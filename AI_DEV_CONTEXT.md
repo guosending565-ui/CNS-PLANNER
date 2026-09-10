@@ -90,9 +90,17 @@ legacy_app.py -> cns_planner/ui/app.py -> Project + storage.py
 python -m pytest -q -rs
 ```
 
-结果：**55 passed, 6 skipped, 0 failed**。
+结果：**59 passed, 6 skipped, 0 failed**。
 
-6 项跳过均来自 `tests/test_map_http.py`，原因是需要先启动真实 QGIS 地图服务并设置 `CNS_MAP_TESTS=1`。默认测试覆盖：项目元信息序列化、Streamlit 骨架、状态聚合和失效、数据健康、启动器、瓦片缓存、六步工作流原型、A* 硬约束失败，以及 MH/T 4063 网格几何。当前缺口包括前端自动化、项目目录 save/open 回归、并发写入、schema 迁移/损坏恢复、真实 QGIS 集成的自动化启动，以及算法输出 golden fixtures。
+6 项跳过均来自 `tests/test_map_http.py`，原因是需要先启动真实 QGIS 地图服务并设置 `CNS_MAP_TESTS=1`。默认测试覆盖：项目元信息序列化、Streamlit 骨架、状态聚合和失效、数据健康、启动器、瓦片缓存、六步工作流原型、V1 航路/覆盖 characterization、A* 硬约束失败，以及 MH/T 4063 网格几何。当前缺口包括前端自动化、项目目录 save/open 回归、并发写入、schema 迁移/损坏恢复和真实 QGIS 集成的自动化启动。
+
+### V1 characterization 覆盖与实际契约
+
+- `tests/test_v1_algorithm_characterization.py` 使用纯内存固定 fixture，锁定相同输入的完整重复结果和固定 SHA-256 `input_fingerprint`，不依赖 QGIS、网络、本机路径、时间戳或临时目录。
+- `RoutePlannerV1` 当前公开结果字段为 `route_id/status/path/reason/algorithm_id/algorithm_version/input_fingerprint/environment_risk`。成功样例锁定绕开中心 BBOX 硬约束的折线路径和关键节点；失败样例锁定纵向硬约束完全阻断时的空路径与失败原因。当前没有 `algorithm_name`、距离或统计字段。
+- `CoveragePlannerV1` 当前顶层字段为 `status/layers/physical_sites/algorithm_id/algorithm_version/input_fingerprint/parameters`；C/N/S 层分别包含状态、站点、统计和消息。固定样例锁定主站、补盲站、跨系统共址、物理站址、站点编号、平均覆盖重数以及未覆盖点/航段字段。
+- Coverage V1 的当前可观察行为是：只要存在主站设备，发现零覆盖采样点便立即插入补盲站并把该点计为已覆盖，因此固定成功样例的 `uncovered_samples=0`、`uncovered_segments=[]`；缺少主站时该分系统直接返回 `missing_data`，这两个未覆盖字段仍为 `0` 和空列表。共址可能把新补盲站移动到已有站址，但当前实现不会在移动后重新核验该采样点是否仍处于覆盖半径内。上述行为仅记录并锁定，未在本轮修正。
+- 两个 V1 都提供 `algorithm_id` 与 `algorithm_version="1.0"`，均不提供名为 `algorithm_name` 的字段。Route V1 不提供距离；Coverage V1 提供逐系统站点数、主/补盲/共址数、平均重数及未覆盖采样/航段，但不提供覆盖或未覆盖距离。
 
 Git 基线状态（2026-09-10）：`main` 已建立首个代码基线提交；源代码、测试、文档和可复现配置纳入版本控制，缓存、日志、临时文件、运行项目数据和机器相关设置由 `.gitignore` 排除。首个提交前复测结果为 **55 passed, 6 skipped, 0 failed**。
 
@@ -180,7 +188,7 @@ tests/
 ### P1：先固化行为，再拆边界
 
 1. **已完成：**建立首个 Git 基线提交，并保存本文件所记录的测试结果。
-2. 为 `RoutePlannerV1`、`CoveragePlannerV1` 增加 characterization/golden tests，锁定成功、失败、编号、指纹、C/N/S、共址和缺口输出。
+2. **已完成：**为 `RoutePlannerV1`、`CoveragePlannerV1` 增加 characterization/golden tests，锁定成功、失败、编号、指纹、C/N/S、共址和缺口输出。
 3. 为项目自动保存、另存、打开、无效 schema、损坏文件和中途失败增加仓储测试；明确错误必须保留当前有效项目。
 4. 从 `map_server.py` 优先抽出无业务变化的 HTTP 路由、QGIS 线程桥、项目仓储和数据源仓储；保留兼容 façade 与原 API。
 5. 给工作流仓储和活动项目切换建立锁/事务边界，移除 handler 对模块级可变全局的直接写入。
