@@ -1,0 +1,32 @@
+[
+  {
+    "name": "cns_planner_prototype.html",
+    "bytes": 1056333,
+    "sha256": "FC02901391854467244C5FF0DF88FA18B95CC3546FAABB3E842B8A5846C8DADF"
+  },
+  {
+    "name": "CNS规划系统_需求规格说明书_草稿.md",
+    "bytes": 23571,
+    "sha256": "66342E268666FCA0608EF5ECF167039F24E494D897FC627E51D168CABBB3269D"
+  },
+  {
+    "name": "CNS规划系统_初步设计说明书_草稿.md",
+    "bytes": 15568,
+    "sha256": "EF4CDAD098AD46DCAC29450C4E727AF2A6B4EEC4958FCA4EC491641E0B81D903"
+  },
+  {
+    "name": "zhoushan_drone_risk_map_1km.html",
+    "bytes": 90643,
+    "sha256": "CF78B540EB9342D1F422EEC700D78CC37F4BD880E460119B8E0BBD43508307EB"
+  },
+  {
+    "name": "zhoushan_cns_infra_plan.html",
+    "bytes": 10675,
+    "sha256": "167B6B185DE6F3B3F57C99F69D55D1CB19B228A8383AE9883563FBF5EA0D4B16"
+  },
+  {
+    "name": "舟山无人机运行风险地图.svg",
+    "bytes": 14846,
+    "sha256": "9BDB75AB6FD12746C9175A68BAF1C639323436B0CED5B2078686414888A1EAC0"
+  }
+]

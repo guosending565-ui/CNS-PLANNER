@@ -1,0 +1,42 @@
+# Python environments, caches and build outputs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Local secrets and machine/editor settings
+.env
+.env.*
+!.env.example
+*.local
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Runtime data and generated outputs
+projects/
+data/
+outputs/
+*.log
+
+# Temporary and generated inventory files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+project_tree.txt
