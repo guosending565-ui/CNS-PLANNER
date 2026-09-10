@@ -90,9 +90,9 @@ legacy_app.py -> cns_planner/ui/app.py -> Project + storage.py
 python -m pytest -q -rs
 ```
 
-结果：**59 passed, 6 skipped, 0 failed**。
+结果：**64 passed, 6 skipped, 4 xfailed, 0 failed**。
 
-6 项跳过均来自 `tests/test_map_http.py`，原因是需要先启动真实 QGIS 地图服务并设置 `CNS_MAP_TESTS=1`。默认测试覆盖：项目元信息序列化、Streamlit 骨架、状态聚合和失效、数据健康、启动器、瓦片缓存、六步工作流原型、V1 航路/覆盖 characterization、A* 硬约束失败，以及 MH/T 4063 网格几何。当前缺口包括前端自动化、项目目录 save/open 回归、并发写入、schema 迁移/损坏恢复和真实 QGIS 集成的自动化启动。
+6 项跳过均来自 `tests/test_map_http.py`，原因是需要先启动真实 QGIS 地图服务并设置 `CNS_MAP_TESTS=1`。4 项严格 `xfail` 记录已确认的持久化安全缺陷，修复后会以 `XPASS(strict)` 使测试失败，从而要求显式更新基线。默认测试覆盖：项目元信息序列化、Streamlit 骨架、状态聚合和失效、数据健康、启动器、瓦片缓存、六步工作流原型、V1 航路/覆盖 characterization、项目持久化 characterization、A* 硬约束失败，以及 MH/T 4063 网格几何。当前缺口包括前端自动化、并发写入、schema 迁移实现和真实 QGIS 集成的自动化启动。
 
 ### V1 characterization 覆盖与实际契约
 
@@ -101,6 +101,14 @@ python -m pytest -q -rs
 - `CoveragePlannerV1` 当前顶层字段为 `status/layers/physical_sites/algorithm_id/algorithm_version/input_fingerprint/parameters`；C/N/S 层分别包含状态、站点、统计和消息。固定样例锁定主站、补盲站、跨系统共址、物理站址、站点编号、平均覆盖重数以及未覆盖点/航段字段。
 - Coverage V1 的当前可观察行为是：只要存在主站设备，发现零覆盖采样点便立即插入补盲站并把该点计为已覆盖，因此固定成功样例的 `uncovered_samples=0`、`uncovered_segments=[]`；缺少主站时该分系统直接返回 `missing_data`，这两个未覆盖字段仍为 `0` 和空列表。共址可能把新补盲站移动到已有站址，但当前实现不会在移动后重新核验该采样点是否仍处于覆盖半径内。上述行为仅记录并锁定，未在本轮修正。
 - 两个 V1 都提供 `algorithm_id` 与 `algorithm_version="1.0"`，均不提供名为 `algorithm_name` 的字段。Route V1 不提供距离；Coverage V1 提供逐系统站点数、主/补盲/共址数、平均重数及未覆盖采样/航段，但不提供覆盖或未覆盖距离。
+
+### 项目持久化 characterization 与安全期望
+
+- `tests/test_project_persistence_characterization.py` 的全部文件均位于 pytest 临时目录；通过 QGIS 导入桩加载现有 `map_server.py` 保存/打开函数，不启动 QGIS、不访问网络，也不读写真实 `projects/`。
+- 当前正常行为已锁定：`WorkflowService` 自动保存后可重新加载完整状态；主要字段、节点/航路、规则、设备、覆盖、风险及结果状态往返保持；另存会复制状态、写 `data_sources.json` 并把活动项目切换到新目录；打开有效目录会恢复项目状态和数据源。
+- 当前安全行为已锁定：项目文件不存在时拒绝打开；数据源适配器加载失败发生在活动项目切换之前，当前 `WORKFLOW` 和 `ACTIVE_PROJECT_FILE` 保持不变，目标目录文件不被写入。
+- 严格 `xfail` 安全期望：不支持的 schema 和损坏的项目 JSON 应报错且保留当前有效项目。现状是 `_load()` 静默生成新空项目，而 `open_project()` 仍切换活动项目。
+- 严格 `xfail` 安全期望：保存异常不应遗留中间文件。现状是临时文件原子替换失败会留下 `.tmp`；`save_project_as()` 直接 `copy2` 到最终文件，复制中断可能留下部分 `project_state.json`。两种情况下原活动项目文件/指针仍保留，但目标目录需要清理或事务化。
 
 Git 基线状态（2026-09-10）：`main` 已建立首个代码基线提交；源代码、测试、文档和可复现配置纳入版本控制，缓存、日志、临时文件、运行项目数据和机器相关设置由 `.gitignore` 排除。首个提交前复测结果为 **55 passed, 6 skipped, 0 failed**。
 
@@ -174,7 +182,7 @@ tests/
 ## 9. 当前技术债
 
 1. `map_server.py`、`workflow.py`、`web/app.js` 是三个高耦合中心，修改影响面大。
-2. 项目存储不是完整、版本化、可迁移的项目包；打开/另存缺少事务与恢复策略。
+2. 项目存储不是完整、版本化、可迁移的项目包；打开/另存缺少事务与恢复策略。不支持 schema 或损坏 JSON 会静默切换为空项目，保存失败会遗留 `.tmp` 或部分复制的最终文件。
 3. 服务端全局可变状态在多线程 HTTP 下没有一致性边界，存在并发覆盖和读取中间状态的风险。
 4. 两代 UI/项目模型并存且不共享状态；README 也同时描述多个阶段口径，容易造成维护歧义。
 5. V1 航路把工作区固定离散为 `56 × 56` 经纬度网格，硬约束来自图层名称识别及整层 BBOX；这只是原型近似，尚非正式空间约束模型。
@@ -189,7 +197,7 @@ tests/
 
 1. **已完成：**建立首个 Git 基线提交，并保存本文件所记录的测试结果。
 2. **已完成：**为 `RoutePlannerV1`、`CoveragePlannerV1` 增加 characterization/golden tests，锁定成功、失败、编号、指纹、C/N/S、共址和缺口输出。
-3. 为项目自动保存、另存、打开、无效 schema、损坏文件和中途失败增加仓储测试；明确错误必须保留当前有效项目。
+3. **已完成测试基线：**为项目自动保存、另存、打开、无效 schema、损坏文件和中途失败增加持久化 characterization；危险现状以严格 `xfail` 登记，修复尚未实施。
 4. 从 `map_server.py` 优先抽出无业务变化的 HTTP 路由、QGIS 线程桥、项目仓储和数据源仓储；保留兼容 façade 与原 API。
 5. 给工作流仓储和活动项目切换建立锁/事务边界，移除 handler 对模块级可变全局的直接写入。
 
