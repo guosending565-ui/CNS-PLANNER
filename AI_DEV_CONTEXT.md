@@ -15,12 +15,13 @@ cns_planner/map_server.py
   ├─ 本机 HTTP API 与静态文件服务
   ├─ QGIS/Qt 主线程任务队列、图层装载与视口渲染
   ├─ 数据源、文件浏览、在线服务检查
-  ├─ 项目保存/打开
+  ├─ 项目保存/打开编排与活动项目切换
+  ├─ DataSourceRepository / ProjectRepository
   └─ WorkflowService
        ├─ RoutePlannerV1
        ├─ CoveragePlannerV1
        ├─ ResultLedger / ResultStatus
-       └─ JSON 状态文件
+       └─ ProjectRepository
 
 cns_planner/web/index.html + style.css + app.js + tiles.js
   └─ 六步界面、Canvas 地图、浏览器端 XYZ 瓦片、API 调用和前端状态
@@ -47,6 +48,7 @@ legacy_app.py -> cns_planner/ui/app.py -> Project + storage.py
 - 浏览器端平移、缩放、定位、图层开关、透明度控制；在线 XYZ 瓦片与 QGIS 本地渲染分离，并具有限流、缓存和过期请求取消。
 - 本机文件/目录浏览，地图数据源“仅校验”和“应用”，文件级及工作区覆盖健康检查，在线瓦片与地名搜索独立检查。
 - 六步工作流状态自动保存与重启恢复，项目目录另存/打开，稳定节点/航路序号和退役航路号。
+- 项目状态与数据源 JSON 的底层文件 I/O 已分别统一到 `ProjectRepository` 和 `DataSourceRepository`，保持既有格式和原子替换方式。
 - 当前端到端原型：矩形工作区、场景航路、基于固定规则网格的 A* 运行航路、硬约束 BBOX 阻断、运行规则校验、C/N/S 确定性覆盖布站、补盲和共址。
 - 明确的多状态结果与保守失效传播；未知风险不会被聚合为通过。
 - 项目 JSON、航路 GeoJSON、站点 GeoJSON 导出。
@@ -60,8 +62,9 @@ legacy_app.py -> cns_planner/ui/app.py -> Project + storage.py
 |---|---|---|
 | `map_app.py`（83 行） | QGIS runner 发现、进程启动、日志、健康等待、浏览器打开 | 当前职责集中，是薄启动器；后续仅需避免继续加入业务逻辑。 |
 | `app.py`（27 行） | CLI 入口转发及 Streamlit iframe 兼容入口 | 足够薄。 |
-| `cns_planner/map_server.py`（808 行） | QGIS 生命周期和线程桥、数据装载/样式/元数据/渲染、数据健康补丁、硬约束提取、文件浏览、在线检查、项目存取、HTTP 安全/路由/响应、全局运行状态 | **职责严重过多，是首要拆分对象。** 基础设施、应用服务和传输层彼此耦合。 |
-| `cns_planner/services/workflow.py`（339 行） | 状态 schema/default/load/save、项目/工作区/节点/航路 CRUD、场景生成、算法编排、规则和设备校验、失效、风险聚合、三类导出 | **职责过多。** 工作流编排、仓储、校验、状态机和导出混在一个可变字典服务中。 |
+| `cns_planner/map_server.py`（804 行） | QGIS 生命周期和线程桥、数据装载/样式/元数据/渲染、数据健康补丁、硬约束提取、文件浏览、在线检查、项目保存/打开编排、HTTP 安全/路由/响应、全局运行状态 | **职责仍然严重过多。** 底层项目/数据源文件 I/O 已委托 repository，但活动切换、QGIS 应用和传输层仍耦合。 |
+| `cns_planner/services/workflow.py`（339 行） | 状态 schema/default 与兼容判定、项目/工作区/节点/航路 CRUD、场景生成、算法编排、规则和设备校验、失效、风险聚合、三类导出；通过 repository 加载/保存 | **职责仍然过多。** 底层项目 JSON I/O 已抽离，何时保存、schema 策略和状态生命周期仍由工作流负责。 |
+| `cns_planner/persistence/project_repository.py` + `data_source_repository.py` | 项目状态和数据源文件的存在性检查、UTF-8 JSON 读写、`.tmp` 原子替换，以及项目状态文件复制 | 边界纯净；不依赖 `map_server`、`WorkflowService`、QGIS、业务校验、失效或 HTTP。 |
 | `cns_planner/algorithms/route_planner.py`（104 行） | 经纬度到固定网格映射、约束 BBOX 栅格化、A*、路径简化、结果/指纹/风险占位组装 | 文件不大但边界不清；算法核与 GIS/结果适配应分离，保持现有 V1 行为作为回归基线。 |
 | `cns_planner/algorithms/coverage_planner.py`（108 行） | 距离和插值、设备选择、C/N/S 循环、主站/补盲、物理站址共址、覆盖采样、缺口统计、编号及指纹 | 文件不大但业务职责密集；布站、共址、覆盖评估和结果组装应形成独立策略接口。 |
 | `cns_planner/web/app.js`（795 行） | API 客户端、全局状态、地图坐标/Canvas 绘制、交互、六步 HTML 模板与事件绑定、数据源中心、在线检查、本机浏览器 | **前端首要拆分对象。** 状态、视图和副作用均依赖模块级可变变量，难以单测。 |
@@ -72,9 +75,9 @@ legacy_app.py -> cns_planner/ui/app.py -> Project + storage.py
 
 ## 5. 项目保存与状态管理现状
 
-- `WorkflowService` 直接持有并修改嵌套 `dict`，每次操作后把整个状态写入同一个 JSON；单文件写入使用临时文件替换，具备基础原子性。
+- `WorkflowService` 直接持有并修改嵌套 `dict`，并决定何时保存；底层加载和整份状态 JSON 写入由 `ProjectRepository` 完成，仍沿用 `.tmp` 后替换的基础原子机制。
 - schema 不匹配、JSON 损坏或读取异常时会静默创建空项目，没有显式迁移、隔离、备份或错误审计。
-- “另存为”先保存活动状态再复制到目标，随后重建全局 `WORKFLOW`；数据源另存为第二个 JSON。当前不是 `manifest/data/results/audit` 形式的完整项目包，也不复制或校验外部数据。
+- “另存为”仍由 `map_server.py` 编排：先保存活动状态、通过 `ProjectRepository` 复制到目标、重建全局 `WORKFLOW`，再通过 `DataSourceRepository` 写第二个 JSON。当前不是 `manifest/data/results/audit` 形式的完整项目包，也不复制或校验外部数据。
 - `open_project()` 会先尝试切换数据源，再切换全局活动项目，整个过程没有事务边界或统一回滚。
 - `DATA`、`WORKFLOW`、`ACTIVE_PROJECT_FILE` 是模块级全局变量；`ThreadingHTTPServer` 可并发执行工作流读写，而工作流状态和临时文件没有专用锁。
 - 前端再用 `state`、`flow`、`view` 等全局变量保存服务快照和交互状态，没有显式 store、动作模型或并发更新策略。
@@ -90,7 +93,7 @@ legacy_app.py -> cns_planner/ui/app.py -> Project + storage.py
 python -m pytest -q -rs
 ```
 
-结果：**64 passed, 6 skipped, 4 xfailed, 0 failed**。
+结果：**67 passed, 6 skipped, 4 xfailed, 0 failed**。
 
 6 项跳过均来自 `tests/test_map_http.py`，原因是需要先启动真实 QGIS 地图服务并设置 `CNS_MAP_TESTS=1`。4 项严格 `xfail` 记录已确认的持久化安全缺陷，修复后会以 `XPASS(strict)` 使测试失败，从而要求显式更新基线。默认测试覆盖：项目元信息序列化、Streamlit 骨架、状态聚合和失效、数据健康、启动器、瓦片缓存、六步工作流原型、V1 航路/覆盖 characterization、项目持久化 characterization、A* 硬约束失败，以及 MH/T 4063 网格几何。当前缺口包括前端自动化、并发写入、schema 迁移实现和真实 QGIS 集成的自动化启动。
 
@@ -109,6 +112,14 @@ python -m pytest -q -rs
 - 当前安全行为已锁定：项目文件不存在时拒绝打开；数据源适配器加载失败发生在活动项目切换之前，当前 `WORKFLOW` 和 `ACTIVE_PROJECT_FILE` 保持不变，目标目录文件不被写入。
 - 严格 `xfail` 安全期望：不支持的 schema 和损坏的项目 JSON 应报错且保留当前有效项目。现状是 `_load()` 静默生成新空项目，而 `open_project()` 仍切换活动项目。
 - 严格 `xfail` 安全期望：保存异常不应遗留中间文件。现状是临时文件原子替换失败会留下 `.tmp`；`save_project_as()` 直接 `copy2` 到最终文件，复制中断可能留下部分 `project_state.json`。两种情况下原活动项目文件/指针仍保留，但目标目录需要清理或事务化。
+
+### P1-3 持久化层边界
+
+- `ProjectRepository` 只负责项目状态文件的存在性/文件检查、JSON 反序列化、保持既有参数的 JSON 序列化、`.tmp` 原子替换和 Save As 文件复制。
+- `DataSourceRepository` 只负责地图源及项目数据源 JSON 的存在性/文件检查、反序列化和 `.tmp` 原子替换写入。
+- `WorkflowService` 保留 schema 版本判定、空状态生成、静默恢复策略、时间戳更新及保存时机；`map_server.py` 保留活动路径选择、目标目录/文件名、legacy 文件回退、`WORKFLOW` 替换、数据源回退取值、QGIS `DATA.load()` 和失效编排。
+- 所有生产调用方已统一通过 repository 读写项目状态、`map_sources.json` 和 `data_sources.json`；repository 不反向依赖上层，因此未形成循环依赖。
+- `tests/test_repositories.py` 增加 3 项纯临时目录单测，锁定项目 JSON 往返、Save As 字节复制和数据源 JSON 往返。原 4 项持久化安全 `xfail` 保持不变。
 
 Git 基线状态（2026-09-10）：`main` 已建立首个代码基线提交；源代码、测试、文档和可复现配置纳入版本控制，缓存、日志、临时文件、运行项目数据和机器相关设置由 `.gitignore` 排除。首个提交前复测结果为 **55 passed, 6 skipped, 0 failed**。
 
@@ -152,9 +163,9 @@ cns_planner/
     renderer.py              # 视口渲染
     workspace_health.py
     constraints.py           # GIS 几何到算法约束输入
-  persistence/
-    project_repository.py
-    data_source_repository.py
+  persistence/              # 已建立底层 JSON I/O 边界
+    project_repository.py   # 已实现
+    data_source_repository.py # 已实现
     migrations/
   services/
     data_registry.py
@@ -181,7 +192,7 @@ tests/
 
 ## 9. 当前技术债
 
-1. `map_server.py`、`workflow.py`、`web/app.js` 是三个高耦合中心，修改影响面大。
+1. `map_server.py`、`workflow.py`、`web/app.js` 是三个高耦合中心，修改影响面大；P1-3 只完成了前两者底层项目/数据源文件 I/O 的抽离。
 2. 项目存储不是完整、版本化、可迁移的项目包；打开/另存缺少事务与恢复策略。不支持 schema 或损坏 JSON 会静默切换为空项目，保存失败会遗留 `.tmp` 或部分复制的最终文件。
 3. 服务端全局可变状态在多线程 HTTP 下没有一致性边界，存在并发覆盖和读取中间状态的风险。
 4. 两代 UI/项目模型并存且不共享状态；README 也同时描述多个阶段口径，容易造成维护歧义。
@@ -198,7 +209,7 @@ tests/
 1. **已完成：**建立首个 Git 基线提交，并保存本文件所记录的测试结果。
 2. **已完成：**为 `RoutePlannerV1`、`CoveragePlannerV1` 增加 characterization/golden tests，锁定成功、失败、编号、指纹、C/N/S、共址和缺口输出。
 3. **已完成测试基线：**为项目自动保存、另存、打开、无效 schema、损坏文件和中途失败增加持久化 characterization；危险现状以严格 `xfail` 登记，修复尚未实施。
-4. 从 `map_server.py` 优先抽出无业务变化的 HTTP 路由、QGIS 线程桥、项目仓储和数据源仓储；保留兼容 façade 与原 API。
+4. **部分完成：**项目仓储和数据源仓储已在不改变外部行为的前提下抽离；HTTP 路由和 QGIS 线程桥尚未拆分，原 API 保持不变。
 5. 给工作流仓储和活动项目切换建立锁/事务边界，移除 handler 对模块级可变全局的直接写入。
 
 ### P2：收敛模型与前端状态

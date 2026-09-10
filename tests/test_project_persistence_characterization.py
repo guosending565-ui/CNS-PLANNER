@@ -398,11 +398,11 @@ def test_save_as_copy_failure_should_not_leave_partial_target(
     destination = tmp_path / "partial-save-project"
     partial_target = destination / "project_state.json"
 
-    def interrupted_copy(source, target):
+    def interrupted_copy(repository, target):
         Path(target).write_text('{"schema_version":', encoding="utf-8")
         raise OSError("simulated interrupted copy")
 
-    monkeypatch.setattr(module.shutil, "copy2", interrupted_copy)
+    monkeypatch.setattr(module.ProjectRepository, "copy_to", interrupted_copy)
 
     with pytest.raises(OSError, match="simulated interrupted copy"):
         module.save_project_as(destination)

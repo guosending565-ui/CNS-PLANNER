@@ -5,7 +5,6 @@ HTTP requests run independently; GIS operations are queued to the Qt owner threa
 import json
 import math
 import os
-import shutil
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from concurrent.futures import Future
@@ -21,6 +20,8 @@ from tile_cache import TileCache
 from services.data_health import build_health
 from services.data_registry import build_registry
 from services.workflow import WorkflowService
+from persistence.data_source_repository import DataSourceRepository
+from persistence.project_repository import ProjectRepository
 
 from qgis.core import (QgsApplication, QgsProject, QgsCoordinateReferenceSystem,
     QgsCoordinateTransform, QgsRectangle, QgsMapSettings, QgsMapRendererParallelJob,
@@ -94,9 +95,10 @@ class MapData:
         self.revision = 0
         self.error = ""
         paths = DEFAULTS.copy()
-        if SETTINGS.exists():
+        settings_repository = DataSourceRepository(SETTINGS)
+        if settings_repository.exists():
             try:
-                paths.update(json.loads(SETTINGS.read_text(encoding="utf-8")))
+                paths.update(settings_repository.load())
             except (ValueError, OSError):
                 pass
         self.paths = paths
@@ -276,10 +278,7 @@ class MapData:
         bounds = [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
         clean_paths = {"basemap": str(qgz.resolve()), "population": str(pop_tif.resolve()), "terrain": str(terrain_tif.resolve())}
         if persist:
-            SETTINGS.parent.mkdir(exist_ok=True)
-            tmp = SETTINGS.with_suffix(".tmp")
-            tmp.write_text(json.dumps(clean_paths, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(SETTINGS)
+            DataSourceRepository(SETTINGS).save(clean_paths)
         self.project, self.population, self.terrain = candidate, raster, terrain
         pop_extent = QgsCoordinateTransform(raster.crs(), WGS84, candidate).transformBoundingBox(raster.extent())
         self.population_bbox_wgs84 = [pop_extent.xMinimum(), pop_extent.yMinimum(), pop_extent.xMaximum(), pop_extent.yMaximum()]
@@ -537,11 +536,8 @@ def persist_active_data_sources():
     target = _active_data_sources_path()
     if target is None:
         return
-    target.parent.mkdir(parents=True, exist_ok=True)
     clean = {key: DATA.paths.get(key, "") for key in ("basemap", "population", "terrain")}
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(target)
+    DataSourceRepository(target).save(clean)
 
 
 def save_project_as(project_dir):
@@ -557,11 +553,11 @@ def save_project_as(project_dir):
     target = folder / "project_state.json"
 
     WORKFLOW.save()
-    source = Path(ACTIVE_PROJECT_FILE)
+    source = ProjectRepository(ACTIVE_PROJECT_FILE)
     if not source.is_file():
         raise ValueError("当前项目尚未形成可保存的项目状态文件")
-    if source.resolve() != target.resolve():
-        shutil.copy2(source, target)
+    if source.path.resolve() != target.resolve():
+        source.copy_to(target)
 
     ACTIVE_PROJECT_FILE = target
     WORKFLOW = WorkflowService(ACTIVE_PROJECT_FILE, DEFAULT_CONFIG)
@@ -585,9 +581,9 @@ def open_project(project_dir):
         else:
             raise ValueError("该目录不是有效项目：缺少 project_state.json")
 
-    sources_file = folder / "data_sources.json"
-    if sources_file.is_file():
-        saved = json.loads(sources_file.read_text(encoding="utf-8"))
+    sources_repository = DataSourceRepository(folder / "data_sources.json")
+    if sources_repository.is_file():
+        saved = sources_repository.load()
         clean = {key: saved.get(key) or DATA.paths.get(key) or DEFAULTS.get(key, "") for key in ("basemap", "population", "terrain")}
         DATA.load(clean, persist=False)
 

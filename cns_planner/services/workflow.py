@@ -12,11 +12,13 @@ try:
     from ..algorithms.coverage_planner import CoveragePlannerV1
     from ..algorithms.route_planner import RoutePlannerV1
     from ..models.status import ResultStatus
+    from ..persistence.project_repository import ProjectRepository
     from .invalidation import ResultLedger
 except ImportError:  # map_server.py runs with cns_planner on sys.path.
     from algorithms.coverage_planner import CoveragePlannerV1
     from algorithms.route_planner import RoutePlannerV1
     from models.status import ResultStatus
+    from persistence.project_repository import ProjectRepository
     from services.invalidation import ResultLedger
 
 
@@ -29,6 +31,7 @@ class WorkflowService:
 
     def __init__(self, store_path: Path, defaults_path: Path):
         self.store_path = store_path
+        self.repository = ProjectRepository(store_path)
         self.defaults_path = defaults_path
         self.defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
         self.route_planner = RoutePlannerV1()
@@ -66,10 +69,10 @@ class WorkflowService:
         return {"status": status, "value": None, "unit": None, "threshold": None, "source": reason}
 
     def _load(self):
-        if not self.store_path.exists():
+        if not self.repository.exists():
             return self._blank()
         try:
-            value = json.loads(self.store_path.read_text(encoding="utf-8"))
+            value = self.repository.load()
             if value.get("schema_version") != self.schema_version:
                 return self._blank()
             return value
@@ -79,10 +82,7 @@ class WorkflowService:
     def save(self):
         self.state["project"]["updated_at"] = utc_now()
         self.state["last_saved_at"] = utc_now()
-        self.store_path.parent.mkdir(exist_ok=True)
-        temporary = self.store_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.state, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-        temporary.replace(self.store_path)
+        self.repository.save(self.state)
 
     def snapshot(self):
         result = deepcopy(self.state)
