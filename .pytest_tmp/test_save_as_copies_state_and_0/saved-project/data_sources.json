@@ -1,0 +1,5 @@
+{
+  "basemap": "fixture/map.qgz",
+  "population": "fixture/population.tif",
+  "terrain": "fixture/terrain.tif"
+}

@@ -1,4 +1,4 @@
-"""Phase 1 project manifest. Coordinates here are WGS84 degrees, not metres."""
+"""Legacy phase-1 project manifest; the schema-v2 workbench does not depend on it."""
 from dataclasses import dataclass, field, asdict
 from math import isfinite
 from uuid import uuid4

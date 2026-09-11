@@ -43,7 +43,7 @@ def ensure_server(timeout=90):
         logfile.write("\n--- CNS start " + time.strftime("%Y-%m-%d %H:%M:%S") + " ---\n")
         logfile.flush()
         process = subprocess.Popen(
-            [str(runner), str(ROOT / "cns_planner" / "map_server.py")],
+            [str(runner), "-m", "cns_planner.map_server"],
             cwd=str(ROOT), env=env, stdout=logfile, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0,

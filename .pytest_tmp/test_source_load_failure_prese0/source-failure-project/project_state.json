@@ -1,0 +1,1305 @@
+{
+  "schema_version": 2,
+  "project": {
+    "project_id": "561ce935-3488-4f43-8ca8-94590d05220e",
+    "name": "持久化回归项目",
+    "created_at": "2026-09-11T07:46:41.872479+00:00",
+    "updated_at": "2026-09-11T07:46:41.889136+00:00"
+  },
+  "workspace": {
+    "bbox": [
+      120.0,
+      30.0,
+      120.01,
+      30.01
+    ],
+    "area_km2": 1.071,
+    "health": {
+      "status": "passed",
+      "population": {
+        "status": "passed"
+      },
+      "airspace": {
+        "status": "passed"
+      },
+      "terrain": {
+        "status": "passed"
+      },
+      "buildings": {
+        "status": "missing_data"
+      },
+      "property": {
+        "status": "missing_data"
+      },
+      "loaded_layer_count": 3,
+      "covered_layer_count": 3
+    },
+    "status": "passed"
+  },
+  "grid": {
+    "status": "passed",
+    "standard": "MH/T 4063.1-2026",
+    "id_scheme": "mht4063-global-index-v1",
+    "preferred_level": 7,
+    "level": 7,
+    "coarsened": false,
+    "workspace_bbox": [
+      120.0,
+      30.0,
+      120.01,
+      30.01
+    ],
+    "cell_size_degrees": [
+      0.0033333333333333335,
+      0.0033333333333333335
+    ],
+    "count": 9,
+    "cells": [
+      {
+        "grid_id": "MHT4063-L07-C00090000-RP00009000",
+        "level": 7,
+        "bbox": [
+          120.0,
+          30.0,
+          120.00333333333333,
+          30.003333333333334
+        ],
+        "center": [
+          120.00166666666667,
+          30.001666666666665
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.0,
+                30.0
+              ],
+              [
+                120.00333333333333,
+                30.0
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.0,
+                30.003333333333334
+              ],
+              [
+                120.0,
+                30.0
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090001-RP00009000",
+        "level": 7,
+        "bbox": [
+          120.00333333333333,
+          30.0,
+          120.00666666666666,
+          30.003333333333334
+        ],
+        "center": [
+          120.005,
+          30.001666666666665
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00333333333333,
+                30.0
+              ],
+              [
+                120.00666666666666,
+                30.0
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.0
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090002-RP00009000",
+        "level": 7,
+        "bbox": [
+          120.00666666666666,
+          30.0,
+          120.01,
+          30.003333333333334
+        ],
+        "center": [
+          120.00833333333333,
+          30.001666666666665
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00666666666666,
+                30.0
+              ],
+              [
+                120.01,
+                30.0
+              ],
+              [
+                120.01,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.0
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090000-RP00009001",
+        "level": 7,
+        "bbox": [
+          120.0,
+          30.003333333333334,
+          120.00333333333333,
+          30.006666666666668
+        ],
+        "center": [
+          120.00166666666667,
+          30.005000000000003
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.0,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.0,
+                30.006666666666668
+              ],
+              [
+                120.0,
+                30.003333333333334
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090001-RP00009001",
+        "level": 7,
+        "bbox": [
+          120.00333333333333,
+          30.003333333333334,
+          120.00666666666666,
+          30.006666666666668
+        ],
+        "center": [
+          120.005,
+          30.005000000000003
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090002-RP00009001",
+        "level": 7,
+        "bbox": [
+          120.00666666666666,
+          30.003333333333334,
+          120.01,
+          30.006666666666668
+        ],
+        "center": [
+          120.00833333333333,
+          30.005000000000003
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.01,
+                30.003333333333334
+              ],
+              [
+                120.01,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090000-RP00009002",
+        "level": 7,
+        "bbox": [
+          120.0,
+          30.006666666666668,
+          120.00333333333333,
+          30.01
+        ],
+        "center": [
+          120.00166666666667,
+          30.008333333333333
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.0,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.01
+              ],
+              [
+                120.0,
+                30.01
+              ],
+              [
+                120.0,
+                30.006666666666668
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090001-RP00009002",
+        "level": 7,
+        "bbox": [
+          120.00333333333333,
+          30.006666666666668,
+          120.00666666666666,
+          30.01
+        ],
+        "center": [
+          120.005,
+          30.008333333333333
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.01
+              ],
+              [
+                120.00333333333333,
+                30.01
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090002-RP00009002",
+        "level": 7,
+        "bbox": [
+          120.00666666666666,
+          30.006666666666668,
+          120.01,
+          30.01
+        ],
+        "center": [
+          120.00833333333333,
+          30.008333333333333
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.01,
+                30.006666666666668
+              ],
+              [
+                120.01,
+                30.01
+              ],
+              [
+                120.00666666666666,
+                30.01
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ]
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  "grid_attributes": {
+    "population": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "population-grid-raw-statistics",
+      "sampling_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "cells": {}
+    },
+    "terrain": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "terrain-grid-elevation-statistics",
+      "sampling_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "cells": {}
+    },
+    "airspace": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "airspace-grid-intersection",
+      "algorithm_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "hit_count": 0,
+      "cells": {}
+    },
+    "traffic": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "uav-traffic-grid-exposure-v1",
+      "algorithm_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "simulation_seconds": null,
+      "normalization": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "cells": {}
+    },
+    "conflict": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "uav-conflict-grid-exposure-v1",
+      "algorithm_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "simulation_seconds": null,
+      "normalization": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "cells": {}
+    },
+    "buildings": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "buildings",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    },
+    "property_exposure": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "property_exposure",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    },
+    "infrastructure": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "infrastructure",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    },
+    "towers": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "towers",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    }
+  },
+  "grid_risk": {
+    "status": "not_calculated",
+    "semantics": "relative_index",
+    "algorithm_id": "risk-model-v1-relative-index",
+    "algorithm_version": "1.1",
+    "parameters": {
+      "parameter_status": "default_engineering_parameters",
+      "risk_semantics": "relative_index",
+      "population_reference": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "terrain_relief_reference": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "ground_formula": {
+        "terrain_multiplier": 0.2,
+        "building_additive_multiplier": 0.0
+      },
+      "ground_completeness_weights": {
+        "population": 0.4,
+        "traffic": 0.4,
+        "terrain": 0.2,
+        "buildings": 0.0
+      },
+      "ground_parameter_status": "default_engineering_parameters",
+      "airspace_category_weights": {},
+      "unknown_category_policy": "missing",
+      "unknown_category_default_weight": null,
+      "operational_air": {
+        "traffic_alpha": 0.5
+      },
+      "operational_air_parameter_status": "default_engineering_parameters",
+      "overall_weights": {
+        "ground": 0.7,
+        "air": 0.3
+      },
+      "overall_weight_status": "engineering_default",
+      "risk_levels": [
+        {
+          "min": 0.0,
+          "max": 0.2,
+          "level": "very_low"
+        },
+        {
+          "min": 0.2,
+          "max": 0.4,
+          "level": "low"
+        },
+        {
+          "min": 0.4,
+          "max": 0.6,
+          "level": "medium"
+        },
+        {
+          "min": 0.6,
+          "max": 0.8,
+          "level": "high"
+        },
+        {
+          "min": 0.8,
+          "max": 1.0,
+          "level": "very_high",
+          "include_max": true
+        }
+      ],
+      "absolute_ground_risk": {
+        "status": "not_calculated",
+        "required_inputs": [
+          "failure_probability_or_rate",
+          "ground_impact_probability",
+          "exposure",
+          "consequence"
+        ]
+      }
+    },
+    "input_status": {},
+    "source_versions": {},
+    "input_versions": {},
+    "grid_level": null,
+    "count": 0,
+    "data_completeness": 0.0,
+    "cells": {}
+  },
+  "traffic_simulation": null,
+  "nodes": [
+    {
+      "node_id": "N001",
+      "name": "A",
+      "coordinate": [
+        120.002,
+        30.002
+      ]
+    },
+    {
+      "node_id": "N002",
+      "name": "B",
+      "coordinate": [
+        120.008,
+        30.008
+      ]
+    }
+  ],
+  "node_seq": 2,
+  "route_seq": 2,
+  "retired_route_ids": [],
+  "scenario_routes": [
+    {
+      "route_id": "R0001",
+      "start_node_id": "N001",
+      "end_node_id": "N002",
+      "start": [
+        120.002,
+        30.002
+      ],
+      "end": [
+        120.008,
+        30.008
+      ],
+      "direction": "N001→N002",
+      "status": "passed",
+      "path": [
+        [
+          120.002,
+          30.002
+        ],
+        [
+          120.008,
+          30.008
+        ]
+      ],
+      "kind": "scenario"
+    },
+    {
+      "route_id": "R0002",
+      "start_node_id": "N002",
+      "end_node_id": "N001",
+      "start": [
+        120.008,
+        30.008
+      ],
+      "end": [
+        120.002,
+        30.002
+      ],
+      "direction": "N002→N001",
+      "status": "passed",
+      "path": [
+        [
+          120.008,
+          30.008
+        ],
+        [
+          120.002,
+          30.002
+        ]
+      ],
+      "kind": "scenario"
+    }
+  ],
+  "operational_routes": [
+    {
+      "route_id": "R0001",
+      "status": "passed",
+      "path": [
+        [
+          120.002,
+          30.002
+        ],
+        [
+          120.008,
+          30.008
+        ]
+      ],
+      "reason": "A* 规划完成；正式风险代价模型待接入",
+      "algorithm_id": "route_planner_v1",
+      "algorithm_version": "1.0",
+      "input_fingerprint": "a56f75a99880e3ffd88dc1f22786db1dd9762035d5284602122d7cbf19364815",
+      "environment_risk": {
+        "status": "pending_confirmation",
+        "value": null,
+        "unit": null,
+        "threshold": null,
+        "source": "GRC 接口待正式模型"
+      }
+    },
+    {
+      "route_id": "R0002",
+      "status": "passed",
+      "path": [
+        [
+          120.008,
+          30.008
+        ],
+        [
+          120.002,
+          30.002
+        ]
+      ],
+      "reason": "A* 规划完成；正式风险代价模型待接入",
+      "algorithm_id": "route_planner_v1",
+      "algorithm_version": "1.0",
+      "input_fingerprint": "1c3ccf989b994e2a9ba1d58ba26f734814932b9dc1512b0dfc5e0432e6539808",
+      "environment_risk": {
+        "status": "pending_confirmation",
+        "value": null,
+        "unit": null,
+        "threshold": null,
+        "source": "GRC 接口待正式模型"
+      }
+    }
+  ],
+  "aircraft": {
+    "aircraft_id": null,
+    "manufacturer": "固定测试厂商",
+    "model": "PERSIST-V1",
+    "cruise_speed_mps": 25.0,
+    "max_speed_mps": 40.0,
+    "mtbf_h": 10000.0,
+    "lambda_per_hour": 0.0001,
+    "route_id": "R0001",
+    "source": "用户输入"
+  },
+  "rules": {
+    "height_ab_m": 120.0,
+    "height_ba_m": 150.0,
+    "height_mode": "different",
+    "horizontal_separation_m": 100.0,
+    "direction_rule": "按航向分层",
+    "delay_sensor_to_platform_ms": 500.0,
+    "delay_platform_to_aircraft_ms": 500.0,
+    "total_delay_ms": 1000.0,
+    "reaction_distance_m": 25.0,
+    "status": "passed",
+    "message": "规则校验通过"
+  },
+  "aircraft_profiles": {
+    "status": "passed",
+    "catalog_id": "aircraft-cns-profile-catalog",
+    "source": "demo/default 工程测试数据",
+    "metadata": {
+      "fallback": true
+    },
+    "count": 1,
+    "items": [
+      {
+        "aircraft_id": "AIRCRAFT-DEFAULT-001",
+        "name": "CNS-DEMO-01",
+        "manufacturer": "工程示例厂商",
+        "model": "CNS-DEMO-01",
+        "communication": {
+          "status": "pending_confirmation",
+          "capabilities": []
+        },
+        "navigation": {
+          "status": "pending_confirmation",
+          "capabilities": []
+        },
+        "surveillance": {
+          "status": "pending_confirmation",
+          "capabilities": []
+        },
+        "source": "demo/default 工程测试数据",
+        "metadata": {},
+        "cruise_speed_mps": 25.0,
+        "max_speed_mps": 35.0,
+        "mtbf_h": 10000.0
+      }
+    ]
+  },
+  "selected_aircraft_profile_id": null,
+  "required_cns": {
+    "status": "pending_confirmation",
+    "source": "项目默认值，待确认",
+    "project_default": {
+      "communication": {
+        "status": "pending_confirmation",
+        "required": null,
+        "coverage_requirement": null,
+        "max_gap_m": null,
+        "latency_ms": null,
+        "redundancy": null
+      },
+      "navigation": {
+        "status": "pending_confirmation",
+        "required": null,
+        "coverage_requirement": null,
+        "accuracy_m": null,
+        "integrity": null,
+        "redundancy": null
+      },
+      "surveillance": {
+        "status": "pending_confirmation",
+        "required": null,
+        "coverage_requirement": null,
+        "update_interval_s": null,
+        "redundancy": null
+      }
+    },
+    "route_overrides": {},
+    "metadata": {
+      "semantics": "mission_requirement_not_aircraft_capability"
+    }
+  },
+  "device_catalog": {
+    "status": "passed",
+    "catalog_id": "cns-device-catalog",
+    "source": "demo/default 工程测试数据",
+    "metadata": {
+      "fallback": true
+    },
+    "count": 6,
+    "items": [
+      {
+        "device_id": "C-PRIMARY-DEMO",
+        "name": "通信主站示例",
+        "subsystem": "C",
+        "role": "primary",
+        "radius_m": 5000.0,
+        "latency_ms": null,
+        "mtbf_h": 20000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "C-GAP-DEMO",
+        "name": "通信补盲示例",
+        "subsystem": "C",
+        "role": "gap",
+        "radius_m": 2500.0,
+        "latency_ms": null,
+        "mtbf_h": 15000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "N-PRIMARY-DEMO",
+        "name": "导航主站示例",
+        "subsystem": "N",
+        "role": "primary",
+        "radius_m": 4000.0,
+        "latency_ms": null,
+        "mtbf_h": 22000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "N-GAP-DEMO",
+        "name": "导航补盲示例",
+        "subsystem": "N",
+        "role": "gap",
+        "radius_m": 2000.0,
+        "latency_ms": null,
+        "mtbf_h": 16000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "S-PRIMARY-DEMO",
+        "name": "监视主站示例",
+        "subsystem": "S",
+        "role": "primary",
+        "radius_m": 4500.0,
+        "latency_ms": null,
+        "mtbf_h": 18000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "S-GAP-DEMO",
+        "name": "监视补盲示例",
+        "subsystem": "S",
+        "role": "gap",
+        "radius_m": 2200.0,
+        "latency_ms": null,
+        "mtbf_h": 14000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      }
+    ]
+  },
+  "existing_cns_facilities": {
+    "status": "not_calculated",
+    "collection_id": "existing-cns-facilities",
+    "source": null,
+    "metadata": {},
+    "count": 0,
+    "items": []
+  },
+  "candidate_sites": {
+    "status": "not_calculated",
+    "collection_id": "candidate-sites",
+    "source": null,
+    "metadata": {},
+    "count": 0,
+    "items": []
+  },
+  "cns_gap_analysis": {
+    "status": "not_calculated",
+    "algorithm_id": "cns_gap_analysis_v1",
+    "algorithm_version": "1.0",
+    "input_fingerprint": null,
+    "route_count": 0,
+    "routes": []
+  },
+  "devices": [
+    {
+      "device_id": "C-PRIMARY-DEMO",
+      "subsystem": "C",
+      "name": "通信主站示例",
+      "role": "primary",
+      "radius_m": 5000.0,
+      "mtbf_h": 20000.0,
+      "enabled": true,
+      "mtbf": 20000.0
+    },
+    {
+      "device_id": "C-GAP-DEMO",
+      "subsystem": "C",
+      "name": "通信补盲示例",
+      "role": "gap",
+      "radius_m": 2500.0,
+      "mtbf_h": 15000.0,
+      "enabled": true,
+      "mtbf": 15000.0
+    },
+    {
+      "device_id": "N-PRIMARY-DEMO",
+      "subsystem": "N",
+      "name": "导航主站示例",
+      "role": "primary",
+      "radius_m": 4000.0,
+      "mtbf_h": 22000.0,
+      "enabled": true,
+      "mtbf": 22000.0
+    },
+    {
+      "device_id": "N-GAP-DEMO",
+      "subsystem": "N",
+      "name": "导航补盲示例",
+      "role": "gap",
+      "radius_m": 2000.0,
+      "mtbf_h": 16000.0,
+      "enabled": true,
+      "mtbf": 16000.0
+    },
+    {
+      "device_id": "S-PRIMARY-DEMO",
+      "subsystem": "S",
+      "name": "监视主站示例",
+      "role": "primary",
+      "radius_m": 4500.0,
+      "mtbf_h": 18000.0,
+      "enabled": true,
+      "mtbf": 18000.0
+    },
+    {
+      "device_id": "S-GAP-DEMO",
+      "subsystem": "S",
+      "name": "监视补盲示例",
+      "role": "gap",
+      "radius_m": 2200.0,
+      "mtbf_h": 14000.0,
+      "enabled": true,
+      "mtbf": 14000.0
+    }
+  ],
+  "coverage": {
+    "status": "passed",
+    "layers": {
+      "C": {
+        "status": "passed",
+        "stations": [
+          {
+            "station_id": "C-R0001-001",
+            "site_id": "SITE-0001",
+            "subsystem": "C",
+            "route_id": "R0001",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": false,
+            "device_id": "C-PRIMARY-DEMO",
+            "radius_m": 5000.0,
+            "mtbf_h": 20000.0
+          },
+          {
+            "station_id": "C-R0001-002",
+            "site_id": "SITE-0001",
+            "subsystem": "C",
+            "route_id": "R0001",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "C-PRIMARY-DEMO",
+            "radius_m": 5000.0,
+            "mtbf_h": 20000.0
+          },
+          {
+            "station_id": "C-R0002-001",
+            "site_id": "SITE-0001",
+            "subsystem": "C",
+            "route_id": "R0002",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "C-PRIMARY-DEMO",
+            "radius_m": 5000.0,
+            "mtbf_h": 20000.0
+          },
+          {
+            "station_id": "C-R0002-002",
+            "site_id": "SITE-0001",
+            "subsystem": "C",
+            "route_id": "R0002",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "C-PRIMARY-DEMO",
+            "radius_m": 5000.0,
+            "mtbf_h": 20000.0
+          }
+        ],
+        "statistics": {
+          "stations": 4,
+          "primary": 4,
+          "gap": 0,
+          "colocated": 3,
+          "average_multiplicity": 4.0,
+          "uncovered_samples": 0,
+          "uncovered_segments": []
+        },
+        "message": "初版覆盖计算完成"
+      },
+      "N": {
+        "status": "passed",
+        "stations": [
+          {
+            "station_id": "N-R0001-001",
+            "site_id": "SITE-0001",
+            "subsystem": "N",
+            "route_id": "R0001",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "N-PRIMARY-DEMO",
+            "radius_m": 4000.0,
+            "mtbf_h": 22000.0
+          },
+          {
+            "station_id": "N-R0001-002",
+            "site_id": "SITE-0001",
+            "subsystem": "N",
+            "route_id": "R0001",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "N-PRIMARY-DEMO",
+            "radius_m": 4000.0,
+            "mtbf_h": 22000.0
+          },
+          {
+            "station_id": "N-R0002-001",
+            "site_id": "SITE-0001",
+            "subsystem": "N",
+            "route_id": "R0002",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "N-PRIMARY-DEMO",
+            "radius_m": 4000.0,
+            "mtbf_h": 22000.0
+          },
+          {
+            "station_id": "N-R0002-002",
+            "site_id": "SITE-0001",
+            "subsystem": "N",
+            "route_id": "R0002",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "N-PRIMARY-DEMO",
+            "radius_m": 4000.0,
+            "mtbf_h": 22000.0
+          }
+        ],
+        "statistics": {
+          "stations": 4,
+          "primary": 4,
+          "gap": 0,
+          "colocated": 4,
+          "average_multiplicity": 4.0,
+          "uncovered_samples": 0,
+          "uncovered_segments": []
+        },
+        "message": "初版覆盖计算完成"
+      },
+      "S": {
+        "status": "passed",
+        "stations": [
+          {
+            "station_id": "S-R0001-001",
+            "site_id": "SITE-0001",
+            "subsystem": "S",
+            "route_id": "R0001",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "S-PRIMARY-DEMO",
+            "radius_m": 4500.0,
+            "mtbf_h": 18000.0
+          },
+          {
+            "station_id": "S-R0001-002",
+            "site_id": "SITE-0001",
+            "subsystem": "S",
+            "route_id": "R0001",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "S-PRIMARY-DEMO",
+            "radius_m": 4500.0,
+            "mtbf_h": 18000.0
+          },
+          {
+            "station_id": "S-R0002-001",
+            "site_id": "SITE-0001",
+            "subsystem": "S",
+            "route_id": "R0002",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "S-PRIMARY-DEMO",
+            "radius_m": 4500.0,
+            "mtbf_h": 18000.0
+          },
+          {
+            "station_id": "S-R0002-002",
+            "site_id": "SITE-0001",
+            "subsystem": "S",
+            "route_id": "R0002",
+            "coordinate": [
+              120.002,
+              30.002
+            ],
+            "role": "primary",
+            "colocated": true,
+            "device_id": "S-PRIMARY-DEMO",
+            "radius_m": 4500.0,
+            "mtbf_h": 18000.0
+          }
+        ],
+        "statistics": {
+          "stations": 4,
+          "primary": 4,
+          "gap": 0,
+          "colocated": 4,
+          "average_multiplicity": 4.0,
+          "uncovered_samples": 0,
+          "uncovered_segments": []
+        },
+        "message": "初版覆盖计算完成"
+      }
+    },
+    "physical_sites": [
+      {
+        "site_id": "SITE-0001",
+        "coordinate": [
+          120.002,
+          30.002
+        ],
+        "source": "CoveragePlannerV1 拟建点"
+      }
+    ],
+    "algorithm_id": "coverage_planner_v1",
+    "algorithm_version": "1.0",
+    "input_fingerprint": "0a42594dcdc630593d384c1e676cb0568b99b1cd7686f43c15378b6f8c1f5fa5",
+    "parameters": {
+      "primary_spacing_factor": {
+        "value": 0.9,
+        "source": "工程默认值，待确认",
+        "confirmed": false
+      },
+      "co_location_search_radius_m": {
+        "value": 2000,
+        "source": "工程默认值，待确认",
+        "confirmed": false
+      }
+    }
+  },
+  "risks": {
+    "environment": {
+      "status": "pending_confirmation",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "GRC 环境风险接口已接入，正式模型待确认"
+    },
+    "technical": {
+      "status": "pending_confirmation",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "MTBF 与 λ 已计算，技术风险模型和阈值待确认"
+    },
+    "life": {
+      "status": "pending_confirmation",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "生命风险模型、单位和阈值待确认"
+    },
+    "property": {
+      "status": "missing_data",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "财产暴露数据未接入"
+    }
+  },
+  "result_statuses": {
+    "workspace": "passed",
+    "grid": "passed",
+    "environment_risk": "not_calculated",
+    "routes": "passed",
+    "coverage": "passed",
+    "cns_gap": "not_calculated",
+    "technical_risk": "not_calculated",
+    "report": "not_calculated"
+  },
+  "last_saved_at": "2026-09-11T07:46:41.889141+00:00"
+}

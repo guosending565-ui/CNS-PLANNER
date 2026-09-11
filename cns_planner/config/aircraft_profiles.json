@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "semantics": "aircraft capabilities only; not mission requirements",
+    "status": "pending_confirmation"
+  },
+  "items": [
+    {
+      "aircraft_id": "AIRCRAFT-CNS-DEMO-01",
+      "name": "CNS-DEMO-01",
+      "manufacturer": "工程示例厂商",
+      "model": "CNS-DEMO-01",
+      "cruise_speed_mps": 25,
+      "max_speed_mps": 35,
+      "mtbf_h": 10000,
+      "communication": {"status": "pending_confirmation", "capabilities": []},
+      "navigation": {"status": "pending_confirmation", "capabilities": []},
+      "surveillance": {"status": "pending_confirmation", "capabilities": []},
+      "source": "demo/default 工程测试数据",
+      "metadata": {"authority": "engineering_placeholder", "confirmed": false}
+    }
+  ]
+}

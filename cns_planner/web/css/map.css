@@ -1,0 +1,267 @@
+/* =========================================================
+   9. 地图图层
+   不再参与一屏高度分配
+   直接放在当前业务流程下面
+   ========================================================= */
+
+.map-layer-panel{
+    flex:none !important;
+
+    margin-top:0 !important;
+
+    padding:7px 2px 4px !important;
+
+    border-top:1px solid #e5ebf0;
+}
+
+
+/* 地图图层标题 */
+
+.map-layer-panel > .section-label{
+    margin:2px 0 4px !important;
+}
+
+
+/* 图层行保持紧凑 */
+
+.map-layer-panel .layer-row{
+    min-height:26px !important;
+
+    padding:3px 2px !important;
+
+    font-size:11px !important;
+}
+
+
+/* 复选框 */
+
+.map-layer-panel input[type="checkbox"]{
+    width:14px !important;
+    height:14px !important;
+}
+
+
+/* 人口透明度 */
+
+.map-layer-panel .opacity{
+    margin:1px 0 3px !important;
+}
+
+.map-layer-panel .opacity label{
+    margin:0 !important;
+
+    font-size:9px !important;
+}
+
+.map-layer-panel input[type="range"]{
+    height:11px !important;
+}
+
+
+/* 图层说明 */
+
+.map-layer-panel .small{
+    margin:2px 0 !important;
+
+    font-size:9px !important;
+    line-height:1.4 !important;
+}
+
+
+/* =========================================================
+   10. 数据源设置区域
+   放到左侧栏最下面
+   ========================================================= */
+
+.sidebar-bottom{
+
+    /*
+     * 原来有 margin-top:auto，
+     * 会参与flex分配。
+     * 这里必须取消。
+     */
+    margin-top:10px !important;
+
+    padding-top:8px !important;
+
+    flex:none !important;
+}
+
+.settings-button{
+    padding:8px 11px !important;
+}
+
+.sidebar-bottom .small{
+    margin-top:5px !important;
+}
+
+
+/* =========================================================
+   11. 屏幕较矮时
+   仍然保持业务流程足够长
+   ========================================================= */
+
+@media (min-width:721px) and (max-height:950px){
+
+    .sidebar{
+        width:400px !important;
+        min-width:400px !important;
+        max-width:400px !important;
+
+        display:block !important;
+
+        overflow-y:auto !important;
+        overflow-x:hidden !important;
+
+        padding-top:12px !important;
+    }
+
+    #steps{
+        margin-bottom:10px !important;
+    }
+
+    #steps button{
+        min-height:35px !important;
+        padding:6px 12px !important;
+    }
+
+    .side-card{
+        /*
+         * 低高度屏幕反而把流程区占比稍微提高。
+         */
+        min-height:74vh !important;
+
+        max-height:none !important;
+
+        height:auto !important;
+
+        flex:none !important;
+
+        overflow:visible !important;
+
+        padding:16px !important;
+    }
+
+}
+
+
+/* =========================================================
+   12. 800px以下屏幕
+   ========================================================= */
+
+@media (min-width:721px) and (max-height:800px){
+
+    .side-card{
+        min-height:76vh !important;
+
+        max-height:none !important;
+
+        height:auto !important;
+
+        overflow:visible !important;
+    }
+
+}
+
+
+/* =========================================================
+   13. 手机/窄屏
+   不固定400px
+   ========================================================= */
+
+@media (max-width:720px){
+
+    .sidebar{
+        width:100% !important;
+        min-width:0 !important;
+        max-width:none !important;
+
+        display:block !important;
+
+        overflow:visible !important;
+    }
+
+    .side-card{
+        min-height:auto !important;
+
+        height:auto !important;
+    }
+
+}
+/* 原始 GLO-30 DEM 高程图例 */
+.raster-legend {
+    margin-top: 12px;
+}
+
+.raster-legend p {
+    margin: 8px 0 6px;
+}
+
+.terrain-raster-gradient {
+    height: 7px;
+    border-radius: 4px;
+    background: linear-gradient(
+        to right,
+        #2c7bb6 0%,
+        #abd9e9 8.33%,
+        #ffffbf 25%,
+        #fdae61 50%,
+        #d7191c 100%
+    );
+}
+
+.terrain-raster-ticks {
+    position: relative;
+    height: 15px;
+    margin-top: 4px;
+    font-size: 8px;
+    color: #7a8883;
+}
+
+.terrain-raster-ticks span {
+    position: absolute;
+    transform: translateX(-50%);
+    white-space: nowrap;
+}
+
+.terrain-raster-ticks span:first-child {
+    transform: none;
+}
+
+.terrain-raster-ticks span:last-child {
+    transform: translateX(-100%);
+}
+
+/* 原始 WorldPop 人口栅格图例 */
+.population-raster-gradient {
+    height: 7px;
+    border-radius: 4px;
+    background: linear-gradient(
+        to right,
+        #fff7ec 0%,
+        #fee391 0.5%,
+        #fec44f 5%,
+        #f03b20 25%,
+        #99000d 100%
+    );
+}
+
+.population-raster-ticks {
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    margin-top: 4px;
+    font-size: 8px;
+    color: #7a8883;
+}
+
+.population-raster-ticks span {
+    white-space: nowrap;
+}
+
+/* 原始人口与DEM图例之间保持清晰分隔 */
+#populationRasterLegend + #terrainRasterLegend {
+    margin-top: 14px;
+}
+
+

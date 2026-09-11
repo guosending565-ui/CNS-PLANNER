@@ -1,0 +1,35 @@
+"""Typed schema-v2 project-state contract used at application boundaries."""
+
+from typing import Any, TypedDict
+
+
+class ProjectMetadata(TypedDict):
+    project_id: str
+    name: str
+    created_at: str
+    updated_at: str
+
+
+class ProjectState(TypedDict, total=False):
+    schema_version: int
+    project: ProjectMetadata
+    workspace: dict[str, Any] | None
+    grid: dict[str, Any] | None
+    grid_attributes: dict[str, dict[str, Any]]
+    grid_risk: dict[str, Any]
+    nodes: list[dict[str, Any]]
+    scenario_routes: list[dict[str, Any]]
+    operational_routes: list[dict[str, Any]]
+    aircraft: dict[str, Any] | None
+    aircraft_profiles: dict[str, Any]
+    selected_aircraft_profile_id: str | None
+    required_cns: dict[str, Any]
+    rules: dict[str, Any] | None
+    device_catalog: dict[str, Any]
+    devices: list[dict[str, Any]]
+    existing_cns_facilities: dict[str, Any]
+    candidate_sites: dict[str, Any]
+    cns_gap_analysis: dict[str, Any]
+    coverage: dict[str, Any] | None
+    risks: dict[str, dict[str, Any]]
+    result_statuses: dict[str, str]

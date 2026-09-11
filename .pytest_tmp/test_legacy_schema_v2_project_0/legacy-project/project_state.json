@@ -1,0 +1,902 @@
+{
+  "schema_version": 2,
+  "project": {
+    "project_id": "c255367e-dbd3-4653-b640-d608665b8573",
+    "name": "CNS 规划项目",
+    "created_at": "2026-09-11T07:46:41.720246+00:00",
+    "updated_at": "2026-09-11T07:46:41.725416+00:00"
+  },
+  "workspace": {
+    "bbox": [
+      120.001,
+      30.001,
+      120.01,
+      30.01
+    ],
+    "area_km2": 0.867,
+    "health": {
+      "status": "passed",
+      "population": {
+        "status": "passed"
+      },
+      "airspace": {
+        "status": "passed"
+      },
+      "terrain": {
+        "status": "passed"
+      },
+      "buildings": {
+        "status": "missing_data"
+      },
+      "property": {
+        "status": "missing_data"
+      },
+      "loaded_layer_count": 3,
+      "covered_layer_count": 3
+    },
+    "status": "passed"
+  },
+  "grid_attributes": {
+    "population": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "population-grid-raw-statistics",
+      "sampling_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "cells": {}
+    },
+    "terrain": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "terrain-grid-elevation-statistics",
+      "sampling_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "cells": {}
+    },
+    "airspace": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "airspace-grid-intersection",
+      "algorithm_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "hit_count": 0,
+      "cells": {}
+    },
+    "traffic": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "uav-traffic-grid-exposure-v1",
+      "algorithm_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "simulation_seconds": null,
+      "normalization": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "cells": {}
+    },
+    "conflict": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": "uav-conflict-grid-exposure-v1",
+      "algorithm_version": "1.0",
+      "grid_level": null,
+      "count": 0,
+      "covered_count": 0,
+      "simulation_seconds": null,
+      "normalization": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "cells": {}
+    },
+    "buildings": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "buildings",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    },
+    "property_exposure": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "property_exposure",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    },
+    "infrastructure": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "infrastructure",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    },
+    "towers": {
+      "status": "not_calculated",
+      "source": null,
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "namespace": "towers",
+      "grid_level": null,
+      "count": 0,
+      "cells": {}
+    }
+  },
+  "grid_risk": {
+    "status": "not_calculated",
+    "semantics": "relative_index",
+    "algorithm_id": "risk-model-v1-relative-index",
+    "algorithm_version": "1.1",
+    "parameters": {
+      "parameter_status": "default_engineering_parameters",
+      "risk_semantics": "relative_index",
+      "population_reference": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "terrain_relief_reference": {
+        "mode": "dataset_quantile",
+        "quantile": 0.95,
+        "value": null
+      },
+      "ground_formula": {
+        "terrain_multiplier": 0.2,
+        "building_additive_multiplier": 0.0
+      },
+      "ground_completeness_weights": {
+        "population": 0.4,
+        "traffic": 0.4,
+        "terrain": 0.2,
+        "buildings": 0.0
+      },
+      "ground_parameter_status": "default_engineering_parameters",
+      "airspace_category_weights": {},
+      "unknown_category_policy": "missing",
+      "unknown_category_default_weight": null,
+      "operational_air": {
+        "traffic_alpha": 0.5
+      },
+      "operational_air_parameter_status": "default_engineering_parameters",
+      "overall_weights": {
+        "ground": 0.7,
+        "air": 0.3
+      },
+      "overall_weight_status": "engineering_default",
+      "risk_levels": [
+        {
+          "min": 0.0,
+          "max": 0.2,
+          "level": "very_low"
+        },
+        {
+          "min": 0.2,
+          "max": 0.4,
+          "level": "low"
+        },
+        {
+          "min": 0.4,
+          "max": 0.6,
+          "level": "medium"
+        },
+        {
+          "min": 0.6,
+          "max": 0.8,
+          "level": "high"
+        },
+        {
+          "min": 0.8,
+          "max": 1.0,
+          "level": "very_high",
+          "include_max": true
+        }
+      ],
+      "absolute_ground_risk": {
+        "status": "not_calculated",
+        "required_inputs": [
+          "failure_probability_or_rate",
+          "ground_impact_probability",
+          "exposure",
+          "consequence"
+        ]
+      }
+    },
+    "input_status": {},
+    "source_versions": {},
+    "input_versions": {},
+    "grid_level": null,
+    "count": 0,
+    "data_completeness": 0.0,
+    "cells": {}
+  },
+  "traffic_simulation": null,
+  "nodes": [],
+  "node_seq": 0,
+  "route_seq": 0,
+  "retired_route_ids": [],
+  "scenario_routes": [],
+  "operational_routes": [],
+  "aircraft": null,
+  "rules": null,
+  "aircraft_profiles": {
+    "status": "passed",
+    "catalog_id": "aircraft-cns-profile-catalog",
+    "source": "demo/default 工程测试数据",
+    "metadata": {
+      "fallback": true
+    },
+    "count": 1,
+    "items": [
+      {
+        "aircraft_id": "AIRCRAFT-DEFAULT-001",
+        "name": "CNS-DEMO-01",
+        "manufacturer": "工程示例厂商",
+        "model": "CNS-DEMO-01",
+        "communication": {
+          "status": "pending_confirmation",
+          "capabilities": []
+        },
+        "navigation": {
+          "status": "pending_confirmation",
+          "capabilities": []
+        },
+        "surveillance": {
+          "status": "pending_confirmation",
+          "capabilities": []
+        },
+        "source": "demo/default 工程测试数据",
+        "metadata": {},
+        "cruise_speed_mps": 25.0,
+        "max_speed_mps": 35.0,
+        "mtbf_h": 10000.0
+      }
+    ]
+  },
+  "selected_aircraft_profile_id": null,
+  "required_cns": {
+    "status": "pending_confirmation",
+    "source": "项目默认值，待确认",
+    "project_default": {
+      "communication": {
+        "status": "pending_confirmation",
+        "required": null,
+        "coverage_requirement": null,
+        "max_gap_m": null,
+        "latency_ms": null,
+        "redundancy": null
+      },
+      "navigation": {
+        "status": "pending_confirmation",
+        "required": null,
+        "coverage_requirement": null,
+        "accuracy_m": null,
+        "integrity": null,
+        "redundancy": null
+      },
+      "surveillance": {
+        "status": "pending_confirmation",
+        "required": null,
+        "coverage_requirement": null,
+        "update_interval_s": null,
+        "redundancy": null
+      }
+    },
+    "route_overrides": {},
+    "metadata": {
+      "semantics": "mission_requirement_not_aircraft_capability"
+    }
+  },
+  "device_catalog": {
+    "status": "passed",
+    "catalog_id": "cns-device-catalog",
+    "source": "demo/default 工程测试数据",
+    "metadata": {
+      "fallback": true
+    },
+    "count": 6,
+    "items": [
+      {
+        "device_id": "C-PRIMARY-DEMO",
+        "name": "通信主站示例",
+        "subsystem": "C",
+        "role": "primary",
+        "radius_m": 5000.0,
+        "latency_ms": null,
+        "mtbf_h": 20000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "C-GAP-DEMO",
+        "name": "通信补盲示例",
+        "subsystem": "C",
+        "role": "gap",
+        "radius_m": 2500.0,
+        "latency_ms": null,
+        "mtbf_h": 15000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "N-PRIMARY-DEMO",
+        "name": "导航主站示例",
+        "subsystem": "N",
+        "role": "primary",
+        "radius_m": 4000.0,
+        "latency_ms": null,
+        "mtbf_h": 22000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "N-GAP-DEMO",
+        "name": "导航补盲示例",
+        "subsystem": "N",
+        "role": "gap",
+        "radius_m": 2000.0,
+        "latency_ms": null,
+        "mtbf_h": 16000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "S-PRIMARY-DEMO",
+        "name": "监视主站示例",
+        "subsystem": "S",
+        "role": "primary",
+        "radius_m": 4500.0,
+        "latency_ms": null,
+        "mtbf_h": 18000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      },
+      {
+        "device_id": "S-GAP-DEMO",
+        "name": "监视补盲示例",
+        "subsystem": "S",
+        "role": "gap",
+        "radius_m": 2200.0,
+        "latency_ms": null,
+        "mtbf_h": 14000.0,
+        "enabled": true,
+        "source": "demo/default 工程测试数据",
+        "parameter_metadata": {}
+      }
+    ]
+  },
+  "existing_cns_facilities": {
+    "status": "not_calculated",
+    "collection_id": "existing-cns-facilities",
+    "source": null,
+    "metadata": {},
+    "count": 0,
+    "items": []
+  },
+  "candidate_sites": {
+    "status": "not_calculated",
+    "collection_id": "candidate-sites",
+    "source": null,
+    "metadata": {},
+    "count": 0,
+    "items": []
+  },
+  "cns_gap_analysis": {
+    "status": "not_calculated",
+    "algorithm_id": "cns_gap_analysis_v1",
+    "algorithm_version": "1.0",
+    "input_fingerprint": null,
+    "route_count": 0,
+    "routes": []
+  },
+  "devices": [
+    {
+      "device_id": "C-PRIMARY-DEMO",
+      "subsystem": "C",
+      "name": "通信主站示例",
+      "role": "primary",
+      "radius_m": 5000,
+      "mtbf_h": 20000,
+      "enabled": true
+    },
+    {
+      "device_id": "C-GAP-DEMO",
+      "subsystem": "C",
+      "name": "通信补盲示例",
+      "role": "gap",
+      "radius_m": 2500,
+      "mtbf_h": 15000,
+      "enabled": true
+    },
+    {
+      "device_id": "N-PRIMARY-DEMO",
+      "subsystem": "N",
+      "name": "导航主站示例",
+      "role": "primary",
+      "radius_m": 4000,
+      "mtbf_h": 22000,
+      "enabled": true
+    },
+    {
+      "device_id": "N-GAP-DEMO",
+      "subsystem": "N",
+      "name": "导航补盲示例",
+      "role": "gap",
+      "radius_m": 2000,
+      "mtbf_h": 16000,
+      "enabled": true
+    },
+    {
+      "device_id": "S-PRIMARY-DEMO",
+      "subsystem": "S",
+      "name": "监视主站示例",
+      "role": "primary",
+      "radius_m": 4500,
+      "mtbf_h": 18000,
+      "enabled": true
+    },
+    {
+      "device_id": "S-GAP-DEMO",
+      "subsystem": "S",
+      "name": "监视补盲示例",
+      "role": "gap",
+      "radius_m": 2200,
+      "mtbf_h": 14000,
+      "enabled": true
+    }
+  ],
+  "coverage": null,
+  "risks": {
+    "environment": {
+      "status": "not_calculated",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "等待当前网格属性风险评估"
+    },
+    "technical": {
+      "status": "pending_confirmation",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "MTBF 技术失效风险接口"
+    },
+    "life": {
+      "status": "pending_confirmation",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "生命风险模型、单位和阈值待确认"
+    },
+    "property": {
+      "status": "missing_data",
+      "value": null,
+      "unit": null,
+      "threshold": null,
+      "source": "财产暴露数据未接入"
+    }
+  },
+  "result_statuses": {
+    "workspace": "passed",
+    "environment_risk": "not_calculated",
+    "routes": "not_calculated",
+    "coverage": "not_calculated",
+    "cns_gap": "not_calculated",
+    "technical_risk": "not_calculated",
+    "report": "not_calculated",
+    "grid": "passed"
+  },
+  "last_saved_at": "2026-09-11T07:46:41.725421+00:00",
+  "grid": {
+    "status": "passed",
+    "standard": "MH/T 4063.1-2026",
+    "id_scheme": "mht4063-global-index-v1",
+    "preferred_level": 7,
+    "level": 7,
+    "coarsened": false,
+    "workspace_bbox": [
+      120.001,
+      30.001,
+      120.01,
+      30.01
+    ],
+    "cell_size_degrees": [
+      0.0033333333333333335,
+      0.0033333333333333335
+    ],
+    "count": 9,
+    "cells": [
+      {
+        "grid_id": "MHT4063-L07-C00090000-RP00009000",
+        "level": 7,
+        "bbox": [
+          120.0,
+          30.0,
+          120.00333333333333,
+          30.003333333333334
+        ],
+        "center": [
+          120.00166666666667,
+          30.001666666666665
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.0,
+                30.0
+              ],
+              [
+                120.00333333333333,
+                30.0
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.0,
+                30.003333333333334
+              ],
+              [
+                120.0,
+                30.0
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090001-RP00009000",
+        "level": 7,
+        "bbox": [
+          120.00333333333333,
+          30.0,
+          120.00666666666666,
+          30.003333333333334
+        ],
+        "center": [
+          120.005,
+          30.001666666666665
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00333333333333,
+                30.0
+              ],
+              [
+                120.00666666666666,
+                30.0
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.0
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090002-RP00009000",
+        "level": 7,
+        "bbox": [
+          120.00666666666666,
+          30.0,
+          120.01,
+          30.003333333333334
+        ],
+        "center": [
+          120.00833333333333,
+          30.001666666666665
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00666666666666,
+                30.0
+              ],
+              [
+                120.01,
+                30.0
+              ],
+              [
+                120.01,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.0
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090000-RP00009001",
+        "level": 7,
+        "bbox": [
+          120.0,
+          30.003333333333334,
+          120.00333333333333,
+          30.006666666666668
+        ],
+        "center": [
+          120.00166666666667,
+          30.005000000000003
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.0,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.0,
+                30.006666666666668
+              ],
+              [
+                120.0,
+                30.003333333333334
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090001-RP00009001",
+        "level": 7,
+        "bbox": [
+          120.00333333333333,
+          30.003333333333334,
+          120.00666666666666,
+          30.006666666666668
+        ],
+        "center": [
+          120.005,
+          30.005000000000003
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00333333333333,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.003333333333334
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090002-RP00009001",
+        "level": 7,
+        "bbox": [
+          120.00666666666666,
+          30.003333333333334,
+          120.01,
+          30.006666666666668
+        ],
+        "center": [
+          120.00833333333333,
+          30.005000000000003
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00666666666666,
+                30.003333333333334
+              ],
+              [
+                120.01,
+                30.003333333333334
+              ],
+              [
+                120.01,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.003333333333334
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090000-RP00009002",
+        "level": 7,
+        "bbox": [
+          120.0,
+          30.006666666666668,
+          120.00333333333333,
+          30.01
+        ],
+        "center": [
+          120.00166666666667,
+          30.008333333333333
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.0,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.00333333333333,
+                30.01
+              ],
+              [
+                120.0,
+                30.01
+              ],
+              [
+                120.0,
+                30.006666666666668
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090001-RP00009002",
+        "level": 7,
+        "bbox": [
+          120.00333333333333,
+          30.006666666666668,
+          120.00666666666666,
+          30.01
+        ],
+        "center": [
+          120.005,
+          30.008333333333333
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00333333333333,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.00666666666666,
+                30.01
+              ],
+              [
+                120.00333333333333,
+                30.01
+              ],
+              [
+                120.00333333333333,
+                30.006666666666668
+              ]
+            ]
+          ]
+        }
+      },
+      {
+        "grid_id": "MHT4063-L07-C00090002-RP00009002",
+        "level": 7,
+        "bbox": [
+          120.00666666666666,
+          30.006666666666668,
+          120.01,
+          30.01
+        ],
+        "center": [
+          120.00833333333333,
+          30.008333333333333
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                120.00666666666666,
+                30.006666666666668
+              ],
+              [
+                120.01,
+                30.006666666666668
+              ],
+              [
+                120.01,
+                30.01
+              ],
+              [
+                120.00666666666666,
+                30.01
+              ],
+              [
+                120.00666666666666,
+                30.006666666666668
+              ]
+            ]
+          ]
+        }
+      }
+    ]
+  }
+}

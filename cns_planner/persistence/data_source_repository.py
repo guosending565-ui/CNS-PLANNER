@@ -22,8 +22,11 @@ class DataSourceRepository:
     def save(self, document) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        try:
+            temporary.write_text(
+                json.dumps(document, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)

@@ -129,25 +129,28 @@ def test_legacy_schema_v2_project_without_grid_is_opened_and_backfilled(tmp_path
 
 def test_frontend_exposes_grid_layer_and_clickable_grid_id():
     html = Path("cns_planner/web/index.html").read_text(encoding="utf-8")
-    javascript = Path("cns_planner/web/app.js").read_text(encoding="utf-8")
+    javascript = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("cns_planner/web/js").rglob("*.js")
+    )
 
     assert 'id="gridLayer"' in html
     assert 'id="gridInfo"' in html
     assert 'id="gridNotice"' in html
     assert 'src="/grid_theme.js"' in html
-    assert "drawStandardGrid()" in javascript
+    assert "drawGridBoundaries()" in javascript
     assert "drawGridThemes()" in javascript
     assert "info.textContent=formatGridDetails(item)" in javascript
-    assert "population.cells?.[gridId]" in javascript
-    assert "terrain.cells?.[gridId]" in javascript
+    assert "sources.population.cells?.[cell.grid_id]" in javascript
+    assert "sources.terrain.cells?.[cell.grid_id]" in javascript
     assert "gridRenderCache" in javascript
     assert "api('/api/workspace/grid')" in javascript
     assert "api('/api/workspace/grid/attributes')" in javascript
     assert 'id="gridOutlineToggle"' in javascript
     assert 'type="radio" name="gridThemeMode"' in javascript
-    assert 'id="gridThemeNone"' in javascript
-    assert 'id="gridPopulationTheme"' in javascript
-    assert 'id="gridTerrainTheme"' in javascript
+    assert "gridThemeNone" in javascript
+    assert "gridPopulationTheme" in javascript
+    assert "gridTerrainTheme" in javascript
     assert "valid_sample_count" in javascript
     assert "mean_elevation" in javascript
     assert "visibleLonLatBounds()" in javascript

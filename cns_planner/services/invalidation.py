@@ -1,16 +1,20 @@
 """Conservative dependency invalidation for later result-producing stages."""
 from dataclasses import dataclass, field
 try:
-    from ..models.status import ResultStatus
+    from ..domain.status import ResultStatus
 except ImportError:
     from models.status import ResultStatus
 
 DEPENDENTS = {
-    "data": ("workspace", "environment_risk", "routes", "coverage", "report"),
-    "workspace": ("environment_risk", "routes", "coverage", "report"),
-    "route": ("coverage", "report"),
-    "rules": ("routes", "coverage", "technical_risk", "report"),
-    "devices": ("coverage", "technical_risk", "report"),
+    "data": ("workspace", "environment_risk", "routes", "coverage", "cns_gap", "report"),
+    "workspace": ("environment_risk", "routes", "coverage", "cns_gap", "report"),
+    "route": ("coverage", "cns_gap", "report"),
+    "rules": ("routes", "coverage", "cns_gap", "technical_risk", "report"),
+    "aircraft_profile": ("routes", "coverage", "cns_gap", "technical_risk", "report"),
+    "required_cns": ("coverage", "cns_gap", "report"),
+    "devices": ("coverage", "cns_gap", "technical_risk", "report"),
+    "existing_cns": ("coverage", "cns_gap", "technical_risk", "report"),
+    "candidate_sites": ("coverage", "technical_risk", "report"),
     "sites": ("coverage", "technical_risk", "report"),
 }
 

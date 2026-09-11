@@ -1,0 +1,11 @@
+import {escapeHtml,shell,statusBadge,statusText} from './common.js';
+export function render({state,flow}){
+  const labels={environment:'环境/GRC',technical:'技术/MTBF',life:'生命',property:'财产'};
+  const risks=Object.entries(flow.review.risks).map(([key,value])=>'<div class="review-row"><span>'+labels[key]+'</span>'+statusBadge(value.status)+'</div>').join('');
+  const resultLabels={workspace:'工作区',grid:'标准网格',environment_risk:'环境风险',routes:'运行航路',coverage:'C/N/S 布站',technical_risk:'技术风险',report:'报告'};
+  const dependencies=Object.entries(flow.result_statuses||{}).map(([key,value])=>'<div class="review-row"><span>'+resultLabels[key]+'</span>'+statusBadge(value)+'</div>').join('');
+  const layers=Object.entries(flow.coverage?.layers||{}).map(([key,value])=>key+'：'+value.statistics.stations+' 站 / '+statusText(value.status)).join('<br>');
+  const body='<div class="review-block"><b>'+escapeHtml(flow.project.name)+'</b><span>数据源：'+statusText(state.data_health.status)+'</span><span>工作区：'+(flow.workspace?flow.workspace.area_km2+' km²':'未定义')+'</span><span>运行航路：'+flow.operational_routes.length+'（'+flow.operational_routes.map(item=>item.route_id).join(', ')+'）</span><span>飞行器：'+(flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置')+'</span><span>规则：'+statusText(flow.rules?.status||'not_calculated')+'</span><span>'+layers+'</span></div><div class="risk-review">'+risks+'</div><div class="risk-review">'+dependencies+'</div><div class="overall-card">overall_status：'+statusBadge(flow.review.overall_status)+'<br>overall_pass：'+String(flow.review.overall_pass)+'</div><div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">project.json</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">routes.geojson</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">sites.geojson</a></div><button class="primary full" id="saveAll">保存当前项目</button>';
+  return shell('06','确认与导出','审查当前有效结果并导出可重新读取的数据。',body);
+}
+export function bind(c){c.actionButton('saveAll',()=>c.mutate('save'));}

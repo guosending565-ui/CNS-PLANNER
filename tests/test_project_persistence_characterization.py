@@ -16,6 +16,7 @@ from types import ModuleType
 import pytest
 
 from cns_planner.services.workflow import WorkflowService
+from cns_planner.persistence.project_repository import ProjectRepository
 
 
 def _health():
@@ -390,10 +391,6 @@ def test_population_source_update_only_stales_population_grid_attributes(
     assert responses
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="unsafe current behavior: an unsupported schema silently opens as a new blank project",
-)
 def test_open_invalid_schema_should_reject_and_preserve_current_project(
     tmp_path, defaults_path, map_server_module
 ):
@@ -415,10 +412,6 @@ def test_open_invalid_schema_should_reject_and_preserve_current_project(
     assert module.WORKFLOW is current_workflow
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="unsafe current behavior: damaged JSON silently opens as a new blank project",
-)
 def test_open_damaged_json_should_reject_and_preserve_current_project(
     tmp_path, defaults_path, map_server_module
 ):
@@ -437,10 +430,6 @@ def test_open_damaged_json_should_reject_and_preserve_current_project(
     assert module.WORKFLOW is current_workflow
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="unsafe current behavior: a failed atomic replace leaves an orphan .tmp file",
-)
 def test_auto_save_replace_failure_should_not_leave_temporary_file(
     tmp_path, defaults_path, monkeypatch
 ):
@@ -466,10 +455,6 @@ def test_auto_save_replace_failure_should_not_leave_temporary_file(
     assert not temporary.exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="unsafe current behavior: interrupted save-as copy can leave a partial project_state.json",
-)
 def test_save_as_copy_failure_should_not_leave_partial_target(
     tmp_path, defaults_path, map_server_module, monkeypatch
 ):
@@ -484,7 +469,7 @@ def test_save_as_copy_failure_should_not_leave_partial_target(
         Path(target).write_text('{"schema_version":', encoding="utf-8")
         raise OSError("simulated interrupted copy")
 
-    monkeypatch.setattr(module.ProjectRepository, "copy_to", interrupted_copy)
+    monkeypatch.setattr(ProjectRepository, "copy_to", interrupted_copy)
 
     with pytest.raises(OSError, match="simulated interrupted copy"):
         module.save_project_as(destination)

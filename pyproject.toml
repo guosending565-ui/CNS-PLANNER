@@ -17,7 +17,7 @@ dev = ["pytest>=8,<9"]
 include = ["cns_planner*"]
 
 [tool.setuptools.package-data]
-cns_planner = ["web/*.html", "web/*.css", "web/*.js"]
+cns_planner = ["config/*.json", "web/*.html", "web/*.css", "web/*.js", "web/*.json", "web/js/**/*.js", "web/css/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

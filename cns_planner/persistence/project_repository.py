@@ -21,13 +21,23 @@ class ProjectRepository:
         return json.loads(self.path.read_text(encoding="utf-8"))
 
     def save(self, document) -> None:
-        self.path.parent.mkdir(exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        try:
+            temporary.write_text(
+                json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False),
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def copy_to(self, target: Path) -> None:
-        shutil.copy2(self.path, Path(target))
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp")
+        try:
+            shutil.copy2(self.path, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
