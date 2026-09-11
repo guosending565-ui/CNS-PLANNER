@@ -7,6 +7,7 @@ nor machine-specific data sources.
 
 from copy import deepcopy
 import importlib.util
+from io import BytesIO
 import json
 from pathlib import Path
 import sys
@@ -176,6 +177,9 @@ def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, def
         "schema_version",
         "project",
         "workspace",
+        "grid",
+        "grid_attributes",
+        "grid_risk",
         "nodes",
         "node_seq",
         "route_seq",
@@ -306,6 +310,84 @@ def test_source_load_failure_preserves_current_project_and_writes_nothing(
     assert module.DATA.paths == current_paths
     assert {path: path.read_bytes() for path in project_dir.iterdir()} == files_before
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_workspace_grid_api_returns_current_grid(
+    tmp_path, defaults_path, map_server_module
+):
+    module = map_server_module
+    _configure_map_server(module, tmp_path, defaults_path)
+    module.WORKFLOW.set_workspace([120.001, 30.001, 120.01, 30.01], _health())
+    responses = []
+    handler = object.__new__(module.Handler)
+    handler.path = "/api/workspace/grid"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.respond = lambda data, *args, **kwargs: responses.append(data)
+
+    handler.do_GET()
+
+    assert responses == [module.WORKFLOW.grid_snapshot()]
+    assert responses[0]["status"] == "passed"
+    assert responses[0]["cells"]
+
+
+def test_workspace_grid_attributes_api_returns_current_attributes(
+    tmp_path, defaults_path, map_server_module
+):
+    module = map_server_module
+    _configure_map_server(module, tmp_path, defaults_path)
+    responses = []
+    handler = object.__new__(module.Handler)
+    handler.path = "/api/workspace/grid/attributes"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.respond = lambda data, *args, **kwargs: responses.append(data)
+
+    handler.do_GET()
+
+    assert responses == [module.WORKFLOW.grid_attributes_snapshot()]
+    assert responses[0]["population"]["status"] == "not_calculated"
+    assert responses[0]["terrain"]["status"] == "not_calculated"
+    assert responses[0]["airspace"]["status"] == "not_calculated"
+    assert responses[0]["buildings"]["status"] == "not_calculated"
+    assert responses[0]["property_exposure"]["status"] == "not_calculated"
+    assert responses[0]["traffic"]["status"] == "not_calculated"
+    assert responses[0]["conflict"]["status"] == "not_calculated"
+
+
+def test_population_source_update_only_stales_population_grid_attributes(
+    tmp_path, defaults_path, map_server_module, monkeypatch
+):
+    module = map_server_module
+    data = FakeMapData()
+    _configure_map_server(module, tmp_path, defaults_path, data)
+    module.WORKFLOW.state["grid_attributes"]["population"]["status"] = "passed"
+    module.WORKFLOW.state["grid_attributes"]["terrain"]["status"] = "passed"
+    module.WORKFLOW.state["result_statuses"]["routes"] = "passed"
+    payload = json.dumps({
+        **data.paths,
+        "population": "fixture/new_population.tif",
+    }).encode("utf-8")
+    responses = []
+    handler = object.__new__(module.Handler)
+    handler.path = "/api/data-sources"
+    handler.headers = {
+        "Host": "127.0.0.1:8765",
+        "X-CNS-Token": module.TOKEN,
+        "Content-Length": str(len(payload)),
+    }
+    handler.rfile = BytesIO(payload)
+    handler.allowed = lambda: True
+    handler.respond = lambda result, *args, **kwargs: responses.append(result)
+    monkeypatch.setattr(module, "gis_call", lambda action: action())
+    monkeypatch.setattr(module, "persist_active_data_sources", lambda: None)
+
+    handler.do_POST()
+
+    attributes = module.WORKFLOW.state["grid_attributes"]
+    assert attributes["population"]["status"] == "stale"
+    assert attributes["terrain"]["status"] == "passed"
+    assert module.WORKFLOW.state["result_statuses"]["routes"] == "passed"
+    assert responses
 
 
 @pytest.mark.xfail(

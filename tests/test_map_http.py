@@ -68,8 +68,16 @@ def test_data_source_endpoints_validate_without_applying():
     before = json.loads(call("/api/state"))
     sources = json.loads(call("/api/data-sources"))
     health = json.loads(call("/api/data-health"))
+    grid = json.loads(call("/api/workspace/grid"))
+    attributes = json.loads(call("/api/workspace/grid/attributes"))
     assert {item["id"] for item in sources} >= {"basemap", "population", "online_map", "geocoder"}
     assert health["stage"] == "P1"
+    assert grid["standard"] == "MH/T 4063.1-2026"
+    assert isinstance(grid["cells"], list)
+    assert set(attributes) == {
+        "population", "terrain", "airspace", "buildings",
+        "property_exposure", "infrastructure", "towers", "traffic", "conflict",
+    }
     candidate = json.loads(call("/api/data-sources/validate", before["paths"], before["token"]))
     after = json.loads(call("/api/state"))
     assert candidate["paths"] == before["paths"]

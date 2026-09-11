@@ -19,6 +19,10 @@ import time
 from tile_cache import TileCache
 from services.data_health import build_health
 from services.data_registry import build_registry
+from services.airspace_grid_service import AirspaceGridService
+from services.population_grid_service import PopulationGridService
+from services.qgis_airspace_adapter import QgisAirspaceAdapter
+from services.terrain_grid_service import TerrainGridService
 from services.workflow import WorkflowService
 from persistence.data_source_repository import DataSourceRepository
 from persistence.project_repository import ProjectRepository
@@ -397,6 +401,16 @@ class MapData:
             "covered_layer_count": len(covered_layers),
         }
 
+    def grid_attributes(self, grid):
+        return {
+            "population": PopulationGridService().map(grid, self.paths.get("population")),
+            "terrain": TerrainGridService().map(grid, self.paths.get("terrain")),
+            "airspace": AirspaceGridService().map(
+                grid,
+                QgisAirspaceAdapter(self.local_layers, self.project, self.paths.get("basemap")),
+            ),
+        }
+
     @classmethod
     def validate_candidate(cls, paths):
         candidate = cls.__new__(cls)
@@ -673,6 +687,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(gis_call(lambda: DATA.metadata()["data_health"]))
             if url.path == "/api/workflow":
                 return self.respond(WORKFLOW.snapshot())
+            if url.path == "/api/workspace/grid":
+                return self.respond(WORKFLOW.grid_snapshot())
+            if url.path == "/api/workspace/grid/attributes":
+                return self.respond(WORKFLOW.grid_attributes_snapshot())
             if url.path == "/api/online-health":
                 if self.headers.get("X-CNS-Token") != TOKEN:
                     return self.respond({"error": "无效会话"}, status=403)
@@ -706,6 +724,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(browse(q.get("path", [""])[0], q.get("kind", ["basemap"])[0]))
             files = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
             files["/tiles.js"] = ("tiles.js", "text/javascript; charset=utf-8")
+            files["/grid_theme.js"] = ("grid_theme.js", "text/javascript; charset=utf-8")
             if url.path in files:
                 name, mime = files[url.path]
                 return self.respond((STATIC / name).read_bytes(), mime)
@@ -733,9 +752,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(WORKFLOW.set_project(paths))
                 if action == "workspace":
                     health = gis_call(lambda: DATA.workspace_health(paths.get("bbox")))
-                    return self.respond(WORKFLOW.set_workspace(paths.get("bbox"), health))
+                    WORKFLOW.set_workspace(paths.get("bbox"), health)
+                    results = gis_call(lambda: DATA.grid_attributes(WORKFLOW.grid_snapshot()))
+                    return self.respond(WORKFLOW.apply_grid_attributes(results))
                 if action == "workspace-clear":
                     return self.respond(WORKFLOW.clear_workspace())
+                if action == "traffic-simulate":
+                    return self.respond(WORKFLOW.run_traffic_simulation(paths))
                 if action == "node":
                     return self.respond(WORKFLOW.add_node(paths.get("coordinate", []), paths.get("name")))
                 if action == "node-delete":
@@ -762,8 +785,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/data-sources/validate":
                 return self.respond(gis_call(lambda: MapData.validate_candidate(clean)))
             def replace_sources():
+                previous = dict(DATA.paths)
                 DATA.load(clean)
-                WORKFLOW.invalidate("data")
+                changed = {name for name in clean if previous.get(name) != DATA.paths.get(name)}
+                WORKFLOW.invalidate_grid_attributes(changed)
+                if "basemap" in changed:
+                    WORKFLOW.invalidate("data")
                 WORKFLOW.save()
                 persist_active_data_sources()
                 return DATA.metadata()

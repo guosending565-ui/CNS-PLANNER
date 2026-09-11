@@ -1,6 +1,12 @@
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,drag=null,drawStart=null,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',browseKind='basemap',browseParent='',selectedFile='',renderController=null;
+let gridDataSerial=0;
+let gridDisplay={outline:true,theme:'none'};
+let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[]};
+const populationPalette=['#fff7bc','#fee391','#fec44f','#fe9929','#cc4c02'];
+const terrainPalette=['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c'];
+const riskPalette=['#2ca25f','#99d8c9','#fee08b','#f46d43','#a50026'],riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
 
 async function api(url,options={}){
@@ -12,7 +18,15 @@ async function api(url,options={}){
 }
 async function mutate(action,payload={}){
   const data=await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  flow=data;renderWorkflow();paint();return data;
+  flow=data;rebuildGridRenderCache();
+  try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}
+  renderWorkflow();paint();return data;
+}
+async function syncGridApis(){
+  const request=++gridDataSerial;
+  const [grid,attributes]=await Promise.all([api('/api/workspace/grid'),api('/api/workspace/grid/attributes')]);
+  if(request!==gridDataSerial)return;
+  flow={...flow,grid,grid_attributes:attributes};rebuildGridRenderCache();
 }
 function showError(message){$('error').hidden=!message;$('error').textContent=message||'';}
 function panelError(message){const target=$('panelError');if(target)target.textContent=message||'';else showError(message);}
@@ -23,6 +37,15 @@ function lonLatToMercator(lon,lat){const limited=Math.max(-85.05112878,Math.min(
 function mercatorToLonLat(x,y){return [x/6378137*180/Math.PI,(2*Math.atan(Math.exp(y/6378137))-Math.PI/2)*180/Math.PI];}
 function screenPoint(coordinate){const p=lonLatToMercator(coordinate[0],coordinate[1]),[w,h]=size();return [w/2+(p[0]-view.x)/view.res,h/2-(p[1]-view.y)/view.res];}
 function eventLonLat(event){const rect=map.getBoundingClientRect(),[w,h]=size();return mercatorToLonLat(view.x+(event.clientX-rect.left-w/2)*view.res,view.y-(event.clientY-rect.top-h/2)*view.res);}
+function visibleLonLatBounds(){
+  const bbox=mapBounds(),southwest=mercatorToLonLat(bbox[0],bbox[1]),northeast=mercatorToLonLat(bbox[2],bbox[3]);
+  return [southwest[0],southwest[1],northeast[0],northeast[1]];
+}
+function fitLonLatBbox(bbox){
+  if(!bbox)return;
+  const southwest=lonLatToMercator(bbox[0],bbox[1]),northeast=lonLatToMercator(bbox[2],bbox[3]);
+  fit([southwest[0],southwest[1],northeast[0],northeast[1]]);
+}
 
 function paint(){
   const [w,h]=size();if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
@@ -40,8 +63,89 @@ function drawWorkspace(bbox,color='#147ac3'){
   ctx.fillRect(Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1]));
   ctx.strokeRect(Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1]));ctx.restore();
 }
+function buildSpatialGrid(cells){
+  if(!cells.length)return null;
+  const bounds=[
+    Math.min(...cells.map(item=>item.cell.bbox[0])),Math.min(...cells.map(item=>item.cell.bbox[1])),
+    Math.max(...cells.map(item=>item.cell.bbox[2])),Math.max(...cells.map(item=>item.cell.bbox[3]))
+  ];
+  const columns=Math.min(64,Math.max(1,Math.ceil(Math.sqrt(cells.length)))),rows=columns,buckets=new Map();
+  const width=(bounds[2]-bounds[0])/columns,height=(bounds[3]-bounds[1])/rows;
+  const index=(value,start,span,count)=>Math.max(0,Math.min(count-1,Math.floor((value-start)/span)));
+  for(const item of cells){
+    const bbox=item.cell.bbox,x0=index(bbox[0],bounds[0],width,columns),x1=index(bbox[2],bounds[0],width,columns);
+    const y0=index(bbox[1],bounds[1],height,rows),y1=index(bbox[3],bounds[1],height,rows);
+    for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+      const key=x+':'+y;if(!buckets.has(key))buckets.set(key,[]);buckets.get(key).push(item);
+    }
+  }
+  return {bounds,columns,rows,width,height,buckets,index};
+}
+function rebuildGridRenderCache(){
+  const grid=flow?.grid,attributes=flow?.grid_attributes||{},population=attributes.population||{},terrain=attributes.terrain||{},airspace=attributes.airspace||{},traffic=attributes.traffic||{},conflict=attributes.conflict||{},risk=flow?.grid_risk||{};
+  const geometryById=new Map((grid?.cells||[]).map(cell=>[cell.grid_id,cell]));
+  const cells=[];
+  for(const [gridId,cell] of geometryById)cells.push({
+    cell,
+    population:population.cells?.[gridId]||null,
+    terrain:terrain.cells?.[gridId]||null,
+    airspace:airspace.cells?.[gridId]||null,
+    traffic:traffic.cells?.[gridId]||null,
+    conflict:conflict.cells?.[gridId]||null,
+    risk:risk.cells?.[gridId]||null
+  });
+  const usable=status=>status==='passed'||status==='missing_data';
+  const populationValues=usable(population.status)?cells.map(item=>item.population?.value_mean).filter(Number.isFinite):[];
+  const terrainValues=usable(terrain.status)?cells.map(item=>item.terrain?.mean_elevation).filter(Number.isFinite):[];
+  gridRenderCache={
+    cells,
+    byId:new Map(cells.map(item=>[item.cell.grid_id,item])),
+    spatial:buildSpatialGrid(cells),
+    populationBreaks:GridTheme.quantileBreaks(populationValues),
+    terrainBreaks:GridTheme.quantileBreaks(terrainValues)
+  };
+  if($('gridInfo'))$('gridInfo').hidden=true;
+  updateGridNotice();
+  updateGridThemeLegend();
+}
+function findGridCell(lon,lat){
+  const spatial=gridRenderCache.spatial;if(!spatial)return null;
+  const {bounds,columns,rows,width,height,buckets,index}=spatial;
+  if(lon<bounds[0]||lon>=bounds[2]||lat<bounds[1]||lat>=bounds[3])return null;
+  const candidates=buckets.get(index(lon,bounds[0],width,columns)+':'+index(lat,bounds[1],height,rows))||[];
+  return candidates.find(item=>GridTheme.bboxContainsHalfOpen(item.cell.bbox,lon,lat))||null;
+}
+function drawGridThemes(){
+  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict'}[gridDisplay.theme]||null;
+  const riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[gridDisplay.theme]||null;
+  if(!view||(!kind&&!riskKind))return;
+  const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),usable=result.status==='passed'||result.status==='missing_data';
+  const breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:riskBreaks):riskBreaks;
+  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:riskPalette):riskPalette,visible=visibleLonLatBounds();ctx.save();
+  for(const item of gridRenderCache.cells){
+    const bbox=item.cell.bbox;if(!GridTheme.bboxIntersects(bbox,visible))continue;
+    const attributes=kind?item[kind]:item.risk?.[riskKind],value=kind?(kind==='population'?attributes?.value_mean:kind==='terrain'?attributes?.mean_elevation:kind==='traffic'?attributes?.traffic_density_norm:attributes?.conflict_rate_norm):attributes?.score;
+    const hasData=usable&&attributes?.status==='passed'&&Number.isFinite(value);
+    const southwest=screenPoint([bbox[0],bbox[1]]),northeast=screenPoint([bbox[2],bbox[3]]);
+    ctx.globalAlpha=hasData ? .72 : .48;ctx.fillStyle=hasData?GridTheme.colorForValue(value,breaks,palette):GridTheme.NO_DATA_COLOR;
+    ctx.fillRect(southwest[0],northeast[1],northeast[0]-southwest[0],southwest[1]-northeast[1]);
+  }
+  ctx.restore();
+}
+function drawStandardGrid(){
+  const grid=flow?.grid;
+  if(!view||!gridDisplay.outline||!$('gridLayer')?.checked||grid?.status!=='passed')return;
+  const visible=visibleLonLatBounds();ctx.save();ctx.strokeStyle='#5a35a5';ctx.globalAlpha=.96;ctx.lineWidth=1.6;ctx.setLineDash([]);
+  for(const cell of grid.cells||[]){
+    const bbox=cell.bbox;
+    if(!GridTheme.bboxIntersects(bbox,visible))continue;
+    const southwest=screenPoint([bbox[0],bbox[1]]),northeast=screenPoint([bbox[2],bbox[3]]);
+    ctx.strokeRect(southwest[0],northeast[1],northeast[0]-southwest[0],southwest[1]-northeast[1]);
+  }
+  ctx.restore();
+}
 function drawWorkflowOverlay(){
-  if(!view||!flow)return;drawWorkspace(draftWorkspace||flow.workspace?.bbox);
+  if(!view||!flow)return;drawWorkspace(draftWorkspace||flow.workspace?.bbox);drawGridThemes();drawStandardGrid();
   for(const route of flow.scenario_routes||[])drawLine(route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(route.path,'#0873cb',4);
   const colors={C:'#1574d4',N:'#c58a13',S:'#139b86'},toggles={C:'cLayer',N:'nLayer',S:'sLayer'};
@@ -106,14 +210,115 @@ canvas.addEventListener('pointerup',async event=>{
 });
 canvas.addEventListener('pointercancel',()=>{drawStart=null;drag=null;map.classList.remove('dragging');});
 canvas.addEventListener('dblclick',event=>{if(interactionMode!=='pan')return;const rect=map.getBoundingClientRect();zoom(.5,event.clientX-rect.left,event.clientY-rect.top);});
+function populationDisplayLabel(result){
+  return result?.unit_status==='verified_from_raster_metadata'&&result.value_unit
+    ? '人口源值（'+result.value_unit+'）'
+    : '人口源值（单位未核实）';
+}
+function updateGridNotice(){
+  const notice=$('gridNotice');if(!notice)return;
+  const hasGrid=flow?.grid?.status==='passed'&&gridRenderCache.cells.length>0;
+  notice.hidden=!gridDisplay.outline||hasGrid;
+  notice.textContent='请先在第02步保存工作区以生成标准网格';
+}
+function updateGridThemeLegend(){
+  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
+  if(!legend)return;
+  legend.hidden=!kind&&!riskKind;
+  if(!kind&&!riskKind)return;
+  const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:riskBreaks):riskBreaks;
+  const populationVerified=result.unit_status==='verified_from_raster_metadata'&&result.value_unit;
+  const riskTitles={ground:'Ground Risk',airspace_constraint:'Airspace Constraint Risk',overall:'Overall Risk'};
+  const kindTitles={terrain:'平均高程',traffic:'Traffic Exposure',conflict:'Conflict Exposure'};
+  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:riskPalette):riskPalette,title=kind?(kind==='population'?(populationVerified?'人口源值':populationDisplayLabel(result)):kindTitles[kind]):riskTitles[riskKind];
+  $('gridThemeLegendTitle').textContent=title;
+  $('gridThemeLegendUnit').textContent=riskKind||kind==='traffic'||kind==='conflict'?'0–1':kind==='terrain'?(result.elevation_unit||'m'):result.unit_status==='verified_from_raster_metadata'?(result.value_unit||''):'';
+  $('gridThemeGradient').style.background='linear-gradient(to right,'+palette.join(',')+')';
+  const ticks=$('gridThemeTicks');ticks.replaceChildren();
+  const shown=breaks.length?[breaks[0],breaks[Math.floor((breaks.length-1)/2)],breaks[breaks.length-1]]:[];
+  for(const value of shown){const span=document.createElement('span');span.textContent=GridTheme.formatNumber(value);ticks.append(span);}
+  if(!shown.length){const span=document.createElement('span');span.textContent='无有效值';ticks.append(span);}
+  const path=result.source?.path||'',source=path.split(/[\\/]/).pop()||'未记录';
+  $('gridThemeLegendNote').textContent=riskKind
+    ? '相对风险指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · 完整度 '+GridTheme.formatNumber((result.data_completeness||0)*100)+'%'
+    : kind==='traffic'||kind==='conflict'
+      ? '相对暴露指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · '+statusText(result.status||'not_calculated')
+    : kind==='population'
+      ? '仅表达源值相对大小 · '+(result.unit_status||'unverified')+' · '+statusText(result.status||'not_calculated')
+      : '均值分级 · '+(result.unit_status||'单位来源未知')+' · '+source+' · '+statusText(result.status||'not_calculated');
+}
+function formatGridDetails(item){
+  const cell=item.cell,populationResult=flow?.grid_attributes?.population||{},terrainResult=flow?.grid_attributes?.terrain||{};
+  const population=item.population||{},terrain=item.terrain||{},airspace=item.airspace||{},traffic=item.traffic||{},conflict=item.conflict||{},populationSamples=population.valid_sample_count||0,terrainSamples=terrain.valid_sample_count||0;
+  const populationValues=populationSamples
+    ? 'mean '+GridTheme.formatNumber(population.value_mean)+' · sum '+GridTheme.formatNumber(population.value_sum)
+    : '无数据';
+  const elevationUnit=terrainResult.elevation_unit||'m';
+  const terrainPath=terrainResult.source?.path||'',terrainSource=terrainPath.split(/[\\/]/).pop()||'未记录';
+  const terrainValues=terrainSamples
+    ? 'mean '+GridTheme.formatNumber(terrain.mean_elevation)+' / min '+GridTheme.formatNumber(terrain.min_elevation)+' / max '+GridTheme.formatNumber(terrain.max_elevation)+' '+elevationUnit
+    : '无数据';
+  const airspaces=airspace.airspaces||[],shownAirspaces=airspaces.slice(0,8);
+  const airspaceLines=shownAirspaces.map(hit=>{
+    const identity=hit.feature_id===null||hit.feature_id===undefined?'':' #'+hit.feature_id;
+    const classification=[hit.category,hit.type].filter(Boolean).join(' / ');
+    const ratio=Number.isFinite(hit.intersection_ratio)?' · 覆盖 '+(hit.intersection_ratio*100).toFixed(1)+'%':' · 几何相交';
+    const sourceAttributes=Object.entries(hit.source_attributes||{}).slice(0,6).map(([key,value])=>key+'='+value).join('，');
+    return '  - '+(hit.name||hit.layer_id||'未命名图层')+identity+(classification?' · '+classification:'')+ratio+(sourceAttributes?' · '+sourceAttributes:'');
+  });
+  if(airspaces.length>shownAirspaces.length)airspaceLines.push('  - 另有 '+(airspaces.length-shownAirspaces.length)+' 个命中');
+  const airspaceSummary='空域：'+statusText(airspace.status||'no_coverage')+' · 命中图层 '+(airspace.intersected_layer_count||0)+(airspaceLines.length?'\n'+airspaceLines.join('\n'):' · 无命中');
+  const trafficSummary='Traffic Exposure：'+statusText(traffic.status||'not_calculated')+' · flights '+(traffic.flight_count||0)+' · flight_seconds '+GridTheme.formatNumber(traffic.flight_seconds)+' · density '+GridTheme.formatNumber(traffic.traffic_density_raw)+' · normalized '+GridTheme.formatNumber(traffic.traffic_density_norm);
+  const conflictSummary='Conflict Exposure：'+statusText(conflict.status||'not_calculated')+' · count '+(conflict.conflict_count||0)+' · rate '+GridTheme.formatNumber(conflict.conflict_rate)+' · normalized '+GridTheme.formatNumber(conflict.conflict_rate_norm);
+  const risk=item.risk||{},ground=risk.ground||{},operationalAir=risk.air||{},airspaceRisk=risk.airspace_constraint||{},overall=risk.overall||{},riskResult=flow?.grid_risk||{};
+  const p=ground.contributors?.population||{},t=ground.contributors?.terrain||{};
+  const riskSummary='Ground Risk：'+riskValue(ground)+'\n'+
+    '  P：'+factorValue(p)+'\n'+
+    '  T：'+factorValue(t)+(t.raw?.relief===undefined?'':' · relief '+GridTheme.formatNumber(t.raw.relief))+'\n'+
+    'Operational Air Risk：'+riskValue(operationalAir)+'\n'+
+    'Airspace Constraint Risk：'+riskValue(airspaceRisk)+'\n'+
+    'Overall Risk：'+riskValue(overall)+' · 完整度 '+GridTheme.formatNumber((overall.data_completeness||0)*100)+'%\n'+
+    '风险语义：'+(overall.semantics||risk.semantics||'relative_index')+' · '+(riskResult.algorithm_id||'未计算')+'@'+(riskResult.algorithm_version||'-');
+  return cell.grid_id+' · L'+cell.level+'\n'+
+    populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(populationResult.unit_status||'unverified')+'\n'+
+    'DEM：样本 '+terrainSamples+' · '+terrainValues+' · '+(terrainResult.unit_status||'单位来源未知')+' · '+terrainSource+'\n'+
+    airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary;
+}
+function riskValue(component){return component?.status==='passed'&&Number.isFinite(component.score)?GridTheme.formatNumber(component.score)+' / '+(component.level||'未分级'):'无数据（'+statusText(component?.status||'not_calculated')+'）';}
+function factorValue(factor){return factor?.status==='passed'?'归一化 '+GridTheme.formatNumber(factor.normalized)+' · contribution '+GridTheme.formatNumber(factor.contribution):statusText(factor?.status||'not_available');}
+canvas.addEventListener('click',event=>{
+  const info=$('gridInfo');
+  if(interactionMode!=='pan'||!gridRenderCache.cells.length){info.hidden=true;return;}
+  const [lon,lat]=eventLonLat(event);
+  const item=findGridCell(lon,lat);
+  if(!item){info.hidden=true;return;}
+  const rect=map.getBoundingClientRect();
+  info.textContent=formatGridDetails(item);
+  info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
+  info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
+  info.hidden=false;
+});
 map.addEventListener('keydown',event=>{if(event.key==='+'||event.key==='=')zoom(.5);if(event.key==='-')zoom(2);});
 $('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
-for(const id of ['air','pop','terrain']){
-  $(id).onchange=()=>{
-    $('popLegend').hidden=!$('pop').checked;
-    queue();
-  };
+for(const id of ['air','pop','terrain'])$(id).onchange=queue;
+
+function updateRasterLegends(){
+  const populationLegend=$('populationRasterLegend');
+  const terrainLegend=$('terrainRasterLegend');
+
+  if(populationLegend){
+    populationLegend.hidden=!$('pop').checked;
+  }
+
+  if(terrainLegend){
+    terrainLegend.hidden=!$('terrain').checked;
+  }
 }
+
+$('pop').addEventListener('change',updateRasterLegends);
+$('terrain').addEventListener('change',updateRasterLegends);
+
+updateRasterLegends();
 
 $('opacity').oninput=()=>{
   $('opacityValue').textContent=$('opacity').value+'%';
@@ -126,10 +331,15 @@ $('terrainOpacity').oninput=()=>{
   queue();
 };
 $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['cLayer','nLayer','sLayer'])$(id).onchange=paint;
+for(const id of ['gridLayer','cLayer','nLayer','sLayer'])$(id).onchange=()=>{
+  if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
+  if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
+  updateGridNotice();
+  paint();
+};
 new ResizeObserver(()=>{if(view)queue();else paint();}).observe(map);
 
-function statusText(status){return {not_calculated:'未计算',missing_data:'缺少数据',pending_confirmation:'待确认',passed:'通过',failed:'失败',not_applicable:'不适用',stale:'已失效',ready:'正常',warning:'警告',error:'错误'}[status]||status;}
+function statusText(status){return {not_calculated:'未计算',missing_data:'缺少数据',not_available:'不可用',unknown_category:'未知类别',pending_confirmation:'待确认',passed:'通过',failed:'失败',not_applicable:'不适用',stale:'已失效',ready:'正常',warning:'警告',error:'错误',no_coverage:'无覆盖',partial_intersection:'部分相交',full_coverage:'完全覆盖'}[status]||status;}
 function statusBadge(status){return '<span class="flow-badge flow-'+status+'">'+statusText(status)+'</span>';}
 function escapeHtml(value){const div=document.createElement('div');div.textContent=String(value??'');return div.innerHTML;}
 function setStep(step){
@@ -209,7 +419,7 @@ function renderStep1(){
 }
 
 function renderStep2(){
-  const workspace=flow.workspace,health=workspace?.health;
+  const workspace=flow.workspace,health=workspace?.health,grid=flow.grid,attributes=flow.grid_attributes||{},risk=flow.grid_risk||{};
   let summary='<div class="empty-note">尚未保存工作区。点击“框选工作区”后在地图拖出矩形。</div>';
   if(workspace){
     summary='<div class="metric-grid"><b>'+workspace.area_km2.toLocaleString()+' km²<small>工作区面积</small></b>'+
@@ -221,13 +431,33 @@ function renderStep2(){
   ' · 建筑：missing_data'+
   ' · 财产：missing_data'+
 '</div>'+
-'<div class="flow-summary">'+
-  escapeHtml(health.terrain?.message||'DEM 状态未知')+
+      '<div class="flow-summary">'+
+  escapeHtml(health.terrain?.message||'DEM 状态未知')+'<br>'+(
+    grid?.status==='passed'
+      ? 'MH/T 4063.1 标准网格：L'+grid.level+' · '+grid.count+' 格'+(grid.coarsened?'（已按数量限制降级）':'')
+      : '标准网格：未生成'
+  )+'<br>'+
+  '人口映射：'+statusText(attributes.population?.status||'not_calculated')+' · 已处理 '+(attributes.population?.count||0)+' 格（有效 '+(attributes.population?.covered_count||0)+' 格）<br>'+
+  'DEM 映射：'+statusText(attributes.terrain?.status||'not_calculated')+' · 已处理 '+(attributes.terrain?.count||0)+' 格（有效 '+(attributes.terrain?.covered_count||0)+' 格）<br>'+
+  '空域映射：'+statusText(attributes.airspace?.status||'not_calculated')+' · 已处理 '+(attributes.airspace?.count||0)+' 格（命中 '+(attributes.airspace?.hit_count||0)+' 格）<br>'+
+  '交通暴露：'+statusText(attributes.traffic?.status||'not_calculated')+' · 已处理 '+(attributes.traffic?.count||0)+' 格（命中 '+(attributes.traffic?.covered_count||0)+' 格）<br>'+
+  '冲突暴露：'+statusText(attributes.conflict?.status||'not_calculated')+' · 已处理 '+(attributes.conflict?.count||0)+' 格（命中 '+(attributes.conflict?.covered_count||0)+' 格）<br>'+
+  '相对风险：'+statusText(risk.status||'not_calculated')+' · 完整度 '+GridTheme.formatNumber((risk.data_completeness||0)*100)+'%'+
 '</div>';
   }
   const draft=draftWorkspace?'<div class="flow-summary">待保存：'+draftWorkspace.map(value=>value.toFixed(5)).join(', ')+'</div>':'';
+  const themes='<div class="grid-theme-controls"><b>网格显示</b><label class="grid-outline"><input type="checkbox" id="gridOutlineToggle" '+(gridDisplay.outline?'checked':'')+'> 标准网格</label>'+
+    '<span>专题模式</span><label><input type="radio" name="gridThemeMode" id="gridThemeNone" value="none" '+(gridDisplay.theme==='none'?'checked':'')+'> 无</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridPopulationTheme" value="population" '+(gridDisplay.theme==='population'?'checked':'')+'> 人口</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridTerrainTheme" value="terrain" '+(gridDisplay.theme==='terrain'?'checked':'')+'> DEM</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridTrafficTheme" value="traffic_exposure" '+(gridDisplay.theme==='traffic_exposure'?'checked':'')+'> Traffic Exposure</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridConflictTheme" value="conflict_exposure" '+(gridDisplay.theme==='conflict_exposure'?'checked':'')+'> Conflict Exposure</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridGroundRiskTheme" value="ground_risk" '+(gridDisplay.theme==='ground_risk'?'checked':'')+'> Ground Risk</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridAirRiskTheme" value="airspace_risk" '+(gridDisplay.theme==='airspace_risk'?'checked':'')+'> 空域约束风险</label>'+
+    '<label><input type="radio" name="gridThemeMode" id="gridOverallRiskTheme" value="overall_risk" '+(gridDisplay.theme==='overall_risk'?'checked':'')+'> Overall Risk</label>'+
+    '<small>'+populationDisplayLabel(attributes.population)+'</small></div>';
   const body='<div class="button-row"><button class="primary" id="drawWorkspace">框选工作区</button><button class="secondary" id="clearWorkspace">清除</button></div>'+
-    draft+summary+'<button class="primary full" id="saveWorkspace" '+(!draftWorkspace?'disabled':'')+'>保存工作区范围</button>'+
+    draft+themes+summary+'<button class="primary full" id="saveWorkspace" '+(!draftWorkspace?'disabled':'')+'>保存工作区范围</button>'+
     '<button class="secondary full" id="nextStep" '+(!flow.steps['2']?'disabled':'')+'>下一步：航路设计</button>';
   return shell('02','工作区与环境','框选、重画并保存分析范围。',body);
 }
@@ -301,7 +531,7 @@ function renderStep6(){
   const review=flow.review,workspace=flow.workspace,coverage=flow.coverage;
   const labels={environment:'环境/GRC',technical:'技术/MTBF',life:'生命',property:'财产'};
   const risks=Object.entries(review.risks).map(([key,value])=>'<div class="review-row"><span>'+labels[key]+'</span>'+statusBadge(value.status)+'</div>').join('');
-  const resultLabels={workspace:'工作区',environment_risk:'环境风险',routes:'运行航路',coverage:'C/N/S 布站',technical_risk:'技术风险',report:'报告'};
+  const resultLabels={workspace:'工作区',grid:'标准网格',environment_risk:'环境风险',routes:'运行航路',coverage:'C/N/S 布站',technical_risk:'技术风险',report:'报告'};
   const dependencies=Object.entries(flow.result_statuses||{}).map(([key,value])=>'<div class="review-row"><span>'+resultLabels[key]+'</span>'+statusBadge(value)+'</div>').join('');
   const layers=Object.entries(coverage?.layers||{}).map(([key,value])=>key+'：'+value.statistics.stations+' 站 / '+statusText(value.status)).join('<br>');
   const body='<div class="review-block"><b>'+escapeHtml(flow.project.name)+'</b>'+
@@ -390,9 +620,8 @@ function bindStep(){
       bitmap?.close();
       bitmap=null;
 
-      if(data.bounds){
-        fit(data.bounds);
-      }
+      if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
+      else if(data.bounds)fit(data.bounds);
 
     }catch(exc){
       panelError('打开项目失败：'+exc.message);
@@ -415,9 +644,11 @@ function bindStep(){
   $('nextStep').onclick=()=>setStep(2);
 }
   if(currentStep===2){
+    $('gridOutlineToggle').onchange=event=>{gridDisplay.outline=event.target.checked;$('gridLayer').checked=gridDisplay.outline;updateGridNotice();paint();};
+    document.querySelectorAll('[name="gridThemeMode"]').forEach(input=>input.onchange=event=>{if(event.target.checked){gridDisplay.theme=event.target.value;updateGridThemeLegend();paint();}});
     $('drawWorkspace').onclick=()=>{interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');};
     actionButton('clearWorkspace',async()=>{draftWorkspace=null;interactionMode='pan';await mutate('workspace-clear');});
-    actionButton('saveWorkspace',async()=>{await mutate('workspace',{bbox:draftWorkspace});interactionMode='pan';draftWorkspace=null;});
+    actionButton('saveWorkspace',async()=>{await mutate('workspace',{bbox:draftWorkspace});interactionMode='pan';draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);});
     if($('nextStep'))$('nextStep').onclick=()=>setStep(3);
   }
   if(currentStep===3){
@@ -525,6 +756,7 @@ function renderSourceCenter(data){
 function update(data){
   state=data;
   flow=data.workflow;
+  rebuildGridRenderCache();
   onlineTiles.configure(data.online_sources||[],data.revision);
   $('basemapPath').value=data.paths.basemap;
   $('populationPath').value=data.paths.population;
@@ -549,6 +781,7 @@ $('terrainInfo').textContent=
   $('sourceSummary').textContent=data.layers.length+' 个本地图层 · '+data.paths.basemap.split(/[\\/]/).pop();
   renderSourceCenter(data);
   renderWorkflow();
+  syncGridApis().then(()=>{renderWorkflow();paint();}).catch(exc=>showError('网格专题同步失败：'+exc.message));
   if(data.error)showError(data.error);
 }
 
@@ -791,5 +1024,7 @@ $('selectFile').onclick=()=>{
 
 api('/api/state').then(data=>{
   update(data);
-  if(data.bounds)fit(data.bounds);else{$('loading').hidden=true;openSettings();}
+  if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
+  else if(data.bounds)fit(data.bounds);
+  else{$('loading').hidden=true;openSettings();}
 }).catch(exc=>{showError('无法连接本机地图服务：'+exc.message);$('loading').hidden=true;});

@@ -13,13 +13,33 @@ try:
     from ..algorithms.route_planner import RoutePlannerV1
     from ..models.status import ResultStatus
     from ..persistence.project_repository import ProjectRepository
+    from ..risk.model import RiskModel
+    from ..risk.v1 import RiskModelV1
+    from ..simulation.conflict_detector import ConflictDetector
+    from ..simulation.traffic_simulator import TrafficSimulator
+    from .airspace_grid_service import AirspaceGridService
+    from .conflict_grid_service import ConflictGridService
+    from .grid_service import WorkspaceGridService
     from .invalidation import ResultLedger
+    from .population_grid_service import PopulationGridService
+    from .terrain_grid_service import TerrainGridService
+    from .traffic_grid_service import TrafficGridService
 except ImportError:  # map_server.py runs with cns_planner on sys.path.
     from algorithms.coverage_planner import CoveragePlannerV1
     from algorithms.route_planner import RoutePlannerV1
     from models.status import ResultStatus
     from persistence.project_repository import ProjectRepository
+    from risk.model import RiskModel
+    from risk.v1 import RiskModelV1
+    from simulation.conflict_detector import ConflictDetector
+    from simulation.traffic_simulator import TrafficSimulator
+    from services.airspace_grid_service import AirspaceGridService
+    from services.conflict_grid_service import ConflictGridService
+    from services.grid_service import WorkspaceGridService
     from services.invalidation import ResultLedger
+    from services.population_grid_service import PopulationGridService
+    from services.terrain_grid_service import TerrainGridService
+    from services.traffic_grid_service import TrafficGridService
 
 
 def utc_now():
@@ -28,14 +48,30 @@ def utc_now():
 
 class WorkflowService:
     schema_version = 2
+    mapped_grid_attribute_names = ("population", "terrain", "airspace")
+    extension_grid_attribute_names = (
+        "buildings", "property_exposure", "infrastructure", "towers",
+        "traffic", "conflict",
+    )
 
-    def __init__(self, store_path: Path, defaults_path: Path):
+    def __init__(
+        self,
+        store_path: Path,
+        defaults_path: Path,
+        risk_model: RiskModel | None = None,
+    ):
         self.store_path = store_path
         self.repository = ProjectRepository(store_path)
         self.defaults_path = defaults_path
         self.defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
         self.route_planner = RoutePlannerV1()
         self.coverage_planner = CoveragePlannerV1(self.defaults)
+        self.grid_service = WorkspaceGridService()
+        self.risk_model: RiskModel = risk_model or RiskModelV1()
+        self.traffic_simulator = TrafficSimulator()
+        self.conflict_detector = ConflictDetector()
+        self.traffic_grid_service = TrafficGridService()
+        self.conflict_grid_service = ConflictGridService()
         self.state = self._load()
 
     def _blank(self):
@@ -49,6 +85,10 @@ class WorkflowService:
             "schema_version": self.schema_version,
             "project": {"project_id": str(uuid4()), "name": "CNS 规划项目", "created_at": utc_now(), "updated_at": utc_now()},
             "workspace": None,
+            "grid": None,
+            "grid_attributes": self._empty_grid_attributes(),
+            "grid_risk": RiskModelV1.empty(),
+            "traffic_simulation": None,
             "nodes": [],
             "node_seq": 0,
             "route_seq": 0,
@@ -60,7 +100,7 @@ class WorkflowService:
             "devices": deepcopy(self.defaults.get("device_library", {}).get("items", [])),
             "coverage": None,
             "risks": risks,
-            "result_statuses": {name: "not_calculated" for name in ("workspace", "environment_risk", "routes", "coverage", "technical_risk", "report")},
+            "result_statuses": {name: "not_calculated" for name in ("workspace", "grid", "environment_risk", "routes", "coverage", "technical_risk", "report")},
             "last_saved_at": None,
         }
 
@@ -75,6 +115,17 @@ class WorkflowService:
             value = self.repository.load()
             if value.get("schema_version") != self.schema_version:
                 return self._blank()
+            if "grid" not in value:
+                workspace = value.get("workspace")
+                value["grid"] = self.grid_service.generate(workspace["bbox"]) if workspace else None
+            attributes = value.setdefault("grid_attributes", self._empty_grid_attributes())
+            for name, empty in self._empty_grid_attributes().items():
+                attributes.setdefault(name, empty)
+            value.setdefault("grid_risk", RiskModelV1.empty())
+            value.setdefault("traffic_simulation", None)
+            value.setdefault("result_statuses", {}).setdefault(
+                "grid", "passed" if value.get("grid") else "not_calculated"
+            )
             return value
         except (OSError, ValueError, AttributeError):
             return self._blank()
@@ -92,6 +143,177 @@ class WorkflowService:
         result["aircraft_source"] = self.defaults.get("aircraft_library", {}).get("source", "demo/default")
         result["review"] = self.review()
         return result
+
+    def grid_snapshot(self):
+        return deepcopy(self.state.get("grid") or self.grid_service.empty())
+
+    def grid_attributes_snapshot(self):
+        return deepcopy(self.state.get("grid_attributes") or self._empty_grid_attributes())
+
+    def grid_risk_snapshot(self):
+        return deepcopy(self.state.get("grid_risk") or RiskModelV1.empty())
+
+    @staticmethod
+    def _empty_grid_attributes():
+        return {
+            "population": PopulationGridService.empty(),
+            "terrain": TerrainGridService.empty(),
+            "airspace": AirspaceGridService.empty(),
+            "buildings": WorkflowService._empty_extension_attribute("buildings"),
+            "property_exposure": WorkflowService._empty_extension_attribute("property_exposure"),
+            "infrastructure": WorkflowService._empty_extension_attribute("infrastructure"),
+            "towers": WorkflowService._empty_extension_attribute("towers"),
+            "traffic": TrafficGridService.empty(),
+            "conflict": ConflictGridService.empty(),
+        }
+
+    @staticmethod
+    def _empty_extension_attribute(name):
+        return {
+            "status": "not_calculated",
+            "source": None,
+            "algorithm_id": None,
+            "algorithm_version": None,
+            "namespace": name,
+            "grid_level": None,
+            "count": 0,
+            "cells": {},
+        }
+
+    def apply_grid_attributes(self, results):
+        grid = self.state.get("grid")
+        if not grid:
+            raise ValueError("请先生成工作区标准网格")
+        expected_ids = {cell["grid_id"] for cell in grid.get("cells", [])}
+        clean = {}
+        incoming = results or {}
+        current = self.state.get("grid_attributes") or self._empty_grid_attributes()
+        for kind in self.mapped_grid_attribute_names:
+            result = deepcopy(incoming.get(kind))
+            if not isinstance(result, dict):
+                raise ValueError(f"{kind} 网格映射结果缺失")
+            if result.get("grid_level") != grid.get("level"):
+                raise ValueError(f"{kind} 网格层级与当前标准网格不一致")
+            if set((result.get("cells") or {}).keys()) != expected_ids:
+                raise ValueError(f"{kind} 网格属性与当前 grid_id 不一致")
+            clean[kind] = result
+        for kind in self.extension_grid_attribute_names:
+            result = deepcopy(incoming.get(kind, current.get(kind)))
+            if not isinstance(result, dict):
+                result = self._empty_extension_attribute(kind)
+            cells = result.get("cells") or {}
+            if result.get("status") != "not_calculated" or cells:
+                if result.get("grid_level") != grid.get("level"):
+                    raise ValueError(f"{kind} 网格层级与当前标准网格不一致")
+                if set(cells) != expected_ids:
+                    raise ValueError(f"{kind} 网格属性与当前 grid_id 不一致")
+            clean[kind] = result
+        self.state["grid_attributes"] = clean
+        self._apply_grid_risk(self.risk_model.evaluate(grid, clean, None))
+        self.save()
+        return self.snapshot()
+
+    def evaluate_grid_risk(self, parameters=None):
+        grid = self.state.get("grid")
+        result = self.risk_model.evaluate(
+            grid, self.state.get("grid_attributes") or {}, parameters
+        )
+        self._apply_grid_risk(result)
+        self.save()
+        return self.snapshot()
+
+    def run_traffic_simulation(self, parameters):
+        grid = self.state.get("grid")
+        if not grid:
+            raise ValueError("请先生成工作区标准网格")
+        payload = parameters or {}
+        simulation = self.traffic_simulator.simulate(payload.get("simulation") or payload)
+        traffic = self.traffic_grid_service.map(
+            grid, simulation, payload.get("traffic") or {}
+        )
+        detection = self.conflict_detector.detect(
+            simulation["trajectories"], payload.get("conflict") or {}
+        )
+        conflict = self.conflict_grid_service.map(
+            grid, detection, simulation["simulation_seconds"],
+            payload.get("conflict_grid") or {},
+        )
+        attributes = self.state.setdefault(
+            "grid_attributes", self._empty_grid_attributes()
+        )
+        attributes["traffic"] = traffic
+        attributes["conflict"] = conflict
+        self.state["traffic_simulation"] = {
+            **simulation,
+            "conflict_detection": detection,
+        }
+        risk_parameters = payload.get("risk")
+        if risk_parameters is None:
+            risk_parameters = (self.state.get("grid_risk") or {}).get("parameters")
+        self._apply_grid_risk(
+            self.risk_model.evaluate(grid, attributes, risk_parameters)
+        )
+        self.save()
+        return self.snapshot()
+
+    def _apply_grid_risk(self, result):
+        if not isinstance(result, dict):
+            raise ValueError("风险模型未返回有效结果")
+        grid = self.state.get("grid")
+        expected_ids = {cell["grid_id"] for cell in (grid or {}).get("cells", [])}
+        result_cells = result.get("cells") or {}
+        if expected_ids and set(result_cells) != expected_ids:
+            raise ValueError("风险结果与当前 grid_id 不一致")
+        if any("geometry" in cell for cell in result_cells.values()):
+            raise ValueError("风险结果不得复制基础网格 geometry")
+        self.state["grid_risk"] = deepcopy(result)
+        status = result.get("status", "not_calculated")
+        self.state["result_statuses"]["environment_risk"] = status
+        self.state["risks"]["environment"] = self._assessment(
+            status,
+            f"{result.get('algorithm_id', 'risk-model')}@{result.get('algorithm_version', 'unknown')}",
+        )
+
+    def invalidate_grid_attributes(self, changed_sources):
+        attributes = self.state.setdefault("grid_attributes", self._empty_grid_attributes())
+        mapping = {
+            "population": ("population",),
+            "terrain": ("terrain",),
+            "basemap": ("airspace",),
+            "airspace": ("airspace",),
+            "buildings": ("buildings",),
+            "property": ("property_exposure",),
+            "property_exposure": ("property_exposure",),
+            "infrastructure": ("infrastructure",),
+            "obstacles": ("towers",),
+            "towers": ("towers",),
+            "traffic_simulation": ("traffic", "conflict"),
+            "traffic": ("traffic", "conflict"),
+            "conflict": ("conflict",),
+        }
+        invalidated = False
+        for source_name in changed_sources:
+            kinds = mapping.get(source_name)
+            if not kinds:
+                continue
+            invalidated = True
+            for kind in kinds:
+                if attributes.get(kind, {}).get("status") != "not_calculated":
+                    attributes[kind]["status"] = "stale"
+            if source_name in ("traffic_simulation", "traffic") and self.state.get("traffic_simulation"):
+                self.state["traffic_simulation"]["status"] = "stale"
+        if invalidated:
+            self._invalidate_grid_risk()
+
+    def _invalidate_grid_risk(self):
+        result = self.state.setdefault("grid_risk", RiskModelV1.empty())
+        if result.get("status") == "not_calculated":
+            return
+        result["status"] = "stale"
+        self.state["result_statuses"]["environment_risk"] = "stale"
+        self.state["risks"]["environment"] = self._assessment(
+            "stale", "网格风险输入属性已变化"
+        )
 
     def _steps(self):
         workspace_ok = bool(self.state["workspace"] and self.state["workspace"].get("status") == "passed")
@@ -127,20 +349,39 @@ class WorkflowService:
             raise ValueError("工作区范围无效")
         width = math.radians(east - west) * 6371008.8 * math.cos(math.radians((south + north) / 2))
         height = math.radians(north - south) * 6371008.8
+        grid = self.grid_service.generate(values)
         self.state["workspace"] = {"bbox": values, "area_km2": round(width * height / 1_000_000, 3), "health": health, "status": "passed"}
         self.state["result_statuses"]["workspace"] = "passed"
         self.invalidate("workspace")
+        self.state["grid"] = grid
+        self.state["grid_attributes"] = self._empty_grid_attributes()
+        self.state["grid_risk"] = RiskModelV1.empty()
+        self.state["traffic_simulation"] = None
+        self.state["risks"]["environment"] = self._assessment(
+            "not_calculated", "等待当前网格属性风险评估"
+        )
+        self.state["result_statuses"]["environment_risk"] = "not_calculated"
+        self.state["result_statuses"]["grid"] = "passed"
         self.save()
         return self.snapshot()
 
     def clear_workspace(self):
+        self.invalidate("workspace")
         self.state["workspace"] = None
+        self.state["grid"] = None
+        self.state["grid_attributes"] = self._empty_grid_attributes()
+        self.state["grid_risk"] = RiskModelV1.empty()
+        self.state["traffic_simulation"] = None
+        self.state["risks"]["environment"] = self._assessment(
+            "not_calculated", "GRC 环境/航路规划风险接口"
+        )
         self.state["nodes"] = []
         self.state["scenario_routes"] = []
         self.state["operational_routes"] = []
         self.state["coverage"] = None
         self.state["result_statuses"]["workspace"] = "not_calculated"
-        self.invalidate("workspace")
+        self.state["result_statuses"]["grid"] = "not_calculated"
+        self.state["result_statuses"]["environment_risk"] = "not_calculated"
         self.save()
         return self.snapshot()
 
