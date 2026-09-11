@@ -102,6 +102,14 @@ cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
 - 未来 CNSSitePlanner：`plan(route, required_cns, candidate_sites, device_catalog, parameters) -> CNSPlanResult`。
 - `DeviceCatalog`（地面设备型号/性能）与 `AircraftCNSProfileCatalog`（机载已有能力/默认需求）必须分开；已有能力不得等同需求。
 
+P3 CNS Taxonomy & Performance Contract：
+
+- AircraftCNSProfile（机载能力）、RequiredCNS（运行需求）和 CNSDevice（地面设备能力）共用轻量 C/N/S taxonomy，但分别保存，互不推导或替代。
+- 每个分系统采用 `type + performance + contingency + source + confirmed + confirmation_status`；未知分类使用允许的 `unknown` 或 `null`，未知性能保持 `null/pending_confirmation`，不填入法规或安全阈值。
+- C 类型包含 `service_type/technology/network_scope/interfaces`，性能包含秒制时延、失链/中断、可用度与冗余；N 类型包含导航 technology，性能包含水平/垂直误差、完整性、告警/降级时间、可用度与冗余；S 类型包含 target cooperation、sensor mode、technology，性能包含探测距离/概率、更新/航迹丢失/告警时间、可用度与冗余。
+- canonical 时间单位统一为秒；schema-v2 继续保留并同步 V1 别名：`max_latency_s <-> latency_ms`、`max_horizontal_error_m <-> accuracy_m`、`integrity_required <-> integrity`、`max_update_interval_s <-> update_interval_s`、`min_redundancy <-> redundancy`。同时提供不一致检测，禁止静默选择其中一个值。
+- availability/probability 校验为 0..1；冗余为正整数；时间和距离非负。Catalog 恢复时执行 additive contract backfill，旧 `capabilities/radius_m/mtbf_h` 等字段原样保留。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -137,6 +145,8 @@ P2 完整运行结果：**150 passed, 6 skipped, 1 failed**；Node 前端纯函�
 CNS Gap Analysis 本轮定向基线：41 passed；覆盖解析长度、missing/pending/not_applicable、航路级需求覆盖、冗余、保存恢复、旧项目回填、输入失效及 API/UI 接线。
 
 Algorithm Registry 定向基线：44 passed；覆盖四个 V1 Manifest、精确版本无 fallback、schema-v2 backfill/保存恢复、未知选择显式失败、Dummy 真正换实例、同选择 no-op、四类定向失效、API、Step 1 和 V1 characterization。
+
+P3 完整基线：**161 passed, 6 skipped, 1 known failed**；Node 前端纯函数/Step 4 **11 passed, 0 failed**，`step04_operation.js` 语法检查通过。新增覆盖 legacy backfill、canonical/V1 alias 双向转换与冲突、C/N/S 枚举和数值校验、Aircraft/Device 分离兼容、route override、保存恢复、Step 4 语义及四个 V1 characterization。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P3 未修改生产空域代码。
 
 ## 9. 架构原则
 

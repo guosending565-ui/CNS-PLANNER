@@ -5,6 +5,7 @@ import {lonLatToMercator,mercatorToLonLat} from '../cns_planner/web/js/map/proje
 import {createStore} from '../cns_planner/web/js/state/store.js';
 import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid_overlay.js';
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
+import {render as renderStep4,withLegacyRequiredAliases} from '../cns_planner/web/js/workflow/step04_operation.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -45,4 +46,26 @@ test('algorithm selection key includes type id and exact version',()=>{
 test('step 1 algorithm details preserve auditable manifest fields',()=>{
   const item={algorithm_type:'risk_model',algorithm_id:'risk-model-v1-relative-index',version:'1.1',name:'Risk V1',provider:'CNS-PLANNER',maturity:'baseline',description:'relative',inputs:['grid'],outputs:['risk'],parameter_schema:{type:'object'},assumptions:['a'],limitations:['b'],references:[]};
   assert.deepEqual(algorithmManifestDetails(item),{identity:'risk-model-v1-relative-index@1.1',provider:'CNS-PLANNER',maturity:'baseline',inputs:'grid',outputs:'risk',assumptions:'a',limitations:'b',references:'未登记'});
+});
+
+test('step 4 canonical seconds create exact V1 aliases',()=>{
+  const result=withLegacyRequiredAliases({
+    communication:{performance:{max_latency_s:0.25,min_redundancy:2}},
+    navigation:{performance:{max_horizontal_error_m:3,integrity_required:'required',min_redundancy:1}},
+    surveillance:{performance:{max_update_interval_s:2,min_redundancy:1}},
+  });
+  assert.equal(result.communication.latency_ms,250);
+  assert.equal(result.navigation.accuracy_m,3);
+  assert.equal(result.navigation.integrity,'required');
+  assert.equal(result.surveillance.update_interval_s,2);
+});
+
+test('step 4 separates aircraft capability and required performance UI',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}});return node;}};
+  const html=renderStep4({flow:{aircraft_profiles:{count:1,items:[{aircraft_id:'A',name:'A',communication:{capabilities:['radio'],type:{technology:'4g'},confirmed:true},navigation:{},surveillance:{}}]},selected_aircraft_profile_id:'A',aircraft_source:'catalog',scenario_routes:[],required_cns:{project_default:{}},device_catalog:{items:[]},steps:{'4':false}}});
+  assert.match(html,/Aircraft Capability/);
+  assert.match(html,/Required CNS Performance/);
+  assert.match(html,/最大时延 s/);
+  assert.match(html,/Ground Device Capability/);
+  assert.doesNotMatch(html,/最大时延 ms/);
 });

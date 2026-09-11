@@ -3,7 +3,7 @@
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog, DeviceCatalog
-from ..domain.cns_inputs import normalize_required_cns
+from ..domain.cns_inputs import backfill_device_contract, normalize_aircraft_profile, normalize_required_cns
 
 
 def empty_collection(collection_id):
@@ -30,6 +30,18 @@ class CNSInputService:
                 state["device_catalog"] = DeviceCatalog.load(config_dir)
             except OSError:
                 state["device_catalog"] = DeviceCatalog.from_defaults(self.session.defaults.get("device_library"))
+        # Additive schema-v2 backfill also applies to catalogs restored from an
+        # older project, not only to freshly imported catalog files.
+        if state.get("aircraft_profiles", {}).get("status") == "passed":
+            state["aircraft_profiles"]["items"] = [
+                normalize_aircraft_profile(item) for item in state["aircraft_profiles"].get("items", [])
+            ]
+            state["aircraft_profiles"]["count"] = len(state["aircraft_profiles"]["items"])
+        if state.get("device_catalog", {}).get("status") == "passed":
+            state["device_catalog"]["items"] = [
+                backfill_device_contract(item) for item in state["device_catalog"].get("items", [])
+            ]
+            state["device_catalog"]["count"] = len(state["device_catalog"]["items"])
         state.setdefault("selected_aircraft_profile_id", None)
         state["required_cns"] = normalize_required_cns(state.get("required_cns"))
         state.setdefault("existing_cns_facilities", empty_collection("existing-cns-facilities"))

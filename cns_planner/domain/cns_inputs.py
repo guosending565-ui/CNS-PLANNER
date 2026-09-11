@@ -6,6 +6,10 @@ from copy import deepcopy
 from math import isfinite
 from typing import Any, TypedDict
 
+from .cns_performance import (
+    empty_subsystem_contract, normalize_subsystem_contract, sync_aliases,
+)
+
 
 SUBSYSTEMS = ("C", "N", "S")
 
@@ -69,25 +73,31 @@ class CandidateSite(TypedDict, total=False):
 
 
 def pending_required_cns() -> RequiredCNS:
+    communication = {
+        "status": "pending_confirmation", "required": None,
+        "coverage_requirement": None, "max_gap_m": None,
+        "latency_ms": None, "redundancy": None,
+        **empty_subsystem_contract("C"),
+    }
+    navigation = {
+        "status": "pending_confirmation", "required": None,
+        "coverage_requirement": None, "accuracy_m": None,
+        "integrity": None, "redundancy": None,
+        **empty_subsystem_contract("N"),
+    }
+    surveillance = {
+        "status": "pending_confirmation", "required": None,
+        "coverage_requirement": None, "update_interval_s": None,
+        "redundancy": None,
+        **empty_subsystem_contract("S"),
+    }
     return {
         "status": "pending_confirmation",
         "source": "项目默认值，待确认",
         "project_default": {
-            "communication": {
-                "status": "pending_confirmation", "required": None,
-                "coverage_requirement": None, "max_gap_m": None,
-                "latency_ms": None, "redundancy": None,
-            },
-            "navigation": {
-                "status": "pending_confirmation", "required": None,
-                "coverage_requirement": None, "accuracy_m": None,
-                "integrity": None, "redundancy": None,
-            },
-            "surveillance": {
-                "status": "pending_confirmation", "required": None,
-                "coverage_requirement": None, "update_interval_s": None,
-                "redundancy": None,
-            },
+            "communication": communication,
+            "navigation": navigation,
+            "surveillance": surveillance,
         },
         "route_overrides": {},
         "metadata": {"semantics": "mission_requirement_not_aircraft_capability"},
@@ -120,9 +130,9 @@ def normalize_aircraft_profile(item: dict) -> AircraftCNSProfile:
         "name": str(item.get("name") or item.get("model") or aircraft_id),
         "manufacturer": str(item.get("manufacturer") or ""),
         "model": str(item.get("model") or ""),
-        "communication": _capability(item.get("communication")),
-        "navigation": _capability(item.get("navigation")),
-        "surveillance": _capability(item.get("surveillance")),
+        "communication": _capability("C", item.get("communication"), "aircraft.communication"),
+        "navigation": _capability("N", item.get("navigation"), "aircraft.navigation"),
+        "surveillance": _capability("S", item.get("surveillance"), "aircraft.surveillance"),
         "source": str(item.get("source") or "未记录"),
         "metadata": deepcopy(item.get("metadata") or {}),
     }
@@ -152,7 +162,25 @@ def normalize_device(item: dict) -> CNSDevice:
         "source": str(item.get("source") or "未记录"),
         "parameter_metadata": deepcopy(item.get("parameter_metadata") or {}),
     }
+    for key in ("accuracy_m", "integrity", "update_interval_s", "redundancy"):
+        if key in item:
+            result[key] = deepcopy(item.get(key))
+    contract = normalize_subsystem_contract(subsystem, item, field=f"device.{device_id}")
+    result.update(contract)
+    result = sync_aliases(subsystem, result, field=f"device.{device_id}")
     return result
+
+
+def backfill_device_contract(item: dict) -> dict:
+    """Add P3 fields to a persisted V1 device without tightening V1 validity."""
+    if not isinstance(item, dict):
+        raise ValueError("设备条目必须是对象")
+    subsystem = str(item.get("subsystem") or "").upper()
+    if subsystem not in SUBSYSTEMS:
+        raise ValueError("设备 subsystem 必须是 C/N/S")
+    result = deepcopy(item)
+    result.update(normalize_subsystem_contract(subsystem, item, field=f"device.{item.get('device_id') or 'legacy'}"))
+    return sync_aliases(subsystem, result, field=f"device.{item.get('device_id') or 'legacy'}")
 
 
 def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacility:
@@ -208,6 +236,7 @@ def _normalize_requirement_set(value):
         raise ValueError("CNS 需求集合必须是对象")
     template = pending_required_cns()["project_default"]
     result = {}
+    subsystem_codes = {"communication": "C", "navigation": "N", "surveillance": "S"}
     for name, default in template.items():
         current = value.get(name) or {}
         if not isinstance(current, dict):
@@ -216,10 +245,12 @@ def _normalize_requirement_set(value):
         required = merged.get("required")
         if required not in (True, False, None):
             raise ValueError(f"{name}.required 必须为 true、false 或 null")
-        for key, number in merged.items():
-            if key in ("status", "required", "integrity") or number is None:
-                continue
-            merged[key] = _optional_nonnegative(number, f"{name}.{key}")
+        for key in ("coverage_requirement", "max_gap_m"):
+            if key in merged:
+                merged[key] = _optional_nonnegative(merged.get(key), f"{name}.{key}")
+        contract = normalize_subsystem_contract(subsystem_codes[name], current, field=f"required_cns.{name}")
+        merged.update(contract)
+        merged = sync_aliases(subsystem_codes[name], merged, field=f"required_cns.{name}")
         merged["status"] = "passed" if required is False or (required is True and _requirements_complete(name, merged)) else "pending_confirmation"
         result[name] = merged
     return result
@@ -234,14 +265,20 @@ def _requirements_complete(name, value):
     return all(value.get(key) is not None and value.get(key) != "" for key in keys)
 
 
-def _capability(value):
+def _capability(subsystem, value, field):
     if value is None:
-        return {"status": "pending_confirmation", "capabilities": []}
+        value = {}
     if isinstance(value, list):
-        return {"status": "confirmed", "capabilities": deepcopy(value)}
+        value = {"status": "confirmed", "capabilities": deepcopy(value), "confirmed": True}
     if not isinstance(value, dict):
         raise ValueError("CNS capability 必须是对象或数组")
-    return {"status": str(value.get("status") or "pending_confirmation"), "capabilities": deepcopy(value.get("capabilities") or []), **{key: deepcopy(current) for key, current in value.items() if key not in ("status", "capabilities")}}
+    result = {
+        "status": str(value.get("status") or "pending_confirmation"),
+        "capabilities": deepcopy(value.get("capabilities") or []),
+    }
+    result.update(normalize_subsystem_contract(subsystem, value, field=field))
+    result = sync_aliases(subsystem, result, field=field)
+    return result
 
 
 def _coordinate(item):
