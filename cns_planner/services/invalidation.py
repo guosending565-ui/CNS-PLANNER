@@ -16,6 +16,9 @@ DEPENDENTS = {
     "existing_cns": ("coverage", "cns_gap", "technical_risk", "report"),
     "candidate_sites": ("coverage", "technical_risk", "report"),
     "sites": ("coverage", "technical_risk", "report"),
+    "route_algorithm": ("routes", "coverage", "cns_gap", "report"),
+    "coverage_algorithm": ("coverage", "report"),
+    "gap_algorithm": ("cns_gap", "report"),
 }
 
 

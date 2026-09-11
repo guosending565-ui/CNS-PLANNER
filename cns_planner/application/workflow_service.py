@@ -3,8 +3,9 @@
 from copy import deepcopy
 from pathlib import Path
 
-from ..algorithms.coverage.v1 import CoveragePlannerV1
-from ..algorithms.route.v1 import RoutePlannerV1
+from ..algorithms.registry import (
+    ALGORITHM_TYPES, build_default_algorithm_registry, normalize_algorithm_selection,
+)
 from ..risk.v1 import RiskModelV1
 from ..data.mapping.conflict import ConflictGridService
 from ..data.mapping.traffic import TrafficGridService
@@ -33,25 +34,32 @@ class WorkflowService:
     mapped_grid_attribute_names = RiskService.MAPPED_ATTRIBUTES
     extension_grid_attribute_names = RiskService.EXTENSION_ATTRIBUTES
 
-    def __init__(self, store_path: Path, defaults_path: Path, risk_model=None, gap_analyzer=None):
+    def __init__(self, store_path: Path, defaults_path: Path, risk_model=None, gap_analyzer=None, algorithm_registry=None):
         self.grid_service = WorkspaceGridService()
         self.session = WorkflowSession(store_path, defaults_path, self.grid_service)
         self.store_path, self.defaults_path = self.session.store_path, self.session.defaults_path
         self.repository, self.defaults, self.state = self.session.repository, self.session.defaults, self.session.state
-        self.route_planner, self.coverage_planner = RoutePlannerV1(), CoveragePlannerV1(self.defaults)
-        self.risk_model = risk_model or RiskModelV1()
+        self.algorithm_registry = algorithm_registry or build_default_algorithm_registry(self.defaults)
+        self.route_planner = self._selected_algorithm("route_planner")
+        self.coverage_planner = self._selected_algorithm("coverage_planner")
+        self.risk_model = risk_model or self._selected_algorithm("risk_model")
+        self.gap_analyzer = gap_analyzer or self._selected_algorithm("cns_gap_analyzer")
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
         snapshot = self.snapshot
         self.cns_input_service = CNSInputService(self.session, self.invalidation_service, CNSInputAdapter(), snapshot)
         self.cns_input_service.ensure_catalogs()
-        self.gap_analysis_service = GapAnalysisService(self.session, gap_analyzer or CNSGapAnalyzerV1(), snapshot)
+        self.gap_analysis_service = GapAnalysisService(self.session, self.gap_analyzer, snapshot)
         self.project_service = ProjectService(self.session, snapshot)
         self.workspace_service = WorkspaceService(self.session, self.grid_service, self.invalidation_service, snapshot)
         self.route_service = RouteService(self.session, self.route_planner, self.invalidation_service, snapshot)
         self.operation_service = OperationService(self.session, self.invalidation_service, snapshot)
-        self.risk_service = RiskService(self.session, self.risk_model, self.traffic_simulator, self.conflict_detector, self.traffic_grid_service, self.conflict_grid_service, self.invalidation_service, snapshot)
+        self.risk_service = RiskService(
+            self.session, self.risk_model, self.traffic_simulator, self.conflict_detector,
+            self.traffic_grid_service, self.conflict_grid_service, self.invalidation_service,
+            snapshot, lambda: deepcopy(self.state["algorithm_selection"]["risk_model"]["parameters"]),
+        )
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.export_service = ExportService(self.session, snapshot)
 
@@ -63,6 +71,7 @@ class WorkflowService:
         result["defaults"] = deepcopy(self.defaults)
         result["device_source"] = self.state.get("device_catalog", {}).get("source") or self.defaults.get("device_library", {}).get("source", "demo/default")
         result["aircraft_source"] = self.state.get("aircraft_profiles", {}).get("source") or self.defaults.get("aircraft_library", {}).get("source", "demo/default")
+        result["algorithm_catalog"] = self.algorithm_registry.catalog()
         result["review"] = self.review()
         return result
 
@@ -75,10 +84,68 @@ class WorkflowService:
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
     def cns_gap_snapshot(self): return deepcopy(self.state.get("cns_gap_analysis") or CNSGapAnalyzerV1.empty())
+    def algorithms_snapshot(self):
+        return {
+            "status": "passed", "selection": deepcopy(self.state["algorithm_selection"]),
+            "items": self.algorithm_registry.catalog(),
+        }
     def _blank(self): return blank_project(self.defaults)
     _assessment = staticmethod(assessment)
     _empty_grid_attributes = staticmethod(empty_grid_attributes)
     _empty_extension_attribute = staticmethod(empty_extension_attribute)
+
+    def _selected_algorithm(self, algorithm_type):
+        selection = self.state["algorithm_selection"][algorithm_type]
+        return self.algorithm_registry.create(
+            selection["algorithm_type"], selection["algorithm_id"],
+            selection["version"], selection["parameters"],
+        )
+
+    def select_algorithm(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("算法选择格式无效")
+        algorithm_type = str(payload.get("algorithm_type") or "")
+        if algorithm_type not in ALGORITHM_TYPES:
+            raise ValueError(f"不支持的算法类型：{algorithm_type}")
+        version = payload.get("version", payload.get("algorithm_version"))
+        candidate = normalize_algorithm_selection({
+            **self.state["algorithm_selection"],
+            algorithm_type: {
+                "algorithm_type": algorithm_type,
+                "algorithm_id": payload.get("algorithm_id"),
+                "version": version,
+                "parameters": payload.get("parameters", {}),
+            },
+        })[algorithm_type]
+        instance = self.algorithm_registry.create(
+            candidate["algorithm_type"], candidate["algorithm_id"],
+            candidate["version"], candidate["parameters"],
+        )
+        if candidate == self.state["algorithm_selection"][algorithm_type]:
+            return self.snapshot()
+        self.state["algorithm_selection"][algorithm_type] = candidate
+        self._bind_algorithm(algorithm_type, instance)
+        if algorithm_type == "risk_model":
+            self.invalidation_service.risk()
+        else:
+            changed = {
+                "route_planner": "route_algorithm",
+                "coverage_planner": "coverage_algorithm",
+                "cns_gap_analyzer": "gap_algorithm",
+            }[algorithm_type]
+            self.invalidation_service.workflow(changed)
+        self.session.save()
+        return self.snapshot()
+
+    def _bind_algorithm(self, algorithm_type, instance):
+        if algorithm_type == "route_planner":
+            self.route_planner = self.route_service.planner = instance
+        elif algorithm_type == "coverage_planner":
+            self.coverage_planner = self.cns_planning_service.planner = instance
+        elif algorithm_type == "cns_gap_analyzer":
+            self.gap_analyzer = self.gap_analysis_service.analyzer = instance
+        elif algorithm_type == "risk_model":
+            self.risk_model = self.risk_service.risk_model = instance
 
     def _steps(self):
         state = self.state
@@ -106,6 +173,7 @@ class WorkflowService:
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
     def analyze_cns_gaps(self): return self.gap_analysis_service.analyze()
+    def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()
     def apply_grid_attributes(self, results): return self.risk_service.apply_grid_attributes(results)

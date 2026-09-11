@@ -16,6 +16,7 @@ class RiskService:
     def __init__(
         self, session, risk_model, traffic_simulator, conflict_detector,
         traffic_grid_service, conflict_grid_service, invalidation, snapshot,
+        algorithm_parameters=lambda: {},
     ):
         self.session = session
         self.risk_model = risk_model
@@ -25,6 +26,7 @@ class RiskService:
         self.conflict_grid_service = conflict_grid_service
         self.invalidation = invalidation
         self.snapshot = snapshot
+        self.algorithm_parameters = algorithm_parameters
 
     def apply_grid_attributes(self, results):
         grid = self.session.state.get("grid")
@@ -48,7 +50,7 @@ class RiskService:
         for kind in ("population", "terrain"):
             if isinstance(clean[kind].get("source_profile"), dict):
                 profiles[kind] = deepcopy(clean[kind]["source_profile"])
-        self.apply_result(self.risk_model.evaluate(grid, clean, None))
+        self.apply_result(self.risk_model.evaluate(grid, clean, self.algorithm_parameters()))
         self.session.save()
         return self.snapshot()
 
@@ -74,6 +76,8 @@ class RiskService:
 
     def evaluate(self, parameters=None):
         state = self.session.state
+        if parameters is None:
+            parameters = self.algorithm_parameters()
         result = self.risk_model.evaluate(
             state.get("grid"), state.get("grid_attributes") or {}, parameters
         )
@@ -101,7 +105,7 @@ class RiskService:
         state["traffic_simulation"] = {**simulation, "conflict_detection": detection}
         risk_parameters = payload.get("risk")
         if risk_parameters is None:
-            risk_parameters = (state.get("grid_risk") or {}).get("parameters")
+            risk_parameters = self.algorithm_parameters() or (state.get("grid_risk") or {}).get("parameters")
         self.apply_result(self.risk_model.evaluate(grid, attributes, risk_parameters))
         self.session.save()
         return self.snapshot()

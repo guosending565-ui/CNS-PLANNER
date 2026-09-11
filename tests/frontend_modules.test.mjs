@@ -4,6 +4,7 @@ import test from 'node:test';
 import {lonLatToMercator,mercatorToLonLat} from '../cns_planner/web/js/map/projection.js';
 import {createStore} from '../cns_planner/web/js/state/store.js';
 import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid_overlay.js';
+import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -35,4 +36,13 @@ test('population theme prefers governed target-grid density and excludes partial
   const theme={quantileBreaks:values=>values,bboxContainsHalfOpen:()=>true};
   const cache=buildGridOverlayCache(grid,attributes,{},theme);
   assert.deepEqual(cache.populationBreaks,[25]);
+});
+
+test('algorithm selection key includes type id and exact version',()=>{
+  assert.equal(algorithmSelectionKey({algorithm_type:'risk_model',algorithm_id:'risk-model-v1-relative-index',version:'1.1'}),'risk_model|risk-model-v1-relative-index|1.1');
+});
+
+test('step 1 algorithm details preserve auditable manifest fields',()=>{
+  const item={algorithm_type:'risk_model',algorithm_id:'risk-model-v1-relative-index',version:'1.1',name:'Risk V1',provider:'CNS-PLANNER',maturity:'baseline',description:'relative',inputs:['grid'],outputs:['risk'],parameter_schema:{type:'object'},assumptions:['a'],limitations:['b'],references:[]};
+  assert.deepEqual(algorithmManifestDetails(item),{identity:'risk-model-v1-relative-index@1.1',provider:'CNS-PLANNER',maturity:'baseline',inputs:'grid',outputs:'risk',assumptions:'a',limitations:'b',references:'未登记'});
 });

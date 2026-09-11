@@ -19,6 +19,9 @@ class RoutePlan:
 class RoutePlannerV1:
     """Small-area A*. Hard constraints are blocked; failure never falls back to a line."""
 
+    algorithm_id = "route_planner_v1"
+    algorithm_version = "1.0"
+
     def __init__(self, grid_size: int = 56):
         self.grid_size = grid_size
 

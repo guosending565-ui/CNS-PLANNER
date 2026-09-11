@@ -11,6 +11,7 @@ from ..data.mapping.population import PopulationGridService
 from ..data.mapping.terrain import TerrainGridService
 from ..data.mapping.traffic import TrafficGridService
 from ..data.source_profiles import default_source_profiles
+from ..algorithms.registry import default_algorithm_selection, normalize_algorithm_selection
 from ..domain.cns_inputs import pending_required_cns
 from ..gap.v1 import CNSGapAnalyzerV1
 
@@ -74,6 +75,7 @@ def blank_project(defaults):
             "created_at": utc_now(), "updated_at": utc_now(),
         },
         "workspace": None, "grid": None,
+        "algorithm_selection": default_algorithm_selection(),
         "data_source_profiles": default_source_profiles(),
         "grid_attributes": empty_grid_attributes(),
         "grid_risk": RiskModelV1.empty(), "traffic_simulation": None,
@@ -110,6 +112,7 @@ def normalize_project(value, grid_service):
     if "grid" not in value:
         workspace = value.get("workspace")
         value["grid"] = grid_service.generate(workspace["bbox"]) if workspace else None
+    value["algorithm_selection"] = normalize_algorithm_selection(value.get("algorithm_selection"))
     profiles = value.setdefault("data_source_profiles", default_source_profiles())
     if not isinstance(profiles, dict):
         raise ValueError("data_source_profiles 格式无效")

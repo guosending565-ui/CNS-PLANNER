@@ -36,19 +36,4 @@ class RouteAlgorithm(Protocol):
     def plan(self, request: RouteRequest) -> RouteResult: ...
 
 
-class AlgorithmRegistry:
-    def __init__(self):
-        self._algorithms: dict[str, RouteAlgorithm] = {}
-
-    def register(self, key: str, algorithm: RouteAlgorithm):
-        if not key or key in self._algorithms:
-            raise ValueError("算法 ID 为空或重复")
-        self._algorithms[key] = algorithm
-
-    def get(self, key: str) -> RouteAlgorithm:
-        if key not in self._algorithms:
-            raise ValueError(f"算法尚未注册：{key}")
-        return self._algorithms[key]
-
-    def keys(self) -> tuple[str, ...]:
-        return tuple(self._algorithms)
+from .registry import AlgorithmRegistry

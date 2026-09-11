@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..gis.map_data import MapData
 from ..gis.online_health import check_online_services
 from .file_browser import browse
 
@@ -35,6 +34,7 @@ class ApiRouter:
         if path == "/api/existing-cns": return Response(workflow.existing_cns_snapshot())
         if path == "/api/candidate-sites": return Response(workflow.candidate_sites_snapshot())
         if path == "/api/cns-gaps": return Response(workflow.cns_gap_snapshot())
+        if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
         if path == "/api/export/project": return Response(workflow.export_project())
         if path == "/api/export/routes": return Response(workflow.export_routes(), "application/geo+json; charset=utf-8")
@@ -67,6 +67,7 @@ class ApiRouter:
             "/api/candidate-sites/import": lambda: workflow.import_candidate_sites(payload),
             "/api/candidate-sites/from-existing": workflow.candidate_sites_from_existing,
             "/api/cns-gaps/analyze": workflow.analyze_cns_gaps,
+            "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
         }
         if path in resource_actions:
             return Response(resource_actions[path]())
@@ -101,6 +102,7 @@ class ApiRouter:
             return Response({"error": "未找到"}, status=404)
         clean = {key: payload.get(key, "") for key in ("basemap", "population", "terrain")}
         if path == "/api/data-sources/validate":
+            from ..gis.map_data import MapData
             return Response(context.qgis.call(lambda: MapData.validate_candidate(clean, default_config=context.default_config, token=context.token)))
         return Response(context.qgis.call(lambda: context.replace_sources(clean)))
 

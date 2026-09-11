@@ -262,6 +262,8 @@
     max-height:280px !important;
 }
 
+.algorithm-settings{display:grid;gap:8px;margin:7px 0 12px}.algorithm-setting{border:1px solid #dfe7ed;border-radius:5px;padding:8px;background:#f8fafb}.algorithm-setting label{display:block;margin:0 0 5px}.algorithm-detail{margin-top:6px;font-size:10px;color:#617587}.algorithm-detail summary{cursor:pointer;color:#315d82}.algorithm-detail p{margin:5px 0}.algorithm-detail small{white-space:normal;line-height:1.45}
+
 
 /* =========================================================
    8. 400px宽度下的设备表格
