@@ -22,18 +22,18 @@
 
     <div id="populationRasterLegend" class="raster-legend" hidden>
         <p>
-            <b>人口密度</b>
-            <span>人/km²</span>
+            <b>WorldPop 源像元人口数</b>
+            <span>person/source pixel</span>
         </p>
         <div class="population-raster-gradient"></div>
         <div class="population-raster-ticks">
             <span>0</span>
-            <span>100</span>
-            <span>1,000</span>
-            <span>5,000</span>
-            <span>&gt;20,000</span>
+            <span>1</span>
+            <span>10</span>
+            <span>50</span>
+            <span>&gt;200</span>
         </div>
-        <small>WorldPop · 地图显示换算为人/km²</small>
+        <small>WorldPop R2025A count · 原始栅格不插值为人数</small>
     </div>
 
     <div id="terrainRasterLegend" class="raster-legend" hidden>
@@ -58,6 +58,6 @@
  <footer><div><i class="dot"></i><span id="sourceSummary">等待数据</span></div><span id="workflowStatus">业务流程载入中</span></footer>
 </main>
 <dialog id="settings" class="source-dialog"><div class="dialog-head"><div><span class="breadcrumb">DATA SOURCE CENTER</span><h2>统一数据源设置</h2></div><button class="close" id="closeSettings" aria-label="关闭设置">×</button></div><p>所有外部数据均在此配置。业务页面只使用已登记数据；原始文件保持只读。</p>
-<div id="healthSummary" class="health-summary">正在检查…</div><div class="source-layout"><section class="source-editor"><h3>当前可配置</h3><label>基础地图 / QGIS 项目</label><div class="file-input"><input id="basemapPath" aria-label="底图文件路径"><button data-browse="basemap">浏览电脑…</button></div><small>支持 .qgz / .qgs；同时检查项目引用、图层和 CRS。</small><label>人口密度 / GeoTIFF</label><div class="file-input"><input id="populationPath" aria-label="人口文件路径"><button data-browse="population">浏览电脑…</button></div><small>支持 .tif / .tiff；检查有效波段、CRS 与 NoData。</small><div id="rasterInfo" class="metadata"></div><label>地形高程 / Copernicus GLO-30</label><div class="file-input"><input id="terrainPath" aria-label="地形DEM文件路径"><button data-browse="terrain">浏览电脑…</button></div><small>支持 .tif / .tiff；推荐 Copernicus GLO-30，读取第 1 波段作为地表高程（m）。</small><div id="terrainInfo" class="metadata"></div></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
+<div id="healthSummary" class="health-summary">正在检查…</div><div class="source-layout"><section class="source-editor"><h3>当前可配置</h3><label>基础地图 / QGIS 项目</label><div class="file-input"><input id="basemapPath" aria-label="底图文件路径"><button data-browse="basemap">浏览电脑…</button></div><small>支持 .qgz / .qgs；同时检查项目引用、图层和 CRS。</small><label>WorldPop 人口数 / GeoTIFF</label><div class="file-input"><input id="populationPath" aria-label="人口文件路径"><button data-browse="population">浏览电脑…</button></div><small>R2025A 原始量为 person/source pixel；映射时按面积权重守恒分配。</small><div id="rasterInfo" class="metadata"></div><label>地形高程 / Copernicus GLO-30 DSM</label><div class="file-input"><input id="terrainPath" aria-label="地形DEM文件路径"><button data-browse="terrain">浏览电脑…</button></div><small>1 arc-second；水平 WGS84/EPSG:4326，垂直 EGM2008/EPSG:3855，单位 m。</small><div id="terrainInfo" class="metadata"></div></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
 <dialog id="browser"><div class="dialog-head"><h2>浏览电脑文件</h2><button class="close" id="closeBrowser" aria-label="关闭文件浏览">×</button></div><div class="browse-bar"><button id="drives">此电脑</button><button id="parent">上一级</button><input id="folder" aria-label="当前目录"><button id="openFolder">转到</button></div><p class="small dark" id="fileFilter"></p><div id="entries"></div><div id="browseError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="chosen">请选择文件；单击文件后确认</span><button class="primary" id="selectFile" disabled>选择此文件</button></div></dialog>
 <script src="/tiles.js"></script><script src="/grid_theme.js"></script><script type="module" src="/app.js"></script></body></html>

@@ -32,10 +32,13 @@ export function buildGridOverlayCache(grid,attributes,risk,gridTheme){
     risk:risk?.cells?.[cell.grid_id]||null
   }));
   const usable=status=>status==='passed'||status==='missing_data';
-  const values=(source,key)=>usable(source.status)?cells.map(item=>item[source===sources.population?'population':'terrain']?.[key]).filter(Number.isFinite):[];
+  const populationValue=item=>Number.isFinite(item.population?.population_density_people_km2)
+    ? (item.population.quantity_status==='passed'?item.population.population_density_people_km2:null)
+    : item.population?.value_mean;
+  const values=(source,key)=>usable(source.status)?cells.map(item=>source===sources.population?populationValue(item):item.terrain?.[key]).filter(Number.isFinite):[];
   return {
     cells,byId:new Map(cells.map(item=>[item.cell.grid_id,item])),spatial:buildSpatialGrid(cells),
-    populationBreaks:gridTheme.quantileBreaks(values(sources.population,'value_mean')),
+    populationBreaks:gridTheme.quantileBreaks(values(sources.population,'population_density_people_km2')),
     terrainBreaks:gridTheme.quantileBreaks(values(sources.terrain,'mean_elevation'))
   };
 }

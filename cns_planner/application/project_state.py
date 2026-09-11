@@ -10,6 +10,7 @@ from ..data.mapping.conflict import ConflictGridService
 from ..data.mapping.population import PopulationGridService
 from ..data.mapping.terrain import TerrainGridService
 from ..data.mapping.traffic import TrafficGridService
+from ..data.source_profiles import default_source_profiles
 from ..domain.cns_inputs import pending_required_cns
 from ..gap.v1 import CNSGapAnalyzerV1
 
@@ -73,6 +74,7 @@ def blank_project(defaults):
             "created_at": utc_now(), "updated_at": utc_now(),
         },
         "workspace": None, "grid": None,
+        "data_source_profiles": default_source_profiles(),
         "grid_attributes": empty_grid_attributes(),
         "grid_risk": RiskModelV1.empty(), "traffic_simulation": None,
         "nodes": [], "node_seq": 0, "route_seq": 0,
@@ -108,6 +110,16 @@ def normalize_project(value, grid_service):
     if "grid" not in value:
         workspace = value.get("workspace")
         value["grid"] = grid_service.generate(workspace["bbox"]) if workspace else None
+    profiles = value.setdefault("data_source_profiles", default_source_profiles())
+    if not isinstance(profiles, dict):
+        raise ValueError("data_source_profiles 格式无效")
+    for name, profile in default_source_profiles().items():
+        current = profiles.setdefault(name, profile)
+        if not isinstance(current, dict):
+            profiles[name] = profile
+            continue
+        for field, default in profile.items():
+            current.setdefault(field, deepcopy(default))
     attributes = value.setdefault("grid_attributes", empty_grid_attributes())
     if not isinstance(attributes, dict):
         raise ValueError("grid_attributes 格式无效")

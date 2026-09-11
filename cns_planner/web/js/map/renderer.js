@@ -21,8 +21,9 @@ export function drawGridTheme(options){
   const palette=kind?(kind==='population'?palettes.population:kind==='terrain'?palettes.terrain:palettes.risk):palettes.risk,visible=visibleBounds();ctx.save();
   for(const item of cache.cells){
     const bbox=item.cell.bbox;if(!gridTheme.bboxIntersects(bbox,visible))continue;
-    const attributes=kind?item[kind]:item.risk?.[riskKind],value=kind?(kind==='population'?attributes?.value_mean:kind==='terrain'?attributes?.mean_elevation:kind==='traffic'?attributes?.traffic_density_norm:attributes?.conflict_rate_norm):attributes?.score;
-    const hasData=usable&&attributes?.status==='passed'&&Number.isFinite(value),southwest=screenPoint([bbox[0],bbox[1]]),northeast=screenPoint([bbox[2],bbox[3]]);
+    const attributes=kind?item[kind]:item.risk?.[riskKind],hasPopulationQuantity=Number.isFinite(attributes?.population_density_people_km2),populationValue=hasPopulationQuantity?(attributes.quantity_status==='passed'?attributes.population_density_people_km2:null):attributes?.value_mean,value=kind?(kind==='population'?populationValue:kind==='terrain'?attributes?.mean_elevation:kind==='traffic'?attributes?.traffic_density_norm:attributes?.conflict_rate_norm):attributes?.score;
+    const semanticStatus=kind==='population'&&hasPopulationQuantity?attributes.quantity_status:attributes?.status;
+    const hasData=usable&&semanticStatus==='passed'&&Number.isFinite(value),southwest=screenPoint([bbox[0],bbox[1]]),northeast=screenPoint([bbox[2],bbox[3]]);
     ctx.globalAlpha=hasData ? .72 : .48;ctx.fillStyle=hasData?gridTheme.colorForValue(value,breaks,palette):gridTheme.NO_DATA_COLOR;
     ctx.fillRect(southwest[0],northeast[1],northeast[0]-southwest[0],southwest[1]-northeast[1]);
   }

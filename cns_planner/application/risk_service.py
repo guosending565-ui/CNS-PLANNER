@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+from ..domain.provenance import source_profile
 from .project_state import assessment, empty_extension_attribute, empty_grid_attributes
 
 
@@ -43,9 +44,19 @@ class RiskService:
             self._validate_attribute(kind, result, grid, expected_ids, required=False)
             clean[kind] = result
         self.session.state["grid_attributes"] = clean
+        profiles = self.session.state.setdefault("data_source_profiles", {})
+        for kind in ("population", "terrain"):
+            if isinstance(clean[kind].get("source_profile"), dict):
+                profiles[kind] = deepcopy(clean[kind]["source_profile"])
         self.apply_result(self.risk_model.evaluate(grid, clean, None))
         self.session.save()
         return self.snapshot()
+
+    def update_source_profiles(self, profiles):
+        current = self.session.state.setdefault("data_source_profiles", {})
+        for name in ("population", "terrain"):
+            if isinstance((profiles or {}).get(name), dict):
+                current[name] = source_profile(profiles[name])
 
     @staticmethod
     def _validate_attribute(kind, result, grid, expected_ids, required):

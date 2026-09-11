@@ -118,7 +118,9 @@ def test_population_maps_raw_source_statistics_by_grid_id_without_geometry_copy(
     assert result["count"] == 4
     assert result["covered_count"] == 1
     assert set(result["cells"]) == {cell["grid_id"] for cell in grid["cells"]}
-    assert result["cells"][first_id] == {
+    assert {key: result["cells"][first_id][key] for key in (
+        "status", "valid_sample_count", "value_sum", "value_mean", "value_min", "value_max",
+    )} == {
         "status": "passed",
         "valid_sample_count": 2,
         "value_sum": 5.5,
@@ -129,6 +131,9 @@ def test_population_maps_raw_source_statistics_by_grid_id_without_geometry_copy(
     assert result["value_unit"] is None
     assert result["unit_status"] == "unverified"
     assert result["interpretation"] == "source_values_only"
+    assert result["cells"][first_id]["population_count_people"] is None
+    assert result["cells"][first_id]["population_density_people_km2"] is None
+    assert result["cells"][first_id]["quantity_status"] == "missing_data"
     assert grid == original
     assert all("geometry" not in attributes for attributes in result["cells"].values())
 
@@ -141,7 +146,9 @@ def test_terrain_maps_elevation_statistics_and_records_no_coverage():
     result = TerrainGridService(lambda _: adapter).map(grid, "terrain.tif")
 
     first_id, missing_id = grid["cells"][0]["grid_id"], grid["cells"][1]["grid_id"]
-    assert result["cells"][first_id] == {
+    assert {key: result["cells"][first_id][key] for key in (
+        "status", "valid_sample_count", "mean_elevation", "min_elevation", "max_elevation",
+    )} == {
         "status": "passed",
         "valid_sample_count": 3,
         "mean_elevation": 20.0,
@@ -152,6 +159,8 @@ def test_terrain_maps_elevation_statistics_and_records_no_coverage():
     assert result["cells"][missing_id]["valid_sample_count"] == 0
     assert result["cells"][missing_id]["mean_elevation"] is None
     assert result["elevation_unit"] == "m"
+    assert result["surface_model"] == "DSM"
+    assert result["cells"][first_id]["surface_elevation_mean_m"] == 20.0
 
 
 class FakeBand:

@@ -109,6 +109,7 @@ class WorkflowService:
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()
     def apply_grid_attributes(self, results): return self.risk_service.apply_grid_attributes(results)
+    def update_data_source_profiles(self, profiles): return self.risk_service.update_source_profiles(profiles)
     def evaluate_grid_risk(self, parameters=None): return self.risk_service.evaluate(parameters)
     def run_traffic_simulation(self, parameters): return self.risk_service.run_traffic_simulation(parameters)
     def invalidate_grid_attributes(self, changed): return self.risk_service.invalidate_grid_attributes(changed)

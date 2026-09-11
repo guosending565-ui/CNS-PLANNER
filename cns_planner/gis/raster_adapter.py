@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from ..domain.quantities import geographic_bbox_area_m2
+
 
 class GdalRasterAdapter:
     """Expose raster metadata and valid values without leaking GDAL into services."""
@@ -53,28 +55,78 @@ class GdalRasterAdapter:
             "path": str(self.path),
             "crs": crs,
             "band": 1,
+            "width": int(self.dataset.RasterXSize),
+            "height": int(self.dataset.RasterYSize),
+            "pixel_size": [abs(float(self.transform[1])), abs(float(self.transform[5]))],
             "nodata": self.nodata,
             "unit_metadata": unit or None,
             "scale": 1.0 if self.scale is None else float(self.scale),
             "offset": 0.0 if self.offset is None else float(self.offset),
         }
 
+    def read_population_count(self, bbox):
+        """Conservatively allocate source-pixel population counts to a WGS84 bbox.
+
+        Counts are distributed by the geodesic-area fraction of each source pixel
+        intersecting the target cell.  No interpolation is used.  The footprint
+        bbox is exact for the configured north-up WGS84 WorldPop product and is a
+        documented approximation for transformed/rotated source rasters.
+        """
+        target = [float(value) for value in bbox]
+        target_area = geographic_bbox_area_m2(target)
+        window = self._window(target)
+        empty = {
+            "status": "missing_data", "population_count_people": None,
+            "target_area_m2": target_area, "valid_covered_area_m2": 0.0,
+            "source_coverage_fraction": 0.0, "source_pixel_count": 0,
+        }
+        if window is None or target_area <= 0:
+            return empty
+        x0, y0, x1, y1 = window
+        values = self.band.ReadAsArray(x0, y0, x1 - x0, y1 - y0)
+        if values is None:
+            return empty
+        rows = values.tolist() if hasattr(values, "tolist") else values
+        scale = 1.0 if self.scale is None else float(self.scale)
+        offset = 0.0 if self.offset is None else float(self.offset)
+        count, covered_area, valid_pixels = 0.0, 0.0, 0
+        for row_offset, row in enumerate(rows):
+            for column_offset, raw in enumerate(row):
+                value = float(raw)
+                if not math.isfinite(value) or self._is_nodata(value):
+                    continue
+                pixel_bbox = self._pixel_wgs84_bbox(x0 + column_offset, y0 + row_offset)
+                overlap = self._intersection_bbox(target, pixel_bbox)
+                if overlap is None:
+                    continue
+                pixel_area = geographic_bbox_area_m2(pixel_bbox)
+                overlap_area = geographic_bbox_area_m2(overlap)
+                if pixel_area <= 0 or overlap_area <= 0:
+                    continue
+                adjusted = value * scale + offset
+                if adjusted < 0:
+                    continue
+                count += adjusted * min(1.0, overlap_area / pixel_area)
+                covered_area += overlap_area
+                valid_pixels += 1
+        if not valid_pixels:
+            return empty
+        coverage = min(1.0, covered_area / target_area)
+        return {
+            "status": "passed" if coverage >= 0.999999 else "missing_data",
+            "population_count_people": count,
+            "target_area_m2": target_area,
+            "valid_covered_area_m2": min(target_area, covered_area),
+            "source_coverage_fraction": coverage,
+            "source_pixel_count": valid_pixels,
+        }
+
     def read_values(self, bbox):
         west, south, east, north = (float(value) for value in bbox)
-        border = []
-        for step in range(5):
-            ratio = step / 4
-            lon = west + (east - west) * ratio
-            lat = south + (north - south) * ratio
-            border.extend(((lon, south), (lon, north), (west, lat), (east, lat)))
-        projected = self.to_source.TransformPoints(border)
-        pixels = [self._apply(self.inverse_transform, point[0], point[1]) for point in projected]
-        x0 = max(0, math.floor(min(point[0] for point in pixels)))
-        y0 = max(0, math.floor(min(point[1] for point in pixels)))
-        x1 = min(self.dataset.RasterXSize, math.ceil(max(point[0] for point in pixels)))
-        y1 = min(self.dataset.RasterYSize, math.ceil(max(point[1] for point in pixels)))
-        if x0 >= x1 or y0 >= y1:
+        window = self._window((west, south, east, north))
+        if window is None:
             return []
+        x0, y0, x1, y1 = window
         values = self.band.ReadAsArray(x0, y0, x1 - x0, y1 - y0)
         if values is None:
             return []
@@ -98,6 +150,42 @@ class GdalRasterAdapter:
                 continue
             valid.append(value * scale + offset)
         return valid
+
+    def _window(self, bbox):
+        west, south, east, north = (float(value) for value in bbox)
+        border = []
+        for step in range(5):
+            ratio = step / 4
+            lon = west + (east - west) * ratio
+            lat = south + (north - south) * ratio
+            border.extend(((lon, south), (lon, north), (west, lat), (east, lat)))
+        projected = self.to_source.TransformPoints(border)
+        pixels = [self._apply(self.inverse_transform, point[0], point[1]) for point in projected]
+        x0 = max(0, math.floor(min(point[0] for point in pixels)))
+        y0 = max(0, math.floor(min(point[1] for point in pixels)))
+        x1 = min(self.dataset.RasterXSize, math.ceil(max(point[0] for point in pixels)))
+        y1 = min(self.dataset.RasterYSize, math.ceil(max(point[1] for point in pixels)))
+        if x0 >= x1 or y0 >= y1:
+            return None
+        return x0, y0, x1, y1
+
+    def _pixel_wgs84_bbox(self, column, row):
+        corners = [
+            self._apply(self.transform, column, row),
+            self._apply(self.transform, column + 1, row),
+            self._apply(self.transform, column, row + 1),
+            self._apply(self.transform, column + 1, row + 1),
+        ]
+        points = self.to_wgs84.TransformPoints(corners)
+        longitudes = [point[0] for point in points]
+        latitudes = [point[1] for point in points]
+        return [min(longitudes), min(latitudes), max(longitudes), max(latitudes)]
+
+    @staticmethod
+    def _intersection_bbox(first, second):
+        bbox = [max(first[0], second[0]), max(first[1], second[1]),
+                min(first[2], second[2]), min(first[3], second[3])]
+        return bbox if bbox[0] < bbox[2] and bbox[1] < bbox[3] else None
 
     def _is_nodata(self, value):
         if self.nodata is None:

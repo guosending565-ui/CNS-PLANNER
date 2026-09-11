@@ -140,9 +140,9 @@ bindMapInteraction({
   onPanStart:()=>{clearTimeout(timer);serial++;}
 });
 function populationDisplayLabel(result){
-  return result?.unit_status==='verified_from_raster_metadata'&&result.value_unit
-    ? '人口源值（'+result.value_unit+'）'
-    : '人口源值（单位未核实）';
+  return result?.source_profile?.quantity==='population_count_per_source_pixel'
+    ? '目标网格人口数（person）/人口密度（person/km²）'
+    : '人口源值（兼容字段，非人数）';
 }
 function updateGridNotice(){
   const notice=$('gridNotice');if(!notice)return;
@@ -156,12 +156,11 @@ function updateGridThemeLegend(){
   legend.hidden=!kind&&!riskKind;
   if(!kind&&!riskKind)return;
   const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:riskBreaks):riskBreaks;
-  const populationVerified=result.unit_status==='verified_from_raster_metadata'&&result.value_unit;
   const riskTitles={ground:'Ground Risk',airspace_constraint:'Airspace Constraint Risk',overall:'Overall Risk'};
   const kindTitles={terrain:'平均高程',traffic:'Traffic Exposure',conflict:'Conflict Exposure'};
-  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:riskPalette):riskPalette,title=kind?(kind==='population'?(populationVerified?'人口源值':populationDisplayLabel(result)):kindTitles[kind]):riskTitles[riskKind];
+  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:riskPalette):riskPalette,title=kind?(kind==='population'?'目标网格人口密度':kindTitles[kind]):riskTitles[riskKind];
   $('gridThemeLegendTitle').textContent=title;
-  $('gridThemeLegendUnit').textContent=riskKind||kind==='traffic'||kind==='conflict'?'0–1':kind==='terrain'?(result.elevation_unit||'m'):result.unit_status==='verified_from_raster_metadata'?(result.value_unit||''):'';
+  $('gridThemeLegendUnit').textContent=riskKind||kind==='traffic'||kind==='conflict'?'0–1':kind==='terrain'?(result.elevation_unit||'m'):'person/km²';
   $('gridThemeGradient').style.background='linear-gradient(to right,'+palette.join(',')+')';
   const ticks=$('gridThemeTicks');ticks.replaceChildren();
   const shown=breaks.length?[breaks[0],breaks[Math.floor((breaks.length-1)/2)],breaks[breaks.length-1]]:[];
@@ -173,15 +172,15 @@ function updateGridThemeLegend(){
     : kind==='traffic'||kind==='conflict'
       ? '相对暴露指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · '+statusText(result.status||'not_calculated')
     : kind==='population'
-      ? '仅表达源值相对大小 · '+(result.unit_status||'unverified')+' · '+statusText(result.status||'not_calculated')
+      ? 'WorldPop count 经面积权重守恒映射，再除以实际网格面积 · '+statusText(result.quantity_status||'not_calculated')
       : '均值分级 · '+(result.unit_status||'单位来源未知')+' · '+source+' · '+statusText(result.status||'not_calculated');
 }
 function formatGridDetails(item){
   const cell=item.cell,populationResult=flow?.grid_attributes?.population||{},terrainResult=flow?.grid_attributes?.terrain||{};
   const population=item.population||{},terrain=item.terrain||{},airspace=item.airspace||{},traffic=item.traffic||{},conflict=item.conflict||{},populationSamples=population.valid_sample_count||0,terrainSamples=terrain.valid_sample_count||0;
-  const populationValues=populationSamples
-    ? 'mean '+GridTheme.formatNumber(population.value_mean)+' · sum '+GridTheme.formatNumber(population.value_sum)
-    : '无数据';
+  const populationValues=Number.isFinite(population.population_count_people)
+    ? '人口数 '+GridTheme.formatNumber(population.population_count_people)+' person · 密度 '+GridTheme.formatNumber(population.population_density_people_km2)+' person/km² · 网格面积 '+GridTheme.formatNumber((population.grid_area_m2||0)/1000000)+' km²'
+    : populationSamples?'兼容源像元统计 mean '+GridTheme.formatNumber(population.value_mean)+' · sum '+GridTheme.formatNumber(population.value_sum)+'（非人数）':'无数据';
   const elevationUnit=terrainResult.elevation_unit||'m';
   const terrainPath=terrainResult.source?.path||'',terrainSource=terrainPath.split(/[\\/]/).pop()||'未记录';
   const terrainValues=terrainSamples
@@ -209,7 +208,7 @@ function formatGridDetails(item){
     'Overall Risk：'+riskValue(overall)+' · 完整度 '+GridTheme.formatNumber((overall.data_completeness||0)*100)+'%\n'+
     '风险语义：'+(overall.semantics||risk.semantics||'relative_index')+' · '+(riskResult.algorithm_id||'未计算')+'@'+(riskResult.algorithm_version||'-');
   return cell.grid_id+' · L'+cell.level+'\n'+
-    populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(populationResult.unit_status||'unverified')+'\n'+
+    populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(population.quantity_status||'missing_data')+'\n'+
     'DEM：样本 '+terrainSamples+' · '+terrainValues+' · '+(terrainResult.unit_status||'单位来源未知')+' · '+terrainSource+'\n'+
     airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary;
 }
@@ -366,12 +365,12 @@ function update(data){
   $('populationPath').value=data.paths.population;
   $('terrainPath').value=data.paths.terrain||'';
   const population=data.population;
-  $('rasterInfo').textContent=population.width?'人口栅格：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nNoData：'+population.nodata+' · '+population.unit:'尚未加载有效人口数据';
+  $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
   const terrain=data.terrain||{};
 
 $('terrainInfo').textContent=
   terrain.width
-    ? 'GLO-30 地形：'+
+    ? 'GLO-30 DSM：'+
       terrain.width.toLocaleString()+
       ' × '+
       terrain.height.toLocaleString()+
@@ -380,7 +379,8 @@ $('terrainInfo').textContent=
       '\nNoData：'+terrain.nodata+
       '\n像元大小：'+
       (terrain.pixel_size||[]).join(' × ')+
-      '\n单位：'+(terrain.unit||'m')
+      '\n单位：'+(terrain.unit||'m')+
+      ' · 水平 WGS84/EPSG:4326 · 垂直 EGM2008/EPSG:3855 · 1 arc-second'
     : '尚未加载有效地形 DEM';
   $('sourceSummary').textContent=data.layers.length+' 个本地图层 · '+data.paths.basemap.split(/[\\/]/).pop();
   sourceCenter.render(data);

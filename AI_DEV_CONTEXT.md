@@ -71,6 +71,7 @@ grid_attributes.terrain
 grid_attributes.airspace
 grid_attributes.traffic
 grid_attributes.conflict
+data_source_profiles（population / terrain 的版本、quantity、unit、resolution、CRS、verification、provenance）
 grid_attributes.buildings / property_exposure / infrastructure / towers（扩展入口）
 grid_risk
 aircraft_profiles / selected_aircraft_profile_id
@@ -98,7 +99,16 @@ cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
 
 ## 7. 数据源扩展
 
-统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`。当前 Registry 已覆盖 basemap、airspace、population、terrain、buildings、property exposure、obstacles、infrastructure、towers、traffic、existing CNS、candidate sites 等。
+统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
+
+P1 数据语义契约：
+
+- WorldPop R2025A（alpha）源量固定为 `population_count_per_source_pixel`、`person/source_pixel`、WGS84/EPSG:4326、约 3 arc-second。目标 MH/T 网格输出 `population_count_people` 与 `population_density_people_km2`，密度分母为该格实际球面面积。
+- count 重映射方法为 `area_weighted_source_pixel_overlap`：按源像元/目标格交叠面积分配并守恒求和，不使用 bilinear 人数；保存 mapping method、假设、源分辨率和覆盖率。部分覆盖或 NoData 的 `quantity_status=missing_data`，不得作为 0 或 passed。
+- Copernicus GLO-30 固定为 DSM、`surface_elevation`、m、水平 WGS84-G1150/EPSG:4326、垂直 EGM2008/EPSG:3855、1 arc-second。
+- schema v2 以 additive/backfill 方式新增 `data_source_profiles`。人口旧字段 `value_sum/value_mean/value_min/value_max/value_unit/unit_status/interpretation`、DEM 旧字段 `mean_elevation/min_elevation/max_elevation/elevation_unit` 暂时保留，保障 RiskModelV1 和旧项目外部语义；权威新字段与旧字段不得混称。
+
+当前 Registry 已覆盖 basemap、airspace、population、terrain、buildings、property exposure、obstacles、infrastructure、towers、traffic、existing CNS、candidate sites 等。
 
 新增来源原则上仅增加：Registry 定义 + GIS Adapter + Mapping Service；不得在 MapData.metadata、Workflow 或 HTTP handler 中补丁式拼接。
 
@@ -113,7 +123,7 @@ node --check cns_planner/web/app.js
 node --check cns_planner/web/js/main.js
 ```
 
-当前基线：**118 passed, 6 skipped, 0 xfailed, 0 failed**；Node 前端纯函数 **6 passed, 0 failed**。6 项跳过均为 `tests/test_map_http.py` 的真实 QGIS 服务集成测试。
+P1 完整运行结果：**140 passed, 6 skipped, 1 failed**；Node 前端纯函数 **7 passed, 0 failed**。6 项跳过均为 `tests/test_map_http.py` 的真实 QGIS 服务集成测试。唯一失败是 P1 修改前已存在的 `test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`：测试替身要求 `QgsSpatialIndex(features)`，当前 airspace adapter 使用 QGIS 支持的空构造后 `addFeature`；本轮遵守 P1 边界未改空域映射实现。
 
 真实 QGIS 3.44.14 初始化与 ApplicationContext 冒烟已通过：加载 31 个本地图层、schema v2、1 个 Aircraft Profile 和 6 个 Device Catalog 条目。
 
@@ -138,9 +148,10 @@ CNS Gap Analysis 本轮定向基线：41 passed；覆盖解析长度、missing/p
 4. `services/` 仍保留一组旧导入路径兼容 facade；待外部脚本完成迁移后可在主版本升级中删除。
 5. 默认测试跳过真实 QGIS HTTP；需在有 QGIS 与真实本机数据时执行集成套件。
 6. V1 航路使用 56×56 经纬度近似网格和图层 BBOX 硬约束；CoverageV1 使用 demo/default 设备参数，均非最终工程模型。
-7. 人口单位仍取决于源元数据确认；未确认时前端和风险均只表达相对源值。
-8. M7 是二维恒速直线轨迹与局部平面 CPA，未处理垂直间隔、动力学、不确定性及正式安全阈值。
-9. CSS 已按加载职责拆分，但 `base.css` 保留历史压缩规则；未来视觉改版时再格式化和去重，避免本轮改变级联结果。
+7. RiskModelV1 为保持外部语义仍读取人口兼容字段 `value_mean`；P1 新的守恒人数/密度已独立保存并用于前端专题，后续模型版本才能显式切换到权威 quantity，不能在 V1 中暗改。
+8. 数据源产品契约已确认，但当前具体 GeoTIFF 文件身份仍记录为 `configured_assumption`；尚未通过 checksum/manifest 验证其确为对应 WorldPop/GLO-30 产品。
+9. M7 是二维恒速直线轨迹与局部平面 CPA，未处理垂直间隔、动力学、不确定性及正式安全阈值。
+10. CSS 已按加载职责拆分，但 `base.css` 保留历史压缩规则；未来视觉改版时再格式化和去重，避免本轮改变级联结果。
 
 ## 11. 下一阶段计划
 

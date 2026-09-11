@@ -8,7 +8,14 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
     connection.className='status status-'+health.status;connection.innerHTML='<i class="dot"></i><span>'+health.label+'</span>';connection.title='打开统一数据源设置查看检查明细';
     const summary=$('healthSummary');summary.className='health-summary health-'+health.status;summary.textContent=health.label+' · '+health.stage+' 文件级检查；工作区覆盖在第 02 步检查';
     const list=$('sourceHealthList');list.replaceChildren();
-    for(const item of health.items){const row=document.createElement('article');row.className='source-health-item';row.dataset.sourceId=item.id;row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · P1 必需':' · 后续/可选')+'</small>';list.append(row);}
+    for(const item of health.items){
+      const row=document.createElement('article');row.className='source-health-item';row.dataset.sourceId=item.id;
+      const crs=typeof item.crs==='object'?[item.crs.horizontal,item.crs.vertical].filter(Boolean).join(' / '):(item.crs||'');
+      const resolution=typeof item.resolution==='object'?(item.resolution.nominal||[item.resolution.angular_value,item.resolution.angular_unit].filter(value=>value!==undefined).join(' ')):(item.resolution||'');
+      const verification=typeof item.verification==='object'?(item.verification.status||'unverified'):(item.verification||'unverified');
+      const metadata=[item.source_mode||item.source_type,item.version,item.quantity,item.unit,resolution,crs,verification].filter(Boolean).join(' · ');
+      row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · P1 必需':' · 后续/可选')+'</small>'+(metadata?'<p>'+escapeHtml(metadata)+'</p>':'');list.append(row);
+    }
     const parameters=$('parameterList');parameters.replaceChildren();const names={vertical_clearance_m:'垂直净空裕度',primary_spacing_factor:'主站间距系数',co_location_search_radius_m:'共址搜索半径'};
     for(const [key,value] of Object.entries(data.defaults?.engineering_parameters||{})){const row=document.createElement('div');row.className='parameter-row';row.textContent=(names[key]||key)+'：'+value.value+(key.endsWith('_m')?' m':'')+' · '+value.source;parameters.append(row);}
   }

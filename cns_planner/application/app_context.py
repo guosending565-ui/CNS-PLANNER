@@ -67,6 +67,10 @@ class ApplicationContext:
     def replace_sources(self, paths):
         previous = dict(self.data.paths)
         self.data.load(paths)
+        self.workflow.update_data_source_profiles({
+            "population": self.data.raster_info.get("source_profile"),
+            "terrain": self.data.terrain_info.get("source_profile"),
+        })
         changed = {name for name in paths if previous.get(name) != self.data.paths.get(name)}
         self.workflow.invalidate_grid_attributes(changed)
         if "basemap" in changed:

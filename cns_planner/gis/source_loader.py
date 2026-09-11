@@ -1,8 +1,8 @@
 """Read-only QGIS project and GeoTIFF loading with existing styles preserved."""
 
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass
-import math
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -14,6 +14,7 @@ from qgis.core import (
 )
 
 from ..persistence.data_source_repository import DataSourceRepository
+from ..data.source_profiles import COPERNICUS_GLO30, WORLDPOP_R2025A
 from .constraints import hard_constraints, layer_extents
 
 gdal.UseExceptions()
@@ -107,46 +108,65 @@ class QgisSourceLoader:
 
     @staticmethod
     def _load_population(path):
-        raster = QgsRasterLayer(str(path), "人口密度")
+        raster = QgsRasterLayer(str(path), "WorldPop 人口数（源像元）")
         if not raster.isValid() or not raster.crs().isValid():
             raise ValueError("人口 GeoTIFF 无效或缺少 CRS")
         dataset = gdal.Open(str(path), gdal.GA_ReadOnly)
         if dataset is None:
             raise ValueError("无法读取人口栅格")
         band, transform = dataset.GetRasterBand(1), dataset.GetGeoTransform()
+        profile = deepcopy(WORLDPOP_R2025A)
+        observed_crs = raster.crs().authid() or raster.crs().description()
+        observed_pixel_size = [abs(transform[1]), abs(transform[5])]
+        profile["crs"] = {**profile["crs"], "observed": observed_crs}
+        profile["resolution"] = {**profile["resolution"], "observed_pixel_size": observed_pixel_size}
+        profile["provenance"] = {**profile["provenance"], "path": str(path)}
         info = {
             "width": dataset.RasterXSize, "height": dataset.RasterYSize,
             "bands": dataset.RasterCount,
-            "crs": raster.crs().authid() or raster.crs().description(),
+            "crs": observed_crs,
             "nodata": str(band.GetNoDataValue()),
-            "pixel_size": list(transform[1:6:4]),
+            "pixel_size": observed_pixel_size,
             "unit_metadata": band.GetUnitType() or "未标注",
-            "unit": "原始：人/像元；地图展示：人/km²",
+            "unit": "person/source_pixel",
+            "quantity": "population_count_per_source_pixel",
+            "version": profile["version"],
+            "resolution": profile["resolution"],
+            "verification": profile["verification"],
+            "source_profile": profile,
+            "rendering_semantics": "source_pixel_count",
         }
-        center_lat = transform[3] + transform[5] * dataset.RasterYSize / 2.0
-        pixel_area = abs(transform[1]) * 111.32 * math.cos(math.radians(center_lat)) * abs(transform[5]) * 111.32
         items = []
-        for density, color_hex, alpha in ((0, "#fff7ec", 0), (100, "#fee391", 110), (1000, "#fec44f", 175), (5000, "#f03b20", 230), (20000, "#99000d", 255)):
+        for count, color_hex, alpha in ((0, "#fff7ec", 0), (1, "#fee391", 110), (10, "#fec44f", 175), (50, "#f03b20", 230), (200, "#99000d", 255)):
             color = QColor(color_hex); color.setAlpha(alpha)
-            items.append(QgsColorRampShader.ColorRampItem(density * pixel_area, color, str(density)))
+            items.append(QgsColorRampShader.ColorRampItem(count, color, str(count)))
         ramp = QgsColorRampShader(); ramp.setColorRampType(QgsColorRampShader.Interpolated); ramp.setColorRampItemList(items)
-        shader = QgsRasterShader(0, 20000 * pixel_area); shader.setRasterShaderFunction(ramp)
+        shader = QgsRasterShader(0, 200); shader.setRasterShaderFunction(ramp)
         raster.setRenderer(QgsSingleBandPseudoColorRenderer(raster.dataProvider(), 1, shader))
         dataset = None
         return raster, info
 
     @staticmethod
     def _load_terrain(path):
-        raster = QgsRasterLayer(str(path), "地形高程")
+        raster = QgsRasterLayer(str(path), "Copernicus GLO-30 DSM")
         if not raster.isValid() or not raster.crs().isValid():
             raise ValueError("地形 DEM 无效或缺少 CRS")
         dataset = gdal.Open(str(path), gdal.GA_ReadOnly)
         if dataset is None:
             raise ValueError("无法读取地形 DEM")
         band, transform = dataset.GetRasterBand(1), dataset.GetGeoTransform()
+        profile = deepcopy(COPERNICUS_GLO30)
+        observed_crs = raster.crs().authid() or raster.crs().description()
+        observed_pixel_size = [abs(transform[1]), abs(transform[5])]
+        profile["crs"] = {**profile["crs"], "observed": observed_crs}
+        profile["resolution"] = {**profile["resolution"], "observed_pixel_size": observed_pixel_size}
+        profile["provenance"] = {**profile["provenance"], "path": str(path)}
         info = {"width": dataset.RasterXSize, "height": dataset.RasterYSize, "bands": dataset.RasterCount,
-                "crs": raster.crs().authid() or raster.crs().description(), "nodata": str(band.GetNoDataValue()),
-                "pixel_size": [abs(transform[1]), abs(transform[5])], "unit": "m", "source": "Copernicus DEM GLO-30"}
+                "crs": observed_crs, "nodata": str(band.GetNoDataValue()),
+                "pixel_size": observed_pixel_size, "unit": "m", "quantity": "surface_elevation",
+                "source": "Copernicus DEM GLO-30", "surface_model": "DSM", "version": profile["version"],
+                "resolution": profile["resolution"], "verification": profile["verification"],
+                "vertical_crs": "EPSG:3855", "vertical_datum": "EGM2008", "source_profile": profile}
         ramp = QgsColorRampShader(); ramp.setColorRampType(QgsColorRampShader.Interpolated)
         ramp.setColorRampItemList([QgsColorRampShader.ColorRampItem(value, QColor(color), label) for value, color, label in (
             (0, "#2c7bb6", "0 m"), (100, "#abd9e9", "100 m"), (300, "#ffffbf", "300 m"),

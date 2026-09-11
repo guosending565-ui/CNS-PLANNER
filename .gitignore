@@ -28,7 +28,7 @@ Desktop.ini
 
 # Runtime data and generated outputs
 projects/
-data/
+/data/
 outputs/
 *.log
 

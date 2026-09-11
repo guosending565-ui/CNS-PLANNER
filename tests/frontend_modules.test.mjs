@@ -25,3 +25,14 @@ test('grid cache joins attributes by grid_id and uses half-open hit boundaries',
   assert.equal(cache.byId.get('A').population.value_mean,5);
   assert.equal(findGridCell(cache,121,30.5,theme).cell.grid_id,'B');
 });
+
+test('population theme prefers governed target-grid density and excludes partial NoData',()=>{
+  const grid={cells:[{grid_id:'A',bbox:[120,30,121,31]},{grid_id:'B',bbox:[121,30,122,31]}]};
+  const attributes={population:{status:'missing_data',cells:{
+    A:{status:'passed',quantity_status:'passed',population_density_people_km2:25,value_mean:999},
+    B:{status:'passed',quantity_status:'missing_data',population_density_people_km2:50,value_mean:888}
+  }},terrain:{cells:{}}};
+  const theme={quantileBreaks:values=>values,bboxContainsHalfOpen:()=>true};
+  const cache=buildGridOverlayCache(grid,attributes,{},theme);
+  assert.deepEqual(cache.populationBreaks,[25]);
+});

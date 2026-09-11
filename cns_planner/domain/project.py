@@ -15,6 +15,7 @@ class ProjectState(TypedDict, total=False):
     project: ProjectMetadata
     workspace: dict[str, Any] | None
     grid: dict[str, Any] | None
+    data_source_profiles: dict[str, dict[str, Any]]
     grid_attributes: dict[str, dict[str, Any]]
     grid_risk: dict[str, Any]
     nodes: list[dict[str, Any]]
