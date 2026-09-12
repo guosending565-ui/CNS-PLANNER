@@ -16,16 +16,22 @@ function gapList(analysis){
   return analysis.routes.map(route=>'<div class="gap-route"><b>'+escapeHtml(route.route_id)+' '+statusBadge(route.status)+'</b>'+route.subsystems.map(item=>'<div class="gap-row"><strong>'+item.subsystem+'</strong><span>'+label(item.status)+'</span><span>覆盖 '+(item.coverage_ratio==null?'—':(item.coverage_ratio*100).toFixed(1)+'%')+'</span><span>缺口 '+(item.gap_length_m==null?'—':Math.round(item.gap_length_m)+' m')+'</span></div>').join('')+'</div>').join('');
 }
 
+function coverage3dList(result){
+  if(!result?.routes?.length)return '<div class="empty-note">尚未运行 3D 几何覆盖</div>';
+  return result.routes.map(route=>'<div class="gap-route"><b>'+escapeHtml(route.route_id)+' '+statusBadge(route.status)+'</b>'+route.subsystems.map(item=>'<div class="gap-row"><strong>'+item.subsystem+'</strong><span>'+statusText(item.status)+'</span><span>覆盖 '+(item.covered_fraction==null?'—':(item.covered_fraction*100).toFixed(1)+'%')+'</span><span>未覆盖 '+(item.uncovered_length_m==null?'—':Math.round(item.uncovered_length_m)+' m')+'</span></div>').join('')+'</div>').join('');
+}
+
 export function render({flow}){
   const devices=(flow.devices||[]).map((device,index)=>'<div class="device-row"><b>'+device.subsystem+' · '+escapeHtml(device.model||device.name||device.device_id)+'</b><label>R(m)<input type="number" data-device-radius="'+index+'" value="'+device.radius_m+'"></label><label>MTBF(h)<input type="number" data-device-mtbf="'+index+'" value="'+(device.mtbf_h||device.mtbf)+'"></label><span>'+device.role+'</span></div>').join('');
   let result='<div class="empty-note">尚未运行 CoveragePlannerV1</div>';
   if(flow.coverage)result=Object.entries(flow.coverage.layers||{}).map(([key,layer])=>{const stats=layer.statistics;return '<div class="coverage-card"><b>'+key+' '+statusBadge(layer.status)+'</b><span>站点 '+stats.stations+' · 主站 '+stats.primary+' · 补盲 '+stats.gap+' · 共址 '+stats.colocated+'</span><span>平均重数 '+stats.average_multiplicity+' · 未覆盖 '+stats.uncovered_samples+'</span></div>';}).join('');
-  const params=flow.defaults.engineering_parameters,existing=flow.existing_cns_facilities||{},candidates=flow.candidate_sites||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{};
+  const params=flow.defaults.engineering_parameters,existing=flow.existing_cns_facilities||{},candidates=flow.candidate_sites||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{};
   const body='<div class="demo-note">DeviceCatalog：'+escapeHtml(catalog.source||flow.device_source)+' · '+(catalog.count||0)+' 型设备</div>'+
     '<div class="parameter-note">主站间距 '+params.primary_spacing_factor.value+'R · 共址半径 '+params.co_location_search_radius_m.value+'m<br>'+escapeHtml(params.primary_spacing_factor.source)+'</div>'+
     '<div class="device-list">'+devices+'</div><div class="button-row"><button class="secondary" id="saveDevices">保存设备参数</button><button class="primary" id="planCoverage">运行布站</button></div>'+
     '<h3>已有 CNS 设施 '+statusBadge(existing.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="existing_cnsPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseExisting">选择…</button></div><button class="secondary full" id="importExisting">导入已有设施</button><div class="scroll-list cns-input-list">'+collectionList(existing,'facility')+'</div>'+
     '<h3>CNS Gap Analysis '+statusBadge(gaps.status||'not_calculated')+'</h3><button class="primary full" id="analyzeGaps">分析当前运行航路缺口</button><div class="gap-results">'+gapList(gaps)+'</div>'+
+    '<h3>3D Geometric Coverage '+statusBadge(coverage3d.status||'not_calculated')+'</h3><div class="parameter-note">几何覆盖 ≠ 真实 CNS 性能；传播、LOS、绕射、干扰、链路预算和传感器 Pd 均未评估。</div><label>sample spacing (m)<input class="panel-input" type="number" id="coverage3dSpacing" value="'+(coverage3d.parameters?.sample_spacing_m||flow.algorithm_selection?.coverage_model?.parameters?.sample_spacing_m||500)+'"></label><button class="secondary full" id="evaluateCoverage3d">运行 3D 几何覆盖</button><div class="gap-results">'+coverage3dList(coverage3d)+'</div>'+
     '<h3>候选站址 '+statusBadge(candidates.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="candidate_sitesPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseCandidates">选择…</button></div><div class="button-row"><button class="secondary" id="importCandidates">导入候选站址</button><button class="secondary" id="deriveCandidates">从已有设施生成</button></div><div class="scroll-list cns-input-list">'+collectionList(candidates,'candidate')+'</div>'+
     '<div class="coverage-results">'+result+'</div><div class="flow-summary">生命风险：'+statusText(flow.risks.life.status)+' · 财产风险：'+statusText(flow.risks.property.status)+'<br>已有设施与候选站址仅作为规划输入，本轮不改变 CoveragePlannerV1。</div><button class="primary full" id="nextStep" '+(!flow.steps['5']?'disabled':'')+'>下一步：确认与导出</button>';
   return shell('05','设备与布站','设备库、已有设施和候选站址；V1 布站保持原有兼容输入。',body);
@@ -41,5 +47,6 @@ export function bind(c){
   c.actionButton('importCandidates',()=>c.resourceAction('/api/candidate-sites/import',{path:c.$('candidate_sitesPath').value.trim()}));
   c.actionButton('deriveCandidates',()=>c.resourceAction('/api/candidate-sites/from-existing',{}));
   c.actionButton('analyzeGaps',()=>c.mutate('gap-analysis'));
+  c.actionButton('evaluateCoverage3d',()=>c.resourceAction('/api/coverage-3d/evaluate',{parameters:{sample_spacing_m:Number(c.$('coverage3dSpacing').value),assumption:'user_engineering_sampling_assumption',confirmed:false}}));
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(6);
 }

@@ -6,12 +6,13 @@ from copy import deepcopy
 
 from ..domain.algorithm_manifest import AlgorithmFactory, AlgorithmManifest
 from .coverage.v1 import CoveragePlannerV1
+from .coverage.geometric_3d import GeometricCoverage3DV1
 from .route.v1 import RoutePlannerV1
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..risk.v1 import RiskModelV1
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -82,6 +83,14 @@ def default_algorithm_selection():
         "route_planner": _selection("route_planner", RoutePlannerV1),
         "coverage_planner": _selection("coverage_planner", CoveragePlannerV1),
         "cns_gap_analyzer": _selection("cns_gap_analyzer", CNSGapAnalyzerV1),
+        "coverage_model": {
+            **_selection("coverage_model", GeometricCoverage3DV1),
+            "parameters": {
+                "sample_spacing_m": 500.0,
+                "assumption": "engineering_sampling_assumption",
+                "confirmed": False,
+            },
+        },
     }
 
 
@@ -119,6 +128,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_route_manifest(), lambda parameters: RoutePlannerV1(**parameters))
     registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
+    registry.register(_geometric_3d_manifest(), lambda parameters: GeometricCoverage3DV1(parameters))
     return registry
 
 
@@ -181,5 +191,19 @@ def _gap_manifest():
         {"type": "object", "additionalProperties": False},
         ("既有设施使用设备 coverage radius 水平覆盖",),
         ("不计算传播、遮挡、干扰或三维性能",),
+        (),
+    )
+
+
+def _geometric_3d_manifest():
+    return AlgorithmManifest(
+        "coverage_model", GeometricCoverage3DV1.algorithm_id, GeometricCoverage3DV1.algorithm_version,
+        "Geometric Coverage 3D V1", "CNS-PLANNER", "engineering_baseline",
+        "基于 EGM2008 正高、球/半球服务体和三维斜距的几何覆盖基线。",
+        ("operational_routes", "route_altitude_profiles", "terrain", "existing_cns", "device_catalog"),
+        ("coverage_3d", "route_3d_samples", "uncovered_segments"),
+        {"type": "object", "properties": {"sample_spacing_m": {"type": "number", "exclusiveMinimum": 0}}, "additionalProperties": True},
+        ("sample_spacing_m 为显式工程采样假设", "canonical vertical reference 为 EGM2008 orthometric"),
+        ("仅几何覆盖", "不评估传播、LOS、绕射、干扰、链路预算或传感器 Pd"),
         (),
     )

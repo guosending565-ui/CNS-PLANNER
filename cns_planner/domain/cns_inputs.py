@@ -10,6 +10,7 @@ from .cns_performance import (
     empty_subsystem_contract, normalize_subsystem_contract, sync_aliases,
 )
 from .cns_reliability import normalize_reliability_spec
+from .spatial_3d import normalize_vertical_profile
 
 
 SUBSYSTEMS = ("C", "N", "S")
@@ -39,6 +40,8 @@ class CNSDevice(TypedDict, total=False):
     source: str
     parameter_metadata: dict[str, Any]
     reliability: dict[str, Any]
+    vertical_profile: dict[str, Any]
+    coverage_geometry: dict[str, Any]
 
 
 class RequiredCNS(TypedDict, total=False):
@@ -59,6 +62,7 @@ class ExistingCNSFacility(TypedDict, total=False):
     status: str
     source: str
     metadata: dict[str, Any]
+    vertical_profile: dict[str, Any]
 
 
 class CandidateSite(TypedDict, total=False):
@@ -72,6 +76,7 @@ class CandidateSite(TypedDict, total=False):
     locked: bool
     source: str
     metadata: dict[str, Any]
+    vertical_profile: dict[str, Any]
 
 
 def pending_required_cns() -> RequiredCNS:
@@ -171,6 +176,7 @@ def normalize_device(item: dict) -> CNSDevice:
         "source": str(item.get("source") or "未记录"),
         "parameter_metadata": deepcopy(item.get("parameter_metadata") or {}),
         "reliability": reliability,
+        "vertical_profile": normalize_vertical_profile(item.get("vertical_profile")),
     }
     for key in ("accuracy_m", "integrity", "update_interval_s", "redundancy"):
         if key in item:
@@ -178,6 +184,7 @@ def normalize_device(item: dict) -> CNSDevice:
     contract = normalize_subsystem_contract(subsystem, item, field=f"device.{device_id}")
     result.update(contract)
     result = sync_aliases(subsystem, result, field=f"device.{device_id}")
+    result["coverage_geometry"] = normalize_coverage_geometry(result, item.get("coverage_geometry"))
     return result
 
 
@@ -196,6 +203,10 @@ def backfill_device_contract(item: dict) -> dict:
         legacy_confirmed=(item.get("parameter_metadata") or {}).get("confirmed", False),
         field=f"device.{item.get('device_id') or 'legacy'}.reliability",
     )
+    result["vertical_profile"] = normalize_vertical_profile(
+        item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m")
+    )
+    result["coverage_geometry"] = normalize_coverage_geometry(result, item.get("coverage_geometry"))
     return sync_aliases(subsystem, result, field=f"device.{item.get('device_id') or 'legacy'}")
 
 
@@ -217,11 +228,18 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
             "device_id": str(device.get("device_id") or ""), "name": str(device.get("name") or ""),
             "subsystem": subsystem, "status": str(device.get("status") or "active"),
             "metadata": deepcopy(device.get("metadata") or {}),
+            "vertical_profile": normalize_vertical_profile(
+                device.get("vertical_profile"), legacy_elevation_m=device.get("elevation_m")
+            ),
+            "coverage_geometry": normalize_coverage_geometry(device, device.get("coverage_geometry")),
         })
     return {
         "facility_id": facility_id, "site_id": str(item.get("site_id") or facility_id),
         "name": str(item.get("name") or facility_id), "coordinate": _coordinate(item),
         "elevation_m": _optional_number(item.get("elevation_m", item.get("elevation")), "elevation_m"),
+        "vertical_profile": normalize_vertical_profile(
+            item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m", item.get("elevation"))
+        ),
         "devices": normalized_devices, "status": str(item.get("status") or "active"),
         "source": str(item.get("source") or "用户导入"), "metadata": deepcopy(item.get("metadata") or {}),
     }
@@ -240,6 +258,9 @@ def normalize_candidate_site(item: dict, index: int = 0) -> CandidateSite:
         "site_id": site_id, "name": str(item.get("name") or site_id),
         "coordinate": _coordinate(item),
         "elevation_m": _optional_number(item.get("elevation_m", item.get("elevation")), "elevation_m"),
+        "vertical_profile": normalize_vertical_profile(
+            item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m", item.get("elevation"))
+        ),
         "site_type": str(item.get("site_type") or "other"),
         "available_subsystems": list(dict.fromkeys(str(value).upper() for value in subsystems)),
         "usable": _boolean(item.get("usable", True)), "locked": _boolean(item.get("locked", False)),
@@ -270,6 +291,45 @@ def _normalize_requirement_set(value):
         merged["status"] = "passed" if required is False or (required is True and _requirements_complete(name, merged)) else "pending_confirmation"
         result[name] = merged
     return result
+
+
+def normalize_coverage_geometry(device, value=None):
+    """Normalize explicit geometry or expose a conservative legacy 2D-radius assumption."""
+    if value is not None and not isinstance(value, dict):
+        raise ValueError("coverage_geometry 必须是对象")
+    raw = value or {}
+    model = str(raw.get("model") or "")
+    if model:
+        if model not in ("sphere", "hemisphere", "none", "unknown"):
+            raise ValueError("coverage_geometry.model 无效")
+        radius_value = raw.get("slant_range_m")
+        radius = (
+            _positive(radius_value, "coverage_geometry.slant_range_m")
+            if radius_value not in (None, "") and model in ("sphere", "hemisphere")
+            else _optional_nonnegative(radius_value, "coverage_geometry.slant_range_m")
+        )
+        confirmed = bool(raw.get("confirmed", False))
+        status = "confirmed" if confirmed and model in ("sphere", "hemisphere") and radius is not None else "missing_data" if model in ("none", "unknown") else "pending_confirmation"
+        return {
+            "model": model, "slant_range_m": radius,
+            "model_scope": "geometric_only",
+            "source": str(raw.get("source") or "未记录"),
+            "confirmed": confirmed,
+            "status": status,
+        }
+    technology = str(((device.get("type") or {}).get("technology") or "unknown")).lower()
+    non_site_based = technology in {"gnss", "inertial", "visual"}
+    radius = device.get("radius_m", device.get("coverage_radius_m"))
+    if radius not in (None, "") and not non_site_based:
+        return {
+            "model": "hemisphere", "slant_range_m": _positive(radius, "radius_m"),
+            "model_scope": "geometric_only", "source": "legacy_engineering_assumption",
+            "confirmed": False, "status": "pending_confirmation",
+        }
+    return {
+        "model": "none", "slant_range_m": None, "model_scope": "geometric_only",
+        "source": "not_defined", "confirmed": False, "status": "missing_data",
+    }
 
 
 def _requirements_complete(name, value):

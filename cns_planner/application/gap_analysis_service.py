@@ -15,11 +15,12 @@ class GapAnalysisService:
             state.get("aircraft_profiles") or {}, state.get("selected_aircraft_profile_id") or ""
         )
         catalog = state.get("device_catalog") or {}
+        facilities = state.get("existing_cns_facilities") or {}
         if getattr(self.analyzer, "algorithm_id", None) == "cns_gap_analysis_v1":
-            profile, catalog = self._v1_inputs(profile, catalog)
+            profile, catalog, facilities = self._v1_inputs(profile, catalog, facilities)
         result = self.analyzer.analyze(
             state.get("operational_routes") or [], state.get("required_cns") or {}, profile,
-            state.get("existing_cns_facilities") or {}, catalog,
+            facilities, catalog,
         )
         state["cns_gap_analysis"] = result
         state["result_statuses"]["cns_gap"] = "failed" if result["status"] == "gap" else result["status"]
@@ -27,8 +28,8 @@ class GapAnalysisService:
         return self.snapshot()
 
     @staticmethod
-    def _v1_inputs(profile, catalog):
-        """Exclude P4-only fields from V1 behavior and input fingerprints."""
+    def _v1_inputs(profile, catalog, facilities=None):
+        """Exclude post-V1 additive fields from GapV1 behavior and fingerprints."""
         profile_view = deepcopy(profile)
         if profile_view:
             for name in ("communication", "navigation", "surveillance"):
@@ -40,4 +41,15 @@ class GapAnalysisService:
         for device in catalog_view.get("items", []):
             if isinstance(device, dict):
                 device.pop("reliability", None)
-        return profile_view, catalog_view
+                device.pop("vertical_profile", None)
+                device.pop("coverage_geometry", None)
+        facilities_view = deepcopy(facilities or {})
+        for facility in facilities_view.get("items", []):
+            if not isinstance(facility, dict):
+                continue
+            facility.pop("vertical_profile", None)
+            for device in facility.get("devices", []):
+                if isinstance(device, dict):
+                    device.pop("vertical_profile", None)
+                    device.pop("coverage_geometry", None)
+        return profile_view, catalog_view, facilities_view

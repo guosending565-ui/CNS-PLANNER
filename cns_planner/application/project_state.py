@@ -15,6 +15,8 @@ from ..algorithms.registry import default_algorithm_selection, normalize_algorit
 from ..domain.cns_inputs import pending_required_cns
 from ..domain.safety_policy import default_safety_policy, normalize_safety_policy
 from ..gap.v1 import CNSGapAnalyzerV1
+from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
+from ..domain.spatial_3d import empty_spatial_3d, normalize_spatial_3d
 
 
 SCHEMA_VERSION = 2
@@ -89,6 +91,8 @@ def blank_project(defaults):
         "data_source_profiles": default_source_profiles(),
         "grid_attributes": empty_grid_attributes(),
         "grid_risk": RiskModelV1.empty(), "traffic_simulation": None,
+        "spatial_3d": empty_spatial_3d(),
+        "coverage_3d": GeometricCoverage3DV1.empty(),
         "nodes": [], "node_seq": 0, "route_seq": 0,
         "retired_route_ids": [], "scenario_routes": [],
         "operational_routes": [], "aircraft": None, "rules": None,
@@ -107,6 +111,7 @@ def blank_project(defaults):
             name: "not_calculated" for name in (
                 "workspace", "grid", "environment_risk", "routes",
                 "coverage", "cns_gap", "safety_assessment",
+                "coverage_3d",
                 "technical_risk", "report",
             )
         },
@@ -143,6 +148,8 @@ def normalize_project(value, grid_service):
         attributes.setdefault(name, empty)
     value.setdefault("grid_risk", RiskModelV1.empty())
     value.setdefault("traffic_simulation", None)
+    value["spatial_3d"] = normalize_spatial_3d(value.get("spatial_3d"))
+    value.setdefault("coverage_3d", GeometricCoverage3DV1.empty())
     value.setdefault("aircraft_profiles", empty_catalog("aircraft-cns-profile-catalog"))
     value.setdefault("selected_aircraft_profile_id", None)
     value.setdefault("required_cns", pending_required_cns())
@@ -154,6 +161,7 @@ def normalize_project(value, grid_service):
     value.setdefault("safety_assessment", empty_safety_assessment())
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"
     )

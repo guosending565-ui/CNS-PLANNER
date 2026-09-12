@@ -6,19 +6,20 @@ except ImportError:
     from models.status import ResultStatus
 
 DEPENDENTS = {
-    "data": ("workspace", "environment_risk", "routes", "coverage", "cns_gap", "report"),
-    "workspace": ("environment_risk", "routes", "coverage", "cns_gap", "report"),
-    "route": ("coverage", "cns_gap", "report"),
-    "rules": ("routes", "coverage", "cns_gap", "technical_risk", "report"),
+    "data": ("workspace", "environment_risk", "routes", "coverage", "cns_gap", "coverage_3d", "report"),
+    "workspace": ("environment_risk", "routes", "coverage", "cns_gap", "coverage_3d", "report"),
+    "route": ("coverage", "cns_gap", "coverage_3d", "report"),
+    "rules": ("routes", "coverage", "cns_gap", "coverage_3d", "technical_risk", "report"),
     "aircraft_profile": ("routes", "coverage", "cns_gap", "technical_risk", "report"),
     "required_cns": ("coverage", "cns_gap", "report"),
-    "devices": ("coverage", "cns_gap", "technical_risk", "report"),
-    "existing_cns": ("coverage", "cns_gap", "technical_risk", "report"),
+    "devices": ("coverage", "cns_gap", "coverage_3d", "technical_risk", "report"),
+    "existing_cns": ("coverage", "cns_gap", "coverage_3d", "technical_risk", "report"),
     "candidate_sites": ("coverage", "technical_risk", "report"),
     "sites": ("coverage", "technical_risk", "report"),
-    "route_algorithm": ("routes", "coverage", "cns_gap", "report"),
+    "route_algorithm": ("routes", "coverage", "cns_gap", "coverage_3d", "report"),
     "coverage_algorithm": ("coverage", "report"),
     "gap_algorithm": ("cns_gap", "report"),
+    "coverage_model": ("coverage_3d", "report"),
     "safety_policy": ("safety_assessment", "technical_risk", "report"),
 }
 

@@ -25,6 +25,9 @@ class CNSPlanningService:
             catalog = catalog_items.get(device.get("device_id"))
             if catalog:
                 catalog.update({"radius_m": device["radius_m"], "mtbf_h": device["mtbf_h"], "enabled": device["enabled"]})
+                geometry = catalog.get("coverage_geometry") or {}
+                if geometry.get("source") == "legacy_engineering_assumption":
+                    geometry["slant_range_m"] = device["radius_m"]
         self.invalidation.workflow("devices")
         self.session.save()
         return self.snapshot()
@@ -40,6 +43,7 @@ class CNSPlanningService:
         devices = DeviceCatalog.to_coverage_v1(state.get("device_catalog") or {}, state["devices"])
         state["coverage"] = self.planner.plan(state["operational_routes"], devices)
         state["result_statuses"]["coverage"] = state["coverage"]["status"]
+        self.invalidation.coverage_3d()
         state["result_statuses"]["report"] = "not_calculated"
         self.session.save()
         return self.snapshot()

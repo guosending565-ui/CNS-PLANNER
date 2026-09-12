@@ -3,7 +3,10 @@
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog, DeviceCatalog
-from ..domain.cns_inputs import backfill_device_contract, normalize_aircraft_profile, normalize_required_cns
+from ..domain.cns_inputs import (
+    backfill_device_contract, normalize_aircraft_profile, normalize_candidate_site,
+    normalize_existing_facility, normalize_required_cns,
+)
 
 
 def empty_collection(collection_id):
@@ -46,6 +49,16 @@ class CNSInputService:
         state["required_cns"] = normalize_required_cns(state.get("required_cns"))
         state.setdefault("existing_cns_facilities", empty_collection("existing-cns-facilities"))
         state.setdefault("candidate_sites", empty_collection("candidate-sites"))
+        state["existing_cns_facilities"]["items"] = [
+            normalize_existing_facility(item, index)
+            for index, item in enumerate(state["existing_cns_facilities"].get("items") or [])
+        ]
+        state["existing_cns_facilities"]["count"] = len(state["existing_cns_facilities"]["items"])
+        state["candidate_sites"]["items"] = [
+            normalize_candidate_site(item, index)
+            for index, item in enumerate(state["candidate_sites"].get("items") or [])
+        ]
+        state["candidate_sites"]["count"] = len(state["candidate_sites"]["items"])
 
     def select_aircraft(self, aircraft_id):
         profile = AircraftCNSProfileCatalog.find(self.session.state["aircraft_profiles"], str(aircraft_id or ""))
@@ -109,6 +122,7 @@ class CNSInputService:
         items = [{
             "site_id": item["site_id"], "name": item["name"], "coordinate": item["coordinate"],
             "elevation_m": item.get("elevation_m"), "site_type": "existing_facility",
+            "vertical_profile": deepcopy(item.get("vertical_profile")),
             "available_subsystems": list(dict.fromkeys(device["subsystem"] for device in item.get("devices", []))),
             "usable": item.get("status") == "active", "locked": True,
             "source": "已有 CNS 设施", "metadata": {"facility_id": item["facility_id"]},

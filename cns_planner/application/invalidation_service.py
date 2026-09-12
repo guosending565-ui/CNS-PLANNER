@@ -38,6 +38,8 @@ class InvalidationService:
             state["result_statuses"]["cns_gap"] = "stale"
         if "coverage" in affected and state.get("coverage"):
             state["coverage"]["status"] = "stale"
+        if "coverage_3d" in affected:
+            self.coverage_3d()
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -55,6 +57,8 @@ class InvalidationService:
                 state["traffic_simulation"]["status"] = "stale"
         if invalidated:
             self.risk()
+        if "terrain" in changed_sources:
+            self.coverage_3d()
 
     def risk(self):
         state = self.session.state
@@ -75,3 +79,14 @@ class InvalidationService:
         state.setdefault("risks", {})["technical"] = assessment(
             "stale", "Safety assessment policy 已变化；技术风险尚未重新评估"
         )
+
+    def coverage_3d(self):
+        """Stale only the additive geometric 3D result and its future consumers."""
+        state = self.session.state
+        result = state.get("coverage_3d") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["coverage_3d"] = result
+            state.setdefault("result_statuses", {})["coverage_3d"] = "stale"
+        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
+            state["result_statuses"]["report"] = "stale"

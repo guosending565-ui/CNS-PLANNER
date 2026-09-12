@@ -50,7 +50,7 @@ map_app.py / app.py
 - `cns_planner/api/router.py`：保持 `/api/*` URL，只解析用例和响应，不依赖算法实现。
 - `cns_planner/application/workflow_service.py`：六步 facade、步骤可进入性和 snapshot；具体变更委派给 Project/Workspace/Route/Operation/Risk/CNSPlanning/Export Service。
 - `application/project_state.py`：schema-v2 空状态、兼容字段回填与 schema 校验。
-- `domain/algorithm_manifest.py`、`algorithms/registry.py`：算法可解释元数据、精确注册/查询/实例化和四个 V1 默认注册；factory/Python 实现路径不进入 ProjectState 或 API Manifest。
+- `domain/algorithm_manifest.py`、`algorithms/registry.py`：算法可解释元数据、精确注册/查询/实例化，包含四个既有 V1 与独立 3D 几何覆盖模型；factory/Python 实现路径不进入 ProjectState 或 API Manifest。
 - `application/cns_input_service.py`：五类 CNS 规划输入的选择、导入、需求覆盖、保存与下游失效。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
 - `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
@@ -83,6 +83,8 @@ existing_cns_facilities / candidate_sites
 cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
 safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA / FunctionalDependency / CoupledCondition / CoupledUE）
 safety_assessment（预留结果容器；P5 preview 不持久化）
+spatial_3d（altitude_layers / route_altitude_profiles / site_vertical_profiles；不保存全量 voxel）
+coverage_3d（按 route/subsystem 保存 3D 几何覆盖结果）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -92,13 +94,14 @@ safety_assessment（预留结果容器；P5 preview 不持久化）
 - workspace、operational route、运行规则/选定机型、RequiredCNS、DeviceCatalog 或 ExistingCNS 变化会使 cns_gap_analysis stale；CandidateSite 不是 Gap Analysis 输入。
 - 缺失/NoData/未知不得转换成零风险或通过。
 - safety_policy 变化只使 safety_assessment、technical_risk、report stale；不得使 workspace/grid/routes/coverage/cns_gap stale。
+- DEM、航路、已有设施、设备及 P7 垂向/几何配置变化定向使 `coverage_3d` stale；单独修改高度层/航路高度剖面不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`。找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`coverage_model/geometric_coverage_3d_v1@1.0`。找不到精确版本直接报错，禁止回退。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
 - Workflow 启动时从 Registry 解析四个选择，再把算法对象注入 Risk/Route/CNSPlanning/GapAnalysis Service；业务 Service 不依赖 Registry。
 - 未来 RoutePlanner：`plan(start, end, grid, risk, constraints) -> RouteResult`。
@@ -139,6 +142,15 @@ P6 CNS Functional Dependency & Coupled Safety Event Analysis V1：
 - 层级固定为 ServiceState/P5 FC → CoupledCondition → CoupledUE。Dependency、Condition 与 CoupledUE 必须分别确认；未确认 CoupledUE 始终 unknown，不推断 unacceptable/catastrophic。
 - P6 所有 coupled 输出 probability=null/probability_status=not_calculated；EventObservation 的额外 probability 不参与计算，CoupledUE policy 拒绝概率输入。P5 FaultTree 的 independence-confirmed 概率规则保持不变。
 - POST /api/cns/coupled-events/evaluate 是无持久化纯 preview；Step 4 新增 Functional Coupling 摘要、EventObservation/OperationalContext 输入和预览。
+
+P7 3D Spatial Model & Geometric CNS Coverage Baseline：
+
+- canonical 垂向基准为 `egm2008_orthometric`；`agl` 必须使用 P1 DEM 单格 `surface_elevation_mean_m` 转换，NoData 保持 `missing_data`；`wgs84_ellipsoidal` 未提供明确 geoid undulation/转换时为 `unresolved`，不得与正高直接混用。
+- `AltitudeLayer`、`RouteAltitudeProfile`、`Route3DSample` 为 JSON-safe 契约；`VoxelRef` 仅按需构造 `grid_id@altitude_layer_id`，ProjectState 禁止预生成或保存全 workspace voxel。
+- ExistingCNSFacility、CandidateSite、CNSDevice additive 保存 `vertical_profile`；legacy `elevation_m` 只进入 `legacy_elevation_m`，不自动解释垂向基准。Device additive 保存 `coverage_geometry`；legacy `radius_m` 仅形成未确认的 `legacy_engineering_assumption/geometric_only`，显式 GNSS 等非站基技术不自动生成球覆盖。
+- `GeometricCoverage3DV1` 与 CoveragePlannerV1 分离，三维距离为 `hypot(horizontal_distance, vertical_delta)`，支持 sphere/hemisphere。`sample_spacing_m` 为显式工程采样参数；覆盖长度按真实航路里程区间累计而非样本数量。
+- 结果始终标记 `model_scope=geometric_only`；propagation/LOS/diffraction/interference/link_budget/sensor_Pd 均为 `not_evaluated`，不得据此调用 P4 ServiceState 或宣称真实 CNS 性能。
+- API：`GET /api/spatial-3d`、`GET /api/coverage-3d`、`POST /api/spatial-3d/altitude-layers`、`POST /api/spatial-3d/route-profile`、`POST /api/coverage-3d/evaluate`。Step 2/3/5 提供最小高度层、航路高度剖面和几何覆盖配置/结果界面。
 
 ## 7. 数据源扩展
 
@@ -183,6 +195,8 @@ P4 完整基线：**175 passed, 6 skipped, 1 known failed**；Node **11 passed, 
 P5 完整基线：**191 passed, 6 skipped, 1 known failed**；P5 定向测试（含 P4、CNS 输入/Gap、repository、architecture 与四个 V1 characterization）**77 passed**；Node **11 passed, 0 failed**，main.js/step04_operation.js 语法检查通过。新增覆盖 FC/UE 模板与枚举、lost/contingency 分层、未确认 UE、FTA AND/OR 与独立性门控、FMEA 引用、schema-v2 backfill/保存恢复、定向失效、API 纯 preview 和 Step 4 声明。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P5 未修改生产空域代码。
 
 P6 完整基线：**206 passed, 6 skipped, 1 known failed**；P4/P5/P6、architecture 与四个 V1 characterization 定向回归 **54 passed**；Node **11 passed, 0 failed**，main.js/step04_operation.js 语法检查通过。新增覆盖 P6 backfill/引用校验、EventObservation、all_of/sequence/overlap、时间缺失/顺序/超时/重叠、运行适用性、未确认 dependency/CoupledUE、禁止耦合概率、保存恢复、定向失效和纯 preview API。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P6 未修改生产空域代码。
+
+P7 完整基线：**219 passed, 6 skipped, 1 known failed**；P7 与 Registry/Gap/V1 定向回归 **42 passed**；Node **12 passed, 0 failed**。新增覆盖垂向基准、AGL/DEM NoData/ellipsoid 拒绝、lazy voxel、constant/waypoint-linear contract、route3D、sphere/hemisphere 边界、legacy radius 假设、GNSS 不自动建球、真实航路长度统计、Registry、API、保存恢复与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P7 未修改生产空域代码。
 
 ## 9. 架构原则
 
