@@ -15,6 +15,10 @@ from .cns_service_model import normalize_service_model_spec
 
 
 SUBSYSTEMS = ("C", "N", "S")
+REUSE_CLASSES = (
+    "existing_cns_facility", "existing_shared_site", "candidate_site",
+    "new_build_candidate",
+)
 
 
 class AircraftCNSProfile(TypedDict, total=False):
@@ -65,6 +69,7 @@ class ExistingCNSFacility(TypedDict, total=False):
     source: str
     metadata: dict[str, Any]
     vertical_profile: dict[str, Any]
+    planning_profile: dict[str, Any]
 
 
 class CandidateSite(TypedDict, total=False):
@@ -79,6 +84,7 @@ class CandidateSite(TypedDict, total=False):
     source: str
     metadata: dict[str, Any]
     vertical_profile: dict[str, Any]
+    planning_profile: dict[str, Any]
 
 
 def pending_required_cns() -> RequiredCNS:
@@ -245,6 +251,7 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
         "vertical_profile": normalize_vertical_profile(
             item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m", item.get("elevation"))
         ),
+        "planning_profile": normalize_planning_profile(item.get("planning_profile")),
         "devices": normalized_devices, "status": str(item.get("status") or "active"),
         "source": str(item.get("source") or "用户导入"), "metadata": deepcopy(item.get("metadata") or {}),
     }
@@ -266,10 +273,48 @@ def normalize_candidate_site(item: dict, index: int = 0) -> CandidateSite:
         "vertical_profile": normalize_vertical_profile(
             item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m", item.get("elevation"))
         ),
+        "planning_profile": normalize_planning_profile(item.get("planning_profile")),
         "site_type": str(item.get("site_type") or "other"),
         "available_subsystems": list(dict.fromkeys(str(value).upper() for value in subsystems)),
         "usable": _boolean(item.get("usable", True)), "locked": _boolean(item.get("locked", False)),
         "source": str(item.get("source") or "用户导入"), "metadata": deepcopy(item.get("metadata") or {}),
+    }
+
+
+def normalize_planning_profile(value: dict | None) -> dict:
+    """Normalize explicit planning eligibility without inferring buildability or cost."""
+    if value is None:
+        return {
+            "reuse_class": None, "add_device_allowed": None,
+            "planning_cost": None, "cost_unit": None,
+            "source": "not_defined", "confirmed": False,
+            "status": "missing_data",
+        }
+    if not isinstance(value, dict):
+        raise ValueError("planning_profile 必须是对象")
+    reuse_class = value.get("reuse_class")
+    if reuse_class is not None and reuse_class not in REUSE_CLASSES:
+        raise ValueError("planning_profile.reuse_class 无效")
+    allowed = value.get("add_device_allowed")
+    if allowed not in (True, False, None):
+        raise ValueError("planning_profile.add_device_allowed 必须是 true/false/null")
+    cost = _optional_nonnegative(value.get("planning_cost"), "planning_profile.planning_cost")
+    if cost == 0:
+        raise ValueError("planning_profile.planning_cost 必须大于零；无费用信息请保持 null")
+    cost_unit = str(value.get("cost_unit") or "").strip() or None
+    if cost is not None and cost_unit is None:
+        raise ValueError("planning_cost 已提供时必须记录 cost_unit")
+    confirmed = value.get("confirmed") is True
+    status = (
+        "missing_data" if reuse_class is None and allowed is None
+        else "confirmed" if confirmed and allowed is not None
+        else "pending_confirmation"
+    )
+    return {
+        "reuse_class": reuse_class, "add_device_allowed": allowed,
+        "planning_cost": cost, "cost_unit": cost_unit,
+        "source": str(value.get("source") or "未记录"),
+        "confirmed": confirmed, "status": status,
     }
 
 

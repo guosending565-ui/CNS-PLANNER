@@ -48,10 +48,16 @@ class Spatial3DService:
             model = self.model.__class__(parameters)
         else:
             model = self.model
+        facilities = deepcopy(state.get("existing_cns_facilities") or {})
+        for facility in facilities.get("items") or []:
+            if isinstance(facility, dict):
+                # P11 planning metadata is not a P7 geometric input.  Keep it
+                # out of the established P7 input fingerprint.
+                facility.pop("planning_profile", None)
         result = model.evaluate(
             state.get("operational_routes"), state.get("spatial_3d"),
             state.get("grid"), state.get("grid_attributes"),
-            state.get("existing_cns_facilities"), state.get("device_catalog"),
+            facilities, state.get("device_catalog"),
         )
         state["coverage_3d"] = result
         self.invalidation.cns_service_capability()

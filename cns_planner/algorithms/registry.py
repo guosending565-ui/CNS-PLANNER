@@ -13,10 +13,11 @@ from .protection.v1 import TacticalProtectionEnvelopeV1
 from .route.v1 import RoutePlannerV1
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
+from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..risk.v1 import RiskModelV1
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -98,6 +99,7 @@ def default_algorithm_selection():
         "service_model": _selection("service_model", CNSServiceCapabilityV1),
         "timeline_model": _selection("timeline_model", RouteServiceTimelineV1),
         "protection_model": _selection("protection_model", TacticalProtectionEnvelopeV1),
+        "site_planner": _selection("site_planner", ReuseFirstSitePlannerV1),
     }
 
 
@@ -140,6 +142,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_service_capability_manifest(), lambda parameters: CNSServiceCapabilityV1(parameters))
     registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
     registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
+    registry.register(_site_planner_manifest(), lambda parameters: ReuseFirstSitePlannerV1(parameters))
     return registry
 
 
@@ -276,5 +279,19 @@ def _protection_manifest():
         {"type": "object", "additionalProperties": True},
         ("响应分量相加", "响应期内相对接近速度恒定"),
         ("不是法规 Well-Clear 或正式 DAA Detection Volume", "不评估飞机动力学"),
+        (),
+    )
+
+
+def _site_planner_manifest():
+    return AlgorithmManifest(
+        "site_planner", ReuseFirstSitePlannerV1.algorithm_id, ReuseFirstSitePlannerV1.algorithm_version,
+        "Reuse-first CNS Site Planner V1", "CNS-PLANNER", "engineering_baseline",
+        "按明确 reuse tier 和 P7/P8 what-if 正边际收益生成 proposal-only CNS 站址动作。",
+        ("gap_v2_planning_segments", "candidate_actions", "candidate_impacts", "site_planning_policy"),
+        ("selected_actions", "remaining_planning_gap", "cost_summary"),
+        {"type": "object", "additionalProperties": False},
+        ("target weight 仅为 confirmed planning-gap length", "无 confirmed cost 时使用 action-count proxy"),
+        ("proposal 不修改 ExistingCNS", "需要 P12 apply + rerun 闭环验证", "不求解联合动作冗余"),
         (),
     )

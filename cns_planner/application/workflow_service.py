@@ -33,6 +33,7 @@ from .workspace_service import WorkspaceService
 from .spatial_3d_service import Spatial3DService
 from .cns_service_capability_service import CNSServiceCapabilityService
 from .operational_timing_service import OperationalTimingService
+from .site_planning_service import SitePlanningService
 
 
 class WorkflowService:
@@ -71,6 +72,7 @@ class WorkflowService:
         self.cns_service_model = self._selected_algorithm("service_model")
         self.timeline_model = self._selected_algorithm("timeline_model")
         self.protection_model = self._selected_algorithm("protection_model")
+        self.site_planner = self._selected_algorithm("site_planner")
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
@@ -104,6 +106,10 @@ class WorkflowService:
             self.session, self.timeline_model, self.protection_model,
             self.invalidation_service, snapshot,
         )
+        self.site_planning_service = SitePlanningService(
+            self.session, self.site_planner, self.coverage_model_3d,
+            self.cns_service_model, self.invalidation_service, snapshot,
+        )
         self.export_service = ExportService(self.session, snapshot)
 
     def save(self): self.session.save()
@@ -134,6 +140,7 @@ class WorkflowService:
     def operational_timing_snapshot(self): return self.operational_timing_service.timing_snapshot()
     def service_timeline_snapshot(self): return self.operational_timing_service.timeline_snapshot()
     def protection_envelope_snapshot(self): return self.operational_timing_service.protection_snapshot()
+    def cns_site_plan_snapshot(self): return self.site_planning_service.result_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -189,6 +196,7 @@ class WorkflowService:
                 "service_model": "service_model",
                 "timeline_model": "timeline_model",
                 "protection_model": "protection_model",
+                "site_planner": "site_planner",
             }[algorithm_type]
             self.invalidation_service.workflow(changed)
         self.session.save()
@@ -208,12 +216,16 @@ class WorkflowService:
             self.risk_model = self.risk_service.risk_model = instance
         elif algorithm_type == "coverage_model":
             self.coverage_model_3d = self.spatial_3d_service.model = instance
+            self.site_planning_service.coverage_model = instance
         elif algorithm_type == "service_model":
             self.cns_service_model = self.cns_service_capability_service.model = instance
+            self.site_planning_service.capability_model = instance
         elif algorithm_type == "timeline_model":
             self.timeline_model = self.operational_timing_service.timeline_model = instance
         elif algorithm_type == "protection_model":
             self.protection_model = self.operational_timing_service.protection_model = instance
+        elif algorithm_type == "site_planner":
+            self.site_planner = self.site_planning_service.planner = instance
 
     def _steps(self):
         state = self.state
@@ -242,6 +254,7 @@ class WorkflowService:
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
     def analyze_cns_gaps(self): return self.gap_analysis_service.analyze()
     def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)
+    def evaluate_cns_site_plan(self, payload=None): return self.site_planning_service.evaluate(payload)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)

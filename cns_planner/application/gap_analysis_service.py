@@ -49,6 +49,7 @@ class GapAnalysisService:
             if not isinstance(facility, dict):
                 continue
             facility.pop("vertical_profile", None)
+            facility.pop("planning_profile", None)
             for device in facility.get("devices", []):
                 if isinstance(device, dict):
                     device.pop("vertical_profile", None)

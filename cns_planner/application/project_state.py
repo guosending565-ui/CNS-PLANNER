@@ -12,7 +12,10 @@ from ..data.mapping.terrain import TerrainGridService
 from ..data.mapping.traffic import TrafficGridService
 from ..data.source_profiles import default_source_profiles
 from ..algorithms.registry import default_algorithm_selection, normalize_algorithm_selection
-from ..domain.cns_inputs import pending_required_cns
+from ..domain.cns_inputs import (
+    normalize_candidate_site, normalize_existing_facility, pending_required_cns,
+)
+from ..domain.site_planning import default_site_planning_policy, normalize_site_planning_policy
 from ..domain.safety_policy import default_safety_policy, normalize_safety_policy
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
@@ -22,6 +25,7 @@ from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
 from ..algorithms.timeline.v1 import RouteServiceTimelineV1
 from ..algorithms.protection.v1 import TacticalProtectionEnvelopeV1
 from ..domain.operational_timing import empty_operational_timing, normalize_operational_timing
+from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 
 
 SCHEMA_VERSION = 2
@@ -113,6 +117,8 @@ def blank_project(defaults):
         "candidate_sites": empty_collection("candidate-sites"),
         "cns_gap_analysis": CNSGapAnalyzerV1.empty(),
         "cns_gap_analysis_v2": CNSGapAnalyzerV2.empty(),
+        "site_planning_policy": default_site_planning_policy(),
+        "cns_site_plan": ReuseFirstSitePlannerV1.empty(),
         "safety_policy": default_safety_policy(),
         "safety_assessment": empty_safety_assessment(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
@@ -120,7 +126,7 @@ def blank_project(defaults):
         "result_statuses": {
             name: "not_calculated" for name in (
                 "workspace", "grid", "environment_risk", "routes",
-                "coverage", "cns_gap", "cns_gap_v2", "safety_assessment",
+                "coverage", "cns_gap", "cns_gap_v2", "cns_site_plan", "safety_assessment",
                 "coverage_3d",
                 "cns_service_capability",
                 "service_timeline", "protection_envelope",
@@ -172,12 +178,25 @@ def normalize_project(value, grid_service):
     value.setdefault("device_catalog", empty_catalog("cns-device-catalog"))
     value.setdefault("existing_cns_facilities", empty_collection("existing-cns-facilities"))
     value.setdefault("candidate_sites", empty_collection("candidate-sites"))
+    value["existing_cns_facilities"]["items"] = [
+        normalize_existing_facility(item, index)
+        for index, item in enumerate(value["existing_cns_facilities"].get("items") or [])
+    ]
+    value["existing_cns_facilities"]["count"] = len(value["existing_cns_facilities"]["items"])
+    value["candidate_sites"]["items"] = [
+        normalize_candidate_site(item, index)
+        for index, item in enumerate(value["candidate_sites"].get("items") or [])
+    ]
+    value["candidate_sites"]["count"] = len(value["candidate_sites"]["items"])
     value.setdefault("cns_gap_analysis", CNSGapAnalyzerV1.empty())
     value.setdefault("cns_gap_analysis_v2", CNSGapAnalyzerV2.empty())
+    value["site_planning_policy"] = normalize_site_planning_policy(value.get("site_planning_policy"))
+    value.setdefault("cns_site_plan", ReuseFirstSitePlannerV1.empty())
     value["safety_policy"] = normalize_safety_policy(value.get("safety_policy"))
     value.setdefault("safety_assessment", empty_safety_assessment())
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("cns_site_plan", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")

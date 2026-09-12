@@ -69,6 +69,7 @@ def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
         ("service_model", "cns_service_capability_v1", "1.0"),
         ("timeline_model", "route_service_timeline_v1", "1.0"),
         ("protection_model", "tactical_protection_envelope_v1", "1.0"),
+        ("site_planner", "reuse_first_site_planner_v1", "1.0"),
     }
     for item in registry.catalog():
         assert set(item) == {
@@ -149,18 +150,20 @@ def test_same_selection_is_noop_and_invalid_selection_preserves_current(tmp_path
         ("service_model", {"cns_service_capability", "service_timeline", "report"}),
         ("timeline_model", {"service_timeline", "report"}),
         ("protection_model", {"protection_envelope", "report"}),
+        ("site_planner", {"cns_site_plan", "report"}),
     ],
 )
 def test_dummy_selection_uses_directed_invalidation(tmp_path, algorithm_type, expected):
     registry = build_default_algorithm_registry(defaults())
     manifest = register_dummy(registry, algorithm_type)
     workflow = WorkflowService(tmp_path / f"{algorithm_type}.json", DEFAULTS_PATH, algorithm_registry=registry)
-    workflow.state["result_statuses"].update({name: "passed" for name in ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "protection_envelope", "technical_risk", "report")})
+    workflow.state["result_statuses"].update({name: "passed" for name in ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "protection_envelope", "cns_site_plan", "technical_risk", "report")})
     workflow.state["coverage"] = {"status": "passed"}
     workflow.state["cns_gap_analysis"] = {"status": "passed"}
     workflow.state["cns_service_capability"]["status"] = "meets_under_model"
     workflow.state["service_timeline"]["status"] = "passed"
     workflow.state["protection_envelope"]["status"] = "passed"
+    workflow.state["cns_site_plan"]["status"] = "proposal_ready"
     workflow.select_algorithm({
         "algorithm_type": algorithm_type, "algorithm_id": manifest.algorithm_id,
         "version": manifest.version, "parameters": {},

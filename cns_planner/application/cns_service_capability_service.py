@@ -19,9 +19,13 @@ class CNSServiceCapabilityService:
             state.get("aircraft_profiles") or {},
             state.get("selected_aircraft_profile_id") or "",
         )
+        facilities = deepcopy(state.get("existing_cns_facilities") or {})
+        for facility in facilities.get("items") or []:
+            if isinstance(facility, dict):
+                facility.pop("planning_profile", None)
         result = self.model.evaluate(
             state.get("coverage_3d") or {}, state.get("required_cns") or {}, profile,
-            state.get("existing_cns_facilities") or {}, state.get("device_catalog") or {},
+            facilities, state.get("device_catalog") or {},
         )
         state["cns_service_capability"] = result
         self.invalidation.service_timeline()

@@ -46,6 +46,8 @@ class InvalidationService:
             self.service_timeline()
         if "cns_gap_v2" in affected:
             self.cns_gap_v2()
+        if "cns_site_plan" in affected:
+            self.cns_site_plan()
         if "protection_envelope" in affected:
             self.protection_envelope()
 
@@ -143,5 +145,17 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_gap_analysis_v2"] = result
             state.setdefault("result_statuses", {})["cns_gap_v2"] = "stale"
+        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
+            state["result_statuses"]["report"] = "stale"
+        self.cns_site_plan()
+
+    def cns_site_plan(self):
+        """Stale only the P11 proposal and report; never mutate evaluated inputs."""
+        state = self.session.state
+        result = state.get("cns_site_plan") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["cns_site_plan"] = result
+            state.setdefault("result_statuses", {})["cns_site_plan"] = "stale"
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"

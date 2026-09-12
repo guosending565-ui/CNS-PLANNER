@@ -187,6 +187,15 @@ P10 3D / Performance / Runtime-Aware CNS Gap Analysis V2：
 - protection margin 默认关闭。显式开启后，仅在 P9 protection passed 且 P8 命中 provider 的 DeviceCatalog 有 confirmed 实际监视探测距离时计算 `available_detection_range-d_protect`；缺证据为 unknown，负值才形成 `protection_margin_gap`。始终标记 engineering only，Well-Clear/正式 DAA 合规未评估。
 - API：`GET/POST /api/cns-gap-analysis-v2`。Step 5 在 P7/P8/P9 后显示 C/N/S planning、runtime lost、contingency、unknown、最大连续 gap 和 segment evidence；Unknown 明确表示证据不足。Gap V2 不自动触发 P5/P6 Safety Event。
 
+P11 Reuse-first CNS Site Planner V1：
+
+- `site_planner/reuse_first_site_planner_v1@1.0` 是 proposal-only 、确定性 reuse-first weighted greedy set-cover 基线。ProjectState additive 保存 `site_planning_policy` 与 `cns_site_plan`；结果固定 `proposal_only=true` 和 `requires_closed_loop_validation=true`，不修改 ExistingCNS，不声明 Gap 已消除。
+- ExistingCNSFacility/CandidateSite 新增显式 `planning_profile`：`reuse_class/add_device_allowed/planning_cost/cost_unit/source/confirmed/status`。缺失数据不根据 `site_type` 或位置猜测建设能力和费用；CandidateAction 只来自已有设施或显式 CandidateSite 坐标。
+- Application `SitePlanningService` 负责构造临时设施 clone，依次复用当前 P7 GeometricCoverage3DV1、P8 CNSServiceCapabilityV1 与 GapV2 planning assessment 做 per-action what-if。临时结果不持久化；只有正的 confirmed planning-gap reduction 才是 eligible gain。
+- target 仅包含 GapV2 `planning_status=confirmed_gap` 且有可能由地面服务改善的 segment；unknown、runtime-only lost 和 contingency 默认不规划。复用 tier 顺序固定为 existing CNS facility → existing shared site → candidate site → new-build candidate，已覆盖区间不重复计益。
+- confirmed explicit cost 使用 marginal gap/cost；缺 cost 时只用 action-count proxy，不伪造货币。provider 数、共址和多个 action 不自动视为 independent redundancy；单 action 无收益但可能需联合求解时保留 residual 并标记 `requires_joint_optimization`。
+- P11 planning metadata 在正常 P7/P8/GapV1 调用前从兼容输入视图剔除，保护已有算法指纹。API 为 `GET/POST /api/cns-site-plan`；Step 5 显示 target、CandidateAction what-if 收益、selected proposal、remaining gap 及 P12 闭环复核声明。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -239,6 +248,8 @@ P9 完整基线：**242 passed, 6 skipped, 1 known failed**；P9/P4/P7/P8/Regist
 
 P10 完整基线：**249 passed, 6 skipped, 1 known failed**；P10/GapV1/P7/P8/P9/Registry/Project/architecture 定向回归 **85 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step05_cns.js` 语法检查通过。新增覆盖 planning fail、runtime lost、contingency/unknown 分离、P8 状态跃迁保守 unknown、统一断点与相邻合并、长度/时间守恒、最大连续 gap、可选 protection margin、Registry 默认 V1、schema-v2 backfill、保存恢复、API 与单向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P10 未修改生产空域代码。
 
+P11 完整基线：**260 passed, 6 skipped, 1 known failed**；P11/P7/P8/P10/Registry/CNS inputs 定向回归 **64 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step05_cns.js` 语法检查通过。新增覆盖 planning profile/backfill、target 过滤、locked/unusable/unsupported/缺失证据门控、真实 P7/P8 what-if、reuse tier、重叠收益去重、cost proxy、deterministic tie-break、独立冗余保守残留、上游不变/指纹兼容、Registry、schema-v2 保存恢复、API 与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P11 未修改生产空域代码。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -273,9 +284,11 @@ P10 完整基线：**249 passed, 6 skipped, 1 known failed**；P10/GapV1/P7/P8/P
 
 17. GapV2 是上游证据的保守区间合并，不做传播/性能/ServiceState 重算，不把 unknown 当 gap，也不触发 SafetyEvent；protection margin 仅支持已有 confirmed 监视探测距离的工程差值，尚未形成 GapV2→Safety/站址方案闭环。
 
+18. P11 是单 action 正收益的 reuse-first 提案器，不求解多 action 联合后才能满足的独立冗余，不含风险/人口/severity 权重，也不是费用优化器。Proposal 尚未 apply；P12 必须将用户明确选中的动作转为项目输入并重跑 P7/P8/P10 闭环，才能验证剩余 Gap。
+
 ## 11. 下一阶段计划
 
-1. 引入可替换 CNSSitePlanner，使用 GapV2、ExistingCNS、CandidateSite 与 DeviceCatalog，先建立 reuse-first 可解释基线并继续保护 CoveragePlannerV1。
+1. P12 建立显式 proposal apply + rerun 闭环：用户确认 CandidateAction 后才更新项目输入，重跑 P7/P8/P10，对比 proposal 与实际剩余 Gap，并保留 audit/rollback 边界。
 2. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 3. 将 grid_risk 作为 RoutePlannerV2 的标准代价输入，在新版本中逐步替换 56×56 原型；不要修改 RoutePlannerV1。
 4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。

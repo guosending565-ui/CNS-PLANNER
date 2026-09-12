@@ -31,6 +31,7 @@ class GapAnalysisV2Service:
             state.get("protection_envelope") or {},
             state.get("device_catalog") or {},
         )
+        self.invalidation.cns_site_plan()
         state["cns_gap_analysis_v2"] = result
         state["result_statuses"]["cns_gap_v2"] = {
             "confirmed_gap": "failed",
@@ -41,4 +42,3 @@ class GapAnalysisV2Service:
         state["result_statuses"]["report"] = "not_calculated"
         self.session.save()
         return self.snapshot()
-
