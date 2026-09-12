@@ -67,5 +67,6 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.match(html,/Required CNS Performance/);
   assert.match(html,/最大时延 s/);
   assert.match(html,/Ground Device Capability/);
+  assert.match(html,/ReliabilitySpec/);
   assert.doesNotMatch(html,/最大时延 ms/);
 });

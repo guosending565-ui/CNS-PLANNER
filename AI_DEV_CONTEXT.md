@@ -110,6 +110,15 @@ P3 CNS Taxonomy & Performance Contract：
 - canonical 时间单位统一为秒；schema-v2 继续保留并同步 V1 别名：`max_latency_s <-> latency_ms`、`max_horizontal_error_m <-> accuracy_m`、`integrity_required <-> integrity`、`max_update_interval_s <-> update_interval_s`、`min_redundancy <-> redundancy`。同时提供不一致检测，禁止静默选择其中一个值。
 - availability/probability 校验为 0..1；冗余为正整数；时间和距离非负。Catalog 恢复时执行 additive contract backfill，旧 `capabilities/radius_m/mtbf_h` 等字段原样保留。
 
+P4 CNS Reliability & Effective Service State：
+
+- `ReliabilitySpec` 是独立统计属性：保存 `model/mtbf_h/mttr_h/failure_rate_per_h/availability/availability_type/empirical_failure_probability/failure_mode/operating_conditions/reference_conditions/confidence/sample_size/source/confirmed/status`。未知不补默认值；demo MTBF 回填为 `source=demo, confirmed=false, model=unknown`。
+- Aircraft 顶层 legacy `mtbf_h` 不下沉为 C/N/S reliability；每个机载 capability 独立保存 `reliability` 和 machine-readable `fallbacks[]`。P3 `contingency` 文本继续保留，但不作为已确认 fallback。
+- 指数可靠度只在明确 `model=constant_rate_exponential` 时计算 `lambda=1/MTBF`、`R(t)=exp(-lambda*t)`、`Pf=1-R`；MTBF 与 failure rate 冲突直接报错。`MTBF/(MTBF+MTTR)` 只输出 inherent availability，operational/empirical availability 独立保存，禁止混合聚合。
+- `ExternalServiceSnapshot` 单独表达实时 `available/degraded/unavailable/unknown`、性能、持续时间、冗余与来源；不得抽样 ReliabilitySpec 随机生成实时 lost。
+- 有效服务状态为 `available/available_degraded/contingency/lost/unknown`，RequiredCNS `required=false` 例外返回 `not_applicable`。只有 confirmed、性能满足且未超过 bridge/需求允许时限的 fallback 才能进入 contingency；输出 `reasons/evidence/fallback_used`。
+- `POST /api/cns/service-state/evaluate` 为无持久化纯计算 preview。Application 为 GapV1 构造不含 `reliability/fallbacks` 的兼容视图，使这些 P4 字段既不参与公式也不改变 V1 输入指纹；GapV1 实现未修改。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -148,6 +157,8 @@ Algorithm Registry 定向基线：44 passed；覆盖四个 V1 Manifest、精确�
 
 P3 完整基线：**161 passed, 6 skipped, 1 known failed**；Node 前端纯函数/Step 4 **11 passed, 0 failed**，`step04_operation.js` 语法检查通过。新增覆盖 legacy backfill、canonical/V1 alias 双向转换与冲突、C/N/S 枚举和数值校验、Aircraft/Device 分离兼容、route override、保存恢复、Step 4 语义及四个 V1 characterization。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P3 未修改生产空域代码。
 
+P4 完整基线：**175 passed, 6 skipped, 1 known failed**；Node **11 passed, 0 failed**，`app.js/main.js/step04_operation.js` 语法检查通过。新增覆盖 ReliabilitySpec 校验/来源、显式指数公式、inherent 与 operational availability 分离、MTBF/lambda 冲突、demo backfill、Aircraft 分系统可靠性/保存恢复、fallback 的 available/degraded/contingency/lost/unknown/not_applicable 转换、bridge 超时、纯 preview API、P4 字段不改变 GapV1 指纹及 V1 characterization。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P4 未修改生产空域代码。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -172,6 +183,7 @@ P3 完整基线：**161 passed, 6 skipped, 1 known failed**；Node 前端纯函�
 11. WorldPop SourceProfile 当前使用 `quantity=population_count_per_source_pixel`、`unit=person/source_pixel` 表达官方 people-per-pixel 语义；长期应规范为 `quantity=population_count`、`unit=person`，并独立使用 `support=source_pixel` / `source_semantics=people_per_pixel` 表达空间支撑。当前阶段不得为此破坏 P1 兼容字段和人口映射结果。
 
 12. 当前全量 pytest 存在 1 个已知基线失败：`test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`。原因是测试替身仅支持 `QgsSpatialIndex(features)`，而生产实现采用真实 QGIS 支持的空构造后 `addFeature`；后续非相关阶段不得通过修改生产空域逻辑来“修绿”该测试。
+13. `OperationService` 为保持旧工作流/API 语义，仍在顶层 `aircraft` 输出 legacy `lambda_per_hour=1/mtbf_h`；Step 4 已标注其不是 P4 ReliabilitySpec 推断。新安全计算只能使用显式声明模型的分系统 ReliabilitySpec。
 
 ## 11. 下一阶段计划
 

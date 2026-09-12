@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..gis.online_health import check_online_services
+from ..safety.service_state import evaluate_service_state
 from .file_browser import browse
 
 
@@ -56,6 +57,13 @@ class ApiRouter:
 
     def post(self, path, payload):
         context, workflow, data = self.context, self.context.workflow, self.context.data
+        if path == "/api/cns/service-state/evaluate":
+            return Response(evaluate_service_state(
+                payload.get("required_cns", payload.get("required")),
+                payload.get("aircraft_capability", payload.get("aircraft")),
+                payload.get("external_service_snapshot", payload.get("external_service")),
+                payload.get("confirmed_fallback"),
+            ))
         if path == "/api/project/save-as": return Response(context.qgis.call(lambda: context.save_project_as(payload.get("project_dir"))))
         if path == "/api/project/open": return Response(context.qgis.call(lambda: context.open_project(payload.get("project_dir"))))
         resource_actions = {

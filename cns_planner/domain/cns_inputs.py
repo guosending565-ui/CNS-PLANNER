@@ -9,6 +9,7 @@ from typing import Any, TypedDict
 from .cns_performance import (
     empty_subsystem_contract, normalize_subsystem_contract, sync_aliases,
 )
+from .cns_reliability import normalize_reliability_spec
 
 
 SUBSYSTEMS = ("C", "N", "S")
@@ -37,6 +38,7 @@ class CNSDevice(TypedDict, total=False):
     enabled: bool
     source: str
     parameter_metadata: dict[str, Any]
+    reliability: dict[str, Any]
 
 
 class RequiredCNS(TypedDict, total=False):
@@ -152,15 +154,23 @@ def normalize_device(item: dict) -> CNSDevice:
     if role not in ("primary", "gap", "existing", "candidate"):
         raise ValueError("设备 role 无效")
     device_id = _identifier(item.get("device_id"), "device_id")
+    reliability = normalize_reliability_spec(
+        item.get("reliability"),
+        legacy_mtbf_h=item.get("mtbf_h", item.get("mtbf")),
+        legacy_source=item.get("source"),
+        legacy_confirmed=(item.get("parameter_metadata") or {}).get("confirmed", False),
+        field=f"device.{device_id}.reliability",
+    )
     result: CNSDevice = {
         "device_id": device_id, "name": str(item.get("name") or device_id),
         "subsystem": subsystem, "role": role,
         "radius_m": _positive(item.get("radius_m", item.get("coverage_radius_m")), "radius_m"),
         "latency_ms": _optional_nonnegative(item.get("latency_ms"), "latency_ms"),
-        "mtbf_h": _positive(item.get("mtbf_h", item.get("mtbf")), "mtbf_h"),
+        "mtbf_h": _positive(reliability.get("mtbf_h"), "mtbf_h"),
         "enabled": bool(item.get("enabled", True)),
         "source": str(item.get("source") or "未记录"),
         "parameter_metadata": deepcopy(item.get("parameter_metadata") or {}),
+        "reliability": reliability,
     }
     for key in ("accuracy_m", "integrity", "update_interval_s", "redundancy"):
         if key in item:
@@ -180,6 +190,12 @@ def backfill_device_contract(item: dict) -> dict:
         raise ValueError("设备 subsystem 必须是 C/N/S")
     result = deepcopy(item)
     result.update(normalize_subsystem_contract(subsystem, item, field=f"device.{item.get('device_id') or 'legacy'}"))
+    result["reliability"] = normalize_reliability_spec(
+        item.get("reliability"), legacy_mtbf_h=item.get("mtbf_h", item.get("mtbf")),
+        legacy_source=item.get("source"),
+        legacy_confirmed=(item.get("parameter_metadata") or {}).get("confirmed", False),
+        field=f"device.{item.get('device_id') or 'legacy'}.reliability",
+    )
     return sync_aliases(subsystem, result, field=f"device.{item.get('device_id') or 'legacy'}")
 
 
@@ -278,6 +294,26 @@ def _capability(subsystem, value, field):
     }
     result.update(normalize_subsystem_contract(subsystem, value, field=field))
     result = sync_aliases(subsystem, result, field=field)
+    result["reliability"] = normalize_reliability_spec(
+        value.get("reliability"), field=f"{field}.reliability",
+    )
+    fallbacks = value.get("fallbacks") or []
+    if not isinstance(fallbacks, list):
+        raise ValueError(f"{field}.fallbacks 必须是数组")
+    result["fallbacks"] = [
+        _normalize_fallback(subsystem, item, f"{field}.fallbacks[{index}]")
+        for index, item in enumerate(fallbacks)
+    ]
+    return result
+
+
+def _normalize_fallback(subsystem, value, field):
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是对象")
+    result = normalize_subsystem_contract(subsystem, value, field=field)
+    result["max_bridge_time_s"] = _optional_nonnegative(value.get("max_bridge_time_s"), f"{field}.max_bridge_time_s")
+    result["status"] = "confirmed" if result["confirmed"] else "pending_confirmation"
+    result["metadata"] = deepcopy(value.get("metadata") or {})
     return result
 
 
