@@ -35,9 +35,7 @@ const themes = `
     <div class="grid-theme-options">
       ${themeOptions.map(([value, label]) => `
         <label class="grid-theme-option">
-          <input
-            type="radio"
-            name="gridThemeMode"
+          <input type="radio" name="gridThemeMode"
             id="${ids[value] || 'gridTheme-' + value}"
             value="${value}"
             ${checked(value)}

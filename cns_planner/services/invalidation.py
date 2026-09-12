@@ -19,6 +19,7 @@ DEPENDENTS = {
     "route_algorithm": ("routes", "coverage", "cns_gap", "report"),
     "coverage_algorithm": ("coverage", "report"),
     "gap_algorithm": ("cns_gap", "report"),
+    "safety_policy": ("safety_assessment", "technical_risk", "report"),
 }
 
 

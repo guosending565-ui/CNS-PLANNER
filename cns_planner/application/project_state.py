@@ -13,6 +13,7 @@ from ..data.mapping.traffic import TrafficGridService
 from ..data.source_profiles import default_source_profiles
 from ..algorithms.registry import default_algorithm_selection, normalize_algorithm_selection
 from ..domain.cns_inputs import pending_required_cns
+from ..domain.safety_policy import default_safety_policy, normalize_safety_policy
 from ..gap.v1 import CNSGapAnalyzerV1
 
 
@@ -61,6 +62,15 @@ def empty_collection(collection_id):
     return {"status": "not_calculated", "collection_id": collection_id, "source": None, "metadata": {}, "count": 0, "items": []}
 
 
+def empty_safety_assessment():
+    return {
+        "status": "not_calculated",
+        "source": None,
+        "input_fingerprint": None,
+        "results": [],
+    }
+
+
 def blank_project(defaults):
     risks = {
         "environment": assessment("not_calculated", "GRC 环境/航路规划风险接口"),
@@ -89,12 +99,15 @@ def blank_project(defaults):
         "existing_cns_facilities": empty_collection("existing-cns-facilities"),
         "candidate_sites": empty_collection("candidate-sites"),
         "cns_gap_analysis": CNSGapAnalyzerV1.empty(),
+        "safety_policy": default_safety_policy(),
+        "safety_assessment": empty_safety_assessment(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
             name: "not_calculated" for name in (
                 "workspace", "grid", "environment_risk", "routes",
-                "coverage", "cns_gap", "technical_risk", "report",
+                "coverage", "cns_gap", "safety_assessment",
+                "technical_risk", "report",
             )
         },
         "last_saved_at": None,
@@ -137,7 +150,10 @@ def normalize_project(value, grid_service):
     value.setdefault("existing_cns_facilities", empty_collection("existing-cns-facilities"))
     value.setdefault("candidate_sites", empty_collection("candidate-sites"))
     value.setdefault("cns_gap_analysis", CNSGapAnalyzerV1.empty())
+    value["safety_policy"] = normalize_safety_policy(value.get("safety_policy"))
+    value.setdefault("safety_assessment", empty_safety_assessment())
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"
     )

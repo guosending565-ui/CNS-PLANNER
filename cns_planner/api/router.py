@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..gis.online_health import check_online_services
+from ..safety.event_evaluator import evaluate_safety_events
+from ..safety.fault_tree import evaluate_fault_tree
 from ..safety.service_state import evaluate_service_state
 from .file_browser import browse
 
@@ -35,6 +37,7 @@ class ApiRouter:
         if path == "/api/existing-cns": return Response(workflow.existing_cns_snapshot())
         if path == "/api/candidate-sites": return Response(workflow.candidate_sites_snapshot())
         if path == "/api/cns-gaps": return Response(workflow.cns_gap_snapshot())
+        if path == "/api/cns/safety-policy": return Response(workflow.safety_policy_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
         if path == "/api/export/project": return Response(workflow.export_project())
@@ -64,6 +67,18 @@ class ApiRouter:
                 payload.get("external_service_snapshot", payload.get("external_service")),
                 payload.get("confirmed_fallback"),
             ))
+        if path == "/api/cns/events/evaluate":
+            return Response(evaluate_safety_events(
+                payload.get("failure_condition"),
+                payload.get("service_state"),
+                payload.get("operational_context"),
+                payload.get("unacceptable_event"),
+            ))
+        if path == "/api/cns/fault-tree/evaluate":
+            return Response(evaluate_fault_tree(
+                payload.get("fault_tree", payload.get("tree")),
+                payload.get("event_states"),
+            ))
         if path == "/api/project/save-as": return Response(context.qgis.call(lambda: context.save_project_as(payload.get("project_dir"))))
         if path == "/api/project/open": return Response(context.qgis.call(lambda: context.open_project(payload.get("project_dir"))))
         resource_actions = {
@@ -75,6 +90,7 @@ class ApiRouter:
             "/api/candidate-sites/import": lambda: workflow.import_candidate_sites(payload),
             "/api/candidate-sites/from-existing": workflow.candidate_sites_from_existing,
             "/api/cns-gaps/analyze": workflow.analyze_cns_gaps,
+            "/api/cns/safety-policy": lambda: workflow.set_safety_policy(payload),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
         }
         if path in resource_actions:

@@ -25,6 +25,7 @@ from .project_state import SCHEMA_VERSION, assessment, blank_project, empty_exte
 from .review_service import ReviewService
 from .risk_service import RiskService
 from .route_service import RouteService
+from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
 from .workspace_service import WorkspaceService
 
@@ -48,6 +49,9 @@ class WorkflowService:
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
         snapshot = self.snapshot
+        self.safety_policy_service = SafetyPolicyService(
+            self.session, self.invalidation_service, snapshot
+        )
         self.cns_input_service = CNSInputService(self.session, self.invalidation_service, CNSInputAdapter(), snapshot)
         self.cns_input_service.ensure_catalogs()
         self.gap_analysis_service = GapAnalysisService(self.session, self.gap_analyzer, snapshot)
@@ -84,6 +88,7 @@ class WorkflowService:
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
     def cns_gap_snapshot(self): return deepcopy(self.state.get("cns_gap_analysis") or CNSGapAnalyzerV1.empty())
+    def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
             "status": "passed", "selection": deepcopy(self.state["algorithm_selection"]),
@@ -173,6 +178,7 @@ class WorkflowService:
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
     def analyze_cns_gaps(self): return self.gap_analysis_service.analyze()
+    def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()

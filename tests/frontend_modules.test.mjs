@@ -68,5 +68,8 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.match(html,/最大时延 s/);
   assert.match(html,/Ground Device Capability/);
   assert.match(html,/ReliabilitySpec/);
+  assert.match(html,/Safety Assessment Policy/);
+  assert.match(html,/ARP4761A\/FAA-inspired engineering assessment/);
+  assert.match(html,/不是认证结论/);
   assert.doesNotMatch(html,/最大时延 ms/);
 });

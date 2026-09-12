@@ -81,6 +81,8 @@ required_cns（project_default + route_overrides）
 device_catalog
 existing_cns_facilities / candidate_sites
 cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
+safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA）
+safety_assessment（预留结果容器；P5 preview 不持久化）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -89,6 +91,7 @@ cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
 - Aircraft/RequiredCNS/Device/ExistingCNS/CandidateSite 变化仅使相应下游 routes、coverage、technical risk、report stale；不改写已保存的 V1 算法结果结构。
 - workspace、operational route、运行规则/选定机型、RequiredCNS、DeviceCatalog 或 ExistingCNS 变化会使 cns_gap_analysis stale；CandidateSite 不是 Gap Analysis 输入。
 - 缺失/NoData/未知不得转换成零风险或通过。
+- safety_policy 变化只使 safety_assessment、technical_risk、report stale；不得使 workspace/grid/routes/coverage/cns_gap stale。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
@@ -118,6 +121,15 @@ P4 CNS Reliability & Effective Service State：
 - `ExternalServiceSnapshot` 单独表达实时 `available/degraded/unavailable/unknown`、性能、持续时间、冗余与来源；不得抽样 ReliabilitySpec 随机生成实时 lost。
 - 有效服务状态为 `available/available_degraded/contingency/lost/unknown`，RequiredCNS `required=false` 例外返回 `not_applicable`。只有 confirmed、性能满足且未超过 bridge/需求允许时限的 fallback 才能进入 contingency；输出 `reasons/evidence/fallback_used`。
 - `POST /api/cns/service-state/evaluate` 为无持久化纯计算 preview。Application 为 GapV1 构造不含 `reliability/fallbacks` 的兼容视图，使这些 P4 字段既不参与公式也不改变 V1 输入指纹；GapV1 实现未修改。
+
+P5 CNS Safety Event / FHA / FTA / FMEA Baseline：
+
+- schema-v2 additive/backfill 新增 safety_policy 与预留 safety_assessment。内置 FC-C-01/FC-N-01/FC-S-01 loss FailureCondition 及对应 UE-C-01/UE-N-01/UE-S-01 项目模板；模板统一 severity=unknown/source=project_template/confirmed=false/status=pending_confirmation，不填安全等级或概率目标。
+- ServiceState → FailureCondition → UnacceptableEvent 为三个独立层级：P4 lost 可触发 loss FC；available/available_degraded/contingency 默认不触发 loss FC；未确认 UE 即使关联 FC triggered 也只能输出 unknown，禁止自动判为 unacceptable/catastrophic。
+- FHA/FailureCondition 保存 function、failure_mode、运行条件/飞行阶段、local/system/operation effect、severity、mitigations、safety_objective 与来源/确认状态。Step 4 明示这是 ARP4761A/FAA-inspired engineering assessment，不是认证结论。
+- FaultTree 使用 JSON-safe top_event/and/or/basic_event/reference 节点。定性状态独立求值；只有每个叶概率均已知且相应 AND/OR gate 明确 independence_confirmed=true 时计算 AND 乘积与 OR 1-product(1-p)。依赖未确认时 probability=null/status=pending_dependency，从不假定独立。
+- FMEA 仅保存 failure mode 到 FC/UE 的 traceability、effects、detection、mitigation 与来源状态，不计算或保存 RPN。引用在 safety policy 规范化时校验。
+- GET/POST /api/cns/safety-policy 持久化策略；POST /api/cns/events/evaluate 与 POST /api/cns/fault-tree/evaluate 为纯计算 preview，不写入 safety_assessment，也不把 risks.technical 变为定量概率或 passed。
 
 ## 7. 数据源扩展
 
@@ -159,6 +171,8 @@ P3 完整基线：**161 passed, 6 skipped, 1 known failed**；Node 前端纯函�
 
 P4 完整基线：**175 passed, 6 skipped, 1 known failed**；Node **11 passed, 0 failed**，`app.js/main.js/step04_operation.js` 语法检查通过。新增覆盖 ReliabilitySpec 校验/来源、显式指数公式、inherent 与 operational availability 分离、MTBF/lambda 冲突、demo backfill、Aircraft 分系统可靠性/保存恢复、fallback 的 available/degraded/contingency/lost/unknown/not_applicable 转换、bridge 超时、纯 preview API、P4 字段不改变 GapV1 指纹及 V1 characterization。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P4 未修改生产空域代码。
 
+P5 完整基线：**191 passed, 6 skipped, 1 known failed**；P5 定向测试（含 P4、CNS 输入/Gap、repository、architecture 与四个 V1 characterization）**77 passed**；Node **11 passed, 0 failed**，main.js/step04_operation.js 语法检查通过。新增覆盖 FC/UE 模板与枚举、lost/contingency 分层、未确认 UE、FTA AND/OR 与独立性门控、FMEA 引用、schema-v2 backfill/保存恢复、定向失效、API 纯 preview 和 Step 4 声明。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P5 未修改生产空域代码。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -184,6 +198,8 @@ P4 完整基线：**175 passed, 6 skipped, 1 known failed**；Node **11 passed, 
 
 12. 当前全量 pytest 存在 1 个已知基线失败：`test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`。原因是测试替身仅支持 `QgsSpatialIndex(features)`，而生产实现采用真实 QGIS 支持的空构造后 `addFeature`；后续非相关阶段不得通过修改生产空域逻辑来“修绿”该测试。
 13. `OperationService` 为保持旧工作流/API 语义，仍在顶层 `aircraft` 输出 legacy `lambda_per_hour=1/mtbf_h`；Step 4 已标注其不是 P4 ReliabilitySpec 推断。新安全计算只能使用显式声明模型的分系统 ReliabilitySpec。
+
+14. P5 只建立单分系统 C/N/S 的轻量事件/FHA/FTA/FMEA 基线；尚未实现 C+S/N+S/C+N 耦合、common-cause、FTA 图形编辑、认证工作流或正式 safety objective 校核。
 
 ## 11. 下一阶段计划
 

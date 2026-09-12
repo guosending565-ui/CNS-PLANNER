@@ -64,3 +64,14 @@ class InvalidationService:
         result["status"] = "stale"
         state["result_statuses"]["environment_risk"] = "stale"
         state["risks"]["environment"] = assessment("stale", "网格风险输入属性已变化")
+
+    def safety_policy(self):
+        """Invalidate only future safety/technical/report products."""
+        state = self.session.state
+        self.workflow("safety_policy")
+        state.setdefault("safety_assessment", {})["status"] = "stale"
+        for name in ("safety_assessment", "technical_risk", "report"):
+            state.setdefault("result_statuses", {})[name] = "stale"
+        state.setdefault("risks", {})["technical"] = assessment(
+            "stale", "Safety assessment policy 已变化；技术风险尚未重新评估"
+        )

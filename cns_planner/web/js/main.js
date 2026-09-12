@@ -36,6 +36,9 @@ async function resourceAction(path,payload={}){
   const data=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   flow=data;store.set({workflow:flow});rebuildGridRenderCache();renderWorkflow();paint();return data;
 }
+async function computeAction(path,payload={}){
+  return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+}
 async function syncGridApis(){
   const request=++gridDataSerial;
   const [grid,attributes]=await Promise.all([api('/api/workspace/grid'),api('/api/workspace/grid/attributes')]);
@@ -296,7 +299,7 @@ function renderWorkflow(){
 }
 
 function stepBindings(){return {
-  $,flow:()=>flow,mutate,resourceAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,
+  $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,
   saveProject,openProject,
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
