@@ -81,7 +81,7 @@ required_cns（project_default + route_overrides）
 device_catalog
 existing_cns_facilities / candidate_sites
 cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
-safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA）
+safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA / FunctionalDependency / CoupledCondition / CoupledUE）
 safety_assessment（预留结果容器；P5 preview 不持久化）
 ```
 
@@ -131,6 +131,15 @@ P5 CNS Safety Event / FHA / FTA / FMEA Baseline：
 - FMEA 仅保存 failure mode 到 FC/UE 的 traceability、effects、detection、mitigation 与来源状态，不计算或保存 RPN。引用在 safety policy 规范化时校验。
 - GET/POST /api/cns/safety-policy 持久化策略；POST /api/cns/events/evaluate 与 POST /api/cns/fault-tree/evaluate 为纯计算 preview，不写入 safety_assessment，也不把 risks.technical 变为定量概率或 passed。
 
+P6 CNS Functional Dependency & Coupled Safety Event Analysis V1：
+
+- safety_policy additive 增加 functional_dependencies、coupled_conditions、coupled_unacceptable_events；旧 schema-v2 项目加载时自动回填。FunctionalDependency 保存 dependency_type、C/N/S participants、可选 stages/order/time constraints、operational condition、来源与确认状态，不内建任何通用 N→S 或 S→C 关系。
+- 内置 FD/CC/CUE-CS-01、FD/CC/CUE-CN-01、FD/CC/CUE-NS-01 三组模板，分别表达战术冲突缓解信息链、导航恢复对通信的条件依赖、导航信息对监视/DAA 的条件影响。全部 severity=unknown、source=project_template、confirmed=false，只是项目研究假设。
+- EventObservation 使用 JSON-safe ref/subsystem/status/start_s/end_s/source。CoupledCondition 支持 all_of、sequence、overlap；有时间规则而缺少时间数据时返回 unknown，顺序错误、超过间隔或重叠不足返回 not_triggered，运行上下文不匹配返回 not_applicable。
+- 层级固定为 ServiceState/P5 FC → CoupledCondition → CoupledUE。Dependency、Condition 与 CoupledUE 必须分别确认；未确认 CoupledUE 始终 unknown，不推断 unacceptable/catastrophic。
+- P6 所有 coupled 输出 probability=null/probability_status=not_calculated；EventObservation 的额外 probability 不参与计算，CoupledUE policy 拒绝概率输入。P5 FaultTree 的 independence-confirmed 概率规则保持不变。
+- POST /api/cns/coupled-events/evaluate 是无持久化纯 preview；Step 4 新增 Functional Coupling 摘要、EventObservation/OperationalContext 输入和预览。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -173,6 +182,8 @@ P4 完整基线：**175 passed, 6 skipped, 1 known failed**；Node **11 passed, 
 
 P5 完整基线：**191 passed, 6 skipped, 1 known failed**；P5 定向测试（含 P4、CNS 输入/Gap、repository、architecture 与四个 V1 characterization）**77 passed**；Node **11 passed, 0 failed**，main.js/step04_operation.js 语法检查通过。新增覆盖 FC/UE 模板与枚举、lost/contingency 分层、未确认 UE、FTA AND/OR 与独立性门控、FMEA 引用、schema-v2 backfill/保存恢复、定向失效、API 纯 preview 和 Step 4 声明。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P5 未修改生产空域代码。
 
+P6 完整基线：**206 passed, 6 skipped, 1 known failed**；P4/P5/P6、architecture 与四个 V1 characterization 定向回归 **54 passed**；Node **11 passed, 0 failed**，main.js/step04_operation.js 语法检查通过。新增覆盖 P6 backfill/引用校验、EventObservation、all_of/sequence/overlap、时间缺失/顺序/超时/重叠、运行适用性、未确认 dependency/CoupledUE、禁止耦合概率、保存恢复、定向失效和纯 preview API。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，P6 未修改生产空域代码。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -199,7 +210,7 @@ P5 完整基线：**191 passed, 6 skipped, 1 known failed**；P5 定向测试（
 12. 当前全量 pytest 存在 1 个已知基线失败：`test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`。原因是测试替身仅支持 `QgsSpatialIndex(features)`，而生产实现采用真实 QGIS 支持的空构造后 `addFeature`；后续非相关阶段不得通过修改生产空域逻辑来“修绿”该测试。
 13. `OperationService` 为保持旧工作流/API 语义，仍在顶层 `aircraft` 输出 legacy `lambda_per_hour=1/mtbf_h`；Step 4 已标注其不是 P4 ReliabilitySpec 推断。新安全计算只能使用显式声明模型的分系统 ReliabilitySpec。
 
-14. P5 只建立单分系统 C/N/S 的轻量事件/FHA/FTA/FMEA 基线；尚未实现 C+S/N+S/C+N 耦合、common-cause、FTA 图形编辑、认证工作流或正式 safety objective 校核。
+14. P6 只支持由离散 EventObservation 驱动的定性 C+S/C+N/N+S 功能耦合；尚无完整航路 ServiceTimeline、耦合概率、common-cause、BN/DBN/Petri、FTA 图形编辑、认证工作流或正式 safety objective 校核。
 
 ## 11. 下一阶段计划
 

@@ -41,8 +41,12 @@ function capabilitySummary(item){
 
 function safetyPolicyPanel(policy={}){
   const failureConditions=policy.failure_conditions||[],unacceptableEvents=policy.unacceptable_events||[];
+  const dependencies=policy.functional_dependencies||[],coupledConditions=policy.coupled_conditions||[];
   const fcOptions=failureConditions.map(item=>'<option value="'+escapeHtml(item.failure_condition_id)+'">'+escapeHtml(item.failure_condition_id+' · '+item.subsystem+' · '+item.failure_mode)+'</option>').join('');
+  const coupledOptions=coupledConditions.map(item=>'<option value="'+escapeHtml(item.coupled_condition_id)+'">'+escapeHtml(item.coupled_condition_id+' · '+item.logic)+'</option>').join('');
   const records=failureConditions.map(item=>item.failure_condition_id+': severity='+item.severity+', '+item.status).join(' · ')||'无';
+  const firstDependency=dependencies.find(item=>item.dependency_id===coupledConditions[0]?.functional_dependency_ref);
+  const previewObservations=(firstDependency?.stages||[]).map((stage,index)=>({ref:stage.event_ref,subsystem:stage.subsystem,status:'triggered',start_s:index*2,end_s:index*2+1,source:'manual_preview'}));
   return '<h3>Safety Assessment Policy</h3>'+
     '<div class="demo-note">ARP4761A/FAA-inspired engineering assessment，仅用于工程分析，不是认证结论。ServiceState、FailureCondition 与 UnacceptableEvent 为不同层级；服务 lost 不会自动成为 unacceptable/catastrophic。</div>'+
     '<div class="flow-summary">'+statusBadge(policy.status||'pending_confirmation')+
@@ -55,7 +59,15 @@ function safetyPolicyPanel(policy={}){
     '<label>上游 Service State<select id="safetyServiceState"><option>available</option><option>available_degraded</option><option>contingency</option><option>lost</option><option>unknown</option><option>not_applicable</option></select></label></div>'+
     '<button class="secondary" id="saveSafetyPolicy">保存 Safety Policy</button> '+
     '<button class="secondary" id="previewSafetyEvent">事件预览（不保存）</button>'+
-    '<pre class="flow-summary" id="safetyEventPreview">选择 Failure Condition 与 Service State 后预览。</pre>';
+    '<pre class="flow-summary" id="safetyEventPreview">选择 Failure Condition 与 Service State 后预览。</pre>'+
+    '<h3>Functional Coupling</h3>'+
+    '<div class="demo-note">C+S / C+N / N+S 模板仅为未确认研究假设，必须按运行条件确认；P6 不计算耦合概率，也不假设各分系统独立。</div>'+
+    '<div class="flow-summary">Dependencies '+dependencies.length+' · Coupled Conditions '+coupledConditions.length+' · Coupled UE '+(policy.coupled_unacceptable_events||[]).length+'</div>'+
+    '<label>Coupled Condition<select id="coupledCondition">'+coupledOptions+'</select></label>'+
+    '<label>EventObservations JSON<textarea id="coupledObservations" rows="7">'+escapeHtml(JSON.stringify(previewObservations,null,2))+'</textarea></label>'+
+    '<label>OperationalContext JSON<textarea id="coupledOperationalContext" rows="3">{}</textarea></label>'+
+    '<button class="secondary" id="previewCoupledEvent">Coupled Event Preview（不保存）</button>'+
+    '<pre class="flow-summary" id="coupledEventPreview">选择 Coupled Condition 并提供观察数据后预览。</pre>';
 }
 
 export function render({flow}){
@@ -102,6 +114,23 @@ export function bind(c){
     const ue=(policy.unacceptable_events||[]).find(item=>(item.failure_condition_refs||[]).includes(fc?.failure_condition_id));
     const result=await c.computeAction('/api/cns/events/evaluate',{failure_condition:fc,unacceptable_event:ue,service_state:{service_state:c.$('safetyServiceState').value},operational_context:{subsystem:fc?.subsystem}});
     c.$('safetyEventPreview').textContent='FailureCondition: '+(result.failure_condition?.status||'unknown')+' · UnacceptableEvent: '+(result.unacceptable_event?.status||'unknown')+' · severity '+(result.unacceptable_event?.severity||'unknown');
+  });
+  const couplingInput=()=>{
+    const policy=c.flow().safety_policy||{},condition=(policy.coupled_conditions||[]).find(item=>item.coupled_condition_id===c.$('coupledCondition').value);
+    const dependency=(policy.functional_dependencies||[]).find(item=>item.dependency_id===condition?.functional_dependency_ref);
+    const coupledUe=(policy.coupled_unacceptable_events||[]).find(item=>(item.coupled_condition_refs||[]).includes(condition?.coupled_condition_id));
+    return {condition,dependency,coupledUe};
+  };
+  if(c.$('coupledCondition'))c.$('coupledCondition').onchange=()=>{
+    const {dependency}=couplingInput();
+    const observations=(dependency?.stages||[]).map((stage,index)=>({ref:stage.event_ref,subsystem:stage.subsystem,status:'triggered',start_s:index*2,end_s:index*2+1,source:'manual_preview'}));
+    c.$('coupledObservations').value=JSON.stringify(observations,null,2);
+  };
+  c.actionButton('previewCoupledEvent',async()=>{
+    const {condition,dependency,coupledUe}=couplingInput();
+    const observations=JSON.parse(c.$('coupledObservations').value||'[]'),operationalContext=JSON.parse(c.$('coupledOperationalContext').value||'{}');
+    const result=await c.computeAction('/api/cns/coupled-events/evaluate',{functional_dependency:dependency,coupled_condition:condition,coupled_unacceptable_event:coupledUe,observations,operational_context:operationalContext});
+    c.$('coupledEventPreview').textContent='CoupledCondition: '+(result.coupled_condition?.status||'unknown')+' · CoupledUE: '+(result.coupled_unacceptable_event?.status||'unknown')+' · probability '+(result.probability_status||'not_calculated');
   });
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(5);
 }

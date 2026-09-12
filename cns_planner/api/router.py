@@ -6,6 +6,7 @@ from pathlib import Path
 from ..gis.online_health import check_online_services
 from ..safety.event_evaluator import evaluate_safety_events
 from ..safety.fault_tree import evaluate_fault_tree
+from ..safety.coupling import evaluate_coupled_events
 from ..safety.service_state import evaluate_service_state
 from .file_browser import browse
 
@@ -78,6 +79,14 @@ class ApiRouter:
             return Response(evaluate_fault_tree(
                 payload.get("fault_tree", payload.get("tree")),
                 payload.get("event_states"),
+            ))
+        if path == "/api/cns/coupled-events/evaluate":
+            return Response(evaluate_coupled_events(
+                payload.get("functional_dependency"),
+                payload.get("coupled_condition"),
+                payload.get("observations"),
+                payload.get("operational_context"),
+                payload.get("coupled_unacceptable_event"),
             ))
         if path == "/api/project/save-as": return Response(context.qgis.call(lambda: context.save_project_as(payload.get("project_dir"))))
         if path == "/api/project/open": return Response(context.qgis.call(lambda: context.open_project(payload.get("project_dir"))))
