@@ -34,6 +34,7 @@ from .spatial_3d_service import Spatial3DService
 from .cns_service_capability_service import CNSServiceCapabilityService
 from .operational_timing_service import OperationalTimingService
 from .site_planning_service import SitePlanningService
+from .closed_loop_service import ClosedLoopService
 
 
 class WorkflowService:
@@ -110,6 +111,10 @@ class WorkflowService:
             self.session, self.site_planner, self.coverage_model_3d,
             self.cns_service_model, self.invalidation_service, snapshot,
         )
+        self.closed_loop_service = ClosedLoopService(
+            self.session, self.coverage_model_3d, self.cns_service_model,
+            self.timeline_model, self.gap_analyzer_v2, snapshot,
+        )
         self.export_service = ExportService(self.session, snapshot)
 
     def save(self): self.session.save()
@@ -141,6 +146,7 @@ class WorkflowService:
     def service_timeline_snapshot(self): return self.operational_timing_service.timeline_snapshot()
     def protection_envelope_snapshot(self): return self.operational_timing_service.protection_snapshot()
     def cns_site_plan_snapshot(self): return self.site_planning_service.result_snapshot()
+    def closed_loop_snapshot(self): return self.closed_loop_service.result_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -210,6 +216,7 @@ class WorkflowService:
         elif algorithm_type == "cns_gap_analyzer":
             if getattr(instance, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id:
                 self.gap_analyzer_v2 = self.gap_analysis_v2_service.analyzer = instance
+                self.closed_loop_service.gap_model = instance
             else:
                 self.gap_analyzer = self.gap_analysis_service.analyzer = instance
         elif algorithm_type == "risk_model":
@@ -217,11 +224,14 @@ class WorkflowService:
         elif algorithm_type == "coverage_model":
             self.coverage_model_3d = self.spatial_3d_service.model = instance
             self.site_planning_service.coverage_model = instance
+            self.closed_loop_service.coverage_model = instance
         elif algorithm_type == "service_model":
             self.cns_service_model = self.cns_service_capability_service.model = instance
             self.site_planning_service.capability_model = instance
+            self.closed_loop_service.capability_model = instance
         elif algorithm_type == "timeline_model":
             self.timeline_model = self.operational_timing_service.timeline_model = instance
+            self.closed_loop_service.timeline_model = instance
         elif algorithm_type == "protection_model":
             self.protection_model = self.operational_timing_service.protection_model = instance
         elif algorithm_type == "site_planner":
@@ -255,6 +265,8 @@ class WorkflowService:
     def analyze_cns_gaps(self): return self.gap_analysis_service.analyze()
     def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)
     def evaluate_cns_site_plan(self, payload=None): return self.site_planning_service.evaluate(payload)
+    def evaluate_closed_loop(self, payload=None): return self.closed_loop_service.evaluate(payload)
+    def apply_closed_loop(self, payload=None): return self.closed_loop_service.apply(payload)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)

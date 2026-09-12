@@ -217,6 +217,9 @@ def test_planning_profile_is_excluded_from_established_p7_p8_fingerprints(tmp_pa
     }
     legacy_facilities = deepcopy(workflow.state["existing_cns_facilities"])
     legacy_facilities["items"][0].pop("planning_profile")
+    legacy_facilities["items"][0].pop("planning_origin")
+    for installed in legacy_facilities["items"][0]["devices"]:
+        installed.pop("planning_origin")
     expected_coverage = workflow.coverage_model_3d.evaluate(
         workflow.state["operational_routes"], workflow.state["spatial_3d"],
         workflow.state["grid"], workflow.state["grid_attributes"],

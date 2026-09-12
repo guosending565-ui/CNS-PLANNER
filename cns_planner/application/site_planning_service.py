@@ -45,6 +45,7 @@ class SitePlanningService:
         result = self.planner.plan(
             targets, actions, impacts, state.get("site_planning_policy") or {},
         )
+        self.invalidation.closed_loop_assessment()
         state["cns_site_plan"] = result
         state["result_statuses"]["cns_site_plan"] = (
             "passed" if result["status"] == "proposal_ready" else "missing_data"

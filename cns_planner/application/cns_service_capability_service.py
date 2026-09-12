@@ -23,6 +23,10 @@ class CNSServiceCapabilityService:
         for facility in facilities.get("items") or []:
             if isinstance(facility, dict):
                 facility.pop("planning_profile", None)
+                facility.pop("planning_origin", None)
+                for device in facility.get("devices") or []:
+                    if isinstance(device, dict):
+                        device.pop("planning_origin", None)
         result = self.model.evaluate(
             state.get("coverage_3d") or {}, state.get("required_cns") or {}, profile,
             facilities, state.get("device_catalog") or {},

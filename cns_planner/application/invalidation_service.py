@@ -159,3 +159,14 @@ class InvalidationService:
             state.setdefault("result_statuses", {})["cns_site_plan"] = "stale"
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"
+        self.closed_loop_assessment()
+
+    def closed_loop_assessment(self):
+        """Invalidate only the P12 verification product."""
+        state = self.session.state
+        result = state.get("closed_loop_assessment") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            result["commit_status"] = "stale_assessment"
+            state["closed_loop_assessment"] = result
+            state.setdefault("result_statuses", {})["closed_loop_assessment"] = "stale"

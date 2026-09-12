@@ -70,6 +70,7 @@ class ExistingCNSFacility(TypedDict, total=False):
     metadata: dict[str, Any]
     vertical_profile: dict[str, Any]
     planning_profile: dict[str, Any]
+    planning_origin: dict[str, Any]
 
 
 class CandidateSite(TypedDict, total=False):
@@ -243,6 +244,7 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
             ),
             "coverage_geometry": normalize_coverage_geometry(device, device.get("coverage_geometry")),
             "service_model": normalize_service_model_spec(device.get("service_model")),
+            "planning_origin": deepcopy(device.get("planning_origin")),
         })
     return {
         "facility_id": facility_id, "site_id": str(item.get("site_id") or facility_id),
@@ -252,6 +254,7 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
             item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m", item.get("elevation"))
         ),
         "planning_profile": normalize_planning_profile(item.get("planning_profile")),
+        "planning_origin": deepcopy(item.get("planning_origin")),
         "devices": normalized_devices, "status": str(item.get("status") or "active"),
         "source": str(item.get("source") or "用户导入"), "metadata": deepcopy(item.get("metadata") or {}),
     }

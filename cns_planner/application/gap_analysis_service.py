@@ -50,8 +50,10 @@ class GapAnalysisService:
                 continue
             facility.pop("vertical_profile", None)
             facility.pop("planning_profile", None)
+            facility.pop("planning_origin", None)
             for device in facility.get("devices", []):
                 if isinstance(device, dict):
+                    device.pop("planning_origin", None)
                     device.pop("vertical_profile", None)
                     device.pop("coverage_geometry", None)
                     device.pop("service_model", None)

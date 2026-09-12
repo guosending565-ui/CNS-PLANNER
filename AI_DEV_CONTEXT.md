@@ -1,6 +1,6 @@
 # CNS 规划系统开发上下文
 
-> 架构基线：2026-09-11（Asia/Shanghai）
+> 架构基线：2026-09-12（Asia/Shanghai）
 > 当前目标是持续完善 CNS 规划工作台；结构重构不得顺带改变 V1 算法、风险公式、API 路径或项目业务结果。
 
 ## 1. 当前架构
@@ -52,6 +52,7 @@ map_app.py / app.py
 - `application/project_state.py`：schema-v2 空状态、兼容字段回填与 schema 校验。
 - `domain/algorithm_manifest.py`、`algorithms/registry.py`：算法可解释元数据、精确注册/查询/实例化，包含受保护的既有 V1 与独立 3D 覆盖、静态能力、时间线和保护包络模型；factory/Python 实现路径不进入 ProjectState 或 API Manifest。
 - `application/cns_input_service.py`：五类 CNS 规划输入的选择、导入、需求覆盖、保存与下游失效。
+- `application/closed_loop_service.py` + `domain/closed_loop.py`：P12 working-copy 重跑编排、确定性 PlanApplication、Before/After 比较和事务式 Preview/Apply；不实现新的覆盖、能力、时间线或 Gap 公式。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
 - `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
 - `application/review_service.py` + `domain/status.py`：结果状态聚合的唯一权威实现。
@@ -90,6 +91,8 @@ operational_timing（route_motion_profiles / service_scenarios / response_time_b
 service_timeline（按 route/subsystem 保存显式场景驱动的连续运行状态区间）
 protection_envelope（独立保存工程战术保护距离结果）
 cns_gap_analysis_v2（独立保存 planning/runtime/combined Gap V2；不覆盖 cns_gap_analysis）
+site_planning_policy / cns_site_plan（P11 proposal-only 规划输入与提案）
+closed_loop_assessment（P12 baseline/planned 重跑证据、比较、provenance 与 commit 状态）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -103,6 +106,7 @@ cns_gap_analysis_v2（独立保存 planning/runtime/combined Gap V2；不覆盖 
 - `coverage_3d`、RequiredCNS、选定 Aircraft Profile、DeviceCatalog/ExistingCNS 或 service-model 选择变化会定向使 `cns_service_capability` stale；不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - route/altitude/P8 capability/RequiredCNS/Aircraft/motion/service scenario 变化会定向使 `service_timeline` stale；response budget/encounter scenario 变化仅使 `protection_envelope` stale。两者均不反向使 grid/routes/CoverageV1/GapV1 stale。
 - RequiredCNS、Aircraft、`coverage_3d`、`cns_service_capability` 或 `service_timeline` 变化会定向使 `cns_gap_analysis_v2` stale；`protection_envelope` 仅在 Gap V2 显式启用 protection margin 时使其 stale。该链路不反向影响 grid/routes/CoverageV1/GapV1/P7/P8/P9。
+- Gap V2、ExistingCNS、CandidateSite、DeviceCatalog、site policy 或相关算法选择变化会使 `cns_site_plan` stale，并继续使 `closed_loop_assessment` stale。P12 Preview 只保存 assessment；Apply 成功后提交 planned ExistingCNS 与 P7-P10 结果，并只向下游使 CoverageV1、GapV1、site plan、technical risk、report stale，不反向影响 grid/routes/grid_risk。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
@@ -196,6 +200,15 @@ P11 Reuse-first CNS Site Planner V1：
 - confirmed explicit cost 使用 marginal gap/cost；缺 cost 时只用 action-count proxy，不伪造货币。provider 数、共址和多个 action 不自动视为 independent redundancy；单 action 无收益但可能需联合求解时保留 residual 并标记 `requires_joint_optimization`。
 - P11 planning metadata 在正常 P7/P8/GapV1 调用前从兼容输入视图剔除，保护已有算法指纹。API 为 `GET/POST /api/cns-site-plan`；Step 5 显示 target、CandidateAction what-if 收益、selected proposal、remaining gap 及 P12 闭环复核声明。
 
+P12 Closed-Loop Plan Application & Reassessment V1：
+
+- P12 是 Application 层的 engineering closed-loop verification，不注册新算法，也不声明真实 CNS 模型 validation、认证结论或安全改善。ProjectState additive 保存独立 `closed_loop_assessment`。
+- Preview 在 deep-copied baseline/planned working state 中使用相同实现与有效参数重跑 P7→P8→P9→P10；planned 副本一次应用 P11 全部 selected actions。Preview 正式状态除 assessment 外不变，P11 估计收益不替代真实重跑结果。
+- `PlanApplication` 以 site-plan fingerprint、baseline fingerprint 和 action IDs 确定性生成 identity，记录 applied facility/device refs 与 planning provenance。既有设施只追加设备；Candidate/New-build 使用显式站址坐标转换为确定性 ExistingCNSFacility，且不修改 DeviceCatalog/CandidateSite。
+- Before/After 分别比较 planning/combined gap、unknown、contingency、runtime lost、最大连续 gap 与 gap count。Gap→Unknown 不计 resolved；有新 confirmed regression 为 regression；confirmed planning gap 实际下降且无 regression 才为 validated_improvement。
+- Apply 只接受当前 validated Preview，并重新校验 baseline/site-plan/assessment fingerprint。工作副本或重跑任一步失败则内存与磁盘正式状态不变；成功时单次保存 planned ExistingCNS 与 P7-P10 结果。相同 application/action 通过 `planning_origin` 幂等去重。
+- API 为 `GET /api/cns-closed-loop`、`POST /api/cns-closed-loop/evaluate`、`POST /api/cns-closed-loop/apply`；Step 5 显示 Before/After/Delta、predicted/actual、residual、regression 和 Preview/Apply 边界。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -250,6 +263,10 @@ P10 完整基线：**249 passed, 6 skipped, 1 known failed**；P10/GapV1/P7/P8/P
 
 P11 完整基线：**260 passed, 6 skipped, 1 known failed**；P11/P7/P8/P10/Registry/CNS inputs 定向回归 **64 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step05_cns.js` 语法检查通过。新增覆盖 planning profile/backfill、target 过滤、locked/unusable/unsupported/缺失证据门控、真实 P7/P8 what-if、reuse tier、重叠收益去重、cost proxy、deterministic tie-break、独立冗余保守残留、上游不变/指纹兼容、Registry、schema-v2 保存恢复、API 与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P11 未修改生产空域代码。
 
+P12 完整基线：**268 passed, 6 skipped, 1 known failed**；P12/P11/P7-P10/GapV1/Registry/Persistence/architecture 定向回归 **104 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step05_cns.js` 语法检查通过。新增覆盖 Preview 零污染、全部 selected actions 组合真实重跑、Apply 单次提交与幂等保存恢复、predicted-vs-actual、Gap→Unknown、regression/no-effect/inconclusive、显式 runtime loss 保持、stale assessment 拒绝、重跑异常 rollback、API、schema-v2 backfill 与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P12 未修改生产空域代码。
+
+当前里程碑：**CNS-PLANNER v1.0 research baseline / ready for synthetic end-to-end validation**。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -284,12 +301,13 @@ P11 完整基线：**260 passed, 6 skipped, 1 known failed**；P11/P7/P8/P10/Reg
 
 17. GapV2 是上游证据的保守区间合并，不做传播/性能/ServiceState 重算，不把 unknown 当 gap，也不触发 SafetyEvent；protection margin 仅支持已有 confirmed 监视探测距离的工程差值，尚未形成 GapV2→Safety/站址方案闭环。
 
-18. P11 是单 action 正收益的 reuse-first 提案器，不求解多 action 联合后才能满足的独立冗余，不含风险/人口/severity 权重，也不是费用优化器。Proposal 尚未 apply；P12 必须将用户明确选中的动作转为项目输入并重跑 P7/P8/P10 闭环，才能验证剩余 Gap。
+18. P11 是单 action 正收益的 reuse-first 提案器，不求解多 action 联合后才能满足的独立冗余，不含风险/人口/severity 权重，也不是费用优化器。P12 可组合 apply 并重跑 P7-P10，但结果仍受 P7/P8 工程模型与输入证据完整度约束。
+19. P12 没有项目级 audit log、撤销已提交 application 或多方案分支合并；事务边界依赖当前单项目单进程 repository 原子写入。真实数据验证、并发提交控制和人工审批流留待后续阶段。
 
 ## 11. 下一阶段计划
 
-1. P12 建立显式 proposal apply + rerun 闭环：用户确认 CandidateAction 后才更新项目输入，重跑 P7/P8/P10，对比 proposal 与实际剩余 Gap，并保留 audit/rollback 边界。
+1. 使用 synthetic end-to-end 场景验证 P7-P12 全链路的守恒量、证据传播、重启恢复和 proposal/actual 偏差。
 2. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 3. 将 grid_risk 作为 RoutePlannerV2 的标准代价输入，在新版本中逐步替换 56×56 原型；不要修改 RoutePlannerV1。
 4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
-5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit 和真实 QGIS 集成 CI/验收脚本。
+5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

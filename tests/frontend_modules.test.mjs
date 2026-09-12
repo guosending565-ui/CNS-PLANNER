@@ -84,8 +84,8 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.doesNotMatch(html,/最大时延 ms/);
 });
 
-test('P7-P11 workflow steps expose vertical, runtime, gap and proposal contracts',()=>{
-  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},cns_gap_analysis_v2:{},coverage_3d:{},cns_service_capability:{},site_planning_policy:{},cns_site_plan:{}};
+test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop contracts',()=>{
+  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},cns_gap_analysis_v2:{},coverage_3d:{},cns_service_capability:{},site_planning_policy:{},cns_site_plan:{},closed_loop_assessment:{}};
   const step2=renderStep2({flow:base,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   const step3=renderStep3({flow:base,interactionMode:'pan'});
   const step5=renderStep5({flow:base});
@@ -107,4 +107,8 @@ test('P7-P11 workflow steps expose vertical, runtime, gap and proposal contracts
   assert.match(step5,/Proposal Only/);
   assert.match(step5,/P12/);
   assert.match(step5,/不修改 ExistingCNS/);
+  assert.match(step5,/Closed-loop Validation V1/);
+  assert.match(step5,/Preview 只在 working copy/);
+  assert.match(step5,/Apply 才正式提交/);
+  assert.match(step5,/不是真实 CNS 模型 validation 或认证结论/);
 });

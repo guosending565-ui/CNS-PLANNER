@@ -41,6 +41,7 @@ class ProjectState(TypedDict, total=False):
     cns_gap_analysis_v2: dict[str, Any]
     site_planning_policy: dict[str, Any]
     cns_site_plan: dict[str, Any]
+    closed_loop_assessment: dict[str, Any]
     safety_policy: dict[str, Any]
     safety_assessment: dict[str, Any]
     coverage: dict[str, Any] | None
