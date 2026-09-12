@@ -1,6 +1,6 @@
 /* 六步业务工作流 */
 .side-card{max-height:calc(100vh - 285px);overflow:auto}
-.side-card input,.side-card select,.panel-input{width:100%;border:1px solid #d5e0e8;border-radius:4px;background:#fff;color:#344f65;padding:8px;margin-bottom:8px}
+.side-card input:not([type="radio"]):not([type="checkbox"]),.side-card select,.panel-input{width:100%;border:1px solid #d5e0e8;border-radius:4px;background:#fff;color:#344f65;padding:8px;margin-bottom:8px}
 .side-card label{margin:10px 0 4px}.side-card button.full{margin-top:7px}.button-row{display:flex;gap:7px;margin:8px 0}.button-row>*{flex:1}
 .flow-summary,.demo-note,.parameter-note,.empty-note{margin:9px 0;padding:9px;border-radius:4px;background:#eef5fb;color:#557188;font-size:10px;line-height:1.7}
 .demo-note{background:#fff7df;color:#80651d}.parameter-note{background:#f4f2fb;color:#66558b}.empty-note{background:#f6f7f8;color:#82909b}
@@ -193,7 +193,7 @@
     font-size:11px !important;
 }
 
-.side-card input,
+.side-card input:not([type="radio"]):not([type="checkbox"]),
 .side-card select,
 .side-card .panel-input{
     width:100%;
@@ -278,3 +278,153 @@
 
     gap:7px !important;
 }
+
+/* =========================================================
+   Step 02：工作区与环境 - 网格显示/专题模式布局优化
+   目标：避免 radio/checkbox 被全宽输入框规则拉伸，专题固定两列排列
+   ========================================================= */
+
+.grid-theme-controls{
+    display:grid !important;
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+    gap:8px !important;
+    margin:12px 0 !important;
+    padding:13px !important;
+    border:1px solid #dfe7ee !important;
+    border-radius:6px !important;
+    background:#fff !important;
+}
+
+/* 标题、标准网格、专题模式标题和说明都单独占一整行 */
+.grid-theme-controls>b,
+.grid-theme-controls>.grid-outline,
+.grid-theme-controls>span,
+.grid-theme-controls>small{
+    grid-column:1/-1 !important;
+}
+
+.grid-theme-controls>b{
+    margin:0 !important;
+    color:#496c87 !important;
+    font-size:11px !important;
+    line-height:1.4 !important;
+}
+
+/* 标准网格 */
+.side-card .grid-theme-controls>.grid-outline{
+    display:flex !important;
+    align-items:center !important;
+    gap:8px !important;
+    margin:0 !important;
+    padding:8px 10px !important;
+    min-width:0;
+    border:1px solid #e3e9ee;
+    border-radius:5px;
+    background:#f8fafc;
+    color:#536b7e;
+    font-size:11px !important;
+    line-height:1.35;
+    cursor:pointer;
+}
+
+/* “专题模式”小标题 */
+.grid-theme-controls>span{
+    margin:4px 0 0 !important;
+    color:#7b8d9c !important;
+    font-size:10px !important;
+    font-weight:600;
+    line-height:1.4;
+}
+
+/* 专题单选项：两列、等宽、紧凑 */
+.side-card .grid-theme-controls>label:not(.grid-outline){
+    display:flex !important;
+    align-items:center !important;
+    gap:7px !important;
+    min-width:0;
+    min-height:36px;
+    margin:0 !important;
+    padding:8px 9px !important;
+    border:1px solid #e3e9ee;
+    border-radius:5px;
+    background:#f8fafc;
+    color:#5d7284;
+    font-size:10px !important;
+    line-height:1.35;
+    cursor:pointer;
+}
+
+/* 修复原先 .side-card input { width:100% } 对 radio/checkbox 的影响 */
+.side-card .grid-theme-controls input[type="radio"],
+.side-card .grid-theme-controls input[type="checkbox"]{
+    width:15px !important;
+    height:15px !important;
+    min-width:15px !important;
+    max-width:15px !important;
+    flex:0 0 15px !important;
+    margin:0 !important;
+    padding:0 !important;
+}
+
+/* 防止中文标签被挤成逐字竖排 */
+.side-card .grid-theme-controls>label:not(.grid-outline){
+    white-space:normal;
+    word-break:keep-all;
+    overflow-wrap:normal;
+}
+
+/* 鼠标悬停 */
+.side-card .grid-theme-controls>label:hover{
+    border-color:#b8d6eb;
+    background:#f2f8fc;
+}
+
+/* 选中状态 */
+.side-card .grid-theme-controls>label:not(.grid-outline):has(input[type="radio"]:checked){
+    border-color:#7dbce8;
+    background:#edf7ff;
+    color:#1a6fae;
+    font-weight:600;
+}
+
+.side-card .grid-theme-controls>.grid-outline:has(input[type="checkbox"]:checked){
+    border-color:#a9cee8;
+    background:#f1f8fd;
+    color:#315d82;
+}
+
+/* 底部数据说明 */
+.grid-theme-controls>small{
+    display:block;
+    margin-top:2px !important;
+    padding-top:9px;
+    border-top:1px solid #edf1f4;
+    color:#8795a3 !important;
+    font-size:9px !important;
+    line-height:1.5;
+    word-break:break-word;
+}
+
+/* Step 02 顶部两个操作按钮保持一致高度 */
+#drawWorkspace,
+#clearWorkspace{
+    min-height:42px;
+}
+
+#drawWorkspace{
+    font-weight:600;
+}
+
+/* 较窄窗口下仍保持可读性 */
+@media(max-width:430px){
+    .grid-theme-controls{
+        grid-template-columns:1fr !important;
+    }
+    .grid-theme-controls>b,
+    .grid-theme-controls>.grid-outline,
+    .grid-theme-controls>span,
+    .grid-theme-controls>small{
+        grid-column:1 !important;
+    }
+}
+
