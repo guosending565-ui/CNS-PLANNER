@@ -42,6 +42,10 @@ class InvalidationService:
             self.coverage_3d()
         if "cns_service_capability" in affected:
             self.cns_service_capability()
+        if "service_timeline" in affected:
+            self.service_timeline()
+        if "protection_envelope" in affected:
+            self.protection_envelope()
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -101,5 +105,26 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_service_capability"] = result
             state.setdefault("result_statuses", {})["cns_service_capability"] = "stale"
+        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
+            state["result_statuses"]["report"] = "stale"
+        self.service_timeline()
+
+    def service_timeline(self):
+        state = self.session.state
+        result = state.get("service_timeline") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["service_timeline"] = result
+            state.setdefault("result_statuses", {})["service_timeline"] = "stale"
+        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
+            state["result_statuses"]["report"] = "stale"
+
+    def protection_envelope(self):
+        state = self.session.state
+        result = state.get("protection_envelope") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["protection_envelope"] = result
+            state.setdefault("result_statuses", {})["protection_envelope"] = "stale"
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"

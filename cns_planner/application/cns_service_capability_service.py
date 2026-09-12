@@ -24,6 +24,7 @@ class CNSServiceCapabilityService:
             state.get("existing_cns_facilities") or {}, state.get("device_catalog") or {},
         )
         state["cns_service_capability"] = result
+        self.invalidation.service_timeline()
         state["result_statuses"]["cns_service_capability"] = {
             "meets_under_model": "passed", "does_not_meet_under_model": "failed",
             "unknown": "pending_confirmation", "unsupported_model": "missing_data",

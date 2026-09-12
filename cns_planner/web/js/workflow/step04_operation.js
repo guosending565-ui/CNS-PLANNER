@@ -70,6 +70,36 @@ function safetyPolicyPanel(policy={}){
     '<pre class="flow-summary" id="coupledEventPreview">选择 Coupled Condition 并提供观察数据后预览。</pre>';
 }
 
+function operationalTimingPanel(flow){
+  const timing=flow.operational_timing||{},routes=flow.operational_routes||[];
+  const routeOptions=routes.map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
+  const firstRoute=routes[0]?.route_id||'',scenario=(timing.service_scenarios||{})[firstRoute]||{},events=scenario.events||[{event_id:'EVENT-1',subsystem:'C',start_s:0,end_s:10,external_state:'unknown',type:{},performance:{},source:'user_configuration',confirmed:false}];
+  const budget=Object.values(timing.response_time_budgets||{})[0]||{},components=budget.components||{};
+  const encounter=Object.values(timing.encounter_scenarios||{})[0]||{};
+  const timeInput=(id,label,key)=>input(id,label,components[key]?.value_s);
+  return '<h3>Operational Timing & Service Scenario</h3>'+
+    '<div class="demo-note">P8 静态 capability 不会自动转为 P4 available；只有 confirmed ServiceScenarioEvent 才产生运行状态。</div>'+
+    '<label>运行航路<select id="serviceScenarioRoute">'+routeOptions+'</select></label>'+
+    '<label>ServiceScenarioEvent JSON<textarea id="serviceScenarioEvents" rows="8">'+escapeHtml(JSON.stringify(events,null,2))+'</textarea></label>'+
+    '<label class="check-row"><input type="checkbox" id="serviceScenarioConfirmed" '+(scenario.confirmed?'checked':'')+'>场景与事件已确认</label>'+
+    '<button class="secondary full" id="saveServiceScenario" '+(!routeOptions?'disabled':'')+'>保存 Service Scenario</button>'+
+    '<h3>Response Time Budget</h3><div class="form-grid">'+
+    timeInput('rtDetect','Detect s','detect')+timeInput('rtTrack','Track s','track')+
+    timeInput('rtProcessing','Processing s','processing')+timeInput('rtDecision','Decision s','decision')+
+    timeInput('rtCommunication','Communication s','communication')+timeInput('rtReaction','Aircraft reaction s','aircraft_reaction')+
+    input('rtSource','时间预算来源',budget.source,'text')+
+    '<label class="check-row"><input type="checkbox" id="rtConfirmed" '+(budget.confirmed?'checked':'')+'>各时间分量已确认</label></div>'+
+    '<button class="secondary full" id="saveResponseBudget">保存 Response Time Budget</button>'+
+    '<h3>Encounter Scenario</h3><div class="form-grid">'+
+    input('encounterRelativeSpeed','Relative closing speed m/s',encounter.relative_closing_speed_mps)+
+    input('encounterManeuver','Maneuver distance m',encounter.maneuver_distance_m)+
+    input('encounterUncertainty','Uncertainty distance m',encounter.uncertainty_distance_m)+
+    input('encounterSource','Encounter 来源',encounter.source,'text')+
+    '<label class="check-row"><input type="checkbox" id="encounterConfirmed" '+(encounter.confirmed?'checked':'')+'>Encounter 参数已确认</label></div>'+
+    '<button class="secondary full" id="saveEncounterScenario">保存 Encounter Scenario</button>'+
+    '<div class="parameter-note">Relative closing speed 必须显式输入，不会用 ownship/cruise speed 代替。</div>';
+}
+
 export function render({flow}){
   const aircraft=flow.aircraft||{},rules=flow.rules||{},catalog=flow.aircraft_profiles||{items:[]};
   const selectedProfile=flow.selected_aircraft_profile_id||aircraft.aircraft_id||'';
@@ -80,10 +110,11 @@ export function render({flow}){
   const profileSummary=catalog.items.filter(item=>item.aircraft_id===selectedProfile).map(capabilitySummary).join('');
   const devices=(flow.device_catalog?.items||[]).map(item=>item.subsystem+':'+(item.type?.technology||'unknown')+' / '+(item.reliability?.source||'未记录')+' / '+(item.reliability?.status||'missing_data')).join(' · ')||'未加载';
   const safetyPanel=safetyPolicyPanel(flow.safety_policy||{});
+  const timingPanel=operationalTimingPanel(flow);
   const body='<div class="demo-note">AircraftCNSProfileCatalog：'+escapeHtml(flow.aircraft_source)+' · '+catalog.count+' 条；机载能力不会自动成为任务需求</div><label>飞行器能力档案<select id="aircraftProfile">'+profileOptions+'</select></label>'+profileSummary+
     '<div class="form-grid"><label>厂家<input id="manufacturer" value="'+escapeHtml(value(aircraft,'manufacturer','工程测试厂家'))+'"></label><label>型号<input id="model" value="'+escapeHtml(value(aircraft,'model','Demo-A1'))+'"></label><label>巡航速度 m/s<input type="number" id="cruise" value="'+value(aircraft,'cruise_speed_mps',25)+'"></label><label>最大速度 m/s<input type="number" id="maximum" value="'+value(aircraft,'max_speed_mps',40)+'"></label><label>MTBF h<input type="number" id="mtbf" value="'+value(aircraft,'mtbf_h',10000)+'"></label><label>绑定航路<select id="aircraftRoute">'+routeOptions+'</select></label><label>A→B 高度 m<input type="number" id="heightAB" value="'+value(rules,'height_ab_m',120)+'"></label><label>B→A 高度 m<input type="number" id="heightBA" value="'+value(rules,'height_ba_m',150)+'"></label><label>高度模式<select id="heightMode"><option value="different">双向不同高度</option><option value="same">同高度层</option></select></label><label>水平间隔 m<input type="number" id="separation" value="'+value(rules,'horizontal_separation_m',100)+'"></label><label>感知→平台 ms<input type="number" id="delaySensor" value="'+value(rules,'delay_sensor_to_platform_ms',500)+'"></label><label>平台→航空器 ms<input type="number" id="delayCommand" value="'+value(rules,'delay_platform_to_aircraft_ms',500)+'"></label></div><label>方向规则<select id="directionRule"><option>按航向分层</option><option>同一航路仅一架</option><option>同一方向仅一架</option></select></label><button class="primary full" id="saveRules">保存并校验规则</button>'+
     (flow.aircraft?'<div class="flow-summary">Legacy λ='+(flow.aircraft.lambda_per_hour*1000000).toFixed(3)+'×10⁻⁶/h（兼容字段，非 P4 ReliabilitySpec 推断） · 总时延 '+rules.total_delay_ms+' ms · 反应距离 '+rules.reaction_distance_m+' m<br>'+statusBadge(rules.status)+' '+escapeHtml(rules.message)+'</div>':'')+
-    '<h3>Required CNS Performance</h3><label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div><button class="secondary full" id="saveRequiredCns">保存 RequiredCNS</button><div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持 pending_confirmation，不提供安全阈值默认值。</div><div class="demo-note">ReliabilitySpec 是统计属性，不会随机决定当前服务状态；demo 与未确认参数仅作待核实输入。</div><div class="flow-summary"><strong>Ground Device Capability</strong><br>'+escapeHtml(devices)+'</div>'+safetyPanel+'<button class="secondary full" id="nextStep" '+(!flow.steps['4']?'disabled':'')+'>下一步：设备与布站</button>';
+    '<h3>Required CNS Performance</h3><label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div><button class="secondary full" id="saveRequiredCns">保存 RequiredCNS</button><div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持 pending_confirmation，不提供安全阈值默认值。</div><div class="demo-note">ReliabilitySpec 是统计属性，不会随机决定当前服务状态；demo 与未确认参数仅作待核实输入。</div><div class="flow-summary"><strong>Ground Device Capability</strong><br>'+escapeHtml(devices)+'</div>'+timingPanel+safetyPanel+'<button class="secondary full" id="nextStep" '+(!flow.steps['4']?'disabled':'')+'>下一步：设备与布站</button>';
   return shell('04','运行规则','Aircraft Capability、Required CNS Performance 与地面设备能力相互独立。',body);
 }
 
@@ -92,6 +123,10 @@ export function bind(c){
   c.$('aircraftProfile').onchange=event=>{const profile=flow.aircraft_profiles.items.find(item=>item.aircraft_id===event.target.value);if(!profile)return;c.$('manufacturer').value=profile.manufacturer||'';c.$('model').value=profile.model||'';for(const [id,key] of [['cruise','cruise_speed_mps'],['maximum','max_speed_mps'],['mtbf','mtbf_h']])if(profile[key]!=null)c.$(id).value=profile[key];};
   c.actionButton('saveRules',async()=>{await c.mutate('rules',{aircraft_id:c.$('aircraftProfile').value,manufacturer:c.$('manufacturer').value,model:c.$('model').value,cruise_speed:c.$('cruise').value,max_speed:c.$('maximum').value,mtbf:c.$('mtbf').value,route_id:c.$('aircraftRoute').value,height_ab:c.$('heightAB').value,height_ba:c.$('heightBA').value,height_mode:c.$('heightMode').value,horizontal_separation:c.$('separation').value,direction_rule:c.$('directionRule').value,delay_sensor:c.$('delaySensor').value,delay_command:c.$('delayCommand').value});if(c.flow().rules?.status==='passed')await c.mutate('operational');});
   const optional=id=>c.$(id).value===''?null:Number(c.$(id).value),textValue=id=>c.$(id).value.trim()||null,required=id=>({yes:true,no:false,pending:null})[c.$(id).value],interfaces=id=>(c.$(id).value||'').split(',').map(item=>item.trim()).filter(Boolean);
+  const timingClone=()=>structuredClone(c.flow().operational_timing||{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}});
+  c.actionButton('saveServiceScenario',()=>{const timing=timingClone(),routeId=c.$('serviceScenarioRoute').value,confirmed=c.$('serviceScenarioConfirmed').checked,events=JSON.parse(c.$('serviceScenarioEvents').value||'[]').map(item=>({...item,confirmed}));timing.service_scenarios=timing.service_scenarios||{};timing.service_scenarios[routeId]={scenario_id:'scenario-'+routeId,route_id:routeId,events,source:'user_configuration',confirmed};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
+  c.actionButton('saveResponseBudget',()=>{const timing=timingClone(),confirmed=c.$('rtConfirmed').checked,source=textValue('rtSource')||'user_configuration',ids={detect:'rtDetect',track:'rtTrack',processing:'rtProcessing',decision:'rtDecision',communication:'rtCommunication',aircraft_reaction:'rtReaction'};timing.response_time_budgets=timing.response_time_budgets||{};timing.response_time_budgets['default-response']={budget_id:'default-response',source,confirmed,components:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{value_s:optional(id),source,confirmed}]))};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
+  c.actionButton('saveEncounterScenario',()=>{const timing=timingClone(),confirmed=c.$('encounterConfirmed').checked;timing.encounter_scenarios=timing.encounter_scenarios||{};timing.encounter_scenarios['default-encounter']={encounter_id:'default-encounter',relative_closing_speed_mps:optional('encounterRelativeSpeed'),maneuver_distance_m:optional('encounterManeuver'),uncertainty_distance_m:optional('encounterUncertainty'),source:textValue('encounterSource')||'user_configuration',confirmed};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('saveRequiredCns',()=>{
     const selectedScope=c.$('requiredScope').value;
     const requirements=withLegacyRequiredAliases({

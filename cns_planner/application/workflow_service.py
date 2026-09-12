@@ -30,6 +30,7 @@ from .session import WorkflowSession
 from .workspace_service import WorkspaceService
 from .spatial_3d_service import Spatial3DService
 from .cns_service_capability_service import CNSServiceCapabilityService
+from .operational_timing_service import OperationalTimingService
 
 
 class WorkflowService:
@@ -49,6 +50,8 @@ class WorkflowService:
         self.gap_analyzer = gap_analyzer or self._selected_algorithm("cns_gap_analyzer")
         self.coverage_model_3d = self._selected_algorithm("coverage_model")
         self.cns_service_model = self._selected_algorithm("service_model")
+        self.timeline_model = self._selected_algorithm("timeline_model")
+        self.protection_model = self._selected_algorithm("protection_model")
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
@@ -74,6 +77,10 @@ class WorkflowService:
         )
         self.cns_service_capability_service = CNSServiceCapabilityService(
             self.session, self.cns_service_model, self.invalidation_service, snapshot
+        )
+        self.operational_timing_service = OperationalTimingService(
+            self.session, self.timeline_model, self.protection_model,
+            self.invalidation_service, snapshot,
         )
         self.export_service = ExportService(self.session, snapshot)
 
@@ -101,6 +108,9 @@ class WorkflowService:
     def spatial_3d_snapshot(self): return self.spatial_3d_service.spatial_snapshot()
     def coverage_3d_snapshot(self): return self.spatial_3d_service.coverage_snapshot()
     def cns_service_capability_snapshot(self): return self.cns_service_capability_service.capability_snapshot()
+    def operational_timing_snapshot(self): return self.operational_timing_service.timing_snapshot()
+    def service_timeline_snapshot(self): return self.operational_timing_service.timeline_snapshot()
+    def protection_envelope_snapshot(self): return self.operational_timing_service.protection_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -152,6 +162,8 @@ class WorkflowService:
                 "cns_gap_analyzer": "gap_algorithm",
                 "coverage_model": "coverage_model",
                 "service_model": "service_model",
+                "timeline_model": "timeline_model",
+                "protection_model": "protection_model",
             }[algorithm_type]
             self.invalidation_service.workflow(changed)
         self.session.save()
@@ -170,6 +182,10 @@ class WorkflowService:
             self.coverage_model_3d = self.spatial_3d_service.model = instance
         elif algorithm_type == "service_model":
             self.cns_service_model = self.cns_service_capability_service.model = instance
+        elif algorithm_type == "timeline_model":
+            self.timeline_model = self.operational_timing_service.timeline_model = instance
+        elif algorithm_type == "protection_model":
+            self.protection_model = self.operational_timing_service.protection_model = instance
 
     def _steps(self):
         state = self.state
@@ -205,6 +221,9 @@ class WorkflowService:
     def set_route_altitude_profile(self, payload): return self.spatial_3d_service.set_route_profile(payload)
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
+    def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)
+    def evaluate_service_timeline(self, payload=None): return self.operational_timing_service.evaluate_timeline(payload)
+    def evaluate_protection_envelope(self, payload=None): return self.operational_timing_service.evaluate_protection(payload)
     def apply_grid_attributes(self, results): return self.risk_service.apply_grid_attributes(results)
     def update_data_source_profiles(self, profiles): return self.risk_service.update_source_profiles(profiles)
     def evaluate_grid_risk(self, parameters=None): return self.risk_service.evaluate(parameters)

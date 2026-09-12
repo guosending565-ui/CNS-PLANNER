@@ -8,12 +8,14 @@ from ..domain.algorithm_manifest import AlgorithmFactory, AlgorithmManifest
 from .coverage.v1 import CoveragePlannerV1
 from .coverage.geometric_3d import GeometricCoverage3DV1
 from .service_capability.v1 import CNSServiceCapabilityV1
+from .timeline.v1 import RouteServiceTimelineV1
+from .protection.v1 import TacticalProtectionEnvelopeV1
 from .route.v1 import RoutePlannerV1
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..risk.v1 import RiskModelV1
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -93,6 +95,8 @@ def default_algorithm_selection():
             },
         },
         "service_model": _selection("service_model", CNSServiceCapabilityV1),
+        "timeline_model": _selection("timeline_model", RouteServiceTimelineV1),
+        "protection_model": _selection("protection_model", TacticalProtectionEnvelopeV1),
     }
 
 
@@ -132,6 +136,8 @@ def build_default_algorithm_registry(defaults):
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
     registry.register(_geometric_3d_manifest(), lambda parameters: GeometricCoverage3DV1(parameters))
     registry.register(_service_capability_manifest(), lambda parameters: CNSServiceCapabilityV1(parameters))
+    registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
+    registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
     return registry
 
 
@@ -223,4 +229,32 @@ def _service_capability_manifest():
         ("free_space_link_budget 仅作 ITU-R P.525 自由空间参考",),
         ("静态能力满足不等于当前服务 available", "不评估 P.526、3GPP channel、GNSS DOP/RAIM 或 radar Pd curve"),
         ("ITU-R P.525",),
+    )
+
+
+def _timeline_manifest():
+    return AlgorithmManifest(
+        "timeline_model", RouteServiceTimelineV1.algorithm_id, RouteServiceTimelineV1.algorithm_version,
+        "Route Service Timeline V1", "CNS-PLANNER", "engineering_baseline",
+        "将已确认航路地速、P7 样本与显式服务场景映射为 C/N/S 运行状态时间线。",
+        ("coverage_3d", "cns_service_capability", "required_cns", "aircraft_profile", "operational_timing"),
+        ("service_timeline", "service_intervals", "state_duration_and_length"),
+        {"type": "object", "additionalProperties": True},
+        ("只支持已确认 constant_ground_speed_mps", "只有显式外部状态才调用 P4 ServiceState"),
+        ("不从 ReliabilitySpec/MTBF 生成随机失效", "P8 静态 meets 不等于 P4 available"),
+        (),
+    )
+
+
+def _protection_manifest():
+    return AlgorithmManifest(
+        "protection_model", TacticalProtectionEnvelopeV1.algorithm_id, TacticalProtectionEnvelopeV1.algorithm_version,
+        "Tactical Protection Envelope V1", "CNS-PLANNER", "engineering_baseline",
+        "按显式响应时间预算、相对接近速度、机动和不确定距离计算工程保护距离。",
+        ("response_time_budget", "encounter_scenario"),
+        ("t_pre_s", "d_reaction_m", "d_protect_m"),
+        {"type": "object", "additionalProperties": True},
+        ("响应分量相加", "响应期内相对接近速度恒定"),
+        ("不是法规 Well-Clear 或正式 DAA Detection Volume", "不评估飞机动力学"),
+        (),
     )

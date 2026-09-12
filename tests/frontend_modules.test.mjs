@@ -77,19 +77,27 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.match(html,/Functional Coupling/);
   assert.match(html,/Coupled Event Preview/);
   assert.match(html,/不计算耦合概率/);
+  assert.match(html,/Operational Timing & Service Scenario/);
+  assert.match(html,/Response Time Budget/);
+  assert.match(html,/Encounter Scenario/);
+  assert.match(html,/P8 静态 capability 不会自动转为 P4 available/);
   assert.doesNotMatch(html,/最大时延 ms/);
 });
 
 test('P7 workflow steps expose vertical contracts and geometric-only warning',()=>{
-  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},coverage_3d:{},cns_service_capability:{}};
+  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},coverage_3d:{},cns_service_capability:{}};
   const step2=renderStep2({flow:base,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   const step3=renderStep3({flow:base,interactionMode:'pan'});
   const step5=renderStep5({flow:base});
   assert.match(step2,/EGM2008 orthometric/);
   assert.match(step2,/3D 高度层/);
   assert.match(step3,/Route 3D Altitude Profile/);
+  assert.match(step3,/Route Motion Profile/);
   assert.match(step5,/3D Geometric Coverage/);
   assert.match(step5,/几何覆盖 ≠ 真实 CNS 性能/);
   assert.match(step5,/CNS Service Capability/);
   assert.match(step5,/静态能力满足 ≠ 当前服务 available/);
+  assert.match(step5,/C\/N\/S Service Timeline/);
+  assert.match(step5,/Tactical Protection Envelope/);
+  assert.match(step5,/工程保护距离 ≠ 法规 Well-Clear/);
 });

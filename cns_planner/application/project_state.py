@@ -18,6 +18,9 @@ from ..gap.v1 import CNSGapAnalyzerV1
 from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
 from ..domain.spatial_3d import empty_spatial_3d, normalize_spatial_3d
 from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
+from ..algorithms.timeline.v1 import RouteServiceTimelineV1
+from ..algorithms.protection.v1 import TacticalProtectionEnvelopeV1
+from ..domain.operational_timing import empty_operational_timing, normalize_operational_timing
 
 
 SCHEMA_VERSION = 2
@@ -95,6 +98,9 @@ def blank_project(defaults):
         "spatial_3d": empty_spatial_3d(),
         "coverage_3d": GeometricCoverage3DV1.empty(),
         "cns_service_capability": CNSServiceCapabilityV1.empty(),
+        "operational_timing": empty_operational_timing(),
+        "service_timeline": RouteServiceTimelineV1.empty(),
+        "protection_envelope": TacticalProtectionEnvelopeV1.empty(),
         "nodes": [], "node_seq": 0, "route_seq": 0,
         "retired_route_ids": [], "scenario_routes": [],
         "operational_routes": [], "aircraft": None, "rules": None,
@@ -115,6 +121,7 @@ def blank_project(defaults):
                 "coverage", "cns_gap", "safety_assessment",
                 "coverage_3d",
                 "cns_service_capability",
+                "service_timeline", "protection_envelope",
                 "technical_risk", "report",
             )
         },
@@ -154,6 +161,9 @@ def normalize_project(value, grid_service):
     value["spatial_3d"] = normalize_spatial_3d(value.get("spatial_3d"))
     value.setdefault("coverage_3d", GeometricCoverage3DV1.empty())
     value.setdefault("cns_service_capability", CNSServiceCapabilityV1.empty())
+    value["operational_timing"] = normalize_operational_timing(value.get("operational_timing"))
+    value.setdefault("service_timeline", RouteServiceTimelineV1.empty())
+    value.setdefault("protection_envelope", TacticalProtectionEnvelopeV1.empty())
     value.setdefault("aircraft_profiles", empty_catalog("aircraft-cns-profile-catalog"))
     value.setdefault("selected_aircraft_profile_id", None)
     value.setdefault("required_cns", pending_required_cns())
@@ -167,6 +177,8 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("service_timeline", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("protection_envelope", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"
     )
