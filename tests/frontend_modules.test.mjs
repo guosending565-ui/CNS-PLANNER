@@ -7,7 +7,7 @@ import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {render as renderStep3} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 
 test('projection round trips WGS84 coordinates',()=>{
@@ -49,6 +49,17 @@ test('algorithm selection key includes type id and exact version',()=>{
 test('step 1 algorithm details preserve auditable manifest fields',()=>{
   const item={algorithm_type:'risk_model',algorithm_id:'risk-model-v1-relative-index',version:'1.1',name:'Risk V1',provider:'CNS-PLANNER',maturity:'baseline',description:'relative',inputs:['grid'],outputs:['risk'],parameter_schema:{type:'object'},assumptions:['a'],limitations:['b'],references:[]};
   assert.deepEqual(algorithmManifestDetails(item),{identity:'risk-model-v1-relative-index@1.1',provider:'CNS-PLANNER',maturity:'baseline',inputs:'grid',outputs:'risk',assumptions:'a',limitations:'b',references:'未登记'});
+});
+
+test('step 3 exposes V2 risk parameters without changing the V1 panel',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  assert.equal(riskAwareRoutePanel({algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'1.0'}}}), '');
+  const html=riskAwareRoutePanel({algorithm_selection:{route_planner:{algorithm_id:'risk_aware_route_planner_v2',version:'2.0',parameters:{risk_weight_lambda:3,risk_component:'ground',unknown_risk_policy:'penalize',unknown_penalty_index:.8}}}});
+  assert.match(html,/Risk-Aware Route Planner V2/);
+  assert.match(html,/Risk weight λ/);
+  assert.match(html,/Ground/);
+  assert.match(html,/Penalize/);
+  assert.match(html,/不是事故概率、SORA GRC 或 TLS/);
 });
 
 test('step 4 canonical seconds create exact V1 aliases',()=>{

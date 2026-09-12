@@ -103,15 +103,25 @@ class RouteService:
         state, workspace = self.session.state, self.session.state.get("workspace")
         if not workspace or not state["scenario_routes"]:
             raise ValueError("请先保存工作区并生成场景航路")
-        results = [
-            self.planner.plan(route, workspace["bbox"], hard_constraints)
-            for route in state["scenario_routes"]
-        ]
+        if getattr(self.planner, "uses_canonical_grid_risk", False):
+            results = [
+                self.planner.plan(
+                    route, state.get("grid") or {}, state.get("grid_risk") or {},
+                    hard_constraints,
+                )
+                for route in state["scenario_routes"]
+            ]
+        else:
+            results = [
+                self.planner.plan(route, workspace["bbox"], hard_constraints)
+                for route in state["scenario_routes"]
+            ]
         state["operational_routes"] = results
         state["result_statuses"]["routes"] = "passed" if all(item["status"] == "passed" for item in results) else "failed"
-        state["risks"]["environment"] = assessment(
-            "pending_confirmation", "GRC 环境风险接口已接入，正式模型待确认"
-        )
+        if not getattr(self.planner, "uses_canonical_grid_risk", False):
+            state["risks"]["environment"] = assessment(
+                "pending_confirmation", "GRC 环境风险接口已接入，正式模型待确认"
+            )
         self.invalidation.workflow("route")
         return self._save()
 

@@ -25,7 +25,7 @@ map_app.py / app.py
 
 1. 项目与数据：项目创建、打开、另存和数据源设置。
 2. 工作区与环境：workspace → MH/T grid → population/terrain/airspace/traffic/conflict → relative risk。
-3. 航路设计：节点、场景航路、RoutePlannerV1 运行航路。
+3. 航路设计：节点、场景航路、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路。
 4. 运行规则：飞行器、方向、高度、间隔和监视延迟。
 5. 设备与布站：C/N/S 设备参数和 CoveragePlannerV1。
 6. 确认与导出：统一 ResultStatus 复核，导出项目、航路和站址。
@@ -39,6 +39,7 @@ map_app.py / app.py
 - CNS 核心输入：AircraftCNSProfileCatalog、RequiredCNS、DeviceCatalog、ExistingCNSFacility、CandidateSite 已纳入 schema v2；已有能力与任务需求严格分离。
 - CNS Gap Analysis：V1 保持 RequiredCNS、机载能力及已有设施二维水平覆盖的既有输出；V2 独立合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线，输出 planning/runtime/combined 评估、连续缺口段、contingency/unknown 暴露和稳定输入指纹。
 - RoutePlannerV1：固定工作区离散、硬约束 BBOX、A*、geometry/关键节点/统计/指纹。
+- Risk-Aware Route Planner V2：直接在 MH/T `grid_id` 邻接图上使用既有 `grid_risk` 相对工程指数执行米制 A*，保留完整 grid path、距离/风险暴露/绕行指标；Registry 默认仍为 V1。
 - CoveragePlannerV1：C/N/S 主站、补盲、共址、未覆盖点/航段、统计/指纹。
 - schema-v2 项目自动保存、打开、Save As 与数据源恢复；失败操作保留当前有效项目并清理临时文件。
 - 本地 QGIS 渲染、原始人口/DEM 图层、在线瓦片、统一数据源中心、六步 ES Module 前端。
@@ -53,6 +54,7 @@ map_app.py / app.py
 - `domain/algorithm_manifest.py`、`algorithms/registry.py`：算法可解释元数据、精确注册/查询/实例化，包含受保护的既有 V1 与独立 3D 覆盖、静态能力、时间线和保护包络模型；factory/Python 实现路径不进入 ProjectState 或 API Manifest。
 - `application/cns_input_service.py`：五类 CNS 规划输入的选择、导入、需求覆盖、保存与下游失效。
 - `application/closed_loop_service.py` + `domain/closed_loop.py`：P12 working-copy 重跑编排、确定性 PlanApplication、Before/After 比较和事务式 Preview/Apply；不实现新的覆盖、能力、时间线或 Gap 公式。
+- `route_planner/risk_aware_v2.py`：P13 纯 Python GridGraph、风险证据门控和 risk-aware A*；直接消费标准网格及网格风险，不依赖 QGIS、不重算 RiskModel。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
 - `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
 - `application/review_service.py` + `domain/status.py`：结果状态聚合的唯一权威实现。
@@ -113,7 +115,7 @@ closed_loop_assessment（P12 baseline/planned 重跑证据、比较、provenance
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`。`cns_gap_analyzer` 默认仍选择 V1；找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`。`route_planner` 与 `cns_gap_analyzer` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
 - Workflow 启动时从 Registry 解析选择，再把算法对象注入相应 Application Service；业务 Service 不依赖 Registry。
 - 未来 RoutePlanner：`plan(start, end, grid, risk, constraints) -> RouteResult`。
@@ -209,6 +211,16 @@ P12 Closed-Loop Plan Application & Reassessment V1：
 - Apply 只接受当前 validated Preview，并重新校验 baseline/site-plan/assessment fingerprint。工作副本或重跑任一步失败则内存与磁盘正式状态不变；成功时单次保存 planned ExistingCNS 与 P7-P10 结果。相同 application/action 通过 `planning_origin` 幂等去重。
 - API 为 `GET /api/cns-closed-loop`、`POST /api/cns-closed-loop/evaluate`、`POST /api/cns-closed-loop/apply`；Step 5 显示 Before/After/Delta、predicted/actual、residual、regression 和 Preview/Apply 边界。
 
+P13 Risk-Aware Route Planner V2：
+
+- `route_planner/risk_aware_route_planner_v2@2.0` 是 additive 可选算法；默认 route planner 及旧项目 backfill 继续使用 `route_planner_v1@1.0`。V1 实现、调用、输出和指纹未修改。
+- `GridGraph` 直接消费当前 MH/T `grid.cells`，优先使用显式 row/column 或稳定 MHT `grid_id` 索引，否则按 bbox 边/角邻接；使用八邻域且禁止对角穿过被阻断角点。起终点使用半开边界映射到包含网格。
+- 节点/边距离复用项目米制 `distance_m`。对边定义 `r_edge=(r_i+r_j)/2`、`risk_exposure=d_m*r_edge`、`edge_cost=d_m*(1+lambda*r_edge)`；`lambda>=0` 时到目标的米制直线距离为 admissible heuristic。
+- `risk_component=overall|ground|air` 只读取对应 `status=passed` 的 `score`。unknown 默认 block；penalize 必须显式给 0..1 penalty。可选最大风险仅是工程相对指数阈值。missing/stale 不变成 0，硬约束始终独立且不可进入。
+- 输出保留真实起终点和 centroid path，并完整保存 `grid_path`、距离、risk exposure、mean/max risk、optimization cost、直线距离、detour、参数、风险来源/fingerprint；语义固定为 `relative_engineering_index_not_probability` 和二维战略水平规划。
+- Step 1 通过 Registry Manifest 展示 V2；Step 3 仅在选中 V2 时显示 lambda/component/unknown/threshold 与 Distance/Risk exposure/Mean/Max/Detour。继续复用既有算法选择和运行航路 API。
+- 只有当前 route planner 精确选择 V2 时，`grid_risk` 变化才使 routes 及 P7-P12 下游 stale；V1 选择时不新增 route 对 grid risk 的依赖。算法/参数选择变化沿既有 route dependency 失效。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -265,6 +277,8 @@ P11 完整基线：**260 passed, 6 skipped, 1 known failed**；P11/P7/P8/P10/Reg
 
 P12 完整基线：**268 passed, 6 skipped, 1 known failed**；P12/P11/P7-P10/GapV1/Registry/Persistence/architecture 定向回归 **104 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step05_cns.js` 语法检查通过。新增覆盖 Preview 零污染、全部 selected actions 组合真实重跑、Apply 单次提交与幂等保存恢复、predicted-vs-actual、Gap→Unknown、regression/no-effect/inconclusive、显式 runtime loss 保持、stale assessment 拒绝、重跑异常 rollback、API、schema-v2 backfill 与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P12 未修改生产空域代码。
 
+P13 完整基线：**278 passed, 6 skipped, 1 known failed**；P13/Registry/V1/P7-P12/Workflow/Risk/Persistence/architecture 定向回归 **114 passed**；Node **13 passed, 0 failed**，`main.js/step03_routes.js` 语法检查通过。新增覆盖 MH/T grid_id 与 bbox fallback 邻接、lambda=0 最短路、lambda>0 风险绕行、距离-风险权衡、边风险暴露公式、unknown block/显式 penalize、工程阈值、硬约束/对角 corner、missing/stale risk、确定性 tie、米制距离、Dijkstra 最优性参照、Registry 默认 V1、Workflow 接线与 V2-only 条件失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P13 未修改生产空域代码。
+
 当前里程碑：**CNS-PLANNER v1.0 research baseline / ready for synthetic end-to-end validation**。
 
 ## 9. 架构原则
@@ -297,17 +311,17 @@ P12 完整基线：**268 passed, 6 skipped, 1 known failed**；P12/P11/P7-P10/Ga
 
 15. P8 仅提供静态技术能力工程基线：尚未实现 P.526/Fresnel/terrain diffraction、3GPP SINR/channel、GNSS constellation/DOP/RAIM、radar equation/Pd curve 或 SitePlanner。
 
-16. P9 时间线仅支持恒定地速和显式离散场景；保护包络是代数工程基线，尚未实现 waypoint-linear motion、飞机动力学/转弯、正式 Well-Clear、DAA Detection Volume、Monte Carlo、Risk-A* 或 SitePlanner。
+16. P9 时间线仅支持恒定地速和显式离散场景；保护包络是代数工程基线，尚未实现 waypoint-linear motion、飞机动力学/转弯、正式 Well-Clear、DAA Detection Volume 或 Monte Carlo。
 
 17. GapV2 是上游证据的保守区间合并，不做传播/性能/ServiceState 重算，不把 unknown 当 gap，也不触发 SafetyEvent；protection margin 仅支持已有 confirmed 监视探测距离的工程差值，尚未形成 GapV2→Safety/站址方案闭环。
 
 18. P11 是单 action 正收益的 reuse-first 提案器，不求解多 action 联合后才能满足的独立冗余，不含风险/人口/severity 权重，也不是费用优化器。P12 可组合 apply 并重跑 P7-P10，但结果仍受 P7/P8 工程模型与输入证据完整度约束。
 19. P12 没有项目级 audit log、撤销已提交 application 或多方案分支合并；事务边界依赖当前单项目单进程 repository 原子写入。真实数据验证、并发提交控制和人工审批流留待后续阶段。
+20. P13 是 MH/T cell-centroid 的二维八邻域 A*；没有 Theta*/LOS smoothing、连续空间最短路、动态/四维风险或高度相关风险。硬约束仍来自现有 bbox 输入，风险仍受 RiskModelV1 相对指数和数据完整度限制。
 
 ## 11. 下一阶段计划
 
-1. 使用 synthetic end-to-end 场景验证 P7-P12 全链路的守恒量、证据传播、重启恢复和 proposal/actual 偏差。
+1. 使用 synthetic end-to-end 场景并列验证 RoutePlannerV1/V2 与 P7-P12 全链路的守恒量、证据传播、重启恢复及距离-风险权衡。
 2. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
-3. 将 grid_risk 作为 RoutePlannerV2 的标准代价输入，在新版本中逐步替换 56×56 原型；不要修改 RoutePlannerV1。
-4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
-5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。
+3. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
+4. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

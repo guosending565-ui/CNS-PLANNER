@@ -11,6 +11,7 @@ from .service_capability.v1 import CNSServiceCapabilityV1
 from .timeline.v1 import RouteServiceTimelineV1
 from .protection.v1 import TacticalProtectionEnvelopeV1
 from .route.v1 import RoutePlannerV1
+from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
@@ -135,6 +136,7 @@ def build_default_algorithm_registry(defaults):
     registry = AlgorithmRegistry()
     registry.register(_risk_manifest(), lambda parameters: RiskModelV1())
     registry.register(_route_manifest(), lambda parameters: RoutePlannerV1(**parameters))
+    registry.register(_risk_aware_route_v2_manifest(), lambda parameters: RiskAwareRoutePlannerV2(parameters))
     registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
     registry.register(_gap_v2_manifest(), lambda parameters: CNSGapAnalyzerV2(parameters))
@@ -178,6 +180,39 @@ def _route_manifest():
         {"type": "object", "properties": {"grid_size": {"type": "integer", "minimum": 2}}, "additionalProperties": False},
         ("经纬度工作区离散为规则网格",),
         ("硬约束使用图层 BBOX", "不是最终三维或风险感知规划器"),
+        (),
+    )
+
+
+def _risk_aware_route_v2_manifest():
+    return AlgorithmManifest(
+        "route_planner", RiskAwareRoutePlannerV2.algorithm_id,
+        RiskAwareRoutePlannerV2.algorithm_version,
+        "Risk-Aware Route Planner V2", "CNS-PLANNER", "engineering_baseline",
+        "在现有 MH/T grid_id 邻接图上，以米制距离和既有相对网格风险执行确定性 A*。",
+        ("scenario_route", "grid.cells", "grid_risk.cells", "hard_constraints"),
+        ("operational_route", "grid_path", "distance_and_risk_metrics"),
+        {
+            "type": "object",
+            "properties": {
+                "risk_weight_lambda": {"type": "number", "minimum": 0, "default": 0},
+                "risk_component": {"enum": ["overall", "ground", "air"], "default": "overall"},
+                "unknown_risk_policy": {"enum": ["block", "penalize"], "default": "block"},
+                "unknown_penalty_index": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                "max_relative_risk_index": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            },
+            "additionalProperties": False,
+        },
+        (
+            "RiskModelV1 分数仅作为 0..1 relative engineering index",
+            "risk_weight_lambda 非负时直线米制 heuristic 可采纳",
+            "最大风险阈值仅为显式工程阈值",
+        ),
+        (
+            "不是事故概率、SORA GRC 或 TLS",
+            "二维战略水平规划；不计算 P7 高度、三维/四维风险或路径平滑",
+            "不在规划器内重算风险",
+        ),
         (),
     )
 

@@ -78,6 +78,16 @@ class InvalidationService:
         result["status"] = "stale"
         state["result_statuses"]["environment_risk"] = "stale"
         state["risks"]["environment"] = assessment("stale", "网格风险输入属性已变化")
+        self.grid_risk_routes()
+
+    def grid_risk_routes(self):
+        """Only Risk-Aware Route Planner V2 makes routes depend on grid_risk."""
+        selection = (self.session.state.get("algorithm_selection") or {}).get("route_planner") or {}
+        if (
+            selection.get("algorithm_id") == "risk_aware_route_planner_v2"
+            and selection.get("version") == "2.0"
+        ):
+            self.workflow("route_algorithm")
 
     def safety_policy(self):
         """Invalidate only future safety/technical/report products."""
