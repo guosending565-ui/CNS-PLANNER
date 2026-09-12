@@ -40,6 +40,8 @@ class InvalidationService:
             state["coverage"]["status"] = "stale"
         if "coverage_3d" in affected:
             self.coverage_3d()
+        if "cns_service_capability" in affected:
+            self.cns_service_capability()
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -88,5 +90,16 @@ class InvalidationService:
             result["status"] = "stale"
             state["coverage_3d"] = result
             state.setdefault("result_statuses", {})["coverage_3d"] = "stale"
+        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
+            state["result_statuses"]["report"] = "stale"
+        self.cns_service_capability()
+
+    def cns_service_capability(self):
+        state = self.session.state
+        result = state.get("cns_service_capability") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["cns_service_capability"] = result
+            state.setdefault("result_statuses", {})["cns_service_capability"] = "stale"
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"

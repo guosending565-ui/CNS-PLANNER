@@ -54,6 +54,7 @@ class Spatial3DService:
             state.get("existing_cns_facilities"), state.get("device_catalog"),
         )
         state["coverage_3d"] = result
+        self.invalidation.cns_service_capability()
         state["result_statuses"]["coverage_3d"] = result["status"]
         state["result_statuses"]["report"] = "not_calculated"
         return self._save()

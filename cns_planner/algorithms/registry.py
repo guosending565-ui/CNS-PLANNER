@@ -7,12 +7,13 @@ from copy import deepcopy
 from ..domain.algorithm_manifest import AlgorithmFactory, AlgorithmManifest
 from .coverage.v1 import CoveragePlannerV1
 from .coverage.geometric_3d import GeometricCoverage3DV1
+from .service_capability.v1 import CNSServiceCapabilityV1
 from .route.v1 import RoutePlannerV1
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..risk.v1 import RiskModelV1
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -91,6 +92,7 @@ def default_algorithm_selection():
                 "confirmed": False,
             },
         },
+        "service_model": _selection("service_model", CNSServiceCapabilityV1),
     }
 
 
@@ -129,6 +131,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
     registry.register(_geometric_3d_manifest(), lambda parameters: GeometricCoverage3DV1(parameters))
+    registry.register(_service_capability_manifest(), lambda parameters: CNSServiceCapabilityV1(parameters))
     return registry
 
 
@@ -206,4 +209,18 @@ def _geometric_3d_manifest():
         ("sample_spacing_m 为显式工程采样假设", "canonical vertical reference 为 EGM2008 orthometric"),
         ("仅几何覆盖", "不评估传播、LOS、绕射、干扰、链路预算或传感器 Pd"),
         (),
+    )
+
+
+def _service_capability_manifest():
+    return AlgorithmManifest(
+        "service_model", CNSServiceCapabilityV1.algorithm_id, CNSServiceCapabilityV1.algorithm_version,
+        "Technology-Aware CNS Service Capability V1", "CNS-PLANNER", "engineering_baseline",
+        "在 P7 几何门控后评估技术、机载接口、服务模型与 RequiredCNS 的静态匹配。",
+        ("coverage_3d", "required_cns", "aircraft_profile", "existing_cns", "device_catalog"),
+        ("cns_service_capability", "provider_evaluations", "length_weighted_summary"),
+        {"type": "object", "additionalProperties": True},
+        ("free_space_link_budget 仅作 ITU-R P.525 自由空间参考",),
+        ("静态能力满足不等于当前服务 available", "不评估 P.526、3GPP channel、GNSS DOP/RAIM 或 radar Pd curve"),
+        ("ITU-R P.525",),
     )

@@ -86,6 +86,11 @@ def normalize_external_service_snapshot(value: dict | None) -> dict:
     }
 
 
+def evaluate_required_performance(required, actual, *, require_capability=False):
+    """Public pure wrapper around the P4 matcher; keeps ServiceState semantics unchanged."""
+    return _satisfies(required or {}, actual, require_capability=require_capability)
+
+
 def _select_fallback(required, candidates, snapshot):
     evidence, reasons = [], []
     elapsed = (

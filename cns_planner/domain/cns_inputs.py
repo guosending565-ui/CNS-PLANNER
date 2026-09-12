@@ -11,6 +11,7 @@ from .cns_performance import (
 )
 from .cns_reliability import normalize_reliability_spec
 from .spatial_3d import normalize_vertical_profile
+from .cns_service_model import normalize_service_model_spec
 
 
 SUBSYSTEMS = ("C", "N", "S")
@@ -42,6 +43,7 @@ class CNSDevice(TypedDict, total=False):
     reliability: dict[str, Any]
     vertical_profile: dict[str, Any]
     coverage_geometry: dict[str, Any]
+    service_model: dict[str, Any]
 
 
 class RequiredCNS(TypedDict, total=False):
@@ -185,6 +187,7 @@ def normalize_device(item: dict) -> CNSDevice:
     result.update(contract)
     result = sync_aliases(subsystem, result, field=f"device.{device_id}")
     result["coverage_geometry"] = normalize_coverage_geometry(result, item.get("coverage_geometry"))
+    result["service_model"] = normalize_service_model_spec(item.get("service_model"))
     return result
 
 
@@ -207,6 +210,7 @@ def backfill_device_contract(item: dict) -> dict:
         item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m")
     )
     result["coverage_geometry"] = normalize_coverage_geometry(result, item.get("coverage_geometry"))
+    result["service_model"] = normalize_service_model_spec(item.get("service_model"))
     return sync_aliases(subsystem, result, field=f"device.{item.get('device_id') or 'legacy'}")
 
 
@@ -232,6 +236,7 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
                 device.get("vertical_profile"), legacy_elevation_m=device.get("elevation_m")
             ),
             "coverage_geometry": normalize_coverage_geometry(device, device.get("coverage_geometry")),
+            "service_model": normalize_service_model_spec(device.get("service_model")),
         })
     return {
         "facility_id": facility_id, "site_id": str(item.get("site_id") or facility_id),

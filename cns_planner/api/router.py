@@ -40,6 +40,7 @@ class ApiRouter:
         if path == "/api/cns-gaps": return Response(workflow.cns_gap_snapshot())
         if path == "/api/spatial-3d": return Response(workflow.spatial_3d_snapshot())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
+        if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/cns/safety-policy": return Response(workflow.safety_policy_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
@@ -106,6 +107,7 @@ class ApiRouter:
             "/api/spatial-3d/altitude-layers": lambda: workflow.set_altitude_layers(payload),
             "/api/spatial-3d/route-profile": lambda: workflow.set_route_altitude_profile(payload),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
+            "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
         }
         if path in resource_actions:
             return Response(resource_actions[path]())

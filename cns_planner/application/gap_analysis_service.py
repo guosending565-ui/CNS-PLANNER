@@ -43,6 +43,7 @@ class GapAnalysisService:
                 device.pop("reliability", None)
                 device.pop("vertical_profile", None)
                 device.pop("coverage_geometry", None)
+                device.pop("service_model", None)
         facilities_view = deepcopy(facilities or {})
         for facility in facilities_view.get("items", []):
             if not isinstance(facility, dict):
@@ -52,4 +53,5 @@ class GapAnalysisService:
                 if isinstance(device, dict):
                     device.pop("vertical_profile", None)
                     device.pop("coverage_geometry", None)
+                    device.pop("service_model", None)
         return profile_view, catalog_view, facilities_view

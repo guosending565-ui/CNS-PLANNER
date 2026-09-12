@@ -21,6 +21,7 @@ class ProjectState(TypedDict, total=False):
     grid_risk: dict[str, Any]
     spatial_3d: dict[str, Any]
     coverage_3d: dict[str, Any]
+    cns_service_capability: dict[str, Any]
     nodes: list[dict[str, Any]]
     scenario_routes: list[dict[str, Any]]
     operational_routes: list[dict[str, Any]]

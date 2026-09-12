@@ -85,6 +85,7 @@ safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA / Functi
 safety_assessment（预留结果容器；P5 preview 不持久化）
 spatial_3d（altitude_layers / route_altitude_profiles / site_vertical_profiles；不保存全量 voxel）
 coverage_3d（按 route/subsystem 保存 3D 几何覆盖结果）
+cns_service_capability（按 route/subsystem/sample 保存静态技术能力判定，不覆盖 coverage_3d）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -95,15 +96,16 @@ coverage_3d（按 route/subsystem 保存 3D 几何覆盖结果）
 - 缺失/NoData/未知不得转换成零风险或通过。
 - safety_policy 变化只使 safety_assessment、technical_risk、report stale；不得使 workspace/grid/routes/coverage/cns_gap stale。
 - DEM、航路、已有设施、设备及 P7 垂向/几何配置变化定向使 `coverage_3d` stale；单独修改高度层/航路高度剖面不得反向使 grid/routes/CoverageV1/GapV1 stale。
+- `coverage_3d`、RequiredCNS、选定 Aircraft Profile、DeviceCatalog/ExistingCNS 或 service-model 选择变化会定向使 `cns_service_capability` stale；不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`coverage_model/geometric_coverage_3d_v1@1.0`。找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`。找不到精确版本直接报错，禁止回退。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
-- Workflow 启动时从 Registry 解析四个选择，再把算法对象注入 Risk/Route/CNSPlanning/GapAnalysis Service；业务 Service 不依赖 Registry。
+- Workflow 启动时从 Registry 解析选择，再把算法对象注入相应 Application Service；业务 Service 不依赖 Registry。
 - 未来 RoutePlanner：`plan(start, end, grid, risk, constraints) -> RouteResult`。
 - 未来 CNSSitePlanner：`plan(route, required_cns, candidate_sites, device_catalog, parameters) -> CNSPlanResult`。
 - `DeviceCatalog`（地面设备型号/性能）与 `AircraftCNSProfileCatalog`（机载已有能力/默认需求）必须分开；已有能力不得等同需求。
@@ -152,6 +154,15 @@ P7 3D Spatial Model & Geometric CNS Coverage Baseline：
 - 结果始终标记 `model_scope=geometric_only`；propagation/LOS/diffraction/interference/link_budget/sensor_Pd 均为 `not_evaluated`，不得据此调用 P4 ServiceState 或宣称真实 CNS 性能。
 - API：`GET /api/spatial-3d`、`GET /api/coverage-3d`、`POST /api/spatial-3d/altitude-layers`、`POST /api/spatial-3d/route-profile`、`POST /api/coverage-3d/evaluate`。Step 2/3/5 提供最小高度层、航路高度剖面和几何覆盖配置/结果界面。
 
+P8 Technology-Aware CNS Service Capability V1：
+
+- `ServiceModelSpec` 是 JSON-safe 静态服务模型契约，支持 `free_space_link_budget/declared_performance/external_service/unsupported`，并保存 version、technology、applicability、parameters、source、confirmed/status、assumptions、limitations 和 references；旧 radius/demo 数据回填为未确认 `unsupported/missing_data`，不得提升为物理模型。
+- `CNSServiceCapabilityV1` 固定按 P7 geometry gate → provider 技术/类型 → Aircraft capability/interface → confirmed service model → RequiredCNS performance 的顺序判定；sample 状态仅为 `meets_under_model/does_not_meet_under_model/unknown/not_applicable/unsupported_model`，语义是静态能力，不是 P4 当前服务状态或 availability。
+- 通信自由空间基线使用 P7 三维斜距和 ITU-R P.525：计算 path loss、received power、available/required/link margin；距离小于等于零直接报错。4G/5G 只标为 `free_space_reference/reference_only`，不代表 3GPP channel 或真实蜂窝覆盖；LOS、绕射、干扰、负载、切换均保持 `not_evaluated`。
+- N 使用已确认机载或 declared/external performance 比较；GNSS/INS/hybrid 不自动生成地面球覆盖。S 显式比较 cooperation/sensor mode/technology 与已确认 Pd、更新、时延等性能；缺失关键证据返回 unknown。
+- provider multiplicity 与 independent redundancy 分离，只有每个有效 provider 都具有确认的独立性及不同 independence group 才能声明独立冗余。route 汇总按真实里程区间分别累计 meets/fail/unknown，unknown 不并入 fail。
+- API：`GET /api/cns-service-capability`、`POST /api/cns-service-capability/evaluate`。Step 5 在 P7 几何覆盖后显示 C/N/S 静态能力比例、scope/model、链路裕度或原因及 not-evaluated 声明。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -198,6 +209,10 @@ P6 完整基线：**206 passed, 6 skipped, 1 known failed**；P4/P5/P6、archite
 
 P7 完整基线：**219 passed, 6 skipped, 1 known failed**；P7 与 Registry/Gap/V1 定向回归 **42 passed**；Node **12 passed, 0 failed**。新增覆盖垂向基准、AGL/DEM NoData/ellipsoid 拒绝、lazy voxel、constant/waypoint-linear contract、route3D、sphere/hemisphere 边界、legacy radius 假设、GNSS 不自动建球、真实航路长度统计、Registry、API、保存恢复与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P7 未修改生产空域代码。
 
+P8 完整基线：**231 passed, 6 skipped, 1 known failed**；P8 能力模型定向测试 **11 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step01_project.js/step05_cns.js` 语法检查通过。新增覆盖 ServiceModelSpec 回填、geometry gate、缺失/未确认模型、ITU-R P.525 链路预算与非法距离、4G/5G reference-only、GNSS 非站基能力、N 性能、S cooperation/Pd、机载不兼容、provider multiplicity/独立冗余、真实里程三分汇总、Registry、保存恢复、API 与单向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P8 未修改生产空域代码。
+
+P8 完整基线：**230 passed, 6 skipped, 1 known failed**；P8 与 P4/P7/Registry/CNS input/Gap/V1 定向回归 **76 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step01_project.js/step05_cns.js` 语法检查通过。新增覆盖 ServiceModelSpec 回填、geometry gate、缺失/未确认证据、P.525 FSPL/link margin、4G/5G reference-only、GNSS 非站基导航、N 性能、S cooperation/Pd、Aircraft 不兼容、冗余独立性、真实长度汇总、Registry、保存恢复、API 与定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P8 未修改生产空域代码。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -225,6 +240,8 @@ P7 完整基线：**219 passed, 6 skipped, 1 known failed**；P7 与 Registry/Ga
 13. `OperationService` 为保持旧工作流/API 语义，仍在顶层 `aircraft` 输出 legacy `lambda_per_hour=1/mtbf_h`；Step 4 已标注其不是 P4 ReliabilitySpec 推断。新安全计算只能使用显式声明模型的分系统 ReliabilitySpec。
 
 14. P6 只支持由离散 EventObservation 驱动的定性 C+S/C+N/N+S 功能耦合；尚无完整航路 ServiceTimeline、耦合概率、common-cause、BN/DBN/Petri、FTA 图形编辑、认证工作流或正式 safety objective 校核。
+
+15. P8 仅提供静态技术能力工程基线：尚未实现 P.526/Fresnel/terrain diffraction、3GPP SINR/channel、GNSS constellation/DOP/RAIM、radar equation/Pd curve、运行时 ServiceTimeline、ProtectionVolume、GapV2 或 SitePlanner。
 
 ## 11. 下一阶段计划
 

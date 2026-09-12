@@ -81,7 +81,7 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
 });
 
 test('P7 workflow steps expose vertical contracts and geometric-only warning',()=>{
-  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},coverage_3d:{}};
+  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},coverage_3d:{},cns_service_capability:{}};
   const step2=renderStep2({flow:base,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   const step3=renderStep3({flow:base,interactionMode:'pan'});
   const step5=renderStep5({flow:base});
@@ -90,4 +90,6 @@ test('P7 workflow steps expose vertical contracts and geometric-only warning',()
   assert.match(step3,/Route 3D Altitude Profile/);
   assert.match(step5,/3D Geometric Coverage/);
   assert.match(step5,/几何覆盖 ≠ 真实 CNS 性能/);
+  assert.match(step5,/CNS Service Capability/);
+  assert.match(step5,/静态能力满足 ≠ 当前服务 available/);
 });

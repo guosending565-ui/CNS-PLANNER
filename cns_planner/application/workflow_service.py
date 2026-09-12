@@ -29,6 +29,7 @@ from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
 from .workspace_service import WorkspaceService
 from .spatial_3d_service import Spatial3DService
+from .cns_service_capability_service import CNSServiceCapabilityService
 
 
 class WorkflowService:
@@ -47,6 +48,7 @@ class WorkflowService:
         self.risk_model = risk_model or self._selected_algorithm("risk_model")
         self.gap_analyzer = gap_analyzer or self._selected_algorithm("cns_gap_analyzer")
         self.coverage_model_3d = self._selected_algorithm("coverage_model")
+        self.cns_service_model = self._selected_algorithm("service_model")
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
@@ -69,6 +71,9 @@ class WorkflowService:
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
             self.session, self.coverage_model_3d, self.invalidation_service, snapshot
+        )
+        self.cns_service_capability_service = CNSServiceCapabilityService(
+            self.session, self.cns_service_model, self.invalidation_service, snapshot
         )
         self.export_service = ExportService(self.session, snapshot)
 
@@ -95,6 +100,7 @@ class WorkflowService:
     def cns_gap_snapshot(self): return deepcopy(self.state.get("cns_gap_analysis") or CNSGapAnalyzerV1.empty())
     def spatial_3d_snapshot(self): return self.spatial_3d_service.spatial_snapshot()
     def coverage_3d_snapshot(self): return self.spatial_3d_service.coverage_snapshot()
+    def cns_service_capability_snapshot(self): return self.cns_service_capability_service.capability_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -145,6 +151,7 @@ class WorkflowService:
                 "coverage_planner": "coverage_algorithm",
                 "cns_gap_analyzer": "gap_algorithm",
                 "coverage_model": "coverage_model",
+                "service_model": "service_model",
             }[algorithm_type]
             self.invalidation_service.workflow(changed)
         self.session.save()
@@ -161,6 +168,8 @@ class WorkflowService:
             self.risk_model = self.risk_service.risk_model = instance
         elif algorithm_type == "coverage_model":
             self.coverage_model_3d = self.spatial_3d_service.model = instance
+        elif algorithm_type == "service_model":
+            self.cns_service_model = self.cns_service_capability_service.model = instance
 
     def _steps(self):
         state = self.state
@@ -195,6 +204,7 @@ class WorkflowService:
     def set_altitude_layers(self, payload): return self.spatial_3d_service.set_altitude_layers(payload)
     def set_route_altitude_profile(self, payload): return self.spatial_3d_service.set_route_profile(payload)
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
+    def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
     def apply_grid_attributes(self, results): return self.risk_service.apply_grid_attributes(results)
     def update_data_source_profiles(self, profiles): return self.risk_service.update_source_profiles(profiles)
     def evaluate_grid_risk(self, parameters=None): return self.risk_service.evaluate(parameters)

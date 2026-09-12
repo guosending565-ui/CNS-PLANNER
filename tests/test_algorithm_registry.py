@@ -65,6 +65,7 @@ def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
         ("coverage_planner", "coverage_planner_v1", "1.0"),
         ("cns_gap_analyzer", "cns_gap_analysis_v1", "1.0"),
         ("coverage_model", "geometric_coverage_3d_v1", "1.0"),
+        ("service_model", "cns_service_capability_v1", "1.0"),
     }
     for item in registry.catalog():
         assert set(item) == {
@@ -141,16 +142,18 @@ def test_same_selection_is_noop_and_invalid_selection_preserves_current(tmp_path
     [
         ("coverage_planner", {"coverage", "report"}),
         ("cns_gap_analyzer", {"cns_gap", "report"}),
-        ("coverage_model", {"coverage_3d", "report"}),
+        ("coverage_model", {"coverage_3d", "cns_service_capability", "report"}),
+        ("service_model", {"cns_service_capability", "report"}),
     ],
 )
 def test_dummy_selection_uses_directed_invalidation(tmp_path, algorithm_type, expected):
     registry = build_default_algorithm_registry(defaults())
     manifest = register_dummy(registry, algorithm_type)
     workflow = WorkflowService(tmp_path / f"{algorithm_type}.json", DEFAULTS_PATH, algorithm_registry=registry)
-    workflow.state["result_statuses"].update({name: "passed" for name in ("routes", "coverage", "cns_gap", "coverage_3d", "technical_risk", "report")})
+    workflow.state["result_statuses"].update({name: "passed" for name in ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "technical_risk", "report")})
     workflow.state["coverage"] = {"status": "passed"}
     workflow.state["cns_gap_analysis"] = {"status": "passed"}
+    workflow.state["cns_service_capability"]["status"] = "meets_under_model"
     workflow.select_algorithm({
         "algorithm_type": algorithm_type, "algorithm_id": manifest.algorithm_id,
         "version": manifest.version, "parameters": {},
