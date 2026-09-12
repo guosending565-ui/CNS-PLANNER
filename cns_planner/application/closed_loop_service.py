@@ -355,6 +355,9 @@ def _apply_post_commit_statuses(state):
     if (state.get("cns_site_plan") or {}).get("status") != "not_calculated":
         state["cns_site_plan"]["status"] = "stale"
         statuses["cns_site_plan"] = "stale"
+    if (state.get("cns_corridor_assessment") or {}).get("status") != "not_calculated":
+        state["cns_corridor_assessment"]["status"] = "stale"
+        statuses["cns_corridor_assessment"] = "stale"
     statuses["technical_risk"] = "stale"
     statuses["report"] = "stale"
     state.setdefault("risks", {})["technical"] = assessment(

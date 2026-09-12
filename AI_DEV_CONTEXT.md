@@ -1,6 +1,6 @@
 # CNS 规划系统开发上下文
 
-> 架构基线：2026-09-12（Asia/Shanghai）
+> 架构基线：2026-09-13（Asia/Shanghai）
 > 当前目标是持续完善 CNS 规划工作台；结构重构不得顺带改变 V1 算法、风险公式、API 路径或项目业务结果。
 
 ## 1. 当前架构
@@ -55,6 +55,7 @@ map_app.py / app.py
 - `application/cns_input_service.py`：五类 CNS 规划输入的选择、导入、需求覆盖、保存与下游失效。
 - `application/closed_loop_service.py` + `domain/closed_loop.py`：P12 working-copy 重跑编排、确定性 PlanApplication、Before/After 比较和事务式 Preview/Apply；不实现新的覆盖、能力、时间线或 Gap 公式。
 - `route_planner/risk_aware_v2.py`：P13 纯 Python GridGraph、风险证据门控和 risk-aware A*；直接消费标准网格及网格风险，不依赖 QGIS、不重算 RiskModel。
+- `domain/cns_corridor.py`、`algorithms/corridor/v1.py`、`application/corridor_service.py`：P14 route corridor 契约、纯 Python 水平/垂向离散、P7/P8 代表点复用及持久化用例。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
 - `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
 - `application/review_service.py` + `domain/status.py`：结果状态聚合的唯一权威实现。
@@ -95,6 +96,7 @@ protection_envelope（独立保存工程战术保护距离结果）
 cns_gap_analysis_v2（独立保存 planning/runtime/combined Gap V2；不覆盖 cns_gap_analysis）
 site_planning_policy / cns_site_plan（P11 proposal-only 规划输入与提案）
 closed_loop_assessment（P12 baseline/planned 重跑证据、比较、provenance 与 commit 状态）
+cns_corridor_policy / cns_corridor_assessment（P14 显式走廊配置与独立 voxel/volume-proxy 结果）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -109,13 +111,14 @@ closed_loop_assessment（P12 baseline/planned 重跑证据、比较、provenance
 - route/altitude/P8 capability/RequiredCNS/Aircraft/motion/service scenario 变化会定向使 `service_timeline` stale；response budget/encounter scenario 变化仅使 `protection_envelope` stale。两者均不反向使 grid/routes/CoverageV1/GapV1 stale。
 - RequiredCNS、Aircraft、`coverage_3d`、`cns_service_capability` 或 `service_timeline` 变化会定向使 `cns_gap_analysis_v2` stale；`protection_envelope` 仅在 Gap V2 显式启用 protection margin 时使其 stale。该链路不反向影响 grid/routes/CoverageV1/GapV1/P7/P8/P9。
 - Gap V2、ExistingCNS、CandidateSite、DeviceCatalog、site policy 或相关算法选择变化会使 `cns_site_plan` stale，并继续使 `closed_loop_assessment` stale。P12 Preview 只保存 assessment；Apply 成功后提交 planned ExistingCNS 与 P7-P10 结果，并只向下游使 CoverageV1、GapV1、site plan、technical risk、report stale，不反向影响 grid/routes/grid_risk。
+- route/path、altitude profile/layers、grid/terrain、RequiredCNS、Aircraft、ExistingCNS、DeviceCatalog、corridor policy 及 P7/P8 有效算法参数变化会使 `cns_corridor_assessment` stale；corridor 变化不反向使 route/P7-P12 stale。P12 Apply 因正式 ExistingCNS 改变只额外 stale corridor，不破坏刚提交的 P7-P10。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`。`route_planner` 与 `cns_gap_analyzer` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`、`site_planner/reuse_first_site_planner_v1@1.0`、`corridor_model/cns_service_corridor_v1@1.0`。`route_planner` 与 `cns_gap_analyzer` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
 - Workflow 启动时从 Registry 解析选择，再把算法对象注入相应 Application Service；业务 Service 不依赖 Registry。
 - 未来 RoutePlanner：`plan(start, end, grid, risk, constraints) -> RouteResult`。
@@ -221,6 +224,15 @@ P13 Risk-Aware Route Planner V2：
 - Step 1 通过 Registry Manifest 展示 V2；Step 3 仅在选中 V2 时显示 lambda/component/unknown/threshold 与 Distance/Risk exposure/Mean/Max/Detour。继续复用既有算法选择和运行航路 API。
 - 只有当前 route planner 精确选择 V2 时，`grid_risk` 变化才使 routes 及 P7-P12 下游 stale；V1 选择时不新增 route 对 grid risk 的依赖。算法/参数选择变化沿既有 route dependency 失效。
 
+P14 CNS Service Requirement Corridor & 3D Volume Assessment V1：
+
+- `corridor_model/cns_service_corridor_v1@1.0` 是 additive 工程评估；ProjectState 独立保存 `cns_corridor_policy` 与 `cns_corridor_assessment`。它不是 JARUS Operational Volume、U-space Surveillance Volume 或法规批准空间，也不改变中心线 GapV2。
+- 每条航路的 `CNSCorridorSpec` 显式保存水平半宽、上下垂向余量、source/confirmed/status；缺失或未确认保持 pending_confirmation，不提供监管或工程默认宽度。
+- 水平离散按 cell center 到航路最近米制距离与 cell half diagonal 做保守网格纳入，语义固定为 `conservative_grid_cell_inclusion_not_exact_buffer`。垂向严格复用 RouteAltitudeProfile、terrain、AltitudeLayer 和 `resolve_egm2008_height`；AGL 无 DEM 或 WGS84 椭球高无 geoid 证据保持 unknown。
+- voxel 继续使用 lazy `grid_id@altitude_layer_id`。代表点取 cell center 与 layer/corridor overlap 中点，语义为 `representative_voxel_probe_not_entire_voxel_guarantee`；体积仅为 cell 米制面积近似乘 overlap 厚度的 `discretized_volume_proxy_not_exact_corridor_volume`。
+- P7 暴露并继续复用同一纯 geometry point helper；P8 暴露并继续复用同一 static capability point helper。P14 按 P7 geometry → P8 technology/aircraft/service-model/performance/redundancy 判定，unknown/unsupported 不转为 deficit 或 passed，且只使用 ExistingCNS，CandidateSite/P11 proposal 不参与。
+- API 为 `GET /api/cns-service-corridor`、`POST /api/cns-service-corridor/evaluate`。Step 4 配置 route corridor spec；Step 5 展示 C/N/S satisfied/confirmed-deficit/unknown voxel 数与 volume proxy 比例。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -279,6 +291,8 @@ P12 完整基线：**268 passed, 6 skipped, 1 known failed**；P12/P11/P7-P10/Ga
 
 P13 完整基线：**278 passed, 6 skipped, 1 known failed**；P13/Registry/V1/P7-P12/Workflow/Risk/Persistence/architecture 定向回归 **114 passed**；Node **13 passed, 0 failed**，`main.js/step03_routes.js` 语法检查通过。新增覆盖 MH/T grid_id 与 bbox fallback 邻接、lambda=0 最短路、lambda>0 风险绕行、距离-风险权衡、边风险暴露公式、unknown block/显式 penalize、工程阈值、硬约束/对角 corner、missing/stale risk、确定性 tie、米制距离、Dijkstra 最优性参照、Registry 默认 V1、Workflow 接线与 V2-only 条件失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P13 未修改生产空域代码。
 
+P14 完整基线：**288 passed, 6 skipped, 1 known failed**；P14/P7/P8/Registry 定向回归 **48 passed**；Node **13 passed, 0 failed**，`app.js/main.js/step04_operation.js/step05_cns.js` 语法检查通过。新增覆盖中心线满足但走廊边缘缺口、水平保守纳入、垂向 layer overlap、waypoint-linear 高度、AGL DEM NoData/WGS84 geoid 缺失、未确认 service model、confirmed fail、GNSS 非站基导航、CandidateSite 隔离、volume proxy 守恒、确定性指纹、P7/P8 point helper、Registry/API/schema-v2 backfill/保存恢复、P12 Apply 与单向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P14 未修改生产空域代码。
+
 当前里程碑：**CNS-PLANNER v1.0 research baseline / ready for synthetic end-to-end validation**。
 
 ## 9. 架构原则
@@ -318,10 +332,11 @@ P13 完整基线：**278 passed, 6 skipped, 1 known failed**；P13/Registry/V1/P
 18. P11 是单 action 正收益的 reuse-first 提案器，不求解多 action 联合后才能满足的独立冗余，不含风险/人口/severity 权重，也不是费用优化器。P12 可组合 apply 并重跑 P7-P10，但结果仍受 P7/P8 工程模型与输入证据完整度约束。
 19. P12 没有项目级 audit log、撤销已提交 application 或多方案分支合并；事务边界依赖当前单项目单进程 repository 原子写入。真实数据验证、并发提交控制和人工审批流留待后续阶段。
 20. P13 是 MH/T cell-centroid 的二维八邻域 A*；没有 Theta*/LOS smoothing、连续空间最短路、动态/四维风险或高度相关风险。硬约束仍来自现有 bbox 输入，风险仍受 RiskModelV1 相对指数和数据完整度限制。
+21. P14 使用保守 cell 纳入、代表性 voxel probe 和离散 volume proxy；不是精确 buffer/mesh，也不保证 voxel 全体满足。尚未评估走廊冗余、韧性、runtime outage、真实传播或法规空间合规。
 
 ## 11. 下一阶段计划
 
-1. 使用 synthetic end-to-end 场景并列验证 RoutePlannerV1/V2 与 P7-P12 全链路的守恒量、证据传播、重启恢复及距离-风险权衡。
+1. P15：Corridor-based CNS Redundancy & Resilience Gap，在不推断独立性或概率 availability 的前提下扩展走廊证据。
 2. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 3. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
 4. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

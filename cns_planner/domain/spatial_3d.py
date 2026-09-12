@@ -107,6 +107,7 @@ def normalize_altitude_layer(value):
         "source": str(value.get("source") or "未记录"),
         "confirmed": confirmed,
         "status": "confirmed" if confirmed and reference != "unknown" else "pending_confirmation",
+        "geoid_undulation_m": _optional_number(value.get("geoid_undulation_m"), "geoid_undulation_m"),
     }
 
 

@@ -10,6 +10,7 @@ from .coverage.geometric_3d import GeometricCoverage3DV1
 from .service_capability.v1 import CNSServiceCapabilityV1
 from .timeline.v1 import RouteServiceTimelineV1
 from .protection.v1 import TacticalProtectionEnvelopeV1
+from .corridor.v1 import CNSServiceCorridorV1
 from .route.v1 import RoutePlannerV1
 from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 from ..gap.v1 import CNSGapAnalyzerV1
@@ -18,7 +19,7 @@ from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..risk.v1 import RiskModelV1
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -101,6 +102,7 @@ def default_algorithm_selection():
         "timeline_model": _selection("timeline_model", RouteServiceTimelineV1),
         "protection_model": _selection("protection_model", TacticalProtectionEnvelopeV1),
         "site_planner": _selection("site_planner", ReuseFirstSitePlannerV1),
+        "corridor_model": _selection("corridor_model", CNSServiceCorridorV1),
     }
 
 
@@ -145,6 +147,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
     registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
     registry.register(_site_planner_manifest(), lambda parameters: ReuseFirstSitePlannerV1(parameters))
+    registry.register(_corridor_manifest(), lambda parameters: CNSServiceCorridorV1(parameters))
     return registry
 
 
@@ -328,5 +331,27 @@ def _site_planner_manifest():
         {"type": "object", "additionalProperties": False},
         ("target weight 仅为 confirmed planning-gap length", "无 confirmed cost 时使用 action-count proxy"),
         ("proposal 不修改 ExistingCNS", "需要 P12 apply + rerun 闭环验证", "不求解联合动作冗余"),
+        (),
+    )
+
+
+def _corridor_manifest():
+    return AlgorithmManifest(
+        "corridor_model", CNSServiceCorridorV1.algorithm_id, CNSServiceCorridorV1.algorithm_version,
+        "CNS Service Requirement Corridor V1", "CNS-PLANNER", "engineering_baseline",
+        "以现有 MH/T 网格和高度层构造保守离散的 CNS 服务需求走廊，并复用 P7/P8 逐点规则评估代表性 voxel probe。",
+        ("operational_routes", "route_altitude_profiles", "grid", "terrain", "altitude_layers", "required_cns", "aircraft_profile", "existing_cns", "device_catalog", "corridor_policy"),
+        ("cns_corridor_assessment", "voxel_probe_results", "volume_proxy_summary"),
+        {"type": "object", "additionalProperties": True},
+        (
+            "水平采用 conservative grid-cell inclusion，而非精确 buffer",
+            "voxel 采用代表点评估，volume 为离散代理量",
+            "canonical vertical reference 为 EGM2008 orthometric",
+        ),
+        (
+            "不是 JARUS Operational Volume、U-space Surveillance Volume 或法规批准空间",
+            "不评估运行时失效、概率可用度、真实传播或精确 3D mesh",
+            "representative probe 不保证整个 voxel 满足",
+        ),
         (),
     )

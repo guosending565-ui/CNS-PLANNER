@@ -39,7 +39,7 @@ class GeometricCoverage3DV1:
         profiles = (spatial_3d or {}).get("route_altitude_profiles") or {}
         terrain = ((grid_attributes or {}).get("terrain") or {}).get("cells") or {}
         cells = list((grid or {}).get("cells") or [])
-        providers = _providers(
+        providers = build_geometric_providers(
             existing_facilities, device_catalog,
             (spatial_3d or {}).get("site_vertical_profiles") or {},
         )
@@ -66,7 +66,7 @@ class GeometricCoverage3DV1:
         if route.get("status") != "passed" or len(path) < 2:
             return {"route_id": route_id, "status": "missing_data", "route_length_m": 0.0, "samples": [], "subsystems": []}
         if not profile:
-            return {"route_id": route_id, "status": "missing_data", "route_length_m": _path_length(path), "samples": [], "subsystems": [], "reasons": ["缺少航路高度剖面"]}
+            return {"route_id": route_id, "status": "missing_data", "route_length_m": path_length_m(path), "samples": [], "subsystems": [], "reasons": ["缺少航路高度剖面"]}
         offsets, total = _sample_offsets(path, self.parameters["sample_spacing_m"])
         samples = [self._sample(route_id, path, offset, total, profile, grid_cells, terrain) for offset in offsets]
         subsystems = [self._subsystem(code, route_id, path, offsets, total, profile, grid_cells, terrain, providers.get(code, [])) for code in ("C", "N", "S")]
@@ -79,11 +79,11 @@ class GeometricCoverage3DV1:
         }
 
     def _sample(self, route_id, path, offset, total, profile, grid_cells, terrain):
-        coordinate = _point_at(path, offset)
-        cell = _find_cell(grid_cells, coordinate)
+        coordinate = route_point_at(path, offset)
+        cell = find_grid_cell(grid_cells, coordinate)
         terrain_cell = terrain.get(cell.get("grid_id")) if cell else None
         surface = terrain_cell.get("surface_elevation_mean_m") if terrain_cell and terrain_cell.get("status") == "passed" else None
-        input_height = _profile_height(profile, offset, total)
+        input_height = route_profile_height(profile, offset, total)
         resolved = resolve_egm2008_height(
             input_height, profile.get("vertical_reference", "unknown"),
             surface_elevation_m=surface,
@@ -103,7 +103,7 @@ class GeometricCoverage3DV1:
     def _subsystem(self, code, route_id, path, offsets, total, profile, grid_cells, terrain, providers):
         point_samples = [self._sample(route_id, path, value, total, profile, grid_cells, terrain) for value in offsets]
         for sample in point_samples:
-            sample.update(_coverage_at(sample, providers))
+            sample.update(evaluate_geometry_point(sample, providers))
         if not providers:
             return _missing_subsystem(code, total, point_samples, "没有可用的明确三维几何服务提供者")
         if any(sample["vertical_status"] != "passed" for sample in point_samples):
@@ -111,7 +111,7 @@ class GeometricCoverage3DV1:
         intervals = []
         for start, end in zip(offsets, offsets[1:]):
             midpoint = self._sample(route_id, path, (start + end) / 2, total, profile, grid_cells, terrain)
-            covered = _coverage_at(midpoint, providers)
+            covered = evaluate_geometry_point(midpoint, providers)
             intervals.append({"start_m": start, "end_m": end, "covered": covered["covered"]})
         covered_length = sum(item["end_m"] - item["start_m"] for item in intervals if item["covered"])
         uncovered = _uncovered_segments(path, intervals)
@@ -126,7 +126,8 @@ class GeometricCoverage3DV1:
         }
 
 
-def _providers(collection, catalog, site_profiles=None):
+def build_geometric_providers(collection, catalog, site_profiles=None):
+    """Build the canonical P7 point-provider input from existing facilities only."""
     devices = {str(item.get("device_id")): item for item in (catalog or {}).get("items") or []}
     result = {"C": [], "N": [], "S": []}
     for facility in (collection or {}).get("items") or []:
@@ -150,7 +151,8 @@ def _providers(collection, catalog, site_profiles=None):
     return result
 
 
-def _coverage_at(sample, providers):
+def evaluate_geometry_point(sample, providers):
+    """Evaluate one EGM2008 point with the exact P7 geometric coverage rules."""
     if sample.get("vertical_status") != "passed":
         return {"covered": None, "providers": [], "nearest_slant_distance_m": None}
     matches, nearest = [], None
@@ -172,7 +174,7 @@ def _coverage_at(sample, providers):
 
 
 def _sample_offsets(path, spacing):
-    total = _path_length(path)
+    total = path_length_m(path)
     if total <= 0:
         return [0.0], 0.0
     values = [0.0]
@@ -184,11 +186,11 @@ def _sample_offsets(path, spacing):
     return values, total
 
 
-def _path_length(path):
+def path_length_m(path):
     return sum(distance_m(a, b) for a, b in zip(path, path[1:]))
 
 
-def _point_at(path, offset):
+def route_point_at(path, offset):
     remaining = max(0.0, float(offset))
     for a, b in zip(path, path[1:]):
         length = distance_m(a, b)
@@ -199,7 +201,7 @@ def _point_at(path, offset):
     return list(path[-1])
 
 
-def _profile_height(profile, offset, total):
+def route_profile_height(profile, offset, total):
     if profile.get("mode") == "constant":
         return profile.get("constant_altitude_m")
     points = profile.get("waypoints") or []
@@ -215,7 +217,7 @@ def _profile_height(profile, offset, total):
     return points[-1]["altitude_m"]
 
 
-def _find_cell(cells, point):
+def find_grid_cell(cells, point):
     lon, lat = point
     max_east = max((cell.get("bbox") or [0, 0, 0, 0])[2] for cell in cells) if cells else None
     max_north = max((cell.get("bbox") or [0, 0, 0, 0])[3] for cell in cells) if cells else None
@@ -239,8 +241,8 @@ def _uncovered_segments(path, intervals):
             groups.append({"route_offset_start_m": item["start_m"], "route_offset_end_m": item["end_m"]})
     for group in groups:
         group["length_m"] = group["route_offset_end_m"] - group["route_offset_start_m"]
-        group["start"] = _point_at(path, group["route_offset_start_m"])
-        group["end"] = _point_at(path, group["route_offset_end_m"])
+        group["start"] = route_point_at(path, group["route_offset_start_m"])
+        group["end"] = route_point_at(path, group["route_offset_end_m"])
         group["path"] = [group["start"], group["end"]]
     return groups
 

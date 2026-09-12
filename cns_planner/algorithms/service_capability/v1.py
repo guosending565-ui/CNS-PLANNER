@@ -36,7 +36,7 @@ class CNSServiceCapabilityV1:
         }
 
     def evaluate(self, coverage_3d, required_cns, aircraft_profile, existing_facilities, device_catalog):
-        devices = _provider_devices(device_catalog, existing_facilities)
+        devices = build_provider_devices(device_catalog, existing_facilities)
         routes = []
         for route in (coverage_3d or {}).get("routes") or []:
             route_id = str(route.get("route_id") or "")
@@ -79,16 +79,41 @@ class CNSServiceCapabilityV1:
         if code == "N" and _technology(capability) in NON_SITE_NAVIGATION:
             status = "meets_under_model" if aircraft_ok is True else "does_not_meet_under_model" if aircraft_ok is False else "unknown"
             reason = "已确认的机载导航性能满足 RequiredCNS" if aircraft_ok is True else "机载导航性能不满足 RequiredCNS" if aircraft_ok is False else "机载导航性能证据不足"
-            samples = [_sample_result(item, status, [reason], [{"kind": "aircraft_navigation", **aircraft_evidence}]) for item in _route_samples(route, geometry)]
+            samples = [evaluate_capability_point(code, item, required, aircraft, devices) for item in _route_samples(route, geometry)]
             return {**base, "status": status, "model_scope": "aircraft_declared_performance", "samples": samples, **_summary(total, samples)}
         samples = []
         for sample in _route_samples(route, geometry):
-            samples.append(self._sample(code, sample, required, capability, aircraft_ok, aircraft_evidence, devices))
+            samples.append(evaluate_capability_point(code, sample, required, aircraft, devices))
         summary = _summary(total, samples)
         status = _summary_status(summary, samples)
         return {**base, "status": status, "samples": samples, **summary}
 
     def _sample(self, code, sample, required, capability, aircraft_ok, aircraft_evidence, devices):
+        return _evaluate_site_capability_point(
+            code, sample, required, capability, aircraft_ok, aircraft_evidence, devices
+        )
+
+
+def evaluate_capability_point(code, sample, required, aircraft, devices):
+    """Evaluate one P7 geometry point with the exact P8 static capability rules."""
+    if required.get("required") is False:
+        return _sample_result(sample, "not_applicable", ["该分系统不适用"])
+    if required.get("required") is not True or required.get("status") == "pending_confirmation":
+        return _sample_result(sample, "unknown", ["RequiredCNS 未确认"])
+    capability = (aircraft or {}).get(SUBSYSTEM_NAMES[code]) or {}
+    aircraft_ok, aircraft_evidence = evaluate_required_performance(
+        _without_redundancy(required), capability, require_capability=True
+    )
+    if code == "N" and _technology(capability) in NON_SITE_NAVIGATION:
+        status = "meets_under_model" if aircraft_ok is True else "does_not_meet_under_model" if aircraft_ok is False else "unknown"
+        reason = "已确认的机载导航性能满足 RequiredCNS" if aircraft_ok is True else "机载导航性能不满足 RequiredCNS" if aircraft_ok is False else "机载导航性能证据不足"
+        return _sample_result(sample, status, [reason], [{"kind": "aircraft_navigation", **aircraft_evidence}])
+    return _evaluate_site_capability_point(
+        code, sample, required, capability, aircraft_ok, aircraft_evidence, devices
+    )
+
+
+def _evaluate_site_capability_point(code, sample, required, capability, aircraft_ok, aircraft_evidence, devices):
         evidence = []
         if sample.get("covered") is False:
             return _sample_result(sample, "does_not_meet_under_model", ["P7 三维几何覆盖门控未通过"], evidence)
@@ -273,7 +298,7 @@ def _declared_actual(device, model):
     }
 
 
-def _provider_devices(catalog, facilities):
+def build_provider_devices(catalog, facilities):
     result = {str(item.get("device_id")): deepcopy(item) for item in (catalog or {}).get("items") or []}
     for facility in (facilities or {}).get("items") or []:
         for installed in facility.get("devices") or []:

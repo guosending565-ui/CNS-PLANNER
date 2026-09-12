@@ -50,6 +50,8 @@ class InvalidationService:
             self.cns_site_plan()
         if "protection_envelope" in affected:
             self.protection_envelope()
+        if "cns_corridor_assessment" in affected:
+            self.cns_corridor()
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -69,6 +71,7 @@ class InvalidationService:
             self.risk()
         if "terrain" in changed_sources:
             self.coverage_3d()
+            self.cns_corridor()
 
     def risk(self):
         state = self.session.state
@@ -111,6 +114,7 @@ class InvalidationService:
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"
         self.cns_service_capability()
+        self.cns_corridor()
 
     def cns_service_capability(self):
         state = self.session.state
@@ -122,6 +126,7 @@ class InvalidationService:
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"
         self.service_timeline()
+        self.cns_corridor()
 
     def service_timeline(self):
         state = self.session.state
@@ -180,3 +185,12 @@ class InvalidationService:
             result["commit_status"] = "stale_assessment"
             state["closed_loop_assessment"] = result
             state.setdefault("result_statuses", {})["closed_loop_assessment"] = "stale"
+
+    def cns_corridor(self):
+        """Stale only the P14 corridor result; never mutate centerline products."""
+        state = self.session.state
+        result = state.get("cns_corridor_assessment") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["cns_corridor_assessment"] = result
+            state.setdefault("result_statuses", {})["cns_corridor_assessment"] = "stale"

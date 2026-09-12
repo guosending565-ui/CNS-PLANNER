@@ -92,6 +92,8 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.match(html,/Response Time Budget/);
   assert.match(html,/Encounter Scenario/);
   assert.match(html,/P8 静态 capability 不会自动转为 P4 available/);
+  assert.match(html,/CNS Service Requirement Corridor/);
+  assert.match(html,/不等同 JARUS Operational Volume/);
   assert.doesNotMatch(html,/最大时延 ms/);
 });
 
@@ -122,4 +124,6 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/Preview 只在 working copy/);
   assert.match(step5,/Apply 才正式提交/);
   assert.match(step5,/不是真实 CNS 模型 validation 或认证结论/);
+  assert.match(step5,/CNS Service Requirement Corridor/);
+  assert.match(step5,/discretized volume proxy/);
 });

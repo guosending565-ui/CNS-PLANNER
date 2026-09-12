@@ -42,6 +42,8 @@ class ProjectState(TypedDict, total=False):
     site_planning_policy: dict[str, Any]
     cns_site_plan: dict[str, Any]
     closed_loop_assessment: dict[str, Any]
+    cns_corridor_policy: dict[str, Any]
+    cns_corridor_assessment: dict[str, Any]
     safety_policy: dict[str, Any]
     safety_assessment: dict[str, Any]
     coverage: dict[str, Any] | None
