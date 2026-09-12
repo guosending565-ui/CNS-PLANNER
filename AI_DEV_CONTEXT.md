@@ -37,7 +37,7 @@ map_app.py / app.py
 - M5–M6：可替换 `RiskModel`；Ground、Airspace Constraint、Overall 相对风险，参数化权重/阈值、贡献解释和完整度。
 - M7：可复现多机直线轨迹、逐格驻留时间、二维 CPA 潜在冲突、traffic/conflict 风险输入。
 - CNS 核心输入：AircraftCNSProfileCatalog、RequiredCNS、DeviceCatalog、ExistingCNSFacility、CandidateSite 已纳入 schema v2；已有能力与任务需求严格分离。
-- CNS Gap Analysis：按 operational route 和 C/N/S 分系统比较 RequiredCNS、机载能力及已有设施水平覆盖，输出长度口径覆盖率、连续缺口航段和稳定输入指纹；结果可直接作为未来 CNSSitePlanner 输入。
+- CNS Gap Analysis：V1 保持 RequiredCNS、机载能力及已有设施二维水平覆盖的既有输出；V2 独立合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线，输出 planning/runtime/combined 评估、连续缺口段、contingency/unknown 暴露和稳定输入指纹。
 - RoutePlannerV1：固定工作区离散、硬约束 BBOX、A*、geometry/关键节点/统计/指纹。
 - CoveragePlannerV1：C/N/S 主站、补盲、共址、未覆盖点/航段、统计/指纹。
 - schema-v2 项目自动保存、打开、Save As 与数据源恢复；失败操作保留当前有效项目并清理临时文件。
@@ -89,6 +89,7 @@ cns_service_capability（按 route/subsystem/sample 保存静态技术能力判�
 operational_timing（route_motion_profiles / service_scenarios / response_time_budgets / encounter_scenarios）
 service_timeline（按 route/subsystem 保存显式场景驱动的连续运行状态区间）
 protection_envelope（独立保存工程战术保护距离结果）
+cns_gap_analysis_v2（独立保存 planning/runtime/combined Gap V2；不覆盖 cns_gap_analysis）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -101,13 +102,14 @@ protection_envelope（独立保存工程战术保护距离结果）
 - DEM、航路、已有设施、设备及 P7 垂向/几何配置变化定向使 `coverage_3d` stale；单独修改高度层/航路高度剖面不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - `coverage_3d`、RequiredCNS、选定 Aircraft Profile、DeviceCatalog/ExistingCNS 或 service-model 选择变化会定向使 `cns_service_capability` stale；不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - route/altitude/P8 capability/RequiredCNS/Aircraft/motion/service scenario 变化会定向使 `service_timeline` stale；response budget/encounter scenario 变化仅使 `protection_envelope` stale。两者均不反向使 grid/routes/CoverageV1/GapV1 stale。
+- RequiredCNS、Aircraft、`coverage_3d`、`cns_service_capability` 或 `service_timeline` 变化会定向使 `cns_gap_analysis_v2` stale；`protection_envelope` 仅在 Gap V2 显式启用 protection margin 时使其 stale。该链路不反向影响 grid/routes/CoverageV1/GapV1/P7/P8/P9。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`。找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`。`cns_gap_analyzer` 默认仍选择 V1；找不到精确版本直接报错，禁止回退。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
 - Workflow 启动时从 Registry 解析选择，再把算法对象注入相应 Application Service；业务 Service 不依赖 Registry。
 - 未来 RoutePlanner：`plan(start, end, grid, risk, constraints) -> RouteResult`。
@@ -176,6 +178,15 @@ P9 Route Service Timeline & Tactical Protection Envelope V1：
 - `TacticalProtectionEnvelopeV1` 计算 `T_pre=sum(response components)`、`D_reaction=relative_closing_speed*T_pre`、`D_protect=D_reaction+maneuver_distance+uncertainty_distance`。缺任何关键 confirmed 输入返回 unknown/null；结果固定声明 `engineering_tactical_protection_envelope`，法规 Well-Clear 和正式 DAA Detection Volume 均为 `not_evaluated`。
 - API：`GET/POST /api/operational-timing`、`GET /api/service-timeline`、`POST /api/service-timeline/evaluate`、`GET /api/protection-envelope`、`POST /api/protection-envelope/evaluate`。Step 3/4/5 提供最小配置和结果界面；P9 不自动触发 P5/P6 事件。
 
+P10 3D / Performance / Runtime-Aware CNS Gap Analysis V2：
+
+- `CNSGapAnalyzerV2` 注册为 `cns_gap_analyzer/cns_gap_analysis_v2@2.0`，但 Registry 默认选择仍是 GapV1。ProjectState 使用独立 `cns_gap_analysis_v2`，V1 `cns_gap_analysis`、实现、API、输出与指纹均不改变。
+- V2 只消费 RequiredCNS、P7 `coverage_3d`、P8 `cns_service_capability`、P9 `service_timeline` 和可选 `protection_envelope`，不重新执行几何覆盖、性能匹配、Reliability 抽样或 ServiceState 判定。P8 meet/fail/unknown 与 P9 available/degraded/contingency/lost/unknown 分别形成 planning 与 operational assessment。
+- unified breakpoints 由航路首尾、P8 sample distance 和 P9 interval offset 构成。只有相邻 P8 sample 状态相同的中间区间才能继承该状态；状态变化区间保持 unknown。`GapSegmentV2` 保存 route/subsystem、里程/时间边界、planning/runtime/combined 状态、结构化 cause、完整 reasons/evidence、contingency exposure 与保守 remediation scope。
+- combined 状态固定为 `satisfied/satisfied_by_contingency/confirmed_gap/unknown/not_applicable`。明确 planning fail 或 runtime lost 为 confirmed gap；contingency 单独统计且不是 gap；无明确 gap 但证据未知时为 unknown。长度/时间按连续区间守恒统计，并输出最大连续缺口。
+- protection margin 默认关闭。显式开启后，仅在 P9 protection passed 且 P8 命中 provider 的 DeviceCatalog 有 confirmed 实际监视探测距离时计算 `available_detection_range-d_protect`；缺证据为 unknown，负值才形成 `protection_margin_gap`。始终标记 engineering only，Well-Clear/正式 DAA 合规未评估。
+- API：`GET/POST /api/cns-gap-analysis-v2`。Step 5 在 P7/P8/P9 后显示 C/N/S planning、runtime lost、contingency、unknown、最大连续 gap 和 segment evidence；Unknown 明确表示证据不足。Gap V2 不自动触发 P5/P6 Safety Event。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -226,6 +237,8 @@ P8 完整基线：**231 passed, 6 skipped, 1 known failed**；P8 能力模型定
 
 P9 完整基线：**242 passed, 6 skipped, 1 known failed**；P9/P4/P7/P8/Registry/Safety/V1 定向回归 **100 passed**；Node **12 passed, 0 failed**，Step 3/4/5 与主入口语法检查通过。新增覆盖 distance→time、非法/未确认速度、P8 meet≠available、显式场景与 P4/fallback、事件重叠、duration/length/unknown、响应预算、缺失参数、显式 relative speed、保护距离 fixture、Registry、schema-v2 backfill、保存恢复、API 和定向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P9 未修改生产空域代码。
 
+P10 完整基线：**249 passed, 6 skipped, 1 known failed**；P10/GapV1/P7/P8/P9/Registry/Project/architecture 定向回归 **85 passed**；Node **12 passed, 0 failed**，`app.js/main.js/step05_cns.js` 语法检查通过。新增覆盖 planning fail、runtime lost、contingency/unknown 分离、P8 状态跃迁保守 unknown、统一断点与相邻合并、长度/时间守恒、最大连续 gap、可选 protection margin、Registry 默认 V1、schema-v2 backfill、保存恢复、API 与单向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P10 未修改生产空域代码。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -254,14 +267,16 @@ P9 完整基线：**242 passed, 6 skipped, 1 known failed**；P9/P4/P7/P8/Regist
 
 14. P6 只支持由离散 EventObservation 驱动的定性 C+S/C+N/N+S 功能耦合；尚无完整航路 ServiceTimeline、耦合概率、common-cause、BN/DBN/Petri、FTA 图形编辑、认证工作流或正式 safety objective 校核。
 
-15. P8 仅提供静态技术能力工程基线：尚未实现 P.526/Fresnel/terrain diffraction、3GPP SINR/channel、GNSS constellation/DOP/RAIM、radar equation/Pd curve、GapV2 或 SitePlanner。
+15. P8 仅提供静态技术能力工程基线：尚未实现 P.526/Fresnel/terrain diffraction、3GPP SINR/channel、GNSS constellation/DOP/RAIM、radar equation/Pd curve 或 SitePlanner。
 
-16. P9 时间线仅支持恒定地速和显式离散场景；保护包络是代数工程基线，尚未实现 waypoint-linear motion、飞机动力学/转弯、正式 Well-Clear、DAA Detection Volume、Monte Carlo、GapV2、Risk-A* 或 SitePlanner。
+16. P9 时间线仅支持恒定地速和显式离散场景；保护包络是代数工程基线，尚未实现 waypoint-linear motion、飞机动力学/转弯、正式 Well-Clear、DAA Detection Volume、Monte Carlo、Risk-A* 或 SitePlanner。
+
+17. GapV2 是上游证据的保守区间合并，不做传播/性能/ServiceState 重算，不把 unknown 当 gap，也不触发 SafetyEvent；protection margin 仅支持已有 confirmed 监视探测距离的工程差值，尚未形成 GapV2→Safety/站址方案闭环。
 
 ## 11. 下一阶段计划
 
-1. 建立 CNS Gap Analysis：按航路比较 RequiredCNS、机载能力与 ExistingCNS 覆盖，输出可解释缺口。
-2. 引入可替换 CNSSitePlanner，使用 gap、CandidateSite 与 DeviceCatalog，继续保护 CoveragePlannerV1。
+1. 引入可替换 CNSSitePlanner，使用 GapV2、ExistingCNS、CandidateSite 与 DeviceCatalog，先建立 reuse-first 可解释基线并继续保护 CoveragePlannerV1。
+2. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 3. 将 grid_risk 作为 RoutePlannerV2 的标准代价输入，在新版本中逐步替换 56×56 原型；不要修改 RoutePlannerV1。
 4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
 5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit 和真实 QGIS 集成 CI/验收脚本。

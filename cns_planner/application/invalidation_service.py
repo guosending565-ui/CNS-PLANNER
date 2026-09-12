@@ -44,6 +44,8 @@ class InvalidationService:
             self.cns_service_capability()
         if "service_timeline" in affected:
             self.service_timeline()
+        if "cns_gap_v2" in affected:
+            self.cns_gap_v2()
         if "protection_envelope" in affected:
             self.protection_envelope()
 
@@ -118,6 +120,7 @@ class InvalidationService:
             state.setdefault("result_statuses", {})["service_timeline"] = "stale"
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"
+        self.cns_gap_v2()
 
     def protection_envelope(self):
         state = self.session.state
@@ -126,5 +129,19 @@ class InvalidationService:
             result["status"] = "stale"
             state["protection_envelope"] = result
             state.setdefault("result_statuses", {})["protection_envelope"] = "stale"
+        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
+            state["result_statuses"]["report"] = "stale"
+        parameters = (state.get("cns_gap_analysis_v2") or {}).get("parameters") or {}
+        if parameters.get("evaluate_protection_margin") is True:
+            self.cns_gap_v2()
+
+    def cns_gap_v2(self):
+        """Stale additive Gap V2 and report without touching upstream or Gap V1."""
+        state = self.session.state
+        result = state.get("cns_gap_analysis_v2") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["cns_gap_analysis_v2"] = result
+            state.setdefault("result_statuses", {})["cns_gap_v2"] = "stale"
         if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
             state["result_statuses"]["report"] = "stale"

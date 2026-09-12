@@ -15,6 +15,7 @@ from ..algorithms.registry import default_algorithm_selection, normalize_algorit
 from ..domain.cns_inputs import pending_required_cns
 from ..domain.safety_policy import default_safety_policy, normalize_safety_policy
 from ..gap.v1 import CNSGapAnalyzerV1
+from ..gap.v2 import CNSGapAnalyzerV2
 from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
 from ..domain.spatial_3d import empty_spatial_3d, normalize_spatial_3d
 from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
@@ -111,6 +112,7 @@ def blank_project(defaults):
         "existing_cns_facilities": empty_collection("existing-cns-facilities"),
         "candidate_sites": empty_collection("candidate-sites"),
         "cns_gap_analysis": CNSGapAnalyzerV1.empty(),
+        "cns_gap_analysis_v2": CNSGapAnalyzerV2.empty(),
         "safety_policy": default_safety_policy(),
         "safety_assessment": empty_safety_assessment(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
@@ -118,7 +120,7 @@ def blank_project(defaults):
         "result_statuses": {
             name: "not_calculated" for name in (
                 "workspace", "grid", "environment_risk", "routes",
-                "coverage", "cns_gap", "safety_assessment",
+                "coverage", "cns_gap", "cns_gap_v2", "safety_assessment",
                 "coverage_3d",
                 "cns_service_capability",
                 "service_timeline", "protection_envelope",
@@ -171,9 +173,11 @@ def normalize_project(value, grid_service):
     value.setdefault("existing_cns_facilities", empty_collection("existing-cns-facilities"))
     value.setdefault("candidate_sites", empty_collection("candidate-sites"))
     value.setdefault("cns_gap_analysis", CNSGapAnalyzerV1.empty())
+    value.setdefault("cns_gap_analysis_v2", CNSGapAnalyzerV2.empty())
     value["safety_policy"] = normalize_safety_policy(value.get("safety_policy"))
     value.setdefault("safety_assessment", empty_safety_assessment())
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")

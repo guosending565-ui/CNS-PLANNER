@@ -14,8 +14,10 @@ from ..simulation.conflict_detector import ConflictDetector
 from ..simulation.traffic_simulator import TrafficSimulator
 from ..gis.cns_input_adapter import CNSInputAdapter
 from ..gap.v1 import CNSGapAnalyzerV1
+from ..gap.v2 import CNSGapAnalyzerV2
 from .cns_input_service import CNSInputService
 from .gap_analysis_service import GapAnalysisService
+from .gap_analysis_v2_service import GapAnalysisV2Service
 from .cns_planning_service import CNSPlanningService
 from .export_service import ExportService
 from .invalidation_service import InvalidationService
@@ -47,7 +49,24 @@ class WorkflowService:
         self.route_planner = self._selected_algorithm("route_planner")
         self.coverage_planner = self._selected_algorithm("coverage_planner")
         self.risk_model = risk_model or self._selected_algorithm("risk_model")
-        self.gap_analyzer = gap_analyzer or self._selected_algorithm("cns_gap_analyzer")
+        selected_gap_analyzer = gap_analyzer or self._selected_algorithm("cns_gap_analyzer")
+        self.gap_analyzer = (
+            selected_gap_analyzer
+            if getattr(selected_gap_analyzer, "algorithm_id", None) != CNSGapAnalyzerV2.algorithm_id
+            else self.algorithm_registry.create(
+                "cns_gap_analyzer", CNSGapAnalyzerV1.algorithm_id,
+                CNSGapAnalyzerV1.algorithm_version, {},
+            )
+        )
+        self.gap_analyzer_v2 = (
+            selected_gap_analyzer
+            if getattr(selected_gap_analyzer, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id
+            else self.algorithm_registry.create(
+                "cns_gap_analyzer", CNSGapAnalyzerV2.algorithm_id,
+                CNSGapAnalyzerV2.algorithm_version,
+                (self.state.get("cns_gap_analysis_v2") or {}).get("parameters") or {},
+            )
+        )
         self.coverage_model_3d = self._selected_algorithm("coverage_model")
         self.cns_service_model = self._selected_algorithm("service_model")
         self.timeline_model = self._selected_algorithm("timeline_model")
@@ -62,6 +81,9 @@ class WorkflowService:
         self.cns_input_service = CNSInputService(self.session, self.invalidation_service, CNSInputAdapter(), snapshot)
         self.cns_input_service.ensure_catalogs()
         self.gap_analysis_service = GapAnalysisService(self.session, self.gap_analyzer, snapshot)
+        self.gap_analysis_v2_service = GapAnalysisV2Service(
+            self.session, self.gap_analyzer_v2, self.invalidation_service, snapshot
+        )
         self.project_service = ProjectService(self.session, snapshot)
         self.workspace_service = WorkspaceService(self.session, self.grid_service, self.invalidation_service, snapshot)
         self.route_service = RouteService(self.session, self.route_planner, self.invalidation_service, snapshot)
@@ -105,6 +127,7 @@ class WorkflowService:
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
     def cns_gap_snapshot(self): return deepcopy(self.state.get("cns_gap_analysis") or CNSGapAnalyzerV1.empty())
+    def cns_gap_v2_snapshot(self): return self.gap_analysis_v2_service.result_snapshot()
     def spatial_3d_snapshot(self): return self.spatial_3d_service.spatial_snapshot()
     def coverage_3d_snapshot(self): return self.spatial_3d_service.coverage_snapshot()
     def cns_service_capability_snapshot(self): return self.cns_service_capability_service.capability_snapshot()
@@ -155,6 +178,8 @@ class WorkflowService:
         self._bind_algorithm(algorithm_type, instance)
         if algorithm_type == "risk_model":
             self.invalidation_service.risk()
+        elif algorithm_type == "cns_gap_analyzer" and getattr(instance, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id:
+            self.invalidation_service.cns_gap_v2()
         else:
             changed = {
                 "route_planner": "route_algorithm",
@@ -175,7 +200,10 @@ class WorkflowService:
         elif algorithm_type == "coverage_planner":
             self.coverage_planner = self.cns_planning_service.planner = instance
         elif algorithm_type == "cns_gap_analyzer":
-            self.gap_analyzer = self.gap_analysis_service.analyzer = instance
+            if getattr(instance, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id:
+                self.gap_analyzer_v2 = self.gap_analysis_v2_service.analyzer = instance
+            else:
+                self.gap_analyzer = self.gap_analysis_service.analyzer = instance
         elif algorithm_type == "risk_model":
             self.risk_model = self.risk_service.risk_model = instance
         elif algorithm_type == "coverage_model":
@@ -213,6 +241,7 @@ class WorkflowService:
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
     def analyze_cns_gaps(self): return self.gap_analysis_service.analyze()
+    def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)

@@ -55,6 +55,7 @@ class OperationalTimingService:
             state.get("required_cns") or {}, profile,
             state.get("operational_timing") or {},
         )
+        self.invalidation.cns_gap_v2()
         state["service_timeline"] = result
         state["result_statuses"]["service_timeline"] = result["status"]
         state["result_statuses"]["report"] = "not_calculated"
@@ -72,6 +73,7 @@ class OperationalTimingService:
         result = self.protection_model.evaluate(
             budgets.get(budget_id), encounters.get(encounter_id),
         )
+        self.invalidation.protection_envelope()
         state["protection_envelope"] = result
         state["result_statuses"]["protection_envelope"] = (
             "pending_confirmation" if result["status"] == "unknown" else result["status"]

@@ -12,6 +12,7 @@ from .timeline.v1 import RouteServiceTimelineV1
 from .protection.v1 import TacticalProtectionEnvelopeV1
 from .route.v1 import RoutePlannerV1
 from ..gap.v1 import CNSGapAnalyzerV1
+from ..gap.v2 import CNSGapAnalyzerV2
 from ..risk.v1 import RiskModelV1
 
 
@@ -134,6 +135,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_route_manifest(), lambda parameters: RoutePlannerV1(**parameters))
     registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
+    registry.register(_gap_v2_manifest(), lambda parameters: CNSGapAnalyzerV2(parameters))
     registry.register(_geometric_3d_manifest(), lambda parameters: GeometricCoverage3DV1(parameters))
     registry.register(_service_capability_manifest(), lambda parameters: CNSServiceCapabilityV1(parameters))
     registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
@@ -200,6 +202,24 @@ def _gap_manifest():
         {"type": "object", "additionalProperties": False},
         ("既有设施使用设备 coverage radius 水平覆盖",),
         ("不计算传播、遮挡、干扰或三维性能",),
+        (),
+    )
+
+
+def _gap_v2_manifest():
+    return AlgorithmManifest(
+        "cns_gap_analyzer", CNSGapAnalyzerV2.algorithm_id, CNSGapAnalyzerV2.algorithm_version,
+        "CNS Gap Analysis V2", "CNS-PLANNER", "engineering_baseline",
+        "合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线的保守航路缺口评估。",
+        ("required_cns", "coverage_3d", "cns_service_capability", "service_timeline", "protection_envelope_optional"),
+        ("planning_assessment", "operational_assessment", "gap_segments_v2"),
+        {
+            "type": "object",
+            "properties": {"evaluate_protection_margin": {"type": "boolean", "default": False}},
+            "additionalProperties": False,
+        },
+        ("P8 相邻 sample 状态变化的区间保持 unknown", "长度和运行时间按统一 route breakpoint 统计"),
+        ("不重算覆盖、性能或 ServiceState", "Gap 不是 SafetyEvent", "保护距离检查仅为 engineering_only"),
         (),
     )
 
