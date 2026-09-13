@@ -100,7 +100,15 @@ function drawWorkflowOverlay(){
   }
   if($('existingCnsLayer')?.checked)for(const facility of flow.existing_cns_facilities?.items||[])drawCnsInputPoint(facility.coordinate,'#7256a1','circle');
   if($('candidateSiteLayer')?.checked)for(const site of flow.candidate_sites?.items||[])drawCnsInputPoint(site.coordinate,site.usable===false?'#8b949e':'#e07a26','diamond');
-  if($('candidateSiteLayer')?.checked)for(const action of flow.cns_corridor_site_plan?.selected_actions||[])drawCnsInputPoint(action.coordinate,'#d12f8a','square');
+  if($('candidateSiteLayer')?.checked)for(const action of proposedPlanActions(flow))drawCnsInputPoint(action.coordinate,'#d12f8a','square');
+}
+function proposedPlanActions(value){
+  const p16=value?.cns_corridor_site_plan||{},review=value?.cns_plan_review||{};
+  if(value?.confirmed_cns_plan?.application?.status==='applied')return [];
+  const variant=(review.variants||[]).find(item=>item.variant_id===review.selected_variant_id);
+  if(!variant)return p16.selected_actions||[];
+  const ids=new Set(variant.selected_action_ids||[]),catalog=[...(p16.candidate_actions||[]),...(p16.selected_actions||[])];
+  return catalog.filter((item,index)=>ids.has(item.action_id)&&catalog.findIndex(other=>other.action_id===item.action_id)===index);
 }
 function drawCnsInputPoint(coordinate,color,shape){
   if(!Array.isArray(coordinate))return;

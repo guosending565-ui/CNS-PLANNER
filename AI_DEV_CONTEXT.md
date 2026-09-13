@@ -279,6 +279,16 @@ P17 Operational Context → RequiredCNS Recommendation：
 - API：`GET/POST /api/cns-operation-context`、`GET/POST /api/cns-requirement-policies`、`GET /api/cns-required-recommendation`、`POST /api/cns-required-recommendation/evaluate|adopt`。Step 1 展示 requirement model；Step 4 展示 Context/Policy/Matched Rules/diff/provenance/Adopt；Step 6 汇总 requirement basis。
 - 正式语义：**operational-context-driven requirement recommendation, not automatic regulatory compliance**。
 
+P18 CNS Plan Review, Variant Comparison & Controlled Apply V1：
+
+- P18 是 Application 决策/配置管理层，不注册新算法；ProjectState additive 保存 `cns_plan_review` 与不可原地修改的 `confirmed_cns_plan` 历史快照。正式语义为 **human-reviewed plan decision and controlled application, not automatic optimal-plan selection**。
+- Initialize 固定当前 RequiredCNS、routes、Existing/Candidate/Device、P14/P15/P16 与相关算法输入 fingerprint，生成 0-action baseline 及当前 P16 auto proposal。`variant_id` 只由 review baseline fingerprint 与排序后的 action IDs 决定，名称/notes 不改变 identity。
+- User variant 只能 include/exclude 当前 P16 CandidateAction；评价在 deep copy ExistingCNS 上一次应用完整 action set，并复用当前 P14→P15 生成 authoritative hypothetical evidence。正式设施和 P14/P15 零污染，不累加 P16 历史 impact。
+- Comparison Matrix 仅展示 route/C/N/S 的 service/redundancy/unknown volume proxy、continuous-deficit、objectives、reuse counts 与按 cost unit 分组的显式费用；`automatic_overall_score/rank=null`，不同费用单位不合计。
+- Confirm 门禁要求 confirmed objectives 全满足、无 confirmed regression、无关键 unknown；未配置 objectives 只允许显式 `confirm_without_objectives` acknowledgement。Select 不改设施，Confirm 只冻结 decision/variant/actions/Before-After/Requirement basis/provenance，Confirm 不等于 Apply。
+- Apply 重校验 review baseline/action fingerprints，在事务 working copy 中复用 P7→P10 和 P14→P15。P14/P15 必须与 confirmed Preview fingerprint 一致，P10 新 confirmed regression 或 satisfied→unknown 会回滚。成功只保存一次并以 planning origin 幂等安装；0-action baseline 可 no-op applied。
+- API：`GET /api/cns-plan-review`，以及 `POST /api/cns-plan-review/initialize|variant|evaluate|select|confirm|apply`。Step 6 提供 Variant cards、无隐藏评分的比较矩阵与 Select→Confirm→Apply；地图切换仅显示 proposed overlay。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -345,6 +355,8 @@ P16 完整基线：**316 passed, 6 skipped, 1 known failed**；P11/P12/P14/P15/P
 
 P16.1 前置门禁：**51 passed**。P17 完整基线：**334 passed, 6 skipped, 1 known failed**；P17/P16/P14/P15/P8/Registry/RequiredCNS 定向回归 **130 passed**；Node **15 passed, 0 failed**，`app.js/main.js/step01_project.js/step04_operation.js/step06_review.js` 语法检查通过。新增覆盖 manual V1 默认/backfill、confirmed exact match、route override、纯 synthetic policy 的 VLOS/BVLOS 与 single/multi 差异、missing/unconfirmed context、空/未确认 policy、字段 merge/同值 provenance/conflict、不完整 recommendation 门控、零污染、外部能力隔离、显式 Adopt/既有失效链、divergence/stale、确定性 fingerprint/diff、Registry/API/schema-v2 保存恢复及 UI。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P17 未修改生产空域代码。
 
+P18 完整基线：**342 passed, 6 skipped, 1 known failed**；P18/P12/P14-P17 定向回归 **72 passed**；Node 前端 **16 passed, 0 failed**，`app.js/main.js/step06_review.js` 语法检查通过。新增覆盖 baseline+auto 初始化、action-set 确定性 identity、P14→P15 authoritative preview 零污染、无隐藏 score/rank、confirmed objectives 与无目标显式 acknowledgement 门禁、no-action baseline、confirmed immutable/clone、Select/Confirm/Apply 分层、输入 stale 拒绝、异常 rollback、成功单次 commit、P14/P15 current、P16/P11/P12/report 定向 stale、幂等 Apply、schema-v2 backfill、API 与 Step 6。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P18 未修改生产空域代码。
+
 当前里程碑：**CNS-PLANNER v1.0 research baseline / ready for synthetic end-to-end validation**。
 
 ## 9. 架构原则
@@ -388,10 +400,11 @@ P16.1 前置门禁：**51 passed**。P17 完整基线：**334 passed, 6 skipped,
 22. P15 只做静态空间 service/redundancy 缺口与显式目标判定；不建模 common-cause、共享供电/回传、塔站失效传播或概率 continuity/availability。共址关系当前既不奖励也不惩罚。
 23. P16 仍是离散 voxel/volume-proxy 的 proposal baseline；没有真实传播、设施施工约束、异构成本归一、全局整数优化、共因失效或 proposal apply/rollback。最终方案仍需用户确认与后续应用闭环。
 24. P17 Policy Engine 只支持显式项目规则、白名单字段和无优先级确定合并；尚无权威 policy catalog 签名/版本治理、法规适用性法律判断、复杂逻辑或审批审计。Recommendation 只能由用户确认后采用。
+25. P18 目前提供单项目、单进程的人工 Variant 审查与原子 Apply；尚无多人审批签名、撤销已应用计划、持久化 audit event stream、跨进程并发提交锁或 PDF 审计报告。Comparison Matrix 有意不提供自动综合评分/排名。
 
 ## 11. 下一阶段计划
 
-1. P18：Plan Review / Scenario Comparison / User Confirmation，统一展示当前正式输入、recommendation/proposal 与显式采用边界。
+1. P19：HTML/PDF Planning Report & Audit Export，导出 P17 requirement basis、P18 Variant/decision/application provenance 与关键结果快照。
 2. 完成 synthetic milestone validation，验证 M2 端到端走廊、冗余、目标、累计站址提案与需求采用。
 3. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。

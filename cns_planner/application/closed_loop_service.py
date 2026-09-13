@@ -150,42 +150,9 @@ class ClosedLoopService:
         return result, planned
 
     def _run_chain(self, state):
-        profile = AircraftCNSProfileCatalog.find(
-            state.get("aircraft_profiles") or {},
-            state.get("selected_aircraft_profile_id") or "",
-        )
-        facilities = _algorithm_facilities(state.get("existing_cns_facilities") or {})
-        coverage_model = _clone_model(
-            self.coverage_model, state.get("coverage_3d") or {},
-        )
-        capability_model = _clone_model(
-            self.capability_model, state.get("cns_service_capability") or {},
-        )
-        timeline_model = _clone_model(
-            self.timeline_model, state.get("service_timeline") or {},
-        )
-        gap_model = _clone_model(
-            self.gap_model, state.get("cns_gap_analysis_v2") or {},
-        )
-        state["coverage_3d"] = coverage_model.evaluate(
-            state.get("operational_routes") or [], state.get("spatial_3d") or {},
-            state.get("grid") or {}, state.get("grid_attributes") or {},
-            facilities, state.get("device_catalog") or {},
-        )
-        state["cns_service_capability"] = capability_model.evaluate(
-            state["coverage_3d"], state.get("required_cns") or {}, profile,
-            facilities, state.get("device_catalog") or {},
-        )
-        state["service_timeline"] = timeline_model.evaluate(
-            state["coverage_3d"], state["cns_service_capability"],
-            state.get("required_cns") or {}, profile,
-            state.get("operational_timing") or {},
-        )
-        state["cns_gap_analysis_v2"] = gap_model.analyze(
-            state.get("required_cns") or {}, state["coverage_3d"],
-            state["cns_service_capability"], state["service_timeline"],
-            state.get("protection_envelope") or {},
-            state.get("device_catalog") or {},
+        rerun_p7_p10_chain(
+            state, self.coverage_model, self.capability_model,
+            self.timeline_model, self.gap_model,
         )
 
     def _rejected(self, commit_status, reason):
@@ -206,6 +173,40 @@ def _clone_model(model, current_result):
         result_parameters if use_result else getattr(model, "parameters", {}) or {}
     )
     return model.__class__(parameters)
+
+
+def rerun_p7_p10_chain(state, coverage_prototype, capability_prototype,
+                       timeline_prototype, gap_prototype):
+    """Run current P7→P10 algorithms on caller-owned state without persistence."""
+    profile = AircraftCNSProfileCatalog.find(
+        state.get("aircraft_profiles") or {},
+        state.get("selected_aircraft_profile_id") or "",
+    )
+    facilities = _algorithm_facilities(state.get("existing_cns_facilities") or {})
+    coverage_model = _clone_model(coverage_prototype, state.get("coverage_3d") or {})
+    capability_model = _clone_model(capability_prototype, state.get("cns_service_capability") or {})
+    timeline_model = _clone_model(timeline_prototype, state.get("service_timeline") or {})
+    gap_model = _clone_model(gap_prototype, state.get("cns_gap_analysis_v2") or {})
+    state["coverage_3d"] = coverage_model.evaluate(
+        state.get("operational_routes") or [], state.get("spatial_3d") or {},
+        state.get("grid") or {}, state.get("grid_attributes") or {},
+        facilities, state.get("device_catalog") or {},
+    )
+    state["cns_service_capability"] = capability_model.evaluate(
+        state["coverage_3d"], state.get("required_cns") or {}, profile,
+        facilities, state.get("device_catalog") or {},
+    )
+    state["service_timeline"] = timeline_model.evaluate(
+        state["coverage_3d"], state["cns_service_capability"],
+        state.get("required_cns") or {}, profile,
+        state.get("operational_timing") or {},
+    )
+    state["cns_gap_analysis_v2"] = gap_model.analyze(
+        state.get("required_cns") or {}, state["coverage_3d"],
+        state["cns_service_capability"], state["service_timeline"],
+        state.get("protection_envelope") or {}, state.get("device_catalog") or {},
+    )
+    return state
 
 
 def _algorithm_facilities(value):
@@ -366,3 +367,14 @@ def _apply_post_commit_statuses(state):
     state.setdefault("risks", {})["technical"] = assessment(
         "stale", "P12 application 已提交；Safety Event/technical risk 未自动重评",
     )
+    review = state.get("cns_plan_review") or {}
+    if review.get("status") not in (None, "not_initialized", "stale"):
+        review["status"] = "stale"
+        review["stale_reason"] = "P12 ExistingCNS application changed P18 baseline"
+        state["cns_plan_review"] = review
+        statuses["cns_plan_review"] = "stale"
+    confirmed = state.get("confirmed_cns_plan") or {}
+    if confirmed.get("status") in ("confirmed", "applied"):
+        confirmed["current_applicability"] = "stale"
+        confirmed["stale_reason"] = "P12 ExistingCNS application changed P18 baseline"
+        state["confirmed_cns_plan"] = confirmed

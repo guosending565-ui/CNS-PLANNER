@@ -48,6 +48,7 @@ class ApiRouter:
         if path == "/api/cns-planning-objectives": return Response(workflow.cns_planning_objectives_snapshot())
         if path == "/api/cns-corridor-gap": return Response(workflow.cns_corridor_gap_snapshot())
         if path == "/api/cns-corridor-site-plan": return Response(workflow.cns_corridor_site_plan_snapshot())
+        if path == "/api/cns-plan-review": return Response(workflow.cns_plan_review_snapshot())
         if path == "/api/spatial-3d": return Response(workflow.spatial_3d_snapshot())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
@@ -127,6 +128,12 @@ class ApiRouter:
             "/api/cns-planning-objectives": lambda: workflow.set_cns_planning_objectives(payload),
             "/api/cns-corridor-gap/evaluate": lambda: workflow.evaluate_cns_corridor_gap(payload),
             "/api/cns-corridor-site-plan/evaluate": lambda: workflow.evaluate_cns_corridor_site_plan(payload),
+            "/api/cns-plan-review/initialize": lambda: workflow.initialize_cns_plan_review(payload),
+            "/api/cns-plan-review/variant": lambda: workflow.create_cns_plan_variant(payload),
+            "/api/cns-plan-review/evaluate": lambda: workflow.evaluate_cns_plan_variant(payload),
+            "/api/cns-plan-review/select": lambda: workflow.select_cns_plan_variant(payload),
+            "/api/cns-plan-review/confirm": lambda: workflow.confirm_cns_plan(payload),
+            "/api/cns-plan-review/apply": lambda: workflow.apply_confirmed_cns_plan(payload),
             "/api/cns/safety-policy": lambda: workflow.set_safety_policy(payload),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
             "/api/spatial-3d/altitude-layers": lambda: workflow.set_altitude_layers(payload),

@@ -9,7 +9,7 @@ import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendatio
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
 import {render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
-import {render as renderStep6} from '../cns_planner/web/js/workflow/step06_review.js';
+import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -148,4 +148,11 @@ test('step 6 keeps the corridor site result visibly proposal-only',()=>{
   assert.match(html,/P16 Corridor Site Plan · Proposal/);
   assert.match(html,/Proposal only/);
   assert.match(html,/不修改 Existing CNS/);
+  assert.match(html,/Plan Review · Controlled Apply/);
+  assert.match(html,/无自动总分\/排名/);
+});
+
+test('P18 review summary keeps selection confirmation and apply separate',()=>{
+  const result=planReviewSummary({selected_variant_id:'PV-1',variants:[{variant_id:'PV-1',selected_action_ids:['A'],evaluation:{confirmation_gate:{status:'ready_for_confirmation'}}}]},{status:'confirmed',application:{status:'not_applied'}});
+  assert.deepEqual(result,{variantCount:1,selectedVariantId:'PV-1',selectedActionIds:['A'],gate:'ready_for_confirmation',confirmedStatus:'confirmed',applyStatus:'not_applied'});
 });

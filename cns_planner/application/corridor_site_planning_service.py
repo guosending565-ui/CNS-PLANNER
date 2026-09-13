@@ -138,6 +138,7 @@ class CorridorSitePlanningService:
             result["stop_reason"] = "only_unknown_or_missing_evidence"
         elif not selected:
             result["status"] = "no_eligible_proposal"
+        self.invalidation.cns_plan_review("p16_reevaluated")
         state["cns_corridor_site_plan"] = result
         state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = {
             "proposal_ready": "passed", "no_action_required": "passed",
@@ -148,6 +149,7 @@ class CorridorSitePlanningService:
         return self.snapshot()
 
     def _save_missing(self, reason):
+        self.invalidation.cns_plan_review("p16_became_missing")
         result = self.planner.empty("missing_data")
         result["reasons"] = [reason]
         self.session.state["cns_corridor_site_plan"] = result
@@ -182,32 +184,39 @@ class CorridorSitePlanningService:
         return impact, after_corridor, after_gap
 
     def _rerun(self, facilities):
-        state = self.session.state
-        profile = AircraftCNSProfileCatalog.find(
-            state.get("aircraft_profiles") or {}, state.get("selected_aircraft_profile_id") or "",
+        return rerun_corridor_chain(
+            self.session.state, self.corridor_model,
+            self.corridor_gap_analyzer, facilities,
         )
-        selections = state.get("algorithm_selection") or {}
-        corridor_model = self.corridor_model.__class__(
-            (state.get("cns_corridor_assessment") or {}).get("parameters")
-            or getattr(self.corridor_model, "parameters", {})
-        )
-        corridor = corridor_model.evaluate(
-            state.get("operational_routes") or [], state.get("spatial_3d") or {},
-            state.get("grid") or {}, state.get("grid_attributes") or {},
-            state.get("required_cns") or {}, profile, facilities,
-            state.get("device_catalog") or {}, state.get("cns_corridor_policy") or {},
-            coverage_parameters=((selections.get("coverage_model") or {}).get("parameters") or {}),
-            capability_parameters=((selections.get("service_model") or {}).get("parameters") or {}),
-        )
-        analyzer = self.corridor_gap_analyzer.__class__(
-            (state.get("cns_corridor_gap_assessment") or {}).get("parameters")
-            or getattr(self.corridor_gap_analyzer, "parameters", {})
-        )
-        gap = analyzer.evaluate(
-            corridor, state.get("required_cns") or {},
-            state.get("cns_planning_objectives") or {},
-        )
-        return corridor, gap
+
+
+def rerun_corridor_chain(state, corridor_model_prototype, corridor_gap_prototype, facilities):
+    """Run the existing P14→P15 chain on caller-owned working data."""
+    profile = AircraftCNSProfileCatalog.find(
+        state.get("aircraft_profiles") or {}, state.get("selected_aircraft_profile_id") or "",
+    )
+    selections = state.get("algorithm_selection") or {}
+    corridor_model = corridor_model_prototype.__class__(
+        (state.get("cns_corridor_assessment") or {}).get("parameters")
+        or getattr(corridor_model_prototype, "parameters", {})
+    )
+    corridor = corridor_model.evaluate(
+        state.get("operational_routes") or [], state.get("spatial_3d") or {},
+        state.get("grid") or {}, state.get("grid_attributes") or {},
+        state.get("required_cns") or {}, profile, facilities,
+        state.get("device_catalog") or {}, state.get("cns_corridor_policy") or {},
+        coverage_parameters=((selections.get("coverage_model") or {}).get("parameters") or {}),
+        capability_parameters=((selections.get("service_model") or {}).get("parameters") or {}),
+    )
+    analyzer = corridor_gap_prototype.__class__(
+        (state.get("cns_corridor_gap_assessment") or {}).get("parameters")
+        or getattr(corridor_gap_prototype, "parameters", {})
+    )
+    gap = analyzer.evaluate(
+        corridor, state.get("required_cns") or {},
+        state.get("cns_planning_objectives") or {},
+    )
+    return corridor, gap
 
 
 def _targets(assessment):

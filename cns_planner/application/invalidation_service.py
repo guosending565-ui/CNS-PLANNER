@@ -220,6 +220,22 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_corridor_site_plan"] = result
             state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = "stale"
+        self.cns_plan_review("p16_or_review_baseline_changed")
+
+    def cns_plan_review(self, reason="review_baseline_changed"):
+        """Stale an active P18 review while retaining confirmed history snapshots."""
+        state = self.session.state
+        review = state.get("cns_plan_review") or {}
+        if review.get("status") not in (None, "not_initialized", "stale"):
+            review["status"] = "stale"
+            review["stale_reason"] = reason
+            state["cns_plan_review"] = review
+            state.setdefault("result_statuses", {})["cns_plan_review"] = "stale"
+        confirmed = state.get("confirmed_cns_plan") or {}
+        if confirmed.get("status") in ("confirmed", "applied"):
+            confirmed["current_applicability"] = "stale"
+            confirmed["stale_reason"] = reason
+            state["confirmed_cns_plan"] = confirmed
 
     def requirement_recommendation(self, reason="recommendation_input_changed"):
         """Stale only P17; preserve formal RequiredCNS and every planning result."""

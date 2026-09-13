@@ -39,6 +39,7 @@ from .corridor_service import CNSCorridorService
 from .corridor_gap_service import CNSCorridorGapService
 from .corridor_site_planning_service import CorridorSitePlanningService
 from .requirement_recommendation_service import RequirementRecommendationService
+from .plan_review_service import PlanReviewService
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
@@ -154,6 +155,11 @@ class WorkflowService:
             self.session, self.corridor_site_planner, self.corridor_model,
             self.corridor_gap_analyzer, self.invalidation_service, snapshot,
         )
+        self.plan_review_service = PlanReviewService(
+            self.session, self.coverage_model_3d, self.cns_service_model,
+            self.timeline_model, self.gap_analyzer_v2, self.corridor_model,
+            self.corridor_gap_analyzer, snapshot,
+        )
         self.export_service = ExportService(self.session, snapshot)
 
     def save(self): self.session.save()
@@ -195,6 +201,7 @@ class WorkflowService:
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
+    def cns_plan_review_snapshot(self): return self.plan_review_service.snapshot_result()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -268,6 +275,7 @@ class WorkflowService:
             if getattr(instance, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id:
                 self.gap_analyzer_v2 = self.gap_analysis_v2_service.analyzer = instance
                 self.closed_loop_service.gap_model = instance
+                self.plan_review_service.gap_model = instance
             else:
                 self.gap_analyzer = self.gap_analysis_service.analyzer = instance
         elif algorithm_type == "risk_model":
@@ -276,13 +284,16 @@ class WorkflowService:
             self.coverage_model_3d = self.spatial_3d_service.model = instance
             self.site_planning_service.coverage_model = instance
             self.closed_loop_service.coverage_model = instance
+            self.plan_review_service.coverage_model = instance
         elif algorithm_type == "service_model":
             self.cns_service_model = self.cns_service_capability_service.model = instance
             self.site_planning_service.capability_model = instance
             self.closed_loop_service.capability_model = instance
+            self.plan_review_service.capability_model = instance
         elif algorithm_type == "timeline_model":
             self.timeline_model = self.operational_timing_service.timeline_model = instance
             self.closed_loop_service.timeline_model = instance
+            self.plan_review_service.timeline_model = instance
         elif algorithm_type == "protection_model":
             self.protection_model = self.operational_timing_service.protection_model = instance
         elif algorithm_type == "site_planner":
@@ -293,9 +304,11 @@ class WorkflowService:
         elif algorithm_type == "corridor_model":
             self.corridor_model = self.corridor_service.model = instance
             self.corridor_site_planning_service.corridor_model = instance
+            self.plan_review_service.corridor_model = instance
         elif algorithm_type == "corridor_gap_analyzer":
             self.corridor_gap_analyzer = self.corridor_gap_service.analyzer = instance
             self.corridor_site_planning_service.corridor_gap_analyzer = instance
+            self.plan_review_service.corridor_gap_analyzer = instance
         elif algorithm_type == "requirement_model":
             self.requirement_model = self.requirement_recommendation_service.model = instance
 
@@ -337,6 +350,12 @@ class WorkflowService:
     def set_cns_planning_objectives(self, payload): return self.corridor_gap_service.set_objectives(payload)
     def evaluate_cns_corridor_gap(self, payload=None): return self.corridor_gap_service.evaluate(payload)
     def evaluate_cns_corridor_site_plan(self, payload=None): return self.corridor_site_planning_service.evaluate(payload)
+    def initialize_cns_plan_review(self, payload=None): return self.plan_review_service.initialize(payload)
+    def create_cns_plan_variant(self, payload): return self.plan_review_service.create_variant(payload)
+    def evaluate_cns_plan_variant(self, payload=None): return self.plan_review_service.evaluate(payload)
+    def select_cns_plan_variant(self, payload): return self.plan_review_service.select(payload)
+    def confirm_cns_plan(self, payload): return self.plan_review_service.confirm(payload)
+    def apply_confirmed_cns_plan(self, payload): return self.plan_review_service.apply(payload)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
