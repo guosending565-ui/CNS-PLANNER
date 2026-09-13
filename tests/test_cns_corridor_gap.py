@@ -106,6 +106,22 @@ def test_two_providers_without_independence_are_unknown_not_confirmed_gap():
     assert assessment["confirmed_target_voxel_ids"] == []
 
 
+@pytest.mark.parametrize("service", ["confirmed_deficit", "unknown"])
+def test_type_compatibility_gate_is_not_a_qualified_provider(service):
+    gate = provider("D1", group="power-a", independent=True)
+    gate["stage"] = "provider_type_compatibility"
+    assessment = result([
+        voxel("G1@L1", 50, 10, service=service, providers=[gate])
+    ])
+    entry = voxel_entry(assessment)
+    assert entry["qualified_provider_count"] == 0
+    assert entry["confirmed_independent_provider_count"] == 0
+    assert entry["service_status"] == service
+    assert entry["combined_status"] == (
+        "confirmed_gap" if service == "confirmed_deficit" else "unknown"
+    )
+
+
 def test_two_confirmed_independent_groups_satisfy_and_same_site_has_no_penalty():
     providers = [
         provider("D1", group="power-a", independent=True, facility="SAME"),

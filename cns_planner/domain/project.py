@@ -46,6 +46,8 @@ class ProjectState(TypedDict, total=False):
     cns_corridor_assessment: dict[str, Any]
     cns_planning_objectives: dict[str, Any]
     cns_corridor_gap_assessment: dict[str, Any]
+    corridor_site_planning_policy: dict[str, Any]
+    cns_corridor_site_plan: dict[str, Any]
     safety_policy: dict[str, Any]
     safety_assessment: dict[str, Any]
     coverage: dict[str, Any] | None

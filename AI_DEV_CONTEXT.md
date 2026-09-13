@@ -57,6 +57,7 @@ map_app.py / app.py
 - `route_planner/risk_aware_v2.py`：P13 纯 Python GridGraph、风险证据门控和 risk-aware A*；直接消费标准网格及网格风险，不依赖 QGIS、不重算 RiskModel。
 - `domain/cns_corridor.py`、`algorithms/corridor/v1.py`、`application/corridor_service.py`：P14 route corridor 契约、纯 Python 水平/垂向离散、P7/P8 代表点复用及持久化用例。
 - `domain/cns_planning_objectives.py`、`algorithms/corridor_gap/v1.py`、`application/corridor_gap_service.py`：P15 显式空间规划目标、P8 独立冗余证据复用、corridor voxel 分类和空间连续缺口投影。
+- `domain/corridor_site_planning.py`、`site_planner/corridor_reuse_first_v2.py`、`application/corridor_site_planning_service.py`：P16 confirmed voxel target/action 契约、确定性 reuse-first 排序与 Application 累计 P14→P15 what-if 编排。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
 - `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
 - `application/review_service.py` + `domain/status.py`：结果状态聚合的唯一权威实现。
@@ -99,6 +100,7 @@ site_planning_policy / cns_site_plan（P11 proposal-only 规划输入与提案�
 closed_loop_assessment（P12 baseline/planned 重跑证据、比较、provenance 与 commit 状态）
 cns_corridor_policy / cns_corridor_assessment（P14 显式走廊配置与独立 voxel/volume-proxy 结果）
 cns_planning_objectives / cns_corridor_gap_assessment（P15 显式规划目标与静态 service/redundancy/continuous-deficit 结果）
+corridor_site_planning_policy / cns_corridor_site_plan（P16 proposal-only 走廊感知 reuse-first 站址提案）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -114,14 +116,15 @@ cns_planning_objectives / cns_corridor_gap_assessment（P15 显式规划目标�
 - RequiredCNS、Aircraft、`coverage_3d`、`cns_service_capability` 或 `service_timeline` 变化会定向使 `cns_gap_analysis_v2` stale；`protection_envelope` 仅在 Gap V2 显式启用 protection margin 时使其 stale。该链路不反向影响 grid/routes/CoverageV1/GapV1/P7/P8/P9。
 - Gap V2、ExistingCNS、CandidateSite、DeviceCatalog、site policy 或相关算法选择变化会使 `cns_site_plan` stale，并继续使 `closed_loop_assessment` stale。P12 Preview 只保存 assessment；Apply 成功后提交 planned ExistingCNS 与 P7-P10 结果，并只向下游使 CoverageV1、GapV1、site plan、technical risk、report stale，不反向影响 grid/routes/grid_risk。
 - route/path、altitude profile/layers、grid/terrain、RequiredCNS、Aircraft、ExistingCNS、DeviceCatalog、corridor policy 及 P7/P8 有效算法参数变化会使 `cns_corridor_assessment` stale；corridor 变化不反向使 route/P7-P12 stale。P12 Apply 因正式 ExistingCNS 改变只额外 stale corridor，不破坏刚提交的 P7-P10。
-- current P14 corridor、RequiredCNS 或 `cns_planning_objectives` 变化只向下使 `cns_corridor_gap_assessment` stale；P15 不反向影响 Route/P7-P14/P10-P12。`cns_corridor_gap_result` 已保留面向 P16 SitePlannerV2 的单向依赖边界。
+- current P14 corridor、RequiredCNS 或 `cns_planning_objectives` 变化只向下使 `cns_corridor_gap_assessment` stale；P15 不反向影响 Route/P7-P14/P10-P12。P15.1 已明确排除 P8 `stage=provider_type_compatibility` 中间门控，只有真正 provider service evaluation 才能计入 qualified provider。
+- current P14/P15、RequiredCNS、ExistingCNS、CandidateSite、DeviceCatalog、P16 policy 或相关 P14/P15/site-planner 有效参数变化会使 `cns_corridor_site_plan` stale。P16 proposal 不反向使 P7-P15/P10-P12 stale；P12 Apply 通过 ExistingCNS→P14→P15→P16 单向传递。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`、`site_planner/reuse_first_site_planner_v1@1.0`、`corridor_model/cns_service_corridor_v1@1.0`、`corridor_gap_analyzer/cns_corridor_gap_v1@1.0`。`route_planner` 与 `cns_gap_analyzer` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`、`site_planner/reuse_first_site_planner_v1@1.0`、`site_planner/corridor_reuse_first_site_planner_v2@2.0`、`corridor_model/cns_service_corridor_v1@1.0`、`corridor_gap_analyzer/cns_corridor_gap_v1@1.0`。`route_planner`、`cns_gap_analyzer` 与 `site_planner` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
 - Workflow 启动时从 Registry 解析选择，再把算法对象注入相应 Application Service；业务 Service 不依赖 Registry。
 - 未来 RoutePlanner：`plan(start, end, grid, risk, constraints) -> RouteResult`。
@@ -246,6 +249,16 @@ P15 CNS Spatial Planning Objectives, Redundancy & Continuous-Deficit Assessment 
 - PlanningObjective 与 RequiredCNS 分离；五类阈值均保存 value/operator/source/confirmed/status，默认完全不配置。输出 `met/not_met/unknown/not_applicable` 及聚合 `objectives_not_configured/objectives_not_met/objectives_unknown/objectives_met`。
 - 明确不评估 common-cause、shared-power、shared-backhaul、tower failure 或 site-failure propagation；不计算概率。API 为 `GET/POST /api/cns-planning-objectives`、`GET /api/cns-corridor-gap`、`POST /api/cns-corridor-gap/evaluate`；Step 5 提供最小目标配置及 service/redundancy/continuous-deficit/Actual-Pass 展示。
 
+P16 Corridor-aware Reuse-first CNS Site Planner V2：
+
+- `site_planner/corridor_reuse_first_site_planner_v2@2.0` 已注册，但 `site_planner` 默认选择继续为 P11 V1。ProjectState additive 保存独立 `corridor_site_planning_policy` 与 `cns_corridor_site_plan`，不覆盖 P11/P12。
+- 自动目标严格来自 current P15 confirmed target voxel；unknown/objective unknown 与非站基导航不触发地面建站。每项保存 required/current/remaining provider requirement unit 和 `discretized_volume_proxy_m3`。
+- Application 在 deep-copied ExistingCNS 上累计应用已选 action，并对每个剩余候选重新运行当前 P14→P15；Planner 只做确定性 tier 内排序和结果组装。最终全部 selected actions 再执行一次 combined P14→P15，作为权威 proposal evidence；正式 ExistingCNS/P14/P15 不写回。
+- 核心收益为 `sum(discretized_volume_proxy_m3 * unit_gain)`，语义固定为 `confirmed_requirement_unit_volume_gain` planning proxy，不是风险或概率。k>1 只使用 P15 confirmed independent provider count；相同 independence group 不重复增加 unit。
+- reuse tier 固定为 existing CNS facility → existing shared site → candidate site → new-build candidate。仅同一已确认 cost unit 内比较收益/成本；其他情况使用 action-count proxy，不生成货币成本。confirmed objectives 全满足可提前停止；未配置目标则运行到没有正 confirmed marginal gain。
+- Proposal 固定 `proposal_only=true/requires_user_confirmation_and_apply=true`，并保存 target、candidate impact、iteration trace、before/after service/redundancy/continuous-deficit/objectives、残余与 unknown evidence。API 为 `GET /api/cns-corridor-site-plan` 与 `POST /api/cns-corridor-site-plan/evaluate`；Step 5/6 显示并将 proposed 点与 Existing/Candidate 区分。
+- 明确不评估 common-cause/shared power/shared backhaul/tower/site failure propagation；共址不自动惩罚或证明独立性。P16 完成后里程碑为 **M2: 3D CNS Spatial Infrastructure Planning Baseline**。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -308,6 +321,8 @@ P14 完整基线：**288 passed, 6 skipped, 1 known failed**；P14/P7/P8/Registr
 
 P15 完整基线：**302 passed, 6 skipped, 1 known failed**；P15/P14/P8/Registry/P12 定向回归 **58 passed**；Node **13 passed, 0 failed**，`app.js/main.js/step05_cns.js/step06_review.js` 语法检查通过。新增覆盖一/二 provider 冗余、独立性缺失、confirmed 独立数量不足、非站基 GNSS、unknown target 隔离、连续投影 merge/route clipping/确定性、volume 守恒、objectives met/not-met/unknown/not-configured、无默认阈值、stale/missing P14 拒绝、无 common-cause 推断、Registry/API/schema-v2 backfill/保存恢复、P12 Apply 和单向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P15 未修改生产空域代码。
 
+P16 完整基线：**316 passed, 6 skipped, 1 known failed**；P11/P12/P14/P15/P16/Registry 定向回归 **82 passed**；P15.1 门禁回归 **37 passed**；Node **14 passed, 0 failed**，`main.js/step05_cns.js/step06_review.js` 语法检查通过。新增覆盖 P8 type compatibility 门控不计 qualified provider、单服务缺口、k=2 累计联合冗余、相同 independence group 不重复收益、unknown/非站基 N target 隔离、reuse tier、objective stop/no-objective stop、不同 cost unit proxy、regression/unknown 门控、最终 combined what-if、proposal 零污染、Registry 默认 V1/V2 精确绑定、API/schema-v2 backfill/保存恢复与单向失效。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P16 未修改生产空域代码。
+
 当前里程碑：**CNS-PLANNER v1.0 research baseline / ready for synthetic end-to-end validation**。
 
 ## 9. 架构原则
@@ -349,10 +364,12 @@ P15 完整基线：**302 passed, 6 skipped, 1 known failed**；P15/P14/P8/Regist
 20. P13 是 MH/T cell-centroid 的二维八邻域 A*；没有 Theta*/LOS smoothing、连续空间最短路、动态/四维风险或高度相关风险。硬约束仍来自现有 bbox 输入，风险仍受 RiskModelV1 相对指数和数据完整度限制。
 21. P14 使用保守 cell 纳入、代表性 voxel probe 和离散 volume proxy；不是精确 buffer/mesh，也不保证 voxel 全体满足。尚未评估走廊冗余、韧性、runtime outage、真实传播或法规空间合规。
 22. P15 只做静态空间 service/redundancy 缺口与显式目标判定；不建模 common-cause、共享供电/回传、塔站失效传播或概率 continuity/availability。共址关系当前既不奖励也不惩罚。
+23. P16 仍是离散 voxel/volume-proxy 的 proposal baseline；没有真实传播、设施施工约束、异构成本归一、全局整数优化、共因失效或 proposal apply/rollback。最终方案仍需用户确认与后续应用闭环。
 
 ## 11. 下一阶段计划
 
-1. P16：Corridor-aware Reuse-first CNS SitePlanner V2，只消费 P15 confirmed targets，并通过 P14/P15 closed-loop what-if 证明空间收益。
-2. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
-3. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
-4. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。
+1. 先完成 synthetic milestone validation，验证 M2 端到端走廊、冗余、目标和累计站址提案。
+2. P17：Operational Context → RequiredCNS V2，继续保持运行上下文、性能需求与既有能力分离。
+3. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
+4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
+5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

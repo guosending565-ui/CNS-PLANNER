@@ -110,7 +110,15 @@ class CNSCorridorGapAnalyzerV1:
 def _evaluate_voxel_subsystem(code, source, required):
     service_status = str(source.get("planning_status") or "unknown")
     evaluations = deepcopy(source.get("provider_evaluations") or [])
-    qualified = [item for item in evaluations if item.get("status") == "meets_under_model"]
+    # P8 may retain provider_type_compatibility gates when the later aircraft or
+    # service-model evaluation cannot run.  Those gates are evidence about type
+    # compatibility, not provider service evaluations, and must never increase
+    # P15 redundancy.
+    qualified = [
+        item for item in evaluations
+        if item.get("status") == "meets_under_model"
+        and item.get("stage") != "provider_type_compatibility"
+    ]
     qualified_count = len(qualified)
     independent_count = confirmed_independent_provider_count(qualified)
     required_flag = required.get("required")

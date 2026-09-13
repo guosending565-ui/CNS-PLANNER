@@ -100,11 +100,12 @@ function drawWorkflowOverlay(){
   }
   if($('existingCnsLayer')?.checked)for(const facility of flow.existing_cns_facilities?.items||[])drawCnsInputPoint(facility.coordinate,'#7256a1','circle');
   if($('candidateSiteLayer')?.checked)for(const site of flow.candidate_sites?.items||[])drawCnsInputPoint(site.coordinate,site.usable===false?'#8b949e':'#e07a26','diamond');
+  if($('candidateSiteLayer')?.checked)for(const action of flow.cns_corridor_site_plan?.selected_actions||[])drawCnsInputPoint(action.coordinate,'#d12f8a','square');
 }
 function drawCnsInputPoint(coordinate,color,shape){
   if(!Array.isArray(coordinate))return;
   const [x,y]=screenPoint(coordinate);ctx.save();ctx.fillStyle=color;ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();
-  if(shape==='diamond'){ctx.moveTo(x,y-7);ctx.lineTo(x+7,y);ctx.lineTo(x,y+7);ctx.lineTo(x-7,y);ctx.closePath();}else ctx.arc(x,y,6,0,Math.PI*2);
+  if(shape==='diamond'){ctx.moveTo(x,y-7);ctx.lineTo(x+7,y);ctx.lineTo(x,y+7);ctx.lineTo(x-7,y);ctx.closePath();}else if(shape==='square'){ctx.rect(x-6,y-6,12,12);}else ctx.arc(x,y,6,0,Math.PI*2);
   ctx.fill();ctx.stroke();ctx.restore();
 }
 function queue(){paint();clearTimeout(timer);serial++;renderController?.abort();timer=setTimeout(()=>{onlineTiles.update(view,...size(),$('online').checked);renderMap();},160);}

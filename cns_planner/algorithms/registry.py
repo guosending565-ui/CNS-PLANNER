@@ -17,6 +17,7 @@ from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
+from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 from ..risk.v1 import RiskModelV1
 
 
@@ -149,6 +150,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
     registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
     registry.register(_site_planner_manifest(), lambda parameters: ReuseFirstSitePlannerV1(parameters))
+    registry.register(_corridor_site_planner_v2_manifest(), lambda parameters: CorridorReuseFirstSitePlannerV2(parameters))
     registry.register(_corridor_manifest(), lambda parameters: CNSServiceCorridorV1(parameters))
     registry.register(_corridor_gap_manifest(), lambda parameters: CNSCorridorGapAnalyzerV1(parameters))
     return registry
@@ -334,6 +336,29 @@ def _site_planner_manifest():
         {"type": "object", "additionalProperties": False},
         ("target weight 仅为 confirmed planning-gap length", "无 confirmed cost 时使用 action-count proxy"),
         ("proposal 不修改 ExistingCNS", "需要 P12 apply + rerun 闭环验证", "不求解联合动作冗余"),
+        (),
+    )
+
+
+def _corridor_site_planner_v2_manifest():
+    return AlgorithmManifest(
+        "site_planner", CorridorReuseFirstSitePlannerV2.algorithm_id,
+        CorridorReuseFirstSitePlannerV2.algorithm_version,
+        "Corridor-aware Reuse-first CNS Site Planner V2", "CNS-PLANNER", "engineering_baseline",
+        "只以 P15 confirmed target voxels 为对象，由 Application 累计重跑 P14/P15 并按 reuse-first 选择 proposal action。",
+        ("current_cns_corridor_gap_assessment", "candidate_actions", "cumulative_p14_p15_what_if", "corridor_site_planning_policy"),
+        ("cns_corridor_site_plan", "selected_actions", "requirement_unit_volume_gain", "objective_before_after"),
+        {"type": "object", "additionalProperties": False},
+        (
+            "benefit 仅为 confirmed requirement-unit volume proxy",
+            "reuse tier 是严格字典序，tier 内动态重跑 what-if",
+            "独立性完全服从 P8/P15 explicit evidence",
+        ),
+        (
+            "proposal 不修改 ExistingCNS/P14/P15",
+            "不评估 common-cause/shared power/backhaul/tower/site failure",
+            "不是风险、概率、认证或费用优化结论",
+        ),
         (),
     )
 

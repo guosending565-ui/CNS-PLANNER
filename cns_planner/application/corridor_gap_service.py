@@ -38,6 +38,7 @@ class CNSCorridorGapService:
             state.get("cns_planning_objectives") or {},
         )
         state["cns_corridor_gap_assessment"] = result
+        self.invalidation.cns_corridor_site_plan()
         state.setdefault("result_statuses", {})["cns_corridor_gap_assessment"] = _result_status(result.get("status"))
         self.session.save()
         return self.snapshot()

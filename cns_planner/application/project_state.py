@@ -35,6 +35,10 @@ from ..domain.cns_planning_objectives import (
     default_cns_planning_objectives, empty_cns_corridor_gap_assessment,
     normalize_cns_planning_objectives,
 )
+from ..domain.corridor_site_planning import (
+    default_corridor_site_planning_policy, empty_cns_corridor_site_plan,
+    normalize_corridor_site_planning_policy,
+)
 
 
 SCHEMA_VERSION = 2
@@ -133,6 +137,8 @@ def blank_project(defaults):
         "cns_corridor_assessment": empty_cns_corridor_assessment(),
         "cns_planning_objectives": default_cns_planning_objectives(),
         "cns_corridor_gap_assessment": empty_cns_corridor_gap_assessment(),
+        "corridor_site_planning_policy": default_corridor_site_planning_policy(),
+        "cns_corridor_site_plan": empty_cns_corridor_site_plan(),
         "safety_policy": default_safety_policy(),
         "safety_assessment": empty_safety_assessment(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
@@ -144,6 +150,7 @@ def blank_project(defaults):
                 "closed_loop_assessment", "safety_assessment",
                 "cns_corridor_assessment",
                 "cns_corridor_gap_assessment",
+                "cns_corridor_site_plan",
                 "coverage_3d",
                 "cns_service_capability",
                 "service_timeline", "protection_envelope",
@@ -214,6 +221,8 @@ def normalize_project(value, grid_service):
     value.setdefault("cns_corridor_assessment", empty_cns_corridor_assessment())
     value["cns_planning_objectives"] = normalize_cns_planning_objectives(value.get("cns_planning_objectives"))
     value.setdefault("cns_corridor_gap_assessment", empty_cns_corridor_gap_assessment())
+    value["corridor_site_planning_policy"] = normalize_corridor_site_planning_policy(value.get("corridor_site_planning_policy"))
+    value.setdefault("cns_corridor_site_plan", empty_cns_corridor_site_plan())
     value["safety_policy"] = normalize_safety_policy(value.get("safety_policy"))
     value.setdefault("safety_assessment", empty_safety_assessment())
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
@@ -222,6 +231,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("closed_loop_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_gap_assessment", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("cns_corridor_site_plan", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")

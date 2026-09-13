@@ -54,6 +54,8 @@ class InvalidationService:
             self.cns_corridor()
         if "cns_corridor_gap_assessment" in affected:
             self.cns_corridor_gap()
+        if "cns_corridor_site_plan" in affected:
+            self.cns_corridor_site_plan()
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -206,3 +208,13 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_corridor_gap_assessment"] = result
             state.setdefault("result_statuses", {})["cns_corridor_gap_assessment"] = "stale"
+        self.cns_corridor_site_plan()
+
+    def cns_corridor_site_plan(self):
+        """Stale only the P16 proposal; preserve ExistingCNS and all P7-P15 products."""
+        state = self.session.state
+        result = state.get("cns_corridor_site_plan") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["cns_corridor_site_plan"] = result
+            state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = "stale"

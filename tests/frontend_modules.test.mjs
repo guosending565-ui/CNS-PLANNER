@@ -9,6 +9,7 @@ import {render as renderStep4,withLegacyRequiredAliases} from '../cns_planner/we
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
 import {render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
+import {render as renderStep6} from '../cns_planner/web/js/workflow/step06_review.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -98,7 +99,7 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
 });
 
 test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop contracts',()=>{
-  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},cns_gap_analysis_v2:{},coverage_3d:{},cns_service_capability:{},site_planning_policy:{},cns_site_plan:{},closed_loop_assessment:{}};
+  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},cns_gap_analysis_v2:{},coverage_3d:{},cns_service_capability:{},site_planning_policy:{},cns_site_plan:{},closed_loop_assessment:{},cns_corridor_assessment:{},cns_planning_objectives:{routes:{}},cns_corridor_gap_assessment:{},corridor_site_planning_policy:{},cns_corridor_site_plan:{}};
   const step2=renderStep2({flow:base,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   const step3=renderStep3({flow:base,interactionMode:'pan'});
   const step5=renderStep5({flow:base});
@@ -129,4 +130,16 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/CNS Spatial Planning Objectives/);
   assert.match(step5,/Spatial continuous-deficit/);
   assert.match(step5,/不是 runtime outage、正式 ICAO continuity/);
+  assert.match(step5,/Corridor-aware Reuse-first Site Planner V2/);
+  assert.match(step5,/累计 P14→P15 what-if/);
+  assert.match(step5,/Unknown 不触发建站/);
+  assert.match(step5,/P16 Proposal/);
+});
+
+test('step 6 keeps the corridor site result visibly proposal-only',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const html=renderStep6({state:{data_health:{status:'passed'}},flow:{project:{name:'P'},workspace:null,operational_routes:[],aircraft:null,rules:null,coverage:null,review:{risks:{},overall_status:'pending_confirmation',overall_pass:false},result_statuses:{cns_corridor_site_plan:'passed'},cns_corridor_site_plan:{status:'proposal_ready',target_voxel_count:2,selected_actions:[{}],confirmed_requirement_unit_volume_gain:10}}});
+  assert.match(html,/P16 Corridor Site Plan · Proposal/);
+  assert.match(html,/Proposal only/);
+  assert.match(html,/不修改 Existing CNS/);
 });
