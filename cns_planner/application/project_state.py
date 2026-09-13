@@ -39,6 +39,11 @@ from ..domain.corridor_site_planning import (
     default_corridor_site_planning_policy, empty_cns_corridor_site_plan,
     normalize_corridor_site_planning_policy,
 )
+from ..domain.requirement_policy import (
+    empty_operation_context, empty_required_cns_adoption,
+    empty_required_cns_recommendation, empty_requirement_policies,
+    normalize_operation_context, normalize_requirement_policies,
+)
 
 
 SCHEMA_VERSION = 2
@@ -125,6 +130,10 @@ def blank_project(defaults):
         "aircraft_profiles": empty_catalog("aircraft-cns-profile-catalog"),
         "selected_aircraft_profile_id": None,
         "required_cns": pending_required_cns(),
+        "cns_operation_context": empty_operation_context(),
+        "cns_requirement_policies": empty_requirement_policies(),
+        "required_cns_recommendation": empty_required_cns_recommendation(),
+        "required_cns_adoption": empty_required_cns_adoption(),
         "device_catalog": empty_catalog("cns-device-catalog"),
         "existing_cns_facilities": empty_collection("existing-cns-facilities"),
         "candidate_sites": empty_collection("candidate-sites"),
@@ -151,6 +160,7 @@ def blank_project(defaults):
                 "cns_corridor_assessment",
                 "cns_corridor_gap_assessment",
                 "cns_corridor_site_plan",
+                "required_cns_recommendation",
                 "coverage_3d",
                 "cns_service_capability",
                 "service_timeline", "protection_envelope",
@@ -199,6 +209,10 @@ def normalize_project(value, grid_service):
     value.setdefault("aircraft_profiles", empty_catalog("aircraft-cns-profile-catalog"))
     value.setdefault("selected_aircraft_profile_id", None)
     value.setdefault("required_cns", pending_required_cns())
+    value["cns_operation_context"] = normalize_operation_context(value.get("cns_operation_context"))
+    value["cns_requirement_policies"] = normalize_requirement_policies(value.get("cns_requirement_policies"))
+    value.setdefault("required_cns_recommendation", empty_required_cns_recommendation())
+    value.setdefault("required_cns_adoption", empty_required_cns_adoption())
     value.setdefault("device_catalog", empty_catalog("cns-device-catalog"))
     value.setdefault("existing_cns_facilities", empty_collection("existing-cns-facilities"))
     value.setdefault("candidate_sites", empty_collection("candidate-sites"))
@@ -232,6 +246,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_gap_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_site_plan", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("required_cns_recommendation", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")

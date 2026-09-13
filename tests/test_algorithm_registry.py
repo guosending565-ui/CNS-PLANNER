@@ -74,6 +74,8 @@ def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
             ("site_planner", "corridor_reuse_first_site_planner_v2", "2.0"),
         ("corridor_model", "cns_service_corridor_v1", "1.0"),
         ("corridor_gap_analyzer", "cns_corridor_gap_v1", "1.0"),
+        ("requirement_model", "manual_required_cns_v1", "1.0"),
+        ("requirement_model", "operational_context_required_cns_v2", "2.0"),
     }
     for item in registry.catalog():
         assert set(item) == {

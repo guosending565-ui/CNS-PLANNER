@@ -9,7 +9,7 @@ export function algorithmManifestDetails(item){return item?{
 }:null;}
 
 function algorithmSettings(flow){
-  const labels={risk_model:'风险模型',route_planner:'航路规划',coverage_planner:'CNS覆盖规划',cns_gap_analyzer:'CNS缺口分析',coverage_model:'3D几何覆盖模型',service_model:'CNS静态服务能力模型',timeline_model:'运行服务时间线模型',protection_model:'战术保护包络模型'};
+  const labels={risk_model:'风险模型',route_planner:'航路规划',coverage_planner:'CNS覆盖规划',cns_gap_analyzer:'CNS缺口分析',coverage_model:'3D几何覆盖模型',service_model:'CNS静态服务能力模型',timeline_model:'运行服务时间线模型',protection_model:'战术保护包络模型',requirement_model:'CNS需求模型'};
   const selection=flow.algorithm_selection||{},catalog=flow.algorithm_catalog||[];
   const rows=Object.entries(labels).map(([type,label])=>{
     const current=selection[type]||{},items=catalog.filter(item=>item.algorithm_type===type);

@@ -38,6 +38,7 @@ from .closed_loop_service import ClosedLoopService
 from .corridor_service import CNSCorridorService
 from .corridor_gap_service import CNSCorridorGapService
 from .corridor_site_planning_service import CorridorSitePlanningService
+from .requirement_recommendation_service import RequirementRecommendationService
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
@@ -98,6 +99,7 @@ class WorkflowService:
         )
         self.corridor_model = self._selected_algorithm("corridor_model")
         self.corridor_gap_analyzer = self._selected_algorithm("corridor_gap_analyzer")
+        self.requirement_model = self._selected_algorithm("requirement_model")
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
@@ -107,6 +109,9 @@ class WorkflowService:
         )
         self.cns_input_service = CNSInputService(self.session, self.invalidation_service, CNSInputAdapter(), snapshot)
         self.cns_input_service.ensure_catalogs()
+        self.requirement_recommendation_service = RequirementRecommendationService(
+            self.session, self.requirement_model, self.invalidation_service, snapshot,
+        )
         self.gap_analysis_service = GapAnalysisService(self.session, self.gap_analyzer, snapshot)
         self.gap_analysis_v2_service = GapAnalysisV2Service(
             self.session, self.gap_analyzer_v2, self.invalidation_service, snapshot
@@ -160,6 +165,8 @@ class WorkflowService:
         result["device_source"] = self.state.get("device_catalog", {}).get("source") or self.defaults.get("device_library", {}).get("source", "demo/default")
         result["aircraft_source"] = self.state.get("aircraft_profiles", {}).get("source") or self.defaults.get("aircraft_library", {}).get("source", "demo/default")
         result["algorithm_catalog"] = self.algorithm_registry.catalog()
+        if hasattr(self, "requirement_recommendation_service"):
+            result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
         result["review"] = self.review()
         return result
 
@@ -169,6 +176,9 @@ class WorkflowService:
     def aircraft_profiles_snapshot(self): return deepcopy(self.state.get("aircraft_profiles") or {})
     def device_catalog_snapshot(self): return deepcopy(self.state.get("device_catalog") or {})
     def required_cns_snapshot(self): return deepcopy(self.state.get("required_cns") or {})
+    def cns_operation_context_snapshot(self): return self.requirement_recommendation_service.context_snapshot()
+    def cns_requirement_policies_snapshot(self): return self.requirement_recommendation_service.policies_snapshot()
+    def required_cns_recommendation_snapshot(self): return self.requirement_recommendation_service.result_snapshot()
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
     def cns_gap_snapshot(self): return deepcopy(self.state.get("cns_gap_analysis") or CNSGapAnalyzerV1.empty())
@@ -243,6 +253,7 @@ class WorkflowService:
                 "site_planner": "site_planner",
                 "corridor_model": "corridor_model",
                 "corridor_gap_analyzer": "corridor_gap_analyzer",
+                "requirement_model": "requirement_model",
             }[algorithm_type]
             self.invalidation_service.workflow(changed)
         self.session.save()
@@ -285,6 +296,8 @@ class WorkflowService:
         elif algorithm_type == "corridor_gap_analyzer":
             self.corridor_gap_analyzer = self.corridor_gap_service.analyzer = instance
             self.corridor_site_planning_service.corridor_gap_analyzer = instance
+        elif algorithm_type == "requirement_model":
+            self.requirement_model = self.requirement_recommendation_service.model = instance
 
     def _steps(self):
         state = self.state
@@ -307,6 +320,10 @@ class WorkflowService:
     def select_aircraft_profile(self, aircraft_id): return self.cns_input_service.select_aircraft(aircraft_id)
     def import_aircraft_catalog(self, path): return self.cns_input_service.import_aircraft_catalog(path)
     def set_required_cns(self, payload): return self.cns_input_service.set_required_cns(payload)
+    def set_cns_operation_context(self, payload): return self.requirement_recommendation_service.set_context(payload)
+    def set_cns_requirement_policies(self, payload): return self.requirement_recommendation_service.set_policies(payload)
+    def evaluate_required_cns_recommendation(self, payload=None): return self.requirement_recommendation_service.evaluate(payload)
+    def adopt_required_cns_recommendation(self, payload=None): return self.requirement_recommendation_service.adopt(payload)
     def import_device_catalog(self, path): return self.cns_input_service.import_device_catalog(path)
     def import_existing_cns(self, payload): return self.cns_input_service.import_existing(payload)
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)

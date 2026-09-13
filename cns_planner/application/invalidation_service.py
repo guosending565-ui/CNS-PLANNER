@@ -56,6 +56,8 @@ class InvalidationService:
             self.cns_corridor_gap()
         if "cns_corridor_site_plan" in affected:
             self.cns_corridor_site_plan()
+        if "required_cns_recommendation" in affected:
+            self.requirement_recommendation(f"{changed}_changed")
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -218,3 +220,13 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_corridor_site_plan"] = result
             state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = "stale"
+
+    def requirement_recommendation(self, reason="recommendation_input_changed"):
+        """Stale only P17; preserve formal RequiredCNS and every planning result."""
+        state = self.session.state
+        result = state.get("required_cns_recommendation") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            result["stale_reason"] = reason
+            state["required_cns_recommendation"] = result
+            state.setdefault("result_statuses", {})["required_cns_recommendation"] = "stale"

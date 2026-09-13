@@ -19,9 +19,11 @@ from ..gap.v2 import CNSGapAnalyzerV2
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 from ..risk.v1 import RiskModelV1
+from .requirements.manual_v1 import ManualRequiredCNSV1
+from .requirements.operational_context_v2 import OperationalContextRequiredCNSV2
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model", "corridor_gap_analyzer")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model", "corridor_gap_analyzer", "requirement_model")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -106,6 +108,7 @@ def default_algorithm_selection():
         "site_planner": _selection("site_planner", ReuseFirstSitePlannerV1),
         "corridor_model": _selection("corridor_model", CNSServiceCorridorV1),
         "corridor_gap_analyzer": _selection("corridor_gap_analyzer", CNSCorridorGapAnalyzerV1),
+        "requirement_model": _selection("requirement_model", ManualRequiredCNSV1),
     }
 
 
@@ -153,6 +156,8 @@ def build_default_algorithm_registry(defaults):
     registry.register(_corridor_site_planner_v2_manifest(), lambda parameters: CorridorReuseFirstSitePlannerV2(parameters))
     registry.register(_corridor_manifest(), lambda parameters: CNSServiceCorridorV1(parameters))
     registry.register(_corridor_gap_manifest(), lambda parameters: CNSCorridorGapAnalyzerV1(parameters))
+    registry.register(_manual_requirement_manifest(), lambda parameters: ManualRequiredCNSV1(parameters))
+    registry.register(_operational_requirement_manifest(), lambda parameters: OperationalContextRequiredCNSV2(parameters))
     return registry
 
 
@@ -404,5 +409,32 @@ def _corridor_gap_manifest():
             "不评估 common-cause、shared power/backhaul、tower/site failure propagation",
             "不是正式 continuity/availability probability",
         ),
+        (),
+    )
+
+
+def _manual_requirement_manifest():
+    return AlgorithmManifest(
+        "requirement_model", ManualRequiredCNSV1.algorithm_id, ManualRequiredCNSV1.algorithm_version,
+        "Manual Required CNS V1", "CNS-PLANNER", "stable_compatibility",
+        "保持现有项目/航路 RequiredCNS 为人工配置的权威规划需求。",
+        ("required_cns",), ("required_cns",),
+        {"type": "object", "additionalProperties": False},
+        ("RequiredCNS 由用户显式配置",),
+        ("不从运行上下文推导需求", "不代表法规合规"), (),
+    )
+
+
+def _operational_requirement_manifest():
+    return AlgorithmManifest(
+        "requirement_model", OperationalContextRequiredCNSV2.algorithm_id,
+        OperationalContextRequiredCNSV2.algorithm_version,
+        "Operational-context Required CNS V2", "CNS-PLANNER", "engineering_baseline",
+        "按已确认运行上下文与显式可追溯 policy 生成 RequiredCNS recommendation。",
+        ("cns_operation_context", "cns_requirement_policies", "current_required_cns", "route_ids"),
+        ("required_cns_recommendation", "field_provenance", "conflicts", "current_vs_recommended_diff"),
+        {"type": "object", "additionalProperties": False},
+        ("仅 confirmed policy 与 confirmed applicability context 可生成需求",),
+        ("recommendation 不会自动修改正式 RequiredCNS", "不内置法规数值或 policy precedence", "不是自动法规符合性判断"),
         (),
     )

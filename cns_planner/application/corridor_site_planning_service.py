@@ -126,10 +126,24 @@ class CorridorSitePlanningService:
                 "persisted_as_upstream": False,
             },
         })
+        if not selected and (_confirmed_objectives_met(baseline_gap) or (not targets and not unknown)):
+            result["status"] = "no_action_required"
+            result["stop_reason"] = (
+                "confirmed_objectives_already_met"
+                if _confirmed_objectives_met(baseline_gap)
+                else "no_confirmed_targets_or_unknown_evidence"
+            )
+        elif not selected and not targets and unknown:
+            result["status"] = "evidence_required"
+            result["stop_reason"] = "only_unknown_or_missing_evidence"
+        elif not selected:
+            result["status"] = "no_eligible_proposal"
         state["cns_corridor_site_plan"] = result
-        state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = (
-            "passed" if result.get("status") == "proposal_ready" else "missing_data"
-        )
+        state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = {
+            "proposal_ready": "passed", "no_action_required": "passed",
+            "evidence_required": "pending_confirmation",
+            "no_eligible_proposal": "failed",
+        }.get(result.get("status"), "missing_data")
         self.session.save()
         return self.snapshot()
 

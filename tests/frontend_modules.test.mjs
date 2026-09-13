@@ -5,7 +5,7 @@ import {lonLatToMercator,mercatorToLonLat} from '../cns_planner/web/js/map/proje
 import {createStore} from '../cns_planner/web/js/state/store.js';
 import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid_overlay.js';
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
-import {render as renderStep4,withLegacyRequiredAliases} from '../cns_planner/web/js/workflow/step04_operation.js';
+import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
 import {render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
@@ -52,6 +52,10 @@ test('step 1 algorithm details preserve auditable manifest fields',()=>{
   assert.deepEqual(algorithmManifestDetails(item),{identity:'risk-model-v1-relative-index@1.1',provider:'CNS-PLANNER',maturity:'baseline',inputs:'grid',outputs:'risk',assumptions:'a',limitations:'b',references:'未登记'});
 });
 
+test('P17 recommendation summary preserves pending/conflict/divergence semantics',()=>{
+  assert.deepEqual(requirementRecommendationSummary({status:'conflict',matched_policies:[{}],unknown_policies:[{}],conflicts:[{}],current_vs_recommended_diff:[{},{}],current_required_cns_diverged:true}),{status:'conflict',matched:1,unknown:1,conflicts:1,changes:2,diverged:true});
+});
+
 test('step 3 exposes V2 risk parameters without changing the V1 panel',()=>{
   globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
   assert.equal(riskAwareRoutePanel({algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'1.0'}}}), '');
@@ -80,6 +84,8 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   const html=renderStep4({flow:{aircraft_profiles:{count:1,items:[{aircraft_id:'A',name:'A',communication:{capabilities:['radio'],type:{technology:'4g'},confirmed:true},navigation:{},surveillance:{}}]},selected_aircraft_profile_id:'A',aircraft_source:'catalog',scenario_routes:[],required_cns:{project_default:{}},device_catalog:{items:[]},steps:{'4':false}}});
   assert.match(html,/Aircraft Capability/);
   assert.match(html,/Required CNS Performance/);
+  assert.match(html,/Operation Context → RequiredCNS Recommendation/);
+  assert.match(html,/Requirement Policies JSON/);
   assert.match(html,/最大时延 s/);
   assert.match(html,/Ground Device Capability/);
   assert.match(html,/ReliabilitySpec/);

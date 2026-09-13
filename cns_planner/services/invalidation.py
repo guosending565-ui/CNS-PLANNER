@@ -8,7 +8,7 @@ except ImportError:
 DEPENDENTS = {
     "data": ("workspace", "environment_risk", "routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
     "workspace": ("environment_risk", "routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
-    "route": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
+    "route": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "required_cns_recommendation", "report"),
     "rules": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "technical_risk", "report"),
     "aircraft_profile": ("routes", "coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "technical_risk", "report"),
     "required_cns": ("coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report"),
@@ -41,6 +41,9 @@ DEPENDENTS = {
     # P15 result is a one-way input to the P16 proposal.
     "cns_corridor_gap_result": ("cns_corridor_site_plan",),
     "corridor_site_planning_policy": ("cns_corridor_site_plan",),
+    "requirement_context": ("required_cns_recommendation",),
+    "requirement_policies": ("required_cns_recommendation",),
+    "requirement_model": ("required_cns_recommendation",),
     "safety_policy": ("safety_assessment", "technical_risk", "report"),
 }
 

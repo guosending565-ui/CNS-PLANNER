@@ -201,6 +201,8 @@ def test_non_site_navigation_and_unknown_never_become_targets(tmp_path):
     nav_result = nav.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
     assert nav_result["target_voxel_count"] == 0
     assert nav_result["selected_actions"] == []
+    assert nav_result["status"] == "no_action_required"
+    assert nav.state["result_statuses"]["cns_corridor_site_plan"] == "passed"
 
     unknown = configured(tmp_path / "unknown")
     c = next(item for item in unknown.state["cns_corridor_gap_assessment"]["routes"][0]["voxels"][0]["subsystems"] if item["subsystem"] == "C")
@@ -210,6 +212,30 @@ def test_non_site_navigation_and_unknown_never_become_targets(tmp_path):
     result = unknown.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
     assert result["target_voxel_count"] == 0
     assert result["unknown_evidence_required"]
+    assert result["status"] == "evidence_required"
+    assert unknown.state["result_statuses"]["cns_corridor_site_plan"] == "pending_confirmation"
+
+
+def test_confirmed_objectives_already_met_requires_no_action_even_with_target(tmp_path):
+    objectives = {"routes": {"R1": {"subsystems": {"C": {"objectives": {
+        "max_confirmed_deficit_volume_fraction": {"value": 1.0, "operator": "<=", "source": "test", "confirmed": True},
+    }}}}}}
+    workflow = configured(tmp_path, objectives=objectives)
+    before = deepcopy(workflow.state["cns_corridor_gap_assessment"])
+    result = workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
+    assert result["target_voxel_count"] == 1
+    assert result["status"] == "no_action_required"
+    assert result["selected_actions"] == []
+    assert result["before"] == result["after"]
+    assert result["final_hypothetical_evidence"]["corridor_gap"] == before
+
+
+def test_confirmed_target_without_positive_candidate_is_no_eligible_proposal(tmp_path):
+    workflow = configured(tmp_path, candidates=[])
+    result = workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
+    assert result["target_voxel_count"] == 1
+    assert result["status"] == "no_eligible_proposal"
+    assert workflow.state["result_statuses"]["cns_corridor_site_plan"] == "failed"
 
 
 def test_strict_reuse_tier_precedes_later_tier(tmp_path):
