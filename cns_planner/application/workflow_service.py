@@ -36,6 +36,7 @@ from .operational_timing_service import OperationalTimingService
 from .site_planning_service import SitePlanningService
 from .closed_loop_service import ClosedLoopService
 from .corridor_service import CNSCorridorService
+from .corridor_gap_service import CNSCorridorGapService
 
 
 class WorkflowService:
@@ -76,6 +77,7 @@ class WorkflowService:
         self.protection_model = self._selected_algorithm("protection_model")
         self.site_planner = self._selected_algorithm("site_planner")
         self.corridor_model = self._selected_algorithm("corridor_model")
+        self.corridor_gap_analyzer = self._selected_algorithm("corridor_gap_analyzer")
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
@@ -120,6 +122,9 @@ class WorkflowService:
         self.corridor_service = CNSCorridorService(
             self.session, self.corridor_model, self.invalidation_service, snapshot,
         )
+        self.corridor_gap_service = CNSCorridorGapService(
+            self.session, self.corridor_gap_analyzer, self.invalidation_service, snapshot,
+        )
         self.export_service = ExportService(self.session, snapshot)
 
     def save(self): self.session.save()
@@ -153,6 +158,8 @@ class WorkflowService:
     def cns_site_plan_snapshot(self): return self.site_planning_service.result_snapshot()
     def closed_loop_snapshot(self): return self.closed_loop_service.result_snapshot()
     def cns_corridor_snapshot(self): return self.corridor_service.result_snapshot()
+    def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
+    def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -210,6 +217,7 @@ class WorkflowService:
                 "protection_model": "protection_model",
                 "site_planner": "site_planner",
                 "corridor_model": "corridor_model",
+                "corridor_gap_analyzer": "corridor_gap_analyzer",
             }[algorithm_type]
             self.invalidation_service.workflow(changed)
         self.session.save()
@@ -245,6 +253,8 @@ class WorkflowService:
             self.site_planner = self.site_planning_service.planner = instance
         elif algorithm_type == "corridor_model":
             self.corridor_model = self.corridor_service.model = instance
+        elif algorithm_type == "corridor_gap_analyzer":
+            self.corridor_gap_analyzer = self.corridor_gap_service.analyzer = instance
 
     def _steps(self):
         state = self.state
@@ -277,6 +287,8 @@ class WorkflowService:
     def evaluate_closed_loop(self, payload=None): return self.closed_loop_service.evaluate(payload)
     def apply_closed_loop(self, payload=None): return self.closed_loop_service.apply(payload)
     def evaluate_cns_corridor(self, payload=None): return self.corridor_service.evaluate(payload)
+    def set_cns_planning_objectives(self, payload): return self.corridor_gap_service.set_objectives(payload)
+    def evaluate_cns_corridor_gap(self, payload=None): return self.corridor_gap_service.evaluate(payload)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)

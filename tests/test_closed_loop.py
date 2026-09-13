@@ -187,6 +187,8 @@ def test_apply_commits_once_is_idempotent_and_preserves_provenance(tmp_path):
     workflow = _workflow(tmp_path)
     workflow.state["cns_corridor_assessment"] = {"status": "passed", "input_fingerprint": "before-apply"}
     workflow.state["result_statuses"]["cns_corridor_assessment"] = "passed"
+    workflow.state["cns_corridor_gap_assessment"] = {"status": "passed", "input_fingerprint": "before-apply-p15"}
+    workflow.state["result_statuses"]["cns_corridor_gap_assessment"] = "passed"
     workflow.state["coverage"] = {"status": "passed", "layers": {}}
     workflow.state["cns_gap_analysis"] = {"status": "passed"}
     workflow.state["result_statuses"]["coverage"] = "passed"
@@ -212,6 +214,7 @@ def test_apply_commits_once_is_idempotent_and_preserves_provenance(tmp_path):
     assert workflow.state["result_statuses"]["report"] == "stale"
     assert workflow.state["result_statuses"]["cns_corridor_assessment"] == "stale"
     assert workflow.state["cns_corridor_assessment"]["status"] == "stale"
+    assert workflow.state["result_statuses"]["cns_corridor_gap_assessment"] == "stale"
     fingerprints = {
         name: workflow.state[name]["input_fingerprint"]
         for name in ("coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_analysis_v2")

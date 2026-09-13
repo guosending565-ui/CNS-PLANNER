@@ -52,6 +52,8 @@ class InvalidationService:
             self.protection_envelope()
         if "cns_corridor_assessment" in affected:
             self.cns_corridor()
+        if "cns_corridor_gap_assessment" in affected:
+            self.cns_corridor_gap()
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -194,3 +196,13 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_corridor_assessment"] = result
             state.setdefault("result_statuses", {})["cns_corridor_assessment"] = "stale"
+        self.cns_corridor_gap()
+
+    def cns_corridor_gap(self):
+        """Stale only P15 and preserve every P1-P14 result."""
+        state = self.session.state
+        result = state.get("cns_corridor_gap_assessment") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            state["cns_corridor_gap_assessment"] = result
+            state.setdefault("result_statuses", {})["cns_corridor_gap_assessment"] = "stale"

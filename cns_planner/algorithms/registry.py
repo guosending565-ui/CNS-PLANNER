@@ -11,6 +11,7 @@ from .service_capability.v1 import CNSServiceCapabilityV1
 from .timeline.v1 import RouteServiceTimelineV1
 from .protection.v1 import TacticalProtectionEnvelopeV1
 from .corridor.v1 import CNSServiceCorridorV1
+from .corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from .route.v1 import RoutePlannerV1
 from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 from ..gap.v1 import CNSGapAnalyzerV1
@@ -19,7 +20,7 @@ from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..risk.v1 import RiskModelV1
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model", "corridor_gap_analyzer")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -103,6 +104,7 @@ def default_algorithm_selection():
         "protection_model": _selection("protection_model", TacticalProtectionEnvelopeV1),
         "site_planner": _selection("site_planner", ReuseFirstSitePlannerV1),
         "corridor_model": _selection("corridor_model", CNSServiceCorridorV1),
+        "corridor_gap_analyzer": _selection("corridor_gap_analyzer", CNSCorridorGapAnalyzerV1),
     }
 
 
@@ -148,6 +150,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
     registry.register(_site_planner_manifest(), lambda parameters: ReuseFirstSitePlannerV1(parameters))
     registry.register(_corridor_manifest(), lambda parameters: CNSServiceCorridorV1(parameters))
+    registry.register(_corridor_gap_manifest(), lambda parameters: CNSCorridorGapAnalyzerV1(parameters))
     return registry
 
 
@@ -352,6 +355,29 @@ def _corridor_manifest():
             "不是 JARUS Operational Volume、U-space Surveillance Volume 或法规批准空间",
             "不评估运行时失效、概率可用度、真实传播或精确 3D mesh",
             "representative probe 不保证整个 voxel 满足",
+        ),
+        (),
+    )
+
+
+def _corridor_gap_manifest():
+    return AlgorithmManifest(
+        "corridor_gap_analyzer", CNSCorridorGapAnalyzerV1.algorithm_id,
+        CNSCorridorGapAnalyzerV1.algorithm_version,
+        "CNS Corridor Gap Analyzer V1", "CNS-PLANNER", "engineering_baseline",
+        "只消费 current P14 corridor、RequiredCNS 与显式规划目标，评估静态服务、独立冗余和空间连续缺口。",
+        ("cns_corridor_assessment", "required_cns", "cns_planning_objectives"),
+        ("cns_corridor_gap_assessment", "redundancy_summary", "continuous_deficit_segments", "objective_results"),
+        {"type": "object", "additionalProperties": False},
+        (
+            "独立冗余严格使用 P8 confirmed independence group",
+            "连续缺口是 corridor voxel 的保守纵向投影",
+            "规划目标只来自项目显式确认配置",
+        ),
+        (
+            "不重算 P7/P8，不消费 runtime 或 CandidateSite/P11 proposal",
+            "不评估 common-cause、shared power/backhaul、tower/site failure propagation",
+            "不是正式 continuity/availability probability",
         ),
         (),
     )

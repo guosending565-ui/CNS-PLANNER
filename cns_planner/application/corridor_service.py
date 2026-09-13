@@ -40,6 +40,7 @@ class CNSCorridorService:
             capability_parameters=((selections.get("service_model") or {}).get("parameters") or {}),
         )
         state["cns_corridor_assessment"] = result
+        self.invalidation.cns_corridor_gap()
         state.setdefault("result_statuses", {})["cns_corridor_assessment"] = _result_status(result.get("status"))
         self.session.save()
         return self.snapshot()

@@ -142,14 +142,14 @@ def _evaluate_site_capability_point(code, sample, required, capability, aircraft
             )
         evidence.append({
             "kind": "provider_multiplicity", "provider_count": len(evaluations),
-            "independent_redundancy_count": _independent_count(evaluations),
-            "independence_claimed": _independent_count(evaluations) is not None,
+            "independent_redundancy_count": confirmed_independent_provider_count(evaluations),
+            "independence_claimed": confirmed_independent_provider_count(evaluations) is not None,
         })
         required_redundancy = (required.get("performance") or {}).get("min_redundancy") or required.get("redundancy") or 1
         meets = [item for item in evaluations if item["status"] == "meets_under_model"]
         unknown = [item for item in evaluations if item["status"] in ("unknown", "unsupported_model")]
         if int(required_redundancy) > 1:
-            independent = _independent_count(meets)
+            independent = confirmed_independent_provider_count(meets)
             if independent is None:
                 status, reasons = "unknown", ["提供者多重度已知，但缺少独立性证据"]
             elif independent >= int(required_redundancy):
@@ -397,7 +397,8 @@ def _summary_status(summary, samples):
     return "meets_under_model"
 
 
-def _independent_count(evaluations):
+def confirmed_independent_provider_count(evaluations):
+    """Count confirmed independent groups; incomplete independence evidence stays unknown."""
     if not evaluations:
         return 0
     if any(item.get("independence_confirmed") is not True or not item.get("independence_group") for item in evaluations):

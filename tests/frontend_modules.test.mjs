@@ -126,4 +126,7 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/不是真实 CNS 模型 validation 或认证结论/);
   assert.match(step5,/CNS Service Requirement Corridor/);
   assert.match(step5,/discretized volume proxy/);
+  assert.match(step5,/CNS Spatial Planning Objectives/);
+  assert.match(step5,/Spatial continuous-deficit/);
+  assert.match(step5,/不是 runtime outage、正式 ICAO continuity/);
 });

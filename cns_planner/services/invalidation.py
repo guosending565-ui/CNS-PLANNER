@@ -11,7 +11,7 @@ DEPENDENTS = {
     "route": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
     "rules": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "technical_risk", "report"),
     "aircraft_profile": ("routes", "coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "technical_risk", "report"),
-    "required_cns": ("coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
+    "required_cns": ("coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_gap_assessment", "report"),
     "devices": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "technical_risk", "report"),
     "existing_cns": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "technical_risk", "report"),
     "candidate_sites": ("coverage", "cns_site_plan", "technical_risk", "report"),
@@ -35,6 +35,11 @@ DEPENDENTS = {
     "protection_model": ("protection_envelope", "report"),
     "corridor_policy": ("cns_corridor_assessment",),
     "corridor_model": ("cns_corridor_assessment",),
+    "corridor_result": ("cns_corridor_gap_assessment",),
+    "planning_objectives": ("cns_corridor_gap_assessment",),
+    "corridor_gap_analyzer": ("cns_corridor_gap_assessment",),
+    # Reserved one-way dependency boundary for P16; no P16 state exists yet.
+    "cns_corridor_gap_result": ("cns_site_plan_v2",),
     "safety_policy": ("safety_assessment", "technical_risk", "report"),
 }
 
