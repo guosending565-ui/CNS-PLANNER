@@ -43,7 +43,7 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.allowed(): return self.respond({"error": "仅允许本机同源访问"}, status=403)
         url = urlparse(self.path)
-        if url.path in ("/api/online-health", "/api/browse") and not valid_token(self.headers, self.context.token):
+        if url.path in ("/api/online-health", "/api/browse", "/api/cns-planning-report/artifact") and not valid_token(self.headers, self.context.token):
             return self.respond({"error": "无效会话"}, status=403)
         try:
             response = ApiRouter(self.context).get(url.path, parse_qs(url.query), self.headers)

@@ -4,6 +4,7 @@ from ..domain.status import ResultStatus
 from ..risk.v1 import RiskModelV1
 from ..services.invalidation import ResultLedger
 from .project_state import assessment, empty_grid_attributes
+from ..domain.reporting import mark_active_report_stale
 
 
 class InvalidationService:
@@ -58,6 +59,8 @@ class InvalidationService:
             self.cns_corridor_site_plan()
         if "required_cns_recommendation" in affected:
             self.requirement_recommendation(f"{changed}_changed")
+        if affected:
+            mark_active_report_stale(state, f"{changed}_changed")
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -74,6 +77,7 @@ class InvalidationService:
             if source_name in ("traffic_simulation", "traffic") and state.get("traffic_simulation"):
                 state["traffic_simulation"]["status"] = "stale"
         if invalidated:
+            mark_active_report_stale(state, "data_source_profiles_changed")
             self.risk()
         if "terrain" in changed_sources:
             self.coverage_3d()
@@ -81,6 +85,7 @@ class InvalidationService:
 
     def risk(self):
         state = self.session.state
+        mark_active_report_stale(state, "grid_risk_input_changed")
         result = state.setdefault("grid_risk", RiskModelV1.empty())
         if result.get("status") == "not_calculated":
             return
@@ -101,6 +106,7 @@ class InvalidationService:
     def safety_policy(self):
         """Invalidate only future safety/technical/report products."""
         state = self.session.state
+        mark_active_report_stale(state, "safety_policy_changed")
         self.workflow("safety_policy")
         state.setdefault("safety_assessment", {})["status"] = "stale"
         for name in ("safety_assessment", "technical_risk", "report"):
@@ -117,8 +123,7 @@ class InvalidationService:
             result["status"] = "stale"
             state["coverage_3d"] = result
             state.setdefault("result_statuses", {})["coverage_3d"] = "stale"
-        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
-            state["result_statuses"]["report"] = "stale"
+        mark_active_report_stale(state, "coverage_3d_changed")
         self.cns_service_capability()
         self.cns_corridor()
 
@@ -129,8 +134,7 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_service_capability"] = result
             state.setdefault("result_statuses", {})["cns_service_capability"] = "stale"
-        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
-            state["result_statuses"]["report"] = "stale"
+        mark_active_report_stale(state, "cns_service_capability_changed")
         self.service_timeline()
         self.cns_corridor()
 
@@ -141,8 +145,7 @@ class InvalidationService:
             result["status"] = "stale"
             state["service_timeline"] = result
             state.setdefault("result_statuses", {})["service_timeline"] = "stale"
-        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
-            state["result_statuses"]["report"] = "stale"
+        mark_active_report_stale(state, "service_timeline_changed")
         self.cns_gap_v2()
 
     def protection_envelope(self):
@@ -152,8 +155,7 @@ class InvalidationService:
             result["status"] = "stale"
             state["protection_envelope"] = result
             state.setdefault("result_statuses", {})["protection_envelope"] = "stale"
-        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
-            state["result_statuses"]["report"] = "stale"
+        mark_active_report_stale(state, "protection_envelope_changed")
         parameters = (state.get("cns_gap_analysis_v2") or {}).get("parameters") or {}
         if parameters.get("evaluate_protection_margin") is True:
             self.cns_gap_v2()
@@ -166,8 +168,7 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_gap_analysis_v2"] = result
             state.setdefault("result_statuses", {})["cns_gap_v2"] = "stale"
-        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
-            state["result_statuses"]["report"] = "stale"
+        mark_active_report_stale(state, "cns_gap_v2_changed")
         self.cns_site_plan()
 
     def cns_site_plan(self):
@@ -178,8 +179,7 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_site_plan"] = result
             state.setdefault("result_statuses", {})["cns_site_plan"] = "stale"
-        if state.setdefault("result_statuses", {}).get("report") != "not_calculated":
-            state["result_statuses"]["report"] = "stale"
+        mark_active_report_stale(state, "cns_site_plan_changed")
         self.closed_loop_assessment()
 
     def closed_loop_assessment(self):
@@ -236,6 +236,7 @@ class InvalidationService:
             confirmed["current_applicability"] = "stale"
             confirmed["stale_reason"] = reason
             state["confirmed_cns_plan"] = confirmed
+        mark_active_report_stale(state, reason)
 
     def requirement_recommendation(self, reason="recommendation_input_changed"):
         """Stale only P17; preserve formal RequiredCNS and every planning result."""
@@ -246,3 +247,4 @@ class InvalidationService:
             result["stale_reason"] = reason
             state["required_cns_recommendation"] = result
             state.setdefault("result_statuses", {})["required_cns_recommendation"] = "stale"
+        mark_active_report_stale(state, reason)

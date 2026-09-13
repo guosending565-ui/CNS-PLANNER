@@ -11,6 +11,7 @@ from ..domain.plan_review import (
     review_input_fingerprints,
 )
 from ..domain.closed_loop import _interval_transitions, _subsystem_index
+from ..domain.reporting import mark_active_report_stale
 from .closed_loop_service import rerun_p7_p10_chain
 from .corridor_site_planning_service import rerun_corridor_chain
 from .project_state import assessment
@@ -55,6 +56,7 @@ class PlanReviewService:
         for variant in review["variants"]:
             self._evaluate_variant(state, review, variant)
         review["selected_variant_id"] = review["variants"][0]["variant_id"]
+        mark_active_report_stale(state, "P18 review reinitialized")
         state["cns_plan_review"] = review
         state.setdefault("result_statuses", {})["cns_plan_review"] = "passed"
         self.session.save()
@@ -80,6 +82,7 @@ class PlanReviewService:
         if existing is None:
             self._evaluate_variant(self.session.state, review, candidate)
             review["variants"].append(candidate)
+            mark_active_report_stale(self.session.state, "P18 variant set changed")
         self.session.state["cns_plan_review"] = review
         self.session.save()
         return self.snapshot()
@@ -90,6 +93,7 @@ class PlanReviewService:
         variants = [self._variant(review, requested)] if requested else review["variants"]
         for variant in variants:
             self._evaluate_variant(self.session.state, review, variant)
+        mark_active_report_stale(self.session.state, "P18 variant reevaluated")
         self.session.state["cns_plan_review"] = review
         self.session.save()
         return self.snapshot()
@@ -97,6 +101,7 @@ class PlanReviewService:
     def select(self, payload):
         review = self._current_review()
         variant = self._variant(review, payload.get("variant_id"))
+        mark_active_report_stale(self.session.state, "P18 selected variant changed")
         review["selected_variant_id"] = variant["variant_id"]
         self.session.state["cns_plan_review"] = review
         self.session.save()
@@ -118,6 +123,7 @@ class PlanReviewService:
                 raise ValueError("无规划目标确认必须记录 reason")
         elif gate.get("status") != "ready_for_confirmation":
             raise ValueError(f"variant 不满足 Confirm 门禁：{gate.get('status')}")
+        mark_active_report_stale(self.session.state, "P18 confirmed plan changed")
         prior = deepcopy(self.session.state.get("confirmed_cns_plan") or empty_confirmed_plan())
         history = deepcopy(prior.get("history") or [])
         if prior.get("status") in ("confirmed", "applied"):
@@ -196,6 +202,7 @@ class PlanReviewService:
             })
             working["confirmed_cns_plan"] = committed_plan
             _post_apply_statuses(working)
+            mark_active_report_stale(working, "P18 confirmed plan applied")
             state.clear(); state.update(working)
             self.session.save()
         except Exception:

@@ -40,6 +40,7 @@ from .corridor_gap_service import CNSCorridorGapService
 from .corridor_site_planning_service import CorridorSitePlanningService
 from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
+from .report_service import PlanningReportService
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
@@ -161,6 +162,9 @@ class WorkflowService:
             self.corridor_gap_analyzer, snapshot,
         )
         self.export_service = ExportService(self.session, snapshot)
+        self.report_service = PlanningReportService(
+            self.session, self.export_service, self.algorithm_registry.catalog, snapshot,
+        )
 
     def save(self): self.session.save()
 
@@ -202,6 +206,7 @@ class WorkflowService:
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
     def cns_plan_review_snapshot(self): return self.plan_review_service.snapshot_result()
+    def cns_planning_report_snapshot(self): return self.report_service.result_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -356,6 +361,9 @@ class WorkflowService:
     def select_cns_plan_variant(self, payload): return self.plan_review_service.select(payload)
     def confirm_cns_plan(self, payload): return self.plan_review_service.confirm(payload)
     def apply_confirmed_cns_plan(self, payload): return self.plan_review_service.apply(payload)
+    def preview_cns_planning_report(self, payload=None): return self.report_service.preview(payload)
+    def generate_cns_planning_report(self, payload=None): return self.report_service.generate(payload)
+    def cns_planning_report_artifact(self, report_id, kind): return self.report_service.artifact(report_id, kind)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
@@ -379,3 +387,4 @@ class WorkflowService:
     def export_project(self): return self.export_service.project()
     def export_routes(self): return self.export_service.routes()
     def export_sites(self): return self.export_service.sites()
+    def export_confirmed_facilities(self): return self.export_service.confirmed_facilities()

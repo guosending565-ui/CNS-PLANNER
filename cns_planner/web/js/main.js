@@ -310,6 +310,7 @@ function renderWorkflow(){
 function stepBindings(){return {
   $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,
   saveProject,openProject,
+  previewPlanningReport,downloadPlanningReport,
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
   startWorkspace(){interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
@@ -317,6 +318,24 @@ function stepBindings(){return {
   saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace});interactionMode='pan';draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
   toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';renderWorkflow();}
 };}
+
+async function previewPlanningReport(){
+  const target=window.open('about:blank','_blank');
+  try{
+    const result=await computeAction('/api/cns-planning-report/preview',{}),blob=new Blob([result.html],{type:'text/html;charset=utf-8'}),url=URL.createObjectURL(blob);
+    if(target)target.location.href=url;else throw Error('浏览器阻止了预览窗口，请允许本地工作台打开新窗口');
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    panelError('报告草稿已在新窗口打开；预览不会写入项目。');
+  }catch(exc){if(target)target.close();throw Error('报告预览失败：'+exc.message+'。请检查项目状态后重试。');}
+}
+async function downloadPlanningReport(kind){
+  const reports=flow?.cns_planning_reports||{},reportId=reports.active_report_id;
+  if(!reportId)throw Error('尚无正式报告。请先确认方案并点击“生成正式报告”。');
+  const url='/api/cns-planning-report/artifact?'+new URLSearchParams({report_id:reportId,kind});
+  const blob=await api(url),objectUrl=URL.createObjectURL(blob),link=document.createElement('a');
+  link.href=objectUrl;link.download={html:'cns-planning-report.html',pdf:'cns-planning-report.pdf',package:'cns-planning-package.zip',json:'cns-planning-report.json'}[kind]||'report.bin';link.click();
+  setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
+}
 
 async function saveProject(projectDir,name){
   if(!projectDir)return panelError('请先选择项目数据存储位置');

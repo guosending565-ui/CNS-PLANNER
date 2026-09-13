@@ -45,6 +45,7 @@ from ..domain.requirement_policy import (
     normalize_operation_context, normalize_requirement_policies,
 )
 from ..domain.plan_review import empty_confirmed_plan, empty_plan_review
+from ..domain.reporting import empty_report_collection
 
 
 SCHEMA_VERSION = 2
@@ -151,6 +152,7 @@ def blank_project(defaults):
         "cns_corridor_site_plan": empty_cns_corridor_site_plan(),
         "cns_plan_review": empty_plan_review(),
         "confirmed_cns_plan": empty_confirmed_plan(),
+        "cns_planning_reports": empty_report_collection(),
         "safety_policy": default_safety_policy(),
         "safety_assessment": empty_safety_assessment(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
@@ -243,6 +245,7 @@ def normalize_project(value, grid_service):
     value.setdefault("cns_corridor_site_plan", empty_cns_corridor_site_plan())
     value.setdefault("cns_plan_review", empty_plan_review())
     value.setdefault("confirmed_cns_plan", empty_confirmed_plan())
+    value.setdefault("cns_planning_reports", empty_report_collection())
     value["safety_policy"] = normalize_safety_policy(value.get("safety_policy"))
     value.setdefault("safety_assessment", empty_safety_assessment())
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
@@ -259,6 +262,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("service_timeline", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("protection_envelope", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("report", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"
     )

@@ -50,6 +50,7 @@ class ProjectState(TypedDict, total=False):
     cns_corridor_site_plan: dict[str, Any]
     cns_plan_review: dict[str, Any]
     confirmed_cns_plan: dict[str, Any]
+    cns_planning_reports: dict[str, Any]
     safety_policy: dict[str, Any]
     safety_assessment: dict[str, Any]
     coverage: dict[str, Any] | None

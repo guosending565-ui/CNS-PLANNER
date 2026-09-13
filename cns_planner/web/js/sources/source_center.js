@@ -1,4 +1,4 @@
-import {escapeHtml,statusText} from '../workflow/common.js';
+import {escapeHtml,sourceModeText,statusText} from '../workflow/common.js';
 
 export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
   let browseKind='basemap',browseParent='',selectedFile='';
@@ -13,7 +13,8 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
       const crs=typeof item.crs==='object'?[item.crs.horizontal,item.crs.vertical].filter(Boolean).join(' / '):(item.crs||'');
       const resolution=typeof item.resolution==='object'?(item.resolution.nominal||[item.resolution.angular_value,item.resolution.angular_unit].filter(value=>value!==undefined).join(' ')):(item.resolution||'');
       const verification=typeof item.verification==='object'?(item.verification.status||'unverified'):(item.verification||'unverified');
-      const metadata=[item.source_mode||item.source_type,item.version,item.quantity,item.unit,resolution,crs,verification].filter(Boolean).join(' · ');
+      const sourceMode=item.source_mode||item.source_type;
+      const metadata=[sourceModeText(sourceMode),item.version,item.quantity,item.unit,resolution,crs,verification].filter(Boolean).join(' · ');
       row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · P1 必需':' · 后续/可选')+'</small>'+(metadata?'<p>'+escapeHtml(metadata)+'</p>':'');list.append(row);
     }
     const parameters=$('parameterList');parameters.replaceChildren();const names={vertical_clearance_m:'垂直净空裕度',primary_spacing_factor:'主站间距系数',co_location_search_radius_m:'共址搜索半径'};

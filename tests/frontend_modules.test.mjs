@@ -10,6 +10,7 @@ import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_works
 import {render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
+import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -145,14 +146,31 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
 test('step 6 keeps the corridor site result visibly proposal-only',()=>{
   globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
   const html=renderStep6({state:{data_health:{status:'passed'}},flow:{project:{name:'P'},workspace:null,operational_routes:[],aircraft:null,rules:null,coverage:null,review:{risks:{},overall_status:'pending_confirmation',overall_pass:false},result_statuses:{cns_corridor_site_plan:'passed'},cns_corridor_site_plan:{status:'proposal_ready',target_voxel_count:2,selected_actions:[{}],confirmed_requirement_unit_volume_gain:10}}});
-  assert.match(html,/P16 Corridor Site Plan · Proposal/);
+  assert.match(html,/P16 走廊站址规划提案/);
   assert.match(html,/Proposal only/);
   assert.match(html,/不修改 Existing CNS/);
-  assert.match(html,/Plan Review · Controlled Apply/);
+  assert.match(html,/方案审查（Plan Review）与受控应用/);
   assert.match(html,/无自动总分\/排名/);
+  assert.match(html,/CNS规划方案报告/);
+  assert.match(html,/预览报告/);
+  assert.match(html,/生成正式报告/);
+  assert.match(html,/下载规划数据包/);
+  assert.match(html,/请先在方案审查中确认一个规划方案/);
 });
 
 test('P18 review summary keeps selection confirmation and apply separate',()=>{
   const result=planReviewSummary({selected_variant_id:'PV-1',variants:[{variant_id:'PV-1',selected_action_ids:['A'],evaluation:{confirmation_gate:{status:'ready_for_confirmation'}}}]},{status:'confirmed',application:{status:'not_applied'}});
   assert.deepEqual(result,{variantCount:1,selectedVariantId:'PV-1',selectedActionIds:['A'],gate:'ready_for_confirmation',confirmedStatus:'confirmed',applyStatus:'not_applied'});
+});
+
+test('Chinese UI labels keep internal enums stable and unknown conservative',()=>{
+  assert.equal(statusText('confirmed_deficit'),'确认缺口');
+  assert.equal(statusText('current'),'当前有效');
+  assert.equal(statusText('stale'),'已失效');
+  assert.equal(statusText('pending_confirmation'),'待确认');
+  assert.equal(statusText('not_applicable'),'不适用');
+  assert.equal(statusText('evidence_required'),'需要补充证据');
+  assert.equal(statusText('unknown'),'证据不足/尚无法判断');
+  assert.deepEqual(['real','synthetic','manual'].map(sourceModeText),['真实数据','模拟数据','人工录入']);
+  assert.equal('confirmed_deficit','confirmed_deficit');
 });

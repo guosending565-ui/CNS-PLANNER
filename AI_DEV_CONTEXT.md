@@ -289,6 +289,17 @@ P18 CNS Plan Review, Variant Comparison & Controlled Apply V1：
 - Apply 重校验 review baseline/action fingerprints，在事务 working copy 中复用 P7→P10 和 P14→P15。P14/P15 必须与 confirmed Preview fingerprint 一致，P10 新 confirmed regression 或 satisfied→unknown 会回滚。成功只保存一次并以 planning origin 幂等安装；0-action baseline 可 no-op applied。
 - API：`GET /api/cns-plan-review`，以及 `POST /api/cns-plan-review/initialize|variant|evaluate|select|confirm|apply`。Step 6 提供 Variant cards、无隐藏评分的比较矩阵与 Select→Confirm→Apply；地图切换仅显示 proposed overlay。
 
+P19 CNS Planning Report, Audit & Export V1：
+
+- P19 是只读报告与交付层，不注册算法、不重算 P1-P18。schema-v2 additive 保存 `cns_planning_reports={status,active_report_id,records[]}`；历史记录和产物只追加，active report 在源输入变化后标记 `stale_current_project`，仍可下载审计。
+- 纯 `ReportBuilder` 从冻结、清洗后的 ProjectState 快照生成唯一 canonical `ReportDataModel`。HTML、PDF 与 ZIP 均消费同一模型；正式报告要求 current `confirmed_cns_plan` 为 `confirmed|applied`，无确认方案只能零持久化 draft preview。
+- `ReportRecord` 保存确定性 `report_id`、schema/template version、source plan/status/fingerprint、ReportDataModel fingerprint、生成时间、current applicability 与白名单相对 artifact paths。相同 plan/source/template 重复生成幂等返回既有记录，任何阶段失败均不写 final record 或半成品目录。
+- 中文 standalone HTML 内嵌 CSS、A4 print CSS 与纯 SVG 航路/设施/C/N/S 统计示意，不依赖 CDN、在线底图、QGIS 截图或第三方 chart。PDF 只允许从 exact HTML 使用可注入 renderer 生成；生产默认 Playwright Chromium，首次需执行 `python -m playwright install chromium`，不可用时显式返回 `pdf_renderer_unavailable`。
+- 数据包固定包含 `report.html/report.pdf/report.json/routes.geojson/facilities.geojson/algorithms.json/provenance.json/manifest-sha256.txt`；manifest 校验各 payload SHA-256，语义仅为 checksum manifest，不宣称 BagIt。provenance 记录 P17→P14→P15→P16→P18→P19，明确 `w3c_prov_inspired_not_full_prov_compliance`。
+- sanitizer 永久遮盖 token/password/secret/api_key/authorization，并将本机绝对路径降为 basename；所有用户文本 HTML escape。final facilities 来自 ExistingCNS 与 P18 confirmed/applied plan，禁止读取 legacy CoverageV1 stations。
+- API：`GET /api/cns-planning-report`、`POST /api/cns-planning-report/preview|generate`、`GET /api/cns-planning-report/artifact?report_id=&kind=`。artifact 只允许 ReportRecord 中 html/pdf/package/json 白名单相对路径，并拒绝绝对路径和 traversal。
+- UI 原则固定为：**内部 schema/API/algorithm/status 英文契约稳定，面向普通用户中文优先**。集中维护状态与来源类型映射；unknown 显示“证据不足/尚无法判断”，real/synthetic/manual 显示“真实数据/模拟数据/人工录入”，技术 ID 保留作为次级审计信息。
+
 ## 7. 数据源扩展
 
 统一定义至少包含 `id/name/category/type/formats/required/health/coverage/source_metadata`，并新增 `source_mode/source_type = real | synthetic | manual`。需要进入计算的数据源通过轻量 `SourceProfile` 保存 `source_id/name/version/quantity/unit/resolution/crs/verification/provenance`；数值边界可使用 `QuantityValue(value/quantity/unit/source_unit/conversion/source/confirmed/status)`，不依赖大型单位或 PROV 库。
@@ -357,7 +368,9 @@ P16.1 前置门禁：**51 passed**。P17 完整基线：**334 passed, 6 skipped,
 
 P18 完整基线：**342 passed, 6 skipped, 1 known failed**；P18/P12/P14-P17 定向回归 **72 passed**；Node 前端 **16 passed, 0 failed**，`app.js/main.js/step06_review.js` 语法检查通过。新增覆盖 baseline+auto 初始化、action-set 确定性 identity、P14→P15 authoritative preview 零污染、无隐藏 score/rank、confirmed objectives 与无目标显式 acknowledgement 门禁、no-action baseline、confirmed immutable/clone、Select/Confirm/Apply 分层、输入 stale 拒绝、异常 rollback、成功单次 commit、P14/P15 current、P16/P11/P12/report 定向 stale、幂等 Apply、schema-v2 backfill、API 与 Step 6。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P18 未修改生产空域代码。
 
-当前里程碑：**CNS-PLANNER v1.0 research baseline / ready for synthetic end-to-end validation**。
+P19 完整基线：**351 passed, 6 skipped, 1 known failed**；P19/P18/ProjectRepository/Persistence 定向回归 **32 passed**；Node 前端 **17 passed, 0 failed**，`app.js/main.js/source_center.js/step06_review.js` 语法检查及 `git diff --check` 通过。新增覆盖 draft/final 门禁、confirmed/applied 标签、canonical 模型章节与 unknown 语义、确定性 ID/幂等、schema-v2 backfill/保存恢复、HTML escape、secret/path redaction、standalone HTML/inline SVG、HTML/PDF 同源、FakePDF 成功/失败回滚、final facility 隔离、ZIP 完整性与 SHA-256、provenance、历史报告 stale 保留、artifact traversal、API 与中文状态/来源映射。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P19 未修改生产空域代码。
+
+当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
 
@@ -400,12 +413,13 @@ P18 完整基线：**342 passed, 6 skipped, 1 known failed**；P18/P12/P14-P17 �
 22. P15 只做静态空间 service/redundancy 缺口与显式目标判定；不建模 common-cause、共享供电/回传、塔站失效传播或概率 continuity/availability。共址关系当前既不奖励也不惩罚。
 23. P16 仍是离散 voxel/volume-proxy 的 proposal baseline；没有真实传播、设施施工约束、异构成本归一、全局整数优化、共因失效或 proposal apply/rollback。最终方案仍需用户确认与后续应用闭环。
 24. P17 Policy Engine 只支持显式项目规则、白名单字段和无优先级确定合并；尚无权威 policy catalog 签名/版本治理、法规适用性法律判断、复杂逻辑或审批审计。Recommendation 只能由用户确认后采用。
-25. P18 目前提供单项目、单进程的人工 Variant 审查与原子 Apply；尚无多人审批签名、撤销已应用计划、持久化 audit event stream、跨进程并发提交锁或 PDF 审计报告。Comparison Matrix 有意不提供自动综合评分/排名。
+25. P18 目前提供单项目、单进程的人工 Variant 审查与原子 Apply；尚无多人审批签名、撤销已应用计划、持久化 audit event stream 或跨进程并发提交锁。Comparison Matrix 有意不提供自动综合评分/排名。
+26. P19 PDF 依赖本机 Playwright Chromium，未安装时正式生成会原子失败并返回可操作提示；当前报告 checksum manifest 不等同完整 BagIt、数字签名或不可抵赖审计，HTML/SVG 地图也仅为无底图工程示意。
 
 ## 11. 下一阶段计划
 
-1. P19：HTML/PDF Planning Report & Audit Export，导出 P17 requirement basis、P18 Variant/decision/application provenance 与关键结果快照。
-2. 完成 synthetic milestone validation，验证 M2 端到端走廊、冗余、目标、累计站址提案与需求采用。
+1. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
+2. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
 3. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
 5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

@@ -10,6 +10,7 @@ from ..domain.requirement_policy import (
     empty_required_cns_recommendation, empty_requirement_policies,
     normalize_operation_context, normalize_requirement_policies,
 )
+from ..domain.reporting import mark_active_report_stale
 
 
 class RequirementRecommendationService:
@@ -77,6 +78,7 @@ class RequirementRecommendationService:
             state.get("required_cns"), state.get("cns_operation_context"),
             state.get("cns_requirement_policies"), self._route_ids(),
         )
+        mark_active_report_stale(state, "P17 requirement recommendation reevaluated")
         state["required_cns_recommendation"] = result
         state.setdefault("result_statuses", {})["required_cns_recommendation"] = result.get("result_status", "not_calculated")
         self.session.save()
