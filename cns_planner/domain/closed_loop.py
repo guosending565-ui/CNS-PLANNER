@@ -237,22 +237,40 @@ def compare_gap_results(baseline_gap, planned_gap, predicted_reduction_m, select
             "planned 关键证据 unknown/missing，无法确认改善"
             if uncertain else "同链路重跑未产生可确认的 planning-gap 改善"
         )
-    residual = [
+    residual_planning = [
         {"route_id": route_id, "subsystem": subsystem, **deepcopy(segment)}
         for (route_id, subsystem), value in after.items()
         for segment in value.get("segments") or []
         if segment.get("planning_status") == "confirmed_gap"
-        or segment.get("combined_status") == "confirmed_gap"
+    ]
+
+    residual_operational = [
+        {"route_id": route_id, "subsystem": subsystem, **deepcopy(segment)}
+        for (route_id, subsystem), value in after.items()
+        for segment in value.get("segments") or []
+        if segment.get("planning_status") != "confirmed_gap"
+                       and segment.get("combined_status") == "confirmed_gap"
     ]
     return {
         "validation_status": validation,
         "comparisons": comparisons,
         "prediction_comparison": prediction,
-        "residual_gap_segments": residual,
+
+        # P12 真正关心的规划残余缺口
+        "residual_planning_gap_segments": residual_planning,
+
+        # P9/P10 运行场景留下的问题，不能冒充规划失败
+        "residual_operational_gap_segments": residual_operational,
+
+        # 暂时保留旧字段，避免前端和已有项目文件立刻失配
+        "residual_gap_segments": [
+            *residual_planning,
+            *residual_operational,
+        ],
+
         "regression_segments": regression_segments,
         "reasons": reasons,
     }
-
 
 def _subsystem_index(gap):
     result = {}

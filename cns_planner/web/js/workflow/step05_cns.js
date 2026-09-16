@@ -55,13 +55,199 @@ function sitePlanSummary(result){
   return '<div class="coverage-card"><b>'+escapeHtml(result.status||'unknown')+' · Proposal Only</b><span>target '+formatMetric(result.target_planning_gap_length_m,'m')+' · projected resolved '+formatMetric(result.resolved_planning_gap_length_m,'m')+' · remaining '+formatMetric(result.remaining_planning_gap_length_m,'m')+'</span><span>existing '+(result.existing_reuse_count||0)+' · shared '+(result.shared_site_reuse_count||0)+' · candidate '+(result.candidate_site_count||0)+' · new-build '+(result.new_build_count||0)+'</span><small>'+escapeHtml(result.cost_summary?.cost_semantics||'action_count_proxy_no_currency')+'；requires P12 closed-loop validation</small></div><h4>CandidateAction what-if</h4>'+candidates+'<h4>Selected proposal</h4>'+(selected||'<div class="empty-note">没有产生正 confirmed planning-gap reduction 的 eligible action</div>');
 }
 
+/*
+ * P12 closed-loop residual semantics
+ *
+ * 后端当前只提供 legacy residual_gap_segments。
+ * 不能把 residual_gap_segments 的数量直接解释成“规划残余”。
+ *
+ * planning_status === confirmed_gap  -> 规划残余
+ * runtime_status  === confirmed_gap  -> 运行场景残余
+ */
+function asArray(value){
+  return Array.isArray(value)?value:[];
+}
+
+function sumBy(items,field){
+  return asArray(items).reduce((sum,item)=>{
+    const value=Number(item?.[field]);
+    return sum+(Number.isFinite(value)?value:0);
+  },0);
+}
+
+function classifyClosedLoopResiduals(result){
+  const residuals=asArray(result?.residual_gap_segments);
+
+  const planningResiduals=residuals.filter(
+    item=>item?.planning_status==='confirmed_gap'
+  );
+
+  const operationalResiduals=residuals.filter(
+    item=>item?.runtime_status==='confirmed_gap'
+  );
+
+  const operationalKeys=new Set(
+    operationalResiduals.map(item=>item?.segment_id).filter(Boolean)
+  );
+
+  residuals.forEach(item=>{
+    const legacyOperational=
+      item?.planning_status==='satisfied' &&
+      item?.combined_status==='confirmed_gap' &&
+      item?.runtime_status!=='confirmed_gap';
+
+    const key=item?.segment_id;
+
+    if(legacyOperational && (!key || !operationalKeys.has(key))){
+      operationalResiduals.push(item);
+      if(key)operationalKeys.add(key);
+    }
+  });
+
+  return {
+    residuals,
+    planningResiduals,
+    operationalResiduals,
+    regressions:asArray(result?.regression_segments),
+    planningResidualLengthM:sumBy(planningResiduals,'length_m'),
+    operationalResidualLengthM:sumBy(operationalResiduals,'length_m'),
+    operationalResidualDurationS:sumBy(operationalResiduals,'duration_s')
+  };
+}
+
+function residualCauses(item){
+  const causes=asArray(item?.gap_causes).filter(Boolean);
+  return causes.length?causes.join(' / '):'未提供结构化原因';
+}
+
+function closedLoopResidualCard(item,kind){
+  const title=kind==='planning'?'规划残余缺口':'运行场景残余';
+  const startM=Number(item?.start_route_offset_m);
+  const endM=Number(item?.end_route_offset_m);
+  const lengthM=Number(item?.length_m);
+  const startS=Number(item?.start_time_s);
+  const endS=Number(item?.end_time_s);
+  const durationS=Number(item?.duration_s);
+
+  const rangeText=
+    (Number.isFinite(startM)?startM.toFixed(1):'—')+
+    '–'+
+    (Number.isFinite(endM)?endM.toFixed(1):'—')+
+    ' m';
+
+  const timeText=
+    (Number.isFinite(startS)?startS.toFixed(1):'—')+
+    '–'+
+    (Number.isFinite(endS)?endS.toFixed(1):'—')+
+    ' s';
+
+  return '<div class="coverage-card">'+
+    '<b>'+escapeHtml(item?.route_id||'—')+' · '+escapeHtml(item?.subsystem||'—')+' · '+title+'</b>'+
+    '<span>航路位置 '+rangeText+' · 长度 '+formatMetric(lengthM,'m')+'</span>'+
+    '<span>时间 '+timeText+' · 持续 '+formatMetric(durationS,'s')+'</span>'+
+    '<span>planning '+escapeHtml(item?.planning_status||'unknown')+
+      ' · runtime '+escapeHtml(item?.runtime_status||'unknown')+
+      ' · combined '+escapeHtml(item?.combined_status||'unknown')+'</span>'+
+    '<small>原因：'+escapeHtml(residualCauses(item))+
+      '；处置范围：'+escapeHtml(item?.remediation_scope||'unknown')+'</small>'+
+    '</div>';
+}
+
 function closedLoopSummary(result){
-  if(!result||result.status==='not_calculated')return '<div class="empty-note">尚未生成 Closed-loop Preview</div>';
+  if(!result||result.status==='not_calculated'){
+    return '<div class="empty-note">尚未生成 Closed-loop Preview</div>';
+  }
+
   const prediction=result.prediction_comparison||{};
-  const rows=(result.comparisons||[]).map(item=>'<div class="coverage-card"><b>'+escapeHtml(item.route_id)+' · '+escapeHtml(item.subsystem)+'</b><span>planning gap '+formatMetric(item.before?.planning_confirmed_gap_length_m,'m')+' → '+formatMetric(item.after?.planning_confirmed_gap_length_m,'m')+' · Δ '+formatMetric(item.delta?.planning_confirmed_gap_length_m,'m')+'</span><span>combined gap '+formatMetric(item.before?.combined_gap_length_m,'m')+' → '+formatMetric(item.after?.combined_gap_length_m,'m')+' · unknown '+formatMetric(item.before?.unknown_length_m,'m')+' → '+formatMetric(item.after?.unknown_length_m,'m')+'</span><span>runtime lost '+formatMetric(item.before?.runtime_lost_length_m,'m')+' / '+formatMetric(item.before?.runtime_lost_duration_s,'s')+' → '+formatMetric(item.after?.runtime_lost_length_m,'m')+' / '+formatMetric(item.after?.runtime_lost_duration_s,'s')+'</span><span>contingency '+formatMetric(item.before?.contingency_exposure_length_m,'m')+' → '+formatMetric(item.after?.contingency_exposure_length_m,'m')+' · max gap '+formatMetric(item.before?.max_continuous_gap_length_m,'m')+' → '+formatMetric(item.after?.max_continuous_gap_length_m,'m')+'</span></div>').join('');
-  const residual=(result.residual_gap_segments||[]).slice(0,12).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+' · '+escapeHtml(item.subsystem)+'</b> '+Math.round(item.start_route_offset_m||0)+'–'+Math.round(item.end_route_offset_m||0)+' m</span><small>'+escapeHtml(item.combined_status||item.planning_status||'unknown')+'</small></div>').join('');
-  const regressions=(result.regression_segments||[]).slice(0,12).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+' · '+escapeHtml(item.subsystem)+'</b> '+Math.round(item.start_route_offset_m||0)+'–'+Math.round(item.end_route_offset_m||0)+' m</span><small>'+escapeHtml(item.before_combined)+' → '+escapeHtml(item.after_combined)+'</small></div>').join('');
-  return '<div class="coverage-card"><b>'+escapeHtml(result.validation_status||'unknown')+' · '+escapeHtml(result.commit_status||'not_committed')+'</b><span>P11 predicted '+formatMetric(prediction.predicted_planning_gap_reduction_m,'m')+' · P12 actual '+formatMetric(prediction.actual_planning_gap_reduction_m,'m')+' · error '+formatMetric(prediction.prediction_error_m,'m')+'</span><span>realized '+(prediction.realized_fraction==null?'—':(prediction.realized_fraction*100).toFixed(1)+'%')+'</span><small>'+escapeHtml((result.reasons||[]).join('；')||'no additional reason')+'</small></div>'+rows+'<h4>Residual gaps</h4>'+(residual||'<div class="empty-note">无 confirmed residual gap</div>')+'<h4>Regressions</h4>'+(regressions||'<div class="empty-note">未发现 confirmed regression</div>');
+  const classified=classifyClosedLoopResiduals(result);
+
+  const planningResiduals=classified.planningResiduals;
+  const operationalResiduals=classified.operationalResiduals;
+  const regressions=classified.regressions;
+
+  const planningClosed=planningResiduals.length===0;
+  const noRegression=regressions.length===0;
+
+  const rows=(result.comparisons||[]).map(item=>
+    '<div class="coverage-card">'+
+      '<b>'+escapeHtml(item.route_id)+' · '+escapeHtml(item.subsystem)+'</b>'+
+      '<span>planning gap '+formatMetric(item.before?.planning_confirmed_gap_length_m,'m')+
+        ' → '+formatMetric(item.after?.planning_confirmed_gap_length_m,'m')+
+        ' · Δ '+formatMetric(item.delta?.planning_confirmed_gap_length_m,'m')+'</span>'+
+      '<span>combined gap '+formatMetric(item.before?.combined_gap_length_m,'m')+
+        ' → '+formatMetric(item.after?.combined_gap_length_m,'m')+
+        ' · unknown '+formatMetric(item.before?.unknown_length_m,'m')+
+        ' → '+formatMetric(item.after?.unknown_length_m,'m')+'</span>'+
+      '<span>runtime lost '+formatMetric(item.before?.runtime_lost_length_m,'m')+
+        ' / '+formatMetric(item.before?.runtime_lost_duration_s,'s')+
+        ' → '+formatMetric(item.after?.runtime_lost_length_m,'m')+
+        ' / '+formatMetric(item.after?.runtime_lost_duration_s,'s')+'</span>'+
+      '<span>contingency '+formatMetric(item.before?.contingency_exposure_length_m,'m')+
+        ' → '+formatMetric(item.after?.contingency_exposure_length_m,'m')+
+        ' · max gap '+formatMetric(item.before?.max_continuous_gap_length_m,'m')+
+        ' → '+formatMetric(item.after?.max_continuous_gap_length_m,'m')+'</span>'+
+    '</div>'
+  ).join('');
+
+  const planningSummary=planningClosed
+    ? '<div class="coverage-card"><b>规划缺口已闭合</b><span>planning residual 0.0 m</span><small>P12 应用后没有 planning_status = confirmed_gap 的 residual segment。</small></div>'
+    : '<div class="coverage-card"><b>仍存在规划残余缺口</b><span>'+planningResiduals.length+
+      ' 段 · '+formatMetric(classified.planningResidualLengthM,'m')+
+      '</span><small>仅统计 planning_status = confirmed_gap。</small></div>';
+
+  const operationalSummary=operationalResiduals.length
+    ? '<div class="coverage-card"><b>仍存在运行场景残余</b><span>'+
+      operationalResiduals.length+' 段 · '+
+      formatMetric(classified.operationalResidualLengthM,'m')+
+      ' · '+formatMetric(classified.operationalResidualDurationS,'s')+
+      '</span><small>运行场景 residual 不等于规划建站失败；应结合 ServiceScenarioEvent / runtime evidence 处置。</small></div>'
+    : '<div class="coverage-card"><b>无 confirmed 运行场景残余</b><span>operational residual 0.0 m</span></div>';
+
+  const planningCards=planningResiduals.slice(0,12)
+    .map(item=>closedLoopResidualCard(item,'planning'))
+    .join('');
+
+  const operationalCards=operationalResiduals.slice(0,12)
+    .map(item=>closedLoopResidualCard(item,'operational'))
+    .join('');
+
+  const regressionCards=regressions.slice(0,12).map(item=>
+    '<div class="list-row"><span><b>'+
+      escapeHtml(item.route_id)+' · '+escapeHtml(item.subsystem)+
+      '</b> '+Math.round(item.start_route_offset_m||0)+'–'+
+      Math.round(item.end_route_offset_m||0)+
+      ' m</span><small>'+
+      escapeHtml(item.before_combined)+' → '+
+      escapeHtml(item.after_combined)+'</small></div>'
+  ).join('');
+
+  const validationTitle=
+    escapeHtml(result.validation_status||result.status||'unknown')+
+    ' · '+
+    escapeHtml(result.commit_status||'not_committed');
+
+  const regressionSummary=noRegression
+    ? '<div class="coverage-card"><b>Regression：0</b><span>未发现 confirmed regression</span></div>'
+    : '<div class="coverage-card"><b>Regression：'+regressions.length+'</b><span>发现应用方案后 confirmed regression，需要人工复核。</span></div>';
+
+  return '<div class="coverage-card">'+
+      '<b>'+validationTitle+'</b>'+
+      '<span>P11 predicted '+formatMetric(prediction.predicted_planning_gap_reduction_m,'m')+
+        ' · P12 actual '+formatMetric(prediction.actual_planning_gap_reduction_m,'m')+
+        ' · error '+formatMetric(prediction.prediction_error_m,'m')+'</span>'+
+      '<span>realized '+(prediction.realized_fraction==null?'—':(prediction.realized_fraction*100).toFixed(1)+'%')+'</span>'+
+      '<small>'+escapeHtml((result.reasons||[]).join('；')||'no additional reason')+'</small>'+
+    '</div>'+
+    planningSummary+
+    operationalSummary+
+    regressionSummary+
+    rows+
+    '<h4>Planning residuals</h4>'+
+      (planningCards||'<div class="empty-note">无 confirmed planning residual gap</div>')+
+    '<h4>Operational residuals</h4>'+
+      (operationalCards||'<div class="empty-note">无 confirmed operational residual gap</div>')+
+    '<h4>Regressions</h4>'+
+      (regressionCards||'<div class="empty-note">未发现 confirmed regression</div>');
 }
 
 function corridorSummary(result){
@@ -112,7 +298,7 @@ export function render({flow}){
     '<h3>Tactical Protection Envelope '+statusBadge(protection.status||'not_calculated')+'</h3><div class="parameter-note">工程保护距离 ≠ 法规 Well-Clear / 正式 DAA Detection Volume。</div><button class="secondary full" id="evaluateProtectionEnvelope">计算工程保护距离</button><div class="gap-results">'+protectionSummary(protection)+'</div>'+
     '<h3>CNS Gap Analysis V2 '+statusBadge(gapV2.status||'not_calculated')+'</h3><div class="parameter-note">合并 P7 几何、P8 静态能力与 P9 运行时间线；Unknown 表示证据不足，不是危险等级，Gap 也不自动触发 Safety Event。</div><label class="check-row"><input type="checkbox" id="gapV2Protection" '+(gapV2.parameters?.evaluate_protection_margin?'checked':'')+'> 可选工程 Protection Margin（非 Well-Clear/认证判断）</label><button class="secondary full" id="evaluateGapV2">运行 Gap V2</button><div class="gap-results">'+gapV2List(gapV2)+'</div>'+
     '<h3>Reuse-first CNS Site Planner V1 '+statusBadge(sitePlan.status||'not_calculated')+'</h3><div class="parameter-note">仅目标化 confirmed planning gap；tier 固定为 Existing CNS → Existing Shared Site → Candidate Site → New-build Candidate。P10 remediation scope 仅为提示，收益必须经 P7/P8 what-if 确认。</div><label class="check-row"><input type="checkbox" id="sitePolicyConfirmed" '+(sitePolicy.confirmed?'checked':'')+'> 确认使用 reuse-first engineering policy</label><button class="secondary full" id="evaluateSitePlan">生成 Proposal</button><div class="parameter-note">Proposal 不修改 ExistingCNS，也不声明 Gap 已消除；P12 必须 apply + rerun 闭环复核。</div><div class="gap-results">'+sitePlanSummary(sitePlan)+'</div>'+
-    '<h3>Closed-loop Validation V1 '+statusBadge(closedLoop.status||'not_calculated')+'</h3><div class="parameter-note">Engineering closed-loop verification：Preview 只在 working copy 重跑 P7→P8→P9→P10，不修改项目；Apply 才正式提交。这不是真实 CNS 模型 validation 或认证结论。</div><div class="button-row"><button class="secondary" id="evaluateClosedLoop">Preview</button><button class="primary" id="applyClosedLoop" '+(closedLoop.validation_status==='validated_improvement'&&closedLoop.commit_status==='preview'?'':'disabled')+'>Apply validated assessment</button></div><div class="gap-results">'+closedLoopSummary(closedLoop)+'</div>'+
+    '<h3>Closed-loop Validation V1 '+statusBadge(closedLoop.status||'not_calculated')+'</h3><div class="parameter-note">Engineering closed-loop verification：Preview 只在 working copy 重跑 P7→P8→P9→P10，不修改项目；Apply 才正式提交。规划 residual 与运行场景 residual 分开解释；这不是真实 CNS 模型 validation 或认证结论。</div><div class="button-row"><button class="secondary" id="evaluateClosedLoop">Preview</button><button class="primary" id="applyClosedLoop" '+(closedLoop.validation_status==='validated_improvement'&&closedLoop.commit_status==='preview'?'':'disabled')+'>Apply validated assessment</button></div><div class="gap-results">'+closedLoopSummary(closedLoop)+'</div>'+
     '<h3>候选站址 '+statusBadge(candidates.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="candidate_sitesPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseCandidates">选择…</button></div><div class="button-row"><button class="secondary" id="importCandidates">导入候选站址</button><button class="secondary" id="deriveCandidates">从已有设施生成</button></div><div class="scroll-list cns-input-list">'+collectionList(candidates,'candidate')+'</div>'+
     '<div class="coverage-results">'+result+'</div><div class="flow-summary">生命风险：'+statusText(flow.risks.life.status)+' · 财产风险：'+statusText(flow.risks.property.status)+'<br>已有设施与候选站址仅作为规划输入，本轮不改变 CoveragePlannerV1。</div><button class="primary full" id="nextStep" '+(!flow.steps['5']?'disabled':'')+'>下一步：确认与导出</button>';
   return shell('05','设备与布站','设备库、已有设施和候选站址；V1 布站保持原有兼容输入。',body);
