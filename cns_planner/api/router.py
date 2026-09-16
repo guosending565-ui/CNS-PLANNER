@@ -34,6 +34,8 @@ class ApiRouter:
         if path == "/api/workspace/grid/attributes": return Response(workflow.grid_attributes_snapshot())
         if path == "/api/aircraft-profiles": return Response(workflow.aircraft_profiles_snapshot())
         if path == "/api/device-catalog": return Response(workflow.device_catalog_snapshot())
+        if path == "/api/reference-landing-sites": return Response(workflow.reference_landing_sites_snapshot())
+        if path == "/api/equipment-reference-catalog": return Response(workflow.equipment_reference_catalog_snapshot())
         if path == "/api/required-cns": return Response(workflow.required_cns_snapshot())
         if path == "/api/cns-operation-context": return Response(workflow.cns_operation_context_snapshot())
         if path == "/api/cns-requirement-policies": return Response(workflow.cns_requirement_policies_snapshot())
@@ -117,6 +119,8 @@ class ApiRouter:
             "/api/aircraft-profiles/select": lambda: workflow.select_aircraft_profile(payload.get("aircraft_id")),
             "/api/aircraft-profiles/import": lambda: workflow.import_aircraft_catalog(payload.get("path")),
             "/api/device-catalog/import": lambda: workflow.import_device_catalog(payload.get("path")),
+            "/api/reference-landing-sites/import": lambda: workflow.import_reference_landing_sites(payload.get("path") or data.paths.get("reference_landing_sites")),
+            "/api/reference-landing-sites/add-to-project": lambda: workflow.add_reference_landing_site(payload.get("reference_site_id")),
             "/api/required-cns": lambda: workflow.set_required_cns(payload),
             "/api/cns-operation-context": lambda: workflow.set_cns_operation_context(payload),
             "/api/cns-requirement-policies": lambda: workflow.set_cns_requirement_policies(payload),

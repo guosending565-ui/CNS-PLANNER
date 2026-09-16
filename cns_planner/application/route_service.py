@@ -14,10 +14,7 @@ class RouteService:
         state, workspace = self.session.state, self.session.state.get("workspace")
         if not workspace:
             raise ValueError("请先保存工作区")
-        lon, lat = (float(value) for value in coordinate)
-        west, south, east, north = workspace["bbox"]
-        if not (west <= lon <= east and south <= lat <= north):
-            raise ValueError("起降点必须位于工作区内")
+        lon, lat = self._coordinate_in_workspace(coordinate, workspace)
         state["node_seq"] += 1
         state["nodes"].append({
             "node_id": f"N{state['node_seq']:03d}",
@@ -26,6 +23,44 @@ class RouteService:
         })
         self.invalidation.workflow("route")
         return self._save()
+
+    def add_reference_site(self, site):
+        state, workspace = self.session.state, self.session.state.get("workspace")
+        if not workspace:
+            raise ValueError("请先保存工作区")
+        reference_site_id = str(site.get("reference_site_id") or "")
+        if not reference_site_id:
+            raise ValueError("参考起降点缺少稳定 ID")
+        if any(item.get("reference_site_id") == reference_site_id for item in state["nodes"]):
+            return self.snapshot()
+        lon, lat = self._coordinate_in_workspace(site.get("coordinate") or [], workspace)
+        state["node_seq"] += 1
+        state["nodes"].append({
+            "node_id": f"N{state['node_seq']:03d}",
+            "name": str(site.get("name") or f"起降点 {state['node_seq']}"),
+            "coordinate": [lon, lat],
+            "reference_site_id": reference_site_id,
+            "provenance": {
+                "source_type": "real_reference",
+                "reference_site_id": reference_site_id,
+                "source": dict(site.get("source") or {}),
+                "coordinate_quality": site.get("quality"),
+                "crs_status": site.get("crs_status", "pending_confirmation"),
+                "coordinate_usage": "source_numeric_lon_lat_pending_crs_confirmation",
+            },
+        })
+        self.invalidation.workflow("route")
+        return self._save()
+
+    @staticmethod
+    def _coordinate_in_workspace(coordinate, workspace):
+        if not isinstance(coordinate, (list, tuple)) or len(coordinate) != 2:
+            raise ValueError("起降点坐标无效")
+        lon, lat = (float(value) for value in coordinate)
+        west, south, east, north = workspace["bbox"]
+        if not (west <= lon <= east and south <= lat <= north):
+            raise ValueError("起降点必须位于工作区内")
+        return lon, lat
 
     def delete_node(self, node_id):
         state = self.session.state

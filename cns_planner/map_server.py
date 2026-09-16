@@ -75,13 +75,15 @@ def save_project_as(project_dir):
 def open_project(project_dir):
     global WORKFLOW, ACTIVE_PROJECT_FILE
     candidate, target = _project_directories().open(project_dir, DATA)
+    candidate.configure_reference_sources(DATA.paths)
     WORKFLOW, ACTIVE_PROJECT_FILE = candidate, target
     return DATA.metadata()
 
 
 def replace_sources(paths):
     previous = dict(DATA.paths)
-    DATA.load(paths)
+    DATA.load({**DATA.paths, **paths})
+    WORKFLOW.configure_reference_sources(DATA.paths)
     changed = {name for name in paths if previous.get(name) != DATA.paths.get(name)}
     WORKFLOW.invalidate_grid_attributes(changed)
     if "basemap" in changed:

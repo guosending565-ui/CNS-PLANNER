@@ -19,6 +19,8 @@ from .constraints import hard_constraints, layer_extents
 
 gdal.UseExceptions()
 
+REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "equipment_reference_catalog")
+
 
 @dataclass
 class LoadedSources:
@@ -77,6 +79,9 @@ class QgisSourceLoader:
         bounds = [min(box[0] for box in boxes), min(box[1] for box in boxes),
                   max(box[2] for box in boxes), max(box[3] for box in boxes)]
         clean_paths = {"basemap": str(qgz.resolve()), "population": str(pop_tif.resolve()), "terrain": str(terrain_tif.resolve())}
+        clean_paths.update({
+            key: str(paths[key]) for key in REFERENCE_SOURCE_KEYS if paths.get(key)
+        })
         if persist:
             DataSourceRepository(self.settings_path).save(clean_paths)
         wgs84_extents = layer_extents(local, project, self.wgs84)

@@ -1,0 +1,345 @@
+{
+  "schema_version": 1,
+  "catalog_id": "equipment-reference-catalog",
+  "source": "舟山设备性能资料离线整理",
+  "metadata": {
+    "source_type": "real",
+    "source_mode": "real",
+    "scope": "source_facts_only",
+    "manufacturer_rule": "only_when_explicit_in_source_or_filename",
+    "planning_integration": "reference_only_not_device_catalog",
+    "notes": [
+      "参数仅按原文件明确内容登记；未将覆盖距离改写为规划 radius_m。",
+      "未补写 cost、capacity、MTBF、MTTR 或其他缺失参数。",
+      "5GA 与低空智联网资料未明确制造商；不得猜测为 54 所。"
+    ]
+  },
+  "registered_sources": [
+    {"file": "低空智能网联系统相关设备信息-四创(1).docx", "status": "parsed"},
+    {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "status": "parsed"},
+    {"file": "5GA通感设备性能参数及可靠性指标(1).docx", "status": "parsed", "manufacturer_status": "pending_confirmation"},
+    {"file": "低空智联网地面机载设备指标(1).docx", "status": "parsed", "manufacturer_status": "pending_confirmation"},
+    {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "status": "parsed"},
+    {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_v1.1(1).docx", "status": "source_registered_deferred"},
+    {"file": "天奥科技低空业务资料2026(1).pdf", "status": "source_registered_deferred"},
+    {"file": "信通院_TDOA调研_天罡科技.xlsx", "status": "source_registered_deferred"},
+    {"file": "信通院_气象调研表_中科光电(1).xlsx", "status": "source_registered_deferred"}
+  ],
+  "items": [
+    {
+      "equipment_id": "EQREF-SC-GNSS-INTEGRITY-01",
+      "manufacturer": "四创",
+      "manufacturer_status": "confirmed_by_source_filename",
+      "model": null,
+      "name": "北斗完好性监测设备",
+      "subsystems": ["N"],
+      "technology": ["GNSS", "BDS", "GPS", "BDSBAS"],
+      "performance": {"sampling_frequency": "1Hz/5Hz/20Hz 可调", "pseudorange_accuracy": "优于19cm RMS", "carrier_phase_accuracy": "≤0.01周 RMS", "tracking": "20dB-Hz", "acquisition": "33dB-Hz"},
+      "conditions": ["跟踪 GPS L1 C/A、L2、L5；BDS B1I、B2I、B3I、B1C、B2a；BDSBAS B1C、B2a"],
+      "reliability": {},
+      "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表1 第2行"},
+      "evidence": [{"locator": "表1 第2行", "statement": "原文件列明观测信号、采样频率、测量精度、跟踪与捕获性能。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-RADAR-MR-I",
+      "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "中近程雷达Ⅰ型", "subsystems": ["S"], "technology": ["radar"],
+      "performance": {"minimum_detection_distance": "≤120m", "maximum_detection_distance": "≥3km", "maximum_detection_height": "≥600m", "azimuth_accuracy": "≤0.5°", "elevation_accuracy": "≤0.5°", "range_accuracy": "≤10m", "search_update": "≤2s", "track_update": "≤1s"},
+      "conditions": ["RCS=0.01m²", "Pf=10^-6", "Pd=0.8", "方位360°四面阵或±45°单面阵", "俯仰覆盖≥45°且仰角可调"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表2 第2行"},
+      "evidence": [{"locator": "表2 第2行", "statement": "探测距离、精度、角度覆盖及更新率均带原始适用条件。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-RADAR-MR-II", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "中近程雷达Ⅱ型", "subsystems": ["S"], "technology": ["radar"],
+      "performance": {"minimum_detection_distance": "≤200m", "maximum_detection_distance": "≥5km", "maximum_detection_height": "≥600m", "classification_accuracy": "≥80%", "azimuth_accuracy": "≤0.3°", "range_accuracy": "≤5m", "search_update": "≤2s", "track_update": "≤1s"},
+      "conditions": ["民用微型无人机RCS=0.01m²", "Pf=10^-6", "Pd=80%", "俯仰精度随仰角区间变化"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表2 第3行"},
+      "evidence": [{"locator": "表2 第3行", "statement": "最大探测距离5km是在明确RCS、虚警率和探测概率条件下给出。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-RADAR-LONG", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "远程雷达", "subsystems": ["S"], "technology": ["radar"],
+      "performance": {"minimum_detection_distance": "≤200m", "maximum_detection_distance": "≥10km", "maximum_detection_height": "≥600m", "azimuth_accuracy": "≤0.3°", "range_accuracy": "≤5m", "data_rate": "2s/次或1s/次可调"},
+      "conditions": ["民用微型无人机RCS=0.01m²", "Pf=10^-6", "Pd=80%", "方位覆盖90°", "俯仰覆盖≥45°且仰角可调"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表2 第4行"},
+      "evidence": [{"locator": "表2 第4行", "statement": "10km为带目标RCS、Pf和Pd条件的最大探测距离。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-RADAR-ULTRA-I", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "超近程雷达Ⅰ型", "subsystems": ["S"], "technology": ["radar"],
+      "performance": {"minimum_detection_distance": "≤20m", "maximum_detection_distance": "≥600m", "azimuth_accuracy": "≤0.8°", "elevation_accuracy": "≤2°", "range_accuracy": "≤2m", "update": "≤2s (TWS)"},
+      "conditions": ["RCS=0.01m²", "Pf=10^-6", "Pd=0.8", "方位-45°~45°", "俯仰0°~30°"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表2 第5行"},
+      "evidence": [{"locator": "表2 第5行", "statement": "原文件给出超近程Ⅰ型的探测、精度、覆盖角和TWS更新率。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-RADAR-ULTRA-II", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "超近程雷达Ⅱ型", "subsystems": ["S"], "technology": ["radar"],
+      "performance": {"minimum_detection_distance": "≤20m", "maximum_detection_distance": "≥300m", "azimuth_accuracy": "≤1.5°", "elevation_accuracy": "≤1.5°", "range_accuracy": "≤2m", "update": "≤2s (TWS)"},
+      "conditions": ["RCS=0.01m²", "Pf=10^-6", "Pd=0.8", "无人机起降场侦查场景", "方位和俯仰-45°~45°"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表2 第6行"},
+      "evidence": [{"locator": "表2 第6行", "statement": "原文件明确其为无人机起降场侦查设备。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-RADAR-ULTRA-III", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "超近程雷达Ⅲ型", "subsystems": ["S"], "technology": ["radar"],
+      "performance": {"minimum_detection_distance": "≤20m", "maximum_detection_distance": "≥300m", "azimuth_accuracy": "≤1.8°", "elevation_accuracy": "≤0.5°", "range_accuracy": "≤2m", "search_update": "≤0.5s"},
+      "conditions": ["RCS=0.01m²", "Pf=10^-6", "Pd=0.8", "低慢小无人机", "方位-6°~6°", "俯仰覆盖≥60°且仰角可调"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表2 第7行"},
+      "evidence": [{"locator": "表2 第7行", "statement": "原文件列出低慢小无人机侦查的条件化性能。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-SC-MET-RADIOMETER", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "微波辐射计", "subsystems": [], "technology": ["microwave_radiometer"],
+      "performance": {"bands": "K 22~32GHz；V 51~59GHz", "temperature_profile_range": "0~10km", "humidity_profile_range": "0~10km", "profile_sampling": "≤2min", "detection_height": "≥10km", "continuous_operation": "≥24h"},
+      "conditions": ["温湿度廓线探测", "精度和垂直分辨率按高度区间分别给出"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表3 第2行"},
+      "evidence": [{"locator": "表3 第2行", "statement": "频段、廓线范围、采样速率、准确度、分辨率和连续工作时间来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "meteorological_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-SC-MET-RAIN-RADAR", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "小型测雨雷达", "subsystems": [], "technology": ["weather_radar", "active_DBF"],
+      "performance": {"frequency": "9.5GHz±0.5GHz或13.5GHz±0.5GHz", "detection_range": "0~10km", "azimuth": "0~360°", "elevation": "0~5°", "sampling_period": "1~5min", "power": "≤200W", "weight": "≤50kg"},
+      "conditions": ["气象回波与降水/风场产品"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表3 第3行"},
+      "evidence": [{"locator": "表3 第3行", "statement": "原表给出频率二选一、探测范围、角度、采样、尺寸、功耗和重量。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "meteorological_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-SC-MET-WIND-PROFILER", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "风廓线雷达", "subsystems": [], "technology": ["coherent_pulse_doppler_radar"],
+      "performance": {"frequency": "1320MHz", "wind_speed_range": "0~60m/s", "wind_direction_range": "0~360°", "wind_speed_error": "≤1.5m/s", "wind_direction_error": "≤10°", "time_resolution": "5波束3min"},
+      "conditions": ["表格与正文存在探测高度表述差异，保留为待核对来源事实"],
+      "reliability": {"mtbf_h": 2500, "mttr_h": 0.5, "source_locator": "正文第11段"},
+      "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "正文第11段及表3第4行"},
+      "evidence": [{"locator": "正文第11段", "statement": "正文明确MTBF 2500小时、MTTR 30分钟。"}, {"locator": "表3 第4行", "statement": "表格列出1320MHz及风场测量性能。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "meteorological_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-SC-MET-AWS", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "自动气象站", "subsystems": [], "technology": ["automatic_weather_station"],
+      "performance": {"visibility": "10~5000m", "temperature": "-40~+55℃", "relative_humidity": "10~100%RH", "precipitation": "0~999.9mm", "wind_speed": "0~60m/s", "wind_direction": "0~360°"},
+      "conditions": ["部署高度2~10m；采样频率可调", "各量测精度按原表分段条件适用"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "正文第10段及表3第5行"},
+      "evidence": [{"locator": "表3 第5行", "statement": "能见度、气温、湿度、降水、风速和风向范围及误差均来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "meteorological_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-SC-MET-LIDAR-3D", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "小型测风激光雷达（三维扫描式）", "subsystems": [], "technology": ["coherent_doppler_lidar"],
+      "performance": {"wavelength": "1550nm±1nm", "blind_zone": "≤30m", "vertical_range": "≥1km", "horizontal_range": "≥3km", "range_resolution": "15/30/60/90m可选", "vertical_refresh": "1s及其倍数可调", "power": "≤120W", "weight": "≤25kg", "protection": "≥IP65"},
+      "conditions": ["10min数据平均时水平风向RMS≤8°、风速RMS≤0.8m/s", "-40℃~50℃正常运行"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表3 第6行"},
+      "evidence": [{"locator": "表3 第6行", "statement": "探测范围、分辨率、刷新率、功耗、重量、防护与温度条件来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "meteorological_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-SC-MET-LIDAR-VERTICAL", "manufacturer": "四创", "manufacturer_status": "confirmed_by_source_filename", "model": null,
+      "name": "小型测风激光雷达（垂直扫描式）", "subsystems": [], "technology": ["coherent_doppler_lidar"],
+      "performance": {"wavelength": "1550nm±1nm", "blind_zone": "≤30m", "vertical_range": "≥1km", "range_resolution": "15/30/60/90m可选", "refresh": "1s及其倍数可调", "power": "≤100W", "weight": "≤10kg", "protection": "≥IP65"},
+      "conditions": ["10min数据平均时水平风向RMS≤8°、风速RMS≤0.8m/s", "-40℃~50℃正常运行"],
+      "reliability": {}, "source": {"file": "低空智能网联系统相关设备信息-四创(1).docx", "locator": "表3 第7行"},
+      "evidence": [{"locator": "表3 第7行", "statement": "参数按垂直扫描式原表登记。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "meteorological_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-5GA-INTEGRATED-01", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "5G-A通感设备", "subsystems": ["C", "S"], "technology": ["5G-A", "integrated_communication_sensing"],
+      "performance": {"wireless_coverage_rate": "≥95%（SS-RSRP≥-100dBm样点）", "uplink_average_rate": "≥40Mbps", "ping_average_latency": "≤40ms（32Byte）", "handover_success_rate": "≥95%", "single_site_sensing_distance": ">1.0km", "horizontal_position_accuracy": "≤15m", "vertical_position_accuracy": "≤15m", "false_alarm_rate": "<5%", "miss_rate": "<5%", "identification_accuracy": ">80%"},
+      "conditions": ["感知距离条件：飞行目标RCS≥0.01m²", "通信指标按给定样本统计口径"],
+      "reliability": {"availability": "≥99.9995%", "mtbf_h": "≥200000", "mttr_h": 1, "service_interruption": "≤2.6分钟/年"},
+      "source": {"file": "5GA通感设备性能参数及可靠性指标(1).docx", "locator": "表1至表3"},
+      "evidence": [{"locator": "表2 第2行", "statement": "单站感知距离附RCS≥0.01m²条件。"}, {"locator": "表3", "statement": "可用性、MTBF、MTTR和年中断服务时间为原文件明示。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "manufacturer_and_planning_semantics_pending_confirmation"}
+    },
+    {
+      "equipment_id": "EQREF-LI-GROUND-COMM-FAMILY", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "低空地面通信基站设备系列", "subsystems": ["C"], "technology": ["700MHz_RRU", "2.6GHz_reuse", "4.9GHz_AAU"],
+      "performance": {"700MHz_uplink_edge_rate": "2~5Mbps", "2.6GHz_uplink_edge_rate": "5~10Mbps", "4.9GHz_uplink_edge_rate": "25Mbps", "air_to_ground_RSRP_coverage": "RSRP≥-110dBm区域占比≥95%"},
+      "conditions": ["700MHz：站间距5km工程部署", "2.6GHz：120m以下常规低空", "4.9GHz：航区2km站间距、航线4km站间距"],
+      "reliability": {}, "source": {"file": "低空智联网地面机载设备指标(1).docx", "locator": "正文第4至10段、表1"},
+      "evidence": [{"locator": "正文第6至9段", "statement": "三类频段方案的速率、站间距和高度/场景条件分别登记。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "equipment_family_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-LI-AIRBORNE-EMERGENCY-BS", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "应急救援无人机载基站", "subsystems": ["C"], "technology": ["airborne_base_station", "satellite_backhaul", "ad_hoc_network"],
+      "performance": {"medium_max_speed": "180km/h", "large_max_speed": "350km/h", "medium_max_continuous_coverage_area": "≥30km²", "large_max_continuous_coverage_area": "≥50km²"},
+      "conditions": ["覆盖面积指单架无人机最优飞行高度", "中型/大型载体的载荷、续航、升限按原文分别给出"],
+      "reliability": {}, "source": {"file": "低空智联网地面机载设备指标(1).docx", "locator": "正文第11至18段"},
+      "evidence": [{"locator": "正文第13至18段", "statement": "移动速度、覆盖面积、载体约束与回传模式均来自原文。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "airborne_reference_not_ground_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-LI-AIRBORNE-TERMINAL", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "机载网联终端/模组", "subsystems": ["C"], "technology": ["airborne_mobile_communication", "H.264", "H.265"],
+      "performance": {"flight_control_rate": "<100kbps", "flight_control_end_to_end_latency": "<100ms", "1080p_uplink": "5Mbps", "4k_uplink": "25Mbps", "medical_360p_uplink": "1Mbps", "payload_video_latency": "<400ms"},
+      "conditions": ["视频带宽按清晰度场景区分"],
+      "reliability": {}, "source": {"file": "低空智联网地面机载设备指标(1).docx", "locator": "正文第19至22段"},
+      "evidence": [{"locator": "正文第21至22段", "statement": "飞控数传与三类图传指标按原文登记。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "airborne_reference_not_ground_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-LI-GROUND-NAV-SUPPORT", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "地面导航配套设备", "subsystems": ["N"], "technology": ["GNSS_reference_station", "NTP", "antenna_parameter_module"],
+      "performance": {"ntp_timing_accuracy": "≤5ms", "ntp_service_rate": "≥20000次/秒", "antenna_azimuth_error": "≤0.5°", "downtilt_error": "≤0.5°", "coordinate_height_error": "≤10cm"},
+      "conditions": ["包含GNSS基准站网、授时平台和高精工参模块，非单一明确型号"],
+      "reliability": {}, "source": {"file": "低空智联网地面机载设备指标(1).docx", "locator": "正文第23至29段"},
+      "evidence": [{"locator": "正文第27至29段", "statement": "授时精度、服务能力与工参误差为原文明确指标。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "composite_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-LI-AIRBORNE-RTK", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "机载RTK定位模组", "subsystems": ["N"], "technology": ["RTK", "5G+BDS"],
+      "performance": {"static_horizontal_CEP95": "≤3cm", "static_vertical_CEP95": "≤5cm", "dynamic_horizontal_CEP95": "≤6cm", "dynamic_vertical_CEP95": "≤10cm", "fix_rate": "≥95%", "network_service_availability": "≥99.99%"},
+      "conditions": ["静态悬停与动态飞行分别适用", "可用性描述对象为中国移动5G+北斗低空导航网络整体服务"],
+      "reliability": {}, "source": {"file": "低空智联网地面机载设备指标(1).docx", "locator": "正文第30至34段"},
+      "evidence": [{"locator": "正文第32至34段", "statement": "CEP95、固定率与网络服务可用性保留各自对象和条件。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "airborne_reference_not_ground_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-LI-5GA-SENSING", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "地面5G-A通感一体基站", "subsystems": ["C", "S"], "technology": ["5G-A", "4.9GHz", "millimeter_wave"],
+      "performance": {"4.9GHz_unobstructed_distance": ">1200m", "4.9GHz_max_height": "站点高度至300m", "4.9GHz_position_accuracy": "<20m", "mmwave_standard_power_distance": "0.6~0.7km", "mmwave_optimized_distance": "1.3~1.4km", "mmwave_position_accuracy": "<15m", "false_alarm_rate": "<5%", "miss_rate": "<5%"},
+      "conditions": ["4.9GHz距离为无遮挡场景", "毫米波0.6~0.7km对应TRP≤25dBm/200MHz", "1.3~1.4km对应突破功率限制优化部署"],
+      "reliability": {}, "source": {"file": "低空智联网地面机载设备指标(1).docx", "locator": "正文第35至41段、表2"},
+      "evidence": [{"locator": "正文第39至40段", "statement": "4.9GHz与毫米波距离不可脱离无遮挡和功率条件使用。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "reference_only_conditions_not_mapped"}
+    },
+    {
+      "equipment_id": "EQREF-TA-SPMH-1000", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "SPMH-1000",
+      "name": "VHF地空通信电台", "subsystems": ["C"], "technology": ["VHF", "A3E", "DSB-AM", "VoIP"],
+      "performance": {"frequency": "117.975~137MHz", "channel_spacing": "25kHz/8.33kHz", "mode": "半双工", "carrier_power": "50W，1dB步进", "sensitivity": "≤-103.5dBm @1kHz MOD=30% SIND=12dB"},
+      "conditions": ["话音业务模式", "符合ED137和MH/T 4001（原文件备注）"],
+      "reliability": {}, "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表1 第2行"},
+      "evidence": [{"locator": "表1 第2行", "statement": "型号、频率、信道间隔、功率和灵敏度来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "voice_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-TA-SPVCS-1000", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "SPVCS-1000",
+      "name": "VOIP内话系统", "subsystems": ["C"], "technology": ["VoIP", "SIP", "RTP", "R2S"],
+      "performance": {"seat_terminals": "100", "wireless_channels": "1000", "wired_channels": "1000", "ptt_delay": "<50ms", "voice_delay": "<70ms", "communication_setup": "<100ms", "online_configuration_effect": "<10s", "startup": "<5min"},
+      "conditions": ["区域级低空监控中心话音交换场景"],
+      "reliability": {}, "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表1 第3行"},
+      "evidence": [{"locator": "表1 第3行", "statement": "容量、时延、启动和接口协议来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "voice_reference_not_current_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-TA-VN-YRFWQ01-M", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "VN-YRFWQ01-M",
+      "name": "低空地基网络核心交换控制单元", "subsystems": ["C"], "technology": ["non_IP_network", "H.265", "H.264"],
+      "performance": {"video": "4K、1080P并向下兼容", "network_delay_claim": "优于100公里1ms"},
+      "conditions": ["地面网内业务服务与全网交换传输"],
+      "reliability": {}, "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表2 第2行"},
+      "evidence": [{"locator": "表2 第2行", "statement": "编解码、分辨率及原备注中的网络时延表述按原文保留。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "network_core_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-TA-VS-0ZHGL02-M", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "VS-0ZHGL02-M",
+      "name": "低空地基网络综合管理服务系统", "subsystems": ["C"], "technology": ["network_management", "storage", "operations"],
+      "performance": {}, "conditions": ["组件化业务接入及设备、业务、应用统一管理"],
+      "reliability": {}, "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表2 第3行"},
+      "evidence": [{"locator": "表2 第3行", "statement": "原表未提供可直接映射的覆盖或可靠性参数。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "management_system_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-TA-VN-SLRQL00-G", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "VN-SLRQL00-G",
+      "name": "低空地基非IP汇聚核心路由器", "subsystems": ["C"], "technology": ["non_IP_router"],
+      "performance": {"switching_capacity": "110Tbps", "forwarding": "14000Mpps"}, "conditions": ["非IP核心汇聚路由"],
+      "reliability": {}, "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表2 第4行"},
+      "evidence": [{"locator": "表2 第4行", "statement": "交换容量与转发性能来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "network_core_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-TA-VN-SWCLJ00-G", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "VN-SWCLJ00-G",
+      "name": "低空地基非IP汇聚交换机", "subsystems": ["C"], "technology": ["non_IP_switch", "SFP"],
+      "performance": {"ports": "48个100/1000Base-X SFP，4个1G/10GBase-X SFP Plus，1个Slot", "switching_capacity": "2.4Tbps", "packet_forwarding": "462Mpps"},
+      "conditions": ["局域网络视频和数据融合传输"], "reliability": {},
+      "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表2 第5行"},
+      "evidence": [{"locator": "表2 第5行", "statement": "端口、交换容量和包转发率来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "network_core_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-TA-VN-SLRTL00-G", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "VN-SLRTL00-G",
+      "name": "低空地基非IP边缘路由器", "subsystems": ["C"], "technology": ["non_IP_edge_router", "VPN"],
+      "performance": {"wan": "4个万兆光口、4个千兆电口", "lan": "12个千兆电口", "switching_capacity": "120Gbps", "forwarding": "9~40Mpps"},
+      "conditions": ["光模块另选配"], "reliability": {},
+      "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表2 第6行"},
+      "evidence": [{"locator": "表2 第6行", "statement": "接口、交换容量与转发性能来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "network_core_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-TA-TK-101-FAMILY", "manufacturer": "成都天奥信息科技有限公司", "manufacturer_status": "confirmed_by_source_filename", "model": "TK-101/TK-103系列",
+      "name": "低空自组网数据链专网通信系列产品", "subsystems": ["C", "N"], "technology": ["COFDM", "MIMO", "ad_hoc_network", "frequency_hopping", "BDS_RNSS_RDSS"],
+      "performance": {"bandwidth": "5/8/10/15/20/30MHz可配置", "sensitivity": "≤-102dBm @10MHz, BER 1E-5", "maximum_transmit_power": "240W", "hop_rate": "≥1000跳/秒", "single_hop_rate": "≥90Mbps", "single_hop_latency": "最低≤10ms", "same_frequency_nodes": "≥64，可扩展至100以上", "video_end_to_end_latency": "≤100ms（指定SDI可见光链路）"},
+      "conditions": ["U/L/S频段可定制", "宽带级联≥6跳时每跳≥5km且通视", "峰值速率与波形体制和通信距离相关", "350km描述依赖地面定向跟踪天线且为通视条件"],
+      "reliability": {}, "source": {"file": "成都天奥信息科技有限公司低空推荐产品案例(1).docx", "locator": "表2 第7行"},
+      "evidence": [{"locator": "表2 第7行", "statement": "频段、带宽、灵敏度、功率、多跳、时延、规模和视频条件按原表保存。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "product_family_requires_model_selection_and_confirmation"}
+    },
+    {
+      "equipment_id": "EQREF-LA-CNS-PLATFORM", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "通导监业务平台", "subsystems": ["C", "N", "S"], "technology": ["CNS_service_platform", "multi_source_surveillance"],
+      "performance": {"network_api_throughput": "250请求/秒", "average_response": "1s", "data_sync_latency": "≤1s", "non_cooperative_fusion_detection_probability": "≥90%", "non_cooperative_fusion_false_alarm_probability": "≤5%"},
+      "conditions": ["指标为平台能力开放及多源协同监视"], "reliability": {},
+      "source": {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "locator": "表1"},
+      "evidence": [{"locator": "表1", "statement": "平台吞吐、响应、同步时延及多源协同概率来自产品规格表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "platform_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-LA-NETWORK-CONTROL", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "网络控制中心", "subsystems": ["C", "N", "S"], "technology": ["network_control", "PPP-RTK", "identity_position_reporting"],
+      "performance": {"communication_throughput": "10Gbps", "position_accuracy": "水平≤10cm，高程≤15cm（95%置信度）", "convergence": "≤1min", "position_update": "≥1次/秒", "network_access": "200个地面基站、80000台机载综合终端"},
+      "conditions": ["控制中心集中接入处理场景"], "reliability": {},
+      "source": {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "locator": "表2"},
+      "evidence": [{"locator": "表2", "statement": "吞吐、定位、收敛、更新和接入数量来自产品规格表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "control_center_not_coverage_device"}
+    },
+    {
+      "equipment_id": "EQREF-LA-INTEGRATED-GROUND-BS", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "一体化地面基站", "subsystems": ["C"], "technology": ["MIMO", "TDD", "BDS_sync", "IEEE_1588v2"],
+      "performance": {"frequency_bands": "1430~1444MHz、1447~1467MHz、3300~3400MHz", "channel_power": "46dBm", "maximum_coverage_radius": "50km", "typical_coverage_radius": "15km", "online_terminals": "1200", "active_terminals": "400"},
+      "conditions": ["典型覆盖：城市场景、20MHz带宽、空对地4Mbps", "最大覆盖：理想场景、20MHz带宽、空对地4Mbps", "覆盖数据不得直接映射为规划radius_m"],
+      "reliability": {}, "source": {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "locator": "正文系统指标第2项及表3"},
+      "evidence": [{"locator": "正文第7段", "statement": "15km与50km半径各自附带场景、带宽和速率条件。"}, {"locator": "表3", "statement": "频段、功率、同步、接入数和环境规格来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "coverage_conditions_not_converted_to_radius_m"}
+    },
+    {
+      "equipment_id": "EQREF-LA-AIRBORNE-CNS-TERMINAL", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": null,
+      "name": "机载综合终端", "subsystems": ["C", "N", "S"], "technology": ["PPP-RTK", "identity_position_reporting", "encrypted_air_interface"],
+      "performance": {"air_ground_latency": "≤50ms", "bit_error_rate": "≤1×10^-5", "horizontal_position_accuracy": "10cm", "vertical_position_accuracy": "15cm", "position_report_interval": "0.5s"},
+      "conditions": ["飞控/载荷控制指令高确保传输与载荷按需高速传输"], "reliability": {},
+      "source": {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "locator": "表4"},
+      "evidence": [{"locator": "表4", "statement": "空地时延、误码率、定位精度及身份位置上报间隔来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "airborne_reference_not_ground_device_catalog"}
+    },
+    {
+      "equipment_id": "EQREF-LA-SZSDTA", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": "SZSDTA",
+      "name": "低轨窄带数据终端", "subsystems": ["C", "N"], "technology": ["LEO_narrowband", "BDS3", "WiFi", "Bluetooth"],
+      "performance": {"uplink": "≥384kbps", "downlink": "≥384kbps", "network_entry": "≤1.5min", "weight": "8.9kg±0.1kg", "maximum_average_power": "70W", "protection": "IP56"},
+      "conditions": ["无人机搭载使用；高速行驶状态自动对星、跟星、切星", "上行1668~1675MHz，下行1518~1525MHz"],
+      "reliability": {"mtbf_h": 3600},
+      "source": {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "locator": "表5"},
+      "evidence": [{"locator": "表5", "statement": "型号、频段、速率、入网、物理规格、防护和MTBF来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "satellite_terminal_reference_only"}
+    },
+    {
+      "equipment_id": "EQREF-LA-SCL045PAT", "manufacturer": null, "manufacturer_status": "pending_confirmation", "model": "SCL045PAT",
+      "name": "等效0.45米相控阵宽带终端", "subsystems": ["C"], "technology": ["LEO_broadband", "phased_array"],
+      "performance": {"uplink_peak": "≥30Mbps", "downlink_peak": "≥90Mbps", "weight": "≤15kg", "size": "600mm×550mm×60mm", "peak_power": "≤415W", "typical_power": "约260W", "protection": "IP66"},
+      "conditions": ["上行27.5~31GHz，下行17.7~21.2GHz", "可按用户需求安装于无人机", "动中通自动捕获跟踪与跨星跨波束切换"],
+      "reliability": {"mtbf_h": 3600},
+      "source": {"file": "低空经济产品资料_低空飞行保障专网_卫星互联网_应用案例v1.3(1).docx", "locator": "表6及正文第116至125段"},
+      "evidence": [{"locator": "表6", "statement": "型号、频段、角度、速率、物理规格、功耗、防护与MTBF来自原表。"}],
+      "planning_mapping": {"status": "not_mapped", "reason": "satellite_terminal_reference_only"}
+    }
+  ]
+}

@@ -7,7 +7,7 @@ import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
@@ -68,6 +68,15 @@ test('step 3 exposes V2 risk parameters without changing the V1 panel',()=>{
   assert.match(html,/不是事故概率、SORA GRC 或 TLS/);
 });
 
+test('reference landing sites stay separate and support workspace search filters',()=>{
+  const sites=[
+    {reference_site_id:'A',name:'港务码头',region:'定海区',site_type:'起降点',coordinate:[122.1,30],quality:'parsed'},
+    {reference_site_id:'B',name:'岛外点',region:'普陀区',site_type:'临时起降点',coordinate:[123,30],quality:'parsed'},
+    {reference_site_id:'C',name:'无效点',region:'定海区',site_type:'起降点',coordinate:null,quality:'invalid'},
+  ];
+  assert.deepEqual(filterReferenceSites(sites,{workspace:{bbox:[122,29.9,122.2,30.1]},search:'码头',region:'定海区',siteType:'起降点'}).map(item=>item.reference_site_id),['A']);
+});
+
 test('step 4 canonical seconds create exact V1 aliases',()=>{
   const result=withLegacyRequiredAliases({
     communication:{performance:{max_latency_s:0.25,min_redundancy:2}},
@@ -114,6 +123,8 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step2,/3D 高度层/);
   assert.match(step3,/Route 3D Altitude Profile/);
   assert.match(step3,/Route Motion Profile/);
+  assert.match(step3,/参考起降点/);
+  assert.match(step3,/reference_landing_sites 与 flow.nodes 严格分离/);
   assert.match(step5,/3D Geometric Coverage/);
   assert.match(step5,/几何覆盖 ≠ 真实 CNS 性能/);
   assert.match(step5,/CNS Service Capability/);
@@ -141,6 +152,8 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/累计 P14→P15 what-if/);
   assert.match(step5,/Unknown 不触发建站/);
   assert.match(step5,/P16 Proposal/);
+  assert.match(step5,/真实设备资料库/);
+  assert.match(step5,/与当前算法 DeviceCatalog 分离/);
 });
 
 test('step 6 keeps the corridor site result visibly proposal-only',()=>{

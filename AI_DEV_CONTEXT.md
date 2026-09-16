@@ -1,6 +1,6 @@
 # CNS 规划系统开发上下文
 
-> 架构基线：2026-09-13（Asia/Shanghai）
+> 架构基线：2026-09-16（Asia/Shanghai）
 > 当前目标是持续完善 CNS 规划工作台；结构重构不得顺带改变 V1 算法、风险公式、API 路径或项目业务结果。
 
 ## 1. 当前架构
@@ -15,6 +15,7 @@ map_app.py / app.py
       ├─ application（六步用例与状态编排）
       ├─ gis（QGIS/GDAL/CRS/渲染/空间输入适配）
       ├─ data（Registry、Health、grid_id Mapping）
+      ├─ reference_data（只读来源事实；与规划输入隔离）
       ├─ algorithms / risk / simulation（纯标准输入输出）
       └─ persistence（原子 JSON I/O）
 ```
@@ -43,6 +44,7 @@ map_app.py / app.py
 - CoveragePlannerV1：C/N/S 主站、补盲、共址、未覆盖点/航段、统计/指纹。
 - schema-v2 项目自动保存、打开、Save As 与数据源恢复；失败操作保留当前有效项目并清理临时文件。
 - 本地 QGIS 渲染、原始人口/DEM 图层、在线瓦片、统一数据源中心、六步 ES Module 前端。
+- 真实数据基线：`reference_landing_sites` 与 `flow.nodes` 分离，Step 03 仅在用户“加入项目”后创建带 provenance 的 node；`equipment_reference_catalog` 与算法 `DeviceCatalog` 分离，Step 05 只读展示来源事实，不自动进入 Coverage/Site Planner。
 
 ## 4. 重要文件职责
 
@@ -53,6 +55,7 @@ map_app.py / app.py
 - `application/project_state.py`：schema-v2 空状态、兼容字段回填与 schema 校验。
 - `domain/algorithm_manifest.py`、`algorithms/registry.py`：算法可解释元数据、精确注册/查询/实例化，包含受保护的既有 V1 与独立 3D 覆盖、静态能力、时间线和保护包络模型；factory/Python 实现路径不进入 ProjectState 或 API Manifest。
 - `application/cns_input_service.py`：五类 CNS 规划输入的选择、导入、需求覆盖、保存与下游失效。
+- `reference_data/landing_sites.py`、`reference_data/equipment_catalog.py`、`application/reference_data_service.py`：真实起降点 XLSX/CSV 导入、坐标质量/重复候选/来源记录、规范设备事实目录加载，以及 reference→node 显式采用边界；不实现规划算法映射。
 - `application/closed_loop_service.py` + `domain/closed_loop.py`：P12 working-copy 重跑编排、确定性 PlanApplication、Before/After 比较和事务式 Preview/Apply；不实现新的覆盖、能力、时间线或 Gap 公式。
 - `route_planner/risk_aware_v2.py`：P13 纯 Python GridGraph、风险证据门控和 risk-aware A*；直接消费标准网格及网格风险，不依赖 QGIS、不重算 RiskModel。
 - `domain/cns_corridor.py`、`algorithms/corridor/v1.py`、`application/corridor_service.py`：P14 route corridor 契约、纯 Python 水平/垂向离散、P7/P8 代表点复用及持久化用例。
@@ -86,6 +89,8 @@ grid_risk
 aircraft_profiles / selected_aircraft_profile_id
 required_cns（project_default + route_overrides）
 device_catalog
+reference_landing_sites（来源事实；CRS pending；选择后才创建 node）
+equipment_reference_catalog（来源事实；不自动映射 DeviceCatalog）
 existing_cns_facilities / candidate_sites
 cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
 safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA / FunctionalDependency / CoupledCondition / CoupledUE）
@@ -313,6 +318,13 @@ P1 数据语义契约：
 
 当前 Registry 已覆盖 basemap、airspace、population、terrain、buildings、property exposure、obstacles、infrastructure、towers、traffic、existing CNS、candidate sites 等。
 
+真实参考数据基线：
+
+- `reference_landing_sites` 从本地配置指向的 XLSX/CSV 导入，保存原始单元格、标准 `[lon, lat]` 数值、`parsed/estimated/uncertain/invalid`、warnings、source(file/sheet/row)、稳定 ID 与疑似重复候选。舟山源表未声明 CRS，因此集合和每条记录固定 `crs_status=pending_confirmation`；`.et` 只返回 `requires_xlsx_or_csv_conversion`，不维护专用解析器。
+- Step 03 只展示工作区内参考点并提供搜索/区域/类型筛选；只有用户点击“加入项目”才调用现有 RouteService 创建 node，并保留 `reference_site_id/provenance`。参考集合不会批量进入 nodes，旧手工地图加点结构不变。
+- `equipment_reference_catalog` 是一次性整理的规范 JSON 来源事实模型，允许字段缺失，保存 source/evidence/conditions/reliability 与 `planning_mapping.status`。当前目录与 `DeviceCatalog` 严格分离，所有 34 条记录均为 `not_mapped`；不得根据缺失信息补造规划 radius、MTBF、MTTR、cost 或 capacity。
+- A/B 本机绝对路径只允许保存在本地/项目 `data_sources` 配置，Python 模块、规范 JSON 与测试不得硬编码。设备运行时不解析 DOCX/PDF/XLSX。
+
 新增来源原则上仅增加：Registry 定义 + GIS Adapter + Mapping Service；不得在 MapData.metadata、Workflow 或 HTTP handler 中补丁式拼接。
 
 ## 8. 测试基线
@@ -370,6 +382,8 @@ P18 完整基线：**342 passed, 6 skipped, 1 known failed**；P18/P12/P14-P17 �
 
 P19 完整基线：**351 passed, 6 skipped, 1 known failed**；P19/P18/ProjectRepository/Persistence 定向回归 **32 passed**；Node 前端 **17 passed, 0 failed**，`app.js/main.js/source_center.js/step06_review.js` 语法检查及 `git diff --check` 通过。新增覆盖 draft/final 门禁、confirmed/applied 标签、canonical 模型章节与 unknown 语义、确定性 ID/幂等、schema-v2 backfill/保存恢复、HTML escape、secret/path redaction、standalone HTML/inline SVG、HTML/PDF 同源、FakePDF 成功/失败回滚、final facility 隔离、ZIP 完整性与 SHA-256、provenance、历史报告 stale 保留、artifact traversal、API 与中文状态/来源映射。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题；P19 未修改生产空域代码。
 
+真实数据基线接入完整结果：**357 passed, 6 skipped, 1 known failed**；reference-data 定向 **6 passed**；Node 前端 **18 passed, 0 failed**，新增 Step 03/05/main 语法检查通过。测试覆盖 XLSX/DMS/estimated/uncertain/invalid、CRS pending、稳定 ID、疑似重复不合并、ET 拒绝、reference→node 显式采用、旧手工 node 结构、设备缺字段和 DeviceCatalog 隔离。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，本轮未修改空域生产代码。
+
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
@@ -415,11 +429,13 @@ P19 完整基线：**351 passed, 6 skipped, 1 known failed**；P19/P18/ProjectRe
 24. P17 Policy Engine 只支持显式项目规则、白名单字段和无优先级确定合并；尚无权威 policy catalog 签名/版本治理、法规适用性法律判断、复杂逻辑或审批审计。Recommendation 只能由用户确认后采用。
 25. P18 目前提供单项目、单进程的人工 Variant 审查与原子 Apply；尚无多人审批签名、撤销已应用计划、持久化 audit event stream 或跨进程并发提交锁。Comparison Matrix 有意不提供自动综合评分/排名。
 26. P19 PDF 依赖本机 Playwright Chromium，未安装时正式生成会原子失败并返回可操作提示；当前报告 checksum manifest 不等同完整 BagIt、数字签名或不可抵赖审计，HTML/SVG 地图也仅为无底图工程示意。
+27. 舟山起降点源表未明确 CRS，当前 `[lon, lat]` 只按源数值临时展示并保持 `pending_confirmation`；正式空间分析前必须获得 CRS 证据。两份 `.et` 需人工转换为 XLSX/CSV；5GA/低空智联网资料的厂商（包括是否为“54所”）仍待来源确认，不得猜测。
 
 ## 11. 下一阶段计划
 
-1. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
-2. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
-3. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
-4. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
-5. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。
+1. 确认舟山起降点坐标 CRS、完成所需 `.et` 转换，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only。
+2. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
+3. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
+4. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
+5. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
+6. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

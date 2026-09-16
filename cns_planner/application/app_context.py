@@ -51,6 +51,7 @@ class ApplicationContext:
             project_metadata_provider=lambda: self.project_directories.storage_metadata(self.active_project_file),
             stale_checker=self.render_requests.obsolete,
         )
+        self.workflow.configure_reference_sources(self.data.paths)
 
     def save_project_as(self, project_dir):
         workflow, target = self.project_directories.save_as(
@@ -61,12 +62,14 @@ class ApplicationContext:
 
     def open_project(self, project_dir):
         workflow, target = self.project_directories.open(project_dir, self.data)
+        workflow.configure_reference_sources(self.data.paths)
         self.workflow, self.active_project_file = workflow, target
         return self.data.metadata()
 
     def replace_sources(self, paths):
         previous = dict(self.data.paths)
-        self.data.load(paths)
+        self.data.load({**self.data.paths, **paths})
+        self.workflow.configure_reference_sources(self.data.paths)
         self.workflow.update_data_source_profiles({
             "population": self.data.raster_info.get("source_profile"),
             "terrain": self.data.terrain_info.get("source_profile"),

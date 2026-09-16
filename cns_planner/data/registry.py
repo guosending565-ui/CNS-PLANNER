@@ -31,8 +31,10 @@ DEFINITIONS = (
     SourceDefinition("towers", "通信铁塔", "设施", "vector_or_table", "CSV / GPKG / SHP", "CNS共址候选", path_key="towers"),
     SourceDefinition("traffic", "无人机运行交通", "运行", "simulation_or_trajectory", "JSON / CSV / GeoJSON", "交通暴露", path_key="traffic", source_type="synthetic"),
     SourceDefinition("vertiports", "起降设施", "设施", "vector_or_table", "CSV / GPKG / GeoJSON", "航路节点", path_key="vertiports"),
+    SourceDefinition("reference_landing_sites", "参考起降点", "参考数据", "reference_collection", "XLSX / CSV", "人工选择后才能加入项目节点", path_key="reference_landing_sites", source_type="real"),
     SourceDefinition("aircraft", "飞行器库", "业务库", "catalog", "JSON", "运行规则与可靠性", path_key="aircraft", source_type="synthetic"),
     SourceDefinition("devices", "CNS 设备库", "业务库", "catalog", "JSON", "布站与覆盖", path_key="devices", source_type="synthetic"),
+    SourceDefinition("equipment_reference_catalog", "真实设备资料库", "参考数据", "reference_catalog", "Canonical JSON（离线整理自 DOCX/PDF/XLSX）", "来源参数查阅；不自动参与规划", path_key="equipment_reference_catalog", source_type="real"),
     SourceDefinition("existing_cns", "既有 CNS 设施", "设施", "vector_or_table", "JSON / CSV / GeoJSON", "改造、共址和已有覆盖", path_key="existing_cns"),
     SourceDefinition("candidate_sites", "候选站址", "设施", "vector_or_table", "JSON / CSV / GeoJSON", "CNS规划候选", path_key="candidate_sites"),
 )
@@ -68,12 +70,12 @@ def build_registry(metadata: dict) -> list[dict]:
             item["source_metadata"] = profile.get("provenance") or {}
             for key in ("version", "quantity", "unit", "resolution", "crs", "verification"):
                 item[key] = profile.get(key)
-        elif definition.id in ("aircraft", "devices", "existing_cns", "candidate_sites"):
-            state_key = {"aircraft": "aircraft_profiles", "devices": "device_catalog", "existing_cns": "existing_cns_facilities", "candidate_sites": "candidate_sites"}[definition.id]
+        elif definition.id in ("aircraft", "devices", "existing_cns", "candidate_sites", "reference_landing_sites", "equipment_reference_catalog"):
+            state_key = {"aircraft": "aircraft_profiles", "devices": "device_catalog", "existing_cns": "existing_cns_facilities", "candidate_sites": "candidate_sites", "reference_landing_sites": "reference_landing_sites", "equipment_reference_catalog": "equipment_reference_catalog"}[definition.id]
             collection = workflow.get(state_key) or (metadata.get("device_library", {}) if definition.id == "devices" else {})
             item["configured"] = bool(collection.get("items"))
             source = collection.get("source")
-            item["location"] = source.get("path") if isinstance(source, dict) else source
+            item["location"] = path or (source.get("path") if isinstance(source, dict) else source)
             item["source_metadata"] = collection.get("metadata") or {}
             item["item_count"] = int(collection.get("count", len(collection.get("items", []))))
             item["source_type"] = item["source_metadata"].get("source_type", item["source_type"])

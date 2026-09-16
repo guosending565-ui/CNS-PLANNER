@@ -41,6 +41,7 @@ from .corridor_site_planning_service import CorridorSitePlanningService
 from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
+from .reference_data_service import ReferenceDataService
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
@@ -121,6 +122,10 @@ class WorkflowService:
         self.project_service = ProjectService(self.session, snapshot)
         self.workspace_service = WorkspaceService(self.session, self.grid_service, self.invalidation_service, snapshot)
         self.route_service = RouteService(self.session, self.route_planner, self.invalidation_service, snapshot)
+        self.reference_data_service = ReferenceDataService(
+            self.session, self.route_service, snapshot,
+        )
+        self.reference_data_service.ensure_equipment_catalog()
         self.operation_service = OperationService(self.session, self.invalidation_service, snapshot)
         self.risk_service = RiskService(
             self.session, self.risk_model, self.traffic_simulator, self.conflict_detector,
@@ -185,6 +190,8 @@ class WorkflowService:
     def grid_risk_snapshot(self): return deepcopy(self.state.get("grid_risk") or RiskModelV1.empty())
     def aircraft_profiles_snapshot(self): return deepcopy(self.state.get("aircraft_profiles") or {})
     def device_catalog_snapshot(self): return deepcopy(self.state.get("device_catalog") or {})
+    def reference_landing_sites_snapshot(self): return self.reference_data_service.landing_sites_snapshot()
+    def equipment_reference_catalog_snapshot(self): return self.reference_data_service.equipment_catalog_snapshot()
     def required_cns_snapshot(self): return deepcopy(self.state.get("required_cns") or {})
     def cns_operation_context_snapshot(self): return self.requirement_recommendation_service.context_snapshot()
     def cns_requirement_policies_snapshot(self): return self.requirement_recommendation_service.policies_snapshot()
@@ -330,6 +337,13 @@ class WorkflowService:
     def set_workspace(self, bbox, health): return self.workspace_service.set_workspace(bbox, health)
     def clear_workspace(self): return self.workspace_service.clear_workspace()
     def add_node(self, coordinate, name=None): return self.route_service.add_node(coordinate, name)
+    def import_reference_landing_sites(self, path): return self.reference_data_service.import_landing_sites(path)
+    def add_reference_landing_site(self, reference_site_id): return self.reference_data_service.add_landing_site_to_project(reference_site_id)
+    def configure_reference_sources(self, paths, save=False):
+        path = (paths or {}).get("reference_landing_sites")
+        if path:
+            return self.reference_data_service.import_landing_sites(path, save=save)
+        return self.snapshot()
     def delete_node(self, node_id): return self.route_service.delete_node(node_id)
     def generate_scenario(self, direction): return self.route_service.generate_scenario(direction)
     def delete_route(self, route_id): return self.route_service.delete_route(route_id)

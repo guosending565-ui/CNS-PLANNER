@@ -80,10 +80,6 @@ function drawWorkflowOverlay(){
   if(!view||!flow)return;drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox);drawGridThemes();drawGridBoundaries();
   for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
-  if(currentStep===3){
-    const filters={workspace:flow.workspace,search:$('referenceSiteSearch')?.value||'',region:$('referenceSiteRegion')?.value||'',siteType:$('referenceSiteType')?.value||''};
-    for(const site of Step03.filterReferenceSites(flow.reference_landing_sites?.items||[],filters))drawCnsInputPoint(site.coordinate,site.possible_duplicate?'#8b6b2f':'#2b8c82','diamond');
-  }
   const gapColors={C:'#d83b35',N:'#c26b16',S:'#9b3eb5'},gapToggles={C:'cLayer',N:'nLayer',S:'sLayer'};
   for(const route of flow.cns_gap_analysis?.status==='stale'?[]:(flow.cns_gap_analysis?.routes||[]))for(const subsystem of route.subsystems||[]){
     if(!$(gapToggles[subsystem.subsystem])?.checked)continue;
@@ -312,7 +308,7 @@ function renderWorkflow(){
 }
 
 function stepBindings(){return {
-  $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
+  $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},

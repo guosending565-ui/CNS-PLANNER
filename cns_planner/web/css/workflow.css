@@ -10,6 +10,7 @@
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 7px}.form-grid label{font-size:9px}.form-grid input,.form-grid select{margin-top:3px}
 .device-list{max-height:190px;overflow:auto}.device-row{display:grid;grid-template-columns:1.4fr .7fr .9fr auto;gap:5px;align-items:end;border-bottom:1px solid #e4e9ee;padding:6px 0;font-size:9px}.device-row label{margin:0}.device-row input{padding:5px;margin:0}.device-row span{padding-bottom:6px}
 .coverage-card{display:grid;gap:3px;padding:8px;margin:5px 0;border-left:3px solid #1686c9;background:#f5f8fa;font-size:9px}.coverage-card b{display:flex;justify-content:space-between}.coverage-results{max-height:190px;overflow:auto}
+.reference-site-list,.equipment-reference-list{max-height:260px}.reference-site-row button{white-space:nowrap}.equipment-reference-card{border-left-color:#2b8c82}.equipment-reference-card b span{font-weight:400;color:#738493}
 .review-block{display:grid;gap:6px;padding:10px;background:#f3f7fa;border-radius:4px;font-size:10px}.risk-review{margin:8px 0}.review-row{display:flex;justify-content:space-between;padding:6px;border-bottom:1px solid #e4e9ed}.overall-card{padding:10px;border:1px solid #e1d49b;background:#fff9e8;border-radius:4px;font-size:11px}.export-row{flex-wrap:wrap}.export-row button{min-width:90px}
 .button-link{text-align:center;text-decoration:none;padding:8px;border-radius:4px;min-width:90px}
 .swatch.C,.swatch.cns-c{background:#1574d4}.swatch.N,.swatch.cns-n{background:#c58a13}.swatch.S,.swatch.cns-s{background:#139b86}
@@ -427,4 +428,3 @@
         grid-column:1 !important;
     }
 }
-

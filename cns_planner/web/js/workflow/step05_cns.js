@@ -279,12 +279,19 @@ function corridorSitePlanSummary(result){
 
 function formatMetric(value,unit){return Number.isFinite(value)?value.toFixed(1)+' '+unit:'—';}
 
+function equipmentReferencePanel(flow){
+  const catalog=flow.equipment_reference_catalog||{},items=catalog.items||[];
+  const rows=items.map(item=>'<div class="coverage-card equipment-reference-card"><b>'+escapeHtml(item.name)+' <span>'+escapeHtml(item.equipment_id)+'</span></b><span>'+escapeHtml(item.manufacturer||'厂商待确认')+(item.model?' · '+escapeHtml(item.model):'')+' · '+escapeHtml((item.subsystems||[]).join('/')||'非CNS规划设备')+'</span><small>技术：'+escapeHtml((item.technology||[]).join('、')||'未标')+'；来源：'+escapeHtml(item.source?.file||'未登记')+' '+escapeHtml(item.source?.locator||'')+'</small><small>planning mapping：'+escapeHtml(item.planning_mapping?.status||'not_mapped')+'</small></div>').join('');
+  return '<h3>真实设备资料库 '+statusBadge(catalog.status||'not_calculated')+'</h3><div class="parameter-note">equipment_reference_catalog 是来源事实模型，与当前算法 DeviceCatalog 分离。下列参数只读，不完整记录不会自动补 radius、MTBF、MTTR、cost 或 capacity，也不会自动参与 Coverage/Site Planner。</div><div class="scroll-list equipment-reference-list">'+(rows||'<div class="empty-note">尚无真实设备参考记录</div>')+'</div>';
+}
+
 export function render({flow}){
   const devices=(flow.devices||[]).map((device,index)=>'<div class="device-row"><b>'+device.subsystem+' · '+escapeHtml(device.model||device.name||device.device_id)+'</b><label>R(m)<input type="number" data-device-radius="'+index+'" value="'+device.radius_m+'"></label><label>MTBF(h)<input type="number" data-device-mtbf="'+index+'" value="'+(device.mtbf_h||device.mtbf)+'"></label><span>'+device.role+'</span></div>').join('');
   let result='<div class="empty-note">尚未运行 CoveragePlannerV1</div>';
   if(flow.coverage)result=Object.entries(flow.coverage.layers||{}).map(([key,layer])=>{const stats=layer.statistics;return '<div class="coverage-card"><b>'+key+' '+statusBadge(layer.status)+'</b><span>站点 '+stats.stations+' · 主站 '+stats.primary+' · 补盲 '+stats.gap+' · 共址 '+stats.colocated+'</span><span>平均重数 '+stats.average_multiplicity+' · 未覆盖 '+stats.uncovered_samples+'</span></div>';}).join('');
   const params=flow.defaults.engineering_parameters,existing=flow.existing_cns_facilities||{},candidates=flow.candidate_sites||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{},capability=flow.cns_service_capability||{},corridor=flow.cns_corridor_assessment||{},corridorGap=flow.cns_corridor_gap_assessment||{},corridorSitePolicy=flow.corridor_site_planning_policy||{},corridorSitePlan=flow.cns_corridor_site_plan||{},timeline=flow.service_timeline||{},protection=flow.protection_envelope||{},gapV2=flow.cns_gap_analysis_v2||{},sitePolicy=flow.site_planning_policy||{},sitePlan=flow.cns_site_plan||{},closedLoop=flow.closed_loop_assessment||{};
   const body='<div class="demo-note">DeviceCatalog：'+escapeHtml(catalog.source||flow.device_source)+' · '+(catalog.count||0)+' 型设备</div>'+
+    equipmentReferencePanel(flow)+
     '<div class="parameter-note">主站间距 '+params.primary_spacing_factor.value+'R · 共址半径 '+params.co_location_search_radius_m.value+'m<br>'+escapeHtml(params.primary_spacing_factor.source)+'</div>'+
     '<div class="device-list">'+devices+'</div><div class="button-row"><button class="secondary" id="saveDevices">保存设备参数</button><button class="primary" id="planCoverage">运行布站</button></div>'+
     '<h3>已有 CNS 设施 '+statusBadge(existing.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="existing_cnsPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseExisting">选择…</button></div><button class="secondary full" id="importExisting">导入已有设施</button><div class="scroll-list cns-input-list">'+collectionList(existing,'facility')+'</div>'+

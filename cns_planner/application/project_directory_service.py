@@ -7,6 +7,7 @@ from ..persistence.project_repository import ProjectRepository
 
 
 class ProjectDirectoryService:
+    REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "equipment_reference_catalog")
     def __init__(self, automatic_file, defaults_path, default_sources, workflow_factory):
         self.automatic_file = Path(automatic_file)
         self.defaults_path = Path(defaults_path)
@@ -62,6 +63,11 @@ class ProjectDirectoryService:
             saved = repository.load()
             clean = {key: saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key, "")
                      for key in ("basemap", "population", "terrain")}
+            clean.update({
+                key: saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key, "")
+                for key in self.REFERENCE_SOURCE_KEYS
+                if saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key)
+            })
             current_data.load(clean, persist=False)
         return candidate, target
 
@@ -82,7 +88,12 @@ class ProjectDirectoryService:
 
     @staticmethod
     def _clean_sources(paths):
-        return {key: paths.get(key, "") for key in ("basemap", "population", "terrain")}
+        result = {key: paths.get(key, "") for key in ("basemap", "population", "terrain")}
+        result.update({
+            key: paths[key] for key in ProjectDirectoryService.REFERENCE_SOURCE_KEYS
+            if paths.get(key)
+        })
+        return result
 
     @staticmethod
     def _restore(path, previous):

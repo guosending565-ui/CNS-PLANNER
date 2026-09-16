@@ -1,0 +1,142 @@
+import json
+
+from openpyxl import Workbook
+
+from cns_planner.api.router import ApiRouter
+from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.reference_data import (
+    load_equipment_reference_catalog,
+    load_reference_landing_sites,
+    parse_coordinate,
+)
+
+
+def _defaults(tmp_path):
+    target = tmp_path / "defaults.json"
+    target.write_text(
+        open("cns_planner/config/defaults.json", encoding="utf-8").read(),
+        encoding="utf-8",
+    )
+    return target
+
+
+def _xlsx(tmp_path):
+    target = tmp_path / "landing-sites.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "舟山测试"
+    sheet.append(["序号", "起降设施分类", "所属县区", "具体位置", "经纬度信息", "面积", "建成", "备注"])
+    sheet.append([1, "起降点", "定海区", "明确点", "东经122°6′21.362″,北纬30°0′22.878″"])
+    sheet.append([2, "临时起降点", "普陀区", "估算点", "估：g122°18'33.5556\",30°02'11.8644\""])
+    sheet.append([3, "无人机起降点", "岱山县", "不确定点", "g122°20'01.2180\",30°30'59.6313\""])
+    sheet.append([4, "起降点", "定海区", "无效点", "东经222°6′21″,北纬30°0′22″"])
+    sheet.append([5, "起降点", "定海区", "近邻疑似重复", "E122°06′21.36″N30°00′22.88″"])
+    workbook.save(target)
+    return target
+
+
+def test_coordinate_parser_preserves_dms_estimated_uncertain_and_invalid():
+    parsed = parse_coordinate("东经122°6′21.362″,北纬30°0′22.878″")
+    assert parsed["quality"] == "parsed"
+    assert parsed["coordinate"] == [122.1059338889, 30.006355]
+
+    estimated = parse_coordinate("估：g122°18'33.5556\",30°02'11.8644\"")
+    assert estimated["quality"] == "estimated"
+    assert "source_marks_coordinate_estimated" in estimated["warnings"]
+
+    uncertain = parse_coordinate("g122°20'01.2180\",30°30'59.6313\"")
+    assert uncertain["quality"] == "uncertain"
+    assert "hemisphere_inferred_from_coordinate_order" in uncertain["warnings"]
+
+    assert parse_coordinate("东经222°0′0″,北纬30°0′0″")["quality"] == "invalid"
+
+
+def test_xlsx_import_keeps_raw_source_crs_and_marks_duplicates(tmp_path):
+    source = _xlsx(tmp_path)
+    first = load_reference_landing_sites(source)
+    second = load_reference_landing_sites(source)
+
+    assert first["status"] == "passed"
+    assert first["count"] == 5
+    assert first["metadata"]["crs_status"] == "pending_confirmation"
+    assert first["metadata"]["quality_counts"] == {
+        "parsed": 2, "estimated": 1, "uncertain": 1, "invalid": 1,
+    }
+    assert first["items"][0]["raw"]["column_5"].startswith("东经")
+    assert first["items"][0]["source"] == {
+        "file": source.name, "sheet": "舟山测试", "row": 2,
+    }
+    assert first["items"][0]["reference_site_id"] == second["items"][0]["reference_site_id"]
+    assert first["items"][0]["possible_duplicate"] is True
+    assert first["items"][4]["possible_duplicate"] is True
+    assert first["count"] == len(first["items"]), "疑似重复不得静默合并"
+
+
+def test_et_is_detected_and_requires_conversion(tmp_path):
+    result = load_reference_landing_sites(tmp_path / "legacy.et")
+    assert result["status"] == "requires_xlsx_or_csv_conversion"
+    assert result["warnings"] == ["requires_xlsx_or_csv_conversion"]
+    assert result["items"] == []
+
+
+def test_reference_site_only_becomes_node_after_explicit_add_and_manual_shape_stays(tmp_path):
+    service = WorkflowService(tmp_path / "project.json", _defaults(tmp_path))
+    service.set_workspace(
+        [121.9, 29.9, 122.5, 30.6],
+        {"status": "passed", "population": {"status": "passed"}, "airspace": {"status": "passed"}},
+    )
+    imported = service.import_reference_landing_sites(_xlsx(tmp_path))
+    assert imported["nodes"] == []
+    site = next(item for item in imported["reference_landing_sites"]["items"] if item["quality"] == "parsed")
+
+    added = service.add_reference_landing_site(site["reference_site_id"])
+    assert len(added["nodes"]) == 1
+    assert added["nodes"][0]["reference_site_id"] == site["reference_site_id"]
+    assert added["nodes"][0]["provenance"]["crs_status"] == "pending_confirmation"
+    assert added["nodes"][0]["provenance"]["source"]["row"] == 2
+    assert len(service.add_reference_landing_site(site["reference_site_id"])["nodes"]) == 1
+
+    manual = service.add_node([122.2, 30.2], "手工点")["nodes"][-1]
+    assert manual == {"node_id": "N002", "name": "手工点", "coordinate": [122.2, 30.2]}
+
+
+def test_equipment_reference_allows_missing_facts_and_never_maps_to_device_catalog(tmp_path):
+    catalog = load_equipment_reference_catalog()
+    assert catalog["status"] == "passed"
+    assert catalog["count"] >= 25
+    assert all(item["planning_mapping"]["status"] != "mapped" for item in catalog["items"])
+    assert all("radius_m" not in item and "cost" not in item for item in catalog["items"])
+    management = next(item for item in catalog["items"] if item["equipment_id"] == "EQREF-TA-VS-0ZHGL02-M")
+    assert management["performance"] == {}
+    assert management["reliability"] == {}
+    five_ga = next(item for item in catalog["items"] if item["equipment_id"] == "EQREF-5GA-INTEGRATED-01")
+    assert five_ga["manufacturer"] is None
+    assert five_ga["manufacturer_status"] == "pending_confirmation"
+    assert "54" not in json.dumps(five_ga, ensure_ascii=False)
+
+    service = WorkflowService(tmp_path / "project.json", _defaults(tmp_path))
+    snapshot = service.snapshot()
+    assert snapshot["equipment_reference_catalog"]["count"] == catalog["count"]
+    assert snapshot["device_catalog"]["catalog_id"] == "cns-device-catalog"
+    assert {item.get("device_id") for item in snapshot["device_catalog"]["items"]}.isdisjoint(
+        {item["equipment_id"] for item in catalog["items"]}
+    )
+
+
+class _ApiData:
+    paths = {}
+
+
+class _ApiContext:
+    def __init__(self, workflow):
+        self.workflow = workflow
+        self.data = _ApiData()
+
+
+def test_reference_data_minimal_api(tmp_path):
+    workflow = WorkflowService(tmp_path / "project.json", _defaults(tmp_path))
+    router = ApiRouter(_ApiContext(workflow))
+    assert router.get("/api/reference-landing-sites", {}, {}).status == 200
+    assert router.get("/api/equipment-reference-catalog", {}, {}).data["count"] >= 25
+    response = router.post("/api/reference-landing-sites/import", {"path": str(_xlsx(tmp_path))})
+    assert response.data["reference_landing_sites"]["count"] == 5

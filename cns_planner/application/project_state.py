@@ -46,6 +46,10 @@ from ..domain.requirement_policy import (
 )
 from ..domain.plan_review import empty_confirmed_plan, empty_plan_review
 from ..domain.reporting import empty_report_collection
+from ..reference_data import (
+    empty_equipment_reference_catalog, empty_reference_landing_sites,
+    normalize_equipment_reference_catalog,
+)
 
 
 SCHEMA_VERSION = 2
@@ -129,6 +133,8 @@ def blank_project(defaults):
         "nodes": [], "node_seq": 0, "route_seq": 0,
         "retired_route_ids": [], "scenario_routes": [],
         "operational_routes": [], "aircraft": None, "rules": None,
+        "reference_landing_sites": empty_reference_landing_sites(),
+        "equipment_reference_catalog": empty_equipment_reference_catalog(),
         "aircraft_profiles": empty_catalog("aircraft-cns-profile-catalog"),
         "selected_aircraft_profile_id": None,
         "required_cns": pending_required_cns(),
@@ -212,6 +218,14 @@ def normalize_project(value, grid_service):
     value["operational_timing"] = normalize_operational_timing(value.get("operational_timing"))
     value.setdefault("service_timeline", RouteServiceTimelineV1.empty())
     value.setdefault("protection_envelope", TacticalProtectionEnvelopeV1.empty())
+    value.setdefault("reference_landing_sites", empty_reference_landing_sites())
+    equipment_reference = value.setdefault(
+        "equipment_reference_catalog", empty_equipment_reference_catalog()
+    )
+    if equipment_reference.get("items"):
+        value["equipment_reference_catalog"] = normalize_equipment_reference_catalog(
+            equipment_reference
+        )
     value.setdefault("aircraft_profiles", empty_catalog("aircraft-cns-profile-catalog"))
     value.setdefault("selected_aircraft_profile_id", None)
     value.setdefault("required_cns", pending_required_cns())
