@@ -256,7 +256,8 @@ def test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index():
     assert layer.request_bbox == (12000.0, 3000.0, 12002.0, 3001.0)
     assert FakeSpatialIndex.query_count == len(cells)
     assert result["cell-1"]["coverage_ratio"] == 1.0
-    assert result["cell-1"]["airspaces"][0]["feature_id"] == 11
+    assert result["cell-1"]["airspaces"][0]["feature_id"].startswith("ASF-")
+    assert result["cell-1"]["airspaces"][0]["source_feature_id"] == 11
     assert result["cell-1"]["airspaces"][0]["category"] == "CTR"
     assert result["cell-1"]["airspaces"][0]["source_attributes"] == {"category": "CTR", "lower": 300}
     assert result["cell-2"] == {"airspaces": [], "coverage_ratio": 0.0}
@@ -294,6 +295,9 @@ def test_airspace_save_restore_workspace_reset_and_old_project_compatibility(tmp
     legacy = WorkflowService(store, defaults)
     assert legacy.state["workspace"] == document["workspace"]
     assert legacy.grid_attributes_snapshot()["airspace"]["status"] == "not_calculated"
+    assert legacy.state["reference_routes"]["items"] == []
+    assert legacy.state["airspace_policies"]["status"] == "pending_confirmation"
+    assert legacy.grid_attributes_snapshot()["airspace"]["airspace_eligibility"]["status"] == "not_calculated"
 
 
 def test_basemap_change_only_stales_airspace_grid_attributes(tmp_path):

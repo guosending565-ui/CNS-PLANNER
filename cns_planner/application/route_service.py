@@ -143,6 +143,7 @@ class RouteService:
                 self.planner.plan(
                     route, state.get("grid") or {}, state.get("grid_risk") or {},
                     hard_constraints,
+                    ((state.get("grid_attributes") or {}).get("airspace") or {}).get("airspace_eligibility"),
                 )
                 for route in state["scenario_routes"]
             ]
@@ -152,7 +153,13 @@ class RouteService:
                 for route in state["scenario_routes"]
             ]
         state["operational_routes"] = results
-        state["result_statuses"]["routes"] = "passed" if all(item["status"] == "passed" for item in results) else "failed"
+        statuses = {item.get("status") for item in results}
+        state["result_statuses"]["routes"] = (
+            "passed" if statuses == {"passed"}
+            else "failed" if "failed" in statuses
+            else "missing_data" if "missing_data" in statuses
+            else "failed"
+        )
         if not getattr(self.planner, "uses_canonical_grid_risk", False):
             state["risks"]["environment"] = assessment(
                 "pending_confirmation", "GRC 环境风险接口已接入，正式模型待确认"

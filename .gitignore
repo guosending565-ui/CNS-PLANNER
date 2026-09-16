@@ -41,3 +41,4 @@ outputs/
 *~
 project_tree.txt
 cns_planner/web/js/*.backup
+*_backup

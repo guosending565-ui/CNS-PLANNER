@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from openpyxl import Workbook
 
 from cns_planner.api.router import ApiRouter
@@ -7,6 +8,7 @@ from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.reference_data import (
     load_equipment_reference_catalog,
     load_reference_landing_sites,
+    load_reference_routes,
     parse_coordinate,
 )
 
@@ -73,10 +75,113 @@ def test_xlsx_import_keeps_raw_source_crs_and_marks_duplicates(tmp_path):
 
 
 def test_et_is_detected_and_requires_conversion(tmp_path):
-    result = load_reference_landing_sites(tmp_path / "legacy.et")
+    source = tmp_path / "legacy.et"
+    source.write_text("converted file required", encoding="utf-8")
+    result = load_reference_landing_sites(source)
     assert result["status"] == "requires_xlsx_or_csv_conversion"
     assert result["warnings"] == ["requires_xlsx_or_csv_conversion"]
     assert result["items"] == []
+    assert load_reference_routes(source)["status"] == "requires_xlsx_or_csv_conversion"
+
+
+def test_reference_source_must_be_a_concrete_file(tmp_path):
+    with pytest.raises(ValueError, match="具体文件"):
+        load_reference_landing_sites(tmp_path)
+    with pytest.raises(ValueError, match="具体文件"):
+        load_reference_routes(tmp_path)
+
+
+def test_landing_site_id_survives_source_row_insert_and_reorder(tmp_path):
+    first_path = _xlsx(tmp_path)
+    first = load_reference_landing_sites(first_path)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "舟山测试"
+    sheet.append(["说明", "插入的非数据行"])
+    sheet.append(["序号", "起降设施分类", "所属县区", "具体位置", "经纬度信息"])
+    source_items = list(reversed(first["items"]))
+    for index, item in enumerate(source_items, 1):
+        sheet.append([index, item["site_type"], item["region"], item["name"], item["coordinate_raw"]])
+    reordered = tmp_path / "reordered.xlsx"
+    workbook.save(reordered)
+    second = load_reference_landing_sites(reordered)
+    assert {item["name"]: item["reference_site_id"] for item in first["items"]} == {
+        item["name"]: item["reference_site_id"] for item in second["items"]
+    }
+
+
+def test_old_row_based_reference_site_node_is_migrated_on_reimport(tmp_path):
+    source = _xlsx(tmp_path)
+    imported = load_reference_landing_sites(source)
+    site = imported["items"][0]
+    service = WorkflowService(tmp_path / "legacy-project.json", _defaults(tmp_path))
+    legacy = dict(site)
+    legacy["reference_site_id"] = "RLS-LEGACY-ROW-2"
+    service.state["reference_landing_sites"] = {**imported, "items": [legacy]}
+    service.state["nodes"] = [{
+        "node_id": "N001", "name": site["name"], "coordinate": site["coordinate"],
+        "reference_site_id": legacy["reference_site_id"],
+        "provenance": {"reference_site_id": legacy["reference_site_id"]},
+    }]
+    snapshot = service.import_reference_landing_sites(source)
+    node = snapshot["nodes"][0]
+    assert node["reference_site_id"] == site["reference_site_id"]
+    assert node["provenance"]["legacy_reference_site_ids"] == ["RLS-LEGACY-ROW-2"]
+
+
+def test_reference_routes_group_and_sort_all_intermediate_points_without_planning_side_effects(tmp_path):
+    source = tmp_path / "舟山16条航线点位核对表.csv"
+    source.write_text(
+        "航线编号,航线名称,航线类别,点序号,点位名称,点位类型,经度,纬度\n"
+        "16,海岛线,验证,3,终点,起降点,122.3,30.3\n"
+        "16,海岛线,验证,1,起点,起降点,122.1,30.1\n"
+        "16,海岛线,验证,2,中间点,航路点,122.2,30.2\n"
+        "2,短线,运输,2,B,起降点,122.5,30.5\n"
+        "2,短线,运输,1,A,起降点,122.4,30.4\n",
+        encoding="utf-8-sig",
+    )
+    first = load_reference_routes(source)
+    reordered = tmp_path / "reordered.csv"
+    lines = source.read_text(encoding="utf-8-sig").splitlines()
+    reordered.write_text("\n".join([lines[0], *reversed(lines[1:])]), encoding="utf-8-sig")
+    second = load_reference_routes(reordered)
+    route = next(item for item in first["items"] if item["route_number"] == "16")
+    points = [item for item in first["points"] if item["route_id"] == route["reference_route_id"]]
+    assert [item["sequence"] for item in points] == [1, 2, 3]
+    assert [item["position"] for item in points] == ["endpoint", "intermediate", "endpoint"]
+    assert route["path"] == [[122.1, 30.1], [122.2, 30.2], [122.3, 30.3]]
+    assert {item["reference_route_id"] for item in first["items"]} == {
+        item["reference_route_id"] for item in second["items"]
+    }
+    assert {item["reference_route_point_id"] for item in first["points"]} == {
+        item["reference_route_point_id"] for item in second["points"]
+    }
+    service = WorkflowService(tmp_path / "route-project.json", _defaults(tmp_path))
+    snapshot = service.import_reference_routes(source)
+    assert snapshot["reference_routes"]["count"] == 2
+    assert snapshot["reference_routes"]["point_count"] == 5
+    assert snapshot["nodes"] == []
+    assert snapshot["scenario_routes"] == [] and snapshot["operational_routes"] == []
+
+
+def test_zhoushan_sixteen_route_shape_restores_by_number_and_sequence(tmp_path):
+    source = tmp_path / "舟山16条航线点位核对表.csv"
+    rows = ["航线编号,航线名称,点序号,航点名称,经度(E),纬度(N)"]
+    for route_number in range(1, 17):
+        for sequence in (3, 1, 2):
+            rows.append(
+                f"{route_number},航线{route_number},{sequence},R{route_number}-P{sequence},"
+                f"{122 + route_number / 100 + sequence / 1000},{30 + sequence / 1000}"
+            )
+    source.write_text("\n".join(rows), encoding="utf-8-sig")
+    result = load_reference_routes(source)
+    assert result["count"] == 16
+    assert result["point_count"] == 48
+    assert all(len(route["path"]) == 3 for route in result["items"])
+    for route in result["items"]:
+        route_points = [point for point in result["points"] if point["route_id"] == route["reference_route_id"]]
+        assert [point["sequence"] for point in route_points] == [1, 2, 3]
+        assert route_points[1]["position"] == "intermediate"
 
 
 def test_reference_site_only_becomes_node_after_explicit_add_and_manual_shape_stays(tmp_path):
@@ -137,6 +242,20 @@ def test_reference_data_minimal_api(tmp_path):
     workflow = WorkflowService(tmp_path / "project.json", _defaults(tmp_path))
     router = ApiRouter(_ApiContext(workflow))
     assert router.get("/api/reference-landing-sites", {}, {}).status == 200
+    assert router.get("/api/reference-routes", {}, {}).status == 200
+    assert router.get("/api/airspace-policies", {}, {}).data["status"] == "pending_confirmation"
     assert router.get("/api/equipment-reference-catalog", {}, {}).data["count"] >= 25
     response = router.post("/api/reference-landing-sites/import", {"path": str(_xlsx(tmp_path))})
     assert response.data["reference_landing_sites"]["count"] == 5
+    route_source = tmp_path / "routes.csv"
+    route_source.write_text(
+        "航线编号,点序号,航点名称,经度,纬度\n1,1,A,122.1,30.1\n1,2,B,122.2,30.2\n",
+        encoding="utf-8-sig",
+    )
+    response = router.post("/api/reference-routes/import", {"path": str(route_source)})
+    assert response.data["reference_routes"]["count"] == 1
+    response = router.post("/api/airspace-policies", {"items": [{
+        "feature_id": "ASF-1", "route_eligibility": "unknown",
+        "confirmed": False, "source": "test",
+    }]})
+    assert response.data["airspace_policies"]["count"] == 1

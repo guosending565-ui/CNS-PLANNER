@@ -7,7 +7,7 @@ from ..persistence.project_repository import ProjectRepository
 
 
 class ProjectDirectoryService:
-    REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "equipment_reference_catalog")
+    REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "reference_routes", "equipment_reference_catalog")
     def __init__(self, automatic_file, defaults_path, default_sources, workflow_factory):
         self.automatic_file = Path(automatic_file)
         self.defaults_path = Path(defaults_path)

@@ -384,6 +384,12 @@ P19 完整基线：**351 passed, 6 skipped, 1 known failed**；P19/P18/ProjectRe
 
 真实数据基线接入完整结果：**357 passed, 6 skipped, 1 known failed**；reference-data 定向 **6 passed**；Node 前端 **18 passed, 0 failed**，新增 Step 03/05/main 语法检查通过。测试覆盖 XLSX/DMS/estimated/uncertain/invalid、CRS pending、稳定 ID、疑似重复不合并、ET 拒绝、reference→node 显式采用、旧手工 node 结构、设备缺字段和 DeviceCatalog 隔离。唯一失败仍为既有 QgsSpatialIndex 测试替身签名问题，本轮未修改空域生产代码。
 
+真实航路/适飞空域硬约束阶段完整结果：**371 passed, 6 skipped**；Node 前端 **20 passed, 0 failed**；Python compile、`app.js/main.js/step03_routes.js` 及新增地图模块语法检查、`git diff --check` 通过。既有 `QgsSpatialIndex` 测试替身签名已用兼容构造处理，不改变真实 QGIS 空间索引语义。新增 `reference_routes`/独立 route points（CSV/XLSX/GeoJSON；按 route_number 分组、sequence 排序、完整保留中间点、稳定 ID、reference_only），并与 nodes/scenario/operational 严格隔离。当前本机目录没有“舟山16条航线点位核对表.csv”等已转换航线文件，仅有 `.et`，因此真实航线/航路点导入数为 **0/0**，状态明确为 `requires_xlsx_or_csv_conversion`。
+
+Step 03 新增真实参考航线、真实航路点、参考起降点三个独立开关和来源事实选中面板；reference/scenario/operational 使用不同样式，并提供参考/运行长度并列对比、无自动评分。原 QGIS 图层改标为“空域源图层（非政策结论）”，`confirmed allowed` 适飞几何独立显示，避免按颜色/图层名猜测政策；真实参考坐标继续明确 `pending_confirmation`，不暗示已确认 WGS84。
+
+空域模型新增 AirspaceFeature 与 AirspacePolicy。只有 `confirmed=true && route_eligibility=allowed` 的 Polygon/MultiPolygon 进入 JSON-safe `airspace_eligibility`；V2 无 confirmed allowed 时为 missing_data，端点不在允许区、允许区不连通或无完整合法路径时为 failed。网格仅作搜索索引：cell 必须完整覆盖，中心边、对角 guard 与真实端点连接均受完整几何覆盖约束；hard constraints 优先，risk 只在 allowed graph 内优化。geometry/policy fingerprint 进入运行航路 provenance，变化会使 operational routes 及下游结果 stale；旧 schema-v2 项目自动 backfill。当前自动恢复项目尚无工作区、无已确认 AirspacePolicy，项目状态计数为 allowed/blocked/unknown = **0/0/0**，不能生成 V2 运行航路。
+
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
@@ -409,7 +415,7 @@ P19 完整基线：**351 passed, 6 skipped, 1 known failed**；P19/P18/ProjectRe
 10. CSS 已按加载职责拆分，但 `base.css` 保留历史压缩规则；未来视觉改版时再格式化和去重，避免本轮改变级联结果。
 11. WorldPop SourceProfile 当前使用 `quantity=population_count_per_source_pixel`、`unit=person/source_pixel` 表达官方 people-per-pixel 语义；长期应规范为 `quantity=population_count`、`unit=person`，并独立使用 `support=source_pixel` / `source_semantics=people_per_pixel` 表达空间支撑。当前阶段不得为此破坏 P1 兼容字段和人口映射结果。
 
-12. 当前全量 pytest 存在 1 个已知基线失败：`test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`。原因是测试替身仅支持 `QgsSpatialIndex(features)`，而生产实现采用真实 QGIS 支持的空构造后 `addFeature`；后续非相关阶段不得通过修改生产空域逻辑来“修绿”该测试。
+12. `QgsSpatialIndex` 同时兼容真实 QGIS 的空构造+`addFeature` 与轻量测试替身的 features 构造；当前全量 pytest 无失败。真实 QGIS HTTP/GUI 集成仍由默认测试环境跳过。
 13. `OperationService` 为保持旧工作流/API 语义，仍在顶层 `aircraft` 输出 legacy `lambda_per_hour=1/mtbf_h`；Step 4 已标注其不是 P4 ReliabilitySpec 推断。新安全计算只能使用显式声明模型的分系统 ReliabilitySpec。
 
 14. P6 只支持由离散 EventObservation 驱动的定性 C+S/C+N/N+S 功能耦合；尚无完整航路 ServiceTimeline、耦合概率、common-cause、BN/DBN/Petri、FTA 图形编辑、认证工作流或正式 safety objective 校核。
@@ -433,7 +439,7 @@ P19 完整基线：**351 passed, 6 skipped, 1 known failed**；P19/P18/ProjectRe
 
 ## 11. 下一阶段计划
 
-1. 确认舟山起降点坐标 CRS、完成所需 `.et` 转换，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only。
+1. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，逐 feature 确认 AirspacePolicy，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。
 2. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
 3. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
 4. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。

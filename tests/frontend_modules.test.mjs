@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 
 import {lonLatToMercator,mercatorToLonLat} from '../cns_planner/web/js/map/projection.js';
 import {createStore} from '../cns_planner/web/js/state/store.js';
@@ -7,7 +8,7 @@ import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
@@ -75,6 +76,30 @@ test('reference landing sites stay separate and support workspace search filters
     {reference_site_id:'C',name:'无效点',region:'定海区',site_type:'起降点',coordinate:null,quality:'invalid'},
   ];
   assert.deepEqual(filterReferenceSites(sites,{workspace:{bbox:[122,29.9,122.2,30.1]},search:'码头',region:'定海区',siteType:'起降点'}).map(item=>item.reference_site_id),['A']);
+});
+
+test('step 3 overlay keeps reference route points scenario and operational routes separate with independent toggles',()=>{
+  const flow={workspace:{bbox:[122,29,123,31]},reference_routes:{items:[{reference_route_id:'RR1',path:[[122.1,30],[122.3,30.2]]}],points:[{reference_route_point_id:'RP1',coordinate:[122.2,30.1]}]},reference_landing_sites:{items:[{reference_site_id:'LS1',coordinate:[122.4,30.2],quality:'parsed'}]},scenario_routes:[{route_id:'S1'}],operational_routes:[{route_id:'O1'}]};
+  const all=referenceOverlayModel(flow,{routes:true,points:true,landingSites:true});
+  assert.equal(all.referenceRoutes.length,1);
+  assert.equal(all.referencePoints.length,1);
+  assert.equal(all.referenceLandingSites.length,1);
+  assert.deepEqual(all.scenarioRoutes,[{route_id:'S1'}]);
+  assert.deepEqual(all.operationalRoutes,[{route_id:'O1'}]);
+  const hidden=referenceOverlayModel(flow,{routes:false,points:false,landingSites:false});
+  assert.equal(hidden.referenceRoutes.length,0);
+  assert.equal(hidden.referencePoints.length,0);
+  assert.equal(hidden.referenceLandingSites.length,0);
+  assert.equal(hidden.scenarioRoutes.length,1);
+  assert.equal(hidden.operationalRoutes.length,1);
+});
+
+test('map exposes independent source airspace confirmed allowed and reference layer toggles',()=>{
+  const html=readFileSync(new URL('../cns_planner/web/index.html',import.meta.url),'utf8');
+  for(const id of ['allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer'])assert.match(html,new RegExp('id="'+id+'"'));
+  assert.match(html,/空域源图层（非政策结论）/);
+  assert.match(html,/适飞空域（confirmed allowed）/);
+  assert.match(html,/不代表已确认 WGS84/);
 });
 
 test('step 4 canonical seconds create exact V1 aliases',()=>{

@@ -53,12 +53,35 @@ def _route(grid, start_id="G-1-0", goal_id="G-1-2"):
     return {"route_id": "R1", "start": centers[start_id], "end": centers[goal_id]}
 
 
+def _eligibility(grid, allowed=None, edges=None, status="passed", fingerprint="allowed-v1"):
+    graph = GridGraph(grid["cells"])
+    allowed = set(allowed or graph.cells)
+    if edges is None:
+        edges = [
+            [left, right]
+            for left in sorted(allowed)
+            for right in graph.neighbors(left)
+            if left < right and right in allowed
+        ]
+    return {
+        "status": status,
+        "algorithm_id": "confirmed-airspace-eligibility",
+        "algorithm_version": "1.0",
+        "fingerprint": fingerprint,
+        "feature_fingerprint": "features-v1",
+        "policy_fingerprint": "policy-v1",
+        "allowed_grid_ids": sorted(allowed),
+        "connector_safe_grid_ids": sorted(allowed),
+        "allowed_edges": edges,
+    }
+
+
 def test_lambda_zero_shortest_and_positive_lambda_avoids_high_risk():
     grid = _grid()
     risk = _risk(grid, {"G-1-1": 0.95})
     route = _route(grid)
-    shortest = RiskAwareRoutePlannerV2({"risk_weight_lambda": 0}).plan(route, grid, risk, [])
-    avoided = RiskAwareRoutePlannerV2({"risk_weight_lambda": 10}).plan(route, grid, risk, [])
+    shortest = RiskAwareRoutePlannerV2({"risk_weight_lambda": 0}).plan(route, grid, risk, [], _eligibility(grid))
+    avoided = RiskAwareRoutePlannerV2({"risk_weight_lambda": 10}).plan(route, grid, risk, [], _eligibility(grid))
 
     assert shortest["grid_path"] == ["G-1-0", "G-1-1", "G-1-2"]
     assert "G-1-1" not in avoided["grid_path"]
@@ -73,7 +96,7 @@ def test_risk_exposure_formula_metric_distance_and_v2_contract():
     grid = _grid(2, 1)
     risk = _risk(grid, {"G-0-0": 0.2, "G-0-1": 0.6})
     route = _route(grid, "G-0-0", "G-0-1")
-    result = RiskAwareRoutePlannerV2({"risk_weight_lambda": 2, "risk_component": "ground"}).plan(route, grid, risk, [])
+    result = RiskAwareRoutePlannerV2({"risk_weight_lambda": 2, "risk_component": "ground"}).plan(route, grid, risk, [], _eligibility(grid))
     expected_distance = distance_m(route["start"], route["end"])
 
     assert result["status"] == "passed"
@@ -93,7 +116,7 @@ def test_unknown_risk_blocks_by_default_or_uses_explicit_penalty():
     grid = _grid(3, 1)
     route = _route(grid, "G-0-0", "G-0-2")
     risk = _risk(grid, missing={"G-0-1"}, status="missing_data")
-    blocked = RiskAwareRoutePlannerV2().plan(route, grid, risk, [])
+    blocked = RiskAwareRoutePlannerV2().plan(route, grid, risk, [], _eligibility(grid))
     assert blocked["status"] == "missing_data"
     assert blocked["path"] == []
 
@@ -101,7 +124,7 @@ def test_unknown_risk_blocks_by_default_or_uses_explicit_penalty():
         RiskAwareRoutePlannerV2({"unknown_risk_policy": "penalize"})
     penalized = RiskAwareRoutePlannerV2({
         "unknown_risk_policy": "penalize", "unknown_penalty_index": 0.8,
-    }).plan(route, grid, risk, [])
+    }).plan(route, grid, risk, [], _eligibility(grid))
     assert penalized["status"] == "passed"
     assert penalized["grid_path"] == ["G-0-0", "G-0-1", "G-0-2"]
     assert penalized["mean_risk_index"] > 0.4
@@ -111,12 +134,12 @@ def test_optional_threshold_and_stale_risk_are_explicit():
     grid = _grid(3, 1)
     route = _route(grid, "G-0-0", "G-0-2")
     threshold = RiskAwareRoutePlannerV2({"max_relative_risk_index": 0.5}).plan(
-        route, grid, _risk(grid, {"G-0-1": 0.8}), [],
+        route, grid, _risk(grid, {"G-0-1": 0.8}), [], _eligibility(grid),
     )
     assert threshold["status"] == "failed"
     assert threshold["risk_threshold_semantics"] == "engineering_relative_index_threshold_not_regulatory"
 
-    stale = RiskAwareRoutePlannerV2().plan(route, grid, _risk(grid, status="stale"), [])
+    stale = RiskAwareRoutePlannerV2().plan(route, grid, _risk(grid, status="stale"), [], _eligibility(grid))
     assert stale["status"] == "missing_data"
     assert "失效" in stale["reason"]
 
@@ -128,15 +151,55 @@ def test_hard_constraints_are_separate_and_diagonal_cannot_cut_blocked_corner():
         {"bbox": [0.001, 0.0, 0.002, 0.001]},
         {"bbox": [0.0, 0.001, 0.001, 0.002]},
     ]
-    result = RiskAwareRoutePlannerV2().plan(route, grid, _risk(grid), constraints)
+    result = RiskAwareRoutePlannerV2().plan(route, grid, _risk(grid), constraints, _eligibility(grid))
     assert result["status"] == "failed"
     assert result["grid_path"] == []
 
     start_blocked = RiskAwareRoutePlannerV2().plan(
-        route, grid, _risk(grid), [{"bbox": [0.0, 0.0, 0.001, 0.001]}],
+        route, grid, _risk(grid), [{"bbox": [0.0, 0.0, 0.001, 0.001]}], _eligibility(grid),
     )
     assert start_blocked["status"] == "failed"
     assert "起点或终点" in start_blocked["reason"]
+    hard_beats_stale_risk = RiskAwareRoutePlannerV2().plan(
+        route, grid, _risk(grid, status="stale"),
+        [{"bbox": [0.0, 0.0, 0.001, 0.001]}], _eligibility(grid),
+    )
+    assert hard_beats_stale_risk["status"] == "failed"
+    assert "硬约束" in hard_beats_stale_risk["reason"]
+
+
+def test_confirmed_allowed_is_mandatory_endpoint_checked_and_disconnected_fails():
+    grid = _grid(3, 1)
+    route = _route(grid, "G-0-0", "G-0-2")
+    planner = RiskAwareRoutePlannerV2()
+    missing = planner.plan(route, grid, _risk(grid), [], None)
+    assert missing["status"] == "missing_data"
+    assert "confirmed allowed" in missing["reason"]
+
+    outside = planner.plan(
+        route, grid, _risk(grid), [], _eligibility(grid, allowed={"G-0-1", "G-0-2"}),
+    )
+    assert outside["status"] == "failed"
+    assert "外" in outside["reason"]
+
+    disconnected = planner.plan(
+        route, grid, _risk(grid), [],
+        _eligibility(grid, allowed={"G-0-0", "G-0-2"}, edges=[]),
+    )
+    assert disconnected["status"] == "failed"
+    assert disconnected["path"] == []
+
+
+def test_risk_optimization_cannot_leave_allowed_graph():
+    grid = _grid(3, 2)
+    route = _route(grid, "G-0-0", "G-0-2")
+    allowed = {"G-0-0", "G-0-1", "G-0-2"}
+    risk = _risk(grid, {"G-0-1": 0.9, "G-1-0": 0.0, "G-1-1": 0.0, "G-1-2": 0.0})
+    result = RiskAwareRoutePlannerV2({"risk_weight_lambda": 100}).plan(
+        route, grid, risk, [], _eligibility(grid, allowed=allowed),
+    )
+    assert result["status"] == "passed"
+    assert set(result["grid_path"]) <= allowed
 
 
 def _dijkstra_cost(graph, risks, source, target, risk_lambda):
@@ -160,8 +223,8 @@ def test_astar_matches_dijkstra_and_is_deterministic_on_ties():
     risk = _risk(grid, {"G-1-1": 0.9})
     route = _route(grid)
     planner = RiskAwareRoutePlannerV2({"risk_weight_lambda": 4})
-    first = planner.plan(route, grid, risk, [])
-    assert first == planner.plan(route, grid, risk, [])
+    first = planner.plan(route, grid, risk, [], _eligibility(grid))
+    assert first == planner.plan(route, grid, risk, [], _eligibility(grid))
     graph = GridGraph(grid["cells"])
     values = {grid_id: value["overall"]["score"] for grid_id, value in risk["cells"].items()}
     assert first["optimization_cost"] == pytest.approx(
@@ -244,6 +307,7 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
     workflow.state["workspace"] = {"status": "passed", "bbox": [0, 0, 0.003, 0.001]}
     workflow.state["grid"] = grid
     workflow.state["grid_risk"] = _risk(grid)
+    workflow.state["grid_attributes"]["airspace"]["airspace_eligibility"] = _eligibility(grid)
     workflow.state["scenario_routes"] = [_route(grid, "G-0-0", "G-0-2")]
     workflow.select_algorithm({
         "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
@@ -258,3 +322,18 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
         "version": "2.0", "parameters": {"risk_weight_lambda": 2},
     })
     assert workflow.state["result_statuses"]["routes"] == "stale"
+
+
+def test_airspace_policy_change_marks_operational_and_route_dependents_stale(tmp_path):
+    workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    workflow.state["operational_routes"] = [{"route_id": "R1", "status": "passed", "path": []}]
+    _mark_route_downstream_passed(workflow)
+    workflow.set_airspace_policies({
+        "items": [{
+            "feature_id": "ASF-1", "route_eligibility": "allowed",
+            "confirmed": True, "source": "user_confirmation",
+        }]
+    })
+    assert workflow.state["operational_routes"][0]["status"] == "stale"
+    assert workflow.state["result_statuses"]["routes"] == "stale"
+    assert workflow.state["result_statuses"]["coverage"] == "stale"

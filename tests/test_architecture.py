@@ -26,7 +26,7 @@ def test_project_state_rejects_unknown_schema_without_mutation():
 
 def test_registry_declares_present_and_future_source_categories():
     source_ids = {item.id for item in DEFINITIONS}
-    assert {"basemap", "airspace", "population", "terrain", "buildings", "property_exposure", "obstacles", "infrastructure", "towers", "traffic", "existing_cns", "candidate_sites", "reference_landing_sites", "equipment_reference_catalog"} <= source_ids
+    assert {"basemap", "airspace", "population", "terrain", "buildings", "property_exposure", "obstacles", "infrastructure", "towers", "traffic", "existing_cns", "candidate_sites", "reference_landing_sites", "reference_routes", "equipment_reference_catalog"} <= source_ids
 
 
 def test_local_security_is_port_independent_but_same_origin():

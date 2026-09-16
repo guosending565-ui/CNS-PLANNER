@@ -42,6 +42,7 @@ from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
+from ..domain.airspace import normalize_airspace_policies
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
@@ -191,6 +192,8 @@ class WorkflowService:
     def aircraft_profiles_snapshot(self): return deepcopy(self.state.get("aircraft_profiles") or {})
     def device_catalog_snapshot(self): return deepcopy(self.state.get("device_catalog") or {})
     def reference_landing_sites_snapshot(self): return self.reference_data_service.landing_sites_snapshot()
+    def reference_routes_snapshot(self): return self.reference_data_service.routes_snapshot()
+    def airspace_policies_snapshot(self): return deepcopy(self.state.get("airspace_policies") or {})
     def equipment_reference_catalog_snapshot(self): return self.reference_data_service.equipment_catalog_snapshot()
     def required_cns_snapshot(self): return deepcopy(self.state.get("required_cns") or {})
     def cns_operation_context_snapshot(self): return self.requirement_recommendation_service.context_snapshot()
@@ -338,11 +341,30 @@ class WorkflowService:
     def clear_workspace(self): return self.workspace_service.clear_workspace()
     def add_node(self, coordinate, name=None): return self.route_service.add_node(coordinate, name)
     def import_reference_landing_sites(self, path): return self.reference_data_service.import_landing_sites(path)
+    def import_reference_routes(self, path): return self.reference_data_service.import_routes(path)
+    def set_airspace_policies(self, payload):
+        previous = self.state.get("airspace_policies")
+        current = normalize_airspace_policies(payload)
+        if current != previous:
+            self.state["airspace_policies"] = current
+            self.invalidation_service.workflow("airspace_policy")
+            airspace = (self.state.get("grid_attributes") or {}).get("airspace") or {}
+            if airspace.get("status") != "not_calculated":
+                airspace["status"] = "stale"
+                eligibility = airspace.setdefault("airspace_eligibility", {})
+                eligibility["status"] = "stale"
+            self.session.save()
+        return self.snapshot()
     def add_reference_landing_site(self, reference_site_id): return self.reference_data_service.add_landing_site_to_project(reference_site_id)
     def configure_reference_sources(self, paths, save=False):
-        path = (paths or {}).get("reference_landing_sites")
-        if path:
-            return self.reference_data_service.import_landing_sites(path, save=save)
+        landing_path = (paths or {}).get("reference_landing_sites")
+        route_path = (paths or {}).get("reference_routes")
+        if landing_path:
+            self.reference_data_service.import_landing_sites(landing_path, save=False)
+        if route_path:
+            self.reference_data_service.import_routes(route_path, save=False)
+        if save and (landing_path or route_path):
+            self.session.save()
         return self.snapshot()
     def delete_node(self, node_id): return self.route_service.delete_node(node_id)
     def generate_scenario(self, direction): return self.route_service.generate_scenario(direction)

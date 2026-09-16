@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from ..risk.v1 import RiskModelV1
 from ..data.mapping.airspace import AirspaceGridService
+from ..data.mapping.airspace_eligibility import empty_airspace_eligibility
 from ..data.mapping.conflict import ConflictGridService
 from ..data.mapping.population import PopulationGridService
 from ..data.mapping.terrain import TerrainGridService
@@ -46,8 +47,9 @@ from ..domain.requirement_policy import (
 )
 from ..domain.plan_review import empty_confirmed_plan, empty_plan_review
 from ..domain.reporting import empty_report_collection
+from ..domain.airspace import empty_airspace_policies, normalize_airspace_policies
 from ..reference_data import (
-    empty_equipment_reference_catalog, empty_reference_landing_sites,
+    empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
 )
 
@@ -134,6 +136,8 @@ def blank_project(defaults):
         "retired_route_ids": [], "scenario_routes": [],
         "operational_routes": [], "aircraft": None, "rules": None,
         "reference_landing_sites": empty_reference_landing_sites(),
+        "reference_routes": empty_reference_routes(),
+        "airspace_policies": empty_airspace_policies(),
         "equipment_reference_catalog": empty_equipment_reference_catalog(),
         "aircraft_profiles": empty_catalog("aircraft-cns-profile-catalog"),
         "selected_aircraft_profile_id": None,
@@ -210,6 +214,13 @@ def normalize_project(value, grid_service):
         raise ValueError("grid_attributes 格式无效")
     for name, empty in empty_grid_attributes().items():
         attributes.setdefault(name, empty)
+    airspace = attributes.get("airspace")
+    if isinstance(airspace, dict):
+        airspace.setdefault("features", [])
+        airspace.setdefault(
+            "airspace_eligibility",
+            empty_airspace_eligibility("missing_data", "旧项目未包含 confirmed allowed eligibility"),
+        )
     value.setdefault("grid_risk", RiskModelV1.empty())
     value.setdefault("traffic_simulation", None)
     value["spatial_3d"] = normalize_spatial_3d(value.get("spatial_3d"))
@@ -219,6 +230,8 @@ def normalize_project(value, grid_service):
     value.setdefault("service_timeline", RouteServiceTimelineV1.empty())
     value.setdefault("protection_envelope", TacticalProtectionEnvelopeV1.empty())
     value.setdefault("reference_landing_sites", empty_reference_landing_sites())
+    value.setdefault("reference_routes", empty_reference_routes())
+    value["airspace_policies"] = normalize_airspace_policies(value.get("airspace_policies"))
     equipment_reference = value.setdefault(
         "equipment_reference_catalog", empty_equipment_reference_catalog()
     )

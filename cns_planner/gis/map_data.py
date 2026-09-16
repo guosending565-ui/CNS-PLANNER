@@ -79,9 +79,14 @@ class MapData:
         return workspace_health(self.loaded, bbox)
 
     def grid_attributes(self, grid):
+        policies = (self.workflow_provider() or {}).get("airspace_policies") or {}
         return {"population": PopulationGridService().map(grid, self.paths.get("population")),
                 "terrain": TerrainGridService().map(grid, self.paths.get("terrain")),
-                "airspace": AirspaceGridService().map(grid, QgisAirspaceAdapter(self.local_layers, self.project, self.paths.get("basemap")))}
+                "airspace": AirspaceGridService().map(
+                    grid,
+                    QgisAirspaceAdapter(self.local_layers, self.project, self.paths.get("basemap")),
+                    policies,
+                )}
 
     def render(self, query):
         if self.loaded is None:

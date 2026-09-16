@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .airspace_eligibility import empty_airspace_eligibility
+
 
 class AirspaceGridService:
     algorithm_id = "airspace-grid-intersection"
@@ -18,12 +20,14 @@ class AirspaceGridService:
             "count": 0,
             "hit_count": 0,
             "cells": {},
+            "features": [],
+            "airspace_eligibility": empty_airspace_eligibility("not_calculated", "尚未计算"),
         }
         if message:
             result["message"] = message
         return result
 
-    def map(self, grid, adapter):
+    def map(self, grid, adapter, policies=None):
         cells = list((grid or {}).get("cells") or [])
         if not cells:
             return self.empty()
@@ -47,6 +51,11 @@ class AirspaceGridService:
                     "coverage_ratio": coverage_ratio,
                     "airspaces": airspaces,
                 }
+            eligibility = (
+                adapter.build_eligibility(cells, grid.get("workspace_bbox"), policies)
+                if callable(getattr(adapter, "build_eligibility", None))
+                else empty_airspace_eligibility()
+            )
             return {
                 "status": "passed",
                 "source": adapter.describe(),
@@ -56,6 +65,8 @@ class AirspaceGridService:
                 "count": len(cells),
                 "hit_count": hit_count,
                 "cells": result_cells,
+                "features": eligibility.get("features") or [],
+                "airspace_eligibility": eligibility,
             }
         except (OSError, ValueError, RuntimeError) as exc:
             result = self.empty("failed", adapter.describe(), str(exc))

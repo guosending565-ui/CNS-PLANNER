@@ -4,6 +4,8 @@ import {eventLonLat as projectEvent,lonLatToMercator,mercatorToLonLat,screenPoin
 import {buildGridOverlayCache,findGridCell as hitGridCell} from './map/grid_overlay.js';
 import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/renderer.js';
+import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay} from './map/reference_overlay.js';
+import {drawConfirmedAllowedAirspace} from './map/airspace_policy_overlay.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
@@ -16,6 +18,7 @@ import {createSourceCenter} from './sources/source_center.js';
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null;
+let selectedReference=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[]};
@@ -78,11 +81,14 @@ function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,dis
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
 function drawWorkflowOverlay(){
   if(!view||!flow)return;drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox);drawGridThemes();drawGridBoundaries();
+  if($('allowedAirspaceLayer')?.checked)drawConfirmedAllowedAirspace(ctx,screenPoint,flow.grid_attributes?.airspace);
   for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
   if(currentStep===3){
+    const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:$('referenceLandingLayer').checked});
+    drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
     const filters={workspace:flow.workspace,search:$('referenceSiteSearch')?.value||'',region:$('referenceSiteRegion')?.value||'',siteType:$('referenceSiteType')?.value||''};
-    for(const site of Step03.filterReferenceSites(flow.reference_landing_sites?.items||[],filters))drawCnsInputPoint(site.coordinate,site.possible_duplicate?'#8b6b2f':'#2b8c82','diamond');
+    if($('referenceLandingLayer').checked)for(const site of Step03.filterReferenceSites(flow.reference_landing_sites?.items||[],filters))drawCnsInputPoint(site.coordinate,site.possible_duplicate?'#8b6b2f':'#2b8c82','diamond');
   }
   const gapColors={C:'#d83b35',N:'#c26b16',S:'#9b3eb5'},gapToggles={C:'cLayer',N:'nLayer',S:'sLayer'};
   for(const route of flow.cns_gap_analysis?.status==='stale'?[]:(flow.cns_gap_analysis?.routes||[]))for(const subsystem of route.subsystems||[]){
@@ -232,8 +238,13 @@ function riskValue(component){return component?.status==='passed'&&Number.isFini
 function factorValue(factor){return factor?.status==='passed'?'归一化 '+GridTheme.formatNumber(factor.normalized)+' · contribution '+GridTheme.formatNumber(factor.contribution):statusText(factor?.status||'not_available');}
 canvas.addEventListener('click',event=>{
   const info=$('gridInfo');
-  if(interactionMode!=='pan'||!gridRenderCache.cells.length){info.hidden=true;return;}
+  if(interactionMode!=='pan'){info.hidden=true;return;}
   const [lon,lat]=eventLonLat(event);
+  if(currentStep===3){
+    const selected=hitReferenceObject(event);
+    if(selected){selectedReference=selected;info.hidden=true;renderWorkflow();paint();return;}
+  }
+  if(!gridRenderCache.cells.length){info.hidden=true;return;}
   const item=findGridCell(lon,lat);
   if(!item){info.hidden=true;return;}
   const rect=map.getBoundingClientRect();
@@ -242,6 +253,10 @@ canvas.addEventListener('click',event=>{
   info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
   info.hidden=false;
 });
+function hitReferenceObject(event){
+  const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top],overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:false});
+  return hitReferenceOverlay(click,overlay,screenPoint);
+}
 map.addEventListener('keydown',event=>{if(event.key==='+'||event.key==='=')zoom(.5);if(event.key==='-')zoom(2);});
 $('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
 for(const id of ['air','pop','terrain'])$(id).onchange=queue;
@@ -275,7 +290,7 @@ $('terrainOpacity').oninput=()=>{
   queue();
 };
 $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer'])$(id).onchange=()=>{
+for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer'])$(id).onchange=()=>{
   if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
   if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
   updateGridNotice();
@@ -307,7 +322,7 @@ function renderWorkflow(){
     : ('项目保存位置：'+(storage.directory||'未选择'));
 
   const steps=[Step01,Step02,Step03,Step04,Step05,Step06],step=steps[currentStep-1];
-  panel.innerHTML=step.render({state,flow,draftWorkspace,gridDisplay,interactionMode,populationDisplayLabel,formatNumber:GridTheme.formatNumber});
+  panel.innerHTML=step.render({state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber});
   step.bind(stepBindings());
 }
 
@@ -315,6 +330,7 @@ function stepBindings(){return {
   $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
+  selectReference(value){selectedReference=value;renderWorkflow();paint();},
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
   startWorkspace(){interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},

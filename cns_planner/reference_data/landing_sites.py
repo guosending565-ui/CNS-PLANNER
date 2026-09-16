@@ -32,6 +32,16 @@ _DECIMAL_PAIR = re.compile(
     r"^\s*(?P<lon>-?\d{2,3}(?:\.\d+)?)\s*[,，/\s]+"
     r"(?P<lat>-?\d{1,2}(?:\.\d+)?)\s*$"
 )
+_HEADER_ALIASES = {
+    "serial": ("序号", "编号"),
+    "site_type": ("起降设施分类", "起降设施类型", "设施分类", "设施类型", "类型"),
+    "region": ("所属县区", "行政区域", "所属区域", "县区", "区域"),
+    "location": ("具体位置", "位置", "点位名称", "起降点名称", "名称"),
+    "coordinate": ("经纬度信息", "经纬度", "坐标信息", "坐标"),
+    "area_m2": ("占地面积", "面积"),
+    "completed_time": ("建成时间", "建设时间"),
+    "remarks": ("备注",),
+}
 
 
 def empty_reference_landing_sites():
@@ -139,41 +149,79 @@ def _site_type(value, name):
     return None
 
 
-def _record_from_row(values, source_file, sheet, row_number):
+def _normalized_text(value):
+    return re.sub(r"[\s\n\r\t（）()：:，,/_-]+", "", str(value or "")).casefold()
+
+
+def _header_map(values):
+    result = {}
+    normalized = [_normalized_text(value) for value in values]
+    for key, aliases in _HEADER_ALIASES.items():
+        for index, value in enumerate(normalized):
+            if any(_normalized_text(alias) in value for alias in aliases):
+                result[key] = index
+                break
+    return result if "serial" in result and "coordinate" in result else None
+
+
+def _looks_like_region(value):
+    text = str(value or "").strip()
+    return bool(text) and any(text.endswith(suffix) for suffix in ("区", "县", "市", "新区", "管委会", "功能区"))
+
+
+def _record_from_row(values, source_file, sheet, row_number, headers=None):
     cells = list(values[:8]) + [None] * max(0, 8 - len(values))
-    if not isinstance(cells[0], (int, float)) and not str(cells[0] or "").strip().isdigit():
+    headers = headers or {}
+    serial_index = headers.get("serial", 0)
+    serial = cells[serial_index] if serial_index < len(cells) else None
+    if not isinstance(serial, (int, float)) and not str(serial or "").strip().isdigit():
         return None
-    coordinate_index = next(
+    coordinate_index = headers.get("coordinate")
+    if coordinate_index is None:
+        coordinate_index = next(
         (index for index, value in enumerate(cells) if isinstance(value, str) and _COORDINATE_HINT.search(value)),
         None,
     )
-    if coordinate_index not in (3, 4):
+    if coordinate_index is None or coordinate_index >= len(cells):
         return None
     coordinate_raw = cells[coordinate_index]
     parsed = parse_coordinate(coordinate_raw)
     warnings = list(parsed["warnings"])
-    if coordinate_index == 3:
-        region, name, explicit_type, location = cells[1], cells[2], None, cells[2]
+    location_index = headers.get("location", coordinate_index - 1)
+    location = cells[location_index] if 0 <= location_index < len(cells) else None
+    region_index, type_index = headers.get("region"), headers.get("site_type")
+    region = cells[region_index] if region_index is not None and region_index < len(cells) else None
+    explicit_type = cells[type_index] if type_index is not None and type_index < len(cells) else None
+    candidates = [
+        value for index, value in enumerate(cells[:coordinate_index])
+        if index not in (serial_index, location_index) and value not in (None, "")
+    ]
+    if region in (None, ""):
+        region = next((value for value in candidates if _looks_like_region(value)), None)
+    if explicit_type in (None, ""):
+        explicit_type = next((value for value in candidates if _site_type(value, value)), None)
+    name = location or explicit_type
+    if explicit_type and "起降" in str(explicit_type) and not location:
+        warnings.append("site_name_derived_from_type")
+    if not explicit_type:
         warnings.append("site_type_derived_from_name")
-    else:
-        region, location = cells[1 if row_number >= 55 else 2], cells[3]
-        explicit_type = cells[2] if row_number >= 55 else cells[1]
-        name = cells[3]
-        if row_number < 28 and explicit_type and "起降" in str(explicit_type) and str(explicit_type) not in (
-            "临时起降点", "临时起降点（暂无配套设施）", "起降点", "公共起降场",
-        ):
-            name = explicit_type
     site_type = _site_type(explicit_type, name)
-    identity = "|".join((source_file, sheet, str(row_number), str(name or ""), str(coordinate_raw or "")))
-    reference_site_id = "RLS-" + sha256(identity.encode("utf-8")).hexdigest()[:12].upper()
     raw = {f"column_{index + 1}": value for index, value in enumerate(cells) if value is not None}
     attributes = {}
-    if row_number < 28:
-        for key, value in (("area_m2", cells[5]), ("completed_time", cells[6]), ("remarks", cells[7])):
-            if value is not None:
-                attributes[key] = value
+    for key in ("area_m2", "completed_time", "remarks"):
+        index = headers.get(key)
+        if index is not None and index < len(cells) and cells[index] is not None:
+            attributes[key] = cells[index]
+    identity = "|".join((
+        _normalized_text(region), _normalized_text(site_type), _normalized_text(name),
+        _normalized_text(location),
+        ",".join(str(value) for value in (parsed["coordinate"] or [])),
+        _normalized_text(coordinate_raw) if parsed["coordinate"] is None else "",
+        "|".join(f"{key}={_normalized_text(value)}" for key, value in sorted(attributes.items())),
+    ))
     return {
-        "reference_site_id": reference_site_id,
+        "reference_site_id": None,
+        "_identity": identity,
         "name": str(name or location or f"来源行 {row_number}"),
         "region": None if region is None else str(region),
         "site_type": site_type,
@@ -212,6 +260,21 @@ def _mark_duplicates(items, threshold_m=75.0):
                     item["warnings"].append("possible_duplicate")
 
 
+def _assign_stable_ids(items):
+    groups = {}
+    for item in items:
+        groups.setdefault(item.pop("_identity"), []).append(item)
+    for identity, matches in groups.items():
+        digest = sha256(identity.encode("utf-8")).hexdigest()[:12].upper()
+        for index, item in enumerate(sorted(matches, key=lambda value: json_safe_raw(value["raw"])), 1):
+            suffix = f"-{index}" if len(matches) > 1 else ""
+            item["reference_site_id"] = f"RLS-{digest}{suffix}"
+
+
+def json_safe_raw(value):
+    return "|".join(f"{key}={value[key]}" for key in sorted(value))
+
+
 def _read_xlsx(path):
     try:
         from openpyxl import load_workbook
@@ -220,20 +283,32 @@ def _read_xlsx(path):
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         for sheet in workbook.worksheets:
+            headers = None
             for row_number, values in enumerate(sheet.iter_rows(min_col=1, max_col=8, values_only=True), 1):
-                yield sheet.title, row_number, values
+                candidate = _header_map(values)
+                if candidate:
+                    headers = candidate
+                    continue
+                yield sheet.title, row_number, values, headers
     finally:
         workbook.close()
 
 
 def _read_csv(path):
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        headers = None
         for row_number, values in enumerate(csv.reader(handle), 1):
-            yield path.stem, row_number, values
+            candidate = _header_map(values)
+            if candidate:
+                headers = candidate
+                continue
+            yield path.stem, row_number, values, headers
 
 
 def load_reference_landing_sites(path):
     source_path = Path(str(path or "")).expanduser()
+    if not source_path.is_file():
+        raise ValueError("参考起降点源路径必须是存在的具体文件")
     suffix = source_path.suffix.lower()
     if suffix == ".et":
         result = empty_reference_landing_sites()
@@ -245,14 +320,13 @@ def load_reference_landing_sites(path):
         return result
     if suffix not in (".xlsx", ".csv"):
         raise ValueError("参考起降点仅支持 XLSX 或 CSV；ET 需先转换")
-    if not source_path.is_file():
-        raise ValueError("参考起降点源文件不存在")
     reader = _read_xlsx(source_path) if suffix == ".xlsx" else _read_csv(source_path)
     items = []
-    for sheet, row_number, values in reader:
-        item = _record_from_row(values, source_path.name, sheet, row_number)
+    for sheet, row_number, values, headers in reader:
+        item = _record_from_row(values, source_path.name, sheet, row_number, headers)
         if item:
             items.append(item)
+    _assign_stable_ids(items)
     _mark_duplicates(items)
     quality_counts = {name: sum(item["quality"] == name for item in items) for name in ("parsed", "estimated", "uncertain", "invalid")}
     return {

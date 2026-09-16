@@ -1,0 +1,33 @@
+export function drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes,points}){
+  const labels=[];
+  for(const route of routes||[]){
+    drawLine(ctx,screenPoint,view,route.path,'#c83f8c',3,[10,5,2,5]);
+    if(view.res<1800&&route.path?.length){const point=route.path[Math.floor(route.path.length/2)],screen=screenPoint(point);drawLabel(ctx,route.name||route.route_number,screen[0]+7,screen[1]-7,labels);}
+  }
+  for(const point of points||[])drawPoint(ctx,view,screenPoint,point,labels);
+}
+
+function drawLabel(ctx,value,x,y,occupied){
+  const text=String(value||'').trim();if(!text)return;
+  const width=Math.min(150,Math.max(28,text.length*11)),box=[x-2,y-12,x+width,y+3];
+  if(occupied.some(other=>!(box[2]<other[0]||box[0]>other[2]||box[3]<other[1]||box[1]>other[3])))return;
+  occupied.push(box);ctx.save();ctx.font='600 10px Segoe UI';ctx.fillStyle='#fff';ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.strokeText(text,x,y);ctx.fillStyle='#74315d';ctx.fillText(text,x,y);ctx.restore();
+}
+
+function drawPoint(ctx,view,screenPoint,point,labels){
+  if(!Array.isArray(point.coordinate))return;const [x,y]=screenPoint(point.coordinate),endpoint=point.position==='endpoint';ctx.save();ctx.fillStyle=endpoint?'#f08a24':'#fff3c4';ctx.strokeStyle='#783b69';ctx.lineWidth=endpoint?2.5:1.5;ctx.beginPath();
+  if(endpoint)ctx.arc(x,y,6,0,Math.PI*2);else{ctx.moveTo(x,y-5);ctx.lineTo(x+5,y+4);ctx.lineTo(x-5,y+4);ctx.closePath();}ctx.fill();ctx.stroke();ctx.restore();
+  if(view.res<900)drawLabel(ctx,point.name||String(point.sequence),x+7,y-6,labels);
+}
+
+export function hitReferenceObject(click,overlay,screenPoint){
+  let best=null,bestDistance=Infinity;
+  for(const point of overlay.referencePoints||[]){const screen=screenPoint(point.coordinate),distance=Math.hypot(click[0]-screen[0],click[1]-screen[1]);if(distance<10&&distance<bestDistance){bestDistance=distance;best={kind:'point',id:point.reference_route_point_id};}}
+  if(best)return best;
+  for(const route of overlay.referenceRoutes||[]){const screens=(route.path||[]).map(screenPoint);for(let index=1;index<screens.length;index++){const distance=segmentDistance(click,screens[index-1],screens[index]);if(distance<7&&distance<bestDistance){bestDistance=distance;best={kind:'route',id:route.reference_route_id};}}}
+  return best;
+}
+
+function segmentDistance(point,left,right){
+  const dx=right[0]-left[0],dy=right[1]-left[1],length=dx*dx+dy*dy;if(!length)return Math.hypot(point[0]-left[0],point[1]-left[1]);const t=Math.max(0,Math.min(1,((point[0]-left[0])*dx+(point[1]-left[1])*dy)/length)),x=left[0]+t*dx,y=left[1]+t*dy;return Math.hypot(point[0]-x,point[1]-y);
+}

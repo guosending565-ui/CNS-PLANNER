@@ -19,7 +19,7 @@ from .constraints import hard_constraints, layer_extents
 
 gdal.UseExceptions()
 
-REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "equipment_reference_catalog")
+REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "reference_routes", "equipment_reference_catalog")
 
 
 @dataclass

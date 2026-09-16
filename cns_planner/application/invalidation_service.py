@@ -34,6 +34,11 @@ class InvalidationService:
         for name in affected:
             if name in state["result_statuses"]:
                 state["result_statuses"][name] = ledger.statuses[name].value
+        if "routes" in affected:
+            for route in state.get("operational_routes") or []:
+                if route.get("status") != "not_calculated":
+                    route["status"] = "stale"
+                    route["stale_reason"] = f"{changed}_changed"
         if "cns_gap" in affected and state.get("cns_gap_analysis", {}).get("status") != "not_calculated":
             state["cns_gap_analysis"]["status"] = "stale"
             state["result_statuses"]["cns_gap"] = "stale"

@@ -35,6 +35,9 @@ class RiskService:
         expected_ids = {cell["grid_id"] for cell in grid.get("cells", [])}
         clean, incoming = {}, results or {}
         current = self.session.state.get("grid_attributes") or empty_grid_attributes()
+        previous_airspace_fingerprint = (
+            (current.get("airspace") or {}).get("airspace_eligibility") or {}
+        ).get("fingerprint")
         for kind in self.MAPPED_ATTRIBUTES:
             result = deepcopy(incoming.get(kind))
             self._validate_attribute(kind, result, grid, expected_ids, required=True)
@@ -46,6 +49,11 @@ class RiskService:
             self._validate_attribute(kind, result, grid, expected_ids, required=False)
             clean[kind] = result
         self.session.state["grid_attributes"] = clean
+        current_airspace_fingerprint = (
+            (clean.get("airspace") or {}).get("airspace_eligibility") or {}
+        ).get("fingerprint")
+        if previous_airspace_fingerprint != current_airspace_fingerprint:
+            self.invalidation.workflow("airspace_policy")
         profiles = self.session.state.setdefault("data_source_profiles", {})
         for kind in ("population", "terrain"):
             if isinstance(clean[kind].get("source_profile"), dict):
