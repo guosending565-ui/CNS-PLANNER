@@ -40,3 +40,4 @@ outputs/
 *.swo
 *~
 project_tree.txt
+cns_planner/web/js/*.backup
