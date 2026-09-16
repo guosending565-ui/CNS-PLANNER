@@ -66,6 +66,8 @@ class ApiRouter:
         if path == "/api/service-timeline": return Response(workflow.service_timeline_snapshot())
         if path == "/api/protection-envelope": return Response(workflow.protection_envelope_snapshot())
         if path == "/api/cns/safety-policy": return Response(workflow.safety_policy_snapshot())
+        if path == "/api/building-clearance/policy": return Response(workflow.building_clearance_policy_snapshot())
+        if path == "/api/building-clearance": return Response(workflow.building_clearance_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
         if path == "/api/export/project": return Response(workflow.export_project())
@@ -151,6 +153,8 @@ class ApiRouter:
             "/api/cns-planning-report/preview": lambda: workflow.preview_cns_planning_report(payload),
             "/api/cns-planning-report/generate": lambda: workflow.generate_cns_planning_report(payload),
             "/api/cns/safety-policy": lambda: workflow.set_safety_policy(payload),
+            "/api/building-clearance/policy": lambda: workflow.set_building_clearance_policy(payload),
+            "/api/building-clearance/evaluate": lambda: context.qgis.call(context.evaluate_building_clearance),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
             "/api/spatial-3d/altitude-layers": lambda: workflow.set_altitude_layers(payload),
             "/api/spatial-3d/route-profile": lambda: workflow.set_route_altitude_profile(payload),
@@ -167,7 +171,7 @@ class ApiRouter:
             if action == "project": return Response(workflow.set_project(payload))
             if action == "workspace":
                 health = context.qgis.call(lambda: data.workspace_health(payload.get("bbox")))
-                workflow.set_workspace(payload.get("bbox"), health)
+                workflow.set_workspace(payload.get("bbox"), health, payload.get("grid_level"))
                 results = context.qgis.call(lambda: data.grid_attributes(workflow.grid_snapshot()))
                 return Response(workflow.apply_grid_attributes(results))
             actions = {
@@ -191,7 +195,17 @@ class ApiRouter:
             return Response(actions[action]())
         if path not in ("/api/sources", "/api/data-sources", "/api/data-sources/validate"):
             return Response({"error": "未找到"}, status=404)
-        clean = {key: payload.get(key, "") for key in ("basemap", "population", "terrain")}
+        clean = {
+            key: payload.get(key, "")
+            for key in (
+                "basemap",
+                "population",
+                "terrain",
+                "terrain_dtm",
+                "buildings",
+                "building_grid",
+            )
+        }
         if path == "/api/data-sources/validate":
             from ..gis.map_data import MapData
             return Response(context.qgis.call(lambda: MapData.validate_candidate(clean, default_config=context.default_config, token=context.token)))

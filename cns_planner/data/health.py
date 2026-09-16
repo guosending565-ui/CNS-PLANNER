@@ -14,16 +14,37 @@ def build_health(metadata: dict, workspace_bbox=None) -> dict:
             ok = bool(metadata.get("layers")) and not metadata.get("error")
             status, message = (("ready", f"已读取 {len(metadata.get('layers', []))} 个本地图层") if ok else ("error", metadata.get("error") or "QGIS 项目不可用"))
             checks = _spatial_checks(ok, workspace_bbox)
-        elif source_id in ("population", "terrain"):
+        elif source_id in ("population", "terrain", "terrain_dtm"):
             raster = metadata.get(source_id, {})
             ok = bool(raster.get("width") and raster.get("bands") and raster.get("crs"))
-            label = "人口 GeoTIFF" if source_id == "population" else "地形 DEM"
+            label = "人口 GeoTIFF" if source_id == "population" else "FABDEM DTM" if source_id == "terrain_dtm" else "地形 DSM"
             status, message = (("ready", f"{raster.get('width')} × {raster.get('height')}，{raster.get('crs')}") if ok else ("error" if source["required"] else "warning", metadata.get("error") or f"{label} 不可用"))
             checks = [
                 {"name": "有效波段", "status": "passed" if raster.get("bands") else "failed"},
                 {"name": "CRS 有效", "status": "passed" if raster.get("crs") else "failed"},
                 {"name": "NoData 已识别", "status": "passed" if raster.get("nodata") not in (None, "None") else "warning"},
                 {"name": "单位与来源", "status": _verification_status(source)},
+                {"name": "覆盖当前工作区", "status": "pending_workspace" if workspace_bbox is None else "not_calculated"},
+            ]
+            if source_id == "terrain_dtm":
+                checks.extend([
+                    {"name": "DTM 数据类型", "status": "passed" if raster.get("dtype") else "failed"},
+                    {"name": "范围有效", "status": "passed" if raster.get("extent") else "failed"},
+                    {"name": "垂向基准", "status": "passed" if raster.get("vertical_status") == "confirmed" else "pending_confirmation"},
+                ])
+        elif source_id in ("buildings", "building_grid"):
+            vector = (metadata.get("vector_sources") or {}).get(source_id) or {}
+            ok = vector.get("status") == "passed" and vector.get("feature_count") is not None
+            status, message = (
+                ("ready", f"{vector.get('layer')} · {vector.get('feature_count', 0):,} 条 · {vector.get('crs')}")
+                if ok else ("warning", "未配置或内容校验未通过")
+            )
+            checks = [
+                {"name": "GeoPackage 可读", "status": "passed" if ok else "failed"},
+                {"name": "Polygon geometry", "status": "passed" if "POLYGON" in str(vector.get("geometry_type", "")).upper() else "failed"},
+                {"name": "CRS 有效", "status": "passed" if vector.get("crs") else "failed"},
+                {"name": "关键字段", "status": "passed" if vector.get("fields") else "failed"},
+                {"name": "空间索引", "status": "passed" if vector.get("spatial_index") else "warning"},
                 {"name": "覆盖当前工作区", "status": "pending_workspace" if workspace_bbox is None else "not_calculated"},
             ]
         elif source_id == "online_map":

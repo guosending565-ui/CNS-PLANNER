@@ -45,6 +45,19 @@ test('population theme prefers governed target-grid density and excludes partial
   assert.deepEqual(cache.populationBreaks,[25]);
 });
 
+test('building grid cache preserves zero versus missing and exposes three theme breaks',()=>{
+  const grid={cells:[{grid_id:'A',bbox:[120,30,121,31]},{grid_id:'B',bbox:[121,30,122,31]}]};
+  const attributes={population:{cells:{}},terrain:{cells:{}},buildings:{status:'missing_data',cells:{
+    A:{status:'passed',building_coverage_ratio:0,height_p95_m:null,height_max_m:null},
+    B:{status:'missing_data',building_coverage_ratio:null,height_p95_m:null,height_max_m:null}
+  }}};
+  const theme={quantileBreaks:values=>values,bboxContainsHalfOpen:()=>true};
+  const cache=buildGridOverlayCache(grid,attributes,{},theme);
+  assert.deepEqual(cache.buildingCoverageBreaks,[0]);
+  assert.equal(cache.byId.get('A').buildings.status,'passed');
+  assert.equal(cache.byId.get('B').buildings.status,'missing_data');
+});
+
 test('algorithm selection key includes type id and exact version',()=>{
   assert.equal(algorithmSelectionKey({algorithm_type:'risk_model',algorithm_id:'risk-model-v1-relative-index',version:'1.1'}),'risk_model|risk-model-v1-relative-index|1.1');
 });
@@ -96,7 +109,7 @@ test('step 3 overlay keeps reference route points scenario and operational route
 
 test('map exposes independent source airspace confirmed allowed and reference layer toggles',()=>{
   const html=readFileSync(new URL('../cns_planner/web/index.html',import.meta.url),'utf8');
-  for(const id of ['allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer'])assert.match(html,new RegExp('id="'+id+'"'));
+  for(const id of ['allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','terrain_dtmPath'])assert.match(html,new RegExp('id="'+id+'"'));
   assert.match(html,/空域源图层（非政策结论）/);
   assert.match(html,/适飞空域（confirmed allowed）/);
   assert.match(html,/不代表已确认 WGS84/);
@@ -146,9 +159,15 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   const step5=renderStep5({flow:base});
   assert.match(step2,/EGM2008 orthometric/);
   assert.match(step2,/3D 高度层/);
+  assert.match(step2,/建筑密度/);
+  assert.match(step2,/P95 建筑高度/);
+  assert.match(step2,/最大建筑高度/);
+  assert.match(step2,/L8（建筑环境直接映射）/);
   assert.match(step3,/Route 3D Altitude Profile/);
   assert.match(step3,/Route Motion Profile/);
   assert.match(step3,/参考起降点/);
+  assert.match(step3,/三维建筑净空/);
+  assert.match(step3,/unknown\/unresolved 永远不视为 safe/);
   assert.match(step3,/reference_landing_sites 与 flow.nodes 严格分离/);
   assert.match(step5,/3D Geometric Coverage/);
   assert.match(step5,/几何覆盖 ≠ 真实 CNS 性能/);

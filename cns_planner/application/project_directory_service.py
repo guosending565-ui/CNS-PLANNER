@@ -8,6 +8,7 @@ from ..persistence.project_repository import ProjectRepository
 
 class ProjectDirectoryService:
     REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "reference_routes", "equipment_reference_catalog")
+    SPATIAL_SOURCE_KEYS = ("terrain_dtm", "buildings", "building_grid")
     def __init__(self, automatic_file, defaults_path, default_sources, workflow_factory):
         self.automatic_file = Path(automatic_file)
         self.defaults_path = Path(defaults_path)
@@ -68,6 +69,11 @@ class ProjectDirectoryService:
                 for key in self.REFERENCE_SOURCE_KEYS
                 if saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key)
             })
+            clean.update({
+                key: saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key, "")
+                for key in self.SPATIAL_SOURCE_KEYS
+                if saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key)
+            })
             current_data.load(clean, persist=False)
         return candidate, target
 
@@ -91,6 +97,10 @@ class ProjectDirectoryService:
         result = {key: paths.get(key, "") for key in ("basemap", "population", "terrain")}
         result.update({
             key: paths[key] for key in ProjectDirectoryService.REFERENCE_SOURCE_KEYS
+            if paths.get(key)
+        })
+        result.update({
+            key: paths[key] for key in ProjectDirectoryService.SPATIAL_SOURCE_KEYS
             if paths.get(key)
         })
         return result

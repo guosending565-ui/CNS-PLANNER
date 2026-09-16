@@ -390,6 +390,14 @@ Step 03 新增真实参考航线、真实航路点、参考起降点三个独立
 
 空域模型新增 AirspaceFeature 与 AirspacePolicy。只有 `confirmed=true && route_eligibility=allowed` 的 Polygon/MultiPolygon 进入 JSON-safe `airspace_eligibility`；V2 无 confirmed allowed 时为 missing_data，端点不在允许区、允许区不连通或无完整合法路径时为 failed。网格仅作搜索索引：cell 必须完整覆盖，中心边、对角 guard 与真实端点连接均受完整几何覆盖约束；hard constraints 优先，risk 只在 allowed graph 内优化。geometry/policy fingerprint 进入运行航路 provenance，变化会使 operational routes 及下游结果 stale；旧 schema-v2 项目自动 backfill。当前自动恢复项目尚无工作区、无已确认 AirspacePolicy，项目状态计数为 allowed/blocked/unknown = **0/0/0**，不能生成 V2 运行航路。
 
+FABDEM/GBA 建筑阶段完整结果：**389 passed, 6 skipped**；Node 前端 **21 passed, 0 failed**；Python compile 与全部新增/修改 JS 语法检查通过。真实源内容已核验：FABDEM V1.2 DTM 为 7200×10800、Float32、NoData=-9999、EPSG:4326、1 arc-second，文件元数据明确 `EGM2008_orthometric`；GBA buildings 为 538,228 个 MULTIPOLYGON、EPSG:4326、带 RTree，字段包含 `id/source/height_m/height_var/height_status`；L8 building grid 为 143,013 个 POLYGON、EPSG:4326，聚合字段与本阶段契约一致。真实 L8 小工作区直接映射验证为 **324/324** 格覆盖。
+
+建筑环境链为 `building_grid → BuildingGridService → grid_attributes.buildings → density/P95/max themes → optional RiskModelV1 building_exposure`。只允许 L8 通过 cell bounds 精确直映，不读取预处理 `grid_key` 作为正式编码；非 L8 显式 unsupported，不做高度平均/插值；范围外为 missing_data，范围内无记录才是 0。RiskModelV1 的 `building_additive_multiplier=0` 与建筑 completeness weight=0 保持不变。
+
+三维建筑净空链为 `FABDEM footprint-mask median ground + GBA height_m → LoD1 prism → indexed route corridor candidates → polygon buffer/route continuous intersection → canonical EGM2008 vertical comparison → breach/safe/unknown intervals`。`GLO-30 DSM` 继续用于原有地形链，明确禁止用于屋顶公式；`height_var` 只保留为原始不确定性字段。新 `building_clearance_policy`/`building_clearance_assessment` 与 CNS Safety Event、grid risk 独立，未确认参数或垂向/高度/DTM 未解析时永不输出 confirmed safe。运行查询使用 provider spatial index，状态只保存候选/关键建筑及 breach 证据，不序列化全量单体。
+
+数据源 `terrain_dtm/buildings/building_grid` 已进入默认/项目路径、保存恢复、统一设置、浏览器、registry/profile/health 与 mtime 失效；workspace/grid、三类数据源、运行航路、spatial_3d/高度剖面、policy 变化均定向使建筑结果 stale。Step 02 提供 L8 显式选择、三类专题与状态；Step 03 提供参数来源/confirmed、执行、汇总、critical buildings 和地图 breach 图层；P19 新增“建筑环境与建筑净空安全”章节与限制声明。当前命令行环境的 QGIS PyQt DLL 仍无法装载，因此真实 QGIS 几何/GUI HTTP 集成需在正常 QGIS 启动器进程手工验收；GDAL 与真实 GeoPackage/DTM 内容、RTree 及 L8 映射已在本机验证。
+
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
@@ -443,5 +451,5 @@ Step 03 新增真实参考航线、真实航路点、参考起降点三个独立
 2. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
 3. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
 4. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
-5. 接入建筑/财产/基础设施真实映射，保持 `grid_attributes` 原始属性与 `grid_risk` 派生结果分离。
+5. 在正常 QGIS 桌面启动器进程中手工验证真实航路的建筑 polygon/DTM mask 净空结果，确认项目水平/垂直阈值来源；财产/基础设施仍待后续真实映射。
 6. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

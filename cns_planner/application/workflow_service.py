@@ -42,6 +42,8 @@ from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
+from .building_clearance_service import BuildingClearanceService
+from ..algorithms.building_clearance import BuildingClearanceV1
 from ..domain.airspace import normalize_airspace_policies
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
@@ -171,6 +173,9 @@ class WorkflowService:
         self.report_service = PlanningReportService(
             self.session, self.export_service, self.algorithm_registry.catalog, snapshot,
         )
+        self.building_clearance_service = BuildingClearanceService(
+            self.session, BuildingClearanceV1(), self.invalidation_service, snapshot,
+        )
 
     def save(self): self.session.save()
 
@@ -218,6 +223,8 @@ class WorkflowService:
     def cns_plan_review_snapshot(self): return self.plan_review_service.snapshot_result()
     def cns_planning_report_snapshot(self): return self.report_service.result_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
+    def building_clearance_policy_snapshot(self): return self.building_clearance_service.policy_snapshot()
+    def building_clearance_snapshot(self): return self.building_clearance_service.assessment_snapshot()
     def algorithms_snapshot(self):
         return {
             "status": "passed", "selection": deepcopy(self.state["algorithm_selection"]),
@@ -337,7 +344,7 @@ class WorkflowService:
         return {"1": True, "2": workspace_ok, "3": routes_ok, "4": rules_ok, "5": coverage_ok, "6": coverage_ok}
 
     def set_project(self, payload): return self.project_service.set_project(payload)
-    def set_workspace(self, bbox, health): return self.workspace_service.set_workspace(bbox, health)
+    def set_workspace(self, bbox, health, preferred_grid_level=None): return self.workspace_service.set_workspace(bbox, health, preferred_grid_level)
     def clear_workspace(self): return self.workspace_service.clear_workspace()
     def add_node(self, coordinate, name=None): return self.route_service.add_node(coordinate, name)
     def import_reference_landing_sites(self, path): return self.reference_data_service.import_landing_sites(path)
@@ -401,6 +408,8 @@ class WorkflowService:
     def generate_cns_planning_report(self, payload=None): return self.report_service.generate(payload)
     def cns_planning_report_artifact(self, report_id, kind): return self.report_service.artifact(report_id, kind)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
+    def set_building_clearance_policy(self, payload): return self.building_clearance_service.set_policy(payload)
+    def evaluate_building_clearance(self, adapter): return self.building_clearance_service.evaluate(adapter)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()

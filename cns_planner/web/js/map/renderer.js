@@ -13,15 +13,16 @@ export function drawWorkspace(ctx,screenPoint,bbox,color='#147ac3'){
 
 export function drawGridTheme(options){
   const {ctx,view,flow,cache,display,visibleBounds,screenPoint,gridTheme,palettes,riskBreaks}=options;
-  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict'}[display.theme]||null;
+  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[display.theme]||null;
   const riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[display.theme]||null;
   if(!view||(!kind&&!riskKind))return;
   const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),usable=result.status==='passed'||result.status==='missing_data';
-  const breaks=kind?(kind==='population'?cache.populationBreaks:kind==='terrain'?cache.terrainBreaks:riskBreaks):riskBreaks;
-  const palette=kind?(kind==='population'?palettes.population:kind==='terrain'?palettes.terrain:palettes.risk):palettes.risk,visible=visibleBounds();ctx.save();
+  const buildingBreaks={building_density:cache.buildingCoverageBreaks,building_p95:cache.buildingP95Breaks,building_max:cache.buildingMaxBreaks};
+  const breaks=kind?(kind==='population'?cache.populationBreaks:kind==='terrain'?cache.terrainBreaks:kind==='buildings'?buildingBreaks[display.theme]:riskBreaks):riskBreaks;
+  const palette=kind?(kind==='population'?palettes.population:kind==='terrain'?palettes.terrain:kind==='buildings'?palettes.buildings:palettes.risk):palettes.risk,visible=visibleBounds();ctx.save();
   for(const item of cache.cells){
     const bbox=item.cell.bbox;if(!gridTheme.bboxIntersects(bbox,visible))continue;
-    const attributes=kind?item[kind]:item.risk?.[riskKind],hasPopulationQuantity=Number.isFinite(attributes?.population_density_people_km2),populationValue=hasPopulationQuantity?(attributes.quantity_status==='passed'?attributes.population_density_people_km2:null):attributes?.value_mean,value=kind?(kind==='population'?populationValue:kind==='terrain'?attributes?.mean_elevation:kind==='traffic'?attributes?.traffic_density_norm:attributes?.conflict_rate_norm):attributes?.score;
+    const attributes=kind?item[kind]:item.risk?.[riskKind],hasPopulationQuantity=Number.isFinite(attributes?.population_density_people_km2),populationValue=hasPopulationQuantity?(attributes.quantity_status==='passed'?attributes.population_density_people_km2:null):attributes?.value_mean,buildingValue=display.theme==='building_density'?attributes?.building_coverage_ratio:display.theme==='building_p95'?attributes?.height_p95_m:attributes?.height_max_m,value=kind?(kind==='population'?populationValue:kind==='terrain'?attributes?.mean_elevation:kind==='buildings'?buildingValue:kind==='traffic'?attributes?.traffic_density_norm:attributes?.conflict_rate_norm):attributes?.score;
     const semanticStatus=kind==='population'&&hasPopulationQuantity?attributes.quantity_status:attributes?.status;
     const hasData=usable&&semanticStatus==='passed'&&Number.isFinite(value),southwest=screenPoint([bbox[0],bbox[1]]),northeast=screenPoint([bbox[2],bbox[3]]);
     ctx.globalAlpha=hasData ? .72 : .48;ctx.fillStyle=hasData?gridTheme.colorForValue(value,breaks,palette):gridTheme.NO_DATA_COLOR;

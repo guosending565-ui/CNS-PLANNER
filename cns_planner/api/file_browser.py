@@ -6,9 +6,18 @@ from pathlib import Path
 def browse(path, kind):
     folder_only = kind == "project"
     extensions = (
-        (".qgz", ".qgs") if kind == "basemap"
-        else (".tif", ".tiff") if kind in ("population", "terrain")
-        else (".json", ".csv", ".geojson") if kind in ("existing_cns", "candidate_sites")
+        (".qgz", ".qgs")
+        if kind == "basemap"
+
+        else (".tif", ".tiff")
+        if kind in ("population", "terrain", "terrain_dtm")
+
+        else (".gpkg",)
+        if kind in ("buildings", "building_grid")
+
+        else (".json", ".csv", ".geojson")
+        if kind in ("existing_cns", "candidate_sites")
+
         else ()
     )
     if not path:

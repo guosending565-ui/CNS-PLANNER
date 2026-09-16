@@ -14,22 +14,29 @@ from qgis.core import (
 )
 
 from ..persistence.data_source_repository import DataSourceRepository
-from ..data.source_profiles import COPERNICUS_GLO30, WORLDPOP_R2025A
+from ..data.source_profiles import COPERNICUS_GLO30, FABDEM_V12, WORLDPOP_R2025A
+from .source_inspection import inspect_geopackage
 from .constraints import hard_constraints, layer_extents
 
 gdal.UseExceptions()
 
 REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "reference_routes", "equipment_reference_catalog")
-
+OPTIONAL_VECTOR_SOURCE_KEYS = (
+    "buildings",
+    "building_grid",
+)
 
 @dataclass
 class LoadedSources:
     project: object
     population: object
     terrain: object
+    terrain_dtm: object
     paths: dict
     raster_info: dict
     terrain_info: dict
+    terrain_dtm_info: dict
+    vector_info: dict
     local_layers: list
     layers: list
     bounds: list
@@ -37,6 +44,7 @@ class LoadedSources:
     layer_boxes_wgs84: dict
     population_bbox_wgs84: list
     terrain_bbox_wgs84: list
+    terrain_dtm_bbox_wgs84: list
     hard_constraints: list
     online_sources: dict
 
@@ -57,7 +65,7 @@ class QgisSourceLoader:
         return paths
 
     def load(self, paths, persist=True):
-        qgz, pop_tif, terrain_tif = self._validate_paths(paths)
+        qgz, pop_tif, terrain_tif, terrain_dtm_tif = self._validate_paths(paths)
         project = QgsProject()
         if not project.read(str(qgz)):
             raise ValueError("无法读取 QGIS 项目")
@@ -70,6 +78,11 @@ class QgisSourceLoader:
             raise ValueError("项目中没有可用本地图层")
         population, population_info = self._load_population(pop_tif)
         terrain, terrain_info = self._load_terrain(terrain_tif)
+        terrain_dtm, terrain_dtm_info = self._load_terrain_dtm(terrain_dtm_tif) if terrain_dtm_tif else (None, {})
+        vector_info = {
+            key: inspect_geopackage(paths[key], key)
+            for key in OPTIONAL_VECTOR_SOURCE_KEYS if paths.get(key)
+        }
         projected_extents = layer_extents(local, project, self.map_crs)
         layers = [{"id": layer.id(), "name": layer.name(), "bbox": projected_extents[layer.id()]}
                   for layer in local if layer.id() in projected_extents]
@@ -79,23 +92,33 @@ class QgisSourceLoader:
         bounds = [min(box[0] for box in boxes), min(box[1] for box in boxes),
                   max(box[2] for box in boxes), max(box[3] for box in boxes)]
         clean_paths = {"basemap": str(qgz.resolve()), "population": str(pop_tif.resolve()), "terrain": str(terrain_tif.resolve())}
+        if terrain_dtm_tif:
+            clean_paths["terrain_dtm"] = str(terrain_dtm_tif.resolve())
         clean_paths.update({
             key: str(paths[key]) for key in REFERENCE_SOURCE_KEYS if paths.get(key)
         })
+        for key in OPTIONAL_VECTOR_SOURCE_KEYS:
+            if paths.get(key):
+                clean_paths[key] = str(
+                    Path(paths[key]).resolve()
+                )
         if persist:
             DataSourceRepository(self.settings_path).save(clean_paths)
         wgs84_extents = layer_extents(local, project, self.wgs84)
         pop_extent = QgsCoordinateTransform(population.crs(), self.wgs84, project).transformBoundingBox(population.extent())
         terrain_extent = QgsCoordinateTransform(terrain.crs(), self.wgs84, project).transformBoundingBox(terrain.extent())
+        terrain_dtm_extent = QgsCoordinateTransform(terrain_dtm.crs(), self.wgs84, project).transformBoundingBox(terrain_dtm.extent()) if terrain_dtm else None
         online_sources = self._online_sources(project)
         return LoadedSources(
-            project=project, population=population, terrain=terrain,
+            project=project, population=population, terrain=terrain, terrain_dtm=terrain_dtm,
             paths=clean_paths, raster_info=population_info, terrain_info=terrain_info,
+            terrain_dtm_info=terrain_dtm_info, vector_info=vector_info,
             local_layers=local, layers=layers, bounds=bounds,
             layer_boxes={item["id"]: QgsRectangle(*item["bbox"]) for item in layers},
             layer_boxes_wgs84=wgs84_extents,
             population_bbox_wgs84=self._bbox(pop_extent),
             terrain_bbox_wgs84=self._bbox(terrain_extent),
+            terrain_dtm_bbox_wgs84=self._bbox(terrain_dtm_extent) if terrain_dtm_extent else [],
             hard_constraints=hard_constraints(local, wgs84_extents),
             online_sources=online_sources,
         )
@@ -103,13 +126,83 @@ class QgisSourceLoader:
     @staticmethod
     def _validate_paths(paths):
         qgz, population, terrain = (Path(paths[key]) for key in ("basemap", "population", "terrain"))
+        terrain_dtm = Path(paths["terrain_dtm"]) if paths.get("terrain_dtm") else None
         if not qgz.is_file() or qgz.suffix.lower() not in (".qgz", ".qgs"):
             raise ValueError("底图请选择存在的 QGZ/QGS 项目文件")
         if not population.is_file() or population.suffix.lower() not in (".tif", ".tiff"):
             raise ValueError("人口数据请选择存在的 GeoTIFF 文件")
         if not terrain.is_file() or terrain.suffix.lower() not in (".tif", ".tiff"):
             raise ValueError("地形数据请选择存在的 GeoTIFF 文件")
-        return qgz, population, terrain
+        if terrain_dtm is not None and (not terrain_dtm.is_file() or terrain_dtm.suffix.lower() not in (".tif", ".tiff")):
+            raise ValueError("FABDEM DTM 请选择存在的 GeoTIFF 文件")
+        for key in OPTIONAL_VECTOR_SOURCE_KEYS:
+            value = paths.get(key)
+
+            if not value:
+                continue
+
+            source_path = Path(value)
+
+            if (
+                    not source_path.is_file()
+                    or source_path.suffix.lower() != ".gpkg"
+            ):
+                label = (
+                    "建筑单体"
+                    if key == "buildings"
+                    else "建筑环境网格"
+                )
+
+                raise ValueError(
+                    f"{label}请选择存在的 GPKG 文件"
+                )
+            inspect_geopackage(source_path, key)
+        return qgz, population, terrain, terrain_dtm
+
+    @staticmethod
+    def _load_terrain_dtm(path):
+        raster = QgsRasterLayer(str(path), "FABDEM bare-earth DTM")
+        if not raster.isValid() or not raster.crs().isValid():
+            raise ValueError("FABDEM DTM 无效或缺少 CRS")
+        dataset = gdal.Open(str(path), gdal.GA_ReadOnly)
+        if dataset is None or dataset.RasterCount < 1:
+            raise ValueError("无法读取 FABDEM DTM 栅格")
+        band, transform = dataset.GetRasterBand(1), dataset.GetGeoTransform()
+        metadata = dataset.GetMetadata() or {}
+        profile = deepcopy(FABDEM_V12)
+        observed_crs = raster.crs().authid() or raster.crs().description()
+        observed_pixel_size = [abs(transform[1]), abs(transform[5])]
+        profile["crs"] = {
+            **profile["crs"], "observed": observed_crs,
+            "observed_vertical": metadata.get("vertical_reference") or "unknown",
+        }
+        profile["resolution"] = {**profile["resolution"], "observed_pixel_size": observed_pixel_size}
+        profile["provenance"] = {**profile["provenance"], "path": str(path), "metadata": metadata}
+        profile["verification"] = {
+            **profile["verification"],
+            "status": "verified_from_raster_metadata" if metadata.get("vertical_reference") == "EGM2008_orthometric" else "pending_confirmation",
+        }
+        corners = [
+            gdal.ApplyGeoTransform(transform, 0, 0),
+            gdal.ApplyGeoTransform(transform, dataset.RasterXSize, 0),
+            gdal.ApplyGeoTransform(transform, 0, dataset.RasterYSize),
+            gdal.ApplyGeoTransform(transform, dataset.RasterXSize, dataset.RasterYSize),
+        ]
+        info = {
+            "width": dataset.RasterXSize, "height": dataset.RasterYSize,
+            "bands": dataset.RasterCount, "band": 1,
+            "crs": observed_crs, "nodata": band.GetNoDataValue(),
+            "pixel_size": observed_pixel_size,
+            "dtype": gdal.GetDataTypeName(band.DataType),
+            "extent": [min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)],
+            "unit": band.GetUnitType() or metadata.get("vertical_unit") or "m",
+            "quantity": "bare_earth_elevation", "surface_model": "DTM",
+            "vertical_reference": metadata.get("vertical_reference") or "unknown",
+            "vertical_status": "confirmed" if metadata.get("vertical_reference") == "EGM2008_orthometric" else "pending_confirmation",
+            "source_metadata": metadata, "source_profile": profile,
+        }
+        dataset = None
+        return raster, info
 
     @staticmethod
     def _load_population(path):

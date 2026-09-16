@@ -48,6 +48,10 @@ from ..domain.requirement_policy import (
 from ..domain.plan_review import empty_confirmed_plan, empty_plan_review
 from ..domain.reporting import empty_report_collection
 from ..domain.airspace import empty_airspace_policies, normalize_airspace_policies
+from ..domain.building_clearance import (
+    default_building_clearance_policy, empty_building_clearance_assessment,
+    normalize_building_clearance_assessment, normalize_building_clearance_policy,
+)
 from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
@@ -75,7 +79,8 @@ def empty_extension_attribute(name):
     return {
         "status": "not_calculated", "source": None,
         "algorithm_id": None, "algorithm_version": None,
-        "namespace": name, "grid_level": None, "count": 0, "cells": {},
+        "namespace": name, "grid_level": None, "count": 0, "covered_count": 0,
+        "metadata": {}, "cells": {},
     }
 
 
@@ -165,6 +170,8 @@ def blank_project(defaults):
         "cns_planning_reports": empty_report_collection(),
         "safety_policy": default_safety_policy(),
         "safety_assessment": empty_safety_assessment(),
+        "building_clearance_policy": default_building_clearance_policy(),
+        "building_clearance_assessment": empty_building_clearance_assessment(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
@@ -172,6 +179,7 @@ def blank_project(defaults):
                 "workspace", "grid", "environment_risk", "routes",
                 "coverage", "cns_gap", "cns_gap_v2", "cns_site_plan",
                 "closed_loop_assessment", "safety_assessment",
+                "building_clearance",
                 "cns_corridor_assessment",
                 "cns_corridor_gap_assessment",
                 "cns_corridor_site_plan",
@@ -275,6 +283,12 @@ def normalize_project(value, grid_service):
     value.setdefault("cns_planning_reports", empty_report_collection())
     value["safety_policy"] = normalize_safety_policy(value.get("safety_policy"))
     value.setdefault("safety_assessment", empty_safety_assessment())
+    value["building_clearance_policy"] = normalize_building_clearance_policy(
+        value.get("building_clearance_policy")
+    )
+    value["building_clearance_assessment"] = normalize_building_clearance_assessment(
+        value.get("building_clearance_assessment")
+    )
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_site_plan", "not_calculated")
@@ -285,6 +299,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("cns_plan_review", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("required_cns_recommendation", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("safety_assessment", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("building_clearance", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("coverage_3d", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("service_timeline", "not_calculated")

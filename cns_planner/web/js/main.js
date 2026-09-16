@@ -6,6 +6,7 @@ import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/renderer.js';
 import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay} from './map/reference_overlay.js';
 import {drawConfirmedAllowedAirspace} from './map/airspace_policy_overlay.js';
+import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
@@ -21,9 +22,10 @@ let currentStep=1,interactionMode='pan',renderController=null;
 let selectedReference=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
-let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[]};
+let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[]};
 const populationPalette=['#fff7bc','#fee391','#fec44f','#fe9929','#cc4c02'];
 const terrainPalette=['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c'];
+const buildingPalette=['#fff7ec','#fdd49e','#fc8d59','#d7301f','#7f0000'];
 const riskPalette=['#2ca25f','#99d8c9','#fee08b','#f46d43','#a50026'],riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan'}});
@@ -77,13 +79,14 @@ function rebuildGridRenderCache(){
   updateGridNotice();updateGridThemeLegend();
 }
 function findGridCell(lon,lat){return hitGridCell(gridRenderCache,lon,lat,GridTheme);}
-function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,display:gridDisplay,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme,palettes:{population:populationPalette,terrain:terrainPalette,risk:riskPalette},riskBreaks});}
+function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,display:gridDisplay,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme,palettes:{population:populationPalette,terrain:terrainPalette,buildings:buildingPalette,risk:riskPalette},riskBreaks});}
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
 function drawWorkflowOverlay(){
   if(!view||!flow)return;drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox);drawGridThemes();drawGridBoundaries();
   if($('allowedAirspaceLayer')?.checked)drawConfirmedAllowedAirspace(ctx,screenPoint,flow.grid_attributes?.airspace);
   for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
+  if($('buildingClearanceLayer')?.checked)drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
   if(currentStep===3){
     const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:$('referenceLandingLayer').checked});
     drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
@@ -173,16 +176,16 @@ function updateGridNotice(){
   notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
-  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
+  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
   if(!legend)return;
   legend.hidden=!kind&&!riskKind;
   if(!kind&&!riskKind)return;
-  const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:riskBreaks):riskBreaks;
+  const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),buildingBreaks={building_density:gridRenderCache.buildingCoverageBreaks,building_p95:gridRenderCache.buildingP95Breaks,building_max:gridRenderCache.buildingMaxBreaks},breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:kind==='buildings'?buildingBreaks[gridDisplay.theme]:riskBreaks):riskBreaks;
   const riskTitles={ground:'Ground Risk',airspace_constraint:'Airspace Constraint Risk',overall:'Overall Risk'};
-  const kindTitles={terrain:'平均高程',traffic:'Traffic Exposure',conflict:'Conflict Exposure'};
-  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:riskPalette):riskPalette,title=kind?(kind==='population'?'目标网格人口密度':kindTitles[kind]):riskTitles[riskKind];
+  const kindTitles={terrain:'平均高程',traffic:'Traffic Exposure',conflict:'Conflict Exposure',buildings:{building_density:'建筑密度',building_p95:'P95 建筑高度',building_max:'最大建筑高度'}[gridDisplay.theme]};
+  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:kind==='buildings'?buildingPalette:riskPalette):riskPalette,title=kind?(kind==='population'?'目标网格人口密度':kindTitles[kind]):riskTitles[riskKind];
   $('gridThemeLegendTitle').textContent=title;
-  $('gridThemeLegendUnit').textContent=riskKind||kind==='traffic'||kind==='conflict'?'0–1':kind==='terrain'?(result.elevation_unit||'m'):'person/km²';
+  $('gridThemeLegendUnit').textContent=riskKind||kind==='traffic'||kind==='conflict'?'0–1':kind==='terrain'?(result.elevation_unit||'m'):kind==='buildings'?(gridDisplay.theme==='building_density'?'ratio':'m'):'person/km²';
   $('gridThemeGradient').style.background='linear-gradient(to right,'+palette.join(',')+')';
   const ticks=$('gridThemeTicks');ticks.replaceChildren();
   const shown=breaks.length?[breaks[0],breaks[Math.floor((breaks.length-1)/2)],breaks[breaks.length-1]]:[];
@@ -191,6 +194,8 @@ function updateGridThemeLegend(){
   const path=result.source?.path||'',source=path.split(/[\\/]/).pop()||'未记录';
   $('gridThemeLegendNote').textContent=riskKind
     ? '相对风险指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · 完整度 '+GridTheme.formatNumber((result.data_completeness||0)*100)+'%'
+    : kind==='buildings'
+      ? 'GBA L8 来源参数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · 0 与无数据严格区分 · '+source+' · '+statusText(result.status||'not_calculated')
     : kind==='traffic'||kind==='conflict'
       ? '相对暴露指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · '+statusText(result.status||'not_calculated')
     : kind==='population'
@@ -199,7 +204,7 @@ function updateGridThemeLegend(){
 }
 function formatGridDetails(item){
   const cell=item.cell,populationResult=flow?.grid_attributes?.population||{},terrainResult=flow?.grid_attributes?.terrain||{};
-  const population=item.population||{},terrain=item.terrain||{},airspace=item.airspace||{},traffic=item.traffic||{},conflict=item.conflict||{},populationSamples=population.valid_sample_count||0,terrainSamples=terrain.valid_sample_count||0;
+  const population=item.population||{},terrain=item.terrain||{},buildings=item.buildings||{},airspace=item.airspace||{},traffic=item.traffic||{},conflict=item.conflict||{},populationSamples=population.valid_sample_count||0,terrainSamples=terrain.valid_sample_count||0;
   const populationValues=Number.isFinite(population.population_count_people)
     ? '人口数 '+GridTheme.formatNumber(population.population_count_people)+' person · 密度 '+GridTheme.formatNumber(population.population_density_people_km2)+' person/km² · 网格面积 '+GridTheme.formatNumber((population.grid_area_m2||0)/1000000)+' km²'
     : populationSamples?'兼容源像元统计 mean '+GridTheme.formatNumber(population.value_mean)+' · sum '+GridTheme.formatNumber(population.value_sum)+'（非人数）':'无数据';
@@ -220,6 +225,7 @@ function formatGridDetails(item){
   const airspaceSummary='空域：'+statusText(airspace.status||'no_coverage')+' · 命中图层 '+(airspace.intersected_layer_count||0)+(airspaceLines.length?'\n'+airspaceLines.join('\n'):' · 无命中');
   const trafficSummary='Traffic Exposure：'+statusText(traffic.status||'not_calculated')+' · flights '+(traffic.flight_count||0)+' · flight_seconds '+GridTheme.formatNumber(traffic.flight_seconds)+' · density '+GridTheme.formatNumber(traffic.traffic_density_raw)+' · normalized '+GridTheme.formatNumber(traffic.traffic_density_norm);
   const conflictSummary='Conflict Exposure：'+statusText(conflict.status||'not_calculated')+' · count '+(conflict.conflict_count||0)+' · rate '+GridTheme.formatNumber(conflict.conflict_rate)+' · normalized '+GridTheme.formatNumber(conflict.conflict_rate_norm);
+  const buildingSummary='建筑环境：'+statusText(buildings.status||'missing_data')+' · count '+GridTheme.formatNumber(buildings.building_count)+' · coverage '+GridTheme.formatNumber(buildings.building_coverage_ratio)+' · mean/P95/max '+GridTheme.formatNumber(buildings.height_mean_m)+' / '+GridTheme.formatNumber(buildings.height_p95_m)+' / '+GridTheme.formatNumber(buildings.height_max_m)+' m';
   const risk=item.risk||{},ground=risk.ground||{},operationalAir=risk.air||{},airspaceRisk=risk.airspace_constraint||{},overall=risk.overall||{},riskResult=flow?.grid_risk||{};
   const p=ground.contributors?.population||{},t=ground.contributors?.terrain||{};
   const riskSummary='Ground Risk：'+riskValue(ground)+'\n'+
@@ -232,7 +238,7 @@ function formatGridDetails(item){
   return cell.grid_id+' · L'+cell.level+'\n'+
     populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(population.quantity_status||'missing_data')+'\n'+
     'DEM：样本 '+terrainSamples+' · '+terrainValues+' · '+(terrainResult.unit_status||'单位来源未知')+' · '+terrainSource+'\n'+
-    airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary;
+    buildingSummary+'\n'+airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary;
 }
 function riskValue(component){return component?.status==='passed'&&Number.isFinite(component.score)?GridTheme.formatNumber(component.score)+' / '+(component.level||'未分级'):'无数据（'+statusText(component?.status||'not_calculated')+'）';}
 function factorValue(factor){return factor?.status==='passed'?'归一化 '+GridTheme.formatNumber(factor.normalized)+' · contribution '+GridTheme.formatNumber(factor.contribution):statusText(factor?.status||'not_available');}
@@ -290,7 +296,7 @@ $('terrainOpacity').oninput=()=>{
   queue();
 };
 $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer'])$(id).onchange=()=>{
+for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer'])$(id).onchange=()=>{
   if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
   if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
   updateGridNotice();
@@ -335,7 +341,7 @@ function stepBindings(){return {
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
   startWorkspace(){interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
   clearWorkspace:async()=>{draftWorkspace=null;interactionMode='pan';await mutate('workspace-clear');},
-  saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace});interactionMode='pan';draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
+  saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace,grid_level:Number($('workspaceGridLevel')?.value||8)});interactionMode='pan';draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
   toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';renderWorkflow();}
 };}
 
@@ -415,24 +421,15 @@ function update(data){
   $('basemapPath').value=data.paths.basemap;
   $('populationPath').value=data.paths.population;
   $('terrainPath').value=data.paths.terrain||'';
+  $('terrain_dtmPath').value=data.paths.terrain_dtm||'';
+  $('buildingsPath').value=data.paths.buildings||'';
+  $('building_gridPath').value=data.paths.building_grid||'';
   const population=data.population;
   $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
   const terrain=data.terrain||{};
-
-$('terrainInfo').textContent=
-  terrain.width
-    ? 'GLO-30 DSM：'+
-      terrain.width.toLocaleString()+
-      ' × '+
-      terrain.height.toLocaleString()+
-      ' · '+
-      terrain.crs+
-      '\nNoData：'+terrain.nodata+
-      '\n像元大小：'+
-      (terrain.pixel_size||[]).join(' × ')+
-      '\n单位：'+(terrain.unit||'m')+
-      ' · 水平 WGS84/EPSG:4326 · 垂直 EGM2008/EPSG:3855 · 1 arc-second'
-    : '尚未加载有效地形 DEM';
+  const terrainDtm=data.terrain_dtm||{};
+  $('terrainDtmInfo').textContent=terrainDtm.width?'FABDEM DTM：'+terrainDtm.width.toLocaleString()+' × '+terrainDtm.height.toLocaleString()+' · '+terrainDtm.crs+'\n'+terrainDtm.dtype+' · NoData：'+terrainDtm.nodata+' · '+terrainDtm.vertical_reference+' ('+terrainDtm.vertical_status+')':'尚未加载有效 FABDEM DTM';
+  $('terrainInfo').textContent=terrain.width?'GLO-30 DSM：'+terrain.width.toLocaleString()+' × '+terrain.height.toLocaleString()+' · '+terrain.crs+'\nNoData：'+terrain.nodata+'\n像元大小：'+(terrain.pixel_size||[]).join(' × ')+'\n单位：'+(terrain.unit||'m')+' · 水平 WGS84/EPSG:4326 · 垂直 EGM2008/EPSG:3855 · 1 arc-second':'尚未加载有效地形 DEM';
   $('sourceSummary').textContent=data.layers.length+' 个本地图层 · '+data.paths.basemap.split(/[\\/]/).pop();
   sourceCenter.render(data);
   renderWorkflow();

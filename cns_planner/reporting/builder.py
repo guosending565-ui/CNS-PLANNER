@@ -46,6 +46,7 @@ class ReportBuilder:
                     "policies": source.get("cns_requirement_policies") or {},
                 },
                 "data_foundation": source.get("data_source_profiles") or {},
+                "building_environment_and_clearance": _building_section(source),
                 "routes_altitude_corridor": {
                     "routes": source.get("operational_routes") or [],
                     "spatial_3d": source.get("spatial_3d") or {},
@@ -81,6 +82,9 @@ class ReportBuilder:
                     "shared_backhaul": "not_evaluated", "tower_failure": "not_evaluated",
                     "safety_certification": "not_evaluated",
                     "automatic_regulatory_compliance": "not_evaluated",
+                    "fabdem": "FABDEM is not survey-grade DTM",
+                    "gba_height": "GBA predicted height is not measured truth",
+                    "building_clearance": "engineering assessment only; not certification or regulatory compliance",
                 },
             },
         }
@@ -104,6 +108,38 @@ def _statistics(p15):
                 "objective_results": deepcopy(item.get("objective_results") or []),
             })
     return {"rows": rows, "classification_semantics": "unknown_is_neither_pass_nor_fail"}
+
+
+def _building_section(source):
+    profiles = source.get("data_source_profiles") or {}
+    grid = ((source.get("grid_attributes") or {}).get("buildings") or {})
+    assessment = source.get("building_clearance_assessment") or {}
+    provenance = assessment.get("provenance") or {}
+    return {
+        "data_sources": {
+            "fabdem_dtm": profiles.get("terrain_dtm") or provenance.get("terrain_dtm") or {},
+            "gba_lod1": provenance.get("buildings") or {},
+            "building_l8_grid": grid.get("source") or {},
+        },
+        "data_quality": {
+            "dtm": provenance.get("terrain_dtm") or {},
+            "building_grid_metadata": grid.get("metadata") or {},
+            "valid_height_coverage": ((provenance.get("buildings") or {}).get("valid_height_fraction")),
+            "uncertainty_semantics": "height_var retained as raw source field only",
+        },
+        "algorithm": {
+            "id": assessment.get("algorithm_id"), "version": assessment.get("algorithm_version"),
+            "ground": "FABDEM footprint-mask median",
+            "roof": "DTM ground median + GBA height_m",
+            "policy": source.get("building_clearance_policy") or {},
+            "vertical_datum": "EGM2008 orthometric when source/profile evidence resolves it",
+        },
+        "result": assessment,
+        "limitations": [
+            "FABDEM ≠ survey-grade DTM", "GBA height ≠ measured truth",
+            "engineering assessment only; no safety certification or regulatory conclusion",
+        ],
+    }
 
 
 def _residuals(p15):

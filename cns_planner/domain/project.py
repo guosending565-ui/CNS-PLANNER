@@ -53,6 +53,8 @@ class ProjectState(TypedDict, total=False):
     cns_planning_reports: dict[str, Any]
     safety_policy: dict[str, Any]
     safety_assessment: dict[str, Any]
+    building_clearance_policy: dict[str, Any]
+    building_clearance_assessment: dict[str, Any]
     coverage: dict[str, Any] | None
     risks: dict[str, dict[str, Any]]
     result_statuses: dict[str, str]

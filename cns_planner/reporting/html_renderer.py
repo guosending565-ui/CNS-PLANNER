@@ -34,16 +34,17 @@ class HtmlReportRenderer:
 <section><h2>1. 项目概述</h2>{_kv(project)}</section>
 <section><h2>2. 运行场景与需求依据</h2>{_requirement_basis(sections.get('operation_and_requirement_basis') or {})}</section>
 <section><h2>3. 数据基础</h2>{_sources(sections.get('data_foundation') or {})}</section>
-<section><h2>4. 航路、高度与三维服务需求走廊</h2>{_route_svg(sections)}<p class="note">走廊为工程CNS服务需求走廊，不等同法规Operational Volume或批准空间。</p>{_json_details(sections.get('routes_altitude_corridor'))}</section>
-<section><h2>5. 所需CNS性能（RequiredCNS）</h2>{_json_details(sections.get('required_cns'))}</section>
-<section><h2>6. P10中心线CNS缺口</h2>{_result_summary(sections.get('centerline_gap_p10'))}</section>
-<section><h2>7. P14三维服务空间</h2><p class="note">离散体积代理 / 代表点评价，不是整个体素的性能保证。</p>{_result_summary(sections.get('spatial_service_p14'))}</section>
-<section><h2>8. P15服务、冗余、空间连续缺口与规划目标</h2>{_statistics(rows)}<p class="note">空间连续缺口投影，不是运行时连续性概率。</p></section>
-<section><h2>9. P18方案比较与人工决策</h2>{_decision(sections.get('plan_review_p18') or {})}</section>
-<section><h2>10. 最终设施方案</h2>{_facility_svg(sections)}{_json_details(sections.get('final_facility_plan'))}</section>
-<section><h2>11. Before / After 与残余问题</h2>{_json_details(sections.get('before_after_residual'))}</section>
-<section><h2>12. 算法、数据、指纹与来源审计</h2>{_audit(sections.get('audit') or {})}</section>
-<section><h2>13. 局限与未评估事项</h2>{_limitations(sections.get('limitations') or {})}</section>
+<section><h2>4. 建筑环境与建筑净空安全</h2><p class="note">FABDEM 非测绘级 DTM；GBA 高度非实测真值；结果仅供工程评估。</p>{_json_details(sections.get('building_environment_and_clearance'))}</section>
+<section><h2>5. 航路、高度与三维服务需求走廊</h2>{_route_svg(sections)}<p class="note">走廊为工程CNS服务需求走廊，不等同法规Operational Volume或批准空间。</p>{_json_details(sections.get('routes_altitude_corridor'))}</section>
+<section><h2>6. 所需CNS性能（RequiredCNS）</h2>{_json_details(sections.get('required_cns'))}</section>
+<section><h2>7. P10中心线CNS缺口</h2>{_result_summary(sections.get('centerline_gap_p10'))}</section>
+<section><h2>8. P14三维服务空间</h2><p class="note">离散体积代理 / 代表点评价，不是整个体素的性能保证。</p>{_result_summary(sections.get('spatial_service_p14'))}</section>
+<section><h2>9. P15服务、冗余、空间连续缺口与规划目标</h2>{_statistics(rows)}<p class="note">空间连续缺口投影，不是运行时连续性概率。</p></section>
+<section><h2>10. P18方案比较与人工决策</h2>{_decision(sections.get('plan_review_p18') or {})}</section>
+<section><h2>11. 最终设施方案</h2>{_facility_svg(sections)}{_json_details(sections.get('final_facility_plan'))}</section>
+<section><h2>12. Before / After 与残余问题</h2>{_json_details(sections.get('before_after_residual'))}</section>
+<section><h2>13. 算法、数据、指纹与来源审计</h2>{_audit(sections.get('audit') or {})}</section>
+<section><h2>14. 局限与未评估事项</h2>{_limitations(sections.get('limitations') or {})}</section>
 </main></body></html>"""
 
 

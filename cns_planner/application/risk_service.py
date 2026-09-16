@@ -55,7 +55,9 @@ class RiskService:
         if previous_airspace_fingerprint != current_airspace_fingerprint:
             self.invalidation.workflow("airspace_policy")
         profiles = self.session.state.setdefault("data_source_profiles", {})
-        for kind in ("population", "terrain"):
+        for kind in ("population", "terrain", "terrain_dtm"):
+            if kind not in clean:
+                continue
             if isinstance(clean[kind].get("source_profile"), dict):
                 profiles[kind] = deepcopy(clean[kind]["source_profile"])
         self.apply_result(self.risk_model.evaluate(grid, clean, self.algorithm_parameters()))
@@ -64,7 +66,7 @@ class RiskService:
 
     def update_source_profiles(self, profiles):
         current = self.session.state.setdefault("data_source_profiles", {})
-        for name in ("population", "terrain"):
+        for name in ("population", "terrain", "terrain_dtm"):
             if isinstance((profiles or {}).get(name), dict):
                 current[name] = source_profile(profiles[name])
 

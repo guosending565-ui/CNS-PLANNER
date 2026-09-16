@@ -29,6 +29,7 @@ class Spatial3DService:
         self.session.state["spatial_3d"]["altitude_layers"] = layers
         self._refresh_status()
         self.invalidation.coverage_3d()
+        self.invalidation.building_clearance("altitude_layers_changed")
         return self._save()
 
     def set_route_profile(self, payload):
@@ -39,6 +40,7 @@ class Spatial3DService:
         self.session.state["spatial_3d"]["route_altitude_profiles"][profile["route_id"]] = profile
         self._refresh_status()
         self.invalidation.coverage_3d()
+        self.invalidation.building_clearance("route_altitude_profile_changed")
         return self._save()
 
     def evaluate(self, payload=None):

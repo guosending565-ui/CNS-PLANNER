@@ -11,6 +11,7 @@ from ..data.registry import build_registry
 from ..data.mapping.airspace import AirspaceGridService
 from ..data.mapping.population import PopulationGridService
 from ..data.mapping.terrain import TerrainGridService
+from ..data.mapping.buildings import BuildingGridService
 from .airspace_adapter import QgisAirspaceAdapter
 from .renderer import QgisMapRenderer
 from .source_loader import QgisSourceLoader
@@ -24,6 +25,9 @@ DEFAULT_PATHS = {
     "basemap": "D:/aaa2026project/UOM/全国适飞空域图_单省可更新.qgz",
     "population": "D:/aaa2026project/UOM/舟山/规划系统/chn_pop_2025_CN_100m_R2025A_v1.tif",
     "terrain": "D:/aaa2026project/UOM/舟山/规划系统/GLO30/output/Zhejiang_GLO30_30m.tif",
+    "terrain_dtm": "D:/aaa2026project/UOM/舟山/规划系统/FABDEM/processed/Zhoushan_FABDEM_DTM_30m.tif",
+    "buildings": "D:/aaa2026project/UOM/舟山/规划系统/building/processed/zhoushan_buildings.gpkg",
+    "building_grid": "D:/aaa2026project/UOM/舟山/规划系统/building/processed/zhoushan_building_grid_L8.gpkg",
 }
 
 
@@ -47,9 +51,20 @@ class MapData:
     def load(self, paths, persist=True):
         loaded = self.loader.load(paths, persist)
         self.loaded, self.paths = loaded, loaded.paths
-        for name in ("project", "population", "terrain", "raster_info", "terrain_info", "local_layers", "layers", "bounds", "layer_boxes", "layer_boxes_wgs84", "population_bbox_wgs84", "terrain_bbox_wgs84", "hard_constraints", "online_sources"):
+        self.source_signatures = {
+            name: self._source_signature(path) for name, path in self.paths.items()
+        }
+        for name in ("project", "population", "terrain", "terrain_dtm", "raster_info", "terrain_info", "terrain_dtm_info", "vector_info", "local_layers", "layers", "bounds", "layer_boxes", "layer_boxes_wgs84", "population_bbox_wgs84", "terrain_bbox_wgs84", "terrain_dtm_bbox_wgs84", "hard_constraints", "online_sources"):
             setattr(self, name, getattr(loaded, name))
         self.revision += 1; self.error = ""; self.renderer.clear()
+
+    @staticmethod
+    def _source_signature(path):
+        try:
+            stat = Path(path).stat()
+            return str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns
+        except (OSError, TypeError):
+            return str(path or ""), None, None
 
     def metadata(self):
         online = []
@@ -61,6 +76,8 @@ class MapData:
         base = {"paths": self.paths, "error": self.error, "revision": self.revision,
                 "layers": getattr(self, "layers", []), "bounds": getattr(self, "bounds", None),
                 "population": getattr(self, "raster_info", {}), "terrain": getattr(self, "terrain_info", {}),
+                "terrain_dtm": getattr(self, "terrain_dtm_info", {}),
+                "vector_sources": getattr(self, "vector_info", {}),
                 "token": self.token, "online_sources": online}
         try:
             base["defaults"] = json.loads(self.default_config.read_text(encoding="utf-8"))
@@ -82,6 +99,7 @@ class MapData:
         policies = (self.workflow_provider() or {}).get("airspace_policies") or {}
         return {"population": PopulationGridService().map(grid, self.paths.get("population")),
                 "terrain": TerrainGridService().map(grid, self.paths.get("terrain")),
+                "buildings": BuildingGridService().map(grid, self.paths.get("building_grid")),
                 "airspace": AirspaceGridService().map(
                     grid,
                     QgisAirspaceAdapter(self.local_layers, self.project, self.paths.get("basemap")),

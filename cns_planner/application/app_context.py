@@ -9,6 +9,7 @@ from ..gis.qgis_runtime import QgisRuntime
 from ..tile_cache import TileCache
 from .project_directory_service import ProjectDirectoryService
 from .workflow_service import WorkflowService
+from ..gis.building_clearance_adapter import QgisBuildingClearanceAdapter
 
 
 class RenderRequestTracker:
@@ -51,6 +52,11 @@ class ApplicationContext:
             project_metadata_provider=lambda: self.project_directories.storage_metadata(self.active_project_file),
             stale_checker=self.render_requests.obsolete,
         )
+        self.workflow.update_data_source_profiles({
+            "population": self.data.raster_info.get("source_profile"),
+            "terrain": self.data.terrain_info.get("source_profile"),
+            "terrain_dtm": self.data.terrain_dtm_info.get("source_profile"),
+        })
         self.workflow.configure_reference_sources(self.data.paths)
 
     def save_project_as(self, project_dir):
@@ -68,16 +74,33 @@ class ApplicationContext:
 
     def replace_sources(self, paths):
         previous = dict(self.data.paths)
+        previous_signatures = {
+            name: (getattr(self.data, "source_signatures", {}) or {}).get(name)
+            for name in paths
+        }
         self.data.load({**self.data.paths, **paths})
         self.workflow.configure_reference_sources(self.data.paths)
         self.workflow.update_data_source_profiles({
             "population": self.data.raster_info.get("source_profile"),
             "terrain": self.data.terrain_info.get("source_profile"),
+            "terrain_dtm": self.data.terrain_dtm_info.get("source_profile"),
         })
-        changed = {name for name in paths if previous.get(name) != self.data.paths.get(name)}
+        changed = {
+            name for name in paths
+            if previous.get(name) != self.data.paths.get(name)
+            or previous_signatures.get(name) != self.data.source_signatures.get(name)
+        }
         self.workflow.invalidate_grid_attributes(changed)
         if "basemap" in changed:
             self.workflow.invalidate("data")
         self.workflow.save()
         self.project_directories.persist_sources(self.active_project_file, self.data)
         return self.data.metadata()
+
+    def evaluate_building_clearance(self):
+        buildings = self.data.paths.get("buildings")
+        terrain_dtm = self.data.paths.get("terrain_dtm")
+        if not buildings or not terrain_dtm:
+            raise ValueError("请先配置 GBA buildings 与 FABDEM terrain_dtm")
+        adapter = QgisBuildingClearanceAdapter(buildings, terrain_dtm)
+        return self.workflow.evaluate_building_clearance(adapter)

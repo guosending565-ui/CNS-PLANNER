@@ -11,7 +11,8 @@ class InvalidationService:
     SOURCE_ATTRIBUTES = {
         "population": ("population",), "terrain": ("terrain",),
         "basemap": ("airspace",), "airspace": ("airspace",),
-        "buildings": ("buildings",), "property": ("property_exposure",),
+        "buildings": ("buildings",), "building_grid": ("buildings",),
+        "terrain_dtm": (), "property": ("property_exposure",),
         "property_exposure": ("property_exposure",),
         "infrastructure": ("infrastructure",),
         "obstacles": ("towers",), "towers": ("towers",),
@@ -66,6 +67,8 @@ class InvalidationService:
             self.requirement_recommendation(f"{changed}_changed")
         if affected:
             mark_active_report_stale(state, f"{changed}_changed")
+        if changed in ("workspace", "route", "route_algorithm", "spatial_3d"):
+            self.building_clearance(f"{changed}_changed")
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -87,6 +90,21 @@ class InvalidationService:
         if "terrain" in changed_sources:
             self.coverage_3d()
             self.cns_corridor()
+        if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
+            self.building_clearance("building_source_changed")
+
+    def building_clearance(self, reason="building_clearance_input_changed"):
+        state = self.session.state
+        result = state.get("building_clearance_assessment") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            result["stale_reason"] = str(reason)
+            state["building_clearance_assessment"] = result
+            state.setdefault("result_statuses", {})["building_clearance"] = "stale"
+        mark_active_report_stale(state, reason)
+
+    def report(self, reason):
+        mark_active_report_stale(self.session.state, reason)
 
     def risk(self):
         state = self.session.state

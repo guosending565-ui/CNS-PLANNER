@@ -24,7 +24,27 @@ DEFINITIONS = (
     SourceDefinition("airspace", "空域", "风险环境", "qgis_layer", "GPKG / SHP / GeoJSON / QGIS", "硬约束与空域属性", source_type="real"),
     SourceDefinition("population", "人口暴露", "风险环境", "raster", "GeoTIFF", "人员暴露与相对风险", "P1", True, "population", "real"),
     SourceDefinition("terrain", "DEM / DSM", "风险环境", "raster", "GeoTIFF", "高程、地形起伏与剖面", None, True, "terrain", "real"),
-    SourceDefinition("buildings", "建筑轮廓与高度", "风险环境", "vector", "GPKG / SHP / GeoJSON", "障碍和建筑暴露", path_key="buildings"),
+    SourceDefinition("terrain_dtm", "FABDEM DTM", "三维建筑环境", "raster", "GeoTIFF", "建筑地面正高与屋顶正高；不替换 GLO-30 DSM", None, True, "terrain_dtm", "real"),
+    SourceDefinition(
+        "buildings",
+        "建筑单体与高度",
+        "三维建筑环境",
+        "vector",
+        "GPKG / SHP / GeoJSON",
+        "独立三维建筑障碍与建筑净空评估",
+        path_key="buildings",
+        source_type="real",
+    ),
+    SourceDefinition(
+        "building_grid",
+        "建筑环境网格（MH/T L8）",
+        "三维建筑环境",
+        "vector",
+        "GPKG",
+        "建筑密度、建筑高度热力图与网格风险输入",
+        path_key="building_grid",
+        source_type="real",
+    ),
     SourceDefinition("property_exposure", "财产暴露", "风险环境", "raster_or_vector", "Raster / Vector", "财产风险接口", path_key="property_exposure"),
     SourceDefinition("obstacles", "铁塔与高塔", "设施", "vector_or_table", "CSV / GPKG / SHP", "避障与共址候选", path_key="obstacles"),
     SourceDefinition("infrastructure", "关键基础设施", "设施", "vector", "GPKG / SHP / GeoJSON", "基础设施暴露", path_key="infrastructure"),
@@ -64,13 +84,19 @@ def build_registry(metadata: dict) -> list[dict]:
         elif definition.id == "airspace":
             item["configured"] = bool(metadata.get("layers"))
             item["location"] = "包含在 QGIS 项目中" if item["configured"] else None
-        elif definition.id in ("population", "terrain"):
+        elif definition.id in ("population", "terrain", "terrain_dtm"):
             raster = metadata.get(definition.id) or {}
             profile = raster.get("source_profile") or (workflow.get("data_source_profiles") or {}).get(definition.id) or {}
             item["source_profile"] = profile
             item["source_metadata"] = profile.get("provenance") or {}
             for key in ("version", "quantity", "unit", "resolution", "crs", "verification"):
                 item[key] = profile.get(key)
+        elif definition.id in ("buildings", "building_grid"):
+            vector = (metadata.get("vector_sources") or {}).get(definition.id) or {}
+            item["configured"] = bool(path)
+            item["source_metadata"] = vector
+            item["item_count"] = vector.get("feature_count", 0)
+            item["health"] = vector.get("status", "not_checked")
         elif definition.id in ("aircraft", "devices", "existing_cns", "candidate_sites", "reference_landing_sites", "reference_routes", "equipment_reference_catalog"):
             state_key = {"aircraft": "aircraft_profiles", "devices": "device_catalog", "existing_cns": "existing_cns_facilities", "candidate_sites": "candidate_sites", "reference_landing_sites": "reference_landing_sites", "reference_routes": "reference_routes", "equipment_reference_catalog": "equipment_reference_catalog"}[definition.id]
             collection = workflow.get(state_key) or (metadata.get("device_library", {}) if definition.id == "devices" else {})

@@ -13,7 +13,7 @@ class WorkspaceService:
         self.invalidation = invalidation
         self.snapshot = snapshot
 
-    def set_workspace(self, bbox, health):
+    def set_workspace(self, bbox, health, preferred_grid_level=None):
         if not isinstance(bbox, list) or len(bbox) != 4:
             raise ValueError("工作区必须包含西、南、东、北四个坐标")
         values = [float(value) for value in bbox]
@@ -30,7 +30,7 @@ class WorkspaceService:
             "bbox": values, "area_km2": round(width * height / 1_000_000, 3),
             "health": health, "status": "passed",
         }
-        state["grid"] = self.grid_service.generate(values)
+        state["grid"] = self.grid_service.generate(values, preferred_grid_level)
         state["grid_attributes"] = empty_grid_attributes()
         state["grid_risk"] = RiskModelV1.empty()
         state["traffic_simulation"] = None
