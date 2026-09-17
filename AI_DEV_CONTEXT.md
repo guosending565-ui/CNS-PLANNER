@@ -406,6 +406,10 @@ WorldPop 原始语义保持 `people_per_pixel` / `person/source_pixel`，映射�
 
 route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building assessment/policy 均进入 fingerprint/provenance 与定向 stale 链；旧 schema-v2 自动 backfill。Step 03 提供航路下拉、FABDEM/flight/roof+required-clearance/breach 纵剖面、hover 数值与二维位置标记，并明确 visualization-only。Step 04 将六个 response-time 分量与 `t_pre/d_reaction/maneuver_distance/uncertainty_distance/d_protect` 做成只读预算图，明确 `engineering protection budget / regulatory well-clear not evaluated`；未增加任何航路 buffer、保护圆或 ConflictDetector 状态机。当前自动恢复项目没有 operational route/confirmed altitude profile，故实际 profile 为 **not_calculated / 0 samples**；Protection 为 **not_calculated**。WorldPop canonical density 另补 `density_support_area_m2` 与 `density_semantics=observed_covered_area_density`，未改变既有数值。
 
+3D Encounter + DAA 告警/响应状态机 V1 完整结果：**410 passed, 6 skipped**；Node 前端 **24 passed, 0 failed**；Python compile、全部 JS syntax 与 `git diff --check` 通过。新增独立 `EncounterTrack`、`EncounterPolicy`、`ManeuverCapabilityProfile`、`ManeuverCommand` 与 `encounter_3d_assessment`，保留原二维 `ConflictDetector` 和 legacy protection encounter 输入。轨迹仅接受明确 EGM2008 orthometric 高度；局部 ENU 按重叠时间段计算水平/垂直/斜距、水平 CPA、阈值进入/退出与 engineering predicted conflict，平行/静止、无时间重叠、缺高度和 pending policy 均有显式保守状态。所有结果固定声明 `regulatory_well_clear=not_evaluated`，不生成法规 hazard zone。
+
+`DAAEventStateMachineV1` 强制保存逐步 transition 的 time/reason/input evidence，覆盖正常 `NO_TRAFFIC→…→CLEARED` 及 `LOST_TRACK/ALERT_DELIVERY_FAILED/COMMAND_UNAVAILABLE/MANEUVER_UNRESOLVED`。S 只门控 detect/track，C 只门控 warning/command delivery，N 只影响 ownship state confidence；这些工程事件不写入 SafetyEvent/UE。Protection Budget 作为响应截止约束并记录 actual-vs-budget；V1 只模拟显式 confirmed command，不生成“最佳”避让。Step 04 新增 DAA Encounter Lab 的轨迹/CPA、距离、C/N/S、状态时间线与播放滑块。track/policy/service timeline/protection/capability/command 进入 fingerprint/stale，旧 schema-v2 自动 backfill，报告只加入 engineering summary。RouteVerticalProfileV1 同时输出 `profile_geometry_status` 与 `clearance_evidence_status`，旧 `status` 保留兼容。
+
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
@@ -427,7 +431,7 @@ route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building ass
 6. V1 航路使用 56×56 经纬度近似网格和图层 BBOX 硬约束；CoverageV1 使用 demo/default 设备参数，均非最终工程模型。
 7. RiskModelV1 已优先使用 canonical `population_density_people_km2`；`value_mean` 仅为旧项目兼容 fallback，并以 `raw_semantics=legacy_source_value_mean` 明示。当前仍是相对工程指数，不是绝对人口风险。
 8. 数据源产品契约已确认，但当前具体 GeoTIFF 文件身份仍记录为 `configured_assumption`；尚未通过 checksum/manifest 验证其确为对应 WorldPop/GLO-30 产品。
-9. M7 是二维恒速直线轨迹与局部平面 CPA，未处理垂直间隔、动力学、不确定性及正式安全阈值。
+9. 原 M7 `ConflictDetector` 仍是兼容的二维恒速直线 CPA；新增 EncounterAssessment3DV1 处理显式 EGM2008 三维轨迹与工程阈值，但位置/速度 uncertainty 在 V1 只记录、不膨胀阈值，也不评价正式法规 well-clear。
 10. CSS 已按加载职责拆分，但 `base.css` 保留历史压缩规则；未来视觉改版时再格式化和去重，避免本轮改变级联结果。
 11. WorldPop SourceProfile 保留兼容字段 `quantity=population_count_per_source_pixel`、`unit=person/source_pixel`，并新增 `support=source_pixel` / `source_semantics=people_per_pixel` 与 canonical target quantities；不得把 partial 未覆盖区当作零人口或进行外推。
 
@@ -438,7 +442,7 @@ route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building ass
 
 15. P8 仅提供静态技术能力工程基线：尚未实现 P.526/Fresnel/terrain diffraction、3GPP SINR/channel、GNSS constellation/DOP/RAIM、radar equation/Pd curve 或 SitePlanner。
 
-16. P9 时间线仅支持恒定地速和显式离散场景；保护包络是代数工程基线，尚未实现 waypoint-linear motion、飞机动力学/转弯、正式 Well-Clear、DAA Detection Volume 或 Monte Carlo。
+16. P9 时间线仍只支持恒定地速和显式离散场景；保护包络仍是代数工程基线。DAA V1 可对给定转弯/水平加速度/垂直速度 command 做简化运动学重评估，但不自动求解动作，不含正式 Well-Clear、DAA Detection Volume、风场安全余度或 Monte Carlo。
 
 17. GapV2 是上游证据的保守区间合并，不做传播/性能/ServiceState 重算，不把 unknown 当 gap，也不触发 SafetyEvent；protection margin 仅支持已有 confirmed 监视探测距离的工程差值，尚未形成 GapV2→Safety/站址方案闭环。
 
@@ -453,6 +457,7 @@ route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building ass
 26. P19 PDF 依赖本机 Playwright Chromium，未安装时正式生成会原子失败并返回可操作提示；当前报告 checksum manifest 不等同完整 BagIt、数字签名或不可抵赖审计，HTML/SVG 地图也仅为无底图工程示意。
 27. 舟山起降点源表未明确 CRS，当前 `[lon, lat]` 只按源数值临时展示并保持 `pending_confirmation`；正式空间分析前必须获得 CRS 证据。两份 `.et` 需人工转换为 XLSX/CSV；5GA/低空智联网资料的厂商（包括是否为“54所”）仍待来源确认，不得猜测。
 28. RouteVerticalProfileV1 是显示用离散采样，不是新的净空裁决器；真实剖面仍依赖 passed operational route、confirmed 高度剖面、带明确 EGM2008 元数据的 FABDEM 与当前有效 BuildingClearanceV1。QGIS GUI/HTTP 真实航路 hover 与建筑区间需在正常 QGIS 启动器进程验收。
+29. EncounterAssessment3DV1 的局部 ENU 与分段线性插值适用于短距离工程仿真；ManeuverCommand 是简化运动学且只验证显式能力上限。当前项目未配置真实 confirmed encounter tracks/policy/capability/command，因此默认结果保持 `not_calculated / NO_TRAFFIC`；不得将 synthetic 测试的 `CLEARED` 视为真实运行安全结论。
 
 ## 11. 下一阶段计划
 

@@ -39,6 +39,12 @@ class OperationalTimingService:
             or candidate["encounter_scenarios"] != previous.get("encounter_scenarios")
         ):
             self.invalidation.protection_envelope()
+        encounter_fields = (
+            "encounter_tracks", "encounter_policies", "maneuver_capability_profiles",
+            "maneuver_commands", "encounter_lab",
+        )
+        if any(candidate.get(name) != previous.get(name) for name in encounter_fields):
+            self.invalidation.encounter_3d("encounter_input_changed")
         self.session.state["operational_timing"] = candidate
         self.session.save()
         return self.snapshot()
@@ -56,6 +62,7 @@ class OperationalTimingService:
             state.get("operational_timing") or {},
         )
         self.invalidation.cns_gap_v2()
+        self.invalidation.encounter_3d("service_timeline_evaluated")
         state["service_timeline"] = result
         state["result_statuses"]["service_timeline"] = result["status"]
         state["result_statuses"]["report"] = "not_calculated"

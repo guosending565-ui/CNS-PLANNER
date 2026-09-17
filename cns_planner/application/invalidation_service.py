@@ -181,6 +181,7 @@ class InvalidationService:
             state.setdefault("result_statuses", {})["service_timeline"] = "stale"
         mark_active_report_stale(state, "service_timeline_changed")
         self.cns_gap_v2()
+        self.encounter_3d("service_timeline_changed")
 
     def protection_envelope(self):
         state = self.session.state
@@ -193,6 +194,17 @@ class InvalidationService:
         parameters = (state.get("cns_gap_analysis_v2") or {}).get("parameters") or {}
         if parameters.get("evaluate_protection_margin") is True:
             self.cns_gap_v2()
+        self.encounter_3d("protection_envelope_changed")
+
+    def encounter_3d(self, reason="encounter_3d_input_changed"):
+        state = self.session.state
+        result = state.get("encounter_3d_assessment") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            result["stale_reason"] = str(reason)
+            state["encounter_3d_assessment"] = result
+            state.setdefault("result_statuses", {})["encounter_3d_assessment"] = "stale"
+        mark_active_report_stale(state, reason)
 
     def cns_gap_v2(self):
         """Stale additive Gap V2 and report without touching upstream or Gap V1."""

@@ -51,6 +51,7 @@ class ReportBuilder:
                     "routes": source.get("operational_routes") or [],
                     "spatial_3d": source.get("spatial_3d") or {},
                     "corridor_policy": source.get("cns_corridor_policy") or {},
+                    "encounter_3d_summary": _encounter_summary(source.get("encounter_3d_assessment") or {}),
                 },
                 "required_cns": source.get("required_cns") or {},
                 "centerline_gap_p10": source.get("cns_gap_analysis_v2") or {},
@@ -108,6 +109,18 @@ def _statistics(p15):
                 "objective_results": deepcopy(item.get("objective_results") or []),
             })
     return {"rows": rows, "classification_semantics": "unknown_is_neither_pass_nor_fail"}
+
+
+def _encounter_summary(value):
+    geometry, machine = value.get("geometry") or {}, value.get("state_machine") or {}
+    return {
+        "status": value.get("status"), "current_state": machine.get("current_state"),
+        "engineering_predicted_conflict": value.get("engineering_predicted_conflict"),
+        "horizontal_cpa_m": geometry.get("horizontal_cpa_m"),
+        "vertical_separation_at_cpa_m": geometry.get("vertical_separation_at_cpa_m"),
+        "regulatory_well_clear": "not_evaluated",
+        "scope": "engineering_simulation_only",
+    }
 
 
 def _building_section(source):

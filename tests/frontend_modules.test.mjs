@@ -16,6 +16,7 @@ import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/wor
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
 import {profileChart,renderRouteVerticalProfilePanel} from '../cns_planner/web/js/workflow/route_vertical_profile.js';
 import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
+import {encounterFrame,renderDaaEncounterLab} from '../cns_planner/web/js/workflow/daa_encounter_lab.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -204,8 +205,28 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.match(html,/Encounter Scenario/);
   assert.match(html,/P8 静态 capability 不会自动转为 P4 available/);
   assert.match(html,/CNS Service Requirement Corridor/);
+  assert.match(html,/DAA Encounter Lab/);
+  assert.match(html,/regulatory well-clear not evaluated/);
+  assert.match(html,/ServiceState ≠ EncounterEvent ≠ SafetyEvent ≠ UnacceptableEvent/);
   assert.match(html,/不等同 JARUS Operational Volume/);
   assert.doesNotMatch(html,/最大时延 ms/);
+});
+
+test('DAA lab renders tracks CPA timeline and playback frame without hazard geometry',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}});return node;}};
+  const own={track_id:'OWN',role:'ownship',samples:[{time_s:0,lon:0,lat:0,altitude_egm2008_m:100},{time_s:10,lon:.01,lat:0,altitude_egm2008_m:100}]};
+  const intruder={track_id:'INT',role:'intruder',samples:[{time_s:0,lon:.005,lat:-.005,altitude_egm2008_m:110},{time_s:10,lon:.005,lat:.005,altitude_egm2008_m:110}]};
+  const result={status:'engineering_event',tracks:[own,intruder],geometry:{cpa_position:{lon:.005,lat:0},horizontal_cpa_m:0,vertical_separation_at_cpa_m:10,time_to_horizontal_cpa_s:5},state_machine:{current_state:'WARNING',transitions:[{from_state:'TRACKED',to_state:'PREDICTED_CONFLICT',time_s:2,reason:'test'},{from_state:'PREDICTED_CONFLICT',to_state:'WARNING',time_s:3,reason:'test'}]},cns_gating:{C:{state:'available'},N:{state:'available_degraded'},S:{state:'available'},ownship_state_confidence:'degraded'}};
+  const flow={operational_timing:{encounter_tracks:{OWN:own,INT:intruder},encounter_policies:{},maneuver_capability_profiles:{},maneuver_commands:{},encounter_lab:{}},encounter_3d_assessment:result,service_timeline:{routes:[]}};
+  const html=renderDaaEncounterLab(flow),frame=encounterFrame(result,4);
+  assert.match(html,/daa-track daa-ownship/);
+  assert.match(html,/daa-cpa/);
+  assert.match(html,/type="range"/);
+  assert.match(html,/TRACKED → PREDICTED_CONFLICT/);
+  assert.equal(frame.state,'WARNING');
+  assert.ok(frame.ownship.lon>0);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/daa_encounter_lab.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/d_protect|hazard-zone|regulatory_buffer/);
 });
 
 test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop contracts',()=>{

@@ -26,6 +26,8 @@ from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
 from ..algorithms.timeline.v1 import RouteServiceTimelineV1
 from ..algorithms.protection.v1 import TacticalProtectionEnvelopeV1
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
+from ..algorithms.encounter_3d import EncounterAssessment3DV1
+from ..domain.encounter_3d import normalize_encounter_3d_assessment
 from ..domain.route_vertical_profile import normalize_route_vertical_profiles
 from ..domain.operational_timing import empty_operational_timing, normalize_operational_timing
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
@@ -140,6 +142,7 @@ def blank_project(defaults):
         "service_timeline": RouteServiceTimelineV1.empty(),
         "protection_envelope": TacticalProtectionEnvelopeV1.empty(),
         "route_vertical_profiles": RouteVerticalProfileV1.empty(),
+        "encounter_3d_assessment": EncounterAssessment3DV1.empty(),
         "nodes": [], "node_seq": 0, "route_seq": 0,
         "retired_route_ids": [], "scenario_routes": [],
         "operational_routes": [], "aircraft": None, "rules": None,
@@ -191,6 +194,7 @@ def blank_project(defaults):
                 "coverage_3d",
                 "cns_service_capability",
                 "service_timeline", "protection_envelope", "route_vertical_profiles",
+                "encounter_3d_assessment",
                 "technical_risk", "report",
             )
         },
@@ -243,6 +247,9 @@ def normalize_project(value, grid_service):
     value.setdefault("protection_envelope", TacticalProtectionEnvelopeV1.empty())
     value["route_vertical_profiles"] = normalize_route_vertical_profiles(
         value.get("route_vertical_profiles")
+    )
+    value["encounter_3d_assessment"] = normalize_encounter_3d_assessment(
+        value.get("encounter_3d_assessment")
     )
     value.setdefault("reference_landing_sites", empty_reference_landing_sites())
     value.setdefault("reference_routes", empty_reference_routes())
@@ -312,6 +319,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("service_timeline", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("protection_envelope", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("route_vertical_profiles", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("encounter_3d_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("report", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"

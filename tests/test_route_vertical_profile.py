@@ -98,6 +98,16 @@ def test_building_breach_is_reused_without_sample_rejudgement():
     assert "exact building breach comes from BuildingClearanceV1" in profile["semantics"]
 
 
+def test_valid_geometry_is_distinct_from_missing_clearance_evidence():
+    result = evaluate(assessment={"status": "not_calculated", "routes": []})
+    profile = result["profiles"][0]
+    assert profile["status"] == "unknown"
+    assert profile["profile_geometry_status"] == "passed"
+    assert profile["clearance_evidence_status"] == "unknown"
+    assert result["profile_geometry_status"] == "passed"
+    assert result["clearance_evidence_status"] == "unknown"
+
+
 def test_dtm_and_building_inputs_enter_fingerprint():
     first = evaluate(sampler=Sampler(signature="a"))
     second = evaluate(sampler=Sampler(signature="b"))

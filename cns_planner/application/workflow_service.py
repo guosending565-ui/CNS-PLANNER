@@ -46,6 +46,8 @@ from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
+from .encounter_3d_service import Encounter3DService
+from ..algorithms.encounter_3d import EncounterAssessment3DV1
 from ..domain.airspace import normalize_airspace_policies
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
@@ -181,6 +183,9 @@ class WorkflowService:
         self.route_vertical_profile_service = RouteVerticalProfileService(
             self.session, RouteVerticalProfileV1(), self.invalidation_service, snapshot,
         )
+        self.encounter_3d_service = Encounter3DService(
+            self.session, EncounterAssessment3DV1(), self.invalidation_service, snapshot,
+        )
 
     def save(self): self.session.save()
 
@@ -231,6 +236,7 @@ class WorkflowService:
     def building_clearance_policy_snapshot(self): return self.building_clearance_service.policy_snapshot()
     def building_clearance_snapshot(self): return self.building_clearance_service.assessment_snapshot()
     def route_vertical_profiles_snapshot(self): return self.route_vertical_profile_service.result_snapshot()
+    def encounter_3d_snapshot(self): return self.encounter_3d_service.result_snapshot()
     def algorithms_snapshot(self):
         return {
             "status": "passed", "selection": deepcopy(self.state["algorithm_selection"]),
@@ -427,6 +433,7 @@ class WorkflowService:
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)
     def evaluate_service_timeline(self, payload=None): return self.operational_timing_service.evaluate_timeline(payload)
     def evaluate_protection_envelope(self, payload=None): return self.operational_timing_service.evaluate_protection(payload)
+    def evaluate_encounter_3d(self, payload=None): return self.encounter_3d_service.evaluate(payload)
     def apply_grid_attributes(self, results): return self.risk_service.apply_grid_attributes(results)
     def update_data_source_profiles(self, profiles): return self.risk_service.update_source_profiles(profiles)
     def evaluate_grid_risk(self, parameters=None): return self.risk_service.evaluate(parameters)

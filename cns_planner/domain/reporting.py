@@ -54,6 +54,7 @@ def report_source_snapshot(state, algorithm_catalog):
         "existing_cns_facilities", "candidate_sites", "device_catalog",
         "data_source_profiles", "algorithm_selection", "grid_risk",
         "grid_attributes", "building_clearance_policy", "building_clearance_assessment",
+        "encounter_3d_assessment",
     )
     source = {key: deepcopy(state.get(key)) for key in keys}
     # Repository save timestamps are not planning evidence and must not break

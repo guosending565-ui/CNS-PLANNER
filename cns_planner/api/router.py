@@ -69,6 +69,7 @@ class ApiRouter:
         if path == "/api/building-clearance/policy": return Response(workflow.building_clearance_policy_snapshot())
         if path == "/api/building-clearance": return Response(workflow.building_clearance_snapshot())
         if path == "/api/route-vertical-profiles": return Response(workflow.route_vertical_profiles_snapshot())
+        if path == "/api/encounter-3d": return Response(workflow.encounter_3d_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
         if path == "/api/export/project": return Response(workflow.export_project())
@@ -165,6 +166,7 @@ class ApiRouter:
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),
             "/api/service-timeline/evaluate": lambda: workflow.evaluate_service_timeline(payload),
             "/api/protection-envelope/evaluate": lambda: workflow.evaluate_protection_envelope(payload),
+            "/api/encounter-3d/evaluate": lambda: workflow.evaluate_encounter_3d(payload),
         }
         if path in resource_actions:
             return Response(resource_actions[path]())

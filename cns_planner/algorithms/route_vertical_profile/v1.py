@@ -62,6 +62,12 @@ class RouteVerticalProfileV1:
         result = empty_route_vertical_profiles(status)
         result.update({
             "parameters": deepcopy(self.parameters), "input_fingerprint": fingerprint,
+            "profile_geometry_status": _aggregate_status(
+                [item.get("profile_geometry_status") for item in profiles]
+            ),
+            "clearance_evidence_status": _aggregate_status(
+                [item.get("clearance_evidence_status") for item in profiles], breach=True
+            ),
             "profile_count": len(profiles),
             "sample_count": sum(len(item["samples"]) for item in profiles),
             "profiles": profiles, "reasons": reasons,
@@ -74,6 +80,8 @@ class RouteVerticalProfileV1:
         total = path_length_m(path) if len(path) >= 2 else 0.0
         base = {
             "route_id": route_id, "status": "missing_data",
+            "profile_geometry_status": "missing_data",
+            "clearance_evidence_status": "missing_data",
             "vertical_reference": (altitude_profile or {}).get("vertical_reference", "unknown"),
             "route_length_m": total,
             "sampling": self._sampling(total, 0), "samples": [],
@@ -94,10 +102,10 @@ class RouteVerticalProfileV1:
             base["reasons"] = ["仅 passed operational route 可生成纵剖面"]
             return base
         if not altitude_profile or altitude_profile.get("status") != "confirmed":
-            base.update(status="unknown", reasons=["缺少已确认的航路高度剖面"])
+            base.update(status="unknown", profile_geometry_status="unknown", clearance_evidence_status="unknown", reasons=["缺少已确认的航路高度剖面"])
             return base
         if altitude_profile.get("vertical_reference") == "unknown":
-            base.update(status="unknown", reasons=["航路 vertical reference 未确认"])
+            base.update(status="unknown", profile_geometry_status="unknown", clearance_evidence_status="unknown", reasons=["航路 vertical reference 未确认"])
             return base
         offsets, actual_spacing = self._offsets(total)
         samples = [self._sample(path, offset, total, altitude_profile, dtm_sampler) for offset in offsets]
@@ -113,7 +121,9 @@ class RouteVerticalProfileV1:
         ]
         evidence_current = building_assessment.get("status") not in (None, "not_calculated", "stale") and clearance_route is not None
         sample_complete = bool(samples) and all(item["status"] == "passed" for item in samples)
-        status = "breach" if evidence_current and breach_intervals else "passed" if evidence_current and sample_complete and clearance_route.get("status") == "passed" else "unknown"
+        geometry_status = "passed" if sample_complete else "unknown"
+        clearance_status = "breach" if evidence_current and breach_intervals else "passed" if evidence_current and clearance_route.get("status") == "passed" else "unknown"
+        status = "breach" if clearance_status == "breach" else "passed" if geometry_status == clearance_status == "passed" else "unknown"
         reasons = []
         if not sample_complete:
             reasons.append("部分 FABDEM/高度样本不可解析")
@@ -122,7 +132,9 @@ class RouteVerticalProfileV1:
         elif clearance_route.get("status") not in ("passed", "failed"):
             reasons.append("BuildingClearanceV1 结论为 unknown")
         base.update({
-            "status": status, "sampling": self._sampling(total, len(samples), actual_spacing),
+            "status": status, "profile_geometry_status": geometry_status,
+            "clearance_evidence_status": clearance_status,
+            "sampling": self._sampling(total, len(samples), actual_spacing),
             "samples": samples, "building_intervals": building_intervals,
             "breach_intervals": breach_intervals, "critical_buildings": critical,
             "required_vertical_clearance_m": ((building_assessment.get("policy") or {}).get("vertical_clearance_m")),
@@ -191,3 +203,11 @@ def _building_intervals(route_result):
 
 def _fingerprint(value):
     return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+
+def _aggregate_status(statuses, breach=False):
+    if not statuses:
+        return "missing_data"
+    if breach and "breach" in statuses:
+        return "breach"
+    return "passed" if all(item == "passed" for item in statuses) else "unknown"

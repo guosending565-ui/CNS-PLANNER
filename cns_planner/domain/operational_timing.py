@@ -6,6 +6,11 @@ from copy import deepcopy
 from math import isfinite
 from typing import Any, TypedDict
 
+from .encounter_3d import (
+    normalize_encounter_policy, normalize_encounter_track,
+    normalize_maneuver_capability, normalize_maneuver_command,
+)
+
 
 SERVICE_SUBSYSTEMS = ("C", "N", "S")
 EXTERNAL_STATES = ("available", "degraded", "unavailable", "unknown")
@@ -64,6 +69,11 @@ def empty_operational_timing():
         "service_scenarios": {},
         "response_time_budgets": {},
         "encounter_scenarios": {},
+        "encounter_tracks": {},
+        "encounter_policies": {},
+        "maneuver_capability_profiles": {},
+        "maneuver_commands": {},
+        "encounter_lab": _normalize_encounter_lab({}),
     }
 
 
@@ -73,6 +83,10 @@ def normalize_operational_timing(value):
     scenarios = _object(raw.get("service_scenarios"), "service_scenarios")
     budgets = _object(raw.get("response_time_budgets"), "response_time_budgets")
     encounters = _object(raw.get("encounter_scenarios"), "encounter_scenarios")
+    tracks = _object(raw.get("encounter_tracks"), "encounter_tracks")
+    policies = _object(raw.get("encounter_policies"), "encounter_policies")
+    capabilities = _object(raw.get("maneuver_capability_profiles"), "maneuver_capability_profiles")
+    commands = _object(raw.get("maneuver_commands"), "maneuver_commands")
     result = {
         "route_motion_profiles": {
             str(key): normalize_route_motion_profile({**item, "route_id": str(key)})
@@ -90,13 +104,46 @@ def normalize_operational_timing(value):
             str(key): normalize_encounter_scenario({**item, "encounter_id": str(key)})
             for key, item in encounters.items()
         },
+        "encounter_tracks": {
+            str(key): normalize_encounter_track({**item, "track_id": str(key)})
+            for key, item in tracks.items()
+        },
+        "encounter_policies": {
+            str(key): normalize_encounter_policy({**item, "policy_id": str(key)})
+            for key, item in policies.items()
+        },
+        "maneuver_capability_profiles": {
+            str(key): normalize_maneuver_capability({**item, "capability_id": str(key)})
+            for key, item in capabilities.items()
+        },
+        "maneuver_commands": {
+            str(key): normalize_maneuver_command({**item, "command_id": str(key)})
+            for key, item in commands.items()
+        },
+        "encounter_lab": _normalize_encounter_lab(raw.get("encounter_lab")),
     }
-    records = [item for group in result.values() for item in group.values()]
+    groups = (
+        "route_motion_profiles", "service_scenarios", "response_time_budgets",
+        "encounter_scenarios", "encounter_tracks", "encounter_policies",
+        "maneuver_capability_profiles", "maneuver_commands",
+    )
+    records = [item for name in groups for item in result[name].values()]
     result["status"] = (
         "passed" if records and all(item.get("status") == "confirmed" for item in records)
         else "pending_confirmation"
     )
     return result
+
+
+def _normalize_encounter_lab(value):
+    raw = value if isinstance(value, dict) else {}
+    return {
+        name: str(raw.get(name) or "")
+        for name in (
+            "ownship_track_id", "intruder_track_id", "policy_id",
+            "capability_id", "command_id", "service_route_id", "budget_id",
+        )
+    }
 
 
 def normalize_route_motion_profile(value):
