@@ -486,6 +486,81 @@ Step 03 并列查看：
 
 **仍需专家决策（本轮不决定）**：V1 是否改用米制/等距格或保留经纬度固定格（B2）；BBOX 硬约束是否升级为 polygon/精确几何（B3）；垂直间隔与高度层规则（B4）；是否引入 Theta*/RRT/Dubins/V3 或路径平滑；`risk_weight_lambda` 与最大相对风险阈值是否存在工程/运行依据；benchmark 是否需要真实数据与更严格质量门限。
 
+## 8.2 航路规划专家证据闭环 V2（本轮）
+
+基线 commit `58a3b96f3ff08e178dcfb9dd279fc68f44fb108a`。本轮把上一轮的 baseline 升级为**证据闭环**：实验与当前正式结果彻底分离、度量改为测地口径、reference 数据 CRS 语义 fail-closed、新增只读 reference 比较、AirspacePolicy/数据就绪可见。
+
+**明确不变（硬边界）**：未修改 V1/V2 路径搜索核心、代价公式、图邻接或输出契约；未实现 V3/Theta*/RRT/Dubins；未继续 DAA/Gap/CNS 设备；未实现 ET parser；未按图层颜色/名称推断 suitability；未自动关联 reference route；未产生 similarity score/排名/优劣结论。
+
+### 1. 实验与当前正式结果分离
+
+- `operational_routes` 仍然**只**表示当前正式 planner 结果，未新增任何写入者。
+- 新增 additive `route_planning_experiments`（`domain/experiment.py` + `application/route_experiment_service.py`）：每条记录保存 `experiment_id`、scenario/input fingerprints、planner id/version/manifest/effective params、result snapshot、quality、runtime、provenance。
+- 运行 V1/V2 比较**不切换 `algorithm_selection`**、**不覆盖 `operational_routes`**、不改变 `result_statuses["routes"]`；record 内固定 `operational_routes_untouched=true` / `algorithm_selection_untouched=true`。
+- 实验身份 `EXP-<12hex>` 只由 scenario fingerprint + planner 版本集合 + 有效参数决定（名称/时间不参与），同输入重跑幂等；集合上限 20 条并保留最新。
+- `current_applicability` 在读取时按当前 scenario fingerprint 计算：输入变化后记录标记 `stale_scenario_inputs`，但**不删除**冻结证据。
+- 实验复用 `RouteService.planner_context()` / `plan_routes()` 的**同一**输入视图与 dispatch（该重构行为等价，characterization 测试锁定）；因此 experiment 与正式路径不会因参数口径不同而不可比。实验仅复用当前 selection 的参数，且只读。
+- API：`GET /api/route-experiments`、`POST /api/route-experiments/evaluate|delete`。
+- Step 03 新增“规划器比较实验”面板，可同时列出 V1/V2 实验结果并明确 **experiment ≠ current operational route**。
+
+### 2. Benchmark 重复运行语义
+
+- `tools/route_planning_baseline.py` 升级为 `route-expert-evidence-2`，支持 `--runs N`（默认 5）与 `--warmup N`（默认 1）、`--project PATH`。
+- 每次重复记录 runtime 与 result/path fingerprint；输出 `min/median/p95/max`（另附 mean/stdev）、`deterministic_consistency`、distinct fingerprint 数、`hostname/python/平台/CPU/git` 与有效参数；seed 字段为未来随机 planner 预留（当前 V1/V2 确定性、保持 `null`）。
+- 统计学口径参考 OMPL benchmark 语义（重复 + 预热 + 分位数），**不引入、不依赖 OMPL**；所有统计字段固定 `used_for_ranking=false`/`used_for_scoring=false`。
+
+### 3. RouteQualityEvaluator 度量口径修正
+
+- 新增 `benchmark/geodesy.py`：距离/方位改用 `pyproj.Geod(ellps="WGS84")` **测地**计算，彻底移除 `atan2(delta_lon, delta_lat)` 的度空间航向。
+- 航向约定为罗盘方位（0°=真北，顺时针）；heading change 归一化到 `[0,180]`，容差 `1e-9` 并随结果输出；无 pyproj 时回退到有标签的球面 haversine 且在 `metric_semantics.backend` 明示。
+- 结果输出 `metric_semantics`（distance/bearing/backend/ellipsoid/单位/约定/容差）、`heading_method`、`assumed_input_crs=EPSG:4326` 与 `vertex_dedup_tolerance_m`。
+- 未改变 planner 结果；`planner_reported` 与 `planner_reported_vs_measured` 继续并列，供专家核对两套口径差异（V1 固定度网格 / V2 项目米制距离 vs 本次测地度量）。
+
+### 4. Reference CRS 语义（fail-closed）
+
+- 新增 `domain/reference_crs.py`：分离 `source_crs` 与 `representation_crs`，各自保存 `value/status/axis_order/confirmed|declared_by_format/source/evidence`。
+- `crs_status=pending` 时：坐标仍可按源数值临时显示（保留 `source_numeric_path`），但**正式 `length_m=null`**、`length_status=blocked_unresolved_source_crs`、`metric_geometry_similarity_available=false`，并输出禁用原因与 warning。
+- CSV/XLSX **绝不**被猜成 WGS84/CGCS2000（`representation_crs.value=null`）；GeoJSON 按 RFC 7946 记录 `representation_crs=OGC:CRS84`（`status=declared`、`declared_by_format=true`），但**不据此证明原始 source CRS**，仍保持 source 未确认、length 禁用。
+- 只有 `source_crs.status=confirmed && confirmed=true && value` 才启用米制度量；仅有值但未确认仍被拒绝（`source_crs_value_not_confirmed`）。
+- 旧项目 additive backfill：`crs_status` 降级为可见 evidence（`legacy_crs_status_field`），旧 `length_m` 移入 `legacy_length_m`，正式 `length_m` 置 null；空集合回填**幂等**，保证项目 round-trip 稳定。
+
+### 5. 显式 reference route 关联
+
+- 新增 `domain/reference_route_link.py` + `application/reference_link_service.py`：`ReferenceRouteLink` 把 `reference_route_id` 与 scenario route/OD 关联，**必须 `confirmed=true` 且带 source**，否则拒绝。
+- 端点距离候选只在 reference source CRS 已确认后给出，且永远 `requires_user_confirmation=true; automatic_association=false`；CRS 未确认时返回 `blocked` + 明确原因，不造候选。
+- API：`GET /api/reference-route-links`、`POST /api/reference-route-links/create|delete`、`GET /api/reference-endpoint-candidates`；Step 03 支持“参考航线 ↔ 当前 OD”选择与逐候选确认。
+
+### 6. 只读 RouteReferenceComparator
+
+- 新增 `benchmark/reference_comparison.py`：仅在 **CRS 已确认 + link 已确认** 时计算 reference/planned 测地长度、`length_delta_m`、`length_ratio`、`start/end_offset_m`、`Hausdorff distance_m`、`discrete Fréchet distance_m`。
+- Hausdorff/Fréchet 先投影到记录明确的**局部米制 CRS**（以数据为中心的 Transverse Mercator，输出 proj4 串、中心经纬度、units=m、backend），再按记录 `sample_spacing_m`（默认 25 m）densify/resample；输出投影、方法、间距与样本数。
+- 前置条件缺失时返回 `status=not_ready` 与结构化 reasons，绝不半算；`similarity_score/ranking/verdict` 恒为 `null`。
+- 结果只读派生（不持久化），随 experiment snapshot 的 `reference_comparisons` 返回，并区分 `comparisons` 与 `blocked`。
+
+### 7. AirspacePolicy readiness
+
+- Step 03 新增只读“AirspacePolicy 就绪总览”：逐条 feature_id/category/source/route_eligibility allowed|blocked|unknown/confirmed，以及 allowed/blocked/unknown/confirmed counts 与 **V2 readiness 原因**。
+- 明确 `never_inferred_from_layer_name_or_color=true`：绝不按颜色/名称推断 suitability。
+- policy 修改继续沿既有 `set_airspace_policies` → airspace eligibility/route stale 链失效（本轮未新增失效通道，仅补测试）。
+
+### 8. 数据就绪面板
+
+- 新增 `GET /api/data-readiness` 与 Step 03 面板：参考起降点 CRS、参考航线 CRS/格式/数量、AirspacePolicy 完整度、reference route link 与 experiment 数、ET 政策。
+- ET 继续 `requires_xlsx_or_csv_conversion`，`et_parser=null`，**未实现 ET parser**。
+
+### 9. 专家证据包升级
+
+- `tools/route_planning_baseline.py` 统一为一个入口，输出 `outputs/route_baseline/route_planning_baseline.json` + `.md`（ignored），包含：合成 benchmark 重复统计、planner manifests、route experiments（项目级）、真实 reference comparisons（若 ready）、data readiness、已知局限、待专家决策（D1/D2/D3）与“明确未做的事”。
+- 项目证据缺失或未确认 CRS 时明确 `NOT READY` + 原因（`not_supplied`/`not_found`/`blocked`），**不造数据**。
+
+本轮测试：全量 pytest **528 passed, 6 skipped**；Node **37 passed, 0 failed**；`compileall`、JS syntax 与 `git diff --check` 全部通过。新增 `tests/test_route_experiments_and_reference_crs.py`（38 项）与 `tests/test_reference_comparison_and_readiness.py`（31 项），覆盖实验隔离、重复统计/确定性、测地航向、CRS pending/confirmed、显式 link、米制 Hausdorff/Fréchet、policy readiness 与 stale、旧 schema backfill、前端双 planner 实验显示。
+
+**仍需人工决策（D1/D2/D3，本轮不决定）**：
+- **D1**：BBOX 硬约束是否升级为 polygon/精确几何边界；
+- **D2**：垂直间隔与高度层规则如何确定；
+- **D3**：V1 是否改用米制/等距格，以及是否引入 Theta*/RRT/Dubins/V3 或路径平滑。
+**仍需人工动作（数据侧）**：舟山起降点/航线坐标 CRS 必须由人工确认并写入 `source_crs`（本轮已提供证据字段与入口，未自动推断）；`.et` 必须人工转 XLSX/CSV；AirspacePolicy 需逐 feature 显式确认后才能解除 V2 readiness blocked；reference route ↔ OD 关联需人工逐条确认。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。
@@ -503,6 +578,8 @@ Step 03 并列查看：
 4. `services/` 仍保留一组旧导入路径兼容 facade；待外部脚本完成迁移后可在主版本升级中删除。
 5. 默认测试跳过真实 QGIS HTTP；需在有 QGIS 与真实本机数据时执行集成套件。
 6. V1 航路使用 56×56 经纬度近似网格和图层 BBOX 硬约束；CoverageV1 使用 demo/default 设备参数，均非最终工程模型。
+6.1 航路实验（`route_planning_experiments`）的 runtime 是单进程 wall-clock，不是跨机器性能基准；同名实验重跑会更新 `created_at`（身份不变），当前不保留历史重复运行明细。reference comparison 为读取时派生、不持久化，因此其脚本/证据只在 experiment 记录存在时可复现。
+6.2 reference 数据的 `source_crs` 目前**全部**为 `pending_confirmation`（含舟山源表），所以 reference `length_m` 与米制相似度默认禁用；AirspacePolicy 为空，V2 readiness 保持 `blocked`。这些是数据/人工确认缺口，不是代码缺陷。
 7. RiskModelV1 已优先使用 canonical `population_density_people_km2`；`value_mean` 仅为旧项目兼容 fallback，并以 `raw_semantics=legacy_source_value_mean` 明示。当前仍是相对工程指数，不是绝对人口风险。
 8. 数据源产品契约已确认，但当前具体 GeoTIFF 文件身份仍记录为 `configured_assumption`；尚未通过 checksum/manifest 验证其确为对应 WorldPop/GLO-30 产品。
 9. 原 M7 `ConflictDetector` 仍是兼容的二维恒速直线 CPA；新增 EncounterAssessment3DV1 处理显式 EGM2008 三维轨迹与工程阈值，但位置/速度 uncertainty 在 V1 只记录、不膨胀阈值，也不评价正式法规 well-clear。

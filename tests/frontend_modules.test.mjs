@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,referenceLinkModel,airspacePolicyReadinessModel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
@@ -222,6 +222,71 @@ test('step 3 explicit OD panel creates a single pair and keeps the legacy genera
   assert.match(html,/生成场景航路（all-pairs，兼容）/);
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
   assert.match(source,/mutate\('scenario-od'/);
+});
+
+test('step 3 experiment panel shows both planners without pretending to be the operational route',()=>{
+  const experiment={experiment_id:'EXP-0123456789AB',created_at:'2026-01-01T00:00:00Z',grounding:'current_scenario_routes',source_type:'project',current_applicability:'current',scenario_fingerprint:'abcdef0123456789',verdicts:{automatically_ranked:false},
+    runs:[
+      {run_id:'route_planner_v1:1.0#1',algorithm_id:'route_planner_v1',algorithm_version:'1.0',status:'passed',planner_invoked:true,effective_parameters:{},result:{},quality:{quality:{path_length_m:1200.5,segment_count:4,turn_count:3,detour_factor:1.05},risk_metrics:{},deterministic_consistency:true},runtime:{per_route_ms_stats:{median:1.5}}},
+      {run_id:'risk_aware_route_planner_v2:2.0#2',algorithm_id:'risk_aware_route_planner_v2',algorithm_version:'2.0',status:'missing_data',planner_invoked:true,effective_parameters:{risk_weight_lambda:0},reason:'没有 confirmed allowed airspace',result:{},quality:{quality:{path_length_m:0,segment_count:0,turn_count:0},risk_metrics:{},deterministic_consistency:true},runtime:{per_route_ms_stats:{median:5.0}}},
+    ]};
+  const flow={nodes:[{node_id:'N001',name:'A',coordinate:[122,30]},{node_id:'N002',name:'B',coordinate:[122.1,30.1]}],scenario_routes:[{route_id:'R0001',direction:'N001→N002'}],operational_routes:[{route_id:'R0001',status:'passed'}],algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'1.0',parameters:{}}},algorithm_catalog:[],retired_route_ids:[],risks:{environment:{status:'not_calculated'}},steps:{},spatial_3d:{},operational_timing:{},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[],points:[]},reference_landing_sites:{items:[]},workspace:{bbox:[122,29.9,122.2,30.1]},route_planning_experiments:{count:1,active_experiment_id:'EXP-0123456789AB',records:[experiment],active_experiment:experiment},reference_route_links:{items:[]},reference_endpoint_candidates:{status:'blocked',reason:'source_crs_pending_confirmation'},data_readiness:{status:'partial',blocks:{}}};
+  const model=routeExperimentModel(flow);
+  assert.equal(model.count,1);
+  assert.equal(model.hasBothPlanners,true);
+  assert.equal(model.semantics,'experiment_is_not_current_operational_route');
+  assert.equal(model.automatic_ranking,false);
+  assert.equal(model.runs.length,2);
+  assert.equal(model.runs[0].path_length_m,1200.5);
+  assert.equal(model.runs[1].status,'missing_data');
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/规划器比较实验/);
+  assert.match(html,/experiment ≠ current operational route/);
+  assert.match(html,/不切换当前 planner/);
+  assert.match(html,/不覆盖 operational_routes/);
+  assert.match(html,/运行 V1 \+ V2 比较实验/);
+  assert.match(html,/risk_aware_route_planner_v2/);
+  assert.match(html,/没有 confirmed allowed airspace/);
+});
+
+test('step 3 reference link panel requires explicit confirmation and blocks candidates without CRS',()=>{
+  const flow={reference_routes:{items:[{reference_route_id:'RLR-1',name:'参考线',crs:{source_crs:{status:'pending_confirmation'}}}]},scenario_routes:[{route_id:'R0001',direction:'N001→N002'}],reference_route_links:{items:[]},reference_endpoint_candidates:{status:'blocked',reason:'source_crs_pending_confirmation',candidate_count:0},data_readiness:{status:'partial',blocks:{reference_routes:{source_crs_resolved:false}}}};
+  const model=referenceLinkModel(flow);
+  assert.equal(model.linkCount,0);
+  assert.equal(model.candidateStatus,'blocked');
+  assert.equal(model.requiresUserConfirmation,true);
+  assert.equal(model.automaticAssociation,false);
+  const html=renderStep3({flow:{...flow,nodes:[],operational_routes:[],algorithm_selection:{route_planner:{}},algorithm_catalog:[],spatial_3d:{},operational_timing:{},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_landing_sites:{items:[]},workspace:{bbox:[122,29.9,122.2,30.1]},route_planning_experiments:{},risks:{},steps:{}},interactionMode:'pan',selectedReference:null});
+  assert.match(html,/参考航线 ↔ 当前 OD 关联/);
+  assert.match(html,/必须由用户显式确认/);
+  assert.match(html,/不得自动认定/);
+  assert.match(html,/source_crs_pending_confirmation/);
+});
+
+test('step 3 airspace policy readiness counts only explicit policy values',()=>{
+  const flow={airspace_policies:{items:[{feature_id:'A',route_eligibility:'allowed',confirmed:true,source:{type:'doc'}},{feature_id:'B',route_eligibility:'unknown',confirmed:false,source:{type:'doc'}}]},data_readiness:{status:'partial',blocks:{airspace_policies:{status:'passed',count:2,route_eligibility_counts:{allowed:1,blocked:0,unknown:1},confirmed_count:1,unconfirmed_count:1,v2_readiness:{status:'blocked',reason:'only_unknown_policies_present'},never_inferred_from_layer_name_or_color:true}}}};
+  const model=airspacePolicyReadinessModel(flow);
+  assert.equal(model.count,2);
+  assert.deepEqual(model.eligibilityCounts,{allowed:1,blocked:0,unknown:1});
+  assert.equal(model.confirmedCount,1);
+  assert.equal(model.neverInferred,true);
+  assert.equal(model.v2Readiness.status,'blocked');
+  const html=renderStep3({flow:{...flow,nodes:[],scenario_routes:[],operational_routes:[],algorithm_selection:{route_planner:{}},algorithm_catalog:[],spatial_3d:{},operational_timing:{},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[]},reference_landing_sites:{items:[]},route_planning_experiments:{},reference_route_links:{},reference_endpoint_candidates:{},workspace:{bbox:[122,29.9,122.2,30.1]},risks:{},steps:{}},interactionMode:'pan',selectedReference:null});
+  assert.match(html,/AirspacePolicy 就绪总览/);
+  assert.match(html,/绝不按图层颜色或名称自动推断/);
+  assert.match(html,/V2 readiness/);
+});
+
+test('step 3 data readiness panel reports reference CRS and ET policy',()=>{
+  const flow={nodes:[],scenario_routes:[],operational_routes:[],algorithm_selection:{route_planner:{}},algorithm_catalog:[],spatial_3d:{},operational_timing:{},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[]},reference_landing_sites:{items:[]},route_planning_experiments:{},reference_route_links:{},reference_endpoint_candidates:{},airspace_policies:{items:[]},workspace:{bbox:[122,29.9,122.2,30.1]},risks:{},steps:{},
+    data_readiness:{status:'partial',reference_route_link_count:2,experiment_count:1,et_source_policy:'requires_xlsx_or_csv_conversion',blocks:{reference_landing_sites:{label:'landing_site',status:'not_calculated',count:0,source_crs:{value:null,status:'pending_confirmation'},representation_crs:{},source_crs_resolved:false,metric_measurement_status:'disabled_unresolved_source_crs'},reference_routes:{label:'reference_route',status:'passed',count:3,format:'csv',source_crs:{value:null,status:'pending_confirmation'},representation_crs:{},source_crs_resolved:false,metric_measurement_status:'disabled_unresolved_source_crs'},airspace_policies:{status:'pending_confirmation',count:0,route_eligibility_counts:{allowed:0,blocked:0,unknown:0},confirmed_count:0,unconfirmed_count:0,v2_readiness:{status:'blocked',reason:'no_confirmed_allowed_airspace_policy'}}}}};
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/数据就绪/);
+  assert.match(html,/source_crs/);
+  assert.match(html,/representation_crs/);
+  assert.match(html,/disabled_unresolved_source_crs/);
+  assert.match(html,/不提供 ET parser/);
+  assert.match(html,/reference route link 2/);
 });
 
 test('route vertical profile renders FABDEM flight building evidence and hover contract',()=>{

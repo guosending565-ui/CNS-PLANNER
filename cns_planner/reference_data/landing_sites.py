@@ -8,14 +8,20 @@ the source workbook itself does not declare.
 from __future__ import annotations
 
 import csv
+from copy import deepcopy
 from hashlib import sha256
 from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
 import re
 
+from ..domain.reference_crs import (
+    CRS84, empty_crs_record, is_resolved, normalize_crs_record, unresolved_reason,
+)
+
 
 COLLECTION_ID = "reference-landing-sites"
 CRS_STATUS = "pending_confirmation"
+LENGTH_SEMANTICS = "geodesic_length_requires_confirmed_source_crs"
 _COORDINATE_HINT = re.compile(r"(?:东经|北纬|[EWNS]|[°度])", re.IGNORECASE)
 _DMS = re.compile(
     r"(?P<hem>东经|北纬|[EWNS])?\s*[gG]?\s*"
@@ -53,11 +59,32 @@ def empty_reference_landing_sites():
             "source_type": "real",
             "source_mode": "real",
             "crs_status": CRS_STATUS,
+            "crs_status_legacy": CRS_STATUS,
             "planning_integration": "selection_required",
         },
+        "crs": empty_crs_record(note=(
+            "源表未声明 CRS；坐标仅按源数值临时展示，不得自动假定 WGS84/CGCS2000。"
+        )),
         "count": 0,
         "items": [],
         "warnings": [],
+    }
+
+
+def _representation_crs(suffix):
+    if suffix in (".geojson", ".json"):
+        return {
+            "value": CRS84, "status": "declared", "axis_order": "lon_lat",
+            "declared_by_format": True,
+            "source": {"type": "format_default", "format": "geojson_rfc7946"},
+            "evidence": [{
+                "type": "rfc7946_format_default", "value": CRS84,
+                "note": "RFC 7946 默认只描述 representation；不证明原始 source CRS。",
+            }],
+        }
+    return {
+        "value": None, "status": "pending_confirmation", "axis_order": None,
+        "declared_by_format": False, "source": None, "evidence": [],
     }
 
 
@@ -305,7 +332,9 @@ def _read_csv(path):
             yield path.stem, row_number, values, headers
 
 
-def load_reference_landing_sites(path):
+def load_reference_landing_sites(path, crs=None):
+    """Import landing sites.  ``crs`` may carry a human-confirmed *source* CRS."""
+
     source_path = Path(str(path or "")).expanduser()
     if not source_path.is_file():
         raise ValueError("参考起降点源路径必须是存在的具体文件")
@@ -320,15 +349,25 @@ def load_reference_landing_sites(path):
         return result
     if suffix not in (".xlsx", ".csv"):
         raise ValueError("参考起降点仅支持 XLSX 或 CSV；ET 需先转换")
+    crs_record = normalize_crs_record(crs) if crs is not None else empty_crs_record()
+    crs_record["representation_crs"] = _representation_crs(suffix)
+    source_resolved = is_resolved(crs_record, role="source_crs")
     reader = _read_xlsx(source_path) if suffix == ".xlsx" else _read_csv(source_path)
     items = []
     for sheet, row_number, values, headers in reader:
         item = _record_from_row(values, source_path.name, sheet, row_number, headers)
         if item:
+            item["crs"] = deepcopy(crs_record)
+            item["metric_measurement_status"] = "enabled" if source_resolved else "disabled_unresolved_source_crs"
             items.append(item)
     _assign_stable_ids(items)
     _mark_duplicates(items)
     quality_counts = {name: sum(item["quality"] == name for item in items) for name in ("parsed", "estimated", "uncertain", "invalid")}
+    warnings = ["source_crs_pending_confirmation"]
+    if crs_record["representation_crs"]["declared_by_format"]:
+        warnings.append("representation_crs_declared_by_format_not_source_crs")
+    if not source_resolved:
+        warnings.append("metric_measurement_disabled_unresolved_source_crs")
     return {
         "status": "passed" if items else "missing_data",
         "collection_id": COLLECTION_ID,
@@ -336,12 +375,67 @@ def load_reference_landing_sites(path):
         "metadata": {
             "source_type": "real", "source_mode": "real",
             "crs_status": CRS_STATUS,
+            "crs_status_legacy": CRS_STATUS,
             "planning_integration": "selection_required",
             "coordinate_order": "lon_lat",
             "quality_counts": quality_counts,
             "possible_duplicate_count": sum(item["possible_duplicate"] for item in items),
+            "metric_measurement_status": "enabled" if source_resolved else "disabled_unresolved_source_crs",
+            "length_semantics": LENGTH_SEMANTICS,
         },
+        "crs": crs_record,
         "count": len(items),
         "items": items,
-        "warnings": ["source_crs_pending_confirmation"],
+        "warnings": warnings,
+    }
+
+
+def backfill_reference_landing_sites(collection):
+    """Additive CRS backfill for landing-site collections saved before the split.
+
+    Idempotent, and an untouched empty collection is returned exactly as
+    :func:`empty_reference_landing_sites` wrote it so project round-trips stay stable.
+    """
+
+    if not isinstance(collection, dict) or not collection:
+        return empty_reference_landing_sites()
+    if not collection.get("items") and collection.get("status") in (None, "not_calculated"):
+        return empty_reference_landing_sites()
+    result = deepcopy(collection)
+    result.setdefault("collection_id", COLLECTION_ID)
+    result.setdefault("metadata", {})
+    result["metadata"].setdefault("crs_status_legacy", result["metadata"].get("crs_status", CRS_STATUS))
+    crs = normalize_crs_record(result.get("crs"))
+    if result.get("crs") is None and result["metadata"].get("crs_status"):
+        crs = normalize_crs_record({"crs_status": result["metadata"]["crs_status"]})
+    result["crs"] = crs
+    source_resolved = is_resolved(crs, role="source_crs")
+    result["metadata"]["metric_measurement_status"] = (
+        "enabled" if source_resolved else "disabled_unresolved_source_crs"
+    )
+    result["metadata"].setdefault("length_semantics", LENGTH_SEMANTICS)
+    warnings = list(result.get("warnings") or [])
+    if not source_resolved and "metric_measurement_disabled_unresolved_source_crs" not in warnings:
+        warnings.append("metric_measurement_disabled_unresolved_source_crs")
+    result["warnings"] = warnings
+    for item in result.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item.setdefault("crs", deepcopy(crs))
+        item["metric_measurement_status"] = (
+            "enabled" if source_resolved else "disabled_unresolved_source_crs"
+        )
+    return result
+
+
+def reference_crs_status(collection):
+    """Compact readiness view used by the data-readiness panel and evidence pack."""
+
+    crs = (collection or {}).get("crs") or empty_crs_record()
+    return {
+        "source_crs": deepcopy(crs.get("source_crs")),
+        "representation_crs": deepcopy(crs.get("representation_crs")),
+        "source_resolved": is_resolved(crs, role="source_crs"),
+        "representation_resolved": is_resolved(crs, role="representation_crs"),
+        "unresolved_reason": unresolved_reason(crs, role="source_crs"),
     }

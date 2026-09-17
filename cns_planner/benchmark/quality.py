@@ -6,6 +6,17 @@ risk metrics (V2 ``distance_m`` / ``risk_exposure_index_m`` / ``mean_risk_index`
 ``max_risk_index`` / ``detour_factor``) those values are read back and reported as
 ``planner_reported``.  Everything else is measured from the published polyline.
 
+Measurement semantics (explicit, never implicit):
+
+* distances and headings are **geodesic** on WGS84 (``pyproj.Geod``), with a
+  labelled spherical fallback only when pyproj is unavailable;
+* headings are compass azimuths (0 = true north, clockwise) and heading change is
+  normalized to ``[0, 180]`` degrees with a stated tolerance;
+* the published planner polyline is treated as WGS84 lon/lat because that is the
+  project's canonical representation for planned routes — reference-route data,
+  whose CRS is *not* confirmed, is handled by the separate reference comparator and
+  never measured here.
+
 Feasibility is reported from the existing authoritative results
 (:func:`cns_planner.application.constraint_validation.validate_hard_constraints` for
 hard constraints and the planner's own ``status`` for allowed-airspace feasibility).
@@ -14,20 +25,28 @@ No verdict, ranking or recommendation is produced.
 
 from __future__ import annotations
 
-import math
-
-from ..algorithms.coverage.v1 import distance_m
 from ..application.constraint_validation import validate_hard_constraints
+from .geodesy import (
+    HEADING_CHANGE_TOLERANCE_DEG,
+    METRIC_SEMANTICS,
+    geodesic_bearing_deg,
+    geodesic_distance_m,
+    geodesic_inverse,
+    heading_change_deg,
+)
 
 __all__ = [
     "evaluate_route_quality",
     "evaluate_constraint_feasibility",
     "polyline_metrics",
     "heading_deg",
+    "HEADING_CHANGE_TOLERANCE_DEG",
+    "METRIC_SEMANTICS",
 ]
 
 #: Shared, code-level tolerance for treating a published vertex as duplicated or a
-#: published segment as degenerate.
+#: published segment as degenerate.  This is a *vertex dedup* tolerance, not a
+#: measurement tolerance: it does not change any reported metric above its value.
 GEOMETRY_TOLERANCE_M = 1e-6
 
 _PLANNER_RISK_FIELDS = (
@@ -55,13 +74,13 @@ _RISK_EVIDENCE_FIELDS = (
 
 
 def heading_deg(left, right):
-    """Compass heading of ``left -> right`` in degrees (0 = north, 90 = east)."""
+    """Geodesic compass heading of ``left -> right`` (0 = north, 90 = east)."""
 
-    return math.degrees(math.atan2(right[0] - left[0], right[1] - left[1])) % 360.0
+    return geodesic_bearing_deg(left, right)
 
 
 def _clean_points(path):
-    """Return the published vertices, dropping exact/near duplicates only."""
+    """Return the published vertices, dropping near-duplicate points only."""
 
     points = []
     for item in path or []:
@@ -72,35 +91,40 @@ def _clean_points(path):
             continue
         if not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
             continue
-        if not (math.isfinite(float(lon)) and math.isfinite(float(lat))):
-            continue
         point = [float(lon), float(lat)]
-        if points and distance_m(points[-1], point) <= GEOMETRY_TOLERANCE_M:
+        if points and geodesic_distance_m(points[-1], point) <= GEOMETRY_TOLERANCE_M:
             continue
         points.append(point)
     return points
 
 
 def polyline_metrics(path):
-    """Measure the published polyline. Pure geometry, no planner involvement."""
+    """Measure the published polyline geodetically. No planner involvement."""
 
     points = _clean_points(path)
-    lengths = [distance_m(left, right) for left, right in zip(points, points[1:])]
-    headings = [heading_deg(left, right) for left, right in zip(points, points[1:])]
-    changes = []
-    for left, right in zip(headings, headings[1:]):
-        delta = abs(right - left) % 360.0
-        changes.append(min(delta, 360.0 - delta))
+    lengths = [geodesic_distance_m(left, right) for left, right in zip(points, points[1:])]
+    headings = [geodesic_bearing_deg(left, right) for left, right in zip(points, points[1:])]
+    changes = [
+        heading_change_deg(left, right) for left, right in zip(headings, headings[1:])
+    ]
+    straight = geodesic_distance_m(points[0], points[-1]) if len(points) > 1 else 0.0
     return {
         "path_length_m": sum(lengths),
         "segment_count": len(lengths),
-        "turn_count": len(changes),
+        "turn_count": sum(1 for change in changes if change > HEADING_CHANGE_TOLERANCE_DEG),
         "total_heading_change_deg": sum(changes),
         "max_heading_change_deg": max(changes) if changes else 0.0,
         "min_segment_m": min(lengths) if lengths else 0.0,
         "vertex_count": len(points),
-        "straight_line_distance_m": (
-            distance_m(points[0], points[-1]) if len(points) > 1 else 0.0
+        "straight_line_distance_m": straight,
+        "metric_semantics": dict(METRIC_SEMANTICS),
+        "heading_method": "geodesic_azimuth_difference_normalized_to_180",
+        "heading_change_tolerance_deg": HEADING_CHANGE_TOLERANCE_DEG,
+        "vertex_dedup_tolerance_m": GEOMETRY_TOLERANCE_M,
+        "assumed_input_crs": "EPSG:4326",
+        "assumed_input_crs_note": (
+            "运行航路 path 为项目 canonical 表示（WGS84 经度/纬度）；"
+            "CRS 未确认的 reference 数据不得使用本度量。"
         ),
     }
 
@@ -177,6 +201,10 @@ def evaluate_route_quality(route, result, hard_constraints=None, runtime_ms=None
                 if reported.get("detour_factor") is None or measured_detour is None
                 else reported["detour_factor"] - measured_detour
             ),
+            "note": (
+                "planner_reported 为 planner 自身契约下的数值（V1 固定度网格 / V2 复用项目米制距离），"
+                "measured 为本次 geodesic 度量；差值只用于说明度量口径差异。"
+            ),
         },
         "hard_constraint_input": evaluate_constraint_feasibility(hard_constraints),
         "allowed_airspace_feasibility": {
@@ -194,6 +222,7 @@ def evaluate_route_quality(route, result, hard_constraints=None, runtime_ms=None
         "risk_recomputed": False,
         "runtime_ms": runtime_ms,
         "runtime_note": "runtime_ms 仅用于报告，不参与任何质量判定。",
+        "metric_semantics": dict(METRIC_SEMANTICS),
         "verdicts": {
             "automatically_ranked": False,
             "automatically_scored": False,

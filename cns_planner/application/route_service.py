@@ -191,6 +191,49 @@ class RouteService:
         self.invalidation.workflow("route")
         return self._save()
 
+    def planner_context(self, hard_constraints):
+        """Frozen, read-only planner inputs for the current project state.
+
+        Shared verbatim by the operational path and by comparison experiments so both
+        feed the planners exactly the same input view.  Building this mapping never
+        mutates project state.
+        """
+        state, workspace = self.session.state, self.session.state.get("workspace")
+        if not workspace:
+            raise ValueError("请先保存工作区")
+        return {
+            "workspace_bbox": list(workspace["bbox"]),
+            "grid": state.get("grid") or {},
+            "grid_risk": state.get("grid_risk") or {},
+            "airspace_eligibility": (
+                (state.get("grid_attributes") or {}).get("airspace") or {}
+            ).get("airspace_eligibility"),
+            "uses_canonical_grid_risk": bool(
+                getattr(self.planner, "uses_canonical_grid_risk", False)
+            ),
+            "hard_constraints": list(hard_constraints or []),
+        }
+
+    @staticmethod
+    def plan_routes(planner, routes, context, constraints):
+        """Dispatch one planner over routes using an explicit, frozen input view.
+
+        The planner's own search core, cost function and output contract are not
+        touched here; only the argument shape is selected from its declared capability.
+        """
+        if getattr(planner, "uses_canonical_grid_risk", False):
+            return [
+                planner.plan(
+                    route, context.get("grid") or {}, context.get("grid_risk") or {},
+                    constraints, context.get("airspace_eligibility"),
+                )
+                for route in routes
+            ]
+        return [
+            planner.plan(route, context.get("workspace_bbox"), constraints)
+            for route in routes
+        ]
+
     def generate_operational(self, hard_constraints):
         state, workspace = self.session.state, self.session.state.get("workspace")
         if not workspace or not state["scenario_routes"]:
@@ -198,20 +241,8 @@ class RouteService:
         # Fail closed before any planner runs: a malformed constraint is never
         # dropped, repaired or silently downgraded to "no constraint".
         constraints = validate_hard_constraints(hard_constraints)
-        if getattr(self.planner, "uses_canonical_grid_risk", False):
-            results = [
-                self.planner.plan(
-                    route, state.get("grid") or {}, state.get("grid_risk") or {},
-                    constraints,
-                    ((state.get("grid_attributes") or {}).get("airspace") or {}).get("airspace_eligibility"),
-                )
-                for route in state["scenario_routes"]
-            ]
-        else:
-            results = [
-                self.planner.plan(route, workspace["bbox"], constraints)
-                for route in state["scenario_routes"]
-            ]
+        context = self.planner_context(constraints)
+        results = self.plan_routes(self.planner, state["scenario_routes"], context, constraints)
         state["operational_routes"] = results
         statuses = {item.get("status") for item in results}
         state["result_statuses"]["routes"] = (

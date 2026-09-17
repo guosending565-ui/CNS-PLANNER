@@ -52,6 +52,10 @@ from ..domain.requirement_policy import (
 from ..domain.plan_review import empty_confirmed_plan, empty_plan_review
 from ..domain.reporting import empty_report_collection
 from ..domain.airspace import empty_airspace_policies, normalize_airspace_policies
+from ..domain.experiment import empty_experiments, normalize_experiments
+from ..domain.reference_route_link import (
+    empty_reference_route_links, normalize_reference_route_links,
+)
 from ..domain.building_clearance import (
     default_building_clearance_policy, empty_building_clearance_assessment,
     normalize_building_clearance_assessment, normalize_building_clearance_policy,
@@ -60,6 +64,8 @@ from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
 )
+from ..reference_data.landing_sites import backfill_reference_landing_sites
+from ..reference_data.routes import backfill_reference_routes
 
 
 SCHEMA_VERSION = 2
@@ -148,6 +154,8 @@ def blank_project(defaults):
         "operational_routes": [], "aircraft": None, "rules": None,
         "reference_landing_sites": empty_reference_landing_sites(),
         "reference_routes": empty_reference_routes(),
+        "reference_route_links": empty_reference_route_links(),
+        "route_planning_experiments": empty_experiments(),
         "airspace_policies": empty_airspace_policies(),
         "equipment_reference_catalog": empty_equipment_reference_catalog(),
         "aircraft_profiles": empty_catalog("aircraft-cns-profile-catalog"),
@@ -252,7 +260,18 @@ def normalize_project(value, grid_service):
         value.get("encounter_3d_assessment")
     )
     value.setdefault("reference_landing_sites", empty_reference_landing_sites())
-    value.setdefault("reference_routes", empty_reference_routes())
+    value["reference_landing_sites"] = backfill_reference_landing_sites(
+        value.get("reference_landing_sites") or empty_reference_landing_sites()
+    )
+    value["reference_routes"] = backfill_reference_routes(
+        value.get("reference_routes") or empty_reference_routes()
+    )
+    value["reference_route_links"] = normalize_reference_route_links(
+        value.get("reference_route_links")
+    )
+    value["route_planning_experiments"] = normalize_experiments(
+        value.get("route_planning_experiments")
+    )
     value["airspace_policies"] = normalize_airspace_policies(value.get("airspace_policies"))
     equipment_reference = value.setdefault(
         "equipment_reference_catalog", empty_equipment_reference_catalog()

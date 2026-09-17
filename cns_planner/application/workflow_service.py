@@ -45,6 +45,8 @@ from .reference_data_service import ReferenceDataService
 from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
+from .reference_link_service import ReferenceLinkService
+from .route_experiment_service import RoutePlanningExperimentService
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
 from .encounter_3d_service import Encounter3DService
 from ..algorithms.encounter_3d import EncounterAssessment3DV1
@@ -133,6 +135,13 @@ class WorkflowService:
             self.session, self.route_service, snapshot,
         )
         self.reference_data_service.ensure_equipment_catalog()
+        self.reference_link_service = ReferenceLinkService(
+            self.session, self.invalidation_service, snapshot,
+        )
+        self.route_experiment_service = RoutePlanningExperimentService(
+            self.session, self.route_service, self.algorithm_registry,
+            self.invalidation_service, snapshot,
+        )
         self.operation_service = OperationService(self.session, self.invalidation_service, snapshot)
         self.risk_service = RiskService(
             self.session, self.risk_model, self.traffic_simulator, self.conflict_detector,
@@ -198,6 +207,10 @@ class WorkflowService:
         result["algorithm_catalog"] = self.algorithm_registry.catalog()
         if hasattr(self, "requirement_recommendation_service"):
             result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
+        if hasattr(self, "route_experiment_service"):
+            result["route_planning_experiments"] = self.route_experiment_service.result_snapshot()
+        if hasattr(self, "reference_link_service"):
+            result["data_readiness"] = self.reference_link_service.data_readiness()
         result["review"] = self.review()
         return result
 
@@ -236,6 +249,10 @@ class WorkflowService:
     def building_clearance_policy_snapshot(self): return self.building_clearance_service.policy_snapshot()
     def building_clearance_snapshot(self): return self.building_clearance_service.assessment_snapshot()
     def route_vertical_profiles_snapshot(self): return self.route_vertical_profile_service.result_snapshot()
+    def reference_route_links_snapshot(self): return self.reference_link_service.links_snapshot()
+    def reference_endpoint_candidates_snapshot(self): return self.reference_link_service.endpoint_candidates_snapshot()
+    def route_experiments_snapshot(self): return self.route_experiment_service.result_snapshot()
+    def data_readiness_snapshot(self): return self.reference_link_service.data_readiness()
     def encounter_3d_snapshot(self): return self.encounter_3d_service.result_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -425,6 +442,10 @@ class WorkflowService:
     def set_building_clearance_policy(self, payload): return self.building_clearance_service.set_policy(payload)
     def evaluate_building_clearance(self, adapter): return self.building_clearance_service.evaluate(adapter)
     def evaluate_route_vertical_profiles(self, sampler, payload=None): return self.route_vertical_profile_service.evaluate(sampler, payload)
+    def evaluate_route_experiment(self, payload=None): return self.route_experiment_service.evaluate(payload)
+    def delete_route_experiment(self, experiment_id): return self.route_experiment_service.delete_experiment(experiment_id)
+    def create_reference_route_link(self, payload): return self.reference_link_service.create_link(payload)
+    def delete_reference_route_link(self, link_id): return self.reference_link_service.delete_link(link_id)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()

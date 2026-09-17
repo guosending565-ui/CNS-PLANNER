@@ -59,19 +59,24 @@ def segment(lon0, lat0, lon1, lat1):
 
 
 def test_evaluator_measures_every_required_metric_for_a_simple_polyline():
+    from cns_planner.benchmark.geodesy import geodesic_distance_m
+
     path = [[0.0, 0.0], [0.001, 0.0], [0.001, 0.001]]
     evaluation = evaluate_route_quality(
         {"route_id": "R1"}, {"route_id": "R1", "status": "passed", "path": path},
     )
     quality = evaluation["quality"]
-    assert quality["path_length_m"] == pytest.approx(111.19 + 111.19, rel=1e-3)
+    legs = [geodesic_distance_m(a, b) for a, b in zip(path, path[1:])]
+    # Values come from the geodesic backend, not a spherical approximation.
+    assert quality["path_length_m"] == pytest.approx(sum(legs))
     assert quality["segment_count"] == 2
     assert quality["turn_count"] == 1
-    assert quality["total_heading_change_deg"] == pytest.approx(90.0)
-    assert quality["max_heading_change_deg"] == pytest.approx(90.0)
-    assert quality["min_segment_m"] == pytest.approx(111.19, rel=1e-3)
-    assert quality["detour_factor"] == pytest.approx(2 ** 0.5, rel=1e-3)
-    assert quality["straight_line_distance_m"] == pytest.approx(157.25, rel=1e-3)
+    assert quality["total_heading_change_deg"] == pytest.approx(90.0, abs=0.01)
+    assert quality["max_heading_change_deg"] == pytest.approx(90.0, abs=0.01)
+    assert quality["min_segment_m"] == pytest.approx(min(legs))
+    assert quality["detour_factor"] == pytest.approx(
+        sum(legs) / geodesic_distance_m(path[0], path[-1]), rel=1e-6,
+    )
 
 
 def test_straight_path_has_zero_turns_and_unit_detour():
@@ -321,7 +326,8 @@ def test_benchmark_does_not_execute_planners_for_inapplicable_runs(tool, monkeyp
 
     monkeypatch.setattr(RoutePlannerV1, "plan", v1_plan)
     monkeypatch.setattr(RiskAwareRoutePlannerV2, "plan", v2_plan)
-    tool.build_pack(["malformed_constraint"])
+    tool.build_pack(["malformed_constraint"], runs=2, warmup=1)
     assert calls == {"v1": 0, "v2": 0}
-    tool.build_pack(["open_space"])
-    assert calls["v1"] == 1 and calls["v2"] == 1
+    tool.build_pack(["open_space"], runs=2, warmup=1)
+    # warmup(1) + runs(2) invocations per planner run; V2 has one run for this case.
+    assert calls["v1"] == 3 and calls["v2"] == 3

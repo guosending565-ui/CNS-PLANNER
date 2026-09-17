@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import csv
+from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
 import re
 
 from ..algorithms.coverage.v1 import distance_m
+from ..domain.reference_crs import CRS84, empty_crs_record, is_resolved, normalize_crs_record, unresolved_reason
 from .landing_sites import CRS_STATUS, parse_coordinate
 
 
 COLLECTION_ID = "reference-routes"
+#: Length/similarity stay disabled until the *source* CRS is confirmed by a human.
+LENGTH_SEMANTICS = "geodesic_length_requires_confirmed_source_crs"
 _ALIASES = {
     "route_number": ("航线编号", "航路编号", "航线号", "route_number", "route_no"),
     "route_name": ("航线名称", "航路名称", "route_name"),
@@ -35,12 +39,42 @@ def empty_reference_routes():
             "source_type": "real", "source_mode": "real",
             "crs_status": CRS_STATUS, "usage": "reference_only",
             "planning_integration": "never_automatic",
+            "crs_status_legacy": CRS_STATUS,
         },
+        "crs": empty_crs_record(note=(
+            "源文件未声明 CRS；CSV/XLSX 不得被自动假定为 WGS84/CGCS2000。"
+            "source_crs 未确认前不输出正式 length_m，也不输出米制几何相似度。"
+        )),
         "count": 0,
         "point_count": 0,
         "items": [],
         "points": [],
         "warnings": [],
+    }
+
+
+def _format_crs(suffix):
+    """Representation CRS implied by the *format* alone (never the source CRS)."""
+
+    if suffix in (".geojson", ".json"):
+        return {
+            "value": CRS84,
+            "status": "declared",
+            "axis_order": "lon_lat",
+            "declared_by_format": True,
+            "source": {"type": "format_default", "format": "geojson_rfc7946"},
+            "evidence": [{
+                "type": "rfc7946_format_default",
+                "value": CRS84,
+                "note": (
+                    "RFC 7946 GeoJSON 规定坐标使用 OGC:CRS84；这只描述 representation，"
+                    "不能证明原始测量/调查 CRS。"
+                ),
+            }],
+        }
+    return {
+        "value": None, "status": "pending_confirmation", "axis_order": None,
+        "declared_by_format": False, "source": None, "evidence": [],
     }
 
 
@@ -154,12 +188,72 @@ def _point_id(route_number, sequence, name, point_type, coordinate):
     return "RLP-" + sha256(identity.encode("utf-8")).hexdigest()[:12].upper()
 
 
-def _build(rows, source_path):
+def backfill_reference_routes(collection):
+    """Additive backfill for projects saved before the CRS split.
+
+    Legacy records kept only ``crs_status`` and an unconditional ``length_m``.  The
+    legacy status becomes visible evidence, the metric length is re-derived from the
+    (unresolved) CRS record — which means it becomes ``None`` — and the original value
+    is preserved as ``legacy_length_m`` so nothing is silently lost.
+
+    The function is idempotent *and* leaves an untouched empty collection exactly as
+    :func:`empty_reference_routes` wrote it, so a project round-trip stays stable.
+    """
+
+    if not isinstance(collection, dict):
+        return empty_reference_routes()
+    if not collection:
+        return empty_reference_routes()
+    if not collection.get("items") and not collection.get("points") and (
+        collection.get("status") in (None, "not_calculated")
+    ):
+        return empty_reference_routes()
+    result = deepcopy(collection)
+    result.setdefault("collection_id", COLLECTION_ID)
+    result.setdefault("metadata", {})
+    result["metadata"].setdefault("crs_status_legacy", result["metadata"].get("crs_status", CRS_STATUS))
+    crs = normalize_crs_record(result.get("crs"))
+    if result.get("crs") is None and result["metadata"].get("crs_status"):
+        crs = normalize_crs_record({"crs_status": result["metadata"]["crs_status"]})
+    result["crs"] = crs
+    result["metadata"]["length_semantics"] = LENGTH_SEMANTICS
+    source_resolved = is_resolved(crs, role="source_crs")
+    result["metadata"]["metric_measurement_status"] = (
+        "enabled" if source_resolved else "disabled_unresolved_source_crs"
+    )
+    warnings = list(result.get("warnings") or [])
+    if not source_resolved and "length_m_and_metric_similarity_disabled" not in warnings:
+        warnings.append("length_m_and_metric_similarity_disabled")
+    result["warnings"] = warnings
+    for index, route in enumerate(result.get("items") or []):
+        if not isinstance(route, dict):
+            continue
+        route.setdefault("crs", deepcopy(crs))
+        route.setdefault("source_numeric_path", deepcopy(route.get("path") or []))
+        route.setdefault("length_semantics", LENGTH_SEMANTICS)
+        route.setdefault("length_unresolved_reason", unresolved_reason(crs, role="source_crs"))
+        route["metric_geometry_similarity_available"] = source_resolved
+        if not source_resolved:
+            if route.get("length_m") is not None:
+                route.setdefault("legacy_length_m", route["length_m"])
+            route["length_m"] = None
+            route["length_status"] = "blocked_unresolved_source_crs"
+        else:
+            route["length_status"] = "passed"
+        result["items"][index] = route
+    for point in result.get("points") or []:
+        if isinstance(point, dict):
+            point.setdefault("crs", deepcopy(crs))
+    return result
+
+
+def _build(rows, source_path, crs):
     grouped = {}
     invalid_rows = 0
     last_route_number = None
     last_route_name = None
     last_category = None
+    source_resolved = is_resolved(crs, role="source_crs")
     for sheet, row_number, row in rows:
         route_number = _field(row, "route_number")
         sequence = _number(_field(row, "sequence"))
@@ -190,6 +284,7 @@ def _build(rows, source_path):
             "quality": parsed["quality"],
             "source": {"file": source_path.name, "sheet": sheet, "row": row_number},
             "crs_status": CRS_STATUS,
+            "crs": deepcopy(crs),
             "position": None,
             "warnings": list(parsed["warnings"]),
         }
@@ -225,10 +320,20 @@ def _build(rows, source_path):
             "ordered_points": [dict(point) for point in ordered],
             "ordered_point_ids": [point["reference_route_point_id"] for point in ordered],
             "path": path,
-            "length_m": sum(distance_m(left, right) for left, right in zip(path, path[1:])),
+            # A metric length is only meaningful against a resolved source CRS.
+            "length_m": (
+                sum(distance_m(left, right) for left, right in zip(path, path[1:]))
+                if source_resolved else None
+            ),
+            "length_status": "passed" if source_resolved else "blocked_unresolved_source_crs",
+            "length_semantics": LENGTH_SEMANTICS,
+            "length_unresolved_reason": unresolved_reason(crs, role="source_crs"),
+            "metric_geometry_similarity_available": source_resolved,
+            "source_numeric_path": deepcopy(path),
             "source": {"file": source_path.name, "rows": sorted(group["rows"])},
             "provenance": {"group_by": "route_number", "order_by": "sequence"},
             "crs_status": CRS_STATUS,
+            "crs": deepcopy(crs),
             "warnings": warnings,
             "usage": "reference_only",
         })
@@ -236,7 +341,14 @@ def _build(rows, source_path):
     return routes, points, invalid_rows
 
 
-def load_reference_routes(path):
+def load_reference_routes(path, crs=None):
+    """Import reference routes.  ``crs`` may carry a *human-confirmed* source CRS.
+
+    Absent explicit confirmation the source CRS stays ``pending_confirmation`` and no
+    formal ``length_m`` / metric geometry similarity is produced — the coordinates are
+    kept as ``source_numeric_path`` for temporary display only.
+    """
+
     source_path = Path(str(path or "")).expanduser()
     if not source_path.is_file():
         raise ValueError("参考航线源路径必须是存在的具体文件")
@@ -249,6 +361,13 @@ def load_reference_routes(path):
             "warnings": ["requires_xlsx_or_csv_conversion"],
         })
         return result
+    representation = _format_crs(suffix)
+    crs_record = normalize_crs_record(crs) if crs is not None else empty_crs_record()
+    crs_record["representation_crs"] = representation
+    crs_record.setdefault("note", (
+        "source_crs 未确认前不输出正式 length_m，也不输出米制几何相似度；"
+        "representation_crs 仅描述当前内存/渲染解释。"
+    ))
     if suffix == ".csv":
         rows = [(source_path.stem, row, values) for row, values in _read_csv(source_path)]
     elif suffix == ".xlsx":
@@ -257,7 +376,12 @@ def load_reference_routes(path):
         rows = [(source_path.stem, row, values) for row, values in _geojson_rows(source_path)]
     else:
         raise ValueError("参考航线仅支持 CSV/XLSX/GeoJSON；ET 需先转换")
-    routes, points, invalid_rows = _build(rows, source_path)
+    routes, points, invalid_rows = _build(rows, source_path, crs_record)
+    warnings = ["source_crs_pending_confirmation"]
+    if representation["declared_by_format"]:
+        warnings.append("representation_crs_declared_by_format_not_source_crs")
+    if not is_resolved(crs_record, role="source_crs"):
+        warnings.append("length_m_and_metric_similarity_disabled")
     return {
         "status": "passed" if routes else "missing_data",
         "collection_id": COLLECTION_ID,
@@ -268,10 +392,16 @@ def load_reference_routes(path):
             "planning_integration": "never_automatic",
             "group_by": "route_number", "order_by": "sequence",
             "invalid_row_count": invalid_rows,
+            "crs_status_legacy": CRS_STATUS,
+            "length_semantics": LENGTH_SEMANTICS,
+            "metric_measurement_status": (
+                "enabled" if is_resolved(crs_record, role="source_crs") else "disabled_unresolved_source_crs"
+            ),
         },
+        "crs": crs_record,
         "count": len(routes),
         "point_count": len(points),
         "items": routes,
         "points": points,
-        "warnings": ["source_crs_pending_confirmation"],
+        "warnings": warnings,
     }

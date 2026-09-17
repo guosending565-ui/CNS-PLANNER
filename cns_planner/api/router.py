@@ -69,6 +69,10 @@ class ApiRouter:
         if path == "/api/building-clearance/policy": return Response(workflow.building_clearance_policy_snapshot())
         if path == "/api/building-clearance": return Response(workflow.building_clearance_snapshot())
         if path == "/api/route-vertical-profiles": return Response(workflow.route_vertical_profiles_snapshot())
+        if path == "/api/route-experiments": return Response(workflow.route_experiments_snapshot())
+        if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
+        if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
+        if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
         if path == "/api/encounter-3d": return Response(workflow.encounter_3d_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
@@ -158,6 +162,10 @@ class ApiRouter:
             "/api/building-clearance/policy": lambda: workflow.set_building_clearance_policy(payload),
             "/api/building-clearance/evaluate": lambda: context.qgis.call(context.evaluate_building_clearance),
             "/api/route-vertical-profiles/evaluate": lambda: context.qgis.call(lambda: context.evaluate_route_vertical_profiles(payload)),
+            "/api/route-experiments/evaluate": lambda: workflow.evaluate_route_experiment(payload),
+            "/api/route-experiments/delete": lambda: workflow.delete_route_experiment(payload.get("experiment_id")),
+            "/api/reference-route-links/create": lambda: workflow.create_reference_route_link(payload),
+            "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
             "/api/spatial-3d/altitude-layers": lambda: workflow.set_altitude_layers(payload),
             "/api/spatial-3d/route-profile": lambda: workflow.set_route_altitude_profile(payload),
