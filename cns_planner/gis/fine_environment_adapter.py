@@ -38,10 +38,12 @@ pure assembly path (with injected sources) is fully testable without it.
 
 from __future__ import annotations
 
-from math import cos, floor, radians
+from math import atan2, cos, floor, hypot, radians, sin, sqrt
 from pathlib import Path
 
-from ..data.mapping.airspace_eligibility import point_covered_by_polygon, polygons_of
+from ..data.mapping.airspace_eligibility import (
+    polygons_of, rect_covered_by_any, rect_intersects_any,
+)
 from ..route_planner_v3.fine_contracts import AIRSPACE_MAPPING_METHOD, contract_fingerprint
 from ..route_planner_v3.fine_grid import (
     assemble_fine_environment, bind_fine_cells_to_parents, build_fine_grid_spec,
@@ -57,8 +59,26 @@ ADAPTER_VERSION = "3.1-alpha"
 TERRAIN_READ_MODE = "single_read_only_window_per_corridor_read_as_array_no_resample"
 BUILDING_QUERY_MODE = "provider_spatial_index_rtree_filter_rect_then_metric_buffer"
 AIRSPACE_QUERY_MODE = "confirmed_policy_coarse_cell_and_fine_centre_point_test"
+#: V3-C airspace query: the *fine cell polygon* (or the realized route's error
+#: envelope) is tested against the confirmed policy union, not just its centre.
+AIRSPACE_POLYGON_QUERY_MODE = "confirmed_policy_fine_cell_polygon_covered_by_allowed_union_and_disjoint_from_blocked_union"
 
 FINE_SOURCE_ROLES = ("terrain_dtm", "buildings", "airspace_policy")
+
+#: Horizontal-resolution provenance methods.  ``projected_linear_unit`` converts an
+#: affine pixel size in a projected CRS through the CRS's own verified linear unit;
+#: ``geographic_geodesic_adjacent_pixel_centres`` measures the ground distance
+#: between adjacent pixel centres in the corridor/reference area.  A raw degree
+#: value is **never** reported as metres.
+RESOLUTION_METHODS = (
+    "projected_crs_verified_linear_unit",
+    "geographic_geodesic_adjacent_pixel_centres",
+    "unresolved",
+)
+
+#: Metres per degree at the equator, used only as an explicitly labelled fallback
+#: when no geodesic engine is available (the method string always says so).
+_EARTH_RADIUS_M = 6371008.8
 
 #: Reasons the adapter itself can report instead of building an environment.
 ADAPTER_BLOCK_REASONS = (
@@ -69,7 +89,68 @@ ADAPTER_BLOCK_REASONS = (
     "airspace_policy_unavailable",
     "metric_transform_unavailable",
     "corridor_support_cells_missing",
+    "airspace_polygon_evidence_unavailable",
 )
+
+
+# --------------------------------------------------------------------------- resolution
+
+
+def _unit_factor_to_metres(crs, osr):
+    """The CRS's own verified linear unit → metre factor, or ``(None, name)``.
+
+    A projected CRS declares its linear unit (``metre``, ``US survey foot``, ...)
+    and the affine ``GeoTransform`` is expressed in *that* unit.  1.0 is returned
+    only when the unit actually is the metre; any other unit uses its own
+    conversion.  When the unit cannot be read, ``None`` forces the caller to fall
+    back to a geodesic measurement instead of assuming metres.
+    """
+
+    if crs is None:
+        return None, None
+    try:
+        if crs.IsGeographic():
+            return None, None
+    except AttributeError:
+        pass
+    name = None
+    try:
+        name = crs.GetLinearUnitsName() if hasattr(crs, "GetLinearUnitsName") else None
+    except (TypeError, RuntimeError):
+        name = None
+    if name:
+        normalized = str(name).strip().lower()
+        if normalized in ("metre", "meter", "m"):
+            return 1.0, str(name)
+        try:
+            factor = float(crs.GetLinearUnits())
+        except (AttributeError, TypeError, RuntimeError):
+            return None, str(name)
+        if factor and factor > 0:
+            return factor, str(name)
+    return None, name
+
+
+def _geodesic_distance_m(first, second, *, geod=None):
+    """Ground distance in metres between two ``[lon, lat]`` points.
+
+    Uses ``pyproj.Geod`` when available (the same engine the existing metric
+    reference comparison uses); otherwise a documented spherical haversine that is
+    labelled as such.  It never returns a degree value.
+    """
+
+    lon1, lat1 = float(first[0]), float(first[1])
+    lon2, lat2 = float(second[0]), float(second[1])
+    if geod is not None:
+        try:
+            return float(geod.inv(lon1, lat1, lon2, lat2)[2]), "pyproj_geod_wgs84_ellipsoid"
+        except (TypeError, ValueError, RuntimeError):
+            pass
+    phi1, phi2 = radians(lat1), radians(lat2)
+    delta_phi = phi2 - phi1
+    delta_lambda = radians(lon2 - lon1)
+    a = sin(delta_phi / 2.0) ** 2 + cos(phi1) * cos(phi2) * sin(delta_lambda / 2.0) ** 2
+    return 2.0 * _EARTH_RADIUS_M * atan2(sqrt(a), sqrt(max(0.0, 1.0 - a))), "spherical_haversine_labelled_approximation"
 
 
 def _basename(value):
@@ -154,8 +235,12 @@ class QgisMetricTransform:
 # --------------------------------------------------------------------------- terrain
 
 
-class FabdemWindowTerrainSource:
-    """Read-only, windowed FABDEM DTM sampler (GDAL)."""
+class _FabdemRasterBase:
+    """Shared read-only FABDEM access: CRS, transforms, native pixel size in metres.
+
+    Both the V3-B window sampler and the V3-C native-pixel window share this base so
+    the resolution/unit/projection semantics exist exactly once.
+    """
 
     role = "terrain_dtm"
 
@@ -186,17 +271,52 @@ class FabdemWindowTerrainSource:
         )
         self.projection = self.dataset.GetProjection()
         self._to_raster = None
+        self._to_geographic = None
+        self._crs = None
+        self.resolution_detail = None
+        self.last_window = None
 
-    # ------------------------------------------------------------------ protocol
+    # ------------------------------------------------------------------ resolution
 
-    def describe(self):
+    def effective_resolution_m(self):
+        """Horizontal pixel size in **metres**, with explicit provenance.
+
+        The affine ``GeoTransform`` pixel size is expressed in the raster CRS's own
+        units.  It is *not* metres in general:
+
+        * projected CRS ⇒ convert through the CRS's own verified linear unit
+          (``projected_crs_verified_linear_unit``);
+        * geographic CRS ⇒ the raw values are **degrees** and are never reported as
+          metres; the ground distance between adjacent pixel centres is measured
+          geodesically near the corridor/reference location
+          (``geographic_geodesic_adjacent_pixel_centres``).
+
+        Anything that cannot be resolved returns ``None`` (blocked), never a
+        degree-as-metre number.
+        """
+
+        detail = self.effective_resolution_detail()
+        if detail.get("status") != "passed":
+            return None
+        return detail.get("effective_resolution_m")
+
+    def effective_resolution_detail(self):
         stat = self.path.stat()
+        detail = self.effective_resolution_detail()
+        self.resolution_detail = detail
         return {
             "role": self.role, "dataset": "FABDEM", "file_name": self.path.name,
             "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
             "driver": self.dataset.GetDriver().ShortName,
             "width": int(self.dataset.RasterXSize), "height": int(self.dataset.RasterYSize),
             "pixel_size": [abs(self.transform[1]), abs(self.transform[5])],
+            "pixel_size_unit": detail.get("native_pixel_size_unit"),
+            "effective_resolution_m": detail.get("effective_resolution_m"),
+            "effective_resolution_m_x": detail.get("effective_resolution_m_x"),
+            "effective_resolution_m_y": detail.get("effective_resolution_m_y"),
+            "resolution_method": detail.get("method"),
+            "resolution_status": detail.get("status"),
+            "resolution_detail": detail,
             "nodata": self.nodata,
             "vertical_reference": self.vertical_reference,
             "vertical_status": self.vertical_status,
@@ -204,11 +324,200 @@ class FabdemWindowTerrainSource:
         }
 
     def effective_resolution_m(self):
-        pixel_x = abs(float(self.transform[1]))
-        pixel_y = abs(float(self.transform[5]))
-        if pixel_x <= 0 or pixel_y <= 0:
+        """Horizontal pixel size in **metres**, with explicit provenance.
+
+        The affine ``GeoTransform`` pixel size is expressed in the raster CRS's own
+        units.  It is *not* metres in general:
+
+        * projected CRS ⇒ convert through the CRS's own verified linear unit
+          (``projected_crs_verified_linear_unit``);
+        * geographic CRS ⇒ the raw values are **degrees** and are never reported as
+          metres; the ground distance between adjacent pixel centres is measured
+          geodesically near the corridor/reference location
+          (``geographic_geodesic_adjacent_pixel_centres``).
+
+        Anything that cannot be resolved returns ``None`` (blocked), never a
+        degree-as-metre number.
+        """
+
+        detail = self.effective_resolution_detail()
+        if detail.get("status") != "passed":
             return None
-        return max(pixel_x, pixel_y)
+        return detail.get("effective_resolution_m")
+
+    def effective_resolution_detail(self):
+        """Native pixel size, unit and the metric conversion method (auditable)."""
+
+        native_x = abs(float(self.transform[1]))
+        native_y = abs(float(self.transform[5]))
+        detail = {
+            "native_pixel_size_x": native_x,
+            "native_pixel_size_y": native_y,
+            "native_pixel_size_unit": None,
+            "effective_resolution_m_x": None,
+            "effective_resolution_m_y": None,
+            "effective_resolution_m": None,
+            "method": "unresolved",
+            "status": "blocked",
+            "reason": None,
+            "reference_location": None,
+            "geodesic_backend": None,
+            "degree_values_never_reported_as_metres": True,
+        }
+        if native_x <= 0 or native_y <= 0:
+            detail["reason"] = "degenerate_affine_pixel_size"
+            return detail
+        crs = self._raster_crs()
+        geographic = None
+        try:
+            geographic = crs.IsGeographic() if crs is not None else None
+        except AttributeError:
+            geographic = None
+        if geographic is False:
+            factor, unit_name = _unit_factor_to_metres(crs, self.osr)
+            if not factor:
+                detail["reason"] = "projected_crs_linear_unit_unresolved"
+                detail["native_pixel_size_unit"] = unit_name
+                return detail
+            detail.update({
+                "native_pixel_size_unit": unit_name or "unknown_projected_linear_unit",
+                "effective_resolution_m_x": native_x * factor,
+                "effective_resolution_m_y": native_y * factor,
+                "effective_resolution_m": max(native_x * factor, native_y * factor),
+                "method": "projected_crs_verified_linear_unit",
+                "status": "passed",
+                "unit_factor_to_metres": factor,
+            })
+            return detail
+        if geographic is None:
+            detail["reason"] = "raster_crs_unreadable"
+            return detail
+        # Geographic CRS: degrees in, metres out -- measured, not relabelled.
+        detail["native_pixel_size_unit"] = "degree"
+        reference = self._reference_pixel_location()
+        if reference is None:
+            detail["reason"] = "geographic_reference_location_unresolved"
+            return detail
+        geod, backend = _load_geod(self.gdal)
+        column, row = reference
+        origin = self._geographic_of_pixel(column, row)
+        if origin is None:
+            detail["reason"] = "geographic_pixel_centre_transform_unavailable"
+            return detail
+        neighbours = {}
+        # The affine basis vectors already carry the pixel size, so an adjacent pixel is
+        # an offset of exactly **one** pixel step in raster space -- not the pixel size
+        # expressed in the CRS's units.
+        for key, (d_column, d_row) in (
+            ("x", (1.0, 0.0)),
+            ("y", (0.0, 1.0)),
+        ):
+            neighbour = self._geographic_of_pixel(column + d_column, row + d_row)
+            if neighbour is None:
+                detail["reason"] = "geographic_neighbour_pixel_centre_transform_unavailable"
+                return detail
+            value, used_backend = _geodesic_distance_m(
+                list(origin), list(neighbour), geod=geod,
+            )
+            neighbours[key] = value
+            backend = used_backend
+        detail.update({
+            "effective_resolution_m_x": neighbours["x"],
+            "effective_resolution_m_y": neighbours["y"],
+            "effective_resolution_m": max(neighbours["x"], neighbours["y"]),
+            "method": "geographic_geodesic_adjacent_pixel_centres",
+            "status": "passed",
+            "reference_location": [float(value) for value in origin],
+            "reference_pixel": [float(column), float(row)],
+            "geodesic_backend": backend,
+            "measured_native_pixel_size_x": native_x,
+            "measured_native_pixel_size_y": native_y,
+        })
+        return detail
+
+    def _raster_crs(self):
+        if getattr(self, "_crs", None) is None:
+            crs = self.osr.SpatialReference()
+            try:
+                crs.ImportFromWkt(self.projection)
+            except (TypeError, RuntimeError):
+                self._crs = None
+                return None
+            self._crs = crs
+        return self._crs
+
+    def _geographic_of_pixel(self, pixel, line):
+        """Raster pixel space → (lon, lat) in traditional GIS order."""
+
+        if self._to_geographic is None:
+            target = self.osr.SpatialReference()
+            target.ImportFromEPSG(4326)
+            source = self.osr.SpatialReference()
+            try:
+                source.ImportFromWkt(self.projection)
+            except (TypeError, RuntimeError):
+                self._to_geographic = False
+                return None
+            for item in (target, source):
+                if hasattr(item, "SetAxisMappingStrategy"):
+                    item.SetAxisMappingStrategy(self.osr.OAMS_TRADITIONAL_GIS_ORDER)
+            self._to_geographic = self.osr.CoordinateTransformation(source, target)
+        if self._to_geographic is False:
+            return None
+        x, y = (
+            self.transform[0] + self.transform[1] * float(pixel) + self.transform[2] * float(line),
+            self.transform[3] + self.transform[4] * float(pixel) + self.transform[5] * float(line),
+        )
+        try:
+            point = self._to_geographic.TransformPoint(x, y)
+        except (TypeError, RuntimeError):
+            return None
+        return [float(point[0]), float(point[1])]
+
+    def _reference_pixel_location(self):
+        """A raster-interior reference **pixel** location for the geodesic measurement."""
+
+        pixels = (
+            (0.5, 0.5),
+            (0.5, self.dataset.RasterYSize - 0.5),
+            (self.dataset.RasterXSize - 0.5, 0.5),
+            (self.dataset.RasterXSize - 0.5, self.dataset.RasterYSize - 0.5),
+            (self.dataset.RasterXSize / 2.0, self.dataset.RasterYSize / 2.0),
+        )
+        for column, row in pixels:
+            # Prefer a location whose ground position is known and inside the raster.
+            if 0 <= column <= self.dataset.RasterXSize and 0 <= row <= self.dataset.RasterYSize:
+                return column, row
+        return None
+
+
+class FabdemWindowTerrainSource(_FabdemRasterBase):
+    """Read-only, windowed FABDEM DTM sampler (GDAL) for V3-B fine cells."""
+
+    # ------------------------------------------------------------------ protocol
+
+    def describe(self):
+        stat = self.path.stat()
+        detail = self.effective_resolution_detail()
+        self.resolution_detail = detail
+        return {
+            "role": self.role, "dataset": "FABDEM", "file_name": self.path.name,
+            "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+            "driver": self.dataset.GetDriver().ShortName,
+            "width": int(self.dataset.RasterXSize), "height": int(self.dataset.RasterYSize),
+            "pixel_size": [abs(self.transform[1]), abs(self.transform[5])],
+            "pixel_size_unit": detail.get("native_pixel_size_unit"),
+            "effective_resolution_m": detail.get("effective_resolution_m"),
+            "effective_resolution_m_x": detail.get("effective_resolution_m_x"),
+            "effective_resolution_m_y": detail.get("effective_resolution_m_y"),
+            "resolution_method": detail.get("method"),
+            "resolution_status": detail.get("status"),
+            "resolution_detail": detail,
+            "nodata": self.nodata,
+            "vertical_reference": self.vertical_reference,
+            "vertical_status": self.vertical_status,
+            "read_mode": TERRAIN_READ_MODE,
+        }
 
     def usable(self):
         if self.vertical_status != "confirmed":
@@ -383,6 +692,24 @@ def _unknown_terrain(reason):
     }
 
 
+def _load_geod(gdal=None):
+    """A ``pyproj.Geod`` when available; otherwise ``(None, fallback_label)``.
+
+    The existing metric reference comparison already depends on ``pyproj``; it is
+    optional here so the pure-assembly/test path keeps working without it, and the
+    fallback is always *labelled* in the recorded provenance.
+    """
+
+    try:
+        from pyproj import Geod
+    except ImportError:
+        return None, "pyproj_unavailable_spherical_fallback"
+    try:
+        return Geod(ellps="WGS84"), "pyproj_geod_wgs84_ellipsoid"
+    except (TypeError, ValueError, RuntimeError):
+        return None, "pyproj_geod_unavailable_spherical_fallback"
+
+
 # --------------------------------------------------------------------------- buildings
 
 
@@ -518,26 +845,34 @@ def _number_or_none(value):
 class ConfirmedAirspacePolygonSource:
     """Confirmed ``AirspacePolicy`` classification for fine cells.
 
-    Two independent confirmed checks must both pass before a fine cell is
-    ``confirmed_allowed``:
+    A fine cell is ``confirmed_allowed`` only when **both** confirmed checks pass:
 
     1. its **parent** L8 cell is in the confirmed ``allowed_grid_ids`` (the same
-       coarse evidence V3-A consumes), and
-    2. its centre is inside a **confirmed allowed** polygon.
+       coarse evidence V3-A consumes); and
+    2. the cell's **full fine-cell polygon** is ``covered_by`` the confirmed allowed
+       union -- i.e. fully contained in *one single* confirmed allowed polygon, with
+       no polygon/hole boundary entering the cell (the same conservative rule the
+       existing eligibility builder uses for L8 cells).
 
-    A centre inside a confirmed blocked polygon is ``confirmed_restricted``.
-    Anything else -- including an unconfirmed policy or a missing geometry -- stays
-    ``unknown`` and is therefore infeasible.  Layer names and colours are never
-    consulted.  A fine cell is a *point* test, not a full-cell coverage proof:
-    the exact polygon membership is V3-C.
+    The cell's polygon must additionally have **no area intersection** with any
+    confirmed blocked polygon.  A mixed/boundary cell (partly allowed, partly
+    outside, or crossing a policy boundary) and an unconfirmed policy both stay
+    ``unknown`` -- a cell centre is never enough.  Layer names and colours are never
+    consulted.
+
+    This is still a *discrete* fine-cell decision: V3-C performs the final,
+    route-level continuous vector validation of the realized trajectory's
+    uncertainty envelope.
     """
 
     role = "airspace_policy"
 
-    def __init__(self, eligibility):
+    def __init__(self, eligibility, *, ring_densification=8):
         self.eligibility = eligibility if isinstance(eligibility, dict) else {}
         self.allowed_ids = {str(item) for item in self.eligibility.get("allowed_grid_ids") or []}
+        self.ring_densification = max(2, int(ring_densification))
         self.allowed_polygons, self.blocked_polygons = [], []
+        self.allowed_entries, self.blocked_entries = [], []
         for feature in self.eligibility.get("features") or []:
             if not isinstance(feature, dict):
                 continue
@@ -546,16 +881,28 @@ class ConfirmedAirspacePolygonSource:
             polygons = polygons_of(feature.get("geometry"))
             if not polygons:
                 continue
-            entry = [(polygon, feature.get("feature_id")) for polygon in polygons]
-            if feature.get("route_eligibility") == "allowed":
-                self.allowed_polygons.extend(entry)
-            elif feature.get("route_eligibility") == "blocked":
-                self.blocked_polygons.extend(entry)
+            interval = _altitude_interval(feature)
+            for polygon in polygons:
+                if feature.get("route_eligibility") == "allowed":
+                    self.allowed_polygons.append(polygon)
+                    self.allowed_entries.append({
+                        "polygon": polygon, "feature_id": feature.get("feature_id"),
+                        "altitude_interval": interval, "source": feature.get("policy_source"),
+                    })
+                elif feature.get("route_eligibility") == "blocked":
+                    self.blocked_polygons.append(polygon)
+                    self.blocked_entries.append({
+                        "polygon": polygon, "feature_id": feature.get("feature_id"),
+                        "altitude_interval": interval, "source": feature.get("policy_source"),
+                    })
 
     def describe(self):
         return {
             "role": self.role,
-            "query_mode": AIRSPACE_QUERY_MODE,
+            "query_mode": AIRSPACE_POLYGON_QUERY_MODE,
+            "cell_test": "fine_cell_polygon_fully_covered_by_single_confirmed_allowed_polygon_and_disjoint_from_blocked",
+            "mixed_boundary_or_unconfirmed_becomes": "unknown",
+            "ring_densification": self.ring_densification,
             "eligibility_status": self.eligibility.get("status"),
             "algorithm_id": self.eligibility.get("algorithm_id"),
             "algorithm_version": self.eligibility.get("algorithm_version"),
@@ -566,6 +913,7 @@ class ConfirmedAirspacePolygonSource:
             "confirmed_allowed_polygon_count": len(self.allowed_polygons),
             "confirmed_blocked_polygon_count": len(self.blocked_polygons),
             "inferred_from_name_or_color": False,
+            "final_route_level_validation": "V3-C",
         }
 
     def usable(self):
@@ -573,45 +921,147 @@ class ConfirmedAirspacePolygonSource:
             return False, "airspace_policy_unavailable"
         return True, None
 
+    def metric_entries(self, transform):
+        """Metric-space allowed/blocked polygon evidence for the V3-C validator."""
+
+        allowed, blocked = [], []
+        for target, source in ((allowed, self.allowed_entries), (blocked, self.blocked_entries)):
+            for entry in source:
+                ring, holes = entry["polygon"]
+                metric_ring = _metric_ring(ring, transform)
+                if metric_ring is None:
+                    continue
+                metric_holes = [_metric_ring(hole, transform) for hole in holes]
+                if any(item is None for item in metric_holes):
+                    continue
+                target.append({
+                    "feature_id": entry.get("feature_id"),
+                    "outer_metric": metric_ring,
+                    "holes_metric": metric_holes,
+                    "altitude_interval": entry.get("altitude_interval"),
+                    "source": entry.get("source"),
+                })
+        return {"allowed": allowed, "blocked": blocked}
+
     def classify(self, cells, *, parent_binding, transform):
+        """Full fine-cell polygon test (never a centre-only test)."""
+
         result = {}
         for cell in cells:
             fine_cell_id = str(cell["fine_cell_id"])
             parent_grid_id = parent_binding.get(fine_cell_id)
-            geographic = cell.get("center")
-            metric = cell.get("center_metric")
-            if geographic is None and metric is not None:
-                geographic = transform.to_geographic(metric)
-            if geographic is None:
-                result[fine_cell_id] = _airspace("unknown", parent_grid_id, None, "fine_cell_center_unresolved")
+            rectangle = self._cell_rectangle(cell, transform)
+            if rectangle is None:
+                result[fine_cell_id] = _airspace(
+                    "unknown", parent_grid_id, None, "fine_cell_polygon_unresolved",
+                )
                 continue
-            point = [float(geographic[0]), float(geographic[1])]
             blocked = next(
-                (entry for entry in self.blocked_polygons
-                 if point_covered_by_polygon(point, entry[0])), None,
+                (entry for entry in self.blocked_entries
+                 if rect_intersects_any([entry["polygon"]], rectangle)), None,
             )
             if blocked is not None:
                 result[fine_cell_id] = _airspace(
-                    "confirmed_restricted", parent_grid_id, blocked[1],
-                    "fine_center_inside_confirmed_blocked_polygon",
+                    "confirmed_restricted", parent_grid_id, blocked.get("feature_id"),
+                    "fine_cell_polygon_intersects_confirmed_blocked_polygon",
                 )
                 continue
             parent_allowed = parent_grid_id in self.allowed_ids
-            allowed = next(
-                (entry for entry in self.allowed_polygons
-                 if point_covered_by_polygon(point, entry[0])), None,
-            )
-            if parent_allowed and allowed is not None:
+            if not parent_allowed:
                 result[fine_cell_id] = _airspace(
-                    "confirmed_allowed", parent_grid_id, allowed[1], None,
+                    "unknown", parent_grid_id, None, "parent_not_confirmed_allowed",
+                )
+                continue
+            covering = next(
+                (entry for entry in self.allowed_entries
+                 if rect_covered_by_any([entry["polygon"]], rectangle)), None,
+            )
+            if covering is None:
+                result[fine_cell_id] = _airspace(
+                    "unknown", parent_grid_id, None,
+                    "fine_cell_polygon_not_fully_covered_by_a_confirmed_allowed_polygon",
                 )
             else:
                 result[fine_cell_id] = _airspace(
-                    "unknown", parent_grid_id, None,
-                    "parent_not_confirmed_allowed" if not parent_allowed
-                    else "fine_center_not_inside_confirmed_allowed_polygon",
+                    "confirmed_allowed", parent_grid_id, covering.get("feature_id"), None,
                 )
         return result
+
+    def _cell_rectangle(self, cell, transform):
+        """The fine cell's polygon as a conservative densified lon/lat rectangle."""
+
+        center = cell.get("center_metric")
+        size = cell.get("cell_size_m")
+        if center is None or not size:
+            bbox = cell.get("bbox_metric")
+            if not bbox:
+                return None
+            center = [(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0]
+            size = min(bbox[2] - bbox[0], bbox[3] - bbox[1])
+        half = float(size) / 2.0
+        west, south = center[0] - half, center[1] - half
+        east, north = center[0] + half, center[1] + half
+        steps = self.ring_densification
+        metric_ring = []
+        for index in range(steps):
+            ratio = index / float(steps)
+            metric_ring.append([west + (east - west) * ratio, south])
+        for index in range(steps):
+            ratio = index / float(steps)
+            metric_ring.append([east, south + (north - south) * ratio])
+        for index in range(steps):
+            ratio = index / float(steps)
+            metric_ring.append([east - (east - west) * ratio, north])
+        for index in range(steps):
+            ratio = index / float(steps)
+            metric_ring.append([west, north - (north - south) * ratio])
+        metric_ring.append(list(metric_ring[0]))
+        geographic = []
+        for point in metric_ring:
+            converted = transform.to_geographic(point)
+            if converted is None:
+                return None
+            geographic.append([float(converted[0]), float(converted[1])])
+        return geographic
+
+
+def _altitude_interval(feature):
+    """Confirmed lower/upper altitude evidence of an airspace feature, else ``None``."""
+
+    lower = feature.get("lower_altitude_egm2008_m", feature.get("lower_altitude_m"))
+    upper = feature.get("upper_altitude_egm2008_m", feature.get("upper_altitude_m"))
+    if lower is None and upper is None:
+        return None
+    values = {}
+    for name, value in (("lower", lower), ("upper", upper)):
+        if value in (None, ""):
+            values[name] = None
+            continue
+        try:
+            values[name] = float(value)
+        except (TypeError, ValueError):
+            return None
+    if not feature.get("altitude_confirmed"):
+        return None
+    return {
+        "lower_altitude_egm2008_m": values["lower"],
+        "upper_altitude_egm2008_m": values["upper"],
+        "vertical_reference": "egm2008_orthometric",
+        "confirmed": True,
+        "source": feature.get("altitude_source") or feature.get("policy_source"),
+    }
+
+
+def _metric_ring(ring, transform):
+    if not ring:
+        return None
+    items = []
+    for point in ring:
+        converted = transform.to_metric([float(point[0]), float(point[1])])
+        if converted is None:
+            return None
+        items.append([float(converted[0]), float(converted[1])])
+    return items if len(items) >= 4 else None
 
 
 def _airspace(status, parent_grid_id, feature_id, reason):
@@ -621,9 +1071,12 @@ def _airspace(status, parent_grid_id, feature_id, reason):
         "mapping_method": AIRSPACE_MAPPING_METHOD,
         "parent_grid_id": parent_grid_id,
         "policy_confirmed": status in ("confirmed_allowed", "confirmed_restricted"),
-        "query_mode": AIRSPACE_QUERY_MODE,
+        "query_mode": AIRSPACE_POLYGON_QUERY_MODE,
         "reason": reason,
-        "semantics": "confirmed_policy_only_point_test_at_fine_center_not_full_cell_coverage_v3c_exact_pending",
+        "semantics": (
+            "confirmed_policy_fine_cell_polygon_coverage_test_mixed_or_boundary_is_unknown_"
+            "v3c_route_level_continuous_validation_pending"
+        ),
     }
 
 
@@ -683,7 +1136,12 @@ class FineEnvironmentAdapter:
             "resolution_source": resolution["resolution_source"],
             "requested_resolution_m": resolution["requested_resolution_m"],
             "effective_source_resolution_m": resolution["effective_source_resolution_m"],
+            "effective_source_resolution_detail": resolution.get("effective_source_resolution_detail") or {},
             "semantics": "fine_horizontal_resolution_must_be_explicit_or_dtm_effective_never_a_30m_constant",
+            "unit_semantics": (
+                "native_geotransform_pixel_size_converted_through_verified_crs_linear_unit_"
+                "or_measured_geodesically_never_degree_as_metre"
+            ),
         }
         entries["metric_frame"] = {
             "role": "metric_frame", "status": "ready" if self.transform else "blocked",
@@ -693,15 +1151,31 @@ class FineEnvironmentAdapter:
         return entries
 
     def _resolve_resolution(self):
+        detail = None
         effective = None
-        if self.terrain_source is not None and hasattr(self.terrain_source, "effective_resolution_m"):
+        if self.terrain_source is not None and hasattr(self.terrain_source, "effective_resolution_detail"):
+            detail = self.terrain_source.effective_resolution_detail()
+            effective = detail.get("effective_resolution_m")
+        elif self.terrain_source is not None and hasattr(self.terrain_source, "effective_resolution_m"):
             effective = self.terrain_source.effective_resolution_m()
+        provenance = {} if detail is None else {
+            "native_pixel_size_x": detail.get("native_pixel_size_x"),
+            "native_pixel_size_y": detail.get("native_pixel_size_y"),
+            "native_pixel_size_unit": detail.get("native_pixel_size_unit"),
+            "effective_resolution_m_x": detail.get("effective_resolution_m_x"),
+            "effective_resolution_m_y": detail.get("effective_resolution_m_y"),
+            "method": detail.get("method"),
+            "reference_location": detail.get("reference_location"),
+            "geodesic_backend": detail.get("geodesic_backend"),
+            "degree_values_never_reported_as_metres": True,
+        }
         if self.resolution_source == "explicit_configuration" and self.resolution_m:
             return {
                 "resolution_m": float(self.resolution_m),
                 "resolution_source": "explicit_configuration",
                 "requested_resolution_m": float(self.resolution_m),
                 "effective_source_resolution_m": effective,
+                "effective_source_resolution_detail": provenance,
                 "reason": None,
             }
         if self.resolution_source == "dtm_effective_resolution" or (
@@ -713,6 +1187,7 @@ class FineEnvironmentAdapter:
                     "resolution_source": "dtm_effective_resolution",
                     "requested_resolution_m": self.resolution_m,
                     "effective_source_resolution_m": float(effective),
+                    "effective_source_resolution_detail": provenance,
                     "reason": None,
                 }
         return {
@@ -720,6 +1195,7 @@ class FineEnvironmentAdapter:
             "resolution_source": None,
             "requested_resolution_m": self.resolution_m,
             "effective_source_resolution_m": effective,
+            "effective_source_resolution_detail": provenance,
             "reason": "fine_resolution_unresolved",
         }
 
@@ -1017,13 +1493,442 @@ def _soft_sources(source_audit):
     }
 
 
-def real_data_source_readiness(paths, *, airspace_eligibility=None, policy_confirmed=False):
-    """Report, without side effects, whether the real V3-B sources can be used.
+# --------------------------------------------------------------------------- V3-C
 
-    ``paths`` is the project's resolved data-source mapping (``terrain_dtm`` /
-    ``buildings``).  Nothing is opened here beyond a file-existence check, so the
-    readiness report itself is safe to call on any project.
+V3C_ADAPTER_ID = "v3c_continuous_validation_adapter"
+V3C_ADAPTER_VERSION = "3.2-alpha"
+
+#: V3-C reads the **native** raster window (never a resampled or reduced copy).
+V3C_TERRAIN_READ_MODE = "single_read_only_native_window_no_resample_per_request"
+#: V3-C queries buildings only inside the route bbox plus the explicit clearance.
+V3C_BUILDING_QUERY_MODE = "route_bbox_plus_clearance_provider_spatial_index_rtree"
+
+
+class NativeTerrainWindowSource(_FabdemRasterBase):
+    """Read-only **native** FABDEM window for V3-C pixel-level validation.
+
+    The V3-B terrain floor was a fine-cell aggregate.  V3-C must not substitute that
+    aggregate for the final terrain verdict, so this class hands the validator every
+    native pixel the realized route touches, with its own source value, NoData status
+    and CRS -- no resampling, no interpolation and no NoData filling.
     """
+
+    def describe(self):
+        stat = self.path.stat()
+        return {
+            "role": self.role, "dataset": "FABDEM", "file_name": self.path.name,
+            "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+            "width": int(self.dataset.RasterXSize), "height": int(self.dataset.RasterYSize),
+            "nodata": self.nodata,
+            "vertical_reference": self.vertical_reference,
+            "vertical_status": self.vertical_status,
+            "read_mode": V3C_TERRAIN_READ_MODE,
+            "source_type": "real_sources",
+        }
+
+    def usable(self):
+        if self.vertical_status != "confirmed":
+            return False, "terrain_vertical_datum_unresolved"
+        return True, None
+
+    def native_window(self, *, transform, metric_line, envelope_radius_m, spacing_m):
+        """Every native pixel the route envelope touches, with its source value.
+
+        The window is a **single** read-only ``ReadAsArray`` over the union pixel
+        rectangle; each touched pixel keeps its own value, NoData flag and the CRS of
+        the dataset.  NoData is reported as ``unknown`` -- never filled, never zero.
+        """
+
+        if self.vertical_status != "confirmed":
+            return {
+                "available": False, "reason": "terrain_vertical_datum_unresolved",
+                "pixels": [], "source": self.describe(),
+            }
+        window = self._window_for_line(transform, metric_line, envelope_radius_m)
+        if window is None:
+            return {
+                "available": False, "reason": "route_outside_dtm_coverage",
+                "pixels": [], "source": self.describe(),
+            }
+        x0, y0, x1, y1 = window
+        array = self.band.ReadAsArray(x0, y0, x1 - x0, y1 - y0)
+        if array is None:
+            return {
+                "available": False, "reason": "dtm_read_failed",
+                "pixels": [], "source": self.describe(),
+            }
+        rows = array.tolist() if hasattr(array, "tolist") else array
+        scale = self.band.GetScale()
+        offset = self.band.GetOffset()
+        scale = 1.0 if scale is None else float(scale)
+        offset = 0.0 if offset is None else float(offset)
+        nodata = self.nodata
+        pixels = []
+        for row_index in range(y1 - y0):
+            for column_index in range(x1 - x0):
+                raw = float(rows[row_index][column_index])
+                column, row = x0 + column_index, y0 + row_index
+                value = raw * scale + offset
+                is_nodata = (
+                    not _finite_number(value)
+                    or (nodata is not None and raw == float(nodata))
+                )
+                corners = self._pixel_metric_bbox(transform, column, row)
+                if corners is None:
+                    continue
+                center_geographic = self._pixel_geographic(column, row)
+                center_metric = (
+                    transform.to_metric(center_geographic) if center_geographic else None
+                )
+                pixels.append({
+                    "pixel": [column, row],
+                    "bbox_metric": corners,
+                    "center_metric": center_metric,
+                    "data_status": "unknown" if is_nodata else "passed",
+                    "elevation_egm2008_m": None if is_nodata else value,
+                    "source_value": None if is_nodata else value,
+                    "reason": (
+                        "source_pixel_nodata_never_filled_never_zeroed" if is_nodata else None
+                    ),
+                })
+        self.last_window = {
+            "window_pixels": [x0, y0, x1 - x0, y1 - y0],
+            "raster_pixels": int(self.dataset.RasterXSize) * int(self.dataset.RasterYSize),
+            "read_mode": V3C_TERRAIN_READ_MODE,
+            "resampled": False,
+            "windowed_read_only": True,
+            "native_pixel_count": len(pixels),
+            "no_data_filling": False,
+        }
+        return {
+            "available": True,
+            "reason": None,
+            "pixels": pixels,
+            "source": {
+                **self.describe(),
+                "crs": self._crs_authority(),
+                "window": self.last_window,
+                "spacing_m": spacing_m,
+                "envelope_radius_m": envelope_radius_m,
+            },
+        }
+
+    # ------------------------------------------------------------------ internals
+
+    def _crs_authority(self):
+        try:
+            crs = self._raster_crs()
+            if crs is None:
+                return None
+            authority = crs.GetAuthorityName(None)
+            code = crs.GetAuthorityCode(None)
+            return f"{authority}:{code}" if authority and code else None
+        except (AttributeError, TypeError, RuntimeError):
+            return None
+
+    def _pixel_geographic(self, column, row):
+        if getattr(self, "_to_geographic", None) is None:
+            target = self.osr.SpatialReference()
+            target.ImportFromEPSG(4326)
+            source = self.osr.SpatialReference()
+            try:
+                source.ImportFromWkt(self.projection)
+            except (TypeError, RuntimeError):
+                self._to_geographic = False
+                return None
+            for item in (source, target):
+                if hasattr(item, "SetAxisMappingStrategy"):
+                    item.SetAxisMappingStrategy(self.osr.OAMS_TRADITIONAL_GIS_ORDER)
+            self._to_geographic = self.osr.CoordinateTransformation(source, target)
+        if self._to_geographic is False:
+            return None
+        transform = self.dataset.GetGeoTransform()
+        x = transform[0] + transform[1] * (column + 0.5) + transform[2] * (row + 0.5)
+        y = transform[3] + transform[4] * (column + 0.5) + transform[5] * (row + 0.5)
+        try:
+            point = self._to_geographic.TransformPoint(x, y)
+        except (TypeError, RuntimeError):
+            return None
+        return [float(point[0]), float(point[1])]
+
+    def _pixel_metric_bbox(self, transform, column, row):
+        corners = []
+        for x, y in ((column, row), (column + 1, row), (column + 1, row + 1), (column, row + 1)):
+            geographic = self._pixel_geographic(x, y)
+            if geographic is None:
+                return None
+            metric = transform.to_metric(geographic)
+            if metric is None:
+                return None
+            corners.append([float(metric[0]), float(metric[1])])
+        return [
+            min(point[0] for point in corners), min(point[1] for point in corners),
+            max(point[0] for point in corners), max(point[1] for point in corners),
+        ]
+
+    def _window_for_line(self, transform, metric_line, envelope_radius_m):
+        pixels = []
+        for point in metric_line or []:
+            geographic = transform.to_geographic([float(point[0]), float(point[1])])
+            if geographic is None:
+                return None
+            raster_crs = self._transform_to_raster_crs(geographic)
+            if raster_crs is None:
+                return None
+            pixel, line = (
+                self.inverse[0] + self.inverse[1] * raster_crs[0] + self.inverse[2] * raster_crs[1],
+                self.inverse[3] + self.inverse[4] * raster_crs[0] + self.inverse[5] * raster_crs[1],
+            )
+            if pixel != pixel or line != line:
+                return None
+            pixels.append((pixel, line))
+        if not pixels:
+            return None
+        margin = max(1.0, float(envelope_radius_m) / max(1e-9, self.effective_resolution_m() or 1.0))
+        x0 = max(0, int(floor(min(item[0] for item in pixels) - margin)))
+        y0 = max(0, int(floor(min(item[1] for item in pixels) - margin)))
+        x1 = min(int(self.dataset.RasterXSize), int(floor(max(item[0] for item in pixels) + margin)) + 1)
+        y1 = min(int(self.dataset.RasterYSize), int(floor(max(item[1] for item in pixels) + margin)) + 1)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, y0, x1, y1
+
+
+class ConfirmedAirspacePolicySource:
+    """The confirmed ``AirspacePolicy`` polygons as V3-C route-level metric evidence."""
+
+    role = "airspace_policy"
+
+    def __init__(self, eligibility):
+        self.eligibility = eligibility if isinstance(eligibility, dict) else {}
+        self.allowed, self.blocked, self.unconfirmed = [], [], []
+        for feature in self.eligibility.get("features") or []:
+            if not isinstance(feature, dict):
+                continue
+            polygons = polygons_of(feature.get("geometry"))
+            if not polygons:
+                continue
+            confirmed = feature.get("policy_confirmed") is True
+            bucket = None
+            if confirmed and feature.get("route_eligibility") == "allowed":
+                bucket = self.allowed
+            elif confirmed and feature.get("route_eligibility") == "blocked":
+                bucket = self.blocked
+            else:
+                bucket = self.unconfirmed
+            for polygon in polygons:
+                bucket.append({
+                    "feature_id": feature.get("feature_id"),
+                    "ring_geographic": polygon[0],
+                    "holes_geographic": polygon[1],
+                    "source": feature.get("policy_source"),
+                })
+
+    def usable(self):
+        if not self.allowed:
+            return False, "airspace_policy_unavailable"
+        return True, None
+
+    def describe(self):
+        return {
+            "role": self.role,
+            "query_mode": "confirmed_policy_route_level_metric_envelope_coverage_and_blocked_disjointness",
+            "eligibility_status": self.eligibility.get("status"),
+            "algorithm_id": self.eligibility.get("algorithm_id"),
+            "algorithm_version": self.eligibility.get("algorithm_version"),
+            "feature_fingerprint": self.eligibility.get("feature_fingerprint"),
+            "policy_fingerprint": self.eligibility.get("policy_fingerprint"),
+            "fingerprint": self.eligibility.get("fingerprint"),
+            "confirmed_allowed_polygon_count": len(self.allowed),
+            "confirmed_blocked_polygon_count": len(self.blocked),
+            "unconfirmed_polygon_count": len(self.unconfirmed),
+            "inferred_from_name_or_color": False,
+            "final_route_level_validation": "V3-C",
+        }
+
+    def metric_evidence(self, transform):
+        return {
+            "confirmed": self.eligibility.get("status") == "passed",
+            "allowed": [_metric_entry(entry, transform) for entry in self.allowed],
+            "blocked": [_metric_entry(entry, transform) for entry in self.blocked],
+            "unconfirmed": [_metric_entry(entry, transform) for entry in self.unconfirmed],
+            "source": self.describe(),
+            "semantics": (
+                "confirmed_policy_polygons_in_the_local_metric_frame_route_level_envelope_validation"
+            ),
+        }
+
+
+class RouteCorridorBuildingSource:
+    """Corridor-only building query for the V3-C building validator.
+
+    Reuses the existing GeoPackage + provider spatial index (RTree) and the existing
+    roof semantics (``ground + height``); V3-C does not invent a third roof formula and
+    never modifies the source geometry.
+    """
+
+    role = "buildings"
+
+    def __init__(self, path, *, layer_name="buildings", height_field="height_m",
+                 height_status_field="height_status", crs_authority="EPSG:32651", gdal=None):
+        from qgis.core import QgsCoordinateReferenceSystem, QgsVectorLayer
+
+        self.path = Path(path).expanduser().resolve()
+        if not self.path.is_file():
+            raise ValueError("buildings 必须是存在的 GeoPackage 文件")
+        self.layer_name = str(layer_name)
+        self.layer = QgsVectorLayer(
+            f"{self.path}|layername={self.layer_name}", "V3-C buildings", "ogr",
+        )
+        if not self.layer.isValid():
+            raise ValueError(f"无法读取 buildings GeoPackage 图层 {self.layer_name}")
+        fields = {field.name() for field in self.layer.fields()}
+        if height_field not in fields:
+            raise ValueError(f"buildings 图层缺少高度字段 {height_field}")
+        self.height_field = height_field
+        self.height_status_field = height_status_field if height_status_field in fields else None
+        self.metric = QgsCoordinateReferenceSystem(str(crs_authority))
+        self._to_metric = None
+
+    def usable(self):
+        try:
+            indexed = bool(self.layer.hasSpatialIndex())
+        except (AttributeError, TypeError):
+            indexed = False
+        if not indexed:
+            return False, "building_source_spatial_index_missing"
+        return True, None
+
+    def describe(self):
+        stat = self.path.stat()
+        extent = self.layer.extent()
+        return {
+            "role": self.role, "file_name": self.path.name, "layer": self.layer_name,
+            "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+            "feature_count": int(self.layer.featureCount()),
+            "crs": self.layer.crs().authid() if self.layer.crs().isValid() else None,
+            "extent": [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()],
+            "spatial_index_available": bool(self.layer.hasSpatialIndex()),
+            "query_mode": V3C_BUILDING_QUERY_MODE,
+            "height_field": self.height_field,
+            "height_status_field": self.height_status_field,
+            "roof_semantics": "shared_building_clearance_roof_elevation_helper",
+            "source_geometry_modified": False,
+        }
+
+    def query_route(self, route, *, transform, horizontal_clearance_m, curve_error_m,
+                    terrain_source=None):
+        from qgis.core import (
+            QgsCoordinateTransform, QgsFeatureRequest, QgsGeometry, QgsProject,
+            QgsRectangle,
+        )
+
+        if self._to_metric is None:
+            context = QgsProject.instance().transformContext()
+            self._to_metric = QgsCoordinateTransform(self.layer.crs(), self.metric, context)
+        envelope = float(horizontal_clearance_m) + float(curve_error_m)
+        metric_points = [
+            [float(point[0]), float(point[1])]
+            for point in ((route or {}).get("horizontal_geometry") or {}).get("linearized", {}).get(
+                "linestring_metric",
+            ) or []
+        ]
+        if len(metric_points) < 2:
+            return {"available": False, "reason": "route_geometry_unresolved", "buildings": []}
+        west = min(point[0] for point in metric_points) - envelope
+        south = min(point[1] for point in metric_points) - envelope
+        east = max(point[0] for point in metric_points) + envelope
+        north = max(point[1] for point in metric_points) + envelope
+        corners = [transform.to_geographic([west, south]), transform.to_geographic([east, north])]
+        if any(item is None for item in corners):
+            return {"available": False, "reason": "metric_transform_unavailable", "buildings": []}
+        rectangle = QgsRectangle(
+            min(corners[0][0], corners[1][0]), min(corners[0][1], corners[1][1]),
+            max(corners[0][0], corners[1][0]), max(corners[0][1], corners[1][1]),
+        )
+        request = QgsFeatureRequest().setFilterRect(rectangle)
+        buildings = []
+        for feature in self.layer.getFeatures(request):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            metric = QgsGeometry(geometry)
+            metric.transform(self._to_metric)
+            ring = _metric_ring_of(metric)
+            if len(ring) < 3:
+                continue
+            height = _number_or_none(feature[self.height_field])
+            status = (
+                str(feature[self.height_status_field] or "")
+                if self.height_status_field else ("predicted" if height is not None else "unknown")
+            )
+            ground = None
+            if terrain_source is not None and hasattr(terrain_source, "sample_footprint_ground"):
+                ground = terrain_source.sample_footprint_ground(ring, transform=transform)
+            buildings.append({
+                "building_id": _feature_identifier(feature, self.layer),
+                "source": str(feature["source"]) if "source" in {f.name() for f in self.layer.fields()} else "unknown",
+                "ring_metric": ring,
+                "height_m": height,
+                "height_status": status or ("predicted" if height is not None else "unknown"),
+                "ground_elevation_max_egm2008_m": ground,
+            })
+        return {
+            "available": True,
+            "reason": None,
+            "buildings": buildings,
+            "source": {
+                **self.describe(),
+                "query_bbox_geographic": [
+                    rectangle.xMinimum(), rectangle.yMinimum(),
+                    rectangle.xMaximum(), rectangle.yMaximum(),
+                ],
+                "envelope_m": envelope,
+            },
+        }
+
+
+def _metric_entry(entry, transform):
+    ring = _metric_ring(entry["ring_geographic"], transform)
+    holes = [_metric_ring(hole, transform) for hole in entry.get("holes_geographic") or []]
+    return {
+        "feature_id": entry.get("feature_id"),
+        "outer_metric": ring,
+        "holes_metric": [hole for hole in holes if hole],
+        "altitude_interval": None,
+        "altitude_evidence": "not_provided_by_the_confirmed_policy_source",
+        "source": entry.get("source"),
+    }
+
+
+def _metric_ring_of(geometry):
+    try:
+        polygon = geometry.asPolygon()
+    except (AttributeError, TypeError):
+        polygon = None
+    if not polygon:
+        return []
+    return [[float(point.x()), float(point.y())] for point in polygon[0]]
+
+
+def _feature_identifier(feature, layer):
+    try:
+        if "id" in {field.name() for field in layer.fields()}:
+            return str(feature["id"])
+    except (AttributeError, TypeError, KeyError):
+        pass
+    return str(feature.id())
+
+
+def _finite_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
+
+
+def real_data_source_readiness(paths, *, airspace_eligibility=None, policy_confirmed=False):
 
     terrain_path = paths.get("terrain_dtm")
     buildings_path = paths.get("buildings")
@@ -1060,9 +1965,12 @@ def real_data_source_readiness(paths, *, airspace_eligibility=None, policy_confi
 
 
 __all__ = [
-    "ADAPTER_BLOCK_REASONS", "ADAPTER_ID", "ADAPTER_VERSION", "AIRSPACE_QUERY_MODE",
-    "BUILDING_QUERY_MODE", "ConfirmedAirspacePolygonSource",
-    "EquirectangularMetricTransform", "FINE_SOURCE_ROLES", "FabdemWindowTerrainSource",
-    "FineEnvironmentAdapter", "QgisGpkgBuildingSource", "QgisMetricTransform",
-    "TERRAIN_READ_MODE", "real_data_source_readiness",
+    "ADAPTER_BLOCK_REASONS", "ADAPTER_ID", "ADAPTER_VERSION", "AIRSPACE_POLYGON_QUERY_MODE",
+    "AIRSPACE_QUERY_MODE", "BUILDING_QUERY_MODE", "ConfirmedAirspacePolygonSource",
+    "ConfirmedAirspacePolicySource", "EquirectangularMetricTransform", "FINE_SOURCE_ROLES",
+    "FabdemWindowTerrainSource", "FineEnvironmentAdapter", "NativeTerrainWindowSource",
+    "QgisGpkgBuildingSource", "QgisMetricTransform", "RESOLUTION_METHODS",
+    "RouteCorridorBuildingSource", "TERRAIN_READ_MODE", "V3C_ADAPTER_ID",
+    "V3C_ADAPTER_VERSION", "V3C_BUILDING_QUERY_MODE", "V3C_TERRAIN_READ_MODE",
+    "real_data_source_readiness",
 ]

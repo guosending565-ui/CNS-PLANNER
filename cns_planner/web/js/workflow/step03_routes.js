@@ -251,6 +251,18 @@ export const V3B_RESULT_STATUSES=['refined_candidate','failed','not_ready','miss
 export const V3B_REFINED_LABEL='refined candidate，未执行 V3-C 连续几何验证';
 export const V3B_ENVIRONMENT_SOURCES=['canonical_synthetic','configured_real_sources'];
 export const V3B_RESOLUTION_SOURCES=['explicit_configuration','dtm_effective_resolution'];
+// ---- Route Planner V3-C (continuous geometry + source-native validation) -------------
+//: V3-C result statuses.  ``validated_route`` exists, but it is NOT an operational
+//: route and CNS has not been assessed -- the label below is not optional.
+export const V3C_RESULT_STATUSES=['validated_route','failed','unresolved','not_ready','validation_incomplete'];
+export const V3C_DOMAINS=['geometry','airspace','terrain','building','altitude','kinematics'];
+export const V3C_EVIDENCE_SOURCES=['canonical_synthetic','configured_real_sources'];
+//: The disclaimer every V3-C rendering must carry verbatim.
+export const V3C_OPERATIONAL_LABEL='V3-C validated route 仍不是 operational route；CNS 尚未评估';
+export const V3C_REFINED_LABEL='continuous 实现 + confirmed 源几何/原生栅格验证';
+const V3C_NOTE_FALLBACK='V3-C：把 V3-B refined candidate 实现为 C1（position+heading 连续）连续几何，圆弧 chord-error 显式；'
+  +'再用 confirmed 空域 polygon、native FABDEM 像元、真实 footprint roof 与显式高度/运动学逐 domain 验证。'
+  +'vector predicate 对 linearized representation（含显式 curve-error envelope）精确；terrain 是 source-native raster evidence。';
 //: Fallback V3-B note, used while a snapshot carries no ``v3b_note`` yet.
 const V3B_NOTE_FALLBACK='V3-B corridor-local 精化候选 ≠ validated route：只在选定且 current 的 V3-A strategic_candidate 的 corridor 内做米制细网格工程精化；未做 V3-C exact polygon/terrain/continuous clearance 验证，也不写 operational_routes、algorithm_selection 或 spatial_3d。';
 
@@ -750,6 +762,358 @@ function v3bHistoryBlock(model){
     +'<div class="scroll-list route-list">'+rows+'</div>';
 }
 
+// ---- V3-C continuous validation (read-only projection) -------------------------------
+
+function v3cContinuousReadinessModel(flow){
+  const readiness=flow?.route_planner_v3_continuous_readiness||{};
+  return {
+    status:readiness.status||'not_calculated',stage:readiness.stage||'V3-C',
+    modelScope:readiness.model_scope||'',
+    architecture:readiness.architecture||'',note:readiness.note||V3C_NOTE_FALLBACK,
+    scope:readiness.stage_scope||{implemented:[],not_implemented:[]},
+    algorithm:readiness.algorithm||{},
+    selectedRefinement:readiness.selected_refinement||null,
+    validationPolicy:readiness.validation_policy||{},
+    planningPolicy:readiness.v3_planning_policy||{},
+    realDataReadiness:readiness.real_data_readiness||{status:'unknown',blocking_reasons:[]},
+    blockingReasons:readiness.blocking_reasons||[],
+    evidenceSources:readiness.evidence_sources||V3C_EVIDENCE_SOURCES,
+    allowedResultStatuses:readiness.allowed_result_statuses||V3C_RESULT_STATUSES,
+    boundaries:readiness.boundaries||{},
+  };
+}
+
+export function routePlannerV3ValidationModel(item){
+  const result=item?.result||{};
+  const route=result.continuous_route||{};
+  const analytic=(route.horizontal_geometry||{}).analytic||{};
+  const linearized=(route.horizontal_geometry||{}).linearized||{};
+  const vertical=route.vertical||{};
+  const kinematics=result.kinematics||{};
+  const margins=result.min_margins||{};
+  const limits=result.resource_limits||{};
+  return {
+    validationId:item?.validation_id||null,refinementId:item?.refinement_id||null,
+    experimentId:item?.experiment_id||null,createdAt:item?.created_at||null,
+    evidenceSource:item?.evidence_source||null,
+    status:result.status||'not_ready',reason:result.reason||null,
+    domainStatuses:result.domain_statuses||{},
+    domains:V3C_DOMAINS.map(domain=>({
+      domain,status:(result.domain_statuses||{})[domain]||'skipped',
+      reason:((result.domains||{})[domain]||{}).reason||null,
+      violations:(((result.domains||{})[domain]||{}).violations||[]).length,
+      unresolved:(((result.domains||{})[domain]||{}).unresolved||[]).length,
+      evaluated:((result.domains||{})[domain]||{}).evaluated===true,
+    })),
+    violations:(result.violations||[]).map(v=>({
+      domain:v.domain,reasonId:v.reason_id,startDistanceM:v.start_distance_m,endDistanceM:v.end_distance_m,
+      startCoordinate:v.start_coordinate,endCoordinate:v.end_coordinate,
+      required:v.required,observed:v.observed,margin:v.margin,evidence:v.evidence||{},
+    })),
+    unresolved:(result.unresolved_evidence||[]).map(v=>({
+      domain:v.domain,reasonId:v.reason_id,startDistanceM:v.start_distance_m,endDistanceM:v.end_distance_m,
+      required:v.required,observed:v.observed,evidence:v.evidence||{},
+    })),
+    margins:{
+      airspaceHorizontalM:margins.airspace_horizontal_m,terrainVerticalM:margins.terrain_vertical_m,
+      buildingHorizontalM:margins.building_horizontal_m,buildingVerticalM:margins.building_vertical_m,
+      altitudeLowerM:margins.altitude_lower_m,altitudeUpperM:margins.altitude_upper_m,
+      turnRadiusM:margins.turn_radius_m,climbGradientMargin:margins.climb_gradient_margin,
+      descentGradientMargin:margins.descent_gradient_margin},
+    analytic:{primitiveCount:analytic.primitive_count,straightCount:analytic.straight_count,
+      arcCount:analytic.arc_count,turnCount:analytic.turn_count,
+      totalHorizontalLengthM:analytic.total_horizontal_length_m,
+      curvatureContinuity:analytic.curvature_continuity,
+      continuousCurvature:analytic.continuous_curvature===true,
+      c2:analytic.c2===true,clothoid:analytic.clothoid,
+      turnRadiusPolicy:analytic.turn_radius_policy,
+      radiusReducedAnywhere:analytic.radius_reduced_anywhere===true},
+    linearized:{pointCount:linearized.point_count,
+      actualMaxChordErrorM:linearized.actual_max_chord_error_m,
+      curveChordErrorM:linearized.curve_chord_error_m,method:linearized.method,
+      notTheMathematicalCurve:linearized.not_the_mathematical_curve===true},
+    vertical:{totalDistanceM:vertical.total_distance_m,minZ:vertical.min_z_egm2008_m,
+      maxZ:vertical.max_z_egm2008_m,maxClimbGradient:vertical.max_climb_gradient_observed,
+      maxDescentGradient:vertical.max_descent_gradient_observed,
+      method:vertical.method},
+    kinematics:{minimumTurnRadiusObservedM:kinematics.minimum_turn_radius_observed_m,
+      requiredMinimumTurnRadiusM:kinematics.required_minimum_turn_radius_m,
+      maxClimbGradientObserved:kinematics.max_climb_gradient_observed,
+      maxDescentGradientObserved:kinematics.max_descent_gradient_observed,
+      maxAllowedClimbGradient:kinematics.max_allowed_climb_gradient,
+      maxAllowedDescentGradient:kinematics.max_allowed_descent_gradient,
+      tangentHeadingContinuityVerified:kinematics.tangent_heading_continuity_verified===true,
+      selfIntersectionIsFailure:kinematics.self_intersection_is_failure===true,
+      turnVerification:kinematics.turn_verification},
+    resourceLimits:{maxValidationSamples:limits.max_validation_samples,sampleCount:limits.sample_count,
+      maxRuntimeS:limits.max_runtime_s,runtimeS:limits.runtime_s,
+      resourceLimited:limits.resource_limited===true,resourceLimitReason:limits.resource_limit_reason},
+    curveError:result.curve_error||item?.curve_error||null,
+    sourceAudit:result.source_audit||{},
+    evidenceComponents:item?.evidence_components||{},
+    currentApplicability:item?.current_applicability||null,
+    validationFingerprint:result.validation_fingerprint||null,
+    verdicts:result.verdicts||{},
+    semantics:result.semantics||{},
+    // Hard boundaries: never render a V3-C result as an operational route.
+    operationalRoute:false,cnsAssessed:false,
+    projection:((route.primitives||[]).flatMap(p=>p.sampled_points_metric||[])),
+    disclaimer:result.disclaimer||'',
+  };
+}
+
+export function routePlannerV3ContinuousModel(flow){
+  const readiness=v3cContinuousReadinessModel(flow);
+  const snapshot=flow?.route_planner_v3_validations||{};
+  const collection=flow?.route_planner_v3_experiments||{};
+  const detail=flow?.route_planner_v3_detail||{};
+  const records=detail.records||[];
+  const activeId=collection.active_experiment_id||null;
+  const record=records.find(item=>item.experiment_id===activeId)||records[0]||null;
+  const refinement=(record?.refinements||[])[0]||null;
+  const validation=(refinement?.validations||[])[0]||null;
+  const applicability={
+    status:snapshot.status||'not_calculated',count:snapshot.count||0,staleCount:snapshot.stale_count||0,
+    validatedRouteCount:snapshot.validated_route_count||0,semantics:snapshot.semantics||'',
+    components:snapshot.components||[],
+    items:(snapshot.items||[]).map(item=>({validationId:item.validation_id,refinementId:item.refinement_id,
+      experimentId:item.experiment_id,status:item.status,domainStatuses:item.domain_statuses||{},
+      recordedApplicability:item.recorded_applicability,currentApplicability:item.current_applicability,
+      changedComponents:item.changed_components||[],reasons:item.reasons||[],
+      validationFingerprint:item.validation_fingerprint,evidenceComponents:item.evidence_components||{}}))};
+  return {
+    readiness,
+    status:collection.status||'not_calculated',
+    note:collection.v3c_note||V3C_NOTE_FALLBACK,
+    architecture:collection.v3c_architecture||'',
+    allowedResultStatuses:collection.allowed_validation_statuses||V3C_RESULT_STATUSES,
+    activeExperimentId:activeId,
+    validationId:validation?.validation_id||null,
+    validationModel:validation?routePlannerV3ValidationModel(validation):null,
+    refinementId:refinement?.refinement_id||null,
+    applicability,
+    refinementStale:(refinement?.current_applicability||null)==='stale',
+  };
+}
+
+function v3cRows(rows){
+  return (rows||[]).map(row=>'<div class="list-row route-row"><span><b>'+escapeHtml(row[0])+'</b>'
+    +'<small>'+row[1]+'</small></span></div>').join('');
+}
+
+function v3cDomainBlock(model){
+  const validation=model.validationModel;
+  if(!validation)return '';
+  const rows=validation.domains.map(item=>[
+    item.domain,statusBadge(item.status)+(item.reason?' · '+escapeHtml(item.reason):'')
+      +' · violation '+escapeHtml(String(item.violations))+' · unresolved '+escapeHtml(String(item.unresolved))
+      +' · evaluated '+escapeHtml(String(item.evaluated))]);
+  return '<h3>V3-C domain status '+statusBadge(validation.status)+'</h3>'
+    +'<div class="parameter-note"><b>'+escapeHtml(V3C_OPERATIONAL_LABEL)+'</b>'
+    +'<br>只有 geometry / airspace / terrain / building / altitude / kinematics 全部 passed 才是 '
+    +escapeHtml('validated_route')+'；确定违反 ⇒ failed（replan_required，不自动修路）；缺证据 ⇒ unresolved；'
+    +'源/refined candidate stale ⇒ not_ready；资源上限 ⇒ validation_incomplete（绝不是 failed）。</div>'
+    +'<div class="scroll-list route-list">'+v3cRows(rows)+'</div>';
+}
+
+function v3cMarginBlock(model){
+  const validation=model.validationModel;
+  if(!validation)return '';
+  const m=validation.margins;
+  const rows=[
+    ['airspace 水平最小 margin (m)',metric(m.airspaceHorizontalM,'m')],
+    ['terrain 垂向最小 margin (m)',metric(m.terrainVerticalM,'m')],
+    ['building 水平 / 垂向最小 margin (m)',metric(m.buildingHorizontalM,'m')+' / '+metric(m.buildingVerticalM,'m')],
+    ['altitude lower / upper margin (m)',metric(m.altitudeLowerM,'m')+' / '+metric(m.altitudeUpperM,'m')],
+    ['turn radius margin (m)',metric(m.turnRadiusM,'m')],
+    ['climb / descent gradient margin',metric(m.climbGradientMargin)+' / '+metric(m.descentGradientMargin)]];
+  return '<h3>最小 margin（各 domain）</h3><div class="scroll-list route-list">'+v3cRows(rows)+'</div>';
+}
+
+function v3cViolationBlock(model){
+  const validation=model.validationModel;
+  if(!validation)return '';
+  const rows=(validation.violations||[]).length
+    ?validation.violations.map(item=>'<div class="list-row route-row"><span><b>'
+      +escapeHtml(item.domain)+' · '+escapeHtml(item.reasonId)+'</b>'
+      +'<small>distance '+metric(item.startDistanceM,'m')+' → '+metric(item.endDistanceM,'m')
+      +' · required '+escapeHtml(String(item.required??'—'))+' · observed '+escapeHtml(String(item.observed??'—'))
+      +' · margin '+metric(item.margin)+'</small>'
+      +'<small>evidence '+escapeHtml(jsonInline(item.evidence||{}))+'</small></span></div>').join('')
+    :'<div class="empty-note">没有 violation interval</div>';
+  const unresolvedRows=(validation.unresolved||[]).length
+    ?validation.unresolved.map(item=>'<div class="list-row route-row"><span><b>'+escapeHtml(item.domain)
+      +' · '+escapeHtml(item.reasonId)+'</b><small>required '+escapeHtml(String(item.required??'—'))
+      +' · observed '+escapeHtml(String(item.observed??'—'))+'</small></span></div>').join('')
+    :'<div class="empty-note">没有 unresolved interval</div>';
+  return '<h3>violation intervals（统一 domain / reason / distance / required / observed / margin / evidence）</h3>'
+    +'<div class="parameter-note">失败只给出结构化证据与 replan_required=true；V3-C 不自动修路、不自动 replan。</div>'
+    +'<div class="scroll-list route-list">'+rows+'</div>'
+    +'<h3>unresolved evidence（unknown 一律不等于 safe）</h3>'
+    +'<div class="scroll-list route-list">'+unresolvedRows+'</div>';
+}
+
+function v3cGeometryBlock(model){
+  const validation=model.validationModel;
+  if(!validation)return '';
+  const a=validation.analytic,l=validation.linearized,v=validation.vertical;
+  const rows=[
+    ['primitive / straight / arc（解析几何）',escapeHtml(String(a.primitiveCount??'—'))+' / '+escapeHtml(String(a.straightCount??'—'))+' / '+escapeHtml(String(a.arcCount??'—'))],
+    ['turn count / turn radius policy',escapeHtml(String(a.turnCount??'—'))+' · '+escapeHtml(a.turnRadiusPolicy||'—')],
+    ['radius_reduced_anywhere',escapeHtml(String(a.radiusReducedAnywhere===true))+'（V3-C 绝不减小 R 以勉强通过转弯）'],
+    ['curvature continuity',escapeHtml(a.curvatureContinuity||'—')+' · continuous_curvature '+escapeHtml(String(a.continuousCurvature===true))
+      +' · C2 '+escapeHtml(String(a.c2===true))+' · clothoid '+escapeHtml(a.clothoid||'future_work_not_implemented')],
+    ['realized horizontal length (m)',metric(a.totalHorizontalLengthM,'m')],
+    ['linearized point count / method',escapeHtml(String(l.pointCount??'—'))+' · '+escapeHtml(l.method||'—')],
+    ['curve_chord_error_m（显式，无默认）',metric(l.curveChordErrorM,'m')],
+    ['actual max chord bound (m)',metric(l.actualMaxChordErrorM,'m')+'（必须 ≤ 显式 tolerance）'],
+    ['linearized ≠ 数学曲线',escapeHtml(String(l.notTheMathematicalCurve===true))],
+    ['vertical z(s) method / min / max',escapeHtml(v.method||'—')+' · '+metric(v.minZ,'m')+' / '+metric(v.maxZ,'m')],
+    ['max climb / descent gradient observed',metric(v.maxClimbGradient)+' / '+metric(v.maxDescentGradient)]];
+  return '<h3>连续几何实现（analytic + explicit chord error）</h3>'
+    +'<div class="parameter-note">只保证 <b>position + heading 连续（C1）</b>；曲率在 straight↔arc 处可跳变，'
+    +'禁止声明 continuous-curvature / C2。圆弧是解析几何，折线是按 explicit curve_chord_error_m 的有界近似；'
+    +'vector predicate 对 linearized representation（含 error envelope）精确。</div>'
+    +'<div class="scroll-list route-list">'+v3cRows(rows)+'</div>';
+}
+
+function v3cKinematicBlock(model){
+  const validation=model.validationModel;
+  if(!validation)return '';
+  const k=validation.kinematics;
+  const rows=[
+    ['minimum_turn_radius_observed / required (m)',metric(k.minimumTurnRadiusObservedM,'m')+' / '+metric(k.requiredMinimumTurnRadiusM,'m')],
+    ['max climb observed / allowed',metric(k.maxClimbGradientObserved)+' / '+metric(k.maxAllowedClimbGradient)],
+    ['max descent observed / allowed',metric(k.maxDescentGradientObserved)+' / '+metric(k.maxAllowedDescentGradient)],
+    ['tangent heading continuity verified',escapeHtml(String(k.tangentHeadingContinuityVerified===true))],
+    ['turn verification',escapeHtml(k.turnVerification||'—')],
+    ['self-intersection（diagnostic）',escapeHtml(String(k.selfIntersectionIsFailure===true))+' · 只有 policy 显式规定才算 failure']];
+  return '<h3>kinematics（analytic R + tangent heading）</h3>'
+    +'<div class="parameter-note">转弯由 <b>解析圆弧</b> 重新验证 R ≥ Rmin 与 tangent heading 连续；'
+    +'V3-B 的 R·|Δψ| 弧长代理不是最终转弯验证。</div>'
+    +'<div class="scroll-list route-list">'+v3cRows(rows)+'</div>';
+}
+
+function v3cSourceBlock(model){
+  const validation=model.validationModel;
+  if(!validation)return '';
+  const audit=validation.sourceAudit||{};
+  const curve=validation.curveError||{};
+  const limits=validation.resourceLimits;
+  const rows=[
+    ['evidence source / sample_count',escapeHtml(validation.evidenceSource||'—')+' · '+escapeHtml(String(limits.sampleCount??'—'))],
+    ['max_validation_samples / resource_limited',escapeHtml(String(limits.maxValidationSamples??'—'))+' · '+escapeHtml(String(limits.resourceLimited))],
+    ['runtime_s / max_runtime_s',escapeHtml(String(limits.runtimeS??'—'))+' / '+escapeHtml(String(limits.maxRuntimeS??'—'))],
+    ['resource_limit_reason',escapeHtml(limits.resourceLimitReason||'—')],
+    ['curve error method / actual / requested',escapeHtml(curve.method||'—')+' · '+metric(curve.actual_max_chord_error_m,'m')
+      +' / '+metric(curve.requested_max_chord_error_m,'m')],
+    ['terrain 语义',escapeHtml('source_native_raster_validation')+'（不声称真实世界地形数学连续 exact）'],
+    ['NoData policy',escapeHtml('node 级 NoData ⇒ unresolved；禁止 bilinear 填补、禁止当 0')],
+    ['adapter',escapeHtml(audit.adapter_id||'—')+' · '+escapeHtml(jsonInline(audit.validation_evidence_source||''))],
+    ['validation fingerprint',escapeHtml(String(validation.validationFingerprint||'—').slice(0,32))],
+    ['fingerprint components',escapeHtml(jsonInline(Object.keys(validation.evidenceComponents||{})))]];
+  return '<h3>source / tolerance / fingerprint</h3>'
+    +'<div class="scroll-list route-list">'+v3cRows(rows)+'</div>';
+}
+
+function v3cReadinessBlock(model){
+  const readiness=model.readiness||{},scope=readiness.scope||{implemented:[],not_implemented:[]};
+  const policy=readiness.validationPolicy||{},planning=readiness.planningPolicy||{};
+  const real=readiness.realDataReadiness||{};
+  const selected=readiness.selectedRefinement;
+  const policyRows=[
+    ['status / stage / model_scope',escapeHtml(readiness.status)+' · '+escapeHtml(readiness.stage)+' · '+escapeHtml(readiness.modelScope||'—')],
+    ['algorithm',escapeHtml((readiness.algorithm||{}).algorithm_id||'—')+'@'+escapeHtml((readiness.algorithm||{}).algorithm_version||'—')
+      +' · registered_in_algorithm_registry '+escapeHtml(String((readiness.algorithm||{}).registered_in_algorithm_registry===true))],
+    ['validator versions',escapeHtml(jsonInline((readiness.algorithm||{}).validator_versions||{}))],
+    ['validation policy status',escapeHtml(policy.status||'—')+' · curve_chord_error_m '+metric(policy.curve_chord_error_m,'m')
+      +' · missing '+escapeHtml(jsonInline(policy.missing_parameters||[]))],
+    ['planning policy（重验证的安全参数来源）','aircraft_min_turn_radius_m '+metric(planning.aircraft_min_turn_radius_m,'m')
+      +' · terrain_clearance_m '+metric(planning.terrain_clearance_m,'m')
+      +' · building h/v '+metric(planning.building_horizontal_clearance_m,'m')+' / '+metric(planning.building_vertical_clearance_m,'m')],
+    ['real data adapter',escapeHtml(real.adapter_id||'—')+'@'+escapeHtml(real.adapter_version||'—')+' · status '+escapeHtml(real.status||'—')],
+    ['evidence_sources',escapeHtml((readiness.evidenceSources||[]).join(' / '))],
+    ['allowed_result_statuses',escapeHtml((readiness.allowedResultStatuses||[]).join(' / '))]];
+  const refinementText=selected
+    ?'refinement '+escapeHtml(selected.refinement_id||'—')+' · experiment '+escapeHtml(selected.experiment_id||'—')
+      +' · result_status '+escapeHtml(selected.result_status||'—')+' · applicability '+escapeHtml(selected.current_applicability||'—')
+      +' · validation_count '+escapeHtml(String(selected.validation_count??0))
+    :'未选中：需要 current 的 V3-B refined_candidate（先运行 V3-B corridor-local 精化）';
+  const sourceOptions=(readiness.evidenceSources||V3C_EVIDENCE_SOURCES).map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('');
+  return '<h3>V3-C readiness '+statusBadge(readiness.status||'not_calculated')+'</h3>'
+    +'<div class="parameter-note">'+escapeHtml(readiness.note||'')+'<br>'+escapeHtml(readiness.architecture||model.architecture||'')+'</div>'
+    +listBlock('V3-C implemented',scope.implemented)+listBlock('V3-C not_implemented',scope.not_implemented)
+    +'<div class="scroll-list route-list">'+v3cRows(policyRows)+'</div>'
+    +'<div class="parameter-note"><b>blocking_reasons</b> '+escapeHtml(jsonInline(readiness.blockingReasons||[]))
+    +'<br>boundaries '+escapeHtml(jsonInline(readiness.boundaries||{}))+'</div>'
+    +'<div class="parameter-note">selected refined candidate：'+refinementText+'</div>'
+    +'<h3>V3-C 输入：validation policy（显式，无默认）</h3>'
+    +'<div class="form-grid"><label>curve_chord_error_m（必须显式，无安全默认）<input class="panel-input" type="number" step="any" min="0.000001" id="v3cChordError" placeholder="例如 0.5" value="'+escapeHtml(policy.curve_chord_error_m??'')+'"></label>'
+    +'<label>max_validation_samples<input class="panel-input" type="number" min="1" id="v3cMaxSamples" value="'+escapeHtml(policy.max_validation_samples??200000)+'"></label>'
+    +'<label>max_runtime_s（可空）<input class="panel-input" type="number" step="any" min="0.000001" id="v3cMaxRuntime" value="'+escapeHtml(policy.max_runtime_s??'')+'"></label>'
+    +'<label>use_curve_error_envelope<select id="v3cEnvelope"><option value="true" '+((policy.use_curve_error_envelope!==false)?'selected':'')+'>true</option><option value="false" '+((policy.use_curve_error_envelope===false)?'selected':'')+'>false</option></select></label></div>'
+    +'<label>validation policy 来源<input class="panel-input" id="v3cPolicySource" value="'+escapeHtml(policy.source||'')+'"></label>'
+    +'<label class="check-row"><input type="checkbox" id="v3cPolicyConfirmed" '+(policy.confirmed?'checked':'')+'>validation policy 已由项目工程依据确认</label>'
+    +'<div class="button-row"><button class="secondary" id="saveRoutePlannerV3ValidationPolicy">保存 V3-C validation policy</button></div>'
+    +'<h3>V3-C 输入：连续验证</h3>'
+    +'<div class="form-grid"><label>evidence_source<select id="v3cEvidenceSource">'+sourceOptions+'</select></label></div>'
+    +'<div class="button-row"><button class="primary" id="evaluateRoutePlannerV3Validation" '+(readiness.status==='passed'?'':'disabled')+'>运行 V3-C 连续几何与源几何验证</button></div>'
+    +'<div class="parameter-note"><b>'+escapeHtml(V3C_OPERATIONAL_LABEL)+'</b>：即使 status=validated_route，也强制 '
+    +'operational_route=false、cns_assessed=false，且不写 operational_routes / algorithm_selection / spatial_3d。'
+    +'缺少 curve_chord_error_m 或 Rmin 时后端明确拒绝，不构造假证据。</div>';
+}
+
+function v3cHistoryBlock(model){
+  const applicability=model.applicability||{items:[]};
+  const rows=applicability.items.length?applicability.items.map(item=>'<div class="list-row route-row"><span><b>'
+    +escapeHtml(item.validationId||'—')+'</b> '+statusBadge(item.status||'not_calculated')
+    +'<small>refinement '+escapeHtml(item.refinementId||'—')+' · experiment '+escapeHtml(item.experimentId||'—')
+    +' · recorded '+escapeHtml(item.recordedApplicability||'—')+' · current '+escapeHtml(item.currentApplicability||'—')+'</small>'
+    +'<small>domain statuses '+escapeHtml(jsonInline(item.domainStatuses||{}))+'</small>'
+    +'<small>changed_components '+escapeHtml(jsonInline(item.changedComponents||[]))+'</small>'
+    +(item.reasons||[]).map(reason=>'<small>'+escapeHtml(reason)+'</small>').join('')
+    +'<small>validation fingerprint '+escapeHtml(String(item.validationFingerprint||'—').slice(0,28))+'</small></span></div>').join('')
+    :'<div class="empty-note">尚无 V3-C validation 记录</div>';
+  return '<h3>V3-C validation 历史与适用性 '+statusBadge(applicability.status||'not_calculated')+'</h3>'
+    +'<div class="parameter-note">stale_count '+escapeHtml(String(applicability.staleCount??0))+' / 总数 '+escapeHtml(String(applicability.count??0))
+    +' · validated_route '+escapeHtml(String(applicability.validatedRouteCount??0))
+    +' · 指纹组件 '+escapeHtml((applicability.components||[]).join(', ')||'—')
+    +'<br>refinement fingerprint / continuous policy / curve tolerance / source audit / CRS-transform / validator versions 任一变化即 stale，必须重跑。</div>'
+    +'<div class="scroll-list route-list">'+rows+'</div>';
+}
+
+export function routePlannerV3ValidationPanel(flow){
+  const model=routePlannerV3ContinuousModel(flow);
+  const validation=model.validationModel;
+  const summary=validation?'<div class="flow-summary"><b>'+escapeHtml(V3C_OPERATIONAL_LABEL)+'</b>'
+    +'<br>validation '+escapeHtml(validation.validationId||'—')+' '+statusBadge(validation.status)
+    +' · evidence_source '+escapeHtml(validation.evidenceSource||'—')
+    +' · arc/straight/turn '+escapeHtml(String((validation.analytic||{}).arcCount??'—'))+' / '
+    +escapeHtml(String((validation.analytic||{}).straightCount??'—'))+' / '+escapeHtml(String((validation.analytic||{}).turnCount??'—'))
+    +'<br>curve_chord_error_m '+metric((validation.linearized||{}).curveChordErrorM,'m')
+    +' · actual max chord '+metric((validation.linearized||{}).actualMaxChordErrorM,'m')
+    +' · min turn radius observed '+metric((validation.kinematics||{}).minimumTurnRadiusObservedM,'m')
+    +'<br>max climb / descent '+metric((validation.vertical||{}).maxClimbGradient)+' / '+metric((validation.vertical||{}).maxDescentGradient)
+    +'<br>realized distance '+metric((validation.vertical||{}).totalDistanceM,'m')
+    +' · violations '+escapeHtml(String((validation.violations||[]).length))
+    +' · unresolved '+escapeHtml(String((validation.unresolved||[]).length))
+    +'<br>'+escapeHtml(validation.disclaimer||'')+'</div>'
+    :(model.refinementStale
+      ?'<div class="parameter-note"><b>V3-B refinement 已 stale</b>：stale 的 refined candidate 不得进入 V3-C，必须先重跑 V3-B。</div>'
+      :'<div class="empty-note">尚无 V3-C validation：保存已确认的 validation policy，再对 current 的 V3-B refined_candidate 运行连续验证。</div>');
+  return '<h3>V3-C 连续几何实现 + source-native/vector 验证 '+statusBadge(model.status)+'</h3>'
+    +'<div class="parameter-note">'+escapeHtml(model.note||'')+'<br>'+escapeHtml(model.architecture||'')+'</div>'
+    +summary
+    +v3cDomainBlock(model)
+    +v3cMarginBlock(model)
+    +v3cViolationBlock(model)
+    +v3cGeometryBlock(model)
+    +v3cKinematicBlock(model)
+    +v3cSourceBlock(model)
+    +v3cReadinessBlock(model)
+    +v3cHistoryBlock(model);
+}
+
 function v3bPanel(model){
   const refinement=(model.refinements||[])[0]||null;
   return v3bRefinementBlock(model,refinement)
@@ -840,8 +1204,14 @@ export function routePlannerV3Panel(flow){
     +'<div class="parameter-note">V3-B corridor-local 精化状态只允许 '+escapeHtml(model.allowedRefinementStatuses.join(' / '))
     +'：没有 validated/final 状态。'+escapeHtml(model.v3bNote||'')+'</div>'
     +v3bPanel(model)
+    +v3cValidationPanel(flow)
     +'<h3>V3-A 实验记录</h3>'+(model.recent.length?'<div class="button-row"><button class="secondary" id="deleteRoutePlannerV3">删除当前实验</button></div>':'')
     +'<div class="scroll-list route-list">'+history+'</div>';
+}
+
+// V3-C is rendered from its own model so its status stays independent from V3-A/V3-B.
+function v3cValidationPanel(flow){
+  return routePlannerV3ValidationPanel(flow);
 }
 
 function optionalNumber(value){const text=String(value??'').trim();return text===''?null:Number(text);}
@@ -900,6 +1270,19 @@ export function bindRoutePlannerV3(c){
     const model=routePlannerV3Model(c.flow());
     if(!model.activeId)throw new Error('没有可删除的 V3 实验');
     await c.resourceAction('/api/route-planner-v3-experiments/delete',{experiment_id:model.activeId});
+  });
+  // ---- V3-C -------------------------------------------------------------------
+  if(c.$('saveRoutePlannerV3ValidationPolicy'))c.actionButton('saveRoutePlannerV3ValidationPolicy',()=>c.resourceAction('/api/route-planner-v3/validation-policy',{
+    curve_chord_error_m:optionalNumber(c.$('v3cChordError').value),
+    max_validation_samples:optionalNumber(c.$('v3cMaxSamples').value),
+    max_runtime_s:optionalNumber(c.$('v3cMaxRuntime').value),
+    use_curve_error_envelope:c.$('v3cEnvelope').value==='true',
+    source:c.$('v3cPolicySource').value.trim(),
+    confirmed:c.$('v3cPolicyConfirmed').checked}));
+  if(c.$('evaluateRoutePlannerV3Validation'))c.actionButton('evaluateRoutePlannerV3Validation',async()=>{
+    await c.resourceAction('/api/route-planner-v3-validations/evaluate',{
+      evidence_source:c.$('v3cEvidenceSource').value});
+    if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
 }
 

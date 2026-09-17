@@ -10,8 +10,14 @@
 
 const COARSE_COLOR = '#4c6ef5';
 const REFINED_COLOR = '#e8590c';
+//: V3-C realized route: the *continuous* geometry (analytic arcs, linearized for
+//: display) with its explicit chord-error envelope.  It is still not an operational
+//: route, so it is drawn as a distinct validated-style line, never as a route of record.
+const VALIDATED_COLOR = '#2f9e44';
+const VALIDATION_FAILURE_COLOR = '#c92a2a';
+const VALIDATION_UNRESOLVED_COLOR = '#f08c00';
 
-export function v3OverlayModel(flow,{candidate=true,corridor=true,refined=true}={}){
+export function v3OverlayModel(flow,{candidate=true,corridor=true,refined=true,validated=true}={}){
   const collection=flow?.route_planner_v3_experiments||{};
   const summary=collection.active_experiment||null;
   const detail=flow?.route_planner_v3_detail||{};
@@ -28,6 +34,32 @@ export function v3OverlayModel(flow,{candidate=true,corridor=true,refined=true}=
   const refinementResult=refinement?.result||null;
   const evidence=refinementResult?.fine_grid_evidence||{};
   const fineGrid=refinementResult?.fine_grid||null;
+  const validation=validated?((refinement?.validations||[])[0]||null):null;
+  const validationResult=validation?.result||null;
+  const continuous=validationResult?.continuous_route||null;
+  const linearized=((continuous||{}).horizontal_geometry||{}).linearized||{};
+  const analytic=((continuous||{}).horizontal_geometry||{}).analytic||{};
+  const projected=(flow?.route_planner_v3_validations?.items||[])[0]||null;
+  // The realized route lives in the V3-B *local metric* frame.  Every state of the
+  // refined candidate carries both metric and geographic coordinates, so the affine
+  // mapping can be fitted and the realized linearized LineString placed honestly --
+  // and skipped (never guessed) when the fit is not available.
+  const project=affineFromStatePath(refinementResult);
+  const metricPairs=((refinementResult?.state_path)||[])
+    .map(item=>({metric:[item.x_metric,item.y_metric],geographic:[item.x,item.y]}))
+    .filter(item=>item.metric.every(Number.isFinite)&&item.geographic.every(Number.isFinite));
+  const projectMetric=project?project:affineProjection(metricPairs);
+  const validatedPath=validated&&projectMetric
+    ?(linearized.linestring_metric||[]).map(point=>projectMetric(point))
+      .filter(point=>point&&point.every(Number.isFinite))
+    :[];
+  const validatedIntervalSegments=validated&&projectMetric
+    ?summarizeIntervals(validationResult).map(item=>({
+      ...item,
+      startCoordinate:pointAtMetricDistance(linearized.linestring_metric||[],projectMetric,item.startDistanceM),
+      endCoordinate:pointAtMetricDistance(linearized.linestring_metric||[],projectMetric,item.endDistanceM),
+    }))
+    :summarizeIntervals(validationResult);
   return {
     status:result?.status||summary?.status||'not_calculated',
     path:candidate?path:[],
@@ -42,7 +74,80 @@ export function v3OverlayModel(flow,{candidate=true,corridor=true,refined=true}=
     refinedIsFinal:false,
     refinedV3cPending:true,
     refinedGridBounds:refinedGridBounds(refinementResult),
+    // ---- V3-C realized route + validation evidence -------------------------
+    validatedStatus:validationResult?.status||null,
+    validatedId:validation?.validation_id||null,
+    validatedIsOperationalRoute:false,
+    validatedCnsAssessed:false,
+    validatedPointCount:linearized.point_count??null,
+    validatedArcCount:analytic.arc_count??null,
+    curveChordErrorM:linearized.curve_chord_error_m??null,
+    validatedPath,
+    validatedGeometryPlaceable:Boolean(validatedPath.length),
+    validatedGeometrySemantics:'realized_c1_linearized_representation_analytic_arcs_with_explicit_chord_error',
+    validatedDomainStatuses:(validationResult?.domain_statuses)||(projected?.domain_statuses)||{},
+    validatedIntervals:validatedIntervalSegments,
+    validatedMargins:validationResult?.min_margins||null,
   };
+}
+
+//: The refined state path supplies (metric, geographic) pairs.  Three or more spread
+//: points give the full affine fit; exactly two give the scale/translation fit that the
+//: V3-B local metric frame actually defines (uniform local scale, north-up), computed
+//: from the pair itself.  With fewer than two pairs nothing is placed -- never guessed.
+function affineFromStatePath(result){
+  const pairs=((result?.state_path)||[])
+    .map(item=>({metric:[item.x_metric,item.y_metric],geographic:[item.x,item.y]}))
+    .filter(item=>item.metric.every(Number.isFinite)&&item.geographic.every(Number.isFinite));
+  const affine=affineProjection(pairs);
+  if(affine)return affine;
+  return scaleTranslationProjection(pairs);
+}
+
+function scaleTranslationProjection(pairs){
+  if((pairs||[]).length<2)return null;
+  const [a,b]=pairs;
+  const metricDistance=Math.hypot(b.metric[0]-a.metric[0],b.metric[1]-a.metric[1]);
+  const geographicDistance=Math.hypot(b.geographic[0]-a.geographic[0],b.geographic[1]-a.geographic[1]);
+  if(!(metricDistance>0)||!(geographicDistance>0))return null;
+  const scale=geographicDistance/metricDistance;
+  const offsetX=a.geographic[0]-a.metric[0]*scale;
+  const offsetY=a.geographic[1]-a.metric[1]*scale;
+  return metric=>[offsetX+metric[0]*scale,offsetY+metric[1]*scale];
+}
+
+//: Point on the linearized polyline at an along-track distance, then projected.
+function pointAtMetricDistance(points, project, distanceM){
+  if(!points.length||!Number.isFinite(distanceM))return null;
+  let travelled=0;
+  for(let index=0;index<points.length-1;index++){
+    const a=points[index],b=points[index+1];
+    const length=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    if(travelled+length>=distanceM||index===points.length-2){
+      const ratio=length<=0?0:Math.max(0,Math.min(1,(distanceM-travelled)/length));
+      const metric=[a[0]+(b[0]-a[0])*ratio,a[1]+(b[1]-a[1])*ratio];
+      const projected=project(metric);
+      return projected&&projected.every(Number.isFinite)?projected:null;
+    }
+    travelled+=length;
+  }
+  return null;
+}
+
+//: Failed / unresolved along-track intervals as distance ranges.  The map has no
+//: distance→position mapping for the realized geometry, so the overlay reports the
+//: intervals as data instead of drawing a guessed segment.
+function summarizeIntervals(result){
+  if(!result)return [];
+  const map=(items,kind)=>(items||[]).map(item=>({
+    kind,domain:item.domain,reasonId:item.reason_id,
+    startDistanceM:item.start_distance_m,endDistanceM:item.end_distance_m,
+    margin:item.margin??null,
+  }));
+  return [
+    ...map(result.violations,'violation'),
+    ...map(result.unresolved_evidence,'unresolved'),
+  ];
 }
 
 //: The fine grid's geographic extent, or ``null`` when the payload cannot supply it.
@@ -118,6 +223,61 @@ export function drawV3CandidateOverlay({ctx,screenPoint,drawLine,model}){
     drawLine(ctx,screenPoint,true,refinedPath,REFINED_COLOR,3,[]);
     for(const point of refinedPath)drawRefinedMarker(ctx,screenPoint,point);
   }
+  drawValidatedOverlay(ctx,screenPoint,drawLine,model);
+}
+
+//: The realized continuous route (solid), its failed/unresolved along-track intervals
+//: (thick markers) and its status colour.  The line stays a *validated* route, never an
+//: operational one -- the panel carries the operational/CNS disclaimer.
+function drawValidatedOverlay(ctx,screenPoint,drawLine,model){
+  const validatedPath=model.validatedPath||[];
+  if(!validatedPath.length)return;
+  const colour=model.validatedStatus==='validated_route'?VALIDATED_COLOR
+    :model.validatedStatus==='failed'?VALIDATION_FAILURE_COLOR
+    :model.validatedStatus==='unresolved'?VALIDATION_UNRESOLVED_COLOR
+    :VALIDATED_COLOR;
+  drawLine(ctx,screenPoint,true,validatedPath,colour,3,[]);
+  for(const item of model.validatedIntervals||[]){
+    if(!item.startCoordinate)continue;
+    const itemColour=item.kind==='violation'?VALIDATION_FAILURE_COLOR:VALIDATION_UNRESOLVED_COLOR;
+    drawIntervalSpan(ctx,screenPoint,drawLine,item.startCoordinate,item.endCoordinate,itemColour);
+  }
+  drawValidatedMarker(ctx,screenPoint,validatedPath);
+}
+
+function drawIntervalSpan(ctx,screenPoint,drawLine,start,end,colour){
+  const [x0,y0]=screenPoint(start),[x1,y1]=screenPoint(end);
+  ctx.save();
+  ctx.fillStyle=colour;
+  ctx.beginPath();
+  ctx.arc(x0,y0,6,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x1,y1,6,0,Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle=colour;
+  ctx.lineWidth=6;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(x0,y0);
+  ctx.lineTo(x1,y1);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawValidatedMarker(ctx,screenPoint,path){
+  const point=path[Math.floor(path.length/2)];
+  if(!point)return;
+  const [x,y]=screenPoint(point);
+  ctx.save();
+  ctx.fillStyle='#ffffff';
+  ctx.strokeStyle=VALIDATED_COLOR;
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.arc(x,y,4,0,Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawFineGridExtent(ctx,screenPoint,bounds){

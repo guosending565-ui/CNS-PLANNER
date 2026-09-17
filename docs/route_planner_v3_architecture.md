@@ -1,9 +1,10 @@
-# Route Planner V3 架构：3D 战略规划（V3-A）+ corridor-local 精化（V3-B）
+# Route Planner V3 架构：3D 战略规划（V3-A）+ corridor-local 精化（V3-B）+ 连续几何实现与源几何验证（V3-C）
 
 > 状态：**V3-A 已实现**（战略搜索 + 硬约束内核 + provenance soft cost 向量 + refinement corridor proposal），并已完成三项正确性修复（admissible heuristic / 删除隐式 normalizer / expansion cap 语义）。
-> **V3-B 已实现**（corridor-local 米制 fine grid + fine environment adapter + multi-cell stride 精化搜索 + refinement fingerprint/staleness）。
-> 明确**未实现**：V3-C exact polygon / terrain / continuous clearance validation；V3-D validated route → operational adapter → CNS Assessment；Route–CNS 联合优化（未来项，不是 V3-D）；energy 模型。
-> 本文件描述 V3 的目标架构与 V3-A/V3-B 的落地边界；凡标 **V3-A 现行** / **V3-B 现行** 的是已实现语义，标 **V3-C/D** 的是后续接口而非承诺。
+> **V3-B 已实现**（corridor-local 米制 fine grid + fine environment adapter + multi-cell stride 精化搜索 + refinement fingerprint/staleness），并已修复三项技术债（DTM 有效分辨率的单位换算、fine airspace 的 cell-polygon 覆盖判定、supercover 的 corner-crossing 保守语义）。
+> **V3-C 已实现**（连续 3D 几何实现 + 源几何硬约束验证：analytic arc fillet、explicit curve chord error、exact airspace polygon、native terrain raster、真实 building footprint、kinematics 重验证）。
+> 明确**未实现**：V3-D validated route → operational adapter → CNS Assessment；clothoid / continuous-curvature 过渡；Route–CNS 联合优化（未来项，不是 V3-D）；energy 模型。
+> 本文件描述 V3 的目标架构与 V3-A/V3-B/V3-C 的落地边界；凡标 **V3-A/B/C 现行** 的是已实现语义，标 **V3-D** 的是后续接口而非承诺。
 
 ---
 
@@ -13,9 +14,11 @@
 | --- | --- | --- |
 | V3-A | L8 × 高度 × heading 战略搜索、硬约束内核、provenance soft cost、candidate refinement corridor | 已实现 |
 | V3-B | 在 V3-A corridor 的 support cells 米制窗口内构造局部 fine grid，做 corridor-local 3D 精化（多 cell stride、逐 traversed cell 检查） | 已实现 |
-| V3-C | exact polygon membership、exact terrain profile clearance、沿整条轨迹的 continuous clearance 验证、连续曲率验证 | 未实现 |
+| V3-C | 连续几何实现（C1 straight/arc、explicit chord error、realized vertical profile）+ 源几何硬约束验证（exact airspace polygon、native terrain raster、真实 building footprint、kinematics） | 已实现 |
 | V3-D | validated route → operational adapter → 既有 P7/P8/P9/P10 CNS Assessment | 未实现 |
-| 未来 | Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 未来 backlog |
+| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 未来 backlog |
+
+**V3-C 的诚实边界**：vector predicate 对 **linearized representation（含显式 curve-error envelope）** 是精确的；圆弧本身是解析几何、折线是有界近似；terrain 是 **source-native raster evidence**，不声称真实世界地形在数学上连续精确。
 
 ---
 
@@ -221,7 +224,8 @@ L8 战略搜索（V3-A 现行）
       ├─ altitude_envelope        : 计划高度范围（可选显式 margin）
       └─ semantics = refinement_search_window_not_safety_corridor
   → corridor-local 米制 fine grid + 精化搜索（V3-B 现行）
-  → exact polygon / terrain / continuous clearance 验证（V3-C，未实现）
+  → 连续几何实现 + 源几何硬约束验证（V3-C 现行，见 §7A）
+  → validated route → operational adapter → CNS Assessment（V3-D，未实现）
 ```
 
 必须明确的语义：
@@ -260,6 +264,7 @@ refined_candidate / failed / not_ready / missing_data / search_incomplete
 
 - fine grid **只在 corridor support cells 的米制 bbox 内**构造（`mapping_method = corridor_support_parent_cells_to_local_metric_index_grid`）；不做全 workspace、全栅格重采样。
 - 水平分辨率来自**显式配置**或 **DTM 有效分辨率**；两者都不可得 ⇒ `fine_resolution_unresolved` ⇒ blocked。
+- **DTM 有效分辨率必须做单位换算**：投影 CRS 按该 CRS 自己验证过的 linear unit 换算成 m（例如 US survey foot ≠ 1.0）；geographic CRS 的 affine pixel size 是**度**，绝不当 m——而是在 corridor/reference location 用 `Geod` 测相邻 pixel 中心的地面距离。记录 `native_pixel_size_x/y` + `native_pixel_size_unit`、`effective_resolution_m_x/y`、`method`（`projected_crs_verified_linear_unit` / `geographic_geodesic_adjacent_pixel_centres`）与 `reference_location`/`geodesic_backend`。`degree_values_never_reported_as_metres=true`。
 - fine cell 的 ID/row/column 为确定性 row-major（south-west origin）；经纬度位置由 adapter 的显式投影逆变换给出，或（synthetic）由显式声明的局部定义给出，并在 frame 中记录 `display_only` / `interpolated_from_parent_cells`。
 
 ### 7.3 Terrain hard facts
@@ -285,10 +290,11 @@ footprint 影响该 cell ⟺ footprint ring 与该 cell 矩形的距离 ≤ expl
 
 ### 7.5 Airspace
 
-- 只消费 **confirmed `AirspacePolicy`**：parent L8 cell 必须在 confirmed `allowed_grid_ids` 中，**且** fine cell 中心位于 confirmed allowed polygon 内；中心落在 confirmed blocked polygon 内 ⇒ `confirmed_restricted`。
-- unconfirmed / 无几何 / 不在 allowed polygon 内 ⇒ `unknown` ⇒ 不可行。
+- 只消费 **confirmed `AirspacePolicy`**：parent L8 cell 必须在 confirmed `allowed_grid_ids` 中，**且** fine cell 的 **full cell polygon** 必须 `covered_by` 一个 confirmed allowed polygon（同一保守规则：允许区边界不得穿入该 cell）。
+- fine cell polygon 与任何 confirmed blocked polygon **有面积交集** ⇒ `confirmed_restricted`。
+- **mixed / boundary / unconfirmed / 无几何** ⇒ `unknown` ⇒ 不可行。**中心点判定不足以判 allowed**。
 - **禁止**根据图层名称或颜色推断；adapter 的 audit 显式记录 `inferred_from_name_or_color = false`。
-- 说明：fine 层是**中心点判定**，不是 full-cell coverage 证明；exact polygon membership 属于 V3-C。
+- 说明：V3-B 仍是**离散 fine-cell 判定**（现在基于完整 cell polygon，不是中心点）；route 级 **continuous vector 验证**（realized route + curve-error envelope）属于 **V3-C**（见 §7A.5）。
 
 ### 7.6 Soft facts：coarse → fine 的 provenance
 
@@ -302,6 +308,7 @@ footprint 影响该 cell ⟺ footprint ring 与该 cell 矩形的距离 ≤ expl
 - state：`fine_cell_id × altitude_index × heading_bin`（与 V3-A 同构，canonical vertical reference 仍是 EGM2008）。
 - **spatial `FineMotionPrimitive`**：沿 8 个网格方向生成 `stride = 1..max_stride_cells` 的水平 primitive，以及 ±1 高度层的 climb/descend 变体。**不机械复用单 cell 转弯**：fine cell 提供的弧长太短，单 cell 步长会拒绝几乎所有转弯。
 - 每个 primitive 记录 `traversed_cell_ids`（Amanatides & Woo supercover，包含起点与终点 cell）与 `traversed_entry_fractions`（路径进度）。
+- **supercover 的 boundary-touch 语义是保守的**：cell 只要被 segment **触及**（在角上或沿边，零长度接触）就算被 traversed。线段**恰好穿过 grid corner** 时，共享该点的三个 cell（两个正交邻格 + 对角格）都被报告，去重且 fraction 单调——**绝不会因为对角前进而漏掉正交邻格**。这比数学 supercover 更 inclusive，方向是安全的：中间障碍/地形尖峰无法被跨越。
 - 转弯约束仍是既有工程约束 **`R · |Δψ| ≤ stride_m`**，并对每个 primitive 记录 `turn_arc_required_m` / `turn_arc_available_m`。
 - 对**所有经过 cell**按路径进度**插值高度**执行 airspace / terrain / building 检查：
 
@@ -331,6 +338,146 @@ refinement_fingerprint = f(strategic_fingerprint, corridor, policy, source audit
 
 - 只在 `route_planner_v3_experiments` 的记录下追加 `refinements[]`（每个 strategic candidate 至多保留 `MAX_V3_REFINEMENTS_PER_EXPERIMENT` 条），以及独立容器 `v3_fine_refinement_policy`。
 - **不写** `operational_routes`、`algorithm_selection`、`spatial_3d`；不产生任何失效传播（不使 routes/grid/grid_risk/P7-P19 stale）。
+
+---
+
+## 7A. V3-C：连续几何实现 + 源几何硬约束验证
+
+### 7A.1 输入边界
+
+V3-C **只**在 **选定且 current 的 V3-B `refined_candidate`** 上运行。它消费该 refinement 已记录的：
+
+- `metric_projection`（V3-B local metric frame 内的米制轨迹）与 `state_path`（逐状态 canonical EGM2008 高度）；
+- `frame`（local metric CRS / origin / axis / resolution / `local_to_geographic`）；
+- `refinement_fingerprint` 与 `source_audit`。
+
+缺少、非 candidate、`current_applicability != current` 的 refinement ⇒ `not_ready`，**不运行**。V3-C 不读 V1/V2 route path，不做任何投影发明。
+
+### 7A.2 连续几何实现（`continuous_geometry.py`）
+
+在 V3-B local metric frame 内把 polyline 变成 **C1（position + heading）连续**几何：
+
+```
+straight → circular_arc(fillet) → straight → …
+```
+
+- 内角 `Δψ`；`R = aircraft_min_turn_radius_m`（显式，**V3-C 先取 R = Rmin**，绝不为了勉强通过而减小 R）；
+- `t = R · tan(|Δψ|/2)`；
+- 若 `t` 超出任一相邻可用 segment、相邻 fillet 重叠、或几何退化（切点构造与解析转角不一致、非有限坐标）⇒ `turn_realization_failed` + `replan_required`，**禁止减小 R**；
+- 圆弧保存 **analytic geometry**：`center_metric / radius_m / start_angle_rad / end_angle_rad / signed_sweep_rad / arc_length_m / chord_length_m / tangent_points_metric / turn_direction / radius_verified_from_center`；
+- **只保证 position + heading 连续**：曲率在 straight↔arc 处**可以跳变**；`continuous_curvature=false`、`c2=false`，禁止声明 continuous-curvature / C2。Clothoid 明确留 future。
+
+### 7A.3 曲线 linearization 与显式 chord error
+
+- `curve_chord_error_m` **必须显式给出，没有安全默认值**。缺失 ⇒ `blocked` ⇒ `not_ready`；`realize_continuous_route` 直接拒绝。
+- 每段圆弧用**等角** sub-chord 线性化：`n = ceil(θ / (2·acos(1 − e/R)))`，即每段 sagitta `R·(1 − cos(θ/(2n))) ≤ e`。
+- 保存解析几何 **和** linearized LineString，并给出 **`actual_max_chord_error_m`（实测）**：对解析圆弧密采样、取到折线的最大垂距。要求 `actual ≤ requested`，否则 `turn_realization_failed`（不静默放宽）。
+- `semantics = arcs_are_analytic_circular_arcs_the_linestring_is_a_chord_bounded_approximation`；`not_the_mathematical_curve = true`。
+- 所有 vector/raster validation 都考虑该**误差包络**（route uncertainty envelope = linearized LineString 按 `curve_chord_error_m` 做 offset）。**不得把采样折线称为数学 exact curve**。
+
+### 7A.4 Vertical profile（`z(s)`）
+
+统一为 **`z(s) = EGM2008 orthometric altitude` vs realized along-track distance**（`egm2008_orthometric_altitude_against_realized_along_track_distance`）：
+
+- tangent point 高度由 V3-B 对应 segment 上**线性插值**给出（按 top-level 距离定位，最近 segment 胜出，避免恰好落在顶点时选错段）；
+- arc 内按 **arc-length 线性插值**（`vertical_interpolation = linear_in_arc_length_between_tangent_point_altitudes`）；
+- 每个 primitive 记录 `horizontal_length_m / length_3d_m / z_start / z_end / gradient`；
+- 重新验证 **min/max altitude**（显式高度带）与 **max climb/descent gradient**；
+- 明确**不写**旧 `spatial_3d` / `route_altitude_profile`。
+
+### 7A.5 ExactAirspaceValidator
+
+- 只消费 **confirmed `AirspacePolicy` 的真实 polygon**；unconfirmed / 无几何 ⇒ `unresolved`（fail-closed）。
+- 把 realized route 与 curve-error envelope 转到**米制几何**后判定：
+  - envelope **必须完全被 allowed union 覆盖**（`envelope.difference(allowed_union)` 无显著面积）；
+  - envelope **必须与 blocked union 不相交**（`envelope ∩ blocked_union` 无显著面积）。
+- 违反 ⇒ 输出 `violation interval`（含起止距离、起止坐标、required/observed/margin、evidence）。
+- 若 feature 有 **confirmed lower/upper altitude**，则按 intersection interval 检查 `z(s)`；**没有垂向证据时明确 `horizontal_only_policy_evidence`**，不猜高度。
+- 记录 `buffer_approximation`（Shapely `quad_segs`；对 polyline buffer 其 offset 距离本身 exact）。
+
+### 7A.6 NativeTerrainValidator
+
+- **直接检查 FABDEM native raster**（`NativeTerrainWindowSource`），**不用 fine-cell hard floor 替代最终验证**。
+- 只读 corridor/path window（单次 `ReadAsArray`）；遍历 realized path **含 curve-error envelope** 涉及的 native pixels。
+- 每个 pixel 保留 **source value / data_status / NoData / CRS**；**NoData ⇒ `unresolved`**，禁止 bilinear 填补、禁止当 0。
+- 把 route 在该 pixel 影响 interval 上的 **minimum z** 与 `terrain elevation + explicit terrain_clearance` 比较。
+- 语义固定 `source_native_raster_validation`；**不声称真实世界无限连续 terrain exactness**。
+- pixel interval 用纯几何 helper `resolve_native_pixel_intervals` 计算（clip 到"该 pixel 中心最近"的区间，保守：min z over interval vs floor 仍精确；相邻 pixel 区间在边界处重叠，transition point 至少被一个 pixel 检查）。
+
+### 7A.7 BuildingPolygonValidator
+
+- **复用现有 BuildingClearance** 的 source、RTree/provider query 与 **EGM2008 roof/height 语义**：`domain/building_clearance.py` 的 `building_roof_elevation` / `evaluate_vertical_clearance` 是**唯一** roof 公式与垂直余量判定的实现，`BuildingClearanceV1` 与 V3-C 共用（不再出现第三套 roof 公式）。行为等价已由 characterization 测试锁定。
+- 只查询 **route bbox + clearance** 候选（provider spatial index）。
+- 真实 footprint 按 `explicit horizontal_clearance + curve_error` 做 **metric buffer**，与 route LineString 求 **affected intervals**。
+- 每 interval 比较 **minimum z(s)** 与 **roof + vertical_clearance**。
+- 缺 height / 缺 ground / invalid geometry ⇒ `unresolved`（**不 MakeValid、不改源 geometry**）。
+- 保留 `building_id / source / roof / min horizontal & vertical margin / interval`。
+- 记录 Shapely buffer approximation 参数（`quad_segs`）。
+
+### 7A.8 KinematicValidator
+
+- 验证 **analytic turn `R ≥ Rmin`**；
+- 验证 **tangent heading continuity**（逐 primitive 边界 + arc 端点与转角一致性，解析检查）；
+- 重新验证每个 **continuous primitive** 的 climb/descent gradient；
+- 记录 `minimum_turn_radius_observed_m`、`max_climb/descent_gradient_observed`；
+- 明确 **不把 V3-B 的 `R·Δψ` 弧长代理当作最终转弯验证**；
+- **self-intersection 只作为 diagnostic**（`self_intersection_semantics = diagnostic_only_not_automatically_unsafe_unless_policy_explicitly_requires`），除非 policy 显式规定 `self_intersection_is_failure`。
+
+### 7A.9 V3ContinuousValidator 汇总
+
+```
+geometry / airspace / terrain / building / altitude / kinematics
+```
+
+- **全部 passed** ⇒ `status = validated_route`；
+- 任一 domain 有**确定违反** ⇒ `failed`（`replan_required=true` + 结构化证据）；
+- 缺证据 ⇒ `unresolved`；
+- source/refined candidate stale ⇒ `not_ready`；
+- **资源上限**（`max_validation_samples` / `max_runtime_s`）⇒ `validation_incomplete`，**绝不当 failed**（`resource_limited_not_infeasible=true`）。
+
+结果状态**只允许**：
+
+```
+validated_route / failed / unresolved / not_ready / validation_incomplete
+```
+
+**即使 `validated_route` 也强制** `operational_route=false`、`cns_assessed=false`（`normalize_v3_continuous_validation_result` 无条件重置），并固定 disclaimer（"V3-C continuous validated route…仍然不是 operational route，CNS 尚未评估"）。
+
+`validation_fingerprint` 组件：
+
+```
+refinement_fingerprint | continuous_policy_fingerprint | curve_tolerance_fingerprint
+| source_fingerprint | crs_fingerprint | validator_versions_fingerprint
+```
+
+任一变化 ⇒ `current_applicability = stale`，必须重跑。
+
+### 7A.10 统一 violation interval
+
+```
+domain, reason_id, start/end_distance_m, start/end coordinate,
+required, observed, margin, evidence
+```
+
+**不自动 repair / 不自动 replan**：失败只给出 `replan_required=true` 与结构化证据。
+
+### 7A.11 写入边界与隔离
+
+- 只在既有 `route_planner_v3_experiments` 记录的 refinement 下追加 `validations[]`（每条 refinement 至多保留 `MAX_V3C_VALIDATIONS_PER_REFINEMENT`），以及独立容器 `v3_continuous_validation_policy`。
+- **不写** `operational_routes`、`algorithm_selection`、`spatial_3d`；不产生任何失效传播。
+- V3-C 只消费 canonical `domain_evidence`（metric polygon / native pixel window / building footprint），**算法包不 import QGIS/GDAL、不读文件**；真实数据只经 `gis/fine_environment_adapter.py` 的 V3-C 类进入。
+
+### 7A.12 接口
+
+| 方法 | 路径 |
+| --- | --- |
+| GET | `/api/route-planner-v3/continuous-readiness` |
+| GET | `/api/route-planner-v3-validations` |
+| POST | `/api/route-planner-v3/validation-policy` |
+| POST | `/api/route-planner-v3-validations/evaluate` |
+| POST | `/api/route-planner-v3-validations/evaluate-real`（GIS-wired，需 QGIS/GDAL） |
+
+Step 03 同时显示 V3-A 战略候选、V3-B refined candidate 与 **V3-C realized route**，并显示：domain status、最小 margin、turn radius、climb/descent、source/tolerance、violation intervals。面板**醒目标注**"V3-C validated route 仍不是 operational route；CNS 尚未评估"。
 
 ---
 
@@ -414,28 +561,37 @@ Step 03 面板同时显示 **V3-A coarse candidate** 与 **V3-B refined candidat
 ## 11. 局限（必须随结果一起阅读）
 
 1. **V3-A 未精化**：候选只在 L8 网格分辨率与离散高度层上可行。
-2. **V3-B 未做最终判定**：fine grid 只做保守包络与逐 cell 插值检查，没有 exact polygon membership、exact terrain profile、沿整条轨迹的 continuous clearance、连续曲率验证。
-3. **运动模型是工程基线**：不是飞行动力学认证模型（无 bank/风/能量）；V3-B 的转弯仍是弧长代理。
+2. **V3-B 未做最终判定**：fine grid 只做保守包络与逐 cell 插值检查，没有 exact polygon membership、exact terrain profile、沿整条轨迹的 continuous clearance、连续曲率验证。**这些由 V3-C 完成**。
+3. **运动模型是工程基线**：不是飞行动力学认证模型（无 bank/风/能量）；V3-B 的转弯仍是弧长代理（V3-C 用解析圆弧重新验证 R 与 tangent heading，但仍不是飞行动力学模型）。
 4. **cell 级保守语义**：地形/建筑按 cell 的 clearance floor 判定，未表达 cell 内几何细节。
-5. **空域只有两值**（外加 unknown）：`confirmed_allowed / confirmed_restricted / unknown`；fine 层是中心点判定。
+5. **空域只有两值**（外加 unknown）：`confirmed_allowed / confirmed_restricted / unknown`；V3-B fine 层是 **full fine-cell polygon coverage** 判定（不再是中心点判定），V3-C 再做 route-level envelope 的连续 vector 验证。
 6. **环境可以是合成**：synthetic 路径只用于确定性演练；真实数据需要配置并确认 FABDEM/建筑/空域来源。
 7. **无 Pareto / 无多目标最优**：soft 向量只报告，标量只是显式加权和。
-8. **endpoint 绑定**：V3-A 绑定最近 cell 中心；V3-B 记录显式绑定方法，仍不是精确多边形包含判定。
+8. **endpoint 绑定**：V3-A 绑定最近 cell 中心；V3-B 记录显式绑定方法；V3-C 从已记录的 metric 轨迹实现几何，仍不是精确多边形包含判定。
 9. **无时间维**：不含时间窗、动态障碍、四维（4D）规划。
 10. **energy 缺席**：`pending_model` / disabled。
 11. **V3-B 垂直自由度受 corridor envelope 限制**：未声明 margin 时只能做水平精化（见 §6）。
 
+V3-C 追加局限：
+
+12. **只保证 C1**：position + heading 连续；曲率在 straight↔arc 处可跳变，**不是 continuous-curvature / C2**；clothoid 未实现（future）。
+13. **折线是有界近似**：vector predicate 对 linearized representation（含显式 `curve_chord_error_m` envelope）精确，**不代表对数学曲线的 exact membership**。
+14. **terrain 是 native-raster evidence**：逐 native pixel 判定，**不声称真实世界地形在数学上连续或精确**；NoData ⇒ `unresolved`。
+15. **building 仍是 LoD1 prism 语义**：roof = ground + 预测 height（复用既有 BuildingClearance 公式），不是真实屋顶几何/遮挡建模。
+16. **kinematics 仍是工程基线**：解析 R 与 tangent heading + 显式 gradient 上限；无 bank/风/能量/飞行动力学。
+17. **`validated_route` 不是 operational route**：`operational_route=false`、`cns_assessed=false` 无条件成立；operational adapter 与 CNS Assessment 属于 V3-D。
+18. **不自动修复**：任何违反只给出结构化证据与 `replan_required=true`，**不自动修路、不自动 replan**。
+
 ---
 
-## 12. V3-C / V3-D 后续接口
+## 12. V3-D 后续接口
 
 | 阶段 | 目标 | 已就位的接口 |
 | --- | --- | --- |
-| **V3-C** | exact polygon membership、exact terrain profile clearance、continuous clearance（沿整条轨迹）、连续曲率验证 | `V3RefinementResult.metrics/state_path`（含 `traversed_cell_ids` 与 `traversed_entry_fractions`）、`semantics.v3c_pending`、`frame`（投影与度量帧）、`source_audit`（fingerprint） |
-| **V3-D** | validated route → operational adapter → 既有 P7/P8/P9/P10 CNS Assessment | `cns_assessment.integration_mode = post_route_assessment`、`next_stage = V3-D_validated_route_operational_adapter_and_cns_assessment`、`V3CostVector` 可扩展 component |
-| 未来 | Route–CNS 联合优化（CNS 进入 cost/约束）、energy 模型 | 显式加权 component 接口；V3 阶段明确标注 energy pending |
+| **V3-D** | validated route → operational adapter → 既有 P7/P8/P9/P10 CNS Assessment | `V3ContinuousValidationResult.continuous_route`（analytic primitives + linearized LineString + per-primitive z/gradient）、`validation_fingerprint`、`semantics.next_stage = V3-D_validated_route_operational_adapter_and_cns_assessment`、`operational_route=false` / `cns_assessed=false` 作为适配器必须解除的显式 gate |
+| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 显式加权 component 接口；V3 阶段明确标注 energy pending |
 
-任何后续阶段都必须继续满足：**没有默认安全值、unknown fail-closed、结果不称 final、CNS/energy 不静默进入 cost、coarse→fine 不声称新精度**。
+任何后续阶段都必须继续满足：**没有默认安全值、unknown fail-closed、结果不称 final（在 V3-D 适配器显式接管前）、CNS/energy 不静默进入 cost、coarse→fine 不声称新精度**。
 
 ---
 
@@ -443,21 +599,33 @@ Step 03 面板同时显示 **V3-A coarse candidate** 与 **V3-B refined candidat
 
 ```
 cns_planner/route_planner_v3/
-  contracts.py         # V3-A JSON-safe 契约、normalizer、readiness 汇总语义、disclaimer
-  motion.py            # MotionPrimitiveProvider、TransitionValidator、kinematic_readiness
-  hard_constraints.py  # HardConstraintEvaluator（state/transition 分离）、HardConstraintAudit
-  cost.py              # SoftCostModel（无隐式 normalizer）、length-integrated exposure、cost vector
-  planner.py           # V3StrategicPlanner：L8 × 高度 × heading 的确定性 A*（h = 纯几何距离）
-  corridor.py          # CandidateRefinementCorridor builder + ring_neighbors
-  readiness.py         # 六域 readiness 与 overall 聚合（V3-A/V3-B 共用 policy/aircraft/cost 判定）
-  synthetic.py         # canonical synthetic V3CellEnvironment（显式 spec + normalized index）
-  fine_contracts.py    # V3-B 契约、fine refinement policy、fingerprint 与 applicability
-  fine_grid.py         # 纯几何：local frame、fine grid、airspace/soft 映射、terrain 聚合、建筑保守包络
-  fine_search.py       # V3RefinementPlanner：multi-cell stride primitive + traversed cell 检查
-  fine_synthetic.py    # V3-B synthetic fine environment builder（显式 spec，非真实数据）
-cns_planner/gis/fine_environment_adapter.py   # V3-B GIS/GDAL 边界（FABDEM 窗口 + GPKG RTree + confirmed airspace）
-cns_planner/application/route_planner_v3_service.py  # 独立实验容器与 V3-A/V3-B 编排（不写 operational_routes）
-cns_planner/web/js/workflow/step03_routes.js         # Step 03 V3-A/V3-B 面板
-cns_planner/web/js/map/route_planner_v3_overlay.js   # coarse + refined 2D 投影 + corridor 搜索窗口
+  contracts.py             # V3-A JSON-safe 契约、normalizer、readiness 汇总语义、disclaimer
+  motion.py                # MotionPrimitiveProvider、TransitionValidator、kinematic_readiness
+  hard_constraints.py      # HardConstraintEvaluator（state/transition 分离）、HardConstraintAudit
+  cost.py                  # SoftCostModel（无隐式 normalizer）、length-integrated exposure、cost vector
+  planner.py               # V3StrategicPlanner：L8 × 高度 × heading 的确定性 A*（h = 纯几何距离）
+  corridor.py              # CandidateRefinementCorridor builder + ring_neighbors
+  readiness.py             # 六域 readiness 与 overall 聚合（V3-A/V3-B 共用 policy/aircraft/cost 判定）
+  synthetic.py             # canonical synthetic V3CellEnvironment（显式 spec + normalized index）
+  fine_contracts.py        # V3-B 契约、fine refinement policy、fingerprint 与 applicability
+  fine_grid.py             # 纯几何：local frame、fine grid、airspace/soft 映射、terrain 聚合、建筑保守包络
+  fine_search.py           # V3RefinementPlanner：multi-cell stride primitive + traversed cell 检查（保守 supercover）
+  fine_synthetic.py        # V3-B synthetic fine environment builder（显式 spec，非真实数据）
+  continuous_contracts.py  # V3-C 契约：ContinuousRoute3D/ContinuousPrimitive3D/TurnRealization/
+                           #   V3ValidationPolicy/ConstraintViolationInterval/DomainValidationResult/
+                           #   V3ContinuousValidationResult、fingerprint、disclaimer
+  continuous_geometry.py   # V3-C 纯几何：C1 straight/arc fillet 实现 + explicit curve chord error linearization
+  continuous_validators.py # V3-C 纯验证：geometry / airspace / terrain / building / altitude / kinematics
+  continuous_validation.py # V3ContinuousValidator：domain 汇总、状态映射、fingerprint、资源上限
+  continuous_raster_window.py # 纯几何：route envelope × native pixel 的 limiting interval
+  continuous_synthetic.py  # V3-C synthetic domain evidence builder（显式 spec，非真实数据）
+cns_planner/gis/fine_environment_adapter.py   # V3-B/V3-C GIS/GDAL 边界
+                           #   V3-B: FabdemWindowTerrainSource / QgisGpkgBuildingSource / ConfirmedAirspacePolygonSource
+                           #   V3-C: NativeTerrainWindowSource / RouteCorridorBuildingSource / ConfirmedAirspacePolicySource
+                           #   + _FabdemRasterBase（DTM 有效分辨率的单位换算与 provenance）
+cns_planner/domain/building_clearance.py      # 共享 roof/垂直余量语义（BuildingClearanceV1 与 V3-C 共用）
+cns_planner/application/route_planner_v3_service.py  # 独立实验容器与 V3-A/V3-B/V3-C 编排（不写 operational_routes）
+cns_planner/web/js/workflow/step03_routes.js         # Step 03 V3-A/V3-B/V3-C 面板
+cns_planner/web/js/map/route_planner_v3_overlay.js   # coarse + refined + realized 投影、corridor、violation intervals
 docs/route_planner_v3_architecture.md                # 本文件
 ```

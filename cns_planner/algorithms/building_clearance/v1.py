@@ -12,7 +12,10 @@ from hashlib import sha256
 import json
 import math
 
-from ...domain.building_clearance import empty_building_clearance_assessment
+from ...domain.building_clearance import (
+    building_roof_elevation, empty_building_clearance_assessment,
+    evaluate_vertical_clearance,
+)
 from ...domain.spatial_3d import resolve_egm2008_height
 from ..coverage.geometric_3d import path_length_m, route_profile_height
 
@@ -111,7 +114,11 @@ class BuildingClearanceV1:
                 vertical_status, reason = "unresolved", "building_height_missing"
             elif terrain.get("dtm_status") != "passed" or ground is None:
                 vertical_status, reason = "unresolved", "building_footprint_dtm_unresolved"
-            roof = ground + height if vertical_status == "resolved" else None
+            # Shared canonical roof semantics (the same helper V3-C consumes).
+            roof_result = building_roof_elevation(ground, height)
+            roof = roof_result["roof_elevation_egm2008_m"]
+            if vertical_status == "resolved" and roof_result["status"] != "resolved":
+                vertical_status, reason = "unresolved", roof_result.get("reason")
             interval_results = []
             for interval in candidate.get("affected_intervals") or []:
                 offsets = sorted(set([
@@ -136,12 +143,18 @@ class BuildingClearanceV1:
                         if resolved.get("status") != "passed" or aircraft is None:
                             vertical_reasons.append(resolved.get("reason") or "route_altitude_unresolved")
                             continue
-                        if aircraft > roof:
-                            vertical_values.append(aircraft - roof)
-                        elif ground <= aircraft <= roof:
-                            vertical_values.append(0.0)
-                        else:
-                            vertical_reasons.append("aircraft_below_building_ground")
+                        evaluation = evaluate_vertical_clearance(
+                            minimum_altitude_egm2008_m=aircraft,
+                            roof_elevation_egm2008_m=roof,
+                            required_clearance_m=float(policy["vertical_clearance_m"]),
+                            ground_elevation_m=ground,
+                        )
+                        if evaluation["status"] != "resolved":
+                            vertical_reasons.append(
+                                evaluation.get("reason") or "vertical_clearance_unresolved"
+                            )
+                            continue
+                        vertical_values.append(evaluation["observed_clearance_m"])
                     if not vertical_values or vertical_reasons:
                         vertical_status = "unresolved"
                         reason = ";".join(sorted(set(vertical_reasons))) or "route_altitude_unresolved"

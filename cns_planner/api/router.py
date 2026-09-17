@@ -74,6 +74,8 @@ class ApiRouter:
         if path == "/api/route-planner-v3/readiness": return Response(workflow.route_planner_v3_readiness())
         if path == "/api/route-planner-v3/refinement-readiness": return Response(workflow.route_planner_v3_refinement_readiness())
         if path == "/api/route-planner-v3-refinements": return Response(workflow.route_planner_v3_refinement_snapshot())
+        if path == "/api/route-planner-v3/continuous-readiness": return Response(workflow.route_planner_v3_continuous_readiness())
+        if path == "/api/route-planner-v3-validations": return Response(workflow.route_planner_v3_validation_snapshot())
         if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
         if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
         if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
@@ -182,6 +184,13 @@ class ApiRouter:
             # GIS-wired variant: builds the real fine-environment adapter (needs QGIS/GDAL).
             "/api/route-planner-v3-refinements/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_route_planner_v3_refinement(payload)
+            ),
+            # ---- V3-C: continuous geometry + source-native validation ----------
+            "/api/route-planner-v3/validation-policy": lambda: workflow.set_route_planner_v3_validation_policy(payload),
+            "/api/route-planner-v3-validations/evaluate": lambda: workflow.evaluate_route_planner_v3_continuous_validation(payload),
+            # GIS-wired variant: builds the V3-C evidence adapter (needs QGIS/GDAL).
+            "/api/route-planner-v3-validations/evaluate-real": lambda: context.qgis.call(
+                lambda: context.evaluate_route_planner_v3_continuous_validation(payload)
             ),
             "/api/reference-route-links/create": lambda: workflow.create_reference_route_link(payload),
             "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),

@@ -184,6 +184,128 @@ class ApplicationContext:
         adapter = self._fine_environment_adapter(payload)
         return self.workflow.evaluate_route_planner_v3_refinement_with_adapter(adapter, payload)
 
+    def evaluate_route_planner_v3_continuous_validation(self, payload=None):
+        """Build the V3-C evidence adapter and run one continuous validation.
+
+        Requires QGIS/GDAL plus configured, confirmed sources; V3-C never validates
+        against fabricated evidence, so a missing configuration is a hard error here
+        and a reviewed ``unresolved``/``not_ready`` verdict on the service path.
+        """
+
+        payload = payload if isinstance(payload, dict) else {}
+        source = str(payload.get("evidence_source") or "canonical_synthetic")
+        if source != "configured_real_sources":
+            return self.workflow.evaluate_route_planner_v3_continuous_validation(payload)
+        adapter = self._continuous_evidence_adapter(payload)
+        return self.workflow.evaluate_route_planner_v3_continuous_validation_with_evidence(
+            adapter, payload,
+        )
+
+    def _continuous_evidence_adapter(self, payload):
+        """Canonical V3-C ``domain_evidence`` from the real GIS sources.
+
+        The returned callable receives the realized route (in the V3-B local metric
+        frame) and returns the metric-space confirmed policy evidence, the **native**
+        FABDEM pixel window and the route-corridor building footprints.  It reads
+        only; nothing is resampled, filled or made valid.
+        """
+
+        from ..gis.fine_environment_adapter import (
+            ConfirmedAirspacePolicySource, NativeTerrainWindowSource,
+            QgisMetricTransform, RouteCorridorBuildingSource,
+        )
+        from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
+
+        terrain_dtm = self.data.paths.get("terrain_dtm")
+        buildings = self.data.paths.get("buildings")
+        if not terrain_dtm or not buildings:
+            raise ValueError("请先配置 FABDEM terrain_dtm 与 GBA buildings GeoPackage")
+        state = self.workflow.state
+        eligibility = (
+            ((state.get("grid_attributes") or {}).get("airspace") or {})
+            .get("airspace_eligibility") or {}
+        )
+        if eligibility.get("status") != "passed":
+            raise ValueError("空域 eligibility 未就绪：V3-C 只消费 confirmed AirspacePolicy")
+        fine_policy = self.workflow.route_planner_v3_service.fine_policy_snapshot()
+        crs = str(
+            payload.get("horizontal_crs") or fine_policy.get("horizontal_crs") or ""
+        )
+        if not crs:
+            raise ValueError("configured_real_sources 需要显式 horizontal_crs（局部米制 CRS）")
+        transform = QgisMetricTransform(crs)
+        terrain = NativeTerrainWindowSource(terrain_dtm)
+        airspace = ConfirmedAirspacePolicySource(eligibility)
+        corridor = RouteCorridorBuildingSource(buildings, crs_authority=crs)
+        adapter_id = "v3c_real_source_evidence_adapter"
+
+        def build_evidence(*, refinement, policy, planning_policy, realization, payload=None):
+            route = realization.get("route") or {}
+            line = [
+                [float(point[0]), float(point[1])]
+                for point in (route.get("horizontal_geometry") or {}).get("linearized", {}).get(
+                    "linestring_metric",
+                ) or []
+            ]
+            curve_error = policy.get("curve_chord_error_m")
+            terrain_evidence = terrain.native_window(
+                transform=transform, metric_line=line,
+                envelope_radius_m=curve_error or 0.0, spacing_m=curve_error,
+            )
+            terrain_evidence["pixels"] = resolve_native_pixel_intervals(
+                route, terrain_evidence.get("pixels") or [],
+                curve_chord_error_m=curve_error or 0.0,
+            )
+            terrain_evidence["available"] = True if terrain_evidence.get("available") else False
+            building_evidence = corridor.query_route(
+                route, transform=transform,
+                horizontal_clearance_m=policy.get("building_horizontal_clearance_m") or 0.0,
+                curve_error_m=curve_error or 0.0,
+                terrain_source=terrain,
+            )
+            if building_evidence.get("available"):
+                for building in building_evidence.get("buildings") or []:
+                    building["source"] = building.get("source") or "GBA"
+                    ring = building.get("ring_metric") or []
+                    if ring:
+                        building["ground_elevation_max_egm2008_m"] = terrain.sample_footprint_ground(
+                            ring, transform=transform,
+                        )
+            airspace_evidence = airspace.metric_evidence(transform)
+            sample_count = len(terrain_evidence.get("pixels") or []) + len(
+                building_evidence.get("buildings") or []
+            )
+            return {
+                "adapter_id": adapter_id,
+                "source_type": "configured_real_sources",
+                "to_geographic": transform.to_geographic,
+                "sample_count": sample_count,
+                "airspace": airspace_evidence,
+                "terrain": terrain_evidence,
+                "buildings": building_evidence,
+                "sources": {
+                    "terrain_dtm": terrain.describe(),
+                    "buildings": corridor.describe(),
+                    "airspace_policy": airspace.describe(),
+                    "metric_frame": transform.describe(),
+                },
+            }
+
+        return build_evidence
+        """Build the GIS fine-environment adapter and run one V3-B refinement.
+
+        Requires QGIS/GDAL plus configured, confirmed sources; V3-B never runs on a
+        fabricated environment, so a missing configuration is a hard error here and
+        a reviewed ``not_ready`` verdict on the service path.
+        """
+
+        payload = payload if isinstance(payload, dict) else {}
+        source = str(payload.get("environment_source") or "canonical_synthetic")
+        if source != "configured_real_sources":
+            return self.workflow.evaluate_route_planner_v3_refinement(payload)
+        adapter = self._fine_environment_adapter(payload)
+        return self.workflow.evaluate_route_planner_v3_refinement_with_adapter(adapter, payload)
+
     def _fine_environment_adapter(self, payload):
         from ..gis.fine_environment_adapter import (
             ConfirmedAirspacePolygonSource, FabdemWindowTerrainSource,

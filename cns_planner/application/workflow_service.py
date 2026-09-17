@@ -234,10 +234,13 @@ class WorkflowService:
                 ],
                 "architecture": collection["architecture"],
                 "v3b_architecture": collection["v3b_architecture"],
+                "v3c_architecture": collection.get("v3c_architecture"),
                 "note": collection["note"],
                 "v3b_note": collection["v3b_note"],
+                "v3c_note": collection.get("v3c_note"),
                 "allowed_result_statuses": collection["allowed_result_statuses"],
                 "allowed_refinement_statuses": collection["allowed_refinement_statuses"],
+                "allowed_validation_statuses": collection.get("allowed_validation_statuses"),
                 "operational_routes_untouched": True,
                 "algorithm_selection_untouched": True,
                 "detail_endpoint": "/api/route-planner-v3-experiments",
@@ -248,6 +251,12 @@ class WorkflowService:
             )
             result["route_planner_v3_refinements"] = (
                 self.route_planner_v3_service.refinement_snapshot()
+            )
+            result["route_planner_v3_continuous_readiness"] = (
+                self.route_planner_v3_service.continuous_readiness_snapshot()
+            )
+            result["route_planner_v3_validations"] = (
+                self.route_planner_v3_service.continuous_validation_snapshot()
             )
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
@@ -312,6 +321,27 @@ class WorkflowService:
         return self.route_planner_v3_service.evaluate_refinement(payload, adapter=adapter)
     def delete_route_planner_v3_experiment(self, experiment_id):
         return self.route_planner_v3_service.delete_experiment(experiment_id)
+
+    # ---- V3-C -----------------------------------------------------------------
+    def route_planner_v3_continuous_readiness(self):
+        return self.route_planner_v3_service.continuous_readiness_snapshot()
+
+    def route_planner_v3_validation_policy(self):
+        return self.route_planner_v3_service.validation_policy_snapshot()
+
+    def route_planner_v3_validation_snapshot(self):
+        return self.route_planner_v3_service.continuous_validation_snapshot()
+
+    def set_route_planner_v3_validation_policy(self, payload):
+        return self.route_planner_v3_service.set_validation_policy(payload)
+
+    def evaluate_route_planner_v3_continuous_validation(self, payload=None):
+        return self.route_planner_v3_service.evaluate_continuous_validation(payload)
+
+    def evaluate_route_planner_v3_continuous_validation_with_evidence(self, evidence_adapter, payload=None):
+        return self.route_planner_v3_service.evaluate_continuous_validation(
+            payload, evidence_adapter=evidence_adapter,
+        )
     def data_readiness_snapshot(self): return self.reference_link_service.data_readiness()
     def source_audits_snapshot(self): return self.source_audit_service.result_snapshot()
     def encounter_3d_snapshot(self): return self.encounter_3d_service.result_snapshot()

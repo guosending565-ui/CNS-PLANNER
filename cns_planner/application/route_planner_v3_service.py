@@ -31,6 +31,17 @@ import json
 from ..algorithms.grid.service import WorkspaceGridService
 from ..gis.fine_environment_adapter import real_data_source_readiness
 from ..route_planner_v3 import V3StrategicPlanner
+from ..route_planner_v3.continuous_contracts import (
+    VALIDATION_FINGERPRINT_COMPONENTS, VALIDATOR_VERSIONS, V3C_DISCLAIMER,
+    V3C_MODEL_SCOPE, V3C_RESULT_STATUSES, contract_fingerprint,
+    default_v3_validation_policy, evaluate_validation_applicability,
+    normalize_v3_validation_policy, validation_fingerprint_components,
+)
+from ..route_planner_v3.continuous_synthetic import (
+    build_synthetic_continuous_evidence, default_synthetic_continuous_spec,
+    normalize_synthetic_continuous_spec, synthetic_validation_policy,
+)
+from ..route_planner_v3.continuous_validation import V3ContinuousValidator
 from ..route_planner_v3.contracts import (
     V3_RESULT_STATUSES, default_v3_cost_model, normalize_aircraft_motion_limits,
     normalize_v3_experiments, normalize_v3_planning_policy,
@@ -57,8 +68,14 @@ V3_ENVIRONMENT_SOURCES = ("canonical_synthetic",)
 #: V3-B environment sources: the explicit synthetic builder, or the injected real
 #: adapter.  Neither path ever fabricates a fine environment.
 V3B_ENVIRONMENT_SOURCES = ("canonical_synthetic", "configured_real_sources")
+#: V3-C domain evidence sources.  The synthetic builder produces an explicit metric
+#: exercise; the real path reads the **native** raster and the real footprints through
+#: the GIS adapter.  Neither fabricates evidence.
+V3C_EVIDENCE_SOURCES = ("canonical_synthetic", "configured_real_sources")
 MAX_V3_EXPERIMENTS = 12
 MAX_V3_REFINEMENTS_PER_EXPERIMENT = 6
+#: V3-C validations kept per refinement (newest first).
+MAX_V3C_VALIDATIONS_PER_REFINEMENT = 4
 V3_EXPERIMENT_NOTE = (
     "V3-A 战略规划实验 ≠ operational route：只写入 route_planner_v3_experiments，"
     "不切换 algorithm_selection，也不覆盖 operational_routes、spatial_3d 或 V1/V2 结果。"
@@ -95,6 +112,27 @@ V3B_ARCHITECTURE_SUMMARY = (
     "ground + height + vertical_clearance；airspace 只消费 confirmed policy；"
     "multi-cell stride primitive 记录 traversed_cell_ids 并按路径进度插值高度逐格检查。"
 )
+V3C_EXPERIMENT_NOTE = (
+    "V3-C continuous validated route ≠ operational route：连续几何实现 + confirmed 源几何/"
+    "原生栅格验证；即使 status=validated_route，也强制 operational_route=false、cns_assessed=false，"
+    "不写 operational_routes、algorithm_selection 或 spatial_3d，也不产生任何失效传播。"
+)
+V3C_ARCHITECTURE_SUMMARY = (
+    "V3-C：把 V3-B refined candidate 的米制轨迹实现为 C1（position+heading 连续）几何——"
+    "内部转弯用 explicit aircraft_min_turn_radius_m 的解析圆弧 fillet（R 绝不减小）；"
+    "圆弧保留 analytic geometry 并按 explicit curve_chord_error_m 线性化（禁止隐式精度假设）；"
+    "随后用逐 domain 的源几何验证：confirmed allowed/blocked polygon 的 route uncertainty envelope "
+    "覆盖率与不相交、native FABDEM 像元 terrain clearance、真实 footprint 的 roof+vertical_clearance、"
+    "高度带与 kinematics（analytic R、tangent heading、climb/descent gradient）。"
+    "vector predicate 对 linearized representation（含显式 chord-error envelope）精确；"
+    "terrain 是 source-native raster evidence，不声称真实世界地形数学连续精确。"
+)
+V3C_REAL_DATA_ADAPTER_STATUS = "implemented_v3c_gis_adapter"
+V3C_REAL_DATA_ADAPTER_REASON = (
+    "V3-C 的真实数据路径位于 GIS 边界：confirmed AirspacePolicy polygon 转到米制帧、"
+    "FABDEM native 像元窗口只读、以及 provider RTree 建筑查询（复用 BuildingClearance 的 roof 语义）；"
+    "数据未配置/未确认时明确 blocked/unresolved，不构造假证据。"
+)
 
 
 def utc_now():
@@ -109,10 +147,11 @@ def _hash(value):
 
 class RoutePlannerV3ExperimentService:
     def __init__(self, session, planner, invalidation, snapshot, grid_service=None,
-                 refinement_planner=None, source_readiness=None):
+                 refinement_planner=None, source_readiness=None, continuous_validator=None):
         self.session = session
         self.planner = planner or V3StrategicPlanner()
         self.refinement_planner = refinement_planner or V3RefinementPlanner()
+        self.continuous_validator = continuous_validator or V3ContinuousValidator()
         self.invalidation = invalidation
         self.snapshot = snapshot
         self.grid_service = grid_service or WorkspaceGridService()
@@ -141,14 +180,22 @@ class RoutePlannerV3ExperimentService:
             "records": records,
             "architecture": V3_ARCHITECTURE_SUMMARY,
             "v3b_architecture": V3B_ARCHITECTURE_SUMMARY,
+            "v3c_architecture": V3C_ARCHITECTURE_SUMMARY,
             "note": V3_EXPERIMENT_NOTE,
             "v3b_note": V3B_EXPERIMENT_NOTE,
+            "v3c_note": V3C_EXPERIMENT_NOTE,
             "operational_routes_untouched": True,
             "algorithm_selection_untouched": True,
             "spatial_3d_untouched": True,
             "disclaimer": "V3-A 结果只允许 status=strategic_candidate/failed/missing_data/pending_confirmation/not_ready/search_incomplete。",
             "allowed_result_statuses": list(V3_RESULT_STATUSES),
             "allowed_refinement_statuses": list(V3B_RESULT_STATUSES),
+            "allowed_validation_statuses": list(V3C_RESULT_STATUSES),
+            "validation_boundaries": {
+                "operational_route_always_false": True,
+                "cns_assessed_always_false": True,
+                "never_repairs_or_replans": True,
+            },
         }
 
     def policy_snapshot(self):
@@ -313,6 +360,495 @@ class RoutePlannerV3ExperimentService:
         self.session.save()
         return self.snapshot()
 
+    # ------------------------------------------------------------------ V3-C
+    def validation_policy_snapshot(self):
+        return deepcopy(
+            self.session.state.get("v3_continuous_validation_policy")
+            or default_v3_validation_policy()
+        )
+
+    def set_validation_policy(self, payload):
+        policy = normalize_v3_validation_policy(payload)
+        self.session.state["v3_continuous_validation_policy"] = policy
+        self.session.save()
+        return self.continuous_readiness_snapshot()
+
+    def continuous_readiness_snapshot(self):
+        """V3-C readiness: a current refined candidate, explicit policy, source evidence."""
+
+        state = self.session.state
+        refinement = self._selected_refinement({})
+        policy = self.validation_policy_snapshot()
+        planning = state.get("v3_planning_policy") or {}
+        blocking = []
+        if refinement is None:
+            blocking.append("no_current_v3b_refined_candidate")
+        if policy.get("status") != "confirmed":
+            blocking.extend(policy.get("reasons") or ["v3_continuous_validation_policy_not_confirmed"])
+        if planning.get("aircraft_min_turn_radius_m") is None:
+            blocking.append("aircraft_min_turn_radius_m_missing_from_v3_planning_policy")
+        return {
+            "status": "passed" if not blocking else "blocked",
+            "stage": "V3-C",
+            "model_scope": V3C_MODEL_SCOPE,
+            "architecture": V3C_ARCHITECTURE_SUMMARY,
+            "note": V3C_EXPERIMENT_NOTE,
+            "stage_scope": {
+                "implemented": [
+                    "c1_tangent_continuous_geometry_realization",
+                    "explicit_circular_arc_fillets_radius_never_reduced",
+                    "explicit_curve_chord_error_linearization",
+                    "realized_vertical_profile_altitude_and_gradient",
+                    "exact_airspace_route_envelope_validation",
+                    "native_raster_terrain_validation",
+                    "real_footprint_building_clearance_validation",
+                    "kinematic_analytic_radius_and_tangent_heading_validation",
+                    "validation_fingerprint_and_staleness",
+                ],
+                "not_implemented": [
+                    "clothoid_or_continuous_curvature_transitions",
+                    "operational_adapter", "cns_assessment", "route_cns_joint_optimization",
+                    "energy_model",
+                ],
+            },
+            "algorithm": {
+                "algorithm_id": self.continuous_validator.algorithm_id,
+                "algorithm_version": self.continuous_validator.algorithm_version,
+                "model_scope": self.continuous_validator.model_scope,
+                "registered_in_algorithm_registry": False,
+                "validator_versions": dict(VALIDATOR_VERSIONS),
+            },
+            "selected_refinement": None if refinement is None else {
+                "experiment_id": refinement.get("experiment_id"),
+                "refinement_id": refinement.get("refinement_id"),
+                "result_status": (refinement.get("result") or {}).get("status"),
+                "current_applicability": refinement.get("current_applicability"),
+                "validation_count": len(refinement.get("validations") or []),
+            },
+            "validation_policy": policy,
+            "v3_planning_policy": planning,
+            "real_data_readiness": self._real_source_readiness(),
+            "blocking_reasons": blocking,
+            "evidence_sources": list(V3C_EVIDENCE_SOURCES),
+            "allowed_result_statuses": list(V3C_RESULT_STATUSES),
+            "fingerprint_components": list(VALIDATION_FINGERPRINT_COMPONENTS),
+            "boundaries": {
+                "operational_route_always_false": True,
+                "cns_assessed_always_false": True,
+                "never_repairs_or_replans": True,
+                "curve_error_has_no_default": True,
+            },
+        }
+
+    def continuous_validation_snapshot(self):
+        """Current applicability of every stored V3-C validation."""
+
+        records = (self.session.state.get("route_planner_v3_experiments") or {}).get("records") or []
+        items = []
+        for record in records:
+            for refinement in record.get("refinements") or []:
+                for validation in refinement.get("validations") or []:
+                    recorded = validation.get("evidence_components") or {}
+                    current = self._current_validation_components(refinement, validation)
+                    verdict = evaluate_validation_applicability(recorded, current)
+                    result = validation.get("result") or {}
+                    items.append({
+                        "validation_id": validation.get("validation_id"),
+                        "refinement_id": refinement.get("refinement_id"),
+                        "experiment_id": record.get("experiment_id"),
+                        "status": result.get("status"),
+                        "domain_statuses": result.get("domain_statuses") or {},
+                        "recorded_applicability": validation.get("current_applicability"),
+                        "current_applicability": verdict["status"],
+                        "changed_components": verdict["changed_components"],
+                        "reasons": verdict["reasons"],
+                        "validation_fingerprint": result.get("validation_fingerprint"),
+                        "evidence_components": recorded,
+                    })
+        return {
+            "status": "passed" if items else "not_calculated",
+            "count": len(items),
+            "items": items,
+            "stale_count": sum(1 for item in items if item["current_applicability"] == "stale"),
+            "validated_route_count": sum(1 for item in items if item["status"] == "validated_route"),
+            "semantics": (
+                "stale_when_refinement_policy_curve_tolerance_source_or_validator_changes"
+            ),
+            "components": list(VALIDATION_FINGERPRINT_COMPONENTS),
+        }
+
+    def evaluate_continuous_validation(self, payload=None, *, evidence_adapter=None):
+        """Run V3-C on a selected, current V3-B ``refined_candidate``.
+
+        ``evidence_adapter`` is an injected callable that returns the canonical
+        ``domain_evidence`` for the realized route (wired in ``ApplicationContext``;
+        it needs QGIS/GDAL).  Without one, or with ``evidence_source`` set to
+        ``canonical_synthetic``, the explicit synthetic builder is used -- never a
+        fabricated real environment.
+        """
+
+        payload = payload if isinstance(payload, dict) else {}
+        state = self.session.state
+        refinement = self._selected_refinement(payload)
+        if refinement is None:
+            raise ValueError("请先运行 V3-B corridor-local 精化并选中一个 refined_candidate")
+        result = refinement.get("result") or {}
+        if result.get("status") != "refined_candidate":
+            raise ValueError(
+                f"V3-C 只能在 V3-B refined_candidate 上运行，当前 refinement status={result.get('status')}"
+            )
+        policy = self._continuous_policy(payload)
+        if policy.get("status") != "confirmed" and not payload.get("allow_unconfirmed_validation_policy"):
+            raise ValueError(
+                "V3-C validation policy 未确认：curve_chord_error_m 必须由项目工程依据显式确认，"
+                "V3-C 禁止安全默认值"
+            )
+        source = str(payload.get("evidence_source") or "canonical_synthetic")
+        if source not in V3C_EVIDENCE_SOURCES:
+            raise ValueError(
+                "V3-C evidence_source 只支持 canonical_synthetic 或 configured_real_sources"
+            )
+        planning = self.session.state.get("v3_planning_policy") or {}
+        if planning.get("aircraft_min_turn_radius_m") is None:
+            raise ValueError(
+                "缺少显式 aircraft_min_turn_radius_m：V3-C 圆弧 fillet 的 R 必须有工程依据，"
+                "禁止猜默认转弯半径"
+            )
+        synthetic_spec = normalize_synthetic_continuous_spec(
+            payload.get("synthetic_continuous_spec") or payload.get("synthetic_spec")
+        )
+        realization = self._realize_for_validation(refinement, policy, planning, synthetic_spec)
+        if source == "canonical_synthetic":
+            evidence = build_synthetic_continuous_evidence(
+                synthetic_spec, continuous_route=realization["route"],
+            )
+        else:
+            evidence = self._real_continuous_evidence(
+                evidence_adapter, refinement, policy, planning, realization, payload,
+            )
+        problem = self._continuous_problem(
+            refinement, policy, planning, synthetic_spec, evidence,
+            source=source, realization=realization,
+        )
+        validation = self.continuous_validator.validate(problem)
+        record = self._validation_record(
+            refinement, policy, source, synthetic_spec, problem, validation, realization,
+        )
+        validations = [
+            item for item in (refinement.get("validations") or [])
+            if item.get("validation_id") != record["validation_id"]
+        ]
+        refinement["validations"] = [record, *validations][:MAX_V3C_VALIDATIONS_PER_REFINEMENT]
+        # Same hard boundary as V3-A/V3-B: only the V3 container is written.
+        self.session.save()
+        return self.snapshot()
+
+    def _selected_refinement(self, payload):
+        records = (self.session.state.get("route_planner_v3_experiments") or {}).get("records") or []
+        experiment_id = str(payload.get("experiment_id") or "")
+        refinement_id = str(payload.get("refinement_id") or "")
+        for record in records:
+            if experiment_id and str(record.get("experiment_id")) != experiment_id:
+                continue
+            for refinement in record.get("refinements") or []:
+                if refinement_id and str(refinement.get("refinement_id")) != refinement_id:
+                    continue
+                return refinement
+        if experiment_id or refinement_id:
+            return None
+        for record in records:
+            for refinement in record.get("refinements") or []:
+                if (refinement.get("result") or {}).get("status") == "refined_candidate":
+                    return refinement
+        return None
+
+    def _continuous_policy(self, payload):
+        """Effective V3-C policy for one run.
+
+        A payload policy is a *complete* statement for that run; the stored policy only
+        supplies the provenance fields a payload usually omits (``source`` and
+        ``confirmed``) when the payload does not state them.  ``confirmed: false`` in the
+        payload is therefore honoured and blocks the run -- it is never upgraded from the
+        stored policy.
+        """
+
+        stored = self.validation_policy_snapshot()
+        supplied = payload.get("validation_policy")
+        if isinstance(supplied, dict):
+            merged = dict(supplied)
+            if merged.get("source") in (None, "") and stored.get("source"):
+                merged["source"] = stored["source"]
+            if "confirmed" not in merged and stored.get("confirmed"):
+                merged["confirmed"] = True
+            return normalize_v3_validation_policy(merged)
+        return normalize_v3_validation_policy(stored)
+
+    def _planning_policy_payload(self, refinement):
+        """The planning policy the refinement actually ran with (per-run override wins)."""
+
+        recorded = (refinement or {}).get("policy")
+        if isinstance(recorded, dict) and recorded:
+            return deepcopy(recorded)
+        return self.policy_snapshot()
+
+    def _realize_for_validation(self, refinement, policy, planning, synthetic_spec):
+        from ..route_planner_v3.continuous_geometry import realize_continuous_route
+
+        result = refinement.get("result") or {}
+        return realize_continuous_route(
+            metric_points=result.get("metric_projection") or [],
+            altitudes=[
+                state.get("altitude_egm2008_m") for state in result.get("state_path") or []
+            ],
+            min_turn_radius_m=policy.get("aircraft_min_turn_radius_m")
+            or planning.get("aircraft_min_turn_radius_m"),
+            curve_chord_error_m=policy.get("curve_chord_error_m"),
+            route_id=refinement.get("route_id"),
+            frame=result.get("frame") or {},
+        )
+
+    def _real_continuous_evidence(self, evidence_adapter, refinement, policy, planning,
+                                  realization, payload):
+        if evidence_adapter is None:
+            return {
+                "source_type": "configured_real_sources",
+                "available": False,
+                "reason": "configured_real_sources_unavailable",
+                "sample_count": 0,
+                "airspace": {"confirmed": False, "allowed": [], "blocked": [], "unconfirmed": []},
+                "terrain": {"available": False, "pixels": []},
+                "buildings": {"available": False, "buildings": []},
+            }
+        return evidence_adapter(
+            refinement=refinement, policy=policy, planning_policy=planning,
+            realization=realization, payload=payload,
+        )
+
+    def _continuous_problem(self, refinement, policy, planning, synthetic_spec, evidence,
+                            *, source, realization):
+        from ..route_planner_v3.continuous_contracts import (
+            normalize_v3_continuous_validation_problem,
+        )
+
+        result = refinement.get("result") or {}
+        route = realization["route"]
+        problem = normalize_v3_continuous_validation_problem({
+            "problem_id": f"v3c-{refinement.get('refinement_id')}",
+            "route_id": refinement.get("route_id"),
+            "refinement": {
+                "experiment_id": refinement.get("experiment_id"),
+                "refinement_id": refinement.get("refinement_id"),
+                "status": (refinement.get("result") or {}).get("status"),
+                "current_applicability": refinement.get("current_applicability"),
+                "refinement_fingerprint": refinement.get("refinement_fingerprint"),
+                "metric_projection": result.get("metric_projection") or [],
+                "state_path": result.get("state_path") or [],
+                "frame": result.get("frame") or {},
+                "fine_grid": result.get("fine_grid") or {},
+                "source_audit": result.get("source_audit") or {},
+                "evidence_components": refinement.get("evidence_components") or {},
+            },
+            "planning_policy": planning,
+            "validation_policy": policy,
+            "aircraft_motion_limits": (
+                refinement.get("aircraft_motion_limits")
+                or self._aircraft_limits(planning)
+            ),
+            "domain_evidence": evidence,
+            "source_audit": {
+                "refinement_source_audit": result.get("source_audit") or {},
+                "validation_evidence_source": source,
+                "validator_versions": dict(VALIDATOR_VERSIONS),
+                "curve_error": realization.get("curve_error"),
+                "synthetic_spec": synthetic_spec if source == "canonical_synthetic" else None,
+                "adapter_id": (evidence or {}).get("adapter_id"),
+            },
+            "provenance": {
+                "evidence_source": source,
+                "realized_continuous_route": True,
+                "operational_routes_untouched": True,
+                "algorithm_selection_untouched": True,
+                "spatial_3d_untouched": True,
+            },
+        })
+        problem["fingerprint_components"] = validation_fingerprint_components(problem)
+        return problem
+
+    def _validation_record(self, refinement, policy, source, synthetic_spec, problem,
+                           validation, realization):
+        """Build the stored V3-C validation record (the caller installs it)."""
+
+        result = refinement.get("result") or {}
+        identity = _hash({
+            "experiment_id": refinement.get("experiment_id"),
+            "refinement_id": refinement.get("refinement_id"),
+            "evidence_source": source,
+            "validation_policy": {
+                "curve_chord_error_m": policy.get("curve_chord_error_m"),
+                "max_validation_samples": policy.get("max_validation_samples"),
+                "use_curve_error_envelope": policy.get("use_curve_error_envelope"),
+            },
+            "synthetic_spec": synthetic_spec if source == "canonical_synthetic" else None,
+            "validation_fingerprint": problem.get("validation_fingerprint"),
+        })
+        return {
+            "validation_id": "V3C-" + identity[:12].upper(),
+            "experiment_id": refinement.get("experiment_id"),
+            "refinement_id": refinement.get("refinement_id"),
+            "route_id": refinement.get("route_id"),
+            "created_at": utc_now(),
+            "evidence_source": source,
+            "synthetic_continuous_spec": synthetic_spec if source == "canonical_synthetic" else None,
+            "validation_fingerprint": problem.get("validation_fingerprint"),
+            #: The evidence a *re-run* would compare against (same shape as
+            #: ``continuous_validation_snapshot`` recomputes), plus the raw problem
+            #: components kept for audit.
+            "problem_fingerprint_components": deepcopy(problem.get("fingerprint_components") or {}),
+            "evidence_components": self._validation_components(
+                refinement, source=source, policy=policy,
+            ),
+            "curve_error": deepcopy(realization.get("curve_error")),
+            "source_audit": deepcopy(problem.get("source_audit") or {}),
+            "result": deepcopy(validation),
+            "current_applicability": "current",
+            "provenance": {
+                "recorded_at": utc_now(),
+                "validator": {
+                    "algorithm_id": self.continuous_validator.algorithm_id,
+                    "algorithm_version": self.continuous_validator.algorithm_version,
+                    "model_scope": self.continuous_validator.model_scope,
+                    "validator_versions": dict(VALIDATOR_VERSIONS),
+                },
+                "refinement_fingerprint": result.get("refinement_fingerprint"),
+                "operational_routes_untouched": True,
+                "algorithm_selection_untouched": True,
+                "spatial_3d_untouched": True,
+                "exact_validation_is_v3c": True,
+                "operational_route_always_false": True,
+                "cns_assessed_always_false": True,
+            },
+            "verdicts": {
+                "validated_route": (validation.get("status") == "validated_route"),
+                "operational_route": False,
+                "cns_assessed": False,
+                "automatic_repair_performed": False,
+                "automatic_replan_performed": False,
+                "automatic_ranking": False,
+                "automatically_scored": False,
+            },
+            "note": V3C_EXPERIMENT_NOTE,
+        }
+
+    def _validation_components(self, refinement, *, source, policy):
+        """The V3-C fingerprint components, built exactly one way.
+
+        Both the write path (with the policy that actually ran) and the applicability
+        path (with the currently stored policy) use this single construction, so a
+        fresh validation is ``current`` and becomes ``stale`` only when the explicit
+        curve tolerance, the policy, the tracked sources or the validator versions
+        actually change.  ``refinement_fingerprint`` is copied from the refinement's own
+        evidence, which is where a changed V3-B refinement shows up.
+        """
+
+        result = (refinement.get("result") or {})
+        policy = policy or {}
+        return {
+            "refinement_fingerprint": (
+                refinement.get("refinement_fingerprint")
+                or result.get("refinement_fingerprint")
+            ),
+            "continuous_policy_fingerprint": contract_fingerprint(policy, prefix="V3CPOL-"),
+            "curve_tolerance_fingerprint": contract_fingerprint(
+                {
+                    "curve_chord_error_m": policy.get("curve_chord_error_m"),
+                    "use_curve_error_envelope": policy.get("use_curve_error_envelope"),
+                },
+                prefix="V3CCURVE-",
+            ),
+            "source_fingerprint": self._validation_source_fingerprint(
+                source=source, refinement=refinement, policy=policy,
+            ),
+            "crs_fingerprint": contract_fingerprint(
+                {
+                    "horizontal_crs": (result.get("frame") or {}).get("horizontal_crs"),
+                    "horizontal_crs_source": (result.get("frame") or {}).get("horizontal_crs_source"),
+                    "local_to_geographic": (
+                        (result.get("frame") or {}).get("local_to_geographic") or {}
+                    ).get("method"),
+                    "frame_id": (result.get("frame") or {}).get("frame_id"),
+                    "vertical_reference": (result.get("frame") or {}).get("vertical_reference"),
+                },
+                prefix="V3CCRS-",
+            ),
+            "validator_versions_fingerprint": contract_fingerprint(
+                VALIDATOR_VERSIONS, prefix="V3CVAL-",
+            ),
+        }
+
+    def _current_validation_components(self, refinement, validation):
+        """Current evidence for a stored validation, in the same shape."""
+
+        return self._validation_components(
+            refinement,
+            source=validation.get("evidence_source"),
+            policy=self._continuous_policy({}),
+        )
+
+    def _validation_source_fingerprint(self, *, source, refinement, policy):
+        """Scope-aware source fingerprint, matching the V3-B convention."""
+
+        state = self.session.state
+        if source == "configured_real_sources":
+            audits = (state.get("source_audits") or {}).get("items") or {}
+            relevant = {}
+            for role in ("terrain", "terrain_dtm", "buildings", "building_grid", "airspace"):
+                item = audits.get(role)
+                if not isinstance(item, dict):
+                    continue
+                relevant[role] = {
+                    "status": item.get("status"),
+                    "version_fingerprint": item.get("version_fingerprint"),
+                    "sha256": item.get("sha256"),
+                    "size_bytes": item.get("size_bytes"),
+                    "mtime_ns": item.get("mtime_ns"),
+                }
+            eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
+                "airspace_eligibility",
+            ) or {}
+            return contract_fingerprint(
+                {
+                    "scope": "configured_real_sources",
+                    "source_audits": relevant,
+                    "airspace_eligibility": {
+                        "fingerprint": eligibility.get("fingerprint"),
+                        "status": eligibility.get("status"),
+                        "allowed_grid_cell_count": len(eligibility.get("allowed_grid_ids") or []),
+                    },
+                    "environment_audit_fingerprint": (
+                        ((refinement.get("result") or {}).get("source_audit") or {}).get("fingerprint")
+                    ),
+                },
+                prefix="V3CSRC-",
+            )
+        grid = state.get("grid") or {}
+        workspace = state.get("workspace") or {}
+        return contract_fingerprint(
+            {
+                "scope": "canonical_synthetic",
+                "workspace_bbox": workspace.get("bbox"),
+                "grid_level": grid.get("level"),
+                "grid_fingerprint": contract_fingerprint(
+                    [
+                        {"grid_id": cell.get("grid_id"), "bbox": cell.get("bbox")}
+                        for cell in grid.get("cells") or []
+                    ],
+                    prefix="V3CGRIDSRC-",
+                ),
+                "policy_fingerprint": contract_fingerprint(policy or {}, prefix="V3CPOL-"),
+            },
+            prefix="V3CSRC-",
+        )
+
     def readiness_snapshot(self):
         """Readiness of the *current project* for V3-A, plus the real-data verdict.
 
@@ -454,13 +990,30 @@ class RoutePlannerV3ExperimentService:
                 "terrain_dtm": fine.get("terrain_dtm"),
                 "buildings": fine.get("buildings"),
             },
+            "v3c": {
+                "status": fine.get("status"),
+                "adapter_status": V3C_REAL_DATA_ADAPTER_STATUS,
+                "reason": V3C_REAL_DATA_ADAPTER_REASON,
+                "blocking_reasons": list(fine.get("blocking_reasons") or []),
+                "confirmed_allowed_grid_cells": len(eligibility.get("allowed_grid_ids") or []),
+                "resolution_policy": fine.get("resolution_policy"),
+                "terrain_dtm": fine.get("terrain_dtm"),
+                "buildings": fine.get("buildings"),
+                "requires": [
+                    "confirmed AirspacePolicy polygons in the local metric frame",
+                    "FABDEM native pixel window with confirmed egm2008_orthometric vertical reference",
+                    "buildings GeoPackage with provider spatial index and height field",
+                    "explicit confirmed V3-C validation policy (curve_chord_error_m, sample budget)",
+                ],
+            },
             "required_before_real_run": [
                 "canonical V3CellEnvironment adapter (terrain surface floor, building required "
                 "clearance, confirmed airspace classification) with audited provenance",
                 "explicit confirmed V3 planning policy and confirmed fine refinement policy "
                 "(local metric CRS + resolution source)",
+                "explicit confirmed V3-C validation policy (curve_chord_error_m has no default)",
                 "FABDEM terrain_dtm + buildings GeoPackage with provider spatial index",
-                "V3-C exact polygon/terrain/continuous clearance validation",
+                "V3-D operational adapter + CNS assessment (V3-C validated route is still not operational)",
             ],
         }
 
@@ -1169,16 +1722,38 @@ def record_summary(record):
         "refinement_scalar_cost": (refinement_result.get("cost_vector") or {}).get("scalar_cost"),
         "refinement_final_validation_performed": False,
         "refinement_environment_source": (active_refinement or {}).get("environment_source"),
+        # ---- V3-C validation projection -------------------------------------
+        "validation_count": len((active_refinement or {}).get("validations") or []),
+        "validation_id": _active_validation(active_refinement, "validation_id"),
+        "validation_status": _active_validation_result(active_refinement).get("status"),
+        "validation_domain_statuses": _active_validation_result(active_refinement).get("domain_statuses") or {},
+        "validation_operational_route": False,
+        "validation_cns_assessed": False,
     }
+
+
+def _active_validation(refinement, field):
+    validations = (refinement or {}).get("validations") or []
+    return (validations[0] or {}).get(field) if validations else None
+
+
+def _active_validation_result(refinement):
+    validations = (refinement or {}).get("validations") or []
+    return (validations[0] or {}).get("result") or {} if validations else {}
 
 
 __all__ = [
     "V3_COLLECTION_ID", "V3_ENVIRONMENT_SOURCES", "MAX_V3_EXPERIMENTS",
-    "MAX_V3_REFINEMENTS_PER_EXPERIMENT", "V3_EXPERIMENT_NOTE", "V3_ARCHITECTURE_SUMMARY",
+    "MAX_V3_REFINEMENTS_PER_EXPERIMENT", "MAX_V3C_VALIDATIONS_PER_REFINEMENT",
+    "V3_EXPERIMENT_NOTE", "V3_ARCHITECTURE_SUMMARY",
     "V3_REAL_DATA_ADAPTER_STATUS", "V3_REAL_DATA_ADAPTER_REASON",
     "V3B_ARCHITECTURE_SUMMARY", "V3B_ENVIRONMENT_SOURCES", "V3B_EXPERIMENT_NOTE",
     "V3B_REAL_DATA_ADAPTER_REASON", "V3B_REAL_DATA_ADAPTER_STATUS",
     "V3B_RESULT_STATUSES", "V3B_DISCLAIMER",
+    "V3C_ARCHITECTURE_SUMMARY", "V3C_DISCLAIMER", "V3C_EVIDENCE_SOURCES",
+    "V3C_EXPERIMENT_NOTE", "V3C_MODEL_SCOPE", "V3C_REAL_DATA_ADAPTER_REASON",
+    "V3C_REAL_DATA_ADAPTER_STATUS", "V3C_RESULT_STATUSES",
     "RoutePlannerV3ExperimentService", "record_summary",
     "utc_now", "default_v3_cost_model", "default_v3_fine_refinement_policy",
+    "default_v3_validation_policy",
 ]

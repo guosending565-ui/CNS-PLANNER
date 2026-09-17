@@ -1,18 +1,56 @@
-"""Route Planner V3-A: native 3D strategic planning contract and hard-constraint kernel.
+"""Route Planner V3: native 3D strategic planning (V3-A), corridor-local refinement
+(V3-B) and continuous geometry realization + source-native validation (V3-C).
 
 This package is additive.  It does not read, rewrite or reimplement the existing
 ``route_planner/risk_aware_v2`` search core, and it never writes
-``operational_routes`` or ``algorithm_selection``.  V3-A produces a *strategic
-candidate* inside an independent experimental container; it is explicitly not a
-final safe or validated operational route.
+``operational_routes`` or ``algorithm_selection``.  Every stage produces its own
+candidate inside an independent experimental container; it is explicitly not a final
+safe or validated operational route.
 
-Stage scope (V3-A): L8 horizontal x altitude x heading strategic search with
-hard-constraint edge generation, a multi-component soft cost vector, and a
-refinement-corridor proposal.  The 30 m local refinement, the exact
-polygon/terrain final validator and CNS joint optimization are **not** in this
-stage and are deliberately absent.
+Stage scope:
+
+* **V3-A** -- L8 horizontal x altitude x heading strategic search with hard-constraint
+  edge generation, a multi-component soft cost vector, and a refinement-corridor
+  proposal;
+* **V3-B** -- corridor-local metric fine refinement with multi-cell stride primitives
+  and per-traversed-cell interpolated checks, all fail-closed on unknown evidence;
+* **V3-C** -- realization of the refined metric trajectory as **C1** (position +
+  heading) straight/circular-arc geometry with an explicitly stated curve chord error,
+  then route-level validation against confirmed airspace polygons, the **native**
+  terrain raster, real building footprints and the explicit altitude/kinematic limits.
+  A V3-C ``validated_route`` still forces ``operational_route=false`` /
+  ``cns_assessed=false``.
+
+The V3-D operational adapter, CNS joint optimization and the energy model are **not**
+in this package and are deliberately absent.
 """
 
+from .continuous_contracts import (
+    CONTINUOUS_PRIMITIVE_SCHEMA_VERSION, CONTINUOUS_ROUTE_SCHEMA_VERSION,
+    CONTINUOUS_VALIDATION_RESULT_SCHEMA_VERSION, CURVE_ERROR_ENVELOPE_SEMANTICS,
+    DOMAIN_STATUSES, VALIDATION_FINGERPRINT_COMPONENTS, VALIDATOR_VERSIONS,
+    V3C_ALGORITHM_ID, V3C_ALGORITHM_VERSION, V3C_DISCLAIMER, V3C_DOMAINS,
+    V3C_MODEL_SCOPE, V3C_RESULT_STATUSES, ConstraintViolationInterval,
+    ContinuousPrimitive3D, ContinuousRoute3D, DomainValidationResult, TurnRealization,
+    V3ContinuousValidationResult, V3ValidationPolicy, default_v3_validation_policy,
+    empty_continuous_route, effective_v3c_policy, evaluate_validation_applicability,
+    normalize_v3_continuous_validation_problem, normalize_v3_continuous_validation_result,
+    normalize_v3_validation_policy, validation_fingerprint,
+    validation_fingerprint_components, violation_interval,
+)
+from .continuous_geometry import (
+    CHORD_LINEARIZATION_METHOD, TURN_RADIUS_POLICY, realize_continuous_route,
+)
+from .continuous_raster_window import resolve_native_pixel_intervals
+from .continuous_synthetic import (
+    build_synthetic_continuous_evidence, default_synthetic_continuous_spec,
+    normalize_synthetic_continuous_spec, synthetic_validation_policy,
+)
+from .continuous_validation import V3ContinuousValidator, validate_continuous_route
+from .continuous_validators import (
+    MetricRoute, validate_airspace, validate_altitude_bounds, validate_buildings,
+    validate_geometry, validate_kinematics, validate_terrain,
+)
 from .contracts import (
     AIRCRAFT_MOTION_LIMITS_SCHEMA_VERSION, BUILDING_EXPOSURE_REFERENCE_M, COST_COMPONENTS,
     MAPPED_SOFT_CHANNELS, REFINEMENT_CORRIDOR_SCHEMA_VERSION, SEARCH_COMPLETENESS,
@@ -81,8 +119,9 @@ from .fine_grid import (
     ring_rect_distance, terrain_fact_from_pixels, terrain_floor, upsample_soft_fields,
 )
 from .fine_search import (
-    TRAVERSED_REASONS, FinePrimitiveProvider, V3RefinementPlanner,
-    evaluate_refinement_readiness, grid_bearing_deg, supercover_line,
+    SUPERCOVER_BOUNDARY_SEMANTICS, TRAVERSED_REASONS, FinePrimitiveProvider,
+    V3RefinementPlanner, corner_crossing_points, evaluate_refinement_readiness,
+    grid_bearing_deg, supercover_line,
 )
 from .fine_synthetic import (
     SYNTHETIC_FINE_SPEC_DEFAULT, build_synthetic_fine_environment,
@@ -129,11 +168,13 @@ __all__ = [
     "FINE_RESOLUTION_SOURCES",
     "LOCAL_FRAME_SCHEMA_VERSION", "REFINEMENT_FINGERPRINT_COMPONENTS",
     "REFINEMENT_PROBLEM_SCHEMA_VERSION", "REFINEMENT_RESULT_SCHEMA_VERSION",
-    "REFINEMENT_TURN_MODEL", "SYNTHETIC_FINE_SPEC_DEFAULT", "TERRAIN_SAMPLING_METHOD",
+    "REFINEMENT_TURN_MODEL", "SUPERCOVER_BOUNDARY_SEMANTICS", "SYNTHETIC_FINE_SPEC_DEFAULT",
+    "TERRAIN_SAMPLING_METHOD",
     "TRAVERSED_REASONS", "V3B_DISCLAIMER", "V3B_RESULT_STATUSES", "V3C_PENDING",
     "FinePrimitiveProvider", "V3RefinementPlanner",
     "assemble_fine_environment", "bind_fine_cells_to_parents", "build_fine_grid_spec",
     "build_local_frame", "build_synthetic_fine_environment", "building_facts_for_cells",
+    "corner_crossing_points",
     "default_v3_fine_refinement_policy",
     "empty_fine_cell_environment", "empty_fine_grid_spec", "empty_local_metric_frame",
     "empty_v3_refinement_problem", "empty_v3_refinement_result",
@@ -148,4 +189,24 @@ __all__ = [
     "refinement_fingerprint",
     "refinement_fingerprint_components", "ring_rect_distance", "supercover_line",
     "terrain_fact_from_pixels", "terrain_floor", "upsample_soft_fields",
+    # ---- V3-C: continuous geometry realization + source-native validation ----
+    "CHORD_LINEARIZATION_METHOD", "CONTINUOUS_PRIMITIVE_SCHEMA_VERSION",
+    "CONTINUOUS_ROUTE_SCHEMA_VERSION", "CONTINUOUS_VALIDATION_RESULT_SCHEMA_VERSION",
+    "CURVE_ERROR_ENVELOPE_SEMANTICS", "DOMAIN_STATUSES", "TURN_RADIUS_POLICY",
+    "VALIDATION_FINGERPRINT_COMPONENTS", "VALIDATOR_VERSIONS",
+    "V3C_ALGORITHM_ID", "V3C_ALGORITHM_VERSION", "V3C_DISCLAIMER", "V3C_DOMAINS",
+    "V3C_MODEL_SCOPE", "V3C_RESULT_STATUSES",
+    "ConstraintViolationInterval", "ContinuousPrimitive3D", "ContinuousRoute3D",
+    "DomainValidationResult", "MetricRoute", "TurnRealization",
+    "V3ContinuousValidationResult", "V3ContinuousValidator", "V3ValidationPolicy",
+    "build_synthetic_continuous_evidence", "default_synthetic_continuous_spec",
+    "default_v3_validation_policy", "effective_v3c_policy", "empty_continuous_route",
+    "evaluate_validation_applicability", "normalize_synthetic_continuous_spec",
+    "normalize_v3_continuous_validation_problem", "normalize_v3_continuous_validation_result",
+    "normalize_v3_validation_policy", "realize_continuous_route",
+    "resolve_native_pixel_intervals", "synthetic_validation_policy",
+    "validate_airspace", "validate_altitude_bounds", "validate_buildings",
+    "validate_continuous_route", "validate_geometry", "validate_kinematics",
+    "validate_terrain", "validation_fingerprint", "validation_fingerprint_components",
+    "violation_interval",
 ]

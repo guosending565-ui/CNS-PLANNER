@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {v3OverlayModel} from '../cns_planner/web/js/map/route_planner_v3_overlay.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
@@ -1002,4 +1002,223 @@ test('V3-B overlay draws both projections and keeps the corridor semantics',()=>
   assert.deepEqual(v3OverlayModel(flow,{refined:false}).refinedPath,[]);
   assert.deepEqual(v3OverlayModel(flow,{candidate:false}).path,[]);
   assert.equal(v3OverlayModel(flow,{candidate:false}).refinedPath.length,2);
+});
+
+// --------------------------------------------------------------------------------------
+// V3-C: continuous geometry realization + source-native/vector validation
+// --------------------------------------------------------------------------------------
+
+function v3cValidationResult(overrides={}){
+  const base={
+    status:'validated_route',
+    algorithm_id:'route_planner_v3_continuous_validation',algorithm_version:'3.2-alpha',
+    model_scope:'continuous_geometry_realization_and_source_native_validation_v3c',
+    validation_fingerprint:'V3CVALID-abc123',operational_route:false,cns_assessed:false,
+    reason:'连续几何实现 + confirmed 源几何/原生栅格验证全部 passed；仍然不是 operational route，CNS 尚未评估',
+    domain_statuses:{geometry:'passed',airspace:'passed',terrain:'passed',building:'passed',
+      altitude:'passed',kinematics:'passed'},
+    domains:{
+      geometry:{status:'passed',reason:null,violations:[],unresolved:[],evaluated:true,evidence:{}},
+      airspace:{status:'passed',reason:null,violations:[],unresolved:[],evaluated:true,evidence:{}},
+      terrain:{status:'passed',reason:null,violations:[],unresolved:[],evaluated:true,evidence:{}},
+      building:{status:'passed',reason:null,violations:[],unresolved:[],evaluated:true,evidence:{}},
+      altitude:{status:'passed',reason:null,violations:[],unresolved:[],evaluated:true,evidence:{}},
+      kinematics:{status:'passed',reason:null,violations:[],unresolved:[],evaluated:true,evidence:{}}},
+    violations:[],
+    unresolved_evidence:[],
+    min_margins:{airspace_horizontal_m:120.5,terrain_vertical_m:170.0,building_horizontal_m:35.0,
+      building_vertical_m:125.0,altitude_lower_m:0.0,altitude_upper_m:200.0,turn_radius_m:0.0,
+      climb_gradient_margin:0.08,descent_gradient_margin:0.08},
+    kinematics:{minimum_turn_radius_observed_m:50.0,required_minimum_turn_radius_m:50.0,
+      max_climb_gradient_observed:0.1,max_descent_gradient_observed:0.0,
+      max_allowed_climb_gradient:0.18,max_allowed_descent_gradient:0.18,
+      tangent_heading_continuity_verified:true,self_intersection_diagnostic:{available:true,self_intersecting:false},
+      self_intersection_is_failure:false,
+      turn_verification:'analytic_arc_radius_and_tangent_heading_not_the_v3b_arc_length_proxy'},
+    resource_limits:{max_validation_samples:200000,sample_count:42,max_runtime_s:null,runtime_s:0.25,
+      resource_limited:false,resource_limit_reason:null},
+    curve_error:{requested_max_chord_error_m:0.5,actual_max_chord_error_m:0.428,
+      method:'equal_angle_chord_sagitta_bounded_by_explicit_curve_chord_error',envelope_radius_m:0.5},
+    continuous_route:{
+      schema_version:'3.2-continuous-route',status:'realized',vertical_reference:'egm2008_orthometric',
+      horizontal_geometry:{
+        analytic:{primitive_count:3,straight_count:2,arc_count:1,turn_count:1,
+          total_horizontal_length_m:1914.159,curvature_continuity:'C1_position_and_heading_only',
+          continuous_curvature:false,c2:false,clothoid:'future_work_not_implemented',
+          turn_radius_policy:'radius_equals_explicit_minimum_never_reduced_to_fit',
+          radius_reduced_anywhere:false},
+        linearized:{linestring_metric:[[0,0],[800,0],[1000,200],[1000,1000]],point_count:4,
+          actual_max_chord_error_m:0.428,curve_chord_error_m:0.5,
+          method:'equal_angle_chord_sagitta_bounded_by_explicit_curve_chord_error',
+          not_the_mathematical_curve:true}},
+      primitives:[{kind:'straight',sampled_points_metric:[[0,0],[800,0]]},
+        {kind:'circular_arc',sampled_points_metric:[[800,0],[1000,200]]},
+        {kind:'straight',sampled_points_metric:[[1000,200],[1000,1000]]}],
+      turns:[{turn_id:'turn001',radius_m:50,turn_angle_deg:90}],
+      vertical:{method:'egm2008_orthometric_altitude_against_realized_along_track_distance',
+        total_distance_m:1914.159,min_z_egm2008_m:100,max_z_egm2008_m:300,
+        max_climb_gradient_observed:0.1,max_descent_gradient_observed:0.0},
+      operational_route:false,cns_assessed:false,final_validation_performed:true,
+      semantics:{not_final_safe:true,never_repairs_or_replans:true},
+      disclaimer:'V3-C continuous validated route：仍然不是 operational route，CNS 尚未评估'},
+    source_audit:{adapter_id:'v3c_real_source_evidence_adapter',validation_evidence_source:'canonical_synthetic'},
+    curve_chord_error_m:0.5,
+    verdicts:{all_domains_passed:true,replan_required:false,automatic_repair_performed:false,
+      automatic_replan_performed:false,validated_route_is_operational_route:false,cns_assessed:false,
+      unknown_is_never_safe:true},
+    semantics:{scope:'continuous_geometry_realization_and_source_native_validation_v3c',
+      continuity:'C1',continuous_curvature:false,c2:false,
+      clothoid:'future_work_not_implemented',terrain_evidence:'source_native_raster_validation',
+      validated_route_is_not_operational_route:true,cns_not_assessed:true},
+    disclaimer:'V3-C continuous validated route：连续几何实现 + confirmed 源几何/原生栅格验证结果，仍然不是 operational route，CNS 尚未评估',
+  };
+  return {...base,...overrides};
+}
+
+function v3cFlow(validationResult=v3cValidationResult()){
+  const flow=v3bFlow();
+  const refinement=flow.route_planner_v3_detail.records[0].refinements[0];
+  refinement.validations=[{
+    validation_id:'V3C-ABC123DEF456',refinement_id:refinement.refinement_id,
+    experiment_id:'V3-1',created_at:'2026-01-01T00:00:00Z',evidence_source:'canonical_synthetic',
+    current_applicability:'current',
+    evidence_components:{refinement_fingerprint:'V3BREF-x',continuous_policy_fingerprint:'V3CPOL-x',
+      curve_tolerance_fingerprint:'V3CCURVE-x',source_fingerprint:'V3CSRC-x',crs_fingerprint:'V3CCRS-x',
+      validator_versions_fingerprint:'V3CVAL-x'},
+    result:validationResult}];
+  flow.route_planner_v3_experiments.v3c_architecture='V3-C 连续几何实现 + source-native 验证';
+  flow.route_planner_v3_experiments.v3c_note='V3-C 连续验证 ≠ operational route';
+  flow.route_planner_v3_experiments.allowed_validation_statuses=V3C_RESULT_STATUSES;
+  flow.route_planner_v3_continuous_readiness={status:'passed',stage:'V3-C',
+    model_scope:'continuous_geometry_realization_and_source_native_validation_v3c',
+    architecture:'V3-C 连续几何实现 + source-native 验证',note:'V3-C 连续验证 ≠ operational route',
+    stage_scope:{implemented:['c1_tangent_continuous_geometry_realization',
+      'exact_airspace_route_envelope_validation','native_raster_terrain_validation'],
+      not_implemented:['clothoid_or_continuous_curvature_transitions','operational_adapter']},
+    algorithm:{algorithm_id:'route_planner_v3_continuous_validation',algorithm_version:'3.2-alpha',
+      model_scope:'continuous_geometry_realization_and_source_native_validation_v3c',
+      registered_in_algorithm_registry:false,validator_versions:{v3_continuous_validator:'3.2'}},
+    selected_refinement:{experiment_id:'V3-1',refinement_id:refinement.refinement_id,
+      result_status:'search_incomplete',current_applicability:'current',validation_count:1},
+    validation_policy:{curve_chord_error_m:0.5,max_validation_samples:200000,max_runtime_s:null,
+      use_curve_error_envelope:true,source:'project_engineering_basis',confirmed:true,status:'confirmed',
+      missing_parameters:[],reasons:[],aircraft_min_turn_radius_m:null},
+    v3_planning_policy:{aircraft_min_turn_radius_m:50,terrain_clearance_m:30,
+      building_horizontal_clearance_m:15,building_vertical_clearance_m:30},
+    real_data_readiness:{status:'blocked',adapter_id:'v3c_real_source_evidence_adapter',
+      adapter_version:'3.2-alpha',blocking_reasons:['terrain_dtm_not_configured_or_missing']},
+    blocking_reasons:[],evidence_sources:V3C_EVIDENCE_SOURCES,
+    allowed_result_statuses:V3C_RESULT_STATUSES,
+    boundaries:{operational_route_always_false:true,cns_assessed_always_false:true,
+      never_repairs_or_replans:true,curve_error_has_no_default:true}};
+  flow.route_planner_v3_validations={status:'passed',count:1,stale_count:0,validated_route_count:1,
+    semantics:'stale_when_refinement_policy_curve_tolerance_source_or_validator_changes',
+    components:['refinement_fingerprint','continuous_policy_fingerprint','curve_tolerance_fingerprint',
+      'source_fingerprint','crs_fingerprint','validator_versions_fingerprint'],
+    items:[{validation_id:'V3C-ABC123DEF456',refinement_id:refinement.refinement_id,experiment_id:'V3-1',
+      status:validationResult.status,domain_statuses:validationResult.domain_statuses,
+      recorded_applicability:'current',current_applicability:'current',changed_components:[],reasons:[],
+      validation_fingerprint:'V3CVALID-abc123',evidence_components:{}}]};
+  return flow;
+}
+
+test('V3-C validation model renders every domain, margin, turn radius and source tolerance',()=>{
+  const flow=v3cFlow();
+  const model=routePlannerV3ContinuousModel(flow);
+  assert.equal(model.status,'passed');
+  assert.equal(model.validationId,'V3C-ABC123DEF456');
+  const validation=model.validationModel;
+  assert.equal(validation.status,'validated_route');
+  assert.deepEqual(validation.domains.map(item=>item.domain),V3C_DOMAINS);
+  assert.ok(validation.domains.every(item=>item.status==='passed'));
+  assert.equal(validation.margins.terrainVerticalM,170);
+  assert.equal(validation.margins.airspaceHorizontalM,120.5);
+  assert.equal(validation.kinematics.minimumTurnRadiusObservedM,50);
+  assert.equal(validation.kinematics.tangentHeadingContinuityVerified,true);
+  assert.equal(validation.analytic.arcCount,1);
+  assert.equal(validation.analytic.continuousCurvature,false);
+  assert.equal(validation.analytic.c2,false);
+  assert.equal(validation.analytic.clothoid,'future_work_not_implemented');
+  assert.equal(validation.analytic.radiusReducedAnywhere,false);
+  assert.equal(validation.linearized.curveChordErrorM,0.5);
+  assert.equal(validation.linearized.actualMaxChordErrorM,0.428);
+  assert.equal(validation.linearized.notTheMathematicalCurve,true);
+  assert.equal(validation.resourceLimits.sampleCount,42);
+  assert.equal(validation.vertical.maxClimbGradient,0.1);
+  // The two boundaries can never be relaxed, whatever the status.
+  assert.equal(validation.operationalRoute,false);
+  assert.equal(validation.cnsAssessed,false);
+  assert.equal(validation.verdicts.validated_route_is_operational_route,false);
+  assert.equal(validation.verdicts.cns_assessed,false);
+});
+
+test('V3-C panel states the operational/CNS disclaimer and reports violations and unresolved evidence',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const failed=v3cValidationResult({
+    status:'failed',reason:'确定违反：terrain:below_native_terrain_clearance（不自动修路/不自动 replan）',
+    domain_statuses:{geometry:'passed',airspace:'passed',terrain:'failed',building:'passed',
+      altitude:'passed',kinematics:'passed'},
+    violations:[{domain:'terrain',reason_id:'below_native_terrain_clearance',start_distance_m:120,
+      end_distance_m:260,start_coordinate:null,end_coordinate:null,required:290,observed:200,margin:-90,
+      evidence:{pixel:[5,3],source_value:260}}],
+    unresolved_evidence:[{domain:'building',reason_id:'building_height_missing',start_distance_m:null,
+      end_distance_m:null,required:'confirmed_height_and_ground_and_valid_geometry',observed:'unresolved',
+      evidence:{building_id:'B9'}}]});
+  const html=routePlannerV3ValidationPanel(v3cFlow(failed));
+  assert.match(html,/V3-C/);
+  assert.match(html,/V3-C validated route 仍不是 operational route；CNS 尚未评估/);
+  assert.match(html,/validated_route/);
+  assert.match(html,/failed/);
+  assert.match(html,/below_native_terrain_clearance/);
+  assert.match(html,/building_height_missing/);
+  assert.match(html,/replan_required/);
+  assert.match(html,/不自动修路/);
+  assert.match(html,/source_native_raster_validation/);
+  assert.match(html,/NoData/);
+  assert.match(html,/curve_chord_error_m/);
+  assert.match(html,/radius_reduced_anywhere/);
+  assert.match(html,/C2 false/);
+  assert.match(html,/clothoid future_work_not_implemented/);
+  assert.match(html,/id="saveRoutePlannerV3ValidationPolicy"/);
+  assert.match(html,/id="evaluateRoutePlannerV3Validation"/);
+  // The main V3-A panel renders V3-A, V3-B and V3-C together.
+  const combined=routePlannerV3Panel(v3cFlow(failed));
+  assert.match(combined,/V3 战略规划实验/);
+  assert.match(combined,/V3-B corridor-local 精化候选/);
+  assert.match(combined,/V3-C 连续几何实现 \+ source-native\/vector 验证/);
+});
+
+test('V3-C statuses include validated_route but never claim an operational route or CNS assessment',()=>{
+  assert.deepEqual(V3C_RESULT_STATUSES,['validated_route','failed','unresolved','not_ready','validation_incomplete']);
+  assert.deepEqual(V3C_DOMAINS,['geometry','airspace','terrain','building','altitude','kinematics']);
+  assert.equal(V3C_OPERATIONAL_LABEL,'V3-C validated route 仍不是 operational route；CNS 尚未评估');
+  for(const wrong of ['operational_route','cns_assessed','final_safe','safe']){
+    assert.ok(!V3C_RESULT_STATUSES.includes(wrong));
+  }
+});
+
+test('V3-C overlay places the realized route and marks failed intervals without claiming operational status',()=>{
+  const flow=v3cFlow(v3cValidationResult({
+    status:'failed',
+    domain_statuses:{geometry:'passed',airspace:'passed',terrain:'failed',building:'passed',
+      altitude:'passed',kinematics:'passed'},
+    violations:[{domain:'terrain',reason_id:'below_native_terrain_clearance',start_distance_m:800,
+      end_distance_m:900,required:290,observed:200,margin:-90,evidence:{}}]}));
+  const model=v3OverlayModel(flow);
+  assert.equal(model.validatedStatus,'failed');
+  assert.equal(model.validatedId,'V3C-ABC123DEF456');
+  assert.equal(model.validatedIsOperationalRoute,false);
+  assert.equal(model.validatedCnsAssessed,false);
+  assert.equal(model.validatedArcCount,1);
+  assert.equal(model.curveChordErrorM,0.5);
+  assert.equal(model.validatedPath.length,4);
+  assert.deepEqual(model.validatedPath[0],[122,29.9]);
+  assert.equal(model.validatedDomainStatuses.terrain,'failed');
+  assert.equal(model.validatedIntervals.length,1);
+  assert.equal(model.validatedIntervals[0].kind,'violation');
+  assert.ok(model.validatedIntervals[0].startCoordinate);
+  assert.equal(model.validatedMargins.terrain_vertical_m,170);
+  // Disabling the validated layer must not drop the earlier projections.
+  assert.deepEqual(v3OverlayModel(flow,{validated:false}).validatedPath,[]);
+  assert.equal(v3OverlayModel(flow,{validated:false}).refinedPath.length,2);
 });

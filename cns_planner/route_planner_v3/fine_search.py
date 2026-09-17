@@ -83,20 +83,80 @@ def grid_bearing_deg(delta_column, delta_row):
     return round(degrees(atan2(float(delta_column), float(delta_row))) % 360.0, 9)
 
 
+#: Boundary-touch semantics of :func:`supercover_line`.
+#:
+#: The traversal is **conservative**: a cell that only *touches* the segment -- at
+#: a corner or along an edge, with zero-length contact -- counts as traversed,
+#: because V3-B interpolates and hard-checks the altitude at every reported cell.
+#: Concretely, when the segment passes exactly through a grid corner, three cells
+#: share that point: the two orthogonal neighbours and the diagonal cell.  All
+#: three are reported (deduplicated, in a deterministic order).  This is
+#: deliberately *more* inclusive than the mathematical supercover and is the safe
+#: direction: an intermediate obstacle or terrain spike can never be skipped.
+SUPERCOVER_BOUNDARY_SEMANTICS = (
+    "conservative_boundary_touch_included_corner_crossing_yields_both_orthogonal_"
+    "neighbours_and_the_diagonal_cell_without_duplicates"
+)
+
+
 def supercover_line(start, end):
     """Cells a straight segment passes through, as ``(cell, entry_fraction)``.
 
-    Amanatides & Woo voxel traversal in grid-index space.  Every cell the segment
-    touches (including the start and end cells) is reported with the segment
-    fraction at which it is *entered*, which is what the altitude interpolation
-    for the hard-fact checks uses.
+    Amanatides & Woo voxel traversal in grid-index space with **conservative
+    boundary-touch semantics** (see :data:`SUPERCOVER_BOUNDARY_SEMANTICS`).  Every
+    cell the segment touches -- including the start and end cells, and both
+    orthogonal neighbours plus the diagonal cell at an exact corner crossing -- is
+    reported with the segment fraction at which it is *entered*, which is what the
+    altitude interpolation for the hard-fact checks uses.  Fractions are
+    non-decreasing, so they can be zipped with the cell ids.
+
+    Corner handling is what keeps this honest: a naive diagonal advance at an exact
+    corner step would silently drop the two orthogonal neighbours, and a cell the
+    path only grazes is still a cell the route occupies.
     """
 
     start_row, start_column = int(start[0]), int(start[1])
     end_row, end_column = int(end[0]), int(end[1])
+    traversed, _corners = _supercover_traversal(start_row, start_column, end_row, end_column)
+    return traversed
+
+
+def supercover_line_with_corners(start, end):
+    """As :func:`supercover_line`, plus the exact grid corners the segment crossed."""
+
+    traversed, corners = _supercover_traversal(
+        int(start[0]), int(start[1]), int(end[0]), int(end[1]),
+    )
+    return traversed, corners
+
+
+def corner_crossing_points(traversed):
+    """Grid corners a traversal passed exactly through, in traversal order.
+
+    Reported in grid space: ``(row + 0.5, column + 0.5)`` marks the shared corner of
+    the current cell and both orthogonal neighbours (the diagonal cell's opposite
+    corner).  For the canonical form returned by :func:`supercover_line`, a real
+    corner crossing is a diagonal step whose two cells share the **same** entry
+    fraction -- the fraction of the corner itself.
+    """
+
+    corners = []
+    for (previous, previous_entry), (following, following_entry) in zip(
+        traversed or [], (traversed or [])[1:],
+    ):
+        row_delta = following[0] - previous[0]
+        column_delta = following[1] - previous[1]
+        if row_delta and column_delta and previous_entry == following_entry:
+            corners.append((previous[0] + row_delta / 2, previous[1] + column_delta / 2))
+    return corners
+
+
+def _supercover_traversal(start_row, start_column, end_row, end_column):
+    """Amanatides & Woo traversal returning ``(cells, corner_crossings)``."""
+
     delta_row, delta_column = end_row - start_row, end_column - start_column
     if delta_row == 0 and delta_column == 0:
-        return [((start_row, start_column), 0.0)]
+        return [((start_row, start_column), 0.0)], []
     step_row = (delta_row > 0) - (delta_row < 0)
     step_column = (delta_column > 0) - (delta_column < 0)
     if delta_row != 0:
@@ -111,26 +171,69 @@ def supercover_line(start, end):
         t_max_column, t_delta_column = inf, inf
     current = (start_row, start_column)
     traversed = [(current, 0.0)]
+    seen = {current}
+    corner_crossings = []
     guard = 0
     while current != (end_row, end_column):
         guard += 1
-        if guard > 4 * (abs(delta_row) + abs(delta_column)) + 8:
+        if guard > 6 * (abs(delta_row) + abs(delta_column)) + 8:
             break
-        if t_max_row < t_max_column - _COMPARISON_TOLERANCE:
+        # ``t_max_row`` is when the segment crosses the vertical grid line at
+        # ``column + step_column * 0.5`` and ``t_max_column`` when it crosses the
+        # horizontal line at ``row + step_row * 0.5``.  Their equality therefore
+        # means the segment passes exactly through the shared corner of the current
+        # cell, the two orthogonal neighbours and the diagonal cell -- which is the
+        # boundary-touch case that must not be dropped.
+        crossed_corner = (
+            delta_row != 0 and delta_column != 0
+            and abs(t_max_row - t_max_column) <= _COMPARISON_TOLERANCE
+        )
+        if crossed_corner:
+            # Compute the entry fractions *before* advancing t_max_*, so the corner
+            # cells share the exact corner parameter.
+            corner_entry = max(0.0, min(1.0, min(t_max_row, t_max_column)))
+            _append_traversed(
+                traversed, seen, (current[0] + step_row, current[1]), corner_entry,
+            )
+            _append_traversed(
+                traversed, seen, (current[0], current[1] + step_column), corner_entry,
+            )
+            current = (current[0] + step_row, current[1] + step_column)
+            traversed.append((current, corner_entry))
+            seen.add(current)
+            corner_crossings.append((current[0] - step_row + 0.5 * step_row,
+                                     current[1] - step_column + 0.5 * step_column))
+            t_max_row += t_delta_row
+            t_max_column += t_delta_column
+        elif t_max_row < t_max_column - _COMPARISON_TOLERANCE:
             current = (current[0] + step_row, current[1])
-            entry = t_max_row
+            traversed.append((current, max(0.0, min(1.0, t_max_row))))
+            seen.add(current)
             t_max_row += t_delta_row
         elif t_max_column < t_max_row - _COMPARISON_TOLERANCE:
             current = (current[0], current[1] + step_column)
-            entry = t_max_column
+            traversed.append((current, max(0.0, min(1.0, t_max_column))))
+            seen.add(current)
             t_max_column += t_delta_column
         else:
+            # Numerical tie without an exact corner: advance diagonally only.
             current = (current[0] + step_row, current[1] + step_column)
-            entry = min(t_max_row, t_max_column)
+            traversed.append((current, max(0.0, min(1.0, min(t_max_row, t_max_column)))))
+            seen.add(current)
             t_max_row += t_delta_row
             t_max_column += t_delta_column
-        traversed.append((current, max(0.0, min(1.0, entry))))
-    return traversed
+    return traversed, corner_crossings
+
+
+def _append_traversed(traversed, seen, cell, entry):
+    """Record a boundary-touch cell once, keeping fractions non-decreasing."""
+
+    if cell in seen:
+        return
+    if traversed and entry < traversed[-1][1]:
+        entry = traversed[-1][1]
+    traversed.append((cell, entry))
+    seen.add(cell)
 
 
 class FinePrimitiveProvider:
@@ -1245,6 +1348,7 @@ def _finalize(result, started):
 
 
 __all__ = [
-    "TRAVERSED_REASONS", "FinePrimitiveProvider", "V3RefinementPlanner",
-    "evaluate_refinement_readiness", "grid_bearing_deg", "supercover_line",
+    "SUPERCOVER_BOUNDARY_SEMANTICS", "TRAVERSED_REASONS", "FinePrimitiveProvider",
+    "V3RefinementPlanner", "corner_crossing_points", "evaluate_refinement_readiness",
+    "grid_bearing_deg", "supercover_line",
 ]

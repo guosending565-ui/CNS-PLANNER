@@ -33,7 +33,8 @@ from cns_planner.gis.fine_environment_adapter import (
     real_data_source_readiness,
 )
 from cns_planner.route_planner_v3 import (
-    V3RefinementPlanner, V3StrategicPlanner, build_synthetic_environment,
+    SUPERCOVER_BOUNDARY_SEMANTICS, V3RefinementPlanner, V3StrategicPlanner,
+    build_synthetic_environment, corner_crossing_points,
     default_v3_cost_model, default_v3_policy, evaluate_refinement_applicability,
     fine_cells_from_spec, normalize_aircraft_motion_limits, normalize_cost_model,
     normalize_fine_cell_environment, normalize_v3_fine_refinement_policy,
@@ -660,17 +661,49 @@ def test_supercover_line_lists_every_cell_the_segment_touches():
     assert [cell for cell, _ in straight] == [(0, 0), (0, 1), (0, 2), (0, 3)]
     # Entry fractions are the boundary crossings of the cell, not the cell centres.
     assert [fraction for _, fraction in straight] == pytest.approx([0.0, 1 / 6, 0.5, 5 / 6])
+    # An exact diagonal passes through every shared *corner*: the conservative
+    # boundary-touch semantics report both orthogonal neighbours and the diagonal
+    # cell at each crossing, so a grazed cell can never be skipped.
     diagonal = supercover_line((0, 0), (3, 3))
-    assert [cell for cell, _ in diagonal] == [(0, 0), (1, 1), (2, 2), (3, 3)]
+    assert [cell for cell, _ in diagonal] == [
+        (0, 0), (1, 0), (0, 1), (1, 1), (2, 1), (1, 2), (2, 2), (3, 2), (2, 3), (3, 3),
+    ]
+    assert corner_crossing_points(diagonal) == [(0.5, 0.5), (1.5, 1.5), (2.5, 2.5)]
+    assert "conservative" in SUPERCOVER_BOUNDARY_SEMANTICS
     shallow = supercover_line((0, 0), (3, 1))
-    assert [cell for cell, _ in shallow] == [(0, 0), (1, 0), (2, 1), (3, 1)]
+    # The segment grazes the corner (1.5, 0.5), so (1, 1) is included with the two
+    # orthogonal neighbours; it does not jump from (2, 0) straight to (2, 1).
+    assert [cell for cell, _ in shallow] == [
+        (0, 0), (1, 0), (2, 0), (1, 1), (2, 1), (3, 1),
+    ]
+    assert corner_crossing_points(shallow) == [(1.5, 0.5)]
     # Entry fractions are path progress, strictly increasing and inside [0, 1].
-    fractions = [fraction for _, fraction in shallow]
-    assert fractions[0] == 0.0 and fractions[-1] <= 1.0
-    assert fractions == sorted(fractions)
+    for traversal in (straight, shallow, diagonal):
+        fractions = [fraction for _, fraction in traversal]
+        assert fractions[0] == 0.0 and fractions[-1] <= 1.0
+        assert fractions == sorted(fractions)
+        assert len({cell for cell, _ in traversal}) == len(traversal)
     # Every step is a Chebyshev neighbour: the line never teleports.
-    for (left, _), (right, _) in zip(shallow, shallow[1:]):
-        assert max(abs(left[0] - right[0]), abs(left[1] - right[1])) == 1
+    for traversal in (straight, shallow, diagonal):
+        for (left, _), (right, _) in zip(traversal, traversal[1:]):
+            assert max(abs(left[0] - right[0]), abs(left[1] - right[1])) == 1
+
+
+def test_supercover_corner_obstacle_is_not_skipped():
+    """A blocked cell touched only at a corner is still reported as traversed."""
+
+    diagonal = supercover_line((0, 0), (2, 2))
+    traversed = {cell for cell, _ in diagonal}
+    # (1, 0) and (0, 1) are the orthogonal neighbours of the (0.5, 0.5) corner; a
+    # diagonal-only advance would silently drop both.
+    assert {(1, 0), (0, 1)} <= traversed
+    assert (1, 1) in traversed
+    # Entry fractions stay path-progress ordered with the corner cells sharing t.
+    by_cell = dict(diagonal)
+    assert by_cell[(1, 0)] == pytest.approx(0.25)
+    assert by_cell[(0, 1)] == pytest.approx(0.25)
+    assert by_cell[(1, 1)] == pytest.approx(0.25)
+    assert corner_crossing_points(diagonal) == [(0.5, 0.5), (1.5, 1.5)]
 
 
 def test_intermediate_obstacle_cannot_be_skipped_by_a_multi_cell_stride():
