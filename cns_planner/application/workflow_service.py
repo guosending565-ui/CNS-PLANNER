@@ -47,6 +47,7 @@ from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
 from .reference_link_service import ReferenceLinkService
 from .route_experiment_service import RoutePlanningExperimentService
+from .route_planner_v3_service import RoutePlannerV3ExperimentService, record_summary as _v3_record_summary
 from .source_audit_service import SourceAuditService
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
 from .encounter_3d_service import Encounter3DService
@@ -143,6 +144,9 @@ class WorkflowService:
             self.session, self.route_service, self.algorithm_registry,
             self.invalidation_service, snapshot,
         )
+        self.route_planner_v3_service = RoutePlannerV3ExperimentService(
+            self.session, None, self.invalidation_service, snapshot, self.grid_service,
+        )
         self.source_audit_service = SourceAuditService(
             self.session, self.invalidation_service, snapshot,
         )
@@ -214,6 +218,28 @@ class WorkflowService:
         if hasattr(self, "route_experiment_service"):
             result["route_planning_experiments"] = self.route_experiment_service.result_snapshot()
             result["route_planning_diagnostics"] = self.route_experiment_service.diagnostics_snapshot()
+        if hasattr(self, "route_planner_v3_service"):
+            # Bounded, read-only projection: the full V3 state path is served by
+            # GET /api/route-planner-v3-experiments so the snapshot stays small.
+            collection = self.route_planner_v3_service.result_snapshot()
+            result["route_planner_v3_experiments"] = {
+                "status": collection["status"],
+                "count": collection["count"],
+                "active_experiment_id": collection["active_experiment_id"],
+                "active_experiment": _v3_record_summary(collection.get("active_experiment")),
+                "records": [
+                    summary for summary in
+                    (_v3_record_summary(item) for item in collection.get("records") or [])
+                    if summary is not None
+                ],
+                "architecture": collection["architecture"],
+                "note": collection["note"],
+                "allowed_result_statuses": collection["allowed_result_statuses"],
+                "operational_routes_untouched": True,
+                "algorithm_selection_untouched": True,
+                "detail_endpoint": "/api/route-planner-v3-experiments",
+            }
+            result["route_planner_v3_readiness"] = self.route_planner_v3_service.readiness_snapshot()
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
         if hasattr(self, "source_audit_service"):
@@ -259,6 +285,12 @@ class WorkflowService:
     def reference_route_links_snapshot(self): return self.reference_link_service.links_snapshot()
     def reference_endpoint_candidates_snapshot(self): return self.reference_link_service.endpoint_candidates_snapshot()
     def route_experiments_snapshot(self): return self.route_experiment_service.result_snapshot()
+    def route_planner_v3_snapshot(self): return self.route_planner_v3_service.result_snapshot()
+    def route_planner_v3_readiness(self): return self.route_planner_v3_service.readiness_snapshot()
+    def set_route_planner_v3_policy(self, payload): return self.route_planner_v3_service.set_policy(payload)
+    def evaluate_route_planner_v3(self, payload=None): return self.route_planner_v3_service.evaluate(payload)
+    def delete_route_planner_v3_experiment(self, experiment_id):
+        return self.route_planner_v3_service.delete_experiment(experiment_id)
     def data_readiness_snapshot(self): return self.reference_link_service.data_readiness()
     def source_audits_snapshot(self): return self.source_audit_service.result_snapshot()
     def encounter_3d_snapshot(self): return self.encounter_3d_service.result_snapshot()

@@ -7,6 +7,7 @@ import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/rende
 import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {drawConfirmedAllowedAirspace} from './map/airspace_policy_overlay.js';
 import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
+import {drawV3CandidateOverlay,v3OverlayModel} from './map/route_planner_v3_overlay.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
@@ -15,7 +16,6 @@ import * as Step04 from './workflow/step04_operation.js';
 import * as Step05 from './workflow/step05_cns.js';
 import * as Step06 from './workflow/step06_review.js';
 import {createSourceCenter} from './sources/source_center.js';
-
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null;
@@ -30,7 +30,6 @@ const riskPalette=['#2ca25f','#99d8c9','#fee08b','#f46d43','#a50026'],riskBreaks
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan'}});
 const api=createApiClient(()=>state?.token);
-
 async function mutate(action,payload={}){
   const data=await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   flow=data;store.set({workflow:flow});rebuildGridRenderCache();
@@ -43,6 +42,12 @@ async function resourceAction(path,payload={}){
 }
 async function computeAction(path,payload={}){
   return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+}
+// V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
+async function loadRoutePlannerV3Detail(){
+  const detail=await api('/api/route-planner-v3-experiments');
+  flow={...flow,route_planner_v3_detail:detail};store.set({workflow:flow});renderWorkflow();paint();
+  return detail;
 }
 async function syncGridApis(){
   const request=++gridDataSerial;
@@ -66,7 +71,6 @@ function fitLonLatBbox(bbox){
   const southwest=lonLatToMercator(bbox[0],bbox[1]),northeast=lonLatToMercator(bbox[2],bbox[3]);
   fit([southwest[0],southwest[1],northeast[0],northeast[1]]);
 }
-
 function paint(){
   const [w,h]=size();if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
   ctx.fillStyle='#f3f4f2';ctx.fillRect(0,0,w,h);onlineTiles.paint(ctx,view,w,h,'base');
@@ -87,6 +91,7 @@ function drawWorkflowOverlay(){
   for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
   if($('buildingClearanceLayer')?.checked)drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
+  if($('v3CandidateLayer')?.checked)drawV3CandidateOverlay({ctx,screenPoint,drawLine,model:v3OverlayModel(flow)});
   const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer')?.checked,points:$('referenceRoutePointLayer')?.checked,landingSites:false});
   drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
   const filters={workspace:flow.workspace,search:currentStep===3?$('referenceSiteSearch')?.value||'':'',region:currentStep===3?$('referenceSiteRegion')?.value||'':'',siteType:currentStep===3?$('referenceSiteType')?.value||'':''};
@@ -135,15 +140,11 @@ async function renderMap(){
   bbox:box.join(','),
   w:Math.round(w*factor),
   h:Math.round(h*factor),
-
   pop:$('pop').checked?'1':'0',
   air:$('air').checked?'1':'0',
-
   terrain:$('terrain').checked?'1':'0',
-
   opacity:$('opacity').value/100,
   terrainOpacity:$('terrainOpacity').value/100,
-
   rev:state.revision,
   client,
   seq:request
@@ -155,7 +156,6 @@ async function renderMap(){
   }catch(exc){if(request===serial&&exc.name!=='AbortError')showError(exc.message);}finally{if(request===serial)$('loading').hidden=true;}
 }
 function zoom(factor,x,y){if(!view)return;const [w,h]=size();x??=w/2;y??=h/2;const before=view.res;view.res=Math.max(.5,Math.min(200000,view.res*factor));view.x+=(x-w/2)*(before-view.res);view.y-=(y-h/2)*(before-view.res);queue();}
-
 bindMapInteraction({
   map,canvas,getView:()=>view,setView:value=>{view=value;},getMode:()=>interactionMode,eventLonLat,zoom,queue,paint,
   onDraft:value=>{draftWorkspace=value;},onDraftComplete:renderWorkflow,
@@ -266,44 +266,36 @@ function hitReferenceObject(event){
 map.addEventListener('keydown',event=>{if(event.key==='+'||event.key==='=')zoom(.5);if(event.key==='-')zoom(2);});
 $('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
 for(const id of ['air','pop','terrain'])$(id).onchange=queue;
-
 function updateRasterLegends(){
   const populationLegend=$('populationRasterLegend');
   const terrainLegend=$('terrainRasterLegend');
-
   if(populationLegend){
     populationLegend.hidden=!$('pop').checked;
   }
-
   if(terrainLegend){
     terrainLegend.hidden=!$('terrain').checked;
   }
 }
-
 $('pop').addEventListener('change',updateRasterLegends);
 $('terrain').addEventListener('change',updateRasterLegends);
-
 updateRasterLegends();
-
 $('opacity').oninput=()=>{
   $('opacityValue').textContent=$('opacity').value+'%';
   queue();
 };
-
 $('terrainOpacity').oninput=()=>{
   $('terrainOpacityValue').textContent=
     $('terrainOpacity').value+'%';
   queue();
 };
 $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer'])$(id).onchange=()=>{
+for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','v3CandidateLayer'])$(id).onchange=()=>{
   if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
   if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
   updateGridNotice();
   paint();
 };
 new ResizeObserver(()=>{if(view)queue();else paint();}).observe(map);
-
 function statusText(status){return labelFor(status);}
 function statusBadge(status){return badgeFor(status);}
 function escapeHtml(value){return escapeValue(value);}
@@ -319,22 +311,19 @@ function renderWorkflow(){
   if(!flow)return;const panel=$('workflowPanel');
   const referenceDiagnostics=referenceLayerDiagnostics(flow);for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites]]){const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}}
   $('workflowStatus').textContent='项目：'+flow.project.name+' · 第 '+currentStep+' 步';
-
   const storage=state?.project_storage||{};
-
   $('projectRestore').textContent=storage.automatic
     ? (flow.last_saved_at
         ? '自动恢复项目已保存 · 建议另存到项目文件夹'
         : '当前使用自动恢复项目')
     : ('项目保存位置：'+(storage.directory||'未选择'));
-
   const steps=[Step01,Step02,Step03,Step04,Step05,Step06],step=steps[currentStep-1];
   panel.innerHTML=step.render({state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber});
   step.bind(stepBindings());
 }
-
 function stepBindings(){return {
   $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
+  loadRoutePlannerV3Detail,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
   selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},
@@ -345,7 +334,6 @@ function stepBindings(){return {
   saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace,grid_level:Number($('workspaceGridLevel')?.value||8)});interactionMode='pan';draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
   toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';renderWorkflow();}
 };}
-
 async function previewPlanningReport(){
   const target=window.open('about:blank','_blank');
   try{
@@ -363,7 +351,6 @@ async function downloadPlanningReport(kind){
   link.href=objectUrl;link.download={html:'cns-planning-report.html',pdf:'cns-planning-report.pdf',package:'cns-planning-package.zip',json:'cns-planning-report.json'}[kind]||'report.bin';link.click();
   setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
 }
-
 async function saveProject(projectDir,name){
   if(!projectDir)return panelError('请先选择项目数据存储位置');
   const button=$('saveProject');try{button.disabled=true;panelError('');await api('/api/workflow/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});update(await api('/api/project/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})}));}catch(exc){panelError('保存项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
@@ -372,7 +359,6 @@ async function openProject(projectDir){
   if(!projectDir)return panelError('请先选择项目文件夹');
   const button=$('openProject');try{button.disabled=true;panelError('');const data=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})});update(data);bitmap?.close();bitmap=null;if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);else if(data.bounds)fit(data.bounds);}catch(exc){panelError('打开项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
 }
-
 function getTiandituKey(){
   for(const source of state?.online_sources||[]){
     if(!source.browser_url?.includes('tianditu.gov.cn'))continue;
@@ -396,7 +382,6 @@ async function searchPlace(){
     if(!container.children.length)container.textContent='没有找到可定位结果';
   }catch(exc){panelError('地名搜索失败：'+exc.message);}
 }
-
 async function downloadExport(kind){
   try{
     const response=await fetch('/api/export/'+kind,{headers:{'X-CNS-Token':state.token}});
@@ -406,13 +391,11 @@ async function downloadExport(kind){
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }catch(exc){panelError(exc.message);}
 }
-
 const sourceCenter=createSourceCenter({
   $,api,onlineTiles,actionButton,
   onApplied(data){update(data);bitmap?.close();bitmap=null;fit(data.bounds);}
 });
 sourceCenter.bind();
-
 function update(data){
   state=data;
   flow=data.workflow;
@@ -439,7 +422,6 @@ function update(data){
   syncGridApis().then(()=>{renderWorkflow();paint();}).catch(exc=>showError('网格专题同步失败：'+exc.message));
   if(data.error)showError(data.error);
 }
-
 api('/api/state').then(data=>{
   update(data);
   if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);

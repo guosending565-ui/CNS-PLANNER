@@ -70,6 +70,8 @@ class ApiRouter:
         if path == "/api/building-clearance": return Response(workflow.building_clearance_snapshot())
         if path == "/api/route-vertical-profiles": return Response(workflow.route_vertical_profiles_snapshot())
         if path == "/api/route-experiments": return Response(workflow.route_experiments_snapshot())
+        if path == "/api/route-planner-v3-experiments": return Response(workflow.route_planner_v3_snapshot())
+        if path == "/api/route-planner-v3/readiness": return Response(workflow.route_planner_v3_readiness())
         if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
         if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
         if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
@@ -170,6 +172,9 @@ class ApiRouter:
             "/api/route-vertical-profiles/evaluate": lambda: context.qgis.call(lambda: context.evaluate_route_vertical_profiles(payload)),
             "/api/route-experiments/evaluate": lambda: workflow.evaluate_route_experiment(payload),
             "/api/route-experiments/delete": lambda: workflow.delete_route_experiment(payload.get("experiment_id")),
+            "/api/route-planner-v3/policy": lambda: workflow.set_route_planner_v3_policy(payload),
+            "/api/route-planner-v3-experiments/evaluate": lambda: workflow.evaluate_route_planner_v3(payload),
+            "/api/route-planner-v3-experiments/delete": lambda: workflow.delete_route_planner_v3_experiment(payload.get("experiment_id")),
             "/api/reference-route-links/create": lambda: workflow.create_reference_route_link(payload),
             "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),

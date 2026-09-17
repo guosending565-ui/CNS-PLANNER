@@ -240,6 +240,244 @@ function experimentRunBlock(run){
     +'</span></div>';
 }
 
+// ---- Route Planner V3-A (strategic planning experiment, read-only panel) ------------
+
+export const V3_EXPERIMENT_NOTE='V3-A 战略规划实验 ≠ 运行航路：只写入 route_planner_v3_experiments，不切换当前 planner，也不覆盖 operational_routes 或 spatial_3d。';
+export const V3_RESULT_STATUSES=['strategic_candidate','failed','missing_data','pending_confirmation','not_ready'];
+
+export function routePlannerV3ReadinessModel(flow){
+  const snapshot=flow?.route_planner_v3_readiness||{};
+  return {status:snapshot.status||'not_calculated',stage:snapshot.stage||'V3-A',
+    architecture:snapshot.architecture||'',scope:snapshot.stage_scope||{implemented:[],not_implemented:[]},
+    algorithm:snapshot.algorithm||{},grid:snapshot.grid||{},policy:snapshot.policy||{},
+    policyReadiness:snapshot.policy_readiness||{status:'unknown',reasons:[],missing_parameters:[]},
+    aircraftReadiness:snapshot.aircraft_readiness||{status:'unknown',reasons:[]},
+    environmentReadiness:snapshot.environment_readiness||{status:'unknown',reason:''},
+    realData:snapshot.real_data_readiness||{status:'unknown',reasons:[]},
+    syntheticOptions:snapshot.synthetic_environment_options||{terrain_profiles:[],buildings_profiles:[],sources:[]},
+    neverFinalValidated:true};
+}
+
+export function routePlannerV3Model(flow){
+  const collection=flow?.route_planner_v3_experiments||{};
+  const detail=flow?.route_planner_v3_detail||{};
+  const records=detail.records||[];
+  const activeId=collection.active_experiment_id||null;
+  const record=records.find(item=>item.experiment_id===activeId)||records[0]||null;
+  const result=record?.result||null;
+  const cost=result?.cost_vector||{};
+  const components=Object.entries(cost.components||{}).map(([name,entry])=>({
+    name,raw:entry.raw,normalized:entry.normalized,weight:entry.weight,contribution:entry.contribution,
+    unit:entry.unit,source:entry.source,semantics:entry.semantics,enabled:entry.enabled===true,
+    status:entry.status,reason:entry.reason}));
+  const corridor=result?.candidate_refinement_corridor||null;
+  const path=result?.state_path||[];
+  return {
+    status:collection.status||'not_calculated',
+    count:collection.count||0,activeId,
+    architecture:collection.architecture||'',
+    allowedStatuses:collection.allowed_result_statuses||V3_RESULT_STATUSES,
+    candidate:result?{
+      status:result.status,routeId:result.route_id,reason:result.reason,
+      distanceM:result.distance_m,scalarCost:cost.scalar_cost??null,
+      scalarAvailable:cost.scalar_cost_available===true,
+      stateCount:path.length,
+      expandedStates:result.search_statistics?.expanded_states??null,
+      runtimeMs:result.search_statistics?.runtime_ms??null,
+      hardSummary:result.hard_constraint_summary||{},
+      heuristic:result.heuristic_semantics||{},
+      disclaimer:result.disclaimer||'',
+      operationalRoute:result.operational_route===true,
+      finalValidationPerformed:result.final_validation_performed===true,
+      altitudeRange:path.length?[Math.min(...path.map(item=>item.altitude_egm2008_m)),Math.max(...path.map(item=>item.altitude_egm2008_m))]:null,
+      projection:result.horizontal_projection||[],
+      statePreview:path.slice(0,24).map(item=>({gridId:item.grid_id,altitudeM:item.altitude_egm2008_m,
+        headingDeg:item.heading_deg,primitiveId:item.primitive_id,climbGradient:item.climb_gradient,
+        headingChangeDeg:item.heading_change_deg})),
+    }:null,
+    components,
+    excludedComponents:cost.excluded_components||[],
+    cnsIntegration:cost.cns_integration||{},
+    corridor:corridor?{
+      semantics:corridor.semantics,ringN:corridor.ring_n,
+      centerCount:(corridor.center_grid_ids||[]).length,
+      supportCount:(corridor.support_grid_ids||[]).length,
+      refinementCellSizeM:corridor.refinement_cell_size_m,
+      altitudeEnvelope:corridor.altitude_envelope||null,
+      nextStage:corridor.next_stage,
+      notSafetyClearance:corridor.n_ring_is_not_a_safety_clearance===true,
+    }:null,
+    recent:(collection.records||[]).map(item=>({experimentId:item.experiment_id,createdAt:item.created_at,
+      status:item.status,distanceM:item.distance_m,stateCount:item.state_count,
+      expandedStates:item.expanded_states,corridorSupportCount:item.corridor_support_count,
+      corridorRingN:item.corridor_ring_n})),
+    note:collection.note||V3_EXPERIMENT_NOTE,
+    semantics:'experiment_is_not_an_operational_route',automaticRanking:false};
+}
+
+function v3ReadinessRows(model){
+  const rows=[
+    {label:'空域 (airspace)',status:model.environmentReadiness.status,reason:'逐格 canonical 评估；只有 confirmed allowed 可行，unknown 不可行'},
+    {label:'地形 (terrain)',status:model.environmentReadiness.status,reason:'逐格 canonical 评估；unknown/NoData fail-closed'},
+    {label:'建筑 (building)',status:model.environmentReadiness.status,reason:'逐格 canonical 评估；unknown fail-closed'},
+    {label:'Policy',status:model.policyReadiness.status,reason:(model.policyReadiness.reasons||[]).join('；')||'参数完整'},
+    {label:'Aircraft 运动能力',status:model.aircraftReadiness.status,reason:(model.aircraftReadiness.reasons||[]).join('；')||'explicit'},
+    {label:'Cost model',status:'ready',reason:'weight 全部显式；energy pending_model/disabled'},
+  ];
+  return rows.map(row=>'<div class="list-row"><span><b>'+escapeHtml(row.label)+'</b> '+statusBadge(row.status)+'<small>'+escapeHtml(row.reason)+'</small></span></div>').join('');
+}
+
+function v3ParameterRows(model){
+  const policy=model.policy||{};
+  const names=[['min_altitude_egm2008_m','最小高度 EGM2008 (m)'],['max_altitude_egm2008_m','最大高度 EGM2008 (m)'],
+    ['vertical_step_m','垂向步长 (m)'],['terrain_clearance_m','地形净空 (m)'],
+    ['building_horizontal_clearance_m','建筑水平净空 (m)'],['building_vertical_clearance_m','建筑垂直净空 (m)'],
+    ['aircraft_min_turn_radius_m','最小转弯半径 (m)'],['max_climb_gradient','最大爬升梯度'],
+    ['max_descent_gradient','最大下降梯度'],['planning_speed_mps','规划速度 (m/s)']];
+  return names.map(([key,label])=>'<div class="list-row"><span><b>'+escapeHtml(label)+'</b><small>'
+    +(policy[key]===null||policy[key]===undefined?'<b>未配置</b>':escapeHtml(String(policy[key])))
+    +'</small></span></div>').join('');
+}
+
+function v3CostRows(model){
+  if(!model.components.length)return '<div class="empty-note">尚无 cost vector。</div>';
+  return model.components.map(item=>'<div class="list-row route-row"><span><b>'+escapeHtml(item.name)+'</b> '
+    +(item.enabled?statusBadge('passed'):statusBadge('not_applicable'))
+    +'<small>raw '+metric(item.raw)+' '+escapeHtml(item.unit||'')+' · normalized '+metric(item.normalized)
+    +' · weight '+(item.weight===null||item.weight===undefined?'—':escapeHtml(String(item.weight)))
+    +' · contribution '+metric(item.contribution)+'</small>'
+    +'<small>'+escapeHtml(item.semantics||'')+'</small>'
+    +(item.enabled?'':'<small>'+escapeHtml(item.reason||item.status||'')+'</small>')+'</span></div>').join('');
+}
+
+function v3StateRows(model){
+  if(!model.candidate)return '';
+  return model.candidate.statePreview.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.gridId)+'</b>'
+    +'<small>高度 '+metric(item.altitudeM,'m')+' · heading '+metric(item.headingDeg,'°')
+    +' · primitive '+escapeHtml(item.primitiveId||'—')+' · climb '+metric(item.climbGradient)
+    +' · Δheading '+metric(item.headingChangeDeg,'°')+'</small></span></div>').join('');
+}
+
+export function routePlannerV3Panel(flow){
+  const model=routePlannerV3Model(flow);
+  const readiness=routePlannerV3ReadinessModel(flow);
+  const candidate=model.candidate;
+  const candidateBlock=candidate
+    ?'<div class="flow-summary"><b>'+escapeHtml(String(candidate.routeId||'—'))+'</b> '+statusBadge(candidate.status)
+      +'<br>3D distance '+metric(candidate.distanceM,'m')+' · scalar cost '+metric(candidate.scalarCost)
+      +' · 3D state 数 '+escapeHtml(String(candidate.stateCount))
+      +' · expanded '+escapeHtml(String(candidate.expandedStates??'—'))+' · runtime '+metric(candidate.runtimeMs,'ms')
+      +(candidate.altitudeRange?'<br>高度范围 '+metric(candidate.altitudeRange[0],'m')+' – '+metric(candidate.altitudeRange[1],'m'):'')
+      +'<br>hard state rejection '+escapeHtml(String(candidate.hardSummary.total_state_rejections??0))
+      +' · hard transition rejection '+escapeHtml(String(candidate.hardSummary.total_transition_rejections??0))
+      +'<br>heuristic '+escapeHtml(candidate.heuristic.type||'—')+' · scale '+escapeHtml(String(candidate.heuristic.scale??'—'))
+      +'<br><b>'+escapeHtml(candidate.disclaimer)+'</b></div>'
+      +'<h3>Hard-constraint rejection 统计</h3><div class="flow-summary">state：'+escapeHtml(jsonInline(candidate.hardSummary.state_rejections||{}))
+      +'<br>transition：'+escapeHtml(jsonInline(candidate.hardSummary.transition_rejections||{}))+'</div>'
+      +'<h3>3D state（前 24 个，含高度/heading）</h3><div class="scroll-list route-list">'+(v3StateRows(model)||'<div class="empty-note">无 state</div>')+'</div>'
+    :'<div class="empty-note">尚无 V3-A 战略候选。运行实验只会写入独立实验容器，不改变运行航路。</div>';
+  const corridor=model.corridor
+    ?'<div class="flow-summary">corridor semantics <code>'+escapeHtml(model.corridor.semantics)+'</code>'
+      +'<br>N-ring '+escapeHtml(String(model.corridor.ringN))+' · center cells '+escapeHtml(String(model.corridor.centerCount))
+      +' · support cells '+escapeHtml(String(model.corridor.supportCount))
+      +' · refinement cell size '+(model.corridor.refinementCellSizeM===null?'未配置':metric(model.corridor.refinementCellSizeM,'m'))
+      +'<br>高度包络 '+metric(model.corridor.altitudeEnvelope?.lower_altitude_egm2008_m,'m')+' – '+metric(model.corridor.altitudeEnvelope?.upper_altitude_egm2008_m,'m')
+      +' （margin '+(model.corridor.altitudeEnvelope?.explicit_margin_m??'—')+'）'
+      +'<br><b>N-ring 不是安全净空值</b>；corridor 只是下一阶段局部精化的搜索窗口。next stage：'+escapeHtml(model.corridor.nextStage||'—')+'</div>'
+    :'<div class="empty-note">尚无 candidate corridor。</div>';
+  const history=model.recent.length
+    ?model.recent.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.experimentId)+'</b> '+statusBadge(item.status||'not_calculated')
+      +'<small>'+escapeHtml(item.createdAt||'')+' · 3D distance '+metric(item.distanceM,'m')+' · state '+escapeHtml(String(item.stateCount??'—'))
+      +' · expanded '+escapeHtml(String(item.expandedStates??'—'))+' · corridor support '+escapeHtml(String(item.corridorSupportCount??'—'))+'</small></span></div>').join('')
+    :'<div class="empty-note">尚无 V3-A 实验记录</div>';
+  return '<h3>V3 战略规划实验 '+statusBadge(model.status)+'</h3>'
+    +'<div class="parameter-note">'+escapeHtml(model.note)+' 记录数 '+escapeHtml(String(model.count))+'。'
+    +'本面板为只读/实验面板：<b>不替换正式 V1/V2 运行航路</b>，结果状态只允许 '
+    +escapeHtml(model.allowedStatuses.join(' / '))+'。</div>'
+    +'<div class="flow-summary">'+escapeHtml(model.architecture)+'</div>'
+    +'<h3>V3 readiness</h3><div class="parameter-note">airspace / terrain / building / policy / aircraft / cost-model 分别给出状态与原因；'
+    +'真实数据 adapter 尚未实现：'+escapeHtml(readiness.realData.status||'blocked')+' · '+escapeHtml(readiness.realData.adapter_status||'—')
+    +'<br>'+escapeHtml(readiness.realData.reason||'')+'</div>'
+    +'<div class="scroll-list route-list">'+v3ReadinessRows(readiness)+'</div>'
+    +'<h3>显式安全参数（无默认值）</h3><div class="scroll-list route-list">'+v3ParameterRows(model)+'</div>'
+    +'<h3>实验输入</h3>'
+    +'<div class="form-grid"><label>环境来源<select id="v3EnvironmentSource"><option value="canonical_synthetic">canonical synthetic（真实 adapter 未实现）</option></select></label>'
+    +'<label>地形剖面<select id="v3TerrainProfile">'+(readiness.syntheticOptions.terrain_profiles||[]).map(name=>'<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>').join('')+'</select></label></div>'
+    +'<div class="form-grid"><label>地形基准高程 (m)<input class="panel-input" type="number" step="any" id="v3BaseElevation" value="0"></label>'
+    +'<label>地形起伏/脊高 (m)<input class="panel-input" type="number" step="any" id="v3TerrainHeight" value="0"></label></div>'
+    +'<div class="form-grid"><label>建筑剖面<select id="v3BuildingsProfile">'+(readiness.syntheticOptions.buildings_profiles||[]).map(name=>'<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>').join('')+'</select></label>'
+    +'<label>建筑数<input class="panel-input" type="number" min="0" id="v3BuildingCount" value="0"></label></div>'
+    +'<label>建筑高度 (m)<input class="panel-input" type="number" step="any" id="v3BuildingHeight" value="0"></label>'
+    +'<div class="form-grid"><label>corridor N-ring<input class="panel-input" type="number" min="0" id="v3CorridorRing" value="0"></label>'
+    +'<label>refinement cell size (m，可空)<input class="panel-input" type="number" step="any" id="v3RefinementCellSize" placeholder="V3-B 参数"></label></div>'
+    +'<div class="parameter-note">合成算例的 terrain/building 值全部来自这里的显式输入，不从任何文件或图层推断；V3-A 不做 30 m 细化，也不做 exact polygon/terrain 最终判定。</div>'
+    +'<h3>Policy（显式安全参数）</h3>'
+    +'<div class="form-grid"><label>最小高度 (m)<input class="panel-input" type="number" step="any" id="v3MinAltitude" value="'+escapeHtml(readiness.policy.min_altitude_egm2008_m??'')+'"></label>'
+    +'<label>最大高度 (m)<input class="panel-input" type="number" step="any" id="v3MaxAltitude" value="'+escapeHtml(readiness.policy.max_altitude_egm2008_m??'')+'"></label>'
+    +'<label>垂向步长 (m)<input class="panel-input" type="number" step="any" id="v3VerticalStep" value="'+escapeHtml(readiness.policy.vertical_step_m??'')+'"></label>'
+    +'<label>地形净空 (m)<input class="panel-input" type="number" step="any" id="v3TerrainClearance" value="'+escapeHtml(readiness.policy.terrain_clearance_m??'')+'"></label>'
+    +'<label>建筑水平净空 (m)<input class="panel-input" type="number" step="any" id="v3BuildingHorizontal" value="'+escapeHtml(readiness.policy.building_horizontal_clearance_m??'')+'"></label>'
+    +'<label>建筑垂直净空 (m)<input class="panel-input" type="number" step="any" id="v3BuildingVertical" value="'+escapeHtml(readiness.policy.building_vertical_clearance_m??'')+'"></label>'
+    +'<label>最小转弯半径 (m)<input class="panel-input" type="number" step="any" id="v3TurnRadius" value="'+escapeHtml(readiness.policy.aircraft_min_turn_radius_m??'')+'"></label>'
+    +'<label>爬升梯度<input class="panel-input" type="number" step="any" id="v3ClimbGradient" value="'+escapeHtml(readiness.policy.max_climb_gradient??'')+'"></label>'
+    +'<label>下降梯度<input class="panel-input" type="number" step="any" id="v3DescentGradient" value="'+escapeHtml(readiness.policy.max_descent_gradient??'')+'"></label>'
+    +'<label>规划速度 (m/s)<input class="panel-input" type="number" step="any" id="v3PlanningSpeed" value="'+escapeHtml(readiness.policy.planning_speed_mps??'')+'"></label></div>'
+    +'<label>参数来源<input class="panel-input" id="v3PolicySource" value="'+escapeHtml(readiness.policy.source||'')+'"></label>'
+    +'<label class="check-row"><input type="checkbox" id="v3PolicyConfirmed" '+(readiness.policy.confirmed?'checked':'')+'>参数已由项目工程依据确认</label>'
+    +'<div class="button-row"><button class="secondary" id="saveRoutePlannerV3Policy">保存 V3 policy</button>'
+    +'<button class="primary" id="evaluateRoutePlannerV3" '+(readiness.status==='passed'?'':'disabled')+'>运行 V3 战略规划实验</button></div>'
+    +'<div class="parameter-note">缺少任一必需安全参数时 readiness 为 blocked，实验拒绝运行；V3-A 禁止猜默认安全值。只有 rate 而没有 explicit planning_speed_mps 时不会换算梯度。</div>'
+    +'<h3>V3-A 战略候选 '+statusBadge(candidate?.status||'not_calculated')+'</h3>'+candidateBlock
+    +'<h3>Cost breakdown（vector，不是单一总数）</h3><div class="parameter-note">不同单位不直接相加；只有已明确 normalization 与非负 weight 的 component 才进入 scalar cost。'
+    +'energy 默认 pending_model/disabled；CNS 记录为 '+escapeHtml(model.cnsIntegration.integration_mode||'post_route_assessment')
+    +' 且 excluded_from_search_cost='+escapeHtml(String(model.cnsIntegration.excluded_from_search_cost===true))+'。</div>'
+    +'<div class="scroll-list route-list">'+v3CostRows(model)+'</div>'
+    +'<h3>Candidate refinement corridor</h3>'+corridor
+    +'<h3>V3-A 实验记录</h3>'+(model.recent.length?'<div class="button-row"><button class="secondary" id="deleteRoutePlannerV3">删除当前实验</button></div>':'')
+    +'<div class="scroll-list route-list">'+history+'</div>';
+}
+
+function optionalNumber(value){const text=String(value??'').trim();return text===''?null:Number(text);}
+
+export function bindRoutePlannerV3(c){
+  if(c.$('saveRoutePlannerV3Policy'))c.actionButton('saveRoutePlannerV3Policy',()=>c.resourceAction('/api/route-planner-v3/policy',{
+    min_altitude_egm2008_m:optionalNumber(c.$('v3MinAltitude').value),
+    max_altitude_egm2008_m:optionalNumber(c.$('v3MaxAltitude').value),
+    vertical_step_m:optionalNumber(c.$('v3VerticalStep').value),
+    terrain_clearance_m:optionalNumber(c.$('v3TerrainClearance').value),
+    building_horizontal_clearance_m:optionalNumber(c.$('v3BuildingHorizontal').value),
+    building_vertical_clearance_m:optionalNumber(c.$('v3BuildingVertical').value),
+    aircraft_min_turn_radius_m:optionalNumber(c.$('v3TurnRadius').value),
+    max_climb_gradient:optionalNumber(c.$('v3ClimbGradient').value),
+    max_descent_gradient:optionalNumber(c.$('v3DescentGradient').value),
+    planning_speed_mps:optionalNumber(c.$('v3PlanningSpeed').value),
+    source:c.$('v3PolicySource').value.trim(),
+    confirmed:c.$('v3PolicyConfirmed').checked}));
+  if(c.$('evaluateRoutePlannerV3'))c.actionButton('evaluateRoutePlannerV3',async()=>{
+    await c.resourceAction('/api/route-planner-v3-experiments/evaluate',{
+      environment_source:c.$('v3EnvironmentSource').value,
+      synthetic_spec:{profile_id:'ui_synthetic',terrain_profile:c.$('v3TerrainProfile').value,
+        base_surface_elevation_m:optionalNumber(c.$('v3BaseElevation').value)??0,
+        ridge_height_m:optionalNumber(c.$('v3TerrainHeight').value)??0,
+        terrain_relative_amplitude_m:optionalNumber(c.$('v3TerrainHeight').value)??0,
+        buildings_profile:c.$('v3BuildingsProfile').value,
+        building_height_m:optionalNumber(c.$('v3BuildingHeight').value)??0,
+        building_count:optionalNumber(c.$('v3BuildingCount').value)??0},
+      corridor_ring_n:optionalNumber(c.$('v3CorridorRing').value)??0,
+      refinement_cell_size_m:optionalNumber(c.$('v3RefinementCellSize').value)});
+    if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
+  });
+  if(c.$('deleteRoutePlannerV3'))c.actionButton('deleteRoutePlannerV3',async()=>{
+    const model=routePlannerV3Model(c.flow());
+    if(!model.activeId)throw new Error('没有可删除的 V3 实验');
+    await c.resourceAction('/api/route-planner-v3-experiments/delete',{experiment_id:model.activeId});
+  });
+}
+
+function experimentPanelV3(flow){
+  return routePlannerV3Panel(flow);
+}
+
 function experimentPanel(flow){
   const model=routeExperimentModel(flow);
   const active=model.active;
@@ -410,11 +648,12 @@ export function render({flow,interactionMode,selectedReference=null}){
   const altitude='<h3>Route 3D Altitude Profile</h3><div class="panel-file-input"><select id="altitudeRoute">'+routeOptions+'</select><select id="routeVerticalReference"><option value="agl">AGL</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option></select></div><label>Constant altitude (m)<input class="panel-input" type="number" id="routeAltitude" value="100"></label><button class="secondary full" id="saveRouteAltitude" '+(!routeOptions?'disabled':'')+'>保存航路高度剖面</button><div class="scroll-list">'+(profiles||'<div class="empty-note">尚未配置运行航路高度</div>')+'</div>';
   const motionProfiles=Object.values(flow.operational_timing?.route_motion_profiles||{}).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_ground_speed_mps??'待确认')+' m/s · '+escapeHtml(item.status)+'</small></span></div>').join('');
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
-  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+airspacePolicyPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+experimentPanel(flow)+routePlanningDiagnosticsPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
+  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+airspacePolicyPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+experimentPanelV3(flow)+experimentPanel(flow)+routePlanningDiagnosticsPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
   return shell('03','航路设计','地图点击增加起降点；场景与运行航路分别保存。',body);
 }
 export function bind(c){
   bindRouteVerticalProfile(c);
+  bindRoutePlannerV3(c);
   c.$('addNodeMode').onclick=c.toggleNodeMode;c.actionButton('scenarioRoutes',()=>c.mutate('scenario',{direction:c.$('routeDirection').value}));c.actionButton('operationalRoutes',()=>c.mutate('operational'));
   if(c.$('createOdRoute'))c.actionButton('createOdRoute',()=>{const start=c.$('odStartNode').value,end=c.$('odEndNode').value;if(start===end)throw new Error('起点与终点不能相同');return c.mutate('scenario-od',{start_node_id:start,end_node_id:end,direction:c.$('odDirection').value});});
   if(c.$('evaluateRouteExperiment'))c.actionButton('evaluateRouteExperiment',()=>c.resourceAction('/api/route-experiments/evaluate',{grounding:'current_scenario_routes'}));

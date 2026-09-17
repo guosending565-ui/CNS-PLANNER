@@ -54,6 +54,9 @@ from ..domain.reporting import empty_report_collection
 from ..domain.airspace import empty_airspace_policies, normalize_airspace_policies
 from ..domain.source_audit import empty_source_audits, normalize_source_audits
 from ..domain.experiment import empty_experiments, normalize_experiments
+from ..route_planner_v3.contracts import (
+    empty_v3_experimental_session, normalize_v3_experiments, normalize_v3_planning_policy,
+)
 from ..domain.reference_route_link import (
     empty_reference_route_links, normalize_reference_route_links,
 )
@@ -157,6 +160,8 @@ def blank_project(defaults):
         "reference_routes": empty_reference_routes(),
         "reference_route_links": empty_reference_route_links(),
         "route_planning_experiments": empty_experiments(),
+        "v3_planning_policy": normalize_v3_planning_policy(None),
+        "route_planner_v3_experiments": empty_v3_experimental_session(),
         "airspace_policies": empty_airspace_policies(),
         "source_audits": empty_source_audits(),
         "reference_route_import_preview": None,
@@ -274,6 +279,10 @@ def normalize_project(value, grid_service):
     )
     value["route_planning_experiments"] = normalize_experiments(
         value.get("route_planning_experiments")
+    )
+    value["v3_planning_policy"] = normalize_v3_planning_policy(value.get("v3_planning_policy"))
+    value["route_planner_v3_experiments"] = normalize_v3_experiments(
+        value.get("route_planner_v3_experiments")
     )
     value["airspace_policies"] = normalize_airspace_policies(value.get("airspace_policies"))
     value["source_audits"] = normalize_source_audits(value.get("source_audits"))
