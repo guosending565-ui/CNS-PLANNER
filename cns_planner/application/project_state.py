@@ -25,6 +25,8 @@ from ..domain.spatial_3d import empty_spatial_3d, normalize_spatial_3d
 from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
 from ..algorithms.timeline.v1 import RouteServiceTimelineV1
 from ..algorithms.protection.v1 import TacticalProtectionEnvelopeV1
+from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
+from ..domain.route_vertical_profile import normalize_route_vertical_profiles
 from ..domain.operational_timing import empty_operational_timing, normalize_operational_timing
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..domain.closed_loop import empty_closed_loop_assessment
@@ -137,6 +139,7 @@ def blank_project(defaults):
         "operational_timing": empty_operational_timing(),
         "service_timeline": RouteServiceTimelineV1.empty(),
         "protection_envelope": TacticalProtectionEnvelopeV1.empty(),
+        "route_vertical_profiles": RouteVerticalProfileV1.empty(),
         "nodes": [], "node_seq": 0, "route_seq": 0,
         "retired_route_ids": [], "scenario_routes": [],
         "operational_routes": [], "aircraft": None, "rules": None,
@@ -187,7 +190,7 @@ def blank_project(defaults):
                 "required_cns_recommendation",
                 "coverage_3d",
                 "cns_service_capability",
-                "service_timeline", "protection_envelope",
+                "service_timeline", "protection_envelope", "route_vertical_profiles",
                 "technical_risk", "report",
             )
         },
@@ -238,6 +241,9 @@ def normalize_project(value, grid_service):
     value["operational_timing"] = normalize_operational_timing(value.get("operational_timing"))
     value.setdefault("service_timeline", RouteServiceTimelineV1.empty())
     value.setdefault("protection_envelope", TacticalProtectionEnvelopeV1.empty())
+    value["route_vertical_profiles"] = normalize_route_vertical_profiles(
+        value.get("route_vertical_profiles")
+    )
     value.setdefault("reference_landing_sites", empty_reference_landing_sites())
     value.setdefault("reference_routes", empty_reference_routes())
     value["airspace_policies"] = normalize_airspace_policies(value.get("airspace_policies"))
@@ -305,6 +311,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("cns_service_capability", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("service_timeline", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("protection_envelope", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("route_vertical_profiles", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("report", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"

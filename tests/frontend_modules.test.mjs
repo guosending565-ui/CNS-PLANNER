@@ -14,6 +14,8 @@ import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwa
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
+import {profileChart,renderRouteVerticalProfilePanel} from '../cns_planner/web/js/workflow/route_vertical_profile.js';
+import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -152,6 +154,33 @@ test('step 4 canonical seconds create exact V1 aliases',()=>{
   assert.equal(result.navigation.accuracy_m,3);
   assert.equal(result.navigation.integrity,'required');
   assert.equal(result.surveillance.update_interval_s,2);
+});
+
+test('route vertical profile renders FABDEM flight building evidence and hover contract',()=>{
+  const profile={route_id:'R1',status:'breach',vertical_reference:'egm2008_orthometric',route_length_m:100,sampling:{sample_count:2,actual_spacing_m:100},required_vertical_clearance_m:20,samples:[{distance_m:0,coordinate:[122,30],ground_egm2008_m:10,flight_egm2008_m:80,flight_agl_m:70,ground_clearance_m:70,status:'passed'},{distance_m:100,coordinate:[122.1,30],ground_egm2008_m:20,flight_egm2008_m:80,flight_agl_m:60,ground_clearance_m:60,status:'passed'}],building_intervals:[{building_id:'B1',start_distance_m:30,end_distance_m:50,roof_elevation_m:70,status:'breach'}],breach_intervals:[{}]};
+  const svg=profileChart(profile),panel=renderRouteVerticalProfilePanel({status:'breach',profiles:[profile]},[{route_id:'R1',status:'passed'}]);
+  assert.match(svg,/data-profile-svg/);
+  assert.match(svg,/ground_egm2008_m|#6b5b3e/);
+  assert.match(svg,/B1/);
+  assert.match(panel,/采样不参与安全判定/);
+  assert.match(panel,/悬停曲线/);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/route_vertical_profile.js',import.meta.url),'utf8');
+  assert.match(source,/onpointermove/);
+  assert.match(source,/setProfileHover/);
+  assert.match(readFileSync(new URL('../cns_planner/web/js/main.js',import.meta.url),'utf8'),/profileHoverCoordinate/);
+});
+
+test('protection budget shows all components and unknown without map geometry',()=>{
+  const components=Object.fromEntries(['detect','track','processing','decision','communication','aircraft_reaction'].map((name,index)=>[name,{value_s:index+1}]));
+  const passed={status:'passed',components,t_pre_s:21,d_reaction_m:210,maneuver_distance_m:40,uncertainty_distance_m:10,d_protect_m:260};
+  const model=protectionBudgetModel(passed),html=renderProtectionBudget(passed);
+  assert.equal(model.parts.length,6);
+  assert.match(html,/t_pre 21.00 s/);
+  assert.match(html,/d_protect 260.00 m/);
+  assert.match(html,/regulatory well-clear not evaluated/);
+  assert.match(renderProtectionBudget({status:'unknown',components:{},reasons:['missing']}),/missing/);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/protection_budget.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/drawLine|\.arc\(/);
 });
 
 test('step 4 separates aircraft capability and required performance UI',()=>{

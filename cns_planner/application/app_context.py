@@ -10,6 +10,7 @@ from ..tile_cache import TileCache
 from .project_directory_service import ProjectDirectoryService
 from .workflow_service import WorkflowService
 from ..gis.building_clearance_adapter import QgisBuildingClearanceAdapter
+from ..gis.route_vertical_profile_adapter import FabdemRouteSampler
 
 
 class RenderRequestTracker:
@@ -104,3 +105,9 @@ class ApplicationContext:
             raise ValueError("请先配置 GBA buildings 与 FABDEM terrain_dtm")
         adapter = QgisBuildingClearanceAdapter(buildings, terrain_dtm)
         return self.workflow.evaluate_building_clearance(adapter)
+
+    def evaluate_route_vertical_profiles(self, payload=None):
+        terrain_dtm = self.data.paths.get("terrain_dtm")
+        if not terrain_dtm:
+            raise ValueError("请先配置 FABDEM terrain_dtm")
+        return self.workflow.evaluate_route_vertical_profiles(FabdemRouteSampler(terrain_dtm), payload)

@@ -25,6 +25,7 @@ class ProjectState(TypedDict, total=False):
     operational_timing: dict[str, Any]
     service_timeline: dict[str, Any]
     protection_envelope: dict[str, Any]
+    route_vertical_profiles: dict[str, Any]
     nodes: list[dict[str, Any]]
     scenario_routes: list[dict[str, Any]]
     operational_routes: list[dict[str, Any]]

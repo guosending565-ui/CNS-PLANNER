@@ -157,6 +157,8 @@ def test_population_service_keeps_partial_value_and_reports_coverage_counts():
     assert cell["population_density_people_km2"] == pytest.approx(
         10.0 / (cell["valid_covered_area_m2"] / 1_000_000.0)
     )
+    assert cell["density_support_area_m2"] == cell["valid_covered_area_m2"]
+    assert cell["density_semantics"] == "observed_covered_area_density"
     assert cell["quantities"]["population_density"]["conversion"]["not_extrapolated"] is True
 
 

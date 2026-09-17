@@ -402,6 +402,10 @@ FABDEM/GBA 建筑阶段完整结果：**389 passed, 6 skipped**；Node 前端 **
 
 WorldPop 原始语义保持 `people_per_pixel` / `person/source_pixel`，映射仍为 source-pixel 与目标格的面积权重 overlap、无插值。新人口结果将 `value_status` 与 `coverage_status=full/partial/nodata_only/outside_extent` 分离，保存有效覆盖面积、覆盖比例、源像元数与 quality flags；partial 保留实际 count，以有效覆盖面积计算 canonical density，不向未覆盖区域外推。RiskModelV1 优先使用 `population_density_people_km2` 并用 coverage fraction 降低 completeness，`value_mean` 仅为旧项目 fallback；building multiplier 仍为 0。真实 WorldPop L8 只读冒烟框 `[122.0,29.9,122.02,29.92]` 共 324 格：full/partial/missing/outside = **4/19/301/0**，其中 nodata-only 301。
 
+航路三维安全剖面与 Protection Budget V1 结果：**402 passed, 6 skipped**；Node 前端 **23 passed, 0 failed**；Python compile、全部 JS syntax 与 `git diff --check` 通过。新增只读 `route_vertical_profiles`：仅对 passed operational route 使用 confirmed altitude profile，并直接从带 `EGM2008_orthometric` 元数据确认的 FABDEM DTM 按自适应间距只读采样；默认最多 500 点，保存首尾点、实际间距、ground/flight EGM2008、AGL 与 ground clearance。样本只服务 SVG 展示，建筑区间、breach 与 critical buildings 原样引用 `BuildingClearanceV1` 的精确结论，不从采样重判安全。
+
+route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building assessment/policy 均进入 fingerprint/provenance 与定向 stale 链；旧 schema-v2 自动 backfill。Step 03 提供航路下拉、FABDEM/flight/roof+required-clearance/breach 纵剖面、hover 数值与二维位置标记，并明确 visualization-only。Step 04 将六个 response-time 分量与 `t_pre/d_reaction/maneuver_distance/uncertainty_distance/d_protect` 做成只读预算图，明确 `engineering protection budget / regulatory well-clear not evaluated`；未增加任何航路 buffer、保护圆或 ConflictDetector 状态机。当前自动恢复项目没有 operational route/confirmed altitude profile，故实际 profile 为 **not_calculated / 0 samples**；Protection 为 **not_calculated**。WorldPop canonical density 另补 `density_support_area_m2` 与 `density_semantics=observed_covered_area_density`，未改变既有数值。
+
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
@@ -448,6 +452,7 @@ WorldPop 原始语义保持 `people_per_pixel` / `person/source_pixel`，映射�
 25. P18 目前提供单项目、单进程的人工 Variant 审查与原子 Apply；尚无多人审批签名、撤销已应用计划、持久化 audit event stream 或跨进程并发提交锁。Comparison Matrix 有意不提供自动综合评分/排名。
 26. P19 PDF 依赖本机 Playwright Chromium，未安装时正式生成会原子失败并返回可操作提示；当前报告 checksum manifest 不等同完整 BagIt、数字签名或不可抵赖审计，HTML/SVG 地图也仅为无底图工程示意。
 27. 舟山起降点源表未明确 CRS，当前 `[lon, lat]` 只按源数值临时展示并保持 `pending_confirmation`；正式空间分析前必须获得 CRS 证据。两份 `.et` 需人工转换为 XLSX/CSV；5GA/低空智联网资料的厂商（包括是否为“54所”）仍待来源确认，不得猜测。
+28. RouteVerticalProfileV1 是显示用离散采样，不是新的净空裁决器；真实剖面仍依赖 passed operational route、confirmed 高度剖面、带明确 EGM2008 元数据的 FABDEM 与当前有效 BuildingClearanceV1。QGIS GUI/HTTP 真实航路 hover 与建筑区间需在正常 QGIS 启动器进程验收。
 
 ## 11. 下一阶段计划
 

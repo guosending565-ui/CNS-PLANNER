@@ -164,6 +164,8 @@ class PopulationGridService:
             "value_max": None,
             "value_status": "missing_data",
             "coverage_status": "nodata_only",
+            "density_support_area_m2": None,
+            "density_semantics": None,
             "valid_covered_area_m2": 0.0,
             "source_coverage_fraction": 0.0,
             "source_pixel_count": 0,
@@ -204,6 +206,8 @@ class PopulationGridService:
             "quantity_status": quantity_status,
             "population_count_people": count,
             "population_density_people_km2": density,
+            "density_support_area_m2": density_area_m2 if density is not None else None,
+            "density_semantics": "observed_covered_area_density" if density is not None else None,
             "grid_area_m2": area_m2,
             "valid_covered_area_m2": covered_area_m2,
             "source_coverage_fraction": allocation.get("source_coverage_fraction"),
@@ -220,6 +224,8 @@ class PopulationGridService:
                     density, "population_density", "person/km2", status=quantity_status,
                     conversion={
                         "denominator": "valid_covered_area_km2" if coverage_status == "partial" else "actual_grid_area_km2",
+                        "density_support_area_m2": density_area_m2 if density is not None else None,
+                        "density_semantics": "observed_covered_area_density" if density is not None else None,
                         "not_extrapolated": True,
                     },
                     source=WORLDPOP_R2025A["source_id"], confirmed=True,
@@ -297,6 +303,8 @@ class PopulationGridService:
                 "quantity_status": value_status,
                 "coverage_status": coverage,
                 "valid_covered_area_m2": valid_area,
+                "density_support_area_m2": cell.get("density_support_area_m2", valid_area if canonical else None),
+                "density_semantics": cell.get("density_semantics", "observed_covered_area_density" if canonical else None),
                 "quality_flags": list(cell.get("quality_flags") or (["partial_source_coverage", "not_extrapolated"] if coverage == "partial" else [])),
             })
             counts[coverage] += 1

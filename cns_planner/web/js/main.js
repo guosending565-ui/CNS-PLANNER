@@ -19,7 +19,7 @@ import {createSourceCenter} from './sources/source_center.js';
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null;
-let selectedReference=null;
+let selectedReference=null,profileHoverCoordinate=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[]};
@@ -109,6 +109,7 @@ function drawWorkflowOverlay(){
     const [x,y]=screenPoint(node.coordinate);ctx.save();ctx.fillStyle='#fff';ctx.strokeStyle='#d65432';ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fill();ctx.stroke();
     ctx.fillStyle='#233f56';ctx.font='600 11px Segoe UI';ctx.fillText(node.node_id,x+10,y-8);ctx.restore();
   }
+  if(profileHoverCoordinate)drawCnsInputPoint(profileHoverCoordinate,'#111','circle');
   if($('existingCnsLayer')?.checked)for(const facility of flow.existing_cns_facilities?.items||[])drawCnsInputPoint(facility.coordinate,'#7256a1','circle');
   if($('candidateSiteLayer')?.checked)for(const site of flow.candidate_sites?.items||[])drawCnsInputPoint(site.coordinate,site.usable===false?'#8b949e':'#e07a26','diamond');
   if($('candidateSiteLayer')?.checked)for(const action of proposedPlanActions(flow))drawCnsInputPoint(action.coordinate,'#d12f8a','square');
@@ -307,7 +308,7 @@ function statusText(status){return labelFor(status);}
 function statusBadge(status){return badgeFor(status);}
 function escapeHtml(value){return escapeValue(value);}
 function setStep(step){
-  currentStep=Number(step);interactionMode='pan';draftWorkspace=null;
+  currentStep=Number(step);interactionMode='pan';draftWorkspace=null;profileHoverCoordinate=null;
   store.set({ui:{...store.get().ui,step:currentStep,interactionMode}});
   document.querySelectorAll('[data-step]').forEach(button=>button.classList.toggle('active',Number(button.dataset.step)===currentStep));
   $('cnsLayers').hidden=currentStep<5;renderWorkflow();paint();
@@ -336,7 +337,7 @@ function stepBindings(){return {
   $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
-  selectReference(value){selectedReference=value;renderWorkflow();paint();},
+  selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
   startWorkspace(){interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},

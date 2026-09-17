@@ -78,6 +78,8 @@ class GdalRasterAdapter:
         outside = {
             "status": "missing_data", "value_status": "missing_data",
             "coverage_status": "outside_extent", "population_count_people": None,
+            "population_density_people_km2": None,
+            "density_support_area_m2": None, "density_semantics": None,
             "target_area_m2": target_area, "valid_covered_area_m2": 0.0,
             "source_coverage_fraction": 0.0, "source_pixel_count": 0,
             "quality_flags": ["outside_source_extent"],
@@ -123,6 +125,7 @@ class GdalRasterAdapter:
             }
         coverage = min(1.0, covered_area / target_area)
         coverage_status = "full" if coverage >= 0.999999 else "partial"
+        density_support_area = min(target_area, covered_area) if coverage_status == "partial" else target_area
         return {
             # ``status`` is retained for old project/schema consumers and now
             # follows value validity. Coverage completeness is independent.
@@ -130,6 +133,9 @@ class GdalRasterAdapter:
             "value_status": "passed",
             "coverage_status": coverage_status,
             "population_count_people": count,
+            "population_density_people_km2": count / (density_support_area / 1_000_000.0),
+            "density_support_area_m2": density_support_area,
+            "density_semantics": "observed_covered_area_density",
             "target_area_m2": target_area,
             "valid_covered_area_m2": min(target_area, covered_area),
             "source_coverage_fraction": coverage,

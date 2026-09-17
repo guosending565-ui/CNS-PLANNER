@@ -68,6 +68,7 @@ class ApiRouter:
         if path == "/api/cns/safety-policy": return Response(workflow.safety_policy_snapshot())
         if path == "/api/building-clearance/policy": return Response(workflow.building_clearance_policy_snapshot())
         if path == "/api/building-clearance": return Response(workflow.building_clearance_snapshot())
+        if path == "/api/route-vertical-profiles": return Response(workflow.route_vertical_profiles_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
         if path == "/api/export/project": return Response(workflow.export_project())
@@ -155,6 +156,7 @@ class ApiRouter:
             "/api/cns/safety-policy": lambda: workflow.set_safety_policy(payload),
             "/api/building-clearance/policy": lambda: workflow.set_building_clearance_policy(payload),
             "/api/building-clearance/evaluate": lambda: context.qgis.call(context.evaluate_building_clearance),
+            "/api/route-vertical-profiles/evaluate": lambda: context.qgis.call(lambda: context.evaluate_route_vertical_profiles(payload)),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
             "/api/spatial-3d/altitude-layers": lambda: workflow.set_altitude_layers(payload),
             "/api/spatial-3d/route-profile": lambda: workflow.set_route_altitude_profile(payload),

@@ -27,6 +27,7 @@ class BuildingClearanceService:
 
     def evaluate(self, adapter):
         state = self.session.state
+        self.invalidation.route_vertical_profiles("building_clearance_changed")
         result = self.model.evaluate(
             state.get("operational_routes"), state.get("spatial_3d"),
             state.get("building_clearance_policy"), adapter,

@@ -44,6 +44,8 @@ from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
 from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
+from .route_vertical_profile_service import RouteVerticalProfileService
+from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
 from ..domain.airspace import normalize_airspace_policies
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
@@ -176,6 +178,9 @@ class WorkflowService:
         self.building_clearance_service = BuildingClearanceService(
             self.session, BuildingClearanceV1(), self.invalidation_service, snapshot,
         )
+        self.route_vertical_profile_service = RouteVerticalProfileService(
+            self.session, RouteVerticalProfileV1(), self.invalidation_service, snapshot,
+        )
 
     def save(self): self.session.save()
 
@@ -225,6 +230,7 @@ class WorkflowService:
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
     def building_clearance_policy_snapshot(self): return self.building_clearance_service.policy_snapshot()
     def building_clearance_snapshot(self): return self.building_clearance_service.assessment_snapshot()
+    def route_vertical_profiles_snapshot(self): return self.route_vertical_profile_service.result_snapshot()
     def algorithms_snapshot(self):
         return {
             "status": "passed", "selection": deepcopy(self.state["algorithm_selection"]),
@@ -410,6 +416,7 @@ class WorkflowService:
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)
     def set_building_clearance_policy(self, payload): return self.building_clearance_service.set_policy(payload)
     def evaluate_building_clearance(self, adapter): return self.building_clearance_service.evaluate(adapter)
+    def evaluate_route_vertical_profiles(self, sampler, payload=None): return self.route_vertical_profile_service.evaluate(sampler, payload)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()

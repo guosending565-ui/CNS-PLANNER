@@ -18,6 +18,8 @@ class SourceProfile(TypedDict, total=False):
     version: str
     quantity: str
     unit: str
+    target_density_semantics: str
+    target_density_support_field: str
     resolution: dict[str, Any]
     crs: dict[str, Any]
     verification: dict[str, Any]

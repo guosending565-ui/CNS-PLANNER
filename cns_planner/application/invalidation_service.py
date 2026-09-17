@@ -102,6 +102,17 @@ class InvalidationService:
             state["building_clearance_assessment"] = result
             state.setdefault("result_statuses", {})["building_clearance"] = "stale"
         mark_active_report_stale(state, reason)
+        self.route_vertical_profiles(reason)
+
+    def route_vertical_profiles(self, reason="route_vertical_profile_input_changed"):
+        state = self.session.state
+        result = state.get("route_vertical_profiles") or {}
+        if result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            result["stale_reason"] = str(reason)
+            state["route_vertical_profiles"] = result
+            state.setdefault("result_statuses", {})["route_vertical_profiles"] = "stale"
+        mark_active_report_stale(state, reason)
 
     def report(self, reason):
         mark_active_report_stale(self.session.state, reason)
