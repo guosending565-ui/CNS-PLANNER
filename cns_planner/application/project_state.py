@@ -52,6 +52,7 @@ from ..domain.requirement_policy import (
 from ..domain.plan_review import empty_confirmed_plan, empty_plan_review
 from ..domain.reporting import empty_report_collection
 from ..domain.airspace import empty_airspace_policies, normalize_airspace_policies
+from ..domain.source_audit import empty_source_audits, normalize_source_audits
 from ..domain.experiment import empty_experiments, normalize_experiments
 from ..domain.reference_route_link import (
     empty_reference_route_links, normalize_reference_route_links,
@@ -157,6 +158,8 @@ def blank_project(defaults):
         "reference_route_links": empty_reference_route_links(),
         "route_planning_experiments": empty_experiments(),
         "airspace_policies": empty_airspace_policies(),
+        "source_audits": empty_source_audits(),
+        "reference_route_import_preview": None,
         "equipment_reference_catalog": empty_equipment_reference_catalog(),
         "aircraft_profiles": empty_catalog("aircraft-cns-profile-catalog"),
         "selected_aircraft_profile_id": None,
@@ -273,6 +276,8 @@ def normalize_project(value, grid_service):
         value.get("route_planning_experiments")
     )
     value["airspace_policies"] = normalize_airspace_policies(value.get("airspace_policies"))
+    value["source_audits"] = normalize_source_audits(value.get("source_audits"))
+    value.setdefault("reference_route_import_preview", None)
     equipment_reference = value.setdefault(
         "equipment_reference_catalog", empty_equipment_reference_catalog()
     )

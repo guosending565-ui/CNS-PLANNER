@@ -592,6 +592,24 @@ Step 03 并列查看：
 
 brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS），只陈述冻结 planner 实际观测：λ 增大时用更长路径换更低 risk exposure（λ=0→4，9428.6 m/8477.8 → 10902.9 m/1935.8，4 条不同路径）；网格 L6→L8 路径缩短 1058.9 m、zigzag 降至 0.087 倍；斜向 OD 上 8 邻域只使用 E/NE 两个方向（其余 6 个方向未出现）。这些观测用于支撑 P5/P6/P7，本身不构成结论或推荐。
 
+## 8.4 真实数据可信化与规划输入就绪 V1（本轮）
+
+基线 commit `9f2af8007e1216b02e1d2675f9865dba61e1c153`。本轮只推进 DATA-1/2/3 与来源治理；V1/V2 搜索、lambda、grid adjacency、hard-constraint 模型与所有需专家决策的算法项保持冻结。
+
+- 新增 JSON-safe `SourceAssetManifest/SourceAudit`：稳定 `source_id` 只依赖 role，绝对路径只由本机 `map_sources.json` 解析，manifest 仅保存 `local_path_ref`、文件名、size/mtime、schema/count/extent、declared/confirmed CRS、geometry health、evidence/provenance 和版本验证。普通 snapshot 仅 stat；只有用户点击“验证数据源”才流式计算 SHA-256。
+- 已验证文件的 size/mtime 或 SHA 变化会标记 `source_changed/needs_revalidation`，使 reference CRS/米制比较或 airspace policy/eligibility/operational route 沿现有依赖链 stale；不自动重算、不以同名文件代表同版本。
+- DATA-1 新增人工 CRS 确认 API/UI：`pyproj.CRS` 只验证用户输入，有 source/evidence 才能保存；需转换时固定 `Transformer.from_crs(source, "OGC:CRS84", always_xy=True)`，保留 source numeric coordinate/path 和转换 provenance。GeoJSON RFC 7946 仍只证明 representation CRS，不自动确认 source CRS。
+- DATA-2 新增 converted route `ImportPreview`：报告 route/point 数、有效/无效坐标、航线编号冲突、sequence gap、columns/bounds/warnings/source audit。配置 CSV/XLSX/GeoJSON 不会替换 `reference_routes`，只有用户确认同一 preview fingerprint 才替换；预览后文件改变则拒绝。`.et` 仍只返回 `requires_xlsx_or_csv_conversion`。
+- DATA-3 新增 AirspacePolicy editor：逐 feature 展示来源几何事实、geometry health、allowed/blocked/unknown/confirmed/source/evidence；单项或“用户明确勾选”的批量保存都要求 source+evidence。旧 project 中无 evidence 的未修改 policy 可 backfill 保留，但不能因此阻断新单项编辑。仍禁止根据图层名/颜色/样式推断。
+- geometry health 为只读检查，记录 null/empty/invalid/unsupported/count/extent/CRS，不 MakeValid。空域几何有无效项时在 intersections/eligibility 前 fail-closed；reference GeoJSON 预览中 blocked geometry 不允许确认导入。
+- 统一最小 provenance 字段为 `source_entity / processing_activity / derived_entity / derived_from / method / timestamp / note`；ET→converted 可在预览时记录 conversion method/evidence，但系统不执行 ET 转换。
+- Data Source Center 新增 configured/identity/schema/CRS/geometry/version/overall 审计状态及“验证数据源 / 确认 CRS / 预览并导入航线 / 编辑 AirspacePolicy”入口，不显示内部 P 阶段编号。
+- `tools/data_readiness_report.py` 生成 ignored `outputs/data_readiness/data_readiness.{json,md}`，只读汇总 source audit/hash/version/CRS/geometry/import/policy/DATA-1/2/3，不造数据、不自动 hash、不猜 CRS、不解析 ET、不确认 policy。
+
+当前本机报告：参考起降点 98 条，geometry health 98/0 null/0 empty/0 invalid/0 unsupported，但 source CRS 待确认；航线配置仍为 `.et`，目录中未发现已转换 CSV/XLSX/GeoJSON，因此 reference routes=0；建筑单体 538,228 个、建筑网格 143,013 个，Shapely 只读拓扑扫描均为 0 null/empty/invalid/unsupported；当前持久化项目尚无新版 airspace geometry health，需重跑工作区网格映射；AirspacePolicy=0，confirmed allowed=0。DATA-1/2/3 全部 blocked，仍需用户提供 CRS 证据、转换 ET 并预览确认、逐 feature 确认 policy。
+
+本轮验证：全量 pytest **566 passed, 6 skipped**；Node **39 passed, 0 failed**；`compileall`、Source Center/Step03 JS syntax 与 `git diff --check` 全部通过。默认 pytest 环境的 `.pytest_cache` 因当前 Windows 中文路径/权限只产生一条 cache warning，不影响测试结果。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。

@@ -1,5 +1,6 @@
 """Composition root for mutable runtime collaborators."""
 
+from copy import deepcopy
 from pathlib import Path
 import secrets
 import threading
@@ -58,7 +59,36 @@ class ApplicationContext:
             "terrain": self.data.terrain_info.get("source_profile"),
             "terrain_dtm": self.data.terrain_dtm_info.get("source_profile"),
         })
+        self.workflow.register_source_paths(self.data.paths, self._source_details())
         self.workflow.configure_reference_sources(self.data.paths)
+
+    def _source_details(self):
+        details = {}
+        for role, info in (getattr(self.data, "vector_info", {}) or {}).items():
+            details[role] = {
+                "schema": {"fields": sorted((info.get("fields") or {}).keys())},
+                "feature_count": info.get("feature_count"), "extent": info.get("extent"),
+                "declared_crs": info.get("crs"),
+                "geometry_health": deepcopy(info.get("geometry_health") or {
+                    "status": "not_fully_checked", "feature_count": info.get("feature_count"),
+                    "null": None, "empty": None, "invalid": None, "unsupported": None,
+                    "extent": info.get("extent"), "crs": info.get("crs"),
+                    "repair_applied": False,
+                }),
+            }
+        for role, info in (
+            ("population", getattr(self.data, "raster_info", {}) or {}),
+            ("terrain", getattr(self.data, "terrain_info", {}) or {}),
+            ("terrain_dtm", getattr(self.data, "terrain_dtm_info", {}) or {}),
+        ):
+            details[role] = {
+                "schema": {"width": info.get("width"), "height": info.get("height"),
+                           "bands": info.get("bands"), "dtype": info.get("dtype")},
+                "extent": info.get("extent"), "declared_crs": info.get("crs"),
+                "geometry_health": {"status": "not_applicable", "feature_count": None,
+                                    "null": 0, "empty": 0, "invalid": 0, "unsupported": 0},
+            }
+        return details
 
     def save_project_as(self, project_dir):
         workflow, target = self.project_directories.save_as(
@@ -80,6 +110,7 @@ class ApplicationContext:
             for name in paths
         }
         self.data.load({**self.data.paths, **paths})
+        self.workflow.register_source_paths(self.data.paths, self._source_details())
         self.workflow.configure_reference_sources(self.data.paths)
         self.workflow.update_data_source_profiles({
             "population": self.data.raster_info.get("source_profile"),

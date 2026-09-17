@@ -8,6 +8,7 @@ from qgis.core import QgsCoordinateReferenceSystem
 
 from ..data.health import build_health
 from ..data.registry import build_registry
+from ..domain.source_audit import source_manifest
 from ..data.mapping.airspace import AirspaceGridService
 from ..data.mapping.population import PopulationGridService
 from ..data.mapping.terrain import TerrainGridService
@@ -86,6 +87,9 @@ class MapData:
         base["device_library"] = base["defaults"].get("device_library", {})
         base["project_storage"] = self.project_metadata_provider()
         base["workflow"] = self.workflow_provider()
+        audits = (base["workflow"].get("source_audits") or {}).setdefault("items", {})
+        for role, path in self.paths.items():
+            audits[role] = source_manifest(role, path, previous=audits.get(role))
         base["data_sources"] = build_registry(base)
         base["data_health"] = build_health(base)
         return base

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from pathlib import Path
 
 from ..data.mapping.airspace_eligibility import AirspaceEligibilityService
 from ..domain.airspace import normalize_airspace_feature
@@ -46,7 +47,8 @@ class QgisAirspaceAdapter:
 
     def describe(self):
         return {
-            "path": self.source_path,
+            "file_name": Path(self.source_path).name if self.source_path else None,
+            "local_path_ref": "local_map_sources:basemap",
             "layers": [
                 {
                     "layer_id": layer.id(),
@@ -114,6 +116,14 @@ class QgisAirspaceAdapter:
         return mapped
 
     def build_eligibility(self, cells, workspace_bbox, policies=None):
+        health = self.geometry_health(workspace_bbox)
+        if any((health.get(name) or 0) > 0 for name in ("null", "empty", "invalid", "unsupported")):
+            from ..data.mapping.airspace_eligibility import empty_airspace_eligibility
+            result = empty_airspace_eligibility(
+                "blocked", "airspace_source_contains_invalid_or_unsupported_geometry",
+            )
+            result["geometry_health"] = health
+            return result
         try:
             features = self.features(workspace_bbox)
         except (AttributeError, TypeError, ValueError, RuntimeError, json.JSONDecodeError):
@@ -121,6 +131,49 @@ class QgisAirspaceAdapter:
             # never a permissive fallback based on layer names or cell intersections.
             features = []
         return AirspaceEligibilityService().build(cells, features, policies)
+
+    def geometry_health(self, workspace_bbox):
+        from qgis.core import QgsWkbTypes
+
+        wgs84 = self.QgsCoordinateReferenceSystem("EPSG:4326")
+        workspace = self.QgsRectangle(*workspace_bbox)
+        counts = {"null": 0, "empty": 0, "invalid": 0, "unsupported": 0}
+        feature_count = 0
+        extents = []
+        crs_values = set()
+        for layer in self.layers:
+            crs_values.add(layer.crs().authid() or layer.crs().description())
+            to_layer = self.QgsCoordinateTransform(wgs84, layer.crs(), self.project)
+            to_wgs84 = self.QgsCoordinateTransform(layer.crs(), wgs84, self.project)
+            request = self.QgsFeatureRequest().setFilterRect(to_layer.transformBoundingBox(workspace))
+            for feature in layer.getFeatures(request):
+                feature_count += 1
+                geometry = feature.geometry()
+                if geometry is None or geometry.isNull():
+                    counts["null"] += 1
+                    continue
+                if geometry.isEmpty():
+                    counts["empty"] += 1
+                    continue
+                if QgsWkbTypes.geometryType(geometry.wkbType()) != QgsWkbTypes.PolygonGeometry:
+                    counts["unsupported"] += 1
+                    continue
+                if callable(getattr(geometry, "isGeosValid", None)) and not geometry.isGeosValid():
+                    counts["invalid"] += 1
+                    continue
+                bbox = to_wgs84.transformBoundingBox(geometry.boundingBox())
+                extents.append([bbox.xMinimum(), bbox.yMinimum(), bbox.xMaximum(), bbox.yMaximum()])
+        extent = ([min(item[0] for item in extents), min(item[1] for item in extents),
+                   max(item[2] for item in extents), max(item[3] for item in extents)]
+                  if extents else None)
+        unhealthy = sum(counts.values())
+        return {
+            "status": "passed" if unhealthy == 0 else "blocked",
+            "scope": "workspace_features", "feature_count": feature_count,
+            **counts, "extent": extent, "crs": sorted(crs_values),
+            "repair_applied": False,
+            "reason": None if unhealthy == 0 else "invalid_geometry_fail_closed",
+        }
 
     def features(self, workspace_bbox):
         """Return normalized polygon facts; route eligibility is deliberately absent."""
@@ -136,7 +189,10 @@ class QgisAirspaceAdapter:
             useful_names = [name for name in field_names if name.lower() in {item.lower() for item in USEFUL_FIELDS}]
             for feature in layer.getFeatures(request):
                 source_geometry = feature.geometry()
-                if source_geometry is None or source_geometry.isNull():
+                if (source_geometry is None or source_geometry.isNull()
+                        or source_geometry.isEmpty()
+                        or (callable(getattr(source_geometry, "isGeosValid", None))
+                            and not source_geometry.isGeosValid())):
                     continue
                 geometry = self.QgsGeometry(source_geometry)
                 geometry.transform(to_wgs84)
@@ -167,7 +223,8 @@ class QgisAirspaceAdapter:
                         "normalized_geometry": "EPSG:4326",
                     },
                     "source": {
-                        "file": self.source_path,
+                        "file": Path(self.source_path).name if self.source_path else None,
+                        "local_path_ref": "local_map_sources:basemap",
                         "layer_id": layer.id(),
                         "layer_name": layer.name(),
                         "source_feature_id": self._json_value(feature.id()),
@@ -178,7 +235,8 @@ class QgisAirspaceAdapter:
 
     def _stable_feature_id(self, layer, feature):
         value = {
-            "source": self.source_path,
+            "source_role": "basemap",
+            "file_name": Path(self.source_path).name if self.source_path else None,
             "layer_id": layer.id(),
             "layer_name": layer.name(),
             "source_feature_id": self._json_value(feature.id()),

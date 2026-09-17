@@ -284,9 +284,9 @@ def test_landing_site_crs_and_format_appear_in_readiness(tmp_path):
 def test_airspace_policy_readiness_counts_only_explicit_values(tmp_path):
     workflow = project_workflow(tmp_path)
     workflow.set_airspace_policies({"items": [
-        {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}},
-        {"feature_id": "B", "route_eligibility": "blocked", "confirmed": True, "source": {"type": "doc"}},
-        {"feature_id": "C", "route_eligibility": "unknown", "confirmed": False, "source": {"type": "doc"}},
+        {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
+        {"feature_id": "B", "route_eligibility": "blocked", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
+        {"feature_id": "C", "route_eligibility": "unknown", "confirmed": False, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
     ]})
     policies = workflow.data_readiness_snapshot()["blocks"]["airspace_policies"]
     assert policies["count"] == 3
@@ -301,7 +301,7 @@ def test_policy_change_stales_airspace_eligibility_and_route_outputs(tmp_path):
     workflow.generate_operational([])
     assert workflow.state["result_statuses"]["routes"] == "passed"
     workflow.set_airspace_policies({"items": [
-        {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}},
+        {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
     ]})
     assert workflow.state["result_statuses"]["routes"] == "stale"
     assert workflow.state["algorithm_selection"]["route_planner"]["algorithm_id"] == "route_planner_v1"

@@ -32,6 +32,22 @@ class AirspaceGridService:
         if not cells:
             return self.empty()
         try:
+            geometry_health = (
+                adapter.geometry_health(grid.get("workspace_bbox"))
+                if callable(getattr(adapter, "geometry_health", None)) else {"status": "not_calculated"}
+            )
+            if geometry_health.get("status") == "blocked":
+                result = self.empty(
+                    "failed", adapter.describe(),
+                    "airspace_source_contains_invalid_or_unsupported_geometry",
+                )
+                result["grid_level"] = grid.get("level")
+                result["count"] = len(cells)
+                result["geometry_health"] = geometry_health
+                result["airspace_eligibility"] = empty_airspace_eligibility(
+                    "blocked", "airspace_source_contains_invalid_or_unsupported_geometry",
+                )
+                return result
             mapped = adapter.intersections(cells, grid.get("workspace_bbox"))
             result_cells = {}
             hit_count = 0
@@ -66,6 +82,7 @@ class AirspaceGridService:
                 "hit_count": hit_count,
                 "cells": result_cells,
                 "features": eligibility.get("features") or [],
+                "geometry_health": geometry_health,
                 "airspace_eligibility": eligibility,
             }
         except (OSError, ValueError, RuntimeError) as exc:

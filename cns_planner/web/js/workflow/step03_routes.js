@@ -301,15 +301,31 @@ export function airspacePolicyReadinessModel(flow){
       confirmed:item.confirmed===true,source:item.source}))};
 }
 
+export function airspacePolicyEditorModel(flow){
+  const policies=new Map((flow?.airspace_policies?.items||[]).map(item=>[item.feature_id,item]));
+  const features=flow?.grid_attributes?.airspace?.features||[];
+  return features.map(feature=>{
+    const policy=policies.get(feature.feature_id)||{};
+    return {feature_id:feature.feature_id,layer:feature.source?.layer_name||feature.source?.layer_id||'—',
+      category:feature.category||feature.type||'—',source:feature.source||{},geometry_health:feature.geometry_health||'passed',
+      route_eligibility:policy.route_eligibility||'unknown',confirmed:policy.confirmed===true,
+      evidence:policy.evidence||[],policy_source:policy.source||null};
+  });
+}
+
 function airspacePolicyPanel(flow){
   const model=airspacePolicyReadinessModel(flow);
-  const rows=model.items.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.feature_id)+'</b><small>route_eligibility '+escapeHtml(item.route_eligibility)+' · confirmed '+escapeHtml(String(item.confirmed))+' · source '+escapeHtml(typeof item.source==='string'?item.source:jsonInline(item.source))+'</small></span></div>').join('');
+  const editor=airspacePolicyEditorModel(flow);
+  const rows=editor.map(item=>'<div class="list-row"><label class="check-row"><input type="checkbox" data-airspace-policy-select="'+escapeHtml(item.feature_id)+'"><span><b>'+escapeHtml(item.feature_id)+'</b><small>layer '+escapeHtml(item.layer)+' · category '+escapeHtml(item.category)+' · geometry '+escapeHtml(String(item.geometry_health))+'</small><small>current '+escapeHtml(item.route_eligibility)+' · confirmed '+escapeHtml(String(item.confirmed))+' · source '+escapeHtml(jsonInline(item.policy_source||item.source))+' · evidence '+escapeHtml(String(item.evidence.length))+'</small></span></label><select data-airspace-policy-value="'+escapeHtml(item.feature_id)+'"><option value="allowed" '+(item.route_eligibility==='allowed'?'selected':'')+'>allowed</option><option value="blocked" '+(item.route_eligibility==='blocked'?'selected':'')+'>blocked</option><option value="unknown" '+(item.route_eligibility==='unknown'?'selected':'')+'>unknown</option></select><button class="secondary compact" data-save-airspace-policy="'+escapeHtml(item.feature_id)+'">保存单项</button></div>').join('');
   return '<h3>AirspacePolicy 就绪总览 '+statusBadge(model.status)+'</h3>'
     +'<div class="parameter-note">只读取已保存 policy：allowed/blocked/unknown 与 confirmed 均来自显式配置，'
     +'<b>绝不按图层颜色或名称自动推断</b>。</div>'
     +'<div class="flow-summary">policy '+model.count+' 条 · allowed '+model.eligibilityCounts.allowed+' · blocked '+model.eligibilityCounts.blocked+' · unknown '+model.eligibilityCounts.unknown
     +' · confirmed '+model.confirmedCount+' · 未确认 '+model.unconfirmedCount+'<br>V2 readiness：'+escapeHtml(model.v2Readiness.status)+' · 原因 '+escapeHtml(model.v2Readiness.reason||'—')+'</div>'
-    +'<div class="scroll-list route-list">'+(rows||'<div class="empty-note">尚无 AirspacePolicy；请在上方空域源图层政策中显式确认</div>')+'</div>';
+    +'<label>policy source<input class="panel-input" id="airspacePolicySource" placeholder="例如 user_review / authority_document"></label><label>evidence<input class="panel-input" id="airspacePolicyEvidence" placeholder="必填：文件、条款或人工核对说明"></label>'
+    +'<div class="form-grid"><label>批量值<select id="airspacePolicyBatchValue"><option value="allowed">allowed</option><option value="blocked">blocked</option><option value="unknown">unknown</option></select></label><button class="secondary" id="saveAirspacePolicyBatch">保存明确选中项</button></div>'
+    +'<div class="parameter-note">批量设置只作用于用户勾选的 feature；保存必须带 source/evidence。系统不读取图层名、颜色或样式作推断。</div>'
+    +'<div class="scroll-list route-list">'+(rows||'<div class="empty-note">尚无可编辑 AirspaceFeature；先加载空域源并生成工作区网格。</div>')+'</div>';
 }
 
 function readinessBlockRows(block){
@@ -351,8 +367,10 @@ function selectedReferencePanel(flow,selected){
 
 function referenceRoutesPanel(flow,selected){
   const catalog=flow.reference_routes||{},routes=catalog.items||[],points=catalog.points||[];
+  const preview=flow.reference_route_import_preview||null;
+  const previewHtml=preview?'<div class="flow-summary"><b>导入预览</b> '+escapeHtml(preview.status||'')+' · routes '+escapeHtml(String(preview.route_count??0))+' · points '+escapeHtml(String(preview.point_count??0))+' · valid/invalid '+escapeHtml(String(preview.valid_coordinate_count??0))+'/'+escapeHtml(String(preview.invalid_coordinate_count??0))+' · sequence gaps '+escapeHtml(String((preview.sequence_gaps||[]).length))+' · duplicate conflicts '+escapeHtml(String((preview.duplicate_route_numbers||[]).length))+'<br>columns '+escapeHtml((preview.columns||[]).join(', '))+'<br>warnings '+escapeHtml((preview.warnings||[]).join(', ')||'无')+(preview.preview_id&&preview.status==='ready_for_confirmation'?'<br><button class="primary compact" id="confirmReferenceRouteImport" data-preview-id="'+escapeHtml(preview.preview_id)+'">确认替换 reference_routes</button>':'')+'</div>':'';
   const rows=routes.map(route=>'<button class="list-row reference-route-row" data-select-reference-route="'+escapeHtml(route.reference_route_id)+'"><span><b>'+escapeHtml(route.name||route.reference_route_id)+'</b><small>航线编号 '+escapeHtml(route.route_number)+' · '+escapeHtml(route.category||'分类未注明')+' · '+(route.ordered_points||[]).length+' 点 · '+metric(route.length_m,'m')+'</small></span></button>').join('');
-  return '<h3>真实参考航线 '+statusBadge(catalog.status||'not_calculated')+'</h3><div class="parameter-note">reference_routes / route points 为只读参考层，不会写入 flow.nodes、scenario_routes 或 operational_routes。全部中间点均按 sequence 保留；CRS 为 pending_confirmation 时仅按源数值临时显示。</div>'+selectedReferencePanel(flow,selected)+'<div class="flow-summary">航线 '+(catalog.count||0)+' 条 · 航路点 '+(catalog.point_count||points.length)+' 个</div><div class="scroll-list">'+(rows||'<div class="empty-note">尚无已转换 CSV/XLSX/GeoJSON 参考航线；ET 需先转换。</div>')+'</div>';
+  return '<h3>真实参考航线 '+statusBadge(catalog.status||'not_calculated')+'</h3><div class="parameter-note">reference_routes / route points 为只读参考层，不会写入 flow.nodes、scenario_routes 或 operational_routes。全部中间点均按 sequence 保留；CRS 为 pending_confirmation 时仅按源数值临时显示。</div>'+previewHtml+selectedReferencePanel(flow,selected)+'<div class="flow-summary">航线 '+(catalog.count||0)+' 条 · 航路点 '+(catalog.point_count||points.length)+' 个</div><div class="scroll-list">'+(rows||'<div class="empty-note">尚无已转换 CSV/XLSX/GeoJSON 参考航线；ET 需先转换。</div>')+'</div>';
 }
 
 function comparisonPanel(flow,selected){
@@ -401,6 +419,10 @@ export function bind(c){
   if(c.$('createOdRoute'))c.actionButton('createOdRoute',()=>{const start=c.$('odStartNode').value,end=c.$('odEndNode').value;if(start===end)throw new Error('起点与终点不能相同');return c.mutate('scenario-od',{start_node_id:start,end_node_id:end,direction:c.$('odDirection').value});});
   if(c.$('evaluateRouteExperiment'))c.actionButton('evaluateRouteExperiment',()=>c.resourceAction('/api/route-experiments/evaluate',{grounding:'current_scenario_routes'}));
   if(c.$('deleteRouteExperiment'))c.actionButton('deleteRouteExperiment',()=>{const model=routeExperimentModel(c.flow());if(!model.active_experiment_id)throw new Error('没有可删除的实验');return c.resourceAction('/api/route-experiments/delete',{experiment_id:model.active_experiment_id});});
+  if(c.$('confirmReferenceRouteImport'))c.actionButton('confirmReferenceRouteImport',()=>c.resourceAction('/api/reference-routes/import-confirm',{preview_id:c.$('confirmReferenceRouteImport').dataset.previewId}));
+  const policyEvidence=()=>{const source=c.$('airspacePolicySource')?.value.trim(),note=c.$('airspacePolicyEvidence')?.value.trim();if(!source||!note)throw new Error('AirspacePolicy 保存必须填写 source 和 evidence');return {source:{type:source},evidence:[{type:'user_supplied',note}]};};
+  document.querySelectorAll('[data-save-airspace-policy]').forEach(button=>button.onclick=async()=>{try{const featureId=button.dataset.saveAirspacePolicy,value=document.querySelector('[data-airspace-policy-value="'+CSS.escape(featureId)+'"]').value;await c.resourceAction('/api/airspace-policies/item',{feature_id:featureId,route_eligibility:value,confirmed:true,...policyEvidence()});}catch(error){c.panelError(error.message);}});
+  if(c.$('saveAirspacePolicyBatch'))c.actionButton('saveAirspacePolicyBatch',()=>{const feature_ids=[...document.querySelectorAll('[data-airspace-policy-select]:checked')].map(item=>item.dataset.airspacePolicySelect);if(!feature_ids.length)throw new Error('请先明确勾选要批量设置的 feature');return c.resourceAction('/api/airspace-policies/batch',{feature_ids,route_eligibility:c.$('airspacePolicyBatchValue').value,confirmed:true,...policyEvidence()});});
   if(c.$('createReferenceLink'))c.actionButton('createReferenceLink',()=>c.resourceAction('/api/reference-route-links/create',{reference_route_id:c.$('linkReferenceRoute').value,scenario_route_id:c.$('linkScenarioRoute').value,confirmed:true}));
   document.querySelectorAll('[data-delete-reference-link]').forEach(button=>button.onclick=()=>c.resourceAction('/api/reference-route-links/delete',{link_id:button.dataset.deleteReferenceLink}).catch(error=>c.panelError(error.message)));
   document.querySelectorAll('[data-confirm-reference-link]').forEach(button=>button.onclick=()=>{const [referenceRouteId,scenarioRouteId]=button.dataset.confirmReferenceLink.split('|');return c.resourceAction('/api/reference-route-links/create',{reference_route_id:referenceRouteId,scenario_route_id:scenarioRouteId,confirmed:true,origin:'user',source:{type:'user_confirmation_from_endpoint_candidate'}}).catch(error=>c.panelError(error.message));});

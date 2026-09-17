@@ -73,6 +73,7 @@ class ApiRouter:
         if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
         if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
         if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
+        if path == "/api/source-audits": return Response(workflow.source_audits_snapshot())
         if path == "/api/encounter-3d": return Response(workflow.encounter_3d_snapshot())
         if path == "/api/algorithms": return Response(workflow.algorithms_snapshot())
         if path == "/api/online-health": return Response(check_online_services(data))
@@ -130,8 +131,13 @@ class ApiRouter:
             "/api/aircraft-profiles/import": lambda: workflow.import_aircraft_catalog(payload.get("path")),
             "/api/device-catalog/import": lambda: workflow.import_device_catalog(payload.get("path")),
             "/api/reference-landing-sites/import": lambda: workflow.import_reference_landing_sites(payload.get("path") or data.paths.get("reference_landing_sites")),
-            "/api/reference-routes/import": lambda: workflow.import_reference_routes(payload.get("path") or data.paths.get("reference_routes")),
+            "/api/reference-routes/import": lambda: workflow.confirm_reference_routes_import(payload.get("path") or data.paths.get("reference_routes"), payload.get("preview_id")),
+            "/api/reference-routes/preview": lambda: workflow.preview_reference_routes(payload.get("path") or data.paths.get("reference_routes"), {"conversion_method": payload.get("conversion_method"), "evidence": payload.get("evidence")} if payload.get("conversion_method") or payload.get("evidence") else None),
+            "/api/reference-routes/import-confirm": lambda: workflow.confirm_reference_routes_import(payload.get("path") or data.paths.get("reference_routes"), payload.get("preview_id")),
+            "/api/reference-crs/confirm": lambda: workflow.confirm_reference_crs(payload.get("role"), payload),
             "/api/airspace-policies": lambda: workflow.set_airspace_policies(payload),
+            "/api/airspace-policies/item": lambda: workflow.set_airspace_policy(payload),
+            "/api/airspace-policies/batch": lambda: workflow.batch_set_airspace_policies(payload),
             "/api/reference-landing-sites/add-to-project": lambda: workflow.add_reference_landing_site(payload.get("reference_site_id")),
             "/api/required-cns": lambda: workflow.set_required_cns(payload),
             "/api/cns-operation-context": lambda: workflow.set_cns_operation_context(payload),
@@ -178,6 +184,23 @@ class ApiRouter:
         }
         if path in resource_actions:
             return Response(resource_actions[path]())
+        if path == "/api/source-audits/verify":
+            role = str(payload.get("role") or "")
+            path_role = "basemap" if role == "airspace" else role
+            source_path = data.paths.get(path_role)
+            if not source_path:
+                raise ValueError("数据源尚未在本机配置")
+            details = None
+            if path_role in ("buildings", "building_grid"):
+                from ..gis.source_inspection import inspect_geopackage
+                info = inspect_geopackage(source_path, path_role, deep_geometry=True)
+                details = {
+                    "schema": {"fields": sorted((info.get("fields") or {}).keys())},
+                    "feature_count": info.get("feature_count"),
+                    "extent": info.get("extent"), "declared_crs": info.get("crs"),
+                    "geometry_health": info.get("geometry_health"),
+                }
+            return Response(workflow.verify_source(path_role, source_path, details))
         if path.startswith("/api/workflow/"):
             action = path.rsplit("/", 1)[-1]
             if action == "project": return Response(workflow.set_project(payload))
@@ -220,6 +243,8 @@ class ApiRouter:
                 "terrain_dtm",
                 "buildings",
                 "building_grid",
+                "reference_landing_sites",
+                "reference_routes",
             )
         }
         if path == "/api/data-sources/validate":

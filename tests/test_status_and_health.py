@@ -41,7 +41,7 @@ def test_only_complete_assessments_pass_and_failure_dominates():
 def test_health_is_stage_aware_and_keeps_online_services_separate():
     health = build_health(sample_metadata())
     by_id = {item["id"]: item for item in health["items"]}
-    assert health["stage"] == "P1"
+    assert health["stage"] == "数据配置"
     assert health["status"] == "warning"
     assert by_id["basemap"]["status"] == "ready"
     assert by_id["population"]["status"] == "ready"

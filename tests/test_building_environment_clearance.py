@@ -81,6 +81,13 @@ def test_building_geopackage_schema_and_rtree_validation(tmp_path):
     assert info["spatial_index"] is True
     assert info["valid_height_fraction"] == 1
     assert {"height_m", "height_var", "height_status"} <= set(info["fields"])
+    assert info["geometry_health"] == {
+        "status": "not_fully_checked", "feature_count": 1, "null": 1,
+        "empty": None, "invalid": None, "unsupported": 0,
+        "extent": [121.0, 30.0, 121.001111111, 30.001111111],
+        "repair_applied": False, "method": "gpkg_schema_and_null_scan",
+        "topology_checked": False,
+    }
 
 
 def test_building_grid_schema_and_direct_l8_bounds_mapping(tmp_path):

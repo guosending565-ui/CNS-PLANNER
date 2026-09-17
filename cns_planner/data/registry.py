@@ -65,6 +65,7 @@ def build_registry(metadata: dict) -> list[dict]:
     paths = metadata.get("paths", {})
     online = metadata.get("online_sources", [])
     workflow = metadata.get("workflow") or {}
+    audits = (workflow.get("source_audits") or {}).get("items") or {}
     result = []
     for definition in DEFINITIONS:
         item = asdict(definition)
@@ -78,12 +79,28 @@ def build_registry(metadata: dict) -> list[dict]:
             "source_metadata": {},
             "source_type_options": ["real", "synthetic", "manual"],
         })
+        audit = audits.get(definition.id) or (audits.get("basemap") if definition.id == "airspace" else {}) or {}
+        item["source_audit"] = audit
+        item["trust"] = {
+            "configured": "passed" if item["configured"] else "missing",
+            "identity": "passed" if audit.get("source_id") else "not_checked",
+            "schema": "passed" if audit.get("schema") else "not_checked",
+            "crs": (
+                "passed" if audit.get("confirmed_crs") else
+                "declared_only" if audit.get("declared_crs") else "pending_confirmation"
+            ),
+            "geometry": (audit.get("geometry_health") or {}).get("status", "not_checked"),
+            "version": "verified" if audit.get("sha256") else audit.get("status", "not_checked"),
+            "overall": audit.get("status", "not_checked"),
+            "reasons": list(audit.get("reasons") or []),
+        }
         if definition.id in ("online_map", "geocoder"):
             item["configured"] = bool(online)
             item["location"] = f"QGIS 项目内 {len(online)} 个 XYZ 图层" if online else None
         elif definition.id == "airspace":
             item["configured"] = bool(metadata.get("layers"))
             item["location"] = "包含在 QGIS 项目中" if item["configured"] else None
+            item["path"] = paths.get("basemap")
         elif definition.id in ("population", "terrain", "terrain_dtm"):
             raster = metadata.get(definition.id) or {}
             profile = raster.get("source_profile") or (workflow.get("data_source_profiles") or {}).get(definition.id) or {}
@@ -110,5 +127,6 @@ def build_registry(metadata: dict) -> list[dict]:
             item["warnings"] = list(collection.get("warnings") or [])
             item["source_type"] = item["source_metadata"].get("source_type", item["source_type"])
             item["source_mode"] = item["source_metadata"].get("source_mode", item["source_type"])
+        item["trust"]["configured"] = "passed" if item["configured"] else "missing"
         result.append(item)
     return result

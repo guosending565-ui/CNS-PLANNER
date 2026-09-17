@@ -47,6 +47,7 @@ from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
 from .reference_link_service import ReferenceLinkService
 from .route_experiment_service import RoutePlanningExperimentService
+from .source_audit_service import SourceAuditService
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
 from .encounter_3d_service import Encounter3DService
 from ..algorithms.encounter_3d import EncounterAssessment3DV1
@@ -142,6 +143,9 @@ class WorkflowService:
             self.session, self.route_service, self.algorithm_registry,
             self.invalidation_service, snapshot,
         )
+        self.source_audit_service = SourceAuditService(
+            self.session, self.invalidation_service, snapshot,
+        )
         self.operation_service = OperationService(self.session, self.invalidation_service, snapshot)
         self.risk_service = RiskService(
             self.session, self.risk_model, self.traffic_simulator, self.conflict_detector,
@@ -212,6 +216,8 @@ class WorkflowService:
             result["route_planning_diagnostics"] = self.route_experiment_service.diagnostics_snapshot()
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
+        if hasattr(self, "source_audit_service"):
+            result["source_audits"] = self.source_audit_service.result_snapshot()
         result["review"] = self.review()
         return result
 
@@ -254,6 +260,7 @@ class WorkflowService:
     def reference_endpoint_candidates_snapshot(self): return self.reference_link_service.endpoint_candidates_snapshot()
     def route_experiments_snapshot(self): return self.route_experiment_service.result_snapshot()
     def data_readiness_snapshot(self): return self.reference_link_service.data_readiness()
+    def source_audits_snapshot(self): return self.source_audit_service.result_snapshot()
     def encounter_3d_snapshot(self): return self.encounter_3d_service.result_snapshot()
     def algorithms_snapshot(self):
         return {
@@ -379,9 +386,26 @@ class WorkflowService:
     def add_node(self, coordinate, name=None): return self.route_service.add_node(coordinate, name)
     def import_reference_landing_sites(self, path): return self.reference_data_service.import_landing_sites(path)
     def import_reference_routes(self, path): return self.reference_data_service.import_routes(path)
-    def set_airspace_policies(self, payload):
+    def preview_reference_routes(self, path, conversion=None):
+        return self.reference_data_service.preview_routes(path, conversion)
+    def confirm_reference_routes_import(self, path, preview_id):
+        return self.reference_data_service.confirm_routes_import(path, preview_id)
+    def confirm_reference_crs(self, role, payload):
+        return self.reference_data_service.confirm_crs(role, payload)
+    def verify_source(self, role, path, details=None):
+        return self.source_audit_service.verify(role, path, details)
+    def register_source_paths(self, paths, details=None, save=False):
+        for role, path in (paths or {}).items():
+            if path:
+                self.source_audit_service.register_quick(
+                    role, path, (details or {}).get(role), save=False,
+                )
+        if save:
+            self.session.save()
+        return self.snapshot()
+    def set_airspace_policies(self, payload, *, require_evidence=True):
         previous = self.state.get("airspace_policies")
-        current = normalize_airspace_policies(payload)
+        current = normalize_airspace_policies(payload, require_evidence=require_evidence)
         if current != previous:
             self.state["airspace_policies"] = current
             self.invalidation_service.workflow("airspace_policy")
@@ -392,14 +416,61 @@ class WorkflowService:
                 eligibility["status"] = "stale"
             self.session.save()
         return self.snapshot()
+    def set_airspace_policy(self, payload):
+        if not isinstance(payload, dict) or not payload.get("feature_id"):
+            raise ValueError("单项 AirspacePolicy 缺少 feature_id")
+        normalized = normalize_airspace_policies(
+            {"items": [payload]}, require_evidence=True,
+        )["items"][0]
+        existing = list((self.state.get("airspace_policies") or {}).get("items") or [])
+        items = [item for item in existing if item.get("feature_id") != payload.get("feature_id")]
+        items.append(normalized)
+        # Untouched legacy policies may predate the evidence field.  The newly
+        # saved item is validated above; backfill compatibility must not make a
+        # single-item edit impossible.
+        return self.set_airspace_policies({"items": items}, require_evidence=False)
+    def batch_set_airspace_policies(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("批量 AirspacePolicy 请求必须是对象")
+        feature_ids = payload.get("feature_ids") or []
+        if not isinstance(feature_ids, list) or not feature_ids:
+            raise ValueError("批量设置必须由用户明确选择 feature_ids")
+        template = {
+            key: deepcopy(payload.get(key)) for key in (
+                "route_eligibility", "confirmed", "source", "evidence",
+            )
+        }
+        normalized_selected = normalize_airspace_policies({"items": [
+            {"feature_id": str(feature_id), **deepcopy(template)}
+            for feature_id in feature_ids
+        ]}, require_evidence=True)["items"]
+        existing = {
+            item.get("feature_id"): item
+            for item in (self.state.get("airspace_policies") or {}).get("items") or []
+        }
+        for item in normalized_selected:
+            existing[item["feature_id"]] = item
+        return self.set_airspace_policies(
+            {"items": list(existing.values())}, require_evidence=False,
+        )
     def add_reference_landing_site(self, reference_site_id): return self.reference_data_service.add_landing_site_to_project(reference_site_id)
     def configure_reference_sources(self, paths, save=False):
         landing_path = (paths or {}).get("reference_landing_sites")
         route_path = (paths or {}).get("reference_routes")
         if landing_path:
-            self.reference_data_service.import_landing_sites(landing_path, save=False)
+            audit = self.source_audit_service.register_quick(
+                "reference_landing_sites", landing_path,
+            )
+            current = self.state.get("reference_landing_sites") or {}
+            # Bootstrap an empty legacy project once.  Existing imported facts
+            # (and their manual CRS confirmation) are never recomputed merely
+            # because the application reopened or the source file changed.
+            if not current.get("items") and audit.get("status") == "configured_unverified":
+                self.reference_data_service.import_landing_sites(landing_path, save=False)
         if route_path:
-            self.reference_data_service.import_routes(route_path, save=False)
+            self.source_audit_service.register_quick("reference_routes", route_path)
+            # Configuring a converted file never replaces reference_routes.
+            # The user must request a preview and explicitly confirm it.
         if save and (landing_path or route_path):
             self.session.save()
         return self.snapshot()

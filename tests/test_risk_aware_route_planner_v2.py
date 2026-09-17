@@ -332,6 +332,7 @@ def test_airspace_policy_change_marks_operational_and_route_dependents_stale(tmp
         "items": [{
             "feature_id": "ASF-1", "route_eligibility": "allowed",
             "confirmed": True, "source": "user_confirmation",
+            "evidence": [{"type": "test"}],
         }]
     })
     assert workflow.state["operational_routes"][0]["status"] == "stale"

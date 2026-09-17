@@ -72,7 +72,7 @@ def build_health(metadata: dict, workspace_bbox=None) -> dict:
     required_errors = [item for item in items if item["required"] and item["status"] == "error"]
     overall = "error" if required_errors else "warning" if any(item["status"] == "warning" or any(check["status"] != "passed" for check in item["checks"]) for item in items) else "ready"
     return {
-        "status": overall, "label": LABELS[overall], "stage": "P1",
+        "status": overall, "label": LABELS[overall], "stage": "数据配置",
         "workspace_defined": workspace_bbox is not None, "items": items,
         "notes": ["在线地图和地名服务分别检查，均不阻塞离线核心功能", "工作区尚未定义，空间覆盖状态保留为待检查"] if workspace_bbox is None else [],
     }

@@ -127,6 +127,7 @@ class ReferenceLinkService:
         ).get("airspace_eligibility") or {}
         links = state.get("reference_route_links") or {}
         experiments = state.get("route_planning_experiments") or {}
+        source_audits = state.get("source_audits") or {}
 
         policy_items = policies.get("items") or []
         eligibility_counts = {"allowed": 0, "blocked": 0, "unknown": 0}
@@ -154,9 +155,43 @@ class ReferenceLinkService:
                 "v2_readiness": self._v2_readiness(eligibility, eligibility_counts),
             },
         }
+        data_issues = {
+            "DATA-1": {
+                "label": "reference CRS",
+                "status": "ready" if (
+                    is_resolved(landing.get("crs"), role="source_crs")
+                    and is_resolved(routes.get("crs"), role="source_crs")
+                ) else "blocked",
+                "reasons": [
+                    label for label, collection in (
+                        ("reference_landing_sites", landing), ("reference_routes", routes)
+                    ) if not is_resolved(collection.get("crs"), role="source_crs")
+                ],
+                "action": "人工输入有证据的 CRS 并确认",
+            },
+            "DATA-2": {
+                "label": "ET→XLSX/CSV",
+                "status": "ready" if routes.get("status") == "passed" else "blocked",
+                "reasons": list(routes.get("warnings") or [routes.get("status") or "not_imported"]),
+                "action": "转换 ET 后预览并确认导入 CSV/XLSX/GeoJSON",
+            },
+            "DATA-3": {
+                "label": "AirspacePolicy",
+                "status": self._v2_readiness(eligibility, eligibility_counts)["status"],
+                "reasons": [self._v2_readiness(eligibility, eligibility_counts).get("reason")],
+                "action": "逐 feature 或显式选择后批量设置 policy，并保存 source/evidence",
+            },
+        }
         return {
             "status": self._overall_status(blocks),
             "blocks": blocks,
+            "source_audits": deepcopy(source_audits),
+            "data_issues": data_issues,
+            "geometry_health": {
+                "reference_landing_sites": self._reference_geometry_health(landing, "items"),
+                "reference_routes": self._reference_geometry_health(routes, "points"),
+                "airspace": deepcopy(((state.get("grid_attributes") or {}).get("airspace") or {}).get("geometry_health") or {"status": "not_calculated"}),
+            },
             "reference_route_link_count": len(links.get("items") or []),
             "experiment_count": len(experiments.get("records") or []),
             "et_source_policy": "requires_xlsx_or_csv_conversion",
@@ -165,6 +200,23 @@ class ReferenceLinkService:
                 "数据就绪面板只读取来源事实与 policy；ET 仍要求人工转换为 XLSX/CSV，"
                 "不提供 ET parser，也不按图层名称/颜色推断 suitability。"
             ),
+        }
+
+    @staticmethod
+    def _reference_geometry_health(collection, field):
+        items = collection.get(field) or []
+        coordinates = [item.get("coordinate") for item in items]
+        valid = [point for point in coordinates if isinstance(point, list) and len(point) >= 2]
+        extent = ([min(point[0] for point in valid), min(point[1] for point in valid),
+                   max(point[0] for point in valid), max(point[1] for point in valid)]
+                  if valid else None)
+        invalid = sum(1 for item in items if item.get("quality") == "invalid")
+        null = sum(1 for item in items if item.get("coordinate") is None and item.get("quality") != "invalid")
+        return {
+            "status": "passed" if items and invalid + null == 0 else "warning" if items else "not_calculated",
+            "feature_count": len(items), "null": null, "empty": 0,
+            "invalid": invalid, "unsupported": 0, "extent": extent,
+            "crs": deepcopy(collection.get("crs")), "repair_applied": False,
         }
 
     @staticmethod

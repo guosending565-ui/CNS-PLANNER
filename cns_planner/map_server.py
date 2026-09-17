@@ -83,6 +83,7 @@ def open_project(project_dir):
 def replace_sources(paths):
     previous = dict(DATA.paths)
     DATA.load({**DATA.paths, **paths})
+    WORKFLOW.register_source_paths(DATA.paths)
     WORKFLOW.configure_reference_sources(DATA.paths)
     changed = {name for name in paths if previous.get(name) != DATA.paths.get(name)}
     WORKFLOW.invalidate_grid_attributes(changed)

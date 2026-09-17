@@ -41,7 +41,7 @@ def empty_airspace_policies():
     }
 
 
-def normalize_airspace_policies(value):
+def normalize_airspace_policies(value, *, require_evidence=False):
     """Keep policy semantics explicit; never infer eligibility from layer styling."""
     result = empty_airspace_policies()
     if value is None:
@@ -69,12 +69,19 @@ def normalize_airspace_policies(value):
         source = deepcopy(raw.get("source"))
         if source in (None, ""):
             raise ValueError("AirspacePolicy.source 缺失")
+        evidence = deepcopy(raw.get("evidence") or [])
+        if require_evidence and (not isinstance(evidence, list) or not evidence):
+            raise ValueError("AirspacePolicy.evidence 缺失")
+        if not isinstance(evidence, list):
+            raise ValueError("AirspacePolicy.evidence 必须是数组")
         seen.add(feature_id)
         normalized.append({
             "feature_id": feature_id,
             "route_eligibility": eligibility,
             "confirmed": raw.get("confirmed") is True,
             "source": source,
+            "evidence": evidence,
+            "current_applicability": raw.get("current_applicability", "current"),
         })
     result["items"] = normalized
     result["count"] = len(normalized)

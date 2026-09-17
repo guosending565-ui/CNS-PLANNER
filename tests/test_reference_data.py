@@ -274,10 +274,12 @@ def test_reference_data_minimal_api(tmp_path):
         "航线编号,点序号,航点名称,经度,纬度\n1,1,A,122.1,30.1\n1,2,B,122.2,30.2\n",
         encoding="utf-8-sig",
     )
-    response = router.post("/api/reference-routes/import", {"path": str(route_source)})
+    response = router.post("/api/reference-routes/preview", {"path": str(route_source)})
+    preview_id = response.data["reference_route_import_preview"]["preview_id"]
+    response = router.post("/api/reference-routes/import", {"path": str(route_source), "preview_id": preview_id})
     assert response.data["reference_routes"]["count"] == 1
     response = router.post("/api/airspace-policies", {"items": [{
         "feature_id": "ASF-1", "route_eligibility": "unknown",
-        "confirmed": False, "source": "test",
+        "confirmed": False, "source": "test", "evidence": [{"type": "test"}],
     }]})
     assert response.data["airspace_policies"]["count"] == 1

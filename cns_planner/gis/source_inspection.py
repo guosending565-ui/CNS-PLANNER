@@ -16,7 +16,7 @@ BUILDING_GRID_FIELDS = {
 }
 
 
-def inspect_geopackage(path, kind):
+def inspect_geopackage(path, kind, *, deep_geometry=False):
     source = Path(path)
     if not source.is_file() or source.suffix.lower() != ".gpkg":
         raise ValueError(f"{kind} 必须是存在的 GeoPackage 文件")
@@ -56,6 +56,10 @@ def inspect_geopackage(path, kind):
             valid_height = connection.execute(
                 f"SELECT COUNT(*) FROM {_quote(table)} WHERE height_m IS NOT NULL"
             ).fetchone()[0]
+        geometry_health = _geopackage_geometry_health(
+            connection, table, geometry_column, geometry_type,
+            [min_x, min_y, max_x, max_y], int(count), deep=deep_geometry,
+        )
         return {
             "status": "passed", "path": str(source.resolve()), "driver": "GPKG",
             "size_bytes": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns,
@@ -66,6 +70,7 @@ def inspect_geopackage(path, kind):
             "spatial_index": has_rtree, "rtree_table": rtree if has_rtree else None,
             "valid_height_count": int(valid_height) if valid_height is not None else None,
             "valid_height_fraction": (valid_height / count) if valid_height is not None and count else None,
+            "geometry_health": geometry_health,
         }
     except sqlite3.DatabaseError as exc:
         raise ValueError(f"无法读取 {kind} GeoPackage：{exc}") from exc
@@ -75,3 +80,83 @@ def inspect_geopackage(path, kind):
 
 def _quote(identifier):
     return '"' + str(identifier).replace('"', '""') + '"'
+
+
+def _geopackage_geometry_health(connection, table, geometry_column, geometry_type,
+                                extent, feature_count, *, deep=False):
+    """Read-only geometry audit; never repairs or rewrites a GeoPackage."""
+
+    null_count = int(connection.execute(
+        f"SELECT COUNT(*) FROM {_quote(table)} WHERE {_quote(geometry_column)} IS NULL"
+    ).fetchone()[0])
+    base = {
+        "status": "not_fully_checked", "feature_count": int(feature_count),
+        "null": null_count, "empty": None, "invalid": None,
+        "unsupported": 0 if "POLYGON" in str(geometry_type).upper() else int(feature_count - null_count),
+        "extent": list(extent), "repair_applied": False,
+        "method": "gpkg_schema_and_null_scan", "topology_checked": False,
+    }
+    if not deep:
+        return base
+    try:
+        import shapely
+    except ImportError:
+        base["reason"] = "shapely_required_for_explicit_geometry_verification"
+        return base
+
+    counts = {"null": null_count, "empty": 0, "invalid": 0, "unsupported": 0}
+    cursor = connection.execute(
+        f"SELECT {_quote(geometry_column)} FROM {_quote(table)} "
+        f"WHERE {_quote(geometry_column)} IS NOT NULL"
+    )
+    while True:
+        rows = cursor.fetchmany(1024)
+        if not rows:
+            break
+        wkbs, parse_failures = [], 0
+        for (blob,) in rows:
+            try:
+                wkbs.append(_gpkg_wkb(blob))
+            except (TypeError, ValueError, IndexError):
+                wkbs.append(None)
+                parse_failures += 1
+        counts["invalid"] += parse_failures
+        valid_wkbs = [value for value in wkbs if value is not None]
+        if not valid_wkbs:
+            continue
+        geometries = shapely.from_wkb(valid_wkbs, on_invalid="ignore")
+        for geometry in geometries:
+            if geometry is None:
+                counts["invalid"] += 1
+            elif geometry.geom_type not in ("Polygon", "MultiPolygon"):
+                counts["unsupported"] += 1
+            elif geometry.is_empty:
+                counts["empty"] += 1
+            elif not geometry.is_valid:
+                counts["invalid"] += 1
+    unhealthy = sum(counts.values())
+    return {
+        "status": "passed" if unhealthy == 0 else "blocked",
+        "feature_count": int(feature_count), **counts, "extent": list(extent),
+        "repair_applied": False, "method": "gpkg_wkb_shapely_is_valid_scan",
+        "topology_checked": True,
+        "reason": None if unhealthy == 0 else "invalid_geometry_fail_closed",
+    }
+
+
+def _gpkg_wkb(blob):
+    """Strip the GeoPackage binary header and return its embedded WKB."""
+
+    value = bytes(blob)
+    if value[:2] != b"GP":
+        return value
+    if len(value) < 8:
+        raise ValueError("truncated GeoPackage geometry header")
+    envelope_indicator = (value[3] >> 1) & 0b111
+    envelope_bytes = {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}.get(envelope_indicator)
+    if envelope_bytes is None:
+        raise ValueError("unsupported GeoPackage envelope indicator")
+    offset = 8 + envelope_bytes
+    if len(value) <= offset:
+        raise ValueError("missing WKB payload")
+    return value[offset:]

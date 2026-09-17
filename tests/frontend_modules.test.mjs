@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
@@ -290,6 +290,19 @@ test('step 3 airspace policy readiness counts only explicit policy values',()=>{
   assert.match(html,/AirspacePolicy 就绪总览/);
   assert.match(html,/绝不按图层颜色或名称自动推断/);
   assert.match(html,/V2 readiness/);
+  assert.match(html,/saveAirspacePolicyBatch/);
+  assert.match(html,/保存明确选中项/);
+  assert.match(html,/保存必须带 source\/evidence/);
+});
+
+test('airspace policy editor joins source facts without inferring eligibility',()=>{
+  const rows=airspacePolicyEditorModel({
+    grid_attributes:{airspace:{features:[{feature_id:'F1',category:'corridor',source:{layer_name:'事实层'}}]}},
+    airspace_policies:{items:[]},
+  });
+  assert.deepEqual(rows.map(item=>[item.feature_id,item.layer,item.route_eligibility,item.confirmed]),[
+    ['F1','事实层','unknown',false],
+  ]);
 });
 
 test('step 3 data readiness panel reports reference CRS and ET policy',()=>{
