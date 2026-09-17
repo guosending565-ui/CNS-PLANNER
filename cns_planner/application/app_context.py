@@ -11,6 +11,7 @@ from ..tile_cache import TileCache
 from .project_directory_service import ProjectDirectoryService
 from .workflow_service import WorkflowService
 from ..gis.building_clearance_adapter import QgisBuildingClearanceAdapter
+from ..gis.fine_environment_adapter import real_data_source_readiness
 from ..gis.route_vertical_profile_adapter import FabdemRouteSampler
 
 
@@ -61,6 +62,7 @@ class ApplicationContext:
         })
         self.workflow.register_source_paths(self.data.paths, self._source_details())
         self.workflow.configure_reference_sources(self.data.paths)
+        self.configure_route_planner_v3_sources()
 
     def _source_details(self):
         details = {}
@@ -142,3 +144,85 @@ class ApplicationContext:
         if not terrain_dtm:
             raise ValueError("请先配置 FABDEM terrain_dtm")
         return self.workflow.evaluate_route_vertical_profiles(FabdemRouteSampler(terrain_dtm), payload)
+
+    # ------------------------------------------------------------------ Route Planner V3
+
+    def configure_route_planner_v3_sources(self):
+        """Give the V3 service a *read-only* real-source readiness provider.
+
+        The provider only reports configured paths and confirmed airspace evidence;
+        it never opens a dataset, so rendering the readiness panel is side-effect
+        free.
+        """
+
+        def readiness():
+            eligibility = (
+                ((self.workflow.state.get("grid_attributes") or {}).get("airspace") or {})
+                .get("airspace_eligibility") or {}
+            )
+            policy = self.workflow.state.get("v3_planning_policy") or {}
+            return real_data_source_readiness(
+                self.data.paths, airspace_eligibility=eligibility,
+                policy_confirmed=bool(policy.get("confirmed")),
+            )
+
+        self.workflow.route_planner_v3_service.source_readiness = readiness
+        return readiness
+
+    def evaluate_route_planner_v3_refinement(self, payload=None):
+        """Build the GIS fine-environment adapter and run one V3-B refinement.
+
+        Requires QGIS/GDAL plus configured, confirmed sources; V3-B never runs on a
+        fabricated environment, so a missing configuration is a hard error here and
+        a reviewed ``not_ready`` verdict on the service path.
+        """
+
+        payload = payload if isinstance(payload, dict) else {}
+        source = str(payload.get("environment_source") or "canonical_synthetic")
+        if source != "configured_real_sources":
+            return self.workflow.evaluate_route_planner_v3_refinement(payload)
+        adapter = self._fine_environment_adapter(payload)
+        return self.workflow.evaluate_route_planner_v3_refinement_with_adapter(adapter, payload)
+
+    def _fine_environment_adapter(self, payload):
+        from ..gis.fine_environment_adapter import (
+            ConfirmedAirspacePolygonSource, FabdemWindowTerrainSource,
+            FineEnvironmentAdapter, QgisGpkgBuildingSource, QgisMetricTransform,
+        )
+
+        terrain_dtm = self.data.paths.get("terrain_dtm")
+        buildings = self.data.paths.get("buildings")
+        if not terrain_dtm or not buildings:
+            raise ValueError("请先配置 FABDEM terrain_dtm 与 GBA buildings GeoPackage")
+        state = self.workflow.state
+        eligibility = (
+            ((state.get("grid_attributes") or {}).get("airspace") or {})
+            .get("airspace_eligibility") or {}
+        )
+        if eligibility.get("status") != "passed":
+            raise ValueError("空域 eligibility 未就绪：V3-B 只消费 confirmed AirspacePolicy")
+        horizontal_crs = str(payload.get("horizontal_crs") or "")
+        if not horizontal_crs:
+            raise ValueError("configured_real_sources 需要显式 horizontal_crs（局部米制 CRS）")
+        fine_policy = self.workflow.route_planner_v3_service.fine_policy_snapshot()
+        return FineEnvironmentAdapter(
+            transform=QgisMetricTransform(horizontal_crs),
+            terrain_source=FabdemWindowTerrainSource(terrain_dtm),
+            building_source=QgisGpkgBuildingSource(buildings),
+            airspace_source=ConfirmedAirspacePolygonSource(eligibility),
+            resolution_m=payload.get("refinement_cell_size_m") or fine_policy.get("resolution_m"),
+            resolution_source=(
+                payload.get("resolution_source") or fine_policy.get("resolution_source")
+            ),
+            max_stride_cells=(
+                payload.get("max_stride_cells") or fine_policy.get("max_stride_cells") or 1
+            ),
+            risk_result=state.get("grid_risk") or {},
+            source_resolution_m=(
+                (state.get("data_source_profiles") or {}).get("population") or {}
+            ).get("resolution"),
+            lineage={
+                "configured_via": "ApplicationContext.evaluate_route_planner_v3_refinement",
+                "project_grid_level": (state.get("grid") or {}).get("level"),
+            },
+        )

@@ -5,15 +5,26 @@ Markov with respect to turn capability: the heading is part of the state, so a
 turn is constrained while the edge is generated instead of being checked after a
 path already exists.
 
-The heuristic is the 3D geometric lower bound (straight-line distance from the
-current state to the goal times an admissible scale).  Soft penalties stay
-non-negative, and the soft weight sum is capped by
-:data:`~cns_planner.route_planner_v3.cost.SOFT_WEIGHT_SUM_LIMIT`, so the
-documented heuristic never overestimates the true cost.
+Heuristic (V3-A correctness fix): **``h`` is the plain 3D geometric distance to
+the goal**.  Each edge costs at least its own geometric length, because
 
-Explicit non-goals of V3-A: no 30 m local refinement, no exact polygon/terrain
-final validator, no CNS term in the search cost, no energy model, and no claim
-that the produced candidate is a final safe or validated operational route.
+    edge_scalar_cost = length_m + sum_channels(weight_c * exposure_m_c)
+
+with ``weight_c >= 0`` and ``exposure_m_c = length_m * mean(endpoint index)``
+where every index is a provenance-carrying value in ``[0, 1]``.  The previous
+``h = 3D distance * (1 + sum(weight))`` was **not** admissible whenever a soft
+penalty could be ``0``, and its ``sum(weight) <= 1`` cap was a workaround for an
+invented normalizer; both are removed.
+
+Reaching ``max_expanded_states`` is reported as ``search_incomplete`` /
+``resource_limited``: the search ran out of budget, which is a statement about
+the search and never a proof of infeasibility.  A goal found before the cap is
+kept, but flagged as not proven optimal.
+
+Explicit non-goals of V3-A: no corridor-local fine refinement (V3-B), no exact
+polygon/terrain final validator (V3-C), no CNS term in the search cost, no energy
+model, and no claim that the produced candidate is a final safe or validated
+operational route.
 """
 
 from __future__ import annotations
@@ -26,12 +37,16 @@ import time
 
 from ..benchmark.geodesy import geodesic_distance_m
 from .contracts import (
-    V3_STRATEGIC_RESULT_DISCLAIMER, build_v3_state, describe_altitude_states,
-    empty_v3_strategic_result, heading_bin_center_deg, heading_bin_for_bearing,
-    normalize_v3_planning_problem,
+    SEARCH_COMPLETENESS, V3_STRATEGIC_RESULT_DISCLAIMER, build_v3_state,
+    describe_altitude_states, empty_v3_strategic_result, heading_bin_center_deg,
+    heading_bin_for_bearing, normalize_v3_planning_problem,
 )
 from .corridor import build_candidate_refinement_corridor
-from .cost import SoftCostModel, build_cost_vector, building_exposure_normalized
+from .cost import (
+    MAPPED_SOFT_CHANNELS, SoftCostModel, build_cost_vector,
+    building_exposure_normalized, soft_channel_provenance,
+    summarize_channel_exposures,
+)
 from .hard_constraints import (
     HardConstraintAudit, HardConstraintEvaluator, seeded_rejection_summary,
 )
@@ -39,7 +54,13 @@ from .motion import (
     MOTION_MODEL_ID, MOTION_MODEL_SEMANTICS, MotionPrimitiveProvider,
     TransitionValidator, derive_grid_index, kinematic_readiness,
 )
-from .readiness import evaluate_v3_readiness, readiness_overall
+from .readiness import (
+    evaluate_v3_readiness, readiness_overall, unresolved_soft_channel_cells,
+)
+
+#: Search outcomes that are not a completed search.
+OUTCOME_EXHAUSTED = "exhausted"
+OUTCOME_CAP_REACHED = "cap_reached"
 
 
 class V3StrategicPlanner:
@@ -89,6 +110,24 @@ class V3StrategicPlanner:
                 normalized, readiness, "blocked", fingerprint, str(exc),
             ), started)
 
+        # Fail closed before the search: an enabled mapped channel needs a
+        # provenance normalized index on every cell.  Readiness already reports
+        # this; the explicit check keeps the search itself free of any implicit
+        # "missing soft field == 0 penalty" fallback.
+        unresolved_soft = unresolved_soft_channel_cells(environment.get("cells") or [], policy)
+        if any(unresolved_soft.values()):
+            reason = (
+                "启用 soft channel 缺少带 provenance 的 normalized index，"
+                "且 planner 不提供隐式 normalizer：" + ", ".join(
+                    f"{channel}({len(ids)})" for channel, ids in sorted(unresolved_soft.items()) if ids
+                )
+            )
+            readiness["cost_model"]["status"] = "blocked"
+            readiness["cost_model"]["reasons"].append(reason)
+            return _finalize(_blocked_result(
+                normalized, readiness, "blocked", fingerprint, reason,
+            ), started)
+
         exit_state = _initial_state(normalized, provider, policy, evaluator, altitude_states, audit)
         if exit_state is not None:
             return _finalize(_blocked_result(
@@ -103,6 +142,15 @@ class V3StrategicPlanner:
             altitudes=altitudes, policy=policy,
         )
         outcome = search.run()
+        if search.outcome_kind == OUTCOME_CAP_REACHED:
+            # The expansion cap is a *resource* limit, never a feasibility verdict.
+            # Returning ``failed`` here would claim "infeasible", which the search
+            # cannot know: it simply stopped early.
+            result = _resource_limited_result(
+                normalized, readiness, fingerprint, outcome, search, audit, environment,
+                evaluator,
+            )
+            return _finalize(result, started)
         if outcome is None:
             reason = "在显式运动能力与硬约束下未找到 3D 可行战略路径"
             status = "missing_data" if search.unknown_blocked else "failed"
@@ -155,24 +203,53 @@ class _Search:
         self.expanded_transitions = 0
         self.unknown_blocked = False
         self.cap_reached = False
+        self.outcome_kind = OUTCOME_EXHAUSTED
         self.states = {}
         self.parents = {}
         self.edge_records = {}
         self.costs = {}
         self._state_cache = {}
-        self._heuristic_scale = self.cost_model.total_weight_sum
-        self.population = _per_cell_property(normalized["environment"], "population")
-        self.traffic = _per_cell_property(normalized["environment"], "traffic")
+        # ``h`` is the plain 3D geometric distance: there is no weight-derived
+        # scale factor any more (it would be inadmissible whenever a soft penalty
+        # can be 0).
+        self._heuristic_scale = 1.0
+        # Provenance-carrying normalized indices, taken verbatim from the canonical
+        # environment.  A ``None`` here is a data gap and is refused rather than
+        # treated as zero.
+        self.soft_index = {
+            channel: {
+                grid_id: (((cell.get("soft_fields") or {}).get(channel) or {}).get("normalized_index"))
+                for grid_id, cell in self.cell_by_id.items()
+            }
+            for channel in MAPPED_SOFT_CHANNELS
+        }
 
     # ------------------------------------------------------------------ helpers
 
     def statistics(self):
+        complete = not self.cap_reached and self.expanded_states > 0
         return {
             "expanded_states": self.expanded_states,
             "generated_states": self.generated_states,
             "expanded_transitions": self.expanded_transitions,
             "expansion_cap": self.policy["max_expanded_states"],
             "expansion_cap_reached": self.cap_reached,
+            "search_complete": bool(complete),
+            "search_completeness": (
+                SEARCH_COMPLETENESS["search_incomplete_resource_limited"] if self.cap_reached
+                else SEARCH_COMPLETENESS["complete"] if complete
+                else SEARCH_COMPLETENESS["not_run"]
+            ),
+            "resource_limited": bool(self.cap_reached),
+            "resource_limit": (
+                "max_expanded_states" if self.cap_reached else None
+            ),
+            "resource_limit_reason": (
+                "达到 policy.max_expanded_states="
+                f"{self.policy['max_expanded_states']}：搜索预算耗尽，"
+                "未证明不可行，也未证明最优"
+                if self.cap_reached else None
+            ),
             "state_space_shape": {
                 "grid_cells": len(self.cell_by_id),
                 "altitude_levels": len(self.altitudes),
@@ -222,6 +299,12 @@ class _Search:
         return cached
 
     def _heuristic(self, grid_id, altitude_index):
+        """Plain 3D geometric distance to the goal -- the admissible lower bound.
+
+        No weight-derived inflation: every edge costs at least its geometric
+        length, so the straight-line 3D distance never overestimates.
+        """
+
         x, y = self.centers[grid_id]
         goal_x, goal_y = self.centers[self.goal_grid]
         horizontal = geodesic_distance_m([x, y], [goal_x, goal_y])
@@ -259,7 +342,11 @@ class _Search:
                 return self._reconstruct(current)
             if self.expanded_states >= cap:
                 self.cap_reached = True
-                return None
+                self.outcome_kind = OUTCOME_CAP_REACHED
+                # A feasible goal state may already have been *generated* but not yet
+                # popped.  Keep it as an explicitly non-optimal candidate instead of
+                # discarding the whole run.
+                return self._best_known_goal(goal_grid, goal_altitudes)
             self.expanded_states += 1
             for record in self._expand(current):
                 neighbour = record["target"]
@@ -275,7 +362,24 @@ class _Search:
                 heuristic = self._heuristic(neighbour[0], neighbour[1])
                 heappush(queue, (candidate + heuristic, candidate, counter, neighbour))
                 self.generated_states += 1
+        self.outcome_kind = OUTCOME_EXHAUSTED
         return None
+
+    def _best_known_goal(self, goal_grid, goal_altitudes):
+        """Cheapest *reachable* goal state found before the cap, or ``None``.
+
+        The value is not proven optimal: the search stopped before the queue was
+        exhausted, so a cheaper goal state may still exist.
+        """
+
+        candidates = [
+            (cost, state) for state, cost in self.costs.items()
+            if state[0] == goal_grid and state[1] in goal_altitudes
+        ]
+        if not candidates:
+            return None
+        cost, state = min(candidates, key=lambda item: (item[0], _state_order(item[1])))
+        return self._reconstruct(state)
 
     def _deterministic_tiebreak(self, current, neighbour, candidate, record):
         existing = self.parents.get(neighbour)
@@ -354,15 +458,24 @@ class _Search:
                      heading_change, target_grid):
         source_grid, source_altitude, _ = source_state
         target_altitude = target_state[1]
-        penalty = self.cost_model.edge_penalty(
-            step_length,
-            self.population.get(source_grid, 0.0) + self.population.get(target_grid, 0.0),
-            self.traffic.get(source_grid, 0.0) + self.traffic.get(target_grid, 0.0),
-            max(
-                building_exposure_normalized(self.altitudes[source_altitude], self._required_clearance(source_grid)),
-                building_exposure_normalized(self.altitudes[target_altitude], self._required_clearance(target_grid)),
-            ),
-        )
+        channel_indices = {}
+        for channel in self.cost_model.enabled_penalty_channels:
+            if channel == "building_exposure":
+                pair = (
+                    building_exposure_normalized(
+                        self.altitudes[source_altitude], self._required_clearance(source_grid),
+                    ),
+                    building_exposure_normalized(
+                        self.altitudes[target_altitude], self._required_clearance(target_grid),
+                    ),
+                )
+            else:
+                pair = (
+                    self._soft_index(channel, source_grid),
+                    self._soft_index(channel, target_grid),
+                )
+            channel_indices[channel] = pair
+        penalty = self.cost_model.edge_penalty(step_length, channel_indices)
         scalar = self.cost_model.edge_scalar_cost(step_length, penalty)
         return {
             "target": target_state,
@@ -374,7 +487,19 @@ class _Search:
             "altitude_change_m": round(self.altitudes[target_altitude] - self.altitudes[source_altitude], 9),
             "soft_penalty": round(penalty, 12),
             "scalar_cost": round(scalar, 9),
+            "channel_indices": channel_indices,
         }
+
+    def _soft_index(self, channel, grid_id):
+        value = self.soft_index.get(channel, {}).get(grid_id)
+        if value is None:
+            # Unreachable: planner.plan refuses an enabled channel without a
+            # provenance index before the search starts.
+            raise ValueError(
+                f"soft channel {channel} 在 cell {grid_id} 缺少 provenance normalized index；"
+                "不得当作 0 penalty"
+            )
+        return float(value)
 
     def _required_clearance(self, grid_id):
         return (self.cell_by_id[grid_id].get("buildings") or {}).get("required_clearance_egm2008_m")
@@ -449,6 +574,7 @@ def _blocked_result(problem, readiness, overall, fingerprint, reason, *, status=
         audit, None, environment, evaluator,
     ))
     result["search_statistics"]["expansion_cap"] = problem["policy"]["max_expanded_states"]
+    result["search_statistics"]["search_completeness"] = SEARCH_COMPLETENESS["not_run"]
     result["search_statistics"]["state_space_shape"] = {
         "grid_cells": len((environment or {}).get("cells") or []),
         "altitude_levels": len(describe_altitude_states(problem["policy"])),
@@ -463,7 +589,8 @@ def _blocked_result(problem, readiness, overall, fingerprint, reason, *, status=
 
 
 def _candidate_result(problem, readiness, fingerprint, outcome, search, audit, environment,
-                      evaluator):
+                      evaluator, *, status="strategic_candidate", reason=None,
+                      optimality_proven=True):
     policy = problem["policy"]
     states = outcome["states"]
     edges = outcome["edges"]
@@ -489,35 +616,33 @@ def _candidate_result(problem, readiness, fingerprint, outcome, search, audit, e
         state_path.append(record)
 
     distances = [edge["length_m"] for edge in edges]
-    population_raw, traffic_raw, building_edges = [], [], []
-    for state, edge in zip(states[:-1], edges):
-        target = edge["target"]
-        population_raw.append(
-            search.population.get(state[0], 0.0) + search.population.get(target[0], 0.0)
-        )
-        traffic_raw.append(
-            search.traffic.get(state[0], 0.0) + search.traffic.get(target[0], 0.0)
-        )
-        building_edges.append(max(
-            building_exposure_normalized(
-                search.altitudes[state[1]], search._required_clearance(state[0]),
+    # Provenance of the soft channels is aggregated from the cells the candidate
+    # actually used, so the reported index scale can be traced back to its source.
+    used_cells = []
+    seen = set()
+    for grid_id, _, _ in states:
+        if grid_id in seen:
+            continue
+        seen.add(grid_id)
+        used_cells.append(search.cell_by_id[grid_id])
+    channel_exposures = {}
+    for channel in search.cost_model.enabled_penalty_channels:
+        channel_exposures[channel] = summarize_channel_exposures(
+            channel, edges,
+            provenance=soft_channel_provenance(
+                used_cells, channel, (environment or {}).get("properties"),
             ),
-            building_exposure_normalized(
-                search.altitudes[target[1]], search._required_clearance(target[0]),
-            ),
-        ))
+        )
     cost_vector = build_cost_vector(
-        distances=distances, population_raw=population_raw, traffic_raw=traffic_raw,
-        building_edges=building_edges, model=search.cost_model,
-        weight_sum=search.cost_model.penalty_weight_sum,
+        distances=distances, channel_exposures=channel_exposures, model=search.cost_model,
     )
     distance_total = round(sum(distances), 9)
     projection = _projection(problem, state_path)
-    result = empty_v3_strategic_result("strategic_candidate")
+    result = empty_v3_strategic_result(status)
     result.update({
         "problem_id": problem["problem_id"],
         "route_id": problem["route_id"] or None,
-        "reason": "在显式硬约束与运动能力下找到 3D 战略候选路径",
+        "reason": reason or "在显式硬约束与运动能力下找到 3D 战略候选路径",
         "readiness": readiness,
         "input_fingerprint": fingerprint,
         "effective_policy": policy,
@@ -537,6 +662,7 @@ def _candidate_result(problem, readiness, fingerprint, outcome, search, audit, e
     })
     result["search_statistics"].update(search.statistics())
     result["search_statistics"]["expanded_states"] = search.expanded_states
+    result["search_statistics"]["optimality_proven"] = bool(optimality_proven)
     result["hard_constraint_summary"].update(_hard_summary(
         audit, search, environment, evaluator,
     ))
@@ -567,6 +693,51 @@ def _candidate_result(problem, readiness, fingerprint, outcome, search, audit, e
     return result
 
 
+def _resource_limited_result(problem, readiness, fingerprint, outcome, search, audit,
+                             environment, evaluator):
+    """``search_incomplete``: the expansion cap stopped the search.
+
+    Two honest sub-cases are distinguished:
+
+    * a feasible goal state was already generated -> it is reported as a
+      *candidate path* whose optimality is explicitly **not** proven;
+    * nothing reachable was found -> the result carries no path and states
+      clearly that infeasibility is **not** proven either.
+    """
+
+    statistics = search.statistics()
+    limit = problem["policy"]["max_expanded_states"]
+    if outcome is not None:
+        result = _candidate_result(
+            problem, readiness, fingerprint, outcome, search, audit, environment, evaluator,
+            status="search_incomplete",
+            reason=(
+                f"达到 max_expanded_states={limit}：已保留当前可行候选，"
+                "但未证明最优（搜索预算耗尽，不是 infeasible）"
+            ),
+            optimality_proven=False,
+        )
+    else:
+        result = _blocked_result(
+            problem, readiness, "pending", fingerprint,
+            (
+                f"达到 max_expanded_states={limit}：搜索预算耗尽，"
+                "本次运行未找到可行候选，但这不构成 infeasible 结论；"
+                "请提高 max_expanded_states 或缩小问题规模后重跑"
+            ),
+            status="search_incomplete", audit=audit, evaluator=evaluator,
+            environment=environment,
+        )
+        result["search_statistics"].update(statistics)
+        result["hard_constraint_summary"].update(_hard_summary(
+            audit, search, environment, evaluator,
+        ))
+    result["search_statistics"]["optimality_proven"] = False
+    result["search_statistics"]["infeasibility_proven"] = False
+    result["semantics"]["resource_limited_not_infeasible"] = True
+    return result
+
+
 def _hard_summary(audit, search, environment, evaluator):
     if audit is None:
         return {}
@@ -588,35 +759,49 @@ def _cns_record(problem):
         "excluded_from_search_cost": True,
         "semantics": expected.get("semantics")
         or "V3 第一阶段 CNS 不进搜索：Route Planning → CNS Assessment",
-        "next_stage": "V3-D_CNS_joint_optimization",
+        "next_stage": "V3-D_validated_route_operational_adapter_and_cns_assessment",
     }
 
 
 def _heuristic_semantics(problem, readiness, *, active):
+    """The heuristic is the plain 3D geometric distance.  No weight enters it.
+
+    ``scale`` stays in the contract (consumers read it) but is exactly ``1`` and
+    no longer derived from the soft weights.
+    """
+
     policy = problem["policy"]
     cost_model = policy.get("cost_model") or {}
     components = cost_model.get("components") or {}
-    enabled = sorted(
-        name for name, item in components.items() if item.get("enabled") and name != "energy"
+    penalties_enabled = sorted(
+        name for name, item in components.items()
+        if item.get("enabled") and name not in ("distance", "energy")
     )
-    penalty_sum = 0.0
-    for name in enabled:
+    weight_sum = 0.0
+    for name in penalties_enabled:
         weight = (components.get(name) or {}).get("weight")
         if weight is not None:
-            penalty_sum += float(weight)
-    penalties_enabled = [name for name in enabled if name != "distance"]
+            weight_sum += float(weight)
     return {
         "active": bool(active),
-        "type": "admissible_3d_geometric_lower_bound",
-        "definition": "3D geodesic distance to the goal x (1 + sum(enabled soft weights))",
-        "scale": round(1.0 + penalty_sum, 9),
-        "scale_basis": "1 for distance plus the sum of explicitly enabled soft weights",
+        "type": "admissible_3d_geometric_distance_lower_bound",
+        "definition": "h = 3D geodesic distance(state, goal)：不乘任何 soft weight 系数",
+        "scale": 1.0,
+        "scale_basis": "exactly 1 -- 几何距离本身；weight 与启发函数完全解耦",
         "admissibility_argument": (
-            "每条边的 normalized penalty 位于 [0,1]/m 且 soft weight 非负，"
-            "因此标量边代价 >= 3D 边长，启发函数不会高估；soft weight 之和被显式限制以保证该下界"
+            "每条边的标量代价 = 边长 + Σ(weight × exposure)，其中 weight 有限且 >= 0，"
+            "exposure = 边长 × 端点 normalized index 的均值且 index ∈ [0,1]，"
+            "因此每条边代价 >= 其 3D 几何边长，h = 3D 几何距离不会高估真实代价。"
+            "soft penalty 可以为 0，所以旧版 h = 距离 × (1 + Σweight) 在 penalty 取 0 时并非下界；"
+            "该写法与 Σweight <= 1 的限制均已删除"
         ),
         "soft_penalties_enabled": penalties_enabled,
+        "soft_penalty_weight_sum_reported_only": round(weight_sum, 9),
+        "soft_penalty_weight_sum_enters_heuristic": False,
+        "soft_penalty_weight_sum_is_bounded": False,
         "soft_penalty_non_negative": True,
+        "soft_index_domain": "[0, 1] provenance normalized index",
+        "no_implicit_normalizer": True,
         "prefers_lower_candidate_scalar_cost": True,
         "not_a_flight_time_energy_or_cns_heuristic": True,
         "altitude_geometric_term": "included_vertical_delta",
@@ -658,15 +843,6 @@ def _state_order(state):
     return (str(state[0]), int(state[1]), int(state[2]))
 
 
-def _per_cell_property(environment, name):
-    values = {}
-    for cell in environment.get("cells") or []:
-        raw = (environment.get("properties") or {}).get(f"{name}_per_cell") or {}
-        value = raw.get(str(cell["grid_id"]))
-        values[str(cell["grid_id"])] = float(value) if isinstance(value, (int, float)) else 0.0
-    return values
-
-
 def _finalize(result, started):
     result["search_statistics"]["runtime_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
     result["algorithm_id"] = V3StrategicPlanner.algorithm_id
@@ -685,10 +861,16 @@ def _finalize(result, started):
         "motion_model": MOTION_MODEL_SEMANTICS,
         "search_state": "grid_id + altitude_index + heading_bin",
         "canonical_vertical_reference": "egm2008_orthometric",
+        "heuristic_is_plain_geometric_distance": True,
+        "soft_fields_are_provenance_normalized_indices": True,
+        "no_hidden_soft_normalizer": True,
+        "soft_weight_sum_is_not_bounded_and_not_used_by_the_heuristic": True,
+        "expansion_cap_is_resource_limited_not_infeasible": True,
         "v3a_scope_limits": {
-            "local_refinement_30m": "not_implemented_V3-B",
-            "exact_polygon_and_terrain_final_validation": "not_implemented_V3-B",
-            "cns_joint_optimization": "not_implemented_V3-D",
+            "corridor_local_fine_refinement": "implemented_in_V3-B",
+            "exact_polygon_terrain_continuous_clearance_validation": "not_implemented_V3-C",
+            "validated_route_operational_adapter": "not_implemented_V3-D",
+            "route_cns_joint_optimization": "future_backlog_not_V3-D",
             "energy_model": "pending_model_disabled",
         },
     })

@@ -233,13 +233,22 @@ class WorkflowService:
                     if summary is not None
                 ],
                 "architecture": collection["architecture"],
+                "v3b_architecture": collection["v3b_architecture"],
                 "note": collection["note"],
+                "v3b_note": collection["v3b_note"],
                 "allowed_result_statuses": collection["allowed_result_statuses"],
+                "allowed_refinement_statuses": collection["allowed_refinement_statuses"],
                 "operational_routes_untouched": True,
                 "algorithm_selection_untouched": True,
                 "detail_endpoint": "/api/route-planner-v3-experiments",
             }
             result["route_planner_v3_readiness"] = self.route_planner_v3_service.readiness_snapshot()
+            result["route_planner_v3_refinement_readiness"] = (
+                self.route_planner_v3_service.refinement_readiness_snapshot()
+            )
+            result["route_planner_v3_refinements"] = (
+                self.route_planner_v3_service.refinement_snapshot()
+            )
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
         if hasattr(self, "source_audit_service"):
@@ -287,8 +296,20 @@ class WorkflowService:
     def route_experiments_snapshot(self): return self.route_experiment_service.result_snapshot()
     def route_planner_v3_snapshot(self): return self.route_planner_v3_service.result_snapshot()
     def route_planner_v3_readiness(self): return self.route_planner_v3_service.readiness_snapshot()
+    def route_planner_v3_refinement_readiness(self):
+        return self.route_planner_v3_service.refinement_readiness_snapshot()
+    def route_planner_v3_refinement_snapshot(self):
+        return self.route_planner_v3_service.refinement_snapshot()
     def set_route_planner_v3_policy(self, payload): return self.route_planner_v3_service.set_policy(payload)
+    def set_route_planner_v3_fine_policy(self, payload):
+        return self.route_planner_v3_service.set_fine_policy(payload)
     def evaluate_route_planner_v3(self, payload=None): return self.route_planner_v3_service.evaluate(payload)
+    def evaluate_route_planner_v3_refinement(self, payload=None):
+        return self.route_planner_v3_service.evaluate_refinement(payload)
+    def evaluate_route_planner_v3_refinement_with_adapter(self, adapter, payload=None):
+        """GIS-wired entry point used by ApplicationContext (needs QGIS/GDAL)."""
+
+        return self.route_planner_v3_service.evaluate_refinement(payload, adapter=adapter)
     def delete_route_planner_v3_experiment(self, experiment_id):
         return self.route_planner_v3_service.delete_experiment(experiment_id)
     def data_readiness_snapshot(self): return self.reference_link_service.data_readiness()

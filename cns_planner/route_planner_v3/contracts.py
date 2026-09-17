@@ -33,13 +33,37 @@ V3_COST_VECTOR_SCHEMA_VERSION = "3.0-cost-vector"
 V3_STRATEGIC_RESULT_DISCLAIMER = (
     "V3-A strategic candidate："
     "3D + heading 战略搜索结果，不是 final safe / validated operational route；"
-    "未做 30 m 局部精化、未做 exact polygon/terrain 最终判定、未做 CNS 联合优化。"
+    "未做 V3-B corridor-local 精化、未做 V3-C exact polygon/terrain/continuous clearance 验证、"
+    "也未做 Route–CNS 联合优化。"
 )
 
+#: The stage that follows a strategic candidate.
+V3_NEXT_STAGE_AFTER_STRATEGIC = "V3-B_corridor_local_refinement"
+
 #: The only statuses a V3-A result may carry.
+#:
+#: ``search_incomplete`` is the *resource-limited* verdict: the search stopped
+#: because ``max_expanded_states`` was reached.  Reaching the expansion cap must
+#: never be reported as ``failed``/infeasible -- the search simply did not have
+#: enough budget to finish, which is a statement about the search, not about the
+#: problem.  The reason string is recorded in ``reason`` and the machine-readable
+#: semantics in ``search_statistics.search_completeness``.
 V3_RESULT_STATUSES = (
     "strategic_candidate", "failed", "missing_data", "pending_confirmation", "not_ready",
+    "search_incomplete",
 )
+
+#: Machine-readable completeness verdicts of one search.
+SEARCH_COMPLETENESS = {
+    "complete": "queue_exhausted_optimality_proven",
+    "search_incomplete_resource_limited": "expansion_cap_reached_optimality_not_proven",
+    "not_run": "search_did_not_run",
+}
+
+#: Per-cell soft-field evidence statuses.  ``not_provided`` means the canonical
+#: environment simply does not carry that field; enabling the corresponding soft
+#: channel then blocks readiness instead of silently costing 0.
+SOFT_FIELD_STATUSES = ("passed", "unknown", "missing_data", "not_provided")
 
 #: Readiness statuses for the six independent readiness domains.
 READINESS_STATUSES = ("ready", "pending", "blocked")
@@ -60,6 +84,12 @@ PRIMITIVE_KINDS = ("horizontal_level", "climb", "descend", "hover")
 BUILDING_EXPOSURE_REFERENCE_M = 100.0
 #: Vertical clearance that maps to "zero building exposure" at the current altitude.
 BUILDING_EXPOSURE_CLEARANCE_M = 50.0
+
+#: Soft channels whose index is *mapped from data* and therefore must carry
+#: provenance.  The building channel is derived from the state's own altitude and
+#: the cell's required clearance, so it carries a documented method instead of a
+#: source raster resolution.
+MAPPED_SOFT_CHANNELS = ("population_risk", "traffic_risk")
 
 
 class V3State(TypedDict):
@@ -136,6 +166,12 @@ class V3CellEnvironment(TypedDict, total=False):
     ``buildings.required_clearance_egm2008_m`` is
     ``roof_elevation_max + building_vertical_clearance_m``.  Both are
     EGM2008 orthometric and both fail closed when ``data_status != passed``.
+
+    ``cells[*].soft_fields`` carries the *only* soft-risk numbers the planner is
+    allowed to consume: each channel is a normalized index in ``[0, 1]`` together
+    with its provenance (``source``, ``source_resolution_m``,
+    ``mapping_method``, ``upsampled_without_new_information``).  There is no
+    implicit normalizer anywhere in the planner.
     """
 
     schema_version: str
@@ -316,7 +352,13 @@ def default_v3_policy():
 
 
 def default_v3_cost_model():
-    """Soft costs are declared but disabled until explicitly enabled + weighted."""
+    """Soft costs are declared but disabled until explicitly enabled + weighted.
+
+    There is deliberately **no** normalizer constant here.  A enabled channel's
+    index must arrive from the canonical environment as a provenance-carrying
+    ``[0, 1]`` value; the planner never divides a raw count by an invented
+    reference (the former ``10000 people`` / ``100 aircraft`` constants are gone).
+    """
 
     components = {}
     for name in COST_COMPONENTS:
@@ -325,35 +367,41 @@ def default_v3_cost_model():
             "weight": None,
             "unit": {
                 "distance": "m",
-                "population_risk": "person_m",
-                "traffic_risk": "aircraft_m",
-                "building_exposure": "normalized_m",
+                "population_risk": "m_x_normalized_index",
+                "traffic_risk": "m_x_normalized_index",
+                "building_exposure": "m_x_normalized_index",
                 "energy": "not_modelled",
             }[name],
             "normalization": {
                 "distance": "raw_metres",
-                "population_risk": f"per_edge_raw_/{10000.0}_people",
-                "traffic_risk": f"per_edge_raw_/{100.0}_aircraft",
-                "building_exposure": f"clearance_ratio_over_{BUILDING_EXPOSURE_REFERENCE_M:.0f}_m",
+                "population_risk": "external_provenance_normalized_index_0_1_from_mapped_soft_field",
+                "traffic_risk": "external_provenance_normalized_index_0_1_from_mapped_soft_field",
+                "building_exposure": "vertical_clearance_proximity_index_0_1",
                 "energy": "not_modelled",
             }[name],
+            "exposure_definition": (
+                "raw_metres" if name == "distance"
+                else "edge_length_m_times_mean_endpoint_index"
+            ),
             "source": "policy.cost_model",
             "semantics": {
                 "distance": "真实三维航段长度，唯一具有物理单位的直接项",
-                "population_risk": "engineering_exposure_meter_person_not_probability",
-                "traffic_risk": "engineering_exposure_meter_aircraft_not_conflict_probability",
-                "building_exposure": "normalized_clearance_proximity_not_collision_probability",
+                "population_risk": "length_integrated_population_exposure_index_not_probability",
+                "traffic_risk": "length_integrated_traffic_exposure_index_not_conflict_probability",
+                "building_exposure": "length_integrated_building_clearance_proximity_index_not_collision_probability",
                 "energy": "pending_model_disabled",
             }[name],
         }
     components["energy"].update({
         "enabled": False, "weight": None, "status": "pending_model",
-        "reason": "V3-A 不发明 energy 公式；energy 默认 pending_model 且禁用。",
+        "reason": "V3 不发明 energy 公式；energy 默认 pending_model 且禁用。",
     })
     return {
         "components": components,
         "scalar_cost_cap": None,
         "scalar_cost_cap_semantics": "optional_explicit_engineering_cap_never_defaulted",
+        "weight_policy": "explicit_finite_non_negative_weights_with_no_sum_cap_and_no_hidden_normalizer",
+        "heuristic_policy": "h_is_plain_3d_geometric_distance_weights_never_enter_the_heuristic",
     }
 
 
@@ -429,11 +477,11 @@ def normalize_cost_model(value=None):
             "source": _text(entry.get("source") or current["source"]),
         })
         if name == "energy":
-            # The energy model does not exist in V3-A; it can never be enabled.
+            # The energy model does not exist in V3; it can never be enabled.
             current["enabled"] = False
             current["weight"] = None
             current["status"] = "pending_model"
-            current["reason"] = "V3-A 不发明 energy 公式；energy 默认 pending_model 且禁用。"
+            current["reason"] = "V3 不发明 energy 公式；energy 默认 pending_model 且禁用。"
     result["scalar_cost_cap"] = _optional_number(
         source.get("scalar_cost_cap"), "scalar_cost_cap", nonnegative=True,
     )
@@ -512,6 +560,7 @@ def empty_v3_cell_environment(status="missing_data", reason="没有可用的 can
             "terrain_clearance_m": None,
             "building_horizontal_clearance_m": None,
             "building_vertical_clearance_m": None,
+            "soft_field_sources": {},
         },
         "cells": [],
     }
@@ -600,7 +649,63 @@ def _normalize_environment_cell(raw):
             "status": airspace_status,
             "feature_id": _text(airspace.get("feature_id")) or None,
         },
+        "soft_fields": _normalize_soft_fields(raw.get("soft_fields"), grid_id),
     }
+
+
+def _normalize_soft_fields(value, grid_id):
+    """Per-cell soft-risk indices with provenance.
+
+    A channel that is simply absent becomes ``status=not_provided`` with
+    ``normalized_index=None`` -- never ``0``.  Enabling such a channel blocks
+    readiness, so a missing mapped field can never be silently costed as zero.
+    """
+
+    source = value if isinstance(value, dict) else {}
+    result = {}
+    for name in COST_COMPONENTS:
+        if name == "distance":
+            continue
+        raw = source.get(name) if isinstance(source.get(name), dict) else None
+        if raw is None:
+            result[name] = {
+                "normalized_index": None,
+                "status": "not_provided",
+                "source": None,
+                "source_resolution_m": None,
+                "mapping_method": None,
+                "upsampled_without_new_information": False,
+                "semantics": None,
+            }
+            continue
+        status = _text(raw.get("status") or "not_provided")
+        if status not in SOFT_FIELD_STATUSES:
+            raise ValueError(f"cell {grid_id} soft_fields.{name}.status 无效：{status}")
+        index = _optional_number(
+            raw.get("normalized_index"), f"soft_fields.{name}.normalized_index",
+        )
+        if index is not None and not (0.0 <= index <= 1.0):
+            raise ValueError(
+                f"cell {grid_id} soft_fields.{name}.normalized_index 必须位于 [0,1]，"
+                "不得把原始计数当作 index"
+            )
+        if status == "passed" and index is None:
+            raise ValueError(f"cell {grid_id} soft_fields.{name} status=passed 但缺少 normalized_index")
+        result[name] = {
+            "normalized_index": index,
+            "status": status,
+            "source": None if raw.get("source") in (None, "") else _text(raw.get("source")),
+            "source_resolution_m": _optional_number(
+                raw.get("source_resolution_m"),
+                f"soft_fields.{name}.source_resolution_m", positive=True,
+            ),
+            "mapping_method": None if raw.get("mapping_method") in (None, "") else _text(raw.get("mapping_method")),
+            "upsampled_without_new_information": bool(
+                raw.get("upsampled_without_new_information", False)
+            ),
+            "semantics": None if raw.get("semantics") in (None, "") else _text(raw.get("semantics")),
+        }
+    return result
 
 
 # --------------------------------------------------------------------------- state
@@ -723,6 +828,21 @@ def normalize_v3_cost_vector(value=None):
             "enabled": bool(entry.get("enabled", False)),
             "status": _text(entry.get("status") or "not_calculated"),
             "reason": entry.get("reason"),
+            # Provenance of a length-integrated normalized index.  These fields are
+            # what makes the soft cost auditable instead of a hidden normalizer.
+            "exposure_m": _optional_number(entry.get("exposure_m"), f"cost_vector.{name}.exposure_m"),
+            "exposure_definition": entry.get("exposure_definition"),
+            "normalized_index_statistics": deepcopy(entry.get("normalized_index_statistics") or {}),
+            "source_resolution_m": _optional_number(
+                entry.get("source_resolution_m"), f"cost_vector.{name}.source_resolution_m", positive=True,
+            ),
+            "mapping_method": entry.get("mapping_method"),
+            "upsampled_without_new_information": bool(
+                entry.get("upsampled_without_new_information", False)
+            ),
+            "provenance_sources": list(entry.get("provenance_sources") or []),
+            "provenance_note": entry.get("provenance_note"),
+            "edge_count": _optional_int(entry.get("edge_count"), f"cost_vector.{name}.edge_count", minimum=0),
         }
     return {
         "schema_version": V3_COST_VECTOR_SCHEMA_VERSION,
@@ -731,10 +851,16 @@ def normalize_v3_cost_vector(value=None):
         "scalar_cost": _optional_number(source.get("scalar_cost"), "scalar_cost"),
         "scalar_cost_semantics": _text(
             source.get("scalar_cost_semantics")
-            or "distance_m_plus_explicitly_normalized_non_negative_weighted_components"
+            or "sum_over_edges(length_m + sum_channels(weight_x_exposure_m))"
         ),
         "scalar_weight_sum": _optional_number(source.get("scalar_weight_sum"), "scalar_weight_sum", nonnegative=True) or 0.0,
+        "scalar_weight_sum_is_not_bounded": bool(source.get("scalar_weight_sum_is_not_bounded", True)),
+        "scalar_weight_sum_not_used_by_the_heuristic": bool(
+            source.get("scalar_weight_sum_not_used_by_the_heuristic", True)
+        ),
         "excluded_components": list(source.get("excluded_components") or []),
+        "scalar_cost_cap": _optional_number(source.get("scalar_cost_cap"), "scalar_cost_cap", nonnegative=True),
+        "scalar_cost_cap_active": bool(source.get("scalar_cost_cap_active", False)),
         "cns_integration": deepcopy(source.get("cns_integration") or {
             "integration_mode": "post_route_assessment",
             "excluded_from_search_cost": True,
@@ -766,7 +892,7 @@ def empty_candidate_refinement_corridor():
         "center_state_count": 0,
         "support_cell_count": 0,
         "n_ring_is_not_a_safety_clearance": True,
-        "next_stage": "V3-B_30m_local_refinement_and_exact_validation",
+        "next_stage": "V3-B_corridor_local_refinement",
     }
 
 
@@ -859,6 +985,11 @@ def empty_v3_strategic_result(status="not_ready"):
             "expanded_states": 0, "generated_states": 0, "rejected_states": 0,
             "expanded_transitions": 0, "runtime_ms": 0.0,
             "expansion_cap": None, "expansion_cap_reached": False,
+            "search_complete": False,
+            "search_completeness": SEARCH_COMPLETENESS["not_run"],
+            "resource_limited": False,
+            "resource_limit": None,
+            "resource_limit_reason": None,
         },
         "hard_constraint_summary": {
             "state_rejections": {}, "transition_rejections": {},
@@ -884,6 +1015,10 @@ def empty_v3_strategic_result(status="not_ready"):
             "not_validated_operational_route": True,
             "unknown_is_never_safe": True,
             "motion_model": "engineering_kinematic_limits_implemented_in_edge_generation_not_flight_dynamics_certification",
+            "heuristic_is_plain_geometric_distance": True,
+            "soft_fields_are_provenance_normalized_indices": True,
+            "no_hidden_soft_normalizer": True,
+            "expansion_cap_is_resource_limited_not_infeasible": True,
         },
     }
 
@@ -922,7 +1057,7 @@ def empty_v3_experimental_session():
         "count": 0,
         "records": [],
         "note": (
-            "V3-A 实验容器：只保存 3D 战略候选与 readiness 证据；"
+            "V3-A/V3-B 实验容器：只保存 3D 战略候选、corridor-local 精化候选与 readiness 证据；"
             "不写入 operational_routes，不切换 algorithm_selection，"
             "也不修改 V1/V2 或 spatial_3d 语义。"
         ),
@@ -935,6 +1070,10 @@ def normalize_v3_experiments(value=None):
         return result
     if not isinstance(value, dict):
         raise ValueError("route_planner_v3_experiments 必须是对象")
+    # Imported lazily: the V3-B contract module imports this one, so a module-level
+    # import here would be circular.
+    from .fine_contracts import normalize_v3_refinement_result
+
     records = []
     for raw in value.get("records") or []:
         if not isinstance(raw, dict):
@@ -946,6 +1085,15 @@ def normalize_v3_experiments(value=None):
         entry.setdefault("policy", None)
         entry.setdefault("environment_source", None)
         entry.setdefault("current_applicability", "unknown")
+        refinements = []
+        for item in entry.get("refinements") or []:
+            if not isinstance(item, dict):
+                raise ValueError("V3 refinement record 必须是对象")
+            normalized = deepcopy(item)
+            normalized["result"] = normalize_v3_refinement_result(item.get("result"))
+            normalized.setdefault("current_applicability", "unknown")
+            refinements.append(normalized)
+        entry["refinements"] = refinements
         records.append(entry)
     result["records"] = records
     result["count"] = len(records)

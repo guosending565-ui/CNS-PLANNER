@@ -19,7 +19,7 @@ from .contracts import empty_candidate_refinement_corridor
 
 CORRIDOR_SEMANTICS = "refinement_search_window_not_safety_corridor"
 RING_SEMANTICS = "n_ring_support_cells_expand_the_search_window_not_a_clearance"
-NEXT_STAGE = "V3-B_30m_local_refinement_and_exact_validation"
+NEXT_STAGE = "V3-B_corridor_local_refinement"
 
 
 def grid_index(cells):
@@ -76,7 +76,7 @@ def build_candidate_refinement_corridor(
             "next_stage": NEXT_STAGE,
             "ring_semantics": RING_SEMANTICS,
             "not_implemented_in_v3a": [
-                "30m_local_refinement", "exact_polygon_terrain_final_validation",
+                "corridor_local_fine_refinement", "exact_polygon_terrain_continuous_clearance_validation",
             ],
         })
         return result
@@ -129,7 +129,7 @@ def build_candidate_refinement_corridor(
         "ring_semantics": RING_SEMANTICS,
         "next_stage": NEXT_STAGE,
         "not_implemented_in_v3a": [
-            "30m_local_refinement", "exact_polygon_terrain_final_validation",
+            "corridor_local_fine_refinement", "exact_polygon_terrain_continuous_clearance_validation",
         ],
     })
     return result

@@ -41,9 +41,39 @@ SYNTHETIC_SPEC_DEFAULT = {
     "restricted_cells": [],
     "unknown_terrain_cells": [],
     "unknown_building_cells": [],
-    "population_per_cell": {},
-    "traffic_per_cell": {},
+    # Soft fields are *normalized indices in [0, 1]*, never raw counts: the
+    # planner has no hidden normalizer any more.  A channel that is not supplied
+    # stays ``not_provided`` and blocks readiness if it is enabled.
+    "population_index_per_cell": {},
+    "traffic_index_per_cell": {},
+    "soft_field_provenance": {},
     "seed": 1,
+}
+
+#: Default provenance of a synthetic soft field.  It is explicitly marked as
+#: synthetic and as carrying no new information beyond its declared index.
+SYNTHETIC_SOFT_FIELD_PROVENANCE = {
+    "population_risk": {
+        "source": "synthetic.policy_spec",
+        "source_resolution_m": None,
+        "mapping_method": "synthetic_explicit_normalized_index_not_derived_from_a_raster",
+        "upsampled_without_new_information": False,
+        "semantics": "length_integrated_population_exposure_index_not_probability",
+    },
+    "traffic_risk": {
+        "source": "synthetic.policy_spec",
+        "source_resolution_m": None,
+        "mapping_method": "synthetic_explicit_normalized_index_not_derived_from_a_raster",
+        "upsampled_without_new_information": False,
+        "semantics": "length_integrated_traffic_exposure_index_not_conflict_probability",
+    },
+    "building_exposure": {
+        "source": "environment.buildings.required_clearance_egm2008_m",
+        "source_resolution_m": None,
+        "mapping_method": "vertical_clearance_proximity_index_0_1",
+        "upsampled_without_new_information": False,
+        "semantics": "length_integrated_building_clearance_proximity_index_not_collision_probability",
+    },
 }
 
 
@@ -81,12 +111,31 @@ def normalize_synthetic_spec(value=None):
     spec["restricted_cells"] = [str(item) for item in spec["restricted_cells"] or []]
     spec["unknown_terrain_cells"] = [str(item) for item in spec["unknown_terrain_cells"] or []]
     spec["unknown_building_cells"] = [str(item) for item in spec["unknown_building_cells"] or []]
-    spec["population_per_cell"] = {
-        str(key): float(value) for key, value in (spec["population_per_cell"] or {}).items()
-    }
-    spec["traffic_per_cell"] = {
-        str(key): float(value) for key, value in (spec["traffic_per_cell"] or {}).items()
-    }
+    spec["population_index_per_cell"] = _normalized_index_map(
+        spec["population_index_per_cell"], "population_index_per_cell",
+    )
+    spec["traffic_index_per_cell"] = _normalized_index_map(
+        spec["traffic_index_per_cell"], "traffic_index_per_cell",
+    )
+    legacy_population = source.get("population_per_cell")
+    if legacy_population and not spec["population_index_per_cell"]:
+        raise ValueError(
+            "population_per_cell 是旧版原始计数接口，已删除：soft channel 只接受 provenance "
+            "normalized index[0,1]，请改用 population_index_per_cell（planner 不再提供 10000/100 隐式 normalizer）"
+        )
+    legacy_traffic = source.get("traffic_per_cell")
+    if legacy_traffic and not spec["traffic_index_per_cell"]:
+        raise ValueError(
+            "traffic_per_cell 是旧版原始计数接口，已删除：soft channel 只接受 provenance "
+            "normalized index[0,1]，请改用 traffic_index_per_cell（planner 不再提供 10000/100 隐式 normalizer）"
+        )
+    provenance = deepcopy(SYNTHETIC_SOFT_FIELD_PROVENANCE)
+    supplied_provenance = source.get("soft_field_provenance")
+    if isinstance(supplied_provenance, dict):
+        for channel, entry in supplied_provenance.items():
+            if channel in provenance and isinstance(entry, dict):
+                provenance[channel].update(deepcopy(entry))
+    spec["soft_field_provenance"] = provenance
     # Backwards-compatible alias: an unspecified channel is treated as unknown
     # terrain evidence, which is the conservative reading.
     legacy_unknown = source.get("unknown_cells")
@@ -94,6 +143,20 @@ def normalize_synthetic_spec(value=None):
         spec["unknown_terrain_cells"] = [str(item) for item in legacy_unknown]
     spec["seed"] = int(spec["seed"])
     return spec
+
+
+def _normalized_index_map(value, field):
+    result = {}
+    for key, item in (value or {}).items():
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise ValueError(f"{field} 的值必须是 [0,1] 内的有限数值")
+        number = float(item)
+        if not (0.0 <= number <= 1.0):
+            raise ValueError(
+                f"{field} 必须是 normalized index 且位于 [0,1]；原始计数不得直接作为 soft cost 输入"
+            )
+        result[str(key)] = number
+    return result
 
 
 def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=None):
@@ -151,8 +214,10 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
                     None if roof is None else roof + vertical_clearance
                 ),
                 "horizontal_clearance_m": horizontal_clearance,
+                "upsampled_without_new_information": False,
             },
             "airspace": {"status": airspace_status, "feature_id": f"synthetic:{grid_id}"},
+            "soft_fields": _soft_fields(spec, grid_id, _cell_size_m(cell)),
         })
     return {
         "schema_version": "3.0-environment",
@@ -164,7 +229,8 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
             "builder": "route_planner_v3.synthetic.build_synthetic_environment",
             "spec": deepcopy(spec),
             "not_real_data": True,
-            "no_30m_refinement_implemented": True,
+            "soft_fields_are_normalized_indices_not_raw_counts": True,
+            "no_hidden_normalizer": True,
             **(source_detail or {}),
         },
         "grid_level": _grid_level(cells),
@@ -173,13 +239,10 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
             "terrain_clearance_m": terrain_clearance,
             "building_horizontal_clearance_m": horizontal_clearance,
             "building_vertical_clearance_m": vertical_clearance,
-            "population_per_cell": {
-                str(cell["grid_id"]): float((spec.get("population_per_cell") or {}).get(str(cell["grid_id"]), 0.0))
-                for cell in cells
-            },
-            "traffic_per_cell": {
-                str(cell["grid_id"]): float((spec.get("traffic_per_cell") or {}).get(str(cell["grid_id"]), 0.0))
-                for cell in cells
+            "soft_field_sources": deepcopy(spec["soft_field_provenance"]),
+            "soft_field_index_maps_declared": {
+                "population_risk": sorted(spec["population_index_per_cell"]),
+                "traffic_risk": sorted(spec["traffic_index_per_cell"]),
             },
             "unknown_terrain_cell_count": len(unknown_terrain),
             "unknown_building_cell_count": len(unknown_building),
@@ -187,6 +250,43 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
         },
         "cells": result_cells,
     }
+
+
+def _soft_fields(spec, grid_id, cell_size_m):
+    """Per-cell normalized soft indices with provenance (never raw counts)."""
+
+    result = {}
+    for channel, key in (
+        ("population_risk", "population_index_per_cell"),
+        ("traffic_risk", "traffic_index_per_cell"),
+    ):
+        provenance = (spec["soft_field_provenance"] or {}).get(channel) or {}
+        supplied = (spec.get(key) or {}).get(str(grid_id))
+        if supplied is None:
+            result[channel] = {
+                "normalized_index": None,
+                "status": "not_provided",
+                "source": provenance.get("source"),
+                "source_resolution_m": provenance.get("source_resolution_m"),
+                "mapping_method": provenance.get("mapping_method"),
+                "upsampled_without_new_information": bool(
+                    provenance.get("upsampled_without_new_information", False)
+                ),
+                "semantics": provenance.get("semantics"),
+            }
+            continue
+        result[channel] = {
+            "normalized_index": float(supplied),
+            "status": "passed",
+            "source": provenance.get("source"),
+            "source_resolution_m": provenance.get("source_resolution_m") or cell_size_m,
+            "mapping_method": provenance.get("mapping_method"),
+            "upsampled_without_new_information": bool(
+                provenance.get("upsampled_without_new_information", False)
+            ),
+            "semantics": provenance.get("semantics"),
+        }
+    return result
 
 
 def open_cell_ids(cells):

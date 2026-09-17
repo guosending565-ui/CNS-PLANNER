@@ -240,22 +240,147 @@ function experimentRunBlock(run){
     +'</span></div>';
 }
 
-// ---- Route Planner V3-A (strategic planning experiment, read-only panel) ------------
+// ---- Route Planner V3-A / V3-B (read-only / experimental panels) --------------------
 
 export const V3_EXPERIMENT_NOTE='V3-A 战略规划实验 ≠ 运行航路：只写入 route_planner_v3_experiments，不切换当前 planner，也不覆盖 operational_routes 或 spatial_3d。';
-export const V3_RESULT_STATUSES=['strategic_candidate','failed','missing_data','pending_confirmation','not_ready'];
+export const V3_RESULT_STATUSES=['strategic_candidate','failed','missing_data','pending_confirmation','not_ready','search_incomplete'];
+//: V3-B result statuses.  There is deliberately no "validated"/"final" status here.
+export const V3B_RESULT_STATUSES=['refined_candidate','failed','not_ready','missing_data','search_incomplete'];
+//: The label every V3-B rendering must carry verbatim: a refined candidate is not
+//: a final safe route and the continuous-geometry validation is V3-C's job.
+export const V3B_REFINED_LABEL='refined candidate，未执行 V3-C 连续几何验证';
+export const V3B_ENVIRONMENT_SOURCES=['canonical_synthetic','configured_real_sources'];
+export const V3B_RESOLUTION_SOURCES=['explicit_configuration','dtm_effective_resolution'];
+//: Fallback V3-B note, used while a snapshot carries no ``v3b_note`` yet.
+const V3B_NOTE_FALLBACK='V3-B corridor-local 精化候选 ≠ validated route：只在选定且 current 的 V3-A strategic_candidate 的 corridor 内做米制细网格工程精化；未做 V3-C exact polygon/terrain/continuous clearance 验证，也不写 operational_routes、algorithm_selection 或 spatial_3d。';
+
+function v3RefinementReadinessModel(flow){
+  const fine=flow?.route_planner_v3_refinement_readiness||{};
+  return {
+    status:fine.status||'not_calculated',stage:fine.stage||'V3-B',
+    modelScope:fine.model_scope||'',architecture:fine.architecture||'',note:fine.note||'',
+    scope:fine.stage_scope||{implemented:[],not_implemented:[]},
+    algorithm:fine.algorithm||{},selectedCandidate:fine.selected_strategic_candidate||null,
+    finePolicy:fine.fine_policy||{},
+    v3PolicyReadiness:fine.v3_policy_readiness||{status:'unknown',missing_parameters:[]},
+    realDataReadiness:fine.real_data_readiness||{status:'unknown',blocking_reasons:[]},
+    blockingReasons:fine.blocking_reasons||[],
+    environmentSources:fine.environment_sources||V3B_ENVIRONMENT_SOURCES,
+    resolutionPolicy:fine.resolution_policy||'',
+    allowedRefinementStatuses:fine.allowed_refinement_statuses||V3B_RESULT_STATUSES};
+}
+
+function v3RefinementApplicabilityModel(flow){
+  const snapshot=flow?.route_planner_v3_refinements||{};
+  return {
+    status:snapshot.status||'not_calculated',count:snapshot.count||0,staleCount:snapshot.stale_count||0,
+    semantics:snapshot.semantics||'stale_when_strategic_corridor_policy_or_source_audit_changes',
+    components:snapshot.components||[],
+    items:(snapshot.items||[]).map(item=>({refinementId:item.refinement_id,experimentId:item.experiment_id,
+      status:item.status,recordedApplicability:item.recorded_applicability,
+      currentApplicability:item.current_applicability,changedComponents:item.changed_components||[],
+      reasons:item.reasons||[],refinementFingerprint:item.refinement_fingerprint,
+      evidenceComponents:item.evidence_components||{}}))};
+}
 
 export function routePlannerV3ReadinessModel(flow){
   const snapshot=flow?.route_planner_v3_readiness||{};
+  const scope=snapshot.stage_scope||{implemented:[],not_implemented:[]};
+  const realData=snapshot.real_data_readiness||{status:'unknown',reasons:[]};
   return {status:snapshot.status||'not_calculated',stage:snapshot.stage||'V3-A',
-    architecture:snapshot.architecture||'',scope:snapshot.stage_scope||{implemented:[],not_implemented:[]},
+    architecture:snapshot.architecture||'',scope:{...scope,implementedInOtherStages:scope.implemented_in_other_stages||{}},
     algorithm:snapshot.algorithm||{},grid:snapshot.grid||{},policy:snapshot.policy||{},
     policyReadiness:snapshot.policy_readiness||{status:'unknown',reasons:[],missing_parameters:[]},
     aircraftReadiness:snapshot.aircraft_readiness||{status:'unknown',reasons:[]},
     environmentReadiness:snapshot.environment_readiness||{status:'unknown',reason:''},
-    realData:snapshot.real_data_readiness||{status:'unknown',reasons:[]},
+    realData:{...realData,v3b:realData.v3b||{status:'unknown',adapter_status:null,blocking_reasons:[],
+      resolution_policy:null,terrain_dtm:null,buildings:null}},
     syntheticOptions:snapshot.synthetic_environment_options||{terrain_profiles:[],buildings_profiles:[],sources:[]},
+    refinementReadiness:v3RefinementReadinessModel(flow),
     neverFinalValidated:true};
+}
+
+function refinementCostComponents(cost){
+  return Object.entries(cost?.components||{}).map(([name,entry])=>({
+    name,raw:entry.raw,normalized:entry.normalized,weight:entry.weight,contribution:entry.contribution,
+    unit:entry.unit,source:entry.source,semantics:entry.semantics,enabled:entry.enabled===true,
+    status:entry.status,reason:entry.reason,
+    exposureM:entry.exposure_m??null,exposureDefinition:entry.exposure_definition||null,
+    indexStatistics:entry.normalized_index_statistics||{},
+    sourceResolutionM:entry.source_resolution_m??null,mappingMethod:entry.mapping_method||null,
+    upsampledWithoutNewInformation:entry.upsampled_without_new_information===true,
+    provenanceSources:entry.provenance_sources||[],provenanceNote:entry.provenance_note||null,
+    edgeCount:entry.edge_count??null}));
+}
+
+function routePlannerV3RefinementModel(item){
+  const result=item?.result||{};
+  const path=result.state_path||[];
+  const stats=result.search_statistics||{};
+  const hard=result.hard_constraint_summary||{};
+  const trajectory=result.trajectory_summary||{};
+  const evidence=result.fine_grid_evidence||{};
+  const grid=result.fine_grid||{};
+  const cost=result.cost_vector||{};
+  const altitudes=path.map(state=>state.altitude_egm2008_m).filter(Number.isFinite);
+  return {
+    refinementId:item?.refinement_id||null,experimentId:item?.experiment_id||null,
+    createdAt:item?.created_at||null,environmentSource:item?.environment_source||null,
+    grounding:item?.grounding||'corridor_local_fine_grid',
+    status:result.status||item?.status||'not_ready',reason:result.reason||null,
+    resolutionM:evidence.resolution_m??grid.resolution_m??null,
+    resolutionSource:evidence.resolution_source??grid.resolution_source??null,
+    requestedResolutionM:evidence.requested_resolution_m??grid.requested_resolution_m??null,
+    effectiveSourceResolutionM:evidence.effective_source_resolution_m??grid.effective_source_resolution_m??null,
+    resolutionDeviationM:evidence.resolution_deviation_m??grid.resolution_deviation_m??null,
+    cellCount:evidence.cell_count??grid.cell_count??null,
+    environmentCellCount:evidence.environment_cell_count??null,
+    corridorSupportCellCount:evidence.corridor_support_cell_count??null,
+    corridorCenterCellCount:evidence.corridor_center_cell_count??null,
+    expandedStates:stats.expanded_states??null,generatedStates:stats.generated_states??null,
+    primitiveChecks:stats.primitive_checks??hard.primitive_checks??null,
+    traversedCellChecks:stats.traversed_cell_checks??hard.traversed_cell_checks??null,
+    maxStrideCells:stats.max_stride_cells??trajectory.max_stride_cells??null,
+    stateCount:trajectory.state_count??path.length,
+    distanceM:result.distance_m??null,scalarCost:cost.scalar_cost??null,
+    hardRejection:{state:hard.state_rejections||{},transition:hard.transition_rejections||{},
+      traversedCell:hard.traversed_cell_rejections||{},
+      totalState:hard.total_state_rejections??0,totalTransition:hard.total_transition_rejections??0,
+      totalTraversed:hard.total_traversed_cell_rejections??0},
+    hardSummary:hard,searchStatistics:stats,
+    searchCompleteness:stats.search_completeness||'search_did_not_run',
+    resourceLimited:stats.resource_limited===true,expansionCapReached:stats.expansion_cap_reached===true,
+    expansionCap:stats.expansion_cap??null,resourceLimit:stats.resource_limit||null,
+    resourceLimitReason:stats.resource_limit_reason||null,optimalityProven:stats.optimality_proven===true,
+    stateSpaceShape:stats.state_space_shape||{},
+    endpointBinding:stats.endpoint_binding||trajectory.endpoint_binding||null,
+    multiCellStrideEdgeCount:trajectory.multi_cell_stride_edge_count??null,
+    traversedCellCheckCount:trajectory.traversed_cell_check_count??null,
+    maxHeadingChangeDeg:trajectory.max_heading_change_deg??null,
+    maxClimbGradient:trajectory.max_climb_gradient??null,
+    altitudeRange:altitudes.length?[Math.min(...altitudes),Math.max(...altitudes)]:null,
+    finalValidationPerformed:false,operationalRoute:false,v3cPending:true,
+    disclaimer:result.disclaimer||'',
+    projection:result.horizontal_projection||[],metricProjection:result.metric_projection||[],
+    fineGrid:result.fine_grid||null,frame:result.frame||null,sourceAudit:result.source_audit||{},
+    evidence,
+    costComponents:refinementCostComponents(cost),
+    costMeta:{scalarCost:cost.scalar_cost??null,scalarCostAvailable:cost.scalar_cost_available===true,
+      scalarWeightSum:cost.scalar_weight_sum??null,
+      scalarWeightSumIsNotBounded:cost.scalar_weight_sum_is_not_bounded===true,
+      scalarWeightSumNotUsedByTheHeuristic:cost.scalar_weight_sum_not_used_by_the_heuristic===true,
+      scalarCostCap:cost.scalar_cost_cap??null,scalarCostCapActive:cost.scalar_cost_cap_active===true,
+      semantics:cost.scalar_cost_semantics||'',cnsIntegration:cost.cns_integration||{}},
+    trajectory,motionModel:result.motion_model||{},semantics:result.semantics||{},
+    readiness:item?.readiness||{},readinessOverall:item?.readiness_overall||null,
+    verdicts:item?.verdicts||{},fingerprintComponents:item?.fingerprint_components||{},
+    currentApplicability:item?.current_applicability||null,
+    recordedApplicability:item?.recorded_applicability||null,
+    refinementFingerprint:item?.refinement_fingerprint??result.refinement_fingerprint??null,
+    evidenceComponents:item?.evidence_components||{},
+    statePreview:path.slice(0,24).map(state=>({fineCellId:state.fine_cell_id,altitudeM:state.altitude_egm2008_m,
+      headingDeg:state.heading_deg,primitiveId:state.primitive_id,strideCells:state.stride_cells,
+      traversedCellCount:(state.traversed_cell_ids||[]).length,climbGradient:state.climb_gradient}))};
 }
 
 export function routePlannerV3Model(flow){
@@ -310,7 +435,23 @@ export function routePlannerV3Model(flow){
     recent:(collection.records||[]).map(item=>({experimentId:item.experiment_id,createdAt:item.created_at,
       status:item.status,distanceM:item.distance_m,stateCount:item.state_count,
       expandedStates:item.expanded_states,corridorSupportCount:item.corridor_support_count,
-      corridorRingN:item.corridor_ring_n})),
+      corridorRingN:item.corridor_ring_n,refinementCount:item.refinement_count,
+      refinementStatus:item.refinement_status,refinementId:item.refinement_id,
+      refinementDistanceM:item.refinement_distance_m,refinementResolutionM:item.refinement_resolution_m,
+      refinementResolutionSource:item.refinement_resolution_source,
+      refinementCellCount:item.refinement_cell_count,
+      refinementEnvironmentCellCount:item.refinement_environment_cell_count,
+      refinementExpandedStates:item.refinement_expanded_states,
+      refinementScalarCost:item.refinement_scalar_cost,
+      refinementEnvironmentSource:item.refinement_environment_source,
+      refinementFinalValidationPerformed:false})),
+    v3bArchitecture:collection.v3b_architecture||'',
+    v3bNote:collection.v3b_note||V3B_NOTE_FALLBACK,
+    allowedRefinementStatuses:collection.allowed_refinement_statuses||V3B_RESULT_STATUSES,
+    refinementCount:(record?.refinements||[]).length||collection.active_experiment?.refinement_count||0,
+    refinements:(record?.refinements||[]).map(routePlannerV3RefinementModel),
+    refinementReadiness:v3RefinementReadinessModel(flow),
+    refinementApplicability:v3RefinementApplicabilityModel(flow),
     note:collection.note||V3_EXPERIMENT_NOTE,
     semantics:'experiment_is_not_an_operational_route',automaticRanking:false};
 }
@@ -358,6 +499,268 @@ function v3StateRows(model){
     +' · Δheading '+metric(item.headingChangeDeg,'°')+'</small></span></div>').join('');
 }
 
+// ---- V3-B corridor-local refinement blocks ------------------------------------------
+
+function v3bRows(rows){
+  return rows.map(row=>'<div class="list-row"><span><b>'+escapeHtml(row[0])+'</b><small>'+row[1]+'</small></span></div>').join('');
+}
+
+function v3bRefinementBlock(model,refinement){
+  const candidate=model.candidate;
+  const header='<h3>V3-B corridor-local 精化候选 '+statusBadge(refinement?.status||'not_calculated')+'</h3>';
+  if(!refinement)return header+'<div class="empty-note">尚无 V3-B 精化记录：先显式保存 V3-B fine policy，再对选定且 current 的 V3-A strategic_candidate 运行 corridor-local 精化。</div>';
+  const summary='<div class="flow-summary"><b>'+V3B_REFINED_LABEL+'</b>'
+    +'<br>refinement <code>'+escapeHtml(refinement.refinementId||'—')+'</code> · environment_source '+escapeHtml(refinement.environmentSource||'—')
+    +' · grounding '+escapeHtml(refinement.grounding||'—')+' · '+escapeHtml(refinement.createdAt||'')
+    +'<br>coarse（V3-A 战略候选）：state '+escapeHtml(String(candidate?.stateCount??'—'))+' · 3D distance '+metric(candidate?.distanceM,'m')
+    +'<br>refined（V3-B corridor-local 精化）：state '+escapeHtml(String(refinement.stateCount??'—'))+' · 3D distance '+metric(refinement.distanceM,'m')
+    +' · scalar cost '+metric(refinement.scalarCost)+' · expanded '+escapeHtml(String(refinement.expandedStates??'—'))
+    +'<br>fine cell 数 '+escapeHtml(String(refinement.cellCount??'—'))+' · environment cell 数 '+escapeHtml(String(refinement.environmentCellCount??'—'))
+    +' · resolution '+metric(refinement.resolutionM,'m')+' · source '+escapeHtml(refinement.resolutionSource||'—')
+    +'<br>state 适用性 recorded '+escapeHtml(refinement.recordedApplicability||'—')+' / current '+escapeHtml(refinement.currentApplicability||'—')
+    +'<br>reason '+escapeHtml(refinement.reason||'—')
+    +'<br>verdicts：operational_route='+escapeHtml(String(refinement.operationalRoute))
+    +' · final_validation_performed='+escapeHtml(String(refinement.finalValidationPerformed))
+    +' · v3c_validation_pending='+escapeHtml(String(refinement.v3cPending))
+    +'<br>V3-B 精化只是某一个 V3-A strategic candidate 的 corridor 内米制细网格工程精化：<b>不是最终安全航路</b>，'
+    +'不是 operational route，也不是 exactly validated。exact polygon / terrain / continuous clearance 验证属于 V3-C；'
+    +'operational adapter 与 CNS 评估属于 V3-D。本面板不声明该候选为已验证/final 航路。'
+    +'<br><b>'+escapeHtml(refinement.disclaimer||'')+'</b></div>';
+  return header+summary;
+}
+
+function v3bFineGridBlock(refinement){
+  const header='<h3>fine grid 与 resolution provenance</h3>';
+  if(!refinement)return header+'<div class="empty-note">尚无 V3-B fine grid。</div>';
+  const grid=refinement.fineGrid||{},frame=refinement.frame||{},mapping=frame.local_to_geographic||{};
+  const axis=frame.axis||{};
+  const rows=[
+    ['resolution_m',metric(refinement.resolutionM,'m')],
+    ['resolution_source',escapeHtml(refinement.resolutionSource||'未记录')],
+    ['requested_resolution_m',metric(refinement.requestedResolutionM,'m')],
+    ['effective_source_resolution_m',metric(refinement.effectiveSourceResolutionM,'m')],
+    ['resolution_deviation_m',metric(refinement.resolutionDeviationM,'m')],
+    ['nx × ny',escapeHtml(String(grid.nx??'—'))+' × '+escapeHtml(String(grid.ny??'—'))],
+    ['fine cell_count',escapeHtml(String(refinement.cellCount??'—'))],
+    ['environment_cell_count',escapeHtml(String(refinement.environmentCellCount??'—'))],
+    ['corridor support / center cell',escapeHtml(String(refinement.corridorSupportCellCount??'—'))+' / '+escapeHtml(String(refinement.corridorCenterCellCount??'—'))],
+    ['local metric CRS',escapeHtml(frame.horizontal_crs||'未记录')+'（source '+escapeHtml(frame.horizontal_crs_source||'—')+'）'],
+    ['local → geographic method',escapeHtml(mapping.method||'未提供（仅米制坐标）')+' · display_only '+escapeHtml(String(mapping.display_only!==false))+' · interpolated_from_parent_cells '+escapeHtml(String(mapping.interpolated_from_parent_cells===true))],
+    ['axis / index origin',escapeHtml([axis.column_axis,axis.row_axis,axis.index_origin].filter(Boolean).join(' / ')||'—')],
+    ['frame metric_bounds（米制，不是经纬度）',escapeHtml(jsonInline(frame.metric_bounds||null))],
+    ['mapping_method / parent resolution',escapeHtml(grid.mapping_method||'—')+' · '+metric(grid.parent_grid_resolution_m,'m')],
+    ['terrain_clearance_m / building horizonal_clearance_m / vertical_clearance_m',
+      metric(refinement.evidence?.terrain_clearance_m,'m')+' / '+metric(refinement.evidence?.horizonal_clearance_m,'m')+' / '+metric(refinement.evidence?.vertical_clearance_m,'m')],
+    ['terrain_sampling / building_mapping',escapeHtml(refinement.evidence?.terrain_sampling||'—')+' · '+escapeHtml(refinement.evidence?.building_mapping||'—')],
+    ['not_a_safety_clearance',escapeHtml(String(grid.not_a_safety_clearance!==false))],
+    ['resolution_deviation source',escapeHtml(grid.resolution_source||refinement.resolutionSource||'—')]];
+  return header
+    +'<div class="scroll-list route-list">'+v3bRows(rows)+'</div>'
+    +'<div class="parameter-note">fine resolution 只可能来自 <code>explicit_configuration</code>（用户显式配置）或 '
+    +'<code>dtm_effective_resolution</code>（DTM 自身有效分辨率）：<b>永远不是硬编码的 30 m 常数</b>，也不构成安全净空（not_a_safety_clearance）。'
+    +'当前来源 <code>'+escapeHtml(refinement.resolutionSource||'未记录')+'</code>。</div>'
+    +'<div class="parameter-note">coarse→fine 的 soft field 只做 <code>upsampled_without_new_information</code> 复制：'
+    +'fine grid <b>不获得新的原始精度</b>（soft index 仍来自母格/既有 canonical 风险层，细网格只是把它复制到更细的索引上，不产生新证据）。</div>';
+}
+
+function v3bSearchBlock(refinement){
+  if(!refinement)return '';
+  const hard=refinement.hardRejection||{};
+  const rows=[
+    ['expanded_states',escapeHtml(String(refinement.expandedStates??'—'))],
+    ['generated_states',escapeHtml(String(refinement.generatedStates??'—'))],
+    ['primitive_checks',escapeHtml(String(refinement.primitiveChecks??'—'))],
+    ['traversed_cell_checks',escapeHtml(String(refinement.traversedCellChecks??'—'))],
+    ['max_stride_cells',escapeHtml(String(refinement.maxStrideCells??'—'))],
+    ['traversed cell rejection 总数',escapeHtml(String(hard.totalTraversed??0))],
+    ['state / transition rejection 总数',escapeHtml(String(hard.totalState??0))+' / '+escapeHtml(String(hard.totalTransition??0))],
+    ['expansion_cap / reached',escapeHtml(String(refinement.expansionCap??'—'))+' / '+escapeHtml(String(refinement.expansionCapReached))],
+    ['multi-cell stride edges / traversed cell checks',escapeHtml(String(refinement.multiCellStrideEdgeCount??'—'))+' / '+escapeHtml(String(refinement.traversedCellCheckCount??'—'))],
+    ['max heading change / max climb gradient',metric(refinement.maxHeadingChangeDeg,'°')+' / '+metric(refinement.maxClimbGradient)],
+    ['altitude range EGM2008 (m)',refinement.altitudeRange?metric(refinement.altitudeRange[0],'m')+' – '+metric(refinement.altitudeRange[1],'m'):'—'],
+    ['search_completeness',escapeHtml(refinement.searchCompleteness||'—')]];
+  return '<h3>search 规模与 hard rejection</h3>'
+    +'<div class="scroll-list route-list">'+v3bRows(rows)+'</div>'
+    +'<div class="parameter-note">state_space_shape '+escapeHtml(jsonInline(refinement.stateSpaceShape||{}))
+    +'<br>endpoint_binding '+escapeHtml(jsonInline(refinement.endpointBinding||{}))+'</div>'
+    +'<div class="parameter-note">state rejection：'+escapeHtml(jsonInline(hard.state||{}))
+    +'<br>transition rejection：'+escapeHtml(jsonInline(hard.transition||{}))
+    +'<br>traversed cell rejection：'+escapeHtml(jsonInline(hard.traversedCell||{}))
+    +' · traversed_cell_checks '+escapeHtml(String(refinement.traversedCellChecks??'—'))+'</div>'
+    +'<div class="parameter-note">unknown 永远不可行（unknown_is_never_feasible='+escapeHtml(String(refinement.hardSummary?.unknown_is_never_feasible!==false))
+    +'）· 多格 stride 不能跳过中间障碍（intermediate_obstacles_cannot_be_skipped_by_a_stride='
+    +escapeHtml(String(refinement.hardSummary?.intermediate_obstacles_cannot_be_skipped_by_a_stride!==false))+'）· audit sample cap per reason '
+    +escapeHtml(String(refinement.hardSummary?.audit_sample_cap_per_reason??'—'))+'。</div>'
+    +'<div class="parameter-note"><b>search_incomplete 语义</b>：达到 expansion cap（expansion_cap_reached='+escapeHtml(String(refinement.expansionCapReached))
+    +'）时结果为 <code>search_incomplete</code>：这是 resource limited（搜索预算耗尽），<b>不是 infeasible</b>，也<b>未证明最优</b>（optimality_proven='
+    +escapeHtml(String(refinement.optimalityProven))+'；resource_limit='+escapeHtml(refinement.resourceLimit||'—')+'）。'
+    +escapeHtml(refinement.resourceLimitReason||'')+'</div>'
+    +'<div class="parameter-note">motion model '+escapeHtml(refinement.motionModel?.model_id||'—')
+    +' · turn constraint '+escapeHtml(refinement.motionModel?.turn_constraint||'—')
+    +' · exact_curvature_validation '+escapeHtml(refinement.motionModel?.exact_curvature_validation||'—')
+    +' · not_a_flight_dynamics_certification_model '+escapeHtml(String(refinement.motionModel?.not_a_flight_dynamics_certification_model!==false))
+    +' · altitude_interpolated_along_primitive '+escapeHtml(String(refinement.motionModel?.altitude_interpolated_along_primitive!==false))+'。</div>';
+}
+
+function v3bCostBlock(refinement){
+  if(!refinement)return '';
+  const meta=refinement.costMeta||{};
+  const rows=refinement.costComponents.length?refinement.costComponents.map(item=>{
+    const statistics=item.indexStatistics||{};
+    return '<div class="list-row route-row"><span><b>'+escapeHtml(item.name)+'</b> '
+      +(item.enabled?statusBadge('passed'):statusBadge('not_applicable'))
+      +'<small>raw '+metric(item.raw)+' '+escapeHtml(item.unit||'')+' · normalized '+metric(item.normalized)
+      +' · weight '+(item.weight===null||item.weight===undefined?'—':escapeHtml(String(item.weight)))
+      +' · contribution '+metric(item.contribution)+' · edge_count '+escapeHtml(String(item.edgeCount??'—'))+'</small>'
+      +'<small>exposure_m '+metric(item.exposureM)+' · exposure_definition '+escapeHtml(item.exposureDefinition||'—')
+      +' · index statistics min/max/mean '+metric(statistics.min)+' / '+metric(statistics.max)+' / '+metric(statistics.mean)
+      +' （count '+escapeHtml(String(statistics.count??'—'))+'）</small>'
+      +'<small>source_resolution_m '+metric(item.sourceResolutionM,'m')+' · mapping_method '+escapeHtml(item.mappingMethod||'—')
+      +' · upsampled_without_new_information '+escapeHtml(String(item.upsampledWithoutNewInformation))+'</small>'
+      +'<small>provenance sources '+escapeHtml(jsonInline(item.provenanceSources||[]))+(item.provenanceNote?' · '+escapeHtml(item.provenanceNote):'')+'</small>'
+      +'<small>'+escapeHtml(item.semantics||'')+'</small>'
+      +(item.enabled?'':'<small>'+escapeHtml(item.reason||item.status||'')+'</small>')+'</span></div>';}).join('')
+    :'<div class="empty-note">尚无 V3-B cost vector。</div>';
+  return '<h3>cost breakdown（含 exposure 与 provenance）</h3>'
+    +'<div class="parameter-note">scalar = Σ_edges( length_m + Σ_channels weight × exposure_m )；'
+    +'exposure_m = length_m × (index_source + index_target) / 2，index 必须带 provenance 且位于 [0,1]。'
+    +'<br>weight 之和没有上限（scalar_weight_sum_is_not_bounded='+escapeHtml(String(meta.scalarWeightSumIsNotBounded))
+    +'，scalar_weight_sum='+metric(meta.scalarWeightSum)+'），并且<b>从不进入启发函数</b>'
+    +'（scalar_weight_sum_not_used_by_the_heuristic='+escapeHtml(String(meta.scalarWeightSumNotUsedByTheHeuristic))
+    +'）：h = 纯 3D 几何距离，与 weight 之和无关。scalar_cost_cap '+metric(meta.scalarCostCap)
+    +'（active='+escapeHtml(String(meta.scalarCostCapActive))+'）；energy 保持 pending_model/disabled；CNS 记录为 '
+    +escapeHtml((meta.cnsIntegration||{}).integration_mode||'post_route_assessment')+' 且 excluded_from_search_cost='
+    +escapeHtml(String((meta.cnsIntegration||{}).excluded_from_search_cost===true))+'。</div>'
+    +'<div class="scroll-list route-list">'+rows+'</div>';
+}
+
+function v3bProvenanceBlock(refinement){
+  if(!refinement)return '';
+  const audit=refinement.sourceAudit||{},terrain=audit.terrain_dtm||null,buildings=audit.buildings||null;
+  const airspace=audit.airspace_policy||null,risk=audit.risk_model||{};
+  const terrainText=terrain?escapeHtml(terrain.file_name||terrain.dataset||'—')
+    +' · role '+escapeHtml(terrain.role||'—')+' · pixel_size '+metric(terrain.pixel_size,'m')
+    +' · nodata '+escapeHtml(String(terrain.nodata??'—'))+' · vertical_reference '+escapeHtml(terrain.vertical_reference||'—')
+    +' · vertical_status '+escapeHtml(terrain.vertical_status||'—')+' · size_bytes '+escapeHtml(String(terrain.size_bytes??'—'))
+    +' · '+escapeHtml(String(terrain.width??'—'))+'×'+escapeHtml(String(terrain.height??'—'))
+    :'未记录（canonical synthetic 无真实 DTM）';
+  const buildingText=buildings?escapeHtml(buildings.file_name||'—')+' · layer '+escapeHtml(buildings.layer||'—')
+    +' · feature_count '+escapeHtml(String(buildings.feature_count??'—'))+' · spatial_index_available '+escapeHtml(String(buildings.spatial_index_available))
+    +' · query_mode '+escapeHtml(buildings.query_mode||'—')+' · crs '+escapeHtml(buildings.crs||'—')
+    +' · height_field '+escapeHtml(buildings.height_field||'—')
+    :'未记录（canonical synthetic 无建筑源）';
+  const airspaceText=airspace?escapeHtml(airspace.query_mode||'—')+' · eligibility_status '+escapeHtml(airspace.eligibility_status||'—')
+    +' · allowed_grid_cell_count '+escapeHtml(String(airspace.allowed_grid_cell_count??'—'))
+    +' · confirmed allowed/blocked polygon '+escapeHtml(String(airspace.confirmed_allowed_polygon_count??'—'))+' / '+escapeHtml(String(airspace.confirmed_blocked_polygon_count??'—'))
+    +' · inferred_from_name_or_color '+escapeHtml(String(airspace.inferred_from_name_or_color===true))
+    +' · algorithm '+escapeHtml(airspace.algorithm_id||'—')+'@'+escapeHtml(airspace.algorithm_version||'—')
+    :'未记录（只消费 confirmed AirspacePolicy；绝不按图层名或颜色推断）';
+  const rows=[
+    ['read_mode / building_query_mode / airspace_query_mode',escapeHtml([audit.read_mode,audit.building_query_mode,audit.airspace_query_mode].filter(Boolean).join(' · ')||'—')],
+    ['terrain_dtm',terrainText],
+    ['buildings',buildingText],
+    ['airspace_policy',airspaceText],
+    ['risk_model（soft contributor 复用）',escapeHtml(risk.algorithm_id||'—')+'@'+escapeHtml(risk.algorithm_version||'—')
+      +' · status '+escapeHtml(risk.status||'—')+' · soft_fields_reused '+escapeHtml(String(risk.soft_fields_reused===true))
+      +' · reused_contributors '+escapeHtml(jsonInline(risk.reused_contributors||[]))],
+    ['metric_frame',escapeHtml(jsonInline(audit.metric_frame||{}))],
+    ['full_raster_resample / source_geometry_modified / exact_validation_performed',escapeHtml(String(audit.full_raster_resample===true))+' / '
+      +escapeHtml(String(audit.source_geometry_modified===true))+' / '+escapeHtml(String(audit.exact_validation_performed===true))],
+    ['policy_fingerprint',escapeHtml(audit.policy_fingerprint||'—')],
+    ['source audit fingerprint',escapeHtml(audit.fingerprint||refinement.evidence?.source_audit_fingerprint||'—')],
+    ['source_type / lineage',escapeHtml(refinement.evidence?.source_type||'—')+' · '+escapeHtml(jsonInline(audit.lineage||{}))],
+    ['adapter',escapeHtml(audit.adapter_id||'—')+'@'+escapeHtml(audit.adapter_version||'—')]];
+  const pending=(refinement.evidence?.v3c_pending||refinement.semantics?.v3c_pending||[]);
+  return '<h3>data provenance（fine environment source audit）</h3>'
+    +'<div class="scroll-list route-list">'+v3bRows(rows)+'</div>'
+    +'<div class="parameter-note"><b>V3-C pending</b>（连续几何验证尚未执行）：'
+    +escapeHtml(pending.join(' / ')||'—')
+    +'<br>terrain hard floor = 相交有效 FABDEM 像元的<b>最大</b> EGM2008 高程 + explicit terrain clearance'
+    +'（绝不是 center sample 或 mean）；building = footprint 按 explicit horizontal clearance 缓存成的保守包络，'
+    +'required floor = ground + height + vertical clearance（不是 exact polygon clearance）；airspace 只消费 confirmed AirspacePolicy。</div>';
+}
+
+function v3bReadinessBlock(model){
+  const readiness=model.refinementReadiness||{},scope=readiness.scope||{implemented:[],not_implemented:[]};
+  const real=readiness.realDataReadiness||{},selected=readiness.selectedCandidate,fine=readiness.finePolicy||{};
+  const policyRows=[
+    ['status / stage',escapeHtml(readiness.status)+' · '+escapeHtml(readiness.stage)],
+    ['model_scope / algorithm',escapeHtml(readiness.modelScope||'—')+' · '+escapeHtml((readiness.algorithm||{}).algorithm_id||'—')
+      +'@'+escapeHtml((readiness.algorithm||{}).algorithm_version||'—')
+      +' · registered_in_algorithm_registry '+escapeHtml(String((readiness.algorithm||{}).registered_in_algorithm_registry===true))],
+    ['resolution_policy',escapeHtml(readiness.resolutionPolicy||'—')],
+    ['real data adapter',escapeHtml(real.adapter_id||'—')+'@'+escapeHtml(real.adapter_version||'—')+' · status '+escapeHtml(real.status||'—')
+      +' · confirmed_allowed_grid_cells '+escapeHtml(String(real.confirmed_allowed_grid_cells??'—'))
+      +' · airspace_eligibility_status '+escapeHtml(real.airspace_eligibility_status||'—')],
+    ['real terrain_dtm / buildings',escapeHtml(real.terrain_dtm||'未配置')+' · '+escapeHtml(real.buildings||'未配置')],
+    ['v3_policy_readiness',escapeHtml((readiness.v3PolicyReadiness||{}).status||'—')+' · missing '
+      +escapeHtml(jsonInline((readiness.v3PolicyReadiness||{}).missing_parameters||[]))],
+    ['environment_sources',escapeHtml((readiness.environmentSources||[]).join(' / '))],
+    ['allowed_refinement_statuses',escapeHtml((readiness.allowedRefinementStatuses||[]).join(' / '))]];
+  const candidateText=selected
+    ?'experiment '+escapeHtml(selected.experiment_id||'—')+' · result_status '+escapeHtml(selected.result_status||'—')
+      +' · route '+escapeHtml(selected.route_id||'—')+' · corridor '+escapeHtml(selected.corridor_id||'—')
+      +' · support cells '+escapeHtml(String(selected.support_cell_count??'—'))+' · refinement_count '+escapeHtml(String(selected.refinement_count??0))
+    :'未选中：需要 current 的 V3-A strategic_candidate + corridor（先运行 V3-A 实验）';
+  const resolutionSourceOptions=V3B_RESOLUTION_SOURCES.map(value=>'<option value="'+escapeHtml(value)+'" '+(fine.resolution_source===value?'selected':'')+'>'+escapeHtml(value)+'</option>').join('');
+  const environmentOptions=(readiness.environmentSources||V3B_ENVIRONMENT_SOURCES).map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('');
+  return '<h3>V3-B readiness '+statusBadge(readiness.status||'not_calculated')+'</h3>'
+    +'<div class="parameter-note">'+escapeHtml(readiness.note||'')+'<br>'+escapeHtml(readiness.architecture||model.v3bArchitecture||'')+'</div>'
+    +listBlock('V3-B implemented',scope.implemented)+listBlock('V3-B not_implemented',scope.not_implemented)
+    +'<div class="scroll-list route-list">'+v3bRows(policyRows)+'</div>'
+    +'<div class="parameter-note"><b>blocking_reasons</b> '+escapeHtml(jsonInline(readiness.blockingReasons||[]))
+    +'<br>real_data blocking_reasons '+escapeHtml(jsonInline(real.blocking_reasons||[]))
+    +'<br>required_before_real_run '+escapeHtml(jsonInline(real.required_before_real_run||[]))
+    +'<br>'+escapeHtml(real.semantics||'')+'</div>'
+    +'<div class="parameter-note">selected strategic candidate：'+candidateText+'</div>'
+    +'<h3>V3-B 输入：fine policy（显式，无默认）</h3>'
+    +'<div class="form-grid"><label>local metric CRS<input class="panel-input" id="v3bFineCrs" placeholder="例如 EPSG:32651（必须显式）" value="'+escapeHtml(fine.horizontal_crs||'')+'"></label>'
+    +'<label>resolution_source<select id="v3bFineResolutionSource"><option value="">未显式选择（无默认）</option>'+resolutionSourceOptions+'</select></label>'
+    +'<label>resolution_m (m，可空)<input class="panel-input" type="number" step="any" id="v3bFineResolution" placeholder="禁止默认 30 m" value="'+escapeHtml(fine.resolution_m??'')+'"></label>'
+    +'<label>max_stride_cells<input class="panel-input" type="number" min="1" id="v3bFineMaxStride" value="'+escapeHtml(fine.max_stride_cells??1)+'"></label></div>'
+    +'<label>fine policy 来源<input class="panel-input" id="v3bFineSource" value="'+escapeHtml(fine.source||'')+'"></label>'
+    +'<label class="check-row"><input type="checkbox" id="v3bFineConfirmed" '+(fine.confirmed?'checked':'')+'>fine policy 已由项目工程依据确认</label>'
+    +'<div class="button-row"><button class="secondary" id="saveRoutePlannerV3FinePolicy">保存 V3-B fine policy</button></div>'
+    +'<h3>V3-B 输入：corridor-local 精化</h3>'
+    +'<div class="form-grid"><label>environment_source<select id="v3bEnvironmentSource">'+environmentOptions+'</select></label>'
+    +'<label>refinement_cell_size_m（显式细网格分辨率 m）<input class="panel-input" type="number" step="any" min="0.001" id="v3bRefinementCellSize" placeholder="留空则使用已保存的 fine policy"></label>'
+    +'<label>max_stride_cells<input class="panel-input" type="number" min="1" id="v3bMaxStride" value="'+escapeHtml(fine.max_stride_cells??1)+'"></label>'
+    +'<label>synthetic base_surface_elevation_m<input class="panel-input" type="number" step="any" id="v3bSyntheticBaseElevation" value="0"></label></div>'
+    +'<div class="button-row"><button class="primary" id="evaluateRoutePlannerV3Refinement">运行 V3-B corridor-local 精化</button></div>'
+    +'<div class="parameter-note">refinement_cell_size_m 与 max_stride_cells 会作为 synthetic fine spec 的 resolution_m / max_stride_cells 原样提交'
+    +'（advanced 的 terrain_spikes / building_blocks 不在 UI 暴露，保持省略）。canonical_synthetic 只接受 explicit_configuration 分辨率；'
+    +'dtm_effective_resolution 需要 configured_real_sources 与真实 DTM。缺少候选/未确认 policy 时后端会明确拒绝，不构造假环境。</div>';
+}
+
+function v3bHistoryBlock(model){
+  const applicability=model.refinementApplicability||{items:[]};
+  const rows=applicability.items.length?applicability.items.map(item=>'<div class="list-row route-row"><span><b>'
+    +escapeHtml(item.refinementId||'—')+'</b> '+statusBadge(item.status||'not_calculated')
+    +'<small>experiment '+escapeHtml(item.experimentId||'—')+' · recorded_applicability '+escapeHtml(item.recordedApplicability||'—')
+    +' · current_applicability '+escapeHtml(item.currentApplicability||'—')+'</small>'
+    +'<small>changed_components '+escapeHtml(jsonInline(item.changedComponents||[]))+'</small>'
+    +(item.reasons||[]).map(reason=>'<small>'+escapeHtml(reason)+'</small>').join('')
+    +'<small>refinement fingerprint '+escapeHtml(String(item.refinementFingerprint||'—').slice(0,28))+'</small></span></div>').join('')
+    :'<div class="empty-note">尚无 V3-B 精化记录</div>';
+  return '<h3>V3-B 精化历史与适用性 '+statusBadge(applicability.status||'not_calculated')+'</h3>'
+    +'<div class="parameter-note">stale_count '+escapeHtml(String(applicability.staleCount??0))+' / 总数 '+escapeHtml(String(applicability.count??0))
+    +' · 指纹组件 '+escapeHtml((applicability.components||[]).join(', ')||'—')
+    +'<br><b>stale：源/corridor/policy 变化后必须重跑</b>——strategic / corridor / policy / source / frame / fine grid 任一组件变化即失效，'
+    +'旧精化结论不得复用。</div>'
+    +'<div class="scroll-list route-list">'+rows+'</div>';
+}
+
+function v3bPanel(model){
+  const refinement=(model.refinements||[])[0]||null;
+  return v3bRefinementBlock(model,refinement)
+    +v3bFineGridBlock(refinement)
+    +v3bSearchBlock(refinement)
+    +v3bCostBlock(refinement)
+    +v3bProvenanceBlock(refinement)
+    +v3bReadinessBlock(model)
+    +v3bHistoryBlock(model);
+}
+
 export function routePlannerV3Panel(flow){
   const model=routePlannerV3Model(flow);
   const readiness=routePlannerV3ReadinessModel(flow);
@@ -388,7 +791,8 @@ export function routePlannerV3Panel(flow){
   const history=model.recent.length
     ?model.recent.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.experimentId)+'</b> '+statusBadge(item.status||'not_calculated')
       +'<small>'+escapeHtml(item.createdAt||'')+' · 3D distance '+metric(item.distanceM,'m')+' · state '+escapeHtml(String(item.stateCount??'—'))
-      +' · expanded '+escapeHtml(String(item.expandedStates??'—'))+' · corridor support '+escapeHtml(String(item.corridorSupportCount??'—'))+'</small></span></div>').join('')
+      +' · expanded '+escapeHtml(String(item.expandedStates??'—'))+' · corridor support '+escapeHtml(String(item.corridorSupportCount??'—'))
+      +' · refinement '+escapeHtml(String(item.refinementCount??0))+' ('+escapeHtml(item.refinementStatus||'—')+')</small></span></div>').join('')
     :'<div class="empty-note">尚无 V3-A 实验记录</div>';
   return '<h3>V3 战略规划实验 '+statusBadge(model.status)+'</h3>'
     +'<div class="parameter-note">'+escapeHtml(model.note)+' 记录数 '+escapeHtml(String(model.count))+'。'
@@ -433,6 +837,9 @@ export function routePlannerV3Panel(flow){
     +' 且 excluded_from_search_cost='+escapeHtml(String(model.cnsIntegration.excluded_from_search_cost===true))+'。</div>'
     +'<div class="scroll-list route-list">'+v3CostRows(model)+'</div>'
     +'<h3>Candidate refinement corridor</h3>'+corridor
+    +'<div class="parameter-note">V3-B corridor-local 精化状态只允许 '+escapeHtml(model.allowedRefinementStatuses.join(' / '))
+    +'：没有 validated/final 状态。'+escapeHtml(model.v3bNote||'')+'</div>'
+    +v3bPanel(model)
     +'<h3>V3-A 实验记录</h3>'+(model.recent.length?'<div class="button-row"><button class="secondary" id="deleteRoutePlannerV3">删除当前实验</button></div>':'')
     +'<div class="scroll-list route-list">'+history+'</div>';
 }
@@ -465,6 +872,28 @@ export function bindRoutePlannerV3(c){
         building_count:optionalNumber(c.$('v3BuildingCount').value)??0},
       corridor_ring_n:optionalNumber(c.$('v3CorridorRing').value)??0,
       refinement_cell_size_m:optionalNumber(c.$('v3RefinementCellSize').value)});
+    if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
+  });
+  if(c.$('saveRoutePlannerV3FinePolicy'))c.actionButton('saveRoutePlannerV3FinePolicy',()=>c.resourceAction('/api/route-planner-v3/fine-policy',{
+    horizontal_crs:c.$('v3bFineCrs').value.trim()||null,
+    resolution_source:c.$('v3bFineResolutionSource').value||null,
+    resolution_m:optionalNumber(c.$('v3bFineResolution').value),
+    max_stride_cells:optionalNumber(c.$('v3bFineMaxStride').value),
+    source:c.$('v3bFineSource').value.trim(),
+    confirmed:c.$('v3bFineConfirmed').checked}));
+  if(c.$('evaluateRoutePlannerV3Refinement'))c.actionButton('evaluateRoutePlannerV3Refinement',async()=>{
+    // The fine resolution / stride are explicit inputs: they are forwarded both as the
+    // direct request fields and inside the synthetic fine spec (never a hidden 30 m).
+    const cellSize=optionalNumber(c.$('v3bRefinementCellSize').value);
+    const stride=optionalNumber(c.$('v3bMaxStride').value);
+    await c.resourceAction('/api/route-planner-v3-refinements/evaluate',{
+      environment_source:c.$('v3bEnvironmentSource').value,
+      refinement_cell_size_m:cellSize,
+      max_stride_cells:stride,
+      synthetic_fine_spec:{profile_id:'ui_synthetic_fine',
+        base_surface_elevation_m:optionalNumber(c.$('v3bSyntheticBaseElevation').value)??0,
+        resolution_m:cellSize,
+        max_stride_cells:stride??1}});
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
   if(c.$('deleteRoutePlannerV3'))c.actionButton('deleteRoutePlannerV3',async()=>{

@@ -67,6 +67,21 @@ def group(**selectors):
     return result
 
 
+def index_map(value, **selectors):
+    """A *complete* normalized index map: ``value`` on the selected band, 0 elsewhere.
+
+    A complete map matters: since the planner has no hidden normalizer, an enabled
+    channel whose index is missing on any cell blocks the run.  A cell explicitly
+    mapped to ``0.0`` with provenance is a measured zero and is therefore allowed.
+    """
+
+    band = set(group(**selectors))
+    return {
+        cell["grid_id"]: (float(value) if cell["grid_id"] in band else 0.0)
+        for cell in grid_cells()
+    }
+
+
 def policy(**overrides):
     base = default_v3_policy()
     base.update({
@@ -264,7 +279,9 @@ def test_cns_is_recorded_as_post_route_assessment_and_excluded_from_search_cost(
     assert result["cns_assessment"]["integration_mode"] == "post_route_assessment"
     assert result["cns_assessment"]["excluded_from_search_cost"] is True
     assert result["cns_assessment"]["evaluated"] is False
-    assert result["cns_assessment"]["next_stage"] == "V3-D_CNS_joint_optimization"
+    assert result["cns_assessment"]["next_stage"] == (
+        "V3-D_validated_route_operational_adapter_and_cns_assessment"
+    )
 
 
 def test_cost_vector_is_a_vector_with_per_component_provenance():
@@ -686,10 +703,10 @@ def test_case_unknown_terrain_or_building_evidence_blocks_the_run_fail_closed():
     assert blocked["readiness"]["terrain"]["status"] == "ready"
 
 
-def test_case_soft_cost_tradeoff_changes_the_selected_candidate():
+def test_soft_cost_uses_a_provenance_normalized_index_not_a_raw_count():
     spec = {
         "profile_id": "traffic_band", "terrain_profile": "flat",
-        "traffic_per_cell": {grid_id: 100.0 for grid_id in group(column=9)},
+        "traffic_index_per_cell": index_map(0.4, column=9),
     }
     baseline = plan(spec)
     assert baseline["status"] == "strategic_candidate"
@@ -705,45 +722,268 @@ def test_case_soft_cost_tradeoff_changes_the_selected_candidate():
     component = weighted["cost_vector"]["components"]["traffic_risk"]
     assert component["enabled"] is True
     assert component["weight"] == 1.0
-    assert component["unit"] == "aircraft_m"
-    assert component["semantics"] == "engineering_exposure_meter_aircraft_not_conflict_probability"
+    assert component["unit"] == "m_x_normalized_index"
+    assert component["semantics"] == "length_integrated_traffic_exposure_index_not_conflict_probability"
     assert weighted["cost_vector"]["scalar_cost"] > weighted["distance_m"]
-    assert weighted["heuristic_semantics"]["scale"] == pytest.approx(2.0)
-    # The weighted run never pays a larger traffic exposure than the unweighted one.
-    baseline_component = baseline["cost_vector"]["components"]["traffic_risk"]
-    assert (baseline_component["raw"] or 0.0) >= (component["raw"] or 0.0) - 1e-9
+    # The heuristic is the plain geometric distance: the weight never enters it.
+    assert weighted["heuristic_semantics"]["scale"] == pytest.approx(1.0)
+    assert weighted["heuristic_semantics"]["soft_penalty_weight_sum_enters_heuristic"] is False
     assert (weighted["hard_constraint_summary"]["state_rejections"]
             == baseline["hard_constraint_summary"]["state_rejections"])
 
+    # A heavier weight must never *increase* the exposure the optimiser accepts.
+    strict_policy = policy()
+    strict_policy["cost_model"] = normalize_cost_model({
+        "components": {"traffic_risk": {"enabled": True, "weight": 40.0}},
+    })
+    strict = plan(spec, policy_value=strict_policy)
+    assert strict["status"] == "strategic_candidate"
+    assert (strict["cost_vector"]["components"]["traffic_risk"]["exposure_m"]
+            <= component["exposure_m"] + 1e-9)
 
-def test_soft_weight_sum_is_bounded_so_the_heuristic_stays_a_lower_bound():
+
+def test_risk_exposure_integrates_the_normalized_index_over_edge_length():
+    spec = {
+        "profile_id": "uniform_traffic", "terrain_profile": "flat",
+        "traffic_index_per_cell": index_map(0.5, columns=list(range(18))),
+    }
+    weighted_policy = policy()
+    weighted_policy["cost_model"] = normalize_cost_model({
+        "components": {"traffic_risk": {"enabled": True, "weight": 2.0}},
+    })
+    result = plan(spec, policy_value=weighted_policy)
+    component = result["cost_vector"]["components"]["traffic_risk"]
+    assert component["exposure_definition"] == "length_m_x_mean_index_of_edge_endpoints"
+    # Every cell carries index 0.5, so exposure == 0.5 * total length exactly.
+    assert component["exposure_m"] == pytest.approx(0.5 * result["distance_m"], rel=1e-9)
+    assert component["raw"] == pytest.approx(component["exposure_m"])
+    assert component["contribution"] == pytest.approx(2.0 * component["exposure_m"], rel=1e-9)
+    assert component["normalized_index_statistics"]["mean"] == pytest.approx(0.5)
+    assert component["normalized_index_statistics"]["min"] == pytest.approx(0.5)
+    assert component["edge_count"] == len(result["state_path"]) - 1
+    # Per-edge penalty is weight x length x index for a single enabled channel.
+    for record in result["state_path"][:-1]:
+        assert record["soft_penalty"] == pytest.approx(2.0 * 0.5 * record["length_m"], rel=1e-9)
+    assert sum(record["soft_penalty"] for record in result["state_path"][:-1]) == pytest.approx(
+        2.0 * component["exposure_m"], rel=1e-9,
+    )
+    # And the scalar is exactly length + weighted exposure per edge.
+    assert result["cost_vector"]["scalar_cost"] == pytest.approx(
+        result["distance_m"] + 2.0 * component["exposure_m"], rel=1e-9,
+    )
+
+
+def test_soft_cost_provenance_travels_with_the_report():
+    spec = {
+        "profile_id": "provenance", "terrain_profile": "flat",
+        "population_index_per_cell": index_map(0.25, columns=list(range(18))),
+        "soft_field_provenance": {
+            "population_risk": {
+                "source": "unit_test_mapped_source",
+                "source_resolution_m": 100.0,
+                "mapping_method": "area_weighted_source_pixel_overlap",
+                "upsampled_without_new_information": False,
+            },
+        },
+    }
+    weighted_policy = policy()
+    weighted_policy["cost_model"] = normalize_cost_model({
+        "components": {"population_risk": {"enabled": True, "weight": 1.0}},
+    })
+    component = plan(spec, policy_value=weighted_policy)["cost_vector"]["components"]["population_risk"]
+    assert component["source"] == "unit_test_mapped_source"
+    assert component["source_resolution_m"] == pytest.approx(100.0)
+    assert component["mapping_method"] == "area_weighted_source_pixel_overlap"
+    assert component["upsampled_without_new_information"] is False
+    assert component["provenance_sources"] == ["unit_test_mapped_source"]
+
+
+def test_enabled_soft_channel_without_a_provenance_index_blocks_the_run():
     over = policy()
     over["cost_model"] = normalize_cost_model({
-        "components": {
-            "population_risk": {"enabled": True, "weight": 0.5},
-            "traffic_risk": {"enabled": True, "weight": 0.5},
-            "building_exposure": {"enabled": True, "weight": 1.0},
-        },
+        "components": {"population_risk": {"enabled": True, "weight": 1.0}},
     })
     result = plan(OPEN_FLAT, policy_value=over)
     assert result["status"] == "not_ready"
     assert result["readiness"]["cost_model"]["status"] == "blocked"
-    with pytest.raises(ValueError):
-        SoftCostModel(over["cost_model"])
+    detail = result["readiness"]["cost_model"]["unresolved_soft_channels"]
+    assert "population_risk" in detail
+    assert detail["population_risk"]["unresolved_cell_count"] == len(grid_cells())
+    assert any("normalized index" in reason for reason in result["readiness"]["cost_model"]["reasons"])
+    assert result["state_path"] == []
 
 
-def test_heuristic_is_documented_admissible_and_non_negative():
+def test_raw_counts_and_out_of_range_indices_are_rejected_not_normalized():
+    from cns_planner.route_planner_v3.synthetic import normalize_synthetic_spec
+
+    with pytest.raises(ValueError, match="traffic_per_cell"):
+        normalize_synthetic_spec({"traffic_per_cell": {"A": 100.0}})
+    with pytest.raises(ValueError, match="population_per_cell"):
+        normalize_synthetic_spec({"population_per_cell": {"A": 12000.0}})
+    with pytest.raises(ValueError, match=r"\[0,1\]"):
+        normalize_synthetic_spec({"population_index_per_cell": {"A": 12.0}})
+    with pytest.raises(ValueError, match=r"\[0,1\]"):
+        normalize_v3_cell_environment({
+            "cells": [{
+                "grid_id": "A", "center": [1.0, 2.0],
+                "soft_fields": {"population_risk": {"normalized_index": 5000.0, "status": "passed"}},
+            }],
+        })
+    with pytest.raises(ValueError, match="normalized_index"):
+        normalize_v3_cell_environment({
+            "cells": [{
+                "grid_id": "A", "center": [1.0, 2.0],
+                "soft_fields": {"population_risk": {"status": "passed"}},
+            }],
+        })
+
+
+def test_no_hidden_normalizer_constants_and_no_weight_sum_cap():
+    from cns_planner import route_planner_v3 as package
+    from cns_planner.route_planner_v3 import cost as cost_module
+
+    for absent in (
+        "SOFT_WEIGHT_SUM_LIMIT", "POPULATION_NORMALIZATION_PEOPLE",
+        "TRAFFIC_NORMALIZATION_AIRCRAFT",
+    ):
+        assert not hasattr(cost_module, absent), absent
+        assert absent not in package.__all__, absent
+    # An explicit, finite, non-negative weight of any size is accepted.
+    model = normalize_cost_model({
+        "components": {
+            "population_risk": {"enabled": True, "weight": 7.5},
+            "traffic_risk": {"enabled": True, "weight": 2.5},
+            "building_exposure": {"enabled": True, "weight": 4.0},
+        },
+    })
+    parsed = SoftCostModel(model)
+    assert parsed.penalty_weight_sum == pytest.approx(14.0)
+    assert parsed.heuristic_scale() == pytest.approx(1.0)
+    assert model["components"]["population_risk"]["normalization"].startswith(
+        "external_provenance_normalized_index"
+    )
+
+
+def test_heuristic_is_the_plain_3d_geometric_distance_and_is_admissible():
     result = plan(OPEN_FLAT)
     semantics = result["heuristic_semantics"]
-    assert semantics["type"] == "admissible_3d_geometric_lower_bound"
+    assert semantics["type"] == "admissible_3d_geometric_distance_lower_bound"
     assert semantics["soft_penalty_non_negative"] is True
     assert semantics["scale"] == pytest.approx(1.0)
+    assert semantics["scale_basis"].startswith("exactly 1")
+    assert semantics["definition"].startswith("h = 3D geodesic distance")
     assert semantics["altitude_geometric_term"] == "included_vertical_delta"
     assert semantics["active"] is True
-    assert "不会高估" in semantics["admissibility_argument"]
+    assert semantics["soft_penalty_weight_sum_enters_heuristic"] is False
+    assert semantics["soft_penalty_weight_sum_is_bounded"] is False
+    assert semantics["no_implicit_normalizer"] is True
+    assert "旧版" in semantics["admissibility_argument"]
 
     blocked = plan(OPEN_FLAT, policy_value=policy(confirmed=False))
     assert blocked["heuristic_semantics"]["active"] is False
+
+
+#: Cases used for the "heuristic == Dijkstra" optimality comparison.
+_DIJKSTRA_CASES = (
+    ("open_flat", {"profile_id": "open_flat", "terrain_profile": "flat"}, {}),
+    ("plateau", PLATEAU, {}),
+    ("buildings", {
+        "profile_id": "buildings", "terrain_profile": "flat",
+        "buildings_profile": "cluster", "building_height_m": 320.0, "building_count": 40,
+    }, {}),
+    ("weighted_population", {
+        "profile_id": "weighted", "terrain_profile": "flat",
+        "population_index_per_cell": None,
+    }, {"population_risk": {"enabled": True, "weight": 3.0}}),
+    ("weighted_all_channels", {
+        "profile_id": "weighted_all", "terrain_profile": "flat",
+        "traffic_index_per_cell": None,
+    }, {
+        "population_risk": {"enabled": True, "weight": 0.5},
+        "traffic_risk": {"enabled": True, "weight": 9.0},
+        "building_exposure": {"enabled": True, "weight": 2.0},
+    }),
+    ("zero_penalty_shortest_path", {
+        "profile_id": "zero_penalty", "terrain_profile": "flat",
+        "traffic_index_per_cell": None,
+    }, {"traffic_risk": {"enabled": True, "weight": 5.0}}),
+)
+
+#: Complete index maps for the weighted cases (band value, 0.0 elsewhere).
+_DIJKSTRA_INDEX_MAPS = {
+    "weighted_population": [("population_index_per_cell", 0.9, {"column": 9})],
+    "weighted_all_channels": [
+        ("population_index_per_cell", 0.3, {"columns": [1, 2, 3]}),
+        ("traffic_index_per_cell", 0.7, {"columns": [4, 5, 6]}),
+    ],
+    "zero_penalty_shortest_path": [("traffic_index_per_cell", 1.0, {"column": 17})],
+}
+
+
+@pytest.mark.parametrize("name,spec,cost_components", _DIJKSTRA_CASES)
+def test_heuristic_matches_dijkstra_optimal_cost_case_by_case(name, spec, cost_components, monkeypatch):
+    """h = 3D geometric distance must give exactly the Dijkstra (h = 0) optimum.
+
+    A zero-penalty edge is exactly the case that made the old
+    ``h = distance x (1 + sum(weight))`` admissible only by accident; comparing
+    against a weight-blind search is the direct regression test.
+    """
+
+    from cns_planner.route_planner_v3 import planner as planner_module
+
+    resolved_spec = dict(spec)
+    for field, value, selectors in _DIJKSTRA_INDEX_MAPS.get(name, []):
+        resolved_spec[field] = index_map(value, **selectors)
+    resolved = policy()
+    if cost_components:
+        resolved["cost_model"] = normalize_cost_model({"components": cost_components})
+    heuristic_run = plan(resolved_spec, policy_value=resolved)
+    assert heuristic_run["search_statistics"]["expansion_cap_reached"] is False
+
+    original = planner_module._Search._heuristic
+    monkeypatch.setattr(planner_module._Search, "_heuristic", lambda self, grid_id, altitude_index: 0.0)
+    try:
+        dijkstra_run = plan(resolved_spec, policy_value=resolved)
+    finally:
+        monkeypatch.setattr(planner_module._Search, "_heuristic", original)
+    # Feasibility is decided by the hard constraints only, so both searches must
+    # agree on whether a candidate exists at all.
+    assert heuristic_run["status"] == dijkstra_run["status"], name
+    assert heuristic_run["status"] in ("strategic_candidate", "failed"), name
+    if heuristic_run["status"] != "strategic_candidate":
+        return
+    assert dijkstra_run["search_statistics"]["search_completeness"] == (
+        "queue_exhausted_optimality_proven"
+    )
+    assert heuristic_run["cost_vector"]["scalar_cost"] == pytest.approx(
+        dijkstra_run["cost_vector"]["scalar_cost"], rel=1e-9,
+    ), name
+    assert heuristic_run["distance_m"] == pytest.approx(dijkstra_run["distance_m"], rel=1e-9), name
+    # The plain-geometry heuristic also never expands more states than Dijkstra.
+    assert heuristic_run["search_statistics"]["expanded_states"] <= (
+        dijkstra_run["search_statistics"]["expanded_states"]
+    ), name
+
+
+def test_scalar_cost_is_never_below_the_geometric_length_for_any_weight():
+    over = policy()
+    over["cost_model"] = normalize_cost_model({
+        "components": {
+            "population_risk": {"enabled": True, "weight": 12.0},
+            "traffic_risk": {"enabled": True, "weight": 8.0},
+            "building_exposure": {"enabled": True, "weight": 20.0},
+        },
+    })
+    spec = {
+        "profile_id": "heavy_weights", "terrain_profile": "flat",
+        "population_index_per_cell": index_map(0.5, columns=list(range(18))),
+        "traffic_index_per_cell": index_map(0.25, columns=list(range(18))),
+    }
+    result = plan(spec, policy_value=over)
+    assert result["status"] == "strategic_candidate"
+    assert result["cost_vector"]["scalar_weight_sum_is_not_bounded"] is True
+    assert result["cost_vector"]["scalar_weight_sum_not_used_by_the_heuristic"] is True
+    assert result["cost_vector"]["scalar_cost"] >= result["distance_m"] - 1e-9
 
 
 def test_search_records_expanded_states_runtime_and_state_space_shape():
@@ -761,11 +1001,44 @@ def test_search_records_expanded_states_runtime_and_state_space_shape():
     assert shape["naive_state_count"] == len(grid_cells()) * 7 * 8
 
 
-def test_expansion_cap_stops_an_unbounded_search_without_claiming_success():
-    result = plan(OPEN_FLAT, policy_value=policy(max_expanded_states=1))
-    assert result["status"] == "failed"
-    assert result["search_statistics"]["expansion_cap_reached"] is True
-    assert result["state_path"] == []
+def test_expansion_cap_is_resource_limited_never_failed_or_infeasible():
+    """Reaching ``max_expanded_states`` is a resource verdict, not a feasibility one."""
+
+    for cap in (1, 500, 5000, 20000):
+        result = plan(OPEN_FLAT, policy_value=policy(max_expanded_states=cap))
+        assert result["status"] in ("search_incomplete", "strategic_candidate"), cap
+        statistics = result["search_statistics"]
+        assert statistics["expansion_cap"] == cap
+        if result["status"] == "search_incomplete":
+            assert statistics["expansion_cap_reached"] is True
+            assert statistics["resource_limited"] is True
+            assert statistics["resource_limit"] == "max_expanded_states"
+            assert statistics["search_completeness"] == (
+                "expansion_cap_reached_optimality_not_proven"
+            )
+            assert statistics["search_complete"] is False
+            assert statistics["optimality_proven"] is False
+            assert statistics["infeasibility_proven"] is False
+            assert result["semantics"]["resource_limited_not_infeasible"] is True
+            assert "infeasible" in result["reason"]
+            assert "不可行" in result["reason"] or "不构成 infeasible" in result["reason"]
+            if result["state_path"]:
+                # A candidate found before the cap is kept, but never as proven optimal.
+                assert result["distance_m"] is not None
+                assert "未证明最优" in result["reason"]
+            else:
+                assert result["distance_m"] is None
+        else:
+            assert statistics["search_complete"] is True
+            assert statistics["search_completeness"] == "queue_exhausted_optimality_proven"
+            assert statistics["optimality_proven"] is True
+
+    # A generous cap completes the same problem and proves optimality.
+    complete = plan(OPEN_FLAT, policy_value=policy(max_expanded_states=200000))
+    assert complete["status"] == "strategic_candidate"
+    assert complete["search_statistics"]["search_complete"] is True
+    assert complete["search_statistics"]["resource_limited"] is False
+    assert complete["search_statistics"]["resource_limit_reason"] is None
 
 
 def test_hard_constraint_rejection_statistics_are_reported_and_bounded():
@@ -801,7 +1074,7 @@ def test_case_corridor_n_ring_is_a_search_window_not_a_safety_clearance():
     assert corridor["ring_n"] == 1
     assert corridor["n_ring_is_not_a_safety_clearance"] is True
     assert corridor["ring_semantics"] == "n_ring_support_cells_expand_the_search_window_not_a_clearance"
-    assert corridor["next_stage"] == "V3-B_30m_local_refinement_and_exact_validation"
+    assert corridor["next_stage"] == "V3-B_corridor_local_refinement"
     centers = set(corridor["center_grid_ids"])
     support = set(corridor["support_grid_ids"])
     assert centers <= support
@@ -813,7 +1086,7 @@ def test_case_corridor_n_ring_is_a_search_window_not_a_safety_clearance():
     assert envelope["upper_altitude_egm2008_m"] == pytest.approx(max(altitudes) + 25.0)
     assert envelope["explicit_margin_m"] == 25.0
     assert corridor["not_implemented_in_v3a"] == [
-        "30m_local_refinement", "exact_polygon_terrain_final_validation",
+        "corridor_local_fine_refinement", "exact_polygon_terrain_continuous_clearance_validation",
     ]
 
     ring_zero = plan(OPEN_FLAT, provenance={"corridor_ring_n": 0})["candidate_refinement_corridor"]
@@ -887,12 +1160,17 @@ def test_no_v3_result_is_ever_labelled_final_safe_or_validated():
 def test_result_declares_the_v3a_scope_limits_explicitly():
     result = plan(OPEN_FLAT)
     limits = result["semantics"]["v3a_scope_limits"]
-    assert limits["local_refinement_30m"] == "not_implemented_V3-B"
-    assert limits["exact_polygon_and_terrain_final_validation"] == "not_implemented_V3-B"
-    assert limits["cns_joint_optimization"] == "not_implemented_V3-D"
+    assert limits["corridor_local_fine_refinement"] == "implemented_in_V3-B"
+    assert limits["exact_polygon_terrain_continuous_clearance_validation"] == "not_implemented_V3-C"
+    assert limits["validated_route_operational_adapter"] == "not_implemented_V3-D"
+    assert limits["route_cns_joint_optimization"] == "future_backlog_not_V3-D"
     assert limits["energy_model"] == "pending_model_disabled"
     assert result["semantics"]["search_state"] == "grid_id + altitude_index + heading_bin"
     assert result["semantics"]["canonical_vertical_reference"] == "egm2008_orthometric"
+    assert result["semantics"]["heuristic_is_plain_geometric_distance"] is True
+    assert result["semantics"]["soft_fields_are_provenance_normalized_indices"] is True
+    assert result["semantics"]["no_hidden_soft_normalizer"] is True
+    assert result["semantics"]["expansion_cap_is_resource_limited_not_infeasible"] is True
     assert "not_a_flight_dynamics_certification_model" in result["semantics"]["motion_model"]
     assert result["semantics"]["motion_model_id"] == "engineering_3d_motion_primitives_v3a"
 

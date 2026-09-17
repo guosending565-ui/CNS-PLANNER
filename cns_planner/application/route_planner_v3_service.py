@@ -1,4 +1,4 @@
-"""V3-A strategic planning experiments: read-only w.r.t. every existing result.
+"""V3-A/V3-B planning experiments: read-only w.r.t. every existing result.
 
 This service is deliberately outside the operational route path:
 
@@ -10,9 +10,15 @@ This service is deliberately outside the operational route path:
 
 V3-A ships **no** real-data adapter: the canonical ``V3CellEnvironment`` is built
 from an explicit synthetic specification so the 3D + heading search and the
-hard-constraint kernel can be exercised deterministically.  Real terrain /
-building / airspace readiness is reported separately and stays blocked until an
-audited adapter exists.
+hard-constraint kernel can be exercised deterministically.
+
+V3-B adds corridor-local fine refinement.  It runs only on a *selected and
+current* V3-A ``strategic_candidate`` and its recorded refinement corridor.  The
+fine environment comes either from an **injected** GIS adapter
+(``gis.fine_environment_adapter``, wired in ``ApplicationContext`` because it
+needs QGIS/GDAL) or from the explicit synthetic builder.  When the real sources
+are not ready the service records an explicit ``not_ready`` refinement with the
+blocking reasons -- it never fabricates an environment.
 """
 
 from __future__ import annotations
@@ -23,12 +29,22 @@ from hashlib import sha256
 import json
 
 from ..algorithms.grid.service import WorkspaceGridService
+from ..gis.fine_environment_adapter import real_data_source_readiness
 from ..route_planner_v3 import V3StrategicPlanner
 from ..route_planner_v3.contracts import (
     V3_RESULT_STATUSES, default_v3_cost_model, normalize_aircraft_motion_limits,
     normalize_v3_experiments, normalize_v3_planning_policy,
     normalize_v3_planning_problem,
 )
+from ..route_planner_v3.fine_contracts import (
+    FINE_MODEL_SCOPE, REFINEMENT_FINGERPRINT_COMPONENTS, V3B_DISCLAIMER,
+    V3B_RESULT_STATUSES, contract_fingerprint, default_v3_fine_refinement_policy,
+    evaluate_refinement_applicability, normalize_v3_fine_refinement_policy,
+    normalize_v3_refinement_problem, normalize_v3_refinement_result,
+    refinement_fingerprint_components,
+)
+from ..route_planner_v3.fine_search import V3RefinementPlanner
+from ..route_planner_v3.fine_synthetic import build_synthetic_fine_environment
 from ..route_planner_v3.motion import kinematic_readiness
 from ..route_planner_v3.readiness import readiness_overall
 from ..route_planner_v3.synthetic import (
@@ -38,23 +54,46 @@ from ..route_planner_v3.synthetic import (
 
 V3_COLLECTION_ID = "route-planner-v3-experiments"
 V3_ENVIRONMENT_SOURCES = ("canonical_synthetic",)
+#: V3-B environment sources: the explicit synthetic builder, or the injected real
+#: adapter.  Neither path ever fabricates a fine environment.
+V3B_ENVIRONMENT_SOURCES = ("canonical_synthetic", "configured_real_sources")
 MAX_V3_EXPERIMENTS = 12
+MAX_V3_REFINEMENTS_PER_EXPERIMENT = 6
 V3_EXPERIMENT_NOTE = (
     "V3-A 战略规划实验 ≠ operational route：只写入 route_planner_v3_experiments，"
     "不切换 algorithm_selection，也不覆盖 operational_routes、spatial_3d 或 V1/V2 结果。"
 )
+V3B_EXPERIMENT_NOTE = (
+    "V3-B corridor-local 精化候选 ≠ validated route：只在选定且 current 的 V3-A "
+    "strategic_candidate 的 corridor 内做米制细网格工程精化；未做 V3-C exact polygon/"
+    "terrain/continuous clearance 验证，也不写 operational_routes、algorithm_selection 或 spatial_3d。"
+)
 V3_REAL_DATA_ADAPTER_STATUS = "not_implemented_v3a"
 V3_REAL_DATA_ADAPTER_REASON = (
-    "V3-A 不提供真实 terrain/building adapter，也不做 30 m 细化；"
+    "V3-A 不提供真实 terrain/building adapter，也不做局部细化；"
     "真实数据必须先在 V3-B/C 阶段转换为 canonical V3CellEnvironment 后才允许进入搜索。"
+)
+V3B_REAL_DATA_ADAPTER_STATUS = "implemented_v3b_gis_adapter"
+V3B_REAL_DATA_ADAPTER_REASON = (
+    "V3-B 的 FineEnvironmentAdapter 位于 GIS 边界（FABDEM 窗口只读 + GPKG RTree 建筑查询 + "
+    "confirmed AirspacePolicy）；数据未配置或未确认时明确返回 blocked，不构造假环境。"
 )
 V3_ARCHITECTURE_SUMMARY = (
     "V3 原生 3D 战略规划：state = grid_id + altitude_index + heading_bin，"
     "hard constraints（allowed/restricted airspace、terrain clearance、building clearance、"
     "altitude bounds、turn/climb/descent capability）进入 edge 生成与验证；"
     "soft cost 输出 distance/population_risk/traffic_risk/building_exposure/energy 向量；"
-    "L8 战略搜索 → corridor → （V3-B）30 m 局部精化 → （V3-B）exact polygon/terrain 最终判定；"
-    "V3 第一阶段 CNS 不进搜索，Route Planning → CNS Assessment。"
+    "L8 战略搜索 → corridor →（V3-B）corridor-local 米制细网格精化 →（V3-C）exact polygon/"
+    "terrain/continuous clearance 验证 →（V3-D）validated route → operational adapter → CNS Assessment；"
+    "Route–CNS 联合优化是更晚期的未来项。"
+)
+V3B_ARCHITECTURE_SUMMARY = (
+    "V3-B：只在 V3-A corridor support cells 的米制窗口内构造局部 fine grid；"
+    "horizontal resolution 来自显式配置或 DTM 有效分辨率（禁止写死 30 m）；"
+    "terrain hard floor = 相交 FABDEM 有效像元最大 EGM2008 高程 + explicit terrain_clearance；"
+    "building = footprint 按 explicit horizontal clearance 的保守包络，required floor = "
+    "ground + height + vertical_clearance；airspace 只消费 confirmed policy；"
+    "multi-cell stride primitive 记录 traversed_cell_ids 并按路径进度插值高度逐格检查。"
 )
 
 
@@ -69,12 +108,19 @@ def _hash(value):
 
 
 class RoutePlannerV3ExperimentService:
-    def __init__(self, session, planner, invalidation, snapshot, grid_service=None):
+    def __init__(self, session, planner, invalidation, snapshot, grid_service=None,
+                 refinement_planner=None, source_readiness=None):
         self.session = session
         self.planner = planner or V3StrategicPlanner()
+        self.refinement_planner = refinement_planner or V3RefinementPlanner()
         self.invalidation = invalidation
         self.snapshot = snapshot
         self.grid_service = grid_service or WorkspaceGridService()
+        #: Optional injected provider for the *current* real-data readiness of the
+        #: V3-B fine sources.  It must not read data; it reports configured paths
+        #: and confirmed airspace evidence (see
+        #: ``gis.fine_environment_adapter.real_data_source_readiness``).
+        self.source_readiness = source_readiness
 
     # ------------------------------------------------------------------ queries
 
@@ -94,15 +140,178 @@ class RoutePlannerV3ExperimentService:
             "active_experiment": active,
             "records": records,
             "architecture": V3_ARCHITECTURE_SUMMARY,
+            "v3b_architecture": V3B_ARCHITECTURE_SUMMARY,
             "note": V3_EXPERIMENT_NOTE,
+            "v3b_note": V3B_EXPERIMENT_NOTE,
             "operational_routes_untouched": True,
             "algorithm_selection_untouched": True,
-            "disclaimer": "V3-A 结果只允许 status=strategic_candidate/failed/missing_data/pending_confirmation。",
+            "spatial_3d_untouched": True,
+            "disclaimer": "V3-A 结果只允许 status=strategic_candidate/failed/missing_data/pending_confirmation/not_ready/search_incomplete。",
             "allowed_result_statuses": list(V3_RESULT_STATUSES),
+            "allowed_refinement_statuses": list(V3B_RESULT_STATUSES),
         }
 
     def policy_snapshot(self):
         return deepcopy(self.session.state.get("v3_planning_policy") or normalize_v3_planning_policy(None))
+
+    def fine_policy_snapshot(self):
+        return deepcopy(
+            self.session.state.get("v3_fine_refinement_policy")
+            or default_v3_fine_refinement_policy()
+        )
+
+    def refinement_snapshot(self):
+        """Current-applicability of every stored refinement against current evidence."""
+
+        records = (self.session.state.get("route_planner_v3_experiments") or {}).get("records") or []
+        items = []
+        for record in records:
+            for refinement in record.get("refinements") or []:
+                recorded = refinement.get("evidence_components") or {}
+                current = self._current_evidence_components(refinement, recorded)
+                verdict = evaluate_refinement_applicability(recorded, current)
+                items.append({
+                    "refinement_id": refinement.get("refinement_id"),
+                    "experiment_id": record.get("experiment_id"),
+                    "status": (refinement.get("result") or {}).get("status"),
+                    "recorded_applicability": refinement.get("current_applicability"),
+                    "current_applicability": verdict["status"],
+                    "changed_components": verdict["changed_components"],
+                    "reasons": verdict["reasons"],
+                    "refinement_fingerprint": (refinement.get("result") or {}).get("refinement_fingerprint"),
+                    "evidence_components": recorded,
+                })
+        return {
+            "status": "passed" if items else "not_calculated",
+            "count": len(items),
+            "items": items,
+            "stale_count": sum(1 for item in items if item["current_applicability"] == "stale"),
+            "semantics": "stale_when_strategic_corridor_policy_or_source_audit_changes",
+            "components": list(REFINEMENT_FINGERPRINT_COMPONENTS),
+        }
+
+    def refinement_readiness_snapshot(self):
+        """V3-B readiness: selected strategic candidate, fine config, real sources."""
+
+        state = self.session.state
+        records = (state.get("route_planner_v3_experiments") or {}).get("records") or []
+        with_corridor = [
+            record for record in records
+            if ((record.get("result") or {}).get("candidate_refinement_corridor") or {}).get("center_grid_ids")
+        ]
+        selected = with_corridor[0] if with_corridor else None
+        fine_policy = self.fine_policy_snapshot()
+        readiness = self._real_source_readiness()
+        blocking = list(readiness.get("blocking_reasons") or [])
+        if selected is None:
+            blocking.append("no_current_v3a_strategic_candidate_with_corridor")
+        if fine_policy.get("status") != "confirmed":
+            blocking.extend(fine_policy.get("reasons") or ["fine_refinement_policy_not_confirmed"])
+        return {
+            "status": "passed" if not blocking else "blocked",
+            "stage": "V3-B",
+            "model_scope": FINE_MODEL_SCOPE,
+            "architecture": V3B_ARCHITECTURE_SUMMARY,
+            "note": V3B_EXPERIMENT_NOTE,
+            "stage_scope": {
+                "implemented": [
+                    "corridor_local_metric_fine_grid", "fine_environment_adapter_gis_boundary",
+                    "terrain_intersecting_pixel_max_floor", "building_conservative_envelope",
+                    "confirmed_airspace_only", "coarse_soft_field_upsampling_with_provenance",
+                    "multi_cell_stride_refinement_search", "traversed_cell_interpolated_checks",
+                    "refinement_fingerprint_and_staleness",
+                ],
+                "not_implemented": [
+                    "exact_polygon_membership", "exact_terrain_profile_clearance",
+                    "continuous_clearance_along_full_trajectory", "operational_adapter",
+                    "cns_joint_optimization", "energy_model",
+                ],
+            },
+            "algorithm": {
+                "algorithm_id": self.refinement_planner.algorithm_id,
+                "algorithm_version": self.refinement_planner.algorithm_version,
+                "model_scope": self.refinement_planner.model_scope,
+                "registered_in_algorithm_registry": False,
+                "turn_model": self.refinement_planner.turn_model,
+            },
+            "selected_strategic_candidate": None if selected is None else {
+                "experiment_id": selected.get("experiment_id"),
+                "result_status": (selected.get("result") or {}).get("status"),
+                "route_id": selected.get("route_id"),
+                "corridor_id": ((selected.get("result") or {}).get("candidate_refinement_corridor") or {}).get("corridor_id"),
+                "support_cell_count": len(
+                    ((selected.get("result") or {}).get("candidate_refinement_corridor") or {}).get("support_grid_ids") or []
+                ),
+                "refinement_count": len(selected.get("refinements") or []),
+            },
+            "fine_policy": fine_policy,
+            "v3_policy_readiness": {
+                "status": (
+                    "ready" if (state.get("v3_planning_policy") or {}).get("confirmed")
+                    and not (state.get("v3_planning_policy") or {}).get("missing_parameters")
+                    else "blocked"
+                ),
+                "missing_parameters": list((state.get("v3_planning_policy") or {}).get("missing_parameters") or []),
+            },
+            "real_data_readiness": readiness,
+            "blocking_reasons": blocking,
+            "environment_sources": list(V3B_ENVIRONMENT_SOURCES),
+            "resolution_policy": "explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant",
+            "allowed_refinement_statuses": list(V3B_RESULT_STATUSES),
+        }
+
+    def evaluate_refinement(self, payload=None, adapter=None):
+        """Run one corridor-local refinement on a selected current V3-A candidate.
+
+        ``adapter`` is an injected ``FineEnvironmentAdapter`` (wired in
+        ``ApplicationContext``).  Without one, the configured real sources are
+        reported as blocked and an explicit ``not_ready`` refinement is recorded --
+        no environment is fabricated.
+        """
+
+        payload = payload if isinstance(payload, dict) else {}
+        state = self.session.state
+        record = self._selected_candidate(payload)
+        if record is None:
+            raise ValueError("请先运行 V3-A 战略规划实验并选中一个 strategic_candidate")
+        result = record.get("result") or {}
+        if result.get("status") != "strategic_candidate":
+            raise ValueError(
+                f"V3-B 只能在 strategic_candidate 上运行，当前 V3-A 结果 status={result.get('status')}"
+            )
+        corridor = result.get("candidate_refinement_corridor") or {}
+        if not corridor.get("center_grid_ids"):
+            raise ValueError("选定的 V3-A 结果没有 refinement corridor，无法精化")
+        policy = record.get("policy") or self.policy_snapshot()
+        if not policy.get("confirmed") and not payload.get("allow_unconfirmed_policy"):
+            raise ValueError("V3 policy 未确认：V3-B 不允许在未确认的规划/安全参数上运行")
+        fine = self._fine_config(payload)
+        if fine.get("confirmed") is not True and not payload.get("allow_unconfirmed_fine_policy"):
+            raise ValueError(
+                "V3-B fine refinement policy 未确认：local metric CRS / resolution source 与 "
+                "max_stride_cells 必须由项目工程依据显式确认；V3-B 禁止猜默认分辨率"
+            )
+        source = str(payload.get("environment_source") or "canonical_synthetic")
+        if source not in V3B_ENVIRONMENT_SOURCES:
+            raise ValueError(
+                "V3-B environment_source 只支持 canonical_synthetic 或 configured_real_sources"
+            )
+        synthetic_spec = normalize_synthetic_spec(
+            payload.get("synthetic_fine_spec") or payload.get("synthetic_spec")
+        )
+        if source == "canonical_synthetic":
+            built = self._synthetic_fine_environment(record, corridor, fine, synthetic_spec)
+        else:
+            built = self._real_fine_environment(adapter, record, corridor, policy, fine, payload)
+        refinement = self._refinement_record(record, fine, source, synthetic_spec, built)
+        refinements = [
+            item for item in (record.get("refinements") or [])
+            if item.get("refinement_id") != refinement["refinement_id"]
+        ]
+        record["refinements"] = [refinement, *refinements][:MAX_V3_REFINEMENTS_PER_EXPERIMENT]
+        # V3-B keeps the same hard boundary as V3-A: only its own container is written.
+        self.session.save()
+        return self.snapshot()
 
     def readiness_snapshot(self):
         """Readiness of the *current project* for V3-A, plus the real-data verdict.
@@ -140,9 +349,15 @@ class RoutePlannerV3ExperimentService:
                     "soft_cost_vector", "refinement_corridor_proposal",
                 ],
                 "not_implemented": [
-                    "30m_local_refinement", "exact_polygon_terrain_final_validation",
-                    "cns_joint_optimization", "energy_model", "real_data_adapter",
+                    "corridor_local_fine_refinement_in_this_stage",
+                    "exact_polygon_terrain_continuous_clearance_validation",
+                    "operational_adapter", "cns_joint_optimization", "energy_model",
                 ],
+                "implemented_in_other_stages": {
+                    "corridor_local_fine_refinement": "V3-B",
+                    "exact_validation": "V3-C",
+                    "validated_route_operational_adapter_and_cns_assessment": "V3-D",
+                },
             },
             "grid": {
                 "status": "ready" if grid_ready and int(level or 0) == 8 else (
@@ -212,13 +427,14 @@ class RoutePlannerV3ExperimentService:
         }
 
     def real_data_readiness(self):
-        """Explicit verdict that the real-data adapter does not exist yet."""
+        """Explicit verdict on real-data readiness for V3-A and V3-B."""
 
         state = self.session.state
         airspace = ((state.get("grid_attributes") or {}).get("airspace") or {})
         eligibility = airspace.get("airspace_eligibility") or {}
         profiles = state.get("data_source_profiles") or {}
         terrain_profile = profiles.get("terrain") or {}
+        fine = self._real_source_readiness()
         return {
             "status": "blocked",
             "adapter_status": V3_REAL_DATA_ADAPTER_STATUS,
@@ -228,11 +444,23 @@ class RoutePlannerV3ExperimentService:
             "confirmed_allowed_grid_cells": len(eligibility.get("allowed_grid_ids") or []),
             "airspace_eligibility_status": eligibility.get("status"),
             "building_grid_source": bool((profiles.get("building_grid") or {}).get("name")),
+            "v3a_status": "blocked",
+            "v3b": {
+                "status": fine.get("status"),
+                "adapter_status": V3B_REAL_DATA_ADAPTER_STATUS,
+                "reason": V3B_REAL_DATA_ADAPTER_REASON,
+                "blocking_reasons": list(fine.get("blocking_reasons") or []),
+                "resolution_policy": fine.get("resolution_policy"),
+                "terrain_dtm": fine.get("terrain_dtm"),
+                "buildings": fine.get("buildings"),
+            },
             "required_before_real_run": [
                 "canonical V3CellEnvironment adapter (terrain surface floor, building required "
                 "clearance, confirmed airspace classification) with audited provenance",
-                "explicit confirmed V3 planning policy for the operation",
-                "V3-B 30 m refinement and exact polygon/terrain final validation",
+                "explicit confirmed V3 planning policy and confirmed fine refinement policy "
+                "(local metric CRS + resolution source)",
+                "FABDEM terrain_dtm + buildings GeoPackage with provider spatial index",
+                "V3-C exact polygon/terrain/continuous clearance validation",
             ],
         }
 
@@ -243,6 +471,438 @@ class RoutePlannerV3ExperimentService:
         self.session.state["v3_planning_policy"] = policy
         self.session.save()
         return self.readiness_snapshot()
+
+    def set_fine_policy(self, payload):
+        policy = normalize_v3_fine_refinement_policy(payload)
+        self.session.state["v3_fine_refinement_policy"] = policy
+        self.session.save()
+        return self.refinement_readiness_snapshot()
+
+    # ------------------------------------------------------------------ V3-B internals
+
+    def _selected_candidate(self, payload):
+        records = (self.session.state.get("route_planner_v3_experiments") or {}).get("records") or []
+        experiment_id = str(payload.get("experiment_id") or "")
+        if experiment_id:
+            return next(
+                (item for item in records if item.get("experiment_id") == experiment_id), None,
+            )
+        route_id = str(payload.get("route_id") or "")
+        candidates = [
+            item for item in records
+            if (item.get("result") or {}).get("status") == "strategic_candidate"
+            and (not route_id or str(item.get("route_id")) == route_id)
+        ]
+        return candidates[0] if candidates else None
+
+    def _fine_config(self, payload):
+        """Effective V3-B fine configuration (resolution + metric CRS), never defaulted."""
+
+        stored = self.fine_policy_snapshot()
+        supplied = payload.get("fine_policy")
+        if isinstance(supplied, dict):
+            merged = dict(supplied)
+            if merged.get("source") in (None, "") and stored.get("source"):
+                merged["source"] = stored["source"]
+            if "confirmed" not in merged and stored.get("confirmed"):
+                merged["confirmed"] = True
+            configured = normalize_v3_fine_refinement_policy(merged)
+        else:
+            configured = normalize_v3_fine_refinement_policy(stored)
+        cell_size = payload.get("refinement_cell_size_m")
+        if cell_size not in (None, ""):
+            configured["resolution_m"] = float(cell_size)
+            configured["resolution_source"] = "explicit_configuration"
+            configured["reasons"] = [
+                reason for reason in configured.get("reasons") or []
+                if "resolution_source" not in reason and "resolution_m" not in reason
+            ]
+        configured["usable_resolution"] = (
+            configured.get("resolution_source") == "dtm_effective_resolution"
+            or (
+                configured.get("resolution_source") == "explicit_configuration"
+                and configured.get("resolution_m") is not None
+            )
+        )
+        configured["stride"] = int(payload.get("max_stride_cells") or configured.get("max_stride_cells") or 1)
+        return configured
+
+    def _synthetic_fine_environment(self, record, corridor, fine, spec):
+        """Deterministically rebuild the coarse synthetic environment, then refine it.
+
+        The synthetic path has no DTM, so the resolution must come from an explicit
+        configuration: ``dtm_effective_resolution`` cannot be resolved here and is
+        reported as blocked rather than replaced by an assumed constant.
+        """
+
+        if not fine.get("usable_resolution") or fine.get("resolution_m") is None:
+            return {
+                "status": "blocked",
+                "reason": "fine_resolution_unresolved",
+                "readiness": {},
+                "frame": None, "fine_grid": None, "environment": None,
+                "source_audit": {},
+            }
+        if fine.get("resolution_source") != "explicit_configuration":
+            return {
+                "status": "blocked",
+                "reason": "synthetic_source_requires_explicit_configuration_resolution",
+                "readiness": {},
+                "frame": None, "fine_grid": None, "environment": None,
+                "source_audit": {},
+            }
+        policy = record.get("policy") or self.policy_snapshot()
+        grid = self._l8_grid()
+        parent_environment = build_synthetic_environment(
+            grid.get("cells") or [], policy, record.get("environment_spec") or {},
+            source_detail={"requested_by": "route_planner_v3_refinement_service"},
+        )
+        built = build_synthetic_fine_environment(
+            parent_environment=parent_environment,
+            corridor=corridor,
+            policy=policy,
+            spec={
+                **{key: value for key, value in spec.items() if key != "profile_id"},
+                "profile_id": str(spec.get("profile_id") or "synthetic_fine_open"),
+                "resolution_m": float(fine["resolution_m"]),
+                "max_stride_cells": int(fine.get("stride") or 1),
+            },
+            source_detail={"requested_by": "route_planner_v3_refinement_service"},
+        )
+        built["resolution"] = {
+            "resolution_m": float(fine["resolution_m"]),
+            "resolution_source": "explicit_configuration",
+            "requested_resolution_m": float(fine["resolution_m"]),
+            "effective_source_resolution_m": None,
+            "source": "synthetic_service_explicit_configuration",
+        }
+        built["parent_environment_fingerprint"] = _hash(parent_environment)
+        return {"status": "passed", "reason": None, **built}
+
+    def _real_fine_environment(self, adapter, record, corridor, policy, fine, payload):
+        readiness = self._real_source_readiness()
+        if adapter is None:
+            return {
+                "status": "blocked",
+                "reason": "configured_real_sources_unavailable",
+                "readiness": readiness,
+                "frame": None, "fine_grid": None, "environment": None,
+                "source_audit": {},
+            }
+        if not fine.get("usable_resolution"):
+            return {
+                "status": "blocked",
+                "reason": "fine_resolution_unresolved",
+                "readiness": readiness,
+                "frame": None, "fine_grid": None, "environment": None,
+                "source_audit": {},
+            }
+        if fine.get("horizontal_crs") and getattr(adapter, "transform", None) is None:
+            return {
+                "status": "blocked",
+                "reason": "metric_transform_unavailable",
+                "readiness": readiness,
+                "frame": None, "fine_grid": None, "environment": None,
+                "source_audit": {},
+            }
+        adapter.resolution_m = fine.get("resolution_m")
+        adapter.resolution_source = fine.get("resolution_source")
+        adapter.max_stride_cells = fine.get("stride") or 1
+        parent_cells = self._parent_cells_for_corridor(corridor)
+        built = adapter.build(
+            policy=policy, corridor=corridor, parent_cells=parent_cells,
+            source_detail={"requested_by": "route_planner_v3_refinement_service"},
+        )
+        return built
+
+    def _parent_cells_for_corridor(self, corridor):
+        """Coarse canonical cells for the corridor, rebuilt deterministically."""
+
+        state = self.session.state
+        grid = state.get("grid") or {}
+        cells = grid.get("cells") or []
+        if not cells or int(grid.get("level") or 0) != 8:
+            cells = self.grid_service.generate(
+                list((state.get("workspace") or {}).get("bbox") or []), 8,
+            ).get("cells") or []
+        wanted = set(str(item) for item in corridor.get("support_grid_ids") or [])
+        selected = [cell for cell in cells if str(cell.get("grid_id")) in wanted]
+        eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
+            "airspace_eligibility",
+        ) or {}
+        allowed = set(str(item) for item in eligibility.get("allowed_grid_ids") or [])
+        for cell in selected:
+            grid_id = str(cell["grid_id"])
+            cell["airspace"] = {
+                "status": "confirmed_allowed" if grid_id in allowed else "unknown",
+                "feature_id": None,
+                "policy_confirmed": bool(eligibility.get("status") == "passed"),
+            }
+        return selected
+
+    def _refinement_record(self, record, fine, source, synthetic_spec, built):
+        result = built.get("environment")
+        policy = record.get("policy") or self.policy_snapshot()
+        if built.get("status") != "passed" or result is None:
+            refinement_result = normalize_v3_refinement_result({
+                "status": "not_ready",
+                "problem_id": f"v3b-{record.get('experiment_id')}",
+                "route_id": record.get("route_id"),
+                "reason": built.get("reason") or "fine environment unavailable",
+                "readiness": built.get("readiness") or {},
+                "refinements_blocked": True,
+            })
+            fingerprint_components = {}
+            refinement_fingerprint = None
+        else:
+            problem = self._refinement_problem(record, fine, built)
+            refinement_result = self.refinement_planner.plan(problem)
+            refinement_result = normalize_v3_refinement_result(refinement_result)
+            fingerprint_components = refinement_fingerprint_components(problem)
+            refinement_fingerprint = problem.get("refinement_fingerprint")
+        identity = _hash({
+            "experiment_id": record.get("experiment_id"),
+            "environment_source": source,
+            "fine_policy": {
+                "resolution_m": fine.get("resolution_m"),
+                "resolution_source": fine.get("resolution_source"),
+                "horizontal_crs": fine.get("horizontal_crs"),
+                "max_stride_cells": fine.get("stride"),
+            },
+            "synthetic_spec": synthetic_spec if source == "canonical_synthetic" else None,
+            "refinement_fingerprint": refinement_fingerprint,
+            "blocked_reason": None if built.get("status") == "passed" else built.get("reason"),
+        })
+        source_audit = (
+            (built.get("environment") or {}).get("source_audit") or {}
+        )
+        # Evidence components: the immutable stored evidence (strategic candidate,
+        # corridor, frame, fine grid) plus the *live project state* at run time.
+        # ``refinement_snapshot`` recomputes exactly the same shape from the live
+        # project, so a fresh refinement is ``current`` and becomes ``stale`` only
+        # when the policy or the scope-relevant sources actually change.
+        evidence_components = dict(fingerprint_components)
+        evidence_components.update(self._evidence_fingerprints(
+            environment_source=source,
+            environment_fingerprint=source_audit.get("fingerprint"),
+        ))
+        return {
+            "refinement_id": "V3B-" + identity[:12].upper(),
+            "experiment_id": record.get("experiment_id"),
+            "route_id": record.get("route_id"),
+            "created_at": utc_now(),
+            "environment_source": source,
+            "grounding": "corridor_local_fine_grid",
+            "fine_policy": deepcopy(fine),
+            "synthetic_fine_spec": synthetic_spec if source == "canonical_synthetic" else None,
+            "refinement_fingerprint": refinement_fingerprint,
+            "fingerprint_components": fingerprint_components,
+            "evidence_components": evidence_components,
+            "source_audit": deepcopy(source_audit),
+            "source_audit_fingerprint": source_audit.get("fingerprint"),
+            "resolution": deepcopy(built.get("resolution") or (built.get("fine_grid") or {}).get("resolution_m")),
+            "result": refinement_result,
+            "readiness": deepcopy(refinement_result.get("readiness")),
+            "readiness_overall": readiness_overall(refinement_result.get("readiness") or {}),
+            "current_applicability": "current",
+            "provenance": {
+                "recorded_at": utc_now(),
+                "planner": {
+                    "algorithm_id": self.refinement_planner.algorithm_id,
+                    "algorithm_version": self.refinement_planner.algorithm_version,
+                    "model_scope": self.refinement_planner.model_scope,
+                    "turn_model": self.refinement_planner.turn_model,
+                },
+                "strategic_experiment_id": record.get("experiment_id"),
+                "strategic_fingerprint": (record.get("result") or {}).get("input_fingerprint"),
+                "operational_routes_untouched": True,
+                "algorithm_selection_untouched": True,
+                "spatial_3d_untouched": True,
+                "not_final_validation": True,
+                "exact_validation_is_v3c": True,
+            },
+            "verdicts": {
+                "operational_route": False,
+                "final_validation_performed": False,
+                "exact_validation_performed": False,
+                "requires_v3c_exact_validation": True,
+                "automatic_ranking": False,
+                "automatically_scored": False,
+            },
+            "note": V3B_EXPERIMENT_NOTE,
+        }
+
+    def _refinement_problem(self, record, fine, built):
+        result = record.get("result") or {}
+        state_path = result.get("state_path") or []
+        strategic = result.get("trajectory_summary") or {}
+        environment = built.get("environment") or {}
+        source_audit = environment.get("source_audit") or {}
+        strategic_candidate = {
+            "status": result.get("status"),
+            "experiment_id": record.get("experiment_id"),
+            "strategic_fingerprint": result.get("input_fingerprint"),
+            "current_applicability": record.get("current_applicability") or "current",
+            "corridor_id": (result.get("candidate_refinement_corridor") or {}).get("corridor_id"),
+            "start_metric": None,
+            "goal_metric": None,
+            "explicit_goal_altitude": bool(
+                (result.get("effective_policy") or {}) and strategic.get("endpoint_altitude_semantics", "").startswith(
+                    "problem.goal.z 为显式硬约束"
+                )
+            ),
+            "start_altitude_egm2008_m": state_path[0].get("altitude_egm2008_m") if state_path else None,
+            "goal_altitude_egm2008_m": state_path[-1].get("altitude_egm2008_m") if state_path else None,
+            "state_count": len(state_path),
+        }
+        if state_path:
+            strategic_candidate["start_point"] = [state_path[0].get("x"), state_path[0].get("y")]
+            strategic_candidate["goal_point"] = [state_path[-1].get("x"), state_path[-1].get("y")]
+        problem = normalize_v3_refinement_problem({
+            "problem_id": f"v3b-{record.get('experiment_id')}",
+            "route_id": record.get("route_id"),
+            "corridor": result.get("candidate_refinement_corridor"),
+            "policy": record.get("policy"),
+            "aircraft_motion_limits": record.get("aircraft_motion_limits"),
+            "frame": built.get("frame"),
+            "fine_grid": built.get("fine_grid"),
+            "environment": environment,
+            "max_stride_cells": fine.get("stride") or 1,
+            "source_audit": source_audit,
+            "strategic_candidate": strategic_candidate,
+            "provenance": {
+                "environment_source": built.get("environment_source") or "canonical_synthetic",
+                "fine_policy": {
+                    "resolution_m": fine.get("resolution_m"),
+                    "resolution_source": fine.get("resolution_source"),
+                    "horizontal_crs": fine.get("horizontal_crs"),
+                },
+            },
+        })
+        return problem
+
+    def _real_source_readiness(self):
+        if callable(self.source_readiness):
+            return self.source_readiness()
+        # No injected provider (for example a headless test workflow): report what
+        # project state can tell us.  Configured file paths live in MapData, which
+        # only ApplicationContext can see, so they read as not configured here
+        # rather than being guessed.
+        state = self.session.state
+        eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
+            "airspace_eligibility",
+        ) or {}
+        policy = state.get("v3_planning_policy") or {}
+        return real_data_source_readiness(
+            {}, airspace_eligibility=eligibility,
+            policy_confirmed=bool(policy.get("confirmed")),
+        )
+
+    def _current_evidence_components(self, refinement, recorded):
+        """Current evidence a stored refinement depends on, in the *same shape*.
+
+        ``policy_fingerprint`` / ``source_fingerprint`` are recomputed from the live
+        project; the stored strategic candidate, corridor, local frame and fine grid
+        are immutable evidence and carry through unchanged (merged from
+        ``recorded``).  Comparing like for like is what makes the verdict meaningful:
+        at write time both sides are computed from the same state, so a fresh
+        refinement is ``current``, and it becomes ``stale`` only when the policy or
+        the scope-relevant sources actually change.
+        """
+
+        result = dict(recorded or {})
+        result.update(self._evidence_fingerprints(
+            environment_source=refinement.get("environment_source"),
+            environment_fingerprint=(
+                ((refinement.get("result") or {}).get("fine_grid_evidence") or {}).get(
+                    "source_audit_fingerprint",
+                )
+            ),
+        ))
+        return result
+
+    def _evidence_fingerprints(self, *, environment_source, environment_fingerprint=None):
+        """Live-state evidence fingerprints for the *scope* a refinement depends on.
+
+        * ``configured_real_sources``: the tracked source audits (terrain / DTM /
+          buildings), the confirmed airspace eligibility and the existing risk
+          model identity;
+        * ``canonical_synthetic``: the synthetic environment is fully described by
+          its own spec, so only the workspace/grid it was rebuilt inside and the
+          recorded environment fingerprint are scope-relevant -- unrelated real
+          source files must not mark a synthetic exercise stale.
+        """
+
+        state = self.session.state
+        audits = (state.get("source_audits") or {}).get("items") or {}
+        relevant_audits = {}
+        for role in ("terrain", "terrain_dtm", "buildings", "building_grid", "airspace"):
+            item = audits.get(role)
+            if not isinstance(item, dict):
+                continue
+            relevant_audits[role] = {
+                "status": item.get("status"),
+                "version_fingerprint": item.get("version_fingerprint"),
+                "sha256": item.get("sha256"),
+                "size_bytes": item.get("size_bytes"),
+                "mtime_ns": item.get("mtime_ns"),
+            }
+        eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
+            "airspace_eligibility",
+        ) or {}
+        risk = state.get("grid_risk") or {}
+        policy_fingerprint = contract_fingerprint(
+            {
+                "scope": "project_state_policy",
+                "v3_planning_policy": state.get("v3_planning_policy") or {},
+                "v3_fine_refinement_policy": state.get("v3_fine_refinement_policy") or {},
+            },
+            prefix="V3BPOL-",
+        )
+        if environment_source == "configured_real_sources":
+            source_fingerprint = contract_fingerprint(
+                {
+                    "scope": "configured_real_sources",
+                    "source_audits": relevant_audits,
+                    "airspace_eligibility": {
+                        "fingerprint": eligibility.get("fingerprint"),
+                        "status": eligibility.get("status"),
+                        "allowed_grid_cell_count": len(eligibility.get("allowed_grid_ids") or []),
+                    },
+                    "risk_model": {
+                        "algorithm_id": risk.get("algorithm_id"),
+                        "algorithm_version": risk.get("algorithm_version"),
+                        "status": risk.get("status"),
+                        "grid_level": risk.get("grid_level"),
+                    },
+                    "environment_audit_fingerprint": environment_fingerprint,
+                },
+                prefix="V3BSRC-",
+            )
+        else:
+            grid = state.get("grid") or {}
+            workspace = state.get("workspace") or {}
+            source_fingerprint = contract_fingerprint(
+                {
+                    "scope": "canonical_synthetic",
+                    "workspace_bbox": workspace.get("bbox"),
+                    "grid_level": grid.get("level"),
+                    "grid_fingerprint": contract_fingerprint(
+                        [
+                            {"grid_id": cell.get("grid_id"), "bbox": cell.get("bbox")}
+                            for cell in grid.get("cells") or []
+                        ],
+                        prefix="V3BGRIDSRC-",
+                    ),
+                    "environment_audit_fingerprint": environment_fingerprint,
+                    "airspace_eligibility_fingerprint": eligibility.get("fingerprint"),
+                },
+                prefix="V3BSRC-",
+            )
+        return {
+            "policy_fingerprint": policy_fingerprint,
+            "source_fingerprint": source_fingerprint,
+        }
 
     # ------------------------------------------------------------------ evaluate
 
@@ -431,12 +1091,15 @@ class RoutePlannerV3ExperimentService:
             "environment_fingerprint": _hash(environment),
             "policy": deepcopy(policy),
             "policy_fingerprint": _hash(policy),
+            "aircraft_motion_limits": deepcopy(problem["aircraft_motion_limits"]),
             "route_id": problem["route_id"] or None,
             "problem_fingerprint": result.get("input_fingerprint"),
             "result": deepcopy(result),
             "readiness": deepcopy(result.get("readiness")),
             "readiness_overall": readiness_overall(result.get("readiness") or {}),
             "current_applicability": "current",
+            #: V3-B corridor-local refinements of this strategic candidate.
+            "refinements": [],
             "provenance": {
                 "recorded_at": utc_now(),
                 "planner": {
@@ -476,6 +1139,10 @@ def record_summary(record):
         return None
     result = record.get("result") or {}
     corridor = result.get("candidate_refinement_corridor") or {}
+    refinements = record.get("refinements") or []
+    active_refinement = refinements[0] if refinements else None
+    refinement_result = (active_refinement or {}).get("result") or {}
+    evidence = refinement_result.get("fine_grid_evidence") or {}
     return {
         "experiment_id": record.get("experiment_id"),
         "created_at": record.get("created_at"),
@@ -489,12 +1156,29 @@ def record_summary(record):
         "corridor_center_count": len(corridor.get("center_grid_ids") or []),
         "corridor_support_count": len(corridor.get("support_grid_ids") or []),
         "corridor_ring_n": corridor.get("ring_n"),
+        # ---- V3-B refinement projection ------------------------------------
+        "refinement_count": len(refinements),
+        "refinement_id": (active_refinement or {}).get("refinement_id"),
+        "refinement_status": refinement_result.get("status"),
+        "refinement_distance_m": refinement_result.get("distance_m"),
+        "refinement_resolution_m": evidence.get("resolution_m"),
+        "refinement_resolution_source": evidence.get("resolution_source"),
+        "refinement_cell_count": evidence.get("cell_count"),
+        "refinement_environment_cell_count": evidence.get("environment_cell_count"),
+        "refinement_expanded_states": (refinement_result.get("search_statistics") or {}).get("expanded_states"),
+        "refinement_scalar_cost": (refinement_result.get("cost_vector") or {}).get("scalar_cost"),
+        "refinement_final_validation_performed": False,
+        "refinement_environment_source": (active_refinement or {}).get("environment_source"),
     }
 
 
 __all__ = [
     "V3_COLLECTION_ID", "V3_ENVIRONMENT_SOURCES", "MAX_V3_EXPERIMENTS",
-    "V3_EXPERIMENT_NOTE", "V3_ARCHITECTURE_SUMMARY", "V3_REAL_DATA_ADAPTER_STATUS",
-    "V3_REAL_DATA_ADAPTER_REASON", "RoutePlannerV3ExperimentService", "record_summary",
-    "utc_now", "default_v3_cost_model",
+    "MAX_V3_REFINEMENTS_PER_EXPERIMENT", "V3_EXPERIMENT_NOTE", "V3_ARCHITECTURE_SUMMARY",
+    "V3_REAL_DATA_ADAPTER_STATUS", "V3_REAL_DATA_ADAPTER_REASON",
+    "V3B_ARCHITECTURE_SUMMARY", "V3B_ENVIRONMENT_SOURCES", "V3B_EXPERIMENT_NOTE",
+    "V3B_REAL_DATA_ADAPTER_REASON", "V3B_REAL_DATA_ADAPTER_STATUS",
+    "V3B_RESULT_STATUSES", "V3B_DISCLAIMER",
+    "RoutePlannerV3ExperimentService", "record_summary",
+    "utc_now", "default_v3_cost_model", "default_v3_fine_refinement_policy",
 ]

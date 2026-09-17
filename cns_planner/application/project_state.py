@@ -57,6 +57,9 @@ from ..domain.experiment import empty_experiments, normalize_experiments
 from ..route_planner_v3.contracts import (
     empty_v3_experimental_session, normalize_v3_experiments, normalize_v3_planning_policy,
 )
+from ..route_planner_v3.fine_contracts import (
+    default_v3_fine_refinement_policy, normalize_v3_fine_refinement_policy,
+)
 from ..domain.reference_route_link import (
     empty_reference_route_links, normalize_reference_route_links,
 )
@@ -161,6 +164,7 @@ def blank_project(defaults):
         "reference_route_links": empty_reference_route_links(),
         "route_planning_experiments": empty_experiments(),
         "v3_planning_policy": normalize_v3_planning_policy(None),
+        "v3_fine_refinement_policy": default_v3_fine_refinement_policy(),
         "route_planner_v3_experiments": empty_v3_experimental_session(),
         "airspace_policies": empty_airspace_policies(),
         "source_audits": empty_source_audits(),
@@ -281,6 +285,9 @@ def normalize_project(value, grid_service):
         value.get("route_planning_experiments")
     )
     value["v3_planning_policy"] = normalize_v3_planning_policy(value.get("v3_planning_policy"))
+    value["v3_fine_refinement_policy"] = normalize_v3_fine_refinement_policy(
+        value.get("v3_fine_refinement_policy")
+    )
     value["route_planner_v3_experiments"] = normalize_v3_experiments(
         value.get("route_planner_v3_experiments")
     )

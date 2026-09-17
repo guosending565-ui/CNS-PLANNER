@@ -15,6 +15,7 @@ safety parameter, a weight or an energy model to make a run possible.
 
 from __future__ import annotations
 
+from .contracts import MAPPED_SOFT_CHANNELS
 from .motion import kinematic_readiness
 
 #: Policy parameters with no default at all: without them no search may run.
@@ -55,8 +56,60 @@ def evaluate_v3_readiness(problem):
         "building": _building(cells, policy, environment),
         "policy": _policy(policy),
         "aircraft": _aircraft(policy, aircraft),
-        "cost_model": _cost_model(policy),
+        "cost_model": _cost_model(policy, cells),
     }
+
+
+def cost_enabled_channels(policy):
+    """Soft channels the policy explicitly enabled (energy can never be enabled)."""
+
+    components = (policy.get("cost_model") or {}).get("components") or {}
+    return sorted(
+        name for name in MAPPED_SOFT_CHANNELS
+        if (components.get(name) or {}).get("enabled") and name != "energy"
+    )
+
+
+def unresolved_soft_channel_cells(cells, policy, id_field="grid_id"):
+    """Cells that do not carry a provenance ``[0, 1]`` index for an enabled channel.
+
+    This is the fail-closed half of the V3-A correctness fix: the planner has no
+    hidden normalizer any more, so an enabled mapped channel whose index is absent
+    (or is not ``status=passed``) must block the run instead of being costed as
+    ``0``.  The building channel is derived from the state's own vertical margin
+    and therefore cannot be "missing" in this sense.
+
+    ``id_field`` lets the same check run over corridor-local fine cells
+    (``fine_cell_id``) without duplicating the rule.
+    """
+
+    result = {}
+    for channel in cost_enabled_channels(policy):
+        missing = sorted(
+            str(cell[id_field]) for cell in cells
+            if ((cell.get("soft_fields") or {}).get(channel) or {}).get("status") != "passed"
+            or ((cell.get("soft_fields") or {}).get(channel) or {}).get("normalized_index") is None
+        )
+        result[channel] = missing
+    return result
+
+
+def policy_readiness(policy):
+    """Public alias of the policy domain (shared by V3-A and V3-B)."""
+
+    return _policy(policy)
+
+
+def aircraft_readiness(policy, aircraft):
+    """Public alias of the aircraft domain (shared by V3-A and V3-B)."""
+
+    return _aircraft(policy, aircraft)
+
+
+def cost_model_readiness(policy, cells=None, id_field="grid_id"):
+    """Public alias of the cost-model domain, usable for fine cells as well."""
+
+    return _cost_model(policy, cells, id_field=id_field)
 
 
 def _airspace(cells, environment):
@@ -224,14 +277,19 @@ def _aircraft(policy, aircraft):
     return entry
 
 
-def _cost_model(policy):
+def _cost_model(policy, cells=None, id_field="grid_id"):
     """Soft-cost configuration readiness.
 
     The soft cost vector is optional by design: with no component explicitly
     enabled the scalar cost still exists and reduces to ``distance`` alone.  That
-    is a *ready* configuration, so this domain never blocks a run -- but it
-    records, explicitly, that only distance is active and that energy stays
-    ``pending_model``.
+    is a *ready* configuration, so this domain never blocks a run for that
+    reason -- but it records, explicitly, that only distance is active and that
+    energy stays ``pending_model``.
+
+    An *enabled* mapped channel is different: it needs a provenance
+    ``[0, 1]`` normalized index on every canonical cell.  Missing evidence blocks
+    the run, because the planner has no hidden normalizer and must never read a
+    missing soft field as a zero penalty.
     """
 
     components = (policy.get("cost_model") or {}).get("components") or {}
@@ -243,12 +301,20 @@ def _cost_model(policy):
         name for name, item in components.items()
         if item.get("enabled") and name != "energy" and item.get("weight") is None
     )
+    cells = list(cells or [])
+    unresolved = unresolved_soft_channel_cells(cells, policy, id_field) if cells else {}
     entry = _entry(
         "cost_model", "ready", [], enabled_components=[name for name in enabled if name != "distance"],
         disabled_components=disabled,
         distance_component="always_enabled_with_weight_1",
         energy_status="pending_model",
-        scalar_cost_semantics="distance_plus_explicitly_weighted_documented_normalized_components",
+        scalar_cost_semantics=(
+            "sum_over_edges(length_m + sum_channels(weight_x_exposure_m)); "
+            "exposure_m = length_m x mean_endpoint_normalized_index"
+        ),
+        weight_policy="explicit_finite_non_negative_weights_no_sum_cap_no_hidden_normalizer",
+        heuristic_policy="plain_3d_geometric_distance_weights_never_enter_the_heuristic",
+        soft_field_channels_checked=sorted(unresolved),
         semantics="weights_are_never_defaulted_never_recommended_and_never_negative",
     )
     if invalid:
@@ -256,12 +322,28 @@ def _cost_model(policy):
         entry["reasons"].append(
             "启用但缺少非负 weight 的 component：" + ", ".join(invalid)
         )
+    unresolved_summary = {
+        channel: {"unresolved_cell_count": len(ids), "samples": ids[:20]}
+        for channel, ids in unresolved.items() if ids
+    }
+    entry["unresolved_soft_channels"] = unresolved_summary
+    if unresolved_summary:
+        entry["status"] = "blocked"
+        for channel, detail in sorted(unresolved_summary.items()):
+            entry["reasons"].append(
+                f"启用 soft channel {channel}，但 {detail['unresolved_cell_count']} 个 canonical cell "
+                "缺少带 provenance 的 normalized index（unknown 不得当作 0 cost；"
+                "planner 不提供隐式 normalizer）"
+            )
     if not [name for name in enabled if name != "distance"]:
         entry["reasons"].append(
             "未启用任何 soft penalty component：scalar cost 目前等价于 distance 项（不是错误，但不含取舍）"
         )
-    entry["reasons"].append("energy 保持 pending_model/disabled：V3-A 不发明 energy 公式")
+    entry["reasons"].append("energy 保持 pending_model/disabled：V3 不发明 energy 公式")
     entry["reasons"].append("CNS 记录为 post_route_assessment 且 excluded_from_search_cost=true")
+    entry["reasons"].append(
+        "启发函数为纯 3D 几何距离：每条边代价 >= 边长，因此与 weight 之和无关，不存在 weight 上限"
+    )
     return entry
 
 
@@ -280,5 +362,7 @@ def readiness_overall(readiness):
 
 __all__ = [
     "REQUIRED_POLICY_PARAMETERS", "REQUIRED_ENVIRONMENT_PROPERTIES",
-    "READINESS_STATUSES", "evaluate_v3_readiness", "readiness_overall",
+    "READINESS_STATUSES", "aircraft_readiness", "cost_enabled_channels",
+    "cost_model_readiness", "evaluate_v3_readiness", "policy_readiness",
+    "readiness_overall", "unresolved_soft_channel_cells",
 ]

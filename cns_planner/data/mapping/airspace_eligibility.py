@@ -187,6 +187,16 @@ def _point_covered(point, polygon):
     return True
 
 
+#: Public aliases.  They expose exactly the confirmed-policy geometry helpers that
+#: V3-B's fine environment adapter reuses; the V1/V2 behaviour above is unchanged.
+def polygons_of(geometry):
+    return _polygons(geometry)
+
+
+def point_covered_by_polygon(point, polygon):
+    return _point_covered(point, polygon)
+
+
 def _strictly_in_rect(point, rect, tolerance=1e-10):
     west, south, east, north = (float(value) for value in rect)
     return west + tolerance < point[0] < east - tolerance and south + tolerance < point[1] < north - tolerance

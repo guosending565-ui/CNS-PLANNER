@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {v3OverlayModel} from '../cns_planner/web/js/map/route_planner_v3_overlay.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
@@ -471,8 +471,10 @@ test('Chinese UI labels keep internal enums stable and unknown conservative',()=
 
 test('V3-A panel model keeps the candidate experimental and shows altitude/heading/cost',()=>{
   const flow={route_planner_v3_experiments:{status:'passed',count:1,active_experiment_id:'V3-1',
-      architecture:'V3 原生 3D 战略规划',allowed_result_statuses:['strategic_candidate','failed','missing_data','pending_confirmation','not_ready'],
-      note:'V3-A 战略规划实验 ≠ 运行航路',records:[{experiment_id:'V3-1',status:'strategic_candidate',distance_m:2777,state_count:18}]},
+      architecture:'V3 原生 3D 战略规划',allowed_result_statuses:['strategic_candidate','failed','missing_data','pending_confirmation','not_ready','search_incomplete'],
+      allowed_refinement_statuses:['refined_candidate','failed','not_ready','missing_data','search_incomplete'],
+      v3b_architecture:'V3-B corridor-local',v3b_note:'V3-B 精化候选 ≠ validated route',
+      note:'V3-A 战略规划实验 ≠ 运行航路',records:[{experiment_id:'V3-1',status:'strategic_candidate',distance_m:2777,state_count:18,refinement_count:0,refinement_status:null}]},
     route_planner_v3_detail:{records:[{experiment_id:'V3-1',result:{status:'strategic_candidate',route_id:'R1',
       distance_m:2777,operational_route:false,final_validation_performed:false,disclaimer:'不是 final safe',
       horizontal_projection:[[122,29.9],[122.02,29.92]],
@@ -487,7 +489,7 @@ test('V3-A panel model keeps the candidate experimental and shows altitude/headi
       candidate_refinement_corridor:{semantics:'refinement_search_window_not_safety_corridor',ring_n:1,
         center_grid_ids:['A','B'],support_grid_ids:['A','B','C'],refinement_cell_size_m:null,
         altitude_envelope:{lower_altitude_egm2008_m:100,upper_altitude_egm2008_m:200,explicit_margin_m:null},
-        next_stage:'V3-B_30m_local_refinement_and_exact_validation',n_ring_is_not_a_safety_clearance:true},
+        next_stage:'V3-B_corridor_local_refinement',n_ring_is_not_a_safety_clearance:true},
       state_path:[{grid_id:'A',altitude_egm2008_m:100,heading_deg:0,primitive_id:'h+1+0',climb_gradient:0.1,heading_change_deg:0},
         {grid_id:'B',altitude_egm2008_m:200,heading_deg:45,primitive_id:null,climb_gradient:null,heading_change_deg:null}]}}]}};
   const model=routePlannerV3Model(flow);
@@ -507,29 +509,51 @@ test('V3-A panel model keeps the candidate experimental and shows altitude/headi
   assert.equal(model.cnsIntegration.excluded_from_search_cost,true);
   assert.equal(model.corridor.semantics,'refinement_search_window_not_safety_corridor');
   assert.equal(model.corridor.notSafetyClearance,true);
-  assert.equal(model.corridor.nextStage,'V3-B_30m_local_refinement_and_exact_validation');
+  assert.equal(model.corridor.nextStage,'V3-B_corridor_local_refinement');
   assert.equal(model.semantics,'experiment_is_not_an_operational_route');
   assert.equal(model.automaticRanking,false);
+  assert.deepEqual(model.refinements,[]);
+  assert.equal(model.refinementCount,0);
+  assert.deepEqual(model.allowedRefinementStatuses,V3B_RESULT_STATUSES);
+  assert.equal(model.refinementReadiness.status,'not_calculated');
+  assert.equal(model.refinementReadiness.stage,'V3-B');
+  assert.deepEqual(model.refinementApplicability.items,[]);
+  assert.equal(model.refinementApplicability.staleCount,0);
 });
 
-test('V3-A readiness model exposes every domain and the missing real adapter',()=>{
+test('V3-A readiness model exposes every domain, the missing real adapter and the V3-B hand-off',()=>{
   const readiness=routePlannerV3ReadinessModel({route_planner_v3_readiness:{status:'passed',stage:'V3-A',
-    architecture:'arch',stage_scope:{implemented:['l8_strategic_search'],not_implemented:['30m_local_refinement']},
+    architecture:'arch',stage_scope:{implemented:['l8_strategic_search'],not_implemented:['exact_polygon_terrain_continuous_clearance_validation'],
+      implemented_in_other_stages:{corridor_local_fine_refinement:'V3-B',exact_validation:'V3-C',validated_route_operational_adapter_and_cns_assessment:'V3-D'}},
     algorithm:{registered_in_algorithm_registry:false,default_route_planner:'route_planner_v1'},
     grid:{status:'regenerable_at_l8',l8_cell_count:324},
     policy:{confirmed:false,min_altitude_egm2008_m:null},
     policy_readiness:{status:'blocked',reasons:['缺少必需安全参数'],missing_parameters:['min_altitude_egm2008_m']},
     aircraft_readiness:{status:'blocked',reasons:['未解析']},
     environment_readiness:{status:'pending',reason:'真实 adapter 未实现'},
-    real_data_readiness:{status:'blocked',adapter_status:'not_implemented_v3a',reason:'V3-A 不提供真实 adapter'},
-    synthetic_environment_options:{terrain_profiles:['flat'],buildings_profiles:['none'],sources:['canonical_synthetic']}}});
+    real_data_readiness:{status:'blocked',adapter_status:'not_implemented_v3a',reason:'V3-A 不提供真实 adapter',
+      v3b:{status:'blocked',adapter_status:'implemented_v3b_gis_adapter',blocking_reasons:['terrain_dtm_not_configured_or_missing'],
+        resolution_policy:'explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant',terrain_dtm:null,buildings:null}},
+    synthetic_environment_options:{terrain_profiles:['flat'],buildings_profiles:['none'],sources:['canonical_synthetic']}},
+    route_planner_v3_refinement_readiness:{status:'blocked',stage:'V3-B',model_scope:'corridor_local_3d_refinement_v3b',
+      fine_policy:{resolution_source:'explicit_configuration',resolution_m:5,status:'blocked'},
+      blocking_reasons:['terrain_dtm_not_configured_or_missing'],
+      environment_sources:['canonical_synthetic','configured_real_sources'],
+      allowed_refinement_statuses:['refined_candidate','failed','not_ready','missing_data','search_incomplete']}});
   assert.equal(readiness.stage,'V3-A');
   assert.equal(readiness.policyReadiness.status,'blocked');
   assert.deepEqual(readiness.policyReadiness.missing_parameters,['min_altitude_egm2008_m']);
   assert.equal(readiness.aircraftReadiness.status,'blocked');
   assert.equal(readiness.realData.adapter_status,'not_implemented_v3a');
   assert.equal(readiness.scope.implemented[0],'l8_strategic_search');
-  assert.equal(readiness.scope.not_implemented[0],'30m_local_refinement');
+  assert.equal(readiness.scope.not_implemented[0],'exact_polygon_terrain_continuous_clearance_validation');
+  assert.equal(readiness.scope.implementedInOtherStages.corridor_local_fine_refinement,'V3-B');
+  assert.equal(readiness.realData.v3b.adapter_status,'implemented_v3b_gis_adapter');
+  assert.deepEqual(readiness.realData.v3b.blocking_reasons,['terrain_dtm_not_configured_or_missing']);
+  assert.equal(readiness.refinementReadiness.stage,'V3-B');
+  assert.equal(readiness.refinementReadiness.finePolicy.resolution_source,'explicit_configuration');
+  assert.deepEqual(readiness.refinementReadiness.environmentSources,['canonical_synthetic','configured_real_sources']);
+  assert.equal(readiness.refinementReadiness.status,'blocked');
   assert.equal(readiness.neverFinalValidated,true);
 });
 
@@ -547,6 +571,15 @@ test('V3-A panel renders the disclaimer, corridor semantics and never claims a f
   assert.match(html,/未配置/);
   assert.match(html,/energy 默认 pending_model\/disabled/);
   assert.ok(!/final safe/.test(html)||/不是 final safe/.test(html));
+  // The V3-B section renders even without any refinement, and it still refuses to
+  // claim a validated route: the empty state says what has to happen first.
+  assert.match(html,/V3-B corridor-local 精化候选/);
+  assert.match(html,/尚无 V3-B 精化记录/);
+  assert.match(html,/V3-B corridor-local 精化状态只允许 refined_candidate \/ failed \/ not_ready \/ missing_data \/ search_incomplete/);
+  assert.match(html,/没有 validated\/final 状态/);
+  assert.match(html,/stale：源\/corridor\/policy 变化后必须重跑/);
+  assert.match(html,/id="saveRoutePlannerV3FinePolicy"/);
+  assert.match(html,/id="evaluateRoutePlannerV3Refinement"/);
 });
 
 test('V3-A map overlay projects only the 2D candidate and the refinement window',()=>{
@@ -562,7 +595,411 @@ test('V3-A map overlay projects only the 2D candidate and the refinement window'
   assert.equal(model.corridorCells[1].center,false);
   assert.equal(model.notSafetyCorridor,true);
   assert.equal(model.semantics,'refinement_search_window_not_safety_corridor');
+  assert.deepEqual(model.refinedPath,[]);
+  assert.equal(model.refinedStatus,null);
+  assert.equal(model.refinedIsFinal,false);
+  assert.equal(model.refinedV3cPending,true);
+  assert.equal(model.refinedGridBounds,null);
   const hidden=v3OverlayModel(flow,{candidate:false,corridor:false});
   assert.deepEqual(hidden.path,[]);
   assert.deepEqual(hidden.corridorCells,[]);
+});
+
+// ---- Route Planner V3-B (corridor-local refinement) --------------------------------
+
+function v3bRefinementRecord(){
+  return {
+    refinement_id:'V3B-ABC123DEF456',
+    experiment_id:'V3-1',
+    route_id:'R1',
+    created_at:'2026-01-02T00:00:00Z',
+    environment_source:'configured_real_sources',
+    grounding:'corridor_local_fine_grid',
+    current_applicability:'current',
+    refinement_fingerprint:'V3BREF-0123456789ABCDEF',
+    fingerprint_components:{strategic_fingerprint:'V3BSTRAT-1'},
+    evidence_components:{strategic_fingerprint:'V3BSTRAT-1',source_fingerprint:'V3BSRC-1'},
+    verdicts:{operational_route:false,final_validation_performed:false,exact_validation_performed:false,
+      requires_v3c_exact_validation:true,automatic_ranking:false,automatically_scored:false},
+    result:{
+      status:'search_incomplete',
+      reason:'达到 max_expanded_states=500：已保留当前精化候选，但未证明最优（搜索预算耗尽，不是 infeasible）',
+      disclaimer:'V3-B refined candidate：corridor-local 米制细网格工程精化结果，不是 final safe / validated operational route；尚未执行 V3-C exact polygon / terrain / continuous clearance 验证，也未进入 V3-D operational adapter 与 CNS 评估。',
+      final_validation_performed:false,operational_route:false,v3c_validation_pending:true,
+      distance_m:1234.5,
+      horizontal_projection:[[122,29.9],[122.01,29.91]],
+      metric_projection:[[0,0],[1234.5,0]],
+      fine_grid:{resolution_m:5,resolution_source:'explicit_configuration',requested_resolution_m:5,
+        effective_source_resolution_m:30,resolution_deviation_m:0,nx:20,ny:10,cell_count:200,
+        corridor_id:'V3CORR-1',corridor_ring_n:1,parent_grid_ids:['A'],
+        mapping_method:'corridor_support_cells_to_local_metric_index_grid',
+        not_a_safety_clearance:true,parent_grid_resolution_m:30},
+      frame:{horizontal_crs:'EPSG:32651',horizontal_crs_source:'qgis_metric_transform',
+        vertical_reference:'egm2008_orthometric',origin_metric:[0,0],
+        axis:{column_axis:'east',row_axis:'north',index_origin:'south_west_corner'},resolution_m:5,
+        metric_bounds:[0,0,100,50],
+        local_to_geographic:{method:'qgis_projected_crs_inverse_transform',authority:'EPSG:32651',
+          display_only:true,interpolated_from_parent_cells:false,note:'显式投影逆变换'},
+        provenance:{adapter_id:'fine-environment-adapter'}},
+      source_audit:{adapter_id:'fine-environment-adapter',adapter_version:'3.1',
+        read_mode:'read_only_window',building_query_mode:'rtree_bbox_query',
+        airspace_query_mode:'confirmed_policy_only',
+        terrain_dtm:{role:'terrain_floor',dataset:'FABDEM',file_name:'fabdem.tif',size_bytes:10,mtime_ns:1,
+          width:100,height:100,pixel_size:30,nodata:-9999,vertical_reference:'egm2008_orthometric',
+          vertical_status:'confirmed',read_mode:'read_only_window'},
+        buildings:{role:'building_envelope',file_name:'buildings.gpkg',layer:'buildings',size_bytes:10,
+          mtime_ns:1,feature_count:12,crs:'EPSG:4326',extent:[1,2,3,4],spatial_index_available:true,
+          query_mode:'rtree_bbox_query',height_field:'height_m'},
+        airspace_policy:{role:'airspace',query_mode:'confirmed_policy_only',eligibility_status:'passed',
+          algorithm_id:'airspace-eligibility-v1',algorithm_version:'1.0',allowed_grid_cell_count:4,
+          confirmed_allowed_polygon_count:2,confirmed_blocked_polygon_count:1,
+          inferred_from_name_or_color:false},
+        metric_frame:{method:'qgis_projected_crs_inverse_transform'},
+        risk_model:{algorithm_id:'risk-model-v1-relative-index',algorithm_version:'1.1',status:'passed',
+          soft_fields_reused:true,reused_contributors:['ground.population','ground.traffic']},
+        policy_fingerprint:'V3BPOL-XYZ',lineage:{},full_raster_resample:false,
+        source_geometry_modified:false,exact_validation_performed:false,fingerprint:'V3BSRC-XYZ'},
+      fine_grid_evidence:{resolution_m:5,resolution_source:'explicit_configuration',requested_resolution_m:5,
+        effective_source_resolution_m:30,resolution_deviation_m:0,cell_count:200,environment_cell_count:180,
+        corridor_support_cell_count:20,corridor_center_cell_count:5,
+        terrain_sampling:'intersecting_valid_fabdem_pixels_max_egm2008_plus_explicit_terrain_clearance',
+        building_mapping:'buffered_footprint_conservative_envelope',horizonal_clearance_m:10,
+        vertical_clearance_m:15,terrain_clearance_m:30,source_audit_fingerprint:'V3BSRC-XYZ',
+        source_type:'real_sources',
+        v3c_pending:['exact_polygon_membership','exact_terrain_profile_clearance',
+          'continuous_clearance_along_the_full_trajectory','monotone_turn_curvature_verification']},
+      search_statistics:{expanded_states:500,generated_states:900,expanded_transitions:3000,
+        primitive_checks:4000,traversed_cell_checks:9000,max_stride_cells:2,expansion_cap:500,
+        expansion_cap_reached:true,search_complete:false,
+        search_completeness:'expansion_cap_reached_optimality_not_proven',resource_limited:true,
+        resource_limit:'max_expanded_states',
+        resource_limit_reason:'达到 policy.max_expanded_states=500：细网格搜索预算耗尽，未证明不可行，也未证明最优',
+        optimality_proven:false,
+        state_space_shape:{fine_cells:200,altitude_levels:3,heading_bins:8,naive_state_count:4800},
+        endpoint_binding:{start:{fine_cell_id:'F1-0000-0000',method:'nearest_fine_cell'},
+          goal:{fine_cell_id:'F1-0001-0001',method:'nearest_fine_cell'},
+          semantics:'explicit_or_recorded_binding_not_assumed_membership'}},
+      hard_constraint_summary:{state_rejections:{below_terrain_clearance:4},
+        transition_rejections:{turn_radius_exceeded:2},
+        traversed_cell_rejections:{traversed_building_envelope:3},total_state_rejections:4,
+        total_transition_rejections:2,total_traversed_cell_rejections:3,primitive_checks:4000,
+        traversed_cell_checks:9000,unknown_is_never_feasible:true,
+        intermediate_obstacles_cannot_be_skipped_by_a_stride:true,audit_sample_cap_per_reason:200},
+      cost_vector:{scalar_cost:1434.5,scalar_cost_available:true,
+        scalar_cost_semantics:'sum_over_edges(length_m + sum_channels(weight_x_exposure_m))',
+        scalar_weight_sum:0.5,scalar_weight_sum_is_not_bounded:true,
+        scalar_weight_sum_not_used_by_the_heuristic:true,excluded_components:['energy'],
+        scalar_cost_cap:null,scalar_cost_cap_active:false,
+        cns_integration:{integration_mode:'post_route_assessment',excluded_from_search_cost:true},
+        components:{
+          distance:{raw:1234.5,normalized:1,weight:1,contribution:1234.5,unit:'m',
+            source:'v3_planner_internal_geodesic_edge_sum',semantics:'真实三维航段长度',enabled:true,status:'passed'},
+          population_risk:{raw:400,normalized:0.4,weight:0.5,contribution:200,unit:'index·m',
+            source:'grid_risk.ground.contributors.population.normalized',semantics:'人口暴露相对指数',enabled:true,
+            status:'passed',exposure_m:400,exposure_definition:'length_m_x_mean_index_of_edge_endpoints',
+            normalized_index_statistics:{count:5,min:0.1,max:0.8,mean:0.4},source_resolution_m:30,
+            mapping_method:'coarse_cell_index_upsampled_to_fine_cells',
+            upsampled_without_new_information:true,provenance_sources:['grid_risk.ground.population'],
+            provenance_note:'单一来源：canonical 母格 index 上采样',edge_count:4},
+          energy:{raw:null,normalized:null,weight:null,contribution:null,unit:'not_modelled',enabled:false,
+            status:'pending_model',semantics:'pending_model_disabled',reason:'V3 不发明 energy 公式'}}},
+      motion_model:{model_id:'engineering_3d_motion_primitives_v3b_corridor_refinement',
+        semantics:'engineering_arc_length_proxy',not_a_flight_dynamics_certification_model:true,
+        multi_cell_stride:true,max_stride_cells:2,min_turn_radius_m:50,
+        turn_constraint:'minimum_turn_radius_m * |dpsi| <= stride_m',traversed_cells_are_checked:true,
+        altitude_interpolated_along_primitive:true,exact_curvature_validation:'not_implemented_V3-C'},
+      state_path:[
+        {index:0,fine_cell_id:'F1-0000-0000',parent_grid_id:'A',altitude_index:0,altitude_egm2008_m:100,
+          heading_bin:0,heading_deg:0,x_metric:0,y_metric:0,x:122,y:29.9,z:100,
+          vertical_reference:'egm2008_orthometric',primitive_id:'h+1+0',stride_cells:1,length_m:100,
+          climb_gradient:0,heading_change_deg:0,turn_arc_required_m:0,turn_arc_available_m:10,
+          traversed_cell_ids:['F1-0000-0001','F1-0000-0002'],soft_penalty:0,scalar_cost:100},
+        {index:1,fine_cell_id:'F1-0001-0001',parent_grid_id:'A',altitude_index:1,altitude_egm2008_m:150,
+          heading_bin:1,heading_deg:45,x_metric:100,y_metric:50,x:122.01,y:29.91,z:150,
+          vertical_reference:'egm2008_orthometric',primitive_id:null,stride_cells:null,length_m:null,
+          climb_gradient:null,heading_change_deg:null,turn_arc_required_m:null,turn_arc_available_m:null,
+          traversed_cell_ids:[],soft_penalty:null,scalar_cost:null}],
+      trajectory_summary:{state_count:2,edge_count:1,distance_m:1234.5,max_stride_cells:2,
+        multi_cell_stride_edge_count:1,traversed_cell_check_count:9,climb_edge_count:0,descent_edge_count:0,
+        level_edge_count:1,max_heading_change_deg:45,max_climb_gradient:0.1,altitude_min_egm2008_m:100,
+        altitude_max_egm2008_m:150,start_fine_cell_id:'F1-0000-0000',goal_fine_cell_id:'F1-0001-0001',
+        endpoint_binding:{},endpoint_binding_semantics:'explicit_or_recorded_binding_not_assumed_membership',
+        turn_model:'engineering_arc_length_proxy'},
+      semantics:{scope:'corridor_local_3d_refinement_v3b',not_final_safe:true,
+        not_validated_operational_route:true,exact_validation_is_v3c:true,unknown_is_never_safe:true,
+        terrain_floor_is_intersecting_pixel_max:true,building_envelope_is_conservative_not_exact:true,
+        airspace_consumes_confirmed_policy_only:true,
+        coarse_soft_fields_are_upsampled_without_new_information:true,turn_model:'engineering_arc_length_proxy',
+        v3c_pending:['exact_polygon_membership','exact_terrain_profile_clearance',
+          'continuous_clearance_along_the_full_trajectory','monotone_turn_curvature_verification'],
+        allowed_result_statuses:['refined_candidate','failed','not_ready','missing_data','search_incomplete']},
+    },
+  };
+}
+
+function v3bFlow(refinement=v3bRefinementRecord()){
+  return {
+    grid:{cells:[{grid_id:'A',bbox:[122.0,29.9,122.001,29.901]}]},
+    route_planner_v3_experiments:{status:'passed',count:1,active_experiment_id:'V3-1',
+      architecture:'V3 原生 3D 战略规划',v3b_architecture:'V3-B corridor-local 米制细网格',
+      note:'V3-A 战略规划实验 ≠ 运行航路',v3b_note:'V3-B corridor-local 精化候选 ≠ validated route',
+      allowed_result_statuses:['strategic_candidate'],allowed_refinement_statuses:V3B_RESULT_STATUSES,
+      active_experiment:{experiment_id:'V3-1',status:'strategic_candidate',refinement_count:1,
+        refinement_id:'V3B-ABC123DEF456',refinement_status:'search_incomplete'},
+      records:[{experiment_id:'V3-1',status:'strategic_candidate',distance_m:2777,state_count:3,
+        refinement_count:1,refinement_status:'search_incomplete'}]},
+    route_planner_v3_detail:{active_experiment_id:'V3-1',records:[{
+      experiment_id:'V3-1',route_id:'R1',
+      result:{status:'strategic_candidate',route_id:'R1',distance_m:2777,operational_route:false,
+        final_validation_performed:false,disclaimer:'不是 final safe',
+        horizontal_projection:[[122,29.9],[122.02,29.92]],
+        search_statistics:{expanded_states:17,runtime_ms:12.5},
+        heuristic_semantics:{type:'admissible_3d_geometric_lower_bound',scale:1},
+        hard_constraint_summary:{state_rejections:{},transition_rejections:{},total_state_rejections:0,
+          total_transition_rejections:0},
+        cost_vector:{scalar_cost:2777,scalar_cost_available:true,excluded_components:['energy'],
+          cns_integration:{integration_mode:'post_route_assessment',excluded_from_search_cost:true},
+          components:{}},
+        candidate_refinement_corridor:{semantics:'refinement_search_window_not_safety_corridor',ring_n:1,
+          center_grid_ids:['A'],support_grid_ids:['A'],refinement_cell_size_m:null,
+          altitude_envelope:{lower_altitude_egm2008_m:100,upper_altitude_egm2008_m:200,explicit_margin_m:null},
+          next_stage:'V3-B_corridor_local_refinement',n_ring_is_not_a_safety_clearance:true},
+        state_path:[{grid_id:'A',altitude_egm2008_m:100,heading_deg:0,primitive_id:'h+1+0',
+          climb_gradient:0.1,heading_change_deg:0}]},
+      refinements:refinement?[refinement]:[]}]},
+    route_planner_v3_refinement_readiness:{status:'blocked',stage:'V3-B',
+      model_scope:'corridor_local_3d_refinement_v3b',architecture:'V3-B corridor-local 米制细网格',
+      note:'V3-B corridor-local 精化候选 ≠ validated route',
+      stage_scope:{implemented:['corridor_local_metric_fine_grid','terrain_intersecting_pixel_max_floor'],
+        not_implemented:['exact_polygon_membership','operational_adapter']},
+      algorithm:{algorithm_id:'route_planner_v3_corridor_refinement',algorithm_version:'3.1-alpha',
+        model_scope:'corridor_local_3d_refinement_v3b',registered_in_algorithm_registry:false,
+        turn_model:'engineering_arc_length_proxy'},
+      selected_strategic_candidate:{experiment_id:'V3-1',result_status:'strategic_candidate',route_id:'R1',
+        corridor_id:'V3CORR-1',support_cell_count:20,refinement_count:1},
+      fine_policy:{horizontal_crs:'EPSG:32651',resolution_source:'explicit_configuration',resolution_m:5,
+        max_stride_cells:2,source:'project_engineering_basis',confirmed:true,status:'confirmed',
+        missing_parameters:[],reasons:[]},
+      v3_policy_readiness:{status:'ready',missing_parameters:[]},
+      real_data_readiness:{status:'blocked',adapter_id:'fine-environment-adapter',adapter_version:'3.1',
+        roles:['terrain_dtm','buildings','airspace'],
+        terrain_dtm:'fabdem.tif',buildings:'buildings.gpkg',confirmed_allowed_grid_cells:4,
+        airspace_eligibility_status:'passed',
+        blocking_reasons:['terrain_dtm_not_configured_or_missing'],
+        resolution_policy:'explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant',
+        required_before_real_run:['FABDEM terrain_dtm with confirmed egm2008_orthometric vertical reference'],
+        semantics:'readiness_report_only_no_data_read_no_fabricated_environment'},
+      blocking_reasons:['terrain_dtm_not_configured_or_missing'],
+      environment_sources:['canonical_synthetic','configured_real_sources'],
+      resolution_policy:'explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant',
+      allowed_refinement_statuses:V3B_RESULT_STATUSES},
+    route_planner_v3_refinements:{status:'passed',count:1,stale_count:1,
+      semantics:'stale_when_strategic_corridor_policy_or_source_audit_changes',
+      components:['strategic_fingerprint','corridor_fingerprint','policy_fingerprint','source_fingerprint',
+        'frame_fingerprint','fine_grid_fingerprint'],
+      items:[{refinement_id:'V3B-ABC123DEF456',experiment_id:'V3-1',status:'search_incomplete',
+        recorded_applicability:'current',current_applicability:'stale',
+        changed_components:['source_fingerprint'],reasons:['refinement 依赖的证据已变化'],
+        refinement_fingerprint:'V3BREF-0123456789ABCDEF',evidence_components:{}}]},
+    route_planner_v3_readiness:{status:'passed',stage:'V3-A',architecture:'arch',
+      stage_scope:{implemented:[],not_implemented:[],implemented_in_other_stages:{corridor_local_fine_refinement:'V3-B'}},
+      policy:{confirmed:false},policy_readiness:{status:'blocked',reasons:[],missing_parameters:[]},
+      aircraft_readiness:{status:'blocked',reasons:[]},
+      real_data_readiness:{status:'blocked',adapter_status:'not_implemented_v3a',reason:'未实现',
+        v3b:{status:'blocked',adapter_status:'implemented_v3b_gis_adapter',
+          blocking_reasons:['terrain_dtm_not_configured_or_missing'],
+          resolution_policy:'explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant',
+          terrain_dtm:null,buildings:null}},
+      synthetic_environment_options:{terrain_profiles:['flat'],buildings_profiles:['none']}},
+  };
+}
+
+test('V3-B panel marks the refined candidate experimental and never claims validation',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=v3bFlow(),html=routePlannerV3Panel(flow);
+  assert.match(html,/V3-B corridor-local 精化候选/);
+  assert.ok(html.includes('refined candidate，未执行 V3-C 连续几何验证'));
+  assert.ok(html.includes(V3B_REFINED_LABEL));
+  assert.match(html,/<b>refined candidate，未执行 V3-C 连续几何验证<\/b>/);
+  // refined vs coarse 2D comparison
+  assert.match(html,/coarse（V3-A 战略候选）：state 1 · 3D distance 2777\.00 m/);
+  assert.match(html,/refined（V3-B corridor-local 精化）：state 2 · 3D distance 1234\.50 m/);
+  assert.match(html,/不是最终安全航路/);
+  assert.match(html,/V3-D/);
+  // fine grid + resolution provenance
+  assert.match(html,/fine grid 与 resolution provenance/);
+  assert.match(html,/resolution_source<\/b><small>explicit_configuration<\/small>/);
+  assert.match(html,/fine cell_count<\/b><small>200<\/small>/);
+  assert.match(html,/environment_cell_count<\/b><small>180<\/small>/);
+  assert.match(html,/nx × ny<\/b><small>20 × 10<\/small>/);
+  assert.match(html,/不是硬编码的 30 m 常数/);
+  assert.match(html,/not_a_safety_clearance/);
+  assert.match(html,/terrain_clearance_m \/ building horizonal_clearance_m \/ vertical_clearance_m<\/b><small>30\.00 m \/ 10\.00 m \/ 15\.00 m<\/small>/);
+  assert.match(html,/intersecting_valid_fabdem_pixels_max_egm2008_plus_explicit_terrain_clearance/);
+  assert.match(html,/buffered_footprint_conservative_envelope/);
+  // search scale + hard rejection
+  assert.match(html,/search 规模与 hard rejection/);
+  assert.match(html,/traversed cell rejection 总数<\/b><small>3<\/small>/);
+  assert.match(html,/traversed_building_envelope/);
+  assert.match(html,/primitive_checks<\/b><small>4000<\/small>/);
+  assert.match(html,/traversed_cell_checks<\/b><small>9000<\/small>/);
+  assert.match(html,/multi-cell stride edges \/ traversed cell checks<\/b><small>1 \/ 9<\/small>/);
+  assert.match(html,/max heading change \/ max climb gradient<\/b><small>45\.00 ° \/ 0\.10<\/small>/);
+  assert.match(html,/altitude range EGM2008 \(m\)<\/b><small>100\.00 m – 150\.00 m<\/small>/);
+  assert.match(html,/frame metric_bounds（米制，不是经纬度）<\/b><small>\[0,0,100,50\]<\/small>/);
+  // cost breakdown with exposure + provenance
+  assert.match(html,/cost breakdown（含 exposure 与 provenance）/);
+  assert.match(html,/exposure_m 400\.00/);
+  assert.match(html,/source_resolution_m 30\.00 m/);
+  assert.match(html,/mapping_method coarse_cell_index_upsampled_to_fine_cells/);
+  assert.match(html,/provenance sources \["grid_risk\.ground\.population"\]/);
+  assert.match(html,/h = 纯 3D 几何距离/);
+  // data provenance of the fine environment
+  assert.match(html,/fabdem\.tif/);
+  assert.match(html,/pixel_size 30\.00 m/);
+  assert.match(html,/nodata -9999/);
+  assert.match(html,/vertical_status confirmed/);
+  assert.match(html,/buildings\.gpkg/);
+  assert.match(html,/feature_count 12/);
+  assert.match(html,/spatial_index_available true/);
+  assert.match(html,/inferred_from_name_or_color false/);
+  assert.match(html,/confirmed allowed\/blocked polygon 2 \/ 1/);
+  assert.match(html,/ground\.population/);
+  assert.match(html,/full_raster_resample \/ source_geometry_modified \/ exact_validation_performed/);
+  assert.match(html,/false \/ false \/ false/);
+  assert.match(html,/exact_polygon_membership/);
+  // verdicts: never a validated / final route
+  assert.match(html,/operational_route=false/);
+  assert.match(html,/final_validation_performed=false/);
+  assert.match(html,/v3c_validation_pending=true/);
+  const claims=[...html.matchAll(/final safe/g)];
+  assert.ok(claims.length>0);
+  assert.equal([...html.matchAll(/不是 final safe/g)].length,claims.length);
+  const model=routePlannerV3Model(flow);
+  assert.equal(model.refinements.length,1);
+  assert.equal(model.refinements[0].finalValidationPerformed,false);
+  assert.equal(model.refinements[0].operationalRoute,false);
+  assert.equal(model.refinements[0].v3cPending,true);
+  assert.equal(model.refinements[0].cellCount,200);
+  assert.equal(model.refinements[0].environmentCellCount,180);
+  assert.equal(model.refinements[0].hardRejection.totalTraversed,3);
+  assert.equal(model.refinements[0].statePreview[0].traversedCellCount,2);
+  assert.equal(model.refinements[0].statePreview[0].fineCellId,'F1-0000-0000');
+  assert.equal(model.refinements[0].costComponents[1].upsampledWithoutNewInformation,true);
+  assert.equal(model.refinements[0].costMeta.scalarWeightSumIsNotBounded,true);
+  assert.equal(model.refinements[0].costMeta.scalarWeightSumNotUsedByTheHeuristic,true);
+});
+
+test('V3-B panel reports search_incomplete as resource limited instead of infeasible',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=v3bFlow(),html=routePlannerV3Panel(flow),model=routePlannerV3Model(flow);
+  assert.match(html,/search_incomplete/);
+  assert.match(html,/resource limited/);
+  assert.match(html,/不是 infeasible/);
+  assert.match(html,/未证明最优/);
+  assert.match(html,/expansion_cap_reached=true/);
+  assert.match(html,/expansion_cap_reached_optimality_not_proven/);
+  assert.match(html,/minimum_turn_radius_m \* \|dpsi\| <= stride_m/);
+  assert.match(html,/exact_curvature_validation not_implemented_V3-C/);
+  assert.match(html,/not_a_flight_dynamics_certification_model true/);
+  assert.equal(model.refinements[0].status,'search_incomplete');
+  assert.equal(model.refinements[0].resourceLimited,true);
+  assert.equal(model.refinements[0].optimalityProven,false);
+  assert.equal(model.refinements[0].searchCompleteness,'expansion_cap_reached_optimality_not_proven');
+  assert.equal(model.refinements[0].expansionCapReached,true);
+  assert.equal(model.refinements[0].resourceLimit,'max_expanded_states');
+});
+
+test('V3-B panel states that coarse to fine soft mapping gains no new source accuracy',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=v3bFlow(),html=routePlannerV3Panel(flow),model=routePlannerV3Model(flow);
+  assert.match(html,/upsampled_without_new_information/);
+  assert.match(html,/不获得新的原始精度/);
+  assert.match(html,/coarse→fine 的 soft field/);
+  assert.equal(model.refinements[0].costComponents[1].upsampledWithoutNewInformation,true);
+  assert.equal(model.refinements[0].costComponents[1].sourceResolutionM,30);
+  assert.equal(model.refinements[0].evidence.resolution_source,'explicit_configuration');
+  assert.equal(model.refinements[0].semantics.coarse_soft_fields_are_upsampled_without_new_information,true);
+});
+
+test('V3-B readiness, fine policy hand-off and staleness are rendered',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=v3bFlow(),html=routePlannerV3Panel(flow),readiness=routePlannerV3ReadinessModel(flow);
+  assert.match(html,/V3-B readiness/);
+  assert.match(html,/corridor_local_metric_fine_grid/);
+  assert.match(html,/exact_polygon_membership/);
+  assert.match(html,/terrain_dtm_not_configured_or_missing/);
+  assert.match(html,/explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant/);
+  assert.match(html,/selected strategic candidate/);
+  assert.match(html,/refinement_count 1/);
+  assert.match(html,/id="v3bFineCrs"/);
+  assert.match(html,/id="v3bFineResolutionSource"/);
+  assert.match(html,/id="v3bFineResolution"/);
+  assert.match(html,/id="v3bFineMaxStride"/);
+  assert.match(html,/id="v3bFineConfirmed"/);
+  assert.match(html,/禁止默认 30 m/);
+  assert.match(html,/id="v3bEnvironmentSource"/);
+  assert.match(html,/value="configured_real_sources"/);
+  assert.match(html,/id="v3bRefinementCellSize"/);
+  assert.match(html,/synthetic base_surface_elevation_m/);
+  assert.match(html,/V3-B 精化历史与适用性/);
+  assert.match(html,/current_applicability stale/);
+  assert.match(html,/changed_components \["source_fingerprint"\]/);
+  assert.match(html,/stale_count 1/);
+  assert.match(html,/stale：源\/corridor\/policy 变化后必须重跑/);
+  assert.equal(readiness.refinementReadiness.status,'blocked');
+  assert.equal(readiness.refinementReadiness.selectedCandidate.support_cell_count,20);
+  assert.deepEqual(readiness.refinementReadiness.blockingReasons,['terrain_dtm_not_configured_or_missing']);
+  assert.equal(readiness.scope.implementedInOtherStages.corridor_local_fine_refinement,'V3-B');
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
+  assert.match(source,/\/api\/route-planner-v3\/fine-policy/);
+  assert.match(source,/\/api\/route-planner-v3-refinements\/evaluate/);
+  assert.match(source,/loadRoutePlannerV3Detail/);
+  assert.match(source,/horizontal_crs:c\.\$\('v3bFineCrs'\)/);
+});
+
+test('V3-B statuses are extended and never include a validated status',()=>{
+  assert.deepEqual(V3_RESULT_STATUSES,['strategic_candidate','failed','missing_data','pending_confirmation','not_ready','search_incomplete']);
+  assert.deepEqual(V3B_RESULT_STATUSES,['refined_candidate','failed','not_ready','missing_data','search_incomplete']);
+  for(const status of ['validated','final','operational_route','safe']){
+    assert.ok(!V3_RESULT_STATUSES.includes(status));
+    assert.ok(!V3B_RESULT_STATUSES.includes(status));
+  }
+  assert.equal(V3B_REFINED_LABEL,'refined candidate，未执行 V3-C 连续几何验证');
+});
+
+test('V3-B overlay draws both projections and keeps the corridor semantics',()=>{
+  const flow=v3bFlow();
+  const model=v3OverlayModel(flow);
+  assert.deepEqual(model.path,[[122,29.9],[122.02,29.92]]);
+  assert.deepEqual(model.refinedPath,[[122,29.9],[122.01,29.91]]);
+  assert.equal(model.refinedStatus,'search_incomplete');
+  assert.equal(model.refinedCellCount,200);
+  assert.equal(model.refinedResolutionM,5);
+  assert.equal(model.refinedId,'V3B-ABC123DEF456');
+  assert.equal(model.refinedIsFinal,false);
+  assert.equal(model.refinedV3cPending,true);
+  assert.equal(model.corridorCells.length,1);
+  assert.equal(model.corridorCells[0].center,true);
+  assert.equal(model.notSafetyCorridor,true);
+  assert.equal(model.semantics,'refinement_search_window_not_safety_corridor');
+  // A 2-point (here: 1-point) refined path cannot place the fine-grid rectangle.
+  assert.equal(model.refinedGridBounds,null);
+  const without=structuredClone(flow);
+  without.route_planner_v3_detail.records[0].refinements=[];
+  const missing=v3OverlayModel(without);
+  assert.deepEqual(missing.refinedPath,[]);
+  assert.equal(missing.refinedStatus,null);
+  assert.equal(missing.refinedCellCount,null);
+  assert.equal(missing.refinedGridBounds,null);
+  assert.deepEqual(missing.path,[[122,29.9],[122.02,29.92]]);
+  const empty=structuredClone(flow);
+  empty.route_planner_v3_detail.records[0].refinements[0].result.horizontal_projection=[];
+  const noProjection=v3OverlayModel(empty);
+  assert.deepEqual(noProjection.refinedPath,[]);
+  assert.equal(noProjection.refinedStatus,'search_incomplete');
+  // The refined projection is a separate toggle from the coarse candidate.
+  assert.deepEqual(v3OverlayModel(flow,{refined:false}).refinedPath,[]);
+  assert.deepEqual(v3OverlayModel(flow,{candidate:false}).path,[]);
+  assert.equal(v3OverlayModel(flow,{candidate:false}).refinedPath.length,2);
 });

@@ -72,6 +72,8 @@ class ApiRouter:
         if path == "/api/route-experiments": return Response(workflow.route_experiments_snapshot())
         if path == "/api/route-planner-v3-experiments": return Response(workflow.route_planner_v3_snapshot())
         if path == "/api/route-planner-v3/readiness": return Response(workflow.route_planner_v3_readiness())
+        if path == "/api/route-planner-v3/refinement-readiness": return Response(workflow.route_planner_v3_refinement_readiness())
+        if path == "/api/route-planner-v3-refinements": return Response(workflow.route_planner_v3_refinement_snapshot())
         if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
         if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
         if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
@@ -173,8 +175,14 @@ class ApiRouter:
             "/api/route-experiments/evaluate": lambda: workflow.evaluate_route_experiment(payload),
             "/api/route-experiments/delete": lambda: workflow.delete_route_experiment(payload.get("experiment_id")),
             "/api/route-planner-v3/policy": lambda: workflow.set_route_planner_v3_policy(payload),
+            "/api/route-planner-v3/fine-policy": lambda: workflow.set_route_planner_v3_fine_policy(payload),
             "/api/route-planner-v3-experiments/evaluate": lambda: workflow.evaluate_route_planner_v3(payload),
             "/api/route-planner-v3-experiments/delete": lambda: workflow.delete_route_planner_v3_experiment(payload.get("experiment_id")),
+            "/api/route-planner-v3-refinements/evaluate": lambda: workflow.evaluate_route_planner_v3_refinement(payload),
+            # GIS-wired variant: builds the real fine-environment adapter (needs QGIS/GDAL).
+            "/api/route-planner-v3-refinements/evaluate-real": lambda: context.qgis.call(
+                lambda: context.evaluate_route_planner_v3_refinement(payload)
+            ),
             "/api/reference-route-links/create": lambda: workflow.create_reference_route_link(payload),
             "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),

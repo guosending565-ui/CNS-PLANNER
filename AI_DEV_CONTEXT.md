@@ -41,7 +41,8 @@ map_app.py / app.py
 - CNS Gap Analysis：V1 保持 RequiredCNS、机载能力及已有设施二维水平覆盖的既有输出；V2 独立合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线，输出 planning/runtime/combined 评估、连续缺口段、contingency/unknown 暴露和稳定输入指纹。
 - RoutePlannerV1：固定工作区离散、硬约束 BBOX、A*、geometry/关键节点/统计/指纹；硬约束在 Application 输入边界 fail-closed 校验。
 - Risk-Aware Route Planner V2：直接在 MH/T `grid_id` 邻接图上使用既有 `grid_risk` 相对工程指数执行米制 A*，保留完整 grid path、距离/风险暴露/绕行指标；Registry 默认仍为 V1。
-- Route Planner V3-A（实验，未注册进 Registry）：原生 3D `grid_id + altitude_index + heading_bin` 状态、hard-constraint edge 生成、soft cost 向量、L8 战略 A* 与 candidate refinement corridor；结果只进独立实验容器，见 `docs/route_planner_v3_architecture.md`。
+- Route Planner V3-A（实验，未注册进 Registry）：原生 3D `grid_id + altitude_index + heading_bin` 状态、hard-constraint edge 生成、provenance soft cost 向量、L8 战略 A* 与 candidate refinement corridor；结果只进独立实验容器，见 `docs/route_planner_v3_architecture.md`。已修正三项语义：h = 纯 3D 几何距离；soft field 只接受带 provenance 的 normalized index（删除 10000/100 隐式 normalizer 与 Σweight≤1 假设）；expansion cap 返回 `search_incomplete`（resource limited）而不是 failed/infeasible。
+- Route Planner V3-B（实验，未注册进 Registry）：只在选定且 current 的 V3-A `strategic_candidate` 的 corridor support cells 米制窗口内构造局部 fine grid 做 3D 精化；multi-cell stride primitive 记录 `traversed_cell_ids` 并按路径进度插值高度逐格检查；地形 hard floor = 相交 FABDEM 有效像元最大 EGM2008 高程 + explicit clearance，建筑为 buffered footprint 的保守包络，空域只消费 confirmed AirspacePolicy；真实数据经 `gis/fine_environment_adapter.py` 进入，未配置即明确 blocked；结果只有 refined_candidate/failed/not_ready/missing_data/search_incomplete，且强制 final_validation=false、operational_route=false。
 - CoveragePlannerV1：C/N/S 主站、补盲、共址、未覆盖点/航段、统计/指纹。
 - schema-v2 项目自动保存、打开、Save As 与数据源恢复；失败操作保留当前有效项目并清理临时文件。
 - 本地 QGIS 渲染、原始人口/DEM 图层、在线瓦片、统一数据源中心、六步 ES Module 前端。
@@ -59,9 +60,10 @@ map_app.py / app.py
 - `reference_data/landing_sites.py`、`reference_data/equipment_catalog.py`、`application/reference_data_service.py`：真实起降点 XLSX/CSV 导入、坐标质量/重复候选/来源记录、规范设备事实目录加载，以及 reference→node 显式采用边界；不实现规划算法映射。
 - `application/closed_loop_service.py` + `domain/closed_loop.py`：P12 working-copy 重跑编排、确定性 PlanApplication、Before/After 比较和事务式 Preview/Apply；不实现新的覆盖、能力、时间线或 Gap 公式。
 - `route_planner/risk_aware_v2.py`：P13 纯 Python GridGraph、风险证据门控和 risk-aware A*；直接消费标准网格及网格风险，不依赖 QGIS、不重算 RiskModel。
-- `route_planner_v3/*`：V3-A 独立 3D 战略规划包（contracts/motion/hard_constraints/cost/planner/corridor/readiness/synthetic）；不 import QGIS/GDAL、不读文件、不写 `operational_routes`，只消费 canonical `V3CellEnvironment`；未注册进 Registry。
-- `application/route_planner_v3_service.py`：V3-A 实验编排与独立容器（`route_planner_v3_experiments` / `v3_planning_policy`）、readiness 报告与 `record_summary` 有界摘要。
-- `docs/route_planner_v3_architecture.md`：V3 目标架构与 V3-A 边界（3D+heading state、hard/soft、L8→30 m→exact 三阶段、CNS post-assessment、与经典 RCSP 的区别、V3-B/C/D 接口）。
+- `route_planner_v3/*`：V3-A/V3-B 独立 3D 规划包（contracts/motion/hard_constraints/cost/planner/corridor/readiness/synthetic + fine_contracts/fine_grid/fine_search/fine_synthetic）；不 import QGIS/GDAL、不读文件、不写 `operational_routes`，只消费 canonical `V3CellEnvironment` / `FineCellEnvironment`；未注册进 Registry。soft cost 的每个 channel 都是带 provenance 的 normalized index `[0,1]`（`exposure_m = length_m × (index_source+index_target)/2`），planner 内**没有**隐式 normalizer，启发函数是纯 3D 几何距离；达到 `max_expanded_states` 返回 `search_incomplete`。
+- `gis/fine_environment_adapter.py`：V3-B 的 GIS/GDAL 边界（FABDEM 单次只读窗口取相交有效像元最大值 + GPKG provider RTree 建筑查询 + confirmed AirspacePolicy 中心点判定）；水平分辨率只能来自显式配置或 DTM 有效分辨率，禁止写死 30 m；数据未配置/未确认时显式 blocked，不构造假环境；算法包不依赖它。
+- `application/route_planner_v3_service.py`：V3-A/V3-B 实验编排与独立容器（`route_planner_v3_experiments` 记录下的 `refinements[]` / `v3_planning_policy` / `v3_fine_refinement_policy`）、readiness 报告、refinement staleness（strategic/corridor/policy/source/frame/grid fingerprint）与 `record_summary` 有界摘要；真实源 readiness 由 ApplicationContext 注入（只报告、不读数据）。
+- `docs/route_planner_v3_architecture.md`：V3 目标架构与 V3-A/V3-B 边界；路线图为 V3-A 战略 → V3-B corridor-local 精化 → V3-C exact polygon/terrain/continuous clearance validation → V3-D validated route → operational adapter → CNS Assessment，Route–CNS 联合优化列为未来项。
 - `domain/cns_corridor.py`、`algorithms/corridor/v1.py`、`application/corridor_service.py`：P14 route corridor 契约、纯 Python 水平/垂向离散、P7/P8 代表点复用及持久化用例。
 - `domain/cns_planning_objectives.py`、`algorithms/corridor_gap/v1.py`、`application/corridor_gap_service.py`：P15 显式空间规划目标、P8 独立冗余证据复用、corridor voxel 分类和空间连续缺口投影。
 - `domain/corridor_site_planning.py`、`site_planner/corridor_reuse_first_v2.py`、`application/corridor_site_planning_service.py`：P16 confirmed voxel target/action 契约、确定性 reuse-first 排序与 Application 累计 P14→P15 what-if 编排。
@@ -117,7 +119,8 @@ corridor_site_planning_policy / cns_corridor_site_plan（P16 proposal-only 走�
 cns_operation_context / cns_requirement_policies（P17 项目默认+航路覆盖运行上下文与可追溯显式规则）
 required_cns_recommendation / required_cns_adoption（P17 proposal 与显式采用 provenance；不替代正式 required_cns）
 v3_planning_policy（V3-A 显式规划/安全参数；无默认安全值，未确认即 pending）
-route_planner_v3_experiments（V3-A 独立实验容器：记录/环境 spec/policy/result/verdicts；不是 operational route）
+v3_fine_refinement_policy（V3-B 显式 fine 配置：local metric CRS、resolution_source、resolution_m、max_stride_cells；无默认分辨率）
+route_planner_v3_experiments（V3-A/V3-B 独立实验容器：记录/环境 spec/policy/result/verdicts + refinements[]；不是 operational route）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -136,7 +139,8 @@ route_planner_v3_experiments（V3-A 独立实验容器：记录/环境 spec/poli
 - current P14 corridor、RequiredCNS 或 `cns_planning_objectives` 变化只向下使 `cns_corridor_gap_assessment` stale；P15 不反向影响 Route/P7-P14/P10-P12。P15.1 已明确排除 P8 `stage=provider_type_compatibility` 中间门控，只有真正 provider service evaluation 才能计入 qualified provider。
 - current P14/P15、RequiredCNS、ExistingCNS、CandidateSite、DeviceCatalog、P16 policy 或相关 P14/P15/site-planner 有效参数变化会使 `cns_corridor_site_plan` stale。P16 proposal 不反向使 P7-P15/P10-P12 stale；P12 Apply 通过 ExistingCNS→P14→P15→P16 单向传递。
 - operation context、requirement policy、requirement-model 选择/参数或 route 集合变化只使 `required_cns_recommendation` stale。Evaluate 不改变正式 RequiredCNS 或 P8-P16；手工 RequiredCNS 编辑只显示 recommendation diverged。只有无 conflict 且 current 的显式 Adopt 才通过既有 `required_cns` 失效链一次性更新下游。
-- V3-A 写入 `route_planner_v3_experiments` / `v3_planning_policy` **不产生任何失效传播**：不使 routes、grid、grid_risk 或 P7-P19 结果 stale；V3 自身也不读取或改写 `operational_routes`、`algorithm_selection`、`spatial_3d`。
+- V3-A/V3-B 写入 `route_planner_v3_experiments` / `v3_planning_policy` / `v3_fine_refinement_policy` **不产生任何失效传播**：不使 routes、grid、grid_risk 或 P7-P19 结果 stale；V3 自身也不读取或改写 `operational_routes`、`algorithm_selection`、`spatial_3d`。
+- V3-B refinement 的 stale 是**自身证据链**判定，不进入既有失效传播：strategic candidate / corridor / policy / source audits / local frame / fine grid 任一变化 ⇒ `current_applicability = stale`（`refinement_snapshot()` 列出 changed components），必须重跑；`configured_real_sources` 覆盖受跟踪 source audits，`canonical_synthetic` 只覆盖其真正依赖的 workspace/grid。
 - 不支持 schema、损坏 JSON、数据源加载失败不会替换当前项目；Save As 失败不切换 active project。
 
 ## 6. 算法外部契约
@@ -350,6 +354,13 @@ node --check cns_planner/web/js/main.js
 
 > 本机 DSH 沙箱会对 pytest `--basetemp` 子树施加拒绝 ACL，导致大量伪 setup error 与退出崩溃；在受限沙箱内运行全量测试时请显式给出可写 basetemp，例如
 > `python -m pytest -q -rs -p no:cacheprovider --basetemp=outputs/pytest_tmp`。
+>
+> 2026-09 复测结论（更精确）：真正的原因是**沙箱拒绝写入以 mode `0o700` 创建的目录**——pytest 的 basetemp 与每个 per-test 目录、以及 `tempfile.mkdtemp`
+> 都用 `0o700`；同时系统临时目录（`%TEMP%`）位于 workspace 之外也不可写。因此仅给 `--basetemp` 仍会失败（`Path.mkdir` 的 0o700 ACL），且
+> `tempfile.mkdtemp` 会在 `%TEMP%` 下失败。受限沙箱内的完整可用形式是：
+> `$env:PYTHONPATH='outputs'; $env:TMP=$env:TEMP=$env:TMPDIR='<workspace>\outputs\sys_tmp'; python -m pytest -q -rs -p no:cacheprovider -p dsh_tmp_plugin --basetemp=outputs/pytest_tmp`
+> 其中 `outputs/dsh_tmp_plugin.py` 是 gitignored 的沙箱兼容 shim，只把 `0o700` 改成宽松 mode（不改测试语义与产品行为）。
+> Node 测试同理：`node --test <file>` 在沙箱内会因 piped stdio EPERM 失败，改用 `node <file>`（`node:test` 在进程内运行）。
 
 P2 完整运行结果：**150 passed, 6 skipped, 1 failed**；Node 前端纯函数 **9 passed, 0 failed**。6 项跳过均为 `tests/test_map_http.py` 的真实 QGIS 服务集成测试。唯一失败仍是 P1 前已存在的 `test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`：测试替身要求 `QgsSpatialIndex(features)`，当前 airspace adapter 使用真实 QGIS 支持的空构造后 `addFeature`；P2 未修改空域生产代码。
 
@@ -424,6 +435,16 @@ route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building ass
 `DAAEventStateMachineV1` 强制保存逐步 transition 的 time/reason/input evidence，覆盖正常 `NO_TRAFFIC→…→CLEARED` 及 `LOST_TRACK/ALERT_DELIVERY_FAILED/COMMAND_UNAVAILABLE/MANEUVER_UNRESOLVED`。S 只门控 detect/track，C 只门控 warning/command delivery，N 只影响 ownship state confidence；这些工程事件不写入 SafetyEvent/UE。Protection Budget 作为响应截止约束并记录 actual-vs-budget；V1 只模拟显式 confirmed command，不生成“最佳”避让。Step 04 新增 DAA Encounter Lab 的轨迹/CPA、距离、C/N/S、状态时间线与播放滑块。track/policy/service timeline/protection/capability/command 进入 fingerprint/stale，旧 schema-v2 自动 backfill，报告只加入 engineering summary。RouteVerticalProfileV1 同时输出 `profile_geometry_status` 与 `clearance_evidence_status`，旧 `status` 保留兼容。
 
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
+
+Route Planner V3-A 正确性修复 + V3-B corridor-local 精化 完整结果：**712 passed, 6 skipped, 0 failed**；Node 前端 **46 passed, 0 failed**；Python compile、全部 JS syntax 与 `git diff --check` 通过；V1/V2 characterization（`test_v1_algorithm_characterization`、`test_route_planner_v3.py` 内的 V1 契约、`test_risk_aware_route_planner_v2`）保持不变。
+
+V3-A 三项正确性修复（必须保留，均有回归测试）：
+
+1. **启发函数**：改为 `h = 纯 3D 几何距离`（scale 恒为 1，与 weight 解耦）。旧 `h = 距离 × (1 + Σweight)` 在 soft penalty 可为 0 时并非 admissible，已删除；新增 `test_heuristic_matches_dijkstra_optimal_cost_case_by_case` 对 6 类算例（含 open/plateau/buildings/高权重/零 penalty 捷径）逐例比对 `h=0` 的最优 cost 与距离。
+2. **soft field**：删除 planner 内隐式 normalizer（`POPULATION_NORMALIZATION_PEOPLE=10000` / `TRAFFIC_NORMALIZATION_AIRCRAFT=100`）与 `SOFT_WEIGHT_SUM_LIMIT=1.0`；soft channel 只接受带 provenance 的 normalized index `[0,1]`，`edge exposure = length_m × (index_source+index_target)/2`，`scalar = Σ(边长 + Σ weight×exposure)`；weight 只需显式、finite、≥0；启用的 channel 缺 index 即 readiness blocked（`test_raw_counts_and_out_of_range_indices_are_rejected_not_normalized`、`test_enabled_soft_channel_without_a_provenance_index_blocks_the_run`、`test_no_hidden_normalizer_constants_and_no_weight_sum_cap`）。
+3. **expansion cap**：达到 `max_expanded_states` 返回 `search_incomplete`（`search_completeness=expansion_cap_reached_optimality_not_proven`、`resource_limited=true`、`optimality_proven/infeasibility_proven=false`），不再返回 failed/infeasible；cap 前已找到的可行候选保留但显式标注未证明最优（`test_expansion_cap_is_resource_limited_never_failed_or_infeasible`）。
+
+V3-B 关键边界：corridor-local fine grid（只在 support cells 米制窗口内、分辨率必须可追溯、禁止写死 30 m）；terrain hard floor = 相交有效像元最大值 + explicit clearance（禁止 center/average，`test_forbidden_terrain_sampling_methods_are_rejected`）；building = buffered footprint 保守包络（required floor = ground+height+vertical_clearance，缺 height/DTM blocked）；airspace 只消费 confirmed policy（`inferred_from_name_or_color=false`）；coarse soft index 只以 `upsampled_without_new_information=true` 复制且复用 RiskModel contributor normalized；multi-cell stride 记录 `traversed_cell_ids`/`traversed_entry_fractions` 并按插值高度逐格检查（`test_intermediate_obstacle_cannot_be_skipped_by_a_multi_cell_stride`、`test_climb_is_distributed_along_the_primitive_and_never_exceeds_the_gradient`）；转弯仍为 `R·|Δψ| ≤ stride_m` 弧长代理（V3-C 才做连续曲率验证）；结果只允许 refined_candidate/failed/not_ready/missing_data/search_incomplete 且强制 `final_validation_performed=false`/`operational_route=false`/`v3c_validation_pending=true`；refinement staleness 由 strategic/corridor/policy/source/frame/fine-grid fingerprint 判定（`test_v3b_refinement_becomes_stale_when_policy_or_sources_change`）。
 
 ## 8.1 航路规划基础治理 + 专家评审基线（本轮）
 
