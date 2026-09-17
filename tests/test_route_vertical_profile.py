@@ -206,8 +206,35 @@ def test_route_vertical_profile_api_persists_collection(tmp_path):
     workflow.state["spatial_3d"]["route_altitude_profiles"]["R1"] = deepcopy(PROFILE)
     workflow.state["building_clearance_assessment"] = clearance()
     router = ApiRouter(ApiContext(workflow))
-    response = router.post("/api/route-vertical-profiles/evaluate", {"route_id": "R1"}).data
+    response = router.post("/api/route-vertical-profiles/evaluate", {}).data
     assert response["route_vertical_profiles"]["status"] == "passed"
     assert router.get("/api/route-vertical-profiles", {}, {}).data["sample_count"] > 1
     restored = WorkflowService(tmp_path / "project.json", DEFAULTS)
     assert restored.state["route_vertical_profiles"]["input_fingerprint"]
+
+
+def test_route_id_request_is_rejected_instead_of_faking_a_per_route_filter(tmp_path):
+    workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    workflow.state["operational_routes"] = [deepcopy(ROUTE)]
+    workflow.state["spatial_3d"]["route_altitude_profiles"]["R1"] = deepcopy(PROFILE)
+    workflow.state["building_clearance_assessment"] = clearance()
+    router = ApiRouter(ApiContext(workflow))
+    with pytest.raises(ValueError, match="route_id"):
+        router.post("/api/route-vertical-profiles/evaluate", {"route_id": "R1"})
+    # A rejected request must not write any profile result.
+    assert workflow.state["route_vertical_profiles"]["status"] == "not_calculated"
+
+
+def test_full_evaluation_always_covers_every_current_operational_route(tmp_path):
+    second = {**deepcopy(ROUTE), "route_id": "R2", "path": [[0.0, 0.0], [0.0, 0.01]]}
+    workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    workflow.state["operational_routes"] = [deepcopy(ROUTE), second]
+    workflow.state["spatial_3d"]["route_altitude_profiles"]["R1"] = deepcopy(PROFILE)
+    workflow.state["spatial_3d"]["route_altitude_profiles"]["R2"] = {**deepcopy(PROFILE), "route_id": "R2"}
+    workflow.state["building_clearance_assessment"] = clearance()
+    # An explicit full-evaluation scope is accepted and still evaluates every route,
+    # so persisted state stays a complete result set rather than a filtered one.
+    workflow.evaluate_route_vertical_profiles(Sampler(), {"route_id": "all"})
+    profiles = workflow.state["route_vertical_profiles"]["profiles"]
+    assert {item["route_id"] for item in profiles} == {"R1", "R2"}
+    assert all(item["samples"] for item in profiles)

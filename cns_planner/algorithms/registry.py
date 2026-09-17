@@ -188,11 +188,27 @@ def _route_manifest():
         "route_planner", RoutePlannerV1.algorithm_id, RoutePlannerV1.algorithm_version,
         "Route Planner V1", "CNS-PLANNER", "engineering_baseline",
         "在固定离散工作区中使用硬约束 BBOX 的确定性 A* 航路规划。",
-        ("scenario_route", "workspace_bbox", "hard_constraints"),
-        ("operational_route", "distance_m", "statistics"),
-        {"type": "object", "properties": {"grid_size": {"type": "integer", "minimum": 2}}, "additionalProperties": False},
-        ("经纬度工作区离散为规则网格",),
-        ("硬约束使用图层 BBOX", "不是最终三维或风险感知规划器"),
+        ("scenario_route", "workspace_bbox", "hard_constraints", "grid_size"),
+        (
+            "operational_route", "path", "algorithm_id", "algorithm_version",
+            "input_fingerprint", "environment_risk", "reason",
+        ),
+        {
+            "type": "object",
+            "properties": {"grid_size": {"type": "integer", "minimum": 2, "default": 56}},
+            "additionalProperties": False,
+        },
+        (
+            "经纬度工作区离散为规则网格",
+            "grid_size 默认 56，实际输出即由该离散决定",
+            "硬约束仅使用图层 BBOX，并与路径规划同源",
+        ),
+        (
+            "经纬度固定格：不按米制等距离散，格内代价不是真实米制长度",
+            "非米制搜索：A* 代价为格步数，不是米制距离或风险代价",
+            "BBOX 硬约束：管制/禁飞区按外接矩形处理，不表达真实多边形边界",
+            "无风险/高度/运动学：不读取 grid_risk，不做高度剖面、爬升或转弯约束",
+        ),
         (),
     )
 
@@ -203,7 +219,10 @@ def _risk_aware_route_v2_manifest():
         RiskAwareRoutePlannerV2.algorithm_version,
         "Risk-Aware Route Planner V2", "CNS-PLANNER", "engineering_baseline",
         "在现有 MH/T grid_id 邻接图上，以米制距离和既有相对网格风险执行确定性 A*。",
-        ("scenario_route", "grid.cells", "grid_risk.cells", "hard_constraints"),
+        (
+            "scenario_route", "grid.cells", "grid_risk.cells", "hard_constraints",
+            "airspace_eligibility",
+        ),
         ("operational_route", "grid_path", "distance_and_risk_metrics"),
         {
             "type": "object",
@@ -223,7 +242,7 @@ def _risk_aware_route_v2_manifest():
         ),
         (
             "不是事故概率、SORA GRC 或 TLS",
-            "二维战略水平规划；不计算 P7 高度、三维/四维风险或路径平滑",
+            "二维战略水平规划；输出为 MH/T 网格中心连成的二维航路，不计算 P7 高度、三维/四维风险，也不做路径平滑",
             "不在规划器内重算风险",
         ),
         (),

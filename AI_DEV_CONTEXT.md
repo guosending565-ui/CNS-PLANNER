@@ -26,7 +26,7 @@ map_app.py / app.py
 
 1. 项目与数据：项目创建、打开、另存和数据源设置。
 2. 工作区与环境：workspace → MH/T grid → population/terrain/airspace/traffic/conflict → relative risk。
-3. 航路设计：节点、场景航路、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路。
+3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路。
 4. 运行规则：飞行器、方向、高度、间隔和监视延迟。
 5. 设备与布站：C/N/S 设备参数和 CoveragePlannerV1。
 6. 确认与导出：统一 ResultStatus 复核，导出项目、航路和站址。
@@ -39,7 +39,7 @@ map_app.py / app.py
 - M7：可复现多机直线轨迹、逐格驻留时间、二维 CPA 潜在冲突、traffic/conflict 风险输入。
 - CNS 核心输入：AircraftCNSProfileCatalog、RequiredCNS、DeviceCatalog、ExistingCNSFacility、CandidateSite 已纳入 schema v2；已有能力与任务需求严格分离。
 - CNS Gap Analysis：V1 保持 RequiredCNS、机载能力及已有设施二维水平覆盖的既有输出；V2 独立合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线，输出 planning/runtime/combined 评估、连续缺口段、contingency/unknown 暴露和稳定输入指纹。
-- RoutePlannerV1：固定工作区离散、硬约束 BBOX、A*、geometry/关键节点/统计/指纹。
+- RoutePlannerV1：固定工作区离散、硬约束 BBOX、A*、geometry/关键节点/统计/指纹；硬约束在 Application 输入边界 fail-closed 校验。
 - Risk-Aware Route Planner V2：直接在 MH/T `grid_id` 邻接图上使用既有 `grid_risk` 相对工程指数执行米制 A*，保留完整 grid path、距离/风险暴露/绕行指标；Registry 默认仍为 V1。
 - CoveragePlannerV1：C/N/S 主站、补盲、共址、未覆盖点/航段、统计/指纹。
 - schema-v2 项目自动保存、打开、Save As 与数据源恢复；失败操作保留当前有效项目并清理临时文件。
@@ -64,6 +64,9 @@ map_app.py / app.py
 - `domain/requirement_policy.py`、`algorithms/requirements/*`、`application/requirement_recommendation_service.py`：P17 运行上下文/显式 Policy 契约、RequiredCNS recommendation 与显式 Adopt 编排。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
 - `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
+- `application/constraint_validation.py`：硬约束输入的 fail-closed 校验（dict + 4 项有限 bbox + west<east/south<north），在 planner 之前拒绝畸形输入；不是 planner 的一部分，也不重解释几何。
+- `cns_planner/benchmark/`：`fixtures.py` 确定性 synthetic 算例、`quality.py` 独立 RouteQualityEvaluator（只读 planner 输出，不重算风险、不排名）；不得被 planner 反向依赖。
+- `tools/route_planning_baseline.py`：专家评审证据包生成器（JSON + Markdown，写入被忽略的 `outputs/`），只报告不评分。
 - `application/review_service.py` + `domain/status.py`：结果状态聚合的唯一权威实现。
 - `gis/source_loader.py`、`renderer.py`、`constraints.py`、`raster_adapter.py`、`airspace_adapter.py`：QGIS/GDAL 边界。
 - `data/registry.py`、`health.py`、`data/mapping/*`：统一来源描述及标准网格属性映射。
@@ -338,6 +341,9 @@ node --check cns_planner/web/app.js
 node --check cns_planner/web/js/main.js
 ```
 
+> 本机 DSH 沙箱会对 pytest `--basetemp` 子树施加拒绝 ACL，导致大量伪 setup error 与退出崩溃；在受限沙箱内运行全量测试时请显式给出可写 basetemp，例如
+> `python -m pytest -q -rs -p no:cacheprovider --basetemp=outputs/pytest_tmp`。
+
 P2 完整运行结果：**150 passed, 6 skipped, 1 failed**；Node 前端纯函数 **9 passed, 0 failed**。6 项跳过均为 `tests/test_map_http.py` 的真实 QGIS 服务集成测试。唯一失败仍是 P1 前已存在的 `test_qgis_adapter_transforms_crs_filters_workspace_and_uses_spatial_index`：测试替身要求 `QgsSpatialIndex(features)`，当前 airspace adapter 使用真实 QGIS 支持的空构造后 `addFeature`；P2 未修改空域生产代码。
 
 真实 QGIS 3.44.14 初始化与 ApplicationContext 冒烟已通过：加载 31 个本地图层、schema v2、1 个 Aircraft Profile 和 6 个 Device Catalog 条目。
@@ -411,6 +417,74 @@ route/path、高度剖面、FABDEM 路径/mtime/vertical metadata、building ass
 `DAAEventStateMachineV1` 强制保存逐步 transition 的 time/reason/input evidence，覆盖正常 `NO_TRAFFIC→…→CLEARED` 及 `LOST_TRACK/ALERT_DELIVERY_FAILED/COMMAND_UNAVAILABLE/MANEUVER_UNRESOLVED`。S 只门控 detect/track，C 只门控 warning/command delivery，N 只影响 ownship state confidence；这些工程事件不写入 SafetyEvent/UE。Protection Budget 作为响应截止约束并记录 actual-vs-budget；V1 只模拟显式 confirmed command，不生成“最佳”避让。Step 04 新增 DAA Encounter Lab 的轨迹/CPA、距离、C/N/S、状态时间线与播放滑块。track/policy/service timeline/protection/capability/command 进入 fingerprint/stale，旧 schema-v2 自动 backfill，报告只加入 engineering summary。RouteVerticalProfileV1 同时输出 `profile_geometry_status` 与 `clearance_evidence_status`，旧 `status` 保留兼容。
 
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
+
+## 8.1 航路规划基础治理 + 专家评审基线（本轮）
+
+本轮目标是为航路规划专家评审准备**可信 baseline**，不是继续扩算法能力。基线 commit `33752b6759d992db39c639085a05e5c291945a38`。
+
+**明确不变（硬边界）**：未修改 V1/V2 路径搜索核心、代价公式或既有输出契约；未把 BBOX 硬约束改为 polygon；未决定垂直间隔；未实现 Theta*/RRT/Dubins/V3；未修改 RiskModel、AirspacePolicy 规则或 BuildingClearance；未新增 DAA/Gap/设备/安全 UE 能力。V1 的 56×56 经纬度近似网格、图层 BBOX 硬约束、`RoutePlannerV1.plan` 返回 dict 及其 `input_fingerprint` 均由 characterization 测试锁定并保持不变。
+
+清理项：
+
+- 删除无人使用且签名错误的 `domain/route.py` `RoutePlanner` Protocol（全仓库无 import）。
+- 删除 V1 中未被引用的 `RoutePlan` dataclass；V1 dict 输出与 `input_fingerprint` 完全不变。
+- `.gitignore` 新增 `.pytest_tmp/`，并用 `git rm -r --cached --ignore-unmatch .pytest_tmp` 取消跟踪已提交的 pytest 临时产物。
+- `docs/03-架构与数据字典.md` 开头标注为 **schema-v1 历史设计稿**，当前以 `AI_DEV_CONTEXT.md` 与 `docs/CNS_TECHNICAL_BASELINE.md` 为准。
+
+Hard constraint 必须 fail-closed：
+
+- 新增 `cns_planner/application/constraint_validation.py`：在 Application 输入边界统一校验，要求每项为 dict/映射且 `bbox` 为 4 项、**finite**、`west < east`、`south < north`；返回归一化副本（float bbox），否则抛出带索引/图层名与可操作建议的 `ValueError`。
+- `RouteService.generate_operational` 在调用任何 planner **之前**校验；V1/V2 内部搜索语义未改动，非法 bbox 绝不被静默当作无约束、也绝不被丢弃后继续规划。API 层沿用既有 HTTP 400 错误响应。
+- 边界语义区分明确：`None`/`[]` 表示**确实没有硬约束**；畸形输入是错误，不是空约束。
+
+Planner manifest 与真实输出对齐（不改算法输出）：
+
+- V1 manifest：参数 schema 明确 `grid_size` **默认 56**、`minimum 2`、`additionalProperties=false`；outputs 收敛为真实返回键；limitations 明确四条——**经纬度固定格 / 非米制搜索 / BBOX 硬约束 / 无风险·高度·运动学**。
+- V2 manifest：inputs 补 `airspace_eligibility`；保留二维战略水平规划、MH/T 网格中心、无 smoothing 等 limitations。
+- Step 03 新增通用“**当前规划器**”卡片，直接从 `algorithm_catalog` manifest 显示 id/version/maturity/description/inputs/assumptions/limitations 与**有效参数**（schema 默认值 + 当前选择，标注来源）。前端不硬编码任何算法限制；选择与 catalog 无精确匹配时只显示“无精确匹配的 Manifest”，不推断限制。V1/V2 都会显示。
+
+RouteVerticalProfile 假过滤语义修复：
+
+- 现状：前端传 `route_id`，service 完全忽略——即“看起来能按航路过滤，实际总是全量”。
+- 修复：不再发送无效 `route_id`；`RouteVerticalProfileService.evaluate` 对具体 `route_id` 请求**显式拒绝**（`ValueError`），只接受 `None`/`""`/`"all"` 全量范围。
+- state 仍是**全量结果**（每条 current operational route 一个 profile）；前端下拉只切换图表显示对象并在 UI 中写明“刷新全部剖面（全量评估）/ 当前全部运行航路”，不制造按单条路由过滤的假象。
+
+显式 OD 航路场景能力：
+
+- 新增 `RouteService.generate_scenario_od(start_node_id, end_node_id, direction)`：只创建用户显式指定的这一条（或这一对双向）场景航路，**不会**因参考点数量自动生成全连接。
+- 原 `generate_scenario(direction)` all-pairs API 保持兼容（3 节点仍生成 6 条双向路由），旧项目不受影响。
+- API 新增 `/api/workflow/scenario-od`；Step 03 优先提供“起点 → 终点 → 创建航路”，旧 all-pairs 按钮保留并标注“兼容”。
+- 与既有 pair 生成器一致：显式 OD 会替换当前场景航路集合、复用仍存方向的 `route_id`、退役被移除方向，并清空运行航路（需重新生成）。
+
+独立 RouteQualityEvaluator 与 benchmark：
+
+- `cns_planner/benchmark/quality.py`：**独立于 planner** 的质量度量，绝不写入 V1/V2 结果。指标含 `path_length_m`、`detour_factor`、`segment_count`、`turn_count`、`total_heading_change_deg`、`max_heading_change_deg`、`min_segment_m`，全部由已发布 polyline 实测（罗盘航向、0°=北）。
+- V2 已发布的 `distance_m`/`risk_exposure_index_m`/`mean`/`max`/`optimization_cost` 原样读取为 `planner_reported`，**不重算风险**（`risk_recomputed=false`）；并给出 planner 自报 vs 实测的差值，供专家核对。
+- constraint/allowed feasibility 使用既有权威结果：硬约束复用同一 validator；allowed 只读 planner `status`，不重新判定。
+- `runtime_ms` 仅用于报告，明确不参与任何质量判定。
+- 输出 `verdicts={automatically_ranked:false, automatically_scored:false, preferred_algorithm:null}`。
+
+可复现 synthetic benchmark fixtures：
+
+- `cns_planner/benchmark/fixtures.py` 提供 8 个确定性算例：`open_space`、`single_obstacle`、`concave_obstacle`、`narrow_passage`、`disconnected_allowed_airspace`、`risk_tradeoff`、`endpoint_near_boundary`、`malformed_constraint`。全部为生成几何，无真实数据、无 QGIS、无网络。
+- 每个 case 声明 `applicability`：不能运行的 planner 明确报 `not_applicable` / `missing_prerequisite` / `rejected_at_input_boundary`，**不得为了让 case 通过而修改 planner**（`planner_changes_allowed=false`）。
+- V2 使用合成 MH/T L7 网格（0.1°×0.1°、900 格）、合成 `grid_risk`、合成 confirmed allowed 外壳与硬约束阻断盒；`risk_tradeoff` 用两个显式 λ（0 与 8）观测长度/风险暴露取舍，λ=8 时路由变长约 1.48 km、风险暴露下降约 77%。
+
+证据包 `tools/route_planning_baseline.py`：
+
+- 运行 benchmark 并输出 `outputs/route_baseline/route_planning_baseline.json` + `.md`（`outputs/` 已被忽略）。
+- 内容包含 planner manifest/limitations、case 输入摘要、status、质量指标、失败原因、有效参数、runtime_ms（仅报告）。
+- 它是给专家的证据包：**不自动排名/评分/推荐算法**，并在文末列明本轮明确未做的事。
+
+Step 03 并列查看：
+
+- 新增 V1/V2 结果并列面板，只做长度/几何与 V2 自报风险指数的**事实并列**，显式声明“本面板不判定更好、不排名、不评分、不推荐算法”。
+- 真实参考航线存在时仍只做长度/几何并列，不作优劣结论。
+- 并列面板说明 V1 顶点更少源于其对共线点的简化、V2 保留完整 grid path（无 smoothing），属**输出契约差异**而非质量结论。
+
+本轮测试：全量 pytest **459 passed, 6 skipped**（6 项跳过仍是 `tests/test_map_http.py` 的真实 QGIS HTTP 集成）；Node **33 passed, 0 failed**；`python -m compileall cns_planner tools`、`app.js`/`main.js`/`step03_routes.js`/`route_vertical_profile.js` 语法检查与 `git diff --check` 全部通过。新增 `tests/test_route_planning_governance.py`（25 项：fail-closed、OD、manifest、清理回归）与 `tests/test_route_planning_benchmark.py`（22 项：evaluator、fixtures、证据包、不调用 inapplicable planner）。
+
+**仍需专家决策（本轮不决定）**：V1 是否改用米制/等距格或保留经纬度固定格（B2）；BBOX 硬约束是否升级为 polygon/精确几何（B3）；垂直间隔与高度层规则（B4）；是否引入 Theta*/RRT/Dubins/V3 或路径平滑；`risk_weight_lambda` 与最大相对风险阈值是否存在工程/运行依据；benchmark 是否需要真实数据与更严格质量门限。
 
 ## 9. 架构原则
 

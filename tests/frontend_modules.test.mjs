@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
@@ -155,6 +155,73 @@ test('step 4 canonical seconds create exact V1 aliases',()=>{
   assert.equal(result.navigation.accuracy_m,3);
   assert.equal(result.navigation.integrity,'required');
   assert.equal(result.surveillance.update_interval_s,2);
+});
+
+test('route vertical profile always refreshes every route and never fakes a per-route filter',()=>{
+  const panel=renderRouteVerticalProfilePanel({status:'passed',profiles:[{route_id:'R1',status:'passed',samples:[],route_length_m:10}]},[{route_id:'R1',status:'passed'}]);
+  assert.match(panel,/刷新全部剖面（全量评估）/);
+  assert.match(panel,/当前全部运行航路/);
+  assert.match(panel,/只切换下方图表的显示对象/);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/route_vertical_profile.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/evaluate',\{route_id/);
+  assert.match(source,/data-profile-view-selector/);
+});
+
+test('step 3 planner card is driven by algorithm_catalog without hardcoded limits',()=>{
+  const manifest={algorithm_type:'route_planner',algorithm_id:'route_planner_v1',version:'1.0',name:'Route Planner V1',provider:'CNS-PLANNER',maturity:'engineering_baseline',description:'确定性 A*',inputs:['scenario_route'],outputs:['operational_route'],parameter_schema:{type:'object',properties:{grid_size:{type:'integer',minimum:2,default:56}}},assumptions:['经纬度工作区离散为规则网格'],limitations:['BBOX 硬约束','非米制搜索'],references:[]};
+  const flow={algorithm_selection:{route_planner:{algorithm_type:'route_planner',algorithm_id:'route_planner_v1',version:'1.0',parameters:{}}},algorithm_catalog:[manifest],nodes:[],scenario_routes:[],operational_routes:[]};
+  const model=plannerCardModel(flow);
+  assert.equal(model.status,'passed');
+  assert.equal(model.manifest.algorithm_id,'route_planner_v1');
+  assert.deepEqual(model.effective_parameters,[{name:'grid_size',value:56,source:'schema_default',declared:true,minimum:2,maximum:undefined}]);
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/当前规划器/);
+  assert.match(html,/algorithm_catalog \/ Manifest/);
+  assert.match(html,/BBOX 硬约束/);
+  assert.match(html,/有效参数/);
+  assert.match(html,/来自 schema 默认值/);
+});
+
+test('step 3 planner card reports a missing manifest instead of inventing limits',()=>{
+  const flow={algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'9.9',parameters:{}}},algorithm_catalog:[],nodes:[],scenario_routes:[],operational_routes:[]};
+  const model=plannerCardModel(flow);
+  assert.equal(model.status,'manifest_missing');
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/没有精确匹配的 Manifest/);
+  assert.doesNotMatch(html,/BBOX 硬约束/);
+});
+
+test('effective parameters prefer the live selection over schema defaults',()=>{
+  const manifest={parameter_schema:{type:'object',properties:{risk_weight_lambda:{type:'number',default:0},risk_component:{enum:['overall','ground','air']},unknown_penalty_index:{type:['number','null']}}}};
+  const params=effectiveParameters(manifest,{parameters:{risk_weight_lambda:4.5,risk_component:'ground',unknown_penalty_index:null}});
+  assert.deepEqual(params.map(item=>[item.name,item.value,item.source]),[['risk_component','ground','selection'],['risk_weight_lambda',4.5,'selection']]);
+  assert.equal(findAlgorithmManifest([manifest],'route_planner','x','1.0'),null);
+});
+
+test('step 3 side by side view never declares a winner',()=>{
+  const flow={scenario_routes:[{route_id:'R0001',direction:'N001→N002'}],operational_routes:[{route_id:'R0001',algorithm_id:'risk_aware_route_planner_v2',status:'passed',path:[[0,0],[0.001,0]],distance_m:111.2,risk_exposure_index_m:5.5,max_risk_index:0.2}],reference_routes:{items:[]},nodes:[{node_id:'N001',name:'A',coordinate:[0,0]},{node_id:'N002',name:'B',coordinate:[0.001,0]}],algorithm_selection:{route_planner:{algorithm_id:'risk_aware_route_planner_v2',version:'2.0',parameters:{}}},algorithm_catalog:[]};
+  const model=routePlannerComparisonModel(flow);
+  assert.equal(model.hasV2,true);
+  assert.equal(model.bothPresent,false);
+  assert.equal(model.automatic_ranking,false);
+  assert.equal(model.semantics,'factual_side_by_side_no_superiority_conclusion');
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/V1 \/ V2 结果并列/);
+  assert.match(html,/不作优劣结论/);
+  assert.doesNotMatch(html,/>更好</);
+});
+
+test('step 3 explicit OD panel creates a single pair and keeps the legacy generator',()=>{
+  const flow={nodes:[{node_id:'N001',name:'A',coordinate:[0,0]},{node_id:'N002',name:'B',coordinate:[0.001,0]},{node_id:'N003',name:'C',coordinate:[0,0.001]}],scenario_routes:[],operational_routes:[],algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'1.0',parameters:{}}},algorithm_catalog:[],retired_route_ids:[],risks:{environment:{status:'not_calculated'}},steps:{'3':false},spatial_3d:{route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{}},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[],points:[]},reference_landing_sites:{items:[]},workspace:{bbox:[0,0,0.1,0.1]}};
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/起点 → 终点 创建航路/);
+  assert.match(html,/id="odStartNode"/);
+  assert.match(html,/id="odEndNode"/);
+  assert.match(html,/id="createOdRoute"/);
+  assert.match(html,/不会因为参考点数量自动生成全连接/);
+  assert.match(html,/生成场景航路（all-pairs，兼容）/);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
+  assert.match(source,/mutate\('scenario-od'/);
 });
 
 test('route vertical profile renders FABDEM flight building evidence and hover contract',()=>{

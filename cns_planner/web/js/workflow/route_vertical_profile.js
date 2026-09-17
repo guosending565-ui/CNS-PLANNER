@@ -22,14 +22,16 @@ export function profileChart(profile){
 export function renderRouteVerticalProfilePanel(collection={},routes=[]){
   const profiles=collection.profiles||[],routeIds=[...new Set([...(routes||[]).filter(item=>item.status==='passed').map(item=>item.route_id),...profiles.map(item=>item.route_id)])],first=profiles.find(item=>item.route_id===routeIds[0])||profiles[0],options=routeIds.map(routeId=>{const profile=profiles.find(item=>item.route_id===routeId);return '<option value="'+escapeHtml(routeId)+'">'+escapeHtml(routeId)+' · '+escapeHtml(profile?.status||'未生成')+'</option>';}).join('');
   const summary=first?'<div class="flow-summary" data-profile-summary>'+profileSummary(first)+'</div>':'<div class="flow-summary" data-profile-summary>'+statusBadge(collection.status||'not_calculated')+' · '+escapeHtml((collection.reasons||['尚未生成']).join('；'))+'</div>';
-  return '<h3>航路三维安全剖面</h3><div class="parameter-note">只读 visualization profile：FABDEM DTM (EGM2008) + confirmed route altitude；建筑与 breach 仅复用 BuildingClearanceV1 精确证据，采样不参与安全判定。</div><div class="button-row"><select id="verticalProfileRoute">'+options+'</select><button class="secondary" id="evaluateVerticalProfile">生成/刷新剖面</button></div>'+summary+'<div data-profile-chart>'+profileChart(first)+'</div><div class="flow-summary" data-profile-tooltip>悬停曲线查看 distance / lon,lat / ground / flight / AGL / clearance / status；对应位置会在二维地图标记。</div><div class="parameter-note">棕线 FABDEM ground；蓝线 flight EGM2008；建筑区间与 required clearance/breach 仅作既有证据可视化。</div>';
+  return '<h3>航路三维安全剖面</h3><div class="parameter-note">只读 visualization profile：FABDEM DTM (EGM2008) + confirmed route altitude；建筑与 breach 仅复用 BuildingClearanceV1 精确证据，采样不参与安全判定。</div><div class="button-row"><select id="verticalProfileRoute" data-profile-view-selector>'+options+'</select><button class="secondary" id="evaluateVerticalProfile">刷新全部剖面（全量评估）</button></div><div class="parameter-note">评估范围固定为<b>当前全部运行航路</b>：几何、DTM 与净空证据在所有航路间共享，因此不提供按单条 route_id 的假过滤。上方选择器只切换下方图表的显示对象，不改变评估范围。</div>'+summary+'<div data-profile-chart>'+profileChart(first)+'</div><div class="flow-summary" data-profile-tooltip>悬停曲线查看 distance / lon,lat / ground / flight / AGL / clearance / status；对应位置会在二维地图标记。</div><div class="parameter-note">棕线 FABDEM ground；蓝线 flight EGM2008；建筑区间与 required clearance/breach 仅作既有证据可视化。</div>';
 }
 
 export function bindRouteVerticalProfile(c){
   const select=c.$('verticalProfileRoute'),collection=c.flow().route_vertical_profiles||{};
   const show=()=>{const profile=(collection.profiles||[]).find(item=>item.route_id===select?.value),chart=document.querySelector('[data-profile-chart]'),summary=document.querySelector('[data-profile-summary]');if(chart)chart.innerHTML=profileChart(profile);if(summary&&profile)summary.innerHTML=profileSummary(profile);bindHover(profile,c);};
   if(select)select.onchange=show;
-  c.actionButton('evaluateVerticalProfile',()=>c.resourceAction('/api/route-vertical-profiles/evaluate',{route_id:select?.value||null}));
+  // No route_id is sent: the evaluate endpoint always recomputes every current
+  // operational route, so requesting one route would only fake a filter.
+  c.actionButton('evaluateVerticalProfile',()=>c.resourceAction('/api/route-vertical-profiles/evaluate',{}));
   show();
 }
 

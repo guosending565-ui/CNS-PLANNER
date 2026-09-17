@@ -387,6 +387,8 @@ class WorkflowService:
         return self.snapshot()
     def delete_node(self, node_id): return self.route_service.delete_node(node_id)
     def generate_scenario(self, direction): return self.route_service.generate_scenario(direction)
+    def generate_scenario_od(self, start_node_id, end_node_id, direction="both"):
+        return self.route_service.generate_scenario_od(start_node_id, end_node_id, direction)
     def delete_route(self, route_id): return self.route_service.delete_route(route_id)
     def generate_operational(self, constraints): return self.route_service.generate_operational(constraints)
     def set_rules(self, payload): return self.operation_service.set_rules(payload)

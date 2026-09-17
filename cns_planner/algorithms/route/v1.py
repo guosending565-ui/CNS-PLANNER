@@ -1,20 +1,11 @@
 """Replaceable grid A* planner used by the first end-to-end workflow."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from hashlib import sha256
 from heapq import heappop, heappush
 import json
 import math
 
-
-@dataclass(frozen=True)
-class RoutePlan:
-    status: str
-    path: list[list[float]]
-    reason: str
-    algorithm_id: str = "route_planner_v1"
-    algorithm_version: str = "1.0"
 
 class RoutePlannerV1:
     """Small-area A*. Hard constraints are blocked; failure never falls back to a line."""

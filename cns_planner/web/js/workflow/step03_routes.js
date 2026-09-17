@@ -1,7 +1,22 @@
 import {escapeHtml,shell,statusBadge,statusText} from './common.js';
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 
-function metric(value,unit=''){return Number.isFinite(value)?value.toFixed(2)+(unit?' '+unit:''):'—';}
+function metric(value,unit=''){const number=Number(value);return value!==null&&value!==undefined&&Number.isFinite(number)?number.toFixed(2)+(unit?' '+unit:''):'—';}
+
+export const PLANNER_V1='route_planner_v1';
+export const PLANNER_V2='risk_aware_route_planner_v2';
+export const ROUTE_PLANNER_TYPE='route_planner';
+
+function turnCount(path){
+  const points=(path||[]).filter(point=>Array.isArray(point)&&point.length>=2);
+  let turns=0;
+  for(let index=1;index<points.length-1;index++){
+    const a=points[index-1],b=points[index],c=points[index+1];
+    if(Math.abs((b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]))>1e-12)turns++;
+  }
+  return turns;
+}
+
 function pathLengthM(path){let total=0;for(let index=1;index<(path||[]).length;index++){const a=path[index-1],b=path[index],lat1=a[1]*Math.PI/180,lat2=b[1]*Math.PI/180,dlat=lat2-lat1,dlon=(b[0]-a[0])*Math.PI/180,h=Math.sin(dlat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dlon/2)**2;total+=6371008.8*2*Math.asin(Math.sqrt(h));}return (path||[]).length>1?total:null;}
 
 export function filterReferenceSites(items,{workspace=null,search='',region='',siteType=''}={}){
@@ -39,6 +54,106 @@ export function referenceOverlayModel(flow,layers={routes:true,points:true,landi
     scenarioRoutes:flow?.scenario_routes||[],
     operationalRoutes:flow?.operational_routes||[],
   };
+}
+
+export function findAlgorithmManifest(catalog,algorithmType,algorithmId,version){
+  return (catalog||[]).find(item=>item.algorithm_type===algorithmType&&item.algorithm_id===algorithmId&&String(item.version)===String(version))||null;
+}
+
+function schemaDefaults(manifest){
+  const properties=manifest?.parameter_schema?.properties||{},result={};
+  Object.entries(properties).forEach(([name,schema])=>{if(schema&&Object.prototype.hasOwnProperty.call(schema,'default'))result[name]=schema.default;});
+  return result;
+}
+
+export function effectiveParameters(manifest,selection){
+  const supplied=(selection&&typeof selection.parameters==='object'&&selection.parameters)?selection.parameters:{},result=schemaDefaults(manifest);
+  Object.entries(supplied).forEach(([name,value])=>{if(value!==null)result[name]=value;});
+  const declared=manifest?.parameter_schema?.properties||{};
+  return Object.entries(result).filter(([name])=>Object.prototype.hasOwnProperty.call(declared,name)||name in supplied)
+    .sort(([a],[b])=>a.localeCompare(b)).map(([name,value])=>{
+      const schema=declared[name]||{};
+      return {name,value,source:Object.prototype.hasOwnProperty.call(supplied,name)?'selection':'schema_default',declared:Object.keys(declared).includes(name),
+        minimum:schema.minimum,maximum:schema.maximum};
+    });
+}
+
+export function plannerCardModel(flow){
+  const selection=flow?.algorithm_selection?.[ROUTE_PLANNER_TYPE]||{};
+  if(!selection.algorithm_id)return null;
+  const manifest=findAlgorithmManifest(flow?.algorithm_catalog,ROUTE_PLANNER_TYPE,selection.algorithm_id,selection.version);
+  if(!manifest){
+    return {status:'manifest_missing',selection:{algorithm_id:selection.algorithm_id,version:selection.version},
+      message:'当前算法选择在 algorithm_catalog 中没有精确匹配的 Manifest；不显示任何推断的限制说明。'};
+  }
+  return {status:'passed',manifest,selection:{algorithm_id:manifest.algorithm_id,version:manifest.version},
+    effective_parameters:effectiveParameters(manifest,selection),active:true};
+}
+
+function listBlock(title,values){
+  const items=(values||[]).filter(Boolean);
+  return '<div class="parameter-note"><b>'+escapeHtml(title)+'</b>'+(items.length?'<ul>'+items.map(item=>'<li>'+escapeHtml(item)+'</li>').join('')+'</ul>':'<br>—')+'</div>';
+}
+
+function plannerCard(model){
+  if(!model)return '';
+  if(model.status!=='passed')return '<h3>当前规划器</h3><div class="parameter-note">'+escapeHtml(model.message||'Manifest 不可用')+'</div>';
+  const m=model.manifest,parameters=model.effective_parameters||[];
+  const rows=parameters.length?parameters.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.name)+'</b><small>'+escapeHtml(String(item.value))+' · '+(item.source==='selection'?'来自当前参数选择':'来自 schema 默认值')+(item.declared?'':' · schema 未声明')+'</small></span></div>').join(''):'<div class="empty-note">Manifest 未声明有效参数</div>';
+  return '<h3>当前规划器 '+statusBadge('passed')+'</h3>'
+    +'<div class="parameter-note">以下内容直接来自 algorithm_catalog / Manifest，前端不硬编码算法限制。<br>'
+    +'<b>'+escapeHtml(m.name||m.algorithm_id)+'</b> · <code>'+escapeHtml(m.algorithm_id)+'@'+escapeHtml(m.version)+'</code> · 成熟度 <code>'+escapeHtml(m.maturity)+'</code> · 提供方 '+escapeHtml(m.provider)+'</div>'
+    +'<div class="flow-summary">'+escapeHtml(m.description||'')+'</div>'
+    +listBlock('输入 contract',m.inputs)+listBlock('假设 assumptions',m.assumptions)+listBlock('局限 limitations',m.limitations)
+    +'<h3>有效参数</h3><div class="scroll-list">'+rows+'</div>';
+}
+
+function plannerEntry(route,result,plannerId){
+  if(!result||result.algorithm_id!==plannerId)return null;
+  return {status:result.status,
+    path_length_m:Number.isFinite(result.distance_m)?result.distance_m:pathLengthM(result.path),
+    segment_count:Array.isArray(result.path)?result.path.length:null,
+    turn_count:turnCount(result.path),
+    risk_exposure_index_m:result.risk_exposure_index_m??null,
+    max_risk_index:result.max_risk_index??null};
+}
+
+export function routePlannerComparisonModel(flow){
+  const results=flow?.operational_routes||[];
+  const rows=(flow?.scenario_routes||[]).map(route=>{
+    const result=results.find(item=>item.route_id===route.route_id);
+    return {route_id:route.route_id,direction:route.direction||'',
+      [PLANNER_V1]:plannerEntry(route,result,PLANNER_V1),
+      [PLANNER_V2]:plannerEntry(route,result,PLANNER_V2)};
+  });
+  const hasV1=rows.some(row=>row[PLANNER_V1]),hasV2=rows.some(row=>row[PLANNER_V2]);
+  const hasReference=(flow?.reference_routes?.items||[]).length>0;
+  return {rows,hasV1,hasV2,bothPresent:hasV1&&hasV2,hasReference,
+    referenceNote:hasReference?'真实参考航线只与运行航线作长度/几何并列，不作优劣结论。':'当前项目没有参考航线可比。',
+    semantics:'factual_side_by_side_no_superiority_conclusion',automatic_ranking:false};
+}
+
+function comparisonPanelV2(flow,model){
+  if(!model.rows.length)return '';
+  if(!model.bothPresent)return '<h3>V1 / V2 结果并列</h3><div class="parameter-note">当前只有 '+(model.hasV2?'V2':'V1')+' 结果；切换到另一个规划器并重新生成运行航路后才会出现并列比较。本面板只做事实并列，不作优劣结论。</div>';
+  const body=model.rows.map(row=>'<div class="list-row route-row"><span><b>'+escapeHtml(row.route_id)+'</b> '+escapeHtml(row.direction)+'<small>V1 length '+metric(row[PLANNER_V1]?.path_length_m,'m')+' · vertices '+escapeHtml(String(row[PLANNER_V1]?.segment_count??'—'))+' · turns '+escapeHtml(String(row[PLANNER_V1]?.turn_count??'—'))+'</small><small>V2 length '+metric(row[PLANNER_V2]?.path_length_m,'m')+' · vertices '+escapeHtml(String(row[PLANNER_V2]?.segment_count??'—'))+' · turns '+escapeHtml(String(row[PLANNER_V2]?.turn_count??'—'))+' · risk exposure '+metric(row[PLANNER_V2]?.risk_exposure_index_m,'index·m')+'</small></span></div>').join('');
+  return '<h3>V1 / V2 结果并列</h3><div class="parameter-note">只并列展示：长度/几何来自各自 planner 的真实输出与已发布路径；risk exposure 为 V2 自报相对工程指数。'
+    +'<b>本面板不判定“更好”</b>，不排名、不评分、不推荐算法。V1 顶点更少是因为它对共线点做了简化，V2 保留完整 grid path 与网格中心（无 smoothing），这只说明输出契约不同。</div><div class="scroll-list route-list">'+body+'</div>';
+}
+
+function endpointOptions(nodes,selectedId){
+  return (nodes||[]).map(node=>'<option value="'+escapeHtml(node.node_id)+'" '+(node.node_id===selectedId?'selected':'')+'>'+escapeHtml(node.node_id)+' · '+escapeHtml(node.name)+'</option>').join('');
+}
+
+function odScenarioPanel(flow){
+  const nodes=flow.nodes||[];
+  const disabled=nodes.length<2?'disabled':'';
+  const first=nodes[0]?.node_id,last=nodes[nodes.length-1]?.node_id;
+  return '<h3>起点 → 终点 创建航路</h3><div class="parameter-note">显式指定两个 node，只创建这一条（或这一对）场景航路，不会因为参考点数量自动生成全连接。创建后会替换当前场景航路并清空运行航路，需要重新生成运行航路。</div>'
+    +'<div class="form-grid"><label>起点<select id="odStartNode">'+endpointOptions(nodes,first)+'</select></label><label>终点<select id="odEndNode">'+endpointOptions(nodes,last)+'</select></label></div>'
+    +'<label>方向<select id="odDirection"><option value="ab">仅 起点→终点</option><option value="ba">仅 终点→起点</option><option value="both" selected>双向（两个 route_id）</option></select></label>'
+    +'<button class="primary full" id="createOdRoute" '+disabled+'>创建航路</button>'
+    +'<div class="parameter-note">兼容说明：下方“生成场景航路”保留原 all-pairs 行为，供旧项目继续使用；新项目优先使用本面板。</div>';
 }
 
 function selectedReferencePanel(flow,selected){
@@ -95,12 +210,13 @@ export function render({flow,interactionMode,selectedReference=null}){
   const altitude='<h3>Route 3D Altitude Profile</h3><div class="panel-file-input"><select id="altitudeRoute">'+routeOptions+'</select><select id="routeVerticalReference"><option value="agl">AGL</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option></select></div><label>Constant altitude (m)<input class="panel-input" type="number" id="routeAltitude" value="100"></label><button class="secondary full" id="saveRouteAltitude" '+(!routeOptions?'disabled':'')+'>保存航路高度剖面</button><div class="scroll-list">'+(profiles||'<div class="empty-note">尚未配置运行航路高度</div>')+'</div>';
   const motionProfiles=Object.values(flow.operational_timing?.route_motion_profiles||{}).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_ground_speed_mps??'待确认')+' m/s · '+escapeHtml(item.status)+'</small></span></div>').join('');
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
-  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+(flow.retired_route_ids.join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks.environment.status)+'</div><button class="primary full" id="nextStep" '+(!flow.steps['3']?'disabled':'')+'>下一步：运行规则</button>';
+  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
   return shell('03','航路设计','地图点击增加起降点；场景与运行航路分别保存。',body);
 }
 export function bind(c){
   bindRouteVerticalProfile(c);
   c.$('addNodeMode').onclick=c.toggleNodeMode;c.actionButton('scenarioRoutes',()=>c.mutate('scenario',{direction:c.$('routeDirection').value}));c.actionButton('operationalRoutes',()=>c.mutate('operational'));
+  if(c.$('createOdRoute'))c.actionButton('createOdRoute',()=>{const start=c.$('odStartNode').value,end=c.$('odEndNode').value;if(start===end)throw new Error('起点与终点不能相同');return c.mutate('scenario-od',{start_node_id:start,end_node_id:end,direction:c.$('odDirection').value});});
   const applyReferenceFilter=()=>{const search=c.$('referenceSiteSearch').value.trim().toLocaleLowerCase(),region=c.$('referenceSiteRegion').value,siteType=c.$('referenceSiteType').value;let visible=0;document.querySelectorAll('[data-reference-site]').forEach(row=>{const show=(!search||row.dataset.search.includes(search))&&(!region||row.dataset.region===region)&&(!siteType||row.dataset.siteType===siteType);row.hidden=!show;if(show)visible++;});const count=c.$('referenceSiteCount');if(count)count.textContent='当前筛选 '+visible+' 条；疑似重复只标记、不合并。';c.paint();};
   c.$('referenceSiteSearch').oninput=applyReferenceFilter;c.$('referenceSiteRegion').onchange=applyReferenceFilter;c.$('referenceSiteType').onchange=applyReferenceFilter;
   document.querySelectorAll('[data-add-reference-site]').forEach(button=>button.onclick=async()=>{try{button.disabled=true;await c.resourceAction('/api/reference-landing-sites/add-to-project',{reference_site_id:button.dataset.addReferenceSite});}catch(error){c.panelError(error.message);button.disabled=false;}});

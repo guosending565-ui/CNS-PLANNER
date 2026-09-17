@@ -184,6 +184,10 @@ class ApiRouter:
                 "node": lambda: workflow.add_node(payload.get("coordinate", []), payload.get("name")),
                 "node-delete": lambda: workflow.delete_node(payload.get("node_id")),
                 "scenario": lambda: workflow.generate_scenario(payload.get("direction", "both")),
+                "scenario-od": lambda: workflow.generate_scenario_od(
+                    payload.get("start_node_id"), payload.get("end_node_id"),
+                    payload.get("direction", "both"),
+                ),
                 "route-delete": lambda: workflow.delete_route(payload.get("route_id")),
                 "operational": lambda: workflow.generate_operational(data.hard_constraints),
                 "rules": lambda: workflow.set_rules(payload),
