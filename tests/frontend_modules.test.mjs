@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,referenceLinkModel,airspacePolicyReadinessModel} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
@@ -247,6 +247,21 @@ test('step 3 experiment panel shows both planners without pretending to be the o
   assert.match(html,/运行 V1 \+ V2 比较实验/);
   assert.match(html,/risk_aware_route_planner_v2/);
   assert.match(html,/没有 confirmed allowed airspace/);
+});
+
+test('step 3 route diagnostics show current and experiment evidence without ranking',()=>{
+  const evaluation={route_id:'R1',status:'passed',algorithm_id:'route_planner_v1',quality:{vertex_count:3,segment_count:2,turn_count:1,total_heading_change_deg:45,max_heading_change_deg:45,min_segment_m:100,zigzag_index:.25},grid_behavior:{grid_level:7,horizontal_step_count:1,vertical_step_count:0,diagonal_step_count:1,direction_histogram:{E:1,NE:1}},risk_metrics:{},constraint_input_summary:{hard_constraint_count:2,allowed_airspace_status:'passed'},runtime_ms:3};
+  const flow={route_planning_diagnostics:{status:'passed',planner:{algorithm_id:'route_planner_v1',version:'1.0',manifest_limitations:['BBOX 硬约束']},routes:[evaluation]},route_planning_experiments:{records:[{experiment_id:'EXP-0123456789AB',runs:[{algorithm_id:'route_planner_v1',quality:evaluation,runtime:{per_route_ms_stats:{median:4}}}]}]}};
+  const model=routePlanningDiagnosticsModel(flow);
+  assert.equal(model.current.length,1);
+  assert.equal(model.experiments.length,1);
+  assert.equal(model.current[0].zigzag_index,.25);
+  assert.equal(model.automatic_ranking,false);
+  const html=renderStep3({flow:{...flow,nodes:[],scenario_routes:[],operational_routes:[],algorithm_selection:{route_planner:{}},algorithm_catalog:[],spatial_3d:{},operational_timing:{},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[]},reference_landing_sites:{items:[]},reference_route_links:{},reference_endpoint_candidates:{},workspace:{bbox:[0,0,.1,.1]},risks:{},steps:{}},interactionMode:'pan'});
+  assert.match(html,/航路规划诊断/);
+  assert.match(html,/zigzag/);
+  assert.match(html,/BBOX 硬约束/);
+  assert.match(html,/不评分、不排名、不推荐算法/);
 });
 
 test('step 3 reference link panel requires explicit confirmation and blocks candidates without CRS',()=>{

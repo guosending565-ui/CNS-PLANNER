@@ -78,14 +78,47 @@ def scenario_fingerprint(scenario_routes):
     return content_hash(relevant)
 
 
-def experiment_id_for(scenario_fingerprint_value, planner_versions, parameters_by_version):
+def planner_context_fingerprint(context):
+    """Fingerprint the non-scenario inputs that can change a planner outcome."""
+
+    context = context if isinstance(context, dict) else {}
+    grid = context.get("grid") or {}
+    eligibility = context.get("airspace_eligibility") or {}
+    risk = context.get("grid_risk") or {}
+    relevant = {
+        "workspace_bbox": context.get("workspace_bbox"),
+        "hard_constraints": context.get("hard_constraints") or [],
+        "grid": {
+            "status": grid.get("status"), "level": grid.get("level"),
+            "cell_size_degrees": grid.get("cell_size_degrees"),
+            "cells": [
+                {"grid_id": item.get("grid_id"), "bbox": item.get("bbox"), "center": item.get("center")}
+                for item in grid.get("cells") or []
+            ],
+        },
+        "grid_risk": risk,
+        "airspace_eligibility": {
+            key: eligibility.get(key) for key in (
+                "status", "reason", "geometry_fingerprint", "policy_fingerprint",
+                "input_fingerprint", "allowed_grid_ids", "allowed_edges",
+            )
+        },
+    }
+    return content_hash(relevant)
+
+
+def experiment_id_for(scenario_fingerprint_value, planner_versions, parameters_by_version,
+                      context_fingerprint_value=None):
     """Deterministic identity: same scenario + same planner set + same params."""
 
-    return "EXP-" + content_hash({
+    identity = {
         "scenario": scenario_fingerprint_value,
         "planners": planner_versions,
         "parameters": parameters_by_version,
-    })[:12].upper()
+    }
+    if context_fingerprint_value is not None:
+        identity["planner_context"] = context_fingerprint_value
+    return "EXP-" + content_hash(identity)[:12].upper()
 
 
 def build_run_record(
@@ -117,12 +150,15 @@ def build_run_record(
 def build_experiment_record(
     *, scenario_fingerprint_value, planners, grounding, source_type,
     source_detail=None, experiment_id=None, runs=None, current_applicability="current",
+    context_fingerprint_value=None, context_basis=None,
 ):
     """Assemble a record whose identity is derived only from inputs and planners."""
 
     versions = {item["run_id"]: f'{item["algorithm_id"]}@{item["algorithm_version"]}' for item in planners}
     parameters = {item["run_id"]: item.get("effective_parameters") or {} for item in planners}
-    identifier = experiment_id or experiment_id_for(scenario_fingerprint_value, versions, parameters)
+    identifier = experiment_id or experiment_id_for(
+        scenario_fingerprint_value, versions, parameters, context_fingerprint_value,
+    )
     if not _EXPERIMENT_ID.match(identifier):
         raise ValueError(f"experiment_id 无效：{identifier}")
     if grounding not in GROUNDING_MODES:
@@ -146,6 +182,8 @@ def build_experiment_record(
         "source_type": source_type,
         "grounding": grounding,
         "scenario_fingerprint": scenario_fingerprint_value,
+        "planner_context_fingerprint": context_fingerprint_value,
+        "planner_context_basis": deepcopy(context_basis),
         "input_fingerprints": {
             item["run_id"]: (item.get("result") or {}).get("input_fingerprint")
             for item in run_records
@@ -230,6 +268,8 @@ def normalize_experiments(value):
         entry.setdefault("source_type", "project")
         entry.setdefault("grounding", "current_scenario_routes")
         entry.setdefault("input_fingerprints", {})
+        entry.setdefault("planner_context_fingerprint", None)
+        entry.setdefault("planner_context_basis", {"source": "legacy_unknown"})
         entry.setdefault("planners", [])
         entry.setdefault("runs", [])
         entry.setdefault("provenance", {

@@ -482,12 +482,14 @@ def test_benchmark_metrics_are_geodesic_in_the_pack(tool):
     assert quality["assumed_input_crs"] == "EPSG:4326"
 
 
-def test_benchmark_fixtures_unchanged_by_this_round():
+def test_benchmark_fixtures_include_diagnostic_cases_without_planner_changes():
     assert set(benchmark_fixtures.case_ids()) == {
         "open_space", "single_obstacle", "concave_obstacle", "narrow_passage",
         "disconnected_allowed_airspace", "risk_tradeoff", "endpoint_near_boundary",
         "malformed_constraint",
+        "zigzag_open_grid_bias", "bbox_overblocking_demo",
     }
+    assert all(item["planner_changes_allowed"] is False for item in benchmark_fixtures.cases())
     assert all(case["planner_changes_allowed"] is False for case in benchmark_fixtures.cases())
 
 

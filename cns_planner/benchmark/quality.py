@@ -25,7 +25,8 @@ No verdict, ranking or recommendation is produced.
 
 from __future__ import annotations
 
-from ..application.constraint_validation import validate_hard_constraints
+import re
+
 from .geodesy import (
     HEADING_CHANGE_TOLERANCE_DEG,
     METRIC_SEMANTICS,
@@ -37,6 +38,8 @@ from .geodesy import (
 
 __all__ = [
     "evaluate_route_quality",
+    "RoutePlanningDiagnostics",
+    "grid_path_metrics",
     "evaluate_constraint_feasibility",
     "polyline_metrics",
     "heading_deg",
@@ -70,6 +73,15 @@ _RISK_EVIDENCE_FIELDS = (
     "optimization_cost",
     "risk_component",
     "risk_weight_lambda",
+)
+
+_GRID_ID = re.compile(
+    r"^MHT4063-L(?P<level>\d+)-C(?P<column>\d+)-R(?P<sign>[PM])(?P<row>\d+)$"
+)
+
+ZIGZAG_INDEX_DEFINITION = (
+    "sum_absolute_heading_change_deg / (180 * interior_vertex_count); "
+    "0 when there is no interior vertex"
 )
 
 
@@ -108,6 +120,11 @@ def polyline_metrics(path):
         heading_change_deg(left, right) for left, right in zip(headings, headings[1:])
     ]
     straight = geodesic_distance_m(points[0], points[-1]) if len(points) > 1 else 0.0
+    interior_vertex_count = max(0, len(points) - 2)
+    zigzag_index = (
+        sum(changes) / (180.0 * interior_vertex_count)
+        if interior_vertex_count else 0.0
+    )
     return {
         "path_length_m": sum(lengths),
         "segment_count": len(lengths),
@@ -116,6 +133,8 @@ def polyline_metrics(path):
         "max_heading_change_deg": max(changes) if changes else 0.0,
         "min_segment_m": min(lengths) if lengths else 0.0,
         "vertex_count": len(points),
+        "zigzag_index": zigzag_index,
+        "zigzag_index_definition": ZIGZAG_INDEX_DEFINITION,
         "straight_line_distance_m": straight,
         "metric_semantics": dict(METRIC_SEMANTICS),
         "heading_method": "geodesic_azimuth_difference_normalized_to_180",
@@ -129,8 +148,73 @@ def polyline_metrics(path):
     }
 
 
+def _parse_grid_id(grid_id):
+    match = _GRID_ID.match(str(grid_id or ""))
+    if not match:
+        return None
+    row = int(match.group("row")) * (-1 if match.group("sign") == "M" else 1)
+    return int(match.group("level")), int(match.group("column")), row
+
+
+def grid_path_metrics(grid_path, grid=None):
+    """Describe V2 grid traversal without judging or changing the route."""
+
+    ids = [str(value) for value in grid_path or []]
+    parsed = [_parse_grid_id(value) for value in ids]
+    histogram = {name: 0 for name in ("E", "W", "N", "S", "NE", "NW", "SE", "SW")}
+    horizontal = vertical = diagonal = invalid = 0
+    direction_by_delta = {
+        (1, 0): "E", (-1, 0): "W", (0, 1): "N", (0, -1): "S",
+        (1, 1): "NE", (-1, 1): "NW", (1, -1): "SE", (-1, -1): "SW",
+    }
+    for left, right in zip(parsed, parsed[1:]):
+        if left is None or right is None or left[0] != right[0]:
+            invalid += 1
+            continue
+        dx, dy = right[1] - left[1], right[2] - left[2]
+        direction = direction_by_delta.get((dx, dy))
+        if direction is None:
+            invalid += 1
+            continue
+        histogram[direction] += 1
+        if dx and dy:
+            diagonal += 1
+        elif dx:
+            horizontal += 1
+        else:
+            vertical += 1
+    levels = sorted({item[0] for item in parsed if item is not None})
+    cell_size = (grid or {}).get("cell_size_degrees")
+    representative = None
+    cells = (grid or {}).get("cells") or []
+    if cells:
+        bbox = cells[0].get("bbox") or []
+        if len(bbox) == 4:
+            center_lat = (float(bbox[1]) + float(bbox[3])) / 2.0
+            representative = {
+                "width_m": geodesic_distance_m([bbox[0], center_lat], [bbox[2], center_lat]),
+                "height_m": geodesic_distance_m([bbox[0], bbox[1]], [bbox[0], bbox[3]]),
+                "semantics": "representative_first_grid_cell_geodesic_dimensions",
+            }
+    return {
+        "grid_path_vertex_count": len(ids),
+        "grid_step_count": max(0, len(ids) - 1),
+        "horizontal_step_count": horizontal,
+        "vertical_step_count": vertical,
+        "diagonal_step_count": diagonal,
+        "invalid_or_non_adjacent_step_count": invalid,
+        "direction_histogram": histogram,
+        "grid_level": levels[0] if len(levels) == 1 else (levels or None),
+        "cell_size_degrees": list(cell_size) if isinstance(cell_size, (list, tuple)) else cell_size,
+        "representative_cell_size_m": representative,
+        "source": "published_grid_path_and_supplied_grid_metadata",
+    }
+
+
 def evaluate_constraint_feasibility(hard_constraints):
     """Fail-closed hard-constraint verdict from the authoritative validator."""
+
+    from ..application.constraint_validation import validate_hard_constraints
 
     try:
         validate_hard_constraints(hard_constraints)
@@ -158,7 +242,10 @@ def _planner_reported(result):
     return reported
 
 
-def evaluate_route_quality(route, result, hard_constraints=None, runtime_ms=None):
+def evaluate_route_quality(
+    route, result, hard_constraints=None, runtime_ms=None, *, grid=None,
+    airspace_eligibility=None,
+):
     """Measure one published ``result`` for one ``route``. Reports, never ranks.
 
     ``route``/``result`` are read-only; the returned mapping is a separate
@@ -177,6 +264,8 @@ def evaluate_route_quality(route, result, hard_constraints=None, runtime_ms=None
     )
     reported = _planner_reported(result)
     planned_length = reported.get("distance_m")
+    grid_behavior = grid_path_metrics(result.get("grid_path"), grid)
+    eligibility = airspace_eligibility if isinstance(airspace_eligibility, dict) else {}
     return {
         "route_id": str(result.get("route_id") or (route or {}).get("route_id") or ""),
         "status": status,
@@ -207,6 +296,18 @@ def evaluate_route_quality(route, result, hard_constraints=None, runtime_ms=None
             ),
         },
         "hard_constraint_input": evaluate_constraint_feasibility(hard_constraints),
+        "constraint_input_summary": {
+            "hard_constraint_count": len(hard_constraints or []) if isinstance(hard_constraints, list) else None,
+            "allowed_airspace_status": eligibility.get("status") or _allowed_feasibility_status(status),
+            "confirmed_allowed_feature_count": eligibility.get("confirmed_allowed_feature_count"),
+            "allowed_grid_id_count": len(eligibility.get("allowed_grid_ids") or []),
+            "allowed_edge_count": len(eligibility.get("allowed_edges") or []),
+            "source": (
+                "supplied_airspace_eligibility"
+                if eligibility else "planner_result_status_only"
+            ),
+        },
+        "grid_behavior": grid_behavior,
         "allowed_airspace_feasibility": {
             "status": _allowed_feasibility_status(status),
             "source": "planner_result_status_only_not_rejudged",
@@ -229,6 +330,22 @@ def evaluate_route_quality(route, result, hard_constraints=None, runtime_ms=None
             "preferred_algorithm": None,
         },
     }
+
+
+class RoutePlanningDiagnostics:
+    """Read-only façade for descriptive route diagnostics.
+
+    The class deliberately delegates to :func:`evaluate_route_quality` and never
+    receives a planner instance, so it cannot alter search behavior or results.
+    """
+
+    @staticmethod
+    def evaluate(route, result, hard_constraints=None, runtime_ms=None, *, grid=None,
+                 airspace_eligibility=None):
+        return evaluate_route_quality(
+            route, result, hard_constraints, runtime_ms,
+            grid=grid, airspace_eligibility=airspace_eligibility,
+        )
 
 
 def _allowed_feasibility_status(status):

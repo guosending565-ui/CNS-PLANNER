@@ -561,6 +561,37 @@ Step 03 并列查看：
 - **D3**：V1 是否改用米制/等距格，以及是否引入 Theta*/RRT/Dubins/V3 或路径平滑。
 **仍需人工动作（数据侧）**：舟山起降点/航线坐标 CRS 必须由人工确认并写入 `source_crs`（本轮已提供证据字段与入口，未自动推断）；`.et` 必须人工转 XLSX/CSV；AirspacePolicy 需逐 feature 显式确认后才能解除 V2 readiness blocked；reference route ↔ OD 关联需人工逐条确认。
 
+## 8.3 航路规划问题定义 + 专家咨询诊断基线（本轮）
+
+基线 commit `e5cfec8afef77b44ed8f5a009222bf7ce6bae26d`。本轮只增加问题定义、独立诊断、敏感性工具、专家咨询材料与 Step 03 只读展示；**V1/V2 的搜索核心、8 邻域、代价、risk lambda 语义、hard constraint 形式和输出契约全部冻结**，未实现 V3/Theta*/RRT/Dubins/smoothing。
+
+- `docs/route_planning_problem_definition.md` 固化战略水平 route 的输入、输出、硬条件、当前目标、已确认假设与未决问题，并严格区分 Fact / Constraint / Policy / Objective；战略规划不等于 DAA 战术避碰。
+- `RoutePlanningDiagnostics` 保持在 benchmark 层并只读取 published result：新增 vertex/segment、总/最大 heading change、min segment、`zigzag_index=sum(abs heading change)/(180×内部顶点数)`、MH/T 水平/垂直/对角步数与八方向直方图、grid level/cell size、V2 已发布 risk、hard constraint/allowed 状态与 runtime。所有 verdict 均不评分、不排名、不推荐。
+- synthetic benchmark 在原 8 case 上新增 `zigzag_open_grid_bias` 与 `bbox_overblocking_demo`；后者只说明现有 BBOX 包络与假想 source polygon 可能不同，不改变 planner，也不声称 polygon 是最终方案。10 个 case 均带 `expert_question`。
+- `tools/route_planning_diagnostics.py` 对冻结 V2 做 λ=`0,0.5,1,2,4,8` 与 MH/T L6/L7/L8 敏感性观测；输出 status/length/detour/turn/heading/risk/runtime/path fingerprint，禁止自动推荐参数。
+- experiment 适用性改为 scenario fingerprint + planner-context fingerprint 双检查；workspace/grid/grid risk/airspace eligibility/hard constraints 变化会标 `stale_context_inputs`。缺 context fingerprint 的旧证据标 `unknown_legacy_context_inputs`，不得误报 current。多航路 `{results:[...]}` reference comparison 按 `route_id` 精确取 path。
+- Step 03 新增只读“航路规划诊断”，展示当前 planner、几何、grid behavior、risk、约束输入、manifest limitations 与历史 experiment diagnostics；没有专家算法执行/导入入口。
+- `tools/route_planning_expert_brief.py` 生成 ignored `outputs/route_expert_brief/route_planning_expert_brief.{md,json}`，固定包含任务、约束、V1/V2 限制、benchmark、λ/grid sensitivity、典型问题、真实数据 readiness 与 P1–P8。
+
+统一未决项命名：
+
+- **DATA-1 = reference CRS**：舟山参考点/线源 CRS 待权威确认，禁止猜 WGS84/CGCS2000。
+- **DATA-2 = ET→XLSX/CSV**：`.et` 需人工转换，系统只返回 `requires_xlsx_or_csv_conversion`。
+- **DATA-3 = AirspacePolicy**：allowed/blocked/unknown 与 confirmed 需逐 feature 有来源确认，禁止从颜色/名称推断。
+- **EXPERT-1 = constraint geometry**：BBOX/polygon/raster/混合表达。
+- **EXPERT-2 = vertical/altitude**：2D+独立高度或 3D 联合规划。
+- **EXPERT-3 = state space/algorithm**：MH/T 搜索空间/风险索引与算法类别。
+- **EXPERT-4 = kinematics**：转弯半径、航向、爬升进入搜索或后处理。
+- **EXPERT-5 = objective/risk cost**：距离+风险的加权和/约束/分层/Pareto 表达。
+
+真实项目数据当前允许保持 **NOT READY**：本轮未猜 CRS、未解析 ET、未自动确认 AirspacePolicy。专家 brief 的“真实数据 readiness”不再复用 project-evidence 的读取状态（那只是“项目能否读出”），而是由 `real_data_verdict()` 独立给出 DATA-1/2/3 逐项 verdict + 需要的人工动作；只要任一项未满足就显示 **NOT READY**。当前真实项目为 `NOT_READY`（DATA-1/2/3 全部 pending），`metric_measurement_enabled=false`。
+
+合成 allowed-airspace fixture 改为直接按 MH/T `grid_id` 整数索引构造邻接（`_adjacency_edges`），不再调用 `AirspaceEligibilityService.build`：后者对候选边做 pairwise 全覆盖判定，是 O(n²)，在 MH/T L8（8100 格）下由 57 s 主导整轮工具运行。改动只影响**合成 fixture 的构造方式**，allowed 集合与邻接语义等价（全部 case 的 path_length/detour/turns/status 与改动前逐位一致），而**生产** airspace eligibility 规则未改动，遍历规则仍由 planner 自身 `diagonal_guards` 在执行时保证。效果：`build_pack` 0.4–0.7 s，`build_diagnostics` 57 s → 3 s。
+
+本轮测试：全量 pytest **550 passed, 6 skipped**；Node **38 passed, 0 failed**；`compileall`、JS syntax 与 `git diff --check` 全部通过。`tests/test_route_planning_diagnostics.py` 覆盖 zigzag 定义、八方向直方图与真实 grid path 一致性、方向偏置回归锁、λ sweep 取舍与“无推荐”保证、grid sensitivity、DATA-1/2/3 verdict 与 NOT READY 路径、brief 固定章节/P1–P8/观测事实。
+
+brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS），只陈述冻结 planner 实际观测：λ 增大时用更长路径换更低 risk exposure（λ=0→4，9428.6 m/8477.8 → 10902.9 m/1935.8，4 条不同路径）；网格 L6→L8 路径缩短 1058.9 m、zigzag 降至 0.087 倍；斜向 OD 上 8 邻域只使用 E/NE 两个方向（其余 6 个方向未出现）。这些观测用于支撑 P5/P6/P7，本身不构成结论或推荐。
+
 ## 9. 架构原则
 
 - 入口只组装；API 只处理传输；Application 负责编排；Domain 维护状态语义；GIS 隔离空间运行时；Algorithm 只计算；Persistence 只可靠读写。

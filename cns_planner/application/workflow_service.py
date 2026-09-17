@@ -209,6 +209,7 @@ class WorkflowService:
             result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
         if hasattr(self, "route_experiment_service"):
             result["route_planning_experiments"] = self.route_experiment_service.result_snapshot()
+            result["route_planning_diagnostics"] = self.route_experiment_service.diagnostics_snapshot()
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
         result["review"] = self.review()

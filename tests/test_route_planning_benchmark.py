@@ -29,6 +29,8 @@ REQUIRED_CASES = {
     "risk_tradeoff",
     "endpoint_near_boundary",
     "malformed_constraint",
+    "zigzag_open_grid_bias",
+    "bbox_overblocking_demo",
 }
 
 
@@ -184,6 +186,7 @@ def test_every_required_case_exists_and_is_deterministic():
 
 def test_fixtures_declare_applicability_instead_of_forcing_cases():
     for case in fixtures.cases():
+        assert case["expert_question"]
         assert case["planner_changes_allowed"] is False
         assert set(case["applicability"]) == {"route_planner_v1", "risk_aware_route_planner_v2"}
         for entry in case["applicability"].values():

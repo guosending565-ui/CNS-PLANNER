@@ -177,10 +177,56 @@ export function routeExperimentModel(flow){
   return {count:records.length,active_experiment_id:collection.active_experiment_id||null,
     active:active?{experiment_id:active.experiment_id,created_at:active.created_at,grounding:active.grounding,
       source_type:active.source_type,current_applicability:active.current_applicability,
-      scenario_fingerprint:active.scenario_fingerprint,verdicts:active.verdicts||{}}:null,
+      scenario_fingerprint:active.scenario_fingerprint,
+      planner_context_fingerprint:active.planner_context_fingerprint,
+      scenario_inputs_changed:active.scenario_inputs_changed,
+      context_inputs_changed:active.context_inputs_changed,verdicts:active.verdicts||{}}:null,
     runs,hasBothPlanners:runs.some(run=>run.algorithm_id===PLANNER_V1)&&runs.some(run=>run.algorithm_id===PLANNER_V2),
     operationalRouteCount:(flow?.operational_routes||[]).length,
     semantics:'experiment_is_not_current_operational_route',automatic_ranking:false};
+}
+
+function diagnosticRowsFromEvaluation(evaluation,origin){
+  const values=Array.isArray(evaluation?.results)?evaluation.results:[evaluation];
+  return values.filter(Boolean).map(item=>{
+    const q=item.quality||{},g=item.grid_behavior||{},risk=item.risk_metrics||{},constraints=item.constraint_input_summary||{};
+    return {origin,route_id:item.route_id,status:item.status,algorithm_id:item.algorithm_id,
+      vertex_count:q.vertex_count,segment_count:q.segment_count,turn_count:q.turn_count,
+      total_heading_change_deg:q.total_heading_change_deg,max_heading_change_deg:q.max_heading_change_deg,
+      min_segment_m:q.min_segment_m,zigzag_index:q.zigzag_index,
+      grid_level:g.grid_level,horizontal_steps:g.horizontal_step_count,vertical_steps:g.vertical_step_count,
+      diagonal_steps:g.diagonal_step_count,direction_histogram:g.direction_histogram||{},
+      risk_exposure_index_m:risk.risk_exposure_index_m,mean_risk_index:risk.mean_risk_index,max_risk_index:risk.max_risk_index,
+      hard_constraint_count:constraints.hard_constraint_count,allowed_airspace_status:constraints.allowed_airspace_status,
+      runtime_ms:item.runtime_ms};
+  });
+}
+
+export function routePlanningDiagnosticsModel(flow){
+  const snapshot=flow?.route_planning_diagnostics||{},current=(snapshot.routes||[]).flatMap(item=>diagnosticRowsFromEvaluation(item,'current'));
+  const records=flow?.route_planning_experiments?.records||[],experiments=[];
+  records.forEach(record=>(record.runs||[]).forEach(run=>{
+    diagnosticRowsFromEvaluation(run.quality||{},'experiment '+record.experiment_id).forEach(item=>experiments.push({...item,algorithm_id:item.algorithm_id||run.algorithm_id,runtime_ms:item.runtime_ms??run.runtime?.per_route_ms_stats?.median}));
+  }));
+  return {status:snapshot.status||'not_calculated',planner:snapshot.planner||{},current,experiments,
+    automatic_ranking:false,automatic_scoring:false,semantics:'descriptive_diagnostics_only'};
+}
+
+function diagnosticRow(item){
+  return '<div class="list-row route-row"><span><b>'+escapeHtml(item.route_id||item.algorithm_id||'route')+'</b> '+statusBadge(item.status||'not_calculated')
+    +'<small>'+escapeHtml(item.origin)+' · planner '+escapeHtml(item.algorithm_id||'—')+' · vertices '+escapeHtml(String(item.vertex_count??'—'))+' · segments '+escapeHtml(String(item.segment_count??'—'))+' · turns '+escapeHtml(String(item.turn_count??'—'))+'</small>'
+    +'<small>heading total/max '+metric(item.total_heading_change_deg,'°')+' / '+metric(item.max_heading_change_deg,'°')+' · min segment '+metric(item.min_segment_m,'m')+' · zigzag '+metric(item.zigzag_index)+'</small>'
+    +'<small>grid L'+escapeHtml(String(item.grid_level??'—'))+' · H/V/D '+escapeHtml(String(item.horizontal_steps??'—'))+'/'+escapeHtml(String(item.vertical_steps??'—'))+'/'+escapeHtml(String(item.diagonal_steps??'—'))+' · directions '+escapeHtml(jsonInline(item.direction_histogram||{}))+'</small>'
+    +'<small>risk exposure/mean/max '+metric(item.risk_exposure_index_m,'index·m')+' / '+metric(item.mean_risk_index)+' / '+metric(item.max_risk_index)+' · runtime '+metric(item.runtime_ms,'ms')+'</small>'
+    +'<small>hard constraints '+escapeHtml(String(item.hard_constraint_count??'—'))+' · allowed airspace '+escapeHtml(item.allowed_airspace_status||'—')+'</small></span></div>';
+}
+
+function routePlanningDiagnosticsPanel(flow){
+  const model=routePlanningDiagnosticsModel(flow),limitations=model.planner.manifest_limitations||[];
+  const rows=[...model.current,...model.experiments].map(diagnosticRow).join('');
+  return '<h3>航路规划诊断 '+statusBadge(model.status)+'</h3><div class="parameter-note">当前 planner <code>'+escapeHtml(model.planner.algorithm_id||'—')+'@'+escapeHtml(model.planner.version||'—')+'</code>。指标仅描述 published route、grid behavior、risk 与约束输入；不评分、不排名、不推荐算法。</div>'
+    +'<div class="flow-summary">Manifest limitations：'+escapeHtml(limitations.join('；')||'未提供')+'</div>'
+    +'<div class="scroll-list route-list">'+(rows||'<div class="empty-note">暂无 current operational route 或 experiment diagnostics。</div>')+'</div>';
 }
 
 function experimentRunBlock(run){
@@ -201,7 +247,7 @@ function experimentPanel(flow){
     +'<div class="parameter-note"><b>experiment ≠ current operational route</b>：实验记录独立保存在 <code>route_planning_experiments</code>，'
     +'运行比较<b>不切换当前 planner</b>，也<b>不覆盖 operational_routes</b>。当前正式运行航路 '+model.operationalRouteCount+' 条，实验记录 '+model.count+' 条。</div>';
   const body=active
-    ?'<div class="flow-summary">experiment <code>'+escapeHtml(active.experiment_id)+'</code> · '+escapeHtml(active.created_at||'')+' · grounding '+escapeHtml(active.grounding)+' · 输入适用性 '+escapeHtml(active.current_applicability)+'<br>scenario fingerprint <code>'+escapeHtml(String(active.scenario_fingerprint||'').slice(0,16))+'</code></div>'
+    ?'<div class="flow-summary">experiment <code>'+escapeHtml(active.experiment_id)+'</code> · '+escapeHtml(active.created_at||'')+' · grounding '+escapeHtml(active.grounding)+' · 输入适用性 '+escapeHtml(active.current_applicability)+'<br>scenario changed '+escapeHtml(String(active.scenario_inputs_changed))+' · context changed '+escapeHtml(String(active.context_inputs_changed))+'<br>scenario fingerprint <code>'+escapeHtml(String(active.scenario_fingerprint||'').slice(0,16))+'</code> · context fingerprint <code>'+escapeHtml(String(active.planner_context_fingerprint||'').slice(0,16))+'</code></div>'
       +'<div class="scroll-list route-list">'+(model.runs.map(experimentRunBlock).join('')||'<div class="empty-note">实验没有 run 记录</div>')+'</div>'
     :'<div class="empty-note">尚无实验记录。运行实验只会写入实验集合，不会改变当前运行航路。</div>';
   const controls='<div class="button-row"><button class="secondary" id="evaluateRouteExperiment" '+((flow.scenario_routes||[]).length?'':'disabled')+'>运行 V1 + V2 比较实验</button>'
@@ -346,7 +392,7 @@ export function render({flow,interactionMode,selectedReference=null}){
   const altitude='<h3>Route 3D Altitude Profile</h3><div class="panel-file-input"><select id="altitudeRoute">'+routeOptions+'</select><select id="routeVerticalReference"><option value="agl">AGL</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option></select></div><label>Constant altitude (m)<input class="panel-input" type="number" id="routeAltitude" value="100"></label><button class="secondary full" id="saveRouteAltitude" '+(!routeOptions?'disabled':'')+'>保存航路高度剖面</button><div class="scroll-list">'+(profiles||'<div class="empty-note">尚未配置运行航路高度</div>')+'</div>';
   const motionProfiles=Object.values(flow.operational_timing?.route_motion_profiles||{}).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_ground_speed_mps??'待确认')+' m/s · '+escapeHtml(item.status)+'</small></span></div>').join('');
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
-  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+airspacePolicyPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+experimentPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
+  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+airspacePolicyPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+experimentPanel(flow)+routePlanningDiagnosticsPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
   return shell('03','航路设计','地图点击增加起降点；场景与运行航路分别保存。',body);
 }
 export function bind(c){

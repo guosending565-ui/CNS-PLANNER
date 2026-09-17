@@ -153,6 +153,39 @@ def test_experiment_marks_itself_stale_when_scenario_inputs_change(tmp_path):
     assert refreshed["runs"]
 
 
+def test_experiment_marks_context_change_stale_without_scenario_change(tmp_path):
+    workflow = workflow_with_routes(tmp_path)
+    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
+    assert record["current_applicability"] == "current"
+    assert record["scenario_inputs_changed"] is False
+    workflow.state["grid_risk"] = {
+        **(workflow.state.get("grid_risk") or {}), "diagnostic_context_revision": "changed",
+    }
+    refreshed = workflow.route_experiments_snapshot()["records"][0]
+    assert refreshed["current_applicability"] == "stale_context_inputs"
+    assert refreshed["scenario_inputs_changed"] is False
+    assert refreshed["context_inputs_changed"] is True
+
+
+def test_legacy_experiment_without_context_fingerprint_is_never_current(tmp_path):
+    workflow = workflow_with_routes(tmp_path)
+    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
+    workflow.state["route_planning_experiments"]["records"][0].pop("planner_context_fingerprint")
+    refreshed = workflow.route_experiments_snapshot()["records"][0]
+    assert refreshed["current_applicability"] == "unknown_legacy_context_inputs"
+    assert refreshed["context_inputs_changed"] is True
+
+
+def test_multi_route_experiment_path_lookup_selects_matching_route(tmp_path):
+    workflow = workflow_with_routes(tmp_path)
+    active = {"runs": [{"result": {"results": [
+        {"route_id": "R-A", "path": [[1, 1], [2, 2]]},
+        {"route_id": "R-B", "path": [[3, 3], [4, 4]]},
+    ]}}]}
+    path = workflow.route_experiment_service._planned_path(active, {"route_id": "R-B"})
+    assert path == [[3, 3], [4, 4]]
+
+
 def test_experiment_requires_scenario_routes(tmp_path):
     workflow = WorkflowService(tmp_path / "empty.json", DEFAULTS)
     workflow.set_workspace(WORKSPACE, {"status": "passed"}, 8)

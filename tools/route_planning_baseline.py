@@ -37,6 +37,7 @@ import json
 import math
 from pathlib import Path
 import platform
+import re
 import socket
 import statistics
 import subprocess
@@ -54,7 +55,6 @@ from cns_planner.application.constraint_validation import validate_hard_constrai
 from cns_planner.benchmark import fixtures as benchmark_fixtures  # noqa: E402
 from cns_planner.benchmark.geodesy import GEODESIC_BACKEND, METRIC_SEMANTICS  # noqa: E402
 from cns_planner.benchmark.quality import evaluate_route_quality  # noqa: E402
-from cns_planner.data.mapping.airspace_eligibility import AirspaceEligibilityService  # noqa: E402
 from cns_planner.domain.reference_crs import is_resolved  # noqa: E402
 from cns_planner.route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2  # noqa: E402
 
@@ -153,8 +153,8 @@ def _result_fingerprint(result):
     }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
-def _workspace_grid(case):
-    service = WorkspaceGridService(preferred_level=case["workspace_level"])
+def _workspace_grid(case, max_cells=5000):
+    service = WorkspaceGridService(preferred_level=case["workspace_level"], max_cells=max_cells)
     return service.generate(case["workspace_bbox"], case["workspace_level"])
 
 
@@ -211,35 +211,103 @@ def _rectangle_geometry(rectangle):
     }
 
 
-def _airspace_eligibility(case, grid):
-    """Synthetic confirmed allowed airspace = workspace shell (blocks stay excluded).
+_GRID_ID_PATTERN = re.compile(
+    r"^MHT4063-L(?P<level>\d+)-C(?P<column>\d+)-R(?P<sign>[PM])(?P<row>\d+)$"
+)
 
-    The shell polygon is confirmed ``allowed``; blocked boxes are NOT declared
-    ``blocked`` here, so they remain inside the allowed geometry and must be
-    excluded by the planner's own hard-constraint handling.  That keeps the
-    allowed-airspace fixture and the hard-constraint fixture independently
-    observable instead of double-counting the same obstacle.
+
+def grid_indices(grid):
+    """Exact ``(level, column, row)`` index per grid_id, mirroring the planner graph.
+
+    Uses the published MH/T ``grid_id`` so neighbour lookup is integer-exact instead of
+    floating-point based; ``None`` when any id does not follow the scheme.
     """
 
-    service = AirspaceEligibilityService()
-    shell = _boxes_to_rectangles(case, grid)[0]
-    feature_id = "SYN-ALLOWED-SHELL"
-    result = service.build(
-        grid.get("cells") or [],
-        [{
-            "feature_id": feature_id,
-            "name": "合成 allowed 工作区外壳",
-            "geometry": _rectangle_geometry(shell),
-        }],
-        {"items": [{
-            "feature_id": feature_id,
-            "route_eligibility": "allowed",
-            "confirmed": True,
-            "source": "synthetic_benchmark_fixture",
-        }]},
-    )
-    result["synthetic_fixture"] = True
+    result = {}
+    seen = set()
+    for cell in grid.get("cells") or []:
+        grid_id = str(cell.get("grid_id") or "")
+        match = _GRID_ID_PATTERN.match(grid_id)
+        if match is None:
+            return None
+        row = int(match.group("row")) * (-1 if match.group("sign") == "M" else 1)
+        index = (int(match.group("level")), int(match.group("column")), row)
+        if index in seen:
+            return None
+        seen.add(index)
+        result[grid_id] = index
     return result
+
+
+def _adjacency_edges(grid):
+    """Adjacency edges of the grid graph, built in O(cells * 8).
+
+    This is intentionally *not* ``AirspaceEligibilityService.build``.  That service
+    answers a harder question (full geometric coverage of every candidate edge by the
+    union of allowed polygons) and does so with a pairwise candidate scan, which is
+    quadratic in the cell count.  For a synthetic allowed *shell* — where every cell is
+    inside the one confirmed allowed polygon by construction — the pairwise scan is pure
+    overhead, and at MH/T level 8 it dominated the whole tool run.
+
+    So the fixture builds the same information directly from exact MH/T indices: the
+    allowed cell set is unambiguous, and the planner's own diagonal guards still enforce
+    every traversal rule at search time.  Production eligibility is untouched.
+    """
+
+    ids = [str(cell["grid_id"]) for cell in grid.get("cells") or []]
+    indices = grid_indices(grid)
+    if indices is None:
+        raise ValueError("合成 grid 缺少可解析的 MH/T grid_id，无法构造邻接")
+    reverse = {value: key for key, value in indices.items()}
+    edges = []
+    for grid_id, (level, column, row) in indices.items():
+        for dx, dy in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
+            other = reverse.get((level, column + dx, row + dy))
+            if other is None:
+                continue
+            # Emit each undirected edge once.  grid_ids are opaque strings whose sort
+            # order is not guaranteed, so compare the parsed integer indices instead.
+            if indices[other] > indices[grid_id]:
+                edges.append([grid_id, other])
+    return sorted(set(ids)), sorted(edges)
+
+
+def _airspace_eligibility(case, grid):
+    """Synthetic confirmed allowed airspace = the whole synthetic workspace shell.
+
+    Blocked boxes are deliberately NOT declared ``blocked`` here, so they stay inside
+    the allowed geometry and must be excluded by the planner's own hard-constraint
+    handling.  That keeps the allowed-airspace fixture and the hard-constraint fixture
+    independently observable instead of double-counting the same obstacle.
+    """
+
+    shell = _boxes_to_rectangles(case, grid)[0]
+    allowed_ids, edges = _adjacency_edges(grid)
+    feature_id = "SYN-ALLOWED-SHELL"
+    return {
+        "status": "passed" if allowed_ids else "missing_data",
+        "message": "仅 confirmed allowed geometry 可用于运行航路",
+        "algorithm_id": "confirmed-airspace-eligibility",
+        "algorithm_version": "1.0",
+        "allowed_grid_ids": allowed_ids,
+        "connector_safe_grid_ids": allowed_ids,
+        "allowed_edges": edges,
+        "feature_counts": {"allowed": 1, "blocked": 0, "unknown": 0},
+        "feature_fingerprint": sha256(
+            json.dumps(_rectangle_geometry(shell), sort_keys=True).encode()
+        ).hexdigest(),
+        "policy_fingerprint": sha256(b"SYN-ALLOWED-SHELL").hexdigest(),
+        "synthetic_fixture": True,
+        "synthetic_construction": {
+            "method": "direct_grid_adjacency_for_single_confirmed_allowed_shell",
+            "why": (
+                "AirspaceEligibilityService 的候选边全覆盖判定是 pairwise（O(n^2)），"
+                "对单一 allowed 外壳属纯开销；合成 fixture 直接构造等价邻接，"
+                "遍历规则仍由 planner 自身 guard 在搜索时执行。"
+            ),
+            "production_eligibility_unchanged": True,
+        },
+    }
 
 
 def _build_grid_risk(case, grid):
@@ -305,7 +373,7 @@ def _context_hard_constraints(case):
     return constraints
 
 
-def _planner_context(case):
+def _planner_context(case, *, max_cells=5000):
     """Everything a planner would receive, or the reason it cannot run at all."""
 
     context = {
@@ -321,7 +389,7 @@ def _planner_context(case):
     except ValueError as exc:
         context["input_rejection"] = str(exc)
         return context
-    grid = _workspace_grid(case)
+    grid = _workspace_grid(case, max_cells=max_cells)
     context["grid"] = grid
     context["grid_risk"] = _build_grid_risk(case, grid)
     context["airspace_eligibility"] = _airspace_eligibility(case, grid)
@@ -499,6 +567,7 @@ def _run_case(case, *, runs, warmup):
         evaluation = evaluate_route_quality(
             context["route"], result, context["hard_constraints"],
             runtime_statistics["runtime_ms"]["median"],
+            grid=context["grid"], airspace_eligibility=context["airspace_eligibility"],
         )
         evaluation["deterministic_consistency"] = runtime_statistics["deterministic_consistency"]
         planners[run_id] = {
@@ -523,6 +592,8 @@ def _run_case(case, *, runs, warmup):
             "risk_metrics": evaluation["risk_metrics"],
             "risk_metrics_source": evaluation["risk_metrics_source"],
             "risk_recomputed": False,
+            "grid_behavior": evaluation["grid_behavior"],
+            "constraint_input_summary": evaluation["constraint_input_summary"],
             "metric_semantics": evaluation["metric_semantics"],
             "hard_constraint_input": evaluation["hard_constraint_input"],
             "allowed_airspace_feasibility": evaluation["allowed_airspace_feasibility"],
@@ -533,6 +604,8 @@ def _run_case(case, *, runs, warmup):
     return {
         "case_id": case["case_id"],
         "description": case["description"],
+        "expert_question": case["expert_question"],
+        "demonstration": deepcopy(case.get("demonstration")),
         "application": case["application"],
         "planner_changes_allowed": False,
         "input_summary": {
@@ -976,9 +1049,15 @@ def write_pack(pack, out_dir):
     json_path = out_dir / "route_planning_baseline.json"
     markdown_path = out_dir / "route_planning_baseline.md"
     pack = deepcopy(pack)
+    def display_path(path):
+        try:
+            return str(path.relative_to(ROOT)).replace("\\", "/")
+        except ValueError:
+            return str(path)
+
     pack["artifacts"] = {
-        "json": str(json_path.relative_to(ROOT)).replace("\\", "/"),
-        "markdown": str(markdown_path.relative_to(ROOT)).replace("\\", "/"),
+        "json": display_path(json_path),
+        "markdown": display_path(markdown_path),
     }
     json_path.write_text(
         json.dumps(pack, ensure_ascii=False, indent=2, sort_keys=False), encoding="utf-8",

@@ -19,7 +19,8 @@ import time
 
 from ..benchmark.quality import evaluate_route_quality
 from ..domain.experiment import (
-    build_experiment_record, experiment_collection, scenario_fingerprint, utc_now,
+    build_experiment_record, experiment_collection, planner_context_fingerprint,
+    scenario_fingerprint, utc_now,
 )
 from .constraint_validation import validate_hard_constraints
 
@@ -56,12 +57,87 @@ class RoutePlanningExperimentService:
         collection["reference_comparisons"] = self.reference_comparisons(collection)
         return collection
 
+    def diagnostics_snapshot(self):
+        """Derived diagnostics for current operational routes; never persisted."""
+
+        state = self.session.state
+        try:
+            workspace = state.get("workspace") or {}
+            constraints = validate_hard_constraints(
+                workspace.get("hard_constraints") or [], field="workspace.hard_constraints",
+            )
+            context = self.route_service.planner_context(constraints)
+        except (TypeError, ValueError) as exc:
+            return {
+                "status": "missing_data", "reason": str(exc), "routes": [],
+                "automatic_ranking": False,
+            }
+        scenarios = {item.get("route_id"): item for item in state.get("scenario_routes") or []}
+        diagnostics = []
+        for result in state.get("operational_routes") or []:
+            route = scenarios.get(result.get("route_id"), {"route_id": result.get("route_id")})
+            diagnostics.append(evaluate_route_quality(
+                route, result, constraints,
+                grid=context.get("grid"),
+                airspace_eligibility=context.get("airspace_eligibility"),
+            ))
+        selection = (state.get("algorithm_selection") or {}).get("route_planner") or {}
+        manifest = None
+        try:
+            manifest = self.registry.manifest(
+                "route_planner", selection.get("algorithm_id"), str(selection.get("version")),
+            ).to_dict()
+        except (KeyError, TypeError, ValueError):
+            pass
+        return {
+            "status": "passed" if diagnostics else "not_calculated",
+            "planner": {
+                "algorithm_id": selection.get("algorithm_id"),
+                "version": selection.get("version"),
+                "manifest_limitations": (manifest or {}).get("limitations") or [],
+            },
+            "routes": diagnostics,
+            "measurement_scope": "derived_read_only_from_current_operational_routes",
+            "automatic_ranking": False,
+            "automatic_scoring": False,
+        }
+
     def _with_applicability(self, record):
         updated = deepcopy(record)
         current = scenario_fingerprint(self.session.state.get("scenario_routes") or [])
-        applicability = "current" if record.get("scenario_fingerprint") == current else "stale_scenario_inputs"
+        scenario_changed = record.get("scenario_fingerprint") != current
+        stored_context = record.get("planner_context_fingerprint")
+        current_context = None
+        context_error = None
+        try:
+            basis = record.get("planner_context_basis") or {}
+            if basis.get("hard_constraints_source") == "payload_override":
+                constraints = validate_hard_constraints(basis.get("hard_constraints_snapshot") or [])
+            else:
+                workspace = self.session.state.get("workspace") or {}
+                constraints = validate_hard_constraints(
+                    workspace.get("hard_constraints") or [], field="workspace.hard_constraints",
+                )
+            current_context = planner_context_fingerprint(
+                self.route_service.planner_context(constraints)
+            )
+        except (TypeError, ValueError) as exc:
+            context_error = str(exc)
+        context_changed = stored_context is None or current_context != stored_context
+        if scenario_changed:
+            applicability = "stale_scenario_inputs"
+        elif stored_context is None:
+            applicability = "unknown_legacy_context_inputs"
+        elif context_changed:
+            applicability = "stale_context_inputs"
+        else:
+            applicability = "current"
         updated["current_applicability"] = applicability
         updated["current_scenario_fingerprint"] = current
+        updated["current_planner_context_fingerprint"] = current_context
+        updated["scenario_inputs_changed"] = scenario_changed
+        updated["context_inputs_changed"] = context_changed
+        updated["context_comparison_error"] = context_error
         return updated
 
     def reference_comparisons(self, collection=None):
@@ -124,6 +200,9 @@ class RoutePlanningExperimentService:
             result = run.get("result") or {}
             if result.get("route_id") == scenario_route.get("route_id") and result.get("path"):
                 return result.get("path")
+            for item in result.get("results") or []:
+                if item.get("route_id") == scenario_route.get("route_id") and item.get("path"):
+                    return item.get("path")
         return None
 
     # ------------------------------------------------------------------ mutating
@@ -138,11 +217,17 @@ class RoutePlanningExperimentService:
         if not specs:
             raise ValueError("至少要选择一个 route planner 才能运行实验")
         constraints = self._constraints(payload)
+        constraint_source = (
+            "payload_override"
+            if "hard_constraints" in payload and payload["hard_constraints"] is not None
+            else "current_workspace"
+        )
         grounding = str(payload.get("grounding") or "current_scenario_routes")
         if grounding != "current_scenario_routes":
             raise ValueError("当前只支持基于 current_scenario_routes 的实验；合成算例请使用 tools/route_planning_baseline.py")
 
         context = self.route_service.planner_context(constraints)
+        context_fingerprint_value = planner_context_fingerprint(context)
         runs = []
         for spec in specs:
             runs.append(self._execute(spec, scenario_routes, context, constraints))
@@ -158,6 +243,12 @@ class RoutePlanningExperimentService:
                 "hard_constraint_count": len(constraints),
                 "planner_source": "registry_manifest_and_factory",
                 "dispatch": "route_service_planner_context_and_plan",
+            },
+            context_fingerprint_value=context_fingerprint_value,
+            context_basis={
+                "hard_constraints_source": constraint_source,
+                "hard_constraints_snapshot": deepcopy(constraints),
+                "semantics": "scenario_and_non_scenario_planner_inputs_compared_independently",
             },
         )
         record["algorithm_selection_snapshot"] = deepcopy(state.get("algorithm_selection"))
@@ -255,7 +346,11 @@ class RoutePlanningExperimentService:
                 repeat = []
             per_route_ms.append((time.perf_counter() - route_start) * 1000.0)
             repeated = repeat[0] if repeat else None
-            evaluation = evaluate_route_quality(route, result, constraints)
+            evaluation = evaluate_route_quality(
+                route, result, constraints, per_route_ms[-1],
+                grid=context.get("grid"),
+                airspace_eligibility=context.get("airspace_eligibility"),
+            )
             evaluation["deterministic_consistency"] = (
                 None if repeated is None else repeated.get("input_fingerprint") == result.get("input_fingerprint")
                 and repeated.get("path") == result.get("path")
