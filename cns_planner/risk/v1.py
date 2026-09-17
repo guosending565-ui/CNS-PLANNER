@@ -161,7 +161,8 @@ class RiskModelV1:
         }
         support_total = sum(configured_support.values())
         support_available = sum(
-            weight for name, weight in configured_support.items()
+            weight * contributors[name].get("data_completeness", 1.0)
+            for name, weight in configured_support.items()
             if contributors[name]["status"] == "passed"
         )
         completeness = support_available / support_total if support_total > 0 else 0.0
@@ -246,18 +247,40 @@ class RiskModelV1:
 
     def _population_factor(self, grid_id, attributes, reference):
         cell = (attributes.get("cells") or {}).get(grid_id) or {}
-        unavailable = self._input_unavailable(attributes, cell)
         unit_status = attributes.get("unit_status", "unverified")
+        canonical = cell.get("population_density_people_km2")
+        canonical_available = self._finite(canonical)
+        coverage_status = cell.get("coverage_status")
+        coverage = cell.get("source_coverage_fraction")
+        if attributes.get("status") == "stale" or cell.get("status") == "stale":
+            unavailable = "stale"
+        elif canonical_available and coverage_status not in ("nodata_only", "outside_extent") and (
+            coverage is None or self._finite(coverage) and float(coverage) > 0
+        ):
+            unavailable = None
+        else:
+            unavailable = self._input_unavailable(attributes, cell)
+        value = canonical if canonical_available else cell.get("value_mean")
+        value_semantics = "population_density_people_km2" if canonical_available else "legacy_source_value_mean"
+        completeness = self._clip(float(coverage)) if canonical_available and self._finite(coverage) else 1.0 if unavailable is None else 0.0
         result = {
-            "raw": cell.get("value_mean"), "normalized": None,
+            "raw": value, "raw_semantics": value_semantics,
+            "population_count_people": cell.get("population_count_people"),
+            "coverage_status": coverage_status,
+            "source_coverage_fraction": coverage,
+            "data_completeness": completeness,
+            "normalized": None,
             "weight": None, "normalized_weight": None, "contribution": None,
             "status": unavailable,
             "population_unit_status": unit_status,
             "risk_semantics": "relative_only" if unit_status != "verified_from_raster_metadata" else "relative_index",
         }
-        value = cell.get("value_mean")
         if unavailable or not self._finite(value):
             result["status"] = unavailable or "missing_data"
+            return result
+        if self._finite(reference) and float(reference) == 0 and float(value) == 0:
+            result["normalized"] = 0.0
+            result["status"] = "passed"
             return result
         if not self._finite(reference) or reference <= 0:
             result["status"] = "missing_data"
@@ -492,10 +515,17 @@ class RiskModelV1:
 
     @staticmethod
     def _population_values(attributes):
-        return [
-            cell.get("value_mean") for cell in (attributes.get("cells") or {}).values()
-            if cell.get("status") == "passed" and RiskModelV1._finite(cell.get("value_mean"))
-        ]
+        values = []
+        for cell in (attributes.get("cells") or {}).values():
+            density = cell.get("population_density_people_km2")
+            coverage = cell.get("source_coverage_fraction")
+            if RiskModelV1._finite(density) and cell.get("coverage_status") not in ("nodata_only", "outside_extent") and (
+                coverage is None or RiskModelV1._finite(coverage) and float(coverage) > 0
+            ):
+                values.append(density)
+            elif cell.get("status") == "passed" and RiskModelV1._finite(cell.get("value_mean")):
+                values.append(cell.get("value_mean"))
+        return values
 
     @staticmethod
     def _terrain_reliefs(attributes):

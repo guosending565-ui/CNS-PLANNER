@@ -168,6 +168,47 @@ def test_v1_marks_unverified_population_as_relative_only_but_still_normalizes():
     assert ground["risk_semantics"] == "relative_only"
 
 
+def test_population_risk_prefers_canonical_density_and_partial_reduces_completeness():
+    attributes = _attributes()
+    attributes["population"]["cells"] = {
+        "G1": {
+            "status": "passed", "value_status": "passed", "value_mean": 9999.0,
+            "population_count_people": 20.0, "population_density_people_km2": 20.0,
+            "coverage_status": "partial", "source_coverage_fraction": 0.5,
+        },
+        "G2": {
+            "status": "passed", "value_status": "passed", "value_mean": 1.0,
+            "population_count_people": 10.0, "population_density_people_km2": 10.0,
+            "coverage_status": "full", "source_coverage_fraction": 1.0,
+        },
+    }
+    result = RiskModelV1().evaluate(_grid(), attributes, {
+        "population_reference": {"value": 20.0},
+        "terrain_relief_reference": {"value": 20.0},
+    })
+    contributor = result["cells"]["G1"]["ground"]["contributors"]["population"]
+    assert contributor["raw"] == 20.0
+    assert contributor["raw_semantics"] == "population_density_people_km2"
+    assert contributor["status"] == "passed"
+    assert contributor["data_completeness"] == 0.5
+    assert result["cells"]["G1"]["ground"]["data_completeness"] == 0.8
+
+
+def test_population_reference_quantile_uses_canonical_density_not_legacy_mean():
+    attributes = _attributes()
+    attributes["population"]["cells"]["G1"].update({
+        "population_density_people_km2": 10.0, "coverage_status": "full", "source_coverage_fraction": 1.0,
+    })
+    attributes["population"]["cells"]["G2"].update({
+        "population_density_people_km2": 20.0, "coverage_status": "full", "source_coverage_fraction": 1.0,
+    })
+    result = RiskModelV1().evaluate(_grid(), attributes, {
+        "population_reference": {"mode": "dataset_quantile", "quantile": 1.0},
+    })
+    assert result["parameters"]["population_reference"]["resolved_value"] == 20.0
+    assert result["cells"]["G1"]["ground"]["contributors"]["population"]["raw"] == 10.0
+
+
 def test_missing_ground_factor_is_excluded_and_weights_are_renormalized():
     attributes = _attributes()
     attributes["terrain"]["cells"]["G1"] = {"status": "missing_data"}

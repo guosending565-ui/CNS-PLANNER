@@ -75,17 +75,23 @@ class GdalRasterAdapter:
         target = [float(value) for value in bbox]
         target_area = geographic_bbox_area_m2(target)
         window = self._window(target)
-        empty = {
-            "status": "missing_data", "population_count_people": None,
+        outside = {
+            "status": "missing_data", "value_status": "missing_data",
+            "coverage_status": "outside_extent", "population_count_people": None,
             "target_area_m2": target_area, "valid_covered_area_m2": 0.0,
             "source_coverage_fraction": 0.0, "source_pixel_count": 0,
+            "quality_flags": ["outside_source_extent"],
         }
         if window is None or target_area <= 0:
-            return empty
+            return outside
         x0, y0, x1, y1 = window
         values = self.band.ReadAsArray(x0, y0, x1 - x0, y1 - y0)
         if values is None:
-            return empty
+            return {
+                **outside,
+                "coverage_status": "nodata_only",
+                "quality_flags": ["source_read_failed_or_nodata_only"],
+            }
         rows = values.tolist() if hasattr(values, "tolist") else values
         scale = 1.0 if self.scale is None else float(self.scale)
         offset = 0.0 if self.offset is None else float(self.offset)
@@ -110,15 +116,25 @@ class GdalRasterAdapter:
                 covered_area += overlap_area
                 valid_pixels += 1
         if not valid_pixels:
-            return empty
+            return {
+                **outside,
+                "coverage_status": "nodata_only",
+                "quality_flags": ["no_valid_source_pixels"],
+            }
         coverage = min(1.0, covered_area / target_area)
+        coverage_status = "full" if coverage >= 0.999999 else "partial"
         return {
-            "status": "passed" if coverage >= 0.999999 else "missing_data",
+            # ``status`` is retained for old project/schema consumers and now
+            # follows value validity. Coverage completeness is independent.
+            "status": "passed" if coverage_status == "full" else "missing_data",
+            "value_status": "passed",
+            "coverage_status": coverage_status,
             "population_count_people": count,
             "target_area_m2": target_area,
             "valid_covered_area_m2": min(target_area, covered_area),
             "source_coverage_fraction": coverage,
             "source_pixel_count": valid_pixels,
+            "quality_flags": [] if coverage_status == "full" else ["partial_source_coverage", "not_extrapolated"],
         }
 
     def read_values(self, bbox):

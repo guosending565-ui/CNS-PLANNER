@@ -95,7 +95,7 @@ class QgisSourceLoader:
         if terrain_dtm_tif:
             clean_paths["terrain_dtm"] = str(terrain_dtm_tif.resolve())
         clean_paths.update({
-            key: str(paths[key]) for key in REFERENCE_SOURCE_KEYS if paths.get(key)
+            key: str(Path(paths[key]).resolve()) for key in REFERENCE_SOURCE_KEYS if paths.get(key)
         })
         for key in OPTIONAL_VECTOR_SOURCE_KEYS:
             if paths.get(key):
@@ -157,6 +157,19 @@ class QgisSourceLoader:
                     f"{label}请选择存在的 GPKG 文件"
                 )
             inspect_geopackage(source_path, key)
+        reference_formats = {
+            "reference_landing_sites": (".xlsx", ".csv", ".et"),
+            "reference_routes": (".csv", ".xlsx", ".geojson", ".json", ".et"),
+        }
+        for key, suffixes in reference_formats.items():
+            value = paths.get(key)
+            if not value:
+                continue
+            source_path = Path(value)
+            if not source_path.is_file():
+                raise ValueError(f"{key} 请选择存在的具体文件")
+            if source_path.suffix.lower() not in suffixes:
+                raise ValueError(f"{key} 文件格式不支持")
         return qgz, population, terrain, terrain_dtm
 
     @staticmethod

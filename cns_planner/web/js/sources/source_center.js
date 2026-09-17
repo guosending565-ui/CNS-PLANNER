@@ -26,7 +26,9 @@ const payload=()=>({
   terrain:$('terrainPath').value,
   terrain_dtm:$('terrain_dtmPath').value,
   buildings:$('buildingsPath').value,
-  building_grid:$('building_gridPath').value
+  building_grid:$('building_gridPath').value,
+  reference_landing_sites:$('reference_landing_sitesPath').value,
+  reference_routes:$('reference_routesPath').value
 });
   function bind(){
     const openSettings=()=>{$('settingsError').textContent='';$('settings').showModal();};
@@ -45,7 +47,7 @@ const payload=()=>({
     finally{button.disabled=false;button.textContent='检查在线服务';}
   }
   function openBrowser(kind,initialPath=''){
-    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体 GeoPackage（.gpkg）',building_grid:'文件类型：建筑环境网格 GeoPackage（.gpkg）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
+    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体 GeoPackage（.gpkg）',building_grid:'文件类型：建筑环境网格 GeoPackage（.gpkg）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
   }
   async function browse(path){
     $('browseError').textContent='';selectedFile='';$('selectFile').disabled=true;$('chosen').textContent=browseKind==='project'?'请选择项目文件夹':'请选择文件；单击文件后确认';

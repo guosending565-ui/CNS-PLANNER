@@ -105,6 +105,9 @@ def build_registry(metadata: dict) -> list[dict]:
             item["location"] = path or (source.get("path") if isinstance(source, dict) else source)
             item["source_metadata"] = collection.get("metadata") or {}
             item["item_count"] = int(collection.get("count", len(collection.get("items", []))))
+            item["collection_status"] = collection.get("status", "not_calculated")
+            item["point_count"] = int(collection.get("point_count", len(collection.get("points", []))))
+            item["warnings"] = list(collection.get("warnings") or [])
             item["source_type"] = item["source_metadata"].get("source_type", item["source_type"])
             item["source_mode"] = item["source_metadata"].get("source_mode", item["source_type"])
         result.append(item)

@@ -15,6 +15,12 @@ def browse(path, kind):
         else (".gpkg",)
         if kind in ("buildings", "building_grid")
 
+        else (".xlsx", ".csv", ".et")
+        if kind == "reference_landing_sites"
+
+        else (".csv", ".xlsx", ".geojson", ".json", ".et")
+        if kind == "reference_routes"
+
         else (".json", ".csv", ".geojson")
         if kind in ("existing_cns", "candidate_sites")
 

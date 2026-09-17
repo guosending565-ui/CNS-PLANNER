@@ -5,6 +5,8 @@ import {readFileSync} from 'node:fs';
 import {lonLatToMercator,mercatorToLonLat} from '../cns_planner/web/js/map/projection.js';
 import {createStore} from '../cns_planner/web/js/state/store.js';
 import {buildGridOverlayCache,findGridCell} from '../cns_planner/web/js/map/grid_overlay.js';
+import {drawGridTheme} from '../cns_planner/web/js/map/renderer.js';
+import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_overlay.js';
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
@@ -34,15 +36,24 @@ test('grid cache joins attributes by grid_id and uses half-open hit boundaries',
   assert.equal(findGridCell(cache,121,30.5,theme).cell.grid_id,'B');
 });
 
-test('population theme prefers governed target-grid density and excludes partial NoData',()=>{
+test('population theme prefers governed target-grid density and retains partial values',()=>{
   const grid={cells:[{grid_id:'A',bbox:[120,30,121,31]},{grid_id:'B',bbox:[121,30,122,31]}]};
   const attributes={population:{status:'missing_data',cells:{
     A:{status:'passed',quantity_status:'passed',population_density_people_km2:25,value_mean:999},
-    B:{status:'passed',quantity_status:'missing_data',population_density_people_km2:50,value_mean:888}
+    B:{status:'passed',value_status:'passed',quantity_status:'missing_data',coverage_status:'partial',population_density_people_km2:50,value_mean:888}
   }},terrain:{cells:{}}};
   const theme={quantileBreaks:values=>values,bboxContainsHalfOpen:()=>true};
   const cache=buildGridOverlayCache(grid,attributes,{},theme);
-  assert.deepEqual(cache.populationBreaks,[25]);
+  assert.deepEqual(cache.populationBreaks,[25,50]);
+});
+
+test('population renderer uses the same color scale and a distinct partial outline',()=>{
+  const grid={cells:[{grid_id:'A',bbox:[120,30,121,31]}]},attributes={population:{status:'passed',cells:{A:{value_status:'passed',coverage_status:'partial',population_density_people_km2:25}}}};
+  const theme={bboxIntersects:()=>true,colorForValue:()=> '#abc',NO_DATA_COLOR:'#gray'},cache=buildGridOverlayCache(grid,attributes,{}, {quantileBreaks:values=>values,bboxContainsHalfOpen:()=>true});
+  const calls=[],ctx={save(){},restore(){},fillRect(){calls.push(['fill',this.fillStyle,this.globalAlpha])},strokeRect(){calls.push(['stroke',this.strokeStyle])},setLineDash(){}};
+  drawGridTheme({ctx,view:{},flow:{grid_attributes:attributes},cache,display:{theme:'population'},visibleBounds:()=>[0,0,180,90],screenPoint:p=>p,gridTheme:theme,palettes:{population:['#abc'],terrain:[],buildings:[],risk:[]},riskBreaks:[]});
+  assert.deepEqual(calls[0],['fill','#abc',.55]);
+  assert.deepEqual(calls[1],['stroke','#714f86']);
 });
 
 test('building grid cache preserves zero versus missing and exposes three theme breaks',()=>{
@@ -107,9 +118,25 @@ test('step 3 overlay keeps reference route points scenario and operational route
   assert.equal(hidden.operationalRoutes.length,1);
 });
 
+test('reference layer diagnostics expose counts and ET conversion reason',()=>{
+  const result=referenceLayerDiagnostics({reference_routes:{status:'requires_xlsx_or_csv_conversion',count:0,point_count:0},reference_landing_sites:{status:'passed',count:12}});
+  assert.equal(result.routes.count,0);
+  assert.match(result.routes.label,/ET 需先转换/);
+  assert.match(result.points.label,/航路点 0/);
+  assert.match(result.landingSites.label,/起降点 12/);
+});
+
+test('reference drawing is global while Step03 alone keeps hit interaction',()=>{
+  const main=readFileSync(new URL('../cns_planner/web/js/main.js',import.meta.url),'utf8');
+  const drawBlock=main.slice(main.indexOf('function drawWorkflowOverlay'),main.indexOf('function proposedPlanActions'));
+  assert.match(drawBlock,/drawReferenceOverlay/);
+  assert.doesNotMatch(drawBlock,/if\(currentStep===3\)/);
+  assert.match(main,/if\(currentStep===3\)[\s\S]*hitReferenceObject/);
+});
+
 test('map exposes independent source airspace confirmed allowed and reference layer toggles',()=>{
   const html=readFileSync(new URL('../cns_planner/web/index.html',import.meta.url),'utf8');
-  for(const id of ['allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','terrain_dtmPath'])assert.match(html,new RegExp('id="'+id+'"'));
+  for(const id of ['allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','referenceRouteStatus','referenceRoutePointStatus','referenceLandingStatus','reference_landing_sitesPath','reference_routesPath','buildingClearanceLayer','terrain_dtmPath'])assert.match(html,new RegExp('id="'+id+'"'));
   assert.match(html,/空域源图层（非政策结论）/);
   assert.match(html,/适飞空域（confirmed allowed）/);
   assert.match(html,/不代表已确认 WGS84/);

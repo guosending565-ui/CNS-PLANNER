@@ -12,6 +12,10 @@ WORLDPOP_R2025A = source_profile({
     "version": "R2025A",
     "quantity": "population_count_per_source_pixel",
     "unit": "person/source_pixel",
+    "support": "source_pixel",
+    "source_semantics": "people_per_pixel",
+    "canonical_target_quantities": ["population_count_people", "population_density_people_km2"],
+    "legacy_compatibility": {"quantity": "population_count_per_source_pixel", "unit": "person/source_pixel"},
     "resolution": {"angular_value": 3, "angular_unit": "arc-second", "nominal": "100 m"},
     "crs": {"horizontal": "EPSG:4326", "name": "WGS84"},
     "verification": {

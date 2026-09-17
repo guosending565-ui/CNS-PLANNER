@@ -102,8 +102,31 @@ def test_population_nodata_is_missing_not_zero_or_passed():
     adapter = GdalRasterAdapter("population.tif", IdentityGdal, IdentityOsr)
     result = adapter.read_population_count([0.0, 0.0, 2.0, 1.0])
     assert result["status"] == "missing_data"
+    assert result["value_status"] == "passed"
+    assert result["coverage_status"] == "partial"
     assert result["population_count_people"] == pytest.approx(10.0)
     assert result["source_coverage_fraction"] < 1.0
+    assert result["quality_flags"] == ["partial_source_coverage", "not_extrapolated"]
+
+
+def test_population_valid_zero_nodata_only_and_outside_extent_are_distinct():
+    IdentityGdal.values = [[0.0, 0.0]]
+    adapter = GdalRasterAdapter("population.tif", IdentityGdal, IdentityOsr)
+    zero = adapter.read_population_count([0.0, 0.0, 2.0, 1.0])
+    assert zero["value_status"] == "passed"
+    assert zero["coverage_status"] == "full"
+    assert zero["population_count_people"] == 0.0
+
+    IdentityGdal.values = [[-9999.0, -9999.0]]
+    nodata = GdalRasterAdapter("population.tif", IdentityGdal, IdentityOsr).read_population_count([0.0, 0.0, 2.0, 1.0])
+    assert nodata["value_status"] == "missing_data"
+    assert nodata["coverage_status"] == "nodata_only"
+    assert nodata["population_count_people"] is None
+
+    outside = adapter.read_population_count([5.0, 5.0, 6.0, 6.0])
+    assert outside["value_status"] == "missing_data"
+    assert outside["coverage_status"] == "outside_extent"
+    assert outside["population_count_people"] is None
 
 
 def test_population_service_emits_count_density_and_keeps_legacy_statistics():
@@ -117,6 +140,24 @@ def test_population_service_emits_count_density_and_keeps_legacy_statistics():
     assert cell["value_mean"] == pytest.approx(15.0)
     assert result["mapping"]["population_conservation"] is True
     assert result["mapping"]["interpolation"] == "none"
+
+
+def test_population_service_keeps_partial_value_and_reports_coverage_counts():
+    IdentityGdal.values = [[10.0, -9999.0]]
+    adapter = GdalRasterAdapter("population.tif", IdentityGdal, IdentityOsr)
+    grid = {"status": "passed", "level": 6, "cells": [{"grid_id": "G", "bbox": [0.0, 0.0, 2.0, 1.0]}]}
+    result = PopulationGridService(lambda _: adapter).map(grid, "population.tif")
+    cell = result["cells"]["G"]
+    assert result["value_status"] == "passed"
+    assert result["coverage_status"] == "partial"
+    assert result["partial_count"] == 1
+    assert result["full_count"] == result["missing_count"] == result["outside_count"] == 0
+    assert cell["value_status"] == "passed"
+    assert cell["population_count_people"] == pytest.approx(10.0)
+    assert cell["population_density_people_km2"] == pytest.approx(
+        10.0 / (cell["valid_covered_area_m2"] / 1_000_000.0)
+    )
+    assert cell["quantities"]["population_density"]["conversion"]["not_extrapolated"] is True
 
 
 class TerrainAdapter:
@@ -150,6 +191,27 @@ def test_schema_v2_backfills_and_roundtrips_source_profiles(tmp_path):
     legacy.pop("data_source_profiles")
     restored_legacy = normalize_project(legacy, NoopGrid())
     assert restored_legacy["data_source_profiles"]["population"]["unit"] == "person/source_pixel"
+
+
+def test_old_population_result_backfills_partial_value_without_extrapolation():
+    state = blank_project({})
+    state["grid_attributes"]["population"] = {
+        "status": "missing_data", "quantity_status": "missing_data", "count": 1,
+        "cells": {"G": {
+            "status": "passed", "quantity_status": "missing_data",
+            "population_count_people": 10.0, "population_density_people_km2": 10.0,
+            "grid_area_m2": 1_000_000.0, "source_coverage_fraction": 0.5,
+        }},
+    }
+    restored = normalize_project(state, NoopGrid())
+    population = restored["grid_attributes"]["population"]
+    cell = population["cells"]["G"]
+    assert population["value_status"] == "passed"
+    assert population["partial_count"] == 1
+    assert cell["value_status"] == "passed"
+    assert cell["coverage_status"] == "partial"
+    assert cell["valid_covered_area_m2"] == 500_000.0
+    assert cell["population_density_people_km2"] == 20.0
 
 
 def test_registry_exposes_source_type_and_semantic_metadata():

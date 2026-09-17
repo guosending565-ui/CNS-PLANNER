@@ -34,7 +34,7 @@ export function buildGridOverlayCache(grid,attributes,risk,gridTheme){
   }));
   const usable=status=>status==='passed'||status==='missing_data';
   const populationValue=item=>Number.isFinite(item.population?.population_density_people_km2)
-    ? (item.population.quantity_status==='passed'?item.population.population_density_people_km2:null)
+    ? item.population.population_density_people_km2
     : item.population?.value_mean;
   const values=(source,key)=>usable(source.status)?cells.map(item=>source===sources.population?populationValue(item):source===sources.buildings?item.buildings?.[key]:item.terrain?.[key]).filter(Number.isFinite):[];
   return {

@@ -53,6 +53,17 @@ def build_health(metadata: dict, workspace_bbox=None) -> dict:
             status, message = ("warning", "已配置 Key；地名搜索权限需独立验证") if source["configured"] else ("warning", "未配置；保留经纬度定位")
         elif source_id == "airspace" and source["configured"]:
             status, message = "ready", "由 QGIS 项目提供；语义分类需按图层属性确认"
+        elif source_id in ("reference_landing_sites", "reference_routes"):
+            collection_status = source.get("collection_status", "not_calculated")
+            if str(source.get("location") or "").lower().endswith(".et"):
+                status, message = "warning", "已检测到 ET；requires_xlsx_or_csv_conversion"
+            elif collection_status == "passed":
+                suffix = f"；航路点 {source.get('point_count', 0)} 个" if source_id == "reference_routes" else ""
+                status, message = "ready", f"已加载 {source.get('item_count', 0)} 条{suffix}"
+            elif source["configured"]:
+                status, message = "warning", f"已配置但可用记录为 0；{collection_status}"
+            else:
+                status, message = "warning", "未配置参考来源"
         elif source_id in ("aircraft", "devices", "existing_cns", "candidate_sites") and source["configured"]:
             status, message = "ready", f"已加载 {source.get('item_count', 0)} 条标准记录"
         item = {**source, "status": status, "message": message, "checks": checks}

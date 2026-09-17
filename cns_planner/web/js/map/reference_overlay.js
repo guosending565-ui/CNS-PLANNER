@@ -7,6 +7,25 @@ export function drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes,point
   for(const point of points||[])drawPoint(ctx,view,screenPoint,point,labels);
 }
 
+function diagnostic(collection,count,label){
+  const status=collection?.status||'not_calculated';
+  let reason=status;
+  if(status==='requires_xlsx_or_csv_conversion')reason='ET 需先转换为 XLSX/CSV';
+  else if(status==='not_calculated')reason='未配置来源';
+  else if(status==='missing_data')reason='来源中没有可用记录';
+  else if(status==='passed')reason='已载入';
+  return {count:Number(count||0),status,reason,label:label+' '+Number(count||0)+' · '+reason};
+}
+
+export function referenceLayerDiagnostics(flow){
+  const routes=flow?.reference_routes||{},landing=flow?.reference_landing_sites||{};
+  return {
+    routes:diagnostic(routes,routes.count,'航线'),
+    points:diagnostic(routes,routes.point_count??routes.points?.length,'航路点'),
+    landingSites:diagnostic(landing,landing.count,'起降点'),
+  };
+}
+
 function drawLabel(ctx,value,x,y,occupied){
   const text=String(value||'').trim();if(!text)return;
   const width=Math.min(150,Math.max(28,text.length*11)),box=[x-2,y-12,x+width,y+3];

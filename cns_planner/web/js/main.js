@@ -4,7 +4,7 @@ import {eventLonLat as projectEvent,lonLatToMercator,mercatorToLonLat,screenPoin
 import {buildGridOverlayCache,findGridCell as hitGridCell} from './map/grid_overlay.js';
 import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/renderer.js';
-import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay} from './map/reference_overlay.js';
+import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {drawConfirmedAllowedAirspace} from './map/airspace_policy_overlay.js';
 import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
@@ -87,12 +87,10 @@ function drawWorkflowOverlay(){
   for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
   if($('buildingClearanceLayer')?.checked)drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
-  if(currentStep===3){
-    const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:$('referenceLandingLayer').checked});
-    drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
-    const filters={workspace:flow.workspace,search:$('referenceSiteSearch')?.value||'',region:$('referenceSiteRegion')?.value||'',siteType:$('referenceSiteType')?.value||''};
-    if($('referenceLandingLayer').checked)for(const site of Step03.filterReferenceSites(flow.reference_landing_sites?.items||[],filters))drawCnsInputPoint(site.coordinate,site.possible_duplicate?'#8b6b2f':'#2b8c82','diamond');
-  }
+  const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer')?.checked,points:$('referenceRoutePointLayer')?.checked,landingSites:false});
+  drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
+  const filters={workspace:flow.workspace,search:currentStep===3?$('referenceSiteSearch')?.value||'':'',region:currentStep===3?$('referenceSiteRegion')?.value||'':'',siteType:currentStep===3?$('referenceSiteType')?.value||'':''};
+  if($('referenceLandingLayer')?.checked)for(const site of Step03.filterReferenceSites(flow.reference_landing_sites?.items||[],filters))drawCnsInputPoint(site.coordinate,site.possible_duplicate?'#8b6b2f':'#2b8c82','diamond');
   const gapColors={C:'#d83b35',N:'#c26b16',S:'#9b3eb5'},gapToggles={C:'cLayer',N:'nLayer',S:'sLayer'};
   for(const route of flow.cns_gap_analysis?.status==='stale'?[]:(flow.cns_gap_analysis?.routes||[]))for(const subsystem of route.subsystems||[]){
     if(!$(gapToggles[subsystem.subsystem])?.checked)continue;
@@ -205,8 +203,9 @@ function updateGridThemeLegend(){
 function formatGridDetails(item){
   const cell=item.cell,populationResult=flow?.grid_attributes?.population||{},terrainResult=flow?.grid_attributes?.terrain||{};
   const population=item.population||{},terrain=item.terrain||{},buildings=item.buildings||{},airspace=item.airspace||{},traffic=item.traffic||{},conflict=item.conflict||{},populationSamples=population.valid_sample_count||0,terrainSamples=terrain.valid_sample_count||0;
+  const populationCoverage=Number.isFinite(population.source_coverage_fraction)?GridTheme.formatNumber(population.source_coverage_fraction*100)+'%':'未知';
   const populationValues=Number.isFinite(population.population_count_people)
-    ? '人口数 '+GridTheme.formatNumber(population.population_count_people)+' person · 密度 '+GridTheme.formatNumber(population.population_density_people_km2)+' person/km² · 网格面积 '+GridTheme.formatNumber((population.grid_area_m2||0)/1000000)+' km²'
+    ? '人口数 '+GridTheme.formatNumber(population.population_count_people)+' person · 密度 '+GridTheme.formatNumber(population.population_density_people_km2)+' person/km² · coverage '+populationCoverage+' · '+(population.coverage_status||'unknown')
     : populationSamples?'兼容源像元统计 mean '+GridTheme.formatNumber(population.value_mean)+' · sum '+GridTheme.formatNumber(population.value_sum)+'（非人数）':'无数据';
   const elevationUnit=terrainResult.elevation_unit||'m';
   const terrainPath=terrainResult.source?.path||'',terrainSource=terrainPath.split(/[\\/]/).pop()||'未记录';
@@ -236,7 +235,7 @@ function formatGridDetails(item){
     'Overall Risk：'+riskValue(overall)+' · 完整度 '+GridTheme.formatNumber((overall.data_completeness||0)*100)+'%\n'+
     '风险语义：'+(overall.semantics||risk.semantics||'relative_index')+' · '+(riskResult.algorithm_id||'未计算')+'@'+(riskResult.algorithm_version||'-');
   return cell.grid_id+' · L'+cell.level+'\n'+
-    populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(population.quantity_status||'missing_data')+'\n'+
+    populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(population.value_status||population.quantity_status||'missing_data')+'\n'+
     'DEM：样本 '+terrainSamples+' · '+terrainValues+' · '+(terrainResult.unit_status||'单位来源未知')+' · '+terrainSource+'\n'+
     buildingSummary+'\n'+airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary;
 }
@@ -317,6 +316,7 @@ document.querySelectorAll('[data-step]').forEach(button=>button.onclick=()=>setS
 function actionButton(id,handler){const button=$(id);if(button)button.onclick=async()=>{try{button.disabled=true;await handler();}catch(exc){panelError(exc.message);}finally{if(document.body.contains(button))button.disabled=false;}};}
 function renderWorkflow(){
   if(!flow)return;const panel=$('workflowPanel');
+  const referenceDiagnostics=referenceLayerDiagnostics(flow);for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites]]){const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}}
   $('workflowStatus').textContent='项目：'+flow.project.name+' · 第 '+currentStep+' 步';
 
   const storage=state?.project_storage||{};
@@ -424,6 +424,8 @@ function update(data){
   $('terrain_dtmPath').value=data.paths.terrain_dtm||'';
   $('buildingsPath').value=data.paths.buildings||'';
   $('building_gridPath').value=data.paths.building_grid||'';
+  $('reference_landing_sitesPath').value=data.paths.reference_landing_sites||'';
+  $('reference_routesPath').value=data.paths.reference_routes||'';
   const population=data.population;
   $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
   const terrain=data.terrain||{};

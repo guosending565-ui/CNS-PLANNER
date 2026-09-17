@@ -4,7 +4,9 @@ import pytest
 from openpyxl import Workbook
 
 from cns_planner.api.router import ApiRouter
+from cns_planner.api.file_browser import browse
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.data.health import build_health
 from cns_planner.reference_data import (
     load_equipment_reference_catalog,
     load_reference_landing_sites,
@@ -82,6 +84,26 @@ def test_et_is_detected_and_requires_conversion(tmp_path):
     assert result["warnings"] == ["requires_xlsx_or_csv_conversion"]
     assert result["items"] == []
     assert load_reference_routes(source)["status"] == "requires_xlsx_or_csv_conversion"
+
+
+def test_reference_source_center_reports_counts_and_et_reason(tmp_path):
+    landing = _xlsx(tmp_path)
+    route = tmp_path / "routes.et"
+    route.write_text("conversion required", encoding="utf-8")
+    metadata = {
+        "paths": {"reference_landing_sites": str(landing), "reference_routes": str(route)},
+        "workflow": {
+            "reference_landing_sites": load_reference_landing_sites(landing),
+            "reference_routes": load_reference_routes(route),
+        },
+        "layers": [],
+    }
+    health = {item["id"]: item for item in build_health(metadata)["items"]}
+    assert health["reference_landing_sites"]["status"] == "ready"
+    assert "5 条" in health["reference_landing_sites"]["message"]
+    assert health["reference_routes"]["status"] == "warning"
+    assert "requires_xlsx_or_csv_conversion" in health["reference_routes"]["message"]
+    assert "routes.et" in {entry["name"] for entry in browse(tmp_path, "reference_routes")["entries"] if not entry["directory"]}
 
 
 def test_reference_source_must_be_a_concrete_file(tmp_path):

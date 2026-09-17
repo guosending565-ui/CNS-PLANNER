@@ -398,6 +398,10 @@ FABDEM/GBA 建筑阶段完整结果：**389 passed, 6 skipped**；Node 前端 **
 
 数据源 `terrain_dtm/buildings/building_grid` 已进入默认/项目路径、保存恢复、统一设置、浏览器、registry/profile/health 与 mtime 失效；workspace/grid、三类数据源、运行航路、spatial_3d/高度剖面、policy 变化均定向使建筑结果 stale。Step 02 提供 L8 显式选择、三类专题与状态；Step 03 提供参数来源/confirmed、执行、汇总、critical buildings 和地图 breach 图层；P19 新增“建筑环境与建筑净空安全”章节与限制声明。当前命令行环境的 QGIS PyQt DLL 仍无法装载，因此真实 QGIS 几何/GUI HTTP 集成需在正常 QGIS 启动器进程手工验收；GDAL 与真实 GeoPackage/DTM 内容、RTree 及 L8 映射已在本机验证。
 
+空间数据可视化闭环与人口语义修正结果：**395 passed, 6 skipped**；Node 前端 **24 passed, 0 failed**；Python compile、相关 JS syntax 与作用域 `git diff --check` 通过。reference overlay 绘制已与 workflow step 解耦：三个全局开关在所有步骤生效，只有 Step 03 保留点击详情、筛选与加入项目交互；侧栏和 Data Source Center 显示航线/航路点/起降点 count、status 与 0 条原因。本机当前项目实际为起降点 **98 / passed**、参考航线/航路点 **0/0 / requires_xlsx_or_csv_conversion**，源目录没有已转换航线文件。
+
+WorldPop 原始语义保持 `people_per_pixel` / `person/source_pixel`，映射仍为 source-pixel 与目标格的面积权重 overlap、无插值。新人口结果将 `value_status` 与 `coverage_status=full/partial/nodata_only/outside_extent` 分离，保存有效覆盖面积、覆盖比例、源像元数与 quality flags；partial 保留实际 count，以有效覆盖面积计算 canonical density，不向未覆盖区域外推。RiskModelV1 优先使用 `population_density_people_km2` 并用 coverage fraction 降低 completeness，`value_mean` 仅为旧项目 fallback；building multiplier 仍为 0。真实 WorldPop L8 只读冒烟框 `[122.0,29.9,122.02,29.92]` 共 324 格：full/partial/missing/outside = **4/19/301/0**，其中 nodata-only 301。
+
 当前里程碑：**interactive CNS planning product delivery baseline complete**；下一步先做 synthetic/manual end-to-end validation。
 
 ## 9. 架构原则
@@ -417,11 +421,11 @@ FABDEM/GBA 建筑阶段完整结果：**389 passed, 6 skipped**；Node 前端 **
 4. `services/` 仍保留一组旧导入路径兼容 facade；待外部脚本完成迁移后可在主版本升级中删除。
 5. 默认测试跳过真实 QGIS HTTP；需在有 QGIS 与真实本机数据时执行集成套件。
 6. V1 航路使用 56×56 经纬度近似网格和图层 BBOX 硬约束；CoverageV1 使用 demo/default 设备参数，均非最终工程模型。
-7. RiskModelV1 为保持外部语义仍读取人口兼容字段 `value_mean`；P1 新的守恒人数/密度已独立保存并用于前端专题，后续模型版本才能显式切换到权威 quantity，不能在 V1 中暗改。
+7. RiskModelV1 已优先使用 canonical `population_density_people_km2`；`value_mean` 仅为旧项目兼容 fallback，并以 `raw_semantics=legacy_source_value_mean` 明示。当前仍是相对工程指数，不是绝对人口风险。
 8. 数据源产品契约已确认，但当前具体 GeoTIFF 文件身份仍记录为 `configured_assumption`；尚未通过 checksum/manifest 验证其确为对应 WorldPop/GLO-30 产品。
 9. M7 是二维恒速直线轨迹与局部平面 CPA，未处理垂直间隔、动力学、不确定性及正式安全阈值。
 10. CSS 已按加载职责拆分，但 `base.css` 保留历史压缩规则；未来视觉改版时再格式化和去重，避免本轮改变级联结果。
-11. WorldPop SourceProfile 当前使用 `quantity=population_count_per_source_pixel`、`unit=person/source_pixel` 表达官方 people-per-pixel 语义；长期应规范为 `quantity=population_count`、`unit=person`，并独立使用 `support=source_pixel` / `source_semantics=people_per_pixel` 表达空间支撑。当前阶段不得为此破坏 P1 兼容字段和人口映射结果。
+11. WorldPop SourceProfile 保留兼容字段 `quantity=population_count_per_source_pixel`、`unit=person/source_pixel`，并新增 `support=source_pixel` / `source_semantics=people_per_pixel` 与 canonical target quantities；不得把 partial 未覆盖区当作零人口或进行外推。
 
 12. `QgsSpatialIndex` 同时兼容真实 QGIS 的空构造+`addFeature` 与轻量测试替身的 features 构造；当前全量 pytest 无失败。真实 QGIS HTTP/GUI 集成仍由默认测试环境跳过。
 13. `OperationService` 为保持旧工作流/API 语义，仍在顶层 `aircraft` 输出 legacy `lambda_per_hour=1/mtbf_h`；Step 4 已标注其不是 P4 ReliabilitySpec 推断。新安全计算只能使用显式声明模型的分系统 ReliabilitySpec。

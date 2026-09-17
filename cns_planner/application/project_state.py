@@ -222,6 +222,7 @@ def normalize_project(value, grid_service):
         raise ValueError("grid_attributes 格式无效")
     for name, empty in empty_grid_attributes().items():
         attributes.setdefault(name, empty)
+    attributes["population"] = PopulationGridService.backfill_legacy(attributes.get("population"))
     airspace = attributes.get("airspace")
     if isinstance(airspace, dict):
         airspace.setdefault("features", [])

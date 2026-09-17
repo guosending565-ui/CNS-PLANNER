@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 from ..source_profiles import WORLDPOP_R2025A
 from ...domain.quantities import geographic_bbox_area_m2, quantity_value
@@ -11,7 +12,7 @@ from ...gis.raster_adapter import GdalRasterAdapter
 
 class PopulationGridService:
     algorithm_id = "population-grid-raw-statistics"
-    sampling_version = "1.0"
+    sampling_version = "1.1"
 
     def __init__(self, adapter_factory=GdalRasterAdapter):
         self.adapter_factory = adapter_factory
@@ -26,6 +27,20 @@ class PopulationGridService:
             "grid_level": None,
             "count": 0,
             "covered_count": 0,
+            "value_covered_count": 0,
+            "full_count": 0,
+            "partial_count": 0,
+            "missing_count": 0,
+            "outside_count": 0,
+            "nodata_only_count": 0,
+            "value_status": "not_calculated",
+            "coverage_status": "not_calculated",
+            "coverage_summary": {
+                "full": 0, "partial": 0, "missing": 0,
+                "outside_extent": 0, "nodata_only": 0,
+                "valid_covered_area_m2": 0.0, "target_area_m2": 0.0,
+                "source_coverage_fraction": 0.0,
+            },
             "quantity_status": "not_calculated",
             "source_profile": deepcopy(WORLDPOP_R2025A),
             "mapping": cls._mapping_contract(),
@@ -47,12 +62,15 @@ class PopulationGridService:
             unit = source.get("unit_metadata")
             profile = self._source_profile(source)
             attributes = {}
-            covered = 0
-            quantity_covered = 0
+            raw_covered = 0
+            coverage_counts = {"full": 0, "partial": 0, "nodata_only": 0, "outside_extent": 0}
+            value_covered = 0
+            valid_area_total = 0.0
+            target_area_total = 0.0
             for cell in cells:
                 values = adapter.read_values(cell["bbox"])
                 if values:
-                    covered += 1
+                    raw_covered += 1
                     item = {
                         "status": "passed",
                         "valid_sample_count": len(values),
@@ -65,17 +83,29 @@ class PopulationGridService:
                     item = self._empty_cell()
                 allocation = self._allocate_count(adapter, cell["bbox"])
                 self._add_quantity_fields(item, cell["bbox"], allocation)
-                quantity_covered += allocation.get("status") == "passed"
+                value_covered += item["value_status"] == "passed"
+                coverage = item["coverage_status"]
+                if coverage in coverage_counts:
+                    coverage_counts[coverage] += 1
+                valid_area_total += float(item.get("valid_covered_area_m2") or 0.0)
+                target_area_total += float(item.get("grid_area_m2") or 0.0)
                 attributes[cell["grid_id"]] = item
+            value_status = "passed" if value_covered == len(cells) else "missing_data"
+            legacy_status = "passed" if raw_covered == len(cells) else "missing_data"
+            status = value_status if hasattr(adapter, "read_population_count") else legacy_status
+            coverage_status = self._dataset_coverage_status(coverage_counts, len(cells))
+            missing_count = len(cells) - coverage_counts["full"] - coverage_counts["partial"]
             return {
-                "status": "passed" if covered == len(cells) else "missing_data",
+                "status": status,
+                "value_status": value_status,
+                "coverage_status": coverage_status,
                 "source": source,
                 "algorithm_id": self.algorithm_id,
                 "sampling_version": self.sampling_version,
                 "value_unit": unit,
                 "unit_status": "verified_from_raster_metadata" if unit else "unverified",
                 "interpretation": "source_values_only",
-                "quantity_status": "passed" if quantity_covered == len(cells) else "missing_data",
+                "quantity_status": value_status,
                 "quantity": "population_count_per_source_pixel",
                 "unit": "person/source_pixel",
                 "target_quantities": {
@@ -86,7 +116,24 @@ class PopulationGridService:
                 "mapping": self._mapping_contract(source),
                 "grid_level": grid.get("level"),
                 "count": len(cells),
-                "covered_count": covered,
+                "covered_count": raw_covered,
+                "value_covered_count": value_covered,
+                "raw_statistics_covered_count": raw_covered,
+                "full_count": coverage_counts["full"],
+                "partial_count": coverage_counts["partial"],
+                "missing_count": missing_count,
+                "outside_count": coverage_counts["outside_extent"],
+                "nodata_only_count": coverage_counts["nodata_only"],
+                "coverage_summary": {
+                    "full": coverage_counts["full"],
+                    "partial": coverage_counts["partial"],
+                    "missing": missing_count,
+                    "outside_extent": coverage_counts["outside_extent"],
+                    "nodata_only": coverage_counts["nodata_only"],
+                    "valid_covered_area_m2": valid_area_total,
+                    "target_area_m2": target_area_total,
+                    "source_coverage_fraction": valid_area_total / target_area_total if target_area_total > 0 else 0.0,
+                },
                 "cells": attributes,
             }
         except (OSError, ValueError, RuntimeError) as exc:
@@ -101,6 +148,9 @@ class PopulationGridService:
         result["unit_status"] = "unverified"
         result["interpretation"] = "source_values_only"
         result["quantity_status"] = status
+        result["value_status"] = status
+        result["coverage_status"] = "missing_data"
+        result["missing_count"] = len(cells)
         return result
 
     @staticmethod
@@ -112,6 +162,12 @@ class PopulationGridService:
             "value_mean": None,
             "value_min": None,
             "value_max": None,
+            "value_status": "missing_data",
+            "coverage_status": "nodata_only",
+            "valid_covered_area_m2": 0.0,
+            "source_coverage_fraction": 0.0,
+            "source_pixel_count": 0,
+            "quality_flags": ["population_quantity_unavailable"],
         }
 
     @staticmethod
@@ -119,9 +175,12 @@ class PopulationGridService:
         reader = getattr(adapter, "read_population_count", None)
         if reader is None:
             return {
-                "status": "missing_data", "population_count_people": None,
+                "status": "missing_data", "value_status": "missing_data",
+                "coverage_status": "nodata_only", "population_count_people": None,
                 "target_area_m2": geographic_bbox_area_m2(bbox),
-                "source_coverage_fraction": None, "source_pixel_count": 0,
+                "valid_covered_area_m2": 0.0,
+                "source_coverage_fraction": 0.0, "source_pixel_count": 0,
+                "quality_flags": ["population_count_reader_unavailable"],
             }
         return reader(bbox)
 
@@ -129,15 +188,28 @@ class PopulationGridService:
     def _add_quantity_fields(item, bbox, allocation):
         area_m2 = float(allocation.get("target_area_m2") or geographic_bbox_area_m2(bbox))
         count = allocation.get("population_count_people")
-        density = count / (area_m2 / 1_000_000.0) if count is not None and area_m2 > 0 else None
-        quantity_status = allocation.get("status") if count is not None else "missing_data"
+        covered_area_m2 = float(allocation.get("valid_covered_area_m2") or 0.0)
+        value_status = allocation.get("value_status") or allocation.get("status") or "missing_data"
+        coverage_status = allocation.get("coverage_status") or (
+            "full" if allocation.get("source_coverage_fraction") == 1 else "partial"
+            if value_status == "passed" else "nodata_only"
+        )
+        density_area_m2 = covered_area_m2 if coverage_status == "partial" else area_m2
+        density = count / (density_area_m2 / 1_000_000.0) if count is not None and density_area_m2 > 0 else None
+        quantity_status = value_status if count is not None else "missing_data"
+        legacy_statistics_status = item.get("status", "missing_data")
         item.update({
+            "value_status": quantity_status,
+            "coverage_status": coverage_status,
             "quantity_status": quantity_status,
             "population_count_people": count,
             "population_density_people_km2": density,
             "grid_area_m2": area_m2,
+            "valid_covered_area_m2": covered_area_m2,
             "source_coverage_fraction": allocation.get("source_coverage_fraction"),
             "source_pixel_count": int(allocation.get("source_pixel_count") or 0),
+            "quality_flags": list(allocation.get("quality_flags") or []),
+            "legacy_statistics_status": legacy_statistics_status,
             "quantities": {
                 "population_count": quantity_value(
                     count, "population_count", "person", status=quantity_status,
@@ -146,11 +218,26 @@ class PopulationGridService:
                 ),
                 "population_density": quantity_value(
                     density, "population_density", "person/km2", status=quantity_status,
-                    conversion={"denominator": "actual_grid_area_km2"},
+                    conversion={
+                        "denominator": "valid_covered_area_km2" if coverage_status == "partial" else "actual_grid_area_km2",
+                        "not_extrapolated": True,
+                    },
                     source=WORLDPOP_R2025A["source_id"], confirmed=True,
                 ),
             },
         })
+
+    @staticmethod
+    def _dataset_coverage_status(counts, total):
+        if counts["full"] == total:
+            return "full"
+        if counts["full"] or counts["partial"]:
+            return "partial"
+        if counts["outside_extent"] == total:
+            return "outside_extent"
+        if counts["nodata_only"] == total:
+            return "nodata_only"
+        return "missing_data"
 
     @classmethod
     def _mapping_contract(cls, source=None):
@@ -158,6 +245,7 @@ class PopulationGridService:
             "method": "area_weighted_source_pixel_overlap",
             "population_conservation": True,
             "interpolation": "none",
+            "partial_coverage": "retain_observed_count_and_density_without_extrapolation",
             "assumptions": [
                 "uniform_population_within_each_source_pixel",
                 "source_pixel_footprint_bbox_exact_for_north_up_wgs84",
@@ -179,3 +267,58 @@ class PopulationGridService:
         if source.get("pixel_size"):
             profile["resolution"] = {**profile.get("resolution", {}), "observed_pixel_size": source["pixel_size"]}
         return profile
+
+    @classmethod
+    def backfill_legacy(cls, value):
+        """Add coverage/value semantics to saved V1.0 results without inventing data."""
+        if not isinstance(value, dict):
+            return cls.empty()
+        cells = value.get("cells") if isinstance(value.get("cells"), dict) else {}
+        counts = {"full": 0, "partial": 0, "nodata_only": 0, "outside_extent": 0}
+        valid_area_total = target_area_total = 0.0
+        value_covered = 0
+        for cell in cells.values():
+            if not isinstance(cell, dict):
+                continue
+            density, count = cell.get("population_density_people_km2"), cell.get("population_count_people")
+            canonical = isinstance(density, (int, float)) and not isinstance(density, bool) and math.isfinite(density)
+            fraction = cell.get("source_coverage_fraction")
+            fraction = float(fraction) if isinstance(fraction, (int, float)) and math.isfinite(fraction) else 0.0
+            coverage = cell.get("coverage_status")
+            if coverage not in counts:
+                coverage = "full" if canonical and fraction >= 0.999999 else "partial" if canonical and fraction > 0 else "nodata_only"
+            value_status = cell.get("value_status") or ("passed" if canonical else "missing_data")
+            area = float(cell.get("grid_area_m2") or 0.0)
+            valid_area = float(cell.get("valid_covered_area_m2") or area * fraction)
+            if canonical and coverage == "partial" and isinstance(count, (int, float)) and valid_area > 0:
+                cell["population_density_people_km2"] = float(count) / (valid_area / 1_000_000.0)
+            cell.update({
+                "value_status": value_status,
+                "quantity_status": value_status,
+                "coverage_status": coverage,
+                "valid_covered_area_m2": valid_area,
+                "quality_flags": list(cell.get("quality_flags") or (["partial_source_coverage", "not_extrapolated"] if coverage == "partial" else [])),
+            })
+            counts[coverage] += 1
+            value_covered += value_status == "passed"
+            valid_area_total += valid_area
+            target_area_total += area
+        total = int(value.get("count", len(cells)))
+        missing = total - counts["full"] - counts["partial"]
+        value_status = "stale" if value.get("status") == "stale" else value.get("value_status") or ("passed" if total and value_covered == total else "missing_data")
+        value.update({
+            "value_status": value_status,
+            "quantity_status": value_status,
+            "coverage_status": value.get("coverage_status") or cls._dataset_coverage_status(counts, total),
+            "value_covered_count": value_covered,
+            "full_count": counts["full"], "partial_count": counts["partial"],
+            "missing_count": missing, "outside_count": counts["outside_extent"],
+            "nodata_only_count": counts["nodata_only"],
+            "coverage_summary": value.get("coverage_summary") or {
+                "full": counts["full"], "partial": counts["partial"], "missing": missing,
+                "outside_extent": counts["outside_extent"], "nodata_only": counts["nodata_only"],
+                "valid_covered_area_m2": valid_area_total, "target_area_m2": target_area_total,
+                "source_coverage_fraction": valid_area_total / target_area_total if target_area_total > 0 else 0.0,
+            },
+        })
+        return value
