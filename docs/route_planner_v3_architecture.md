@@ -13,7 +13,10 @@
 > `DepartureProcedure → fixed cruise AltitudeLayer + horizontal route → ArrivalProcedure`。
 > V3-A/V3-B/V3-C/V3-D 自本轮起是 **advanced experimental / continuous validation capability**，
 > 不再是生产航路的默认路径，也不再与「巡航高度层」竞争主业务入口。适飞空域仍然 `display_only`。
-> 下一阶段是 **Risk Framework V2**；**不开发 V3-E**。
+> **Risk Framework V2 已实现**（factor / exposure → `ground` / `air_traffic` / `environment_obstacle`
+> domains，additive `grid_risk_v2` + `risk_policy_v2`，见 AI_DEV_CONTEXT §8.10）；
+> 后续顺序固定为 **Risk Framework V2 → Layered Risk-Aware Route Planner → RouteRiskProfile**；
+> **不开发 V3-E**。
 
 ---
 
@@ -37,8 +40,9 @@
 5. **V3-D locked profile 语义不变**：`source=v3c_validated_route` + `derived/locked/locked_by_adoption` 的剖面继续被锁定，撤销 adoption 后才允许手工改高；它只作为 `advanced_variable_profile` 只读展示。
 6. **缺值 = pending**，既不等于 unsafe 也不等于 0；readiness 四项分开报告：`altitude_layer_catalog` / `route_layer_assignment` / `departure_procedure` / `arrival_procedure`。
 
-本轮**只做**合同 / readiness / CRUD：**不做** procedure path optimizer、不做 Risk Framework V2、不做 Layered A\*、不做 RouteRiskProfile、不做新 V3 算法、不做真实进离场优化。
-未来 Layered Planner 接入后，layer selection 才会影响水平 route planning fingerprint；本轮 layer/procedure 改动只沿最小链失效 vertical / terrain-building / 下游 CNS-safety 派生结果，不改写 grid risk。
+本轮**只做**合同 / readiness / CRUD：**不做** procedure path optimizer、**不做** Layered A\*、**不做** RouteRiskProfile、**不做**新 V3 算法、**不做**真实进离场优化。
+**Risk Framework V2 已在后续轮次独立交付**（additive `grid_risk_v2` / `risk_policy_v2`，无默认生产 risk weight，`RiskModelV1` / `grid_risk` 仍完整兼容且仍是当前 `RiskAwareRoutePlannerV2` 的唯一风险输入）。
+未来 Layered Planner 接入后，layer selection 与 V2 domain index 才会影响水平 route planning fingerprint；本轮 layer/procedure 改动只沿最小链失效 vertical / terrain-building / 下游 CNS-safety 派生结果，不改写 grid risk。
 
 ---
 
@@ -51,8 +55,9 @@
 | V3-C | 连续几何实现（C1 straight/arc、explicit chord error、realized vertical profile）+ 源证据硬约束验证（native terrain raster、真实 building footprint、altitude、kinematics）；`airspace` 域固定 `skipped/not_applicable` | 已实现 |
 | V3-D | validated route → operational adoption（既有 `operational_routes` + `spatial_3d` 高度剖面接口）→ 复用既有 P7/P8/P9/P10 CNS Assessment bridge | 已实现 |
 | Layered Operational Route Architecture V1 | 固定巡航高度层 + 水平路径的生产主模式（AltitudeLayer / RouteOperatingLayer / DepartureArrivalProcedure / RouteOperatingPlan），见 §0A | 已实现（合同/readiness/CRUD） |
-| 下一阶段 | **Risk Framework V2**（生产主线）；**不开发 V3-E** | 计划 |
-| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型；Layered Planner（layer selection 进入水平规划 fingerprint） | 未来 backlog |
+| Risk Framework V2 | Factor / Exposure → `ground` / `air_traffic` / `environment_obstacle` domains；additive `grid_risk_v2` + `risk_policy_v2`，无默认生产 risk weight，`absolute_risk`/`sora_grc`/`sora_arc` 恒 `not_computed` | 已实现（additive；详见 AI_DEV_CONTEXT §8.10） |
+| 下一阶段 | **Layered Risk-Aware Route Planner**（cruise layer selection 与 V2 domain index 进入水平规划 fingerprint 与 policy）；**之后**是 RouteRiskProfile；**不开发 V3-E** | 计划 |
+| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 未来 backlog |
 
 **V3-C 的诚实边界**：vector predicate 对 **linearized representation（含显式 curve-error envelope）** 是精确的；圆弧本身是解析几何、折线是有界近似；terrain 是 **source-native raster evidence**，不声称真实世界地形在数学上连续精确。
 

@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from ..risk.v1 import RiskModelV1
+from ..domain.risk_v2 import (
+    default_risk_policy_v2, empty_grid_risk_v2, normalize_grid_risk_v2,
+    normalize_risk_policy_v2,
+)
 from ..data.mapping.airspace import AirspaceGridService
 from ..data.mapping.airspace_eligibility import empty_airspace_eligibility
 from ..data.mapping.conflict import ConflictGridService
@@ -155,6 +159,12 @@ def blank_project(defaults):
         "data_source_profiles": default_source_profiles(),
         "grid_attributes": empty_grid_attributes(),
         "grid_risk": RiskModelV1.empty(), "traffic_simulation": None,
+        # Additive Risk Framework V2 (factor → ground/air_traffic/environment_obstacle
+        # domains).  ``grid_risk`` (legacy Risk V1) stays authoritative for the
+        # current RiskAwareRoutePlannerV2; ``grid_risk_v2`` ships with no confirmed
+        # aggregation policy and therefore no production risk weight.
+        "risk_policy_v2": default_risk_policy_v2(),
+        "grid_risk_v2": empty_grid_risk_v2(),
         "spatial_3d": empty_spatial_3d(),
         "coverage_3d": GeometricCoverage3DV1.empty(),
         "cns_service_capability": CNSServiceCapabilityV1.empty(),
@@ -219,6 +229,7 @@ def blank_project(defaults):
             name: "not_calculated" for name in (
                 "workspace", "grid", "environment_risk", "routes",
                 "coverage", "cns_gap", "cns_gap_v2", "cns_site_plan",
+                "grid_risk_v2",
                 "closed_loop_assessment", "safety_assessment",
                 "building_clearance",
                 "cns_corridor_assessment",
@@ -273,6 +284,10 @@ def normalize_project(value, grid_service):
             empty_airspace_eligibility("missing_data", "旧项目未包含 confirmed allowed eligibility"),
         )
     value.setdefault("grid_risk", RiskModelV1.empty())
+    # Additive Risk Framework V2 backfill: legacy schema-v2 projects get the
+    # pending policy (no default weights) and an uncalculated V2 result.
+    value["risk_policy_v2"] = normalize_risk_policy_v2(value.get("risk_policy_v2"))
+    value["grid_risk_v2"] = normalize_grid_risk_v2(value.get("grid_risk_v2"))
     value.setdefault("traffic_simulation", None)
     value["spatial_3d"] = normalize_spatial_3d(value.get("spatial_3d"))
     value.setdefault("coverage_3d", GeometricCoverage3DV1.empty())
@@ -381,6 +396,7 @@ def normalize_project(value, grid_service):
         value.get("building_clearance_assessment")
     )
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_site_plan", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("closed_loop_assessment", "not_calculated")

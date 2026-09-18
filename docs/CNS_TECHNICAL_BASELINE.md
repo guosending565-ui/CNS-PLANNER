@@ -889,6 +889,16 @@ JARUS SORA 2.5 Annex H 定义了 Tactical Conflict Detection and Alerting Safety
 
 ## 14. 风险计算 baseline：先采用成熟的第三方地面风险量化框架
 
+> **Risk Framework V2（2026-09，additive，当前实现）**：现行交付把相对风险重构为
+> `Risk Factor / Exposure → ground / air_traffic / environment_obstacle` domains
+> （`grid_risk_v2` + `risk_policy_v2`），仍是 **relative engineering index**：
+> `absolute_risk` / `sora_grc` / `sora_arc` 恒为 `not_computed`，**无默认生产 risk weight**
+> （无 confirmed aggregation policy 时 domain `index=null`），`property_exposure` /
+> `critical_infrastructure_exposure` 无数据源时保持 `unknown`。`RiskModelV1` / `grid_risk`
+> 完整保留，仍是当前 `RiskAwareRoutePlannerV2` 的唯一风险输入；airspace 仍 `display_only`。
+> 本节后续的 `GroundThirdPartyRiskV2` / absolute risk / 第三方地面风险量化路线仍属未来 backlog，
+> 不在 Risk Framework V2 范围内。
+
 ### 14.1 为什么不立即把 RiskModelV1 改成概率
 
 当前 RiskModelV1 的 `[0,1]` 输出是 relative index，其输入数据仍不完整，且人口单位之前未完成确认。

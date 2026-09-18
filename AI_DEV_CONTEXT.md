@@ -5,7 +5,9 @@
 >
 > **Real-Data Enablement V1 决策**：现有适飞空域/AirspacePolicy/airspace_eligibility 是 `display_only_reference_layer`。DATA-3 已退役并标记 `retired/not_applicable_by_architecture_decision`；它不是 route eligibility、risk evidence 或 regulatory constraint，不参与规划、readiness、fingerprint、staleness 或 CNS。
 >
-> **Layered Operational Route Architecture V1 决策（本轮）**：**生产航路** = `DepartureProcedure → fixed cruise AltitudeLayer + horizontal route → ArrivalProcedure`，语义为 `Layered Risk-Aware Operational Route Planning`。一条具体方案只对应**一个**巡航高度层；高度转换不进入水平 A\*，只存在于 terminal procedure。**V3-A/V3-B/V3-C/V3-D 保留为 advanced experimental / continuous validation capability**，不再是生产主入口。适飞空域仍然 `display_only`。**下一阶段是 Risk Framework V2；不开发 V3-E、Layered A\*、RouteRiskProfile 或新 V3 算法。**
+> **Layered Operational Route Architecture V1 决策**：**生产航路** = `DepartureProcedure → fixed cruise AltitudeLayer + horizontal route → ArrivalProcedure`，语义为 `Layered Risk-Aware Operational Route Planning`。一条具体方案只对应**一个**巡航高度层；高度转换不进入水平 A\*，只存在于 terminal procedure。**V3-A/V3-B/V3-C/V3-D 保留为 advanced experimental / continuous validation capability**，不再是生产主入口。适飞空域仍然 `display_only`。
+>
+> **Risk Framework V2 决策（本轮）**：风险框架自本轮起为 `Risk Factor / Exposure → Ground / Air-Traffic / Environment-Obstacle domains`（additive `grid_risk_v2` + `risk_policy_v2`）。结果仍是**可解释的 relative engineering index**：不声称事故概率、SORA GRC/ARC 或绝对安全风险。`RiskModelV1` / `grid_risk` 完整兼容，仍是当前 `RiskAwareRoutePlannerV2` 的唯一风险输入；**无默认生产 risk weight**，没有 confirmed aggregation policy 时 factor maps 正常生成但 domain `index=null/status=pending_confirmation`。后续顺序固定为 **Risk Framework V2 → Layered Risk-Aware Route Planner → RouteRiskProfile**；**不开发 Layered A\*（本轮）、RouteRiskProfile（本轮）、Safety Framework V2、V3-E**。
 
 ## 1. 当前架构
 
@@ -29,7 +31,7 @@ map_app.py / app.py
 ## 2. 六步业务流程
 
 1. 项目与数据：项目创建、打开、另存和数据源设置。
-2. 工作区与环境：workspace → MH/T grid → population/terrain/traffic/conflict → relative risk；airspace 仅显示。
+2. 工作区与环境：workspace → MH/T grid → population/terrain/traffic/conflict → relative risk（`Legacy Risk V1`）；additive `Risk Framework V2` 把 canonical factors 分入 Ground / Air-Traffic / Environment-Obstacle 三个 domain（无 confirmed policy 时 domain index 保持 null）；airspace 仅显示。
 3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路；生产航路按**巡航高度层**业务面板显式选择固定 `AltitudeLayer`，并显示离场/进场 procedure readiness；高级/V3 剖面独立展示、不混成主生产模式。
 4. 运行规则：飞行器、方向、高度、间隔和监视延迟。
 5. 设备与布站：C/N/S 设备参数和 CoveragePlannerV1。
@@ -40,6 +42,7 @@ map_app.py / app.py
 - M1：workspace 生成/裁剪 MH/T 4063 标准网格，稳定 `grid_id`，保存恢复、API、Canvas 显示和点击。
 - M2–M4：人口 GeoTIFF、GLO-30 DEM、QGIS 空域按 `grid_id` 映射；处理 CRS、NoData、无覆盖和定向失效。
 - M5–M6：可替换 `RiskModel`；Ground、Operational Air、Overall 相对风险，参数化权重/阈值、贡献解释和完整度；legacy `airspace_constraint` 固定为 not_applicable/display_only。
+- Risk Framework V2（additive，`grid_risk_v2` + `risk_policy_v2`）：`Risk Factor / Exposure → ground / air_traffic / environment_obstacle` 三层分解。canonical 复用 `population_density_people_km2`、`traffic_density_raw/norm`、`conflict_rate/norm`、`surface_elevation_max_m-min_m`、`building_coverage_ratio`、`height_p95_m/height_max_m + valid_height_fraction`；`property_exposure` / `critical_infrastructure_exposure` 无数据保持 `unknown`，**不补 0**；`valid_height_fraction<1` 的 building height 保持 `partial/unresolved`。存在 canonical `TrafficGridService`（flight_count/flight_seconds）是 **UAV traffic**，只归入 Air/Traffic，**不是**地面交通。`absolute_risk` / `sora_grc` / `sora_arc` 恒为 `not_computed`；airspace 恒 `display_only` 且不进入任何 factor/value/fingerprint。**无默认生产 risk weight**：没有 confirmed policy 时 domain `index=null` + `pending_confirmation`；`weighted_sum` 要求显式权重和≈1 且**禁止自动归一化**；required 或带权重 factor 缺失 ⇒ `unresolved`，不按 available weights 重归一化。
 - M7：可复现多机直线轨迹、逐格驻留时间、二维 CPA 潜在冲突、traffic/conflict 风险输入。
 - CNS 核心输入：AircraftCNSProfileCatalog、RequiredCNS、DeviceCatalog、ExistingCNSFacility、CandidateSite 已纳入 schema v2；已有能力与任务需求严格分离。
 - CNS Gap Analysis：V1 保持 RequiredCNS、机载能力及已有设施二维水平覆盖的既有输出；V2 独立合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线，输出 planning/runtime/combined 评估、连续缺口段、contingency/unknown 暴露和稳定输入指纹。
@@ -78,7 +81,9 @@ map_app.py / app.py
 - `domain/corridor_site_planning.py`、`site_planner/corridor_reuse_first_v2.py`、`application/corridor_site_planning_service.py`：P16 confirmed voxel target/action 契约、确定性 reuse-first 排序与 Application 累计 P14→P15 what-if 编排。
 - `domain/requirement_policy.py`、`algorithms/requirements/*`、`application/requirement_recommendation_service.py`：P17 运行上下文/显式 Policy 契约、RequiredCNS recommendation 与显式 Adopt 编排。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
-- `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现。
+- `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现；`risk_v2(reason)` 只 stale `grid_risk_v2`（无 confirmed policy、无 planner 消费 V2，因此绝不 stale 当前 routes/CNS/`grid_risk`）。
+- `domain/risk_v2.py`、`risk/normalization.py`、`risk/factors_v2.py`、`risk/domains_v2.py`、`risk/model_v2.py`：Risk Framework V2 的契约、relative-scaling normalization、factor 提取与 domain 聚合**分层实现**（factor 层只回答 canonical raw/normalized/provenance，domain 层只回答显式权重聚合）。无 QGIS、无默认生产权重、不 import 也不改写 `risk/v1.py`。
+- `application/risk_v2_service.py`：`RiskFrameworkV2Service` 是 `grid_risk_v2` / `risk_policy_v2` 的唯一写入者（policy / read / evaluate / readiness / legacy backfill）；只写这两个 additive 键，不触碰 `grid_attributes`、`grid_risk`、`operational_routes` 或任何 CNS 结果。
 - `application/constraint_validation.py`：硬约束输入的 fail-closed 校验（dict + 4 项有限 bbox + west<east/south<north），在 planner 之前拒绝畸形输入；不是 planner 的一部分，也不重解释几何。
 - `cns_planner/benchmark/`：`fixtures.py` 确定性 synthetic 算例、`quality.py` 独立 RouteQualityEvaluator（只读 planner 输出，不重算风险、不排名）；不得被 planner 反向依赖。
 - `tools/route_planning_baseline.py`：专家评审证据包生成器（JSON + Markdown，写入被忽略的 `outputs/`），只报告不评分。
@@ -103,7 +108,9 @@ grid_attributes.conflict
 data_source_profiles（population / terrain 的版本、quantity、unit、resolution、CRS、verification、provenance）
 algorithm_selection（每类仅保存 algorithm_type / algorithm_id / version / parameters）
 grid_attributes.buildings / property_exposure / infrastructure / towers（扩展入口）
-grid_risk
+grid_risk（Legacy Risk V1；当前 RiskAwareRoutePlannerV2 的唯一风险输入）
+risk_policy_v2（Risk Framework V2 显式聚合策略；默认 pending_confirmation，无默认生产 risk weight）
+grid_risk_v2（Risk Framework V2 factor/domain 相对工程指数结果；additive，不被任何 planner 消费）
 aircraft_profiles / selected_aircraft_profile_id
 required_cns（project_default + route_overrides）
 device_catalog
@@ -141,6 +148,7 @@ v3_cns_assessment_bundle（V3-D CNS 评估结果：assessment_status=not_started
 - Aircraft/RequiredCNS/Device/ExistingCNS/CandidateSite 变化仅使相应下游 routes、coverage、technical risk、report stale；不改写已保存的 V1 算法结果结构。
 - workspace、operational route、运行规则/选定机型、RequiredCNS、DeviceCatalog 或 ExistingCNS 变化会使 cns_gap_analysis stale；CandidateSite 不是 Gap Analysis 输入。
 - 缺失/NoData/未知不得转换成零风险或通过。
+- **Risk Framework V2 失效规则**：`risk_policy_v2` 变化与 grid attribute / 源数据变化只把 `grid_risk_v2` 标记 `stale`；**不得** stale 当前 `routes`、`operational_routes`、任何 CNS 结果、legacy `grid_risk` 或 `environment_risk`（本轮 planner 尚未消费 V2）。`apply_grid_attributes` / `run_traffic_simulation` 会顺带重算 V2（additive 结果，不改变 V1 输出）；`risk_model` 算法选择变化仍只走既有 V1 链。
 - safety_policy 变化只使 safety_assessment、technical_risk、report stale；不得使 workspace/grid/routes/coverage/cns_gap stale。
 - DEM、航路、已有设施、设备及 P7 垂向/几何配置变化定向使 `coverage_3d` stale；单独修改高度层/航路高度剖面不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - **Layered Operational Route Architecture V1 最小失效链**：`AltitudeLayer` 目录、`RouteOperatingLayer` 分配、departure/arrival procedure 变化只 stale `coverage_3d → cns_service_capability → service_timeline → cns_gap_v2`、`building_clearance → route_vertical_profiles`、`cns_corridor_*` 与 report；**不得**改写 `grid_risk`，**不得**使 `routes`/`grid`/CoverageV1/GapV1 stale。未来 Layered Planner 接入后才让 layer selection 进入水平 route planning fingerprint。
@@ -690,7 +698,53 @@ Step 04 新增 **V3 CNS Assessment summary**：Route validation / Operational pu
 
 新增 `tests/test_route_operating_layer.py`（22 项）与 `tests/frontend_modules.test.mjs` 7 项（Node）。覆盖：legacy backfill/round-trip/幂等；nominal bounds；unknown datum / 缺 nominal / 缺 source 一律 pending；不自动推断 nominal；route→layer existence 与唯一 active assignment；constant legacy profile 不自动绑定 layer；procedure pending/confirmed 与缺省证据清单；V3-D waypoint/locked 语义保持（含 locked 拒绝手工改高）；删除/修改 layer 的引用一致性；readiness 四桶分离且缺值 pending≠unsafe/0；plan projection 只读且 cruise/terminal 分离；API CRUD/readiness/plan；最小失效链不动 grid risk 与 routes；前端无默认真实高度。
 
+## 8.10 Risk Framework V2：Factor / Exposure → Ground · Air-Traffic · Environment-Obstacle（本轮）
+
+基线 commit `df02866a485a25e14865a2237a413d4648fdbcb9`。本轮**只做** Risk Framework V2：把当前单一 relative overall risk 重构为 `Risk Factor / Exposure → ground / air_traffic / environment_obstacle` 三层分解。**不**开发 Layered A\*、RouteRiskProfile、Safety Framework V2、V3-E；不改真实舟山数据；不填任何真实 risk weight；不 commit/push；不要求人工测试。
+
+**明确不变（硬边界）**：`RiskModelV1` / `grid_risk` 的公式、参数、默认模型与 characterization 未修改；`RiskAwareRoutePlannerV2` 本轮继续消费 legacy `grid_risk`；V1/V2 搜索核心与输出契约未修改；V3-A/B/C/D 与 Layered Operational Route Architecture V1 未修改；未注册新算法、未改 `algorithm_selection`；适飞空域仍 `display_only`。
+
+### 1. Factor 层（`risk/factors_v2.py` + `risk/normalization.py`）
+
+- 统一 Factor contract：`factor_id / domain / status / raw_value / raw_unit / normalized_index / normalization / source_role / source_id / source_fingerprint / coverage / quality_flags / provenance`（另含 `resolved`、`reason`）。`status ∈ {passed, partial, missing_data, not_available, unknown, stale}`。
+- canonical 复用（不新建数据产品、不猜字段）：`population_exposure ← population_density_people_km2`；`uav_traffic_exposure ← traffic_density_raw / traffic_density_norm`；`conflict_exposure ← conflict_rate / conflict_rate_norm`；`terrain_relief ← surface_elevation_max_m − surface_elevation_min_m`（缺失时用同一来源的 legacy `min_elevation/max_elevation` 别名并打 `legacy_elevation_alias`）；`building_coverage ← building_coverage_ratio`；`building_height ← height_p95_m / height_max_m（记录 height_field）+ valid_height_fraction`。
+- **关键修正**：既有 `TrafficGridService` 是 **UAV traffic exposure**（`flight_count` / `flight_seconds`）。它只属于 Air/Traffic，**不是**地面交通；Ground domain 的 factor 集合固定为 `population_exposure / property_exposure / critical_infrastructure_exposure`。
+- `property_exposure` 与 `critical_infrastructure_exposure` 无 canonical 源，恒为 `unknown` + `normalized_index=null`（**禁止补 0**）。V2 不接受 V1 的 `value_mean` legacy fallback：缺失 canonical population density 即 `missing_data`。
+- `valid_height_fraction < 1` 或缺失时 `building_height` 保持 `partial` + `resolved=false`，已测高度仍给出 index；`building_coverage` 独立保持有效。建筑 coverage **不是** sheltering。
+- Normalization 记录 method / reference / reference_fingerprint，语义固定 `relative_scaling_only_not_a_safety_threshold`，输出 `[0,1]`。population/terrain/building height 复用与 V1 相同的 `dataset_quantile(0.95)` 相对缩放；traffic/conflict 直接采用既有 canonical normalized field；coverage 是 identity ratio。
+
+### 2. Domain 层（`risk/domains_v2.py`）
+
+- 每个 domain result 含 `domain_id / status / index / level(optional) / contributors / aggregation_policy_fingerprint / data_completeness / unresolved / required_factors / method / policy_status / semantics`。`level` 只在 policy 显式提供 bands 时给出，否则 `null`（不发明阈值）。
+- 状态优先级：`stale` → `pending_confirmation`（policy 未 confirmed）→ `unresolved` → `passed`。**无默认生产 risk weights**：默认 policy 下 factor maps 正常生成，但所有 domain `index=null` + `status=pending_confirmation`。
+- `weighted_sum` 要求显式 `weights` 且和≈1（`1e-6` 容差），**禁止自动归一化用户权重**；method/weights/required_factors/source/evidence/confirmed 全部显式且 traceable，`confirmed=true` 必须带显式 `source`。
+- required factor 缺失 ⇒ `unresolved/missing_data`；**任何带权重 factor 缺失同样 unresolved**，绝不按 available weights 重新归一化（`missing_is_not_zero` / `no_automatic_renormalization`）。
+- Environment/Obstacle 是 CNS Planner 内部 engineering domain，不标 SORA ARC/GRC；terrain/building hard clearance 与 environment risk 严格分离：clearance breach 属 feasibility，不得转换成 `risk=1`。
+- 跨域 `overall` 不再是 V2 核心：固定 `status=not_configured` / `index=null`，不提供 ground/air 默认 `0.7/0.3`；路径 cost 权重属于下一阶段 Layered Planner policy。
+
+### 3. 顶层语义（`risk/model_v2.py`）
+
+- `risk_semantics=relative_engineering_index`、`absolute_risk.status=not_computed`、`sora_grc.status=not_computed`、`sora_arc.status=not_computed`，并逐项列出缺 verified failure / impact / exposure / consequence / encounter 模型。
+- `airspace` 固定 `not_applicable / display_only`，`used_in_value_or_fingerprint=false`；所有输入/source/policy 进入 `input_fingerprint`（`riskframeworkv2-` 前缀 = `riskpolicyv2-` × factor 输入指纹），**airspace 绝不在其中**。
+- 顶层 `domains` 是跨格汇总，`index` 保持 `null` 且 `index_scope=per_cell_only`（不发明跨格平均公式）。
+
+### 4. Application / state / API
+
+- `RiskFrameworkV2Service`（`application/risk_v2_service.py`）唯一写入 `grid_risk_v2` / `risk_policy_v2`，提供 read / evaluate / policy / readiness；factor 提取与 domain aggregation 分层，不塞进一个函数。
+- API：`GET /api/grid-risk-v2`、`GET /api/risk-policy-v2`、`GET /api/risk-framework-v2/readiness`、`POST /api/risk-policy-v2`、`POST /api/grid-risk-v2/evaluate`；naming 沿用既有 workflow facade 风格。
+- schema-v2 旧项目自动 backfill 两个键（policy = pending、result = `not_calculated`），normalizer 是幂等不动点。
+
+### 5. 前端
+
+- Step 02 新增 **Risk Framework V2 工作台**：三域卡片（status / index / policy / completeness / weights / required / unresolved / aggregation policy fingerprint）、canonical factor 表（raw/unit/normalization/reference fingerprint/source fingerprint/coverage/quality flags）、readiness 与两个 fingerprint；domain policy pending 时明确“**聚合策略待确认**”，**不显示伪 0**。本轮**不提供**权重填写 UI。
+- 地图专题新增 V2 factor / domain 图层；`pending_confirmation` 或 `unresolved` 的 domain、缺失 factor 一律画“无数据”色，绝不画 0。V1 图层保留但明确标为 **`Legacy Risk V1` · 地面风险 / 综合风险**。前端无默认 risk weights，UI 不出现内部研发编号。
+
+### 6. 本轮验证
+
+新增 `tests/test_risk_framework_v2.py`（24 项）与 `tests/frontend_modules.test.mjs` 3 项（Node）。覆盖：V1 输出/公式 characterization 不变；UAV traffic 只属于 Air/Traffic；六类 canonical factor 的 raw+normalized+provenance+normalization+fingerprint；missing/unknown 不变 0（含确认的 0 仍是 0）；partial building height 保持 unresolved 且 coverage 独立有效；无 confirmed policy ⇒ factors ready 但 domain index null；显式 confirmed 权重生出 domain index（含 explicit bands）；required/带权重 factor 缺失不重归一化；invalid/非 1 和权重、未知 factor、未知 method、confirmed 缺 source 一律拒绝；airspace 不进入 value/fingerprint；absolute risk / SORA GRC / SORA ARC 均 `not_computed`；V2 变化与源变化不 stale 当前 routes/CNS；`apply_grid_attributes` / traffic simulation 重算 V2；legacy 项目 backfill 与 normalizer 幂等；readiness 结构；API 命名；前端无默认权重与 Legacy V1/V2 语义分离、V2 图层不画伪 0。
+
 ## 8.1 航路规划基础治理 + 专家评审基线（本轮）
+
 
 本轮目标是为航路规划专家评审准备**可信 baseline**，不是继续扩算法能力。基线 commit `33752b6759d992db39c639085a05e5c291945a38`。
 
@@ -1022,11 +1076,13 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 
 39. Layered Operational Route Architecture V1 当前只有**合同 / readiness / CRUD**：没有 procedure path optimizer，没有 Layered A\*，layer selection 也尚未影响水平 route planning fingerprint。真实 `nominal_altitude_m`、`vertical_reference`、route→layer 分配、爬升率/下降率/转弯半径/join-leave 点与 procedure 的 node/site 参考全部保持 pending，**必须由人工工程确认**；本轮不填任何真实高度值、不改真实舟山项目数据。巡航高度层只在**当前 `operational_routes`** 上做显式分配：route 被删除后遗留的 assignment/procedure 会以 `pending_confirmation` + 原因暴露（不会静默保持 confirmed），清理入口是同一个 CRUD service。
 
+40. Risk Framework V2 已把 factor / domain 分层交付，但**没有任何生产 risk weight**：默认 policy 恒 `pending_confirmation`，三个 domain 的 `index` 为 `null`，跨域 `overall` 恒 `not_configured`。待确认项：domain method/weights/required_factors 与工程依据、`property_exposure`/`critical_infrastructure_exposure` 的真实数据源、`valid_height_fraction<1` 的工程处理规则、dataset_quantile 参考分位是否被接受为相对缩放基准。`uav_traffic_exposure` 与 `conflict_exposure` 依赖 `TrafficSimulator`/`ConflictDetector` 的 synthetic 或显式 scenario 输出（二维恒速直线 CPA），因此 Air/Traffic domain 目前只是既有交通暴露模型的相对重述，不是空域流量或 encounter 模型。V2 尚未被任何 planner 消费：Layered Planner 接入后才让 domain index 进入 route planning fingerprint 与 policy。
+
 
 ## 11. 下一阶段计划
 
-1. **下一阶段 = Risk Framework V2**（生产主线，`Layered Risk-Aware Operational Route Planning` 的风险框架）；**不开发 V3-E**，也不在近期开发 Layered A\*、RouteRiskProfile 或真实进离场优化。Layered Operational Route Architecture V1 本轮只交付合同 / readiness / CRUD；未来 Layered Planner 接入后，layer selection 才会进入水平 route planning fingerprint。
-2. 真实工程确认项（本轮全部保持 pending，禁止补默认值）：舟山项目的巡航高度层 `nominal_altitude_m` 与 `vertical_reference`、各航路的 operating layer 显式分配、离场/进场的爬升率/下降率/转弯半径/join-leave 点与过渡模式，以及 procedure 绑定的 node/site 参考。
+1. **后续顺序固定为：Risk Framework V2（本轮已完成）→ Layered Risk-Aware Route Planner → RouteRiskProfile**。Layered Planner 才让 cruise layer selection 与 V2 domain index 进入水平 route planning fingerprint 与 policy；RouteRiskProfile 在 Layered Planner 之后。**不开发 V3-E**，也不在本轮/近期开发 Layered A\*、RouteRiskProfile 或真实进离场优化。V3-A/V3-B/V3-C/V3-D 仍为 advanced experimental / continuous validation capability；适飞空域仍 `display_only`。
+2. 真实工程确认项（本轮全部保持 pending，禁止补默认值）：舟山项目的巡航高度层 `nominal_altitude_m` 与 `vertical_reference`、各航路的 operating layer 显式分配、离场/进场的爬升率/下降率/转弯半径/join-leave 点与过渡模式，以及 procedure 绑定的 node/site 参考。Risk Framework V2 同样保持 pending：三个 domain 的 `method`/`weights`/`required_factors`/`source`/`evidence`/`confirmed`、`property_exposure` 与 `critical_infrastructure_exposure` 的真实数据源、建筑高度 `valid_height_fraction<1` 的 unresolved 处理规则，以及 dataset_quantile 参考分位是否被工程接受为相对缩放基准。
 3. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。**不再**需要逐 feature 确认 AirspacePolicy（DATA-3 已退役）。
 4. V3-D 已实现（validated route → operational adoption → 复用既有 P7/P8/P9/P10 CNS Assessment；`operational_route`/`cns_assessed` 在 V3-C validation 内仍恒为 false，"已采用/CNS 已评估"读取自 adoption/bundle 容器）。下一步是在正常 QGIS 启动器进程中用**真实舟山来源**做 V3-D 端到端验收（见下节"仍需真实端到端验证的问题"）。
 5. 真实数据 canonical adapter（terrain surface clearance floor、building required vertical clearance、grid risk soft fields）与来源审计在 V3-A/V3-B/V3-C 已实现（GIS 边界，`cns_planner/gis/v3_environment_adapter.py`），V3-D 的 operational adoption 与 CNS bridge 亦已就绪；仍需在正常 QGIS 启动器进程手工验收真实航路的 V3-A/V3-C/V3-D 端到端结果。空域不进入该链路。

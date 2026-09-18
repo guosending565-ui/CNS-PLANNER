@@ -20,6 +20,7 @@ import {profileChart,renderRouteVerticalProfilePanel} from '../cns_planner/web/j
 import {ADVANCED_PROFILE_LABEL,CRUISE_LAYER_MODE,LAYER_PENDING_LABEL,PRODUCTION_ROUTE_LABEL,READINESS_BUCKETS,routeOperatingModel,renderCruiseLayerPanel} from '../cns_planner/web/js/workflow/route_operating_layer.js';
 import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
 import {encounterFrame,renderDaaEncounterLab} from '../cns_planner/web/js/workflow/daa_encounter_lab.js';
+import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,riskV2CellSummary,riskV2LegendModel,riskV2ThemeOptions} from '../cns_planner/web/js/workflow/risk_framework_v2.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -1577,4 +1578,140 @@ test('step 2 altitude layer editor requests an explicit nominal and confirms not
   assert.doesNotMatch(source,/id="altitudeLayerId"[^>]*value="/);
   // the catalogue write goes through the explicit single-layer endpoint
   assert.match(source,/\/api\/spatial-3d\/altitude-layer'/);
+});
+
+// ---- Risk Framework V2 (factor → ground / air_traffic / environment_obstacle) -------
+
+function riskV2Flow(){
+  return {
+    steps:{'2':true},
+    workspace:null,
+    grid:null,
+    grid_attributes:{},
+    spatial_3d:{altitude_layers:[]},
+    grid_risk:{status:'passed',algorithm_id:'risk-model-v1-relative-index',algorithm_version:'1.1',data_completeness:.8,parameter_status:'default_engineering_parameters'},
+    risk_policy_v2:{
+      status:'pending_confirmation',parameter_status:'no_default_production_risk_weights',
+      domains:{
+        ground:{domain_id:'ground',status:'pending_confirmation',method:null,weights:{},required_factors:[],confirmed:false,source:'未配置'},
+        air_traffic:{domain_id:'air_traffic',status:'pending_confirmation',method:null,weights:{},required_factors:[],confirmed:false,source:'未配置'},
+        environment_obstacle:{domain_id:'environment_obstacle',status:'pending_confirmation',method:null,weights:{},required_factors:[],confirmed:false,source:'未配置'},
+      },
+    },
+    grid_risk_v2:{
+      status:'pending_confirmation',algorithm_id:'risk-framework-v2-domains',algorithm_version:'2.0',
+      risk_semantics:'relative_engineering_index',
+      absolute_risk:{status:'not_computed',value:null},sora_grc:{status:'not_computed',value:null},sora_arc:{status:'not_computed',value:null},
+      airspace:{status:'not_applicable',applicability:'display_only',used_in_value_or_fingerprint:false},
+      policy_fingerprint:'riskpolicyv2-abc',input_fingerprint:'riskframeworkv2-def',data_completeness:0,
+      domains:{
+        ground:{domain_id:'ground',status:'pending_confirmation',index:null,aggregation_policy_fingerprint:'riskaggv2-1',unresolved:[],data_completeness:0},
+        air_traffic:{domain_id:'air_traffic',status:'pending_confirmation',index:null,aggregation_policy_fingerprint:'riskaggv2-2',unresolved:[],data_completeness:0},
+        environment_obstacle:{domain_id:'environment_obstacle',status:'pending_confirmation',index:null,aggregation_policy_fingerprint:'riskaggv2-3',unresolved:[],data_completeness:0},
+      },
+    },
+    risk_framework_v2_readiness:{
+      status:'pending_confirmation',
+      policy:{status:'pending_confirmation',fingerprint:'riskpolicyv2-abc',default_production_risk_weights:false,domains:{}},
+      factors:{
+        population_exposure:{factor_id:'population_exposure',domain:'ground',status:'passed',readiness:'ready',cell_count:2,raw_unit:'people/km²',coverage:1,source_role:'population',source_id:'worldpop.tif',source_fingerprint:'risksourcev2-1',normalization:{method:'log1p_ratio_to_dataset_quantile',reference:{value:19.5,fingerprint:'riskrefv2-1'}},quality_flags:[],canonical_source_available:true},
+        property_exposure:{factor_id:'property_exposure',domain:'ground',status:'unknown',readiness:'blocked',cell_count:2,raw_unit:null,source_role:'property_exposure',quality_flags:['no_canonical_source'],canonical_source_available:false},
+        critical_infrastructure_exposure:{factor_id:'critical_infrastructure_exposure',domain:'ground',status:'unknown',readiness:'blocked',cell_count:2,quality_flags:['no_canonical_source'],canonical_source_available:false},
+        uav_traffic_exposure:{factor_id:'uav_traffic_exposure',domain:'air_traffic',status:'passed',readiness:'ready',cell_count:2,raw_unit:'relative_index_0_1',source_role:'traffic',normalization:{method:'canonical_normalized_field',reference:{fingerprint:'riskrefv2-2'}},quality_flags:[],canonical_source_available:true},
+        conflict_exposure:{factor_id:'conflict_exposure',domain:'air_traffic',status:'passed',readiness:'ready',cell_count:2,source_role:'conflict',normalization:{method:'canonical_normalized_field',reference:{fingerprint:'riskrefv2-3'}},quality_flags:[],canonical_source_available:true},
+        terrain_relief:{factor_id:'terrain_relief',domain:'environment_obstacle',status:'passed',readiness:'ready',cell_count:2,raw_unit:'m',source_role:'terrain',normalization:{method:'ratio_to_dataset_quantile',reference:{value:19.2,fingerprint:'riskrefv2-4'}},quality_flags:[],canonical_source_available:true},
+        building_coverage:{factor_id:'building_coverage',domain:'environment_obstacle',status:'passed',readiness:'ready',cell_count:2,raw_unit:'ratio_0_1',source_role:'buildings',quality_flags:['building_coverage_is_not_sheltering'],canonical_source_available:true},
+        building_height:{factor_id:'building_height',domain:'environment_obstacle',status:'partial',readiness:'partial',cell_count:2,raw_unit:'m',source_role:'buildings',quality_flags:['partial_building_height_coverage'],canonical_source_available:true},
+      },
+      domains:{
+        ground:{domain_id:'ground',status:'pending_confirmation',index:null,index_scope:'per_cell_only',aggregation_policy_fingerprint:'riskaggv2-1',data_completeness:0,unresolved:[]},
+        air_traffic:{domain_id:'air_traffic',status:'pending_confirmation',index:null,index_scope:'per_cell_only',aggregation_policy_fingerprint:'riskaggv2-2',data_completeness:0,unresolved:[]},
+        environment_obstacle:{domain_id:'environment_obstacle',status:'unresolved',index:null,index_scope:'per_cell_only',aggregation_policy_fingerprint:'riskaggv2-3',data_completeness:0,unresolved:['building_height']},
+      },
+      not_computed:{absolute_risk:{status:'not_computed'},sora_grc:{status:'not_computed'},sora_arc:{status:'not_computed'}},
+      airspace:{status:'not_applicable',applicability:'display_only'},
+    },
+  };
+}
+
+test('step 2 risk framework V2 workbench separates factors, domains and legacy V1',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=riskV2Flow();
+  const model=riskFrameworkV2Model(flow);
+  assert.equal(model.riskSemantics,'relative_engineering_index');
+  assert.equal(model.defaultProductionRiskWeights,false);
+  assert.equal(model.absoluteRisk,'not_computed');
+  assert.equal(model.soraGrc,'not_computed');
+  assert.equal(model.soraArc,'not_computed');
+  assert.equal(model.airspaceApplicability,'display_only');
+  assert.equal(model.policyStatus,'pending_confirmation');
+  assert.equal(model.factors.length,8);
+  assert.equal(model.domains.length,3);
+  assert.deepEqual(model.pendingDomains,['ground','air_traffic','environment_obstacle']);
+  assert.equal(model.domains.find(item=>item.domainId==='ground').indexAvailable,false);
+  assert.equal(model.domains.find(item=>item.domainId==='ground').index,null);
+  assert.equal(model.domains.find(item=>item.domainId==='environment_obstacle').unresolved[0],'building_height');
+  assert.equal(model.factors.find(item=>item.factorId==='uav_traffic_exposure').domain,'air_traffic');
+  assert.equal(model.factors.find(item=>item.factorId==='property_exposure').canonicalSourceAvailable,false);
+
+  const html=renderRiskFrameworkV2Panel(flow);
+  assert.match(html,/Risk Framework V2/);
+  assert.match(html,/relative_engineering_index/);
+  assert.match(html,/聚合策略待确认/);
+  assert.match(html,/未配置（无默认权重）/);
+  assert.match(html,/not_computed/);
+  assert.match(html,new RegExp(LEGACY_RISK_V1_LABEL));
+  assert.match(html,/flight_count\/flight_seconds/);
+  assert.match(html,/不是事故概率|不是<\/b>事故概率/);
+  assert.doesNotMatch(html,/P1\b|P7\b|P13\b/);
+  const step2=renderStep2({flow,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
+  assert.match(step2,/Risk Framework V2/);
+  assert.match(step2,new RegExp(LEGACY_RISK_V1_LABEL+' · 地面风险'));
+  assert.match(step2,new RegExp(LEGACY_RISK_V1_LABEL+' · 综合风险'));
+  assert.match(step2,/V2 因子 · 人口暴露/);
+  assert.match(step2,/V2 域 · Ground/);
+  assert.match(step2,/id="evaluateRiskV2"/);
+});
+
+test('no production risk weight ships in the V2 frontend or default policy',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/risk_framework_v2.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/overall_weights/);
+  assert.doesNotMatch(source,/0\.7|0\.3/);
+  assert.doesNotMatch(source,/weights:\{'ground'|weights:\{ground/);
+  const options=riskV2ThemeOptions().map(item=>item[0]);
+  assert.ok(options.includes('risk_v2:factor:population_exposure'));
+  assert.ok(options.includes('risk_v2:domain:ground'));
+  assert.ok(options.includes('ground_risk'));
+  assert.ok(options.includes('overall_risk'));
+  const labels=riskV2ThemeOptions().map(item=>item[1]).join('|');
+  assert.match(labels,new RegExp(LEGACY_RISK_V1_LABEL+' · 地面风险'));
+  assert.doesNotMatch(labels,/地面交通/);
+});
+
+test('risk V2 map layers never paint a pending domain index as zero',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const grid={cells:[{grid_id:'A',bbox:[120,30,121,31]},{grid_id:'B',bbox:[121,30,122,31]}]};
+  const riskV2={cells:{
+    A:{factors:{terrain_relief:{status:'passed',normalized_index:.5,raw_value:10}},domains:{ground:{status:'pending_confirmation',index:null}}},
+    B:{factors:{terrain_relief:{status:'missing_data',normalized_index:null,raw_value:null}},domains:{ground:{status:'pending_confirmation',index:null}}},
+  }};
+  const theme={quantileBreaks:values=>values,bboxContainsHalfOpen:()=>true,bboxIntersects:()=>true,colorForValue:()=>'#abc',NO_DATA_COLOR:'#gray',formatNumber:String};
+  const cache=buildGridOverlayCache(grid,{},{},theme,riskV2);
+  assert.deepEqual(cache.v2Breaks.factors.get('terrain_relief'),[.5]);
+  assert.deepEqual(cache.v2Breaks.domains.get('ground'),[]);
+  const calls=[],ctx={save(){},restore(){},fillRect(){calls.push(['fill',this.fillStyle])},strokeRect(){},setLineDash(){}};
+  drawGridTheme({ctx,view:{},flow:{grid_risk_v2:riskV2},cache,display:{theme:'risk_v2:domain:ground'},visibleBounds:()=>[0,0,180,90],screenPoint:p=>p,gridTheme:theme,palettes:{population:[],terrain:[],buildings:[],risk:['#abc']},riskBreaks:[]});
+  assert.deepEqual(calls,[['fill','#gray'],['fill','#gray']]);
+  const factorCalls=[],factorCtx={save(){},restore(){},fillRect(){factorCalls.push(['fill',this.fillStyle])},strokeRect(){},setLineDash(){}};
+  drawGridTheme({ctx:factorCtx,view:{},flow:{grid_risk_v2:riskV2},cache,display:{theme:'risk_v2:factor:terrain_relief'},visibleBounds:()=>[0,0,180,90],screenPoint:p=>p,gridTheme:theme,palettes:{population:[],terrain:[],buildings:[],risk:['#abc']},riskBreaks:[]});
+  assert.deepEqual(factorCalls,[['fill','#abc'],['fill','#gray']]);
+  const legend=riskV2LegendModel('risk_v2:factor:terrain_relief',cache,theme);
+  assert.match(legend.title,/Risk Framework V2/);
+  assert.equal(legend.selection.id,'terrain_relief');
+  assert.equal(riskV2LegendModel('ground_risk',cache,theme),null);
+  const summary=riskV2CellSummary(riskV2.cells.A,String);
+  assert.match(summary,/Risk Framework V2/);
+  assert.match(summary,/ground/);
+  assert.match(summary,/not_computed/);
+  assert.doesNotMatch(summary,/overall_weights/);
 });

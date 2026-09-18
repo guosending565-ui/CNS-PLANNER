@@ -70,6 +70,10 @@ class ApiRouter:
         if path == "/api/cns/safety-policy": return Response(workflow.safety_policy_snapshot())
         if path == "/api/building-clearance/policy": return Response(workflow.building_clearance_policy_snapshot())
         if path == "/api/building-clearance": return Response(workflow.building_clearance_snapshot())
+        # ---- Risk Framework V2 (additive; legacy grid_risk stays authoritative) ----
+        if path == "/api/grid-risk-v2": return Response(workflow.grid_risk_v2_snapshot())
+        if path == "/api/risk-policy-v2": return Response(workflow.risk_policy_v2_snapshot())
+        if path == "/api/risk-framework-v2/readiness": return Response(workflow.risk_framework_v2_readiness())
         if path == "/api/route-vertical-profiles": return Response(workflow.route_vertical_profiles_snapshot())
         if path == "/api/route-experiments": return Response(workflow.route_experiments_snapshot())
         if path == "/api/route-planner-v3-experiments": return Response(workflow.route_planner_v3_snapshot())
@@ -177,6 +181,8 @@ class ApiRouter:
             "/api/cns-planning-report/generate": lambda: workflow.generate_cns_planning_report(payload),
             "/api/cns/safety-policy": lambda: workflow.set_safety_policy(payload),
             "/api/building-clearance/policy": lambda: workflow.set_building_clearance_policy(payload),
+            "/api/risk-policy-v2": lambda: workflow.set_risk_policy_v2(payload),
+            "/api/grid-risk-v2/evaluate": lambda: workflow.evaluate_grid_risk_v2(payload),
             "/api/building-clearance/evaluate": lambda: context.qgis.call(context.evaluate_building_clearance),
             "/api/route-vertical-profiles/evaluate": lambda: context.qgis.call(lambda: context.evaluate_route_vertical_profiles(payload)),
             "/api/route-experiments/evaluate": lambda: workflow.evaluate_route_experiment(payload),

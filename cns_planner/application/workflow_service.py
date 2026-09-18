@@ -7,6 +7,7 @@ from ..algorithms.registry import (
     ALGORITHM_TYPES, build_default_algorithm_registry, normalize_algorithm_selection,
 )
 from ..risk.v1 import RiskModelV1
+from ..risk.model_v2 import GridRiskModelV2
 from ..data.mapping.conflict import ConflictGridService
 from ..data.mapping.traffic import TrafficGridService
 from ..algorithms.grid.service import WorkspaceGridService
@@ -26,6 +27,7 @@ from .project_service import ProjectService
 from .project_state import SCHEMA_VERSION, assessment, blank_project, empty_extension_attribute, empty_grid_attributes
 from .review_service import ReviewService
 from .risk_service import RiskService
+from .risk_v2_service import RiskFrameworkV2Service
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -157,6 +159,12 @@ class WorkflowService:
             self.session, self.risk_model, self.traffic_simulator, self.conflict_detector,
             self.traffic_grid_service, self.conflict_grid_service, self.invalidation_service,
             snapshot, lambda: deepcopy(self.state["algorithm_selection"]["risk_model"]["parameters"]),
+        )
+        # Additive Risk Framework V2: factor → ground/air_traffic/environment_obstacle
+        # domains.  It owns ``grid_risk_v2`` / ``risk_policy_v2`` only; the current
+        # planner keeps consuming the legacy Risk V1 ``grid_risk``.
+        self.risk_v2_service = RiskFrameworkV2Service(
+            self.session, GridRiskModelV2(), self.invalidation_service, snapshot,
         )
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
@@ -300,12 +308,22 @@ class WorkflowService:
             result["route_operating_plan"] = self.route_operating_layer_service.plan_snapshot()
         if hasattr(self, "source_audit_service"):
             result["source_audits"] = self.source_audit_service.result_snapshot()
+        if hasattr(self, "risk_v2_service"):
+            result["grid_risk_v2"] = self.risk_v2_service.result_snapshot()
+            result["risk_policy_v2"] = self.risk_v2_service.policy_snapshot()
+            result["risk_framework_v2_readiness"] = self.risk_v2_service.readiness_snapshot()
         result["review"] = self.review()
         return result
 
     def grid_snapshot(self): return deepcopy(self.state.get("grid") or self.grid_service.empty())
     def grid_attributes_snapshot(self): return deepcopy(self.state.get("grid_attributes") or empty_grid_attributes())
     def grid_risk_snapshot(self): return deepcopy(self.state.get("grid_risk") or RiskModelV1.empty())
+    # ---- Risk Framework V2 (additive) -----------------------------------------
+    def grid_risk_v2_snapshot(self): return self.risk_v2_service.result_snapshot()
+    def risk_policy_v2_snapshot(self): return self.risk_v2_service.policy_snapshot()
+    def risk_framework_v2_readiness(self): return self.risk_v2_service.readiness_snapshot()
+    def set_risk_policy_v2(self, payload): return self.risk_v2_service.set_policy(payload)
+    def evaluate_grid_risk_v2(self, payload=None): return self.risk_v2_service.evaluate(payload)
     def aircraft_profiles_snapshot(self): return deepcopy(self.state.get("aircraft_profiles") or {})
     def device_catalog_snapshot(self): return deepcopy(self.state.get("device_catalog") or {})
     def reference_landing_sites_snapshot(self): return self.reference_data_service.landing_sites_snapshot()
@@ -685,10 +703,15 @@ class WorkflowService:
     def evaluate_service_timeline(self, payload=None): return self.operational_timing_service.evaluate_timeline(payload)
     def evaluate_protection_envelope(self, payload=None): return self.operational_timing_service.evaluate_protection(payload)
     def evaluate_encounter_3d(self, payload=None): return self.encounter_3d_service.evaluate(payload)
-    def apply_grid_attributes(self, results): return self.risk_service.apply_grid_attributes(results)
+    def apply_grid_attributes(self, results):
+        self.risk_service.apply_grid_attributes(results)
+        # The additive V2 result recomputes from the same canonical attributes.
+        return self.risk_v2_service.evaluate()
     def update_data_source_profiles(self, profiles): return self.risk_service.update_source_profiles(profiles)
     def evaluate_grid_risk(self, parameters=None): return self.risk_service.evaluate(parameters)
-    def run_traffic_simulation(self, parameters): return self.risk_service.run_traffic_simulation(parameters)
+    def run_traffic_simulation(self, parameters):
+        self.risk_service.run_traffic_simulation(parameters)
+        return self.risk_v2_service.evaluate()
     def invalidate_grid_attributes(self, changed): return self.risk_service.invalidate_grid_attributes(changed)
     def _apply_grid_risk(self, result): return self.risk_service.apply_result(result)
     def _invalidate_grid_risk(self): return self.invalidation_service.risk()

@@ -2,6 +2,7 @@
 
 from ..domain.status import ResultStatus
 from ..risk.v1 import RiskModelV1
+from ..domain.risk_v2 import empty_grid_risk_v2
 from ..services.invalidation import ResultLedger
 from .project_state import assessment, empty_grid_attributes
 from ..domain.reporting import mark_active_report_stale
@@ -67,6 +68,12 @@ class InvalidationService:
             self.requirement_recommendation(f"{changed}_changed")
         if affected:
             mark_active_report_stale(state, f"{changed}_changed")
+        if "environment_risk" in affected:
+            # Risk Framework V2 consumes the same canonical grid attributes, so a
+            # workspace/grid-attribute change makes the additive V2 result stale.
+            # This never stales routes/CNS: the current planner still consumes the
+            # legacy Risk V1 ``grid_risk`` only.
+            self.risk_v2(f"{changed}_changed")
         if changed in ("workspace", "route", "route_algorithm", "spatial_3d"):
             self.building_clearance(f"{changed}_changed")
 
@@ -87,6 +94,7 @@ class InvalidationService:
         if invalidated:
             mark_active_report_stale(state, "data_source_profiles_changed")
             self.risk()
+            self.risk_v2("grid_attribute_source_changed")
         if "terrain" in changed_sources:
             self.coverage_3d()
             self.cns_corridor()
@@ -141,6 +149,25 @@ class InvalidationService:
         state["result_statuses"]["environment_risk"] = "stale"
         state["risks"]["environment"] = assessment("stale", "网格风险输入属性已变化")
         self.grid_risk_routes()
+
+    def risk_v2(self, reason="risk_v2_input_changed"):
+        """Stale only the additive Risk Framework V2 result.
+
+        No confirmed V2 aggregation policy exists yet and no planner consumes
+        ``grid_risk_v2``, so a V2 change must never stale the current routes,
+        CNS results, legacy ``grid_risk`` or ``environment_risk``.
+        """
+
+        state = self.session.state
+        result = state.get("grid_risk_v2")
+        if not isinstance(result, dict):
+            result = empty_grid_risk_v2()
+            state["grid_risk_v2"] = result
+        if result.get("status") == "not_calculated":
+            return
+        result["status"] = "stale"
+        result["stale_reason"] = str(reason)
+        state.setdefault("result_statuses", {})["grid_risk_v2"] = "stale"
 
     def grid_risk_routes(self):
         """Only Risk-Aware Route Planner V2 makes routes depend on grid_risk."""

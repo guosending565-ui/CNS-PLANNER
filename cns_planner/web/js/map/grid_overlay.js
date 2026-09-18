@@ -17,7 +17,49 @@ function buildSpatialGrid(cells){
   return {bounds,columns,rows,width,height,buckets,index};
 }
 
-export function buildGridOverlayCache(grid,attributes,risk,gridTheme){
+// Risk Framework V2 map layer semantics.  A V2 layer is named
+// ``risk_v2:factor:<factor_id>`` or ``risk_v2:domain:<domain_id>``.  A layer only
+// renders a real relative index: a ``pending_confirmation`` / ``unresolved``
+// domain (or a missing factor) is drawn as "no data", never as 0.
+export const RISK_V2_FACTOR_IDS=[
+  'population_exposure','uav_traffic_exposure','conflict_exposure',
+  'terrain_relief','building_coverage','building_height'
+];
+export const RISK_V2_DOMAIN_IDS=['ground','air_traffic','environment_obstacle'];
+
+export function parseRiskV2Theme(theme){
+  if(typeof theme!=='string'||!theme.startsWith('risk_v2:'))return null;
+  const [,kind,id]=theme.split(':');
+  if((kind!=='factor'&&kind!=='domain')||!id)return null;
+  return {kind,id};
+}
+
+export function riskV2Record(item,selection){
+  if(!selection||!item?.risk_v2)return null;
+  return selection.kind==='domain'
+    ? item.risk_v2.domains?.[selection.id]||null
+    : item.risk_v2.factors?.[selection.id]||null;
+}
+
+export function riskV2Value(item,selection){
+  const record=riskV2Record(item,selection);
+  const raw=selection?.kind==='domain'?record?.index:record?.normalized_index;
+  const value=Number.isFinite(raw)?raw:null;
+  const status=record?.status||null;
+  return {
+    record,value,status,
+    displayable:value!==null&&(status==='passed'||status==='partial'),
+    partial:status==='partial'
+  };
+}
+
+export function riskV2Breaks(cache,selection){
+  if(!selection)return [];
+  const map=selection.kind==='domain'?cache?.v2Breaks?.domains:cache?.v2Breaks?.factors;
+  return map?.get(selection.id)||[];
+}
+
+export function buildGridOverlayCache(grid,attributes,risk,gridTheme,riskV2){
   const sources={
     population:attributes?.population||{},terrain:attributes?.terrain||{},airspace:attributes?.airspace||{},
     traffic:attributes?.traffic||{},conflict:attributes?.conflict||{},buildings:attributes?.buildings||{}
@@ -30,20 +72,33 @@ export function buildGridOverlayCache(grid,attributes,risk,gridTheme){
     traffic:sources.traffic.cells?.[cell.grid_id]||null,
     conflict:sources.conflict.cells?.[cell.grid_id]||null,
     buildings:sources.buildings.cells?.[cell.grid_id]||null,
-    risk:risk?.cells?.[cell.grid_id]||null
+    risk:risk?.cells?.[cell.grid_id]||null,
+    risk_v2:riskV2?.cells?.[cell.grid_id]||null
   }));
   const usable=status=>status==='passed'||status==='missing_data';
   const populationValue=item=>Number.isFinite(item.population?.population_density_people_km2)
     ? item.population.population_density_people_km2
     : item.population?.value_mean;
   const values=(source,key)=>usable(source.status)?cells.map(item=>source===sources.population?populationValue(item):source===sources.buildings?item.buildings?.[key]:item.terrain?.[key]).filter(Number.isFinite):[];
+  const v2Breaks={factors:new Map(),domains:new Map()};
+  for(const id of RISK_V2_FACTOR_IDS){
+    v2Breaks.factors.set(id,gridTheme.quantileBreaks(
+      cells.map(item=>item.risk_v2?.factors?.[id]?.normalized_index).filter(Number.isFinite)
+    ));
+  }
+  for(const id of RISK_V2_DOMAIN_IDS){
+    v2Breaks.domains.set(id,gridTheme.quantileBreaks(
+      cells.map(item=>item.risk_v2?.domains?.[id]?.index).filter(Number.isFinite)
+    ));
+  }
   return {
     cells,byId:new Map(cells.map(item=>[item.cell.grid_id,item])),spatial:buildSpatialGrid(cells),
     populationBreaks:gridTheme.quantileBreaks(values(sources.population,'population_density_people_km2')),
     terrainBreaks:gridTheme.quantileBreaks(values(sources.terrain,'mean_elevation')),
     buildingCoverageBreaks:gridTheme.quantileBreaks(values(sources.buildings,'building_coverage_ratio')),
     buildingP95Breaks:gridTheme.quantileBreaks(values(sources.buildings,'height_p95_m')),
-    buildingMaxBreaks:gridTheme.quantileBreaks(values(sources.buildings,'height_max_m'))
+    buildingMaxBreaks:gridTheme.quantileBreaks(values(sources.buildings,'height_max_m')),
+    v2Breaks
   };
 }
 

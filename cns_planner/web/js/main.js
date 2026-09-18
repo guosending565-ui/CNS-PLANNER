@@ -8,6 +8,7 @@ import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay,reference
 import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
 import {drawV3CandidateOverlay,v3OverlayModel} from './map/route_planner_v3_overlay.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
+import {LEGACY_RISK_V1_LABEL,riskV2CellSummary,riskV2LegendModel} from './workflow/risk_framework_v2.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
 import * as Step03 from './workflow/step03_routes.js';
@@ -21,7 +22,7 @@ let currentStep=1,interactionMode='pan',renderController=null;
 let selectedReference=null,profileHoverCoordinate=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
-let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[]};
+let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
 const populationPalette=['#fff7bc','#fee391','#fec44f','#fe9929','#cc4c02'];
 const terrainPalette=['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c'];
 const buildingPalette=['#fff7ec','#fdd49e','#fc8d59','#d7301f','#7f0000'];
@@ -77,7 +78,7 @@ function paint(){
   onlineTiles.paint(ctx,view,w,h,'annotation');drawWorkflowOverlay();
 }
 function rebuildGridRenderCache(){
-  gridRenderCache=buildGridOverlayCache(flow?.grid,flow?.grid_attributes||{},flow?.grid_risk||{},GridTheme);
+  gridRenderCache=buildGridOverlayCache(flow?.grid,flow?.grid_attributes||{},flow?.grid_risk||{},GridTheme,flow?.grid_risk_v2||null);
   if($('gridInfo'))$('gridInfo').hidden=true;
   updateGridNotice();updateGridThemeLegend();
 }
@@ -173,6 +174,7 @@ function updateGridNotice(){
   notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
+  if(updateRiskV2Legend())return;
   const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
   if(!legend)return;
   legend.hidden=!kind&&!riskKind;
@@ -198,6 +200,20 @@ function updateGridThemeLegend(){
     : kind==='population'
       ? 'WorldPop count 经面积权重守恒映射，再除以实际网格面积 · '+statusText(result.quantity_status||'not_calculated')
       : '均值分级 · '+(result.unit_status||'单位来源未知')+' · '+source+' · '+statusText(result.status||'not_calculated');
+}
+// Risk Framework V2 legend: factor/domain layers are relative engineering
+// indices.  A pending/unresolved domain index renders as "no data", never as 0.
+function updateRiskV2Legend(){
+  const legend=$('gridThemeLegend'),model=riskV2LegendModel(gridDisplay.theme,gridRenderCache,GridTheme);
+  if(!model||!legend)return false;
+  legend.hidden=false;
+  $('gridThemeLegendTitle').textContent=model.title;
+  $('gridThemeLegendUnit').textContent=model.unit;
+  $('gridThemeGradient').style.background='linear-gradient(to right,'+riskPalette.join(',')+')';
+  const ticks=$('gridThemeTicks');ticks.replaceChildren();
+  for(const value of (model.ticks.length?model.ticks:['无有效值'])){const span=document.createElement('span');span.textContent=value;ticks.append(span);}
+  $('gridThemeLegendNote').textContent=model.note;
+  return true;
 }
 function formatGridDetails(item){
   const cell=item.cell,populationResult=flow?.grid_attributes?.population||{},terrainResult=flow?.grid_attributes?.terrain||{};
@@ -226,17 +242,18 @@ function formatGridDetails(item){
   const buildingSummary='建筑环境：'+statusText(buildings.status||'missing_data')+' · count '+GridTheme.formatNumber(buildings.building_count)+' · coverage '+GridTheme.formatNumber(buildings.building_coverage_ratio)+' · mean/P95/max '+GridTheme.formatNumber(buildings.height_mean_m)+' / '+GridTheme.formatNumber(buildings.height_p95_m)+' / '+GridTheme.formatNumber(buildings.height_max_m)+' m';
   const risk=item.risk||{},ground=risk.ground||{},operationalAir=risk.air||{},overall=risk.overall||{},riskResult=flow?.grid_risk||{};
   const p=ground.contributors?.population||{},t=ground.contributors?.terrain||{};
-  const riskSummary='Ground Risk：'+riskValue(ground)+'\n'+
+  const riskSummary=LEGACY_RISK_V1_LABEL+' · Ground Risk：'+riskValue(ground)+'\n'+
     '  P：'+factorValue(p)+'\n'+
     '  T：'+factorValue(t)+(t.raw?.relief===undefined?'':' · relief '+GridTheme.formatNumber(t.raw.relief))+'\n'+
     'Operational Air Risk：'+riskValue(operationalAir)+'\n'+
     'Airspace：not applicable（display-only reference layer）\n'+
     'Overall Risk：'+riskValue(overall)+' · 完整度 '+GridTheme.formatNumber((overall.data_completeness||0)*100)+'%\n'+
     '风险语义：'+(overall.semantics||risk.semantics||'relative_index')+' · '+(riskResult.algorithm_id||'未计算')+'@'+(riskResult.algorithm_version||'-');
+  const v2Summary=riskV2CellSummary(item.risk_v2,GridTheme.formatNumber);
   return cell.grid_id+' · L'+cell.level+'\n'+
     populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(population.value_status||population.quantity_status||'missing_data')+'\n'+
     'DEM：样本 '+terrainSamples+' · '+terrainValues+' · '+(terrainResult.unit_status||'单位来源未知')+' · '+terrainSource+'\n'+
-    buildingSummary+'\n'+airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary;
+    buildingSummary+'\n'+airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary+'\n'+v2Summary;
 }
 function riskValue(component){return component?.status==='passed'&&Number.isFinite(component.score)?GridTheme.formatNumber(component.score)+' / '+(component.level||'未分级'):'无数据（'+statusText(component?.status||'not_calculated')+'）';}
 function factorValue(factor){return factor?.status==='passed'?'归一化 '+GridTheme.formatNumber(factor.normalized)+' · contribution '+GridTheme.formatNumber(factor.contribution):statusText(factor?.status||'not_available');}
