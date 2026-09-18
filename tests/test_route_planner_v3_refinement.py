@@ -763,7 +763,7 @@ def _dividing_column(cells, result):
     )
 
 
-def test_unconfirmed_or_unknown_airspace_is_never_feasible_at_fine_resolution():
+def test_unconfirmed_or_unknown_display_airspace_is_not_a_fine_constraint():
     policy = normalize_v3_planning_policy(v3_policy())
     _, environment, coarse = coarse_environment()
     built = fine_environment(policy, environment, coarse)
@@ -775,21 +775,16 @@ def test_unconfirmed_or_unknown_airspace_is_never_feasible_at_fine_resolution():
 
     unknown = fine_environment(policy, environment, coarse, {"unknown_airspace_cells": wall})
     cell = next(item for item in unknown["environment"]["cells"] if item["fine_cell_id"] == wall[0])
-    assert cell["airspace"]["status"] == "unknown"
-    assert cell["airspace"]["policy_confirmed"] is True
+    assert cell["airspace"]["status"] == "not_applicable"
+    assert cell["airspace"]["policy_confirmed"] is False
     assert cell["airspace"]["mapping_method"] == (
-        "confirmed_airspace_policy_only_never_inferred_from_layer_name_or_color"
+        "display_only_reference_layer_not_used_for_planning"
     )
     result = V3RefinementPlanner().plan(refinement_problem(policy, coarse, unknown))
-    # A full column of unknown cells cannot be crossed: unknown is never feasible,
-    # and the honest verdict is ``missing_data`` (evidence gap), not ``failed``.
-    assert result["status"] == "missing_data"
-    assert result["reason"]
+    assert result["status"] == "refined_candidate"
     summary = result["hard_constraint_summary"]
-    assert (
-        summary["state_rejections"].get("airspace_unknown", 0)
-        + summary["traversed_cell_rejections"].get("traversed_airspace_unknown", 0)
-    ) > 0
+    assert summary["state_rejections"].get("airspace_unknown", 0) == 0
+    assert summary["traversed_cell_rejections"].get("traversed_airspace_unknown", 0) == 0
 
     unconfirmed = fine_environment(policy, environment, coarse, {
         "unconfirmed_airspace_cells": [wall[0]],
@@ -797,21 +792,20 @@ def test_unconfirmed_or_unknown_airspace_is_never_feasible_at_fine_resolution():
     entry = next(
         item for item in unconfirmed["environment"]["cells"] if item["fine_cell_id"] == wall[0]
     )
-    assert entry["airspace"]["status"] == "unknown"
+    assert entry["airspace"]["status"] == "not_applicable"
     assert entry["airspace"]["policy_confirmed"] is False
-    assert entry["airspace"]["reason"] == "synthetic_explicit_unconfirmed_policy"
+    assert entry["airspace"]["applicability"] == "display_only"
 
     every = fine_environment(policy, environment, coarse, {
         "unknown_airspace_cells": [item["fine_cell_id"] for item in cells],
     })
-    blocked = V3RefinementPlanner().plan(refinement_problem(policy, coarse, every))
-    assert blocked["status"] == "not_ready"
-    assert blocked["readiness"]["airspace"]["status"] == "blocked"
-    assert blocked["readiness"]["airspace"]["status_counts"]["confirmed_allowed"] == 0
-    assert any("fail-closed" in reason for reason in blocked["readiness"]["airspace"]["reasons"])
+    allowed = V3RefinementPlanner().plan(refinement_problem(policy, coarse, every))
+    assert allowed["status"] == "refined_candidate"
+    assert allowed["readiness"]["airspace"]["status"] == "ready"
+    assert allowed["readiness"]["airspace"]["status_counts"]["not_applicable"] > 0
 
 
-def test_restricted_fine_cell_is_rejected_as_restricted_not_unknown():
+def test_restricted_display_airspace_is_not_used_by_fine_search():
     policy = normalize_v3_planning_policy(v3_policy())
     _, environment, coarse = coarse_environment()
     built = fine_environment(policy, environment, coarse)
@@ -823,14 +817,14 @@ def test_restricted_fine_cell_is_rejected_as_restricted_not_unknown():
     entry = next(
         item for item in restricted["environment"]["cells"] if item["fine_cell_id"] == wall[0]
     )
-    assert entry["airspace"]["status"] == "confirmed_restricted"
+    assert entry["airspace"]["status"] == "not_applicable"
     result = V3RefinementPlanner().plan(refinement_problem(policy, coarse, restricted))
-    assert result["status"] == "failed"
+    assert result["status"] == "refined_candidate"
     summary = result["hard_constraint_summary"]
     assert (
         summary["state_rejections"].get("airspace_not_confirmed_allowed", 0)
         + summary["traversed_cell_rejections"].get("traversed_airspace_not_confirmed_allowed", 0)
-    ) > 0
+    ) == 0
 
 
 # --------------------------------------------------------------------------------------
@@ -1329,8 +1323,7 @@ def test_gis_adapter_builds_a_corridor_local_fine_environment_from_real_sources(
     assert audit["adapter_id"] == "v3b_fine_environment_adapter"
     assert audit["terrain_dtm"]["file_name"] == "double.tif"
     assert audit["buildings"]["spatial_index_available"] is True
-    assert audit["airspace_policy"]["confirmed_allowed_polygon_count"] == 1
-    assert audit["airspace_policy"]["inferred_from_name_or_color"] is False
+    assert audit["airspace"] == {"status": "not_applicable", "applicability": "display_only"}
     assert audit["risk_model"]["soft_fields_reused"] is True
     assert audit["full_raster_resample"] is False
     assert audit["source_geometry_modified"] is False
@@ -1338,8 +1331,8 @@ def test_gis_adapter_builds_a_corridor_local_fine_environment_from_real_sources(
     assert audit["fingerprint"].startswith("V3BSRC-")
     assert built["environment"]["source_audit"]["fingerprint"] == audit["fingerprint"]
     assert {key: value["status"] for key, value in built["readiness"].items()} == {
-        "terrain_dtm": "ready", "buildings": "ready", "airspace_policy": "ready",
-        "resolution": "ready", "metric_frame": "ready",
+        "terrain_dtm": "ready", "buildings": "ready", "resolution": "ready",
+        "metric_frame": "ready",
     }
     result = V3RefinementPlanner().plan(adapter_refinement_problem(built, policy))
     assert result["status"] in ("refined_candidate", "failed", "search_incomplete")
@@ -1429,7 +1422,7 @@ def test_gis_adapter_building_envelope_uses_the_metric_buffered_footprint():
         )
 
 
-def test_gis_adapter_never_infers_airspace_from_a_layer_name_or_colour():
+def test_gis_adapter_ignores_airspace_source_names_colours_and_policy():
     policy = normalize_v3_planning_policy(v3_policy())
     eligibility = deepcopy(_DEFAULT_ELIGIBILITY)
     eligibility["features"][0].update({
@@ -1437,17 +1430,16 @@ def test_gis_adapter_never_infers_airspace_from_a_layer_name_or_colour():
     })
     built = build_with(adapter(airspace=eligibility))
     assert built["status"] == "passed"
-    assert built["readiness"]["airspace_policy"]["status"] == "blocked"
     assert all(
-        cell["airspace"]["status"] == "unknown" and cell["airspace"]["policy_confirmed"] is False
+        cell["airspace"]["status"] == "not_applicable"
+        and cell["airspace"]["applicability"] == "display_only"
         for cell in built["environment"]["cells"]
     )
-    assert built["source_audit"]["airspace_policy"]["confirmed_allowed_polygon_count"] == 0
-    assert built["source_audit"]["airspace_policy"]["inferred_from_name_or_color"] is False
+    assert built["source_audit"]["airspace"]["status"] == "not_applicable"
     result = V3RefinementPlanner().plan(adapter_refinement_problem(built, policy))
-    assert result["status"] == "not_ready"
-    assert result["readiness"]["airspace"]["status"] == "blocked"
-    assert result["readiness"]["airspace"]["status_counts"]["confirmed_allowed"] == 0
+    assert result["status"] in ("refined_candidate", "failed", "search_incomplete")
+    assert result["readiness"]["airspace"]["status"] == "ready"
+    assert result["readiness"]["airspace"]["applicability"] == "not_applicable"
 
 
 def test_configured_real_data_smoke_reports_blocked_without_reading_data():
@@ -1461,7 +1453,6 @@ def test_configured_real_data_smoke_reports_blocked_without_reading_data():
     assert set(readiness["blocking_reasons"]) == {
         "terrain_dtm_not_configured_or_missing",
         "buildings_geopackage_not_configured_or_missing",
-        "no_confirmed_allowed_airspace_cells",
         "v3_policy_not_confirmed",
     }
     assert readiness["resolution_policy"] == (
@@ -1470,9 +1461,7 @@ def test_configured_real_data_smoke_reports_blocked_without_reading_data():
     assert readiness["semantics"] == (
         "readiness_report_only_no_data_read_no_fabricated_environment"
     )
-    assert "confirmed AirspacePolicy with at least one allowed geometry" in (
-        readiness["required_before_real_run"]
-    )
+    assert readiness["airspace"]["status"] == "not_applicable"
 
 
 def test_fine_policy_has_no_default_resolution_or_crs():

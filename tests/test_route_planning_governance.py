@@ -273,9 +273,9 @@ def test_v1_manifest_limitations_state_all_four_declared_limits():
         assert token in joined
 
 
-def test_v2_manifest_inputs_include_airspace_eligibility_and_keep_2d_limits():
+def test_v2_manifest_excludes_display_airspace_and_keeps_2d_limits():
     manifest = registry().manifest("route_planner", "risk_aware_route_planner_v2", "2.0")
-    assert "airspace_eligibility" in manifest.inputs
+    assert "airspace_eligibility" not in manifest.inputs
     joined = " ".join(manifest.limitations)
     assert "二维战略水平规划" in joined
     assert "网格中心" in joined or "grid" in joined
@@ -287,7 +287,7 @@ def test_manifests_describe_the_planners_that_actually_run():
     planner = RiskAwareRoutePlannerV2()
     assert planner.algorithm_id == manifest.algorithm_id
     assert planner.algorithm_version == manifest.version
-    assert "airspace_eligibility" in manifest.inputs
+    assert "airspace_eligibility" not in manifest.inputs
     planner_v1 = RoutePlannerV1()
     manifest_v1 = registry().manifest("route_planner", "route_planner_v1", "1.0")
     assert manifest_v1.algorithm_id == planner_v1.algorithm_id

@@ -18,7 +18,9 @@ def layer_extents(layers, project, target_crs):
     return result
 
 
-def hard_constraints(layers, extents_wgs84):
+def hard_constraints(layers, extents_wgs84, *, excluded_layer_ids=()):
+    excluded = {str(value) for value in excluded_layer_ids or ()}
     return [{"layer_id": layer.id(), "name": layer.name(), "bbox": extents_wgs84[layer.id()]}
             for layer in layers
-            if layer.id() in extents_wgs84 and any(word in layer.name().lower() for word in HARD_CONSTRAINT_WORDS)]
+            if (layer.id() in extents_wgs84 and str(layer.id()) not in excluded
+                and any(word in layer.name().lower() for word in HARD_CONSTRAINT_WORDS))]

@@ -177,19 +177,13 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
     cells = _apply_cell_bounds_index(cells)
     unknown_terrain = {str(item) for item in spec["unknown_terrain_cells"]}
     unknown_building = {str(item) for item in spec["unknown_building_cells"]}
-    restricted = {str(item) for item in spec["restricted_cells"]}
     building_targets = _building_targets(cells, spec)
     result_cells = []
     for index, cell in enumerate(cells):
         grid_id = str(cell["grid_id"])
         center = [float(cell["center"][0]), float(cell["center"][1])]
         surface = _surface_elevation(spec, center, index, grid_id)
-        # The three evidence channels are independent: an unknown terrain cell is
-        # still a confirmed airspace decision, and vice versa.
         terrain_status = "unknown" if grid_id in unknown_terrain else "passed"
-        airspace_status = (
-            "confirmed_restricted" if grid_id in restricted else "confirmed_allowed"
-        )
         building_status = "unknown" if grid_id in unknown_building else "passed"
         roof = None
         if building_status == "passed" and grid_id in building_targets:
@@ -216,7 +210,10 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
                 "horizontal_clearance_m": horizontal_clearance,
                 "upsampled_without_new_information": False,
             },
-            "airspace": {"status": airspace_status, "feature_id": f"synthetic:{grid_id}"},
+            "airspace": {
+                "status": "not_applicable", "applicability": "display_only",
+                "semantics": "display_only_reference_layer_not_used_for_planning",
+            },
             "soft_fields": _soft_fields(spec, grid_id, _cell_size_m(cell)),
         })
     return {
@@ -246,7 +243,8 @@ def build_synthetic_environment(grid_cells, policy, spec=None, *, source_detail=
             },
             "unknown_terrain_cell_count": len(unknown_terrain),
             "unknown_building_cell_count": len(unknown_building),
-            "restricted_cell_count": len(restricted),
+            "restricted_cell_count": 0,
+            "airspace_applicability": "display_only_not_used_for_planning",
         },
         "cells": result_cells,
     }

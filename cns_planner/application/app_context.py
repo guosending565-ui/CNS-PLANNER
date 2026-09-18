@@ -126,8 +126,6 @@ class ApplicationContext:
             or previous_signatures.get(name) != self.data.source_signatures.get(name)
         }
         self.workflow.invalidate_grid_attributes(changed)
-        if "basemap" in changed:
-            self.workflow.invalidate("data")
         self.workflow.save()
         self.project_directories.persist_sources(self.active_project_file, self.data)
         return self.data.metadata()
@@ -151,24 +149,40 @@ class ApplicationContext:
     def configure_route_planner_v3_sources(self):
         """Give the V3 service a *read-only* real-source readiness provider.
 
-        The provider only reports configured paths and confirmed airspace evidence;
+        The provider only reports configured paths and confirmed planning policy;
         it never opens a dataset, so rendering the readiness panel is side-effect
         free.
         """
 
         def readiness():
-            eligibility = (
-                ((self.workflow.state.get("grid_attributes") or {}).get("airspace") or {})
-                .get("airspace_eligibility") or {}
-            )
             policy = self.workflow.state.get("v3_planning_policy") or {}
             return real_data_source_readiness(
-                self.data.paths, airspace_eligibility=eligibility,
-                policy_confirmed=bool(policy.get("confirmed")),
+                self.data.paths, policy_confirmed=bool(policy.get("confirmed")),
+                source_audits=self.workflow.state.get("source_audits") or {},
+                terrain_profile=(self.workflow.state.get("data_source_profiles") or {}).get("terrain_dtm") or {},
             )
 
         self.workflow.route_planner_v3_service.source_readiness = readiness
         return readiness
+
+    def evaluate_route_planner_v3(self, payload=None):
+        """Run V3-A; configured real sources are opened only on the QGIS thread."""
+
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("environment_source") or "canonical_synthetic") != "configured_real_sources":
+            return self.workflow.evaluate_route_planner_v3(payload)
+
+        def evaluate_real():
+            from ..gis.fine_environment_adapter import FabdemWindowTerrainSource
+            from ..gis.v3_environment_adapter import V3RealEnvironmentAdapter
+
+            terrain_dtm = self.data.paths.get("terrain_dtm")
+            if not terrain_dtm:
+                raise ValueError("请先配置 verified FABDEM terrain_dtm")
+            adapter = V3RealEnvironmentAdapter(FabdemWindowTerrainSource(terrain_dtm))
+            return self.workflow.route_planner_v3_service.evaluate(payload, adapter=adapter)
+
+        return self.qgis.call(evaluate_real)
 
     def configure_route_planner_v3_adoption(self):
         """Give the V3-D adoption service a real metric → OGC:CRS84 CRS transform.
@@ -229,8 +243,7 @@ class ApplicationContext:
         """
 
         from ..gis.fine_environment_adapter import (
-            ConfirmedAirspacePolicySource, NativeTerrainWindowSource,
-            QgisMetricTransform, RouteCorridorBuildingSource,
+            NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
         )
         from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
 
@@ -238,13 +251,6 @@ class ApplicationContext:
         buildings = self.data.paths.get("buildings")
         if not terrain_dtm or not buildings:
             raise ValueError("请先配置 FABDEM terrain_dtm 与 GBA buildings GeoPackage")
-        state = self.workflow.state
-        eligibility = (
-            ((state.get("grid_attributes") or {}).get("airspace") or {})
-            .get("airspace_eligibility") or {}
-        )
-        if eligibility.get("status") != "passed":
-            raise ValueError("空域 eligibility 未就绪：V3-C 只消费 confirmed AirspacePolicy")
         fine_policy = self.workflow.route_planner_v3_service.fine_policy_snapshot()
         crs = str(
             payload.get("horizontal_crs") or fine_policy.get("horizontal_crs") or ""
@@ -253,7 +259,6 @@ class ApplicationContext:
             raise ValueError("configured_real_sources 需要显式 horizontal_crs（局部米制 CRS）")
         transform = QgisMetricTransform(crs)
         terrain = NativeTerrainWindowSource(terrain_dtm)
-        airspace = ConfirmedAirspacePolicySource(eligibility)
         corridor = RouteCorridorBuildingSource(buildings, crs_authority=crs)
         adapter_id = "v3c_real_source_evidence_adapter"
 
@@ -289,7 +294,6 @@ class ApplicationContext:
                         building["ground_elevation_max_egm2008_m"] = terrain.sample_footprint_ground(
                             ring, transform=transform,
                         )
-            airspace_evidence = airspace.metric_evidence(transform)
             sample_count = len(terrain_evidence.get("pixels") or []) + len(
                 building_evidence.get("buildings") or []
             )
@@ -298,13 +302,17 @@ class ApplicationContext:
                 "source_type": "configured_real_sources",
                 "to_geographic": transform.to_geographic,
                 "sample_count": sample_count,
-                "airspace": airspace_evidence,
+                "airspace": {
+                    "available": False, "status": "not_applicable",
+                    "applicability": "display_only",
+                    "reason": "display_only_airspace_not_used_for_route_constraints",
+                },
                 "terrain": terrain_evidence,
                 "buildings": building_evidence,
                 "sources": {
                     "terrain_dtm": terrain.describe(),
                     "buildings": corridor.describe(),
-                    "airspace_policy": airspace.describe(),
+                    "airspace": {"status": "not_applicable", "applicability": "display_only"},
                     "metric_frame": transform.describe(),
                 },
             }
@@ -313,8 +321,8 @@ class ApplicationContext:
 
     def _fine_environment_adapter(self, payload):
         from ..gis.fine_environment_adapter import (
-            ConfirmedAirspacePolygonSource, FabdemWindowTerrainSource,
-            FineEnvironmentAdapter, QgisGpkgBuildingSource, QgisMetricTransform,
+            FabdemWindowTerrainSource, FineEnvironmentAdapter,
+            QgisGpkgBuildingSource, QgisMetricTransform,
         )
 
         terrain_dtm = self.data.paths.get("terrain_dtm")
@@ -322,12 +330,6 @@ class ApplicationContext:
         if not terrain_dtm or not buildings:
             raise ValueError("请先配置 FABDEM terrain_dtm 与 GBA buildings GeoPackage")
         state = self.workflow.state
-        eligibility = (
-            ((state.get("grid_attributes") or {}).get("airspace") or {})
-            .get("airspace_eligibility") or {}
-        )
-        if eligibility.get("status") != "passed":
-            raise ValueError("空域 eligibility 未就绪：V3-B 只消费 confirmed AirspacePolicy")
         horizontal_crs = str(payload.get("horizontal_crs") or "")
         if not horizontal_crs:
             raise ValueError("configured_real_sources 需要显式 horizontal_crs（局部米制 CRS）")
@@ -336,7 +338,6 @@ class ApplicationContext:
             transform=QgisMetricTransform(horizontal_crs),
             terrain_source=FabdemWindowTerrainSource(terrain_dtm),
             building_source=QgisGpkgBuildingSource(buildings),
-            airspace_source=ConfirmedAirspacePolygonSource(eligibility),
             resolution_m=payload.get("refinement_cell_size_m") or fine_policy.get("resolution_m"),
             resolution_source=(
                 payload.get("resolution_source") or fine_policy.get("resolution_source")

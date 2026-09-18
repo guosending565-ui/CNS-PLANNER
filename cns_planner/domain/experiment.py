@@ -83,7 +83,6 @@ def planner_context_fingerprint(context):
 
     context = context if isinstance(context, dict) else {}
     grid = context.get("grid") or {}
-    eligibility = context.get("airspace_eligibility") or {}
     risk = context.get("grid_risk") or {}
     relevant = {
         "workspace_bbox": context.get("workspace_bbox"),
@@ -97,12 +96,6 @@ def planner_context_fingerprint(context):
             ],
         },
         "grid_risk": risk,
-        "airspace_eligibility": {
-            key: eligibility.get(key) for key in (
-                "status", "reason", "geometry_fingerprint", "policy_fingerprint",
-                "input_fingerprint", "allowed_grid_ids", "allowed_edges",
-            )
-        },
     }
     return content_hash(relevant)
 

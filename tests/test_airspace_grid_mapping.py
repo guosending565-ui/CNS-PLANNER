@@ -300,7 +300,7 @@ def test_airspace_save_restore_workspace_reset_and_old_project_compatibility(tmp
     assert legacy.grid_attributes_snapshot()["airspace"]["airspace_eligibility"]["status"] == "not_calculated"
 
 
-def test_basemap_change_only_stales_airspace_grid_attributes(tmp_path):
+def test_basemap_change_is_display_only_and_does_not_stale_grid_attributes(tmp_path):
     service = WorkflowService(tmp_path / "project.json", _defaults_path(tmp_path))
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
     attributes = _workflow_attributes(service, state["grid"])
@@ -309,8 +309,8 @@ def test_basemap_change_only_stales_airspace_grid_attributes(tmp_path):
     service.invalidate_grid_attributes({"basemap"})
     service.save()
 
-    assert service.state["grid_attributes"]["airspace"]["status"] == "stale"
+    assert service.state["grid_attributes"]["airspace"]["status"] == "passed"
     assert service.state["grid_attributes"]["population"]["status"] == "passed"
     assert service.state["grid_attributes"]["terrain"]["status"] == "passed"
     persisted = WorkflowService(service.store_path, service.defaults_path)
-    assert persisted.state["grid_attributes"]["airspace"]["status"] == "stale"
+    assert persisted.state["grid_attributes"]["airspace"]["status"] == "passed"

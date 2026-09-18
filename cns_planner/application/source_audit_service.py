@@ -92,13 +92,12 @@ class SourceAuditService:
                 for item in policies["items"]:
                     item["current_applicability"] = "needs_revalidation"
                     item["confirmed"] = False
-            self.invalidation.workflow("airspace_policy")
             airspace = (state.get("grid_attributes") or {}).get("airspace") or {}
             if airspace:
-                airspace["status"] = "stale"
-                airspace.setdefault("airspace_eligibility", {})["status"] = "stale"
-        self.invalidation.grid_sources({role})
+                airspace["planning_applicability"] = "display_only"
+        if role not in ("basemap", "airspace"):
+            self.invalidation.grid_sources({role})
         # V3 adoptees depend on the tracked V3 sources; a source change stales them (and
         # their adopted routes) without touching any V1/V2 operational route.
-        if callable(self.v3_adoption_invalidator):
+        if role not in ("basemap", "airspace") and callable(self.v3_adoption_invalidator):
             self.v3_adoption_invalidator([role])

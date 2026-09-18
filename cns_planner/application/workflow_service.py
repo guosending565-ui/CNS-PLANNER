@@ -538,12 +538,8 @@ class WorkflowService:
         current = normalize_airspace_policies(payload, require_evidence=require_evidence)
         if current != previous:
             self.state["airspace_policies"] = current
-            self.invalidation_service.workflow("airspace_policy")
             airspace = (self.state.get("grid_attributes") or {}).get("airspace") or {}
-            if airspace.get("status") != "not_calculated":
-                airspace["status"] = "stale"
-                eligibility = airspace.setdefault("airspace_eligibility", {})
-                eligibility["status"] = "stale"
+            airspace["planning_applicability"] = "display_only"
             self.session.save()
         return self.snapshot()
     def set_airspace_policy(self, payload):

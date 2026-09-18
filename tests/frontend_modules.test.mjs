@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {routePlannerV3CnsSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {v3OverlayModel} from '../cns_planner/web/js/map/route_planner_v3_overlay.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
@@ -139,11 +139,11 @@ test('reference drawing is global while Step03 alone keeps hit interaction',()=>
   assert.match(main,/if\(currentStep===3\)[\s\S]*hitReferenceObject/);
 });
 
-test('map exposes independent source airspace confirmed allowed and reference layer toggles',()=>{
+test('map exposes display-only source airspace and reference layer toggles',()=>{
   const html=readFileSync(new URL('../cns_planner/web/index.html',import.meta.url),'utf8');
-  for(const id of ['allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','referenceRouteStatus','referenceRoutePointStatus','referenceLandingStatus','reference_landing_sitesPath','reference_routesPath','buildingClearanceLayer','terrain_dtmPath'])assert.match(html,new RegExp('id="'+id+'"'));
-  assert.match(html,/空域源图层（非政策结论）/);
-  assert.match(html,/适飞空域（confirmed allowed）/);
+  for(const id of ['referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','referenceRouteStatus','referenceRoutePointStatus','referenceLandingStatus','reference_landing_sitesPath','reference_routesPath','buildingClearanceLayer','terrain_dtmPath'])assert.match(html,new RegExp('id="'+id+'"'));
+  assert.doesNotMatch(html,/id="allowedAirspaceLayer"/);
+  assert.match(html,/空域参考图层（仅显示，不参与路线约束）/);
   assert.match(html,/不代表已确认 WGS84/);
 });
 
@@ -280,31 +280,29 @@ test('step 3 reference link panel requires explicit confirmation and blocks cand
   assert.match(html,/source_crs_pending_confirmation/);
 });
 
-test('step 3 airspace policy readiness counts only explicit policy values',()=>{
+test('step 3 has no AirspacePolicy editor and never infers eligibility',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/airspacePolicyReadinessModel|airspacePolicyEditorModel|airspacePolicyPanel/);
+  assert.doesNotMatch(source,/data-save-airspace-policy|data-airspace-policy-value|saveAirspacePolicyBatch/);
   const flow={airspace_policies:{items:[{feature_id:'A',route_eligibility:'allowed',confirmed:true,source:{type:'doc'}},{feature_id:'B',route_eligibility:'unknown',confirmed:false,source:{type:'doc'}}]},data_readiness:{status:'partial',blocks:{airspace_policies:{status:'passed',count:2,route_eligibility_counts:{allowed:1,blocked:0,unknown:1},confirmed_count:1,unconfirmed_count:1,v2_readiness:{status:'blocked',reason:'only_unknown_policies_present'},never_inferred_from_layer_name_or_color:true}}}};
-  const model=airspacePolicyReadinessModel(flow);
-  assert.equal(model.count,2);
-  assert.deepEqual(model.eligibilityCounts,{allowed:1,blocked:0,unknown:1});
-  assert.equal(model.confirmedCount,1);
-  assert.equal(model.neverInferred,true);
-  assert.equal(model.v2Readiness.status,'blocked');
   const html=renderStep3({flow:{...flow,nodes:[],scenario_routes:[],operational_routes:[],algorithm_selection:{route_planner:{}},algorithm_catalog:[],spatial_3d:{},operational_timing:{},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[]},reference_landing_sites:{items:[]},route_planning_experiments:{},reference_route_links:{},reference_endpoint_candidates:{},workspace:{bbox:[122,29.9,122.2,30.1]},risks:{},steps:{}},interactionMode:'pan',selectedReference:null});
-  assert.match(html,/AirspacePolicy 就绪总览/);
-  assert.match(html,/绝不按图层颜色或名称自动推断/);
-  assert.match(html,/V2 readiness/);
-  assert.match(html,/saveAirspacePolicyBatch/);
-  assert.match(html,/保存明确选中项/);
-  assert.match(html,/保存必须带 source\/evidence/);
+  assert.doesNotMatch(html,/AirspacePolicy 就绪总览/);
+  assert.doesNotMatch(html,/saveAirspacePolicyBatch/);
+  // No confirmed-allowed count and no V2 airspace readiness warning may be shown.
+  assert.doesNotMatch(html,/confirmed_count|confirmed allowed|V2 readiness/);
 });
 
-test('airspace policy editor joins source facts without inferring eligibility',()=>{
-  const rows=airspacePolicyEditorModel({
-    grid_attributes:{airspace:{features:[{feature_id:'F1',category:'corridor',source:{layer_name:'事实层'}}]}},
-    airspace_policies:{items:[]},
-  });
-  assert.deepEqual(rows.map(item=>[item.feature_id,item.layer,item.route_eligibility,item.confirmed]),[
-    ['F1','事实层','unknown',false],
-  ]);
+test('the confirmed-allowed airspace overlay module is gone',()=>{
+  assert.throws(()=>readFileSync(new URL('../cns_planner/web/js/map/airspace_policy_overlay.js',import.meta.url),'utf8'),/ENOENT/);
+  const html=readFileSync(new URL('../cns_planner/web/index.html',import.meta.url),'utf8');
+  // The raw airspace reference layer toggle stays; the confirmed-allowed overlay does not.
+  assert.match(html,/id="air"/);
+  assert.doesNotMatch(html,/confirmed allowed/i);
+  assert.doesNotMatch(html,/allowedAirspaceLayer/);
+  // Source Center keeps only verify-source / confirm-CRS / preview-import actions.
+  const center=readFileSync(new URL('../cns_planner/web/js/sources/source_center.js',import.meta.url),'utf8');
+  assert.match(center,/data-verify-source/);
+  assert.doesNotMatch(center,/airspace/i);
 });
 
 test('step 3 data readiness panel reports reference CRS and ET policy',()=>{
@@ -315,7 +313,7 @@ test('step 3 data readiness panel reports reference CRS and ET policy',()=>{
   assert.match(html,/source_crs/);
   assert.match(html,/representation_crs/);
   assert.match(html,/disabled_unresolved_source_crs/);
-  assert.match(html,/不提供 ET parser/);
+  assert.match(html,/ET 仍要求人工转换/);
   assert.match(html,/reference route link 2/);
 });
 
@@ -863,8 +861,7 @@ test('V3-B panel marks the refined candidate experimental and never claims valid
   assert.match(html,/buildings\.gpkg/);
   assert.match(html,/feature_count 12/);
   assert.match(html,/spatial_index_available true/);
-  assert.match(html,/inferred_from_name_or_color false/);
-  assert.match(html,/confirmed allowed\/blocked polygon 2 \/ 1/);
+  assert.match(html,/not applicable · display-only reference layer/);
   assert.match(html,/ground\.population/);
   assert.match(html,/full_raster_resample \/ source_geometry_modified \/ exact_validation_performed/);
   assert.match(html,/false \/ false \/ false/);

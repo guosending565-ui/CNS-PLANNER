@@ -79,7 +79,6 @@ class RoutePlanningExperimentService:
             diagnostics.append(evaluate_route_quality(
                 route, result, constraints,
                 grid=context.get("grid"),
-                airspace_eligibility=context.get("airspace_eligibility"),
             ))
         selection = (state.get("algorithm_selection") or {}).get("route_planner") or {}
         manifest = None
@@ -349,7 +348,6 @@ class RoutePlanningExperimentService:
             evaluation = evaluate_route_quality(
                 route, result, constraints, per_route_ms[-1],
                 grid=context.get("grid"),
-                airspace_eligibility=context.get("airspace_eligibility"),
             )
             evaluation["deterministic_consistency"] = (
                 None if repeated is None else repeated.get("input_fingerprint") == result.get("input_fingerprint")

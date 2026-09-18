@@ -8,9 +8,8 @@ This service is deliberately outside the operational route path:
   its own contract);
 * it stores everything in the additive ``route_planner_v3_experiments`` container.
 
-V3-A ships **no** real-data adapter: the canonical ``V3CellEnvironment`` is built
-from an explicit synthetic specification so the 3D + heading search and the
-hard-constraint kernel can be exercised deterministically.
+V3-A accepts either an explicit synthetic environment or an injected GIS-boundary
+adapter that builds the same canonical contract from audited real sources.
 
 V3-B adds corridor-local fine refinement.  It runs only on a *selected and
 current* V3-A ``strategic_candidate`` and its recorded refinement corridor.  The
@@ -64,7 +63,7 @@ from ..route_planner_v3.synthetic import (
 )
 
 V3_COLLECTION_ID = "route-planner-v3-experiments"
-V3_ENVIRONMENT_SOURCES = ("canonical_synthetic",)
+V3_ENVIRONMENT_SOURCES = ("canonical_synthetic", "configured_real_sources")
 #: V3-B environment sources: the explicit synthetic builder, or the injected real
 #: adapter.  Neither path ever fabricates a fine environment.
 V3B_ENVIRONMENT_SOURCES = ("canonical_synthetic", "configured_real_sources")
@@ -85,10 +84,10 @@ V3B_EXPERIMENT_NOTE = (
     "strategic_candidate 的 corridor 内做米制细网格工程精化；未做 V3-C exact polygon/"
     "terrain/continuous clearance 验证，也不写 operational_routes、algorithm_selection 或 spatial_3d。"
 )
-V3_REAL_DATA_ADAPTER_STATUS = "not_implemented_v3a"
+V3_REAL_DATA_ADAPTER_STATUS = "implemented_v3a_gis_adapter"
 V3_REAL_DATA_ADAPTER_REASON = (
-    "V3-A 不提供真实 terrain/building adapter，也不做局部细化；"
-    "真实数据必须先在 V3-B/C 阶段转换为 canonical V3CellEnvironment 后才允许进入搜索。"
+    "V3-A 通过注入的 GIS adapter 将 verified FABDEM、L8 building_grid 与 grid_risk "
+    "转换为 canonical V3CellEnvironment；未知建筑高度保持 unresolved。"
 )
 V3B_REAL_DATA_ADAPTER_STATUS = "implemented_v3b_gis_adapter"
 V3B_REAL_DATA_ADAPTER_REASON = (
@@ -97,7 +96,7 @@ V3B_REAL_DATA_ADAPTER_REASON = (
 )
 V3_ARCHITECTURE_SUMMARY = (
     "V3 原生 3D 战略规划：state = grid_id + altitude_index + heading_bin，"
-    "hard constraints（allowed/restricted airspace、terrain clearance、building clearance、"
+    "hard constraints（terrain clearance、building clearance、"
     "altitude bounds、turn/climb/descent capability）进入 edge 生成与验证；"
     "soft cost 输出 distance/population_risk/traffic_risk/building_exposure/energy 向量；"
     "L8 战略搜索 → corridor →（V3-B）corridor-local 米制细网格精化 →（V3-C）exact polygon/"
@@ -109,7 +108,7 @@ V3B_ARCHITECTURE_SUMMARY = (
     "horizontal resolution 来自显式配置或 DTM 有效分辨率（禁止写死 30 m）；"
     "terrain hard floor = 相交 FABDEM 有效像元最大 EGM2008 高程 + explicit terrain_clearance；"
     "building = footprint 按 explicit horizontal clearance 的保守包络，required floor = "
-    "ground + height + vertical_clearance；airspace 只消费 confirmed policy；"
+    "ground + height + vertical_clearance；airspace 仅为 display-only reference layer；"
     "multi-cell stride primitive 记录 traversed_cell_ids 并按路径进度插值高度逐格检查。"
 )
 V3C_EXPERIMENT_NOTE = (
@@ -121,16 +120,15 @@ V3C_ARCHITECTURE_SUMMARY = (
     "V3-C：把 V3-B refined candidate 的米制轨迹实现为 C1（position+heading 连续）几何——"
     "内部转弯用 explicit aircraft_min_turn_radius_m 的解析圆弧 fillet（R 绝不减小）；"
     "圆弧保留 analytic geometry 并按 explicit curve_chord_error_m 线性化（禁止隐式精度假设）；"
-    "随后用逐 domain 的源几何验证：confirmed allowed/blocked polygon 的 route uncertainty envelope "
-    "覆盖率与不相交、native FABDEM 像元 terrain clearance、真实 footprint 的 roof+vertical_clearance、"
+    "随后用逐 domain 的源证据验证：native FABDEM 像元 terrain clearance、真实 footprint 的 roof+vertical_clearance、"
     "高度带与 kinematics（analytic R、tangent heading、climb/descent gradient）。"
     "vector predicate 对 linearized representation（含显式 chord-error envelope）精确；"
     "terrain 是 source-native raster evidence，不声称真实世界地形数学连续精确。"
 )
 V3C_REAL_DATA_ADAPTER_STATUS = "implemented_v3c_gis_adapter"
 V3C_REAL_DATA_ADAPTER_REASON = (
-    "V3-C 的真实数据路径位于 GIS 边界：confirmed AirspacePolicy polygon 转到米制帧、"
-    "FABDEM native 像元窗口只读、以及 provider RTree 建筑查询（复用 BuildingClearance 的 roof 语义）；"
+    "V3-C 的真实数据路径位于 GIS 边界：FABDEM native 像元窗口只读、"
+    "以及 provider RTree 建筑查询（复用 BuildingClearance 的 roof 语义）；"
     "数据未配置/未确认时明确 blocked/unresolved，不构造假证据。"
 )
 
@@ -147,7 +145,8 @@ def _hash(value):
 
 class RoutePlannerV3ExperimentService:
     def __init__(self, session, planner, invalidation, snapshot, grid_service=None,
-                 refinement_planner=None, source_readiness=None, continuous_validator=None):
+                 refinement_planner=None, source_readiness=None, continuous_validator=None,
+                 environment_adapter=None):
         self.session = session
         self.planner = planner or V3StrategicPlanner()
         self.refinement_planner = refinement_planner or V3RefinementPlanner()
@@ -156,10 +155,11 @@ class RoutePlannerV3ExperimentService:
         self.snapshot = snapshot
         self.grid_service = grid_service or WorkspaceGridService()
         #: Optional injected provider for the *current* real-data readiness of the
-        #: V3-B fine sources.  It must not read data; it reports configured paths
-        #: and confirmed airspace evidence (see
+        #: V3-B fine sources.  It must not read data; it reports configured paths,
+        #: audited terrain/building sources and confirmed planning policy (see
         #: ``gis.fine_environment_adapter.real_data_source_readiness``).
         self.source_readiness = source_readiness
+        self.environment_adapter = environment_adapter
 
     # ------------------------------------------------------------------ queries
 
@@ -264,7 +264,7 @@ class RoutePlannerV3ExperimentService:
                 "implemented": [
                     "corridor_local_metric_fine_grid", "fine_environment_adapter_gis_boundary",
                     "terrain_intersecting_pixel_max_floor", "building_conservative_envelope",
-                    "confirmed_airspace_only", "coarse_soft_field_upsampling_with_provenance",
+                    "display_only_airspace_not_used_for_planning", "coarse_soft_field_upsampling_with_provenance",
                     "multi_cell_stride_refinement_search", "traversed_cell_interpolated_checks",
                     "refinement_fingerprint_and_staleness",
                 ],
@@ -346,6 +346,9 @@ class RoutePlannerV3ExperimentService:
         synthetic_spec = normalize_synthetic_spec(
             payload.get("synthetic_fine_spec") or payload.get("synthetic_spec")
         )
+        for key in ("restricted_cells", "unknown_airspace_cells", "unconfirmed_airspace_cells"):
+            if key in synthetic_spec:
+                synthetic_spec[key] = []
         if source == "canonical_synthetic":
             built = self._synthetic_fine_environment(record, corridor, fine, synthetic_spec)
         else:
@@ -801,7 +804,7 @@ class RoutePlannerV3ExperimentService:
         if source == "configured_real_sources":
             audits = (state.get("source_audits") or {}).get("items") or {}
             relevant = {}
-            for role in ("terrain", "terrain_dtm", "buildings", "building_grid", "airspace"):
+            for role in ("terrain", "terrain_dtm", "buildings", "building_grid"):
                 item = audits.get(role)
                 if not isinstance(item, dict):
                     continue
@@ -812,18 +815,10 @@ class RoutePlannerV3ExperimentService:
                     "size_bytes": item.get("size_bytes"),
                     "mtime_ns": item.get("mtime_ns"),
                 }
-            eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
-                "airspace_eligibility",
-            ) or {}
             return contract_fingerprint(
                 {
                     "scope": "configured_real_sources",
                     "source_audits": relevant,
-                    "airspace_eligibility": {
-                        "fingerprint": eligibility.get("fingerprint"),
-                        "status": eligibility.get("status"),
-                        "allowed_grid_cell_count": len(eligibility.get("allowed_grid_ids") or []),
-                    },
                     "environment_audit_fingerprint": (
                         ((refinement.get("result") or {}).get("source_audit") or {}).get("fingerprint")
                     ),
@@ -946,11 +941,9 @@ class RoutePlannerV3ExperimentService:
                 **kinematics,
             },
             "environment_readiness": {
-                "status": "pending" if "canonical_synthetic" in V3_ENVIRONMENT_SOURCES else "blocked",
-                "reason": (
-                    "真实数据 adapter 未实现；readiness 在每次实验时对 canonical synthetic 环境逐格评估"
-                ),
-                "domains_evaluated": ["airspace", "terrain", "building", "policy", "aircraft", "cost_model"],
+                "status": "pending",
+                "reason": "运行时对选定 canonical synthetic 或 configured real 环境逐格评估",
+                "domains_evaluated": ["terrain", "building", "policy", "aircraft", "cost_model"],
                 "evaluated_in": "run_result.readiness",
             },
             "synthetic_environment_options": {
@@ -966,18 +959,31 @@ class RoutePlannerV3ExperimentService:
         """Explicit verdict on real-data readiness for V3-A and V3-B."""
 
         state = self.session.state
-        airspace = ((state.get("grid_attributes") or {}).get("airspace") or {})
-        eligibility = airspace.get("airspace_eligibility") or {}
         profiles = state.get("data_source_profiles") or {}
         terrain_dtm_profile = profiles.get("terrain_dtm") or {}
         terrain_dtm_crs = terrain_dtm_profile.get("crs") or {}
-
         audits = (state.get("source_audits") or {}).get("items") or {}
+        terrain_audit = audits.get("terrain_dtm") or {}
+        buildings_audit = audits.get("buildings") or {}
         building_grid_audit = audits.get("building_grid") or {}
-
+        observed_vertical = terrain_dtm_crs.get("observed_vertical") or terrain_dtm_crs.get("vertical")
+        v3a_blocking = []
+        if str(observed_vertical or "").lower() != "egm2008_orthometric":
+            v3a_blocking.append("terrain_dtm_vertical_reference_not_verified_egm2008_orthometric")
+        if (terrain_dtm_profile.get("verification") or {}).get("status") != "verified_from_raster_metadata":
+            v3a_blocking.append("terrain_dtm_metadata_verification_missing")
+        if terrain_audit.get("status") != "verified":
+            v3a_blocking.append("terrain_dtm_source_not_verified")
+        if buildings_audit.get("status") != "verified":
+            v3a_blocking.append("buildings_source_not_verified")
+        if building_grid_audit.get("status") != "verified":
+            v3a_blocking.append("building_grid_source_not_verified")
+        policy = state.get("v3_planning_policy") or {}
+        if not policy.get("confirmed") or policy.get("missing_parameters"):
+            v3a_blocking.append("v3_policy_not_confirmed")
         fine = self._real_source_readiness()
         return {
-            "status": "blocked",
+            "status": "ready" if not v3a_blocking else "blocked",
             "adapter_status": V3_REAL_DATA_ADAPTER_STATUS,
             "reason": V3_REAL_DATA_ADAPTER_REASON,
             "terrain_source_declared": bool(
@@ -985,14 +991,14 @@ class RoutePlannerV3ExperimentService:
                 or terrain_dtm_profile.get("name")
             ),
             "terrain_vertical_reference": (
-                    terrain_dtm_crs.get("observed_vertical")
-                    or terrain_dtm_crs.get("vertical")
+                    observed_vertical
             ),
-            ...
-                "building_grid_source": (
-                building_grid_audit.get("status") == "verified"
-        ),
-            "v3a_status": "blocked",
+            "terrain_source_verified": terrain_audit.get("status") == "verified",
+            "buildings_source_verified": buildings_audit.get("status") == "verified",
+            "building_grid_source": building_grid_audit.get("status") == "verified",
+            "v3a_status": "ready" if not v3a_blocking else "blocked",
+            "v3a_blocking_reasons": v3a_blocking,
+            "airspace": {"status": "not_applicable", "applicability": "display_only"},
             "v3b": {
                 "status": fine.get("status"),
                 "adapter_status": V3B_REAL_DATA_ADAPTER_STATUS,
@@ -1007,20 +1013,18 @@ class RoutePlannerV3ExperimentService:
                 "adapter_status": V3C_REAL_DATA_ADAPTER_STATUS,
                 "reason": V3C_REAL_DATA_ADAPTER_REASON,
                 "blocking_reasons": list(fine.get("blocking_reasons") or []),
-                "confirmed_allowed_grid_cells": len(eligibility.get("allowed_grid_ids") or []),
                 "resolution_policy": fine.get("resolution_policy"),
                 "terrain_dtm": fine.get("terrain_dtm"),
                 "buildings": fine.get("buildings"),
                 "requires": [
-                    "confirmed AirspacePolicy polygons in the local metric frame",
                     "FABDEM native pixel window with confirmed egm2008_orthometric vertical reference",
                     "buildings GeoPackage with provider spatial index and height field",
                     "explicit confirmed V3-C validation policy (curve_chord_error_m, sample budget)",
                 ],
             },
             "required_before_real_run": [
-                "canonical V3CellEnvironment adapter (terrain surface floor, building required "
-                "clearance, confirmed airspace classification) with audited provenance",
+                "canonical V3CellEnvironment adapter (terrain surface floor and building required "
+                "clearance) with audited provenance",
                 "explicit confirmed V3 planning policy and confirmed fine refinement policy "
                 "(local metric CRS + resolution source)",
                 "explicit confirmed V3-C validation policy (curve_chord_error_m has no default)",
@@ -1192,16 +1196,10 @@ class RoutePlannerV3ExperimentService:
             ).get("cells") or []
         wanted = set(str(item) for item in corridor.get("support_grid_ids") or [])
         selected = [cell for cell in cells if str(cell.get("grid_id")) in wanted]
-        eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
-            "airspace_eligibility",
-        ) or {}
-        allowed = set(str(item) for item in eligibility.get("allowed_grid_ids") or [])
         for cell in selected:
-            grid_id = str(cell["grid_id"])
             cell["airspace"] = {
-                "status": "confirmed_allowed" if grid_id in allowed else "unknown",
-                "feature_id": None,
-                "policy_confirmed": bool(eligibility.get("status") == "passed"),
+                "status": "not_applicable", "applicability": "display_only",
+                "policy_confirmed": False,
             }
         return selected
 
@@ -1353,14 +1351,9 @@ class RoutePlannerV3ExperimentService:
         # project state can tell us.  Configured file paths live in MapData, which
         # only ApplicationContext can see, so they read as not configured here
         # rather than being guessed.
-        state = self.session.state
-        eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
-            "airspace_eligibility",
-        ) or {}
-        policy = state.get("v3_planning_policy") or {}
+        policy = self.session.state.get("v3_planning_policy") or {}
         return real_data_source_readiness(
-            {}, airspace_eligibility=eligibility,
-            policy_confirmed=bool(policy.get("confirmed")),
+            {}, policy_confirmed=bool(policy.get("confirmed")),
         )
 
     def _current_evidence_components(self, refinement, recorded):
@@ -1390,7 +1383,7 @@ class RoutePlannerV3ExperimentService:
         """Live-state evidence fingerprints for the *scope* a refinement depends on.
 
         * ``configured_real_sources``: the tracked source audits (terrain / DTM /
-          buildings), the confirmed airspace eligibility and the existing risk
+          buildings) and the existing risk
           model identity;
         * ``canonical_synthetic``: the synthetic environment is fully described by
           its own spec, so only the workspace/grid it was rebuilt inside and the
@@ -1401,7 +1394,7 @@ class RoutePlannerV3ExperimentService:
         state = self.session.state
         audits = (state.get("source_audits") or {}).get("items") or {}
         relevant_audits = {}
-        for role in ("terrain", "terrain_dtm", "buildings", "building_grid", "airspace"):
+        for role in ("terrain", "terrain_dtm", "buildings", "building_grid"):
             item = audits.get(role)
             if not isinstance(item, dict):
                 continue
@@ -1412,9 +1405,6 @@ class RoutePlannerV3ExperimentService:
                 "size_bytes": item.get("size_bytes"),
                 "mtime_ns": item.get("mtime_ns"),
             }
-        eligibility = ((state.get("grid_attributes") or {}).get("airspace") or {}).get(
-            "airspace_eligibility",
-        ) or {}
         risk = state.get("grid_risk") or {}
         policy_fingerprint = contract_fingerprint(
             {
@@ -1429,11 +1419,6 @@ class RoutePlannerV3ExperimentService:
                 {
                     "scope": "configured_real_sources",
                     "source_audits": relevant_audits,
-                    "airspace_eligibility": {
-                        "fingerprint": eligibility.get("fingerprint"),
-                        "status": eligibility.get("status"),
-                        "allowed_grid_cell_count": len(eligibility.get("allowed_grid_ids") or []),
-                    },
                     "risk_model": {
                         "algorithm_id": risk.get("algorithm_id"),
                         "algorithm_version": risk.get("algorithm_version"),
@@ -1460,7 +1445,6 @@ class RoutePlannerV3ExperimentService:
                         prefix="V3BGRIDSRC-",
                     ),
                     "environment_audit_fingerprint": environment_fingerprint,
-                    "airspace_eligibility_fingerprint": eligibility.get("fingerprint"),
                 },
                 prefix="V3BSRC-",
             )
@@ -1471,7 +1455,7 @@ class RoutePlannerV3ExperimentService:
 
     # ------------------------------------------------------------------ evaluate
 
-    def evaluate(self, payload=None):
+    def evaluate(self, payload=None, adapter=None):
         payload = payload if isinstance(payload, dict) else {}
         state = self.session.state
         workspace = state.get("workspace") or {}
@@ -1480,20 +1464,35 @@ class RoutePlannerV3ExperimentService:
         source = str(payload.get("environment_source") or "canonical_synthetic")
         if source not in V3_ENVIRONMENT_SOURCES:
             raise ValueError(
-                "V3-A 只支持 canonical_synthetic 环境；真实数据 adapter 在 V3-B/C 之前不可用"
+                "V3-A environment_source 只支持 canonical_synthetic 或 configured_real_sources"
             )
         policy = self._policy(payload)
-        if policy.get("status") != "confirmed" and not payload.get("allow_unconfirmed_policy"):
+        allow_unconfirmed = bool(payload.get("allow_unconfirmed_policy")) and source == "canonical_synthetic"
+        if policy.get("status") != "confirmed" and not allow_unconfirmed:
             raise ValueError(
                 "V3 policy 未确认：缺少显式安全参数或 confirmed=false。"
                 "V3-A 禁止猜默认安全值；请先保存已确认 policy。"
             )
         spec = normalize_synthetic_spec(payload.get("synthetic_spec"))
+        spec["restricted_cells"] = []
         grid = self._l8_grid()
-        environment = build_synthetic_environment(
-            grid.get("cells") or [], policy, spec,
-            source_detail={"requested_by": "route_planner_v3_experiment_service"},
-        )
+        if source == "canonical_synthetic":
+            environment = build_synthetic_environment(
+                grid.get("cells") or [], policy, spec,
+                source_detail={"requested_by": "route_planner_v3_experiment_service"},
+            )
+        else:
+            readiness = self.real_data_readiness()
+            if readiness.get("v3a_status") != "ready":
+                raise ValueError(
+                    "configured_real_sources 未就绪：" + ", ".join(
+                        readiness.get("v3a_blocking_reasons") or ["unknown_real_source_blocker"]
+                    )
+                )
+            active_adapter = adapter or self.environment_adapter
+            if active_adapter is None or not hasattr(active_adapter, "build"):
+                raise ValueError("configured_real_sources 需要注入 V3-A GIS environment adapter")
+            environment = active_adapter.build(grid=grid, policy=policy, state=state)
         start, goal = self._endpoints(payload, environment)
         problem = normalize_v3_planning_problem({
             "problem_id": str(payload.get("problem_id") or "v3-experiment"),
@@ -1505,7 +1504,7 @@ class RoutePlannerV3ExperimentService:
             "environment": environment,
             "provenance": {
                 "environment_source": source,
-                "synthetic_spec": spec,
+                "synthetic_spec": spec if source == "canonical_synthetic" else None,
                 "corridor_ring_n": payload.get("corridor_ring_n") or 0,
                 "refinement_cell_size_m": payload.get("refinement_cell_size_m"),
                 "corridor_altitude_margin_m": payload.get("corridor_altitude_margin_m"),
@@ -1513,7 +1512,7 @@ class RoutePlannerV3ExperimentService:
             },
         })
         result = self.planner.plan(problem)
-        record = self._record(payload, policy, spec, environment, problem, result)
+        record = self._record(payload, policy, spec, environment, problem, result, source=source)
         existing = (state.get("route_planner_v3_experiments") or {}).get("records") or []
         retained = [item for item in existing if item.get("experiment_id") != record["experiment_id"]]
         state["route_planner_v3_experiments"] = normalize_v3_experiments({
@@ -1626,7 +1625,7 @@ class RoutePlannerV3ExperimentService:
             return None
         return routes[0] if routes else None
 
-    def _record(self, payload, policy, spec, environment, problem, result):
+    def _record(self, payload, policy, spec, environment, problem, result, *, source):
         grid = self.session.state.get("grid") or {}
         identity = _hash({
             "grid": {
@@ -1637,7 +1636,9 @@ class RoutePlannerV3ExperimentService:
                 ],
             },
             "policy": policy,
-            "synthetic_spec": spec,
+            "synthetic_spec": spec if source == "canonical_synthetic" else None,
+            "environment_source": source,
+            "environment_source_detail": environment.get("source_detail") or {},
             "route_id": problem["route_id"],
             "start": problem["start"],
             "goal": problem["goal"],
@@ -1649,10 +1650,13 @@ class RoutePlannerV3ExperimentService:
         return {
             "experiment_id": "V3-" + identity[:12].upper(),
             "created_at": utc_now(),
-            "source_type": "synthetic",
-            "grounding": "canonical_synthetic_environment",
-            "environment_source": "canonical_synthetic",
-            "environment_spec": deepcopy(spec),
+            "source_type": "synthetic" if source == "canonical_synthetic" else "configured_real_sources",
+            "grounding": (
+                "canonical_synthetic_environment" if source == "canonical_synthetic"
+                else "audited_configured_real_sources"
+            ),
+            "environment_source": source,
+            "environment_spec": deepcopy(spec) if source == "canonical_synthetic" else None,
             "environment_fingerprint": _hash(environment),
             "policy": deepcopy(policy),
             "policy_fingerprint": _hash(policy),
@@ -1677,7 +1681,11 @@ class RoutePlannerV3ExperimentService:
                 "operational_routes_untouched": True,
                 "algorithm_selection_untouched": True,
                 "spatial_3d_untouched": True,
-                "environment_semantics": "canonical V3CellEnvironment built from an explicit synthetic spec; not real data",
+                "environment_semantics": (
+                    "canonical V3CellEnvironment built from an explicit synthetic spec; not real data"
+                    if source == "canonical_synthetic" else
+                    "canonical V3CellEnvironment built by injected GIS adapter from audited real sources"
+                ),
                 "not_final_validation": True,
             },
             "verdicts": {

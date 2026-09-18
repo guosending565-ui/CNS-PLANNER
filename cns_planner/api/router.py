@@ -181,7 +181,11 @@ class ApiRouter:
             "/api/route-experiments/delete": lambda: workflow.delete_route_experiment(payload.get("experiment_id")),
             "/api/route-planner-v3/policy": lambda: workflow.set_route_planner_v3_policy(payload),
             "/api/route-planner-v3/fine-policy": lambda: workflow.set_route_planner_v3_fine_policy(payload),
-            "/api/route-planner-v3-experiments/evaluate": lambda: workflow.evaluate_route_planner_v3(payload),
+            "/api/route-planner-v3-experiments/evaluate": lambda: (
+                context.evaluate_route_planner_v3(payload)
+                if hasattr(context, "evaluate_route_planner_v3")
+                else workflow.evaluate_route_planner_v3(payload)
+            ),
             "/api/route-planner-v3-experiments/delete": lambda: workflow.delete_route_planner_v3_experiment(payload.get("experiment_id")),
             "/api/route-planner-v3-refinements/evaluate": lambda: workflow.evaluate_route_planner_v3_refinement(payload),
             # GIS-wired variant: builds the real fine-environment adapter (needs QGIS/GDAL).

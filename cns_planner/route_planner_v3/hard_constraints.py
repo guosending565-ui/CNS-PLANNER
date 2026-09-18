@@ -1,11 +1,10 @@
 """Separated hard-constraint evaluation for Route Planner V3-A.
 
-``state_feasible``  — allowed airspace, altitude band, terrain clearance, building clearance.
-``transition_feasible`` — airspace continuity, turn capability, climb/descent capability.
+``state_feasible``  — altitude band, terrain clearance, building clearance.
+``transition_feasible`` — turn capability and climb/descent capability.
 
 Both directions fail closed: a cell whose terrain or building evidence is
-``unknown`` is **not** feasible, and an unconfirmed/absent airspace
-classification is not allowed.  This module never touches GDAL/QGIS/files; it
+``unknown`` is **not** feasible. Airspace is display-only metadata. This module never touches GDAL/QGIS/files; it
 only consumes the canonical :class:`~cns_planner.route_planner_v3.contracts.V3CellEnvironment`.
 """
 
@@ -17,8 +16,6 @@ from math import radians as _radians
 #: Rejection reasons are stable identifiers so expert evidence can be aggregated.
 STATE_REASONS = (
     "cell_not_in_environment",
-    "airspace_not_confirmed_allowed",
-    "airspace_unknown",
     "altitude_above_max",
     "altitude_below_min",
     "terrain_clearance_unresolved",
@@ -118,9 +115,6 @@ class HardConstraintEvaluator:
         cell = self.cells.get(grid_id)
         if cell is None:
             return False, "cell_not_in_environment"
-        airspace = str((cell.get("airspace") or {}).get("status") or "unknown")
-        if airspace != "confirmed_allowed":
-            return False, "airspace_not_confirmed_allowed" if airspace == "confirmed_restricted" else "airspace_unknown"
         altitude = float(altitude_egm2008_m)
         if self.max_altitude is not None and altitude > float(self.max_altitude) + _TOLERANCE:
             return False, "altitude_above_max"
@@ -195,7 +189,7 @@ class HardConstraintEvaluator:
 def seeded_rejection_summary(environment, evaluator, altitude_index=0, sample_limit=64):
     """Cell-level evidence gaps, measured once over a bounded sample.
 
-    This reports how many cells carry unresolved terrain/building/airspace
+    This reports how many cells carry unresolved terrain/building
     evidence in the *canonical environment itself*, independent of how much of
     the state space the search happened to expand.
     """
@@ -203,23 +197,16 @@ def seeded_rejection_summary(environment, evaluator, altitude_index=0, sample_li
     counts = {
         "terrain_unknown_cells": 0,
         "building_unknown_cells": 0,
-        "airspace_unknown_cells": 0,
-        "airspace_restricted_cells": 0,
     }
     samples = []
     for index, cell in enumerate((environment or {}).get("cells") or []):
         grid_id = str(cell["grid_id"])
         terrain = cell.get("terrain") or {}
         buildings = cell.get("buildings") or {}
-        airspace = str((cell.get("airspace") or {}).get("status") or "unknown")
         if terrain.get("data_status") != "passed" or terrain.get("surface_clearance_egm2008_m") is None:
             counts["terrain_unknown_cells"] += 1
         if buildings.get("data_status") != "passed" or buildings.get("required_clearance_egm2008_m") is None:
             counts["building_unknown_cells"] += 1
-        if airspace == "unknown":
-            counts["airspace_unknown_cells"] += 1
-        elif airspace == "confirmed_restricted":
-            counts["airspace_restricted_cells"] += 1
         if index < sample_limit:
             feasible, reason = evaluator.state_feasible(
                 grid_id, altitude_index,

@@ -19,7 +19,7 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
       const actions='<div class="button-row"><button class="secondary compact" data-verify-source="'+escapeHtml(item.id)+'" '+(item.path?'':'disabled')+'>验证数据源</button>'
         +(item.id==='reference_landing_sites'||item.id==='reference_routes'?'<button class="secondary compact" data-confirm-crs="'+escapeHtml(item.id)+'">确认 CRS</button>':'')
         +(item.id==='reference_routes'?'<button class="secondary compact" data-preview-routes>预览并导入航线</button>':'')
-        +(item.id==='airspace'?'<button class="secondary compact" data-edit-airspace-policy>编辑 AirspacePolicy</button>':'')+'</div>';
+        +'</div>';
       row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · 基础运行必需':' · 可选')+'</small>'+(metadata?'<p>'+escapeHtml(metadata)+'</p>':'')
         +'<p><b>数据可信度/审计</b> · configured '+escapeHtml(trust.configured||'—')+' · identity '+escapeHtml(trust.identity||'—')+' · schema '+escapeHtml(trust.schema||'—')+' · CRS '+escapeHtml(trust.crs||'—')+' · geometry '+escapeHtml(trust.geometry||'—')+' · version '+escapeHtml(trust.version||'—')+' · overall '+escapeHtml(trust.overall||'—')+'</p><small>source_id '+escapeHtml(audit.source_id||'—')+' · reasons '+escapeHtml(reasons)+'</small>'+actions;list.append(row);
     }
@@ -49,7 +49,6 @@ const payload=()=>({
       const crs=event.target.closest?.('[data-confirm-crs]');
       if(crs){const value=globalThis.prompt?.('输入经证据确认的 CRS（如 EPSG:4326）','')||'';if(!value)return;const evidence=globalThis.prompt?.('输入 CRS 证据说明','')||'';if(!evidence)return;try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/reference-crs/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:crs.dataset.confirmCrs,value,source:{type:'user_confirmation'},evidence:[{type:'user_supplied',note:evidence}]})});const refreshedState=await api('/api/state');onApplied(refreshedState);}catch(error){$('settingsError').textContent=error.message;}return;}
       if(event.target.closest?.('[data-preview-routes]')){try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/reference-routes/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const refreshedState=await api('/api/state');onApplied(refreshedState);$('settingsMessage').textContent='航线预览已生成；请在航路设计页核对后确认导入';}catch(error){$('settingsError').textContent=error.message;}return;}
-      if(event.target.closest?.('[data-edit-airspace-policy]')){$('settings').close();document.querySelector('[data-step="3"]')?.click();}
     });
     $('closeBrowser').onclick=()=>$('browser').close();$('drives').onclick=()=>browse('');$('parent').onclick=()=>browse(browseParent);$('openFolder').onclick=()=>browse($('folder').value);
     $('selectFile').onclick=()=>{const target=$(browseKind+'Path');if(selectedFile&&target)target.value=selectedFile;$('browser').close();};

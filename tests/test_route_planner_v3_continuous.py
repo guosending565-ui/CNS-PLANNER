@@ -31,7 +31,7 @@ from cns_planner.algorithms.grid.service import WorkspaceGridService
 from cns_planner.application.project_state import blank_project, normalize_project
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.route_planner_v3.continuous_contracts import (
-    VALIDATION_FINGERPRINT_COMPONENTS, V3C_DOMAINS, V3C_RESULT_STATUSES,
+    ACTIVE_V3C_DOMAINS, VALIDATION_FINGERPRINT_COMPONENTS, V3C_DOMAINS, V3C_RESULT_STATUSES,
     default_v3_validation_policy, effective_v3c_policy, evaluate_validation_applicability,
     normalize_v3_continuous_validation_result, normalize_v3_validation_policy,
     validation_fingerprint_components,
@@ -375,73 +375,55 @@ def test_realized_altitude_bounds_are_revalidated_against_the_explicit_band():
 
 
 # --------------------------------------------------------------------------------------
-# 3. airspace (exact route-level vector validation)
+# 3. legacy airspace evidence is display-only for active V3-C validation
 # --------------------------------------------------------------------------------------
 
 
-def test_tiny_blocked_polygon_inside_a_v3b_centre_test_blind_spot_is_caught():
-    # A 10 m x 30 m blocked polygon centred inside one fine cell: its cell centre is
-    # outside the polygon, so the V3-B centre test passes, while the realized route
-    # envelope provably intersects it.
+def test_tiny_blocked_airspace_polygon_is_display_only():
     spec = filled_spec(blocked_metric_polygons=[[
         [495.0, -15.0], [505.0, -15.0], [505.0, 15.0], [495.0, 15.0], [495.0, -15.0],
     ]])
     outcome = run_case(OPEN_POINTS, spec=spec)
     result = outcome["result"]
-    assert result["domain_statuses"]["airspace"] == "failed"
-    assert result["status"] == "failed"
-    violation = next(
-        item for item in result["violations"]
-        if item["reason_id"] == "route_envelope_intersects_confirmed_blocked_airspace"
-    )
-    assert violation["start_distance_m"] <= 500.0 <= violation["end_distance_m"]
-    assert violation["required"] == "envelope_disjoint_from_confirmed_blocked_union"
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["domains"]["airspace"]["applicability"] == "not_applicable"
+    assert result["status"] == "validated_route"
+    assert not [item for item in result["violations"] if item["domain"] == "airspace"]
 
 
-def test_allowed_boundary_leaves_the_route_outside_confirmed_airspace():
+def test_allowed_airspace_boundary_does_not_gate_v3c():
     spec = filled_spec(allowed_metric_polygons=[[
         [0.0, -200.0], [1000.0, -200.0], [1000.0, 200.0], [0.0, 200.0], [0.0, -200.0],
     ]])
     outcome = run_case(OPEN_POINTS, spec=spec)
     result = outcome["result"]
-    assert result["domain_statuses"]["airspace"] == "failed"
-    assert any(
-        item["reason_id"] == "route_envelope_not_covered_by_confirmed_allowed_airspace"
-        for item in result["violations"]
-    )
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["status"] == "validated_route"
 
 
-def test_route_fully_inside_confirmed_allowed_airspace_passes_with_a_margin():
+def test_airspace_geometry_changes_do_not_change_v3c_verdict():
     outcome = run_case(OPEN_POINTS)
     result = outcome["result"]
-    assert result["domain_statuses"]["airspace"] == "passed"
-    # The envelope is strictly inside the allowed union, so the signed margin is
-    # non-negative (0.0 when the envelope only touches the boundary).
-    assert result["min_margins"]["airspace_horizontal_m"] >= 0.0
-    assert result["domains"]["airspace"]["evidence"]["coverage_gap_area_m2"] == pytest.approx(0.0)
-    # Shrinking the allowed polygon so it no longer covers the route flips the verdict.
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["min_margins"]["airspace_horizontal_m"] is None
     tight = run_case(OPEN_POINTS, spec=filled_spec(allowed_metric_polygons=[[
         [0.0, -200.0], [1000.0, -200.0], [1000.0, 200.0], [0.0, 200.0], [0.0, -200.0],
     ]]))["result"]
-    assert tight["domain_statuses"]["airspace"] == "failed"
-    assert tight["min_margins"]["airspace_horizontal_m"] <= 0.0
+    assert tight["domain_statuses"]["airspace"] == "skipped"
+    assert tight["status"] == result["status"] == "validated_route"
 
 
-def test_unconfirmed_airspace_evidence_touching_the_route_is_unresolved():
+def test_unconfirmed_airspace_evidence_is_display_only():
     spec = filled_spec(unconfirmed_metric_polygons=[[
         [480.0, -40.0], [520.0, -40.0], [520.0, 40.0], [480.0, 40.0], [480.0, -40.0],
     ]])
     outcome = run_case(OPEN_POINTS, spec=spec)
     result = outcome["result"]
-    assert result["domain_statuses"]["airspace"] == "unresolved"
-    assert result["status"] == "unresolved"
-    assert any(
-        item["reason_id"] == "unconfirmed_airspace_feature_overlaps_route_envelope"
-        for item in result["unresolved_evidence"]
-    )
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["status"] == "validated_route"
 
 
-def test_unconfirmed_policy_is_fail_closed_even_when_the_polygon_would_allow():
+def test_unconfirmed_legacy_airspace_policy_is_not_a_v3c_gate():
     spec = filled_spec(allowed_metric_polygons=[[
         [-5000.0, -5000.0], [5000.0, -5000.0], [5000.0, 5000.0], [-5000.0, 5000.0],
         [-5000.0, -5000.0],
@@ -449,34 +431,28 @@ def test_unconfirmed_policy_is_fail_closed_even_when_the_polygon_would_allow():
     spec["confirmed"] = False
     outcome = run_case(OPEN_POINTS, spec=spec)
     result = outcome["result"]
-    assert result["domain_statuses"]["airspace"] == "unresolved"
-    assert result["unresolved_evidence"][0]["reason_id"] == "airspace_policy_not_confirmed"
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["status"] == "validated_route"
 
 
-def test_confirmed_vertical_evidence_bounds_the_route_interval_check():
+def test_legacy_airspace_vertical_evidence_is_not_a_v3c_constraint():
     spec = filled_spec(blocked_metric_polygons=[{
         "ring_metric": [[480.0, -40.0], [520.0, -40.0], [520.0, 40.0], [480.0, 40.0], [480.0, -40.0]],
         "altitude_interval": {"lower_altitude_egm2008_m": 400.0, "upper_altitude_egm2008_m": 600.0},
     }])
     outcome = run_case(OPEN_POINTS, [200.0, 200.0, 200.0], spec=spec)
     result = outcome["result"]
-    assert result["domain_statuses"]["airspace"] == "failed"
-    reasons = {item["reason_id"] for item in result["violations"]}
-    # The route leaves the confirmed band at that interval.
-    assert "route_below_confirmed_airspace_lower_altitude" in reasons
-    # Both the horizontal intersection and the vertical breach are reported.
-    assert "route_envelope_intersects_confirmed_blocked_airspace" in reasons
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["status"] == "validated_route"
 
 
-def test_airspace_evidence_records_horizontal_only_when_no_vertical_evidence_exists():
+def test_airspace_domain_records_display_only_contract():
     outcome = run_case(OPEN_POINTS)
     airspace = outcome["result"]["domains"]["airspace"]
-    assert airspace["evidence"]["horizontal_only_policy_evidence"] is True
-    assert "no_confirmed_vertical_evidence" in airspace["evidence"]["vertical_evidence_semantics"]
-    assert airspace["evidence"]["vector_predicate_semantics"].startswith("exact_on_the_linearized")
-    assert airspace["evidence"]["buffer_approximation"]["parameter"] == "quad_segs"
-    assert airspace["evidence"]["final_route_level_validation"] is True
-    assert airspace["evidence"]["fine_cell_centre_only_test"] is False
+    assert airspace["status"] == "skipped"
+    assert airspace["applicability"] == "not_applicable"
+    assert airspace["reason"] == "display_only_airspace_not_used_for_route_constraints"
+    assert airspace["semantics"]["layer_role"] == "display_only_reference_layer"
 
 
 def test_airspace_validator_reports_unresolved_for_invalid_source_geometry():
@@ -830,13 +806,18 @@ def test_geometry_domain_reports_a_radius_reduction_as_a_failure():
 # --------------------------------------------------------------------------------------
 
 
-def test_validated_route_requires_every_domain_to_pass():
+def test_validated_route_requires_every_active_domain_to_pass():
+    """``airspace`` is a display-only reference layer and can never gate a route."""
+
     result = run_case(OPEN_POINTS)["result"]
     assert result["status"] == "validated_route"
-    assert all(result["domain_statuses"][name] == "passed" for name in V3C_DOMAINS)
+    assert all(result["domain_statuses"][name] == "passed" for name in ACTIVE_V3C_DOMAINS)
+    assert result["domain_statuses"]["airspace"] == "skipped"
+    assert result["domains"]["airspace"]["applicability"] == "not_applicable"
+    assert result["domains"]["airspace"]["reason"] == "display_only_airspace_not_used_for_route_constraints"
     assert result["verdicts"]["all_domains_passed"] is True
     assert result["verdicts"]["replan_required"] is False
-    assert result["statistics"]["passed_domain_count"] == len(V3C_DOMAINS)
+    assert result["statistics"]["passed_domain_count"] == len(ACTIVE_V3C_DOMAINS)
 
 
 def test_validated_route_is_never_an_operational_route_and_cns_is_not_assessed():
@@ -966,12 +947,12 @@ def test_the_fingerprint_covers_refinement_policy_curve_tolerance_source_crs_and
                       "local_to_geographic": {"method": "qgis"}, "vertical_reference": "egm2008_orthometric"},
         },
         "policy": {"curve_chord_error_m": 0.5, "use_curve_error_envelope": True},
-        "source_audit": {"fingerprint": "V3CSRC-A"},
+        "source_audit": {"terrain": {"sha256": "T1"}, "buildings": {"sha256": "B1"}},
     }
     components = validation_fingerprint_components(problem)
     assert set(components) == set(VALIDATION_FINGERPRINT_COMPONENTS)
     assert components["refinement_fingerprint"] == "V3BREF-A"
-    assert components["source_fingerprint"] == "V3CSRC-A"
+    assert components["source_fingerprint"].startswith("V3CSRC-")
     changed_policy = deepcopy(problem)
     changed_policy["policy"]["curve_chord_error_m"] = 0.05
     assert (
@@ -985,11 +966,31 @@ def test_the_fingerprint_covers_refinement_policy_curve_tolerance_source_crs_and
         != components["crs_fingerprint"]
     )
     changed_source = deepcopy(problem)
-    changed_source["source_audit"]["fingerprint"] = "V3CSRC-B"
+    changed_source["source_audit"]["terrain"] = {"sha256": "T2"}
     assert (
         validation_fingerprint_components(changed_source)["source_fingerprint"]
         != components["source_fingerprint"]
     )
+
+
+def test_the_fingerprint_never_covers_the_display_only_airspace_layer():
+    """Airspace is display-only: it may not enter any V3-C fingerprint component."""
+
+    problem = {
+        "refinement": {
+            "refinement_fingerprint": "V3BREF-A",
+            "frame": {"frame_id": "F1", "horizontal_crs": "EPSG:32651",
+                      "local_to_geographic": {"method": "qgis"}, "vertical_reference": "egm2008_orthometric"},
+        },
+        "policy": {"curve_chord_error_m": 0.5, "use_curve_error_envelope": True},
+        "source_audit": {"terrain": {"sha256": "T1"}, "airspace": {"sha256": "A1"}},
+    }
+    components = validation_fingerprint_components(problem)
+    changed = deepcopy(problem)
+    changed["policy"]["airspace_allow_touching_blocked_boundary"] = True
+    changed["source_audit"]["airspace"] = {"sha256": "A2"}
+    changed["source_audit"]["airspace_policy"] = {"status": "confirmed_allowed"}
+    assert validation_fingerprint_components(changed) == components
 
 
 def test_a_stale_expected_validation_fingerprint_blocks_the_run():
@@ -1168,7 +1169,8 @@ def test_service_runs_v3c_and_writes_only_its_own_container(tmp_path):
     assert result["status"] == "validated_route"
     assert result["operational_route"] is False
     assert result["cns_assessed"] is False
-    assert all(result["domain_statuses"][name] == "passed" for name in V3C_DOMAINS)
+    assert all(result["domain_statuses"][name] == "passed" for name in ACTIVE_V3C_DOMAINS)
+    assert result["domain_statuses"]["airspace"] == "skipped"
     assert service.state["operational_routes"] == before_routes
     assert service.state["algorithm_selection"] == before_selection
     assert service.state["spatial_3d"] == before_spatial
@@ -1265,7 +1267,7 @@ def test_configured_real_sources_without_an_adapter_is_unresolved_not_fabricated
     result = latest_validation(service)["result"]
     assert result["status"] == "unresolved"
     assert result["domain_statuses"]["terrain"] == "unresolved"
-    assert result["domain_statuses"]["airspace"] == "unresolved"
+    assert result["domain_statuses"]["airspace"] == "skipped"
     assert result["domain_statuses"]["building"] == "unresolved"
     assert result["operational_route"] is False
 

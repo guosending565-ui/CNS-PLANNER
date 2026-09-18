@@ -259,7 +259,7 @@ def test_readiness_reports_crs_format_count_and_policy_completeness(tmp_path):
     assert policies["confirmed_count"] == 0
     assert policies["route_eligibility_counts"] == {"allowed": 0, "blocked": 0, "unknown": 0}
     assert policies["never_inferred_from_layer_name_or_color"] is True
-    assert policies["v2_readiness"]["status"] == "blocked"
+    assert policies["v2_readiness"]["status"] == "not_applicable"
     assert readiness["et_source_policy"] == "requires_xlsx_or_csv_conversion"
     assert readiness["et_parser"] is None
 
@@ -296,14 +296,14 @@ def test_airspace_policy_readiness_counts_only_explicit_values(tmp_path):
     assert policies["confirmed_count"] + policies["unconfirmed_count"] == policies["count"]
 
 
-def test_policy_change_stales_airspace_eligibility_and_route_outputs(tmp_path):
+def test_policy_change_does_not_stale_route_outputs(tmp_path):
     workflow = project_workflow(tmp_path)
     workflow.generate_operational([])
     assert workflow.state["result_statuses"]["routes"] == "passed"
     workflow.set_airspace_policies({"items": [
         {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
     ]})
-    assert workflow.state["result_statuses"]["routes"] == "stale"
+    assert workflow.state["result_statuses"]["routes"] == "passed"
     assert workflow.state["algorithm_selection"]["route_planner"]["algorithm_id"] == "route_planner_v1"
 
 

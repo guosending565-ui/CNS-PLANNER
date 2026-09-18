@@ -14,7 +14,7 @@ export function drawWorkspace(ctx,screenPoint,bbox,color='#147ac3'){
 export function drawGridTheme(options){
   const {ctx,view,flow,cache,display,visibleBounds,screenPoint,gridTheme,palettes,riskBreaks}=options;
   const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[display.theme]||null;
-  const riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[display.theme]||null;
+  const riskKind={ground_risk:'ground',overall_risk:'overall'}[display.theme]||null;
   if(!view||(!kind&&!riskKind))return;
   const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),usable=result.status==='passed'||result.status==='missing_data';
   const buildingBreaks={building_density:cache.buildingCoverageBreaks,building_p95:cache.buildingP95Breaks,building_max:cache.buildingMaxBreaks};

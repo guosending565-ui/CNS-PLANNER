@@ -28,7 +28,7 @@ class RiskModelV1:
             "population": 0.4, "traffic": 0.4, "terrain": 0.2, "buildings": 0.0,
         },
         "ground_parameter_status": "default_engineering_parameters",
-        "airspace_category_weights": {},
+        "airspace_category_weights": {},  # deprecated display-only compatibility
         "unknown_category_policy": "missing",
         "unknown_category_default_weight": None,
         "operational_air": {"traffic_alpha": 0.5},
@@ -51,7 +51,7 @@ class RiskModelV1:
         },
     }
     input_names = (
-        "population", "terrain", "airspace", "buildings",
+        "population", "terrain", "buildings",
         "property_exposure", "infrastructure", "towers", "traffic", "conflict",
     )
 
@@ -103,15 +103,12 @@ class RiskModelV1:
         for grid_cell in cells:
             grid_id = grid_cell["grid_id"]
             ground = self._ground_risk(grid_id, attributes, effective)
-            airspace_constraint = self._airspace_constraint_risk(
-                grid_id, attributes.get("airspace") or {}, effective
-            )
             air = self._operational_air_risk(grid_id, attributes, effective)
             overall = self._overall_risk(ground, air, effective)
             result_cells[grid_id] = {
                 "ground": ground,
                 "air": air,
-                "airspace_constraint": airspace_constraint,
+                "airspace_constraint": self._display_only_airspace_risk(),
                 "overall": overall,
                 "contributors": deepcopy(overall["contributors"]),
                 "status": overall["status"],
@@ -399,6 +396,15 @@ class RiskModelV1:
             "unit": "index_0_1",
         })
         return result
+
+    @staticmethod
+    def _display_only_airspace_risk():
+        return {
+            "status": "not_applicable", "score": None, "value": None,
+            "level": None, "unit": None, "data_completeness": 0.0,
+            "contributors": [], "applicability": "display_only",
+            "semantics": "display_only_airspace_not_used_as_risk_input",
+        }
 
     def _airspace_hit(self, hit, category_weights, policy, parameters):
         ratio = hit.get("intersection_ratio")

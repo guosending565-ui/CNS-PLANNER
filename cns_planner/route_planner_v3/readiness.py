@@ -4,7 +4,7 @@ Two distinct conditions are reported separately:
 
 ``blocked``
     the safety evidence itself is missing or unusable -- unknown/NoData terrain or
-    building evidence, no confirmed allowed airspace, no canonical environment.
+    building evidence, or no canonical environment.
 ``pending``
     the evidence could exist but an explicit policy parameter or source
     declaration has not been supplied/confirmed yet.
@@ -113,32 +113,13 @@ def cost_model_readiness(policy, cells=None, id_field="grid_id"):
 
 
 def _airspace(cells, environment):
-    counts = {"confirmed_allowed": 0, "confirmed_restricted": 0, "unknown": 0}
-    for cell in cells:
-        status = str((cell.get("airspace") or {}).get("status") or "unknown")
-        counts[status if status in counts else "unknown"] += 1
-    entry = _entry(
-        "airspace", "ready", [], status_counts=counts, cell_count=len(cells),
-        evaluated=bool(cells),
-        semantics="only_confirmed_allowed_cells_are_feasible_never_inferred_from_layer_name_or_color",
+    return _entry(
+        "airspace", "ready", ["display_only_airspace_not_used_for_route_constraints"],
+        status_counts={"not_applicable": len(cells)}, cell_count=len(cells),
+        evaluated=False, applicability="not_applicable",
+        layer_role="display_only_reference_layer",
+        semantics="display_only_reference_layer_not_used_for_planning",
     )
-    if not cells:
-        entry["status"] = "blocked"
-        entry["evaluated"] = False
-        entry["reasons"].append("canonical V3CellEnvironment 为空，没有任何可判定单元")
-    elif environment.get("status") == "missing_data":
-        entry["status"] = "blocked"
-        entry["reasons"].append(environment.get("reason") or "环境整体状态为 missing_data")
-    elif counts["confirmed_allowed"] == 0:
-        entry["status"] = "blocked"
-        entry["reasons"].append(
-            "没有任何 confirmed allowed 空域单元；unknown 一律 fail-closed，不得当作允许"
-        )
-    if counts["unknown"] and entry["status"] == "ready":
-        entry["reasons"].append(
-            f"{counts['unknown']} 个单元空域状态为 unknown，这些单元在搜索中不可行"
-        )
-    return entry
 
 
 def _terrain(cells, policy, environment):

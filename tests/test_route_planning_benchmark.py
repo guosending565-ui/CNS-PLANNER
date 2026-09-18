@@ -111,8 +111,8 @@ def test_failed_result_is_measured_without_inventing_quality():
     assert evaluation["status"] == "failed"
     assert evaluation["quality"]["path_length_m"] == 0
     assert evaluation["quality"]["detour_factor"] == 1.0
-    assert evaluation["allowed_airspace_feasibility"]["status"] == "failed"
-    assert evaluation["allowed_airspace_feasibility"]["source"] == "planner_result_status_only_not_rejudged"
+    assert evaluation["allowed_airspace_feasibility"]["status"] == "not_applicable"
+    assert evaluation["allowed_airspace_feasibility"]["source"] == "display_only_airspace_not_used_for_route_constraints"
 
 
 def test_evaluator_reads_v2_risk_metrics_and_never_recomputes_risk():
@@ -254,7 +254,7 @@ def test_pack_lists_manifest_limitations_and_case_input_summaries(pack):
     assert v1["parameter_schema"]["properties"]["grid_size"]["default"] == 56
     assert any("BBOX" in item for item in v1["limitations"])
     v2 = pack["planner_manifests"]["risk_aware_route_planner_v2"]
-    assert "airspace_eligibility" in v2["inputs"]
+    assert "airspace_eligibility" not in v2["inputs"]
     for item in pack["cases"]:
         summary = item["input_summary"]
         assert summary["workspace_bbox"] and summary["start"] and summary["end"]

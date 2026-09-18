@@ -9,7 +9,7 @@ route-level status, and the mapping is fixed:
 * the V3-B source or the refined candidate is stale ⇒ ``not_ready``;
 * a validation resource limit (sample budget or wall-clock budget) ⇒
   ``validation_incomplete`` -- **never** ``failed``;
-* only when geometry, airspace, terrain, building, altitude and kinematics are all
+* only when geometry, terrain, building, altitude and kinematics are all
   ``passed`` ⇒ ``validated_route``.
 
 Even ``validated_route`` forces ``operational_route=false`` and
@@ -24,14 +24,14 @@ import time
 
 from .continuous_contracts import (
     CONTINUOUS_VALIDATION_RESULT_SCHEMA_VERSION, V3C_ALGORITHM_ID, V3C_ALGORITHM_VERSION,
-    V3C_DISCLAIMER, V3C_DOMAINS, V3C_MODEL_SCOPE, V3C_RESULT_STATUSES,
+    ACTIVE_V3C_DOMAINS, V3C_DISCLAIMER, V3C_DOMAINS, V3C_MODEL_SCOPE, V3C_RESULT_STATUSES,
     empty_domain_result, empty_v3_continuous_validation_result,
     normalize_v3_continuous_validation_problem, normalize_v3_continuous_validation_result,
     validation_fingerprint_components, violation_interval,
 )
 from .continuous_geometry import TURN_RADIUS_POLICY, realize_continuous_route
 from .continuous_validators import (
-    MetricRoute, validate_airspace, validate_altitude_bounds, validate_buildings,
+    MetricRoute, validate_altitude_bounds, validate_buildings,
     validate_geometry, validate_kinematics, validate_terrain,
 )
 
@@ -42,7 +42,7 @@ class V3ContinuousValidator:
     algorithm_id = V3C_ALGORITHM_ID
     algorithm_version = V3C_ALGORITHM_VERSION
     model_scope = V3C_MODEL_SCOPE
-    domains = V3C_DOMAINS
+    domains = ACTIVE_V3C_DOMAINS
 
     def validate(self, problem):
         started = time.perf_counter()
@@ -88,7 +88,7 @@ class V3ContinuousValidator:
             for domain in V3C_DOMAINS:
                 if domain == "geometry":
                     continue
-                domains[domain] = _skipped(domain, "geometry_realization_failed")
+                domains[domain] = _airspace_not_applicable() if domain == "airspace" else _skipped(domain, "geometry_realization_failed")
             result = self._assemble(
                 normalized, readiness, fingerprint, fingerprint_components, route, domains,
                 sample_count=collected, runtime_s=time.perf_counter() - started,
@@ -99,10 +99,7 @@ class V3ContinuousValidator:
         metric_route = MetricRoute(route)
         to_geographic = _geographic_converter(evidence)
         domains["geometry"] = validate_geometry(route, policy=policy)
-        domains["airspace"] = validate_airspace(
-            metric_route, evidence=evidence.get("airspace") or {}, policy=policy,
-            to_geographic=to_geographic,
-        )
+        domains["airspace"] = _airspace_not_applicable()
         domains["terrain"] = validate_terrain(
             metric_route, evidence=evidence.get("terrain") or {}, policy=policy,
             to_geographic=to_geographic,
@@ -235,7 +232,7 @@ class V3ContinuousValidator:
         result["reason"] = reason
         result["verdicts"] = {
             "all_domains_passed": all(
-                (domains.get(name) or {}).get("status") == "passed" for name in V3C_DOMAINS
+                (domains.get(name) or {}).get("status") == "passed" for name in ACTIVE_V3C_DOMAINS
             ),
             "replan_required": status == "failed",
             "automatic_repair_performed": False,
@@ -266,7 +263,7 @@ class V3ContinuousValidator:
             "effective_policy": deepcopy(problem.get("policy")),
             "continuous_route": None,
             "domains": {
-                name: _skipped(name, "validation_not_run_readiness_blocked") for name in V3C_DOMAINS
+                name: (_airspace_not_applicable() if name == "airspace" else _skipped(name, "validation_not_run_readiness_blocked")) for name in V3C_DOMAINS
             },
             "domain_statuses": {name: "skipped" for name in V3C_DOMAINS},
             "min_margins": _min_margins({}),
@@ -387,6 +384,21 @@ def _skipped(domain, reason):
     return result
 
 
+def _airspace_not_applicable():
+    result = empty_domain_result("airspace", "skipped")
+    result.update({
+        "evaluated": False,
+        "applicability": "not_applicable",
+        "reason": "display_only_airspace_not_used_for_route_constraints",
+        "semantics": {
+            "applicability": "not_applicable",
+            "layer_role": "display_only_reference_layer",
+            "not_a_planning_input": True,
+        },
+    })
+    return result
+
+
 def _min_margins(domains):
     airspace = domains.get("airspace") or {}
     terrain = domains.get("terrain") or {}
@@ -477,7 +489,7 @@ def _route_status(domains, policy):
     """Fixed status mapping: violation ⇒ failed, missing evidence ⇒ unresolved."""
 
     reasons = []
-    for domain in V3C_DOMAINS:
+    for domain in ACTIVE_V3C_DOMAINS:
         entry = domains.get(domain) or {}
         status = entry.get("status")
         if status == "failed":
@@ -486,13 +498,13 @@ def _route_status(domains, policy):
         return "failed", "确定违反：" + "; ".join(reasons) + "（不自动修路/不自动 replan）"
     unresolved = [
         f"{domain}:{entry.get('reason') or 'unresolved'}"
-        for domain in V3C_DOMAINS
+        for domain in ACTIVE_V3C_DOMAINS
         for entry in [domains.get(domain) or {}]
         if entry.get("status") == "unresolved"
     ]
     if unresolved:
         return "unresolved", "证据不足：" + "; ".join(unresolved)
-    if not all((domains.get(domain) or {}).get("status") == "passed" for domain in V3C_DOMAINS):
+    if not all((domains.get(domain) or {}).get("status") == "passed" for domain in ACTIVE_V3C_DOMAINS):
         return "unresolved", "并非所有 domain 都 passed，且不存在确定违反：按证据不足处理"
     return "validated_route", (
         "连续几何实现 + confirmed 源几何/原生栅格验证全部 passed；"

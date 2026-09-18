@@ -162,7 +162,7 @@ class RiskAwareRoutePlannerV2:
 
     def plan(self, route, grid, grid_risk, hard_constraints, airspace_eligibility=None):
         fingerprint = _fingerprint(
-            route, grid, grid_risk, hard_constraints, self.parameters, airspace_eligibility,
+            route, grid, grid_risk, hard_constraints, self.parameters,
         )
         route_id = str((route or {}).get("route_id") or "")
         start, goal = (route or {}).get("start"), (route or {}).get("end")
@@ -182,22 +182,6 @@ class RiskAwareRoutePlannerV2:
         if _point_in_constraints(start, hard_constraints) or _point_in_constraints(goal, hard_constraints) or source in hard_blocked or target in hard_blocked:
             return self._result("failed", route_id, [], [], "起点或终点落入管制/硬约束范围", fingerprint)
 
-        eligibility = airspace_eligibility or {}
-        if eligibility.get("status") != "passed":
-            return self._result(
-                "missing_data", route_id, [], [],
-                "没有 confirmed allowed airspace，禁止回退到旧 A*", fingerprint,
-                airspace_eligibility=eligibility,
-            )
-        allowed = {str(value) for value in eligibility.get("allowed_grid_ids") or []}
-        connector_safe = {
-            str(value) for value in eligibility.get("connector_safe_grid_ids") or []
-        }
-        if source not in allowed or target not in allowed or source not in connector_safe or target not in connector_safe:
-            return self._result(
-                "failed", route_id, [], [], "起点或终点位于 confirmed allowed airspace 外",
-                fingerprint, airspace_eligibility=eligibility,
-            )
         if (
             not isinstance(grid_risk, dict)
             or grid_risk.get("status") not in ("passed", "missing_data")
@@ -205,13 +189,7 @@ class RiskAwareRoutePlannerV2:
         ):
             return self._result(
                 "missing_data", route_id, [], [], "grid_risk 未计算或已失效", fingerprint,
-                airspace_eligibility=eligibility,
             )
-        allowed_edges = {
-            tuple(sorted((str(edge[0]), str(edge[1]))))
-            for edge in eligibility.get("allowed_edges") or []
-            if isinstance(edge, (list, tuple)) and len(edge) == 2
-        }
 
         risk_values, unknown = self._risk_values(graph, grid_risk)
         threshold = self.parameters["max_relative_risk_index"]
@@ -224,15 +202,14 @@ class RiskAwareRoutePlannerV2:
         if source in threshold_blocked or target in threshold_blocked:
             return self._result("failed", route_id, [], [], "起点或终点超过工程相对风险阈值", fingerprint)
 
-        blocked = hard_blocked | threshold_blocked | unknown | (set(graph.cells) - allowed)
-        grid_path = self._astar(graph, source, target, risk_values, blocked, allowed_edges)
+        blocked = hard_blocked | threshold_blocked | unknown
+        grid_path = self._astar(graph, source, target, risk_values, blocked)
         if not grid_path:
-            risk_unknown_inside = bool(unknown & allowed)
+            risk_unknown_inside = bool(unknown)
             status = "missing_data" if risk_unknown_inside else "failed"
-            reason = "风险证据缺失阻断，未找到可用路径" if risk_unknown_inside else "confirmed allowed 区域不连通或硬约束阻断"
+            reason = "风险证据缺失阻断，未找到可用路径" if risk_unknown_inside else "显式硬约束阻断，未找到可用路径"
             return self._result(
                 status, route_id, [], [], reason, fingerprint,
-                airspace_eligibility=eligibility,
             )
 
         path = _path_with_real_endpoints(start, goal, grid_path, graph.centers)
@@ -244,7 +221,7 @@ class RiskAwareRoutePlannerV2:
                 **metrics,
                 "straight_line_distance_m": straight,
                 "detour_factor": metrics["distance_m"] / straight if straight > 0 else 1.0,
-            }, grid_risk=grid_risk, airspace_eligibility=eligibility,
+            }, grid_risk=grid_risk,
         )
 
     def _risk_values(self, graph, grid_risk):
@@ -263,7 +240,7 @@ class RiskAwareRoutePlannerV2:
                 unknown.add(grid_id)
         return values, unknown
 
-    def _astar(self, graph, source, target, risks, blocked, allowed_edges):
+    def _astar(self, graph, source, target, risks, blocked):
         queue = [(distance_m(graph.centers[source], graph.centers[target]), 0.0, source)]
         costs = {source: 0.0}
         previous = {}
@@ -275,8 +252,6 @@ class RiskAwareRoutePlannerV2:
                 break
             for neighbour in graph.neighbors(current):
                 if neighbour in blocked:
-                    continue
-                if tuple(sorted((current, neighbour))) not in allowed_edges:
                     continue
                 guards = graph.diagonal_guards(current, neighbour)
                 if guards is not None and (None in guards or any(item in blocked for item in guards)):
@@ -365,13 +340,11 @@ class RiskAwareRoutePlannerV2:
                 "fingerprint": risk_fingerprint,
             },
             "risk_fingerprint": risk_fingerprint,
-            "airspace_eligibility_fingerprint": (airspace_eligibility or {}).get("fingerprint"),
+            "airspace_eligibility_fingerprint": None,
             "airspace_source": {
-                "status": (airspace_eligibility or {}).get("status"),
-                "algorithm_id": (airspace_eligibility or {}).get("algorithm_id"),
-                "algorithm_version": (airspace_eligibility or {}).get("algorithm_version"),
-                "feature_fingerprint": (airspace_eligibility or {}).get("feature_fingerprint"),
-                "policy_fingerprint": (airspace_eligibility or {}).get("policy_fingerprint"),
+                "status": "not_applicable",
+                "applicability": "display_only",
+                "semantics": "display_only_reference_layer_not_used_for_planning",
             },
             "environment_risk": {
                 "status": "passed" if status == "passed" else status,
@@ -422,14 +395,7 @@ def _fingerprint(route, grid, grid_risk, constraints, parameters, airspace_eligi
     return _hash([
         route,
         [{"grid_id": cell.get("grid_id"), "level": cell.get("level"), "bbox": cell.get("bbox"), "center": cell.get("center")} for cell in (grid or {}).get("cells") or []],
-        relevant_risk, constraints or [], parameters, {
-            "status": (airspace_eligibility or {}).get("status"),
-            "fingerprint": (airspace_eligibility or {}).get("fingerprint"),
-            "feature_fingerprint": (airspace_eligibility or {}).get("feature_fingerprint"),
-            "policy_fingerprint": (airspace_eligibility or {}).get("policy_fingerprint"),
-            "allowed_grid_ids": (airspace_eligibility or {}).get("allowed_grid_ids") or [],
-            "allowed_edges": (airspace_eligibility or {}).get("allowed_edges") or [],
-        },
+        relevant_risk, constraints or [], parameters,
     ])
 
 

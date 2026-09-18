@@ -2,6 +2,8 @@
 
 > 架构基线：2026-09-16（Asia/Shanghai）
 > 当前目标是持续完善 CNS 规划工作台；结构重构不得顺带改变 V1 算法、风险公式、API 路径或项目业务结果。
+>
+> **Real-Data Enablement V1 决策**：现有适飞空域/AirspacePolicy/airspace_eligibility 是 `display_only_reference_layer`。DATA-3 已退役并标记 `retired/not_applicable_by_architecture_decision`；它不是 route eligibility、risk evidence 或 regulatory constraint，不参与规划、readiness、fingerprint、staleness 或 CNS。
 
 ## 1. 当前架构
 
@@ -25,7 +27,7 @@ map_app.py / app.py
 ## 2. 六步业务流程
 
 1. 项目与数据：项目创建、打开、另存和数据源设置。
-2. 工作区与环境：workspace → MH/T grid → population/terrain/airspace/traffic/conflict → relative risk。
+2. 工作区与环境：workspace → MH/T grid → population/terrain/traffic/conflict → relative risk；airspace 仅显示。
 3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路。
 4. 运行规则：飞行器、方向、高度、间隔和监视延迟。
 5. 设备与布站：C/N/S 设备参数和 CoveragePlannerV1。
@@ -35,15 +37,15 @@ map_app.py / app.py
 
 - M1：workspace 生成/裁剪 MH/T 4063 标准网格，稳定 `grid_id`，保存恢复、API、Canvas 显示和点击。
 - M2–M4：人口 GeoTIFF、GLO-30 DEM、QGIS 空域按 `grid_id` 映射；处理 CRS、NoData、无覆盖和定向失效。
-- M5–M6：可替换 `RiskModel`；Ground、Airspace Constraint、Overall 相对风险，参数化权重/阈值、贡献解释和完整度。
+- M5–M6：可替换 `RiskModel`；Ground、Operational Air、Overall 相对风险，参数化权重/阈值、贡献解释和完整度；legacy `airspace_constraint` 固定为 not_applicable/display_only。
 - M7：可复现多机直线轨迹、逐格驻留时间、二维 CPA 潜在冲突、traffic/conflict 风险输入。
 - CNS 核心输入：AircraftCNSProfileCatalog、RequiredCNS、DeviceCatalog、ExistingCNSFacility、CandidateSite 已纳入 schema v2；已有能力与任务需求严格分离。
 - CNS Gap Analysis：V1 保持 RequiredCNS、机载能力及已有设施二维水平覆盖的既有输出；V2 独立合并 P7 三维几何、P8 静态能力与 P9 显式运行时间线，输出 planning/runtime/combined 评估、连续缺口段、contingency/unknown 暴露和稳定输入指纹。
 - RoutePlannerV1：固定工作区离散、硬约束 BBOX、A*、geometry/关键节点/统计/指纹；硬约束在 Application 输入边界 fail-closed 校验。
 - Risk-Aware Route Planner V2：直接在 MH/T `grid_id` 邻接图上使用既有 `grid_risk` 相对工程指数执行米制 A*，保留完整 grid path、距离/风险暴露/绕行指标；Registry 默认仍为 V1。
 - Route Planner V3-A（实验，未注册进 Registry）：原生 3D `grid_id + altitude_index + heading_bin` 状态、hard-constraint edge 生成、provenance soft cost 向量、L8 战略 A* 与 candidate refinement corridor；结果只进独立实验容器，见 `docs/route_planner_v3_architecture.md`。已修正三项语义：h = 纯 3D 几何距离；soft field 只接受带 provenance 的 normalized index（删除 10000/100 隐式 normalizer 与 Σweight≤1 假设）；expansion cap 返回 `search_incomplete`（resource limited）而不是 failed/infeasible。
-- Route Planner V3-B（实验，未注册进 Registry）：只在选定且 current 的 V3-A `strategic_candidate` 的 corridor support cells 米制窗口内构造局部 fine grid 做 3D 精化；multi-cell stride primitive 记录 `traversed_cell_ids` 并按路径进度插值高度逐格检查；地形 hard floor = 相交 FABDEM 有效像元最大 EGM2008 高程 + explicit clearance，建筑为 buffered footprint 的保守包络，空域按 **fine-cell polygon** 只消费 confirmed AirspacePolicy；真实数据经 `gis/fine_environment_adapter.py` 进入，未配置即明确 blocked；结果只有 refined_candidate/failed/not_ready/missing_data/search_incomplete，且强制 final_validation=false、operational_route=false。
-- Route Planner V3-C（实验，未注册进 Registry）：只在选定且 current 的 V3-B `refined_candidate` 上，把其米制轨迹实现为 **C1**（position+heading）连续几何（explicit `aircraft_min_turn_radius_m` 的解析圆弧 fillet，R 绝不减小；圆弧按 explicit `curve_chord_error_m` 线性化并给出实测 chord bound）；随后逐 domain 做**源几何硬约束验证**：confirmed allowed/blocked polygon 的 route uncertainty envelope 覆盖率与不相交、native FABDEM 像元 terrain clearance、真实 footprint 的 `roof + vertical_clearance`（复用 BuildingClearance 语义）、高度带与 kinematics（analytic R、tangent heading、climb/descent gradient）。结果只有 validated_route/failed/unresolved/not_ready/validation_incomplete，**即使 validated_route 也强制 operational_route=false、cns_assessed=false**，且不自动修路/自动 replan；见 `docs/route_planner_v3_architecture.md` §7A。
+- Route Planner V3-A/B（实验，未注册进 Registry）：V3-A 支持 canonical synthetic 与 injected `configured_real_sources`；真实 adapter 位于 GIS 边界，消费 verified FABDEM、buildings/building_grid L8 facts 与 grid_risk。V3-B 在 corridor-local fine grid 上严格检查 terrain/building/altitude/kinematics；airspace 均为 display-only/not-applicable。
+- Route Planner V3-C（实验，未注册进 Registry）：active validation domains 为 geometry/terrain/building/altitude/kinematics；兼容 airspace domain 固定 skipped/not_applicable。结果只有 validated_route/failed/unresolved/not_ready/validation_incomplete，**即使 validated_route 也强制 operational_route=false、cns_assessed=false**。
 - CoveragePlannerV1：C/N/S 主站、补盲、共址、未覆盖点/航段、统计/指纹。
 - schema-v2 项目自动保存、打开、Save As 与数据源恢复；失败操作保留当前有效项目并清理临时文件。
 - 本地 QGIS 渲染、原始人口/DEM 图层、在线瓦片、统一数据源中心、六步 ES Module 前端。
@@ -596,6 +598,39 @@ Step 04 新增 **V3 CNS Assessment summary**：Route validation / Operational pu
 
 **人工走查结论（outputs/ 下 ignored harness，不属于测试套件）**：synthetic V3-C validated route 的投影得到 11 个顶点的二维 `[lon,lat]` path（端点与 scenario route 一致）、`v3_metric_length_m=2855.13` 与 `legacy_geodesic_length_m=2863.19`（`length_delta_m=8.06`）、locked profile 11 个顶点且 `z=100 m`；Apply 后 `operational_routes=[R0001 passed operational]`、下游状态 stale 而 `routes` 仍 passed；手工改高被拒；未满足需求时 `assessment_status=complete` + `requirement_verdict=does_not_meet` 而 V3-C 仍 `validated_route`；缺 timing 时 `incomplete`；Revoke 移除 route+profile 并保留外来 route。
 
+## 8.8 V3 Real-Data Enablement V1：Airspace Decoupling + readiness fixes + V3-A configured_real_sources（本轮）
+
+基线 commit `ab8f4e9587db10db1ee801f39312ff424e12f466`。本轮**不**开发 V3-E、不补任何 V3 safety/aircraft/risk 默认值、不要求人工测试、不改真实项目数据、不 push。
+
+**已发现问题的修复**：`cns_planner/application/route_planner_v3_service.py::real_data_readiness()` 在 `terrain_vertical_reference` 与 `building_grid_source` 之间存在残留裸 `...`（main commit diff 同样存在），导致 `SyntaxError`。已修复；因此此前“850 pytest passed”**不能**作为当前 HEAD 的测试结论，本轮重新全量执行。
+
+**架构决策（本轮生效）**：适飞空域 / `AirspacePolicy` / `airspace_eligibility` 自本轮起只有一种语义——`display_only_reference_layer`。
+
+- 不参与 risk、V1/V2/V3 feasibility/search/readiness、allowed/blocked graph、candidate corridor、V3-B、V3-C gate、V3-D adoption、route comparison、CNS assessment、fingerprint/staleness/invalidation。
+- 旧 schema/API 仅为 backward compatibility 保留，并标记 `deprecated/display_only/not_used_for_planning`。
+- 禁止 `outside => blocked`、`unknown AirspacePolicy => unsafe`、图层名/颜色 => allowed/blocked。
+- 未来 `regulatory_constraints` 是**独立扩展位**；本轮不把当前适飞空域重新解释成法规约束。
+
+**逐层解耦**：
+
+- **V1/V2**：`RiskAwareRoutePlannerV2` 删除 AirspacePolicy allowed-cell/edge gate，`airspace_eligibility` 仍可作为兼容参数接收但**不进入** fingerprint/blocked/missing_data，搜索空间 = 工作区有效标准网格 + 真正 explicit hard constraints；无 AirspacePolicy 仍可运行，`grid/risk/distance/adjacency/corner-guard/cost` 行为与路径保持不变。`RiskModelV1` 的 overall 公式未改写，`airspace` 从 active inputs、required mapped attrs、source_versions/fingerprint、availability、normalization/invalidation 中移除；legacy `airspace_constraint` 固定输出 `not_applicable`。
+- **V3 hard constraints / readiness**：`HardConstraintEvaluator` 不再因 unknown/restricted airspace 拒绝 cell；active hard constraints 仅 terrain clearance、building clearance、altitude bounds、turn、climb/descent。`evaluate_v3_readiness` 的 airspace 项固定 `status=ready / applicability=not_applicable / layer_role=display_only_reference_layer`，不影响 overall。
+- **V3-A**：`V3_ENVIRONMENT_SOURCES` 扩展为 `canonical_synthetic + configured_real_sources`。`route_planner_v3` 算法包**不**读取 QGIS/GDAL/files；真实数据由 GIS 边界的新适配器 `cns_planner/gis/v3_environment_adapter.py::V3RealEnvironmentAdapter` 注入，构造 canonical `V3CellEnvironment`。数据来源：当前 L8 grid、verified FABDEM `terrain_dtm`、verified buildings/building_grid L8 facts、`grid_risk` soft fields、source audit/provenance。**不**消费 airspace。`building_count > valid_height_count` 时保留 unresolved，绝不把未知建筑高度当 0；terrain 高程缺失时不猜 clearance。
+- **readiness 修复**：terrain vertical reference 从 canonical `terrain_dtm` source profile/audit 解析（`crs.observed_vertical=EGM2008_orthometric` + `verified_from_raster_metadata` 被正确识别）；`building_grid` 从 `source_audits.items.building_grid` 的 canonical identity/status 获取。因此真实 FABDEM/buildings/building_grid 可表达 `verified/ready`，不再 null/false。real source adapter readiness 可为 ready，但 V3-P1 未确认时 `policy_readiness`/`aircraft_readiness` 必须仍 blocked，`configured_real_sources` **不得**通过 `allow_unconfirmed_policy` 绕过。
+- **V3-B**：`FineEnvironmentAdapter`、`FINE_SOURCE_ROLES`、source_readiness/source_audit/fingerprint 不再要求 AirspacePolicy，删除 `no_confirmed_allowed_airspace_cells` blocker；fine cell 不因 current airspace unknown/outside 变 blocked。
+- **V3-C**：real evidence adapter 不再读取 `ConfirmedAirspacePolicySource`（该类保留为 legacy 兼容，**未删除**）。`airspace` domain 返回 `status=skipped / applicability=not_applicable / reason=display_only_airspace_not_used_for_route_constraints`。`ACTIVE_V3C_DOMAINS = geometry, terrain, building, altitude, kinematics`；`_route_status`、`all_domains_passed`、`validated_route` 只要求 active domains passed；`validation_fingerprint_components` 的 policy/source 分量排除 `airspace_allow_touching_blocked_boundary`、`airspace`、`airspace_policy`。geometry/FABDEM/buildings/altitude/kinematics 仍严格 fail-closed。
+- **V3-D**：production source chain/readiness/fingerprint 不要求 AirspacePolicy；`stale_for_sources` 移除 airspace 及仅因旧 airspace 链加入的 basemap dependency，`["airspace","basemap"]` 返回 `not_applicable` 且不 stale 任何 adoption/adopted route。`validated_route != operational_route` 与 `CNS unmet != route unsafe` 未改变。
+- **Invalidation / Source Center / Step 03**：切断 `airspace_policy -> routes/CNS` dependency（`services/invalidation.py` 中 `airspace_policy: ()`）；`InvalidationService.SOURCE_ATTRIBUTES` 中 `airspace`/`basemap` 为空集；`SourceAuditService._source_changed` 对 `airspace`/`basemap` 只更新显示健康与 legacy policy `needs_revalidation`，不触发 `grid_sources`、不触发 V3 adoption invalidator。legacy AirspacePolicy backfill/API 保留，但修改 policy 不再 stale planning。前端删除 Step 03 的 AirspacePolicy editor/`airspacePolicyPanel`、`data-save-airspace-policy`、confirmed allowed count、V2 airspace readiness warning、`airspace_risk` 栅格主题与 `map/airspace_policy_overlay.js`（confirmed-allowed 叠加层）；保留**原始适飞空域参考图层**与开关（`id="air"`，标注“仅显示，不参与路线约束”），不再用 “confirmed allowed overlay” 暗示规划可行性。
+- **DATA-3**：`retired/not_applicable_by_architecture_decision`，不计入 `pending_items`/blocking；DATA-1、DATA-2 语义不变。
+
+**新增/调整测试**：新增 `tests/test_airspace_decoupling_v1.py`（无 AirspacePolicy 的 V2 可运行、risk value/fingerprint 不受 airspace 影响、V3 hard constraint 不因 airspace 拒绝、V3-C airspace `skipped/not_applicable` 不阻塞 `validated_route`、V3-D `stale_for_sources(["airspace","basemap"])` 不 stale、V3-A real adapter 保留 unresolved 建筑高度、V3-A real readiness/`allow_unconfirmed_policy` 绕过被拒、V3-B 无 airspace role/blocker、real source adapter 不构造 ConfirmedAirspace*、airspace/basemap 源变化不 stale risk/routes）；`tests/test_route_planner_v3_continuous.py` 改用 `ACTIVE_V3C_DOMAINS` 并新增 fingerprint 排除 display-only airspace 的回归；`tests/test_route_planning_diagnostics.py` 断言 DATA-3 `retired`；`tests/frontend_modules.test.mjs` 断言 Step 03 无 AirspacePolicy editor/confirmed-allowed 语义、Source Center 无 AirspacePolicy 动作且叠加层模块已删除。
+
+**本轮完整结果**：全量 pytest **866 passed, 6 skipped, 0 failed**（6 项跳过仍是 `tests/test_map_http.py` 的真实 QGIS HTTP 集成）；Node **58 passed, 0 failed**（`tests/frontend_modules.test.mjs` 55 项 + `tests/grid_theme.test.js` 3 项）；`python -m compileall cns_planner tools tests`、全部改动 JS 的 `node --check` 与 `git diff --check` 全部通过。**未修改真实项目数据，未 push。**
+
+> 沙箱说明：本轮全量 pytest 与 Node 测试在 DSH workspace-write 沙箱内执行。受限沙箱会拒绝写入 mode `0o700` 的目录（pytest basetemp/per-test 目录与 `tempfile.mkdtemp` 都是该 mode），因此使用 gitignored 的 `outputs/dsh_tmp_plugin.py` shim，并改用 `node <file>`（`node --test <file>` 因 piped stdio EPERM 失败）。这是环境工件，不是代码缺陷。
+
+
+
 ## 8.1 航路规划基础治理 + 专家评审基线（本轮）
 
 本轮目标是为航路规划专家评审准备**可信 baseline**，不是继续扩算法能力。基线 commit `33752b6759d992db39c639085a05e5c291945a38`。
@@ -755,14 +790,14 @@ Step 03 并列查看：
 
 - **DATA-1 = reference CRS**：舟山参考点/线源 CRS 待权威确认，禁止猜 WGS84/CGCS2000。
 - **DATA-2 = ET→XLSX/CSV**：`.et` 需人工转换，系统只返回 `requires_xlsx_or_csv_conversion`。
-- **DATA-3 = AirspacePolicy**：allowed/blocked/unknown 与 confirmed 需逐 feature 有来源确认，禁止从颜色/名称推断。
+- **DATA-3 = AirspacePolicy（已退役）**：状态固定为 `retired/not_applicable_by_architecture_decision`。当前适飞空域是 `display_only_reference_layer`，不是 route eligibility、risk evidence 或 regulatory constraint。legacy schema/API 仅为 backward compatibility 保留；禁止从颜色/名称推断，未来法规约束是**独立扩展位**。
 - **EXPERT-1 = constraint geometry**：BBOX/polygon/raster/混合表达。
 - **EXPERT-2 = vertical/altitude**：2D+独立高度或 3D 联合规划。
 - **EXPERT-3 = state space/algorithm**：MH/T 搜索空间/风险索引与算法类别。
 - **EXPERT-4 = kinematics**：转弯半径、航向、爬升进入搜索或后处理。
 - **EXPERT-5 = objective/risk cost**：距离+风险的加权和/约束/分层/Pareto 表达。
 
-真实项目数据当前允许保持 **NOT READY**：本轮未猜 CRS、未解析 ET、未自动确认 AirspacePolicy。专家 brief 的“真实数据 readiness”不再复用 project-evidence 的读取状态（那只是“项目能否读出”），而是由 `real_data_verdict()` 独立给出 DATA-1/2/3 逐项 verdict + 需要的人工动作；只要任一项未满足就显示 **NOT READY**。当前真实项目为 `NOT_READY`（DATA-1/2/3 全部 pending），`metric_measurement_enabled=false`。
+真实项目数据当前允许保持 **NOT READY**：本轮未猜 CRS、未解析 ET。专家 brief 的“真实数据 readiness”不再复用 project-evidence 的读取状态（那只是“项目能否读出”），而是由 `real_data_verdict()` 独立给出 DATA-1/2 逐项 verdict + 需要的人工动作，并把 DATA-3 固定为 `retired`（不计入 pending/blocking）。当前真实项目为 `NOT_READY`（DATA-1/2 pending，DATA-3 retired），`metric_measurement_enabled=false`。
 
 合成 allowed-airspace fixture 改为直接按 MH/T `grid_id` 整数索引构造邻接（`_adjacency_edges`），不再调用 `AirspaceEligibilityService.build`：后者对候选边做 pairwise 全覆盖判定，是 O(n²)，在 MH/T L8（8100 格）下由 57 s 主导整轮工具运行。改动只影响**合成 fixture 的构造方式**，allowed 集合与邻接语义等价（全部 case 的 path_length/detour/turns/status 与改动前逐位一致），而**生产** airspace eligibility 规则未改动，遍历规则仍由 planner 自身 `diagonal_guards` 在执行时保证。效果：`build_pack` 0.4–0.7 s，`build_diagnostics` 57 s → 3 s。
 
@@ -771,6 +806,8 @@ Step 03 并列查看：
 brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS），只陈述冻结 planner 实际观测：λ 增大时用更长路径换更低 risk exposure（λ=0→4，9428.6 m/8477.8 → 10902.9 m/1935.8，4 条不同路径）；网格 L6→L8 路径缩短 1058.9 m、zigzag 降至 0.087 倍；斜向 OD 上 8 邻域只使用 E/NE 两个方向（其余 6 个方向未出现）。这些观测用于支撑 P5/P6/P7，本身不构成结论或推荐。
 
 ## 8.4 真实数据可信化与规划输入就绪 V1（本轮）
+
+> **已被 8.8 取代（DATA-3 部分）**：本节描述的是 DATA-3 = AirspacePolicy 仍然 active 的历史状态。自 V3 Real-Data Enablement V1 起 DATA-3 已退役，AirspacePolicy 不再进入 readiness/route eligibility；Data Source Center 与 Step 03 的 AirspacePolicy editor 已删除。其余 DATA-1/2 结论仍然有效。
 
 基线 commit `9f2af8007e1216b02e1d2675f9865dba61e1c153`。本轮只推进 DATA-1/2/3 与来源治理；V1/V2 搜索、lambda、grid adjacency、hard-constraint 模型与所有需专家决策的算法项保持冻结。
 
@@ -907,18 +944,18 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 27. 舟山起降点源表未明确 CRS，当前 `[lon, lat]` 只按源数值临时展示并保持 `pending_confirmation`；正式空间分析前必须获得 CRS 证据。两份 `.et` 需人工转换为 XLSX/CSV；5GA/低空智联网资料的厂商（包括是否为“54所”）仍待来源确认，不得猜测。
 28. RouteVerticalProfileV1 是显示用离散采样，不是新的净空裁决器；真实剖面仍依赖 passed operational route、confirmed 高度剖面、带明确 EGM2008 元数据的 FABDEM 与当前有效 BuildingClearanceV1。QGIS GUI/HTTP 真实航路 hover 与建筑区间需在正常 QGIS 启动器进程验收。
 29. EncounterAssessment3DV1 的局部 ENU 与分段线性插值适用于短距离工程仿真；ManeuverCommand 是简化运动学且只验证显式能力上限。当前项目未配置真实 confirmed encounter tracks/policy/capability/command，因此默认结果保持 `not_calculated / NO_TRAFFIC`；不得将 synthetic 测试的 `CLEARED` 视为真实运行安全结论。
-30. V3-A 只在 L8 网格分辨率与显式离散高度层上判定硬约束可行性，**没有** 30 m 局部精化与 exact polygon/terrain 最终判定；运动模型是工程运动学基线（无 bank/风/能量，非适航认证模型）；空域只有 `confirmed_allowed/confirmed_restricted/unknown` 两值，不支持分层高度或时变空域；环境仅有 canonical synthetic（真实 adapter 未实现）；soft cost 只做报告、不产出 Pareto 前沿，也不声称最优性；endpoint 绑定最近 cell 中心而非精确多边形包含判定。以上限制随结果 `disclaimer` 一起交付，禁止把 V3-A 结果读作 final safe / operational route。
+30. V3-A 只在 L8 网格分辨率与显式离散高度层上判定硬约束可行性，**没有** 30 m 局部精化与 exact polygon/terrain 最终判定；运动模型是工程运动学基线（无 bank/风/能量，非适航认证模型）；空域自 V3 Real-Data Enablement V1 起是 `display_only_reference_layer`，**不参与**可行性判定（legacy `airspace.status` 只作显示，硬约束仅 terrain clearance、building clearance、altitude bounds、turn、climb/descent）；环境支持 canonical synthetic 与 injected `configured_real_sources`；soft cost 只做报告、不产出 Pareto 前沿，也不声称最优性；endpoint 绑定最近 cell 中心而非精确多边形包含判定。以上限制随结果 `disclaimer` 一起交付，禁止把 V3-A 结果读作 final safe / operational route。
 31. V3-A `max_expanded_states` 是显式工程上限：达到上限返回 `search_incomplete`（resource limited，不是 failed/infeasible）而不是「尽量近似」；L8×高度×heading 的朴素状态空间随工作区线性增长（324 cell × 7 高度 × 8 heading ≈ 1.8 万状态），大工作区需要重新评估上限与索引策略，本轮未做性能优化承诺。
 
 32. V3-C 只保证 **C1（position + heading）连续**：曲率在 straight↔arc 处可跳变，`continuous_curvature=false`/`c2=false`，clothoid 未实现（future）。vector predicate 对 **linearized representation（含显式 `curve_chord_error_m` envelope）** 精确，**不对数学曲线**；terrain 是 **native-raster evidence**，不声称真实世界地形数学连续精确。building 仍是 LoD1 prism（ground + 预测 height）语义；kinematics 仍是工程基线（无 bank/风/能量/飞行动力学）。圆弧 linearization 的 `curve_chord_error_m` 与 `max_validation_samples`/`max_runtime_s` 都是显式工程参数，缺一即 blocked/not_ready 或 validation_incomplete。
 
 33. V3-C `validated_route` **不是** operational route（`operational_route=false`、`cns_assessed=false` 无条件强制），也不自动修复/自动 replan。**V3-D 已实现** operational adoption + 既有 P7/P8/P9/P10 CNS Assessment bridge；但 `operational_route`/`cns_assessed` 仍**只在 V3-C validation 内恒为 false**（历史 immutable），"已采用"与"CNS 已评估"的事实读取自 `v3_operational_adoptions` 与 `v3_cns_assessment_bundle`。Route–CNS 联合优化（CNS 进入 cost/约束）继续留在 future backlog。
 
-34. V3-C/V3-D 的真实数据路径仍依赖本机 QGIS/GDAL 与已确认来源：`NativeTerrainWindowSource` 需要带 `egm2008_orthometric` 元数据的 FABDEM、`RouteCorridorBuildingSource` 需要带 spatial index 的 buildings GeoPackage、`ConfirmedAirspacePolicySource` 需要 confirmed AirspacePolicy（当前项目仍是 allowed/blocked/unknown=0/0/0）。当前自动恢复项目无 current V3-B refined candidate 与 confirmed V3-C policy，因此 V3-C 真实结果为 `not_ready`、V3-D production gate 为 `configured_real_source_chain_not_ready`，不是代码缺陷；V3-C/V3-D 的 QGIS/GDAL 端到端仍需在正常 QGIS 启动器进程手工验收。
+34. V3-C/V3-D 的真实数据路径仍依赖本机 QGIS/GDAL 与已确认来源：`NativeTerrainWindowSource` 需要带 `egm2008_orthometric` 元数据的 FABDEM、`RouteCorridorBuildingSource` 需要带 spatial index 的 buildings GeoPackage。自 V3 Real-Data Enablement V1 起 V3-C **不再**要求 confirmed AirspacePolicy（`ConfirmedAirspacePolicySource` 保留为 legacy 兼容类，不再进入证据链）：`airspace` domain 固定返回 `status=skipped / applicability=not_applicable / reason=display_only_airspace_not_used_for_route_constraints`，active domains 仅 geometry/terrain/building/altitude/kinematics。当前自动恢复项目无 current V3-B refined candidate 与 confirmed V3-C policy，因此 V3-C 真实结果为 `not_ready`、V3-D production gate 为 `configured_real_source_chain_not_ready`，不是代码缺陷；V3-C/V3-D 的 QGIS/GDAL 端到端仍需在正常 QGIS 启动器进程手工验收。
 
 35. V3-C 的 airspace/building geometry 层依赖 Shapely（buffer/intersection/within/covers）；缺失时相关 domain 报 `unresolved` 而不是伪造通过。terrain pixel interval 与 route 几何是纯 Python，不依赖 Shapely。Shapely `quad_segs` 只影响 cap 的圆弧离散，buffer offset 距离本身 exact；该参数已随 domain evidence 记录。
 
-36. V3-D production Apply 需要 **real configured source chain ready**（`real_data_readiness().v3c.status == ready`）。该判定读取本机 `map_sources.json` 解析出的路径与 confirmed AirspacePolicy；仓库与测试**不硬编码**本机路径。`V3OperationalAdoptionService.require_production_sources` 是**仅本机 harness 可用**的测试 seam（构造函数参数，**不可由 HTTP payload 设置**），生产部署保持默认 `true`。测试用注入的 affine transform 代替 pyproj/QGIS（接口为 `to_geographic` + `describe`）；真实路径用 `_library_transform`（pyproj `Transformer.from_crs(authority, "OGC:CRS84", always_xy=True)`），CRS 不可解析即 fail-closed 为 `crs_transform_unavailable`。
+36. V3-D production Apply 需要 **real configured source chain ready**（`real_data_readiness().v3c.status == ready`）。该判定读取本机 `map_sources.json` 解析出的路径、terrain vertical reference 与 building/building_grid source audit；**不再**读取 AirspacePolicy。`airspace` 无论存在与否都返回 `not_applicable/display_only`，因此 production gate 不会因适飞空域缺失或变化而 blocked/stale。仓库与测试**不硬编码**本机路径。`V3OperationalAdoptionService.require_production_sources` 是**仅本机 harness 可用**的测试 seam（构造函数参数，**不可由 HTTP payload 设置**），生产部署保持默认 `true`。测试用注入的 affine transform 代替 pyproj/QGIS（接口为 `to_geographic` + `describe`）；真实路径用 `_library_transform`（pyproj `Transformer.from_crs(authority, "OGC:CRS84", always_xy=True)`），CRS 不可解析即 fail-closed 为 `crs_transform_unavailable`。
 
 37. V3-D 的 `route_altitude_profile` 距离基准是 published 二维 path 的**累计基线距离**（`cumulative_2d_baseline_path_distance_matching_path_vertex_order`），与 meter 无关；`v3_metric_length_m`/`legacy_geodesic_length_m` 都是米，`length_delta_m` 记录表示差异供审计。**不要**把 `profile_length_m` 当作米去和 `v3_metric_length_m` 比较——两者基准不同且已在 `path_metrics.length_semantics` 中写明。
 
@@ -927,9 +964,9 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 
 ## 11. 下一阶段计划
 
-1. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，逐 feature 确认 AirspacePolicy，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。
+1. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。**不再**需要逐 feature 确认 AirspacePolicy（DATA-3 已退役）。
 2. V3-D 已实现（validated route → operational adoption → 复用既有 P7/P8/P9/P10 CNS Assessment；`operational_route`/`cns_assessed` 在 V3-C validation 内仍恒为 false，"已采用/CNS 已评估"读取自 adoption/bundle 容器）。下一步是在正常 QGIS 启动器进程中用**真实舟山来源**做 V3-D 端到端验收（见下节"仍需真实端到端验证的问题"）。
-3. 真实数据 canonical adapter（terrain surface clearance floor、building required vertical clearance、confirmed airspace 分类）与来源审计在 V3-B/V3-C 已实现（GIS 边界），V3-D 的 operational adoption 与 CNS bridge 亦已就绪；仍需在正常 QGIS 启动器进程手工验收真实航路的 V3-C/V3-D 端到端结果。
+3. 真实数据 canonical adapter（terrain surface clearance floor、building required vertical clearance、grid risk soft fields）与来源审计在 V3-A/V3-B/V3-C 已实现（GIS 边界，`cns_planner/gis/v3_environment_adapter.py`），V3-D 的 operational adoption 与 CNS bridge 亦已就绪；仍需在正常 QGIS 启动器进程手工验收真实航路的 V3-A/V3-C/V3-D 端到端结果。空域不进入该链路。
 4. V3 后续（非 V3-D）：clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型——三者都必须先用显式 policy 定义归一化与权重，禁止静默进入 cost。
 5. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
 6. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。

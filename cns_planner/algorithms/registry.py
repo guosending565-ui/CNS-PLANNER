@@ -221,7 +221,6 @@ def _risk_aware_route_v2_manifest():
         "在现有 MH/T grid_id 邻接图上，以米制距离和既有相对网格风险执行确定性 A*。",
         (
             "scenario_route", "grid.cells", "grid_risk.cells", "hard_constraints",
-            "airspace_eligibility",
         ),
         ("operational_route", "grid_path", "distance_and_risk_metrics"),
         {

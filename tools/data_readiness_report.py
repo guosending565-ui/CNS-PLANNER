@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a read-only source audit and DATA-1/2/3 readiness report."""
+"""Generate a read-only source audit and DATA-1/2 readiness report."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def _markdown(report):
             f"size={audit.get('size_bytes')} · sha256={audit.get('sha256') or '未验证'} · "
             f"CRS={audit.get('confirmed_crs') or audit.get('declared_crs') or '待确认'}"
         )
-    lines += ["", "## DATA-1 / DATA-2 / DATA-3", ""]
+    lines += ["", "## DATA-1 / DATA-2", ""]
     for key, item in report["data_issues"].items():
         lines.append(
             f"- **{key}** `{item.get('status')}` {item.get('label')}；"

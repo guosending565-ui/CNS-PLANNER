@@ -282,8 +282,9 @@ def test_source_center_hides_internal_stage_numbers():
     text = Path("cns_planner/web/js/sources/source_center.js").read_text(encoding="utf-8")
     assert "P1" not in text and "P7" not in text and "P13" not in text
     assert "数据可信度/审计" in text
-    for action in ("验证数据源", "确认 CRS", "预览并导入航线", "编辑 AirspacePolicy"):
+    for action in ("验证数据源", "确认 CRS", "预览并导入航线"):
         assert action in text
+    assert "编辑 AirspacePolicy" not in text
 
 
 def test_data_readiness_report_generation(tmp_path):
@@ -294,7 +295,7 @@ def test_data_readiness_report_generation(tmp_path):
     project = workflow(tmp_path)
     project.save()
     report = module.build_report(project.store_path, tmp_path / "missing-map-sources.json")
-    assert set(report["data_issues"]) == {"DATA-1", "DATA-2", "DATA-3"}
+    assert set(report["data_issues"]) == {"DATA-1", "DATA-2"}
     assert report["automatic_confirmation"] is False and report["et_parser"] is None
     json_path, md_path = module.write_report(report, tmp_path / "report")
     assert json_path.is_file() and md_path.is_file()

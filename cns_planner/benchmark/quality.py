@@ -265,7 +265,6 @@ def evaluate_route_quality(
     reported = _planner_reported(result)
     planned_length = reported.get("distance_m")
     grid_behavior = grid_path_metrics(result.get("grid_path"), grid)
-    eligibility = airspace_eligibility if isinstance(airspace_eligibility, dict) else {}
     return {
         "route_id": str(result.get("route_id") or (route or {}).get("route_id") or ""),
         "status": status,
@@ -298,20 +297,17 @@ def evaluate_route_quality(
         "hard_constraint_input": evaluate_constraint_feasibility(hard_constraints),
         "constraint_input_summary": {
             "hard_constraint_count": len(hard_constraints or []) if isinstance(hard_constraints, list) else None,
-            "allowed_airspace_status": eligibility.get("status") or _allowed_feasibility_status(status),
-            "confirmed_allowed_feature_count": eligibility.get("confirmed_allowed_feature_count"),
-            "allowed_grid_id_count": len(eligibility.get("allowed_grid_ids") or []),
-            "allowed_edge_count": len(eligibility.get("allowed_edges") or []),
-            "source": (
-                "supplied_airspace_eligibility"
-                if eligibility else "planner_result_status_only"
-            ),
+            "allowed_airspace_status": "not_applicable",
+            "confirmed_allowed_feature_count": None,
+            "allowed_grid_id_count": None,
+            "allowed_edge_count": None,
+            "source": "display_only_airspace_not_used_for_route_constraints",
         },
         "grid_behavior": grid_behavior,
         "allowed_airspace_feasibility": {
-            "status": _allowed_feasibility_status(status),
-            "source": "planner_result_status_only_not_rejudged",
-            "reason": result.get("reason"),
+            "status": "not_applicable",
+            "source": "display_only_airspace_not_used_for_route_constraints",
+            "reason": None,
         },
         "risk_metrics": {
             name: reported[name] for name in _RISK_EVIDENCE_FIELDS if name in reported

@@ -236,9 +236,13 @@ def test_real_data_verdict_is_not_ready_when_no_project_is_supplied():
     assert verdict["status"] == "NOT_READY"
     assert verdict["reason"] == "no_project_path_argument"
     assert set(verdict["items"]) == {"DATA-1", "DATA-2", "DATA-3"}
-    for item in verdict["items"].values():
-        assert item["status"] == "NOT_READY"
-        assert item["action"]
+    for item in ("DATA-1", "DATA-2"):
+        assert verdict["items"][item]["status"] == "NOT_READY"
+        assert verdict["items"][item]["action"]
+    # DATA-3 (current airspace) is retired by architecture decision: display-only layer.
+    assert verdict["items"]["DATA-3"]["status"] == "retired"
+    assert verdict["items"]["DATA-3"]["reason"] == "not_applicable_by_architecture_decision"
+    assert verdict["pending_items"] == ["DATA-1", "DATA-2"]
     assert verdict["metric_measurement_enabled"] is False
 
 
@@ -259,12 +263,12 @@ def test_real_data_verdict_keeps_pending_data_items_explicit(tmp_path):
     assert brief["current_data_and_constraints"]["project_evidence_status"] == "passed"
     # ...but real data is still NOT READY, and each item says why.
     assert readiness["status"] == "NOT_READY"
-    assert readiness["pending_items"] == ["DATA-1", "DATA-2", "DATA-3"]
+    assert readiness["pending_items"] == ["DATA-1", "DATA-2"]
     assert readiness["items"]["DATA-1"]["status"] == "NOT_READY"
     assert readiness["items"]["DATA-1"]["reason"] == "source_crs_pending_confirmation"
     assert readiness["items"]["DATA-2"]["status"] == "NOT_READY"
-    assert readiness["items"]["DATA-3"]["status"] == "NOT_READY"
-    assert readiness["items"]["DATA-3"]["reason"] == "no_confirmed_allowed_airspace_policy"
+    assert readiness["items"]["DATA-3"]["status"] == "retired"
+    assert readiness["items"]["DATA-3"]["reason"] == "not_applicable_by_architecture_decision"
     assert readiness["metric_measurement_enabled"] is False
     assert readiness["airspace_policies"]["never_inferred_from_layer_name_or_color"] is True
     assert readiness["blocks"]["reference_landing_sites"]["count"] == 1

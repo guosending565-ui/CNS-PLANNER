@@ -7,7 +7,8 @@ from .project_state import assessment, empty_extension_attribute, empty_grid_att
 
 
 class RiskService:
-    MAPPED_ATTRIBUTES = ("population", "terrain", "airspace")
+    MAPPED_ATTRIBUTES = ("population", "terrain")
+    DISPLAY_ATTRIBUTES = ("airspace",)
     EXTENSION_ATTRIBUTES = (
         "buildings", "property_exposure", "infrastructure", "towers",
         "traffic", "conflict",
@@ -35,12 +36,15 @@ class RiskService:
         expected_ids = {cell["grid_id"] for cell in grid.get("cells", [])}
         clean, incoming = {}, results or {}
         current = self.session.state.get("grid_attributes") or empty_grid_attributes()
-        previous_airspace_fingerprint = (
-            (current.get("airspace") or {}).get("airspace_eligibility") or {}
-        ).get("fingerprint")
         for kind in self.MAPPED_ATTRIBUTES:
             result = deepcopy(incoming.get(kind))
             self._validate_attribute(kind, result, grid, expected_ids, required=True)
+            clean[kind] = result
+        for kind in self.DISPLAY_ATTRIBUTES:
+            result = deepcopy(incoming.get(kind, current.get(kind)))
+            if not isinstance(result, dict):
+                result = empty_grid_attributes()[kind]
+            self._validate_attribute(kind, result, grid, expected_ids, required=False)
             clean[kind] = result
         for kind in self.EXTENSION_ATTRIBUTES:
             result = deepcopy(incoming.get(kind, current.get(kind)))
@@ -49,11 +53,6 @@ class RiskService:
             self._validate_attribute(kind, result, grid, expected_ids, required=False)
             clean[kind] = result
         self.session.state["grid_attributes"] = clean
-        current_airspace_fingerprint = (
-            (clean.get("airspace") or {}).get("airspace_eligibility") or {}
-        ).get("fingerprint")
-        if previous_airspace_fingerprint != current_airspace_fingerprint:
-            self.invalidation.workflow("airspace_policy")
         profiles = self.session.state.setdefault("data_source_profiles", {})
         for kind in ("population", "terrain", "terrain_dtm"):
             if kind not in clean:

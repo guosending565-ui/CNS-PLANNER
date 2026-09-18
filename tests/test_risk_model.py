@@ -137,7 +137,8 @@ def test_risk_model_protocol_and_v1_contract_are_geometry_free_and_relative():
     assert result["algorithm_id"] == "risk-model-v1-relative-index"
     assert result["algorithm_version"] == "1.1"
     assert result["parameters"]["scenario"] == "fixture"
-    assert result["input_status"]["airspace"] == "passed"
+    assert "airspace" not in result["input_status"]
+    assert "airspace" not in result["source_versions"]
     assert result["source_versions"]["terrain"]["version"] == "fixture-1"
     assert set(result["cells"]) == {"G1", "G2"}
     first = result["cells"]["G1"]
@@ -246,7 +247,7 @@ def test_all_missing_inputs_never_become_zero_risk():
     assert first["data_completeness"] == 0.0
 
 
-def test_airspace_uses_max_hit_and_unknown_category_policy_is_explicit():
+def test_airspace_is_display_only_and_cannot_change_risk():
     attributes = _attributes()
     attributes["airspace"]["cells"]["G1"] = {
         "status": "partial_intersection",
@@ -263,25 +264,23 @@ def test_airspace_uses_max_hit_and_unknown_category_policy_is_explicit():
 
     result = RiskModelV1().evaluate(_grid(), attributes, parameters)
 
+    baseline = deepcopy(result)
     air = result["cells"]["G1"]["airspace_constraint"]
-    assert air["status"] == "passed"
-    assert air["score"] == 0.4
-    assert air["score"] != 0.4 + 0.18
-    assert air["semantics"] == "airspace_constraint_risk"
+    assert air["status"] == "not_applicable"
+    assert air["score"] is None
+    assert air["applicability"] == "display_only"
 
     attributes["airspace"]["cells"]["G1"]["airspaces"][0]["category"] = "未知类别"
-    missing = RiskModelV1().evaluate(_grid(), attributes, parameters)["cells"]["G1"]["airspace_constraint"]
-    assert missing["status"] == "missing_data"
-    assert missing["score"] is None
-    assert missing["contributors"][0]["status"] == "unknown_category"
+    changed = RiskModelV1().evaluate(_grid(), attributes, parameters)
+    assert changed == baseline
 
     defaulted = RiskModelV1().evaluate(_grid(), attributes, {
         **parameters,
         "unknown_category_policy": "default_weight",
         "unknown_category_default_weight": 0.6,
-    })["cells"]["G1"]["airspace_constraint"]
-    assert defaulted["status"] == "passed"
-    assert defaulted["score"] == 0.3
+    })
+    assert defaulted["cells"]["G1"]["overall"] == baseline["cells"]["G1"]["overall"]
+    assert defaulted["cells"]["G1"]["airspace_constraint"]["status"] == "not_applicable"
 
 
 def test_risk_level_thresholds_are_parameterized():

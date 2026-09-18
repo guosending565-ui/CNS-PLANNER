@@ -15,7 +15,7 @@ Design rules encoded here:
   ``"30 m"`` constant is forbidden: it would silently claim a safety clearance
   the data never provided;
 * ``FineCellEnvironment`` carries only hard facts (terrain floor / building
-  required clearance / confirmed airspace) plus the coarse-upsampled soft fields.
+  required clearance) plus display-only airspace metadata and coarse soft fields.
   Everything is fail-closed: ``unknown``/NoData is never "clear";
 * a coarse value mapped onto finer cells always carries
   ``upsampled_without_new_information=true`` -- V3-B never claims finer *source*
@@ -72,7 +72,7 @@ TERRAIN_SAMPLING_METHOD = "intersecting_valid_fabdem_pixels_max_egm2008_plus_exp
 TERRAIN_FORBIDDEN_METHODS = ("center_sample", "average", "mean", "bilinear_resample")
 BUILDING_MAPPING_METHOD = "footprint_buffered_by_explicit_horizontal_clearance_to_fine_cell_envelope"
 BUILDING_FORBIDDEN_METHODS = ("center_inside_polygon_only", "exact_polygon_clearance")
-AIRSPACE_MAPPING_METHOD = "confirmed_airspace_policy_only_never_inferred_from_layer_name_or_color"
+AIRSPACE_MAPPING_METHOD = "display_only_reference_layer_not_used_for_planning"
 SOFT_FIELD_MAPPING_METHOD = "coarse_cell_index_upsampled_to_fine_cells"
 REFINEMENT_TURN_MODEL = (
     "engineering_arc_length_proxy_min_turn_radius_times_heading_change_"
@@ -753,7 +753,7 @@ def empty_v3_refinement_result(status="not_ready"):
             "unknown_is_never_safe": True,
             "terrain_floor_is_intersecting_pixel_max": True,
             "building_envelope_is_conservative_not_exact": True,
-            "airspace_consumes_confirmed_policy_only": True,
+            "airspace_applicability": "display_only_not_used_for_planning",
             "coarse_soft_fields_are_upsampled_without_new_information": True,
             "turn_model": REFINEMENT_TURN_MODEL,
             "v3c_pending": list(V3C_PENDING),

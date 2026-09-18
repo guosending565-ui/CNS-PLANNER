@@ -1040,7 +1040,7 @@ class V3OperationalAdoptionService:
         """
 
         relevant = sorted(set(changed_sources or []) & {
-            "terrain_dtm", "buildings", "building_grid", "airspace", "basemap",
+            "terrain_dtm", "buildings", "building_grid",
         })
         if not relevant:
             return {"status": "not_applicable", "stale_adoption_ids": [], "stale_route_ids": []}

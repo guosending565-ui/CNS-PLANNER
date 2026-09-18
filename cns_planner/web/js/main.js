@@ -5,7 +5,6 @@ import {buildGridOverlayCache,findGridCell as hitGridCell} from './map/grid_over
 import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/renderer.js';
 import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
-import {drawConfirmedAllowedAirspace} from './map/airspace_policy_overlay.js';
 import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
 import {drawV3CandidateOverlay,v3OverlayModel} from './map/route_planner_v3_overlay.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
@@ -87,7 +86,6 @@ function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,dis
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
 function drawWorkflowOverlay(){
   if(!view||!flow)return;drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox);drawGridThemes();drawGridBoundaries();
-  if($('allowedAirspaceLayer')?.checked)drawConfirmedAllowedAirspace(ctx,screenPoint,flow.grid_attributes?.airspace);
   for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
   if($('buildingClearanceLayer')?.checked)drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
@@ -175,12 +173,12 @@ function updateGridNotice(){
   notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
-  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',airspace_risk:'airspace_constraint',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
+  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
   if(!legend)return;
   legend.hidden=!kind&&!riskKind;
   if(!kind&&!riskKind)return;
   const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),buildingBreaks={building_density:gridRenderCache.buildingCoverageBreaks,building_p95:gridRenderCache.buildingP95Breaks,building_max:gridRenderCache.buildingMaxBreaks},breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:kind==='buildings'?buildingBreaks[gridDisplay.theme]:riskBreaks):riskBreaks;
-  const riskTitles={ground:'Ground Risk',airspace_constraint:'Airspace Constraint Risk',overall:'Overall Risk'};
+  const riskTitles={ground:'Ground Risk',overall:'Overall Risk'};
   const kindTitles={terrain:'平均高程',traffic:'Traffic Exposure',conflict:'Conflict Exposure',buildings:{building_density:'建筑密度',building_p95:'P95 建筑高度',building_max:'最大建筑高度'}[gridDisplay.theme]};
   const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:kind==='buildings'?buildingPalette:riskPalette):riskPalette,title=kind?(kind==='population'?'目标网格人口密度':kindTitles[kind]):riskTitles[riskKind];
   $('gridThemeLegendTitle').textContent=title;
@@ -226,13 +224,13 @@ function formatGridDetails(item){
   const trafficSummary='Traffic Exposure：'+statusText(traffic.status||'not_calculated')+' · flights '+(traffic.flight_count||0)+' · flight_seconds '+GridTheme.formatNumber(traffic.flight_seconds)+' · density '+GridTheme.formatNumber(traffic.traffic_density_raw)+' · normalized '+GridTheme.formatNumber(traffic.traffic_density_norm);
   const conflictSummary='Conflict Exposure：'+statusText(conflict.status||'not_calculated')+' · count '+(conflict.conflict_count||0)+' · rate '+GridTheme.formatNumber(conflict.conflict_rate)+' · normalized '+GridTheme.formatNumber(conflict.conflict_rate_norm);
   const buildingSummary='建筑环境：'+statusText(buildings.status||'missing_data')+' · count '+GridTheme.formatNumber(buildings.building_count)+' · coverage '+GridTheme.formatNumber(buildings.building_coverage_ratio)+' · mean/P95/max '+GridTheme.formatNumber(buildings.height_mean_m)+' / '+GridTheme.formatNumber(buildings.height_p95_m)+' / '+GridTheme.formatNumber(buildings.height_max_m)+' m';
-  const risk=item.risk||{},ground=risk.ground||{},operationalAir=risk.air||{},airspaceRisk=risk.airspace_constraint||{},overall=risk.overall||{},riskResult=flow?.grid_risk||{};
+  const risk=item.risk||{},ground=risk.ground||{},operationalAir=risk.air||{},overall=risk.overall||{},riskResult=flow?.grid_risk||{};
   const p=ground.contributors?.population||{},t=ground.contributors?.terrain||{};
   const riskSummary='Ground Risk：'+riskValue(ground)+'\n'+
     '  P：'+factorValue(p)+'\n'+
     '  T：'+factorValue(t)+(t.raw?.relief===undefined?'':' · relief '+GridTheme.formatNumber(t.raw.relief))+'\n'+
     'Operational Air Risk：'+riskValue(operationalAir)+'\n'+
-    'Airspace Constraint Risk：'+riskValue(airspaceRisk)+'\n'+
+    'Airspace：not applicable（display-only reference layer）\n'+
     'Overall Risk：'+riskValue(overall)+' · 完整度 '+GridTheme.formatNumber((overall.data_completeness||0)*100)+'%\n'+
     '风险语义：'+(overall.semantics||risk.semantics||'relative_index')+' · '+(riskResult.algorithm_id||'未计算')+'@'+(riskResult.algorithm_version||'-');
   return cell.grid_id+' · L'+cell.level+'\n'+
@@ -289,7 +287,7 @@ $('terrainOpacity').oninput=()=>{
   queue();
 };
 $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','allowedAirspaceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','v3CandidateLayer'])$(id).onchange=()=>{
+for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','v3CandidateLayer'])$(id).onchange=()=>{
   if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
   if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
   updateGridNotice();

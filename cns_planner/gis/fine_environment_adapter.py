@@ -24,10 +24,7 @@ What the adapter guarantees:
   the required floor is ``ground + height + vertical_clearance``.  A missing
   height or missing DTM means ``unknown``, which is blocked.  Source geometry is
   never modified -- the exact polygon clearance is V3-C;
-* airspace consumes **confirmed** ``AirspacePolicy`` only (never a layer name or
-  colour): a fine cell is feasible only when its parent cell is confirmed allowed
-  *and* the fine cell centre is inside a confirmed allowed polygon, and it must not
-  be inside a confirmed blocked polygon;
+* airspace is display-only reference metadata and is never queried for planning;
 * population/traffic soft indices are **reused** from the existing RiskModel
   contributor ``normalized`` values; coarse values mapped onto finer cells are
   flagged ``upsampled_without_new_information=true``.
@@ -63,7 +60,7 @@ AIRSPACE_QUERY_MODE = "confirmed_policy_coarse_cell_and_fine_centre_point_test"
 #: envelope) is tested against the confirmed policy union, not just its centre.
 AIRSPACE_POLYGON_QUERY_MODE = "confirmed_policy_fine_cell_polygon_covered_by_allowed_union_and_disjoint_from_blocked_union"
 
-FINE_SOURCE_ROLES = ("terrain_dtm", "buildings", "airspace_policy")
+FINE_SOURCE_ROLES = ("terrain_dtm", "buildings")
 
 #: Horizontal-resolution provenance methods.  ``projected_linear_unit`` converts an
 #: affine pixel size in a projected CRS through the CRS's own verified linear unit;
@@ -1114,7 +1111,6 @@ class FineEnvironmentAdapter:
         for role, source in (
             ("terrain_dtm", self.terrain_source),
             ("buildings", self.building_source),
-            ("airspace_policy", self.airspace_source),
         ):
             if source is None:
                 entries[role] = {
@@ -1218,10 +1214,7 @@ class FineEnvironmentAdapter:
         resolution = self._resolve_resolution()
         if not resolution["resolution_m"] or not self.transform:
             return self._blocked(resolution["reason"] or "metric_transform_unavailable", readiness)
-        # Terrain and buildings are *required* hard facts: without them there is no
-        # environment to refine in.  Airspace is different -- the environment still
-        # exists, so its cells simply stay ``unknown`` (and therefore infeasible)
-        # until a confirmed policy is supplied.
+        # Terrain and buildings are required hard facts. Airspace is display-only.
         for role in ("terrain_dtm", "buildings"):
             if readiness[role]["status"] != "ready":
                 reason = (
@@ -1313,18 +1306,15 @@ class FineEnvironmentAdapter:
                 for cell in cells
             }
         buildings = self._buildings(policy, cells, readiness)
-        if readiness["airspace_policy"]["status"] == "ready":
-            airspace = self.airspace_source.classify(
-                cells, parent_binding=binding, transform=self.transform,
-            )
-        else:
-            airspace = {
-                str(cell["fine_cell_id"]): _airspace(
-                    "unknown", binding.get(str(cell["fine_cell_id"])), None,
-                    readiness["airspace_policy"]["reasons"][0],
-                )
-                for cell in cells
+        airspace = {
+            str(cell["fine_cell_id"]): {
+                "status": "not_applicable", "applicability": "display_only",
+                "parent_grid_id": binding.get(str(cell["fine_cell_id"])),
+                "mapping_method": "display_only_reference_layer_not_used_for_planning",
+                "policy_confirmed": False,
             }
+            for cell in cells
+        }
         soft_fields = upsample_soft_fields(
             {item["grid_id"]: item for item in support_metric}, binding,
         )
@@ -1420,10 +1410,9 @@ class FineEnvironmentAdapter:
             "adapter_version": ADAPTER_VERSION,
             "read_mode": TERRAIN_READ_MODE,
             "building_query_mode": BUILDING_QUERY_MODE,
-            "airspace_query_mode": AIRSPACE_QUERY_MODE,
             "terrain_dtm": readiness["terrain_dtm"].get("describe"),
             "buildings": readiness["buildings"].get("describe"),
-            "airspace_policy": readiness["airspace_policy"].get("describe"),
+            "airspace": {"status": "not_applicable", "applicability": "display_only"},
             "metric_frame": self.transform.describe() if self.transform else None,
             "risk_model": {
                 "algorithm_id": (self.risk_result or {}).get("algorithm_id"),
@@ -1928,19 +1917,30 @@ def _finite_number(value):
     return number == number and number not in (float("inf"), float("-inf"))
 
 
-def real_data_source_readiness(paths, *, airspace_eligibility=None, policy_confirmed=False):
+def real_data_source_readiness(
+    paths, *, airspace_eligibility=None, policy_confirmed=False,
+    source_audits=None, terrain_profile=None,
+):
 
     terrain_path = paths.get("terrain_dtm")
     buildings_path = paths.get("buildings")
-    eligibility = airspace_eligibility if isinstance(airspace_eligibility, dict) else {}
-    allowed = len(eligibility.get("allowed_grid_ids") or [])
     missing = []
     if not terrain_path or not Path(terrain_path).is_file():
         missing.append("terrain_dtm_not_configured_or_missing")
     if not buildings_path or not Path(buildings_path).is_file():
         missing.append("buildings_geopackage_not_configured_or_missing")
-    if allowed == 0:
-        missing.append("no_confirmed_allowed_airspace_cells")
+    if source_audits is not None:
+        items = (source_audits or {}).get("items") or {}
+        for role in ("terrain_dtm", "buildings", "building_grid"):
+            if (items.get(role) or {}).get("status") != "verified":
+                missing.append(f"{role}_source_not_verified")
+    if terrain_profile is not None:
+        profile = terrain_profile or {}
+        observed = ((profile.get("crs") or {}).get("observed_vertical") or "")
+        if str(observed).lower() != "egm2008_orthometric":
+            missing.append("terrain_dtm_vertical_reference_not_verified_egm2008_orthometric")
+        if (profile.get("verification") or {}).get("status") != "verified_from_raster_metadata":
+            missing.append("terrain_dtm_metadata_verification_missing")
     if not policy_confirmed:
         missing.append("v3_policy_not_confirmed")
     return {
@@ -1950,14 +1950,12 @@ def real_data_source_readiness(paths, *, airspace_eligibility=None, policy_confi
         "roles": list(FINE_SOURCE_ROLES),
         "terrain_dtm": _basename(terrain_path),
         "buildings": _basename(buildings_path),
-        "confirmed_allowed_grid_cells": allowed,
-        "airspace_eligibility_status": eligibility.get("status"),
+        "airspace": {"status": "not_applicable", "applicability": "display_only"},
         "blocking_reasons": missing,
         "resolution_policy": "explicit_configuration_or_dtm_effective_resolution_never_a_30m_constant",
         "required_before_real_run": [
             "FABDEM terrain_dtm with confirmed egm2008_orthometric vertical reference",
             "buildings GeoPackage with a provider spatial index (RTree) and a height field",
-            "confirmed AirspacePolicy with at least one allowed geometry",
             "explicit confirmed V3 planning policy",
         ],
         "semantics": "readiness_report_only_no_data_read_no_fabricated_environment",

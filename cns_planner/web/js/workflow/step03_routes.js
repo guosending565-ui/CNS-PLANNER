@@ -197,7 +197,7 @@ function diagnosticRowsFromEvaluation(evaluation,origin){
       grid_level:g.grid_level,horizontal_steps:g.horizontal_step_count,vertical_steps:g.vertical_step_count,
       diagonal_steps:g.diagonal_step_count,direction_histogram:g.direction_histogram||{},
       risk_exposure_index_m:risk.risk_exposure_index_m,mean_risk_index:risk.mean_risk_index,max_risk_index:risk.max_risk_index,
-      hard_constraint_count:constraints.hard_constraint_count,allowed_airspace_status:constraints.allowed_airspace_status,
+      hard_constraint_count:constraints.hard_constraint_count,
       runtime_ms:item.runtime_ms};
   });
 }
@@ -218,7 +218,7 @@ function diagnosticRow(item){
     +'<small>heading total/max '+metric(item.total_heading_change_deg,'°')+' / '+metric(item.max_heading_change_deg,'°')+' · min segment '+metric(item.min_segment_m,'m')+' · zigzag '+metric(item.zigzag_index)+'</small>'
     +'<small>grid L'+escapeHtml(String(item.grid_level??'—'))+' · H/V/D '+escapeHtml(String(item.horizontal_steps??'—'))+'/'+escapeHtml(String(item.vertical_steps??'—'))+'/'+escapeHtml(String(item.diagonal_steps??'—'))+' · directions '+escapeHtml(jsonInline(item.direction_histogram||{}))+'</small>'
     +'<small>risk exposure/mean/max '+metric(item.risk_exposure_index_m,'index·m')+' / '+metric(item.mean_risk_index)+' / '+metric(item.max_risk_index)+' · runtime '+metric(item.runtime_ms,'ms')+'</small>'
-    +'<small>hard constraints '+escapeHtml(String(item.hard_constraint_count??'—'))+' · allowed airspace '+escapeHtml(item.allowed_airspace_status||'—')+'</small></span></div>';
+    +'<small>hard constraints '+escapeHtml(String(item.hard_constraint_count??'—'))+' · airspace display-only</small></span></div>';
 }
 
 function routePlanningDiagnosticsPanel(flow){
@@ -486,7 +486,7 @@ export function routePlannerV3Model(flow){
 
 function v3ReadinessRows(model){
   const rows=[
-    {label:'空域 (airspace)',status:model.environmentReadiness.status,reason:'逐格 canonical 评估；只有 confirmed allowed 可行，unknown 不可行'},
+    {label:'空域 (airspace)',status:'not_applicable',reason:'仅显示参考图层，不参与路线约束'},
     {label:'地形 (terrain)',status:model.environmentReadiness.status,reason:'逐格 canonical 评估；unknown/NoData fail-closed'},
     {label:'建筑 (building)',status:model.environmentReadiness.status,reason:'逐格 canonical 评估；unknown fail-closed'},
     {label:'Policy',status:model.policyReadiness.status,reason:(model.policyReadiness.reasons||[]).join('；')||'参数完整'},
@@ -677,12 +677,7 @@ function v3bProvenanceBlock(refinement){
     +' · query_mode '+escapeHtml(buildings.query_mode||'—')+' · crs '+escapeHtml(buildings.crs||'—')
     +' · height_field '+escapeHtml(buildings.height_field||'—')
     :'未记录（canonical synthetic 无建筑源）';
-  const airspaceText=airspace?escapeHtml(airspace.query_mode||'—')+' · eligibility_status '+escapeHtml(airspace.eligibility_status||'—')
-    +' · allowed_grid_cell_count '+escapeHtml(String(airspace.allowed_grid_cell_count??'—'))
-    +' · confirmed allowed/blocked polygon '+escapeHtml(String(airspace.confirmed_allowed_polygon_count??'—'))+' / '+escapeHtml(String(airspace.confirmed_blocked_polygon_count??'—'))
-    +' · inferred_from_name_or_color '+escapeHtml(String(airspace.inferred_from_name_or_color===true))
-    +' · algorithm '+escapeHtml(airspace.algorithm_id||'—')+'@'+escapeHtml(airspace.algorithm_version||'—')
-    :'未记录（只消费 confirmed AirspacePolicy；绝不按图层名或颜色推断）';
+  const airspaceText='not applicable · display-only reference layer';
   const rows=[
     ['read_mode / building_query_mode / airspace_query_mode',escapeHtml([audit.read_mode,audit.building_query_mode,audit.airspace_query_mode].filter(Boolean).join(' · ')||'—')],
     ['terrain_dtm',terrainText],
@@ -705,7 +700,7 @@ function v3bProvenanceBlock(refinement){
     +escapeHtml(pending.join(' / ')||'—')
     +'<br>terrain hard floor = 相交有效 FABDEM 像元的<b>最大</b> EGM2008 高程 + explicit terrain clearance'
     +'（绝不是 center sample 或 mean）；building = footprint 按 explicit horizontal clearance 缓存成的保守包络，'
-    +'required floor = ground + height + vertical clearance（不是 exact polygon clearance）；airspace 只消费 confirmed AirspacePolicy。</div>';
+    +'required floor = ground + height + vertical clearance（不是 exact polygon clearance）；airspace 仅供显示。</div>';
 }
 
 function v3bReadinessBlock(model){
@@ -718,8 +713,7 @@ function v3bReadinessBlock(model){
       +' · registered_in_algorithm_registry '+escapeHtml(String((readiness.algorithm||{}).registered_in_algorithm_registry===true))],
     ['resolution_policy',escapeHtml(readiness.resolutionPolicy||'—')],
     ['real data adapter',escapeHtml(real.adapter_id||'—')+'@'+escapeHtml(real.adapter_version||'—')+' · status '+escapeHtml(real.status||'—')
-      +' · confirmed_allowed_grid_cells '+escapeHtml(String(real.confirmed_allowed_grid_cells??'—'))
-      +' · airspace_eligibility_status '+escapeHtml(real.airspace_eligibility_status||'—')],
+      +' · airspace display-only / not applicable'],
     ['real terrain_dtm / buildings',escapeHtml(real.terrain_dtm||'未配置')+' · '+escapeHtml(real.buildings||'未配置')],
     ['v3_policy_readiness',escapeHtml((readiness.v3PolicyReadiness||{}).status||'—')+' · missing '
       +escapeHtml(jsonInline((readiness.v3PolicyReadiness||{}).missing_parameters||[]))],
@@ -926,7 +920,7 @@ function v3cDomainBlock(model){
       +' · evaluated '+escapeHtml(String(item.evaluated))]);
   return '<h3>V3-C domain status '+statusBadge(validation.status)+'</h3>'
     +'<div class="parameter-note"><b>'+escapeHtml(V3C_OPERATIONAL_LABEL)+'</b>'
-    +'<br>只有 geometry / airspace / terrain / building / altitude / kinematics 全部 passed 才是 '
+    +'<br>只有 geometry / terrain / building / altitude / kinematics 全部 passed 才是 '
     +escapeHtml('validated_route')+'；确定违反 ⇒ failed（replan_required，不自动修路）；缺证据 ⇒ unresolved；'
     +'源/refined candidate stale ⇒ not_ready；资源上限 ⇒ validation_incomplete（绝不是 failed）。</div>'
     +'<div class="scroll-list route-list">'+v3cRows(rows)+'</div>';
@@ -937,7 +931,6 @@ function v3cMarginBlock(model){
   if(!validation)return '';
   const m=validation.margins;
   const rows=[
-    ['airspace 水平最小 margin (m)',metric(m.airspaceHorizontalM,'m')],
     ['terrain 垂向最小 margin (m)',metric(m.terrainVerticalM,'m')],
     ['building 水平 / 垂向最小 margin (m)',metric(m.buildingHorizontalM,'m')+' / '+metric(m.buildingVerticalM,'m')],
     ['altitude lower / upper margin (m)',metric(m.altitudeLowerM,'m')+' / '+metric(m.altitudeUpperM,'m')],
@@ -1179,13 +1172,13 @@ export function routePlannerV3Panel(flow){
     +'本面板为只读/实验面板：<b>不替换正式 V1/V2 运行航路</b>，结果状态只允许 '
     +escapeHtml(model.allowedStatuses.join(' / '))+'。</div>'
     +'<div class="flow-summary">'+escapeHtml(model.architecture)+'</div>'
-    +'<h3>V3 readiness</h3><div class="parameter-note">airspace / terrain / building / policy / aircraft / cost-model 分别给出状态与原因；'
-    +'真实数据 adapter 尚未实现：'+escapeHtml(readiness.realData.status||'blocked')+' · '+escapeHtml(readiness.realData.adapter_status||'—')
+    +'<h3>V3 readiness</h3><div class="parameter-note">terrain / building / policy / aircraft / cost-model 分别给出状态与原因；空域为 display-only / not applicable。'
+    +'真实数据 adapter：'+escapeHtml(readiness.realData.status||'blocked')+' · '+escapeHtml(readiness.realData.adapter_status||'—')
     +'<br>'+escapeHtml(readiness.realData.reason||'')+'</div>'
     +'<div class="scroll-list route-list">'+v3ReadinessRows(readiness)+'</div>'
     +'<h3>显式安全参数（无默认值）</h3><div class="scroll-list route-list">'+v3ParameterRows(model)+'</div>'
     +'<h3>实验输入</h3>'
-    +'<div class="form-grid"><label>环境来源<select id="v3EnvironmentSource"><option value="canonical_synthetic">canonical synthetic（真实 adapter 未实现）</option></select></label>'
+    +'<div class="form-grid"><label>环境来源<select id="v3EnvironmentSource"><option value="canonical_synthetic">canonical synthetic</option><option value="configured_real_sources">configured real sources</option></select></label>'
     +'<label>地形剖面<select id="v3TerrainProfile">'+(readiness.syntheticOptions.terrain_profiles||[]).map(name=>'<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>').join('')+'</select></label></div>'
     +'<div class="form-grid"><label>地形基准高程 (m)<input class="panel-input" type="number" step="any" id="v3BaseElevation" value="0"></label>'
     +'<label>地形起伏/脊高 (m)<input class="panel-input" type="number" step="any" id="v3TerrainHeight" value="0"></label></div>'
@@ -1620,46 +1613,7 @@ function referenceLinkPanel(flow){
     +'<h3>候选提示（仅提示，需确认）</h3>'+candidateBlock;
 }
 
-// ---- airspace policy + data readiness ----------------------------------------------
-
-export function airspacePolicyReadinessModel(flow){
-  const readiness=flow?.data_readiness||{},block=readiness.blocks?.airspace_policies||{};
-  const items=((flow?.airspace_policies||{}).items)||[];
-  return {status:block.status||'not_calculated',count:block.count??items.length,
-    eligibilityCounts:block.route_eligibility_counts||{allowed:0,blocked:0,unknown:0},
-    confirmedCount:block.confirmed_count||0,unconfirmedCount:block.unconfirmed_count||0,
-    v2Readiness:block.v2_readiness||{status:'unknown',reason:'readiness_not_available'},
-    neverInferred:block.never_inferred_from_layer_name_or_color!==false,
-    items:items.map(item=>({feature_id:item.feature_id,route_eligibility:item.route_eligibility,
-      confirmed:item.confirmed===true,source:item.source}))};
-}
-
-export function airspacePolicyEditorModel(flow){
-  const policies=new Map((flow?.airspace_policies?.items||[]).map(item=>[item.feature_id,item]));
-  const features=flow?.grid_attributes?.airspace?.features||[];
-  return features.map(feature=>{
-    const policy=policies.get(feature.feature_id)||{};
-    return {feature_id:feature.feature_id,layer:feature.source?.layer_name||feature.source?.layer_id||'—',
-      category:feature.category||feature.type||'—',source:feature.source||{},geometry_health:feature.geometry_health||'passed',
-      route_eligibility:policy.route_eligibility||'unknown',confirmed:policy.confirmed===true,
-      evidence:policy.evidence||[],policy_source:policy.source||null};
-  });
-}
-
-function airspacePolicyPanel(flow){
-  const model=airspacePolicyReadinessModel(flow);
-  const editor=airspacePolicyEditorModel(flow);
-  const rows=editor.map(item=>'<div class="list-row"><label class="check-row"><input type="checkbox" data-airspace-policy-select="'+escapeHtml(item.feature_id)+'"><span><b>'+escapeHtml(item.feature_id)+'</b><small>layer '+escapeHtml(item.layer)+' · category '+escapeHtml(item.category)+' · geometry '+escapeHtml(String(item.geometry_health))+'</small><small>current '+escapeHtml(item.route_eligibility)+' · confirmed '+escapeHtml(String(item.confirmed))+' · source '+escapeHtml(jsonInline(item.policy_source||item.source))+' · evidence '+escapeHtml(String(item.evidence.length))+'</small></span></label><select data-airspace-policy-value="'+escapeHtml(item.feature_id)+'"><option value="allowed" '+(item.route_eligibility==='allowed'?'selected':'')+'>allowed</option><option value="blocked" '+(item.route_eligibility==='blocked'?'selected':'')+'>blocked</option><option value="unknown" '+(item.route_eligibility==='unknown'?'selected':'')+'>unknown</option></select><button class="secondary compact" data-save-airspace-policy="'+escapeHtml(item.feature_id)+'">保存单项</button></div>').join('');
-  return '<h3>AirspacePolicy 就绪总览 '+statusBadge(model.status)+'</h3>'
-    +'<div class="parameter-note">只读取已保存 policy：allowed/blocked/unknown 与 confirmed 均来自显式配置，'
-    +'<b>绝不按图层颜色或名称自动推断</b>。</div>'
-    +'<div class="flow-summary">policy '+model.count+' 条 · allowed '+model.eligibilityCounts.allowed+' · blocked '+model.eligibilityCounts.blocked+' · unknown '+model.eligibilityCounts.unknown
-    +' · confirmed '+model.confirmedCount+' · 未确认 '+model.unconfirmedCount+'<br>V2 readiness：'+escapeHtml(model.v2Readiness.status)+' · 原因 '+escapeHtml(model.v2Readiness.reason||'—')+'</div>'
-    +'<label>policy source<input class="panel-input" id="airspacePolicySource" placeholder="例如 user_review / authority_document"></label><label>evidence<input class="panel-input" id="airspacePolicyEvidence" placeholder="必填：文件、条款或人工核对说明"></label>'
-    +'<div class="form-grid"><label>批量值<select id="airspacePolicyBatchValue"><option value="allowed">allowed</option><option value="blocked">blocked</option><option value="unknown">unknown</option></select></label><button class="secondary" id="saveAirspacePolicyBatch">保存明确选中项</button></div>'
-    +'<div class="parameter-note">批量设置只作用于用户勾选的 feature；保存必须带 source/evidence。系统不读取图层名、颜色或样式作推断。</div>'
-    +'<div class="scroll-list route-list">'+(rows||'<div class="empty-note">尚无可编辑 AirspaceFeature；先加载空域源并生成工作区网格。</div>')+'</div>';
-}
+// ---- data readiness (airspace is a display-only reference layer: no editor) ------
 
 function readinessBlockRows(block){
   const crs=block||{};
@@ -1669,9 +1623,9 @@ function readinessBlockRows(block){
 
 function dataReadinessPanel(flow){
   const readiness=flow?.data_readiness||{},blocks=readiness.blocks||{};
-  const list=['reference_landing_sites','reference_routes','airspace_policies'].map(name=>blocks[name]?readinessBlockRows(blocks[name]):'').join('');
+  const list=['reference_landing_sites','reference_routes'].map(name=>blocks[name]?readinessBlockRows(blocks[name]):'').join('');
   return '<h3>数据就绪 '+statusBadge(readiness.status||'not_calculated')+'</h3>'
-    +'<div class="parameter-note">只读汇总：参考起降点 CRS、参考航线 CRS/格式/数量、AirspacePolicy 完整度。ET 仍要求人工转换为 XLSX/CSV，系统不提供 ET parser。</div>'
+    +'<div class="parameter-note">只读汇总：参考起降点 CRS、参考航线 CRS/格式/数量。空域仅为显示图层，不构成 readiness 阻断。ET 仍要求人工转换为 XLSX/CSV。</div>'
     +'<div class="scroll-list route-list">'+(list||'<div class="empty-note">尚无就绪信息</div>')+'</div>'
     +'<div class="flow-summary">reference route link '+escapeHtml(String(readiness.reference_route_link_count??0))+' · experiment '+escapeHtml(String(readiness.experiment_count??0))+' · ET 政策 '+escapeHtml(readiness.et_source_policy||'requires_xlsx_or_csv_conversion')+'</div>';
 }
@@ -1743,7 +1697,7 @@ export function render({flow,interactionMode,selectedReference=null}){
   const altitude='<h3>Route 3D Altitude Profile</h3><div class="panel-file-input"><select id="altitudeRoute">'+routeOptions+'</select><select id="routeVerticalReference"><option value="agl">AGL</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option></select></div><label>Constant altitude (m)<input class="panel-input" type="number" id="routeAltitude" value="100"></label><button class="secondary full" id="saveRouteAltitude" '+(!routeOptions?'disabled':'')+'>保存航路高度剖面</button><div class="scroll-list">'+(profiles||'<div class="empty-note">尚未配置运行航路高度</div>')+'</div>';
   const motionProfiles=Object.values(flow.operational_timing?.route_motion_profiles||{}).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_ground_speed_mps??'待确认')+' m/s · '+escapeHtml(item.status)+'</small></span></div>').join('');
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
-  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+airspacePolicyPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+experimentPanelV3(flow)+experimentPanel(flow)+routePlanningDiagnosticsPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
+  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+experimentPanelV3(flow)+experimentPanel(flow)+routePlanningDiagnosticsPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
   return shell('03','航路设计','地图点击增加起降点；场景与运行航路分别保存。',body);
 }
 export function bind(c){
@@ -1754,9 +1708,6 @@ export function bind(c){
   if(c.$('evaluateRouteExperiment'))c.actionButton('evaluateRouteExperiment',()=>c.resourceAction('/api/route-experiments/evaluate',{grounding:'current_scenario_routes'}));
   if(c.$('deleteRouteExperiment'))c.actionButton('deleteRouteExperiment',()=>{const model=routeExperimentModel(c.flow());if(!model.active_experiment_id)throw new Error('没有可删除的实验');return c.resourceAction('/api/route-experiments/delete',{experiment_id:model.active_experiment_id});});
   if(c.$('confirmReferenceRouteImport'))c.actionButton('confirmReferenceRouteImport',()=>c.resourceAction('/api/reference-routes/import-confirm',{preview_id:c.$('confirmReferenceRouteImport').dataset.previewId}));
-  const policyEvidence=()=>{const source=c.$('airspacePolicySource')?.value.trim(),note=c.$('airspacePolicyEvidence')?.value.trim();if(!source||!note)throw new Error('AirspacePolicy 保存必须填写 source 和 evidence');return {source:{type:source},evidence:[{type:'user_supplied',note}]};};
-  document.querySelectorAll('[data-save-airspace-policy]').forEach(button=>button.onclick=async()=>{try{const featureId=button.dataset.saveAirspacePolicy,value=document.querySelector('[data-airspace-policy-value="'+CSS.escape(featureId)+'"]').value;await c.resourceAction('/api/airspace-policies/item',{feature_id:featureId,route_eligibility:value,confirmed:true,...policyEvidence()});}catch(error){c.panelError(error.message);}});
-  if(c.$('saveAirspacePolicyBatch'))c.actionButton('saveAirspacePolicyBatch',()=>{const feature_ids=[...document.querySelectorAll('[data-airspace-policy-select]:checked')].map(item=>item.dataset.airspacePolicySelect);if(!feature_ids.length)throw new Error('请先明确勾选要批量设置的 feature');return c.resourceAction('/api/airspace-policies/batch',{feature_ids,route_eligibility:c.$('airspacePolicyBatchValue').value,confirmed:true,...policyEvidence()});});
   if(c.$('createReferenceLink'))c.actionButton('createReferenceLink',()=>c.resourceAction('/api/reference-route-links/create',{reference_route_id:c.$('linkReferenceRoute').value,scenario_route_id:c.$('linkScenarioRoute').value,confirmed:true}));
   document.querySelectorAll('[data-delete-reference-link]').forEach(button=>button.onclick=()=>c.resourceAction('/api/reference-route-links/delete',{link_id:button.dataset.deleteReferenceLink}).catch(error=>c.panelError(error.message)));
   document.querySelectorAll('[data-confirm-reference-link]').forEach(button=>button.onclick=()=>{const [referenceRouteId,scenarioRouteId]=button.dataset.confirmReferenceLink.split('|');return c.resourceAction('/api/reference-route-links/create',{reference_route_id:referenceRouteId,scenario_route_id:scenarioRouteId,confirmed:true,origin:'user',source:{type:'user_confirmation_from_endpoint_candidate'}}).catch(error=>c.panelError(error.message));});

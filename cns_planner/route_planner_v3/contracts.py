@@ -74,8 +74,9 @@ COST_COMPONENTS = ("distance", "population_risk", "traffic_risk", "building_expo
 #: Data completeness of one canonical cell.
 ENVIRONMENT_DATA_STATUSES = ("passed", "unknown", "restricted")
 
-#: Explicit airspace classification of one canonical cell.
-AIRSPACE_STATUSES = ("confirmed_allowed", "confirmed_restricted", "unknown")
+#: Airspace is retained only as display-only compatibility metadata.  It is not
+#: an input to V3 feasibility, cost, readiness or fingerprints.
+AIRSPACE_STATUSES = ("not_applicable", "confirmed_allowed", "confirmed_restricted", "unknown")
 
 #: Motion primitive kinds actually modelled in V3-A.
 PRIMITIVE_KINDS = ("horizontal_level", "climb", "descend", "hover")
@@ -648,6 +649,8 @@ def _normalize_environment_cell(raw):
         "airspace": {
             "status": airspace_status,
             "feature_id": _text(airspace.get("feature_id")) or None,
+            "applicability": _text(airspace.get("applicability")) or None,
+            "semantics": _text(airspace.get("semantics")) or None,
         },
         "soft_fields": _normalize_soft_fields(raw.get("soft_fields"), grid_id),
     }

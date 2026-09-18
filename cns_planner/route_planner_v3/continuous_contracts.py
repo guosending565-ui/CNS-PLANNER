@@ -10,8 +10,7 @@ candidate's already-recorded metric trajectory (the V3-B local metric frame) and
    safe default: an unstated chord error would silently claim a precision the
    geometry does not have) and keeps both the analytic geometry and the linearized
    representation, side by side, with the actual chord bound;
-3. validates the realized route against **confirmed source geometry**: the exact
-   allowed/blocked airspace polygons, the **native** terrain raster pixels, the real
+3. validates the realized route against source evidence: the **native** terrain raster pixels, the real
    building footprints (reusing the existing building-clearance roof semantics) and
    the explicit altitude / kinematic limits.
 
@@ -69,6 +68,7 @@ DOMAIN_STATUSES = ("passed", "failed", "unresolved", "skipped")
 #: The domains V3-C validates.  ``geometry`` covers the realization itself
 #: (C1 continuity, radius, chord bound), ``altitude`` the vertical profile bounds.
 V3C_DOMAINS = ("geometry", "airspace", "terrain", "building", "altitude", "kinematics")
+ACTIVE_V3C_DOMAINS = ("geometry", "terrain", "building", "altitude", "kinematics")
 
 #: Result statuses that force a conservative verdict for the whole route.
 STATUS_FOR_FAILURE = "failed"
@@ -106,7 +106,6 @@ VALIDATION_FINGERPRINT_COMPONENTS = (
 VALIDATOR_VERSIONS = {
     "continuous_geometry_realizer": "3.2",
     "vertical_profile_realizer": "3.2",
-    "exact_airspace_validator": "3.2",
     "native_terrain_validator": "3.2",
     "building_polygon_validator": "3.2",
     "kinematic_validator": "3.2",
@@ -842,7 +841,7 @@ def validation_fingerprint_components(problem):
 
     A change in **any** component makes the stored validation stale: the V3-B
     refinement it was built from, the continuous validation policy, the explicit
-    curve tolerance, the source audits (terrain / buildings / airspace), the
+    curve tolerance, the source audits (terrain / buildings), the
     CRS/transform evidence and the validator versions themselves.
     """
 
@@ -852,7 +851,10 @@ def validation_fingerprint_components(problem):
     frame = refinement.get("frame") or {}
     return {
         "refinement_fingerprint": refinement.get("refinement_fingerprint"),
-        "continuous_policy_fingerprint": contract_fingerprint(policy, prefix="V3CPOL-"),
+        "continuous_policy_fingerprint": contract_fingerprint(
+            {key: value for key, value in policy.items() if key != "airspace_allow_touching_blocked_boundary"},
+            prefix="V3CPOL-",
+        ),
         "curve_tolerance_fingerprint": contract_fingerprint(
             {
                 "curve_chord_error_m": policy.get("curve_chord_error_m"),
@@ -861,8 +863,11 @@ def validation_fingerprint_components(problem):
             prefix="V3CCURVE-",
         ),
         "source_fingerprint": (
-            source_audit.get("fingerprint")
-            or contract_fingerprint(source_audit, prefix="V3CSRC-")
+            contract_fingerprint(
+                {key: value for key, value in source_audit.items()
+                 if key not in ("fingerprint", "airspace", "airspace_policy")},
+                prefix="V3CSRC-",
+            )
         ),
         "crs_fingerprint": contract_fingerprint(
             {
@@ -1058,7 +1063,8 @@ __all__ = [
     "TERRAIN_EVIDENCE_SEMANTICS", "TURN_REALIZATION_SCHEMA_VERSION",
     "VALIDATION_FINGERPRINT_COMPONENTS", "VALIDATION_POLICY_SCHEMA_VERSION",
     "VALIDATOR_VERSIONS", "V3C_ALGORITHM_ID", "V3C_ALGORITHM_VERSION", "V3C_DISCLAIMER",
-    "V3C_DOMAINS", "V3C_MODEL_SCOPE", "V3C_RESULT_STATUSES", "VECTOR_PREDICATE_SEMANTICS",
+    "ACTIVE_V3C_DOMAINS", "V3C_DOMAINS", "V3C_MODEL_SCOPE", "V3C_RESULT_STATUSES",
+    "VECTOR_PREDICATE_SEMANTICS",
     "VIOLATION_INTERVAL_SCHEMA_VERSION",
     # ---- types -----------------------------------------------------------------
     "ConstraintViolationInterval", "ContinuousPrimitive3D", "ContinuousRoute3D",

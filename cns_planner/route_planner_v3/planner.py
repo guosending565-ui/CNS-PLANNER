@@ -439,7 +439,7 @@ class _Search:
                 self.audit.record_state(
                     target_reason, (target_grid, target_altitude_index, target_heading_bin),
                 )
-                if target_reason in ("terrain_clearance_unresolved", "building_clearance_unresolved", "airspace_unknown"):
+                if target_reason in ("terrain_clearance_unresolved", "building_clearance_unresolved"):
                     self.unknown_blocked = True
                 continue
             records.append(self._edge_record(

@@ -16,7 +16,6 @@ const themeOptions = [
   ['traffic_exposure', '交通暴露'],
   ['conflict_exposure', '冲突暴露'],
   ['ground_risk', '地面风险'],
-  ['airspace_risk', '空域约束风险'],
   ['overall_risk', '综合风险'],
 ];
 

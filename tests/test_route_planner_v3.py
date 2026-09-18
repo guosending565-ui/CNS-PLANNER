@@ -432,7 +432,7 @@ def evaluator(spec=None, policy_value=None):
     ), env
 
 
-def test_state_feasibility_rejects_airspace_altitude_terrain_and_building_separately():
+def test_state_feasibility_ignores_display_airspace_but_checks_active_constraints():
     restricted = group(column=9, rows=[0, 1])
     buildings = group(column=9, rows=[2, 3])
     spec = {
@@ -444,7 +444,7 @@ def test_state_feasibility_rejects_airspace_altitude_terrain_and_building_separa
         "building_height_m": 200.0,
     }
     constraints, _ = evaluator(spec)
-    assert constraints.state_feasible(restricted[0], 3, 250.0) == (False, "airspace_not_confirmed_allowed")
+    assert constraints.state_feasible(restricted[0], 3, 250.0) == (True, None)
     assert constraints.state_feasible(buildings[0], 2, 200.0) == (False, "below_building_clearance")
     other = group(column=3, row=0)[0]
     assert constraints.state_feasible(other, 0, 100.0) == (False, "below_terrain_clearance")
@@ -669,16 +669,17 @@ def test_case_descent_rejection_blocks_a_descent_that_is_too_steep():
     assert result["status"] in ("strategic_candidate", "failed")
 
 
-def test_case_airspace_blocked_corridor_is_never_crossed():
+def test_case_display_airspace_does_not_block_the_corridor():
     result = plan({
         "profile_id": "airspace", "terrain_profile": "flat",
         "restricted_cells": group(column=9),
     })
-    assert result["status"] == "failed"
-    assert result["hard_constraint_summary"]["state_rejections"].get("airspace_not_confirmed_allowed", 0) > 0
+    assert result["status"] == "strategic_candidate"
+    assert result["hard_constraint_summary"]["state_rejections"].get("airspace_not_confirmed_allowed", 0) == 0
     airspace = result["readiness"]["airspace"]
     assert airspace["status"] == "ready"
-    assert airspace["status_counts"]["confirmed_restricted"] == len(grid_cells()) // 18
+    assert airspace["applicability"] == "not_applicable"
+    assert airspace["status_counts"]["not_applicable"] == len(grid_cells())
 
 
 def test_case_unknown_terrain_or_building_evidence_blocks_the_run_fail_closed():

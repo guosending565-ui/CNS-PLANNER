@@ -17,7 +17,7 @@ DEPENDENTS = {
     "candidate_sites": ("coverage", "cns_site_plan", "cns_corridor_site_plan", "technical_risk", "report"),
     "sites": ("coverage", "technical_risk", "report"),
     "route_algorithm": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "report"),
-    "airspace_policy": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
+    "airspace_policy": (),
     "coverage_algorithm": ("coverage", "report"),
     "gap_algorithm": ("cns_gap", "report"),
     "coverage_model": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),

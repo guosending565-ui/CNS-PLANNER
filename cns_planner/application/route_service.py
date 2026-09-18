@@ -205,9 +205,6 @@ class RouteService:
             "workspace_bbox": list(workspace["bbox"]),
             "grid": state.get("grid") or {},
             "grid_risk": state.get("grid_risk") or {},
-            "airspace_eligibility": (
-                (state.get("grid_attributes") or {}).get("airspace") or {}
-            ).get("airspace_eligibility"),
             "uses_canonical_grid_risk": bool(
                 getattr(self.planner, "uses_canonical_grid_risk", False)
             ),
@@ -225,7 +222,7 @@ class RouteService:
             return [
                 planner.plan(
                     route, context.get("grid") or {}, context.get("grid_risk") or {},
-                    constraints, context.get("airspace_eligibility"),
+                    constraints,
                 )
                 for route in routes
             ]

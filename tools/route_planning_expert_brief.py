@@ -35,7 +35,7 @@ EXPERT_QUESTIONS = [
 OPEN_ITEMS = {
     "DATA-1": "reference CRS：舟山参考点/线坐标系待权威确认。",
     "DATA-2": "ET→XLSX/CSV：ET 必须人工转换，系统不解析。",
-    "DATA-3": "AirspacePolicy：allowed/blocked/unknown 与 confirmed 需逐 feature 确认。",
+    "DATA-3": "retired/not_applicable_by_architecture_decision：当前空域只作为显示参考图层。",
     "EXPERT-1": "constraint geometry：BBOX/polygon/raster/混合表达。",
     "EXPERT-2": "vertical/altitude：二维+独立高度或三维联合规划。",
     "EXPERT-3": "state space/algorithm：搜索状态空间与算法类别。",
@@ -46,12 +46,12 @@ OPEN_ITEMS = {
 _ACTION_ITEMS = {
     "DATA-1": "由数据方给出权威 CRS 证据并写入 reference source_crs（禁止猜测 WGS84/CGCS2000）。",
     "DATA-2": "人工把 .et 转换为 XLSX/CSV 后重新导入；系统不实现 ET parser。",
-    "DATA-3": "逐 AirspaceFeature 显式确认 allowed/blocked/unknown 与 confirmed（禁止按图层名或颜色推断）。",
+    "DATA-3": "无人工动作；已按架构决策退役，仅保留 display-only 兼容信息。",
 }
 
 
 def real_data_verdict(project_evidence):
-    """Explicit DATA-1/2/3 readiness verdict, or an honest NOT READY reason.
+    """Explicit DATA-1/2 readiness verdict plus retired DATA-3 compatibility.
 
     The project-level ``status`` only says whether the project file could be read and
     its evidence collected.  It is NOT a real-data readiness statement, so this helper
@@ -64,7 +64,7 @@ def real_data_verdict(project_evidence):
             "reason": (project_evidence or {}).get("not_ready_reason") or "project_evidence_unavailable",
             "detail": (project_evidence or {}).get("note"),
             "data_readiness": None,
-            "pending_items": ["DATA-1", "DATA-2", "DATA-3"],
+            "pending_items": ["DATA-1", "DATA-2"],
             "blocks": {},
             "airspace_policies": {
                 "status": None, "count": None, "confirmed_count": None,
@@ -73,9 +73,9 @@ def real_data_verdict(project_evidence):
                 "never_inferred_from_layer_name_or_color": True,
             },
             "items": {
-                key: {"item": key, "status": "NOT_READY", "reason": "project_evidence_unavailable",
-                      "action": _ACTION_ITEMS[key]}
-                for key in ("DATA-1", "DATA-2", "DATA-3")
+                "DATA-1": {"item": "DATA-1", "status": "NOT_READY", "reason": "project_evidence_unavailable", "action": _ACTION_ITEMS["DATA-1"]},
+                "DATA-2": {"item": "DATA-2", "status": "NOT_READY", "reason": "project_evidence_unavailable", "action": _ACTION_ITEMS["DATA-2"]},
+                "DATA-3": {"item": "DATA-3", "status": "retired", "reason": "not_applicable_by_architecture_decision", "action": _ACTION_ITEMS["DATA-3"]},
             },
             "metric_measurement_enabled": False,
             "note": "未提供可读取的项目：真实数据证据 NOT READY，未造数据。",
@@ -120,11 +120,10 @@ def real_data_verdict(project_evidence):
         "reference_route_status": routes.get("status"),
         "et_parser": readiness.get("et_parser"),
     }
-    policy_ready = v2.get("status") == "ready"
     items["DATA-3"] = {
         "item": "DATA-3",
-        "status": "confirmed" if policy_ready else "NOT_READY",
-        "reason": None if policy_ready else (v2.get("reason") or "no_confirmed_allowed_airspace_policy"),
+        "status": "retired",
+        "reason": "not_applicable_by_architecture_decision",
         "action": _ACTION_ITEMS["DATA-3"],
         "policy_count": policies.get("count"),
         "confirmed_count": policies.get("confirmed_count"),
@@ -162,8 +161,8 @@ def real_data_verdict(project_evidence):
         "metric_measurement_enabled": crs_resolved,
         "items": items,
         "note": (
-            "真实数据仍 NOT READY 的条目已逐项列出；禁止猜 CRS、禁止解析 ET、"
-            "禁止自动确认 AirspacePolicy。"
+            "真实数据仍 NOT READY 的条目已逐项列出；禁止猜 CRS、禁止解析 ET；"
+            "DATA-3 已按架构决策退役。"
         ),
     }
 

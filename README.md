@@ -19,7 +19,7 @@ python map_app.py
 ## 当前六步工作流
 
 1. **项目与数据**：创建、打开、另存项目；配置 QGIS、人口、DEM、CNS catalog 等数据源；查看算法选择与 Manifest。
-2. **工作区与环境**：定义工作区，生成 MH/T 标准网格，映射人口、GLO-30 DEM、空域、交通与冲突，计算相对风险；配置三维高度层。
+2. **工作区与环境**：定义工作区，生成 MH/T 标准网格，映射人口、GLO-30 DEM、交通与冲突，计算相对风险；空域仅作显示参考；配置三维高度层。
 3. **航路设计**：维护节点、场景航路和 RoutePlannerV1 运行航路，并配置航路高度剖面。
 4. **运行规则与安全**：配置 Aircraft CNS Profile、RequiredCNS、C/N/S 性能、可靠性与 fallback；支持 ServiceState、FHA/FTA/FMEA、安全策略及跨 C/N/S 功能耦合 preview。
 5. **设备与 CNS 分析**：维护 DeviceCatalog、Existing CNS 与 Candidate Sites；运行二维 CoveragePlannerV1、三维 GeometricCoverage3DV1 和 Technology-Aware CNS Service Capability V1。

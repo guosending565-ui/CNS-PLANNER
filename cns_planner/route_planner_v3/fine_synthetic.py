@@ -1,10 +1,11 @@
 """Synthetic corridor-local fine environments for V3-B tests and experiments.
 
 The **real** fine environment comes from ``gis.fine_environment_adapter`` (GDAL
-windowed FABDEM reads + QGIS/GPKG RTree building queries + confirmed airspace
-policy).  This module builds a *synthetic* one from an explicit specification so
-the refinement kernel, the conservative envelopes and the provenance rules can be
-exercised deterministically without any real data.
+windowed FABDEM reads + QGIS/GPKG RTree building queries; airspace is a
+display-only reference layer and is never a source).  This module builds a
+*synthetic* one from an explicit specification so the refinement kernel, the
+conservative envelopes and the provenance rules can be exercised
+deterministically without any real data.
 
 Everything produced here is labelled ``source_type=synthetic``; real-data
 readiness stays blocked until the adapter supplies audited evidence.  The module
@@ -212,32 +213,14 @@ def build_synthetic_fine_environment(
         cell["parent_grid_id"] = binding[str(cell["fine_cell_id"])]
         cell["parent_binding"] = "nearest_parent_cell_center"
     parent_by_id = {str(item["grid_id"]): item for item in parent_cells}
-    restricted = set(spec["restricted_cells"])
-    unknown_airspace = set(spec["unknown_airspace_cells"])
-    unconfirmed = set(spec["unconfirmed_airspace_cells"])
-    parent_airspace = {}
-    for grid_id, cell in parent_by_id.items():
-        parent_airspace[grid_id] = {
-            "status": (cell.get("airspace") or {}).get("status"),
-            "feature_id": (cell.get("airspace") or {}).get("feature_id"),
-            "policy_confirmed": True,
+    airspace = {
+        str(cell["fine_cell_id"]): {
+            "status": "not_applicable", "applicability": "display_only",
+            "mapping_method": "display_only_reference_layer_not_used_for_planning",
+            "policy_confirmed": False,
         }
-    airspace = map_airspace_to_fine(parent_airspace, binding)
-    for cell in cells:
-        fine_cell_id = str(cell["fine_cell_id"])
-        if fine_cell_id in restricted:
-            airspace[fine_cell_id].update({
-                "status": "confirmed_restricted", "policy_confirmed": True, "reason": "synthetic_explicit_restriction",
-            })
-        if fine_cell_id in unknown_airspace:
-            airspace[fine_cell_id].update({
-                "status": "unknown", "policy_confirmed": True, "reason": "synthetic_explicit_unknown_airspace",
-            })
-        if fine_cell_id in unconfirmed:
-            airspace[fine_cell_id].update({
-                "status": "unknown", "policy_confirmed": False,
-                "reason": "synthetic_explicit_unconfirmed_policy",
-            })
+        for cell in cells
+    }
     terrain = _terrain(cells, spec)
     footprints = _footprints(cells, spec)
     blocks_by_cell = _blocks_by_cell(cells, spec)
@@ -250,7 +233,7 @@ def build_synthetic_fine_environment(
         "source_type": "synthetic",
         "terrain": {"source": "synthetic_spec", "sampling": "explicit_subpixel_values_not_real_fabdem"},
         "buildings": {"source": "synthetic_spec", "query": "explicit_metric_rectangles_not_gpkg"},
-        "airspace": {"source": "synthetic_spec", "rule": "confirmed_policy_only"},
+        "airspace": {"status": "not_applicable", "applicability": "display_only"},
         "not_real_data": True,
     }
     source_audit["fingerprint"] = contract_fingerprint(source_audit, prefix="V3BSRC-")

@@ -10,7 +10,7 @@ from ..domain.reporting import mark_active_report_stale
 class InvalidationService:
     SOURCE_ATTRIBUTES = {
         "population": ("population",), "terrain": ("terrain",),
-        "basemap": ("airspace",), "airspace": ("airspace",),
+        "basemap": (), "airspace": (),
         "buildings": ("buildings",), "building_grid": ("buildings",),
         "terrain_dtm": (), "property": ("property_exposure",),
         "property_exposure": ("property_exposure",),

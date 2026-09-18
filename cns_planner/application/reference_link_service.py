@@ -122,9 +122,6 @@ class ReferenceLinkService:
         landing = state.get("reference_landing_sites") or {}
         routes = state.get("reference_routes") or {}
         policies = state.get("airspace_policies") or {}
-        eligibility = (
-            (state.get("grid_attributes") or {}).get("airspace") or {}
-        ).get("airspace_eligibility") or {}
         links = state.get("reference_route_links") or {}
         experiments = state.get("route_planning_experiments") or {}
         source_audits = state.get("source_audits") or {}
@@ -140,7 +137,8 @@ class ReferenceLinkService:
             "reference_landing_sites": self._collection_block(landing, "landing_site"),
             "reference_routes": self._collection_block(routes, "reference_route"),
             "airspace_policies": {
-                "status": policies.get("status") or "pending_confirmation",
+                "status": "not_applicable",
+                "applicability": "display_only",
                 "count": len(policy_items),
                 "route_eligibility_counts": eligibility_counts,
                 "confirmed_count": confirmed_count,
@@ -152,7 +150,7 @@ class ReferenceLinkService:
                 }) if policy_items else 0,
                 "eligibility_derived_from": "confirmed_policy_only",
                 "never_inferred_from_layer_name_or_color": True,
-                "v2_readiness": self._v2_readiness(eligibility, eligibility_counts),
+                "v2_readiness": {"status": "not_applicable", "reason": "display_only_airspace_not_used_for_route_constraints"},
             },
         }
         data_issues = {
@@ -175,15 +173,9 @@ class ReferenceLinkService:
                 "reasons": list(routes.get("warnings") or [routes.get("status") or "not_imported"]),
                 "action": "转换 ET 后预览并确认导入 CSV/XLSX/GeoJSON",
             },
-            "DATA-3": {
-                "label": "AirspacePolicy",
-                "status": self._v2_readiness(eligibility, eligibility_counts)["status"],
-                "reasons": [self._v2_readiness(eligibility, eligibility_counts).get("reason")],
-                "action": "逐 feature 或显式选择后批量设置 policy，并保存 source/evidence",
-            },
         }
         return {
-            "status": self._overall_status(blocks),
+            "status": self._overall_status({key: value for key, value in blocks.items() if key != "airspace_policies"}),
             "blocks": blocks,
             "source_audits": deepcopy(source_audits),
             "data_issues": data_issues,
@@ -197,8 +189,7 @@ class ReferenceLinkService:
             "et_source_policy": "requires_xlsx_or_csv_conversion",
             "et_parser": None,
             "note": (
-                "数据就绪面板只读取来源事实与 policy；ET 仍要求人工转换为 XLSX/CSV，"
-                "不提供 ET parser，也不按图层名称/颜色推断 suitability。"
+                "数据就绪面板只读取来源事实；空域图层仅供显示。ET 仍要求人工转换为 XLSX/CSV。"
             ),
         }
 
@@ -238,27 +229,6 @@ class ReferenceLinkService:
             ),
             "warnings": list(collection.get("warnings") or []),
             "label": label,
-        }
-
-    @staticmethod
-    def _v2_readiness(eligibility, counts):
-        if eligibility.get("status") == "passed" and (eligibility.get("allowed_grid_ids") or []):
-            return {
-                "status": "ready",
-                "reason": None,
-                "allowed_grid_ids": len(eligibility.get("allowed_grid_ids") or []),
-            }
-        if not counts["allowed"]:
-            reason = "no_confirmed_allowed_airspace_policy"
-        elif counts["unknown"] and not counts["blocked"]:
-            reason = "only_unknown_policies_present"
-        else:
-            reason = eligibility.get("message") or "airspace_eligibility_not_passed"
-        return {
-            "status": "blocked",
-            "reason": reason,
-            "allowed_grid_ids": len(eligibility.get("allowed_grid_ids") or []),
-            "eligibility_status": eligibility.get("status"),
         }
 
     @staticmethod

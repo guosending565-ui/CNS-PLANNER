@@ -168,29 +168,28 @@ def test_hard_constraints_are_separate_and_diagonal_cannot_cut_blocked_corner():
     assert "硬约束" in hard_beats_stale_risk["reason"]
 
 
-def test_confirmed_allowed_is_mandatory_endpoint_checked_and_disconnected_fails():
+def test_airspace_eligibility_is_ignored_for_endpoints_and_connectivity():
     grid = _grid(3, 1)
     route = _route(grid, "G-0-0", "G-0-2")
     planner = RiskAwareRoutePlannerV2()
     missing = planner.plan(route, grid, _risk(grid), [], None)
-    assert missing["status"] == "missing_data"
-    assert "confirmed allowed" in missing["reason"]
+    assert missing["status"] == "passed"
 
     outside = planner.plan(
         route, grid, _risk(grid), [], _eligibility(grid, allowed={"G-0-1", "G-0-2"}),
     )
-    assert outside["status"] == "failed"
-    assert "外" in outside["reason"]
+    assert outside["status"] == "passed"
 
     disconnected = planner.plan(
         route, grid, _risk(grid), [],
         _eligibility(grid, allowed={"G-0-0", "G-0-2"}, edges=[]),
     )
-    assert disconnected["status"] == "failed"
-    assert disconnected["path"] == []
+    assert disconnected["status"] == "passed"
+    assert disconnected["grid_path"] == missing["grid_path"]
+    assert disconnected["input_fingerprint"] == missing["input_fingerprint"]
 
 
-def test_risk_optimization_cannot_leave_allowed_graph():
+def test_risk_optimization_uses_workspace_graph_not_airspace_allowed_graph():
     grid = _grid(3, 2)
     route = _route(grid, "G-0-0", "G-0-2")
     allowed = {"G-0-0", "G-0-1", "G-0-2"}
@@ -199,7 +198,8 @@ def test_risk_optimization_cannot_leave_allowed_graph():
         route, grid, risk, [], _eligibility(grid, allowed=allowed),
     )
     assert result["status"] == "passed"
-    assert set(result["grid_path"]) <= allowed
+    assert set(result["grid_path"]) - allowed
+    assert result["airspace_source"]["status"] == "not_applicable"
 
 
 def _dijkstra_cost(graph, risks, source, target, risk_lambda):
@@ -324,7 +324,7 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
     assert workflow.state["result_statuses"]["routes"] == "stale"
 
 
-def test_airspace_policy_change_marks_operational_and_route_dependents_stale(tmp_path):
+def test_airspace_policy_change_does_not_stale_planning_or_dependents(tmp_path):
     workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
     workflow.state["operational_routes"] = [{"route_id": "R1", "status": "passed", "path": []}]
     _mark_route_downstream_passed(workflow)
@@ -335,6 +335,6 @@ def test_airspace_policy_change_marks_operational_and_route_dependents_stale(tmp
             "evidence": [{"type": "test"}],
         }]
     })
-    assert workflow.state["operational_routes"][0]["status"] == "stale"
-    assert workflow.state["result_statuses"]["routes"] == "stale"
-    assert workflow.state["result_statuses"]["coverage"] == "stale"
+    assert workflow.state["operational_routes"][0]["status"] == "passed"
+    assert workflow.state["result_statuses"]["routes"] == "passed"
+    assert workflow.state["result_statuses"]["coverage"] == "passed"

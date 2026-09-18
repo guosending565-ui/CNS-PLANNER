@@ -14,7 +14,7 @@ What is different from V3-A, on purpose:
   proxy**, not exact curvature; the continuous V3-C validation is still pending;
 * **every traversed cell is checked.**  Each primitive records its
   ``traversed_cell_ids`` and the entry fraction at which the path enters each of
-  them, then re-checks airspace / terrain / building against the altitude
+  them, then re-checks terrain / building against the altitude
   *interpolated along the path*.  A stride can therefore never jump over an
   intermediate obstacle or over an intermediate terrain spike;
 * readiness still fails closed: unknown source evidence, a stale strategic
@@ -57,8 +57,6 @@ from .readiness import (
 #: Reasons a *traversed* (intermediate) fine cell rejects a primitive.
 TRAVERSED_REASONS = (
     "traversed_cell_not_in_environment",
-    "traversed_airspace_not_confirmed_allowed",
-    "traversed_airspace_unknown",
     "traversed_terrain_clearance_unresolved",
     "traversed_below_terrain_clearance",
     "traversed_building_clearance_unresolved",
@@ -416,28 +414,13 @@ def _frame(problem):
 
 
 def _fine_airspace(cells):
-    counts = {"confirmed_allowed": 0, "confirmed_restricted": 0, "unknown": 0}
-    unconfirmed = 0
-    for cell in cells:
-        airspace = cell.get("airspace") or {}
-        status = str(airspace.get("status") or "unknown")
-        counts[status if status in counts else "unknown"] += 1
-        if not airspace.get("policy_confirmed"):
-            unconfirmed += 1
-    entry = _entry(
-        "airspace", "ready", [], status_counts=counts, cell_count=len(cells),
-        unconfirmed_policy_cell_count=unconfirmed,
-        semantics="only_confirmed_allowed_fine_cells_are_feasible_never_inferred_from_name_or_color",
+    return _entry(
+        "airspace", "ready", ["display_only_airspace_not_used_for_route_constraints"],
+        status_counts={"not_applicable": len(cells)}, cell_count=len(cells),
+        evaluated=False, applicability="not_applicable",
+        layer_role="display_only_reference_layer",
+        semantics="display_only_reference_layer_not_used_for_planning",
     )
-    if not cells:
-        entry["status"] = "blocked"
-        entry["reasons"].append("fine environment 为空，没有可判定单元")
-    elif counts["confirmed_allowed"] == 0:
-        entry["status"] = "blocked"
-        entry["reasons"].append("没有任何 confirmed allowed fine cell；unknown 一律 fail-closed")
-    if counts["unknown"]:
-        entry["reasons"].append(f"{counts['unknown']} 个 fine cell 空域状态为 unknown，搜索中不可行")
-    return entry
 
 
 def _fine_terrain(cells, properties):
@@ -879,7 +862,7 @@ class _RefinementSearch:
                     target_reason, (target_cell, target_altitude_index, heading_bin),
                 )
                 if target_reason in (
-                    "terrain_clearance_unresolved", "building_clearance_unresolved", "airspace_unknown",
+                    "terrain_clearance_unresolved", "building_clearance_unresolved",
                 ):
                     self.unknown_blocked = True
                 continue
@@ -894,7 +877,6 @@ class _RefinementSearch:
                 if traversed_reason in (
                     "traversed_terrain_clearance_unresolved",
                     "traversed_building_clearance_unresolved",
-                    "traversed_airspace_unknown",
                 ):
                     self.unknown_blocked = True
                 continue
@@ -929,11 +911,6 @@ class _RefinementSearch:
                 return False, "traversed_cell_outside_corridor_altitude_envelope", cell_id
             if upper is not None and altitude > float(upper) + _COMPARISON_TOLERANCE:
                 return False, "traversed_cell_outside_corridor_altitude_envelope", cell_id
-            airspace = str((cell.get("airspace") or {}).get("status") or "unknown")
-            if airspace == "unknown":
-                return False, "traversed_airspace_unknown", cell_id
-            if airspace != "confirmed_allowed":
-                return False, "traversed_airspace_not_confirmed_allowed", cell_id
             terrain = cell.get("terrain") or {}
             floor = terrain.get("surface_clearance_egm2008_m")
             if terrain.get("data_status") != "passed" or floor is None:
@@ -1040,11 +1017,6 @@ def _state_feasible(cell_by_id, *, fine_cell_id, altitude):
     cell = cell_by_id.get(fine_cell_id)
     if cell is None:
         return False, "cell_not_in_environment"
-    airspace = str((cell.get("airspace") or {}).get("status") or "unknown")
-    if airspace == "unknown":
-        return False, "airspace_unknown"
-    if airspace != "confirmed_allowed":
-        return False, "airspace_not_confirmed_allowed"
     terrain = cell.get("terrain") or {}
     floor = terrain.get("surface_clearance_egm2008_m")
     if terrain.get("data_status") != "passed" or floor is None:
@@ -1337,7 +1309,7 @@ def _finalize(result, started):
         "unknown_is_never_safe": True,
         "terrain_floor_is_intersecting_pixel_max": True,
         "building_envelope_is_conservative_not_exact": True,
-        "airspace_consumes_confirmed_policy_only": True,
+        "airspace_applicability": "display_only_not_used_for_planning",
         "coarse_soft_fields_are_upsampled_without_new_information": True,
         "turn_model": REFINEMENT_TURN_MODEL,
         "v3c_pending": list(V3C_PENDING),

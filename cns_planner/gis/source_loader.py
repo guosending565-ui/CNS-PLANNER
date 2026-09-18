@@ -119,7 +119,11 @@ class QgisSourceLoader:
             population_bbox_wgs84=self._bbox(pop_extent),
             terrain_bbox_wgs84=self._bbox(terrain_extent),
             terrain_dtm_bbox_wgs84=self._bbox(terrain_dtm_extent) if terrain_dtm_extent else [],
-            hard_constraints=hard_constraints(local, wgs84_extents),
+            # The configured QGIS project is the current display-only airspace source.
+            # Its layer names/colors must never manufacture planning constraints.
+            hard_constraints=hard_constraints(
+                local, wgs84_extents, excluded_layer_ids={layer.id() for layer in local},
+            ),
             online_sources=online_sources,
         )
 
