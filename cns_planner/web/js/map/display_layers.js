@@ -86,14 +86,19 @@ function drawAggregate(ctx,x,y,count,color){
 
 /**
  * 构建一次绘制的点显示计划。
- * @param {{flow,view,size,screenPoint,fromScreen,layers,referenceOverlay,
+ *
+ * screenToLonLat 的语义是"屏幕像素 → 经纬度（lon/lat）"，只用于把聚合显示
+ * 中心换算回地理坐标；单个点永远沿用原始坐标，因此不会引入任何漂移。
+ * 它既不是 EPSG:3857 反投影，也不是 fitScreenBox 使用的那个换算。
+ *
+ * @param {{flow,view,size,screenPoint,screenToLonLat,layers,referenceOverlay,
  *          selectedReference,referenceFilters,filterReferenceSites}} input
  * @returns {{level,levelLabel,resolution,styles,clusterPixels,nodes,landingSites,
- *            referencePoints,referenceRoutes,referencePointsVisible,priority,
- *            selectedScreen,clusterCounts}}
+ *            referencePoints,referenceRoutes,referencePointsVisible,priorityIds,
+ *            priorityCoordinates,selectedReferenceId,selectedScreen,clusterCounts}}
  */
 export function buildDisplayPlan({
-  flow,view,size,screenPoint,fromScreen,layers={},referenceOverlay={referenceRoutes:[],referencePoints:[]},
+  flow,view,size,screenPoint,screenToLonLat,layers={},referenceOverlay={referenceRoutes:[],referencePoints:[]},
   selectedReference=null,referenceFilters={},filterReferenceSites=null
 }){
   const style=displayStyle({
@@ -107,10 +112,11 @@ export function buildDisplayPlan({
     return point[0]>-90&&point[1]>-90&&point[0]<width+90&&point[1]<height+90;
   };
 
-  // 聚合只改显示位置：单点沿用原始坐标，聚合中心换算回地理坐标
+  // 聚合只改显示位置：单点沿用原始坐标，聚合中心换算回经纬度显示坐标。
+  // 聚合阈值来自 displayStyle 顶层（styles 只承载线宽/透明度等绘制参数）。
   const cluster=items=>toGeographic(
-    clusterPoints(items,screenPoint,styles.clusterPixels).entries,
-    fromScreen
+    clusterPoints(items,screenPoint,style.clusterPixels).entries,
+    screenToLonLat
   ).filter(onScreen);
 
   const nodeItems=(flow?.nodes||[]).map(node=>({id:node.node_id,coordinate:node.coordinate,node}));
@@ -121,9 +127,10 @@ export function buildDisplayPlan({
   const nodes=cluster(nodeItems);
   const landingSites=layers.landingSites===false?[]:cluster(siteItems);
 
-  // 参考航路点：overview 一律隐藏；medium 只在调用方显式要求时显示；detail 显示
-  const referencePointsVisible=styles.level==='detail'
-    ||(styles.level==='medium'&&layers.referencePointsDetail===true);
+  // 参考航路点的显示条件 = 图层开关 → LOD 语义：
+  //   overview 一律不显示；medium 默认不显示（仅调用方显式要求时显示）；detail 显示。
+  const referencePointsVisible=layers.referenceRoutePointLayer!==false&&(
+    style.level==='detail'||(style.level==='medium'&&layers.referencePointsDetail===true));
 
   // 业务优先对象：当前选择的参考对象、当前航路端点
   const priorityIds=new Set();

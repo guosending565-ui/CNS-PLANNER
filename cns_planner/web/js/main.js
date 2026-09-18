@@ -71,7 +71,10 @@ function size(){return [Math.max(1,Math.round(map.clientWidth)),Math.max(1,Math.
 function fit(box){if(!box)return;const [w,h]=size();view={x:(box[0]+box[2])/2,y:(box[1]+box[3])/2,res:Math.max((box[2]-box[0])/w,(box[3]-box[1])/h)*1.1};queue();}
 function mapBounds(){const [w,h]=size();return [view.x-w*view.res/2,view.y-h*view.res/2,view.x+w*view.res/2,view.y+h*view.res/2];}
 function screenPoint(coordinate){const [w,h]=size();return projectPoint(coordinate,view,w,h);}
+// fromScreen：屏幕像素 → EPSG:3857（fitScreenBox 与聚类放大沿用此语义）
 function fromScreen(point){const [w,h]=size();return [view.x+(point[0]-w/2)*view.res,view.y-(point[1]-h/2)*view.res];}
+// screenToLonLat：屏幕像素 → 经纬度。只供显示计划换算聚合中心，与 fromScreen 相互独立
+function screenToLonLat(point){return mercatorToLonLat(...fromScreen(point));}
 function eventLonLat(event){const [w,h]=size();return projectEvent(event,map,view,w,h);}
 function visibleLonLatBounds(){
   const bbox=mapBounds(),southwest=mercatorToLonLat(bbox[0],bbox[1]),northeast=mercatorToLonLat(bbox[2],bbox[3]);
@@ -118,11 +121,11 @@ function referenceFilters(){
 }
 // 尺度相关的显示决定全部来自 map/lod.js 与屏幕空间聚合，这里只组装输入
 function displayPlan(){
-  const overlay=Step03.referenceOverlayModel(flow,{routes:layers().referenceRouteLayer,points:false,landingSites:false});
-  return buildDisplayPlan({
-    flow,view,size:size(),screenPoint,fromScreen,layers:layers(),referenceOverlay:overlay,
-    selectedReference,referenceFilters:referenceFilters(),filterReferenceSites:Step03.filterReferenceSites
-  });
+  const switches=layers();
+  // 参考航路点跟随图层开关进入计划；是否真正显示仍由 LOD 决定（overview/medium 隐藏）
+  const overlay=Step03.referenceOverlayModel(flow,{routes:switches.referenceRouteLayer,points:switches.referenceRoutePointLayer,landingSites:false});
+  return buildDisplayPlan({flow,view,size:size(),screenPoint,screenToLonLat,layers:switches,referenceOverlay:overlay,
+    selectedReference,referenceFilters:referenceFilters(),filterReferenceSites:Step03.filterReferenceSites});
 }
 function drawWorkflowOverlay(){
   if(!view||!flow)return;
@@ -184,13 +187,14 @@ bindMapInteraction({
 canvas.addEventListener('click',event=>{
   const info=$('gridInfo');
   if(interactionMode!=='pan'){info.hidden=true;return;}
+  // 可见聚合点的"放大到范围"优先于其下方被隐藏/弱化的参考对象命中
+  const clusterTarget=hitClusterAt(event);
+  if(clusterTarget&&clusterTarget.count>1){const box=entryExtent(clusterTarget);if(box)fitScreenBox(box);info.hidden=true;return;}
+  // 参考对象交互只在 detail 档保留：overview/medium 下参考层被弱化或隐藏，不参与命中
   if(currentStep===3){
     const selected=hitReferenceObject(event);
     if(selected){selectedReference=selected;info.hidden=true;renderWorkflow();paint();return;}
   }
-  // 聚合点可点击放大到其范围；没有放大能力时不会误选看不见的单点
-  const clusterTarget=hitClusterAt(event);
-  if(clusterTarget&&clusterTarget.count>1){const box=entryExtent(clusterTarget);if(box)fitScreenBox(box);info.hidden=true;return;}
   const [lon,lat]=eventLonLat(event);
   const item=gridRenderCache.cells.length?findGridCell(lon,lat):null;
   if(!item){info.hidden=true;if(selectedReference){selectedReference=null;}return;}
@@ -205,10 +209,15 @@ function hitClusterAt(event){
   const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top];
   return hitDisplayEntry(currentPlan,click,{kind:'nodes'})||hitDisplayEntry(currentPlan,click,{kind:'sites'});
 }
+// 参考对象命中只在 detail 档保留（overview/medium 的参考层被弱化或隐藏，不参与交互）。
+// 其中参考航路点还要满足"当前 LOD 允许显示且图层开关打开"——referencePointsVisible
+// 已经把这两件事都算进去了，隐藏的点因此永远不会命中。
 function hitReferenceObject(event){
+  if(!currentPlan||currentPlan.level!=='detail')return null;
   const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top],
-    overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:false});
-  return hitReferenceOverlay(click,overlay,screenPoint);
+    points=currentPlan.referencePointsVisible?(currentPlan.referencePoints||[]):[],
+    overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:false,landingSites:false});
+  return hitReferenceOverlay(click,{...overlay,referencePoints:points},screenPoint);
 }
 bindShell({
   $,downloadExport,saveProject,panelError,
