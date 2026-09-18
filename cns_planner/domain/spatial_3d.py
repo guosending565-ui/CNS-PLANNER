@@ -41,6 +41,22 @@ class RouteAltitudeProfile(TypedDict, total=False):
     source: str
     confirmed: bool
     status: str
+    # ---- additive V3-D provenance (never required, never inferred) ----------------
+    #: True when the profile was derived from a V3-C validated route rather than typed
+    #: in by a user.  A derived profile is locked against manual altitude edits until its
+    #: operational adoption is revoked.
+    derived: bool
+    locked: bool
+    locked_by_adoption: bool
+    adoption_owned: bool
+    distance_basis: str
+    profile_derivation: str
+    profile_semantics: str
+    vertex_order_semantics: str
+    v3_metric_length_m: float | None
+    legacy_geodesic_length_m: float | None
+    length_delta_m: float | None
+    curve_chord_error_m: float | None
 
 
 class Route3DSample(TypedDict, total=False):
@@ -143,13 +159,34 @@ def normalize_route_altitude_profile(value):
     waypoints.sort(key=lambda item: item["distance_along_route_m"])
     valid = constant is not None if mode == "constant" else len(waypoints) >= 2
     confirmed = bool(value.get("confirmed", False))
-    return {
+    # V3-D provenance is purely additive: it is preserved when present and never
+    # invented for a profile a user typed in.
+    derived = bool(value.get("derived", False))
+    result = {
         "route_id": route_id, "mode": mode, "vertical_reference": reference,
         "constant_altitude_m": constant, "waypoints": waypoints,
         "source": str(value.get("source") or "未记录"), "confirmed": confirmed,
         "status": "confirmed" if valid and confirmed and reference != "unknown" else "pending_confirmation",
         "geoid_undulation_m": _optional_number(value.get("geoid_undulation_m"), "geoid_undulation_m"),
+        "derived": derived,
+        "locked": bool(value.get("locked", False)) and derived,
+        "locked_by_adoption": bool(value.get("locked_by_adoption", False)) and derived,
+        "adoption_owned": bool(value.get("adoption_owned", False)) and derived,
+        "requested_by_user": bool(value.get("requested_by_user", False)),
+        "distance_basis": _optional_text(value.get("distance_basis")),
+        "profile_derivation": _optional_text(value.get("profile_derivation")),
+        "profile_semantics": _optional_text(value.get("profile_semantics")),
+        "vertex_order_semantics": _optional_text(value.get("vertex_order_semantics")),
+        "v3_metric_length_m": _optional_number(value.get("v3_metric_length_m"), "v3_metric_length_m"),
+        "legacy_geodesic_length_m": _optional_number(
+            value.get("legacy_geodesic_length_m"), "legacy_geodesic_length_m",
+        ),
+        "length_delta_m": _optional_number(value.get("length_delta_m"), "length_delta_m"),
+        "curve_chord_error_m": _optional_number(
+            value.get("curve_chord_error_m"), "curve_chord_error_m",
+        ),
     }
+    return result
 
 
 def normalize_vertical_profile(value=None, legacy_elevation_m=None):
@@ -218,6 +255,12 @@ def _nonnegative(value, field):
 
 def _optional_number(value, field):
     return None if value in (None, "") else _number(value, field)
+
+
+def _optional_text(value):
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 def _optional_nonnegative(value, field):

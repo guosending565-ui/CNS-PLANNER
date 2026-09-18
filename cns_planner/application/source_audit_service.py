@@ -10,10 +10,13 @@ from ..domain.source_audit import (
 
 
 class SourceAuditService:
-    def __init__(self, session, invalidation, snapshot):
+    def __init__(self, session, invalidation, snapshot, v3_adoption_invalidator=None):
         self.session = session
         self.invalidation = invalidation
         self.snapshot = snapshot
+        #: Set by the composition root once the V3-D adoption service exists (the audit
+        #: service is constructed first).  It stales V3 adoptions and only V3 adoptees.
+        self.v3_adoption_invalidator = v3_adoption_invalidator
 
     def result_snapshot(self, paths=None):
         collection = deepcopy(self.session.state.get("source_audits") or empty_source_audits())
@@ -95,3 +98,7 @@ class SourceAuditService:
                 airspace["status"] = "stale"
                 airspace.setdefault("airspace_eligibility", {})["status"] = "stale"
         self.invalidation.grid_sources({role})
+        # V3 adoptees depend on the tracked V3 sources; a source change stales them (and
+        # their adopted routes) without touching any V1/V2 operational route.
+        if callable(self.v3_adoption_invalidator):
+            self.v3_adoption_invalidator([role])

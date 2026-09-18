@@ -53,6 +53,7 @@ class ReportBuilder:
                     "corridor_policy": source.get("cns_corridor_policy") or {},
                     "encounter_3d_summary": _encounter_summary(source.get("encounter_3d_assessment") or {}),
                 },
+                "v3_validated_route_provenance": _v3_provenance(source),
                 "required_cns": source.get("required_cns") or {},
                 "centerline_gap_p10": source.get("cns_gap_analysis_v2") or {},
                 "spatial_service_p14": source.get("cns_corridor_assessment") or {},
@@ -92,6 +93,87 @@ class ReportBuilder:
         model["statistics"] = _statistics(p15)
         model["report_data_fingerprint"] = stable_fingerprint(model)
         return model
+
+
+def _v3_provenance(source):
+    """The V3-C/V3-D chain, kept strictly separate from the CNS requirement verdict."""
+
+    adoption_collection = source.get("v3_operational_adoptions") or {}
+    bundles = (source.get("v3_cns_assessment_bundle") or {}).get("items") or []
+    bundle_by_adoption = {
+        str(item.get("adoption_id")): item for item in bundles if isinstance(item, dict)
+    }
+    routes = []
+    for adoption in adoption_collection.get("items") or []:
+        if not isinstance(adoption, dict):
+            continue
+        provenance = adoption.get("route_provenance") or {}
+        metrics = adoption.get("path_metrics") or {}
+        compatibility = adoption.get("compatibility") or {}
+        bundle = bundle_by_adoption.get(str(adoption.get("adoption_id"))) or {}
+        stage_statuses = {
+            name: ((bundle.get("stage_results") or {}).get(name) or {}).get("status")
+            for name in ("P7", "P8", "P9", "P10")
+        }
+        routes.append({
+            "route_id": adoption.get("route_id"),
+            "adoption_id": adoption.get("adoption_id"),
+            "adoption_status": adoption.get("status"),
+            "current_applicability": adoption.get("current_applicability"),
+            "applied_at": adoption.get("applied_at"),
+            "evidence_source": adoption.get("evidence_source"),
+            "validated_route": {
+                "validation_id": provenance.get("validation_id"),
+                "validation_fingerprint": provenance.get("validation_fingerprint"),
+                "refinement_id": provenance.get("refinement_id"),
+                "refinement_fingerprint": provenance.get("refinement_fingerprint"),
+                "curve_chord_error_m": provenance.get("curve_chord_error_m"),
+                "horizontal_crs": provenance.get("horizontal_crs"),
+                "crs_transform": provenance.get("crs_transform"),
+            },
+            "representation": {
+                "horizontal": provenance.get("horizontal_representation"),
+                "vertical": provenance.get("vertical_representation"),
+                "vertical_reference": provenance.get("vertical_reference"),
+                "two_dimensional_path_only": True,
+                "egm2008_in_geojson_third_coordinate": False,
+                "v3_metric_length_m": metrics.get("v3_metric_length_m"),
+                "legacy_geodesic_length_m": metrics.get("legacy_geodesic_length_m"),
+                "length_delta_m": metrics.get("length_delta_m"),
+                "distance_basis": metrics.get("distance_basis"),
+                "profile_locked": bool((adoption.get("profile") or {}).get("locked_by_adoption")),
+                "path_and_profile_share_vertex_order": compatibility.get(
+                    "path_and_profile_share_vertex_order"
+                ),
+                "simplification_applied": compatibility.get("simplification_applied"),
+            },
+            "cns_assessment": {
+                "bundle_id": bundle.get("bundle_id"),
+                "assessment_status": bundle.get("assessment_status") or "not_started",
+                "requirement_verdict": bundle.get("requirement_verdict") or "unknown",
+                "stage_statuses": stage_statuses,
+                "blocking_reasons": bundle.get("blocking_reasons") or [],
+                "computed_at": bundle.get("computed_at"),
+            },
+        })
+    return {
+        "stage_chain": [
+            "V3-A strategic", "V3-B refinement", "V3-C continuous validation",
+            "V3-D operational adoption",
+        ],
+        "adoption_count": len(routes),
+        "routes": routes,
+        "semantics": {
+            "validated_route_is_not_operational_route_until_adopted": True,
+            "cns_excluded_from_v3_search_cost": True,
+            "route_planning_then_cns_assessment_is_serial": True,
+            "route_safety_is_not_cns_compliance": True,
+            "assessment_completeness_is_not_requirement_verdict": True,
+            "cns_gap_never_rewrites_route_validation": True,
+            "horizontal_representation": "two_dimensional_lon_lat_only",
+            "vertical_representation": "locked_route_altitude_profile_egm2008_orthometric",
+        },
+    }
 
 
 def _statistics(p15):

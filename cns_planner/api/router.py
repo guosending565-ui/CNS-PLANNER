@@ -76,6 +76,9 @@ class ApiRouter:
         if path == "/api/route-planner-v3-refinements": return Response(workflow.route_planner_v3_refinement_snapshot())
         if path == "/api/route-planner-v3/continuous-readiness": return Response(workflow.route_planner_v3_continuous_readiness())
         if path == "/api/route-planner-v3-validations": return Response(workflow.route_planner_v3_validation_snapshot())
+        if path == "/api/route-planner-v3-operational-adoptions": return Response(workflow.v3_operational_adoptions_snapshot())
+        if path == "/api/route-planner-v3-operational-publish": return Response(workflow.v3_operational_publish_status())
+        if path == "/api/v3-cns-assessment": return Response(workflow.v3_cns_assessment_snapshot())
         if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
         if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
         if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
@@ -192,6 +195,11 @@ class ApiRouter:
             "/api/route-planner-v3-validations/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_route_planner_v3_continuous_validation(payload)
             ),
+            # ---- V3-D: operational adoption + CNS assessment bridge ------------
+            "/api/route-planner-v3-operational-adoptions/preview": lambda: workflow.preview_v3_operational_adoption(payload),
+            "/api/route-planner-v3-operational-adoptions/apply": lambda: workflow.apply_v3_operational_adoption(payload),
+            "/api/route-planner-v3-operational-adoptions/revoke": lambda: workflow.revoke_v3_operational_adoption(payload),
+            "/api/v3-cns-assessment/evaluate": lambda: workflow.assess_v3_adopted_route(payload),
             "/api/reference-route-links/create": lambda: workflow.create_reference_route_link(payload),
             "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),

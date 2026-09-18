@@ -7,6 +7,20 @@ from ..domain.spatial_3d import (
 )
 
 
+def is_locked_v3_profile(profile):
+    """A V3-D derived profile is locked against manual altitude edits.
+
+    The lock is owned by the operational adoption: revoking the adoption removes the
+    profile (or leaves it unlocked), after which a user may edit or replace it normally.
+    """
+
+    if not isinstance(profile, dict):
+        return False
+    if str(profile.get("source") or "") != "v3c_validated_route":
+        return False
+    return bool(profile.get("derived")) and bool(profile.get("locked_by_adoption"))
+
+
 class Spatial3DService:
     def __init__(self, session, model, invalidation, snapshot):
         self.session, self.model = session, model
@@ -37,6 +51,14 @@ class Spatial3DService:
         route_ids = {str(item.get("route_id")) for item in self.session.state.get("operational_routes") or []}
         if profile["route_id"] not in route_ids:
             raise ValueError("航路高度剖面对应的运行航路不存在")
+        existing = (self.session.state["spatial_3d"]["route_altitude_profiles"] or {}).get(
+            profile["route_id"]
+        )
+        if is_locked_v3_profile(existing):
+            raise ValueError(
+                "该运行航路由 V3-D operational adoption 管理，其高度剖面由 V3-C validated route "
+                "导出并锁定：撤销 adoption 后才允许手工修改高度"
+            )
         self.session.state["spatial_3d"]["route_altitude_profiles"][profile["route_id"]] = profile
         self._refresh_status()
         self.invalidation.coverage_3d()

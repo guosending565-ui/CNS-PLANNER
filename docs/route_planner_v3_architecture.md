@@ -1,10 +1,11 @@
-# Route Planner V3 架构：3D 战略规划（V3-A）+ corridor-local 精化（V3-B）+ 连续几何实现与源几何验证（V3-C）
+# Route Planner V3 架构：3D 战略规划（V3-A）+ corridor-local 精化（V3-B）+ 连续几何实现与源几何验证（V3-C）+ 运行化采用与 CNS 桥接（V3-D）
 
 > 状态：**V3-A 已实现**（战略搜索 + 硬约束内核 + provenance soft cost 向量 + refinement corridor proposal），并已完成三项正确性修复（admissible heuristic / 删除隐式 normalizer / expansion cap 语义）。
 > **V3-B 已实现**（corridor-local 米制 fine grid + fine environment adapter + multi-cell stride 精化搜索 + refinement fingerprint/staleness），并已修复三项技术债（DTM 有效分辨率的单位换算、fine airspace 的 cell-polygon 覆盖判定、supercover 的 corner-crossing 保守语义）。
 > **V3-C 已实现**（连续 3D 几何实现 + 源几何硬约束验证：analytic arc fillet、explicit curve chord error、exact airspace polygon、native terrain raster、真实 building footprint、kinematics 重验证）。
-> 明确**未实现**：V3-D validated route → operational adapter → CNS Assessment；clothoid / continuous-curvature 过渡；Route–CNS 联合优化（未来项，不是 V3-D）；energy 模型。
-> 本文件描述 V3 的目标架构与 V3-A/V3-B/V3-C 的落地边界；凡标 **V3-A/B/C 现行** 的是已实现语义，标 **V3-D** 的是后续接口而非承诺。
+> **V3-D 已实现**（V3-C validated route → operational adoption → 复用既有 P7/P8/P9/P10 的 CNS Assessment bridge），见 §7B。
+> 明确**未实现**：clothoid / continuous-curvature 过渡；Route–CNS 联合优化（未来项，不是 V3-D）；energy 模型。
+> 本文件描述 V3 的目标架构与 V3-A/V3-B/V3-C/V3-D 的落地边界；凡标 **V3-A/B/C/D 现行** 的是已实现语义。
 
 ---
 
@@ -15,10 +16,15 @@
 | V3-A | L8 × 高度 × heading 战略搜索、硬约束内核、provenance soft cost、candidate refinement corridor | 已实现 |
 | V3-B | 在 V3-A corridor 的 support cells 米制窗口内构造局部 fine grid，做 corridor-local 3D 精化（多 cell stride、逐 traversed cell 检查） | 已实现 |
 | V3-C | 连续几何实现（C1 straight/arc、explicit chord error、realized vertical profile）+ 源几何硬约束验证（exact airspace polygon、native terrain raster、真实 building footprint、kinematics） | 已实现 |
-| V3-D | validated route → operational adapter → 既有 P7/P8/P9/P10 CNS Assessment | 未实现 |
+| V3-D | validated route → operational adoption（既有 `operational_routes` + `spatial_3d` 高度剖面接口）→ 复用既有 P7/P8/P9/P10 CNS Assessment bridge | 已实现 |
 | 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 未来 backlog |
 
 **V3-C 的诚实边界**：vector predicate 对 **linearized representation（含显式 curve-error envelope）** 是精确的；圆弧本身是解析几何、折线是有界近似；terrain 是 **source-native raster evidence**，不声称真实世界地形在数学上连续精确。
+
+**V3-D 的两条不可放松的边界**：
+
+1. **V3-C validation 历史不可变**：`operational_route=false` / `cns_assessed=false` 永不回写 `true`；正式状态存放在新的 adoption / bundle 容器里；
+2. **route safety 与 CNS 合规严格分离**：CNS 不满足 ⇒ `assessment_status=complete` + `requirement_verdict=does_not_meet`，而 V3-C 仍然是 `validated_route`；CNS gap 绝不改写成 route validation failed，route validated 也不等于 CNS 合规。
 
 ---
 
@@ -225,7 +231,8 @@ L8 战略搜索（V3-A 现行）
       └─ semantics = refinement_search_window_not_safety_corridor
   → corridor-local 米制 fine grid + 精化搜索（V3-B 现行）
   → 连续几何实现 + 源几何硬约束验证（V3-C 现行，见 §7A）
-  → validated route → operational adapter → CNS Assessment（V3-D，未实现）
+  → validated route → operational adoption（既有 operational_routes + spatial_3d）
+    → 复用既有 P7/P8/P9/P10 CNS Assessment（V3-D 现行，见 §7B）
 ```
 
 必须明确的语义：
@@ -481,6 +488,130 @@ Step 03 同时显示 V3-A 战略候选、V3-B refined candidate 与 **V3-C reali
 
 ---
 
+## 7B. V3-D：V3-C validated route → operational adoption → CNS Assessment bridge
+
+V3-D **不再开发航路算法**。它把 current V3-C `validated_route` 以**显式、可追溯、事务式**方式发布到既有 `operational_routes` + `spatial_3d` 高度剖面接口，并复用既有 P7/P8/P9/P10 做 CNS Assessment。**Route 与 CNS 仍然串行，CNS 绝不反馈 V3 cost/search。**
+
+### 7B.1 独立契约
+
+`cns_planner/domain/v3_operational_adoption.py`：
+
+```
+V3OperationalProjection      # 投影：legacy route + locked profile + path metrics + compatibility
+V3OperationalAdoption        # 一条正式采用记录（immutable 历史之外的正式状态）
+V3OperationalAdoptionPreview # 只读 Preview（不写入任何 state）
+V3CNSAssessmentBundle        # CNS 评估结果（完整度与需求满足度分离）
+```
+
+**V3-C validation 历史保持 immutable**：`operational_route=false`、`cns_assessed=false` 永不回写 `true`；正式状态只存在 adoption / bundle 中。
+
+### 7B.2 Publish gate（`V3OperationalAdoptionService.publish_gate`）
+
+只允许 selected validation 满足**全部**条件：
+
+- `status = validated_route`；
+- validation **current**（`continuous_validation_snapshot().current_applicability == current`）；
+- source / refinement fingerprints current（refinement fingerprint 存在且 validation 未 stale）；
+- `route_id` **对应当前 scenario route**，且投影后的 start/end 与该 scenario route 一致；start/end node identity 齐全；
+- real configured source chain **ready**（`real_data_readiness().v3c.status == ready`，production 路径）；
+- CRS transform 可用（不可用 ⇒ `crs_transform_unavailable`，**不猜 identity**）。
+
+其他规则：
+
+- **production Apply 禁止 `canonical_synthetic`**；`canonical_synthetic` 只能 Preview，并标注"仅测试，不可正式发布"；
+- Preview **只读**：`operational_routes_untouched / spatial_3d_untouched / cns_not_run` 全部为 `true`；
+- Apply 必须显式 `confirmed=true`，并提交 `expected_validation_fingerprint`；fingerprint 变化 ⇒ **拒绝**（避免 TOCTOU）；
+- 支持 `validation_ids[]` **批量原子** Apply：任一失败则**全部不写**；
+- Apply / Revoke 都是**事务式**：在 `deepcopy` 上完成全部变更，成功后才就地安装并保存一次；任何异常都保持原状态不变。
+
+### 7B.3 V3 → legacy 兼容投影
+
+`ContinuousRoute3D` 仍是 **authoritative source**：
+
+- 使用其**已验证的 linearized metric geometry**，**不再 simplify**（`simplification_applied=false`）；
+- 通过 recorded projected CRS 转到 **OGC:CRS84**；
+- `operational_routes` 的 `path` **只保存二维 `[lon, lat]`**；**严禁把 EGM2008 正高写进 GeoJSON 第三坐标**（第三坐标会被误解释为 WGS84 ellipsoidal height）；高度**只**由 locked profile 承载；
+- route 记录：`route_id / start / end / start_node_id / end_node_id / kind=operational / status=passed / path`，加轻量 provenance：`source_type=v3c_validated_route`、`validation_id`、`validation_fingerprint`、`refinement_id`、`refinement_fingerprint`、`curve_chord_error_m`、`horizontal_crs`、`crs_transform`、`vertical_reference=egm2008_orthometric`、`planner_family=route_planner_v3`、`cns_integration_mode=post_route_assessment`、`cns_excluded_from_search_cost=true`；
+- **完整 analytic geometry 不复制进 `operational_routes`**。
+
+### 7B.4 自动生成且锁定 RouteAltitudeProfile
+
+- 从 V3-C 的 linearized point 取对应 `z(s)`；
+- 转成 lon/lat 后，对**最终二维 path** 重算累计距离，得到 `waypoint_linear` profile：
+  `vertical_reference=egm2008_orthometric`、`confirmed=true`、`source=v3c_validated_route`、`derived=true`、`locked=true`、`locked_by_adoption=true`；
+- 保存 `v3_metric_length_m`、`legacy_geodesic_length_m`、`length_delta_m` 与 `distance_basis`；
+- **path 与 profile 顶点顺序、距离基准完全一致**（profile 的 `distance_along_route_m` 就是 published path 的累计基线距离，逐顶点对应）；因此 P7 的 `route_profile_height(offset)` 与路径顶点不会漂移；
+- **禁止要求用户重新手填 V3 高度**；
+- `RouteAltitudeProfile` normalization 仅做 **additive** provenance/locked 字段兼容（旧项目与用户 profile 不带这些字段，默认 `derived=false`/`locked=false`）；
+- `Spatial3DService.set_route_profile` 在 route 当前由 V3 adoption 管理且 locked 时**拒绝手工改高**；撤销 adoption 后才允许（V1/V2 行为完全不变）。
+
+### 7B.5 Adoption state 与 Revoke
+
+新增 `v3_operational_adoptions`（schema/backfill/additive）。每条保存：`adoption_id / route_id / validation ids + fingerprints / refinement fingerprint / projection fingerprint / applied_at / current_applicability / before-after 摘要 / provenance / CNS assessment link`。
+
+- Apply 对对应 `route_id` 做 **upsert**，**不清空无关 `operational_routes`**；
+- `route_id / start / end` 保持 scenario identity；
+- API：Preview / Apply / Revoke；
+- **Revoke 只在"仍由该 adoption 拥有"时**移除该 adoption 及其 derived profile/route——ownership 由 route provenance 的 `source_type + validation_id + validation_fingerprint` 与 profile 的 `source + locked_by_adoption + route_id` 判定；**不得误删其他 planner 后来生成的同 id route**。
+
+### 7B.6 Invalidation
+
+- **不对 Apply 调用 `workflow("route")`**（那会立即把刚发布的 route 标 stale）。新增专用 `v3_operational_route_published`：保持新 route 与 current V3 validation 不变，**只 stale downstream**：
+  `coverage_3d → cns_service_capability → service_timeline → cns_gap_v2`，以及依赖 operational route 的 corridor/site/report/building/route-profile 展示结果；
+- **Risk / grid / V3-A/B/C 不反向失效**（`environment_risk`、`grid_risk`、`route_planner_v3_experiments`、V3 policy 全部保持原状态）；
+- `terrain_dtm` / `buildings` / `AirspacePolicy` / V3 policy / source audit / validation fingerprint 变化 ⇒ **只**把相关 V3 adoption + adopted operational route 标 stale，并向下 stale CNS；**不得误伤 V1/V2 route**（`V3OperationalAdoptionService.stale_for_sources` 只遍历 adoption 拥有的 route_id）；
+- **任何 CNS evaluation 前重新检查 adoption current**：不 current ⇒ `assessment_status=stale`，不给 verdict。
+
+### 7B.7 CNS Assessment bridge
+
+新增"对 V3 adopted route 运行现有 CNS 链"的 orchestrator，**严禁复制/改写 P7-P10 公式**。顺序复用现有服务：
+
+```
+P7  Spatial3DService.evaluate
+ → P8  CNSServiceCapabilityService.evaluate
+ → P9  OperationalTimingService.evaluate_timeline
+ → P10 GapAnalysisV2Service.evaluate
+```
+
+- 每阶段先检查其**真实 prerequisites**：`spatial_3d.route_altitude_profiles`、confirmed `required_cns`（read from the scoped `project_default` / `route_overrides`，不是容器顶层）、selected aircraft profile、`existing_cns_facilities.items`；缺参数/required_cns/aircraft/timing ⇒ `incomplete` + blocking reason，**禁止造默认**；
+- 允许请求 `stages`，默认按 ready 程度顺序运行；
+- 每个 `evaluate()` 会持久化自己的 canonical 结果并返回 workflow snapshot，因此 stage entry **从持久化容器读回**；
+- 阶段 route 级状态按**必选分系统**计算（P7 覆盖 / P8 能力 / P9 时间线 / P10 缺口都过滤到 required 的 C/N/S）：项目不要求的分系统可以合法地 `missing_data`，不应让评估显得 incomplete，也不应污染 requirement verdict。
+
+### 7B.8 CNS 结果语义
+
+`V3CNSAssessmentBundle` 至少包含：`assessment_status = not_started|incomplete|complete|stale`、`requirement_verdict = meets|does_not_meet|unknown`、`stage_results{P7,P8,P9,P10}`、input/output fingerprints、`route/adoption/validation ids`。
+
+- **"评估完成但 CNS 不满足"必须是**：`assessment_status=complete` **且** `requirement_verdict=does_not_meet`，且 **V3 validation 仍 `validated_route`**；
+- **不得**把 CNS gap/coverage failure 改成 route validation failed（normalizer 强制 `route_validation_unchanged=true`，且从不回写 validation）；
+- 完整度与需求满足度是两个独立维度，前端**不得用一个总红/绿状态混淆 route safety 与 CNS compliance**。
+
+### 7B.9 写入边界
+
+- 只写 `route_planner_v3_experiments` 之外的新增容器：`v3_operational_adoptions`、`v3_cns_assessment_bundle`，以及既有 `operational_routes` / `spatial_3d.route_altitude_profiles`（**仅** adopted route_id）；
+- **不注册**进 `algorithm_registry`；默认 route planner 仍为 `route_planner_v1`；
+- 算法包与 domain 层不 import QGIS/GDAL；真实 CRS transform 由 composition root 注入 resolver。
+
+### 7B.10 接口
+
+| 方法 | 路径 |
+| --- | --- |
+| GET | `/api/route-planner-v3-operational-adoptions` |
+| GET | `/api/route-planner-v3-operational-publish` |
+| GET | `/api/v3-cns-assessment` |
+| POST | `/api/route-planner-v3-operational-adoptions/preview` |
+| POST | `/api/route-planner-v3-operational-adoptions/apply` |
+| POST | `/api/route-planner-v3-operational-adoptions/revoke` |
+| POST | `/api/v3-cns-assessment/evaluate` |
+
+Step 03 在 V3-C 下新增"发布为运行分析航路"：Preview → 显示 route/profile/provenance/downstream invalidation → 显式确认 Apply；状态链显示 **V3-A strategic → V3-B refined → V3-C validated → V3-D published**；synthetic 必须显示"仅测试，不可正式发布"。
+
+Step 04 新增 **V3 CNS Assessment summary**：Route validation / Operational publication / P7 geometry / P8 capability / P9 timeline / P10 gap / Assessment completeness / Requirement verdict——**route validation 与 CNS 结果分列，不合并**。
+
+报告新增 `v3_validated_route_provenance` 段：validated route id/fingerprint、operational adoption、horizontal/vertical representation、curve error、P7-P10 statuses、assessment completeness vs requirement verdict，并明确 **Route Planning → CNS Assessment**、**CNS excluded from V3 search cost**。
+
+---
+
 ## 8. 与经典 RCSP 的区别
 
 | | 经典 RCSP（Resource-Constrained Shortest Path） | V3-A/V3-B 现行 |
@@ -579,19 +710,28 @@ V3-C 追加局限：
 14. **terrain 是 native-raster evidence**：逐 native pixel 判定，**不声称真实世界地形在数学上连续或精确**；NoData ⇒ `unresolved`。
 15. **building 仍是 LoD1 prism 语义**：roof = ground + 预测 height（复用既有 BuildingClearance 公式），不是真实屋顶几何/遮挡建模。
 16. **kinematics 仍是工程基线**：解析 R 与 tangent heading + 显式 gradient 上限；无 bank/风/能量/飞行动力学。
-17. **`validated_route` 不是 operational route**：`operational_route=false`、`cns_assessed=false` 无条件成立；operational adapter 与 CNS Assessment 属于 V3-D。
+17. **`validated_route` 不是 operational route**：在 V3-C validation 记录内 `operational_route=false`、`cns_assessed=false` **无条件成立且历史 immutable**；"已采用"与"CNS 已评估"的事实读取自 V3-D 的 `v3_operational_adoptions` / `v3_cns_assessment_bundle`（见 §7B），而不是回写 validation。
 18. **不自动修复**：任何违反只给出结构化证据与 `replan_required=true`，**不自动修路、不自动 replan**。
+
+V3-D 追加局限：
+
+19. **操作采用依赖真实来源就绪**：production Apply 需要 `real_data_readiness().v3c.status == ready`（FABDEM + buildings GeoPackage + confirmed AirspacePolicy + confirmed V3 policy）；当前自动恢复项目为 blocked，因此生产不能从 synthetic 演练直接发布。
+20. **表示是有损但显式**：published path 是二维 `[lon,lat]`，V3 metric 几何经 recorded projected CRS 转换后**不再 simplify**，但表示变化本身会引入米制/测地长度差异（记录为 `length_delta_m`）；完整 analytic geometry 不进入 `operational_routes`。
+21. **CNS 桥接不产生 route 安全结论**：bridge 只编排既有 P7-P10；`does_not_meet` 是需求不满足，**不是** route unsafe；反之 `validated_route` 也**不是** CNS 合规。
+22. **profile 距离基准不是米**：`profile_length_m` 是二维基线累计距离，仅用于与 path 顶点对齐；米制长度见 `v3_metric_length_m`/`legacy_geodesic_length_m`。
+23. **不注册为默认 planner**：V3-D 未进入 `algorithm_registry`；默认 route planner 仍为 `route_planner_v1`，V1/V2 行为未改动。
 
 ---
 
-## 12. V3-D 后续接口
+## 12. 未来接口
 
 | 阶段 | 目标 | 已就位的接口 |
 | --- | --- | --- |
-| **V3-D** | validated route → operational adapter → 既有 P7/P8/P9/P10 CNS Assessment | `V3ContinuousValidationResult.continuous_route`（analytic primitives + linearized LineString + per-primitive z/gradient）、`validation_fingerprint`、`semantics.next_stage = V3-D_validated_route_operational_adapter_and_cns_assessment`、`operational_route=false` / `cns_assessed=false` 作为适配器必须解除的显式 gate |
-| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 显式加权 component 接口；V3 阶段明确标注 energy pending |
+| 未来 | clothoid / continuous-curvature 过渡 | V3-C `ContinuousPrimitive3D`（straight/circular_arc）已预留 arc 解析字段与 `clothoid=future_work_not_implemented` 语义 |
+| 未来 | Route–CNS 联合优化（CNS 进入 cost/约束） | 当前明确**禁止**：CNS 只在 `post_route_assessment` 阶段运行，`cns_excluded_from_search_cost=true`；若要进入 cost，必须先用显式 policy 定义归一化与权重 |
+| 未来 | energy 模型 | 显式加权 component 接口；V3 阶段明确标注 energy pending |
 
-任何后续阶段都必须继续满足：**没有默认安全值、unknown fail-closed、结果不称 final（在 V3-D 适配器显式接管前）、CNS/energy 不静默进入 cost、coarse→fine 不声称新精度**。
+任何后续阶段都必须继续满足：**没有默认安全值、unknown fail-closed、CNS/energy 不静默进入 cost、coarse→fine 不声称新精度、route safety 与 CNS 合规不合并**。
 
 ---
 
@@ -623,9 +763,14 @@ cns_planner/gis/fine_environment_adapter.py   # V3-B/V3-C GIS/GDAL 边界
                            #   V3-B: FabdemWindowTerrainSource / QgisGpkgBuildingSource / ConfirmedAirspacePolygonSource
                            #   V3-C: NativeTerrainWindowSource / RouteCorridorBuildingSource / ConfirmedAirspacePolicySource
                            #   + _FabdemRasterBase（DTM 有效分辨率的单位换算与 provenance）
+cns_planner/domain/v3_operational_adoption.py      # V3-D 契约：Projection/Adoption/Preview/CNSAssessmentBundle
+cns_planner/application/v3_operational_adoption_service.py  # V3-D：publish gate、二维投影、locked profile、
+                           #   operational adoption 容器、专用失效传播、Revoke ownership、P7-P10 CNS bridge
 cns_planner/domain/building_clearance.py      # 共享 roof/垂直余量语义（BuildingClearanceV1 与 V3-C 共用）
 cns_planner/application/route_planner_v3_service.py  # 独立实验容器与 V3-A/V3-B/V3-C 编排（不写 operational_routes）
-cns_planner/web/js/workflow/step03_routes.js         # Step 03 V3-A/V3-B/V3-C 面板
+cns_planner/web/js/workflow/step03_routes.js         # Step 03 V3-A/V3-B/V3-C/V3-D 面板
+cns_planner/web/js/workflow/step04_operation.js      # Step 04 V3 CNS Assessment summary（safety/compliance 分列）
 cns_planner/web/js/map/route_planner_v3_overlay.js   # coarse + refined + realized 投影、corridor、violation intervals
+cns_planner/reporting/builder.py                     # P19 报告 v3_validated_route_provenance 段
 docs/route_planner_v3_architecture.md                # 本文件
 ```

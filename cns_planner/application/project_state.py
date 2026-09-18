@@ -63,6 +63,10 @@ from ..route_planner_v3.fine_contracts import (
 from ..route_planner_v3.continuous_contracts import (
     default_v3_validation_policy, normalize_v3_validation_policy,
 )
+from ..domain.v3_operational_adoption import (
+    empty_v3_cns_assessment_bundle, empty_v3_operational_adoptions,
+    normalize_v3_cns_assessment_bundle, normalize_v3_operational_adoptions,
+)
 from ..domain.reference_route_link import (
     empty_reference_route_links, normalize_reference_route_links,
 )
@@ -170,6 +174,13 @@ def blank_project(defaults):
         "v3_fine_refinement_policy": default_v3_fine_refinement_policy(),
         "v3_continuous_validation_policy": default_v3_validation_policy(),
         "route_planner_v3_experiments": empty_v3_experimental_session(),
+        "v3_operational_adoptions": empty_v3_operational_adoptions(),
+        "v3_cns_assessment_bundle": {
+            "schema_version": "3.3-cns-assessment-bundle-collection",
+            "status": "not_calculated",
+            "count": 0,
+            "items": [],
+        },
         "airspace_policies": empty_airspace_policies(),
         "source_audits": empty_source_audits(),
         "reference_route_import_preview": None,
@@ -298,6 +309,25 @@ def normalize_project(value, grid_service):
     value["route_planner_v3_experiments"] = normalize_v3_experiments(
         value.get("route_planner_v3_experiments")
     )
+    value["v3_operational_adoptions"] = normalize_v3_operational_adoptions(
+        value.get("v3_operational_adoptions")
+    )
+    bundles = value.get("v3_cns_assessment_bundle") or {}
+    if not isinstance(bundles, dict):
+        bundles = {}
+    value["v3_cns_assessment_bundle"] = {
+        "schema_version": str(
+            bundles.get("schema_version") or "3.3-cns-assessment-bundle-collection"
+        ),
+        "count": len([
+            item for item in bundles.get("items") or [] if isinstance(item, dict)
+        ]),
+        "status": str(bundles.get("status") or ("passed" if bundles.get("items") else "not_calculated")),
+        "items": [
+            normalize_v3_cns_assessment_bundle(item)
+            for item in bundles.get("items") or [] if isinstance(item, dict)
+        ],
+    }
     value["airspace_policies"] = normalize_airspace_policies(value.get("airspace_policies"))
     value["source_audits"] = normalize_source_audits(value.get("source_audits"))
     value.setdefault("reference_route_import_preview", None)

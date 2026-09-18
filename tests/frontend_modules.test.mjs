@@ -10,7 +10,8 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,airspacePolicyReadinessModel,airspacePolicyEditorModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {routePlannerV3CnsSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {v3OverlayModel} from '../cns_planner/web/js/map/route_planner_v3_overlay.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
@@ -1221,4 +1222,218 @@ test('V3-C overlay places the realized route and marks failed intervals without 
   // Disabling the validated layer must not drop the earlier projections.
   assert.deepEqual(v3OverlayModel(flow,{validated:false}).validatedPath,[]);
   assert.equal(v3OverlayModel(flow,{validated:false}).refinedPath.length,2);
+});
+
+// --------------------------------------------------------------------------------------
+// V3-D: operational adoption + CNS assessment bridge
+// --------------------------------------------------------------------------------------
+
+function v3dProjection(overrides={}){
+  const path=[[122.0005,29.9005],[122.00778,29.90778],[122.01306,29.91306],[122.0195,29.9195]];
+  const waypoints=path.map((point,index)=>({distance_along_route_m:index*0.0123,altitude_m:100}));
+  return Object.assign({
+    schema_version:'3.3-operational-projection',status:'ready',reason:null,
+    projection_id:'V3DPROJ-ABCDEF1234567890',projection_fingerprint:'V3DPROJ-ABCDEF1234567890',
+    validation_id:'V3C-ABC123DEF456',refinement_id:'V3B-ABC123DEF456',experiment_id:'V3-1',
+    route_id:'R0001',
+    route:{route_id:'R0001',start:[122.0005,29.9005],end:[122.0195,29.9195],
+      start_node_id:'N001',end_node_id:'N002',direction:'ab',kind:'operational',status:'passed',
+      path,
+      provenance:{source_type:'v3c_validated_route',planner_family:'route_planner_v3',
+        validation_id:'V3C-ABC123DEF456',validation_fingerprint:'V3CVALID-abc123',
+        refinement_id:'V3B-ABC123DEF456',refinement_fingerprint:'V3BREF-x',
+        curve_chord_error_m:0.5,horizontal_crs:'EPSG:32651',vertical_reference:'egm2008_orthometric',
+        horizontal_representation:'two_dimensional_lon_lat_only',
+        vertical_representation:'locked_route_altitude_profile_waypoints',
+        crs_transform:{method:'explicit_projected_crs_to_ogc_crs84',authority:'EPSG:32651',
+          target_crs:'OGC:CRS84',geodetic:true},
+        cns_integration_mode:'post_route_assessment',cns_excluded_from_search_cost:true,
+        simplification_applied:false}},
+    profile:{route_id:'R0001',mode:'waypoint_linear',vertical_reference:'egm2008_orthometric',
+      constant_altitude_m:null,waypoints,source:'v3c_validated_route',confirmed:true,derived:true,
+      locked:true,locked_by_adoption:true,adoption_owned:true,status:'confirmed',
+      distance_basis:'cumulative_2d_baseline_path_distance_matching_path_vertex_order',
+      profile_derivation:'v3c_z_s_sampled_at_the_published_path_vertices_and_interpolated_linearly_on_the_published_profile_distance_basis',
+      profile_semantics:'v3c_validated_realized_vertical_profile_not_an_independent_safety_verdict',
+      vertex_order_semantics:'index_matched_to_published_path_vertices',
+      v3_metric_length_m:2855.13,legacy_geodesic_length_m:2863.19,length_delta_m:8.06,
+      curve_chord_error_m:0.5,requested_by_user:false},
+    path_metrics:{v3_metric_length_m:2855.13,legacy_geodesic_length_m:2863.19,length_delta_m:8.06,
+      distance_basis:'cumulative_2d_baseline_path_distance_matching_path_vertex_order',
+      profile_length_m:0.0276,metric_vertex_count:4,published_vertex_count:4,
+      curve_chord_error_m:0.5,simplification_applied:false},
+    path_crs:'OGC:CRS84',horizontal_crs:'EPSG:32651',horizontal_crs_source:'explicit_configuration',
+    transform:{method:'explicit_projected_crs_to_ogc_crs84',authority:'EPSG:32651',
+      geodetic:true,target_crs:'OGC:CRS84'},
+    two_dimensional_path_only:true,
+    altitude_representation:{vertical_reference:'egm2008_orthometric',
+      in_geojson_third_coordinate:false,carried_by:'locked_route_altitude_profile_waypoints',
+      reason:'GeoJSON 第三坐标会被解释为 WGS84 ellipsoidal height'},
+    profile_vertex_count:waypoints.length,
+    compatibility:{projection_semantics:'validated_v3c_linearized_metric_geometry_transformed_to_ogc_crs84_two_dimensional_only',
+      profile_semantics:'v3c_validated_realized_vertical_profile_not_an_independent_safety_verdict',
+      profile_derivation:'v3c_z_s_sampled',path_and_profile_share_vertex_order:true,
+      path_and_profile_share_distance_basis:true,simplification_applied:false,crs_mixing:false,
+      published_metric_length_m:2855.13,published_geodesic_length_m:2863.19,length_delta_m:8.06,
+      vertex_count:path.length,min_altitude_egm2008_m:100,max_altitude_egm2008_m:100},
+    downstream_invalidation:V3D_DOWNSTREAM_RESULTS,
+    route_identity:{route_id:'R0001',start:[122.0005,29.9005],end:[122.0195,29.9195],
+      start_node_id:'N001',end_node_id:'N002',identity_preserved:true},
+    issues:[],
+    semantics:{authoritative_geometry_source:'v3c_continuous_route_linearized_metric_geometry',
+      no_simplification:true,two_dimensional_path_only:true,
+      egm2008_never_in_geojson_third_coordinate:true,cns_not_in_route_cost:true}},overrides);
+}
+
+function v3dFlow({projection=null,adoptions=null,assessment=null,publishOptions=null}={}){
+  const flow=v3cFlow();
+  flow.route_planner_v3_operational_publish={status:'passed',stage:'V3-D',
+    model_scope:'v3c_validated_route_operational_adoption_and_cns_bridge_v3d',
+    algorithm:{algorithm_id:'route_planner_v3_operational_adoption',algorithm_version:'3.3-alpha',
+      registered_in_algorithm_registry:false},
+    options:publishOptions||[{validation_id:'V3C-ABC123DEF456',route_id:'R0001',
+      refinement_id:'V3B-ABC123DEF456',status:'validated_route',evidence_source:'canonical_synthetic',
+      eligible:true,reasons:[],production_eligible:false,
+      production_reasons:['production_apply_requires_configured_real_sources']}],
+    blocking_reasons:[],boundaries:{production_apply_requires_configured_real_sources:true,
+      synthetic_preview_only:true,cns_excluded_from_route_cost:true,
+      route_safety_and_cns_compliance_are_separate:true,v3c_validation_history_immutable:true},
+    note:'V3-D 桥接说明'};
+  flow.v3_operational_adoptions=adoptions||{status:'passed',count:1,current_count:1,stale_count:0,
+    revoked_count:0,items:[{adoption_id:'V3D-ABCDEF123456',route_id:'R0001',status:'published',
+      current_applicability:'current',applied_at:'2026-01-01T00:00:00Z',
+      evidence_source:'configured_real_sources',validation_ids:['V3C-ABC123DEF456'],
+      validation_fingerprints:{'V3C-ABC123DEF456':'V3CVALID-abc123'},
+      refinement_fingerprint:'V3BREF-x',projection_fingerprint:'V3DPROJ-ABCDEF1234567890',
+      route_provenance:{},path_metrics:{},compatibility:{},before:{present:false},after:{present:true},
+      cns_assessment:{bundle_id:null,assessment_status:'not_started',requirement_verdict:'unknown'},
+      applicability_reasons:[],ownership:{route_owned:true,profile_owned:true,revocable:true}}]};
+  flow.v3_cns_assessment={status:'not_calculated',count:0,items:[],stage_order:V3D_STAGES};
+  if(assessment){
+    flow.v3_cns_assessment={status:'passed',count:1,items:[assessment],stage_order:V3D_STAGES};
+  }
+  return flow;
+}
+
+function v3dBundle(overrides={}){
+  const base={
+    bundle_id:'V3CNS-V3DBUNDLE-AB',route_id:'R0001',adoption_id:'V3D-ABCDEF123456',
+    validation_id:'V3C-ABC123DEF456',assessment_status:'complete',requirement_verdict:'does_not_meet',
+    route_validation_status:'validated_route',route_validation_unchanged:true,
+    blocking_reasons:[],computed_at:'2026-01-01T00:00:00Z',assessment_fingerprint:'V3DBUNDLE-AB',
+    requested_stages:[...V3D_STAGES],
+    stage_results:{
+      P7:{stage:'P7',status:'passed',route_statuses:{R0001:'passed'},reason:null},
+      P8:{stage:'P8',status:'does_not_meet_under_model',
+        route_statuses:{R0001:'does_not_meet_under_model'},reason:null},
+      P9:{stage:'P9',status:'passed',route_statuses:{R0001:'passed'},reason:null},
+      P10:{stage:'P10',status:'confirmed_gap',route_statuses:{R0001:'confirmed_gap'},reason:null}},
+    semantics:{route_safety_is_not_cns_compliance:true,
+      assessment_completeness_is_not_requirement_verdict:true,
+      cns_gap_never_rewrites_route_validation:true,cns_excluded_from_route_cost:true}};
+  return {...base,...overrides};
+}
+
+test('V3-D adoption model surfaces the gate, projection and adoption state',()=>{
+  const flow=v3dFlow({projection:v3dProjection()});
+  const model=routePlannerV3AdoptionModel(flow);
+  assert.equal(model.stage,'V3-D');
+  assert.equal(model.algorithm.registered_in_algorithm_registry,false);
+  assert.equal(model.options.length,1);
+  assert.equal(model.options[0].eligible,true);
+  assert.equal(model.options[0].productionEligible,false);
+  assert.equal(model.adoptionCount,1);
+  assert.equal(model.currentCount,1);
+  assert.equal(model.adoptions[0].adoptionId,'V3D-ABCDEF123456');
+  assert.equal(model.adoptions[0].ownership.route_owned,true);
+  assert.equal(model.stageOrder.join(','),'P7,P8,P9,P10');
+  assert.match(model.separationLabel,/route safety validation 与 CNS 结果严格分离/);
+  assert.match(model.publishLabel,/发布为运行分析航路/);
+  assert.match(model.syntheticLabel,/不可正式发布/);
+  assert.equal(model.neverFinalValidated,true);
+});
+
+test('V3-D preview block shows route/profile/provenance and the downstream invalidation',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=v3dFlow({projection:v3dProjection()});
+  const preview={status:'ready',previewId:'V3DPREV-1',previewFingerprint:'V3DPREV-1',
+    publicationAllowed:false,evidenceSource:'canonical_synthetic',productionPublication:false,
+    syntheticTestOnly:true,syntheticNotice:'canonical synthetic 证据仅用于测试：不可正式发布到 operational_routes',
+    routeIds:['R0001'],projections:[v3dProjection()],blocked:[],
+    downstreamInvalidation:V3D_DOWNSTREAM_RESULTS,
+    operationalRoutesUntouched:true,spatial3dUntouched:true,cnsNotRun:true};
+  const html=routePlannerV3AdoptionPanel(flow,preview);
+  assert.match(html,/V3-D 发布为运行分析航路/);
+  assert.match(html,/状态链（V3-A → V3-B → V3-C → V3-D）/);
+  assert.match(html,/V3-D Preview/);
+  assert.match(html,/不可正式发布到 operational_routes/);
+  assert.match(html,/待发布的 operational projection/);
+  assert.match(html,/path 仅二维 \[lon, lat\]/);
+  assert.match(html,/locked true（by adoption true）/);
+  assert.match(html,/v3_metric_length_m \/ legacy_geodesic_length_m/);
+  assert.match(html,/path\/profile 顶点顺序与距离基准一致/);
+  assert.match(html,/simplification_applied false/);
+  assert.match(html,/crs_mixing false/);
+  assert.match(html,/operational_routes \/ spatial_3d \/ CNS/);
+  assert.match(html,/untouched=true \/ untouched=true \/ not_run=true/);
+  assert.match(html,/TOCTOU/);
+  assert.match(html,/id="previewRoutePlannerV3Adoption"/);
+  assert.match(html,/id="applyRoutePlannerV3Adoption"/);
+  assert.match(html,/id="revokeRoutePlannerV3Adoption"/);
+  assert.match(html,/id="v3dConfirmed"/);
+  // The panel also renders without a cached preview.
+  const bare=routePlannerV3AdoptionPanel(flow,null);
+  assert.match(bare,/V3 operational adoptions/);
+  assert.match(bare,/V3D-ABCDEF123456/);
+});
+
+test('V3-D expects the stored validation fingerprint for the TOCTOU guard',()=>{
+  const flow=v3dFlow();
+  assert.equal(v3dExpectedFingerprint(flow,['V3C-ABC123DEF456']),'V3CVALID-abc123');
+  assert.equal(v3dExpectedFingerprint(flow,[]),'V3CVALID-abc123');
+  assert.equal(v3dExpectedFingerprint({route_planner_v3_detail:{records:[]}},[]),null);
+});
+
+test('V3-D statuses and vocabulary are closed and never merge safety with compliance',()=>{
+  assert.deepEqual(V3D_ADOPTION_STATUSES,['published','stale','revoked']);
+  assert.deepEqual(V3D_ASSESSMENT_STATUSES,['not_started','incomplete','complete','stale']);
+  assert.deepEqual(V3D_REQUIREMENT_VERDICTS,['meets','does_not_meet','unknown']);
+  assert.deepEqual(V3D_STAGES,['P7','P8','P9','P10']);
+  assert.equal(V3D_PUBLISH_LABEL,'发布为运行分析航路：只把 current V3-C validated route 投影进既有 operational_routes，不改变 V3 验证结论');
+  assert.equal(V3D_SYNTHETIC_LABEL,'canonical synthetic 证据仅用于测试，不可正式发布到 operational_routes');
+  for(const wrong of ['operational_route','safe','cns_compliant']){
+    assert.ok(!V3D_ASSESSMENT_STATUSES.includes(wrong));
+    assert.ok(!V3D_REQUIREMENT_VERDICTS.includes(wrong));
+  }
+});
+
+test('V3-D CNS summary reports route validation and CNS compliance side by side',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=v3dFlow({assessment:v3dBundle()});
+  const html=routePlannerV3CnsSummary(flow);
+  assert.match(html,/CNS Assessment Bridge/);
+  assert.match(html,/Route validation（V3-C）/);
+  assert.match(html,/validated_route/);
+  assert.match(html,/Operational publication（V3-D）/);
+  assert.match(html,/V3D-ABCDEF123456/);
+  assert.match(html,/P7 geometry/);
+  assert.match(html,/P8 capability/);
+  assert.match(html,/P9 timeline/);
+  assert.match(html,/P10 gap/);
+  assert.match(html,/does_not_meet_under_model/);
+  assert.match(html,/confirmed_gap/);
+  assert.match(html,/Assessment completeness（证据完整度）/);
+  assert.match(html,/complete/);
+  assert.match(html,/Requirement verdict（需求满足度）/);
+  assert.match(html,/does_not_meet/);
+  assert.match(html,/评估可以 complete 而 verdict 为 does_not_meet/);
+  assert.match(html,/CNS 缺口绝不回写成 route validation failed/);
+  assert.match(html,/id="assessV3AdoptedRoute"/);
+  // A not-yet-published adoption disables the bridge and says so explicitly.
+  const unpublished=v3dFlow({adoptions:{status:'not_calculated',count:0,current_count:0,
+    stale_count:0,revoked_count:0,items:[]}});
+  const bare=routePlannerV3CnsSummary(unpublished);
+  assert.match(bare,/未发布/);
+  assert.match(bare,/无 V3-C validation/);
+  assert.match(bare,/not_started/);
 });

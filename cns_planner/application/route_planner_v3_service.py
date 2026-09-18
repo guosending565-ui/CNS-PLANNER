@@ -969,17 +969,29 @@ class RoutePlannerV3ExperimentService:
         airspace = ((state.get("grid_attributes") or {}).get("airspace") or {})
         eligibility = airspace.get("airspace_eligibility") or {}
         profiles = state.get("data_source_profiles") or {}
-        terrain_profile = profiles.get("terrain") or {}
+        terrain_dtm_profile = profiles.get("terrain_dtm") or {}
+        terrain_dtm_crs = terrain_dtm_profile.get("crs") or {}
+
+        audits = (state.get("source_audits") or {}).get("items") or {}
+        building_grid_audit = audits.get("building_grid") or {}
+
         fine = self._real_source_readiness()
         return {
             "status": "blocked",
             "adapter_status": V3_REAL_DATA_ADAPTER_STATUS,
             "reason": V3_REAL_DATA_ADAPTER_REASON,
-            "terrain_source_declared": bool(terrain_profile.get("source_id") or terrain_profile.get("name")),
-            "terrain_vertical_reference": terrain_profile.get("vertical_reference"),
-            "confirmed_allowed_grid_cells": len(eligibility.get("allowed_grid_ids") or []),
-            "airspace_eligibility_status": eligibility.get("status"),
-            "building_grid_source": bool((profiles.get("building_grid") or {}).get("name")),
+            "terrain_source_declared": bool(
+                terrain_dtm_profile.get("source_id")
+                or terrain_dtm_profile.get("name")
+            ),
+            "terrain_vertical_reference": (
+                    terrain_dtm_crs.get("observed_vertical")
+                    or terrain_dtm_crs.get("vertical")
+            ),
+            ...
+                "building_grid_source": (
+                building_grid_audit.get("status") == "verified"
+        ),
             "v3a_status": "blocked",
             "v3b": {
                 "status": fine.get("status"),

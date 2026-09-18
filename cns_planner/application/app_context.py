@@ -63,6 +63,7 @@ class ApplicationContext:
         self.workflow.register_source_paths(self.data.paths, self._source_details())
         self.workflow.configure_reference_sources(self.data.paths)
         self.configure_route_planner_v3_sources()
+        self.configure_route_planner_v3_adoption()
 
     def _source_details(self):
         details = {}
@@ -168,6 +169,23 @@ class ApplicationContext:
 
         self.workflow.route_planner_v3_service.source_readiness = readiness
         return readiness
+
+    def configure_route_planner_v3_adoption(self):
+        """Give the V3-D adoption service a real metric → OGC:CRS84 CRS transform.
+
+        The resolver builds a QGIS-backed transform for the recorded projected CRS on
+        demand.  It is deliberately a *resolver* rather than a default transform: a CRS
+        the local runtime cannot honour leaves the publish gate blocked instead of
+        silently publishing unconverted coordinates.
+        """
+
+        from ..gis.fine_environment_adapter import QgisMetricTransform
+
+        def resolver(horizontal_crs):
+            return QgisMetricTransform(str(horizontal_crs))
+
+        self.workflow.v3_operational_adoption_service.transform_resolver = resolver
+        return resolver
 
     def evaluate_route_planner_v3_refinement(self, payload=None):
         """Build the GIS fine-environment adapter and run one V3-B refinement.
@@ -292,19 +310,6 @@ class ApplicationContext:
             }
 
         return build_evidence
-        """Build the GIS fine-environment adapter and run one V3-B refinement.
-
-        Requires QGIS/GDAL plus configured, confirmed sources; V3-B never runs on a
-        fabricated environment, so a missing configuration is a hard error here and
-        a reviewed ``not_ready`` verdict on the service path.
-        """
-
-        payload = payload if isinstance(payload, dict) else {}
-        source = str(payload.get("environment_source") or "canonical_synthetic")
-        if source != "configured_real_sources":
-            return self.workflow.evaluate_route_planner_v3_refinement(payload)
-        adapter = self._fine_environment_adapter(payload)
-        return self.workflow.evaluate_route_planner_v3_refinement_with_adapter(adapter, payload)
 
     def _fine_environment_adapter(self, payload):
         from ..gis.fine_environment_adapter import (

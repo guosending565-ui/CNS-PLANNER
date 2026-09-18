@@ -1,6 +1,9 @@
 import {escapeHtml,shell,statusBadge} from './common.js';
 import {renderProtectionBudget} from './protection_budget.js';
 import {renderDaaEncounterLab,bindDaaEncounterLab} from './daa_encounter_lab.js';
+import {
+  V3D_CNS_SEPARATION_LABEL, V3D_STAGES, routePlannerV3AdoptionModel,
+} from './step03_routes.js';
 
 const value=(object,key,fallback='')=>object?.[key]??fallback;
 const numberValue=value=>value===null||value===undefined?'':value;
@@ -146,8 +149,58 @@ function requirementPolicyPanel(flow){
     '<div class="button-row"><button class="secondary" id="evaluateRequiredRecommendation">Evaluate Recommendation</button><button class="primary" id="adoptRequiredRecommendation" '+(summary.status!=='recommendation_ready'||summary.diverged?'disabled':'')+'>Adopt（显式更新 RequiredCNS）</button></div>';
 }
 
+//: A V3 adopted route's CNS assessment summary.  Route safety and CNS compliance are
+//: reported side by side and never merged into one pass/fail badge.
+export function routePlannerV3CnsSummary(flow){
+  const model=routePlannerV3AdoptionModel(flow);
+  const assessment=model.assessments[0]||null;
+  const publication=model.adoptions.find(item=>item.status!=='revoked')||null;
+  const rows=[
+    ['Route validation（V3-C）',
+      assessment?statusBadge(assessment.routeValidationStatus||'not_ready')+' '
+        +escapeHtml(assessment.routeValidationStatus||'—')+' · unchanged '
+        +escapeHtml(String(assessment.routeValidationUnchanged)):'无 V3-C validation'],
+    ['Operational publication（V3-D）',
+      publication?statusBadge(publication.status)+' '+escapeHtml(publication.adoptionId||'—')
+        +' · route '+escapeHtml(publication.routeId||'—')+' · applicability '
+        +escapeHtml(publication.currentApplicability||'—'):'未发布'],
+    ['P7 geometry',stageText(assessment,'P7')],
+    ['P8 capability',stageText(assessment,'P8')],
+    ['P9 timeline',stageText(assessment,'P9')],
+    ['P10 gap',stageText(assessment,'P10')],
+    ['Assessment completeness（证据完整度）',
+      assessment?statusBadge(assessment.assessmentStatus)+' '+escapeHtml(assessment.assessmentStatus):'not_started'],
+    ['Requirement verdict（需求满足度）',
+      assessment?statusBadge(assessment.requirementVerdict)+' '+escapeHtml(assessment.requirementVerdict):'unknown']];
+  const blocking=(assessment?.blockingReasons||[]).length
+    ?'<div class="parameter-note">blocking_reasons '+escapeHtml(JSON.stringify(assessment.blockingReasons))+'</div>':'';
+  return '<h3>V3 adopted route · CNS Assessment Bridge '+statusBadge(assessment?assessment.assessmentStatus:'not_started')+'</h3>'
+    +'<div class="parameter-note"><b>'+escapeHtml(V3D_CNS_SEPARATION_LABEL)+'</b><br>'
+    +'评估完整度与需求满足度是两个独立维度：评估可以 complete 而 verdict 为 does_not_meet，'
+    +'此时 V3-C 仍然是 validated_route（CNS 缺口绝不回写成 route validation failed）。'
+    +'CNS 结果不进入 V3 cost/search。</div>'
+    +'<div class="scroll-list route-list">'+rows.map(row=>'<div class="list-row route-row"><span><b>'
+      +escapeHtml(row[0])+'</b><small>'+row[1]+'</small></span></div>').join('')+'</div>'
+    +blocking
+    +'<div class="button-row"><button class="primary" id="assessV3AdoptedRoute" '
+    +(publication?'':'disabled')+'>运行既有 P7→P8→P9→P10 CNS 评估</button></div>'
+    +'<div class="parameter-note">桥接只编排既有 P7/P8/P9/P10 服务，不复制或改写任何 CNS 公式；'
+    +'stages '+escapeHtml((model.stageOrder||V3D_STAGES).join(' → '))
+    +' · 缺参数/RequiredCNS/aircraft/timing 时返回 incomplete 与 blocking reason，不造默认值。</div>';
+}
+
+function stageText(assessment,stage){
+  if(!assessment)return '未运行';
+  const entry=(assessment.stageResults||{})[stage]||{};
+  const statuses=entry.route_statuses||{};
+  const detail=Object.entries(statuses).map(([routeId,status])=>routeId+':'+status).join(' · ');
+  return statusBadge(entry.status||'not_run')+' '+escapeHtml(entry.status||'not_run')
+    +(detail?'<br><small>'+escapeHtml(detail)+'</small>':'');
+}
+
 export function render({flow}){
   const aircraft=flow.aircraft||{},rules=flow.rules||{},catalog=flow.aircraft_profiles||{items:[]};
+  const v3Panel=routePlannerV3CnsSummary(flow);
   const selectedProfile=flow.selected_aircraft_profile_id||aircraft.aircraft_id||'';
   const profileOptions='<option value="">自定义/未选择</option>'+catalog.items.map(item=>'<option value="'+escapeHtml(item.aircraft_id)+'" '+selected(item.aircraft_id,selectedProfile)+'>'+escapeHtml(item.name)+' · '+escapeHtml(item.aircraft_id)+'</option>').join('');
   const routeOptions='<option value="">不指定</option>'+(flow.scenario_routes||[]).map(route=>'<option value="'+route.route_id+'" '+selected(route.route_id,aircraft.route_id)+'>'+route.route_id+' '+route.direction+'</option>').join('');
@@ -162,7 +215,7 @@ export function render({flow}){
   const body='<div class="demo-note">AircraftCNSProfileCatalog：'+escapeHtml(flow.aircraft_source)+' · '+catalog.count+' 条；机载能力不会自动成为任务需求</div><label>飞行器能力档案<select id="aircraftProfile">'+profileOptions+'</select></label>'+profileSummary+
     '<div class="form-grid"><label>厂家<input id="manufacturer" value="'+escapeHtml(value(aircraft,'manufacturer','工程测试厂家'))+'"></label><label>型号<input id="model" value="'+escapeHtml(value(aircraft,'model','Demo-A1'))+'"></label><label>巡航速度 m/s<input type="number" id="cruise" value="'+value(aircraft,'cruise_speed_mps',25)+'"></label><label>最大速度 m/s<input type="number" id="maximum" value="'+value(aircraft,'max_speed_mps',40)+'"></label><label>MTBF h<input type="number" id="mtbf" value="'+value(aircraft,'mtbf_h',10000)+'"></label><label>绑定航路<select id="aircraftRoute">'+routeOptions+'</select></label><label>A→B 高度 m<input type="number" id="heightAB" value="'+value(rules,'height_ab_m',120)+'"></label><label>B→A 高度 m<input type="number" id="heightBA" value="'+value(rules,'height_ba_m',150)+'"></label><label>高度模式<select id="heightMode"><option value="different">双向不同高度</option><option value="same">同高度层</option></select></label><label>水平间隔 m<input type="number" id="separation" value="'+value(rules,'horizontal_separation_m',100)+'"></label><label>感知→平台 ms<input type="number" id="delaySensor" value="'+value(rules,'delay_sensor_to_platform_ms',500)+'"></label><label>平台→航空器 ms<input type="number" id="delayCommand" value="'+value(rules,'delay_platform_to_aircraft_ms',500)+'"></label></div><label>方向规则<select id="directionRule"><option>按航向分层</option><option>同一航路仅一架</option><option>同一方向仅一架</option></select></label><button class="primary full" id="saveRules">保存并校验规则</button>'+
     (flow.aircraft?'<div class="flow-summary">Legacy λ='+(flow.aircraft.lambda_per_hour*1000000).toFixed(3)+'×10⁻⁶/h（兼容字段，非 P4 ReliabilitySpec 推断） · 总时延 '+rules.total_delay_ms+' ms · 反应距离 '+rules.reaction_distance_m+' m<br>'+statusBadge(rules.status)+' '+escapeHtml(rules.message)+'</div>':'')+
-    '<h3>Required CNS Performance</h3><label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div><button class="secondary full" id="saveRequiredCns">保存 RequiredCNS</button><div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持 pending_confirmation，不提供安全阈值默认值。</div>'+requirementPanel+'<div class="demo-note">ReliabilitySpec 是统计属性，不会随机决定当前服务状态；demo 与未确认参数仅作待核实输入。</div><div class="flow-summary"><strong>Ground Device Capability</strong><br>'+escapeHtml(devices)+'</div>'+timingPanel+renderProtectionBudget(flow.protection_envelope)+renderDaaEncounterLab(flow)+corridorPanel+safetyPanel+'<button class="secondary full" id="nextStep" '+(!flow.steps['4']?'disabled':'')+'>下一步：设备与布站</button>';
+    '<h3>Required CNS Performance</h3><label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div><button class="secondary full" id="saveRequiredCns">保存 RequiredCNS</button><div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持 pending_confirmation，不提供安全阈值默认值。</div>'+requirementPanel+'<div class="demo-note">ReliabilitySpec 是统计属性，不会随机决定当前服务状态；demo 与未确认参数仅作待核实输入。</div><div class="flow-summary"><strong>Ground Device Capability</strong><br>'+escapeHtml(devices)+'</div>'+timingPanel+renderProtectionBudget(flow.protection_envelope)+renderDaaEncounterLab(flow)+v3Panel+corridorPanel+safetyPanel+'<button class="secondary full" id="nextStep" '+(!flow.steps['4']?'disabled':'')+'>下一步：设备与布站</button>';
   return shell('04','运行规则','Aircraft Capability、Required CNS Performance 与地面设备能力相互独立。',body);
 }
 
@@ -184,6 +237,8 @@ export function bind(c){
   c.actionButton('saveResponseBudget',()=>{const timing=timingClone(),confirmed=c.$('rtConfirmed').checked,source=textValue('rtSource')||'user_configuration',ids={detect:'rtDetect',track:'rtTrack',processing:'rtProcessing',decision:'rtDecision',communication:'rtCommunication',aircraft_reaction:'rtReaction'};timing.response_time_budgets=timing.response_time_budgets||{};timing.response_time_budgets['default-response']={budget_id:'default-response',source,confirmed,components:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{value_s:optional(id),source,confirmed}]))};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('saveEncounterScenario',()=>{const timing=timingClone(),confirmed=c.$('encounterConfirmed').checked;timing.encounter_scenarios=timing.encounter_scenarios||{};timing.encounter_scenarios['default-encounter']={encounter_id:'default-encounter',relative_closing_speed_mps:optional('encounterRelativeSpeed'),maneuver_distance_m:optional('encounterManeuver'),uncertainty_distance_m:optional('encounterUncertainty'),source:textValue('encounterSource')||'user_configuration',confirmed};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('evaluateProtectionBudget',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
+  // The bridge only orchestrates the existing P7-P10 services; it never reimplements them.
+  if(c.$('assessV3AdoptedRoute'))c.actionButton('assessV3AdoptedRoute',()=>c.resourceAction('/api/v3-cns-assessment/evaluate',{}));
   c.actionButton('saveCorridorPolicy',()=>{const policy=structuredClone(c.flow().cns_corridor_policy||{routes:{}}),routeId=c.$('corridorRoute').value;policy.routes=policy.routes||{};policy.routes[routeId]={route_id:routeId,horizontal_half_width_m:optional('corridorHalfWidth'),vertical_lower_margin_m:optional('corridorLower'),vertical_upper_margin_m:optional('corridorUpper'),source:textValue('corridorSource')||'user_configuration',confirmed:c.$('corridorConfirmed').checked};return c.resourceAction('/api/cns-service-corridor/evaluate',{cns_corridor_policy:policy});});
   c.actionButton('saveRequiredCns',()=>{
     const selectedScope=c.$('requiredScope').value;

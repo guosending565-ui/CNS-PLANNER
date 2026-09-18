@@ -263,6 +263,22 @@ export const V3C_REFINED_LABEL='continuous 实现 + confirmed 源几何/原生�
 const V3C_NOTE_FALLBACK='V3-C：把 V3-B refined candidate 实现为 C1（position+heading 连续）连续几何，圆弧 chord-error 显式；'
   +'再用 confirmed 空域 polygon、native FABDEM 像元、真实 footprint roof 与显式高度/运动学逐 domain 验证。'
   +'vector predicate 对 linearized representation（含显式 curve-error envelope）精确；terrain 是 source-native raster evidence。';
+// ---- Route Planner V3-D (operational adoption + CNS assessment bridge) ---------------
+export const V3D_ADOPTION_STATUSES=['published','stale','revoked'];
+export const V3D_ADOPTION_APPLICABILITY=['current','stale','revoked'];
+export const V3D_ASSESSMENT_STATUSES=['not_started','incomplete','complete','stale'];
+export const V3D_REQUIREMENT_VERDICTS=['meets','does_not_meet','unknown'];
+export const V3D_STAGES=['P7','P8','P9','P10'];
+//: The boundary label every V3-D rendering must carry verbatim.
+export const V3D_PUBLISH_LABEL='发布为运行分析航路：只把 current V3-C validated route 投影进既有 operational_routes，不改变 V3 验证结论';
+export const V3D_SYNTHETIC_LABEL='canonical synthetic 证据仅用于测试，不可正式发布到 operational_routes';
+export const V3D_CNS_SEPARATION_LABEL='route safety validation 与 CNS 结果严格分离：CNS 不满足不等于 route unsafe，route validated 也不等于 CNS 合规';
+//: The downstream results a V3-D publish stales (never the route it just published).
+export const V3D_DOWNSTREAM_RESULTS=['coverage_3d','cns_service_capability','service_timeline',
+  'cns_gap_v2','cns_site_plan','closed_loop_assessment','building_clearance','route_vertical_profiles',
+  'cns_corridor_assessment','cns_corridor_gap_assessment','cns_corridor_site_plan','report'];
+const V3D_NOTE_FALLBACK='V3-D：把 current V3-C validated route 以显式、可追溯、事务式方式发布到既有 operational_routes + spatial_3d 高度剖面接口，'
+  +'并复用既有 P7/P8/P9/P10 做 CNS Assessment。EGM2008 正高只写入 locked profile，绝不写入 GeoJSON 第三坐标；CNS 绝不反馈 V3 cost。';
 //: Fallback V3-B note, used while a snapshot carries no ``v3b_note`` yet.
 const V3B_NOTE_FALLBACK='V3-B corridor-local 精化候选 ≠ validated route：只在选定且 current 的 V3-A strategic_candidate 的 corridor 内做米制细网格工程精化；未做 V3-C exact polygon/terrain/continuous clearance 验证，也不写 operational_routes、algorithm_selection 或 spatial_3d。';
 
@@ -1205,6 +1221,7 @@ export function routePlannerV3Panel(flow){
     +'：没有 validated/final 状态。'+escapeHtml(model.v3bNote||'')+'</div>'
     +v3bPanel(model)
     +v3cValidationPanel(flow)
+    +v3dAdoptionPanel(flow)
     +'<h3>V3-A 实验记录</h3>'+(model.recent.length?'<div class="button-row"><button class="secondary" id="deleteRoutePlannerV3">删除当前实验</button></div>':'')
     +'<div class="scroll-list route-list">'+history+'</div>';
 }
@@ -1212,6 +1229,215 @@ export function routePlannerV3Panel(flow){
 // V3-C is rendered from its own model so its status stays independent from V3-A/V3-B.
 function v3cValidationPanel(flow){
   return routePlannerV3ValidationPanel(flow);
+}
+
+// ---- V3-D operational adoption + CNS assessment ---------------------------------------
+
+function v3OperationalProjectionModel(projection){
+  if(!projection)return null;
+  const route=projection.route||{},profile=projection.profile||{};
+  const waypoints=profile.waypoints||[];
+  return {
+    projectionId:projection.projection_id||null,
+    projectionFingerprint:projection.projection_fingerprint||null,
+    validationId:projection.validation_id||null,
+    refinementId:projection.refinement_id||null,
+    routeId:projection.route_id||null,
+    status:projection.status||'not_ready',reason:projection.reason||null,
+    routeKind:route.kind||null,routeStatus:route.status||null,
+    vertexCount:(route.path||[]).length,
+    pathIsTwoDimensional:(route.path||[]).every(point=>point.length===2),
+    pathStart:(route.path||[])[0]||null,pathEnd:(route.path||[])[route.path.length-1]||null,
+    provenance:route.provenance||{},
+    profileMode:profile.mode||null,profileLocked:profile.locked===true,
+    profileLockedByAdoption:profile.locked_by_adoption===true,
+    profileStatus:profile.status||null,verticalReference:profile.vertical_reference||null,
+    profileVertexCount:waypoints.length,
+    profileStart:waypoints[0]||null,profileEnd:waypoints[waypoints.length-1]||null,
+    pathMetrics:projection.path_metrics||{},
+    compatibility:projection.compatibility||{},
+    transform:projection.transform||{},
+    horizontalCrs:projection.horizontal_crs||null,
+    altitudeRepresentation:projection.altitude_representation||{},
+    downstreamInvalidation:projection.downstream_invalidation||[]};
+}
+
+export function routePlannerV3AdoptionModel(flow){
+  const publish=flow?.route_planner_v3_operational_publish||{};
+  const adoptions=flow?.v3_operational_adoptions||{};
+  const assessment=flow?.v3_cns_assessment||{};
+  return {
+    status:publish.status||'not_calculated',stage:publish.stage||'V3-D',
+    modelScope:publish.model_scope||'',
+    algorithm:publish.algorithm||{},
+    options:(publish.options||[]).map(option=>({
+      validationId:option.validation_id,routeId:option.route_id,refinementId:option.refinement_id,
+      status:option.status,evidenceSource:option.evidence_source,eligible:option.eligible===true,
+      reasons:option.reasons||[],productionEligible:option.production_eligible===true,
+      productionReasons:option.production_reasons||[]})),
+    blockingReasons:publish.blocking_reasons||[],
+    boundaries:publish.boundaries||{},
+    note:publish.note||V3D_NOTE_FALLBACK,
+    adoptionStatus:adoptions.status||'not_calculated',
+    adoptionCount:adoptions.count||0,currentCount:adoptions.current_count||0,
+    staleCount:adoptions.stale_count||0,revokedCount:adoptions.revoked_count||0,
+    adoptions:(adoptions.items||[]).map(item=>({
+      adoptionId:item.adoption_id,routeId:item.route_id,status:item.status,
+      currentApplicability:item.current_applicability,appliedAt:item.applied_at,
+      evidenceSource:item.evidence_source,validationIds:item.validation_ids||[],
+      validationFingerprints:item.validation_fingerprints||{},
+      refinementFingerprint:item.refinement_fingerprint,
+      projectionFingerprint:item.projection_fingerprint,
+      routeProvenance:item.route_provenance||{},pathMetrics:item.path_metrics||{},
+      compatibility:item.compatibility||{},before:item.before||{},after:item.after||{},
+      cnsAssessment:item.cns_assessment||{},
+      applicabilityReasons:item.applicability_reasons||[],ownership:item.ownership||{}})),
+    assessmentStatus:assessment.status||'not_calculated',
+    assessmentCount:assessment.count||0,
+    assessments:(assessment.items||[]).map(item=>({
+      bundleId:item.bundle_id,routeId:item.route_id,adoptionId:item.adoption_id,
+      validationId:item.validation_id,assessmentStatus:item.assessment_status,
+      requirementVerdict:item.requirement_verdict,blockingReasons:item.blocking_reasons||[],
+      routeValidationStatus:item.route_validation_status,
+      routeValidationUnchanged:item.route_validation_unchanged===true,
+      stageResults:item.stage_results||{},requestedStages:item.requested_stages||[],
+      computedAt:item.computed_at,assessmentFingerprint:item.assessment_fingerprint,
+      semantics:item.semantics||{}})),
+    stageOrder:assessment.stage_order||V3D_STAGES,
+    separationLabel:V3D_CNS_SEPARATION_LABEL,
+    publishLabel:V3D_PUBLISH_LABEL,
+    syntheticLabel:V3D_SYNTHETIC_LABEL,
+    neverFinalValidated:true};
+}
+
+function v3dRows(rows){
+  return (rows||[]).map(row=>'<div class="list-row route-row"><span><b>'+escapeHtml(row[0])+'</b>'
+    +'<small>'+row[1]+'</small></span></div>').join('');
+}
+
+function v3dStatusChain(model,validationModel){
+  // The four-stage chain: strategic -> refined -> validated -> published.
+  const chain=[
+    ['V3-A strategic',model.status==='not_calculated'?'未运行':'见 V3-A 面板'],
+    ['V3-B refined',model.status==='not_calculated'?'未运行':'见 V3-B 面板'],
+    ['V3-C validated',validationModel?validationModel.status:'未运行'],
+    ['V3-D published',model.adoptionCount?('已发布 '+model.adoptionCount+' 条'):'未发布']];
+  return '<h3>状态链（V3-A → V3-B → V3-C → V3-D）</h3><div class="scroll-list route-list">'
+    +v3dRows(chain.map(([name,value])=>[name,statusBadge(value)+' '+escapeHtml(String(value))]))+'</div>';
+}
+
+function v3dPreviewBlock(model,preview){
+  if(!preview)return '';
+  const rows=[
+    ['preview_id / fingerprint',escapeHtml(preview.previewId||'—')+' · '+escapeHtml(String(preview.previewFingerprint||'—').slice(0,24))],
+    ['status / publication_allowed',statusBadge(preview.status)+' · publication_allowed '+escapeHtml(String(preview.publicationAllowed))],
+    ['evidence_source',escapeHtml(preview.evidenceSource||'—')+' · production '+escapeHtml(String(preview.productionPublication))
+      +' · synthetic_test_only '+escapeHtml(String(preview.syntheticTestOnly))],
+    ['route_ids',escapeHtml(jsonInline(preview.routeIds||[]))],
+    ['downstream invalidation',escapeHtml(jsonInline(preview.downstreamInvalidation||[]))],
+    ['operational_routes / spatial_3d / CNS',escapeHtml('untouched='+String(preview.operationalRoutesUntouched))
+      +' / '+escapeHtml('untouched='+String(preview.spatial3dUntouched))+' / '+escapeHtml('not_run='+String(preview.cnsNotRun))]];
+  const blocked=(preview.blocked||[]).length
+    ?preview.blocked.map(item=>'<div class="list-row route-row"><span><b>'+escapeHtml(item.validationId||'—')
+      +'</b>'+statusBadge('blocked')+'<small>route '+escapeHtml(item.routeId||'—')+'</small>'
+      +'<small>reasons '+escapeHtml(jsonInline(item.reasons||[]))+'</small></span></div>').join('')
+    :'<div class="empty-note">没有被拒绝的 validation</div>';
+  return '<h3>V3-D Preview '+statusBadge(preview.status)+'（只读，不写入）</h3>'
+    +(preview.syntheticTestOnly?'<div class="parameter-note"><b>'+escapeHtml(V3D_SYNTHETIC_LABEL)+'</b></div>':'')
+    +'<div class="scroll-list route-list">'+v3dRows(rows)+'</div>'
+    +'<div class="parameter-note">确认无误后再 Apply：Apply 必须显式 confirmed=true，并提交 expected_validation_fingerprint（TOCTOU 防护）。</div>'
+    +'<h3>被拒绝的 validation（batch atomic：任一失败则全部不写）</h3><div class="scroll-list route-list">'+blocked+'</div>';
+}
+
+function v3dProjectionBlock(model,preview){
+  const projections=(preview?.projections||[]);
+  if(!projections.length)return '';
+  const blocks=projections.map(projection=>{
+    const p=v3OperationalProjectionModel(projection);
+    const rows=[
+      ['route',escapeHtml(p.routeId||'—')+' · kind '+escapeHtml(p.routeKind||'—')+' · status '+escapeHtml(p.routeStatus||'—')],
+      ['path 顶点数 / 起点 / 终点',escapeHtml(String(p.vertexCount))+' · '+escapeHtml(jsonInline(p.pathStart||[]))+' → '+escapeHtml(jsonInline(p.pathEnd||[]))],
+      ['path 仅二维 [lon, lat]',escapeHtml(String(p.pathIsTwoDimensional))+'（EGM2008 正高绝不写入第三坐标）'],
+      ['高度表示',escapeHtml(p.verticalReference||'—')+' · carried_by '+escapeHtml(p.altitudeRepresentation.carried_by||'—')],
+      ['profile mode / locked / status',escapeHtml(p.profileMode||'—')+' · locked '+escapeHtml(String(p.profileLocked))
+        +'（by adoption '+escapeHtml(String(p.profileLockedByAdoption))+'） · '+escapeHtml(p.profileStatus||'—')],
+      ['profile 顶点数 / 首 / 末',escapeHtml(String(p.profileVertexCount))+' · '+escapeHtml(jsonInline(p.profileStart||{}))+' → '+escapeHtml(jsonInline(p.profileEnd||{}))],
+      ['v3_metric_length_m / legacy_geodesic_length_m',metric(p.pathMetrics.v3_metric_length_m,'m')+' / '+metric(p.pathMetrics.legacy_geodesic_length_m,'m')],
+      ['length_delta_m / distance_basis',metric(p.pathMetrics.length_delta_m,'m')+' · '+escapeHtml(p.pathMetrics.distance_basis||'—')],
+      ['curve_chord_error_m',metric(p.pathMetrics.curve_chord_error_m,'m')],
+      ['transform',escapeHtml(p.transform.method||'—')+' · '+escapeHtml(p.transform.authority||'—')+' → '+escapeHtml(p.transform.target_crs||'—')],
+      ['path/profile 顶点顺序与距离基准一致',escapeHtml(String(p.compatibility.path_and_profile_share_vertex_order))
+        +' / '+escapeHtml(String(p.compatibility.path_and_profile_share_distance_basis))
+        +' · simplification_applied '+escapeHtml(String(p.compatibility.simplification_applied))
+        +' · crs_mixing '+escapeHtml(String(p.compatibility.crs_mixing))],
+      ['provenance',escapeHtml(p.provenance.source_type||'—')+' · validation '+escapeHtml(p.provenance.validation_id||'—')
+        +' · refinement fingerprint '+escapeHtml(String(p.refinementId||'—'))],
+      ['projection fingerprint',escapeHtml(String(p.projectionFingerprint||'—').slice(0,28))]];
+    return '<h4>'+escapeHtml(p.routeId||'—')+'</h4><div class="scroll-list route-list">'+v3dRows(rows)+'</div>';
+  }).join('');
+  return '<h3>待发布的 operational projection</h3>'
+    +'<div class="parameter-note">'+escapeHtml(V3D_PUBLISH_LABEL)+'：path 只保存二维 [lon, lat]，'
+    +'完整 analytic geometry 不复制进 operational_routes；高度由 locked profile 承载。</div>'+blocks;
+}
+
+function v3dAdoptionBlock(model){
+  if(!model.adoptions.length)return '<h3>V3 operational adoptions</h3><div class="empty-note">尚无 V3 operational adoption</div>';
+  const rows=model.adoptions.map(item=>'<div class="list-row route-row"><span><b>'
+    +escapeHtml(item.adoptionId||'—')+'</b> '+statusBadge(item.status||'published')
+    +' · applicability '+escapeHtml(item.currentApplicability||'—')
+    +'<small>route '+escapeHtml(item.routeId||'—')+' · applied '+escapeHtml(item.appliedAt||'—')
+    +' · evidence_source '+escapeHtml(item.evidenceSource||'—')+'</small>'
+    +'<small>validation '+escapeHtml(jsonInline(item.validationIds||[]))+' · refinement fingerprint '
+    +escapeHtml(String(item.refinementFingerprint||'—').slice(0,20))+'</small>'
+    +'<small>ownership route/profile/revocable '+escapeHtml(String((item.ownership||{}).route_owned))
+    +' / '+escapeHtml(String((item.ownership||{}).profile_owned))+' / '+escapeHtml(String((item.ownership||{}).revocable))+'</small>'
+    +'<small>before '+escapeHtml(jsonInline(item.before||{}))+'</small>'
+    +'<small>after '+escapeHtml(jsonInline(item.after||{}))+'</small>'
+    +(item.applicabilityReasons||[]).map(reason=>'<small>'+escapeHtml(reason)+'</small>').join('')
+    +'<small>CNS '+escapeHtml(jsonInline(item.cnsAssessment||{}))+'</small></span></div>').join('');
+  return '<h3>V3 operational adoptions '+statusBadge(model.adoptionStatus)+'</h3>'
+    +'<div class="parameter-note">current '+escapeHtml(String(model.currentCount))+' · stale '+escapeHtml(String(model.staleCount))
+    +' · revoked '+escapeHtml(String(model.revokedCount))+'。Revoke 只移除该 adoption 仍拥有的 route/profile，不误删其他 planner 的 route。</div>'
+    +'<div class="scroll-list route-list">'+rows+'</div>';
+}
+
+export function routePlannerV3AdoptionPanel(flow,preview=null){
+  const model=routePlannerV3AdoptionModel(flow);
+  const validation=routePlannerV3ContinuousModel(flow).validationModel;
+  const optionRows=model.options.length?model.options.map(option=>'<div class="list-row route-row"><span><b>'
+    +escapeHtml(option.validationId)+'</b> '+statusBadge(option.eligible?'ready':'blocked')
+    +'<small>route '+escapeHtml(option.routeId||'—')+' · status '+escapeHtml(option.status||'—')
+    +' · evidence_source '+escapeHtml(option.evidenceSource||'—')+'</small>'
+    +'<small>production_eligible '+escapeHtml(String(option.productionEligible))
+    +' · reasons '+escapeHtml(jsonInline(option.reasons||[]))+'</small>'
+    +'<small>production reasons '+escapeHtml(jsonInline(option.productionReasons||[]))+'</small></span></div>').join('')
+    :'<div class="empty-note">尚无 V3-C validation 记录</div>';
+  const evidenceOptions=['configured_real_sources','canonical_synthetic']
+    .map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('');
+  return '<h3>V3-D 发布为运行分析航路（operational adoption）'+statusBadge(model.status)+'</h3>'
+    +v3dStatusChain(model,validation)
+    +'<div class="parameter-note">'+escapeHtml(model.note)+'</div>'
+    +'<div class="parameter-note"><b>'+escapeHtml(V3D_CNS_SEPARATION_LABEL)+'</b></div>'
+    +'<h3>可发布的 current V3-C validated route</h3><div class="scroll-list route-list">'+optionRows+'</div>'
+    +'<div class="parameter-note"><b>blocking_reasons</b> '+escapeHtml(jsonInline(model.blockingReasons))
+    +'<br>boundaries '+escapeHtml(jsonInline(model.boundaries))
+    +'<br>production Apply 只接受 configured_real_sources；canonical_synthetic 只能 Preview。</div>'
+    +'<h3>Preview / Apply</h3>'
+    +'<div class="form-grid"><label>evidence_source<select id="v3dEvidenceSource">'+evidenceOptions+'</select></label>'
+    +'<label>validation_ids（逗号分隔，可空=全部 eligible）<input class="panel-input" id="v3dValidationIds" placeholder="V3C-..."></label></div>'
+    +'<div class="button-row"><button class="secondary" id="previewRoutePlannerV3Adoption">Preview（只读）</button>'
+    +'<button class="primary" id="applyRoutePlannerV3Adoption">Apply（需显式确认）</button>'
+    +'<button class="secondary" id="revokeRoutePlannerV3Adoption">Revoke（需显式确认）</button></div>'
+    +'<label class="check-row"><input type="checkbox" id="v3dConfirmed">我已复核 Preview 内容并确认 Apply/Revoke</label>'
+    +v3dPreviewBlock(model,preview)
+    +v3dProjectionBlock(model,preview)
+    +v3dAdoptionBlock(model);
+}
+
+// V3-D is rendered from its own model so its status stays independent from V3-A/B/C.
+// The cached Preview response is display-only: Preview never writes project state.
+function v3dAdoptionPanel(flow){
+  return routePlannerV3AdoptionPanel(flow,v3dPreviewCache);
 }
 
 function optionalNumber(value){const text=String(value??'').trim();return text===''?null:Number(text);}
@@ -1284,6 +1510,63 @@ export function bindRoutePlannerV3(c){
       evidence_source:c.$('v3cEvidenceSource').value});
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
+  // ---- V3-D -------------------------------------------------------------------
+  if(c.$('previewRoutePlannerV3Adoption'))c.actionButton('previewRoutePlannerV3Adoption',async()=>{
+    const payload=v3dPayload(c);
+    // Preview writes nothing; the response is cached only to show the projections.
+    const result=await c.resourceAction('/api/route-planner-v3-operational-adoptions/preview',payload);
+    v3dPreviewCache=result?.data??result??null;
+  });
+  if(c.$('applyRoutePlannerV3Adoption'))c.actionButton('applyRoutePlannerV3Adoption',async()=>{
+    if(!c.$('v3dConfirmed').checked)throw new Error('Apply 需要显式确认：请先复核 Preview 并勾选确认');
+    const payload=v3dPayload(c);
+    payload.confirmed=true;
+    // TOCTOU guard: send the fingerprint observed at Preview time so a changed
+    // validation is rejected instead of silently published.
+    const fingerprint=v3dExpectedFingerprint(c.flow(),payload.validation_ids);
+    if(fingerprint)payload.expected_validation_fingerprint=fingerprint;
+    await c.resourceAction('/api/route-planner-v3-operational-adoptions/apply',payload);
+    v3dPreviewCache=null;
+    if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
+  });
+  if(c.$('revokeRoutePlannerV3Adoption'))c.actionButton('revokeRoutePlannerV3Adoption',async()=>{
+    if(!c.$('v3dConfirmed').checked)throw new Error('Revoke 需要显式确认');
+    const model=routePlannerV3AdoptionModel(c.flow());
+    const target=model.adoptions.find(item=>item.status!=='revoked');
+    if(!target)throw new Error('没有可撤销的 V3 operational adoption');
+    await c.resourceAction('/api/route-planner-v3-operational-adoptions/revoke',{
+      confirmed:true,adoption_id:target.adoptionId});
+    if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
+  });
+}
+
+//: Last Preview response, kept only for display (it is never persisted).
+let v3dPreviewCache=null;
+
+export function v3dPreviewModel(){return v3dPreviewCache;}
+
+//: The validation fingerprint currently stored for the selected validation ids.
+export function v3dExpectedFingerprint(flow,validationIds){
+  const detail=flow?.route_planner_v3_detail||{};
+  const wanted=new Set(validationIds||[]);
+  for(const record of detail.records||[]){
+    for(const refinement of record.refinements||[]){
+      for(const validation of refinement.validations||[]){
+        const id=String(validation.validation_id||'');
+        const result=validation.result||{};
+        if(wanted.size&&!wanted.has(id))continue;
+        const fingerprint=result.validation_fingerprint||validation.fingerprint;
+        if(fingerprint)return String(fingerprint);
+      }
+    }
+  }
+  return null;
+}
+
+function v3dPayload(c){
+  const raw=String(c.$('v3dValidationIds')?.value||'').trim();
+  const validation_ids=raw?raw.split(',').map(value=>value.trim()).filter(Boolean):[];
+  return {evidence_source:c.$('v3dEvidenceSource')?.value||'configured_real_sources',validation_ids};
 }
 
 function experimentPanelV3(flow){

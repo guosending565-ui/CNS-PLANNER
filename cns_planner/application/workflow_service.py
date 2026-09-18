@@ -49,6 +49,7 @@ from .reference_link_service import ReferenceLinkService
 from .route_experiment_service import RoutePlanningExperimentService
 from .route_planner_v3_service import RoutePlannerV3ExperimentService, record_summary as _v3_record_summary
 from .source_audit_service import SourceAuditService
+from .v3_operational_adoption_service import V3OperationalAdoptionService
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
 from .encounter_3d_service import Encounter3DService
 from ..algorithms.encounter_3d import EncounterAssessment3DV1
@@ -203,6 +204,20 @@ class WorkflowService:
         self.encounter_3d_service = Encounter3DService(
             self.session, EncounterAssessment3DV1(), self.invalidation_service, snapshot,
         )
+        # P20 V3-D: the bridge that publishes a current V3-C validated route into the
+        # existing operational route surface and reuses P7-P10 for CNS assessment.  It is
+        # constructed last because it orchestrates the services above.
+        self.v3_operational_adoption_service = V3OperationalAdoptionService(
+            self.session, self.route_planner_v3_service, self.invalidation_service, snapshot,
+            spatial_3d_service=self.spatial_3d_service,
+            cns_service_capability_service=self.cns_service_capability_service,
+            operational_timing_service=self.operational_timing_service,
+            gap_analysis_v2_service=self.gap_analysis_v2_service,
+        )
+        # Source changes must stale a V3 adoption (and only V3 adoptees).
+        self.source_audit_service.v3_adoption_invalidator = (
+            self.v3_operational_adoption_service.stale_for_sources
+        )
 
     def save(self): self.session.save()
 
@@ -258,6 +273,16 @@ class WorkflowService:
             result["route_planner_v3_validations"] = (
                 self.route_planner_v3_service.continuous_validation_snapshot()
             )
+            if hasattr(self, "v3_operational_adoption_service"):
+                result["v3_operational_adoptions"] = (
+                    self.v3_operational_adoption_service.adoptions_snapshot()
+                )
+                result["v3_operational_publish_status"] = (
+                    self.v3_operational_adoption_service.publish_status()
+                )
+                result["v3_cns_assessment"] = (
+                    self.v3_operational_adoption_service.cns_bundle_snapshot()
+                )
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
         if hasattr(self, "source_audit_service"):
@@ -342,6 +367,28 @@ class WorkflowService:
         return self.route_planner_v3_service.evaluate_continuous_validation(
             payload, evidence_adapter=evidence_adapter,
         )
+
+    # ---- V3-D: operational adoption + CNS assessment bridge --------------------
+    def v3_operational_adoptions_snapshot(self):
+        return self.v3_operational_adoption_service.adoptions_snapshot()
+
+    def v3_operational_publish_status(self):
+        return self.v3_operational_adoption_service.publish_status()
+
+    def preview_v3_operational_adoption(self, payload=None):
+        return self.v3_operational_adoption_service.preview(payload)
+
+    def apply_v3_operational_adoption(self, payload=None):
+        return self.v3_operational_adoption_service.apply(payload)
+
+    def revoke_v3_operational_adoption(self, payload=None):
+        return self.v3_operational_adoption_service.revoke(payload)
+
+    def v3_cns_assessment_snapshot(self):
+        return self.v3_operational_adoption_service.cns_bundle_snapshot()
+
+    def assess_v3_adopted_route(self, payload=None):
+        return self.v3_operational_adoption_service.assess_route(payload)
     def data_readiness_snapshot(self): return self.reference_link_service.data_readiness()
     def source_audits_snapshot(self): return self.source_audit_service.result_snapshot()
     def encounter_3d_snapshot(self): return self.encounter_3d_service.result_snapshot()
