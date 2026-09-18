@@ -1,0 +1,245 @@
+/* =========================================================
+   workbench.css —— 右侧当前步骤工作台
+   步骤标题 + 一级标签（操作/结果/高级）+ 二级分段 + 单一滚动区
+   ========================================================= */
+
+.workbench{
+  grid-area:workbench;
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+  background:var(--bg-surface);
+  border-left:1px solid var(--line);
+}
+
+/* =========================================================
+   1. 头部（固定）
+   ========================================================= */
+
+.workbench-head{
+  flex:0 0 auto;
+  padding:var(--sp-6) var(--sp-6) var(--sp-4);
+  border-bottom:1px solid var(--line);
+  background:var(--bg-surface);
+  box-shadow:var(--shadow-1);
+  z-index:2;
+}
+
+.workbench-title-row{display:flex;align-items:flex-start;gap:var(--sp-5)}
+
+.workbench-step{
+  flex:0 0 auto;
+  padding:var(--sp-2) var(--sp-4);
+  border:1px solid var(--brand-line);
+  border-radius:var(--r-sm);
+  background:var(--brand-soft);
+  color:var(--brand-deep);
+  font:700 var(--fs-sm)/1.5 var(--font-mono);
+  letter-spacing:.5px;
+}
+
+.workbench-title{min-width:0;flex:1 1 auto}
+.workbench-title h2{margin:0;font-size:var(--fs-md);font-weight:650;color:var(--ink-strong);line-height:1.35}
+.workbench-title p{margin:var(--sp-2) 0 0;font-size:var(--fs-micro);line-height:1.6;color:var(--ink-muted)}
+
+.workbench-collapse{
+  flex:0 0 auto;
+  padding:var(--sp-2) var(--sp-4);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--bg-subtle);
+  color:var(--ink-muted);
+  font-size:var(--fs-micro);
+  line-height:1.6;
+}
+
+/* =========================================================
+   2. 标签导航
+   ========================================================= */
+
+.workbench-tabs{margin-top:var(--sp-5)}
+.workbench-segs{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top:1px dashed var(--line-soft)}
+.workbench-segs[hidden]{display:none}
+
+/* 一级标签：桌面宽屏下等分 */
+.workbench-tabs .tabbar button{font-size:var(--fs-sm)}
+
+/* =========================================================
+   3. 滚动内容区（唯一滚动容器，保持滚动位置）
+   ========================================================= */
+
+.workbench-body{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding:var(--sp-6) var(--sp-6) var(--sp-9);
+  overscroll-behavior:contain;
+}
+
+/* 内容块节奏 */
+.workbench-body section,
+.workbench-body .wb-section{margin-bottom:var(--sp-7)}
+
+.wb-section{
+  display:grid;
+  gap:var(--sp-4);
+  padding-bottom:var(--sp-6);
+  border-bottom:1px solid var(--line-soft);
+}
+.wb-section:last-child{border-bottom:0;padding-bottom:0}
+
+.wb-section-head{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:var(--sp-4);
+}
+
+.wb-section-head h3,
+.workbench-body h3{
+  margin:0;
+  font-size:var(--fs-sm);
+  font-weight:650;
+  color:var(--ink-strong);
+  letter-spacing:.2px;
+}
+
+.workbench-body h4{margin:0;font-size:var(--fs-xs);font-weight:650;color:var(--ink-soft)}
+
+/* 空状态 */
+.wb-empty{
+  padding:var(--sp-7) var(--sp-6);
+  border:1px dashed var(--line-strong);
+  border-radius:var(--r-sm);
+  background:var(--bg-subtle);
+  color:var(--ink-muted);
+  font-size:var(--fs-xs);
+  line-height:1.7;
+  text-align:center;
+}
+
+/* 二级分段提示：同一一级标签下还有其他子任务 */
+.wb-hint{
+  margin-bottom:var(--sp-5);
+  padding:var(--sp-3) var(--sp-5);
+  border:1px dashed var(--line-strong);
+  border-radius:var(--r-sm);
+  background:var(--brand-softer);
+  color:var(--ink-muted);
+  font-size:var(--fs-micro);
+  line-height:1.6;
+}
+
+/* 面板内的说明与错误 */
+.wb-panel>.flow-summary:first-child,
+.wb-panel>.parameter-note:first-child,
+.wb-panel>.empty-note:first-child{margin-top:0}
+
+/* 一级/二级面板之间的视觉分隔 */
+.wb-seg-panel{padding-top:var(--sp-2)}
+
+/* 关键业务摘要置顶 */
+.wb-snapshot{
+  display:grid;
+  gap:var(--sp-4);
+  margin-bottom:var(--sp-3);
+}
+
+.wb-snapshot-line{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-5);
+  padding:var(--sp-4) var(--sp-5);
+  border:1px solid var(--line);
+  border-left:3px solid var(--brand-line);
+  border-radius:0 var(--r-sm) var(--r-sm) 0;
+  background:var(--bg-subtle);
+  font-size:var(--fs-xs);
+  color:var(--ink-soft);
+}
+
+.wb-snapshot-line b{font-weight:650;color:var(--ink-strong)}
+.wb-snapshot-line[data-tone="ok"]{border-left-color:var(--ok);background:var(--ok-bg);color:var(--ok)}
+.wb-snapshot-line[data-tone="warn"]{border-left-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+.wb-snapshot-line[data-tone="danger"]{border-left-color:var(--danger);background:var(--danger-bg);color:var(--danger)}
+
+.wb-snapshot-line small{color:inherit;opacity:.8;font-size:var(--fs-micro)}
+
+/* 工程内部标识：默认弱化，仍可查看 */
+.wb-engine{
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--sp-2) var(--sp-4);
+  margin-top:var(--sp-2);
+  font:var(--fs-micro)/1.6 var(--font-mono);
+  color:var(--ink-faint);
+  overflow-wrap:anywhere;
+}
+
+.wb-engine span{padding:1px var(--sp-3);border:1px solid var(--line-soft);border-radius:var(--r-xs);background:var(--bg-subtle)}
+
+/* =========================================================
+   4. 底部（面板错误固定可见）
+   ========================================================= */
+
+.workbench-foot{
+  flex:0 0 auto;
+  margin:0;
+  padding:0 var(--sp-6);
+  border-top:1px solid var(--line);
+  background:var(--bg-surface);
+  max-height:32%;
+  overflow-y:auto;
+}
+
+.workbench-foot:empty,
+.workbench-foot .inline-error:empty{display:none;border:0}
+.workbench-foot .inline-error{margin:var(--sp-4) 0;border:1px solid var(--danger-line)}
+
+/* =========================================================
+   5. 折叠形态
+   ========================================================= */
+
+.workbench-app.workbench-collapsed .workbench{display:none}
+
+/* 窄屏：工作台展开时浮在地图之上，避免把地图压到无法使用 */
+@media (max-width:1180px){
+  .workbench-app.workbench-open{
+    grid-template-columns:var(--w-rail-narrow) minmax(0,1fr) 0;
+  }
+  .workbench-app.workbench-open .workbench{
+    position:fixed;
+    top:calc(var(--h-topbar) + var(--sp-3));
+    right:var(--sp-3);
+    bottom:calc(var(--h-statusbar) + var(--sp-3));
+    z-index:40;
+    width:min(390px,92vw);
+    border:1px solid var(--line-strong);
+    border-radius:var(--r-md);
+    box-shadow:var(--shadow-3);
+    overflow:hidden;
+  }
+}
+
+@media (max-width:900px){
+  .workbench{border-left:0;border-top:1px solid var(--line)}
+  .workbench-body{overflow:visible;padding:var(--sp-6)}
+  .workbench-collapse{display:none}
+}
+
+/* =========================================================
+   6. 紧凑度：信息密度高但层级清楚
+   ========================================================= */
+
+.workbench-body label{font-size:var(--fs-micro)}
+.workbench-body .flow-summary,
+.workbench-body .demo-note,
+.workbench-body .parameter-note,
+.workbench-body .empty-note{padding:var(--sp-4) var(--sp-5);line-height:1.65}
+.workbench-body .list-row{padding:var(--sp-3) var(--sp-5)}
+.workbench-body .review-block{padding:var(--sp-5);gap:var(--sp-2)}
+.workbench-body .metric-grid b{padding:var(--sp-4) var(--sp-5);font-size:var(--fs-md)}

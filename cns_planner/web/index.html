@@ -1,63 +1,144 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>低空航路CNS规划系统</title><link rel="stylesheet" href="/style.css"></head>
-<body><div class="topbar"><strong>低空航路CNS规划系统</strong></div><aside class="sidebar">
- <div class="brand"><span class="logo">C</span><div>CNS 航路规划<span class="eyebrow">AIRSPACE PLANNING STUDIO</span></div></div>
- <div class="section-label">工作流程</div><nav id="steps"><button class="active" data-step="1"><b>01</b> 项目与数据</button><button data-step="2"><b>02</b> 工作区与环境</button><button data-step="3"><b>03</b> 航路设计</button><button data-step="4"><b>04</b> 运行规则</button><button data-step="5"><b>05</b> 设备与布站</button><button data-step="6"><b>06</b> 确认与导出</button></nav>
- <section class="side-card"><div id="workflowPanel"><div class="section-label">正在载入业务流程</div></div></section>
- <div class="section-label">地图图层</div><div class="layer-row"><span><i class="swatch air"></i> 空域参考图层（仅显示，不参与路线约束）</span><input type="checkbox" id="air" checked aria-label="空域参考图层"></div><div class="layer-row"><span><i class="swatch reference-route"></i> 真实参考航线<small id="referenceRouteStatus">等待数据</small></span><input type="checkbox" id="referenceRouteLayer" checked aria-label="真实参考航线"></div><div class="layer-row"><span><i class="swatch reference-point"></i> 真实航路点<small id="referenceRoutePointStatus">等待数据</small></span><input type="checkbox" id="referenceRoutePointLayer" checked aria-label="真实航路点"></div><div class="layer-row"><span><i class="swatch reference-landing"></i> 参考起降点<small id="referenceLandingStatus">等待数据</small></span><input type="checkbox" id="referenceLandingLayer" checked aria-label="参考起降点"></div><div class="layer-row"><span><i class="swatch" style="background:#d7263d"></i> 建筑净空突破</span><input type="checkbox" id="buildingClearanceLayer" checked aria-label="建筑净空突破"></div><div class="layer-row"><span><i class="swatch" style="background:#4c6ef5"></i> V3-A 战略候选（2D 投影，实验）</span><input type="checkbox" id="v3CandidateLayer" checked aria-label="V3-A 战略候选 2D 投影"></div><div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> Selected layer 可行性（coarse 垂向包络 · 分层候选）</span><input type="checkbox" id="layeredFeasibilityLayer" checked aria-label="Selected layer 可行性掩码与分层候选"></div><div class="layer-row"><span><i class="swatch grid"></i> 标准网格</span><input type="checkbox" id="gridLayer" checked aria-label="MH/T 4063标准网格"></div><div class="layer-row"><span><i class="swatch pop"></i> 人口栅格（原始）</span><input type="checkbox" id="pop" aria-label="人口原始栅格"></div><div class="opacity"><label for="opacity">人口图层透明度 <span id="opacityValue">65%</span></label><input id="opacity" type="range" min="0" max="100" value="65"></div><div class="layer-row"><span><i class="swatch terrain" style="background:#9b8b63"></i> 地形栅格（原始）</span><input type="checkbox" id="terrain" aria-label="地形原始栅格"></div><div class="opacity"><label for="terrainOpacity">地形透明度 <span id="terrainOpacityValue">55%</span></label><input id="terrainOpacity" type="range" min="0" max="100" value="55"></div><div class="layer-row"><span>QGIS 在线底图</span><input type="checkbox" id="online" aria-label="QGIS 在线底图"></div><p class="small">空域及底图只用于显示参考，不参与风险、航路规划、readiness、fingerprint 或失效传播。真实参考数据 CRS 仍为 pending_confirmation，不代表已确认 WGS84。</p>
- <div id="cnsLayers" hidden><div class="section-label">CNS 规划图层</div><div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS</span><input type="checkbox" id="existingCnsLayer" checked></div><div class="layer-row"><span><i class="swatch candidate-site"></i>候选站址</span><input type="checkbox" id="candidateSiteLayer" checked></div><div class="layer-row"><span><i class="swatch cns-c"></i>通信 C</span><input type="checkbox" id="cLayer" checked></div><div class="layer-row"><span><i class="swatch cns-n"></i>导航 N</span><input type="checkbox" id="nLayer" checked></div><div class="layer-row"><span><i class="swatch cns-s"></i>监视 S</span><input type="checkbox" id="sLayer" checked></div></div>
- <div class="sidebar-bottom"><button id="settingsBtn" class="settings-button">⚙ 数据源设置 <span>→</span></button><div class="small" id="projectRestore">项目自动保存 · 可重启恢复</div></div>
-</aside>
-<main><header><div><span class="breadcrumb">规划工作台 / 空间数据</span><h1>空域、人口与地形全景</h1></div><div class="header-right"><button id="connection" class="status status-checking" title="打开数据源设置"><i class="dot"></i><span>正在检查数据源</span></button></div></header>
- <div class="map-wrap" id="map" tabindex="0" aria-label="交互地图，拖拽平移，滚轮或加减键缩放"><canvas id="canvas"></canvas><div class="map-hint">拖拽平移 · 滚轮缩放 · 双击放大</div><div id="gridNotice" class="grid-notice" hidden></div><div id="gridInfo" class="grid-info" hidden></div><div id="loading" class="loading">正在加载空间数据…</div><div id="error" role="alert" hidden></div><div class="map-tools"><button id="zoomIn" aria-label="放大">＋</button><button id="zoomOut" aria-label="缩小">−</button><hr><button id="fit" title="回到全域" aria-label="回到全域">⌂</button></div><div class="north">N<br>↑</div>
- <div class="legend">
-    <div class="legend-title">
-        图层图例 <span>LOCAL DATA</span>
-    </div>
+<body>
+<div class="workbench-app" id="appShell">
 
-    <div>
-        <i class="swatch air"></i>
-        空域源图层 · QGIS 原始样式（非政策结论）
+ <header class="topbar">
+  <div class="topbar-brand"><strong>CNS Planner</strong><span class="topbar-project" data-project-name>未命名项目</span></div>
+  <button id="connection" class="status status-checking" title="打开数据源设置"><i class="dot"></i><span>正在检查数据源</span></button>
+  <div class="topbar-spacer"></div>
+  <div class="topbar-actions">
+   <button id="workbenchOpen" class="secondary compact" title="展开当前步骤工作台">工作台</button>
+   <button id="settingsBtn" class="secondary compact">数据源</button>
+   <button id="saveProjectTop" class="secondary compact">保存项目</button>
+   <div class="topbar-menu">
+    <button id="exportMenuBtn" class="secondary compact" aria-haspopup="true" aria-expanded="false">导出 / 报告</button>
+    <div class="topbar-menu-panel" id="exportMenuPanel" hidden>
+     <div class="topbar-menu-title">数据导出</div>
+     <button data-export-kind="project">项目 JSON</button>
+     <button data-export-kind="routes">航路 GeoJSON</button>
+     <button data-export-kind="sites">站点 GeoJSON</button>
+     <div class="topbar-menu-title">方案报告</div>
+     <button data-report-action="preview">预览报告草稿</button>
+     <button data-report-action="generate">生成正式报告</button>
+     <button data-report-action="downloadPackage">下载规划数据包</button>
     </div>
+   </div>
+  </div>
+ </header>
 
+ <nav class="rail" id="rail" aria-label="六步规划流程">
+  <div class="rail-head"><span class="rail-title">规划流程</span><button class="rail-toggle" id="railToggle" title="折叠左侧导航">收起</button></div>
+  <div class="rail-list" id="steps">
+   <button class="rail-step active" data-step="1" data-state="active"><span class="rail-num">01</span><span class="rail-label">项目准备</span><span class="rail-state"><i></i>进行中</span><span class="rail-note">项目、路径与算法选择</span></button>
+   <button class="rail-step" data-step="2" data-state="todo"><span class="rail-num">02</span><span class="rail-label">环境建模</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">工作区、网格与风险框架</span></button>
+   <button class="rail-step" data-step="3" data-state="todo"><span class="rail-num">03</span><span class="rail-label">航路规划</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">OD、分层候选与运行航路</span></button>
+   <button class="rail-step" data-step="4" data-state="todo"><span class="rail-num">04</span><span class="rail-label">运行规则</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">能力、需求与运行约束</span></button>
+   <button class="rail-step" data-step="5" data-state="todo"><span class="rail-num">05</span><span class="rail-label">CNS规划</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">覆盖、缺口与布站提案</span></button>
+   <button class="rail-step" data-step="6" data-state="todo"><span class="rail-num">06</span><span class="rail-label">方案评审</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">比较、确认与报告</span></button>
+  </div>
+  <div class="rail-foot" id="projectRestore">项目自动保存 · 可重启恢复</div>
+ </nav>
+
+ <main class="stage">
+  <div class="map-wrap" id="map" tabindex="0" aria-label="交互地图，拖拽平移，滚轮或加减键缩放">
+   <canvas id="canvas"></canvas>
+   <div class="map-hint">拖拽平移 · 滚轮缩放 · 双击放大</div>
+   <div class="map-stage-status"><span class="lod-status" id="lodStatus">显示层级 <b>概述</b></span></div>
+   <div class="north">N<br>↑</div>
+
+   <div class="layer-drawer" id="layerDrawer" data-open="false">
+    <button class="drawer-toggle" id="layerDrawerToggle" aria-expanded="false">图层 <span class="drawer-caret">展开</span></button>
+    <div class="layer-drawer-body">
+     <div class="layer-group">
+      <div class="layer-group-title">基础参考</div>
+      <div class="layer-row"><span><i class="swatch air"></i> 空域参考图层（仅显示，不参与路线约束）</span><input type="checkbox" id="air" checked aria-label="空域参考图层"></div>
+      <div class="layer-row"><span><i class="swatch reference-route"></i> 真实参考航线<small id="referenceRouteStatus">等待数据</small></span><input type="checkbox" id="referenceRouteLayer" checked aria-label="真实参考航线"></div>
+      <div class="layer-row"><span><i class="swatch reference-point"></i> 真实航路点<small id="referenceRoutePointStatus">等待数据</small></span><input type="checkbox" id="referenceRoutePointLayer" checked aria-label="真实航路点"></div>
+      <div class="layer-row"><span><i class="swatch reference-landing"></i> 参考起降点<small id="referenceLandingStatus">等待数据</small></span><input type="checkbox" id="referenceLandingLayer" checked aria-label="参考起降点"></div>
+     </div>
+     <div class="layer-group">
+      <div class="layer-group-title">环境</div>
+      <div class="layer-row"><span><i class="swatch grid"></i> 标准网格</span><input type="checkbox" id="gridLayer" checked aria-label="MH/T 4063标准网格"></div>
+      <div class="layer-row"><span><i class="swatch pop"></i> 人口栅格（原始）</span><input type="checkbox" id="pop" aria-label="人口原始栅格"></div>
+      <div class="opacity"><label for="opacity">人口图层透明度 <span id="opacityValue">65%</span></label><input id="opacity" type="range" min="0" max="100" value="65"></div>
+      <div class="layer-row"><span><i class="swatch terrain"></i> 地形栅格（原始）</span><input type="checkbox" id="terrain" aria-label="地形原始栅格"></div>
+      <div class="opacity"><label for="terrainOpacity">地形透明度 <span id="terrainOpacityValue">55%</span></label><input id="terrainOpacity" type="range" min="0" max="100" value="55"></div>
+      <div class="layer-row"><span>QGIS 在线底图</span><input type="checkbox" id="online" aria-label="QGIS 在线底图"></div>
+     </div>
+     <div class="layer-group">
+      <div class="layer-group-title">规划结果</div>
+      <div class="layer-row"><span><i class="swatch" style="background:#d7263d"></i> 建筑净空突破</span><input type="checkbox" id="buildingClearanceLayer" checked aria-label="建筑净空突破"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#4c6ef5"></i> V3-A 战略候选（2D 投影，实验）</span><input type="checkbox" id="v3CandidateLayer" checked aria-label="V3-A 战略候选 2D 投影"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> Selected layer 可行性（coarse 垂向包络 · 分层候选）</span><input type="checkbox" id="layeredFeasibilityLayer" checked aria-label="Selected layer 可行性掩码与分层候选"></div>
+     </div>
+     <div class="layer-group" id="cnsLayers" hidden>
+      <div class="layer-group-title">CNS</div>
+      <div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS</span><input type="checkbox" id="existingCnsLayer" checked></div>
+      <div class="layer-row"><span><i class="swatch candidate-site"></i>候选站址</span><input type="checkbox" id="candidateSiteLayer" checked></div>
+      <div class="layer-row"><span><i class="swatch cns-c"></i>通信 C</span><input type="checkbox" id="cLayer" checked></div>
+      <div class="layer-row"><span><i class="swatch cns-n"></i>导航 N</span><input type="checkbox" id="nLayer" checked></div>
+      <div class="layer-row"><span><i class="swatch cns-s"></i>监视 S</span><input type="checkbox" id="sLayer" checked></div>
+     </div>
+     <p class="small">空域及底图只用于显示参考，不参与风险、航路规划、readiness、fingerprint 或失效传播。真实参考数据 CRS 仍为 pending_confirmation，不代表已确认 WGS84。</p>
+    </div>
+   </div>
+
+   <div class="legend legend-collapsed" id="legend">
+    <div class="legend-title" id="legendToggle">图层图例 <span>LOCAL DATA</span></div>
+    <div><i class="swatch air"></i>空域源图层 · QGIS 原始样式（非政策结论）</div>
     <div id="populationRasterLegend" class="raster-legend" hidden>
-        <p>
-            <b>WorldPop 源像元人口数</b>
-            <span>person/source pixel</span>
-        </p>
-        <div class="population-raster-gradient"></div>
-        <div class="population-raster-ticks">
-            <span>0</span>
-            <span>1</span>
-            <span>10</span>
-            <span>50</span>
-            <span>&gt;200</span>
-        </div>
-        <small>WorldPop R2025A count · 原始栅格不插值为人数</small>
+     <p><b>WorldPop 源像元人口数</b><span>person/source pixel</span></p>
+     <div class="population-raster-gradient"></div>
+     <div class="population-raster-ticks"><span>0</span><span>1</span><span>10</span><span>50</span><span>&gt;200</span></div>
+     <small>WorldPop R2025A count · 原始栅格不插值为人数</small>
     </div>
-
     <div id="terrainRasterLegend" class="raster-legend" hidden>
-        <p>
-            <b>地形高程</b>
-            <span>m</span>
-        </p>
-        <div class="terrain-raster-gradient"></div>
-        <div class="terrain-raster-ticks">
-            <span style="left:0%">0</span>
-            <span style="left:8.33%">100</span>
-            <span style="left:25%">300</span>
-            <span style="left:50%">600</span>
-            <span style="left:100%">1200+</span>
-        </div>
-        <small>Copernicus DEM GLO-30</small>
+     <p><b>地形高程</b><span>m</span></p>
+     <div class="terrain-raster-gradient"></div>
+     <div class="terrain-raster-ticks"><span style="left:0%">0</span><span style="left:8.33%">100</span><span style="left:25%">300</span><span style="left:50%">600</span><span style="left:100%">1200+</span></div>
+     <small>Copernicus DEM GLO-30</small>
     </div>
-
     <div id="gridThemeLegend" hidden><p><b id="gridThemeLegendTitle"></b><span id="gridThemeLegendUnit"></span></p><div id="gridThemeGradient" class="gradient"></div><div id="gridThemeTicks" class="ticks"></div><div class="no-data-key"><i></i>无数据</div><small id="gridThemeLegendNote"></small></div>
     <div id="layeredFeasibilityLegend" hidden></div>
+   </div>
+
+   <div id="gridNotice" class="grid-notice" hidden></div>
+   <div id="gridInfo" class="grid-info" hidden></div>
+   <div id="loading" class="loading">正在加载空间数据…</div>
+   <div id="error" role="alert" hidden></div>
+
+   <div class="map-tools"><button id="zoomIn" aria-label="放大">＋</button><button id="zoomOut" aria-label="缩小">−</button><hr><button id="fit" title="回到全域" aria-label="回到全域">⌂</button></div>
+   <div id="tileStatus" class="tile-status"></div>
+   <div class="map-footer"><span id="position">EPSG:3857 显示 · 经纬度读数 WGS84</span><span id="viewStatus">本地空域数据</span></div>
+  </div>
+ </main>
+
+ <aside class="workbench" id="workbench" aria-label="当前步骤工作台">
+  <div class="workbench-head">
+   <div class="workbench-title-row">
+    <span class="workbench-step" id="workbenchStepNumber">01</span>
+    <div class="workbench-title"><h2 id="workbenchStepTitle">项目准备</h2><p id="workbenchStepNote">设置项目名称和数据存储位置，检查数据后进入工作区。</p></div>
+    <button class="workbench-collapse" id="workbenchToggle" title="折叠右侧工作台">收起</button>
+   </div>
+   <div class="workbench-tabs"><div class="tabbar" id="workbenchTabs"></div></div>
+   <div class="workbench-segs" id="workbenchSegs" hidden></div>
+  </div>
+  <div class="workbench-body" id="workbenchBody">
+   <div id="workflowPanel"><div class="empty-note">正在载入业务流程</div></div>
+  </div>
+  <div class="workbench-foot"><div id="panelError" class="inline-error" role="alert"></div></div>
+ </aside>
+
+ <footer class="statusbar">
+  <span class="statusbar-main"><i class="dot"></i><span id="workflowStatus">业务流程载入中</span></span>
+  <span class="statusbar-sep">|</span>
+  <span id="sourceSummary">等待数据</span>
+  <span class="statusbar-sep">|</span>
+  <span class="statusbar-coords">EPSG:3857 · WGS84 读数</span>
+ </footer>
 </div>
- <div id="tileStatus" class="tile-status"></div><div class="map-footer"><span id="position">EPSG:3857 显示 · 经纬度读数 WGS84</span><span id="viewStatus">本地空域数据</span></div></div>
- <footer><div><i class="dot"></i><span id="sourceSummary">等待数据</span></div><span id="workflowStatus">业务流程载入中</span></footer>
-</main>
+
 <dialog id="settings" class="source-dialog"><div class="dialog-head"><div><span class="breadcrumb">DATA SOURCE CENTER</span><h2>统一数据源设置</h2></div><button class="close" id="closeSettings" aria-label="关闭设置">×</button></div><p>所有外部数据均在此配置。业务页面只使用已登记数据；原始文件保持只读。</p>
 <div id="healthSummary" class="health-summary">正在检查…</div><div class="source-layout"><section class="source-editor"><h3>当前可配置</h3><label>基础地图 / QGIS 项目</label><div class="file-input"><input id="basemapPath" aria-label="底图文件路径"><button data-browse="basemap">浏览电脑…</button></div><small>支持 .qgz / .qgs；同时检查项目引用、图层和 CRS。</small><label>WorldPop 人口数 / GeoTIFF</label><div class="file-input"><input id="populationPath" aria-label="人口文件路径"><button data-browse="population">浏览电脑…</button></div><small>R2025A 原始量为 person/source pixel；映射时按面积权重守恒分配。</small><div id="rasterInfo" class="metadata"></div><label>地形高程 / Copernicus GLO-30 DSM</label><div class="file-input"><input id="terrainPath" aria-label="地形DEM文件路径"><button data-browse="terrain">浏览电脑…</button></div><small>1 arc-second；水平 WGS84/EPSG:4326，垂直 EGM2008/EPSG:3855，单位 m。</small><div id="terrainInfo" class="metadata"></div><label>裸地高程 / FABDEM DTM</label><div class="file-input"><input id="terrain_dtmPath" aria-label="FABDEM DTM文件路径"><button data-browse="terrain_dtm">浏览电脑…</button></div><small>建筑地面正高专用；不会替换 GLO-30 DSM。运行时校验垂向基准元数据。</small><div id="terrainDtmInfo" class="metadata"></div><label>建筑单体 / GBA LoD1 GeoPackage</label>
 <div class="file-input">

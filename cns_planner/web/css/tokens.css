@@ -1,0 +1,163 @@
+/* =========================================================
+   tokens.css —— 设计令牌
+   CNS Planner 桌面工程/GIS 工作台
+   浅色基底：白 / 浅灰 + 蓝色主色 + 少量青色科技细节
+   ========================================================= */
+
+:root{
+  color-scheme:light;
+
+  /* ---- 基底与表面 ---- */
+  --bg-app:#eef1f4;
+  --bg-surface:#ffffff;
+  --bg-subtle:#f6f8fa;
+  --bg-sunken:#f1f4f7;
+  --bg-hover:#f2f7fb;
+  --bg-overlay:rgba(232,238,244,.72);
+
+  /* ---- 文字 ---- */
+  --ink:#22303c;
+  --ink-strong:#16222d;
+  --ink-soft:#516579;
+  --ink-muted:#7c8b9a;
+  --ink-faint:#9aa8b5;
+  --ink-invert:#ffffff;
+
+  /* ---- 线条 ---- */
+  --line:#dfe5eb;
+  --line-strong:#c9d4de;
+  --line-soft:#ecf1f5;
+
+  /* ---- 主色（蓝） ---- */
+  --brand:#0b6bbd;
+  --brand-deep:#0a5798;
+  --brand-bright:#1687e0;
+  --brand-soft:#e8f2fb;
+  --brand-softer:#f3f8fd;
+  --brand-line:#bcd8ef;
+
+  /* ---- 科技青（少量点缀） ---- */
+  --accent:#0f9aa8;
+  --accent-soft:#e4f6f8;
+
+  /* ---- 语义状态 ---- */
+  --ok:#1f7a4d;
+  --ok-bg:#e8f6ee;
+  --ok-line:#c6e6d4;
+  --warn:#8a6206;
+  --warn-bg:#fdf6e3;
+  --warn-line:#eeddab;
+  --danger:#a8392f;
+  --danger-bg:#fdecea;
+  --danger-line:#f0cfc9;
+  --info:#3a6a91;
+  --info-bg:#eef4f9;
+  --info-line:#d5e3ee;
+  --neutral:#5f6f7d;
+  --neutral-bg:#f0f3f6;
+  --neutral-line:#dde4ea;
+
+  /* ---- 地图专题色（与 grid_theme.js 调色板保持一致的辅助色） ---- */
+  --map-airspace:#54dce1;
+  --map-route-reference:#c83f8c;
+  --map-route-point:#e07f24;
+  --map-landing:#1a8677;
+  --map-node:#c25233;
+  --map-operational:#0b6bbd;
+  --map-scenario:#7b8791;
+  --map-cns-c:#1574d4;
+  --map-cns-n:#b8840f;
+  --map-cns-s:#0f8a78;
+
+  /* ---- 间距 ---- */
+  --sp-1:2px;
+  --sp-2:4px;
+  --sp-3:6px;
+  --sp-4:8px;
+  --sp-5:10px;
+  --sp-6:12px;
+  --sp-7:14px;
+  --sp-8:16px;
+  --sp-9:20px;
+  --sp-10:24px;
+
+  /* ---- 字号 ---- */
+  --fs-micro:10px;
+  --fs-xs:11px;
+  --fs-sm:12px;
+  --fs-base:13px;
+  --fs-md:14px;
+  --fs-lg:16px;
+  --fs-xl:19px;
+
+  /* ---- 圆角 ---- */
+  --r-xs:3px;
+  --r-sm:4px;
+  --r-md:6px;
+  --r-lg:9px;
+
+  /* ---- 阴影 ---- */
+  --shadow-1:0 1px 2px rgba(28,52,74,.06);
+  --shadow-2:0 2px 8px rgba(28,52,74,.10);
+  --shadow-3:0 10px 30px rgba(24,48,70,.16);
+
+  /* ---- 尺寸 ---- */
+  --h-topbar:48px;
+  --h-statusbar:26px;
+  --w-rail:196px;
+  --w-workbench:392px;
+  --w-rail-narrow:168px;
+  --w-workbench-narrow:344px;
+
+  /* ---- 字体栈 ---- */
+  --font-ui:'Segoe UI','Microsoft YaHei','PingFang SC',system-ui,sans-serif;
+  --font-mono:'Cascadia Mono',Consolas,'Courier New',monospace;
+}
+
+/* =========================================================
+   通用重置
+   ========================================================= */
+
+*{box-sizing:border-box}
+
+html,body{height:100%}
+
+body{
+  margin:0;
+  color:var(--ink);
+  background:var(--bg-app);
+  font:var(--fs-base)/1.55 var(--font-ui);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+h1,h2,h3,h4,p{margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--brand);text-decoration:none}
+
+code{
+  padding:0 3px;
+  border-radius:var(--r-xs);
+  background:var(--bg-sunken);
+  font:var(--fs-micro)/1.5 var(--font-mono);
+  color:var(--ink-soft);
+  overflow-wrap:anywhere;
+}
+
+/* 统一焦点样式：可访问且不刺眼 */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible{
+  outline:2px solid var(--brand-bright);
+  outline-offset:1px;
+}
+
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#c9d5df;border:2px solid transparent;border-radius:6px;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#a9bccb;background-clip:content-box}
+
+/* 移动端/窄屏的整体滚动由 layout.css 接管 */

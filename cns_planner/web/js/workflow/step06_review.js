@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbSection} from './common.js';
 
 export function planReviewSummary(review,confirmed){
   const variants=review?.variants||[],selected=variants.find(item=>item.variant_id===review?.selected_variant_id)||null;
@@ -28,8 +28,18 @@ export function render({state,flow}){
     '<div class="review-block"><b>确认门禁（Confirmation gate）</b><span>'+statusText(selected?.evaluation?.confirmation_gate?.status||'not_evaluated')+'</span><label><input type="checkbox" id="confirmWithoutObjectives"> 未配置规划目标时仍确认（记录明确知情确认）</label><label>确认理由<input id="planDecisionReason" placeholder="请记录人工确认依据"></label><div class="button-row"><button class="secondary" id="confirmPlan" '+(!selected?'disabled':'')+'>确认所选方案</button><button class="primary" id="applyPlan" '+(confirmed.status!=='confirmed'?'disabled':'')+'>应用已确认方案</button></div><small>应用会重跑 P7→P10 与 P14→P15；验证不一致、出现确认回归或关键证据不足时整笔回滚。</small></div>';
   const reports=flow.cns_planning_reports||{},active=(reports.records||[]).find(item=>item.report_id===reports.active_report_id),hasPlan=['confirmed','applied'].includes(confirmed.status),hasReport=Boolean(active),stale=active?.current_applicability==='stale_current_project';
   const reportUi='<div class="review-block"><b>CNS规划方案报告</b><span>方案状态：'+statusText(confirmed.status||'not_confirmed')+' · 报告状态：'+statusText(active?.current_applicability||reports.status||'not_calculated')+'</span><span>报告ID：'+escapeHtml(active?.report_id||'尚未生成')+' · 生成时间：'+escapeHtml(active?.generated_at||'—')+'</span>'+(stale?'<p class="inline-error">该报告对应旧项目状态，可继续下载，但不代表当前项目。请重新确认方案并生成新报告。</p>':'')+(!hasPlan?'<p class="empty">请先在方案审查中确认一个规划方案；当前只能预览草稿，不能生成正式报告。</p>':'')+'<div class="button-row"><button class="secondary" id="previewPlanningReport">预览报告</button><button class="primary" id="generatePlanningReport" '+(!hasPlan?'disabled':'')+'>生成正式报告</button></div><div class="button-row"><button class="secondary" id="downloadReportHtml" '+(!hasReport?'disabled':'')+'>下载HTML</button><button class="secondary" id="downloadReportPdf" '+(!hasReport?'disabled':'')+'>下载PDF</button><button class="secondary" id="downloadReportPackage" '+(!hasReport?'disabled':'')+'>下载规划数据包</button></div><small>PDF使用与HTML完全相同的冻结ReportDataModel和页面；如提示PDF能力缺失，请执行 <code>python -m playwright install chromium</code> 后重试。</small></div>';
-  const body='<div class="review-block"><b>'+escapeHtml(flow.project.name)+'</b><span>数据源：'+statusText(state.data_health.status)+'</span><span>工作区：'+(flow.workspace?flow.workspace.area_km2+' km²':'未定义')+'</span><span>运行航路：'+flow.operational_routes.length+'（'+flow.operational_routes.map(item=>item.route_id).join(', ')+'）</span><span>飞行器：'+(flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置')+'</span><span>规则：'+statusText(flow.rules?.status||'not_calculated')+'</span><span>'+layers+'</span></div>'+requirementSummary+proposalSummary+reviewUi+reportUi+'<div class="risk-review">'+risks+'</div><div class="risk-review">'+dependencies+'</div><div class="overall-card">总体状态：'+statusBadge(flow.review.overall_status)+'<br>总体通过：'+(flow.review.overall_pass?'是':'否')+'</div><div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">兼容站点GeoJSON</a></div><button class="primary full" id="saveAll">保存当前项目</button>';
-  return shell('06','方案审查与受控应用','比较客观指标，人工选择、确认，再事务式应用。',body);
+  const overview='<div class="review-block"><b>'+escapeHtml(flow.project.name)+'</b><span>数据源：'+statusText(state.data_health.status)+'</span><span>工作区：'+(flow.workspace?flow.workspace.area_km2+' km²':'未定义')+'</span><span>运行航路：'+flow.operational_routes.length+'（'+flow.operational_routes.map(item=>item.route_id).join(', ')+'）</span><span>飞行器：'+(flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置')+'</span><span>规则：'+statusText(flow.rules?.status||'not_calculated')+'</span><span>'+layers+'</span></div>';
+  const riskPanel='<div class="risk-review">'+risks+'</div><div class="risk-review">'+dependencies+'</div><div class="overall-card">总体状态：'+statusBadge(flow.review.overall_status)+'<br>总体通过：'+(flow.review.overall_pass?'是':'否')+'</div>';
+  const body=wbPanel('operate',
+      wbSection('方案审查与受控应用',overview+reviewUi))
+    +wbPanel('result',
+      wbSection('报告与导出',reportUi)
+      +wbSection('总体状态',riskPanel)
+      +'<div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">兼容站点GeoJSON</a></div>'
+      +'<button class="primary full" id="saveAll">保存当前项目</button>')
+    +wbPanel('advanced',
+      wbSection('证据与来源追溯',requirementSummary+proposalSummary));
+  return shell('06','方案评审','比较客观指标，人工选择、确认，再事务式应用。',body);
 }
 
 export function bind(c){

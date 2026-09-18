@@ -855,7 +855,7 @@ test('V3-B panel marks the refined candidate experimental and never claims valid
   assert.match(html,/exposure_m 400\.00/);
   assert.match(html,/source_resolution_m 30\.00 m/);
   assert.match(html,/mapping_method coarse_cell_index_upsampled_to_fine_cells/);
-  assert.match(html,/provenance sources \["grid_risk\.ground\.population"\]/);
+  assert.match(html,/provenance sources \[&quot;grid_risk\.ground\.population&quot;\]/);
   assert.match(html,/h = 纯 3D 几何距离/);
   // data provenance of the fine environment
   assert.match(html,/fabdem\.tif/);
@@ -901,7 +901,7 @@ test('V3-B panel reports search_incomplete as resource limited instead of infeas
   assert.match(html,/未证明最优/);
   assert.match(html,/expansion_cap_reached=true/);
   assert.match(html,/expansion_cap_reached_optimality_not_proven/);
-  assert.match(html,/minimum_turn_radius_m \* \|dpsi\| <= stride_m/);
+  assert.match(html,/minimum_turn_radius_m \* \|dpsi\| &lt;= stride_m/);
   assert.match(html,/exact_curvature_validation not_implemented_V3-C/);
   assert.match(html,/not_a_flight_dynamics_certification_model true/);
   assert.equal(model.refinements[0].status,'search_incomplete');
@@ -946,7 +946,7 @@ test('V3-B readiness, fine policy hand-off and staleness are rendered',()=>{
   assert.match(html,/synthetic base_surface_elevation_m/);
   assert.match(html,/V3-B 精化历史与适用性/);
   assert.match(html,/current_applicability stale/);
-  assert.match(html,/changed_components \["source_fingerprint"\]/);
+  assert.match(html,/changed_components \[&quot;source_fingerprint&quot;\]/);
   assert.match(html,/stale_count 1/);
   assert.match(html,/stale：源\/corridor\/policy 变化后必须重跑/);
   assert.equal(readiness.refinementReadiness.status,'blocked');
@@ -1824,7 +1824,7 @@ test('layered planner panel never invents a default height, clearance or lambda'
   assert.match(html,/id="layeredGroundLambda" type="number" step="0.1" placeholder="留空 = null（待确认）"/);
   assert.match(html,new RegExp(LAYERED_BLOCKED_NOTE));
   assert.match(html,/cost_weights_not_configured/);
-  assert.match(html,/λ 启用（λ>0） · 配置值 2\.0000/);
+  assert.match(html,/λ 启用（λ&gt;0） · 配置值 2\.0000/);
   assert.match(html,/λ 关闭（显式 0） · 配置值 0\.0000/);
   assert.match(html,/λ 待确认（null） · 配置值 null（待确认）/);
   assert.match(html,/unknown ≠ feasible ≠ blocked/);

@@ -1,0 +1,101 @@
+// =========================================================
+// 集中式地图显示分级（LOD）
+//
+// 目的：缩小看概况、放大看细节。所有与比例尺有关的显示阈值只在
+// 本模块定义，禁止散落到 main.js 或其他绘制代码里。
+//
+// 判定依据：view.res（每屏幕像素对应的 EPSG:3857 米）。40075016.686 米
+// 是 Web Mercator 赤道周长，因此 res 可换算为"每像素多少米"。
+//
+// 三档：
+//   overview  全域/大范围 —— 只显示概况
+//   medium    中等尺度   —— 开始出现主要点
+//   detail    局部尺度   —— 展开单点与名称
+// =========================================================
+
+/** 每屏幕像素对应的地面米数分档阈值（数值越大表示视图越"远"）。 */
+export const LOD_THRESHOLDS={medium:2200,detail:420};
+
+/** 单个起降点/航路点被合并的屏幕距离（像素）。 */
+export const CLUSTER_PIXEL_THRESHOLD={overview:26,medium:15,detail:0};
+
+/**
+ * 参考航线与航路点的显示阈值：航路点只有在足够近时才显示。
+ * scenario/operational/CNS gap 线宽按档整体降低，避免抢地图。
+ */
+export const ROUTE_STYLES={
+  overview:{
+    routeWidth:1,routeAlpha:.30,referenceWidth:1,referenceAlpha:.30,
+    scenarioWidth:1.5,scenarioAlpha:.55,operationalWidth:2.2,operationalAlpha:.85,
+    gapWidth:2.4,gapAlpha:.75,infeasibleWidth:1,pointRadius:2.4,pointAlpha:.55,
+    nameMode:'hidden',markerMode:'cluster',showAllNames:false,coverageRing:false
+  },
+  medium:{
+    routeWidth:1.5,routeAlpha:.45,referenceWidth:1.5,referenceAlpha:.55,
+    scenarioWidth:2,scenarioAlpha:.7,operationalWidth:3,operationalAlpha:.92,
+    gapWidth:3.2,gapAlpha:.85,infeasibleWidth:1.2,pointRadius:3,pointAlpha:.8,
+    nameMode:'avoid',markerMode:'cluster',showAllNames:false,coverageRing:true
+  },
+  detail:{
+    routeWidth:2,routeAlpha:.6,referenceWidth:1.8,referenceAlpha:.7,
+    scenarioWidth:2.4,scenarioAlpha:.75,operationalWidth:3.6,operationalAlpha:1,
+    gapWidth:4,gapAlpha:.95,infeasibleWidth:1.4,pointRadius:3.4,pointAlpha:.95,
+    nameMode:'avoid',markerMode:'single',showAllNames:false,coverageRing:true
+  }
+};
+
+/** 三档的中文名，用于地图角标与状态栏。 */
+export const LOD_LABELS={overview:'概述',medium:'中等',detail:'细节'};
+
+/**
+ * 根据视图分辨率（以及可选的屏幕可见要素数量）给出 LOD 档位。
+ * @param {number} res view.res（EPSG:3857 米/像素）
+ * @param {number} [featureCount] 屏幕内要素数量，用于在临界处提前降级
+ */
+export function lodLevel(res,featureCount=0){
+  const value=Number(res);
+  if(!Number.isFinite(value)||value<=0)return 'overview';
+  // 要素极多时下调一档，避免过密遮挡（只是显示逻辑，不改变数据）
+  const crowded=Number(featureCount)>1400?1:0;
+  if(value>LOD_THRESHOLDS.medium)return crowded?'overview':'overview';
+  if(value>LOD_THRESHOLDS.detail)return crowded?'overview':'medium';
+  return crowded?'medium':'detail';
+}
+
+/** 每像素米数的可读文本。 */
+export function resolutionLabel(res){
+  const value=Number(res);
+  if(!Number.isFinite(value)||value<=0)return '—';
+  if(value>=1000)return (value/1000).toFixed(1)+' km/px';
+  return value.toFixed(0)+' m/px';
+}
+
+/**
+ * 一次性取出当前视图的完整显示配置。
+ * @param {{res:number,featureCount?:number}} view
+ */
+export function displayStyle(view){
+  const level=lodLevel(view&&view.res,view&&view.featureCount);
+  return {
+    level,
+    label:LOD_LABELS[level],
+    resolution:resolutionLabel(view&&view.res),
+    clusterPixels:CLUSTER_PIXEL_THRESHOLD[level],
+    styles:ROUTE_STYLES[level]
+  };
+}
+
+/** 某个图层在指定档位下是否应该绘制（供调用方做整体开关）。 */
+export function visibleAt(level,feature){
+  const table={
+    referencePoints:{overview:false,medium:'near',detail:true},
+    referenceRoutes:{overview:true,medium:true,detail:true},
+    scenarioRoutes:{overview:true,medium:true,detail:true},
+    operationalRoutes:{overview:true,medium:true,detail:true},
+    gapLines:{overview:true,medium:true,detail:true}
+  };
+  const row=table[feature];
+  if(!row)return true;
+  const value=row[level];
+  return value===undefined?true:value;
+}

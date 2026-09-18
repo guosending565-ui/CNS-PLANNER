@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge} from './common.js';
+import {escapeHtml,shell,statusBadge,wbPanel,wbSection,wbEmpty,wbLine,wbEngine,wbCard} from './common.js';
 
 export function algorithmSelectionKey(item){return [item?.algorithm_type,item?.algorithm_id,item?.version].join('|');}
 export function algorithmManifestDetails(item){return item?{
@@ -29,13 +29,37 @@ export function render({state,flow}){
     ['Existing CNS',flow.existing_cns_facilities],['Candidate Site',flow.candidate_sites],
   ];
   const cnsStatus=cnsSources.map(([label,item])=>'<div class="list-row"><span>'+escapeHtml(label)+'</span><small>'+statusBadge(item?.status||'not_calculated')+' '+(item?.count||0)+' 项</small></div>').join('');
-  const body='<label>项目名称</label><input class="panel-input" id="projectName" value="'+escapeHtml(flow.project.name)+'">'+
-    '<label>项目数据存储位置</label><div class="panel-file-input"><input class="panel-input" id="projectPath" value="'+escapeHtml(storageDir)+'" placeholder="请选择项目文件夹"><button class="secondary" id="browseProject">选择…</button></div>'+
-    '<div class="button-row project-buttons"><button class="secondary" id="openProject">打开项目</button><button class="primary" id="saveProject">保存项目</button></div>'+
-    '<div class="project-path-note">保存后将在该目录生成 project_state.json 和 data_sources.json；之后的自动保存将写入该项目。</div>'+
-    '<label>地名搜索定位</label><input class="panel-input" id="placeSearch" type="search" placeholder="舟山市、朱家尖、普陀山"><button class="secondary full" id="searchPlace">搜索定位</button><div id="placeResults" class="place-results" hidden></div>'+
-    '<div class="flow-summary">'+statusBadge(state.data_health.status)+' '+state.data_health.label+'<br>'+state.layers.length+' 个本地图层 · 本地数据可独立工作</div><div class="scroll-list">'+cnsStatus+'</div>'+algorithmSettings(flow)+'<button class="primary full" id="nextStep">下一步：工作区</button>';
-  return shell('01','项目与数据','设置项目名称和数据存储位置，检查数据后进入工作区。',body);
+  const health=state?.data_health||{};
+  const healthLabel={ready:'数据源正常',warning:'数据源有告警',error:'数据源错误',checking:'正在检查数据源'}[health.status]||health.status;
+  const healthLine=wbLine(healthLabel||'数据源状态未知',health.status==='ready'?'ok':'warn',health.label||'');
+  const healthy=cnsSources.filter(([,item])=>item?.status==='passed').length;
+
+  const operate=wbPanel('operate',
+    wbSection('项目与存储位置')
+      +'<label>项目名称</label><input class="panel-input" id="projectName" value="'+escapeHtml(flow.project.name)+'">'
+      +'<label>项目数据存储位置</label><div class="panel-file-input"><input class="panel-input" id="projectPath" value="'+escapeHtml(storageDir)+'" placeholder="请选择项目文件夹"><button class="secondary" id="browseProject">选择…</button></div>'
+      +'<div class="button-row project-buttons"><button class="secondary" id="openProject">打开项目</button><button class="primary" id="saveProject">保存项目</button></div>'
+      +'<div class="project-path-note">保存后将在该目录生成 project_state.json 和 data_sources.json；之后的自动保存将写入该项目。</div>'
+      +wbSection('地名定位')
+      +'<label>地名搜索定位</label><input class="panel-input" id="placeSearch" type="search" placeholder="舟山市、朱家尖、普陀山"><button class="secondary full" id="searchPlace">搜索定位</button><div id="placeResults" class="place-results" hidden></div>'
+  );
+
+  const result=wbPanel('result',
+    wbSection('数据健康',statusBadge(health.status||'unknown'))
+      +healthLine
+      +wbSection('规划输入就绪')
+      +'<div class="scroll-list">'+(cnsStatus||wbEmpty('尚未载入规划输入数据'))+'</div>'
+      +'<div class="flow-summary">'+statusBadge(state.data_health.status)+' '+state.data_health.label+'<br>'+state.layers.length+' 个本地图层 · 本地数据可独立工作</div>'
+  );
+
+  const advanced=wbPanel('advanced',
+    wbSection('算法选择')
+      +'<div class="parameter-note">每个算法类型使用注册表中精确的 id@version；未注册的精确版本不会回退到其他版本。</div>'
+      +algorithmSettings(flow)
+  );
+
+  const body=operate+result+advanced+'<button class="primary full" id="nextStep">下一步：环境建模</button>';
+  return shell('01','项目准备','设置项目名称和数据存储位置，检查数据后进入工作区。',body);
 }
 export function bind(c){
   c.$('browseProject').onclick=()=>c.openBrowser('project',c.$('projectPath').value);

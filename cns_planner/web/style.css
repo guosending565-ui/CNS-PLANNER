@@ -1,5 +1,16 @@
-/* Stable stylesheet entry; ordering preserves the existing visual cascade. */
-@import url('./css/base.css');
-@import url('./css/dialogs.css');
-@import url('./css/workflow.css');
+/* =========================================================
+   Stable stylesheet entry.
+   清晰分层的层叠顺序：
+     tokens   设计令牌
+     layout   应用骨架（顶栏/左导航/中地图/右工作台/底栏）
+     components 通用控件与信息块
+     workbench  右侧当前步骤工作台
+     map      地图舞台浮层
+     dialogs  数据源与文件浏览对话框
+   ========================================================= */
+@import url('./css/tokens.css');
+@import url('./css/layout.css');
+@import url('./css/components.css');
+@import url('./css/workbench.css');
 @import url('./css/map.css');
+@import url('./css/dialogs.css');

@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbSection,wbSegHint} from './common.js';
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './route_operating_layer.js';
 import {bindLayeredRoutePlanner,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
@@ -1693,7 +1693,7 @@ function buildingClearancePanel(flow){
 
 export function render({flow,interactionMode,selectedReference=null}){
   const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+node.node_id+'</b> '+escapeHtml(node.name)+'<small>'+node.coordinate.map(value=>value.toFixed(5)).join(', ')+(node.reference_site_id?' · 来源 '+escapeHtml(node.reference_site_id):' · 手工点')+'</small></span><button data-delete-node="'+node.node_id+'">×</button></div>').join('');
-  const routes=(flow.scenario_routes||[]).map(route=>{const result=(flow.operational_routes||[]).find(item=>item.route_id===route.route_id),v2=result?.algorithm_id==='risk_aware_route_planner_v2',details=v2?'<small>Distance '+metric(result.distance_m,'m')+' · Risk exposure '+metric(result.risk_exposure_index_m,'index·m')+' · Mean '+metric(result.mean_risk_index)+' · Max '+metric(result.max_risk_index)+' · Detour '+metric(result.detour_factor)+'</small>':'';return '<div class="list-row route-row"><span><b>'+route.route_id+'</b> '+route.direction+' '+statusBadge(result?.status||'not_calculated')+details+'</span><button data-delete-route="'+route.route_id+'">×</button></div>';}).join('');
+  const routes=routesFor(flow);
   const routeOptions=(flow.operational_routes||[]).map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
   const profiles=Object.values(flow.spatial_3d?.route_altitude_profiles||{}).map(item=>{const locked=item.locked_by_adoption===true||item.locked===true;return '<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_altitude_m===null||item.constant_altitude_m===undefined?'无 constant 值':escapeHtml(String(item.constant_altitude_m))+' m')+' '+escapeHtml(item.vertical_reference)+' · '+escapeHtml(item.source||'')+(item.derived?' · derived':'')+'</small>'+(locked?'<small>V3-D locked · advanced_variable_profile / v3c_validated_route（只读）</small>':'')+'</span></div>';}).join('');
   // The naked "Constant altitude" production entry is gone: the production cruise layer is
@@ -1702,8 +1702,79 @@ export function render({flow,interactionMode,selectedReference=null}){
   const altitude='<h3>高级/实验：Route 3D Altitude Profile</h3><div class="parameter-note">'+escapeHtml(ADVANCED_PROFILE_LABEL)+'。此处保存的 constant / waypoint 剖面不会创建或改写生产巡航高度层，也不会被自动匹配到任何 AltitudeLayer；V3-D validated route 导出的 locked profile 保持只读。系统不提供默认真实高度。</div><div class="panel-file-input"><select id="altitudeRoute">'+routeOptions+'</select><select id="routeVerticalReference"><option value="">请选择垂向基准（不猜）</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="agl">AGL</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option></select></div><label>Constant altitude (m)<input class="panel-input" type="number" step="any" id="routeAltitude" placeholder="必须显式输入，无默认值"></label><button class="secondary full" id="saveRouteAltitude" '+(!routeOptions?'disabled':'')+'>保存高级高度剖面</button><div class="scroll-list">'+(profiles||'<div class="empty-note">尚未配置高级高度剖面</div>')+'</div>';
   const motionProfiles=Object.values(flow.operational_timing?.route_motion_profiles||{}).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_ground_speed_mps??'待确认')+' m/s · '+escapeHtml(item.status)+'</small></span></div>').join('');
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
-  const body=referenceRoutesPanel(flow,selectedReference)+referenceLandingPanel(flow)+dataReadinessPanel(flow)+'<h3>项目起降点</h3><button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button><div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'+odScenarioPanel(flow)+'<h3>旧：生成方向</h3><label>生成方向</label><select id="routeDirection"><option value="both">双向（独立生成两个 route_id）</option><option value="ab">A→B</option><option value="ba">B→A</option></select>'+plannerCard(plannerCardModel(flow))+riskAwareRoutePanel(flow)+'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div><div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'+renderCruiseLayerPanel(flow)+renderLayeredRoutePlannerPanel(flow)+experimentPanelV3(flow)+experimentPanel(flow)+routePlanningDiagnosticsPanel(flow)+comparisonPanelV2(flow,routePlannerComparisonModel(flow))+referenceLinkPanel(flow)+comparisonPanel(flow,selectedReference)+altitude+renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)+motion+buildingClearancePanel(flow)+'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div><button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>';
-  return shell('03','航路设计','地图点击增加起降点；场景与运行航路分别保存。',body);
+  return shell('03','航路规划','地图点击增加起降点；场景与运行航路分别保存。',
+    routeOperateSection(flow,{interactionMode,nodes})
+    +routeResultSection(flow,{routes,selectedReference})
+    +routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion})
+    +'<button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>');
+}
+
+// ---- 操作/结果/高级的二级分段定义（与 CSS 分段选择器一一对应） -------------------
+const OPERATE_SEGMENTS=[['op-sites','起降点与OD'],['op-candidates','分层候选'],['op-operational','运行航路'],['op-altitude','高度与程序']];
+const RESULT_SEGMENTS=[['res-route','当前航路'],['res-feasibility','可行性与净空'],['res-compare','对比与验证']];
+const ADVANCED_SEGMENTS=[['adv-reference','参考数据与关联'],['adv-legacy','Legacy / Risk-Aware V2'],['adv-experiment','V3实验'],['adv-diagnostics','规划诊断'],['adv-profile','剖面与运动']];
+
+// ---- 操作区：同屏只呈现当前任务 -------------------------------------------------
+function routeOperateSection(flow,{interactionMode,nodes}){
+  // 生成运行航路是整步最高频动作，放在操作区首个分段内
+  const routeActions='<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div>';
+  const sitesPanel=referenceLandingPanel(flow)
+    +'<h3>项目起降点</h3>'
+    +'<button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button>'
+    +'<div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'
+    +odScenarioPanel(flow);
+  return wbPanel('operate','',{segments:[
+    ['op-sites','起降点与OD',
+      wbSection('起降点与 OD')
+        +wbSegHint(OPERATE_SEGMENTS,'op-sites')
+        +'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'
+        +sitesPanel],
+    ['op-candidates','分层候选',wbSection('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+renderLayeredRoutePlannerPanel(flow))],
+    ['op-operational','运行航路',
+      wbSection('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+routeActions+'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')],
+    ['op-altitude','高度与程序',wbSection('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow))]
+  ]});
+}
+
+// ---- 结果区：当前航路 / 可行性 / 对比验证 ---------------------------------------
+function routeResultSection(flow,{routes,selectedReference}){
+  // 建筑净空突破的详细分析在"高级 → 剖面与运动"，这里保持独立的可行性与净空汇总
+  const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)+buildingClearancePanel(flow);
+  return wbPanel('result','',{segments:[
+    ['res-route','当前航路',
+      wbSection('当前航路')
+        +wbSegHint(RESULT_SEGMENTS,'res-route')
+        +'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'
+        +wbSection('航路剖面')
+        +renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)],
+    ['res-feasibility','可行性与净空',wbSection('可行性与净空',feasibility)],
+    ['res-compare','对比与验证',
+      wbSection('参考航线 vs 运行航路',comparisonPanel(flow,selectedReference))
+        +wbSection('规划器结果并列',comparisonPanelV2(flow,routePlannerComparisonModel(flow)))]
+  ]});
+}
+
+// ---- 高级区：参考数据 / Legacy / 实验 / 诊断 / 剖面 -----------------------------
+function routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion}){
+  return wbPanel('advanced','',{segments:[
+    ['adv-reference','参考数据与关联',
+      wbSection('真实参考航线',wbSegHint(ADVANCED_SEGMENTS,'adv-reference')+referenceRoutesPanel(flow,null))
+        +wbSection('参考航线 ↔ 当前 OD 关联',referenceLinkPanel(flow))],
+    ['adv-legacy','Legacy / Risk-Aware V2',
+      wbSection('Legacy 规划器',wbSegHint(ADVANCED_SEGMENTS,'adv-legacy')+plannerCard(plannerCardModel(flow)))
+        +wbSection('Risk-Aware V2 参数',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是 Risk-Aware V2，V2 参数面板不适用。</div>')],
+    ['adv-experiment','V3 实验',
+      wbSection('V3 实验',wbSegHint(ADVANCED_SEGMENTS,'adv-experiment')+experimentPanelV3(flow)+experimentPanel(flow))],
+    ['adv-diagnostics','规划诊断',
+      wbSection('航路规划诊断',wbSegHint(ADVANCED_SEGMENTS,'adv-diagnostics')+routePlanningDiagnosticsPanel(flow))
+        +'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div>'],
+    ['adv-profile','剖面与运动',
+      wbSection('高级 3D 剖面 / 运动剖面',wbSegHint(ADVANCED_SEGMENTS,'adv-profile')+altitude+motion)]
+  ]});
+}
+
+function routesFor(flow){
+  return (flow.scenario_routes||[]).map(route=>{const result=(flow.operational_routes||[]).find(item=>item.route_id===route.route_id),v2=result?.algorithm_id==='risk_aware_route_planner_v2',details=v2?'<small>Distance '+metric(result.distance_m,'m')+' · Risk exposure '+metric(result.risk_exposure_index_m,'index·m')+' · Mean '+metric(result.mean_risk_index)+' · Max '+metric(result.max_risk_index)+' · Detour '+metric(result.detour_factor)+'</small>':'';return '<div class="list-row route-row"><span><b>'+route.route_id+'</b> '+route.direction+' '+statusBadge(result?.status||'not_calculated')+details+'</span><button data-delete-route="'+route.route_id+'">×</button></div>';}).join('');
 }
 export function bind(c){
   bindRouteVerticalProfile(c);

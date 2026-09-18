@@ -3,15 +3,17 @@ import {createStore} from './state/store.js';
 import {eventLonLat as projectEvent,lonLatToMercator,mercatorToLonLat,screenPoint as projectPoint} from './map/projection.js';
 import {buildGridOverlayCache,findGridCell as hitGridCell} from './map/grid_overlay.js';
 import {bindMapInteraction} from './map/interaction.js';
-import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/renderer.js';
-import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
-import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
-import {drawV3CandidateOverlay,v3OverlayModel} from './map/route_planner_v3_overlay.js';
-import {drawLayeredFeasibilityOverlay} from './map/layered_feasibility_overlay.js';
+import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/renderer.js';
+import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
+import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,entryExtent} from './map/display_layers.js';
 import {renderLayeredFeasibilityLegend} from './workflow/layered_legend.js';
-import {BUILDING_PALETTE,POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
+import {renderWorkflowSteps} from './workflow/steps.js';
+import {createWorkbench} from './workflow/workbench.js';
+import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
-import {LEGACY_RISK_V1_LABEL,riskV2CellSummary,riskV2LegendModel} from './workflow/risk_framework_v2.js';
+import {riskV2LegendModel} from './workflow/risk_framework_v2.js';
+import {gridCellDetails,populationDisplayLabel} from './workflow/grid_details.js';
+import {bindShell,updateLodBadge,renderRailSteps,layerSwitches} from './shell.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
 import * as Step03 from './workflow/step03_routes.js';
@@ -19,9 +21,12 @@ import * as Step04 from './workflow/step04_operation.js';
 import * as Step05 from './workflow/step05_cns.js';
 import * as Step06 from './workflow/step06_review.js';
 import {createSourceCenter} from './sources/source_center.js';
+
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
+const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','referenceRouteLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
-let currentStep=1,interactionMode='pan',renderController=null;
+let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
@@ -29,8 +34,14 @@ let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],te
 const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
 const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
-const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan'}});
+const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan',workbench:{step:1,tab:'operate',segs:{},scroll:0}}});
 const api=createApiClient(()=>state?.token);
+// 右栏工作台视图状态：只保存展示导航（step / 一级 tab / 二级段 / 滚动位置）
+const workbench=createWorkbench({
+  getState:()=>store.get().ui.workbench,
+  setState:value=>store.set({ui:{...store.get().ui,workbench:value}})
+});
+function layers(){return layerSwitches($,LAYER_IDS);}
 async function mutate(action,payload={}){
   const data=await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   flow=data;store.set({workflow:flow});rebuildGridRenderCache();
@@ -41,9 +52,7 @@ async function resourceAction(path,payload={}){
   const data=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   flow=data;store.set({workflow:flow});rebuildGridRenderCache();renderWorkflow();paint();return data;
 }
-async function computeAction(path,payload={}){
-  return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-}
+async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
 // V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
 async function loadRoutePlannerV3Detail(){
   const detail=await api('/api/route-planner-v3-experiments');
@@ -62,6 +71,7 @@ function size(){return [Math.max(1,Math.round(map.clientWidth)),Math.max(1,Math.
 function fit(box){if(!box)return;const [w,h]=size();view={x:(box[0]+box[2])/2,y:(box[1]+box[3])/2,res:Math.max((box[2]-box[0])/w,(box[3]-box[1])/h)*1.1};queue();}
 function mapBounds(){const [w,h]=size();return [view.x-w*view.res/2,view.y-h*view.res/2,view.x+w*view.res/2,view.y+h*view.res/2];}
 function screenPoint(coordinate){const [w,h]=size();return projectPoint(coordinate,view,w,h);}
+function fromScreen(point){const [w,h]=size();return [view.x+(point[0]-w/2)*view.res,view.y-(point[1]-h/2)*view.res];}
 function eventLonLat(event){const [w,h]=size();return projectEvent(event,map,view,w,h);}
 function visibleLonLatBounds(){
   const bbox=mapBounds(),southwest=mercatorToLonLat(bbox[0],bbox[1]),northeast=mercatorToLonLat(bbox[2],bbox[3]);
@@ -71,6 +81,11 @@ function fitLonLatBbox(bbox){
   if(!bbox)return;
   const southwest=lonLatToMercator(bbox[0],bbox[1]),northeast=lonLatToMercator(bbox[2],bbox[3]);
   fit([southwest[0],southwest[1],northeast[0],northeast[1]]);
+}
+function fitScreenBox(box){
+  if(!box)return;
+  const first=mercatorToLonLat(...fromScreen([box[0],box[3]])),second=mercatorToLonLat(...fromScreen([box[2],box[1]]));
+  fitLonLatBbox([first[0],first[1],second[0],second[1]]);
 }
 function paint(){
   const [w,h]=size();if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
@@ -86,39 +101,54 @@ function rebuildGridRenderCache(){
 function findGridCell(lon,lat){return hitGridCell(gridRenderCache,lon,lat,GridTheme);}
 function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,display:gridDisplay,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme,palettes:{population:populationPalette,terrain:terrainPalette,buildings:buildingPalette,risk:riskPalette},riskBreaks});}
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
+function formatGridDetails(item){return gridCellDetails(item,flow,GridTheme.formatNumber);}
+// CNS 缺口段计数：只读汇总，用于状态栏提示；绘制本身在 map/display_layers.js
+function cnsGapSegments(){
+  const analysis=flow?.cns_gap_analysis;
+  if(!analysis||analysis.status==='stale')return 0;
+  let count=0;
+  for(const route of analysis.routes||[]){
+    for(const subsystem of route.subsystems||[])count+=(subsystem.uncovered_segments||[]).length;
+  }
+  return count;
+}
+function referenceFilters(){
+  const active=currentStep===3;  return {workspace:flow?.workspace,search:active?$('referenceSiteSearch')?.value||'':'',
+    region:active?$('referenceSiteRegion')?.value||'':'',siteType:active?$('referenceSiteType')?.value||'':''};
+}
+// 尺度相关的显示决定全部来自 map/lod.js 与屏幕空间聚合，这里只组装输入
+function displayPlan(){
+  const overlay=Step03.referenceOverlayModel(flow,{routes:layers().referenceRouteLayer,points:false,landingSites:false});
+  return buildDisplayPlan({
+    flow,view,size:size(),screenPoint,fromScreen,layers:layers(),referenceOverlay:overlay,
+    selectedReference,referenceFilters:referenceFilters(),filterReferenceSites:Step03.filterReferenceSites
+  });
+}
 function drawWorkflowOverlay(){
-  if(!view||!flow)return;drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox);drawGridThemes();drawGridBoundaries();
-  for(const route of flow.scenario_routes||[])drawLine(ctx,screenPoint,view,route.path,'#7b8791',2,[7,5]);
-  for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
-  if($('buildingClearanceLayer')?.checked)drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
-  if($('v3CandidateLayer')?.checked)drawV3CandidateOverlay({ctx,screenPoint,drawLine,model:v3OverlayModel(flow)});
-  if($('layeredFeasibilityLayer')?.checked)drawLayeredFeasibilityOverlay({ctx,view,screenPoint,flow,grid:flow.grid,gridTheme:GridTheme});
-  const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer')?.checked,points:$('referenceRoutePointLayer')?.checked,landingSites:false});
-  drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
-  const filters={workspace:flow.workspace,search:currentStep===3?$('referenceSiteSearch')?.value||'':'',region:currentStep===3?$('referenceSiteRegion')?.value||'':'',siteType:currentStep===3?$('referenceSiteType')?.value||'':''};
-  if($('referenceLandingLayer')?.checked)for(const site of Step03.filterReferenceSites(flow.reference_landing_sites?.items||[],filters))drawCnsInputPoint(site.coordinate,site.possible_duplicate?'#8b6b2f':'#2b8c82','diamond');
-  const gapColors={C:'#d83b35',N:'#c26b16',S:'#9b3eb5'},gapToggles={C:'cLayer',N:'nLayer',S:'sLayer'};
-  for(const route of flow.cns_gap_analysis?.status==='stale'?[]:(flow.cns_gap_analysis?.routes||[]))for(const subsystem of route.subsystems||[]){
-    if(!$(gapToggles[subsystem.subsystem])?.checked)continue;
-    for(const segment of subsystem.uncovered_segments||[])drawLine(ctx,screenPoint,view,segment.path,gapColors[subsystem.subsystem],6,[5,3]);
+  if(!view||!flow)return;
+  currentPlan=displayPlan();
+  updateLodBadge($('lodStatus'),currentPlan,escapeHtml);
+  drawWorkflowLayers({
+    ctx,view,flow,plan:currentPlan,layers:layers(),screenPoint,profileHoverCoordinate,gridTheme:GridTheme,
+    proposedPlanActions,
+    drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
+    drawGridThemes,drawGridBoundaries
+  });
+  // 参考层：只读参考数据，线宽/透明度/点半径按当前显示层级收敛
+  const plan=currentPlan,switches=layers(),styles=plan.styles;
+  drawReferenceOverlay({
+    ctx,view,screenPoint,drawLine,
+    routes:switches.referenceRouteLayer?plan.referenceRoutes:[],
+    points:(switches.referenceRoutePointLayer&&plan.referencePointsVisible)?plan.referencePoints:[],
+    routeWidth:styles.referenceWidth,routeAlpha:styles.referenceAlpha,
+    pointRadius:styles.pointRadius,pointAlpha:styles.pointAlpha,
+    labelMode:plan.level==='detail'?'detail':'hidden'
+  });
+  if(selectedReference&&plan.selectedScreen){
+    const [x,y]=plan.selectedScreen;ctx.save();
+    ctx.fillStyle='#8f2f6b';ctx.strokeStyle='#fff';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(x,y,8,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();
   }
-  const colors={C:'#1574d4',N:'#c58a13',S:'#139b86'},toggles={C:'cLayer',N:'nLayer',S:'sLayer'};
-  for(const [subsystem,layer] of Object.entries(flow.coverage?.layers||{})){
-    if(!$(toggles[subsystem])?.checked)continue;
-    for(const station of layer.stations||[]){
-      const [x,y]=screenPoint(station.coordinate),radius=Math.max(5,station.radius_m/view.res);
-      ctx.save();ctx.strokeStyle=colors[subsystem];ctx.fillStyle=colors[subsystem]+'20';ctx.lineWidth=1;ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);ctx.fill();ctx.stroke();
-      ctx.fillStyle=station.role==='gap'?'#fff':colors[subsystem];ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,5,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();
-    }
-  }
-  for(const node of flow.nodes||[]){
-    const [x,y]=screenPoint(node.coordinate);ctx.save();ctx.fillStyle='#fff';ctx.strokeStyle='#d65432';ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fill();ctx.stroke();
-    ctx.fillStyle='#233f56';ctx.font='600 11px Segoe UI';ctx.fillText(node.node_id,x+10,y-8);ctx.restore();
-  }
-  if(profileHoverCoordinate)drawCnsInputPoint(profileHoverCoordinate,'#111','circle');
-  if($('existingCnsLayer')?.checked)for(const facility of flow.existing_cns_facilities?.items||[])drawCnsInputPoint(facility.coordinate,'#7256a1','circle');
-  if($('candidateSiteLayer')?.checked)for(const site of flow.candidate_sites?.items||[])drawCnsInputPoint(site.coordinate,site.usable===false?'#8b949e':'#e07a26','diamond');
-  if($('candidateSiteLayer')?.checked)for(const action of proposedPlanActions(flow))drawCnsInputPoint(action.coordinate,'#d12f8a','square');
 }
 function proposedPlanActions(value){
   const p16=value?.cns_corridor_site_plan||{},review=value?.cns_plan_review||{};
@@ -128,28 +158,15 @@ function proposedPlanActions(value){
   const ids=new Set(variant.selected_action_ids||[]),catalog=[...(p16.candidate_actions||[]),...(p16.selected_actions||[])];
   return catalog.filter((item,index)=>ids.has(item.action_id)&&catalog.findIndex(other=>other.action_id===item.action_id)===index);
 }
-function drawCnsInputPoint(coordinate,color,shape){
-  if(!Array.isArray(coordinate))return;
-  const [x,y]=screenPoint(coordinate);ctx.save();ctx.fillStyle=color;ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();
-  if(shape==='diamond'){ctx.moveTo(x,y-7);ctx.lineTo(x+7,y);ctx.lineTo(x,y+7);ctx.lineTo(x-7,y);ctx.closePath();}else if(shape==='square'){ctx.rect(x-6,y-6,12,12);}else ctx.arc(x,y,6,0,Math.PI*2);
-  ctx.fill();ctx.stroke();ctx.restore();
-}
 function queue(){paint();clearTimeout(timer);serial++;renderController?.abort();timer=setTimeout(()=>{onlineTiles.update(view,...size(),$('online').checked);renderMap();},160);}
 async function renderMap(){
   if(!view||!state?.bounds)return;const started=performance.now(),request=serial,box=mapBounds(),[w,h]=size(),factor=Math.min(1,1600/w,1000/h);
- const q=new URLSearchParams({
-  bbox:box.join(','),
-  w:Math.round(w*factor),
-  h:Math.round(h*factor),
-  pop:$('pop').checked?'1':'0',
-  air:$('air').checked?'1':'0',
-  terrain:$('terrain').checked?'1':'0',
-  opacity:$('opacity').value/100,
-  terrainOpacity:$('terrainOpacity').value/100,
-  rev:state.revision,
-  client,
-  seq:request
-});
+  const q=new URLSearchParams({
+    bbox:box.join(','),w:Math.round(w*factor),h:Math.round(h*factor),
+    pop:$('pop').checked?'1':'0',air:$('air').checked?'1':'0',terrain:$('terrain').checked?'1':'0',
+    opacity:$('opacity').value/100,terrainOpacity:$('terrainOpacity').value/100,
+    rev:state.revision,client,seq:request
+  });
   renderController=new AbortController();$('loading').hidden=false;$('loading').textContent='更新本地图层…';
   try{
     const response=await fetch('/api/render?'+q,{signal:renderController.signal});if(!response.ok)throw Error((await response.json()).error);
@@ -164,11 +181,42 @@ bindMapInteraction({
   onPosition:point=>{$('position').textContent=point[0].toFixed(5)+'° E / '+point[1].toFixed(5)+'° N · WGS84';},
   onPanStart:()=>{clearTimeout(timer);serial++;}
 });
-function populationDisplayLabel(result){
-  return result?.source_profile?.quantity==='population_count_per_source_pixel'
-    ? '目标网格人口数（person）/人口密度（person/km²）'
-    : '人口源值（兼容字段，非人数）';
+canvas.addEventListener('click',event=>{
+  const info=$('gridInfo');
+  if(interactionMode!=='pan'){info.hidden=true;return;}
+  if(currentStep===3){
+    const selected=hitReferenceObject(event);
+    if(selected){selectedReference=selected;info.hidden=true;renderWorkflow();paint();return;}
+  }
+  // 聚合点可点击放大到其范围；没有放大能力时不会误选看不见的单点
+  const clusterTarget=hitClusterAt(event);
+  if(clusterTarget&&clusterTarget.count>1){const box=entryExtent(clusterTarget);if(box)fitScreenBox(box);info.hidden=true;return;}
+  const [lon,lat]=eventLonLat(event);
+  const item=gridRenderCache.cells.length?findGridCell(lon,lat):null;
+  if(!item){info.hidden=true;if(selectedReference){selectedReference=null;}return;}
+  const rect=map.getBoundingClientRect();
+  info.textContent=formatGridDetails(item);
+  info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
+  info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
+  info.hidden=false;
+});
+function hitClusterAt(event){
+  if(!currentPlan)return null;
+  const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top];
+  return hitDisplayEntry(currentPlan,click,{kind:'nodes'})||hitDisplayEntry(currentPlan,click,{kind:'sites'});
 }
+function hitReferenceObject(event){
+  const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top],
+    overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:false});
+  return hitReferenceOverlay(click,overlay,screenPoint);
+}
+bindShell({
+  $,downloadExport,saveProject,panelError,
+  previewReport:()=>previewPlanningReport(),
+  generateReport:()=>resourceAction('/api/cns-planning-report/generate',{}),
+  downloadReport:kind=>downloadPlanningReport(kind)
+});
+$('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
 function updateGridNotice(){
   const notice=$('gridNotice');if(!notice)return;
   const hasGrid=flow?.grid?.status==='passed'&&gridRenderCache.cells.length>0;
@@ -208,127 +256,61 @@ function updateRiskV2Legend(){
   $('gridThemeLegendNote').textContent=model.note;
   return true;
 }
-function formatGridDetails(item){
-  const cell=item.cell,populationResult=flow?.grid_attributes?.population||{},terrainResult=flow?.grid_attributes?.terrain||{};
-  const population=item.population||{},terrain=item.terrain||{},buildings=item.buildings||{},airspace=item.airspace||{},traffic=item.traffic||{},conflict=item.conflict||{},populationSamples=population.valid_sample_count||0,terrainSamples=terrain.valid_sample_count||0;
-  const populationCoverage=Number.isFinite(population.source_coverage_fraction)?GridTheme.formatNumber(population.source_coverage_fraction*100)+'%':'未知';
-  const populationValues=Number.isFinite(population.population_count_people)
-    ? '人口数 '+GridTheme.formatNumber(population.population_count_people)+' person · 密度 '+GridTheme.formatNumber(population.population_density_people_km2)+' person/km² · coverage '+populationCoverage+' · '+(population.coverage_status||'unknown')
-    : populationSamples?'兼容源像元统计 mean '+GridTheme.formatNumber(population.value_mean)+' · sum '+GridTheme.formatNumber(population.value_sum)+'（非人数）':'无数据';
-  const elevationUnit=terrainResult.elevation_unit||'m';
-  const terrainPath=terrainResult.source?.path||'',terrainSource=terrainPath.split(/[\\/]/).pop()||'未记录';
-  const terrainValues=terrainSamples
-    ? 'mean '+GridTheme.formatNumber(terrain.mean_elevation)+' / min '+GridTheme.formatNumber(terrain.min_elevation)+' / max '+GridTheme.formatNumber(terrain.max_elevation)+' '+elevationUnit
-    : '无数据';
-  const airspaces=airspace.airspaces||[],shownAirspaces=airspaces.slice(0,8);
-  const airspaceLines=shownAirspaces.map(hit=>{
-    const identity=hit.feature_id===null||hit.feature_id===undefined?'':' #'+hit.feature_id;
-    const classification=[hit.category,hit.type].filter(Boolean).join(' / ');
-    const ratio=Number.isFinite(hit.intersection_ratio)?' · 覆盖 '+(hit.intersection_ratio*100).toFixed(1)+'%':' · 几何相交';
-    const sourceAttributes=Object.entries(hit.source_attributes||{}).slice(0,6).map(([key,value])=>key+'='+value).join('，');
-    return '  - '+(hit.name||hit.layer_id||'未命名图层')+identity+(classification?' · '+classification:'')+ratio+(sourceAttributes?' · '+sourceAttributes:'');
-  });
-  if(airspaces.length>shownAirspaces.length)airspaceLines.push('  - 另有 '+(airspaces.length-shownAirspaces.length)+' 个命中');
-  const airspaceSummary='空域：'+statusText(airspace.status||'no_coverage')+' · 命中图层 '+(airspace.intersected_layer_count||0)+(airspaceLines.length?'\n'+airspaceLines.join('\n'):' · 无命中');
-  const trafficSummary='Traffic Exposure：'+statusText(traffic.status||'not_calculated')+' · flights '+(traffic.flight_count||0)+' · flight_seconds '+GridTheme.formatNumber(traffic.flight_seconds)+' · density '+GridTheme.formatNumber(traffic.traffic_density_raw)+' · normalized '+GridTheme.formatNumber(traffic.traffic_density_norm);
-  const conflictSummary='Conflict Exposure：'+statusText(conflict.status||'not_calculated')+' · count '+(conflict.conflict_count||0)+' · rate '+GridTheme.formatNumber(conflict.conflict_rate)+' · normalized '+GridTheme.formatNumber(conflict.conflict_rate_norm);
-  const buildingSummary='建筑环境：'+statusText(buildings.status||'missing_data')+' · count '+GridTheme.formatNumber(buildings.building_count)+' · coverage '+GridTheme.formatNumber(buildings.building_coverage_ratio)+' · mean/P95/max '+GridTheme.formatNumber(buildings.height_mean_m)+' / '+GridTheme.formatNumber(buildings.height_p95_m)+' / '+GridTheme.formatNumber(buildings.height_max_m)+' m';
-  const risk=item.risk||{},ground=risk.ground||{},operationalAir=risk.air||{},overall=risk.overall||{},riskResult=flow?.grid_risk||{};
-  const p=ground.contributors?.population||{},t=ground.contributors?.terrain||{};
-  const riskSummary=LEGACY_RISK_V1_LABEL+' · Ground Risk：'+riskValue(ground)+'\n'+
-    '  P：'+factorValue(p)+'\n'+
-    '  T：'+factorValue(t)+(t.raw?.relief===undefined?'':' · relief '+GridTheme.formatNumber(t.raw.relief))+'\n'+
-    'Operational Air Risk：'+riskValue(operationalAir)+'\n'+
-    'Airspace：not applicable（display-only reference layer）\n'+
-    'Overall Risk：'+riskValue(overall)+' · 完整度 '+GridTheme.formatNumber((overall.data_completeness||0)*100)+'%\n'+
-    '风险语义：'+(overall.semantics||risk.semantics||'relative_index')+' · '+(riskResult.algorithm_id||'未计算')+'@'+(riskResult.algorithm_version||'-');
-  const v2Summary=riskV2CellSummary(item.risk_v2,GridTheme.formatNumber);
-  return cell.grid_id+' · L'+cell.level+'\n'+
-    populationDisplayLabel(populationResult)+'：样本 '+populationSamples+' · '+populationValues+' · '+(population.value_status||population.quantity_status||'missing_data')+'\n'+
-    'DEM：样本 '+terrainSamples+' · '+terrainValues+' · '+(terrainResult.unit_status||'单位来源未知')+' · '+terrainSource+'\n'+
-    buildingSummary+'\n'+airspaceSummary+'\n'+trafficSummary+'\n'+conflictSummary+'\n'+riskSummary+'\n'+v2Summary;
-}
-function riskValue(component){return component?.status==='passed'&&Number.isFinite(component.score)?GridTheme.formatNumber(component.score)+' / '+(component.level||'未分级'):'无数据（'+statusText(component?.status||'not_calculated')+'）';}
-function factorValue(factor){return factor?.status==='passed'?'归一化 '+GridTheme.formatNumber(factor.normalized)+' · contribution '+GridTheme.formatNumber(factor.contribution):statusText(factor?.status||'not_available');}
-canvas.addEventListener('click',event=>{
-  const info=$('gridInfo');
-  if(interactionMode!=='pan'){info.hidden=true;return;}
-  const [lon,lat]=eventLonLat(event);
-  if(currentStep===3){
-    const selected=hitReferenceObject(event);
-    if(selected){selectedReference=selected;info.hidden=true;renderWorkflow();paint();return;}
-  }
-  if(!gridRenderCache.cells.length){info.hidden=true;return;}
-  const item=findGridCell(lon,lat);
-  if(!item){info.hidden=true;return;}
-  const rect=map.getBoundingClientRect();
-  info.textContent=formatGridDetails(item);
-  info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
-  info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
-  info.hidden=false;
-});
-function hitReferenceObject(event){
-  const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top],overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:$('referenceRoutePointLayer').checked,landingSites:false});
-  return hitReferenceOverlay(click,overlay,screenPoint);
-}
-map.addEventListener('keydown',event=>{if(event.key==='+'||event.key==='=')zoom(.5);if(event.key==='-')zoom(2);});
-$('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
-for(const id of ['air','pop','terrain'])$(id).onchange=queue;
 function updateRasterLegends(){
-  const populationLegend=$('populationRasterLegend');
-  const terrainLegend=$('terrainRasterLegend');
-  if(populationLegend){
-    populationLegend.hidden=!$('pop').checked;
-  }
-  if(terrainLegend){
-    terrainLegend.hidden=!$('terrain').checked;
-  }
+  if($('populationRasterLegend'))$('populationRasterLegend').hidden=!$('pop').checked;
+  if($('terrainRasterLegend'))$('terrainRasterLegend').hidden=!$('terrain').checked;
 }
-$('pop').addEventListener('change',updateRasterLegends);
-$('terrain').addEventListener('change',updateRasterLegends);
-updateRasterLegends();
-$('opacity').oninput=()=>{
-  $('opacityValue').textContent=$('opacity').value+'%';
-  queue();
-};
-$('terrainOpacity').oninput=()=>{
-  $('terrainOpacityValue').textContent=
-    $('terrainOpacity').value+'%';
-  queue();
-};
-$('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer'])$(id).onchange=()=>{
-  if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
-  if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
-  updateGridNotice();
-  updateGridThemeLegend();
-  paint();
-};
-new ResizeObserver(()=>{if(view)queue();else paint();}).observe(map);
+function syncLayerControls(){
+  for(const id of ['air','pop','terrain'])$(id).onchange=queue;
+  $('pop').addEventListener('change',updateRasterLegends);
+  $('terrain').addEventListener('change',updateRasterLegends);
+  updateRasterLegends();
+  $('opacity').oninput=()=>{$('opacityValue').textContent=$('opacity').value+'%';queue();};
+  $('terrainOpacity').oninput=()=>{$('terrainOpacityValue').textContent=$('terrainOpacity').value+'%';queue();};
+  $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
+  for(const id of [...LAYER_IDS,'gridLayer','referenceRoutePointLayer'])$(id).onchange=()=>{
+    if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
+    if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
+    updateGridNotice();updateGridThemeLegend();paint();
+  };
+}
 function statusText(status){return labelFor(status);}
 function statusBadge(status){return badgeFor(status);}
 function escapeHtml(value){return escapeValue(value);}
 function setStep(step){
   currentStep=Number(step);interactionMode='pan';draftWorkspace=null;profileHoverCoordinate=null;
   store.set({ui:{...store.get().ui,step:currentStep,interactionMode}});
-  document.querySelectorAll('[data-step]').forEach(button=>button.classList.toggle('active',Number(button.dataset.step)===currentStep));
-  $('cnsLayers').hidden=currentStep<5;renderWorkflow();paint();
+  workbench.clearState();
+  $('cnsLayers').hidden=currentStep<5;
+  renderWorkflow();paint();
 }
-document.querySelectorAll('[data-step]').forEach(button=>button.onclick=()=>setStep(button.dataset.step));
+for(const button of document.querySelectorAll('#steps [data-step]'))button.onclick=()=>setStep(button.dataset.step);
 function actionButton(id,handler){const button=$(id);if(button)button.onclick=async()=>{try{button.disabled=true;await handler();}catch(exc){panelError(exc.message);}finally{if(document.body.contains(button))button.disabled=false;}};}
 function renderWorkflow(){
-  if(!flow)return;const panel=$('workflowPanel');
-  const referenceDiagnostics=referenceLayerDiagnostics(flow);for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites]]){const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}}
-  $('workflowStatus').textContent='项目：'+flow.project.name+' · 第 '+currentStep+' 步';
-  const storage=state?.project_storage||{};
-  $('projectRestore').textContent=storage.automatic
-    ? (flow.last_saved_at
-        ? '自动恢复项目已保存 · 建议另存到项目文件夹'
-        : '当前使用自动恢复项目')
-    : ('项目保存位置：'+(storage.directory||'未选择'));
-  const steps=[Step01,Step02,Step03,Step04,Step05,Step06],step=steps[currentStep-1];
-  panel.innerHTML=step.render({state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber});
+  if(!flow)return;
+  const referenceDiagnostics=referenceLayerDiagnostics(flow);
+  for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites]]){
+    const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}
+  }
+  const step=STEPS[currentStep-1],body=workbench.body();
+  // mutation / 重新渲染后保持当前一级与二级标签以及滚动位置
+  const scroll=body?body.scrollTop:0;
+  store.set({ui:{...store.get().ui,workbench:{...store.get().ui.workbench,scroll}}});
+  const rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber}});
+  workbench.mount({root:rendered,step});
   step.bind(stepBindings());
+  if(body)body.scrollTop=Math.min(scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+  const projectName=document.querySelector('[data-project-name]');
+  if(projectName)projectName.textContent=flow.project.name;
+  if($('workflowStatus')){
+    const gaps=cnsGapSegments();
+    $('workflowStatus').textContent='项目：'+flow.project.name+' · 第 '+currentStep+' 步'+(gaps?' · CNS 缺口段 '+gaps:'');
+  }
+  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));
+  const storage=state?.project_storage||{};
+  if($('projectRestore'))$('projectRestore').textContent=storage.automatic
+    ? (flow.last_saved_at?'自动恢复项目已保存 · 建议另存到项目文件夹':'当前使用自动恢复项目')
+    : ('项目保存位置：'+(storage.directory||'未选择'));
 }
 function stepBindings(){return {
   $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
@@ -360,9 +342,19 @@ async function downloadPlanningReport(kind){
   link.href=objectUrl;link.download={html:'cns-planning-report.html',pdf:'cns-planning-report.pdf',package:'cns-planning-package.zip',json:'cns-planning-report.json'}[kind]||'report.bin';link.click();
   setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
 }
+// 顶部全局"保存项目"：沿用既有保存语义（step01 保存按钮仍是同一个入口）
 async function saveProject(projectDir,name){
-  if(!projectDir)return panelError('请先选择项目数据存储位置');
-  const button=$('saveProject');try{button.disabled=true;panelError('');await api('/api/workflow/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});update(await api('/api/project/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})}));}catch(exc){panelError('保存项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
+  const directory=projectDir||state?.project_storage?.directory||'';
+  if(!directory)return panelError('请先在第01步选择项目数据存储位置');
+  const button=$('saveProjectTop')||$('saveProject');
+  try{
+    if(button)button.disabled=true;panelError('');
+    const projectName=name||$('projectName')?.value||flow?.project?.name||'';
+    const data=await api('/api/workflow/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:projectName})});
+    flow=data;store.set({workflow:flow});
+    update(await api('/api/project/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})}));
+  }catch(exc){panelError('保存项目失败：'+exc.message);}
+  finally{if(button&&document.body.contains(button))button.disabled=false;}
 }
 async function openProject(projectDir){
   if(!projectDir)return panelError('请先选择项目文件夹');
@@ -421,8 +413,7 @@ function update(data){
   $('reference_routesPath').value=data.paths.reference_routes||'';
   const population=data.population;
   $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
-  const terrain=data.terrain||{};
-  const terrainDtm=data.terrain_dtm||{};
+  const terrain=data.terrain||{},terrainDtm=data.terrain_dtm||{};
   $('terrainDtmInfo').textContent=terrainDtm.width?'FABDEM DTM：'+terrainDtm.width.toLocaleString()+' × '+terrainDtm.height.toLocaleString()+' · '+terrainDtm.crs+'\n'+terrainDtm.dtype+' · NoData：'+terrainDtm.nodata+' · '+terrainDtm.vertical_reference+' ('+terrainDtm.vertical_status+')':'尚未加载有效 FABDEM DTM';
   $('terrainInfo').textContent=terrain.width?'GLO-30 DSM：'+terrain.width.toLocaleString()+' × '+terrain.height.toLocaleString()+' · '+terrain.crs+'\nNoData：'+terrain.nodata+'\n像元大小：'+(terrain.pixel_size||[]).join(' × ')+'\n单位：'+(terrain.unit||'m')+' · 水平 WGS84/EPSG:4326 · 垂直 EGM2008/EPSG:3855 · 1 arc-second':'尚未加载有效地形 DEM';
   $('sourceSummary').textContent=data.layers.length+' 个本地图层 · '+data.paths.basemap.split(/[\\/]/).pop();
@@ -431,6 +422,14 @@ function update(data){
   syncGridApis().then(()=>{renderWorkflow();paint();}).catch(exc=>showError('网格专题同步失败：'+exc.message));
   if(data.error)showError(data.error);
 }
+bindShell({
+  $,downloadExport,saveProject,panelError,
+  previewReport:()=>previewPlanningReport(),
+  generateReport:()=>resourceAction('/api/cns-planning-report/generate',{}),
+  downloadReport:kind=>downloadPlanningReport(kind)
+});
+syncLayerControls();
+new ResizeObserver(()=>{if(view)queue();else paint();}).observe(map);
 api('/api/state').then(data=>{
   update(data);
   if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
