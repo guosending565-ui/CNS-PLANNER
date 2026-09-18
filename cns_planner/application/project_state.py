@@ -78,6 +78,12 @@ from ..domain.building_clearance import (
     default_building_clearance_policy, empty_building_clearance_assessment,
     normalize_building_clearance_assessment, normalize_building_clearance_policy,
 )
+from ..domain.layered_route import (
+    default_layered_route_cost_policy, default_layered_route_feasibility_policy,
+    default_layered_route_request, empty_layered_route_candidate_collection,
+    normalize_layered_route_candidate_collection, normalize_layered_route_cost_policy,
+    normalize_layered_route_feasibility_policy, normalize_layered_route_request,
+)
 from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
@@ -223,6 +229,13 @@ def blank_project(defaults):
         "safety_assessment": empty_safety_assessment(),
         "building_clearance_policy": default_building_clearance_policy(),
         "building_clearance_assessment": empty_building_clearance_assessment(),
+        # Layered Risk-Aware Route Planner V1 (production main line): explicit altitude
+        # layer selection + explicit feasibility/cost policy + independent candidate
+        # container.  No default clearance and no default lambda ships here.
+        "layered_route_planning_request": default_layered_route_request(),
+        "layered_route_feasibility_policy": default_layered_route_feasibility_policy(),
+        "layered_route_cost_policy": default_layered_route_cost_policy(),
+        "layered_route_candidates": empty_layered_route_candidate_collection(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
@@ -242,6 +255,7 @@ def blank_project(defaults):
                 "service_timeline", "protection_envelope", "route_vertical_profiles",
                 "encounter_3d_assessment",
                 "technical_risk", "report",
+                "layered_route_candidate",
             )
         },
         "last_saved_at": None,
@@ -395,6 +409,22 @@ def normalize_project(value, grid_service):
     value["building_clearance_assessment"] = normalize_building_clearance_assessment(
         value.get("building_clearance_assessment")
     )
+    # Layered Risk-Aware Route Planner V1 additive backfill.  A legacy project gets the
+    # pending request, the blocked feasibility policy (no default clearance), the pending
+    # cost policy (no default lambda) and an empty candidate container.
+    value["layered_route_planning_request"] = normalize_layered_route_request(
+        value.get("layered_route_planning_request")
+    )
+    value["layered_route_feasibility_policy"] = normalize_layered_route_feasibility_policy(
+        value.get("layered_route_feasibility_policy")
+    )
+    value["layered_route_cost_policy"] = normalize_layered_route_cost_policy(
+        value.get("layered_route_cost_policy")
+    )
+    value["layered_route_candidates"] = normalize_layered_route_candidate_collection(
+        value.get("layered_route_candidates")
+    )
+    value.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")

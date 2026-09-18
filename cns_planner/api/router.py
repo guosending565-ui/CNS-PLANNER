@@ -62,6 +62,11 @@ class ApiRouter:
         if path == "/api/spatial-3d": return Response(workflow.spatial_3d_snapshot())
         if path == "/api/spatial-3d/readiness": return Response(workflow.route_operating_readiness())
         if path == "/api/route-operating-plan": return Response(workflow.route_operating_plan())
+        if path == "/api/layered-route-planner/readiness": return Response(workflow.layered_route_planner_readiness())
+        if path == "/api/layered-route-planning-request": return Response(workflow.layered_route_planning_request())
+        if path == "/api/layered-route-feasibility-policy": return Response(workflow.layered_route_feasibility_policy())
+        if path == "/api/layered-route-cost-policy": return Response(workflow.layered_route_cost_policy())
+        if path == "/api/layered-route-candidates": return Response(workflow.layered_route_candidates())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -223,6 +228,17 @@ class ApiRouter:
             "/api/spatial-3d/departure-arrival-procedure": lambda: workflow.set_departure_arrival_procedure(payload),
             "/api/spatial-3d/departure-arrival-procedure/delete": lambda: workflow.delete_departure_arrival_procedure(payload),
             "/api/spatial-3d/route-profile": lambda: workflow.set_route_altitude_profile(payload),
+            # ---- Layered Risk-Aware Route Planner V1 --------------------------------
+            "/api/layered-route-planning-request": lambda: workflow.set_layered_route_planning_request(payload),
+            "/api/layered-route-feasibility-policy": lambda: workflow.set_layered_route_feasibility_policy(payload),
+            "/api/layered-route-cost-policy": lambda: workflow.set_layered_route_cost_policy(payload),
+            "/api/layered-route-candidates/evaluate": lambda: workflow.evaluate_layered_route_candidate(payload),
+            "/api/layered-route-candidates/evaluate-real": lambda: context.qgis.call(
+                lambda: context.evaluate_layered_route_candidate(payload)
+            ),
+            "/api/layered-route-candidates/delete": lambda: workflow.delete_layered_route_candidate(
+                payload.get("candidate_id")
+            ),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),

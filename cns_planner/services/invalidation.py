@@ -17,6 +17,9 @@ DEPENDENTS = {
     "candidate_sites": ("coverage", "cns_site_plan", "cns_corridor_site_plan", "technical_risk", "report"),
     "sites": ("coverage", "technical_risk", "report"),
     "route_algorithm": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "report"),
+    # Layered Risk-Aware Route Planner V1: its own algorithm selection only stales the
+    # additive layered candidate product (plus the report); legacy routes are untouched.
+    "layered_route_planner_algorithm": ("report",),
     "airspace_policy": (),
     "coverage_algorithm": ("coverage", "report"),
     "gap_algorithm": ("cns_gap", "report"),

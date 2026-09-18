@@ -7,6 +7,9 @@ import {drawGridTheme,drawLine,drawStandardGrid,drawWorkspace} from './map/rende
 import {drawReferenceOverlay,hitReferenceObject as hitReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {drawBuildingClearanceOverlay} from './map/building_clearance_overlay.js';
 import {drawV3CandidateOverlay,v3OverlayModel} from './map/route_planner_v3_overlay.js';
+import {drawLayeredFeasibilityOverlay} from './map/layered_feasibility_overlay.js';
+import {renderLayeredFeasibilityLegend} from './workflow/layered_legend.js';
+import {BUILDING_PALETTE,POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
 import {LEGACY_RISK_V1_LABEL,riskV2CellSummary,riskV2LegendModel} from './workflow/risk_framework_v2.js';
 import * as Step01 from './workflow/step01_project.js';
@@ -23,10 +26,8 @@ let selectedReference=null,profileHoverCoordinate=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
-const populationPalette=['#fff7bc','#fee391','#fec44f','#fe9929','#cc4c02'];
-const terrainPalette=['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c'];
-const buildingPalette=['#fff7ec','#fdd49e','#fc8d59','#d7301f','#7f0000'];
-const riskPalette=['#2ca25f','#99d8c9','#fee08b','#f46d43','#a50026'],riskBreaks=[0,.2,.4,.6,.8,1];
+const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
+const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan'}});
 const api=createApiClient(()=>state?.token);
@@ -91,6 +92,7 @@ function drawWorkflowOverlay(){
   for(const route of flow.operational_routes||[])if(route.status==='passed')drawLine(ctx,screenPoint,view,route.path,'#0873cb',4);
   if($('buildingClearanceLayer')?.checked)drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
   if($('v3CandidateLayer')?.checked)drawV3CandidateOverlay({ctx,screenPoint,drawLine,model:v3OverlayModel(flow)});
+  if($('layeredFeasibilityLayer')?.checked)drawLayeredFeasibilityOverlay({ctx,view,screenPoint,flow,grid:flow.grid,gridTheme:GridTheme});
   const overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer')?.checked,points:$('referenceRoutePointLayer')?.checked,landingSites:false});
   drawReferenceOverlay({ctx,view,screenPoint,drawLine,routes:overlay.referenceRoutes,points:overlay.referencePoints});
   const filters={workspace:flow.workspace,search:currentStep===3?$('referenceSiteSearch')?.value||'':'',region:currentStep===3?$('referenceSiteRegion')?.value||'':'',siteType:currentStep===3?$('referenceSiteType')?.value||'':''};
@@ -174,32 +176,23 @@ function updateGridNotice(){
   notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
+  if(updateLayeredFeasibilityLegend())return;
   if(updateRiskV2Legend())return;
-  const kind={population:'population',terrain:'terrain',traffic_exposure:'traffic',conflict_exposure:'conflict',building_density:'buildings',building_p95:'buildings',building_max:'buildings'}[gridDisplay.theme]||null,riskKind={ground_risk:'ground',overall_risk:'overall'}[gridDisplay.theme]||null,legend=$('gridThemeLegend');
+  const legend=$('gridThemeLegend'),model=gridThemeLegendModel(flow,gridRenderCache,gridDisplay);
   if(!legend)return;
-  legend.hidden=!kind&&!riskKind;
-  if(!kind&&!riskKind)return;
-  const result=kind?(flow?.grid_attributes?.[kind]||{}):(flow?.grid_risk||{}),buildingBreaks={building_density:gridRenderCache.buildingCoverageBreaks,building_p95:gridRenderCache.buildingP95Breaks,building_max:gridRenderCache.buildingMaxBreaks},breaks=kind?(kind==='population'?gridRenderCache.populationBreaks:kind==='terrain'?gridRenderCache.terrainBreaks:kind==='buildings'?buildingBreaks[gridDisplay.theme]:riskBreaks):riskBreaks;
-  const riskTitles={ground:'Ground Risk',overall:'Overall Risk'};
-  const kindTitles={terrain:'平均高程',traffic:'Traffic Exposure',conflict:'Conflict Exposure',buildings:{building_density:'建筑密度',building_p95:'P95 建筑高度',building_max:'最大建筑高度'}[gridDisplay.theme]};
-  const palette=kind?(kind==='population'?populationPalette:kind==='terrain'?terrainPalette:kind==='buildings'?buildingPalette:riskPalette):riskPalette,title=kind?(kind==='population'?'目标网格人口密度':kindTitles[kind]):riskTitles[riskKind];
-  $('gridThemeLegendTitle').textContent=title;
-  $('gridThemeLegendUnit').textContent=riskKind||kind==='traffic'||kind==='conflict'?'0–1':kind==='terrain'?(result.elevation_unit||'m'):kind==='buildings'?(gridDisplay.theme==='building_density'?'ratio':'m'):'person/km²';
-  $('gridThemeGradient').style.background='linear-gradient(to right,'+palette.join(',')+')';
+  legend.hidden=!model;
+  if(!model)return;
+  $('gridThemeLegendTitle').textContent=model.title;
+  $('gridThemeLegendUnit').textContent=model.unit;
+  $('gridThemeGradient').style.background='linear-gradient(to right,'+model.palette.join(',')+')';
   const ticks=$('gridThemeTicks');ticks.replaceChildren();
-  const shown=breaks.length?[breaks[0],breaks[Math.floor((breaks.length-1)/2)],breaks[breaks.length-1]]:[];
-  for(const value of shown){const span=document.createElement('span');span.textContent=GridTheme.formatNumber(value);ticks.append(span);}
-  if(!shown.length){const span=document.createElement('span');span.textContent='无有效值';ticks.append(span);}
-  const path=result.source?.path||'',source=path.split(/[\\/]/).pop()||'未记录';
-  $('gridThemeLegendNote').textContent=riskKind
-    ? '相对风险指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · 完整度 '+GridTheme.formatNumber((result.data_completeness||0)*100)+'%'
-    : kind==='buildings'
-      ? 'GBA L8 来源参数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · 0 与无数据严格区分 · '+source+' · '+statusText(result.status||'not_calculated')
-    : kind==='traffic'||kind==='conflict'
-      ? '相对暴露指数 · '+(result.algorithm_id||'未计算')+'@'+(result.algorithm_version||'-')+' · '+statusText(result.status||'not_calculated')
-    : kind==='population'
-      ? 'WorldPop count 经面积权重守恒映射，再除以实际网格面积 · '+statusText(result.quantity_status||'not_calculated')
-      : '均值分级 · '+(result.unit_status||'单位来源未知')+' · '+source+' · '+statusText(result.status||'not_calculated');
+  for(const value of (model.shown.length?model.shown:['无有效值'])){const span=document.createElement('span');span.textContent=typeof value==='number'?GridTheme.formatNumber(value):value;ticks.append(span);}
+  $('gridThemeLegendNote').textContent=gridThemeLegendNote(model,statusText,GridTheme.formatNumber);
+}
+// Layered Route Planner V1 legend: the selected layer's coarse feasibility mask only.
+function updateLayeredFeasibilityLegend(){
+  if(!$('layeredFeasibilityLayer')?.checked)return false;
+  return renderLayeredFeasibilityLegend($('layeredFeasibilityLegend'),flow,GridTheme.formatNumber);
 }
 // Risk Framework V2 legend: factor/domain layers are relative engineering
 // indices.  A pending/unresolved domain index renders as "no data", never as 0.
@@ -304,10 +297,11 @@ $('terrainOpacity').oninput=()=>{
   queue();
 };
 $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','v3CandidateLayer'])$(id).onchange=()=>{
+for(const id of ['gridLayer','cLayer','nLayer','sLayer','existingCnsLayer','candidateSiteLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer'])$(id).onchange=()=>{
   if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
   if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
   updateGridNotice();
+  updateGridThemeLegend();
   paint();
 };
 new ResizeObserver(()=>{if(view)queue();else paint();}).observe(map);

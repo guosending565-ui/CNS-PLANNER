@@ -28,6 +28,7 @@ from .project_state import SCHEMA_VERSION, assessment, blank_project, empty_exte
 from .review_service import ReviewService
 from .risk_service import RiskService
 from .risk_v2_service import RiskFrameworkV2Service
+from .layered_route_planner_service import LayeredRoutePlannerService
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -166,6 +167,23 @@ class WorkflowService:
         self.risk_v2_service = RiskFrameworkV2Service(
             self.session, GridRiskModelV2(), self.invalidation_service, snapshot,
         )
+        # Layered Risk-Aware Route Planner V1 (production main line): explicit altitude layer
+        # selection, terrain/building coarse feasibility mask, single-layer MH/T L8 A* with
+        # Risk Framework V2 soft cost, and an independent candidate container.  It never
+        # writes ``operational_routes`` / CNS results and never switches the project's default
+        # route planner.
+        self.layered_route_planner_service = LayeredRoutePlannerService(
+            self.session, self.invalidation_service, snapshot,
+        )
+        # A Risk Framework V2 / layer / terrain-building / policy change stales only the
+        # layered candidates and masks, never legacy routes, V3 or CNS results.
+        self.invalidation_service.layered_route_invalidator = (
+            self.layered_route_planner_service.refresh_for_reason
+        )
+        # Resolve the registered layered planner (its own algorithm type; the project's
+        # ``route_planner`` default stays ``route_planner_v1``).
+        self.layered_route_planner = self._selected_algorithm("layered_route_planner")
+        self.layered_route_planner_service.planner = self.layered_route_planner
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
             self.session, self.coverage_model_3d, self.invalidation_service, snapshot
@@ -312,6 +330,25 @@ class WorkflowService:
             result["grid_risk_v2"] = self.risk_v2_service.result_snapshot()
             result["risk_policy_v2"] = self.risk_v2_service.policy_snapshot()
             result["risk_framework_v2_readiness"] = self.risk_v2_service.readiness_snapshot()
+        if hasattr(self, "layered_route_planner_service"):
+            # Layered Risk-Aware Route Planner V1: only the bounded readiness, the explicit
+            # request/policies and the candidate summary travel in the snapshot; the full mask
+            # detail is served by the dedicated read-only endpoint.
+            result["layered_route_planning_request"] = (
+                self.layered_route_planner_service.request_snapshot()
+            )
+            result["layered_route_feasibility_policy"] = (
+                self.layered_route_planner_service.feasibility_policy_snapshot()
+            )
+            result["layered_route_cost_policy"] = (
+                self.layered_route_planner_service.cost_policy_snapshot()
+            )
+            result["layered_route_planner_readiness"] = (
+                self.layered_route_planner_service.readiness_snapshot()
+            )
+            result["layered_route_candidates"] = (
+                self.layered_route_planner_service.result_snapshot()
+            )
         result["review"] = self.review()
         return result
 
@@ -471,6 +508,7 @@ class WorkflowService:
         else:
             changed = {
                 "route_planner": "route_algorithm",
+                "layered_route_planner": "layered_route_planner_algorithm",
                 "coverage_planner": "coverage_algorithm",
                 "cns_gap_analyzer": "gap_algorithm",
                 "coverage_model": "coverage_model",
@@ -489,6 +527,11 @@ class WorkflowService:
     def _bind_algorithm(self, algorithm_type, instance):
         if algorithm_type == "route_planner":
             self.route_planner = self.route_service.planner = instance
+        elif algorithm_type == "layered_route_planner":
+            # The layered planner owns its own candidate/mask products; it never becomes the
+            # project's ``route_planner`` and never writes operational routes.
+            self.layered_route_planner = instance
+            self.layered_route_planner_service.planner = instance
         elif algorithm_type == "coverage_planner":
             self.coverage_planner = self.cns_planning_service.planner = instance
         elif algorithm_type == "cns_gap_analyzer":
@@ -697,6 +740,27 @@ class WorkflowService:
         return self.route_operating_layer_service.readiness_snapshot()
     def route_operating_plan(self):
         return self.route_operating_layer_service.plan_snapshot()
+    # ---- Layered Risk-Aware Route Planner V1 ---------------------------------------
+    def layered_route_planner_readiness(self):
+        return self.layered_route_planner_service.readiness_snapshot()
+    def layered_route_planning_request(self):
+        return self.layered_route_planner_service.request_snapshot()
+    def layered_route_feasibility_policy(self):
+        return self.layered_route_planner_service.feasibility_policy_snapshot()
+    def layered_route_cost_policy(self):
+        return self.layered_route_planner_service.cost_policy_snapshot()
+    def layered_route_candidates(self):
+        return self.layered_route_planner_service.result_snapshot()
+    def set_layered_route_planning_request(self, payload):
+        return self.layered_route_planner_service.set_planning_request(payload)
+    def set_layered_route_feasibility_policy(self, payload):
+        return self.layered_route_planner_service.set_feasibility_policy(payload)
+    def set_layered_route_cost_policy(self, payload):
+        return self.layered_route_planner_service.set_cost_policy(payload)
+    def evaluate_layered_route_candidate(self, payload=None, adapter=None):
+        return self.layered_route_planner_service.evaluate(payload, adapter=adapter)
+    def delete_layered_route_candidate(self, candidate_id):
+        return self.layered_route_planner_service.delete_candidate(candidate_id)
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)

@@ -7,7 +7,9 @@
 >
 > **Layered Operational Route Architecture V1 决策**：**生产航路** = `DepartureProcedure → fixed cruise AltitudeLayer + horizontal route → ArrivalProcedure`，语义为 `Layered Risk-Aware Operational Route Planning`。一条具体方案只对应**一个**巡航高度层；高度转换不进入水平 A\*，只存在于 terminal procedure。**V3-A/V3-B/V3-C/V3-D 保留为 advanced experimental / continuous validation capability**，不再是生产主入口。适飞空域仍然 `display_only`。
 >
-> **Risk Framework V2 决策（本轮）**：风险框架自本轮起为 `Risk Factor / Exposure → Ground / Air-Traffic / Environment-Obstacle domains`（additive `grid_risk_v2` + `risk_policy_v2`）。结果仍是**可解释的 relative engineering index**：不声称事故概率、SORA GRC/ARC 或绝对安全风险。`RiskModelV1` / `grid_risk` 完整兼容，仍是当前 `RiskAwareRoutePlannerV2` 的唯一风险输入；**无默认生产 risk weight**，没有 confirmed aggregation policy 时 factor maps 正常生成但 domain `index=null/status=pending_confirmation`。后续顺序固定为 **Risk Framework V2 → Layered Risk-Aware Route Planner → RouteRiskProfile**；**不开发 Layered A\*（本轮）、RouteRiskProfile（本轮）、Safety Framework V2、V3-E**。
+> **Risk Framework V2 决策**：风险框架自本轮起为 `Risk Factor / Exposure → Ground / Air-Traffic / Environment-Obstacle domains`（additive `grid_risk_v2` + `risk_policy_v2`）。结果仍是**可解释的 relative engineering index**：不声称事故概率、SORA GRC/ARC 或绝对安全风险。`RiskModelV1` / `grid_risk` 完整兼容，仍是当前 `RiskAwareRoutePlannerV2` 的唯一风险输入；**无默认生产 risk weight**，没有 confirmed aggregation policy 时 factor maps 正常生成但 domain `index=null/status=pending_confirmation`。后续顺序固定为 **Risk Framework V2 → Layered Risk-Aware Route Planner → RouteRiskProfile**；**不开发 RouteRiskProfile（本轮）、Safety Framework V2、V3-E**。
+>
+> **Layered Risk-Aware Route Planner V1 决策（本轮）**：**生产主线** = `scenario/OD route → explicit AltitudeLayer → terrain/building feasibility mask → MH/T L8 A* → Risk Framework V2 soft cost → LayeredRouteCandidate`。结果只是 **candidate**：`operational_route=false`、`continuous_validation_required=true`，**不得**直接写 `operational_routes`/CNS，也不自动创建 `RouteOperatingLayer`。高度层必须**显式选择**；`terrain_vertical_clearance_m` 与三个 λ **无默认值**（`null != 0`，显式 `0` 合法）。下一阶段 = **RouteRiskProfile**；V3-A/B/C/D 保留为 advanced experimental / continuous validation capability；适飞空域仍 `display_only`。
 
 ## 1. 当前架构
 
@@ -32,7 +34,7 @@ map_app.py / app.py
 
 1. 项目与数据：项目创建、打开、另存和数据源设置。
 2. 工作区与环境：workspace → MH/T grid → population/terrain/traffic/conflict → relative risk（`Legacy Risk V1`）；additive `Risk Framework V2` 把 canonical factors 分入 Ground / Air-Traffic / Environment-Obstacle 三个 domain（无 confirmed policy 时 domain index 保持 null）；airspace 仅显示。
-3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路；生产航路按**巡航高度层**业务面板显式选择固定 `AltitudeLayer`，并显示离场/进场 procedure readiness；高级/V3 剖面独立展示、不混成主生产模式。
+3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路；生产航路按**巡航高度层**业务面板显式选择固定 `AltitudeLayer`，并显示离场/进场 procedure readiness；**生产候选规划**区（Layered Risk-Aware Route Planner V1）按 scenario/OD + 显式 AltitudeLayer 输出 `LayeredRouteCandidate`（只是 candidate，不是运行航路）；高级/V3 剖面独立展示、不混成主生产模式。
 4. 运行规则：飞行器、方向、高度、间隔和监视延迟。
 5. 设备与布站：C/N/S 设备参数和 CoveragePlannerV1。
 6. 确认与导出：统一 ResultStatus 复核，导出项目、航路和站址。
@@ -74,7 +76,10 @@ map_app.py / app.py
 - `gis/fine_environment_adapter.py`：V3-B/V3-C 的 GIS/GDAL 边界。V3-B：FABDEM 单次只读窗口取相交有效像元最大值 + GPKG provider RTree 建筑查询 + confirmed AirspacePolicy **fine-cell polygon** 判定；水平分辨率只能来自显式配置或 DTM 有效分辨率（投影 CRS 按自身 verified linear unit 换算，geographic CRS 用 `Geod` 测相邻像元中心地面距离，**禁止 degree-as-meter**），禁止写死 30 m。V3-C：`NativeTerrainWindowSource`（native 像元窗口，NoData 不填补）、`RouteCorridorBuildingSource`（route bbox + clearance 的 RTree 查询）、`ConfirmedAirspacePolicySource`（confirmed polygon → 米制）。数据未配置/未确认时显式 blocked/unresolved，不构造假环境；算法包不依赖它。
 - `application/route_planner_v3_service.py`：V3-A/V3-B/V3-C 实验编排与独立容器（`route_planner_v3_experiments` 记录下的 `refinements[]`/`validations[]`、`v3_planning_policy`、`v3_fine_refinement_policy`、`v3_continuous_validation_policy`）、readiness 报告、refinement/validation staleness 与 `record_summary` 有界摘要；真实源 readiness 由 ApplicationContext 注入（只报告、不读数据）。
 - `application/route_operating_layer_service.py`：Layered Operational Route Architecture V1 唯一写入者（`AltitudeLayer` 目录单层 CRUD、`RouteOperatingLayer` 显式分配、departure/arrival procedure CRUD）与只读 `route_operating_readiness` / `route_operating_plan`；确认必须 explicit + traceable，缺值一律 pending，绝不猜高度或垂向基准。
-- `domain/building_clearance.py`：唯一 roof/垂直余量语义（`building_roof_elevation` = ground + height、`evaluate_vertical_clearance` = `minimum_z − (roof + vertical_clearance)`）；`BuildingClearanceV1` 与 V3-C `BuildingPolygonValidator` 共用，不出现第三套 roof 公式。
+- `domain/building_clearance.py`：唯一 roof/垂直余量语义（`building_roof_elevation` = ground + height、`evaluate_vertical_clearance` = `minimum_z − (roof + vertical_clearance)`）；`BuildingClearanceV1`、V3-C `BuildingPolygonValidator` 与 Layered Planner V1 的 coarse building envelope 共用，不出现第三套 roof 公式。
+- `domain/layered_route.py`、`layered_route_planner/*`：**Layered Risk-Aware Route Planner V1**（生产主线）契约与算法。`LayeredRoutePlanningRequest`（显式 scenario/OD + 显式 AltitudeLayer，不从 profile 推断）、`LayeredRouteFeasibilityPolicy`（`terrain_vertical_clearance_m` **无默认值**，复用既有 confirmed `building_clearance_policy`，不造第三套建筑净空定义）、`LayeredRouteCostPolicy`（ground/air_traffic/environment_obstacle λ，默认均 `null`/pending，`null != 0`，显式 `0` 合法）、`LayerFeasibilityMask`（per selected layer × L8 cell 的 feasible/blocked/unknown + terrain/building floor/margin/reason/provenance/fingerprint）、`LayeredRouteCandidate`（独立容器，强制 `operational_route=false`/`continuous_validation_required=true`）。算法包不 import QGIS/GDAL、不读文件、不写 `operational_routes`，A* 只在 MH/T L8 feasible cells 内、保留既有邻接/corner guard、不跨层、无自由 3D state；edge cost = `d*(1+λg·Rg+λa·Ra+λe·Re)`，edge risk 取两端 V2 domain index 平均，λ 均 ≥0 因此纯直线米制距离仍是 admissible heuristic。
+- `gis/layered_feasibility_adapter.py`：Layered Planner V1 的 GIS 边界。`terrain_floor` = **复用既有 verified FABDEM window sampler**（单次只读窗口、无重采样、NoData 不填补）的相交有效像元 **cell max EGM2008** + 显式 terrain clearance；building 事实直接复用既有 `grid_attributes.buildings` 的 L8 聚合（`building_count`/`height_max_m`/`valid_height_fraction`），**不重复实现栅格读取或聚合**。`building_count=0` ⇒ 无建筑垂向约束；`valid_height_fraction<1` 或 height/ground 缺失 ⇒ `unknown`（绝不当 0）；否则 coarse `building_floor = terrain cell max + height_max + 既有 confirmed building vertical clearance`。语义固定 `coarse_strategic_vertical_envelope`：不是 exact footprint，也不是水平/精确建筑净空（留给后续 continuous validation）。airspace 不进入 mask/search/fingerprint。
+- `application/layered_route_planner_service.py`：Layered Planner V1 唯一写入者（`layered_route_planning_request` / `layered_route_feasibility_policy` / `layered_route_cost_policy` / `layered_route_candidates`），提供 readiness、candidate/mask 快照与 `refresh_for_reason` 定向失效。**不写** `operational_routes`、`algorithm_selection`、`spatial_3d`、`route_operating_layers`、`grid_risk_v2` 或任何 CNS 结果，**也不切换项目默认 planner**。
 - `docs/route_planner_v3_architecture.md`：V3 目标架构与 V3-A/V3-B/V3-C/V3-D 边界；V3-D 见 §7B；路线图为 V3-A 战略 → V3-B corridor-local 精化 → V3-C 连续几何实现 + 源几何硬约束验证 → V3-D validated route → operational adoption → CNS Assessment，clothoid 与 Route–CNS 联合优化列为未来项。
 - `domain/cns_corridor.py`、`algorithms/corridor/v1.py`、`application/corridor_service.py`：P14 route corridor 契约、纯 Python 水平/垂向离散、P7/P8 代表点复用及持久化用例。
 - `domain/cns_planning_objectives.py`、`algorithms/corridor_gap/v1.py`、`application/corridor_gap_service.py`：P15 显式空间规划目标、P8 独立冗余证据复用、corridor voxel 分类和空间连续缺口投影。
@@ -140,6 +145,8 @@ v3_continuous_validation_policy（V3-C 显式验证配置：curve_chord_error_m 
 route_planner_v3_experiments（V3-A/V3-B/V3-C 独立实验容器：记录/环境 spec/policy/result/verdicts + refinements[] + 每条 refinement 下的 validations[]；不是 operational route）
 v3_operational_adoptions（V3-D 正式采用记录：adoption_id/route_id/validation ids+fingerprints/refinement fingerprint/projection fingerprint/applied_at/current_applicability/before-after/provenance/CNS link；`published`/`stale`/`revoked`）
 v3_cns_assessment_bundle（V3-D CNS 评估结果：assessment_status=not_started|incomplete|complete|stale、requirement_verdict=meets|does_not_meet|unknown、stage_results{P7,P8,P9,P10}、fingerprints、route/adoption/validation ids）
+layered_route_planning_request / layered_route_feasibility_policy / layered_route_cost_policy（Layered Planner V1 显式规划请求与显式工程策略：高度层必须显式选择；clearance 与三个 λ 默认 null，null != 0）
+layered_route_candidates（Layered Planner V1 独立 candidate 容器：`items[]` + 按 (route, layer) lane 的 `masks{}`；candidate 强制 operational_route=false、continuous_validation_required=true，不写 operational_routes/CNS）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -151,7 +158,8 @@ v3_cns_assessment_bundle（V3-D CNS 评估结果：assessment_status=not_started
 - **Risk Framework V2 失效规则**：`risk_policy_v2` 变化与 grid attribute / 源数据变化只把 `grid_risk_v2` 标记 `stale`；**不得** stale 当前 `routes`、`operational_routes`、任何 CNS 结果、legacy `grid_risk` 或 `environment_risk`（本轮 planner 尚未消费 V2）。`apply_grid_attributes` / `run_traffic_simulation` 会顺带重算 V2（additive 结果，不改变 V1 输出）；`risk_model` 算法选择变化仍只走既有 V1 链。
 - safety_policy 变化只使 safety_assessment、technical_risk、report stale；不得使 workspace/grid/routes/coverage/cns_gap stale。
 - DEM、航路、已有设施、设备及 P7 垂向/几何配置变化定向使 `coverage_3d` stale；单独修改高度层/航路高度剖面不得反向使 grid/routes/CoverageV1/GapV1 stale。
-- **Layered Operational Route Architecture V1 最小失效链**：`AltitudeLayer` 目录、`RouteOperatingLayer` 分配、departure/arrival procedure 变化只 stale `coverage_3d → cns_service_capability → service_timeline → cns_gap_v2`、`building_clearance → route_vertical_profiles`、`cns_corridor_*` 与 report；**不得**改写 `grid_risk`，**不得**使 `routes`/`grid`/CoverageV1/GapV1 stale。未来 Layered Planner 接入后才让 layer selection 进入水平 route planning fingerprint。
+- **Layered Operational Route Architecture V1 最小失效链**：`AltitudeLayer` 目录、`RouteOperatingLayer` 分配、departure/arrival procedure 变化只 stale `coverage_3d → cns_service_capability → service_timeline → cns_gap_v2`、`building_clearance → route_vertical_profiles`、`cns_corridor_*` 与 report；同时按下一行只 stale Layered Planner candidate/mask；**不得**改写 `grid_risk`，**不得**使 `routes`/`grid`/CoverageV1/GapV1 stale。
+- **Layered Planner V1 失效规则**：Risk Framework V2（`grid_risk_v2` / `risk_policy_v2`）变化、显式 planning request / 选中 layer 变化、`terrain_dtm`/`buildings`/`building_grid` 源变化、`building_clearance_policy` 变化、feasibility/cost policy 变化、以及 `layered_route_planner` 算法选择变化，只 stale 相关 `LayeredRouteCandidate` 与 `LayerFeasibilityMask`（candidate 输入指纹变化 ⇒ `stale_inputs_changed`，旧记录保留为 stale 证据、不删除）。**绝不同时** stale legacy `routes`/V3/CNS 结果；`risk_v2()` 只把 `layered_route_candidate` 追加为 stale，`routes`、`coverage_3d`、`cns_gap_v2`、`grid_risk` 均保持原状。candidate fingerprint 组件固定为 scenario/grid/layer、request、hard constraints、FABDEM/building/building_grid source audits、building clearance policy、`grid_risk_v2` input+policy fingerprint、cost/feasibility policy、feasibility mask fingerprint、planner version；**不含 current airspace**。
 - `coverage_3d`、RequiredCNS、选定 Aircraft Profile、DeviceCatalog/ExistingCNS 或 service-model 选择变化会定向使 `cns_service_capability` stale；不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - route/altitude/P8 capability/RequiredCNS/Aircraft/motion/service scenario 变化会定向使 `service_timeline` stale；response budget/encounter scenario 变化仅使 `protection_envelope` stale。两者均不反向使 grid/routes/CoverageV1/GapV1 stale。
 - RequiredCNS、Aircraft、`coverage_3d`、`cns_service_capability` 或 `service_timeline` 变化会定向使 `cns_gap_analysis_v2` stale；`protection_envelope` 仅在 Gap V2 显式启用 protection margin 时使其 stale。该链路不反向影响 grid/routes/CoverageV1/GapV1/P7/P8/P9。
@@ -169,7 +177,7 @@ v3_cns_assessment_bundle（V3-D CNS 评估结果：assessment_status=not_started
 
 - RoutePlannerV1 与 CoveragePlannerV1 保留公开输入输出、`status`、`algorithm_name/version`、`input_fingerprint`、geometry/站址/统计和固定输入确定性。
 - RiskModel 接口固定为 `evaluate(grid, grid_attributes, parameters) -> risk_result`。RiskModelV1 输出为 `relative_index`，不是事故或碰撞概率。
-- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`、`site_planner/reuse_first_site_planner_v1@1.0`、`site_planner/corridor_reuse_first_site_planner_v2@2.0`、`corridor_model/cns_service_corridor_v1@1.0`、`corridor_gap_analyzer/cns_corridor_gap_v1@1.0`。`route_planner`、`cns_gap_analyzer` 与 `site_planner` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。
+- P2 Algorithm Registry 使用精确 `(algorithm_type, algorithm_id, version)` 键，当前注册：`risk-model-v1-relative-index@1.1`、`route_planner_v1@1.0`、`risk_aware_route_planner_v2@2.0`、`layered_route_planner/layered_route_planner_v1@1.0`、`coverage_planner_v1@1.0`、`cns_gap_analysis_v1@1.0`、`cns_gap_analysis_v2@2.0`、`coverage_model/geometric_coverage_3d_v1@1.0`、`service_model/cns_service_capability_v1@1.0`、`timeline_model/route_service_timeline_v1@1.0`、`protection_model/tactical_protection_envelope_v1@1.0`、`site_planner/reuse_first_site_planner_v1@1.0`、`site_planner/corridor_reuse_first_site_planner_v2@2.0`、`corridor_model/cns_service_corridor_v1@1.0`、`corridor_gap_analyzer/cns_corridor_gap_v1@1.0`。`route_planner`、`layered_route_planner`、`cns_gap_analyzer` 与 `site_planner` 默认仍选择各自 V1；找不到精确版本直接报错，禁止回退。Layered Planner 使用**独立 algorithm type**，因此选择它不可能替换项目默认 `route_planner`。
 - `requirement_model` 注册 `manual_required_cns_v1@1.0` 与 `operational_context_required_cns_v2@2.0`，默认始终为 manual V1；旧项目不自动迁移、也不自动采用 recommendation。
 - `AlgorithmManifest` 固定包含 `name/provider/maturity/description/inputs/outputs/parameter_schema/assumptions/limitations/references`；Registry 内部 factory 不序列化，ProjectState 只保存选择与参数。
 - Workflow 启动时从 Registry 解析选择，再把算法对象注入相应 Application Service；业务 Service 不依赖 Registry。
@@ -743,8 +751,55 @@ Step 04 新增 **V3 CNS Assessment summary**：Route validation / Operational pu
 
 新增 `tests/test_risk_framework_v2.py`（24 项）与 `tests/frontend_modules.test.mjs` 3 项（Node）。覆盖：V1 输出/公式 characterization 不变；UAV traffic 只属于 Air/Traffic；六类 canonical factor 的 raw+normalized+provenance+normalization+fingerprint；missing/unknown 不变 0（含确认的 0 仍是 0）；partial building height 保持 unresolved 且 coverage 独立有效；无 confirmed policy ⇒ factors ready 但 domain index null；显式 confirmed 权重生出 domain index（含 explicit bands）；required/带权重 factor 缺失不重归一化；invalid/非 1 和权重、未知 factor、未知 method、confirmed 缺 source 一律拒绝；airspace 不进入 value/fingerprint；absolute risk / SORA GRC / SORA ARC 均 `not_computed`；V2 变化与源变化不 stale 当前 routes/CNS；`apply_grid_attributes` / traffic simulation 重算 V2；legacy 项目 backfill 与 normalizer 幂等；readiness 结构；API 命名；前端无默认权重与 Legacy V1/V2 语义分离、V2 图层不画伪 0。
 
-## 8.1 航路规划基础治理 + 专家评审基线（本轮）
+## 8.11 Layered Risk-Aware Route Planner V1：显式高度层 + coarse 可行性 mask + V2 soft cost（本轮）
 
+基线 commit `f6846edbee912b5890440a0211cc8f8d37c74b77`。本轮把 **Layered planner 接成生产主线**：`scenario/OD route → explicit AltitudeLayer → terrain/building feasibility mask → MH/T L8 A* → Risk Framework V2 soft cost → LayeredRouteCandidate`。本轮**不**开发 RouteRiskProfile、Safety Framework V2、V3-E、真实进离场优化；**不**填写任何真实 clearance/λ/高度值；不改真实舟山数据；不 commit/push；不要求人工测试。
+
+**明确不变（硬边界）**：`RoutePlannerV1`（含 56×56 经纬度固定格、BBOX 硬约束、`input_fingerprint`）、`RiskAwareRoutePlannerV2`（搜索核心、代价公式、输出契约）、V3-A/B/C/D（算法、容器、fingerprint）全部未修改，由既有 characterization 测试锁定；**默认 route planner 仍为 `route_planner_v1`**（Layered Planner 使用独立 algorithm type `layered_route_planner`）；未注册为默认、未改 `algorithm_selection` 语义；`RouteOperatingLayer` 仍是 operational route 合同，**未**被当作规划前输入，本轮 candidate 也**不**自动创建它；适飞空域仍 `display_only` 且不进入 mask/search/fingerprint。
+
+### 1. 契约（`domain/layered_route.py`）
+
+- `LayeredRoutePlanningRequest`：`scenario_route_id` 或显式 OD 节点对（二者不得同时给出）+ `altitude_layer_id` + `source`/`evidence`/`confirmed`。高度层**必须显式选择**：缺失即 `blocked/altitude_layer_not_explicitly_selected`；`confirmed=true` 必须带显式 `source`。
+- `LayeredRouteFeasibilityPolicy`：只有 `terrain_vertical_clearance_m` + `source`/`evidence`/`confirmed`，**无默认值**（默认 `blocked/no_default_clearance`）。Building vertical clearance **复用既有 confirmed `building_clearance_policy`**，本模块只声明 `building_clearance_is_reused_not_redefined=true`，不造第三套建筑净空定义。
+- `LayeredRouteCostPolicy`：`ground_lambda` / `air_traffic_lambda` / `environment_obstacle_lambda` + `source`/`evidence`/`confirmed`，默认全部 `null`/`pending_confirmation`。**`null != 0`**：`null` 表示待确认且**阻断**规划，显式 `0` 合法且表示该 domain 不作为规划输入。
+- `LayerFeasibilityMask`：按 selected layer + L8 cell 输出 `feasible/blocked/unknown`、terrain/building floor/margin、`reason_code`、provenance、`mask_fingerprint`。`unknown` 永不参与 A*，也永不等于 `feasible`。
+- `LayeredRouteCandidate`：独立容器（`layered_route_candidates.items[]` + `masks{route@layer}`）。normalizer **无条件**强制 `operational_route=false`、`cns_assessed=false`、`continuous_validation_required=true`、`route_operating_layer_created=false`，任何构造路径都无法放松。
+
+### 2. AltitudeLayer → canonical EGM2008
+
+`resolve_cruise_altitude` 只接受可**可靠转换**为 canonical EGM2008 的层：`egm2008_orthometric` 直接采用显式 `nominal_altitude_m`；`agl` / `wgs84_ellipsoidal` 必须有显式 DEM surface / geoid undulation 证据，否则 `blocked`（V1 不做伪转换、不猜 datum/geoid）。缺 `nominal`、`vertical_reference=unknown`、或层未 `confirmed` 一律 blocked/pending。
+
+### 3. Coarse 可行性（`gis/layered_feasibility_adapter.py` + `build_layer_feasibility_mask`）
+
+- GIS 边界**复用**既有 verified FABDEM window sampler（单次只读窗口、无重采样、NoData 不填补、不填 0）与既有 `grid_attributes.buildings` 的 L8 聚合事实；算法包不 import QGIS/GDAL、不读文件。
+- `terrain_floor = FABDEM 相交有效像元 cell max EGM2008 + 显式 terrain clearance`（不是 center/average）。
+- 无 confirmed `terrain_vertical_clearance_m` ⇒ 全部 cell `unknown`；terrain 缺失/NoData ⇒ `unknown`；`building_count = 0` ⇒ 该格**没有建筑垂向约束**；有建筑且 `valid_height_fraction < 1` 或 `height_max`/terrain 缺失 ⇒ `unknown`（**绝不当 0**）；否则 coarse `building_floor = terrain cell max + height_max + 既有 building vertical clearance`（roof/margin 复用 `domain/building_clearance.py` 的唯一实现）。
+- 语义固定 `coarse_strategic_vertical_envelope`：**不是** exact footprint，**不是**水平/精确建筑净空；水平与精确建筑净空留给后续 continuous validation。
+
+### 4. 搜索与 cost（`layered_route_planner/planner.py`）
+
+- 只在 MH/T L8 `feasible` cells 上搜索，复用既有 `GridGraph` 邻接与对角 corner guard；显式 hard constraints 继续生效（bbox 相交即移除，起终点落入即 fail-closed）；**不跨层**、无自由 3D state。
+- 边代价 `d * (1 + λg·Rg + λa·Ra + λe·Re)`，`edge_risk_domain = (index_source + index_target)/2`；λ 均 ≥ 0 ⇒ 纯直线米制距离仍是 admissible/consistent heuristic。输出每域 `domain_exposure_index_m` / `mean_domain_index` / `lambda_weighted_contributions_m` 与 `distance_contribution_m`。
+- **λ > 0 的 domain** 在任一候选 cell 的 V2 domain index `missing`/`unresolved`/`pending` 时使该 cell **不可遍历**（`risk_domain_unresolved`，绝不使用 unknown penalty 或默认 risk）；**λ = 0 的 domain 完全不作为规划输入**（即使 index 缺失也不阻断）。只用 per-cell domain index，**Risk V2 overall 不使用**。
+- 达到 `max_expanded_states` 时返回 `search_incomplete=true` + `expansion_cap_reached_optimality_not_proven`，不声称 failed/infeasible。
+
+### 5. Application / API / readiness / 失效
+
+- `LayeredRoutePlannerService`（`application/layered_route_planner_service.py`）唯一写入四个 additive 键；readiness 分列 planning request、altitude layer（含 cruise altitude 解析）、feasibility policy、cost policy（逐 domain 的 `configured`/`enabled`/`lambda`）、Risk V2、既有 building clearance policy、来源可用性与 mask 状态，无 confirmed 参数时**逐项列出 blocking reason**。
+- 每次 evaluate：先把前一 candidate 记为 `stale`（保留冻结证据），再按**输入 fingerprint** 幂等替换/新增（相同输入重跑不产生重复记录）；`current_applicability` 只在快照中派生，不写回状态。
+- API：`GET /api/layered-route-planner/readiness`、`GET/POST /api/layered-route-planning-request`、`GET/POST /api/layered-route-feasibility-policy`、`GET/POST /api/layered-route-cost-policy`、`GET /api/layered-route-candidates`、`POST /api/layered-route-candidates/evaluate(|/evaluate-real|/delete)`；`evaluate-real` 由 `ApplicationContext` 在 QGIS 线程构建真实 adapter。
+- schema-v2 旧项目自动 backfill 四个键（pending request / blocked feasibility / pending cost / 空 candidate 容器）；`layered_route_planner_algorithm` 选择变化只 stale `layered_route_candidate` + report；`risk_v2()` 额外只 stale `layered_route_candidate`；`route_operating_layer*` / 建筑源变化同时只 stale candidate/mask。**绝不** stale legacy routes/V3/CNS。
+
+### 6. 前端
+
+- Step 03 新增「生产候选规划（Layered Risk-Aware Route Planner V1）」面板：选 scenario/OD、**显式选 AltitudeLayer**、request source/确认、feasibility policy（clearance 无默认、source、确认）、cost policy（逐域 λ，留空 = null、显式 0 = 关闭、source、确认）、逐项 blocking、Risk V2 soft-cost 输入说明、selected layer mask 统计与指纹、候选结果（cost breakdown 与四个指纹）。无 confirmed 参数时**面板明确 blocked 且不提供任何默认高度/净空/λ**；UI 不出现内部研发编号。
+- 地图新增 `layeredFeasibilityLayer` 开关与图例：按 selected layer 画 `feasible/blocked/unknown` 三类离散色块（`unknown` 画“无数据”色，绝不画 0）并叠加当前 current candidate 的 L8 中心折线；Risk V2 既有图层继续复用。
+
+### 7. 本轮验证
+
+新增 `tests/test_layered_route_planner.py`（58 项）与 `tests/frontend_modules.test.mjs` 7 项（Node）。覆盖：显式高度层必选（含 OD 路径）；无默认 clearance/λ；**显式 0 与 null 区分**；未确认 request/policy 阻断且不读数据源；AGL/WGS84 无证据 blocked 与显式证据可转换；terrain missing/NoData ⇒ unknown；海拔低于 terrain floor blocked；`building_count=0` 无约束；`valid_height_fraction<1`/缺 building grid fact ⇒ unknown 绝不当 0；coarse building floor = terrain max + height_max + 既有垂直净空；mask 保持 airspace display-only 且不含 allowed/blocked 语义；λ=0 最短路与最短基线；λ>0 缺 domain index 阻断（λ=0 时同一缺失被忽略）；edge risk 两端平均、cost 公式与逐域 breakdown；纯距离 heuristic；硬约束与 corner guard 生效、起终点落入 fail-closed；expansion cap ⇒ `search_incomplete`；candidate 不写 `operational_routes`/CNS/`RouteOperatingLayer` 且 normalizer 强制标志；fingerprint 组件封闭且不含 airspace、逐组件敏感；Risk V2 变化只 stale layered candidate；layer/源/policy 变化只 stale layered candidate；stale 记录保留 + 相同输入幂等；legacy 项目 backfill 固定点；保存恢复；独立 algorithm type 且默认 route planner 仍为 V1；API 命名与 payload 透传；算法包不读文件/GIS；前端无默认真实参数与 overlay 三态语义。
+
+## 8.1 航路规划基础治理 + 专家评审基线
 
 本轮目标是为航路规划专家评审准备**可信 baseline**，不是继续扩算法能力。基线 commit `33752b6759d992db39c639085a05e5c291945a38`。
 
@@ -1076,13 +1131,17 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 
 39. Layered Operational Route Architecture V1 当前只有**合同 / readiness / CRUD**：没有 procedure path optimizer，没有 Layered A\*，layer selection 也尚未影响水平 route planning fingerprint。真实 `nominal_altitude_m`、`vertical_reference`、route→layer 分配、爬升率/下降率/转弯半径/join-leave 点与 procedure 的 node/site 参考全部保持 pending，**必须由人工工程确认**；本轮不填任何真实高度值、不改真实舟山项目数据。巡航高度层只在**当前 `operational_routes`** 上做显式分配：route 被删除后遗留的 assignment/procedure 会以 `pending_confirmation` + 原因暴露（不会静默保持 confirmed），清理入口是同一个 CRUD service。
 
-40. Risk Framework V2 已把 factor / domain 分层交付，但**没有任何生产 risk weight**：默认 policy 恒 `pending_confirmation`，三个 domain 的 `index` 为 `null`，跨域 `overall` 恒 `not_configured`。待确认项：domain method/weights/required_factors 与工程依据、`property_exposure`/`critical_infrastructure_exposure` 的真实数据源、`valid_height_fraction<1` 的工程处理规则、dataset_quantile 参考分位是否被接受为相对缩放基准。`uav_traffic_exposure` 与 `conflict_exposure` 依赖 `TrafficSimulator`/`ConflictDetector` 的 synthetic 或显式 scenario 输出（二维恒速直线 CPA），因此 Air/Traffic domain 目前只是既有交通暴露模型的相对重述，不是空域流量或 encounter 模型。V2 尚未被任何 planner 消费：Layered Planner 接入后才让 domain index 进入 route planning fingerprint 与 policy。
+40. Risk Framework V2 已把 factor / domain 分层交付，但**没有任何生产 risk weight**：默认 policy 恒 `pending_confirmation`，三个 domain 的 `index` 为 `null`，跨域 `overall` 恒 `not_configured`。待确认项：domain method/weights/required_factors 与工程依据、`property_exposure`/`critical_infrastructure_exposure` 的真实数据源、`valid_height_fraction<1` 的工程处理规则、dataset_quantile 参考分位是否被接受为相对缩放基准。`uav_traffic_exposure` 与 `conflict_exposure` 依赖 `TrafficSimulator`/`ConflictDetector` 的 synthetic 或显式 scenario 输出（二维恒速直线 CPA），因此 Air/Traffic domain 目前只是既有交通暴露模型的相对重述，不是空域流量或 encounter 模型。V2 已被 **Layered Planner** 消费：per-cell domain index 进入 edge cost 与 candidate fingerprint；**overall 仍不使用**。
+
+41. Layered Risk-Aware Route Planner V1 是**生产主线的候选规划器**，但结果只是 `LayeredRouteCandidate`：不是 operational route、CNS 未评估、也**不**自动创建 `RouteOperatingLayer`，正式运行前必须经过后续 **continuous validation**（精确 footprint、水平/精确建筑净空、native raster 与连续几何）。可行性是 `coarse_strategic_vertical_envelope`（按 L8 cell 的 intersected FABDEM cell max + 显式 clearance、以及 `terrain cell max + height_max + 既有垂直净空`），**不是** exact footprint，也**不是**水平净空结论。A* 是单层 MH/T L8 网格上的 8 邻域搜索（保留 corner guard），无自由 3D state、不跨层、无路径平滑/Theta*。真实工程参数（selected layer 的 `nominal_altitude_m`/`vertical_reference`、`terrain_vertical_clearance_m`、三个 cost λ、既有 `building_clearance_policy`）**全部保持 pending**，无默认值、`null != 0`；AGL/WGS84 高度层在缺少显式 DEM surface / geoid 证据时 blocked。当前自动恢复项目没有 confirmed 参数，因此 readiness 为 `blocked`、没有 candidate，这是设计行为而非缺陷；真实 FABDEM/buildings L8 端到端仍需在正常 QGIS 启动器进程手工验收。
+
+42. Layered Planner 的 V2 soft cost 只是「让 domain index 影响水平路径取舍」，不是风险优化或安全结论：`environment_obstacle` domain 是 CNS Planner 内部工程域（不标 SORA ARC/GRC），terrain/building clearance breach 属 feasibility、**不**转换成 risk；`RouteRiskProfile`（按航路的 domain/interval 风险画像）与 high-risk interval 仍未实现，是**下一阶段**。
 
 
 ## 11. 下一阶段计划
 
-1. **后续顺序固定为：Risk Framework V2（本轮已完成）→ Layered Risk-Aware Route Planner → RouteRiskProfile**。Layered Planner 才让 cruise layer selection 与 V2 domain index 进入水平 route planning fingerprint 与 policy；RouteRiskProfile 在 Layered Planner 之后。**不开发 V3-E**，也不在本轮/近期开发 Layered A\*、RouteRiskProfile 或真实进离场优化。V3-A/V3-B/V3-C/V3-D 仍为 advanced experimental / continuous validation capability；适飞空域仍 `display_only`。
-2. 真实工程确认项（本轮全部保持 pending，禁止补默认值）：舟山项目的巡航高度层 `nominal_altitude_m` 与 `vertical_reference`、各航路的 operating layer 显式分配、离场/进场的爬升率/下降率/转弯半径/join-leave 点与过渡模式，以及 procedure 绑定的 node/site 参考。Risk Framework V2 同样保持 pending：三个 domain 的 `method`/`weights`/`required_factors`/`source`/`evidence`/`confirmed`、`property_exposure` 与 `critical_infrastructure_exposure` 的真实数据源、建筑高度 `valid_height_fraction<1` 的 unresolved 处理规则，以及 dataset_quantile 参考分位是否被工程接受为相对缩放基准。
+1. **后续顺序固定为：Risk Framework V2（已完成）→ Layered Risk-Aware Route Planner V1（本轮已完成，生产主线）→ RouteRiskProfile（下一阶段）**。Layered Planner 已让 explicit cruise layer selection 与 V2 per-cell domain index 进入水平 route planning fingerprint 与 cost policy；RouteRiskProfile 在 Layered Planner 之后。**不开发 V3-E**，也不在本轮/近期开发 RouteRiskProfile、真实进离场优化或把 candidate 直接提升为 operational route。V3-A/V3-B/V3-C/V3-D 仍为 advanced experimental / continuous validation capability；适飞空域仍 `display_only`。
+2. 真实工程确认项（全部保持 pending，禁止补默认值）：舟山项目的巡航高度层 `nominal_altitude_m` 与 `vertical_reference`、各航路的 operating layer 显式分配、离场/进场的爬升率/下降率/转弯半径/join-leave 点与过渡模式、procedure 绑定的 node/site 参考，以及 **Layered Planner 的 `terrain_vertical_clearance_m`、三个 cost λ（ground / air_traffic / environment_obstacle）、每个候选航路显式选定的 AltitudeLayer 与既有 `building_clearance_policy`**。Risk Framework V2 同样保持 pending：三个 domain 的 `method`/`weights`/`required_factors`/`source`/`evidence`/`confirmed`、`property_exposure` 与 `critical_infrastructure_exposure` 的真实数据源、建筑高度 `valid_height_fraction<1` 的 unresolved 处理规则，以及 dataset_quantile 参考分位是否被工程接受为相对缩放基准。
 3. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。**不再**需要逐 feature 确认 AirspacePolicy（DATA-3 已退役）。
 4. V3-D 已实现（validated route → operational adoption → 复用既有 P7/P8/P9/P10 CNS Assessment；`operational_route`/`cns_assessed` 在 V3-C validation 内仍恒为 false，"已采用/CNS 已评估"读取自 adoption/bundle 容器）。下一步是在正常 QGIS 启动器进程中用**真实舟山来源**做 V3-D 端到端验收（见下节"仍需真实端到端验证的问题"）。
 5. 真实数据 canonical adapter（terrain surface clearance floor、building required vertical clearance、grid risk soft fields）与来源审计在 V3-A/V3-B/V3-C 已实现（GIS 边界，`cns_planner/gis/v3_environment_adapter.py`），V3-D 的 operational adoption 与 CNS bridge 亦已就绪；仍需在正常 QGIS 启动器进程手工验收真实航路的 V3-A/V3-C/V3-D 端到端结果。空域不进入该链路。

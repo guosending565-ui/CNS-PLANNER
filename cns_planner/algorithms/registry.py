@@ -14,6 +14,7 @@ from .corridor.v1 import CNSServiceCorridorV1
 from .corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from .route.v1 import RoutePlannerV1
 from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
+from ..layered_route_planner.planner import LayeredRoutePlannerV1
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
@@ -23,7 +24,7 @@ from .requirements.manual_v1 import ManualRequiredCNSV1
 from .requirements.operational_context_v2 import OperationalContextRequiredCNSV2
 
 
-ALGORITHM_TYPES = ("risk_model", "route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model", "corridor_gap_analyzer", "requirement_model")
+ALGORITHM_TYPES = ("risk_model", "route_planner", "layered_route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model", "corridor_gap_analyzer", "requirement_model")
 
 
 class AlgorithmNotFoundError(ValueError):
@@ -92,6 +93,9 @@ def default_algorithm_selection():
     return {
         "risk_model": _selection("risk_model", RiskModelV1),
         "route_planner": _selection("route_planner", RoutePlannerV1),
+        # Layered Risk-Aware Route Planner V1: its own algorithm type so that selecting it can
+        # never be confused with (or replace) the project's default ``route_planner``.
+        "layered_route_planner": _selection("layered_route_planner", LayeredRoutePlannerV1),
         "coverage_planner": _selection("coverage_planner", CoveragePlannerV1),
         "cns_gap_analyzer": _selection("cns_gap_analyzer", CNSGapAnalyzerV1),
         "coverage_model": {
@@ -145,6 +149,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_risk_manifest(), lambda parameters: RiskModelV1())
     registry.register(_route_manifest(), lambda parameters: RoutePlannerV1(**parameters))
     registry.register(_risk_aware_route_v2_manifest(), lambda parameters: RiskAwareRoutePlannerV2(parameters))
+    registry.register(_layered_route_planner_v1_manifest(), lambda parameters: LayeredRoutePlannerV1(parameters))
     registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
     registry.register(_gap_v2_manifest(), lambda parameters: CNSGapAnalyzerV2(parameters))
@@ -243,6 +248,48 @@ def _risk_aware_route_v2_manifest():
             "不是事故概率、SORA GRC 或 TLS",
             "二维战略水平规划；输出为 MH/T 网格中心连成的二维航路，不计算 P7 高度、三维/四维风险，也不做路径平滑",
             "不在规划器内重算风险",
+        ),
+        (),
+    )
+
+
+def _layered_route_planner_v1_manifest():
+    return AlgorithmManifest(
+        "layered_route_planner", LayeredRoutePlannerV1.algorithm_id,
+        LayeredRoutePlannerV1.algorithm_version,
+        "Layered Risk-Aware Route Planner V1", "CNS-PLANNER", "engineering_baseline",
+        "按显式 AltitudeLayer 建立 coarse 地形/建筑垂向可行性 mask，在 MH/T L8 feasible cells "
+        "上以 Risk Framework V2 domain index 作为 soft cost 执行单层 A*，输出 candidate。",
+        (
+            "scenario_or_od_route", "explicit_altitude_layer", "grid.cells",
+            "layer_feasibility_mask", "grid_risk_v2.cells", "layered_route_feasibility_policy",
+            "layered_route_cost_policy", "hard_constraints", "building_clearance_policy",
+        ),
+        (
+            "layered_route_candidate", "layer_feasibility_mask", "grid_path", "distance_m",
+            "optimization_cost", "cost_breakdown", "fingerprints",
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "max_expanded_states": {"type": ["integer", "null"], "minimum": 1},
+            },
+            "additionalProperties": False,
+        },
+        (
+            "高度层必须显式选择：不从 RouteAltitudeProfile 或 RouteOperatingLayer 推断",
+            "没有默认 terrain clearance，也没有默认 λ：null != 0，显式 0 合法",
+            "edge cost = d * (1 + λg·Rg + λa·Ra + λe·Re)，edge risk 取两端 domain index 平均",
+            "λ 均 >= 0，因此纯直线米制距离是 admissible heuristic",
+            "λ>0 的 domain 在任一候选 cell missing/unresolved/pending 时该 cell 不可遍历；λ=0 时该 domain 不作为规划输入",
+            "可行性只是 coarse_strategic_vertical_envelope",
+        ),
+        (
+            "输出只是 candidate：operational_route=false、continuous_validation_required=true，"
+            "不写 operational_routes/CNS，也不自动创建 RouteOperatingLayer",
+            "coarse mask 不是 exact footprint，也不做水平/精确建筑净空（留给后续 continuous validation）",
+            "Risk Framework V2 overall 不使用；适飞空域仍 display_only，不进入搜索或 fingerprint",
+            "不跨层、无自由 3D state、不做路径平滑或 Theta*",
         ),
         (),
     )

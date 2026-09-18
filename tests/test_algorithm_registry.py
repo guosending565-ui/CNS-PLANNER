@@ -63,6 +63,7 @@ def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
         ("risk_model", "risk-model-v1-relative-index", "1.1"),
         ("route_planner", "route_planner_v1", "1.0"),
         ("route_planner", "risk_aware_route_planner_v2", "2.0"),
+        ("layered_route_planner", "layered_route_planner_v1", "1.0"),
         ("coverage_planner", "coverage_planner_v1", "1.0"),
         ("cns_gap_analyzer", "cns_gap_analysis_v1", "1.0"),
         ("cns_gap_analyzer", "cns_gap_analysis_v2", "2.0"),
@@ -152,6 +153,7 @@ def test_same_selection_is_noop_and_invalid_selection_preserves_current(tmp_path
     [
         ("coverage_planner", {"coverage", "report"}),
         ("cns_gap_analyzer", {"cns_gap", "report"}),
+        ("layered_route_planner", {"layered_route_candidate", "report"}),
         ("coverage_model", {"coverage_3d", "cns_service_capability", "service_timeline", "report"}),
         ("service_model", {"cns_service_capability", "service_timeline", "report"}),
         ("timeline_model", {"service_timeline", "report"}),

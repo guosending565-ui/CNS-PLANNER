@@ -23,6 +23,11 @@ class InvalidationService:
 
     def __init__(self, session):
         self.session = session
+        #: Injected by the composition root once the layered planner service exists.  It
+        #: stales the additive ``layered_route_candidates`` / ``LayerFeasibilityMask`` and
+        #: **only** those: legacy ``routes``, V3 and CNS results are never touched by a
+        #: Risk Framework V2 or layered-policy change.
+        self.layered_route_invalidator = None
 
     def workflow(self, changed):
         state = self.session.state
@@ -76,6 +81,11 @@ class InvalidationService:
             self.risk_v2(f"{changed}_changed")
         if changed in ("workspace", "route", "route_algorithm", "spatial_3d"):
             self.building_clearance(f"{changed}_changed")
+        if changed == "layered_route_planner_algorithm":
+            # Selecting another registered layered planner implementation stales only the
+            # additive layered candidate product; legacy routes stay untouched.
+            state.setdefault("result_statuses", {})["layered_route_candidate"] = "stale"
+            self.layered_route(str(changed))
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -100,20 +110,26 @@ class InvalidationService:
             self.cns_corridor()
         if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
             self.building_clearance("building_source_changed")
+        if "buildings" in changed_sources or "building_grid" in changed_sources:
+            # The layered feasibility mask consumes the L8 building grid facts, so only the
+            # layered candidates are additionally staled here.
+            self.layered_route("building_grid_facts_changed")
 
     def route_operating_layer(self, reason="route_operating_layer_changed"):
         """Minimal Layered Operational Route Architecture V1 invalidation chain.
 
         Altitude layer / route-layer assignment / procedure changes stale only the vertical,
         terrain-building and downstream CNS-safety derived results.  Grid risk is never
-        rewritten, and horizontal routes are not invalidated: the future layered planner is
-        the component that will make a layer selection affect the horizontal route planning
-        fingerprint.
+        rewritten, and horizontal routes are not invalidated: the Layered Risk-Aware Route
+        Planner V1 (not the legacy planners) is the component that makes a layer selection
+        affect the horizontal route planning fingerprint — it stales only its own
+        candidate/mask products.
         """
 
         mark_active_report_stale(self.session.state, reason)
         self.coverage_3d()
         self.building_clearance(reason)
+        self.layered_route(reason)
 
     def building_clearance(self, reason="building_clearance_input_changed"):
         state = self.session.state
@@ -168,6 +184,20 @@ class InvalidationService:
         result["status"] = "stale"
         result["stale_reason"] = str(reason)
         state.setdefault("result_statuses", {})["grid_risk_v2"] = "stale"
+        self.layered_route(reason)
+
+    def layered_route(self, reason="layered_route_input_changed"):
+        """Stale only the additive Layered Route Planner V1 candidate/mask products.
+
+        A Risk Framework V2 change, a selected layer/request change, a terrain/building or
+        building-clearance policy change, and a feasibility/cost policy change only make the
+        related ``LayeredRouteCandidate`` / ``LayerFeasibilityMask`` stale.  Legacy routes,
+        V3 experiments/adoptions and every CNS result are deliberately untouched.
+        """
+
+        invalidator = self.layered_route_invalidator
+        if callable(invalidator):
+            invalidator(str(reason))
 
     def grid_risk_routes(self):
         """Only Risk-Aware Route Planner V2 makes routes depend on grid_risk."""

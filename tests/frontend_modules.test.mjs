@@ -21,6 +21,8 @@ import {ADVANCED_PROFILE_LABEL,CRUISE_LAYER_MODE,LAYER_PENDING_LABEL,PRODUCTION_
 import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
 import {encounterFrame,renderDaaEncounterLab} from '../cns_planner/web/js/workflow/daa_encounter_lab.js';
 import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,riskV2CellSummary,riskV2LegendModel,riskV2ThemeOptions} from '../cns_planner/web/js/workflow/risk_framework_v2.js';
+import {COST_DOMAIN_LABELS,LAYERED_BLOCKED_NOTE,LAYERED_CANDIDATE_LABEL,LAYERED_PLANNER_ALGORITHM_TYPE,layeredEvaluatePayload,layeredOverlayModel,layeredRequestPayload,layeredRoutePlannerModel,renderLayeredRoutePlannerPanel} from '../cns_planner/web/js/workflow/layered_route_planner.js';
+import {LAYERED_FEASIBILITY_COLORS,currentLayeredCandidate,drawLayeredFeasibilityOverlay,layeredFeasibilityCells,layeredFeasibilityLegend} from '../cns_planner/web/js/map/layered_feasibility_overlay.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -1714,4 +1716,244 @@ test('risk V2 map layers never paint a pending domain index as zero',()=>{
   assert.match(summary,/ground/);
   assert.match(summary,/not_computed/);
   assert.doesNotMatch(summary,/overall_weights/);
+});
+
+// ---- Layered Risk-Aware Route Planner V1 -------------------------------------------
+
+function layeredFlow(overrides={}){
+  const base={
+    scenario_routes:[
+      {route_id:'R0001',direction:'N001→N002',start_node_id:'N001',end_node_id:'N002'},
+    ],
+    layered_route_planning_request:{status:'confirmed',confirmed:true,source:'工程确认-测试',
+      scenario_route_id:'R0001',altitude_layer_id:'L8-LOW'},
+    layered_route_feasibility_policy:{status:'confirmed',terrain_vertical_clearance_m:50,
+      source:'工程确认-测试',fingerprint:'layeredfeasv1-abc',parameter_status:'explicit'},
+    layered_route_cost_policy:{status:'confirmed',ground_lambda:2,air_traffic_lambda:0,
+      environment_obstacle_lambda:null,source:'工程确认-测试',parameter_status:'explicit'},
+    layered_route_planner_readiness:{
+      status:'blocked',
+      algorithm:{algorithm_id:'layered_route_planner_v1',algorithm_version:'1.0'},
+      request:{status:'confirmed',scenario_route_id:'R0001',altitude_layer_id:'L8-LOW',confirmed:true},
+      altitude_layer_catalog:{status:'configured',count:1,altitude_layer_ids:['L8-LOW'],
+        selected_altitude_layer_id:'L8-LOW',
+        cruise_altitude:{status:'confirmed',altitude_egm2008_m:300,vertical_reference:'egm2008_orthometric'}},
+      scenario_route:{status:'resolved',route_id:'R0001',count:1},
+      feasibility_policy:{status:'confirmed',terrain_vertical_clearance_m:50,fingerprint:'layeredfeasv1-abc'},
+      cost_policy:{status:'confirmed',fingerprint:'layeredcostv1-abc',active_domains:['ground'],
+        parameter_status:'explicit',domains:{
+          ground:{lambda:2,enabled:true,configured:true},
+          air_traffic:{lambda:0,enabled:false,configured:true},
+          environment_obstacle:{lambda:null,enabled:false,configured:false},
+        }},
+      risk_framework_v2:{status:'passed',input_fingerprint:'riskv2-input',policy_fingerprint:'riskv2-policy',overall_used:false},
+      building_clearance_policy:{status:'confirmed',vertical_clearance_m:10,reused_not_redefined:true},
+      feasibility_mask:{status:'passed',counts:{feasible:3,blocked:1,unknown:1},mask_fingerprint:'layeredmaskv1-abc'},
+      blockers:[{reason_code:'cost_weights_not_configured',reason:'λ 未全部确认'}],
+      airspace:{status:'not_applicable',applicability:'display_only',used_in_mask_search_or_fingerprint:false},
+      semantics:{no_default_clearance_or_lambda:true},
+    },
+    layered_route_candidates:{
+      status:'passed',count:1,active_candidate_id:'LRC-R0001-L8-LOW-1',
+      current_key:'R0001@L8-LOW',current_candidate_fingerprint:'layeredcandv1-current',
+      items:[{
+        candidate_id:'LRC-R0001-L8-LOW-1',route_id:'R0001',altitude_layer_id:'L8-LOW',
+        lane_key:'R0001@L8-LOW',status:'candidate',current_applicability:'current',
+        candidate_fingerprint:'layeredcandv1-current',feasibility_fingerprint:'layeredfeasibilityv1-a',
+        risk_fingerprint:'layeredriskv1-a',policy_fingerprint:'layeredpolicyv1-a',
+        distance_m:1200,optimization_cost:1800,detour_factor:1.2,grid_path:['A','B','C'],
+        operational_route:false,cns_assessed:false,continuous_validation_required:true,
+        route_operating_layer_created:false,search_incomplete:false,
+        cost_breakdown:{distance_contribution_m:1200,
+          lambda_weighted_contributions_m:{ground:600,air_traffic:null,environment_obstacle:null},
+          domain_exposure_index_m:{ground:300,air_traffic:null,environment_obstacle:null},
+          mean_domain_index:{ground:.25,air_traffic:null,environment_obstacle:null},
+          lambdas:{ground:2,air_traffic:0,environment_obstacle:null},active_domains:['ground']},
+      }],
+      masks:{'R0001@L8-LOW':{status:'passed',altitude_layer_id:'L8-LOW',current_applicability:'current',
+        mask_fingerprint:'layeredmaskv1-abc',counts:{feasible:3,blocked:1,unknown:1},
+        airspace:{applicability:'display_only',used_in_mask:false},
+        cells:{
+          A:{grid_id:'A',status:'feasible',reason_code:null,reason:null},
+          B:{grid_id:'B',status:'blocked',reason_code:'altitude_below_building_clearance_floor',reason:'low'},
+          C:{grid_id:'C',status:'unknown',reason_code:'terrain_data_unavailable',reason:'nodata'},
+        }}},
+    },
+  };
+  return {...base,...overrides};
+}
+
+function layeredGrid(){
+  return {cells:[
+    {grid_id:'A',bbox:[122.0,30.0,122.01,30.01],center:[122.005,30.005]},
+    {grid_id:'B',bbox:[122.01,30.0,122.02,30.01],center:[122.015,30.005]},
+    {grid_id:'C',bbox:[122.02,30.0,122.03,30.01],center:[122.025,30.005]},
+  ]};
+}
+
+test('layered planner model exposes readiness, policy and candidate facts',()=>{
+  const model=layeredRoutePlannerModel(layeredFlow());
+  assert.equal(model.status,'blocked');
+  assert.equal(model.selectedRouteId,'R0001');
+  assert.equal(model.selectedLayerId,'L8-LOW');
+  assert.equal(model.cruiseAltitude.altitude_egm2008_m,300);
+  assert.equal(model.blockers[0].reason_code,'cost_weights_not_configured');
+  assert.equal(model.feasibility.clearance,50);
+  assert.equal(model.cost.domains.length,3);
+  assert.equal(model.cost.anyNull,true);
+  assert.equal(model.cost.domains[0].state,'启用（λ>0）');
+  assert.equal(model.cost.domains[1].state,'关闭（显式 0）');
+  assert.equal(model.cost.domains[2].state,'待确认（null）');
+  assert.equal(model.risk.overall_used,false);
+  assert.equal(model.candidates.count,1);
+  assert.equal(model.candidates.items[0].operationalRoute,false);
+  assert.equal(model.candidates.items[0].continuousValidationRequired,true);
+  assert.equal(model.candidates.items[0].routeOperatingLayerCreated,false);
+  assert.equal(LAYERED_PLANNER_ALGORITHM_TYPE,'layered_route_planner');
+});
+
+test('layered planner panel never invents a default height, clearance or lambda',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=layeredFlow();
+  const html=renderLayeredRoutePlannerPanel(flow);
+  assert.match(html,/Layered Risk-Aware Route Planner V1/);
+  assert.match(html,/coarse_strategic_vertical_envelope/);
+  assert.match(html,/id="layeredAltitudeLayerSelect"/);
+  assert.match(html,/id="layeredRouteSelect"/);
+  assert.match(html,/id="layeredTerrainClearance" type="number" step="0.1" placeholder="必填，无默认值"/);
+  assert.match(html,/id="layeredGroundLambda" type="number" step="0.1" placeholder="留空 = null（待确认）"/);
+  assert.match(html,new RegExp(LAYERED_BLOCKED_NOTE));
+  assert.match(html,/cost_weights_not_configured/);
+  assert.match(html,/λ 启用（λ>0） · 配置值 2\.0000/);
+  assert.match(html,/λ 关闭（显式 0） · 配置值 0\.0000/);
+  assert.match(html,/λ 待确认（null） · 配置值 null（待确认）/);
+  assert.match(html,/unknown ≠ feasible ≠ blocked/);
+  assert.match(html,/不得直接写入运行航路或 CNS/);
+  assert.match(html,/不会写入 operational_routes \/ CNS/);
+  assert.doesNotMatch(html,/\bP1\b|\bP13\b/);
+  // A blank project shows no invented altitude / clearance / lambda: every field starts empty.
+  const blank=layeredFlow();
+  blank.layered_route_planning_request={status:'pending_confirmation',confirmed:false,source:null,
+    scenario_route_id:null,altitude_layer_id:null};
+  blank.layered_route_feasibility_policy={status:'blocked',terrain_vertical_clearance_m:null,
+    source:'未配置；必须由项目工程依据显式确认 terrain_vertical_clearance_m',fingerprint:'layeredfeasv1-empty'};
+  blank.layered_route_cost_policy={status:'pending_confirmation',ground_lambda:null,
+    air_traffic_lambda:null,environment_obstacle_lambda:null,source:'未配置'};
+  blank.layered_route_planner_readiness={...blank.layered_route_planner_readiness,
+    status:'blocked',blockers:[
+      {reason_code:'route_identity_not_selected',reason:'尚未确认显式规划请求'},
+      {reason_code:'terrain_vertical_clearance_not_configured',reason:'无默认净空'},
+      {reason_code:'cost_weights_not_configured',reason:'无默认 λ'},
+    ],
+    feasibility_policy:{status:'blocked',terrain_vertical_clearance_m:null,fingerprint:'layeredfeasv1-empty'},
+    cost_policy:{status:'pending_confirmation',fingerprint:null,active_domains:[],parameter_status:'no_default_lambda',
+      domains:{
+        ground:{lambda:null,enabled:false,configured:false},
+        air_traffic:{lambda:null,enabled:false,configured:false},
+        environment_obstacle:{lambda:null,enabled:false,configured:false},
+      }},
+    altitude_layer_catalog:{status:'not_configured',count:0,altitude_layer_ids:[],
+      selected_altitude_layer_id:null,cruise_altitude:{status:'blocked',altitude_egm2008_m:null,reason:'altitude_layer_missing'}},
+    feasibility_mask:{status:'not_calculated',counts:{},mask_fingerprint:null}};
+  blank.layered_route_candidates={status:'not_calculated',count:0,active_candidate_id:null,items:[],masks:{}};
+  const blankHtml=renderLayeredRoutePlannerPanel(blank);
+  assert.doesNotMatch(blankHtml,/<input[^>]*type="number"[^>]*value="[0-9]/);
+  assert.match(blankHtml,/no default|无默认|待确认/);
+  assert.match(blankHtml,/placeholder="必填，无默认值"/);
+  assert.match(blankHtml,/placeholder="留空 = null（待确认）"/);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/layered_route_planner.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/\b(80|100|120|150)\b\s*;?\s*\/\/\s*default/);
+  assert.doesNotMatch(source,/defaultValue/);
+});
+
+test('layered evaluate payload maps blank inputs to null and 0 stays an explicit value',()=>{
+  const fields={
+    layeredRouteSelect:'R0001',layeredAltitudeLayerSelect:'L8-LOW',
+    layeredRequestSource:'工程确认-测试',layeredRequestConfirmed:true,
+    layeredTerrainClearance:'',layeredFeasibilitySource:'',layeredFeasibilityConfirmed:false,
+    layeredGroundLambda:'0',layeredAirLambda:'',layeredEnvironmentLambda:'1.5',
+    layeredCostSource:'工程确认-测试',layeredCostConfirmed:true,
+  };
+  const get=id=>{
+    const value=fields[id];
+    if(typeof value==='boolean')return {checked:value,value:''};
+    return {checked:false,value:value===undefined?'':String(value)};
+  };
+  const payload=layeredEvaluatePayload(get);
+  assert.equal(payload.request.altitude_layer_id,'L8-LOW');
+  assert.equal(payload.feasibility.terrain_vertical_clearance_m,null);
+  assert.equal(payload.cost.ground_lambda,0);
+  assert.equal(payload.cost.air_traffic_lambda,null);
+  assert.equal(payload.cost.environment_obstacle_lambda,1.5);
+  assert.equal(payload.cost.confirmed,true);
+  const request=layeredRequestPayload(layeredFlow());
+  assert.equal(request.scenario_route_id,'R0001');
+  assert.equal(request.confirmed,true);
+  assert.equal(COST_DOMAIN_LABELS.air_traffic,'Air / Traffic（空中交通暴露）');
+});
+
+test('layered feasibility overlay draws only the selected layer with three verdicts',()=>{
+  const flow=layeredFlow();
+  const cells=layeredFeasibilityCells(flow);
+  assert.equal(cells.length,3);
+  assert.equal(cells.find(item=>item.gridId==='A').status,'feasible');
+  assert.equal(cells.find(item=>item.gridId==='B').status,'blocked');
+  assert.equal(cells.find(item=>item.gridId==='C').status,'unknown');
+  assert.equal(cells.find(item=>item.gridId==='C').color,LAYERED_FEASIBILITY_COLORS.unknown);
+  const model=layeredOverlayModel(flow);
+  assert.equal(model.available,true);
+  assert.deepEqual(model.counts,{feasible:3,blocked:1,unknown:1});
+  assert.equal(model.currentApplicability,'current');
+  const candidate=currentLayeredCandidate(flow);
+  assert.equal(candidate.candidate_id,'LRC-R0001-L8-LOW-1');
+  const legend=layeredFeasibilityLegend();
+  assert.deepEqual(legend.map(item=>item.status),['feasible','blocked','unknown']);
+  // switch the selected layer: the overlay follows the lane, and a missing lane draws nothing
+  const other=layeredFlow();
+  other.layered_route_planning_request={...other.layered_route_planning_request,altitude_layer_id:'L8-HIGH'};
+  assert.equal(layeredFeasibilityCells(other).length,0);
+  assert.equal(layeredOverlayModel(other).available,false);
+  assert.equal(currentLayeredCandidate(other),null);
+});
+
+test('layered feasibility overlay paints categorical cells and the current candidate path',()=>{
+  const flow=layeredFlow();
+  const fills=[],strokes=[];
+  const ctx={save(){},restore(){},fill(){fills.push(this.fillStyle)},stroke(){strokes.push(this.strokeStyle)},
+    beginPath(){},moveTo(){},lineTo(){},closePath(){},setLineDash(){},globalAlpha:1};
+  const theme={bboxIntersects:()=>true};
+  const drawn=drawLayeredFeasibilityOverlay({
+    ctx,view:{x:0,y:0,res:1},screenPoint:point=>[point[0],point[1]],flow,grid:layeredGrid(),gridTheme:theme,
+  });
+  assert.equal(drawn.cells,3);
+  assert.equal(drawn.path,3);
+  assert.deepEqual(fills,[
+    LAYERED_FEASIBILITY_COLORS.feasible,
+    LAYERED_FEASIBILITY_COLORS.blocked,
+    LAYERED_FEASIBILITY_COLORS.unknown,
+  ]);
+  assert.deepEqual(strokes,['#123a5c']);
+  // a candidate that is not current is not drawn as the selected-layer path
+  const stale=layeredFlow();
+  stale.layered_route_candidates={...stale.layered_route_candidates,
+    items:[{...stale.layered_route_candidates.items[0],current_applicability:'stale'}]};
+  assert.equal(currentLayeredCandidate(stale),null);
+});
+
+test('layered candidate vocabulary is closed and never claims operational status',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/layered_route_planner.js',import.meta.url),'utf8');
+  assert.match(source,/LAYERED_CANDIDATE_LABEL='分层候选（candidate，非运行航路）'/);
+  assert.doesNotMatch(source,/operational_route:true|route_operating_layer_created:true/);
+  const html=renderLayeredRoutePlannerPanel(layeredFlow());
+  assert.match(html,/candidate 不会写入 operational_routes \/ CNS，也不会自动创建 RouteOperatingLayer。/);
+  assert.doesNotMatch(html,/Risk V2 overall 使用|overall 参与 cost/);
+  // a blocked run surfaces the candidate label with the explicit blocking reason
+  const blocked=layeredFlow();
+  blocked.layered_route_candidates={...blocked.layered_route_candidates,
+    items:[{candidate_id:null,route_id:'R0001',altitude_layer_id:'L8-LOW',status:'blocked',
+      current_applicability:'current',blocking_reasons:[{reason_code:'cost_weights_not_configured',reason:'λ 未确认'}]}]};
+  const blockedHtml=renderLayeredRoutePlannerPanel(blocked);
+  assert.match(blockedHtml,new RegExp('分层候选（candidate，非运行航路）'));
+  assert.match(blockedHtml,/blocking：cost_weights_not_configured/);
 });

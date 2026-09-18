@@ -264,4 +264,26 @@
     margin-top: 14px;
 }
 
+/* Layered Route Planner V1：selected layer 可行性（三类离散结论，unknown 绝不画成 0） */
+#layeredFeasibilityLegend {
+    margin-top: 14px;
+}
+
+#layeredFeasibilityLegend .layer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: #3c4a52;
+    padding: 2px 0;
+}
+
+#layeredFeasibilityLegend .small {
+    margin-top: 6px;
+    font-size: 10px;
+    line-height: 1.45;
+    color: #7a8883;
+}
+
 

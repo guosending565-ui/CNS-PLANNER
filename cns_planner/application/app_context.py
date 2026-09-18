@@ -12,6 +12,7 @@ from .project_directory_service import ProjectDirectoryService
 from .workflow_service import WorkflowService
 from ..gis.building_clearance_adapter import QgisBuildingClearanceAdapter
 from ..gis.fine_environment_adapter import real_data_source_readiness
+from ..gis.layered_feasibility_adapter import layered_feasibility_source_status
 from ..gis.route_vertical_profile_adapter import FabdemRouteSampler
 
 
@@ -64,6 +65,7 @@ class ApplicationContext:
         self.workflow.configure_reference_sources(self.data.paths)
         self.configure_route_planner_v3_sources()
         self.configure_route_planner_v3_adoption()
+        self.configure_layered_route_planner_sources()
 
     def _source_details(self):
         details = {}
@@ -143,6 +145,45 @@ class ApplicationContext:
         if not terrain_dtm:
             raise ValueError("请先配置 FABDEM terrain_dtm")
         return self.workflow.evaluate_route_vertical_profiles(FabdemRouteSampler(terrain_dtm), payload)
+
+    # ------------------------------------------------- Layered Risk-Aware Route Planner V1
+
+    def configure_layered_route_planner_sources(self):
+        """Give the layered planner a read-only feasibility source-status provider.
+
+        The provider only reports configured paths and source audit status; it never opens a
+        dataset, so rendering the readiness panel is side-effect free.
+        """
+
+        def source_status():
+            return layered_feasibility_source_status(
+                self.workflow.state, self.data.paths.get("terrain_dtm"),
+            )
+
+        self.workflow.layered_route_planner_service.source_status = source_status
+        return source_status
+
+    def evaluate_layered_route_candidate(self, payload=None):
+        """Run one Layered Route Planner V1 evaluation against the verified real sources.
+
+        The coarse feasibility facts come from the existing verified FABDEM window sampler and
+        the existing L8 building grid facts; without a configured FABDEM DTM this raises
+        instead of fabricating an environment.
+        """
+
+        payload = payload if isinstance(payload, dict) else {}
+        terrain_dtm = self.data.paths.get("terrain_dtm")
+        if not terrain_dtm:
+            raise ValueError("请先配置 verified FABDEM terrain_dtm")
+
+        def evaluate():
+            from ..gis.fine_environment_adapter import FabdemWindowTerrainSource
+            from ..gis.layered_feasibility_adapter import LayeredFeasibilityAdapter
+
+            adapter = LayeredFeasibilityAdapter(FabdemWindowTerrainSource(terrain_dtm))
+            return self.workflow.evaluate_layered_route_candidate(payload, adapter=adapter)
+
+        return self.qgis.call(evaluate)
 
     # ------------------------------------------------------------------ Route Planner V3
 
