@@ -13,7 +13,7 @@ import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThe
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
 import {riskV2LegendModel} from './workflow/risk_framework_v2.js';
 import {gridCellDetails,populationDisplayLabel} from './workflow/grid_details.js';
-import {bindShell,updateLodBadge,renderRailSteps,layerSwitches} from './shell.js';
+import {bindShell,bindLayerControls,updateLodBadge,renderRailSteps,layerSwitches} from './shell.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
 import * as Step03 from './workflow/step03_routes.js';
@@ -24,7 +24,8 @@ import {createSourceCenter} from './sources/source_center.js';
 
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','referenceRouteLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer'];
+// 统一的地图图层开关（图层抽屉里的全部 checkbox 都在这里，避免散落引用）
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
@@ -219,12 +220,6 @@ function hitReferenceObject(event){
     overlay=Step03.referenceOverlayModel(flow,{routes:$('referenceRouteLayer').checked,points:false,landingSites:false});
   return hitReferenceOverlay(click,{...overlay,referencePoints:points},screenPoint);
 }
-bindShell({
-  $,downloadExport,saveProject,panelError,
-  previewReport:()=>previewPlanningReport(),
-  generateReport:()=>resourceAction('/api/cns-planning-report/generate',{}),
-  downloadReport:kind=>downloadPlanningReport(kind)
-});
 $('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
 function updateGridNotice(){
   const notice=$('gridNotice');if(!notice)return;
@@ -265,23 +260,13 @@ function updateRiskV2Legend(){
   $('gridThemeLegendNote').textContent=model.note;
   return true;
 }
-function updateRasterLegends(){
-  if($('populationRasterLegend'))$('populationRasterLegend').hidden=!$('pop').checked;
-  if($('terrainRasterLegend'))$('terrainRasterLegend').hidden=!$('terrain').checked;
-}
 function syncLayerControls(){
-  for(const id of ['air','pop','terrain'])$(id).onchange=queue;
-  $('pop').addEventListener('change',updateRasterLegends);
-  $('terrain').addEventListener('change',updateRasterLegends);
-  updateRasterLegends();
-  $('opacity').oninput=()=>{$('opacityValue').textContent=$('opacity').value+'%';queue();};
-  $('terrainOpacity').oninput=()=>{$('terrainOpacityValue').textContent=$('terrainOpacity').value+'%';queue();};
-  $('online').onchange=()=>{onlineTiles.update(view,...size(),$('online').checked);paint();};
-  for(const id of [...LAYER_IDS,'gridLayer','referenceRoutePointLayer'])$(id).onchange=()=>{
-    if(id==='gridLayer')gridDisplay.outline=$('gridLayer').checked;
-    if(id==='gridLayer'&&$('gridOutlineToggle'))$('gridOutlineToggle').checked=gridDisplay.outline;
-    updateGridNotice();updateGridThemeLegend();paint();
-  };
+  bindLayerControls({
+    $,layerIds:LAYER_IDS,queue,paint,
+    setGridOutline(value){gridDisplay.outline=value;},
+    updateGridNotice,updateGridThemeLegend,
+    onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked)
+  });
 }
 function statusText(status){return labelFor(status);}
 function statusBadge(status){return badgeFor(status);}
@@ -431,6 +416,7 @@ function update(data){
   syncGridApis().then(()=>{renderWorkflow();paint();}).catch(exc=>showError('网格专题同步失败：'+exc.message));
   if(data.error)showError(data.error);
 }
+// ---- 启动装配（只调用一次，避免重复 document / menu listener） -------------
 bindShell({
   $,downloadExport,saveProject,panelError,
   previewReport:()=>previewPlanningReport(),
@@ -439,9 +425,18 @@ bindShell({
 });
 syncLayerControls();
 new ResizeObserver(()=>{if(view)queue();else paint();}).observe(map);
+// 两阶段 bootstrap：A 取不到 /api/state → 归因连接失败；B 已返回但前端初始化抛错
+// → console.error 完整异常 + “前端初始化失败”，两者都不吞异常
+function bootstrapFailure(message,exc){
+  if(exc)console.error('[CNS Planner] '+message,exc);
+  showError(message+'：'+(exc&&exc.message?exc.message:exc||''));
+  $('loading').hidden=true;
+}
 api('/api/state').then(data=>{
-  update(data);
-  if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
-  else if(data.bounds)fit(data.bounds);
-  else{$('loading').hidden=true;$('settings').showModal();}
-}).catch(exc=>{showError('无法连接本机地图服务：'+exc.message);$('loading').hidden=true;});
+  try{
+    update(data);
+    if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
+    else if(data.bounds)fit(data.bounds);
+    else{$('loading').hidden=true;$('settings').showModal();}
+  }catch(exc){bootstrapFailure('前端初始化失败',exc);}
+}).catch(exc=>bootstrapFailure('无法连接本机地图服务',exc));

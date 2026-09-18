@@ -12,6 +12,41 @@ export function layerSwitches($,ids){
   return value;
 }
 
+/** 人口 / 地形原始栅格的图例跟随各自开关。 */
+export function updateRasterLegends($){
+  if($('populationRasterLegend'))$('populationRasterLegend').hidden=!$('pop')?.checked;
+  if($('terrainRasterLegend'))$('terrainRasterLegend').hidden=!$('terrain')?.checked;
+}
+
+/**
+ * 绑定图层抽屉的全部控件（基础栅格、透明度、统一 layer switches）。
+ * 全部使用 onchange/oninput 赋值，重复调用也不会叠加监听器。
+ * @param {{$,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles}} options
+ */
+export function bindLayerControls({
+  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles
+}){
+  // 基础开关：air 只重绘；pop/terrain 同时刷新栅格图例
+  if($('air'))$('air').onchange=queue;
+  if($('pop'))$('pop').onchange=()=>{updateRasterLegends($);queue();};
+  if($('terrain'))$('terrain').onchange=()=>{updateRasterLegends($);queue();};
+  if($('online'))$('online').onchange=()=>{onOnlineTiles();paint();};
+  updateRasterLegends($);
+  if($('opacity'))$('opacity').oninput=()=>{$('opacityValue').textContent=$('opacity').value+'%';queue();};
+  if($('terrainOpacity'))$('terrainOpacity').oninput=()=>{$('terrainOpacityValue').textContent=$('terrainOpacity').value+'%';queue();};
+  // layerIds 是统一开关集合（含 referenceRoutePointLayer），这里再补 gridLayer
+  for(const id of [...layerIds,'gridLayer']){
+    const input=$(id);if(!input)continue;
+    input.onchange=()=>{
+      if(id==='gridLayer'){
+        setGridOutline($('gridLayer').checked);
+        if($('gridOutlineToggle'))$('gridOutlineToggle').checked=$('gridLayer').checked;
+      }
+      updateGridNotice();updateGridThemeLegend();paint();
+    };
+  }
+}
+
 /**
  * 绑定图层抽屉、图例收起、左右栏折叠与顶部导出菜单。
  * @param {{$,downloadExport,previewReport,generateReport,downloadReport,saveProject,panelError}} options

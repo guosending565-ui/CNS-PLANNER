@@ -21,6 +21,7 @@ import {render as renderStep4} from '../cns_planner/web/js/workflow/step04_opera
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6} from '../cns_planner/web/js/workflow/step06_review.js';
 import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
+import {renderWorkflowSteps} from '../cns_planner/web/js/workflow/steps.js';
 
 // ---- 最小 DOM 桩：只支撑被测模块真正用到的接口 ------------------------------
 // 这些步骤面板与工作台控制器不依赖浏览器布局，因此可以用一个极小的桩在
@@ -42,6 +43,7 @@ class StubNode{
   constructor(tag='div'){
     this.tagName=String(tag).toUpperCase();
     this.dataset={};
+    this.attributes={};
     this.style={};
     this.classList=new StubClassList();
     this.children=[];
@@ -55,7 +57,17 @@ class StubNode{
     for(const name of String(value||'').split(/\s+/))if(name)this.classList.add(name);
   }
   get className(){return [...this.classList.values].join(' ');}
-  append(...nodes){for(const node of nodes){node.parentNode=this;this.children.push(node);}}
+  append(...nodes){
+    for(const node of nodes){
+      // DocumentFragment 语义：插入其子节点而不是 fragment 本身
+      if(node&&node.tagName==='FRAGMENT'){
+        this.append(...node.children.slice());
+        continue;
+      }
+      node.parentNode=this;
+      this.children.push(node);
+    }
+  }
   appendChild(node){this.append(node);return node;}
   replaceChildren(...nodes){this.children=[];this.append(...nodes);}
   removeChild(node){this.children=this.children.filter(child=>child!==node);node.parentNode=null;return node;}
@@ -63,15 +75,9 @@ class StubNode{
   get firstElementChild(){return this.children[0]||null;}
   querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
   querySelectorAll(selector){
-    const [attribute,value]=parseAttributeSelector(selector);
+    const parsed=parseSelector(selector);
     const out=[];
-    const walk=node=>{
-      for(const child of node.children){
-        if(matches(child,attribute,value))out.push(child);
-        walk(child);
-      }
-    };
-    walk(this);
+    forEachDescendant(this,child=>{if(matchesSelector(child,parsed))out.push(child);});
     return out;
   }
   addEventListener(){}
@@ -81,33 +87,157 @@ class StubNode{
   removeAttribute(name){delete this[name];}
 }
 
-function parseAttributeSelector(selector){
-  const match=/^\[([a-zA-Z-]+)(?:="([^"]*)")?\]$/.exec(String(selector).trim());
-  if(!match)return [null,null];
-  return [match[1],match[2]===undefined?null:match[2]];
+// 支持三种选择器：标签名、[attr]、[attr="value"]（本项目模板只用到这些）
+function parseSelector(selector){
+  const text=String(selector).trim();
+  const attribute=/^\[([a-zA-Z-]+)(?:="([^"]*)")?\]$/.exec(text);
+  if(attribute)return {kind:'attr',name:attribute[1],value:attribute[2]===undefined?null:attribute[2]};
+  const tag=/^[A-Za-z][-A-Za-z0-9]*$/.exec(text);
+  if(tag)return {kind:'tag',name:text.toUpperCase()};
+  const className=/^\.([A-Za-z][-A-Za-z0-9_]*)$/.exec(text);
+  if(className)return {kind:'class',name:className[1]};
+  return {kind:'none'};
 }
 
-function matches(node,attribute,value){
-  if(!attribute)return false;
-  const key=attribute.replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());
+function matchesSelector(node,parsed){
+  if(parsed.kind==='tag')return node.tagName===parsed.name;
+  if(parsed.kind==='class')return node.classList.contains(parsed.name);
+  if(parsed.kind!=='attr')return false;
+  const key=parsed.name.replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());
   const current=node.dataset[key];
   if(current===undefined)return false;
-  return value===null?true:String(current)===value;
+  return parsed.value===null?true:String(current)===parsed.value;
 }
 
-/** 安装最小 DOM 桩，返回全部已注册 id 的索引。 */
+// ---- 极简 HTML 解析：让 template.innerHTML 生成真实节点树 -------------------
+// 只支持本项目模板用到的写法（标签、引号包裹的属性、布尔属性），用于端到端
+// 验证 render → mount 之后 DOM 是否完整，而不是只检查 HTML 字符串。
+
+function toDatasetKey(attribute){
+  return attribute.replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());
+}
+
+function parseAttributes(text,node){
+  for(const match of text.matchAll(/([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*"([^"]*)")?/g)){
+    const name=match[1],value=match[2]===undefined?'':match[2];
+    if(name.startsWith('data-'))node.dataset[toDatasetKey(name.slice(5))]=value;
+    else node.attributes[name]=value;
+    if(name==='id')node.id=value;
+    if(name==='class')node.className=value;
+  }
+}
+
+function parseHtml(html){
+  const root=new StubNode('div');
+  const stack=[root];
+  const text=String(html||'').replace(/<!--[\s\S]*?-->/g,'');
+  const tokens=/<\/([A-Za-z][-A-Za-z0-9]*)\s*>|<([A-Za-z][-A-Za-z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/g;
+  let cursor=0,match;
+  while((match=tokenRegexStep(tokens,text,cursor))!==null){
+    const textPart=text.slice(cursor,match.index);
+    if(textPart.trim())stack[stack.length-1].textContent+=textPart;
+    cursor=tokens.lastIndex;
+    if(match[1]){
+      if(stack.length>1)stack.pop();
+      continue;
+    }
+    const tag=match[2].toLowerCase();
+    const node=new StubNode(tag);
+    parseAttributes(match[3]||'',node);
+    stack[stack.length-1].append(node);
+    // void 元素（input/label 之外的 input/img/br…）没有子节点，但仍必须建节点并登记 id
+    if(!VOID_TAGS.has(tag))stack.push(node);
+  }
+  return root;
+}
+
+function tokenRegexStep(regex,text,cursor){
+  regex.lastIndex=cursor;
+  const match=regex.exec(text);
+  return match?match:null;
+}
+
+const VOID_TAGS=new Set(['br','hr','img','input','meta','link','source','col','area','base','wbr']);
+
+function forEachDescendant(node,visit){
+  for(const child of node.children){
+    visit(child);
+    forEachDescendant(child,visit);
+  }
+}
+
+/** 在子树中按 dataset 键值查找（不依赖选择器实现，语义与 querySelector 一致）。 */
+function findByDataset(root,key,value){
+  let found=null;
+  forEachDescendant(root,node=>{
+    if(found)return;
+    if(node.dataset&&String(node.dataset[key])===String(value))found=node;
+  });
+  return found;
+}
+
+function createTemplateElement(){
+  const node=new StubNode('template');
+  Object.defineProperty(node,'innerHTML',{
+    get(){return '';},
+    set(html){
+      const parsed=parseHtml(html);
+      const content=new StubNode('fragment');
+      for(const child of parsed.children.slice())content.append(child);
+      Object.defineProperty(node,'content',{value:content,configurable:true,writable:true});
+    },
+    configurable:true
+  });
+  Object.defineProperty(node,'content',{value:new StubNode('fragment'),configurable:true,writable:true});
+  return node;
+}
+
+function createElementStub(tag){
+  if(String(tag).toLowerCase()==='template')return createTemplateElement();
+  return new StubNode(tag);
+}
+
+/** 在子树中登记 id（append 时同步注册），等价于浏览器语义。 */
+function registerTree(nodes,node){
+  if(node.id)nodes.set(node.id,node);
+  for(const child of node.children)registerTree(nodes,child);
+}
+
+/** 让 StubNode.append 自动登记 id；只打一次补丁，避免重复调用时叠加。 */
+function patchAppendOnce(){
+  if(StubNode.prototype.append.__dshRegistersIds)return;
+  const original=StubNode.prototype.append;
+  const patched=function(...children){
+    const result=original.apply(this,children);
+    // 归属当前桩文档：withStubDom 会替换 globalThis.document，
+    // 因此登记必须按本次调用的文档进行，否则 id 会写进上一次的索引。
+    const document=globalThis.document;
+    if(document&&document.__nodes)for(const child of children)registerTree(document.__nodes,child);
+    return result;
+  };
+  patched.__dshRegistersIds=true;
+  StubNode.prototype.append=patched;
+}
+
 function installStubDom(){
+  patchAppendOnce();
   const nodes=new Map();
   const document={
     body:new StubNode('body'),
-    createElement:tag=>new StubNode(tag),
+    __nodes:nodes,
+    createElement:tag=>createElementStub(tag),
     getElementById:id=>nodes.get(id)||null,
     querySelector:()=>null,
     querySelectorAll:()=>[],
     addEventListener(){},
-    register(id){const node=new StubNode('div');node.id=id;nodes.set(id,node);return node;}
+    register(id){const node=new StubNode('div');node.id=id;nodes.set(id,node);document.body.append(node);return node;}
   };
+  const workflowPanel=new StubNode('div');
+  workflowPanel.id='workflowPanel';
+  document.body.append(workflowPanel);
+  nodes.set('workflowPanel',workflowPanel);
   globalThis.document=document;
+  registerTree(nodes,document.body);
   return document;
 }
 
@@ -264,6 +394,87 @@ test('LOD thresholds live in one module only',()=>{
     assert.doesNotMatch(source,/view\.res\s*<\s*\d{3,}/,`${file} hardcodes a view.res threshold`);
     assert.doesNotMatch(source,/view\.res\s*>\s*\d{3,}/,`${file} hardcodes a view.res threshold`);
   }
+});
+
+// ---- 启动级集成回归：render → renderWorkflowSteps → mount -------------------
+//
+// 这一段锁定真实回归：shell() 必须返回唯一根容器，否则 mount() 的
+// replaceChildren(root) 会丢弃全部业务面板与控件。
+
+function mountStep01(document){
+  const controller=createWorkbench({
+    getState:()=>({step:1,tab:'operate',segs:{},scroll:0}),
+    setState:()=>{}
+  });
+  const root=renderWorkflowSteps({
+    step:{render:renderStep1},
+    context:{
+      state:baseState(),flow:baseFlow(),draftWorkspace:null,
+      gridDisplay:{outline:true,theme:'none'},interactionMode:'pan',selectedReference:null,
+      populationDisplayLabel:()=>'人口',formatNumber:value=>String(value)
+    }
+  });
+  controller.mount({root,step:{number:1,title:'项目准备',note:'',panels:{operate:1,result:1,advanced:1}}});
+  return {controller,root};
+}
+
+test('step 01 controls survive render → mount',()=>{
+  withStubDom(document=>{
+    const {root}=mountStep01(document);
+    const panel=document.getElementById('workflowPanel');
+    assert.ok(root,'renderWorkflowSteps must return the panel root');
+    assert.equal(root.classList.contains('wb-root'),true,'the root keeps the wb-root class');
+    assert.equal(panel.children.length,1,'workflowPanel holds exactly the mounted root');
+    assert.equal(panel.children[0],root,'the mounted node is the rendered root, not a bare header');
+    for(const id of ['projectName','projectPath','browseProject','saveProject','nextStep']){
+      assert.ok(document.getElementById(id),`#${id} must survive mount (registered: ${[...document.__nodes.keys()].join(',')})`);
+    }
+    for(const panelName of ['operate','result','advanced']){
+      assert.ok(findByDataset(root,'panelGroup',panelName),`missing ${panelName} panel after mount`);
+    }
+    // 标题占位被搬走后不应留下重复标题，也不能带走业务内容
+    assert.equal(root.querySelector('[data-workbench-head]'),null,'the head placeholder is removed');
+  });
+});
+
+test('shell markup has exactly one root container',()=>{
+  const html=renderStep1(stepContext());
+  const roots=[...html.matchAll(/class="wb-root"/g)].length;
+  assert.equal(roots,1,'shell() must emit exactly one wb-root container');
+  assert.match(html,/^<div class="wb-root">/,'the root container opens the markup');
+  assert.match(html,/<\/div>$/,'the root container closes the markup');
+  // 标题占位必须在根容器内部，而不是它的兄弟
+  assert.match(html,/<div class="wb-root"><div data-workbench-head/);
+  assert.match(html,/data-panel-group="operate"/);
+  assert.match(html,/id="projectName"/);
+});
+
+test('template parsing registers every id including void elements',()=>{
+  const template=createTemplateElement();
+  template.innerHTML='<div class="wb-root"><div data-workbench-head></div><label>x</label><input class="panel-input" id="projectName" value="T"><div class="panel-file-input"><input class="panel-input" id="projectPath" placeholder="sel"><button class="secondary" id="browseProject">选择…</button></div></div>';
+  const ids=[];
+  forEachDescendant(template.content,node=>{if(node.id)ids.push(node.id);});
+  assert.deepEqual(ids,['projectName','projectPath','browseProject'],'stub must register every id');
+});
+
+test('main.js wires layer switches and bootstrap once',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/main.js',import.meta.url),'utf8');
+  const shellSource=readFileSync(new URL('../cns_planner/web/js/shell.js',import.meta.url),'utf8');
+  // LAYER_IDS 必须包含参考航路点图层，displayPlan 依赖该 key
+  assert.match(source,/const LAYER_IDS=\[[^\]]*'referenceRoutePointLayer'/);
+  assert.match(source,/const LAYER_IDS=\[[^\]]*'referenceLandingLayer'/);
+  // 统一开关集合通过 layerIds 传入，避免同一 id 被重复绑定
+  assert.match(source,/layerIds:LAYER_IDS/);
+  assert.match(shellSource,/\[\.\.\.layerIds,'gridLayer'\]/);
+  assert.doesNotMatch(shellSource,/\[\.\.\.layerIds,'gridLayer','referenceRoutePointLayer'\]/);
+  // bindShell 只能装配一次
+  assert.equal([...source.matchAll(/^bindShell\(\{/gm)].length,1,'bindShell must be called exactly once');
+  // 两阶段 bootstrap：区分请求失败与前端初始化失败，且都不吞异常
+  assert.match(source,/无法连接本机地图服务/);
+  assert.match(source,/前端初始化失败/);
+  assert.match(source,/bootstrapFailure\('前端初始化失败',exc\)/);
+  assert.match(source,/bootstrapFailure\('无法连接本机地图服务',exc\)/);
+  assert.match(source,/console\.error\('\[CNS Planner\] '\+message,exc\)/);
 });
 
 export {StubNode};

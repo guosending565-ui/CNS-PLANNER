@@ -160,7 +160,10 @@ function planFlow(){
       {node_id:'N001',coordinate:[122.00,30.00]},
       {node_id:'N002',coordinate:[122.01,30.00]}
     ],
-    reference_landing_sites:{items:[]},
+    reference_landing_sites:{items:[
+      {reference_site_id:'S1',coordinate:[122.002,30.00]},
+      {reference_site_id:'S2',coordinate:[122.004,30.00]}
+    ]},
     scenario_routes:[{route_id:'R0001',path:[[122.00,30.00],[122.01,30.00]]}]
   };
 }
@@ -202,6 +205,25 @@ test('reference route points reach the plan whenever the layer is on',()=>{
   }
   const off=plan({res:LOD_THRESHOLDS.detail,layers:{referenceRoutePointLayer:false},referencePoints:[]});
   assert.equal(off.referencePoints.length,0);
+});
+
+test('reference landing sites follow the referenceLandingLayer switch',()=>{
+  // 关闭：不进入计划（既不绘制也不可命中）
+  const closed=plan({res:LOD_THRESHOLDS.medium+10,layers:{referenceLandingLayer:false}});
+  assert.equal(closed.landingSites.length,0,'landing sites must be empty when the layer is off');
+  assert.equal(closed.clusterCounts.sites,0);
+  // 打开：按当前 LOD 聚合（overview 下 2 个邻近点合并为 1 个聚合条目）
+  const open=plan({res:LOD_THRESHOLDS.medium+10,layers:{referenceLandingLayer:true}});
+  assert.equal(open.landingSites.length,1);
+  assert.equal(open.landingSites[0].count,2);
+  assert.equal(open.clusterCounts.sites,2);
+  // detail 档展开为单点
+  const detail=plan({res:LOD_THRESHOLDS.detail,layers:{referenceLandingLayer:true}});
+  assert.equal(detail.landingSites.length,2);
+  assert.ok(detail.landingSites.every(entry=>entry.single));
+  // 未显式提供该 key 时保持向后兼容（默认视为开启）
+  const implicit=plan({res:LOD_THRESHOLDS.detail,layers:{}});
+  assert.equal(implicit.landingSites.length,2);
 });
 
 test('cluster display centres are lon/lat while single points stay untouched',()=>{

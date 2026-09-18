@@ -125,7 +125,8 @@ export function buildDisplayPlan({
   const siteItems=filtered.map(site=>({id:site.reference_site_id,coordinate:site.coordinate,site}));
 
   const nodes=cluster(nodeItems);
-  const landingSites=layers.landingSites===false?[]:cluster(siteItems);
+  // 参考起降点跟随图层抽屉的 referenceLandingLayer 开关；关闭时不进入计划（也就不绘制、不可命中）
+  const landingSites=layers.referenceLandingLayer===false?[]:cluster(siteItems);
 
   // 参考航路点的显示条件 = 图层开关 → LOD 语义：
   //   overview 一律不显示；medium 默认不显示（仅调用方显式要求时显示）；detail 显示。

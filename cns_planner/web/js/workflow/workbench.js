@@ -237,7 +237,7 @@ export function createWorkbench({getState,setState}={}){
     /** 更新步骤标题区：优先使用面板自带的标题，其次用步骤声明。 */
     head(){
       const step=currentStep||{};
-      const root=document.getElementById('workflowPanel');
+      const root=mountedRoot||document.getElementById('workbenchPanel')||document.getElementById('workflowPanel');
       const host=root?root.querySelector('[data-workbench-head]'):null;
       const number=document.getElementById('workbenchStepNumber');
       const title=document.getElementById('workbenchStepTitle');
@@ -248,7 +248,7 @@ export function createWorkbench({getState,setState}={}){
       if(number)number.textContent=String(panelNumber||step.number||'').padStart(2,'0');
       if(title)title.textContent=panelTitle||step.title||'';
       if(note)note.textContent=panelNote||step.note||'';
-      // 面板自带的标题区只用于把标题搬进固定头部，本身不再重复显示
+      // 只移除面板自带的标题占位；wb-root 与全部业务内容必须留在 DOM 中
       if(host&&host.parentNode)host.parentNode.removeChild(host);
     },
 

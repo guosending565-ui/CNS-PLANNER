@@ -8,10 +8,16 @@ export function escapeHtml(value){
   })[character]);
 }
 /**
- * 步骤面板外壳。
- * 标题信息以 data 属性输出，由右侧工作台的固定头部（workbench.js）读取显示，
- * 因此这里不再重复渲染标题；面板内容全部保留在 DOM 中，仅由标签控制显隐。
+ * 步骤面板外壳：返回**唯一根容器**。
+ *
+ * 标题信息写在根容器内部的 [data-workbench-head] 上，由右侧工作台的固定
+ * 头部（workbench.js）读取后移除；业务内容与 wb-root 本身必须保留，否则
+ * 工作台挂载时会丢失全部面板与控件。
  */
-export const shell=(number,title,text,body)=>'<div class="wb-root" data-workbench-head data-workbench-number="'+number+'" data-workbench-title="'+escapeHtml(title)+'" data-workbench-note="'+escapeHtml(text)+'"></div>'+body;
+export const shell=(number,title,text,body)=>
+  '<div class="wb-root">'
+  +'<div data-workbench-head data-workbench-number="'+number+'" data-workbench-title="'+escapeHtml(title)+'" data-workbench-note="'+escapeHtml(text)+'"></div>'
+  +body
+  +'</div>';
 /** 一级标签面板 / 二级分段面板的快捷构造，转发到 workbench 组件。 */
 export {panel as wbPanel,segPanel as wbSegPanel,segmentHint as wbSegHint,section as wbSection,metricCard as wbCard,emptyState as wbEmpty,snapshotLine as wbLine,engineFacts as wbEngine} from './workbench.js';
