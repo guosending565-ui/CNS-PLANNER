@@ -4,6 +4,8 @@
 > 当前目标是持续完善 CNS 规划工作台；结构重构不得顺带改变 V1 算法、风险公式、API 路径或项目业务结果。
 >
 > **Real-Data Enablement V1 决策**：现有适飞空域/AirspacePolicy/airspace_eligibility 是 `display_only_reference_layer`。DATA-3 已退役并标记 `retired/not_applicable_by_architecture_decision`；它不是 route eligibility、risk evidence 或 regulatory constraint，不参与规划、readiness、fingerprint、staleness 或 CNS。
+>
+> **Layered Operational Route Architecture V1 决策（本轮）**：**生产航路** = `DepartureProcedure → fixed cruise AltitudeLayer + horizontal route → ArrivalProcedure`，语义为 `Layered Risk-Aware Operational Route Planning`。一条具体方案只对应**一个**巡航高度层；高度转换不进入水平 A\*，只存在于 terminal procedure。**V3-A/V3-B/V3-C/V3-D 保留为 advanced experimental / continuous validation capability**，不再是生产主入口。适飞空域仍然 `display_only`。**下一阶段是 Risk Framework V2；不开发 V3-E、Layered A\*、RouteRiskProfile 或新 V3 算法。**
 
 ## 1. 当前架构
 
@@ -28,7 +30,7 @@ map_app.py / app.py
 
 1. 项目与数据：项目创建、打开、另存和数据源设置。
 2. 工作区与环境：workspace → MH/T grid → population/terrain/traffic/conflict → relative risk；airspace 仅显示。
-3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路。
+3. 航路设计：节点、场景航路（显式 起点→终点，或兼容的 all-pairs）、默认 RoutePlannerV1 或显式选择的 Risk-Aware Route Planner V2 运行航路；生产航路按**巡航高度层**业务面板显式选择固定 `AltitudeLayer`，并显示离场/进场 procedure readiness；高级/V3 剖面独立展示、不混成主生产模式。
 4. 运行规则：飞行器、方向、高度、间隔和监视延迟。
 5. 设备与布站：C/N/S 设备参数和 CoveragePlannerV1。
 6. 确认与导出：统一 ResultStatus 复核，导出项目、航路和站址。
@@ -68,6 +70,7 @@ map_app.py / app.py
 - `application/v3_operational_adoption_service.py`：V3-D 唯一写入者。publish gate（validated_route + current + fingerprints + route_id 对应 scenario route + real source chain ready + CRS transform 可用；production 禁止 synthetic；Apply 需 `confirmed=true` + `expected_validation_fingerprint` 防 TOCTOU；batch atomic；事务式 deepcopy 后就地安装）；V3→legacy 二维 `[lon,lat]` 投影（不 simplify、不复制 analytic geometry）；自动生成且 locked 的 EGM2008 derived profile（含 `v3_metric_length_m`/`legacy_geodesic_length_m`/`length_delta_m`/`distance_basis`，path 与 profile 同顶点顺序同距离基准）；`v3_operational_route_published` 专用失效传播（只 stale downstream，不 stale 刚发布的 route，不反向失效 Risk/grid/V3）；`stale_for_sources` 只 stale V3 adoptees（不误伤 V1/V2）；Revoke 仅在 ownership 仍属于该 adoption 时移除 route/profile；CNS bridge 只编排既有 P7→P8→P9→P10（不复制公式），prerequisites 缺失 ⇒ incomplete + blocking reason。
 - `gis/fine_environment_adapter.py`：V3-B/V3-C 的 GIS/GDAL 边界。V3-B：FABDEM 单次只读窗口取相交有效像元最大值 + GPKG provider RTree 建筑查询 + confirmed AirspacePolicy **fine-cell polygon** 判定；水平分辨率只能来自显式配置或 DTM 有效分辨率（投影 CRS 按自身 verified linear unit 换算，geographic CRS 用 `Geod` 测相邻像元中心地面距离，**禁止 degree-as-meter**），禁止写死 30 m。V3-C：`NativeTerrainWindowSource`（native 像元窗口，NoData 不填补）、`RouteCorridorBuildingSource`（route bbox + clearance 的 RTree 查询）、`ConfirmedAirspacePolicySource`（confirmed polygon → 米制）。数据未配置/未确认时显式 blocked/unresolved，不构造假环境；算法包不依赖它。
 - `application/route_planner_v3_service.py`：V3-A/V3-B/V3-C 实验编排与独立容器（`route_planner_v3_experiments` 记录下的 `refinements[]`/`validations[]`、`v3_planning_policy`、`v3_fine_refinement_policy`、`v3_continuous_validation_policy`）、readiness 报告、refinement/validation staleness 与 `record_summary` 有界摘要；真实源 readiness 由 ApplicationContext 注入（只报告、不读数据）。
+- `application/route_operating_layer_service.py`：Layered Operational Route Architecture V1 唯一写入者（`AltitudeLayer` 目录单层 CRUD、`RouteOperatingLayer` 显式分配、departure/arrival procedure CRUD）与只读 `route_operating_readiness` / `route_operating_plan`；确认必须 explicit + traceable，缺值一律 pending，绝不猜高度或垂向基准。
 - `domain/building_clearance.py`：唯一 roof/垂直余量语义（`building_roof_elevation` = ground + height、`evaluate_vertical_clearance` = `minimum_z − (roof + vertical_clearance)`）；`BuildingClearanceV1` 与 V3-C `BuildingPolygonValidator` 共用，不出现第三套 roof 公式。
 - `docs/route_planner_v3_architecture.md`：V3 目标架构与 V3-A/V3-B/V3-C/V3-D 边界；V3-D 见 §7B；路线图为 V3-A 战略 → V3-B corridor-local 精化 → V3-C 连续几何实现 + 源几何硬约束验证 → V3-D validated route → operational adoption → CNS Assessment，clothoid 与 Route–CNS 联合优化列为未来项。
 - `domain/cns_corridor.py`、`algorithms/corridor/v1.py`、`application/corridor_service.py`：P14 route corridor 契约、纯 Python 水平/垂向离散、P7/P8 代表点复用及持久化用例。
@@ -110,7 +113,7 @@ existing_cns_facilities / candidate_sites
 cns_gap_analysis（按 route_id / subsystem 保存，不复制航路）
 safety_policy（FailureCondition / UnacceptableEvent / FaultTree / FMEA / FunctionalDependency / CoupledCondition / CoupledUE）
 safety_assessment（预留结果容器；P5 preview 不持久化）
-spatial_3d（altitude_layers / route_altitude_profiles / site_vertical_profiles；不保存全量 voxel）
+spatial_3d（altitude_layers / route_operating_layers / departure_arrival_procedures / route_altitude_profiles / site_vertical_profiles；不保存全量 voxel）
 coverage_3d（按 route/subsystem 保存 3D 几何覆盖结果）
 cns_service_capability（按 route/subsystem/sample 保存静态技术能力判定，不覆盖 coverage_3d）
 operational_timing（route_motion_profiles / service_scenarios / response_time_budgets / encounter_scenarios）
@@ -140,6 +143,7 @@ v3_cns_assessment_bundle（V3-D CNS 评估结果：assessment_status=not_started
 - 缺失/NoData/未知不得转换成零风险或通过。
 - safety_policy 变化只使 safety_assessment、technical_risk、report stale；不得使 workspace/grid/routes/coverage/cns_gap stale。
 - DEM、航路、已有设施、设备及 P7 垂向/几何配置变化定向使 `coverage_3d` stale；单独修改高度层/航路高度剖面不得反向使 grid/routes/CoverageV1/GapV1 stale。
+- **Layered Operational Route Architecture V1 最小失效链**：`AltitudeLayer` 目录、`RouteOperatingLayer` 分配、departure/arrival procedure 变化只 stale `coverage_3d → cns_service_capability → service_timeline → cns_gap_v2`、`building_clearance → route_vertical_profiles`、`cns_corridor_*` 与 report；**不得**改写 `grid_risk`，**不得**使 `routes`/`grid`/CoverageV1/GapV1 stale。未来 Layered Planner 接入后才让 layer selection 进入水平 route planning fingerprint。
 - `coverage_3d`、RequiredCNS、选定 Aircraft Profile、DeviceCatalog/ExistingCNS 或 service-model 选择变化会定向使 `cns_service_capability` stale；不得反向使 grid/routes/CoverageV1/GapV1 stale。
 - route/altitude/P8 capability/RequiredCNS/Aircraft/motion/service scenario 变化会定向使 `service_timeline` stale；response budget/encounter scenario 变化仅使 `protection_envelope` stale。两者均不反向使 grid/routes/CoverageV1/GapV1 stale。
 - RequiredCNS、Aircraft、`coverage_3d`、`cns_service_capability` 或 `service_timeline` 变化会定向使 `cns_gap_analysis_v2` stale；`protection_envelope` 仅在 Gap V2 显式启用 protection margin 时使其 stale。该链路不反向影响 grid/routes/CoverageV1/GapV1/P7/P8/P9。
@@ -631,6 +635,61 @@ Step 04 新增 **V3 CNS Assessment summary**：Route validation / Operational pu
 
 
 
+## 8.9 Layered Operational Route Architecture V1：固定巡航高度层 + 水平路径（本轮）
+
+基线 commit `d015e53ddfb2cddb62ae966c9e45d16b4ba9b2ce`。本轮**不**开发 Risk Framework V2、Layered A\*、RouteRiskProfile、新 V3 算法或真实进离场优化；不改真实舟山数据；不填写任何真实高度值；不 commit/push；不要求人工测试。生产语义固定为 `Layered Risk-Aware Operational Route Planning`，V3-A/V3-B/V3-C/V3-D 保留为 advanced experimental / continuous validation capability，适飞空域仍 `display_only`。
+
+**明确不变（硬边界）**：复用并扩展既有 `domain/spatial_3d.py` 的 `AltitudeLayer` / `RouteAltitudeProfile`，**没有**新建平行 `AltitudeLayerV2`；`RouteAltitudeProfile` 语义不变（constant 可存在但**不自动创建** `RouteOperatingLayer`；V3-D `waypoint_linear` + `derived/locked/locked_by_adoption` 保持锁定与 revoke 语义，作为 `advanced_variable_profile` / `v3c_validated_route` 只读展示）；V1/V2 搜索核心、代价公式、输出契约与 characterization 未修改；V3-A/B/C/D 算法、容器与 fingerprint 未修改；未注册新算法、未改 `algorithm_selection`。
+
+### 1. 扩展 `AltitudeLayer`（向后兼容）
+
+- canonical 字段：`altitude_layer_id / name / nominal_altitude_m / lower_altitude_m / upper_altitude_m / vertical_reference / source / evidence / confirmed / status`（沿用既有 `geoid_undulation_m`）。
+- `lower ≤ nominal ≤ upper` 显式校验；越界直接 `ValueError`。
+- `nominal_altitude_m` **只能显式给出**：缺失时保持 `nominal_altitude_m=null` + `pending_confirmation`，**绝不取上下界中值**、绝不从 `RouteAltitudeProfile`/其它数值推断。
+- `vertical_reference` 缺失即 `unknown`，不得猜；`source` 缺失记 `未记录`，未确认来源时即使 `confirmed=true` 也保持 pending（`confirmed` 记录声明，`status` 记录可用的客观状态）。
+
+### 2. `RouteOperatingLayer`（additive、JSON-safe）
+
+- 字段：`route_id / altitude_layer_id / operating_mode=fixed_cruise_layer / vertical_reference / source / evidence / confirmed / status`（additive `active`）。
+- route 与 layer **必须存在**；同一 route **最多一个 active assignment**（service 结构上替换旧值，normalizer 对重复 active 直接报错）。
+- 缺省 `vertical_reference` 时从**被引用的 layer**继承；显式给出但与 layer 不一致直接拒绝（不猜垂向基准）。
+- **绝不**根据 `RouteAltitudeProfile` 数值自动匹配 layer；constant profile 不会创建 assignment。
+
+### 3. `DepartureArrivalProcedure` 合同
+
+- 字段：`procedure_id / procedure_type(departure|arrival) / route_id / node_id / site_reference / altitude_layer_id / transition_mode / horizontal_geometry / vertical_profile / join_leave_point / source / evidence / confirmed / status / missing_evidence`。
+- 本轮只做**合同 / readiness / CRUD**，不做 procedure path optimizer：缺 `climb_rate_mps`（departure）/ `descent_rate_mps`（arrival）/ `turn_radius_m` / join-leave point / `transition_mode` / layer / node-or-site reference 时保持 `pending_confirmation` 并逐项列出 `missing_evidence`，**不补默认值**。
+- 绑定校验：route 必须存在；`altitude_layer_id` 必须存在；`node_id` 必须是项目内已有 node（`site_reference` 作为来源事实字符串记录）。
+
+### 4. 只读 `RouteOperatingPlan` projection
+
+- `GET /api/route-operating-plan`（同时进入 workflow snapshot `route_operating_plan`）：horizontal route（只引用 `operational_routes`，不复制几何）+ `cruise_layer` + `terminal_transition{departure,arrival}` + `advanced_variable_profile`（只读，`is_production_cruise_layer=false`）。
+- `semantics` 固定 `cruise_and_terminal_transition_are_separate_contracts=true`、`vertical_transition_never_enters_horizontal_route_planning=true`、`read_only_projection=true`；projection 是纯读取，不写任何状态（有回归测试）。
+
+### 5. 持久化 / 迁移 / 失效
+
+- `spatial_3d` additive 新增 `route_operating_layers: []` 与 `departure_arrival_procedures: []`；旧 schema-v2 项目自动 backfill，normalize 是幂等不动点（旧 `altitude_layers` 无 nominal 时降级为 pending，不补值）。
+- `Spatial3DService.set_altitude_layers`（legacy replace-all）保留并复用同一 resync：layer 失去 nominal/确认后，引用它的 assignment 与 procedure **不能**继续保持 `confirmed`。
+- 新增 `InvalidationService.route_operating_layer(reason)` 最小链：`coverage_3d → cns_service_capability → service_timeline → cns_gap_v2 → cns_site_plan/closed_loop`、`building_clearance → route_vertical_profiles`、`cns_corridor_*`、report；**不改写 `grid_risk`**、**不 stale `routes`**。未来 Layered Planner 接入后才让 layer selection 影响水平 route planning fingerprint。
+
+### 6. Application / API
+
+- `application/route_operating_layer_service.py`：`RouteOperatingLayerService`（唯一写入者）+ 纯函数 `route_operating_readiness(state)` / `route_operating_plan(state)` / `resync_operating_layer_statuses(state)` / `refresh_spatial_status(state)`。
+- readiness **分开报告**四项：`altitude_layer_catalog` / `route_layer_assignment` / `departure_procedure` / `arrival_procedure`；缺值 = `pending_confirmation`，**不等于 unsafe / 0**（`semantics.missing_value_is_pending_not_unsafe_and_not_zero=true`）。
+- 所有确认 **explicit + traceable**：`confirmed=true` 必须带显式 `source`（否则 `ValueError`），并记录 `source`/`evidence`。
+- 引用一致性：删除仍被引用的 AltitudeLayer 直接拒绝并列出引用者；变更被引用 layer 的 `vertical_reference` 直接拒绝；layer 降级会同步降级引用者。
+- API：`GET /api/spatial-3d/readiness`、`GET /api/route-operating-plan`；`POST /api/spatial-3d/altitude-layer(|/delete)`、`POST /api/spatial-3d/route-operating-layer(|/delete)`、`POST /api/spatial-3d/departure-arrival-procedure(|/delete)`。legacy `/api/spatial-3d/altitude-layers` 与 `/api/spatial-3d/route-profile` 保持兼容。
+
+### 7. 前端
+
+- Step 03 新增“**巡航高度层（生产主模式）**”业务面板：显示已配置 AltitudeLayer（nominal/基准/状态）、按 route 显式选择 operating layer、四项 readiness、离场/进场 procedure readiness 与最小 CRUD；无真实 layer 时明确“**待工程确认**”，**不提供默认 80/100/120 m**，新 UI 不出现 P1/P7 等内部研发编号。
+- 原裸 `Constant altitude` 主业务入口被移除；`Route 3D Altitude Profile` 降级为“高级/实验”独立面板块（`advanced_variable_profile`），保留 V3-D locked profile 只读展示，不与主生产模式混合。
+- Step 02 的高度层编辑器去掉 `0/120` 默认值，改为必填 nominal + 显式垂向基准（空选项，不猜）+ 来源/依据 + 显式确认勾选，并改用新增的单层 API。
+
+### 8. 本轮验证
+
+新增 `tests/test_route_operating_layer.py`（22 项）与 `tests/frontend_modules.test.mjs` 7 项（Node）。覆盖：legacy backfill/round-trip/幂等；nominal bounds；unknown datum / 缺 nominal / 缺 source 一律 pending；不自动推断 nominal；route→layer existence 与唯一 active assignment；constant legacy profile 不自动绑定 layer；procedure pending/confirmed 与缺省证据清单；V3-D waypoint/locked 语义保持（含 locked 拒绝手工改高）；删除/修改 layer 的引用一致性；readiness 四桶分离且缺值 pending≠unsafe/0；plan projection 只读且 cruise/terminal 分离；API CRUD/readiness/plan；最小失效链不动 grid risk 与 routes；前端无默认真实高度。
+
 ## 8.1 航路规划基础治理 + 专家评审基线（本轮）
 
 本轮目标是为航路规划专家评审准备**可信 baseline**，不是继续扩算法能力。基线 commit `33752b6759d992db39c639085a05e5c291945a38`。
@@ -961,15 +1020,19 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 
 38. V3-D CNS bridge 的**完整度**只看 requested stages 是否都运行且必选分系统都有确定判定；**需求满足度**单独由 required 分系统的 P7/P8/P9/P10 route 级状态推导。项目**未要求**的分系统可以合法 `missing_data`（例如只要求 C 时的 N/S），不会让评估 incomplete，也不会污染 verdict；反之缺 evidence 的必选分系统 ⇒ incomplete + blocking reason。P8 在有单一已确认地面提供者但缺 provider independence 证据时仍返回 evidence-limited 状态（非 meets），这是既有 fail-closed 语义，V3-D 不改写它。
 
+39. Layered Operational Route Architecture V1 当前只有**合同 / readiness / CRUD**：没有 procedure path optimizer，没有 Layered A\*，layer selection 也尚未影响水平 route planning fingerprint。真实 `nominal_altitude_m`、`vertical_reference`、route→layer 分配、爬升率/下降率/转弯半径/join-leave 点与 procedure 的 node/site 参考全部保持 pending，**必须由人工工程确认**；本轮不填任何真实高度值、不改真实舟山项目数据。巡航高度层只在**当前 `operational_routes`** 上做显式分配：route 被删除后遗留的 assignment/procedure 会以 `pending_confirmation` + 原因暴露（不会静默保持 confirmed），清理入口是同一个 CRUD service。
+
 
 ## 11. 下一阶段计划
 
-1. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。**不再**需要逐 feature 确认 AirspacePolicy（DATA-3 已退役）。
-2. V3-D 已实现（validated route → operational adoption → 复用既有 P7/P8/P9/P10 CNS Assessment；`operational_route`/`cns_assessed` 在 V3-C validation 内仍恒为 false，"已采用/CNS 已评估"读取自 adoption/bundle 容器）。下一步是在正常 QGIS 启动器进程中用**真实舟山来源**做 V3-D 端到端验收（见下节"仍需真实端到端验证的问题"）。
-3. 真实数据 canonical adapter（terrain surface clearance floor、building required vertical clearance、grid risk soft fields）与来源审计在 V3-A/V3-B/V3-C 已实现（GIS 边界，`cns_planner/gis/v3_environment_adapter.py`），V3-D 的 operational adoption 与 CNS bridge 亦已就绪；仍需在正常 QGIS 启动器进程手工验收真实航路的 V3-A/V3-C/V3-D 端到端结果。空域不进入该链路。
-4. V3 后续（非 V3-D）：clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型——三者都必须先用显式 policy 定义归一化与权重，禁止静默进入 cost。
-5. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
-6. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
-7. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
-8. 在正常 QGIS 桌面启动器进程中手工验证真实航路的建筑 polygon/DTM mask 净空结果与 V3-C native-raster 验证，确认项目水平/垂直阈值来源；财产/基础设施仍待后续真实映射。
-9. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。
+1. **下一阶段 = Risk Framework V2**（生产主线，`Layered Risk-Aware Operational Route Planning` 的风险框架）；**不开发 V3-E**，也不在近期开发 Layered A\*、RouteRiskProfile 或真实进离场优化。Layered Operational Route Architecture V1 本轮只交付合同 / readiness / CRUD；未来 Layered Planner 接入后，layer selection 才会进入水平 route planning fingerprint。
+2. 真实工程确认项（本轮全部保持 pending，禁止补默认值）：舟山项目的巡航高度层 `nominal_altitude_m` 与 `vertical_reference`、各航路的 operating layer 显式分配、离场/进场的爬升率/下降率/转弯半径/join-leave 点与过渡模式，以及 procedure 绑定的 node/site 参考。
+3. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。**不再**需要逐 feature 确认 AirspacePolicy（DATA-3 已退役）。
+4. V3-D 已实现（validated route → operational adoption → 复用既有 P7/P8/P9/P10 CNS Assessment；`operational_route`/`cns_assessed` 在 V3-C validation 内仍恒为 false，"已采用/CNS 已评估"读取自 adoption/bundle 容器）。下一步是在正常 QGIS 启动器进程中用**真实舟山来源**做 V3-D 端到端验收（见下节"仍需真实端到端验证的问题"）。
+5. 真实数据 canonical adapter（terrain surface clearance floor、building required vertical clearance、grid risk soft fields）与来源审计在 V3-A/V3-B/V3-C 已实现（GIS 边界，`cns_planner/gis/v3_environment_adapter.py`），V3-D 的 operational adoption 与 CNS bridge 亦已就绪；仍需在正常 QGIS 启动器进程手工验收真实航路的 V3-A/V3-C/V3-D 端到端结果。空域不进入该链路。
+6. V3 后续（非 V3-D）：clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型——三者都必须先用显式 policy 定义归一化与权重，禁止静默进入 cost。
+7. 完成 synthetic/manual end-to-end validation，验证从需求推荐、三维走廊、冗余目标、站址提案、人工确认/应用到 P19 交付包的完整闭环。
+8. P20：Synthetic Data Generator，为可复现端到端场景提供显式模拟数据与来源标记。
+9. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
+10. 在正常 QGIS 桌面启动器进程中手工验证真实航路的建筑 polygon/DTM mask 净空结果与 V3-C native-raster 验证，确认项目水平/垂直阈值来源；财产/基础设施仍待后续真实映射。
+11. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。

@@ -8,6 +8,37 @@
 > **V3-D 已实现**（V3-C validated route → operational adoption → 复用既有 P7/P8/P9/P10 的 CNS Assessment bridge），见 §7B。
 > 明确**未实现**：clothoid / continuous-curvature 过渡；Route–CNS 联合优化（未来项，不是 V3-D）；energy 模型。
 > 本文件描述 V3 的目标架构与 V3-A/V3-B/V3-C/V3-D 的落地边界；凡标 **V3-A/B/C/D 现行** 的是已实现语义。
+>
+> **Layered Operational Route Architecture V1（生产主线，见 §0A）**：生产航路固定为
+> `DepartureProcedure → fixed cruise AltitudeLayer + horizontal route → ArrivalProcedure`。
+> V3-A/V3-B/V3-C/V3-D 自本轮起是 **advanced experimental / continuous validation capability**，
+> 不再是生产航路的默认路径，也不再与「巡航高度层」竞争主业务入口。适飞空域仍然 `display_only`。
+> 下一阶段是 **Risk Framework V2**；**不开发 V3-E**。
+
+---
+
+## 0A. 生产主线：Layered Operational Route Architecture V1
+
+| 项 | 生产（production） | 高级/实验（advanced） |
+| --- | --- | --- |
+| 语义 | `Layered Risk-Aware Operational Route Planning` | `V3 experimental / continuous validation` |
+| 高度 | 一条 route 一个**固定巡航高度层**（`RouteOperatingLayer.operating_mode=fixed_cruise_layer`），高度转换只存在于 terminal procedure | V3 原生 3D 搜索 state（altitude + heading），连续剖面 `z(s)` |
+| 水平 | 既有 V1/V2 二维战略水平航路 | V3-A L8 战略 → V3-B corridor-local fine → V3-C 连续几何验证 |
+| 高度承载 | `AltitudeLayer`（显式 nominal/lower/upper/vertical_reference/source/evidence/confirmed） | `RouteAltitudeProfile`（`waypoint_linear`，V3-D 导出时 `derived/locked/locked_by_adoption`） |
+| 目的 | 近期生产交付 | 研究、验证与未来联合优化 |
+| 空域 | `display_only_reference_layer`（不参与规划） | 同左（V3-C `airspace` 域固定 `skipped/not_applicable`） |
+
+不可放松的规则：
+
+1. **一条具体方案只对应一个巡航高度层**；同 route 最多一个 active `RouteOperatingLayer`。
+2. **高度转换不进入水平 A\***：cruise layer 与 terminal transition（离场/进场 procedure）是两个分离的合同。
+3. **不猜高度、不猜垂向基准**：`AltitudeLayer.nominal_altitude_m` 只能显式给出；legacy layer 缺 nominal 时保持 `pending_confirmation`，绝不取上下界中值。
+4. **不从 `RouteAltitudeProfile` 数值自动匹配 layer**：constant/waypoint 剖面可以存在，但不会创建或匹配任何 `RouteOperatingLayer`。
+5. **V3-D locked profile 语义不变**：`source=v3c_validated_route` + `derived/locked/locked_by_adoption` 的剖面继续被锁定，撤销 adoption 后才允许手工改高；它只作为 `advanced_variable_profile` 只读展示。
+6. **缺值 = pending**，既不等于 unsafe 也不等于 0；readiness 四项分开报告：`altitude_layer_catalog` / `route_layer_assignment` / `departure_procedure` / `arrival_procedure`。
+
+本轮**只做**合同 / readiness / CRUD：**不做** procedure path optimizer、不做 Risk Framework V2、不做 Layered A\*、不做 RouteRiskProfile、不做新 V3 算法、不做真实进离场优化。
+未来 Layered Planner 接入后，layer selection 才会影响水平 route planning fingerprint；本轮 layer/procedure 改动只沿最小链失效 vertical / terrain-building / 下游 CNS-safety 派生结果，不改写 grid risk。
 
 ---
 
@@ -19,7 +50,9 @@
 | V3-B | 在 V3-A corridor 的 support cells 米制窗口内构造局部 fine grid，做 corridor-local 3D 精化（多 cell stride、逐 traversed cell 检查） | 已实现 |
 | V3-C | 连续几何实现（C1 straight/arc、explicit chord error、realized vertical profile）+ 源证据硬约束验证（native terrain raster、真实 building footprint、altitude、kinematics）；`airspace` 域固定 `skipped/not_applicable` | 已实现 |
 | V3-D | validated route → operational adoption（既有 `operational_routes` + `spatial_3d` 高度剖面接口）→ 复用既有 P7/P8/P9/P10 CNS Assessment bridge | 已实现 |
-| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型 | 未来 backlog |
+| Layered Operational Route Architecture V1 | 固定巡航高度层 + 水平路径的生产主模式（AltitudeLayer / RouteOperatingLayer / DepartureArrivalProcedure / RouteOperatingPlan），见 §0A | 已实现（合同/readiness/CRUD） |
+| 下一阶段 | **Risk Framework V2**（生产主线）；**不开发 V3-E** | 计划 |
+| 未来 | clothoid / continuous-curvature 过渡；Route–CNS 联合优化（CNS 进入 cost/约束）；energy 模型；Layered Planner（layer selection 进入水平规划 fingerprint） | 未来 backlog |
 
 **V3-C 的诚实边界**：vector predicate 对 **linearized representation（含显式 curve-error envelope）** 是精确的；圆弧本身是解析几何、折线是有界近似；terrain 是 **source-native raster evidence**，不声称真实世界地形在数学上连续精确。
 

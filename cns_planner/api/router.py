@@ -60,6 +60,8 @@ class ApiRouter:
             content, content_type = workflow.cns_planning_report_artifact(report_id, kind)
             return Response(content, content_type)
         if path == "/api/spatial-3d": return Response(workflow.spatial_3d_snapshot())
+        if path == "/api/spatial-3d/readiness": return Response(workflow.route_operating_readiness())
+        if path == "/api/route-operating-plan": return Response(workflow.route_operating_plan())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -208,6 +210,12 @@ class ApiRouter:
             "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
             "/api/spatial-3d/altitude-layers": lambda: workflow.set_altitude_layers(payload),
+            "/api/spatial-3d/altitude-layer": lambda: workflow.set_altitude_layer(payload),
+            "/api/spatial-3d/altitude-layer/delete": lambda: workflow.delete_altitude_layer(payload),
+            "/api/spatial-3d/route-operating-layer": lambda: workflow.set_route_operating_layer(payload),
+            "/api/spatial-3d/route-operating-layer/delete": lambda: workflow.delete_route_operating_layer(payload),
+            "/api/spatial-3d/departure-arrival-procedure": lambda: workflow.set_departure_arrival_procedure(payload),
+            "/api/spatial-3d/departure-arrival-procedure/delete": lambda: workflow.delete_departure_arrival_procedure(payload),
             "/api/spatial-3d/route-profile": lambda: workflow.set_route_altitude_profile(payload),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),

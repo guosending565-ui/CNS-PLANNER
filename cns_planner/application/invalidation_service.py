@@ -93,6 +93,20 @@ class InvalidationService:
         if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
             self.building_clearance("building_source_changed")
 
+    def route_operating_layer(self, reason="route_operating_layer_changed"):
+        """Minimal Layered Operational Route Architecture V1 invalidation chain.
+
+        Altitude layer / route-layer assignment / procedure changes stale only the vertical,
+        terrain-building and downstream CNS-safety derived results.  Grid risk is never
+        rewritten, and horizontal routes are not invalidated: the future layered planner is
+        the component that will make a layer selection affect the horizontal route planning
+        fingerprint.
+        """
+
+        mark_active_report_stale(self.session.state, reason)
+        self.coverage_3d()
+        self.building_clearance(reason)
+
     def building_clearance(self, reason="building_clearance_input_changed"):
         state = self.session.state
         result = state.get("building_clearance_assessment") or {}

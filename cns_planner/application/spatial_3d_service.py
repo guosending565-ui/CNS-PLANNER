@@ -5,6 +5,9 @@ from copy import deepcopy
 from ..domain.spatial_3d import (
     normalize_altitude_layer, normalize_route_altitude_profile,
 )
+from .route_operating_layer_service import (
+    refresh_spatial_status, resync_operating_layer_statuses,
+)
 
 
 def is_locked_v3_profile(profile):
@@ -41,9 +44,12 @@ class Spatial3DService:
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("altitude_layer_id 不得重复")
         self.session.state["spatial_3d"]["altitude_layers"] = layers
+        # The catalogue write also re-evaluates the explicit cruise-layer assignments and
+        # procedure statuses: a layer that loses its nominal altitude/confirmation can never
+        # leave a referencing assignment silently ``confirmed``.
+        resync_operating_layer_statuses(self.session.state)
         self._refresh_status()
-        self.invalidation.coverage_3d()
-        self.invalidation.building_clearance("altitude_layers_changed")
+        self.invalidation.route_operating_layer("altitude_layers_changed")
         return self._save()
 
     def set_route_profile(self, payload):
@@ -94,10 +100,4 @@ class Spatial3DService:
         return self.snapshot()
 
     def _refresh_status(self):
-        spatial = self.session.state["spatial_3d"]
-        configured = [
-            *(spatial.get("altitude_layers") or []),
-            *(spatial.get("route_altitude_profiles") or {}).values(),
-            *(spatial.get("site_vertical_profiles") or {}).values(),
-        ]
-        spatial["status"] = "passed" if configured and all(item.get("status") in ("passed", "confirmed") for item in configured) else "pending_confirmation"
+        refresh_spatial_status(self.session.state)

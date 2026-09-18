@@ -17,6 +17,7 @@ import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.j
 import {render as renderStep6,planReviewSummary} from '../cns_planner/web/js/workflow/step06_review.js';
 import {sourceModeText,statusText} from '../cns_planner/web/js/workflow/common.js';
 import {profileChart,renderRouteVerticalProfilePanel} from '../cns_planner/web/js/workflow/route_vertical_profile.js';
+import {ADVANCED_PROFILE_LABEL,CRUISE_LAYER_MODE,LAYER_PENDING_LABEL,PRODUCTION_ROUTE_LABEL,READINESS_BUCKETS,routeOperatingModel,renderCruiseLayerPanel} from '../cns_planner/web/js/workflow/route_operating_layer.js';
 import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
 import {encounterFrame,renderDaaEncounterLab} from '../cns_planner/web/js/workflow/daa_encounter_lab.js';
 
@@ -1433,4 +1434,147 @@ test('V3-D CNS summary reports route validation and CNS compliance side by side'
   assert.match(bare,/未发布/);
   assert.match(bare,/无 V3-C validation/);
   assert.match(bare,/not_started/);
+});
+
+// ---- Layered Operational Route Architecture V1 ---------------------------------------
+
+function cruiseFlow(overrides={}){
+  return {
+    operational_routes:[{route_id:'R0001',status:'passed'}],
+    spatial_3d:{altitude_layers:[],route_operating_layers:[],departure_arrival_procedures:[],
+      route_altitude_profiles:{}},
+    route_operating_readiness:null,
+    ...overrides,
+  };
+}
+
+const CONFIRMED_LAYER={altitude_layer_id:'L-LOW',name:'低层',nominal_altitude_m:100,
+  lower_altitude_m:50,upper_altitude_m:150,vertical_reference:'egm2008_orthometric',
+  source:'工程确认',confirmed:true,status:'confirmed'};
+const CONFIRMED_ASSIGNMENT={route_id:'R0001',altitude_layer_id:'L-LOW',
+  operating_mode:CRUISE_LAYER_MODE,vertical_reference:'egm2008_orthometric',
+  source:'工程确认',confirmed:true,status:'confirmed',active:true};
+const CONFIRMED_DEPARTURE={procedure_id:'DP-1',procedure_type:'departure',route_id:'R0001',
+  altitude_layer_id:'L-LOW',transition_mode:'climb_to_cruise_layer',missing_evidence:[],status:'confirmed'};
+
+test('cruise layer vocabulary fixes one operating mode and one production route definition',()=>{
+  assert.equal(CRUISE_LAYER_MODE,'fixed_cruise_layer');
+  assert.equal(LAYER_PENDING_LABEL,'待工程确认');
+  assert.match(PRODUCTION_ROUTE_LABEL,/固定巡航高度层/);
+  assert.deepEqual(READINESS_BUCKETS.map(item=>item[0]),
+    ['altitude_layer_catalog','route_layer_assignment','departure_procedure','arrival_procedure']);
+  assert.match(ADVANCED_PROFILE_LABEL,/不是生产巡航高度层/);
+});
+
+test('cruise layer model keeps an unassigned route pending and never reads profile altitudes',()=>{
+  const flow=cruiseFlow({spatial_3d:{altitude_layers:[CONFIRMED_LAYER],route_operating_layers:[],
+    departure_arrival_procedures:[],route_altitude_profiles:{R0001:{route_id:'R0001',mode:'constant',
+      constant_altitude_m:999,vertical_reference:'egm2008_orthometric',source:'user',confirmed:true}}}});
+  const model=routeOperatingModel(flow);
+  assert.equal(model.semantics.route_layer_is_never_matched_from_a_route_altitude_profile,true);
+  assert.equal(model.semantics.assignment_source,'explicit_user_selection_only');
+  assert.equal(model.semantics.default_altitudes_provided,false);
+  assert.equal(model.confirmed_layer_count,1);
+  assert.equal(model.routes[0].assignment,null);
+  assert.equal(model.routes[0].cruise_status,'pending_confirmation');
+  assert.equal(model.routes[0].nominal_altitude_m,null);
+  assert.equal(model.routes[0].has_advanced_profile,true);
+  assert.equal(model.routes[0].departure_status,'pending_confirmation');
+  assert.equal(model.routes[0].arrival_status,'pending_confirmation');
+});
+
+test('cruise layer model reports the four readiness buckets and the explicit assignment',()=>{
+  const flow=cruiseFlow({
+    spatial_3d:{altitude_layers:[CONFIRMED_LAYER],route_operating_layers:[CONFIRMED_ASSIGNMENT],
+      departure_arrival_procedures:[CONFIRMED_DEPARTURE],route_altitude_profiles:{}},
+    route_operating_readiness:{status:'pending_confirmation',
+      altitude_layer_catalog:{status:'confirmed',reasons:[]},
+      route_layer_assignment:{status:'confirmed',reasons:[]},
+      departure_procedure:{status:'confirmed',reasons:[]},
+      arrival_procedure:{status:'pending_confirmation',reasons:['尚未配置任何 arrival procedure']}},
+  });
+  const model=routeOperatingModel(flow);
+  assert.equal(model.routes[0].cruise_status,'confirmed');
+  assert.equal(model.routes[0].nominal_altitude_m,100);
+  assert.equal(model.routes[0].vertical_reference,'egm2008_orthometric');
+  assert.equal(model.routes[0].departure_status,'confirmed');
+  assert.equal(model.routes[0].arrival_status,'pending_confirmation');
+  assert.deepEqual(model.readiness_rows.map(row=>row.key),
+    ['altitude_layer_catalog','route_layer_assignment','departure_procedure','arrival_procedure']);
+  assert.deepEqual(model.readiness_rows.map(row=>row.status),
+    ['confirmed','confirmed','confirmed','pending_confirmation']);
+  assert.equal(model.procedures.length,1);
+});
+
+test('cruise layer panel says 待工程确认 and ships no default real altitude',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const html=renderCruiseLayerPanel(cruiseFlow());
+  assert.match(html,/id="cruiseLayerPanel"/);
+  assert.match(html,/巡航高度层（生产主模式）/);
+  assert.match(html,/待工程确认/);
+  assert.match(html,/尚未配置任何 AltitudeLayer/);
+  assert.match(html,/固定巡航高度层/);
+  assert.match(html,/不根据 RouteAltitudeProfile 数值自动匹配/);
+  assert.doesNotMatch(html,/value="(80|100|120|150)"/);
+  // no internal R&D phase numbering in the new production panel
+  assert.doesNotMatch(html,/P1\b|P7|P13|P20/);
+  assert.match(html,/readiness（分开报告）/);
+  assert.match(html,/离场 \/ 进场程序/);
+  assert.match(html,/不补默认值/);
+});
+
+test('cruise layer panel renders the catalogue, the explicit assignment and procedure readiness',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=cruiseFlow({
+    spatial_3d:{altitude_layers:[CONFIRMED_LAYER],route_operating_layers:[CONFIRMED_ASSIGNMENT],
+      departure_arrival_procedures:[CONFIRMED_DEPARTURE],
+      route_altitude_profiles:{R0001:{route_id:'R0001',mode:'constant',constant_altitude_m:999,
+        vertical_reference:'egm2008_orthometric',source:'user',confirmed:true}}},
+    route_operating_readiness:{status:'pending_confirmation',
+      altitude_layer_catalog:{status:'confirmed',reasons:[]},
+      route_layer_assignment:{status:'confirmed',reasons:[]},
+      departure_procedure:{status:'confirmed',reasons:[]},
+      arrival_procedure:{status:'pending_confirmation',reasons:['R0001：缺少 arrival procedure']}},
+  });
+  const html=renderCruiseLayerPanel(flow);
+  assert.match(html,/已配置 AltitudeLayer/);
+  assert.match(html,/L-LOW/);
+  assert.match(html,/100 m nominal/);
+  assert.match(html,/data-save-cruise-layer="R0001"/);
+  assert.match(html,/data-delete-cruise-layer="R0001"/);
+  assert.match(html,/data-delete-procedure="DP-1"/);
+  assert.match(html,/R0001：缺少 arrival procedure/);
+  assert.match(html,/id="saveProcedure"/);
+  // the advanced/experimental profile altitude never leaks into the production cruise layer
+  assert.doesNotMatch(html,/999/);
+});
+
+test('step 3 renders the cruise layer panel and keeps the advanced profile surface separate',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=cruiseFlow({nodes:[],scenario_routes:[],algorithm_selection:{route_planner:{}},
+    algorithm_catalog:[],operational_timing:{},route_vertical_profiles:{},
+    building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[]},
+    reference_landing_sites:{items:[]},route_planning_experiments:{},reference_route_links:{},
+    reference_endpoint_candidates:{},workspace:{bbox:[122,29.9,122.2,30.1]},risks:{},steps:{}});
+  const html=renderStep3({flow,interactionMode:'pan'});
+  assert.match(html,/id="cruiseLayerPanel"/);
+  assert.match(html,/生产航路 = 离场程序/);
+  assert.match(html,/高级\/实验：Route 3D Altitude Profile/);
+  assert.match(html,/advanced_variable_profile/);
+  // the old naked constant-altitude production entry is gone: explicit input, no default value
+  assert.doesNotMatch(html,/id="routeAltitude" value=/);
+  assert.match(html,/id="routeAltitude" placeholder="必须显式输入，无默认值"/);
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/<input class="panel-input" type="number" id="routeAltitude" value=/);
+});
+
+test('step 2 altitude layer editor requests an explicit nominal and confirms nothing by default',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step02_workspace.js',import.meta.url),'utf8');
+  assert.match(source,/id="altitudeNominal"/);
+  assert.match(source,/id="altitudeLayerConfirmed"/);
+  assert.match(source,/nominal_altitude_m:optionalNumber\('altitudeNominal'\)/);
+  assert.doesNotMatch(source,/value="(80|100|120|150)"/);
+  assert.doesNotMatch(source,/id="altitudeLayerId"[^>]*value="/);
+  // the catalogue write goes through the explicit single-layer endpoint
+  assert.match(source,/\/api\/spatial-3d\/altitude-layer'/);
 });

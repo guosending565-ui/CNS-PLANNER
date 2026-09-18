@@ -1,8 +1,17 @@
-"""Additive JSON-safe contracts for vertical coordinates and lazy 3D references."""
+"""Additive JSON-safe contracts for vertical coordinates and lazy 3D references.
+
+Layered Operational Route Architecture V1 lives here as well: a production route is
+``DepartureProcedure -> fixed cruise AltitudeLayer + horizontal route -> ArrivalProcedure``.
+One concrete route carries exactly one cruise altitude layer; vertical transitions belong to
+the terminal procedures and never enter horizontal route planning.  The contracts stay
+additive: ``RouteAltitudeProfile`` (including the advanced/V3-D waypoint profile) keeps its
+existing semantics and is never converted into a fixed cruise layer.
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
+from json import dumps, loads
 from math import isfinite
 from typing import Literal, TypedDict
 
@@ -14,16 +23,71 @@ VERTICAL_REFERENCES = {
     "agl", "egm2008_orthometric", "wgs84_ellipsoidal", "unknown",
 }
 
+#: The only operating mode implemented by Layered Operational Route Architecture V1.
+ROUTE_OPERATING_MODES = {"fixed_cruise_layer"}
+PROCEDURE_TYPES = {"departure", "arrival"}
+TRANSITION_MODES = {
+    "climb_to_cruise_layer", "descend_from_cruise_layer", "level_transition",
+    "not_specified",
+}
+JOIN_LEAVE_KINDS = {"join", "leave"}
+#: The placeholder this code base already uses for "no recorded source/evidence".
+UNRECORDED_SOURCE = "未记录"
+
 
 class AltitudeLayer(TypedDict, total=False):
     altitude_layer_id: str
     name: str
+    #: Explicitly declared nominal cruise altitude.  ``None`` means "not yet confirmed by
+    #: engineering": it is never derived from the bounds, never defaulted, and it keeps the
+    #: layer ``pending_confirmation``.
+    nominal_altitude_m: float | None
     lower_altitude_m: float
     upper_altitude_m: float
     vertical_reference: VerticalReference
     source: str
+    evidence: dict
     confirmed: bool
     status: str
+
+
+class RouteOperatingLayer(TypedDict, total=False):
+    """One active cruise-altitude-layer assignment for one route (JSON-safe)."""
+
+    route_id: str
+    altitude_layer_id: str
+    operating_mode: str
+    vertical_reference: VerticalReference
+    source: str
+    evidence: dict
+    confirmed: bool
+    status: str
+    active: bool
+
+
+class DepartureArrivalProcedure(TypedDict, total=False):
+    """Terminal transition contract (departure/arrival) for one route.
+
+    V1 implements the contract, readiness and CRUD only: no procedure path optimizer, and no
+    default climb/descent rate, turn radius or join/leave point is ever invented.  Missing
+    evidence keeps the procedure ``pending_confirmation``.
+    """
+
+    procedure_id: str
+    procedure_type: str
+    route_id: str
+    node_id: str | None
+    site_reference: str | None
+    altitude_layer_id: str | None
+    transition_mode: str
+    horizontal_geometry: dict
+    vertical_profile: dict
+    join_leave_point: dict | None
+    source: str
+    evidence: dict
+    confirmed: bool
+    status: str
+    missing_evidence: list[str]
 
 
 class VoxelRef(TypedDict):
@@ -75,6 +139,8 @@ def empty_spatial_3d():
         "status": "pending_confirmation",
         "canonical_vertical_reference": "egm2008_orthometric",
         "altitude_layers": [],
+        "route_operating_layers": [],
+        "departure_arrival_procedures": [],
         "route_altitude_profiles": {},
         "site_vertical_profiles": {},
     }
@@ -83,6 +149,15 @@ def empty_spatial_3d():
 def normalize_spatial_3d(value):
     source = value if isinstance(value, dict) else {}
     layers = [normalize_altitude_layer(item) for item in source.get("altitude_layers") or []]
+    assignments = [
+        normalize_route_operating_layer(item)
+        for item in source.get("route_operating_layers") or []
+    ]
+    _assert_single_active_assignment(assignments)
+    procedures = [
+        normalize_departure_arrival_procedure(item)
+        for item in source.get("departure_arrival_procedures") or []
+    ]
     profiles = source.get("route_altitude_profiles") or {}
     sites = source.get("site_vertical_profiles") or {}
     if not isinstance(profiles, dict) or not isinstance(sites, dict):
@@ -92,11 +167,16 @@ def normalize_spatial_3d(value):
         for key, item in profiles.items()
     }
     site_profiles = {str(key): normalize_vertical_profile(item) for key, item in sites.items()}
-    configured = [*layers, *route_profiles.values(), *site_profiles.values()]
+    configured = [
+        *layers, *assignments, *procedures,
+        *route_profiles.values(), *site_profiles.values(),
+    ]
     return {
         "status": "passed" if configured and all(item.get("status") in ("passed", "confirmed") for item in configured) else "pending_confirmation",
         "canonical_vertical_reference": "egm2008_orthometric",
         "altitude_layers": layers,
+        "route_operating_layers": assignments,
+        "departure_arrival_procedures": procedures,
         "route_altitude_profiles": route_profiles,
         "site_vertical_profiles": site_profiles,
     }
@@ -113,18 +193,142 @@ def normalize_altitude_layer(value):
     upper = _number(value.get("upper_altitude_m"), "upper_altitude_m")
     if upper < lower:
         raise ValueError("高度层上界不得低于下界")
+    nominal = _optional_number(value.get("nominal_altitude_m"), "nominal_altitude_m")
+    if nominal is not None and not lower <= nominal <= upper:
+        raise ValueError("nominal_altitude_m 必须满足 lower_altitude_m <= nominal <= upper_altitude_m")
+    source = _source(value.get("source"))
     confirmed = bool(value.get("confirmed", False))
+    # A layer without an explicit nominal altitude, without a recorded source or with an
+    # unknown vertical datum stays pending.  The midpoint is never substituted, and no
+    # vertical datum is ever guessed.
+    resolvable = nominal is not None and reference != "unknown" and source != UNRECORDED_SOURCE
     return {
         "altitude_layer_id": layer_id,
         "name": str(value.get("name") or layer_id),
+        "nominal_altitude_m": nominal,
         "lower_altitude_m": lower,
         "upper_altitude_m": upper,
         "vertical_reference": reference,
-        "source": str(value.get("source") or "未记录"),
+        "source": source,
+        "evidence": _json_object(value.get("evidence"), "evidence"),
         "confirmed": confirmed,
-        "status": "confirmed" if confirmed and reference != "unknown" else "pending_confirmation",
+        "status": "confirmed" if confirmed and resolvable else "pending_confirmation",
         "geoid_undulation_m": _optional_number(value.get("geoid_undulation_m"), "geoid_undulation_m"),
     }
+
+
+def normalize_route_operating_layer(value):
+    """Normalize one route → cruise AltitudeLayer assignment.
+
+    Existence of both the route and the referenced layer is enforced by the application
+    service; this contract only fixes the JSON-safe shape and the confirmation semantics.
+    """
+
+    if not isinstance(value, dict):
+        raise ValueError("route operating layer 必须是对象")
+    route_id = str(value.get("route_id") or "").strip()
+    if not route_id:
+        raise ValueError("route_id 不能为空")
+    layer_id = str(value.get("altitude_layer_id") or "").strip()
+    if not layer_id:
+        raise ValueError("altitude_layer_id 不能为空")
+    mode = str(value.get("operating_mode") or "fixed_cruise_layer")
+    if mode not in ROUTE_OPERATING_MODES:
+        raise ValueError(f"不支持的 operating_mode：{mode}")
+    reference = _reference(value.get("vertical_reference"))
+    source = _source(value.get("source"))
+    confirmed = bool(value.get("confirmed", False))
+    resolvable = reference != "unknown" and source != UNRECORDED_SOURCE
+    return {
+        "route_id": route_id,
+        "altitude_layer_id": layer_id,
+        "operating_mode": mode,
+        "vertical_reference": reference,
+        "source": source,
+        "evidence": _json_object(value.get("evidence"), "evidence"),
+        "confirmed": confirmed,
+        "status": "confirmed" if confirmed and resolvable else "pending_confirmation",
+        "active": bool(value.get("active", True)),
+    }
+
+
+def normalize_departure_arrival_procedure(value):
+    if not isinstance(value, dict):
+        raise ValueError("procedure 必须是对象")
+    procedure_id = str(value.get("procedure_id") or "").strip()
+    if not procedure_id:
+        raise ValueError("procedure_id 不能为空")
+    procedure_type = str(value.get("procedure_type") or "").strip()
+    if procedure_type not in PROCEDURE_TYPES:
+        raise ValueError("procedure_type 只能是 departure 或 arrival")
+    route_id = str(value.get("route_id") or "").strip()
+    if not route_id:
+        raise ValueError("procedure 必须绑定 route_id")
+    transition_mode = str(value.get("transition_mode") or "not_specified")
+    if transition_mode not in TRANSITION_MODES:
+        raise ValueError(f"不支持的 transition_mode：{transition_mode}")
+    point = _optional_json_object(value.get("join_leave_point"), "join_leave_point")
+    if isinstance(point, dict):
+        kind = point.get("kind")
+        if kind not in (None, "") and str(kind) not in JOIN_LEAVE_KINDS:
+            raise ValueError("join_leave_point.kind 只能是 join 或 leave")
+    source = _source(value.get("source"))
+    confirmed = bool(value.get("confirmed", False))
+    result = {
+        "procedure_id": procedure_id,
+        "procedure_type": procedure_type,
+        "route_id": route_id,
+        "node_id": _optional_text(value.get("node_id")),
+        "site_reference": _optional_text(value.get("site_reference")),
+        "altitude_layer_id": _optional_text(value.get("altitude_layer_id")),
+        "transition_mode": transition_mode,
+        "horizontal_geometry": _json_object(value.get("horizontal_geometry"), "horizontal_geometry"),
+        "vertical_profile": _json_object(value.get("vertical_profile"), "vertical_profile"),
+        "join_leave_point": point,
+        "source": source,
+        "evidence": _json_object(value.get("evidence"), "evidence"),
+        "confirmed": confirmed,
+        "missing_evidence": [],
+        "status": "pending_confirmation",
+    }
+    result["missing_evidence"] = procedure_missing_evidence(result)
+    result["status"] = (
+        "confirmed"
+        if confirmed and source != UNRECORDED_SOURCE and not result["missing_evidence"]
+        else "pending_confirmation"
+    )
+    return result
+
+
+def procedure_missing_evidence(procedure):
+    """Explicit evidence a procedure still needs.  Nothing is ever defaulted in."""
+
+    if not isinstance(procedure, dict):
+        raise ValueError("procedure 必须是对象")
+    kind = str(procedure.get("procedure_type") or "")
+    missing = []
+    if not str(procedure.get("altitude_layer_id") or "").strip():
+        missing.append("altitude_layer_id")
+    if not str(procedure.get("node_id") or "").strip() and not str(procedure.get("site_reference") or "").strip():
+        missing.append("node_or_site_reference")
+    if str(procedure.get("transition_mode") or "not_specified") == "not_specified":
+        missing.append("transition_mode")
+    vertical = procedure.get("vertical_profile") if isinstance(procedure.get("vertical_profile"), dict) else {}
+    geometry = procedure.get("horizontal_geometry") if isinstance(procedure.get("horizontal_geometry"), dict) else {}
+    if kind == "departure":
+        if _optional_positive(vertical.get("climb_rate_mps")) is None:
+            missing.append("climb_rate_mps")
+    elif kind == "arrival":
+        if _optional_positive(vertical.get("descent_rate_mps")) is None:
+            missing.append("descent_rate_mps")
+    if _optional_positive(geometry.get("turn_radius_m")) is None:
+        missing.append("turn_radius_m")
+    expected = "join" if kind == "departure" else "leave"
+    point = procedure.get("join_leave_point")
+    observed = str((point or {}).get("kind") or "") if isinstance(point, dict) else ""
+    if observed != expected:
+        missing.append("join_point" if expected == "join" else "leave_point")
+    return missing
 
 
 def voxel_ref(grid_id, altitude_layer_id):
@@ -239,7 +443,46 @@ def _reference(value):
     return reference
 
 
+def _source(value):
+    text = str(value or "").strip()
+    return text or UNRECORDED_SOURCE
+
+
+def _json_object(value, field):
+    """Return a JSON-safe deep copy of ``value`` (empty object when absent)."""
+
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是对象")
+    try:
+        return loads(dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} 必须是 JSON-safe 对象") from exc
+
+
+def _optional_json_object(value, field):
+    if value in (None, ""):
+        return None
+    return _json_object(value, field)
+
+
+def _assert_single_active_assignment(assignments):
+    active = [item["route_id"] for item in assignments if item.get("active", True)]
+    if len(active) != len(set(active)):
+        raise ValueError("同一 route 最多只能有一个 active 巡航高度层配置")
+
+
+def _optional_positive(value):
+    if value in (None, ""):
+        return None
+    number = _number(value, "procedure evidence")
+    return number if number > 0 else None
+
+
 def _number(value, field):
+    if value in (None, ""):
+        raise ValueError(f"{field} 必须是有限数值")
     number = float(value)
     if not isfinite(number):
         raise ValueError(f"{field} 必须是有限数值")

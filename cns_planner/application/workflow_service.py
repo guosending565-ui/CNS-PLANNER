@@ -31,6 +31,7 @@ from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
 from .workspace_service import WorkspaceService
 from .spatial_3d_service import Spatial3DService
+from .route_operating_layer_service import RouteOperatingLayerService
 from .cns_service_capability_service import CNSServiceCapabilityService
 from .operational_timing_service import OperationalTimingService
 from .site_planning_service import SitePlanningService
@@ -161,6 +162,11 @@ class WorkflowService:
         self.spatial_3d_service = Spatial3DService(
             self.session, self.coverage_model_3d, self.invalidation_service, snapshot
         )
+        # Layered Operational Route Architecture V1: fixed cruise layer catalogue, explicit
+        # route → layer assignments and departure/arrival procedure contracts.
+        self.route_operating_layer_service = RouteOperatingLayerService(
+            self.session, self.invalidation_service, snapshot
+        )
         self.cns_service_capability_service = CNSServiceCapabilityService(
             self.session, self.cns_service_model, self.invalidation_service, snapshot
         )
@@ -285,6 +291,13 @@ class WorkflowService:
                 )
         if hasattr(self, "reference_link_service"):
             result["data_readiness"] = self.reference_link_service.data_readiness()
+        if hasattr(self, "route_operating_layer_service"):
+            # Layered Operational Route Architecture V1: production route projection and
+            # the four separately reported readiness buckets.
+            result["route_operating_readiness"] = (
+                self.route_operating_layer_service.readiness_snapshot()
+            )
+            result["route_operating_plan"] = self.route_operating_layer_service.plan_snapshot()
         if hasattr(self, "source_audit_service"):
             result["source_audits"] = self.source_audit_service.result_snapshot()
         result["review"] = self.review()
@@ -649,6 +662,23 @@ class WorkflowService:
     def plan_coverage(self): return self.cns_planning_service.plan_coverage()
     def set_altitude_layers(self, payload): return self.spatial_3d_service.set_altitude_layers(payload)
     def set_route_altitude_profile(self, payload): return self.spatial_3d_service.set_route_profile(payload)
+    # ---- Layered Operational Route Architecture V1 ---------------------------------
+    def set_altitude_layer(self, payload):
+        return self.route_operating_layer_service.set_altitude_layer(payload)
+    def delete_altitude_layer(self, payload):
+        return self.route_operating_layer_service.delete_altitude_layer(payload)
+    def set_route_operating_layer(self, payload):
+        return self.route_operating_layer_service.set_route_operating_layer(payload)
+    def delete_route_operating_layer(self, payload):
+        return self.route_operating_layer_service.delete_route_operating_layer(payload)
+    def set_departure_arrival_procedure(self, payload):
+        return self.route_operating_layer_service.set_procedure(payload)
+    def delete_departure_arrival_procedure(self, payload):
+        return self.route_operating_layer_service.delete_procedure(payload)
+    def route_operating_readiness(self):
+        return self.route_operating_layer_service.readiness_snapshot()
+    def route_operating_plan(self):
+        return self.route_operating_layer_service.plan_snapshot()
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)
