@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbSection} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock} from './common.js';
 
 export function planReviewSummary(review,confirmed){
   const variants=review?.variants||[],selected=variants.find(item=>item.variant_id===review?.selected_variant_id)||null;
@@ -31,14 +31,14 @@ export function render({state,flow}){
   const overview='<div class="review-block"><b>'+escapeHtml(flow.project.name)+'</b><span>数据源：'+statusText(state.data_health.status)+'</span><span>工作区：'+(flow.workspace?flow.workspace.area_km2+' km²':'未定义')+'</span><span>运行航路：'+flow.operational_routes.length+'（'+flow.operational_routes.map(item=>item.route_id).join(', ')+'）</span><span>飞行器：'+(flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置')+'</span><span>规则：'+statusText(flow.rules?.status||'not_calculated')+'</span><span>'+layers+'</span></div>';
   const riskPanel='<div class="risk-review">'+risks+'</div><div class="risk-review">'+dependencies+'</div><div class="overall-card">总体状态：'+statusBadge(flow.review.overall_status)+'<br>总体通过：'+(flow.review.overall_pass?'是':'否')+'</div>';
   const body=wbPanel('operate',
-      wbSection('方案审查与受控应用',overview+reviewUi))
+      wbBlock('方案审查与受控应用',overview+reviewUi))
     +wbPanel('result',
-      wbSection('报告与导出',reportUi)
-      +wbSection('总体状态',riskPanel)
+      wbBlock('报告与导出',reportUi)
+      +wbBlock('总体状态',riskPanel)
       +'<div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">兼容站点GeoJSON</a></div>'
       +'<button class="primary full" id="saveAll">保存当前项目</button>')
     +wbPanel('advanced',
-      wbSection('证据与来源追溯',requirementSummary+proposalSummary));
+      wbBlock('证据与来源追溯',requirementSummary+proposalSummary));
   return shell('06','方案评审','比较客观指标，人工选择、确认，再事务式应用。',body);
 }
 

@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbSection} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock} from './common.js';
 import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskV2ThemeOptions} from './risk_framework_v2.js';
 export function render({flow,draftWorkspace,gridDisplay,populationDisplayLabel,formatNumber}){
   const workspace=flow.workspace,health=workspace?.health,grid=flow.grid,attributes=flow.grid_attributes||{},risk=flow.grid_risk||{},spatial=flow.spatial_3d||{},layers=spatial.altitude_layers||[];
@@ -60,19 +60,19 @@ const themes = `
   const vertical='<h3>3D 高度层（工程设定）</h3><div class="flow-summary">内部 canonical vertical datum：EGM2008 orthometric。垂向基准与 nominal 高度只能显式填写：系统不猜垂向基准，也不提供任何默认真实高度。<b>缺少 nominal 的高度层保持待工程确认</b>（绝不自动取上下界中值）。高度层不预生成 voxel；巡航高度层的业务分配在步骤 03。</div><div class="form-grid"><label>layer id<input class="panel-input" id="altitudeLayerId" placeholder="必填"></label><label>名称<input class="panel-input" id="altitudeLayerName" placeholder="可空，默认同 layer id"></label><label>垂向基准<select id="altitudeReference"><option value="">请选择（不猜）</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="agl">AGL</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option><option value="unknown">unknown</option></select></label><label>nominal 高度 m<input class="panel-input" type="number" step="any" id="altitudeNominal" placeholder="必须显式填写"></label><label>下界 m<input class="panel-input" type="number" step="any" id="altitudeLower" placeholder="必须显式填写"></label><label>上界 m<input class="panel-input" type="number" step="any" id="altitudeUpper" placeholder="必须显式填写"></label><label>来源/依据<input class="panel-input" id="altitudeLayerSource" placeholder="工程依据、文件或评审记录"></label></div><label class="check-row"><input type="checkbox" id="altitudeLayerConfirmed">垂向基准与高度已由工程依据确认</label><button class="secondary full" id="saveAltitudeLayer">保存高度层（显式工程设定）</button><div class="scroll-list">'+(layerRows||'<div class="empty-note">尚未定义高度层；步骤 03 的巡航高度层业务面板会明确显示“待工程确认”。</div>')+'</div>';
   return shell('02','环境建模','框选、重画并保存分析范围。',
     wbPanel('operate',
-      wbSection('工作区范围')
-        +'<div class="button-row"><button class="primary" id="drawWorkspace">框选工作区</button><button class="secondary" id="clearWorkspace">清除</button></div>'
+      wbBlock('工作区范围',
+        '<div class="button-row"><button class="primary" id="drawWorkspace">框选工作区</button><button class="secondary" id="clearWorkspace">清除</button></div>'
         +draft
         +'<button class="primary full" id="saveWorkspace" '+(!draftWorkspace?'disabled':'')+'>保存工作区范围</button>'
-        +buildingSummary
+        +buildingSummary)
     )
     +wbPanel('result',
-      wbSection('环境映射与风险摘要')
-        +themes
-        +summary
+      wbBlock('环境映射与风险摘要',
+        themes
+        +summary)
     )
     +wbPanel('advanced',
-      wbSection('风险框架配置')+renderRiskFrameworkV2Panel(flow)
+      wbBlock('风险框架配置',renderRiskFrameworkV2Panel(flow))
         +vertical
     )
     +'<button class="secondary full" id="nextStep" '+(!flow.steps['2']?'disabled':'')+'>下一步：航路规划</button>');

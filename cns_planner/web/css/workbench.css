@@ -59,12 +59,11 @@
    2. 标签导航
    ========================================================= */
 
-.workbench-tabs{margin-top:var(--sp-5)}
+/* 一级标签：#workbenchTabs 自身即 .tabbar，不再嵌套一层 .tabbar */
+#workbenchTabs{margin-top:var(--sp-5)}
+#workbenchTabs button{font-size:var(--fs-sm)}
 .workbench-segs{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top:1px dashed var(--line-soft)}
 .workbench-segs[hidden]{display:none}
-
-/* 一级标签：桌面宽屏下等分 */
-.workbench-tabs .tabbar button{font-size:var(--fs-sm)}
 
 /* =========================================================
    3. 滚动内容区（唯一滚动容器，保持滚动位置）

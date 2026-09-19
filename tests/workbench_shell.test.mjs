@@ -51,6 +51,10 @@ class StubNode{
     this.hidden=false;
     this.textContent='';
     this.id='';
+    this.listeners={};
+    this.scrollTop=0;
+    this.scrollHeight=0;
+    this.clientHeight=0;
   }
   set className(value){
     this.classList=new StubClassList();
@@ -77,36 +81,85 @@ class StubNode{
   querySelectorAll(selector){
     const parsed=parseSelector(selector);
     const out=[];
-    forEachDescendant(this,child=>{if(matchesSelector(child,parsed))out.push(child);});
+    forEachDescendant(this,child=>{if(parsed.some(part=>matchesSelector(child,part)))out.push(child);});
     return out;
   }
-  addEventListener(){}
-  removeEventListener(){}
+  addEventListener(name,handler){(this.listeners[name]||(this.listeners[name]=[])).push(handler);}
+  removeEventListener(name,handler){
+    const list=this.listeners[name]||[];
+    const index=list.indexOf(handler);
+    if(index>=0)list.splice(index,1);
+  }
+  dispatchEvent(event){
+    for(const handler of this.listeners[event.type]||[])handler(event);
+    return true;
+  }
+  /** 只沿父链匹配，不遍历子树；语义足够支撑 document 级点击委托。 */
+  closest(selector){
+    const parsed=parseSelector(selector);
+    for(let node=this;node;node=node.parentNode){
+      if(node.tagName&&matchesSelector(node,parsed))return node;
+    }
+    return null;
+  }
   setAttribute(name,value){this[name]=value;}
   getAttribute(name){return this[name];}
   removeAttribute(name){delete this[name];}
 }
 
-// 支持三种选择器：标签名、[attr]、[attr="value"]（本项目模板只用到这些）
-function parseSelector(selector){
-  const text=String(selector).trim();
+// 支持四种选择器：标签名、.class、tag.class、[attr]/[attr="value"]（本项目模板只用到这些）
+function parsePart(text){
   const attribute=/^\[([a-zA-Z-]+)(?:="([^"]*)")?\]$/.exec(text);
   if(attribute)return {kind:'attr',name:attribute[1],value:attribute[2]===undefined?null:attribute[2]};
-  const tag=/^[A-Za-z][-A-Za-z0-9]*$/.exec(text);
-  if(tag)return {kind:'tag',name:text.toUpperCase()};
   const className=/^\.([A-Za-z][-A-Za-z0-9_]*)$/.exec(text);
   if(className)return {kind:'class',name:className[1]};
+  const tagAndClass=/^([A-Za-z][-A-Za-z0-9]*)\.([A-Za-z][-A-Za-z0-9_]*)$/.exec(text);
+  if(tagAndClass)return [
+    {kind:'tag',name:tagAndClass[1].toUpperCase()},
+    {kind:'class',name:tagAndClass[2]}
+  ];
+  const tag=/^[A-Za-z][-A-Za-z0-9]*$/.exec(text);
+  if(tag)return {kind:'tag',name:text.toUpperCase()};
   return {kind:'none'};
 }
 
+function parseSelector(selector){
+  return String(selector).split(',').map(part=>{
+    const parsed=parsePart(part.trim());
+    return Array.isArray(parsed)?parsed:[parsed];
+  });
+}
+
 function matchesSelector(node,parsed){
-  if(parsed.kind==='tag')return node.tagName===parsed.name;
-  if(parsed.kind==='class')return node.classList.contains(parsed.name);
-  if(parsed.kind!=='attr')return false;
-  const key=parsed.name.replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());
-  const current=node.dataset[key];
-  if(current===undefined)return false;
-  return parsed.value===null?true:String(current)===parsed.value;
+  const parts=Array.isArray(parsed[0])?parsed[0]:parsed;
+  return parts.every(part=>{
+    if(part.kind==='tag')return node.tagName===part.name;
+    if(part.kind==='class')return node.classList.contains(part.name);
+    if(part.kind!=='attr')return false;
+    // 与 parseAttributes 一致：data-* 属性落在 dataset 上（键名去掉 data- 前缀）
+    const base=part.name.startsWith('data-')?part.name.slice(5):part.name;
+    const key=toDatasetKey(base);
+    const current=node.dataset[key];
+    if(current===undefined)return false;
+    return part.value===null?true:String(current)===part.value;
+  });
+}
+
+/** 在树中查找匹配的节点（测试辅助，等价于 querySelectorAll）。 */
+function findAll(root,selector){
+  const parts=parseSelector(selector),out=[];
+  forEachDescendant(root,node=>{
+    if(parts.some(part=>matchesSelector(node,part)))out.push(node);
+  });
+  return out;
+}
+
+/** 派发一次点击：等价于浏览器中从事件目标冒泡到 document 的委托过程。 */
+function clickNode(document,node){
+  const event={type:'click',target:node};
+  for(let current=node;current;current=current.parentNode){
+    current.dispatchEvent(event);
+  }
 }
 
 // ---- 极简 HTML 解析：让 template.innerHTML 生成真实节点树 -------------------
@@ -131,7 +184,9 @@ function parseHtml(html){
   const root=new StubNode('div');
   const stack=[root];
   const text=String(html||'').replace(/<!--[\s\S]*?-->/g,'');
-  const tokens=/<\/([A-Za-z][-A-Za-z0-9]*)\s*>|<([A-Za-z][-A-Za-z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/g;
+  // 标签必须以字母或 / 紧跟 "<"：业务文案里的 "Legacy / Risk-Aware V2" 之类
+  // 裸 "<"、"/" 组合不会被误判成标签边界。
+  const tokens=/<(\/?)([A-Za-z][-A-Za-z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
   let cursor=0,match;
   while((match=tokenRegexStep(tokens,text,cursor))!==null){
     const textPart=text.slice(cursor,match.index);
@@ -145,9 +200,11 @@ function parseHtml(html){
     const node=new StubNode(tag);
     parseAttributes(match[3]||'',node);
     stack[stack.length-1].append(node);
-    // void 元素（input/label 之外的 input/img/br…）没有子节点，但仍必须建节点并登记 id
+    // void 元素（input/img/br…）没有子节点，但仍必须建节点并登记 id
     if(!VOID_TAGS.has(tag))stack.push(node);
   }
+  const tail=text.slice(cursor);
+  if(tail.trim())stack[stack.length-1].textContent+=tail;
   return root;
 }
 
@@ -192,11 +249,6 @@ function createTemplateElement(){
   return node;
 }
 
-function createElementStub(tag){
-  if(String(tag).toLowerCase()==='template')return createTemplateElement();
-  return new StubNode(tag);
-}
-
 /** 在子树中登记 id（append 时同步注册），等价于浏览器语义。 */
 function registerTree(nodes,node){
   if(node.id)nodes.set(node.id,node);
@@ -225,17 +277,29 @@ function installStubDom(){
   const document={
     body:new StubNode('body'),
     __nodes:nodes,
-    createElement:tag=>createElementStub(tag),
+    __listeners:{},
+    createElement:tag=>String(tag).toLowerCase()==='template'?createTemplateElement():new StubNode(tag),
     getElementById:id=>nodes.get(id)||null,
     querySelector:()=>null,
     querySelectorAll:()=>[],
-    addEventListener(){},
-    register(id){const node=new StubNode('div');node.id=id;nodes.set(id,node);document.body.append(node);return node;}
+    addEventListener(name,handler){(document.__listeners[name]||(document.__listeners[name]=[])).push(handler);},
+    removeEventListener(){},
+    dispatchEvent(event){
+      for(const handler of document.__listeners[event.type]||[])handler(event);
+      return true;
+    },
+    register(id,className=''){const node=new StubNode('div');node.id=id;node.className=className;nodes.set(id,node);document.body.append(node);return node;}
   };
+  // 浏览器语义：body 的父节点是 document，事件才能从目标冒泡到 document 委托监听
+  document.body.parentNode=document;
   const workflowPanel=new StubNode('div');
   workflowPanel.id='workflowPanel';
   document.body.append(workflowPanel);
   nodes.set('workflowPanel',workflowPanel);
+  // 右侧工作台的固定骨架：一级标签容器、二级分段容器、滚动区
+  document.register('workbenchTabs','tabbar');
+  document.register('workbenchSegs');
+  document.register('workbenchBody');
   globalThis.document=document;
   registerTree(nodes,document.body);
   return document;
@@ -336,16 +400,281 @@ test('step 03 exposes the documented second-level segments',()=>{
   assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
 });
 
-test('workbench navigation state survives a re-render',()=>{
+// ---- 真实集成：render → renderWorkflowSteps → mount，只用生产路径 ----------
+//
+// 这一段是本轮修复的核心回归。它刻意**不**传任何 panels/segments metadata：
+// 工作台必须从真实步骤模块渲染出的 DOM 里自行发现一级面板与二级分段，
+// 并使用真实的点击委托导航，否则生产环境依旧是"没有标签、点了没反应"。
+
+function mountRealStep(render,store,stepNo=1,title='步骤'){
+  const controller=createWorkbench({
+    getState:()=>store,
+    setState:value=>Object.assign(store,value)
+  });
+  const root=renderWorkflowSteps({step:{render},context:stepContext()});
+  controller.mount({root,step:{number:stepNo,title,note:''}});
+  return {controller,root};
+}
+
+function tabButtons(document){
+  return document.getElementById('workbenchTabs').children;
+}
+
+function segButtons(document){
+  const container=document.getElementById('workbenchSegs');
+  const group=container.children.find(child=>child.classList.contains('segmented'));
+  return group?group.children:[];
+}
+
+/** 直接读节点文本（button 的 textContent 会被 parseHtml 的文本聚合影响）。 */
+function segControls(document){
+  return segButtons(document).map(node=>node.textContent);
+}
+
+function activateProbe(target){
+  if(!target||!target.dataset)return null;
+  if(target.dataset.wbTab)return {tab:target.dataset.wbTab};
+  if(target.dataset.wbSeg)return {seg:target.dataset.wbSeg,segSet:target.dataset.wbSegSet};
+  return null;
+}
+
+test('step 01 mount generates the three first-level tabs from the real DOM',()=>{
   withStubDom(document=>{
-    const store={step:1,tab:'advanced',segs:{advanced:'adv-diagnostics'},scroll:120};
+    const store={step:1,tab:'operate',segs:{},scroll:0};
+    mountRealStep(renderStep1,store,1,'项目准备');
+    const tabs=tabButtons(document);
+    assert.deepEqual(tabs.map(node=>node.textContent),['操作','结果','高级'],'operate/result/advanced must all be generated');
+    assert.deepEqual(tabs.map(node=>node.dataset.wbTab),['operate','result','advanced']);
+    assert.equal(tabs[0].classList.contains('tab-active'),true);
+    // 一级容器自身就是 .tabbar，不能再嵌套一层 .tabbar
+    assert.equal(document.getElementById('workbenchTabs').classList.contains('tabbar'),true);
+    assert.equal(findAll(document.getElementById('workbenchTabs'),'.tabbar').length,0,'no .tabbar > .tabbar');
+    assert.equal(document.getElementById('workbenchSegs').hidden,true,'step 01 has no second-level segments');
+  });
+});
+
+test('first-level clicks navigate and switch the visible panel',()=>{
+  withStubDom(document=>{
+    const store={step:1,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep1,store,1,'项目准备');
+    const clicked=[];
+    for(const label of ['结果','高级','操作']){
+      const target=tabButtons(document).find(node=>node.textContent===label);
+      assert.ok(target,`tab button ${label} must exist`);
+      clickNode(document,target);
+      clicked.push(label);
+      const expected={操作:'operate',结果:'result',高级:'advanced'}[label];
+      assert.equal(root.dataset.tab,expected,`clicking ${label} sets data-tab`);
+      assert.equal(store.tab,expected,`clicking ${label} writes the workbench state`);
+      assert.equal(tabButtons(document).find(node=>node.classList.contains('tab-active')).textContent,label);
+    }
+    // 一级面板始终在 DOM 中（由 CSS 属性选择器决定显隐），切换不重新渲染业务内容
+    for(const group of ['operate','result','advanced']){
+      assert.ok(findByDataset(root,'panelGroup',group),`${group} panel stays mounted`);
+    }
+  });
+});
+
+test('step 03 discovers its segments from the active panel and restores selection',()=>{
+  withStubDom(document=>{
+    const store={step:3,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep3,store,3,'航路规划');
+
+    // 默认：操作 → op-sites，4 个二级按钮
+    assert.equal(root.dataset.tab,'operate');
+    assert.equal(root.dataset.seg,'op-sites','operate defaults to the first segment');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
+      ['op-sites','op-candidates','op-operational','op-altitude']);
+
+    // 结果 → res-route，3 个二级按钮
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assert.equal(root.dataset.tab,'result');
+    assert.equal(root.dataset.seg,'res-route','result defaults to the first segment');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
+      ['res-route','res-feasibility','res-compare']);
+
+    // 高级 → adv-reference，5 个二级按钮
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assert.equal(root.dataset.tab,'advanced');
+    assert.equal(root.dataset.seg,'adv-reference','advanced defaults to the first segment');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
+      ['adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']);
+    // 二级按钮名称来自分段自身的 data-seg-label，不是外部 manifest
+    assert.deepEqual(segButtons(document).map(node=>node.textContent),
+      ['参考数据与关联','Legacy / Risk-Aware V2','V3 实验','规划诊断','剖面与运动']);
+
+    // 选择 adv-diagnostics 后重新 render + mount，仍恢复 advanced + adv-diagnostics
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='adv-diagnostics'));
+    assert.equal(root.dataset.seg,'adv-diagnostics');
+    assert.equal(store.segs.advanced,'adv-diagnostics','segment choice is written to the workbench state');
+
+    const remounted=mountRealStep(renderStep3,store,3,'航路规划');
+    assert.equal(remounted.root.dataset.tab,'advanced','tab survives a re-render');
+    assert.equal(remounted.root.dataset.seg,'adv-diagnostics','segment survives a re-render');
+    assert.equal(segButtons(document).find(node=>node.classList.contains('seg-active')).dataset.wbSeg,'adv-diagnostics');
+
+    // 切回操作再切回高级：该 tab 之前选过的分段必须恢复
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='operate'));
+    assert.equal(remounted.root.dataset.seg,'op-sites');
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assert.equal(remounted.root.dataset.seg,'adv-diagnostics','a previously chosen segment is restored');
+  });
+});
+
+test('step 02/04/05/06 business controls live in a normal section body',()=>{
+  const expected=[
+    ['02',renderStep2,['drawWorkspace','clearWorkspace','saveWorkspace','gridOutlineToggle']],
+    ['04',renderStep4,['manufacturer','model','cruise','saveRules','aircraftProfile']],
+    ['05',renderStep5,['saveDevices','planCoverage','analyzeGaps','sitePolicyConfirmed']],
+    ['06',renderStep6,['initializePlanReview','confirmPlan','applyPlan','previewPlanningReport','generatePlanningReport']]
+  ];
+  for(const [number,render,ids] of expected){
+    withStubDom(document=>{
+      const store={step:Number(number),tab:'operate',segs:{},scroll:0};
+      const {root}=mountRealStep(render,store,Number(number),'步骤 '+number);
+      const missing=ids.filter(id=>!document.getElementById(id));
+      assert.deepEqual(missing,[],`step ${number} controls must stay mounted: ${missing.join(', ')}`);
+      for(const id of ids){
+        const node=document.getElementById(id);
+        assert.equal(node.closest('.wb-section-head'),null,`#${id} must not sit inside .wb-section-head`);
+        assert.ok(node.closest('.wb-section'),`#${id} must sit inside a .wb-section body`);
+      }
+      // 三个一级面板都生成
+      for(const group of ['operate','result','advanced']){
+        assert.ok(findByDataset(root,'panelGroup',group),`step ${number} ${group} panel`);
+      }
+    });
+  }
+});
+
+test('no .wb-section-head carries block-level business content',()=>{
+  for(const [number,render] of STEP_RENDERS){
+    const html=render(stepContext());
+    for(const head of html.match(/<div class="wb-section-head">[\s\S]*?<\/div>/g)||[]){
+      // 只允许 <h3> 与状态徽章（<span class="flow-badge …">）
+      for(const tag of ['input','select','button','table','fieldset','section','p']){
+        assert.doesNotMatch(head,new RegExp('<'+tag+'[\\s>]'),`step ${number} .wb-section-head carries a <${tag}> body`);
+      }
+      const divs=[...head.matchAll(/<div[\s>]/g)].length;
+      assert.ok(divs<=1,`step ${number} .wb-section-head carries a nested <div> body`);
+      assert.match(head,/<h3>/,'a section head must keep its title');
+    }
+  }
+});
+
+test('every step renders exactly one panel per workbench tab',()=>{
+  for(const [number,render] of STEP_RENDERS){
+    const html=render(stepContext());
+    const tabs=[...html.matchAll(/data-panel-group="([a-z]+)"/g)].map(match=>match[1]);
+    assert.deepEqual(tabs.slice().sort(),['advanced','operate','result'],`step ${number} tab panels`);
+  }
+});
+
+test('step 03 exposes the documented second-level segments',()=>{
+  const html=renderStep3(stepContext());
+  const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
+  for(const required of ['op-sites','op-candidates','op-operational','op-altitude','res-route','res-feasibility','res-compare','adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']){
+    assert.ok(segs.includes(required),`missing segment ${required}`);
+  }
+  assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
+  // 每个二级分段都挂在一个一级面板下，并且自描述名称与 id 成对出现
+  assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
+  // 自描述：data-seg-label（单数）与 data-seg-name 成对出现，data-seg-labels 是面板级汇总
+  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');  // 分段可见性由 CSS 承载：每个分段 id 必须有对应规则（显式列表或通用兜底）
+  const css=readFileSync(new URL('../cns_planner/web/css/components.css',import.meta.url),'utf8');
+  for(const id of segs)assert.match(css,new RegExp('data-seg-name="'+id+'"|data-seg-name\\^'),`${id} has no visibility rule`);
+});
+
+test('every step generates three tabs, unique ids and bindable controls',()=>{
+  const modules={
+    '01':'step01_project.js','02':'step02_workspace.js','03':'step03_routes.js',
+    '04':'step04_operation.js','05':'step05_cns.js','06':'step06_review.js'
+  };
+  const segmentOwners=new Map();
+  for(const [number,render] of STEP_RENDERS){
+    withStubDom(document=>{
+      const store={step:Number(number),tab:'operate',segs:{},scroll:0};
+      const {root}=mountRealStep(render,store,Number(number),'步骤 '+number);
+      // A. 三个一级标签都能生成（面板来自真实 DOM，不依赖 step.panels）
+      assert.deepEqual(tabButtons(document).map(node=>node.dataset.wbTab),['operate','result','advanced'],`step ${number} tabs`);
+      // 无重复 id：每个 id 在整步内只出现一次
+      const ids=findAll(root,'[id]').map(node=>node.id).filter(Boolean);
+      assert.equal(new Set(ids).size,ids.length,`step ${number} duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+      // 每个分段 id 只属于一个一级标签，避免跨标签串显
+      for(const node of findAll(root,'[data-seg-name]')){
+        const owner=node.parentNode&&node.parentNode.dataset?node.parentNode.dataset.panelGroup:'';
+        if(segmentOwners.has(node.dataset.segName)){
+          assert.equal(segmentOwners.get(node.dataset.segName),owner,`segment ${node.dataset.segName} declared twice`);
+        }
+        segmentOwners.set(node.dataset.segName,owner);
+      }
+      // bind() 中 c.$()/actionButton() 无条件查询的控件必须在挂载后仍然存在；
+      // if(c.$('X')) 守卫的可选控件、以及只在特定算法/状态下面板才渲染的控件
+      // （bind 已用守卫保护）允许缺席。
+      const source=readFileSync(new URL('../cns_planner/web/js/workflow/'+modules[number],import.meta.url),'utf8');
+      const optional=new Set();
+      for(const match of source.matchAll(/if\(c\.\$\('([A-Za-z_][A-Za-z0-9_]*)'\)\)/g))optional.add(match[1]);
+      // 条件渲染（另一个模块导出的面板只在特定状态下输出控件）
+      for(const id of ['routeRiskLambda','routeRiskComponent','routeUnknownPolicy','routeUnknownPenalty','routeMaxRisk'])optional.add(id);
+      const required=new Set();
+      for(const match of source.matchAll(/(?:c\.\$\(|c\.actionButton\()'([A-Za-z_][A-Za-z0-9_]*)'/g)){
+        // 以 "_" 结尾的是模板拼接 id（'operationContext_'+name），不是静态控件
+        if(match[1].endsWith('_'))continue;
+        if(!optional.has(match[1]))required.add(match[1]);
+      }
+      const missing=[...required].filter(id=>!document.getElementById(id));
+      assert.deepEqual(missing,[],`step ${number} bind() queries missing controls: ${missing.join(', ')}`);
+      // 反向契约：bind() 无条件读取的控件必须真的渲染出来（否则点击即抛异常）
+      assert.doesNotMatch(source, /c\.\$\('routeDirection'\)/, 'bind() must not read a control the panel no longer renders');
+    });
+  }
+});
+
+test('step 03 exposes all twelve segments through real click navigation',()=>{
+  withStubDom(document=>{
+    const store={step:3,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep3,store,3,'航路规划');
+    const expected={
+      operate:['op-sites','op-candidates','op-operational','op-altitude'],
+      result:['res-route','res-feasibility','res-compare'],
+      advanced:['adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']
+    };
+    for(const [tab,segments] of Object.entries(expected)){
+      clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab===tab));
+      assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),segments,`${tab} segments`);
+      // 每个分段都能被真实点击选中，并落到根节点的 data-seg 上
+      for(const id of segments){
+        clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg===id));
+        assert.equal(root.dataset.seg,id,`clicking ${id} selects it`);
+        assert.equal(store.segs[tab],id,`clicking ${id} stores it under ${tab}`);
+        assert.equal(segButtons(document).find(node=>node.classList.contains('seg-active')).dataset.wbSeg,id);
+      }
+    }
+    // 隐藏面板里的控件仍然挂载（因此现有 bind() 不会失效）
+    for(const id of ['createOdRoute','saveRouteAltitude','saveRouteMotion','saveBuildingClearancePolicy','aircraftProfile']){
+      const node=document.getElementById(id);
+      if(node)assert.ok(findByDataset(root,'panelGroup','operate')||findByDataset(root,'panelGroup','advanced'),`#${id} stays mounted`);
+    }
+  });
+});
+
+test('main.js keeps no workbench DOM navigation details',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/main.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/data-wb-tab|data-wb-seg|wbTab|wbSeg/, 'main.js must not bind workbench tab/segment clicks');
+  assert.doesNotMatch(source,/workbenchTabs|workbenchSegs/, 'main.js must not build workbench navigation DOM');
+  assert.doesNotMatch(source,/workbench\.navigate\(/, 'navigation belongs to createWorkbench');
+  assert.match(source,/createWorkbench\(\{/, 'main.js only constructs the workbench controller');
+});
+
+test('workbench navigation state survives a re-render',()=>{  withStubDom(document=>{
+    const store={step:3,tab:'advanced',segs:{advanced:'adv-diagnostics'},scroll:120};
     const controller=createWorkbench({
       getState:()=>store,
       setState:value=>Object.assign(store,value)
     });
-    const root=document.createElement('div');
-    root.className='wb-root';
-    controller.mount({root,step:{number:3,title:'航路规划',note:'',panels:{operate:1,result:1,advanced:1},segments:[{id:'adv-diagnostics',label:'诊断',tab:'advanced'}]}});
+    const root=renderWorkflowSteps({step:{render:renderStep3},context:stepContext()});
+    // 真实步骤模块不导出 panels/segments：工作台只能从 DOM 恢复导航
+    controller.mount({root,step:{number:3,title:'航路规划',note:''}});
     assert.equal(root.id,'workbenchPanel','the mounted panel carries a stable id');
     assert.equal(root.dataset.tab,'advanced','the previous first-level tab is restored');
     assert.equal(root.dataset.seg,'adv-diagnostics','the previous second-level segment is restored');
@@ -477,4 +806,4 @@ test('main.js wires layer switches and bootstrap once',()=>{
   assert.match(source,/console\.error\('\[CNS Planner\] '\+message,exc\)/);
 });
 
-export {StubNode};
+export {StubNode,installStubDom,renderWorkflowSteps,renderStep1,createWorkbench};

@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbSection} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock} from './common.js';
 
 function collectionList(collection,kind){
   const items=collection?.items||[];
@@ -307,9 +307,9 @@ export function render({flow}){
     '<h3>CNS Gap Analysis V2 '+statusBadge(gapV2.status||'not_calculated')+'</h3><div class="parameter-note">合并 P7 几何、P8 静态能力与 P9 运行时间线；Unknown 表示证据不足，不是危险等级，Gap 也不自动触发 Safety Event。</div><label class="check-row"><input type="checkbox" id="gapV2Protection" '+(gapV2.parameters?.evaluate_protection_margin?'checked':'')+'> 可选工程 Protection Margin（非 Well-Clear/认证判断）</label><button class="secondary full" id="evaluateGapV2">运行 Gap V2</button><div class="gap-results">'+gapV2List(gapV2)+'</div>'+
     '<h3>Reuse-first CNS Site Planner V1 '+statusBadge(sitePlan.status||'not_calculated')+'</h3><div class="parameter-note">仅目标化 confirmed planning gap；tier 固定为 Existing CNS → Existing Shared Site → Candidate Site → New-build Candidate。P10 remediation scope 仅为提示，收益必须经 P7/P8 what-if 确认。</div><label class="check-row"><input type="checkbox" id="sitePolicyConfirmed" '+(sitePolicy.confirmed?'checked':'')+'> 确认使用 reuse-first engineering policy</label><button class="secondary full" id="evaluateSitePlan">生成 Proposal</button><div class="parameter-note">Proposal 不修改 ExistingCNS，也不声明 Gap 已消除；P12 必须 apply + rerun 闭环复核。</div><div class="gap-results">'+sitePlanSummary(sitePlan)+'</div>'+
     '<h3>Closed-loop Validation V1 '+statusBadge(closedLoop.status||'not_calculated')+'</h3><div class="parameter-note">Engineering closed-loop verification：Preview 只在 working copy 重跑 P7→P8→P9→P10，不修改项目；Apply 才正式提交。规划 residual 与运行场景 residual 分开解释；这不是真实 CNS 模型 validation 或认证结论。</div><div class="button-row"><button class="secondary" id="evaluateClosedLoop">Preview</button><button class="primary" id="applyClosedLoop" '+(closedLoop.validation_status==='validated_improvement'&&closedLoop.commit_status==='preview'?'':'disabled')+'>Apply validated assessment</button></div><div class="gap-results">'+closedLoopSummary(closedLoop)+'</div>';
-  const body=wbPanel('operate',wbSection('设备与布站输入',operate))
-    +wbPanel('result',wbSection('覆盖与缺口结果',resultPanel)+'<div class="coverage-results">'+result+'</div>')
-    +wbPanel('advanced',wbSection('高级与应用',advanced)
+  const body=wbPanel('operate',wbBlock('设备与布站输入',operate))
+    +wbPanel('result',wbBlock('覆盖与缺口结果',resultPanel)+'<div class="coverage-results">'+result+'</div>')
+    +wbPanel('advanced',wbBlock('高级与应用',advanced)
       +'<div class="flow-summary">生命风险：'+statusText(flow.risks.life.status)+' · 财产风险：'+statusText(flow.risks.property.status)+'<br>已有设施与候选站址仅作为规划输入，本轮不改变 CoveragePlannerV1。</div>')
     +'<button class="primary full" id="nextStep" '+(!flow.steps['5']?'disabled':'')+'>下一步：方案评审</button>';
   return shell('05','CNS规划','设备库、已有设施和候选站址；V1 布站保持原有兼容输入。',body);

@@ -473,6 +473,15 @@ td:first-child,th:first-child{padding-left:var(--sp-6)}
   display:block;
 }
 
+/* 通用兜底：根节点有生效的 data-seg（非 none）时，按 tab 前缀显示对应分段。
+   新增面板/分段无需再补 CSS 选择器；上方的显式列表继续锁定 Step03 的
+   12 个分段语义，两者互不冲突（CSS 中后出现的规则优先）。 */
+.wb-root[data-tab="operate"]>[data-panel-group="operate"][data-seg-set="operate"]>[data-seg-name^="op-"],
+.wb-root[data-tab="result"]>[data-panel-group="result"][data-seg-set="result"]>[data-seg-name^="res-"],
+.wb-root[data-tab="advanced"]>[data-panel-group="advanced"][data-seg-set="advanced"]>[data-seg-name^="adv-"]{
+  display:block;
+}
+
 /* 顶部栏/工作台的通用段按钮组（用于一级 tab） */
 .tabbar{display:flex;gap:var(--sp-2);padding:var(--sp-2);border-radius:var(--r-md);background:var(--bg-sunken)}
 

@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbSection,wbSegHint} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint} from './common.js';
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './route_operating_layer.js';
 import {bindLayeredRoutePlanner,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
@@ -1725,14 +1725,11 @@ function routeOperateSection(flow,{interactionMode,nodes}){
     +odScenarioPanel(flow);
   return wbPanel('operate','',{segments:[
     ['op-sites','起降点与OD',
-      wbSection('起降点与 OD')
-        +wbSegHint(OPERATE_SEGMENTS,'op-sites')
-        +'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'
-        +sitesPanel],
-    ['op-candidates','分层候选',wbSection('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+renderLayeredRoutePlannerPanel(flow))],
+      wbBlock('起降点与 OD',wbSegHint(OPERATE_SEGMENTS,'op-sites')+'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'+sitesPanel)],
+    ['op-candidates','分层候选',wbBlock('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+renderLayeredRoutePlannerPanel(flow))],
     ['op-operational','运行航路',
-      wbSection('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+routeActions+'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')],
-    ['op-altitude','高度与程序',wbSection('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow))]
+      wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+routeActions+'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')],
+    ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow))]
   ]});
 }
 
@@ -1742,15 +1739,12 @@ function routeResultSection(flow,{routes,selectedReference}){
   const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)+buildingClearancePanel(flow);
   return wbPanel('result','',{segments:[
     ['res-route','当前航路',
-      wbSection('当前航路')
-        +wbSegHint(RESULT_SEGMENTS,'res-route')
-        +'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>'
-        +wbSection('航路剖面')
-        +renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes)],
-    ['res-feasibility','可行性与净空',wbSection('可行性与净空',feasibility)],
+      wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>')
+        +wbBlock('航路剖面',renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes))],
+    ['res-feasibility','可行性与净空',wbBlock('可行性与净空',feasibility)],
     ['res-compare','对比与验证',
-      wbSection('参考航线 vs 运行航路',comparisonPanel(flow,selectedReference))
-        +wbSection('规划器结果并列',comparisonPanelV2(flow,routePlannerComparisonModel(flow)))]
+      wbBlock('参考航线 vs 运行航路',comparisonPanel(flow,selectedReference))
+        +wbBlock('规划器结果并列',comparisonPanelV2(flow,routePlannerComparisonModel(flow)))]
   ]});
 }
 
@@ -1758,18 +1752,18 @@ function routeResultSection(flow,{routes,selectedReference}){
 function routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion}){
   return wbPanel('advanced','',{segments:[
     ['adv-reference','参考数据与关联',
-      wbSection('真实参考航线',wbSegHint(ADVANCED_SEGMENTS,'adv-reference')+referenceRoutesPanel(flow,null))
-        +wbSection('参考航线 ↔ 当前 OD 关联',referenceLinkPanel(flow))],
+      wbBlock('真实参考航线',wbSegHint(ADVANCED_SEGMENTS,'adv-reference')+referenceRoutesPanel(flow,null))
+        +wbBlock('参考航线 ↔ 当前 OD 关联',referenceLinkPanel(flow))],
     ['adv-legacy','Legacy / Risk-Aware V2',
-      wbSection('Legacy 规划器',wbSegHint(ADVANCED_SEGMENTS,'adv-legacy')+plannerCard(plannerCardModel(flow)))
-        +wbSection('Risk-Aware V2 参数',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是 Risk-Aware V2，V2 参数面板不适用。</div>')],
+      wbBlock('Legacy 规划器',wbSegHint(ADVANCED_SEGMENTS,'adv-legacy')+plannerCard(plannerCardModel(flow)))
+        +wbBlock('Risk-Aware V2 参数',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是 Risk-Aware V2，V2 参数面板不适用。</div>')],
     ['adv-experiment','V3 实验',
-      wbSection('V3 实验',wbSegHint(ADVANCED_SEGMENTS,'adv-experiment')+experimentPanelV3(flow)+experimentPanel(flow))],
+      wbBlock('V3 实验',wbSegHint(ADVANCED_SEGMENTS,'adv-experiment')+experimentPanelV3(flow)+experimentPanel(flow))],
     ['adv-diagnostics','规划诊断',
-      wbSection('航路规划诊断',wbSegHint(ADVANCED_SEGMENTS,'adv-diagnostics')+routePlanningDiagnosticsPanel(flow))
+      wbBlock('航路规划诊断',wbSegHint(ADVANCED_SEGMENTS,'adv-diagnostics')+routePlanningDiagnosticsPanel(flow))
         +'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div>'],
     ['adv-profile','剖面与运动',
-      wbSection('高级 3D 剖面 / 运动剖面',wbSegHint(ADVANCED_SEGMENTS,'adv-profile')+altitude+motion)]
+      wbBlock('高级 3D 剖面 / 运动剖面',wbSegHint(ADVANCED_SEGMENTS,'adv-profile')+altitude+motion)]
   ]});
 }
 
@@ -1781,7 +1775,10 @@ export function bind(c){
   bindRoutePlannerV3(c);
   bindCruiseLayer(c);
   bindLayeredRoutePlanner(c);
-  c.$('addNodeMode').onclick=c.toggleNodeMode;c.actionButton('scenarioRoutes',()=>c.mutate('scenario',{direction:c.$('routeDirection').value}));c.actionButton('operationalRoutes',()=>c.mutate('operational'));
+  // 兼容入口"生成场景航路"保持原 all-pairs 语义：不再读取已随面板移除的
+  // routeDirection 控件（读它会抛 TypeError，导致按钮完全不可用），
+  // direction 交给后端默认值 both，与旧行为一致。
+  c.$('addNodeMode').onclick=c.toggleNodeMode;c.actionButton('scenarioRoutes',()=>c.mutate('scenario',{}));c.actionButton('operationalRoutes',()=>c.mutate('operational'));
   if(c.$('createOdRoute'))c.actionButton('createOdRoute',()=>{const start=c.$('odStartNode').value,end=c.$('odEndNode').value;if(start===end)throw new Error('起点与终点不能相同');return c.mutate('scenario-od',{start_node_id:start,end_node_id:end,direction:c.$('odDirection').value});});
   if(c.$('evaluateRouteExperiment'))c.actionButton('evaluateRouteExperiment',()=>c.resourceAction('/api/route-experiments/evaluate',{grounding:'current_scenario_routes'}));
   if(c.$('deleteRouteExperiment'))c.actionButton('deleteRouteExperiment',()=>{const model=routeExperimentModel(c.flow());if(!model.active_experiment_id)throw new Error('没有可删除的实验');return c.resourceAction('/api/route-experiments/delete',{experiment_id:model.active_experiment_id});});

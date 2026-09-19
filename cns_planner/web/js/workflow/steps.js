@@ -8,10 +8,19 @@
 //  - 面板内容始终挂载，切换标签不重新渲染，表单与列表状态不丢失。
 // =========================================================
 
+// 单根容器：shell() 返回的根节点就是 [data-workbench-head] 的父节点
 function toFragment(html){
   const template=document.createElement('template');
   template.innerHTML=String(html||'').trim();
   return template.content;
+}
+
+/** 找到面板根节点（.wb-root），并保证它在 workflowPanel 内是唯一子元素。 */
+function normalizeHost(host){
+  if(!host)return null;
+  const root=host.querySelector?host.querySelector('.wb-root'):null;
+  if(root&&root.parentNode===host&&host.children.length>1)host.replaceChildren(root);
+  return root||host.firstElementChild||null;
 }
 
 /**
@@ -24,5 +33,5 @@ export function renderWorkflowSteps({step,context}){
   if(!host||!step||typeof step.render!=='function')return null;
   const html=step.render(context);
   host.replaceChildren(toFragment(html));
-  return host.firstElementChild;
+  return normalizeHost(host);
 }
