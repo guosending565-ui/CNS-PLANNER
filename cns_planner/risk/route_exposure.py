@@ -18,21 +18,18 @@ RouteRiskProfile 的 ``exposure_index_m``、``route_length_m``、segment 积分�
 
 from __future__ import annotations
 
-import math
-from numbers import Real
-
 from ..algorithms.coverage.v1 import distance_m
+from ..domain.risk_v2 import DOMAIN_IDS
+from .accessors_v2 import (
+    RESOLVED_DOMAIN_STATUS, cell_domain_index, domain_record_path, finite,
+)
 
-#: ``grid_risk_v2`` 每个 domain 在其 cell 记录里的容器键。
-#: planner 的 cost 与 profiler 使用**同一**读取规则，不允许出现第二套映射。
+#: ``grid_risk_v2`` 中每个 domain 在 cell 记录里的 **canonical 路径**。
+#: planner 的 cost 与 profiler 使用**同一**读取规则（:mod:`.accessors_v2`），
+#: 不允许出现第二套映射，也不保留历史错误的 flat ``cell[domain_id]`` 兼容。
 DOMAIN_CELL_CONTAINER_KEY = {
-    "ground": "ground",
-    "air_traffic": "air_traffic",
-    "environment_obstacle": "environment_obstacle",
+    domain_id: domain_record_path(domain_id) for domain_id in DOMAIN_IDS
 }
-
-#: 只有该状态的 domain 容器才携带可用的 relative engineering index。
-RESOLVED_DOMAIN_STATUS = "passed"
 
 ENDPOINT_CONNECTOR_SEMANTICS = {
     "start_connector": "route_start_endpoint_to_first_grid_cell_center",
@@ -44,24 +41,12 @@ ENDPOINT_CONNECTOR_SEMANTICS = {
 }
 
 
-def finite(value):
-    return isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value))
-
-
-def cell_domain_index(record, domain_id):
-    """返回一个 cell 的 ``(index, container_status)``；缺失时 index 为 ``None``。"""
-
-    container = (record or {}).get(DOMAIN_CELL_CONTAINER_KEY[domain_id])
-    container = container if isinstance(container, dict) else {}
-    status = str(container.get("status") or "missing_data")
-    index = container.get("index")
-    if status == RESOLVED_DOMAIN_STATUS and finite(index) and 0.0 <= float(index) <= 1.0:
-        return float(index), status
-    return None, status
-
-
 def resolve_cell_domain_indices(grid_risk_v2, cell_ids, domain_ids):
     """解析每个 cell 每个 domain 的 index。
+
+    读取规则完全来自 canonical accessor :func:`cns_planner.risk.accessors_v2.cell_domain_index`
+    （即 ``cells[gid]["domains"][domain_id]``），因此 planner 的 edge cost 与 RouteRiskProfile
+    的 exposure 积分逐值一致。
 
     返回 ``(resolved, unresolved)``，结构与 Layered Route Planner V1 原先的
     ``resolve_lambda_domain_indices`` 完全一致：``resolved[grid_id][domain_id]`` 是 index 或

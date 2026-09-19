@@ -29,6 +29,7 @@ from ..domain.route_risk_profile import (
     profile_fingerprint, route_risk_profile_policy_fingerprint,
 )
 from ..route_planner.risk_aware_v2 import GridGraph
+from .accessors_v2 import cell_factor_record
 from .route_exposure import DOMAIN_CELL_CONTAINER_KEY, integrate_path_exposure, resolve_cell_domain_indices
 
 NUMERICAL_TOLERANCE = 1e-6
@@ -527,10 +528,14 @@ def _finalize_interval(domain_id, current, position):
 
 
 def _cell_factor_record(grid_risk_v2_cells, grid_id, factor_id):
+    """canonical factor 读取：``grid_risk_v2.cells[gid]["factors"][factor_id]``。
+
+    读取规则与 domain 读取共用同一 accessor 模块（``risk/accessors_v2.py``），不在此再写
+    第二套路径。
+    """
+
     record = (grid_risk_v2_cells or {}).get(str(grid_id)) or {}
-    factors = record.get("factors") if isinstance(record.get("factors"), dict) else {}
-    item = factors.get(factor_id)
-    return item if isinstance(item, dict) else {}
+    return cell_factor_record(record, factor_id)
 
 
 def _record_resolved(record):

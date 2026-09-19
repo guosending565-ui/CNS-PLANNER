@@ -30,6 +30,10 @@ from .risk_v2 import (
     NO_SOURCE_FACTOR_IDS, display_only_airspace, empty_absolute_risk, empty_sora_arc,
     empty_sora_grc, stable_fingerprint,
 )
+#: ``grid_risk_v2`` cell 的 canonical 读取规则只有一份实现（``risk/accessors_v2.py``）。
+#: profile 的 risk-cell fingerprint 必须复用它与 planner / profiler 完全相同的 nested
+#: ``cell["domains"]`` / ``cell["factors"]`` 读取路径。
+from ..risk.accessors_v2 import cell_domains_view, cell_factors_view
 
 SCHEMA_VERSION = "route-risk-profile-v1"
 
@@ -597,37 +601,24 @@ def profile_fingerprint(components):
 
 
 def grid_risk_v2_cells_fingerprint(grid_risk_v2):
-    """当前 ``grid_risk_v2`` cell 内容的指纹（domain index + factor normalized index）。"""
+    """当前 ``grid_risk_v2`` cell 内容的指纹（domain index + factor normalized index）。
+
+    domain 的 index/status 与 factor 的 normalized_index 全部通过 canonical accessor
+    :mod:`cns_planner.risk.accessors_v2` 从 nested ``cell["domains"][domain_id]`` /
+    ``cell["factors"][factor_id]`` 读取，因此本函数不再持有第二套 schema 解释。历史错误的
+    flat ``cell[domain_id]`` 会被读成 missing（``None``），指纹随之变化 —— 这正是契约修复的
+    可观测结果。airspace 不在 ``cells`` 内，绝不进入本指纹。
+    """
 
     cells = (grid_risk_v2 or {}).get("cells")
     cells = cells if isinstance(cells, dict) else {}
     payload = {}
     for grid_id in sorted(cells):
-        record = cells[grid_id] if isinstance(cells[grid_id], dict) else {}
+        cell = cells[grid_id]
         payload[str(grid_id)] = {
-            "status": record.get("status"),
-            "domains": {
-                domain_id: {
-                    "index": (record.get(domain_id) or {}).get("index")
-                    if isinstance(record.get(domain_id), dict) else None,
-                    "container_status": (
-                        (record.get(domain_id) or {}).get("status")
-                        if isinstance(record.get(domain_id), dict) else None
-                    ),
-                }
-                for domain_id in DOMAIN_IDS
-            },
-            "factors": {
-                factor_id: {
-                    "status": (record.get("factors") or {}).get(factor_id, {}).get("status")
-                    if isinstance((record.get("factors") or {}).get(factor_id), dict) else None,
-                    "normalized_index": (
-                        (record.get("factors") or {}).get(factor_id, {}).get("normalized_index")
-                        if isinstance((record.get("factors") or {}).get(factor_id), dict) else None
-                    ),
-                }
-                for factor_id in FACTOR_IDS
-            },
+            "status": cell.get("status") if isinstance(cell, dict) else None,
+            "domains": cell_domains_view(cell),
+            "factors": cell_factors_view(cell),
         }
     return stable_fingerprint(payload, prefix="routeprofilegridriskv1-")
 

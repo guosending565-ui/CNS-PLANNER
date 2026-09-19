@@ -155,4 +155,4 @@ def test_frontend_exposes_grid_layer_and_clickable_grid_id():
     assert "mean_elevation" in javascript
     assert "visibleLonLatBounds()" in javascript
     assert "fitLonLatBbox(flow.workspace?.bbox)" in javascript
-    assert "grid:'标准网格'" in javascript
+    assert "['grid','标准网格']" in javascript

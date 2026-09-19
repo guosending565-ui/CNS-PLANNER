@@ -187,16 +187,21 @@ def confirmed_request(service, route_id="R0001"):
 
 
 def risk_v2(cells, index=0.5, *, status="passed"):
+    """Canonical ``grid_risk_v2`` fixture: nested ``cell["domains"][domain_id]`` records."""
+
     return {
         "status": "passed", "algorithm_id": "risk-framework-v2-domains", "algorithm_version": "2.0",
         "input_fingerprint": "riskv2-input-fixture", "policy_fingerprint": "riskv2-policy-fixture",
         "cells": {
             cell["grid_id"]: {
-                "ground": {"status": status, "index": index, "domain_id": "ground"},
-                "air_traffic": {"status": status, "index": index, "domain_id": "air_traffic"},
-                "environment_obstacle": {
-                    "status": status, "index": index, "domain_id": "environment_obstacle",
+                "grid_id": cell["grid_id"], "status": "passed",
+                "domains": {
+                    domain_id: {
+                        "domain_id": domain_id, "status": status, "index": index,
+                    }
+                    for domain_id in ("ground", "air_traffic", "environment_obstacle")
                 },
+                "factors": {},
             }
             for cell in cells
         },
@@ -558,8 +563,8 @@ def test_only_enabled_domains_need_a_resolved_index():
     cells = ["A", "B"]
     risk = {
         "cells": {
-            "A": {"ground": {"status": "passed", "index": 0.4}},
-            "B": {"ground": {"status": "pending_confirmation", "index": None}},
+            "A": {"domains": {"ground": {"status": "passed", "index": 0.4}}},
+            "B": {"domains": {"ground": {"status": "pending_confirmation", "index": None}}},
         },
     }
     resolved, unresolved = resolve_lambda_domain_indices(risk, ("ground",), cells)
@@ -570,6 +575,18 @@ def test_only_enabled_domains_need_a_resolved_index():
     resolved, unresolved = resolve_lambda_domain_indices(risk, (), cells)
     assert resolved == {"A": {}, "B": {}}
     assert unresolved == {}
+
+
+def test_flat_legacy_cell_schema_is_missing_not_silently_read():
+    """The historical flat ``cell[domain_id]`` form is never accepted as canonical."""
+
+    cells = ["A"]
+    flat = {"status": "passed", "cells": {
+        "A": {"ground": {"status": "passed", "index": 0.4}},
+    }}
+    resolved, unresolved = resolve_lambda_domain_indices(flat, ("ground",), cells)
+    assert resolved["A"]["ground"] is None
+    assert unresolved["A"] == ["ground:missing_data"]
 
 
 def test_overall_risk_v2_is_never_used_as_a_soft_cost():
@@ -615,8 +632,8 @@ def test_edge_cost_uses_the_mean_of_both_endpoint_domain_indices(tmp_path):
     service.state["grid_risk_v2"] = {
         "status": "passed", "input_fingerprint": "i", "policy_fingerprint": "p",
         "cells": {
-            grid[0]["grid_id"]: {"ground": {"status": "passed", "index": 0.2}},
-            grid[1]["grid_id"]: {"ground": {"status": "passed", "index": 0.8}},
+            grid[0]["grid_id"]: {"domains": {"ground": {"status": "passed", "index": 0.2}}},
+            grid[1]["grid_id"]: {"domains": {"ground": {"status": "passed", "index": 0.8}}},
         },
     }
     collection = run_planner(service, stub_facts(grid))

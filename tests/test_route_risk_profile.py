@@ -159,7 +159,14 @@ class StubAdapter:
 
 def risk_v2(cells, index=0.5, *, indices=None, missing_domains=None, factor_indices=None,
             policy=None, factor_ids=None):
-    """Structural ``grid_risk_v2`` fixture: cell-level domain containers + factor records."""
+    """Structural ``grid_risk_v2`` fixture: the **canonical** nested cell schema.
+
+    Canonical (see ``risk/accessors_v2.py``) is
+    ``cell = {"status":..., "domains": {domain_id: {"index":..., "status":...}},
+    "factors": {factor_id: {...}}}``.  The historical flat ``cell[domain_id]`` form is
+    deliberately *not* produced here any more: it masked the production contract and made
+    the planner fail closed on real ``λ > 0`` data.
+    """
 
     indices = indices or {}
     missing_domains = missing_domains or {}
@@ -169,18 +176,18 @@ def risk_v2(cells, index=0.5, *, indices=None, missing_domains=None, factor_indi
     for cell in cells:
         grid_id = cell["grid_id"]
         value = indices.get(grid_id, index)
-        record = {"status": "passed"}
+        domains = {}
         for domain_id in DOMAIN_IDS:
             if domain_id in (missing_domains.get(grid_id) or set()):
-                record[domain_id] = {
+                domains[domain_id] = {
                     "domain_id": domain_id, "status": "missing_data", "index": None,
                 }
             else:
-                record[domain_id] = {
+                domains[domain_id] = {
                     "domain_id": domain_id, "status": "passed", "index": value,
                 }
         factor_value = factor_indices.get(grid_id, value)
-        record["factors"] = {
+        factors = {
             factor_id: {
                 "factor_id": factor_id, "domain": (
                     "ground" if factor_id == "population_exposure"
@@ -199,7 +206,10 @@ def risk_v2(cells, index=0.5, *, indices=None, missing_domains=None, factor_indi
             }
             for factor_id in factor_ids
         }
-        cell_map[grid_id] = record
+        cell_map[grid_id] = {
+            "grid_id": grid_id, "status": "passed",
+            "domains": domains, "factors": factors,
+        }
     result = {
         "status": "passed", "algorithm_id": "risk-framework-v2-domains", "algorithm_version": "2.0",
         "input_fingerprint": "riskv2-input-fixture", "policy_fingerprint": "riskv2-policy-fixture",
@@ -1041,15 +1051,20 @@ def test_profiler_reads_domain_indices_with_the_planner_rule(tmp_path):
     """The profiler reads domain indices with the exact rule the planner cost uses."""
 
     service, grid = prepare(tmp_path)
+    # Canonical path per domain: nested ``cell["domains"][domain_id]`` (never flat).
     assert DOMAIN_CELL_CONTAINER_KEY == {
-        "ground": "ground", "air_traffic": "air_traffic",
-        "environment_obstacle": "environment_obstacle",
+        "ground": "domains.ground", "air_traffic": "domains.air_traffic",
+        "environment_obstacle": "domains.environment_obstacle",
     }
     candidate = service.layered_route_candidates()["items"][-1]
     indices, _unresolved = resolve_cell_domain_indices(
         service.state["grid_risk_v2"], candidate["grid_path"], DOMAIN_IDS,
     )
     assert set(indices[candidate["grid_path"][0]]) == set(DOMAIN_IDS)
+    assert all(
+        value is not None
+        for values in indices.values() for value in values.values()
+    )
 
 
 def test_build_route_risk_profile_wrapper_matches_the_profiler(tmp_path):

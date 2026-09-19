@@ -38,12 +38,10 @@ DOMAIN_LABELS = {
     "air_traffic": "Air / Traffic（空中交通暴露）",
     "environment_obstacle": "Environment / Obstacle（工程环境-障碍物）",
 }
-#: ``grid_risk_v2`` cell key per domain.
-DOMAIN_RISK_CELL_KEY = {
-    "ground": "ground",
-    "air_traffic": "air_traffic",
-    "environment_obstacle": "environment_obstacle",
-}
+#: ``grid_risk_v2`` cell 的 canonical domain 容器是 nested ``cell["domains"][domain_id]``。
+#: 读取规则**只有一份**实现：``cns_planner.risk.accessors_v2``（planner cost / profiler /
+#: profile fingerprint 共用）。本契约模块不再声明任何 flat ``cell[domain_id]`` 映射。
+DOMAIN_RISK_CELL_CONTAINER_KEY = "domains"
 
 #: Feasibility verdict vocabulary of the layer mask.
 FEASIBILITY_STATUSES = ("feasible", "blocked", "unknown")
@@ -797,7 +795,7 @@ CANDIDATE_FINGERPRINT_COMPONENTS = (
 __all__ = [
     "CANDIDATE_FINGERPRINT_COMPONENTS", "CANDIDATE_SEMANTICS", "CANDIDATE_STATUSES",
     "COARSE_ENVELOPE_SEMANTICS", "COST_DOMAIN_IDS", "DOMAIN_LABELS",
-    "DOMAIN_RISK_CELL_KEY", "FEASIBILITY_POLICY_PENDING_SOURCE", "FEASIBILITY_REASON_CODES",
+    "DOMAIN_RISK_CELL_CONTAINER_KEY", "FEASIBILITY_POLICY_PENDING_SOURCE", "FEASIBILITY_REASON_CODES",
     "FEASIBILITY_STATUSES", "POLICY_SEMANTICS", "SCHEMA_VERSION",
     "BUILDING_CLEARANCE_PENDING_SOURCE", "COST_POLICY_PENDING_SOURCE",
     "REQUEST_PENDING_SOURCE",
