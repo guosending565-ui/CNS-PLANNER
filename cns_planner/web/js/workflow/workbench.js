@@ -199,6 +199,9 @@ function button(className,label,dataset){
   node.type='button';
   node.className=className||'';
   node.textContent=label;
+  // 基础可访问性：一级/二级导航按钮都是 tab，选中态由 aria-selected 表达。
+  // 这里只补属性，不改变任何导航逻辑与 class 语义。
+  node.setAttribute('role','tab');
   for(const [key,value] of Object.entries(dataset||{}))node.dataset[key]=value;
   return node;
 }
@@ -356,6 +359,8 @@ export function createWorkbench({getState,setState}={}){
       for(const {group,node} of panelNodes()){
         const panelActive=group===state.tab;
         node.classList.toggle(PANEL_ACTIVE,panelActive);
+        // ARIA：只有当前面板是 tabpanel，隐藏面板不冒充 tabpanel。
+        if(panelActive)node.setAttribute('role','tabpanel');else node.removeAttribute('role');
         const list=segmentNodes(node);
         if(!list.length)continue; // 没有二级分段的面板：内容始终可见
         // 非当前标签下的分段全部收起，保证任何时候只有 1 个 .wb-seg-active
@@ -373,7 +378,9 @@ export function createWorkbench({getState,setState}={}){
       const nodes=[];
       for(const tab of WORKBENCH_TABS){
         if(!available.has(tab.id))continue;
-        nodes.push(button(tab.id===state.tab?'tab-active':'',tab.label,{'wbTab':tab.id}));
+        const node=button(tab.id===state.tab?'tab-active':'',tab.label,{'wbTab':tab.id});
+        node.setAttribute('aria-selected',tab.id===state.tab?'true':'false');
+        nodes.push(node);
       }
       container.replaceChildren(...nodes);
     },
@@ -391,8 +398,12 @@ export function createWorkbench({getState,setState}={}){
       const host=document.createElement('div');
       host.className='segmented';
       host.dataset.segSet=state.tab;
+      // tablist 与 tab 之间的布局容器不承担语义，避免打断 tablist 的拥有关系
+      host.setAttribute('role','presentation');
       for(const segment of list){
-        host.append(button(segment.id===active?'seg-active':'',segment.label,{'wbSeg':segment.id,'wbSegSet':state.tab}));
+        const node=button(segment.id===active?'seg-active':'',segment.label,{'wbSeg':segment.id,'wbSegSet':state.tab});
+        node.setAttribute('aria-selected',segment.id===active?'true':'false');
+        host.append(node);
       }
       container.append(host);
     },

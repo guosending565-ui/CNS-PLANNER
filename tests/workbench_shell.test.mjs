@@ -18,7 +18,7 @@ import {render as renderStep1} from '../cns_planner/web/js/workflow/step01_proje
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
 import {render as renderStep3} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep4} from '../cns_planner/web/js/workflow/step04_operation.js';
-import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
+import {render as renderStep5,bind as bindStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6} from '../cns_planner/web/js/workflow/step06_review.js';
 import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
 import {renderWorkflowSteps} from '../cns_planner/web/js/workflow/steps.js';
@@ -1007,6 +1007,161 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
     // 按钮保留：正常两列（窄屏换行由 @container 负责）
     assert.ok(document.getElementById('saveDevices'),'save devices stays mounted');
     assert.ok(document.getElementById('planCoverage'),'run site planning stays mounted');
+  });
+});
+
+// ---- Step05：任务式二级工作台 ------------------------------------------------
+//
+// Step05 曾经是三个超长页面。重组后每个一级标签下都是一组任务分段，
+// 这一组断言锁定"任务可切换、始终只有一个分段可见、控件与 bind 契约不变"。
+
+const STEP05_SEGMENTS={
+  operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
+  result:[['cns-res-coverage','基础覆盖'],['cns-res-capability','3D与能力'],['cns-res-corridor','服务走廊'],['cns-res-gap','规划目标与缺口']],
+  advanced:[['cns-adv-site','走廊站址优化'],['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与 Gap V2'],['cns-adv-closedloop','Legacy与闭环']]
+};
+
+/** Step05 的关键控件：既有业务 id，重组后必须一个不少。 */
+const STEP05_CONTROLS=[
+  'saveDevices','planCoverage','existing_cnsPath','browseExisting','importExisting',
+  'candidate_sitesPath','browseCandidates','importCandidates','deriveCandidates',
+  'analyzeGaps','coverage3dSpacing','evaluateCoverage3d','evaluateServiceCapability',
+  'evaluateCorridor','planningObjectiveRoute','planningObjectiveSubsystem',
+  'objectiveMinSatisfied','objectiveMaxDeficit','objectiveMaxUnknown','objectiveMinRedundancy',
+  'objectiveMaxContinuous','planningObjectiveSource','planningObjectiveConfirmed',
+  'savePlanningObjectives','evaluateCorridorGap','corridorSitePolicyConfirmed',
+  'evaluateCorridorSitePlan','evaluateServiceTimeline','evaluateProtectionEnvelope',
+  'gapV2Protection','evaluateGapV2','sitePolicyConfirmed','evaluateSitePlan',
+  'evaluateClosedLoop','applyClosedLoop','nextStep'
+];
+
+test('step 05 declares the documented task segments',()=>{
+  const html=renderStep5(stepContext());
+  const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
+  const expected=Object.values(STEP05_SEGMENTS).flat().map(item=>item[0]);
+  assert.deepEqual(segs.slice().sort(),expected.slice().sort(),'step 05 segment ids');
+  assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
+  assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
+  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');
+  // 业务语言标签逐条锁定：段按钮的名称来自分段自身，而不是外部 metadata
+  for(const [id,label] of Object.values(STEP05_SEGMENTS).flat()){
+    assert.ok(html.includes('data-seg-name="'+id+'" data-seg-label="'+label+'"'),`segment ${id} keeps its business label`);
+  }
+});
+
+test('step 05 task navigation keeps exactly one segment visible and every control mounted',()=>{
+  withStubDom(document=>{
+    const store={step:5,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep5,store,5,'CNS规划');
+
+    // 入口：操作只显示"设备与参数"，其他任务不出现在首屏
+    assertOnlyVisible(root,'operate','cns-op-devices');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),STEP05_SEGMENTS.operate.map(item=>item[0]));
+    assert.deepEqual(segButtons(document).map(node=>node.textContent),STEP05_SEGMENTS.operate.map(item=>item[1]));
+
+    for(const [tab,segments] of Object.entries(STEP05_SEGMENTS)){
+      clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab===tab));
+      assert.equal(root.dataset.tab,tab);
+      assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),segments.map(item=>item[0]),`${tab} segment buttons`);
+      assert.deepEqual(segButtons(document).map(node=>node.textContent),segments.map(item=>item[1]),`${tab} segment labels`);
+      for(const [id] of segments){
+        clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg===id));
+        assert.equal(root.dataset.seg,id,`clicking ${id} selects it`);
+        assert.equal(store.segs[tab],id,`clicking ${id} stores it under ${tab}`);
+        // 每次严格只有 1 个分段可见：同组其他分段与别的一级标签都不能串显
+        assertOnlyVisible(root,tab,id);
+      }
+    }
+
+    // 11 个分段始终挂载 DOM（3 操作 + 4 结果 + 4 高级），只切 .wb-seg-active
+    const expectedSegments=Object.values(STEP05_SEGMENTS).flat().map(item=>item[0]);
+    assert.deepEqual(findAll(root,'[data-seg-name]').map(node=>node.dataset.segName).sort(),expectedSegments.slice().sort(),'every segment stays mounted');
+    // 全部原关键控件仍然存在，并且落在正常正文里（不是 .wb-section-head）
+    const missing=STEP05_CONTROLS.filter(id=>!document.getElementById(id));
+    assert.deepEqual(missing,[],`step 05 controls stay mounted: ${missing.join(', ')}`);
+    for(const id of STEP05_CONTROLS){
+      if(id==='nextStep')continue; // 步骤级"下一步"始终在所有面板之外，不属于任何 segment
+      const node=document.getElementById(id);
+      assert.equal(node.closest('.wb-section-head'),null,`#${id} must not sit inside .wb-section-head`);
+      assert.ok(node.closest('.wb-section'),`#${id} must sit inside a .wb-section body`);
+    }
+    const ids=findAll(root,'[id]').map(node=>node.id).filter(Boolean);
+    assert.equal(new Set(ids).size,ids.length,`step 05 duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+  });
+});
+
+test('step 05 bind() resolves every control it queries',()=>{
+  withStubDom(document=>{
+    const store={step:5,tab:'operate',segs:{},scroll:0};
+    mountRealStep(renderStep5,store,5,'CNS规划');
+    const c={
+      flow:()=>({devices:[],cns_planning_objectives:{routes:{}},corridor_site_planning_policy:{},site_planning_policy:{},closed_loop_assessment:{}}),
+      mutate:()=>{},resourceAction:()=>{},setStep:()=>{},openBrowser:()=>{},
+      $:id=>document.getElementById(id),actionButton:()=>{}
+    };
+    // 无条件访问的控件若缺席，这里会直接抛 TypeError
+    bindStep5(c);
+    assert.ok(document.getElementById('nextStep').onclick,'nextStep stays wired');
+  });
+});
+
+test('step 05 keeps the chosen task after a re-render and returns to the top on a switch',()=>{
+  withStubDom(document=>{
+    const store={step:5,tab:'advanced',segs:{advanced:'cns-adv-gapv2'},scroll:0};
+    const {controller,root}=mountRealStep(renderStep5,store,5,'CNS规划');
+    assert.equal(root.dataset.tab,'advanced','the stored tab is restored');
+    assert.equal(root.dataset.seg,'cns-adv-gapv2','the stored segment is restored');
+    assertOnlyVisible(root,'advanced','cns-adv-gapv2');
+
+    // mutation / renderWorkflow() 重新挂载：保持当前segment 与滚动位置
+    const body=document.getElementById('workbenchBody');
+    body.scrollHeight=1600;body.clientHeight=400;
+    body.scrollTop=360;store.scroll=360;
+    const remounted=renderWorkflowSteps({step:{render:renderStep5},context:stepContext()});
+    controller.mount({root:remounted,step:{render:renderStep5}});
+    body.scrollTop=Math.min(store.scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+    assert.equal(remounted.dataset.seg,'cns-adv-gapv2','a re-render keeps the current task');
+    assert.equal(body.scrollTop,360,'a re-render keeps the scroll position');
+    assertOnlyVisible(remounted,'advanced','cns-adv-gapv2');
+
+    // 显式切换一级/二级：回到该任务顶部
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assert.equal(remounted.dataset.seg,'cns-res-coverage','a tab switch falls back to its first task');
+    assert.equal(body.scrollTop,0,'switching a tab returns to the top');
+    assertOnlyVisible(remounted,'result','cns-res-coverage');
+    body.scrollTop=280;store.scroll=280;
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-gap'));
+    assert.equal(body.scrollTop,0,'switching a segment returns to the top');
+    assert.equal(store.scroll,0,'switching a segment resets the stored scroll');
+    assertOnlyVisible(remounted,'result','cns-res-gap');
+  });
+});
+
+test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
+  const html=readFileSync(new URL('../cns_planner/web/index.html',import.meta.url),'utf8');
+  assert.match(html,/id="workbenchTabs" role="tablist"/,'the first-level navigation is a tablist');
+  assert.match(html,/id="workbenchSegs" role="tablist"/,'the second-level navigation is a tablist');
+  withStubDom(document=>{
+    const store={step:5,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep5,store,5,'CNS规划');
+    assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('role')),['tab','tab','tab']);
+    assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false']);
+    assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),'tabpanel');
+    assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),undefined,'a hidden panel must not claim tabpanel');
+    // tablist 与 tab 之间的布局层不承担语义
+    const group=document.getElementById('workbenchSegs').children[0];
+    assert.equal(group.getAttribute('role'),'presentation');
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('role')),['tab','tab','tab']);
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false']);
+
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['false','true','false']);
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false']);
+    assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),'tabpanel');
+    assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),undefined);
+
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false']);
   });
 });
 
