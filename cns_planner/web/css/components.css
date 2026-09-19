@@ -550,6 +550,18 @@ td:first-child,th:first-child{padding-left:var(--sp-6)}
 .variant-grid{display:grid;gap:var(--sp-4);margin:var(--sp-5) 0}
 .plan-variant{border-left-color:var(--line-strong)}
 .plan-variant.selected{border-left-color:var(--brand);background:var(--brand-softer)}
+/* 状态总览的键值行：右侧取值右对齐，多行也不会挤坏标签 */
+.review-row>.review-value{text-align:right;min-width:0}
+.review-row>.review-value small{margin-top:var(--sp-2);text-align:right}
+/* 逐航路紧凑比较卡（392px 工作台内一层读完一个 route × subsystem） */
+.comparison-card{margin:var(--sp-4) 0}
+.comparison-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-3)}
+.comparison-body{display:grid;gap:var(--sp-3);margin-top:var(--sp-3)}
+/* 比较条目：满足/缺口/未知三元组与缺口长度各自独立 */
+.comparison-item{padding:var(--sp-3) var(--sp-4);border:1px solid var(--line-soft);border-radius:var(--r-sm);background:var(--bg-surface)}
+.comparison-item>span{font-size:var(--fs-micro);color:var(--ink-faint)}
+.comparison-item>b{display:block;font-size:var(--fs-md);color:var(--brand-deep);font-weight:600}
+.comparison-item>small{display:block;color:var(--ink-muted);font-size:var(--fs-micro)}
 
 .risk-review+.risk-review{margin-top:var(--sp-4)}
 .project-buttons{margin-top:var(--sp-2)}

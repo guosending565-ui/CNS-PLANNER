@@ -19,7 +19,7 @@ import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_works
 import {render as renderStep3} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep4,bind as bindStep4} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep5,bind as bindStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
-import {render as renderStep6} from '../cns_planner/web/js/workflow/step06_review.js';
+import {render as renderStep6,bind as bindStep6} from '../cns_planner/web/js/workflow/step06_review.js';
 import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
 import {renderWorkflowSteps} from '../cns_planner/web/js/workflow/steps.js';
 
@@ -1378,6 +1378,384 @@ test('step 04 keeps the chosen task after a re-render and returns to the top on 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
     assert.equal(remounted.dataset.seg,'run-adv-safety','a previously chosen task is restored');
     assertOnlyVisible(remounted,'advanced','run-adv-safety');
+  });
+});
+
+// ---- Step06：评审 / 决策 / 交付工作台 ---------------------------------------
+//
+// Step06 曾经是三个"超长页面"。重组后每个一级标签下都是一组任务分段，
+// 这一组断言锁定"任务可切换、始终只有一个分段可见、控件与 bind 契约不变"，
+// 并且锁定三条业务边界：
+//  - Select ≠ Confirm ≠ Apply：confirmed 前 applyPlan 必须 disabled；
+//  - 比较卡与完整矩阵来自同一份 comparison_matrix，不引入 overall score / rank；
+//  - 报告 stale 与"无 plan 不能生成正式报告"的既有语义不变。
+
+const STEP06_SEGMENTS={
+  operate:[['review-op-overview','评审概览'],['review-op-compare','方案比较'],['review-op-edit','方案编辑'],['review-op-confirm','确认与应用']],
+  result:[['review-res-status','状态总览'],['review-res-report','报告与交付']],
+  advanced:[['review-adv-requirement','需求依据'],['review-adv-proposal','布站提案证据']]
+};
+
+/** Step06 的关键控件：既有业务 id，重组后必须一个不少。 */
+const STEP06_CONTROLS=[
+  // 操作 · 评审概览 / 方案比较
+  'initializePlanReview','evaluatePlanVariant',
+  // 操作 · 方案编辑
+  'variantInclude','variantExclude','variantName','createPlanVariant',
+  // 操作 · 确认与应用
+  'confirmWithoutObjectives','planDecisionReason','confirmPlan','applyPlan',
+  // 结果 · 报告与交付
+  'previewPlanningReport','generatePlanningReport',
+  'downloadReportHtml','downloadReportPdf','downloadReportPackage','saveAll'
+];
+
+/** 一份完整的 Step06 flow 替身：只包含 render 真正读取的字段。 */
+function step06Flow(overrides={}){
+  return {
+    project:{name:'测试项目'},
+    workspace:null,
+    operational_routes:[],
+    aircraft:null,
+    rules:null,
+    coverage:null,
+    review:{risks:{},overall_status:'pending_confirmation',overall_pass:false},
+    result_statuses:{},
+    cns_plan_review:{},
+    confirmed_cns_plan:{},
+    cns_planning_reports:{},
+    ...overrides
+  };
+}
+
+/** 与 step06_review.js 的 number() 一致：有限数保留一位小数，否则 —。 */
+function numberField(value){return Number.isFinite(value)?value.toFixed(1):'—';}
+
+/** 一个已评价的方案：comparison_matrix 同时喂给紧凑卡与完整矩阵。 */
+const STEP06_MATRIX=[
+  {route_id:'R0001',subsystem:'C',objective_status:'objectives_met',service:{voxel_counts:{satisfied:12,confirmed_deficit:0,unknown:1}},redundancy:{voxel_counts:{satisfied:9,confirmed_deficit:2,unknown:0}},total_confirmed_deficit_projection_m:120.5,max_continuous_deficit_projection_m:40,unknown_voxel_ids:['V-1']},
+  {route_id:'R0001',subsystem:'N',objective_status:'objectives_unknown',service:{voxel_counts:{satisfied:5,confirmed_deficit:3,unknown:4}},redundancy:{voxel_counts:{satisfied:6,confirmed_deficit:1,unknown:2}},total_confirmed_deficit_projection_m:300,max_continuous_deficit_projection_m:150.25,unknown_voxel_ids:['V-2','V-3']}
+];
+const STEP06_VARIANT={
+  variant_id:'PV-1',name:'Baseline',source:'baseline',selected_action_ids:['A1'],
+  status:'evaluated',evaluation:{
+    confirmation_gate:{status:'ready_for_confirmation'},comparison_matrix:STEP06_MATRIX,
+    action_summary:{explicit_costs_by_unit:{},reuse_class_counts:{}}
+  }
+};
+function step06ReviewFlow(overrides={}){
+  return step06Flow({
+    cns_plan_review:{status:'current',selected_variant_id:'PV-1',variants:[STEP06_VARIANT]},
+    ...overrides
+  });
+}
+
+test('step 06 declares the documented task segments',()=>{
+  const html=renderStep6(stepContext());
+  const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
+  const expected=Object.values(STEP06_SEGMENTS).flat().map(item=>item[0]);
+  assert.deepEqual(segs.slice().sort(),expected.slice().sort(),'step 06 segment ids');
+  assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
+  assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
+  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');
+  for(const [id,label] of Object.values(STEP06_SEGMENTS).flat()){
+    assert.ok(html.includes('data-seg-name="'+id+'" data-seg-label="'+label+'"'),`segment ${id} keeps its business label`);
+    // 第一视觉层不把工程编号（P 编号 / 算法 id）当导航名称
+    assert.doesNotMatch(label,/^P\d|_v\d/,`segment ${id} must use business language`);
+  }
+  // 操作 4 段 / 结果 2 段 / 高级 2 段
+  assert.deepEqual(STEP06_SEGMENTS.operate.map(item=>item[0]),['review-op-overview','review-op-compare','review-op-edit','review-op-confirm']);
+  assert.deepEqual(STEP06_SEGMENTS.result.map(item=>item[0]),['review-res-status','review-res-report']);
+  assert.deepEqual(STEP06_SEGMENTS.advanced.map(item=>item[0]),['review-adv-requirement','review-adv-proposal']);
+});
+
+test('step 06 task navigation keeps exactly one segment visible and every control mounted',()=>{
+  withStubDom(document=>{
+    const context=stepContext();
+    context.flow=step06ReviewFlow();
+    const store={step:6,tab:'operate',segs:{},scroll:0};
+    const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+    const root=renderWorkflowSteps({step:{render:renderStep6},context});
+    controller.mount({root,step:{number:6,title:'方案评审',note:''}});
+
+    // 入口：操作只显示"评审概览"
+    assertOnlyVisible(root,'operate','review-op-overview');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),STEP06_SEGMENTS.operate.map(item=>item[0]));
+    assert.deepEqual(segButtons(document).map(node=>node.textContent),STEP06_SEGMENTS.operate.map(item=>item[1]));
+
+    for(const [tab,segments] of Object.entries(STEP06_SEGMENTS)){
+      clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab===tab));
+      assert.equal(root.dataset.tab,tab);
+      assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),segments.map(item=>item[0]),`${tab} segment buttons`);
+      assert.deepEqual(segButtons(document).map(node=>node.textContent),segments.map(item=>item[1]),`${tab} segment labels`);
+      for(const [id] of segments){
+        clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg===id));
+        assert.equal(root.dataset.seg,id,`clicking ${id} selects it`);
+        assert.equal(store.segs[tab],id,`clicking ${id} stores it under ${tab}`);
+        // 每次严格只有 1 个分段可见：同组其他分段与别的一级标签都不能串显
+        assertOnlyVisible(root,tab,id);
+      }
+    }
+
+    // 8 个分段始终挂载 DOM（4 操作 + 2 结果 + 2 高级），只切 .wb-seg-active
+    const expectedSegments=Object.values(STEP06_SEGMENTS).flat().map(item=>item[0]);
+    assert.deepEqual(findAll(root,'[data-seg-name]').map(node=>node.dataset.segName).sort(),expectedSegments.slice().sort(),'every segment stays mounted');
+    // 全部原关键控件仍然存在，并且落在正常正文里（不是 .wb-section-head）
+    const missing=STEP06_CONTROLS.filter(id=>!document.getElementById(id));
+    assert.deepEqual(missing,[],`step 06 controls stay mounted: ${missing.join(', ')}`);
+    for(const id of STEP06_CONTROLS){
+      const node=document.getElementById(id);
+      assert.equal(node.closest('.wb-section-head'),null,`#${id} must not sit inside .wb-section-head`);
+      assert.ok(node.closest('.wb-section'),`#${id} must sit inside a .wb-section body`);
+    }
+    const ids=findAll(root,'[id]').map(node=>node.id).filter(Boolean);
+    assert.equal(new Set(ids).size,ids.length,`step 06 duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+    // 导出链接与两个 GeoJSON 端点原样保留
+    const links=findAll(root,'.button-link').map(node=>node.attributes.href);
+    for(const path of ['/api/export/project','/api/export/routes','/api/export/sites']){
+      assert.ok(links.includes(path),`step 06 keeps the ${path} export link`);
+    }
+  });
+});
+
+test('step 06 comparison cards and the full objective matrix share one matrix source',()=>{
+  withStubDom(document=>{
+    const context=stepContext();
+    context.flow=step06ReviewFlow();
+    const store={step:6,tab:'operate',segs:{operate:'review-op-compare'},scroll:0};
+    const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+    const root=renderWorkflowSteps({step:{render:renderStep6},context});
+    controller.mount({root,step:{number:6,title:'方案评审',note:''}});
+    assertOnlyVisible(root,'operate','review-op-compare');
+
+    // 第一视觉层：每个 route × subsystem 一张紧凑比较卡
+    const segment=findByDataset(root,'segName','review-op-compare');
+    const cards=findAll(segment,'.comparison-card');
+    assert.equal(cards.length,STEP06_MATRIX.length,'one comparison card per comparison_matrix row');
+    // 桩 DOM 只记录节点自身的文本，因此逐节点取文本（浏览器 textContent 会递归聚合）
+    const itemText=card=>findAll(card,'.comparison-item').flatMap(item=>findAll(item,'span').concat(findAll(item,'b'),findAll(item,'small')).map(node=>node.textContent));
+    for(const [index,row] of STEP06_MATRIX.entries()){
+      const card=cards[index];
+      const head=findAll(card,'b')[0].textContent;
+      assert.ok(head.includes(row.route_id),`comparison card ${index} shows route ${row.route_id}`);
+      assert.ok(head.includes(row.subsystem),`comparison card ${index} shows subsystem ${row.subsystem}`);
+      const items=itemText(card);
+      assert.equal(items.length,6,'each card keeps label + triple + note for service and redundancy');
+      // 每张卡都显式标注 满足/缺口/未知 两个维度，不合并成单一分数
+      assert.ok(items.includes('服务 满足/缺口/未知'),'the card labels the service satisfied/deficit/unknown triple');
+      assert.ok(items.includes('冗余 满足/缺口/未知'),'the card labels the redundancy satisfied/deficit/unknown triple');
+      const service=row.service.voxel_counts;
+      assert.ok(items.includes([service.satisfied||0,service.confirmed_deficit||0,service.unknown||0].join('/')),`card ${index} prints the raw service counts`);
+      const redundancy=row.redundancy.voxel_counts;
+      assert.ok(items.includes([redundancy.satisfied||0,redundancy.confirmed_deficit||0,redundancy.unknown||0].join('/')),`card ${index} prints the raw redundancy counts`);
+      const notes=items.join(' | ');
+      assert.ok(notes.includes(numberField(row.total_confirmed_deficit_projection_m)),`card ${index} shows the total deficit projection`);
+      assert.ok(notes.includes(numberField(row.max_continuous_deficit_projection_m)),`card ${index} shows the max continuous deficit`);
+      assert.ok(notes.includes(String((row.unknown_voxel_ids||[]).length)),`card ${index} shows the unknown voxel count`);
+    }
+
+    // 完整 Objective Comparison Matrix 仍然保留，收进 wbDisclosure 的 <details>
+    assert.equal(findAll(segment,'.algorithm-detail').length,1,'the full matrix lives in exactly one disclosure');
+    const headers=findAll(segment,'th').map(node=>node.textContent);
+    assert.deepEqual(headers,['航路','C/N/S','规划目标','服务 满足/缺口/未知','冗余 满足/缺口/未知','缺口总长 m','最大连续缺口 m','证据不足体素']);
+    const rows=findAll(segment,'tr');
+    assert.equal(rows.length,STEP06_MATRIX.length+1,'header row plus one row per matrix row');
+    const headerCells=findAll(rows[0],'th').length;
+    for(const [index,row] of STEP06_MATRIX.entries()){
+      const cells=findAll(rows[index+1],'td').map(node=>node.textContent);
+      assert.equal(cells.length,headerCells,'the full matrix keeps all eight columns');
+      assert.equal(cells[0],row.route_id,'the full matrix shows the same route id');
+      assert.equal(cells[1],row.subsystem,'the full matrix shows the same subsystem');
+      assert.equal(cells[3],[row.service.voxel_counts.satisfied||0,row.service.voxel_counts.confirmed_deficit||0,row.service.voxel_counts.unknown||0].join('/'),'the full matrix prints the same service counts');
+      assert.equal(cells[5],numberField(row.total_confirmed_deficit_projection_m),'the full matrix prints the same total deficit');
+      assert.equal(cells[7],String((row.unknown_voxel_ids||[]).length),'the full matrix prints the same unknown voxel count');
+    }
+    // 同一份数据：紧凑卡与完整矩阵都只来自 selected.evaluation.comparison_matrix
+    const source=readFileSync(new URL('../cns_planner/web/js/workflow/step06_review.js',import.meta.url),'utf8');
+    assert.equal((source.match(/comparison_matrix/g)||[]).length,2,'both surfaces read the same comparison_matrix field');
+    assert.doesNotMatch(source,/automatic_score|overall_score|automatic_rank|winner|ranking/i,'no hidden score/rank/winner logic may be introduced');
+  });
+});
+
+test('step 06 keeps Select, Confirm and Apply separate and disabled before the gate opens',()=>{
+  withStubDom(document=>{
+    const store={step:6,tab:'operate',segs:{operate:'review-op-confirm'},scroll:0};
+    const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+    // A. 未初始化：没有可选方案，Confirm/Apply 都不可用
+    const initial=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow:step06Flow()}});
+    controller.mount({root:initial,step:{number:6,title:'方案评审',note:''}});
+    const disabled=id=>document.getElementById(id).attributes.disabled!==undefined;
+    assert.equal(disabled('applyPlan'),true,'applyPlan is disabled without a confirmed plan');
+    assert.equal(document.getElementById('applyPlan').dataset.applyGate,'blocked');
+    assert.equal(disabled('confirmPlan'),true,'confirmPlan is disabled without a selected variant');
+    assert.equal(document.getElementById('confirmPlan').dataset.gate,'not_evaluated');
+    assert.equal(disabled('createPlanVariant'),true,'no variant can be cloned before one is selected');
+
+    // B. 已选择且门禁 ready：Confirm 可用，但还没确认 → Apply 仍不可用
+    const selected=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow:step06ReviewFlow()}});
+    controller.mount({root:selected,step:{number:6,title:'方案评审',note:''}});
+    assert.equal(disabled('confirmPlan'),false,'confirmPlan opens when the gate is ready_for_confirmation');
+    assert.equal(disabled('createPlanVariant'),false,'a user variant can be cloned from the selection');
+    assert.equal(disabled('applyPlan'),true,'confirm and apply must not be treated as equivalent');
+    assert.equal(document.getElementById('confirmPlan').dataset.gate,'ready_for_confirmation');
+    // 知情确认必须由用户显式勾选：系统从不预勾选，也不替用户确认
+    assert.equal(document.getElementById('confirmWithoutObjectives').attributes.checked,undefined,'the acknowledgement is never pre-checked');
+
+    // B2. 未配置规划目标：勾选框可用，但确认理由未填前不预勾选
+    const ackFlow=step06ReviewFlow({
+      cns_plan_review:{status:'current',selected_variant_id:'PV-1',variants:[{...STEP06_VARIANT,evaluation:{
+        confirmation_gate:{status:'objectives_not_configured',requires_confirm_without_objectives_acknowledgement:true},
+        comparison_matrix:STEP06_MATRIX,action_summary:{explicit_costs_by_unit:{}}
+      }}]}
+    });
+    const ack=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow:ackFlow}});
+    controller.mount({root:ack,step:{number:6,title:'方案评审',note:''}});
+    assert.equal(disabled('confirmWithoutObjectives'),false,'the acknowledgement opens when the gate demands it');
+    assert.equal(disabled('confirmPlan'),false,'the acknowledgement path may still be confirmed');
+    assert.equal(document.getElementById('confirmPlan').dataset.gate,'objectives_not_configured');
+
+    // C. confirmed + current：Apply 打开，且从不与 Confirm 并排
+    const confirmedFlow=step06ReviewFlow({
+      confirmed_cns_plan:{status:'confirmed',plan_id:'CP-1',current_applicability:'current',application:{status:'not_applied'}}
+    });
+    const confirmed=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow:confirmedFlow}});
+    controller.mount({root:confirmed,step:{number:6,title:'方案评审',note:''}});
+    assert.equal(disabled('applyPlan'),false,'a current confirmed plan may be applied');
+    assert.equal(document.getElementById('applyPlan').dataset.applyGate,'ready');
+    const confirmRow=document.getElementById('confirmPlan').parentNode;
+    const applyRow=document.getElementById('applyPlan').parentNode;
+    assert.notEqual(confirmRow,applyRow,'Confirm and Apply must not share one button container');
+    assert.ok(confirmRow.classList.contains('review-block'),'Confirm sits in its own step block');
+    assert.ok(applyRow.classList.contains('review-block'),'Apply sits in its own step block');
+  });
+});
+
+test('step 06 report gate, stale semantics and bind contract stay unchanged',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step06_review.js',import.meta.url),'utf8');
+  // 端点与动作名保持原样
+  for(const path of ['/api/cns-plan-review/initialize','/api/cns-plan-review/evaluate','/api/cns-plan-review/select',
+    '/api/cns-plan-review/variant','/api/cns-plan-review/confirm','/api/cns-plan-review/apply',
+    '/api/cns-planning-report/generate']){
+    assert.ok(source.includes(path),`step 06 must keep the ${path} contract`);
+  }
+  // 报告生成条件与 stale 语义不变
+  assert.match(source,/\['confirmed','applied'\]\.includes\(confirmed\.status\)/,'only a confirmed/applied plan may generate a formal report');
+  assert.match(source,/stale_current_project/,'the stale report state keeps its own marker');
+  assert.match(source,/该报告对应旧项目状态，可继续下载/,'a stale report stays downloadable and is clearly flagged');
+
+  withStubDom(document=>{
+    const store={step:6,tab:'result',segs:{result:'review-res-report'},scroll:0};
+    const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+    const disabled=id=>document.getElementById(id).attributes.disabled!==undefined;
+    // 无 plan：只能预览草稿，正式报告 disabled
+    const empty=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow:step06Flow()}});
+    controller.mount({root:empty,step:{number:6,title:'方案评审',note:''}});
+    assert.equal(disabled('generatePlanningReport'),true,'a formal report needs a confirmed plan');
+    assert.equal(document.getElementById('generatePlanningReport').dataset.reportGate,'blocked');
+    assert.equal(disabled('previewPlanningReport'),false,'the draft preview stays available without a plan');
+    assert.equal(disabled('downloadReportHtml'),true,'there is nothing to download before a report exists');
+
+    // stale 报告：仍可下载，不自动覆盖
+    const staleFlow=step06Flow({
+      confirmed_cns_plan:{status:'confirmed',plan_id:'CP-1',current_applicability:'stale',application:{status:'not_applied'}},
+      cns_planning_reports:{status:'stale',active_report_id:'RPT-1',records:[{report_id:'RPT-1',current_applicability:'stale_current_project',generated_at:'2026-01-01T00:00:00'}]}
+    });
+    const stale=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow:staleFlow}});
+    controller.mount({root:stale,step:{number:6,title:'方案评审',note:''}});
+    assert.equal(disabled('downloadReportHtml'),false,'a stale report stays downloadable');
+    assert.equal(disabled('downloadReportPdf'),false,'a stale report keeps its PDF download');
+    assert.equal(disabled('downloadReportPackage'),false,'a stale report keeps its package download');
+    const reportSegment=findByDataset(stale,'segName','review-res-report');
+    const flagged=findAll(reportSegment,'.inline-error').some(node=>node.textContent.includes('该报告对应旧项目状态'));
+    assert.ok(flagged,'a stale report keeps its explicit stale warning');
+
+    // bind() 只查询真实挂载的控件：无条件读取若缺席会抛 TypeError
+    const registered=[];
+    const c={
+      flow:()=>step06ReviewFlow(),
+      mutate:()=>{},resourceAction:()=>{},
+      $:id=>document.getElementById(id),
+      actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;}
+    };
+    bindStep6(c);
+    assert.deepEqual(registered,['saveAll','initializePlanReview','evaluatePlanVariant','createPlanVariant','confirmPlan','applyPlan',
+      'previewPlanningReport','generatePlanningReport','downloadReportHtml','downloadReportPdf','downloadReportPackage']);
+    for(const button of document.querySelectorAll('.selectPlanVariant'))assert.ok(button.onclick,'every variant card keeps its select handler');
+  });
+});
+
+test('step 06 status overview groups the existing statuses without recomputing them',()=>{
+  withStubDom(document=>{
+    const flow=step06ReviewFlow({
+      confirmed_cns_plan:{status:'confirmed',plan_id:'CP-1',current_applicability:'current',application:{status:'not_applied'}},
+      result_statuses:{routes:'passed',coverage:'stale',cns_corridor_gap_assessment:'passed',cns_plan_review:'passed',report:'stale'},
+      review:{risks:{environment:{status:'passed'},technical:{status:'failed'},life:{status:'not_calculated'},property:{status:'passed'}},overall_status:'pending_confirmation',overall_pass:false}
+    });
+    const store={step:6,tab:'result',segs:{result:'review-res-status'},scroll:0};
+    const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+    const root=renderWorkflowSteps({step:{render:renderStep6},context:{state:baseState(),flow}});
+    controller.mount({root,step:{number:6,title:'方案评审',note:''}});
+    assertOnlyVisible(root,'result','review-res-status');
+    const segment=findByDataset(root,'segName','review-res-status');
+    // 按业务组展示：规划输入 / CNS 规划 / 风险 / 方案与交付 + 总体状态
+    const titles=[...findAll(segment,'h3'),...findAll(segment,'b')].map(node=>node.textContent);
+    for(const group of ['规划输入','CNS 规划','风险','方案与交付','总体状态']){
+      assert.ok(titles.includes(group),`status overview keeps the "${group}" group`);
+    }
+    // 只映射现有 status：取值原样透出，不重新计算任何结论
+    const rows=findAll(segment,'.review-row').map(row=>({
+      label:findAll(row,'span')[0].textContent,
+      badge:findAll(row,'span.flow-badge').length?findAll(row,'span.flow-badge')[0].textContent:'',
+      value:findAll(row,'span')[1]?findAll(row,'span')[1].textContent:''
+    }));
+    const valueOf=label=>rows.find(row=>row.label===label);
+    assert.equal(valueOf('运行航路').badge,'通过','a passed result status is mapped as-is');
+    assert.equal(valueOf('基础覆盖').badge,'已失效','a stale result status stays stale');
+    assert.equal(valueOf('走廊空间缺口评估').badge,'通过','the corridor gap status is mapped as-is');
+    assert.equal(valueOf('技术风险').badge,'失败','the risk group reads flow.review.risks');
+    assert.equal(valueOf('规划报告').badge,'已失效','the report status is mapped as-is');
+    assert.equal(valueOf('总体状态').badge,'待确认','the overall status is not recomputed');
+    assert.equal(valueOf('总体通过').value,'否','overall_pass is shown as a plain yes/no');
+    // 未计算的条目显示"未计算"，而不是被省略或伪造成通过
+    assert.equal(valueOf('3D 几何覆盖').badge,'未计算','an untouched result stays not_calculated');
+  });
+});
+
+test('step 06 keeps the chosen task after a re-render and returns to the top on a switch',()=>{
+  withStubDom(document=>{
+    const context=stepContext();
+    context.flow=step06ReviewFlow();
+    const store={step:6,tab:'advanced',segs:{advanced:'review-adv-proposal'},scroll:0};
+    const {controller,root}=mountRealStep(renderStep6,store,6,'方案评审');
+    assert.equal(root.dataset.tab,'advanced','the stored tab is restored');
+    assert.equal(root.dataset.seg,'review-adv-proposal','the stored segment is restored');
+    assertOnlyVisible(root,'advanced','review-adv-proposal');
+
+    // mutation / renderWorkflow() 重新挂载：保持当前任务与滚动位置
+    const body=document.getElementById('workbenchBody');
+    body.scrollHeight=1600;body.clientHeight=400;
+    body.scrollTop=360;store.scroll=360;
+    const remounted=renderWorkflowSteps({step:{render:renderStep6},context});
+    controller.mount({root:remounted,step:{render:renderStep6}});
+    body.scrollTop=Math.min(store.scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+    assert.equal(remounted.dataset.seg,'review-adv-proposal','a re-render keeps the current task');
+    assert.equal(body.scrollTop,360,'a re-render keeps the scroll position');
+    assertOnlyVisible(remounted,'advanced','review-adv-proposal');
+
+    // 显式切换一级/二级：回到该任务顶部
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assert.equal(remounted.dataset.seg,'review-res-status','a tab switch falls back to its first task');
+    assert.equal(body.scrollTop,0,'switching a tab returns to the top');
+    assertOnlyVisible(remounted,'result','review-res-status');
+    body.scrollTop=280;store.scroll=280;
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='review-res-report'));
+    assert.equal(body.scrollTop,0,'switching a segment returns to the top');
+    assert.equal(store.scroll,0,'switching a segment resets the stored scroll');
+    assertOnlyVisible(remounted,'result','review-res-report');
+
+    // 切回高级：该 tab 之前选过的任务必须恢复
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assert.equal(remounted.dataset.seg,'review-adv-proposal','a previously chosen task is restored');
+    assertOnlyVisible(remounted,'advanced','review-adv-proposal');
   });
 });
 

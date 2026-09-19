@@ -1,5 +1,35 @@
-import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock} from './common.js';
+// =========================================================
+// Step06 方案评审：评审 / 决策 / 交付工作台
+//
+// 信息架构
+//  - 操作：评审概览 / 方案比较 / 方案编辑 / 确认与应用
+//  - 结果：状态总览 / 报告与交付
+//  - 高级：需求依据 / 布站提案证据
+//  每个一级标签下同一时刻只显示一个任务（由 workbench.js 的 .wb-seg-active 保证）。
+//
+// 语义边界（本次重组只改展示组织，不改任何业务契约）
+//  - Select（选择方案）≠ Confirm（冻结快照）≠ Apply（事务提交）：三步在视觉上分开，
+//    Confirm 与 Apply 不再并排成等价主按钮；
+//  - Plan Variant 始终是人工决策候选：不计算隐藏总分、排名或优胜者，
+//    也没有任何"自动推荐 / 自动选择"通道；
+//  - 所有状态都从现有 flow / state 派生，不新增、不重算任何结论；
+//  - 所有既有 DOM id、API path、payload 与 bind 语义保持原样。
+// =========================================================
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint,wbDisclosure} from './common.js';
 
+// ---- 二级任务分段 -----------------------------------------------------------
+// id 稳定（review-*），标签是第一视觉层的业务语言：
+// 不把 P 编号 / 算法 id 当作导航语言（它们只出现在说明或高级标签里）。
+export const REVIEW_SEGMENTS={
+  operate:[['review-op-overview','评审概览'],['review-op-compare','方案比较'],['review-op-edit','方案编辑'],['review-op-confirm','确认与应用']],
+  result:[['review-res-status','状态总览'],['review-res-report','报告与交付']],
+  advanced:[['review-adv-requirement','需求依据'],['review-adv-proposal','布站提案证据']]
+};
+
+/**
+ * 方案审查摘要：Select / Confirm / Apply / 报告状态彼此独立。
+ * 契约保持原样（frontend_modules 测试逐字段锁定）。
+ */
 export function planReviewSummary(review,confirmed){
   const variants=review?.variants||[],selected=variants.find(item=>item.variant_id===review?.selected_variant_id)||null;
   return {variantCount:variants.length,selectedVariantId:selected?.variant_id||null,
@@ -7,38 +37,235 @@ export function planReviewSummary(review,confirmed){
     confirmedStatus:confirmed?.status||'not_confirmed',applyStatus:confirmed?.application?.status||'not_applied'};
 }
 
-export function render({state,flow}){
-  const labels={environment:'环境/GRC',technical:'技术/MTBF',life:'生命',property:'财产'};
-  const risks=Object.entries(flow.review.risks).map(([key,value])=>'<div class="review-row"><span>'+labels[key]+'</span>'+statusBadge(value.status)+'</div>').join('');
-  const resultLabels={workspace:'工作区',grid:'标准网格',environment_risk:'环境风险',routes:'运行航路',coverage:'C/N/S 布站',cns_corridor_assessment:'CNS 服务需求走廊',cns_corridor_gap_assessment:'CNS 走廊空间缺口',cns_corridor_site_plan:'P16 走廊布站提案',cns_plan_review:'P18 Plan Review',technical_risk:'技术风险',report:'报告'};
-  const dependencies=Object.entries(flow.result_statuses||{}).map(([key,value])=>'<div class="review-row"><span>'+escapeHtml(resultLabels[key]||key)+'</span>'+statusBadge(value)+'</div>').join('');
+// ---- 工具 -------------------------------------------------------------------
+function list(value){return String(value||'').split(',').map(item=>item.trim()).filter(Boolean);}
+function number(value){return Number.isFinite(value)?value.toFixed(1):'—';}
+/** 体素计数三元组：满足 / 确认缺口 / 证据不足。 */
+function formatDist(value){const counts=value?.voxel_counts||{};return [counts.satisfied||0,counts.confirmed_deficit??counts.confirmed_gap??0,counts.unknown||0].join('/');}
+function formatCosts(summary){const values=summary?.explicit_costs_by_unit||{},text=Object.entries(values).map(([unit,value])=>number(value)+' '+escapeHtml(unit)).join('；');return text||'action_count_proxy（未伪造货币成本）';}
+function statusOf(map,key){return map&&map[key]?map[key]:'not_calculated';}
+function kvRow(label,value,note){return '<div class="review-row"><span>'+escapeHtml(label)+'</span><span class="review-value">'+(value||'—')+(note?'<small>'+escapeHtml(note)+'</small>':'')+'</span></div>';}
+function badgeRow(label,status,note){return kvRow(label,statusBadge(status),note);}
+function reviewBlock(title,body,note){return '<div class="review-block"><b>'+escapeHtml(title)+'</b>'+(body||'')+(note?'<small>'+escapeHtml(note)+'</small>':'')+'</div>';}
+
+/**
+ * 状态总览：按业务组展示既有 status。
+ * 只映射现有 result_statuses / risks / review 的取值，不重新计算任何结论。
+ */
+const STATUS_GROUPS=[
+  ['规划输入',[['workspace','工作区'],['grid','标准网格'],['routes','运行航路']]],
+  ['CNS 规划',[
+    ['coverage','基础覆盖'],['coverage_3d','3D 几何覆盖'],['cns_service_capability','CNS 服务能力'],
+    ['service_timeline','服务时间线'],['protection_envelope','保护包络'],['cns_gap','规划缺口'],
+    ['cns_gap_v2','规划缺口 V2'],['cns_site_plan','布站方案'],['building_clearance','建筑净空'],
+    ['route_vertical_profiles','航路垂直剖面'],['encounter_3d_assessment','3D 相遇评估'],
+    ['layered_route_candidate','分层航路候选']
+  ]],
+  ['风险',[
+    ['environment_risk','环境风险'],['grid_risk_v2','网格风险 V2'],['technical_risk','技术风险'],
+    ['safety_assessment','安全评估']
+  ]],
+  ['方案与交付',[
+    ['cns_plan_review','方案审查'],['cns_corridor_assessment','服务走廊评估'],
+    ['cns_corridor_gap_assessment','走廊空间缺口评估'],['cns_corridor_site_plan','走廊布站提案'],
+    ['required_cns_recommendation','需求建议'],['report','规划报告']
+  ]]
+];
+const EXTRA_RISK_LABELS=[['life','生命风险'],['property','财产风险']];
+
+// ---- 评审概览 ---------------------------------------------------------------
+function projectOverview(flow,state){
   const layers=Object.entries(flow.coverage?.layers||{}).map(([key,value])=>key+'：'+value.statistics.stations+' 站 / '+statusText(value.status)).join('<br>');
-  const proposal=flow.cns_corridor_site_plan||{},proposalSummary='<div class="review-block"><b>P16 走廊站址规划提案（Corridor Site Plan Proposal）</b><span>状态：'+statusText(proposal.status||'not_calculated')+'</span><span>目标体素：'+(proposal.target_voxel_count||0)+' · 已选动作：'+(proposal.selected_actions||[]).length+'</span><span>确认需求单位体积收益：'+(Number.isFinite(proposal.confirmed_requirement_unit_volume_gain)?proposal.confirmed_requirement_unit_volume_gain.toFixed(1)+' m³·unit':'—')+'</span><small>Proposal only；本身不修改 Existing CNS，P18 负责人工比较、确认与受控 Apply。</small></div>';
-  const recommendation=flow.required_cns_recommendation||{},adoption=flow.required_cns_adoption||{},requirementSummary='<div class="review-block"><b>需求依据与来源追溯（Requirement basis / provenance）</b><span>模型：'+escapeHtml((recommendation.algorithm_id||flow.algorithm_selection?.requirement_model?.algorithm_id||'manual_required_cns_v1')+'@'+(recommendation.algorithm_version||flow.algorithm_selection?.requirement_model?.version||'1.0'))+'</span><span>需求建议：'+statusText(recommendation.status||'not_calculated')+' · 采用状态：'+statusText(adoption.status||'not_adopted')+'</span><span>匹配规则：'+(recommendation.matched_policies||[]).length+' · 来源字段：'+Object.keys(recommendation.field_provenance||{}).length+'</span><small>需求与能力/服务分离；不代表自动法规合规。</small></div>';
+  return reviewBlock('项目概览',[
+    kvRow('数据源',statusBadge(state.data_health.status)),
+    kvRow('工作区',flow.workspace?flow.workspace.area_km2+' km²':'未定义'),
+    kvRow('运行航路',String(flow.operational_routes.length),flow.operational_routes.map(item=>item.route_id).join('、')),
+    kvRow('飞行器',flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置'),
+    kvRow('飞行规则',statusBadge(flow.rules?.status||'not_calculated')),
+    // 逐层级布站明细：整行留着说明，不塞进右对齐的取值列
+    layers?'<div class="review-row"><span>C/N/S 布站层级</span><span class="review-value">—</span></div><small>'+layers+'</small>':''
+  ].join(''));
+}
+
+/** 评审流程状态：只读现有 state，不做任何结论判断。 */
+function reviewStatusPanel(flow){
   const review=flow.cns_plan_review||{},confirmed=flow.confirmed_cns_plan||{},summary=planReviewSummary(review,confirmed);
-  const variantCards=(review.variants||[]).map(variant=>{
+  const application=confirmed.application||{},reports=flow.cns_planning_reports||{};
+  const active=(reports.records||[]).find(item=>item.report_id===reports.active_report_id)||null;
+  return reviewBlock('方案审查（Plan Review）与受控应用',[
+    kvRow('方案审查',statusBadge(review.status||'not_initialized'),'初始化后由人工比较与选择'),
+    kvRow('候选方案数',String(summary.variantCount)),
+    kvRow('已选方案',summary.selectedVariantId?escapeHtml(summary.selectedVariantId):'尚未选择'),
+    kvRow('所选动作数',String(summary.selectedActionIds.length)),
+    kvRow('确认门禁',statusBadge(summary.gate)),
+    kvRow('已确认方案',statusBadge(summary.confirmedStatus)),
+    kvRow('应用状态',statusBadge(summary.applyStatus),application.planning_origin?'来源：'+escapeHtml(String(application.planning_origin.plan_id||'')):''),
+    kvRow('规划报告',statusBadge(active?active.current_applicability:(reports.status||'not_calculated')),active?'报告ID：'+escapeHtml(active.report_id):'尚未生成')
+  ].join(''),'候选方案无自动总分/排名（no automatic overall score/rank），也不自动推荐或选择；三步语义彼此独立（选择 / 确认 / 应用）。');
+}
+
+// ---- 方案比较：紧凑比较卡 + 完整矩阵 ----------------------------------------
+function comparisonRowCard(row){
+  const objective=row.objective_status||'not_evaluated',unknown=(row.unknown_voxel_ids||[]).length;
+  return '<div class="review-block comparison-card">'
+    +'<div class="comparison-head"><b>'+escapeHtml(row.route_id||'—')+' · '+escapeHtml(row.subsystem||'—')+'</b>'+statusBadge(objective)+'</div>'
+    +'<div class="comparison-body">'
+    +'<div class="comparison-item"><span>服务 满足/缺口/未知</span><b>'+escapeHtml(formatDist(row.service))+'</b><small>连续缺口投影 '+number(row.total_confirmed_deficit_projection_m)+' m</small></div>'
+    +'<div class="comparison-item"><span>冗余 满足/缺口/未知</span><b>'+escapeHtml(formatDist(row.redundancy))+'</b><small>最大连续缺口 '+number(row.max_continuous_deficit_projection_m)+' m · 证据不足体素 '+unknown+'</small></div>'
+    +'</div></div>';
+}
+function comparisonCards(selected){
+  const matrix=selected?.evaluation?.comparison_matrix||[];
+  if(!selected)return '<div class="wb-empty">先初始化方案审查并选择一个方案，再查看逐航路比较卡。</div>';
+  if(!matrix.length)return '<div class="wb-empty">所选方案尚无 comparison matrix；请先重新评价该方案。</div>';
+  return matrix.map(comparisonRowCard).join('');
+}
+/** 完整 Objective Comparison Matrix：原 8 列表格，收进 wbDisclosure。 */
+function comparisonMatrixTable(selected){
+  const matrix=selected?.evaluation?.comparison_matrix||[];
+  const rows=matrix.map(row=>'<tr><td>'+escapeHtml(row.route_id)+'</td><td>'+escapeHtml(row.subsystem)+'</td><td>'+statusText(row.objective_status||'not_evaluated')+'</td><td>'+formatDist(row.service)+'</td><td>'+formatDist(row.redundancy)+'</td><td>'+number(row.total_confirmed_deficit_projection_m)+'</td><td>'+number(row.max_continuous_deficit_projection_m)+'</td><td>'+(row.unknown_voxel_ids||[]).length+'</td></tr>').join('');
+  const table='<div class="table-wrap"><table><thead><tr><th>航路</th><th>C/N/S</th><th>规划目标</th><th>服务 满足/缺口/未知</th><th>冗余 满足/缺口/未知</th><th>缺口总长 m</th><th>最大连续缺口 m</th><th>证据不足体素</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  return wbDisclosure('完整客观指标矩阵',matrix.length?table:'<div class="wb-empty">尚未评价所选方案。</div>');
+}
+
+// ---- 方案编辑 / 确认与应用 ---------------------------------------------------
+function variantCards(selectedVariantId,review){
+  return (review.variants||[]).map(variant=>{
     const evaluation=variant.evaluation||{},gate=evaluation.confirmation_gate||{},actions=variant.selected_action_ids||[];
-    return '<div class="review-block plan-variant '+(variant.variant_id===review.selected_variant_id?'selected':'')+'"><b>'+escapeHtml(variant.name||variant.variant_id)+'</b><span>'+escapeHtml(variant.source||'')+' · '+actions.length+' 个动作 · '+statusText(gate.status||'not_evaluated')+'</span><small>'+escapeHtml(variant.variant_id||'')+'</small><button class="secondary selectPlanVariant" data-variant-id="'+escapeHtml(variant.variant_id||'')+'">选择此方案</button></div>';
+    const selected=variant.variant_id===selectedVariantId;
+    return '<div class="review-block plan-variant '+(selected?'selected':'')+'"><b>'+escapeHtml(variant.name||variant.variant_id)+'</b>'
+      +'<span>'+escapeHtml(variant.source||'')+' · '+actions.length+' 个动作 · 确认门禁：'+statusText(gate.status||'not_evaluated')+'</span>'
+      +'<small>'+escapeHtml(variant.variant_id||'')+'</small>'
+      +'<button class="secondary selectPlanVariant" data-variant-id="'+escapeHtml(variant.variant_id||'')+'">'+(selected?'当前已选（重新选择）':'选择此方案')+'</button></div>';
   }).join('')||'<div class="empty">尚未初始化方案审查。</div>';
-  const selected=(review.variants||[]).find(item=>item.variant_id===review.selected_variant_id),matrix=selected?.evaluation?.comparison_matrix||[];
-  const matrixRows=matrix.map(row=>'<tr><td>'+escapeHtml(row.route_id)+'</td><td>'+escapeHtml(row.subsystem)+'</td><td>'+statusText(row.objective_status||'not_evaluated')+'</td><td>'+formatDist(row.service)+'</td><td>'+formatDist(row.redundancy)+'</td><td>'+number(row.total_confirmed_deficit_projection_m)+'</td><td>'+number(row.max_continuous_deficit_projection_m)+'</td><td>'+(row.unknown_voxel_ids||[]).length+'</td></tr>').join('');
-  const comparison='<div class="review-block"><b>规划目标对比表（Objective Comparison Matrix；无自动总分/排名）</b><div class="table-wrap"><table><thead><tr><th>航路</th><th>C/N/S</th><th>规划目标</th><th>服务 满足/缺口/未知</th><th>冗余 满足/缺口/未知</th><th>缺口总长 m</th><th>最大连续缺口 m</th><th>证据不足体素</th></tr></thead><tbody>'+matrixRows+'</tbody></table></div><span>显式费用：'+formatCosts(selected?.evaluation?.action_summary)+'</span></div>';
-  const reviewUi='<div class="review-block"><b>P18 方案审查（Plan Review）与受控应用</b><span>评审：'+statusText(review.status||'not_initialized')+' · 已确认方案：'+statusText(summary.confirmedStatus)+' · 应用：'+statusText(summary.applyStatus)+'</span><small>Plan Variant 是人工决策候选；系统不计算隐藏 overall score/rank。选择不改设施，确认只冻结快照，应用才事务提交。</small><div class="button-row"><button class="secondary" id="initializePlanReview">初始化方案审查</button><button class="secondary" id="evaluatePlanVariant" '+(!selected?'disabled':'')+'>重新评价所选方案</button></div></div><div class="variant-grid">'+variantCards+'</div>'+comparison+
-    '<div class="review-block"><b>用户编辑方案（User-edited Variant）</b><label>纳入动作ID（逗号分隔）<input id="variantInclude" placeholder="candidate_site:S1:C1"></label><label>排除动作ID（逗号分隔）<input id="variantExclude"></label><label>方案名称<input id="variantName" value="用户方案"></label><button class="secondary" id="createPlanVariant" '+(!selected?'disabled':'')+'>克隆并创建方案</button></div>'+
-    '<div class="review-block"><b>确认门禁（Confirmation gate）</b><span>'+statusText(selected?.evaluation?.confirmation_gate?.status||'not_evaluated')+'</span><label><input type="checkbox" id="confirmWithoutObjectives"> 未配置规划目标时仍确认（记录明确知情确认）</label><label>确认理由<input id="planDecisionReason" placeholder="请记录人工确认依据"></label><div class="button-row"><button class="secondary" id="confirmPlan" '+(!selected?'disabled':'')+'>确认所选方案</button><button class="primary" id="applyPlan" '+(confirmed.status!=='confirmed'?'disabled':'')+'>应用已确认方案</button></div><small>应用会重跑 P7→P10 与 P14→P15；验证不一致、出现确认回归或关键证据不足时整笔回滚。</small></div>';
-  const reports=flow.cns_planning_reports||{},active=(reports.records||[]).find(item=>item.report_id===reports.active_report_id),hasPlan=['confirmed','applied'].includes(confirmed.status),hasReport=Boolean(active),stale=active?.current_applicability==='stale_current_project';
-  const reportUi='<div class="review-block"><b>CNS规划方案报告</b><span>方案状态：'+statusText(confirmed.status||'not_confirmed')+' · 报告状态：'+statusText(active?.current_applicability||reports.status||'not_calculated')+'</span><span>报告ID：'+escapeHtml(active?.report_id||'尚未生成')+' · 生成时间：'+escapeHtml(active?.generated_at||'—')+'</span>'+(stale?'<p class="inline-error">该报告对应旧项目状态，可继续下载，但不代表当前项目。请重新确认方案并生成新报告。</p>':'')+(!hasPlan?'<p class="empty">请先在方案审查中确认一个规划方案；当前只能预览草稿，不能生成正式报告。</p>':'')+'<div class="button-row"><button class="secondary" id="previewPlanningReport">预览报告</button><button class="primary" id="generatePlanningReport" '+(!hasPlan?'disabled':'')+'>生成正式报告</button></div><div class="button-row"><button class="secondary" id="downloadReportHtml" '+(!hasReport?'disabled':'')+'>下载HTML</button><button class="secondary" id="downloadReportPdf" '+(!hasReport?'disabled':'')+'>下载PDF</button><button class="secondary" id="downloadReportPackage" '+(!hasReport?'disabled':'')+'>下载规划数据包</button></div><small>PDF使用与HTML完全相同的冻结ReportDataModel和页面；如提示PDF能力缺失，请执行 <code>python -m playwright install chromium</code> 后重试。</small></div>';
-  const overview='<div class="review-block"><b>'+escapeHtml(flow.project.name)+'</b><span>数据源：'+statusText(state.data_health.status)+'</span><span>工作区：'+(flow.workspace?flow.workspace.area_km2+' km²':'未定义')+'</span><span>运行航路：'+flow.operational_routes.length+'（'+flow.operational_routes.map(item=>item.route_id).join(', ')+'）</span><span>飞行器：'+(flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置')+'</span><span>规则：'+statusText(flow.rules?.status||'not_calculated')+'</span><span>'+layers+'</span></div>';
-  const riskPanel='<div class="risk-review">'+risks+'</div><div class="risk-review">'+dependencies+'</div><div class="overall-card">总体状态：'+statusBadge(flow.review.overall_status)+'<br>总体通过：'+(flow.review.overall_pass?'是':'否')+'</div>';
-  const body=wbPanel('operate',
-      wbBlock('方案审查与受控应用',overview+reviewUi))
-    +wbPanel('result',
-      wbBlock('报告与导出',reportUi)
-      +wbBlock('总体状态',riskPanel)
-      +'<div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">兼容站点GeoJSON</a></div>'
-      +'<button class="primary full" id="saveAll">保存当前项目</button>')
-    +wbPanel('advanced',
-      wbBlock('证据与来源追溯',requirementSummary+proposalSummary));
+}
+function comparisonPanel(review,selected){
+  return reviewBlock('人工决策候选（无自动推荐）',
+    '<div class="variant-grid">'+variantCards(review.selected_variant_id,review)+'</div>'
+    +'<div class="button-row"><button class="secondary" id="initializePlanReview">初始化方案审查</button><button class="secondary" id="evaluatePlanVariant" '+(!selected?'disabled':'')+'>重新评价所选方案</button></div>',
+    '选择只改变当前候选方案，不修改任何设施；系统不排序、不评分、不自动选择。')
+    +reviewBlock('所选方案逐航路比较（紧凑卡）',comparisonCards(selected)
+      +'<small>满足/缺口/未知均为体素计数；缺口长度为保守纵向投影，不是运行中断时长。</small>')
+    +reviewBlock('完整客观指标矩阵',comparisonMatrixTable(selected))
+    +reviewBlock('显式费用',escapeHtml(formatCosts(selected?.evaluation?.action_summary)),'按单位分组，不做跨单位合计；未提供显式费用时使用 action_count_proxy。');
+}
+function editPanel(selected){
+  return reviewBlock('用户编辑方案（人工决策候选）',
+    kvRow('编辑基线',selected?escapeHtml(selected.name||selected.variant_id)+'（'+escapeHtml(selected.variant_id)+'）':'尚未选择方案')
+    +'<label>纳入动作ID（逗号分隔）<input id="variantInclude" placeholder="candidate_site:S1:C1"></label>'
+    +'<label>排除动作ID（逗号分隔）<input id="variantExclude"></label>'
+    +'<label>方案名称<input id="variantName" value="用户方案"></label>'
+    +'<button class="secondary full" id="createPlanVariant" '+(!selected?'disabled':'')+'>克隆并创建方案</button>',
+    '创建只追加人工编辑候选；不会自动选中，也不会改动设施。');
+}
+function confirmPanel(confirmed,selected,summary){
+  const evaluation=selected?.evaluation||{},gate=evaluation.confirmation_gate||{},gateStatus=gate.status||'not_evaluated';
+  const acknowledged=gate.requires_confirm_without_objectives_acknowledgement===true;
+  const canConfirm=Boolean(selected)&&(gateStatus==='ready_for_confirmation'||acknowledged);
+  const canApply=Boolean(summary.confirmedStatus==='confirmed'&&confirmed.current_applicability==='current');
+  const applyId=String(confirmed.plan_id||'');
+  return reviewBlock('1 选择 → 2 确认 → 3 应用',[
+    kvRow('当前所选方案',selected?escapeHtml(selected.name||selected.variant_id)+'（'+escapeHtml(selected.variant_id)+'）':'尚未选择'),
+    kvRow('确认门禁状态',statusBadge(gateStatus),acknowledged?'未配置规划目标：勾选知情确认并填写理由后才能确认':'仅 ready_for_confirmation 可直接确认')
+  ].join(''),'三步语义不同：选择只切换候选，确认只冻结快照，应用才事务提交。')
+    +reviewBlock('第 2 步 · 确认（冻结快照，不修改设施）',
+      kvRow('已确认方案',statusBadge(summary.confirmedStatus),confirmed.plan_id?'plan_id：'+escapeHtml(String(confirmed.plan_id)):'')
+      +'<label><input type="checkbox" id="confirmWithoutObjectives" '+(acknowledged?'':'disabled')+'> 未配置规划目标时仍确认（记录明确知情确认）</label>'
+      +'<label>确认理由<input id="planDecisionReason" placeholder="请记录人工确认依据"></label>'
+      +'<button class="secondary full" id="confirmPlan" data-gate="'+escapeHtml(gateStatus)+'" '+(canConfirm?'':'disabled')+'>确认所选方案</button>',
+      acknowledged?'勾选后必须填写确认理由，后端会把知情确认写入 acknowledgements。':'确认只冻结该方案的快照，不写入任何设施。')
+    +reviewBlock('第 3 步 · 应用（事务提交）',
+      kvRow('可应用条件',statusBadge(canApply?'ready':'not_available'),canApply?'已确认且当前有效，可以提交':'需要先确认方案，且 RequiredCNS/routes/设施/候选/设备基线未变化')
+      +'<button class="primary full" id="applyPlan" data-apply-gate="'+(canApply?'ready':'blocked')+'" '+(canApply?'':'disabled')+'>应用已确认方案</button>',
+      '应用会重跑 P7→P10 与 P14→P15；验证不一致、出现确认回归或关键证据不足时整笔回滚。'+(applyId?' 当前 plan_id：'+escapeHtml(applyId):''));
+}
+
+// ---- 状态总览 ---------------------------------------------------------------
+function statusOverview(flow){
+  const statuses=flow.result_statuses||{},risks=flow.review?.risks||{};
+  const groups=STATUS_GROUPS.map(([title,rows])=>{
+    // 生命 / 财产风险只存在于 flow.review.risks（不在 result_statuses 里），按需追加。
+    const extra=title==='风险'
+      ? EXTRA_RISK_LABELS.filter(([key])=>risks[key]&&!rows.some(([known])=>known===key)).map(([key,label])=>[key,label])
+      : [];
+    const all=[...rows,...extra];
+    return wbBlock(title,reviewBlock(title,all.map(([key,label])=>{
+      // 技术风险以 risks.technical 为准，缺失时才回退到 result_statuses。
+      const status=key==='technical_risk'?(risks.technical?.status||statusOf(statuses,'technical_risk')):statusOf(statuses,key);
+      return badgeRow(label,status);
+    }).join('')));
+  }).join('');
+  const overall=reviewBlock('总体状态',
+    kvRow('总体状态',statusBadge(flow.review?.overall_status||'not_calculated'))
+    +kvRow('总体通过',flow.review?.overall_pass?'是':'否'),
+    '只映射现有 status，不在此重新计算任何结论。');
+  return groups+overall;
+}
+
+// ---- 报告与交付 -------------------------------------------------------------
+function reportPanel(flow){
+  const reports=flow.cns_planning_reports||{},active=(reports.records||[]).find(item=>item.report_id===reports.active_report_id);
+  const confirmed=flow.confirmed_cns_plan||{},hasPlan=['confirmed','applied'].includes(confirmed.status),hasReport=Boolean(active);
+  const stale=active?.current_applicability==='stale_current_project';
+  return reviewBlock('CNS规划方案报告',
+    kvRow('方案状态',statusBadge(confirmed.status||'not_confirmed'))
+    +kvRow('报告状态',statusBadge(active?.current_applicability||reports.status||'not_calculated'))
+    +kvRow('报告ID',active?escapeHtml(active.report_id):'尚未生成')
+    +kvRow('生成时间',active?escapeHtml(active.generated_at||'—'):'—')
+    +(stale?'<p class="inline-error">该报告对应旧项目状态，可继续下载，但不代表当前项目。请重新确认方案并生成新报告。</p>':'')
+    +(!hasPlan?'<p class="empty">请先在方案审查中确认一个规划方案；当前只能预览草稿，不能生成正式报告。</p>':'')
+    +'<div class="button-row"><button class="secondary" id="previewPlanningReport">预览报告</button><button class="primary" id="generatePlanningReport" data-report-gate="'+(hasPlan?'ready':'blocked')+'" '+(!hasPlan?'disabled':'')+'>生成正式报告</button></div>'
+    +'<div class="button-row"><button class="secondary" id="downloadReportHtml" '+(!hasReport?'disabled':'')+'>下载HTML</button><button class="secondary" id="downloadReportPdf" '+(!hasReport?'disabled':'')+'>下载PDF</button></div>'
+    +'<button class="secondary full" id="downloadReportPackage" '+(!hasReport?'disabled':'')+'>下载规划数据包</button>',
+    'PDF使用与HTML完全相同的冻结ReportDataModel和页面；如提示PDF能力缺失，请执行 python -m playwright install chromium 后重试。');
+}
+function deliveryPanel(flow){
+  const reports=flow.cns_planning_reports||{},active=(reports.records||[]).find(item=>item.report_id===reports.active_report_id);
+  const stale=active?.current_applicability==='stale_current_project';
+  return reviewBlock('导出与保存',
+    (stale?'<p class="inline-error">当前报告对应旧项目状态：仍可下载，系统不会自动覆盖或删除旧报告。</p>':'')
+    +'<div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">兼容站点GeoJSON</a></div>'
+    +'<button class="primary full" id="saveAll">保存当前项目</button>',
+    '导出只读取当前项目状态；报告与项目状态各自独立，不会互相覆盖。');
+}
+// ---- 高级：需求依据 / 布站提案证据 ------------------------------------------
+function requirementPanel(flow){
+  const recommendation=flow.required_cns_recommendation||{},adoption=flow.required_cns_adoption||{};
+  return '<div class="review-block"><b>需求依据与来源追溯（Requirement basis / provenance）</b>'
+    +'<span>模型：'+escapeHtml((recommendation.algorithm_id||flow.algorithm_selection?.requirement_model?.algorithm_id||'manual_required_cns_v1')+'@'+(recommendation.algorithm_version||flow.algorithm_selection?.requirement_model?.version||'1.0'))+'</span>'
+    +'<span>需求建议：'+statusText(recommendation.status||'not_calculated')+' · 采用状态：'+statusText(adoption.status||'not_adopted')+'</span>'
+    +'<span>匹配规则：'+(recommendation.matched_policies||[]).length+' · 来源字段：'+Object.keys(recommendation.field_provenance||{}).length+'</span>'
+    +'<small>需求与能力/服务分离；不代表自动法规合规。</small></div>';
+}
+function proposalPanel(flow){
+  const proposal=flow.cns_corridor_site_plan||{};
+  return '<div class="review-block"><b>P16 走廊站址规划提案（Corridor Site Plan Proposal）</b>'
+    +'<span>状态：'+statusText(proposal.status||'not_calculated')+'</span>'
+    +'<span>目标体素：'+(proposal.target_voxel_count||0)+' · 已选动作：'+(proposal.selected_actions||[]).length+'</span>'
+    +'<span>确认需求单位体积收益：'+(Number.isFinite(proposal.confirmed_requirement_unit_volume_gain)?proposal.confirmed_requirement_unit_volume_gain.toFixed(1)+' m³·unit':'—')+'</span>'
+    +'<small>Proposal only；本身不修改 Existing CNS，P18 负责人工比较、确认与受控 Apply。</small></div>';
+}
+
+// ---- 渲染 -------------------------------------------------------------------
+export function render({state,flow}){
+  const review=flow.cns_plan_review||{},confirmed=flow.confirmed_cns_plan||{},summary=planReviewSummary(review,confirmed);
+  const selected=(review.variants||[]).find(item=>item.variant_id===review.selected_variant_id)||null;
+  const OPERATE=REVIEW_SEGMENTS.operate,RESULT=REVIEW_SEGMENTS.result,ADVANCED=REVIEW_SEGMENTS.advanced;
+
+  const body=wbPanel('operate','',{segments:[
+      ['review-op-overview','评审概览',wbBlock('评审概览',wbSegHint(OPERATE,'review-op-overview')+projectOverview(flow,state)+reviewStatusPanel(flow))],
+      ['review-op-compare','方案比较',wbBlock('方案比较',wbSegHint(OPERATE,'review-op-compare')+comparisonPanel(review,selected))],
+      ['review-op-edit','方案编辑',wbBlock('方案编辑',wbSegHint(OPERATE,'review-op-edit')+editPanel(selected))],
+      ['review-op-confirm','确认与应用',wbBlock('确认与应用',wbSegHint(OPERATE,'review-op-confirm')+confirmPanel(confirmed,selected,summary))]
+    ]})
+    +wbPanel('result','',{segments:[
+      ['review-res-status','状态总览',wbBlock('状态总览',wbSegHint(RESULT,'review-res-status')+statusOverview(flow))],
+      ['review-res-report','报告与交付',wbBlock('报告与交付',wbSegHint(RESULT,'review-res-report')+reportPanel(flow)+deliveryPanel(flow))]
+    ]})
+    +wbPanel('advanced','',{segments:[
+      ['review-adv-requirement','需求依据',wbBlock('需求依据',wbSegHint(ADVANCED,'review-adv-requirement')+requirementPanel(flow))],
+      ['review-adv-proposal','布站提案证据',wbBlock('布站提案证据',wbSegHint(ADVANCED,'review-adv-proposal')+proposalPanel(flow))]
+    ]});
   return shell('06','方案评审','比较客观指标，人工选择、确认，再事务式应用。',body);
 }
 
@@ -63,8 +290,3 @@ export function bind(c){
   c.actionButton('downloadReportPdf',()=>c.downloadPlanningReport('pdf'));
   c.actionButton('downloadReportPackage',()=>c.downloadPlanningReport('package'));
 }
-
-function list(value){return String(value||'').split(',').map(item=>item.trim()).filter(Boolean);}
-function number(value){return Number.isFinite(value)?value.toFixed(1):'—';}
-function formatDist(value){const counts=value?.voxel_counts||{};return [counts.satisfied||0,counts.confirmed_deficit??counts.confirmed_gap??0,counts.unknown||0].join('/');}
-function formatCosts(summary){const values=summary?.explicit_costs_by_unit||{},text=Object.entries(values).map(([unit,value])=>number(value)+' '+escapeHtml(unit)).join('；');return text||'action_count_proxy（未伪造货币成本）';}

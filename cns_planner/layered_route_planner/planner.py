@@ -27,8 +27,11 @@ from heapq import heappop, heappush
 import math
 
 from ..algorithms.coverage.v1 import distance_m
+from ..risk.route_exposure import (
+    integrate_path_exposure, resolve_cell_domain_indices,
+)
 from ..domain.layered_route import (
-    COARSE_ENVELOPE_SEMANTICS, COST_DOMAIN_IDS, DOMAIN_RISK_CELL_KEY,
+    COARSE_ENVELOPE_SEMANTICS, COST_DOMAIN_IDS,
     active_cost_domains, candidate_fingerprint, cost_lambdas, cost_policy_fingerprint,
     cost_policy_is_runnable, default_layer_feasibility_mask,
     default_layered_route_candidate, feasibility_policy_fingerprint,
@@ -333,30 +336,12 @@ def resolve_lambda_domain_indices(grid_risk_v2, active_domains, cell_ids):
     Only the domains whose lambda is ``> 0`` are resolved.  A domain that is precisely
     ``0`` is not a planning input and is never required.  A cell missing a required domain
     index is reported in ``unresolved`` — it is never penalized with a default risk.
+
+    The reading rule itself lives in :mod:`cns_planner.risk.route_exposure` so the planner
+    cost and the RouteRiskProfile integral can never drift apart.
     """
 
-    cells = {}
-    for grid_id, item in ((grid_risk_v2 or {}).get("cells") or {}).items():
-        if isinstance(item, dict):
-            cells[str(grid_id)] = item
-    resolved, unresolved = {}, {}
-    for grid_id in cell_ids:
-        record = cells.get(str(grid_id)) or {}
-        entry = {}
-        reasons = []
-        for domain_id in active_domains:
-            container = record.get(DOMAIN_RISK_CELL_KEY[domain_id])
-            container = container if isinstance(container, dict) else {}
-            index = container.get("index")
-            if str(container.get("status") or "") == "passed" and _finite(index) and 0.0 <= float(index) <= 1.0:
-                entry[domain_id] = float(index)
-            else:
-                entry[domain_id] = None
-                reasons.append(f"{domain_id}:{container.get('status') or 'missing_data'}")
-        resolved[str(grid_id)] = entry
-        if reasons:
-            unresolved[str(grid_id)] = reasons
-    return resolved, unresolved
+    return resolve_cell_domain_indices(grid_risk_v2, cell_ids, tuple(active_domains))
 
 
 # --------------------------------------------------------------------------- planner
@@ -817,22 +802,21 @@ def _astar(
 
 
 def _path_metrics(path, grid_path, centers, indices, lambdas, active_domains, start, end):
-    points = [list(start), *[centers[item] for item in grid_path], list(end)]
-    point_indices = [
-        indices[grid_path[0]],
-        *[indices[item] for item in grid_path],
-        indices[grid_path[-1]],
-    ]
-    distance = 0.0
-    domain_exposure = {domain_id: 0.0 for domain_id in COST_DOMAIN_IDS}
-    for left, right, left_index, right_index in zip(
-        points, points[1:], point_indices, point_indices[1:],
-    ):
-        length = distance_m(left, right)
-        distance += length
-        for domain_id in active_domains:
-            mean = (left_index[domain_id] + right_index[domain_id]) / 2.0
-            domain_exposure[domain_id] += length * mean
+    """Integrate the candidate path with the shared, backend-only exposure helper.
+
+    ``cns_planner.risk.route_exposure.integrate_path_exposure`` is the single integral
+    definition also used by the RouteRiskProfile profiler: ``points = [start, *centers,
+    end]``, endpoint connectors reuse the first/last cell index, ``segment index =
+    (left + right) / 2`` and ``exposure = Σ(length * mean index)``.  Only the ``λ > 0``
+    domains are integrated, exactly as before the helper was extracted.
+    """
+
+    integral = integrate_path_exposure(
+        start=start, end=end, grid_path=grid_path, centers=centers, indices=indices,
+        domain_ids=COST_DOMAIN_IDS, integration_domains=active_domains,
+    )
+    distance = integral["distance_m"]
+    domain_exposure = integral["domain_exposure_index_m"]
     weighted = {
         domain_id: (
             None if domain_id not in active_domains
