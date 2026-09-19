@@ -345,7 +345,7 @@ def _geometric_3d_manifest():
         "coverage_model", GeometricCoverage3DV1.algorithm_id, GeometricCoverage3DV1.algorithm_version,
         "Geometric Coverage 3D V1", "CNS-PLANNER", "engineering_baseline",
         "基于 EGM2008 正高、球/半球服务体和三维斜距的几何覆盖基线。",
-        ("operational_routes", "route_altitude_profiles", "terrain", "existing_cns", "device_catalog"),
+        ("operational_routes", "effective_route_vertical_context", "terrain", "existing_cns", "device_catalog"),
         ("coverage_3d", "route_3d_samples", "uncovered_segments"),
         {"type": "object", "properties": {"sample_spacing_m": {"type": "number", "exclusiveMinimum": 0}}, "additionalProperties": True},
         ("sample_spacing_m 为显式工程采样假设", "canonical vertical reference 为 EGM2008 orthometric"),
@@ -438,7 +438,7 @@ def _corridor_manifest():
         "corridor_model", CNSServiceCorridorV1.algorithm_id, CNSServiceCorridorV1.algorithm_version,
         "CNS Service Requirement Corridor V1", "CNS-PLANNER", "engineering_baseline",
         "以现有 MH/T 网格和高度层构造保守离散的 CNS 服务需求走廊，并复用 P7/P8 逐点规则评估代表性 voxel probe。",
-        ("operational_routes", "route_altitude_profiles", "grid", "terrain", "altitude_layers", "required_cns", "aircraft_profile", "existing_cns", "device_catalog", "corridor_policy"),
+        ("operational_routes", "effective_route_vertical_context", "grid", "terrain", "altitude_layers", "required_cns", "aircraft_profile", "existing_cns", "device_catalog", "corridor_policy"),
         ("cns_corridor_assessment", "voxel_probe_results", "volume_proxy_summary"),
         {"type": "object", "additionalProperties": True},
         (

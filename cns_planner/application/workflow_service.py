@@ -30,6 +30,8 @@ from .risk_service import RiskService
 from .risk_v2_service import RiskFrameworkV2Service
 from .layered_route_planner_service import LayeredRoutePlannerService
 from .route_risk_profile_service import RouteRiskProfileService
+from .layered_route_validation_service import LayeredRouteValidationService
+from .layered_operational_adoption_service import LayeredOperationalAdoptionService
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -197,6 +199,13 @@ class WorkflowService:
         self.invalidation_service.route_risk_profile_invalidator = (
             self.route_risk_profile_service.refresh_for_reason
         )
+        self.layered_route_validation_service = LayeredRouteValidationService(
+            self.session, self.invalidation_service, snapshot,
+            self.layered_route_planner_service, self.route_risk_profile_service,
+        )
+        self.invalidation_service.layered_route_validation_invalidator = (
+            self.layered_route_validation_service.stale_for_reason
+        )
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
             self.session, self.coverage_model_3d, self.invalidation_service, snapshot
@@ -262,6 +271,13 @@ class WorkflowService:
         # Source changes must stale a V3 adoption (and only V3 adoptees).
         self.source_audit_service.v3_adoption_invalidator = (
             self.v3_operational_adoption_service.stale_for_sources
+        )
+        self.layered_operational_adoption_service = LayeredOperationalAdoptionService(
+            self.session, self.layered_route_validation_service,
+            self.invalidation_service, snapshot,
+        )
+        self.layered_route_validation_service.adoption_invalidator = (
+            self.layered_operational_adoption_service.stale_for_validations
         )
 
     def save(self): self.session.save()
@@ -373,6 +389,20 @@ class WorkflowService:
             )
             result["route_risk_profile_readiness"] = (
                 self.route_risk_profile_service.readiness_snapshot()
+            )
+        if hasattr(self, "layered_route_validation_service"):
+            result["layered_route_validations"] = (
+                self.layered_route_validation_service.result_snapshot()
+            )
+            result["layered_route_validation_readiness"] = (
+                self.layered_route_validation_service.readiness_snapshot()
+            )
+        if hasattr(self, "layered_operational_adoption_service"):
+            result["layered_operational_adoptions"] = (
+                self.layered_operational_adoption_service.result_snapshot()
+            )
+            result["layered_operational_adoption_readiness"] = (
+                self.layered_operational_adoption_service.readiness_snapshot()
             )
         result["review"] = self.review()
         return result
@@ -808,6 +838,36 @@ class WorkflowService:
         return self.route_risk_profile_service.evaluate(payload)
     def delete_route_risk_profile(self, profile_id):
         return self.route_risk_profile_service.delete_profile(profile_id)
+
+    # ---- Production layered candidate continuous validation/adoption ----------
+    def layered_route_validation_readiness(self):
+        return self.layered_route_validation_service.readiness_snapshot()
+
+    def layered_route_validations(self):
+        return self.layered_route_validation_service.result_snapshot()
+
+    def evaluate_layered_route_validation(self, payload=None, evidence_adapter=None):
+        return self.layered_route_validation_service.validate(
+            payload, evidence_adapter=evidence_adapter,
+        )
+
+    def layered_operational_adoptions(self):
+        return self.layered_operational_adoption_service.result_snapshot()
+
+    def layered_operational_adoption_readiness(self):
+        return self.layered_operational_adoption_service.readiness_snapshot()
+
+    def project_layered_operational_adoption(self, payload=None):
+        return self.layered_operational_adoption_service.projection(payload)
+
+    def preview_layered_operational_adoption(self, payload=None):
+        return self.layered_operational_adoption_service.preview(payload)
+
+    def apply_layered_operational_adoption(self, payload=None):
+        return self.layered_operational_adoption_service.apply(payload)
+
+    def revoke_layered_operational_adoption(self, payload=None):
+        return self.layered_operational_adoption_service.revoke(payload)
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)

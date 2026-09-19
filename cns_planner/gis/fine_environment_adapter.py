@@ -1844,15 +1844,14 @@ class RouteCorridorBuildingSource:
             metric = QgsGeometry(geometry)
             metric.transform(self._to_metric)
             ring = _metric_ring_of(metric)
-            if len(ring) < 3:
-                continue
             height = _number_or_none(feature[self.height_field])
             status = (
                 str(feature[self.height_status_field] or "")
                 if self.height_status_field else ("predicted" if height is not None else "unknown")
             )
             ground = None
-            if terrain_source is not None and hasattr(terrain_source, "sample_footprint_ground"):
+            if (len(ring) >= 3 and terrain_source is not None
+                    and hasattr(terrain_source, "sample_footprint_ground")):
                 ground = terrain_source.sample_footprint_ground(ring, transform=transform)
             buildings.append({
                 "building_id": _feature_identifier(feature, self.layer),
@@ -1861,6 +1860,7 @@ class RouteCorridorBuildingSource:
                 "height_m": height,
                 "height_status": status or ("predicted" if height is not None else "unknown"),
                 "ground_elevation_max_egm2008_m": ground,
+                "geometry_status": "passed" if len(ring) >= 3 else "invalid_unmodified",
             })
         return {
             "available": True,

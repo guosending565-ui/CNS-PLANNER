@@ -8,7 +8,7 @@ import json
 import math
 
 from ...domain.route_vertical_profile import empty_route_vertical_profiles
-from ...domain.spatial_3d import resolve_egm2008_height
+from ...domain.spatial_3d import effective_route_vertical_context, resolve_egm2008_height
 from ..coverage.geometric_3d import path_length_m, route_point_at, route_profile_height
 
 
@@ -34,11 +34,16 @@ class RouteVerticalProfileV1:
         candidates = [item for item in (routes or []) if route_id in (None, "", str(item.get("route_id")))]
         profiles = []
         for route in candidates:
-            profile = ((spatial_3d or {}).get("route_altitude_profiles") or {}).get(str(route.get("route_id")))
+            profile = effective_route_vertical_context(spatial_3d, route.get("route_id"))
             profiles.append(self._route(route, profile, building_assessment or {}, dtm_sampler))
         fingerprint_input = {
             "routes": candidates,
-            "altitude_profiles": (spatial_3d or {}).get("route_altitude_profiles") or {},
+            "effective_vertical_contexts": {
+                str(route.get("route_id")): effective_route_vertical_context(
+                    spatial_3d, route.get("route_id")
+                )
+                for route in candidates
+            },
             "dtm": dtm_sampler.describe(),
             "building_assessment": {
                 "status": (building_assessment or {}).get("status"),
@@ -102,7 +107,7 @@ class RouteVerticalProfileV1:
             base["reasons"] = ["仅 passed operational route 可生成纵剖面"]
             return base
         if not altitude_profile or altitude_profile.get("status") != "confirmed":
-            base.update(status="unknown", profile_geometry_status="unknown", clearance_evidence_status="unknown", reasons=["缺少已确认的航路高度剖面"])
+            base.update(status="unknown", profile_geometry_status="unknown", clearance_evidence_status="unknown", reasons=["缺少已确认的 effective route vertical context"])
             return base
         if altitude_profile.get("vertical_reference") == "unknown":
             base.update(status="unknown", profile_geometry_status="unknown", clearance_evidence_status="unknown", reasons=["航路 vertical reference 未确认"])

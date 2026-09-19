@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-19T07:23:45+00:00",
+  "project_file": "project.json",
+  "local_source_config_ref": "projects/map_sources.json",
+  "source_audits": {},
+  "hash_and_version": {},
+  "crs": {},
+  "geometry_health": {
+    "reference_landing_sites": {
+      "status": "not_calculated",
+      "feature_count": 0,
+      "null": 0,
+      "empty": 0,
+      "invalid": 0,
+      "unsupported": 0,
+      "extent": null,
+      "crs": {
+        "source_crs": {
+          "value": null,
+          "status": "pending_confirmation",
+          "axis_order": null,
+          "confirmed": false,
+          "source": null,
+          "evidence": []
+        },
+        "representation_crs": {
+          "value": null,
+          "status": "pending_confirmation",
+          "axis_order": null,
+          "declared_by_format": false,
+          "source": null,
+          "evidence": []
+        },
+        "note": "源表未声明 CRS；坐标仅按源数值临时展示，不得自动假定 WGS84/CGCS2000。"
+      },
+      "repair_applied": false
+    },
+    "reference_routes": {
+      "status": "not_calculated",
+      "feature_count": 0,
+      "null": 0,
+      "empty": 0,
+      "invalid": 0,
+      "unsupported": 0,
+      "extent": null,
+      "crs": {
+        "source_crs": {
+          "value": null,
+          "status": "pending_confirmation",
+          "axis_order": null,
+          "confirmed": false,
+          "source": null,
+          "evidence": []
+        },
+        "representation_crs": {
+          "value": null,
+          "status": "pending_confirmation",
+          "axis_order": null,
+          "declared_by_format": false,
+          "source": null,
+          "evidence": []
+        },
+        "note": "源文件未声明 CRS；CSV/XLSX 不得被自动假定为 WGS84/CGCS2000。source_crs 未确认前不输出正式 length_m，也不输出米制几何相似度。"
+      },
+      "repair_applied": false
+    },
+    "airspace": {
+      "status": "not_calculated"
+    }
+  },
+  "reference_import_readiness": null,
+  "airspace_policy_readiness": {
+    "status": "not_applicable",
+    "applicability": "display_only",
+    "count": 0,
+    "route_eligibility_counts": {
+      "allowed": 0,
+      "blocked": 0,
+      "unknown": 0
+    },
+    "confirmed_count": 0,
+    "unconfirmed_count": 0,
+    "source_count": 0,
+    "eligibility_derived_from": "confirmed_policy_only",
+    "never_inferred_from_layer_name_or_color": true,
+    "v2_readiness": {
+      "status": "not_applicable",
+      "reason": "display_only_airspace_not_used_for_route_constraints"
+    }
+  },
+  "data_issues": {
+    "DATA-1": {
+      "label": "reference CRS",
+      "status": "blocked",
+      "reasons": [
+        "reference_landing_sites",
+        "reference_routes"
+      ],
+      "action": "人工输入有证据的 CRS 并确认"
+    },
+    "DATA-2": {
+      "label": "ET→XLSX/CSV",
+      "status": "blocked",
+      "reasons": [
+        "not_calculated"
+      ],
+      "action": "转换 ET 后预览并确认导入 CSV/XLSX/GeoJSON"
+    }
+  },
+  "automatic_confirmation": false,
+  "et_parser": null,
+  "note": "报告只读取现有证据；不造数据、不猜 CRS、不解析 ET、不自动确认 policy。"
+}

@@ -239,7 +239,7 @@ def normalize_route_operating_layer(value):
     source = _source(value.get("source"))
     confirmed = bool(value.get("confirmed", False))
     resolvable = reference != "unknown" and source != UNRECORDED_SOURCE
-    return {
+    result = {
         "route_id": route_id,
         "altitude_layer_id": layer_id,
         "operating_mode": mode,
@@ -250,6 +250,18 @@ def normalize_route_operating_layer(value):
         "status": "confirmed" if confirmed and resolvable else "pending_confirmation",
         "active": bool(value.get("active", True)),
     }
+    # Production adoption ownership/evidence applicability is additive.  Preserve a stale
+    # evidence marker only for adoption-owned assignments; ordinary manual confirmation
+    # continues to use the original derived status semantics.
+    if bool(value.get("adoption_owned", False)):
+        result["adoption_owned"] = True
+        result["current_applicability"] = str(
+            value.get("current_applicability") or "current"
+        )
+        result["stale_reason"] = value.get("stale_reason")
+        if value.get("status") == "stale":
+            result["status"] = "stale"
+    return result
 
 
 def normalize_departure_arrival_procedure(value):
@@ -434,6 +446,73 @@ def resolve_egm2008_height(height_m, reference, *, surface_elevation_m=None, geo
             return {"status": "unresolved", "altitude_egm2008_m": None, "reason": "缺少 WGS84 ellipsoid 到 EGM2008 大地水准面转换"}
         return {"status": "passed", "altitude_egm2008_m": height - undulation, "reason": "ellipsoidal - geoid undulation"}
     return {"status": "unresolved", "altitude_egm2008_m": None, "reason": "vertical reference unknown"}
+
+
+def effective_route_vertical_context(spatial_3d, route_id):
+    """Return the authoritative vertical context for one operational route.
+
+    A confirmed active ``RouteOperatingLayer`` and its referenced ``AltitudeLayer`` have
+    production priority.  Only when no active production assignment exists may the existing
+    legacy/V3 ``RouteAltitudeProfile`` be used.  A stale or unresolved assignment is returned
+    as unresolved and is never silently bypassed.
+    """
+
+    spatial = spatial_3d if isinstance(spatial_3d, dict) else {}
+    wanted = str(route_id or "")
+    assignment = next((
+        item for item in spatial.get("route_operating_layers") or []
+        if str(item.get("route_id")) == wanted and item.get("active", True) is True
+    ), None)
+    if assignment is not None:
+        layer_id = str(assignment.get("altitude_layer_id") or "")
+        layer = next((
+            item for item in spatial.get("altitude_layers") or []
+            if str(item.get("altitude_layer_id")) == layer_id
+        ), None)
+        valid = bool(
+            assignment.get("confirmed") is True
+            and assignment.get("status") == "confirmed"
+            and assignment.get("operating_mode") == "fixed_cruise_layer"
+            and assignment.get("vertical_reference") == "egm2008_orthometric"
+            and isinstance(layer, dict)
+            and layer.get("confirmed") is True
+            and layer.get("status") == "confirmed"
+            and layer.get("vertical_reference") == "egm2008_orthometric"
+            and layer.get("nominal_altitude_m") is not None
+        )
+        if not valid:
+            return {
+                "route_id": wanted, "mode": "constant",
+                "vertical_reference": "egm2008_orthometric",
+                "constant_altitude_m": None, "waypoints": [],
+                "confirmed": False, "status": "unresolved",
+                "source": "route_operating_layer",
+                "source_kind": "production_fixed_cruise_layer",
+                "altitude_layer_id": layer_id,
+                "reason": "active_production_route_operating_layer_not_resolvable",
+                "fallback_profile_used": False,
+            }
+        return {
+            "route_id": wanted, "mode": "constant",
+            "vertical_reference": "egm2008_orthometric",
+            "constant_altitude_m": float(layer["nominal_altitude_m"]),
+            "waypoints": [], "confirmed": True, "status": "confirmed",
+            "source": assignment.get("source"),
+            "source_kind": "production_fixed_cruise_layer",
+            "altitude_layer_id": layer_id,
+            "assignment_evidence": deepcopy(assignment.get("evidence") or {}),
+            "layer_evidence": deepcopy(layer.get("evidence") or {}),
+            "planning_input_provenance_propagation": True,
+            "altitude_inferred": False, "fallback_profile_used": False,
+        }
+    profile = (spatial.get("route_altitude_profiles") or {}).get(wanted)
+    if isinstance(profile, dict):
+        return {
+            **deepcopy(profile),
+            "source_kind": "legacy_or_v3_route_altitude_profile",
+            "fallback_profile_used": True,
+        }
+    return None
 
 
 def _reference(value):

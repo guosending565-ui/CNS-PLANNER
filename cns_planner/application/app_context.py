@@ -66,6 +66,7 @@ class ApplicationContext:
         self.configure_route_planner_v3_sources()
         self.configure_route_planner_v3_adoption()
         self.configure_layered_route_planner_sources()
+        self.configure_layered_route_validation_sources()
 
     def _source_details(self):
         details = {}
@@ -359,6 +360,84 @@ class ApplicationContext:
             }
 
         return build_evidence
+
+    def configure_layered_route_validation_sources(self):
+        """Bind the production native FABDEM/real-footprint evidence adapter."""
+
+        def adapter(**kwargs):
+            return self._layered_route_validation_evidence(**kwargs)
+
+        self.workflow.layered_route_validation_service.evidence_adapter = adapter
+        return adapter
+
+    def evaluate_layered_route_validation(self, payload=None):
+        """Run production candidate validation on the QGIS thread."""
+
+        return self.workflow.evaluate_layered_route_validation(payload)
+
+    def _layered_route_validation_evidence(
+        self, *, candidate, path, altitude_layer, nominal_altitude_m, policy, payload,
+    ):
+        """Build source-native evidence for the unchanged candidate centreline."""
+
+        from ..gis.fine_environment_adapter import (
+            NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
+        )
+        from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
+
+        terrain_path = self.data.paths.get("terrain_dtm")
+        building_path = self.data.paths.get("buildings")
+        if not terrain_path or not building_path:
+            raise ValueError("请先配置 verified FABDEM terrain_dtm 与 buildings GeoPackage")
+        horizontal_crs = str((payload or {}).get("horizontal_crs") or "").strip()
+        if not horizontal_crs:
+            raise ValueError("production validation 需要显式 horizontal_crs（米制 CRS）")
+        transform = QgisMetricTransform(horizontal_crs)
+        metric_path = []
+        for point in path or []:
+            converted = transform.to_metric([float(point[0]), float(point[1])])
+            if converted is None:
+                raise ValueError("candidate CRS84 path 无法投影到显式 metric CRS")
+            metric_path.append([float(converted[0]), float(converted[1])])
+        route = {
+            "horizontal_geometry": {"linearized": {
+                "linestring_metric": metric_path, "curve_chord_error_m": 0.0,
+            }},
+        }
+        terrain = NativeTerrainWindowSource(terrain_path)
+        buildings = RouteCorridorBuildingSource(
+            building_path, crs_authority=horizontal_crs,
+        )
+        terrain_evidence = terrain.native_window(
+            transform=transform, metric_line=metric_path,
+            envelope_radius_m=0.0, spacing_m=None,
+        )
+        terrain_evidence["pixels"] = resolve_native_pixel_intervals(
+            route, terrain_evidence.get("pixels") or [], curve_chord_error_m=0.0,
+        )
+        building_evidence = buildings.query_route(
+            route, transform=transform,
+            horizontal_clearance_m=policy["building_horizontal_clearance_m"],
+            curve_error_m=0.0, terrain_source=terrain,
+        )
+        return {
+            "adapter_id": "layered_candidate_real_source_validation_adapter_v1",
+            "source_type": "configured_real_sources",
+            "metric_path": metric_path, "metric_crs": horizontal_crs,
+            "to_geographic": transform.to_geographic,
+            "terrain": terrain_evidence, "buildings": building_evidence,
+            "sample_count": len(terrain_evidence.get("pixels") or []) + len(
+                building_evidence.get("buildings") or []
+            ),
+            "sources": {
+                "terrain_dtm": terrain.describe(), "buildings": buildings.describe(),
+                "metric_frame": transform.describe(),
+            },
+            "airspace": {
+                "status": "not_applicable", "applicability": "display_only",
+                "used_in_validation": False,
+            },
+        }
 
     def _fine_environment_adapter(self, payload):
         from ..gis.fine_environment_adapter import (

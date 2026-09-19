@@ -71,6 +71,10 @@ class ApiRouter:
         if path == "/api/route-risk-profile/readiness": return Response(workflow.route_risk_profile_readiness())
         if path == "/api/route-risk-profile-policy": return Response(workflow.route_risk_profile_policy())
         if path == "/api/route-risk-profiles": return Response(workflow.route_risk_profiles())
+        if path == "/api/layered-route-validation/readiness": return Response(workflow.layered_route_validation_readiness())
+        if path == "/api/layered-route-validations": return Response(workflow.layered_route_validations())
+        if path == "/api/layered-operational-adoption/readiness": return Response(workflow.layered_operational_adoption_readiness())
+        if path == "/api/layered-operational-adoptions": return Response(workflow.layered_operational_adoptions())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -249,6 +253,15 @@ class ApiRouter:
             "/api/route-risk-profiles/delete": lambda: workflow.delete_route_risk_profile(
                 payload.get("profile_id")
             ),
+            # ---- Production layered candidate continuous validation/adoption --------
+            "/api/layered-route-validations/evaluate": lambda: workflow.evaluate_layered_route_validation(payload),
+            "/api/layered-route-validations/evaluate-real": lambda: context.qgis.call(
+                lambda: context.evaluate_layered_route_validation(payload)
+            ),
+            "/api/layered-operational-adoptions/project": lambda: workflow.project_layered_operational_adoption(payload),
+            "/api/layered-operational-adoptions/preview": lambda: workflow.preview_layered_operational_adoption(payload),
+            "/api/layered-operational-adoptions/apply": lambda: workflow.apply_layered_operational_adoption(payload),
+            "/api/layered-operational-adoptions/revoke": lambda: workflow.revoke_layered_operational_adoption(payload),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),

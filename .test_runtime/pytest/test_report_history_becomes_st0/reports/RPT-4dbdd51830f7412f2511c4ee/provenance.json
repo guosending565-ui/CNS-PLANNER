@@ -1,0 +1,54 @@
+{
+  "semantics": "w3c_prov_inspired_not_full_prov_compliance",
+  "derivation": [
+    {
+      "stage": "P17",
+      "entity": "required_cns_recommendation",
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null
+    },
+    {
+      "stage": "P14",
+      "entity": "cns_corridor_assessment",
+      "algorithm_id": "cns_service_corridor_v1",
+      "algorithm_version": "1.0",
+      "input_fingerprint": "930095066c166744b65d638b52a13c6a5884eafaa67b35e464e91fbba8c0234e",
+      "output_fingerprint": null
+    },
+    {
+      "stage": "P15",
+      "entity": "cns_corridor_gap_assessment",
+      "algorithm_id": "cns_corridor_gap_v1",
+      "algorithm_version": "1.0",
+      "input_fingerprint": "a74b528d1c0ec8a98457e2f27b9511535dd401477c8a76bb6cea514c54490b88",
+      "output_fingerprint": null
+    },
+    {
+      "stage": "P16",
+      "entity": "cns_corridor_site_plan",
+      "algorithm_id": "corridor_reuse_first_site_planner_v2",
+      "algorithm_version": "2.0",
+      "input_fingerprint": "3384b3998ef730a983430eea0c772e45cb5d91620a851c00cb390651f5dfb341",
+      "output_fingerprint": null
+    },
+    {
+      "stage": "P18",
+      "entity": "confirmed_cns_plan",
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "input_fingerprint": null,
+      "output_fingerprint": "CP-9d4196df2c3086935d2a"
+    },
+    {
+      "stage": "P19",
+      "entity": "cns_planning_report",
+      "algorithm_id": null,
+      "algorithm_version": null,
+      "input_fingerprint": "b0507117d9604abb1d448fdc11960ecdaa71d9c11958d31d14851a3094bd24a9",
+      "output_fingerprint": "7a6b09c11ebef242ac6bda7764c3c687e9b48c3667ef8a7dc60bf42f5c401e64"
+    }
+  ],
+  "report_data_fingerprint": "7a6b09c11ebef242ac6bda7764c3c687e9b48c3667ef8a7dc60bf42f5c401e64"
+}

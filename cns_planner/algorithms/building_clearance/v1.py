@@ -16,7 +16,7 @@ from ...domain.building_clearance import (
     building_roof_elevation, empty_building_clearance_assessment,
     evaluate_vertical_clearance,
 )
-from ...domain.spatial_3d import resolve_egm2008_height
+from ...domain.spatial_3d import effective_route_vertical_context, resolve_egm2008_height
 from ..coverage.geometric_3d import path_length_m, route_profile_height
 
 
@@ -37,11 +37,11 @@ class BuildingClearanceV1:
             result["provenance"] = adapter.provenance()
             return result
 
-        profiles = (spatial_3d or {}).get("route_altitude_profiles") or {}
         route_results = []
         for route in routes or []:
             route_results.append(self._route(
-                route, profiles.get(str(route.get("route_id"))), policy, adapter
+                route, effective_route_vertical_context(spatial_3d, route.get("route_id")),
+                policy, adapter
             ))
         breaches = [
             segment for route in route_results
@@ -97,7 +97,7 @@ class BuildingClearanceV1:
         if route.get("status") != "passed" or len(path) < 2:
             return _missing_route(route_id, "运行航路不存在或状态不是 passed")
         if not profile or profile.get("status") not in ("passed", "confirmed"):
-            return _missing_route(route_id, "缺少已确认航路高度剖面")
+            return _missing_route(route_id, "缺少已确认 effective route vertical context")
         evidence = adapter.route_candidates(route, float(policy["horizontal_clearance_m"]), policy)
         candidates = evidence.get("candidates") or []
         segments, buildings, unresolved = [], [], 0

@@ -32,6 +32,9 @@ class InvalidationService:
         #: stales the additive ``route_risk_profiles`` (and **only** those) when the candidate
         #: set, ``grid_risk_v2`` or the profile policy changes.
         self.route_risk_profile_invalidator = None
+        #: Production candidate validation has its own evidence lifecycle.  Candidate/layer,
+        #: native sources and clearance changes stale it without touching V3 history.
+        self.layered_route_validation_invalidator = None
 
     def workflow(self, changed):
         state = self.session.state
@@ -114,6 +117,8 @@ class InvalidationService:
             self.cns_corridor()
         if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
             self.building_clearance("building_source_changed")
+        if set(changed_sources) & {"terrain_dtm", "buildings"}:
+            self.layered_route_validation("source_changed:" + ",".join(sorted(changed_sources)))
         if "buildings" in changed_sources or "building_grid" in changed_sources:
             # The layered feasibility mask consumes the L8 building grid facts, so only the
             # layered candidates are additionally staled here.
@@ -206,6 +211,7 @@ class InvalidationService:
         if callable(invalidator):
             invalidator(str(reason))
         self.route_risk_profile(reason)
+        self.layered_route_validation(reason)
 
     def route_risk_profile(self, reason="route_risk_profile_input_changed"):
         """Stale only the additive RouteRiskProfile product.
@@ -219,6 +225,40 @@ class InvalidationService:
         invalidator = self.route_risk_profile_invalidator
         if callable(invalidator):
             invalidator(str(reason))
+
+    def layered_route_validation(self, reason="layered_route_validation_input_changed"):
+        """Stale only production LayeredRouteValidation and its owned adoption chain."""
+
+        invalidator = self.layered_route_validation_invalidator
+        if callable(invalidator):
+            return invalidator(str(reason))
+        return {"stale_validation_ids": []}
+
+    def operational_route_published(self, route_ids, *, reason, preserve_published_routes=True):
+        """Dedicated publication propagation: stale downstream, never candidate/V3.
+
+        ``workflow('route')`` is intentionally not used because it would immediately stale
+        the route just published.  Evidence-outdated propagation may pass
+        ``preserve_published_routes=False`` after the owner has explicitly marked its route
+        stale; this method will then leave that status untouched.
+        """
+
+        state = self.session.state
+        route_ids = {str(item) for item in route_ids or []}
+        self.coverage_3d()
+        self.building_clearance(str(reason))
+        self.cns_site_plan()
+        self.cns_corridor()
+        mark_active_report_stale(state, str(reason))
+        if preserve_published_routes:
+            for route in state.get("operational_routes") or []:
+                if str(route.get("route_id")) in route_ids:
+                    route["status"] = "passed"
+                    route.pop("stale_reason", None)
+        return {
+            "reason": str(reason), "route_ids": sorted(route_ids),
+            "candidate_and_v3_untouched": True,
+        }
 
     def grid_risk_routes(self):
         """Only Risk-Aware Route Planner V2 makes routes depend on grid_risk."""

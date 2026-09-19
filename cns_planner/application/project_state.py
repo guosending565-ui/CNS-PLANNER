@@ -88,6 +88,13 @@ from ..domain.route_risk_profile import (
     default_route_risk_profile_collection, normalize_route_risk_profile_collection,
     normalize_route_risk_profile_policy,
 )
+from ..domain.layered_route_validation import (
+    empty_layered_route_validation_collection,
+    normalize_layered_route_validation_collection,
+)
+from ..domain.layered_operational_adoption import (
+    empty_layered_operational_adoptions, normalize_layered_operational_adoptions,
+)
 from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
@@ -244,6 +251,10 @@ def blank_project(defaults):
         # thresholds ship unconfirmed (no default), and the profile container starts empty.
         "route_risk_profile_policy": normalize_route_risk_profile_policy(None),
         "route_risk_profiles": default_route_risk_profile_collection(),
+        # Production source-native validation and explicit operational adoption remain
+        # independent from both the candidate and the V3 experiment containers.
+        "layered_route_validations": empty_layered_route_validation_collection(),
+        "layered_operational_adoptions": empty_layered_operational_adoptions(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
@@ -265,6 +276,7 @@ def blank_project(defaults):
                 "technical_risk", "report",
                 "layered_route_candidate",
                 "route_risk_profile",
+                "layered_route_validation",
             )
         },
         "last_saved_at": None,
@@ -441,8 +453,17 @@ def normalize_project(value, grid_service):
     value["route_risk_profiles"] = normalize_route_risk_profile_collection(
         value.get("route_risk_profiles")
     )
+    value["layered_route_validations"] = normalize_layered_route_validation_collection(
+        value.get("layered_route_validations")
+    )
+    value["layered_operational_adoptions"] = normalize_layered_operational_adoptions(
+        value.get("layered_operational_adoptions")
+    )
     value.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault(
+        "layered_route_validation", "not_calculated"
+    )
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")

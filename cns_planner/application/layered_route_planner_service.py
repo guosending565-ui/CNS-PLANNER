@@ -362,6 +362,7 @@ class LayeredRoutePlannerService:
         collection["status"] = "passed" if remaining else "not_calculated"
         state["layered_route_candidates"] = collection
         state.setdefault("result_statuses", {})["layered_route_candidate"] = collection["status"]
+        self.invalidation.layered_route_validation("candidate_deleted")
         self.session.save()
         return self.snapshot()
 
@@ -466,6 +467,9 @@ class LayeredRoutePlannerService:
         self._store_candidate(collection, key, request, candidate, prior)
         state["layered_route_candidates"] = collection
         state.setdefault("result_statuses", {})["layered_route_candidate"] = collection["status"]
+        # Replacing the current candidate invalidates the frozen validation evidence only;
+        # the newly created candidate itself remains current.
+        self.invalidation.layered_route_validation("candidate_recomputed")
         self.session.save()
         return self.snapshot()
 
@@ -653,6 +657,7 @@ class LayeredRoutePlannerService:
         self._store_candidate(collection, key, request, candidate, prior)
         state["layered_route_candidates"] = collection
         state.setdefault("result_statuses", {})["layered_route_candidate"] = collection["status"]
+        self.invalidation.layered_route_validation("candidate_attempt_replaced_current_candidate")
         self.session.save()
         return self.snapshot()
 

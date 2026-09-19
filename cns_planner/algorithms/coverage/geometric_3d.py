@@ -7,7 +7,7 @@ import json
 import math
 
 from .v1 import distance_m
-from ...domain.spatial_3d import resolve_egm2008_height
+from ...domain.spatial_3d import effective_route_vertical_context, resolve_egm2008_height
 
 
 class GeometricCoverage3DV1:
@@ -36,7 +36,6 @@ class GeometricCoverage3DV1:
         }
 
     def evaluate(self, routes, spatial_3d, grid, grid_attributes, existing_facilities, device_catalog):
-        profiles = (spatial_3d or {}).get("route_altitude_profiles") or {}
         terrain = ((grid_attributes or {}).get("terrain") or {}).get("cells") or {}
         cells = list((grid or {}).get("cells") or [])
         providers = build_geometric_providers(
@@ -45,7 +44,7 @@ class GeometricCoverage3DV1:
         )
         results = []
         for route in routes or []:
-            profile = profiles.get(str(route.get("route_id")))
+            profile = effective_route_vertical_context(spatial_3d, route.get("route_id"))
             results.append(self._route(route, profile, cells, terrain, providers))
         fingerprint_input = {
             "routes": routes or [], "spatial_3d": spatial_3d or {},

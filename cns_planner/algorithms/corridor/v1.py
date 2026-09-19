@@ -22,7 +22,9 @@ from ..service_capability.v1 import (
     evaluate_capability_point,
 )
 from ...domain.cns_corridor import corridor_disclaimers, empty_cns_corridor_assessment
-from ...domain.spatial_3d import resolve_egm2008_height, voxel_ref
+from ...domain.spatial_3d import (
+    effective_route_vertical_context, resolve_egm2008_height, voxel_ref,
+)
 
 
 class CNSServiceCorridorV1:
@@ -44,7 +46,6 @@ class CNSServiceCorridorV1:
     ):
         cells = list((grid or {}).get("cells") or [])
         terrain = ((grid_attributes or {}).get("terrain") or {}).get("cells") or {}
-        profiles = (spatial_3d or {}).get("route_altitude_profiles") or {}
         layers = list((spatial_3d or {}).get("altitude_layers") or [])
         specs = (corridor_policy or {}).get("routes") or {}
         geometric_providers = build_geometric_providers(
@@ -56,7 +57,8 @@ class CNSServiceCorridorV1:
         for route in routes or []:
             route_id = str(route.get("route_id") or "")
             route_results.append(self._route(
-                route, profiles.get(route_id), specs.get(route_id), cells, terrain,
+                route, effective_route_vertical_context(spatial_3d, route_id),
+                specs.get(route_id), cells, terrain,
                 layers, required_cns or {}, aircraft_profile or {},
                 geometric_providers, provider_devices,
             ))

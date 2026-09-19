@@ -22,6 +22,7 @@ class BuildingClearanceService:
         if candidate != self.session.state["building_clearance_policy"]:
             self.session.state["building_clearance_policy"] = candidate
             self.invalidation.building_clearance("clearance_policy_changed")
+            self.invalidation.layered_route_validation("building_clearance_policy_changed")
             self.session.save()
         return self.snapshot()
 
