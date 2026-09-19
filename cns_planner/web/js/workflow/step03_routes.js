@@ -4,6 +4,11 @@ import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './r
 import {bindLayeredRoutePlanner,layeredPlannerUsesThetaStarV2,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
 import {bindLayeredThetaV2,renderLayeredThetaV2Panel} from './layered_theta_v2.js';
 import {ROUTE_RISK_PROFILE_SEGMENT,bindRouteRiskProfile,renderRouteRiskProfile} from './route_risk_profile.js';
+// production LayeredRouteCandidate 的 Continuous Validation 与 Operational Adoption：
+// 业务语义与渲染全部在各自模块内，本文件只负责 render / bind 组合。
+import {bindLayeredRouteValidation,renderLayeredRouteValidation} from './layered_route_validation.js';
+import {LAYERED_ADOPTION_LEGACY_LABEL,bindLayeredOperationalAdoption,renderLayeredOperationalAdoption,
+  selectedLayeredAdoptionValidation} from './layered_operational_adoption.js';
 
 function jsonInline(value){
   try{return JSON.stringify(value);}catch(error){return String(value);}
@@ -1735,9 +1740,43 @@ export function bindLayeredCandidatePanel(c){
   else bindLayeredRoutePlanner(c);
 }
 
+//: 「操作 → 运行航路」中 Layered 发布区的 Select 状态。
+//: 面板本身是无状态字符串：用户在 radio 上的选择只缓存在这里，重新渲染时回填，
+//: 但 Apply 仍然只认"模块内 Preview 缓存 + 显式确认"，绝不由这里推断。
+let layeredAdoptionSelection='';
+
+/** 首次进入时默认选中第一条 eligible validation（只是 Select，不代表 Validate/Apply）。 */
+function layeredAdoptionSelected(flow){
+  const options=((flow||{}).layered_operational_adoption_readiness||{}).options||[];
+  if(layeredAdoptionSelection&&options.some(item=>String(item.validation_id)===layeredAdoptionSelection)){
+    return layeredAdoptionSelection;
+  }
+  const first=options.find(item=>item.eligible===true);
+  layeredAdoptionSelection=first?String(first.validation_id||''):'';
+  return layeredAdoptionSelection;
+}
+
+function renderLayeredAdoptionPanel(flow){
+  return renderLayeredOperationalAdoption(flow,layeredAdoptionSelected(flow));
+}
+
+function bindLayeredAdoptionPanel(c){
+  // 面板自身维护 Select 与 Preview 缓存（radio 的 change 也由模块负责）：
+  // 这里只把渲染出来的当前选择同步回本文件的回填用缓存。
+  bindLayeredOperationalAdoption(c);
+  const selected=selectedLayeredAdoptionValidation(c);
+  if(selected)layeredAdoptionSelection=selected;
+}
+
 function routeOperateSection(flow,{interactionMode,nodes}){
-  // 生成运行航路是整步最高频动作，放在操作区首个分段内
+  // 生成运行航路是整步最高频动作，放在操作区首个分段内。
+  // A. 现有 / Legacy 运行航路生成完全保持原样：两个按钮的 id / 端点 / 逻辑都不变，
+  //    这里只把它们与 B. Layered Candidate 发布显式分成两块，避免语义混用。
   const routeActions='<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div>';
+  const legacyOperationalBlock=wbBlock(LAYERED_ADOPTION_LEGACY_LABEL,routeActions
+    +'<div class="parameter-note">这两个入口沿用既有 /api/workflow/scenario 与 /api/workflow/operational，'
+    +'生成的是场景航路 / 运行航路；它们与下方 Layered Candidate 发布（validation → operational adoption）'
+    +'是两套语义、互不替代，也绝不自动覆盖彼此的结果。</div>');
   const sitesPanel=referenceLandingPanel(flow)
     +'<h3>项目起降点</h3>'
     +'<button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button>'
@@ -1748,15 +1787,20 @@ function routeOperateSection(flow,{interactionMode,nodes}){
       wbBlock('起降点与 OD',wbSegHint(OPERATE_SEGMENTS,'op-sites')+'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'+sitesPanel)],
     ['op-candidates','分层候选',wbBlock('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+layeredCandidatePanel(flow))],
     ['op-operational','运行航路',
-      wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+routeActions+'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')],
+      wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+legacyOperationalBlock
+        +'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')
+        +wbBlock('Layered Candidate 发布',renderLayeredAdoptionPanel(flow))],
     ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow))]
   ]});
 }
 
 // ---- 结果区：当前航路 / 可行性与净空 / 路径风险画像 / 对比验证 -------------------
 function routeResultSection(flow,{routes,selectedReference}){
-  // 建筑净空突破的详细分析在"高级 → 剖面与运动"，这里保持独立的可行性与净空汇总
-  const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)+buildingClearancePanel(flow);
+  // 建筑净空突破的详细分析在"高级 → 剖面与运动"，这里保持独立的可行性与净空汇总。
+  // Continuous Validation 接在既有 data readiness / building clearance 之后，
+  // 实现完全在 layered_route_validation.js：本文件只插入组合。
+  const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)
+    +buildingClearancePanel(flow)+renderLayeredRouteValidation(flow);
   // RouteRiskProfile 的展示实现独立在 route_risk_profile.js：这里只插入分段，不再往本文件堆业务。
   const riskProfile=wbSegHint(RESULT_SEGMENTS,ROUTE_RISK_PROFILE_SEGMENT)+renderRouteRiskProfile(flow);
   return wbPanel('result','',{segments:[
@@ -1799,6 +1843,8 @@ export function bind(c){
   bindCruiseLayer(c);
   bindLayeredCandidatePanel(c);
   bindRouteRiskProfile(c);
+  bindLayeredRouteValidation(c);
+  bindLayeredAdoptionPanel(c);
   // 兼容入口"生成场景航路"保持原 all-pairs 语义：不再读取已随面板移除的
   // routeDirection 控件（读它会抛 TypeError，导致按钮完全不可用），
   // direction 交给后端默认值 both，与旧行为一致。
