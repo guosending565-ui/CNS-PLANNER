@@ -10,9 +10,10 @@ export function escapeHtml(value){
 /**
  * 步骤面板外壳：返回**唯一根容器**。
  *
- * 标题信息写在根容器内部的 [data-workbench-head] 上，由右侧工作台的固定
- * 头部（workbench.js）读取后移除；业务内容与 wb-root 本身必须保留，否则
- * 工作台挂载时会丢失全部面板与控件。
+ * 标题信息写在根容器内部的 [data-workbench-head] 上：右侧工作台（workbench.js）
+ * 每次导航都从这里读取步骤编号/标题/说明。该节点必须**常驻 DOM**——一旦被移除，
+ * 后续切换一级标签或二级分段就没有标题元数据（真实浏览器会显示 00 与空标题）。
+ * 业务内容与 wb-root 本身同样必须保留，否则工作台挂载时会丢失全部面板与控件。
  */
 export const shell=(number,title,text,body)=>
   '<div class="wb-root">'

@@ -76,6 +76,8 @@
   overflow-x:hidden;
   padding:var(--sp-6) var(--sp-6) var(--sp-9);
   overscroll-behavior:contain;
+  /* 正文宽度是随右栏变化的，不是视口宽度：窄屏自适应按容器宽度查询 */
+  container:workbench / inline-size;
 }
 
 /* 内容块节奏 */

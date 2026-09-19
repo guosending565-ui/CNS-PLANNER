@@ -94,11 +94,12 @@ class StubNode{
     for(const handler of this.listeners[event.type]||[])handler(event);
     return true;
   }
-  /** 只沿父链匹配，不遍历子树；语义足够支撑 document 级点击委托。 */
+  /** 只沿父链匹配，不遍历子树；语义足够支撑 document 级点击委托。
+   *  与 querySelectorAll 一致地支持逗号选择器（closest('[data-wb-tab],[data-wb-seg]')）。 */
   closest(selector){
     const parsed=parseSelector(selector);
     for(let node=this;node;node=node.parentNode){
-      if(node.tagName&&matchesSelector(node,parsed))return node;
+      if(node.tagName&&parsed.some(part=>matchesSelector(node,part)))return node;
     }
     return null;
   }
@@ -296,10 +297,13 @@ function installStubDom(){
   workflowPanel.id='workflowPanel';
   document.body.append(workflowPanel);
   nodes.set('workflowPanel',workflowPanel);
-  // 右侧工作台的固定骨架：一级标签容器、二级分段容器、滚动区
+  // 右侧工作台的固定骨架：一级标签容器、二级分段容器、滚动区、步骤标题区
   document.register('workbenchTabs','tabbar');
   document.register('workbenchSegs');
   document.register('workbenchBody');
+  document.register('workbenchStepNumber','workbench-step');
+  document.register('workbenchStepTitle','');
+  document.register('workbenchStepNote','');
   globalThis.document=document;
   registerTree(nodes,document.body);
   return document;
@@ -580,9 +584,16 @@ test('step 03 exposes the documented second-level segments',()=>{
   // 每个二级分段都挂在一个一级面板下，并且自描述名称与 id 成对出现
   assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
   // 自描述：data-seg-label（单数）与 data-seg-name 成对出现，data-seg-labels 是面板级汇总
-  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');  // 分段可见性由 CSS 承载：每个分段 id 必须有对应规则（显式列表或通用兜底）
+  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');
+  // 显隐不再由 CSS 枚举选择器承担：只允许两个状态类，禁止按 id 枚举或按前缀兜底
   const css=readFileSync(new URL('../cns_planner/web/css/components.css',import.meta.url),'utf8');
-  for(const id of segs)assert.match(css,new RegExp('data-seg-name="'+id+'"|data-seg-name\\^'),`${id} has no visibility rule`);
+  assert.match(css,/\.wb-panel\{display:none\}/);
+  assert.match(css,/\.wb-panel-active\{display:block\}/);
+  assert.match(css,/\.wb-seg\{display:none\}/);
+  assert.match(css,/\.wb-seg-active\{display:block\}/);
+  assert.doesNotMatch(css,/data-seg-name/, 'segment visibility must not enumerate data-seg-name selectors');
+  assert.doesNotMatch(css,/data-seg-name\^=/, 'no prefix fallback for segment visibility');
+  assert.doesNotMatch(css,/\[data-tab=/, 'root data-tab must not drive panel visibility');
 });
 
 test('every step generates three tabs, unique ids and bindable controls',()=>{
@@ -761,8 +772,10 @@ test('step 01 controls survive render → mount',()=>{
     for(const panelName of ['operate','result','advanced']){
       assert.ok(findByDataset(root,'panelGroup',panelName),`missing ${panelName} panel after mount`);
     }
-    // 标题占位被搬走后不应留下重复标题，也不能带走业务内容
-    assert.equal(root.querySelector('[data-workbench-head]'),null,'the head placeholder is removed');
+    // 标题元数据节点常驻 DOM（后续每次导航都要读它），但被隐藏、不重复显示标题
+    const head=root.querySelector('[data-workbench-head]');
+    assert.ok(head,'the head metadata node must stay mounted for later navigation');
+    assert.equal(head.hidden,true,'the head metadata node never participates in display');
   });
 });
 
@@ -804,6 +817,197 @@ test('main.js wires layer switches and bootstrap once',()=>{
   assert.match(source,/bootstrapFailure\('前端初始化失败',exc\)/);
   assert.match(source,/bootstrapFailure\('无法连接本机地图服务',exc\)/);
   assert.match(source,/console\.error\('\[CNS Planner\] '\+message,exc\)/);
+});
+
+// ---- 真实显隐状态回归 -------------------------------------------------------
+//
+// 这一组断言刻意**不看** dataset 属性或按钮高亮，而是直接检查真实 DOM 节点上
+// 的可见状态类：上一轮回归正是"按钮高亮变了、正文仍然从第一个分段开始"，
+// 因为显隐由枚举 CSS 选择器与错误的前缀兜底承担。
+
+/** 真实可见的一级面板（.wb-panel-active）。 */
+function activePanels(root){return findAll(root,'.wb-panel-active');}
+
+/** 真实可见的二级分段（.wb-seg-active）。 */
+function activeSegments(root){return findAll(root,'.wb-seg-active');}
+
+/** 只用真实节点断言：同一时刻严格只有 1 个面板 / 1 个分段可见。 */
+function assertOnlyVisible(root,panelGroup,segmentName){
+  const panels=activePanels(root);
+  assert.equal(panels.length,1,`exactly one panel may be visible, got ${panels.map(node=>node.dataset.panelGroup).join(',')}`);
+  assert.equal(panels[0].dataset.panelGroup,panelGroup,`visible panel must be ${panelGroup}`);
+  const segments=activeSegments(root);
+  if(!segmentName){
+    assert.equal(segments.length,0,'a panel without segments keeps every segment hidden');
+    return;
+  }
+  assert.equal(segments.length,1,`exactly one segment may be visible, got ${segments.map(node=>node.dataset.segName).join(',')}`);
+  assert.equal(segments[0].dataset.segName,segmentName,`visible segment must be ${segmentName}`);
+}
+
+test('step 03 second-level navigation really switches the visible DOM node',()=>{
+  withStubDom(document=>{
+    const store={step:3,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep3,store,3,'航路规划');
+
+    // 操作 → 起降点与OD
+    assertOnlyVisible(root,'operate','op-sites');
+
+    // 操作 → 高度与程序：只有 op-altitude 可见
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='op-altitude'));
+    assertOnlyVisible(root,'operate','op-altitude');
+    assert.equal(activeSegments(root)[0],findByDataset(root,'segName','op-altitude'),'the visible node is the real op-altitude element');
+
+    // 结果 → 对比与验证：只有 res-compare 可见
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assertOnlyVisible(root,'result','res-route');
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='res-compare'));
+    assertOnlyVisible(root,'result','res-compare');
+
+    // 高级 → 规划诊断：只有 adv-diagnostics 可见
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assertOnlyVisible(root,'advanced','adv-reference');
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='adv-diagnostics'));
+    assertOnlyVisible(root,'advanced','adv-diagnostics');
+
+    // 切回来的历史选择同样落到真实 DOM 上
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='operate'));
+    assertOnlyVisible(root,'operate','op-altitude');
+  });
+});
+
+test('every step keeps exactly one visible panel and its own title after navigation',()=>{
+  for(const [number,render] of STEP_RENDERS){
+    withStubDom(document=>{
+      const store={step:Number(number),tab:'operate',segs:{},scroll:0};
+      const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+      const root=renderWorkflowSteps({step:{render},context:stepContext()});
+      // 与 main.js 完全一致：step 对象只有 render/bind，没有 number/title/note
+      controller.mount({root,step:{render}});
+      const head=root.querySelector('[data-workbench-head]');
+      const expected={number:head.dataset.workbenchNumber,title:head.dataset.workbenchTitle,note:head.dataset.workbenchNote};
+      const read=()=>({
+        number:document.getElementById('workbenchStepNumber').textContent,
+        title:document.getElementById('workbenchStepTitle').textContent,
+        note:document.getElementById('workbenchStepNote').textContent
+      });
+      assert.equal(read().number,expected.number,`step ${number} shows its own number after mount`);
+      assert.equal(read().title,expected.title,`step ${number} shows its own title after mount`);
+      if(expected.note)assert.equal(read().note,expected.note,`step ${number} shows its own note after mount`);
+
+      // 逐一点击一级标签与二级分段：标题必须始终是本步骤的真实编号与名称
+      for(const label of ['result','advanced','operate','advanced']){
+        clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab===label));
+        // 真实 DOM：只有该标签面板可见，且它下面严格只有 1 个分段可见（有分段时）
+        const panel=findByDataset(root,'panelGroup',label);
+        const owned=findAll(panel,'[data-seg-name]').map(node=>node.dataset.segName);
+        const visiblePanels=activePanels(root),visibleSegments=activeSegments(root);
+        assert.equal(visiblePanels.length,1,`step ${number} shows exactly one panel after clicking ${label}`);
+        assert.equal(visiblePanels[0].dataset.panelGroup,label,`step ${number} shows the ${label} panel`);
+        assert.equal(visibleSegments.length,owned.length>0?1:0,`step ${number} shows exactly one segment under ${label}`);
+        if(owned.length)assert.ok(owned.includes(visibleSegments[0].dataset.segName),`step ${number} visible segment belongs to ${label}`);
+        assert.equal(read().number,expected.number,`step ${number} number survives clicking ${label}`);
+        assert.equal(read().title,expected.title,`step ${number} title survives clicking ${label}`);
+        assert.notEqual(read().number,'00',`step ${number} must never fall back to 00`);
+        assert.ok(read().title.length>0,`step ${number} title must never be empty`);
+        const count=segButtons(document).length;
+        for(let index=0;index<count;index++){
+          const button=segButtons(document)[index];
+          if(button)clickNode(document,button);
+          assert.equal(read().number,expected.number,`step ${number} number survives segment clicks`);
+          assert.equal(read().title,expected.title,`step ${number} title survives segment clicks`);
+          assert.notEqual(read().number,'00',`step ${number} must never fall back to 00`);
+        }
+      }
+    });
+  }
+});
+
+test('explicit navigation returns to the top while a re-render keeps the position',()=>{
+  withStubDom(document=>{
+    const store={step:3,tab:'operate',segs:{},scroll:0};
+    const {controller,root}=mountRealStep(renderStep3,store,3,'航路规划');
+    const body=document.getElementById('workbenchBody');
+    // 让滚动范围可计算，模拟真实容器的 scrollHeight / clientHeight
+    body.scrollHeight=1200;body.clientHeight=400;
+
+    // 同一视图的 mutation/重渲染：由 main.js 保存并恢复滚动位置，mount 不得重置
+    body.scrollTop=240;
+    store.scroll=body.scrollTop;
+    const remounted=renderWorkflowSteps({step:{render:renderStep3},context:stepContext()});
+    controller.mount({root:remounted,step:{render:renderStep3}});
+    body.scrollTop=Math.min(store.scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+    assert.equal(body.scrollTop,240,'a re-render keeps the scroll position');
+    assert.equal(store.scroll,240,'a re-render keeps the stored scroll position');
+
+    // 显式切换一级标签：回到该任务顶部，同时把 scroll 状态归零
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assert.equal(body.scrollTop,0,'switching a tab scrolls back to the top');
+    assert.equal(store.scroll,0,'switching a tab resets the stored scroll');
+
+    // 显式切换二级分段：同样回到顶部
+    body.scrollTop=320;
+    store.scroll=320;
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='adv-diagnostics'));
+    assert.equal(body.scrollTop,0,'switching a segment scrolls back to the top');
+    assert.equal(store.scroll,0,'switching a segment resets the stored scroll');
+    assertOnlyVisible(remounted,'advanced','adv-diagnostics');
+  });
+});
+
+test('step 05 device parameters use a two-layer card layout and keep the collect contract',()=>{
+  const css=readFileSync(new URL('../cns_planner/web/css/components.css',import.meta.url),'utf8');
+  const rule=/\.device-row\{[\s\S]*?\}/.exec(css);
+  assert.ok(rule,'.device-row must have its own layout rule');
+  // 不再依赖四列布局；名称/角色一行，两个参数各占半宽
+  assert.match(rule[0],/grid-template-areas/,'.device-row must use grid-template-areas');
+  assert.match(rule[0],/"name\s+role"/,'the first row is name + role');
+  assert.match(rule[0],/"radius\s+mtbf"/,'the second row is radius + mtbf');
+  assert.doesNotMatch(rule[0],/1\.5fr/,'.device-row must not keep the cramped four-column template');
+  assert.equal((rule[0].match(/minmax\(0,1fr\)/g)||[]).length,2,'two equal columns for the numeric inputs');
+  assert.match(css,/@container workbench \(max-width:340px\)[\s\S]*?"name"[\s\S]*?"role"[\s\S]*?"radius"[\s\S]*?"mtbf"/,'narrow content must degrade to a single column');
+  const bodyTheme=readFileSync(new URL('../cns_planner/web/css/workbench.css',import.meta.url),'utf8');
+  assert.match(bodyTheme,/container:workbench\s*\/\s*inline-size/,'the workbench body must be the query container');
+
+  withStubDom(document=>{
+    const context=stepContext();
+    context.flow.devices=[
+      {subsystem:'C',model:'Radio-1',device_id:'D1',radius_m:120,mtbf_h:2000,role:'primary'},
+      {subsystem:'N',model:'Nav-1',device_id:'D2',radius_m:80,mtbf:1500,role:'gap'}
+    ];
+    const store={step:5,tab:'operate',segs:{},scroll:0};
+    const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+    const root=renderWorkflowSteps({step:{render:renderStep5},context});
+    controller.mount({root,step:{render:renderStep5}});
+
+    const rows=findAll(root,'.device-row');
+    assert.equal(rows.length,2,'every device keeps its own row');
+    for(const [index,row] of rows.entries()){
+      // 结构：名称 + 弱化 role + 两个半宽输入，全部在同一张卡片里
+      assert.equal(findAll(row,'.device-name').length,1,`device ${index} keeps its name`);
+      assert.equal(findAll(row,'.device-role').length,1,`device ${index} keeps its role badge`);
+      const radius=findAll(row,'.device-field-radius');
+      const mtbf=findAll(row,'.device-field-mtbf');
+      assert.equal(radius.length,1,`device ${index} keeps exactly one R field`);
+      assert.equal(mtbf.length,1,`device ${index} keeps exactly one MTBF field`);
+      // bind/collect 契约：按索引查询的两个 data 属性必须原样保留
+      assert.ok(findByDataset(row,'deviceRadius',String(index)),`device ${index} keeps data-device-radius`);
+      assert.ok(findByDataset(row,'deviceMtbf',String(index)),`device ${index} keeps data-device-mtbf`);
+      assert.ok(findByDataset(radius[0],'deviceRadius',String(index)),`the R input sits inside its own field`);
+      assert.ok(findByDataset(mtbf[0],'deviceMtbf',String(index)),`the MTBF input sits inside its own field`);
+    }
+    // 值本身没有被改写（radius_m / mtbf_h / mtbf 原样输出）
+    assert.equal(findByDataset(root,'deviceRadius','0').attributes.value,'120');
+    assert.equal(findByDataset(root,'deviceMtbf','0').attributes.value,'2000');
+    assert.equal(findByDataset(root,'deviceMtbf','1').attributes.value,'1500','mtbf fallback field is preserved');
+    // 设备名称允许换行、role 弱化显示，两者都不再是表格列
+    assert.match(findByDataset(root,'deviceRadius','0').parentNode.className,/device-field/,'the R input lives in a labelled field');
+    assert.equal(findAll(rows[0],'.device-name')[0].textContent,'C · Radio-1','the device name keeps subsystem · model');
+    assert.equal(findAll(rows[0],'.device-role')[0].textContent,'primary','the role stays available as a weak badge');
+    // 按钮保留：正常两列（窄屏换行由 @container 负责）
+    assert.ok(document.getElementById('saveDevices'),'save devices stays mounted');
+    assert.ok(document.getElementById('planCoverage'),'run site planning stays mounted');
+  });
 });
 
 export {StubNode,installStubDom,renderWorkflowSteps,renderStep1,createWorkbench};

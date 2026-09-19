@@ -7,11 +7,16 @@
 //  - 面板与分段结构直接从已挂载 DOM 发现：一级面板是根的直属
 //    [data-panel-group]，二级分段是该面板内的 [data-seg-name]（名称取自
 //    data-seg-label）。新增面板/分段不需要在 main.js 里同步 metadata；
-//  - 所有面板始终存在于 DOM 中（便于审计与测试），仅由根节点 data 属性
-//    经 CSS 控制显隐，因此切换标签不需要重新渲染业务内容；
+//  - 所有面板始终存在于 DOM 中（便于审计与测试），显隐由本模块直接切换到
+//    真实 DOM 上（.wb-panel-active / .wb-seg-active），因此切换标签不需要
+//    重新渲染业务内容；根节点 data-tab / data-seg 只作为状态与调试记录，
+//    不再驱动任何枚举 CSS 选择器（枚举 selector 会在切换后让同组全部显隐失效）；
 //  - 一级/二级点击由本模块自行委托绑定，main.js 不承担 DOM 导航细节；
-//  - mutation / renderWorkflow() 之后保持：当前 step、一级标签、二级标签
-//    与滚动位置，不会跳回顶部或第一个标签；
+//    点击用 closest('[data-wb-tab],[data-wb-seg]') 并限定在当前导航区域内，
+//    按钮内部再加 span/图标也不会失效；
+//  - mutation / renderWorkflow() 重新挂载时保持：当前 step、一级标签、二级标签
+//    与滚动位置，不会跳回顶部或第一个标签；只有用户显式点击一级标签或二级
+//    分段才回到该子任务顶部（scrollTop 与 scroll 状态一起归零）；
 //  - 本模块只做展示组织，不读取也不写入任何业务状态。
 // =========================================================
 // 本模块自带转义，避免与 common.js 形成循环依赖。
@@ -32,6 +37,30 @@ const TAB_IDS=WORKBENCH_TABS.map(tab=>tab.id);
 
 function normalizeTab(tab){
   return TAB_IDS.includes(tab)?tab:'operate';
+}
+
+// ---- 真实 DOM 显隐状态类 ----------------------------------------------------
+// 一级面板与二级分段各只有一个可见状态类：同一时刻严格只有一个元素带该类。
+// CSS 只定义 .wb-panel{display:none}/.wb-panel-active{display:block} 与
+// .wb-seg{display:none}/.wb-seg-active{display:block}，不做任何按 id 枚举或
+// 按前缀兜底的显隐规则，因此新增面板/分段无需再补 CSS。
+const PANEL_ACTIVE='wb-panel-active';
+const SEG_ACTIVE='wb-seg-active';
+
+/** 取第一个非空文本：面板元数据优先，其次步骤声明，最后是上次缓存。 */
+function firstText(...values){
+  for(const value of values){
+    const text=String(value==null?'':value).trim();
+    if(text)return text;
+  }
+  return '';
+}
+
+/** 节点是否位于容器内（沿父链判断，等价于 container.contains(node) 的深度语义）。 */
+function inside(node,container){
+  if(!node||!container)return false;
+  for(let current=node;current;current=current.parentNode)if(current===container)return true;
+  return false;
 }
 
 // ---- 纯标记片段 -------------------------------------------------------------
@@ -179,7 +208,7 @@ function button(className,label,dataset){
  * @param {{getState:Function,setState:Function}} options
  */
 export function createWorkbench({getState,setState}={}){
-  let currentStep=null,mountedRoot=null;
+  let currentStep=null,mountedRoot=null,headMeta=null;
 
   const readState=()=>{
     const value=(getState&&getState())||{};
@@ -236,16 +265,31 @@ export function createWorkbench({getState,setState}={}){
     return map;
   }
 
+  /** 某个一级面板直属的二级分段节点（最近的 [data-panel-group] 祖先必须是它自己）。 */
+  function segmentNodes(panelNode){
+    const list=[];
+    if(!panelNode||typeof panelNode.querySelectorAll!=='function')return list;
+    for(const node of panelNode.querySelectorAll('[data-seg-name]')){
+      let owner=null;
+      for(let current=node.parentNode;current;current=current.parentNode){
+        if(current.dataset&&current.dataset.panelGroup){owner=current;break;}
+      }
+      if(owner!==panelNode)continue;
+      const id=String(node.dataset.segName||'');
+      if(id)list.push({id,node});
+    }
+    return list;
+  }
+
   /** 该一级标签下真实的二级分段（按 DOM 顺序，标签来自自描述属性）。 */
   const segmentsFor=tab=>{
     const found=panelNodes().find(item=>item.group===normalizeTab(tab));
     if(!found)return [];
-    const fallback=declaredLabels(found.node),list=[];
-    for(const node of found.node.querySelectorAll('[data-seg-name]')){
-      const id=String(node.dataset.segName||'');
-      if(!id)continue;
-      list.push({id,label:String(node.dataset.segLabel||'')||fallback.get(id)||id});
-    }
+    const fallback=declaredLabels(found.node);
+    const list=segmentNodes(found.node).map(item=>({
+      id:item.id,
+      label:String(item.node.dataset.segLabel||'')||fallback.get(item.id)||item.id
+    }));
     if(list.length)return list;
     return String(found.node.dataset.segIds||'').split(/\s+/).filter(Boolean)
       .map(id=>({id,label:fallback.get(id)||id}));
@@ -261,11 +305,18 @@ export function createWorkbench({getState,setState}={}){
 
   // ---- 导航事件：由工作台自己绑定，不重复注册，不依赖 main.js ---------------
   // 一次委托同时覆盖 #workbenchTabs（一级）与 #workbenchSegs（二级）；
-  // 导航只重绘导航与显隐属性，不重新渲染业务内容，因此不丢草稿与状态。
+  // 导航只重绘导航与真实 DOM 显隐状态，不重新渲染业务内容，因此不丢草稿与状态。
   function activate(target){
-    if(!target||!target.dataset)return;
-    if(target.dataset.wbTab)return {tab:target.dataset.wbTab};
-    if(target.dataset.wbSeg)return {seg:target.dataset.wbSeg,segSet:target.dataset.wbSegSet};
+    if(!target||typeof target.closest!=='function')return null;
+    // 不用 event.target 本身：按钮内部以后加 span / 图标 / 文字包装仍然有效
+    const node=target.closest('[data-wb-tab],[data-wb-seg]');
+    if(!node||!node.dataset)return null;
+    // 只接受工作台导航区域内的点击，避免误伤地图或其他面板上的同名属性
+    const inTabs=inside(node,document.getElementById('workbenchTabs'));
+    const inSegs=inside(node,document.getElementById('workbenchSegs'));
+    if(!inTabs&&!inSegs)return null;
+    if(node.dataset.wbTab)return {tab:node.dataset.wbTab};
+    if(node.dataset.wbSeg)return {seg:node.dataset.wbSeg,segSet:node.dataset.wbSegSet};
     return null;
   }
 
@@ -284,17 +335,32 @@ export function createWorkbench({getState,setState}={}){
   const controller={
     clearState(){
       writeState({tab:'operate',segs:{},scroll:0});
+      const body=this.body();
+      if(body)body.scrollTop=0;
     },
 
     body(){return document.getElementById('workbenchBody');},
 
+    /**
+     * 把当前一级标签与二级分段落到真实 DOM 上。
+     * 同一时刻严格只有 1 个一级面板可见；有分段的面板内严格只有 1 个分段可见。
+     * data-tab / data-seg 继续写入根节点，只用于状态与调试，不参与显隐。
+     */
     applyView(){
       const root=(mountedRoot&&mountedRoot.isConnected!==false)?mountedRoot:document.getElementById('workbenchPanel');
-      if(root&&currentStep){
-        const state=readState();
-        root.dataset.tab=state.tab;
-        const seg=activeSeg(state);
-        if(seg)root.dataset.seg=seg;else delete root.dataset.seg;
+      if(!root||!currentStep)return;
+      const state=readState();
+      root.dataset.tab=state.tab;
+      const seg=activeSeg(state);
+      if(seg)root.dataset.seg=seg;else delete root.dataset.seg;
+      for(const {group,node} of panelNodes()){
+        const panelActive=group===state.tab;
+        node.classList.toggle(PANEL_ACTIVE,panelActive);
+        const list=segmentNodes(node);
+        if(!list.length)continue; // 没有二级分段的面板：内容始终可见
+        // 非当前标签下的分段全部收起，保证任何时候只有 1 个 .wb-seg-active
+        const chosen=panelActive&&seg&&list.some(item=>item.id===seg)?seg:'';
+        for(const item of list)item.node.classList.toggle(SEG_ACTIVE,item.id===chosen);
       }
     },
 
@@ -331,22 +397,37 @@ export function createWorkbench({getState,setState}={}){
       container.append(host);
     },
 
-    /** 更新步骤标题区：优先使用面板自带的标题，其次用步骤声明。 */
+    /**
+     * 更新步骤标题区：面板自带的 [data-workbench-head] 是唯一权威来源。
+     *
+     * 该节点只读取、**不移除**：它是后续每一次 renderNavigation 的标题元数据。
+     * 之前这里把节点摘掉，于是第二次 head() 既没有面板元数据、步骤对象也没有
+     * number/title，真实浏览器就显示成 "00" 与空标题说明。节点常驻 DOM 并置
+     * hidden（CSS 亦不显示），缓存与节点双重兜底，任何 tab/segment 点击后标题不变。
+     */
     head(){
       const step=currentStep||{};
       const root=mountedRoot||document.getElementById('workbenchPanel')||document.getElementById('workflowPanel');
-      const host=root?root.querySelector('[data-workbench-head]'):null;
+      const host=root&&typeof root.querySelector==='function'?root.querySelector('[data-workbench-head]'):null;
+      if(host){
+        headMeta={
+          number:firstText(host.dataset?.workbenchNumber),
+          title:firstText(host.dataset?.workbenchTitle),
+          note:firstText(host.dataset?.workbenchNote)
+        };
+        host.hidden=true;
+      }
+      const meta=headMeta||{number:'',title:'',note:''};
       const number=document.getElementById('workbenchStepNumber');
       const title=document.getElementById('workbenchStepTitle');
       const note=document.getElementById('workbenchStepNote');
-      const panelNumber=host?host.dataset.workbenchNumber:'';
-      const panelTitle=host?host.dataset.workbenchTitle:'';
-      const panelNote=host?host.dataset.workbenchNote:'';
-      if(number)number.textContent=String(panelNumber||step.number||'').padStart(2,'0');
-      if(title)title.textContent=panelTitle||step.title||'';
-      if(note)note.textContent=panelNote||step.note||'';
-      // 只移除面板自带的标题占位；wb-root 与全部业务内容必须留在 DOM 中
-      if(host&&host.parentNode)host.parentNode.removeChild(host);
+      // 禁止写出 "00" 或空标题：只有拿到真实文本才更新，拿不到就保留上一次的值
+      const numberText=firstText(meta.number,step.number);
+      const titleText=firstText(meta.title,step.title);
+      const noteText=firstText(meta.note,step.note);
+      if(number&&numberText)number.textContent=numberText.padStart(2,'0');
+      if(title&&titleText)title.textContent=titleText;
+      if(note&&noteText)note.textContent=noteText;
     },
 
     /** 只重绘导航（标题、一级标签、二级分段）与显隐属性。 */
@@ -380,10 +461,14 @@ export function createWorkbench({getState,setState}={}){
     /**
      * 一次标签点击：写状态、重绘导航、更新显隐。
      * 不重新渲染业务内容，因此表单草稿与列表状态保持不变。
+     *
+     * 显式切换一级标签或二级分段 = 进入另一个子任务，必须回到该任务顶部：
+     * scrollTop 与 scroll 状态一起归零。同一 tab/segment 因 mutation /
+     * renderWorkflow() 重新挂载时不会走到这里，滚动位置仍由 main.js 恢复。
      */
     navigate({tab,seg,segSet}={}){
       const state=readState();
-      const patch={};
+      const patch={scroll:0};
       if(tab&&TAB_IDS.includes(tab))patch.tab=tab;
       if(seg){
         const set=segSet||(patch.tab||state.tab);
@@ -392,11 +477,7 @@ export function createWorkbench({getState,setState}={}){
       writeState(patch);
       this.renderNavigation();
       const body=this.body();
-      if(body){
-        // 切换标签后内容高度变化，滚动位置按容器实际范围收敛，不强制回到顶部
-        const state2=readState();
-        body.scrollTop=Math.min(state2.scroll,Math.max(0,body.scrollHeight-body.clientHeight));
-      }
+      if(body)body.scrollTop=0;
       return readState();
     },
 

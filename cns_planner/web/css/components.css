@@ -419,17 +419,73 @@ td:first-child,th:first-child{padding-left:var(--sp-6)}
 .grid-theme-controls label:has(input[type="checkbox"]:checked){border-color:var(--brand-line);background:var(--brand-soft);color:var(--brand-deep);font-weight:600}
 .grid-theme-note{display:block;padding-top:var(--sp-4);border-top:1px solid var(--line-soft);color:var(--ink-faint);font-size:var(--fs-micro);line-height:1.5}
 
-.device-row{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.7fr) minmax(0,.9fr) auto;gap:var(--sp-3);align-items:end;padding:var(--sp-3) 0;border-bottom:1px solid var(--line-soft);font-size:var(--fs-micro)}
-.device-row label{margin:0}
-.device-row input{padding:var(--sp-3);margin:0}
+/* Step05 设备参数：右栏正文只有约 340–392px，四列会把两个输入框挤到无法使用。
+   改为卡片式两层布局：第一行名称 + 弱化 role，第二行两个数字输入各占半宽；
+   更窄时（容器 <=340px）降级成单列，任何宽度下都不出现横向滚动。 */
+.device-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  grid-template-areas:
+    "name   role"
+    "radius mtbf";
+  gap:var(--sp-3) var(--sp-4);
+  align-items:end;
+  padding:var(--sp-4) 0;
+  border-bottom:1px solid var(--line-soft);
+  font-size:var(--fs-micro);
+}
+.device-row .device-name{
+  grid-area:name;
+  min-width:0;
+  color:var(--ink-strong);
+  font-weight:650;
+  line-height:1.5;
+  overflow-wrap:anywhere;
+}
+.device-row .device-role{
+  grid-area:role;
+  justify-self:end;
+  align-self:start;
+  max-width:100%;
+  padding:1px var(--sp-3);
+  border:1px solid var(--line-soft);
+  border-radius:var(--r-xs);
+  background:var(--bg-subtle);
+  color:var(--ink-faint);
+  font-weight:400;
+  line-height:1.5;
+  overflow-wrap:anywhere;
+}
+.device-row .device-field{display:block;grid-area:auto;margin:0}
+.device-row .device-field-radius{grid-area:radius}
+.device-row .device-field-mtbf{grid-area:mtbf}
+.device-row input{width:100%;padding:var(--sp-3);margin:0}
+
+/* 更窄的正文宽度：名称 / role / 两个参数上下排成单列 */
+@container workbench (max-width:340px){
+  .device-row{
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:
+      "name"
+      "role"
+      "radius"
+      "mtbf";
+    align-items:stretch;
+  }
+  .device-row .device-role{justify-self:start}
+  /* 保存设备参数 / 运行布站：窄屏换行而不是压缩按钮 */
+  .device-list+.button-row{flex-wrap:wrap}
+  .device-list+.button-row>*{flex:1 1 140px}
+}
 
 .equipment-reference-card{border-left-color:var(--accent)}
 .equipment-reference-card b span{font-weight:400;color:var(--ink-muted)}
 .reference-site-row button{white-space:nowrap}
 
 /* =========================================================
-   8. 分段导航（二级 tab，纯 CSS 显隐）
-   由 workbench.js 在根节点写入 data-seg 属性
+   8. 分段导航（二级 tab）
+   显隐由 workbench.js 在真实 DOM 上切换状态类；
+   根节点 data-tab / data-seg 只记录状态，供调试与审计
    ========================================================= */
 
 .segmented{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
@@ -447,40 +503,21 @@ td:first-child,th:first-child{padding-left:var(--sp-6)}
 .segmented button:hover{background:var(--bg-hover);color:var(--brand-deep)}
 .segmented button.seg-active{background:var(--brand-soft);border-color:var(--brand-line);color:var(--brand-deep)}
 
-/* 一级标签内容：一次只显示一组 */
+/* 一级标签内容：一次只显示一组。
+   workbench.js 直接把 .wb-panel-active 切到当前面板的真实节点上；
+   根节点的 data-tab / data-seg 只是状态与调试记录，不参与显隐。 */
 .wb-panel{display:none}
-.wb-root[data-tab="operate"]>[data-panel-group="operate"],
-.wb-root[data-tab="result"]>[data-panel-group="result"],
-.wb-root[data-tab="advanced"]>[data-panel-group="advanced"]{display:block}
+.wb-panel-active{display:block}
 
 /* 二级分段内容：一次只显示一个子任务。
-   根节点 data-seg 记录当前生效的二级分段 id，二级分段 id 在整步内唯一。 */
+   workbench.js 直接把 .wb-seg-active 切到当前分段的真实节点上。
+   不写任何枚举选择器或前缀兜底：那种写法会在切换后让同组全部分段
+   同时 display:block，新增面板/分段也不必再补 CSS。 */
 .wb-seg{display:none}
-.wb-panel[data-seg-set="none"]>.wb-seg{display:block}
+.wb-seg-active{display:block}
 
-.wb-root[data-tab="operate"][data-seg="op-sites"]>[data-panel-group="operate"]>[data-seg-name="op-sites"],
-.wb-root[data-tab="operate"][data-seg="op-candidates"]>[data-panel-group="operate"]>[data-seg-name="op-candidates"],
-.wb-root[data-tab="operate"][data-seg="op-operational"]>[data-panel-group="operate"]>[data-seg-name="op-operational"],
-.wb-root[data-tab="operate"][data-seg="op-altitude"]>[data-panel-group="operate"]>[data-seg-name="op-altitude"],
-.wb-root[data-tab="result"][data-seg="res-route"]>[data-panel-group="result"]>[data-seg-name="res-route"],
-.wb-root[data-tab="result"][data-seg="res-feasibility"]>[data-panel-group="result"]>[data-seg-name="res-feasibility"],
-.wb-root[data-tab="result"][data-seg="res-compare"]>[data-panel-group="result"]>[data-seg-name="res-compare"],
-.wb-root[data-tab="advanced"][data-seg="adv-reference"]>[data-panel-group="advanced"]>[data-seg-name="adv-reference"],
-.wb-root[data-tab="advanced"][data-seg="adv-legacy"]>[data-panel-group="advanced"]>[data-seg-name="adv-legacy"],
-.wb-root[data-tab="advanced"][data-seg="adv-experiment"]>[data-panel-group="advanced"]>[data-seg-name="adv-experiment"],
-.wb-root[data-tab="advanced"][data-seg="adv-diagnostics"]>[data-panel-group="advanced"]>[data-seg-name="adv-diagnostics"],
-.wb-root[data-tab="advanced"][data-seg="adv-profile"]>[data-panel-group="advanced"]>[data-seg-name="adv-profile"]{
-  display:block;
-}
-
-/* 通用兜底：根节点有生效的 data-seg（非 none）时，按 tab 前缀显示对应分段。
-   新增面板/分段无需再补 CSS 选择器；上方的显式列表继续锁定 Step03 的
-   12 个分段语义，两者互不冲突（CSS 中后出现的规则优先）。 */
-.wb-root[data-tab="operate"]>[data-panel-group="operate"][data-seg-set="operate"]>[data-seg-name^="op-"],
-.wb-root[data-tab="result"]>[data-panel-group="result"][data-seg-set="result"]>[data-seg-name^="res-"],
-.wb-root[data-tab="advanced"]>[data-panel-group="advanced"][data-seg-set="advanced"]>[data-seg-name^="adv-"]{
-  display:block;
-}
+/* 步骤标题元数据节点：常驻 DOM（供每次导航读取），但永不参与显示 */
+.wb-root>[data-workbench-head]{display:none}
 
 /* 顶部栏/工作台的通用段按钮组（用于一级 tab） */
 .tabbar{display:flex;gap:var(--sp-2);padding:var(--sp-2);border-radius:var(--r-md);background:var(--bg-sunken)}
