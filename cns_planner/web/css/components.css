@@ -269,7 +269,10 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 
 .scroll-list{max-height:230px;overflow-y:auto;overflow-x:hidden;margin:var(--sp-4) 0;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg-surface)}
 .scroll-list:empty{display:none}
-.device-list{max-height:250px}
+/* 设备行超出高度时在列表内部滚动：之前只给了 max-height，内容溢出盒子，
+   与下方"保存设备参数 / 运行布站"按钮以及 nextStep 视觉重叠。
+   与 .scroll-list 一致地使用真实内部滚动容器。 */
+.device-list{max-height:250px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
 .coverage-results{max-height:250px;overflow-y:auto}
 .reference-site-list,.equipment-reference-list{max-height:280px}
 

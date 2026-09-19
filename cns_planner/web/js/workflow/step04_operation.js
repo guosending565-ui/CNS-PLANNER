@@ -1,9 +1,26 @@
-import {escapeHtml,shell,statusBadge,wbPanel,wbBlock} from './common.js';
+import {escapeHtml,shell,statusBadge,wbPanel,wbBlock,wbSegHint,wbDisclosure} from './common.js';
 import {renderProtectionBudget} from './protection_budget.js';
 import {renderDaaEncounterLab,bindDaaEncounterLab} from './daa_encounter_lab.js';
 import {
   V3D_CNS_SEPARATION_LABEL, V3D_STAGES, routePlannerV3AdoptionModel,
 } from './step03_routes.js';
+
+// 二级任务分段：id 稳定（run-*），标签是第一视觉层的业务语言。
+// 与 Step05 使用同一套 wbPanel/wbBlock/wbSegHint 机制：同一时刻只显示一个任务。
+const OPERATE_SEGMENTS=[
+  ['run-op-aircraft','飞行器能力'],
+  ['run-op-rules','飞行规则']
+];
+const RESULT_SEGMENTS=[
+  ['run-res-required','CNS需求'],
+  ['run-res-recommend','需求建议'],
+  ['run-res-corridor','服务走廊']
+];
+const ADVANCED_SEGMENTS=[
+  ['run-adv-timing','时间与场景'],
+  ['run-adv-safety','安全与耦合'],
+  ['run-adv-v3','V3 CNS评估']
+];
 
 const value=(object,key,fallback='')=>object?.[key]??fallback;
 const numberValue=value=>value===null||value===undefined?'':value;
@@ -143,9 +160,14 @@ function requirementPolicyPanel(flow){
     '<div class="demo-note">'+escapeHtml((model.algorithm_id||'manual_required_cns_v1')+'@'+(model.version||'1.0'))+'；运行上下文只通过 confirmed、可追溯 Policy 生成建议，不自动判断法规合规，也不会自动修改正式 RequiredCNS。</div>'+
     '<label>上下文作用域<select id="operationContextScope">'+scopeOptions+'</select></label><div class="form-grid">'+fields+input('operationContextSource','上下文来源','user_configuration','text')+'<label class="check-row"><input type="checkbox" id="operationContextConfirmed">字段均已确认</label></div>'+
     '<button class="secondary full" id="saveOperationContext">保存 Operation Context</button>'+
-    '<label>Requirement Policies JSON<textarea id="requirementPoliciesJson" rows="10">'+escapeHtml(JSON.stringify(policies.items||[],null,2))+'</textarea></label>'+
-    '<button class="secondary full" id="saveRequirementPolicies">保存 Policy 列表</button>'+
-    '<div class="flow-summary">Recommendation '+statusBadge(summary.status)+' · matched '+summary.matched+' · unknown '+summary.unknown+' · conflicts '+summary.conflicts+' · changes '+summary.changes+(summary.diverged?' · <strong>current 已与 recommendation 分叉</strong>':'')+'<pre>'+escapeHtml(diff)+'\n\n'+escapeHtml(provenance)+'</pre></div>'+
+    // Requirement Policies JSON 与 recommendation diff/provenance 是工程输入与证据，
+    // 默认收进 disclosure 以减少第一视觉层占用；控件仍挂载在 DOM 中且可编辑。
+    wbDisclosure('Requirement Policies JSON（工程输入，默认收起）',
+      '<label>Requirement Policies JSON<textarea id="requirementPoliciesJson" rows="10">'+escapeHtml(JSON.stringify(policies.items||[],null,2))+'</textarea></label>'+
+      '<button class="secondary full" id="saveRequirementPolicies">保存 Policy 列表</button>')+
+    '<div class="flow-summary">Recommendation '+statusBadge(summary.status)+' · matched '+summary.matched+' · unknown '+summary.unknown+' · conflicts '+summary.conflicts+' · changes '+summary.changes+(summary.diverged?' · <strong>current 已与 recommendation 分叉</strong>':'')
+      +wbDisclosure('recommendation diff / provenance','<pre>'+escapeHtml(diff)+'\n\n'+escapeHtml(provenance)+'</pre>')
+      +'</div>'+
     '<div class="button-row"><button class="secondary" id="evaluateRequiredRecommendation">Evaluate Recommendation</button><button class="primary" id="adoptRequiredRecommendation" '+(summary.status!=='recommendation_ready'||summary.diverged?'disabled':'')+'>Adopt（显式更新 RequiredCNS）</button></div>';
 }
 
@@ -212,13 +234,32 @@ export function render({flow}){
   const timingPanel=operationalTimingPanel(flow);
   const corridorPanel=corridorPolicyPanel(flow);
   const requirementPanel=requirementPolicyPanel(flow);
-  const operate='<div class="demo-note">AircraftCNSProfileCatalog：'+escapeHtml(flow.aircraft_source)+' · '+catalog.count+' 条；机载能力不会自动成为任务需求</div><label>飞行器能力档案<select id="aircraftProfile">'+profileOptions+'</select></label>'+profileSummary+
-    '<div class="form-grid"><label>厂家<input id="manufacturer" value="'+escapeHtml(value(aircraft,'manufacturer','工程测试厂家'))+'"></label><label>型号<input id="model" value="'+escapeHtml(value(aircraft,'model','Demo-A1'))+'"></label><label>巡航速度 m/s<input type="number" id="cruise" value="'+value(aircraft,'cruise_speed_mps',25)+'"></label><label>最大速度 m/s<input type="number" id="maximum" value="'+value(aircraft,'max_speed_mps',40)+'"></label><label>MTBF h<input type="number" id="mtbf" value="'+value(aircraft,'mtbf_h',10000)+'"></label><label>绑定航路<select id="aircraftRoute">'+routeOptions+'</select></label><label>A→B 高度 m<input type="number" id="heightAB" value="'+value(rules,'height_ab_m',120)+'"></label><label>B→A 高度 m<input type="number" id="heightBA" value="'+value(rules,'height_ba_m',150)+'"></label><label>高度模式<select id="heightMode"><option value="different">双向不同高度</option><option value="same">同高度层</option></select></label><label>水平间隔 m<input type="number" id="separation" value="'+value(rules,'horizontal_separation_m',100)+'"></label><label>感知→平台 ms<input type="number" id="delaySensor" value="'+value(rules,'delay_sensor_to_platform_ms',500)+'"></label><label>平台→航空器 ms<input type="number" id="delayCommand" value="'+value(rules,'delay_platform_to_aircraft_ms',500)+'"></label></div><label>方向规则<select id="directionRule"><option>按航向分层</option><option>同一航路仅一架</option><option>同一方向仅一架</option></select></label><button class="primary full" id="saveRules">保存并校验规则</button>'+
+  // ---- 操作：飞行器能力 / 飞行规则 -------------------------------------------
+  const aircraftPanel='<div class="demo-note">AircraftCNSProfileCatalog：'+escapeHtml(flow.aircraft_source)+' · '+catalog.count+' 条；机载能力不会自动成为任务需求</div><label>飞行器能力档案<select id="aircraftProfile">'+profileOptions+'</select></label>'+profileSummary+
+    '<div class="form-grid"><label>厂家<input id="manufacturer" value="'+escapeHtml(value(aircraft,'manufacturer','工程测试厂家'))+'"></label><label>型号<input id="model" value="'+escapeHtml(value(aircraft,'model','Demo-A1'))+'"></label><label>巡航速度 m/s<input type="number" id="cruise" value="'+value(aircraft,'cruise_speed_mps',25)+'"></label><label>最大速度 m/s<input type="number" id="maximum" value="'+value(aircraft,'max_speed_mps',40)+'"></label><label>MTBF h<input type="number" id="mtbf" value="'+value(aircraft,'mtbf_h',10000)+'"></label></div>';
+  const rulesPanel='<div class="form-grid"><label>绑定航路<select id="aircraftRoute">'+routeOptions+'</select></label><label>A→B 高度 m<input type="number" id="heightAB" value="'+value(rules,'height_ab_m',120)+'"></label><label>B→A 高度 m<input type="number" id="heightBA" value="'+value(rules,'height_ba_m',150)+'"></label><label>高度模式<select id="heightMode"><option value="different">双向不同高度</option><option value="same">同高度层</option></select></label><label>水平间隔 m<input type="number" id="separation" value="'+value(rules,'horizontal_separation_m',100)+'"></label><label>感知→平台 ms<input type="number" id="delaySensor" value="'+value(rules,'delay_sensor_to_platform_ms',500)+'"></label><label>平台→航空器 ms<input type="number" id="delayCommand" value="'+value(rules,'delay_platform_to_aircraft_ms',500)+'"></label></div><label>方向规则<select id="directionRule"><option>按航向分层</option><option>同一航路仅一架</option><option>同一方向仅一架</option></select></label><button class="primary full" id="saveRules">保存并校验规则</button>'+
     (flow.aircraft?'<div class="flow-summary">Legacy λ='+(flow.aircraft.lambda_per_hour*1000000).toFixed(3)+'×10⁻⁶/h（兼容字段，非 P4 ReliabilitySpec 推断） · 总时延 '+rules.total_delay_ms+' ms · 反应距离 '+rules.reaction_distance_m+' m<br>'+statusBadge(rules.status)+' '+escapeHtml(rules.message)+'</div>':'');
-  const resultPanel='<h3>Required CNS Performance</h3><label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div><button class="secondary full" id="saveRequiredCns">保存 RequiredCNS</button><div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持 pending_confirmation，不提供安全阈值默认值。</div>'+requirementPanel+'<div class="demo-note">ReliabilitySpec 是统计属性，不会随机决定当前服务状态；demo 与未确认参数仅作待核实输入。</div><div class="flow-summary"><strong>Ground Device Capability</strong><br>'+escapeHtml(devices)+'</div>';
-  const body=wbPanel('operate',wbBlock('飞行器与运行规则',operate))
-    +wbPanel('result',wbBlock('需求与设备能力',resultPanel))
-    +wbPanel('advanced',wbBlock('高级运行模型',timingPanel+renderProtectionBudget(flow.protection_envelope)+renderDaaEncounterLab(flow)+v3Panel+corridorPanel+safetyPanel))
+  // ---- 结果：CNS需求 / 需求建议 / 服务走廊 ------------------------------------
+  // Aircraft Capability（操作）≠ Required CNS ≠ Ground Device Capability：
+  // 三者各自独立成段，不合并成单一结论，也不互相推断。
+  const requiredCnsPanel='<h3>Required CNS Performance</h3><label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div><button class="secondary full" id="saveRequiredCns">保存 RequiredCNS</button><div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持 pending_confirmation，不提供安全阈值默认值。</div>';
+  const groundCapabilityPanel='<div class="demo-note">ReliabilitySpec 是统计属性，不会随机决定当前服务状态；demo 与未确认参数仅作待核实输入。</div><div class="flow-summary"><strong>Ground Device Capability</strong><br>'+escapeHtml(devices)+'</div>';
+  // ---- 高级：时间与场景 / 安全与耦合 / V3 CNS评估 -----------------------------
+  const body=wbPanel('operate','',{segments:[
+      ['run-op-aircraft','飞行器能力',wbBlock('飞行器能力',wbSegHint(OPERATE_SEGMENTS,'run-op-aircraft')+aircraftPanel)],
+      ['run-op-rules','飞行规则',wbBlock('飞行规则',wbSegHint(OPERATE_SEGMENTS,'run-op-rules')+rulesPanel)]
+    ]})
+    +wbPanel('result','',{segments:[
+      ['run-res-required','CNS需求',wbBlock('CNS 需求',wbSegHint(RESULT_SEGMENTS,'run-res-required')+requiredCnsPanel)
+        +wbBlock('地面设备能力',groundCapabilityPanel)],
+      ['run-res-recommend','需求建议',wbBlock('需求建议',wbSegHint(RESULT_SEGMENTS,'run-res-recommend')+requirementPanel)],
+      ['run-res-corridor','服务走廊',wbBlock('服务走廊',wbSegHint(RESULT_SEGMENTS,'run-res-corridor')+corridorPanel)]
+    ]})
+    +wbPanel('advanced','',{segments:[
+      ['run-adv-timing','时间与场景',wbBlock('时间与场景',wbSegHint(ADVANCED_SEGMENTS,'run-adv-timing')+timingPanel+renderProtectionBudget(flow.protection_envelope)+renderDaaEncounterLab(flow))],
+      ['run-adv-safety','安全与耦合',wbBlock('安全与耦合',wbSegHint(ADVANCED_SEGMENTS,'run-adv-safety')+safetyPanel)],
+      ['run-adv-v3','V3 CNS评估',wbBlock('V3 CNS评估',wbSegHint(ADVANCED_SEGMENTS,'run-adv-v3')+v3Panel)]
+    ]})
     +'<button class="secondary full" id="nextStep" '+(!flow.steps['4']?'disabled':'')+'>下一步：CNS规划</button>';
   return shell('04','运行规则','Aircraft Capability、Required CNS Performance 与地面设备能力相互独立。',body);
 }

@@ -23,4 +23,4 @@ export const shell=(number,title,text,body)=>
 /** 一级标签面板 / 二级分段面板的快捷构造，转发到 workbench 组件。
  *  wbSection 只接受"标题 + 状态徽章"；标题 + 整块正文请用 wbBlock，
  *  否则正文会落进 .wb-section-head 的 flex 行里被挤压。 */
-export {panel as wbPanel,segPanel as wbSegPanel,segmentHint as wbSegHint,section as wbSection,block as wbBlock,metricCard as wbCard,emptyState as wbEmpty,snapshotLine as wbLine,engineFacts as wbEngine} from './workbench.js';
+export {panel as wbPanel,segPanel as wbSegPanel,segmentHint as wbSegHint,section as wbSection,block as wbBlock,metricCard as wbCard,emptyState as wbEmpty,snapshotLine as wbLine,engineFacts as wbEngine,disclosure as wbDisclosure} from './workbench.js';

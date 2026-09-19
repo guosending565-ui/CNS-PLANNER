@@ -17,7 +17,7 @@ import path from 'node:path';
 import {render as renderStep1} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
 import {render as renderStep3} from '../cns_planner/web/js/workflow/step03_routes.js';
-import {render as renderStep4} from '../cns_planner/web/js/workflow/step04_operation.js';
+import {render as renderStep4,bind as bindStep4} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep5,bind as bindStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6} from '../cns_planner/web/js/workflow/step06_review.js';
 import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
@@ -1163,6 +1163,233 @@ test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
     assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false']);
   });
+});
+
+// ---- Step04：任务式二级工作台 ------------------------------------------------
+//
+// Step04 曾经是三个"超长页面"。重组后每个一级标签下都是一组任务分段，
+// 这一组断言锁定"任务可切换、始终只有一个分段可见、控件与 bind 契约不变"，
+// 并且 Aircraft Capability / Required CNS / Ground Device Capability 三层各自独立成段。
+
+const STEP04_SEGMENTS={
+  operate:[['run-op-aircraft','飞行器能力'],['run-op-rules','飞行规则']],
+  result:[['run-res-required','CNS需求'],['run-res-recommend','需求建议'],['run-res-corridor','服务走廊']],
+  advanced:[['run-adv-timing','时间与场景'],['run-adv-safety','安全与耦合'],['run-adv-v3','V3 CNS评估']]
+};
+
+/** Step04 的关键控件：既有业务 id，重组后必须一个不少（条件渲染的 DAA 滑块除外）。 */
+const STEP04_CONTROLS=[
+  // 操作 · 飞行器能力
+  'aircraftProfile','manufacturer','model','cruise','maximum','mtbf',
+  // 操作 · 飞行规则
+  'aircraftRoute','heightAB','heightBA','heightMode','separation','delaySensor','delayCommand',
+  'directionRule','saveRules',
+  // 结果 · CNS需求
+  'requiredScope','saveRequiredCns',
+  'cRequired','cServiceType','cTechnology','cNetworkScope','cInterfaces','cCoverage','cMaxGap',
+  'cMaxLatency','cLostLink','cContinuousOutage','cCumulativeOutage','cAvailability','cRedundancy',
+  'cSource','cConfirmed','cContingency',
+  'nRequired','nTechnology','nCoverage','nHorizontalError','nVerticalError','nIntegrity',
+  'nTimeToAlert','nDegradation','nAvailability','nRedundancy','nSource','nConfirmed','nContingency',
+  'sRequired','sTargetCooperation','sSensorMode','sTechnology','sCoverage','sDetectionRange',
+  'sDetectionProbability','sMaxUpdate','sTrackLoss','sAlertLatency','sAvailability','sRedundancy',
+  'sSource','sConfirmed','sContingency',
+  // 结果 · 需求建议（Policy JSON / diff / provenance 收进 disclosure，但控件仍挂载）
+  'operationContextScope','operationContext_operation_mode','operationContext_airspace_context',
+  'operationContext_uas_traffic_context','operationContext_traffic_mix',
+  'operationContext_manned_traffic_density','operationContextSource','operationContextConfirmed',
+  'saveOperationContext','requirementPoliciesJson','saveRequirementPolicies',
+  'evaluateRequiredRecommendation','adoptRequiredRecommendation',
+  // 结果 · 服务走廊
+  'corridorRoute','corridorHalfWidth','corridorLower','corridorUpper','corridorSource',
+  'corridorConfirmed','saveCorridorPolicy',
+  // 高级 · 时间与场景
+  'serviceScenarioRoute','serviceScenarioEvents','serviceScenarioConfirmed','saveServiceScenario',
+  'rtDetect','rtTrack','rtProcessing','rtDecision','rtCommunication','rtReaction','rtSource',
+  'rtConfirmed','saveResponseBudget','encounterRelativeSpeed','encounterManeuver',
+  'encounterUncertainty','encounterSource','encounterConfirmed','saveEncounterScenario',
+  'evaluateProtectionBudget','daaTracks','daaPolicy','daaCapability','daaCommand',
+  'daaServiceRoute','daaBudget','saveDaaEncounter','evaluateDaaEncounter',
+  // 高级 · 安全与耦合
+  'safetyPolicySource','safetyPolicyConfirmed','safetyFailureCondition','safetyServiceState',
+  'saveSafetyPolicy','previewSafetyEvent','safetyEventPreview','coupledCondition',
+  'coupledObservations','coupledOperationalContext','previewCoupledEvent','coupledEventPreview',
+  // 高级 · V3 CNS评估
+  'assessV3AdoptedRoute',
+  // 步骤级
+  'nextStep'
+];
+
+test('step 04 declares the documented task segments',()=>{
+  const html=renderStep4(stepContext());
+  const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
+  const expected=Object.values(STEP04_SEGMENTS).flat().map(item=>item[0]);
+  assert.deepEqual(segs.slice().sort(),expected.slice().sort(),'step 04 segment ids');
+  assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
+  assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
+  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');
+  // 业务语言标签逐条锁定：段按钮的名称来自分段自身，而不是外部 metadata
+  for(const [id,label] of Object.values(STEP04_SEGMENTS).flat()){
+    assert.ok(html.includes('data-seg-name="'+id+'" data-seg-label="'+label+'"'),`segment ${id} keeps its business label`);
+    // 第一视觉层不把工程编号（P 编号 / 算法 id）当导航名称
+    assert.doesNotMatch(label,/^P\d|_v\d/,`segment ${id} must use business language`);
+  }
+});
+
+test('step 04 task navigation keeps exactly one segment visible and every control mounted',()=>{
+  withStubDom(document=>{
+    const store={step:4,tab:'operate',segs:{},scroll:0};
+    const {root}=mountRealStep(renderStep4,store,4,'运行规则');
+
+    // 入口：操作只显示"飞行器能力"
+    assertOnlyVisible(root,'operate','run-op-aircraft');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),STEP04_SEGMENTS.operate.map(item=>item[0]));
+    assert.deepEqual(segButtons(document).map(node=>node.textContent),STEP04_SEGMENTS.operate.map(item=>item[1]));
+
+    for(const [tab,segments] of Object.entries(STEP04_SEGMENTS)){
+      clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab===tab));
+      assert.equal(root.dataset.tab,tab);
+      assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),segments.map(item=>item[0]),`${tab} segment buttons`);
+      assert.deepEqual(segButtons(document).map(node=>node.textContent),segments.map(item=>item[1]),`${tab} segment labels`);
+      for(const [id] of segments){
+        clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg===id));
+        assert.equal(root.dataset.seg,id,`clicking ${id} selects it`);
+        assert.equal(store.segs[tab],id,`clicking ${id} stores it under ${tab}`);
+        // 每次严格只有 1 个分段可见：同组其他分段与别的一级标签都不能串显
+        assertOnlyVisible(root,tab,id);
+      }
+    }
+
+    // 8 个分段始终挂载 DOM（2 操作 + 3 结果 + 3 高级），只切 .wb-seg-active
+    const expectedSegments=Object.values(STEP04_SEGMENTS).flat().map(item=>item[0]);
+    assert.deepEqual(findAll(root,'[data-seg-name]').map(node=>node.dataset.segName).sort(),expectedSegments.slice().sort(),'every segment stays mounted');
+    // 全部原关键控件仍然存在，并且落在正常正文里（不是 .wb-section-head）
+    const missing=STEP04_CONTROLS.filter(id=>!document.getElementById(id));
+    assert.deepEqual(missing,[],`step 04 controls stay mounted: ${missing.join(', ')}`);
+    for(const id of STEP04_CONTROLS){
+      if(id==='nextStep')continue; // 步骤级"下一步"始终在所有面板之外，不属于任何 segment
+      const node=document.getElementById(id);
+      assert.equal(node.closest('.wb-section-head'),null,`#${id} must not sit inside .wb-section-head`);
+      assert.ok(node.closest('.wb-section'),`#${id} must sit inside a .wb-section body`);
+    }
+    const ids=findAll(root,'[id]').map(node=>node.id).filter(Boolean);
+    assert.equal(new Set(ids).size,ids.length,`step 04 duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+  });
+});
+
+test('step 04 keeps every task owning its own controls',()=>{
+  withStubDom(document=>{
+    const store={step:4,tab:'operate',segs:{},scroll:0};
+    mountRealStep(renderStep4,store,4,'运行规则');
+    const ownerOf=id=>{const node=document.getElementById(id);const seg=node&&node.closest('[data-seg-name]');return seg?seg.dataset.segName:null;};
+    const expected={
+      aircraftProfile:'run-op-aircraft',manufacturer:'run-op-aircraft',cruise:'run-op-aircraft',mtbf:'run-op-aircraft',
+      aircraftRoute:'run-op-rules',heightAB:'run-op-rules',heightMode:'run-op-rules',separation:'run-op-rules',
+      directionRule:'run-op-rules',saveRules:'run-op-rules',
+      requiredScope:'run-res-required',saveRequiredCns:'run-res-required',cConfirmed:'run-res-required',sCoverage:'run-res-required',
+      operationContextScope:'run-res-recommend',saveOperationContext:'run-res-recommend',
+      requirementPoliciesJson:'run-res-recommend',saveRequirementPolicies:'run-res-recommend',
+      evaluateRequiredRecommendation:'run-res-recommend',adoptRequiredRecommendation:'run-res-recommend',
+      corridorRoute:'run-res-corridor',corridorConfirmed:'run-res-corridor',saveCorridorPolicy:'run-res-corridor',
+      serviceScenarioRoute:'run-adv-timing',
+      saveResponseBudget:'run-adv-timing',saveEncounterScenario:'run-adv-timing',
+      evaluateProtectionBudget:'run-adv-timing',evaluateDaaEncounter:'run-adv-timing',
+      saveSafetyPolicy:'run-adv-safety',previewSafetyEvent:'run-adv-safety',
+      coupledCondition:'run-adv-safety',previewCoupledEvent:'run-adv-safety',
+      assessV3AdoptedRoute:'run-adv-v3'
+    };
+    for(const [id,segment] of Object.entries(expected)){
+      assert.equal(ownerOf(id),segment,`#${id} belongs to ${segment}`);
+    }
+    // 三个能力层级仍然各自独立成段：机载能力 ≠ Required CNS ≠ 地面设备能力/走廊
+    assert.notEqual(ownerOf('aircraftProfile'),ownerOf('saveRequiredCns'),'aircraft capability and required CNS stay in separate tasks');
+    assert.notEqual(ownerOf('saveRequiredCns'),ownerOf('corridorRoute'),'required CNS and corridor stay in separate tasks');
+  });
+});
+
+test('step 04 bind() resolves every control it queries',()=>{
+  withStubDom(document=>{
+    const store={step:4,tab:'operate',segs:{},scroll:0};
+    mountRealStep(renderStep4,store,4,'运行规则');
+    const registered=[];
+    const c={
+      flow:()=>({rules:{height_mode:'different'},operational_timing:{},encounter_3d_assessment:{},aircraft_profiles:{items:[]}}),
+      mutate:()=>{},resourceAction:()=>{},computeAction:()=>{},setStep:()=>{},
+      $:id=>document.getElementById(id),
+      actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;}
+    };
+    // 无条件访问的控件若缺席，这里会直接抛 TypeError
+    bindStep4(c);
+    assert.ok(document.getElementById('nextStep').onclick,'nextStep stays wired');
+    for(const id of ['saveRules','saveRequiredCns','saveOperationContext','saveRequirementPolicies',
+      'evaluateRequiredRecommendation','adoptRequiredRecommendation','saveServiceScenario','saveResponseBudget',
+      'saveEncounterScenario','evaluateProtectionBudget','saveCorridorPolicy','saveSafetyPolicy',
+      'previewSafetyEvent','previewCoupledEvent','saveDaaEncounter','evaluateDaaEncounter','assessV3AdoptedRoute']){
+      assert.ok(registered.includes(id),`bind() must still register ${id}`);
+    }
+    // 按钮契约不变：只重组展示层，端点与动作名保持原样
+    const source=readFileSync(new URL('../cns_planner/web/js/workflow/step04_operation.js',import.meta.url),'utf8');
+    for(const path of ['/api/cns-operation-context','/api/cns-requirement-policies',
+      '/api/cns-required-recommendation/evaluate','/api/cns-required-recommendation/adopt',
+      '/api/operational-timing','/api/protection-envelope/evaluate',
+      '/api/v3-cns-assessment/evaluate','/api/cns-service-corridor/evaluate','/api/cns/safety-policy',
+      '/api/cns/events/evaluate','/api/cns/coupled-events/evaluate']){
+      assert.ok(source.includes(path),`step 04 must keep the ${path} contract`);
+    }
+    // DAA Encounter Lab 仍由 Step04 组合进"时间与场景"任务，端点不变
+    const daaSource=readFileSync(new URL('../cns_planner/web/js/workflow/daa_encounter_lab.js',import.meta.url),'utf8');
+    assert.ok(daaSource.includes('/api/encounter-3d/evaluate'),'the DAA encounter lab keeps its endpoint');
+    assert.ok(source.includes("c.mutate('rules'"),'saveRules keeps c.mutate(rules)');
+    assert.ok(source.includes("c.mutate('required-cns'"),'saveRequiredCns keeps c.mutate(required-cns)');
+  });
+});
+
+test('step 04 keeps the chosen task after a re-render and returns to the top on a switch',()=>{
+  withStubDom(document=>{
+    const store={step:4,tab:'advanced',segs:{advanced:'run-adv-safety'},scroll:0};
+    const {controller,root}=mountRealStep(renderStep4,store,4,'运行规则');
+    assert.equal(root.dataset.tab,'advanced','the stored tab is restored');
+    assert.equal(root.dataset.seg,'run-adv-safety','the stored segment is restored');
+    assertOnlyVisible(root,'advanced','run-adv-safety');
+
+    // mutation / renderWorkflow() 重新挂载：保持当前任务与滚动位置
+    const body=document.getElementById('workbenchBody');
+    body.scrollHeight=1600;body.clientHeight=400;
+    body.scrollTop=360;store.scroll=360;
+    const remounted=renderWorkflowSteps({step:{render:renderStep4},context:stepContext()});
+    controller.mount({root:remounted,step:{render:renderStep4}});
+    body.scrollTop=Math.min(store.scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+    assert.equal(remounted.dataset.seg,'run-adv-safety','a re-render keeps the current task');
+    assert.equal(body.scrollTop,360,'a re-render keeps the scroll position');
+    assertOnlyVisible(remounted,'advanced','run-adv-safety');
+
+    // 显式切换一级/二级：回到该任务顶部
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assert.equal(remounted.dataset.seg,'run-res-required','a tab switch falls back to its first task');
+    assert.equal(body.scrollTop,0,'switching a tab returns to the top');
+    assertOnlyVisible(remounted,'result','run-res-required');
+    body.scrollTop=280;store.scroll=280;
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='run-res-corridor'));
+    assert.equal(body.scrollTop,0,'switching a segment returns to the top');
+    assert.equal(store.scroll,0,'switching a segment resets the stored scroll');
+    assertOnlyVisible(remounted,'result','run-res-corridor');
+
+    // 切回高级：该 tab 之前选过的任务必须恢复
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assert.equal(remounted.dataset.seg,'run-adv-safety','a previously chosen task is restored');
+    assertOnlyVisible(remounted,'advanced','run-adv-safety');
+  });
+});
+
+test('step 05 device list scrolls inside its own box instead of overflowing',()=>{
+  const css=readFileSync(new URL('../cns_planner/web/css/components.css',import.meta.url),'utf8');
+  const rule=/\.device-list\{([^}]*)\}/.exec(css);
+  assert.ok(rule,'.device-list must keep its own rule');
+  const body=rule[1];
+  assert.match(body,/max-height:250px/,'the device list keeps its bounded height');
+  assert.match(body,/overflow-y:auto/,'the device list must scroll vertically inside the box');
+  assert.match(body,/overflow-x:hidden/,'the device list must not overflow horizontally');
+  assert.match(body,/overscroll-behavior:contain/,'device scrolling must not chain to the workbench body');
 });
 
 export {StubNode,installStubDom,renderWorkflowSteps,renderStep1,createWorkbench};
