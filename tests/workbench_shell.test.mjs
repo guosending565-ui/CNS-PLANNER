@@ -397,7 +397,7 @@ test('every step renders exactly one panel per workbench tab',()=>{
 test('step 03 exposes the documented second-level segments',()=>{
   const html=renderStep3(stepContext());
   const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
-  for(const required of ['op-sites','op-candidates','op-operational','op-altitude','res-route','res-feasibility','res-compare','adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']){
+  for(const required of ['op-sites','op-candidates','op-operational','op-altitude','res-route','res-feasibility','res-risk-profile','res-compare','adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']){
     assert.ok(segs.includes(required),`missing segment ${required}`);
   }
   assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
@@ -491,12 +491,12 @@ test('step 03 discovers its segments from the active panel and restores selectio
     assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
       ['op-sites','op-candidates','op-operational','op-altitude']);
 
-    // 结果 → res-route，3 个二级按钮
+    // 结果 → res-route，4 个二级按钮
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
     assert.equal(root.dataset.tab,'result');
     assert.equal(root.dataset.seg,'res-route','result defaults to the first segment');
     assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
-      ['res-route','res-feasibility','res-compare']);
+      ['res-route','res-feasibility','res-risk-profile','res-compare']);
 
     // 高级 → adv-reference，5 个二级按钮
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
@@ -578,7 +578,7 @@ test('every step renders exactly one panel per workbench tab',()=>{
 test('step 03 exposes the documented second-level segments',()=>{
   const html=renderStep3(stepContext());
   const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
-  for(const required of ['op-sites','op-candidates','op-operational','op-altitude','res-route','res-feasibility','res-compare','adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']){
+  for(const required of ['op-sites','op-candidates','op-operational','op-altitude','res-route','res-feasibility','res-risk-profile','res-compare','adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']){
     assert.ok(segs.includes(required),`missing segment ${required}`);
   }
   assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
@@ -642,13 +642,13 @@ test('every step generates three tabs, unique ids and bindable controls',()=>{
   }
 });
 
-test('step 03 exposes all twelve segments through real click navigation',()=>{
+test('step 03 exposes all thirteen segments through real click navigation',()=>{
   withStubDom(document=>{
     const store={step:3,tab:'operate',segs:{},scroll:0};
     const {root}=mountRealStep(renderStep3,store,3,'航路规划');
     const expected={
       operate:['op-sites','op-candidates','op-operational','op-altitude'],
-      result:['res-route','res-feasibility','res-compare'],
+      result:['res-route','res-feasibility','res-risk-profile','res-compare'],
       advanced:['adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']
     };
     for(const [tab,segments] of Object.entries(expected)){

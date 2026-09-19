@@ -2,6 +2,7 @@ import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint} from 
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './route_operating_layer.js';
 import {bindLayeredRoutePlanner,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
+import {ROUTE_RISK_PROFILE_SEGMENT,bindRouteRiskProfile,renderRouteRiskProfile} from './route_risk_profile.js';
 
 function jsonInline(value){
   try{return JSON.stringify(value);}catch(error){return String(value);}
@@ -1711,7 +1712,7 @@ export function render({flow,interactionMode,selectedReference=null}){
 
 // ---- 操作/结果/高级的二级分段定义（与 CSS 分段选择器一一对应） -------------------
 const OPERATE_SEGMENTS=[['op-sites','起降点与OD'],['op-candidates','分层候选'],['op-operational','运行航路'],['op-altitude','高度与程序']];
-const RESULT_SEGMENTS=[['res-route','当前航路'],['res-feasibility','可行性与净空'],['res-compare','对比与验证']];
+const RESULT_SEGMENTS=[['res-route','当前航路'],['res-feasibility','可行性与净空'],[ROUTE_RISK_PROFILE_SEGMENT,'路径风险画像'],['res-compare','对比与验证']];
 const ADVANCED_SEGMENTS=[['adv-reference','参考数据与关联'],['adv-legacy','Legacy / Risk-Aware V2'],['adv-experiment','V3实验'],['adv-diagnostics','规划诊断'],['adv-profile','剖面与运动']];
 
 // ---- 操作区：同屏只呈现当前任务 -------------------------------------------------
@@ -1733,15 +1734,18 @@ function routeOperateSection(flow,{interactionMode,nodes}){
   ]});
 }
 
-// ---- 结果区：当前航路 / 可行性 / 对比验证 ---------------------------------------
+// ---- 结果区：当前航路 / 可行性与净空 / 路径风险画像 / 对比验证 -------------------
 function routeResultSection(flow,{routes,selectedReference}){
   // 建筑净空突破的详细分析在"高级 → 剖面与运动"，这里保持独立的可行性与净空汇总
   const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)+buildingClearancePanel(flow);
+  // RouteRiskProfile 的展示实现独立在 route_risk_profile.js：这里只插入分段，不再往本文件堆业务。
+  const riskProfile=wbSegHint(RESULT_SEGMENTS,ROUTE_RISK_PROFILE_SEGMENT)+renderRouteRiskProfile(flow);
   return wbPanel('result','',{segments:[
     ['res-route','当前航路',
       wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>')
         +wbBlock('航路剖面',renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes))],
     ['res-feasibility','可行性与净空',wbBlock('可行性与净空',feasibility)],
+    [ROUTE_RISK_PROFILE_SEGMENT,'路径风险画像',riskProfile],
     ['res-compare','对比与验证',
       wbBlock('参考航线 vs 运行航路',comparisonPanel(flow,selectedReference))
         +wbBlock('规划器结果并列',comparisonPanelV2(flow,routePlannerComparisonModel(flow)))]
@@ -1775,6 +1779,7 @@ export function bind(c){
   bindRoutePlannerV3(c);
   bindCruiseLayer(c);
   bindLayeredRoutePlanner(c);
+  bindRouteRiskProfile(c);
   // 兼容入口"生成场景航路"保持原 all-pairs 语义：不再读取已随面板移除的
   // routeDirection 控件（读它会抛 TypeError，导致按钮完全不可用），
   // direction 交给后端默认值 both，与旧行为一致。
