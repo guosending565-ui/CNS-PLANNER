@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {filterReferenceSites,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {bindLayeredCandidatePanel,filterReferenceSites,layeredCandidatePanel,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {routePlannerV3CnsSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {v3OverlayModel} from '../cns_planner/web/js/map/route_planner_v3_overlay.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
@@ -21,7 +21,8 @@ import {ADVANCED_PROFILE_LABEL,CRUISE_LAYER_MODE,LAYER_PENDING_LABEL,PRODUCTION_
 import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
 import {encounterFrame,renderDaaEncounterLab} from '../cns_planner/web/js/workflow/daa_encounter_lab.js';
 import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,riskV2CellSummary,riskV2LegendModel,riskV2ThemeOptions} from '../cns_planner/web/js/workflow/risk_framework_v2.js';
-import {COST_DOMAIN_LABELS,LAYERED_BLOCKED_NOTE,LAYERED_CANDIDATE_LABEL,LAYERED_PLANNER_ALGORITHM_TYPE,layeredEvaluatePayload,layeredOverlayModel,layeredRequestPayload,layeredRoutePlannerModel,renderLayeredRoutePlannerPanel} from '../cns_planner/web/js/workflow/layered_route_planner.js';
+import {COST_DOMAIN_LABELS,LAYERED_BLOCKED_NOTE,LAYERED_CANDIDATE_LABEL,LAYERED_PLANNER_ALGORITHM_TYPE,layeredEvaluatePayload,layeredOverlayModel,layeredPlannerUsesThetaStarV2,layeredRequestPayload,layeredRoutePlannerModel,renderLayeredRoutePlannerPanel} from '../cns_planner/web/js/workflow/layered_route_planner.js';
+import {THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_PANEL_TITLE,THETA_V2_EVALUATE_BLOCKED_NOTE,bindLayeredThetaV2,isLegacyV1CostBlocker,layeredThetaV2Model,renderLayeredThetaV2Panel,thetaV2ObjectivePolicyPayload,thetaV2RiskDensityPayload,thetaV2ShelterPolicyPayload} from '../cns_planner/web/js/workflow/layered_theta_v2.js';
 import {LAYERED_FEASIBILITY_COLORS,currentLayeredCandidate,drawLayeredFeasibilityOverlay,layeredFeasibilityCells,layeredFeasibilityLegend} from '../cns_planner/web/js/map/layered_feasibility_overlay.js';
 
 test('projection round trips WGS84 coordinates',()=>{
@@ -1957,3 +1958,451 @@ test('layered candidate vocabulary is closed and never claims operational status
   assert.match(blockedHtml,new RegExp('分层候选（candidate，非运行航路）'));
   assert.match(blockedHtml,/blocking：cost_weights_not_configured/);
 });
+
+// ---- Layered Risk-Aware Theta* V2 ---------------------------------------------------
+
+/** 与后端 Theta* V2 snapshot 同形的 flow：legacy λ 仍然未确认，但 λ 不是 V2 的 blocker。 */
+function thetaV2Flow(overrides={}){
+  const base={
+    scenario_routes:[
+      {route_id:'R0001',direction:'N001→N002',start_node_id:'N001',end_node_id:'N002'},
+    ],
+    layered_route_planning_request:{status:'confirmed',confirmed:true,source:'工程确认-测试',
+      scenario_route_id:'R0001',altitude_layer_id:'L8-LOW'},
+    layered_route_feasibility_policy:{status:'confirmed',terrain_vertical_clearance_m:50,
+      source:'工程确认-测试',fingerprint:'layeredfeasv2-abc',parameter_status:'explicit'},
+    layered_route_cost_policy:{status:'pending_confirmation',ground_lambda:null,air_traffic_lambda:null,
+      environment_obstacle_lambda:null,source:'未配置',parameter_status:'no_default_lambda'},
+    layered_route_planner_readiness:{
+      status:'blocked',
+      algorithm:{algorithm_id:'layered_risk_aware_theta_star_v2',algorithm_version:'2.0'},
+      request:{status:'confirmed',scenario_route_id:'R0001',altitude_layer_id:'L8-LOW',confirmed:true},
+      altitude_layer_catalog:{status:'configured',count:1,altitude_layer_ids:['L8-LOW'],
+        selected_altitude_layer_id:'L8-LOW',
+        cruise_altitude:{status:'confirmed',altitude_egm2008_m:300,vertical_reference:'egm2008_orthometric'}},
+      scenario_route:{status:'resolved',route_id:'R0001',count:1},
+      feasibility_policy:{status:'confirmed',terrain_vertical_clearance_m:50,fingerprint:'layeredfeasv2-abc'},
+      cost_policy:{status:'pending_confirmation',fingerprint:null,active_domains:[],parameter_status:'no_default_lambda',
+        domains:{
+          ground:{lambda:null,enabled:false,configured:false},
+          air_traffic:{lambda:null,enabled:false,configured:false},
+          environment_obstacle:{lambda:null,enabled:false,configured:false},
+        }},
+      risk_framework_v2:{status:'passed',input_fingerprint:'riskv2-input',policy_fingerprint:'riskv2-policy',overall_used:false},
+      theta_star_v2:{
+        algorithm:{algorithm_id:'layered_risk_aware_theta_star_v2',algorithm_version:'2.0',uses_theta_star:true},
+        status:'ready',blockers:[],
+        population_shelter:{status:'passed',cell_count:4,resolved_cell_count:4,field_fingerprint:'popshelterv1-abc',
+          shelter_coefficient_policy:{status:'confirmed',default_coefficient:1,source:'user_defined_baseline',
+            provenance:'user_defined_baseline',confirmed:true},
+          raw_exposure_definition:'population_density_people_km2 * shelter_coefficient',
+          risk_index_definition:'normalized_population_factor * shelter_coefficient',risk_index_range:[0,1]},
+        objective:{formula:'J = risk_weight * risk_exposure_index_m + turn_weight * turn_cost_m + distance_weight * distance_m',
+          risk_weight:0.8,turn_weight:0.1,distance_weight:0.1,provenance:'user_defined_baseline',
+          objective_population_shelter_only:true},
+        evaluation_constraint:{metric:'route_risk_density',threshold:1,
+          source:'user_defined_temporary_wide_constraint',temporary:true,
+          role:'candidate_evaluation_acceptance_constraint',objective_term:false},
+        regulatory_constraints:{status:'not_evaluated',regulatory_compliance:'not_evaluated',
+          constraint_dataset_status:'not_configured',constraint_count:0,confirmed_constraint_count:0,
+          dataset_fingerprint:null,configured:false,
+          statement:'未配置任何 regulatory constraint 数据集：本轮 regulatory_compliance=not_evaluated。'},
+        communication:{interface:'communication_planning_field',status:'not_configured',provider:null,source:null,
+          cell_count:0,informational_fingerprint:'commsfieldv1-empty',used_in_cost:false,used_as_constraint:false,
+          affected_path_or_cost:false,readiness:'interface_declared_no_field_configured'},
+        airspace:{status:'not_applicable',applicability:'display_only',used_in_search:false,
+          used_in_hard_gate:false,used_in_fingerprint:false},
+      },
+      building_clearance_policy:{status:'confirmed',vertical_clearance_m:10,reused_not_redefined:true},
+      feasibility_mask:{status:'passed',counts:{feasible:3,blocked:1,unknown:1},
+        mask_fingerprint:'layeredmaskv2-abc',current_applicability:'current'},
+      // 后端 readiness 里仍然带 legacy λ blocker：Theta* V2 绝不把它当 blocker。
+      blockers:[{reason_code:'cost_policy_not_confirmed',
+        reason:'LayeredRouteCostPolicy 未确认：λ 无默认值（null != 0）'}],
+      sources:{terrain:{available:true,reason:null},population:{available:true,reason:null}},
+    },
+    shelter_coefficient_policy:{schema_version:'population-shelter-v1',status:'confirmed',status_reason:null,
+      default_coefficient:1,per_grid_overrides:{},unit:'dimensionless_shelter_coefficient_0_1',range:[0,1],
+      source:'user_defined_baseline',confirmed:true,provenance:'user_defined_baseline',
+      parameter_status:'explicit_confirmed_coefficient'},
+    population_shelter:{schema_version:'population-shelter-v1',attribute:'population_shelter',status:'passed',
+      source:'derived',grid_level:8,count:4,covered_count:4,field_fingerprint:'popshelterv1-abc',
+      shelter_coefficient_policy_fingerprint:'shelterpolicyv1-abc',cells:{
+        A:{grid_id:'A',status:'passed'},B:{grid_id:'B',status:'passed'},
+        C:{grid_id:'C',status:'passed'},D:{grid_id:'D',status:'passed'},
+      }},
+    regulatory_constraints:{status:'not_configured',count:0,items:[],dataset_fingerprint:null},
+    communication_planning_field:{status:'not_configured',provider:null,count:0,cells:{}},
+    theta_v2_objective_policy:{schema_version:'layered-theta-star-v2',status:'confirmed',
+      risk_weight:0.8,turn_weight:0.1,distance_weight:0.1,source:'user_defined_baseline',
+      provenance:'user_defined_baseline',confirmed:true,algorithm_policy_baseline:true,
+      weights_are_editable:true,sum_constraint:1,sum_tolerance:1e-9,
+      formula:'J = risk_weight * risk_exposure_index_m + turn_weight * turn_cost_m + distance_weight * distance_m',
+      objective_population_shelter_only:true},
+    max_route_risk_density:{schema_version:'layered-theta-star-v2',constraint_id:'max_route_risk_density',
+      metric:'route_risk_density',threshold:1,comparison:'less_than_or_equal',
+      unit:'dimensionless_length_weighted_mean_index',source:'user_defined_temporary_wide_constraint',
+      confirmed:true,temporary:true,provenance:'user_defined_temporary_wide_constraint',status:'confirmed',
+      role:'candidate_evaluation_acceptance_constraint',objective_term:false,changes_objective_weights:false},
+    layered_route_candidates:{
+      status:'passed',count:1,current_key:'R0001@L8-LOW',current_candidate_fingerprint:'thetacandv2-current',
+      items:[{
+        candidate_id:'LRC-R0001-L8-LOW-V2',route_id:'R0001',altitude_layer_id:'L8-LOW',lane_key:'R0001@L8-LOW',
+        status:'candidate',current_applicability:'current',
+        algorithm_id:'layered_risk_aware_theta_star_v2',algorithm_version:'2.0',
+        distance_m:1234.567891,optimization_cost:321.307651,grid_path:['A','B','C'],
+        planning_objective:{
+          risk_exposure_index_m:246.913578,turn_count:2,total_heading_change_deg:47.5,turn_cost_m:3.2,
+          distance_m:1234.567891,risk_weight:0.8,turn_weight:0.1,distance_weight:0.1,
+          weighted_risk:197.530862,weighted_turn:0.32,weighted_distance:123.456789,total_cost:321.307651,
+          formula:'J = risk_weight * risk_exposure_index_m + turn_weight * turn_cost_m + distance_weight * distance_m',
+          objective_population_shelter_only:true,risk_v2_overall_used:false,
+          route_risk_density_is_not_an_objective_term:true,policy_fingerprint:'thetaobjv2-abc',
+          provenance:{definition:'domain/layered_theta_v2.py'},
+        },
+        route_risk_density:{metric:'route_risk_density',unit:'dimensionless_length_weighted_mean_index',
+          definition:'risk_exposure_index_m / distance_m',risk_exposure_index_m:246.913578,
+          distance_m:1234.567891,value:0.2,threshold:1,margin:0.8,status:'passed',reason:null,
+          comparison:'less_than_or_equal',source:'user_defined_temporary_wide_constraint',
+          temporary_constraint:true,confirmed:true,objective_term:false,changes_objective_weights:false},
+        turn_statistics:{turn_count:2,total_heading_change_deg:47.5,turn_cost_m:3.2,
+          turns:[{from_heading_deg:0,to_heading_deg:45,heading_change_deg:45,cost_m:2.8}],
+          theta_min_deg:5,d_ref_m:100,semantics:'planning_smoothness_proxy_not_flight_dynamics_validation'},
+        search_statistics:{expanded_labels:120,generated_labels:340,los_checks:88,los_shortcuts:31,
+          rejected_terrain:2,rejected_building:1,rejected_regulatory:0,rejected_unknown:0,
+          rejected_hard_constraint:0,rejected_outside_grid:0,rewired_parent_shortcuts:7,
+          heading_bin_count:8,theta_min_deg:5,d_ref_m:100,
+          d_ref_provenance:'derived_from_current_mh_t_l8_grid_typical_centre_to_centre_step_median_of_adjacent_cell_distances',
+          search_completeness:'complete',
+          search_limit:{max_expanded_labels:null,limit_reached:false,safety_parameter:false},
+          risk_unresolved_cell_count:0},
+        los_segments:[
+          {from_grid_id:'A',to_grid_id:'B',length_m:600,risk_exposure_index_m:120.5,
+            traversed_cells:['A','B'],outgoing_heading_deg:45,incoming_heading_deg:0,
+            supercover:true,shortcut:true},
+          {from_grid_id:'B',to_grid_id:'C',length_m:634.567891,risk_exposure_index_m:126.413578,
+            traversed_cells:['B','C'],outgoing_heading_deg:90,incoming_heading_deg:45,
+            supercover:true,shortcut:true},
+        ],
+        blocking_reasons:[],search_incomplete:false,mask_status:'passed',
+        candidate_fingerprint:'thetacandv2-current',feasibility_fingerprint:'thetav2-feas',
+        risk_fingerprint:'thetav2-risk',policy_fingerprint:'thetav2-policy',
+        request_fingerprint:'thetav2-request',input_fingerprint:'thetav2-input',
+        feasibility_mask_fingerprint:'layeredmaskv2-abc',
+        communication_informational_fingerprint:'commsfieldv1-empty',
+        provenance:{pipeline:'scenario_or_od_route -> explicit_fixed_altitude_H -> layered_route_candidate',
+          search_semantics:{algorithm:'theta_star_any_angle_with_parent_los_rewiring'},
+          feasibility_semantics:'coarse_strategic_vertical_envelope',
+          risk_density_constraint:{threshold:1,objective_term:false,changes_objective_weights:false},
+          communication:{readiness:'interface_declared_no_field_configured',affected_path_or_cost:false},
+          airspace:{applicability:'display_only'}},
+      }],
+      masks:{'R0001@L8-LOW':{status:'passed',altitude_layer_id:'L8-LOW',current_applicability:'current',
+        mask_fingerprint:'layeredmaskv2-abc',counts:{feasible:3,blocked:1,unknown:1},cells:{}}},
+    },
+  };
+  return {...base,...overrides};
+}
+
+/** Theta* V2 / V1 共用的 bind 桩：只登记面板真实存在的控件。 */
+function thetaV2BindHarness(flow,fields={}){
+  const calls=[],registered=[],handlers={};
+  const ids=new Set([...Object.keys(fields),'saveLayeredRequest','saveLayeredFeasibilityPolicy',
+    'saveLayeredCostPolicy','saveThetaV2ShelterPolicy','saveThetaV2ObjectivePolicy',
+    'saveThetaV2RiskDensity','evaluateLayeredCandidate']);
+  const c={
+    flow:()=>flow,
+    $:id=>ids.has(id)
+      ?{value:fields[id]===undefined?'':String(fields[id]),checked:fields[id]===true,attributes:{},dataset:{}}
+      :null,
+    panelError:message=>calls.push(['__error',message]),
+    resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+    actionButton:(id,handler)=>{registered.push(id);handlers[id]=handler;},
+  };
+  return {c,calls,registered,handlers};
+}
+
+test('the layered candidate bind switch follows the same exact algorithm id',async()=>{
+  // V1：仍然绑定 legacy λ 流程（cost policy 保存 + evaluate 要求 λ）
+  const v1=thetaV2BindHarness(layeredFlow());
+  bindLayeredCandidatePanel(v1.c);
+  assert.deepEqual(v1.registered,['saveLayeredRequest','saveLayeredFeasibilityPolicy',
+    'saveLayeredCostPolicy','evaluateLayeredCandidate']);
+  await v1.handlers.evaluateLayeredCandidate();
+  assert.equal(v1.calls.length,1);
+  assert.equal(v1.calls[0][0],'__error');
+  assert.match(v1.calls[0][1],/λ/,'V1 仍然要求 legacy λ');
+
+  // V2：绝不绑定 legacy cost policy，也不把 λ 当 blocker
+  const v2=thetaV2BindHarness(thetaV2Flow());
+  bindLayeredCandidatePanel(v2.c);
+  assert.deepEqual(v2.registered,['saveLayeredRequest','saveLayeredFeasibilityPolicy',
+    'saveThetaV2ShelterPolicy','saveThetaV2ObjectivePolicy','saveThetaV2RiskDensity',
+    'evaluateLayeredCandidate']);
+  assert.equal(v2.registered.includes('saveLayeredCostPolicy'),false,
+    'Theta* V2 不得再注册 legacy cost policy 保存控件');
+  await v2.handlers.evaluateLayeredCandidate();
+  assert.deepEqual(v2.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
+});
+
+test('the layered candidate view is chosen by the exact algorithm id only',()=>{
+  assert.equal(layeredPlannerUsesThetaStarV2(thetaV2Flow()),true);
+  assert.equal(layeredPlannerUsesThetaStarV2(layeredFlow()),false);
+  // 缺失算法信息或未知 id 时绝不冒充 Theta* V2：退回既有 V1 面板
+  assert.equal(layeredPlannerUsesThetaStarV2({}),false);
+  assert.equal(layeredPlannerUsesThetaStarV2({layered_route_planner_readiness:{algorithm:{algorithm_id:'risk_aware_route_planner_v2'}}}),false);
+
+  const v1Html=layeredCandidatePanel(layeredFlow());
+  assert.match(v1Html,/Layered Risk-Aware Route Planner V1/);
+  assert.match(v1Html,/id="layeredGroundLambda"/);
+  assert.doesNotMatch(v1Html,/Theta\* V2 candidate/);
+
+  const v2Html=layeredCandidatePanel(thetaV2Flow());
+  assert.ok(v2Html.includes(THETA_STAR_V2_PANEL_TITLE),'Theta* V2 标题必须出现');
+  assert.match(v2Html,/layered_risk_aware_theta_star_v2/);
+  assert.doesNotMatch(v2Html,/id="layeredGroundLambda"|id="layeredCostSource"|id="saveLayeredCostPolicy"/,
+    'Theta* V2 视图不得再渲染 legacy λ cost policy 控件');
+  assert.doesNotMatch(v2Html,/id="layeredRouteSelect"[^>]*A\* \+ legacy λ/);
+});
+
+test('theta v2 never treats the legacy lambda cost policy as a blocker',async()=>{
+  const flow=thetaV2Flow();
+  const model=layeredThetaV2Model(flow);
+  assert.equal(model.blockers.legacyV1.length,1,'后端 readiness 的 legacy λ blocker 仍然原样保留');
+  assert.equal(model.blockers.legacyV1[0].reasonCode,'cost_policy_not_confirmed');
+  assert.equal(model.blockers.thetaV2.length,0,'legacy λ 不得进入 Theta* V2 的 blocker 集合');
+  assert.equal(isLegacyV1CostBlocker({reason_code:'cost_weights_not_configured'}),true);
+  assert.equal(isLegacyV1CostBlocker({reason_code:'population_shelter_field_missing'}),false);
+
+  const html=renderLayeredThetaV2Panel(flow);
+  assert.match(html,/不是<\/b> Theta\* V2 的 blocker/);
+  assert.match(html,/legacy V1 λ blocker/);
+  assert.doesNotMatch(html,/必须补齐 λ|请先补齐 confirmed 的高度层、clearance 与 λ|λ 未全部确认[\s\S]{0,40}blocker/,
+    'Theta* V2 视图不得提示"必须补齐 λ"');
+  assert.doesNotMatch(html,/id="evaluateLayeredCandidate" disabled/,
+    'legacy λ 不得禁用 Theta* V2 的运行按钮');
+
+  const {c,calls,handlers}=thetaV2BindHarness(flow);
+  bindLayeredThetaV2(c);
+  await handlers.evaluateLayeredCandidate();
+  assert.equal(calls.some(call=>call[0]==='__error'),false,'λ 不确认时不得报 blocking 错误');
+  assert.deepEqual(calls.pop(),['/api/layered-route-candidates/evaluate-real',{}]);
+
+  // 真正的 Theta* V2 blocker（population_shelter 场缺失）仍然阻止运行
+  const blocked=thetaV2Flow();
+  blocked.layered_route_planner_readiness={
+    ...blocked.layered_route_planner_readiness,
+    theta_star_v2:{...blocked.layered_route_planner_readiness.theta_star_v2,
+      status:'not_ready',
+      blockers:[{reason_code:'population_shelter_field_missing',
+        reason:'population_shelter 场缺失：risk weight>0 时 fail-closed，绝不补 0'}]},
+  };
+  const blockedHtml=renderLayeredThetaV2Panel(blocked);
+  assert.match(blockedHtml,/population_shelter_field_missing/);
+  assert.match(blockedHtml,/id="evaluateLayeredCandidate" disabled/);
+  const blockedHarness=thetaV2BindHarness(blocked);
+  bindLayeredThetaV2(blockedHarness.c);
+  await blockedHarness.handlers.evaluateLayeredCandidate();
+  assert.deepEqual(blockedHarness.calls,[['__error',THETA_V2_EVALUATE_BLOCKED_NOTE]]);
+});
+
+test('theta v2 panel renders the six first-visual layers in order with unique ids',()=>{
+  const flow=thetaV2Flow();
+  const model=layeredThetaV2Model(flow);
+  assert.equal(model.algorithmId,'layered_risk_aware_theta_star_v2');
+  assert.equal(model.algorithmVersion,'2.0');
+  assert.equal(model.expectedAlgorithmId,THETA_STAR_V2_ALGORITHM_ID);
+  const html=renderLayeredThetaV2Panel(flow);
+  const order=['① 规划请求','② terrain / building feasibility','②b Regulatory','③ Population × Shelter',
+    '④ Objective','⑤ Route Risk Density','⑥ Theta* V2 candidate 结果'];
+  let cursor=-1;
+  for(const marker of order){
+    const at=html.indexOf(marker);
+    assert.ok(at>cursor,`${marker} 必须按第一视觉层顺序出现`);
+    cursor=at;
+  }
+  for(const id of ['layeredRouteSelect','layeredAltitudeLayerSelect','layeredRequestSource','layeredRequestConfirmed',
+    'layeredTerrainClearance','layeredFeasibilitySource','layeredFeasibilityConfirmed','saveLayeredRequest',
+    'saveLayeredFeasibilityPolicy','evaluateLayeredCandidate','thetaV2ShelterCoefficient','thetaV2ShelterSource',
+    'thetaV2ShelterConfirmed','saveThetaV2ShelterPolicy','thetaV2RiskWeight','thetaV2TurnWeight',
+    'thetaV2DistanceWeight','thetaV2ObjectiveSource','thetaV2ObjectiveConfirmed','saveThetaV2ObjectivePolicy',
+    'thetaV2RiskDensityThreshold','thetaV2RiskDensitySource','thetaV2RiskDensityConfirmed',
+    'thetaV2RiskDensityTemporary','saveThetaV2RiskDensity']){
+    assert.ok(html.includes('id="'+id+'"'),`#${id} 必须存在`);
+  }
+  const ids=Array.from(html.matchAll(/id="([^"]+)"/g),match=>match[1]);
+  assert.equal(new Set(ids).size,ids.length,
+    `duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+});
+
+test('theta v2 transcription: population x shelter, objective and risk density come from backend fields',()=>{
+  const flow=thetaV2Flow();
+  const model=layeredThetaV2Model(flow);
+  assert.equal(model.shelter.policy.defaultCoefficient,1);
+  assert.equal(model.shelter.policy.confirmed,true);
+  assert.equal(model.shelter.field.cellCount,4);
+  assert.equal(model.shelter.field.resolvedCellCount,4);
+  assert.equal(model.shelter.field.unresolvedCellIds.length,0);
+  assert.equal(model.shelter.field.fieldFingerprint,'popshelterv1-abc');
+  assert.equal(model.shelter.field.riskIndexDefinition,'normalized_population_factor * shelter_coefficient');
+  assert.equal(model.objective.riskWeight,0.8);
+  assert.equal(model.objective.turnWeight,0.1);
+  assert.equal(model.objective.distanceWeight,0.1);
+  assert.equal(model.objective.weightsSum,1);
+  assert.equal(model.objective.sumOk,true);
+  assert.equal(model.objective.baseline,true);
+  assert.equal(model.riskDensity.threshold,1);
+  assert.equal(model.riskDensity.temporary,true);
+  assert.equal(model.riskDensity.objectiveTerm,false);
+  assert.equal(model.riskDensity.changesObjectiveWeights,false);
+  assert.equal(model.regulatory.configured,false);
+  assert.equal(model.communication.affectedPathOrCost,false);
+
+  const html=renderLayeredThetaV2Panel(flow);
+  assert.match(html,/risk_index = normalized population factor × shelter coefficient/);
+  assert.match(html,/不是事故概率/);
+  assert.match(html,/missing ≠ 0/);
+  assert.match(html,/绝不补 0/);
+  assert.match(html,/route_risk_density = risk_exposure_index_m \/ distance_m/);
+  assert.match(html,/不是第四个 objective term/);
+  assert.match(html,/J = wr\*E_risk \+ wt\*C_turn \+ wd\*L/);
+  assert.match(html,/当前版本 communication 不影响 path \/ cost/);
+  assert.match(html,/regulatory_compliance=not_evaluated|not_evaluated/);
+});
+
+test('theta v2 candidate metrics are transcribed verbatim and the boundaries stay explicit',()=>{
+  const flow=thetaV2Flow();
+  const model=layeredThetaV2Model(flow);
+  const candidate=model.candidates.current;
+  assert.ok(candidate,'current candidate 必须被识别');
+  assert.equal(candidate.isCurrent,true);
+  assert.equal(candidate.objective.riskExposureIndexM,246.913578);
+  assert.equal(candidate.objective.turnCount,2);
+  assert.equal(candidate.objective.totalHeadingChangeDeg,47.5);
+  assert.equal(candidate.objective.turnCostM,3.2);
+  assert.equal(candidate.objective.distanceM,1234.567891);
+  assert.equal(candidate.objective.riskWeight,0.8);
+  assert.equal(candidate.objective.turnWeight,0.1);
+  assert.equal(candidate.objective.distanceWeight,0.1);
+  assert.equal(candidate.objective.weightedRisk,197.530862);
+  assert.equal(candidate.objective.weightedTurn,0.32);
+  assert.equal(candidate.objective.weightedDistance,123.456789);
+  assert.equal(candidate.objective.totalCost,321.307651);
+  assert.equal(candidate.routeRiskDensity.value,0.2);
+  assert.equal(candidate.routeRiskDensity.threshold,1);
+  assert.equal(candidate.turnStatistics.turnCount,2);
+  assert.equal(candidate.searchStatistics.rewired_parent_shortcuts,7);
+  assert.equal(candidate.los.segmentCount,2);
+
+  const html=renderLayeredThetaV2Panel(flow);
+  for(const value of ['246.913578','47.500000','3.200000','1234.567891','197.530862','0.320000',
+    '123.456789','321.307651','0.200000']){
+    assert.ok(html.includes(value),`candidate 指标 ${value} 必须原样展示`);
+  }
+  for(const field of ['risk_exposure_index_m','turn_count','total_heading_change_deg','turn_cost_m','distance_m',
+    'risk_weight','turn_weight','distance_weight','weighted_risk','weighted_turn','weighted_distance','total_cost']){
+    assert.ok(html.includes('data-theta-v2-candidate-field="'+field+'"'),`${field} 必须以转印行展示`);
+  }
+  assert.match(html,/rewired_parent_shortcuts/);
+  assert.match(html,/LOS-1/);
+  assert.match(html,/LOS-2/);
+  assert.match(html,/Theta\* V2 candidate ≠ operational route/);
+  assert.match(html,/不自动 adopt/);
+  assert.match(html,/RouteRiskProfile 是独立的 post-hoc 多域分析/);
+  assert.match(html,/与 Theta\* objective 里的 population × shelter risk 不是同一件事/);
+  // 前端不新增 objective / 风险 / 距离重算
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/layered_theta_v2.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/haversine|6371008\.8|computeDistance|Math\.asin|risk_weight\s*\*?\s*=.*normalize/i);
+  assert.doesNotMatch(source,/normalizeWeight|renormaliz|归一化\(/);
+});
+
+test('theta v2 policy POST contracts keep overrides, never normalize weights and never guess thresholds',async()=>{
+  // shelter policy：per_grid_overrides 必须原样回传（保存绝不清空）
+  const flow=thetaV2Flow();
+  flow.shelter_coefficient_policy={...flow.shelter_coefficient_policy,default_coefficient:0.75,
+    per_grid_overrides:{A:0.25,B:0.5},source:'工程确认-测试',provenance:'explicit_override'};
+  const harness=thetaV2BindHarness(flow,{
+    thetaV2ShelterCoefficient:'0.6',thetaV2ShelterSource:'工程确认-新依据',thetaV2ShelterConfirmed:true,
+    thetaV2RiskWeight:'0.5',thetaV2TurnWeight:'0.5',thetaV2DistanceWeight:'0.5',
+    thetaV2ObjectiveSource:'工程确认-测试',thetaV2ObjectiveConfirmed:true,
+    thetaV2RiskDensityThreshold:'',thetaV2RiskDensitySource:'',thetaV2RiskDensityConfirmed:false,
+    thetaV2RiskDensityTemporary:true,
+  });
+  bindLayeredThetaV2(harness.c);
+  assert.deepEqual(harness.registered,['saveLayeredRequest','saveLayeredFeasibilityPolicy',
+    'saveThetaV2ShelterPolicy','saveThetaV2ObjectivePolicy','saveThetaV2RiskDensity','evaluateLayeredCandidate']);
+  const model=layeredThetaV2Model(flow);
+  assert.deepEqual(thetaV2ShelterPolicyPayload(harness.c,model.shelter.policy),{
+    default_coefficient:0.6,per_grid_overrides:{A:0.25,B:0.5},source:'工程确认-新依据',
+    confirmed:true,provenance:'explicit_override',
+  });
+  // 未修改时必须沿用后端 provenance，而不是无端改写成 explicit_override
+  const unchanged=thetaV2BindHarness(flow,{
+    thetaV2ShelterCoefficient:'0.75',thetaV2ShelterSource:'工程确认-测试',thetaV2ShelterConfirmed:true,
+  });
+  assert.deepEqual(thetaV2ShelterPolicyPayload(unchanged.c,model.shelter.policy),{
+    default_coefficient:0.75,per_grid_overrides:{A:0.25,B:0.5},source:'工程确认-测试',
+    confirmed:true,provenance:'explicit_override',
+  });
+  // objective：原样提交，绝不静默归一化（0.5/0.5/0.5 直接送后端校验）
+  assert.deepEqual(thetaV2ObjectivePolicyPayload(harness.c,model.objective),{
+    risk_weight:0.5,turn_weight:0.5,distance_weight:0.5,source:'工程确认-测试',confirmed:true,
+  });
+  // risk density：空 threshold 提交 null（不猜值），其余字段照原样
+  assert.deepEqual(thetaV2RiskDensityPayload(harness.c,model.riskDensity),{
+    threshold:null,source:'user_defined_temporary_wide_constraint',confirmed:false,temporary:true,
+  });
+  // 端点契约：三个 POST 路径与 payload 一一对应
+  await harness.handlers.saveThetaV2ShelterPolicy();
+  assert.deepEqual(harness.calls.pop(),['/api/shelter-coefficient-policy',
+    thetaV2ShelterPolicyPayload(harness.c,model.shelter.policy)]);
+  await harness.handlers.saveThetaV2ObjectivePolicy();
+  assert.deepEqual(harness.calls.pop(),['/api/theta-v2-objective-policy',
+    thetaV2ObjectivePolicyPayload(harness.c,model.objective)]);
+  await harness.handlers.saveThetaV2RiskDensity();
+  assert.deepEqual(harness.calls.pop(),['/api/max-route-risk-density',
+    thetaV2RiskDensityPayload(harness.c,model.riskDensity)]);
+  await harness.handlers.saveLayeredRequest();
+  assert.equal(harness.calls.pop()[0],'/api/layered-route-planning-request');
+  await harness.handlers.saveLayeredFeasibilityPolicy();
+  assert.equal(harness.calls.pop()[0],'/api/layered-route-feasibility-policy');
+
+  // objective 权重和≠1 时只提示，不静默归一化
+  const offSum=thetaV2Flow();
+  offSum.theta_v2_objective_policy={...offSum.theta_v2_objective_policy,
+    risk_weight:0.5,turn_weight:0.5,distance_weight:0.5,provenance:'explicit_override'};
+  const offModel=layeredThetaV2Model(offSum);
+  assert.equal(offModel.objective.weightsSum,1.5);
+  assert.equal(offModel.objective.sumOk,false);
+  const offHtml=renderLayeredThetaV2Panel(offSum);
+  assert.match(offHtml,/后端会拒绝；前端不做静默归一化/);
+  assert.match(offHtml,/最终以后端校验为准/);
+});
+
+test('step 03 mounts the theta v2 candidate panel without duplicate ids or legacy lambda controls',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow={
+    ...thetaV2Flow(),
+    nodes:[{node_id:'N001',name:'A',coordinate:[122,30]},{node_id:'N002',name:'B',coordinate:[122.1,30.1]}],
+    operational_routes:[],algorithm_selection:{route_planner:{}},algorithm_catalog:[],risks:{},steps:{3:true},
+    spatial_3d:{altitude_layers:[{altitude_layer_id:'L8-LOW',name:'低层',nominal_altitude_m:300,
+      vertical_reference:'egm2008_orthometric',status:'confirmed'}],route_altitude_profiles:{}},
+    operational_timing:{route_motion_profiles:{}},route_vertical_profiles:{},
+    building_clearance_policy:{status:'confirmed',vertical_clearance_m:10},building_clearance_assessment:{},
+    reference_routes:{items:[],points:[]},reference_landing_sites:{items:[]},
+    route_planning_experiments:{},reference_route_links:{items:[]},reference_endpoint_candidates:{},
+    workspace:{bbox:[122,29.9,122.2,30.1]},
+  };
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  // 「操作 → 分层候选」分区不变，只有面板内容切换成 Theta* V2
+  assert.ok(html.includes('data-seg-name="op-candidates"')||html.includes('分层候选'),'分层候选分区必须保留');
+  assert.match(html,/Layered Risk-Aware Theta\* V2/);
+  assert.match(html,/⑥ Theta\* V2 candidate 结果/);
+  assert.match(html,/<option value="L8-LOW" selected>/,'显式 AltitudeLayer 必须可选中');
+  assert.doesNotMatch(html,/id="layeredGroundLambda"|id="layeredCostSource"|id="saveLayeredCostPolicy"/,
+    'Theta* V2 页面不得再出现 legacy λ cost policy 控件');
+  const ids=Array.from(html.matchAll(/id="([^"]+)"/g),match=>match[1]);
+  assert.equal(new Set(ids).size,ids.length,
+    `duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+});
+

@@ -6,7 +6,10 @@
  *  - readiness / blockers 原样转印，前端不重新判断；
  *  - 没有确认阈值时仍显示 exposure，但 classification / high-risk 永远不伪造；
  *  - 只有 confirmed 阈值才出现 low/medium/high 与 high-risk interval；
- *  - 一维 SVG 的坐标只来自后端累计距离与 route_length_m；
+ *  - 画像是 Distance × Risk Index profile：X 只来自后端累计距离，Y 只来自后端
+ *    mean_index（固定 0..1），medium_min / high_min 只决定 Y 方向的阈值线与背景带；
+ *  - 只有 current_applicability==='current' 的 profile 才是"当前 profile"，stale 只作历史证据；
+ *  - 生成 profile 不要求阈值（阈值只决定 classification / high-risk）；
  *  - 三个 domain 各自独立，没有 cross-domain overall / high-risk；
  *  - policy / evaluate / delete 三个端点按契约调用；
  *  - stale profile 保留显示并明确标记；
@@ -24,7 +27,8 @@ import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
 import {renderWorkflowSteps} from '../cns_planner/web/js/workflow/steps.js';
 import {
   DOMAIN_IDS,ROUTE_RISK_PROFILE_SEGMENT,routeRiskDomainGeometry,routeRiskDomainModel,
-  routeRiskDomainSvg,routeRiskProfileModel,routeRiskProfilePolicyPayload,renderRouteRiskProfile,
+  routeRiskDomainSvg,routeRiskProfileModel,routeRiskProfilePolicyPayload,routeRiskProfileScale,
+  renderRouteRiskProfile,
 } from '../cns_planner/web/js/workflow/route_risk_profile.js';
 
 // ---- 最小 DOM 桩 -------------------------------------------------------------
@@ -346,6 +350,8 @@ function profileFixture({groundConfirmed=false,status='passed',applicability='cu
     profile_id:'RRP-LRC-1-abcdef0123456789',
     artifact_type:'layered_route_candidate',
     status,
+    // 与后端 result_snapshot 同形：每个 profile 顶层都带派生的 current_applicability。
+    current_applicability:applicability,
     status_reason:null,
     stale_reason:status==='stale'?'route_risk_profile_policy_changed':null,
     blocking_reasons:[],
@@ -581,14 +587,40 @@ function cardOf(root,domainId){
   };
 }
 
-function svgRects(svg){
-  return Array.from(svg.matchAll(/<rect [^>]*data-rrp-segment="([^"]*)"[^>]*x="([0-9.]+)"[^>]*width="([0-9.]+)"/g),
-    match=>({segmentId:match[1],x:Number(match[2]),width:Number(match[3])}));
+/** 从单个标签文本里取属性（要求属性名前是空白，避免命中 data-*-x / data-*-y）。 */
+function attributeOf(tag,name){
+  const match=new RegExp('(?:^|\\s)'+name+'="([^"]*)"').exec(tag);
+  return match?match[1]:null;
 }
 
+/** 画像里的 segment 柱：x/width 来自累计距离，y/height 来自 mean_index。 */
+function svgRects(svg){
+  return Array.from(svg.matchAll(/<rect [^>]*data-rrp-segment="[^"]*"[^>]*>/g),match=>match[0])
+    .map(tag=>({
+      segmentId:attributeOf(tag,'data-rrp-segment'),
+      x:Number(attributeOf(tag,'x')),y:Number(attributeOf(tag,'y')),
+      width:Number(attributeOf(tag,'width')),height:Number(attributeOf(tag,'height')),
+    }));
+}
+
+/** 分类背景带：必须是横跨整个 X 轴的水平带，y/height 只由阈值决定。 */
 function svgBands(svg){
-  return Array.from(svg.matchAll(/<rect [^>]*data-rrp-band="([^"]*)"[^>]*x="([0-9.]+)"[^>]*width="([0-9.]+)"/g),
-    match=>({band:match[1],x:Number(match[2]),width:Number(match[3])}));
+  return Array.from(svg.matchAll(/<rect [^>]*data-rrp-band="[^"]*"[^>]*>/g),match=>match[0])
+    .map(tag=>({
+      band:attributeOf(tag,'data-rrp-band'),
+      x:Number(attributeOf(tag,'x')),y:Number(attributeOf(tag,'y')),
+      width:Number(attributeOf(tag,'width')),height:Number(attributeOf(tag,'height')),
+    }));
+}
+
+/** 阈值线：x1/x2 恒定（不参与 X 定位），y 只由 medium_min / high_min 决定。 */
+function svgThresholds(svg){
+  return Array.from(svg.matchAll(/<line [^>]*data-rrp-threshold="[^"]*"[^>]*>/g),match=>match[0])
+    .map(tag=>({
+      name:attributeOf(tag,'data-rrp-threshold'),
+      x1:Number(attributeOf(tag,'x1')),x2:Number(attributeOf(tag,'x2')),
+      y1:Number(attributeOf(tag,'y1')),y2:Number(attributeOf(tag,'y2')),
+    }));
 }
 
 // ---- 1. Step03 结果区结构 ----------------------------------------------------
@@ -711,14 +743,27 @@ test('without confirmed thresholds the profile still shows exposure but never fa
     assert.equal(domainModel.highRiskIntervalCount,null);
     assert.deepEqual(domainModel.intervals,[]);
 
-    // SVG 在未确认阈值时不出现 low/medium/high 配色，也不画阈值区段带
-    const svg=routeRiskDomainSvg(flow.route_risk_profiles.items[0],'ground');
+    // SVG 在未确认阈值时不出现 low/medium/high 配色，也不画任何背景带 / 阈值线
+    const profile=flow.route_risk_profiles.items[0];
+    const svg=routeRiskDomainSvg(profile,'ground');
     assert.doesNotMatch(svg,/#2f8f4e|#c98a1b|#c0392b|rgba\(47,143,78|rgba\(201,138,27|rgba\(192,57,43/,
       'an unconfirmed domain must not use level colors');
     assert.doesNotMatch(svg,/data-rrp-band|data-rrp-threshold/,
-      'an unconfirmed domain must not draw threshold bands');
+      'an unconfirmed domain must not draw threshold bands or threshold lines');
     assert.match(svg,/data-rrp-level="not_configured"/);
-    assert.match(svg,/未配置\/未确认阈值/);
+    assert.match(svg,/未确认阈值 · raw index only/);
+    assert.match(svg,/data-rrp-y-axis="mean_index_0_1"/);
+    // 未确认阈值时：柱顶 Y 仍然只来自后端 mean_index（raw index），X 仍然只来自累计距离
+    const scale=routeRiskProfileScale(profile.route_length_m);
+    const rects=svgRects(svg);
+    assert.equal(rects.length,profile.segments.length);
+    rects.forEach((rect,index)=>{
+      const segment=profile.segments[index];
+      assert.ok(Math.abs(rect.y-scale.y(segment.domains.ground.mean_index))<0.06,
+        'raw index 柱顶 Y 只能来自 mean_index');
+      assert.ok(Math.abs(rect.x-scale.x(segment.start_cumulative_distance_m))<0.06,
+        '柱 x 只能来自累计距离');
+    });
   });
 });
 
@@ -772,45 +817,83 @@ test('only confirmed thresholds produce low/medium/high levels and high-risk int
 
 // ---- 5. SVG 坐标只来自后端累计距离 ------------------------------------------
 
-test('the one-dimensional svg maps x strictly from backend cumulative distances',()=>{
+test('the distance x risk index svg maps x only from cumulative distance and y only from mean_index',()=>{
   const profile=profileFixture({groundConfirmed:true});
   const geometry=routeRiskDomainGeometry(profile,'ground');
   assert.equal(geometry.routeLengthM,profile.route_length_m);
   assert.deepEqual(geometry.positions.map(item=>item.startDistanceM),[0,550,1050,1500]);
   assert.deepEqual(geometry.positions.map(item=>item.endDistanceM),[550,1050,1500,1925.858241815]);
+  assert.deepEqual(geometry.positions.map(item=>item.meanIndex),[0.9,0.9,0.5,0.1]);
 
-  // 与渲染实现完全一致的线性映射：padLeft 48、可用宽度 696。
+  // 与渲染实现共用同一份映射：X 为累计距离，Y 为固定 0..1 的 mean_index。
+  const scale=routeRiskProfileScale(profile.route_length_m);
+  assert.equal(scale.usableWidth,696);
   const expectedX=value=>48+value/profile.route_length_m*696;
-  const rects=svgRects(routeRiskDomainSvg(profile,'ground'));
+  const svg=routeRiskDomainSvg(profile,'ground');
+  const rects=svgRects(svg);
   assert.equal(rects.length,profile.segments.length);
   rects.forEach((rect,index)=>{
     const segment=profile.segments[index];
+    const mean=segment.domains.ground.mean_index;
     assert.equal(rect.segmentId,segment.segment_id);
+    // X 只来自累计距离
     assert.ok(Math.abs(rect.x-expectedX(segment.start_cumulative_distance_m))<0.06,
       `rect ${index} x must come from start_cumulative_distance_m`);
     assert.ok(Math.abs(rect.width-(expectedX(segment.end_cumulative_distance_m)-expectedX(segment.start_cumulative_distance_m)))<0.06,
       `rect ${index} width must come from end - start cumulative distance`);
+    // Y 只来自 mean_index（柱底固定为 index=0）
+    assert.ok(Math.abs(rect.y-scale.y(mean))<0.06,
+      `rect ${index} y must come from mean_index (${mean})`);
+    assert.ok(Math.abs(rect.height-(scale.plotBottom-scale.y(mean)))<0.06,
+      `rect ${index} height must come from mean_index`);
+    assert.ok(Math.abs(rect.y+rect.height-scale.y(0))<0.06,'every segment bar starts at index 0');
   });
   // 末段终点必须落在横轴右端
   const last=rects[rects.length-1];
   assert.ok(Math.abs((last.x+last.width)-(48+696))<0.12,'the last segment must end at route_length_m');
   // 横轴刻度也来自后端 route_length_m
-  const svg=routeRiskDomainSvg(profile,'ground');
   assert.match(svg,/1925\.9 m/);
   assert.match(svg,/962\.9 m/);
-  // 阈值区段带同样只用后端阈值 + route_length_m 定位（不做前端分级）
+  assert.match(svg,/data-rrp-x-axis="cumulative_distance_m"/);
+  assert.match(svg,/data-rrp-y-axis="mean_index_0_1"/);
+  assert.match(svg,/data-rrp-segment-x="cumulative_distance_m"/);
+  assert.match(svg,/data-rrp-segment-y="mean_index"/);
+  assert.doesNotMatch(svg,/data-rrp-band-axis="cumulative_distance_m"/,
+    '分类带绝不能按长度（X）分段');
+
+  // 阈值只决定 Y：水平阈值线横跨整个 X 轴，x1/x2 恒定
+  const thresholds=svgThresholds(svg);
+  assert.deepEqual(Array.from(thresholds,item=>item.name),['medium_min','high_min']);
+  const groundThresholds=profile.domains.ground.classification.thresholds;
+  for(const item of thresholds){
+    assert.equal(item.x1,48,`${item.name} 阈值线的 x1 恒定，不由阈值决定`);
+    assert.equal(item.x2,48+696,`${item.name} 阈值线的 x2 恒定，不由阈值决定`);
+    const expectedY=scale.y(groundThresholds[item.name]);
+    assert.ok(Math.abs(item.y1-expectedY)<0.06,`${item.name} 只决定 Y`);
+    assert.ok(Math.abs(item.y2-expectedY)<0.06,`${item.name} 只决定 Y`);
+  }
+  // 背景带同样是水平带：x/width 恒定，y/height 只由阈值决定
   const bands=svgBands(svg);
   assert.deepEqual(Array.from(bands,band=>band.band),['low','medium','high']);
-  assert.ok(Math.abs(bands[0].width-(0.3*696))<0.06,'the low band ends at medium_min');
-  assert.ok(Math.abs(bands[1].width-(0.5*696))<0.06,'the medium band spans medium_min → high_min');
-  assert.ok(Math.abs(bands[2].width-(0.2*696))<0.06,'the high band spans high_min → 1.0');
-  assert.match(svg,/data-rrp-threshold="medium_min"[^>]*x1="256\.8"/);
-  assert.match(svg,/data-rrp-threshold="high_min"[^>]*x1="604\.8"/);
-  // geometry 只读后端字段：前端不新增任何距离/风险计算
+  for(const band of bands){
+    assert.equal(band.x,48,'分类带从 X 轴起点开始');
+    assert.equal(band.width,696,'分类带横跨整个 X 轴，而不是按长度分段的 X 区段');
+  }
+  const mediumBand=bands.find(band=>band.band==='medium');
+  assert.ok(Math.abs(mediumBand.y-scale.y(0.8))<0.06,'medium 带上边界是 high_min');
+  assert.ok(Math.abs(mediumBand.height-(scale.y(0.3)-scale.y(0.8)))<0.06,'medium 带下边界是 medium_min');
+  const highBand=bands.find(band=>band.band==='high');
+  assert.ok(Math.abs(highBand.y-scale.y(1))<0.06);
+  const lowBand=bands.find(band=>band.band==='low');
+  assert.ok(Math.abs(lowBand.y+lowBand.height-scale.y(0))<0.06);
+
+  // geometry 只读后端字段：前端不新增任何距离/风险计算，阈值也不进入 X 映射
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/route_risk_profile.js',import.meta.url),'utf8');
   assert.doesNotMatch(source,/haversine|6371008\.8|computeDistance|pathLengthM|Math\.asin/,
     'the frontend must not recompute any distance');
   assert.doesNotMatch(source,/integrate|exposure\s*\*=|weighted_sum/,'the frontend must not recompute risk');
+  assert.doesNotMatch(source,/x\([^)]*mediumMin|x\([^)]*highMin|mediumMin\s*\*\s*length|highMin\s*\*\s*length/,
+    'threshold 绝不能参与 X 定位');
 });
 
 // ---- 6. 三 domain 独立，无 cross-domain overall ------------------------------
@@ -919,7 +1002,7 @@ test('policy evaluate delete endpoints are wired exactly as contracted',()=>{
 
 // ---- 8. stale profile 保留 ---------------------------------------------------
 
-test('a stale profile stays visible, is labelled stale and is never rewritten',()=>{
+test('a stale profile stays visible as history and never masquerades as the current profile',()=>{
   withStubDom(document=>{
     const flow=baseFlow({confirmedDomains:['ground'],profileStatus:'stale'});
     const {root}=mountStep3(document,flow);
@@ -929,19 +1012,81 @@ test('a stale profile stays visible, is labelled stale and is never rewritten',(
     assert.match(html,/RRP-LRC-1-abcdef0123456789/,'the stale profile must stay listed');
     assert.match(html,/stale：保留为审计证据/);
     assert.match(html,/route_risk_profile_policy_changed/);
-    assert.match(html,/已 stale/);
     const deletions=findAll(section,'[data-delete-route-risk-profile]');
     assert.equal(deletions.length,1,'the stale profile keeps exactly one delete control');
     assert.equal(deletions[0].dataset.deleteRouteRiskProfile,'RRP-LRC-1-abcdef0123456789');
-    // 冻结的证据仍然可读（exposure 不被清空，卡片仍挂载）
+    // stale 绝不冒充 current：model.current 必须是 null，当前区域不挂 stale 证据
+    const model=routeRiskProfileModel(flow);
+    assert.equal(model.current,null,'a stale profile is never the current profile');
+    assert.equal(model.profileCount,1,'the stale record stays in the history collection');
+    assert.equal(model.profiles[0].currentApplicability,'stale');
     const card=cardOf(root,'ground');
-    assert.match(card.fields['exposure_index_m'],/1011\.076/);
-    assert.ok(card.chart,'the frozen one-dimensional profile stays rendered');
-    // stale 的 profile 不得被标成 current
-    const domainModel=routeRiskDomainModel(flow.route_risk_profiles.items[0],'ground');
-    assert.equal(domainModel.classified,true,'a stale profile keeps its frozen classification evidence');
-    assert.equal(routeRiskProfileModel(flow).current.status,'stale');
+    assert.equal(card.fields['exposure_index_m'],undefined,
+      'stale 证据不得出现在"当前 profile"的 domain 卡片里');
+    assert.equal(card.chart,null,'stale 证据不得作为当前画像渲染');
+    assert.match(textOf(section),/没有 current profile/);
+    assert.match(html,/只作为历史证据保留/);
+    // 冻结的证据本身仍然可读：直接读 profile 对象时 classification 不被清空
+    const frozen=routeRiskDomainModel(flow.route_risk_profiles.items[0],'ground');
+    assert.equal(frozen.classified,true,'a stale profile keeps its frozen classification evidence');
+    assert.equal(frozen.classificationLevel,'medium');
+    // 集合里同时存在 current 与 stale 时，current 必须精确指向 current 的那条
+    const mixed=baseFlow({confirmedDomains:['ground']});
+    mixed.route_risk_profiles={...mixed.route_risk_profiles,items:[
+      {...mixed.route_risk_profiles.items[0],profile_id:'RRP-STALE-0001',status:'stale',
+        current_applicability:'stale',stale_reason:'grid_risk_v2_changed'},
+      mixed.route_risk_profiles.items[0],
+    ]};
+    const mixedModel=routeRiskProfileModel(mixed);
+    assert.equal(mixedModel.current.profile_id,'RRP-LRC-1-abcdef0123456789');
+    assert.equal(mixedModel.current.current_applicability,'current');
+    assert.equal(mixedModel.profiles.length,2,'stale 记录仍然留在历史集合里');
   });
+});
+
+// ---- 8b. current profile 语义 + "生成 profile 不要求阈值" ----------------------
+
+test('a profile is current only when current_applicability is exactly current',()=>{
+  const current=routeRiskProfileModel(baseFlow());
+  assert.equal(current.current.current_applicability,'current');
+  assert.equal(current.current.profile_id,'RRP-LRC-1-abcdef0123456789');
+
+  // 没有任何 profile 时 current 必须是 null：不构造占位 profile
+  const emptyCollection={status:'not_calculated',count:0,items:[],last_evaluation:null,notes:[]};
+  const empty=routeRiskProfileModel(baseFlow({collection:emptyCollection}));
+  assert.equal(empty.current,null);
+  assert.equal(empty.profileCount,0);
+  assert.match(renderRouteRiskProfile(baseFlow({collection:emptyCollection})),
+    /当前没有 current_applicability=current 的 profile/);
+
+  // 只有 stale 记录时 current 仍是 null：绝不退化成"最后一条"
+  const staleOnly=routeRiskProfileModel(baseFlow({profileStatus:'stale',confirmedDomains:['ground']}));
+  assert.equal(staleOnly.current,null);
+  assert.equal(staleOnly.profiles.length,1);
+
+  // 缺少 current_applicability 的历史记录同样不冒充 current
+  const legacyRecord=baseFlow({collection:{status:'passed',count:1,last_evaluation:null,notes:[],
+    items:[{...profileFixture({groundConfirmed:true}),status:'passed',current_applicability:undefined}]}});
+  assert.equal(routeRiskProfileModel(legacyRecord).current,null);
+});
+
+test('generating a profile never requires thresholds; thresholds only decide classification and high-risk',()=>{
+  const unconfirmed=renderRouteRiskProfile(baseFlow());
+  assert.match(unconfirmed,/生成 profile 不要求阈值/);
+  assert.match(unconfirmed,/阈值只决定 classification 与 high-risk/);
+  assert.doesNotMatch(unconfirmed,/id="evaluateRouteRiskProfile" disabled/,
+    '未确认阈值不得禁用生成按钮：只有后端 readiness 才是 gate');
+  const unconfirmedModel=routeRiskProfileModel(baseFlow());
+  assert.equal(unconfirmedModel.domains.every(domain=>domain.thresholdsConfigured===false),true);
+  assert.equal(unconfirmedModel.readinessStatus,'ready','阈值不是 readiness 的 blocker');
+  // 阈值设置面板同样明确"生成不要求阈值"
+  assert.match(unconfirmed,
+    /生成 profile 不要求阈值，未确认阈值的 domain 仍然输出 exposure \/ mean \/ max 与 raw index/);
+  assert.match(unconfirmed,/SVG 里也不会出现 low\/medium\/high 背景带与阈值线/);
+  // 只有后端 readiness 才会禁用按钮
+  const blocked=renderRouteRiskProfile(baseFlow({readiness:readinessFixture({status:'blocked',
+    blockers:[{reason_code:'candidate_not_available',reason:'当前没有 LayeredRouteCandidate'}]})}));
+  assert.match(blocked,/id="evaluateRouteRiskProfile" disabled/);
 });
 
 // ---- 9. 工程证据默认折叠 + 边界文案 ------------------------------------------

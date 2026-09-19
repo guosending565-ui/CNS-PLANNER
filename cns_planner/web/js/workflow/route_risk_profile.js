@@ -7,8 +7,16 @@
 //    high-risk —— 三个 domain（ground / air_traffic / environment_obstacle）各自独立成卡；
 //  * 阈值没有默认值：未配置/未确认时只显示 exposure / mean / max 与 raw index，
 //    classification 与 high-risk 指标保持 not_configured / null，前端绝不代为分级；
-//  * 一维 SVG 的横轴与每个区段位置全部来自后端已有字段（route_length_m /
-//    start_cumulative_distance_m / end_cumulative_distance_m），前端不做任何几何或距离推算；
+//  * 生成 profile 不要求阈值：阈值只决定 classification 与 high-risk 指标；
+//  * 画像是真正的 Distance × Risk Index profile：
+//      X = backend 累计距离（start_cumulative_distance_m / end_cumulative_distance_m /
+//          route_length_m，只做"米 → 像素"线性映射）；
+//      Y = 后端 segment.domains[domain].mean_index，固定 0..1；
+//    medium_min / high_min **只**决定 Y 方向上的水平阈值线与水平背景带，
+//    绝不参与任何 X 定位；segment 颜色仍然只使用后端 classification.level；
+//  * 未 confirmed 时只画 neutral / raw index：没有 low/medium/high 带，也没有阈值线；
+//  * current profile 只认 current_applicability==='current'：没有 current 时为 null，
+//    stale profile 只作为历史证据保留，绝不冒充"当前 profile"；
 //  * factor contributor 只是 relative engineering contribution，不是事故原因概率；
 //  * stale profile 保留为审计证据并明确标 stale，删除只走 /api/route-risk-profiles/delete；
 //  * 工程证据（factor / consistency / fingerprints / 历史 profile）默认折叠。
@@ -82,8 +90,9 @@ export function routeRiskProfileModel(flow){
     };
   });
 
-  const current=items.find(item=>item&&item.current_applicability==='current')
-    ||items[items.length-1]||null;
+  // 只有后端明确标 current_applicability==='current' 的 profile 才是"当前 profile"：
+  // 找不到就是 null（stale / 历史 profile 绝不顶替 current）。
+  const current=items.find(item=>item&&item.current_applicability==='current')||null;
 
   return {
     readinessStatus:text(readiness.status||'blocked'),
@@ -162,11 +171,13 @@ export function routeRiskDomainModel(profile,domainId){
 // ---------------------------------------------------------------- SVG geometry
 
 /**
- * 一维路径画像几何：x 坐标**只**来自后端已有累计距离字段与 route_length_m。
+ * Distance × Risk Index profile 的几何：**X 只来自后端累计距离**（
+ * `start_cumulative_distance_m` / `end_cumulative_distance_m` / `route_length_m`），
+ * **Y 只来自后端 `segment.domains[domain].mean_index`**（固定 0..1）。
  *
- * 这里没有任何距离或风险的重新计算：`start_cumulative_distance_m` /
- * `end_cumulative_distance_m` / `route_length_m` 都是后端 profile 的原值，
- * 本函数只做"米 → 像素"的线性映射。
+ * 这里没有任何距离或风险的重新计算：全部是后端 profile 的原值，
+ * 本函数只把"米 / index"映射到像素。阈值（medium_min / high_min）只在
+ * `routeRiskDomainSvg` 中用于 Y 方向的水平线与水平背景带，绝不参与 X 定位。
  *
  * @param {{domains?:object,route_length_m?:number,segments?:Array}} profile
  * @param {string} domainId
@@ -207,89 +218,141 @@ export function routeRiskDomainGeometry(profile,domainId){
   };
 }
 
+/** 画像 SVG 的固定布局常量：实现与测试共用同一份定义。 */
+export const RRP_PROFILE_SVG={
+  width:760,height:200,padLeft:48,padRight:16,padTop:24,padBottom:44,
+};
+
 /**
- * 原生 SVG 一维路径画像（无第三方依赖）。
+ * X / Y 线性映射（唯一的两个输入轴）：
+ *  * X：后端累计距离，0 → `route_length_m`；
+ *  * Y：后端 `mean_index`，固定 0 → 1（index 语义固定，与阈值无关）。
+ *
+ * @param {number} routeLengthM 后端 route_length_m
+ */
+export function routeRiskProfileScale(routeLengthM){
+  const {width,height,padLeft,padRight,padTop,padBottom}=RRP_PROFILE_SVG;
+  const usableWidth=width-padLeft-padRight;
+  const plotTop=padTop,plotBottom=height-padBottom;
+  const length=finite(routeLengthM)&&Number(routeLengthM)>0?Number(routeLengthM):null;
+  const clamp01=value=>Math.max(0,Math.min(1,finite(value)?Number(value):0));
+  return {
+    width,height,padLeft,padRight,padTop,padBottom,usableWidth,plotTop,plotBottom,
+    routeLengthM:length,
+    // index → y：0 在底部、1 在顶部；越界只做裁剪，不改变数值。
+    y:index=>plotBottom-clamp01(index)*(plotBottom-plotTop),
+    // 累计距离 → x：0 → padLeft、route_length_m → padLeft + usableWidth。
+    x:value=>length===null
+      ?padLeft
+      :padLeft+Math.max(0,Math.min(length,finite(value)?Number(value):0))/length*usableWidth,
+  };
+}
+
+/**
+ * 原生 SVG **Distance × Risk Index profile**（无第三方依赖）。
+ *
+ *  * X 全部来自后端累计距离：segment 的 x / width 只由
+ *    `start_cumulative_distance_m` / `end_cumulative_distance_m` 决定；
+ *  * 柱顶 Y 全部来自后端 `segment.domains[domain].mean_index`（固定 0..1）；
+ *  * `medium_min` / `high_min` **只**决定 Y 方向的水平阈值线与水平背景带；
+ *  * segment 颜色只使用后端 classification.level，未确认时只画 neutral raw index。
+ *
  * @param {{domains?:object,route_length_m?:number,segments?:Array}} profile
  * @param {string} domainId
  */
 export function routeRiskDomainSvg(profile,domainId){
   const geometry=routeRiskDomainGeometry(profile,domainId);
-  const length=geometry.routeLengthM;
-  if(!finite(length)||length<=0)return '';
-  const width=760,height=132,padLeft=48,padRight=16,padTop=30,padBottom=30;
-  const usable=width-padLeft-padRight;
-  // 横轴 0 → route_length_m：唯一来源是后端 route_length_m。
-  const x=value=>padLeft+Math.max(0,Math.min(length,finite(value)?Number(value):0))/length*usable;
-  const barTop=padTop,barHeight=34,barBottom=barTop+barHeight;
+  const scale=routeRiskProfileScale(geometry.routeLengthM);
+  const length=scale.routeLengthM;
+  if(length===null)return '';
+  const {width,height,padLeft,padRight,plotTop,plotBottom,usableWidth}=scale;
+  const x=scale.x,y=scale.y;
 
   const classified=geometry.classified;
   const caption=classified
-    ?'后端已确认阈值：level 来自 profile segment classification（low / medium / high）'
+    ?'后端已确认阈值：medium_min / high_min 只画在 Y 方向的阈值线与背景带；segment 颜色来自 profile classification level'
     :'后端未配置/未确认阈值：'+RRP_RAW_INDEX_LABEL;
-  const ticks=[0,length/2,length].map(value=>
-    '<text x="'+x(value).toFixed(1)+'" y="'+(height-8)+'" font-size="11" text-anchor="middle" fill="#566">'
+
+  // Y 轴：index 语义固定 0..1，与阈值无关（阈值只决定额外的水平线/带）。
+  const yTicks=[0,0.5,1].map(value=>
+    '<line x1="'+padLeft+'" x2="'+(padLeft+usableWidth)+'" y1="'+y(value).toFixed(1)
+    +'" y2="'+y(value).toFixed(1)+'" stroke="#e5ebe9" stroke-width="1"></line>'
+    +'<text x="'+(padLeft-6)+'" y="'+(y(value)+3).toFixed(1)+'" font-size="10" text-anchor="end" fill="#667">'
+    +escapeHtml(fmt(value,1))+'</text>').join('');
+  // X 轴：0 / route_length_m 的一半 / route_length_m，只来自 route_length_m。
+  const xTicks=[0,length/2,length].map(value=>
+    '<line x1="'+x(value).toFixed(1)+'" x2="'+x(value).toFixed(1)+'" y1="'+plotTop
+    +'" y2="'+plotBottom+'" stroke="#eef3f1" stroke-width="1"></line>'
+    +'<text x="'+x(value).toFixed(1)+'" y="'+(plotBottom+14)+'" font-size="11" text-anchor="middle" fill="#566">'
     +escapeHtml(fmt(value,1))+' m</text>').join('');
-  const gridLines=[0,length/2,length].map(value=>
-    '<line x1="'+x(value).toFixed(1)+'" x2="'+x(value).toFixed(1)+'" y1="'+(barTop-6)+'" y2="'+(barBottom+6)
-    +'" stroke="#dde4e1" stroke-width="1"></line>').join('');
 
-  const bars=geometry.positions.map(position=>{
-    const startX=x(position.startDistanceM),endX=x(position.endDistanceM);
-    // 区段位置严格取自后端累计距离；宽度不足 1px 时只做最小可视化，不改变数值。
-    const barWidth=Math.max(1,endX-startX);
-    const level=classified?position.classificationLevel:null;
-    const fill=LEVEL_FILL[level]||NEUTRAL_FILL;
-    const label=classified
-      ?text(level||'未分类')
-      :'raw index '+(position.meanIndex===null?'未解析':fmt(position.meanIndex,4));
-    const title=escapeHtml('segment '+short(position.segmentId)
-      +' · distance '+fmt(position.startDistanceM,1)+' → '+fmt(position.endDistanceM,1)+' m'
-      +' · length '+fmt(position.lengthM,1)+' m · '+label);
-    return '<rect data-rrp-segment="'+escapeHtml(text(position.segmentId))+'"'
-      +' data-rrp-level="'+escapeHtml(classified?text(level||'unclassified'):'not_configured')+'"'
-      +' x="'+startX.toFixed(1)+'" y="'+barTop+'" width="'+barWidth.toFixed(1)+'" height="'+barHeight+'"'
-      +' fill="'+fill+'" opacity="'+(classified?'.85':'.35')+'"><title>'+title+'</title></rect>';
-  }).join('');
-
-  const markers=gridLines;
-
-  // 阈值区段带：只有后端已确认阈值时才画出 low / medium / high 的索引区段。
-  // 区段边界严格由后端的 medium_min / high_min 与 route_length_m 决定，前端不做任何分级。
+  // 水平分类背景带：只有后端已确认阈值才画；y 边界只由 medium_min / high_min 决定。
   const bands=classified
     ?[['low',0,geometry.mediumMin],['medium',geometry.mediumMin,geometry.highMin],
       ['high',geometry.highMin,1]]
-      .filter(item=>finite(item[1])&&finite(item[2])&&item[2]>item[1])
+      .filter(item=>finite(item[1])&&finite(item[2])&&item[2]>=item[1])
       .map(item=>{
-        const startX=x(item[1]*length),bandWidth=Math.max(1,x(item[2]*length)-startX);
-        return '<rect data-rrp-band="'+item[0]+'" x="'+startX.toFixed(1)+'" y="'+(barTop-6)
-          +'" width="'+bandWidth.toFixed(1)+'" height="'+(barHeight+12)+'" fill="'+LEVEL_BAND[item[0]]
-          +'"><title>'+escapeHtml(item[0]+' 区段 · index '+fmt(item[1],4)+' – '+fmt(item[2],4)
-            +'（后端已确认阈值）')+'</title></rect>';
+        const top=y(item[2]),bottom=y(item[1]);
+        return '<rect data-rrp-band="'+item[0]+'" data-rrp-band-axis="mean_index" x="'+padLeft
+          +'" y="'+top.toFixed(1)+'" width="'+usableWidth+'" height="'+Math.max(1,bottom-top).toFixed(1)
+          +'" fill="'+LEVEL_BAND[item[0]]+'"><title>'+escapeHtml(item[0]+' 背景带 · index '
+            +fmt(item[1],4)+' – '+fmt(item[2],4)+'（后端已确认阈值，Y 方向）')+'</title></rect>';
       }).join('')
     :'';
+  // 水平阈值线：x1 / x2 恒定，只有 y 由阈值决定 —— 阈值绝不参与 X 定位。
   const thresholdMarkers=classified
     ?[['medium_min',geometry.mediumMin],['high_min',geometry.highMin]]
       .filter(item=>finite(item[1]))
-      .map(item=>{
-        const value=x(item[1]*length);
-        return '<line data-rrp-threshold="'+item[0]+'" x1="'+value.toFixed(1)+'" x2="'+value.toFixed(1)
-          +'" y1="'+(barTop-10)+'" y2="'+(barBottom+10)+'" stroke="#33404c" stroke-dasharray="4 3"></line>'
-          +'<text x="'+value.toFixed(1)+'" y="'+(barBottom+22)+'" font-size="10" text-anchor="middle" fill="#33404c">'
-          +escapeHtml(item[0]+' '+fmt(item[1],4))+'</text>';
-      }).join('')
+      .map(item=>'<line data-rrp-threshold="'+item[0]+'" data-rrp-threshold-axis="mean_index" x1="'+padLeft
+        +'" x2="'+(padLeft+usableWidth)+'" y1="'+y(item[1]).toFixed(1)+'" y2="'+y(item[1]).toFixed(1)
+        +'" stroke="#33404c" stroke-dasharray="4 3"></line>'
+        +'<text x="'+(padLeft+usableWidth)+'" y="'+(y(item[1])-3).toFixed(1)
+        +'" font-size="10" text-anchor="end" fill="#33404c">'
+        +escapeHtml(item[0]+' '+fmt(item[1],4))+'</text>').join('')
     :'';
 
-  const rawNote='<text x="'+padLeft+'" y="'+(barTop-10)+'" font-size="11" fill="#566">'
-    +'route_length_m '+escapeHtml(fmt(length,1))+' m（后端）</text>'
-    +'<text x="'+(width-padRight)+'" y="'+(barTop-10)+'" font-size="11" text-anchor="end" fill="#566">'
-    +escapeHtml(classified?('domain level '+short(geometry.domainLevel)):'未确认阈值')+'</text>';
+  const bars=geometry.positions.map(position=>{
+    const startX=x(position.startDistanceM),endX=x(position.endDistanceM);
+    // 区段宽度严格取自后端累计距离；宽度不足 1px 时只做最小可视化，不改变数值。
+    const barWidth=Math.max(1,endX-startX);
+    if(position.meanIndex===null){
+      // 未解析就是未解析：绝不当 0，也不编造 index。
+      return '<rect data-rrp-segment-unresolved="'+escapeHtml(text(position.segmentId))+'"'
+        +' x="'+startX.toFixed(1)+'" y="'+(plotBottom-1)+'" width="'+barWidth.toFixed(1)+'" height="1"'
+        +' fill="#c8d0d4"><title>'+escapeHtml('segment '+short(position.segmentId)
+          +' · raw index 未解析（missing ≠ 0）')+'</title></rect>';
+    }
+    const level=classified?position.classificationLevel:null;
+    const fill=LEVEL_FILL[level]||NEUTRAL_FILL;
+    const top=y(position.meanIndex);
+    const label=classified
+      ?text(level||'未分类')
+      :'raw index '+fmt(position.meanIndex,4);
+    const title=escapeHtml('segment '+short(position.segmentId)
+      +' · distance '+fmt(position.startDistanceM,1)+' → '+fmt(position.endDistanceM,1)+' m'
+      +' · length '+fmt(position.lengthM,1)+' m'
+      +' · mean_index '+fmt(position.meanIndex,6)+' · '+label);
+    return '<rect data-rrp-segment="'+escapeHtml(text(position.segmentId))+'"'
+      +' data-rrp-level="'+escapeHtml(classified?text(level||'unclassified'):'not_configured')+'"'
+      +' data-rrp-segment-x="cumulative_distance_m" data-rrp-segment-y="mean_index"'
+      +' x="'+startX.toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+barWidth.toFixed(1)+'"'
+      +' height="'+Math.max(1,plotBottom-top).toFixed(1)+'"'
+      +' fill="'+fill+'" opacity="'+(classified?'.85':'.55')+'"><title>'+title+'</title></rect>';
+  }).join('');
+
+  const axisNote='<text x="'+padLeft+'" y="'+(plotTop-8)+'" font-size="11" fill="#566">'
+    +'X = 累计距离 · route_length_m '+escapeHtml(fmt(length,1))
+    +' m（后端）；Y = risk index 0–1（后端 mean_index）</text>'
+    +'<text x="'+(width-padRight)+'" y="'+(height-6)+'" font-size="11" text-anchor="end" fill="#566">'
+    +escapeHtml(classified?('domain level '+short(geometry.domainLevel)):'未确认阈值 · raw index only')+'</text>';
 
   return '<svg data-rrp-svg="'+escapeHtml(domainId)+'" data-rrp-x-axis="cumulative_distance_m"'
+    +' data-rrp-y-axis="mean_index_0_1"'
     +' viewBox="0 0 '+width+' '+height+'" role="img"'
-    +' aria-label="'+escapeHtml(domainLabel(domainId)+' 一维路径画像')+'"'
-    +' style="width:100%;min-height:132px;background:#f7faf9;border:1px solid #ccd8d4">'
-    +bands+rawNote+thresholdMarkers+markers+bars+ticks
-    +'<text x="'+padLeft+'" y="'+(height-28)+'" font-size="10" fill="#667">'+escapeHtml(caption)+'</text>'
+    +' aria-label="'+escapeHtml(domainLabel(domainId)+' Distance × Risk Index 画像')+'"'
+    +' style="width:100%;min-height:'+height+'px;background:#f7faf9;border:1px solid #ccd8d4">'
+    +bands+yTicks+xTicks+thresholdMarkers+bars+axisNote
+    +'<text x="'+padLeft+'" y="'+(height-22)+'" font-size="10" fill="#667">'+escapeHtml(caption)+'</text>'
     +'</svg>';
 }
 
@@ -346,7 +409,8 @@ function domainCard(model,profile,domainId){
   const domain=routeRiskDomainModel(profile,domainId);
   const header='<h3>'+escapeHtml(domainLabel(domainId))+'</h3>';
   if(!domain){
-    return header+'<div class="empty-note">当前 profile 没有该 domain 的字段：不显示推断值。</div>';
+    return header+'<div class="empty-note">没有 current profile（或该 profile 不含此 domain）：不显示推断值；'
+      +'stale profile 只在下方历史证据里出现。</div>';
   }
   const thresholds=model.domains.find(item=>item.domainId===domainId)||{};  const levelText=domain.classified
     ?statusBadge(domain.classificationLevel||'passed')+' · level '+escapeHtml(short(domain.classificationLevel))
@@ -456,8 +520,11 @@ function policyPanel(model){
     '<div class="parameter-note">RouteRiskProfilePolicy 按 domain 逐个显式确认，'
     +'<b>系统绝不提供任何默认阈值</b>（0.6 / 0.8 之类的猜测值一律不出现）。'
     +'保存时必须满足 <code>0 ≤ medium_min ≤ high_min ≤ 1</code>；声明 confirmed 时还必须提供显式 source，'
-    +'否则后端直接拒绝。未确认阈值的 domain 仍然输出 exposure / mean / max，'
-    +'但 classification 与 high-risk 指标保持 not_configured / null。</div>'
+    +'否则后端直接拒绝。'
+    +'<b>阈值只决定 classification 与 high-risk 指标</b>：生成 profile 不要求阈值，'
+    +'未确认阈值的 domain 仍然输出 exposure / mean / max 与 raw index，'
+    +'但 classification 与 high-risk 指标保持 not_configured / null，'
+    +'SVG 里也不会出现 low/medium/high 背景带与阈值线。</div>'
     +(model.policyNotes.length?'<div class="parameter-note">后端 policy notes：'
       +model.policyNotes.map(note=>escapeHtml(text(note))).join('<br>')+'</div>':'')
     +fields
@@ -556,6 +623,8 @@ function profileEvidenceBlock(profile){
 function currentProfileHeader(model,profile){
   const candidate=profile.candidate||{};
   const applicability=text(profile.current_applicability);
+  // 进来的一定是 current_applicability==='current' 的 profile；这里只保留一道防御：
+  // 万一后端把 status 与 applicability 报得不一致，仍然按 stale 明确警示。
   const stale=profile.status==='stale'||applicability.startsWith('stale');
   const rows=[
     ['profile_id',escapeHtml(short(profile.profile_id))],
@@ -603,8 +672,9 @@ function historyBlock(model){
       +'">删除该 profile</button>（只调用 /api/route-risk-profiles/delete）</small></span></div>';
   }).join('');
   return wbBlock('历史 profiles '+statusBadge(model.collectionStatus),
-    '<div class="parameter-note">stale profile 必须保留显示：它记录的是生成当时的候选、'
-    +'grid_risk_v2 与阈值证据。删除仅移除该条记录，不影响 candidate、运行航路或 CNS 结果。</div>'
+    '<div class="parameter-note">只有 <code>current_applicability=current</code> 的 profile 才是"当前 profile"；'
+    +'stale profile 必须保留显示：它记录的是生成当时的候选、grid_risk_v2 与阈值证据，'
+    +'绝不冒充 current 结论。删除仅移除该条记录，不影响 candidate、运行航路或 CNS 结果。</div>'
     +'<div class="scroll-list route-list">'+rows+'</div>');
 }
 
@@ -639,7 +709,8 @@ export function renderRouteRiskProfile(flow){
     +(model.readinessStatus==='ready'?'':'disabled')+'>生成风险画像</button></div>'
     +'<div class="parameter-note">按钮可用性来自后端 readiness：'
     +escapeHtml(model.readinessStatus==='ready'?'ready（无 blocker）':'blocked（blocker 未清除）')
-    +'。前端不重新判断候选、grid_risk_v2 或阈值是否就绪。</div>'
+    +'。<b>生成 profile 不要求阈值</b>：未确认阈值的 domain 仍然会输出 exposure / mean / max 与 raw index，'
+    +'阈值只决定 classification 与 high-risk 指标。前端不重新判断候选、grid_risk_v2 或阈值是否就绪。</div>'
     +'<h3>blockers（后端 readiness 原样转印）</h3>'
     +blockerRows(model)
     +'<div class="parameter-note">candidate_status 原值 <code>'+escapeHtml(short(candidate.status))
@@ -657,7 +728,9 @@ export function renderRouteRiskProfile(flow){
   const profileSection=model.current
     ?currentProfileHeader(model,model.current)
     :wbBlock('当前 profile '+statusBadge('not_calculated'),
-      '<div class="empty-note">尚无 RouteRiskProfile：先补齐 blocker 与工程阈值，再点击"生成风险画像"。</div>');
+      '<div class="empty-note">当前没有 current_applicability=current 的 profile：'
+      +'<b>生成 profile 不要求阈值</b>，只需后端 readiness 的 blocker 已清除；'
+      +'已存在的 stale profile 只作为历史证据保留，不会冒充当前 profile。</div>');
 
   return overview+domainCards+profileSection+policy+evidence+historyBlock(model)+boundaryBlock(model);
 }

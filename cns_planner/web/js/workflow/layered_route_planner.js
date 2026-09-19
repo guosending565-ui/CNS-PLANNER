@@ -1,32 +1,160 @@
 import {escapeHtml,statusBadge,statusText} from './common.js';
 
-// Layered Risk-Aware Route Planner V1 workbench (production main line).
+// =========================================================
+// 「操作 → 分层候选」的公共部分 + Layered Risk-Aware Route Planner V1 面板。
 //
-// Hard rules surfaced in the UI:
-//   * the cruise altitude layer is an explicit选择 — never inferred from a RouteAltitudeProfile
-//     and never defaulted;
-//   * there is no default terrain clearance and no default λ: ``null != 0`` and an explicit
-//     ``0`` is legal (that domain is then not a planning input at all);
-//   * the result is only a candidate: it is not an operational route, CNS is not assessed and
-//     continuous validation is still required.
+// 算法分流严格依据 ``flow.layered_route_planner_readiness.algorithm.algorithm_id``：
+//   * ``layered_route_planner_v1``（A* + legacy λ）→ 本文件的 V1 面板与 V1 λ 语义；
+//   * ``layered_risk_aware_theta_star_v2@2.0``     → layered_theta_v2.js 的 Theta* V2 视图。
+// 本文件只保留两边共用的 planning request / scenario / 显式 AltitudeLayer 与
+// terrain-building feasibility 控件，避免两套面板各自发明字段与 id。
+//
+// V1 继续在 UI 上明示的硬规则：
+//   * cruise altitude layer 必须显式选择：不从 RouteAltitudeProfile 推断、不给默认值；
+//   * 没有默认地形净空、没有默认 λ：``null != 0``，显式 ``0`` 是合法的工程决定；
+//   * 结果只是 candidate：不是运行航路，CNS 未评估，连续验证仍必须执行。
+// =========================================================
 export const LAYERED_PLANNER_ALGORITHM_TYPE='layered_route_planner';
 export const LAYERED_PLANNER_ALGORITHM_ID='layered_route_planner_v1';
+//: Theta* V2 的 exact algorithm id：只有它才把「分层候选」切换成 Theta* V2 视图。
+export const THETA_STAR_V2_ALGORITHM_ID='layered_risk_aware_theta_star_v2';
+export const THETA_STAR_V2_ALGORITHM_VERSION='2.0';
 export const LAYERED_CANDIDATE_LABEL='分层候选（candidate，非运行航路）';
 export const LAYERED_BLOCKED_NOTE='没有 confirmed 参数时一律 blocked：不提供任何默认高度、净空或 λ。';
+export const THETA_STAR_V2_BLOCKED_NOTE='Theta* V2 不读取 legacy LayeredRouteCostPolicy 的 λ：'
+  +'population × shelter risk 才是搜索代价，缺 shelter policy / population_shelter 场 / confirmed 巡航高度时才 blocked。';
 export const COST_DOMAIN_LABELS={
   ground:'Ground（地面暴露）',
   air_traffic:'Air / Traffic（空中交通暴露）',
   environment_obstacle:'Environment / Obstacle（工程环境-障碍物）',
 };
 
-export function layeredRoutePlannerModel(flow){
+// ---------------------------------------------------------------- algorithm switch
+
+/** readiness.algorithm.algorithm_id 是视图选择的唯一依据（缺失时退回 V1 基线）。 */
+export function layeredAlgorithmId(flow){
+  const id=flow?.layered_route_planner_readiness?.algorithm?.algorithm_id;
+  return typeof id==='string'&&id?id:LAYERED_PLANNER_ALGORITHM_ID;
+}
+
+export function layeredAlgorithmVersion(flow){
+  const version=flow?.layered_route_planner_readiness?.algorithm?.algorithm_version;
+  return typeof version==='string'&&version?version:null;
+}
+
+/** 只有 exact algorithm id 等于 layered_risk_aware_theta_star_v2 才是 Theta* V2。 */
+export function layeredPlannerUsesThetaStarV2(flow){
+  return layeredAlgorithmId(flow)===THETA_STAR_V2_ALGORITHM_ID;
+}
+
+export function layeredPlannerAlgorithmLabel(flow){
+  const version=layeredAlgorithmVersion(flow);
+  return (layeredPlannerUsesThetaStarV2(flow)
+    ?'Layered Risk-Aware Theta* V2'
+    :'Layered Risk-Aware Route Planner V1')+(version?'@'+version:'');
+}
+
+// ---------------------------------------------------------------- public model
+
+/**
+ * 公共 planning request / scenario / 显式 AltitudeLayer 投影（V1 与 V2 完全同源）。
+ * @param {object} flow published workflow snapshot
+ */
+export function layeredPlanningRequestModel(flow){
   const readiness=flow?.layered_route_planner_readiness||{};
   const request=flow?.layered_route_planning_request||readiness.request||{};
+  const catalog=readiness.altitude_layer_catalog||{};
+  // AltitudeLayer 必须显式选择：目录优先取 readiness，缺失时退回 flow.spatial_3d 的既有定义
+  // （绝不从 RouteAltitudeProfile 推断，也不给默认层）。
+  const layerSource=(Array.isArray(catalog.layers)&&catalog.layers.length)
+    ?catalog.layers
+    :((flow?.spatial_3d||{}).altitude_layers||[]);
+  return {
+    scenarioRoutes:(flow?.scenario_routes||[]).map(route=>({
+      routeId:route.route_id,
+      direction:route.direction||((route.start_node_id&&route.end_node_id)?(route.start_node_id+'→'+route.end_node_id):''),
+    })),
+    selectedRouteId:request.scenario_route_id||readiness.scenario_route?.route_id||null,
+    scenarioRouteStatus:readiness.scenario_route?.status||'not_resolved',
+    scenarioRouteCount:Number.isFinite(readiness.scenario_route?.count)?readiness.scenario_route.count:null,
+    layers:layerSource.map(layer=>({
+      layerId:layer.altitude_layer_id,name:layer.name,
+      nominal:Number.isFinite(layer.nominal_altitude_m)?layer.nominal_altitude_m:null,
+      verticalReference:layer.vertical_reference,
+      status:layer.status,reasons:layer.reasons||[],
+    })),
+    layerCatalogStatus:catalog.status||'not_configured',
+    selectedLayerId:request.altitude_layer_id||null,
+    cruiseAltitude:catalog.cruise_altitude||null,
+    requestStatus:request.status||'pending_confirmation',
+    requestConfirmed:request.confirmed===true,
+    source:request.source||null,
+  };
+}
+
+/** 公共 terrain / building feasibility 投影（V1 与 V2 完全同源）。 */
+export function layeredFeasibilityModel(flow){
+  const readiness=flow?.layered_route_planner_readiness||{};
   const feasibility=flow?.layered_route_feasibility_policy||{};
+  return {
+    status:feasibility.status||'blocked',
+    clearance:Number.isFinite(feasibility.terrain_vertical_clearance_m)?feasibility.terrain_vertical_clearance_m:null,
+    parameterStatus:feasibility.parameter_status||null,
+    source:feasibility.source||null,
+    fingerprint:feasibility.fingerprint||null,
+    policyStatus:readiness.feasibility_policy?.status||feasibility.status||'blocked',
+    maskingConfirmed:readiness.feasibility_policy?.status==='confirmed',
+    buildingClearance:readiness.building_clearance_policy||{},
+    mask:readiness.feasibility_mask||{},
+    sources:readiness.sources||{},
+  };
+}
+
+// ---------------------------------------------------------------- public fields
+
+/** 公共 request 字段（scenario / 显式 AltitudeLayer / source / confirmed）。 */
+export function renderLayeredPlanningRequestFields(model,{altitudeNote}={}){
+  const routeOptions=model.scenarioRoutes.map(route=>
+    '<option value="'+escapeHtml(route.routeId)+'"'+(route.routeId===model.selectedRouteId?' selected':'')+'>'+
+    escapeHtml(route.routeId+(route.direction?' · '+route.direction:''))+'</option>').join('');
+  const layerOptions=model.layers.map(layer=>
+    '<option value="'+escapeHtml(layer.layerId)+'"'+(layer.layerId===model.selectedLayerId?' selected':'')+'>'+
+    escapeHtml(layer.layerId+(layer.nominal===null?' · nominal 待确认':' · '+layer.nominal)+' m')+'</option>').join('');
+  const note=altitudeNote||('AGL / WGS84 高度层在缺少显式 DEM surface 或 geoid 证据时保持 blocked：'
+    +'V1 不做 datum/geoid 猜测或伪转换。');
+  return '<label>scenario / OD 航路</label>'+
+    '<select id="layeredRouteSelect">'+(routeOptions||'<option value="">当前没有 scenario/OD 航路</option>')+'</select>'+
+    '<label>巡航高度层（显式选择，不从 profile 推断）</label>'+
+    '<select id="layeredAltitudeLayerSelect">'+(layerOptions||'<option value="">尚未配置 AltitudeLayer</option>')+'</select>'+
+    '<div class="parameter-note">selected layer cruise altitude：'+
+    escapeHtml(model.cruiseAltitude?.status||'not_resolved')+
+    (Number.isFinite(model.cruiseAltitude?.altitude_egm2008_m)?' · '+formatNumber(model.cruiseAltitude.altitude_egm2008_m)+' m EGM2008':'')+
+    (model.cruiseAltitude?.reason?' · '+escapeHtml(model.cruiseAltitude.reason):'')+
+    '<br>'+escapeHtml(note)+'</div>'+
+    '<label>request source / evidence</label>'+
+    '<input id="layeredRequestSource" placeholder="工程依据（确认时必填）" value="'+escapeHtml(model.source||'')+'">'+
+    '<label class="checkbox-row"><input type="checkbox" id="layeredRequestConfirmed"'+(model.requestConfirmed?' checked':'')+'> 显式确认本次规划请求</label>';
+}
+
+/** 公共 feasibility policy 字段（terrain clearance 无默认值）。 */
+export function renderLayeredFeasibilityFields(model){
+  return '<label>feasibility policy：terrain vertical clearance (m)</label>'+
+    '<input id="layeredTerrainClearance" type="number" step="0.1" placeholder="必填，无默认值" value="'+
+    (model.feasibility.clearance===null?'':model.feasibility.clearance)+'">'+
+    '<label>feasibility policy source</label>'+
+    '<input id="layeredFeasibilitySource" placeholder="工程依据（确认时必填）">'+
+    '<label class="checkbox-row"><input type="checkbox" id="layeredFeasibilityConfirmed"> 显式确认 feasibility policy</label>';
+}
+
+// ---------------------------------------------------------------- V1 model
+
+export function layeredRoutePlannerModel(flow){
+  const readiness=flow?.layered_route_planner_readiness||{};
   const cost=flow?.layered_route_cost_policy||{};
   const candidates=flow?.layered_route_candidates||{};
-  const catalog=readiness.altitude_layer_catalog||{};
   const costPolicy=readiness.cost_policy||{};
+  const requestModel=layeredPlanningRequestModel(flow);
+  const feasibilityModel=layeredFeasibilityModel(flow);
   const domains=Object.keys(COST_DOMAIN_LABELS).map(domainId=>{
     const policy=(costPolicy.domains||{})[domainId]||{};
     const lambda=policy.lambda;
@@ -42,31 +170,26 @@ export function layeredRoutePlannerModel(flow){
   const items=candidates.items||[];
   const active=items.find(item=>item.candidate_id&&item.candidate_id===candidates.active_candidate_id)||null;
   return {
+    // 视图选择的唯一依据（V1 面板自己只在 V1 下渲染）。
+    algorithmId:layeredAlgorithmId(flow),
+    usesThetaStarV2:layeredPlannerUsesThetaStarV2(flow),
     status:readiness.status||'blocked',
     algorithm:readiness.algorithm||{},
-    scenarioRoutes:(flow?.scenario_routes||[]).map(route=>({
-      routeId:route.route_id,
-      direction:route.direction||((route.start_node_id&&route.end_node_id)?(route.start_node_id+'→'+route.end_node_id):''),
-    })),
-    selectedRouteId:request.scenario_route_id||readiness.scenario_route?.route_id||null,
-    scenarioRouteStatus:readiness.scenario_route?.status||'not_resolved',
-    layers:(catalog.layers||[]).map(layer=>({
-      layerId:layer.altitude_layer_id,name:layer.name,
-      nominal:Number.isFinite(layer.nominal_altitude_m)?layer.nominal_altitude_m:null,
-      verticalReference:layer.vertical_reference,
-      status:layer.status,reasons:layer.reasons||[],
-    })),
-    selectedLayerId:request.altitude_layer_id||null,
-    cruiseAltitude:readiness.altitude_layer_catalog?.cruise_altitude||null,
-    requestStatus:request.status||'pending_confirmation',
-    requestConfirmed:request.confirmed===true,
-    source:request.source||null,
+    scenarioRoutes:requestModel.scenarioRoutes,
+    selectedRouteId:requestModel.selectedRouteId,
+    scenarioRouteStatus:requestModel.scenarioRouteStatus,
+    layers:requestModel.layers,
+    selectedLayerId:requestModel.selectedLayerId,
+    cruiseAltitude:requestModel.cruiseAltitude,
+    requestStatus:requestModel.requestStatus,
+    requestConfirmed:requestModel.requestConfirmed,
+    source:requestModel.source,
     feasibility:{
-      status:feasibility.status||'blocked',
-      clearance:Number.isFinite(feasibility.terrain_vertical_clearance_m)?feasibility.terrain_vertical_clearance_m:null,
-      parameterStatus:feasibility.parameter_status||null,
-      fingerprint:feasibility.fingerprint||null,
-      maskingConfirmed:readiness.feasibility_policy?.status==='confirmed',
+      status:feasibilityModel.status,
+      clearance:feasibilityModel.clearance,
+      parameterStatus:feasibilityModel.parameterStatus,
+      fingerprint:feasibilityModel.fingerprint,
+      maskingConfirmed:feasibilityModel.maskingConfirmed,
     },
     cost:{
       status:cost.status||'pending_confirmation',
@@ -77,8 +200,8 @@ export function layeredRoutePlannerModel(flow){
       parameterStatus:costPolicy.parameter_status||null,
     },
     risk:readiness.risk_framework_v2||{},
-    buildingClearance:readiness.building_clearance_policy||{},
-    mask:readiness.feasibility_mask||{},
+    buildingClearance:feasibilityModel.buildingClearance,
+    mask:feasibilityModel.mask,
     blockers:readiness.blockers||[],
     candidates:{
       status:candidates.status||'not_calculated',
@@ -110,7 +233,7 @@ export function layeredRoutePlannerModel(flow){
       active:active?{candidateId:active.candidate_id,status:active.status}:null,
     },
     // The overlay renders the mask of the currently selected (route, layer) lane only.
-    overlayMask:selectOverlayMask(candidates,request),
+    overlayMask:selectOverlayMask(candidates,flow?.layered_route_planning_request||readiness.request||{}),
     layerCatalog:readiness.altitude_layer_catalog||{},
     sources:readiness.sources||{},
   };
@@ -201,14 +324,12 @@ function candidateRow(item){
     '</span></div>';
 }
 
+/**
+ * V1 面板（A* + legacy λ）。只有 algorithm_id = layered_route_planner_v1 时才渲染。
+ * Theta* V2 的视图在 layered_theta_v2.js，绝不复用下面的 legacy λ 语义。
+ */
 export function renderLayeredRoutePlannerPanel(flow){
   const model=layeredRoutePlannerModel(flow);
-  const routeOptions=model.scenarioRoutes.map(route=>
-    '<option value="'+escapeHtml(route.routeId)+'"'+(route.routeId===model.selectedRouteId?' selected':'')+'>'+
-    escapeHtml(route.routeId+(route.direction?' · '+route.direction:''))+'</option>').join('');
-  const layerOptions=model.layers.map(layer=>
-    '<option value="'+escapeHtml(layer.layerId)+'"'+(layer.layerId===model.selectedLayerId?' selected':'')+'>'+
-    escapeHtml(layer.layerId+(layer.nominal===null?' · nominal 待确认':' · '+layer.nominal)+' m')+'</option>').join('');
   const counts=model.mask?.counts||{};
   return '<h3>生产候选规划（Layered Risk-Aware Route Planner V1）</h3>'+
     '<div class="parameter-note">pipeline：scenario/OD 航路 → <b>显式 AltitudeLayer</b> → terrain/building '+
@@ -218,18 +339,7 @@ export function renderLayeredRoutePlannerPanel(flow){
     '<div class="parameter-note">readiness：'+statusBadge(model.status)+' · '+
     escapeHtml(model.algorithm.algorithm_id||LAYERED_PLANNER_ALGORITHM_ID)+'@'+escapeHtml(model.algorithm.algorithm_version||'1.0')+
     ' · '+LAYERED_BLOCKED_NOTE+'</div>'+
-    '<label>scenario / OD 航路</label>'+
-    '<select id="layeredRouteSelect">'+(routeOptions||'<option value="">当前没有 scenario/OD 航路</option>')+'</select>'+
-    '<label>巡航高度层（显式选择，不从 profile 推断）</label>'+
-    '<select id="layeredAltitudeLayerSelect">'+(layerOptions||'<option value="">尚未配置 AltitudeLayer</option>')+'</select>'+
-    '<div class="parameter-note">selected layer cruise altitude：'+
-    escapeHtml(model.cruiseAltitude?.status||'not_resolved')+
-    (Number.isFinite(model.cruiseAltitude?.altitude_egm2008_m)?' · '+formatNumber(model.cruiseAltitude.altitude_egm2008_m)+' m EGM2008':'')+
-    (model.cruiseAltitude?.reason?' · '+escapeHtml(model.cruiseAltitude.reason):'')+
-    '<br>AGL / WGS84 高度层在缺少显式 DEM surface 或 geoid 证据时保持 blocked：V1 不做 datum/geoid 猜测或伪转换。</div>'+
-    '<label>request source / evidence</label>'+
-    '<input id="layeredRequestSource" placeholder="工程依据（确认时必填）" value="'+escapeHtml(model.source||'')+'">'+
-    '<label class="checkbox-row"><input type="checkbox" id="layeredRequestConfirmed"'+(model.requestConfirmed?' checked':'')+'> 显式确认本次规划请求</label>'+
+    renderLayeredPlanningRequestFields(model)+
     '<div class="button-row">'+
     '<button class="secondary" id="saveLayeredRequest">保存 planning request</button>'+
     '<button class="secondary" id="saveLayeredFeasibilityPolicy">保存 feasibility policy</button>'+
@@ -248,12 +358,7 @@ export function renderLayeredRoutePlannerPanel(flow){
     '<div class="list-row"><span><b>建筑垂直净空（复用既有策略）</b> '+statusBadge(model.buildingClearance.status)+
     '<small>'+(Number.isFinite(model.buildingClearance.vertical_clearance_m)?'vertical '+formatNumber(model.buildingClearance.vertical_clearance_m)+' m':'vertical 待确认')+
     ' · 不新建第二套建筑净空定义</small></span></div>'+
-    '<label>feasibility policy：terrain vertical clearance (m)</label>'+
-    '<input id="layeredTerrainClearance" type="number" step="0.1" placeholder="必填，无默认值" value="'+
-    (model.feasibility.clearance===null?'':model.feasibility.clearance)+'">'+
-    '<label>feasibility policy source</label>'+
-    '<input id="layeredFeasibilitySource" placeholder="工程依据（确认时必填）">'+
-    '<label class="checkbox-row"><input type="checkbox" id="layeredFeasibilityConfirmed"> 显式确认 feasibility policy</label>'+
+    renderLayeredFeasibilityFields(model)+
     '<label>cost policy：ground λ</label>'+
     '<input id="layeredGroundLambda" type="number" step="0.1" placeholder="留空 = null（待确认）" value="'+
     (model.cost.domains[0].lambda===null?'':model.cost.domains[0].lambda)+'">'+
@@ -288,6 +393,46 @@ export function renderLayeredRoutePlannerPanel(flow){
     '风险权重与高度层都只来自显式确认的工程输入。</div>';
 }
 
+// ---------------------------------------------------------------- public payloads
+
+/** 公共 request payload（空串一律提交 null / false，不补默认值）。 */
+export function layeredRequestPayloadFrom(close=id=>document.getElementById(id)){
+  const value=id=>{const node=close(id);return node?node.value:'';};
+  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
+  return {
+    scenario_route_id:value('layeredRouteSelect')||null,
+    altitude_layer_id:value('layeredAltitudeLayerSelect')||null,
+    source:value('layeredRequestSource')||'',
+    confirmed:checked('layeredRequestConfirmed'),
+  };
+}
+
+/** 公共 feasibility policy payload：terrain clearance 空值 = null（无默认值）。 */
+export function layeredFeasibilityPayloadFrom(close=id=>document.getElementById(id)){
+  const value=id=>{const node=close(id);return node?node.value:'';};
+  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
+  const raw=value('layeredTerrainClearance');
+  return {
+    terrain_vertical_clearance_m:raw===''||raw===null?null:Number(raw),
+    source:value('layeredFeasibilitySource')||'',
+    confirmed:checked('layeredFeasibilityConfirmed'),
+  };
+}
+
+/** V1 legacy cost policy payload（λ 空值 = null，显式 0 保留为 0）。 */
+export function layeredCostPayloadFrom(close=id=>document.getElementById(id)){
+  const value=id=>{const node=close(id);return node?node.value:'';};
+  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
+  const number=id=>{const raw=value(id);return raw===''||raw===null?null:Number(raw);};
+  return {
+    ground_lambda:number('layeredGroundLambda'),
+    air_traffic_lambda:number('layeredAirLambda'),
+    environment_obstacle_lambda:number('layeredEnvironmentLambda'),
+    source:value('layeredCostSource')||'',
+    confirmed:checked('layeredCostConfirmed'),
+  };
+}
+
 export function layeredRequestPayload(flow){
   const model=layeredRoutePlannerModel(flow);
   return {
@@ -299,33 +444,30 @@ export function layeredRequestPayload(flow){
 }
 
 export function layeredEvaluatePayload(close=id=>document.getElementById(id)){
-  const value=id=>{const node=close(id);return node?node.value:'';};
-  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
-  const number=id=>{const raw=value(id);return raw===''||raw===null?null:Number(raw);};
-  const request={scenario_route_id:value('layeredRouteSelect')||null,altitude_layer_id:value('layeredAltitudeLayerSelect')||null,
-    source:value('layeredRequestSource')||'',confirmed:checked('layeredRequestConfirmed')};
-  const feasibility={terrain_vertical_clearance_m:number('layeredTerrainClearance'),source:value('layeredFeasibilitySource')||'',
-    confirmed:checked('layeredFeasibilityConfirmed')};
-  const cost={ground_lambda:number('layeredGroundLambda'),air_traffic_lambda:number('layeredAirLambda'),
-    environment_obstacle_lambda:number('layeredEnvironmentLambda'),source:value('layeredCostSource')||'',
-    confirmed:checked('layeredCostConfirmed')};
-  return {request,feasibility,cost};
+  return {
+    request:layeredRequestPayloadFrom(close),
+    feasibility:layeredFeasibilityPayloadFrom(close),
+    cost:layeredCostPayloadFrom(close),
+  };
 }
 
+// ---------------------------------------------------------------- V1 bind
+
+/**
+ * 绑定 V1 面板（A* + legacy λ）。Theta* V2 的绑定在 layered_theta_v2.js：
+ * 那里的 evaluate 绝不要求/提示 legacy λ。
+ */
 export function bindLayeredRoutePlanner(context){
   const {$,panelError,actionButton,resourceAction}=context;
   const current=()=>layeredRoutePlannerModel(context.flow());
   actionButton('saveLayeredRequest',async()=>{
-    const {request}=layeredEvaluatePayload(id=>$(id));
-    await resourceAction('/api/layered-route-planning-request',request);
+    await resourceAction('/api/layered-route-planning-request',layeredRequestPayloadFrom(id=>$(id)));
   });
   actionButton('saveLayeredFeasibilityPolicy',async()=>{
-    const {feasibility}=layeredEvaluatePayload(id=>$(id));
-    await resourceAction('/api/layered-route-feasibility-policy',feasibility);
+    await resourceAction('/api/layered-route-feasibility-policy',layeredFeasibilityPayloadFrom(id=>$(id)));
   });
   actionButton('saveLayeredCostPolicy',async()=>{
-    const {cost}=layeredEvaluatePayload(id=>$(id));
-    await resourceAction('/api/layered-route-cost-policy',cost);
+    await resourceAction('/api/layered-route-cost-policy',layeredCostPayloadFrom(id=>$(id)));
   });
   actionButton('evaluateLayeredCandidate',async()=>{
     const model=current();

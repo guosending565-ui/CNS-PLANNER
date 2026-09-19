@@ -1,7 +1,8 @@
 import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint} from './common.js';
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './route_operating_layer.js';
-import {bindLayeredRoutePlanner,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
+import {bindLayeredRoutePlanner,layeredPlannerUsesThetaStarV2,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
+import {bindLayeredThetaV2,renderLayeredThetaV2Panel} from './layered_theta_v2.js';
 import {ROUTE_RISK_PROFILE_SEGMENT,bindRouteRiskProfile,renderRouteRiskProfile} from './route_risk_profile.js';
 
 function jsonInline(value){
@@ -1716,6 +1717,24 @@ const RESULT_SEGMENTS=[['res-route','当前航路'],['res-feasibility','可行�
 const ADVANCED_SEGMENTS=[['adv-reference','参考数据与关联'],['adv-legacy','Legacy / Risk-Aware V2'],['adv-experiment','V3实验'],['adv-diagnostics','规划诊断'],['adv-profile','剖面与运动']];
 
 // ---- 操作区：同屏只呈现当前任务 -------------------------------------------------
+
+/**
+ * 「操作 → 分层候选」的算法分流：分区与位置完全不变，只有视图随
+ * `layered_route_planner_readiness.algorithm.algorithm_id` 切换。
+ *   * layered_route_planner_v1        → V1 面板（A* + legacy λ）；
+ *   * layered_risk_aware_theta_star_v2 → Theta* V2 面板（population × shelter risk）。
+ */
+export function layeredCandidatePanel(flow){
+  return layeredPlannerUsesThetaStarV2(flow)
+    ?renderLayeredThetaV2Panel(flow)
+    :renderLayeredRoutePlannerPanel(flow);
+}
+
+export function bindLayeredCandidatePanel(c){
+  if(layeredPlannerUsesThetaStarV2(c.flow()))bindLayeredThetaV2(c);
+  else bindLayeredRoutePlanner(c);
+}
+
 function routeOperateSection(flow,{interactionMode,nodes}){
   // 生成运行航路是整步最高频动作，放在操作区首个分段内
   const routeActions='<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div>';
@@ -1727,7 +1746,7 @@ function routeOperateSection(flow,{interactionMode,nodes}){
   return wbPanel('operate','',{segments:[
     ['op-sites','起降点与OD',
       wbBlock('起降点与 OD',wbSegHint(OPERATE_SEGMENTS,'op-sites')+'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'+sitesPanel)],
-    ['op-candidates','分层候选',wbBlock('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+renderLayeredRoutePlannerPanel(flow))],
+    ['op-candidates','分层候选',wbBlock('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+layeredCandidatePanel(flow))],
     ['op-operational','运行航路',
       wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+routeActions+'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')],
     ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow))]
@@ -1778,7 +1797,7 @@ export function bind(c){
   bindRouteVerticalProfile(c);
   bindRoutePlannerV3(c);
   bindCruiseLayer(c);
-  bindLayeredRoutePlanner(c);
+  bindLayeredCandidatePanel(c);
   bindRouteRiskProfile(c);
   // 兼容入口"生成场景航路"保持原 all-pairs 语义：不再读取已随面板移除的
   // routeDirection 控件（读它会抛 TypeError，导致按钮完全不可用），
