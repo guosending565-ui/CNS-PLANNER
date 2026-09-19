@@ -43,3 +43,6 @@ outputs/
 project_tree.txt
 cns_planner/web/js/*.backup
 *_backup
+
+_dsh_tmp/
+_probe_dir/
