@@ -378,6 +378,27 @@ class WorkflowService:
             result["layered_route_candidates"] = (
                 self.layered_route_planner_service.result_snapshot()
             )
+            # Additive Theta* V2 planning inputs and the derived per-grid population ×
+            # shelter field.  These are read-only projections; the candidates carry the
+            # objective/evaluation evidence themselves.
+            result["shelter_coefficient_policy"] = (
+                self.layered_route_planner_service.shelter_policy_snapshot()
+            )
+            result["population_shelter"] = (
+                self.layered_route_planner_service.population_shelter_snapshot()
+            )
+            result["regulatory_constraints"] = deepcopy(
+                self.state.get("regulatory_constraints") or {}
+            )
+            result["communication_planning_field"] = (
+                self.layered_route_planner_service.communication_field_snapshot()
+            )
+            result["theta_v2_objective_policy"] = deepcopy(
+                self.state.get("theta_v2_objective_policy") or {}
+            )
+            result["max_route_risk_density"] = deepcopy(
+                self.state.get("max_route_risk_density") or {}
+            )
         if hasattr(self, "route_risk_profile_service"):
             # RouteRiskProfile V1: the explicit per-domain thresholds, the bounded readiness
             # and the independent profile container travel in the snapshot.
@@ -812,6 +833,28 @@ class WorkflowService:
         return self.layered_route_planner_service.set_feasibility_policy(payload)
     def set_layered_route_cost_policy(self, payload):
         return self.layered_route_planner_service.set_cost_policy(payload)
+    def shelter_coefficient_policy(self):
+        return self.layered_route_planner_service.shelter_policy_snapshot()
+    def set_shelter_coefficient_policy(self, payload):
+        return self.layered_route_planner_service.set_shelter_policy(payload)
+    def population_shelter(self):
+        return self.layered_route_planner_service.population_shelter_snapshot()
+    def regulatory_constraints(self):
+        return deepcopy(self.state.get("regulatory_constraints") or {})
+    def set_regulatory_constraints(self, payload):
+        return self.layered_route_planner_service.set_regulatory_constraints(payload)
+    def communication_planning_field(self):
+        return self.layered_route_planner_service.communication_field_snapshot()
+    def set_communication_planning_field(self, payload):
+        return self.layered_route_planner_service.set_communication_field(payload)
+    def theta_v2_objective_policy(self):
+        return deepcopy(self.state.get("theta_v2_objective_policy") or {})
+    def set_theta_v2_objective_policy(self, payload):
+        return self.layered_route_planner_service.set_objective_policy(payload)
+    def max_route_risk_density(self):
+        return deepcopy(self.state.get("max_route_risk_density") or {})
+    def set_max_route_risk_density(self, payload):
+        return self.layered_route_planner_service.set_risk_density_constraint(payload)
     def evaluate_layered_route_candidate(self, payload=None, adapter=None):
         self.layered_route_planner_service.evaluate(payload, adapter=adapter)
         # A new candidate run may have replaced/staled the previous record of a lane, so the

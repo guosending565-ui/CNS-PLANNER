@@ -15,6 +15,7 @@ from .corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from .route.v1 import RoutePlannerV1
 from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 from ..layered_route_planner.planner import LayeredRoutePlannerV1
+from ..layered_route_planner.theta_star_v2 import LayeredRiskAwareThetaStarV2
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
@@ -150,6 +151,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_route_manifest(), lambda parameters: RoutePlannerV1(**parameters))
     registry.register(_risk_aware_route_v2_manifest(), lambda parameters: RiskAwareRoutePlannerV2(parameters))
     registry.register(_layered_route_planner_v1_manifest(), lambda parameters: LayeredRoutePlannerV1(parameters))
+    registry.register(_layered_risk_aware_theta_star_v2_manifest(), lambda parameters: LayeredRiskAwareThetaStarV2(parameters))
     registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
     registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
     registry.register(_gap_v2_manifest(), lambda parameters: CNSGapAnalyzerV2(parameters))
@@ -295,8 +297,62 @@ def _layered_route_planner_v1_manifest():
     )
 
 
-def _coverage_manifest():
+def _layered_risk_aware_theta_star_v2_manifest():
     return AlgorithmManifest(
+        "layered_route_planner", LayeredRiskAwareThetaStarV2.algorithm_id,
+        LayeredRiskAwareThetaStarV2.algorithm_version,
+        "Layered Risk-Aware Theta* V2", "CNS-PLANNER", "engineering_baseline",
+        "在固定 confirmed AltitudeLayer（H = nominal_altitude_m）下，于 MH/T L8 水平网格执行 "
+        "heading-aware 多标签 Theta* any-angle 搜索：parent LOS supercover 同时完成风险积分与硬门控，"
+        "目标 J = 0.8*E_risk + 0.1*C_turn + 0.1*L，并单独评价 candidate 的 route_risk_density。",
+        (
+            "scenario_or_od_route", "explicit_altitude_layer", "grid.cells",
+            "layer_feasibility_mask", "population_shelter", "shelter_coefficient_policy",
+            "regulatory_constraints_optional", "layer_theta_v2_objective_policy",
+            "max_route_risk_density", "hard_constraints", "building_clearance_policy",
+        ),
+        (
+            "layered_route_candidate", "grid_path", "planning_objective",
+            "route_risk_density", "search_statistics", "los_segments",
+            "distance_m", "optimization_cost", "fingerprints",
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "heading_bin_count": {"type": "integer", "minimum": 4},
+                "theta_min_deg": {"type": "number", "minimum": 0, "maximum": 180},
+                "d_ref_m": {"type": ["number", "null"], "exclusiveMinimum": 0},
+                "max_expanded_labels": {"type": ["integer", "null"], "minimum": 1},
+                "objective_policy": {"type": "object"},
+                "max_route_risk_density": {"type": "object"},
+            },
+            "additionalProperties": False,
+        },
+        (
+            "固定 H：z(x, y) 恒等于 selected AltitudeLayer 的 confirmed nominal_altitude_m",
+            "真正的 Theta*：搜索过程中即发生 parent LOS rewiring，不是 A* + 后期平滑",
+            "state = (grid_id, incoming_heading_bin)，保留 parent LOS rewiring，不退化为 heading A*",
+            "LOS 为 supercover/grid traversal，返回每个穿越 cell 的真实长度，绝不只看端点",
+            "同一次 traversal 完成 terrain/building/hard constraint/regulatory/risk evidence 硬门控",
+            "任一穿越 cell blocked 或 unknown → LOS = false；corner-touch 保守，不可从两个 blocked cell 角间穿过",
+            "J = 0.8*E_risk + 0.1*C_turn + 0.1*L，权重可编辑、非负、和=1，provenance=user_defined_baseline",
+            "搜索目标风险只使用 population × shelter；Risk Framework V2 overall 不使用",
+            "heuristic = distance_weight * 直线距离，因 risk/turn 非负而保持 admissible",
+            "max_route_risk_density 是 candidate evaluation 约束，不是目标函数第四项",
+        ),
+        (
+            "输出只是 candidate：operational_route=false、continuous_validation_required=true，"
+            "不写 operational_routes/CNS，也不自动创建 RouteOperatingLayer",
+            "L8 只做战略筛选；最终 native FABDEM + 真实 footprint 验证仍由 continuous validation 负责",
+            "airspace 仍 display_only，不进入搜索 / hard gate / fingerprint",
+            "communication 接口本轮 used_in_cost=false 且 used_as_constraint=false，不影响 path/cost",
+            "不猜真实航空器转弯半径；D_ref 由当前 L8 典型网格步长派生并记录 provenance",
+        ),
+        (),
+    )
+
+
+def _coverage_manifest():    return AlgorithmManifest(
         "coverage_planner", CoveragePlannerV1.algorithm_id, CoveragePlannerV1.algorithm_version,
         "Coverage Planner V1", "CNS-PLANNER", "demo",
         "按设备水平覆盖半径生成 C/N/S 主站、补盲站与共址结果。",

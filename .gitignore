@@ -6,6 +6,8 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .pytest_tmp/
+# pytest 运行时工作区（曾被误跟踪；正式测试套件仍在 tests/，不受影响）
+.test_runtime/
 .mypy_cache/
 .ruff_cache/
 .coverage

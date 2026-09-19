@@ -23,13 +23,33 @@ from ..domain.layered_route import (
     feasibility_policy_fingerprint, feasibility_policy_is_runnable,
     normalize_layered_route_candidate_collection, normalize_layered_route_cost_policy,
     normalize_layered_route_feasibility_policy, normalize_layered_route_request,
-    request_fingerprint, resolve_cruise_altitude,
+    request_fingerprint, resolve_cruise_altitude, stable_fingerprint,
+)
+from ..domain.communication_planning_field import (
+    communication_readiness, normalize_communication_planning_field,
+)
+from ..domain.layered_theta_v2 import (
+    default_risk_density_constraint, default_theta_v2_objective_policy,
+    normalize_risk_density_constraint, normalize_theta_v2_objective_policy,
+)
+from ..domain.population_shelter import (
+    default_shelter_coefficient_policy, normalize_population_shelter_attribute,
+    normalize_shelter_coefficient_policy, population_shelter_fingerprint,
+    resolve_population_shelter, shelter_policy_fingerprint, user_defined_baseline_policy,
+)
+from ..domain.regulatory_constraints import (
+    default_regulatory_constraints, is_configured as regulatory_is_configured,
+    normalize_regulatory_constraints, regulatory_compliance_record,
 )
 
 from ..layered_route_planner.planner import (
     ALGORITHM_ID, ALGORITHM_VERSION, LayeredRoutePlannerV1,
     build_layer_feasibility_mask,
 )
+from ..layered_route_planner.theta_star_v2 import (
+    POPULATION_FACTOR_ID, grid_bearing_deg,
+)
+from ..risk.accessors_v2 import cell_factor_index
 
 POLICY_SEMANTICS = {
     "no_default_clearance_or_lambda": True,
@@ -58,6 +78,25 @@ def _scenario_routes(state):
 
 def _candidate_key(route_id, altitude_layer_id):
     return f"{route_id or 'od'}@{altitude_layer_id or 'layer'}"
+
+
+def _shelter_input_fingerprint(grid, policy, grid_risk_v2):
+    """Fingerprint of everything the derived per-grid shelter field depends on.
+
+    Population source/normalization, the grid identity and the confirmed shelter policy —
+    so a change in any of them rebuilds the field instead of silently reusing it.
+    """
+
+    return stable_fingerprint({
+        "grid_level": (grid or {}).get("level"),
+        "grid_cells": sorted(
+            str(cell.get("grid_id")) for cell in (grid or {}).get("cells") or []
+            if isinstance(cell, dict)
+        ),
+        "grid_risk_v2_input_fingerprint": (grid_risk_v2 or {}).get("input_fingerprint"),
+        "grid_risk_v2_policy_fingerprint": (grid_risk_v2 or {}).get("policy_fingerprint"),
+        "shelter_policy_fingerprint": shelter_policy_fingerprint(policy),
+    }, prefix="shelterinputv1-")
 
 
 def _fingerprint_planner(planner):
@@ -99,6 +138,8 @@ class LayeredRoutePlannerService:
         #: Bound to the registry-selected ``layered_route_planner`` algorithm.  The default is
         #: the canonical V1 planner; the project's ``route_planner`` selection is untouched.
         self.planner = LayeredRoutePlannerV1()
+        #: Optional read-only communication field provider (interface only in this round).
+        self.communication_provider = None
         self.ensure_state()
 
     # ------------------------------------------------------------------ state
@@ -116,6 +157,37 @@ class LayeredRoutePlannerService:
         )
         state["layered_route_candidates"] = normalize_layered_route_candidate_collection(
             state.get("layered_route_candidates")
+        )
+        # Additive Theta* V2 inputs.  Each ships *not configured* rather than with an assumed
+        # value, except the shelter policy: the user explicitly confirmed the 1.0 baseline,
+        # and that value is stored as real per-grid data in ``grid_attributes``.
+        state.setdefault(
+            "shelter_coefficient_policy", user_defined_baseline_policy()
+        )
+        state["shelter_coefficient_policy"] = normalize_shelter_coefficient_policy(
+            state.get("shelter_coefficient_policy")
+        )
+        # The per-grid ``population_shelter`` field is derived data: it is rebuilt from the
+        # canonical population factor plus this policy on demand and is deliberately kept out
+        # of the persisted ``grid_attributes`` so it can never drift from its inputs.
+        state["grid_attributes"].pop("population_shelter", None)
+        state.setdefault("regulatory_constraints", default_regulatory_constraints())
+        state["regulatory_constraints"] = normalize_regulatory_constraints(
+            state.get("regulatory_constraints")
+        )
+        state.setdefault(
+            "communication_planning_field", normalize_communication_planning_field(None)
+        )
+        state["communication_planning_field"] = normalize_communication_planning_field(
+            state.get("communication_planning_field")
+        )
+        state.setdefault("theta_v2_objective_policy", default_theta_v2_objective_policy())
+        state["theta_v2_objective_policy"] = normalize_theta_v2_objective_policy(
+            state.get("theta_v2_objective_policy")
+        )
+        state.setdefault("max_route_risk_density", default_risk_density_constraint())
+        state["max_route_risk_density"] = normalize_risk_density_constraint(
+            state.get("max_route_risk_density")
         )
         state.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
         return state
@@ -293,6 +365,7 @@ class LayeredRoutePlannerService:
                 },
             },
             "risk_framework_v2": self._risk_readiness(state),
+            "theta_star_v2": self._theta_v2_readiness(state, request, cruise),
             "building_clearance_policy": {
                 "status": building_policy.get("status"),
                 "vertical_clearance_m": building_policy.get("vertical_clearance_m"),
@@ -393,13 +466,18 @@ class LayeredRoutePlannerService:
                 "LayeredRouteFeasibilityPolicy 未确认：terrain_vertical_clearance_m 无默认值",
                 reason or "feasibility_policy_not_confirmed", key,
             )
-        runnable, reason = cost_policy_is_runnable(cost)
-        if not runnable:
-            return self._blocked(
-                state, collection, request, route, "blocked", prior,
-                "LayeredRouteCostPolicy 未确认：λ 无默认值（null != 0）",
-                reason or "cost_policy_not_confirmed", key,
-            )
+        if self._uses_theta_star():
+            # Theta* V2 prices population × shelter risk, not the legacy Risk Framework V2
+            # domain lambdas, so it does not require a LayeredRouteCostPolicy at all.
+            pass
+        else:
+            runnable, reason = cost_policy_is_runnable(cost)
+            if not runnable:
+                return self._blocked(
+                    state, collection, request, route, "blocked", prior,
+                    "LayeredRouteCostPolicy 未确认：λ 无默认值（null != 0）",
+                    reason or "cost_policy_not_confirmed", key,
+                )
         if request.get("status") != "confirmed":
             return self._blocked(
                 state, collection, request, route, "blocked", prior,
@@ -462,6 +540,7 @@ class LayeredRoutePlannerService:
             hard_constraints=hard_constraints,
             building_clearance_policy=building_policy,
             source_audits=state.get("source_audits") or {},
+            **self._planner_specific_inputs(state, grid),
         )
         collection["masks"][key] = mask
         self._store_candidate(collection, key, request, candidate, prior)
@@ -474,6 +553,136 @@ class LayeredRoutePlannerService:
         return self.snapshot()
 
     # ------------------------------------------------------------------ helpers
+
+    def _uses_theta_star(self):
+        return bool(getattr(self.planner, "uses_theta_star", False))
+
+    def _planner_specific_inputs(self, state, grid):
+        """The Theta* V2-only planning inputs; empty for the V1 A* baseline.
+
+        Returning an empty mapping for V1 keeps a single call shape while guaranteeing that
+        the V1 baseline never sees (and therefore can never be changed by) these inputs.
+        """
+
+        if not self._uses_theta_star():
+            return {}
+        return {
+            "population_shelter": self.population_shelter_snapshot(),
+            "shelter_policy": self.shelter_policy_snapshot(),
+            "regulatory_constraints": state.get("regulatory_constraints")
+            or default_regulatory_constraints(),
+            "communication_field": self.communication_field_snapshot(),
+            "objective_policy": state.get("theta_v2_objective_policy")
+            or default_theta_v2_objective_policy(),
+            "risk_density_constraint": state.get("max_route_risk_density")
+            or default_risk_density_constraint(),
+        }
+
+    def shelter_policy_snapshot(self):
+        return deepcopy(
+            self.ensure_state()["shelter_coefficient_policy"]
+        )
+
+    def set_shelter_policy(self, payload):
+        raw = payload.get("shelter_coefficient_policy", payload) if isinstance(payload, dict) else payload
+        candidate = normalize_shelter_coefficient_policy(raw)
+        state = self.ensure_state()
+        if candidate != state["shelter_coefficient_policy"]:
+            state["shelter_coefficient_policy"] = candidate
+            # The per-grid field is derived data: it is rebuilt from the policy below so the
+            # stored coefficients can never drift from the confirmed policy.
+            state["grid_attributes"]["population_shelter"] = normalize_population_shelter_attribute(None)
+            self.invalidation.layered_route("shelter_coefficient_policy_changed")
+            self.session.save()
+        return self.snapshot()
+
+    def population_shelter_snapshot(self):
+        """The per-grid ``population_shelter`` field, rebuilt from current canonical inputs.
+
+        The field is *derived*: it reuses the existing canonical Risk Framework V2
+        population factor and the confirmed shelter policy, and it stores a real
+        ``shelter_coefficient`` per grid cell that a future confirmed shelter dataset can
+        replace wholesale.  Nothing is hardcoded inside the planner.
+        """
+
+        state = self.ensure_state()
+        grid = state.get("grid") or {}
+        policy = state["shelter_coefficient_policy"]
+        grid_risk_v2 = state.get("grid_risk_v2") or {}
+        attribute = state.get("_population_shelter_cache") or {}
+        cells = attribute.get("cells") or {}
+        derived_from = attribute.get("derived_from_fingerprint")
+        if cells and derived_from == _shelter_input_fingerprint(grid, policy, grid_risk_v2):
+            return deepcopy(attribute)
+        factors = {}
+        for grid_id, cell in (grid_risk_v2.get("cells") or {}).items():
+            index, status = cell_factor_index(cell, POPULATION_FACTOR_ID)
+            if status == "passed" and index is not None:
+                factors[str(grid_id)] = index
+        attribute = resolve_population_shelter(
+            grid=grid,
+            population_attribute=state["grid_attributes"].get("population") or {},
+            normalized_population_factors=factors,
+            policy=policy,
+        )
+        attribute["derived_from_fingerprint"] = _shelter_input_fingerprint(
+            grid, policy, grid_risk_v2
+        )
+        state["_population_shelter_cache"] = attribute
+        return deepcopy(attribute)
+
+    def set_regulatory_constraints(self, payload):
+        raw = payload.get("regulatory_constraints", payload) if isinstance(payload, dict) else payload
+        candidate = normalize_regulatory_constraints(raw)
+        state = self.ensure_state()
+        if candidate != state["regulatory_constraints"]:
+            state["regulatory_constraints"] = candidate
+            self.invalidation.layered_route("regulatory_constraints_changed")
+            self.session.save()
+        return self.snapshot()
+
+    def communication_field_snapshot(self):
+        provider = self.communication_provider
+        if callable(provider):
+            try:
+                return normalize_communication_planning_field(provider())
+            except (TypeError, ValueError, RuntimeError):
+                return normalize_communication_planning_field(None)
+        state = self.ensure_state()
+        return deepcopy(state.get("communication_planning_field"))
+
+    def set_communication_field(self, payload):
+        raw = payload.get("communication_planning_field", payload) if isinstance(payload, dict) else payload
+        candidate = normalize_communication_planning_field(raw)
+        state = self.ensure_state()
+        if candidate != state["communication_planning_field"]:
+            state["communication_planning_field"] = candidate
+            # The communication field is not a planning input in this round, so it does not
+            # stale the candidates: only the readiness record changes.
+            self.session.save()
+        return self.snapshot()
+
+    def set_objective_policy(self, payload):
+        raw = payload.get("theta_v2_objective_policy", payload) if isinstance(payload, dict) else payload
+        candidate = normalize_theta_v2_objective_policy(raw)
+        state = self.ensure_state()
+        if candidate != state["theta_v2_objective_policy"]:
+            state["theta_v2_objective_policy"] = candidate
+            self.invalidation.layered_route("theta_v2_objective_policy_changed")
+            self.session.save()
+        return self.snapshot()
+
+    def set_risk_density_constraint(self, payload):
+        raw = payload.get("max_route_risk_density", payload) if isinstance(payload, dict) else payload
+        candidate = normalize_risk_density_constraint(raw)
+        state = self.ensure_state()
+        if candidate != state["max_route_risk_density"]:
+            state["max_route_risk_density"] = candidate
+            # A threshold change does not touch population/terrain/building raw data; it makes
+            # the derived candidate evaluation stale through the layered invalidation chain.
+            self.invalidation.layered_route("max_route_risk_density_changed")
+            self.session.save()
+        return self.snapshot()
 
     def refresh_for_reason(self, reason):
         """Stale the layered candidates/masks; never touch legacy routes or V3/CNS."""
@@ -546,6 +755,7 @@ class LayeredRoutePlannerService:
             feasibility_policy=state["layered_route_feasibility_policy"],
             hard_constraints=[], building_clearance_policy=state.get("building_clearance_policy") or {},
             source_audits=state.get("source_audits") or {},
+            **self._planner_specific_inputs(state, state.get("grid") or {}),
         )
         return {
             "lane_key": key,
@@ -582,6 +792,96 @@ class LayeredRoutePlannerService:
             if callable(status):
                 return deepcopy(status())
         return None
+
+    def _theta_v2_readiness(self, state, request, cruise):
+        """Readiness of the population × shelter risk and the additive interfaces."""
+
+        policy = state["shelter_coefficient_policy"]
+        attribute = self.population_shelter_snapshot()
+        cells = attribute.get("cells") or {}
+        unresolved = sorted(
+            grid_id for grid_id, cell in cells.items()
+            if (cell or {}).get("status") != "passed"
+        )
+        regulatory = state.get("regulatory_constraints") or default_regulatory_constraints()
+        objective = state.get("theta_v2_objective_policy") or default_theta_v2_objective_policy()
+        constraint = state.get("max_route_risk_density") or default_risk_density_constraint()
+        blockers = []
+        if self._uses_theta_star():
+            if policy.get("status") != "confirmed":
+                blockers.append({
+                    "reason_code": str(policy.get("status_reason") or "shelter_coefficient_policy_not_confirmed"),
+                    "reason": "shelter_coefficient_policy 未确认：不假设任何遮盖系数",
+                })
+            if not cells:
+                blockers.append({
+                    "reason_code": "population_shelter_field_missing",
+                    "reason": "population_shelter 场缺失：risk weight>0 时 fail-closed，绝不补 0",
+                })
+            elif unresolved:
+                blockers.append({
+                    "reason_code": "population_shelter_risk_unresolved",
+                    "reason": (
+                        "部分 L8 cell 的 population_shelter risk_index 未解析（"
+                        f"{len(unresolved)} 格）：fail-closed，绝不补 0"
+                    ),
+                })
+            if cruise.get("status") != "confirmed":
+                blockers.append({
+                    "reason_code": "fixed_cruise_altitude_not_confirmed",
+                    "reason": "Theta* V2 固定 z(x, y) = H，必须能解析 confirmed EGM2008 巡航高度",
+                })
+        return {
+            "algorithm": {
+                "algorithm_id": getattr(self.planner, "algorithm_id", ALGORITHM_ID),
+                "algorithm_version": getattr(self.planner, "algorithm_version", ALGORITHM_VERSION),
+                "uses_theta_star": self._uses_theta_star(),
+            },
+            "status": "ready" if not blockers else "not_ready",
+            "blockers": blockers,
+            "population_shelter": {
+                "status": attribute.get("status", "not_calculated"),
+                "cell_count": len(cells),
+                "resolved_cell_count": len(cells) - len(unresolved),
+                "field_fingerprint": population_shelter_fingerprint(attribute),
+                "shelter_coefficient_policy": {
+                    "status": policy.get("status"),
+                    "default_coefficient": policy.get("default_coefficient"),
+                    "source": policy.get("source"),
+                    "provenance": policy.get("provenance"),
+                    "confirmed": bool(policy.get("confirmed")),
+                },
+                "raw_exposure_definition": "population_density_people_km2 * shelter_coefficient",
+                "risk_index_definition": "normalized_population_factor * shelter_coefficient",
+                "risk_index_range": [0.0, 1.0],
+            },
+            "objective": {
+                "formula": objective.get("formula"),
+                "risk_weight": objective.get("risk_weight"),
+                "turn_weight": objective.get("turn_weight"),
+                "distance_weight": objective.get("distance_weight"),
+                "provenance": objective.get("provenance"),
+                "objective_population_shelter_only": True,
+            },
+            "evaluation_constraint": {
+                "metric": constraint.get("metric"),
+                "threshold": constraint.get("threshold"),
+                "source": constraint.get("source"),
+                "temporary": constraint.get("temporary"),
+                "role": constraint.get("role"),
+                "objective_term": False,
+            },
+            "regulatory_constraints": {
+                **regulatory_compliance_record(regulatory),
+                "configured": regulatory_is_configured(regulatory),
+            },
+            "communication": communication_readiness(self.communication_field_snapshot()),
+            "airspace": {
+                "status": "not_applicable", "applicability": "display_only",
+                "used_in_search": False, "used_in_hard_gate": False,
+                "used_in_fingerprint": False,
+            },
+        }
 
     @staticmethod
     def _risk_readiness(state):
@@ -645,6 +945,7 @@ class LayeredRoutePlannerService:
             feasibility_policy=state["layered_route_feasibility_policy"],
             hard_constraints=[], building_clearance_policy=state.get("building_clearance_policy") or {},
             source_audits=state.get("source_audits") or {},
+            **self._planner_specific_inputs(state, state.get("grid") or {}),
         )
         candidate.update({
             "input_fingerprint": fingerprints["input_fingerprint"],

@@ -64,6 +64,7 @@ def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
         ("route_planner", "route_planner_v1", "1.0"),
         ("route_planner", "risk_aware_route_planner_v2", "2.0"),
         ("layered_route_planner", "layered_route_planner_v1", "1.0"),
+        ("layered_route_planner", "layered_risk_aware_theta_star_v2", "2.0"),
         ("coverage_planner", "coverage_planner_v1", "1.0"),
         ("cns_gap_analyzer", "cns_gap_analysis_v1", "1.0"),
         ("cns_gap_analyzer", "cns_gap_analysis_v2", "2.0"),

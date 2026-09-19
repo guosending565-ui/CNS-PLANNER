@@ -67,6 +67,13 @@ class ApiRouter:
         if path == "/api/layered-route-feasibility-policy": return Response(workflow.layered_route_feasibility_policy())
         if path == "/api/layered-route-cost-policy": return Response(workflow.layered_route_cost_policy())
         if path == "/api/layered-route-candidates": return Response(workflow.layered_route_candidates())
+        # ---- Layered Risk-Aware Theta* V2 additive interfaces ------------------------
+        if path == "/api/shelter-coefficient-policy": return Response(workflow.shelter_coefficient_policy())
+        if path == "/api/population-shelter": return Response(workflow.population_shelter())
+        if path == "/api/regulatory-constraints": return Response(workflow.regulatory_constraints())
+        if path == "/api/communication-planning-field": return Response(workflow.communication_planning_field())
+        if path == "/api/theta-v2-objective-policy": return Response(workflow.theta_v2_objective_policy())
+        if path == "/api/max-route-risk-density": return Response(workflow.max_route_risk_density())
         # ---- RouteRiskProfile V1 (additive; analysis of a current layered candidate) ----
         if path == "/api/route-risk-profile/readiness": return Response(workflow.route_risk_profile_readiness())
         if path == "/api/route-risk-profile-policy": return Response(workflow.route_risk_profile_policy())
@@ -240,6 +247,11 @@ class ApiRouter:
             "/api/layered-route-planning-request": lambda: workflow.set_layered_route_planning_request(payload),
             "/api/layered-route-feasibility-policy": lambda: workflow.set_layered_route_feasibility_policy(payload),
             "/api/layered-route-cost-policy": lambda: workflow.set_layered_route_cost_policy(payload),
+            "/api/shelter-coefficient-policy": lambda: workflow.set_shelter_coefficient_policy(payload),
+            "/api/regulatory-constraints": lambda: workflow.set_regulatory_constraints(payload),
+            "/api/communication-planning-field": lambda: workflow.set_communication_planning_field(payload),
+            "/api/theta-v2-objective-policy": lambda: workflow.set_theta_v2_objective_policy(payload),
+            "/api/max-route-risk-density": lambda: workflow.set_max_route_risk_density(payload),
             "/api/layered-route-candidates/evaluate": lambda: workflow.evaluate_layered_route_candidate(payload),
             "/api/layered-route-candidates/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_layered_route_candidate(payload)

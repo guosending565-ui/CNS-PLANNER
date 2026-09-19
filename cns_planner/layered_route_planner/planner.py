@@ -374,7 +374,17 @@ class LayeredRoutePlannerV1:
         self, *, request, scenario_route, grid, layer_mask, grid_risk_v2,
         feasibility_policy, cost_policy, hard_constraints=None,
         building_clearance_policy=None, source_audits=None,
+        population_shelter=None, shelter_policy=None, regulatory_constraints=None,
+        communication_field=None, objective_policy=None, risk_density_constraint=None,
     ):
+        """Plan with the layered A* baseline.
+
+        The V2-only keywords (``population_shelter`` / ``shelter_policy`` /
+        ``regulatory_constraints`` / ``communication_field`` / ``objective_policy`` /
+        ``risk_density_constraint``) are accepted and **ignored** on purpose: the registry
+        and the application service drive both layered planners through one call shape, and
+        V1's behaviour, cost and fingerprints must stay exactly as they were.
+        """
         grid = grid if isinstance(grid, dict) else {}
         mask = layer_mask if isinstance(layer_mask, dict) else {}
         fingerprints = self.fingerprints(
@@ -578,7 +588,15 @@ class LayeredRoutePlannerV1:
     def fingerprints(
         self, *, request, scenario_route, grid, layer_mask, grid_risk_v2, cost_policy,
         feasibility_policy, hard_constraints, building_clearance_policy, source_audits,
+        population_shelter=None, shelter_policy=None, regulatory_constraints=None,
+        communication_field=None, objective_policy=None, risk_density_constraint=None,
     ):
+        """V1's declared dependency fingerprint.
+
+        The V2-only keywords are accepted and ignored so both layered planners share one
+        call shape; V1's components — and therefore its ``candidate_fingerprint`` — are
+        unchanged.
+        """
         route = scenario_route if isinstance(scenario_route, dict) else {}
         grid_cells = (grid or {}).get("cells") or []
         components = {

@@ -84,6 +84,20 @@ from ..domain.layered_route import (
     normalize_layered_route_candidate_collection, normalize_layered_route_cost_policy,
     normalize_layered_route_feasibility_policy, normalize_layered_route_request,
 )
+from ..domain.communication_planning_field import (
+    normalize_communication_planning_field,
+)
+from ..domain.layered_theta_v2 import (
+    default_risk_density_constraint, default_theta_v2_objective_policy,
+    normalize_risk_density_constraint, normalize_theta_v2_objective_policy,
+)
+from ..domain.population_shelter import (
+    normalize_population_shelter_attribute, normalize_shelter_coefficient_policy,
+    user_defined_baseline_policy,
+)
+from ..domain.regulatory_constraints import (
+    default_regulatory_constraints, normalize_regulatory_constraints,
+)
 from ..domain.route_risk_profile import (
     default_route_risk_profile_collection, normalize_route_risk_profile_collection,
     normalize_route_risk_profile_policy,
@@ -255,6 +269,14 @@ def blank_project(defaults):
         # independent from both the candidate and the V3 experiment containers.
         "layered_route_validations": empty_layered_route_validation_collection(),
         "layered_operational_adoptions": empty_layered_operational_adoptions(),
+        # Layered Risk-Aware Theta* V2 additive planning inputs.  The shelter coefficient is
+        # the user-confirmed 1.0 baseline and lives as real per-grid data in
+        # ``grid_attributes.population_shelter``; the two interfaces ship not configured.
+        "shelter_coefficient_policy": user_defined_baseline_policy(),
+        "regulatory_constraints": default_regulatory_constraints(),
+        "communication_planning_field": normalize_communication_planning_field(None),
+        "theta_v2_objective_policy": default_theta_v2_objective_policy(),
+        "max_route_risk_density": default_risk_density_constraint(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
@@ -458,6 +480,30 @@ def normalize_project(value, grid_service):
     )
     value["layered_operational_adoptions"] = normalize_layered_operational_adoptions(
         value.get("layered_operational_adoptions")
+    )
+    # Layered Risk-Aware Theta* V2 additive backfill.  A legacy project gets the explicit
+    # user-confirmed shelter_coefficient = 1.0 baseline, the confirmed 0.8/0.1/0.1 objective,
+    # the deliberately wide temporary max_route_risk_density = 1.0 evaluation constraint, and
+    # the two additive interfaces in their ``not_configured`` state.  The per-grid
+    # ``population_shelter`` field itself is *derived* from the canonical population factor
+    # plus this policy on demand, so it is deliberately not written into ``grid_attributes``.
+    value["shelter_coefficient_policy"] = normalize_shelter_coefficient_policy(
+        value.get("shelter_coefficient_policy") or user_defined_baseline_policy()
+    )
+    value["regulatory_constraints"] = normalize_regulatory_constraints(
+        value.get("regulatory_constraints")
+    )
+    value["max_route_risk_density"] = normalize_risk_density_constraint(
+        value.get("max_route_risk_density")
+    )
+    value["communication_planning_field"] = normalize_communication_planning_field(
+        value.get("communication_planning_field")
+    )
+    value["theta_v2_objective_policy"] = normalize_theta_v2_objective_policy(
+        value.get("theta_v2_objective_policy")
+    )
+    value["max_route_risk_density"] = normalize_risk_density_constraint(
+        value.get("max_route_risk_density")
     )
     value.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")
