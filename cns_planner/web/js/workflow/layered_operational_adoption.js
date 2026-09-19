@@ -10,11 +10,19 @@
 //  * 2D route path 不携带高度第三坐标：高度由 RouteOperatingLayer → AltitudeLayer 承载，
 //    本流程不创建 RouteAltitudeProfile，也不创建 Departure/Arrival procedure；
 //  * route_id 冲突时默认禁止 Apply：replace_existing 默认 false，绝不自动覆盖；
+//  * Preview 是一次冻结：{validation_id, validation_fingerprint, replace_existing,
+//    publication_allowed, preview response} 五者绑定在一起，Apply 只提交这份冻结结果；
+//  * 首次无已知冲突时 Preview 提交 replace_existing=false；Preview 发现 conflict 后
+//    UI 才出现 replace checkbox（默认不勾选）；用户改变 replace_existing 后旧 Preview
+//    立即视为 expired/intent_changed：Apply 禁用、必须重新 Preview；
 //  * Apply 必须先有"当前 preview"且 publication_allowed=true，并显式勾选确认；
-//  * expected_validation_fingerprint 只能来自刚 Preview 的那条 validation：
-//    证据变化时必须提示"证据已变化，请重新 Preview"，绝不自动重试、绝不换成新 flow 值；
-//  * Revoke 是"撤销本次发布"，不是"删除航路"，必须显式确认；前端绝不直接删路由；
-//  * published / stale / revoked / superseded 历史与 ownership 信息全部保留。
+//  * expected_validation_fingerprint 与 replace_existing 都只能来自刚 Preview 的那份冻结结果：
+//    validation 选择 / fingerprint / replace_existing 任一变化都必须提示"请重新 Preview"，
+//    绝不自动重试、绝不换成新 flow 值、绝不用当前 checkbox 覆盖 Preview 意图；
+//  * Revoke 必须显式选择目标 adoption（绝不自动选择，也绝不按列表顺序猜测目标），
+//    显式确认后只提交 adoption_id + confirmed：它是"撤销本次发布"，不是"删除航路"；
+//  * published / stale / revoked / superseded 历史与 ownership 信息全部保留，
+//    revoked 记录永不出现在可撤销目标里。
 // =========================================================
 import {escapeHtml,statusBadge,wbBlock,wbDisclosure} from './common.js';
 
@@ -44,6 +52,13 @@ export const LAYERED_ADOPTION_CONFLICT_NOTE='route_id 冲突时默认禁止 Appl
   +'replace_existing 默认 false，绝不自动覆盖既有航路。';
 export const LAYERED_ADOPTION_REVOKE_LABEL='撤销本次发布（revoke）不是"删除航路"';
 export const LAYERED_ADOPTION_EVIDENCE_CHANGED='证据已变化，请重新 Preview';
+//: 用户改变 replace_existing（或切换 validation / 证据变化）后，旧 Preview 的意图不再成立。
+export const LAYERED_ADOPTION_INTENT_CHANGED='发布意图已变化，请重新 Preview';
+export const LAYERED_ADOPTION_REVOKE_TARGET_NAME='layeredAdoptionRevokeTarget';
+export const LAYERED_ADOPTION_REVOKE_TARGET_NOTE='撤销目标必须显式选择：'
+  +'前端不自动选择任何 adoption，也不按顺序猜测目标；选定目标只改前端选择，'
+  +'删除/恢复 route 一律由后端 revoke 语义决定。';
+export const LAYERED_ADOPTION_REVOKE_TARGET_UNSELECTABLE='revoked：已撤销，不可作为撤销目标';
 export const LAYERED_ADOPTION_SAFE_LABEL='只转印后端状态，前端不推断 safe';
 
 const text=value=>String(value??'');
@@ -198,22 +213,36 @@ export function layeredAdoptionOptionModel(model,validationId){
 // ---------------------------------------------------------------- preview cache (module-local)
 
 /**
- * 模块内 Preview 缓存：只保存最近一次 Preview 的响应与它当时锚定的 validation。
+ * 模块内 Preview 缓存：保存最近一次 Preview 的响应，以及它当时冻结的
+ * validation / fingerprint / replace_existing。
  *
  * 它是"是否允许 Apply"的唯一依据：Apply 绝不在现场替换 expected fingerprint，
- * 也不在证据变化后自动重试。
+ * 也绝不用当前 checkbox 覆盖 Preview 时刻的 replace_existing 意图，
+ * 更不在证据或意图变化后自动重试。
  */
 let previewCache=null;
 //: Apply 成功后只转印的四个字段（响应原文，不在前端推断）。
 let lastApplyCache=null;
+/**
+ * Revoke 目标的显式选择（Select）。
+ *
+ * 默认是空串：面板绝不自动选择任何 adoption，也绝不按顺序猜目标。
+ * 只有用户显式点选 radio 才会写入这里，重新渲染时只回填"用户已经显式选过的"那一条。
+ */
+let revokeTargetSelection='';
 
 export function layeredAdoptionPreview(){return previewCache;}
 
 export function layeredAdoptionLastApply(){return lastApplyCache;}
 
+/** 当前显式选择的撤销目标（未显式选择时为空串）。 */
+export function selectedLayeredAdoptionRevokeTargetId(){return revokeTargetSelection;}
+
 export function clearLayeredAdoptionPreview(){previewCache=null;}
 
-export function clearLayeredAdoptionCache(){previewCache=null;lastApplyCache=null;}
+export function clearLayeredAdoptionCache(){
+  previewCache=null;lastApplyCache=null;revokeTargetSelection='';
+}
 
 /** Apply 响应的原样转印：只保留契约里的四个字段。 */
 export function recordLayeredAdoptionApply(result){
@@ -229,40 +258,79 @@ export function recordLayeredAdoptionApply(result){
   return lastApplyCache;
 }
 
-export function cacheLayeredAdoptionPreview(preview,validationId=null){
+/**
+ * 冻结一份 Preview 响应。
+ *
+ * 冻结内容：validation_id / validation_fingerprint / replace_existing / publication_allowed
+ * 与这份响应原文。replace_existing 优先取调用方（bind 从 checkbox 读到的真实意图），
+ * 缺失时才退回后端 projection.replacement_requested —— 绝不由前端发明。
+ *
+ * @param {object} preview /preview 响应原文
+ * @param {string|null} validationId 发起 Preview 时锚定的 validation
+ * @param {{replaceExisting:boolean|null}} options 发起 Preview 时提交的 replace_existing
+ */
+export function cacheLayeredAdoptionPreview(preview,validationId=null,{replaceExisting=null}={}){
   const value=preview&&typeof preview==='object'?preview:null;
   if(!value){previewCache=null;return null;}
   const anchored=text(validationId)||text(value.validation_id);
+  const projection=value.projection||{};
+  const intent=(replaceExisting===null||replaceExisting===undefined)
+    ?projection.replacement_requested===true
+    :replaceExisting===true;
   previewCache={
     preview:value,
     validationId:anchored,
     // 这是 Preview 时刻由后端冻结的指纹：Apply 只允许提交它。
     validationFingerprint:text(value.validation_fingerprint||
-      ((value.projection||{}).validation_fingerprint)||'')||null,
+      projection.validation_fingerprint||'')||null,
+    // 这是 Preview 时刻冻结的发布意图：Apply 只允许提交它。
+    replaceExisting:intent,
     publicationAllowed:value.publication_allowed===true,
-    conflict:((value.projection||{}).conflict)||null,
+    conflict:projection.conflict||null,
     cachedAt:Date.now(),
   };
   return previewCache;
 }
 
-/** 缓存是否仍与当前 flow / 用户选择一致（证据是否已变化）。 */
-export function layeredAdoptionPreviewState(flow,validationId=null){
+/**
+ * 缓存是否仍与当前 flow / 用户选择一致。
+ *
+ * 三种变化都让 Preview 过期：validation 选择变化、证据（validation fingerprint）变化、
+ * 发布意图（replace_existing）变化。
+ *
+ * @param {object} flow 当前 snapshot
+ * @param {string|null} validationId 当前 UI 选择的 validation
+ * @param {{replaceExisting:boolean|undefined}} options 当前 UI 的 replace_existing；
+ *   传 undefined 表示"本次调用不比较发布意图"（只用于与 UI 无关的纯证据比对）。
+ */
+export function layeredAdoptionPreviewState(flow,validationId=null,{replaceExisting=undefined}={}){
   const cache=previewCache;
   const wanted=text(validationId);
-  if(!cache)return {present:false,expired:false,validationId:'',validationFingerprint:null,publicationAllowed:false,conflict:null};
+  const compareIntent=replaceExisting!==undefined&&replaceExisting!==null;
+  const uiIntent=replaceExisting===true;
+  if(!cache){
+    return {present:false,expired:false,selectionChanged:false,evidenceChanged:false,intentChanged:false,
+      validationId:'',validationFingerprint:null,currentFingerprint:null,
+      replaceExisting:compareIntent?uiIntent:false,currentReplaceExisting:uiIntent,
+      publicationAllowed:false,conflict:null,preview:null};
+  }
   const currentFingerprint=layeredValidationFingerprintFromFlow(flow,cache.validationId);
   const selectionChanged=Boolean(wanted)&&wanted!==cache.validationId;
   const evidenceChanged=Boolean(cache.validationFingerprint)
     &&text(currentFingerprint)!==text(cache.validationFingerprint);
+  const intentChanged=compareIntent&&uiIntent!==(cache.replaceExisting===true);
   return {
     present:true,
-    expired:selectionChanged||evidenceChanged,
+    expired:selectionChanged||evidenceChanged||intentChanged,
     selectionChanged,
     evidenceChanged,
+    intentChanged,
     validationId:cache.validationId,
     validationFingerprint:cache.validationFingerprint,
     currentFingerprint,
+    // Preview 冻结的 replace_existing：Apply 唯一被允许提交的值。
+    replaceExisting:cache.replaceExisting===true,
+    currentReplaceExisting:compareIntent?uiIntent:cache.replaceExisting===true,
     publicationAllowed:cache.publicationAllowed===true,
     conflict:cache.conflict,
     preview:cache.preview,
@@ -286,15 +354,26 @@ export function layeredAdoptionPreviewPayload(validationId,{replaceExisting=fals
 /**
  * Apply 的硬守卫（纯函数，便于独立验证）。
  *
+ * 事务边界：payload 里的 replace_existing 与 expected_validation_fingerprint
+ * 都只来自 Preview 冻结值；options.replaceExisting 只是"当前 UI 意图"，
+ * 用于检测意图是否已经偏离那次 Preview —— 偏离即拒绝，绝不覆盖。
+ *
  * @param {object} flow 当前 snapshot
  * @param {string} validationId 用户在 UI 里选择的 eligible validation
- * @param {{confirmed:boolean,replaceExisting:boolean}} options 用户显式输入
+ * @param {{confirmed:boolean,replaceExisting:boolean|undefined}} options 用户显式输入
  * @returns {{allowed:boolean,reason:string,payload:object|null}}
  */
-export function layeredAdoptionApplyGuard(flow,validationId,{confirmed=false,replaceExisting=false}={}){
-  const state=layeredAdoptionPreviewState(flow,validationId);
-  const request={confirmed:confirmed===true,replace_existing:replaceExisting===true};
+export function layeredAdoptionApplyGuard(flow,validationId,{confirmed=false,replaceExisting=undefined}={}){
+  const state=layeredAdoptionPreviewState(flow,validationId,{replaceExisting});
   if(!state.present)return {allowed:false,reason:'Apply 必须先 Preview：当前没有可用的 Preview 结果',payload:null};
+  if(state.intentChanged){
+    return {
+      allowed:false,
+      reason:LAYERED_ADOPTION_INTENT_CHANGED+'（Preview 冻结的 replace_existing='
+        +String(state.replaceExisting)+'，与当前选择 '+String(state.currentReplaceExisting)+' 不一致）',
+      payload:null,
+    };
+  }
   if(state.expired){
     return {
       allowed:false,
@@ -305,10 +384,10 @@ export function layeredAdoptionApplyGuard(flow,validationId,{confirmed=false,rep
   if(!state.publicationAllowed){
     return {allowed:false,reason:'Preview 的 publication_allowed 不是 true，禁止 Apply',payload:null};
   }
-  if(request.confirmed!==true){
+  if(confirmed!==true){
     return {allowed:false,reason:'Apply 需要显式勾选确认（confirmed=true）',payload:null};
   }
-  if(state.conflict&&request.replace_existing!==true){
+  if(state.conflict&&state.replaceExisting!==true){
     return {allowed:false,reason:'route_id 冲突：'+LAYERED_ADOPTION_CONFLICT_NOTE,payload:null};
   }
   return {
@@ -317,7 +396,8 @@ export function layeredAdoptionApplyGuard(flow,validationId,{confirmed=false,rep
     payload:{
       validation_id:text(validationId),
       confirmed:true,
-      replace_existing:request.replace_existing,
+      // 只提交 Preview 冻结的 replace_existing：不读当前 checkbox、不做临时改写。
+      replace_existing:state.replaceExisting===true,
       // 只提交 Preview 时刻冻结的指纹，绝不在这里读取新的 flow 值。
       expected_validation_fingerprint:state.validationFingerprint,
     },
@@ -331,9 +411,23 @@ export function layeredAdoptionRevokePayload(adoptionId,{confirmed=false}={}){
 
 export function layeredAdoptionRevokeGuard(adoptionId,{confirmed=false}={}){
   const wanted=text(adoptionId);
-  if(!wanted)return {allowed:false,reason:'没有可撤销的 adoption',payload:null};
+  if(!wanted)return {
+    allowed:false,
+    reason:'没有可撤销的 adoption：请先显式选择一个 status != revoked 的撤销目标',
+    payload:null,
+  };
   if(confirmed!==true)return {allowed:false,reason:'Revoke 需要显式确认（confirmed=true）',payload:null};
   return {allowed:true,reason:'',payload:layeredAdoptionRevokePayload(wanted,{confirmed:true})};
+}
+
+/**
+ * 可撤销目标：只有 status != revoked 的 adoption 才能被选中。
+ *
+ * 它是纯函数投影，绝不排序成"最近一条"：调用方不选择时就没有目标。
+ */
+export function layeredAdoptionRevokeTargets(model){
+  const items=model&&Array.isArray(model.adoptions)?model.adoptions:[];
+  return items.filter(item=>item&&item.status!=='revoked');
 }
 
 // ---------------------------------------------------------------- render
@@ -377,15 +471,29 @@ function optionBlock(model,selected){
     +'validation 才 eligible；Select 不等于 Validate，也不等于 Apply。</div>';
 }
 
+function intentNote(state){
+  // 发布意图变化的显式提示：由 bind 在用户改变 replace_existing 时点亮。
+  return '<div class="parameter-note" id="layeredAdoptionIntentChanged"'
+    +(state.intentChanged?'':' hidden')+'>'
+    +(state.intentChanged?escapeHtml(LAYERED_ADOPTION_INTENT_CHANGED):'')+'</div>';
+}
+
 function conflictBlock(state){
   const conflict=state.conflict;
-  if(!conflict)return '<div class="parameter-note">route_id 无冲突：Apply 不需要 replace_existing。</div>';
+  if(!conflict)return '<div class="parameter-note">route_id 无冲突：Apply 不需要 replace_existing。</div>'
+    +intentNote(state);
+  // Preview 冻结的 replace_existing 回填到 checkbox：用户看到的初始勾选状态就是那份 Preview 的意图。
+  const checked=state.replaceExisting===true?' checked':'';
   return '<div class="parameter-note"><b>route_id 冲突</b>：route '
     +escapeHtml(short(conflict.route_id))+' · existing_status '+escapeHtml(short(conflict.existing_status))
     +' · existing_source_type '+escapeHtml(short(conflict.existing_source_type))
     +'<br>'+escapeHtml(LAYERED_ADOPTION_CONFLICT_NOTE)+'</div>'
-    +'<label class="check-row"><input type="checkbox" id="layeredAdoptionReplaceExisting">'
-    +'显式允许替换既有 route_id（replace_existing，默认 false；不会自动覆盖）</label>';
+    +'<label class="check-row"><input type="checkbox" id="layeredAdoptionReplaceExisting"'+checked+'>'
+    +'显式允许替换既有 route_id（replace_existing，默认 false；不会自动覆盖）</label>'
+    +'<div class="parameter-note">Preview 冻结的 replace_existing '
+    +escapeHtml(String(state.replaceExisting===true))
+    +'：改变它会立即让这份 Preview 过期，必须重新 Preview 才能 Apply。</div>'
+    +intentNote(state);
 }
 
 function previewBlock(state){
@@ -396,8 +504,10 @@ function previewBlock(state){
   const assignment=projection.route_operating_layer||{};
   const altitude=projection.altitude_representation||{};
   const path=route.path||[];
+  const expiredLabel=state.intentChanged&&!state.evidenceChanged&&!state.selectionChanged
+    ?LAYERED_ADOPTION_INTENT_CHANGED:LAYERED_ADOPTION_EVIDENCE_CHANGED;
   return '<h4>Preview（不写 state）'+(state.expired?' · <b>'
-    +escapeHtml(LAYERED_ADOPTION_EVIDENCE_CHANGED)+'</b>':'')+'</h4>'
+    +escapeHtml(expiredLabel)+'</b>':'')+'</h4>'
     +'<div class="scroll-list route-list">'+rows([
       ['side_effects',escapeHtml(String(preview.side_effects===true))+'（Preview 绝不写 state）'],
       ['publication_allowed',statusBadge(preview.publication_allowed===true?'passed':'not_ready')
@@ -406,6 +516,7 @@ function previewBlock(state){
         +escapeHtml(short(preview.preview_fingerprint))],
       ['validation_id / validation fingerprint',escapeHtml(short(preview.validation_id||state.validationId))
         +' · '+escapeHtml(short(state.validationFingerprint))],
+      ['Preview 冻结的 replace_existing（Apply 只提交它）',escapeHtml(String(state.replaceExisting===true))],
       ['projection route','route_id '+escapeHtml(short(route.route_id))
         +' · kind '+escapeHtml(short(route.kind))+' · status '+escapeHtml(short(route.status))
         +'<br>顶点数 '+escapeHtml(String(path.length))
@@ -429,34 +540,89 @@ function previewBlock(state){
     +'</div>';
 }
 
-function applyBlock(flow,model,selected){  const state=layeredAdoptionPreviewState(flow,selected);
+/**
+ * Apply 按钮的可用性：只有"当前 Preview + 未过期 + publication_allowed=true"才静态启用。
+ * 显式确认由 guard 与 bind 的实时刷新共同把守（未勾选时同样禁用）。
+ */
+function applyEnabledByPreview(state){
+  return state.present&&!state.expired&&state.publicationAllowed===true;
+}
+
+function applyBlock(flow,model,selected){
+  const state=layeredAdoptionPreviewState(flow,selected);
   const summary='<div class="scroll-list route-list">'+rows([
     ['当前选择（Select）',escapeHtml(short(selected))+' · eligible '
       +escapeHtml(String((layeredAdoptionOptionModel(model,selected)||{}).eligible===true))],
     ['Preview 锚定 validation',escapeHtml(short(state.validationId))
-      +(state.expired?' · <b>'+escapeHtml(LAYERED_ADOPTION_EVIDENCE_CHANGED)+'</b>':'')],
+      +(state.expired?' · <b>'+escapeHtml(state.intentChanged&&!state.evidenceChanged&&!state.selectionChanged
+        ?LAYERED_ADOPTION_INTENT_CHANGED:LAYERED_ADOPTION_EVIDENCE_CHANGED)+'</b>':'')],
     ['Preview fingerprint（Apply 将提交它）',escapeHtml(short(state.validationFingerprint))],
     ['当前 flow 的同一条 validation fingerprint',escapeHtml(short(state.currentFingerprint))
       +(state.evidenceChanged?' · 已变化':' · 未变化')],
+    ['Preview 冻结的 replace_existing（Apply 将提交它）',escapeHtml(String(state.replaceExisting===true))
+      +(state.intentChanged?' · 与当前 checkbox 不一致':'')],
     ['publication_allowed',escapeHtml(String(state.publicationAllowed))],
     ['route 冲突（默认 replace_existing=false）',escapeHtml(jsonInline(state.conflict||null))],
   ])+'</div>';
   return '<h4>Apply（必须显式确认）</h4>'
     +'<div id="layeredAdoptionSelectedValidation" data-selected-validation="'+escapeHtml(text(selected))
     +'" data-preview-fingerprint="'+escapeHtml(short(state.validationFingerprint))
+    +'" data-preview-replace-existing="'+escapeHtml(String(state.replaceExisting===true))
     +'" data-preview-expired="'+escapeHtml(String(state.expired))+'"></div>'
     +summary
     +conflictBlock(state)
     +'<label class="check-row"><input type="checkbox" id="layeredAdoptionApplyConfirmed">'
     +'我已复核当前 Preview 内容，确认执行 Apply（默认不勾选）</label>'
     +'<div class="button-row"><button class="secondary" id="previewLayeredAdoption">Preview（只读）</button>'
-    +'<button class="primary" id="applyLayeredAdoption">Apply（需 Preview + 显式确认）</button>'
-    +'<button class="secondary" id="revokeLayeredAdoption">撤销本次发布（需显式确认）</button></div>'
-    +'<label class="check-row"><input type="checkbox" id="layeredAdoptionRevokeConfirmed">'
-    +'确认撤销当前选中的 adoption（'+escapeHtml(LAYERED_ADOPTION_REVOKE_LABEL)+'）</label>'
+    +'<button class="primary" id="applyLayeredAdoption"'+(applyEnabledByPreview(state)?'':' disabled')+'>'
+    +'Apply（需当前 Preview + 显式确认）</button></div>'
     +'<div class="parameter-note">'+escapeHtml(LAYERED_ADOPTION_CONFIRM_NOTE)+'<br>'
-    +'若 fingerprint 已变化：'+escapeHtml(LAYERED_ADOPTION_EVIDENCE_CHANGED)
-    +'，前端不会自动重试、也不会偷偷换成新的 flow 值。</div>';
+    +'若 fingerprint 或 replace_existing 已变化：'+escapeHtml(LAYERED_ADOPTION_EVIDENCE_CHANGED)
+    +' / '+escapeHtml(LAYERED_ADOPTION_INTENT_CHANGED)
+    +'，前端不会自动重试、不会偷偷换成新的 flow 值，也不会用当前 checkbox 覆盖 Preview 意图。</div>';
+}
+
+/**
+ * 撤销目标区块：每个 status != revoked 的 adoption 单独一个 radio。
+ *
+ * 绝不自动选择任何 adoption；revoked 记录只列出、不可作为目标。
+ */
+function revokeTargetBlock(model){
+  const targets=layeredAdoptionRevokeTargets(model);
+  const wanted=text(revokeTargetSelection);
+  // 目标可能已经被后端撤销或不再存在：渲染时校正，避免陈旧选择继续指向 revoked 记录。
+  const stillValid=targets.some(item=>item.adoptionId===wanted);
+  if(!stillValid)revokeTargetSelection='';
+  const selected=stillValid?wanted:'';
+  const targetRows=model.adoptions.length?model.adoptions.map(item=>{
+    const label=escapeHtml(short(item.adoptionId))
+      +' · route '+escapeHtml(short(item.routeId))
+      +' · status '+escapeHtml(short(item.status))
+      +' · applicability '+escapeHtml(short(item.currentApplicability))
+      +' · ownership route_owned '+escapeHtml(String((item.ownership||{}).route_owned===true))
+      +' / route_operating_layer_owned '
+      +escapeHtml(String((item.ownership||{}).route_operating_layer_owned===true));
+    if(item.status==='revoked'){
+      // revoked 记录不可选：不渲染可选 radio（只在历史里保留）。
+      return '<label class="check-row"><input type="radio" disabled>'+label
+        +' · '+escapeHtml(LAYERED_ADOPTION_REVOKE_TARGET_UNSELECTABLE)+'</label>';
+    }
+    const checked=item.adoptionId===selected?' checked':'';
+    return '<label class="check-row"><input type="radio" name="'+escapeHtml(LAYERED_ADOPTION_REVOKE_TARGET_NAME)
+      +'" id="layeredAdoptionRevokeTarget_'+escapeHtml(item.adoptionId)
+      +'" value="'+escapeHtml(item.adoptionId)+'"'+checked+'>'+label+'</label>';
+  }).join(''):'<div class="empty-note">尚无 adoption：没有可撤销的发布记录。</div>';
+  return '<h4>撤销目标（必须显式选择，不会自动选择）</h4>'
+    +'<div class="parameter-note">'+escapeHtml(LAYERED_ADOPTION_REVOKE_TARGET_NOTE)+'</div>'
+    +'<div id="layeredAdoptionRevokeTargetMarker" data-selected-revoke-target="'+escapeHtml(selected)+'"></div>'
+    +'<div class="scroll-list route-list">'+targetRows+'</div>'
+    +'<label class="check-row"><input type="checkbox" id="layeredAdoptionRevokeConfirmed">'
+    +'确认撤销上面显式选中的 adoption（'+escapeHtml(LAYERED_ADOPTION_REVOKE_LABEL)+'）</label>'
+    +'<div class="button-row"><button class="secondary" id="revokeLayeredAdoption"'
+    +(selected?'':' disabled')+'>撤销本次发布（需显式目标 + 显式确认）</button></div>'
+    +'<div class="parameter-note" id="layeredAdoptionRevokeTargetNote">'
+    +(selected?'当前撤销目标 '+escapeHtml(selected):'尚未显式选择撤销目标：Revoke 被禁用')
+    +'</div>';
 }
 
 function resultBlock(model){
@@ -517,6 +683,7 @@ export function renderLayeredOperationalAdoption(flow,selected=''){
     +optionBlock(model,chosen)
     +previewBlock(layeredAdoptionPreviewState(flow,chosen))
     +applyBlock(flow,model,chosen)
+    +revokeTargetBlock(model)
     +resultBlock(model)
     +historyBlock(model)
     +wbDisclosure('ownership / before-after 详细证据',
@@ -559,10 +726,107 @@ export function syncSelectedLayeredAdoptionValidation(c,validationId){
 }
 
 /**
+ * 当前 UI 的 replace_existing 意图。
+ *
+ * 冲突未出现时 checkbox 不渲染 —— 此时意图是 false（协议：首次无已知冲突 replace=false）。
+ */
+export function selectedLayeredAdoptionReplaceExisting(c){
+  if(!c||typeof c.$!=='function')return false;
+  const node=c.$('layeredAdoptionReplaceExisting');
+  return Boolean(node&&node.checked===true);
+}
+
+/**
+ * 当前显式选择的撤销目标（Select）。
+ *
+ * 与 validation 选择同构：优先读模块自己的标记节点，节点缺席时才回退到 radio。
+ * 绝不自动选择、绝不回退到"最近一条 adoption"。
+ */
+export function selectedLayeredAdoptionRevokeTarget(c){
+  if(c&&typeof c.$==='function'){
+    const marker=c.$('layeredAdoptionRevokeTargetMarker');
+    const value=marker&&marker.dataset?text(marker.dataset.selectedRevokeTarget):'';
+    if(value)return value;
+  }
+  const root=globalThis.document;
+  const groups=root&&typeof root.querySelectorAll==='function'
+    ?root.querySelectorAll('input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]'):[];
+  for(const node of groups||[])if(node&&node.checked)return text(node.value);
+  return '';
+}
+
+/**
+ * 记录用户显式选择的撤销目标。
+ *
+ * 只有 status != revoked 且在可撤销目标集合里的 adoption 才被接受：
+ * 其余输入一律视为"未选择"（空串），避免用一个不存在的目标去调后端。
+ */
+export function syncSelectedLayeredAdoptionRevokeTarget(c,adoptionId,model=null){
+  const wanted=text(adoptionId);
+  const targets=layeredAdoptionRevokeTargets(
+    model||layeredOperationalAdoptionModel(c&&typeof c.flow==='function'?c.flow():null));
+  const accepted=targets.some(item=>item.adoptionId===wanted)?wanted:'';
+  revokeTargetSelection=accepted;
+  if(c&&typeof c.$==='function'){
+    const marker=c.$('layeredAdoptionRevokeTargetMarker');
+    if(marker&&marker.dataset)marker.dataset.selectedRevokeTarget=accepted;
+    const note=c.$('layeredAdoptionRevokeTargetNote');
+    if(note)note.textContent=accepted?'当前撤销目标 '+accepted:'尚未显式选择撤销目标：Revoke 被禁用';
+  }
+  return accepted;
+}
+
+/**
+ * 实时刷新按钮可用性与"意图已变化"提示。
+ *
+ * 渲染是无状态字符串：用户在 checkbox / radio 上的改动不会自动重渲染，
+ * 因此由这里把"当前 Preview + 未过期 + publication_allowed + 显式确认"的结论写回 DOM。
+ * 它只改前端禁用状态与提示文案，不触发任何后端动作，也不改 Preview 缓存。
+ */
+export function refreshLayeredAdoptionAffordances(c){
+  const flow=typeof c?.flow==='function'?c.flow():null;
+  const validationId=selectedLayeredAdoptionValidation(c);
+  const state=layeredAdoptionPreviewState(flow,validationId,
+    {replaceExisting:selectedLayeredAdoptionReplaceExisting(c)});
+  const confirmed=Boolean(c&&typeof c.$==='function'&&c.$('layeredAdoptionApplyConfirmed')
+    &&c.$('layeredAdoptionApplyConfirmed').checked);
+  const applyNode=c&&typeof c.$==='function'?c.$('applyLayeredAdoption'):null;
+  const applyEnabled=state.present&&!state.expired&&state.publicationAllowed===true&&confirmed;
+  if(applyNode&&'disabled' in applyNode)applyNode.disabled=!applyEnabled;
+  // 三种过期原因都必须在 UI 上说清楚：换 validation 或改 replace 意图 → 发布意图已变化；
+  // 证据（fingerprint）变化 → 证据已变化。
+  const message=state.intentChanged||state.selectionChanged
+    ?LAYERED_ADOPTION_INTENT_CHANGED
+    :(state.evidenceChanged?LAYERED_ADOPTION_EVIDENCE_CHANGED:'');
+  const intentNode=c&&typeof c.$==='function'?c.$('layeredAdoptionIntentChanged'):null;
+  if(intentNode){
+    intentNode.textContent=message;
+    if('hidden' in intentNode)intentNode.hidden=!message;
+  }
+  const target=selectedLayeredAdoptionRevokeTarget(c);
+  const revokeNode=c&&typeof c.$==='function'?c.$('revokeLayeredAdoption'):null;
+  if(revokeNode&&'disabled' in revokeNode)revokeNode.disabled=!target;
+  return {applyEnabled,intentChanged:state.intentChanged===true,expired:state.expired===true,
+    publicationAllowed:state.publicationAllowed===true,revokeTarget:target,message};
+}
+
+/**
+ * main.js 的 actionButton 在 handler 结束后会把 disabled 复位，
+ * 因此在下一个微任务里再刷新一次，保证"Preview 已消费/已过期"的禁用状态不被抹掉。
+ */
+function refreshLayeredAdoptionAffordancesSoon(c){
+  refreshLayeredAdoptionAffordances(c);
+  if(typeof queueMicrotask==='function')queueMicrotask(()=>refreshLayeredAdoptionAffordances(c));
+}
+
+/**
  * 绑定 Preview / Apply / Revoke。
  *
  * 副作用边界：Preview 不写 state（后端强制 side_effects=false），
  * 只有 /apply 与 /revoke 会写 operational state。
+ *
+ * 事务边界：任何 Select / replace_existing 变化都让旧 Preview 立即过期，
+ * Apply 只提交 Preview 冻结的 replace_existing 与 validation fingerprint。
  */
 export function bindLayeredOperationalAdoption(c){
   if(!c||typeof c.$!=='function')return;
@@ -571,33 +835,62 @@ export function bindLayeredOperationalAdoption(c){
   const options=root&&typeof root.querySelectorAll==='function'
     ?root.querySelectorAll('input[name="layeredAdoptionValidation"]'):[];
   for(const node of options||[]){
-    node.onchange=()=>{if(node.checked)syncSelectedLayeredAdoptionValidation(c,node.value);};
+    node.onchange=()=>{
+      if(!node.checked)return;
+      syncSelectedLayeredAdoptionValidation(c,node.value);
+      refreshLayeredAdoptionAffordances(c);
+    };
   }
+  // 撤销目标：只有用户显式点选才写入；revoked 记录不渲染可选 radio。
+  const revokeOptions=root&&typeof root.querySelectorAll==='function'
+    ?root.querySelectorAll('input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]'):[];
+  for(const node of revokeOptions||[]){
+    node.onchange=()=>{
+      if(!node.checked)return;
+      syncSelectedLayeredAdoptionRevokeTarget(c,node.value);
+      refreshLayeredAdoptionAffordances(c);
+    };
+  }
+  // 发布意图改变 → 旧 Preview 立即不可用于 Apply。
+  const replaceNode=c.$('layeredAdoptionReplaceExisting');
+  if(replaceNode)replaceNode.onchange=()=>refreshLayeredAdoptionAffordances(c);
+  const applyConfirmedNode=c.$('layeredAdoptionApplyConfirmed');
+  if(applyConfirmedNode)applyConfirmedNode.onchange=()=>refreshLayeredAdoptionAffordances(c);
+  const revokeConfirmedNode=c.$('layeredAdoptionRevokeConfirmed');
+  if(revokeConfirmedNode)revokeConfirmedNode.onchange=()=>refreshLayeredAdoptionAffordances(c);
   if(c.$('previewLayeredAdoption'))c.actionButton('previewLayeredAdoption',async()=>{
     const validationId=selectedLayeredAdoptionValidation(c);
     if(!validationId)throw new Error('请先选择一个 eligible validation');
+    // 第二次 Preview 必须读取 checkbox：replace_existing 的意图在这里冻结。
+    const replaceExisting=selectedLayeredAdoptionReplaceExisting(c);
     const response=await c.resourceAction('/api/layered-operational-adoptions/preview',
-      layeredAdoptionPreviewPayload(validationId,{replaceExisting:false}));
-    // 只缓存响应：Preview 时刻的 validation fingerprint 就是 Apply 唯一被允许提交的值。
-    cacheLayeredAdoptionPreview(response,validationId);
+      layeredAdoptionPreviewPayload(validationId,{replaceExisting}));
+    // 只缓存响应：Preview 时刻的指纹与 replace_existing 就是 Apply 唯一被允许提交的值。
+    cacheLayeredAdoptionPreview(response,validationId,{replaceExisting});
+    refreshLayeredAdoptionAffordancesSoon(c);
   });
   if(c.$('applyLayeredAdoption'))c.actionButton('applyLayeredAdoption',async()=>{
     const validationId=selectedLayeredAdoptionValidation(c);
     const confirmed=c.$('layeredAdoptionApplyConfirmed')?c.$('layeredAdoptionApplyConfirmed').checked:false;
-    const replaceExisting=c.$('layeredAdoptionReplaceExisting')?c.$('layeredAdoptionReplaceExisting').checked:false;
+    // checkbox 只是"当前 UI 意图"，guard 用它判断意图是否已偏离 Preview，绝不覆盖冻结值。
+    const replaceExisting=selectedLayeredAdoptionReplaceExisting(c);
     const guard=layeredAdoptionApplyGuard(c.flow(),validationId,{confirmed,replaceExisting});
     if(!guard.allowed)throw new Error(guard.reason);
     const result=await c.resourceAction('/api/layered-operational-adoptions/apply',guard.payload);
     recordLayeredAdoptionApply(result);
     // Apply 成功后 Preview 立即作废：不允许用同一个 Preview 二次 Apply。
     clearLayeredAdoptionPreview();
+    refreshLayeredAdoptionAffordancesSoon(c);
   });
   if(c.$('revokeLayeredAdoption'))c.actionButton('revokeLayeredAdoption',async()=>{
-    const model=layeredOperationalAdoptionModel(c.flow());
-    const target=[...model.adoptions].reverse().find(item=>item.status!=='revoked');
+    // 目标只能来自用户显式选择：绝不按列表顺序猜一条。
+    const target=selectedLayeredAdoptionRevokeTarget(c);
     const confirmed=c.$('layeredAdoptionRevokeConfirmed')?c.$('layeredAdoptionRevokeConfirmed').checked:false;
-    const guard=layeredAdoptionRevokeGuard(target?target.adoptionId:'',{confirmed});
+    const guard=layeredAdoptionRevokeGuard(target,{confirmed});
     if(!guard.allowed)throw new Error(guard.reason);
     await c.resourceAction('/api/layered-operational-adoptions/revoke',guard.payload);
   });
+  // 装载后立刻按"当前 Preview + 当前勾选状态"刷新一次按钮状态：
+  // 未勾选确认、Preview 已过期或已被消费时，Apply 一律显示为 disabled。
+  refreshLayeredAdoptionAffordances(c);
 }

@@ -36,12 +36,18 @@ import {
   layeredValidationFingerprint,layeredValidationStatusModel,renderLayeredRouteValidation,
 } from '../cns_planner/web/js/workflow/layered_route_validation.js';
 import {
-  LAYERED_ADOPTION_CHAIN_STAGES,LAYERED_ADOPTION_EVIDENCE_CHANGED,
-  LAYERED_ADOPTION_LEGACY_LABEL,LAYERED_ADOPTION_REVOKE_LABEL,LAYERED_ADOPTION_STATUSES,
+  LAYERED_ADOPTION_CHAIN_STAGES,LAYERED_ADOPTION_EVIDENCE_CHANGED,LAYERED_ADOPTION_INTENT_CHANGED,
+  LAYERED_ADOPTION_LEGACY_LABEL,LAYERED_ADOPTION_REVOKE_LABEL,LAYERED_ADOPTION_REVOKE_TARGET_NAME,
+  LAYERED_ADOPTION_STATUSES,
+  bindLayeredOperationalAdoption,
   cacheLayeredAdoptionPreview,clearLayeredAdoptionCache,layeredAdoptionApplyGuard,
   layeredAdoptionChainModel,layeredAdoptionLastApply,layeredAdoptionPreviewPayload,
   layeredAdoptionPreviewState,layeredAdoptionRevokeGuard,layeredAdoptionRevokePayload,
-  layeredOperationalAdoptionModel,recordLayeredAdoptionApply,renderLayeredOperationalAdoption,
+  layeredAdoptionRevokeTargets,
+  layeredOperationalAdoptionModel,recordLayeredAdoptionApply,refreshLayeredAdoptionAffordances,
+  renderLayeredOperationalAdoption,
+  selectedLayeredAdoptionReplaceExisting,selectedLayeredAdoptionRevokeTarget,
+  selectedLayeredAdoptionRevokeTargetId,syncSelectedLayeredAdoptionRevokeTarget,
 } from '../cns_planner/web/js/workflow/layered_operational_adoption.js';
 
 // ---- 最小 DOM 桩 -------------------------------------------------------------
@@ -165,6 +171,7 @@ function parseAttributes(textValue,node){
     if(name==='id')node.id=value;
     if(name==='class')node.className=value;
     if(name==='checked')node.checked=true;
+    if(name==='disabled')node.disabled=true;
     if(name==='value')node.value=value;
   }
 }
@@ -853,25 +860,51 @@ test('conflict forbids apply by default and both checkboxes default to false',()
   assert.equal(withReplace.allowed,false,'even replace_existing cannot bypass a blocked publication');
   assert.equal(withReplace.payload,null);
 
-  // 冲突但 publication_allowed=true：默认仍禁止，只有显式 replace_existing 才放行
+  // 冲突但 publication_allowed=true：这份 Preview 冻结的是 replace_existing=false，
+  // 因此默认禁止 Apply；此时把 checkbox 改成 true 属于"发布意图已变化"，
+  // 必须重新 Preview —— 绝不允许用现场 checkbox 覆盖冻结意图。
   cacheLayeredAdoptionPreview({
     status:'ready',side_effects:false,publication_allowed:true,validation_id:'LRV-AAAAAAAAAAAA',
     projection:{status:'ready',route_id:'R-1',conflict:{route_id:'R-1',existing_status:'passed'},
       route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
       route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}},
-  },'LRV-AAAAAAAAAAAA');
+  },'LRV-AAAAAAAAAAAA',{replaceExisting:false});
   const defaultReplace=layeredAdoptionApplyGuard(conflictFlow,'LRV-AAAAAAAAAAAA',{confirmed:true});
   assert.equal(defaultReplace.allowed,false);
   assert.match(defaultReplace.reason,/replace_existing 默认 false/);
   const explicitReplace=layeredAdoptionApplyGuard(conflictFlow,'LRV-AAAAAAAAAAAA',
     {confirmed:true,replaceExisting:true});
-  assert.equal(explicitReplace.allowed,true);
-  assert.equal(explicitReplace.payload.replace_existing,true);
-  // 渲染层：冲突时 replace_existing 复选框出现且默认不勾选
+  assert.equal(explicitReplace.allowed,false,
+    'changing replace_existing must expire the frozen preview instead of allowing apply');
+  assert.equal(explicitReplace.payload,null,'the checkbox must never overwrite the frozen intent');
+  assert.match(explicitReplace.reason,new RegExp(LAYERED_ADOPTION_INTENT_CHANGED));
+  // 只有重新 Preview（replace_existing=true）之后才允许 Apply，且提交的是这份冻结值
+  cacheLayeredAdoptionPreview({
+    status:'ready',side_effects:false,publication_allowed:true,validation_id:'LRV-AAAAAAAAAAAA',
+    projection:{status:'ready',route_id:'R-1',replacement_requested:true,
+      conflict:{route_id:'R-1',existing_status:'passed'},
+      route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
+      route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}},
+  },'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+  const rePreviewed=layeredAdoptionApplyGuard(conflictFlow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:true});
+  assert.equal(rePreviewed.allowed,true,'a re-preview freezing replace=true is the only way through');
+  assert.equal(rePreviewed.payload.replace_existing,true);
+  // 渲染层：冲突时 replace_existing 复选框出现，并按 Preview 冻结值回填（冻结 true → 勾选）
   const conflictHtml=renderLayeredOperationalAdoption(conflictFlow,'LRV-AAAAAAAAAAAA');
-  assert.match(conflictHtml,/id="layeredAdoptionReplaceExisting"/);
-  assert.doesNotMatch(conflictHtml,/id="layeredAdoptionReplaceExisting" checked/);
-  assert.match(conflictHtml,/默认 false/);
+  assert.match(conflictHtml,/id="layeredAdoptionReplaceExisting" checked/);
+  assert.match(conflictHtml,/Preview 冻结的 replace_existing true/);
+  // 冻结 false 的冲突 Preview：复选框必须是不勾选的默认态
+  cacheLayeredAdoptionPreview({
+    status:'ready',side_effects:false,publication_allowed:false,validation_id:'LRV-AAAAAAAAAAAA',
+    projection:{status:'ready',route_id:'R-1',conflict:{route_id:'R-1',existing_status:'passed'},
+      route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
+      route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}},
+  },'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+  const defaultHtml=renderLayeredOperationalAdoption(conflictFlow,'LRV-AAAAAAAAAAAA');
+  assert.match(defaultHtml,/id="layeredAdoptionReplaceExisting"/);
+  assert.doesNotMatch(defaultHtml,/id="layeredAdoptionReplaceExisting" checked/);
+  assert.match(defaultHtml,/默认 false/);
   clearLayeredAdoptionCache();
 });
 
@@ -1203,4 +1236,601 @@ test('the panels state the operational boundaries they must not cross',()=>{
   // 实现不得塞进 layered_theta_v2.js
   const theta=readFileSync(new URL('../cns_planner/web/js/workflow/layered_theta_v2.js',import.meta.url),'utf8');
   assert.doesNotMatch(theta,/layered-route-validations|layered-operational-adoptions/);
+});
+
+// ---- 16. conflict re-preview：Preview 冻结 replace_existing，Apply 只提交冻结值 ---------
+
+/** 与后端 LayeredOperationalAdoptionService.preview 同形的假响应（publication_allowed 由 conflict 推导）。 */
+function fakePreviewResponse(flow,payload,{conflict=true}={}){
+  const replaceExisting=payload.replace_existing===true;
+  const blocked=Boolean(conflict&&!replaceExisting);
+  const projection={
+    status:'ready',validation_id:payload.validation_id,route_id:'R-1',
+    projection_fingerprint:'layeredprojectionv1-proj',
+    validation_fingerprint:'layeredvalidationv1-fp-1',
+    route:{route_id:'R-1',status:'passed',kind:'layered_risk_aware_operational_route',
+      path_crs:'OGC:CRS84',path:[[122,30],[122.001,30]]},
+    route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW',
+      operating_mode:'fixed_cruise_layer',vertical_reference:'egm2008_orthometric',
+      confirmed:true,adoption_owned:true},
+    conflict:conflict?{route_id:'R-1',existing_status:'passed',
+      existing_source_type:'manual_or_other_planner',
+      replacement_requires_explicit_confirmation:true}:null,
+    replacement_requested:replaceExisting,
+    apply_blocked_by_conflict:blocked,
+    two_dimensional_path_only:true,
+    altitude_representation:{carried_by:'RouteOperatingLayer -> AltitudeLayer',
+      vertical_reference:'egm2008_orthometric',in_crs84_third_coordinate:false,
+      route_altitude_profile_created:false},
+  };
+  return {status:'ready',projection,side_effects:false,
+    publication_allowed:projection.status==='ready'&&!blocked,
+    preview_fingerprint:'layeredpreviewv1-'+(replaceExisting?'replacement':'default')};
+}
+
+/**
+ * 只挂载 adoption 面板而非整个 Step03：重新渲染时替换 host 的 children，
+ * 并把被卸载节点从 id 索引里撤销，避免旧控件继续被 getElementById 命中。
+ */
+function mountAdoptionPanel(document,flow,selected='LRV-AAAAAAAAAAAA'){
+  let host=document.getElementById('layeredAdoptionHost');
+  if(!host){
+    host=new StubNode('div');host.id='layeredAdoptionHost';
+    document.body.append(host);document.__nodes.set(host.id,host);
+  }
+  forEachDescendant(host,node=>{
+    if(node.id&&document.__nodes.get(node.id)===node)document.__nodes.delete(node.id);
+  });
+  host.replaceChildren(...parseHtml(renderLayeredOperationalAdoption(flow,selected)).children);
+  registerTree(document.__nodes,host);
+  return host;
+}
+
+/** adoption 面板的 controller 桩：actionButton 与 main.js 同构（handler 抛错落到 panelError）。 */
+function adoptionController(document,flow,{resourceAction=null}={}){
+  const calls=[];
+  const c={
+    flow:()=>flow,$:id=>document.getElementById(id),
+    panelError:message=>calls.push(['error',message]),
+    resourceAction:(path,payload)=>{
+      calls.push([path,payload]);
+      return Promise.resolve(resourceAction?resourceAction(path,payload):{status:'passed'});
+    },
+    actionButton:(id,handler)=>{
+      const node=document.getElementById(id);
+      if(node)node.onclick=async()=>{
+        try{await handler();}catch(error){calls.push(['error',error.message]);}
+      };
+    },
+  };
+  return {c,calls};
+}
+
+function stubDocumentQueries(document){
+  document.querySelectorAll=selector=>findAll(document.body,selector);
+  document.querySelector=selector=>findAll(document.body,selector)[0]||null;
+}
+
+test('the first preview always submits replace_existing=false and freezes the conflict preview',async()=>{
+  clearLayeredAdoptionCache();
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      stubDocumentQueries(document);
+      const flow=baseFlow();
+      mountAdoptionPanel(document,flow);
+      const {c,calls}=adoptionController(document,flow,
+        {resourceAction:(path,payload)=>fakePreviewResponse(flow,payload)});
+      bindLayeredOperationalAdoption(c);
+      return document.getElementById('previewLayeredAdoption').onclick().then(()=>{
+        const previewCall=calls.filter(item=>item[0]==='/api/layered-operational-adoptions/preview').pop();
+        assert.deepEqual(previewCall[1],{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false},
+          'the first preview must submit replace_existing=false');
+        const state=layeredAdoptionPreviewState(flow,'LRV-AAAAAAAAAAAA');
+        assert.equal(state.present,true);
+        assert.equal(state.replaceExisting,false,'the preview freezes replace_existing=false');
+        assert.equal(state.publicationAllowed,false,'a discovered conflict is not publishable yet');
+        assert.notEqual(state.conflict,null,'the conflict is part of the frozen preview');
+        resolve();
+      });
+    });
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('a discovered conflict renders the replace checkbox unchecked and keeps apply disabled',()=>{
+  clearLayeredAdoptionCache();
+  withStubDom(document=>{
+    stubDocumentQueries(document);
+    const flow=baseFlow();
+    mountAdoptionPanel(document,flow);
+    // Preview 之前没有已知冲突：replace 控件不渲染，且没有 Preview 时 Apply 一律 disabled
+    assert.equal(document.getElementById('layeredAdoptionReplaceExisting'),null,
+      'replace_existing only appears once a preview reports a conflict');
+    assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,'no preview → apply disabled');
+    // Preview #1（replace=false）发现 conflict → 旧的 UI 不再成立，重新渲染后复选框出现但默认不勾选
+    cacheLayeredAdoptionPreview(
+      fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false}),
+      'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+    mountAdoptionPanel(document,flow);
+    const replaceNode=document.getElementById('layeredAdoptionReplaceExisting');
+    assert.ok(replaceNode,'a discovered conflict must render the replace checkbox');
+    assert.equal(replaceNode.checked,false,'the checkbox defaults to unchecked');
+    assert.match(textOf(replaceNode.closest('label')),/默认 false/);
+    assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+      'publication_allowed=false → apply disabled');
+    assert.match(textOf(document.getElementById('layeredAdoptionIntentChanged')),/^$/,
+      'no intent change has happened yet');
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('changing replace_existing expires the frozen preview and blocks apply',async()=>{
+  clearLayeredAdoptionCache();
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      stubDocumentQueries(document);
+      const flow=baseFlow();
+      cacheLayeredAdoptionPreview(
+        fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false}),
+        'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+      mountAdoptionPanel(document,flow);
+      const {c,calls}=adoptionController(document,flow,{});
+      bindLayeredOperationalAdoption(c);
+      // 用户勾选 replace：旧 Preview 立即视为 expired / intent_changed
+      const replaceNode=document.getElementById('layeredAdoptionReplaceExisting');
+      replaceNode.checked=true;
+      replaceNode.onchange();
+      const state=layeredAdoptionPreviewState(flow,'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+      assert.equal(state.intentChanged,true);
+      assert.equal(state.expired,true,'a replace_existing change expires the frozen preview');
+      assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+        'an expired preview disables apply');
+      assert.match(textOf(document.getElementById('layeredAdoptionIntentChanged')),
+        new RegExp(LAYERED_ADOPTION_INTENT_CHANGED));
+      // 显式确认也不能绕过：Apply 被 guard 拒绝，且不发任何端点请求
+      document.getElementById('layeredAdoptionApplyConfirmed').checked=true;
+      document.getElementById('layeredAdoptionApplyConfirmed').onchange();
+      assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+        'confirmation cannot revive an expired preview');
+      return document.getElementById('applyLayeredAdoption').onclick().then(()=>{
+        assert.equal(calls.some(item=>String(item[0]).endsWith('/apply')),false);
+        assert.match(calls.filter(item=>item[0]==='error').map(item=>item[1]).join(' '),
+          new RegExp(LAYERED_ADOPTION_INTENT_CHANGED));
+        resolve();
+      });
+    });
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('the second preview reads the checkbox and submits replace_existing=true',async()=>{
+  clearLayeredAdoptionCache();
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      stubDocumentQueries(document);
+      const flow=baseFlow();
+      mountAdoptionPanel(document,flow);
+      const {c,calls}=adoptionController(document,flow,
+        {resourceAction:(path,payload)=>fakePreviewResponse(flow,payload)});
+      bindLayeredOperationalAdoption(c);
+      // 第一次 Preview：没有已知冲突 → 提交 replace_existing=false，后端回报 conflict
+      return document.getElementById('previewLayeredAdoption').onclick().then(()=>{
+        assert.deepEqual(calls.filter(item=>String(item[0]).endsWith('/preview'))[0][1],
+          {validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false});
+        assert.equal(layeredAdoptionPreviewState(flow,'LRV-AAAAAAAAAAAA').publicationAllowed,false);
+        // 后端响应触发的重新渲染：conflict 进入 UI，复选框出现但默认不勾选
+        mountAdoptionPanel(document,flow);
+        bindLayeredOperationalAdoption(c);
+        const replaceNode=document.getElementById('layeredAdoptionReplaceExisting');
+        assert.ok(replaceNode,'the conflict must produce a replace checkbox');
+        assert.equal(replaceNode.checked,false,'the replace checkbox defaults to unchecked');
+        // 用户勾选并重新 Preview：这一次必须提交 replace_existing=true
+        replaceNode.checked=true;
+        replaceNode.onchange();
+        return document.getElementById('previewLayeredAdoption').onclick();
+      }).then(()=>{
+        const previews=calls.filter(item=>item[0]==='/api/layered-operational-adoptions/preview');
+        assert.equal(previews.length,2,'the user must preview again after changing the intent');
+        assert.deepEqual(previews[0][1],{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false});
+        assert.deepEqual(previews[1][1],{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:true},
+          'the second preview submits the checkbox value');
+        const state=layeredAdoptionPreviewState(flow,'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+        assert.equal(state.replaceExisting,true,'the new preview freezes replace_existing=true');
+        assert.equal(state.publicationAllowed,true,'replacement makes the conflict publishable');
+        assert.equal(state.expired,false);
+        resolve();
+      });
+    });
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('apply submits the replace_existing frozen by the second preview',async()=>{
+  clearLayeredAdoptionCache();
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      stubDocumentQueries(document);
+      const flow=baseFlow();
+      const applyResult={status:'passed',adoption_id:'LRA-222222222222',route_id:'R-1',
+        route_operating_layer_created:true,route_altitude_profile_created:false,
+        departure_arrival_procedure_created:false};
+      const respond=(path,payload)=>String(path).endsWith('/preview')
+        ?fakePreviewResponse(flow,payload):applyResult;
+      cacheLayeredAdoptionPreview(
+        fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false}),
+        'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+      mountAdoptionPanel(document,flow);
+      let {c,calls}=adoptionController(document,flow,{resourceAction:respond});
+      bindLayeredOperationalAdoption(c);
+      const replaceNode=document.getElementById('layeredAdoptionReplaceExisting');
+      replaceNode.checked=true;
+      replaceNode.onchange();
+      return document.getElementById('previewLayeredAdoption').onclick().then(()=>{
+        // 第二次 Preview 完成后重新渲染（main.js 的 resourceAction 会 renderWorkflow）：
+        // 复选框按这些 Preview 的冻结值回填。
+        mountAdoptionPanel(document,flow);
+        ({c,calls}=adoptionController(document,flow,{resourceAction:respond}));
+        bindLayeredOperationalAdoption(c);
+        assert.equal(document.getElementById('layeredAdoptionReplaceExisting').checked,true,
+          'the frozen replace_existing is reflected back into the checkbox');
+        assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+          'unconfirmed apply stays disabled');
+        document.getElementById('layeredAdoptionApplyConfirmed').checked=true;
+        document.getElementById('layeredAdoptionApplyConfirmed').onchange();
+        assert.equal(document.getElementById('applyLayeredAdoption').disabled,false,
+          'current preview + publication_allowed + confirmed → enabled');
+        return document.getElementById('applyLayeredAdoption').onclick();
+      }).then(()=>{
+        const applyCall=calls.filter(item=>String(item[0]).endsWith('/apply')).pop();
+        assert.deepEqual(applyCall[1],{
+          validation_id:'LRV-AAAAAAAAAAAA',confirmed:true,replace_existing:true,
+          expected_validation_fingerprint:'layeredvalidationv1-fp-1',
+        },'apply must submit the frozen replace_existing and fingerprint');
+        // Apply 消费掉这份 Preview：不能二次 Apply
+        return document.getElementById('applyLayeredAdoption').onclick().then(()=>{
+          assert.equal(calls.filter(item=>String(item[0]).endsWith('/apply')).length,1);
+          assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+            'a consumed preview disables apply again');
+          resolve();
+        });
+      });
+    });
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('apply never substitutes the current checkbox for the frozen preview intent',()=>{
+  clearLayeredAdoptionCache();
+  const flow=baseFlow();
+  // 冻结 false：现场改成 true 不算数
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+  const changedIntent=layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:true});
+  assert.equal(changedIntent.allowed,false);
+  assert.equal(changedIntent.payload,null,'the checkbox must never overwrite the frozen intent');
+  assert.match(changedIntent.reason,new RegExp(LAYERED_ADOPTION_INTENT_CHANGED));
+  // 冻结 true：现场取消勾选同样不算数
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:true}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+  const cancelledIntent=layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:false});
+  assert.equal(cancelledIntent.allowed,false);
+  assert.equal(cancelledIntent.payload,null);
+  assert.match(cancelledIntent.reason,new RegExp(LAYERED_ADOPTION_INTENT_CHANGED));
+  // 冻结 true + 现场一致 → 提交冻结值
+  const frozen=layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:true});
+  assert.equal(frozen.allowed,true);
+  assert.equal(frozen.payload.replace_existing,true);
+  // 完全不读 checkbox 时，payload 仍然来自 Preview 冻结值
+  const withoutUI=layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',{confirmed:true});
+  assert.equal(withoutUI.allowed,true);
+  assert.equal(withoutUI.payload.replace_existing,true);
+  assert.equal(withoutUI.payload.expected_validation_fingerprint,
+    layeredAdoptionPreviewState(flow,'LRV-AAAAAAAAAAAA').validationFingerprint);
+  clearLayeredAdoptionCache();
+});
+
+test('every replace_existing change demands a new preview before apply',()=>{
+  clearLayeredAdoptionCache();
+  const flow=baseFlow();
+  // 1) 第二份 Preview 冻结 true：允许替换
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:true}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+  assert.equal(layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:true}).allowed,true);
+  // 2) 用户取消勾选 → 这份 Preview 立刻不可用
+  const back=layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:false});
+  assert.equal(back.allowed,false,'cancelling the intent must also demand a new preview');
+  assert.match(back.reason,new RegExp(LAYERED_ADOPTION_INTENT_CHANGED));
+  // 3) 重新 Preview(false)：conflict 又把它挡回 publication_allowed=false
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+  const rePreviewed=layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:false});
+  assert.equal(rePreviewed.allowed,false);
+  assert.match(rePreviewed.reason,/publication_allowed/);
+  assert.match(renderLayeredOperationalAdoption(flow,'LRV-AAAAAAAAAAAA'),
+    /id="applyLayeredAdoption" disabled/);
+  clearLayeredAdoptionCache();
+});
+
+test('fingerprint and validation changes still expire a replacement preview',()=>{
+  clearLayeredAdoptionCache();
+  const flow=baseFlow();
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:true}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+  const changed=baseFlow({validations:[validationFixture({
+    validationFingerprint:'layeredvalidationv1-fp-NEW'})]});
+  const state=layeredAdoptionPreviewState(changed,'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+  assert.equal(state.evidenceChanged,true);
+  assert.equal(state.expired,true,'a fingerprint change still expires the preview');
+  assert.equal(state.replaceExisting,true,'the frozen intent stays readable while expired');
+  const guard=layeredAdoptionApplyGuard(changed,'LRV-AAAAAAAAAAAA',
+    {confirmed:true,replaceExisting:true});
+  assert.equal(guard.allowed,false);
+  assert.match(guard.reason,new RegExp(LAYERED_ADOPTION_EVIDENCE_CHANGED));
+  assert.match(renderLayeredOperationalAdoption(changed,'LRV-AAAAAAAAAAAA'),
+    /id="applyLayeredAdoption" disabled/);
+  // 切换 validation 同样让含 replace 意图的 Preview 过期
+  const other=baseFlow({validations:[validationFixture(),validationFixture({
+    validationId:'LRV-BBBBBBBBBBBB',validationFingerprint:'layeredvalidationv1-fp-2'})]});
+  const switched=layeredAdoptionApplyGuard(other,'LRV-BBBBBBBBBBBB',
+    {confirmed:true,replaceExisting:true});
+  assert.equal(switched.allowed,false);
+  assert.match(switched.reason,new RegExp(LAYERED_ADOPTION_EVIDENCE_CHANGED));
+  // 渲染层：切到另一条 validation 后 Apply 立即禁用，并明确要求重新 Preview
+  withStubDom(document=>{
+    stubDocumentQueries(document);
+    cacheLayeredAdoptionPreview(
+      fakePreviewResponse(other,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false},{conflict:false}),
+      'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+    mountAdoptionPanel(document,other,'LRV-AAAAAAAAAAAA');
+    const {c}=adoptionController(document,other,{});
+    bindLayeredOperationalAdoption(c);
+    document.getElementById('layeredAdoptionApplyConfirmed').checked=true;
+    document.getElementById('layeredAdoptionApplyConfirmed').onchange();
+    assert.equal(document.getElementById('applyLayeredAdoption').disabled,false);
+    const radio=findAll(document.body,'input[name="layeredAdoptionValidation"]')
+      .find(node=>node.value==='LRV-BBBBBBBBBBBB');
+    assert.ok(radio,'the second validation must be selectable');
+    radio.checked=true;
+    radio.onchange();
+    assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+      'switching the validation disables apply');
+    assert.match(textOf(document.getElementById('layeredAdoptionIntentChanged')),
+      new RegExp(LAYERED_ADOPTION_INTENT_CHANGED),
+      'the UI must say the intent changed and a new preview is required');
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('the apply button state follows the frozen preview publication flag and confirmation',()=>{
+  clearLayeredAdoptionCache();
+  const flow=baseFlow();
+  // 无 Preview → disabled
+  assert.match(renderLayeredOperationalAdoption(flow,'LRV-AAAAAAAAAAAA'),
+    /id="applyLayeredAdoption" disabled/);
+  // Preview expired（fingerprint 变化）→ disabled
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false},{conflict:false}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+  const changed=baseFlow({validations:[validationFixture({
+    validationFingerprint:'layeredvalidationv1-fp-NEW'})]});
+  assert.match(renderLayeredOperationalAdoption(changed,'LRV-AAAAAAAAAAAA'),
+    /id="applyLayeredAdoption" disabled/);
+  // publication_allowed != true → disabled
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:false}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:false});
+  assert.match(renderLayeredOperationalAdoption(flow,'LRV-AAAAAAAAAAAA'),
+    /id="applyLayeredAdoption" disabled/);
+  // 当前 Preview + publication_allowed=true → 渲染层启用；未显式确认时 bind 仍禁用
+  cacheLayeredAdoptionPreview(
+    fakePreviewResponse(flow,{validation_id:'LRV-AAAAAAAAAAAA',replace_existing:true}),
+    'LRV-AAAAAAAAAAAA',{replaceExisting:true});
+  assert.doesNotMatch(renderLayeredOperationalAdoption(flow,'LRV-AAAAAAAAAAAA'),
+    /id="applyLayeredAdoption" disabled/);
+  withStubDom(document=>{
+    stubDocumentQueries(document);
+    mountAdoptionPanel(document,flow);
+    const {c}=adoptionController(document,flow,{});
+    bindLayeredOperationalAdoption(c);
+    assert.equal(document.getElementById('applyLayeredAdoption').disabled,true,
+      'an unconfirmed apply stays disabled');
+    document.getElementById('layeredAdoptionApplyConfirmed').checked=true;
+    document.getElementById('layeredAdoptionApplyConfirmed').onchange();
+    assert.equal(document.getElementById('applyLayeredAdoption').disabled,false,
+      'current preview + publication_allowed + confirmed → enabled');
+    // 双重把守：未确认时 guard 也拒绝
+    assert.equal(layeredAdoptionApplyGuard(flow,'LRV-AAAAAAAAAAAA',
+      {confirmed:false,replaceExisting:true}).allowed,false);
+  });
+  clearLayeredAdoptionCache();
+});
+
+// ---- 17. Revoke：目标必须显式选择 ------------------------------------------------
+
+function adoptionCollection(items){
+  return {schema_version:'layered-operational-adoption-collection-v1',
+    status:'passed',count:items.length,items};
+}
+
+test('revoke without an explicit target is refused',async()=>{
+  clearLayeredAdoptionCache();
+  assert.equal(LAYERED_ADOPTION_REVOKE_TARGET_NAME,'layeredAdoptionRevokeTarget',
+    'the revoke target radio group keeps its contracted name');
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      stubDocumentQueries(document);
+      const flow=baseFlow({adoptions:adoptionCollection([
+        adoptionFixture({adoptionId:'LRA-PUBLISHED01'}),
+        adoptionFixture({adoptionId:'LRA-STALE000001',status:'stale',applicability:'superseded'}),
+      ])});
+      mountAdoptionPanel(document,flow);
+      const {c,calls}=adoptionController(document,flow,{});
+      bindLayeredOperationalAdoption(c);
+      assert.equal(selectedLayeredAdoptionRevokeTarget(c),'','no adoption may be auto-selected');
+      assert.equal(document.getElementById('revokeLayeredAdoption').disabled,true,
+        'revoke is disabled until a target is explicitly chosen');
+      assert.match(textOf(document.getElementById('layeredAdoptionRevokeTargetNote')),
+        /尚未显式选择撤销目标/);
+      // 即使勾选确认，也不能撤销一个没有被显式选择的目标
+      document.getElementById('layeredAdoptionRevokeConfirmed').checked=true;
+      document.getElementById('layeredAdoptionRevokeConfirmed').onchange();
+      return document.getElementById('revokeLayeredAdoption').onclick().then(()=>{
+        assert.equal(calls.some(item=>String(item[0]).endsWith('/revoke')),false,
+          'revoke must not fire without an explicit target');
+        assert.match(calls.filter(item=>item[0]==='error').map(item=>item[1]).join(' '),
+          /没有可撤销的 adoption/);
+        assert.equal(layeredAdoptionRevokeGuard('',{confirmed:true}).allowed,false);
+        assert.equal(layeredAdoptionRevokePayload('',{confirmed:true}).adoption_id,'');
+        resolve();
+      });
+    });
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('revoke posts exactly the explicitly selected adoption_id',async()=>{
+  clearLayeredAdoptionCache();
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      stubDocumentQueries(document);
+      const flow=baseFlow({adoptions:adoptionCollection([
+        adoptionFixture({adoptionId:'LRA-PUBLISHED01'}),
+        adoptionFixture({adoptionId:'LRA-STALE000001',status:'stale',applicability:'superseded'}),
+      ])});
+      mountAdoptionPanel(document,flow);
+      const {c,calls}=adoptionController(document,flow,{});
+      bindLayeredOperationalAdoption(c);
+      const radio=findAll(document.body,'input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]')
+        .find(node=>node.value==='LRA-STALE000001');
+      assert.ok(radio,'every non-revoked adoption gets its own radio');
+      assert.match(textOf(radio.closest('label')),
+        /LRA-STALE000001 · route R-1 · status stale · applicability superseded · ownership route_owned true/,
+        'the target row must show adoption_id / route_id / status / applicability / ownership');
+      radio.checked=true;
+      radio.onchange();
+      assert.equal(selectedLayeredAdoptionRevokeTarget(c),'LRA-STALE000001');
+      assert.equal(selectedLayeredAdoptionRevokeTargetId(),'LRA-STALE000001');
+      assert.equal(document.getElementById('revokeLayeredAdoption').disabled,false);
+      assert.match(textOf(document.getElementById('layeredAdoptionRevokeTargetNote')),/LRA-STALE000001/);
+      // 未确认 → 拒绝
+      return document.getElementById('revokeLayeredAdoption').onclick().then(()=>{
+        assert.equal(calls.some(item=>String(item[0]).endsWith('/revoke')),false);
+        assert.match(calls.filter(item=>item[0]==='error').map(item=>item[1]).join(' '),
+          /显式确认/);
+        document.getElementById('layeredAdoptionRevokeConfirmed').checked=true;
+        document.getElementById('layeredAdoptionRevokeConfirmed').onchange();
+        return document.getElementById('revokeLayeredAdoption').onclick();
+      }).then(()=>{
+        const revokeCall=calls.filter(item=>String(item[0]).endsWith('/revoke')).pop();
+        assert.deepEqual(revokeCall[1],{adoption_id:'LRA-STALE000001',confirmed:true},
+          'revoke must post the explicitly selected adoption_id');
+        assert.equal(revokeCall[1].route_id,undefined,'the frontend never addresses a route directly');
+        resolve();
+      });
+    });
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('multiple published stale and superseded adoptions never auto-select a revoke target',()=>{
+  clearLayeredAdoptionCache();
+  withStubDom(document=>{
+    stubDocumentQueries(document);
+    const flow=baseFlow({adoptions:adoptionCollection([
+      adoptionFixture({adoptionId:'LRA-A00000000001',status:'published'}),
+      adoptionFixture({adoptionId:'LRA-B00000000002',status:'stale',applicability:'superseded'}),
+      adoptionFixture({adoptionId:'LRA-C00000000003',status:'stale',applicability:'stale'}),
+      adoptionFixture({adoptionId:'LRA-D00000000004',status:'revoked',applicability:'revoked'}),
+    ])});
+    mountAdoptionPanel(document,flow);
+    const model=layeredOperationalAdoptionModel(flow);
+    assert.equal(model.adoptions.length,4,'the full history stays visible');
+    const radios=findAll(document.body,'input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]');
+    assert.equal(radios.length,3,'every non-revoked adoption gets exactly one radio');
+    for(const radio of radios)assert.equal(radio.checked,false,'no adoption may be auto-selected');
+    assert.equal(selectedLayeredAdoptionRevokeTargetId(),'');
+    assert.deepEqual(layeredAdoptionRevokeTargets(model).map(item=>item.adoptionId),
+      ['LRA-A00000000001','LRA-B00000000002','LRA-C00000000003'],
+      'the target list is never reordered into "the latest one"');
+    // 源码层：撤销目标绝不按顺序猜
+    const source=readFileSync(new URL('../cns_planner/web/js/workflow/layered_operational_adoption.js',import.meta.url),'utf8');
+    assert.doesNotMatch(source,/reverse\(\)/,'the revoke target must never be guessed by list order');
+    assert.doesNotMatch(source,/find\(item=>item\.status!=='revoked'\)/);
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('revoked adoptions are never selectable as revoke targets',()=>{
+  clearLayeredAdoptionCache();
+  withStubDom(document=>{
+    stubDocumentQueries(document);
+    const flow=baseFlow({adoptions:adoptionCollection([
+      adoptionFixture({adoptionId:'LRA-LIVE00000001',status:'published'}),
+      adoptionFixture({adoptionId:'LRA-REVOKED0001',status:'revoked',applicability:'revoked'}),
+    ])});
+    mountAdoptionPanel(document,flow);
+    const {c}=adoptionController(document,flow,{});
+    bindLayeredOperationalAdoption(c);
+    const radios=findAll(document.body,'input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]');
+    assert.deepEqual(radios.map(node=>node.value),['LRA-LIVE00000001']);
+    assert.equal(radios.some(node=>node.value==='LRA-REVOKED0001'),false,
+      'a revoked adoption must not offer a selectable target');
+    const panelText=textOf(document.getElementById('layeredAdoptionHost'));
+    assert.match(panelText,/LRA-REVOKED0001[\s\S]*?revoked：已撤销，不可作为撤销目标/);
+    // revoked 记录仍然完整留在历史里（statusBadge 的 flow-revoked 只在 HTML 类名上）
+    const panelHtml=renderLayeredOperationalAdoption(flow);
+    assert.match(panelHtml,/flow-revoked/,'the revoked record stays in the history');
+    // 即使被硬塞一个 revoked id，也不会成为撤销目标
+    assert.equal(syncSelectedLayeredAdoptionRevokeTarget(c,'LRA-REVOKED0001'),'',
+      'a revoked adoption can never become the target');
+    assert.equal(selectedLayeredAdoptionRevokeTargetId(),'');
+    assert.equal(selectedLayeredAdoptionRevokeTarget(c),'');
+    // 用户先前显式选过的目标被后端撤销后：重新渲染即校正，不再指着 revoked 记录
+    const liveRadio=findAll(document.body,'input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]')[0];
+    liveRadio.checked=true;
+    liveRadio.onchange();
+    assert.equal(selectedLayeredAdoptionRevokeTargetId(),'LRA-LIVE00000001');
+    const allRevoked=baseFlow({adoptions:adoptionCollection([
+      adoptionFixture({adoptionId:'LRA-LIVE00000001',status:'revoked',applicability:'revoked'}),
+      adoptionFixture({adoptionId:'LRA-REVOKED0001',status:'revoked',applicability:'revoked'}),
+    ])});
+    mountAdoptionPanel(document,allRevoked);
+    assert.equal(selectedLayeredAdoptionRevokeTargetId(),'',
+      'a target the backend revoked must not stay selected');
+    assert.equal(findAll(document.body,'input[name="'+LAYERED_ADOPTION_REVOKE_TARGET_NAME+'"]').length,0);
+    assert.equal(document.getElementById('revokeLayeredAdoption').disabled,true);
+  });
+  clearLayeredAdoptionCache();
+});
+
+test('the revoke confirmation and replace intent are read from the rendered panel only',()=>{
+  clearLayeredAdoptionCache();
+  withStubDom(document=>{
+    stubDocumentQueries(document);
+    const flow=baseFlow();
+    mountAdoptionPanel(document,flow);
+    const {c}=adoptionController(document,flow,{});
+    bindLayeredOperationalAdoption(c);
+    // 冲突 Preview 未出现时 checkbox 不存在：意图就是 false
+    assert.equal(selectedLayeredAdoptionReplaceExisting(c),false);
+    assert.equal(document.getElementById('layeredAdoptionRevokeConfirmed').checked,false);
+    assert.equal(document.getElementById('layeredAdoptionApplyConfirmed').checked,false);
+    const refreshed=refreshLayeredAdoptionAffordances(c);
+    assert.equal(refreshed.applyEnabled,false,'no preview → nothing to apply');
+    assert.equal(refreshed.revokeTarget,'');
+    // 面板自己记录的选择不会被 refresh 自动填上
+    assert.equal(selectedLayeredAdoptionRevokeTargetId(),'');
+  });
+  clearLayeredAdoptionCache();
 });
