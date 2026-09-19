@@ -29,6 +29,7 @@ from .review_service import ReviewService
 from .risk_service import RiskService
 from .risk_v2_service import RiskFrameworkV2Service
 from .layered_route_planner_service import LayeredRoutePlannerService
+from .route_risk_profile_service import RouteRiskProfileService
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -184,6 +185,18 @@ class WorkflowService:
         # ``route_planner`` default stays ``route_planner_v1``).
         self.layered_route_planner = self._selected_algorithm("layered_route_planner")
         self.layered_route_planner_service.planner = self.layered_route_planner
+        # RouteRiskProfile V1 (additive, analysis only): current LayeredRouteCandidate +
+        # current GridRiskV2 → path risk profile.  It never replans, never mutates the
+        # candidate and never writes operational_routes / CNS / RouteOperatingLayer.
+        self.route_risk_profile_service = RouteRiskProfileService(
+            self.session, self.invalidation_service, snapshot,
+            self.layered_route_planner_service,
+        )
+        # A candidate / grid_risk_v2 / profile-policy change stales only the additive
+        # route_risk_profiles; legacy routes, V3 and CNS results stay untouched.
+        self.invalidation_service.route_risk_profile_invalidator = (
+            self.route_risk_profile_service.refresh_for_reason
+        )
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
             self.session, self.coverage_model_3d, self.invalidation_service, snapshot
@@ -348,6 +361,18 @@ class WorkflowService:
             )
             result["layered_route_candidates"] = (
                 self.layered_route_planner_service.result_snapshot()
+            )
+        if hasattr(self, "route_risk_profile_service"):
+            # RouteRiskProfile V1: the explicit per-domain thresholds, the bounded readiness
+            # and the independent profile container travel in the snapshot.
+            result["route_risk_profile_policy"] = (
+                self.route_risk_profile_service.policy_snapshot()
+            )
+            result["route_risk_profiles"] = (
+                self.route_risk_profile_service.result_snapshot()
+            )
+            result["route_risk_profile_readiness"] = (
+                self.route_risk_profile_service.readiness_snapshot()
             )
         result["review"] = self.review()
         return result
@@ -758,9 +783,31 @@ class WorkflowService:
     def set_layered_route_cost_policy(self, payload):
         return self.layered_route_planner_service.set_cost_policy(payload)
     def evaluate_layered_route_candidate(self, payload=None, adapter=None):
-        return self.layered_route_planner_service.evaluate(payload, adapter=adapter)
+        self.layered_route_planner_service.evaluate(payload, adapter=adapter)
+        # A new candidate run may have replaced/staled the previous record of a lane, so the
+        # existing RouteRiskProfiles are re-checked: only profiles whose candidate is gone,
+        # replaced or stale are invalidated (old profiles are kept as audit evidence).
+        if hasattr(self, "route_risk_profile_service"):
+            return self.route_risk_profile_service.reconcile()
+        return self.snapshot()
     def delete_layered_route_candidate(self, candidate_id):
-        return self.layered_route_planner_service.delete_candidate(candidate_id)
+        self.layered_route_planner_service.delete_candidate(candidate_id)
+        if hasattr(self, "route_risk_profile_service"):
+            return self.route_risk_profile_service.reconcile("candidate_deleted")
+        return self.snapshot()
+    # ---- RouteRiskProfile V1 (additive analysis of a current layered candidate) -----
+    def route_risk_profile_policy(self):
+        return self.route_risk_profile_service.policy_snapshot()
+    def route_risk_profiles(self):
+        return self.route_risk_profile_service.result_snapshot()
+    def route_risk_profile_readiness(self):
+        return self.route_risk_profile_service.readiness_snapshot()
+    def set_route_risk_profile_policy(self, payload):
+        return self.route_risk_profile_service.set_policy(payload)
+    def evaluate_route_risk_profile(self, payload=None):
+        return self.route_risk_profile_service.evaluate(payload)
+    def delete_route_risk_profile(self, profile_id):
+        return self.route_risk_profile_service.delete_profile(profile_id)
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)

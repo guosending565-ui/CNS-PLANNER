@@ -511,6 +511,17 @@ class LayeredRoutePlannerService:
         return None
 
     def _current_identity(self):
+        identity = self.current_identity()
+        return identity["lane_key"], identity["candidate_fingerprint"]
+
+    def current_identity(self):
+        """Re-computed identity of the current ``(route, layer)`` lane.
+
+        Additive read-only seam for downstream analyses (e.g. RouteRiskProfile): it exposes
+        the same declared-dependency fingerprints the candidate carries, so a consumer can
+        prove a candidate is still current without re-deriving the fingerprint definition.
+        """
+
         state = self.ensure_state()
         request = state["layered_route_planning_request"]
         collection = normalize_layered_route_candidate_collection(state["layered_route_candidates"])
@@ -532,7 +543,15 @@ class LayeredRoutePlannerService:
             hard_constraints=[], building_clearance_policy=state.get("building_clearance_policy") or {},
             source_audits=state.get("source_audits") or {},
         )
-        return key, fingerprints["candidate_fingerprint"]
+        return {
+            "lane_key": key,
+            "candidate_fingerprint": fingerprints["candidate_fingerprint"],
+            "risk_fingerprint": fingerprints["risk_fingerprint"],
+            "policy_fingerprint": fingerprints["policy_fingerprint"],
+            "input_fingerprint": fingerprints["input_fingerprint"],
+            "request_fingerprint": fingerprints["request_fingerprint"],
+            "feasibility_mask_fingerprint": mask.get("mask_fingerprint"),
+        }
 
     @staticmethod
     def _applicability(candidate, current_key, current_fingerprint):

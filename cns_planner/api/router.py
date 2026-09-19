@@ -67,6 +67,10 @@ class ApiRouter:
         if path == "/api/layered-route-feasibility-policy": return Response(workflow.layered_route_feasibility_policy())
         if path == "/api/layered-route-cost-policy": return Response(workflow.layered_route_cost_policy())
         if path == "/api/layered-route-candidates": return Response(workflow.layered_route_candidates())
+        # ---- RouteRiskProfile V1 (additive; analysis of a current layered candidate) ----
+        if path == "/api/route-risk-profile/readiness": return Response(workflow.route_risk_profile_readiness())
+        if path == "/api/route-risk-profile-policy": return Response(workflow.route_risk_profile_policy())
+        if path == "/api/route-risk-profiles": return Response(workflow.route_risk_profiles())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -238,6 +242,12 @@ class ApiRouter:
             ),
             "/api/layered-route-candidates/delete": lambda: workflow.delete_layered_route_candidate(
                 payload.get("candidate_id")
+            ),
+            # ---- RouteRiskProfile V1 -------------------------------------------------
+            "/api/route-risk-profile-policy": lambda: workflow.set_route_risk_profile_policy(payload),
+            "/api/route-risk-profiles/evaluate": lambda: workflow.evaluate_route_risk_profile(payload),
+            "/api/route-risk-profiles/delete": lambda: workflow.delete_route_risk_profile(
+                payload.get("profile_id")
             ),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),

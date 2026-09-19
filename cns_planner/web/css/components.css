@@ -400,6 +400,10 @@ td:first-child,th:first-child{padding-left:var(--sp-6)}
 
 .grid-theme-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
 
+/* Step02 结果/高级的任务卡：映射状态与风险框架状态各一张卡。
+   专题按钮与卡片都保持 2 列；右栏容器更窄时由下面的容器查询降成 1 列。 */
+.env-metric-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4);margin:var(--sp-5) 0}
+
 .grid-theme-controls label{
   display:flex;
   align-items:center;
@@ -466,6 +470,9 @@ td:first-child,th:first-child{padding-left:var(--sp-6)}
 
 /* 更窄的正文宽度：名称 / role / 两个参数上下排成单列 */
 @container workbench (max-width:340px){
+  /* Step02：专题按钮与任务卡在窄容器里降成单列，避免按钮文字被压成竖排 */
+  .grid-theme-options,
+  .env-metric-cards{grid-template-columns:minmax(0,1fr)}
   .device-row{
     grid-template-columns:minmax(0,1fr);
     grid-template-areas:

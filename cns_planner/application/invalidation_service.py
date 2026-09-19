@@ -28,6 +28,10 @@ class InvalidationService:
         #: **only** those: legacy ``routes``, V3 and CNS results are never touched by a
         #: Risk Framework V2 or layered-policy change.
         self.layered_route_invalidator = None
+        #: Injected by the composition root once the RouteRiskProfile service exists.  It
+        #: stales the additive ``route_risk_profiles`` (and **only** those) when the candidate
+        #: set, ``grid_risk_v2`` or the profile policy changes.
+        self.route_risk_profile_invalidator = None
 
     def workflow(self, changed):
         state = self.session.state
@@ -193,9 +197,26 @@ class InvalidationService:
         building-clearance policy change, and a feasibility/cost policy change only make the
         related ``LayeredRouteCandidate`` / ``LayerFeasibilityMask`` stale.  Legacy routes,
         V3 experiments/adoptions and every CNS result are deliberately untouched.
+
+        The additive ``RouteRiskProfile`` consumes a current candidate, so it is staled in the
+        same pass — and only it: ``operational_routes`` / CNS are still never touched.
         """
 
         invalidator = self.layered_route_invalidator
+        if callable(invalidator):
+            invalidator(str(reason))
+        self.route_risk_profile(reason)
+
+    def route_risk_profile(self, reason="route_risk_profile_input_changed"):
+        """Stale only the additive RouteRiskProfile product.
+
+        A candidate change, a ``grid_risk_v2`` change and a RouteRiskProfilePolicy change only
+        make the dependent ``route_risk_profiles`` stale.  Legacy routes, V3
+        experiments/adoptions, ``operational_routes`` and every CNS result stay untouched, and
+        a stale profile is preserved as audit evidence instead of being deleted.
+        """
+
+        invalidator = self.route_risk_profile_invalidator
         if callable(invalidator):
             invalidator(str(reason))
 

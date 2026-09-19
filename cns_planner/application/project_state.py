@@ -84,6 +84,10 @@ from ..domain.layered_route import (
     normalize_layered_route_candidate_collection, normalize_layered_route_cost_policy,
     normalize_layered_route_feasibility_policy, normalize_layered_route_request,
 )
+from ..domain.route_risk_profile import (
+    default_route_risk_profile_collection, normalize_route_risk_profile_collection,
+    normalize_route_risk_profile_policy,
+)
 from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
@@ -236,6 +240,10 @@ def blank_project(defaults):
         "layered_route_feasibility_policy": default_layered_route_feasibility_policy(),
         "layered_route_cost_policy": default_layered_route_cost_policy(),
         "layered_route_candidates": empty_layered_route_candidate_collection(),
+        # RouteRiskProfile V1 (additive analysis of a current layered candidate): per-domain
+        # thresholds ship unconfirmed (no default), and the profile container starts empty.
+        "route_risk_profile_policy": normalize_route_risk_profile_policy(None),
+        "route_risk_profiles": default_route_risk_profile_collection(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
@@ -256,6 +264,7 @@ def blank_project(defaults):
                 "encounter_3d_assessment",
                 "technical_risk", "report",
                 "layered_route_candidate",
+                "route_risk_profile",
             )
         },
         "last_saved_at": None,
@@ -424,7 +433,16 @@ def normalize_project(value, grid_service):
     value["layered_route_candidates"] = normalize_layered_route_candidate_collection(
         value.get("layered_route_candidates")
     )
+    # RouteRiskProfile V1 additive backfill: a legacy project gets the unconfirmed per-domain
+    # thresholds (no default) and an empty profile container.
+    value["route_risk_profile_policy"] = normalize_route_risk_profile_policy(
+        value.get("route_risk_profile_policy")
+    )
+    value["route_risk_profiles"] = normalize_route_risk_profile_collection(
+        value.get("route_risk_profiles")
+    )
     value.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")

@@ -15,12 +15,13 @@ import test from 'node:test';
 import path from 'node:path';
 
 import {render as renderStep1} from '../cns_planner/web/js/workflow/step01_project.js';
-import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
+import {render as renderStep2,bind as bindStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
 import {render as renderStep3} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {render as renderStep4,bind as bindStep4} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep5,bind as bindStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {render as renderStep6,bind as bindStep6} from '../cns_planner/web/js/workflow/step06_review.js';
 import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
+import {riskV2ThemeOptions} from '../cns_planner/web/js/workflow/risk_framework_v2.js';
 import {renderWorkflowSteps} from '../cns_planner/web/js/workflow/steps.js';
 
 // ---- 最小 DOM 桩：只支撑被测模块真正用到的接口 ------------------------------
@@ -1378,6 +1379,337 @@ test('step 04 keeps the chosen task after a re-render and returns to the top on 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
     assert.equal(remounted.dataset.seg,'run-adv-safety','a previously chosen task is restored');
     assertOnlyVisible(remounted,'advanced','run-adv-safety');
+  });
+});
+
+// ---- Step02：环境建模工作台 -------------------------------------------------
+//
+// Step02 曾经是"一页三块"（操作 / 结果 / 高级各一大段）。重组后每个一级标签下
+// 都是一组任务分段，这一组断言锁定：
+//  - 操作 2 段 / 结果 2 段 / 高级 2 段，逐个可切且严格只有 1 段可见；
+//  - 全部既有 DOM id 一个不少（无重复 id），bind() 无条件查询的控件都能命中；
+//  - 数据映射卡只转印 flow 现有状态：stale 保持 stale、未计算保持未计算；
+//  - 专题浏览只切 UI 任务与地图配色，不自动改工作区、网格、缩放或图层；
+//  - 工作区 / 网格层级 / Risk V2 / 高度层的 API 与语义契约保持不变。
+
+const STEP02_SEGMENTS={
+  operate:[['env-op-workspace','工作区范围'],['env-op-grid','标准网格与建筑环境']],
+  result:[['env-res-mapping','数据映射'],['env-res-theme','专题浏览']],
+  advanced:[['env-adv-risk','风险框架'],['env-adv-altitude','高度层']]
+};
+
+/** 专题清单：8 个基础专题 + riskV2ThemeOptions()（V2 因子 / V2 域 / Legacy V1）。 */
+const STEP02_THEME_VALUES=[
+  'none','population','terrain','building_density','building_p95','building_max','traffic_exposure','conflict_exposure',
+  ...riskV2ThemeOptions().map(item=>item[0])
+];
+
+/** Step02 的关键控件：既有业务 id，重组后必须一个不少。 */
+const STEP02_CONTROLS=[
+  // 操作 · 工作区范围
+  'drawWorkspace','clearWorkspace','saveWorkspace',
+  // 操作 · 标准网格与建筑环境
+  'workspaceGridLevel',
+  // 结果 · 专题浏览
+  'gridOutlineToggle','gridThemeNone','gridPopulationTheme','gridTerrainTheme',
+  // 高级 · 风险框架
+  'evaluateRiskV2',
+  // 高级 · 高度层
+  'altitudeLayerId','altitudeLayerName','altitudeReference','altitudeNominal','altitudeLower','altitudeUpper',
+  'altitudeLayerSource','altitudeLayerConfirmed','saveAltitudeLayer'
+];
+
+/** 与 step02_workspace.js 的 themeId() 一致：基础专题沿用稳定的固定 id。 */
+function step02ThemeId(value){
+  const ids={none:'gridThemeNone',population:'gridPopulationTheme',terrain:'gridTerrainTheme'};
+  return ids[value]||'gridTheme-'+String(value).replace(/[^A-Za-z0-9_-]/g,'-');
+}
+
+/** 一份完整的 Step02 flow 替身：只包含 render 真正读取的字段。 */
+function step02Flow(overrides={}){
+  return {
+    steps:{'2':true},
+    workspace:{bbox:[122,29.9,122.2,30.1],area_km2:12.5,health:{
+      population:{status:'passed'},airspace:{status:'passed'},terrain:{status:'passed',message:'FABDEM 已确认 EGM2008 orthometric'},
+      terrain_dtm:{status:'passed'},buildings:{status:'passed'},building_grid:{status:'passed'},loaded_layer_count:4}},
+    grid:{status:'passed',level:8,count:10,preferred_level:8,coarsened:false},
+    grid_attributes:{
+      population:{status:'passed',value_status:'quantity',full_count:3,partial_count:1,missing_count:2,outside_count:0},
+      terrain:{status:'passed',count:10,covered_count:9},
+      airspace:{status:'passed',count:10,hit_count:4},
+      buildings:{status:'passed',count:10,covered_count:7},
+      traffic:{status:'passed',count:10,covered_count:2},
+      conflict:{status:'passed',count:10,covered_count:1}
+    },
+    grid_risk:{status:'passed',algorithm_id:'risk-model-v1-relative-index',algorithm_version:'1.1',data_completeness:.8},
+    grid_risk_v2:{status:'pending_confirmation',risk_semantics:'relative_engineering_index',data_completeness:0},
+    risk_policy_v2:{status:'pending_confirmation',parameter_status:'no_default_production_risk_weights',domains:{}},
+    risk_framework_v2_readiness:{status:'pending_confirmation',factors:{},domains:{}},
+    spatial_3d:{altitude_layers:[
+      {altitude_layer_id:'L-120',name:'巡航层',status:'confirmed',nominal_altitude_m:120,lower_altitude_m:100,upper_altitude_m:150,vertical_reference:'egm2008_orthometric'},
+      {altitude_layer_id:'L-PENDING',name:'待确认层',status:'pending_confirmation',nominal_altitude_m:null,lower_altitude_m:60,upper_altitude_m:80,vertical_reference:'unknown'}
+    ]},
+    ...overrides
+  };
+}
+
+function mountStep02(document,{tab='operate',segs={},flow=step02Flow()}={}){
+  const context=stepContext();
+  context.flow=flow;
+  const store={step:2,tab,segs,scroll:0};
+  const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
+  const root=renderWorkflowSteps({step:{render:renderStep2},context});
+  controller.mount({root,step:{number:2,title:'环境建模',note:''}});
+  return {controller,root,store,context};
+}
+
+test('step 02 declares the documented task segments',()=>{
+  const html=renderStep2(stepContext());
+  const segs=[...html.matchAll(/data-seg-name="([a-z0-9-]+)"/g)].map(match=>match[1]);
+  const expected=Object.values(STEP02_SEGMENTS).flat().map(item=>item[0]);
+  assert.deepEqual(segs.slice().sort(),expected.slice().sort(),'step 02 segment ids');
+  assert.equal(new Set(segs).size,segs.length,'segment ids must be unique');
+  assert.equal((html.match(/data-seg-set="(?!none)/g)||[]).length,3,'three panels carry segments');
+  assert.equal((html.match(/data-seg-label="/g)||[]).length,segs.length,'every segment declares its own label');
+  for(const [id,label] of Object.values(STEP02_SEGMENTS).flat()){
+    assert.ok(html.includes('data-seg-name="'+id+'" data-seg-label="'+label+'"'),`segment ${id} keeps its business label`);
+    // 第一视觉层不把工程编号 / 算法 id 当导航名称
+    assert.doesNotMatch(label,/^[A-Za-z]|_v\d|\d+_/,`segment ${id} must use business language`);
+  }
+  // 操作 2 段 / 结果 2 段 / 高级 2 段
+  assert.deepEqual(STEP02_SEGMENTS.operate.map(item=>item[0]),['env-op-workspace','env-op-grid']);
+  assert.deepEqual(STEP02_SEGMENTS.result.map(item=>item[0]),['env-res-mapping','env-res-theme']);
+  assert.deepEqual(STEP02_SEGMENTS.advanced.map(item=>item[0]),['env-adv-risk','env-adv-altitude']);
+});
+
+test('step 02 task navigation keeps exactly one segment visible and every control mounted',()=>{
+  withStubDom(document=>{
+    const {root,store}=mountStep02(document);
+
+    // 入口：操作只显示"工作区范围"
+    assertOnlyVisible(root,'operate','env-op-workspace');
+    assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),STEP02_SEGMENTS.operate.map(item=>item[0]));
+    assert.deepEqual(segButtons(document).map(node=>node.textContent),STEP02_SEGMENTS.operate.map(item=>item[1]));
+
+    for(const [tab,segments] of Object.entries(STEP02_SEGMENTS)){
+      clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab===tab));
+      assert.equal(root.dataset.tab,tab);
+      assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),segments.map(item=>item[0]),`${tab} segment buttons`);
+      assert.deepEqual(segButtons(document).map(node=>node.textContent),segments.map(item=>item[1]),`${tab} segment labels`);
+      for(const [id] of segments){
+        clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg===id));
+        assert.equal(root.dataset.seg,id,`clicking ${id} selects it`);
+        assert.equal(store.segs[tab],id,`clicking ${id} stores it under ${tab}`);
+        // 每次严格只有 1 个分段可见：同组其他分段与别的一级标签都不能串显
+        assertOnlyVisible(root,tab,id);
+      }
+    }
+
+    // 6 个分段始终挂载 DOM（2 操作 + 2 结果 + 2 高级），只切 .wb-seg-active
+    const expectedSegments=Object.values(STEP02_SEGMENTS).flat().map(item=>item[0]);
+    assert.deepEqual(findAll(root,'[data-seg-name]').map(node=>node.dataset.segName).sort(),expectedSegments.slice().sort(),'every segment stays mounted');
+
+    // 全部既有控件仍然存在，并且落在正常正文里（不是 .wb-section-head）
+    const missing=STEP02_CONTROLS.filter(id=>!document.getElementById(id));
+    assert.deepEqual(missing,[],`step 02 controls stay mounted: ${missing.join(', ')}`);
+    for(const id of STEP02_CONTROLS){
+      const node=document.getElementById(id);
+      assert.equal(node.closest('.wb-section-head'),null,`#${id} must not sit inside .wb-section-head`);
+      assert.ok(node.closest('.wb-section'),`#${id} must sit inside a .wb-section body`);
+    }
+    assert.ok(document.getElementById('nextStep'),'#nextStep stays mounted outside the task sections');
+
+    // 无重复 id：每个 id 在整步内只出现一次
+    const ids=findAll(root,'[id]').map(node=>node.id).filter(Boolean);
+    assert.equal(new Set(ids).size,ids.length,`step 02 duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+
+    // 专题清单：8 个基础专题 + riskV2ThemeOptions()，每个都是独立的互斥 radio
+    for(const value of STEP02_THEME_VALUES){
+      const node=document.getElementById(step02ThemeId(value));
+      assert.ok(node,`theme radio for ${value} must be mounted`);
+      assert.equal(node.attributes.value,value,`theme radio ${value} keeps its value`);
+      assert.equal(node.attributes.type,'radio',`theme ${value} must be an exclusive radio`);
+      assert.equal(node.attributes.name,'gridThemeMode',`theme ${value} must join the gridThemeMode group`);
+    }
+  });
+});
+
+test('step 02 mapping cards transcribe the existing flow state without recomputing it',()=>{
+  withStubDom(document=>{
+    const {root}=mountStep02(document,{tab:'result',segs:{result:'env-res-mapping'},flow:step02Flow({
+      grid_attributes:{
+        population:{status:'stale',value_status:'partial',full_count:0,partial_count:1,missing_count:2,outside_count:4},
+        terrain:{status:'not_calculated'},
+        airspace:{status:'missing_data',count:10},
+        buildings:{status:'passed',count:10,covered_count:7},
+        traffic:{},
+        conflict:{status:'unknown'}
+      }
+    })});
+    assertOnlyVisible(root,'result','env-res-mapping');
+    const segment=findByDataset(root,'segName','env-res-mapping');
+    const cards=findAll(segment,'.metric-card').map(card=>({
+      label:findAll(card,'.metric-label')[0].textContent,
+      value:findAll(card,'.metric-value')[0].textContent,
+      note:findAll(card,'.metric-note')[0].textContent
+    }));
+    const cardOf=label=>cards.find(card=>card.label===label);
+    for(const label of ['人口映射','地形 DEM 映射','低空空域映射','建筑环境映射','交通暴露映射','冲突暴露映射']){
+      assert.ok(cardOf(label),`mapping card "${label}" must exist`);
+    }
+    // 取值原样透出：stale / not_calculated / missing_data / unknown 都不被改写成 passed
+    assert.equal(cardOf('人口映射').value,'已失效','a stale population mapping stays stale');
+    assert.equal(cardOf('人口映射').note,'full 0 / partial 1 / missing 2 / outside 4 格','population counts are the existing flow counts');
+    assert.equal(cardOf('地形 DEM 映射').value,'未计算','an untouched terrain mapping stays not_calculated');
+    assert.equal(cardOf('低空空域映射').value,'缺少数据','a missing airspace mapping stays missing_data');
+    assert.equal(cardOf('建筑环境映射').value,'通过','a passed building mapping is mapped as-is');
+    assert.equal(cardOf('建筑环境映射').note,'已覆盖 7 / 10 格','the building mapping keeps its existing counts');
+    assert.equal(cardOf('交通暴露映射').value,'未计算','an empty traffic mapping is never faked as passed');
+    assert.equal(cardOf('冲突暴露映射').value,'证据不足/尚无法判断','unknown is exposed as-is');
+    // 工作区摘要只读现有 health：面积 / 数据状态 / 已加载图层
+    const summary=findAll(segment,'.metric-grid').flatMap(grid=>findAll(grid,'b')).map(node=>node.textContent);
+    assert.deepEqual(summary.slice(0,4),['12.5 km²','通过','通过','4'],'the workspace summary reads the existing health values');
+    // 未保存工作区时保持空状态，同时映射卡仍然显示"未计算"，不伪造数据
+    assert.ok(findAll(segment,'.empty-note').length===0,'a saved workspace shows no empty note');
+  });
+
+  withStubDom(document=>{
+    const {root}=mountStep02(document,{tab:'result',segs:{result:'env-res-mapping'},flow:step02Flow({workspace:null,grid_attributes:{}})});
+    const segment=findByDataset(root,'segName','env-res-mapping');
+    assert.ok(findAll(segment,'.empty-note').some(node=>node.textContent.includes('尚未保存工作区')),'an unsaved workspace explains why there is no mapping');
+    const values=findAll(segment,'.metric-value').map(node=>node.textContent);
+    assert.deepEqual(values,['未计算','未计算','未计算','未计算','未计算','未计算'],'every unmapped layer stays not_calculated');
+  });
+});
+
+test('step 02 theme browser switches only the UI task and the map theme',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step02_workspace.js',import.meta.url),'utf8');
+  // 专题与网格开关只由用户操作驱动：render 不做任何自动切换
+  assert.equal((source.match(/setGridTheme/g)||[]).length,1,'setGridTheme is only called from the radio change handler');
+  assert.equal((source.match(/setGridOutline/g)||[]).length,1,'setGridOutline is only called from the checkbox handler');
+  assert.doesNotMatch(source,/setZoom|zoomTo|fitLonLatBbox|setLayer\(|layerIds/,'主题切换不得自动改地图缩放、图层或视野');
+  // 两列专题按钮：窄容器由既有 workbench 容器查询降成一列
+  const css=readFileSync(new URL('../cns_planner/web/css/components.css',import.meta.url),'utf8');
+  assert.match(css,/\.grid-theme-options\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/,'专题按钮保持两列');
+  const containerRule=/@container workbench \(max-width:340px\)\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(containerRule,'the existing workbench container query must stay');
+  assert.match(containerRule[1],/\.grid-theme-options,[\s\S]*?\.env-metric-cards\{grid-template-columns:minmax\(0,1fr\)\}/,'窄容器下专题按钮降成一列');
+
+  withStubDom(document=>{
+    const {root}=mountStep02(document,{tab:'result',segs:{result:'env-res-theme'}});
+    assertOnlyVisible(root,'result','env-res-theme');
+    // 当前主题是唯一勾选项，其余专题都不预勾选
+    assert.ok('checked' in document.getElementById('gridThemeNone').attributes,'the active theme stays the only checked radio');
+    for(const value of STEP02_THEME_VALUES.slice(1)){
+      assert.equal(document.getElementById(step02ThemeId(value)).attributes.checked,undefined,`${value} must not be pre-checked`);
+    }
+    // bind 只把用户操作映射到显示状态：不触发工作区、网格或任何业务动作
+    // 桩 DOM 的 document.querySelectorAll 默认返回空，这里按真实语义补一层最小实现，
+    // 以便验证专题 radio 与网格开关真正接到了显示状态上。
+    document.querySelectorAll=selector=>selector==='[name="gridThemeMode"]'
+      ?STEP02_THEME_VALUES.map(value=>document.getElementById(step02ThemeId(value)))
+      :findAll(document.body,selector);
+    const calls=[];
+    const c={
+      setGridTheme:value=>calls.push(['theme',value]),setGridOutline:value=>calls.push(['outline',value]),
+      setStep:()=>calls.push(['step']),startWorkspace:()=>calls.push(['start']),
+      clearWorkspace:()=>calls.push(['clear']),saveWorkspace:()=>calls.push(['save']),
+      resourceAction:()=>calls.push(['resource']),panelError:()=>{},
+      $:id=>document.getElementById(id),actionButton:()=>{}
+    };
+    bindStep2(c);
+    document.getElementById('gridTerrainTheme').onchange({target:{checked:true,value:'terrain'}});
+    assert.deepEqual(calls,[['theme','terrain']],'勾选专题只改变地图配色');
+    document.getElementById('gridOutlineToggle').onchange({target:{checked:false}});
+    assert.deepEqual(calls,[['theme','terrain'],['outline',false]],'网格开关只改 display.outline');
+  });
+});
+
+test('step 02 keeps the chosen task after a re-render and returns to the top on a switch',()=>{
+  withStubDom(document=>{
+    const store={step:2,tab:'advanced',segs:{advanced:'env-adv-altitude'},scroll:0};
+    const {controller,root}=mountRealStep(renderStep2,store,2,'环境建模');
+    assert.equal(root.dataset.tab,'advanced','the stored tab is restored');
+    assert.equal(root.dataset.seg,'env-adv-altitude','the stored segment is restored');
+    assertOnlyVisible(root,'advanced','env-adv-altitude');
+
+    // mutation / renderWorkflow() 重新挂载：保持当前任务与滚动位置
+    const body=document.getElementById('workbenchBody');
+    body.scrollHeight=1600;body.clientHeight=400;
+    body.scrollTop=360;store.scroll=360;
+    const remounted=renderWorkflowSteps({step:{render:renderStep2},context:stepContext()});
+    controller.mount({root:remounted,step:{render:renderStep2}});
+    body.scrollTop=Math.min(store.scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+    assert.equal(remounted.dataset.seg,'env-adv-altitude','a re-render keeps the current task');
+    assert.equal(body.scrollTop,360,'a re-render keeps the scroll position');
+    assertOnlyVisible(remounted,'advanced','env-adv-altitude');
+
+    // 显式切换一级/二级：回到该任务顶部
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
+    assert.equal(remounted.dataset.seg,'env-res-mapping','a tab switch falls back to its first task');
+    assert.equal(body.scrollTop,0,'switching a tab returns to the top');
+    assertOnlyVisible(remounted,'result','env-res-mapping');
+    body.scrollTop=280;store.scroll=280;
+    clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='env-res-theme'));
+    assert.equal(body.scrollTop,0,'switching a segment returns to the top');
+    assert.equal(store.scroll,0,'switching a segment resets the stored scroll');
+    assertOnlyVisible(remounted,'result','env-res-theme');
+
+    // 切回高级：该 tab 之前选过的任务必须恢复
+    clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='advanced'));
+    assert.equal(remounted.dataset.seg,'env-adv-altitude','a previously chosen task is restored');
+    assertOnlyVisible(remounted,'advanced','env-adv-altitude');
+  });
+});
+
+test('step 02 keeps the workspace, grid, risk V2 and altitude contracts',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/step02_workspace.js',import.meta.url),'utf8');
+  // API path 与 payload 保持原样
+  for(const path of ['/api/grid-risk-v2/evaluate','/api/spatial-3d/altitude-layer/delete']){
+    assert.ok(source.includes(path),`step 02 must keep the ${path} contract`);
+  }
+  assert.match(source,/\/api\/spatial-3d\/altitude-layer'/,'the altitude layer write keeps its explicit endpoint');
+  assert.match(source,/nominal_altitude_m:optionalNumber\('altitudeNominal'\)/,'nominal is read from the explicit input only');
+  assert.doesNotMatch(source,/value="(80|100|120|150)"/,'no default real altitude may ship');
+  // 既有网格层级语义与专题入口不变
+  assert.match(source,/L8（建筑环境直接映射）/);
+  assert.match(source,/L7（建筑网格 unsupported）/);
+  assert.match(source,/L6（建筑网格 unsupported）/);
+  assert.match(source,/riskV2ThemeOptions\(\)/);
+  assert.match(source,/populationDisplayLabel\(attributes\.population\)/);
+  // 垂向基准不猜、不补默认高度
+  assert.match(source,/系统不猜垂向基准，也不提供任何默认真实高度/);
+  assert.match(source,/EGM2008 orthometric/);
+
+  withStubDom(document=>{
+    const {root}=mountStep02(document,{tab:'advanced',segs:{advanced:'env-adv-risk'}});
+    // Risk Framework V2 面板（含 evaluateRiskV2）始终挂载，工程解释可折叠
+    assertOnlyVisible(root,'advanced','env-adv-risk');
+    assert.ok(document.getElementById('evaluateRiskV2'),'#evaluateRiskV2 stays mounted inside the risk task');
+    assert.ok(findAll(root,'.algorithm-detail').length>=1,'the long engineering explanation lives in a disclosure');
+    // 高度层列表：缺 nominal 的高度层保持待工程确认，绝不自动补值
+    const altitude=findByDataset(root,'segName','env-adv-altitude');
+    const rows=findAll(altitude,'.list-row').map(row=>({name:findAll(row,'b')[0].textContent,note:findAll(row,'small').map(node=>node.textContent).join(' | ')}));
+    const pending=rows.find(row=>row.name==='待确认层');
+    assert.ok(pending,'the pending altitude layer stays listed');
+    assert.match(pending.note,/nominal 未配置（待工程确认）/,'a missing nominal stays pending_confirmation');
+    assert.match(pending.note,/60–80 m/,'the explicit bounds are still shown');
+    assert.match(pending.note,/unknown/,'the vertical reference is never guessed');
+    assert.equal(findAll(altitude,'[data-delete-altitude-layer]').length,2,'every configured layer keeps its delete control');
+
+    // bind() 的每个静态查询都必须命中真实挂载的 DOM（否则点击即抛 TypeError）
+    const queried=new Set();
+    for(const match of source.matchAll(/c\.\$\('([A-Za-z_][A-Za-z0-9_]*)'\)/g))queried.add(match[1]);
+    for(const match of source.matchAll(/c\.actionButton\('([A-Za-z_][A-Za-z0-9_]*)'/g))queried.add(match[1]);
+    const missing=[...queried].filter(id=>!document.getElementById(id));
+    assert.deepEqual(missing,[],`step 02 bind() queries missing controls: ${missing.join(', ')}`);
+    const registered=[];
+    const c={$:id=>document.getElementById(id),actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
+      clearWorkspace:()=>{},saveWorkspace:()=>{},
+      resourceAction:()=>{},panelError:()=>{},setGridTheme:()=>{},setGridOutline:()=>{}};
+    bindStep2(c);
+    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','saveAltitudeLayer'],'bind() registers exactly the existing actions');
+    for(const id of registered)assert.ok(document.getElementById(id).onclick,`#${id} keeps its handler`);
   });
 });
 
