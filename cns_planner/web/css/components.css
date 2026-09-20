@@ -314,6 +314,10 @@ button.list-row:hover{border-color:var(--line-soft);filter:none}
 
 .review-row{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);border-bottom:1px solid var(--line-soft);font-size:var(--fs-xs)}
 .review-row:last-child{border-bottom:0}
+/* Route Safety Evidence V2：四个 domain card 自适应排布，窄屏单列。 */
+.safety-domain-grid{display:grid;gap:var(--sp-4);grid-template-columns:repeat(auto-fit,minmax(280px,1fr));align-items:start}
+.safety-domain-card{margin:0;overflow-wrap:anywhere}
+.review-sub{margin-top:var(--sp-3);color:var(--ink-muted);font-size:var(--fs-micro)}
 .risk-review{margin:var(--sp-5) 0;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg-surface)}
 
 .overall-card{

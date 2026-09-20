@@ -1003,24 +1003,30 @@ def test_communication_field_present_absent_or_changed_never_changes_the_path_or
 # --------------------------------------------------------------------------------------
 
 
-def test_v1_baseline_characterization_is_unchanged_and_v2_is_explicitly_selectable():
+def test_v1_baseline_characterization_is_unchanged_and_v2_is_the_explicit_default():
     registry = build_default_algorithm_registry({})
     manifests = {item.algorithm_id: item for item in registry.manifests("layered_route_planner")}
     assert set(manifests) == {"layered_route_planner_v1", "layered_risk_aware_theta_star_v2"}
     assert manifests["layered_route_planner_v1"].version == "1.0"
     assert manifests["layered_risk_aware_theta_star_v2"].version == "2.0"
     assert manifests["layered_risk_aware_theta_star_v2"].algorithm_type == "layered_route_planner"
-    # The project default stays V1: selecting V2 is always explicit.
-    assert default_algorithm_selection()["layered_route_planner"]["algorithm_id"] == (
-        "layered_route_planner_v1"
-    )
+    # Theta* V2 is now the production layered planning baseline *and* the project default.
+    default = default_algorithm_selection()["layered_route_planner"]
+    assert default["algorithm_id"] == "layered_risk_aware_theta_star_v2"
+    assert default["version"] == "2.0"
+    # V1 stays fully characterized: same id, same version, same planner type, same rejection
+    # of unknown parameters, and still explicitly selectable.
     v1 = LayeredRoutePlannerV1()
     assert v1.algorithm_id == "layered_route_planner_v1"
     assert v1.algorithm_version == "1.0"
     assert getattr(v1, "uses_theta_star", False) is False
-    # V1 rejects unknown parameters exactly as before, and its planner type is untouched.
     with pytest.raises(ValueError, match="不接受参数"):
         LayeredRoutePlannerV1({"heading_bin_count": 8})
+    selected_v1 = registry.create(
+        "layered_route_planner", LayeredRoutePlannerV1.algorithm_id,
+        LayeredRoutePlannerV1.algorithm_version, {},
+    )
+    assert selected_v1.algorithm_id == "layered_route_planner_v1"
     v2 = registry.create("layered_route_planner", ALGORITHM_ID, ALGORITHM_VERSION, {
         "heading_bin_count": 12,
     })

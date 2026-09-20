@@ -37,6 +37,7 @@ The module is pure Python: no QGIS/GDAL, no raster, no file access.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from heapq import heappop, heappush
 import math
 
@@ -55,7 +56,7 @@ from ..domain.layered_theta_v2 import (
     normalize_risk_density_constraint, normalize_theta_v2_objective_policy,
     normalize_theta_v2_search_parameters, objective_policy_fingerprint,
     objective_weights, risk_density_constraint_fingerprint, search_parameter_fingerprint,
-    weighted_terms,
+    theta_v2_search_parameter_view, weighted_terms,
 )
 from ..domain.population_shelter import (
     population_shelter_fingerprint, shelter_policy_fingerprint,
@@ -369,12 +370,18 @@ class LayeredRiskAwareThetaStarV2:
         supplied = dict(parameters or {})
         allowed = {
             "heading_bin_count", "theta_min_deg", "max_expanded_labels", "d_ref_m",
-            "objective_policy", "max_route_risk_density",
+            "objective_policy", "max_route_risk_density", "search_parameter_provenance",
         }
         extra = set(supplied) - allowed
         if extra:
             raise ValueError(f"Layered Risk-Aware Theta* V2 不接受参数：{sorted(extra)}")
         self.search_parameters = normalize_theta_v2_search_parameters(supplied)
+        #: The declared provenance of the two search parameters.  The default is the
+        #: project's software algorithm baseline; an explicit algorithm selection that
+        #: changes either value is reported as ``explicit_algorithm_selection``.
+        self.search_parameter_provenance = deepcopy(
+            self.search_parameters["search_parameter_provenance"]
+        )
         self.objective_policy = normalize_theta_v2_objective_policy(
             supplied.get("objective_policy")
         )
@@ -386,6 +393,7 @@ class LayeredRiskAwareThetaStarV2:
             "theta_min_deg": self.search_parameters["theta_min_deg"],
             "max_expanded_labels": self.search_parameters["max_expanded_labels"],
             "d_ref_m": self.search_parameters["d_ref_m"],
+            "search_parameter_provenance": deepcopy(self.search_parameter_provenance),
         }
 
     # ------------------------------------------------------------------ public API
@@ -636,12 +644,10 @@ class LayeredRiskAwareThetaStarV2:
             "shelter_field_fingerprint": population_shelter_fingerprint(population_attribute),
             "shelter_policy_fingerprint": shelter_policy_fingerprint(policy),
             "objective_policy": objective_policy_fingerprint(objective_policy),
-            "theta_parameters": search_parameter_fingerprint({
-                "heading_bin_count": self.parameters["heading_bin_count"],
-                "theta_min_deg": self.parameters["theta_min_deg"],
-                "d_ref_m": self.parameters["d_ref_m"],
-                "max_expanded_labels": self.parameters["max_expanded_labels"],
-            }),
+            # The effective search parameters *and* their declared provenance: an explicit
+            # algorithm selection that rewrites heading_bin_count / theta_min_deg changes
+            # the candidate fingerprint instead of silently keeping the software baseline.
+            "theta_parameters": search_parameter_fingerprint(self.search_parameters),
             "risk_density_constraint": risk_density_constraint_fingerprint(
                 risk_density_constraint
             ),
@@ -706,6 +712,7 @@ class LayeredRiskAwareThetaStarV2:
             "rewired_parent_shortcuts": 0, "heading_bin_count": self.parameters["heading_bin_count"],
             "theta_min_deg": self.parameters["theta_min_deg"],
             "d_ref_m": _round(d_ref), "d_ref_provenance": D_REF_PROVENANCE,
+            "search_parameter_provenance": deepcopy(self.search_parameter_provenance),
             "risk_weight": risk_weight, "turn_weight": turn_weight,
             "distance_weight": distance_weight,
             "search_limit": {
@@ -734,6 +741,19 @@ class LayeredRiskAwareThetaStarV2:
             (request or {}).get("altitude_layer_id"), status,
         )
         weights = objective_weights(objective_policy)
+        # The effective search parameters of this run, including the grid-derived D_ref when
+        # it was not supplied explicitly.  ``statistics`` already carries that value, so the
+        # candidate and the readiness view never have to re-derive it.
+        effective_d_ref = self.parameters["d_ref_m"]
+        if isinstance(statistics, dict) and statistics.get("d_ref_m") is not None:
+            effective_d_ref = statistics.get("d_ref_m")
+        search_view = theta_v2_search_parameter_view({
+            "heading_bin_count": self.parameters["heading_bin_count"],
+            "theta_min_deg": self.parameters["theta_min_deg"],
+            "max_expanded_labels": self.parameters["max_expanded_labels"],
+            "d_ref_m": effective_d_ref,
+            "search_parameter_provenance": deepcopy(self.search_parameter_provenance),
+        })
         objective_record = {
             "risk_exposure_index_m": None, "turn_count": 0,
             "total_heading_change_deg": 0.0, "turn_cost_m": None, "distance_m": None,
@@ -749,6 +769,7 @@ class LayeredRiskAwareThetaStarV2:
             "weights_provenance": objective_policy.get("provenance"),
             "d_ref_m": self.parameters["d_ref_m"],
             "theta_min_deg": self.parameters["theta_min_deg"],
+            "search_parameters": search_view,
         }
         if objective:
             objective_record.update(objective)
@@ -791,6 +812,7 @@ class LayeredRiskAwareThetaStarV2:
             "optimization_cost": _round(optimization_cost),
             "cost_breakdown": cost_breakdown,
             "planning_objective": objective_record,
+            "search_parameters": search_view,
             "evaluation": evaluation or {"route_risk_density": risk_density},
             "route_risk_density": risk_density,
             "turn_statistics": turn_statistics or _empty_turn_statistics(),
@@ -820,6 +842,7 @@ class LayeredRiskAwareThetaStarV2:
                 ),
                 "fingerprint_components": fingerprints["components"],
                 "search_semantics": SEARCH_SEMANTICS,
+                "search_parameters": search_view,
                 "feasibility_semantics": COARSE_ENVELOPE_SEMANTICS,
                 "objective": dict(PLANNING_OBJECTIVE_PROVENANCE),
                 "risk_density_constraint": {

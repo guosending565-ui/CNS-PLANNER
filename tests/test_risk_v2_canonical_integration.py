@@ -142,6 +142,17 @@ def real_grid_risk_v2(cells, *, densities=POPULATION_DENSITIES):
 
 def workflow(tmp_path, *, cells, ground_lambda=1.0, name="canonical.json"):
     service = WorkflowService(tmp_path / name, DEFAULTS)
+    # 本文件锁定的是 Layered Route Planner V1 的 canonical domain-index 集成；Theta* V2 已是
+    # 项目默认 layered planner，因此这里显式选择 V1。
+    service.select_algorithm({
+        "algorithm_type": "layered_route_planner",
+        "algorithm_id": "layered_route_planner_v1",
+        "version": "1.0",
+        "parameters": {},
+    })
+    assert service.layered_route_planner_service.planner.algorithm_id == (
+        "layered_route_planner_v1"
+    )
     service.state["grid"] = {
         "status": "passed", "level": 8, "count": len(cells), "cells": cells,
     }

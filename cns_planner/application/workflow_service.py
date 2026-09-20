@@ -32,6 +32,7 @@ from .layered_route_planner_service import LayeredRoutePlannerService
 from .route_risk_profile_service import RouteRiskProfileService
 from .layered_route_validation_service import LayeredRouteValidationService
 from .layered_operational_adoption_service import LayeredOperationalAdoptionService
+from .route_safety_evidence_service import RouteSafetyEvidenceService
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -170,11 +171,11 @@ class WorkflowService:
         self.risk_v2_service = RiskFrameworkV2Service(
             self.session, GridRiskModelV2(), self.invalidation_service, snapshot,
         )
-        # Layered Risk-Aware Route Planner V1 (production main line): explicit altitude layer
-        # selection, terrain/building coarse feasibility mask, single-layer MH/T L8 A* with
-        # Risk Framework V2 soft cost, and an independent candidate container.  It never
-        # writes ``operational_routes`` / CNS results and never switches the project's default
-        # route planner.
+        # Layered route planning: the default ``layered_route_planner`` is now Theta* V2;
+        # V1 remains registered as the legacy/baseline planner.  Explicit altitude layer
+        # selection, terrain/building coarse feasibility mask and an independent candidate
+        # container are shared.  It never writes ``operational_routes`` / CNS results and
+        # never switches the project's default ``route_planner`` (still ``route_planner_v1``).
         self.layered_route_planner_service = LayeredRoutePlannerService(
             self.session, self.invalidation_service, snapshot,
         )
@@ -184,7 +185,8 @@ class WorkflowService:
             self.layered_route_planner_service.refresh_for_reason
         )
         # Resolve the registered layered planner (its own algorithm type; the project's
-        # ``route_planner`` default stays ``route_planner_v1``).
+        # ``route_planner`` default stays ``route_planner_v1``).  A project that explicitly
+        # saved ``layered_route_planner_v1`` keeps running V1 — no silent migration.
         self.layered_route_planner = self._selected_algorithm("layered_route_planner")
         self.layered_route_planner_service.planner = self.layered_route_planner
         # RouteRiskProfile V1 (additive, analysis only): current LayeredRouteCandidate +
@@ -278,6 +280,17 @@ class WorkflowService:
         )
         self.layered_route_validation_service.adoption_invalidator = (
             self.layered_operational_adoption_service.stale_for_validations
+        )
+        # Route Safety Evidence V2: additive post-planning evidence aggregation over the
+        # published layered operational adoption lineage.  It never replans, never adopts and
+        # never writes any upstream container; it is only ever staled *by* its dependencies.
+        self.route_safety_evidence_service = RouteSafetyEvidenceService(
+            self.session, self.invalidation_service, snapshot,
+            self.layered_route_planner_service, self.layered_route_validation_service,
+            self.layered_operational_adoption_service, self.route_risk_profile_service,
+        )
+        self.invalidation_service.route_safety_evidence_invalidator = (
+            self.route_safety_evidence_service.stale_for_reason
         )
 
     def save(self): self.session.save()
@@ -424,6 +437,16 @@ class WorkflowService:
             )
             result["layered_operational_adoption_readiness"] = (
                 self.layered_operational_adoption_service.readiness_snapshot()
+            )
+        if hasattr(self, "route_safety_evidence_service"):
+            # Route Safety Evidence V2: only the read-only assessment projection and the
+            # bounded readiness travel in the snapshot.  Nothing here is ever recomputed by
+            # the snapshot itself.
+            result["route_safety_evidence_v2"] = (
+                self.route_safety_evidence_service.result_snapshot()
+            )
+            result["route_safety_evidence_v2_readiness"] = (
+                self.route_safety_evidence_service.readiness_snapshot()
             )
         result["review"] = self.review()
         return result
@@ -911,6 +934,20 @@ class WorkflowService:
 
     def revoke_layered_operational_adoption(self, payload=None):
         return self.layered_operational_adoption_service.revoke(payload)
+
+    # ---- Route Safety Evidence V2 (additive post-planning evidence aggregation) -----
+    def route_safety_evidence_v2(self, payload=None):
+        return self.route_safety_evidence_service.result_snapshot(payload)
+
+    def route_safety_evidence_v2_readiness(self, payload=None):
+        return self.route_safety_evidence_service.readiness_snapshot(payload)
+
+    def evaluate_route_safety_evidence_v2(self, payload=None):
+        return self.route_safety_evidence_service.evaluate(payload)
+
+    def set_regulatory_constraints(self, payload):
+        return self.layered_route_planner_service.set_regulatory_constraints(payload)
+
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)

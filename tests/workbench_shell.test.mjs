@@ -2013,7 +2013,8 @@ test('step 06 report gate, stale semantics and bind contract stay unchanged',()=
     };
     bindStep6(c);
     assert.deepEqual(registered,['saveAll','initializePlanReview','evaluatePlanVariant','createPlanVariant','confirmPlan','applyPlan',
-      'previewPlanningReport','generatePlanningReport','downloadReportHtml','downloadReportPdf','downloadReportPackage']);
+      'previewPlanningReport','generatePlanningReport','downloadReportHtml','downloadReportPdf','downloadReportPackage',
+      'evaluateRouteSafetyEvidenceV2']);
     for(const button of document.querySelectorAll('.selectPlanVariant'))assert.ok(button.onclick,'every variant card keeps its select handler');
   });
 });

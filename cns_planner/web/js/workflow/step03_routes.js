@@ -1726,8 +1726,10 @@ const ADVANCED_SEGMENTS=[['adv-reference','参考数据与关联'],['adv-legacy'
 /**
  * 「操作 → 分层候选」的算法分流：分区与位置完全不变，只有视图随
  * `layered_route_planner_readiness.algorithm.algorithm_id` 切换。
- *   * layered_route_planner_v1        → V1 面板（A* + legacy λ）；
- *   * layered_risk_aware_theta_star_v2 → Theta* V2 面板（population × shelter risk）。
+ *   * layered_risk_aware_theta_star_v2 → Theta* V2 面板（population × shelter risk）；
+ *     这是项目默认的 production layered planner；
+ *   * layered_route_planner_v1        → V1 面板（A* + legacy λ），只在项目显式保存 V1
+ *     selection 时出现；它保留为 legacy/baseline，系统不会静默迁移。
  */
 export function layeredCandidatePanel(flow){
   return layeredPlannerUsesThetaStarV2(flow)

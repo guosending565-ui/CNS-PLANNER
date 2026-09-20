@@ -1,10 +1,14 @@
-"""Layered Risk-Aware Route Planner V1 (production main line).
+"""Layered planners for the MH/T L8 strategic grid.
 
-``scenario/OD route -> explicit AltitudeLayer -> terrain/building feasibility mask ->
-MH/T L8 A* -> Risk Framework V2 soft cost -> LayeredRouteCandidate``.
+Two registered implementations of the ``layered_route_planner`` algorithm type live here:
 
-This package is a pure algorithm package: it never imports QGIS/GDAL, never reads a file
-and never writes ``operational_routes`` / CNS results.  Real terrain and building facts are
+* ``LayeredRiskAwareThetaStarV2`` (``theta_star_v2``) — the **production layered planning
+  baseline** and the project default;
+* ``LayeredRoutePlannerV1`` (``planner``) — the legacy/baseline layered planner, kept
+  registered, tested and explicitly selectable, never silently migrated to V2.
+
+Both pipelines are pure algorithm packages: they never import QGIS/GDAL, never read a file
+and never write ``operational_routes`` / CNS results.  Real terrain and building facts are
 produced at the GIS boundary (``cns_planner.gis.layered_feasibility_adapter``) by reusing
 the existing verified FABDEM window sampler and the existing L8 building grid facts.
 """

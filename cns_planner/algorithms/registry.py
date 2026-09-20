@@ -23,6 +23,13 @@ from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlanner
 from ..risk.v1 import RiskModelV1
 from .requirements.manual_v1 import ManualRequiredCNSV1
 from .requirements.operational_context_v2 import OperationalContextRequiredCNSV2
+from ..domain.layered_theta_v2 import (
+    ALGORITHM_ID as LAYERED_THETA_V2_ALGORITHM_ID,
+    ALGORITHM_VERSION as LAYERED_THETA_V2_ALGORITHM_VERSION,
+    DEFAULT_HEADING_BIN_COUNT, DEFAULT_THETA_MIN_DEG,
+    default_theta_v2_search_parameter_provenance,
+    normalize_theta_v2_search_parameters,
+)
 
 
 ALGORITHM_TYPES = ("risk_model", "route_planner", "layered_route_planner", "coverage_planner", "cns_gap_analyzer", "coverage_model", "service_model", "timeline_model", "protection_model", "site_planner", "corridor_model", "corridor_gap_analyzer", "requirement_model")
@@ -90,13 +97,58 @@ class AlgorithmRegistry:
         return [manifest.to_dict() for manifest in self.manifests()]
 
 
+def default_layered_theta_v2_selection_parameters():
+    """The explicit search parameters of the default layered Theta* V2 selection.
+
+    ``heading_bin_count`` and ``theta_min_deg`` are the project's **software algorithm
+    baseline**.  They ship *with* their provenance instead of living as invisible planner
+    constants, so candidate / fingerprint / readiness can always report both the effective
+    values and the fact that no engineer has confirmed them.  ``max_expanded_labels = null``
+    means "no search expansion cap", which is an explicit value rather than a missing one.
+    """
+
+    return normalize_layered_theta_v2_selection_parameters({
+        "heading_bin_count": DEFAULT_HEADING_BIN_COUNT,
+        "theta_min_deg": DEFAULT_THETA_MIN_DEG,
+        "max_expanded_labels": None,
+        "search_parameter_provenance": default_theta_v2_search_parameter_provenance(),
+    })
+
+
+def normalize_layered_theta_v2_selection_parameters(value):
+    """Normalize one ``algorithm_selection.layered_route_planner.parameters`` payload.
+
+    A legacy selection that predates the explicit search parameters is completed with the
+    software baseline **and its provenance**, so the debt is closed at normalization time.
+    Unknown keys supplied by the caller are preserved verbatim; nothing is silently dropped
+    and no value is silently rewritten.
+    """
+
+    source = deepcopy(value) if isinstance(value, dict) else {}
+    normalized = normalize_theta_v2_search_parameters(source)
+    result = dict(source)
+    result.update({
+        "heading_bin_count": normalized["heading_bin_count"],
+        "theta_min_deg": normalized["theta_min_deg"],
+        "max_expanded_labels": normalized["max_expanded_labels"],
+        "search_parameter_provenance": normalized["search_parameter_provenance"],
+    })
+    return result
+
+
 def default_algorithm_selection():
     return {
         "risk_model": _selection("risk_model", RiskModelV1),
         "route_planner": _selection("route_planner", RoutePlannerV1),
-        # Layered Risk-Aware Route Planner V1: its own algorithm type so that selecting it can
-        # never be confused with (or replace) the project's default ``route_planner``.
-        "layered_route_planner": _selection("layered_route_planner", LayeredRoutePlannerV1),
+        # Layered Risk-Aware Theta* V2 is the **production layered planning baseline**: its
+        # own algorithm type, so that selecting it can never be confused with (or replace)
+        # the project's default ``route_planner``.  Layered Risk-Aware Route Planner V1 stays
+        # registered as the legacy/baseline layered planner and is only ever selected
+        # explicitly — an existing project that saved V1 explicitly is never migrated.
+        "layered_route_planner": {
+            **_selection("layered_route_planner", LayeredRiskAwareThetaStarV2),
+            "parameters": default_layered_theta_v2_selection_parameters(),
+        },
         "coverage_planner": _selection("coverage_planner", CoveragePlannerV1),
         "cns_gap_analyzer": _selection("cns_gap_analyzer", CNSGapAnalyzerV1),
         "coverage_model": {
@@ -136,11 +188,22 @@ def normalize_algorithm_selection(value):
             raise ValueError(f"{algorithm_type} 算法选择缺少 id/version")
         if not isinstance(entry["parameters"], dict):
             raise ValueError(f"{algorithm_type} parameters 必须是对象")
+        parameters = deepcopy(entry["parameters"])
+        if (
+            algorithm_type == "layered_route_planner"
+            and str(entry["algorithm_id"]) == LAYERED_THETA_V2_ALGORITHM_ID
+            and str(entry["version"]) == LAYERED_THETA_V2_ALGORITHM_VERSION
+        ):
+            # Close the "invisible 8 / 5 constant" debt for legacy projects that already
+            # selected Theta* V2 without any explicit parameters: normalization records the
+            # software baseline *and* its provenance.  An explicitly saved V1 selection is
+            # deliberately left untouched (its ``parameters`` stay exactly as saved).
+            parameters = normalize_layered_theta_v2_selection_parameters(parameters)
         result[algorithm_type] = {
             "algorithm_type": algorithm_type,
             "algorithm_id": str(entry["algorithm_id"]),
             "version": str(entry["version"]),
-            "parameters": deepcopy(entry["parameters"]),
+            "parameters": parameters,
         }
     return result
 
@@ -259,7 +322,8 @@ def _layered_route_planner_v1_manifest():
     return AlgorithmManifest(
         "layered_route_planner", LayeredRoutePlannerV1.algorithm_id,
         LayeredRoutePlannerV1.algorithm_version,
-        "Layered Risk-Aware Route Planner V1", "CNS-PLANNER", "engineering_baseline",
+        "Layered Risk-Aware Route Planner V1 (legacy/baseline)", "CNS-PLANNER",
+        "engineering_baseline",
         "按显式 AltitudeLayer 建立 coarse 地形/建筑垂向可行性 mask，在 MH/T L8 feasible cells "
         "上以 Risk Framework V2 domain index 作为 soft cost 执行单层 A*，输出 candidate。",
         (
@@ -279,6 +343,8 @@ def _layered_route_planner_v1_manifest():
             "additionalProperties": False,
         },
         (
+            "legacy/baseline layered planner：默认 layered_route_planner 已是 Theta* V2，"
+            "V1 只在项目显式选择时运行，且不会被静默迁移到 V2",
             "高度层必须显式选择：不从 RouteAltitudeProfile 或 RouteOperatingLayer 推断",
             "没有默认 terrain clearance，也没有默认 λ：null != 0，显式 0 合法",
             "edge cost = d * (1 + λg·Rg + λa·Ra + λe·Re)，edge risk 取两端 domain index 平均",
@@ -304,7 +370,8 @@ def _layered_risk_aware_theta_star_v2_manifest():
         "Layered Risk-Aware Theta* V2", "CNS-PLANNER", "engineering_baseline",
         "在固定 confirmed AltitudeLayer（H = nominal_altitude_m）下，于 MH/T L8 水平网格执行 "
         "heading-aware 多标签 Theta* any-angle 搜索：parent LOS supercover 同时完成风险积分与硬门控，"
-        "目标 J = 0.8*E_risk + 0.1*C_turn + 0.1*L，并单独评价 candidate 的 route_risk_density。",
+        "目标 J = 0.8*E_risk + 0.1*C_turn + 0.1*L，并单独评价 candidate 的 route_risk_density。"
+        "本项目默认 layered_route_planner（production layered planning baseline）。",
         (
             "scenario_or_od_route", "explicit_altitude_layer", "grid.cells",
             "layer_feasibility_mask", "population_shelter", "shelter_coefficient_policy",
@@ -323,12 +390,24 @@ def _layered_risk_aware_theta_star_v2_manifest():
                 "theta_min_deg": {"type": "number", "minimum": 0, "maximum": 180},
                 "d_ref_m": {"type": ["number", "null"], "exclusiveMinimum": 0},
                 "max_expanded_labels": {"type": ["integer", "null"], "minimum": 1},
+                "search_parameter_provenance": {"type": "object"},
                 "objective_policy": {"type": "object"},
                 "max_route_risk_density": {"type": "object"},
             },
             "additionalProperties": False,
         },
         (
+            "默认 selection 显式携带 heading_bin_count=8 / theta_min_deg=5.0 / "
+            "max_expanded_labels=null 与 search parameter provenance：它们不是 planner 内部"
+            "不可见常数，而是可见、可审计、可覆盖的算法参数",
+            "8 与 5.0 是 software algorithm baseline（"
+            "software_algorithm_baseline_not_engineering_confirmed）："
+            "source=cns_planner_software_algorithm_baseline、parameter_origin=software_baseline、"
+            "engineering_confirmed=false、evidence=null",
+            "theta_min_deg 不是航空器最小转弯角，D_ref 也不是航空器转弯半径；"
+            "本 planner 不建模航空器运动学",
+            "显式改写 8/5 后 parameter_origin 变为 explicit_algorithm_selection；"
+            "除非调用方同时提供明确 evidence 与 confirmed，engineering_confirmed 一律保持 false",
             "固定 H：z(x, y) 恒等于 selected AltitudeLayer 的 confirmed nominal_altitude_m",
             "真正的 Theta*：搜索过程中即发生 parent LOS rewiring，不是 A* + 后期平滑",
             "state = (grid_id, incoming_heading_bin)，保留 parent LOS rewiring，不退化为 heading A*",

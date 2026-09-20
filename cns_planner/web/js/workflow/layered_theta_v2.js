@@ -1,7 +1,8 @@
 import {escapeHtml,statusBadge,wbBlock,wbDisclosure} from './common.js';
 import {
   LAYERED_CANDIDATE_LABEL,THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_ALGORITHM_VERSION,
-  THETA_STAR_V2_BLOCKED_NOTE,layeredAlgorithmId,layeredAlgorithmVersion,
+  THETA_STAR_V2_BLOCKED_NOTE,layeredAlgorithmId,
+  layeredAlgorithmVersion,layeredPlannerAlgorithmLabel,layeredPlannerRoleLabel,
   layeredFeasibilityModel,layeredFeasibilityPayloadFrom,layeredPlanningRequestModel,
   layeredRequestPayloadFrom,renderLayeredFeasibilityFields,renderLayeredPlanningRequestFields,
 } from './layered_route_planner.js';
@@ -44,6 +45,13 @@ export const THETA_V2_ALTITUDE_NOTE='Theta* V2 固定 z(x, y) = H：H 必须能�
   +'缺失时保持 blocked，不做 datum/geoid 猜测或伪转换。';
 export const THETA_V2_EVALUATE_BLOCKED_NOTE='Theta* V2 仍有 blocking 项：请先补齐 shelter policy、'
   +'population_shelter 场与 confirmed 巡航高度。legacy LayeredRouteCostPolicy 的 λ 不是 Theta* V2 的 blocker。';
+//: 搜索参数（heading / theta）的语义边界。8 与 5.0 是软件算法 baseline，不是工程确认参数。
+export const THETA_V2_SEARCH_PARAMETER_BASELINE_SOURCE='cns_planner_software_algorithm_baseline';
+export const THETA_V2_SEARCH_PARAMETER_PURPOSE='search_discretization_and_planning_turn_smoothness_proxy';
+export const THETA_V2_SEARCH_PARAMETER_BOUNDARY='heading_bin_count / theta_min_deg 只是本项目的软件算法 baseline：'
+  +'它们决定搜索离散与规划转向平滑度代理，不是经工程确认的航空参数。theta_min_deg 不等于航空器最小转弯角，'
+  +'D_ref 也不等于航空器转弯半径；未同时提供明确 evidence 与 confirmed 时 engineering_confirmed 一律为 false。';
+//: 视图选择依据的常量从这里也可取到（唯一定义仍在 layered_route_planner.js）。
 //: legacy V1 A* 的 cost policy blocker：在 Theta* V2 视图里不得作为 blocker。
 const LEGACY_V1_BLOCKER_CODES=new Set([
   'cost_policy_not_confirmed','cost_weights_not_configured','layered_route_cost_policy_not_confirmed',
@@ -259,6 +267,34 @@ export function layeredThetaV2Model(flow){
     semantics:communicationRecord.semantics||{},
   };
 
+  const searchReadiness=theta.search_parameters||{};
+  const searchProvenance=searchReadiness.provenance||{};
+  const searchSource=text(searchProvenance.source);
+  const searchParameterModel={
+    applicable:searchReadiness.applicable!==false,
+    reason:text(searchReadiness.reason),
+    headingBinCount:number(searchReadiness.heading_bin_count),
+    thetaMinDeg:number(searchReadiness.theta_min_deg),
+    maxExpandedLabels:finite(searchReadiness.max_expanded_labels)
+      ?Number(searchReadiness.max_expanded_labels):null,
+    dRefM:number(searchReadiness.d_ref_m),
+    dRefProvenance:text(searchReadiness.d_ref_provenance),
+    parameterOrigin:text(searchReadiness.parameter_origin||searchProvenance.parameter_origin),
+    engineeringConfirmed:searchReadiness.engineering_confirmed===true,
+    softwareAlgorithmBaseline:searchReadiness.software_algorithm_baseline===true,
+    source:searchSource||THETA_V2_SEARCH_PARAMETER_BASELINE_SOURCE,
+    // 软件 baseline 的来源标识不是工程来源：不作为可编辑文本回填。
+    sourceInput:searchSource===THETA_V2_SEARCH_PARAMETER_BASELINE_SOURCE?'':searchSource,
+    purpose:text(searchProvenance.purpose||THETA_V2_SEARCH_PARAMETER_PURPOSE),
+    evidence:searchProvenance.evidence||null,
+    evidenceReference:searchProvenance.evidence&&searchProvenance.evidence.reference
+      ?text(searchProvenance.evidence.reference):'',
+    confirmed:searchProvenance.confirmed===true,
+    fingerprint:text(searchReadiness.fingerprint),
+    semantics:searchProvenance.semantics||{},
+    boundary:searchProvenance.engineering_boundary||{},
+  };
+
   const candidates=flow?.layered_route_candidates||{};
   const items=Array.isArray(candidates.items)?candidates.items:[];
   const current=items.find(item=>item&&item.current_applicability==='current')||null;
@@ -275,6 +311,8 @@ export function layeredThetaV2Model(flow){
   return {
     algorithmId:layeredAlgorithmId(flow),
     algorithmVersion:layeredAlgorithmVersion(flow),
+    algorithmLabel:layeredPlannerAlgorithmLabel(flow),
+    plannerRole:layeredPlannerRoleLabel(flow),
     expectedAlgorithmId:THETA_STAR_V2_ALGORITHM_ID,
     expectedAlgorithmVersion:THETA_STAR_V2_ALGORITHM_VERSION,
     status:text(readiness.status||'blocked'),
@@ -282,6 +320,7 @@ export function layeredThetaV2Model(flow){
     semantics:theta.semantics||{},
     request,
     feasibility,
+    searchParameters:searchParameterModel,
     shelter:shelterModel,
     objective:objectiveModel,
     riskDensity:densityModel,
@@ -450,6 +489,7 @@ function readinessSection(model){
     +'<div class="parameter-note">'+escapeHtml(THETA_STAR_V2_BLOCKED_NOTE)+'</div>'
     +'<div class="scroll-list route-list">'
     +row('readiness status',model.status+'（后端原值）')
+    +row('layered planner',short(model.algorithmLabel)+' · '+short(model.plannerRole))
     +row('artifact_type','layered_route_candidate · 只分析候选，不写运行航路')
     +row('algorithm',short(model.algorithmId)+'@'+short(model.algorithmVersion||model.expectedAlgorithmVersion))
     +'</div>'
@@ -464,6 +504,67 @@ function readinessSection(model){
       :'—')
     +'</div>',
     model.blockers.thetaV2.length?statusBadge('blocked'):statusBadge(model.thetaStatus));
+}
+
+/**
+ * 搜索参数（heading_bin_count / theta_min_deg / max_expanded_labels）与 provenance。
+ *
+ * 两个数值不再是 planner 内部不可见常数：这里显示 effective value、parameter_origin 与
+ * engineering_confirmed，并允许通过现有 ``/api/algorithms/select`` 显式改写。前端只转印
+ * 后端字段，不推导结论，也不把软件 baseline 说成工程确认参数。
+ */
+function searchParameterSection(model){
+  const p=model.searchParameters;
+  if(!p.applicable){
+    return wbBlock('①b Theta* 搜索参数（heading / theta）',
+      '<div class="parameter-note">当前 layered planner 不是 Theta* V2：'
+      +escapeHtml(p.reason||'legacy_layered_planner_has_no_theta_search_parameters')
+      +'。后端明确报告 applicable=false，前端不为 legacy planner 发明搜索参数。</div>');
+  }
+  return wbBlock('①b Theta* 搜索参数（heading / theta）',
+    '<div class="parameter-note">'+escapeHtml(THETA_V2_SEARCH_PARAMETER_BOUNDARY)+'</div>'
+    +'<div class="scroll-list route-list">'
+    +row('heading_bin_count',short(p.headingBinCount)+'（生效值）')
+    +row('theta_min_deg',short(p.thetaMinDeg)+'（生效值 · 规划转向平滑度代理阈值）')
+    +row('max_expanded_labels',p.maxExpandedLabels===null?'null（不设上限）':short(p.maxExpandedLabels))
+    +row('parameter_origin',short(p.parameterOrigin))
+    +row('engineering_confirmed',p.engineeringConfirmed?'true':'false')
+    +row('search parameter fingerprint',short(p.fingerprint))
+    +row('d_ref_m / provenance',short(p.dRefM)+' · '+short(p.dRefProvenance))
+    +row('source',short(p.source))
+    +row('purpose',short(p.purpose))
+    +row('evidence',p.evidence?short(JSON.stringify(p.evidence)):'null（未提供工程证据）')
+    +'</div>'
+    +'<h3>显式改写搜索参数（/api/algorithms/select）</h3>'
+    +'<div class="form-grid">'
+    +'<label>heading_bin_count（≥4 且整除 360）'
+    +'<input class="panel-input" id="thetaV2HeadingBinCount" type="number" step="1" '
+    +'value="'+inputValue(p.headingBinCount)+'"></label>'
+    +'<label>theta_min_deg（0..180）'
+    +'<input class="panel-input" id="thetaV2ThetaMinDeg" type="number" step="any" '
+    +'value="'+inputValue(p.thetaMinDeg)+'"></label>'
+    +'<label>max_expanded_labels（空 = null，不设上限）'
+    +'<input class="panel-input" id="thetaV2MaxExpandedLabels" type="number" step="1" '
+    +'value="'+inputValue(p.maxExpandedLabels)+'"></label>'
+    +'<label>source（工程来源，可空）'
+    +'<input class="panel-input" id="thetaV2SearchParamSource" value="'
+    +escapeHtml(p.sourceInput)+'" placeholder="例如 engineering_review"></label>'
+    +'<label>evidence reference（可空）'
+    +'<input class="panel-input" id="thetaV2SearchParamEvidence" value="'
+    +escapeHtml(p.evidenceReference)+'" placeholder="例如 ENG-2026-001"></label>'
+    +'<label class="checkbox-row"><input type="checkbox" id="thetaV2SearchParamConfirmed"'
+    +(p.confirmed?' checked':'')+'> 显式 confirmed</label>'
+    +'<label class="checkbox-row"><input type="checkbox" id="thetaV2SearchParamEngineeringConfirmed"'
+    +(p.engineeringConfirmed?' checked':'')+'> 声明 engineering confirmed（需同时提供 evidence）</label>'
+    +'</div>'
+    +'<div class="button-row">'
+    +'<button class="secondary" id="saveThetaV2SearchParameters">保存搜索参数</button>'
+    +'</div>'
+    +'<div class="parameter-note">改写 heading_bin_count / theta_min_deg 会把 parameter_origin 变成 '
+    +'<code>explicit_algorithm_selection</code>；除非同时提供明确 evidence 并勾选 confirmed 与 '
+    +'engineering_confirmed，后端仍保持 engineering_confirmed=false。'
+    +'heading_bin_count / theta_min_deg / parameter_origin / engineering_confirmed 全部来自后端 readiness，'
+    +'前端不推导结论。</div>');
 }
 
 function requestSection(model){
@@ -818,6 +919,7 @@ export function renderLayeredThetaV2Panel(flow){
   return '<div data-theta-v2-panel="'+escapeHtml(model.algorithmId)+'">'
     +readinessSection(model)
     +requestSection(model)
+    +searchParameterSection(model)
     +feasibilitySection(model)
     +complianceSection(model)
     +shelterSection(model)
@@ -877,8 +979,47 @@ export function thetaV2RiskDensityPayload(c,current){
   };
 }
 
-// ---------------------------------------------------------------- bind
+/**
+ * search parameter payload（``/api/algorithms/select``）。
+ *
+ * 三个字段原样提交：空 heading/theta 提交 null，绝不静默回退成软件 baseline（后端会用
+ * baseline 补默认值，因此前端必须在 bind 中先拦截空值）。``max_expanded_labels`` 空即 null
+ * （不设上限）。provenance 里 ``engineering_confirmed`` 只有在同时提供 evidence 且勾选
+ * confirmed 时才可能为 true；后端仍是最终裁决者。
+ */
+export function thetaV2SearchParametersPayload(c,current){
+  const model=current||{};
+  const headingBinCount=numberFromField(c.$('thetaV2HeadingBinCount'));
+  const thetaMinDeg=numberFromField(c.$('thetaV2ThetaMinDeg'));
+  const maxRaw=fieldValue(c.$('thetaV2MaxExpandedLabels')).trim();
+  const maxExpandedLabels=maxRaw===''?null:numberFromField(c.$('thetaV2MaxExpandedLabels'));
+  const source=fieldValue(c.$('thetaV2SearchParamSource')).trim();
+  const evidenceReference=fieldValue(c.$('thetaV2SearchParamEvidence')).trim();
+  const confirmed=checkedFrom(c.$('thetaV2SearchParamConfirmed'));
+  const engineeringConfirmed=checkedFrom(c.$('thetaV2SearchParamEngineeringConfirmed'));
+  const provenance={
+    source:source||text(model.source)||THETA_V2_SEARCH_PARAMETER_BASELINE_SOURCE,
+    purpose:text(model.purpose)||THETA_V2_SEARCH_PARAMETER_PURPOSE,
+    confirmed,
+    engineering_confirmed:engineeringConfirmed,
+    evidence:evidenceReference
+      ?{reference:evidenceReference,statement:'用户在 Step03 Theta* V2 面板显式记录的工程证据引用'}
+      :null,
+  };
+  return {
+    algorithm_type:'layered_route_planner',
+    algorithm_id:THETA_STAR_V2_ALGORITHM_ID,
+    version:THETA_STAR_V2_ALGORITHM_VERSION,
+    parameters:{
+      heading_bin_count:headingBinCount,
+      theta_min_deg:thetaMinDeg,
+      max_expanded_labels:maxExpandedLabels,
+      search_parameter_provenance:provenance,
+    },
+  };
+}
 
+// ---------------------------------------------------------------- bind
 /**
  * 绑定 Theta* V2 视图。evaluate 只按 Theta* V2 blocker 判断：
  * legacy LayeredRouteCostPolicy 的 λ 既不阻止运行，也不出现在提示里。
@@ -904,6 +1045,19 @@ export function bindLayeredThetaV2(c){
   if(c.$('saveThetaV2RiskDensity')){
     c.actionButton('saveThetaV2RiskDensity',()=>c.resourceAction(
       '/api/max-route-risk-density',thetaV2RiskDensityPayload(c,model().riskDensity)));
+  }
+  if(c.$('saveThetaV2SearchParameters')){
+    c.actionButton('saveThetaV2SearchParameters',()=>{
+      const payload=thetaV2SearchParametersPayload(c,model().searchParameters);
+      const parameters=payload.parameters;
+      // 空值不会被静默替换成软件 baseline：这里直接拦截，交给用户补明确数值。
+      if(parameters.heading_bin_count===null||!Number.isFinite(parameters.heading_bin_count)
+        ||parameters.theta_min_deg===null||!Number.isFinite(parameters.theta_min_deg)){
+        c.panelError('heading_bin_count 与 theta_min_deg 必须是明确数值：前端不会用软件 baseline 静默替换空值。');
+        return;
+      }
+      return c.resourceAction('/api/algorithms/select',payload);
+    });
   }
   if(c.$('evaluateLayeredCandidate')){
     c.actionButton('evaluateLayeredCandidate',async()=>{

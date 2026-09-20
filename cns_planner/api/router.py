@@ -82,6 +82,8 @@ class ApiRouter:
         if path == "/api/layered-route-validations": return Response(workflow.layered_route_validations())
         if path == "/api/layered-operational-adoption/readiness": return Response(workflow.layered_operational_adoption_readiness())
         if path == "/api/layered-operational-adoptions": return Response(workflow.layered_operational_adoptions())
+        if path == "/api/route-safety-evidence-v2/readiness": return Response(workflow.route_safety_evidence_v2_readiness())
+        if path == "/api/route-safety-evidence-v2": return Response(workflow.route_safety_evidence_v2())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -274,6 +276,9 @@ class ApiRouter:
             "/api/layered-operational-adoptions/preview": lambda: workflow.preview_layered_operational_adoption(payload),
             "/api/layered-operational-adoptions/apply": lambda: workflow.apply_layered_operational_adoption(payload),
             "/api/layered-operational-adoptions/revoke": lambda: workflow.revoke_layered_operational_adoption(payload),
+            # ---- Route Safety Evidence V2 (additive evidence aggregation) -----------
+            # No background evaluation exists: one explicit POST evaluates one assessment.
+            "/api/route-safety-evidence-v2/evaluate": lambda: workflow.evaluate_route_safety_evidence_v2(payload),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),

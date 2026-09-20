@@ -35,6 +35,11 @@ class InvalidationService:
         #: Production candidate validation has its own evidence lifecycle.  Candidate/layer,
         #: native sources and clearance changes stale it without touching V3 history.
         self.layered_route_validation_invalidator = None
+        #: Route Safety Evidence V2 aggregates the existing lineage evidence.  It is staled by
+        #: every dependency change below — and it is strictly downstream: a stale Safety
+        #: Evidence V2 never stales a route, a candidate, a validation, an adoption or any CNS
+        #: result.
+        self.route_safety_evidence_invalidator = None
 
     def workflow(self, changed):
         state = self.session.state
@@ -196,7 +201,7 @@ class InvalidationService:
         self.layered_route(reason)
 
     def layered_route(self, reason="layered_route_input_changed"):
-        """Stale only the additive Layered Route Planner V1 candidate/mask products.
+        """Stale only the additive layered route planner candidate/mask products.
 
         A Risk Framework V2 change, a selected layer/request change, a terrain/building or
         building-clearance policy change, and a feasibility/cost policy change only make the
@@ -225,14 +230,29 @@ class InvalidationService:
         invalidator = self.route_risk_profile_invalidator
         if callable(invalidator):
             invalidator(str(reason))
+        self.route_safety_evidence(reason)
 
     def layered_route_validation(self, reason="layered_route_validation_input_changed"):
         """Stale only production LayeredRouteValidation and its owned adoption chain."""
 
         invalidator = self.layered_route_validation_invalidator
+        result = {"stale_validation_ids": []}
+        if callable(invalidator):
+            result = invalidator(str(reason))
+        self.route_safety_evidence(reason)
+        return result
+
+    def route_safety_evidence(self, reason="route_safety_evidence_input_changed"):
+        """Stale only the additive Route Safety Evidence V2 artifact.
+
+        This is the single downstream sink: no route, candidate, validation, adoption or CNS
+        result is ever invalidated because a Safety Evidence V2 assessment went stale.
+        """
+
+        invalidator = self.route_safety_evidence_invalidator
         if callable(invalidator):
             return invalidator(str(reason))
-        return {"stale_validation_ids": []}
+        return {"stale_assessment_ids": []}
 
     def operational_route_published(self, route_ids, *, reason, preserve_published_routes=True):
         """Dedicated publication propagation: stale downstream, never candidate/V3.
@@ -250,6 +270,7 @@ class InvalidationService:
         self.cns_site_plan()
         self.cns_corridor()
         mark_active_report_stale(state, str(reason))
+        self.route_safety_evidence(str(reason))
         if preserve_published_routes:
             for route in state.get("operational_routes") or []:
                 if str(route.get("route_id")) in route_ids:
@@ -292,6 +313,7 @@ class InvalidationService:
         mark_active_report_stale(state, "coverage_3d_changed")
         self.cns_service_capability()
         self.cns_corridor()
+        self.route_safety_evidence("coverage_3d_changed")
 
     def cns_service_capability(self):
         state = self.session.state
@@ -303,6 +325,7 @@ class InvalidationService:
         mark_active_report_stale(state, "cns_service_capability_changed")
         self.service_timeline()
         self.cns_corridor()
+        self.route_safety_evidence("cns_service_capability_changed")
 
     def service_timeline(self):
         state = self.session.state
@@ -348,6 +371,7 @@ class InvalidationService:
             state.setdefault("result_statuses", {})["cns_gap_v2"] = "stale"
         mark_active_report_stale(state, "cns_gap_v2_changed")
         self.cns_site_plan()
+        self.route_safety_evidence("cns_gap_v2_changed")
 
     def cns_site_plan(self):
         """Stale only the P11 proposal and report; never mutate evaluated inputs."""
@@ -379,6 +403,7 @@ class InvalidationService:
             state["cns_corridor_assessment"] = result
             state.setdefault("result_statuses", {})["cns_corridor_assessment"] = "stale"
         self.cns_corridor_gap()
+        self.route_safety_evidence("cns_corridor_changed")
 
     def cns_corridor_gap(self):
         """Stale only P15 and preserve every P1-P14 result."""

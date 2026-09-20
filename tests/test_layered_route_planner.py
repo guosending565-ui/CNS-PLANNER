@@ -117,7 +117,23 @@ def workflow(
     tmp_path, name="project.json", *, cells=None, route=True, altitude=LOW_ALTITUDE,
     lower=250.0, upper=350.0,
 ):
+    """A project whose ``layered_route_planner`` is **explicitly** Layered Planner V1.
+
+    Theta* V2 is the project's default layered planner, so a V1 behaviour suite must select
+    V1 explicitly — exactly what a legacy project with a saved V1 selection does.  The
+    default-selection migration itself is covered by the dedicated registry tests.
+    """
+
     service = WorkflowService(tmp_path / name, DEFAULTS)
+    service.select_algorithm({
+        "algorithm_type": "layered_route_planner",
+        "algorithm_id": "layered_route_planner_v1",
+        "version": "1.0",
+        "parameters": {},
+    })
+    assert service.layered_route_planner_service.planner.algorithm_id == (
+        "layered_route_planner_v1"
+    )
     grid = grid_cells() if cells is None else cells
     service.state["grid"] = {
         "status": "passed", "level": 8, "count": len(grid), "cells": grid,
@@ -1142,16 +1158,24 @@ def test_candidate_collection_normalizer_is_idempotent():
     assert collection == normalize_layered_route_candidate_collection(collection)
 
 
-def test_layered_planner_has_its_own_algorithm_type_that_never_becomes_the_default():
+def test_layered_planner_has_its_own_algorithm_type_and_never_becomes_the_route_planner():
     selection = default_algorithm_selection()
     assert selection["route_planner"]["algorithm_id"] == "route_planner_v1"
-    assert selection["layered_route_planner"]["algorithm_id"] == "layered_route_planner_v1"
+    # The layered default is now the production Theta* V2 baseline; V1 stays registered and
+    # explicitly selectable as the legacy/baseline layered planner.
+    assert selection["layered_route_planner"]["algorithm_id"] == (
+        "layered_risk_aware_theta_star_v2"
+    )
+    assert selection["layered_route_planner"]["version"] == "2.0"
     registry = build_default_algorithm_registry({})
     manifests = {
         (item.algorithm_type, item.algorithm_id, item.version) for item in registry.manifests()
     }
     assert ("layered_route_planner", "layered_route_planner_v1", "1.0") in manifests
+    assert ("layered_route_planner", "layered_risk_aware_theta_star_v2", "2.0") in manifests
+    # Neither layered planner can ever be selected as the project's ``route_planner``.
     assert ("route_planner", "layered_route_planner_v1", "1.0") not in manifests
+    assert ("route_planner", "layered_risk_aware_theta_star_v2", "2.0") not in manifests
 
 
 class ApiWorkflow:

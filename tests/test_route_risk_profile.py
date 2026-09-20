@@ -72,7 +72,23 @@ def layer(**overrides):
 
 
 def workflow(tmp_path, name="project.json", *, cells=None, route=True, endpoint_inset=0.0):
+    """A project whose ``layered_route_planner`` is **explicitly** Layered Planner V1.
+
+    RouteRiskProfile 的 per-domain cost/exposure characterization 属于 V1 A* 的 soft-cost
+    语义；Theta* V2 是项目默认 layered planner，因此这些 V1 characterization 必须显式选择
+    V1，否则它们测的就不再是同一个 planner。
+    """
+
     service = WorkflowService(tmp_path / name, DEFAULTS)
+    service.select_algorithm({
+        "algorithm_type": "layered_route_planner",
+        "algorithm_id": "layered_route_planner_v1",
+        "version": "1.0",
+        "parameters": {},
+    })
+    assert service.layered_route_planner_service.planner.algorithm_id == (
+        "layered_route_planner_v1"
+    )
     grid = grid_cells(columns=3, rows=1) if cells is None else cells
     service.state["grid"] = {
         "status": "passed", "level": 8, "count": len(grid), "cells": grid,

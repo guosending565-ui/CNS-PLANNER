@@ -19,6 +19,11 @@ export const LAYERED_PLANNER_ALGORITHM_ID='layered_route_planner_v1';
 //: Theta* V2 的 exact algorithm id：只有它才把「分层候选」切换成 Theta* V2 视图。
 export const THETA_STAR_V2_ALGORITHM_ID='layered_risk_aware_theta_star_v2';
 export const THETA_STAR_V2_ALGORITHM_VERSION='2.0';
+export const LAYERED_V1_ALGORITHM_ID='layered_route_planner_v1';
+export const LAYERED_V1_ALGORITHM_VERSION='1.0';
+//: 视图角色：Theta* V2 是 production layered planner，V1 只是 legacy/baseline。
+export const LAYERED_PLANNER_PRODUCTION_ROLE='production layered planner';
+export const LAYERED_PLANNER_LEGACY_ROLE='legacy/baseline layered planner';
 export const LAYERED_CANDIDATE_LABEL='分层候选（candidate，非运行航路）';
 export const LAYERED_BLOCKED_NOTE='没有 confirmed 参数时一律 blocked：不提供任何默认高度、净空或 λ。';
 export const THETA_STAR_V2_BLOCKED_NOTE='Theta* V2 不读取 legacy LayeredRouteCostPolicy 的 λ：'
@@ -31,7 +36,12 @@ export const COST_DOMAIN_LABELS={
 
 // ---------------------------------------------------------------- algorithm switch
 
-/** readiness.algorithm.algorithm_id 是视图选择的唯一依据（缺失时退回 V1 基线）。 */
+/**
+ * readiness.algorithm.algorithm_id 是视图选择的唯一依据（缺失时退回 V1 基线面板）。
+ *
+ * Theta* V2 现在是项目默认的 layered planner，因此真实项目的 readiness 总是报告 V2；这里
+ * 保留"缺失信息时绝不冒充 Theta* V2"的保守回退，未知/缺失一律按 legacy 面板显示。
+ */
 export function layeredAlgorithmId(flow){
   const id=flow?.layered_route_planner_readiness?.algorithm?.algorithm_id;
   return typeof id==='string'&&id?id:LAYERED_PLANNER_ALGORITHM_ID;
@@ -52,6 +62,13 @@ export function layeredPlannerAlgorithmLabel(flow){
   return (layeredPlannerUsesThetaStarV2(flow)
     ?'Layered Risk-Aware Theta* V2'
     :'Layered Risk-Aware Route Planner V1')+(version?'@'+version:'');
+}
+
+/** 当前 layered planner 的角色文案：只有 Theta* V2 是 production layered planner。 */
+export function layeredPlannerRoleLabel(flow){
+  return layeredPlannerUsesThetaStarV2(flow)
+    ?LAYERED_PLANNER_PRODUCTION_ROLE
+    :LAYERED_PLANNER_LEGACY_ROLE;
 }
 
 // ---------------------------------------------------------------- public model
@@ -331,13 +348,17 @@ function candidateRow(item){
 export function renderLayeredRoutePlannerPanel(flow){
   const model=layeredRoutePlannerModel(flow);
   const counts=model.mask?.counts||{};
-  return '<h3>生产候选规划（Layered Risk-Aware Route Planner V1）</h3>'+
+  return '<h3>分层候选规划（legacy/baseline：Layered Risk-Aware Route Planner V1）</h3>'+
+    '<div class="parameter-note">当前 <code>layered_route_planner</code> 是 <b>legacy/baseline</b> 实现（V1 A* + '
+    +'Risk Framework V2 soft cost）。项目默认已是 <b>Layered Risk-Aware Theta* V2</b>；只有显式保存了 V1 selection '
+    +'的项目才会看到本面板，系统不会静默迁移到 V2。</div>'+
     '<div class="parameter-note">pipeline：scenario/OD 航路 → <b>显式 AltitudeLayer</b> → terrain/building '+
     'coarse 可行性 mask → MH/T L8 A* → Risk Framework V2 soft cost → LayeredRouteCandidate。'+
     '结果只是 <b>candidate</b>：不得直接写入运行航路或 CNS；连续验证（精确 footprint 与水平净空）仍需后续执行。'+
     '这是 <b>coarse_strategic_vertical_envelope</b>，不是 exact footprint，也不是水平/精确建筑净空结论。</div>'+
     '<div class="parameter-note">readiness：'+statusBadge(model.status)+' · '+
     escapeHtml(model.algorithm.algorithm_id||LAYERED_PLANNER_ALGORITHM_ID)+'@'+escapeHtml(model.algorithm.algorithm_version||'1.0')+
+    ' · role '+escapeHtml(layeredPlannerRoleLabel(flow))+
     ' · '+LAYERED_BLOCKED_NOTE+'</div>'+
     renderLayeredPlanningRequestFields(model)+
     '<div class="button-row">'+

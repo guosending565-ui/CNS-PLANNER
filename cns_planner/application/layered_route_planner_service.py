@@ -1,4 +1,4 @@
-"""Use cases for the Layered Risk-Aware Route Planner V1.
+"""Use cases for the layered risk-aware route planner (Theta* V2 default, V1 legacy).
 
 Owns exactly three additive products:
 
@@ -31,6 +31,7 @@ from ..domain.communication_planning_field import (
 from ..domain.layered_theta_v2 import (
     default_risk_density_constraint, default_theta_v2_objective_policy,
     normalize_risk_density_constraint, normalize_theta_v2_objective_policy,
+    theta_v2_search_parameter_view,
 )
 from ..domain.population_shelter import (
     default_shelter_coefficient_policy, normalize_population_shelter_attribute,
@@ -135,8 +136,9 @@ class LayeredRoutePlannerService:
         #: reported blocked instead of being fabricated.
         self.adapter = adapter
         self.source_status = source_status
-        #: Bound to the registry-selected ``layered_route_planner`` algorithm.  The default is
-        #: the canonical V1 planner; the project's ``route_planner`` selection is untouched.
+        #: Bound to the registry-selected ``layered_route_planner`` algorithm.  The default
+        #: is now the production Theta* V2 baseline; a project that explicitly saved V1 keeps
+        #: running V1.  The project's ``route_planner`` selection is untouched either way.
         self.planner = LayeredRoutePlannerV1()
         #: Optional read-only communication field provider (interface only in this round).
         self.communication_provider = None
@@ -326,7 +328,20 @@ class LayeredRoutePlannerService:
 
         return {
             "status": "ready" if not blockers else "blocked",
-            "algorithm": {"algorithm_id": ALGORITHM_ID, "algorithm_version": ALGORITHM_VERSION},
+            # The *effective* planner bound to this project's ``layered_route_planner``
+            # selection.  The frontend selects its panel from exactly this algorithm_id, so a
+            # project running Theta* V2 must never be reported as the legacy V1 baseline.
+            "algorithm": {
+                "algorithm_id": getattr(self.planner, "algorithm_id", ALGORITHM_ID),
+                "algorithm_version": getattr(
+                    self.planner, "algorithm_version", ALGORITHM_VERSION
+                ),
+                "uses_theta_star": self._uses_theta_star(),
+                "role": (
+                    "production_layered_planner" if self._uses_theta_star()
+                    else "legacy_baseline_layered_planner"
+                ),
+            },
             "request": deepcopy(request),
             "request_semantics": deepcopy(REQUEST_SEMANTICS),
             "altitude_layer_catalog": {
@@ -556,6 +571,29 @@ class LayeredRoutePlannerService:
 
     def _uses_theta_star(self):
         return bool(getattr(self.planner, "uses_theta_star", False))
+
+    def _search_parameter_view(self):
+        """Effective Theta* V2 search parameters + provenance for readiness/audit.
+
+        The V1 legacy baseline has no heading/theta search parameter at all, so it reports
+        ``applicable=False`` instead of inventing a value for an algorithm that never reads
+        one.
+        """
+
+        if not self._uses_theta_star():
+            return {
+                "applicable": False,
+                "algorithm_id": getattr(self.planner, "algorithm_id", ALGORITHM_ID),
+                "algorithm_version": getattr(
+                    self.planner, "algorithm_version", ALGORITHM_VERSION
+                ),
+                "reason": "legacy_layered_planner_has_no_theta_search_parameters",
+                "engineering_confirmed": False,
+            }
+        return {
+            "applicable": True,
+            **theta_v2_search_parameter_view(getattr(self.planner, "search_parameters", None)),
+        }
 
     def _planner_specific_inputs(self, state, grid):
         """The Theta* V2-only planning inputs; empty for the V1 A* baseline.
@@ -839,6 +877,11 @@ class LayeredRoutePlannerService:
             },
             "status": "ready" if not blockers else "not_ready",
             "blockers": blockers,
+            # The effective search parameters *and* their provenance.  The two values are no
+            # longer invisible planner constants: the software baseline is reported as such,
+            # and an explicit algorithm selection override is reported as an override that is
+            # still not engineering-confirmed.
+            "search_parameters": self._search_parameter_view(),
             "population_shelter": {
                 "status": attribute.get("status", "not_calculated"),
                 "cell_count": len(cells),

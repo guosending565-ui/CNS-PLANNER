@@ -180,6 +180,188 @@ function confirmPanel(confirmed,selected,summary){
       '应用会重跑 P7→P10 与 P14→P15；验证不一致、出现确认回归或关键证据不足时整笔回滚。'+(applyId?' 当前 plan_id：'+escapeHtml(applyId):''));
 }
 
+// ---- Route Safety Evidence V2 -------------------------------------------------
+// 四个 evidence domain 分开显示。全部字段来自后端 route_safety_evidence_v2，
+// 前端不做任何重新推导，也不合成 overall safety score / 排名。
+export const ROUTE_SAFETY_EVIDENCE_DOMAINS=[
+  ['geometry_obstacle','Geometry / Obstacle'],
+  ['ground_exposure','Ground Exposure'],
+  ['regulatory','Regulatory'],
+  ['cns_operational_support','CNS Operational Support']
+];
+export const ROUTE_SAFETY_EVIDENCE_STATUS_NOTE=
+  '该状态表示证据完整性/明确硬约束结果，不是自动安全认证或安全评分。';
+export const ROUTE_SAFETY_EVIDENCE_CNS_NOTE=
+  'CNS confirmed gap 记为 operational support deficit：它不代表航路不安全，也不改变 geometry validation。';
+
+/** 后端 route_safety_evidence_v2 / readiness 的只读投影。 */
+export function routeSafetyEvidenceModel(flow){
+  const collection=flow?.route_safety_evidence_v2||{};
+  const readiness=flow?.route_safety_evidence_v2_readiness||{};
+  const items=Array.isArray(collection.items)?collection.items:[];
+  const current=items.find(item=>item&&item.current_applicability==='current')||null;
+  const shown=current||items[items.length-1]||null;
+  const domains=(shown&&shown.domains)||{};
+  const lineage=(shown&&shown.lineage)||{};
+  return {
+    status:text(shown&&shown.status,'not_ready'),
+    statusReason:text(shown&&shown.status_reason),
+    applicability:text(shown&&shown.current_applicability,'not_evaluated'),
+    assessmentId:text(shown&&shown.assessment_id),
+    routeId:text(shown&&shown.route_id),
+    adoptionId:text(shown&&shown.adoption_id),
+    createdAt:text(shown&&shown.created_at),
+    isCurrent:Boolean(current),
+    count:items.length,
+    readinessStatus:text(readiness.status,'not_ready'),
+    target:(readiness.target)||{},
+    lineage:{
+      complete:Boolean(lineage.complete),
+      status:text(lineage.status,'not_resolved'),
+      missing:Array.isArray(lineage.missing_links)?lineage.missing_links:[],
+      stale:Array.isArray(lineage.stale_links)?lineage.stale_links:[],
+    },
+    summary:(shown&&shown.evidence_summary)||{},
+    limitations:Array.isArray(shown&&shown.limitations)?shown.limitations:[],
+    fingerprints:(shown&&shown.fingerprints)||{},
+    provenance:(shown&&shown.provenance)||{},
+    domains:ROUTE_SAFETY_EVIDENCE_DOMAINS.map(([id,label])=>{
+      const domain=domains[id]||{};
+      return {
+        id,label,
+        status:text(domain.status,'not_ready'),
+        reason:text(domain.status_reason),
+        hardFailure:domain.hard_constraint_failure===true,
+        metrics:domain.metrics||{},
+        evidence:domain.evidence||{},
+        sources:Array.isArray(domain.sources)?domain.sources:[],
+        limitations:Array.isArray(domain.limitations)?domain.limitations:[],
+      };
+    }),
+  };
+}
+
+function text(value,fallback=''){return value===null||value===undefined||value===''?fallback:String(value);}
+function safeNumber(value,digits=3){
+  return Number.isFinite(value)?Number(value).toFixed(digits):'—';
+}
+function metricText(value){return value===null||value===undefined?'—':(Number.isFinite(value)?safeNumber(value):String(value));}
+
+/** 单个 domain 的紧凑指标（只转印后端关键字段）。 */
+function safetyDomainMetrics(model){
+  const metrics=model.metrics||{};
+  if(model.id==='geometry_obstacle'){
+    return [['validation status',text(model.evidence&&model.evidence.validation_status)||'—'],
+      ['terrain status',text(metrics.terrain_status,'—')+' · min margin '+metricText(metrics.terrain_minimum_margin_m)+' m'],
+      ['building status',text(metrics.building_status,'—')+' · min margin '+metricText(metrics.building_minimum_margin_m)+' m'],
+      ['fixed cruise altitude',metricText(metrics.fixed_cruise_altitude_m)+' m EGM2008'],
+      ['unresolved intervals',String(metrics.unresolved_interval_count??0)
+        +' · failed intervals '+String(metrics.failed_interval_count??0)],
+      ['resource-limited evidence',metrics.resource_limited?'是（计算资源限制，不是安全结论）':'否']];
+  }
+  if(model.id==='ground_exposure'){
+    const theta=(model.evidence&&model.evidence.theta_star_planning_objective)||{};
+    const density=(model.evidence&&model.evidence.route_risk_density)||{};
+    return [['Theta* population×shelter exposure',metricText(metrics.population_shelter_risk_exposure_index_m)+' index·m'],
+      ['route_risk_density',metricText(metrics.route_risk_density)+' / threshold '+metricText(metrics.route_risk_density_threshold)
+        +' · '+text(metrics.route_risk_density_status,'unresolved')],
+      ['objective weights',['risk','turn','distance'].map(key=>key+' '+metricText((theta.weights||{})[key])).join(' · ')],
+      ['RouteRiskProfile ground mean/max',metricText(metrics.profile_ground_mean_index)+' / '+metricText(metrics.profile_ground_max_index)],
+      ['profile exposure / unresolved length',metricText(metrics.profile_ground_exposure_index_m)+' index·m / '
+        +metricText(metrics.profile_ground_unresolved_length_m)+' m'],
+      ['profile thresholds / provenance',metricText(metrics.profile_thresholds&&metrics.profile_thresholds.medium_min)
+        +' / '+metricText(metrics.profile_thresholds&&metrics.profile_thresholds.high_min)+' · '
+        +text(metrics.profile_thresholds&&metrics.profile_thresholds.status,'not_configured')],
+      ['density role',density.objective_term?'objective term（异常：后端绝不允许）':'评价约束，不是 objective term']];
+  }
+  if(model.id==='regulatory'){
+    return [['dataset status',text(model.evidence&&model.evidence.dataset_status,'not_configured')],
+      ['configured',metrics.configured?'是':'否（未配置 ≠ passed）'],
+      ['evaluated',metrics.evaluated?'是':'否（not_evaluated ≠ passed）'],
+      ['blocked constraints',String((metrics.blocked_constraints||[]).length)],
+      ['unresolved constraints',String((metrics.unresolved_constraints||[]).length)],
+      ['segment count',String(metrics.segment_count??0)]];
+  }
+  const subsystems=Array.isArray(metrics.subsystems)?metrics.subsystems:[];
+  const rows=subsystems.map(item=>[item.subsystem+' verdict',
+    text(item.operational_support_verdict,'unknown')
+    +' · coverage '+text(item.coverage&&item.coverage.status,'—')
+    +' · capability '+text(item.capability&&item.capability.status,'—')
+    +' · gap length '+metricText(item.confirmed_gap&&item.confirmed_gap.gap_length_m)+' m']);
+  return rows.concat([
+    ['operational support deficit',metrics.operational_support_deficit?'是（operational support deficit）':'否'],
+    ['confirmed gap C/N/S',(metrics.confirmed_gap_subsystems||[]).join('/')||'—'],
+    ['unknown C/N/S',(metrics.unknown_subsystems||[]).join('/')||'—'],
+  ]);
+}
+
+function safetyDomainCard(model){
+  const metrics=safetyDomainMetrics(model).map(([label,value])=>kvRow(label,escapeHtml(value))).join('');
+  const sources=model.sources.length
+    ?model.sources.map(source=>kvRow('source',escapeHtml(text(source.role,'—'))
+      +(source.algorithm_id?' · '+escapeHtml(String(source.algorithm_id)):'')
+      +(source.fingerprint?' · '+escapeHtml(String(source.fingerprint)):''))).join('')
+    :'';
+  const limitations=model.limitations.length
+    ?'<small>'+escapeHtml(model.limitations[0])+'</small>'
+    :'<small>—</small>';
+  const boundary=model.id==='cns_operational_support'
+    ?'<small class="parameter-note">'+escapeHtml(ROUTE_SAFETY_EVIDENCE_CNS_NOTE)+'</small>'
+    :'';
+  return '<div class="review-block safety-domain-card" data-safety-domain="'+escapeHtml(model.id)+'">'
+    +'<div class="comparison-head"><b>'+escapeHtml(model.label)+'</b>'
+    +statusBadge(model.status)+(model.hardFailure?statusBadge('failed'):'')+'</div>'
+    +(model.reason?'<small>'+escapeHtml(model.reason)+'</small>':'')
+    +metrics
+    +'<div class="review-sub"><b>evidence source</b></div>'+sources
+    +limitations
+    +boundary
+    +'</div>';
+}
+
+/**
+ * Route Safety Evidence 紧凑卡片：overall evidence status + 四个 domain card，
+ * 高级 fingerprint / source lineage 折叠。
+ */
+function routeSafetyEvidencePanel(flow){
+  const model=routeSafetyEvidenceModel(flow);
+  const ready=model.readinessStatus==='ready';
+  const overall=[
+    kvRow('overall evidence status',statusBadge(model.status),model.statusReason||''),
+    kvRow('current_applicability',statusBadge(model.applicability),
+      model.isCurrent?'这是 current assessment':'非 current，仅作历史证据'),
+    kvRow('评估对象',model.routeId?escapeHtml(model.routeId)+' · adoption '+escapeHtml(model.adoptionId||'—'):'尚未评估'),
+    kvRow('lineage',model.lineage.complete?'完整（complete）':'不完整：'
+      +escapeHtml([...model.lineage.missing,...model.lineage.stale].join('、')||'—')),
+    kvRow('readiness',statusBadge(model.readinessStatus),ready?'':'需要先存在 current published layered operational adoption'),
+  ].join('');
+  const cards=model.domains.map(safetyDomainCard).join('');
+  const fingerprintRows=[
+    ['assessment fingerprint',model.fingerprints.assessment_fingerprint],
+    ['operational route/adoption',model.fingerprints.operational_route_adoption_fingerprint],
+    ['validation',model.fingerprints.validation_fingerprint],
+    ['candidate',model.fingerprints.candidate_fingerprint],
+    ['RouteRiskProfile',model.fingerprints.route_risk_profile_fingerprint],
+    ['regulatory dataset',model.fingerprints.regulatory_dataset_fingerprint],
+    ['Coverage3D',model.fingerprints.coverage_3d_fingerprint],
+    ['CNS capability',model.fingerprints.cns_service_capability_fingerprint],
+    ['Gap V2',model.fingerprints.cns_gap_v2_fingerprint],
+    ['corridor',model.fingerprints.cns_corridor_fingerprint],
+    ['evaluator version',model.fingerprints.evaluator_version],
+  ].map(([label,value])=>kvRow(label,escapeHtml(text(value,'—')))).join('');
+  const limitationRows=model.limitations.map(item=>'<small>'+escapeHtml(item)+'</small>').join('');
+  return reviewBlock('Route Safety Evidence',
+    '<p class="parameter-note">'+escapeHtml(ROUTE_SAFETY_EVIDENCE_STATUS_NOTE)+'</p>'
+    +'<div class="scroll-list route-list">'+overall+'</div>'
+    +'<div class="safety-domain-grid">'+cards+'</div>'
+    +wbDisclosure('高级：fingerprint / source lineage',
+      '<div class="scroll-list route-list">'+fingerprintRows+'</div>'
+      +'<div class="parameter-note">'+escapeHtml(JSON.stringify(model.provenance))+'</div>')
+    +wbDisclosure('局限（limitations）',limitationRows||'<small>—</small>')
+    +'<div class="button-row"><button class="secondary" id="evaluateRouteSafetyEvidenceV2">评价 Route Safety Evidence</button></div>',
+    '四个 domain 分开报告，前端绝不合成 overall safety score、排名或自动安全等级。');
+}
+
 // ---- 状态总览 ---------------------------------------------------------------
 function statusOverview(flow){
   const statuses=flow.result_statuses||{},risks=flow.review?.risks||{};
@@ -259,7 +441,7 @@ export function render({state,flow}){
       ['review-op-confirm','确认与应用',wbBlock('确认与应用',wbSegHint(OPERATE,'review-op-confirm')+confirmPanel(confirmed,selected,summary))]
     ]})
     +wbPanel('result','',{segments:[
-      ['review-res-status','状态总览',wbBlock('状态总览',wbSegHint(RESULT,'review-res-status')+statusOverview(flow))],
+      ['review-res-status','状态总览',wbBlock('状态总览',wbSegHint(RESULT,'review-res-status')+statusOverview(flow)+routeSafetyEvidencePanel(flow))],
       ['review-res-report','报告与交付',wbBlock('报告与交付',wbSegHint(RESULT,'review-res-report')+reportPanel(flow)+deliveryPanel(flow))]
     ]})
     +wbPanel('advanced','',{segments:[
@@ -289,4 +471,7 @@ export function bind(c){
   c.actionButton('downloadReportHtml',()=>c.downloadPlanningReport('html'));
   c.actionButton('downloadReportPdf',()=>c.downloadPlanningReport('pdf'));
   c.actionButton('downloadReportPackage',()=>c.downloadPlanningReport('package'));
+  // 显式评价：不存在任何自动后台评价，前端只提交一次 POST 并转印后端结果。
+  c.actionButton('evaluateRouteSafetyEvidenceV2',()=>c.resourceAction(
+    '/api/route-safety-evidence-v2/evaluate',{}));
 }

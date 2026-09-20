@@ -109,6 +109,10 @@ from ..domain.layered_route_validation import (
 from ..domain.layered_operational_adoption import (
     empty_layered_operational_adoptions, normalize_layered_operational_adoptions,
 )
+from ..domain.route_safety_evidence_v2 import (
+    empty_route_safety_evidence_v2_collection,
+    normalize_route_safety_evidence_v2_collection,
+)
 from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
@@ -254,7 +258,8 @@ def blank_project(defaults):
         "safety_assessment": empty_safety_assessment(),
         "building_clearance_policy": default_building_clearance_policy(),
         "building_clearance_assessment": empty_building_clearance_assessment(),
-        # Layered Risk-Aware Route Planner V1 (production main line): explicit altitude
+        # Layered route planning (Theta* V2 is the default layered_route_planner; V1 stays
+        # the explicitly selectable legacy/baseline planner): explicit altitude
         # layer selection + explicit feasibility/cost policy + independent candidate
         # container.  No default clearance and no default lambda ships here.
         "layered_route_planning_request": default_layered_route_request(),
@@ -269,6 +274,10 @@ def blank_project(defaults):
         # independent from both the candidate and the V3 experiment containers.
         "layered_route_validations": empty_layered_route_validation_collection(),
         "layered_operational_adoptions": empty_layered_operational_adoptions(),
+        # Route Safety Evidence V2 (additive post-planning evidence aggregation over the
+        # published layered adoption lineage).  It ships empty: nothing is ever evaluated in
+        # the background, and the container never feeds back into any upstream result.
+        "route_safety_evidence_v2": empty_route_safety_evidence_v2_collection(),
         # Layered Risk-Aware Theta* V2 additive planning inputs.  The shelter coefficient is
         # the user-confirmed 1.0 baseline and lives as real per-grid data in
         # ``grid_attributes.population_shelter``; the two interfaces ship not configured.
@@ -299,6 +308,7 @@ def blank_project(defaults):
                 "layered_route_candidate",
                 "route_risk_profile",
                 "layered_route_validation",
+                "route_safety_evidence_v2",
             )
         },
         "last_saved_at": None,
@@ -481,6 +491,11 @@ def normalize_project(value, grid_service):
     value["layered_operational_adoptions"] = normalize_layered_operational_adoptions(
         value.get("layered_operational_adoptions")
     )
+    # Route Safety Evidence V2 additive backfill: a legacy project gets an empty collection,
+    # never a synthesized "current" assessment.
+    value["route_safety_evidence_v2"] = normalize_route_safety_evidence_v2_collection(
+        value.get("route_safety_evidence_v2")
+    )
     # Layered Risk-Aware Theta* V2 additive backfill.  A legacy project gets the explicit
     # user-confirmed shelter_coefficient = 1.0 baseline, the confirmed 0.8/0.1/0.1 objective,
     # the deliberately wide temporary max_route_risk_density = 1.0 evaluation constraint, and
@@ -509,6 +524,9 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "layered_route_validation", "not_calculated"
+    )
+    value.setdefault("result_statuses", {}).setdefault(
+        "route_safety_evidence_v2", "not_calculated"
     )
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
