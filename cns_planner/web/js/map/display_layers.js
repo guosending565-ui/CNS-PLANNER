@@ -13,6 +13,7 @@ import {drawLine} from './renderer.js';
 import {drawBuildingClearanceOverlay} from './building_clearance_overlay.js';
 import {drawV3CandidateOverlay,v3OverlayModel} from './route_planner_v3_overlay.js';
 import {drawLayeredFeasibilityOverlay} from './layered_feasibility_overlay.js';
+import {drawLayeredCandidateOverlay} from './layered_candidate_overlay.js';
 import {clusterPoints,toGeographic,extentOf,hitCluster} from './point_clustering.js';
 import {displayStyle} from './lod.js';
 
@@ -25,6 +26,9 @@ const GAP_COLORS={C:'#d83b35',N:'#c26b16',S:'#9b3eb5'};
 const SUBSYSTEM_COLORS={C:'#1574d4',N:'#b8840f',S:'#0f8a78'};
 const SCENARIO_COLOR='#7b8791';
 const OPERATIONAL_COLOR='#0b6bbd';
+//: 临时 evidence highlight（RRP segment / high-risk interval hover）视觉权重最高：
+//: 它画在正常路线与 candidate 之上，且只是纯 UI 状态，不影响任何业务层。
+const ROUTE_EVIDENCE_COLOR='#c0392b';
 
 const CLUSTER_COLORS={nodes:'#c25233',sites:LANDING_COLOR.cluster,referencePoints:'#783b69'};
 
@@ -192,12 +196,16 @@ export function entryExtent(entry){return extentOf(entry);}
 
 /**
  * 绘制 workflow 叠加层。
- * @param {{ctx,view,flow,plan,layers,screenPoint,currentStep,profileHoverCoordinate,
+ *
+ * 视觉层级（从低到高）：scenario / reference route → operational route →
+ * **LayeredRouteCandidate（当前规划结果主线）** → 临时 evidence highlight（最高）。
+ *
+ * @param {{ctx,view,flow,plan,layers,screenPoint,profileHoverCoordinate,routeEvidenceHighlight,
  *          draftBounds,gridDisplay,gridCache,visibleBounds,gridTheme,palettes,riskBreaks,
  *          drawWorkspace,drawGridThemes,drawGridBoundaries,proposedPlanActions}} input
  */
 export function drawWorkflowLayers({
-  ctx,view,flow,plan,layers={},screenPoint,profileHoverCoordinate=null,gridTheme=null,
+  ctx,view,flow,plan,layers={},screenPoint,profileHoverCoordinate=null,routeEvidenceHighlight=null,gridTheme=null,
   drawWorkspace,drawGridThemes,drawGridBoundaries,proposedPlanActions=()=>[]
 }){
   const styles=plan.styles;
@@ -208,9 +216,14 @@ export function drawWorkflowLayers({
   drawGridBoundaries();
 
   // 1) 航路（当前选择增强，其余降低视觉权重）
+  //    scenario 只是场景对照、reference 只是参考：candidate 是当前规划结果主线，
+  //    因此这两类在这里都被压到 candidate 之下（颜色更浅、线更细、虚线）。
   const selectedRouteId=plan.selectedReferenceId||null;
   for(const route of flow.scenario_routes||[]){
+    ctx.save();
+    ctx.globalAlpha=styles.scenarioAlpha*.72;
     drawLine(ctx,screenPoint,view,route.path,SCENARIO_COLOR,styles.scenarioWidth,[7,5]);
+    ctx.restore();
   }
   for(const route of flow.operational_routes||[]){
     if(route.status!=='passed')continue;
@@ -230,7 +243,17 @@ export function drawWorkflowLayers({
     drawV3CandidateOverlay({ctx,screenPoint,drawLine,model:v3OverlayModel(flow)});
   }
   if(layers.layeredFeasibility){
+    // 只画 selected-layer coarse feasibility mask：不再绘制 candidate route。
     drawLayeredFeasibilityOverlay({ctx,view,screenPoint,flow,grid:flow.grid,gridTheme:gridTheme});
+  }
+  if(layers.layeredCandidate!==false){
+    // current LayeredRouteCandidate：优先 candidate.path（Theta* V2 真实起终点 + any-angle）。
+    // overview / medium / detail 都允许显示，只按既有 LOD 调整线宽与 alpha。
+    const width=styles.operationalWidth+0.4;
+    drawLayeredCandidateOverlay({
+      ctx,screenPoint,flow,grid:flow.grid,
+      style:{width,alpha:styles.operationalAlpha,dash:[]},
+    });
   }
 
   // 3) 参考航线与航路点由 main.js 的 drawWorkflowOverlay 显式调用
@@ -318,4 +341,22 @@ export function drawWorkflowLayers({
   if(plan.selectedScreen){
     placer.place(ctx,plan.selectedReferenceId||'当前选择',plan.selectedScreen[0]+10,plan.selectedScreen[1]-9,{color:'#8f2f6b'});
   }
+
+  // 10) 临时 evidence highlight：视觉权重最高，画在全部正常路线与 candidate 之上。
+  //     几何来自后端 RRP segment 的 start_coordinate / end_coordinate（原样绘制，不插值）；
+  //     这里不做任何 zoom / layer / LOD 变更，也不写入任何业务状态。
+  drawRouteEvidenceHighlight({ctx,view,screenPoint,highlight:routeEvidenceHighlight});
+}
+
+/**
+ * 临时 evidence highlight：只在 highlight.path 至少有 2 个点时画一条高权重折线。
+ * 缺失几何时什么都不画（绝不根据 distance 自行插值出坐标）。
+ */
+export function drawRouteEvidenceHighlight({ctx,view,screenPoint,highlight}){
+  const path=highlight?.path;
+  if(!Array.isArray(path)||path.length<2)return 0;
+  // 白色描边在下、evidence 色在上：保证在 candidate / scenario 之上仍然可读。
+  drawLine(ctx,screenPoint,view,path,'#ffffff',9,[]);
+  drawLine(ctx,screenPoint,view,path,ROUTE_EVIDENCE_COLOR,6,[]);
+  return path.length;
 }

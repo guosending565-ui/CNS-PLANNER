@@ -26,8 +26,9 @@ import {render as renderStep3,bind as bindStep3} from '../cns_planner/web/js/wor
 import {createWorkbench} from '../cns_planner/web/js/workflow/workbench.js';
 import {renderWorkflowSteps} from '../cns_planner/web/js/workflow/steps.js';
 import {
-  DOMAIN_IDS,ROUTE_RISK_PROFILE_SEGMENT,routeRiskDomainGeometry,routeRiskDomainModel,
-  routeRiskDomainSvg,routeRiskProfileModel,routeRiskProfilePolicyPayload,routeRiskProfileScale,
+  DOMAIN_IDS,ROUTE_RISK_PROFILE_SEGMENT,bindRouteRiskProfileMapLinkage,routeRiskDomainGeometry,
+  routeRiskDomainModel,routeRiskDomainSvg,routeRiskIntervalHighlight,routeRiskProfileModel,
+  routeRiskProfilePolicyPayload,routeRiskProfileScale,routeRiskSegmentHighlight,
   renderRouteRiskProfile,
 } from '../cns_planner/web/js/workflow/route_risk_profile.js';
 
@@ -250,10 +251,14 @@ installStubDom();
 
 const GOLDEN_ROUTE_LENGTH_M=1925.858241815;
 
-/** 与后端 profile 同形的 segments：位置只由 start/end_cumulative_distance_m 表达。 */
+/** 与后端 profile 同形的 segments：位置只由 start/end_cumulative_distance_m 表达。
+ *  Layered Route Map Evidence V1 起，后端每个 segment 还额外给出权威的
+ *  start_coordinate / end_coordinate —— 地图联动**只**用这两个字段（绝不用 distance 插值）。 */
 function segmentsFor(lengths,groundLevels,index){
   const segments=[];
   let total=0;
+  //: 沿一条正东测线每 0.001° 一个节点：坐标是后端给出的证据，不是前端推算的。
+  const coordinateAt=metres=>[122.0+metres/1000*0.001,30.0];
   lengths.forEach((lengthValue,position)=>{
     const level=groundLevels[position]||null;
     segments.push({
@@ -262,6 +267,8 @@ function segmentsFor(lengths,groundLevels,index){
       start_cumulative_distance_m:total,
       end_cumulative_distance_m:total+lengthValue,
       length_m:lengthValue,
+      start_coordinate:coordinateAt(total),
+      end_coordinate:coordinateAt(total+lengthValue),
       start_index_grid_id:'G'+position,
       end_index_grid_id:'G'+(position+1),
       domains:{
@@ -1125,4 +1132,85 @@ test('engineering evidence is collapsed by default and the boundaries stay expli
       ['0.3','',''],'an unconfirmed domain must never be prefilled');
     for(const node of mediumInputs)assert.equal(node.attributes.placeholder,'无默认值');
   });
+});
+
+// ---- 10. RouteRiskProfile → 地图临时联动（DOM 级） ----------------------------
+
+test('segment and interval evidence rows drive the temporary map highlight and clear it on leave',()=>{
+  withStubDom(document=>{
+    const flow=baseFlow({confirmedDomains:['ground']});
+    const {root}=mountStep3(document,flow);
+    document.querySelectorAll=selector=>findAll(document.body,selector);
+    document.querySelector=selector=>findAll(document.body,selector)[0]||null;
+    const profile=flow.route_risk_profiles.items[0];
+    const calls=[];
+    const c={
+      $:id=>document.getElementById(id),flow:()=>flow,document,
+      panelError:()=>{},resourceAction:()=>Promise.resolve({}),actionButton:()=>{},
+      routeEvidence:{set:value=>calls.push(['set',value]),clear:()=>calls.push(['clear'])},
+    };
+    assert.equal(bindRouteRiskProfileMapLinkage(c),13,
+      'three domains × four segment bars plus one high-risk interval');
+    // 渲染出来的 segment 柱必须带回调需要的标识（并且是可聚焦的）：只有 SVG 柱参与联动
+    // ground / air_traffic 是 resolved 柱，environment_obstacle 是 raw index 未解析柱，两者都要可联动。
+    const rects=findAll(root,'[data-rrp-segment]').filter(node=>node.tagName==='RECT');
+    const unresolvedRects=findAll(root,'[data-rrp-segment-unresolved]').filter(node=>node.tagName==='RECT');
+    assert.equal(rects.length,profile.segments.length*2);
+    assert.equal(unresolvedRects.length,profile.segments.length);
+    assert.equal(rects.length+unresolvedRects.length+findAll(root,'[data-rrp-interval]').length,13);
+    for(const rect of [...rects,...unresolvedRects]){
+      assert.equal(rect.dataset.rrpSegmentHighlight,rect.dataset.rrpSegment||rect.dataset.rrpSegmentUnresolved);
+      assert.equal(rect.attributes.tabindex,'0');
+    }
+    const interval=findAll(root,'[data-rrp-interval]')[0];
+    assert.ok(interval,'the high-risk interval row must be present');
+    assert.equal(interval.dataset.rrpIntervalDomain,'ground');
+    assert.equal(interval.attributes.tabindex,'0');
+
+    const dispatch=(node,type)=>node.dispatchEvent({type,target:node});
+    const hovered=rects[1];
+    dispatch(hovered,'mouseenter');
+    const hoverEvidence=calls.pop();
+    assert.equal(hoverEvidence[0],'set');
+    assert.deepEqual(hoverEvidence[1],routeRiskSegmentHighlight(profile,profile.segments[1].segment_id));
+    assert.deepEqual(hoverEvidence[1].path,[profile.segments[1].start_coordinate,profile.segments[1].end_coordinate],
+      'segment 几何只能来自后端的 start/end_coordinate');
+    dispatch(hovered,'mouseleave');
+    assert.deepEqual(calls.pop(),['clear']);
+
+    dispatch(interval,'focus');
+    const focusEvidence=calls.pop();
+    assert.equal(focusEvidence[0],'set');
+    assert.deepEqual(focusEvidence[1],routeRiskIntervalHighlight(profile,
+      profile.domains.ground.high_risk.intervals[0]));
+    assert.deepEqual(focusEvidence[1].segmentIds,['RRP-LRC-1-S0000','RRP-LRC-1-S0001']);
+    // 区间几何 = 按 segment_ids 顺序拼接的坐标（首尾相接、无重复点）
+    assert.deepEqual(focusEvidence[1].path,[
+      [122.0,30.0],[122.00055,30.0],[122.00105,30.0],
+    ]);
+    dispatch(interval,'blur');
+    assert.deepEqual(calls.pop(),['clear']);
+  });
+});
+
+test('the map linkage never fabricates geometry and never rewrites risk or classification',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/route_risk_profile.js',import.meta.url),'utf8');
+  // 只用后端坐标字段；不存在 distance → coordinate 的插值
+  assert.match(source,/start_coordinate/);
+  assert.match(source,/end_coordinate/);
+  assert.doesNotMatch(source,/interpolat|lerp|along_track|haversine|6371008\.8|Math\.asin/);
+  assert.doesNotMatch(source,/start_distance_m[^;\n]*coord|end_distance_m[^;\n]*coord/,
+    'interval 的 distance 区间绝不能参与坐标生成');
+  // 联动不写地图 layer / zoom，也不经 mutate 触发任何写操作
+  assert.doesNotMatch(source,/setLayer\(|setZoom|fitLonLatBbox|layerIds|c\.mutate\(/);
+  // interval 几何严格来自 segment_ids → 当前 profile.segments
+  assert.match(source,/interval\?\.segment_ids|segment_ids\|\|\[\]/);
+  const profile=profileFixture({groundConfirmed:true});
+  // interval 的 distance 区间与坐标顺序无关：交换 segment_ids 得到镜像路径
+  const interval={interval_id:'ground-HR-0001',segment_ids:[
+    profile.segments[1].segment_id,profile.segments[0].segment_id]};
+  assert.deepEqual(routeRiskIntervalHighlight(profile,interval).path,[
+    profile.segments[1].start_coordinate,profile.segments[1].end_coordinate,
+    profile.segments[0].start_coordinate,profile.segments[0].end_coordinate,
+  ]);
 });

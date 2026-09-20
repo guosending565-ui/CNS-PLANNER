@@ -1698,7 +1698,7 @@ function buildingClearancePanel(flow){
   return '<h3>三维建筑净空 '+statusBadge(result.status||'not_calculated')+'</h3><div class="parameter-note">FABDEM DTM footprint median + GBA height_m 构成 LoD1 棱柱；GLO-30 DSM 不参与屋顶高程。建筑环境风险与本评估彼此独立。</div><div class="form-grid"><label>水平净空 (m)<input class="panel-input" type="number" min="0" step="any" id="buildingHorizontalClearance" value="'+escapeHtml(policy.horizontal_clearance_m??'')+'"></label><label>垂直净空 (m)<input class="panel-input" type="number" min="0" step="any" id="buildingVerticalClearance" value="'+escapeHtml(policy.vertical_clearance_m??'')+'"></label><label>最小建筑高度 (m，可空)<input class="panel-input" type="number" min="0" step="any" id="buildingMinHeight" value="'+escapeHtml(policy.min_building_height_m??'')+'"></label><label>地形起伏复核阈值 (m，可空)<input class="panel-input" type="number" min="0" step="any" id="buildingReliefReview" value="'+escapeHtml(policy.terrain_relief_review_m??'')+'"></label></div><label>工程参数来源<input class="panel-input" id="buildingClearanceSource" value="'+escapeHtml(policy.source||'')+'"></label><label class="check-row"><input type="checkbox" id="buildingClearanceConfirmed" '+(policy.confirmed?'checked':'')+'>参数已由工程依据确认</label><div class="button-row"><button class="secondary" id="saveBuildingClearancePolicy">保存参数</button><button class="primary" id="evaluateBuildingClearance">执行净空分析</button></div><div class="flow-summary">breach '+(stats.breach_count||0)+' · safe routes '+(stats.safe_route_count||0)+' · unknown routes '+(stats.unknown_route_count||0)+' · unresolved buildings '+unresolved+'<br>unknown/unresolved 永远不视为 safe；本结果不构成认证或法规符合性结论。</div><h3>Closest / critical buildings</h3><div class="scroll-list">'+(critical||'<div class="empty-note">尚无评估证据</div>')+'</div>';
 }
 
-export function render({flow,interactionMode,selectedReference=null}){
+export function render({flow,interactionMode,selectedReference=null,routeEvidenceHighlight=null}){
   const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+node.node_id+'</b> '+escapeHtml(node.name)+'<small>'+node.coordinate.map(value=>value.toFixed(5)).join(', ')+(node.reference_site_id?' · 来源 '+escapeHtml(node.reference_site_id):' · 手工点')+'</small></span><button data-delete-node="'+node.node_id+'">×</button></div>').join('');
   const routes=routesFor(flow);
   const routeOptions=(flow.operational_routes||[]).map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
@@ -1711,7 +1711,7 @@ export function render({flow,interactionMode,selectedReference=null}){
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
   return shell('03','航路规划','地图点击增加起降点；场景与运行航路分别保存。',
     routeOperateSection(flow,{interactionMode,nodes})
-    +routeResultSection(flow,{routes,selectedReference})
+    +routeResultSection(flow,{routes,selectedReference,routeEvidenceHighlight})
     +routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion})
     +'<button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>');
 }
@@ -1795,14 +1795,16 @@ function routeOperateSection(flow,{interactionMode,nodes}){
 }
 
 // ---- 结果区：当前航路 / 可行性与净空 / 路径风险画像 / 对比验证 -------------------
-function routeResultSection(flow,{routes,selectedReference}){
+function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighlight=null}){
   // 建筑净空突破的详细分析在"高级 → 剖面与运动"，这里保持独立的可行性与净空汇总。
   // Continuous Validation 接在既有 data readiness / building clearance 之后，
   // 实现完全在 layered_route_validation.js：本文件只插入组合。
   const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)
     +buildingClearancePanel(flow)+renderLayeredRouteValidation(flow);
   // RouteRiskProfile 的展示实现独立在 route_risk_profile.js：这里只插入分段，不再往本文件堆业务。
-  const riskProfile=wbSegHint(RESULT_SEGMENTS,ROUTE_RISK_PROFILE_SEGMENT)+renderRouteRiskProfile(flow);
+  // 地图联动（临时 evidence highlight）只读取 main.js 传入的纯 UI 状态，不参与任何数值判断。
+  const riskProfile=wbSegHint(RESULT_SEGMENTS,ROUTE_RISK_PROFILE_SEGMENT)
+    +renderRouteRiskProfile(flow,{routeEvidenceHighlight});
   return wbPanel('result','',{segments:[
     ['res-route','当前航路',
       wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>')

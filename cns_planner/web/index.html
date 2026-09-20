@@ -70,7 +70,8 @@
       <div class="layer-group-title">规划结果</div>
       <div class="layer-row"><span><i class="swatch" style="background:#d7263d"></i> 建筑净空突破</span><input type="checkbox" id="buildingClearanceLayer" checked aria-label="建筑净空突破"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#4c6ef5"></i> V3-A 战略候选（2D 投影，实验）</span><input type="checkbox" id="v3CandidateLayer" checked aria-label="V3-A 战略候选 2D 投影"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> Selected layer 可行性（coarse 垂向包络 · 分层候选）</span><input type="checkbox" id="layeredFeasibilityLayer" checked aria-label="Selected layer 可行性掩码与分层候选"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> Selected layer 可行性（coarse 垂向包络掩码）</span><input type="checkbox" id="layeredFeasibilityLayer" checked aria-label="Selected layer coarse 可行性掩码"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 分层候选航路（current candidate，当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" checked aria-label="分层候选航路 current candidate"></div>
      </div>
      <div class="layer-group" id="cnsLayers" hidden>
       <div class="layer-group-title">CNS</div>
@@ -101,6 +102,7 @@
     </div>
     <div id="gridThemeLegend" hidden><p><b id="gridThemeLegendTitle"></b><span id="gridThemeLegendUnit"></span></p><div id="gridThemeGradient" class="gradient"></div><div id="gridThemeTicks" class="ticks"></div><div class="no-data-key"><i></i>无数据</div><small id="gridThemeLegendNote"></small></div>
     <div id="layeredFeasibilityLegend" hidden></div>
+    <div id="layeredCandidateLegend" hidden></div>
    </div>
 
    <div id="gridNotice" class="grid-notice" hidden></div>

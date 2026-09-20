@@ -1,8 +1,13 @@
-// Selected-layer feasibility overlay for the Layered Risk-Aware Route Planner V1.
+// Selected-layer coarse feasibility mask overlay for the Layered Risk-Aware Route Planner.
 //
 // Only the *selected* (scenario route, altitude layer) lane is rendered, and only three
 // categorical verdicts exist: feasible / blocked / unknown.  ``unknown`` is drawn as
 // "no evidence" — it is never drawn as feasible and never as a numeric 0.
+//
+// Layered Route Map Evidence V1 split: this module draws the coarse feasibility mask **only**.
+// The current LayeredRouteCandidate path moved to ``layered_candidate_overlay.js`` so the mask
+// and the candidate route can be switched (and audited) independently.  ``currentLayeredCandidate``
+// stays exported for backward compatibility, but nothing here draws a candidate route.
 export const LAYERED_FEASIBILITY_COLORS={
   feasible:'#2f9e6f',
   blocked:'#d7263d',
@@ -55,6 +60,9 @@ function cellPath(ctx,screenPoint,bbox){
   ctx.closePath();
 }
 
+//: 只画 selected-layer coarse feasibility mask。
+//: candidate route 已拆到 ``layered_candidate_overlay.js``，本函数**不再**绘制任何候选航路，
+//: 返回值里的 ``path`` 因此恒为 0（保留该字段只为兼容既有调用方与审计）。
 export function drawLayeredFeasibilityOverlay({ctx,view,screenPoint,flow,grid,gridTheme}){
   if(!view||!flow||!grid?.cells?.length)return {cells:0,path:0};
   const cells=layeredFeasibilityCells(flow);
@@ -71,25 +79,5 @@ export function drawLayeredFeasibilityOverlay({ctx,view,screenPoint,flow,grid,gr
     ctx.restore();
     drawn+=1;
   }
-  const candidate=currentLayeredCandidate(flow);
-  let pathPoints=0;
-  if(candidate){
-    const centers=new Map((grid.cells||[]).map(cell=>[cell.grid_id,cell.center]));
-    const points=(candidate.grid_path||[]).map(id=>centers.get(id)).filter(Boolean);
-    if(points.length>1){
-      ctx.save();
-      ctx.strokeStyle='#123a5c';
-      ctx.lineWidth=3;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      points.forEach((point,index)=>{
-        const screen=screenPoint(point);
-        if(index===0)ctx.moveTo(screen[0],screen[1]);else ctx.lineTo(screen[0],screen[1]);
-      });
-      ctx.stroke();
-      ctx.restore();
-      pathPoints=points.length;
-    }
-  }
-  return {cells:drawn,path:pathPoints};
+  return {cells:drawn,path:0};
 }

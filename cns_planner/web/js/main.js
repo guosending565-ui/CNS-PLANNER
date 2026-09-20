@@ -6,7 +6,7 @@ import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/renderer.js';
 import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,entryExtent} from './map/display_layers.js';
-import {renderLayeredFeasibilityLegend} from './workflow/layered_legend.js';
+import {updateLayeredLegends} from './workflow/layered_legend.js';
 import {renderWorkflowSteps} from './workflow/steps.js';
 import {createWorkbench} from './workflow/workbench.js';
 import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
@@ -24,11 +24,15 @@ import {createSourceCenter} from './sources/source_center.js';
 
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
-// 统一的地图图层开关（图层抽屉里的全部 checkbox 都在这里，避免散落引用）
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer'];
+// 统一的地图图层开关（图层抽屉里全部 checkbox 都在这里）：layeredFeasibilityLayer 只画
+// coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
+// 临时 evidence highlight（RouteRiskProfile → 地图联动）：纯 UI 状态，不写 ProjectState、
+// 不调用 API、不改 zoom / layer / LOD，也不新增任何永久状态。
+let routeEvidenceHighlight=null;
 let gridDataSerial=0;
 let gridDisplay={outline:true,theme:'none'};
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
@@ -134,17 +138,18 @@ function drawWorkflowOverlay(){
   updateLodBadge($('lodStatus'),currentPlan,escapeHtml);
   drawWorkflowLayers({
     ctx,view,flow,plan:currentPlan,layers:layers(),screenPoint,profileHoverCoordinate,gridTheme:GridTheme,
+    routeEvidenceHighlight,
     proposedPlanActions,
     drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
     drawGridThemes,drawGridBoundaries
   });
-  // 参考层：只读参考数据，线宽/透明度/点半径按当前显示层级收敛
+  // 参考层：只读参考数据；视觉层级 candidate > scenario / reference，因此参考线再压一层。
   const plan=currentPlan,switches=layers(),styles=plan.styles;
   drawReferenceOverlay({
     ctx,view,screenPoint,drawLine,
     routes:switches.referenceRouteLayer?plan.referenceRoutes:[],
     points:(switches.referenceRoutePointLayer&&plan.referencePointsVisible)?plan.referencePoints:[],
-    routeWidth:styles.referenceWidth,routeAlpha:styles.referenceAlpha,
+    routeWidth:styles.referenceWidth,routeAlpha:styles.referenceAlpha*.7,
     pointRadius:styles.pointRadius,pointAlpha:styles.pointAlpha,
     labelMode:plan.level==='detail'?'detail':'hidden'
   });
@@ -228,7 +233,7 @@ function updateGridNotice(){
   notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
-  if(updateLayeredFeasibilityLegend())return;
+  if(updateLayeredLegends({$,flow,formatNumber:GridTheme.formatNumber}))return;
   if(updateRiskV2Legend())return;
   const legend=$('gridThemeLegend'),model=gridThemeLegendModel(flow,gridRenderCache,gridDisplay);
   if(!legend)return;
@@ -240,11 +245,6 @@ function updateGridThemeLegend(){
   const ticks=$('gridThemeTicks');ticks.replaceChildren();
   for(const value of (model.shown.length?model.shown:['无有效值'])){const span=document.createElement('span');span.textContent=typeof value==='number'?GridTheme.formatNumber(value):value;ticks.append(span);}
   $('gridThemeLegendNote').textContent=gridThemeLegendNote(model,statusText,GridTheme.formatNumber);
-}
-// Layered Route Planner V1 legend: the selected layer's coarse feasibility mask only.
-function updateLayeredFeasibilityLegend(){
-  if(!$('layeredFeasibilityLayer')?.checked)return false;
-  return renderLayeredFeasibilityLegend($('layeredFeasibilityLegend'),flow,GridTheme.formatNumber);
 }
 // Risk Framework V2 legend: factor/domain layers are relative engineering
 // indices.  A pending/unresolved domain index renders as "no data", never as 0.
@@ -273,6 +273,7 @@ function statusBadge(status){return badgeFor(status);}
 function escapeHtml(value){return escapeValue(value);}
 function setStep(step){
   currentStep=Number(step);interactionMode='pan';draftWorkspace=null;profileHoverCoordinate=null;
+  routeEvidenceHighlight=null;
   store.set({ui:{...store.get().ui,step:currentStep,interactionMode}});
   workbench.clearState();
   $('cnsLayers').hidden=currentStep<5;
@@ -290,7 +291,7 @@ function renderWorkflow(){
   // mutation / 重新渲染后保持当前一级与二级标签以及滚动位置
   const scroll=body?body.scrollTop:0;
   store.set({ui:{...store.get().ui,workbench:{...store.get().ui.workbench,scroll}}});
-  const rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber}});
+  const rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight}});
   workbench.mount({root:rendered,step});
   step.bind(stepBindings());
   if(body)body.scrollTop=Math.min(scroll,Math.max(0,body.scrollHeight-body.clientHeight));
@@ -312,6 +313,11 @@ function stepBindings(){return {
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
   selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},
+  // RouteRiskProfile → 地图的临时联动：只改纯 UI 高亮状态并重绘。
+  routeEvidence:{
+    set(value){routeEvidenceHighlight=value||null;paint();},
+    clear(){routeEvidenceHighlight=null;paint();},
+  },
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
   startWorkspace(){interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},

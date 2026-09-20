@@ -24,6 +24,9 @@ import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,ris
 import {COST_DOMAIN_LABELS,LAYERED_BLOCKED_NOTE,LAYERED_CANDIDATE_LABEL,LAYERED_PLANNER_ALGORITHM_TYPE,layeredEvaluatePayload,layeredOverlayModel,layeredPlannerUsesThetaStarV2,layeredRequestPayload,layeredRoutePlannerModel,renderLayeredRoutePlannerPanel} from '../cns_planner/web/js/workflow/layered_route_planner.js';
 import {THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_PANEL_TITLE,THETA_V2_EVALUATE_BLOCKED_NOTE,bindLayeredThetaV2,isLegacyV1CostBlocker,layeredThetaV2Model,renderLayeredThetaV2Panel,thetaV2ObjectivePolicyPayload,thetaV2RiskDensityPayload,thetaV2ShelterPolicyPayload} from '../cns_planner/web/js/workflow/layered_theta_v2.js';
 import {LAYERED_FEASIBILITY_COLORS,currentLayeredCandidate,drawLayeredFeasibilityOverlay,layeredFeasibilityCells,layeredFeasibilityLegend} from '../cns_planner/web/js/map/layered_feasibility_overlay.js';
+import {drawWorkflowLayers} from '../cns_planner/web/js/map/display_layers.js';
+import {drawLayeredCandidateOverlay} from '../cns_planner/web/js/map/layered_candidate_overlay.js';
+import {ROUTE_STYLES} from '../cns_planner/web/js/map/lod.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -1917,7 +1920,7 @@ test('layered feasibility overlay draws only the selected layer with three verdi
   assert.equal(currentLayeredCandidate(other),null);
 });
 
-test('layered feasibility overlay paints categorical cells and the current candidate path',()=>{
+test('layered feasibility overlay paints categorical cells only and never a candidate path',()=>{
   const flow=layeredFlow();
   const fills=[],strokes=[];
   const ctx={save(){},restore(){},fill(){fills.push(this.fillStyle)},stroke(){strokes.push(this.strokeStyle)},
@@ -1927,18 +1930,64 @@ test('layered feasibility overlay paints categorical cells and the current candi
     ctx,view:{x:0,y:0,res:1},screenPoint:point=>[point[0],point[1]],flow,grid:layeredGrid(),gridTheme:theme,
   });
   assert.equal(drawn.cells,3);
-  assert.equal(drawn.path,3);
+  // Layered Route Map Evidence V1：feasibility overlay 以后不得再绘制 candidate route
+  assert.equal(drawn.path,0,'the coarse feasibility mask never draws a candidate route');
+  assert.deepEqual(strokes,[],'the feasibility mask only fills cells');
   assert.deepEqual(fills,[
     LAYERED_FEASIBILITY_COLORS.feasible,
     LAYERED_FEASIBILITY_COLORS.blocked,
     LAYERED_FEASIBILITY_COLORS.unknown,
   ]);
-  assert.deepEqual(strokes,['#123a5c']);
   // a candidate that is not current is not drawn as the selected-layer path
   const stale=layeredFlow();
   stale.layered_route_candidates={...stale.layered_route_candidates,
     items:[{...stale.layered_route_candidates.items[0],current_applicability:'stale'}]};
   assert.equal(currentLayeredCandidate(stale),null);
+});
+
+test('drawWorkflowLayers keeps the candidate layer and the evidence highlight independent',()=>{
+  const flow={scenario_routes:[],operational_routes:[],nodes:[],reference_landing_sites:{items:[]},
+    layered_route_planning_request:{scenario_route_id:'R0001',altitude_layer_id:'L8-LOW'},
+    layered_route_candidates:{status:'passed',count:1,active_candidate_id:'LRC-R0001-L8-LOW-1',
+      items:[{candidate_id:'LRC-R0001-L8-LOW-1',route_id:'R0001',altitude_layer_id:'L8-LOW',
+        lane_key:'R0001@L8-LOW',status:'candidate',current_applicability:'current',
+        path:[[122.0,30.0],[122.001,30.0004],[122.01,30.01]],grid_path:['A','B','C']}],
+      masks:{'R0001@L8-LOW':{status:'passed',cells:{A:{grid_id:'A',status:'feasible'}}}}},
+    grid:{cells:layeredGrid().cells}};
+  const strokes=[];
+  const ctx={save(){},restore(){},fill(){},stroke(){strokes.push({color:this.strokeStyle,width:this.lineWidth})},
+    beginPath(){},moveTo(){},lineTo(){},closePath(){},setLineDash(){},globalAlpha:1};
+  const plan={styles:ROUTE_STYLES.detail,pending:[],referenceRoutes:[],referencePoints:[],
+    landingSites:[],nodes:[],priorityIds:new Set(),priorityCoordinates:new Set(),selectedScreen:null,
+    selectedReferenceId:null,clusterCounts:{nodes:0,sites:0},level:'detail',levelLabel:'细节',
+    resolution:'1.0 km/px',referencePointsVisible:false};
+  const draw=input=>drawWorkflowLayers({ctx,view:{x:0,y:0,res:1},flow,screenPoint:point=>[point[0],point[1]],
+    plan,layers:{layeredFeasibility:false,layeredCandidate:true},gridTheme:{bboxIntersects:()=>true},
+    drawWorkspace(){},drawGridThemes(){},drawGridBoundaries(){},...input});
+  // 候选层打开：画 candidate 几何（Theta* any-angle 折线）
+  draw({});
+  assert.equal(strokes.length,1);
+  assert.equal(strokes[0].color,'#123a5c');
+  assert.equal(strokes[0].width,ROUTE_STYLES.detail.operationalWidth+0.4);
+  // 候选层关闭：candidate 几何消失，feasibility 掩码仍然独立可画
+  strokes.length=0;
+  draw({layers:{layeredFeasibility:false,layeredCandidate:false}});
+  assert.deepEqual(strokes,[]);
+  strokes.length=0;
+  draw({layers:{layeredFeasibility:true,layeredCandidate:false}});
+  assert.deepEqual(strokes,[],'the feasibility mask fills cells and never strokes a route');
+  // 临时 highlight 画在正常路线（含 candidate）之上：白描边 + evidence 色
+  strokes.length=0;
+  draw({layers:{layeredFeasibility:true,layeredCandidate:true},
+    routeEvidenceHighlight:{source:'route_risk_profile',profileId:'RRP-1',candidateId:'LRC-R0001-L8-LOW-1',
+      segmentIds:['RRP-S0000'],path:[[122.0,30.0],[122.001,30.0]]}});
+  assert.deepEqual(strokes,[
+    {color:'#123a5c',width:ROUTE_STYLES.detail.operationalWidth+0.4},
+    {color:'#ffffff',width:9},
+    {color:'#c0392b',width:6},
+  ],'the highlight is drawn after the candidate route');
+  assert.equal(JSON.stringify(flow).includes('routeEvidenceHighlight'),false,
+    'the highlight must never be written into the snapshot');
 });
 
 test('layered candidate vocabulary is closed and never claims operational status',()=>{

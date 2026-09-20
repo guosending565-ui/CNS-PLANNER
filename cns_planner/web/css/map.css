@@ -303,6 +303,15 @@
 #layeredFeasibilityLegend{margin-top:var(--sp-6);padding-top:var(--sp-5);border-top:1px solid var(--line-soft)}
 #layeredFeasibilityLegend .layer-row{font-size:var(--fs-micro);padding:var(--sp-1) 0}
 #layeredFeasibilityLegend .small{margin-top:var(--sp-4);font-size:9px;line-height:1.5;color:var(--ink-faint)}
+#layeredCandidateLegend{margin-top:var(--sp-6);padding-top:var(--sp-5);border-top:1px solid var(--line-soft)}
+#layeredCandidateLegend .layer-row{font-size:var(--fs-micro);padding:var(--sp-1) 0}
+#layeredCandidateLegend .small{margin-top:var(--sp-4);font-size:9px;line-height:1.5;color:var(--ink-faint)}
+
+/* RouteRiskProfile → 地图联动：可 hover / focus 的 evidence 有明确的可交互提示（只是显示）。 */
+[data-rrp-segment-highlight]:hover,[data-rrp-segment-unresolved]:hover{cursor:crosshair;opacity:1}
+[data-rrp-segment-highlight]:focus-visible,[data-rrp-segment-unresolved]:focus-visible{outline:2px solid #c0392b;outline-offset:1px}
+[data-rrp-interval]{cursor:crosshair}
+[data-rrp-interval]:hover,[data-rrp-interval]:focus-visible{background:rgba(192,57,43,.10)}
 
 /* =========================================================
    5. 网格提示与点击详情

@@ -806,6 +806,9 @@ test('main.js wires layer switches and bootstrap once',()=>{
   // LAYER_IDS 必须包含参考航路点图层，displayPlan 依赖该 key
   assert.match(source,/const LAYER_IDS=\[[^\]]*'referenceRoutePointLayer'/);
   assert.match(source,/const LAYER_IDS=\[[^\]]*'referenceLandingLayer'/);
+  // Layered Route Map Evidence V1：可行性掩码与候选航路是两个独立图层开关
+  assert.match(source,/const LAYER_IDS=\[[^\]]*'layeredFeasibilityLayer'/);
+  assert.match(source,/const LAYER_IDS=\[[^\]]*'layeredCandidateLayer'/);
   // 统一开关集合通过 layerIds 传入，避免同一 id 被重复绑定
   assert.match(source,/layerIds:LAYER_IDS/);
   assert.match(shellSource,/\[\.\.\.layerIds,'gridLayer'\]/);

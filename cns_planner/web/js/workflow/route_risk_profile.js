@@ -218,6 +218,104 @@ export function routeRiskDomainGeometry(profile,domainId){
   };
 }
 
+// ------------------------------------------------- RouteRiskProfile → map linkage
+
+//: 临时 evidence highlight 的 source 标识（只是 UI 状态，不是业务字段）。
+export const RRP_EVIDENCE_HIGHLIGHT_SOURCE='route_risk_profile';
+
+/**
+ * 单个 RRP segment 的地图几何。
+ *
+ * **几何只来自后端已给出的 `start_coordinate` / `end_coordinate`**：
+ * 本模块绝不根据 `start_cumulative_distance_m` / `end_cumulative_distance_m` 自行插值经纬度。
+ * 缺少任一坐标时返回 null（宁可不画，也不编造几何）。
+ *
+ * @param {object} segment profile.segments[] 里的原始记录
+ * @returns {Array<Array<number>>|null} [start_coordinate, end_coordinate]
+ */
+export function routeRiskSegmentMapPath(segment){
+  const start=segment?.start_coordinate,end=segment?.end_coordinate;
+  if(!coordinateIsDrawable(start)||!coordinateIsDrawable(end))return null;
+  return [[start[0],start[1]],[end[0],end[1]]];
+}
+
+function coordinateIsDrawable(coordinate){
+  return Array.isArray(coordinate)&&coordinate.length>=2
+    &&Number.isFinite(coordinate[0])&&Number.isFinite(coordinate[1]);
+}
+
+function locateSegment(profile,segmentId){
+  return (profile?.segments||[]).find(item=>text(item?.segment_id)===text(segmentId))||null;
+}
+
+/**
+ * 严格按 interval.segment_ids 查询当前 profile.segments，并按 segment 原顺序拼接几何：
+ * 每个 segment 贡献 `start_coordinate → end_coordinate`，相邻重复点去重。
+ *
+ * 绝不使用 interval 的 start_distance_m / end_distance_m 重新插值几何。
+ *
+ * @returns {Array<Array<number>>|null}
+ */
+export function routeRiskIntervalMapPath(profile,segmentIds){
+  const points=[];
+  for(const segmentId of segmentIds||[]){
+    const segment=locateSegment(profile,segmentId);
+    if(!segment)continue;
+    const start=segment.start_coordinate,end=segment.end_coordinate;
+    if(!coordinateIsDrawable(start)||!coordinateIsDrawable(end))continue;
+    for(const point of [[start[0],start[1]],[end[0],end[1]]]){
+      const last=points[points.length-1];
+      if(last&&last[0]===point[0]&&last[1]===point[1])continue;
+      points.push(point);
+    }
+  }
+  return points.length>=2?points:null;
+}
+
+/** 当前 profile 的身份（candidate_id 用于校验联动对象仍是同一个 current candidate）。 */
+export function routeRiskProfileMapIdentity(profile){
+  return {
+    profileId:text(profile?.profile_id),
+    candidateId:text((profile?.candidate||{}).candidate_id),
+  };
+}
+
+/**
+ * 单个 RRP segment 的 evidence highlight 载荷；几何不可用或 profile 不是 current 时返回 null。
+ */
+export function routeRiskSegmentHighlight(profile,segmentId){
+  if(!profile)return null;
+  const segment=locateSegment(profile,segmentId);
+  const path=routeRiskSegmentMapPath(segment);
+  if(!path)return null;
+  const identity=routeRiskProfileMapIdentity(profile);
+  return {
+    source:RRP_EVIDENCE_HIGHLIGHT_SOURCE,
+    profileId:identity.profileId,
+    candidateId:identity.candidateId,
+    segmentIds:[text(segmentId)],
+    path,
+  };
+}
+
+/**
+ * high-risk interval 的 evidence highlight 载荷：严格由 segment_ids 拼路径。
+ */
+export function routeRiskIntervalHighlight(profile,interval){
+  const segmentIds=(interval?.segment_ids||[]).map(text).filter(Boolean);
+  if(!segmentIds.length)return null;
+  const path=routeRiskIntervalMapPath(profile,segmentIds);
+  if(!path)return null;
+  const identity=routeRiskProfileMapIdentity(profile);
+  return {
+    source:RRP_EVIDENCE_HIGHLIGHT_SOURCE,
+    profileId:identity.profileId,
+    candidateId:identity.candidateId,
+    segmentIds,
+    path,
+  };
+}
+
 /** 画像 SVG 的固定布局常量：实现与测试共用同一份定义。 */
 export const RRP_PROFILE_SVG={
   width:760,height:200,padLeft:48,padRight:16,padTop:24,padBottom:44,
@@ -318,6 +416,8 @@ export function routeRiskDomainSvg(profile,domainId){
     if(position.meanIndex===null){
       // 未解析就是未解析：绝不当 0，也不编造 index。
       return '<rect data-rrp-segment-unresolved="'+escapeHtml(text(position.segmentId))+'"'
+        +' data-rrp-segment-highlight="'+escapeHtml(text(position.segmentId))+'" tabindex="0"'
+        +' data-rrp-segment-focusable="true"'
         +' x="'+startX.toFixed(1)+'" y="'+(plotBottom-1)+'" width="'+barWidth.toFixed(1)+'" height="1"'
         +' fill="#c8d0d4"><title>'+escapeHtml('segment '+short(position.segmentId)
           +' · raw index 未解析（missing ≠ 0）')+'</title></rect>';
@@ -333,6 +433,8 @@ export function routeRiskDomainSvg(profile,domainId){
       +' · length '+fmt(position.lengthM,1)+' m'
       +' · mean_index '+fmt(position.meanIndex,6)+' · '+label);
     return '<rect data-rrp-segment="'+escapeHtml(text(position.segmentId))+'"'
+      +' data-rrp-segment-highlight="'+escapeHtml(text(position.segmentId))+'" tabindex="0"'
+      +' data-rrp-segment-focusable="true"'
       +' data-rrp-level="'+escapeHtml(classified?text(level||'unclassified'):'not_configured')+'"'
       +' data-rrp-segment-x="cumulative_distance_m" data-rrp-segment-y="mean_index"'
       +' x="'+startX.toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+barWidth.toFixed(1)+'"'
@@ -452,7 +554,9 @@ function domainCard(model,profile,domainId){
       const details=wbDisclosure('segment_ids / cell_ids（工程证据）',
         '<div class="parameter-note">segment_ids '+escapeHtml((interval.segment_ids||[]).join(', ')||'—')
         +'<br>cell_ids '+escapeHtml((interval.cell_ids||[]).join(', ')||'—')+'</div>');
-      return '<div class="list-row route-row"><span><b>'+escapeHtml(short(interval.interval_id))+'</b>'
+      return '<div class="list-row route-row" data-rrp-interval="'+escapeHtml(short(interval.interval_id))
+        +'" data-rrp-interval-domain="'+escapeHtml(domainId)+'" tabindex="0"'
+        +'><span><b>'+escapeHtml(short(interval.interval_id))+'</b>'
         +'<small>start_distance_m '+fmt(interval.start_distance_m,3)+' m'
         +' · end_distance_m '+fmt(interval.end_distance_m,3)+' m'
         +' · length_m '+fmt(interval.length_m,3)+' m</small>'
@@ -697,8 +801,10 @@ function boundaryBlock(model){
 /**
  * 渲染"路径风险画像"分段正文。
  * @param {object} flow published workflow snapshot
+ * @param {{routeEvidenceHighlight?:object|null}} [options] 只用于把"当前是否有临时高亮"标出来，
+ *   不参与任何数值或分级判断
  */
-export function renderRouteRiskProfile(flow){
+export function renderRouteRiskProfile(flow,{routeEvidenceHighlight=null}={}){
   const model=routeRiskProfileModel(flow);
   const candidate=model.candidate||{};
   const overview=wbBlock('RouteRiskProfile V1 '+statusBadge(model.readinessStatus),
@@ -732,7 +838,31 @@ export function renderRouteRiskProfile(flow){
       +'<b>生成 profile 不要求阈值</b>，只需后端 readiness 的 blocker 已清除；'
       +'已存在的 stale profile 只作为历史证据保留，不会冒充当前 profile。</div>');
 
-  return overview+domainCards+profileSection+policy+evidence+historyBlock(model)+boundaryBlock(model);
+  return overview+domainCards+profileSection+policy+evidence+historyBlock(model)+boundaryBlock(model)+mapLinkageBlock(model,routeEvidenceHighlight);
+}
+
+//: 地图联动说明：hover / focus 只改前端临时 highlight，不改任何业务状态。
+export const RRP_MAP_LINKAGE_NOTE='hover / focus 一个 segment 或 high-risk interval 时，'
+  +'地图只按后端 start_coordinate / end_coordinate 高亮对应 evidence：'
+  +'这是临时 UI 状态，不写 ProjectState、不调用 API、不改 zoom / layer / LOD，也不重算任何 risk 或 classification。';
+
+function mapLinkageBlock(model,routeEvidenceHighlight){
+  const active=routeEvidenceHighlight&&routeEvidenceHighlight.source===RRP_EVIDENCE_HIGHLIGHT_SOURCE
+    ?routeEvidenceHighlight:null;
+  const segmentIds=(active?.segmentIds||[]).map(text).filter(Boolean);
+  const status=active
+    ?'当前高亮 '+escapeHtml(short(active.profileId))+' · segment '
+      +escapeHtml(segmentIds.join(', ')||'—')+' · points '+escapeHtml(String((active.path||[]).length))
+    :'当前没有临时高亮（地图显示正常路线）';
+  const sameCandidate=active?text(active.candidateId)===text((model.current||{}).candidate_id):false;
+  return wbBlock('地图联动（临时 evidence highlight）',
+    '<div class="parameter-note" data-rrp-map-linkage="true">'+escapeHtml(RRP_MAP_LINKAGE_NOTE)+'</div>'
+    +'<div class="parameter-note" data-rrp-map-linked-segments="'+escapeHtml(segmentIds.join(','))
+    +'" data-rrp-map-linked-candidate="'+escapeHtml(active?text(active.candidateId):'')
+    +'" data-rrp-map-linked-same-candidate="'+escapeHtml(String(sameCandidate))+'">'+status+'</div>'
+    +'<div class="parameter-note">candidate '
+    +escapeHtml(short((model.current||{}).candidate_id||'—'))+' · 几何只来自后端坐标，'
+    +'绝不根据 distance 插值经纬度；intervals 只按 segment_ids 拼路径。</div>');
 }
 
 // ---------------------------------------------------------------- bind
@@ -794,6 +924,56 @@ export function bindRouteRiskProfile(c){
       profile_id:button.dataset.deleteRouteRiskProfile,
     }).catch(error=>c.panelError(error.message));
   }
+  bindRouteRiskProfileMapLinkage(c);
+}
+
+/**
+ * RouteRiskProfile → 地图的临时联动绑定（Layered Route Map Evidence V1）。
+ *
+ *  * SVG 里的 segment 柱（`[data-rrp-segment]` / `[data-rrp-segment-unresolved]`）与
+ *    high-risk interval 行（`[data-rrp-interval]`）支持 mouseenter / focus → 高亮，
+ *    mouseleave / blur → 清除；
+ *  * 高亮载荷完全是后端字段：segment 用自己的 start/end_coordinate，
+ *    interval 只按 segment_ids 查询当前 profile.segments 后按原顺序拼接；
+ *  * 绝不重算 risk / classification，也绝不用 distance 插值几何。
+ *
+ * 地图状态入口是 workflow context 上的 ``routeEvidence``（main.js 提供的纯 UI 回调）。
+ */
+export function bindRouteRiskProfileMapLinkage(c){
+  if(!c||typeof c.$!=='function')return 0;
+  const evidence=c.routeEvidence;
+  if(!evidence||typeof evidence.set!=='function'||typeof evidence.clear!=='function')return 0;
+  const profile=c.flow?c.flow():null;
+  const current=((profile||{}).route_risk_profiles||{}).items?.find?.(item=>item&&item.current_applicability==='current')||null;
+  if(!current)return 0;
+  const highlight=value=>{if(value)evidence.set(value);else evidence.clear();};
+  const root=c.document||document;
+  // 每次渲染都是全新节点，因此这里直接 addEventListener 不会重复累积。
+  const link=(node,payload)=>{
+    node.addEventListener('mouseenter',()=>highlight(payload()));
+    node.addEventListener('mouseleave',()=>highlight(null));
+    node.addEventListener('focus',()=>highlight(payload()));
+    node.addEventListener('blur',()=>highlight(null));
+  };
+  let bound=0;
+  for(const node of root.querySelectorAll('[data-rrp-segment],[data-rrp-segment-unresolved]')){
+    const segmentId=node.dataset?.rrpSegmentHighlight||node.dataset?.rrpSegment||node.dataset?.rrpSegmentUnresolved;
+    link(node,()=>routeRiskSegmentHighlight(current,segmentId));
+    bound+=1;
+  }
+  for(const node of root.querySelectorAll('[data-rrp-interval]')){
+    const domainId=node.dataset?.rrpIntervalDomain||null;
+    const intervalId=node.dataset?.rrpInterval;
+    const interval=findInterval(current,domainId,intervalId);
+    link(node,()=>routeRiskIntervalHighlight(current,interval));
+    bound+=1;
+  }
+  return bound;
+}
+
+function findInterval(profile,domainId,intervalId){
+  const domain=(profile?.domains||{})[domainId];
+  return ((domain||{}).high_risk?.intervals||[]).find(item=>text(item?.interval_id)===text(intervalId))||null;
 }
 
 export const ROUTE_RISK_PROFILE_SEGMENT='res-risk-profile';
