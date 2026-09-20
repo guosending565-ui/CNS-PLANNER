@@ -24,6 +24,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..domain.layered_route_validation import stable_fingerprint, utc_now
+from ..domain.route_3d_profile import TERMINAL_TRANSITION_VALIDATION_NOT_EVALUATED
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, evaluate_regulatory_intersection,
     is_configured as regulatory_is_configured, regulatory_constraints_fingerprint,
@@ -301,8 +302,26 @@ class RouteSafetyEvidenceService:
         status = _GEOMETRY_STATUS.get(str(record.get("status")), "not_ready")
         if not record:
             status = "not_ready"
-        domain["status"] = status
+        # Production Route3DProfile V1 boundary.  The existing LayeredRouteValidation validates
+        # a *fixed cruise altitude only*; when a current Route3DProfile exists the route is
+        # actually evaluated with climb/cruise/descent geometry, so the terminal transition
+        # evidence must be shown next to the cruise verdict.  The transition is
+        # ``not_evaluated`` in this stage, which downgrades the geometry domain to
+        # ``validation_incomplete`` — and therefore the overall status to at least
+        # ``evidence_incomplete``.  The original validation verdict is never rewritten, and no
+        # safe/unsafe conclusion is ever produced.
+        transition = self._terminal_transition_evidence(lineage)
         domain["status_reason"] = record.get("status_reason")
+        if transition["applies"] and status == "validated":
+            if transition["current_profile"]:
+                status = "validation_incomplete"
+                domain["status_reason"] = "terminal_transition_validation_not_evaluated"
+            else:
+                # A stored profile that is no longer current is unresolved evidence, and it
+                # still must not be reported as a complete geometry evidence set.
+                status = "unresolved"
+                domain["status_reason"] = "terminal_transition_validation_unresolved_profile"
+        domain["status"] = status
         domains = record.get("domains") or {}
         terrain = domains.get("terrain") or {}
         building = domains.get("building") or {}
@@ -332,6 +351,7 @@ class RouteSafetyEvidenceService:
             "provenance": deepcopy(record.get("provenance") or {}),
             "semantics": deepcopy(record.get("semantics") or {}),
         }
+        domain["transition"] = transition
         domain["metrics"] = {
             "terrain_status": terrain.get("status"),
             "building_status": building.get("status"),
@@ -364,6 +384,19 @@ class RouteSafetyEvidenceService:
                 "validated_candidate 只表示现有 terrain/building validator 在该固定巡航高度"
                 "未发现明确净空违规；它不是 safe route，也不评估转弯、爬升、气象或运行失效。"
             )
+        elif status == "validation_incomplete" and transition["applies"]:
+            domain["limitations"].append(
+                "该航路存在 current Production Route3DProfile：既有 validator 只覆盖固定巡航"
+                "高度，climb/descent 的 terminal transition 在本阶段为 "
+                f"{transition['terminal_transition_validation']}，因此几何域证据不完整。"
+                "本域绝不因此输出 safe/unsafe，也不改写原 LayeredRouteValidation。"
+            )
+        elif status == "unresolved" and transition["applies"]:
+            domain["limitations"].append(
+                "该航路存在非 current 的 Production Route3DProfile（"
+                f"{transition['current_applicability']}）：既有的固定高度验证不能描述整条 3D "
+                "航迹，terminal transition 证据未解析。该状态既不是 failure 也不是 pass。"
+            )
         elif status == "failed":
             domain["limitations"].append(
                 "只有已有 validator 的明确 clearance violation 才是 geometry failure；"
@@ -380,8 +413,85 @@ class RouteSafetyEvidenceService:
             "validated_route_is_not_a_safe_route": True,
             "unknown_is_not_safe": True,
             "resource_limit_is_computational_not_safety": True,
+            "cruise_validation_and_terminal_transition_validation_are_reported_separately": True,
+            "cruise_validator_never_endorses_climb_or_descent": True,
+            "terminal_transition_not_evaluated_downgrades_to_incomplete": True,
+            "layered_route_validation_is_never_rewritten": True,
+            "produces_safe_or_unsafe_verdict": False,
         }
         return domain
+
+    def _terminal_transition_evidence(self, lineage):
+        """Read (never recompute) the current Production Route3DProfile of this route.
+
+        Returns ``{"applies": False}`` when the route has no current Route3DProfile — in which
+        case the geometry domain keeps its original, unchanged semantics.  A stored profile
+        that is not current is reported as ``stale``/``unresolved`` evidence, never silently
+        ignored and never read as a fixed cruise altitude.
+        """
+
+        result = {
+            "applies": False,
+            "profile_id": None,
+            "profile_status": None,
+            "current_applicability": None,
+            "cruise_validation": None,
+            "terminal_transition_validation": None,
+            "full_3d_geometry_validated": None,
+            "geometry_mode": None,
+            "profile_fingerprint": None,
+            "profile_version": None,
+            "stale_reason": None,
+            "semantics": {
+                "read_only": True,
+                "never_recomputes_the_profile": True,
+                "never_rewrites_layered_route_validation": True,
+                "no_safe_or_unsafe_verdict": True,
+            },
+        }
+        route = lineage.get("operational_route") or {}
+        route_id = str(route.get("route_id") or "")
+        if not route_id:
+            return result
+        spatial = self.session.state.get("spatial_3d") or {}
+        collection = spatial.get("route_3d_profiles") or {}
+        if not isinstance(collection, dict):
+            return result
+        profile = next((
+            item for item in collection.values()
+            if isinstance(item, dict) and str(item.get("route_id")) == route_id
+        ), None)
+        if profile is None:
+            return result
+        boundary = profile.get("validation_boundary") or {}
+        applicability = str(profile.get("current_applicability") or "not_ready")
+        result.update({
+            "applies": True,
+            "profile_id": profile.get("profile_id"),
+            "profile_status": profile.get("status"),
+            "current_applicability": applicability,
+            "geometry_mode": "climb_cruise_descent_waypoint_linear",
+            "cruise_validation": boundary.get("cruise_validation"),
+            "terminal_transition_validation": boundary.get(
+                "terminal_transition_validation"
+            ),
+            "full_3d_geometry_validated": boundary.get("full_3d_geometry_validated"),
+            "profile_fingerprint": (profile.get("fingerprints") or {}).get(
+                "profile_fingerprint"
+            ),
+            "profile_version": profile.get("profile_version") or profile.get("schema_version"),
+            "current_profile": applicability == "current" and profile.get("status") == "passed",
+        })
+        if applicability != "current" or profile.get("status") != "passed":
+            # A stored-but-not-current profile is itself an evidence gap: report it as such and
+            # never pretend the fixed-H cruise validation still describes the whole track.
+            result["terminal_transition_validation"] = "unresolved_profile_not_current"
+            result["stale_reason"] = profile.get("stale_reason")
+        elif result["terminal_transition_validation"] is None:
+            result["terminal_transition_validation"] = (
+                TERMINAL_TRANSITION_VALIDATION_NOT_EVALUATED
+            )
+        return result
 
     def _ground_domain(self, lineage):
         domain = empty_domain("ground_exposure")
@@ -996,7 +1106,8 @@ class RouteSafetyEvidenceService:
 
         Exactly the references named by the contract: operational route / adoption, validation,
         candidate, RouteRiskProfile, regulatory dataset, Coverage3D, CNS capability, Gap V2,
-        corridor evidence (when consumed) and the evaluator version.
+        corridor evidence (when consumed), the Production Route3DProfile (when one is stored)
+        and the evaluator version.
         """
 
         adoption = lineage.get("adoption") or {}
@@ -1010,6 +1121,7 @@ class RouteSafetyEvidenceService:
         gap = state.get("cns_gap_analysis_v2") or {}
         corridor = state.get("cns_corridor_assessment") or {}
         route_id = str((lineage.get("operational_route") or {}).get("route_id") or "")
+        profile_3d = self._terminal_transition_evidence(lineage)
         corridor_consumed = bool(
             route_id and _route_of(corridor, route_id)
             and str(corridor.get("status")) not in ("not_calculated", "stale")
@@ -1043,6 +1155,12 @@ class RouteSafetyEvidenceService:
                 corridor.get("input_fingerprint") if corridor_consumed else None
             ),
             "cns_corridor_consumed": corridor_consumed,
+            "route_3d_profile_fingerprint": profile_3d.get("profile_fingerprint"),
+            "route_3d_profile_id": profile_3d.get("profile_id"),
+            "route_3d_profile_applicability": profile_3d.get("current_applicability"),
+            "terminal_transition_validation": profile_3d.get(
+                "terminal_transition_validation"
+            ),
             "evaluator_version": f"{ALGORITHM_ID}@{ALGORITHM_VERSION}",
         }
 

@@ -309,6 +309,7 @@ def blank_project(defaults):
                 "route_risk_profile",
                 "layered_route_validation",
                 "route_safety_evidence_v2",
+                "route_3d_profiles",
             )
         },
         "last_saved_at": None,
@@ -528,6 +529,9 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault(
         "route_safety_evidence_v2", "not_calculated"
     )
+    # Production Route3DProfile V1 ships inside ``spatial_3d`` (additive, backfilled empty for
+    # a legacy project by ``normalize_spatial_3d``); only its result status is registered here.
+    value.setdefault("result_statuses", {}).setdefault("route_3d_profiles", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")

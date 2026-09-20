@@ -1,6 +1,7 @@
 import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint} from './common.js';
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './route_operating_layer.js';
+import {bindRoute3DProfile,renderRoute3DProfilePanel} from './route3d_profile.js';
 import {bindLayeredRoutePlanner,layeredPlannerUsesThetaStarV2,renderLayeredRoutePlannerPanel} from './layered_route_planner.js';
 import {bindLayeredThetaV2,renderLayeredThetaV2Panel} from './layered_theta_v2.js';
 import {ROUTE_RISK_PROFILE_SEGMENT,bindRouteRiskProfile,renderRouteRiskProfile} from './route_risk_profile.js';
@@ -1792,7 +1793,7 @@ function routeOperateSection(flow,{interactionMode,nodes}){
       wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+legacyOperationalBlock
         +'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')
         +wbBlock('Layered Candidate 发布',renderLayeredAdoptionPanel(flow))],
-    ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow))]
+    ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow)+renderRoute3DProfilePanel(flow))]
   ]});
 }
 
@@ -1845,6 +1846,7 @@ export function bind(c){
   bindRouteVerticalProfile(c);
   bindRoutePlannerV3(c);
   bindCruiseLayer(c);
+  bindRoute3DProfile(c);
   bindLayeredCandidatePanel(c);
   bindRouteRiskProfile(c);
   bindLayeredRouteValidation(c);

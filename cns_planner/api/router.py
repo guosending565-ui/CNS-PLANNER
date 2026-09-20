@@ -84,6 +84,9 @@ class ApiRouter:
         if path == "/api/layered-operational-adoptions": return Response(workflow.layered_operational_adoptions())
         if path == "/api/route-safety-evidence-v2/readiness": return Response(workflow.route_safety_evidence_v2_readiness())
         if path == "/api/route-safety-evidence-v2": return Response(workflow.route_safety_evidence_v2())
+        # ---- Production Route3DProfile V1 (additive thin 3D-profile derivation) ---------
+        if path == "/api/route-3d-profiles/readiness": return Response(workflow.route_3d_profile_readiness())
+        if path == "/api/route-3d-profiles": return Response(workflow.route_3d_profiles())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -279,6 +282,10 @@ class ApiRouter:
             # ---- Route Safety Evidence V2 (additive evidence aggregation) -----------
             # No background evaluation exists: one explicit POST evaluates one assessment.
             "/api/route-safety-evidence-v2/evaluate": lambda: workflow.evaluate_route_safety_evidence_v2(payload),
+            # ---- Production Route3DProfile V1 ---------------------------------------
+            # No automatic generation: the user explicitly evaluates one route (or "all").
+            "/api/route-3d-profiles/evaluate": lambda: workflow.evaluate_route_3d_profile(payload),
+            "/api/route-3d-profiles/delete": lambda: workflow.delete_route_3d_profile(payload),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),

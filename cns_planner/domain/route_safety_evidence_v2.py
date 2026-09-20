@@ -236,6 +236,10 @@ def empty_route_safety_evidence_v2(status="not_ready"):
             "cns_service_capability_fingerprint": None,
             "cns_gap_v2_fingerprint": None,
             "cns_corridor_fingerprint": None,
+            "route_3d_profile_fingerprint": None,
+            "route_3d_profile_id": None,
+            "route_3d_profile_applicability": None,
+            "terminal_transition_validation": None,
             "evaluator_version": f"{ALGORITHM_ID}@{ALGORITHM_VERSION}",
         },
         "provenance": {

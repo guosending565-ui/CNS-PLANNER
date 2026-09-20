@@ -33,6 +33,7 @@ from .route_risk_profile_service import RouteRiskProfileService
 from .layered_route_validation_service import LayeredRouteValidationService
 from .layered_operational_adoption_service import LayeredOperationalAdoptionService
 from .route_safety_evidence_service import RouteSafetyEvidenceService
+from .route_3d_profile_service import Route3DProfileService
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -292,6 +293,17 @@ class WorkflowService:
         self.invalidation_service.route_safety_evidence_invalidator = (
             self.route_safety_evidence_service.stale_for_reason
         )
+        # Production Route3DProfile V1 (additive, thin derivation layer): derives the published
+        # fixed-H layered route into a distance-parameterised climb → cruise → descent profile
+        # for the existing RouteVerticalProfile / Coverage3D consumers.  It never performs a 3D
+        # search, never invents a Dubins/motion-primitive trajectory and never validates
+        # kinematics.  It is created last because it reads the full published lineage.
+        self.route_3d_profile_service = Route3DProfileService(
+            self.session, self.invalidation_service, snapshot,
+        )
+        self.invalidation_service.route_3d_profile_invalidator = (
+            self.route_3d_profile_service.stale_for_reason
+        )
 
     def save(self): self.session.save()
 
@@ -447,6 +459,15 @@ class WorkflowService:
             )
             result["route_safety_evidence_v2_readiness"] = (
                 self.route_safety_evidence_service.readiness_snapshot()
+            )
+        if hasattr(self, "route_3d_profile_service"):
+            # Production Route3DProfile V1: the read-only projection (with recomputed
+            # ``current_applicability``) and the bounded readiness travel in the snapshot.  The
+            # stored container itself stays inside ``spatial_3d.route_3d_profiles``; nothing is
+            # ever derived by the snapshot.
+            result["route_3d_profiles"] = self.route_3d_profile_service.result_snapshot()
+            result["route_3d_profile_readiness"] = (
+                self.route_3d_profile_service.readiness_snapshot()
             )
         result["review"] = self.review()
         return result
@@ -945,8 +966,33 @@ class WorkflowService:
     def evaluate_route_safety_evidence_v2(self, payload=None):
         return self.route_safety_evidence_service.evaluate(payload)
 
-    def set_regulatory_constraints(self, payload):
-        return self.layered_route_planner_service.set_regulatory_constraints(payload)
+    # ---- Production Route3DProfile V1 (additive thin 3D-profile derivation) ---------
+    def route_3d_profiles(self):
+        return self.route_3d_profile_service.result_snapshot()
+
+    def route_3d_profile_readiness(self):
+        return self.route_3d_profile_service.readiness_snapshot()
+
+    def evaluate_route_3d_profile(self, payload=None):
+        """Explicit user-triggered derivation.  Nothing is ever generated in background."""
+
+        result = self.route_3d_profile_service.evaluate(payload)
+        # The profile now governs the effective vertical context of the route, so its existing
+        # consumers are stale.  This propagation is strictly downstream.
+        self.invalidation_service.route_3d_profile_changed("route_3d_profile_evaluated")
+        self.session.save()
+        return result
+
+    def delete_route_3d_profile(self, payload=None):
+        data = payload if isinstance(payload, dict) else {}
+        result = self.route_3d_profile_service.delete(
+            data.get("profile_id"), route_id=data.get("route_id"),
+        )
+        # Removing the profile changes the effective vertical context back to the constant
+        # cruise layer, so the same downstream propagation applies.
+        self.invalidation_service.route_3d_profile_changed("route_3d_profile_deleted")
+        self.session.save()
+        return result
 
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()

@@ -161,8 +161,15 @@ function procedureEditor(model){
     +'<label>下降率 m/s（arrival）<input class="panel-input" type="number" step="any" id="procedureDescentRate" placeholder="必须显式填写"></label>'
     +'<label>转弯半径 m<input class="panel-input" type="number" step="any" id="procedureTurnRadius" placeholder="必须显式填写"></label>'
     +'<label>join/leave 里程 m<input class="panel-input" type="number" step="any" id="procedureJoinDistance" placeholder="必须显式填写"></label>'
+    // Production Route3DProfile V1 需要的显式 terminal altitude 证据：数值 + source + evidence
+    // 三者缺一不可，系统绝不后台默认 FABDEM 或起降平台高度。
+    +'<label>terminal altitude EGM2008 m<input class="panel-input" type="number" step="any" id="procedureTerminalAltitude" placeholder="显式填写，绝不默认地形高度"></label>'
+    +'<label>terminal altitude source<input class="panel-input" id="procedureTerminalSource" placeholder="例如 manual 工程评审 / verified 实测"></label>'
+    +'<label>terminal altitude evidence<input class="panel-input" id="procedureTerminalEvidence" placeholder="依据文件、记录或编号"></label>'
     +'<label>来源/依据<input class="panel-input" id="procedureSource" placeholder="工程依据、文件或评审记录"></label>'
     +'</div><label class="check-row"><input type="checkbox" id="procedureConfirmed">离场/进场程序参数已由工程依据确认</label>'
+    +'<div class="parameter-note">terminal altitude 必须来自显式 manual/verified 来源并带 evidence：'
+    +'Route3DProfile 缺任一项即 not_ready，绝不后台默认 FABDEM / 起降平台高度。</div>'
     +'<button class="secondary full" id="saveProcedure">保存程序（显式工程设定）</button>';
 }
 
@@ -192,6 +199,7 @@ export function renderCruiseLayerPanel(flow){
 export function bindCruiseLayer(c){
   if(!c.$('cruiseLayerPanel'))return;
   const optionalNumber=id=>{const field=c.$(id);if(!field)return null;const value=String(field.value??'').trim();return value===''?null:Number(value);};
+  const optionalText=id=>{const field=c.$(id);return field?String(field.value||'').trim():'';};
   const source=()=>{const field=c.$('cruiseLayerSource');return field?String(field.value||'').trim():'';};
   const confirmed=()=>{const field=c.$('cruiseLayerConfirmed');return Boolean(field&&field.checked);};
   document.querySelectorAll('[data-save-cruise-layer]').forEach(button=>button.onclick=async()=>{
@@ -218,6 +226,14 @@ export function bindCruiseLayer(c){
     const descentRate=optionalNumber('procedureDescentRate');
     if(type==='departure'&&climbRate!==null)verticalProfile.climb_rate_mps=climbRate;
     if(type==='arrival'&&descentRate!==null)verticalProfile.descent_rate_mps=descentRate;
+    // Production Route3DProfile V1 的 terminal altitude 证据：数值、source、evidence 三者
+    // 都只在用户显式填写时才发送；前端绝不补默认值，也绝不从地形/平台推导。
+    const terminalAltitude=optionalNumber('procedureTerminalAltitude');
+    const terminalSource=optionalText('procedureTerminalSource');
+    const terminalEvidence=optionalText('procedureTerminalEvidence');
+    if(terminalAltitude!==null)verticalProfile.terminal_altitude_egm2008_m=terminalAltitude;
+    if(terminalSource)verticalProfile.terminal_altitude_source=terminalSource;
+    if(terminalEvidence)verticalProfile.terminal_altitude_evidence=terminalEvidence;
     const horizontalGeometry={};
     const turnRadius=optionalNumber('procedureTurnRadius');
     if(turnRadius!==null)horizontalGeometry.turn_radius_m=turnRadius;

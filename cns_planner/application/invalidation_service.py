@@ -7,6 +7,9 @@ from ..services.invalidation import ResultLedger
 from .project_state import assessment, empty_grid_attributes
 from ..domain.reporting import mark_active_report_stale
 
+#: The direct downstream consumers of an explicit Production Route3DProfile V1 change.
+DOWNSTREAM_RESULTS = ("coverage_3d", "route_vertical_profiles", "route_safety_evidence_v2")
+
 
 class InvalidationService:
     SOURCE_ATTRIBUTES = {
@@ -35,6 +38,10 @@ class InvalidationService:
         #: Production candidate validation has its own evidence lifecycle.  Candidate/layer,
         #: native sources and clearance changes stale it without touching V3 history.
         self.layered_route_validation_invalidator = None
+        #: Additive Production Route3DProfile V1.  A route/layer/procedure change stales the
+        #: stored profile through this invalidator — and **never** the other way round: a
+        #: profile change never stales a Theta* candidate, a validation or an adoption.
+        self.route_3d_profile_invalidator = None
         #: Route Safety Evidence V2 aggregates the existing lineage evidence.  It is staled by
         #: every dependency change below — and it is strictly downstream: a stale Safety
         #: Evidence V2 never stales a route, a candidate, a validation, an adoption or any CNS
@@ -138,12 +145,49 @@ class InvalidationService:
         Planner V1 (not the legacy planners) is the component that makes a layer selection
         affect the horizontal route planning fingerprint — it stales only its own
         candidate/mask products.
+
+        The additive Production Route3DProfile V1 reads exactly this configuration, so it is
+        staled in the same pass (its stored record is preserved as audit evidence, and a stale
+        profile deliberately never falls back to the constant cruise altitude).
+        """
+
+        mark_active_report_stale(self.session.state, reason)
+        self.route_3d_profile(reason, propagate=False)
+        self.coverage_3d()
+        self.building_clearance(reason)
+        self.layered_route(reason)
+
+    def route_3d_profile(self, reason="route_3d_profile_input_changed", *, propagate=True):
+        """Stale only the additive Production Route3DProfile V1 records.
+
+        Strictly downstream: it never marks a Theta* candidate, a ``LayeredRouteValidation``
+        or a ``LayeredOperationalAdoption`` stale, and it never deletes a stored profile.
+        ``propagate`` additionally stales the direct consumers (``coverage_3d`` and
+        ``route_vertical_profiles``), which is required when the *profile set itself* changed.
+        """
+
+        invalidator = self.route_3d_profile_invalidator
+        result = {"stale_profile_ids": []}
+        if callable(invalidator):
+            result = invalidator(str(reason))
+        if propagate:
+            self.coverage_3d()
+            self.route_vertical_profiles(str(reason))
+        return result
+
+    def route_3d_profile_changed(self, reason="route_3d_profile_changed"):
+        """Propagate an explicit Route3DProfile evaluate/delete to its direct consumers.
+
+        The profile is the authoritative vertical context of a route, so ``coverage_3d`` (which
+        consumes it through ``effective_route_vertical_context``) and ``route_vertical_profiles``
+        become stale.  The propagation is strictly downstream: no route, candidate, validation,
+        adoption or CNS-upstream result is ever invalidated here.
         """
 
         mark_active_report_stale(self.session.state, reason)
         self.coverage_3d()
-        self.building_clearance(reason)
-        self.layered_route(reason)
+        self.route_vertical_profiles(reason)
+        return {"reason": str(reason), "downstream": list(DOWNSTREAM_RESULTS)}
 
     def building_clearance(self, reason="building_clearance_input_changed"):
         state = self.session.state

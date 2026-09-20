@@ -6,6 +6,12 @@ One concrete route carries exactly one cruise altitude layer; vertical transitio
 the terminal procedures and never enter horizontal route planning.  The contracts stay
 additive: ``RouteAltitudeProfile`` (including the advanced/V3-D waypoint profile) keeps its
 existing semantics and is never converted into a fixed cruise layer.
+
+Production **Route3DProfile V1** (see :mod:`cns_planner.domain.route_3d_profile`) is the
+additive derivation of the published fixed-H route into a distance-parameterised
+climb → cruise → descent profile.  It lives in ``spatial_3d.route_3d_profiles`` next to —
+never inside — ``route_altitude_profiles``, and
+:func:`effective_route_vertical_context` consumes it with the highest priority.
 """
 
 from __future__ import annotations
@@ -142,6 +148,9 @@ def empty_spatial_3d():
         "route_operating_layers": [],
         "departure_arrival_procedures": [],
         "route_altitude_profiles": {},
+        # Additive Production Route3DProfile V1 container.  It is derived **only** from an
+        # explicit user evaluation and never replaces ``route_altitude_profiles``.
+        "route_3d_profiles": {},
         "site_vertical_profiles": {},
     }
 
@@ -166,10 +175,16 @@ def normalize_spatial_3d(value):
         str(key): normalize_route_altitude_profile({**item, "route_id": str(key)})
         for key, item in profiles.items()
     }
+    # Additive: the Route3DProfile container is normalised in place and never merged into
+    # ``route_altitude_profiles`` (the legacy/V3 semantics stay untouched).
+    from .route_3d_profile import normalize_route_3d_profiles
+
+    route_3d_profiles = normalize_route_3d_profiles(source.get("route_3d_profiles"))
     site_profiles = {str(key): normalize_vertical_profile(item) for key, item in sites.items()}
     configured = [
         *layers, *assignments, *procedures,
         *route_profiles.values(), *site_profiles.values(),
+        *route_3d_profiles.values(),
     ]
     return {
         "status": "passed" if configured and all(item.get("status") in ("passed", "confirmed") for item in configured) else "pending_confirmation",
@@ -178,6 +193,7 @@ def normalize_spatial_3d(value):
         "route_operating_layers": assignments,
         "departure_arrival_procedures": procedures,
         "route_altitude_profiles": route_profiles,
+        "route_3d_profiles": route_3d_profiles,
         "site_vertical_profiles": site_profiles,
     }
 
@@ -451,14 +467,27 @@ def resolve_egm2008_height(height_m, reference, *, surface_elevation_m=None, geo
 def effective_route_vertical_context(spatial_3d, route_id):
     """Return the authoritative vertical context for one operational route.
 
-    A confirmed active ``RouteOperatingLayer`` and its referenced ``AltitudeLayer`` have
-    production priority.  Only when no active production assignment exists may the existing
-    legacy/V3 ``RouteAltitudeProfile`` be used.  A stale or unresolved assignment is returned
-    as unresolved and is never silently bypassed.
+    Production priority:
+
+    1. a **current** Production ``Route3DProfile`` (``mode=waypoint_linear``), which the
+       existing ``route_profile_height()`` / ``RouteVerticalProfile`` / ``Coverage3D``
+       consumers read unchanged;
+    2. the confirmed active ``RouteOperatingLayer`` + ``AltitudeLayer`` constant cruise
+       altitude ``H``;
+    3. the legacy/V3 ``RouteAltitudeProfile`` fallback.
+
+    A stored Route3DProfile that is **not** current (stale / unresolved / not_ready) is
+    returned as ``unresolved`` and deliberately **never** silently falls back to the constant
+    cruise altitude: pretending the analysis is using the full 3D profile while actually
+    evaluating a fixed H would be a fabricated evidence state.  When no Route3DProfile exists
+    at all, the previous constant-H behaviour is preserved byte for byte.
     """
 
     spatial = spatial_3d if isinstance(spatial_3d, dict) else {}
     wanted = str(route_id or "")
+    profile_3d = _current_route_3d_profile(spatial, wanted)
+    if profile_3d is not None:
+        return profile_3d
     assignment = next((
         item for item in spatial.get("route_operating_layers") or []
         if str(item.get("route_id")) == wanted and item.get("active", True) is True
@@ -513,6 +542,86 @@ def effective_route_vertical_context(spatial_3d, route_id):
             "fallback_profile_used": True,
         }
     return None
+
+
+def _current_route_3d_profile(spatial, route_id):
+    """Resolve the effective vertical context from a Production Route3DProfile V1.
+
+    Returns ``None`` when no Route3DProfile exists for the route (the caller then keeps the
+    existing constant-H / legacy behaviour).  A stored profile that is not current is
+    returned as an ``unresolved`` context so the consumer can never mistake a fixed cruise
+    altitude for a validated 3D track.
+    """
+
+    collection = spatial.get("route_3d_profiles") or {}
+    if not isinstance(collection, dict):
+        return None
+    profile = next((
+        item for item in collection.values()
+        if isinstance(item, dict) and str(item.get("route_id")) == route_id
+    ), None)
+    if profile is None:
+        return None
+    status = str(profile.get("status") or "not_ready")
+    applicability = str(profile.get("current_applicability") or "not_ready")
+    if status == "passed" and applicability == "current":
+        return {
+            "route_id": route_id,
+            "mode": "waypoint_linear",
+            "vertical_reference": str(
+                profile.get("vertical_reference") or "egm2008_orthometric"
+            ),
+            "constant_altitude_m": None,
+            "waypoints": deepcopy(profile.get("waypoints") or []),
+            "geoid_undulation_m": profile.get("geoid_undulation_m"),
+            "confirmed": True,
+            "status": "confirmed",
+            "source": "route_3d_profile",
+            "source_kind": "production_route_3d_profile",
+            "profile_id": profile.get("profile_id"),
+            "profile_version": profile.get("profile_version"),
+            "altitude_layer_id": profile.get("altitude_layer_id"),
+            "adoption_id": profile.get("adoption_id"),
+            "route_length_m": profile.get("route_length_m"),
+            "phases": deepcopy(profile.get("phases") or []),
+            "diagnostics": deepcopy(profile.get("diagnostics") or {}),
+            "validation_boundary": deepcopy(profile.get("validation_boundary") or {}),
+            "fingerprints": deepcopy(profile.get("fingerprints") or {}),
+            "altitude_inferred": False,
+            "fallback_profile_used": False,
+        }
+    reason = (
+        "stored_production_route_3d_profile_not_current"
+        if applicability != "current"
+        else "stored_production_route_3d_profile_not_passed"
+    )
+    return {
+        "route_id": route_id,
+        "mode": "waypoint_linear",
+        "vertical_reference": str(
+            profile.get("vertical_reference") or "egm2008_orthometric"
+        ),
+        "constant_altitude_m": None,
+        "waypoints": [],
+        "confirmed": False,
+        "status": "unresolved",
+        "source": "route_3d_profile",
+        "source_kind": "production_route_3d_profile",
+        "profile_id": profile.get("profile_id"),
+        "altitude_layer_id": profile.get("altitude_layer_id"),
+        "profile_status": status,
+        "profile_current_applicability": applicability,
+        "reason": reason,
+        "stale_reason": profile.get("stale_reason"),
+        "reasons": [
+            "该运行航路存在 Production Route3DProfile，但其状态不是 current："
+            "禁止静默回退到固定巡航高度 H，必须显式重新 evaluate。"
+        ],
+        # Hard boundary: a non-current profile never silently degrades to constant H.
+        "fallback_profile_used": False,
+        "silent_constant_h_fallback": False,
+        "altitude_inferred": False,
+    }
 
 
 def _reference(value):
