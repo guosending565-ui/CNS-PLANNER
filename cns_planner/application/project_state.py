@@ -113,6 +113,10 @@ from ..domain.route_safety_evidence_v2 import (
     empty_route_safety_evidence_v2_collection,
     normalize_route_safety_evidence_v2_collection,
 )
+from ..domain.vertical_transition_validation import (
+    empty_vertical_transition_validation_collection,
+    normalize_vertical_transition_validation_collection,
+)
 from ..reference_data import (
     empty_equipment_reference_catalog, empty_reference_landing_sites, empty_reference_routes,
     normalize_equipment_reference_catalog,
@@ -278,6 +282,12 @@ def blank_project(defaults):
         # published layered adoption lineage).  It ships empty: nothing is ever evaluated in
         # the background, and the container never feeds back into any upstream result.
         "route_safety_evidence_v2": empty_route_safety_evidence_v2_collection(),
+        # Vertical Transition Continuous Validation V1 (climb/descent source-native geometry
+        # of a current Production Route3DProfile).  It ships empty: no background evaluation
+        # ever exists, and the container never feeds back into any upstream result.
+        "vertical_transition_validations": (
+            empty_vertical_transition_validation_collection()
+        ),
         # Layered Risk-Aware Theta* V2 additive planning inputs.  The shelter coefficient is
         # the user-confirmed 1.0 baseline and lives as real per-grid data in
         # ``grid_attributes.population_shelter``; the two interfaces ship not configured.
@@ -310,6 +320,7 @@ def blank_project(defaults):
                 "layered_route_validation",
                 "route_safety_evidence_v2",
                 "route_3d_profiles",
+                "vertical_transition_validation",
             )
         },
         "last_saved_at": None,
@@ -497,6 +508,13 @@ def normalize_project(value, grid_service):
     value["route_safety_evidence_v2"] = normalize_route_safety_evidence_v2_collection(
         value.get("route_safety_evidence_v2")
     )
+    # Vertical Transition Continuous Validation V1 additive backfill: a legacy project gets an
+    # empty collection, never a synthesized "validated" transition.
+    value["vertical_transition_validations"] = (
+        normalize_vertical_transition_validation_collection(
+            value.get("vertical_transition_validations")
+        )
+    )
     # Layered Risk-Aware Theta* V2 additive backfill.  A legacy project gets the explicit
     # user-confirmed shelter_coefficient = 1.0 baseline, the confirmed 0.8/0.1/0.1 objective,
     # the deliberately wide temporary max_route_risk_density = 1.0 evaluation constraint, and
@@ -528,6 +546,9 @@ def normalize_project(value, grid_service):
     )
     value.setdefault("result_statuses", {}).setdefault(
         "route_safety_evidence_v2", "not_calculated"
+    )
+    value.setdefault("result_statuses", {}).setdefault(
+        "vertical_transition_validation", "not_calculated"
     )
     # Production Route3DProfile V1 ships inside ``spatial_3d`` (additive, backfilled empty for
     # a legacy project by ``normalize_spatial_3d``); only its result status is registered here.

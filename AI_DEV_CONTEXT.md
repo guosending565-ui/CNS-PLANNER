@@ -1,5 +1,22 @@
 # CNS 规划系统开发上下文
 
+> ## **`Route Planning V1.0 frozen baseline`**（航路规划 V1.0 冻结基线）
+>
+> 自本轮起，**航路规划（Route Planning）标记为 `Route Planning V1.0 frozen baseline`**。冻结基线包含：
+>
+> 1. **Theta\* V2**（`layered_route_planner/layered_risk_aware_theta_star_v2@2.0`）——分层风险感知 Theta\* 水平搜索（生产默认 layered planner）；
+> 2. **RouteRiskProfile**——按航路的 domain/interval 风险画像（post-planning analysis）；
+> 3. **cruise continuous validation**（`layered_candidate_continuous_validation_v1@1.0`）——固定巡航高度的源生 terrain/building 连续验证；
+> 4. **operational adoption**（`LayeredOperationalAdoption`）——显式人工采用与发布；
+> 5. **Route3DProfile**（`route_3d_profile_v1@1.0`）——已发布固定高度航路的 distance-parametric climb/cruise/descent 薄层派生；
+> 6. **vertical transition geometry validation**（`vertical_transition_source_native_geometry_validation_v1`，本轮新增）——climb/descent 的源生 3D 几何验证。
+>
+> **冻结后的变更边界**：除 **bug 修复**、**真实数据适配**（显式来源/CRS/工程确认参数）、**性能与 UI** 之外，**不得改变路径规划算法语义**——包括 Theta\* V2 搜索与启发函数、`theta_v2_objective_policy` 目标函数、`RouteRiskProfile` 域/阈值数学、`LayeredRouteValidation` 与新增 `VerticalTransitionValidation` 的判据与 verdict 映射、以及 `Route3DProfile` 的几何派生与 fail-closed 边界。
+>
+> **明确列入 future work（本轮不实现，也不得静默并入）**：Dubins Airplane / minimum-snap 轨迹、3D search（自由三维搜索）、clothoid/continuous-curvature、**aircraft kinematic / flight-dynamics certification**、terminal procedure certification、以及把 CNS、energy、regulatory 并入规划 cost 或约束的联合优化。
+>
+> **`full_3d_geometry_validated` 的严格含义**：它只表示 *climb/descent 源生几何证据 + 巡航源生几何证据都已 current 且无明确穿透*。它**不是** aircraft kinematic validation、**不是** terminal procedure certification、**也不是** `route_safe`。
+
 > 架构基线：2026-09-16（Asia/Shanghai）
 > 当前目标是持续完善 CNS 规划工作台；结构重构不得顺带改变 V1 算法、风险公式、API 路径或项目业务结果。
 >
@@ -88,7 +105,10 @@ map_app.py / app.py
 - `domain/corridor_site_planning.py`、`site_planner/corridor_reuse_first_v2.py`、`application/corridor_site_planning_service.py`：P16 confirmed voxel target/action 契约、确定性 reuse-first 排序与 Application 累计 P14→P15 what-if 编排。
 - `domain/requirement_policy.py`、`algorithms/requirements/*`、`application/requirement_recommendation_service.py`：P17 运行上下文/显式 Policy 契约、RequiredCNS recommendation 与显式 Adopt 编排。
 - `catalogs/*`：JSON 飞行器能力与设备目录；`gis/cns_input_adapter.py`：JSON/CSV/Point GeoJSON 设施、站址标准化。
-- `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现；`risk_v2(reason)` 只 stale `grid_risk_v2`（无 confirmed policy、无 planner 消费 V2，因此绝不 stale 当前 routes/CNS/`grid_risk`）。
+- `domain/route_safety_evidence_v2.py`、`application/route_safety_evidence_service.py`：Route Safety Evidence V2（post-planning evidence aggregation）。四 domain 分开报告，绝不合成 Safety Score；只读既有 lineage 证据，`validated | failed | unresolved` 的结论**只读**自 `LayeredRouteValidation` 与 `VerticalTransitionValidation`，绝不重算。
+- `domain/vertical_transition_validation.py`、`application/vertical_transition_validation_service.py`：**Vertical Transition Continuous Validation V1**（冻结基线的一部分，additive）。`domain` 只含纯几何/判定：里程截取（保留原 polyline 顶点）、`MetricRoute` 构造（`curve_chord_error_m=0`、piecewise-linear `z(s)`）、terrain 复用未改动的 `validate_terrain`、building 走真实 footprint 几何相交 + 既有 `building_roof_elevation`（`margin = minimum_z − roof`）。`application` 只做 readiness（passed/current adoption + current passed Route3DProfile + current cruise LayeredRouteValidation + 显式 `horizontal_crs` + verified terrain_dtm/buildings source audit）、显式 evaluate 编排、fingerprint 与单向失效。**不**改写 `Route3DProfile` / `LayeredRouteValidation` / `operational_routes`，**不**在后台自动 evaluate，**不**引入新的默认净空值。
+- `application/route_3d_profile_service.py`：Production Route3DProfile V1 唯一写入者（容器 `spatial_3d.route_3d_profiles`）。`result_snapshot()` 里的 `validation_boundary` 是**只读投影**：把 current `VerticalTransitionValidation` 的 verdict 报在静态 cruise-only 边界旁边，**绝不**回写存储记录。
+- `application/invalidation_service.py`：工作流、映射属性和风险失效的唯一权威实现；`risk_v2(reason)` 只 stale `grid_risk_v2`（无 confirmed policy、无 planner 消费 V2，因此绝不 stale 当前 routes/CNS/`grid_risk`）。`vertical_transition_validation(reason)` 只 stale 该产物；`vertical_transition_validation_changed(reason)` 只向下 stale `route_safety_evidence_v2` 与 report。
 - `domain/risk_v2.py`、`risk/normalization.py`、`risk/factors_v2.py`、`risk/domains_v2.py`、`risk/model_v2.py`：Risk Framework V2 的契约、relative-scaling normalization、factor 提取与 domain 聚合**分层实现**（factor 层只回答 canonical raw/normalized/provenance，domain 层只回答显式权重聚合）。无 QGIS、无默认生产权重、不 import 也不改写 `risk/v1.py`。
 - `application/risk_v2_service.py`：`RiskFrameworkV2Service` 是 `grid_risk_v2` / `risk_policy_v2` 的唯一写入者（policy / read / evaluate / readiness / legacy backfill）；只写这两个 additive 键，不触碰 `grid_attributes`、`grid_risk`、`operational_routes` 或任何 CNS 结果。
 - `application/constraint_validation.py`：硬约束输入的 fail-closed 校验（dict + 4 项有限 bbox + west<east/south<north），在 planner 之前拒绝畸形输入；不是 planner 的一部分，也不重解释几何。
@@ -149,6 +169,11 @@ v3_operational_adoptions（V3-D 正式采用记录：adoption_id/route_id/valida
 v3_cns_assessment_bundle（V3-D CNS 评估结果：assessment_status=not_started|incomplete|complete|stale、requirement_verdict=meets|does_not_meet|unknown、stage_results{P7,P8,P9,P10}、fingerprints、route/adoption/validation ids）
 layered_route_planning_request / layered_route_feasibility_policy / layered_route_cost_policy（Layered Planner V1 显式规划请求与显式工程策略：高度层必须显式选择；clearance 与三个 λ 默认 null，null != 0）
 layered_route_candidates（Layered Planner V1 独立 candidate 容器：`items[]` + 按 (route, layer) lane 的 `masks{}`；candidate 强制 operational_route=false、continuous_validation_required=true，不写 operational_routes/CNS）
+layered_route_validations（固定巡航高度 continuous validation 记录；`validated_candidate|failed|unresolved|validation_incomplete|not_ready|stale`）
+layered_operational_adoptions（显式人工采用与发布；`published|stale|revoked`）
+spatial_3d.route_3d_profiles（Production Route3DProfile V1：distance-parametric climb/cruise/descent 薄层派生；存储记录的 validation_boundary 恒为静态 cruise-only 边界）
+vertical_transition_validations（Vertical Transition Continuous Validation V1：climb/descent 源生几何验证；`validated|failed|unresolved|not_ready|stale`，绝不输出 safe/unsafe）
+route_safety_evidence_v2（post-planning evidence aggregation：四 domain 分开报告，不合成 Safety Score）
 ```
 
 - workspace/grid 变化：所有网格属性、traffic/conflict 和 risk 失效或重算。
@@ -801,6 +826,35 @@ Step 04 新增 **V3 CNS Assessment summary**：Route validation / Operational pu
 
 新增 `tests/test_layered_route_planner.py`（58 项）与 `tests/frontend_modules.test.mjs` 7 项（Node）。覆盖：显式高度层必选（含 OD 路径）；无默认 clearance/λ；**显式 0 与 null 区分**；未确认 request/policy 阻断且不读数据源；AGL/WGS84 无证据 blocked 与显式证据可转换；terrain missing/NoData ⇒ unknown；海拔低于 terrain floor blocked；`building_count=0` 无约束；`valid_height_fraction<1`/缺 building grid fact ⇒ unknown 绝不当 0；coarse building floor = terrain max + height_max + 既有垂直净空；mask 保持 airspace display-only 且不含 allowed/blocked 语义；λ=0 最短路与最短基线；λ>0 缺 domain index 阻断（λ=0 时同一缺失被忽略）；edge risk 两端平均、cost 公式与逐域 breakdown；纯距离 heuristic；硬约束与 corner guard 生效、起终点落入 fail-closed；expansion cap ⇒ `search_incomplete`；candidate 不写 `operational_routes`/CNS/`RouteOperatingLayer` 且 normalizer 强制标志；fingerprint 组件封闭且不含 airspace、逐组件敏感；Risk V2 变化只 stale layered candidate；layer/源/policy 变化只 stale layered candidate；stale 记录保留 + 相同输入幂等；legacy 项目 backfill 固定点；保存恢复；独立 algorithm type 且默认 route planner 仍为 V1；API 命名与 payload 透传；算法包不读文件/GIS；前端无默认真实参数与 overlay 三态语义。
 
+## 8.12 Production Route3DProfile V1：distance-parametric climb/cruise/descent 薄层派生
+
+**目标**：把已发布的固定高度分层航路派生成供既有纵剖面 / Coverage3D 直接消费的 distance-parametric 3D 剖面，**不是**新的规划器。
+
+- 输入（全部显式，缺一即 `not_ready`）：`passed` operational route + current `LayeredOperationalAdoption` + active confirmed `RouteOperatingLayer`（`fixed_cruise_layer`、`egm2008_orthometric`）+ confirmed `AltitudeLayer` H + confirmed departure/arrival procedure（显式 terminal altitude + source + evidence、显式 join/leave `distance_along_route_m`、显式正 rate）。
+- 几何：`(0, z0) → (s_join, H) → (s_leave, H) → (L, z1)`；`takeoff_event`/`landing_event` 只是端点事件，**不虚构零水平距离悬停段**。
+- **本轮新增 fail-closed 边界**：`z0 != H` 时必须 `s_join > 0`；`z1 != H` 时必须 `s_leave < L`。distance-parametric `z(s)` 无法无歧义表示同一 `s` 的两个高度，因此 `(0,z0)→(0,H)` / `(L,H)→(L,z1)` 这类零水平垂直跳变直接 `unresolved` 并给出 reason；`z0 == H, s_join == 0` 与 `z1 == H, s_leave == L` 仍然合法。**正常 profile 数学未改变**。
+- rate（`climb_rate_mps`/`descent_rate_mps`）只作为显式性能证据进入 `diagnostic_not_aircraft_kinematic_validation` 诊断块；join/leave 里程**绝不**由 `cruise_speed` 反推；terminal altitude 必须来自显式 manual/verified source + evidence，**绝不**默认 FABDEM/起降平台高度。
+- 容器 `spatial_3d.route_3d_profiles`；`profile_fingerprint` 绑定 route/adoption/operating layer/altitude layer/procedures（含 terminal altitude evidence 与 join/leave 里程）。profile 变化只向下 stale `coverage_3d`、`route_vertical_profiles`、`route_safety_evidence_v2`；**绝不** stale Theta\* candidate / `RouteRiskProfile` / `LayeredRouteValidation` / adoption。
+- API：`GET /api/route-3d-profiles/readiness`、`GET /api/route-3d-profiles`、`POST /api/route-3d-profiles/evaluate`、`POST /api/route-3d-profiles/delete`；无后台自动生成。
+- UI：Step 03「完整 3D 航迹（Production Route3DProfile V1）」卡片，复用既有纵剖面图，不新增图表引擎。
+
+## 8.13 Vertical Transition Continuous Validation V1：climb/descent 源生 3D 几何验证（本轮，冻结基线最后一块）
+
+**目标**：补上 Route3DProfile 阶段唯一剩下的几何缺口——既有 `LayeredRouteValidation` 只验证固定巡航高度 H，**从不为 climb/descent 背书**。本轮新增 additive `source_native_terminal_transition_geometry_validation`，与既有 cruise validation 共同构成完整 3D geometry evidence。
+
+- 新增产物（独立容器，**不**改写 `LayeredRouteValidation` 与 Route3DProfile 历史记录）：`domain/vertical_transition_validation.py`、`application/vertical_transition_validation_service.py`、state 键 `vertical_transition_validations`。
+- 结果至少含 `validation_id, route_id, profile_id, status, current_applicability, phases, minimum_margins, unresolved_evidence, fingerprints, provenance, limitations, created_at`；status ∈ `validated|failed|unresolved|not_ready|stale`；phases 只有 `departure_climb` 与 `arrival_descent`。
+- **readiness（只接受，缺一即 `not_ready`）**：passed/current layered operational adoption + current passed ProductionRoute3DProfile + existing current cruise `LayeredRouteValidation` + **显式局部米制 `horizontal_crs`** + verified configured real FABDEM `terrain_dtm` + verified real building footprint source。NoData/unknown 绝不当 0。
+- **3D 几何**：沿**原 operational route polyline 按 route distance 截取** `[0, s_join]` 与 `[s_leave, L]`——boundary station 作为精确锚点插入，区间内的原顶点全部保留，**绝不用 start→end 直线替换原 Theta\* polyline**；显式投影到 `horizontal_crs`；每个 phase 构造 `MetricRoute`（linearized metric polyline、`curve_chord_error_m = 0`、`z(s)` 按 Route3DProfile piecewise-linear 端点线性变化）。复用 `QgisMetricTransform` / `MetricRoute` / `NativeTerrainWindowSource` / `RouteCorridorBuildingSource` / `resolve_native_pixel_intervals` / `building_roof_elevation`，**未重写 GIS 数据访问**。
+- **terrain**：native FABDEM 像素逐区间 `margin = minimum_z(interval) − terrain_elevation`（复用未改动的 `validate_terrain`，`terrain_clearance_m = 0`）；margin < 0 ⇒ `failed`；NoData/无法解析 ⇒ `unresolved`。
+- **building**：只按真实 footprint 几何相交（query 时 `horizontal_clearance_m = 0`，逐字记录为 `geometry_intersection_threshold_not_an_engineering_clearance`，**不是**工程净空参数）；roof 复用既有 `ground + height` 语义；`margin = minimum_z(intersection interval) − roof_elevation`；margin < 0 ⇒ `failed`；missing height/ground/invalid geometry ⇒ `unresolved`。**不引入任何新的默认 terrain/building clearance 数值**。允许 terminal endpoint 与 surface/roof `margin == 0`（contact geometry，不代表安全净空认证）。airspace/display-only 不使用；正式 regulatory constraints 保持既有 Safety Evidence 语义，本轮不扩新监管算法。
+- **verdict**：每 phase 分别输出 terrain/building status；总 transition：任一明确 penetration ⇒ `failed`；无 failure 但存在 unknown ⇒ `unresolved`；两 phase 全部 resolved 且无 penetration ⇒ `validated`。**绝不输出 safe/unsafe**。
+- **Safety 联动（只读）**：Safety Evidence V2 读取 current `VerticalTransitionValidation`——`validated` + current cruise validation ⇒ geometry domain 可恢复 `validated` 且 `full_3d_geometry_validated=true`；transition `failed` ⇒ geometry hard constraint failure；`unresolved`/`not_ready`/`stale` ⇒ geometry incomplete/unresolved；**无 transition validation 时保持既有 `not_evaluated` 降级语义不变**。transition fingerprint 进入 assessment fingerprint。明确 `full_3d_geometry_validated != aircraft_kinematic_validation`、`!= terminal_procedure_certification`、`!= route_safe`。Route3DProfile 的存储记录保持静态 cruise-only `validation_boundary`，transition verdict 只是**只读投影**。
+- **失效（严格单向）**：transition fingerprint 至少绑定 Route3DProfile fingerprint、operational route/adoption、cruise validation fingerprint、terrain/building source audit、metric CRS、validator version。profile/route/adoption/cruise validation/terrain/building 变化 ⇒ transition `stale`；transition 变化 ⇒ Safety Evidence V2 / report `stale`。**绝不**反向 stale Theta\* candidate、`RouteRiskProfile`、`LayeredRouteValidation`、adoption 或 Route3DProfile。
+- API：`GET /api/vertical-transition-validation/readiness`、`GET /api/vertical-transition-validations`、`POST /api/vertical-transition-validations/evaluate-real`（真实源，需显式 `horizontal_crs`）。**无自动 evaluate**。
+- UI：Step 03「完整 3D 航迹」卡内追加紧凑 Transition Validation 区（readiness/blockers、departure climb / arrival descent、terrain/building status、minimum margins、failed/unresolved intervals、fingerprint、显式 horizontal_crs 输入与 evaluate 按钮），复用既有 status/interval 展示，**不新增图表引擎**；明确标注“geometry validation，不是 flight-dynamics / 安全认证”。
+- 本轮新增 `tests/test_vertical_transition_validation.py`，覆盖：正常 climb/descent pass；terrain penetration fail；building roof penetration fail；NoData/missing height unresolved；exact contact `margin == 0` 不算 penetration；原 polyline 截取而非端点直线；profile 非 current/not_ready；source verification 与 `horizontal_crs`；profile 零水平 altitude-jump 修复；transition `validated` ⇒ `full_3d_geometry_validated`；transition `failed` ⇒ hard failure；absent/unresolved ⇒ Safety 仍不 complete；stale/fingerprint/invalidation（含"绝不 stale Theta\* 链"）；Coverage3D 不回归；Theta path/objective/candidate fingerprint 完全不变；持久化/API/UI 契约。
+
 ## 8.1 航路规划基础治理 + 专家评审基线
 
 本轮目标是为航路规划专家评审准备**可信 baseline**，不是继续扩算法能力。基线 commit `33752b6759d992db39c639085a05e5c291945a38`。
@@ -1139,10 +1193,18 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 
 42. Layered Planner 的 V2 soft cost 只是「让 domain index 影响水平路径取舍」，不是风险优化或安全结论：`environment_obstacle` domain 是 CNS Planner 内部工程域（不标 SORA ARC/GRC），terrain/building clearance breach 属 feasibility、**不**转换成 risk；`RouteRiskProfile`（按航路的 domain/interval 风险画像）与 high-risk interval 仍未实现，是**下一阶段**。
 
+43. `Route3DProfile` V1 是**薄层派生**：不做 3D 搜索、不做 Dubins/minimum-snap、不做运动学判断；`takeoff_event`/`landing_event` 只是端点事件（不虚构零水平距离的垂直悬停段）；`climb_rate_mps`/`descent_rate_mps` 只作为显式性能证据用于 `diagnostic_not_aircraft_kinematic_validation` 诊断块，join/leave 里程**绝不**由 `cruise_speed` 反推；terminal altitude 必须来自显式 manual/verified source + evidence，**绝不**后台默认 FABDEM 或起降平台高度。本轮新增 fail-closed 边界：distance-parametric `z(s)` 无法无歧义表示同一 `s` 的两个高度，因此 `z0 != H` 时必须 `s_join > 0`、`z1 != H` 时必须 `s_leave < L`（`z0 == H, s_join == 0` 与 `z1 == H, s_leave == L` 仍合法）；违反时 profile 直接 `unresolved` 并给出 reason，**不修正用户输入**。
+
+44. `VerticalTransitionValidation` V1 只做 **climb/descent 的源生 3D 几何验证**：沿**原始 operational route polyline 按 route distance 截取**（`[0, s_join]` / `[s_leave, L]`，**绝不**替换为端点直线），显式投影到 `horizontal_crs`，按 Route3DProfile 的 piecewise-linear `z(s)` 在每个 metric 顶点采样，`curve_chord_error_m = 0`（截取后的 polyline 本身就是验证几何）。判据：地形 `margin = minimum_z(interval) − terrain_elevation`（复用未改动的 `validate_terrain`，`terrain_clearance_m = 0`）；建筑只按**真实 footprint 几何相交**（`horizontal_clearance_m = 0`，逐字记录为 `geometry_intersection_threshold_not_an_engineering_clearance`）且 roof 复用既有 `building_roof_elevation` = ground + height，`margin = minimum_z(intersection interval) − roof_elevation`。**不在本验证内引入任何新的默认净空数值**；允许 terminal endpoint 与地表/屋顶 `margin == 0`（contact geometry，不表示安全净空认证）。NoData / 缺 height / 缺 ground / 无效几何 ⇒ `unresolved`（**绝不当 0、绝不当 safe**）。verdict 只有 `validated | failed | unresolved | not_ready | stale`，**绝不输出 `safe`/`unsafe`**。airspace/display-only 与正式 regulatory constraints 均不进入本验证。本产物**不是** flight-dynamics / aircraft-kinematic validation，**不是** terminal procedure certification，**不是** route-safety 结论。
+
+45. `full_3d_geometry_validated` 与 Safety Evidence V2 的联动是**只读**的：Safety Evidence V2 读取 current `VerticalTransitionValidation`，`validated` + current cruise validation ⇒ geometry domain 可恢复 `validated` 且 `full_3d_geometry_validated=true`；transition `failed` ⇒ geometry hard constraint failure；`unresolved`/`not_ready`/`stale` ⇒ geometry incomplete/unresolved；**无 transition validation 时保持既有 `not_evaluated` 降级语义不变**。`VerticalTransitionValidation` 的 fingerprint 进入 Safety Evidence V2 的 assessment fingerprint。失效链严格单向：profile/route/adoption/cruise validation/terrain/building 变化 ⇒ transition validation `stale`；transition 变化 ⇒ Safety Evidence V2 / report `stale`；**绝不**反向 stale Theta\* candidate、`RouteRiskProfile`、`LayeredRouteValidation` 或 adoption。`Route3DProfile` 的存储记录**永不**被 transition 评估改写（其 `validation_boundary` 在存储层保持静态 `not_evaluated`，transition verdict 只是**只读投影**）。
+
 
 ## 11. 下一阶段计划
 
-1. **后续顺序固定为：Risk Framework V2（已完成）→ Layered Risk-Aware Route Planner V1（本轮已完成，生产主线）→ RouteRiskProfile（下一阶段）**。Layered Planner 已让 explicit cruise layer selection 与 V2 per-cell domain index 进入水平 route planning fingerprint 与 cost policy；RouteRiskProfile 在 Layered Planner 之后。**不开发 V3-E**，也不在本轮/近期开发 RouteRiskProfile、真实进离场优化或把 candidate 直接提升为 operational route。V3-A/V3-B/V3-C/V3-D 仍为 advanced experimental / continuous validation capability；适飞空域仍 `display_only`。
+0. **航路规划已冻结为 `Route Planning V1.0 frozen baseline`**（见文档开头）：Theta\* V2 + RouteRiskProfile + cruise continuous validation + adoption + Route3DProfile + vertical transition geometry validation。冻结后的增量只允许 **bug 修复、真实数据适配（显式来源/CRS/工程确认参数）、性能与 UI**；**不得**改变路径规划算法语义。以下全部列入 **future work**，本轮不实现，也不得静默并入：**Dubins Airplane / minimum-snap 轨迹、3D search（自由三维搜索）、clothoid / continuous-curvature、aircraft kinematic / flight-dynamics certification、terminal procedure certification、以及 CNS/energy/regulatory 联合优化**。
+
+1. **后续顺序固定为：Risk Framework V2（已完成）→ Layered Risk-Aware Route Planner V1（已完成，生产主线）→ RouteRiskProfile（已完成）→ Production Route3DProfile V1（已完成）→ Vertical Transition Validation V1（本轮已完成，冻结基线收口）**。Layered Planner 已让 explicit cruise layer selection 与 V2 per-cell domain index 进入水平 route planning fingerprint 与 cost policy。**不开发 V3-E**，也不在本轮/近期开发真实进离场优化或把 candidate 直接提升为 operational route。V3-A/V3-B/V3-C/V3-D 仍为 advanced experimental / continuous validation capability；适飞空域仍 `display_only`。
 2. 真实工程确认项（全部保持 pending，禁止补默认值）：舟山项目的巡航高度层 `nominal_altitude_m` 与 `vertical_reference`、各航路的 operating layer 显式分配、离场/进场的爬升率/下降率/转弯半径/join-leave 点与过渡模式、procedure 绑定的 node/site 参考，以及 **Layered Planner 的 `terrain_vertical_clearance_m`、三个 cost λ（ground / air_traffic / environment_obstacle）、每个候选航路显式选定的 AltitudeLayer 与既有 `building_clearance_policy`**。Risk Framework V2 同样保持 pending：三个 domain 的 `method`/`weights`/`required_factors`/`source`/`evidence`/`confirmed`、`property_exposure` 与 `critical_infrastructure_exposure` 的真实数据源、建筑高度 `valid_height_fraction<1` 的 unresolved 处理规则，以及 dataset_quantile 参考分位是否被工程接受为相对缩放基准。
 3. 确认舟山起降点/航线坐标 CRS，将“区县航线统计表（包括企业）总表260304.et”或权威“舟山16条航线点位核对表”转换为 XLSX/CSV/GeoJSON，并补齐 5GA/低空智联网资料的明确厂商来源证据；确认前保持 reference-only/unknown。**不再**需要逐 feature 确认 AirspacePolicy（DATA-3 已退役）。
 4. V3-D 已实现（validated route → operational adoption → 复用既有 P7/P8/P9/P10 CNS Assessment；`operational_route`/`cns_assessed` 在 V3-C validation 内仍恒为 false，"已采用/CNS 已评估"读取自 adoption/bundle 容器）。下一步是在正常 QGIS 启动器进程中用**真实舟山来源**做 V3-D 端到端验收（见下节"仍需真实端到端验证的问题"）。

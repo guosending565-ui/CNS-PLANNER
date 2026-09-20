@@ -87,6 +87,11 @@ class ApiRouter:
         # ---- Production Route3DProfile V1 (additive thin 3D-profile derivation) ---------
         if path == "/api/route-3d-profiles/readiness": return Response(workflow.route_3d_profile_readiness())
         if path == "/api/route-3d-profiles": return Response(workflow.route_3d_profiles())
+        # ---- Vertical Transition Continuous Validation V1 (climb/descent geometry) ------
+        if path == "/api/vertical-transition-validation/readiness":
+            return Response(workflow.vertical_transition_validation_readiness(query))
+        if path == "/api/vertical-transition-validations":
+            return Response(workflow.vertical_transition_validations())
         if path == "/api/coverage-3d": return Response(workflow.coverage_3d_snapshot())
         if path == "/api/cns-service-capability": return Response(workflow.cns_service_capability_snapshot())
         if path == "/api/operational-timing": return Response(workflow.operational_timing_snapshot())
@@ -286,6 +291,16 @@ class ApiRouter:
             # No automatic generation: the user explicitly evaluates one route (or "all").
             "/api/route-3d-profiles/evaluate": lambda: workflow.evaluate_route_3d_profile(payload),
             "/api/route-3d-profiles/delete": lambda: workflow.delete_route_3d_profile(payload),
+            # ---- Vertical Transition Continuous Validation V1 -----------------------
+            # No automatic evaluation: one explicit POST evaluates the two transitions of one
+            # route against the configured real FABDEM/buildings sources.
+            "/api/vertical-transition-validations/evaluate-real": lambda: (
+                context.evaluate_vertical_transition_validation(payload)
+                if hasattr(context, "evaluate_vertical_transition_validation")
+                else context.qgis.call(
+                    lambda: workflow.evaluate_vertical_transition_validation(payload)
+                )
+            ),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),

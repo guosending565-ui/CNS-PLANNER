@@ -653,7 +653,15 @@ def test_profile_records_the_explicit_cruise_only_validation_boundary(tmp_path):
     assert boundary["never_rewrites_layered_route_validation"] is True
     assert boundary["produces_safe_or_unsafe_verdict"] is False
     assert boundary["next_stage"] == "vertical_transition_continuous_validation"
-    assert boundary["next_stage_implemented"] is False
+    # The next stage now exists as the separate additive VerticalTransitionValidation artifact.
+    # The *stored* profile derivation keeps its static boundary (it is never rewritten by a
+    # transition evaluation); the reported verdict is a read-only projection of the transition
+    # validation, which the Card 3 test file asserts.
+    assert boundary["next_stage_implemented"] is True
+    assert boundary["transition_verdict_is_projected_not_stored"] is True
+    assert boundary["full_3d_geometry_validated_is_not_aircraft_kinematic_validation"] is True
+    assert boundary["full_3d_geometry_validated_is_not_terminal_procedure_certification"] is True
+    assert boundary["full_3d_geometry_validated_is_not_route_safe"] is True
 
 
 class DirectQgis:

@@ -113,6 +113,8 @@ def build_geometry(route_length_m, cruise_altitude_m, terminal_departure_m,
     if reasons:
         return [], reasons
     length = float(route_length_m)
+    h = float(cruise_altitude_m)
+    z0, z1 = float(terminal_departure_m), float(terminal_arrival_m)
     if length <= 0:
         reasons.append("route_length_m 必须大于零")
     join, leave = float(join_distance_m), float(leave_distance_m)
@@ -126,6 +128,22 @@ def build_geometry(route_length_m, cruise_altitude_m, terminal_departure_m,
     if join > leave:
         reasons.append(
             "transition overlap：s_join > s_leave，爬升与下降区间重叠；不修正用户输入"
+        )
+    # Distance-parametric ``z(s)`` cannot represent two altitudes at the same ``s``
+    # unambiguously.  A non-cruise terminal altitude together with a zero-length transition
+    # would require exactly such a vertical step *inside* ``waypoint_linear``
+    # (``(0, z0) -> (0, H)`` or ``(L, H) -> (L, z1)``), which no consumer can sample
+    # unambiguously.  The geometry therefore fails closed instead of being silently
+    # repaired; ``z0 == H, s_join == 0`` and ``z1 == H, s_leave == L`` stay legitimate.
+    if z0 != h and join <= 0:
+        reasons.append(
+            "zero-horizontal vertical jump：z0 != H 时必须满足 s_join > 0，"
+            "否则 waypoint_linear 的 z(s) 需要 (0, z0) → (0, H) 垂直跳变；不修正用户输入"
+        )
+    if z1 != h and leave >= length:
+        reasons.append(
+            "zero-horizontal vertical jump：z1 != H 时必须满足 s_leave < L，"
+            "否则 waypoint_linear 的 z(s) 需要 (L, H) → (L, z1) 垂直跳变；不修正用户输入"
         )
     if reasons:
         return [], reasons
@@ -578,7 +596,7 @@ def readiness_snapshot(state):
         "automatic_generation": False,
         "produces_safe_or_unsafe_verdict": False,
         "next_stage": "vertical_transition_continuous_validation",
-        "next_stage_implemented": False,
+        "next_stage_implemented": True,
     }
 
 
@@ -923,6 +941,11 @@ class Route3DProfileService:
 
     def __init__(self, session, invalidation, snapshot):
         self.session, self.invalidation, self.snapshot = session, invalidation, snapshot
+        #: Optional resolver injected by the composition root.  It returns the *current*
+        #: Vertical Transition Validation of a route (or ``None``).  It is used **only** by the
+        #: read-only projection below: the stored profile record is never rewritten, so a
+        #: transition evaluation can neither mutate nor invalidate a stored profile.
+        self.transition_validation_resolver = None
 
     # ---- container ----------------------------------------------------------------
     @property
@@ -947,6 +970,7 @@ class Route3DProfileService:
             if applicability == "stale":
                 entry["stale_reason"] = reason
                 entry["status"] = "stale"
+            entry["validation_boundary"] = self._projected_boundary(entry)
             projected.append(entry)
         collection = {
             "status": (
@@ -973,6 +997,50 @@ class Route3DProfileService:
 
     def readiness_snapshot(self):
         return self.readiness()
+
+    def _projected_boundary(self, profile):
+        """The **read-only** boundary view of one stored profile.
+
+        ``full_3d_geometry_validated`` lives in the closure of two independent artifacts: the
+        existing cruise ``LayeredRouteValidation`` and the additive
+        ``VerticalTransitionValidation``.  The stored profile therefore keeps a static
+        ``not_evaluated`` boundary, and this projection adds the current transition verdict
+        next to it.  Nothing is written back: a transition evaluation never rewrites (and never
+        invalidates) a stored profile.
+        """
+
+        boundary = deepcopy(profile.get("validation_boundary") or validation_boundary())
+        resolver = self.transition_validation_resolver
+        if not callable(resolver) or str(profile.get("status")) != "passed":
+            return boundary
+        try:
+            current = resolver(str(profile.get("route_id") or ""))
+        except (TypeError, ValueError, RuntimeError):  # pragma: no cover - defensive
+            return boundary
+        if not isinstance(current, dict):
+            return boundary
+        status = str(current.get("status") or "not_evaluated")
+        boundary["terminal_transition_validation"] = status
+        boundary["transition_validation_id"] = current.get("validation_id")
+        boundary["transition_validation_fingerprint"] = (
+            (current.get("fingerprints") or {}).get("transition_fingerprint")
+        )
+        boundary["transition_validation_applicability"] = current.get(
+            "current_applicability"
+        )
+        boundary["full_3d_geometry_validated"] = bool(
+            status == "validated" and current.get("current_applicability") == "current"
+        )
+        boundary["full_3d_geometry_evidence_complete"] = bool(
+            boundary["cruise_validation"] == CRUISE_VALIDATION_CURRENT
+            and boundary["full_3d_geometry_validated"]
+        )
+        boundary["transition_verdict_is_projected_not_stored"] = True
+        boundary["produces_safe_or_unsafe_verdict"] = False
+        boundary["full_3d_geometry_validated_is_not_aircraft_kinematic_validation"] = True
+        boundary["full_3d_geometry_validated_is_not_terminal_procedure_certification"] = True
+        boundary["full_3d_geometry_validated_is_not_route_safe"] = True
+        return boundary
 
     # ---- explicit derivation ------------------------------------------------------
     def evaluate(self, payload=None, *, save=True):

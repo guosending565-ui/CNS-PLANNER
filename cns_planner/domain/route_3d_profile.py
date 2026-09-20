@@ -252,9 +252,13 @@ def normalize_route_3d_profiles(value):
 def validation_boundary(recorded_cruise_validation=None):
     """The explicit validation boundary carried by every Route3DProfile.
 
-    The existing ``LayeredRouteValidation`` validates a *fixed cruise altitude* only.  It is
-    never extended here to cover the climb/descent geometry: the terminal transition stays
-    ``not_evaluated`` and ``full_3d_geometry_validated`` stays ``False``.
+    The existing ``LayeredRouteValidation`` validates a *fixed cruise altitude* only; it is
+    never extended here to cover the climb/descent geometry.  ``full_3d_geometry_validated``
+    is ``False`` **on the stored derivation**: the transition verdict is owned by the separate
+    additive ``VerticalTransitionValidation`` artifact, and the read-only projection of the
+    profile reports that verdict next to this block (see
+    :func:`cns_planner.application.route_3d_profile_service.Route3DProfileService.result_snapshot`).
+    The stored record itself is never rewritten by a transition evaluation.
     """
 
     return {
@@ -264,9 +268,14 @@ def validation_boundary(recorded_cruise_validation=None):
         "full_3d_geometry_validated": False,
         "climb_descent_is_not_validated_by_the_cruise_validator": True,
         "next_stage": "vertical_transition_continuous_validation",
-        "next_stage_implemented": False,
+        "next_stage_implemented": True,
         "never_rewrites_layered_route_validation": True,
         "produces_safe_or_unsafe_verdict": False,
+        # ``full_3d_geometry_validated`` is a *geometry evidence* statement only.
+        "full_3d_geometry_validated_is_not_aircraft_kinematic_validation": True,
+        "full_3d_geometry_validated_is_not_terminal_procedure_certification": True,
+        "full_3d_geometry_validated_is_not_route_safe": True,
+        "transition_verdict_is_projected_not_stored": True,
     }
 
 

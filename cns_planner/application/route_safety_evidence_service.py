@@ -24,7 +24,12 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..domain.layered_route_validation import stable_fingerprint, utc_now
-from ..domain.route_3d_profile import TERMINAL_TRANSITION_VALIDATION_NOT_EVALUATED
+from ..domain.route_3d_profile import (
+    CRUISE_VALIDATION_CURRENT, TERMINAL_TRANSITION_VALIDATION_NOT_EVALUATED,
+)
+from ..domain.vertical_transition_validation import (
+    current_transition_validation, normalize_vertical_transition_validation_collection,
+)
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, evaluate_regulatory_intersection,
     is_configured as regulatory_is_configured, regulatory_constraints_fingerprint,
@@ -305,15 +310,31 @@ class RouteSafetyEvidenceService:
         # Production Route3DProfile V1 boundary.  The existing LayeredRouteValidation validates
         # a *fixed cruise altitude only*; when a current Route3DProfile exists the route is
         # actually evaluated with climb/cruise/descent geometry, so the terminal transition
-        # evidence must be shown next to the cruise verdict.  The transition is
-        # ``not_evaluated`` in this stage, which downgrades the geometry domain to
-        # ``validation_incomplete`` — and therefore the overall status to at least
-        # ``evidence_incomplete``.  The original validation verdict is never rewritten, and no
-        # safe/unsafe conclusion is ever produced.
+        # evidence must be shown next to the cruise verdict.
+        #
+        # Since Vertical Transition Continuous Validation V1 the climb/descent geometry has its
+        # own artifact.  The geometry domain only reads it:
+        #   * ``validated`` (plus a current cruise validation) restores ``validated``;
+        #   * an explicit penetration is a geometry hard-constraint failure;
+        #   * unresolved / not_ready / stale / absent stays incomplete or unresolved.
+        # The original validation verdict is never rewritten and no safe/unsafe conclusion is
+        # ever produced.
         transition = self._terminal_transition_evidence(lineage)
         domain["status_reason"] = record.get("status_reason")
+        hard_failure_from_transition = False
         if transition["applies"] and status == "validated":
-            if transition["current_profile"]:
+            transition_status = str(transition.get("transition_validation_status") or "absent")
+            if transition_status == "validated":
+                status = "validated"
+                domain["status_reason"] = None
+            elif transition_status == "failed":
+                status = "failed"
+                domain["status_reason"] = "terminal_transition_penetration"
+                hard_failure_from_transition = True
+            elif transition_status in ("unresolved", "not_ready", "stale"):
+                status = "unresolved"
+                domain["status_reason"] = f"terminal_transition_{transition_status}"
+            elif transition["current_profile"]:
                 status = "validation_incomplete"
                 domain["status_reason"] = "terminal_transition_validation_not_evaluated"
             else:
@@ -329,15 +350,15 @@ class RouteSafetyEvidenceService:
         unresolved_intervals = record.get("unresolved_intervals") or []
         margins = record.get("minimum_margins") or {}
         resource = record.get("resource_limits") or {}
-        # Only an *explicit clearance violation from the existing validator* is a geometry
-        # failure.  An unresolved / incomplete / missing evidence never becomes a failure and
-        # never becomes a pass either.
-        hard_failure = bool(status == "failed" and (
+        # Only an *explicit clearance violation from the existing validator* (or an explicit
+        # transition penetration) is a geometry failure.  An unresolved / incomplete / missing
+        # evidence never becomes a failure and never becomes a pass either.
+        hard_failure = bool(hard_failure_from_transition or (status == "failed" and (
             failed_intervals
             or str(terrain.get("status")) == "failed"
             or str(building.get("status")) == "failed"
             or terrain.get("violations") or building.get("violations")
-        ))
+        )))
         domain["hard_constraint_failure"] = hard_failure
         domain["evidence"] = {
             "validation_id": record.get("validation_id"),
@@ -380,9 +401,35 @@ class RouteSafetyEvidenceService:
         }
         domain["sources"] = _source_rows(record.get("source_audits") or {})
         if status == "validated":
+            if str(transition.get("transition_validation_status") or "") == "validated":
+                domain["limitations"].append(
+                    "geometry 域为 validated 是因为**两条独立验证**都已完成且均为 current："
+                    "固定巡航高度的 LayeredRouteValidation，以及 climb/descent 的 "
+                    "VerticalTransitionValidation（源生 FABDEM 像素 + 真实 footprint 几何相交）。"
+                    "这只表示 3D 几何证据完整：它不是 aircraft kinematic validation，"
+                    "不是 terminal procedure certification，也不是 route_safe。"
+                )
+            else:
+                domain["limitations"].append(
+                    "validated_candidate 只表示现有 terrain/building validator 在该固定巡航高度"
+                    "未发现明确净空违规；它不是 safe route，也不评估转弯、爬升、气象或运行失效。"
+                )
+        elif status == "failed" and hard_failure_from_transition:
             domain["limitations"].append(
-                "validated_candidate 只表示现有 terrain/building validator 在该固定巡航高度"
-                "未发现明确净空违规；它不是 safe route，也不评估转弯、爬升、气象或运行失效。"
+                "该 geometry failure 来自 climb/descent 的 VerticalTransitionValidation："
+                "transition 区间存在明确 penetration（margin < 0）。故障区间与最小 margin "
+                "见 transition 证据；这不等于整条航路不安全，也不构成飞行可行性结论。"
+            )
+            domain["limitations"].append(
+                "既有 LayeredRouteValidation 的原始结论未被改写；两条验证分别报告。"
+            )
+        elif status == "unresolved" and transition.get("transition_validation_status") in (
+            "unresolved", "not_ready", "stale",
+        ):
+            domain["limitations"].append(
+                "climb/descent 的 VerticalTransitionValidation 当前为 "
+                f"{transition.get('transition_validation_status')}：存在未解析证据"
+                "（NoData / 缺 height / 缺 ground / 无效几何），既不是 pass 也不是 penetration。"
             )
         elif status == "validation_incomplete" and transition["applies"]:
             domain["limitations"].append(
@@ -416,6 +463,12 @@ class RouteSafetyEvidenceService:
             "cruise_validation_and_terminal_transition_validation_are_reported_separately": True,
             "cruise_validator_never_endorses_climb_or_descent": True,
             "terminal_transition_not_evaluated_downgrades_to_incomplete": True,
+            "consumes_vertical_transition_validation_read_only": True,
+            "validated_requires_both_cruise_and_transition_geometry_evidence": True,
+            "transition_penetration_sets_hard_constraint_failure": True,
+            "full_3d_geometry_validated_is_not_aircraft_kinematic_validation": True,
+            "full_3d_geometry_validated_is_not_terminal_procedure_certification": True,
+            "full_3d_geometry_validated_is_not_route_safe": True,
             "layered_route_validation_is_never_rewritten": True,
             "produces_safe_or_unsafe_verdict": False,
         }
@@ -442,10 +495,23 @@ class RouteSafetyEvidenceService:
             "profile_fingerprint": None,
             "profile_version": None,
             "stale_reason": None,
+            # ---- Vertical Transition Continuous Validation V1 (read-only) ----
+            "transition_validation_id": None,
+            "transition_validation_status": None,
+            "transition_validation_fingerprint": None,
+            "transition_validation_applicability": None,
+            "transition_phase_statuses": {},
+            "transition_minimum_margins": {},
+            "transition_penetration": False,
+            "transition_read_only": True,
             "semantics": {
                 "read_only": True,
                 "never_recomputes_the_profile": True,
+                "never_recomputes_the_transition_validation": True,
                 "never_rewrites_layered_route_validation": True,
+                "full_3d_geometry_validated_is_not_aircraft_kinematic_validation": True,
+                "full_3d_geometry_validated_is_not_terminal_procedure_certification": True,
+                "full_3d_geometry_validated_is_not_route_safe": True,
                 "no_safe_or_unsafe_verdict": True,
             },
         }
@@ -453,6 +519,25 @@ class RouteSafetyEvidenceService:
         route_id = str(route.get("route_id") or "")
         if not route_id:
             return result
+        current_transition = current_transition_validation(self.session.state)
+        transition_applies = bool(
+            current_transition
+            and str(current_transition.get("route_id") or "") == route_id
+        )
+        if transition_applies:
+            record = current_transition
+            result.update({
+                "transition_validation_id": record.get("validation_id"),
+                "transition_validation_status": record.get("status"),
+                "transition_validation_fingerprint": (
+                    (record.get("fingerprints") or {}).get("transition_fingerprint")
+                ),
+                "transition_validation_applicability": record.get("current_applicability"),
+                "transition_phase_statuses": deepcopy(record.get("phase_statuses") or {}),
+                "transition_minimum_margins": deepcopy(record.get("minimum_margins") or {}),
+                "transition_penetration": bool(record.get("failed_intervals")),
+                "transition_horizontal_crs": record.get("horizontal_crs"),
+            })
         spatial = self.session.state.get("spatial_3d") or {}
         collection = spatial.get("route_3d_profiles") or {}
         if not isinstance(collection, dict):
@@ -487,6 +572,14 @@ class RouteSafetyEvidenceService:
             # never pretend the fixed-H cruise validation still describes the whole track.
             result["terminal_transition_validation"] = "unresolved_profile_not_current"
             result["stale_reason"] = profile.get("stale_reason")
+        elif transition_applies:
+            # The current Vertical Transition Validation owns the transition verdict; the
+            # stored profile keeps its static ``not_evaluated`` boundary.
+            result["terminal_transition_validation"] = result["transition_validation_status"]
+            result["full_3d_geometry_validated"] = bool(
+                result["transition_validation_status"] == "validated"
+                and result["cruise_validation"] == CRUISE_VALIDATION_CURRENT
+            )
         elif result["terminal_transition_validation"] is None:
             result["terminal_transition_validation"] = (
                 TERMINAL_TRANSITION_VALIDATION_NOT_EVALUATED
@@ -1160,6 +1253,17 @@ class RouteSafetyEvidenceService:
             "route_3d_profile_applicability": profile_3d.get("current_applicability"),
             "terminal_transition_validation": profile_3d.get(
                 "terminal_transition_validation"
+            ),
+            # Vertical Transition Continuous Validation V1 is part of the declared geometry
+            # evidence set: its fingerprint is part of the assessment fingerprint, so a
+            # transition change (or a newly evaluated one) makes a stored assessment stale.
+            "transition_validation_fingerprint": profile_3d.get(
+                "transition_validation_fingerprint"
+            ),
+            "transition_validation_id": profile_3d.get("transition_validation_id"),
+            "transition_validation_status": profile_3d.get("transition_validation_status"),
+            "transition_phase_statuses": deepcopy(
+                profile_3d.get("transition_phase_statuses") or {}
             ),
             "evaluator_version": f"{ALGORITHM_ID}@{ALGORITHM_VERSION}",
         }

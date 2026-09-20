@@ -67,6 +67,7 @@ class ApplicationContext:
         self.configure_route_planner_v3_adoption()
         self.configure_layered_route_planner_sources()
         self.configure_layered_route_validation_sources()
+        self.configure_vertical_transition_validation_sources()
 
     def _source_details(self):
         details = {}
@@ -432,6 +433,129 @@ class ApplicationContext:
             "sources": {
                 "terrain_dtm": terrain.describe(), "buildings": buildings.describe(),
                 "metric_frame": transform.describe(),
+            },
+            "airspace": {
+                "status": "not_applicable", "applicability": "display_only",
+                "used_in_validation": False,
+            },
+        }
+
+    # --------------------------------------------------- Vertical Transition Validation V1
+
+    def configure_vertical_transition_validation_sources(self):
+        """Bind the production native FABDEM/real-footprint evidence adapter.
+
+        The adapter receives one **already truncated** metric transition polyline (the
+        *original* operational route polyline cut by route distance, never a straight chord)
+        and returns the native pixel window plus the corridor building footprints for that
+        phase only.  The building query uses ``horizontal_clearance_m = 0``: it is a pure
+        **geometry intersection** test, never an engineering separation minimum.
+        """
+
+        def adapter(**kwargs):
+            return self._vertical_transition_evidence(**kwargs)
+
+        cache = {}
+
+        def to_metric(point, *, crs=None):
+            authority = str(crs or adapter.horizontal_crs or "").strip()
+            if not authority:
+                return None
+            transform = cache.get(authority)
+            if transform is None:
+                from ..gis.fine_environment_adapter import QgisMetricTransform
+
+                transform = QgisMetricTransform(authority)
+                cache[authority] = transform
+            return transform.to_metric(point)
+
+        # The service projects the *original* route polyline with the same transform the
+        # raster/building queries use, so geometry and evidence share one metric frame.
+        adapter.to_metric = to_metric
+        adapter.horizontal_crs = None
+        self.workflow.vertical_transition_validation_service.evidence_adapter = adapter
+        return adapter
+
+    def evaluate_vertical_transition_validation(self, payload=None):
+        """Run the climb/descent geometry validation on the QGIS thread.
+
+        The evidence adapter opens the native FABDEM window and the buildings GeoPackage, so
+        the whole evaluation runs on the QGIS thread (same shape as the production cruise
+        validation entry point).  No automatic evaluation exists.
+        """
+
+        return self.qgis.call(
+            lambda: self.workflow.evaluate_vertical_transition_validation(payload)
+        )
+
+    def _vertical_transition_evidence(
+        self, *, phase, phase_id, route_id, profile, metric_line, metric_route,
+        horizontal_crs, payload,
+    ):
+        """Source-native evidence for one transition phase (read-only, never resampled)."""
+
+        from ..gis.fine_environment_adapter import (
+            NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
+        )
+        from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
+
+        terrain_path = self.data.paths.get("terrain_dtm")
+        building_path = self.data.paths.get("buildings")
+        if not terrain_path or not building_path:
+            raise ValueError("请先配置 verified FABDEM terrain_dtm 与 buildings GeoPackage")
+        crs = str(horizontal_crs or "").strip()
+        if not crs:
+            raise ValueError("transition validation 需要显式 horizontal_crs（米制 CRS）")
+        transform = QgisMetricTransform(crs)
+        line = [
+            [float(point[0]), float(point[1])]
+            for point in metric_line or []
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+        if len(line) < 2:
+            raise ValueError("transition phase 的 metric 顶点不足（需要 >= 2）")
+        terrain = NativeTerrainWindowSource(terrain_path)
+        corridor = RouteCorridorBuildingSource(building_path, crs_authority=crs)
+        # The truncated polyline *is* the validation geometry: no curve error envelope.
+        terrain_evidence = terrain.native_window(
+            transform=transform, metric_line=line, envelope_radius_m=0.0, spacing_m=None,
+        )
+        terrain_evidence["pixels"] = resolve_native_pixel_intervals(
+            metric_route, terrain_evidence.get("pixels") or [], curve_chord_error_m=0.0,
+        )
+        building_evidence = corridor.query_route(
+            metric_route, transform=transform,
+            horizontal_clearance_m=0.0,
+            curve_error_m=0.0, terrain_source=terrain,
+        )
+        if building_evidence.get("available"):
+            for building in building_evidence.get("buildings") or []:
+                building["source"] = building.get("source") or "GBA"
+                ring = building.get("ring_metric") or []
+                if ring:
+                    building["ground_elevation_max_egm2008_m"] = terrain.sample_footprint_ground(
+                        ring, transform=transform,
+                    )
+        return {
+            "adapter_id": "vertical_transition_real_source_evidence_adapter_v1",
+            "source_type": "configured_real_sources",
+            "phase_id": phase_id,
+            "metric_crs": crs,
+            "to_geographic": transform.to_geographic,
+            "terrain": terrain_evidence,
+            "buildings": building_evidence,
+            "sample_count": len(terrain_evidence.get("pixels") or []) + len(
+                building_evidence.get("buildings") or []
+            ),
+            "sources": {
+                "terrain_dtm": terrain.describe(), "buildings": corridor.describe(),
+                "metric_frame": transform.describe(),
+            },
+            "clearance_usage": {
+                "terrain_clearance_m": 0.0,
+                "building_horizontal_clearance_m": 0.0,
+                "curve_chord_error_m": 0.0,
+                "semantics": "geometry_intersection_threshold_not_an_engineering_clearance",
             },
             "airspace": {
                 "status": "not_applicable", "applicability": "display_only",

@@ -34,6 +34,7 @@ from .layered_route_validation_service import LayeredRouteValidationService
 from .layered_operational_adoption_service import LayeredOperationalAdoptionService
 from .route_safety_evidence_service import RouteSafetyEvidenceService
 from .route_3d_profile_service import Route3DProfileService
+from .vertical_transition_validation_service import VerticalTransitionValidationService
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
@@ -304,6 +305,41 @@ class WorkflowService:
         self.invalidation_service.route_3d_profile_invalidator = (
             self.route_3d_profile_service.stale_for_reason
         )
+        # Vertical Transition Continuous Validation V1 (additive, thin geometry validation).
+        # It closes the *only* geometry gap of the Route3DProfile stage: the existing
+        # LayeredRouteValidation validates a fixed cruise altitude only, so the climb and the
+        # descent are validated here against the native FABDEM pixels and the real building
+        # footprints.  Together they form the complete 3D geometry evidence of one route.  It
+        # never rewrites the stored Route3DProfile / LayeredRouteValidation and it is strictly
+        # downstream: a transition change only stales the Safety Evidence and the report.
+        self.vertical_transition_validation_service = VerticalTransitionValidationService(
+            self.session, self.invalidation_service, snapshot,
+            layered_service=self.layered_route_planner_service,
+            validation_service=self.layered_route_validation_service,
+            risk_profile_service=self.route_risk_profile_service,
+            profile_service=self.route_3d_profile_service,
+        )
+        self.invalidation_service.vertical_transition_validation_invalidator = (
+            self.vertical_transition_validation_service.stale_for_reason
+        )
+        # The Route3DProfile *projection* reports the current transition verdict next to the
+        # unchanged cruise-only boundary.  The stored profile record is never rewritten.
+        self.route_3d_profile_service.transition_validation_resolver = (
+            self._current_transition_validation
+        )
+
+    def _current_transition_validation(self, route_id):
+        """Read-only resolver used by the Route3DProfile projection."""
+
+        wanted = str(route_id or "")
+        if not wanted:
+            return None
+        collection = self.vertical_transition_validation_service.result_snapshot()
+        return next((
+            item for item in reversed(collection.get("items") or [])
+            if str(item.get("route_id") or "") == wanted
+            and item.get("current_applicability") == "current"
+        ), None)
 
     def save(self): self.session.save()
 
@@ -468,6 +504,17 @@ class WorkflowService:
             result["route_3d_profiles"] = self.route_3d_profile_service.result_snapshot()
             result["route_3d_profile_readiness"] = (
                 self.route_3d_profile_service.readiness_snapshot()
+            )
+        if hasattr(self, "vertical_transition_validation_service"):
+            # Vertical Transition Continuous Validation V1: the read-only projection (with a
+            # recomputed ``current_applicability``) and the bounded readiness travel in the
+            # snapshot.  The stored container is ``state["vertical_transition_validations"]``;
+            # nothing is ever evaluated by the snapshot itself.
+            result["vertical_transition_validations"] = (
+                self.vertical_transition_validation_service.result_snapshot()
+            )
+            result["vertical_transition_validation_readiness"] = (
+                self.vertical_transition_validation_service.readiness_snapshot()
             )
         result["review"] = self.review()
         return result
@@ -991,6 +1038,30 @@ class WorkflowService:
         # Removing the profile changes the effective vertical context back to the constant
         # cruise layer, so the same downstream propagation applies.
         self.invalidation_service.route_3d_profile_changed("route_3d_profile_deleted")
+        self.session.save()
+        return result
+
+    # ---- Vertical Transition Continuous Validation V1 (climb/descent source-native geometry) ---
+    def vertical_transition_validations(self):
+        return self.vertical_transition_validation_service.result_snapshot()
+
+    def vertical_transition_validation_readiness(self, payload=None):
+        return self.vertical_transition_validation_service.readiness_snapshot(payload)
+
+    def evaluate_vertical_transition_validation(self, payload=None, evidence_adapter=None):
+        """Explicit user-triggered climb/descent geometry validation.
+
+        Nothing is ever evaluated in the background, and the stored ``Route3DProfile`` /
+        ``LayeredRouteValidation`` are never rewritten.  A new record only makes the
+        downstream Safety Evidence / report stale.
+        """
+
+        result = self.vertical_transition_validation_service.evaluate(
+            payload, evidence_adapter=evidence_adapter,
+        )
+        self.invalidation_service.vertical_transition_validation_changed(
+            "vertical_transition_validation_evaluated"
+        )
         self.session.save()
         return result
 

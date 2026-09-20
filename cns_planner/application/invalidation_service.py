@@ -42,6 +42,12 @@ class InvalidationService:
         #: stored profile through this invalidator — and **never** the other way round: a
         #: profile change never stales a Theta* candidate, a validation or an adoption.
         self.route_3d_profile_invalidator = None
+        #: Vertical Transition Continuous Validation V1 (climb/descent source-native geometry).
+        #: Every profile/route/adoption/cruise-validation/source change stales it; a transition
+        #: change only stales the Safety Evidence and the report.  It is never a *source* of
+        #: upstream invalidation: it can never stale a Theta* candidate, a RouteRiskProfile, a
+        #: LayeredRouteValidation, a Route3DProfile or an adoption.
+        self.vertical_transition_validation_invalidator = None
         #: Route Safety Evidence V2 aggregates the existing lineage evidence.  It is staled by
         #: every dependency change below — and it is strictly downstream: a stale Safety
         #: Evidence V2 never stales a route, a candidate, a validation, an adoption or any CNS
@@ -131,6 +137,11 @@ class InvalidationService:
             self.building_clearance("building_source_changed")
         if set(changed_sources) & {"terrain_dtm", "buildings"}:
             self.layered_route_validation("source_changed:" + ",".join(sorted(changed_sources)))
+            # The transition validation binds the terrain/building source audits, so its
+            # stored records are stale as soon as those sources change.
+            self.vertical_transition_validation(
+                "source_changed:" + ",".join(sorted(set(changed_sources) & {"terrain_dtm", "buildings"}))
+            )
         if "buildings" in changed_sources or "building_grid" in changed_sources:
             # The layered feasibility mask consumes the L8 building grid facts, so only the
             # layered candidates are additionally staled here.
@@ -170,10 +181,43 @@ class InvalidationService:
         result = {"stale_profile_ids": []}
         if callable(invalidator):
             result = invalidator(str(reason))
+        self.vertical_transition_validation(
+            f"route_3d_profile_changed:{reason}"
+        )
         if propagate:
             self.coverage_3d()
             self.route_vertical_profiles(str(reason))
         return result
+
+    def vertical_transition_validation(self, reason="vertical_transition_input_changed"):
+        """Stale only the additive Vertical Transition Continuous Validation V1 records.
+
+        The transition validation depends on the profile, the operational route/adoption, the
+        existing cruise ``LayeredRouteValidation``, the terrain/building source audits, the
+        explicit metric CRS and its own validator version.  A change to any of those makes a
+        stored record stale.  This is the *end* of that chain: it never triggers anything
+        upstream, and a stale transition record itself is only propagated to the Safety
+        Evidence V2 / report by :meth:`vertical_transition_validation_changed`.
+        """
+
+        invalidator = self.vertical_transition_validation_invalidator
+        if callable(invalidator):
+            return invalidator(str(reason))
+        return {"stale_validation_ids": []}
+
+    def vertical_transition_validation_changed(
+        self, reason="vertical_transition_validation_changed",
+    ):
+        """Propagate an explicit transition evaluate to its declared downstream consumers.
+
+        The transition verdict feeds the Route Safety Evidence V2 geometry domain and the
+        report.  Nothing else.  It never stales a route, candidate, profile, validation,
+        adoption, RouteRiskProfile or CNS result.
+        """
+
+        mark_active_report_stale(self.session.state, reason)
+        self.route_safety_evidence(str(reason))
+        return {"reason": str(reason), "downstream": ["route_safety_evidence_v2", "report"]}
 
     def route_3d_profile_changed(self, reason="route_3d_profile_changed"):
         """Propagate an explicit Route3DProfile evaluate/delete to its direct consumers.
@@ -187,6 +231,7 @@ class InvalidationService:
         mark_active_report_stale(self.session.state, reason)
         self.coverage_3d()
         self.route_vertical_profiles(reason)
+        self.vertical_transition_validation(f"route_3d_profile_changed:{reason}")
         return {"reason": str(reason), "downstream": list(DOWNSTREAM_RESULTS)}
 
     def building_clearance(self, reason="building_clearance_input_changed"):
@@ -283,6 +328,9 @@ class InvalidationService:
         result = {"stale_validation_ids": []}
         if callable(invalidator):
             result = invalidator(str(reason))
+        # The transition validation binds the current cruise validation fingerprint, so a
+        # cruise-validation change makes it stale too (still strictly downstream).
+        self.vertical_transition_validation(f"cruise_validation_changed:{reason}")
         self.route_safety_evidence(reason)
         return result
 
