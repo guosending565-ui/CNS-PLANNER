@@ -634,7 +634,7 @@ def test_missing_building_ground_elevation_is_unresolved():
     assert result["unresolved"][0]["reason_id"] == "building_footprint_ground_elevation_unresolved"
 
 
-def test_invalid_building_geometry_is_unresolved_and_not_made_valid():
+def test_invalid_building_geometry_stays_unresolved_when_it_cannot_be_repaired():
     buildings = [{
         "building_id": "B5", "ring_metric": [[400.0, 0.0], [460.0, 0.0], [400.0, 0.0]],
         "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
@@ -648,12 +648,72 @@ def test_invalid_building_geometry_is_unresolved_and_not_made_valid():
     )
     assert result["status"] == "unresolved"
     assert result["evidence"]["make_valid_applied"] is False
-    # A self-touching ring is invalid geometry and must not be silently repaired.
-    assert any(
-        item["reason_id"].startswith("building_footprint_geometry_invalid")
-        or item["reason_id"] == "building_evidence_unresolved"
-        for item in result["unresolved"]
-    ) or result["status"] == "unresolved"
+    # A collinear (zero-area) ring has nothing to repair: geometry quality is ``invalid`` and
+    # the footprint must stay unknown — never "no building", never a pass.
+    quality = result["evidence"]["building_quality_report"]
+    assert quality["counts"] == {"passed": 0, "repaired": 0, "invalid": 1}
+    assert quality["status"] == "invalid_geometry_present"
+    assert quality["repair"]["failed_count"] == 1
+    assert result["unresolved"][0]["reason_id"] == "building_footprint_quality_unresolved"
+    assert result["unresolved"][0]["evidence"]["internal_geometry_quality_status"] == "invalid"
+
+
+def test_self_intersecting_building_geometry_is_repaired_and_then_evaluated():
+    # A bowtie footprint at the route's own centre: ``make_valid`` repairs it in memory, and
+    # the repaired parts are then evaluated against the real clearance criterion.
+    buildings = [{
+        "building_id": "BOWTIE",
+        "ring_metric": [[400.0, -60.0], [460.0, 60.0], [460.0, -60.0], [400.0, 60.0],
+                        [400.0, -60.0]],
+        "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+    }]
+    outcome = run_case(OPEN_POINTS, [200.0, 200.0, 200.0], buildings=buildings)
+    result = outcome["result"]
+    building = result["domains"]["building"]
+    quality = building["evidence"]["building_quality_report"]
+    assert quality["counts"]["repaired"] == 1
+    assert quality["repair"]["applied_count"] == 1
+    assert building["evidence"]["make_valid_applied"] is True
+    # The geometry was repaired, not ignored: the footprint is now a real evaluated
+    # constraint (roof 50 m, observed 200 m, required 25 m -> margin 125 m).
+    assert building["evidence"]["source_geometry_modified"] is False
+    assert result["domain_statuses"]["building"] == "passed", result["reason"]
+    assert building["minimum_margin"] == pytest.approx(125.0)
+
+
+def test_every_part_of_a_multi_part_footprint_is_evaluated():
+    # The second part is a genuine penetration while the first could never be one (its ground
+    # already sits far above the route, so it is a *penetration* on its own): the point is that
+    # the part the route passes through is not skipped just because it is the smaller one.
+    buildings = [{
+        "building_id": "MULTI",
+        "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, -50.0], [400.0, -50.0],
+                        [400.0, -60.0]],
+        "ring_parts_metric": [
+            [[400.0, -60.0], [460.0, -60.0], [460.0, -50.0], [400.0, -50.0], [400.0, -60.0]],
+            [[420.0, -10.0], [440.0, -10.0], [440.0, 10.0], [420.0, 10.0], [420.0, -10.0]],
+        ],
+        "height_m": 400.0, "ground_elevation_max_egm2008_m": 0.0,
+    }]
+    outcome = run_case(OPEN_POINTS, [300.0, 300.0, 300.0], buildings=buildings)
+    result = outcome["result"]
+    building = result["domains"]["building"]
+    assert building["evidence"]["building_quality_report"]["counts"] == {
+        "passed": 2, "repaired": 0, "invalid": 0,
+    }
+    assert building["evidence"]["building_quality_report"]["evaluated_footprint_count"] == 2
+    assert result["domain_statuses"]["building"] == "failed"
+    parts = {
+        item["evidence"]["footprint_part_index"]
+        for item in result["violations"] if item["domain"] == "building"
+    }
+    # Both parts are evaluated and reported with their own index/count pair.
+    assert parts == {0, 1}
+    for item in result["violations"]:
+        if item["domain"] != "building":
+            continue
+        assert item["reason_id"] == "building_vertical_clearance_violated"
+        assert item["evidence"]["footprint_part_count"] == 2
 
 
 def test_footprint_far_from_the_route_is_not_reported_as_a_constraint():

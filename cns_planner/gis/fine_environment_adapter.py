@@ -41,6 +41,7 @@ from pathlib import Path
 from ..data.mapping.airspace_eligibility import (
     polygons_of, rect_covered_by_any, rect_intersects_any,
 )
+from ..domain.building_geometry_quality import annotate_footprint_geometry
 from ..route_planner_v3.fine_contracts import AIRSPACE_MAPPING_METHOD, contract_fingerprint
 from ..route_planner_v3.fine_grid import (
     assemble_fine_environment, bind_fine_cells_to_parents, build_fine_grid_spec,
@@ -825,13 +826,9 @@ class QgisGpkgBuildingSource:
 
 
 def _ring_metric(geometry):
-    try:
-        polygon = geometry.asPolygon()
-    except (AttributeError, TypeError):
-        polygon = None
-    if not polygon:
-        return []
-    return [[float(point.x()), float(point.y())] for point in polygon[0]]
+    """Representative metric ring of a coarse building-grid geometry (largest part)."""
+
+    return _metric_ring_of(geometry)
 
 
 def _number_or_none(value):
@@ -1851,7 +1848,13 @@ class RouteCorridorBuildingSource:
                 continue
             metric = QgsGeometry(geometry)
             metric.transform(self._to_metric)
-            ring = _metric_ring_of(metric)
+            part_rings = _metric_rings_of(metric)
+            # Quality check + shapely make_valid repair happen once, in the domain helper
+            # shared with the validators; the GeoPackage and the source geometry stay
+            # untouched (`source_geometry_modified=False`).
+            identifier = _feature_identifier(feature, self.layer)
+            annotated = annotate_footprint_geometry(identifier, part_rings)
+            ring = annotated["parts_metric"][0] if annotated["parts_metric"] else []
             height = _number_or_none(feature[self.height_field])
             status = (
                 str(feature[self.height_status_field] or "")
@@ -1862,13 +1865,16 @@ class RouteCorridorBuildingSource:
                     and hasattr(terrain_source, "sample_footprint_ground")):
                 ground = terrain_source.sample_footprint_ground(ring, transform=transform)
             buildings.append({
-                "building_id": _feature_identifier(feature, self.layer),
+                "building_id": identifier,
                 "source": str(feature["source"]) if "source" in {f.name() for f in self.layer.fields()} else "unknown",
                 "ring_metric": ring,
+                "ring_parts_metric": annotated["parts_metric"],
+                "part_count": len(annotated["parts_metric"]),
                 "height_m": height,
                 "height_status": status or ("predicted" if height is not None else "unknown"),
                 "ground_elevation_max_egm2008_m": ground,
-                "geometry_status": "passed" if len(ring) >= 3 else "invalid_unmodified",
+                "geometry_status": annotated["status"],
+                "geometry_quality": annotated["annotation"],
             })
         return {
             "available": True,
@@ -1898,14 +1904,54 @@ def _metric_entry(entry, transform):
     }
 
 
-def _metric_ring_of(geometry):
+def _metric_rings_of(geometry):
+    """Metric outer rings of a QGIS geometry — one per part, never empty for a valid polygon.
+
+    QGIS represents a transformed single-polygon feature of the real Zhoushan building layer
+    as a **MultiPolygon** (measured: every one of the 1481 corridor footprints), so calling
+    only ``asPolygon()`` raises ``TypeError`` and silently produced an empty ring.  That was
+    the root cause of ``building_footprint_geometry_invalid``; here every part is kept so a
+    later ``make_valid`` repair never has to guess which part mattered.
+    """
+
+    polygon = None
     try:
         polygon = geometry.asPolygon()
     except (AttributeError, TypeError):
         polygon = None
-    if not polygon:
+    if polygon:
+        return [[[float(point.x()), float(point.y())] for point in polygon[0]]]
+    multi = None
+    try:
+        multi = geometry.asMultiPolygon()
+    except (AttributeError, TypeError):
+        multi = None
+    rings = []
+    for part in multi or []:
+        if part:
+            rings.append([[float(point.x()), float(point.y())] for point in part[0]])
+    return rings
+
+
+def _metric_ring_of(geometry):
+    """The footprint's representative ring (largest part), for ground sampling/reporting."""
+
+    rings = _metric_rings_of(geometry)
+    if not rings:
         return []
-    return [[float(point.x()), float(point.y())] for point in polygon[0]]
+    if len(rings) == 1:
+        return rings[0]
+    best, best_area = rings[0], None
+    try:
+        from shapely.geometry import Polygon
+
+        for ring in rings:
+            area = Polygon(ring).area
+            if best_area is None or area > best_area:
+                best, best_area = ring, area
+    except Exception:  # noqa: BLE001 - 选取代表环失败不影响逐部件净空判定
+        return rings[0]
+    return best
 
 
 def _feature_identifier(feature, layer):

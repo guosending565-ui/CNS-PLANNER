@@ -323,8 +323,14 @@ class LayeredRouteValidationService:
                     "route_planner_v3.continuous_validators.validate_buildings",
                     "domain.building_clearance.building_roof_elevation",
                     "domain.building_clearance.evaluate_vertical_clearance",
+                    # Footprint geometry quality gate (Phase 3.5): read-only check plus
+                    # in-memory shapely make_valid; the source GPKG is never rewritten and an
+                    # unrepairable footprint stays unresolved.
+                    "domain.building_geometry_quality.prepare_footprint_polygons",
                 ],
                 "planning_or_geometry_mutation": False,
+                "building_geometry_quality_report": True,
+                "source_geometry_modified": False,
             },
         })
         return record

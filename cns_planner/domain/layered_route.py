@@ -45,10 +45,41 @@ DOMAIN_RISK_CELL_CONTAINER_KEY = "domains"
 
 #: Feasibility verdict vocabulary of the layer mask.
 FEASIBILITY_STATUSES = ("feasible", "blocked", "unknown")
-#: Candidate status vocabulary.  ``blocked`` covers a missing/unconfirmed input, a fully
-#: blocked mask and an unreachable goal; a blocked result never claims infeasibility proof.
+
+#: **计划结果语义（Phase 3.5 稳定化）。** 一次 layered 规划运行的终态只有四类可解释结果：
+#:
+#: * ``success``（线上拼写 ``candidate``）—— 找到了可行航路候选；
+#: * ``no_path`` —— 搜索**完整跑完**但没有可行路径（可行 cell 被 mask/硬约束/regulatory 阻断，
+#:   或起点终点之间确实不连通）。这是关于"当前约束下无解"的陈述；
+#: * ``search_incomplete`` —— **搜索预算耗尽**（达到 ``max_expanded_labels``），
+#:   最优性与可达性都**未被证明**。它绝不能被解释成"无解/空域不可行"；
+#: * ``invalid_input`` —— 输入本身不可解释（端点坐标非法、网格/掩码结构不可用等）。
+#:
+#: 除这四类之外只报告**前置条件未满足**（``not_ready`` / ``missing_data`` / ``stale``），
+#: 它们是"还没到能规划的状态"，不是规划结论。
+PLANNING_TERMINAL_STATUSES = (
+    "success", "no_path", "search_incomplete", "invalid_input",
+)
+#: 可直接用于"是否找到航路"判断的终态集合。``success`` 是 ``candidate`` 的规范别名，
+#: 两个拼写同时被接受，避免改变既有候选结果的外部契约。
+PLANNING_SUCCESS_STATUSES = ("success", "candidate")
+#: 预算受限终态：最优化与可行性均未被证明。
+PLANNING_RESOURCE_LIMITED_STATUSES = ("search_incomplete",)
+#: 终态 status → 稳定 machine-readable 语义（供 service / readiness / 报告解释）。
+PLANNING_TERMINAL_SEMANTICS = {
+    "success": "search_completed_with_a_feasible_path",
+    "candidate": "search_completed_with_a_feasible_path",
+    "no_path": "search_completed_without_a_feasible_path",
+    "search_incomplete": "search_budget_exhausted_reachability_not_proven",
+    "invalid_input": "planning_input_not_interpretable",
+}
+
+#: Candidate status vocabulary.  ``blocked`` 是**历史拼写**，保留为兼容别名（旧项目、
+#: 旧报告与旧测试仍会读到它）；新结果使用 ``no_path``（搜索完整但无解）或
+#: ``search_incomplete``（预算耗尽）。``blocked`` **永不**声称不可行性证明。
 CANDIDATE_STATUSES = (
-    "candidate", "blocked", "missing_data", "stale", "not_ready", "search_incomplete",
+    "candidate", "no_path", "search_incomplete", "invalid_input",
+    "blocked", "missing_data", "stale", "not_ready",
 )
 
 REQUEST_PENDING_SOURCE = "未记录"
@@ -783,6 +814,79 @@ def normalize_layered_route_candidate_collection(value):
     return result
 
 
+def planning_status_reaches_a_path(status):
+    """``True`` 仅当该 status 表示"搜索完成了并且找到了航路"。
+
+    ``False`` 对 ``no_path`` / ``search_incomplete`` / ``invalid_input`` / 前置条件未满足
+    与历史 ``blocked`` 一律成立：**没有航路**不等于**空域不可行**，调用方必须自己区分。
+    """
+
+    return str(status or "") in PLANNING_SUCCESS_STATUSES
+
+
+def planning_status_semantics(status):
+    """终态 status 的 machine-readable 语义；非终态返回 ``None``。"""
+
+    return PLANNING_TERMINAL_SEMANTICS.get(str(status or ""))
+
+
+#: 非路径终态的稳定 reason code：它们解释"为什么没有候选"，而不是"空域不可行"。
+TERMINAL_REASON_CODES = {
+    "no_path": "no_traversable_path",
+    "search_incomplete": "search_budget_exhausted",
+    "invalid_input": "planning_input_not_interpretable",
+    "not_ready": "planning_precondition_not_satisfied",
+    "missing_data": "required_planning_input_missing",
+    "stale": "planning_input_stale",
+    "blocked": "explicit_hard_constraint_blocks_endpoints",
+}
+
+
+def terminal_reason_code(status, supplied_code=None):
+    """终态 status 的稳定 machine-readable reason code（调用方给的更具体 code 优先）。"""
+
+    if supplied_code:
+        return str(supplied_code)
+    return TERMINAL_REASON_CODES.get(str(status or "")) or "planning_result_undetermined"
+
+
+def annotate_terminal_status(result, status):
+    """在结果上记录终态语义，**不改变**任何判定。
+
+    这是 reporting-only 的补充：它不动搜索、启发函数、目标函数或 status 本身，
+    只让下游（service / readiness / report / UI）能区分 ``no_path``、
+    ``search_incomplete`` 与 ``invalid_input``，而不必从"没有路径"反推"不可行"。
+    """
+
+    if not isinstance(result, dict):
+        return result
+    semantics = planning_status_semantics(status)
+    if semantics is None:
+        return result
+    statistics = result.get("statistics")
+    if not isinstance(statistics, dict):
+        statistics = {}
+        result["statistics"] = statistics
+    statistics["terminal_status"] = str(status)
+    statistics["terminal_status_semantics"] = semantics
+    result["terminal_status"] = str(status)
+    result["terminal_status_semantics"] = semantics
+    # Every blocking reason carries the same two honesty flags so that no reader has to
+    # guess: reachability is only "proven" when a complete search found nothing to reach.
+    reasons = result.get("blocking_reasons")
+    if isinstance(reasons, list):
+        for item in reasons:
+            if not isinstance(item, dict):
+                continue
+            item.setdefault("terminal_status", str(status))
+            item.setdefault("terminal_status_semantics", semantics)
+            item.setdefault(
+                "reachability_proven", str(status) in ("no_path", "invalid_input"),
+            )
+            item.setdefault("optimality_proven", str(status) in PLANNING_SUCCESS_STATUSES)
+    return result
+
+
 def candidate_fingerprint(components):
     """Deterministic fingerprint over the candidate's declared dependency components.
 
@@ -805,10 +909,13 @@ __all__ = [
     "CANDIDATE_FINGERPRINT_COMPONENTS", "CANDIDATE_SEMANTICS", "CANDIDATE_STATUSES",
     "COARSE_ENVELOPE_SEMANTICS", "COST_DOMAIN_IDS", "DOMAIN_LABELS",
     "DOMAIN_RISK_CELL_CONTAINER_KEY", "FEASIBILITY_POLICY_PENDING_SOURCE", "FEASIBILITY_REASON_CODES",
-    "FEASIBILITY_STATUSES", "POLICY_SEMANTICS", "SCHEMA_VERSION",
+    "FEASIBILITY_STATUSES", "PLANNING_RESOURCE_LIMITED_STATUSES", "PLANNING_SUCCESS_STATUSES",
+    "PLANNING_TERMINAL_SEMANTICS", "PLANNING_TERMINAL_STATUSES", "POLICY_SEMANTICS",
+    "SCHEMA_VERSION", "planning_status_reaches_a_path", "planning_status_semantics",
     "BUILDING_CLEARANCE_PENDING_SOURCE", "COST_POLICY_PENDING_SOURCE",
     "REQUEST_PENDING_SOURCE",
-    "active_cost_domains", "build_layers_dict", "candidate_fingerprint",
+    "TERMINAL_REASON_CODES", "active_cost_domains", "annotate_terminal_status",
+    "build_layers_dict", "candidate_fingerprint",
     "cost_lambdas", "cost_policy_fingerprint", "cost_policy_is_runnable",
     "default_layer_feasibility_mask", "default_layered_route_candidate",
     "default_layered_route_cost_policy", "default_layered_route_feasibility_policy",
@@ -818,5 +925,5 @@ __all__ = [
     "normalize_layered_route_candidate", "normalize_layered_route_candidate_collection",
     "normalize_layered_route_cost_policy", "normalize_layered_route_feasibility_policy",
     "normalize_layered_route_request", "request_fingerprint",
-    "resolve_cruise_altitude", "stable_fingerprint",
+    "resolve_cruise_altitude", "stable_fingerprint", "terminal_reason_code",
 ]

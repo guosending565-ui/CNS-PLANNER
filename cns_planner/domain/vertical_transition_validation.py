@@ -637,9 +637,10 @@ def building_domain_result(metric_route, *, evidence, to_geographic=None):
     fabricated number.
     """
 
-    from shapely.geometry import Polygon
-
     from .building_clearance import building_roof_elevation
+    from .building_geometry_quality import (
+        empty_geometry_quality_report, merge_geometry_quality, prepare_footprint_polygons,
+    )
     from ..route_planner_v3.continuous_contracts import (
         TOLERANCE, empty_domain_result, violation_interval,
     )
@@ -675,19 +676,21 @@ def building_domain_result(metric_route, *, evidence, to_geographic=None):
         })
     minimum_vertical = None
     unresolved = []
+    geometry_quality = empty_geometry_quality_report()
     for footprint in footprints:
-        ring = footprint.get("ring_metric") or []
         identifier = footprint.get("building_id")
-        if len(ring) < 3:
-            unresolved.append({
-                "building_id": identifier, "reason": "building_footprint_geometry_invalid",
-            })
-            continue
-        polygon = Polygon(ring)
-        if polygon.is_empty or polygon.area <= 0 or not polygon.is_valid:
+        # Same geometry quality gate as the cruise validator: never rewrite the source ring,
+        # repair with shapely ``make_valid`` when that yields a valid polygon, and keep an
+        # unrepairable ring ``unresolved`` instead of inventing a number.
+        prepared = prepare_footprint_polygons(footprint)
+        for record in prepared["records"]:
+            merge_geometry_quality(geometry_quality, record)
+        if prepared["quality"] == "invalid":
             unresolved.append({
                 "building_id": identifier,
-                "reason": "building_footprint_geometry_invalid_not_made_valid",
+                "reason": "building_footprint_quality_unresolved",
+                "internal_geometry_quality_status": prepared["quality"],
+                "internal_geometry_quality": prepared["annotation"],
             })
             continue
         roof = building_roof_elevation(
@@ -701,48 +704,60 @@ def building_domain_result(metric_route, *, evidence, to_geographic=None):
             })
             continue
         roof_m = float(roof["roof_elevation_egm2008_m"])
-        intersection = metric_route.line.intersection(polygon)
-        if intersection.is_empty:
-            continue
-        distances = [metric_route.distance_of([x, y]) for x, y in _coordinates(intersection)]
-        if not distances:
-            continue
-        start, end = min(distances), max(distances)
-        observed = metric_route.minimum_z(start, end)
-        if observed is None:
-            unresolved.append({
-                "building_id": identifier,
-                "reason": "realized_altitude_profile_unresolved_for_building_interval",
-                "start_distance_m": start, "end_distance_m": end,
-            })
-            continue
-        margin = float(observed) - roof_m
-        minimum_vertical = margin if minimum_vertical is None else min(minimum_vertical, margin)
-        if margin < -TOLERANCE:
-            result["violations"].append(violation_interval(
-                domain="building", reason_id="building_footprint_penetration",
-                start_distance_m=start, end_distance_m=end,
-                start_point=metric_route.to_geographic(
-                    metric_route.sample_at(start), to_geographic=to_geographic,
-                ),
-                end_point=metric_route.to_geographic(
-                    metric_route.sample_at(end), to_geographic=to_geographic,
-                ),
-                required=roof_m, observed=observed, margin=margin,
-                evidence={
+        # Every part is validated: ignoring a smaller part could hide a penetration.
+        for piece_index, polygon in enumerate(prepared["polygons"]):
+            intersection = metric_route.line.intersection(polygon)
+            if intersection.is_empty:
+                continue
+            distances = [metric_route.distance_of([x, y]) for x, y in _coordinates(intersection)]
+            if not distances:
+                continue
+            start, end = min(distances), max(distances)
+            observed = metric_route.minimum_z(start, end)
+            if observed is None:
+                unresolved.append({
                     "building_id": identifier,
-                    "building_source": footprint.get("source"),
-                    "height_m": footprint.get("height_m"),
-                    "ground_elevation_max_egm2008_m": footprint.get(
-                        "ground_elevation_max_egm2008_m"
+                    "reason": "realized_altitude_profile_unresolved_for_building_interval",
+                    "start_distance_m": start, "end_distance_m": end,
+                    "footprint_part_index": piece_index,
+                })
+                continue
+            margin = float(observed) - roof_m
+            minimum_vertical = margin if minimum_vertical is None else min(minimum_vertical, margin)
+            if margin < -TOLERANCE:
+                result["violations"].append(violation_interval(
+                    domain="building", reason_id="building_footprint_penetration",
+                    start_distance_m=start, end_distance_m=end,
+                    start_point=metric_route.to_geographic(
+                        metric_route.sample_at(start), to_geographic=to_geographic,
                     ),
-                    "roof_elevation_egm2008_m": roof_m,
-                    "horizontal_clearance_m": GEOMETRY_INTERSECTION_THRESHOLD_M,
-                    "curve_error_m": 0.0,
-                    "clearance_semantics": CLEARANCE_SEMANTICS,
-                    "interval_length_m": float(end) - float(start),
-                },
-            ))
+                    end_point=metric_route.to_geographic(
+                        metric_route.sample_at(end), to_geographic=to_geographic,
+                    ),
+                    required=roof_m, observed=observed, margin=margin,
+                    evidence={
+                        "building_id": identifier,
+                        "building_source": footprint.get("source"),
+                        "height_m": footprint.get("height_m"),
+                        "ground_elevation_max_egm2008_m": footprint.get(
+                            "ground_elevation_max_egm2008_m"
+                        ),
+                        "roof_elevation_egm2008_m": roof_m,
+                        "horizontal_clearance_m": GEOMETRY_INTERSECTION_THRESHOLD_M,
+                        "curve_error_m": 0.0,
+                        "clearance_semantics": CLEARANCE_SEMANTICS,
+                        "interval_length_m": float(end) - float(start),
+                        "footprint_part_index": piece_index,
+                        "footprint_part_count": len(prepared["polygons"]),
+                    },
+                ))
+    result["evidence"]["geometry_quality"] = geometry_quality
+    result["evidence"]["building_quality_report"] = geometry_quality
+    result["evidence"]["source_modified"] = False
+    # Reporting only: repairing geometry does not relax the penetration criterion.
+    result["evidence"]["make_valid_applied"] = bool(geometry_quality["repair"]["applied_count"])
+    result["evidence"]["prefer_shapely_make_valid"] = True
+    result["evidence"]["unrepairable_geometry_stays_unknown"] = True
     result["minimum_margin"] = minimum_vertical
     result["item_count"] = len(footprints)
     result["failed_interval_count"] = len(result["violations"])

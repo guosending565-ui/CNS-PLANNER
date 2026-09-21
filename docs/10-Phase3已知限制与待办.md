@@ -1,8 +1,12 @@
 # Phase 3：真实舟山航路规划闭环稳定化 — 已知限制与待办
 
 本文件记录 Phase 3 端到端验证过程中**确认**的问题、当前处理方式与后续需求。
-与 `AI_DEV_CONTEXT.md` 的冻结边界一致：本轮只做 **bug 修复**、**真实数据适配（显式来源/CRS/工程确认参数）**
+与 `AI_DEV_CONTEXT.md` 的冻结边界一致：只做 **bug 修复**、**真实数据适配（显式来源/CRS/工程确认参数）**
 与 **性能/UI**，不改变任何路径规划算法语义。
+
+> **Phase 3.5（工程稳定化）已完成项见 `docs/11-Phase3.5稳定化开发报告.md`**：
+> §2 的建筑几何 `unresolved` 根因、§4 的搜索预算状态语义、以及层级能力声明接口都已落地。
+> 下列 §1 的**层级无关建筑事实获取**与 §3 的**大工作区服务端开销**仍然是未完成项。
 
 ---
 
@@ -88,23 +92,59 @@ Theta* 搜索竞争 GIL，最终把一次 `evaluate-real` 推到 **>1800 秒**�
 2. 写操作（`*-evaluate-real`）返回**该操作自己的结果投影**，而不是整个 workflow snapshot；
 3. 长 CPU 任务移出 GIL（子进程/线程池），使 HTTP 读请求不被饿死。
 
-### 搜索预算（已确认的真实缺陷）
+### 搜索预算（Phase 3 已确认，**Phase 3.5 已修复**）
 
 `layered_route_planner` 基线的 `max_expanded_labels = null`（无上限）。实测舟山案例走廊：
 
 | 格数 | 找到路径所需扩展 | 耗时 | 20000 扩展上限下的结果 |
 |---|---|---|---|
-| 8505 (L8) | 46,620 | 97.6 s | `blocked`（"未找到 any-angle 可用路径"）|
+| 8505 (L8) | 46,620 | 97.6 s | ~~`blocked`（"未找到 any-angle 可用路径"）~~ |
 
-即：**达到扩展上限时返回的是 `blocked`（语义上等于"无解"），而不是资源受限**。
-`docs/route_planner_v3_architecture.md` 中 V3-A 对同类情形明确要求返回
-`search_incomplete`（resource limited），Layered Theta* V2 与该语义不一致。
-本轮**未修改算法**（冻结边界禁止改动 Theta* V2 搜索语义），只在工程验证中通过
-`/api/algorithms/select` 显式设置一个足够大的搜索预算。
+**Phase 3.5 修复（不改搜索语义，只改终态报告）**：达到扩展上限时不再返回 `blocked`，
+而是返回 **`search_incomplete`**（resource limited，可达性与最优性均未证明）；只有
+**搜索完整跑完**且没有可行路径时才返回 **`no_path`**。`blocked` 保留为历史拼写与
+"显式硬约束阻断端点"的语义。详细状态机见
+`docs/11-Phase3.5稳定化开发报告.md` 与 `cns_planner/domain/layered_route.py`。
 
-**最小修改方案（建议，尚未实施）**：在 Theta* V2 达到 `max_expanded_labels` 时返回
-`search_incomplete` + `statistics.expanded_labels`，而不是 `blocked`；这不改变搜索、
-启发函数、代价或任何 verdict 语义，只修正"资源耗尽 ≠ 无可行解"的报告语义。
+---
+
+## 2. 建筑几何质量导致 building domain `unresolved`（真实数据缺陷，**Phase 3.5 已修复**）
+
+### 现象
+
+真实舟山案例的 `LayeredRouteValidation` 建筑域恒为：
+
+```text
+building status = unresolved
+reason = building_footprint_geometry_invalid（例如 building_id=4tCet）
+```
+
+导致 `operational adoption` 的 publish gate 拒绝发布（`validated_route` 未达成）。
+
+### 根因（Phase 3.5 定位，**不是源数据几何损坏**）
+
+```text
+QgsGeometry.transform(WGS84 -> EPSG:32651)
+  → 单部件 polygon 被表示成 MultiPolygon（实测走廊内 1481/1481）
+_metric_ring_of(geometry) / _ring_metric(geometry)
+  → 只调用 asPolygon()，对 MultiPolygon 抛 TypeError 并被 except 吞掉
+  → ring_metric = []  ⇒ validate_buildings 记 building_footprint_geometry_invalid
+```
+
+原始 GPKG 的 538228 个 footprint 在 WGS84 下**全部** `shapely.is_valid == True`
+（只读探测），因此这是**提取链路缺陷**而不是数据损坏。
+
+### 修复（只读 + 内存修复，绝不改写源数据）
+
+1. GIS 边界按**每个部件**提取米制外环（`_metric_rings_of`），不再只调用 `asPolygon()`；
+2. 新增共享质量门 `domain/building_geometry_quality.py`：`Ring → shapely Polygon →
+   (必要时) make_valid → 全部有效部件`；无法解释的几何保持 `invalid`（unknown 语义）；
+3. 两个连续验证器（cruise 与 vertical transition）都改为**逐部件**参与净空判定，
+   多部件 footprint 一个不漏；质量报告随 `evidence.building_quality_report` 输出；
+4. 新增只读报告工具 `tools/building_geometry_quality_report.py`（不改源数据）。
+
+**未变**：`building_clearance.py` 的 roof 公式、`evaluate_vertical_clearance` 判据、
+fail-closed 语义（`unknown != safe`）、源 GeoPackage 内容。
 
 ---
 
@@ -153,8 +193,8 @@ L8 是 `building_grid` 事实唯一可映射的层级；L7 下 `buildings` 全�
 | Operational Adoption | **正确拒绝发布**（publish gate 要求 `validated_route`，当前为 `unresolved`） | 3.5 s |
 
 **结论**：管道完整、语义正确。规划与地形验证在真实数据上通过；建筑域的 `unresolved`
-是**源数据几何质量问题**（不是系统缺陷），系统按 `unknown != safe` 正确 fail-closed，
-从而不允许发布运行航路。
+根因经 Phase 3.5 定位为**提取链路缺陷**（投影后 MultiPolygon 未被识别），已在 §2 修复；
+系统在该形态下按 `unknown != safe` 正确 fail-closed，从而不允许发布运行航路。
 
 ### 本轮修复的 7 个真实缺陷
 
@@ -172,8 +212,9 @@ L8 是 `building_grid` 事实唯一可映射的层级；L7 下 `buildings` 全�
 
 ### 仍然存在的（未修）问题
 
-* §1 建筑事实的层级无关获取（用户已明确为后续需求）；
-* §3 大工作区下 `snapshot()` 13 s / 68 MB 的服务端开销；
-* §3 `max_expanded_labels` 达到上限时返回 `blocked` 而非 `search_incomplete`。
+* §1 建筑事实的层级无关获取（用户已明确为后续需求；Phase 3.5 只补了能力声明，未改行为）；
+* §3 大工作区下 `snapshot()` 13 s / 68 MB 的服务端开销。
+
+**Phase 3.5 已关闭**：§2 建筑几何 `unresolved` 根因、§3 `max_expanded_labels` 终态语义。
 
 

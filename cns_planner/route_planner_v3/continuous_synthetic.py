@@ -180,6 +180,14 @@ def build_synthetic_continuous_evidence(spec=None, *, continuous_route=None):
                     "building_id": str(item.get("building_id") or f"synthetic-building-{index}"),
                     "source": "synthetic",
                     "ring_metric": [[float(point[0]), float(point[1])] for point in item["ring_metric"]],
+                    # A multi-part footprint keeps every part so the clearance validator can
+                    # evaluate all of them (never just the largest one).
+                    **({
+                        "ring_parts_metric": [
+                            [[float(point[0]), float(point[1])] for point in ring]
+                            for ring in item["ring_parts_metric"]
+                        ],
+                    } if item.get("ring_parts_metric") else {}),
                     "height_m": item.get("height_m"),
                     "height_status": item.get("height_status", "predicted"),
                     "ground_elevation_max_egm2008_m": item.get("ground_elevation_max_egm2008_m"),

@@ -667,7 +667,7 @@ def test_edge_cost_uses_the_mean_of_both_endpoint_domain_indices(tmp_path):
     assert candidate["optimization_cost"] == pytest.approx(distance * (1 + 2.0 * mean), rel=1e-9)
 
 
-def test_positive_lambda_is_blocked_when_a_required_domain_index_is_missing(tmp_path):
+def test_positive_lambda_reports_no_path_when_a_required_domain_index_is_missing(tmp_path):
     service = workflow(tmp_path)
     confirmed_environment(service, ground=1.0)
     confirmed_request(service)
@@ -676,7 +676,12 @@ def test_positive_lambda_is_blocked_when_a_required_domain_index_is_missing(tmp_
     service.state["grid_risk_v2"] = {"status": "passed", "cells": {}}
     collection = run_planner(service, stub_facts(grid))
     candidate = collection["items"][-1]
-    assert candidate["status"] == "blocked"
+    # A completed search without a traversable path is ``no_path`` — a statement about the
+    # current constraint set, never about the airspace being infeasible.
+    assert candidate["status"] == "no_path"
+    assert candidate["terminal_status_semantics"] == (
+        "search_completed_without_a_feasible_path"
+    )
     assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
     mask = list(collection["masks"].values())[0]
     assert mask["counts"]["blocked"] == 2
@@ -784,12 +789,19 @@ def test_expansion_cap_is_reported_as_search_incomplete_not_failed(tmp_path):
     )
     collection = run_planner(service, stub_facts(grid))
     candidate = collection["items"][-1]
-    assert candidate["status"] == "blocked"
+    # The expansion cap stopped the search: reachability is unproven, so this is
+    # ``search_incomplete`` (resource limited) and NOT ``blocked`` / ``no_path``.
+    assert candidate["status"] == "search_incomplete"
+    assert candidate["terminal_status_semantics"] == (
+        "search_budget_exhausted_reachability_not_proven"
+    )
     assert candidate["search_incomplete"] is True
     assert candidate["statistics"]["search_completeness"] == (
         "expansion_cap_reached_optimality_not_proven"
     )
-    assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
+    assert candidate["blocking_reasons"][0]["reason_code"] == "search_budget_exhausted"
+    assert candidate["blocking_reasons"][0]["reachability_proven"] is False
+    assert candidate["blocking_reasons"][0]["optimality_proven"] is False
 
 
 def test_candidate_cost_breakdown_lists_every_domain_contribution(tmp_path):

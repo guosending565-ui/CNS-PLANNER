@@ -43,8 +43,10 @@ from ..domain.regulatory_constraints import (
     normalize_regulatory_constraints, regulatory_compliance_record,
 )
 
+from ..algorithms.grid.service import WorkspaceGridService
+from ..data.mapping.buildings import BuildingGridService
 from ..layered_route_planner.planner import (
-    ALGORITHM_ID, ALGORITHM_VERSION, LayeredRoutePlannerV1,
+    ALGORITHM_ID, ALGORITHM_VERSION, PLANNER_CAPABILITY, LayeredRoutePlannerV1,
     build_layer_feasibility_mask,
 )
 from ..layered_route_planner.theta_star_v2 import (
@@ -245,6 +247,20 @@ class LayeredRoutePlannerService:
 
     # ------------------------------------------------------------------ readiness
 
+    @staticmethod
+    def _workspace_grid_capability():
+        """工作区网格的**软件基线**能力声明（只读，不改变任何工作区行为）。
+
+        这里报告的是 ``WorkspaceGridService`` 的默认参数（L7 / max_cells 上限），不是当前
+        项目网格的实际层级；项目实际层级始终以 ``state["grid"]["level"]`` 为准。
+        """
+
+        service = WorkspaceGridService()
+        capability = service.capabilities()
+        capability["capability_scope"] = "software_baseline_defaults_not_project_grid"
+        capability["project_grid_level_authority"] = "project_state.grid.level"
+        return capability
+
     def readiness_snapshot(self):
         state = self.ensure_state()
         request = state["layered_route_planning_request"]
@@ -344,6 +360,17 @@ class LayeredRoutePlannerService:
             },
             "request": deepcopy(request),
             "request_semantics": deepcopy(REQUEST_SEMANTICS),
+            # Capability declaration (Phase 3.5, additive): which horizontal grid levels this
+            # planner is declared to work on, which one it prefers, and the known gap between
+            # the workspace default and the only level the L8 building facts can be mapped to.
+            # Declaring this changes no search behaviour.
+            "capabilities": {
+                "planner": deepcopy(PLANNER_CAPABILITY),
+                "building_grid": deepcopy(BuildingGridService.capabilities(
+                    declared_level=(state.get("grid") or {}).get("level"),
+                )),
+                "workspace_grid": self._workspace_grid_capability(),
+            },
             "altitude_layer_catalog": {
                 "status": "configured" if layers else "not_configured",
                 "count": len(layers),
@@ -733,7 +760,12 @@ class LayeredRoutePlannerService:
             mask["status"] = "stale"
             mask["stale_reason"] = str(reason)
         for item in collection["items"]:
-            if item.get("status") in ("candidate", "blocked", "missing_data"):
+            if item.get("status") in (
+                "candidate", "blocked", "missing_data",
+                # Phase 3.5 terminal statuses: a stale input must also stale a result that
+                # ended as no_path / search_incomplete / invalid_input.
+                "no_path", "search_incomplete", "invalid_input",
+            ):
                 item["status"] = "stale"
             item["stale_reason"] = str(reason)
         collection["status"] = "stale"

@@ -12,6 +12,57 @@ class BuildingGridService:
     algorithm_id = "building-grid-direct-l8"
     algorithm_version = "1.0"
 
+    #: 本服务**能正确映射**的网格层级。``zhoushan_building_grid_L8.gpkg`` 是预先按 L8
+    #: 聚合好的事实表，跨层级平均/插值是明确禁止的，所以这里只有 L8。
+    AVAILABLE_LEVELS = (8,)
+    #: 默认层级：调用方不显式指定时必须使用的层级。
+    PREFERRED_LEVEL = 8
+    #: 未选定层级时的兜底层级（与 ``PREFERRED_LEVEL`` 一致，保留别名便于调用方表达意图）。
+    DEFAULT_LEVEL = 8
+    #: 与工作区网格的已知落差（只声明，不在本轮改变行为）。
+    #: ``WorkspaceGridService`` 默认 ``preferred_level=7``；二者不一致时工作区会被
+    #: coarsen 到 L6/L7，建筑事实整表不可用（详见 docs/10-Phase3已知限制与待办.md §1）。
+    PREFERRED_WORKSPACE_LEVEL_ALIGNMENT = "not_aligned_workspace_default_is_7"
+
+    @classmethod
+    def capabilities(cls, *, source_path=None, declared_level=None):
+        """能力声明：``available_levels`` / ``preferred_level``，**不改变任何映射行为**。
+
+        现有调用方（``map(grid, source_path)`` 与 ``level != 8 ⇒ unsupported``）保持完全
+        不变；本方法只是把既有契约显式化，让 readiness / UI / 测试不必再猜层级。
+        """
+
+        available = list(cls.AVAILABLE_LEVELS)
+        level = declared_level if declared_level is not None else cls.PREFERRED_LEVEL
+        usable = level in cls.AVAILABLE_LEVELS
+        return {
+            "role": "building_grid",
+            "algorithm_id": cls.algorithm_id,
+            "algorithm_version": cls.algorithm_version,
+            "available_levels": available,
+            "preferred_level": cls.PREFERRED_LEVEL,
+            "default_level": cls.DEFAULT_LEVEL,
+            "source_declared_level": declared_level,
+            "declared_level_usable": usable,
+            "source_path_configured": bool(source_path),
+            "mapping": "exact_bounds_not_grid_key",
+            "cross_level_aggregation_allowed": False,
+            "cross_level_interpolation_allowed": False,
+            "unusable_reason": None if usable else "unsupported_grid_level",
+            "unusable_message": (
+                None if usable else
+                "building_grid 当前仅允许 L8 直接映射；禁止跨层级平均或插值"
+            ),
+            "workspace_level_alignment": cls.PREFERRED_WORKSPACE_LEVEL_ALIGNMENT,
+            "limitations": [
+                "只有恰好 L8 的工作区网格能直接映射建筑事实表。",
+                "工作区被 coarsen 到其他层级时 status=unsupported、逐格 missing_data，"
+                "unknown 绝不当 0。",
+                "层级无关的建筑事实获取是已记录的后续需求，本轮不实现。",
+            ],
+            "future_work": "level_independent_building_fact_acquisition",
+        }
+
     @classmethod
     def empty(cls, status="not_calculated", source=None, message=None):
         result = {

@@ -270,6 +270,25 @@ function readinessBlock(model){
 }
 
 /** policy 只用于展示：原样读 snapshot 里的 clearance policy，不在前端重算。 */
+function buildingQualityNote(evidence){
+  const evidenceFields=evidence||{};
+  const quality=evidenceFields.building_quality_report||evidenceFields.legacy_quality_report;
+  if(!quality||!quality.counts)return '';
+  const counts=quality.counts||{},repair=quality.repair||{};
+  // 注意：本面板绝不派生任何坐标或区间几何（见 tests/layered_route_map_evidence.test.mjs），
+  // 这里只转印后端给出的质量统计。
+  return '<div class="parameter-note" data-building-quality-report="report">'
+    +'<b>建筑 footprint 质量检查（building quality report）</b>：passed '
+    +escapeHtml(String(counts.passed||0))
+    +' · repaired '+escapeHtml(String(counts.repaired||0))
+    +' · invalid '+escapeHtml(String(counts.invalid||0))
+    +'<br>make_valid applied '+escapeHtml(String(repair.applied_count||0))
+    +' · repair failed '+escapeHtml(String(repair.failed_count||0))
+    +' · source rewritten '+escapeHtml(String(evidenceFields.source_modified===true))
+    +'<br>无效 footprint 优先用 shapely <code>make_valid()</code> 在内存中修复；修复失败保持 '
+    +'unknown，绝不当作"没有建筑"或"已验证"。</div>';
+}
+
 function domainBlock(validation,domainId){
   const domain=layeredValidationDomainModel(validation,domainId);
   if(!domain)return wbBlock(LAYERED_VALIDATION_DOMAIN_LABELS[domainId]||domainId,
@@ -290,6 +309,7 @@ function domainBlock(validation,domainId){
         +escapeHtml(String(domain.unresolvedCount))],
       ['source',escapeHtml(jsonInline(evidence.source||{}))],
     ])+'</div>'
+    +(domain.domainId==='building'?buildingQualityNote(evidence):'')
     +'<h4>failed_intervals</h4><div class="scroll-list route-list">'+violationRows+'</div>'
     +'<h4>unresolved_intervals</h4><div class="scroll-list route-list">'+unresolvedRows+'</div>'
     +(domain.unresolvedCount?'<div class="parameter-note"><b>unresolved 不是 failed</b>：'

@@ -1209,3 +1209,95 @@ def test_search_statistics_and_los_audit_are_complete():
         assert limited["search_statistics"]["search_completeness"] == (
             "expansion_cap_reached_optimality_not_proven"
         )
+
+
+# ---------------------------------------------------------------------------------------
+# terminal result statuses (Phase 3.5): search budget exhaustion is not infeasibility
+
+
+def test_expansion_cap_reports_search_incomplete_not_blocked_or_no_path():
+    limited = plan_v2(grid_cells(), parameters={"max_expanded_labels": 3})
+    assert limited["status"] == "search_incomplete"
+    assert limited["status"] != "blocked"
+    assert limited["status"] != "no_path"
+    assert limited["terminal_status"] == "search_incomplete"
+    assert limited["terminal_status_semantics"] == (
+        "search_budget_exhausted_reachability_not_proven"
+    )
+    assert limited["search_incomplete"] is True
+    assert limited["statistics"]["terminal_status"] == "search_incomplete"
+    reasons = limited["blocking_reasons"][0]
+    assert reasons["reason_code"] == "search_budget_exhausted"
+    assert reasons["resource_limit"] == "max_expanded_labels"
+    # The result explicitly refuses to claim that reachability or optimality was decided.
+    assert reasons["reachability_proven"] is False
+    assert reasons["optimality_proven"] is False
+
+
+def test_completed_search_without_a_path_reports_no_path_and_proves_reachability():
+    grid = grid_cells()
+    # A ring of buildings around the target leaves no traversable approach at all: the
+    # search runs to exhaustion and may therefore report ``no_path``.
+    blocked = build_mask(grid, buildings={
+        cell["grid_id"]: {
+            "data_status": "passed", "building_count": 1, "height_max_m": 5000.0,
+            "valid_height_fraction": 1.0,
+        }
+        for cell in grid
+        if cell["grid_id"] != grid[0]["grid_id"]
+    })
+    candidate = plan_v2(grid, mask=blocked, parameters={"max_expanded_labels": 100000})
+    assert candidate["search_incomplete"] is False
+    assert candidate["status"] == "no_path"
+    assert candidate["terminal_status_semantics"] == (
+        "search_completed_without_a_feasible_path"
+    )
+    assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
+    assert candidate["blocking_reasons"][0]["reachability_proven"] is True
+    assert candidate["statistics"]["search_completeness"] == (
+        "search_exhausted_no_traversable_path"
+    )
+
+
+def test_uninterpretable_planning_input_reports_invalid_input():
+    grid = grid_cells()
+    # A scenario route whose endpoints are not usable coordinates: the request itself cannot
+    # be interpreted, so the planner must say ``invalid_input`` rather than "no path".
+    broken = {"route_id": "SCN-BROKEN", "start": None, "end": None}
+    candidate = plan_v2(grid, route=broken)
+    assert candidate["status"] == "invalid_input"
+    assert candidate["terminal_status_semantics"] == "planning_input_not_interpretable"
+    assert candidate["blocking_reasons"][0]["reason_code"] == "scenario_route_endpoints_missing"
+    assert candidate["blocking_reasons"][0]["reachability_proven"] is True
+    assert candidate["blocking_reasons"][0]["optimality_proven"] is False
+
+    # The grid itself carrying no cells is the same class of result.
+    empty = planner().plan(
+        request=request(), scenario_route=route_for(grid),
+        grid={"level": LEVEL, "cells": []},
+        layer_mask=build_mask(grid), grid_risk_v2=risk_v2(grid),
+        feasibility_policy=feasibility_policy(),
+        population_shelter=shelter_field(grid),
+        shelter_policy=user_defined_baseline_policy(),
+        building_clearance_policy=BUILDING_POLICY,
+    )
+    assert empty["status"] == "invalid_input"
+    assert empty["blocking_reasons"][0]["reason_code"] == "grid_unavailable"
+
+
+def test_planning_status_vocabulary_is_exposed_on_every_terminal_result():
+    from cns_planner.domain.layered_route import (
+        PLANNING_TERMINAL_SEMANTICS, planning_status_reaches_a_path,
+    )
+
+    success = plan_v2(grid_cells())
+    assert success["status"] == "candidate"
+    assert success["terminal_status"] == "candidate"
+    assert success["terminal_status_semantics"] == "search_completed_with_a_feasible_path"
+    assert planning_status_reaches_a_path("candidate") is True
+    for status in ("no_path", "search_incomplete", "invalid_input", "blocked"):
+        assert planning_status_reaches_a_path(status) is False
+        assert status in PLANNING_TERMINAL_SEMANTICS or status == "blocked"
+    assert set(PLANNING_TERMINAL_SEMANTICS) >= {
+        "success", "candidate", "no_path", "search_incomplete", "invalid_input",
+    }

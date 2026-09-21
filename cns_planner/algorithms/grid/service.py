@@ -56,6 +56,35 @@ class WorkspaceGridService:
             "cell_size_degrees": None,
             "count": 0,
             "cells": [],
+            "capabilities": self.capabilities(),
+        }
+
+    def capabilities(self, *, preferred_level=None, max_cells=None):
+        """能力声明：``available_levels`` / ``preferred_level``，**不改变生成行为**。
+
+        工作区网格可以生成任意 MH/T 标准层级；但只有 ``preferred_level``（默认 L7）是
+        默认选择，且在 ``max_cells`` 之下会被静默 coarsen。这里只把这两件事说清楚。
+        """
+
+        level = self.preferred_level if preferred_level is None else preferred_level
+        validate_level(level)
+        limit = self.max_cells if max_cells is None else _resolve_max_cells(max_cells)
+        return {
+            "role": "workspace_grid",
+            "standard": self.standard,
+            "id_scheme": self.id_scheme,
+            "available_levels": list(LEVEL_SIZE_DEGREES),
+            "preferred_level": level,
+            "instance_preferred_level": self.preferred_level,
+            "max_cells": limit,
+            "coarsening": "silent_step_down_until_cell_count_within_max_cells",
+            "coarsening_is_explicit_in_response": True,
+            "coarsened_flag_key": "coarsened",
+            "explicit_level_request_supported": True,
+            "limitations": [
+                "请求的层级可能被静默 coarsen 到更粗层级（响应中的 coarsened=true 记录了这一事实）。",
+                "需要恰好 L8 的下游（building_grid 事实表）在大工作区上因此不可用。",
+            ],
         }
 
     def generate(self, workspace_bbox, preferred_level: int | None = None,

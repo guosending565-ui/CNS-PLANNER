@@ -32,11 +32,11 @@ from ..risk.route_exposure import (
 )
 from ..domain.layered_route import (
     COARSE_ENVELOPE_SEMANTICS, COST_DOMAIN_IDS,
-    active_cost_domains, candidate_fingerprint, cost_lambdas, cost_policy_fingerprint,
-    cost_policy_is_runnable, default_layer_feasibility_mask,
+    active_cost_domains, annotate_terminal_status, candidate_fingerprint, cost_lambdas,
+    cost_policy_fingerprint, cost_policy_is_runnable, default_layer_feasibility_mask,
     default_layered_route_candidate, feasibility_policy_fingerprint,
-    feasibility_policy_is_runnable, mask_cell, mask_fingerprint, request_fingerprint,
-    stable_fingerprint,
+    feasibility_policy_is_runnable, mask_cell, mask_fingerprint, planning_status_semantics,
+    request_fingerprint, stable_fingerprint, terminal_reason_code,
 )
 from ..domain.building_clearance import (
     building_roof_elevation, evaluate_vertical_clearance,
@@ -48,6 +48,24 @@ ALGORITHM_VERSION = "1.0"
 
 #: Set on every mask produced here.
 MASK_SCOPE = "coarse_strategic_vertical_envelope"
+
+#: 能力声明（Phase 3.5，**只声明**，不改变搜索行为）。与 Theta* V2 同构。
+PLANNER_CAPABILITY = {
+    "algorithm_id": ALGORITHM_ID,
+    "algorithm_version": ALGORITHM_VERSION,
+    "horizontal_grid_levels": [8],
+    "available_levels": [8],
+    "preferred_level": 8,
+    "level_binding": "current_workspace_grid_level_used_as_is",
+    "building_fact_level": 8,
+    "cross_level_aggregation_allowed": False,
+    "notes": [
+        "搜索发生在工作区当前网格层级的水平面上，算法本身不做层级转换。",
+        "建筑垂向包线只消费 L8 building_grid 事实；工作区被 coarsen 时建筑约束实际不参与。",
+        "层级无关的建筑事实获取是已记录的后续需求，本轮不实现，也不静默降级。",
+    ],
+    "future_work": "level_independent_building_fact_acquisition",
+}
 
 #: The planner only ever searches inside the explicitly selected layer.
 SEARCH_SEMANTICS = {
@@ -394,10 +412,25 @@ class LayeredRoutePlannerV1:
             building_clearance_policy=building_clearance_policy,
             source_audits=source_audits,
         )
-        blocked = lambda status, reason, code, **extra: self._result(  # noqa: E731
-            status=status, request=request, fingerprints=fingerprints, reason=reason,
-            blocking_reasons=[{"reason_code": code, "reason": reason}], **extra,
-        )
+        def blocked(status, reason, code, **extra):
+            """Structured non-path result (same terminal-status contract as Theta* V2).
+
+            ``no_path`` = a completed search without a traversable path;
+            ``search_incomplete`` = the expansion budget stopped the search, so reachability
+            is **unproven** and the result must not be read as "the airspace is infeasible";
+            ``invalid_input`` = the planning input itself cannot be interpreted.
+            """
+
+            return annotate_terminal_status(self._result(
+                status=status, request=request, fingerprints=fingerprints, reason=reason,
+                blocking_reasons=[{
+                    "reason_code": terminal_reason_code(status, code),
+                    "reason": reason,
+                    "terminal_status": str(status),
+                    "terminal_status_semantics": planning_status_semantics(status),
+                }],
+                **extra,
+            ), status)
         if not isinstance(request, dict) or request.get("status") != "confirmed":
             return blocked(
                 "not_ready", "显式 LayeredRoutePlanningRequest 未确认：必须显式选择 scenario/OD 与 "
@@ -419,10 +452,13 @@ class LayeredRoutePlannerV1:
                 reason or "feasibility_policy_not_confirmed",
             )
         if not grid.get("cells"):
-            return blocked("missing_data", "当前 MH/T L8 标准网格不可用", "grid_unavailable")
+            return blocked(
+                "invalid_input", "当前 MH/T 标准网格不可用（cells 为空）", "grid_unavailable",
+            )
         if str(mask.get("status") or "") != "passed" or not mask.get("cells"):
             return blocked(
-                "missing_data", "LayerFeasibilityMask 缺失或不可用", "feasibility_mask_unavailable",
+                "invalid_input", "LayerFeasibilityMask 缺失或不可用",
+                "feasibility_mask_unavailable",
             )
         stale_reason = self._mask_staleness(
             mask, request=request, feasibility_policy=feasibility_policy,
@@ -438,14 +474,15 @@ class LayeredRoutePlannerV1:
         start, end = route.get("start"), route.get("end")
         if not route_id or not _point(start) or not _point(end):
             return blocked(
-                "missing_data", "scenario/OD 航路端点或 route_id 缺失", "scenario_route_endpoints_missing",
+                "invalid_input", "scenario/OD 航路端点或 route_id 缺失",
+                "scenario_route_endpoints_missing",
             )
 
         graph = GridGraph(list(grid["cells"]))
         source, target = graph.containing_cell(start), graph.containing_cell(end)
         if source is None or target is None:
             return blocked(
-                "blocked", "起点或终点不在当前标准网格内", "endpoints_outside_grid",
+                "invalid_input", "起点或终点不在当前标准网格内", "endpoints_outside_grid",
             )
 
         candidates = sorted(set(mask["cells"]) & set(graph.cells))
@@ -500,7 +537,7 @@ class LayeredRoutePlannerV1:
 
         if source in excluded or target in excluded:
             # The endpoints are checked before any search runs, so they get the same
-            # blocking vocabulary the search would have produced.
+            # no-path vocabulary the search would have produced.
             codes = {
                 "mask_not_feasible": "endpoint_not_feasible",
                 "hard_constraint": "endpoint_in_hard_constraint",
@@ -513,7 +550,7 @@ class LayeredRoutePlannerV1:
                 + (f" · {blocked_at}" if blocked_at else "")
             )
             return blocked(
-                "blocked", reason, code,
+                "no_path", reason, code,
                 mask=mask,
                 statistics={
                     "mask_counts": deepcopy_counts(mask),
@@ -523,8 +560,8 @@ class LayeredRoutePlannerV1:
             )
         if not traversable:
             return blocked(
-                "blocked",
-                "没有任何可行 cell：selected layer 在该 L8 网格内没有 feasible 垂向包络",
+                "no_path",
+                "没有任何可行 cell：selected layer 在该 MH/T 网格内没有 feasible 垂向包络",
                 "no_feasible_cell_in_selected_layer",
                 mask=mask,
                 statistics={"mask_counts": deepcopy_counts(mask), "traversable_count": 0},
@@ -535,13 +572,20 @@ class LayeredRoutePlannerV1:
             self.parameters["max_expanded_states"],
         )
         if expansion["grid_path"] is None:
+            # A budget-limited search stops before reachability is decided: it is
+            # ``search_incomplete`` and never evidence that the airspace is infeasible.
+            incomplete = bool(expansion["cap_reached"])
             reason = (
+                "搜索预算耗尽（达到 max_expanded_states）：可达性未被证明，这不是空域不可行"
+                if incomplete else
                 "风险证据缺失阻断，未找到可用路径"
                 if any(code == "risk_domain_unresolved" for code in excluded.values()) else
                 "feasible cell 不连通或显式硬约束阻断，未找到可用路径"
             )
             return blocked(
-                "blocked", reason, "no_traversable_path",
+                "search_incomplete" if incomplete else "no_path",
+                reason,
+                "search_budget_exhausted" if incomplete else "no_traversable_path",
                 mask=mask,
                 statistics={
                     "mask_counts": deepcopy_counts(mask),
@@ -550,10 +594,10 @@ class LayeredRoutePlannerV1:
                     "expanded_states": expansion["expanded_states"],
                     "search_completeness": (
                         "expansion_cap_reached_optimality_not_proven"
-                        if expansion["cap_reached"] else "no_traversable_path"
+                        if incomplete else "search_exhausted_no_traversable_path"
                     ),
                 },
-                search_incomplete=expansion["cap_reached"],
+                search_incomplete=incomplete,
             )
         grid_path = expansion["grid_path"]
         path = _path_with_real_endpoints(start, end, grid_path, graph.centers)
@@ -561,7 +605,7 @@ class LayeredRoutePlannerV1:
             path, grid_path, graph.centers, indices, lambdas, active_domains, start, end,
         )
         straight = distance_m(start, end)
-        return self._result(
+        return annotate_terminal_status(self._result(
             status="candidate", request=request, fingerprints=fingerprints,
             reason="Layered Route Planner V1 candidate 规划完成",
             path=path, grid_path=grid_path, mask=mask,
@@ -581,7 +625,7 @@ class LayeredRoutePlannerV1:
                 ),
             },
             search_incomplete=expansion["cap_reached"],
-        )
+        ), "candidate")
 
     # ------------------------------------------------------------------ helpers
 

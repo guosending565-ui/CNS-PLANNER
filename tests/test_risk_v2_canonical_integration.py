@@ -331,8 +331,12 @@ def test_missing_canonical_domain_index_still_fails_closed_without_zero(tmp_path
 
     collection = run_planner(service, cells)
     candidate = candidate_of(collection)
-    assert candidate["status"] == "blocked"
+    # Phase 3.5 terminal semantics: the unresolved domain index blocks that cell, the search
+    # then completes without a traversable path, so the honest result is ``no_path`` (a
+    # statement about this constraint set) and not ``blocked``/``search_incomplete``.
+    assert candidate["status"] == "no_path"
     assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
+    assert candidate["search_incomplete"] is False
     mask = list(collection["layered_route_candidates"]["masks"].values())[0]
     assert mask["cells"][target]["reason_code"] == "risk_domain_unresolved"
     resolved, unresolved = resolve_cell_domain_indices(tampered, (target,), ("ground",))

@@ -428,6 +428,13 @@ export function candidateModel(candidate,isCurrent){
     },
     blockingReasons:Array.isArray(candidate?.blocking_reasons)?candidate.blocking_reasons:[],
     searchIncomplete:candidate?.search_incomplete===true,
+    // Terminal status projection (Phase 3.5): ``no_path`` (搜索完整但无解) and
+    // ``search_incomplete`` (搜索预算耗尽，可达性未证明) must never be shown as the same thing.
+    terminalStatus:text(candidate?.terminal_status||candidate?.status),
+    terminalStatusSemantics:text(candidate?.terminal_status_semantics),
+    resourceLimited:(candidate?.terminal_status||candidate?.status)==='search_incomplete',
+    reachabilityProven:candidate?.blocking_reasons?.[0]?.reachability_proven===true,
+    resourceLimit:text(candidate?.blocking_reasons?.[0]?.resource_limit),
     maskStatus:text(candidate?.mask_status),
     fingerprints:{
       candidate:text(candidate?.candidate_fingerprint),
@@ -465,7 +472,11 @@ function listRows(rows){
 function blockerRows(blockers,emptyNote){
   if(!blockers.length)return '<div class="parameter-note">'+escapeHtml(emptyNote)+'</div>';
   return listRows(blockers.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.reasonCode)
-    +'</b> '+statusBadge('blocked')+'<small>'+escapeHtml(item.reason)+'</small></span></div>'));
+    +'</b> '+statusBadge(item.terminalStatus==='search_incomplete'?'search_incomplete':(item.terminalStatus||'blocked'))
+    +'<small>'+escapeHtml(item.reason)+'</small>'
+    +(item.resourceLimit?'<small>resource_limit='+escapeHtml(String(item.resourceLimit))
+      +' · reachability_proven='+escapeHtml(String(item.reachabilityProven===true))+'</small>':'')
+    +'</span></div>'));
 }
 
 // ---------------------------------------------------------------- sections

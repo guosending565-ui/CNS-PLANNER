@@ -798,19 +798,49 @@ def test_building_missing_ground_is_unresolved(tmp_path):
     assert descent["domain_statuses"]["building"] == "unresolved"
 
 
-def test_invalid_building_geometry_is_unresolved_and_never_made_valid(tmp_path):
+def test_self_intersecting_transition_footprint_is_repaired_then_evaluated(tmp_path):
     service = ready_service(tmp_path)
-    invalid = building_covering_the_descent(ground=30.0, height=20.0)
-    invalid["ring_metric"] = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]
+    repaired = building_covering_the_descent(ground=0.0, height=400.0)
+    x0 = to_metric([122.0, 30.0])[0]
+    x1 = to_metric([122.02, 30.0])[0]
+    y = to_metric([122.0, 30.0])[1]
+    # Bowtie: the same four corners with the ring order crossing itself.
+    repaired["ring_metric"] = [
+        [x0, y - 60.0], [x1, y + 60.0], [x1, y - 60.0], [x0, y + 60.0], [x0, y - 60.0],
+    ]
     evaluate(service, evidence_adapter(
         terrain=terrain_pixels(elevation_climb=10.0, elevation_descent=4.0),
-        buildings={"departure_climb": [], "arrival_descent": [invalid]},
+        buildings={"departure_climb": [], "arrival_descent": [repaired]},
+    ))
+    record = latest(service)
+    descent = next(item for item in record["phases"] if item["phase_id"] == "arrival_descent")
+    quality = descent["domains"]["building"]["evidence"]["building_quality_report"]
+    assert quality["counts"]["repaired"] == 1
+    assert quality["repair"]["applied_count"] == 1
+    assert descent["domains"]["building"]["evidence"]["make_valid_applied"] is True
+    assert descent["domains"]["building"]["evidence"]["source_geometry_modified"] is False
+    # The repaired geometry is a real constraint now, so the phase reaches a verdict.
+    assert descent["domain_statuses"]["building"] in ("failed", "passed"), descent["reason"]
+
+
+def test_collinear_transition_footprint_stays_unresolved_after_failed_repair(tmp_path):
+    service = ready_service(tmp_path)
+    degenerate = building_covering_the_descent(ground=30.0, height=20.0)
+    degenerate["ring_metric"] = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]
+    evaluate(service, evidence_adapter(
+        terrain=terrain_pixels(elevation_climb=10.0, elevation_descent=4.0),
+        buildings={"departure_climb": [], "arrival_descent": [degenerate]},
     ))
     record = latest(service)
     assert record["status"] == "unresolved"
     descent = next(item for item in record["phases"] if item["phase_id"] == "arrival_descent")
     assert descent["domains"]["building"]["evidence"]["make_valid_applied"] is False
     assert descent["domains"]["building"]["evidence"]["source_geometry_modified"] is False
+    quality = descent["domains"]["building"]["evidence"]["building_quality_report"]
+    assert quality["counts"] == {"passed": 0, "repaired": 0, "invalid": 1}
+    assert quality["repair"]["failed_count"] == 1
+    assert quality["semantics"]["unrepairable_geometry_stays_unknown"] is True
+    assert descent["domain_statuses"]["building"] == "unresolved"
 
 
 def test_exact_contact_margin_zero_is_not_a_penetration(tmp_path):

@@ -45,9 +45,11 @@ from ..algorithms.coverage.v1 import distance_m
 from ..domain.building_clearance import building_roof_elevation, evaluate_vertical_clearance
 from ..domain.communication_planning_field import communication_readiness
 from ..domain.layered_route import (
-    COARSE_ENVELOPE_SEMANTICS, COST_DOMAIN_IDS, candidate_fingerprint,
+    COARSE_ENVELOPE_SEMANTICS, COST_DOMAIN_IDS, PLANNING_TERMINAL_SEMANTICS,
+    PLANNING_TERMINAL_STATUSES, annotate_terminal_status, candidate_fingerprint,
     default_layered_route_candidate, feasibility_policy_fingerprint,
-    mask_fingerprint, request_fingerprint, stable_fingerprint,
+    mask_fingerprint, planning_status_semantics, request_fingerprint, stable_fingerprint,
+    terminal_reason_code,
 )
 from ..domain.layered_theta_v2 import (
     ALGORITHM_ID, ALGORITHM_VERSION, D_REF_PROVENANCE, OBJECTIVE_FORMULA,
@@ -75,6 +77,26 @@ from .supercover import (
 #: Risk Framework V2 factor used as the normalized population factor.
 POPULATION_FACTOR_ID = "population_exposure"
 
+#: 能力声明（Phase 3.5，**只声明**，不改变搜索行为）。
+#: Theta* V2 在"当前工作区网格层级"的水平面上搜索；建筑事实来自 L8 building_grid，
+#: 因此工作区不是 L8 时建筑约束实际不参与包线（见 docs/10-Phase3已知限制与待办.md §1）。
+PLANNER_CAPABILITY = {
+    "algorithm_id": ALGORITHM_ID,
+    "algorithm_version": ALGORITHM_VERSION,
+    "horizontal_grid_levels": [8],
+    "available_levels": [8],
+    "preferred_level": 8,
+    "level_binding": "current_workspace_grid_level_used_as_is",
+    "building_fact_level": 8,
+    "cross_level_aggregation_allowed": False,
+    "notes": [
+        "搜索发生在工作区当前网格层级的水平面上，算法本身不做层级转换。",
+        "建筑垂向包线只消费 L8 building_grid 事实；工作区被 coarsen 时建筑约束实际不参与。",
+        "层级无关的建筑事实获取是已记录的后续需求，本轮不实现，也不静默降级。",
+    ],
+    "future_work": "level_independent_building_fact_acquisition",
+}
+
 #: Traversal rejection vocabulary.
 LOS_REJECTION_REASONS = (
     "terrain", "building", "regulatory", "unknown", "hard_constraint", "outside_grid",
@@ -101,6 +123,14 @@ SEARCH_SEMANTICS = {
     "search_objective_risk_scope": "population_x_shelter_only",
     "communication_affects_path_or_cost": False,
     "airspace_not_used": True,
+    # Terminal-status semantics (Phase 3.5).  Reaching the expansion cap stops the
+    # search before reachability is decided, so it is reported as ``search_incomplete``
+    # and is never evidence that the airspace is infeasible.
+    "terminal_statuses": list(PLANNING_TERMINAL_STATUSES),
+    "terminal_status_semantics": dict(PLANNING_TERMINAL_SEMANTICS),
+    "expansion_cap_status": "search_incomplete",
+    "search_budget_exhausted_is_not_infeasibility": True,
+    "no_path_requires_a_completed_exhaustive_search": True,
 }
 
 #: Objective / evaluation semantics recorded on every candidate.
@@ -433,12 +463,26 @@ class LayeredRiskAwareThetaStarV2:
         communication = communication_readiness(communication_field)
 
         def blocked(status, reason, code, **extra):
-            return self._result(
+            """Structured non-path result.
+
+            ``status`` is one of the terminal planning statuses — ``invalid_input`` (the
+            request itself cannot be interpreted), ``not_ready`` / ``missing_data``
+            (a precondition is not satisfied yet) or ``blocked`` (a fully evaluated hard
+            constraint forbids the endpoints).  "No path found" is reported separately as
+            ``no_path`` / ``search_incomplete`` by :meth:`plan`.
+            """
+
+            return annotate_terminal_status(self._result(
                 status=status, request=request, fingerprints=fingerprints, reason=reason,
-                blocking_reasons=[{"reason_code": code, "reason": reason}],
+                blocking_reasons=[{
+                    "reason_code": terminal_reason_code(status, code),
+                    "reason": reason,
+                    "terminal_status": str(status),
+                    "terminal_status_semantics": planning_status_semantics(status),
+                }],
                 objective_policy=objective, risk_density_constraint=constraint,
                 communication=communication, **extra,
-            )
+            ), status)
 
         if not isinstance(request, dict) or request.get("status") != "confirmed":
             return blocked(
@@ -457,10 +501,13 @@ class LayeredRiskAwareThetaStarV2:
             )
         altitude = float(altitude)
         if not grid.get("cells"):
-            return blocked("missing_data", "当前 MH/T L8 标准网格不可用", "grid_unavailable")
+            return blocked(
+                "invalid_input", "当前 MH/T 标准网格不可用（cells 为空）", "grid_unavailable",
+            )
         if str(mask.get("status") or "") != "passed" or not mask.get("cells"):
             return blocked(
-                "missing_data", "LayerFeasibilityMask 缺失或不可用", "feasibility_mask_unavailable",
+                "invalid_input", "LayerFeasibilityMask 缺失或不可用",
+                "feasibility_mask_unavailable",
             )
 
         route = scenario_route if isinstance(scenario_route, dict) else {}
@@ -468,7 +515,7 @@ class LayeredRiskAwareThetaStarV2:
         start, end = route.get("start"), route.get("end")
         if not route_id or not _point(start) or not _point(end):
             return blocked(
-                "missing_data", "scenario/OD 航路端点或 route_id 缺失",
+                "invalid_input", "scenario/OD 航路端点或 route_id 缺失",
                 "scenario_route_endpoints_missing",
             )
 
@@ -476,7 +523,9 @@ class LayeredRiskAwareThetaStarV2:
         index_map = GridIndexMap(graph)
         source, target = graph.containing_cell(start), graph.containing_cell(end)
         if source is None or target is None:
-            return blocked("blocked", "起点或终点不在当前标准网格内", "endpoints_outside_grid")
+            return blocked(
+                "invalid_input", "起点或终点不在当前标准网格内", "endpoints_outside_grid",
+            )
 
         weights = objective_weights(objective)
         risk_weight = float(weights["risk"])
@@ -540,16 +589,41 @@ class LayeredRiskAwareThetaStarV2:
         statistics["risk_unresolved_cell_count"] = len(risk_unresolved)
 
         if search["path"] is None:
+            # A stopped-because-budget-exhausted search proves nothing about reachability, so
+            # it is reported as ``search_incomplete``; only a search that ran to exhaustion
+            # may report ``no_path``.  Neither is ever a claim that the airspace is unusable.
+            incomplete = bool(search["cap_reached"])
             statistics["search_completeness"] = (
                 "expansion_cap_reached_optimality_not_proven"
-                if search["cap_reached"] else "no_traversable_path"
+                if incomplete else "search_exhausted_no_traversable_path"
             )
-            return blocked(
-                "blocked",
-                "Theta* 未找到 any-angle 可用路径（地形/建筑/硬约束/regulatory/风险证据任一阻断）",
-                "no_traversable_path",
-                mask=mask, statistics=statistics, search_incomplete=search["cap_reached"],
-            )
+            return annotate_terminal_status(self._result(
+                status="search_incomplete" if incomplete else "no_path",
+                request=request, fingerprints=fingerprints,
+                reason=(
+                    "Theta* 搜索预算耗尽（达到 max_expanded_labels）：可达性未被证明，"
+                    "这不是空域不可行，也不代表没有航路；请提高搜索预算或缩小问题规模后重跑"
+                    if incomplete else
+                    "Theta* 完整搜索结束但未找到 any-angle 可用路径"
+                    "（地形/建筑/硬约束/regulatory/风险证据任一阻断）"
+                ),
+                blocking_reasons=[{
+                    "reason_code": (
+                        "search_budget_exhausted" if incomplete else "no_traversable_path"
+                    ),
+                    "reason": (
+                        "达到 max_expanded_labels：搜索预算耗尽，可达性未被证明"
+                        if incomplete else "搜索完整结束且不存在可行路径"
+                    ),
+                    "resource_limit": "max_expanded_labels" if incomplete else None,
+                    "reachability_proven": not incomplete,
+                    "optimality_proven": False,
+                }],
+                objective_policy=objective, risk_density_constraint=constraint,
+                communication=communication,
+                mask=mask, statistics=statistics, search_incomplete=incomplete,
+                mask_status=mask.get("status"),
+            ), "search_incomplete" if incomplete else "no_path")
 
         metrics = _objective_metrics(search, weights, d_ref, self.parameters["theta_min_deg"])
         evaluation = evaluate_route_risk_density(
@@ -561,7 +635,7 @@ class LayeredRiskAwareThetaStarV2:
             "expansion_cap_reached_optimality_not_proven"
             if search["cap_reached"] else "optimal_path_found"
         )
-        return self._result(
+        return annotate_terminal_status(self._result(
             status="candidate", request=request, fingerprints=fingerprints,
             reason=(
                 "Layered Risk-Aware Theta* V2 candidate 规划完成（任何角度搜索 + parent LOS "
@@ -579,7 +653,7 @@ class LayeredRiskAwareThetaStarV2:
             communication=communication,
             regulatory=regulatory_compliance_record(regulatory_constraints),
             search_incomplete=search["cap_reached"],
-        )
+        ), "candidate")
 
     # ------------------------------------------------------------------ fingerprints
 
