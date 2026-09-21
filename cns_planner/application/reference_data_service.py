@@ -10,7 +10,8 @@ from ..algorithms.coverage.v1 import distance_m
 from ..domain.source_audit import provenance_record, source_manifest
 from ..domain.geometry_health import inspect_geojson_geometries
 from ..reference_data import (
-    load_equipment_reference_catalog, load_reference_landing_sites, load_reference_routes,
+    declared_source_crs, load_equipment_reference_catalog, load_reference_landing_sites,
+    load_reference_routes,
 )
 
 
@@ -85,6 +86,10 @@ class ReferenceDataService:
 
     def import_routes(self, path, save=True):
         result = load_reference_routes(path)
+        result["data_source"] = {
+            **dict(result.get("data_source") or {}),
+            "imported": True, "imported_from": "direct_source_import",
+        }
         self.session.state["reference_routes"] = result
         self._store_audit("reference_routes", path, {
             "row_count": result.get("point_count", 0) + int((result.get("metadata") or {}).get("invalid_row_count") or 0),
@@ -96,11 +101,13 @@ class ReferenceDataService:
                 "unsupported": 0,
             },
         })
+        # 源文件自带 source_crs + crs_confirmed=true 时自动确认，不再要求用户重复确认。
+        self._auto_confirm_declared_crs("reference_routes", save=False)
         if save:
             self.session.save()
         return self.snapshot()
 
-    def preview_routes(self, path, conversion=None):
+    def preview_routes(self, path, conversion=None, auto_confirm=True):
         source = Path(str(path or "")).expanduser()
         if not source.is_file():
             raise ValueError("参考航线源路径必须是存在的具体文件")
@@ -183,6 +190,8 @@ class ReferenceDataService:
             "confirmation_required": True,
             "replacement_semantics": "replace_reference_routes_only_after_user_confirmation",
             "conversion_record": deepcopy(conversion) if conversion else None,
+            # 源文件自身的坐标系声明：为真时无需用户再次确认。
+            "declared_source_crs": deepcopy(parsed.get("declared_source_crs")),
         }
         self.session.state["reference_route_import_preview"] = preview
         self._store_audit("reference_routes", source, {
@@ -190,6 +199,10 @@ class ReferenceDataService:
             "feature_count": parsed.get("count", 0), "extent": bounds,
             "geometry_health": geometry_health,
         })
+        # 源文件已自带"坐标系已确认"声明时，预览即完成导入：正式 reference_routes
+        # 对象立即生成，项目里不再只留下一个孤立的 preview。
+        if auto_confirm and self._auto_import_declared_routes(source, preview):
+            return self.snapshot()
         self.session.save()
         return self.snapshot()
 
@@ -200,24 +213,128 @@ class ReferenceDataService:
         if preview.get("status") != "ready_for_confirmation":
             raise ValueError("导入预览未通过，不能替换 reference_routes")
         source = Path(str(path or "")).expanduser()
-        current = self.preview_routes(source, preview.get("conversion_record"))["reference_route_import_preview"]
+        current = self.preview_routes(
+            source, preview.get("conversion_record"), auto_confirm=False,
+        )["reference_route_import_preview"]
         if current.get("preview_id") != preview_id:
             raise ValueError("源文件在预览后发生变化，请重新确认")
+        self._store_confirmed_routes(source, preview_id, current)
+        return self.snapshot()
+
+    def _store_confirmed_routes(self, source, preview_id, preview):
+        """把已确认的预览落成正式 ``reference_routes`` 业务航线对象。"""
+
         result = load_reference_routes(source)
         result["import_preview_id"] = preview_id
         result["provenance"] = provenance_record(
-            source_entity=preview["source_audit"]["source_id"],
+            source_entity=((preview.get("source_audit") or {}).get("source_id") or "SRC-REFROUTES"),
             processing_activity="confirmed_reference_route_import",
             derived_entity=result["collection_id"], method="CSV/XLSX/GeoJSON parser",
             note="用户确认预览后替换 reference_routes；未进入规划结果。",
         )
         result["provenance"]["conversion_record"] = deepcopy(preview.get("conversion_record"))
+        result["data_source"] = {
+            **dict(result.get("data_source") or {}),
+            "imported": True,
+            "imported_from": preview.get("import_origin") or "user_confirmed_preview",
+        }
         self.session.state["reference_routes"] = result
         self.session.state["reference_route_import_preview"] = None
+        self._auto_confirm_declared_crs("reference_routes", save=False)
         self.session.save()
+        return result
+
+    def _auto_import_declared_routes(self, source, preview):
+        """源文件自带已确认坐标系时直接生成正式业务航线。
+
+        只在本项目还没有正式 ``reference_routes`` 对象时生效；已有对象时仍然
+        由用户显式确认替换，避免一次预览就覆盖既有成果。
+        """
+
+        if preview.get("status") != "ready_for_confirmation":
+            return False
+        declaration = preview.get("declared_source_crs") or {}
+        if declaration.get("confirmed") is not True or not declaration.get("value"):
+            return False
+        if (self.session.state.get("reference_routes") or {}).get("items"):
+            return False
+        preview["import_origin"] = "source_declared_crs_auto_import"
+        self._store_confirmed_routes(source, preview.get("preview_id"), preview)
+        return True
+
+    def restore_routes_from_source(self, path, save=False):
+        """项目打开时按已保存的数据源恢复正式业务航线。
+
+        前提是源文件**自己声明了已确认的坐标系**（``source_crs`` 且
+        ``crs_confirmed=true``）；只做转述与校验，绝不推断。缺少该声明时保持既有
+        契约：仍需用户显式预览并确认，配置一个文件本身永不替换 reference_routes。
+        返回当前快照，任何失败都保持项目原有内容不变。
+        """
+
+        source = Path(str(path or "")).expanduser()
+        collection = self.session.state.get("reference_routes") or {}
+        if not source.is_file():
+            return self.snapshot()
+        declaration = collection.get("declared_source_crs")
+        if not isinstance(declaration, dict):
+            declaration = declared_source_crs(source) or {}
+        if declaration.get("confirmed") is not True or not declaration.get("value"):
+            return self.snapshot()
+        if not collection.get("items"):
+            parsed = load_reference_routes(source)
+            if parsed.get("items"):
+                parsed["declared_source_crs"] = declaration
+                parsed["data_source"] = {
+                    **dict(parsed.get("data_source") or {}),
+                    "imported": True, "imported_from": "project_open_restore",
+                }
+                self.session.state["reference_routes"] = parsed
+                self.session.state["reference_route_import_preview"] = None
+                collection = parsed
+        if collection.get("items"):
+            if not isinstance(collection.get("declared_source_crs"), dict):
+                collection["declared_source_crs"] = declaration
+            self._auto_confirm_declared_crs("reference_routes", save=False)
+        if save:
+            self.session.save()
         return self.snapshot()
 
-    def confirm_crs(self, role, payload):
+    def _auto_confirm_declared_crs(self, role, save=False):
+        """按源文件声明自动确认坐标系，免去用户重复确认。
+
+        仅当源文件明确写了 ``crs_confirmed=true`` 且取值能通过 pyproj 校验时
+        才升级为已确认记录；任何异常都只留下 warning，不阻断导入。
+        """
+
+        collection = self.session.state.get(role) or {}
+        declaration = collection.get("declared_source_crs") or {}
+        value = str(declaration.get("value") or "").strip()
+        if declaration.get("confirmed") is not True or not value:
+            return False
+        current = ((collection.get("crs") or {}).get("source_crs") or {})
+        if current.get("confirmed") is True and current.get("value") == value:
+            return False
+        payload = {
+            "value": value,
+            "source": {
+                "type": "source_file_column",
+                "file": (collection.get("source") or {}).get("file"),
+                "columns": deepcopy(declaration.get("columns") or ["source_crs", "crs_confirmed"]),
+            },
+            "evidence": deepcopy(declaration.get("evidence") or [{
+                "type": "source_file_declaration", "value": value,
+                "note": "源文件 source_crs 列声明该坐标系且 crs_confirmed 为真。",
+            }]),
+        }
+        try:
+            self.confirm_crs(role, payload, save=save)
+        except ValueError as exc:
+            collection.setdefault("warnings", []).append("declared_crs_auto_confirm_failed")
+            collection.setdefault("metadata", {})["declared_crs_auto_confirm_error"] = str(exc)
+            return False
+        return True
+
+    def confirm_crs(self, role, payload, save=True):
         if role not in ("reference_landing_sites", "reference_routes"):
             raise ValueError("只支持 reference_landing_sites/reference_routes CRS 确认")
         if not isinstance(payload, dict):
@@ -301,6 +418,14 @@ class ReferenceDataService:
             "source_crs": canonical_value, "target_crs": "OGC:CRS84",
             "method": "pyproj.Transformer.from_crs", "always_xy": True,
         }
+        # 数据源摘要随确认结果一起刷新，项目保存后即可据此判断"已导入且坐标系已确认"。
+        source_state = collection.get("data_source")
+        if isinstance(source_state, dict):
+            source_state["crs"] = canonical_value
+            source_state["crs_confirmed"] = True
+            source_state["imported"] = bool(collection.get("items")) or source_state.get("imported") is True
+            source_state["route_count"] = len(collection.get("items") or [])
+            source_state["point_count"] = collection.get("point_count", len(collection.get("points") or []))
         audit = ((self.session.state.get("source_audits") or {}).get("items") or {}).get(role)
         collection["crs_confirmation_provenance"] = provenance_record(
             source_entity=(audit or {}).get("source_id") or f"{role}:configured_source",
@@ -325,7 +450,8 @@ class ReferenceDataService:
                     item["confirmed"] = False
             for experiment in (self.session.state.get("route_planning_experiments") or {}).get("records") or []:
                 experiment["reference_comparison_status"] = "stale_crs_changed"
-        self.session.save()
+        if save:
+            self.session.save()
         return self.snapshot()
 
     @staticmethod

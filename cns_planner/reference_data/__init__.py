@@ -12,11 +12,17 @@ from .landing_sites import (
     parse_coordinate,
     reference_crs_status,
 )
-from .routes import backfill_reference_routes, empty_reference_routes, load_reference_routes
+from .routes import (
+    backfill_reference_routes,
+    declared_source_crs,
+    empty_reference_routes,
+    load_reference_routes,
+)
 
 __all__ = [
     "backfill_reference_landing_sites",
     "backfill_reference_routes",
+    "declared_source_crs",
     "empty_equipment_reference_catalog",
     "empty_reference_landing_sites",
     "load_equipment_reference_catalog",

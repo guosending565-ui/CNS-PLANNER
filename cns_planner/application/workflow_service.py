@@ -1037,6 +1037,11 @@ class WorkflowService:
     def configure_reference_sources(self, paths, save=False):
         landing_path = (paths or {}).get("reference_landing_sites")
         route_path = (paths or {}).get("reference_routes")
+        if not route_path and "reference_routes" not in (paths or {}):
+            # 数据源路径本身丢失时（自动项目不写 data_sources.json）回退到项目状态里
+            # 保存的来源，避免"项目重新打开后还需要重新配置数据源"。显式传入空值表示
+            # 用户主动清空该数据源，此时不回退。
+            route_path = ((self.state.get("reference_routes") or {}).get("data_source") or {}).get("path")
         if landing_path:
             audit = self.source_audit_service.register_quick(
                 "reference_landing_sites", landing_path,
@@ -1049,8 +1054,12 @@ class WorkflowService:
                 self.reference_data_service.import_landing_sites(landing_path, save=False)
         if route_path:
             self.source_audit_service.register_quick("reference_routes", route_path)
-            # Configuring a converted file never replaces reference_routes.
+            # Configuring a converted file never replaces existing reference_routes.
             # The user must request a preview and explicitly confirm it.
+            # 例外：项目里还没有任何正式业务航线对象时，按已保存的数据源自动恢复；
+            # 是否真正恢复仍取决于源文件自身的 source_crs + crs_confirmed=true 声明。
+            if not (self.state.get("reference_routes") or {}).get("items"):
+                self.reference_data_service.restore_routes_from_source(route_path, save=False)
         if save and (landing_path or route_path):
             self.session.save()
         return self.snapshot()

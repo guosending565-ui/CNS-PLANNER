@@ -217,4 +217,33 @@ L8 是 `building_grid` 事实唯一可映射的层级；L7 下 `buildings` 全�
 
 **Phase 3.5 已关闭**：§2 建筑几何 `unresolved` 根因、§3 `max_expanded_labels` 终态语义。
 
+---
+
+## 6. 前端待办需求（已记录，**尚未实现**）
+
+来源：2026-09-21 人工验收提出，当时明确"本轮只完成数据恢复和真实航线恢复"。
+
+### FRONT-001：默认打开地图只显示 QGIS 在线底图
+
+**现状**：地图初始化后会一次性叠加当前 `MapData` 载入的全部本地图层（`loaded_layer_count`
+在真实验收项目里为 31），人口、地形、建筑等分析图层默认出现在首屏。
+
+**期望**：默认视图只显示 QGIS 在线底图；其余分析图层（人口 / DSM / FABDEM / 建筑等）
+默认关闭，由用户在图层列表里按需打开。
+
+**约束**：只改默认可见性，不改任何图层的加载、CRS、映射或算法语义；
+`online_sources` / `layers` / `local_layers` 的数据结构保持不变。
+
+### FRONT-002：建筑图层增加前端显示能力
+
+**现状**：建筑事实（`buildings` / `building_grid`）已在 `grid_attributes` 与
+`vector_sources` 中可达，但前端没有独立的建筑图层开关与渲染。
+
+**期望**：前端可独立开关并渲染建筑图层（至少支持 L8 建筑环境网格与建筑单体轮廓的
+只读展示）。
+
+**约束**：纯展示层能力；不得把建筑事实写入 `flow.nodes` / `scenario_routes` /
+`operational_routes`，也不得让显示能力反过来影响净空判定（`unknown != safe` 不变）。
+
+
 
