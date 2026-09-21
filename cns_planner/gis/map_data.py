@@ -25,7 +25,7 @@ DEFAULT_CONFIG = ROOT / "cns_planner" / "config" / "defaults.json"
 DEFAULT_PATHS = {
     "basemap": "D:/aaa2026project/UOM/全国适飞空域图_单省可更新.qgz",
     "population": "D:/aaa2026project/UOM/舟山/规划系统/chn_pop_2025_CN_100m_R2025A_v1.tif",
-    "terrain": "D:/aaa2026project/UOM/舟山/规划系统/GLO30/output/Zhejiang_GLO30_30m.tif",
+    "terrain": "D:/aaa2026project/UOM/舟山/规划系统/GLO30/output/Zhejiang_GLO30_mosaic_30m.tif",
     "terrain_dtm": "D:/aaa2026project/UOM/舟山/规划系统/FABDEM/processed/Zhoushan_FABDEM_DTM_30m.tif",
     "buildings": "D:/aaa2026project/UOM/舟山/规划系统/building/processed/zhoushan_buildings.gpkg",
     "building_grid": "D:/aaa2026project/UOM/舟山/规划系统/building/processed/zhoushan_building_grid_L8.gpkg",

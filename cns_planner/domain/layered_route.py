@@ -543,18 +543,23 @@ def default_layer_feasibility_mask(altitude_layer_id=None, status="not_calculate
 
 
 def normalize_layer_feasibility_mask(value):
+    # 读取性能：mask 可能携带上万个 cell（每个 cell 带 terrain/building 诊断）。
+    # 这里只做"新的顶层容器 + 归一化字段"的投影，逐 cell 明细共享只读引用，
+    # 不再为每次读取深拷贝整份 mask —— 归一化结果与字段语义完全不变。
     if not isinstance(value, dict):
         return default_layer_feasibility_mask()
     result = default_layer_feasibility_mask(
         value.get("altitude_layer_id"), str(value.get("status") or "not_calculated"),
     )
-    result.update(deepcopy(value))
+    result.update(value)
     result["schema_version"] = SCHEMA_VERSION
     cells = result.get("cells")
     result["cells"] = cells if isinstance(cells, dict) else {}
     counts = result.get("counts")
     if not isinstance(counts, dict):
         counts = {"feasible": 0, "blocked": 0, "unknown": 0}
+    else:
+        counts = dict(counts)
     for key in FEASIBILITY_STATUSES:
         counts.setdefault(key, 0)
     result["counts"] = counts
@@ -688,13 +693,15 @@ def default_layered_route_candidate(
 
 
 def normalize_layered_route_candidate(value):
+    # 读取性能：候选记录只做顶层投影，嵌套载荷（path / planning_objective / 统计）
+    # 共享只读引用，避免每次读取深拷贝整份候选记录。字段与状态机语义不变。
     if not isinstance(value, dict):
         return default_layered_route_candidate()
     result = default_layered_route_candidate(
         value.get("route_id"), value.get("altitude_layer_id"),
         str(value.get("status") or "not_calculated"),
     )
-    result.update(deepcopy(value))
+    result.update(value)
     result["schema_version"] = SCHEMA_VERSION
     # The candidate contract is enforced unconditionally: no construction path can turn a
     # candidate into an operational route.
@@ -750,10 +757,12 @@ def empty_layered_route_candidate_collection():
 
 
 def normalize_layered_route_candidate_collection(value):
+    # 读取性能：容器可能承载多个上万个 cell 的 feasibility mask。这里只做顶层投影，
+    # 逐 cell 明细由 normalize_layer_feasibility_mask 共享只读引用，不做整树深拷贝。
     if not isinstance(value, dict):
         return empty_layered_route_candidate_collection()
     result = empty_layered_route_candidate_collection()
-    result.update(deepcopy(value))
+    result.update(value)
     result["schema_version"] = SCHEMA_VERSION
     items = [item for item in result.get("items") or [] if isinstance(item, dict)]
     result["items"] = [normalize_layered_route_candidate(item) for item in items]

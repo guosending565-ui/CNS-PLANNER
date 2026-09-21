@@ -236,17 +236,19 @@ export function drawWorkflowLayers({
   }
 
   // 2) 专题覆盖（沿用既有 overlay 模块，几何与语义不变）
-  if(layers.buildingClearance){
+  //    图层 key 与图层抽屉里的 checkbox id 完全一致（shell.js 的 layerSwitches 直接
+  //    以 checkbox id 作为 key），不再使用缩写 key，避免开关读不到、图层永远不画。
+  if(layers.buildingClearanceLayer){
     drawBuildingClearanceOverlay({ctx,screenPoint,drawLine,assessment:flow.building_clearance_assessment});
   }
-  if(layers.v3Candidate){
+  if(layers.v3CandidateLayer){
     drawV3CandidateOverlay({ctx,screenPoint,drawLine,model:v3OverlayModel(flow)});
   }
-  if(layers.layeredFeasibility){
+  if(layers.layeredFeasibilityLayer){
     // 只画 selected-layer coarse feasibility mask：不再绘制 candidate route。
     drawLayeredFeasibilityOverlay({ctx,view,screenPoint,flow,grid:flow.grid,gridTheme:gridTheme});
   }
-  if(layers.layeredCandidate!==false){
+  if(layers.layeredCandidateLayer!==false){
     // current LayeredRouteCandidate：优先 candidate.path（Theta* V2 真实起终点 + any-angle）。
     // overview / medium / detail 都允许显示，只按既有 LOD 调整线宽与 alpha。
     const width=styles.operationalWidth+0.4;
@@ -288,14 +290,14 @@ export function drawWorkflowLayers({
     }
   }
 
-  // 6) CNS 输入点
-  if(layers.existingCns){
+  // 6) CNS 输入点（同样以 checkbox id 作为图层 key）
+  if(layers.existingCnsLayer){
     for(const facility of flow.existing_cns_facilities?.items||[]){
       const [x,y]=screenPoint(facility.coordinate);
       drawMarker(ctx,'circle',x,y,styles.pointRadius+1,CNS_COLORS.existing,'#ffffff',1.2);
     }
   }
-  if(layers.candidateSites){
+  if(layers.candidateSiteLayer){
     for(const site of flow.candidate_sites?.items||[]){
       const [x,y]=screenPoint(site.coordinate);
       drawMarker(ctx,'diamond',x,y,styles.pointRadius+1.4,site.usable===false?CNS_COLORS.unusable:CNS_COLORS.candidate,'#ffffff',1.2);

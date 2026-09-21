@@ -287,7 +287,11 @@ def test_airspace_save_restore_workspace_reset_and_old_project_compatibility(tmp
 
     changed = restored.set_workspace([120.021, 30.021, 120.03, 30.03], _health())
     assert changed["grid_attributes"]["airspace"]["status"] == "not_calculated"
-    assert changed["grid_attributes"]["airspace"]["cells"] == {}
+    # 轻量 workflow 状态只携带 grid_attributes 摘要：逐 cell 明细由专用接口
+    # GET /api/workspace/grid/attributes 提供，因此这里断言"没有逐 cell 明细"。
+    assert "cells" not in changed["grid_attributes"]["airspace"]
+    assert changed["grid_attributes"]["airspace"]["detail_available"] is False
+    assert restored.grid_attributes_snapshot()["airspace"]["cells"] == {}
 
     document = ProjectRepository(store).load()
     document["grid_attributes"].pop("airspace")

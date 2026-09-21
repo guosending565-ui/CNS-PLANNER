@@ -8,7 +8,12 @@ def sample_metadata():
         "paths": {"basemap": "map.qgz", "population": "population.tif"},
         "layers": [{"id": "air", "name": "airspace"}],
         "online_sources": [{"id": "tiles", "browser_url": "https://example.test/{z}/{x}/{y}.png"}],
-        "population": {"width": 100, "height": 200, "bands": 1, "crs": "EPSG:4326", "nodata": "-9999"},
+        # 规模取真实 100m 全国人口栅格的量级：健康检查会拒绝把截取的样例瓦片报成 ready
+        # （见 tests/test_data_source_operational_health.py）。
+        "population": {
+            "width": 73530, "height": 45337, "bands": 1, "crs": "EPSG:4326",
+            "nodata": "-99999", "source_metadata": {"Description": "CHN population 2025"},
+        },
         "error": "",
     }
 

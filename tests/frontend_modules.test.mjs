@@ -1962,7 +1962,7 @@ test('drawWorkflowLayers keeps the candidate layer and the evidence highlight in
     selectedReferenceId:null,clusterCounts:{nodes:0,sites:0},level:'detail',levelLabel:'细节',
     resolution:'1.0 km/px',referencePointsVisible:false};
   const draw=input=>drawWorkflowLayers({ctx,view:{x:0,y:0,res:1},flow,screenPoint:point=>[point[0],point[1]],
-    plan,layers:{layeredFeasibility:false,layeredCandidate:true},gridTheme:{bboxIntersects:()=>true},
+    plan,layers:{layeredFeasibilityLayer:false,layeredCandidateLayer:true},gridTheme:{bboxIntersects:()=>true},
     drawWorkspace(){},drawGridThemes(){},drawGridBoundaries(){},...input});
   // 候选层打开：画 candidate 几何（Theta* any-angle 折线）
   draw({});
@@ -1971,14 +1971,14 @@ test('drawWorkflowLayers keeps the candidate layer and the evidence highlight in
   assert.equal(strokes[0].width,ROUTE_STYLES.detail.operationalWidth+0.4);
   // 候选层关闭：candidate 几何消失，feasibility 掩码仍然独立可画
   strokes.length=0;
-  draw({layers:{layeredFeasibility:false,layeredCandidate:false}});
+  draw({layers:{layeredFeasibilityLayer:false,layeredCandidateLayer:false}});
   assert.deepEqual(strokes,[]);
   strokes.length=0;
-  draw({layers:{layeredFeasibility:true,layeredCandidate:false}});
+  draw({layers:{layeredFeasibilityLayer:true,layeredCandidateLayer:false}});
   assert.deepEqual(strokes,[],'the feasibility mask fills cells and never strokes a route');
   // 临时 highlight 画在正常路线（含 candidate）之上：白描边 + evidence 色
   strokes.length=0;
-  draw({layers:{layeredFeasibility:true,layeredCandidate:true},
+  draw({layers:{layeredFeasibilityLayer:true,layeredCandidateLayer:true},
     routeEvidenceHighlight:{source:'route_risk_profile',profileId:'RRP-1',candidateId:'LRC-R0001-L8-LOW-1',
       segmentIds:['RRP-S0000'],path:[[122.0,30.0],[122.001,30.0]]}});
   assert.deepEqual(strokes,[

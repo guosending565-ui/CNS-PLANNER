@@ -4,6 +4,50 @@ from .registry import build_registry
 
 LABELS = {"checking": "正在检查数据源", "ready": "数据源就绪", "warning": "数据源不完整", "error": "数据源不可用"}
 
+#: 数据集自带的"非运行数据"标记。样例 / 阶段性验证数据必须显式声明，健康检查据此
+#: 拒绝把这种数据源报成 ready，绝不因为文件可读就当作生产数据。
+NON_OPERATIONAL_METADATA_KEYS = ("CNS_NOT_OPERATIONAL_DATA", "CNS_STAGE_ASSUMPTION")
+NON_OPERATIONAL_VALUE = "true"
+
+#: 100m 全国人口栅格的最小可信像元数。低于此值只可能是截取的样例瓦片，
+#: 而不是真实的区域数据（样例 R0003 为 63 × 190 = 11,970 像元；真实产品为
+#: 73530 × 45337）。这个下界只作用于已知产品尺寸的 population 栅格，
+#: 不对 terrain / terrain_dtm 或测试用的小型夹具施加任何要求。
+MIN_POPULATION_PIXELS = 1_000_000
+
+
+def non_operational_markers(source_metadata) -> list:
+    """数据集元数据里显式声明的非运行数据标记（无标记则返回空列表）。"""
+
+    if not isinstance(source_metadata, dict):
+        return []
+    markers = []
+    for key in NON_OPERATIONAL_METADATA_KEYS:
+        value = source_metadata.get(key)
+        if value in (None, ""):
+            continue
+        markers.append(f"{key}={value}")
+    return markers
+
+
+def raster_non_operational_reasons(source_id, raster) -> list:
+    """一个栅格数据源为什么不能算作运行数据（没有问题时返回空列表）。
+
+    只依据已加载的栅格元数据判断，不重新读取文件、不改变任何映射语义。
+    """
+
+    reasons = non_operational_markers((raster or {}).get("source_metadata"))
+    if source_id == "population":
+        width = (raster or {}).get("width")
+        height = (raster or {}).get("height")
+        if isinstance(width, int) and isinstance(height, int):
+            if width * height < MIN_POPULATION_PIXELS:
+                reasons.append(
+                    f"像元数 {width}×{height} 低于 100m 全国人口栅格的最小可信规模"
+                    f"（<{MIN_POPULATION_PIXELS}），疑似样例瓦片"
+                )
+    return reasons
+
 
 def build_health(metadata: dict, workspace_bbox=None) -> dict:
     items = []
@@ -18,12 +62,19 @@ def build_health(metadata: dict, workspace_bbox=None) -> dict:
             raster = metadata.get(source_id, {})
             ok = bool(raster.get("width") and raster.get("bands") and raster.get("crs"))
             label = "人口 GeoTIFF" if source_id == "population" else "FABDEM DTM" if source_id == "terrain_dtm" else "地形 DSM"
-            status, message = (("ready", f"{raster.get('width')} × {raster.get('height')}，{raster.get('crs')}") if ok else ("error" if source["required"] else "warning", metadata.get("error") or f"{label} 不可用"))
+            # 样例 / 阶段性验证数据永远不能报 ready：文件可读不代表它是运行数据。
+            non_operational = raster_non_operational_reasons(source_id, raster) if ok else []
+            if non_operational:
+                status = "warning"
+                message = f"{label} 不是运行数据：" + "；".join(non_operational)
+            else:
+                status, message = (("ready", f"{raster.get('width')} × {raster.get('height')}，{raster.get('crs')}") if ok else ("error" if source["required"] else "warning", metadata.get("error") or f"{label} 不可用"))
             checks = [
                 {"name": "有效波段", "status": "passed" if raster.get("bands") else "failed"},
                 {"name": "CRS 有效", "status": "passed" if raster.get("crs") else "failed"},
                 {"name": "NoData 已识别", "status": "passed" if raster.get("nodata") not in (None, "None") else "warning"},
                 {"name": "单位与来源", "status": _verification_status(source)},
+                {"name": "运行数据（非样例）", "status": "failed" if non_operational else ("passed" if raster.get("source_metadata") else "not_calculated")},
                 {"name": "覆盖当前工作区", "status": "pending_workspace" if workspace_bbox is None else "not_calculated"},
             ]
             if source_id == "terrain_dtm":

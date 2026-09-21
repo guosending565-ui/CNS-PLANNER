@@ -435,12 +435,16 @@ def empty_grid_risk_v2(status="not_calculated"):
 
 
 def normalize_grid_risk_v2(value):
-    """Idempotent backfill for legacy projects without a V2 result."""
+    """Idempotent backfill for legacy projects without a V2 result.
+
+    读取性能：结果可能携带上万个逐 cell 因子值。这里只做顶层投影 —— 除 ``policy``
+    之外的值共享只读引用，不再为每次读取深拷贝整份结果。字段与状态语义不变。
+    """
 
     if not isinstance(value, dict):
         return empty_grid_risk_v2()
     result = empty_grid_risk_v2(str(value.get("status") or "not_calculated"))
-    result.update(deepcopy(value))
+    result.update(value)
     result["schema_version"] = SCHEMA_VERSION
     result.setdefault("risk_semantics", "relative_engineering_index")
     result.setdefault("absolute_risk", empty_absolute_risk())

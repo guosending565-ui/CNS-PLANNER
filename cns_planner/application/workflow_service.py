@@ -68,6 +68,178 @@ from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
 
+# ---------------------------------------------------------------------------
+# 轻量 workflow 投影（P0 显示/性能修复）
+#
+# ``/api/state`` 与 ``/api/workflow`` 只承载"页面装配 + 面板摘要"所需的字段。
+# 逐 cell 的大结果（grid_risk_v2.cells / grid_attributes.*.cells /
+# layered_route_candidates.masks[*].cells 的诊断字段 / _population_shelter_cache
+# 等派生缓存）不再随通用状态返回；它们仍由既有专用接口按需提供：
+#
+#   * grid_attributes            -> GET /api/workspace/grid/attributes
+#   * grid_risk_v2               -> GET /api/grid-risk-v2
+#   * layered_route_candidates   -> GET /api/layered-route-candidates
+#   * population_shelter         -> GET /api/population-shelter
+#
+# 投影只做"去细节"，不新增、不重算、不改写任何业务语义：状态、计数、指纹、
+# 状态机与 readiness 一律原样透传，缺失值继续保持 None/null（绝不补 0）。
+# ---------------------------------------------------------------------------
+
+#: 地图专题需要的 V2 因子字段（与前端 RISK_V2_FACTOR_IDS 一致）。
+_V2_FACTOR_SUMMARY_KEYS = (
+    "factor_id", "domain", "status", "resolved", "raw_value", "raw_unit",
+    "normalized_index", "source_role", "coverage", "reason",
+)
+_V2_DOMAIN_SUMMARY_KEYS = (
+    "domain_id", "status", "index", "index_scope", "data_completeness",
+    "unresolved", "reason", "aggregation_policy_fingerprint",
+)
+_MASK_CELL_SUMMARY_KEYS = ("grid_id", "status", "reason", "reason_code")
+
+#: 派生缓存：不进入 workflow 快照，也不随项目迁移（可由现有输入重建）。
+_SNAPSHOT_OMITTED_STATE_KEYS = ("_population_shelter_cache",)
+
+#: 逐 cell 大结果：快照以只读投影共享引用，不做整树深拷贝。
+#: 这些容器只会被整体替换（copy-on-write），快照序列化后即结束生命周期。
+_SNAPSHOT_SHARED_STATE_KEYS = (
+    "grid", "grid_attributes", "grid_risk", "grid_risk_v2", "layered_route_candidates",
+)
+
+
+def _snapshot_state_value(key, value):
+    """快照取值：小对象深拷贝（保持既有隔离语义），大结果只共享只读引用。"""
+
+    return value if key in _SNAPSHOT_SHARED_STATE_KEYS else deepcopy(value)
+
+
+def _short_text(value, limit=200):
+    if not isinstance(value, str):
+        return value
+    return value if len(value) <= limit else value[:limit] + "…"
+
+
+def _option_value(option):
+    if isinstance(option, dict):
+        for key in ("value", "resolved_value", "default"):
+            candidate = option.get(key)
+            if candidate not in (None, ""):
+                return candidate
+        return None
+    return option
+
+
+def slim_grid_risk_v2(result):
+    """Risk Framework V2 结果摘要：保留状态/指纹/domains 与逐 cell 的因子指数。
+
+    去掉逐 cell 的 normalization reference / provenance / source 诊断块。
+    逐 cell 的 ``status`` 与 ``normalized_index`` 必须保留：地图 V2 专题直接消费
+    它们，且 pending/unknown 仍按"无数据"绘制，绝不补 0。
+    """
+
+    if not isinstance(result, dict):
+        return result
+    slim = {
+        key: deepcopy(value) for key, value in result.items() if key != "cells"
+    }
+    cells = {}
+    for grid_id, cell in (result.get("cells") or {}).items():
+        if not isinstance(cell, dict):
+            continue
+        factors = {}
+        for factor_id, factor in (cell.get("factors") or {}).items():
+            if not isinstance(factor, dict):
+                continue
+            normalized = (factor.get("normalization") or {}).get("reference") or {}
+            reference = normalized.get("reference") if isinstance(normalized, dict) else None
+            factors[factor_id] = {
+                key: deepcopy(factor.get(key)) for key in _V2_FACTOR_SUMMARY_KEYS
+            }
+            factors[factor_id]["reference_value"] = _option_value(reference)
+        slim_cell = {
+            key: deepcopy(value) for key, value in cell.items() if key != "factors"
+        }
+        slim_cell["factors"] = factors
+        slim_cell["domains"] = {
+            domain_id: {
+                key: deepcopy(domain.get(key)) for key in _V2_DOMAIN_SUMMARY_KEYS
+            }
+            for domain_id, domain in (cell.get("domains") or {}).items()
+            if isinstance(domain, dict)
+        }
+        # _V2_FACTOR_SUMMARY_KEYS 已经覆盖 status / normalized_index / factor_id；
+        # 这里再确保地图专题必需的两个字段存在（缺失仍是 None，不补 0）。
+        cells[str(grid_id)] = slim_cell
+    slim["cells"] = cells
+    return slim
+
+
+def slim_grid_attributes(attributes):
+    """grid_attributes 摘要：只保留每个命名空间的状态/来源/计数，不含逐 cell 明细。
+
+    每次调用都返回新的顶层容器，但命名空间容器（以及其中的 ``cells``）共享只读引用；
+    因此快照不会就地改写服务状态，也不需要为上万 cell 做一次深拷贝。
+    """
+
+    if not isinstance(attributes, dict):
+        return attributes
+    slim = {}
+    for name, attribute in attributes.items():
+        if not isinstance(attribute, dict):
+            slim[name] = deepcopy(attribute)
+            continue
+        summary = {
+            key: value for key, value in attribute.items() if key != "cells"
+        }
+        summary["detail_available"] = bool(attribute.get("cells"))
+        slim[name] = summary
+    return slim
+
+
+def slim_layered_route_candidates(collection):
+    """候选容器摘要：候选记录原样保留，feasibility mask 只保留逐 cell 的判定。
+
+    mask 的 ``counts`` / 指纹 / 状态与 ``items`` 全部原样透传，只把每个 cell 的
+    诊断字段（terrain / building 明细、adapter、reason 文本）收敛为
+    grid_id + status + reason(code)，使前端覆盖层与图例所需信息不丢失。
+    """
+
+    if not isinstance(collection, dict):
+        return collection
+    slim = deepcopy(collection)
+    masks = {}
+    for key, mask in (collection.get("masks") or {}).items():
+        if not isinstance(mask, dict):
+            masks[key] = deepcopy(mask)
+            continue
+        slim_mask = {name: deepcopy(value) for name, value in mask.items() if name != "cells"}
+        slim_mask["cells"] = {
+            str(cell_id): {
+                name: _short_text(cell.get(name)) for name in _MASK_CELL_SUMMARY_KEYS
+                if name in cell
+            }
+            for cell_id, cell in (mask.get("cells") or {}).items()
+            if isinstance(cell, dict)
+        }
+        slim_mask["cells_detail"] = "GET /api/layered-route-candidates"
+        masks[key] = slim_mask
+    slim["masks"] = masks
+    return slim
+
+
+def slim_population_shelter(attribute):
+    """population_shelter 摘要：保留状态/指纹/计数，不含逐 cell 的 shelter 系数。
+
+    只做顶层投影：不深拷贝万级 cell 的派生场，也不改写任何字段语义。
+    """
+
+    if not isinstance(attribute, dict):
+        return attribute
+    slim = {key: deepcopy(value) for key, value in attribute.items() if key != "cells"}
+    slim["cell_count"] = len(attribute.get("cells") or {})
+    slim["cells_detail"] = "GET /api/population-shelter"
+    return slim
+
+
 class WorkflowService:
     schema_version = SCHEMA_VERSION
     mapped_grid_attribute_names = RiskService.MAPPED_ATTRIBUTES
@@ -344,7 +516,18 @@ class WorkflowService:
     def save(self): self.session.save()
 
     def snapshot(self):
-        result = deepcopy(self.state)
+        # 轻量 workflow 状态：逐 cell 大结果与派生缓存不随通用状态返回，
+        # 由既有专用接口按需提供（见模块顶部说明）。业务语义完全不变。
+        #
+        # 读取性能：顶层逐项浅拷贝。只有小对象做 deepcopy；逐 cell 的大结果
+        # （grid_risk.cells / grid_risk_v2 / layered_route_candidates.masks）以只读
+        # 投影共享引用，既省掉整树深拷贝，也不改变任何字段或状态机。
+        result = {
+            key: _snapshot_state_value(key, value)
+            for key, value in self.state.items()
+            if key not in _SNAPSHOT_OMITTED_STATE_KEYS
+        }
+        result["grid_attributes"] = slim_grid_attributes(self.state.get("grid_attributes"))
         result["steps"] = self._steps()
         result["defaults"] = deepcopy(self.defaults)
         result["device_source"] = self.state.get("device_catalog", {}).get("source") or self.defaults.get("device_library", {}).get("source", "demo/default")
@@ -417,7 +600,12 @@ class WorkflowService:
         if hasattr(self, "source_audit_service"):
             result["source_audits"] = self.source_audit_service.result_snapshot()
         if hasattr(self, "risk_v2_service"):
-            result["grid_risk_v2"] = self.risk_v2_service.result_snapshot()
+            # 轻量投影：逐 cell 的 V2 因子指数保留（地图专题消费），
+            # normalization reference / provenance / source 诊断块由 /api/grid-risk-v2 提供。
+            # 投影以只读引用复用服务快照，不再二次深拷贝上万 cell 的派生结果。
+            result["grid_risk_v2"] = slim_grid_risk_v2(
+                self.risk_v2_service.result_snapshot()
+            )
             result["risk_policy_v2"] = self.risk_v2_service.policy_snapshot()
             result["risk_framework_v2_readiness"] = self.risk_v2_service.readiness_snapshot()
         if hasattr(self, "layered_route_planner_service"):
@@ -436,7 +624,7 @@ class WorkflowService:
             result["layered_route_planner_readiness"] = (
                 self.layered_route_planner_service.readiness_snapshot()
             )
-            result["layered_route_candidates"] = (
+            result["layered_route_candidates"] = slim_layered_route_candidates(
                 self.layered_route_planner_service.result_snapshot()
             )
             # Additive Theta* V2 planning inputs and the derived per-grid population ×
@@ -445,7 +633,7 @@ class WorkflowService:
             result["shelter_coefficient_policy"] = (
                 self.layered_route_planner_service.shelter_policy_snapshot()
             )
-            result["population_shelter"] = (
+            result["population_shelter"] = slim_population_shelter(
                 self.layered_route_planner_service.population_shelter_snapshot()
             )
             result["regulatory_constraints"] = deepcopy(

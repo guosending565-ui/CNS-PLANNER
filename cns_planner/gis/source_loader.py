@@ -233,9 +233,10 @@ class QgisSourceLoader:
         profile = deepcopy(WORLDPOP_R2025A)
         observed_crs = raster.crs().authid() or raster.crs().description()
         observed_pixel_size = [abs(transform[1]), abs(transform[5])]
+        metadata = dataset.GetMetadata() or {}
         profile["crs"] = {**profile["crs"], "observed": observed_crs}
         profile["resolution"] = {**profile["resolution"], "observed_pixel_size": observed_pixel_size}
-        profile["provenance"] = {**profile["provenance"], "path": str(path)}
+        profile["provenance"] = {**profile["provenance"], "path": str(path), "metadata": metadata}
         info = {
             "width": dataset.RasterXSize, "height": dataset.RasterYSize,
             "bands": dataset.RasterCount,
@@ -249,6 +250,7 @@ class QgisSourceLoader:
             "resolution": profile["resolution"],
             "verification": profile["verification"],
             "source_profile": profile,
+            "source_metadata": metadata,
             "rendering_semantics": "source_pixel_count",
         }
         items = []
@@ -270,18 +272,20 @@ class QgisSourceLoader:
         if dataset is None:
             raise ValueError("无法读取地形 DEM")
         band, transform = dataset.GetRasterBand(1), dataset.GetGeoTransform()
+        metadata = dataset.GetMetadata() or {}
         profile = deepcopy(COPERNICUS_GLO30)
         observed_crs = raster.crs().authid() or raster.crs().description()
         observed_pixel_size = [abs(transform[1]), abs(transform[5])]
         profile["crs"] = {**profile["crs"], "observed": observed_crs}
         profile["resolution"] = {**profile["resolution"], "observed_pixel_size": observed_pixel_size}
-        profile["provenance"] = {**profile["provenance"], "path": str(path)}
+        profile["provenance"] = {**profile["provenance"], "path": str(path), "metadata": metadata}
         info = {"width": dataset.RasterXSize, "height": dataset.RasterYSize, "bands": dataset.RasterCount,
                 "crs": observed_crs, "nodata": str(band.GetNoDataValue()),
                 "pixel_size": observed_pixel_size, "unit": "m", "quantity": "surface_elevation",
                 "source": "Copernicus DEM GLO-30", "surface_model": "DSM", "version": profile["version"],
                 "resolution": profile["resolution"], "verification": profile["verification"],
-                "vertical_crs": "EPSG:3855", "vertical_datum": "EGM2008", "source_profile": profile}
+                "vertical_crs": "EPSG:3855", "vertical_datum": "EGM2008", "source_profile": profile,
+                "source_metadata": metadata}
         ramp = QgsColorRampShader(); ramp.setColorRampType(QgsColorRampShader.Interpolated)
         ramp.setColorRampItemList([QgsColorRampShader.ColorRampItem(value, QColor(color), label) for value, color, label in (
             (0, "#2c7bb6", "0 m"), (100, "#abd9e9", "100 m"), (300, "#ffffbf", "300 m"),

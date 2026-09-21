@@ -157,9 +157,10 @@ test('the candidate route layer is a separate switch from the coarse feasibility
   assert.ok(layerIds,'LAYER_IDS must stay a single literal list');
   assert.match(layerIds[1],/'layeredFeasibilityLayer'/);
   assert.match(layerIds[1],/'layeredCandidateLayer'/);
-  // display_layers：两个图层分别由各自的开关与各自的 overlay 模块负责
-  assert.match(DISPLAY_LAYERS_SOURCE,/if\(layers\.layeredFeasibility\)\{/);
-  assert.match(DISPLAY_LAYERS_SOURCE,/if\(layers\.layeredCandidate!==false\)\{/);
+  // display_layers：两个图层分别由各自的开关与各自的 overlay 模块负责。
+  // 图层 key 必须就是 checkbox id 本身（与 LAYER_IDS / layerSwitches 同一套命名）。
+  assert.match(DISPLAY_LAYERS_SOURCE,/if\(layers\.layeredFeasibilityLayer\)\{/);
+  assert.match(DISPLAY_LAYERS_SOURCE,/if\(layers\.layeredCandidateLayer!==false\)\{/);
   assert.match(DISPLAY_LAYERS_SOURCE,/drawLayeredFeasibilityOverlay/);
   assert.match(DISPLAY_LAYERS_SOURCE,/drawLayeredCandidateOverlay/);
   // feasibility overlay 源码里不再有任何 candidate path 绘制

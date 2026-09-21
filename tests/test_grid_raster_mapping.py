@@ -243,7 +243,11 @@ def test_grid_attributes_save_restore_workspace_reset_and_legacy_compatibility(t
     assert changed["grid_attributes"]["population"]["status"] == "not_calculated"
     assert changed["grid_attributes"]["terrain"]["status"] == "not_calculated"
     assert changed["grid_attributes"]["airspace"]["status"] == "not_calculated"
-    assert changed["grid_attributes"]["population"]["cells"] == {}
+    # 轻量 workflow 状态只携带 grid_attributes 摘要：逐 cell 明细由专用接口
+    # GET /api/workspace/grid/attributes 提供，因此这里断言"没有逐 cell 明细"。
+    assert "cells" not in changed["grid_attributes"]["population"]
+    assert changed["grid_attributes"]["population"]["detail_available"] is False
+    assert restored.grid_attributes_snapshot()["population"]["cells"] == {}
 
     document = ProjectRepository(store).load()
     document.pop("grid_attributes")
