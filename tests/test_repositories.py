@@ -1,7 +1,9 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from cns_planner.persistence.data_source_repository import DataSourceRepository
 from cns_planner.persistence.project_repository import ProjectRepository
+from cns_planner.persistence.project_compaction import compact_and_store, restore_compacted_results
 
 
 def test_project_repository_roundtrip_uses_existing_json_shape(tmp_path):
@@ -19,7 +21,36 @@ def test_project_repository_roundtrip_uses_existing_json_shape(tmp_path):
     assert repository.is_file()
     assert repository.load() == document
     assert json.loads(path.read_text(encoding="utf-8")) == document
-    assert not path.with_suffix(".tmp").exists()
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_project_repository_ten_saves_keep_latest_and_recent_backup(tmp_path):
+    path = tmp_path / "project" / "project_state.json"
+    repository = ProjectRepository(path)
+
+    for revision in range(10):
+        repository.save({"revision": revision, "payload": "x" * 1000})
+
+    assert repository.load()["revision"] == 9
+    assert json.loads(repository.backup_path.read_text(encoding="utf-8"))["revision"] == 8
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_project_repository_concurrent_saves_are_complete_json(tmp_path):
+    path = tmp_path / "project" / "project_state.json"
+
+    def save(revision):
+        # Separate instances must still coordinate on the same canonical path.
+        ProjectRepository(path).save({"revision": revision, "payload": str(revision) * 5000})
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(save, range(20)))
+
+    current = json.loads(path.read_text(encoding="utf-8"))
+    backup = json.loads(ProjectRepository(path).backup_path.read_text(encoding="utf-8"))
+    assert current["payload"] == str(current["revision"]) * 5000
+    assert backup["payload"] == str(backup["revision"]) * 5000
+    assert not list(path.parent.glob("*.tmp"))
 
 
 def test_project_repository_copy_preserves_saved_document(tmp_path):
@@ -33,6 +64,56 @@ def test_project_repository_copy_preserves_saved_document(tmp_path):
 
     assert ProjectRepository(target).load() == document
     assert target.read_bytes() == source.path.read_bytes()
+
+
+def test_large_derived_results_are_indexed_and_restored_from_sidecar(tmp_path):
+    path = tmp_path / "source" / "current_project.json"
+    cells = {f"G{i}": {"grid_id": f"G{i}", "value": "x" * 1000} for i in range(40)}
+    masks = {"R1@L1": {"fingerprint": "mask-fp", "cells": cells}}
+    state = {
+        "schema_version": 2,
+        "project": {"name": "compact"},
+        "grid_risk_v2": {
+            "status": "passed", "input_fingerprint": "input-fp",
+            "policy_fingerprint": "policy-fp", "cells": cells,
+        },
+        "layered_route_candidates": {
+            "status": "passed", "count": 1, "active_candidate_id": "C1",
+            "items": [{"candidate_id": "C1", "fingerprint": "candidate-fp", "grid_path": list(cells)}],
+            "masks": masks,
+        },
+        "_population_shelter_cache": {"cells": cells},
+    }
+
+    compact = compact_and_store(state, path)
+    ProjectRepository(path).save(compact)
+    restored = restore_compacted_results(ProjectRepository(path).load(), path)
+
+    assert "_population_shelter_cache" not in compact
+    assert compact["grid_risk_v2"]["cells"] == {}
+    assert compact["layered_route_candidates"]["items"] == []
+    assert compact["layered_route_candidates"]["masks"] == {}
+    assert compact["result_index"]["grid_risk_v2"]["cell_count"] == 40
+    assert compact["result_index"]["layered_route_candidates"]["fingerprints"] == ["candidate-fp"]
+    assert restored["grid_risk_v2"]["cells"] == cells
+    assert restored["layered_route_candidates"]["items"] == state["layered_route_candidates"]["items"]
+    assert restored["layered_route_candidates"]["masks"] == masks
+    assert path.stat().st_size < len(json.dumps(state, ensure_ascii=False).encode("utf-8")) / 4
+
+
+def test_copy_project_copies_indexed_result_artifact(tmp_path):
+    source = tmp_path / "source" / "current_project.json"
+    target = tmp_path / "target" / "project_state.json"
+    state = {
+        "grid_risk_v2": {"cells": {"G1": {"value": 1}}},
+        "layered_route_candidates": {"items": [], "masks": {}},
+    }
+    ProjectRepository(source).save(compact_and_store(state, source))
+
+    ProjectRepository(source).copy_to(target)
+
+    restored = restore_compacted_results(ProjectRepository(target).load(), target)
+    assert restored["grid_risk_v2"]["cells"] == {"G1": {"value": 1}}
 
 
 def test_data_source_repository_roundtrip_uses_existing_json_shape(tmp_path):

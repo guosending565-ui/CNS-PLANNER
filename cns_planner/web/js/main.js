@@ -40,7 +40,7 @@ const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
 const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan',workbench:{step:1,tab:'operate',segs:{},scroll:0}}});
-const api=createApiClient(()=>state?.token);
+const api=createApiClient(()=>state?.token,()=>flow?.revision);
 // 右栏工作台视图状态：只保存展示导航（step / 一级 tab / 二级段 / 滚动位置）
 const workbench=createWorkbench({
   getState:()=>store.get().ui.workbench,

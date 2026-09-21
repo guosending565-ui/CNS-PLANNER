@@ -45,6 +45,7 @@ class ApplicationContext:
         self.qgis = QgisRuntime()
         self.tiles = TileCache()
         self.render_requests = RenderRequestTracker()
+        self.mutation_lock = threading.RLock()
         self.workflow = WorkflowService(self.active_project_file, self.default_config)
         self.project_directories = ProjectDirectoryService(
             self.automatic_project_file, self.default_config, DEFAULT_PATHS, WorkflowService

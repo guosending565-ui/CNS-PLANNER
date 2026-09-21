@@ -189,9 +189,10 @@ def blank_project(defaults):
     }
     return {
         "schema_version": SCHEMA_VERSION,
+        "revision": 0,
         "project": {
             "project_id": str(uuid4()), "name": "CNS 规划项目",
-            "created_at": utc_now(), "updated_at": utc_now(),
+            "created_at": utc_now(), "updated_at": utc_now(), "revision": 0,
         },
         "workspace": None, "grid": None,
         "algorithm_selection": default_algorithm_selection(),
@@ -335,6 +336,14 @@ def normalize_project(value, grid_service):
         raise ValueError(f"不支持的项目 schema：{value.get('schema_version')}")
     if not isinstance(value.get("project"), dict):
         raise ValueError("项目状态缺少 project")
+    value["revision"] = max(0, int(value.get("revision") or 0))
+    value["project"]["revision"] = max(
+        0, int(value["project"].get("revision") or value["revision"])
+    )
+    if isinstance(value.get("workspace"), dict):
+        value["workspace"]["revision"] = max(
+            0, int(value["workspace"].get("revision") or 0)
+        )
     if "grid" not in value:
         workspace = value.get("workspace")
         value["grid"] = grid_service.generate(workspace["bbox"]) if workspace else None

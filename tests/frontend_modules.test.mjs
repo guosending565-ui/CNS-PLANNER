@@ -27,6 +27,7 @@ import {LAYERED_FEASIBILITY_COLORS,currentLayeredCandidate,drawLayeredFeasibilit
 import {drawWorkflowLayers} from '../cns_planner/web/js/map/display_layers.js';
 import {drawLayeredCandidateOverlay} from '../cns_planner/web/js/map/layered_candidate_overlay.js';
 import {ROUTE_STYLES} from '../cns_planner/web/js/map/lod.js';
+import {createApiClient} from '../cns_planner/web/js/api/client.js';
 
 test('projection round trips WGS84 coordinates',()=>{
   const original=[120.1234,30.5678],restored=mercatorToLonLat(...lonLatToMercator(...original));
@@ -38,6 +39,34 @@ test('store merges explicit state updates',()=>{
   const store=createStore({server:null,ui:{step:1}});
   store.set({server:{revision:2}});
   assert.deepEqual(store.get(),{server:{revision:2},ui:{step:1}});
+});
+
+test('api client serializes writes and advances workflow revision headers',async()=>{
+  const originalFetch=globalThis.fetch,calls=[];
+  let active=0,maxActive=0,serverRevision=4;
+  globalThis.fetch=async(url,options)=>{
+    active++;maxActive=Math.max(maxActive,active);
+    calls.push({url,headers:options.headers});
+    await new Promise(resolve=>setTimeout(resolve,5));
+    serverRevision++;active--;
+    return {
+      ok:true,status:200,
+      headers:{get:name=>name.toLowerCase()==='content-type'?'application/json':(name.toLowerCase()==='x-cns-revision'?String(serverRevision):null)},
+      json:async()=>({ok:true}),blob:async()=>null,
+    };
+  };
+  try{
+    const api=createApiClient(()=> 'token',()=>4);
+    await Promise.all([
+      api('/first',{method:'POST',body:'{}'}),
+      api('/second',{method:'POST',body:'{}'}),
+    ]);
+    assert.equal(maxActive,1);
+    assert.equal(calls[0].headers['X-CNS-Revision'],'4');
+    assert.equal(calls[1].headers['X-CNS-Revision'],'5');
+    assert.match(calls[0].headers['X-CNS-Request-Id'],/:1$/);
+    assert.match(calls[1].headers['X-CNS-Request-Id'],/:2$/);
+  }finally{globalThis.fetch=originalFetch;}
 });
 
 test('grid cache joins attributes by grid_id and uses half-open hit boundaries',()=>{

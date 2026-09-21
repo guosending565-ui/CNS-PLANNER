@@ -9,6 +9,10 @@ from .router import ApiRouter
 from .security import same_origin, valid_token
 
 
+class StaleRevisionError(ValueError):
+    pass
+
+
 class LocalServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
@@ -28,12 +32,14 @@ class ApiHandler(BaseHTTPRequestHandler):
     def context(self):
         return self.server.context
 
-    def respond(self, data, content_type="application/json; charset=utf-8", status=200, cache=False):
+    def respond(self, data, content_type="application/json; charset=utf-8", status=200, cache=False, headers=None):
         if not isinstance(data, bytes): data = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "private, max-age=86400" if cache else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "frame-ancestors 'self' http://127.0.0.1:8501 http://localhost:8501")
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         self.end_headers()
         try: self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError): pass
@@ -47,7 +53,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self.respond({"error": "无效会话"}, status=403)
         try:
             response = ApiRouter(self.context).get(url.path, parse_qs(url.query), self.headers)
-            self.respond(response.data, response.content_type, response.status, response.cache)
+            revision = int(self.context.workflow.state.get("revision") or 0)
+            self.respond(
+                response.data, response.content_type, response.status, response.cache,
+                headers={"X-CNS-Revision": revision},
+            )
         except Exception as exc: self.respond({"error": str(exc)}, status=400)
 
     def do_POST(self):
@@ -58,8 +68,31 @@ class ApiHandler(BaseHTTPRequestHandler):
             if not 0 < length < 16384: raise ValueError("请求大小无效")
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict): raise ValueError("请求必须是 JSON 对象")
-            response = ApiRouter(self.context).post(self.path, payload)
-            self.respond(response.data, response.content_type, response.status, response.cache)
+            expected = self.headers.get("X-CNS-Revision")
+            if expected is None:
+                raise StaleRevisionError("请求缺少 workflow revision，请刷新项目状态后重试")
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError) as exc:
+                raise StaleRevisionError("请求 workflow revision 无效") from exc
+            lock = getattr(self.context, "mutation_lock", None)
+            if lock is None:
+                raise RuntimeError("服务端缺少状态写入锁")
+            with lock:
+                current = int(self.context.workflow.state.get("revision") or 0)
+                if expected != current:
+                    raise StaleRevisionError(
+                        f"项目状态已更新（请求 {expected}，当前 {current}），请刷新后重试"
+                    )
+                response = ApiRouter(self.context).post(self.path, payload)
+                current = int(self.context.workflow.state.get("revision") or 0)
+            self.respond(
+                response.data, response.content_type, response.status, response.cache,
+                headers={"X-CNS-Revision": current},
+            )
+        except StaleRevisionError as exc:
+            current = int(getattr(getattr(self.context, "workflow", None), "state", {}).get("revision") or 0)
+            self.respond({"error": str(exc), "revision": current}, status=409)
         except Exception as exc: self.respond({"error": str(exc)}, status=400)
 
     def log_message(self, format, *args): pass

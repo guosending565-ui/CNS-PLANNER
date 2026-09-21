@@ -165,6 +165,13 @@ def _configure_map_server(module, tmp_path, defaults_path, data=None):
     return auto_file
 
 
+def _tree_bytes(folder):
+    return {
+        path.relative_to(folder).as_posix(): path.read_bytes()
+        for path in folder.rglob("*") if path.is_file()
+    }
+
+
 def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, defaults_path):
     store = tmp_path / "automatic" / "current_project.json"
     original = _populate(WorkflowService(store, defaults_path))
@@ -172,8 +179,11 @@ def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, def
     saved_document = json.loads(store.read_text(encoding="utf-8"))
     restored = WorkflowService(store, defaults_path)
 
-    assert saved_document == original.state
-    assert restored.state == original.state
+    assert "_population_shelter_cache" not in saved_document
+    assert saved_document["grid_risk_v2"]["cells"] == {}
+    assert saved_document["layered_route_candidates"]["items"] == []
+    assert saved_document["layered_route_candidates"]["masks"] == {}
+    assert saved_document["result_index"] == original.state["result_index"]
     for field in (
         "schema_version",
         "project",
@@ -193,7 +203,7 @@ def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, def
         "coverage",
         "risks",
         "result_statuses",
-        "last_saved_at",
+        "last_saved_at", "result_index",
     ):
         assert restored.state[field] == original.state[field]
     assert not list(tmp_path.rglob("*.tmp"))
@@ -242,7 +252,7 @@ def test_open_existing_project_switches_state_and_restores_sources(
     }
     sources_file = project_dir / "data_sources.json"
     sources_file.write_text(json.dumps(expected_sources), encoding="utf-8")
-    files_before = {path: path.read_bytes() for path in project_dir.iterdir()}
+    files_before = _tree_bytes(project_dir)
 
     module.open_project(project_dir)
 
@@ -252,7 +262,7 @@ def test_open_existing_project_switches_state_and_restores_sources(
     assert module.WORKFLOW.state["project"]["project_id"] != current_id
     assert module.DATA.paths == expected_sources
     assert module.DATA.load_calls == [(expected_sources, False)]
-    assert {path: path.read_bytes() for path in project_dir.iterdir()} == files_before
+    assert _tree_bytes(project_dir) == files_before
     assert not list(tmp_path.rglob("*.tmp"))
 
 
@@ -300,7 +310,7 @@ def test_source_load_failure_preserves_current_project_and_writes_nothing(
         ),
         encoding="utf-8",
     )
-    files_before = {path: path.read_bytes() for path in project_dir.iterdir()}
+    files_before = _tree_bytes(project_dir)
 
     with pytest.raises(ValueError, match="fixture source load failed"):
         module.open_project(project_dir)
@@ -309,7 +319,7 @@ def test_source_load_failure_preserves_current_project_and_writes_nothing(
     assert module.WORKFLOW is current_workflow
     assert module.WORKFLOW.state == current_state
     assert module.DATA.paths == current_paths
-    assert {path: path.read_bytes() for path in project_dir.iterdir()} == files_before
+    assert _tree_bytes(project_dir) == files_before
     assert not list(tmp_path.rglob("*.tmp"))
 
 
@@ -374,6 +384,7 @@ def test_population_source_update_only_stales_population_grid_attributes(
     handler.headers = {
         "Host": "127.0.0.1:8765",
         "X-CNS-Token": module.TOKEN,
+        "X-CNS-Revision": str(module.WORKFLOW.state["revision"]),
         "Content-Length": str(len(payload)),
     }
     handler.rfile = BytesIO(payload)
@@ -389,6 +400,43 @@ def test_population_source_update_only_stales_population_grid_attributes(
     assert attributes["terrain"]["status"] == "passed"
     assert module.WORKFLOW.state["result_statuses"]["routes"] == "passed"
     assert responses
+
+
+def test_stale_http_mutation_is_rejected_without_overwriting_newer_state(
+    tmp_path, defaults_path, map_server_module
+):
+    module = map_server_module
+    _configure_map_server(module, tmp_path, defaults_path)
+    initial_revision = module.WORKFLOW.state["revision"]
+
+    def post(name, revision):
+        payload = json.dumps({"name": name}).encode("utf-8")
+        responses = []
+        handler = object.__new__(module.Handler)
+        handler.path = "/api/workflow/project"
+        handler.headers = {
+            "Host": "127.0.0.1:8765", "X-CNS-Token": module.TOKEN,
+            "X-CNS-Revision": str(revision), "X-CNS-Request-Id": f"test:{name}",
+            "Content-Length": str(len(payload)),
+        }
+        handler.rfile = BytesIO(payload)
+        handler.allowed = lambda: True
+        handler.respond = lambda data, *args, **kwargs: responses.append((
+            data, kwargs.get("status", args[1] if len(args) > 1 else 200),
+            kwargs.get("headers") or {},
+        ))
+        handler.do_POST()
+        return responses[-1]
+
+    accepted, accepted_status, accepted_headers = post("新状态", initial_revision)
+    rejected, rejected_status, _ = post("过期覆盖", initial_revision)
+
+    assert accepted_status == 200
+    assert accepted["project"]["name"] == "新状态"
+    assert accepted_headers["X-CNS-Revision"] == module.WORKFLOW.state["revision"]
+    assert rejected_status == 409
+    assert rejected["revision"] == module.WORKFLOW.state["revision"]
+    assert module.WORKFLOW.state["project"]["name"] == "新状态"
 
 
 def test_open_invalid_schema_should_reject_and_preserve_current_project(
@@ -438,21 +486,20 @@ def test_auto_save_replace_failure_should_not_leave_temporary_file(
     service.set_project({"name": "已保存版本"})
     saved_bytes = store.read_bytes()
     service.state["project"]["name"] = "未完成版本"
-    temporary = store.with_suffix(".tmp")
-    original_replace = Path.replace
+    original_replace = __import__("os").replace
 
     def fail_target_replace(path, target):
-        if path == temporary:
+        if Path(target) == store:
             raise OSError("simulated replace failure")
         return original_replace(path, target)
 
-    monkeypatch.setattr(Path, "replace", fail_target_replace)
+    monkeypatch.setattr("cns_planner.persistence.project_repository.os.replace", fail_target_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         service.save()
 
     assert store.read_bytes() == saved_bytes
-    assert not temporary.exists()
+    assert not list(store.parent.glob("*.tmp"))
 
 
 def test_save_as_copy_failure_should_not_leave_partial_target(

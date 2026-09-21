@@ -63,6 +63,7 @@ def report_source_snapshot(state, algorithm_catalog):
     # deterministic report identity/idempotence.
     if isinstance(source.get("project"), dict):
         source["project"].pop("updated_at", None)
+        source["project"].pop("revision", None)
     source["algorithm_manifests"] = deepcopy(algorithm_catalog or [])
     return sanitize_report_value(source)
 

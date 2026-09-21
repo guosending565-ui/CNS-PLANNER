@@ -37,6 +37,7 @@ _RUNTIME = QgisRuntime()
 TASKS = _RUNTIME.tasks
 TILES = TileCache()
 _RENDER_REQUESTS = RenderRequestTracker()
+_MUTATION_LOCK = threading.RLock()
 LATEST, LATEST_LOCK = _RENDER_REQUESTS.latest, _RENDER_REQUESTS.lock
 WORKFLOW = None
 DATA = None
@@ -130,6 +131,7 @@ class _CompatContext:
     token = TOKEN
     tiles = TILES
     render_requests = _RENDER_REQUESTS
+    mutation_lock = _MUTATION_LOCK
 
     @property
     def workflow(self): return WORKFLOW
