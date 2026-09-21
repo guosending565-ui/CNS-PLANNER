@@ -5,7 +5,14 @@
 // 这里不做任何业务判断，只把用户动作转成回调。
 // =========================================================
 
-/** 图层开关当前值（全部来自图层抽屉，默认开启）。 */
+/**
+ * 图层开关当前值（全部来自图层抽屉，默认开启）。
+ *
+ * key 统一就是图层抽屉里的 checkbox id 本身（例如 ``buildingClearanceLayer`` /
+ * ``v3CandidateLayer`` / ``layeredFeasibilityLayer`` / ``layeredCandidateLayer`` /
+ * ``existingCnsLayer`` / ``candidateSiteLayer``），绘制侧
+ * （map/display_layers.js）与 LAYER_IDS 使用同一把 key，不再出现两套命名。
+ */
 export function layerSwitches($,ids){
   const value={};
   for(const id of ids)value[id]=$(id)?.checked!==false;
