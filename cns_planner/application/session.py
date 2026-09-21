@@ -19,6 +19,12 @@ class WorkflowSession:
         self.defaults = json.loads(self.defaults_path.read_text(encoding="utf-8"))
         self.grid_service = grid_service
         self.lock = threading.RLock()
+        #: Deferred commit support: one user action that legitimately consists of several
+        #: internal steps (e.g. re-map the workspace and then recompute its grid attributes)
+        #: must reach the disk — and therefore the revision counter — as **one** commit.
+        #: While ``defer_save`` is set, ``save()`` only records that a commit is pending.
+        self.defer_save = False
+        self.pending_save = False
         self.state = self._load()
         self._workspace_signature = self._signature(self.state.get("workspace"))
 
@@ -32,6 +38,23 @@ class WorkflowSession:
         return normalize_project(document, self.grid_service)
 
     def save(self):
+        with self.lock:
+            if self.defer_save:
+                self.pending_save = True
+                return
+            self._commit()
+
+    def commit_deferred(self):
+        """Commit once, if any deferred ``save()`` happened.  Returns whether it committed."""
+
+        with self.lock:
+            if not self.pending_save:
+                return False
+            self.pending_save = False
+            self._commit()
+            return True
+
+    def _commit(self):
         with self.lock:
             previous = {
                 "revision": self.state.get("revision", 0),

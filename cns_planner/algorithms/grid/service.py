@@ -4,8 +4,32 @@ from __future__ import annotations
 
 from fractions import Fraction
 import math
+import os
 
 from .mht4063 import LEVEL_SIZE_DEGREES, cell_bounds, validate_level
+
+
+#: Default ceiling on standard cells per workspace.  It is unchanged from the historic
+#: behaviour; ``CNS_GRID_MAX_CELLS`` only overrides the *default*, and an explicit
+#: ``max_cells`` argument always wins.
+DEFAULT_MAX_CELLS = 5000
+MAX_CELLS_ENV = "CNS_GRID_MAX_CELLS"
+
+
+def _resolve_max_cells(value):
+    if value is not None:
+        candidate = value
+    else:
+        candidate = os.environ.get(MAX_CELLS_ENV)
+        if candidate is None or not str(candidate).strip():
+            return DEFAULT_MAX_CELLS
+    try:
+        resolved = int(candidate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_cells 必须是正整数") from exc
+    if resolved < 1:
+        raise ValueError("max_cells 必须是正整数")
+    return resolved
 
 
 class WorkspaceGridService:
@@ -14,12 +38,10 @@ class WorkspaceGridService:
     standard = "MH/T 4063.1-2026"
     id_scheme = "mht4063-global-index-v1"
 
-    def __init__(self, preferred_level: int = 7, max_cells: int = 5000):
+    def __init__(self, preferred_level: int = 7, max_cells=None):
         validate_level(preferred_level)
-        if not isinstance(max_cells, int) or max_cells < 1:
-            raise ValueError("max_cells 必须是正整数")
         self.preferred_level = preferred_level
-        self.max_cells = max_cells
+        self.max_cells = _resolve_max_cells(max_cells)
 
     def empty(self) -> dict:
         return {
@@ -27,6 +49,7 @@ class WorkspaceGridService:
             "standard": self.standard,
             "id_scheme": self.id_scheme,
             "preferred_level": self.preferred_level,
+            "max_cells": self.max_cells,
             "level": None,
             "coarsened": False,
             "workspace_bbox": None,
@@ -35,7 +58,17 @@ class WorkspaceGridService:
             "cells": [],
         }
 
-    def generate(self, workspace_bbox, preferred_level: int | None = None) -> dict:
+    def generate(self, workspace_bbox, preferred_level: int | None = None,
+                 max_cells: int | None = None) -> dict:
+        """Standard cells for ``workspace_bbox`` at the finest level within the limit.
+
+        ``max_cells`` lets a caller explicitly raise (or lower) the per-workspace cell ceiling
+        for one request — required whenever a finer level (e.g. L8, which is the only level the
+        L8 building-environment facts can be mapped onto) must actually be selected instead of
+        being silently coarsened away.
+        """
+
+        limit = _resolve_max_cells(max_cells) if max_cells is not None else self.max_cells
         west, south, east, north = self._validate_bbox(workspace_bbox)
         requested_level = self.preferred_level if preferred_level is None else preferred_level
         validate_level(requested_level)
@@ -44,7 +77,7 @@ class WorkspaceGridService:
         for level in range(requested_level, 0, -1):
             column_range, row_range = self._index_ranges((west, south, east, north), level)
             count = len(column_range) * len(row_range)
-            if count <= self.max_cells:
+            if count <= limit:
                 selected = level, column_range, row_range
                 break
         if selected is None:
@@ -62,6 +95,7 @@ class WorkspaceGridService:
             "standard": self.standard,
             "id_scheme": self.id_scheme,
             "preferred_level": requested_level,
+            "max_cells": limit,
             "level": level,
             "coarsened": level != requested_level,
             "workspace_bbox": [west, south, east, north],

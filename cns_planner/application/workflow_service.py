@@ -1,6 +1,7 @@
 """Thin six-step workflow orchestrator with backward-compatible public methods."""
 
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..algorithms.registry import (
@@ -515,6 +516,28 @@ class WorkflowService:
 
     def save(self): self.session.save()
 
+    @contextmanager
+    def deferred_save(self):
+        """Collect every ``save()`` inside the block into a single commit at the end.
+
+        One user action may legitimately consist of several internal steps (re-map the
+        workspace, then recompute its grid attributes).  Without this, the disk — and the
+        ``revision`` counter the API compares against — would expose the *intermediate*
+        state, so a concurrent GET could report a workspace whose attributes look unset.
+        """
+
+        session = self.session
+        previous = session.defer_save
+        session.defer_save = True
+        try:
+            yield
+        finally:
+            session.defer_save = previous
+            if not previous:
+                # Committing even on failure keeps the in-memory state and the persisted
+                # document consistent; the individual steps themselves are unchanged.
+                session.commit_deferred()
+
     def snapshot(self):
         # 轻量 workflow 状态：逐 cell 大结果与派生缓存不随通用状态返回，
         # 由既有专用接口按需提供（见模块顶部说明）。业务语义完全不变。
@@ -940,7 +963,9 @@ class WorkflowService:
         return {"1": True, "2": workspace_ok, "3": routes_ok, "4": rules_ok, "5": coverage_ok, "6": coverage_ok}
 
     def set_project(self, payload): return self.project_service.set_project(payload)
-    def set_workspace(self, bbox, health, preferred_grid_level=None): return self.workspace_service.set_workspace(bbox, health, preferred_grid_level)
+    def set_workspace(self, bbox, health, preferred_grid_level=None, max_cells=None): return self.workspace_service.set_workspace(bbox, health, preferred_grid_level, max_cells)
+    def population_nodata_policy(self): return self.workspace_service.population_nodata_policy_snapshot()
+    def set_population_nodata_policy(self, payload): return self.workspace_service.set_population_nodata_policy(payload)
     def clear_workspace(self): return self.workspace_service.clear_workspace()
     def add_node(self, coordinate, name=None): return self.route_service.add_node(coordinate, name)
     def import_reference_landing_sites(self, path): return self.reference_data_service.import_landing_sites(path)

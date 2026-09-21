@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 
 from ..domain.quantities import geographic_bbox_area_m2
+from ..domain.population_nodata import confirmed_zero_allocation, policy_is_confirmed
 
 
 class GdalRasterAdapter:
@@ -64,13 +65,19 @@ class GdalRasterAdapter:
             "offset": 0.0 if self.offset is None else float(self.offset),
         }
 
-    def read_population_count(self, bbox):
+    def read_population_count(self, bbox, nodata_semantics=None):
         """Conservatively allocate source-pixel population counts to a WGS84 bbox.
 
         Counts are distributed by the geodesic-area fraction of each source pixel
         intersecting the target cell.  No interpolation is used.  The footprint
         bbox is exact for the configured north-up WGS84 WorldPop product and is a
         documented approximation for transformed/rotated source rasters.
+
+        ``nodata_semantics`` is the **explicitly confirmed** ``population_nodata_policy``.
+        When it is confirmed, a grid cell that lies wholly inside the raster footprint and
+        whose pixels are *all* NoData is recorded as a **known zero** population exposure
+        (with full provenance), instead of ``missing_data``.  Cells outside the footprint
+        are never converted, and an unconfirmed policy changes nothing.
         """
         target = [float(value) for value in bbox]
         target_area = geographic_bbox_area_m2(target)
@@ -98,10 +105,12 @@ class GdalRasterAdapter:
         scale = 1.0 if self.scale is None else float(self.scale)
         offset = 0.0 if self.offset is None else float(self.offset)
         count, covered_area, valid_pixels = 0.0, 0.0, 0
+        nodata_pixels = 0
         for row_offset, row in enumerate(rows):
             for column_offset, raw in enumerate(row):
                 value = float(raw)
                 if not math.isfinite(value) or self._is_nodata(value):
+                    nodata_pixels += 1
                     continue
                 pixel_bbox = self._pixel_wgs84_bbox(x0 + column_offset, y0 + row_offset)
                 overlap = self._intersection_bbox(target, pixel_bbox)
@@ -118,10 +127,14 @@ class GdalRasterAdapter:
                 covered_area += overlap_area
                 valid_pixels += 1
         if not valid_pixels:
+            confirmed = self._confirmed_zero_population(nodata_semantics, target)
+            if confirmed is not None:
+                return confirmed
             return {
                 **outside,
                 "coverage_status": "nodata_only",
                 "quality_flags": ["no_valid_source_pixels"],
+                "nodata_pixel_count": nodata_pixels,
             }
         coverage = min(1.0, covered_area / target_area)
         coverage_status = "full" if coverage >= 0.999999 else "partial"
@@ -216,6 +229,40 @@ class GdalRasterAdapter:
         if math.isnan(nodata):
             return math.isnan(value)
         return value == nodata
+
+    def _confirmed_zero_population(self, nodata_semantics, target):
+        """Confirmed ``NoData = zero population`` allocation, or ``None`` when not applicable.
+
+        The conversion is deliberately narrow: it requires an *explicitly confirmed* policy
+        and a target cell that lies **wholly inside** the source footprint.  A cell that
+        merely overlaps the raster edge keeps its ``missing_data`` semantics.
+        """
+
+        if not policy_is_confirmed(nodata_semantics):
+            return None
+        if not self._inside_extent(target):
+            return None
+        return confirmed_zero_allocation(
+            geographic_bbox_area_m2(target), nodata_semantics,
+            trigger="in_footprint_all_pixels_nodata",
+        )
+
+    def _inside_extent(self, bbox):
+        """True when the whole WGS84 bbox falls inside the raster footprint."""
+
+        west, south, east, north = (float(value) for value in bbox)
+        corners = [(west, south), (west, north), (east, south), (east, north)]
+        try:
+            projected = self.to_source.TransformPoints(corners)
+        except (RuntimeError, ValueError):  # pragma: no cover - defensive
+            return False
+        for point in projected:
+            column, row = self._apply(self.inverse_transform, point[0], point[1])
+            if column < 0 or row < 0:
+                return False
+            if column > self.dataset.RasterXSize or row > self.dataset.RasterYSize:
+                return False
+        return True
 
     def _inverse(self, transform):
         inverse = self.gdal.InvGeoTransform(transform)

@@ -7,6 +7,10 @@ import math
 
 from ..source_profiles import WORLDPOP_R2025A
 from ...domain.quantities import geographic_bbox_area_m2, quantity_value
+from ...domain.population_nodata import (
+    CONFIRMED_ZERO_COVERAGE_STATUS, confirmed_zero_allocation, nodata_semantics_record,
+    normalize_population_nodata_policy, policy_fingerprint, policy_is_confirmed,
+)
 from ...gis.raster_adapter import GdalRasterAdapter
 
 
@@ -50,12 +54,14 @@ class PopulationGridService:
             result["message"] = message
         return result
 
-    def map(self, grid, source_path):
+    def map(self, grid, source_path, nodata_semantics=None):
         cells = list((grid or {}).get("cells") or [])
         if not cells:
             return self.empty()
         if not source_path:
             return self._missing(cells, grid.get("level"), None, "未配置人口栅格")
+        policy = normalize_population_nodata_policy(nodata_semantics)
+        record = nodata_semantics_record(policy)
         try:
             adapter = self.adapter_factory(source_path)
             source = adapter.describe()
@@ -63,7 +69,10 @@ class PopulationGridService:
             profile = self._source_profile(source)
             attributes = {}
             raw_covered = 0
-            coverage_counts = {"full": 0, "partial": 0, "nodata_only": 0, "outside_extent": 0}
+            coverage_counts = {
+                "full": 0, "partial": 0, "nodata_only": 0, "outside_extent": 0,
+                CONFIRMED_ZERO_COVERAGE_STATUS: 0,
+            }
             value_covered = 0
             valid_area_total = 0.0
             target_area_total = 0.0
@@ -81,8 +90,30 @@ class PopulationGridService:
                     }
                 else:
                     item = self._empty_cell()
-                allocation = self._allocate_count(adapter, cell["bbox"])
+                allocation = self._allocate_count(adapter, cell["bbox"], policy)
+                if not values and allocation.get("coverage_status") not in (
+                    CONFIRMED_ZERO_COVERAGE_STATUS, "outside_extent",
+                ):
+                    # 该格没有任何来源像元中心落在其内：`read_population_count` 的“极小面积
+                    # 重叠”会把 2e-7 人的观测外推成 ~79 person/km² 的病态密度。项目已显式确认
+                    # 该来源的 NoData 表示零人口，因此这种“无有效观测覆盖”的格子按**已知 0**
+                    # 处理，原分配的 quality flags 原样保留作为审计信息；来源范围之外仍是 unknown。
+                    replacement = confirmed_zero_allocation(
+                        allocation.get("target_area_m2") or geographic_bbox_area_m2(cell["bbox"]),
+                        policy,
+                        nodata_pixel_count=allocation.get("nodata_pixel_count"),
+                        extra_quality_flags=list(allocation.get("quality_flags") or []),
+                        trigger="no_source_pixel_centre_inside_cell",
+                    )
+                    if replacement is not None:
+                        allocation = replacement
                 self._add_quantity_fields(item, cell["bbox"], allocation)
+                if allocation.get("coverage_status") == CONFIRMED_ZERO_COVERAGE_STATUS:
+                    # A confirmed zero is a *known* value: the cell is usable downstream,
+                    # and it carries its own provenance instead of an observation.
+                    item["status"] = "passed"
+                    item["nodata_semantics"] = allocation.get("nodata_semantics") or record
+                    item["nodata_pixel_count"] = allocation.get("nodata_pixel_count")
                 value_covered += item["value_status"] == "passed"
                 coverage = item["coverage_status"]
                 if coverage in coverage_counts:
@@ -94,7 +125,10 @@ class PopulationGridService:
             legacy_status = "passed" if raw_covered == len(cells) else "missing_data"
             status = value_status if hasattr(adapter, "read_population_count") else legacy_status
             coverage_status = self._dataset_coverage_status(coverage_counts, len(cells))
-            missing_count = len(cells) - coverage_counts["full"] - coverage_counts["partial"]
+            missing_count = (
+                len(cells) - coverage_counts["full"] - coverage_counts["partial"]
+                - coverage_counts[CONFIRMED_ZERO_COVERAGE_STATUS]
+            )
             return {
                 "status": status,
                 "value_status": value_status,
@@ -124,12 +158,18 @@ class PopulationGridService:
                 "missing_count": missing_count,
                 "outside_count": coverage_counts["outside_extent"],
                 "nodata_only_count": coverage_counts["nodata_only"],
+                "confirmed_zero_population_count": coverage_counts[CONFIRMED_ZERO_COVERAGE_STATUS],
+                "nodata_semantics": record,
+                "nodata_semantics_policy_fingerprint": (
+                    policy_fingerprint(policy) if policy_is_confirmed(policy) else None
+                ),
                 "coverage_summary": {
                     "full": coverage_counts["full"],
                     "partial": coverage_counts["partial"],
                     "missing": missing_count,
                     "outside_extent": coverage_counts["outside_extent"],
                     "nodata_only": coverage_counts["nodata_only"],
+                    "confirmed_zero_population": coverage_counts[CONFIRMED_ZERO_COVERAGE_STATUS],
                     "valid_covered_area_m2": valid_area_total,
                     "target_area_m2": target_area_total,
                     "source_coverage_fraction": valid_area_total / target_area_total if target_area_total > 0 else 0.0,
@@ -173,7 +213,7 @@ class PopulationGridService:
         }
 
     @staticmethod
-    def _allocate_count(adapter, bbox):
+    def _allocate_count(adapter, bbox, nodata_semantics=None):
         reader = getattr(adapter, "read_population_count", None)
         if reader is None:
             return {
@@ -184,7 +224,11 @@ class PopulationGridService:
                 "source_coverage_fraction": 0.0, "source_pixel_count": 0,
                 "quality_flags": ["population_count_reader_unavailable"],
             }
-        return reader(bbox)
+        try:
+            return reader(bbox, nodata_semantics=nodata_semantics)
+        except TypeError:
+            # 既有/替身 adapter 只接受 bbox：保持完全一致的历史行为（绝不补 0）。
+            return reader(bbox)
 
     @staticmethod
     def _add_quantity_fields(item, bbox, allocation):
@@ -235,6 +279,17 @@ class PopulationGridService:
 
     @staticmethod
     def _dataset_coverage_status(counts, total):
+        confirmed_zero = counts.get(CONFIRMED_ZERO_COVERAGE_STATUS, 0)
+        if confirmed_zero:
+            # Confirmed zero-population cells are *known* values, but they are still not
+            # observations: the dataset is reported as partial unless every cell is one.
+            if counts["full"] or counts["partial"]:
+                return "partial"
+            if counts["outside_extent"] == total:
+                return "outside_extent"
+            if confirmed_zero == total:
+                return CONFIRMED_ZERO_COVERAGE_STATUS
+            return "partial"
         if counts["full"] == total:
             return "full"
         if counts["full"] or counts["partial"]:

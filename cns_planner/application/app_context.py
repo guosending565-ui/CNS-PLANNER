@@ -172,6 +172,12 @@ class ApplicationContext:
         The coarse feasibility facts come from the existing verified FABDEM window sampler and
         the existing L8 building grid facts; without a configured FABDEM DTM this raises
         instead of fabricating an environment.
+
+        The API layer already marshals this call onto the QGIS owner thread
+        (``api/router.py`` -> ``context.qgis.call(...)``).  Wrapping it a *second* time here
+        made the QGIS thread queue a task to itself and then block on ``future.result()``:
+        the request never returned and the whole workbench appeared hung.  This mirrors the
+        single-level shape the other ``*-real`` entry points already use.
         """
 
         payload = payload if isinstance(payload, dict) else {}
@@ -179,14 +185,11 @@ class ApplicationContext:
         if not terrain_dtm:
             raise ValueError("请先配置 verified FABDEM terrain_dtm")
 
-        def evaluate():
-            from ..gis.fine_environment_adapter import FabdemWindowTerrainSource
-            from ..gis.layered_feasibility_adapter import LayeredFeasibilityAdapter
+        from ..gis.fine_environment_adapter import FabdemWindowTerrainSource
+        from ..gis.layered_feasibility_adapter import LayeredFeasibilityAdapter
 
-            adapter = LayeredFeasibilityAdapter(FabdemWindowTerrainSource(terrain_dtm))
-            return self.workflow.evaluate_layered_route_candidate(payload, adapter=adapter)
-
-        return self.qgis.call(evaluate)
+        adapter = LayeredFeasibilityAdapter(FabdemWindowTerrainSource(terrain_dtm))
+        return self.workflow.evaluate_layered_route_candidate(payload, adapter=adapter)
 
     # ------------------------------------------------------------------ Route Planner V3
 

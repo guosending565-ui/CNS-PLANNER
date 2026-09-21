@@ -273,6 +273,26 @@ class _FabdemRasterBase:
         self.resolution_detail = None
         self.last_window = None
 
+    def _transform_to_raster_crs(self, coordinate):
+        """WGS84 → raster CRS transform, shared by **both** FABDEM samplers.
+
+        It belongs on the base class because the V3-C native-pixel sampler
+        (``NativeTerrainWindowSource``) uses it as well.  While it was defined only on
+        ``FabdemWindowTerrainSource``, the production layered-candidate validation failed with
+        ``'NativeTerrainWindowSource' object has no attribute '_transform_to_raster_crs'``.
+        """
+
+        if self._to_raster is None:
+            target = self.osr.SpatialReference()
+            target.ImportFromWkt(self.projection)
+            source = self.osr.SpatialReference()
+            source.ImportFromEPSG(4326)
+            for item in (source, target):
+                if hasattr(item, "SetAxisMappingStrategy"):
+                    item.SetAxisMappingStrategy(self.osr.OAMS_TRADITIONAL_GIS_ORDER)
+            self._to_raster = self.osr.CoordinateTransformation(source, target)
+        return self._to_raster.TransformPoint(float(coordinate[0]), float(coordinate[1]))
+
     # ------------------------------------------------------------------ resolution
 
     def effective_resolution_m(self):
@@ -664,18 +684,6 @@ class FabdemWindowTerrainSource(_FabdemRasterBase):
         if pixel != pixel or line != line:
             return None
         return pixel, line
-
-    def _transform_to_raster_crs(self, coordinate):
-        if self._to_raster is None:
-            target = self.osr.SpatialReference()
-            target.ImportFromWkt(self.projection)
-            source = self.osr.SpatialReference()
-            source.ImportFromEPSG(4326)
-            for item in (source, target):
-                if hasattr(item, "SetAxisMappingStrategy"):
-                    item.SetAxisMappingStrategy(self.osr.OAMS_TRADITIONAL_GIS_ORDER)
-            self._to_raster = self.osr.CoordinateTransformation(source, target)
-        return self._to_raster.TransformPoint(float(coordinate[0]), float(coordinate[1]))
 
 
 def _unknown_terrain(reason):

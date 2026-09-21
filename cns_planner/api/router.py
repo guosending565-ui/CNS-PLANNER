@@ -69,6 +69,7 @@ class ApiRouter:
         if path == "/api/layered-route-candidates": return Response(workflow.layered_route_candidates())
         # ---- Layered Risk-Aware Theta* V2 additive interfaces ------------------------
         if path == "/api/shelter-coefficient-policy": return Response(workflow.shelter_coefficient_policy())
+        if path == "/api/population-nodata-policy": return Response(workflow.population_nodata_policy())
         if path == "/api/population-shelter": return Response(workflow.population_shelter())
         if path == "/api/regulatory-constraints": return Response(workflow.regulatory_constraints())
         if path == "/api/communication-planning-field": return Response(workflow.communication_planning_field())
@@ -258,6 +259,7 @@ class ApiRouter:
             "/api/layered-route-feasibility-policy": lambda: workflow.set_layered_route_feasibility_policy(payload),
             "/api/layered-route-cost-policy": lambda: workflow.set_layered_route_cost_policy(payload),
             "/api/shelter-coefficient-policy": lambda: workflow.set_shelter_coefficient_policy(payload),
+            "/api/population-nodata-policy": lambda: workflow.set_population_nodata_policy(payload),
             "/api/regulatory-constraints": lambda: workflow.set_regulatory_constraints(payload),
             "/api/communication-planning-field": lambda: workflow.set_communication_planning_field(payload),
             "/api/theta-v2-objective-policy": lambda: workflow.set_theta_v2_objective_policy(payload),
@@ -332,9 +334,16 @@ class ApiRouter:
             if action == "project": return Response(workflow.set_project(payload))
             if action == "workspace":
                 health = context.qgis.call(lambda: data.workspace_health(payload.get("bbox")))
-                workflow.set_workspace(payload.get("bbox"), health, payload.get("grid_level"))
-                results = context.qgis.call(lambda: data.grid_attributes(workflow.grid_snapshot()))
-                return Response(workflow.apply_grid_attributes(results))
+                # Mapping the workspace and recomputing its attributes is ONE user action and
+                # therefore ONE commit: a concurrent reader must never observe the workspace
+                # with its attributes already cleared but not yet recomputed.
+                with workflow.deferred_save():
+                    workflow.set_workspace(
+                        payload.get("bbox"), health, payload.get("grid_level"),
+                        payload.get("max_cells"),
+                    )
+                    results = context.qgis.call(lambda: data.grid_attributes(workflow.grid_snapshot()))
+                    return Response(workflow.apply_grid_attributes(results))
             actions = {
                 "workspace-clear": lambda: workflow.clear_workspace(),
                 "traffic-simulate": lambda: workflow.run_traffic_simulation(payload),

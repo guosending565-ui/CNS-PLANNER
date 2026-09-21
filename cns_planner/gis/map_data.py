@@ -100,8 +100,14 @@ class MapData:
         return workspace_health(self.loaded, bbox)
 
     def grid_attributes(self, grid):
-        policies = (self.workflow_provider() or {}).get("airspace_policies") or {}
-        return {"population": PopulationGridService().map(grid, self.paths.get("population")),
+        snapshot = self.workflow_provider() or {}
+        policies = snapshot.get("airspace_policies") or {}
+        # The population NoData semantics is an *explicit engineering confirmation* held in
+        # the project state; when it is not confirmed the mapping keeps its historical
+        # behaviour (source NoData stays missing_data and is never filled with zero).
+        nodata_semantics = snapshot.get("population_nodata_policy")
+        return {"population": PopulationGridService().map(
+                    grid, self.paths.get("population"), nodata_semantics),
                 "terrain": TerrainGridService().map(grid, self.paths.get("terrain")),
                 "buildings": BuildingGridService().map(grid, self.paths.get("building_grid")),
                 "airspace": AirspaceGridService().map(

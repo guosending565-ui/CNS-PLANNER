@@ -15,6 +15,8 @@
 >
 > **明确列入 future work（本轮不实现，也不得静默并入）**：Dubins Airplane / minimum-snap 轨迹、3D search（自由三维搜索）、clothoid/continuous-curvature、**aircraft kinematic / flight-dynamics certification**、terminal procedure certification、以及把 CNS、energy、regulatory 并入规划 cost 或约束的联合优化。
 >
+> **建筑事实的层级无关获取（Phase 3 记录，用户明确需求，本轮不实现）**：当前 `BuildingGridService` 硬性要求 `grid level == 8`，而 `WorkspaceGridService(preferred_level=7, max_cells=5000)` 会把舟山全域这类大工作区静默 coarsen 到 L6，导致 `grid_attributes.buildings` 恒为 `unsupported`、建筑约束实际不参与 Layered Risk-Aware Theta* V2 的 coarse 战略垂向包线。用户要求：**不论工作区层级，需要建筑事实时应能直接取得**。允许的方向是按当前层级对原始 footprint 做**精确几何聚合**（不是跨层级平均/插值），或允许显式指定 L8 并在超限时显式失败而非静默 coarsen；任何方案都必须保持 `unknown != 0`、`missing_data != 0` 并记录聚合 provenance。详见 `docs/10-Phase3已知限制与待办.md`。
+>
 > **`full_3d_geometry_validated` 的严格含义**：它只表示 *climb/descent 源生几何证据 + 巡航源生几何证据都已 current 且无明确穿透*。它**不是** aircraft kinematic validation、**不是** terminal procedure certification、**也不是** `route_safe`。
 
 > 架构基线：2026-09-16（Asia/Shanghai）

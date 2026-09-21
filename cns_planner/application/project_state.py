@@ -95,6 +95,9 @@ from ..domain.population_shelter import (
     normalize_population_shelter_attribute, normalize_shelter_coefficient_policy,
     user_defined_baseline_policy,
 )
+from ..domain.population_nodata import (
+    default_population_nodata_policy, normalize_population_nodata_policy,
+)
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, normalize_regulatory_constraints,
 )
@@ -293,6 +296,8 @@ def blank_project(defaults):
         # the user-confirmed 1.0 baseline and lives as real per-grid data in
         # ``grid_attributes.population_shelter``; the two interfaces ship not configured.
         "shelter_coefficient_policy": user_defined_baseline_policy(),
+        # 真实人口产品的 NoData 语义默认未确认：来源范围内的 NoData 保持 missing_data。
+        "population_nodata_policy": default_population_nodata_policy(),
         "regulatory_constraints": default_regulatory_constraints(),
         "communication_planning_field": normalize_communication_planning_field(None),
         "theta_v2_objective_policy": default_theta_v2_objective_policy(),
@@ -532,6 +537,10 @@ def normalize_project(value, grid_service):
     # plus this policy on demand, so it is deliberately not written into ``grid_attributes``.
     value["shelter_coefficient_policy"] = normalize_shelter_coefficient_policy(
         value.get("shelter_coefficient_policy") or user_defined_baseline_policy()
+    )
+    # 显式的人口来源 NoData 语义确认：缺失时回到 not_configured（绝不视为已确认）。
+    value["population_nodata_policy"] = normalize_population_nodata_policy(
+        value.get("population_nodata_policy")
     )
     value["regulatory_constraints"] = normalize_regulatory_constraints(
         value.get("regulatory_constraints")

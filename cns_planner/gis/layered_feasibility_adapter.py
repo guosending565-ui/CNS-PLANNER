@@ -191,17 +191,61 @@ class LayeredFeasibilityAdapter:
 
 
 def layered_feasibility_source_status(state, terrain_path=None):
-    """Read-only readiness summary (never opens a dataset)."""
+    """Read-only readiness summary (never opens a dataset).
 
-    audits = ((state or {}).get("source_audits") or {}).get("items") or {}
+    The keys must match what the readiness projection and the frontend actually read:
+    ``terrain`` (not only ``terrain_dtm``) plus ``population``.  Reporting the terrain
+    status under a key nobody reads made every project look as if the verified FABDEM
+    source were missing.
+    """
+
+    state = state or {}
+    audits = (state.get("source_audits") or {}).get("items") or {}
     buildings = audits.get("buildings") or {}
     building_grid = audits.get("building_grid") or {}
+    terrain_audit = audits.get("terrain_dtm") or {}
+    terrain_status = str(terrain_audit.get("status") or "")
+    terrain_configured = bool(terrain_path)
+    terrain_available = terrain_configured and terrain_status == "verified"
+    if terrain_available:
+        terrain_reason = None
+    elif not terrain_configured:
+        terrain_reason = "terrain_source_not_configured"
+    else:
+        terrain_reason = f"terrain_source_audit_{terrain_status or 'unknown'}"
+    terrain = {
+        "role": "terrain_dtm",
+        "configured": terrain_configured,
+        "audit_status": terrain_audit.get("status"),
+        "available": terrain_available,
+        "reason": terrain_reason,
+    }
+
+    attribute = (state.get("grid_attributes") or {}).get("population") or {}
+    population_status = str(attribute.get("status") or "")
+    population_available = population_status == "passed"
+    population = {
+        "role": "population",
+        "configured": bool(attribute),
+        "status": attribute.get("status"),
+        "value_status": attribute.get("value_status"),
+        "coverage_status": attribute.get("coverage_status"),
+        "nodata_only_count": attribute.get("nodata_only_count"),
+        "confirmed_zero_population_count": attribute.get("confirmed_zero_population_count"),
+        "nodata_semantics_status": (attribute.get("nodata_semantics") or {}).get("mode"),
+        "available": population_available,
+        "reason": None if population_available else (
+            "population_attribute_not_calculated" if not attribute
+            else str(attribute.get("message") or population_status or "population_unavailable")
+        ),
+    }
+
     return {
-        "terrain_dtm": {
-            "role": "terrain_dtm",
-            "configured": bool(terrain_path),
-            "audit_status": (audits.get("terrain_dtm") or {}).get("status"),
-        },
+        # ``terrain`` is the contract the readiness projection and the UI read; ``terrain_dtm``
+        # is kept for already-deployed consumers of the older key.
+        "terrain": terrain,
+        "terrain_dtm": dict(terrain),
+        "population": population,
         "buildings": {"role": "buildings", "audit_status": buildings.get("status")},
         "building_grid": {"role": "building_grid", "audit_status": building_grid.get("status")},
         "airspace": {
