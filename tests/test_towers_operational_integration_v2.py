@@ -279,9 +279,12 @@ def test_obstacle_profiles_persistence_round_trip_keeps_heights():
 
 
 def confirmed_colocation_policy():
+    """规划宿主已确认（**只**确认规划层；物理安装层没有可确认的输入）。"""
+
     return normalize_tower_colocation_policy({
         "service_origin_assumption": "tower_top_agl_0",
-        "device_mount_confirmed": True, "source": "测试", "confirmed": True,
+        "planning_host_use_confirmed": True,
+        "source": "测试", "confirmed": True,
     })
 
 
@@ -364,7 +367,9 @@ def test_colocation_candidates_persistence_keeps_host_linkage():
                            for index, item in enumerate(collection["items"])]
     reopened = normalize_tower_colocation_candidates(deepcopy(collection))
     assert reopened["items"][0]["metadata"]["host"]["host_tower_id"] == "T1"
-    assert reopened["policy"]["confirmed"] is True
+    assert reopened["policy"]["planning_host_use_confirmed"] is True
+    assert reopened["policy"]["physical_mount_confirmed"] is False
+    assert reopened["policy"]["requires_site_survey"] is True
 
 
 # ======================================================================================
@@ -924,36 +929,311 @@ def test_colocation_policy_save_through_the_existing_endpoint(tmp_path):
 
     service = loaded_workflow(tmp_path)
     service.evaluate_tower_obstacle_profiles({"tower_colocation_policy": {
-        "service_origin_assumption": "tower_top_agl_0", "device_mount_confirmed": True,
+        "service_origin_assumption": "tower_top_agl_0",
+        "planning_host_use_confirmed": True,
         "source": "user_configuration", "confirmed": True,
     }})
     policy = service.state["tower_colocation_policy"]
     assert policy["enabled"] is True and policy["status"] == "confirmed"
+    assert policy["planning_host_status"] == "eligible"
+    assert policy["subsystem_mount_status"] == "unverified"
     item = service.state["tower_colocation_candidates"]["items"][0]
     assert item["planning_profile"]["confirmed"] is True
     assert item["planning_profile"]["add_device_allowed"] is True
-    assert item["metadata"]["host"]["device_mount_confirmed"] is True
+    # 规划层确认**不**等于物理安装确认（FIX-TOWER-SEM-001）
+    assert item["metadata"]["host"]["planning_host_use_confirmed"] is True
+    assert item["metadata"]["host"]["physical_mount_confirmed"] is False
+    assert item["metadata"]["host"]["requires_site_survey"] is True
+    assert item["metadata"]["host"]["device_mount_confirmed"] is False
+    assert item["metadata"]["planning_host"]["subsystem_mount_status"] == "unverified"
     # 没有 tower facts provider ⇒ 塔顶未解析 ⇒ 服务原点仍未确认（fail-closed）
     assert item["vertical_profile"]["confirmed"] is False
     assert item["vertical_profile"]["service_origin_egm2008_m"] is None
 
 
-def test_colocation_policy_stays_ineligible_until_all_three_conditions_hold(tmp_path):
-    """策略确认 + 设备挂载确认 + 服务原点假设，三者缺一都保持 ineligible。"""
+def test_colocation_policy_needs_planning_host_and_origin_only(tmp_path):
+    """只有两个条件：规划宿主允许 + 服务原点假设；物理安装确认不再是启用条件。"""
 
     service = loaded_workflow(tmp_path)
     for payload in (
-        {"service_origin_assumption": "tower_top_agl_0", "device_mount_confirmed": True,
-         "source": "user_configuration", "confirmed": False},
-        {"service_origin_assumption": "tower_top_agl_0", "device_mount_confirmed": False,
-         "source": "user_configuration", "confirmed": True},
-        {"service_origin_assumption": None, "device_mount_confirmed": True,
-         "source": "user_configuration", "confirmed": True},
+        {"service_origin_assumption": "tower_top_agl_0",
+         "planning_host_use_confirmed": False, "source": "user_configuration", "confirmed": True},
+        {"service_origin_assumption": None,
+         "planning_host_use_confirmed": True, "source": "user_configuration", "confirmed": True},
     ):
         service.evaluate_tower_obstacle_profiles({"tower_colocation_policy": payload})
         policy = service.state["tower_colocation_policy"]
         assert policy["enabled"] is False, payload
         assert policy["status"] == "pending_confirmation"
+        assert policy["planning_host_status"] == "not_confirmed"
         item = service.state["tower_colocation_candidates"]["items"][0]
         assert item["planning_profile"]["add_device_allowed"] is None
         assert item["planning_profile"]["confirmed"] is False
+
+
+# ======================================================================================
+# 7. FIX-TOWER-SEM-001 / SEM-002：规划宿主 vs 物理安装 / 分系统兼容性
+# ======================================================================================
+
+
+def test_global_host_confirmation_never_implies_physical_mount_for_all_towers():
+    """全局"允许共塔规划"绝不等于 373 个铁塔 physical mount confirmed。"""
+
+    towers = [tower(f"T{index:04d}", longitude=122.0 + 0.001 * index,
+                    latitude=30.0 + 0.001 * index) for index in range(20)]
+    profiles = build_tower_obstacle_profiles(
+        towers, terrain_by_tower={item["tower_id"]: terrain_fact(100.0) for item in towers},
+    )
+    collection = build_tower_colocation_candidates(
+        towers, obstacle_profiles=profiles, policy=confirmed_colocation_policy(),
+    )
+    assert collection["count"] == 20
+    for item in collection["items"]:
+        host = item["metadata"]["host"]
+        assert host["planning_host_use_confirmed"] is True, "规划层已允许"
+        assert host["physical_mount_confirmed"] is False, "物理安装绝不被全局策略确认"
+        assert host["requires_site_survey"] is True
+        assert host["device_mount_confirmed"] is False
+    # 集合级也明确声明
+    assert collection["creates_existing_facilities"] is False
+    assert collection["invents_device_parameters"] is False
+
+
+def test_physical_mount_and_site_survey_defaults_are_fail_closed():
+    default = default_tower_colocation_policy()
+    assert default["physical_mount_confirmed"] is False
+    assert default["requires_site_survey"] is True
+    assert default["planning_host_use_confirmed"] is False
+    assert default["device_mount_confirmed"] is False
+    # 任何输入组合都不能把物理层打开（本阶段没有逐塔调查数据）
+    for payload in (
+        {"planning_host_use_confirmed": True, "physical_mount_confirmed": True,
+         "requires_site_survey": False, "device_mount_confirmed": True,
+         "service_origin_assumption": "tower_top_agl_0", "confirmed": True},
+        {"confirmed": True, "device_mount_confirmed": True,
+         "service_origin_assumption": "tower_top_agl_0"},
+    ):
+        policy = normalize_tower_colocation_policy(payload)
+        assert policy["physical_mount_confirmed"] is False
+        assert policy["requires_site_survey"] is True
+        assert policy["device_mount_confirmed"] is False
+
+
+def test_legacy_policy_input_still_enables_planning_host_only():
+    """旧项目 reopen：legacy confirmed + device_mount_confirmed 只映射到规划层。"""
+
+    legacy = normalize_tower_colocation_policy({
+        "service_origin_assumption": "tower_top_agl_0",
+        "device_mount_confirmed": True, "confirmed": True, "source": "旧项目",
+    })
+    assert legacy["planning_host_use_confirmed"] is True
+    assert legacy["enabled"] is True
+    assert legacy["physical_mount_confirmed"] is False
+    # 幂等：再 normalize 一次结果不变
+    assert normalize_tower_colocation_policy(legacy) == legacy
+
+
+def test_empty_available_subsystems_is_not_a_capability_claim(tmp_path):
+    """available_subsystems=[] 表示"没有证据"，不是"所有目标设备都能装"。"""
+
+    catalog = {"items": [device("C"), device("N"), device("S")]}
+    targets = target() + [
+        {
+            "segment_id": f"R1:{code}:001", "route_id": "R1", "subsystem": code,
+            "start_route_offset_m": 0.0, "end_route_offset_m": 1000.0, "length_m": 1000.0,
+            "requires_joint_optimization": False,
+        }
+        for code in ("N", "S")
+    ]
+    actions = _candidate_actions(
+        targets, {}, {}, catalog, {"items": [colocation_site()]},
+    )
+    assert {action["subsystem"] for action in actions} == {"C", "N", "S"}
+    for action in actions:
+        # 无证据 → unverified，且**不**因此被排除（共塔方案仍可参与 what-if 比较）
+        assert action["subsystem_mount_status"] == "unverified"
+        assert action["eligibility"]["status"] == "eligible"
+        assert action["requires_site_survey"] is True
+        assert action["physical_mount_confirmed"] is False
+    # 塔本身仍然不声明任何可用分系统
+    site = colocation_site()
+    assert site["available_subsystems"] == []
+
+
+def test_declared_subsystems_are_still_enforced():
+    """站点**显式声明**的可用分系统仍然是硬约束（声明与设备不匹配 ⇒ ineligible）。"""
+
+    catalog = {"items": [device("C")]}
+    actions = _candidate_actions(
+        target(), {}, {"items": [plain_site(available_subsystems=["S"])]}, catalog,
+    )
+    action = actions[0]
+    assert action["subsystem_mount_status"] == "declared_not_compatible"
+    assert action["eligibility"]["status"] == "ineligible"
+    assert any("可用分系统不包含" in reason for reason in action["eligibility"]["reasons"])
+    compatible = _candidate_actions(
+        target(), {}, {"items": [plain_site(available_subsystems=["C"])]}, catalog,
+    )[0]
+    assert compatible["subsystem_mount_status"] == "declared_compatible"
+    assert compatible["eligibility"]["status"] == "eligible"
+
+
+def test_colocation_action_keeps_two_layer_status_through_save_and_reopen(tmp_path):
+    """CandidateAction 的两层状态进入 state、save/reopen 不丢。"""
+
+    service = loaded_workflow(tmp_path)
+    service.evaluate_tower_obstacle_profiles({"tower_colocation_policy": {
+        "service_origin_assumption": "tower_top_agl_0",
+        "planning_host_use_confirmed": True,
+        "source": "user_configuration", "confirmed": True,
+    }})
+    state = service.state
+    state["device_catalog"] = {"status": "passed", "items": [device("C")]}
+    state["cns_gap_analysis_v2"] = {
+        "status": "confirmed_gap", "routes": [{
+            "route_id": "R1", "route_length_m": 1000.0,
+            "subsystems": [{"subsystem": "C", "segments": []}],
+        }],
+    }
+    actions = _candidate_actions(
+        target(), state.get("existing_cns_facilities") or {},
+        state.get("candidate_sites") or {}, state.get("device_catalog") or {},
+        state.get("tower_colocation_candidates") or {},
+    )
+    action = next(item for item in actions
+                  if item["reuse_class"] == TOWER_COLOCATION_REUSE_CLASS)
+    assert action["host"]["host_tower_id"] == "T1"
+    assert action["device_id"] == "C-1"
+    assert action["subsystem"] == "C"
+    assert action["planning_host_status"] == "eligible"
+    assert action["subsystem_mount_status"] == "unverified"
+    assert action["physical_mount_confirmed"] is False
+    assert action["requires_site_survey"] is True
+    # 内联持久化：写入 plan 后 save/reopen 仍保留这些字段
+    service.session.state["cns_site_plan"] = {
+        "status": "proposal_ready", "candidate_actions": [action], "selected_actions": [action],
+    }
+    service.session.save()
+    reopened = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    stored = reopened.state["cns_site_plan"]["candidate_actions"][0]
+    for field in ("host", "device_id", "subsystem", "planning_host_status",
+                  "subsystem_mount_status", "physical_mount_confirmed", "requires_site_survey"):
+        assert field in stored, f"save/reopen 丢失 {field}"
+    assert stored["physical_mount_confirmed"] is False
+    assert stored["requires_site_survey"] is True
+
+
+def test_unresolved_tower_cell_is_unknown_and_the_gate_fails_closed():
+    """塔顶未解析 ⇒ cell 为 unknown；Theta* gate 把它当作不可穿越（fail-closed）。"""
+
+    from cns_planner.layered_route_planner.theta_star_v2 import _build_gate
+
+    cells = grid_cells(columns=1, rows=1)
+    facts = tower_facts(cells, {cells[0]["grid_id"]: cell_tower_fact(2, 1, 1, 200.0)})
+    mask = mask_for(facts, altitude=300.0, tower_clearance={
+        "tower_vertical_clearance_m": 20.0, "tower_horizontal_clearance_m": 0.0,
+        "source": "测试", "confirmed": True,
+    })
+    cell = mask["cells"][cells[0]["grid_id"]]
+    assert cell["status"] == "unknown"
+    assert cell["tower_required_clearance_egm2008_m"] is None, "不生成具体 clearance floor"
+
+    class _Graph:
+        def __init__(self, bbox_by_id):
+            self.cells = {grid_id: {"bbox": bbox} for grid_id, bbox in bbox_by_id.items()}
+
+    gate, diagnostics = _build_gate(
+        graph=_Graph({cells[0]["grid_id"]: cells[0]["bbox"]}), index_map=None, mask=mask,
+        hard_constraints=[], regulatory=None, altitude=300.0,
+    )
+    verdict = gate(cells[0]["grid_id"])
+    assert verdict is not None, "unknown 必须 fail-closed（不可穿越）"
+    assert verdict["domain"] == "unknown"
+    assert verdict["reason_code"] == "tower_height_unresolved"
+    assert diagnostics["gate_reasons"][cells[0]["grid_id"]] == "tower_height_unresolved"
+
+
+def test_adapter_metadata_separates_building_and_tower_horizontal_clearance():
+    """describe() 不能再笼统声明整个 adapter not_horizontal_clearance。"""
+
+    from cns_planner.domain.layered_route import COARSE_ENVELOPE_SEMANTICS
+    from cns_planner.gis.layered_feasibility_adapter import LayeredFeasibilityAdapter
+
+    described = LayeredFeasibilityAdapter(None).describe()
+    assert described["building_horizontal_clearance"] == (
+        "not_modeled_here_deferred_to_continuous_validation"
+    )
+    assert described["tower_horizontal_clearance"] == "explicit_policy_bbox_envelope"
+    assert described["tower_horizontal_clearance_envelope"] == (
+        "coarse_bbox_envelope_not_exact_radial_clearance"
+    )
+    assert described["tower_horizontal_clearance_is_exact_radial"] is False
+    # mask 语义同样按域拆分（并保留"整体不是精确水平净空"的既有键）
+    assert COARSE_ENVELOPE_SEMANTICS["tower_horizontal_clearance"] == (
+        "explicit_policy_bbox_envelope"
+    )
+    assert COARSE_ENVELOPE_SEMANTICS["tower_horizontal_clearance_is_exact_radial"] is False
+    assert COARSE_ENVELOPE_SEMANTICS["building_horizontal_clearance"] == (
+        "not_modeled_here_deferred_to_continuous_validation"
+    )
+    assert COARSE_ENVELOPE_SEMANTICS["not_horizontal_clearance"] is True
+    # describe 里不再有会误导的笼统声明
+    assert "not_horizontal_clearance" not in {
+        key for key, value in described.items() if value is True and key.startswith("tower")
+    }
+
+
+def test_rooftop_markers_include_louding_and_stay_conservative():
+    """FIX-TOWER-TYPE-001：'楼顶'明确属于 rooftop；其余未知类型不被自动分类。"""
+
+    from cns_planner.domain.tower_obstacle import GROUND_MARKERS, ROOFTOP_MARKERS
+
+    assert "楼顶" in ROOFTOP_MARKERS
+    assert classify_base_type("楼顶景观塔")[0] == "rooftop"
+    assert classify_base_type("楼顶景观塔")[1] == "site_type_rooftop_marker"
+    # 其余 unknown 类型本轮**不**自动分类，也不被设为 ground
+    for site_type in ("角钢塔", "H杆塔", "单管塔", "造型景观塔", "水泥杆塔",
+                      "通信灯杆塔", "一体化塔房", None):
+        assert classify_base_type(site_type)[0] == "unknown", site_type
+    assert "地面" in GROUND_MARKERS and "落地" in GROUND_MARKERS
+    # 楼顶塔按 rooftop 公式计算（terrain + building + structure）
+    profile = build_tower_obstacle_profile(
+        tower(site_type="楼顶景观塔", height_m=12.0),
+        terrain=terrain_fact(100.0), building=building_fact(30.0),
+    )
+    assert profile["base_type"] == "rooftop"
+    assert profile["status"] == "resolved"
+    assert profile["tower_top_orthometric_m"] == 142.0
+
+
+REAL_TOWER_XLSX = Path(
+    r"D:\aaa2026project\UOM\舟山\基础数据\各单位报送的补充材料\各单位报送的补充材料"
+    r"\航路航线规划-铁塔数据.xlsx"
+)
+
+
+@pytest.mark.skipif(not REAL_TOWER_XLSX.is_file(), reason="真实铁塔报送数据不在本机")
+def test_real_tower_site_type_classification_is_219_39_115():
+    """真实 373 条数据重统计：楼顶景观塔 ×2 变为 rooftop ⇒ 219 / 39 / 115。"""
+
+    from collections import Counter
+
+    from cns_planner.reference_data.towers import load_towers
+
+    record = load_towers(REAL_TOWER_XLSX)
+    assert record["count"] == 373
+    buckets = Counter(classify_base_type(item.get("site_type"))[0] for item in record["items"])
+    assert buckets["rooftop"] == 219
+    assert buckets["ground"] == 39
+    assert buckets["unknown"] == 115
+    types = Counter(item.get("site_type") for item in record["items"])
+    assert types["楼顶景观塔"] == 2
+    unknown_types = {
+        site_type for site_type in types if classify_base_type(site_type)[0] == "unknown"
+    }
+    assert unknown_types == {
+        "角钢塔", "H杆塔", "单管塔", "造型景观塔", "水泥杆塔", "通信灯杆塔",
+        "一体化塔房", None,
+    }
+    assert "楼顶景观塔" not in unknown_types
+    assert sum(types[site_type] for site_type in unknown_types) == 115

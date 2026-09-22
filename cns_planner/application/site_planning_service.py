@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog
-from ..domain.site_planning import normalize_site_planning_policy
+from ..domain.site_planning import TOWER_COLOCATION_REUSE_CLASS, normalize_site_planning_policy
 from ..gap.v2 import CNSGapAnalyzerV2
 
 
@@ -201,6 +201,17 @@ def _action(site, device, installed, is_existing):
     reuse_class = profile.get("reuse_class")
     identifier = str(site.get("facility_id") if is_existing else site.get("site_id") or "")
     device_id = str(device.get("device_id") or "")
+    device_subsystem = str(device.get("subsystem") or "")
+    metadata = site.get("metadata") if isinstance(site.get("metadata"), dict) else {}
+    host = metadata.get("host") if isinstance(metadata.get("host"), dict) else None
+    planning_host = (
+        metadata.get("planning_host") if isinstance(metadata.get("planning_host"), dict) else None
+    )
+    is_tower_host = reuse_class == TOWER_COLOCATION_REUSE_CLASS
+    # 站点显式声明的可用分系统（仅当源数据/用户真的声明过）。
+    declared = [
+        str(item).upper() for item in (site.get("available_subsystems") or []) if str(item).strip()
+    ]
     reasons, unknown = [], []
     if profile.get("confirmed") is not True:
         unknown.append("planning_profile 未确认")
@@ -229,11 +240,24 @@ def _action(site, device, installed, is_existing):
     coordinate = site.get("coordinate")
     if not isinstance(coordinate, list) or len(coordinate) < 2:
         reasons.append("站点坐标缺失")
+
+    # 分系统兼容性（两层语义，绝不把"无证据"当成"都能装"）：
+    #   * 站点**显式声明**了可用分系统且不含该设备的分系统 ⇒ 硬冲突（ineligible）；
+    #   * 站点声明了且包含 ⇒ declared_compatible；
+    #   * 站点没有任何声明（例如真实铁塔候选 available_subsystems=[]）⇒ **unverified**：
+    #     它既不是"已证明可装"，也**不**因此把规划方案排除掉 ——
+    #     共塔方案仍可作为工程 Proposal 参与 P11/P16 what-if 比较。
+    if declared and device_subsystem and device_subsystem not in declared:
+        reasons.append("站点声明的可用分系统不包含该设备分系统")
+        subsystem_mount_status = "declared_not_compatible"
+    elif declared:
+        subsystem_mount_status = "declared_compatible"
+    else:
+        subsystem_mount_status = "unverified"
+
     status = "ineligible" if reasons else "unknown" if unknown else "eligible"
     eligibility_reasons = [*reasons, *unknown]
     action_type = "add_device_to_existing_facility" if is_existing else "add_device_to_explicit_site"
-    metadata = site.get("metadata") if isinstance(site.get("metadata"), dict) else {}
-    host = metadata.get("host") if isinstance(metadata.get("host"), dict) else None
     return {
         "action_id": f"{reuse_class or 'unknown'}:{identifier}:{device_id}",
         "action_type": action_type,
@@ -248,6 +272,13 @@ def _action(site, device, installed, is_existing):
         # 共塔候选的宿主溯源：只搬运事实，不推断任何设备/安装结论。
         "host": deepcopy(host),
         "planning_origin": deepcopy(metadata.get("planning_origin")),
+        # 规划层 / 实施层状态（共塔候选才适用；其它站点为 None = 不适用）。
+        "planning_host_status": (
+            (planning_host or {}).get("planning_host_status") if is_tower_host else None
+        ),
+        "subsystem_mount_status": subsystem_mount_status,
+        "physical_mount_confirmed": False if is_tower_host else None,
+        "requires_site_survey": True if is_tower_host else None,
         "source": str(profile.get("source") or site.get("source") or "未记录"),
         "confirmed": status == "eligible",
         "eligibility": {"status": status, "reasons": eligibility_reasons},

@@ -126,6 +126,15 @@ COARSE_ENVELOPE_SEMANTICS = {
     ),
     "tower_horizontal_clearance_is_explicit": True,
     "tower_horizontal_clearance_default": None,
+    #: 铁塔水平净空的真实形态：显式 policy 决定的 cell 级 bbox 保守包络。
+    #: 它不是精确圆形/欧氏水平净空 —— 精确 corridor clearance 留给连续验证阶段。
+    "tower_horizontal_clearance": "explicit_policy_bbox_envelope",
+    "tower_horizontal_clearance_is_exact_radial": False,
+    "tower_horizontal_clearance_envelope": (
+        "coarse_bbox_envelope_not_exact_radial_clearance"
+    ),
+    #: 建筑水平净空不在这里建模（既有语义，本轮不改）。
+    "building_horizontal_clearance": "not_modeled_here_deferred_to_continuous_validation",
     "tower_clearance_has_no_default": True,
     "tower_height_unresolved_is_unknown_never_obstacle_free": True,
     "tower_point_geometry_is_authoritative": True,

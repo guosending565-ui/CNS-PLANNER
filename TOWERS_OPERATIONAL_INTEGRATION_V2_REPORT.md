@@ -100,10 +100,13 @@
 * `default_tower_colocation_policy()`：
   `strategy = prefer_tower_colocation_fallback_to_plain_candidates`、
   `reuse_class = tower_colocation_host`、`service_origin_assumption = null`、
-  `device_mount_confirmed = false`、`confirmed = false`；
+  `planning_host_use_confirmed = false`、`physical_mount_confirmed = false`、
+  `requires_site_survey = true`、`confirmed = false`（legacy 别名，= 规划层）；
 * `normalize_tower_colocation_policy()`：只允许
   `service_origin_assumption ∈ {null, "tower_top_agl_0"}`；只有
-  `confirmed && device_mount_confirmed && assumption != null` 才 `enabled = true`；
+  `planning_host_use_confirmed && assumption != null` 才 `enabled = true`
+  （**FIX-TOWER-SEM-001**：规划宿主确认 ≠ 物理安装确认；legacy
+  `device_mount_confirmed` 仅作为输入别名读取，canonical 值恒为 `false`）；
 * `tower_colocation_candidate()` 产出的条目**复用既有 CandidateSite 契约形状**
   （`site_id / name / coordinate / elevation_m / site_type / available_subsystems /
   usable / locked / source / metadata / vertical_profile / planning_profile`），
@@ -558,21 +561,29 @@ towers V1 的既有测试）。回归中修改过的唯一既有测试是
 
 ## 18. 已知限制
 
-1. **未知塔型不参与净空**：真实源里的 `site_type` 若既不含"楼面/屋顶"也不含
-   "地面/落地"，base_type 为 `unknown` ⇒ 该塔 obstacle `unresolved`（fail-closed）。
+1. **未知塔型不生成净空 floor**：真实源里的 `site_type` 若既不含"楼面/楼顶/屋顶"也不含
+   "地面/落地"，base_type 为 `unknown` ⇒ 该塔 obstacle `unresolved` ⇒
+   **塔顶高度未解析时不生成具体 tower clearance floor；相关空间保持 unknown，
+   并在路径搜索中 fail-closed，不得作为已验证安全可通行区域**。
    要么补源数据分类，要么显式配置 `tower_obstacle_policy.default_base_type`。
 2. **楼面塔依赖建筑源**：未配置建筑数据源、建筑源 CRS 不可判定、或塔坐标不落在任何
-   足迹内时，楼面塔塔顶保持 unresolved（绝不补 0）。
+   足迹内时，楼面塔同样不生成 tower clearance floor（保持 unknown + fail-closed，绝不补 0）。
 3. **净空 policy 无默认值**：未配置 `tower_clearance_policy` 时，任何含塔 cell 都是
    `unknown`，航路无法穿越这些 cell。这是有意为之（不给没有依据的业务值）。
 4. **mask 是 cell 级粗包络**：同一 cell 内只要有塔，整格按"格内最高塔顶 + 显式垂直净空"
    判定（比点更保守）。对候选 route corridor 的逐点精确塔净空仍需连续验证阶段完成
    （与既有"exact footprint / horizontal clearance 留给连续验证"的分工一致）。
 5. **水平净空是 bbox 近似**：以塔为中心的经纬度 bbox（米→度按纬度近似换算），
-   不是圆形 buffer。
+   即 `tower_horizontal_clearance: explicit_policy_bbox_envelope` /
+   `coarse_bbox_envelope_not_exact_radial_clearance`，**不是**精确圆形/欧氏水平净空
+   （精确 corridor clearance 仍留给连续验证阶段）。
 6. **共塔候选使用塔顶作为服务原点假设**：只有在显式确认
    `service_origin_assumption = "tower_top_agl_0"` 时才确认 service origin；
    真实设备挂高仍需用户在 adoption 阶段确认，本阶段不推断挂高。
+7. **规划宿主 ≠ 物理安装确认**（FIX-TOWER-SEM-001）：全局策略只确认
+   `planning_host_use_confirmed`；`physical_mount_confirmed` 恒为 `false`、
+   `requires_site_survey` 恒为 `true`，`subsystem_mount_status` 恒为 `unverified`
+   （没有逐塔分系统安装证据，需现场勘察）。
 7. **P16 同步接入**：共塔 tier 同时进入 corridor site planner 的 tier 词典序，
    但其 what-if/目标语义完全未改。
 8. **点击优先级**：共塔候选与宿主铁塔坐标完全重合，click 优先给候选详情并高亮塔；

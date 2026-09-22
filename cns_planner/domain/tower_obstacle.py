@@ -27,7 +27,8 @@ TOWER_OBSTACLE_COLLECTION_ID = "tower_obstacle_profiles"
 EGM2008_ORTHOMETRIC = "egm2008_orthometric"
 
 #: 站址细分类型里的"楼面/屋顶"识别特征。命中即判定为 rooftop（不推断塔身是否落地）。
-ROOFTOP_MARKERS = ("楼面", "屋顶", "屋面", "rooftop", "roof")
+#: "楼顶"是真实报送数据里明确属于 rooftop 的写法（例如"楼顶景观塔"），因此显式纳入。
+ROOFTOP_MARKERS = ("楼面", "楼顶", "屋顶", "屋面", "rooftop", "roof")
 #: 明确的地面识别特征。只有明确写了"地面/落地"才判定 ground。
 GROUND_MARKERS = ("地面", "落地", "ground")
 
@@ -282,7 +283,10 @@ def build_tower_obstacle_profile(tower, *, terrain=None, building=None, policy=N
             "楼面塔必须在塔身高度之上叠加建筑高度；"
             f"建筑高度未解析（{building_reading['reason']}），绝不当作 0"
         )
-        limitations.append("楼面塔建筑高度未解析：塔顶高度保持 unresolved，不参与净空判定")
+        limitations.append(
+            "楼面塔建筑高度未解析：不生成具体 tower clearance floor，"
+            "相关空间保持 unknown 并在路径搜索中 fail-closed"
+        )
     else:
         tower_top = (
             terrain_reading["elevation_m"]
@@ -294,7 +298,10 @@ def build_tower_obstacle_profile(tower, *, terrain=None, building=None, policy=N
 
     status = "resolved" if tower_top is not None else "unresolved"
     if status == "unresolved":
-        limitations.append("unresolved 的塔不参与净空判定（fail-closed），也不会被当作无塔")
+        limitations.append(
+            "塔顶高度未解析时不生成具体 tower clearance floor；相关空间保持 unknown，"
+            "并在路径搜索中 fail-closed，不得作为已验证安全可通行区域"
+        )
 
     return {
         "schema_version": TOWER_OBSTACLE_SCHEMA_VERSION,

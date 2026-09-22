@@ -328,7 +328,8 @@ def build_layer_feasibility_mask(
                 tower_reason_code = "tower_height_unresolved"
                 tower_reason = (
                     f"该格有 {tower_count} 个真实铁塔，其中 {tower_unresolved} 个塔顶 EGM2008 "
-                    "正高未解析：塔净空未知，绝不当作无塔"
+                    "正高未解析：不生成具体 tower clearance floor，该格保持 unknown，"
+                    "在路径搜索中 fail-closed，不得作为已验证安全可通行区域"
                 )
             else:
                 tower_floor = tower_top + tower_clearance_vertical

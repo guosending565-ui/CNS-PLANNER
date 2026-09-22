@@ -300,28 +300,35 @@ test('FRONTEND: Step05 ships the Tower Colocation Policy form on the existing en
   assert.match(step05,/export function towerColocationPolicyForm/);
   const form=step05.slice(step05.indexOf('export function towerColocationPolicyForm'),
     step05.indexOf('function gapList('));
-  for(const field of ['towerColocationOrigin','towerColocationMount','towerColocationConfirmed',
+  for(const field of ['towerColocationOrigin','towerColocationPlanningHost',
     'towerColocationSource','saveTowerColocationPolicy']){
     assert.ok(form.includes(field),`共塔策略表单必须提供 ${field}`);
   }
-  // 四个正式字段：service_origin_assumption / device_mount_confirmed / confirmed / source
+  // 正式字段：service_origin_assumption / planning_host_use_confirmed / source
   assert.match(form,/policy\.service_origin_assumption/);
   assert.match(form,/tower_top_agl_0/);
-  assert.match(form,/policy\.device_mount_confirmed/);
-  assert.match(form,/policy\.confirmed/);
+  assert.match(form,/policy\.planning_host_use_confirmed/);
   assert.match(form,/policy\.source/);
-  // 复用现有端点：不新增第二套 API/contract（payload 写四个字段）
+  // FIX-TOWER-SEM-001：不得再用"该铁塔确实可以安装设备"这样的全局物理安装 checkbox
+  assert.doesNotMatch(form,/设备挂载已确认/);
+  assert.doesNotMatch(form,/该铁塔确实可以安装设备/);
+  assert.doesNotMatch(form,/towerColocationMount/);
+  assert.match(form,/允许真实铁塔作为共塔规划宿主候选（工程规划假设，不涉及物理安装确认）/);
+  assert.match(form,/物理安装条件：<b>未逐塔核实，需现场勘察<\/b>/);
+  assert.match(form,/physical_mount_confirmed=false · requires_site_survey=true/);
+  // 复用现有端点：不新增第二套 API/contract
   const bind=step05.slice(step05.indexOf('export function bind(c)'));
   assert.match(bind,/saveTowerColocationPolicy[\s\S]{0,600}\/api\/tower-obstacle-profiles\/evaluate/);
   assert.match(bind,/service_origin_assumption:c\.\$\('towerColocationOrigin'\)\.value\|\|null/);
-  assert.match(bind,/device_mount_confirmed:c\.\$\('towerColocationMount'\)\.checked/);
-  assert.match(bind,/confirmed:c\.\$\('towerColocationConfirmed'\)\.checked/);
+  assert.match(bind,/planning_host_use_confirmed:c\.\$\('towerColocationPlanningHost'\)\.checked/);
   assert.match(bind,/source:c\.\$\('towerColocationSource'\)\.value\.trim\(\)\|\|'user_configuration'/);
+  assert.doesNotMatch(bind,/device_mount_confirmed:/,'不得再提交全局物理安装确认');
   assert.doesNotMatch(bind,/\/api\/tower-colocation-policy/,'不得新增共塔策略端点');
   assert.doesNotMatch(bind,/\/api\/tower-obstacle-profiles\/policy/);
-  // 未确认仍然 ineligible
+  // 未确认仍然 ineligible；只有两个条件
   assert.match(form,/未启用（候选 ineligible）/);
-  assert.match(form,/三个条件（策略确认 \+ 设备挂载确认 \+ 服务原点假设）全部满足才会启用/);
+  assert.match(form,/两个条件（规划宿主允许 \+ 服务原点假设）满足才会进入规划/);
+  assert.match(form,/分系统是否真的装得上保持 unverified/);
   // 表单确实挂载在候选站址面板里
   assert.match(step05,/\+\s*towerColocationPolicyForm\(flow\)/);
 });
@@ -358,19 +365,27 @@ test('FRONTEND: both policy forms actually render the acceptance fields',async()
   const step03Module=await import('../cns_planner/web/js/workflow/step03_routes.js');
   const colocation=step05Module.towerColocationPolicyForm({
     tower_colocation_candidates:{count:3,policy:{
-      service_origin_assumption:'tower_top_agl_0',device_mount_confirmed:true,
-      confirmed:true,source:'user_configuration',enabled:true,status:'confirmed',
+      service_origin_assumption:'tower_top_agl_0',planning_host_use_confirmed:true,
+      physical_mount_confirmed:false,requires_site_survey:true,
+      planning_host_status:'eligible',subsystem_mount_status:'unverified',
+      source:'user_configuration',enabled:true,status:'confirmed',
     }},
     tower_obstacle_profiles:{resolved_count:200,unresolved_count:173},
   });
-  for(const id of ['towerColocationOrigin','towerColocationMount','towerColocationConfirmed',
+  for(const id of ['towerColocationOrigin','towerColocationPlanningHost',
     'towerColocationSource','saveTowerColocationPolicy']){
     assert.ok(colocation.includes(`id="${id}"`),`共塔策略表单缺少 ${id}`);
   }
+  // 物理安装确认没有 UI 入口（不存在这样的全局 checkbox）
+  assert.equal(colocation.includes('id="towerColocationMount"'),false);
+  assert.equal(colocation.includes('id="towerColocationConfirmed"'),false);
   assert.match(colocation,/value="tower_top_agl_0" selected/);
-  assert.match(colocation,/id="towerColocationMount" checked/);
-  assert.match(colocation,/id="towerColocationConfirmed" checked/);
-  assert.match(colocation,/当前已启用/);
+  assert.match(colocation,/id="towerColocationPlanningHost" checked/);
+  assert.match(colocation,/物理安装条件：<b>未逐塔核实，需现场勘察<\/b>/);
+  assert.match(colocation,/规划宿主/);
+  assert.match(colocation,/eligible/);
+  assert.match(colocation,/分系统安装证据 unverified/);
+  assert.match(colocation,/策略 已启用/);
   assert.match(colocation,/共塔候选 3 个 · 塔顶已解析 200 · 未解析 173/);
 
   const clearance=step03Module.towerClearancePanel({
@@ -397,6 +412,18 @@ test('FRONTEND: both policy forms actually render the acceptance fields',async()
   assert.match(filled,/id="towerVerticalClearance"[^>]*value="25"/);
   assert.match(filled,/id="towerHorizontalClearance"[^>]*value="80"/);
   assert.match(filled,/id="towerClearanceConfirmed" checked/);
+});
+
+test('FRONTEND: the Proposal surfaces the two-layer host/mount status',()=>{
+  // P11/P16 Proposal 行必须显式显示 planning_host_status / subsystem_mount_status /
+  // physical_mount_confirmed / requires_site_survey —— 不能只显示一个 eligible。
+  assert.match(step05,/分系统安装 '\+escapeHtml\(action\.subsystem_mount_status\|\|'unverified'\)/);
+  assert.match(step05,/物理安装'\+\(action\.physical_mount_confirmed===true\?'已确认':'未核实'\)/);
+  assert.match(step05,/action\.requires_site_survey\?'（需现场勘察）':''/);
+  assert.match(step05,/规划宿主 '\+escapeHtml\(action\.planning_host_status\|\|'not_applicable'\)/);
+  // 共塔候选列表也不再声称"设备挂载已确认"
+  assert.doesNotMatch(step05,/设备挂载'\+\(host\.device_mount_confirmed/);
+  assert.match(step05,/物理安装 未核实（需现场勘察） · 分系统证据/);
 });
 
 test('FRONTEND: the Step05 reuse-tier description matches the real code order',()=>{

@@ -31,6 +31,15 @@ class CandidateAction(TypedDict, total=False):
     #: 共塔候选的宿主溯源（``host_type`` / ``host_tower_id`` / ...）；其它站点为 None。
     host: dict[str, Any] | None
     planning_origin: dict[str, Any] | None
+    #: 规划层宿主状态（``eligible`` / ``not_confirmed``）；非共塔站点为 None。
+    planning_host_status: str | None
+    #: 分系统物理安装证据状态（``unverified`` / ``declared_compatible`` /
+    #: ``declared_not_compatible``）。``unverified`` 表示**没有证据**，不是"都能装"。
+    subsystem_mount_status: str | None
+    #: 物理安装是否已确认；共塔候选恒为 ``False``（除非有逐塔现场调查数据）。
+    physical_mount_confirmed: bool | None
+    #: 是否需要现场勘察；共塔候选恒为 ``True``。
+    requires_site_survey: bool | None
     source: str
     confirmed: bool
     eligibility: dict[str, Any]

@@ -35,51 +35,62 @@ export function towerColocationList(collection){
   if(!items.length)return '<div class="empty-note">尚无共塔候选（先导入真实铁塔，再执行"铁塔派生"）</div>';
   const policy=collection.policy||{};
   const rows=items.slice(0,20).map(item=>{
-    const host=(item.metadata||{}).host||{},profile=(item.metadata||{}).obstacle_profile||{};
+    const host=(item.metadata||{}).host||{},mount=(item.metadata||{}).planning_host||{};
+    const profile=(item.metadata||{}).obstacle_profile||{};
     const top=profile.tower_top_orthometric_m;
     return '<div class="list-row"><span><b>共塔候选</b> '+escapeHtml(host.host_tower_id||item.site_id)
       +'<br><small>Tower '+escapeHtml(host.host_tower_name||'—')+' · '+escapeHtml(host.host_site_type||'—')
-      +' · 设备挂载'+(host.device_mount_confirmed?'已确认':'未确认')+'</small>'
+      +' · 规划宿主'+(host.planning_host_use_confirmed?'已允许':'未确认')+'</small>'
+      +'<br><small>物理安装 未核实（需现场勘察） · 分系统证据 '+escapeHtml(mount.subsystem_mount_status||'unverified')+'</small>'
       +'<br><small>塔顶 '+(typeof top==='number'?top.toFixed(1)+' m EGM2008':'未解析')
       +' · 位置'+(host.site_position_available?'可用':'未知')+'</small></span>'
       +'<small>'+escapeHtml(reuseClassLabel((item.planning_profile||{}).reuse_class))+'</small></div>';
   }).join('');
-  return '<div class="parameter-note">共塔候选 = 真实铁塔作为<b>共塔宿主</b>的规划候选；它们不是已有 CNS 设备，也不带任何设备性能参数。'
-    +'策略状态：'+escapeHtml(policy.status||'pending_confirmation')
-    +' · 优先共塔（prefer，不是 force）：塔不能满足缺口时仍会生成普通候选站。</div>'
+  return '<div class="parameter-note">共塔候选 = 真实铁塔作为<b>共塔规划宿主</b>的工程候选；它们不是已有 CNS 设备，也不带任何设备性能参数。'
+    +'<br>规划层：'+(policy.planning_host_status||'not_confirmed')
+    +' · 物理实施层：未核实，需现场勘察（requires_site_survey='+String(policy.requires_site_survey!==false)+'）'
+    +'<br>优先共塔（prefer，不是 force）：塔不能满足缺口时仍会生成普通候选站。</div>'
     +rows+(items.length>20?'<div class="empty-note">另有 '+(items.length-20)+' 项</div>':'');
 }
 
 /**
  * Tower Colocation Policy 表单（Step05「操作 → 候选站址」）。
  *
+ * **两层语义，必须分开**：
+ *
+ * * 规划层 —— `planning_host_use_confirmed`：允许 P11/P16 在**工程规划方案**里把真实铁塔
+ *   作为 Preferred Host Site 参与 what-if 比较；
+ * * 物理实施层 —— `physical_mount_confirmed`（恒 false）/ `requires_site_survey`（恒 true）：
+ *   本阶段没有逐塔现场调查数据，因此**绝不**把 373 个铁塔写成"该铁塔确实可以安装设备"。
+ *
  * 只写既有的 `tower_colocation_policy` 字段，并复用**现有**端点
  * `POST /api/tower-obstacle-profiles/evaluate`（payload 携带 `tower_colocation_policy`）：
  * 不新增第二套 API/contract。
- *
- * 未确认（或未确认设备挂载、或未选服务原点假设）时策略 `enabled=false`，
- * 共塔候选保持 **ineligible**：不会被规划选中，但普通候选站/新建候选照常补盲。
  */
 export function towerColocationPolicyForm(flow){
   const colocation=flow.tower_colocation_candidates||{},policy=colocation.policy||{};
   const profiles=flow.tower_obstacle_profiles||{};
   const assumption=policy.service_origin_assumption||'';
+  const planningHost=policy.planning_host_use_confirmed===true;
   return '<div class="form-grid">'
     +'<label>服务原点假设<select id="towerColocationOrigin">'
     +'<option value="" '+(assumption===''?'selected':'')+'>未假设（不把塔顶当服务原点）</option>'
     +'<option value="tower_top_agl_0" '+(assumption==='tower_top_agl_0'?'selected':'')+'>塔顶 EGM2008 · 挂高 0（显式假设）</option>'
     +'</select></label></div>'
-    +'<label class="check-row"><input type="checkbox" id="towerColocationMount" '+(policy.device_mount_confirmed?'checked':'')+'>设备挂载已确认（该铁塔确实可以安装设备）</label>'
-    +'<label class="check-row"><input type="checkbox" id="towerColocationConfirmed" '+(policy.confirmed?'checked':'')+'>共塔布设策略已确认</label>'
+    +'<label class="check-row"><input type="checkbox" id="towerColocationPlanningHost" '+(planningHost?'checked':'')+'>允许真实铁塔作为共塔规划宿主候选（工程规划假设，不涉及物理安装确认）</label>'
+    +'<div class="flow-summary">物理安装条件：<b>未逐塔核实，需现场勘察</b>'
+    +'（physical_mount_confirmed=false · requires_site_survey=true）</div>'
     +'<label>策略来源<input class="panel-input" id="towerColocationSource" value="'+escapeHtml(policy.source||'')+'"></label>'
     +'<div class="button-row"><button class="secondary" id="saveTowerColocationPolicy">保存策略并派生候选</button>'
     +'<button class="secondary" id="deriveTowerColocation">仅重算塔顶事实</button></div>'
-    +'<div class="flow-summary">策略 '+statusBadge(policy.status||'pending_confirmation')
-    +' · 当前'+(policy.enabled===true?'已启用':'未启用（候选 ineligible）')
-    +' · 共塔候选 '+(colocation.count||0)+' 个 · 塔顶已解析 '+(profiles.resolved_count||0)
+    +'<div class="flow-summary">规划宿主 '+statusBadge(policy.planning_host_status||'not_confirmed')
+    +' · 策略 '+(policy.enabled===true?'已启用':'未启用（候选 ineligible）')
+    +' · 分系统安装证据 '+escapeHtml(policy.subsystem_mount_status||'unverified')
+    +'<br>共塔候选 '+(colocation.count||0)+' 个 · 塔顶已解析 '+(profiles.resolved_count||0)
     +' · 未解析 '+(profiles.unresolved_count||0)
-    +'<br>三个条件（策略确认 + 设备挂载确认 + 服务原点假设）全部满足才会启用；'
-    +'设备型号与性能参数仍只能来自 device catalog / 用户确认，绝不从铁塔数据推断。</div>';
+    +'<br>两个条件（规划宿主允许 + 服务原点假设）满足才会进入规划；'
+    +'设备型号与性能参数仍只能来自 device catalog / 用户确认，绝不从铁塔数据推断；'
+    +'分系统是否真的装得上保持 unverified，需现场勘察。</div>';
 }
 
 function gapList(analysis){
@@ -122,8 +133,8 @@ function gapV2List(result){
 function sitePlanSummary(result){
   if(!result||result.status==='not_calculated')return '<div class="empty-note">尚未运行 Reuse-first CNS Site Planner</div>';
   const impacts=new Map((result.candidate_impacts||[]).map(item=>[item.action_id,item]));
-  const candidates=(result.candidate_actions||[]).slice(0,20).map(action=>{const impact=impacts.get(action.action_id)||{};const host=action.host||{};return '<div class="list-row"><span><b>'+escapeHtml(action.action_id)+'</b>'+(action.reuse_class==='tower_colocation_host'?' <b>共塔候选</b>':'')+'<br><small>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.eligibility?.status||'unknown')+(host.host_tower_id?' · Tower '+escapeHtml(host.host_tower_id):'')+'</small></span><small>what-if gain '+formatMetric(impact.planning_gap_reduction_m,'m')+'</small></div>';}).join('');
-  const selected=(result.selected_actions||[]).map(action=>'<div class="coverage-card"><b>'+escapeHtml(action.action_id)+'</b><span>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.subsystem)+' · marginal '+formatMetric(action.marginal_planning_gap_reduction_m,'m')+'</span><small>'+escapeHtml(action.score_semantics||'action_count_proxy')+'</small></div>').join('');
+  const candidates=(result.candidate_actions||[]).slice(0,20).map(action=>{const impact=impacts.get(action.action_id)||{};const host=action.host||{};return '<div class="list-row"><span><b>'+escapeHtml(action.action_id)+'</b>'+(action.reuse_class==='tower_colocation_host'?' <b>共塔候选</b>':'')+'<br><small>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.eligibility?.status||'unknown')+(host.host_tower_id?' · Tower '+escapeHtml(host.host_tower_id):'')+' · 分系统安装 '+escapeHtml(action.subsystem_mount_status||'unverified')+(action.requires_site_survey?'（需现场勘察）':'')+'</small></span><small>what-if gain '+formatMetric(impact.planning_gap_reduction_m,'m')+'</small></div>';}).join('');
+  const selected=(result.selected_actions||[]).map(action=>'<div class="coverage-card"><b>'+escapeHtml(action.action_id)+'</b><span>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.subsystem)+' · marginal '+formatMetric(action.marginal_planning_gap_reduction_m,'m')+'</span><span>规划宿主 '+escapeHtml(action.planning_host_status||'not_applicable')+' · 分系统安装 '+escapeHtml(action.subsystem_mount_status||'unverified')+' · 物理安装'+(action.physical_mount_confirmed===true?'已确认':'未核实')+(action.requires_site_survey?'（需现场勘察）':'')+'</span><small>'+escapeHtml(action.score_semantics||'action_count_proxy')+'</small></div>').join('');
   return '<div class="coverage-card"><b>'+escapeHtml(result.status||'unknown')+' · Proposal Only</b><span>target '+formatMetric(result.target_planning_gap_length_m,'m')+' · projected resolved '+formatMetric(result.resolved_planning_gap_length_m,'m')+' · remaining '+formatMetric(result.remaining_planning_gap_length_m,'m')+'</span><span>已有站点 '+(result.existing_reuse_count||0)+' · 共享站址 '+(result.shared_site_reuse_count||0)+' · 共塔候选 '+((result.reuse_counts||{}).tower_colocation_host||0)+' · 普通候选 '+(result.candidate_site_count||0)+' · 新建候选 '+(result.new_build_count||0)+'</span><small>'+escapeHtml(result.cost_summary?.cost_semantics||'action_count_proxy_no_currency')+'；requires P12 closed-loop validation</small></div><h4>CandidateAction what-if</h4>'+candidates+'<h4>Selected proposal</h4>'+(selected||'<div class="empty-note">没有产生正 confirmed planning-gap reduction 的 eligible action</div>');
 }
 
@@ -423,11 +434,11 @@ export function bind(c){
   // 真实铁塔 → 共塔宿主候选 + 塔顶障碍物事实（一次显式动作；不生成任何设备参数）。
   c.actionButton('deriveTowerColocation',()=>c.resourceAction('/api/tower-obstacle-profiles/evaluate',{}));
   // 策略确认：复用同一个端点，payload 携带 tower_colocation_policy（不新增端点/契约）。
+  // 这里**只**确认规划层（planning_host_use_confirmed）；物理安装层没有可确认的输入。
   if(c.$('saveTowerColocationPolicy'))c.actionButton('saveTowerColocationPolicy',()=>c.resourceAction('/api/tower-obstacle-profiles/evaluate',{
     tower_colocation_policy:{
       service_origin_assumption:c.$('towerColocationOrigin').value||null,
-      device_mount_confirmed:c.$('towerColocationMount').checked,
-      confirmed:c.$('towerColocationConfirmed').checked,
+      planning_host_use_confirmed:c.$('towerColocationPlanningHost').checked,
       source:c.$('towerColocationSource').value.trim()||'user_configuration',
     },
   }));

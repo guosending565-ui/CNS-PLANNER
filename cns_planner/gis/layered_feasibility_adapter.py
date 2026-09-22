@@ -280,6 +280,18 @@ class LayeredFeasibilityAdapter:
             "read_mode": "single_read_only_window_per_run_read_as_array_no_resample",
             "scope": "coarse_strategic_vertical_envelope",
             "not_exact_footprint": True,
+            # 水平净空必须按域分开说明（不能再用一个笼统的 not_horizontal_clearance 覆盖全 adapter）：
+            #   * 建筑：这里不建模，留给 continuous validation；
+            #   * 铁塔：**已真实使用** tower_clearance_policy.tower_horizontal_clearance_m，
+            #     但它只是"以塔点为中心、按显式 policy 扩展的 cell 级 bbox 保守包络"，
+            #     不是精确圆形/欧氏水平净空。
+            "building_horizontal_clearance": "not_modeled_here_deferred_to_continuous_validation",
+            "tower_horizontal_clearance": "explicit_policy_bbox_envelope",
+            "tower_horizontal_clearance_envelope": (
+                "coarse_bbox_envelope_not_exact_radial_clearance"
+            ),
+            "tower_horizontal_clearance_is_exact_radial": False,
+            # 整体仍**不是**精确水平净空结论（保留既有键，含义收窄为"非精确"）。
             "not_horizontal_clearance": True,
         }
 
