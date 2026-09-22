@@ -372,6 +372,16 @@ class ApiRouter:
         }
         if path in resource_actions:
             return Response(resource_actions[path]())
+        if path == "/api/workspace/grid/population/remap":
+            # Population-only remap（BUG-POP-001）：在 QGIS 线程上读取**当前** grid、
+            # **当前**人口源与**当前** NoData 语义确认，只执行 PopulationGridService.map。
+            # 不重算 terrain / buildings / airspace，不重新生成网格，也不动 nodes / scenario_routes。
+            # 读取与写入是一次用户动作 → 用 deferred_save 折叠成**一次**提交（无中间态）。
+            with workflow.deferred_save():
+                result = context.qgis.call(
+                    lambda: data.population_grid_attribute(workflow.grid_snapshot())
+                )
+                return Response(workflow.apply_population_grid_attribute(result))
         if path == "/api/source-audits/verify":
             role = str(payload.get("role") or "")
             path_role = "basemap" if role == "airspace" else role

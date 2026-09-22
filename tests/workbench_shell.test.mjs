@@ -1582,7 +1582,12 @@ test('step 02 mapping cards transcribe the existing flow state without recomputi
     const segment=findByDataset(root,'segName','env-res-mapping');
     assert.ok(findAll(segment,'.empty-note').some(node=>node.textContent.includes('尚未保存工作区')),'an unsaved workspace explains why there is no mapping');
     const values=findAll(segment,'.metric-value').map(node=>node.textContent);
-    assert.deepEqual(values,['未计算','未计算','未计算','未计算','未计算','未计算'],'every unmapped layer stays not_calculated');
+    // BUG-POP-001 追加 Population NoData 语义两张卡：未确认时如实显示 not_configured / 未提供，
+    // 绝不把"没有确认"渲染成已确认，也不影响其余六张映射卡的状态词。
+    assert.deepEqual(values,['未计算','未计算','未计算','未计算','未计算','未计算','not_configured','未提供'],'every unmapped layer stays not_calculated and the unconfirmed NoData semantics is reported as-is');
+    const labels=findAll(segment,'.metric-label').map(node=>node.textContent);
+    assert.ok(labels.includes('Population NoData 语义'),'the NoData semantics card lives beside the population mapping card');
+    assert.ok(labels.includes('来源与证据'),'source / evidence are visibly reported even when unset');
   });
 });
 
@@ -1709,10 +1714,11 @@ test('step 02 keeps the workspace, grid, risk V2 and altitude contracts',()=>{
     assert.deepEqual(missing,[],`step 02 bind() queries missing controls: ${missing.join(', ')}`);
     const registered=[];
     const c={$:id=>document.getElementById(id),actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
-      clearWorkspace:()=>{},saveWorkspace:()=>{},
+      clearWorkspace:()=>{},saveWorkspace:()=>{},remapPopulation:()=>{},
       resourceAction:()=>{},panelError:()=>{},setGridTheme:()=>{},setGridOutline:()=>{}};
     bindStep2(c);
-    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','saveAltitudeLayer'],'bind() registers exactly the existing actions');
+    // 本轮新增三项：保存 / 撤回 Population NoData 语义，以及 population-only remap。
+    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','savePopulationNodata','revokePopulationNodata','remapPopulation','saveAltitudeLayer'],'bind() registers exactly the existing actions');
     for(const id of registered)assert.ok(document.getElementById(id).onclick,`#${id} keeps its handler`);
   });
 });

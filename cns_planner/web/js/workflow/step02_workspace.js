@@ -17,7 +17,10 @@
 //  - 专题浏览只切地图配色（gridDisplay.outline / theme）：不自动改 zoom、图层，
 //    也不改任何业务状态；专题清单仍由 riskV2ThemeOptions() 提供；
 //  - 垂向基准与 nominal 高度只能显式填写：不猜 datum、不提供任何默认真实高度，
-//    缺 nominal 的高度层保持 pending_confirmation（绝不取上下界中值）。
+//    缺 nominal 的高度层保持 pending_confirmation（绝不取上下界中值）；
+//  - Population NoData Semantics 只是把后端已存的**显式工程确认**投影出来：mode 只有
+//    nodata_is_zero_population 一种取值，且必须 source + evidence + confirmed 齐全才可保存；
+//    未确认时如实显示未配置，绝不推断确认，也绝不把零人口说成安全/适飞结论。
 // =========================================================
 import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint,wbCard,wbDisclosure} from './common.js';
 import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,riskV2ThemeOptions} from './risk_framework_v2.js';
@@ -58,22 +61,51 @@ function percentText(ratio){
 /**
  * 人口映射覆盖统计。优先读后端统一载体 ``population_mapping``；旧快照没有该键时，
  * 只用既有的 full/partial/missing/outside 计数做**展示换算**（不重算任何业务数值）。
+ *
+ * 统一载体存在时六类计数**必须可闭合**：
+ * ``full + partial + nodata_only + confirmed_zero + missing + outside === total``，
+ * 且 ``covered === full + partial + confirmed_zero``、``unresolved === total - covered``。
+ * ``closed`` / ``closure`` 就是为了让界面与测试都能直接验证这条恒等式。
  */
-function populationCoverage(population){
+export function populationCoverage(population){
   const mapping=population?.population_mapping;
   if(mapping){
+    const full=Number(mapping.full_cells)||0,partial=Number(mapping.partial_cells)||0,
+      nodataOnly=Number(mapping.nodata_only_cells)||0,
+      confirmedZero=Number(mapping.confirmed_zero_cells)||0,
+      missing=Number(mapping.missing_cells)||0,outside=Number(mapping.outside_cells)||0;
+    const total=Number(mapping.total_cells)||0,covered=Number(mapping.covered_cells)||0,
+      unresolved=Number(mapping.unresolved_cells)||0;
+    const closure=full+partial+nodataOnly+confirmedZero+missing+outside;
     return {
-      total:Number(mapping.total_cells)||0,covered:Number(mapping.covered_cells)||0,
-      unresolved:Number(mapping.unresolved_cells)||0,
-      full:Number(mapping.full_cells)||0,partial:Number(mapping.partial_cells)||0,
-      missing:Number(mapping.missing_cells)||0,outside:Number(mapping.outside_cells)||0,
-      ratio:mapping.coverage_ratio
+      unified:true,total,covered,unresolved,full,partial,nodataOnly,confirmedZero,missing,outside,
+      ratio:mapping.coverage_ratio,closure,
+      closed:closure===total&&covered===full+partial+confirmedZero&&unresolved===total-covered
     };
   }
   const full=Number(population?.full_count)||0,partial=Number(population?.partial_count)||0,
     missing=Number(population?.missing_count)||0,outside=Number(population?.outside_count)||0;
   const total=full+partial+missing+outside,covered=full+partial;
-  return {total,covered,unresolved:total-covered,full,partial,missing,outside,ratio:total?covered/total:null};
+  // 旧快照无法把 nodata_only / confirmed_zero 从 missing 里分出来：保持 null 而不是伪造 0。
+  return {
+    unified:false,total,covered,unresolved:total-covered,full,partial,
+    nodataOnly:null,confirmedZero:null,missing,outside,
+    ratio:total?covered/total:null,closure:total,
+    closed:covered===full+partial
+  };
+}
+
+/** 统一载体下的人口映射计数明细行（数字可闭合；旧快照只显示它真正拥有的四类）。 */
+export function populationCoverageNote(counts){
+  const head='已覆盖 '+counts.covered+' / '+counts.total+' 格（'+percentText(counts.ratio)+'）';
+  if(!counts.unified){
+    return head+' · full '+counts.full+' / partial '+counts.partial
+      +' / missing '+counts.missing+' / outside '+counts.outside;
+  }
+  return head+' · full '+counts.full+' / partial '+counts.partial
+    +' / nodata_only '+counts.nodataOnly+' / confirmed_zero '+counts.confirmedZero
+    +' / missing '+counts.missing+' / outside '+counts.outside
+    +' · 未判定 '+counts.unresolved;
 }
 
 /**
@@ -100,10 +132,7 @@ export function mappingStatusCards(flow){
   const populationCounts=populationCoverage(population);
   const buildingCard=buildingMappingCard(buildings);
   return '<div class="env-metric-cards">'+[
-    wbCard('人口映射',populationMappingStatus(population),
-      '已覆盖 '+populationCounts.covered+' / '+populationCounts.total+' 格（'+percentText(populationCounts.ratio)+'）'
-      +' · full '+populationCounts.full+' / partial '+populationCounts.partial
-      +' / missing '+populationCounts.missing+' / outside '+populationCounts.outside),
+    wbCard('人口映射',populationMappingStatus(population),populationCoverageNote(populationCounts)),
     wbCard('地形 DEM 映射',statusText(terrain.status||'not_calculated'),
       '已处理 '+(terrain.count||0)+' 格（有效 '+(terrain.covered_count||0)+' 格）'),
     wbCard('低空空域映射',statusText(airspace.status||'not_calculated'),
@@ -156,6 +185,127 @@ export function buildingEnvironmentSummary(flow){
     +' · GBA buildings：'+escapeHtml(statusText(health.buildings?.status||'missing_data'))
     +' · L8 grid：'+escapeHtml(statusText(health.building_grid?.status||'missing_data'))
     +'<br>建筑网格映射：'+escapeHtml(card.value)+' · '+escapeHtml(card.note)+levelNote+'</div>';
+}
+
+// ---- 结果 · 数据映射 · Population NoData Semantics -----------------------------
+
+/**
+ * 唯一被允许的确认模式：与后端 ``domain/population_nodata.py`` 的
+ * ``MODE_NODATA_IS_ZERO_POPULATION`` **逐字一致**。任何其他取值都视为未确认。
+ */
+export const POPULATION_NODATA_MODE='nodata_is_zero_population';
+
+/**
+ * Population NoData 语义的只读投影：status / mode / source / evidence / confirmed
+ * 全部来自 ``flow.population_nodata_policy``（后端 state），**不推断、不伪造确认**。
+ */
+export function populationNodataModel(flow){
+  const policy=flow?.population_nodata_policy||{};
+  const population=flow?.grid_attributes?.population||{};
+  const evidence=policy.evidence&&typeof policy.evidence==='object'&&!Array.isArray(policy.evidence)
+    ?policy.evidence:null;
+  return {
+    status:policy.status||'not_configured',
+    statusReason:policy.status_reason||null,
+    mode:policy.mode||null,
+    source:policy.source||null,
+    sourceId:policy.source_id||null,
+    evidence,evidenceKeys:evidence?Object.keys(evidence):[],
+    confirmed:policy.confirmed===true,
+    confirmedAt:policy.confirmed_at||null,
+    statement:policy.statement||'',
+    neverConverts:Array.isArray(policy.never_converts)?policy.never_converts:[],
+    semantics:policy.semantics||{},
+    mappingStatus:population.status||'not_calculated',
+    mappingStale:population.status==='stale',
+    mappingCounts:populationCoverage(population)
+  };
+}
+
+/**
+ * 保存前的显式校验（与后端 ``normalize_population_nodata_policy`` 的接受条件一致）：
+ * mode 只能是 ``nodata_is_zero_population``，且必须同时具备 source + 非空 evidence + confirmed。
+ * 任一缺失就抛出可读错误，绝不静默降级成"已确认"。
+ */
+export function populationNodataPayload({mode,source,sourceId,evidence,confirmed}={}){
+  const wanted=String(mode||'').trim();
+  const owner=String(source||'').trim();
+  const ownerId=String(sourceId||'').trim();
+  const raw=evidence===null||evidence===undefined?'':String(evidence).trim();
+  if(wanted!==POPULATION_NODATA_MODE)throw new Error('mode 只允许 '+POPULATION_NODATA_MODE);
+  if(!owner)throw new Error('必须显式填写 source（确认人或工程依据来源）');
+  if(confirmed!==true)throw new Error('必须显式勾选工程确认才能保存');
+  let parsed=null;
+  if(raw){
+    try{parsed=JSON.parse(raw);}catch(_){throw new Error('evidence 必须是合法 JSON');}
+  }
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||!Object.keys(parsed).length){
+    throw new Error('evidence 必须是至少含一个字段的 JSON 对象');
+  }
+  return {population_nodata_policy:{
+    mode:POPULATION_NODATA_MODE,role:'population',source:owner,
+    source_id:ownerId||null,evidence:parsed,confirmed:true
+  }};
+}
+
+/**
+ * Population NoData Semantics 面板（Step02 → 结果 → 数据映射，紧邻人口映射卡）。
+ *
+ * 明示三条边界：只作用于来源 extent 之内、outside_extent 永远是 unknown、
+ * 零人口不是安全/适飞结论。policy 变化后人口映射会 stale，这里给出"仅重算人口映射"入口。
+ */
+export function populationNodataPanel(flow){
+  const model=populationNodataModel(flow);
+  const evidenceText=model.evidence?JSON.stringify(model.evidence):'未提供';
+  // source / source_id / evidence 键名 / mode 都可能由用户填写：一律先转义再拼 HTML。
+  const sourceText=escapeHtml([model.source,model.sourceId].filter(Boolean).join(' · '))||'未提供';
+  const evidenceKeys=model.evidenceKeys.map(key=>escapeHtml(key)).join('、');
+  const cards=[
+    wbCard('Population NoData 语义',escapeHtml(statusText(model.status)),
+      'mode '+escapeHtml(model.mode||'未设置')+' · confirmed '+(model.confirmed?'是':'否')
+      +' · role population'),
+    wbCard('来源与证据',model.source?'已记录':'未提供',
+      'source '+sourceText+' · evidence '+(evidenceKeys||'未提供')),
+  ];
+  const staleNotice=model.mappingStale
+    ?'<div class="parameter-note">NoData 语义已变化：人口映射当前为 <b>stale</b>。'
+      +'点击“仅重算人口映射”才会用当前来源与当前语义重新映射（不会自动重算，也不会重算其它映射）。</div>'
+    :'';
+  const hasGrid=flow?.grid?.status==='passed';
+  return '<div class="parameter-note">Population NoData Semantics 是<b>显式工程确认</b>：只有确认后，'
+    +'<b>来源 extent 之内</b>、全部像元均为 NoData 的格子才被记录为<b>已知的 0 人口暴露</b>；'
+    +'未确认时这些格子保持 missing_data（missing_data ≠ zero）。</div>'
+    +'<div class="env-metric-cards">'+cards.join('')+'</div>'
+    +staleNotice
+    +'<div class="form-grid">'
+    +'<label>mode<select id="populationNodataMode"><option value="">请选择（不猜）</option>'
+    +'<option value="'+POPULATION_NODATA_MODE+'" '+(model.mode===POPULATION_NODATA_MODE?'selected':'')+'>'
+    +POPULATION_NODATA_MODE+'</option></select></label>'
+    +'<label>source（确认人 / 工程依据来源，必填）<input class="panel-input" id="populationNodataSource" value="'
+    +escapeHtml(model.source||'')+'" placeholder="必填"></label>'
+    +'<label>source id（可空）<input class="panel-input" id="populationNodataSourceId" value="'
+    +escapeHtml(model.sourceId||'')+'"></label>'
+    +'</div>'
+    +'<label>evidence（JSON 对象，必须非空）<textarea class="panel-input" id="populationNodataEvidence" rows="3" '
+    +'placeholder=\'{"product":"WorldPop Population Counts R2025A","note":"海上/无人区像元为 NoData"}\'>'
+    +escapeHtml(model.evidence?JSON.stringify(model.evidence,null,1):'')+'</textarea></label>'
+    +'<label class="check-row"><input type="checkbox" id="populationNodataConfirmed" '
+    +(model.confirmed?'checked':'')+'>该来源的 NoData 表示零人口，已由工程依据确认</label>'
+    +'<div class="button-row"><button class="secondary" id="savePopulationNodata">保存 NoData 语义</button>'
+    +'<button class="secondary" id="revokePopulationNodata">撤回确认</button></div>'
+    +'<button class="secondary full" id="remapPopulation" '+(hasGrid?'':'disabled')+'>仅重算人口映射</button>'
+    +'<div class="parameter-note">边界：只作用于人口来源 extent <b>之内</b>的 NoData；'
+    +'<b>outside_extent 永远是 unknown</b>，绝不转换，也不填补部分覆盖像元。'
+    +'<b>零人口不是安全结论、也不是适飞结论</b>：该确认不改变任何算法、阈值、验证或采用语义，'
+    +'并且可以随时撤回（撤回后行为与确认前完全一致）。'
+    +'确认后若人口源或语义变化，人口映射会按既有 invalidation 变为 stale。</div>'
+    +wbDisclosure('当前确认原文（statement / evidence）',
+      '<div class="flow-summary">status '+escapeHtml(model.status)
+      +' · status_reason '+escapeHtml(model.statusReason||'—')
+      +' · confirmed_at '+escapeHtml(model.confirmedAt||'—')
+      +' · never_converts '+escapeHtml(model.neverConverts.join('、')||'—')
+      +'<br>statement：'+escapeHtml(model.statement||'—')
+      +'<br>evidence：'+escapeHtml(evidenceText)+'</div>');
 }
 
 // ---- 操作 · 工作区范围 -------------------------------------------------------
@@ -291,7 +441,7 @@ export function render({flow,draftWorkspace,gridDisplay,populationDisplayLabel,f
       ['env-op-grid','标准网格与建筑环境',wbBlock('标准网格与建筑环境',wbSegHint(OPERATE,'env-op-grid')+gridEnvironmentPanel(flow))]
     ]})
     +wbPanel('result','',{segments:[
-      ['env-res-mapping','数据映射',wbBlock('数据映射',wbSegHint(RESULT,'env-res-mapping')+workspaceMappingSummary(flow)+mappingStatusCards(flow))],
+      ['env-res-mapping','数据映射',wbBlock('数据映射',wbSegHint(RESULT,'env-res-mapping')+workspaceMappingSummary(flow)+mappingStatusCards(flow)+populationNodataPanel(flow))],
       ['env-res-theme','专题浏览',wbBlock('专题浏览',wbSegHint(RESULT,'env-res-theme')+themePanel(gridDisplay,attributes,populationDisplayLabel))]
     ]})
     +wbPanel('advanced','',{segments:[
@@ -307,6 +457,19 @@ export function bind(c){
   c.$('gridOutlineToggle').onchange=e=>c.setGridOutline(e.target.checked);document.querySelectorAll('[name="gridThemeMode"]').forEach(input=>input.onchange=e=>e.target.checked&&c.setGridTheme(e.target.value));
   c.$('drawWorkspace').onclick=c.startWorkspace;c.actionButton('clearWorkspace',c.clearWorkspace);c.actionButton('saveWorkspace',c.saveWorkspace);if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(3);
   if(c.$('evaluateRiskV2'))c.actionButton('evaluateRiskV2',()=>c.resourceAction('/api/grid-risk-v2/evaluate',{}));
+  // Population NoData 语义：保存即显式工程确认；撤回回到"未确认"（绝不补 0）。
+  c.actionButton('savePopulationNodata',()=>c.resourceAction('/api/population-nodata-policy',populationNodataPayload({
+    mode:c.$('populationNodataMode')?.value,
+    source:c.$('populationNodataSource')?.value,
+    sourceId:c.$('populationNodataSourceId')?.value,
+    evidence:c.$('populationNodataEvidence')?.value,
+    confirmed:c.$('populationNodataConfirmed')?.checked===true
+  })));
+  c.actionButton('revokePopulationNodata',()=>c.resourceAction('/api/population-nodata-policy',{
+    population_nodata_policy:{confirmed:false}
+  }));
+  // 人口映射 stale 后的唯一出口：只重算人口映射（不重算其它映射、不重新生成网格）。
+  if(c.$('remapPopulation'))c.actionButton('remapPopulation',()=>c.remapPopulation());
   c.actionButton('saveAltitudeLayer',()=>{const optionalNumber=id=>{const field=c.$(id);const value=field?String(field.value??'').trim():'';return value===''?null:Number(value);};const layerId=c.$('altitudeLayerId').value.trim();return c.resourceAction('/api/spatial-3d/altitude-layer',{altitude_layer_id:layerId,name:c.$('altitudeLayerName').value.trim()||layerId,nominal_altitude_m:optionalNumber('altitudeNominal'),lower_altitude_m:optionalNumber('altitudeLower'),upper_altitude_m:optionalNumber('altitudeUpper'),vertical_reference:c.$('altitudeReference').value,source:c.$('altitudeLayerSource').value.trim(),confirmed:c.$('altitudeLayerConfirmed').checked});});
   document.querySelectorAll('[data-delete-altitude-layer]').forEach(button=>button.onclick=async()=>{try{button.disabled=true;await c.resourceAction('/api/spatial-3d/altitude-layer/delete',{altitude_layer_id:button.dataset.deleteAltitudeLayer});}catch(error){c.panelError(error.message);}finally{if(document.body.contains(button))button.disabled=false;}});
 }

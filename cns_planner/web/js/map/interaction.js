@@ -7,11 +7,14 @@ export function bindMapInteraction(options){
   },{passive:false});
   canvas.addEventListener('pointerdown',event=>{
     const view=getView();if(!view)return;
-    if(getMode()==='workspace'){
+    const mode=getMode();
+    if(mode==='workspace'){
       drawStart=eventLonLat(event);onDraft([drawStart[0],drawStart[1],drawStart[0],drawStart[1]]);
       canvas.setPointerCapture(event.pointerId);return;
     }
-    if(getMode()==='node')return;
+    // node：单击加点；measure：测距（单击加点 / 双击完成）由 click / dblclick 处理。
+    // 两者都绝不拖拽平移、不画工作区框、不改任何业务状态。
+    if(mode==='node'||mode==='measure')return;
     drag={x:event.clientX,y:event.clientY,cx:view.x,cy:view.y};canvas.setPointerCapture(event.pointerId);map.classList.add('dragging');onPanStart();
   });
   canvas.addEventListener('pointermove',event=>{

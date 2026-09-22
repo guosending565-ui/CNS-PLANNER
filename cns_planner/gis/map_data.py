@@ -156,13 +156,29 @@ class MapData:
             raise ValueError(self.error or "未加载地图")
         return workspace_health(self.loaded, bbox)
 
+    def population_grid_attribute(self, grid, nodata_semantics=None):
+        """当前人口源 + 当前 NoData 语义确认 → 人口网格属性（**唯一**的人口映射入口）。
+
+        ``grid_attributes()`` 与 ``POST /api/workspace/grid/population/remap`` 都调用它，
+        因此"全量映射"与"仅重算人口映射"永远使用同一份人口算法与同一份 policy 读取路径：
+        这里只读取当前 workflow 快照里的 ``population_nodata_policy``，不复制、不改写算法。
+
+        ``nodata_semantics`` 允许调用方传入**已经取好的**同一份 policy（``grid_attributes``
+        为避免重复读取 workflow 快照而这样做）；省略时本方法自己读取。两种路径的语义完全
+        相同：都只从项目状态里读，绝不发明确认。
+        """
+
+        if nodata_semantics is None:
+            snapshot = self.workflow_provider() or {}
+            # The population NoData semantics is an *explicit engineering confirmation* held
+            # in the project state; when it is not confirmed the mapping keeps its historical
+            # behaviour (source NoData stays missing_data and is never filled with zero).
+            nodata_semantics = snapshot.get("population_nodata_policy")
+        return PopulationGridService().map(grid, self.paths.get("population"), nodata_semantics)
+
     def grid_attributes(self, grid):
         snapshot = self.workflow_provider() or {}
         policies = snapshot.get("airspace_policies") or {}
-        # The population NoData semantics is an *explicit engineering confirmation* held in
-        # the project state; when it is not confirmed the mapping keeps its historical
-        # behaviour (source NoData stays missing_data and is never filled with zero).
-        nodata_semantics = snapshot.get("population_nodata_policy")
         # 建筑事实有两个来源，各自解析成"实际可读取的矢量图层"：
         #  * building_grid：预先聚合好的 L8 事实表（level == 8 时最快的权威路径）；
         #  * buildings：原始建筑足迹（.gpkg / .shp / .geojson，或引用它们的 .qgz 工程），
@@ -181,8 +197,8 @@ class MapData:
             "building_grid": self._vector_role_record(grid_role),
             "buildings": self._vector_role_record(footprint_role),
         }
-        return {"population": PopulationGridService().map(
-                    grid, self.paths.get("population"), nodata_semantics),
+        return {"population": self.population_grid_attribute(
+                    grid, snapshot.get("population_nodata_policy")),
                 "terrain": TerrainGridService().map(grid, self.paths.get("terrain")),
                 "buildings": buildings,
                 "airspace": AirspaceGridService().map(

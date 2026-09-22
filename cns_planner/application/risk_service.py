@@ -63,6 +63,43 @@ class RiskService:
         self.session.save()
         return self.snapshot()
 
+    def apply_population_grid_attribute(self, result):
+        """**仅**替换 ``grid_attributes.population`` 的定向 apply（population-only remap）。
+
+        这是"仅重算人口映射"的落库入口，边界严格：
+
+        * 只写 ``population`` 一个命名空间：``terrain`` / ``buildings`` / ``airspace`` /
+          ``traffic`` / ``conflict`` / ``property_exposure`` 等一律原样保留；
+        * 不调用 ``set_workspace``，不重新生成 ``grid``，不触碰 ``nodes`` /
+          ``scenario_routes`` / ``operational_routes`` / ``workspace``；
+        * 仍然验证结果与**当前** ``grid`` 的 level 与 ``grid_id`` 集合一致（``_validate_attribute``），
+          级别或 id 不一致直接报错，绝不把别的网格的结果写进当前网格；
+        * 人口属性变化按既有 invalidation（``grid_sources(["population"])``）使依赖它的
+          Legacy Risk V1 / Risk Framework V2 / layered candidate 等变为 stale —— 与替换人口
+          数据源的既有语义完全一致，不新增失效链；
+        * 派生缓存 ``_population_shelter_cache`` 一并丢弃，由既有逻辑在下次读取时重建。
+
+        失效传播放在写入**之前**：因此这里绝不会把刚刚写入的新结果又标成 stale。
+        提交沿用既有 single-save 契约（调用方用 ``deferred_save`` 折叠为一次 commit）。
+        """
+
+        state = self.session.state
+        grid = state.get("grid")
+        if not grid:
+            raise ValueError("请先生成工作区标准网格")
+        expected_ids = {cell["grid_id"] for cell in grid.get("cells", [])}
+        population = deepcopy(result)
+        self._validate_attribute("population", population, grid, expected_ids, required=True)
+        self.invalidation.grid_sources(["population"])
+        attributes = state.setdefault("grid_attributes", empty_grid_attributes())
+        attributes["population"] = population
+        profiles = state.setdefault("data_source_profiles", {})
+        if isinstance(population.get("source_profile"), dict):
+            profiles["population"] = deepcopy(population["source_profile"])
+        state.pop("_population_shelter_cache", None)
+        self.session.save()
+        return self.snapshot()
+
     def update_source_profiles(self, profiles):
         current = self.session.state.setdefault("data_source_profiles", {})
         for name in ("population", "terrain", "terrain_dtm"):

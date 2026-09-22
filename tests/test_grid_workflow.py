@@ -140,7 +140,10 @@ def test_frontend_exposes_grid_layer_and_clickable_grid_id():
     assert 'src="/grid_theme.js"' in html
     assert "drawGridBoundaries()" in javascript
     assert "drawGridThemes()" in javascript
-    assert "info.textContent=formatGridDetails(item)" in javascript
+    # BUG-MAP-001：网格点击详情改为"精简摘要 + 详细信息展开区"的**已转义** HTML，
+    # 因此这里是 innerHTML（内容由 grid_details.js 整体转义），弹窗元素与 id 不变。
+    assert "info.innerHTML=formatGridDetails(item)" in javascript
+    assert "info.textContent=formatGridDetails(item)" not in javascript
     assert "sources.population.cells?.[cell.grid_id]" in javascript
     assert "sources.terrain.cells?.[cell.grid_id]" in javascript
     assert "gridRenderCache" in javascript

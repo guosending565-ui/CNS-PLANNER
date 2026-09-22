@@ -44,9 +44,11 @@ test('population mapping shows coverage statistics instead of a bare missing_dat
   const population=cards.find(card=>card.label==='人口映射');
   assert.ok(population,'the population mapping card must exist');
   assert.equal(population.value,'部分覆盖','the unified mapping carrier wins over a bare value_status');
+  // BUG-POP-001：统一载体下六类计数与未判定数必须全部给出（数字可闭合）。
   assert.equal(
     population.note,
-    '已覆盖 6 / 10 格（60%） · full 4 / partial 2 / missing 3 / outside 1',
+    '已覆盖 6 / 10 格（60%） · full 4 / partial 2 / nodata_only 0 / confirmed_zero 0 '
+    +'/ missing 3 / outside 1 · 未判定 4',
     'the coverage statistics are shown verbatim'
   );
 });

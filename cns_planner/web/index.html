@@ -111,8 +111,9 @@
    <div id="loading" class="loading">正在加载空间数据…</div>
    <div id="error" role="alert" hidden></div>
 
-   <div class="map-tools"><button id="zoomIn" aria-label="放大">＋</button><button id="zoomOut" aria-label="缩小">−</button><hr><button id="fit" title="回到全域" aria-label="回到全域">⌂</button></div>
+   <div class="map-tools"><button id="zoomIn" aria-label="放大">＋</button><button id="zoomOut" aria-label="缩小">−</button><hr><button id="measureTool" title="测距（单击加点，双击完成，Esc 退出）" aria-label="测距" aria-pressed="false">⇔</button><button id="measureClear" title="清除测距并退出" aria-label="清除测距">⌫</button><hr><button id="fit" title="回到全域" aria-label="回到全域">⌂</button></div>
    <div id="tileStatus" class="tile-status"></div>
+   <div id="measureStatus" class="measure-status" hidden></div>
    <div class="map-footer"><span id="position">EPSG:3857 显示 · 经纬度读数 WGS84</span><span id="viewStatus">本地空域数据</span></div>
   </div>
  </main>

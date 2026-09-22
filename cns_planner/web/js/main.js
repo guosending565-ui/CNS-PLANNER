@@ -13,7 +13,8 @@ import {createWorkbench} from './workflow/workbench.js';
 import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
 import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor} from './workflow/common.js';
 import {riskV2LegendModel} from './workflow/risk_framework_v2.js';
-import {gridCellDetails,populationDisplayLabel} from './workflow/grid_details.js';
+import {gridCellDetailsHtml,populationDisplayLabel} from './workflow/grid_details.js';
+import {attachMeasureTool} from './map/measure_tool.js';
 import {bindShell,bindLayerControls,updateLodBadge,renderRailSteps,layerSwitches} from './shell.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
@@ -39,7 +40,7 @@ let gridDisplay={outline:false,theme:'none'};// 首次打开：网格边界默�
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
 const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
 const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
-const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
+const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text),measure=attachMeasureTool({$,canvas,paint,eventLonLat,getMode:()=>interactionMode,setMode:value=>{interactionMode=value;}});
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan',workbench:{step:1,tab:'operate',segs:{},scroll:0}}});
 const api=createApiClient(()=>state?.token,()=>flow?.revision),buildingFootprints=attachBuildingFootprintLayer({api,$,paint,getView:()=>view,size,visibleLonLatBounds});// 建筑轮廓：默认关闭 + zoom LOD 按需拉取，装配全在模块内
 // 右栏工作台视图状态：只保存展示导航（step / 一级 tab / 二级段 / 滚动位置）
@@ -100,7 +101,7 @@ function paint(){
   const [w,h]=size();if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
   ctx.fillStyle='#f3f4f2';ctx.fillRect(0,0,w,h);onlineTiles.paint(ctx,view,w,h,'base');
   if(bitmap&&view&&imageView){const b=imageView;ctx.drawImage(bitmap,w/2+(b[0]-view.x)/view.res,h/2-(b[3]-view.y)/view.res,(b[2]-b[0])/view.res,(b[3]-b[1])/view.res);}
-  onlineTiles.paint(ctx,view,w,h,'annotation');drawWorkflowOverlay();
+  onlineTiles.paint(ctx,view,w,h,'annotation');drawWorkflowOverlay();if(view)measure.draw(ctx,screenPoint);
 }
 function rebuildGridRenderCache(){
   gridRenderCache=buildGridOverlayCache(flow?.grid,flow?.grid_attributes||{},flow?.grid_risk||{},GridTheme,flow?.grid_risk_v2||null);
@@ -110,7 +111,7 @@ function rebuildGridRenderCache(){
 function findGridCell(lon,lat){return hitGridCell(gridRenderCache,lon,lat,GridTheme);}
 function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,display:gridDisplay,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme,palettes:{population:populationPalette,terrain:terrainPalette,buildings:buildingPalette,risk:riskPalette},riskBreaks});}
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
-function formatGridDetails(item){return gridCellDetails(item,flow,GridTheme.formatNumber);}
+function formatGridDetails(item){return gridCellDetailsHtml(item,flow,GridTheme.formatNumber,gridDisplay.theme);}
 // CNS 缺口段计数：只读汇总，用于状态栏提示；绘制本身在 map/display_layers.js
 function cnsGapSegments(){
   const analysis=flow?.cns_gap_analysis;
@@ -188,7 +189,7 @@ bindMapInteraction({
   map,canvas,getView:()=>view,setView:value=>{view=value;},getMode:()=>interactionMode,eventLonLat,zoom,queue,paint,
   onDraft:value=>{draftWorkspace=value;},onDraftComplete:renderWorkflow,
   onNode:async coordinate=>{try{await mutate('node',{coordinate});}catch(exc){panelError(exc.message);}},
-  onPosition:point=>{$('position').textContent=point[0].toFixed(5)+'° E / '+point[1].toFixed(5)+'° N · WGS84';},
+  onPosition:(point,event)=>{$('position').textContent=point[0].toFixed(5)+'° E / '+point[1].toFixed(5)+'° N · WGS84';measure.hover(point,event);},
   onPanStart:()=>{clearTimeout(timer);serial++;}
 });
 canvas.addEventListener('click',event=>{
@@ -206,7 +207,7 @@ canvas.addEventListener('click',event=>{
   const item=gridRenderCache.cells.length?findGridCell(lon,lat):null;
   if(!item){info.hidden=true;if(selectedReference){selectedReference=null;}return;}
   const rect=map.getBoundingClientRect();
-  info.textContent=formatGridDetails(item);
+  info.innerHTML=formatGridDetails(item);
   info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
   info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
   info.hidden=false;
@@ -269,11 +270,9 @@ function syncLayerControls(){
     onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked)
   });
 }
-function statusText(status){return labelFor(status);}
-function statusBadge(status){return badgeFor(status);}
-function escapeHtml(value){return escapeValue(value);}
+function statusText(status){return labelFor(status);}function statusBadge(status){return badgeFor(status);}function escapeHtml(value){return escapeValue(value);}
 function setStep(step){
-  currentStep=Number(step);interactionMode='pan';draftWorkspace=null;profileHoverCoordinate=null;
+  currentStep=Number(step);interactionMode='pan';measure.sync();draftWorkspace=null;profileHoverCoordinate=null;
   routeEvidenceHighlight=null;
   store.set({ui:{...store.get().ui,step:currentStep,interactionMode}});
   workbench.clearState();
@@ -320,11 +319,11 @@ function stepBindings(){return {
     clear(){routeEvidenceHighlight=null;paint();},
   },
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
-  setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},
-  startWorkspace(){interactionMode='workspace';draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
-  clearWorkspace:async()=>{draftWorkspace=null;interactionMode='pan';await mutate('workspace-clear');},
-  saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace,grid_level:Number($('workspaceGridLevel')?.value||8)});interactionMode='pan';draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
-  toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';renderWorkflow();}
+  setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}renderWorkflow();paint();return data;},
+  startWorkspace(){interactionMode='workspace';measure.sync();draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
+  clearWorkspace:async()=>{draftWorkspace=null;interactionMode='pan';measure.sync();await mutate('workspace-clear');},
+  saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace,grid_level:Number($('workspaceGridLevel')?.value||8)});interactionMode='pan';measure.sync();draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
+  toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';measure.sync();renderWorkflow();}
 };}
 async function previewPlanningReport(){
   const target=window.open('about:blank','_blank');

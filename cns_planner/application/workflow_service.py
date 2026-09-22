@@ -1297,6 +1297,15 @@ class WorkflowService:
         self.risk_service.apply_grid_attributes(results)
         # The additive V2 result recomputes from the same canonical attributes.
         return self.risk_v2_service.evaluate()
+    def apply_population_grid_attribute(self, result):
+        """Targeted apply：只替换 ``grid_attributes.population``（population-only remap）。
+
+        与 :meth:`apply_grid_attributes` 不同，这里**不**重算 terrain / buildings /
+        airspace，也**不**自动重跑 Risk Framework V2：人口属性的变化只按既有
+        invalidation 把依赖它的结果标为 stale，由用户显式决定下一步。
+        """
+
+        return self.risk_service.apply_population_grid_attribute(result)
     def update_data_source_profiles(self, profiles): return self.risk_service.update_source_profiles(profiles)
     def evaluate_grid_risk(self, parameters=None): return self.risk_service.evaluate(parameters)
     def run_traffic_simulation(self, parameters):

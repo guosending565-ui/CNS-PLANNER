@@ -124,7 +124,26 @@
   font-size:var(--fs-md);
 }
 .map-tools button:hover{background:var(--brand-soft);color:var(--brand-deep)}
+/* 测距激活态：工具处于“测距中”时按钮必须一眼可辨（纯 UI 状态，不写任何业务数据） */
+.map-tools button.active{background:var(--brand-soft);color:var(--brand-deep);box-shadow:inset 0 0 0 1px var(--brand-line)}
 .map-tools hr{width:100%;height:1px;margin:var(--sp-2) 0;border:0;background:var(--line-soft)}
+
+/* 测距读数（纯前端 UI，只显示本机点击出的折线长度） */
+.measure-status{
+  position:absolute;
+  z-index:8;
+  top:var(--sp-6);
+  left:var(--sp-8);
+  max-width:60%;
+  padding:var(--sp-4) var(--sp-6);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:rgba(255,255,255,.95);
+  box-shadow:var(--shadow-1);
+  color:var(--ink-soft);
+  font:var(--fs-micro)/1.5 var(--font-mono);
+  pointer-events:none;
+}
 
 /* =========================================================
    3. 图层抽屉（原左栏图层全部移入此处）
@@ -347,6 +366,12 @@
   white-space:pre-wrap;
   overflow-wrap:anywhere;
 }
+
+/* 点击详情：默认只显示精简摘要；完整诊断收进「详细信息」展开区 */
+.grid-info-summary{white-space:pre-wrap}
+.grid-info-detail{margin-top:var(--sp-3);padding-top:var(--sp-2);border-top:1px dashed var(--line-soft)}
+.grid-info-detail>summary{cursor:pointer;color:var(--brand-deep);font-size:var(--fs-micro);user-select:none}
+.grid-info-detail-body{margin-top:var(--sp-2);white-space:pre-wrap;color:var(--ink-soft)}
 
 /* 点击详情右上角关闭 */
 .grid-info-close{
