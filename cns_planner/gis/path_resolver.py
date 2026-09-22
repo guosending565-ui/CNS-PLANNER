@@ -40,7 +40,7 @@ SOURCE_FORMATS: dict[str, tuple[str, ...]] = {
     "property_exposure": RASTER_FORMATS + VECTOR_FORMATS,
     "obstacles": VECTOR_FORMATS + (".csv",),
     "infrastructure": VECTOR_FORMATS,
-    "towers": VECTOR_FORMATS + (".csv",),
+    "towers": VECTOR_FORMATS + (".csv", ".xlsx", ".xlsm"),
     "traffic": VECTOR_FORMATS + (".csv",),
     "vertiports": VECTOR_FORMATS + (".csv",),
     "reference_landing_sites": (".xlsx", ".csv", ".et"),

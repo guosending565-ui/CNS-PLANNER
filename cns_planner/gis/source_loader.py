@@ -23,7 +23,9 @@ from .constraints import hard_constraints, layer_extents
 
 gdal.UseExceptions()
 
-REFERENCE_SOURCE_KEYS = ("reference_landing_sites", "reference_routes", "equipment_reference_catalog")
+REFERENCE_SOURCE_KEYS = (
+    "reference_landing_sites", "reference_routes", "equipment_reference_catalog", "towers",
+)
 OPTIONAL_VECTOR_SOURCE_KEYS = (
     "buildings",
     "building_grid",

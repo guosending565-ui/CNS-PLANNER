@@ -51,6 +51,10 @@ class ApiRouter:
         if path == "/api/cns-required-recommendation": return Response(workflow.required_cns_recommendation_snapshot())
         if path == "/api/existing-cns": return Response(workflow.existing_cns_snapshot())
         if path == "/api/candidate-sites": return Response(workflow.candidate_sites_snapshot())
+        # ---- Towers Operational Integration V2（铁塔派生事实；只读投影） --------------
+        if path == "/api/tower-obstacle-profiles": return Response(workflow.tower_obstacle_profiles_snapshot())
+        if path == "/api/tower-colocation-candidates": return Response(workflow.tower_colocation_candidates_snapshot())
+        if path == "/api/tower-integration-policies": return Response(workflow.tower_integration_policies_snapshot())
         if path == "/api/cns-gaps": return Response(workflow.cns_gap_snapshot())
         if path == "/api/cns-gap-analysis-v2": return Response(workflow.cns_gap_v2_snapshot())
         if path == "/api/cns-site-plan": return Response(workflow.cns_site_plan_snapshot())
@@ -244,6 +248,7 @@ class ApiRouter:
             "/api/reference-routes/preview": lambda: workflow.preview_reference_routes(payload.get("path") or data.paths.get("reference_routes"), {"conversion_method": payload.get("conversion_method"), "evidence": payload.get("evidence")} if payload.get("conversion_method") or payload.get("evidence") else None),
             "/api/reference-routes/import-confirm": lambda: workflow.confirm_reference_routes_import(payload.get("path") or data.paths.get("reference_routes"), payload.get("preview_id")),
             "/api/reference-crs/confirm": lambda: workflow.confirm_reference_crs(payload.get("role"), payload),
+            "/api/towers/import": lambda: workflow.import_towers(payload.get("path") or data.paths.get("towers")),
             "/api/airspace-policies": lambda: workflow.set_airspace_policies(payload),
             "/api/airspace-policies/item": lambda: workflow.set_airspace_policy(payload),
             "/api/airspace-policies/batch": lambda: workflow.batch_set_airspace_policies(payload),
@@ -256,6 +261,14 @@ class ApiRouter:
             "/api/existing-cns/import": lambda: workflow.import_existing_cns(payload),
             "/api/candidate-sites/import": lambda: workflow.import_candidate_sites(payload),
             "/api/candidate-sites/from-existing": workflow.candidate_sites_from_existing,
+            # 铁塔派生事实（障碍物高度 + 共塔宿主候选）：真实源只在 QGIS 线程读取。
+            "/api/tower-obstacle-profiles/evaluate": lambda: (
+                context.evaluate_tower_obstacle_profiles(payload)
+                if hasattr(context, "evaluate_tower_obstacle_profiles")
+                else context.qgis.call(
+                    lambda: workflow.evaluate_tower_obstacle_profiles(payload)
+                )
+            ),
             "/api/cns-gaps/analyze": workflow.analyze_cns_gaps,
             "/api/cns-gap-analysis-v2": lambda: workflow.analyze_cns_gaps_v2(payload),
             "/api/cns-site-plan": lambda: workflow.evaluate_cns_site_plan(payload),
@@ -454,6 +467,7 @@ class ApiRouter:
                 "building_grid",
                 "reference_landing_sites",
                 "reference_routes",
+                "towers",
             )
         }
         if path == "/api/data-sources/validate":

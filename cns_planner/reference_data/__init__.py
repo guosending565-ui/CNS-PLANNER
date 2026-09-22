@@ -18,6 +18,11 @@ from .routes import (
     empty_reference_routes,
     load_reference_routes,
 )
+from .towers import (
+    COLLECTION_ID as TOWERS_COLLECTION_ID,
+    duplicate_report as tower_duplicate_report,
+    load_towers,
+)
 
 __all__ = [
     "backfill_reference_landing_sites",
@@ -32,4 +37,7 @@ __all__ = [
     "reference_crs_status",
     "empty_reference_routes",
     "load_reference_routes",
+    "TOWERS_COLLECTION_ID",
+    "load_towers",
+    "tower_duplicate_report",
 ]

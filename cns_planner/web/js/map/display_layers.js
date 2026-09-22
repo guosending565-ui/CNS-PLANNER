@@ -21,6 +21,10 @@ import {displayStyle} from './lod.js';
 
 const NODE_COLOR={fill:'#ffffff',stroke:'#c25233',label:'#22303c',radius:5.5};
 const LANDING_COLOR={normal:'#1a8677',duplicate:'#8b6b2f',cluster:'#0f6f62'};
+//: 真实通信铁塔站址：只表达"存在一个真实站址"，不表达任何通信能力/通过与否。
+const TOWER_COLOR={normal:'#1f7a8c',cluster:'#155f6d'};
+//: CNS 共塔候选 → 对应铁塔的高亮（纯 UI 关联提示，不画永久连接线）。
+const TOWER_HIGHLIGHT_COLOR='#d12f8a';
 const CNS_COLORS={existing:'#7256a1',candidate:'#e07a26',unusable:'#8b949e',planned:'#d12f8a',hover:'#111111',cluster:'#5c6d7d'};
 const GAP_COLORS={C:'#d83b35',N:'#c26b16',S:'#9b3eb5'};
 const SUBSYSTEM_COLORS={C:'#1574d4',N:'#b8840f',S:'#0f8a78'};
@@ -30,7 +34,7 @@ const OPERATIONAL_COLOR='#0b6bbd';
 //: 它画在正常路线与 candidate 之上，且只是纯 UI 状态，不影响任何业务层。
 const ROUTE_EVIDENCE_COLOR='#c0392b';
 
-const CLUSTER_COLORS={nodes:'#c25233',sites:LANDING_COLOR.cluster,referencePoints:'#783b69'};
+const CLUSTER_COLORS={nodes:'#c25233',sites:LANDING_COLOR.cluster,referencePoints:'#783b69',towers:TOWER_COLOR.cluster};
 
 // ---- 绘制小工具 ---------------------------------------------------------------
 
@@ -86,6 +90,93 @@ function drawAggregate(ctx,x,y,count,color){
   drawText(ctx,String(count),x+14,y-11,{color,font:'700 11px "Segoe UI",sans-serif'});
 }
 
+// ---- 通信铁塔矢量符号（地图符号与图例符号的唯一来源） ------------------------
+//
+// 识别特征：顶部天线 + 两层桁架 + 塔脚，与用户给出的示意一致：
+//
+//       │
+//      / \
+//     /___\
+//      / \
+//     /___\
+//     /   \
+//
+// 几何定义在归一化的 x∈[-0.72,0.72]、y∈[-0.95,0.8] 单位框内：
+// canvas 绘制与图例 inline SVG 用的是**同一份线段表**，因此地图符号与图例
+// 符号永远一致，不会出现"图例画一种、地图画另一种"。
+// 只用本地 Path，不用 emoji、外部图片或第三方 icon 包。
+export const TOWER_SYMBOL={
+  //: [[起点], [终点]]，单位框内坐标（y 向下为正，与 canvas 一致）。
+  segments:[
+    [[0,-0.95],[0,-0.5]],            // 顶部天线
+    [[-0.3,-0.5],[0.3,-0.5]],        // 上层横梁
+    [[-0.3,-0.5],[0,-0.02]],         // 上层左斜撑
+    [[0.3,-0.5],[0,-0.02]],          // 上层右斜撑
+    [[-0.42,-0.02],[0.42,-0.02]],    // 下层横梁
+    [[-0.42,-0.02],[0,0.42]],        // 下层左斜撑
+    [[0.42,-0.02],[0,0.42]],         // 下层右斜撑
+    [[-0.52,0.42],[0.52,0.42]],      // 底横梁
+    [[-0.52,0.42],[-0.66,0.8]],      // 左塔脚
+    [[0.52,0.42],[0.66,0.8]]         // 右塔脚
+  ],
+  //: 图例用 viewBox（正方形，保证 SVG 不被拉伸）。
+  viewBox:'-1 -1 2 2'
+};
+
+function traceTowerPath(ctx,x,y,scale){
+  ctx.beginPath();
+  for(const [start,end] of TOWER_SYMBOL.segments){
+    ctx.moveTo(x+start[0]*scale,y+start[1]*scale);
+    ctx.lineTo(x+end[0]*scale,y+end[1]*scale);
+  }
+}
+
+/** 在 canvas 上画一个铁塔符号（白色描边在下，保证在底图上可读）。 */
+export function drawTowerSymbol(ctx,x,y,scale=1,{color=TOWER_COLOR.normal,width=1.2,halo=true}={}){
+  const size=Number.isFinite(scale)&&scale>0?scale:1;
+  ctx.save();
+  ctx.lineCap='round';
+  if(halo){
+    traceTowerPath(ctx,x,y,size);
+    ctx.strokeStyle='#ffffff';ctx.lineWidth=width+1.7;ctx.stroke();
+  }
+  traceTowerPath(ctx,x,y,size);
+  ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();
+  ctx.restore();
+}
+
+/** 同一份符号的 inline SVG（统一图例使用，无外部资源、无版权依赖）。 */
+export function towerSymbolSvg({size=15,color=TOWER_COLOR.normal,width=1.1}={}){
+  const path=TOWER_SYMBOL.segments
+    .map(([start,end])=>'M'+start[0]+' '+start[1]+'L'+end[0]+' '+end[1])
+    .join('');
+  return '<svg width="'+size+'" height="'+size+'" viewBox="'+TOWER_SYMBOL.viewBox+'" aria-hidden="true">'
+    +'<path d="'+path+'" fill="none" stroke="'+color+'" stroke-width="'+width+'" stroke-linecap="round"/></svg>';
+}
+
+//: drawMarker 支持的形状；图例也只允许这些形状，避免图例与地图各画一套。
+export const MARKER_SHAPES=['circle','diamond','square','triangle'];
+
+/**
+ * 基础标记形状的 inline SVG。
+ *
+ * 与 ``drawMarker`` 一一对应（同一个 shape 词表、同一套视觉语义），
+ * 图例因此不会引入第二套符号语言；铁塔符号另有 :data:`TOWER_SYMBOL` 作为唯一来源。
+ */
+export function markerSymbolSvg(shape,{size=14,fill='#ffffff',stroke='#33424f',strokeWidth=1.4}={}){
+  if(!MARKER_SHAPES.includes(shape))throw new Error('未知的地图标记形状：'+shape);
+  const half=size/2,inset=strokeWidth;
+  const body=shape==='circle'
+    ?'<circle cx="'+half+'" cy="'+half+'" r="'+Math.max(1,half-inset)+'"/>'
+    :shape==='diamond'
+      ?'<polygon points="'+half+',1 '+(size-1)+','+half+' '+half+','+(size-1)+' 1,'+half+'"/>'
+      :shape==='triangle'
+        ?'<polygon points="'+half+',1 '+(size-1)+','+(size-1)+' 1,'+(size-1)+'"/>'
+        :'<rect x="1" y="1" width="'+(size-2)+'" height="'+(size-2)+'"/>';
+  return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 '+size+' '+size+'" aria-hidden="true">'
+    +'<g fill="'+fill+'" stroke="'+stroke+'" stroke-width="'+strokeWidth+'">'+body+'</g></svg>';
+}
+
 // ---- 点标记计划（LOD + 屏幕空间聚合） -----------------------------------------
 
 /**
@@ -103,7 +194,7 @@ function drawAggregate(ctx,x,y,count,color){
  */
 export function buildDisplayPlan({
   flow,view,size,screenPoint,screenToLonLat,layers={},referenceOverlay={referenceRoutes:[],referencePoints:[]},
-  selectedReference=null,referenceFilters={},filterReferenceSites=null
+  selectedReference=null,referenceFilters={},filterReferenceSites=null,towerHighlight=null
 }){
   const style=displayStyle({
     res:view?view.res:0,
@@ -131,6 +222,34 @@ export function buildDisplayPlan({
   const nodes=cluster(nodeItems);
   // 参考起降点跟随图层抽屉的 referenceLandingLayer 开关；关闭时不进入计划（也就不绘制、不可命中）
   const landingSites=layers.referenceLandingLayer===false?[]:cluster(siteItems);
+
+  // 真实通信铁塔站址：**默认关闭** —— 只有显式勾选 towerLayer 才进入计划，
+  // 因此默认既不绘制也不可命中。373 个点一律复用同一套聚合（point_clustering），
+  // 绝不铺开单点标记或名称标签。
+  const towerItems=((flow?.towers?.items)||[]).map(tower=>({id:tower.tower_id,coordinate:tower.coordinate,tower}));
+  const towers=layers.towerLayer===true?cluster(towerItems):[];
+  // overview 档只显示聚合点：聚合不住的孤立单塔在这里就被移出计划，
+  // 因此它既不会被绘制，也不会被命中（不会出现"点到看不见的点"）。
+  const towerMarkerMode=styles.towerMarkerMode||'single';
+  // overview 只显示聚合点；但被显式高亮的那个塔（CNS 共塔候选联动）始终保留，
+  // 否则用户点了共塔候选却看不到对应铁塔。
+  const visibleTowers=towerMarkerMode==='cluster'
+    ?towers.filter(entry=>entry.count>1||(
+      towerHighlight&&entry.anchor&&entry.anchor.tower
+      &&String(entry.anchor.tower.tower_id)===String(towerHighlight)
+    ))
+    :towers;
+
+  // CNS 共塔候选：真实铁塔派生出的**宿主候选**（不是已有设备）。只跟随候选站图层开关，
+  // 并且只在地图上与宿主铁塔建立"点击即可高亮"的关联，绝不画大量永久连接线。
+  const cnsTowerCandidates=layers.candidateSiteLayer===false?[]:
+    ((flow?.tower_colocation_candidates?.items)||[]).map(site=>({
+      id:String(site.site_id||''),
+      coordinate:site.coordinate,
+      screen:site.coordinate?screenPoint(site.coordinate):null,
+      site,
+      hostTowerId:String((((site.metadata||{}).host)||{}).host_tower_id||'')||null,
+    })).filter(entry=>entry.screen);
 
   // 参考航路点的显示条件 = 图层开关 → LOD 语义：
   //   overview 一律不显示；medium 默认不显示（仅调用方显式要求时显示）；detail 显示。
@@ -165,8 +284,12 @@ export function buildDisplayPlan({
     resolution:style.resolution,
     styles,
     clusterPixels:style.clusterPixels,
+    towerMarkerMode,
+    towerSymbolScale:styles.towerSymbolScale||1,
     nodes,
     landingSites,
+    towers:visibleTowers,
+    cnsTowerCandidates,
     referenceRoutes:(model=>(model.referenceRoutes||[]))(referenceOverlay||{}),
     referencePoints:(model=>(model.referencePoints||[]))(referenceOverlay||{}),
     referencePointsVisible,
@@ -177,7 +300,8 @@ export function buildDisplayPlan({
     gridTheme:null,
     clusterCounts:{
       nodes:nodes.filter(entry=>entry.count>1).reduce((sum,entry)=>sum+entry.count,0),
-      sites:landingSites.filter(entry=>entry.count>1).reduce((sum,entry)=>sum+entry.count,0)
+      sites:landingSites.filter(entry=>entry.count>1).reduce((sum,entry)=>sum+entry.count,0),
+      towers:towers.filter(entry=>entry.count>1).reduce((sum,entry)=>sum+entry.count,0)
     }
   };
 }
@@ -186,11 +310,24 @@ export function buildDisplayPlan({
 
 /** 节点 / 起降点聚合命中。 */
 export function hitDisplayEntry(plan,point,{kind='nodes',singleRadius=9}={}){
-  const entries=kind==='sites'?plan.landingSites:plan.nodes;
+  const entries=kind==='sites'?plan.landingSites:kind==='towers'?plan.towers:plan.nodes;
   return hitCluster(entries,point,{singleRadius});
 }
 
 export function entryExtent(entry){return extentOf(entry);}
+
+/** CNS 共塔候选命中（用于"点击候选 → 高亮宿主铁塔"）。 */
+export function hitCnsTowerCandidate(plan,point,{radius=11}={}){
+  const [x,y]=point;
+  let best=null,bestDistance=Infinity;
+  for(const entry of plan?.cnsTowerCandidates||[]){
+    const screen=entry.screen;
+    if(!screen)continue;
+    const distance=Math.hypot(screen[0]-x,screen[1]-y);
+    if(distance<=radius&&distance<bestDistance){best=entry;bestDistance=distance;}
+  }
+  return best;
+}
 
 // ---- 绘制 ---------------------------------------------------------------------
 
@@ -207,6 +344,7 @@ export function entryExtent(entry){return extentOf(entry);}
  */
 export function drawWorkflowLayers({
   ctx,view,flow,plan,layers={},screenPoint,profileHoverCoordinate=null,routeEvidenceHighlight=null,gridTheme=null,
+  towerHighlight=null,
   drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,proposedPlanActions=()=>[]
 }){
   const styles=plan.styles;
@@ -323,6 +461,45 @@ export function drawWorkflowLayers({
     const site=entry.anchor.site||{};
     const color=site.possible_duplicate?LANDING_COLOR.duplicate:LANDING_COLOR.normal;
     drawMarker(ctx,'diamond',x,y,styles.pointRadius+1.4,color,'#ffffff',1.2);
+  }
+
+  // 7.5) 真实通信铁塔站址（默认关闭，勾选后才进入 plan）：
+  //      与起降点复用同一聚合与同一 LOD（map/lod.js 的 towerMarkerMode）：
+  //        overview 只显示聚合点；
+  //        medium   仍以聚合为主，聚合不住的孤立塔画简化铁塔符号；
+  //        detail   每个真实铁塔画独立铁塔图标。
+  //      单塔一律画**铁塔矢量符号**，且**绝不铺开 373 个名称标签**（hover/click 才显示）。
+  const towerScale=plan.towerSymbolScale||1;
+  for(const entry of plan.towers||[]){
+    const [x,y]=entry.screen||entry.center;
+    if(entry.count>1){drawAggregate(ctx,x,y,entry.count,CLUSTER_COLORS.towers);continue;}
+    drawTowerSymbol(ctx,x,y,towerScale,{color:TOWER_COLOR.normal,width:towerScale<1?.95:1.2});
+  }
+
+  // 7.6) CNS 共塔候选（真实铁塔派生的宿主候选）：画成"候选色的铁塔符号"，
+  //      与宿主铁塔建立视觉关联，但不画永久连接线；点击候选时由 towerHighlight 高亮宿主塔。
+  for(const entry of plan.cnsTowerCandidates||[]){
+    const [x,y]=entry.screen;
+    if(!entry.hostTowerId)continue;
+    const highlighted=String(towerHighlight||'')===entry.hostTowerId;
+    drawTowerSymbol(ctx,x,y,1,{color:CNS_COLORS.candidate,width:highlighted?1.6:1.25});
+    if(highlighted){
+      ctx.save();ctx.strokeStyle=CNS_COLORS.candidate;ctx.lineWidth=1.6;
+      ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.stroke();ctx.restore();
+    }
+  }
+
+  // 7.7) 共塔候选关联的宿主铁塔高亮：只在"当前被关联的那一个塔"周围画一圈。
+  if(towerHighlight){
+    for(const entry of plan.towers||[]){
+      const tower=(entry.anchor&&entry.anchor.tower)||null;
+      if(!tower||String(tower.tower_id)!==String(towerHighlight))continue;
+      const [x,y]=entry.screen||entry.center;
+      ctx.save();
+      ctx.strokeStyle=TOWER_HIGHLIGHT_COLOR;ctx.lineWidth=2.2;
+      ctx.beginPath();ctx.arc(x,y,12,0,Math.PI*2);ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // 8) 项目起降点：聚合 + 名称策略（默认不铺开名称，且始终避让）

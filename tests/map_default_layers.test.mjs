@@ -16,7 +16,7 @@ const main=readFileSync(new URL('../cns_planner/web/js/main.js',import.meta.url)
 const shell=readFileSync(new URL('../cns_planner/web/js/shell.js',import.meta.url),'utf8');
 
 //: 图层抽屉里全部图层 checkbox 的 id（main.js LAYER_IDS + 栅格/网格/在线底图开关）。
-const LAYER_IDS=['air','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer',
+const LAYER_IDS=['air','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer',
   'gridLayer','pop','terrain','buildingFootprintLayer','online','buildingClearanceLayer',
   'v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','existingCnsLayer',
   'candidateSiteLayer','cLayer','nLayer','sLayer'];

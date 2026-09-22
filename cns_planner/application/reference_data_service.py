@@ -7,11 +7,24 @@ import json
 from pathlib import Path
 
 from ..algorithms.coverage.v1 import distance_m
-from ..domain.source_audit import provenance_record, source_manifest
+from ..domain.source_audit import provenance_record, sha256_file, source_manifest
 from ..domain.geometry_health import inspect_geojson_geometries
 from ..reference_data import (
     declared_source_crs, load_equipment_reference_catalog, load_reference_landing_sites,
-    load_reference_routes,
+    load_reference_routes, load_towers,
+)
+
+#: 人工裁定的铁塔源坐标系（2026 舟山通信铁塔报送数据接入裁定）。
+#: 这是**人工确认**，不是从文件内容解析出的证据；文件本身未声明任何 CRS。
+TOWERS_CONFIRMED_SOURCE_CRS = "EPSG:4490"
+TOWERS_CONFIRMED_SOURCE_CRS_NOTE = "人工裁定：CGCS2000 / EPSG:4490"
+TOWERS_PERMISSION_EVIDENCE = (
+    {"type": "usage_permission", "value": "confirmed",
+     "note": "人工裁定：允许进入项目数据库/项目数据目录"},
+    {"type": "publication_permission", "value": "confirmed",
+     "note": "人工裁定：允许用于科研分析、论文、报告和地图成果展示"},
+    {"type": "classification", "value": "non_sensitive",
+     "note": "人工裁定：非涉密资料"},
 )
 
 
@@ -55,6 +68,80 @@ class ReferenceDataService:
         if save:
             self.session.save()
         return self.snapshot()
+
+    # ------------------------------------------------------------------ towers
+    def towers_snapshot(self):
+        return deepcopy(self.session.state.get("towers") or {})
+
+    def import_towers(self, path, save=True, *, source_crs=TOWERS_CONFIRMED_SOURCE_CRS):
+        """导入真实通信铁塔**站址位置**（只读原始 Excel）。
+
+        边界（本阶段刻意不做的事）：
+
+        * 不写 ``grid_attributes["towers"]`` —— 因此不进入 Risk V1/V2、planning
+          exposure、Theta* V2 objective 或任何失效链取值计算；
+        * 不生成 coverage / 不把站址转成 C/N/S existing site / candidate site；
+        * 原始文件始终以只读方式解析，绝不回写。
+
+        ``source_crs`` 是**人工裁定**的确认值，不是解析得到的证据。
+        """
+
+        source_crs = str(source_crs or TOWERS_CONFIRMED_SOURCE_CRS)
+        result = load_towers(
+            path,
+            source_crs=source_crs,
+            crs_confirmed=True,
+            crs_source={"type": "user_confirmation", "origin": "human_adjudication"},
+            crs_evidence=[
+                {"type": "user_supplied", "value": source_crs,
+                 "note": TOWERS_CONFIRMED_SOURCE_CRS_NOTE},
+                *[deepcopy(item) for item in TOWERS_PERMISSION_EVIDENCE],
+            ],
+        )
+        self.session.state["towers"] = result
+        items = result.get("items") or []
+        coordinates = [(item["longitude"], item["latitude"]) for item in items]
+        resolved = (result.get("crs") or {}).get("source_crs") or {}
+        self._store_audit("towers", path, {
+            "row_count": result.get("count"),
+            "feature_count": result.get("count"),
+            "extent": ([min(point[0] for point in coordinates), min(point[1] for point in coordinates),
+                        max(point[0] for point in coordinates), max(point[1] for point in coordinates)]
+                       if coordinates else None),
+            "declared_crs": None,
+            "confirmed_crs": resolved.get("value") if resolved.get("confirmed") else None,
+            "geometry_health": {
+                "status": "passed" if not result.get("skipped") else "warning",
+                "feature_count": result.get("count"), "null": 0, "empty": 0,
+                "invalid": len(result.get("skipped") or []), "unsupported": 0,
+            },
+            "evidence": [
+                {"type": "crs_confirmation", "value": resolved.get("value"),
+                 "note": TOWERS_CONFIRMED_SOURCE_CRS_NOTE},
+                *[deepcopy(item) for item in TOWERS_PERMISSION_EVIDENCE],
+            ],
+            "provenance": provenance_record(
+                source_entity="local_map_sources:towers",
+                processing_activity="tower_site_reference_import",
+                derived_entity="towers",
+                derived_from=["local_map_sources:towers"],
+                method="read_only_table_parse_with_human_confirmed_source_crs",
+                note=(
+                    "仅登记真实站址位置；CGCS2000/EPSG:4490 为人工裁定（源文件未声明 CRS）；"
+                    "不生成 CNS 覆盖、不转 C/N/S existing site、不进入规划与风险数学。"
+                ),
+            ),
+        }, verify_content=True)
+        if save:
+            self.session.save()
+        return self.snapshot()
+
+    def restore_towers_from_source(self, path, save=False):
+        """Configured-source bootstrap: import once when the project has no towers yet."""
+
+        if (self.session.state.get("towers") or {}).get("items"):
+            return self.towers_snapshot()
+        return self.import_towers(path, save=save)
 
     def _migrate_landing_site_references(self, previous, current):
         old_by_id = {
@@ -486,12 +573,20 @@ class ReferenceDataService:
             })
         return []
 
-    def _store_audit(self, role, path, details):
+    def _store_audit(self, role, path, details, *, verify_content=False):
         audits = self.session.state.setdefault("source_audits", {
             "status": "not_calculated", "schema_version": 1, "count": 0, "items": {},
         })
         previous = audits.setdefault("items", {}).get(role)
-        audits["items"][role] = source_manifest(role, path, previous=previous, details=details)
+        verified_sha256 = None
+        if verify_content:
+            candidate = Path(str(path or "")).expanduser()
+            if candidate.is_file():
+                verified_sha256 = sha256_file(candidate)
+        audits["items"][role] = source_manifest(
+            role, path, previous=previous, details=details,
+            verified_sha256=verified_sha256,
+        )
         audits["count"] = len(audits["items"])
         audits["status"] = "passed"
 

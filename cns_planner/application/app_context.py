@@ -206,6 +206,34 @@ class ApplicationContext:
         self.workflow.layered_route_planner_service.source_status = source_status
         return source_status
 
+    # ------------------------------------------------- Towers Operational Integration V2
+
+    def evaluate_tower_obstacle_profiles(self, payload=None):
+        """派生铁塔障碍物高度事实 + 共塔宿主候选（仅 QGIS 线程读取真实源）。
+
+        地形必须是已确认垂直基准的 FABDEM DTM；建筑高度直接在真实建筑足迹上按塔坐标
+        做包含查询（层级无关的精确几何，不经过 L7/L8 建筑网格）。任何一步不可用都让
+        对应塔保持 ``unresolved``，绝不补 0。
+        """
+
+        from ..gis.fine_environment_adapter import FabdemWindowTerrainSource
+        from ..gis.tower_obstacle_adapter import build_tower_obstacle_facts
+
+        terrain_dtm = self.data.paths.get("terrain_dtm")
+        if not terrain_dtm:
+            raise ValueError("请先配置 verified FABDEM terrain_dtm")
+        terrain_source = FabdemWindowTerrainSource(terrain_dtm)
+        building_source = self.data.vector_role_source("buildings")
+
+        def facts_provider(towers, state):
+            return build_tower_obstacle_facts(
+                towers, terrain_source=terrain_source, building_source=building_source,
+            )
+
+        return self.workflow.evaluate_tower_obstacle_profiles(
+            payload, facts_provider=facts_provider,
+        )
+
     def evaluate_layered_route_candidate(self, payload=None):
         """Run one Layered Route Planner V1 evaluation against the verified real sources.
 

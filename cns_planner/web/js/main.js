@@ -5,9 +5,9 @@ import {buildGridOverlayCache,findGridCell as hitGridCell} from './map/grid_over
 import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/renderer.js';
 import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
-import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,entryExtent} from './map/display_layers.js';
-import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';
-import {updateLayeredLegends} from './workflow/layered_legend.js';
+import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,hitCnsTowerCandidate,entryExtent} from './map/display_layers.js';
+import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';import {attachTowerReferenceLayer,towerDetailContext} from './map/tower_reference_layer.js';
+import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend} from './workflow/map_legend.js';
 import {renderWorkflowSteps} from './workflow/steps.js';
 import {createWorkbench} from './workflow/workbench.js';
 import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
@@ -28,7 +28,7 @@ const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // 统一的地图图层开关（图层抽屉里全部 checkbox 都在这里）：layeredFeasibilityLayer 只画
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer'];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
@@ -42,7 +42,7 @@ const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
 const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text),measure=attachMeasureTool({$,canvas,paint,eventLonLat,getMode:()=>interactionMode,setMode:value=>{interactionMode=value;}});
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan',workbench:{step:1,tab:'operate',segs:{},scroll:0}}});
-const api=createApiClient(()=>state?.token,()=>flow?.revision),buildingFootprints=attachBuildingFootprintLayer({api,$,paint,getView:()=>view,size,visibleLonLatBounds});// 建筑轮廓：默认关闭 + zoom LOD 按需拉取，装配全在模块内
+const api=createApiClient(()=>state?.token,()=>flow?.revision),buildingFootprints=attachBuildingFootprintLayer({api,$,paint,getView:()=>view,size,visibleLonLatBounds}),towerReference=attachTowerReferenceLayer({canvas,paint,getPlan:()=>currentPlan,isEnabled:()=>!!$('towerLayer')?.checked,getInfo:()=>$('gridInfo'),escapeHtml:escapeValue,getTowerContext:towerId=>towerDetailContext(flow,towerId)});// 建筑轮廓：默认关闭 + zoom LOD 按需拉取，装配全在模块内；铁塔交互同为只读叶子模块
 // 右栏工作台视图状态：只保存展示导航（step / 一级 tab / 二级段 / 滚动位置）
 const workbench=createWorkbench({
   getState:()=>store.get().ui.workbench,
@@ -132,7 +132,7 @@ function displayPlan(){
   // 参考航路点跟随图层开关进入计划；是否真正显示仍由 LOD 决定（overview/medium 隐藏）
   const overlay=Step03.referenceOverlayModel(flow,{routes:switches.referenceRouteLayer,points:switches.referenceRoutePointLayer,landingSites:false});
   return buildDisplayPlan({flow,view,size:size(),screenPoint,screenToLonLat,layers:switches,referenceOverlay:overlay,
-    selectedReference,referenceFilters:referenceFilters(),filterReferenceSites:Step03.filterReferenceSites});
+    selectedReference,referenceFilters:referenceFilters(),filterReferenceSites:Step03.filterReferenceSites,towerHighlight:towerReference.highlightedTower()});
 }
 function drawWorkflowOverlay(){
   if(!view||!flow)return;
@@ -140,7 +140,7 @@ function drawWorkflowOverlay(){
   updateLodBadge($('lodStatus'),currentPlan,escapeHtml);
   drawWorkflowLayers({
     ctx,view,flow,plan:currentPlan,layers:layers(),screenPoint,profileHoverCoordinate,gridTheme:GridTheme,
-    routeEvidenceHighlight,
+    towerHighlight:towerReference.highlightedTower(),routeEvidenceHighlight,
     proposedPlanActions,
     drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
     drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint)
@@ -194,10 +194,12 @@ bindMapInteraction({
 });
 canvas.addEventListener('click',event=>{
   const info=$('gridInfo');
-  if(interactionMode!=='pan'){info.hidden=true;return;}
+  if(interactionMode!=='pan'){info.hidden=true;return;}const rect=map.getBoundingClientRect();
   // 可见聚合点的"放大到范围"优先于其下方被隐藏/弱化的参考对象命中
   const clusterTarget=hitClusterAt(event);
   if(clusterTarget&&clusterTarget.count>1){const box=entryExtent(clusterTarget);if(box)fitScreenBox(box);info.hidden=true;return;}
+  if(towerReference.candidateClick(event))return;
+  if(towerReference.detail(clusterTarget,event))return;// 铁塔详情：字段与"不派生通信能力"声明都在 tower_reference_layer.js
   // 参考对象交互只在 detail 档保留：overview/medium 下参考层被弱化或隐藏，不参与命中
   if(currentStep===3){
     const selected=hitReferenceObject(event);
@@ -206,7 +208,6 @@ canvas.addEventListener('click',event=>{
   const [lon,lat]=eventLonLat(event);
   const item=gridRenderCache.cells.length?findGridCell(lon,lat):null;
   if(!item){info.hidden=true;if(selectedReference){selectedReference=null;}return;}
-  const rect=map.getBoundingClientRect();
   info.innerHTML=formatGridDetails(item);
   info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
   info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
@@ -215,7 +216,7 @@ canvas.addEventListener('click',event=>{
 function hitClusterAt(event){
   if(!currentPlan)return null;
   const rect=canvas.getBoundingClientRect(),click=[event.clientX-rect.left,event.clientY-rect.top];
-  return hitDisplayEntry(currentPlan,click,{kind:'nodes'})||hitDisplayEntry(currentPlan,click,{kind:'sites'});
+  return hitDisplayEntry(currentPlan,click,{kind:'nodes'})||hitDisplayEntry(currentPlan,click,{kind:'sites'})||hitDisplayEntry(currentPlan,click,{kind:'towers'});
 }
 // 参考对象命中只在 detail 档保留（overview/medium 的参考层被弱化或隐藏，不参与交互）。
 // 其中参考航路点还要满足"当前 LOD 允许显示且图层开关打开"——referencePointsVisible
@@ -266,7 +267,7 @@ function syncLayerControls(){
   bindLayerControls({
     $,layerIds:LAYER_IDS,queue,paint,
     setGridOutline(value){gridDisplay.outline=value;},
-    updateGridNotice,updateGridThemeLegend,
+    updateGridNotice,updateGridThemeLegend,updateMapLegend,
     onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked)
   });
 }
@@ -284,7 +285,7 @@ function actionButton(id,handler){const button=$(id);if(button)button.onclick=as
 function renderWorkflow(){
   if(!flow)return;
   const referenceDiagnostics=referenceLayerDiagnostics(flow);
-  for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites]]){
+  for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites],['towerLayerStatus',referenceDiagnostics.towers]]){
     const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}
   }
   const step=STEPS[currentStep-1],body=workbench.body();
@@ -301,7 +302,7 @@ function renderWorkflow(){
     const gaps=cnsGapSegments();
     $('workflowStatus').textContent='项目：'+flow.project.name+' · 第 '+currentStep+' 步'+(gaps?' · CNS 缺口段 '+gaps:'');
   }
-  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));
+  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));updateMapLegend({$,flow});
   const storage=state?.project_storage||{};
   if($('projectRestore'))$('projectRestore').textContent=storage.automatic
     ? (flow.last_saved_at?'自动恢复项目已保存 · 建议另存到项目文件夹':'当前使用自动恢复项目')

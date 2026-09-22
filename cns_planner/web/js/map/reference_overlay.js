@@ -41,11 +41,12 @@ function diagnostic(collection,count,label){
 }
 
 export function referenceLayerDiagnostics(flow){
-  const routes=flow?.reference_routes||{},landing=flow?.reference_landing_sites||{};
+  const routes=flow?.reference_routes||{},landing=flow?.reference_landing_sites||{},towers=flow?.towers||{};
   return {
     routes:diagnostic(routes,routes.count,'航线'),
     points:diagnostic(routes,routes.point_count??routes.points?.length,'航路点'),
     landingSites:diagnostic(landing,landing.count,'起降点'),
+    towers:diagnostic(towers,towers.count,'铁塔站址'),
   };
 }
 

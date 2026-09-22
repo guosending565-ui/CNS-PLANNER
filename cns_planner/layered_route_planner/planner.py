@@ -97,6 +97,22 @@ def _terrain_elevation(terrain_fact):
     return None, str(fact.get("reason") or "terrain_data_unavailable")
 
 
+def _tower_profile_status(cells):
+    """铁塔障碍物事实的整体状态（只描述事实，不做任何风险判断）。"""
+
+    statuses = set()
+    for cell in cells or []:
+        if not isinstance(cell, dict):
+            continue
+        fact = cell.get("towers") if isinstance(cell.get("towers"), dict) else {}
+        statuses.add(str(fact.get("data_status") or "no_towers"))
+    if "unknown" in statuses:
+        return "unresolved_tower_heights_present"
+    if "passed" in statuses:
+        return "resolved"
+    return "no_towers_in_scope"
+
+
 def _grid_audit(source_audits, role):
     """One source audit record (asset identity), or ``None`` when it is not registered."""
 
@@ -118,13 +134,13 @@ def _grid_audit(source_audits, role):
 
 def build_layer_feasibility_mask(
     *, request, cruise_altitude, cells, feasibility_policy, building_clearance_policy,
-    source_audits=None, grid_level=None, adapter=None,
+    source_audits=None, grid_level=None, adapter=None, tower_clearance_policy=None,
 ):
     """Build the coarse strategic vertical envelope for one explicitly selected layer.
 
     ``cells`` items are GIS-boundary canonical facts::
 
-        {"grid_id": str, "terrain": {...}, "buildings": {...}}
+        {"grid_id": str, "terrain": {...}, "buildings": {...}, "towers": {...}}
 
     Rules (fail-closed, missing is never zero):
 
@@ -134,7 +150,11 @@ def build_layer_feasibility_mask(
     * a building cell with ``valid_height_fraction < 1`` or a missing height / missing
       terrain elevation ⇒ ``unknown``, never 0;
     * otherwise ``building_floor = terrain_cell_max + height_max + existing confirmed
-      building vertical clearance`` (the existing ``BuildingClearanceV1`` semantics).
+      building vertical clearance`` (the existing ``BuildingClearanceV1`` semantics);
+    * a cell containing real towers with a confirmed ``tower_clearance_policy`` ⇒
+      ``tower_floor = max(tower_top_egm2008) + explicit tower vertical clearance``; a cell
+      with towers but an unconfirmed policy or an unresolved tower top is ``unknown``
+      (never "no obstacle"), and it is **never** a risk-factor input.
     """
 
     cruise = cruise_altitude if isinstance(cruise_altitude, dict) else {}
@@ -150,6 +170,15 @@ def build_layer_feasibility_mask(
     building_vertical = (
         float(building_policy["vertical_clearance_m"]) if building_confirmed else None
     )
+    tower_policy = tower_clearance_policy if isinstance(tower_clearance_policy, dict) else {}
+    tower_clearance_vertical = tower_policy.get("tower_vertical_clearance_m")
+    tower_clearance_horizontal = tower_policy.get("tower_horizontal_clearance_m")
+    tower_policy_confirmed = (
+        str(tower_policy.get("status") or "") == "confirmed"
+        and tower_clearance_vertical is not None
+        and tower_clearance_horizontal is not None
+    )
+    tower_vertical = float(tower_clearance_vertical) if tower_policy_confirmed else None
     records = {}
     for raw in cells or []:
         item = raw if isinstance(raw, dict) else {}
@@ -274,6 +303,56 @@ def build_layer_feasibility_mask(
                         "既有建筑垂直净空）"
                     )
 
+        # ---- 真实铁塔净空（Obstacle / Clearance，**不是** risk factor） --------------
+        # 顺序与 COARSE_ENVELOPE_SEMANTICS 一致：terrain → building → tower。
+        # 塔是点几何事实，网格只把它索引到相关 cell；同一 cell 内取塔顶最高值（保守）。
+        # 有任何一塔高度未解析 ⇒ unknown（绝不当作"没有塔"）。
+        tower_fact = item.get("towers") if isinstance(item.get("towers"), dict) else {}
+        tower_count = tower_fact.get("tower_count")
+        tower_count = int(tower_count) if _finite(tower_count) else 0
+        tower_unresolved = tower_fact.get("unresolved_count")
+        tower_unresolved = int(tower_unresolved) if _finite(tower_unresolved) else 0
+        tower_top = tower_fact.get("tower_top_max_egm2008_m")
+        tower_top = float(tower_top) if _finite(tower_top) else None
+        tower_status, tower_reason_code, tower_reason = "not_applicable", None, None
+        if tower_count > 0:
+            if not tower_policy_confirmed:
+                tower_status = "unknown"
+                tower_reason_code = "tower_clearance_not_configured"
+                tower_reason = (
+                    f"该格有 {tower_count} 个真实铁塔，但 tower_clearance_policy 未确认"
+                    "（垂直/水平净空都没有默认值）：塔净空未知，既不是 feasible 也不是 blocked"
+                )
+            elif tower_fact.get("data_status") != "passed" or tower_top is None:
+                tower_status = "unknown"
+                tower_reason_code = "tower_height_unresolved"
+                tower_reason = (
+                    f"该格有 {tower_count} 个真实铁塔，其中 {tower_unresolved} 个塔顶 EGM2008 "
+                    "正高未解析：塔净空未知，绝不当作无塔"
+                )
+            else:
+                tower_floor = tower_top + tower_clearance_vertical
+                if altitude is None:
+                    tower_status = "unknown"
+                    tower_reason_code = "tower_clearance_not_configured"
+                    tower_reason = "巡航高度无法解析为 canonical EGM2008，塔净空未知"
+                elif altitude < tower_floor:
+                    tower_status = "blocked"
+                    tower_reason_code = "altitude_below_tower_clearance_floor"
+                    tower_reason = (
+                        f"巡航高度 {_round(altitude)} m 低于 tower clearance floor "
+                        f"{_round(tower_floor)} m（= 该格真实塔顶最高 "
+                        f"{_round(tower_top)} m + 显式 tower 垂直净空 "
+                        f"{_round(tower_clearance_vertical)}）"
+                    )
+                else:
+                    tower_status = "passed"
+        tower_resolved_top = tower_top if tower_status in ("passed", "blocked") else None
+        if tower_status == "blocked" and status != "blocked":
+            status, reason_code, reason = "blocked", tower_reason_code, tower_reason
+        elif tower_status == "unknown" and status == "feasible":
+            status, reason_code, reason = "unknown", tower_reason_code, tower_reason
+
         counts[status] += 1
         cell = mask_cell(
             grid_id, status=status, cruise_altitude_egm2008_m=altitude,
@@ -283,12 +362,21 @@ def build_layer_feasibility_mask(
             building_height_max_m=_round(building_height),
             building_required_clearance_egm2008_m=_round(building_floor),
             reason_code=reason_code, reason=reason,
+            tower_count=(tower_count or None),
+            tower_unresolved_count=(tower_unresolved or None),
+            tower_top_max_egm2008_m=_round(tower_resolved_top),
+            tower_required_clearance_egm2008_m=(
+                _round(tower_resolved_top + tower_clearance_vertical)
+                if tower_resolved_top is not None and tower_policy_confirmed else None
+            ),
             provenance={
                 **provenance,
                 "terrain_data_status": (item.get("terrain") or {}).get("data_status"),
                 "building_data_status": building_fact.get("data_status"),
                 "valid_height_fraction": fraction,
                 "building_clearance_policy_status": building_policy.get("status"),
+                "tower_data_status": tower_fact.get("data_status"),
+                "tower_clearance_policy_status": tower_policy.get("status"),
             },
         )
         result_cells[grid_id] = cell
@@ -307,6 +395,21 @@ def build_layer_feasibility_mask(
         "building_vertical_clearance_m": building_vertical,
         "building_clearance_policy_status": building_policy.get("status"),
         "building_clearance_source": building_policy.get("source"),
+        # ---- 真实铁塔净空（障碍物，不是风险因子） --------------------------------
+        "tower_vertical_clearance_m": tower_vertical,
+        "tower_horizontal_clearance_m": (
+            float(tower_clearance_horizontal) if tower_policy_confirmed else None
+        ),
+        "tower_clearance_policy_status": tower_policy.get("status") or "not_configured",
+        "tower_clearance_source": tower_policy.get("source"),
+        "tower_obstacle_profile_status": _tower_profile_status(cells),
+        "tower_cell_count": sum(
+            1 for cell in result_cells.values() if (cell.get("tower_count") or 0) > 0
+        ),
+        "tower_unresolved_cell_count": sum(
+            1 for cell in result_cells.values() if (cell.get("tower_unresolved_count") or 0) > 0
+        ),
+        "tower_obstacle_semantics": "obstacle_clearance_not_a_risk_factor",
         "cruise_altitude": {
             "status": cruise.get("status"),
             "altitude_egm2008_m": altitude,
@@ -325,11 +428,18 @@ def build_layer_feasibility_mask(
                 "vertical_clearance_m": building_policy.get("vertical_clearance_m"),
                 "source": building_policy.get("source"),
             },
+            "tower_clearance_policy": {
+                "status": tower_policy.get("status"),
+                "tower_vertical_clearance_m": tower_policy.get("tower_vertical_clearance_m"),
+                "tower_horizontal_clearance_m": tower_policy.get("tower_horizontal_clearance_m"),
+                "source": tower_policy.get("source"),
+            },
             "cruise_altitude": cruise.get("altitude_egm2008_m"),
             "cells": {
                 grid_id: {
                     "terrain": (records[grid_id].get("terrain") or {}),
                     "buildings": (records[grid_id].get("buildings") or {}),
+                    "towers": (records[grid_id].get("towers") or {}),
                 }
                 for grid_id in sorted(records)
             },

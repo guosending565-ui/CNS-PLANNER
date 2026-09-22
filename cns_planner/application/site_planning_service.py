@@ -40,6 +40,7 @@ class SitePlanningService:
         actions = _candidate_actions(
             targets, state.get("existing_cns_facilities") or {},
             state.get("candidate_sites") or {}, state.get("device_catalog") or {},
+            state.get("tower_colocation_candidates") or {},
         )
         impacts = [self._what_if(action, targets) for action in actions]
         result = self.planner.plan(
@@ -170,7 +171,7 @@ def _planning_targets(gap_v2, required_cns):
     return targets
 
 
-def _candidate_actions(targets, existing, candidates, catalog):
+def _candidate_actions(targets, existing, candidates, catalog, tower_colocation=None):
     target_subsystems = {item["subsystem"] for item in targets}
     devices = [
         item for item in (catalog or {}).get("items") or []
@@ -181,6 +182,13 @@ def _candidate_actions(targets, existing, candidates, catalog):
         installed = {str(item.get("device_id") or "") for item in facility.get("devices") or []}
         for device in devices:
             actions.append(_action(facility, device, installed, is_existing=True))
+    # 真实铁塔共塔候选（TowerColocationCandidate）：复用同一个 CandidateSite 契约，
+    # 因此和用户导入的候选站址走同一条 action 生成路径。它们的 reuse_class 是
+    # ``tower_colocation_host``，由 ReuseFirstSitePlannerV1 的 tier 词典序保证
+    # "共塔优先、普通候选站 fallback"。
+    for site in (tower_colocation or {}).get("items") or []:
+        for device in devices:
+            actions.append(_action(site, device, set(), is_existing=False))
     for site in (candidates or {}).get("items") or []:
         for device in devices:
             actions.append(_action(site, device, set(), is_existing=False))
@@ -224,6 +232,8 @@ def _action(site, device, installed, is_existing):
     status = "ineligible" if reasons else "unknown" if unknown else "eligible"
     eligibility_reasons = [*reasons, *unknown]
     action_type = "add_device_to_existing_facility" if is_existing else "add_device_to_explicit_site"
+    metadata = site.get("metadata") if isinstance(site.get("metadata"), dict) else {}
+    host = metadata.get("host") if isinstance(metadata.get("host"), dict) else None
     return {
         "action_id": f"{reuse_class or 'unknown'}:{identifier}:{device_id}",
         "action_type": action_type,
@@ -235,6 +245,9 @@ def _action(site, device, installed, is_existing):
         "coordinate": deepcopy(coordinate),
         "vertical": vertical,
         "planning_profile": profile,
+        # 共塔候选的宿主溯源：只搬运事实，不推断任何设备/安装结论。
+        "host": deepcopy(host),
+        "planning_origin": deepcopy(metadata.get("planning_origin")),
         "source": str(profile.get("source") or site.get("source") or "未记录"),
         "confirmed": status == "eligible",
         "eligibility": {"status": status, "reasons": eligibility_reasons},

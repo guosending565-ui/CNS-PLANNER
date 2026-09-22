@@ -96,6 +96,10 @@ FEASIBILITY_REASON_CODES = (
     "building_height_or_ground_elevation_unresolved",
     "altitude_below_building_clearance_floor",
     "building_vertical_clearance_not_confirmed",
+    # Towers Operational Integration V2：真实铁塔塔高进入净空（**不是**风险因子）。
+    "tower_clearance_not_configured",
+    "tower_height_unresolved",
+    "altitude_below_tower_clearance_floor",
 )
 
 #: The mask is a strategic vertical envelope: it answers "is this whole L8 cell above the
@@ -116,6 +120,16 @@ COARSE_ENVELOPE_SEMANTICS = {
     "partial_height_coverage_is_unknown_never_zero": True,
     "unknown_is_never_feasible": True,
     "airspace": "display_only_not_used_for_feasibility",
+    # Towers Operational Integration V2：塔高只进入障碍物/净空，永不进入风险数学。
+    "tower_floor": (
+        "cell_intersecting_real_tower_top_max_egm2008_plus_explicit_tower_vertical_clearance"
+    ),
+    "tower_horizontal_clearance_is_explicit": True,
+    "tower_horizontal_clearance_default": None,
+    "tower_clearance_has_no_default": True,
+    "tower_height_unresolved_is_unknown_never_obstacle_free": True,
+    "tower_point_geometry_is_authoritative": True,
+    "tower_obstacle_is_not_a_risk_factor": True,
 }
 
 POLICY_SEMANTICS = {
@@ -547,6 +561,15 @@ def default_layer_feasibility_mask(altitude_layer_id=None, status="not_calculate
         "building_vertical_clearance_m": None,
         "building_clearance_policy_status": None,
         "building_clearance_source": None,
+        # Towers Operational Integration V2（铁塔净空；没有默认值，未配置即 not_configured）
+        "tower_vertical_clearance_m": None,
+        "tower_horizontal_clearance_m": None,
+        "tower_clearance_policy_status": None,
+        "tower_clearance_source": None,
+        "tower_obstacle_profile_status": None,
+        "tower_cell_count": 0,
+        "tower_unresolved_cell_count": 0,
+        "tower_obstacle_semantics": "obstacle_clearance_not_a_risk_factor",
         "cruise_altitude": None,
         "feasibility_policy_fingerprint": None,
         "request_fingerprint": None,
@@ -612,6 +635,10 @@ def mask_fingerprint(mask):
             "terrain_vertical_clearance_m": (mask or {}).get("terrain_vertical_clearance_m"),
             "building_vertical_clearance_m": (mask or {}).get("building_vertical_clearance_m"),
             "building_clearance_source": (mask or {}).get("building_clearance_source"),
+            "tower_vertical_clearance_m": (mask or {}).get("tower_vertical_clearance_m"),
+            "tower_horizontal_clearance_m": (mask or {}).get("tower_horizontal_clearance_m"),
+            "tower_clearance_source": (mask or {}).get("tower_clearance_source"),
+            "tower_obstacle_profile_status": (mask or {}).get("tower_obstacle_profile_status"),
             "cruise_altitude": (mask or {}).get("cruise_altitude"),
             "feasibility_policy_fingerprint": (mask or {}).get("feasibility_policy_fingerprint"),
             "request_fingerprint": (mask or {}).get("request_fingerprint"),
@@ -634,6 +661,8 @@ def mask_cell(
     terrain_floor_egm2008_m, terrain_clearance_m, building_count,
     building_height_max_m, building_required_clearance_egm2008_m,
     reason_code, reason=None, provenance=None,
+    tower_count=None, tower_unresolved_count=None, tower_top_max_egm2008_m=None,
+    tower_required_clearance_egm2008_m=None,
 ):
     return {
         "grid_id": str(grid_id),
@@ -651,6 +680,12 @@ def mask_cell(
         "building_margin_m": _margin(
             cruise_altitude_egm2008_m, building_required_clearance_egm2008_m,
         ),
+        # 真实铁塔障碍物事实：塔高只用于净空判定，绝不进入任何风险或代价项。
+        "tower_count": tower_count,
+        "tower_unresolved_count": tower_unresolved_count,
+        "tower_top_max_egm2008_m": tower_top_max_egm2008_m,
+        "tower_required_clearance_egm2008_m": tower_required_clearance_egm2008_m,
+        "tower_margin_m": _margin(cruise_altitude_egm2008_m, tower_required_clearance_egm2008_m),
         "provenance": deepcopy(provenance or {}),
         "feasibility": "coarse_strategic_vertical_envelope",
     }

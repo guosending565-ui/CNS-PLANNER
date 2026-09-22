@@ -16,8 +16,8 @@ from .cns_service_model import normalize_service_model_spec
 
 SUBSYSTEMS = ("C", "N", "S")
 REUSE_CLASSES = (
-    "existing_cns_facility", "existing_shared_site", "candidate_site",
-    "new_build_candidate",
+    "existing_cns_facility", "existing_shared_site", "tower_colocation_host",
+    "candidate_site", "new_build_candidate",
 )
 
 

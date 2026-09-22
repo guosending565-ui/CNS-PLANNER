@@ -53,6 +53,7 @@ from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
+from .tower_obstacle_service import TowerObstacleService
 from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
@@ -106,6 +107,8 @@ _SNAPSHOT_OMITTED_STATE_KEYS = (
 #: 这些容器只会被整体替换（copy-on-write），快照序列化后即结束生命周期。
 _SNAPSHOT_SHARED_STATE_KEYS = (
     "grid", "grid_attributes", "grid_risk", "grid_risk_v2", "layered_route_candidates",
+    # Towers Operational Integration V2：373 条派生事实，整体替换、只读消费。
+    "tower_obstacle_profiles", "tower_colocation_candidates",
 )
 
 
@@ -365,6 +368,12 @@ class WorkflowService:
         # container are shared.  It never writes ``operational_routes`` / CNS results and
         # never switches the project's default ``route_planner`` (still ``route_planner_v1``).
         self.layered_route_planner_service = LayeredRoutePlannerService(
+            self.session, self.invalidation_service, snapshot,
+        )
+        # Towers Operational Integration V2：真实铁塔的派生事实（障碍物高度 + 共塔宿主候选）。
+        # 两个派生层都只服务自己那条链路 —— 塔高只进航路净空，共塔候选只进 CNS 规划；
+        # 谁都不进入 population×shelter 或 Risk Framework V2 数学。
+        self.tower_obstacle_service = TowerObstacleService(
             self.session, self.invalidation_service, snapshot,
         )
         # A Risk Framework V2 / layer / terrain-building / policy change stales only the
@@ -764,6 +773,17 @@ class WorkflowService:
     def device_catalog_snapshot(self): return deepcopy(self.state.get("device_catalog") or {})
     def reference_landing_sites_snapshot(self): return self.reference_data_service.landing_sites_snapshot()
     def reference_routes_snapshot(self): return self.reference_data_service.routes_snapshot()
+    def towers_snapshot(self): return self.reference_data_service.towers_snapshot()
+    def tower_obstacle_profiles_snapshot(self): return self.tower_obstacle_service.result_snapshot()
+    def tower_colocation_candidates_snapshot(self): return self.tower_obstacle_service.colocation_snapshot()
+    def tower_integration_policies_snapshot(self): return self.tower_obstacle_service.policy_snapshot()
+    def evaluate_tower_obstacle_profiles(self, payload=None, *, facts_provider=None):
+        return self.tower_obstacle_service.evaluate(payload, facts_provider=facts_provider)
+    def import_towers(self, path):
+        result = self.reference_data_service.import_towers(path)
+        # 铁塔源真的换了：派生事实与其下游必须过时（绝不触发 Risk V2）。
+        self.invalidation_service.tower_data_changed("tower_source_imported", include_derived=True)
+        return result
     def airspace_policies_snapshot(self): return deepcopy(self.state.get("airspace_policies") or {})
     def equipment_reference_catalog_snapshot(self): return self.reference_data_service.equipment_catalog_snapshot()
     def required_cns_snapshot(self): return deepcopy(self.state.get("required_cns") or {})
@@ -1058,6 +1078,7 @@ class WorkflowService:
     def configure_reference_sources(self, paths, save=False):
         landing_path = (paths or {}).get("reference_landing_sites")
         route_path = (paths or {}).get("reference_routes")
+        tower_path = (paths or {}).get("towers")
         if not route_path and "reference_routes" not in (paths or {}):
             # 数据源路径本身丢失时（自动项目不写 data_sources.json）回退到项目状态里
             # 保存的来源，避免"项目重新打开后还需要重新配置数据源"。显式传入空值表示
@@ -1081,7 +1102,16 @@ class WorkflowService:
             # 是否真正恢复仍取决于源文件自身的 source_crs + crs_confirmed=true 声明。
             if not (self.state.get("reference_routes") or {}).get("items"):
                 self.reference_data_service.restore_routes_from_source(route_path, save=False)
-        if save and (landing_path or route_path):
+        if tower_path:
+            # 真实通信铁塔站址（只读参考数据）：只登记来源与审计，首次配置时按源恢复一次。
+            # 绝不写入 grid_attributes、绝不生成 CNS 覆盖或把站址转成 C/N/S existing site。
+            self.source_audit_service.register_quick("towers", tower_path)
+            if not (self.state.get("towers") or {}).get("items"):
+                self.reference_data_service.restore_towers_from_source(tower_path, save=False)
+                self.invalidation_service.tower_data_changed(
+                    "tower_source_restored", include_derived=True,
+                )
+        if save and (landing_path or route_path or tower_path):
             self.session.save()
         return self.snapshot()
     def delete_node(self, node_id): return self.route_service.delete_node(node_id)

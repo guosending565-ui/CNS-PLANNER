@@ -99,7 +99,7 @@ PLANNER_CAPABILITY = {
 
 #: Traversal rejection vocabulary.
 LOS_REJECTION_REASONS = (
-    "terrain", "building", "regulatory", "unknown", "hard_constraint", "outside_grid",
+    "terrain", "building", "tower", "regulatory", "unknown", "hard_constraint", "outside_grid",
 )
 
 SEARCH_SEMANTICS = {
@@ -1072,6 +1072,9 @@ def _build_gate(*, graph, index_map, mask, hard_constraints, regulatory, altitud
                 return "terrain", reason_code
             if reason_code == "altitude_below_building_clearance_floor":
                 return "building", reason_code
+            # 真实铁塔塔高是**障碍物/净空**约束，不是风险项，也不进入 objective。
+            if reason_code == "altitude_below_tower_clearance_floor":
+                return "tower", reason_code
             return "unknown", reason_code or "blocked_without_terrain_or_building_reason"
         return "unknown", reason_code or "feasibility_unknown"
 

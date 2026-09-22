@@ -448,6 +448,9 @@ class LayeredRoutePlannerService:
                 "source": building_policy.get("source"),
                 "reused_not_redefined": True,
             },
+            # 真实铁塔净空：没有默认值；未配置时显式 not_configured / unresolved，
+            # 绝不用一个没有工程依据的数值让航路"看起来通过了"。
+            "tower_clearance_policy": _tower_clearance_readiness(state, mask),
             "sources": deepcopy(source_status or {}),
             "feasibility_mask": {
                 "status": (mask or {}).get("status", "not_calculated"),
@@ -599,12 +602,14 @@ class LayeredRoutePlannerService:
                 f"读取 coarse 地形/建筑事实失败：{exc}", "feasibility_source_read_failed", key,
             )
         building_policy = state.get("building_clearance_policy") or {}
+        tower_policy = state.get("tower_clearance_policy") or {}
         describe = getattr(active_adapter, "describe", None)
         mask = build_layer_feasibility_mask(
             request=request, cruise_altitude=cruise, cells=cells,
             feasibility_policy=feasibility, building_clearance_policy=building_policy,
             source_audits=state.get("source_audits") or {}, grid_level=grid.get("level"),
             adapter=describe() if callable(describe) else None,
+            tower_clearance_policy=tower_policy,
         )
         hard_constraints = payload.get("hard_constraints")
         if hard_constraints is None:
@@ -1183,5 +1188,41 @@ class LayeredRoutePlannerService:
 
 # ``GridGraph`` is the existing MH/T adjacency/corner-guard implementation; the planner
 # consumes it directly, so it is not re-implemented here.
+
+
+def _tower_clearance_readiness(state, mask):
+    """真实铁塔净空的 readiness 投影（只陈述配置与事实状态，不给任何结论）。"""
+
+    state = state or {}
+    policy = state.get("tower_clearance_policy") or {}
+    profiles = state.get("tower_obstacle_profiles") or {}
+    towers = state.get("towers") or {}
+    vertical = policy.get("tower_vertical_clearance_m")
+    horizontal = policy.get("tower_horizontal_clearance_m")
+    configured = vertical is not None and horizontal is not None
+    confirmed = str(policy.get("status") or "") == "confirmed"
+    if configured and confirmed:
+        status = "configured"
+    elif not configured:
+        status = "not_configured"
+    else:
+        status = "pending_confirmation"
+    return {
+        "status": status,
+        "confirmed": confirmed,
+        "tower_vertical_clearance_m": vertical,
+        "tower_horizontal_clearance_m": horizontal,
+        "source": policy.get("source"),
+        "tower_count": towers.get("count"),
+        "obstacle_profile_status": profiles.get("status") or "not_calculated",
+        "obstacle_profile_resolved_count": profiles.get("resolved_count"),
+        "obstacle_profile_unresolved_count": profiles.get("unresolved_count"),
+        "mask_tower_cell_count": (mask or {}).get("tower_cell_count"),
+        "mask_tower_unresolved_cell_count": (mask or {}).get("tower_unresolved_cell_count"),
+        "semantics": "obstacle_clearance_not_a_risk_factor",
+        "in_risk_framework_v2": False,
+        "in_theta_star_objective": False,
+    }
+
 
 __all__ = ["LayeredRoutePlannerService", "POLICY_SEMANTICS", "REQUEST_SEMANTICS"]

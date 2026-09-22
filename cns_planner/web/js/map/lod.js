@@ -20,29 +20,57 @@ export const LOD_THRESHOLDS={medium:2200,detail:420};
 export const CLUSTER_PIXEL_THRESHOLD={overview:26,medium:15,detail:0};
 
 /**
+ * 真实铁塔图标的显示模式（复用同一套 LOD，不新增第二套阈值）。
+ *
+ * ``cluster``          只显示聚合点；孤立单塔不绘制（也不参与命中）。
+ * ``cluster_isolated`` 仍以聚合为主，只有聚合不住的孤立铁塔画出简化符号。
+ * ``single``           每一个真实铁塔都画独立铁塔图标（逐塔显示）。
+ */
+export const TOWER_MARKER_MODES={
+  overview:'cluster',
+  medium:'cluster_isolated',
+  detail:'single'
+};
+
+/**
  * 参考航线与航路点的显示阈值：航路点只有在足够近时才显示。
  * scenario/operational/CNS gap 线宽按档整体降低，避免抢地图。
+ *
+ * ``towerMarkerMode`` / ``towerSymbolScale`` 是铁塔图层专用的同一套 LOD 参数：
+ * overview 只显示聚合点，medium 允许孤立塔显示简化符号，detail 逐塔显示完整符号。
  */
 export const ROUTE_STYLES={
   overview:{
     routeWidth:1,routeAlpha:.30,referenceWidth:1,referenceAlpha:.30,
     scenarioWidth:1.5,scenarioAlpha:.55,operationalWidth:2.2,operationalAlpha:.85,
     gapWidth:2.4,gapAlpha:.75,infeasibleWidth:1,pointRadius:2.4,pointAlpha:.55,
-    nameMode:'hidden',markerMode:'cluster',showAllNames:false,coverageRing:false
+    nameMode:'hidden',markerMode:'cluster',showAllNames:false,coverageRing:false,
+    towerMarkerMode:TOWER_MARKER_MODES.overview,towerSymbolScale:.7
   },
   medium:{
     routeWidth:1.5,routeAlpha:.45,referenceWidth:1.5,referenceAlpha:.55,
     scenarioWidth:2,scenarioAlpha:.7,operationalWidth:3,operationalAlpha:.92,
     gapWidth:3.2,gapAlpha:.85,infeasibleWidth:1.2,pointRadius:3,pointAlpha:.8,
-    nameMode:'avoid',markerMode:'cluster',showAllNames:false,coverageRing:true
+    nameMode:'avoid',markerMode:'cluster',showAllNames:false,coverageRing:true,
+    towerMarkerMode:TOWER_MARKER_MODES.medium,towerSymbolScale:.78
   },
   detail:{
     routeWidth:2,routeAlpha:.6,referenceWidth:1.8,referenceAlpha:.7,
     scenarioWidth:2.4,scenarioAlpha:.75,operationalWidth:3.6,operationalAlpha:1,
     gapWidth:4,gapAlpha:.95,infeasibleWidth:1.4,pointRadius:3.4,pointAlpha:.95,
-    nameMode:'avoid',markerMode:'single',showAllNames:false,coverageRing:true
+    nameMode:'avoid',markerMode:'single',showAllNames:false,coverageRing:true,
+    towerMarkerMode:TOWER_MARKER_MODES.detail,towerSymbolScale:1
   }
 };
+
+/**
+ * 当前 LOD 档位下单个铁塔是否真的被画出来。
+ * @param {'overview'|'medium'|'detail'} level
+ * @returns {boolean} overview 只画聚合点，因此单塔返回 false
+ */
+export function towerSingleVisible(level){
+  return (TOWER_MARKER_MODES[level]||TOWER_MARKER_MODES.detail)!=='cluster';
+}
 
 /** 三档的中文名，用于地图角标与状态栏。 */
 export const LOD_LABELS={overview:'概述',medium:'中等',detail:'细节'};

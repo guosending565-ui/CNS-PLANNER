@@ -16,6 +16,40 @@ function collectionList(collection,kind){
   }).join('')+(items.length>20?'<div class="empty-note">另有 '+(items.length-20)+' 项</div>':'');
 }
 
+// ---- 共塔候选（真实铁塔宿主） -------------------------------------------------
+// 共塔候选是**宿主候选**，不是已有 CNS 设备：列表只展示宿主事实与确认状态。
+export const REUSE_CLASS_LABEL={
+  existing_cns_facility:'已有站点',
+  existing_shared_site:'共享站址',
+  tower_colocation_host:'共塔候选',
+  candidate_site:'普通候选',
+  new_build_candidate:'新建候选'
+};
+
+export function reuseClassLabel(value){
+  return REUSE_CLASS_LABEL[value]||value||'unknown';
+}
+
+export function towerColocationList(collection){
+  const items=collection?.items||[];
+  if(!items.length)return '<div class="empty-note">尚无共塔候选（先导入真实铁塔，再执行"铁塔派生"）</div>';
+  const policy=collection.policy||{};
+  const rows=items.slice(0,20).map(item=>{
+    const host=(item.metadata||{}).host||{},profile=(item.metadata||{}).obstacle_profile||{};
+    const top=profile.tower_top_orthometric_m;
+    return '<div class="list-row"><span><b>共塔候选</b> '+escapeHtml(host.host_tower_id||item.site_id)
+      +'<br><small>Tower '+escapeHtml(host.host_tower_name||'—')+' · '+escapeHtml(host.host_site_type||'—')
+      +' · 设备挂载'+(host.device_mount_confirmed?'已确认':'未确认')+'</small>'
+      +'<br><small>塔顶 '+(typeof top==='number'?top.toFixed(1)+' m EGM2008':'未解析')
+      +' · 位置'+(host.site_position_available?'可用':'未知')+'</small></span>'
+      +'<small>'+escapeHtml(reuseClassLabel((item.planning_profile||{}).reuse_class))+'</small></div>';
+  }).join('');
+  return '<div class="parameter-note">共塔候选 = 真实铁塔作为<b>共塔宿主</b>的规划候选；它们不是已有 CNS 设备，也不带任何设备性能参数。'
+    +'策略状态：'+escapeHtml(policy.status||'pending_confirmation')
+    +' · 优先共塔（prefer，不是 force）：塔不能满足缺口时仍会生成普通候选站。</div>'
+    +rows+(items.length>20?'<div class="empty-note">另有 '+(items.length-20)+' 项</div>':'');
+}
+
 function gapList(analysis){
   if(!analysis?.routes?.length)return '<div class="empty-note">尚未运行 CNS Gap Analysis</div>';
   const label=status=>status==='passed'?'满足':statusText(status);
@@ -56,9 +90,9 @@ function gapV2List(result){
 function sitePlanSummary(result){
   if(!result||result.status==='not_calculated')return '<div class="empty-note">尚未运行 Reuse-first CNS Site Planner</div>';
   const impacts=new Map((result.candidate_impacts||[]).map(item=>[item.action_id,item]));
-  const candidates=(result.candidate_actions||[]).slice(0,20).map(action=>{const impact=impacts.get(action.action_id)||{};return '<div class="list-row"><span><b>'+escapeHtml(action.action_id)+'</b><br><small>'+escapeHtml(action.reuse_class||'unknown')+' · '+escapeHtml(action.eligibility?.status||'unknown')+'</small></span><small>what-if gain '+formatMetric(impact.planning_gap_reduction_m,'m')+'</small></div>';}).join('');
-  const selected=(result.selected_actions||[]).map(action=>'<div class="coverage-card"><b>'+escapeHtml(action.action_id)+'</b><span>'+escapeHtml(action.reuse_class)+' · '+escapeHtml(action.subsystem)+' · marginal '+formatMetric(action.marginal_planning_gap_reduction_m,'m')+'</span><small>'+escapeHtml(action.score_semantics||'action_count_proxy')+'</small></div>').join('');
-  return '<div class="coverage-card"><b>'+escapeHtml(result.status||'unknown')+' · Proposal Only</b><span>target '+formatMetric(result.target_planning_gap_length_m,'m')+' · projected resolved '+formatMetric(result.resolved_planning_gap_length_m,'m')+' · remaining '+formatMetric(result.remaining_planning_gap_length_m,'m')+'</span><span>existing '+(result.existing_reuse_count||0)+' · shared '+(result.shared_site_reuse_count||0)+' · candidate '+(result.candidate_site_count||0)+' · new-build '+(result.new_build_count||0)+'</span><small>'+escapeHtml(result.cost_summary?.cost_semantics||'action_count_proxy_no_currency')+'；requires P12 closed-loop validation</small></div><h4>CandidateAction what-if</h4>'+candidates+'<h4>Selected proposal</h4>'+(selected||'<div class="empty-note">没有产生正 confirmed planning-gap reduction 的 eligible action</div>');
+  const candidates=(result.candidate_actions||[]).slice(0,20).map(action=>{const impact=impacts.get(action.action_id)||{};const host=action.host||{};return '<div class="list-row"><span><b>'+escapeHtml(action.action_id)+'</b>'+(action.reuse_class==='tower_colocation_host'?' <b>共塔候选</b>':'')+'<br><small>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.eligibility?.status||'unknown')+(host.host_tower_id?' · Tower '+escapeHtml(host.host_tower_id):'')+'</small></span><small>what-if gain '+formatMetric(impact.planning_gap_reduction_m,'m')+'</small></div>';}).join('');
+  const selected=(result.selected_actions||[]).map(action=>'<div class="coverage-card"><b>'+escapeHtml(action.action_id)+'</b><span>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.subsystem)+' · marginal '+formatMetric(action.marginal_planning_gap_reduction_m,'m')+'</span><small>'+escapeHtml(action.score_semantics||'action_count_proxy')+'</small></div>').join('');
+  return '<div class="coverage-card"><b>'+escapeHtml(result.status||'unknown')+' · Proposal Only</b><span>target '+formatMetric(result.target_planning_gap_length_m,'m')+' · projected resolved '+formatMetric(result.resolved_planning_gap_length_m,'m')+' · remaining '+formatMetric(result.remaining_planning_gap_length_m,'m')+'</span><span>已有站点 '+(result.existing_reuse_count||0)+' · 共享站址 '+(result.shared_site_reuse_count||0)+' · 共塔候选 '+((result.reuse_counts||{}).tower_colocation_host||0)+' · 普通候选 '+(result.candidate_site_count||0)+' · 新建候选 '+(result.new_build_count||0)+'</span><small>'+escapeHtml(result.cost_summary?.cost_semantics||'action_count_proxy_no_currency')+'；requires P12 closed-loop validation</small></div><h4>CandidateAction what-if</h4>'+candidates+'<h4>Selected proposal</h4>'+(selected||'<div class="empty-note">没有产生正 confirmed planning-gap reduction 的 eligible action</div>');
 }
 
 /*
@@ -297,13 +331,16 @@ export function render({flow}){
   const devices=(flow.devices||[]).map((device,index)=>'<div class="device-row"><b class="device-name">'+escapeHtml(device.subsystem)+' · '+escapeHtml(device.model||device.name||device.device_id)+'</b><span class="device-role">'+escapeHtml(device.role||'')+'</span><label class="device-field device-field-radius">R(m)<input type="number" data-device-radius="'+index+'" value="'+device.radius_m+'"></label><label class="device-field device-field-mtbf">MTBF(h)<input type="number" data-device-mtbf="'+index+'" value="'+(device.mtbf_h||device.mtbf)+'"></label></div>').join('');
   let result='<div class="empty-note">尚未运行 CoveragePlannerV1</div>';
   if(flow.coverage)result=Object.entries(flow.coverage.layers||{}).map(([key,layer])=>{const stats=layer.statistics;return '<div class="coverage-card"><b>'+key+' '+statusBadge(layer.status)+'</b><span>站点 '+stats.stations+' · 主站 '+stats.primary+' · 补盲 '+stats.gap+' · 共址 '+stats.colocated+'</span><span>平均重数 '+stats.average_multiplicity+' · 未覆盖 '+stats.uncovered_samples+'</span></div>';}).join('');
-  const params=flow.defaults.engineering_parameters,existing=flow.existing_cns_facilities||{},candidates=flow.candidate_sites||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{},capability=flow.cns_service_capability||{},corridor=flow.cns_corridor_assessment||{},corridorGap=flow.cns_corridor_gap_assessment||{},corridorSitePolicy=flow.corridor_site_planning_policy||{},corridorSitePlan=flow.cns_corridor_site_plan||{},timeline=flow.service_timeline||{},protection=flow.protection_envelope||{},gapV2=flow.cns_gap_analysis_v2||{},sitePolicy=flow.site_planning_policy||{},sitePlan=flow.cns_site_plan||{},closedLoop=flow.closed_loop_assessment||{};
+  const params=flow.defaults.engineering_parameters,existing=flow.existing_cns_facilities||{},candidates=flow.candidate_sites||{},colocation=flow.tower_colocation_candidates||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{},capability=flow.cns_service_capability||{},corridor=flow.cns_corridor_assessment||{},corridorGap=flow.cns_corridor_gap_assessment||{},corridorSitePolicy=flow.corridor_site_planning_policy||{},corridorSitePlan=flow.cns_corridor_site_plan||{},timeline=flow.service_timeline||{},protection=flow.protection_envelope||{},gapV2=flow.cns_gap_analysis_v2||{},sitePolicy=flow.site_planning_policy||{},sitePlan=flow.cns_site_plan||{},closedLoop=flow.closed_loop_assessment||{};
   // ---- 操作：设备与参数 / 已有设施 / 候选站址 --------------------------------
   const deviceCatalogNote='<div class="demo-note">DeviceCatalog：'+escapeHtml(catalog.source||flow.device_source)+' · '+(catalog.count||0)+' 型设备</div>';
   const engineeringParameters='<div class="parameter-note">主站间距 '+params.primary_spacing_factor.value+'R · 共址半径 '+params.co_location_search_radius_m.value+'m<br>'+escapeHtml(params.primary_spacing_factor.source)+'</div>';
   const deviceActions='<div class="device-list">'+devices+'</div><div class="button-row"><button class="secondary" id="saveDevices">保存设备参数</button><button class="primary" id="planCoverage">运行布站</button></div>';
   const existingPanel='<h3>已有 CNS 设施 '+statusBadge(existing.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="existing_cnsPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseExisting">选择…</button></div><button class="secondary full" id="importExisting">导入已有设施</button><div class="scroll-list cns-input-list">'+collectionList(existing,'facility')+'</div>';
-  const candidatePanel='<h3>候选站址 '+statusBadge(candidates.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="candidate_sitesPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseCandidates">选择…</button></div><div class="button-row"><button class="secondary" id="importCandidates">导入候选站址</button><button class="secondary" id="deriveCandidates">从已有设施生成</button></div><div class="scroll-list cns-input-list">'+collectionList(candidates,'candidate')+'</div>';
+  const candidatePanel='<h3>候选站址 '+statusBadge(candidates.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="candidate_sitesPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseCandidates">选择…</button></div><div class="button-row"><button class="secondary" id="importCandidates">导入候选站址</button><button class="secondary" id="deriveCandidates">从已有设施生成</button></div><div class="scroll-list cns-input-list">'+collectionList(candidates,'candidate')+'</div>'
+    +'<h3>共塔候选（真实铁塔宿主） '+statusBadge(colocation.status||'not_calculated')+'</h3>'
+    +'<div class="button-row"><button class="secondary" id="deriveTowerColocation">从真实铁塔派生宿主候选</button></div>'
+    +'<div class="scroll-list cns-input-list">'+towerColocationList(colocation)+'</div>';
   // ---- 结果：基础覆盖 / 3D与能力 / 服务走廊 / 规划目标与缺口 ----------------
   const coverageResult='<div class="coverage-results">'+result+'</div>';
   const gapPanel='<h3>CNS Gap Analysis '+statusBadge(gaps.status||'not_calculated')+'</h3><button class="primary full" id="analyzeGaps">分析当前运行航路缺口</button><div class="gap-results">'+gapList(gaps)+'</div>';
@@ -351,6 +388,8 @@ export function bind(c){
   c.actionButton('importExisting',()=>c.resourceAction('/api/existing-cns/import',{path:c.$('existing_cnsPath').value.trim()}));
   c.actionButton('importCandidates',()=>c.resourceAction('/api/candidate-sites/import',{path:c.$('candidate_sitesPath').value.trim()}));
   c.actionButton('deriveCandidates',()=>c.resourceAction('/api/candidate-sites/from-existing',{}));
+  // 真实铁塔 → 共塔宿主候选 + 塔顶障碍物事实（一次显式动作；不生成任何设备参数）。
+  c.actionButton('deriveTowerColocation',()=>c.resourceAction('/api/tower-obstacle-profiles/evaluate',{}));
   c.actionButton('analyzeGaps',()=>c.mutate('gap-analysis'));
   c.actionButton('evaluateCoverage3d',()=>c.resourceAction('/api/coverage-3d/evaluate',{parameters:{sample_spacing_m:Number(c.$('coverage3dSpacing').value),assumption:'user_engineering_sampling_assumption',confirmed:false}}));
   c.actionButton('evaluateServiceCapability',()=>c.resourceAction('/api/cns-service-capability/evaluate',{}));

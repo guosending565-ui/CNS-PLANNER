@@ -231,6 +231,7 @@
 .swatch.reference-route{background:var(--map-route-reference)}
 .swatch.reference-point{background:var(--map-route-point)}
 .swatch.reference-landing{background:var(--map-landing)}
+.swatch.reference-tower{background:#1f7a8c}
 .swatch.grid{background:#5a35a5}
 .swatch.pop{background:#99000d}
 .swatch.terrain{background:#9b8b63}
@@ -296,6 +297,27 @@
 .legend-title span{font-weight:400;color:var(--ink-faint);letter-spacing:0}
 
 .legend>div{display:flex;align-items:flex-start;gap:var(--sp-4);margin:var(--sp-2) 0}
+
+/* 统一图例里的"在线底图 / 真实业务数据"分区（含通信铁塔）。
+   #businessLegend 是 #legend 的直接子元素，但内部必须是块级列表，
+   不能被 .legend>div 的 flex 布局拆散。 */
+.legend>#businessLegend{display:block;margin:0 0 var(--sp-5)}
+.legend-group-label{
+  margin:var(--sp-4) 0 var(--sp-1);
+  padding-bottom:2px;
+  border-bottom:1px solid var(--line-soft);
+  color:var(--ink-faint);
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:.8px;
+  text-transform:uppercase;
+}
+.legend-line{display:flex;align-items:center;gap:var(--sp-3);margin:var(--sp-2) 0;min-height:16px}
+.legend-line .legend-symbol{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;flex:0 0 auto}
+.legend-line .legend-label{color:var(--ink-muted)}
+.legend-line small{margin-left:auto;color:var(--ink-faint);font-size:9px;white-space:nowrap}
+.legend-line .legend-state{margin-left:var(--sp-2)}
+.legend-stroke{display:inline-block;width:16px;height:0;border-top:2px dashed var(--map-route-reference)}
 
 .raster-legend{display:block;margin-top:var(--sp-6);padding-top:var(--sp-5);border-top:1px solid var(--line-soft)}
 .raster-legend p{display:flex;justify-content:space-between;gap:var(--sp-4);margin:0 0 var(--sp-3)}

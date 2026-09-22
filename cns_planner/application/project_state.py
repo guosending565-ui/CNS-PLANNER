@@ -130,6 +130,14 @@ from ..reference_data import (
 )
 from ..reference_data.landing_sites import backfill_reference_landing_sites
 from ..reference_data.routes import backfill_reference_routes
+from ..domain.tower_colocation import (
+    empty_tower_colocation_candidates, normalize_tower_colocation_candidates,
+    normalize_tower_colocation_policy,
+)
+from ..domain.tower_obstacle import (
+    empty_tower_obstacle_profiles, normalize_tower_clearance_policy,
+    normalize_tower_obstacle_policy, normalize_tower_obstacle_profiles,
+)
 
 
 SCHEMA_VERSION = 2
@@ -230,6 +238,12 @@ def blank_project(defaults):
         "reference_routes": empty_reference_routes(),
         "reference_route_links": empty_reference_route_links(),
         "route_planning_experiments": empty_experiments(),
+        # Towers Operational Integration V2：铁塔派生层（障碍物高度 + 共塔宿主候选）。
+        "tower_obstacle_policy": normalize_tower_obstacle_policy(None),
+        "tower_clearance_policy": normalize_tower_clearance_policy(None),
+        "tower_colocation_policy": normalize_tower_colocation_policy(None),
+        "tower_obstacle_profiles": empty_tower_obstacle_profiles(),
+        "tower_colocation_candidates": empty_tower_colocation_candidates(),
         "v3_planning_policy": normalize_v3_planning_policy(None),
         "v3_fine_refinement_policy": default_v3_fine_refinement_policy(),
         "v3_continuous_validation_policy": default_v3_validation_policy(),
@@ -337,6 +351,8 @@ def blank_project(defaults):
                 "route_safety_evidence_v2",
                 "route_3d_profiles",
                 "vertical_transition_validation",
+                "tower_obstacle_profiles",
+                "tower_colocation_candidates",
             )
         },
         "last_saved_at": None,
@@ -421,6 +437,23 @@ def normalize_project(value, grid_service):
     )
     value["route_planning_experiments"] = normalize_experiments(
         value.get("route_planning_experiments")
+    )
+    # ---- Towers Operational Integration V2：铁塔派生事实（障碍物高度 + 共塔宿主候选）
+    # 两者都是**派生层**：绝不改写原始 TowerSite 只读导入结果，也绝不进入风险数学。
+    value["tower_obstacle_policy"] = normalize_tower_obstacle_policy(
+        value.get("tower_obstacle_policy")
+    )
+    value["tower_clearance_policy"] = normalize_tower_clearance_policy(
+        value.get("tower_clearance_policy")
+    )
+    value["tower_colocation_policy"] = normalize_tower_colocation_policy(
+        value.get("tower_colocation_policy")
+    )
+    value["tower_obstacle_profiles"] = normalize_tower_obstacle_profiles(
+        value.get("tower_obstacle_profiles")
+    )
+    value["tower_colocation_candidates"] = normalize_tower_colocation_candidates(
+        value.get("tower_colocation_candidates")
     )
     value["v3_planning_policy"] = normalize_v3_planning_policy(value.get("v3_planning_policy"))
     value["v3_fine_refinement_policy"] = normalize_v3_fine_refinement_policy(
@@ -612,4 +645,7 @@ def normalize_project(value, grid_service):
     value.setdefault("result_statuses", {}).setdefault(
         "grid", "passed" if value.get("grid") else "not_calculated"
     )
+    # Towers Operational Integration V2：旧项目没有铁塔派生层，按"未计算"回填。
+    for name in ("tower_obstacle_profiles", "tower_colocation_candidates"):
+        value.setdefault("result_statuses", {}).setdefault(name, "not_calculated")
     return value

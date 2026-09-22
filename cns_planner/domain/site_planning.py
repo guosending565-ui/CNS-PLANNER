@@ -7,9 +7,14 @@ from typing import Any, TypedDict
 
 
 REUSE_TIERS = (
-    "existing_cns_facility", "existing_shared_site", "candidate_site",
-    "new_build_candidate",
+    "existing_cns_facility", "existing_shared_site", "tower_colocation_host",
+    "candidate_site", "new_build_candidate",
 )
+
+#: 真实铁塔共塔宿主（Preferred Host Site）的 reuse_class。
+#: 语义是 **prefer** 共塔，不是 force：该 tier 排在普通 candidate_site / new_build 之前，
+#: 但没有合适铁塔时后面两个 tier 照常补盲。
+TOWER_COLOCATION_REUSE_CLASS = "tower_colocation_host"
 
 
 class CandidateAction(TypedDict, total=False):
@@ -22,6 +27,10 @@ class CandidateAction(TypedDict, total=False):
     reuse_class: str
     coordinate: list[float]
     vertical: dict[str, Any]
+    planning_profile: dict[str, Any]
+    #: 共塔候选的宿主溯源（``host_type`` / ``host_tower_id`` / ...）；其它站点为 None。
+    host: dict[str, Any] | None
+    planning_origin: dict[str, Any] | None
     source: str
     confirmed: bool
     eligibility: dict[str, Any]

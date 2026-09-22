@@ -47,6 +47,7 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
       const actions='<div class="button-row"><button class="secondary compact" data-verify-source="'+escapeHtml(item.id)+'" '+(item.path?'':'disabled')+'>验证数据源</button>'
         +(item.id==='reference_landing_sites'||item.id==='reference_routes'?'<button class="secondary compact" data-confirm-crs="'+escapeHtml(item.id)+'">确认 CRS</button>':'')
         +(item.id==='reference_routes'?'<button class="secondary compact" data-preview-routes>预览并导入航线</button>':'')
+        +(item.id==='towers'?'<button class="secondary compact" data-import-towers '+(item.path?'':'disabled')+'>导入铁塔站址</button>':'')
         +'</div>';
       row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · 基础运行必需':' · 可选')+'</small>'+(metadata?'<p>'+escapeHtml(metadata)+'</p>':'')
         +'<p><b>数据可信度/审计</b> · configured '+escapeHtml(trust.configured||'—')+' · identity '+escapeHtml(trust.identity||'—')+' · schema '+escapeHtml(trust.schema||'—')+' · CRS '+escapeHtml(trust.crs||'—')+' · geometry '+escapeHtml(trust.geometry||'—')+' · version '+escapeHtml(trust.version||'—')+' · overall '+escapeHtml(trust.overall||'—')+'</p><small>source_id '+escapeHtml(audit.source_id||'—')+' · reasons '+escapeHtml(reasons)+'</small>'
@@ -64,7 +65,8 @@ const payload=()=>({
   buildings:$('buildingsPath').value,
   building_grid:$('building_gridPath').value,
   reference_landing_sites:$('reference_landing_sitesPath').value,
-  reference_routes:$('reference_routesPath').value
+  reference_routes:$('reference_routesPath').value,
+  towers:$('towersPath').value
 });
   function bind(){
     const openSettings=()=>{$('settingsError').textContent='';$('settings').showModal();};
@@ -76,6 +78,7 @@ const payload=()=>({
     document.addEventListener('click',async event=>{
       const verify=event.target.closest?.('[data-verify-source]');
       if(verify){const role=verify.dataset.verifySource;try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/source-audits/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role})});const refreshedState=await api('/api/state');onApplied(refreshedState);$('settingsMessage').textContent='数据源 SHA-256 验证完成';}catch(error){$('settingsError').textContent=error.message;}return;}
+      if(event.target.closest?.('[data-import-towers]')){try{const freshState=await api('/api/state');onApplied(freshState);const data=await api('/api/towers/import',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});onApplied(data);const towers=data?.workflow?.towers||{};$('settingsMessage').textContent='已导入真实通信铁塔站址 '+(towers.count||0)+' 个（只读参考数据；不进入规划、风险与覆盖计算）';}catch(error){$('settingsError').textContent=error.message;}return;}
       const crs=event.target.closest?.('[data-confirm-crs]');
       if(crs){const value=globalThis.prompt?.('输入经证据确认的 CRS（如 EPSG:4326）','')||'';if(!value)return;const evidence=globalThis.prompt?.('输入 CRS 证据说明','')||'';if(!evidence)return;try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/reference-crs/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:crs.dataset.confirmCrs,value,source:{type:'user_confirmation'},evidence:[{type:'user_supplied',note:evidence}]})});const refreshedState=await api('/api/state');onApplied(refreshedState);}catch(error){$('settingsError').textContent=error.message;}return;}
       if(event.target.closest?.('[data-preview-routes]')){try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/reference-routes/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const refreshedState=await api('/api/state');onApplied(refreshedState);const routes=refreshedState?.workflow?.reference_routes||{},crs=(routes.crs||{}).source_crs||{};$('settingsMessage').textContent=routes.count>0?(crs.confirmed===true?'已按源文件声明的 '+crs.value+' 导入 '+routes.count+' 条真实参考航线（'+(routes.point_count??0)+' 个航路点），无需再次确认':'已导入 '+routes.count+' 条真实参考航线（坐标系待确认）'):'航线预览已生成；请在航路设计页核对后确认导入';}catch(error){$('settingsError').textContent=error.message;}return;}
@@ -90,7 +93,7 @@ const payload=()=>({
     finally{button.disabled=false;button.textContent='检查在线服务';}
   }
   function openBrowser(kind,initialPath=''){
-    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体（.gpkg / .shp / .geojson，或引用建筑图层的 .qgz / .qgs 工程）',building_grid:'文件类型：建筑环境网格（.gpkg / .shp / .geojson，或引用该图层的 .qgz / .qgs 工程）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
+    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体（.gpkg / .shp / .geojson，或引用建筑图层的 .qgz / .qgs 工程）',building_grid:'文件类型：建筑环境网格（.gpkg / .shp / .geojson，或引用该图层的 .qgz / .qgs 工程）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',towers:'文件类型：通信铁塔站址（.xlsx / .csv / .geojson）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
   }
   async function browse(path){
     $('browseError').textContent='';selectedFile='';$('selectFile').disabled=true;$('chosen').textContent=browseKind==='project'?'请选择项目文件夹':'请选择文件；单击文件后确认';

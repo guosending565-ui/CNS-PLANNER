@@ -28,10 +28,10 @@ export function updateRasterLegends($){
 /**
  * 绑定图层抽屉的全部控件（基础栅格、透明度、统一 layer switches）。
  * 全部使用 onchange/oninput 赋值，重复调用也不会叠加监听器。
- * @param {{$,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles}} options
+ * @param {{$,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend}} options
  */
 export function bindLayerControls({
-  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles
+  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend
 }){
   // 基础开关：air 只重绘；pop/terrain 同时刷新栅格图例
   if($('air'))$('air').onchange=queue;
@@ -49,7 +49,7 @@ export function bindLayerControls({
         setGridOutline($('gridLayer').checked);
         if($('gridOutlineToggle'))$('gridOutlineToggle').checked=$('gridLayer').checked;
       }
-      updateGridNotice();updateGridThemeLegend();paint();
+      updateGridNotice();updateGridThemeLegend();updateMapLegend?.();paint();
     };
   }
 }

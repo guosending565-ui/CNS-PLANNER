@@ -41,6 +41,7 @@ class CorridorSitePlanningService:
         actions = _candidate_actions(
             targets, state.get("existing_cns_facilities") or {},
             state.get("candidate_sites") or {}, state.get("device_catalog") or {},
+            state.get("tower_colocation_candidates") or {},
         )
         policy = state.get("corridor_site_planning_policy") or normalize_corridor_site_planning_policy()
         selected, trace, all_impacts = [], [], []

@@ -56,6 +56,7 @@
       <div class="layer-row"><span><i class="swatch reference-route"></i> 真实参考航线<small id="referenceRouteStatus">等待数据</small></span><input type="checkbox" id="referenceRouteLayer" aria-label="真实参考航线"></div>
       <div class="layer-row"><span><i class="swatch reference-point"></i> 真实航路点<small id="referenceRoutePointStatus">等待数据</small></span><input type="checkbox" id="referenceRoutePointLayer" aria-label="真实航路点"></div>
       <div class="layer-row"><span><i class="swatch reference-landing"></i> 参考起降点<small id="referenceLandingStatus">等待数据</small></span><input type="checkbox" id="referenceLandingLayer" aria-label="参考起降点"></div>
+      <div class="layer-row"><span><i class="swatch reference-tower"></i> 通信铁塔站址<small id="towerLayerStatus">等待数据</small></span><input type="checkbox" id="towerLayer" aria-label="通信铁塔站址"></div>
      </div>
      <div class="layer-group">
       <div class="layer-group-title">环境</div>
@@ -88,6 +89,7 @@
 
    <div class="legend legend-collapsed" id="legend">
     <div class="legend-title" id="legendToggle">图层图例 <span>LOCAL DATA</span></div>
+    <div id="businessLegend" hidden></div>
     <div><i class="swatch air"></i>空域源图层 · QGIS 原始样式（非政策结论）</div>
     <div id="populationRasterLegend" class="raster-legend" hidden>
      <p><b>WorldPop 源像元人口数</b><span>person/source pixel</span></p>
@@ -172,6 +174,6 @@
 <small>
     预聚合的 MH/T L8 建筑数据；工作区恰好 L8 时直接映射，其它层级由上面的原始足迹精确聚合。
     支持 .gpkg / .shp / .geojson，也可以指向引用该图层的 .qgz / .qgs 工程。
-</small><label>参考起降点 / XLSX、CSV</label><div class="file-input"><input id="reference_landing_sitesPath" aria-label="参考起降点文件路径"><button data-browse="reference_landing_sites">浏览电脑…</button></div><small>只读参考层；ET 仅诊断并提示转换，不会解析。</small><label>真实参考航线 / CSV、XLSX、GeoJSON</label><div class="file-input"><input id="reference_routesPath" aria-label="真实参考航线文件路径"><button data-browse="reference_routes">浏览电脑…</button></div><small>保留全部中间航路点；不会自动进入项目航路。ET 需先转换。</small></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
+</small><label>参考起降点 / XLSX、CSV</label><div class="file-input"><input id="reference_landing_sitesPath" aria-label="参考起降点文件路径"><button data-browse="reference_landing_sites">浏览电脑…</button></div><small>只读参考层；ET 仅诊断并提示转换，不会解析。</small><label>真实参考航线 / CSV、XLSX、GeoJSON</label><div class="file-input"><input id="reference_routesPath" aria-label="真实参考航线文件路径"><button data-browse="reference_routes">浏览电脑…</button></div><small>保留全部中间航路点；不会自动进入项目航路。ET 需先转换。</small><label>通信铁塔站址 / XLSX、CSV、GeoJSON</label><div class="file-input"><input id="towersPath" aria-label="通信铁塔站址文件路径"><button data-browse="towers">浏览电脑…</button></div><small>只登记真实站址位置（CGCS2000/EPSG:4490，人工裁定）；不生成 CNS 覆盖，不转 C/N/S 设备，不进入规划与风险计算。</small></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
 <dialog id="browser"><div class="dialog-head"><h2>浏览电脑文件</h2><button class="close" id="closeBrowser" aria-label="关闭文件浏览">×</button></div><div class="browse-bar"><button id="drives">此电脑</button><button id="parent">上一级</button><input id="folder" aria-label="当前目录"><button id="openFolder">转到</button></div><p class="small dark" id="fileFilter"></p><div id="entries"></div><div id="browseError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="chosen">请选择文件；单击文件后确认</span><button class="primary" id="selectFile" disabled>选择此文件</button></div></dialog>
 <script src="/tiles.js"></script><script src="/grid_theme.js"></script><script type="module" src="/app.js"></script></body></html>

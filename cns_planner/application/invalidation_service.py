@@ -19,7 +19,11 @@ class InvalidationService:
         "terrain_dtm": (), "property": ("property_exposure",),
         "property_exposure": ("property_exposure",),
         "infrastructure": ("infrastructure",),
-        "obstacles": ("towers",), "towers": ("towers",),
+        # BUG-TOWERS-002：真实铁塔**不是**网格属性，也不是人口风险因子。它过去被映射到
+        # ``grid_attributes["towers"]``（一个永远空的容器），于是每次 towers 源变化都会
+        # 连带把 grid_risk / grid_risk_v2 / environment_risk 标 stale —— 而风险数学从未
+        # 读取过铁塔。现在铁塔走自己的定向链路（``tower_data_changed``）。
+        "obstacles": (), "towers": (),
         "traffic_simulation": ("traffic", "conflict"),
         "traffic": ("traffic", "conflict"), "conflict": ("conflict",),
     }
@@ -146,6 +150,38 @@ class InvalidationService:
             # The layered feasibility mask consumes the L8 building grid facts, so only the
             # layered candidates are additionally staled here.
             self.layered_route("building_grid_facts_changed")
+        if set(changed_sources) & {"towers", "obstacles"}:
+            # 真实铁塔源变化：派生事实（障碍物高度 / 共塔候选）先过时，再定向失效其下游。
+            # 绝不经过 risk()/risk_v2()：塔不是风险输入。
+            self.tower_data_changed("tower_source_changed", include_derived=True)
+
+    def tower_data_changed(self, reason="tower_data_changed", *, include_derived=False):
+        """真实铁塔数据或其派生事实变化时的**定向**失效。
+
+        只失效真正消费铁塔的下游：
+
+        * （可选）``tower_obstacle_profiles`` / ``tower_colocation_candidates`` 派生事实；
+        * ``layered_route_candidate`` + ``LayerFeasibilityMask``（塔净空进入可行性判定），
+          并沿用既有语义连带 ``route_risk_profiles`` / ``layered_route_validations`` /
+          Safety Evidence —— 因为候选航路本身变了，这些剖面确实需要重算；
+        * ``cns_site_plan`` / ``cns_corridor_site_plan``（共塔宿主候选变了）；
+        * 当前 active report。
+
+        **绝不**失效 ``grid_risk`` / ``grid_risk_v2`` / ``environment_risk``：
+        铁塔不参与人口×遮蔽（population×shelter）、Risk Framework V2 或
+        RouteRiskProfile 的**数学**，把它标 stale 属于无意义重算。
+        """
+
+        state = self.session.state
+        statuses = state.setdefault("result_statuses", {})
+        if include_derived:
+            for name in ("tower_obstacle_profiles", "tower_colocation_candidates"):
+                if statuses.get(name) not in (None, "not_calculated"):
+                    statuses[name] = "stale"
+        self.layered_route(str(reason))
+        self.cns_site_plan()
+        self.cns_corridor_site_plan()
+        mark_active_report_stale(state, str(reason))
 
     def route_operating_layer(self, reason="route_operating_layer_changed"):
         """Minimal Layered Operational Route Architecture V1 invalidation chain.
