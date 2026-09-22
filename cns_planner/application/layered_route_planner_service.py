@@ -39,9 +39,9 @@ from ..domain.population_shelter import (
     resolve_population_shelter, shelter_policy_fingerprint, user_defined_baseline_policy,
 )
 from ..domain.planning_exposure import (
-    default_planning_exposure_policy, normalize_planning_exposure_policy,
-    planning_exposure_factors, planning_exposure_policy_fingerprint,
-    resolve_planning_exposure,
+    PLANNING_EXPOSURE_POPULATION_FACTOR_SOURCE, default_planning_exposure_policy,
+    normalize_planning_exposure_policy, planning_exposure_factors,
+    planning_exposure_policy_fingerprint, resolve_planning_exposure,
 )
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, is_configured as regulatory_is_configured,
@@ -704,12 +704,17 @@ class LayeredRoutePlannerService:
         return self.snapshot()
 
     def planning_exposure_snapshot(self):
-        """BUG-ROUTE-005：规划用暴露度层（**派生**，永远不进人口报告 / 审计）。
+        """BUG-ROUTE-005（收口后）：规划用暴露度层（**派生**，永远不进人口报告 / 审计）。
 
         未配置（默认）时它是 ``not_configured`` / ``applied=False``：调用方必须原样使用
-        人口因子，本层绝不产生影响。启用后它只把**陆地**格的有效人口抬到不低于
-        ``land_population_floor``，并把"人口下限"用 Risk Framework V2 的同一个
-        ``log1p_quantile`` 参考值换算成归一化因子（与"先抬升密度再归一化"数学等价）。
+        canonical 人口因子，本层绝不产生影响。启用后它对每一格套用**统一仿射映射**
+
+            ``planning_population_factor = (1-b)*p + b*L``
+
+        （``p`` = canonical Risk V2 归一化人口因子，``L`` = 陆地 1 / 海面 0，``b`` =
+        显式确认的 ``land_relative_risk_baseline``）：同一 ``p`` 下陆海差值恒等于 ``b``，
+        人口相对差异统一保留 ``(1-b)``，输出天然落在 ``[0, 1]`` 且不做 clip。真实人口密度、
+        人口报告、Population NoData 与 Risk V2 canonical 因子都不受影响。
         """
 
         state = self.ensure_state()
@@ -764,9 +769,11 @@ class LayeredRoutePlannerService:
         ``shelter_coefficient`` per grid cell that a future confirmed shelter dataset can
         replace wholesale.  Nothing is hardcoded inside the planner.
 
-        BUG-ROUTE-005：当规划用暴露度层**已确认并生效**时，它提供的归一化人口因子取代
-        canonical 因子（``max(density, floor)`` 的等价因子）。人口属性、人口报告、数据审计与
-        NoData 语义都不受影响 —— 被替换的只是这一步规划用的因子输入。
+        BUG-ROUTE-005（收口后）：当规划用暴露度层**已确认并生效**时，它提供的
+        ``planning_population_factor``（``(1-b)*p + b*L``）取代 canonical 因子作为这一步规划
+        的人口因子输入。地形证据缺失的格在本层里是 unresolved（``None``），因此它**不会**被
+        canonical 因子回落补齐 —— fail-closed，而不是 fail-open。人口属性、人口报告、数据审计
+        与 NoData 语义都不受影响。
         """
 
         state = self.ensure_state()
@@ -781,7 +788,13 @@ class LayeredRoutePlannerService:
         ):
             return deepcopy(attribute)
         exposure = self.planning_exposure_snapshot()
-        factors = planning_exposure_factors(exposure) or self._population_factors(state)
+        exposure_factors = planning_exposure_factors(exposure)
+        # ``None`` = 本层未生效（原样用 canonical）；空 dict = 本层已生效但没有任何格算出因子
+        # （全部 fail-closed）—— 后者绝不能被 ``or`` 静默回落成 canonical。
+        factors = (
+            exposure_factors if exposure_factors is not None
+            else self._population_factors(state)
+        )
         attribute = resolve_population_shelter(
             grid=grid,
             population_attribute=state["grid_attributes"].get("population") or {},
@@ -793,16 +806,23 @@ class LayeredRoutePlannerService:
             "status": exposure.get("status"),
             "applied": exposure.get("applied") is True,
             "policy_fingerprint": exposure.get("policy_fingerprint"),
-            "land_population_floor": exposure.get("land_population_floor"),
+            "formula": exposure.get("formula"),
+            "land_relative_risk_baseline": exposure.get("land_relative_risk_baseline"),
+            "land_water_gap": exposure.get("land_water_gap"),
+            "population_difference_retention": exposure.get("population_difference_retention"),
             "land_min_surface_elevation_m": exposure.get("land_min_surface_elevation_m"),
             "land_count": exposure.get("land_count"),
             "water_count": exposure.get("water_count"),
             "unresolved_land_status_count": exposure.get("unresolved_land_status_count"),
-            "floor_applied_count": exposure.get("floor_applied_count"),
+            "applied_count": exposure.get("applied_count"),
+            "land_baseline_raised_count": exposure.get("land_baseline_raised_count"),
+            "land_population_floor": exposure.get("land_population_floor"),
+            "land_population_floor_deprecated": True,
+            "land_population_floor_used_for_planning": False,
             "used_population_nodata_as_sea_proxy": False,
         }
         attribute["population_factor_source"] = (
-            "planning_exposure_effective_population"
+            PLANNING_EXPOSURE_POPULATION_FACTOR_SOURCE
             if exposure.get("applied") is True else "canonical_risk_v2_population_factor"
         )
         attribute["derived_from_fingerprint"] = _shelter_input_fingerprint(

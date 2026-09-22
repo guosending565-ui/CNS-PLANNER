@@ -43,6 +43,16 @@ export const THETA_V2_PROFILE_SEPARATION='RouteRiskProfile 是独立的 post-hoc
   +'environment_obstacle 与 Theta* objective 里的 population × shelter risk 不是同一件事，两者数值不可互相代替。';
 export const THETA_V2_ALTITUDE_NOTE='Theta* V2 固定 z(x, y) = H：H 必须能解析为 confirmed EGM2008 巡航高度；'
   +'缺失时保持 blocked，不做 datum/geoid 猜测或伪转换。';
+//: BUG-ROUTE-005 收口：陆地统一相对风险基线（正式规划语义）。
+export const THETA_V2_PLANNING_FACTOR_FORMULA='planning_population_factor = (1-b)*p + b*L';
+//: 首轮工程**建议**值：只是输入框的可选预填，绝不是自动生效的默认值（必须显式 confirmed）。
+export const THETA_V2_LAND_RISK_BASELINE_SUGGESTED=0.08;
+export const THETA_V2_LAND_RISK_BASELINE_DEFINITION='陆地统一相对风险基线：p = canonical Risk V2 归一化人口因子，'
+  +'L = 陆地 1 / 海面 0，b = land_relative_risk_baseline（0 ≤ b < 1，必须显式 confirmed）。';
+export const THETA_V2_LAND_RISK_BASELINE_NOTE='同一 p 下陆地 − 海面差值恒等于 b；所有人口相对差异统一保留 (1-b)，'
+  +'不是只抬低人口区域。输出天然落在 [0,1]（不做 clip，因此高风险陆地不会饱和），land / water 内部排序保持不变。'
+  +'它**不改**真实人口密度、人口报告、Population NoData 与 Risk V2 canonical 因子；'
+  +'旧的 land_population_floor（person/km²）已废弃：不会被换算成任何 b，旧项目必须重新显式确认。';
 //: catalog 为空时的明确提示：目录本身为空，因此没有任何可选巡航高度层。
 //: 这里只提示"目录为空"，绝不放行高度检查（planning request 仍必须显式选择高度层）。
 export const THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE='高度层目录为空（共 0 层）：没有可选巡航高度层，'
@@ -189,6 +199,68 @@ export function layeredThetaV2Model(flow){
       cellCount:finite(thetaShelter.cell_count)?Number(thetaShelter.cell_count):null,
       resolvedCellCount:finite(thetaShelter.resolved_cell_count)?Number(thetaShelter.resolved_cell_count):null,
     },
+    // 这一步规划实际消费的人口因子来源（canonical 或规划用暴露度层）。
+    populationFactorSource:text(shelterField.population_factor_source||'canonical_risk_v2_population_factor'),
+  };
+
+  // ---- BUG-ROUTE-005（收口）：陆地统一相对风险基线 -------------------------------
+  const exposurePolicy=flow?.planning_exposure_policy||{};
+  const exposureField=flow?.planning_exposure||{};
+  const exposureSource=text(exposurePolicy.source);
+  const exposureBaseline=number(exposurePolicy.land_relative_risk_baseline);
+  const exposureThreshold=number(exposurePolicy.land_min_surface_elevation_m);
+  const deprecatedFloorPresent=finite(exposurePolicy.land_population_floor);
+  const planningExposureModel={
+    policy:{
+      status:text(exposurePolicy.status||'not_configured'),
+      statusReason:text(exposurePolicy.status_reason),
+      enabled:exposurePolicy.enabled===true,
+      confirmed:exposurePolicy.confirmed===true,
+      baseline:exposureBaseline,
+      // 未配置时输入框给出"工程建议值"0.08 作为可选预填：它**不**代表已确认。
+      baselineInput:exposureBaseline===null?'':String(exposureBaseline),
+      baselineFieldValue:exposureBaseline===null
+        ?String(THETA_V2_LAND_RISK_BASELINE_SUGGESTED):String(exposureBaseline),
+      baselineSuggested:THETA_V2_LAND_RISK_BASELINE_SUGGESTED,
+      baselineRange:Array.isArray(exposurePolicy.land_relative_risk_baseline_range)
+        ?exposurePolicy.land_relative_risk_baseline_range:[0,1],
+      formula:text(exposurePolicy.formula||THETA_V2_PLANNING_FACTOR_FORMULA),
+      threshold:exposureThreshold,
+      landDetectionMethod:text(exposurePolicy.land_detection_method),
+      source:exposureSource,
+      sourceInput:exposureSource.startsWith('未配置')?'':exposureSource,
+      provenance:text(exposurePolicy.provenance),
+      evidence:exposurePolicy.evidence||null,
+      deprecatedFloor:number(exposurePolicy.land_population_floor),
+      deprecatedFloorPresent,
+      deprecatedFloorUsedForPlanning:exposurePolicy.land_population_floor_used_for_planning===true,
+    },
+    field:{
+      status:text(exposureField.status||'not_configured'),
+      reason:text(exposureField.reason),
+      applied:exposureField.applied===true,
+      enabled:exposureField.enabled===true,
+      formula:text(exposureField.formula||THETA_V2_PLANNING_FACTOR_FORMULA),
+      baseline:number(exposureField.land_relative_risk_baseline),
+      landWaterGap:number(exposureField.land_water_gap),
+      retention:number(exposureField.population_difference_retention),
+      threshold:number(exposureField.land_min_surface_elevation_m),
+      landCount:finite(exposureField.land_count)?Number(exposureField.land_count):null,
+      waterCount:finite(exposureField.water_count)?Number(exposureField.water_count):null,
+      unresolvedLandStatusCount:finite(exposureField.unresolved_land_status_count)
+        ?Number(exposureField.unresolved_land_status_count):null,
+      unresolvedPopulationFactorCount:finite(exposureField.unresolved_population_factor_count)
+        ?Number(exposureField.unresolved_population_factor_count):null,
+      appliedCount:finite(exposureField.applied_count)?Number(exposureField.applied_count):null,
+      landBaselineRaisedCount:finite(exposureField.land_baseline_raised_count)
+        ?Number(exposureField.land_baseline_raised_count):null,
+      cellCount:finite(exposureField.cell_count)?Number(exposureField.cell_count):null,
+      populationFactorSource:text(
+        shelterField.population_factor_source||'canonical_risk_v2_population_factor'),
+      fieldFingerprint:text(exposureField.field_fingerprint),
+      policyFingerprint:text(exposureField.policy_fingerprint),
+      usedPopulationNoDataAsSeaProxy:exposureField.used_population_nodata_as_sea_proxy===true,
+    },
   };
 
   const weights={
@@ -328,6 +400,7 @@ export function layeredThetaV2Model(flow){
     feasibility,
     searchParameters:searchParameterModel,
     shelter:shelterModel,
+    planningExposure:planningExposureModel,
     objective:objectiveModel,
     riskDensity:densityModel,
     regulatory:regulatoryModel,
@@ -468,6 +541,86 @@ function fieldRow(key,label,value,note=''){
   return '<div class="list-row" data-theta-v2-candidate-field="'+escapeHtml(key)+'"><span><b>'
     +escapeHtml(label)+'</b><small>'+escapeHtml(value)+'</small>'
     +(note?'<small>'+note+'</small>':'')+'</span></div>';
+}
+
+/** 陆地相对风险基线的只读展示行（与 candidate 转印行分开标注）。 */
+function planningExposureRow(key,label,value){
+  return '<div class="list-row" data-planning-exposure-field="'+escapeHtml(key)+'"><span><b>'
+    +escapeHtml(label)+'</b><small>'+escapeHtml(value)+'</small></span></div>';
+}
+
+/**
+ * BUG-ROUTE-005（收口）：陆地统一相对风险基线配置（挂在 ③ Population × Shelter 内）。
+ *
+ * 展示全部来自后端 projection / attribute，前端不重算 planning factor；
+ * ``0.08`` 只是可选预填的工程建议值，未显式 confirmed 时后端不生效。
+ */
+function planningExposureSection(model){
+  const exposure=model.planningExposure;
+  const policy=exposure.policy;
+  const field=exposure.field;
+  const deprecatedFloor=policy.deprecatedFloorPresent
+    ?fmtNumber(policy.deprecatedFloor,6)+' person/km²（deprecated：不参与规划，绝不被换算成 b）'
+    :'—（无旧 land_population_floor 记录）';
+  return '<h3>陆地相对风险基线：planning_exposure_policy</h3>'
+    +'<div class="parameter-note">'+escapeHtml(THETA_V2_LAND_RISK_BASELINE_DEFINITION)+' '
+    +'<code>'+escapeHtml(field.formula)+'</code>。'+escapeHtml(THETA_V2_LAND_RISK_BASELINE_NOTE)+'</div>'
+    +'<div class="scroll-list route-list" data-planning-exposure-summary="1">'
+    +planningExposureRow('policy_status','policy status',
+      policy.status+' · '+short(policy.statusReason))
+    +planningExposureRow('land_relative_risk_baseline','land_relative_risk_baseline',
+      policy.baseline===null
+        ?'null（未配置；必须显式确认）· 工程建议值 '+fmtNumber(policy.baselineSuggested,2)
+        :fmtNumber(policy.baseline,6)+' · 0 ≤ b < 1 · 工程建议值 '
+          +fmtNumber(policy.baselineSuggested,2))
+    +planningExposureRow('formula','formula',field.formula)
+    +planningExposureRow('land_water_gap','land-water gap（同一 p 下恒等于 b）',
+      field.landWaterGap===null?'—':fmtNumber(field.landWaterGap,9))
+    +planningExposureRow('population_difference_retention','population 相对差异保留 (1-b)',
+      field.retention===null?'—':fmtNumber(field.retention,9))
+    +planningExposureRow('land_count','land_count',short(field.landCount))
+    +planningExposureRow('water_count','water_count',short(field.waterCount))
+    +planningExposureRow('applied','applied',String(field.applied)
+      +' · applied_count '+short(field.appliedCount)
+      +' · land_baseline_raised_count '+short(field.landBaselineRaisedCount))
+    +planningExposureRow('unresolved','unresolved（terrain / population factor，fail-closed）',
+      'land_status '+short(field.unresolvedLandStatusCount)
+      +' · population_factor '+short(field.unresolvedPopulationFactorCount))
+    +planningExposureRow('population_factor_source','population_factor_source',
+      field.populationFactorSource)
+    +planningExposureRow('land_threshold','land_min_surface_elevation_m',
+      policy.threshold===null?'null（未配置）':fmtNumber(policy.threshold,6)+' m'
+      +' · 方法 '+short(policy.landDetectionMethod))
+    +planningExposureRow('land_population_floor','land_population_floor（deprecated）',deprecatedFloor)
+    +planningExposureRow('fingerprints','field / policy fingerprint',
+      short(field.fieldFingerprint)+' / '+short(field.policyFingerprint))
+    +planningExposureRow('used_population_nodata_as_sea_proxy','used_population_nodata_as_sea_proxy',
+      String(field.usedPopulationNoDataAsSeaProxy))
+    +'</div>'
+    +'<h3>可编辑：planning_exposure_policy</h3>'
+    +'<label>land_relative_risk_baseline（0 ≤ b &lt; 1，可空 = 未配置）'
+    +'<input class="panel-input" id="thetaV2LandRiskBaseline" type="number" min="0" max="1" step="any" '
+    +'data-planning-exposure-suggested="'+escapeHtml(policy.baselineSuggested)+'" '
+    +'placeholder="'+escapeHtml(policy.baselineSuggested)+'（工程建议值，须显式确认）" '
+    +'value="'+escapeHtml(policy.baselineFieldValue)+'"></label>'
+    +'<label>land_min_surface_elevation_m（海陆判定阈值，m；必须由工程依据给出）'
+    +'<input class="panel-input" id="thetaV2LandThreshold" type="number" step="any" '
+    +'placeholder="无默认值" value="'+inputValue(policy.threshold)+'"></label>'
+    +'<label>source（工程依据）'
+    +'<input class="panel-input" id="thetaV2LandRiskSource" value="'
+    +escapeHtml(policy.sourceInput)+'"></label>'
+    +'<label class="checkbox-row"><input type="checkbox" id="thetaV2LandRiskEnabled"'
+    +(policy.enabled?' checked':'')+'> 启用本层（未勾选 = 不生效）</label>'
+    +'<label class="checkbox-row"><input type="checkbox" id="thetaV2LandRiskConfirmed"'
+    +(policy.confirmed?' checked':'')+'> planning_exposure_policy 已由项目工程依据确认</label>'
+    +'<div class="button-row">'
+    +'<button class="secondary" id="saveThetaV2PlanningExposure">保存陆地相对风险基线</button>'
+    +'</div>'
+    +'<div class="parameter-note"><b>0.08 只是首轮工程建议值</b>：它只作为可选预填出现，'
+    +'未勾选 confirmed（或未勾选启用）时后端保持 not_configured / pending_confirmation，'
+    +'规划人口因子原样使用 canonical Risk V2 因子。旧项目已保存的 land_population_floor '
+    +'既不生效也不会被自动换算成基线，必须由用户重新显式确认新参数；'
+    +'地形证据缺失的格保持 unresolved（fail-closed），绝不被当成海面。</div>';
 }
 
 function listRows(rows){
@@ -713,7 +866,8 @@ function shelterSection(model){
     +'</div>'
     +'<div class="parameter-note">保存只写 <code>shelter_coefficient_policy</code>，'
     +'并把现有 <code>per_grid_overrides</code>（'+policy.perGridOverrideCount+' 条）原样回传，绝不在保存时清空；'
-    +'未确认或无系数时后端保持 not_configured / pending_confirmation，不假设任何遮盖系数。</div>');
+    +'未确认或无系数时后端保持 not_configured / pending_confirmation，不假设任何遮盖系数。</div>'
+    +planningExposureSection(model));
 }
 
 function objectiveSection(model){
@@ -975,6 +1129,29 @@ export function thetaV2ShelterPolicyPayload(c,current){
   return payload;
 }
 
+/**
+ * ``planning_exposure_policy`` payload（陆地统一相对风险基线）。
+ *
+ * * ``enabled`` / ``confirmed`` 只反映控件的真实勾选状态：前端**绝不**替用户确认；
+ * * baseline 空值提交 ``null``（未配置 ≠ 0），后端据此保持 not_configured；
+ * * 旧的 ``land_population_floor`` 若项目里已有记录则**原样回传**（它不参与规划，仅保留兼容记录），
+ *   绝不换算、绝不用它推导 baseline。
+ */
+export function thetaV2PlanningExposurePayload(c,current){
+  const policy=current||{};
+  const payload={
+    enabled:checkedFrom(c.$('thetaV2LandRiskEnabled')),
+    land_relative_risk_baseline:numberFromField(c.$('thetaV2LandRiskBaseline')),
+    land_min_surface_elevation_m:numberFromField(c.$('thetaV2LandThreshold')),
+    source:fieldValue(c.$('thetaV2LandRiskSource')).trim()||text(policy.sourceInput),
+    confirmed:checkedFrom(c.$('thetaV2LandRiskConfirmed')),
+  };
+  if(policy.deprecatedFloorPresent&&finite(policy.deprecatedFloor)){
+    payload.land_population_floor=policy.deprecatedFloor;
+  }
+  return payload;
+}
+
 /** theta_v2_objective_policy payload：原样提交权重，前端绝不静默归一化。 */
 export function thetaV2ObjectivePolicyPayload(c,current){
   const objective=current||{};
@@ -1064,6 +1241,11 @@ export function bindLayeredThetaV2(c){
   if(c.$('saveThetaV2RiskDensity')){
     c.actionButton('saveThetaV2RiskDensity',()=>c.resourceAction(
       '/api/max-route-risk-density',thetaV2RiskDensityPayload(c,model().riskDensity)));
+  }
+  if(c.$('saveThetaV2PlanningExposure')){
+    c.actionButton('saveThetaV2PlanningExposure',()=>c.resourceAction(
+      '/api/planning-exposure-policy',
+      thetaV2PlanningExposurePayload(c,model().planningExposure.policy)));
   }
   if(c.$('saveThetaV2SearchParameters')){
     c.actionButton('saveThetaV2SearchParameters',()=>{
