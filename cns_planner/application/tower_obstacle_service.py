@@ -22,7 +22,8 @@ from ..domain.tower_colocation import (
     normalize_tower_colocation_policy,
 )
 from ..domain.tower_obstacle import (
-    build_tower_obstacle_profiles, normalize_tower_obstacle_policy,
+    build_tower_obstacle_profiles, normalize_tower_clearance_policy,
+    normalize_tower_obstacle_policy,
 )
 
 
@@ -46,7 +47,38 @@ class TowerObstacleService:
         return {
             "tower_obstacle_policy": deepcopy(state.get("tower_obstacle_policy") or {}),
             "tower_colocation_policy": deepcopy(state.get("tower_colocation_policy") or {}),
+            "tower_clearance_policy": deepcopy(state.get("tower_clearance_policy") or {}),
         }
+
+    # ------------------------------------------------------------------ policies
+
+    def set_clearance_policy(self, payload=None):
+        """保存 Tower Clearance Policy（Step03 航路净空配置）。
+
+        只改 ``state["tower_clearance_policy"]``，两个净空**都没有默认值**：
+        没有工程依据的数值不会在这里被写入。保存后：
+
+        * 立即进入 mask ``input_fingerprint`` / ``mask_fingerprint`` 与 readiness；
+        * 通过 ``invalidation.layered_route(...)`` 让既有 layered candidate / mask /
+          RouteRiskProfile / LayeredRouteValidation / Safety Evidence 按既有语义 stale；
+        * **不**触碰 ``grid_risk`` / ``grid_risk_v2`` / ``environment_risk``（铁塔不是风险输入），
+          也不 stale 共塔宿主候选（净空不改变宿主事实）。
+        """
+
+        state = self.session.state
+        payload = payload if isinstance(payload, dict) else {}
+        # 既接受 {"tower_clearance_policy": {...}}，也接受直接字段形式（前端只传四个字段）。
+        raw = payload["tower_clearance_policy"] if "tower_clearance_policy" in payload else {
+            key: value for key, value in payload.items()
+            if key in ("tower_vertical_clearance_m", "tower_horizontal_clearance_m",
+                       "source", "confirmed")
+        }
+        candidate = normalize_tower_clearance_policy(raw)
+        if candidate != state.get("tower_clearance_policy"):
+            state["tower_clearance_policy"] = candidate
+            self.invalidation.layered_route("tower_clearance_policy_changed")
+        self.session.save()
+        return self.snapshot()
 
     # ------------------------------------------------------------------ evaluation
 

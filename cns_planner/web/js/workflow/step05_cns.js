@@ -50,6 +50,38 @@ export function towerColocationList(collection){
     +rows+(items.length>20?'<div class="empty-note">另有 '+(items.length-20)+' 项</div>':'');
 }
 
+/**
+ * Tower Colocation Policy 表单（Step05「操作 → 候选站址」）。
+ *
+ * 只写既有的 `tower_colocation_policy` 字段，并复用**现有**端点
+ * `POST /api/tower-obstacle-profiles/evaluate`（payload 携带 `tower_colocation_policy`）：
+ * 不新增第二套 API/contract。
+ *
+ * 未确认（或未确认设备挂载、或未选服务原点假设）时策略 `enabled=false`，
+ * 共塔候选保持 **ineligible**：不会被规划选中，但普通候选站/新建候选照常补盲。
+ */
+export function towerColocationPolicyForm(flow){
+  const colocation=flow.tower_colocation_candidates||{},policy=colocation.policy||{};
+  const profiles=flow.tower_obstacle_profiles||{};
+  const assumption=policy.service_origin_assumption||'';
+  return '<div class="form-grid">'
+    +'<label>服务原点假设<select id="towerColocationOrigin">'
+    +'<option value="" '+(assumption===''?'selected':'')+'>未假设（不把塔顶当服务原点）</option>'
+    +'<option value="tower_top_agl_0" '+(assumption==='tower_top_agl_0'?'selected':'')+'>塔顶 EGM2008 · 挂高 0（显式假设）</option>'
+    +'</select></label></div>'
+    +'<label class="check-row"><input type="checkbox" id="towerColocationMount" '+(policy.device_mount_confirmed?'checked':'')+'>设备挂载已确认（该铁塔确实可以安装设备）</label>'
+    +'<label class="check-row"><input type="checkbox" id="towerColocationConfirmed" '+(policy.confirmed?'checked':'')+'>共塔布设策略已确认</label>'
+    +'<label>策略来源<input class="panel-input" id="towerColocationSource" value="'+escapeHtml(policy.source||'')+'"></label>'
+    +'<div class="button-row"><button class="secondary" id="saveTowerColocationPolicy">保存策略并派生候选</button>'
+    +'<button class="secondary" id="deriveTowerColocation">仅重算塔顶事实</button></div>'
+    +'<div class="flow-summary">策略 '+statusBadge(policy.status||'pending_confirmation')
+    +' · 当前'+(policy.enabled===true?'已启用':'未启用（候选 ineligible）')
+    +' · 共塔候选 '+(colocation.count||0)+' 个 · 塔顶已解析 '+(profiles.resolved_count||0)
+    +' · 未解析 '+(profiles.unresolved_count||0)
+    +'<br>三个条件（策略确认 + 设备挂载确认 + 服务原点假设）全部满足才会启用；'
+    +'设备型号与性能参数仍只能来自 device catalog / 用户确认，绝不从铁塔数据推断。</div>';
+}
+
 function gapList(analysis){
   if(!analysis?.routes?.length)return '<div class="empty-note">尚未运行 CNS Gap Analysis</div>';
   const label=status=>status==='passed'?'满足':statusText(status);
@@ -339,7 +371,7 @@ export function render({flow}){
   const existingPanel='<h3>已有 CNS 设施 '+statusBadge(existing.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="existing_cnsPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseExisting">选择…</button></div><button class="secondary full" id="importExisting">导入已有设施</button><div class="scroll-list cns-input-list">'+collectionList(existing,'facility')+'</div>';
   const candidatePanel='<h3>候选站址 '+statusBadge(candidates.status||'not_calculated')+'</h3><div class="panel-file-input"><input class="panel-input" id="candidate_sitesPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseCandidates">选择…</button></div><div class="button-row"><button class="secondary" id="importCandidates">导入候选站址</button><button class="secondary" id="deriveCandidates">从已有设施生成</button></div><div class="scroll-list cns-input-list">'+collectionList(candidates,'candidate')+'</div>'
     +'<h3>共塔候选（真实铁塔宿主） '+statusBadge(colocation.status||'not_calculated')+'</h3>'
-    +'<div class="button-row"><button class="secondary" id="deriveTowerColocation">从真实铁塔派生宿主候选</button></div>'
+    +towerColocationPolicyForm(flow)
     +'<div class="scroll-list cns-input-list">'+towerColocationList(colocation)+'</div>';
   // ---- 结果：基础覆盖 / 3D与能力 / 服务走廊 / 规划目标与缺口 ----------------
   const coverageResult='<div class="coverage-results">'+result+'</div>';
@@ -353,7 +385,7 @@ export function render({flow}){
   const timelinePanel='<h3>C/N/S Service Timeline '+statusBadge(timeline.status||'not_calculated')+'</h3><div class="parameter-note">运行状态只来自显式 ServiceScenarioEvent；不从 P8 meets、ReliabilitySpec 或 MTBF 推断 available/outage。</div><button class="secondary full" id="evaluateServiceTimeline">生成服务时间线</button><div class="gap-results">'+timelineList(timeline)+'</div>';
   const protectionPanel='<h3>Tactical Protection Envelope '+statusBadge(protection.status||'not_calculated')+'</h3><div class="parameter-note">工程保护距离 ≠ 法规 Well-Clear / 正式 DAA Detection Volume。</div><button class="secondary full" id="evaluateProtectionEnvelope">计算工程保护距离</button><div class="gap-results">'+protectionSummary(protection)+'</div>';
   const gapV2Panel='<h3>CNS Gap Analysis V2 '+statusBadge(gapV2.status||'not_calculated')+'</h3><div class="parameter-note">合并 P7 几何、P8 静态能力与 P9 运行时间线；Unknown 表示证据不足，不是危险等级，Gap 也不自动触发 Safety Event。</div><label class="check-row"><input type="checkbox" id="gapV2Protection" '+(gapV2.parameters?.evaluate_protection_margin?'checked':'')+'> 可选工程 Protection Margin（非 Well-Clear/认证判断）</label><button class="secondary full" id="evaluateGapV2">运行 Gap V2</button><div class="gap-results">'+gapV2List(gapV2)+'</div>';
-  const sitePlanPanel='<h3>Reuse-first CNS Site Planner V1 '+statusBadge(sitePlan.status||'not_calculated')+'</h3><div class="parameter-note">仅目标化 confirmed planning gap；tier 固定为 Existing CNS → Existing Shared Site → Candidate Site → New-build Candidate。P10 remediation scope 仅为提示，收益必须经 P7/P8 what-if 确认。</div><label class="check-row"><input type="checkbox" id="sitePolicyConfirmed" '+(sitePolicy.confirmed?'checked':'')+'> 确认使用 reuse-first engineering policy</label><button class="secondary full" id="evaluateSitePlan">生成 Proposal</button><div class="parameter-note">Proposal 不修改 ExistingCNS，也不声明 Gap 已消除；P12 必须 apply + rerun 闭环复核。</div><div class="gap-results">'+sitePlanSummary(sitePlan)+'</div>';
+  const sitePlanPanel='<h3>Reuse-first CNS Site Planner V1 '+statusBadge(sitePlan.status||'not_calculated')+'</h3><div class="parameter-note">仅目标化 confirmed planning gap；reuse tier 顺序固定为 Existing CNS → Existing Shared Site → Tower Colocation Host（真实铁塔共塔宿主）→ Candidate Site → New-build Candidate，语义是 prefer 共塔而不是 force。P10 remediation scope 仅为提示，收益必须经 P7/P8 what-if 确认。</div><label class="check-row"><input type="checkbox" id="sitePolicyConfirmed" '+(sitePolicy.confirmed?'checked':'')+'> 确认使用 reuse-first engineering policy</label><button class="secondary full" id="evaluateSitePlan">生成 Proposal</button><div class="parameter-note">Proposal 不修改 ExistingCNS，也不声明 Gap 已消除；P12 必须 apply + rerun 闭环复核。</div><div class="gap-results">'+sitePlanSummary(sitePlan)+'</div>';
   const closedLoopPanel='<h3>Closed-loop Validation V1 '+statusBadge(closedLoop.status||'not_calculated')+'</h3><div class="parameter-note">Engineering closed-loop verification：Preview 只在 working copy 重跑 P7→P8→P9→P10，不修改项目；Apply 才正式提交。规划 residual 与运行场景 residual 分开解释；这不是真实 CNS 模型 validation 或认证结论。</div><div class="button-row"><button class="secondary" id="evaluateClosedLoop">Preview</button><button class="primary" id="applyClosedLoop" '+(closedLoop.validation_status==='validated_improvement'&&closedLoop.commit_status==='preview'?'':'disabled')+'>Apply validated assessment</button></div><div class="gap-results">'+closedLoopSummary(closedLoop)+'</div>';
   const body=wbPanel('operate','',{segments:[
     ['cns-op-devices','设备与参数',
@@ -390,6 +422,15 @@ export function bind(c){
   c.actionButton('deriveCandidates',()=>c.resourceAction('/api/candidate-sites/from-existing',{}));
   // 真实铁塔 → 共塔宿主候选 + 塔顶障碍物事实（一次显式动作；不生成任何设备参数）。
   c.actionButton('deriveTowerColocation',()=>c.resourceAction('/api/tower-obstacle-profiles/evaluate',{}));
+  // 策略确认：复用同一个端点，payload 携带 tower_colocation_policy（不新增端点/契约）。
+  if(c.$('saveTowerColocationPolicy'))c.actionButton('saveTowerColocationPolicy',()=>c.resourceAction('/api/tower-obstacle-profiles/evaluate',{
+    tower_colocation_policy:{
+      service_origin_assumption:c.$('towerColocationOrigin').value||null,
+      device_mount_confirmed:c.$('towerColocationMount').checked,
+      confirmed:c.$('towerColocationConfirmed').checked,
+      source:c.$('towerColocationSource').value.trim()||'user_configuration',
+    },
+  }));
   c.actionButton('analyzeGaps',()=>c.mutate('gap-analysis'));
   c.actionButton('evaluateCoverage3d',()=>c.resourceAction('/api/coverage-3d/evaluate',{parameters:{sample_spacing_m:Number(c.$('coverage3dSpacing').value),assumption:'user_engineering_sampling_assumption',confirmed:false}}));
   c.actionButton('evaluateServiceCapability',()=>c.resourceAction('/api/cns-service-capability/evaluate',{}));

@@ -22,6 +22,8 @@ const display=readFileSync(new URL('../cns_planner/web/js/map/display_layers.js'
 const lod=readFileSync(new URL('../cns_planner/web/js/map/lod.js',import.meta.url),'utf8');
 const css=readFileSync(new URL('../cns_planner/web/css/map.css',import.meta.url),'utf8');
 const step05=readFileSync(new URL('../cns_planner/web/js/workflow/step05_cns.js',import.meta.url),'utf8');
+const step03=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
+const routerSource=readFileSync(new URL('../cns_planner/api/router.py',import.meta.url),'utf8');
 const towerLayer=readFileSync(new URL('../cns_planner/web/js/map/tower_reference_layer.js',import.meta.url),'utf8');
 
 // ---- 显示计划夹具 ---------------------------------------------------------------
@@ -290,4 +292,131 @@ test('FRONTEND: Step05 shows a colocation badge and keeps reuse classes distingu
   assert.match(step05,/普通候选 /);
   // 共塔候选列表明确声明"不是已有设备 / 无设备参数"
   assert.match(step05,/不是已有 CNS 设备，也不带任何设备性能参数/);
+});
+
+// ---- 验收前三项收口：两个 Policy UI + 旧说明文字 -------------------------------------
+
+test('FRONTEND: Step05 ships the Tower Colocation Policy form on the existing endpoint',()=>{
+  assert.match(step05,/export function towerColocationPolicyForm/);
+  const form=step05.slice(step05.indexOf('export function towerColocationPolicyForm'),
+    step05.indexOf('function gapList('));
+  for(const field of ['towerColocationOrigin','towerColocationMount','towerColocationConfirmed',
+    'towerColocationSource','saveTowerColocationPolicy']){
+    assert.ok(form.includes(field),`共塔策略表单必须提供 ${field}`);
+  }
+  // 四个正式字段：service_origin_assumption / device_mount_confirmed / confirmed / source
+  assert.match(form,/policy\.service_origin_assumption/);
+  assert.match(form,/tower_top_agl_0/);
+  assert.match(form,/policy\.device_mount_confirmed/);
+  assert.match(form,/policy\.confirmed/);
+  assert.match(form,/policy\.source/);
+  // 复用现有端点：不新增第二套 API/contract（payload 写四个字段）
+  const bind=step05.slice(step05.indexOf('export function bind(c)'));
+  assert.match(bind,/saveTowerColocationPolicy[\s\S]{0,600}\/api\/tower-obstacle-profiles\/evaluate/);
+  assert.match(bind,/service_origin_assumption:c\.\$\('towerColocationOrigin'\)\.value\|\|null/);
+  assert.match(bind,/device_mount_confirmed:c\.\$\('towerColocationMount'\)\.checked/);
+  assert.match(bind,/confirmed:c\.\$\('towerColocationConfirmed'\)\.checked/);
+  assert.match(bind,/source:c\.\$\('towerColocationSource'\)\.value\.trim\(\)\|\|'user_configuration'/);
+  assert.doesNotMatch(bind,/\/api\/tower-colocation-policy/,'不得新增共塔策略端点');
+  assert.doesNotMatch(bind,/\/api\/tower-obstacle-profiles\/policy/);
+  // 未确认仍然 ineligible
+  assert.match(form,/未启用（候选 ineligible）/);
+  assert.match(form,/三个条件（策略确认 \+ 设备挂载确认 \+ 服务原点假设）全部满足才会启用/);
+  // 表单确实挂载在候选站址面板里
+  assert.match(step05,/\+\s*towerColocationPolicyForm\(flow\)/);
+});
+
+test('FRONTEND: Step03 ships the Tower Clearance Policy form with no hidden defaults',()=>{
+  assert.match(step03,/function towerClearancePanel\(flow\)/);
+  const panel=step03.slice(step03.indexOf('function towerClearancePanel(flow)'),
+    step03.indexOf('export function render({flow,interactionMode'));
+  for(const field of ['towerVerticalClearance','towerHorizontalClearance',
+    'towerClearanceConfirmed','towerClearanceSource','saveTowerClearancePolicy']){
+    assert.ok(panel.includes(field),`塔净空面板必须提供 ${field}`);
+  }
+  assert.match(panel,/tower_vertical_clearance_m/);
+  assert.match(panel,/tower_horizontal_clearance_m/);
+  // 没有隐藏默认值：两个输入框都显式声明"必须显式填写，无默认值"
+  assert.equal((panel.match(/必须显式填写，无默认值/g)||[]).length,2);
+  assert.match(panel,/fail-closed/);
+  // 面板挂在"结果 → 可行性与净空"段（建筑净空之后、连续验证之前）
+  assert.match(step03,/buildingClearancePanel\(flow\)\+towerClearancePanel\(flow\)\+renderLayeredRouteValidation\(flow\)/);
+  // 保存走既有 state 字段 + 显式确认
+  const bind=step03.slice(step03.indexOf('c.actionButton(\'saveTowerClearancePolicy\''));
+  assert.match(bind,/resourceAction\('\/api\/tower-clearance-policy'/);
+  assert.match(bind,/tower_vertical_clearance_m:optional\('towerVerticalClearance'\)/);
+  assert.match(bind,/tower_horizontal_clearance_m:optional\('towerHorizontalClearance'\)/);
+  assert.match(bind,/confirmed:c\.\$\(\'towerClearanceConfirmed\'\)\.checked/);
+  // 前后端契约一致：端点已注册
+  assert.match(routerSource,/\/api\/tower-clearance-policy/);
+  assert.match(routerSource,/set_tower_clearance_policy/);
+});
+
+test('FRONTEND: both policy forms actually render the acceptance fields',async()=>{
+  // 运行时渲染（不只是源码正则）：确认模板真的产出了可提交的字段。
+  const step05Module=await import('../cns_planner/web/js/workflow/step05_cns.js');
+  const step03Module=await import('../cns_planner/web/js/workflow/step03_routes.js');
+  const colocation=step05Module.towerColocationPolicyForm({
+    tower_colocation_candidates:{count:3,policy:{
+      service_origin_assumption:'tower_top_agl_0',device_mount_confirmed:true,
+      confirmed:true,source:'user_configuration',enabled:true,status:'confirmed',
+    }},
+    tower_obstacle_profiles:{resolved_count:200,unresolved_count:173},
+  });
+  for(const id of ['towerColocationOrigin','towerColocationMount','towerColocationConfirmed',
+    'towerColocationSource','saveTowerColocationPolicy']){
+    assert.ok(colocation.includes(`id="${id}"`),`共塔策略表单缺少 ${id}`);
+  }
+  assert.match(colocation,/value="tower_top_agl_0" selected/);
+  assert.match(colocation,/id="towerColocationMount" checked/);
+  assert.match(colocation,/id="towerColocationConfirmed" checked/);
+  assert.match(colocation,/当前已启用/);
+  assert.match(colocation,/共塔候选 3 个 · 塔顶已解析 200 · 未解析 173/);
+
+  const clearance=step03Module.towerClearancePanel({
+    tower_clearance_policy:{status:'not_configured',confirmed:false},
+    tower_obstacle_profiles:{resolved_count:256,unresolved_count:117},
+    towers:{count:373},
+  });
+  for(const id of ['towerVerticalClearance','towerHorizontalClearance',
+    'towerClearanceConfirmed','towerClearanceSource','saveTowerClearancePolicy']){
+    assert.ok(clearance.includes(`id="${id}"`),`塔净空面板缺少 ${id}`);
+  }
+  // 未配置时两个输入框必须为空（不预填任何值）
+  assert.equal((clearance.match(/id="tower(Vertical|Horizontal)Clearance" placeholder="必须显式填写，无默认值" value=""/g)||[]).length,2);
+  assert.doesNotMatch(clearance,/id="towerVerticalClearance"[^>]*value="[0-9]/);
+  assert.doesNotMatch(clearance,/id="towerHorizontalClearance"[^>]*value="[0-9]/);
+  assert.match(clearance,/铁塔 373 个 · 塔顶已解析 256 · 未解析 117/);
+  assert.match(clearance,/fail-closed/);
+  // 已配置时回填
+  const filled=step03Module.towerClearancePanel({
+    tower_clearance_policy:{status:'confirmed',confirmed:true,source:'user_configuration',
+      tower_vertical_clearance_m:25,tower_horizontal_clearance_m:80},
+    tower_obstacle_profiles:{},towers:{count:373},
+  });
+  assert.match(filled,/id="towerVerticalClearance"[^>]*value="25"/);
+  assert.match(filled,/id="towerHorizontalClearance"[^>]*value="80"/);
+  assert.match(filled,/id="towerClearanceConfirmed" checked/);
+});
+
+test('FRONTEND: the Step05 reuse-tier description matches the real code order',()=>{
+  const expected='Existing CNS → Existing Shared Site → Tower Colocation Host'
+    +'（真实铁塔共塔宿主）→ Candidate Site → New-build Candidate';
+  assert.ok(step05.includes(expected),'说明文字必须与 REUSE_TIERS 完全一致');
+  assert.doesNotMatch(step05,/tier 固定为 Existing CNS → Existing Shared Site → Candidate Site/,
+    '不得保留缺少共塔 tier 的旧说明');
+  assert.match(step05,/prefer 共塔而不是 force/);
+  // 与代码里的真实顺序一致
+  const tiers=['existing_cns_facility','existing_shared_site','tower_colocation_host',
+    'candidate_site','new_build_candidate'];
+  const domainSource=readFileSync(
+    new URL('../cns_planner/domain/site_planning.py',import.meta.url),'utf8');
+  const block=domainSource.slice(domainSource.indexOf('REUSE_TIERS = ('),
+    domainSource.indexOf('TOWER_COLOCATION_REUSE_CLASS'));
+  let cursor=-1;
+  for(const tier of tiers){
+    const at=block.indexOf(`"${tier}"`);
+    assert.ok(at>cursor,`REUSE_TIERS 顺序必须是 ${tiers.join(' → ')}`);
+    cursor=at;
+  }
 });

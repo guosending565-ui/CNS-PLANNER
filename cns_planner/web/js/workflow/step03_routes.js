@@ -1699,6 +1699,26 @@ function buildingClearancePanel(flow){
   return '<h3>三维建筑净空 '+statusBadge(result.status||'not_calculated')+'</h3><div class="parameter-note">FABDEM DTM footprint median + GBA height_m 构成 LoD1 棱柱；GLO-30 DSM 不参与屋顶高程。建筑环境风险与本评估彼此独立。</div><div class="form-grid"><label>水平净空 (m)<input class="panel-input" type="number" min="0" step="any" id="buildingHorizontalClearance" value="'+escapeHtml(policy.horizontal_clearance_m??'')+'"></label><label>垂直净空 (m)<input class="panel-input" type="number" min="0" step="any" id="buildingVerticalClearance" value="'+escapeHtml(policy.vertical_clearance_m??'')+'"></label><label>最小建筑高度 (m，可空)<input class="panel-input" type="number" min="0" step="any" id="buildingMinHeight" value="'+escapeHtml(policy.min_building_height_m??'')+'"></label><label>地形起伏复核阈值 (m，可空)<input class="panel-input" type="number" min="0" step="any" id="buildingReliefReview" value="'+escapeHtml(policy.terrain_relief_review_m??'')+'"></label></div><label>工程参数来源<input class="panel-input" id="buildingClearanceSource" value="'+escapeHtml(policy.source||'')+'"></label><label class="check-row"><input type="checkbox" id="buildingClearanceConfirmed" '+(policy.confirmed?'checked':'')+'>参数已由工程依据确认</label><div class="button-row"><button class="secondary" id="saveBuildingClearancePolicy">保存参数</button><button class="primary" id="evaluateBuildingClearance">执行净空分析</button></div><div class="flow-summary">breach '+(stats.breach_count||0)+' · safe routes '+(stats.safe_route_count||0)+' · unknown routes '+(stats.unknown_route_count||0)+' · unresolved buildings '+unresolved+'<br>unknown/unresolved 永远不视为 safe；本结果不构成认证或法规符合性结论。</div><h3>Closest / critical buildings</h3><div class="scroll-list">'+(critical||'<div class="empty-note">尚无评估证据</div>')+'</div>';
 }
 
+export function towerClearancePanel(flow){
+  const policy=flow.tower_clearance_policy||{},profiles=flow.tower_obstacle_profiles||{},towers=flow.towers||{};
+  const vertical=policy.tower_vertical_clearance_m,horizontal=policy.tower_horizontal_clearance_m;
+  const status=policy.status||'not_configured';
+  return '<h3>通信铁塔净空 '+statusBadge(status)+'</h3>'
+    +'<div class="parameter-note">真实铁塔塔顶是<b>障碍物/净空</b>事实：进入 layered feasibility 的 hard constraint，'
+    +'不进入风险数学，也不进入 Theta* 的 0.8/0.1/0.1 objective。两个净空都必须显式填写；'
+    +'没有工程依据时请保持空值——系统不会替你选一个默认值。</div>'
+    +'<div class="form-grid">'
+    +'<label>塔垂直净空 (m)<input class="panel-input" type="number" min="0" step="any" id="towerVerticalClearance" placeholder="必须显式填写，无默认值" value="'+escapeHtml(vertical??'')+'"></label>'
+    +'<label>塔水平净空 (m)<input class="panel-input" type="number" min="0" step="any" id="towerHorizontalClearance" placeholder="必须显式填写，无默认值" value="'+escapeHtml(horizontal??'')+'"></label>'
+    +'</div>'
+    +'<label>工程参数来源<input class="panel-input" id="towerClearanceSource" value="'+escapeHtml(policy.source||'')+'"></label>'
+    +'<label class="check-row"><input type="checkbox" id="towerClearanceConfirmed" '+(policy.confirmed?'checked':'')+'>参数已由工程依据确认</label>'
+    +'<button class="secondary full" id="saveTowerClearancePolicy">保存塔净空参数</button>'
+    +'<div class="flow-summary">铁塔 '+(towers.count||0)+' 个 · 塔顶已解析 '+(profiles.resolved_count||0)+' · 未解析 '+(profiles.unresolved_count||0)
+    +'<br>未配置或未确认时：含塔网格在 feasible mask 中为 unknown（fail-closed），既不是 feasible 也不是 blocked；'
+    +'未解析塔顶的塔绝不当作"没有塔"。</div>';
+}
+
 export function render({flow,interactionMode,selectedReference=null,routeEvidenceHighlight=null}){
   const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+node.node_id+'</b> '+escapeHtml(node.name)+'<small>'+node.coordinate.map(value=>value.toFixed(5)).join(', ')+(node.reference_site_id?' · 来源 '+escapeHtml(node.reference_site_id):' · 手工点')+'</small></span><button data-delete-node="'+node.node_id+'">×</button></div>').join('');
   const routes=routesFor(flow);
@@ -1803,7 +1823,7 @@ function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighligh
   // Continuous Validation 接在既有 data readiness / building clearance 之后，
   // 实现完全在 layered_route_validation.js：本文件只插入组合。
   const feasibility=wbSegHint(RESULT_SEGMENTS,'res-feasibility')+dataReadinessPanel(flow)
-    +buildingClearancePanel(flow)+renderLayeredRouteValidation(flow);
+    +buildingClearancePanel(flow)+towerClearancePanel(flow)+renderLayeredRouteValidation(flow);
   // RouteRiskProfile 的展示实现独立在 route_risk_profile.js：这里只插入分段，不再往本文件堆业务。
   // 地图联动（临时 evidence highlight）只读取 main.js 传入的纯 UI 状态，不参与任何数值判断。
   const riskProfile=wbSegHint(RESULT_SEGMENTS,ROUTE_RISK_PROFILE_SEGMENT)
@@ -1873,6 +1893,8 @@ export function bind(c){
   c.actionButton('saveRouteMotion',()=>{const timing=structuredClone(c.flow().operational_timing||{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}}),routeId=c.$('motionRoute').value;timing.route_motion_profiles=timing.route_motion_profiles||{};timing.route_motion_profiles[routeId]={route_id:routeId,mode:'constant_ground_speed_mps',constant_ground_speed_mps:Number(c.$('routeGroundSpeed').value),source:'user_configuration',confirmed:true};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   const optional=id=>{const value=c.$(id).value.trim();return value===''?null:Number(value);};
   c.actionButton('saveBuildingClearancePolicy',()=>c.resourceAction('/api/building-clearance/policy',{horizontal_clearance_m:optional('buildingHorizontalClearance'),vertical_clearance_m:optional('buildingVerticalClearance'),min_building_height_m:optional('buildingMinHeight'),terrain_relief_review_m:optional('buildingReliefReview'),source:c.$('buildingClearanceSource').value.trim(),confirmed:c.$('buildingClearanceConfirmed').checked}));
+  // 塔净空：空值就是 null（不配置），绝不在这里补默认值。
+  if(c.$('saveTowerClearancePolicy'))c.actionButton('saveTowerClearancePolicy',()=>c.resourceAction('/api/tower-clearance-policy',{tower_vertical_clearance_m:optional('towerVerticalClearance'),tower_horizontal_clearance_m:optional('towerHorizontalClearance'),source:c.$('towerClearanceSource').value.trim(),confirmed:c.$('towerClearanceConfirmed').checked}));
   c.actionButton('evaluateBuildingClearance',()=>c.resourceAction('/api/building-clearance/evaluate',{}));
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(4);
 }

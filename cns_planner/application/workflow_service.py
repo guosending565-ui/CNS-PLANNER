@@ -779,6 +779,8 @@ class WorkflowService:
     def tower_integration_policies_snapshot(self): return self.tower_obstacle_service.policy_snapshot()
     def evaluate_tower_obstacle_profiles(self, payload=None, *, facts_provider=None):
         return self.tower_obstacle_service.evaluate(payload, facts_provider=facts_provider)
+    def set_tower_clearance_policy(self, payload=None):
+        return self.tower_obstacle_service.set_clearance_policy(payload)
     def import_towers(self, path):
         result = self.reference_data_service.import_towers(path)
         # 铁塔源真的换了：派生事实与其下游必须过时（绝不触发 Risk V2）。

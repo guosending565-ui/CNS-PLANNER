@@ -584,7 +584,10 @@ def test_tower_endpoints_and_snapshots_are_registered(tmp_path):
         "tower_colocation_candidates"
     )
     policies=service.tower_integration_policies_snapshot()
-    assert set(policies) == {"tower_obstacle_policy", "tower_colocation_policy"}
+    assert set(policies) == {
+        "tower_obstacle_policy", "tower_colocation_policy", "tower_clearance_policy",
+    }
+    assert "/api/tower-clearance-policy" in router_source
     # 快照以只读共享引用携带派生层（373 塔规模下不做整树深拷贝）
     snapshot=service.snapshot()
     assert snapshot["tower_obstacle_profiles"] is service.state["tower_obstacle_profiles"]
@@ -850,3 +853,107 @@ def test_unknown_policy_values_are_rejected():
         normalize_tower_clearance_policy({"tower_vertical_clearance_m": -1.0})
     with pytest.raises(ValueError):
         normalize_tower_colocation_policy({"service_origin_assumption": "tower_middle"})
+
+
+# ======================================================================================
+# 6. Policy UI 的后端支撑（Step03 塔净空 / Step05 共塔策略）
+# ======================================================================================
+
+
+def test_clearance_policy_save_enters_state_stale_chain_and_fingerprint(tmp_path):
+    """Step03 保存塔净空：进 state → 进 fingerprint → 进既有 stale 链（不动风险数学）。"""
+
+    service = loaded_workflow(tmp_path)
+    assert service.state["result_statuses"]["tower_colocation_candidates"] == "passed"
+
+    service.set_tower_clearance_policy({
+        "tower_vertical_clearance_m": 25.0, "tower_horizontal_clearance_m": 80.0,
+        "source": "user_configuration", "confirmed": True,
+    })
+    policy = service.state["tower_clearance_policy"]
+    assert policy["tower_vertical_clearance_m"] == 25.0
+    assert policy["tower_horizontal_clearance_m"] == 80.0
+    assert policy["status"] == "confirmed" and policy["confirmed"] is True
+
+    state = service.state
+    # 进既有 stale 链：layered candidate（塔净空进入 feasibility）
+    assert state["result_statuses"]["layered_route_candidate"] == "stale"
+    # 不 stale 共塔宿主候选（净空不改变宿主事实）
+    assert state["result_statuses"]["tower_colocation_candidates"] == "passed"
+    # 绝不动风险数学
+    assert state["grid_risk"]["status"] == "passed"
+    assert state["grid_risk_v2"]["status"] == "passed"
+
+    # 进 fingerprint：同一批 cells 在两个 policy 下 mask 指纹必须不同
+    cells = grid_cells(columns=1, rows=1)
+    facts = tower_facts(cells, {cells[0]["grid_id"]: cell_tower_fact(1, 1, 0, 290.0)})
+    unconfigured = mask_for(facts, altitude=300.0)
+    configured = mask_for(facts, altitude=300.0, tower_clearance=policy)
+    assert unconfigured["input_fingerprint"] != configured["input_fingerprint"]
+    assert unconfigured["mask_fingerprint"] != configured["mask_fingerprint"]
+    assert configured["tower_clearance_policy_status"] == "confirmed"
+    # 290 + 25 = 315 m > 300 m ⇒ blocked（未配置时同一格是 unknown，绝不 feasible）
+    assert configured["cells"][cells[0]["grid_id"]]["status"] == "blocked"
+    assert unconfigured["cells"][cells[0]["grid_id"]]["status"] == "unknown"
+
+
+def test_clearance_policy_never_invents_a_default_value(tmp_path):
+    """没有工程依据时不写任何数值：只填一个净空仍是 not_configured。"""
+
+    service = loaded_workflow(tmp_path)
+    service.set_tower_clearance_policy({
+        "tower_vertical_clearance_m": 25.0, "source": "user_configuration", "confirmed": True,
+    })
+    policy = service.state["tower_clearance_policy"]
+    assert policy["tower_vertical_clearance_m"] == 25.0
+    assert policy["tower_horizontal_clearance_m"] is None
+    assert policy["status"] == "not_configured"
+
+    # 空 payload（例如用户清空两个输入框）回到全空：不配置就是不配置
+    service.set_tower_clearance_policy({})
+    cleared = service.state["tower_clearance_policy"]
+    assert cleared["tower_vertical_clearance_m"] is None
+    assert cleared["tower_horizontal_clearance_m"] is None
+    assert cleared["status"] == "not_configured"
+    with pytest.raises(ValueError):
+        service.set_tower_clearance_policy({"tower_vertical_clearance_m": -5.0})
+
+
+def test_colocation_policy_save_through_the_existing_endpoint(tmp_path):
+    """Step05 保存共塔策略复用现有 /api/tower-obstacle-profiles/evaluate 语义。"""
+
+    service = loaded_workflow(tmp_path)
+    service.evaluate_tower_obstacle_profiles({"tower_colocation_policy": {
+        "service_origin_assumption": "tower_top_agl_0", "device_mount_confirmed": True,
+        "source": "user_configuration", "confirmed": True,
+    }})
+    policy = service.state["tower_colocation_policy"]
+    assert policy["enabled"] is True and policy["status"] == "confirmed"
+    item = service.state["tower_colocation_candidates"]["items"][0]
+    assert item["planning_profile"]["confirmed"] is True
+    assert item["planning_profile"]["add_device_allowed"] is True
+    assert item["metadata"]["host"]["device_mount_confirmed"] is True
+    # 没有 tower facts provider ⇒ 塔顶未解析 ⇒ 服务原点仍未确认（fail-closed）
+    assert item["vertical_profile"]["confirmed"] is False
+    assert item["vertical_profile"]["service_origin_egm2008_m"] is None
+
+
+def test_colocation_policy_stays_ineligible_until_all_three_conditions_hold(tmp_path):
+    """策略确认 + 设备挂载确认 + 服务原点假设，三者缺一都保持 ineligible。"""
+
+    service = loaded_workflow(tmp_path)
+    for payload in (
+        {"service_origin_assumption": "tower_top_agl_0", "device_mount_confirmed": True,
+         "source": "user_configuration", "confirmed": False},
+        {"service_origin_assumption": "tower_top_agl_0", "device_mount_confirmed": False,
+         "source": "user_configuration", "confirmed": True},
+        {"service_origin_assumption": None, "device_mount_confirmed": True,
+         "source": "user_configuration", "confirmed": True},
+    ):
+        service.evaluate_tower_obstacle_profiles({"tower_colocation_policy": payload})
+        policy = service.state["tower_colocation_policy"]
+        assert policy["enabled"] is False, payload
+        assert policy["status"] == "pending_confirmation"
+        item = service.state["tower_colocation_candidates"]["items"][0]
+        assert item["planning_profile"]["add_device_allowed"] is None
+        assert item["planning_profile"]["confirmed"] is False

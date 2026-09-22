@@ -269,6 +269,9 @@ class ApiRouter:
                     lambda: workflow.evaluate_tower_obstacle_profiles(payload)
                 )
             ),
+            # Tower Clearance Policy（Step03 航路净空配置）：只写既有 state 字段，
+            # 没有默认值，未配置时 readiness 明确 not_configured 且 mask 对含塔格 fail-closed。
+            "/api/tower-clearance-policy": lambda: workflow.set_tower_clearance_policy(payload),
             "/api/cns-gaps/analyze": workflow.analyze_cns_gaps,
             "/api/cns-gap-analysis-v2": lambda: workflow.analyze_cns_gaps_v2(payload),
             "/api/cns-site-plan": lambda: workflow.evaluate_cns_site_plan(payload),
