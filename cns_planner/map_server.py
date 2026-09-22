@@ -19,8 +19,8 @@ from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.gis.map_data import DEFAULT_PATHS, MapData as _MapData
 from cns_planner.gis.online_health import check_online_services as _check_online_services
 from cns_planner.gis.qgis_runtime import QgisRuntime
+from cns_planner.process_identity import build_identity as _build_identity
 from cns_planner.tile_cache import TileCache
-
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "cns_planner" / "web"
@@ -39,9 +39,14 @@ TILES = TileCache()
 _RENDER_REQUESTS = RenderRequestTracker()
 _MUTATION_LOCK = threading.RLock()
 LATEST, LATEST_LOCK = _RENDER_REQUESTS.latest, _RENDER_REQUESTS.lock
-WORKFLOW = None
-DATA = None
-APP_CONTEXT = None
+WORKFLOW = DATA = APP_CONTEXT = None
+
+
+def process_identity():
+    """本次后端进程的最小运行身份（BUG-STARTUP-001）：pid/started_at/project_root
+    取自本进程真实运行状态，git_commit 由启动器注入。
+    """
+    return _build_identity(ROOT)
 
 
 def obsolete(query):
@@ -138,6 +143,9 @@ class _CompatContext:
 
     @property
     def data(self): return DATA
+
+    @property
+    def health_identity(self): return process_identity()
 
     @property
     def qgis(self): return self

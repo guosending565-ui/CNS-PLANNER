@@ -25,7 +25,14 @@ class ApiRouter:
 
     def get(self, path, query, headers):
         context, workflow, data = self.context, self.context.workflow, self.context.data
-        if path == "/api/health": return Response({"service": "cns-map", "ready": True, "data_error": data.error})
+        if path == "/api/health":
+            # 保留原有 field 契约（service/ready/data_error），只附加最小运行身份：
+            # 启动器据此判断 8765 上的服务是否属于本项目，而不是仅凭 service 名复用。
+            payload = {"service": "cns-map", "ready": True, "data_error": data.error}
+            identity = getattr(context, "health_identity", None)
+            if identity:
+                payload.update(identity)
+            return Response(payload)
         if path == "/api/state": return Response(context.qgis.call(data.metadata))
         if path == "/api/data-sources": return Response(context.qgis.call(lambda: data.metadata()["data_sources"]))
         if path == "/api/data-health": return Response(context.qgis.call(lambda: data.metadata()["data_health"]))

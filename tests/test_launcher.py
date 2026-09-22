@@ -1,21 +1,187 @@
-from unittest.mock import patch
-from pathlib import Path
+"""launcher/health 的独立测试（BUG-STARTUP-001），不需要真实 QGIS。"""
+import json
+import launcher_process
 import map_app
 
 
-def test_ready_server_is_reused():
-    with patch.object(map_app, "is_ready", return_value=True), patch.object(map_app.subprocess, "Popen") as popen:
-        assert map_app.ensure_server() is None
-        popen.assert_not_called()
+def make_probe(**overrides):
+    fields = {
+        "occupied": True, "service": "cns-map", "ready": True,
+        "project_root": str(map_app.ROOT), "pid": 4321,
+        "started_at": "2026-01-01T00:00:00+00:00", "git_commit": "abc", "data_error": None,
+    }
+    fields.update(overrides)
+    return map_app.HealthProbe(**fields)
 
 
-def test_missing_qgis_is_actionable(tmp_path, monkeypatch):
-    monkeypatch.setenv("CNS_QGIS_PYTHON", str(tmp_path / "missing.bat"))
-    import pytest
-    with pytest.raises(RuntimeError, match="未找到 QGIS"):
-        map_app.find_runner()
+def test_identity_match_allows_reuse():
+    assert map_app.health_matches(make_probe())
+
+
+def test_identity_match_is_case_and_separator_insensitive():
+    weird = str(map_app.ROOT).replace("\\", "/").swapcase()
+    assert map_app.health_matches(make_probe(project_root=weird))
+
+
+def test_identity_mismatch_is_rejected():
+    assert not map_app.health_matches(make_probe(project_root=r"C:\other\project"))
+
+
+def test_missing_project_root_is_rejected():
+    # 旧版本后端不上报 project_root：不得仅凭 service 名复用。
+    assert not map_app.health_matches(make_probe(project_root=None))
+
+
+def test_foreign_service_and_not_ready_are_rejected():
+    assert not map_app.health_matches(make_probe(service="other-map"))
+    assert not map_app.health_matches(make_probe(ready=False))
+
+
+def test_free_port_is_not_occupied():
+    assert not map_app.health_matches(make_probe(occupied=False))
+
+
+def test_probe_reports_non_http_occupant(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(map_app, "urlopen", refuse)
+    probe = map_app.probe_health()
+    assert probe.occupied and probe.service is None
+    assert not map_app.health_matches(probe)
+
+
+def test_probe_reads_identity_fields(monkeypatch):
+    seen = {}
+    payload = {"service": "cns-map", "ready": True, "pid": 77, "started_at": "t",
+               "project_root": str(map_app.ROOT), "git_commit": "deadbeef"}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    def fake_urlopen(url, timeout=None):
+        seen["url"] = url
+        return FakeResponse()
+
+    monkeypatch.setattr(map_app, "urlopen", fake_urlopen)
+    probe = map_app.probe_health()
+    assert seen["url"].endswith("/api/health")
+    assert (probe.pid, probe.started_at, probe.git_commit) == (77, "t", "deadbeef")
+    assert map_app.health_matches(probe)
+
+
+def test_ready_server_is_reused(monkeypatch):
+    monkeypatch.setattr(map_app, "port_in_use", lambda *a, **k: True)
+    monkeypatch.setattr(map_app, "probe_health", lambda: make_probe())
+    launched = []
+    monkeypatch.setattr(launcher_process.ProcessTree, "launch",
+                        lambda self, *a, **k: launched.append(a) or self)
+    assert map_app.ensure_server() is None
+    assert launched == []
+
+
+def test_server_of_another_project_is_rejected(monkeypatch):
+    monkeypatch.setattr(map_app, "port_in_use", lambda *a, **k: True)
+    monkeypatch.setattr(map_app, "probe_health",
+                        lambda: make_probe(project_root=r"C:\other\project"))
+    launched = []
+    monkeypatch.setattr(launcher_process.ProcessTree, "launch",
+                        lambda self, *a, **k: launched.append(a) or self)
+    try:
+        map_app.ensure_server(timeout=1)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("必须拒绝复用其他项目的服务")
+    assert r"C:\other\project" in message
+    assert launched == []
+
+
+def test_unknown_occupant_is_rejected(monkeypatch):
+    monkeypatch.setattr(map_app, "port_in_use", lambda *a, **k: True)
+    monkeypatch.setattr(map_app, "probe_health", lambda: make_probe(service=None, ready=None))
+    try:
+        map_app.ensure_server(timeout=1)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("必须拒绝复用未知占用者")
+    assert "8765" in message
+
+
+def test_ensure_server_starts_managed_tree(monkeypatch, tmp_path):
+    monkeypatch.setattr(map_app, "port_in_use", lambda *a, **k: False)
+    monkeypatch.setattr(map_app, "LOG", tmp_path / "map-server.log")
+    monkeypatch.setattr(map_app, "find_runner", lambda: tmp_path / "python-qgis.bat")
+    monkeypatch.setattr(map_app, "git_commit", lambda: "deadbeef")
+    calls = {"launch": [], "suspend": [], "env": [], "closed": 0, "ready": 0}
+
+    class FakeTree:
+        def __init__(self):
+            self._poll = None
+
+        def launch(self, command, cwd, env, stdout, suspend=False):
+            calls["launch"].append([str(part) for part in command])
+            calls["suspend"].append(suspend)
+            calls["env"].append(dict(env))
+            return self
+
+        def poll(self):
+            return self._poll
+
+        def close(self):
+            calls["closed"] += 1
+
+    def ready():
+        calls["ready"] += 1
+        return calls["ready"] > 1
+
+    monkeypatch.setattr(launcher_process, "ProcessTree", FakeTree)
+    monkeypatch.setattr(map_app, "is_ready", ready)
+    tree = map_app.ensure_server(timeout=10)
+    assert isinstance(tree, FakeTree)
+    assert calls["launch"][0][-2:] == ["-m", "cns_planner.map_server"]
+    assert calls["suspend"] == [True]
+    # 身份注入：后端把 HEAD 回报到 /api/health 的 git_commit
+    assert calls["env"][0]["CNS_LAUNCHER_GIT_COMMIT"] == "deadbeef"
+    assert calls["closed"] == 0
+
+
+def test_failed_start_closes_its_own_tree(monkeypatch, tmp_path):
+    monkeypatch.setattr(map_app, "port_in_use", lambda *a, **k: False)
+    monkeypatch.setattr(map_app, "LOG", tmp_path / "map-server.log")
+    monkeypatch.setattr(map_app, "find_runner", lambda: tmp_path / "python-qgis.bat")
+    monkeypatch.setattr(map_app, "is_ready", lambda: False)
+    calls = {"closed": 0}
+
+    class FakeTree:
+        def launch(self, command, cwd, env, stdout, suspend=False):
+            return self
+
+        def poll(self):
+            return None
+
+        def close(self):
+            calls["closed"] += 1
+
+    monkeypatch.setattr(launcher_process, "ProcessTree", FakeTree)
+    try:
+        map_app.ensure_server(timeout=0.3)
+    except RuntimeError as exc:
+        assert "超时" in str(exc)
+    else:
+        raise AssertionError("启动超时必须报错")
+    assert calls["closed"] == 1
 
 
 def test_launcher_uses_package_entrypoint():
-    source = Path("map_app.py").read_text(encoding="utf-8")
-    assert '[str(runner), "-m", "cns_planner.map_server"]' in source
+    from pathlib import Path
+    source = Path(map_app.__file__).read_text(encoding="utf-8")
+    assert "cns_planner.map_server" in source

@@ -14,6 +14,7 @@ from ..gis.building_clearance_adapter import QgisBuildingClearanceAdapter
 from ..gis.fine_environment_adapter import real_data_source_readiness
 from ..gis.layered_feasibility_adapter import layered_feasibility_source_status
 from ..gis.route_vertical_profile_adapter import FabdemRouteSampler
+from ..process_identity import build_identity
 
 
 class RenderRequestTracker:
@@ -69,6 +70,15 @@ class ApplicationContext:
         self.configure_layered_route_planner_sources()
         self.configure_layered_route_validation_sources()
         self.configure_vertical_transition_validation_sources()
+
+    @property
+    def health_identity(self):
+        """本后端进程的最小运行身份（BUG-STARTUP-001）。
+
+        ``/api/health`` 用它向启动器声明"这个服务属于哪个项目"，启动器据此
+        拒绝跨项目复用，而不是仅凭 service 名就接管 8765 上的进程。
+        """
+        return build_identity(self.root)
 
     def _source_details(self):
         details = {}
