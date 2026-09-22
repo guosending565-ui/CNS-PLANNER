@@ -20,7 +20,10 @@ from ..algorithms.registry import default_algorithm_selection, normalize_algorit
 from ..domain.cns_inputs import (
     normalize_candidate_site, normalize_existing_facility, pending_required_cns,
 )
-from ..domain.site_planning import default_site_planning_policy, normalize_site_planning_policy
+from ..domain.site_planning import (
+    LEGACY_REUSE_TIERS_V1,
+    default_site_planning_policy, normalize_site_planning_policy,
+)
 from ..domain.safety_policy import default_safety_policy, normalize_safety_policy
 from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
@@ -359,6 +362,50 @@ def blank_project(defaults):
     }
 
 
+def _is_legacy_reuse_tier_policy(policy):
+    """该**持久化**政策是否使用官方旧 4 层 reuse tier 顺序。"""
+    if not isinstance(policy, dict):
+        return False
+    return tuple(policy.get("reuse_tiers") or ()) == LEGACY_REUSE_TIERS_V1
+
+
+def _mark_migrated_policy_proposal_stale(state, proposal_key, status_key, reason):
+    """legacy policy 迁移后，把按旧 tier 顺序派生出来的 proposal 标记为 stale。
+
+    只改 ``status``（以及 ``result_statuses``）这一个字段：``candidate_actions`` /
+    ``selected_actions`` / 指纹等全部原样保留，既不删除项目数据，也不重算任何结果，
+    更不把旧 proposal 冒充成迁移后新策略的 current 派生。``not_calculated`` 不动，
+    因此该标记是幂等的：迁移后的项目再次保存/打开不会二次漂移。
+    """
+
+    proposal = state.get(proposal_key)
+    if not isinstance(proposal, dict):
+        return False
+    if proposal.get("status") in (None, "not_calculated", "stale"):
+        return False
+    proposal["status"] = "stale"
+    proposal["stale_reason"] = reason
+    state.setdefault("result_statuses", {})[status_key] = "stale"
+    return True
+
+
+def _mark_proposals_stale_after_reuse_tier_migration(state, p11_migrated, p16_migrated):
+    """BUG-PERSIST-REUSE-TIER-001：legacy 4 层政策被迁移时，失效其派生 proposal。"""
+
+    if p11_migrated:
+        _mark_migrated_policy_proposal_stale(
+            state, "cns_site_plan", "cns_site_plan",
+            "site_planning_policy 由官方 legacy 4 层 reuse tier 顺序迁移为当前 5 层；"
+            "旧 proposal 不是新策略下的 current 派生",
+        )
+    if p16_migrated:
+        _mark_migrated_policy_proposal_stale(
+            state, "cns_corridor_site_plan", "cns_corridor_site_plan",
+            "corridor_site_planning_policy 由官方 legacy 4 层 reuse tier 顺序迁移为当前 5 层；"
+            "旧 proposal 不是新策略下的 current 派生",
+        )
+
+
 def normalize_project(value, grid_service):
     """Validate the schema and backfill fields added without a schema bump."""
     if not isinstance(value, dict):
@@ -516,15 +563,24 @@ def normalize_project(value, grid_service):
     value["candidate_sites"]["count"] = len(value["candidate_sites"]["items"])
     value.setdefault("cns_gap_analysis", CNSGapAnalyzerV1.empty())
     value.setdefault("cns_gap_analysis_v2", CNSGapAnalyzerV2.empty())
+    # BUG-PERSIST-REUSE-TIER-001：先记住持久化的 tier 顺序是否为官方 legacy 4 层。
+    # 只有**严格等于**官方旧顺序才迁移（见 ``canonicalize_reuse_tiers``）；迁移发生后，
+    # 按旧顺序派生的 proposal 必须失效，不能冒充新策略下的 current 派生。
+    p11_legacy_policy = _is_legacy_reuse_tier_policy(value.get("site_planning_policy"))
     value["site_planning_policy"] = normalize_site_planning_policy(value.get("site_planning_policy"))
     value.setdefault("cns_site_plan", ReuseFirstSitePlannerV1.empty())
     value.setdefault("closed_loop_assessment", empty_closed_loop_assessment())
+    p16_legacy_policy = _is_legacy_reuse_tier_policy(value.get("corridor_site_planning_policy"))
     value["cns_corridor_policy"] = normalize_cns_corridor_policy(value.get("cns_corridor_policy"))
     value.setdefault("cns_corridor_assessment", empty_cns_corridor_assessment())
     value["cns_planning_objectives"] = normalize_cns_planning_objectives(value.get("cns_planning_objectives"))
     value.setdefault("cns_corridor_gap_assessment", empty_cns_corridor_gap_assessment())
     value["corridor_site_planning_policy"] = normalize_corridor_site_planning_policy(value.get("corridor_site_planning_policy"))
     value.setdefault("cns_corridor_site_plan", empty_cns_corridor_site_plan())
+    # 两条 policy 都规范化完成后统一处理迁移派生失效（P11 与 P16 同一规则）。
+    _mark_proposals_stale_after_reuse_tier_migration(
+        value, p11_legacy_policy, p16_legacy_policy
+    )
     value.setdefault("cns_plan_review", empty_plan_review())
     value.setdefault("confirmed_cns_plan", empty_confirmed_plan())
     value.setdefault("cns_planning_reports", empty_report_collection())
