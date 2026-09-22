@@ -18,6 +18,9 @@ class PopulationGridService:
     algorithm_id = "population-grid-raw-statistics"
     sampling_version = "1.1"
 
+    #: 统一映射结果的取值词汇（与建筑环境映射保持一致的三态）。
+    POPULATION_MAPPING_STATUSES = ("passed", "partial", "unsupported")
+
     def __init__(self, adapter_factory=GdalRasterAdapter):
         self.adapter_factory = adapter_factory
 
@@ -37,6 +40,11 @@ class PopulationGridService:
             "missing_count": 0,
             "outside_count": 0,
             "nodata_only_count": 0,
+            # 统一结果载体使用的稳定别名：full_cells / partial_cells / missing_cells / coverage_ratio。
+            "full_cells": 0,
+            "partial_cells": 0,
+            "missing_cells": 0,
+            "coverage_ratio": None,
             "value_status": "not_calculated",
             "coverage_status": "not_calculated",
             "coverage_summary": {
@@ -52,6 +60,99 @@ class PopulationGridService:
         }
         if message:
             result["message"] = message
+        result["population_mapping"] = cls.population_mapping(result)
+        return result
+
+    @classmethod
+    def population_mapping(cls, result):
+        """统一的 ``PopulationMappingResult``（只做归一化统计，不重算任何数值）。
+
+        字段：``coverage_ratio`` / ``full_cells`` / ``partial_cells`` / ``missing_cells`` /
+        ``total_cells`` / ``covered_cells`` / ``unresolved_cells`` / ``status``。
+
+        ``status`` 三态：
+
+        * ``passed``：每一格都有明确结论（观测覆盖或已确认的零人口）；
+        * ``partial``：部分格有观测覆盖，部分格仍无法判定（``missing_data`` 绝不当 0）；
+        * ``unsupported``：无任何可用覆盖（未配置 / 源不可用）。
+
+        计数以 ``cells`` 为唯一权威来源重新统计，避免历史记录里
+        ``full_count`` 与 ``coverage_summary.full`` 互相矛盾时把旧状态带到界面上。
+        """
+
+        result = result if isinstance(result, dict) else {}
+        cells = result.get("cells") if isinstance(result.get("cells"), dict) else {}
+        total = int(result.get("count") or len(cells))
+        counts = {
+            "full": 0, "partial": 0, "outside_extent": 0,
+            "nodata_only": 0, "missing_data": 0, CONFIRMED_ZERO_COVERAGE_STATUS: 0,
+        }
+        value_passed = 0
+        for cell in cells.values():
+            if not isinstance(cell, dict):
+                continue
+            coverage = str(cell.get("coverage_status") or "")
+            if coverage in counts:
+                counts[coverage] += 1
+            else:
+                counts["missing_data"] += 1
+            if str(cell.get("value_status") or "") == "passed":
+                value_passed += 1
+        confirmed_zero = counts[CONFIRMED_ZERO_COVERAGE_STATUS]
+        covered = counts["full"] + counts["partial"] + confirmed_zero
+        unresolved = max(0, total - covered)
+        summary = result.get("coverage_summary") if isinstance(result.get("coverage_summary"), dict) else {}
+        area_ratio = summary.get("source_coverage_fraction")
+        cell_ratio = (covered / total) if total else None
+        if isinstance(area_ratio, (int, float)) and not isinstance(area_ratio, bool) and total:
+            coverage_ratio = float(area_ratio)
+        else:
+            coverage_ratio = cell_ratio
+        result_status = str(result.get("status") or "")
+        if not total:
+            status = "unsupported"
+        elif covered == total:
+            status = "passed"
+        elif covered:
+            status = "partial"
+        else:
+            status = "unsupported"
+        return {
+            "status": status,
+            "total_cells": total,
+            "covered_cells": covered,
+            "unresolved_cells": unresolved,
+            "coverage_ratio": coverage_ratio,
+            "cell_coverage_ratio": cell_ratio,
+            "area_coverage_ratio": (
+                float(area_ratio) if isinstance(area_ratio, (int, float))
+                and not isinstance(area_ratio, bool) else None
+            ),
+            "full_cells": counts["full"],
+            "partial_cells": counts["partial"],
+            "missing_cells": counts["missing_data"],
+            "outside_cells": counts["outside_extent"],
+            "nodata_only_cells": counts["nodata_only"],
+            "confirmed_zero_cells": confirmed_zero,
+            "value_covered_cells": value_passed,
+            "value_status": result.get("value_status"),
+            "coverage_status": result.get("coverage_status"),
+            "mapping_status": result_status or "not_calculated",
+            "source_available": bool(result.get("source")) and result_status != "failed",
+            "participates_in_planner": result_status == "passed",
+            "algorithm_id": result.get("algorithm_id"),
+            "sampling_version": result.get("sampling_version"),
+        }
+
+    @classmethod
+    def _with_population_mapping(cls, result):
+        mapping = cls.population_mapping(result)
+        result["population_mapping"] = mapping
+        # 稳定别名：前端与外部消费者可以只读这四个键就拿到覆盖统计。
+        result["coverage_ratio"] = mapping["coverage_ratio"]
+        result["full_cells"] = mapping["full_cells"]
+        result["partial_cells"] = mapping["partial_cells"]
+        result["missing_cells"] = mapping["missing_cells"]
         return result
 
     def map(self, grid, source_path, nodata_semantics=None):
@@ -129,7 +230,7 @@ class PopulationGridService:
                 len(cells) - coverage_counts["full"] - coverage_counts["partial"]
                 - coverage_counts[CONFIRMED_ZERO_COVERAGE_STATUS]
             )
-            return {
+            return self._with_population_mapping({
                 "status": status,
                 "value_status": value_status,
                 "coverage_status": coverage_status,
@@ -175,7 +276,7 @@ class PopulationGridService:
                     "source_coverage_fraction": valid_area_total / target_area_total if target_area_total > 0 else 0.0,
                 },
                 "cells": attributes,
-            }
+            })
         except (OSError, ValueError, RuntimeError) as exc:
             return self._missing(cells, grid.get("level"), {"path": str(source_path)}, str(exc), "failed")
 
@@ -191,7 +292,7 @@ class PopulationGridService:
         result["value_status"] = status
         result["coverage_status"] = "missing_data"
         result["missing_count"] = len(cells)
-        return result
+        return self._with_population_mapping(result)
 
     @staticmethod
     def _empty_cell():
@@ -384,4 +485,4 @@ class PopulationGridService:
                 "source_coverage_fraction": valid_area_total / target_area_total if target_area_total > 0 else 0.0,
             },
         })
-        return value
+        return cls._with_population_mapping(value)

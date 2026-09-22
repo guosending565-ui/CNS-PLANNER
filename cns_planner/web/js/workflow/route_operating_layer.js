@@ -19,7 +19,11 @@ export const PROCEDURE_TYPE_LABELS={departure:'离场程序',arrival:'进场程�
 export const LAYER_PENDING_LABEL='待工程确认';
 export const PRODUCTION_ROUTE_LABEL='生产航路 = 离场程序 → 固定巡航高度层 + 水平航路 → 进场程序';
 export const ADVANCED_PROFILE_LABEL='advanced_variable_profile：高级/实验剖面展示，不是生产巡航高度层';
-export const NO_DEFAULT_ALTITUDE_LABEL='系统不提供任何默认真实高度（80/100/120 m 等）；未显式确认一律保持待工程确认。';
+// 工程默认高度层（ALT-060/080/100/150/200）只是**目录条目**，绝不是任何航路的默认高度：
+// 系统不为航路自动选择或分配高度，必须由用户显式选择。
+export const NO_DEFAULT_ALTITUDE_LABEL='系统不为任何航路自动选择或分配默认高度；目录条目必须由用户显式选择并确认。';
+// catalog 为空（从未初始化且恢复未补建，或用户显式删空）时的明确提示。
+export const EMPTY_ALTITUDE_CATALOG_LABEL='高度层目录为空（共 0 层）：没有可选高度层，请先在步骤 02 的工作区/垂直配置面板补建 AltitudeLayer；系统不会自动选择或推断任何高度。';
 export const READINESS_BUCKETS=[
   ['altitude_layer_catalog','高度层目录'],
   ['route_layer_assignment','航路 → 巡航高度层分配'],
@@ -175,7 +179,7 @@ function procedureEditor(model){
 
 export function renderCruiseLayerPanel(flow){
   const model=routeOperatingModel(flow);
-  const catalog=model.layers.length?model.layers.map(layerRow).join(''):'<div class="empty-note">尚未配置任何 AltitudeLayer：巡航高度层保持 <b>'+LAYER_PENDING_LABEL+'</b>。'+NO_DEFAULT_ALTITUDE_LABEL+'</div>';
+  const catalog=model.layers.length?model.layers.map(layerRow).join(''):'<div class="empty-note">'+EMPTY_ALTITUDE_CATALOG_LABEL+' 巡航高度层保持 <b>'+LAYER_PENDING_LABEL+'</b>。</div>';
   const routeRows=model.routes.length?model.routes.map(route=>cruiseRouteRow(model,route)).join(''):'<div class="empty-note">尚无运行航路；生成运行航路后才能显式分配巡航高度层。</div>';
   const procedures=model.procedures.length?model.procedures.map(procedureRow).join(''):'<div class="empty-note">尚无离场/进场程序：readiness 保持 '+LAYER_PENDING_LABEL+'，不填默认爬升率/下降率/转弯半径/join-leave 点。</div>';
   return '<div id="cruiseLayerPanel">'

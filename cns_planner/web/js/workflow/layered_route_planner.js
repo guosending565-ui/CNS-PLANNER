@@ -113,11 +113,16 @@ export function layeredPlanningRequestModel(flow){
 export function layeredFeasibilityModel(flow){
   const readiness=flow?.layered_route_planner_readiness||{};
   const feasibility=flow?.layered_route_feasibility_policy||{};
+  const source=typeof feasibility.source==='string'?feasibility.source:'';
   return {
     status:feasibility.status||'blocked',
     clearance:Number.isFinite(feasibility.terrain_vertical_clearance_m)?feasibility.terrain_vertical_clearance_m:null,
     parameterStatus:feasibility.parameter_status||null,
-    source:feasibility.source||null,
+    source:source||null,
+    // 未配置时的后端占位说明不是工程依据：不回填成可编辑值，否则一次无修改的保存就会
+    // 把占位文本当成 explicit source 提交。
+    sourceInput:source.startsWith('未配置')?'':source,
+    confirmed:feasibility.confirmed===true,
     fingerprint:feasibility.fingerprint||null,
     policyStatus:readiness.feasibility_policy?.status||feasibility.status||'blocked',
     maskingConfirmed:readiness.feasibility_policy?.status==='confirmed',
@@ -142,7 +147,9 @@ export function renderLayeredPlanningRequestFields(model,{altitudeNote}={}){
   return '<label>scenario / OD 航路</label>'+
     '<select id="layeredRouteSelect">'+(routeOptions||'<option value="">当前没有 scenario/OD 航路</option>')+'</select>'+
     '<label>巡航高度层（显式选择，不从 profile 推断）</label>'+
-    '<select id="layeredAltitudeLayerSelect">'+(layerOptions||'<option value="">尚未配置 AltitudeLayer</option>')+'</select>'+
+    '<select id="layeredAltitudeLayerSelect">'+
+    (layerOptions||'<option value="">高度层目录为空（'+model.layerCatalogStatus+' · 共 0 层）：没有可选高度层</option>')+
+    '</select>'+
     '<div class="parameter-note">selected layer cruise altitude：'+
     escapeHtml(model.cruiseAltitude?.status||'not_resolved')+
     (Number.isFinite(model.cruiseAltitude?.altitude_egm2008_m)?' · '+formatNumber(model.cruiseAltitude.altitude_egm2008_m)+' m EGM2008':'')+
@@ -153,14 +160,24 @@ export function renderLayeredPlanningRequestFields(model,{altitudeNote}={}){
     '<label class="checkbox-row"><input type="checkbox" id="layeredRequestConfirmed"'+(model.requestConfirmed?' checked':'')+'> 显式确认本次规划请求</label>';
 }
 
-/** 公共 feasibility policy 字段（terrain clearance 无默认值）。 */
+/**
+ * 公共 feasibility policy 字段（terrain clearance 无默认值）。
+ *
+ * source 与 explicit confirmation 必须从后端 policy 回填：否则每次保存后的重渲染都会
+ * 把两者清空，第二次保存就把已 confirmed 的策略降级成 pending_confirmation
+ * （Phase 3.5 BUG-ROUTE-002）。
+ */
 export function renderLayeredFeasibilityFields(model){
+  const feasibility=model?.feasibility||{};
+  const clearance=Number.isFinite(feasibility.clearance)?feasibility.clearance:null;
   return '<label>feasibility policy：terrain vertical clearance (m)</label>'+
     '<input id="layeredTerrainClearance" type="number" step="0.1" placeholder="必填，无默认值" value="'+
-    (model.feasibility.clearance===null?'':model.feasibility.clearance)+'">'+
+    (clearance===null?'':clearance)+'">'+
     '<label>feasibility policy source</label>'+
-    '<input id="layeredFeasibilitySource" placeholder="工程依据（确认时必填）">'+
-    '<label class="checkbox-row"><input type="checkbox" id="layeredFeasibilityConfirmed"> 显式确认 feasibility policy</label>';
+    '<input id="layeredFeasibilitySource" placeholder="工程依据（确认时必填）" value="'+
+    escapeHtml(feasibility.sourceInput||'')+'">'+
+    '<label class="checkbox-row"><input type="checkbox" id="layeredFeasibilityConfirmed"'+
+    (feasibility.confirmed===true?' checked':'')+'> 显式确认 feasibility policy</label>';
 }
 
 // ---------------------------------------------------------------- V1 model
@@ -205,6 +222,11 @@ export function layeredRoutePlannerModel(flow){
       status:feasibilityModel.status,
       clearance:feasibilityModel.clearance,
       parameterStatus:feasibilityModel.parameterStatus,
+      // source / confirmed 由同一个 renderLayeredFeasibilityFields 渲染：V1 面板也必须
+      // 拿到后端保存的值，否则保存后重渲染会清空它们。
+      source:feasibilityModel.source,
+      sourceInput:feasibilityModel.sourceInput,
+      confirmed:feasibilityModel.confirmed,
       fingerprint:feasibilityModel.fingerprint,
       maskingConfirmed:feasibilityModel.maskingConfirmed,
     },
@@ -416,10 +438,31 @@ export function renderLayeredRoutePlannerPanel(flow){
 
 // ---------------------------------------------------------------- public payloads
 
+/**
+ * 控件读取契约：优先 DOM 实时属性，回退 HTML 属性。
+ *
+ * 与 Theta* V2 面板（layered_theta_v2.js 的 fieldValue / checkedFrom）保持一致：把
+ * input 的 value / checked 只当作属性携带时也必须能读到，绝不静默返回空值。
+ */
+function fieldValue(node){
+  if(!node)return '';
+  const direct=node.value;
+  if(direct!==undefined&&direct!==null)return String(direct);
+  const attribute=(node.attributes||{}).value;
+  return attribute===undefined||attribute===null?'':String(attribute);
+}
+
+function checkedField(node){
+  if(!node)return false;
+  if(node.checked===true||node.checked==='true')return true;
+  const attributes=node.attributes||{};
+  return attributes.checked===true||attributes.checked==='true';
+}
+
 /** 公共 request payload（空串一律提交 null / false，不补默认值）。 */
 export function layeredRequestPayloadFrom(close=id=>document.getElementById(id)){
-  const value=id=>{const node=close(id);return node?node.value:'';};
-  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
+  const value=id=>fieldValue(close(id));
+  const checked=id=>checkedField(close(id));
   return {
     scenario_route_id:value('layeredRouteSelect')||null,
     altitude_layer_id:value('layeredAltitudeLayerSelect')||null,
@@ -430,8 +473,8 @@ export function layeredRequestPayloadFrom(close=id=>document.getElementById(id))
 
 /** 公共 feasibility policy payload：terrain clearance 空值 = null（无默认值）。 */
 export function layeredFeasibilityPayloadFrom(close=id=>document.getElementById(id)){
-  const value=id=>{const node=close(id);return node?node.value:'';};
-  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
+  const value=id=>fieldValue(close(id));
+  const checked=id=>checkedField(close(id));
   const raw=value('layeredTerrainClearance');
   return {
     terrain_vertical_clearance_m:raw===''||raw===null?null:Number(raw),
@@ -442,8 +485,8 @@ export function layeredFeasibilityPayloadFrom(close=id=>document.getElementById(
 
 /** V1 legacy cost policy payload（λ 空值 = null，显式 0 保留为 0）。 */
 export function layeredCostPayloadFrom(close=id=>document.getElementById(id)){
-  const value=id=>{const node=close(id);return node?node.value:'';};
-  const checked=id=>{const node=close(id);return node?node.checked===true:false;};
+  const value=id=>fieldValue(close(id));
+  const checked=id=>checkedField(close(id));
   const number=id=>{const raw=value(id);return raw===''||raw===null?null:Number(raw);};
   return {
     ground_lambda:number('layeredGroundLambda'),

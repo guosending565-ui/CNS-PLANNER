@@ -73,8 +73,12 @@ class ApplicationContext:
     def _source_details(self):
         details = {}
         for role, info in (getattr(self.data, "vector_info", {}) or {}).items():
+            # ``fields`` 有两种合法形态：既有 GeoPackage 检查返回 {名称: 类型}，
+            # 通用矢量发现（.shp/.geojson/由 qgz 解析出的图层）返回名称列表。
+            fields = info.get("fields") or {}
+            field_names = sorted(fields.keys()) if isinstance(fields, dict) else sorted(str(name) for name in fields)
             details[role] = {
-                "schema": {"fields": sorted((info.get("fields") or {}).keys())},
+                "schema": {"fields": field_names},
                 "feature_count": info.get("feature_count"), "extent": info.get("extent"),
                 "declared_crs": info.get("crs"),
                 "geometry_health": deepcopy(info.get("geometry_health") or {

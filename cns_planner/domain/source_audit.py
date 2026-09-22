@@ -73,7 +73,20 @@ def source_manifest(role, path, *, previous=None, details=None, verified_sha256=
     details = details if isinstance(details, dict) else {}
     signature = _quick_signature(path)
     source = Path(path) if path else None
+    # 源文件签名（大小 / mtime）与上次记录不一致时，**绝不复用**上一次的 schema / extent /
+    # feature_count / geometry_health：那属于"缓存旧状态"，会让界面显示上一个文件的事实。
+    previous_signature_matches = bool(
+        signature
+        and previous.get("size_bytes") == signature["size_bytes"]
+        and previous.get("mtime_ns") == signature["mtime_ns"]
+    )
+    signature_changed = bool(previous and not previous_signature_matches)
+    if signature_changed:
+        # 只保留"上一次验证记录"（用于判定 needs_revalidation），丢弃全部派生事实。
+        previous = {"verification": deepcopy(previous.get("verification") or {})}
     reasons = []
+    if signature_changed:
+        reasons.append("source_signature_changed_previous_details_dropped")
     if source is None:
         status = "not_configured"
         reasons.append("source_not_configured")

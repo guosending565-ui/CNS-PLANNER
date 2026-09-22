@@ -5,6 +5,7 @@ from copy import deepcopy
 from ..domain.spatial_3d import (
     normalize_altitude_layer, normalize_route_altitude_profile,
 )
+from ..domain.altitude_layer_defaults import mark_altitude_layer_catalog_managed
 from .route_operating_layer_service import (
     refresh_spatial_status, resync_operating_layer_statuses,
 )
@@ -44,6 +45,9 @@ class Spatial3DService:
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("altitude_layer_id 不得重复")
         self.session.state["spatial_3d"]["altitude_layers"] = layers
+        # 批量写入 = 用户显式管理过 catalog：之后不再自动补建工程默认高度层
+        # （即使这次写入把目录清空），由前端对空目录给出明确提示。
+        mark_altitude_layer_catalog_managed(self.session.state)
         # The catalogue write also re-evaluates the explicit cruise-layer assignments and
         # procedure statuses: a layer that loses its nominal altitude/confirmation can never
         # leave a referencing assignment silently ``confirmed``.

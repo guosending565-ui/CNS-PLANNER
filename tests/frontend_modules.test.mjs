@@ -21,8 +21,8 @@ import {ADVANCED_PROFILE_LABEL,CRUISE_LAYER_MODE,LAYER_PENDING_LABEL,PRODUCTION_
 import {protectionBudgetModel,renderProtectionBudget} from '../cns_planner/web/js/workflow/protection_budget.js';
 import {encounterFrame,renderDaaEncounterLab} from '../cns_planner/web/js/workflow/daa_encounter_lab.js';
 import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,riskV2CellSummary,riskV2LegendModel,riskV2ThemeOptions} from '../cns_planner/web/js/workflow/risk_framework_v2.js';
-import {COST_DOMAIN_LABELS,LAYERED_BLOCKED_NOTE,LAYERED_CANDIDATE_LABEL,LAYERED_PLANNER_ALGORITHM_TYPE,layeredEvaluatePayload,layeredOverlayModel,layeredPlannerUsesThetaStarV2,layeredRequestPayload,layeredRoutePlannerModel,renderLayeredRoutePlannerPanel} from '../cns_planner/web/js/workflow/layered_route_planner.js';
-import {THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_PANEL_TITLE,THETA_V2_EVALUATE_BLOCKED_NOTE,bindLayeredThetaV2,isLegacyV1CostBlocker,layeredThetaV2Model,renderLayeredThetaV2Panel,thetaV2ObjectivePolicyPayload,thetaV2RiskDensityPayload,thetaV2ShelterPolicyPayload} from '../cns_planner/web/js/workflow/layered_theta_v2.js';
+import {COST_DOMAIN_LABELS,LAYERED_BLOCKED_NOTE,LAYERED_CANDIDATE_LABEL,LAYERED_PLANNER_ALGORITHM_TYPE,layeredEvaluatePayload,layeredOverlayModel,layeredPlannerUsesThetaStarV2,layeredPlanningRequestModel,layeredRequestPayload,layeredRoutePlannerModel,renderLayeredRoutePlannerPanel} from '../cns_planner/web/js/workflow/layered_route_planner.js';
+import {THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_PANEL_TITLE,THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE,THETA_V2_EVALUATE_BLOCKED_NOTE,bindLayeredThetaV2,isLegacyV1CostBlocker,layeredThetaV2Model,renderLayeredThetaV2Panel,thetaV2ObjectivePolicyPayload,thetaV2RiskDensityPayload,thetaV2ShelterPolicyPayload} from '../cns_planner/web/js/workflow/layered_theta_v2.js';
 import {LAYERED_FEASIBILITY_COLORS,currentLayeredCandidate,drawLayeredFeasibilityOverlay,layeredFeasibilityCells,layeredFeasibilityLegend} from '../cns_planner/web/js/map/layered_feasibility_overlay.js';
 import {drawWorkflowLayers} from '../cns_planner/web/js/map/display_layers.js';
 import {drawLayeredCandidateOverlay} from '../cns_planner/web/js/map/layered_candidate_overlay.js';
@@ -1548,7 +1548,9 @@ test('cruise layer panel says 待工程确认 and ships no default real altitude
   assert.match(html,/id="cruiseLayerPanel"/);
   assert.match(html,/巡航高度层（生产主模式）/);
   assert.match(html,/待工程确认/);
-  assert.match(html,/尚未配置任何 AltitudeLayer/);
+  // 目录为空时给出明确提示（不是含糊的"尚未配置"），且不放弃待工程确认语义。
+  assert.match(html,/高度层目录为空（共 0 层）/);
+  assert.match(html,/不会自动选择或推断任何高度/);
   assert.match(html,/固定巡航高度层/);
   assert.match(html,/不根据 RouteAltitudeProfile 数值自动匹配/);
   assert.doesNotMatch(html,/value="(80|100|120|150)"/);
@@ -2482,5 +2484,88 @@ test('step 03 mounts the theta v2 candidate panel without duplicate ids or legac
   const ids=Array.from(html.matchAll(/id="([^"]+)"/g),match=>match[1]);
   assert.equal(new Set(ids).size,ids.length,
     `duplicate ids: ${ids.filter((id,index)=>ids.indexOf(id)!==index).join(', ')}`);
+});
+
+// ---------------------------------------------------------------- altitude layer catalog lifecycle
+
+test('step 03 altitude layer dropdown reads the restored catalog and never invents a layer',()=>{
+  // 项目恢复补建的工程默认高度层：catalog 走 flow.spatial_3d.altitude_layers（readiness 的
+  // catalog 只带 id 列表），下拉必须逐层来自后端，且不自动选中任何一层。
+  const flow=layeredFlow({
+    spatial_3d:{altitude_layers:[
+      {altitude_layer_id:'ALT-060',name:'60 m 巡航高度层',nominal_altitude_m:60,
+        lower_altitude_m:40,upper_altitude_m:70,vertical_reference:'egm2008_orthometric',
+        source:'工程默认高度层（软件基线）',confirmed:true,status:'confirmed'},
+      {altitude_layer_id:'ALT-080',name:'80 m 巡航高度层',nominal_altitude_m:80,
+        lower_altitude_m:70,upper_altitude_m:90,vertical_reference:'egm2008_orthometric',
+        source:'工程默认高度层（软件基线）',confirmed:true,status:'confirmed'},
+      {altitude_layer_id:'ALT-100',name:'100 m 巡航高度层',nominal_altitude_m:100,
+        lower_altitude_m:90,upper_altitude_m:125,vertical_reference:'egm2008_orthometric',
+        source:'工程默认高度层（软件基线）',confirmed:true,status:'confirmed'},
+      {altitude_layer_id:'ALT-150',name:'150 m 巡航高度层',nominal_altitude_m:150,
+        lower_altitude_m:125,upper_altitude_m:175,vertical_reference:'egm2008_orthometric',
+        source:'工程默认高度层（软件基线）',confirmed:true,status:'confirmed'},
+      {altitude_layer_id:'ALT-200',name:'200 m 巡航高度层',nominal_altitude_m:200,
+        lower_altitude_m:175,upper_altitude_m:250,vertical_reference:'egm2008_orthometric',
+        source:'工程默认高度层（软件基线）',confirmed:true,status:'confirmed'},
+    ]},
+  });
+  flow.layered_route_planning_request={status:'pending_confirmation',confirmed:false,source:null,
+    scenario_route_id:'R0001',altitude_layer_id:null};
+  flow.layered_route_planner_readiness={...flow.layered_route_planner_readiness,
+    request:{status:'pending_confirmation',scenario_route_id:'R0001',altitude_layer_id:null,confirmed:false},
+    altitude_layer_catalog:{status:'configured',count:5,
+      altitude_layer_ids:['ALT-060','ALT-080','ALT-100','ALT-150','ALT-200'],selected_altitude_layer_id:null,
+      cruise_altitude:{status:'blocked',altitude_egm2008_m:null,reason:'altitude_layer_missing'}}};
+
+  const model=layeredPlanningRequestModel(flow);
+  assert.equal(model.layerCatalogStatus,'configured');
+  assert.deepEqual(model.layers.map(layer=>layer.layerId),
+    ['ALT-060','ALT-080','ALT-100','ALT-150','ALT-200']);
+  assert.deepEqual(model.layers.map(layer=>layer.nominal),[60,80,100,150,200]);
+  // 目录有 5 层不等于替用户选择：selectedLayerId 保持 null。
+  assert.equal(model.selectedLayerId,null);
+
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const html=renderLayeredRoutePlannerPanel(flow);
+  assert.match(html,/<option value="ALT-060"/);
+  assert.match(html,/<option value="ALT-080"/);
+  assert.match(html,/<option value="ALT-100"/);
+  assert.match(html,/<option value="ALT-150"/);
+  assert.match(html,/<option value="ALT-200"/);
+  assert.doesNotMatch(html,/<option value="ALT-[0-9]+" selected>/,'默认高度层不得被自动选中');
+});
+
+test('step 03 shows an explicit notice when the altitude layer catalog is empty',()=>{
+  globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
+  const flow=thetaV2Flow();
+  flow.layered_route_planning_request={status:'pending_confirmation',confirmed:false,source:null,
+    scenario_route_id:null,altitude_layer_id:null};
+  flow.layered_route_planner_readiness={...flow.layered_route_planner_readiness,
+    status:'blocked',
+    request:{status:'pending_confirmation',scenario_route_id:null,altitude_layer_id:null,confirmed:false},
+    altitude_layer_catalog:{status:'not_configured',count:0,altitude_layer_ids:[],
+      selected_altitude_layer_id:null,
+      cruise_altitude:{status:'blocked',altitude_egm2008_m:null,reason:'altitude_layer_missing'}},
+    blockers:[{reason_code:'altitude_layer_not_found',reason:'selected AltitudeLayer 不存在'}],
+    // 后端 Theta* V2 readiness 同时报告该高度层 blocker：前端只转印，不自行判断。
+    theta_star_v2:{...flow.layered_route_planner_readiness.theta_star_v2,
+      status:'blocked',
+      blockers:[{reason_code:'altitude_layer_not_found',reason:'selected AltitudeLayer 不存在：None'}]},
+  };
+  flow.spatial_3d={altitude_layers:[]};
+
+  const model=layeredThetaV2Model(flow);
+  assert.equal(model.request.layers.length,0);
+  assert.equal(model.request.layerCatalogStatus,'not_configured');
+  const html=renderLayeredThetaV2Panel(flow);
+  // 明确提示 + 后端 blocker 原文，且按钮保持 disabled：提示不等于放行高度检查。
+  assert.ok(html.includes(THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE),'必须显示目录为空的明确提示');
+  assert.match(html,/not_configured · 共 0 层/);
+  assert.match(html,/高度层目录为空/);
+  assert.match(html,/<option value="">高度层目录为空/);
+  assert.match(html,/altitude_layer_not_found/);
+  assert.match(html,/id="evaluateLayeredCandidate" disabled/,'目录为空时不得放行 Theta* V2');
+  assert.match(html,/没有可选高度层/);
 });
 

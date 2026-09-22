@@ -15,6 +15,9 @@ from qgis.core import (
 
 from ..persistence.data_source_repository import DataSourceRepository
 from ..data.source_profiles import COPERNICUS_GLO30, FABDEM_V12, WORLDPOP_R2025A
+from .building_footprint_aggregation import discover_vector_layer
+from .path_resolver import STATUS_OK, resolve_source_path
+from .qgis_project_layers import resolve_vector_layer_source
 from .source_inspection import inspect_geopackage
 from .constraints import hard_constraints, layer_extents
 
@@ -25,6 +28,10 @@ OPTIONAL_VECTOR_SOURCE_KEYS = (
     "buildings",
     "building_grid",
 )
+#: 必须是具体文件的来源角色（其余角色缺失只表示"未配置"）。
+REQUIRED_FILE_ROLES = ("basemap", "population", "terrain")
+#: 启动时执行统一 exists/is_file/格式校验的角色。
+CHECKED_FILE_ROLES = REQUIRED_FILE_ROLES + ("terrain_dtm",) + OPTIONAL_VECTOR_SOURCE_KEYS
 
 @dataclass
 class LoadedSources:
@@ -80,7 +87,7 @@ class QgisSourceLoader:
         terrain, terrain_info = self._load_terrain(terrain_tif)
         terrain_dtm, terrain_dtm_info = self._load_terrain_dtm(terrain_dtm_tif) if terrain_dtm_tif else (None, {})
         vector_info = {
-            key: inspect_geopackage(paths[key], key)
+            key: self.vector_source_info(paths[key], key)
             for key in OPTIONAL_VECTOR_SOURCE_KEYS if paths.get(key)
         }
         projected_extents = layer_extents(local, project, self.map_crs)
@@ -128,39 +135,73 @@ class QgisSourceLoader:
         )
 
     @staticmethod
+    def vector_source_info(value, role):
+        """建筑单体 / 建筑环境网格的只读来源描述。
+
+        配置值可以是 ``.gpkg`` / ``.shp`` / ``.geojson``，也可以是**引用建筑图层的 QGIS
+        工程**（``.qgz`` / ``.qgs``）。GeoPackage 走既有的严格 schema 校验；其它格式走通用
+        矢量发现并显式标注"深层字段未校验"，绝不把未校验的源说成已验证。
+        """
+
+        resolved = resolve_vector_layer_source(value, role=role)
+        if not resolved.get("ok"):
+            return {
+                "status": "failed", "reason": resolved.get("reason"),
+                "path": str(value), "configured_path": str(value),
+                "via": resolved.get("source"), "schema_verified": False,
+            }
+        resolved_path = resolved.get("path")
+        layer_name = resolved.get("layer_name")
+        suffix = str(resolved.get("format") or "").lower()
+        common = {
+            "configured_path": str(value), "via": resolved.get("source"),
+            "project_path": resolved.get("project_path"), "layer_name": layer_name,
+        }
+        if suffix == ".gpkg":
+            try:
+                info = dict(inspect_geopackage(resolved_path, role))
+            except (OSError, ValueError) as exc:
+                return {
+                    **common, "status": "failed", "reason": str(exc),
+                    "path": resolved_path, "schema_verified": False,
+                }
+            return {**info, **common, "schema_verified": True}
+        try:
+            info = dict(discover_vector_layer(resolved_path, layer_name))
+        except (OSError, ValueError, RuntimeError) as exc:
+            return {
+                **common, "status": "failed", "reason": str(exc),
+                "path": resolved_path, "schema_verified": False,
+            }
+        info.pop("_features", None)
+        return {
+            **info, **common, "status": "passed", "schema_verified": False,
+            "schema_note": f"{role} 的深层字段校验只在 GeoPackage 上执行",
+        }
+
+    @staticmethod
     def _validate_paths(paths):
-        qgz, population, terrain = (Path(paths[key]) for key in ("basemap", "population", "terrain"))
-        terrain_dtm = Path(paths["terrain_dtm"]) if paths.get("terrain_dtm") else None
-        if not qgz.is_file() or qgz.suffix.lower() not in (".qgz", ".qgs"):
-            raise ValueError("底图请选择存在的 QGZ/QGS 项目文件")
-        if not population.is_file() or population.suffix.lower() not in (".tif", ".tiff"):
-            raise ValueError("人口数据请选择存在的 GeoTIFF 文件")
-        if not terrain.is_file() or terrain.suffix.lower() not in (".tif", ".tiff"):
-            raise ValueError("地形数据请选择存在的 GeoTIFF 文件")
-        if terrain_dtm is not None and (not terrain_dtm.is_file() or terrain_dtm.suffix.lower() not in (".tif", ".tiff")):
-            raise ValueError("FABDEM DTM 请选择存在的 GeoTIFF 文件")
-        for key in OPTIONAL_VECTOR_SOURCE_KEYS:
-            value = paths.get(key)
+        """统一路径校验：exists + is_file + 角色允许的格式（支持 .qgz/.gpkg/.shp/.geojson）。"""
 
-            if not value:
+        for role in CHECKED_FILE_ROLES:
+            record = resolve_source_path(paths.get(role), role=role)
+            if record["path"] is None:
+                if role in REQUIRED_FILE_ROLES:
+                    raise ValueError(f"{record['label']}必须配置")
                 continue
-
-            source_path = Path(value)
-
-            if (
-                    not source_path.is_file()
-                    or source_path.suffix.lower() != ".gpkg"
-            ):
-                label = (
-                    "建筑单体"
-                    if key == "buildings"
-                    else "建筑环境网格"
-                )
-
+            if record["status"] != STATUS_OK:
+                raise ValueError(record["reason"])
+        # 建筑类来源还要在启动时确认"能解析出可用图层"：路径存在但工程里没有可用矢量图层，
+        # 同样属于"路径存在但状态异常"，必须在加载阶段就说清楚。
+        for role in OPTIONAL_VECTOR_SOURCE_KEYS:
+            if not paths.get(role):
+                continue
+            resolved = resolve_vector_layer_source(paths[role], role=role)
+            if not resolved.get("ok"):
                 raise ValueError(
-                    f"{label}请选择存在的 GPKG 文件"
+                    f"{'建筑单体' if role == 'buildings' else '建筑环境网格'}："
+                    f"{resolved.get('reason')}"
                 )
-            inspect_geopackage(source_path, key)
         reference_formats = {
             "reference_landing_sites": (".xlsx", ".csv", ".et"),
             "reference_routes": (".csv", ".xlsx", ".geojson", ".json", ".et"),
@@ -174,6 +215,10 @@ class QgisSourceLoader:
                 raise ValueError(f"{key} 请选择存在的具体文件")
             if source_path.suffix.lower() not in suffixes:
                 raise ValueError(f"{key} 文件格式不支持")
+        qgz = Path(paths["basemap"])
+        population = Path(paths["population"])
+        terrain = Path(paths["terrain"])
+        terrain_dtm = Path(paths["terrain_dtm"]) if paths.get("terrain_dtm") else None
         return qgz, population, terrain, terrain_dtm
 
     @staticmethod

@@ -3,6 +3,34 @@ import {escapeHtml,sourceModeText,statusText} from '../workflow/common.js';
 export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
   let browseKind='basemap',browseParent='',selectedFile='';
   const healthLabel=status=>({ready:'正常',warning:'警告',error:'错误',checking:'检查中'}[status]||statusText(status));
+  // 统一路径校验结论（后端每次 metadata() 都重新 exists/is_file，不做缓存）。
+  const PATH_CHECK_TEXT={
+    ok:'存在且是文件',not_configured:'未配置',path_missing:'路径不存在',
+    not_a_file:'不是具体文件',unsupported_format:'格式不受支持'
+  };
+  function pathCheckLine(data,item){
+    const items=data.path_checks?.items||{};
+    // 先按 source id 精确匹配；共享同一个配置路径的来源（例如空域参考图层复用底图工程）
+    // 再按路径回退匹配，避免这里出现任何政策语义的硬编码分支。
+    const record=items[item.id]||Object.values(items).find(entry=>entry.path&&item.path&&entry.path===item.path);
+    if(!record||!record.path)return '';
+    const label=PATH_CHECK_TEXT[record.status]||record.status;
+    const detail=record.status==='ok'?(' · '+escapeHtml(record.suffix||'')):(' · '+escapeHtml(record.reason||''));
+    return '<p><b>路径校验</b> · '+escapeHtml(label)+detail+'</p>';
+  }
+  // 建筑来源解析结论：路径存在但"状态异常"通常来自工程里没有可用图层或格式不被接受。
+  function buildingSourceLine(data,item){
+    if(item.id!=='buildings'&&item.id!=='building_grid')return '';
+    const record=(data.building_sources||{})[item.id]||{};
+    if(!record.configured_path)return '';
+    if(record.ok){
+      const via=record.source==='qgis_project'?'QGIS 工程解析':'数据集直接读取';
+      const target=record.resolved_path?escapeHtml(String(record.resolved_path).split(/[\\/]/).pop()):'—';
+      return '<p><b>已解析</b> · '+escapeHtml(via)+' → '+target
+        +(record.layer_name?'（图层 '+escapeHtml(record.layer_name)+'）':'')+'</p>';
+    }
+    return '<p><b>解析失败</b> · '+escapeHtml(record.reason||record.status||'未知原因')+'</p>';
+  }
   function render(data){
     const health=data.data_health||{status:'checking',label:'正在检查数据源',items:[]},connection=$('connection');
     connection.className='status status-'+health.status;connection.innerHTML='<i class="dot"></i><span>'+health.label+'</span>';connection.title='打开统一数据源设置查看检查明细';
@@ -21,7 +49,9 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
         +(item.id==='reference_routes'?'<button class="secondary compact" data-preview-routes>预览并导入航线</button>':'')
         +'</div>';
       row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · 基础运行必需':' · 可选')+'</small>'+(metadata?'<p>'+escapeHtml(metadata)+'</p>':'')
-        +'<p><b>数据可信度/审计</b> · configured '+escapeHtml(trust.configured||'—')+' · identity '+escapeHtml(trust.identity||'—')+' · schema '+escapeHtml(trust.schema||'—')+' · CRS '+escapeHtml(trust.crs||'—')+' · geometry '+escapeHtml(trust.geometry||'—')+' · version '+escapeHtml(trust.version||'—')+' · overall '+escapeHtml(trust.overall||'—')+'</p><small>source_id '+escapeHtml(audit.source_id||'—')+' · reasons '+escapeHtml(reasons)+'</small>'+actions;list.append(row);
+        +'<p><b>数据可信度/审计</b> · configured '+escapeHtml(trust.configured||'—')+' · identity '+escapeHtml(trust.identity||'—')+' · schema '+escapeHtml(trust.schema||'—')+' · CRS '+escapeHtml(trust.crs||'—')+' · geometry '+escapeHtml(trust.geometry||'—')+' · version '+escapeHtml(trust.version||'—')+' · overall '+escapeHtml(trust.overall||'—')+'</p><small>source_id '+escapeHtml(audit.source_id||'—')+' · reasons '+escapeHtml(reasons)+'</small>'
+        +pathCheckLine(data,item)+buildingSourceLine(data,item)
+        +actions;list.append(row);
     }
     const parameters=$('parameterList');parameters.replaceChildren();const names={vertical_clearance_m:'垂直净空裕度',primary_spacing_factor:'主站间距系数',co_location_search_radius_m:'共址搜索半径'};
     for(const [key,value] of Object.entries(data.defaults?.engineering_parameters||{})){const row=document.createElement('div');row.className='parameter-row';row.textContent=(names[key]||key)+'：'+value.value+(key.endsWith('_m')?' m':'')+' · '+value.source;parameters.append(row);}
@@ -60,7 +90,7 @@ const payload=()=>({
     finally{button.disabled=false;button.textContent='检查在线服务';}
   }
   function openBrowser(kind,initialPath=''){
-    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体 GeoPackage（.gpkg）',building_grid:'文件类型：建筑环境网格 GeoPackage（.gpkg）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
+    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体（.gpkg / .shp / .geojson，或引用建筑图层的 .qgz / .qgs 工程）',building_grid:'文件类型：建筑环境网格（.gpkg / .shp / .geojson，或引用该图层的 .qgz / .qgs 工程）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
   }
   async function browse(path){
     $('browseError').textContent='';selectedFile='';$('selectFile').disabled=true;$('chosen').textContent=browseKind==='project'?'请选择项目文件夹':'请选择文件；单击文件后确认';

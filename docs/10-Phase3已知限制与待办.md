@@ -6,13 +6,51 @@
 
 > **Phase 3.5（工程稳定化）已完成项见 `docs/11-Phase3.5稳定化开发报告.md`**：
 > §2 的建筑几何 `unresolved` 根因、§4 的搜索预算状态语义、以及层级能力声明接口都已落地。
-> 下列 §1 的**层级无关建筑事实获取**与 §3 的**大工作区服务端开销**仍然是未完成项。
+> **Phase 3.5 人工验收修复见 `docs/12-Phase3.5验收修复报告.md`**：§1 的**层级无关建筑事实获取**
+> 与 §6 的 **FRONT-002** 已实现（按当前层级对原始 footprint 做精确几何聚合 + 前端建筑轮廓图层）；
+> **§4b 的 AltitudeLayer 目录生命周期**（工程默认高度层 ALT-060/080/100/150/200 的初始化与项目恢复）也已实现。
+> §3 的**大工作区服务端开销**与 **FRONT-001**（默认只显示在线底图）仍是未完成项。
 
 ---
 
-## 1. 建筑事实只支持 L8 网格（本轮不修，已记录为后续需求）
+## 0. AltitudeLayer 目录在 Step03 为空（**Phase 3.5 二轮验收已修复**）
 
-### 现象
+### 现象（修复前）
+
+```text
+Step02 环境建模 Terrain / Building mapping / Population / Airspace 全部 PASS
+Step03 航路规划：scenario route R0005 N017→N018
+  altitude layer catalog = not_configured · 共 0 层
+  → resolve_cruise_altitude = blocked · altitude_layer_missing
+  → readiness blockers 含 altitude_layer_not_found ⇒ Theta* V2 无法执行
+```
+
+### 根因
+
+`spatial_3d.altitude_layers` 只有 `POST /api/spatial-3d/altitude-layer`（用户手工逐条写入）
+一条产生路径；`empty_spatial_3d()` 给出 `altitude_layers: []`，工作区设置与项目恢复都不补建目录。
+因此"没有手工配过高度层"的项目进入 Step03 必然 `altitude_layer_missing`。这是**配置生命周期缺陷**，
+不是算法缺陷，也不是数据缺陷。
+
+### 修复（只补 catalog 生命周期，不放宽高度检查）
+
+* 新增 `domain/altitude_layer_defaults.py`：工程默认高度层 `ALT-060` / `ALT-080` / `ALT-100` /
+  `ALT-150` / `ALT-200`（60/80/100/150/200 m，`egm2008_orthometric`，显式 `source`，`confirmed=true`，
+  边界 40–70 / 70–90 / 90–125 / 125–175 / 175–250 m，互不重叠）；
+* `WorkspaceService.set_workspace`：工作区确认时补建并提交；
+* `WorkflowSession._load`：项目恢复时补建（**只读**，仅置 `pending_save`，不改写项目文件）；
+* 首次补建或被显式删除后置位 `altitude_layer_defaults_initialized` ⇒ 用户刻意删空的目录保持为空，
+  由前端显式提示（`高度层目录为空（共 0 层）…`），绝不静默填满；
+* planning request 的 `altitude_layer_id` 仍必须由用户显式选择，`no_default_altitude_layer` /
+  `altitude_layer_not_explicitly_selected` 语义与门控完全不变。
+
+回归：`tests/test_altitude_layer_lifecycle.py`（14 项）+ 前端 2 项。详见 `docs/12-Phase3.5验收修复报告.md` §4b。
+
+---
+
+## 1. 建筑事实的层级无关获取（**Phase 3.5 验收修复已实现**）
+
+### 现象（修复前）
 
 在舟山全域工作区（5344.78 km²）上，`grid_attributes.buildings` 恒为：
 
@@ -63,7 +101,32 @@ BuildingGridService.map()
 3. 无论选哪条，都必须保持 `unknown ≠ 0`、`missing_data ≠ 0`，并在 provenance 中记录
    聚合方法、源几何与层级，绝不静默降级。
 
-**本轮决定：不修改。** 作为已确认的已知限制与后续需求记录在此。
+**修复结果（Phase 3.5 验收修复）**：采用方向 1（**按当前层级的精确几何聚合**）。
+
+```text
+zhoushan_buildings.gpkg（只读，RTree + bbox）
+  → 投影到工作区中心决定的 UTM 带（舟山 ⇒ EPSG:32651）
+  → 建筑质心分配计数 / 高度统计（一个建筑只计一次）
+  → footprint ∩ cell 精确相交面积 ⇒ building_coverage_ratio
+  → grid_attributes.buildings.cells（键集合与 L8 事实表直接映射完全一致）
+```
+
+关键约束（全部保持）：
+
+* **不是跨层级平均、不是插值**：`metadata.cross_level_averaging=false`、
+  `cross_level_interpolation=false`；语义与 `build_mht_building_grid.py` 逐条对齐，
+  并在真实数据上逐格回归比对（`tests/test_building_level_independent_facts.py`）；
+* **unknown ≠ 0**：源 extent 之外保持 `missing_data`；
+* **无空间索引 / 无几何库 / 无 footprint 源 ⇒ 显式失败**，绝不伪造建筑事实；
+* L8 事实表直接映射的既有行为与 `capabilities()` 的 `available_levels=[8]` 完全不变；
+* 新增统一结果载体 `grid_attributes.buildings.environment_mapping`
+  （`status` ∈ passed/partial/unsupported + `total_cells`/`covered_cells`/`unresolved_cells`）。
+
+真实舟山 L7 工作区（3528 格）修复后：`status=passed`、`covered_cells=3528`、
+`mapping_basis=exact_footprint_intersection_and_centroid_allocation`、
+建筑事实实际进入 coarse 战略垂向包线。
+
+详见 `docs/12-Phase3.5验收修复报告.md`。
 
 ---
 
@@ -234,9 +297,9 @@ L8 是 `building_grid` 事实唯一可映射的层级；L7 下 `buildings` 全�
 **约束**：只改默认可见性，不改任何图层的加载、CRS、映射或算法语义；
 `online_sources` / `layers` / `local_layers` 的数据结构保持不变。
 
-### FRONT-002：建筑图层增加前端显示能力
+### FRONT-002：建筑图层增加前端显示能力（**Phase 3.5 验收修复已实现**）
 
-**现状**：建筑事实（`buildings` / `building_grid`）已在 `grid_attributes` 与
+**现状（修复前）**：建筑事实（`buildings` / `building_grid`）已在 `grid_attributes` 与
 `vector_sources` 中可达，但前端没有独立的建筑图层开关与渲染。
 
 **期望**：前端可独立开关并渲染建筑图层（至少支持 L8 建筑环境网格与建筑单体轮廓的
@@ -244,6 +307,12 @@ L8 是 `building_grid` 事实唯一可映射的层级；L7 下 `buildings` 全�
 
 **约束**：纯展示层能力；不得把建筑事实写入 `flow.nodes` / `scenario_routes` /
 `operational_routes`，也不得让显示能力反过来影响净空判定（`unknown != safe` 不变）。
+
+**实现（Phase 3.5 验收修复）**：图层抽屉"环境"组新增 **建筑轮廓（QGIS 建筑数据）**，
+**默认关闭**；数据链路为 `qgz` → 后端解析（`gis/qgis_project_layers.py`）→
+`GET /api/building-footprints`（按视图 bbox + RTree + 简化）→ GeoJSON → 前端 canvas 绘制。
+LOD 三档：`res > 30` 完全不请求；`8 < res ≤ 30` 上限 600 个要素；`res ≤ 8` 上限 3000 个要素。
+端点只读、不写任何项目状态，不参与净空判定。详见 `docs/12-Phase3.5验收修复报告.md` §4。
 
 
 

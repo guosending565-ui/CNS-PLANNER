@@ -418,6 +418,9 @@ class LayeredRoutePlannerService:
             "sources": deepcopy(source_status or {}),
             "feasibility_mask": {
                 "status": (mask or {}).get("status", "not_calculated"),
+                # selected-layer mask 必须能自报属于哪一层：缺了它前端只能显示 "—"，
+                # 用户无法判断「selected layer mask」是哪一层的 mask。
+                "altitude_layer_id": (mask or {}).get("altitude_layer_id"),
                 "counts": deepcopy((mask or {}).get("counts") or {}),
                 "mask_fingerprint": (mask or {}).get("mask_fingerprint"),
                 "current_applicability": (mask or {}).get("current_applicability"),

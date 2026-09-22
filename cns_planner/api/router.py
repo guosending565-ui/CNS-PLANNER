@@ -137,9 +137,62 @@ class ApiRouter:
             tile, mime = context.tiles.get(source["template"], z, x, y)
             return Response(tile, mime, cache=True)
         if path == "/api/browse": return Response(browse(query.get("path", [""])[0], query.get("kind", ["basemap"])[0]))
+        # ---- 建筑轮廓图层（只读）：qgz/gpkg/shp/geojson → GeoJSON，按视图 bbox 按需拉取 ----
+        if path == "/api/building-footprints":
+            return Response(context.qgis.call(lambda: self._building_footprints(query)))
         static = self._static(path)
         if static: return static
         return Response({"error": "未找到"}, status=404)
+
+    @staticmethod
+    def _first(query, key, default=""):
+        value = query.get(key)
+        if isinstance(value, (list, tuple)):
+            return value[0] if value else default
+        return default if value is None else value
+
+    def _building_footprints(self, query):
+        """只读建筑轮廓 GeoJSON。
+
+        浏览器不能读 ``.qgz``：这里由后端解析工程 → 定位建筑 Polygon 图层 → 按当前视图
+        bbox 走空间索引查询 → 返回 GeoJSON。**不写任何项目状态**，也不参与净空判定。
+        """
+
+        from ..gis.building_footprint_aggregation import footprints_geojson
+
+        data = self.context.data
+        role = str(self._first(query, "role", "buildings") or "buildings")
+        if role not in ("buildings", "building_grid"):
+            role = "buildings"
+        resolved = data.vector_role_source(role)
+        if not resolved.get("ok"):
+            return {
+                "status": "unavailable", "role": role,
+                "reason": resolved.get("reason") or "建筑数据源不可用",
+                "type": "FeatureCollection", "features": [], "count": 0,
+            }
+        raw_bbox = str(self._first(query, "bbox", "") or "")
+        try:
+            box = [float(value) for value in raw_bbox.split(",")]
+        except (TypeError, ValueError):
+            box = []
+        try:
+            limit = int(float(self._first(query, "limit", 2000) or 2000))
+        except (TypeError, ValueError):
+            limit = 2000
+        raw_tolerance = self._first(query, "tolerance", "")
+        try:
+            tolerance = float(raw_tolerance) if str(raw_tolerance).strip() else None
+        except (TypeError, ValueError):
+            tolerance = None
+        result = footprints_geojson(
+            resolved.get("path"), box, limit=limit, tolerance_deg=tolerance,
+            layer_name=resolved.get("layer_name"),
+        )
+        result["role"] = role
+        result["resolved_via"] = resolved.get("source")
+        result["layer_title"] = resolved.get("layer_title")
+        return result
 
     def post(self, path, payload):
         context, workflow, data = self.context, self.context.workflow, self.context.data

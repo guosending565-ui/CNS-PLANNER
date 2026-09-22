@@ -24,6 +24,13 @@ class BuildingGridService:
     #: coarsen 到 L6/L7，建筑事实整表不可用（详见 docs/10-Phase3已知限制与待办.md §1）。
     PREFERRED_WORKSPACE_LEVEL_ALIGNMENT = "not_aligned_workspace_default_is_7"
 
+    #: 层级无关建筑事实获取：按**当前工作区层级**对原始 footprint 做精确几何聚合
+    #: （不是跨层级平均、不是插值）。实现位于 GIS 边界
+    #: ``cns_planner.gis.building_footprint_aggregation``，语义与既有 L8 事实表生成脚本一致。
+    FOOTPRINT_AGGREGATION_METHOD = "exact_footprint_intersection_and_centroid_allocation"
+    #: 统一映射结果的取值词汇（passed / partial / unsupported）。
+    ENVIRONMENT_MAPPING_STATUSES = ("passed", "partial", "unsupported")
+
     @classmethod
     def capabilities(cls, *, source_path=None, declared_level=None):
         """能力声明：``available_levels`` / ``preferred_level``，**不改变任何映射行为**。
@@ -54,13 +61,26 @@ class BuildingGridService:
                 "building_grid 当前仅允许 L8 直接映射；禁止跨层级平均或插值"
             ),
             "workspace_level_alignment": cls.PREFERRED_WORKSPACE_LEVEL_ALIGNMENT,
+            "footprint_aggregation": {
+                "available": True,
+                "method": cls.FOOTPRINT_AGGREGATION_METHOD,
+                "requires_original_footprints": True,
+                "requires_geometry_libraries": True,
+                "cross_level_averaging": False,
+                "cross_level_interpolation": False,
+                "note": (
+                    "源 footprint 可用时按**当前工作区层级**做精确面几何聚合，"
+                    "因此建筑事实不再被 L8 绑死；聚合语义与 L8 事实表生成脚本一致。"
+                ),
+            },
             "limitations": [
                 "只有恰好 L8 的工作区网格能直接映射建筑事实表。",
-                "工作区被 coarsen 到其他层级时 status=unsupported、逐格 missing_data，"
+                "其它层级由源 footprint 精确聚合获得事实；聚合不可用（无 footprint 源 / "
+                "无几何库 / 无空间索引）时保持 status=unsupported、逐格 missing_data，"
                 "unknown 绝不当 0。",
-                "层级无关的建筑事实获取是已记录的后续需求，本轮不实现。",
             ],
             "future_work": "level_independent_building_fact_acquisition",
+            "future_work_status": "implemented_via_exact_footprint_aggregation",
         }
 
     @classmethod
@@ -73,17 +93,152 @@ class BuildingGridService:
         }
         if message:
             result["message"] = message
+        result["environment_mapping"] = cls.environment_mapping(result)
         return result
 
-    def map(self, grid, source_path):
+    def map(self, grid, source_path, *, footprint_source=None, footprint_aggregator=None,
+            footprint_layer_name=None):
+        """建筑环境映射。
+
+        三条互不混淆的路径：
+
+        1. **恰好 L8 且 L8 事实表可用** → 既有的按 ``grid_id`` bbox 直接映射（行为完全不变）；
+        2. **层级无关事实获取**（用户明确要求：不论层级都要能拿到可用于航路规划的建筑事实）→
+           通过注入的 ``footprint_aggregator`` 按当前工作区层级对原始 footprint 做**精确几何
+           聚合**。聚合实现位于 GIS 边界，本层不 import QGIS/shapely；
+        3. **降级**：既有的 ``unsupported`` / ``missing_data`` 语义（无源、层级不可用且没有
+           聚合能力时）完全保留，绝不伪造建筑事实。
+
+        返回结果始终带统一载体 ``environment_mapping``：
+        ``{status, total_cells, covered_cells, unresolved_cells, ...}``。
+        """
+
         cells = list((grid or {}).get("cells") or [])
         level = (grid or {}).get("level")
         if not cells:
             return self.empty()
+
+        l8_result = None
+        if level == 8 and source_path:
+            l8_result = self._map_l8(grid, cells, level, source_path)
+            if l8_result.get("status") != "failed":
+                return self._with_environment_mapping(l8_result)
+
+        aggregated, aggregation_error = self._aggregate(
+            cells, level, footprint_source, footprint_aggregator, footprint_layer_name,
+        )
+        if aggregated is not None:
+            return self._with_environment_mapping(aggregated)
+
+        if l8_result is not None:
+            return self._with_environment_mapping(l8_result, aggregation_error=aggregation_error)
         if level != 8:
-            return self._unsupported(cells, level, source_path)
-        if not source_path:
-            return self._missing(cells, level, None, "未配置 L8 建筑环境网格")
+            result = self._unsupported(cells, level, source_path)
+        elif not source_path:
+            result = self._missing(cells, level, None, "未配置 L8 建筑环境网格")
+        else:
+            result = self._missing(
+                cells, level, {"path": str(source_path)}, "L8 建筑环境网格不可用",
+            )
+        return self._with_environment_mapping(result, aggregation_error=aggregation_error)
+
+    # ------------------------------------------------------------------ 层级无关聚合
+
+    @classmethod
+    def _aggregate(cls, cells, level, footprint_source, aggregator, layer_name):
+        """按当前层级对原始 footprint 做精确聚合；不可用时返回 ``(None, 原因)``。"""
+
+        if not footprint_source:
+            return None, None
+        if aggregator is None:
+            return None, "footprint_aggregator_not_configured"
+        try:
+            result = aggregator(
+                cells, footprint_source, grid_level=level, layer_name=layer_name,
+            )
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+        if not isinstance(result, dict) or not result.get("cells"):
+            return None, "footprint_aggregator_returned_no_cells"
+        return result, None
+
+    # ------------------------------------------------------------------ 统一结果载体
+
+    @classmethod
+    def _with_environment_mapping(cls, result, *, aggregation_error=None):
+        result["environment_mapping"] = cls.environment_mapping(
+            result, aggregation_error=aggregation_error,
+        )
+        return result
+
+    @classmethod
+    def environment_mapping(cls, result, *, aggregation_error=None):
+        """统一的 ``BuildingEnvironmentMappingResult``。
+
+        字段：``total_cells`` / ``covered_cells`` / ``unresolved_cells`` / ``status``。
+        状态词汇固定为 ``passed`` / ``partial`` / ``unsupported``：
+
+        * ``passed``：网格内每一格都有明确建筑事实（含"范围内确认无建筑"的已知 0 语义）；
+        * ``partial``：部分格有事实、部分格无法判定（``unknown`` 绝不当 0）；
+        * ``unsupported``：一格都拿不到（源缺失、不可读、层级不适用且无聚合能力）。
+
+        本方法**只做归一化统计**，不重算任何建筑数值，也不改变既有 ``status`` / ``cells``。
+        """
+
+        result = result if isinstance(result, dict) else {}
+        cells = result.get("cells") if isinstance(result.get("cells"), dict) else {}
+        total = int(result.get("count") or len(cells))
+        covered = 0
+        reasons = {}
+        for cell in cells.values():
+            if not isinstance(cell, dict):
+                continue
+            if str(cell.get("status") or "") == "passed":
+                covered += 1
+                continue
+            reason = str(cell.get("reason") or cell.get("status") or "unresolved")
+            reasons[reason] = reasons.get(reason, 0) + 1
+        unresolved = max(0, total - covered)
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        aggregation_method = metadata.get("aggregation_method")
+        if aggregation_method:
+            basis = aggregation_method
+        elif result.get("grid_level") == 8 and result.get("source"):
+            basis = "l8_building_grid_fact_table"
+        else:
+            basis = None
+        result_status = str(result.get("status") or "")
+        if total and not unresolved:
+            status = "passed"
+        elif covered:
+            status = "partial"
+        else:
+            status = "unsupported"
+        mapping = {
+            "status": status,
+            "total_cells": total,
+            "covered_cells": covered,
+            "unresolved_cells": unresolved,
+            "coverage_ratio": (covered / total) if total else None,
+            "mapping_basis": basis,
+            "grid_level": result.get("grid_level"),
+            "level_aligned": result.get("grid_level") == 8,
+            "level_independent_facts": bool(aggregation_method),
+            "source_available": bool(result.get("source")) and result_status != "failed",
+            "facts_available": covered > 0,
+            "participates_in_planner": covered > 0,
+            "unresolved_reasons": reasons,
+            "mapping_status": result_status or "not_calculated",
+            "algorithm_id": result.get("algorithm_id"),
+            "algorithm_version": result.get("algorithm_version"),
+        }
+        if aggregation_error:
+            mapping["aggregation_error"] = str(aggregation_error)
+        return mapping
+
+    def _map_l8(self, grid, cells, level, source_path):
+        """既有的"恰好 L8 直接映射"实现（本轮除拆出方法外未做任何修改）。"""
+
         try:
             metadata = inspect_geopackage(source_path, "building_grid")
             rows = self._rows(metadata, grid.get("workspace_bbox"), source_path)

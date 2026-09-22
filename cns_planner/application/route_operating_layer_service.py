@@ -18,6 +18,7 @@ from ..domain.spatial_3d import (
     normalize_departure_arrival_procedure, normalize_route_operating_layer,
     procedure_missing_evidence,
 )
+from ..domain.altitude_layer_defaults import mark_altitude_layer_catalog_managed
 
 
 PRODUCTION_ROUTE_DEFINITION = (
@@ -460,6 +461,9 @@ class RouteOperatingLayerService:
         spatial["altitude_layers"] = [
             item for item in layers if item["altitude_layer_id"] != layer_id
         ]
+        # 用户已显式管理过 catalog：目录即使被删空也不再自动补建默认工程高度层
+        # （空目录由前端显式提示，而不是被静默填满）。
+        mark_altitude_layer_catalog_managed(self.session.state)
         return self._commit("altitude_layer_deleted")
 
     # ---- route → cruise layer assignment ------------------------------------------

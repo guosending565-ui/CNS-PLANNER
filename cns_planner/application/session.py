@@ -8,7 +8,11 @@ import threading
 
 from ..persistence.project_repository import ProjectRepository
 from ..persistence.project_compaction import compact_and_store, restore_compacted_results
+from ..domain.altitude_layer_defaults import ensure_default_altitude_layers
 from .project_state import blank_project, normalize_project, utc_now
+from .route_operating_layer_service import (
+    refresh_spatial_status, resync_operating_layer_statuses,
+)
 
 
 class WorkflowSession:
@@ -35,7 +39,24 @@ class WorkflowSession:
             document = restore_compacted_results(self.repository.load(), self.store_path)
         except JSONDecodeError as exc:
             raise ValueError("项目 JSON 损坏，未打开") from exc
-        return normalize_project(document, self.grid_service)
+        state = normalize_project(document, self.grid_service)
+        self._restore_altitude_layer_catalog(state)
+        return state
+
+    def _restore_altitude_layer_catalog(self, state):
+        """项目恢复：旧项目没有巡航高度层目录时补建工程默认高度层。
+
+        只补 ``spatial_3d.altitude_layers`` 的 catalog 条目（ALT-060/080/100/150/200），不选择高度层、
+        不触碰任何规划输入。**恢复本身保持只读**：这里不写盘，``pending_save`` 只记录“这次
+        加载产生了需要落盘的差异”，由下一次真实提交一并写入；因此打开项目不会因为恢复而
+        修改项目文件（既有持久化契约不变），而任何后续写操作都会把目录固化下来。
+        """
+
+        if not ensure_default_altitude_layers(state):
+            return
+        resync_operating_layer_statuses(state)
+        refresh_spatial_status(state)
+        self.pending_save = True
 
     def save(self):
         with self.lock:

@@ -6,6 +6,7 @@ import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/renderer.js';
 import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,entryExtent} from './map/display_layers.js';
+import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';
 import {updateLayeredLegends} from './workflow/layered_legend.js';
 import {renderWorkflowSteps} from './workflow/steps.js';
 import {createWorkbench} from './workflow/workbench.js';
@@ -26,7 +27,7 @@ const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // 统一的地图图层开关（图层抽屉里全部 checkbox 都在这里）：layeredFeasibilityLayer 只画
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer'];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
@@ -40,7 +41,7 @@ const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
 const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
 const client=crypto.randomUUID(),onlineTiles=new OnlineTiles(()=>requestAnimationFrame(paint),text=>$('tileStatus').textContent=text);
 const store=createStore({server:null,workflow:null,mapView:null,ui:{step:1,interactionMode:'pan',workbench:{step:1,tab:'operate',segs:{},scroll:0}}});
-const api=createApiClient(()=>state?.token,()=>flow?.revision);
+const api=createApiClient(()=>state?.token,()=>flow?.revision),buildingFootprints=attachBuildingFootprintLayer({api,$,paint,getView:()=>view,size,visibleLonLatBounds});// 建筑轮廓：默认关闭 + zoom LOD 按需拉取，装配全在模块内
 // 右栏工作台视图状态：只保存展示导航（step / 一级 tab / 二级段 / 滚动位置）
 const workbench=createWorkbench({
   getState:()=>store.get().ui.workbench,
@@ -141,7 +142,7 @@ function drawWorkflowOverlay(){
     routeEvidenceHighlight,
     proposedPlanActions,
     drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
-    drawGridThemes,drawGridBoundaries
+    drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint)
   });
   // 参考层：只读参考数据；视觉层级 candidate > scenario / reference，因此参考线再压一层。
   const plan=currentPlan,switches=layers(),styles=plan.styles;
@@ -167,7 +168,7 @@ function proposedPlanActions(value){
   const ids=new Set(variant.selected_action_ids||[]),catalog=[...(p16.candidate_actions||[]),...(p16.selected_actions||[])];
   return catalog.filter((item,index)=>ids.has(item.action_id)&&catalog.findIndex(other=>other.action_id===item.action_id)===index);
 }
-function queue(){paint();clearTimeout(timer);serial++;renderController?.abort();timer=setTimeout(()=>{onlineTiles.update(view,...size(),$('online').checked);renderMap();},160);}
+function queue(){paint();clearTimeout(timer);serial++;renderController?.abort();timer=setTimeout(()=>{onlineTiles.update(view,...size(),$('online').checked);renderMap();buildingFootprints.sync();},160);}
 async function renderMap(){
   if(!view||!state?.bounds)return;const started=performance.now(),request=serial,box=mapBounds(),[w,h]=size(),factor=Math.min(1,1600/w,1000/h);
   const q=new URLSearchParams({
@@ -401,7 +402,7 @@ function update(data){
   state=data;
   flow=data.workflow;
   store.set({server:state,workflow:flow,mapView:view});
-  rebuildGridRenderCache();
+  rebuildGridRenderCache();buildingFootprints.reset();
   onlineTiles.configure(data.online_sources||[],data.revision);
   $('basemapPath').value=data.paths.basemap;
   $('populationPath').value=data.paths.population;

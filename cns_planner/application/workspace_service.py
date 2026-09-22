@@ -4,10 +4,12 @@ import math
 from copy import deepcopy
 
 from ..risk.v1 import RiskModelV1
+from ..domain.altitude_layer_defaults import ensure_default_altitude_layers
 from ..domain.population_nodata import (
     POLICY_KEY, default_population_nodata_policy, normalize_population_nodata_policy,
 )
 from .project_state import assessment, empty_grid_attributes
+from .route_operating_layer_service import refresh_spatial_status
 
 
 class WorkspaceService:
@@ -44,6 +46,11 @@ class WorkspaceService:
         state["result_statuses"]["workspace"] = "passed"
         state["result_statuses"]["grid"] = "passed"
         state["result_statuses"]["environment_risk"] = "not_calculated"
+        # 工作区（工程范围）确认后，若该项目从未初始化过巡航高度层目录，补建工程默认高度层
+        # （ALT-060/080/100/150/200，EGM2008 正高）。这只补 **catalog 条目**，不为任何航路选择高度层：
+        # planning request 仍需用户显式选择 AltitudeLayer。
+        if ensure_default_altitude_layers(state):
+            refresh_spatial_status(state)
         self.session.save()
         return self.snapshot()
 

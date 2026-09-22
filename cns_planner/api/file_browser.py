@@ -2,30 +2,19 @@
 
 from pathlib import Path
 
+from ..gis.path_resolver import SOURCE_FORMATS
+
 
 def browse(path, kind):
     folder_only = kind == "project"
-    extensions = (
-        (".qgz", ".qgs")
-        if kind == "basemap"
-
-        else (".tif", ".tiff")
-        if kind in ("population", "terrain", "terrain_dtm")
-
-        else (".gpkg",)
-        if kind in ("buildings", "building_grid")
-
-        else (".xlsx", ".csv", ".et")
-        if kind == "reference_landing_sites"
-
-        else (".csv", ".xlsx", ".geojson", ".json", ".et")
-        if kind == "reference_routes"
-
-        else (".json", ".csv", ".geojson")
-        if kind in ("existing_cns", "candidate_sites")
-
-        else ()
-    )
+    if folder_only:
+        extensions = ()
+    elif kind in SOURCE_FORMATS and SOURCE_FORMATS[kind]:
+        # 单一事实来源：文件对话框接受的扩展名与来源校验接受的一致（例如建筑类来源
+        # 现在是 .gpkg / .shp / .geojson / 引用建筑图层的 .qgz 工程）。
+        extensions = tuple(SOURCE_FORMATS[kind])
+    else:
+        extensions = ()
     if not path:
         return {"path": "", "parent": "", "entries": [{"name": f"{drive}:\\", "path": f"{drive}:/", "directory": True} for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if Path(f"{drive}:/").exists()]}
     directory = Path(path).expanduser().resolve()

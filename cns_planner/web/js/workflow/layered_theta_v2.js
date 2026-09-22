@@ -43,6 +43,12 @@ export const THETA_V2_PROFILE_SEPARATION='RouteRiskProfile 是独立的 post-hoc
   +'environment_obstacle 与 Theta* objective 里的 population × shelter risk 不是同一件事，两者数值不可互相代替。';
 export const THETA_V2_ALTITUDE_NOTE='Theta* V2 固定 z(x, y) = H：H 必须能解析为 confirmed EGM2008 巡航高度；'
   +'缺失时保持 blocked，不做 datum/geoid 猜测或伪转换。';
+//: catalog 为空时的明确提示：目录本身为空，因此没有任何可选巡航高度层。
+//: 这里只提示"目录为空"，绝不放行高度检查（planning request 仍必须显式选择高度层）。
+export const THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE='高度层目录为空（共 0 层）：没有可选巡航高度层，'
+  +'planning request 无法显式选择高度层，Theta* V2 保持 blocked。'
+  +'请先在工作区/垂直配置面板补建 AltitudeLayer（例如 ALT-060/ALT-080/ALT-100/ALT-150/ALT-200），'
+  +'系统不会自动选择或推断任何高度。';
 export const THETA_V2_EVALUATE_BLOCKED_NOTE='Theta* V2 仍有 blocking 项：请先补齐 shelter policy、'
   +'population_shelter 场与 confirmed 巡航高度。legacy LayeredRouteCostPolicy 的 λ 不是 Theta* V2 的 blocker。';
 //: 搜索参数（heading / theta）的语义边界。8 与 5.0 是软件算法 baseline，不是工程确认参数。
@@ -592,6 +598,8 @@ function requestSection(model){
       +' · resolve '+request.scenarioRouteStatus)
     +row('altitude layer catalog',request.layerCatalogStatus+' · 共 '+request.layers.length+' 层')
     +'</div>'
+    +(request.layers.length?'':'<div class="parameter-note">'
+      +escapeHtml(THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE)+'</div>')
     +renderLayeredPlanningRequestFields(request,{altitudeNote:THETA_V2_ALTITUDE_NOTE})
     +'<div class="button-row">'
     +'<button class="secondary" id="saveLayeredRequest">保存 planning request</button>'

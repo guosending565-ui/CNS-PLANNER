@@ -202,11 +202,12 @@ export function entryExtent(entry){return extentOf(entry);}
  *
  * @param {{ctx,view,flow,plan,layers,screenPoint,profileHoverCoordinate,routeEvidenceHighlight,
  *          draftBounds,gridDisplay,gridCache,visibleBounds,gridTheme,palettes,riskBreaks,
- *          drawWorkspace,drawGridThemes,drawGridBoundaries,proposedPlanActions}} input
+ *          drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,
+ *          proposedPlanActions}} input
  */
 export function drawWorkflowLayers({
   ctx,view,flow,plan,layers={},screenPoint,profileHoverCoordinate=null,routeEvidenceHighlight=null,gridTheme=null,
-  drawWorkspace,drawGridThemes,drawGridBoundaries,proposedPlanActions=()=>[]
+  drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,proposedPlanActions=()=>[]
 }){
   const styles=plan.styles;
   const placer=createLabelPlacer();
@@ -214,6 +215,9 @@ export function drawWorkflowLayers({
   drawWorkspace();
   drawGridThemes();
   drawGridBoundaries();
+  // 建筑轮廓只读底图性质：画在网格之上、航路之下，避免遮挡规划结果。
+  // 是否真的画、画多少由调用方（map/building_footprint_layer.js）按图层开关与 LOD 决定。
+  if(typeof drawBuildingFootprints==='function')drawBuildingFootprints();
 
   // 1) 航路（当前选择增强，其余降低视觉权重）
   //    scenario 只是场景对照、reference 只是参考：candidate 是当前规划结果主线，

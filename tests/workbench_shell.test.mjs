@@ -1562,11 +1562,12 @@ test('step 02 mapping cards transcribe the existing flow state without recomputi
     }
     // 取值原样透出：stale / not_calculated / missing_data / unknown 都不被改写成 passed
     assert.equal(cardOf('人口映射').value,'已失效','a stale population mapping stays stale');
-    assert.equal(cardOf('人口映射').note,'full 0 / partial 1 / missing 2 / outside 4 格','population counts are the existing flow counts');
+    // 人口映射不再只显示 value_status：覆盖统计始终随卡片给出（含 full/partial/missing/outside）。
+    assert.equal(cardOf('人口映射').note,'已覆盖 1 / 7 格（14%） · full 0 / partial 1 / missing 2 / outside 4','population counts are shown as coverage statistics');
     assert.equal(cardOf('地形 DEM 映射').value,'未计算','an untouched terrain mapping stays not_calculated');
     assert.equal(cardOf('低空空域映射').value,'缺少数据','a missing airspace mapping stays missing_data');
     assert.equal(cardOf('建筑环境映射').value,'通过','a passed building mapping is mapped as-is');
-    assert.equal(cardOf('建筑环境映射').note,'已覆盖 7 / 10 格','the building mapping keeps its existing counts');
+    assert.equal(cardOf('建筑环境映射').note,'已覆盖 7 / 10 格（70%） · 未判定 3 格 · 既有建筑网格映射','the building mapping keeps its existing counts and states its basis');
     assert.equal(cardOf('交通暴露映射').value,'未计算','an empty traffic mapping is never faked as passed');
     assert.equal(cardOf('冲突暴露映射').value,'证据不足/尚无法判断','unknown is exposed as-is');
     // 工作区摘要只读现有 health：面积 / 数据状态 / 已加载图层

@@ -26,6 +26,7 @@ from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
 from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
 from ..domain.spatial_3d import empty_spatial_3d, normalize_spatial_3d
+from ..domain.altitude_layer_defaults import INITIALIZED_KEY as ALTITUDE_LAYER_INITIALIZED_KEY
 from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
 from ..algorithms.timeline.v1 import RouteServiceTimelineV1
 from ..algorithms.protection.v1 import TacticalProtectionEnvelopeV1
@@ -209,6 +210,9 @@ def blank_project(defaults):
         "risk_policy_v2": default_risk_policy_v2(),
         "grid_risk_v2": empty_grid_risk_v2(),
         "spatial_3d": empty_spatial_3d(),
+        # 工程默认高度层目录（ALT-060/080/100/150/200）的**一次性**初始化标记：目录首次被补建或
+        # 被用户显式管理后置位，据此绝不把用户刻意清空的目录再次填满。
+        ALTITUDE_LAYER_INITIALIZED_KEY: False,
         "coverage_3d": GeometricCoverage3DV1.empty(),
         "cns_service_capability": CNSServiceCapabilityV1.empty(),
         "operational_timing": empty_operational_timing(),
@@ -383,6 +387,11 @@ def normalize_project(value, grid_service):
     value["grid_risk_v2"] = normalize_grid_risk_v2(value.get("grid_risk_v2"))
     value.setdefault("traffic_simulation", None)
     value["spatial_3d"] = normalize_spatial_3d(value.get("spatial_3d"))
+    # 旧项目没有目录初始化标记：保持 False，让工作区设置/项目恢复路径决定是否补建
+    # 默认工程高度层（ALT-060/080/100/150/200）。这里只回填标记本身，绝不在此处写入高度层。
+    value[ALTITUDE_LAYER_INITIALIZED_KEY] = bool(
+        value.get(ALTITUDE_LAYER_INITIALIZED_KEY, False)
+    )
     value.setdefault("coverage_3d", GeometricCoverage3DV1.empty())
     value.setdefault("cns_service_capability", CNSServiceCapabilityV1.empty())
     value["operational_timing"] = normalize_operational_timing(value.get("operational_timing"))

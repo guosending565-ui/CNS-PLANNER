@@ -34,11 +34,57 @@ export const WORKSPACE_SEGMENTS={
 // ---- 纯展示辅助（只读 flow / 已有展示状态，不修改任何业务数据） ---------------
 
 /**
- * 人口映射状态：与原摘要同一取值来源——stale 优先，其次 value_status，最后 status。
- * 只做取值映射，不做任何重算。
+ * 统一映射结果的展示文案。三态词汇来自后端 ``population_mapping`` /
+ * ``environment_mapping``；没有该载体的旧快照回退到既有的 status 文案。
+ */
+const MAPPING_STATUS_TEXT={passed:'通过',partial:'部分覆盖',unsupported:'不可用'};
+
+/** 建筑环境映射的"依据"标签（只做取词映射，不推断任何业务语义）。 */
+const BUILDING_MAPPING_BASIS_TEXT={
+  l8_building_grid_fact_table:'L8 建筑环境网格直接映射',
+  exact_footprint_intersection_and_centroid_allocation:'原始建筑足迹精确聚合'
+};
+
+function mappingStatusLabel(status,fallbackStatus){
+  if(status&&MAPPING_STATUS_TEXT[status])return MAPPING_STATUS_TEXT[status];
+  return statusText(fallbackStatus||status||'not_calculated');
+}
+
+function percentText(ratio){
+  const value=Number(ratio);
+  return Number.isFinite(value)?Math.round(value*100)+'%':'—';
+}
+
+/**
+ * 人口映射覆盖统计。优先读后端统一载体 ``population_mapping``；旧快照没有该键时，
+ * 只用既有的 full/partial/missing/outside 计数做**展示换算**（不重算任何业务数值）。
+ */
+function populationCoverage(population){
+  const mapping=population?.population_mapping;
+  if(mapping){
+    return {
+      total:Number(mapping.total_cells)||0,covered:Number(mapping.covered_cells)||0,
+      unresolved:Number(mapping.unresolved_cells)||0,
+      full:Number(mapping.full_cells)||0,partial:Number(mapping.partial_cells)||0,
+      missing:Number(mapping.missing_cells)||0,outside:Number(mapping.outside_cells)||0,
+      ratio:mapping.coverage_ratio
+    };
+  }
+  const full=Number(population?.full_count)||0,partial=Number(population?.partial_count)||0,
+    missing=Number(population?.missing_count)||0,outside=Number(population?.outside_count)||0;
+  const total=full+partial+missing+outside,covered=full+partial;
+  return {total,covered,unresolved:total-covered,full,partial,missing,outside,ratio:total?covered/total:null};
+}
+
+/**
+ * 人口映射状态：stale 优先（保持既有语义），其次统一载体 ``population_mapping.status``，
+ * 最后回退到 value_status / status。**不再**因为 value_status=missing_data 就只显示"缺少数据"：
+ * 覆盖统计始终随卡片给出。
  */
 function populationMappingStatus(population){
-  return statusText(population?.status==='stale'?'stale':population?.value_status||population?.status||'not_calculated');
+  if(population?.status==='stale')return statusText('stale');
+  return mappingStatusLabel(population?.population_mapping?.status,
+    population?.value_status||population?.status||'not_calculated');
 }
 
 /**
@@ -51,20 +97,45 @@ export function mappingStatusCards(flow){
   const attributes=flow?.grid_attributes||{},buildings=attributes.buildings||{};
   const population=attributes.population||{},terrain=attributes.terrain||{},
     airspace=attributes.airspace||{},traffic=attributes.traffic||{},conflict=attributes.conflict||{};
+  const populationCounts=populationCoverage(population);
+  const buildingCard=buildingMappingCard(buildings);
   return '<div class="env-metric-cards">'+[
     wbCard('人口映射',populationMappingStatus(population),
-      'full '+(population.full_count||0)+' / partial '+(population.partial_count||0)+' / missing '+(population.missing_count||0)+' / outside '+(population.outside_count||0)+' 格'),
+      '已覆盖 '+populationCounts.covered+' / '+populationCounts.total+' 格（'+percentText(populationCounts.ratio)+'）'
+      +' · full '+populationCounts.full+' / partial '+populationCounts.partial
+      +' / missing '+populationCounts.missing+' / outside '+populationCounts.outside),
     wbCard('地形 DEM 映射',statusText(terrain.status||'not_calculated'),
       '已处理 '+(terrain.count||0)+' 格（有效 '+(terrain.covered_count||0)+' 格）'),
     wbCard('低空空域映射',statusText(airspace.status||'not_calculated'),
       '已处理 '+(airspace.count||0)+' 格（命中 '+(airspace.hit_count||0)+' 格）'),
-    wbCard('建筑环境映射',statusText(buildings.status||'not_calculated'),
-      '已覆盖 '+(buildings.covered_count||0)+' / '+(buildings.count||0)+' 格'),
+    wbCard('建筑环境映射',buildingCard.value,buildingCard.note),
     wbCard('交通暴露映射',statusText(traffic.status||'not_calculated'),
       '已处理 '+(traffic.count||0)+' 格（命中 '+(traffic.covered_count||0)+' 格）'),
     wbCard('冲突暴露映射',statusText(conflict.status||'not_calculated'),
       '已处理 '+(conflict.count||0)+' 格（命中 '+(conflict.covered_count||0)+' 格）')
   ].join('')+'</div>';
+}
+
+/**
+ * 建筑环境映射卡的**值**（``wbCard`` 的第二个参数）。
+ *
+ * 统一载体 ``environment_mapping`` 是权威来源：``status`` 三态 + ``total_cells`` /
+ * ``covered_cells`` / ``unresolved_cells``。旧快照没有该载体时回退到既有
+ * ``buildings.status`` / ``covered_count``，行为与改造前一致。
+ */
+function buildingMappingCard(buildings){
+  const mapping=buildings?.environment_mapping;
+  const total=Number(mapping?.total_cells??buildings?.count)||0;
+  const covered=Number(mapping?.covered_cells??buildings?.covered_count)||0;
+  const unresolved=Number(mapping?.unresolved_cells??Math.max(0,total-covered))||0;
+  const ratio=mapping?.coverage_ratio??(total?covered/total:null);
+  const basis=mapping
+    ?(BUILDING_MAPPING_BASIS_TEXT[mapping.mapping_basis]||'未记录映射依据')
+    :'既有建筑网格映射';
+  return {
+    value:mappingStatusLabel(mapping?.status,buildings?.status),
+    note:'已覆盖 '+covered+' / '+total+' 格（'+percentText(ratio)+'） · 未判定 '+unresolved+' 格 · '+basis
+  };
 }
 
 /**
@@ -75,11 +146,16 @@ export function mappingStatusCards(flow){
  */
 export function buildingEnvironmentSummary(flow){
   const health=flow?.workspace?.health||{},buildings=flow?.grid_attributes?.buildings||{};
+  const mapping=buildings.environment_mapping;
+  const card=buildingMappingCard(buildings);
+  // 层级无关事实获取：工作区不是 L8 时，事实来自按当前层级的精确足迹聚合。
+  const levelNote=mapping?.level_independent_facts
+    ?'（按当前 L'+mapping.grid_level+' 层级精确聚合原始建筑足迹，未做跨层级平均/插值）'
+    :'';
   return '<div class="flow-summary"><b>建筑环境链</b><br>FABDEM DTM：'+escapeHtml(statusText(health.terrain_dtm?.status||'missing_data'))
     +' · GBA buildings：'+escapeHtml(statusText(health.buildings?.status||'missing_data'))
     +' · L8 grid：'+escapeHtml(statusText(health.building_grid?.status||'missing_data'))
-    +'<br>建筑网格映射：'+escapeHtml(statusText(buildings.status||'not_calculated'))
-    +' · '+(buildings.covered_count||0)+' / '+(buildings.count||0)+' 格</div>';
+    +'<br>建筑网格映射：'+escapeHtml(card.value)+' · '+escapeHtml(card.note)+levelNote+'</div>';
 }
 
 // ---- 操作 · 工作区范围 -------------------------------------------------------
@@ -117,13 +193,16 @@ function gridEnvironmentPanel(flow){
 
 /** 工作区摘要（面积 / 数据可用性 / 已加载图层）与缺失项提示：取值与原来一致。 */
 function workspaceMappingSummary(flow){
-  const workspace=flow?.workspace,health=workspace?.health;
+  const workspace=flow?.workspace,health=workspace?.health,attributes=flow?.grid_attributes||{};
   if(!workspace)return '<div class="empty-note">尚未保存工作区。点击“框选工作区”后在地图拖出矩形。</div>';
   return '<div class="metric-grid"><b>'+(workspace.area_km2).toLocaleString()+' km²<small>工作区面积</small></b>'
     +'<b>'+escapeHtml(statusText(health?.population?.status||'missing_data'))+'<small>人口数据</small></b>'
     +'<b>'+escapeHtml(statusText(health?.airspace?.status||'missing_data'))+'<small>空域数据</small></b>'
     +'<b>'+escapeHtml(String(health?.loaded_layer_count||0))+'<small>已加载图层</small></b></div>'
-    +'<div class="missing-list">DEM：'+escapeHtml(statusText(health?.terrain?.status||'missing_data'))+' · 建筑：missing_data · 财产：missing_data</div>';
+    // 建筑 / 财产状态必须读真实映射结果，绝不再硬编码"missing_data"（那会把旧状态写死在界面上）。
+    +'<div class="missing-list">DEM：'+escapeHtml(statusText(health?.terrain?.status||'missing_data'))
+    +' · 建筑：'+escapeHtml(statusText(attributes.buildings?.status||'missing_data'))
+    +' · 财产：'+escapeHtml(statusText(attributes.property_exposure?.status||'missing_data'))+'</div>';
 }
 
 // ---- 结果 · 专题浏览 ---------------------------------------------------------
