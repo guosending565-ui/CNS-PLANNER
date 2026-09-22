@@ -38,6 +38,11 @@ from ..domain.population_shelter import (
     normalize_shelter_coefficient_policy, population_shelter_fingerprint,
     resolve_population_shelter, shelter_policy_fingerprint, user_defined_baseline_policy,
 )
+from ..domain.planning_exposure import (
+    default_planning_exposure_policy, normalize_planning_exposure_policy,
+    planning_exposure_factors, planning_exposure_policy_fingerprint,
+    resolve_planning_exposure,
+)
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, is_configured as regulatory_is_configured,
     normalize_regulatory_constraints, regulatory_compliance_record,
@@ -83,11 +88,12 @@ def _candidate_key(route_id, altitude_layer_id):
     return f"{route_id or 'od'}@{altitude_layer_id or 'layer'}"
 
 
-def _shelter_input_fingerprint(grid, policy, grid_risk_v2):
+def _shelter_input_fingerprint(grid, policy, grid_risk_v2, planning_exposure_policy=None):
     """Fingerprint of everything the derived per-grid shelter field depends on.
 
-    Population source/normalization, the grid identity and the confirmed shelter policy —
-    so a change in any of them rebuilds the field instead of silently reusing it.
+    Population source/normalization, the grid identity, the confirmed shelter policy and the
+    planning-exposure policy — so a change in any of them rebuilds the field instead of
+    silently reusing it.
     """
 
     return stable_fingerprint({
@@ -99,7 +105,25 @@ def _shelter_input_fingerprint(grid, policy, grid_risk_v2):
         "grid_risk_v2_input_fingerprint": (grid_risk_v2 or {}).get("input_fingerprint"),
         "grid_risk_v2_policy_fingerprint": (grid_risk_v2 or {}).get("policy_fingerprint"),
         "shelter_policy_fingerprint": shelter_policy_fingerprint(policy),
+        "planning_exposure_policy_fingerprint": planning_exposure_policy_fingerprint(
+            planning_exposure_policy or default_planning_exposure_policy()
+        ),
     }, prefix="shelterinputv1-")
+
+
+def _planning_exposure_input_fingerprint(grid, policy, grid_risk_v2):
+    """Fingerprint of everything the derived planning-exposure layer depends on."""
+
+    return stable_fingerprint({
+        "grid_level": (grid or {}).get("level"),
+        "grid_cells": sorted(
+            str(cell.get("grid_id")) for cell in (grid or {}).get("cells") or []
+            if isinstance(cell, dict)
+        ),
+        "grid_risk_v2_input_fingerprint": (grid_risk_v2 or {}).get("input_fingerprint"),
+        "grid_risk_v2_policy_fingerprint": (grid_risk_v2 or {}).get("policy_fingerprint"),
+        "planning_exposure_policy_fingerprint": planning_exposure_policy_fingerprint(policy),
+    }, prefix="planningexpinputv1-")
 
 
 def _fingerprint_planner(planner):
@@ -192,6 +216,15 @@ class LayeredRoutePlannerService:
         state.setdefault("max_route_risk_density", default_risk_density_constraint())
         state["max_route_risk_density"] = normalize_risk_density_constraint(
             state.get("max_route_risk_density")
+        )
+        # BUG-ROUTE-005：规划用暴露度层。默认未配置 ⇒ 完全不生效，人口因子原样使用。
+        # 派生缓存 ``_planning_exposure_cache`` 刻意**不在这里**初始化：它只在真正派生过
+        # 之后才存在，并与 ``_population_shelter_cache`` 一样不随项目持久化。
+        state.setdefault(
+            "planning_exposure_policy", default_planning_exposure_policy()
+        )
+        state["planning_exposure_policy"] = normalize_planning_exposure_policy(
+            state.get("planning_exposure_policy")
         )
         state.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
         return state
@@ -664,6 +697,59 @@ class LayeredRoutePlannerService:
             self.session.save()
         return self.snapshot()
 
+    def planning_exposure_snapshot(self):
+        """BUG-ROUTE-005：规划用暴露度层（**派生**，永远不进人口报告 / 审计）。
+
+        未配置（默认）时它是 ``not_configured`` / ``applied=False``：调用方必须原样使用
+        人口因子，本层绝不产生影响。启用后它只把**陆地**格的有效人口抬到不低于
+        ``land_population_floor``，并把"人口下限"用 Risk Framework V2 的同一个
+        ``log1p_quantile`` 参考值换算成归一化因子（与"先抬升密度再归一化"数学等价）。
+        """
+
+        state = self.ensure_state()
+        policy = state["planning_exposure_policy"]
+        grid = state.get("grid") or {}
+        grid_risk_v2 = state.get("grid_risk_v2") or {}
+        fingerprint = _planning_exposure_input_fingerprint(grid, policy, grid_risk_v2)
+        cached = state.get("_planning_exposure_cache")
+        if isinstance(cached, dict) and cached.get("derived_from_fingerprint") == fingerprint:
+            return deepcopy(cached)
+        attribute = resolve_planning_exposure(
+            grid=grid,
+            population_attribute=state["grid_attributes"].get("population") or {},
+            terrain_attribute=state["grid_attributes"].get("terrain") or {},
+            normalized_population_factors=self._population_factors(state),
+            policy=policy, grid_risk_v2=grid_risk_v2,
+        )
+        attribute["derived_from_fingerprint"] = fingerprint
+        state["_planning_exposure_cache"] = attribute
+        return deepcopy(attribute)
+
+    @staticmethod
+    def _population_factors(state):
+        """Canonical Risk Framework V2 population factor per grid (``None`` never becomes 0)."""
+
+        factors = {}
+        grid_risk_v2 = state.get("grid_risk_v2") or {}
+        for grid_id, cell in (grid_risk_v2.get("cells") or {}).items():
+            index, status = cell_factor_index(cell, POPULATION_FACTOR_ID)
+            if status == "passed" and index is not None:
+                factors[str(grid_id)] = index
+        return factors
+
+    def set_planning_exposure_policy(self, payload):
+        raw = payload.get("planning_exposure_policy", payload) if isinstance(
+            payload, dict
+        ) else payload
+        candidate = normalize_planning_exposure_policy(raw)
+        state = self.ensure_state()
+        if candidate != state["planning_exposure_policy"]:
+            state["planning_exposure_policy"] = candidate
+            state.pop("_planning_exposure_cache", None)
+            self.invalidation.layered_route("planning_exposure_policy_changed")
+            self.session.save()
+        return self.snapshot()
+
     def population_shelter_snapshot(self):
         """The per-grid ``population_shelter`` field, rebuilt from current canonical inputs.
 
@@ -671,6 +757,10 @@ class LayeredRoutePlannerService:
         population factor and the confirmed shelter policy, and it stores a real
         ``shelter_coefficient`` per grid cell that a future confirmed shelter dataset can
         replace wholesale.  Nothing is hardcoded inside the planner.
+
+        BUG-ROUTE-005：当规划用暴露度层**已确认并生效**时，它提供的归一化人口因子取代
+        canonical 因子（``max(density, floor)`` 的等价因子）。人口属性、人口报告、数据审计与
+        NoData 语义都不受影响 —— 被替换的只是这一步规划用的因子输入。
         """
 
         state = self.ensure_state()
@@ -680,21 +770,37 @@ class LayeredRoutePlannerService:
         attribute = state.get("_population_shelter_cache") or {}
         cells = attribute.get("cells") or {}
         derived_from = attribute.get("derived_from_fingerprint")
-        if cells and derived_from == _shelter_input_fingerprint(grid, policy, grid_risk_v2):
+        if cells and derived_from == _shelter_input_fingerprint(
+            grid, policy, grid_risk_v2, state.get("planning_exposure_policy")
+        ):
             return deepcopy(attribute)
-        factors = {}
-        for grid_id, cell in (grid_risk_v2.get("cells") or {}).items():
-            index, status = cell_factor_index(cell, POPULATION_FACTOR_ID)
-            if status == "passed" and index is not None:
-                factors[str(grid_id)] = index
+        exposure = self.planning_exposure_snapshot()
+        factors = planning_exposure_factors(exposure) or self._population_factors(state)
         attribute = resolve_population_shelter(
             grid=grid,
             population_attribute=state["grid_attributes"].get("population") or {},
             normalized_population_factors=factors,
             policy=policy,
         )
+        attribute["planning_exposure"] = {
+            "attribute": "planning_exposure",
+            "status": exposure.get("status"),
+            "applied": exposure.get("applied") is True,
+            "policy_fingerprint": exposure.get("policy_fingerprint"),
+            "land_population_floor": exposure.get("land_population_floor"),
+            "land_min_surface_elevation_m": exposure.get("land_min_surface_elevation_m"),
+            "land_count": exposure.get("land_count"),
+            "water_count": exposure.get("water_count"),
+            "unresolved_land_status_count": exposure.get("unresolved_land_status_count"),
+            "floor_applied_count": exposure.get("floor_applied_count"),
+            "used_population_nodata_as_sea_proxy": False,
+        }
+        attribute["population_factor_source"] = (
+            "planning_exposure_effective_population"
+            if exposure.get("applied") is True else "canonical_risk_v2_population_factor"
+        )
         attribute["derived_from_fingerprint"] = _shelter_input_fingerprint(
-            grid, policy, grid_risk_v2
+            grid, policy, grid_risk_v2, state.get("planning_exposure_policy")
         )
         state["_population_shelter_cache"] = attribute
         return deepcopy(attribute)

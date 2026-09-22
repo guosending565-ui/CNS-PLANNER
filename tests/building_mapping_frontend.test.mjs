@@ -44,11 +44,12 @@ test('population mapping shows coverage statistics instead of a bare missing_dat
   const population=cards.find(card=>card.label==='人口映射');
   assert.ok(population,'the population mapping card must exist');
   assert.equal(population.value,'部分覆盖','the unified mapping carrier wins over a bare value_status');
-  // BUG-POP-001：统一载体下六类计数与未判定数必须全部给出（数字可闭合）。
+  // BUG-POP-001 / BUG-UI-POP-002：统一载体下六类计数与未判定数必须全部给出（数字可闭合），
+  // 且「格网判定」与「映射有效面积覆盖」两个口径必须**分开**显示。
   assert.equal(
     population.note,
-    '已覆盖 6 / 10 格（60%） · full 4 / partial 2 / nodata_only 0 / confirmed_zero 0 '
-    +'/ missing 3 / outside 1 · 未判定 4',
+    '格网判定 6 / 10（60%） · 映射有效面积覆盖 — · full 4 / partial 2 / nodata_only 0 '
+    +'/ confirmed_zero 0 / missing 3 / outside 1 · 未判定 4',
     'the coverage statistics are shown verbatim'
   );
 });
@@ -59,7 +60,10 @@ test('population mapping falls back to the legacy counts for old snapshots',()=>
   }}}));
   const population=cards.find(card=>card.label==='人口映射');
   assert.equal(population.value,'通过');
-  assert.equal(population.note,'已覆盖 4 / 4 格（100%） · full 3 / partial 1 / missing 0 / outside 0');
+  assert.equal(
+    population.note,
+    '格网判定 4 / 4（100%） · 映射有效面积覆盖 — · full 3 / partial 1 / missing 0 / outside 0'
+  );
 });
 
 // ============================================================================

@@ -15,6 +15,63 @@ from .mht4063 import LEVEL_SIZE_DEGREES, cell_bounds, validate_level
 DEFAULT_MAX_CELLS = 5000
 MAX_CELLS_ENV = "CNS_GRID_MAX_CELLS"
 
+#: Sphere radius used for the **display** metadata below.  It is the same constant the
+#: existing ``distance_m`` helper uses, so the reported grid edge length and every other
+#: distance in the workspace agree with each other.
+EARTH_RADIUS_M = 6371008.8
+
+#: How the metre-valued cell size is derived from the authoritative degree-valued level table.
+CELL_SIZE_MEASUREMENT = "geodesic_edge_lengths_from_mht4063_degree_span_at_cell_centre_latitude"
+CELL_SIZE_SOURCE = "mht4063_level_size_degrees"
+
+
+def cell_size_metadata(level, *, latitude_deg):
+    """Metre-valued cell geometry for one MH/T level at one latitude (BUG-GRID-001).
+
+    MH/T 4063.1 defines every planar level as a **square in degrees**, which is *not* a
+    square in metres: a longitude degree is shorter than a latitude degree by ``cos(lat)``.
+    The authoritative definition therefore stays ``LEVEL_SIZE_DEGREES`` and this helper only
+    *reports* the resulting metre edges of that same definition -- it never invents a second
+    grid definition, and the frontend must never re-derive it from raw degrees.
+
+    * ``resolution_x`` -- east-west edge length in metres at ``latitude_deg``;
+    * ``resolution_y`` -- north-south edge length in metres (independent of longitude);
+    * ``cell_size_m`` -- the area-equivalent edge length ``sqrt(resolution_x * resolution_y)``,
+      i.e. a single representative size for a cell that is not square in metres.
+    """
+
+    validate_level(level)
+    lon_span, lat_span = LEVEL_SIZE_DEGREES[level]
+    resolution_y = math.radians(float(lat_span)) * EARTH_RADIUS_M
+    resolution_x = (
+        math.radians(float(lon_span)) * EARTH_RADIUS_M
+        * math.cos(math.radians(float(latitude_deg)))
+    )
+    return {
+        "cell_size_m": math.sqrt(resolution_x * resolution_y),
+        "resolution_x": resolution_x,
+        "resolution_y": resolution_y,
+    }
+
+
+def level_metadata(level, *, latitude_deg):
+    """The single, additive grid-level metadata block consumed by the UI (BUG-GRID-001)."""
+
+    lon_span, lat_span = LEVEL_SIZE_DEGREES[level]
+    measured = cell_size_metadata(level, latitude_deg=latitude_deg)
+    return {
+        "level": int(level),
+        **{key: round(float(value), 9) for key, value in measured.items()},
+        "unit": "m",
+        "cell_size_degrees": [float(lon_span), float(lat_span)],
+        "reference_latitude_deg": round(float(latitude_deg), 9),
+        "measurement": CELL_SIZE_MEASUREMENT,
+        "source": CELL_SIZE_SOURCE,
+        # A level is square in degrees, not in metres: the two edges differ by cos(latitude).
+        "square_in_degrees_not_in_metres": True,
+        "never_estimated_on_the_frontend": True,
+    }
+
 
 def _resolve_max_cells(value):
     if value is not None:
@@ -54,6 +111,7 @@ class WorkspaceGridService:
             "coarsened": False,
             "workspace_bbox": None,
             "cell_size_degrees": None,
+            "level_metadata": None,
             "count": 0,
             "cells": [],
             "capabilities": self.capabilities(),
@@ -81,6 +139,12 @@ class WorkspaceGridService:
             "coarsening_is_explicit_in_response": True,
             "coarsened_flag_key": "coarsened",
             "explicit_level_request_supported": True,
+            # BUG-GRID-001：格网尺寸只有这一个来源，前端不得自行按经纬度估算。
+            "level_metadata_key": "level_metadata",
+            "level_metadata_units": "m",
+            "level_metadata_derived_from": CELL_SIZE_SOURCE,
+            "level_metadata_describes": "the_level_actually_generated_after_coarsening",
+            "frontend_must_not_estimate_cell_size": True,
             "limitations": [
                 "请求的层级可能被静默 coarsen 到更粗层级（响应中的 coarsened=true 记录了这一事实）。",
                 "需要恰好 L8 的下游（building_grid 事实表）在大工作区上因此不可用。",
@@ -119,6 +183,10 @@ class WorkspaceGridService:
             for column in column_range
         ]
         lon_size, lat_size = LEVEL_SIZE_DEGREES[level]
+        # The metadata always describes the level that was actually generated (post
+        # coarsening), never the requested one: a silently coarsened workspace must never
+        # report a finer cell size than the cells it really contains.
+        reference_latitude = (south + north) / 2.0
         return {
             "status": "passed",
             "standard": self.standard,
@@ -129,6 +197,7 @@ class WorkspaceGridService:
             "coarsened": level != requested_level,
             "workspace_bbox": [west, south, east, north],
             "cell_size_degrees": [float(lon_size), float(lat_size)],
+            "level_metadata": level_metadata(level, latitude_deg=reference_latitude),
             "count": len(cells),
             "cells": cells,
         }
@@ -183,6 +252,14 @@ class WorkspaceGridService:
             "bbox": [west, south, east, north],
             "center": [(west + east) / 2, (south + north) / 2],
             "geometry": {"type": "Polygon", "coordinates": [ring]},
+            # Per-cell metre geometry from the **same** authoritative level table.  The UI
+            # displays / measures with this instead of estimating a size from raw degrees.
+            **{
+                key: round(float(value), 9)
+                for key, value in cell_size_metadata(
+                    level, latitude_deg=(south + north) / 2.0
+                ).items()
+            },
         }
 
     @staticmethod

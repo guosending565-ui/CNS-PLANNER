@@ -33,7 +33,9 @@ function cardsOf(html){
 const MAPPING={
   status:'partial',total_cells:10,covered_cells:6,unresolved_cells:4,
   full_cells:3,partial_cells:2,nodata_only_cells:1,confirmed_zero_cells:1,
-  missing_cells:2,outside_cells:1,coverage_ratio:0.6,
+  missing_cells:2,outside_cells:1,
+  // BUG-UI-POP-002：格网判定口径与映射有效面积口径是两个不同的量。
+  coverage_ratio:0.45,cell_coverage_ratio:0.6,area_coverage_ratio:0.45,
 };
 
 const CONFIRMED_POLICY={
@@ -61,10 +63,13 @@ test('population coverage closes exactly over the six declared buckets',()=>{
   assert.equal(counts.covered,counts.full+counts.partial+counts.confirmedZero);
   assert.equal(counts.unresolved,counts.total-counts.covered);
   assert.equal(counts.closed,true);
+  // 两个口径必须分别暴露，绝不混写。
+  assert.equal(counts.cellRatio,0.6);
+  assert.equal(counts.areaRatio,0.45);
   assert.equal(
     populationCoverageNote(counts),
-    '已覆盖 6 / 10 格（60%） · full 3 / partial 2 / nodata_only 1 / confirmed_zero 1 '
-    +'/ missing 2 / outside 1 · 未判定 4'
+    '格网判定 6 / 10（60%） · 映射有效面积覆盖 45% · full 3 / partial 2 / nodata_only 1 '
+    +'/ confirmed_zero 1 / missing 2 / outside 1 · 未判定 4'
   );
 });
 
@@ -84,7 +89,13 @@ test('legacy snapshots keep the four buckets they really own without inventing z
   assert.equal(counts.unified,false);
   assert.equal(counts.nodataOnly,null);
   assert.equal(counts.confirmedZero,null);
-  assert.equal(populationCoverageNote(counts),'已覆盖 4 / 4 格（100%） · full 3 / partial 1 / missing 0 / outside 0');
+  // 旧快照没有面积口径：保持 null（显示 "—"），绝不用格网口径顶替。
+  assert.equal(counts.cellRatio,1);
+  assert.equal(counts.areaRatio,null);
+  assert.equal(
+    populationCoverageNote(counts),
+    '格网判定 4 / 4（100%） · 映射有效面积覆盖 — · full 3 / partial 1 / missing 0 / outside 0'
+  );
 });
 
 // ============================================================================

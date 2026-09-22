@@ -98,7 +98,9 @@ _V2_DOMAIN_SUMMARY_KEYS = (
 _MASK_CELL_SUMMARY_KEYS = ("grid_id", "status", "reason", "reason_code")
 
 #: 派生缓存：不进入 workflow 快照，也不随项目迁移（可由现有输入重建）。
-_SNAPSHOT_OMITTED_STATE_KEYS = ("_population_shelter_cache",)
+_SNAPSHOT_OMITTED_STATE_KEYS = (
+    "_population_shelter_cache", "_planning_exposure_cache",
+)
 
 #: 逐 cell 大结果：快照以只读投影共享引用，不做整树深拷贝。
 #: 这些容器只会被整体替换（copy-on-write），快照序列化后即结束生命周期。
@@ -238,6 +240,17 @@ def slim_population_shelter(attribute):
     slim = {key: deepcopy(value) for key, value in attribute.items() if key != "cells"}
     slim["cell_count"] = len(attribute.get("cells") or {})
     slim["cells_detail"] = "GET /api/population-shelter"
+    return slim
+
+
+def slim_planning_exposure(attribute):
+    """BUG-ROUTE-005 规划用暴露度层摘要：状态/计数/策略原样，逐 cell 由专用接口提供。"""
+
+    if not isinstance(attribute, dict):
+        return attribute
+    slim = {key: deepcopy(value) for key, value in attribute.items() if key != "cells"}
+    slim["cell_count"] = len(attribute.get("cells") or {})
+    slim["cells_detail"] = "GET /api/planning-exposure"
     return slim
 
 
@@ -670,6 +683,14 @@ class WorkflowService:
             )
             result["max_route_risk_density"] = deepcopy(
                 self.state.get("max_route_risk_density") or {}
+            )
+            # BUG-ROUTE-005：规划用暴露度层（策略本体 + 只读派生摘要）。它**不**进入人口报告、
+            # 数据审计或 NoData 语义；默认未配置时不产生任何影响。
+            result["planning_exposure_policy"] = deepcopy(
+                self.state.get("planning_exposure_policy") or {}
+            )
+            result["planning_exposure"] = slim_planning_exposure(
+                self.layered_route_planner_service.planning_exposure_snapshot()
             )
         if hasattr(self, "route_risk_profile_service"):
             # RouteRiskProfile V1: the explicit per-domain thresholds, the bounded readiness
@@ -1168,6 +1189,13 @@ class WorkflowService:
         return deepcopy(self.state.get("max_route_risk_density") or {})
     def set_max_route_risk_density(self, payload):
         return self.layered_route_planner_service.set_risk_density_constraint(payload)
+    # ---- BUG-ROUTE-005：规划用暴露度层（planning exposure floor） ---------------------
+    def planning_exposure_policy(self):
+        return deepcopy(self.state.get("planning_exposure_policy") or {})
+    def set_planning_exposure_policy(self, payload):
+        return self.layered_route_planner_service.set_planning_exposure_policy(payload)
+    def planning_exposure(self):
+        return self.layered_route_planner_service.planning_exposure_snapshot()
     def evaluate_layered_route_candidate(self, payload=None, adapter=None):
         self.layered_route_planner_service.evaluate(payload, adapter=adapter)
         # A new candidate run may have replaced/staled the previous record of a lane, so the

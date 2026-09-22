@@ -54,8 +54,15 @@ function mappingStatusLabel(status,fallbackStatus){
 }
 
 function percentText(ratio){
+  // null / undefined 一律显示 "—"：**绝不**把"缺失"渲染成 "0%"（Number(null)===0）。
+  if(ratio===null||ratio===undefined)return '—';
   const value=Number(ratio);
   return Number.isFinite(value)?Math.round(value*100)+'%':'—';
+}
+
+/** 只接受后端给出的有限数值；其余（含 null / 字符串 / NaN）保持"未提供"。 */
+function finiteRatio(value){
+  return typeof value==='number'&&Number.isFinite(value)?value:null;
 }
 
 /**
@@ -66,6 +73,11 @@ function percentText(ratio){
  * ``full + partial + nodata_only + confirmed_zero + missing + outside === total``，
  * 且 ``covered === full + partial + confirmed_zero``、``unresolved === total - covered``。
  * ``closed`` / ``closure`` 就是为了让界面与测试都能直接验证这条恒等式。
+ *
+ * BUG-UI-POP-002：``cellRatio`` 与 ``areaRatio`` 是**两个不同口径**的量，必须分开展示。
+ * ``cell_coverage_ratio`` 是格网判定口径（covered/total），``area_coverage_ratio`` 是映射
+ * 有效面积口径（valid_covered_area / target_area）。旧快照缺少新 ratio 时保持 ``null``，
+ * 由展示层显示 "—"，**绝不**用另一个口径的数字顶替，也绝不伪造百分比。
  */
 export function populationCoverage(population){
   const mapping=population?.population_mapping;
@@ -77,8 +89,12 @@ export function populationCoverage(population){
     const total=Number(mapping.total_cells)||0,covered=Number(mapping.covered_cells)||0,
       unresolved=Number(mapping.unresolved_cells)||0;
     const closure=full+partial+nodataOnly+confirmedZero+missing+outside;
+    const cellRatio=finiteRatio(mapping.cell_coverage_ratio)
+      ??(total?covered/total:null);
     return {
       unified:true,total,covered,unresolved,full,partial,nodataOnly,confirmedZero,missing,outside,
+      cellRatio,
+      areaRatio:finiteRatio(mapping.area_coverage_ratio),
       ratio:mapping.coverage_ratio,closure,
       closed:closure===total&&covered===full+partial+confirmedZero&&unresolved===total-covered
     };
@@ -87,17 +103,26 @@ export function populationCoverage(population){
     missing=Number(population?.missing_count)||0,outside=Number(population?.outside_count)||0;
   const total=full+partial+missing+outside,covered=full+partial;
   // 旧快照无法把 nodata_only / confirmed_zero 从 missing 里分出来：保持 null 而不是伪造 0。
+  // 它也没有面积口径的 ratio：areaRatio 保持 null（展示为 "—"），绝不用格网口径顶替。
   return {
     unified:false,total,covered,unresolved:total-covered,full,partial,
     nodataOnly:null,confirmedZero:null,missing,outside,
+    cellRatio:total?covered/total:null,areaRatio:null,
     ratio:total?covered/total:null,closure:total,
     closed:covered===full+partial
   };
 }
 
-/** 统一载体下的人口映射计数明细行（数字可闭合；旧快照只显示它真正拥有的四类）。 */
+/**
+ * 统一载体下的人口映射计数明细行（数字可闭合；旧快照只显示它真正拥有的四类）。
+ *
+ * BUG-UI-POP-002：``格网判定 X / Y（cell%）`` 与 ``映射有效面积覆盖 area%`` 分开写。
+ * 之前这里把面积口径的 ``coverage_ratio`` 直接写在 "已覆盖 X / Y 格" 后面，产生了
+ * "986/986 格（90%）" 这种自相矛盾的显示。
+ */
 export function populationCoverageNote(counts){
-  const head='已覆盖 '+counts.covered+' / '+counts.total+' 格（'+percentText(counts.ratio)+'）';
+  const head='格网判定 '+counts.covered+' / '+counts.total+'（'+percentText(counts.cellRatio)+'）'
+    +' · 映射有效面积覆盖 '+percentText(counts.areaRatio);
   if(!counts.unified){
     return head+' · full '+counts.full+' / partial '+counts.partial
       +' / missing '+counts.missing+' / outside '+counts.outside;
@@ -319,12 +344,23 @@ function workspaceRangePanel(draftWorkspace){
 
 // ---- 操作 · 标准网格与建筑环境 ------------------------------------------------
 
-/** 既有 MH/T 4063.1 标准网格状态行（含数量限制降级提示），取值与原来一致。 */
+/**
+ * 既有 MH/T 4063.1 标准网格状态行（含数量限制降级提示）。
+ *
+ * BUG-GRID-001：格网的**米制边长只来自后端** ``grid.level_metadata``（它描述的是实际
+ * 生成、即 coarsen 之后的层级）。前端绝不按经纬度估算层级或尺寸；旧快照没有 metadata
+ * 时只显示层级与格数，**不显示任何猜测的尺寸**。
+ */
 function standardGridLine(flow){
   const grid=flow?.grid||{};
-  return grid?.status==='passed'
-    ?'MH/T 4063.1 标准网格：L'+grid.level+' · '+grid.count+' 格'+(grid.coarsened?'（已按数量限制降级）':'')
-    :'标准网格：未生成';
+  if(grid?.status!=='passed')return '标准网格：未生成';
+  const metadata=grid.level_metadata||null;
+  const size=metadata&&Number.isFinite(metadata.resolution_x)&&Number.isFinite(metadata.resolution_y)
+    ?' · 格网 '+Math.round(metadata.resolution_x)+' × '+Math.round(metadata.resolution_y)+' m'
+      +'（后端 level_metadata，非前端估算）'
+    :'';
+  return 'MH/T 4063.1 标准网格：L'+grid.level+' · '+grid.count+' 格'+size
+    +(grid.coarsened?'（已按数量限制降级）':'');
 }
 
 function gridEnvironmentPanel(flow){

@@ -18,7 +18,7 @@ def compact_and_store(state, project_path):
 
     document = {
         key: value for key, value in state.items()
-        if key != "_population_shelter_cache"
+        if key not in ("_population_shelter_cache", "_planning_exposure_cache")
     }
     risk = state.get("grid_risk_v2") if isinstance(state.get("grid_risk_v2"), dict) else {}
     candidates = (

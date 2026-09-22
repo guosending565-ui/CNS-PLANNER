@@ -82,6 +82,9 @@ class ApiRouter:
         if path == "/api/communication-planning-field": return Response(workflow.communication_planning_field())
         if path == "/api/theta-v2-objective-policy": return Response(workflow.theta_v2_objective_policy())
         if path == "/api/max-route-risk-density": return Response(workflow.max_route_risk_density())
+        # BUG-ROUTE-005：规划用暴露度层（规划专用，不进人口报告 / 审计）。
+        if path == "/api/planning-exposure-policy": return Response(workflow.planning_exposure_policy())
+        if path == "/api/planning-exposure": return Response(workflow.planning_exposure())
         # ---- RouteRiskProfile V1 (additive; analysis of a current layered candidate) ----
         if path == "/api/route-risk-profile/readiness": return Response(workflow.route_risk_profile_readiness())
         if path == "/api/route-risk-profile-policy": return Response(workflow.route_risk_profile_policy())
@@ -324,6 +327,7 @@ class ApiRouter:
             "/api/communication-planning-field": lambda: workflow.set_communication_planning_field(payload),
             "/api/theta-v2-objective-policy": lambda: workflow.set_theta_v2_objective_policy(payload),
             "/api/max-route-risk-density": lambda: workflow.set_max_route_risk_density(payload),
+            "/api/planning-exposure-policy": lambda: workflow.set_planning_exposure_policy(payload),
             "/api/layered-route-candidates/evaluate": lambda: workflow.evaluate_layered_route_candidate(payload),
             "/api/layered-route-candidates/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_layered_route_candidate(payload)

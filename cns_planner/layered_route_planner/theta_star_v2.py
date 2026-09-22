@@ -118,7 +118,18 @@ SEARCH_SEMANTICS = {
     "no_free_3d_state": True,
     "no_dynamic_altitude": True,
     "no_cross_layer_edge": True,
-    "heuristic": "distance_weight * straight_line_distance_to_goal",
+    "heuristic": (
+        "(distance_weight + risk_weight * min_risk_index) * "
+        "max(0, straight_line_distance_to_target_centre - terminal_stub_length_m)"
+    ),
+    "exact_od_terminal_segments_are_priced": True,
+    "start_connector_is_a_ledger_segment": "exact_start_to_source_cell_centre_zero_when_coincident",
+    "end_connector_is_a_ledger_segment": "target_cell_centre_to_exact_end_zero_when_coincident",
+    "goal_acceptance": (
+        "every_target_heading_label_is_priced_with_the_complete_exact_od_ledger_and_the_"
+        "search_ends_only_when_the_queue_lower_bound_cannot_improve_the_best_complete_goal"
+    ),
+    "edge_length_semantics": "real_los_segment_length_m_never_a_re_added_origin_to_neighbour_distance",
     "risk_v2_overall_not_used": True,
     "search_objective_risk_scope": "population_x_shelter_only",
     "communication_affects_path_or_cost": False,
@@ -587,6 +598,11 @@ class LayeredRiskAwareThetaStarV2:
         statistics.update(search["statistics"])
         statistics["d_ref_m"] = _round(d_ref)
         statistics["risk_unresolved_cell_count"] = len(risk_unresolved)
+        # BUG-ROUTE-004 evidence: the ledger the search actually minimised and the ledger the
+        # exact-OD audit recomputed must describe one and the same route.
+        statistics["search_termination"] = search.get("termination")
+        statistics["goal_candidates"] = list(search.get("goal_candidates") or [])
+        statistics["goal_ledger_consistency"] = _goal_ledger_consistency(search, weights)
 
         if search["path"] is None:
             # A stopped-because-budget-exhausted search proves nothing about reachability, so
@@ -869,7 +885,7 @@ class LayeredRiskAwareThetaStarV2:
             "risk_framework_v2_domains_used_in_objective": False,
             "formula": OBJECTIVE_FORMULA,
             "legacy_formula_not_used": "edge_cost = d * (1 + sum_lambda_domain * mean_domain_index)",
-            "heuristic": "distance_weight * straight_line_distance_to_goal_admissible",
+            "heuristic": "admissible_lower_bound_on_the_complete_exact_od_objective",
             "risk_v2_overall_used": False,
             "risk_density_added_to_objective": False,
         }
@@ -1105,11 +1121,28 @@ def _theta_star(
       grandparent) is path-1-reachable from the neighbour, so ``neighbour`` is rewired to
       the grandparent and the straight ``grandparent -> neighbour`` segment is taken.
 
-    The heuristic is ``distance_weight * straight_line_distance_to_goal``.  With
-    non-negative risk and turn penalties this stays an admissible, consistent lower bound
-    on the remaining distance term, so the search keeps its optimality character under the
-    label-setting rule.  No goal heading is required, which is what makes the relaxation
-    valid: a straight line is always available to every goal label.
+    The heuristic is ``(distance_weight + risk_weight * min_risk_index) *
+    max(0, straight_line_distance_to_target_centre - terminal_stub_length)``: every
+    remaining metre costs at least ``distance_weight`` plus ``risk_weight`` times the
+    smallest risk index on the grid, a turn is never negative, and the target-centre ->
+    exact-end connector is travelled inside the target cell.  It is therefore an
+    admissible, consistent lower bound on the *complete exact-OD objective*, which is what
+    the termination rule below needs.  No goal heading is required, which is what makes the
+    relaxation valid: a straight line is always available to every goal label.
+
+    The search prices **complete exact-OD goal labels**, not the first arrival at the
+    target cell centre:
+
+    * ``exact start -> source centre`` is the start label's initial ledger segment (exactly
+      zero length, and therefore without a reference heading, when the origin is already the
+      cell centre);
+    * every edge prices its own real LOS ``segment_length_m``;
+    * ``target centre -> exact end`` is appended to every goal label before it is priced, so
+      two labels that reach the same target cell under different incoming headings are
+      compared on the *complete* OD objective (their terminal turn differs);
+    * the search only stops once no queued lower bound can still improve the best complete
+      goal, which is the point at which the winning goal ledger and the
+      :func:`_route_segment_audit` ledger describe the same route.
     """
 
     weight_distance = float(weights["distance"])
@@ -1122,9 +1155,6 @@ def _theta_star(
         "rewired_parent_shortcuts": 0,
     }
 
-    def heuristic(grid_id):
-        return weight_distance * distance_m(graph.centers[grid_id], graph.centers[target])
-
     def los(from_id, to_id, from_point, to_point):
         return line_of_sight(
             graph, index_map, source_id=from_id, target_id=to_id,
@@ -1133,16 +1163,74 @@ def _theta_star(
             statistics=statistics,
         )
 
+    # ------------------------------------------------------------------ exact OD terminals
+    # The search runs on cell centres, but the candidate is the *exact* OD geometry:
+    # ``exact start -> source centre -> Theta* vertices -> target centre -> exact end``.
+    # Both connectors are terminal segments of the very same objective ledger, so they are
+    # gated, risk-integrated and measured exactly like any search segment.  When an endpoint
+    # already sits on its cell centre the connector is exactly zero length and contributes
+    # nothing -- and, having no bearing, it is not charged a turn either.
+    source_center = [float(value) for value in graph.centers[source]]
+    target_center = [float(value) for value in graph.centers[target]]
+    start_stub = los(source, source, list(start_point), source_center)
+    if not start_stub["ok"]:
+        # The origin cell itself is not traversable, so no departure LOS can ever succeed.
+        return _unsolved_search(
+            statistics, cap_reached=False, termination="origin_cell_not_traversable",
+            los_records={},
+        )
+    terminal_stub = los(target, target, target_center, list(end_point))
+    start_stub_bin = heading_bin_for_bearing(
+        grid_bearing_deg(start_point, source_center), heading_bin_count
+    )
+    terminal_stub_bin = heading_bin_for_bearing(
+        grid_bearing_deg(target_center, end_point), heading_bin_count
+    )
+    terminal_stub_heading = (
+        None if terminal_stub_bin is None
+        else heading_bin_center_deg(terminal_stub_bin, heading_bin_count)
+    )
+    terminal_length = float(terminal_stub.get("segment_length_m") or 0.0)
+
+    # Admissible lower bound on the remaining objective: every remaining metre costs at
+    # least ``distance_weight + risk_weight * min_risk_index`` (a cell's risk index is
+    # bounded below by the smallest index on the grid) and a turn is never negative.  The
+    # terminal connector is subtracted because it is travelled inside the target cell.
+    risk_floor = min(float(value) for value in risk_indices.values()) if risk_indices else 0.0
+    heuristic_factor = weight_distance + weight_risk * risk_floor
+
+    def heuristic(grid_id):
+        remaining = distance_m(graph.centers[grid_id], target_center) - terminal_length
+        return heuristic_factor * max(0.0, remaining)
+
     start_grid = source
-    # The route has no preceding turn, so the start label carries **no** reference heading:
-    # the first real segment is never charged one.  The bin is still filled from the initial
-    # direction to the goal, which only labels the start state; it is not a flown heading.
-    start_bin = heading_bin_for_bearing(
-        grid_bearing_deg(start_point, end_point), heading_bin_count
+    # The route has no preceding turn, so a start whose exact origin *is* the source centre
+    # carries **no** reference heading: the first real segment is never charged one.  When
+    # the exact origin is off-centre, the start connector is a real flown segment and its
+    # heading is the reference the first search segment is priced against.
+    start_reference_heading = (
+        None if start_stub_bin is None
+        else heading_bin_center_deg(start_stub_bin, heading_bin_count)
+    )
+    start_bin = (
+        start_stub_bin if start_stub_bin is not None
+        else heading_bin_for_bearing(
+            grid_bearing_deg(start_point, end_point), heading_bin_count
+        )
     )
     start_key = (start_grid, start_bin)
 
-    costs = {start_key: 0.0}
+    start_ledger = _extend_ledger(
+        _empty_ledger(),
+        risk_exposure=start_stub["risk_exposure_index_m"],
+        distance=start_stub["segment_length_m"],
+        previous_heading=None, new_heading=start_reference_heading,
+        weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
+        theta_min_deg=theta_min_deg,
+    )
+    start_cost = _ledger_total_cost(start_ledger, weight_risk, weight_turn, weight_distance)
+
+    costs = {start_key: start_cost}
     parents = {start_key: None}        # grid_id of the label's Theta* parent (None at start)
     incoming = {start_key: None}       # the parent label key the route actually comes from
     edge_bearing = {start_key: None}   # bearing of the route into this label (None at start)
@@ -1150,55 +1238,91 @@ def _theta_star(
     # Theta* rewiring replaces a label's parent, and an incrementally summed ledger would
     # then describe a route the finalized chain no longer is.  Deriving it from the chain
     # keeps ``costs`` and ``incoming`` describing exactly the same route.
-    accumulated = {start_key: _empty_ledger()}
-    queue = [(heuristic(start_grid), 0.0, 0, start_grid, start_bin)]
+    accumulated = {start_key: start_ledger}
+    #: Number of labels on the label's own chain.  Used **only** as an equal-cost
+    #: tie-break: when two chains price the identical objective, the one with fewer
+    #: vertices wins.  That is what keeps the search's any-angle character (a straight LOS
+    #: shortcut instead of a staircase of equal cost) without touching any objective value.
+    depth = {start_key: 1}
+    queue = [(start_cost + heuristic(start_grid), start_cost, 0, start_grid, start_bin)]
     los_records = {}
     expanded = 0
     cap_reached = False
-    best_goal_key = None
+    termination = "queue_exhausted"
+    best_goal = None
+    goal_candidates = []
     closed = set()
 
     while queue:
-        _, _, _, current_grid, current_bin = heappop(queue)
+        queue_bound, _, _, current_grid, current_bin = heappop(queue)
         current_key = (current_grid, current_bin)
         current_cost = costs.get(current_key)
         if current_cost is None:
             continue
-        if current_grid == target:
-            # A goal label is popped and immediately closed: the remaining queue can only
-            # hold labels whose cost is at least this one, so this is the optimum under the
-            # label-setting rule.
-            best_goal_key = current_key
+        # A queued entry is ranked by ``cost + admissible_remaining``, so once the best
+        # queued bound can no longer beat the best *complete* OD goal, no unexplored or
+        # unpriced route can improve it either.
+        if best_goal is not None and queue_bound >= best_goal["total_cost"] - 1e-9:
+            termination = "queue_lower_bound_exceeds_best_goal"
             break
         if current_key in closed:
             continue
         if max_expanded_labels is not None and expanded >= max_expanded_labels:
             cap_reached = True
+            termination = "expansion_cap_reached"
             break
         expanded += 1
         statistics["expanded_labels"] = expanded
         closed.add(current_key)
         current_point = graph.centers[current_grid]
-        parent_key = incoming[current_key]
-        grandparent_grid = (
-            parents.get(parent_key) if parent_key is not None else None
-        )
-        path2_eligible = grandparent_grid is not None
         current_ledger = accumulated[current_key]
         # Turn cost is measured between the **discretized** headings, which is the whole
         # reason the state carries a heading bin: two labels that reach the same cell with
         # different incoming headings are genuinely different states.
         current_bin_heading = (
-            None if current_key == start_key else heading_bin_center_deg(
-                current_bin, heading_bin_count
-            )
+            start_reference_heading if current_key == start_key
+            else heading_bin_center_deg(current_bin, heading_bin_count)
         )
-        parent_ledger = accumulated.get(parent_key) if parent_key is not None else None
-        parent_bin_heading = (
-            None if parent_key is None or parent_key == start_key else heading_bin_center_deg(
-                parent_key[1], heading_bin_count
-            )
-        )
+
+        if current_grid == target:
+            # A goal label is never accepted merely because it reached the target cell
+            # centre: the ``target centre -> exact end`` connector belongs to the same OD
+            # objective, and labels arriving under different incoming headings pay a
+            # different terminal turn.  Every goal label is priced completely and the
+            # cheapest complete OD objective wins.  The goal label is not expanded further.
+            if terminal_stub["ok"]:
+                complete_ledger = _extend_ledger(
+                    current_ledger,
+                    risk_exposure=terminal_stub["risk_exposure_index_m"],
+                    distance=terminal_stub["segment_length_m"],
+                    previous_heading=current_bin_heading, new_heading=terminal_stub_heading,
+                    weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
+                    theta_min_deg=theta_min_deg,
+                )
+                complete_cost = _ledger_total_cost(
+                    complete_ledger, weight_risk, weight_turn, weight_distance
+                )
+                goal_candidates.append({
+                    "grid_id": current_grid, "incoming_heading_bin": current_bin,
+                    "incoming_heading_deg": current_bin_heading,
+                    "terminal_heading_deg": terminal_stub_heading,
+                    "terminal_length_m": _round(terminal_stub.get("segment_length_m")),
+                    "risk_exposure_index_m": _round(complete_ledger["risk"]),
+                    "turn_cost_m": _round(complete_ledger["turn"]),
+                    "distance_m": _round(complete_ledger["distance"]),
+                    "total_cost": _round(complete_cost),
+                })
+                if best_goal is None or complete_cost < best_goal["total_cost"] - 1e-9:
+                    best_goal = {
+                        "key": current_key, "total_cost": complete_cost,
+                        "ledger": complete_ledger,
+                    }
+            continue
+
+        parent_key = incoming[current_key]
+        grandparent_key = incoming.get(parent_key) if parent_key is not None else None
+        grandparent_grid = parents.get(parent_key) if parent_key is not None else None
+        path2_eligible = grandparent_grid is not None and grandparent_key is not None
 
         for neighbour in graph.neighbors(current_grid):
             if neighbour == start_grid:
@@ -1223,9 +1347,10 @@ def _theta_star(
             direct_bin = heading_bin_for_bearing(direct_bearing, heading_bin_count)
             direct_ledger = _extend_ledger(
                 current_ledger, risk_exposure=direct["risk_exposure_index_m"],
-                # Geometric prefix length: the distance term must describe the chain this
-                # relaxation is installing, not a detour an earlier chain accumulated.
-                distance=distance_m(start_point, neighbour_point),
+                # The ledger accumulates the **real length of this LOS segment**: the
+                # objective's distance term must describe the chain actually being
+                # installed, not a repeatedly re-added origin-to-neighbour distance.
+                distance=direct["segment_length_m"],
                 previous_heading=current_bin_heading,
                 new_heading=heading_bin_center_deg(direct_bin, heading_bin_count),
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
@@ -1244,7 +1369,7 @@ def _theta_star(
                 costs=costs, parents=parents, incoming=incoming,
                 edge_bearing=edge_bearing, accumulated=accumulated, closed=closed,
                 statistics=statistics, queue=queue, los_records=los_records,
-                los_result=direct,
+                los_result=direct, depth=depth,
             )
 
             if not path2_eligible:
@@ -1256,24 +1381,36 @@ def _theta_star(
             shortcut = los(grandparent_grid, neighbour, grandparent_point, neighbour_point)
             if not shortcut["ok"]:
                 continue
-            grandparent_cost = costs.get(parent_key)
+            grandparent_cost = costs.get(grandparent_key)
             if grandparent_cost is None:
                 continue
+            grandparent_ledger = accumulated.get(grandparent_key)
+            if grandparent_ledger is None:
+                continue
+            grandparent_heading = (
+                start_reference_heading if grandparent_key == start_key
+                else heading_bin_center_deg(grandparent_key[1], heading_bin_count)
+            )
             shortcut_bearing = grid_bearing_deg(grandparent_point, neighbour_point)
             shortcut_bin = heading_bin_for_bearing(shortcut_bearing, heading_bin_count)
             shortcut_ledger = _extend_ledger(
-                parent_ledger, risk_exposure=shortcut["risk_exposure_index_m"],
-                distance=distance_m(start_point, neighbour_point),
-                previous_heading=parent_bin_heading,
+                # The rewritten chain is ``... -> grandparent -> neighbour``, so the ledger
+                # must extend the **grandparent's** ledger and price the real
+                # ``grandparent -> neighbour`` LOS segment.  Extending the current label's
+                # own ledger would keep the replaced ``grandparent -> current`` leg in the
+                # cost of a route that no longer contains it.
+                grandparent_ledger, risk_exposure=shortcut["risk_exposure_index_m"],
+                distance=shortcut["segment_length_m"],
+                previous_heading=grandparent_heading,
                 new_heading=heading_bin_center_deg(shortcut_bin, heading_bin_count),
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
             )
-            # ``parent_key``'s own parent becomes the new label's parent: the shortcut
-            # *replaces* the two-segment detour through ``current_key`` with the single
-            # straight ``grandparent -> neighbour`` segment, which is exactly what Theta*
-            # rewiring means.  Keeping ``current_key`` as the parent instead would leave a
-            # phantom vertex at ``current_grid`` in the reconstructed route geometry.
+            # ``grandparent_key`` becomes the new label's parent: the shortcut *replaces*
+            # the two-segment detour through ``current_key`` with the single straight
+            # ``grandparent -> neighbour`` segment, which is exactly what Theta* rewiring
+            # means.  Keeping ``current_key`` as the parent instead would leave a phantom
+            # vertex at ``current_grid`` in the reconstructed route geometry.
             _relax(
                 grid_id=neighbour,
                 bin_index=shortcut_bin,
@@ -1281,20 +1418,22 @@ def _theta_star(
                 ledger=shortcut_ledger,
                 risk_weight=weight_risk, turn_weight=weight_turn,
                 distance_weight=weight_distance,
-                parent_key=incoming[parent_key],
+                parent_key=grandparent_key,
                 parent_grid=grandparent_grid,
                 heuristic=heuristic,
                 costs=costs, parents=parents, incoming=incoming,
                 edge_bearing=edge_bearing, accumulated=accumulated, closed=closed,
                 statistics=statistics, queue=queue, los_records=los_records,
-                los_result=shortcut, is_rewire=True,
+                los_result=shortcut, depth=depth, is_rewire=True,
             )
 
-    if best_goal_key is None:
-        return {
-            "path": None, "grid_path": None, "los_segments": [], "los_records": {},
-            "accumulated": None, "statistics": statistics, "cap_reached": cap_reached,
-        }
+    if best_goal is None:
+        return _unsolved_search(
+            statistics, cap_reached=cap_reached, termination=termination,
+            los_records=los_records, goal_candidates=goal_candidates,
+        )
+
+    best_goal_key = best_goal["key"]
 
     # Reconstruct the label chain.  ``grid_path`` is the route's *vertex* cell sequence: the
     # cells the any-angle route actually turns at.  A straight segment between two
@@ -1321,11 +1460,13 @@ def _theta_star(
 
     los_segments = _route_segment_audit(
         graph, index_map, grid_path, start_point, end_point, gate, altitude, regulatory,
-        risk_indices, statistics,
+        risk_indices, statistics, heading_bin_count,
     )
 
     # Authoritative ledger: recomputed from the *final* parent chain, so the reported
-    # objective can never describe a route the chain no longer is.
+    # objective can never describe a route the chain no longer is.  It is derived from the
+    # same exact-OD segment audit the goal labels were priced with, which is why the winning
+    # search ledger and this ledger describe one and the same route.
     ledger = _empty_ledger()
     previous_heading = None
     for segment in los_segments:
@@ -1349,28 +1490,34 @@ def _theta_star(
             {"grid_id": item[0], "incoming_heading_bin": item[1]} for item in chain
         ],
         "accumulated": ledger,
+        "search_goal_ledger": best_goal["ledger"],
+        "goal_candidates": goal_candidates,
+        "termination": termination,
         "los_segments": los_segments,
         "los_records": los_records,
         "statistics": statistics, "cap_reached": cap_reached,
     }
 
 
-def _bin_centre_heading(bearing_deg):
-    """Snap a raw bearing to its heading-bin centre in the 360-degree fine binning.
+def _bin_centre_heading(bearing_deg, bin_count):
+    """Snap a raw bearing to its heading-bin centre in the search's own binning.
 
     The reported audit headings are the discretized headings the turn cost was actually
-    priced between, so ``turn_statistics`` and ``planning_objective`` can be reproduced from
-    the reported segments alone.
+    priced between -- that is, the same ``heading_bin_count`` the search labels use -- so
+    ``turn_statistics`` and ``planning_objective`` can be reproduced from the reported
+    segments alone.
     """
 
     if bearing_deg is None:
         return None
-    return heading_bin_center_deg(heading_bin_for_bearing(bearing_deg, 360), 360)
+    return heading_bin_center_deg(
+        heading_bin_for_bearing(bearing_deg, bin_count), bin_count
+    )
 
 
 def _route_segment_audit(
     graph, index_map, grid_path, start_point, end_point, gate, altitude, regulatory,
-    risk_indices, statistics,
+    risk_indices, statistics, heading_bin_count,
 ):
     """One entry per route segment, in order, with its crossed cells and headings.
 
@@ -1405,7 +1552,7 @@ def _route_segment_audit(
             "length_m": _round(distance_m(entry, exit_point)),
             "traversed_cells": list((record or {}).get("cells") or []),
             "risk_exposure_index_m": _round((record or {}).get("risk_exposure_index_m")),
-            "outgoing_heading_deg": _bin_centre_heading(outward),
+            "outgoing_heading_deg": _bin_centre_heading(outward, heading_bin_count),
             "supercover": True,
             "shortcut": True,
         })
@@ -1429,7 +1576,7 @@ def _route_segment_audit(
             "length_m": _round(distance_m(exit_point, end_point)),
             "traversed_cells": list((record or {}).get("cells") or []),
             "risk_exposure_index_m": _round((record or {}).get("risk_exposure_index_m")),
-            "outgoing_heading_deg": _bin_centre_heading(outward),
+            "outgoing_heading_deg": _bin_centre_heading(outward, heading_bin_count),
             "supercover": True,
             "shortcut": True,
         })
@@ -1451,6 +1598,65 @@ def _empty_ledger():
     }
 
 
+def _ledger_total_cost(ledger, weight_risk, weight_turn, weight_distance):
+    """``J = wr*E_risk + wt*C_turn + wd*L`` for one accumulated ledger.
+
+    Kept in one place so the search's own goal pricing and the reported objective can never
+    drift apart: both call this with the same weights.
+    """
+
+    return (
+        weight_risk * float(ledger["risk"])
+        + weight_turn * float(ledger["turn"])
+        + weight_distance * float(ledger["distance"])
+    )
+
+
+def _goal_ledger_consistency(search, weights):
+    """搜索端 winning goal ledger 与最终 exact-OD audit ledger 的一致性证据。
+
+    两者必须描述同一条 route：搜索选择 goal 时使用的 distance / risk / turn 账本，就是
+    candidate 最终报告的 ``planning_objective``。任何不一致都是 BUG-ROUTE-004 的回归。
+    """
+
+    item = search if isinstance(search, dict) else {}
+    audit = item.get("accumulated") or _empty_ledger()
+    winning = item.get("search_goal_ledger") or _empty_ledger()
+    weight_risk = float(weights["risk"])
+    weight_turn = float(weights["turn"])
+    weight_distance = float(weights["distance"])
+    search_cost = _ledger_total_cost(winning, weight_risk, weight_turn, weight_distance)
+    audit_cost = _ledger_total_cost(audit, weight_risk, weight_turn, weight_distance)
+    difference = abs(search_cost - audit_cost)
+    return {
+        "search_total_cost": _round(search_cost),
+        "audit_total_cost": _round(audit_cost),
+        "absolute_difference": _round(difference),
+        "consistent": bool(difference <= 1e-6),
+        "search_distance_m": _round(winning["distance"]),
+        "audit_distance_m": _round(audit["distance"]),
+        "search_risk_exposure_index_m": _round(winning["risk"]),
+        "audit_risk_exposure_index_m": _round(audit["risk"]),
+        "search_turn_cost_m": _round(winning["turn"]),
+        "audit_turn_cost_m": _round(audit["turn"]),
+        "semantics": (
+            "winning_search_goal_ledger_must_equal_the_exact_od_audit_ledger_for_"
+            "distance_risk_and_turn"
+        ),
+    }
+
+
+def _unsolved_search(statistics, *, cap_reached, termination, los_records, goal_candidates=()):
+    """Structured "no goal label was priced" search result (never a fabricated ledger)."""
+
+    return {
+        "path": None, "grid_path": None, "los_segments": [], "los_records": los_records,
+        "accumulated": None, "search_goal_ledger": None,
+        "goal_candidates": list(goal_candidates), "termination": termination,
+        "statistics": statistics, "cap_reached": cap_reached,
+    }
+
+
 def _ledger_distance(ledger):
     return float(ledger.get("ledger_distance", ledger.get("distance", 0.0)))
 
@@ -1458,7 +1664,7 @@ def _ledger_distance(ledger):
 def _relax(
     *, grid_id, bin_index, bearing, ledger, risk_weight, turn_weight, distance_weight,
     parent_key, parent_grid, heuristic, costs, parents, incoming, edge_bearing,
-    accumulated, closed, statistics, queue, los_records, los_result, is_rewire=False,
+    accumulated, closed, statistics, queue, los_records, los_result, depth, is_rewire=False,
 ):
     """Install (or improve) one label.
 
@@ -1469,20 +1675,28 @@ def _relax(
     prefix describing a route that no longer exists.  Freezing a closed label makes the
     prefix ledger of every descendant stay the authoritative description of the chain it
     actually hangs from.
+
+    **Equal-cost tie-break.**  When two chains price the *identical* objective, the one
+    with fewer labels wins.  This never changes an objective value, never reopens a closed
+    label and never introduces a post-processing smoother: it only makes the search prefer
+    the straight LOS shortcut over an equally priced staircase, which is the any-angle
+    character of Theta* itself.
     """
 
     key = (grid_id, bin_index)
     statistics["generated_labels"] += 1
     if key in closed:
         return
-    cost = (
-        risk_weight * ledger["risk"] + turn_weight * ledger["turn"]
-        + distance_weight * ledger["distance"]
-    )
+    cost = _ledger_total_cost(ledger, risk_weight, turn_weight, distance_weight)
+    new_depth = int(depth.get(parent_key, 0)) + 1
     known = costs.get(key)
-    if known is not None and cost >= known - 1e-9:
-        return
+    if known is not None:
+        if cost > known + 1e-9:
+            return
+        if cost >= known - 1e-9 and new_depth >= int(depth.get(key, new_depth)):
+            return
     costs[key] = cost
+    depth[key] = new_depth
     parents[key] = parent_grid
     incoming[key] = parent_key
     edge_bearing[key] = bearing

@@ -99,6 +99,9 @@ from ..domain.population_shelter import (
 from ..domain.population_nodata import (
     default_population_nodata_policy, normalize_population_nodata_policy,
 )
+from ..domain.planning_exposure import (
+    default_planning_exposure_policy, normalize_planning_exposure_policy,
+)
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, normalize_regulatory_constraints,
 )
@@ -306,6 +309,9 @@ def blank_project(defaults):
         "communication_planning_field": normalize_communication_planning_field(None),
         "theta_v2_objective_policy": default_theta_v2_objective_policy(),
         "max_route_risk_density": default_risk_density_constraint(),
+        # BUG-ROUTE-005：规划用暴露度层默认**关闭**。开启需要显式工程确认的下限与陆地判据
+        # 阈值；未确认时它绝不生效，也绝不改变人口报告 / NoData 语义。
+        "planning_exposure_policy": default_planning_exposure_policy(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
         "coverage": None, "risks": risks,
         "result_statuses": {
@@ -565,6 +571,10 @@ def normalize_project(value, grid_service):
     )
     value["max_route_risk_density"] = normalize_risk_density_constraint(
         value.get("max_route_risk_density")
+    )
+    # BUG-ROUTE-005：规划用暴露度层是 additive 的**规划专用**策略，旧项目回填时保持未配置。
+    value["planning_exposure_policy"] = normalize_planning_exposure_policy(
+        value.get("planning_exposure_policy") or default_planning_exposure_policy()
     )
     value.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")

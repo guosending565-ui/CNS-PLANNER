@@ -1562,8 +1562,9 @@ test('step 02 mapping cards transcribe the existing flow state without recomputi
     }
     // 取值原样透出：stale / not_calculated / missing_data / unknown 都不被改写成 passed
     assert.equal(cardOf('人口映射').value,'已失效','a stale population mapping stays stale');
-    // 人口映射不再只显示 value_status：覆盖统计始终随卡片给出（含 full/partial/missing/outside）。
-    assert.equal(cardOf('人口映射').note,'已覆盖 1 / 7 格（14%） · full 0 / partial 1 / missing 2 / outside 4','population counts are shown as coverage statistics');
+    // 人口映射不再只显示 value_status：覆盖统计始终随卡片给出（含 full/partial/missing/outside），
+    // 并且「格网判定」与「映射有效面积覆盖」两个口径分开显示（BUG-UI-POP-002）。
+    assert.equal(cardOf('人口映射').note,'格网判定 1 / 7（14%） · 映射有效面积覆盖 — · full 0 / partial 1 / missing 2 / outside 4','population counts are shown as coverage statistics');
     assert.equal(cardOf('地形 DEM 映射').value,'未计算','an untouched terrain mapping stays not_calculated');
     assert.equal(cardOf('低空空域映射').value,'缺少数据','a missing airspace mapping stays missing_data');
     assert.equal(cardOf('建筑环境映射').value,'通过','a passed building mapping is mapped as-is');
