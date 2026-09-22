@@ -64,12 +64,8 @@ class ApplicationContext:
             "terrain_dtm": self.data.terrain_dtm_info.get("source_profile"),
         })
         self.workflow.register_source_paths(self.data.paths, self._source_details())
-        self.workflow.configure_reference_sources(self.data.paths)
-        self.configure_route_planner_v3_sources()
-        self.configure_route_planner_v3_adoption()
-        self.configure_layered_route_planner_sources()
-        self.configure_layered_route_validation_sources()
-        self.configure_vertical_transition_validation_sources()
+        # 启动即把 runtime provider/adapter 绑定到当前 workflow（与 open/save-as 同一条路径）。
+        self._activate_workflow(self.workflow, self.active_project_file)
 
     @property
     def health_identity(self):
@@ -112,17 +108,47 @@ class ApplicationContext:
             }
         return details
 
+    def _activate_workflow(self, workflow, target):
+        """切换当前 ``WorkflowService``，并把全部 runtime 绑定重新指向它。
+
+        ``open_project`` / ``save_project_as`` 会用一个**新的** ``WorkflowService`` 替换
+        当前实例。runtime 级 provider/adapter 挂在**具体实例**的 service 上（不是模块级、
+        也不是随 ``self.workflow`` 动态查找的），所以每次切换都必须重新绑定：
+
+        1. 先把 ``self.workflow`` / ``self.active_project_file`` 指向新对象——下面两步都
+           通过 ``self.workflow`` 取得目标实例；
+        2. 再 ``configure_reference_sources`` 与 ``_bind_runtime_services()``。
+        """
+
+        self.workflow, self.active_project_file = workflow, target
+        self.workflow.configure_reference_sources(self.data.paths)
+        self._bind_runtime_services()
+        return workflow
+
+    def _bind_runtime_services(self):
+        """把全部 runtime 级 GIS provider/adapter 统一绑定到当前 ``self.workflow``。
+
+        只做绑定，不做业务判断：每个 provider 都在被调用时才读取真实来源（source audit /
+        ``grid_attributes``），因此这里既不会打开数据集，也不会把任何 available 硬设为 true。
+        """
+
+        self.configure_route_planner_v3_sources()
+        self.configure_route_planner_v3_adoption()
+        self.configure_layered_route_planner_sources()
+        self.configure_layered_route_validation_sources()
+        self.configure_vertical_transition_validation_sources()
+        return self.workflow
+
     def save_project_as(self, project_dir):
         workflow, target = self.project_directories.save_as(
             project_dir, self.workflow, self.active_project_file, self.data
         )
-        self.workflow, self.active_project_file = workflow, target
+        self._activate_workflow(workflow, target)
         return self.data.metadata()
 
     def open_project(self, project_dir):
         workflow, target = self.project_directories.open(project_dir, self.data)
-        workflow.configure_reference_sources(self.data.paths)
-        self.workflow, self.active_project_file = workflow, target
+        self._activate_workflow(workflow, target)
         return self.data.metadata()
 
     def replace_sources(self, paths):

@@ -35,7 +35,7 @@ let selectedReference=null,profileHoverCoordinate=null;
 // 不调用 API、不改 zoom / layer / LOD，也不新增任何永久状态。
 let routeEvidenceHighlight=null;
 let gridDataSerial=0;
-let gridDisplay={outline:true,theme:'none'};
+let gridDisplay={outline:false,theme:'none'};// 首次打开：网格边界默认关闭（图层抽屉里只有在线底图默认勾选）
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
 const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
 const buildingPalette=BUILDING_PALETTE,riskPalette=RISK_PALETTE,riskBreaks=[0,.2,.4,.6,.8,1];
