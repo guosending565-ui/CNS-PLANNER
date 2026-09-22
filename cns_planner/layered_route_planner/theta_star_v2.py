@@ -79,7 +79,8 @@ POPULATION_FACTOR_ID = "population_exposure"
 
 #: 能力声明（Phase 3.5，**只声明**，不改变搜索行为）。
 #: Theta* V2 在"当前工作区网格层级"的水平面上搜索；建筑事实来自 L8 building_grid，
-#: 因此工作区不是 L8 时建筑约束实际不参与包线（见 docs/10-Phase3已知限制与待办.md §1）。
+#: 因此 legacy / diagnostic 的 L7/L6 工作区（正式入口已不再产生）拿不到 L8 建筑事实
+#: （见 docs/10-Phase3已知限制与待办.md §1）；正式工作区恒为 L8，建筑约束始终参与。
 PLANNER_CAPABILITY = {
     "algorithm_id": ALGORITHM_ID,
     "algorithm_version": ALGORITHM_VERSION,
@@ -91,7 +92,10 @@ PLANNER_CAPABILITY = {
     "cross_level_aggregation_allowed": False,
     "notes": [
         "搜索发生在工作区当前网格层级的水平面上，算法本身不做层级转换。",
-        "建筑垂向包线只消费 L8 building_grid 事实；工作区被 coarsen 时建筑约束实际不参与。",
+        "建筑垂向包线只消费 L8 building_grid 事实；正式入口的工作区恒为 L8，"
+        "因此建筑约束在正式规划中始终参与。",
+        "legacy / diagnostic 的非 L8 工作区（已不由正式入口产生）仍会因层级不匹配而拿不到"
+        "L8 建筑事实，此时算法绝不静默降级、绝不把 unknown 当 0。",
         "层级无关的建筑事实获取是已记录的后续需求，本轮不实现，也不静默降级。",
     ],
     "future_work": "level_independent_building_fact_acquisition",

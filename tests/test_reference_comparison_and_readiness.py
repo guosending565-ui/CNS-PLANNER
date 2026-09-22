@@ -226,7 +226,13 @@ def test_comparison_uses_planned_path_when_supplied(tmp_path):
 
 def project_workflow(tmp_path):
     workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    workflow.set_workspace([122.0, 29.9, 122.2, 30.1], {"status": "passed"}, 8)
+    # GRID-L8-UNIFICATION：正式工作区网格恒为 canonical L8，默认资源上限 12000 格。
+    # 本文件的两个端点（同时也是参考航路 CSV 的端点）跨度本身就需要 21025 个 L8 格，
+    # 因此这里**显式提高资源上限**（正式支持的路径：只提高软件资源保护阈值，
+    # 不改变任何空间语义），而不是让工作区静默退到 L7。
+    workflow.set_workspace(
+        [122.02, 29.92, 122.18, 30.08], {"status": "passed"}, 8, 22000
+    )
     workflow.state["nodes"] = [
         {"node_id": "N001", "name": "A", "coordinate": [122.02, 29.92]},
         {"node_id": "N002", "name": "B", "coordinate": [122.18, 30.08]},

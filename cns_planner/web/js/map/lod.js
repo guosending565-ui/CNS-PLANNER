@@ -33,11 +33,67 @@ export const TOWER_MARKER_MODES={
 };
 
 /**
+ * 铁塔符号的**真实屏幕像素尺寸**（MAP-TOWER-SYMBOL-V2）。
+ *
+ * BUG（已修复）：旧实现把 ``towerSymbolScale`` 当成归一化倍数（0.7 / 0.78 / 1）直接乘进
+ * canvas 坐标，而 ``TOWER_SYMBOL`` 的 y 跨度只有约 1.75 单位 ⇒ detail 档符号总高度也只有
+ * 约 1.75 px，地图放大到 detail LOD 仍然几乎不可见。
+ *
+ * 现在这里的数值就是**符号的可见高度（px）**，几何本身仍是同一份归一化 ``TOWER_SYMBOL``：
+ *  * ``overview`` 只画聚合点（单塔不进入绘制计划），因此单塔高度为 0；被 highlight 的
+ *    宿主塔例外显示，并沿用 medium 的尺寸；
+ *  * ``medium``   孤立单塔约 16 px 高（肉眼可辨认）；
+ *  * ``detail``   逐塔显示，约 22 px 高（桁架结构清晰）。
+ *
+ * 具体的 px → 归一化坐标换算只发生在 ``display_layers.js``（符号几何的唯一所有者），
+ * 本模块只声明"多大、多粗、命中半径多少"。
+ */
+export const TOWER_SYMBOL_SIZE_PX={
+  overview:0,
+  medium:16,
+  detail:22
+};
+
+/** 被高亮的宿主铁塔：任何档位都至少按 detail 尺寸绘制，外加高亮环。 */
+export const TOWER_HIGHLIGHT_SIZE_PX=22;
+
+/** 共塔候选（真实铁塔派生的宿主候选）：与宿主塔使用同一尺寸语言。 */
+export const TOWER_COLOCATION_CANDIDATE_SIZE_PX=22;
+
+/** 铁塔高亮环半径（px）：必须明显大于符号本身，不能只靠颜色变化。 */
+export const TOWER_HIGHLIGHT_RING_RADIUS_PX=15;
+
+/**
+ * 铁塔符号的笔画宽度（px，与尺寸一起集中在本模块，禁止散落到绘制代码）。
+ *
+ * 主体 stroke 不能细到看不见；halo 比主体再宽约 2 px，保证在海图、道路、建筑底图上
+ * 都有足够对比度。
+ */
+export const TOWER_SYMBOL_STROKE_PX={
+  overview:1.5,
+  medium:1.7,
+  detail:2.1
+};
+export const TOWER_SYMBOL_HALO_EXTRA_PX=2;
+
+/**
+ * 铁塔（单塔）的点击命中半径（px）。
+ *
+ * 必须与视觉尺寸一致：detail 档符号约 22 px 高、约 14 px 宽，半径 13 px 才能避免
+ * "看得见却点不中"。它只作用于 towers；nodes / landingSites 的命中半径完全不变。
+ */
+export const TOWER_HIT_RADIUS_PX={
+  overview:13,
+  medium:13,
+  detail:13
+};
+
+/**
  * 参考航线与航路点的显示阈值：航路点只有在足够近时才显示。
  * scenario/operational/CNS gap 线宽按档整体降低，避免抢地图。
  *
- * ``towerMarkerMode`` / ``towerSymbolScale`` 是铁塔图层专用的同一套 LOD 参数：
- * overview 只显示聚合点，medium 允许孤立塔显示简化符号，detail 逐塔显示完整符号。
+ * 铁塔相关的 LOD 参数（``towerMarkerMode`` / ``towerSymbolSizePx`` …）与其它图层共用
+ * 同一套 LOD 档位，不新增第二套阈值。
  */
 export const ROUTE_STYLES={
   overview:{
@@ -45,21 +101,39 @@ export const ROUTE_STYLES={
     scenarioWidth:1.5,scenarioAlpha:.55,operationalWidth:2.2,operationalAlpha:.85,
     gapWidth:2.4,gapAlpha:.75,infeasibleWidth:1,pointRadius:2.4,pointAlpha:.55,
     nameMode:'hidden',markerMode:'cluster',showAllNames:false,coverageRing:false,
-    towerMarkerMode:TOWER_MARKER_MODES.overview,towerSymbolScale:.7
+    towerMarkerMode:TOWER_MARKER_MODES.overview,
+    towerSymbolSizePx:TOWER_SYMBOL_SIZE_PX.overview,
+    towerSymbolStrokePx:TOWER_SYMBOL_STROKE_PX.overview,
+    towerHighlightSizePx:TOWER_HIGHLIGHT_SIZE_PX,
+    towerCandidateSizePx:TOWER_COLOCATION_CANDIDATE_SIZE_PX,
+    towerHighlightRingRadiusPx:TOWER_HIGHLIGHT_RING_RADIUS_PX,
+    towerHitRadiusPx:TOWER_HIT_RADIUS_PX.overview
   },
   medium:{
     routeWidth:1.5,routeAlpha:.45,referenceWidth:1.5,referenceAlpha:.55,
     scenarioWidth:2,scenarioAlpha:.7,operationalWidth:3,operationalAlpha:.92,
     gapWidth:3.2,gapAlpha:.85,infeasibleWidth:1.2,pointRadius:3,pointAlpha:.8,
     nameMode:'avoid',markerMode:'cluster',showAllNames:false,coverageRing:true,
-    towerMarkerMode:TOWER_MARKER_MODES.medium,towerSymbolScale:.78
+    towerMarkerMode:TOWER_MARKER_MODES.medium,
+    towerSymbolSizePx:TOWER_SYMBOL_SIZE_PX.medium,
+    towerSymbolStrokePx:TOWER_SYMBOL_STROKE_PX.medium,
+    towerHighlightSizePx:TOWER_HIGHLIGHT_SIZE_PX,
+    towerCandidateSizePx:TOWER_COLOCATION_CANDIDATE_SIZE_PX,
+    towerHighlightRingRadiusPx:TOWER_HIGHLIGHT_RING_RADIUS_PX,
+    towerHitRadiusPx:TOWER_HIT_RADIUS_PX.medium
   },
   detail:{
     routeWidth:2,routeAlpha:.6,referenceWidth:1.8,referenceAlpha:.7,
     scenarioWidth:2.4,scenarioAlpha:.75,operationalWidth:3.6,operationalAlpha:1,
     gapWidth:4,gapAlpha:.95,infeasibleWidth:1.4,pointRadius:3.4,pointAlpha:.95,
     nameMode:'avoid',markerMode:'single',showAllNames:false,coverageRing:true,
-    towerMarkerMode:TOWER_MARKER_MODES.detail,towerSymbolScale:1
+    towerMarkerMode:TOWER_MARKER_MODES.detail,
+    towerSymbolSizePx:TOWER_SYMBOL_SIZE_PX.detail,
+    towerSymbolStrokePx:TOWER_SYMBOL_STROKE_PX.detail,
+    towerHighlightSizePx:TOWER_HIGHLIGHT_SIZE_PX,
+    towerCandidateSizePx:TOWER_COLOCATION_CANDIDATE_SIZE_PX,
+    towerHighlightRingRadiusPx:TOWER_HIGHLIGHT_RING_RADIUS_PX,
+    towerHitRadiusPx:TOWER_HIT_RADIUS_PX.detail
   }
 };
 

@@ -384,7 +384,9 @@ test('the evidence highlight is pure UI: no state, no zoom, no layer, no LOD cha
   }
   // 图层开关集合里没有为 highlight 增加任何开关
   assert.doesNotMatch(MAIN_SOURCE,/routeEvidenceHighlight[^\n]*\n[^\n]*LAYER_IDS/);
-  assert.doesNotMatch(LOD_SOURCE,/routeEvidence|highlight/);
+  // evidence highlight 不得进入 LOD 模块：LOD 只声明"多大、多粗、显示不显示"。
+  // （MAP-TOWER-SYMBOL-V2 的 TOWER_HIGHLIGHT_* 是铁塔符号的显示尺寸常量，不是 evidence 状态。）
+  assert.doesNotMatch(LOD_SOURCE,/routeEvidence|routeRisk|evidenceHighlight/);
   // highlight 只由 display_layers 在正常路线之上绘制
   const index=DISPLAY_LAYERS_SOURCE.indexOf('drawRouteEvidenceHighlight({ctx,view,screenPoint');
   const nodesIndex=DISPLAY_LAYERS_SOURCE.indexOf('// 9) 当前选择的参考对象');

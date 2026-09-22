@@ -284,8 +284,9 @@ class LayeredRoutePlannerService:
     def _workspace_grid_capability():
         """工作区网格的**软件基线**能力声明（只读，不改变任何工作区行为）。
 
-        这里报告的是 ``WorkspaceGridService`` 的默认参数（L7 / max_cells 上限），不是当前
-        项目网格的实际层级；项目实际层级始终以 ``state["grid"]["level"]`` 为准。
+        这里报告的是 ``WorkspaceGridService`` 的软件基线（canonical L8 /
+        ``max_cells`` 资源上限 / 正式入口禁止 silent coarsening），不是当前项目网格的
+        实际层级；项目实际层级始终以 ``state["grid"]["level"]`` 为准。
         """
 
         service = WorkspaceGridService()

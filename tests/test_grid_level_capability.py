@@ -1,11 +1,12 @@
-"""网格层级能力声明（Phase 3.5，只声明不改变行为）。
+"""网格层级能力声明（Phase 3.5 + GRID-L8-UNIFICATION）。
 
 覆盖：
 * ``BuildingGridService.capabilities()`` 声明 ``available_levels`` / ``preferred_level``，
   并在工作区层级不可用时给出明确原因；
 * **L8 行为完全不变**：level 8 正常映射、其它层级仍 ``unsupported`` + 逐格
   ``missing_data``；
-* ``WorkspaceGridService.capabilities()`` 声明可用层级、默认层级与 coarsen 语义；
+* ``WorkspaceGridService.capabilities()`` 声明可用层级、canonical 正式层级、正式入口的
+  strict 语义与底层 legacy coarsen 语义；
 * layered planner readiness 暴露 planner / building_grid / workspace_grid 三份能力声明。
 """
 
@@ -13,7 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from cns_planner.algorithms.grid.service import WorkspaceGridService
+from cns_planner.algorithms.grid.service import (
+    OPERATIONAL_GRID_LEVEL, OPERATIONAL_GRID_SEMANTICS, WorkspaceGridService,
+)
 from cns_planner.data.mapping.buildings import BuildingGridService
 
 
@@ -32,7 +35,10 @@ def test_building_grid_declares_the_unusable_reason_for_other_levels():
     assert capability["declared_level_usable"] is False
     assert capability["unusable_reason"] == "unsupported_grid_level"
     assert "L8" in capability["unusable_message"]
-    assert capability["workspace_level_alignment"] == "not_aligned_workspace_default_is_7"
+    # GRID-L8-UNIFICATION：工作区正式层级已统一到 L8，建筑事实表与工作区网格层级一致。
+    assert capability["workspace_level_alignment"] == (
+        "aligned_workspace_canonical_level_is_8"
+    )
 
 
 def test_building_grid_l8_mapping_behaviour_is_unchanged(tmp_path):
@@ -71,8 +77,15 @@ def test_building_grid_non_l8_mapping_behaviour_is_unchanged():
 def test_workspace_grid_declares_levels_and_coarsening_semantics():
     capability = WorkspaceGridService().capabilities()
     assert capability["available_levels"] == list(range(1, 17))
-    assert capability["preferred_level"] == 7
+    # canonical 正式层级 = L8；底层生成器的默认层级与它一致。
+    assert capability["preferred_level"] == OPERATIONAL_GRID_LEVEL == 8
+    assert capability["canonical_operational_level"] == OPERATIONAL_GRID_LEVEL
+    assert capability["operational_semantics"] == OPERATIONAL_GRID_SEMANTICS
+    assert capability["operational_entry"] == "generate_operational"
+    assert capability["operational_silent_coarsening_allowed"] is False
+    # 底层 legacy coarsening 能力保留，但明确标注作用域只是 legacy generate。
     assert capability["coarsening"] == "silent_step_down_until_cell_count_within_max_cells"
+    assert capability["coarsening_scope"] == "legacy_generate_only"
     assert capability["coarsened_flag_key"] == "coarsened"
     assert capability["explicit_level_request_supported"] is True
 
@@ -80,8 +93,9 @@ def test_workspace_grid_declares_levels_and_coarsening_semantics():
 def test_workspace_grid_capability_accepts_an_explicit_level_and_ceiling():
     capability = WorkspaceGridService().capabilities(preferred_level=8, max_cells=12000)
     assert capability["preferred_level"] == 8
-    assert capability["instance_preferred_level"] == 7
+    assert capability["instance_preferred_level"] == OPERATIONAL_GRID_LEVEL
     assert capability["max_cells"] == 12000
+    assert capability["max_cells_is_resource_guard_only"] is True
 
 
 def test_workspace_grid_capability_rejects_an_invalid_level():

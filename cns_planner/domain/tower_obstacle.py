@@ -180,10 +180,27 @@ def empty_tower_obstacle_profiles(status="not_calculated"):
     }
 
 
+def _canonical_vertical_reference(value):
+    """垂直基准的**最小**规范化：只 strip + case-insensitive 识别 EGM2008 正高。
+
+    真实 FABDEM metadata 的 casing 是 ``"EGM2008_orthometric"``，而常量是
+    ``"egm2008_orthometric"``；大小写不同并不代表垂直基准不同。因此这里对
+    已确认的基准做 canonical 归一化，成功即写回规范写法。
+
+    这是**唯一**被归一化的取值：任何其它字符串原样保留（绝不放宽为"任意非空
+    字符串即可信"），由调用方继续 fail-closed 判为 unresolved。
+    """
+
+    text = str(value or "").strip()
+    if text.lower() == EGM2008_ORTHOMETRIC:
+        return EGM2008_ORTHOMETRIC
+    return text
+
+
 def _terrain_reading(terrain):
     fact = terrain if isinstance(terrain, dict) else {}
     elevation = _number(fact.get("elevation_m"))
-    reference = str(fact.get("vertical_reference") or "")
+    reference = _canonical_vertical_reference(fact.get("vertical_reference"))
     passed = str(fact.get("status") or "") == "passed" and elevation is not None
     if passed and reference == EGM2008_ORTHOMETRIC:
         return {

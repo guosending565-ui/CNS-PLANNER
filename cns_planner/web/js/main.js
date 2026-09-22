@@ -49,16 +49,11 @@ const workbench=createWorkbench({
   setState:value=>store.set({ui:{...store.get().ui,workbench:value}})
 });
 function layers(){return layerSwitches($,LAYER_IDS);}
-async function mutate(action,payload={}){
-  const data=await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  flow=data;store.set({workflow:flow});rebuildGridRenderCache();
-  try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}
-  renderWorkflow();paint();return data;
-}
-async function resourceAction(path,payload={}){
-  const data=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  flow=data;store.set({workflow:flow});rebuildGridRenderCache();renderWorkflow();paint();return data;
-}
+async function applyWorkflow(data){flow=data;store.set({workflow:flow});rebuildGridRenderCache();try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}renderWorkflow();paint();return data;}
+async function mutate(action,payload={}){return applyWorkflow(await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
+// GRID-L8-UNIFICATION：超限时后端返回 blocked（不是降级）并已把该状态落库；重新读取快照让界面显示阻断原因。
+async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow'));}
+async function resourceAction(path,payload={}){const data=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});flow=data;store.set({workflow:flow});rebuildGridRenderCache();renderWorkflow();paint();return data;}
 async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
 // V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
 async function loadRoutePlannerV3Detail(){
@@ -323,7 +318,10 @@ function stepBindings(){return {
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}renderWorkflow();paint();return data;},
   startWorkspace(){interactionMode='workspace';measure.sync();draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
   clearWorkspace:async()=>{draftWorkspace=null;interactionMode='pan';measure.sync();await mutate('workspace-clear');},
-  saveWorkspace:async()=>{await mutate('workspace',{bbox:draftWorkspace,grid_level:Number($('workspaceGridLevel')?.value||8)});interactionMode='pan';measure.sync();draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
+  // 正式工作流只有一个 canonical 层级（MH/T 4063.1 L8）：grid_level 是常量，不来自任何下拉选择。
+  // 超限时后端返回 blocked（不是降级）并已把该状态落库：重新读取快照让界面如实显示
+  // "已阻断 + 需求格数 / 上限 / 建议"，再把可读错误交给统一的 actionButton 显示。
+  saveWorkspace:async()=>{try{await mutate('workspace',{bbox:draftWorkspace,grid_level:Step02.OPERATIONAL_GRID_LEVEL});}catch(exc){try{await refreshWorkflow();}catch(_){/* 读取失败时仍把原始错误暴露给用户 */}throw exc;}interactionMode='pan';measure.sync();draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
   toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';measure.sync();renderWorkflow();}
 };}
 async function previewPlanningReport(){

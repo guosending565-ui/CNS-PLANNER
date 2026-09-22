@@ -105,7 +105,7 @@ test('MAP-TOWER-ICON: the legend and the map share one symbol definition',()=>{
     stroke(){strokes.push(true);},set strokeStyle(value){this._stroke=value;},
     get strokeStyle(){return this._stroke;},set lineWidth(value){this._width=value;},
     get lineWidth(){return this._width;},set lineCap(value){}};
-  drawTowerSymbol(ctx,10,10,1);
+  drawTowerSymbol(ctx,10,10,{sizePx:22});
   assert.equal(strokes.length,2,'符号必须先画白色描边再画本体');
 });
 
@@ -175,7 +175,9 @@ test('MAP-TOWER-ICON: the single-tower branch draws the tower symbol, never a sq
     display.indexOf('for(const entry of plan.towers'),
     display.indexOf('// 7.6) CNS 共塔候选')
   );
-  assert.match(towerLoop,/drawTowerSymbol\(ctx,x,y,towerScale/);
+  // MAP-TOWER-SYMBOL-V2：单塔分支必须按**真实像素尺寸**调用共享符号绘制。
+  assert.match(towerLoop,/drawTowerSymbol\(ctx,x,y,\{/);
+  assert.match(towerLoop,/sizePx/);
   assert.equal(towerLoop.includes("drawMarker(ctx,'square'"),false,
     'detail 档不得退回方形标记');
   assert.equal(towerLoop.includes("drawMarker(ctx,'diamond'"),false);

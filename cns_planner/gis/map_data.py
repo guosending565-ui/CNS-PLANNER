@@ -180,10 +180,11 @@ class MapData:
         snapshot = self.workflow_provider() or {}
         policies = snapshot.get("airspace_policies") or {}
         # 建筑事实有两个来源，各自解析成"实际可读取的矢量图层"：
-        #  * building_grid：预先聚合好的 L8 事实表（level == 8 时最快的权威路径）；
+        #  * building_grid：预先聚合好的 L8 事实表（level == 8 时最快的权威路径，也是正式工作流）；
         #  * buildings：原始建筑足迹（.gpkg / .shp / .geojson，或引用它们的 .qgz 工程），
-        #    供**层级无关的精确足迹聚合**使用 —— 这样工作区被 coarsen 到 L7/L6 时建筑
-        #    约束依然能进入 Layered Theta* V2 的 coarse 战略垂向包线。
+        #    供**层级无关的精确足迹聚合**使用 —— 这样即便是 legacy / diagnostic 的 L7/L6
+        #    网格（正式工作流已不再产生），建筑约束依然能进入 Layered Theta* V2 的
+        #    coarse 战略垂向包线。
         grid_role = self._resolve_vector_role("building_grid")
         footprint_role = self._resolve_vector_role("buildings")
         buildings = BuildingGridService().map(

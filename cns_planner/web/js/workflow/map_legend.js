@@ -63,7 +63,9 @@ export function mapLegendModel({flow,towerLayerOn=false}={}){
           {id:'reference-landing',label:'起降点',symbol:markerSymbolSvg('diamond',{size:14,fill:LEGEND_COLORS.landing,stroke:'#ffffff',strokeWidth:1.2}),note:collectionNote(landing,'个')},
           {id:'reference-route',label:'真实参考航路',symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.referenceRoute+'"></span>',note:collectionNote(routes,'条')},
           {id:'reference-route-point',label:'真实航路点',symbol:markerSymbolSvg('triangle',{size:14,fill:LEGEND_COLORS.referencePoint,stroke:'#ffffff',strokeWidth:1.2}),note:collectionNote({status:pointCount>0?'passed':routes?.status,count:pointCount},'个')},
-          {id:'tower-reference',label:TOWER_LEGEND_LABEL,symbol:towerSymbolSvg({size:15,color:LEGEND_COLORS.tower}),note:collectionNote(towers,'个'),state:towerLayerOn?'图层已打开':'图层默认关闭'}
+          // MAP-TOWER-SYMBOL-V2：图例铁塔与地图符号共用同一份 TOWER_SYMBOL 几何，
+          // 尺寸同样按**可见高度 px** 给出（20 px，与地图 detail 档同量级），线条清晰。
+          {id:'tower-reference',label:TOWER_LEGEND_LABEL,symbol:towerSymbolSvg({size:20,color:LEGEND_COLORS.tower,strokePx:1.8}),note:collectionNote(towers,'个'),state:towerLayerOn?'图层已打开':'图层默认关闭'}
         ]
       }
     ]

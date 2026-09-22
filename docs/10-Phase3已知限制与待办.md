@@ -128,6 +128,33 @@ zhoushan_buildings.gpkg（只读，RTree + bbox）
 
 详见 `docs/12-Phase3.5验收修复报告.md`。
 
+### 收口（GRID-L8-UNIFICATION，本轮）
+
+上面"让工作区层级可显式指定为 L8，并在超出 `max_cells` 时显式失败，而不是静默 coarsen"
+（方向 2）已作为**正式语义**落地，工作区层级落差本身不再是已知限制：
+
+```text
+OPERATIONAL_GRID_LEVEL = 8                     # canonical operational grid level
+DEFAULT_MAX_CELLS      = 12000                 # 只是软件资源保护阈值，不是空间工程参数
+
+WorkspaceGridService.generate_operational()    # 正式入口
+  → 预计 L8 格数 ≤ max_cells ⇒ 生成实际 L8（coarsened=false）
+  → 预计 L8 格数 >  max_cells ⇒ status="blocked" + 可读原因
+                                （绝不生成 L7/L6，绝不返回伪 passed）
+
+WorkspaceService.set_workspace() / 正式 API     # strict-L8
+  → 层级参数只接受 None / 8；L6/L7 明确拒绝
+  → 被阻断时写入 blocked 状态并抛 OperationalGridBlockedError（HTTP 400）
+```
+
+* Step02 不再向用户提供 L6/L7 选择，改为固定展示 canonical **L8**，并显示
+  actual level / 格数 / 资源上限 / `level_metadata` 的 `resolution_x` × `resolution_y`；
+* 底层 `WorkspaceGridService.generate()` 的多层级与 coarsening 能力**保留**
+  （legacy / unit test / diagnostic），但**不再是正式工作流的降级目标**；
+* 旧项目里遗留的 L7/L6 快照不会被静默改写：重新保存工作区才会在 L8 上重建空间索引；
+* 建筑事实的 L8 事实表与工作区网格层级由此**始终一致**，正式流程不再出现
+  `unsupported_grid_level`（回归见 `tests/test_bug_grid_l8_unification.py`）。
+
 ---
 
 ## 3. 大工作区下的服务端开销（已确认，本轮只记录 + 部分修复）

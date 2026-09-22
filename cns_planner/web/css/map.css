@@ -312,8 +312,8 @@
   letter-spacing:.8px;
   text-transform:uppercase;
 }
-.legend-line{display:flex;align-items:center;gap:var(--sp-3);margin:var(--sp-2) 0;min-height:16px}
-.legend-line .legend-symbol{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;flex:0 0 auto}
+.legend-line{display:flex;align-items:center;gap:var(--sp-3);margin:var(--sp-2) 0;min-height:20px}
+.legend-line .legend-symbol{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 auto}
 .legend-line .legend-label{color:var(--ink-muted)}
 .legend-line small{margin-left:auto;color:var(--ink-faint);font-size:9px;white-space:nowrap}
 .legend-line .legend-state{margin-left:var(--sp-2)}

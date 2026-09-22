@@ -224,7 +224,8 @@ def _service(tmp_path, workspace=(120.001, 30.001, 120.02, 30.02)):
     defaults.write_text(DEFAULTS.read_text(encoding="utf-8"), encoding="utf-8")
     store = tmp_path / "project_state.json"
     service = WorkflowService(store, defaults)
-    service.set_workspace(list(workspace), _health(), 6)
+    # GRID-L8-UNIFICATION：正式入口的网格层级恒为 canonical L8（不再接受 L6/L7 选择）。
+    service.set_workspace(list(workspace), _health())
     return service, store
 
 

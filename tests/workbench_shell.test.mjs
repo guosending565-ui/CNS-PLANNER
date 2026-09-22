@@ -1681,10 +1681,13 @@ test('step 02 keeps the workspace, grid, risk V2 and altitude contracts',()=>{
   assert.match(source,/\/api\/spatial-3d\/altitude-layer'/,'the altitude layer write keeps its explicit endpoint');
   assert.match(source,/nominal_altitude_m:optionalNumber\('altitudeNominal'\)/,'nominal is read from the explicit input only');
   assert.doesNotMatch(source,/value="(80|100|120|150)"/,'no default real altitude may ship');
-  // 既有网格层级语义与专题入口不变
-  assert.match(source,/L8（建筑环境直接映射）/);
-  assert.match(source,/L7（建筑网格 unsupported）/);
-  assert.match(source,/L6（建筑网格 unsupported）/);
+  // GRID-L8-UNIFICATION：正式工作流只暴露 canonical L8（固定展示），不再有 L6/L7 选择；
+  // 层级契约改由 OPERATIONAL_GRID_LEVEL 常量 + 后端 strict 语义共同锁定。
+  assert.match(source,/export const OPERATIONAL_GRID_LEVEL=8/);
+  assert.match(source,/标准规划网格/);
+  assert.match(source,/MH\/T 4063\.1 · L'\+OPERATIONAL_GRID_LEVEL/);
+  assert.equal(source.includes('L7（建筑网格 unsupported）'),false,'不得再向用户暴露 L7 选择');
+  assert.equal(source.includes('L6（建筑网格 unsupported）'),false,'不得再向用户暴露 L6 选择');
   assert.match(source,/riskV2ThemeOptions\(\)/);
   assert.match(source,/populationDisplayLabel\(attributes\.population\)/);
   // 垂向基准不猜、不补默认高度

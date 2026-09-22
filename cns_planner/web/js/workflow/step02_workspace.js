@@ -10,8 +10,10 @@
 //
 // 语义边界（本次重组只改展示组织，不改任何业务契约）
 //  - 工作区框选 / 清除 / 保存的 DOM id、API path 与 payload 完全不变；
-//  - 标准网格层级仍只有 L8 / L7 / L6：L8 是建筑环境直接映射，L7/L6 的建筑网格
-//    仍为 unsupported，超过数量限制时仍由后端降级（coarsening），前端不聚合/插值；
+//  - **标准规划网格只有一个 canonical 层级：MH/T 4063.1 L8**（GRID-L8-UNIFICATION）。
+//    正式工作流不再向用户暴露 L6/L7 选择：后端超限时返回 status=blocked，前端如实显示
+//    可读错误（需求格数 / 资源上限 / 建议），绝不出现"选了 L8、实际静默 L7"的模糊状态，
+//    也绝不显示伪通过。L6/L7 的底层算法仅保留给 legacy / unit test / diagnostic；
 //  - 数据映射卡只转印现有 flow.workspace.health 与 flow.grid_attributes 的
 //    status / 计数：不重算状态、不新增数据状态、绝不把缺失数据写成 passed；
 //  - 专题浏览只切地图配色（gridDisplay.outline / theme）：不自动改 zoom、图层，
@@ -345,35 +347,77 @@ function workspaceRangePanel(draftWorkspace){
 // ---- 操作 · 标准网格与建筑环境 ------------------------------------------------
 
 /**
- * 既有 MH/T 4063.1 标准网格状态行（含数量限制降级提示）。
- *
- * BUG-GRID-001：格网的**米制边长只来自后端** ``grid.level_metadata``（它描述的是实际
- * 生成、即 coarsen 之后的层级）。前端绝不按经纬度估算层级或尺寸；旧快照没有 metadata
- * 时只显示层级与格数，**不显示任何猜测的尺寸**。
+ * 正式业务的 canonical 空间索引层级：与后端
+ * ``cns_planner.algorithms.grid.service.OPERATIONAL_GRID_LEVEL`` **逐字一致**。
+ * 前端不得再提供第二个可选的正式层级。
  */
-function standardGridLine(flow){
+export const OPERATIONAL_GRID_LEVEL=8;
+
+/**
+ * 「标准规划网格」固定展示块（GRID-L8-UNIFICATION）。
+ *
+ * 正式工作流只有一个 canonical 层级，因此这里**不再有 L6/L7 下拉选择**，而是固定展示
+ * 层级语义，并如实转印后端返回的**实际**层级、格数、资源上限与 ``level_metadata``
+ * 的米制边长（BUG-GRID-001：尺寸只有后端一个权威来源，前端绝不按经纬度估算）。
+ *
+ * 三态都有明确显示，绝不出现模糊状态：
+ *  * ``passed``  → canonical level / actual level / 格数 / 上限 / resolution_x × resolution_y；
+ *  * ``blocked`` → 可读错误（原因码、需求格数、上限、缩小范围或提高上限的建议）；
+ *  * 其它       → 未生成（保存工作区后在 L8 上生成）。
+ *
+ * 旧项目里遗留的 L7/L6 快照（``coarsened=true``）会被明确标注为"实际层级低于 canonical"，
+ * 提示重新保存工作区，而不会被悄悄当成 L8。
+ */
+export function standardGridPanel(flow){
   const grid=flow?.grid||{};
-  if(grid?.status!=='passed')return '标准网格：未生成';
+  const canonical=Number.isFinite(Number(grid.canonical_level))
+    ?Number(grid.canonical_level):OPERATIONAL_GRID_LEVEL;
+  const ceiling=Number.isFinite(Number(grid.max_cells))?Number(grid.max_cells):null;
+  const header='<div class="flow-summary" id="workspaceGridLevel" data-grid-level="'+OPERATIONAL_GRID_LEVEL+'">'
+    +'<b>标准规划网格</b><br>MH/T 4063.1 · L'+OPERATIONAL_GRID_LEVEL
+    +'<br><small>用于人口 / 地形 / 建筑 / 风险 / TowerObstacle / Theta* V2</small></div>';
+  if(grid.status==='blocked'){
+    const required=Number(grid.required_cells);
+    const code=grid.blocked_code||grid.error?.code||'operational_grid_cell_ceiling_exceeded';
+    const message=grid.blocked_message||grid.error?.message||'工作区超出标准网格资源上限';
+    const detail='L'+canonical+' 需求 '+count(required)+' 格 · 资源上限 '+count(ceiling)+' 格';
+    return header
+      +'<div class="parameter-note" id="workspaceGridBlocked"><b>标准规划网格：已阻断</b>（'+escapeHtml(code)+'）'
+      +'<br>'+escapeHtml(detail)
+      +'<br>'+escapeHtml(message)
+      +'<br>正式工作流不允许降级到 L7/L6：请缩小工作区范围，或显式提高 max_cells 资源上限。</div>';
+  }
+  if(grid.status!=='passed'){
+    return header+'<div class="parameter-note">标准规划网格：未生成。保存工作区范围后会在 L8 上生成标准网格。</div>';
+  }
   const metadata=grid.level_metadata||null;
   const size=metadata&&Number.isFinite(metadata.resolution_x)&&Number.isFinite(metadata.resolution_y)
-    ?' · 格网 '+Math.round(metadata.resolution_x)+' × '+Math.round(metadata.resolution_y)+' m'
-      +'（后端 level_metadata，非前端估算）'
+    ?' · 格网 '+Math.round(metadata.resolution_x)+' × '+Math.round(metadata.resolution_y)+' m（后端 level_metadata，非前端估算）'
     :'';
-  return 'MH/T 4063.1 标准网格：L'+grid.level+' · '+grid.count+' 格'+size
-    +(grid.coarsened?'（已按数量限制降级）':'');
+  const legacy=Number(grid.level)!==OPERATIONAL_GRID_LEVEL||grid.coarsened===true
+    ?' · <b>实际层级低于 canonical L'+OPERATIONAL_GRID_LEVEL+'</b>：这是旧项目快照，'
+      +'请重新保存工作区范围以在 L8 上重建空间索引'
+    :'';
+  return header+'<div class="flow-summary">canonical level L'+canonical+' · actual level L'+grid.level
+    +' · 格数 '+count(grid.count)+' / 上限 '+count(ceiling)+size+legacy+'</div>';
+}
+
+function count(value){
+  const number=Number(value);
+  return Number.isFinite(number)?number:'—';
 }
 
 function gridEnvironmentPanel(flow){
-  const grid=flow?.grid||{},health=flow?.workspace?.health||{};
-  const levelOptions='<option value="8" '+((grid?.preferred_level??8)===8?'selected':'')+'>L8（建筑环境直接映射）</option>'
-    +'<option value="7" '+(grid?.preferred_level===7?'selected':'')+'>L7（建筑网格 unsupported）</option>'
-    +'<option value="6" '+(grid?.preferred_level===6?'selected':'')+'>L6（建筑网格 unsupported）</option>';
-  return '<label>目标标准网格层级<select id="workspaceGridLevel">'+levelOptions+'</select></label>'
-    +'<small>若工作区过大超过网格数量限制，系统仍会降级层级，此时不会聚合/插值 L8 建筑高度。</small>'
-    +'<div class="flow-summary">'+standardGridLine(flow)+'<br>DEM：'+escapeHtml(statusText(health.terrain?.status||'missing_data'))+' · '+escapeHtml(health.terrain?.message||'DEM 状态未知')+'</div>'
+  const health=flow?.workspace?.health||{};
+  return standardGridPanel(flow)
+    +'<div class="parameter-note">正式工作流只使用 MH/T 4063.1 <b>L8</b> 作为 canonical 空间索引；'
+    +'max_cells 只是软件资源保护上限，不是空间工程参数。工作区超出上限时会被<b>明确阻断</b>，'
+    +'系统不会生成 L7/L6 网格，也不会聚合/插值 L8 建筑高度。</div>'
+    +'<div class="flow-summary">DEM：'+escapeHtml(statusText(health.terrain?.status||'missing_data'))+' · '+escapeHtml(health.terrain?.message||'DEM 状态未知')+'</div>'
     +buildingEnvironmentSummary(flow)
     +wbDisclosure('建筑环境链工程说明','<div class="parameter-note">0 表示覆盖范围内确认无该项；灰色表示无数据/范围外。建筑风险权重保持 0，净空评估独立。</div>');
 }
+
 
 // ---- 结果 · 数据映射 ---------------------------------------------------------
 

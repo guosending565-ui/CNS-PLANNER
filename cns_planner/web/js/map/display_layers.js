@@ -15,7 +15,9 @@ import {drawV3CandidateOverlay,v3OverlayModel} from './route_planner_v3_overlay.
 import {drawLayeredFeasibilityOverlay} from './layered_feasibility_overlay.js';
 import {drawLayeredCandidateOverlay} from './layered_candidate_overlay.js';
 import {clusterPoints,toGeographic,extentOf,hitCluster} from './point_clustering.js';
-import {displayStyle} from './lod.js';
+import {
+  displayStyle,TOWER_HIGHLIGHT_SIZE_PX,TOWER_SYMBOL_HALO_EXTRA_PX,TOWER_SYMBOL_STROKE_PX
+} from './lod.js';
 
 // ---- 样式（颜色只表达来源与状态，不表达通过与否） ----------------------------
 
@@ -92,66 +94,108 @@ function drawAggregate(ctx,x,y,count,color){
 
 // ---- 通信铁塔矢量符号（地图符号与图例符号的唯一来源） ------------------------
 //
-// 识别特征：顶部天线 + 两层桁架 + 塔脚，与用户给出的示意一致：
+// MAP-TOWER-SYMBOL-V2：经典桁架通信铁塔轮廓（lattice tower silhouette）。识别特征：
 //
-//       │
-//      / \
-//     /___\
-//      / \
-//     /___\
-//     /   \
+//         │            顶部天线桅杆
+//        ╱ ╲
+//       ╱───╲          顶梁（塔腿起点）
+//      ╱X   X╲         第 1 组 X 型斜撑
+//     ╱───────╲        第 2 层水平横梁
+//     ╱ X   X ╲        第 2 组 X 型斜撑
+//    ╱─────────╲       第 3 层水平横梁
+//    ╱  X   X  ╲       第 3 组 X 型斜撑
+//   ╱───────────╲      宽底座上沿
+//  ╱             ╲     两条向下张开的外侧塔腿
 //
-// 几何定义在归一化的 x∈[-0.72,0.72]、y∈[-0.95,0.8] 单位框内：
-// canvas 绘制与图例 inline SVG 用的是**同一份线段表**，因此地图符号与图例
-// 符号永远一致，不会出现"图例画一种、地图画另一种"。
-// 只用本地 Path，不用 emoji、外部图片或第三方 icon 包。
+// 几何定义在归一化的 x∈[-0.65,0.65]、y∈[-1,1] 单位框内（y 向下为正，与 canvas 一致），
+// 因此 **2 个单位 = 符号的可见高度**。canvas 绘制与图例 inline SVG 用**同一份线段表**，
+// 图例因此永远不会画出第二套铁塔。
+//
+// 尺寸语义（MAP-TOWER-SYMBOL-V2 的核心修正）：符号尺寸一律是**屏幕像素高度**
+// （``towerSymbolSizePx`` / ``TOWER_HIGHLIGHT_SIZE_PX``），由 map/lod.js 集中声明；
+// 归一化坐标只在 ``traceTowerPath`` 里乘一次"半尺寸 px"。旧实现把 0.7 / 0.78 / 1
+// 这种归一化倍数直接当像素用，导致 detail 档符号总高只有约 1.75 px（放大也看不见）。
+//
+// 只用本地 canvas Path / segments：无 emoji、无字体图标、无第三方 icon 包、无外部 SVG、
+// 无网络图片。
 export const TOWER_SYMBOL={
   //: [[起点], [终点]]，单位框内坐标（y 向下为正，与 canvas 一致）。
   segments:[
-    [[0,-0.95],[0,-0.5]],            // 顶部天线
-    [[-0.3,-0.5],[0.3,-0.5]],        // 上层横梁
-    [[-0.3,-0.5],[0,-0.02]],         // 上层左斜撑
-    [[0.3,-0.5],[0,-0.02]],          // 上层右斜撑
-    [[-0.42,-0.02],[0.42,-0.02]],    // 下层横梁
-    [[-0.42,-0.02],[0,0.42]],        // 下层左斜撑
-    [[0.42,-0.02],[0,0.42]],         // 下层右斜撑
-    [[-0.52,0.42],[0.52,0.42]],      // 底横梁
-    [[-0.52,0.42],[-0.66,0.8]],      // 左塔脚
-    [[0.52,0.42],[0.66,0.8]]         // 右塔脚
+    [[0,-1],[0,-0.78]],              // 顶部天线桅杆
+    [[-0.08,-0.78],[0.08,-0.78]],    // 顶梁（塔腿起点）
+    [[-0.08,-0.78],[-0.65,1]],       // 左塔腿（向下张开）
+    [[0.08,-0.78],[0.65,1]],         // 右塔腿（向下张开）
+    [[-0.234,-0.3],[0.234,-0.3]],    // 第 2 层水平横梁
+    [[-0.387,0.18],[0.387,0.18]],    // 第 3 层水平横梁
+    [[-0.541,0.66],[0.541,0.66]],    // 第 4 层水平横梁（宽底座上沿）
+    [[-0.08,-0.78],[0.234,-0.3]],    // X 型斜撑 1
+    [[0.08,-0.78],[-0.234,-0.3]],
+    [[-0.234,-0.3],[0.387,0.18]],    // X 型斜撑 2
+    [[0.234,-0.3],[-0.387,0.18]],
+    [[-0.387,0.18],[0.541,0.66]],    // X 型斜撑 3
+    [[0.387,0.18],[-0.541,0.66]]
   ],
   //: 图例用 viewBox（正方形，保证 SVG 不被拉伸）。
-  viewBox:'-1 -1 2 2'
+  viewBox:'-1 -1 2 2',
+  //: 归一化几何的可见高度（y 跨度）：2 个单位 = 1 个"符号高度"。
+  heightUnits:2
 };
 
-function traceTowerPath(ctx,x,y,scale){
+/** 归一化坐标 → 屏幕坐标：只在这里乘一次半尺寸（px）。 */
+function traceTowerPath(ctx,x,y,halfSizePx){
   ctx.beginPath();
   for(const [start,end] of TOWER_SYMBOL.segments){
-    ctx.moveTo(x+start[0]*scale,y+start[1]*scale);
-    ctx.lineTo(x+end[0]*scale,y+end[1]*scale);
+    ctx.moveTo(x+start[0]*halfSizePx,y+start[1]*halfSizePx);
+    ctx.lineTo(x+end[0]*halfSizePx,y+end[1]*halfSizePx);
   }
 }
 
-/** 在 canvas 上画一个铁塔符号（白色描边在下，保证在底图上可读）。 */
-export function drawTowerSymbol(ctx,x,y,scale=1,{color=TOWER_COLOR.normal,width=1.2,halo=true}={}){
-  const size=Number.isFinite(scale)&&scale>0?scale:1;
+/**
+ * 在 canvas 上画一个铁塔符号（白色 halo 在下，保证在海图 / 道路 / 建筑底图上可读）。
+ *
+ * @param {number} sizePx 符号的**可见高度（像素）**；``sizePx<=0`` 时什么都不画
+ *   （overview 档的孤立单塔就是这种情形：它根本不进入绘制计划）。
+ * @returns {boolean} 是否真的画了
+ */
+export function drawTowerSymbol(ctx,x,y,{
+  sizePx=TOWER_HIGHLIGHT_SIZE_PX,color=TOWER_COLOR.normal,
+  strokePx=TOWER_SYMBOL_STROKE_PX.detail,
+  halo=true,haloExtraPx=TOWER_SYMBOL_HALO_EXTRA_PX
+}={}){
+  const size=Number(sizePx);
+  if(!Number.isFinite(size)||size<=0)return false;
+  const halfSizePx=size/2;
   ctx.save();
   ctx.lineCap='round';
   if(halo){
-    traceTowerPath(ctx,x,y,size);
-    ctx.strokeStyle='#ffffff';ctx.lineWidth=width+1.7;ctx.stroke();
+    traceTowerPath(ctx,x,y,halfSizePx);
+    ctx.strokeStyle='#ffffff';ctx.lineWidth=strokePx+haloExtraPx;ctx.stroke();
   }
-  traceTowerPath(ctx,x,y,size);
-  ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();
+  traceTowerPath(ctx,x,y,halfSizePx);
+  ctx.strokeStyle=color;ctx.lineWidth=strokePx;ctx.stroke();
   ctx.restore();
+  return true;
 }
 
-/** 同一份符号的 inline SVG（统一图例使用，无外部资源、无版权依赖）。 */
-export function towerSymbolSvg({size=15,color=TOWER_COLOR.normal,width=1.1}={}){
+/**
+ * 同一份符号的 inline SVG（统一图例使用，无外部资源、无版权依赖）。
+ *
+ * ``size`` 与 canvas 的 ``sizePx`` 语义**完全一致**：符号的可见高度（px）。
+ * viewBox 的高度是 ``heightUnits``（2），因此 SVG 的 width/height 就等于符号高度。
+ */
+export function towerSymbolSvg({
+  size=20,color=TOWER_COLOR.normal,
+  strokePx=TOWER_SYMBOL_STROKE_PX.detail,halo=true,haloExtraPx=TOWER_SYMBOL_HALO_EXTRA_PX
+}={}){
   const path=TOWER_SYMBOL.segments
     .map(([start,end])=>'M'+start[0]+' '+start[1]+'L'+end[0]+' '+end[1])
     .join('');
+  const haloPath=halo
+    ?'<path d="'+path+'" fill="none" stroke="#ffffff" stroke-width="'+(strokePx+haloExtraPx)+'" stroke-linecap="round"/>'
+    :'';
   return '<svg width="'+size+'" height="'+size+'" viewBox="'+TOWER_SYMBOL.viewBox+'" aria-hidden="true">'
-    +'<path d="'+path+'" fill="none" stroke="'+color+'" stroke-width="'+width+'" stroke-linecap="round"/></svg>';
+    +haloPath
+    +'<path d="'+path+'" fill="none" stroke="'+color+'" stroke-width="'+strokePx+'" stroke-linecap="round"/></svg>';
 }
 
 //: drawMarker 支持的形状；图例也只允许这些形状，避免图例与地图各画一套。
@@ -285,7 +329,13 @@ export function buildDisplayPlan({
     styles,
     clusterPixels:style.clusterPixels,
     towerMarkerMode,
-    towerSymbolScale:styles.towerSymbolScale||1,
+    // 铁塔符号的真实屏幕像素尺寸 / 笔画 / 命中半径：全部来自 map/lod.js 的同一套 LOD。
+    towerSymbolSizePx:styles.towerSymbolSizePx||0,
+    towerSymbolStrokePx:styles.towerSymbolStrokePx||TOWER_SYMBOL_STROKE_PX.detail,
+    towerHighlightSizePx:styles.towerHighlightSizePx||TOWER_HIGHLIGHT_SIZE_PX,
+    towerCandidateSizePx:styles.towerCandidateSizePx||TOWER_HIGHLIGHT_SIZE_PX,
+    towerHighlightRingRadiusPx:styles.towerHighlightRingRadiusPx||15,
+    towerHitRadiusPx:styles.towerHitRadiusPx||13,
     nodes,
     landingSites,
     towers:visibleTowers,
@@ -308,10 +358,16 @@ export function buildDisplayPlan({
 
 // ---- 命中测试（避免 overview 下误选看不见的单点） ----------------------------
 
-/** 节点 / 起降点聚合命中。 */
-export function hitDisplayEntry(plan,point,{kind='nodes',singleRadius=9}={}){
+/** 节点 / 起降点 / 铁塔聚合命中。
+ *
+ * 命中半径必须与视觉尺寸一致：铁塔 detail 图标约 22 px 高（宽约 14 px），因此默认使用
+ * ``plan.towerHitRadiusPx``（约 13 px），避免"看得见却点不中"。
+ * **nodes / landingSites 的半径保持 9 px 不变**（显式传入 singleRadius 时也以显式值为准）。
+ */
+export function hitDisplayEntry(plan,point,{kind='nodes',singleRadius=null}={}){
   const entries=kind==='sites'?plan.landingSites:kind==='towers'?plan.towers:plan.nodes;
-  return hitCluster(entries,point,{singleRadius});
+  const radius=singleRadius??(kind==='towers'?(plan?.towerHitRadiusPx??13):9);
+  return hitCluster(entries,point,{singleRadius:radius});
 }
 
 export function entryExtent(entry){return extentOf(entry);}
@@ -465,39 +521,53 @@ export function drawWorkflowLayers({
 
   // 7.5) 真实通信铁塔站址（默认关闭，勾选后才进入 plan）：
   //      与起降点复用同一聚合与同一 LOD（map/lod.js 的 towerMarkerMode）：
-  //        overview 只显示聚合点；
-  //        medium   仍以聚合为主，聚合不住的孤立塔画简化铁塔符号；
-  //        detail   每个真实铁塔画独立铁塔图标。
+  //        overview 只显示聚合点（孤立单塔不进入计划，也就不绘制、不可命中）；
+  //        medium   仍以聚合为主，聚合不住的孤立塔画铁塔符号（约 16 px 高）；
+  //        detail   每个真实铁塔画独立铁塔图标（约 22 px 高）。
+  //      尺寸语义是**屏幕像素高度**（MAP-TOWER-SYMBOL-V2）；被 CNS 共塔候选联动的宿主塔
+  //      在任何档位都至少按 detail 尺寸绘制并加高亮环，绝不因太小而丢失。
   //      单塔一律画**铁塔矢量符号**，且**绝不铺开 373 个名称标签**（hover/click 才显示）。
-  const towerScale=plan.towerSymbolScale||1;
   for(const entry of plan.towers||[]){
     const [x,y]=entry.screen||entry.center;
     if(entry.count>1){drawAggregate(ctx,x,y,entry.count,CLUSTER_COLORS.towers);continue;}
-    drawTowerSymbol(ctx,x,y,towerScale,{color:TOWER_COLOR.normal,width:towerScale<1?.95:1.2});
+    const tower=(entry.anchor&&entry.anchor.tower)||null;
+    const highlighted=!!towerHighlight&&!!tower
+      &&String(tower.tower_id)===String(towerHighlight);
+    const sizePx=highlighted?plan.towerHighlightSizePx:plan.towerSymbolSizePx;
+    drawTowerSymbol(ctx,x,y,{
+      sizePx,
+      color:highlighted?TOWER_HIGHLIGHT_COLOR:TOWER_COLOR.normal,
+      strokePx:plan.towerSymbolStrokePx
+    });
   }
 
   // 7.6) CNS 共塔候选（真实铁塔派生的宿主候选）：画成"候选色的铁塔符号"，
   //      与宿主铁塔建立视觉关联，但不画永久连接线；点击候选时由 towerHighlight 高亮宿主塔。
+  //      图标几何与真实铁塔**完全相同**（同一 TOWER_SYMBOL），只有语义颜色与高亮环不同。
   for(const entry of plan.cnsTowerCandidates||[]){
     const [x,y]=entry.screen;
     if(!entry.hostTowerId)continue;
     const highlighted=String(towerHighlight||'')===entry.hostTowerId;
-    drawTowerSymbol(ctx,x,y,1,{color:CNS_COLORS.candidate,width:highlighted?1.6:1.25});
+    drawTowerSymbol(ctx,x,y,{
+      sizePx:plan.towerCandidateSizePx,color:CNS_COLORS.candidate,
+      strokePx:plan.towerSymbolStrokePx
+    });
     if(highlighted){
-      ctx.save();ctx.strokeStyle=CNS_COLORS.candidate;ctx.lineWidth=1.6;
-      ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.stroke();ctx.restore();
+      ctx.save();ctx.strokeStyle=CNS_COLORS.candidate;ctx.lineWidth=1.8;
+      ctx.beginPath();ctx.arc(x,y,plan.towerHighlightRingRadiusPx,0,Math.PI*2);ctx.stroke();ctx.restore();
     }
   }
 
   // 7.7) 共塔候选关联的宿主铁塔高亮：只在"当前被关联的那一个塔"周围画一圈。
+  //      高亮不是只改颜色：环半径约 15 px，明显大于符号本身，overview/medium/detail 都看得见。
   if(towerHighlight){
     for(const entry of plan.towers||[]){
       const tower=(entry.anchor&&entry.anchor.tower)||null;
       if(!tower||String(tower.tower_id)!==String(towerHighlight))continue;
       const [x,y]=entry.screen||entry.center;
       ctx.save();
-      ctx.strokeStyle=TOWER_HIGHLIGHT_COLOR;ctx.lineWidth=2.2;
-      ctx.beginPath();ctx.arc(x,y,12,0,Math.PI*2);ctx.stroke();
+      ctx.strokeStyle=TOWER_HIGHLIGHT_COLOR;ctx.lineWidth=2.4;
+      ctx.beginPath();ctx.arc(x,y,plan.towerHighlightRingRadiusPx,0,Math.PI*2);ctx.stroke();
       ctx.restore();
     }
   }

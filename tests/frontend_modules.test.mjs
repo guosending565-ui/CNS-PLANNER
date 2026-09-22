@@ -436,7 +436,8 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step2,/建筑密度/);
   assert.match(step2,/P95 建筑高度/);
   assert.match(step2,/最大建筑高度/);
-  assert.match(step2,/L8（建筑环境直接映射）/);
+  // GRID-L8-UNIFICATION：Step02 固定展示 canonical L8，不再提供 L6/L7 选择。
+  assert.match(step2,/MH\/T 4063\.1 · L8/);
   assert.match(step3,/Route 3D Altitude Profile/);
   assert.match(step3,/Route Motion Profile/);
   assert.match(step3,/参考起降点/);

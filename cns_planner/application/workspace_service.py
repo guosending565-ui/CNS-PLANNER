@@ -3,6 +3,7 @@
 import math
 from copy import deepcopy
 
+from ..algorithms.grid.service import OperationalGridBlockedError
 from ..risk.v1 import RiskModelV1
 from ..domain.altitude_layer_defaults import ensure_default_altitude_layers
 from ..domain.population_nodata import (
@@ -13,6 +14,18 @@ from .route_operating_layer_service import refresh_spatial_status
 
 
 class WorkspaceService:
+    """工作区与标准网格用例。
+
+    GRID-L8-UNIFICATION：正式业务的 canonical 空间索引只有一个层级 —— MH/T 4063.1 **L8**。
+
+    * 正式入口调用 ``WorkspaceGridService.generate_operational()``：恰好 L8、**禁止 silent
+      coarsening**、超出 ``max_cells``（软件资源保护上限）时明确 blocked；
+    * 层级参数只接受 ``None`` / ``8``：界面也不再暴露 L6/L7，"用户选 L8、实际静默 L7"
+      这种模糊状态被彻底取消；
+    * L6/L7 的**底层算法**仍在 ``WorkspaceGridService.generate()`` 中保留（legacy / unit
+      test / diagnostic），但不再是正式工作流的降级目标。
+    """
+
     def __init__(self, session, grid_service, invalidation, snapshot):
         self.session = session
         self.grid_service = grid_service
@@ -26,33 +39,58 @@ class WorkspaceService:
         west, south, east, north = values
         if not (-180 <= west < east <= 180 and -85 < south < north < 85):
             raise ValueError("工作区范围无效")
+        # 层级与网格必须在**写入任何状态之前**确定：正式入口只接受 canonical L8（L6/L7 由
+        # generate_operational 明确拒绝），超限即阻断，因此不存在"工作区已经保存、网格却悄悄
+        # 退到 L7"的中间态，也不存在伪 passed。
+        grid = self.grid_service.generate_operational(
+            values, level=preferred_grid_level, max_cells=max_cells
+        )
+        blocked = str(grid.get("status") or "") == "blocked"
         width = math.radians(east - west) * 6371008.8 * math.cos(
             math.radians((south + north) / 2)
         )
         height = math.radians(north - south) * 6371008.8
         state = self.session.state
         self.invalidation.workflow("workspace")
-        state["workspace"] = {
+        workspace_status = "blocked" if blocked else "passed"
+        workspace = {
             "bbox": values, "area_km2": round(width * height / 1_000_000, 3),
-            "health": health, "status": "passed",
+            "health": health, "status": workspace_status,
         }
-        state["grid"] = self.grid_service.generate(values, preferred_grid_level, max_cells)
+        if blocked:
+            # blocked 是**明确的工程阻断**（不是失败后的降级）：如实记录原因、需求格数与上限，
+            # 界面据此提示"缩小工作区或显式提高资源上限"，绝不显示伪通过。
+            workspace.update({
+                "blocked_code": grid.get("blocked_code"),
+                "blocked_reason": grid.get("blocked_message"),
+                "required_cells": grid.get("required_cells"),
+                "max_cells": grid.get("max_cells"),
+                "canonical_level": grid.get("canonical_level"),
+            })
+        state["workspace"] = workspace
+        state["grid"] = grid
         state["grid_attributes"] = empty_grid_attributes()
         state["grid_risk"] = RiskModelV1.empty()
         state["traffic_simulation"] = None
         state["risks"]["environment"] = assessment(
             "not_calculated", "等待当前网格属性风险评估"
         )
-        state["result_statuses"]["workspace"] = "passed"
-        state["result_statuses"]["grid"] = "passed"
+        state["result_statuses"]["workspace"] = workspace_status
+        state["result_statuses"]["grid"] = workspace_status
         state["result_statuses"]["environment_risk"] = "not_calculated"
-        # 工作区（工程范围）确认后，若该项目从未初始化过巡航高度层目录，补建工程默认高度层
-        # （ALT-060/080/100/150/200，EGM2008 正高）。这只补 **catalog 条目**，不为任何航路选择高度层：
-        # planning request 仍需用户显式选择 AltitudeLayer。
-        if ensure_default_altitude_layers(state):
-            refresh_spatial_status(state)
+        if not blocked:
+            # 工作区（工程范围）确认后，若该项目从未初始化过巡航高度层目录，补建工程默认高度层
+            # （ALT-060/080/100/150/200，EGM2008 正高）。这只补 **catalog 条目**，不为任何航路选择高度层：
+            # planning request 仍需用户显式选择 AltitudeLayer。
+            # 网格被阻断时不补建：正式业务流程在 L8 空间索引成立之前不继续。
+            if ensure_default_altitude_layers(state):
+                refresh_spatial_status(state)
         self.session.save()
+        if blocked:
+            # 状态已经如实落库（blocked），异常只负责让本次 API 调用返回可读错误并停止后续步骤。
+            raise OperationalGridBlockedError(grid.get("blocked_message"), grid.get("error"))
         return self.snapshot()
+
 
     # ------------------------------------------------- population NoData semantics
 

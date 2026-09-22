@@ -31,7 +31,10 @@ from cns_planner.domain.reference_route_link import (
 from cns_planner.reference_data import load_reference_landing_sites, load_reference_routes
 
 DEFAULTS = Path("cns_planner/config/defaults.json")
-WORKSPACE = [122.0, 29.9, 122.2, 30.1]
+#: GRID-L8-UNIFICATION：正式工作区网格恒为 canonical L8，默认资源上限 12000 格。
+#: 本文件的用例只把工作区当作 experiment / reference 语义的前置条件（不做网格搜索），
+#: 因此用一个 L8 下 8281 格的小工作区，避免大范围在正式上限处被**明确阻断**。
+WORKSPACE = [122.0, 29.9, 122.10, 30.00]
 PLANNER_V1 = "route_planner_v1"
 PLANNER_V2 = "risk_aware_route_planner_v2"
 

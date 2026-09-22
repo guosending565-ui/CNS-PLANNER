@@ -208,9 +208,14 @@ def test_zhoushan_sixteen_route_shape_restores_by_number_and_sequence(tmp_path):
 
 def test_reference_site_only_becomes_node_after_explicit_add_and_manual_shape_stays(tmp_path):
     service = WorkflowService(tmp_path / "project.json", _defaults(tmp_path))
+    # GRID-L8-UNIFICATION：正式工作区网格恒为 canonical L8（默认资源上限 12000 格）。
+    # 参考起降点必须落在工作区内，而它与手工点的跨度需要约 16471 个 L8 格，因此这里
+    # **显式提高资源上限**（正式支持的路径），而不是让工作区静默退到 L7。
     service.set_workspace(
-        [121.9, 29.9, 122.5, 30.6],
+        [122.10, 30.00, 122.20, 30.20],
         {"status": "passed", "population": {"status": "passed"}, "airspace": {"status": "passed"}},
+        None,
+        20000,
     )
     imported = service.import_reference_landing_sites(_xlsx(tmp_path))
     assert imported["nodes"] == []

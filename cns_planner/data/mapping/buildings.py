@@ -19,10 +19,11 @@ class BuildingGridService:
     PREFERRED_LEVEL = 8
     #: 未选定层级时的兜底层级（与 ``PREFERRED_LEVEL`` 一致，保留别名便于调用方表达意图）。
     DEFAULT_LEVEL = 8
-    #: 与工作区网格的已知落差（只声明，不在本轮改变行为）。
-    #: ``WorkspaceGridService`` 默认 ``preferred_level=7``；二者不一致时工作区会被
-    #: coarsen 到 L6/L7，建筑事实整表不可用（详见 docs/10-Phase3已知限制与待办.md §1）。
-    PREFERRED_WORKSPACE_LEVEL_ALIGNMENT = "not_aligned_workspace_default_is_7"
+    #: 与工作区网格的层级对齐状态（GRID-L8-UNIFICATION 已收口）。
+    #: ``WorkspaceGridService`` 的正式入口（``generate_operational``）与
+    #: ``WorkspaceService`` 都只生成 canonical L8，因此建筑的 L8 事实表与工作区网格
+    #: **层级一致**；旧项目里遗留的 L7/L6 快照需要重新保存工作区才会升级到 L8。
+    PREFERRED_WORKSPACE_LEVEL_ALIGNMENT = "aligned_workspace_canonical_level_is_8"
 
     #: 层级无关建筑事实获取：按**当前工作区层级**对原始 footprint 做精确几何聚合
     #: （不是跨层级平均、不是插值）。实现位于 GIS 边界
@@ -37,6 +38,10 @@ class BuildingGridService:
 
         现有调用方（``map(grid, source_path)`` 与 ``level != 8 ⇒ unsupported``）保持完全
         不变；本方法只是把既有契约显式化，让 readiness / UI / 测试不必再猜层级。
+
+        GRID-L8-UNIFICATION 之后，正式工作流的工作区网格恒为 L8，因此
+        ``declared_level_usable`` 在正式流程中不再因为工作区被 coarsen 而变 false；
+        ``unsupported_grid_level`` 只可能来自 legacy / diagnostic 的非 L8 网格。
         """
 
         available = list(cls.AVAILABLE_LEVELS)
@@ -74,10 +79,11 @@ class BuildingGridService:
                 ),
             },
             "limitations": [
-                "只有恰好 L8 的工作区网格能直接映射建筑事实表。",
-                "其它层级由源 footprint 精确聚合获得事实；聚合不可用（无 footprint 源 / "
-                "无几何库 / 无空间索引）时保持 status=unsupported、逐格 missing_data，"
-                "unknown 绝不当 0。",
+                "只有恰好 L8 的工作区网格能直接映射建筑事实表；正式工作流恒为 L8，"
+                "因此正式流程不再出现 unsupported_grid_level。",
+                "其它层级（legacy / diagnostic 网格）由源 footprint 精确聚合获得事实；"
+                "聚合不可用（无 footprint 源 / 无几何库 / 无空间索引）时保持 status=unsupported、"
+                "逐格 missing_data，unknown 绝不当 0。",
             ],
             "future_work": "level_independent_building_fact_acquisition",
             "future_work_status": "implemented_via_exact_footprint_aggregation",

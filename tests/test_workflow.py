@@ -26,7 +26,10 @@ def test_complete_workflow_persists_exports_and_never_reuses_route_ids(tmp_path)
     )
     service = WorkflowService(store, defaults)
     service.set_project({"name": "端到端测试"})
-    service.set_workspace([121.9, 29.9, 122.1, 30.1], health())
+    # GRID-L8-UNIFICATION：正式工作区网格恒为 canonical L8，且默认资源上限为 12000 格；
+    # 这里用一个 L8 下约 8.3k 格的矩形（仍然完整包含后面两个节点），使本测试继续走**正式**
+    # 默认路径而不是被上限阻断。
+    service.set_workspace([121.94, 29.96, 122.04, 30.04], health())
     service.add_node([121.96, 29.98], "A")
     service.add_node([122.02, 30.02], "B")
     state = service.generate_scenario("both")

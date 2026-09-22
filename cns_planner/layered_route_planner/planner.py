@@ -61,7 +61,10 @@ PLANNER_CAPABILITY = {
     "cross_level_aggregation_allowed": False,
     "notes": [
         "搜索发生在工作区当前网格层级的水平面上，算法本身不做层级转换。",
-        "建筑垂向包线只消费 L8 building_grid 事实；工作区被 coarsen 时建筑约束实际不参与。",
+        "建筑垂向包线只消费 L8 building_grid 事实；正式入口的工作区恒为 L8，"
+        "因此建筑约束在正式规划中始终参与。",
+        "legacy / diagnostic 的非 L8 工作区（已不由正式入口产生）仍会因层级不匹配而拿不到"
+        "L8 建筑事实，此时算法绝不静默降级、绝不把 unknown 当 0。",
         "层级无关的建筑事实获取是已记录的后续需求，本轮不实现，也不静默降级。",
     ],
     "future_work": "level_independent_building_fact_acquisition",
