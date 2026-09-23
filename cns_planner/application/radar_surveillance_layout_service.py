@@ -75,6 +75,14 @@ FORBIDDEN_WRITE_KEYS = (
 )
 
 DEMO_ROUTE_SOURCE = "current_layered_candidate"
+OPERATIONAL_ROUTE_SOURCE = "operational_routes"
+LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE = (
+    "layered_candidate_operational_adoption_v1"
+)
+OPERATIONAL_ROUTE_PROVENANCE_FIELDS = (
+    "source_type", "adoption_id", "validation_id", "validation_fingerprint",
+    "candidate_id", "candidate_fingerprint",
+)
 DEMO_PROPOSAL_TITLE = "80m固定高度航路方向性雷达几何初步划设方案（演示预览）"
 DEMO_WARNING = "演示预览：当前航路尚未完成建筑地面高程证据验证，不代表运行航路已发布。"
 DEMO_VALIDATION_REASON = "building_footprint_ground_elevation_unresolved"
@@ -1046,6 +1054,9 @@ class RadarSurveillanceLayoutService:
                 "demo_preview_only": item.get("demo_preview_only") is True,
                 "operationally_adopted": item.get("operationally_adopted"),
                 "route_source": item.get("route_source"),
+                "operational_route_provenance": deepcopy(
+                    item.get("operational_route_provenance")
+                ),
                 "candidate_id": item.get("candidate_id"),
                 "route_validation_status": item.get("route_validation_status"),
                 "route_validation_reason": item.get("route_validation_reason"),
@@ -1389,7 +1400,26 @@ class RadarSurveillanceLayoutService:
                 "demo_readiness": deepcopy(demo_context.get("readiness") or {}),
             })
         else:
-            base["demo_preview_only"] = False
+            route_provenance = (
+                route.get("provenance")
+                if isinstance(route, dict) and isinstance(route.get("provenance"), dict)
+                else {}
+            )
+            base.update({
+                "demo_preview_only": False,
+                "route_source": OPERATIONAL_ROUTE_SOURCE,
+                "operationally_adopted": bool(
+                    route_provenance.get("source_type")
+                    == LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE
+                    and route_provenance.get("adoption_id")
+                ),
+                # 仅转印 operational route 已有的、与 adoption 身份相关的有界字段。
+                "operational_route_provenance": {
+                    key: deepcopy(route_provenance[key])
+                    for key in OPERATIONAL_ROUTE_PROVENANCE_FIELDS
+                    if key in route_provenance
+                },
+            })
         base["input_fingerprint"] = self.input_fingerprint(
             route_id, route=route if demo_preview_only else None,
             demo_preview_only=demo_preview_only,
@@ -1994,6 +2024,8 @@ def normalize_radar_surveillance_layout(value):
 __all__ = [
     "BOUNDARIES", "DEMO_PROPOSAL_TITLE", "DEMO_ROUTE_SOURCE",
     "DEMO_VALIDATION_REASON", "DEMO_WARNING", "FORBIDDEN_WRITE_KEYS", "LAYOUT_KEY",
+    "LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE", "OPERATIONAL_ROUTE_SOURCE",
+    "OPERATIONAL_ROUTE_PROVENANCE_FIELDS",
     "LAYOUT_STATUSES", "POLICY_KEY",
     "PROPOSAL_ONLY", "READINESS_SEMANTICS", "STATUS_KEY",
     "RadarSurveillanceLayoutService", "default_radar_surveillance_policy",

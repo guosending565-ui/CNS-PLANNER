@@ -413,6 +413,9 @@ test('radar layout panel renders the required V1.1 summary fields', () => {
   assert.match(html, /真实物理水平范围/);
   // legacy 挂高输入框必须存在但被禁用（只读回显），不能作为必填项。
   assert.match(html, /id="radarMountHeight"[^>]*disabled/);
+  assert.doesNotMatch(html, /not_for_operational_use=true/);
+  assert.doesNotMatch(html, /not_for_safety_claim=true/);
+  assert.doesNotMatch(html, /not_for_final_confirmed_plan=true/);
   assert.doesNotMatch(html, /<script/);
 });
 
@@ -432,6 +435,7 @@ test('demo preview renders an unmistakable non-operational warning', () => {
   assert.match(html, /演示预览：当前航路尚未完成建筑地面高程证据验证/);
   assert.match(html, /not_for_operational_use=true/);
   assert.match(html, /not_for_safety_claim=true/);
+  assert.match(html, /not_for_final_confirmed_plan=true/);
 });
 
 test('radar layout panel escapes user provided text', () => {

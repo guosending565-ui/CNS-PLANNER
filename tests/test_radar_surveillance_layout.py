@@ -56,6 +56,7 @@ from cns_planner.application.project_state import normalize_project
 from cns_planner.application.radar_surveillance_layout_service import (
     DEMO_PROPOSAL_TITLE, DEMO_ROUTE_SOURCE, DEMO_VALIDATION_REASON, DEMO_WARNING,
     DISPLAY_GEOMETRY_SEMANTICS, DISPLAY_ROUTE_MARGIN_M, LAYOUT_KEY, POLICY_KEY,
+    LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE, OPERATIONAL_ROUTE_SOURCE,
     _route_focused_display_panels, normalize_radar_surveillance_layout,
     normalize_radar_surveillance_policy,
 )
@@ -2157,11 +2158,68 @@ def test_normal_mode_without_passed_operational_route_is_not_ready(tmp_path):
     item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
     assert item["status"] == "not_ready"
     assert item["demo_preview_only"] is False
+    assert item["route_source"] == OPERATIONAL_ROUTE_SOURCE
+    assert item["operationally_adopted"] is False
+    assert item["operational_route_provenance"] == {}
     assert any("operational route 状态不是 passed" in reason for reason in item["blockers"])
+
+
+def test_formal_operational_route_provenance_distinguishes_layered_adoption(tmp_path):
+    service, provider = _service(tmp_path, surface="sea")
+    route = service.state["operational_routes"][0]
+    route["provenance"] = {
+        "source_type": LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE,
+        "adoption_id": "LRA-21576F0DF020",
+        "validation_id": "LRV-R0003",
+        "validation_fingerprint": "validation-fingerprint",
+        "candidate_id": "LRC-R0003-ALT080",
+        "candidate_fingerprint": "candidate-fingerprint",
+        "projection_fingerprint": "not_part_of_bounded_projection",
+    }
+
+    _evaluate(service, provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    expected = {
+        "source_type": LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE,
+        "adoption_id": "LRA-21576F0DF020",
+        "validation_id": "LRV-R0003",
+        "validation_fingerprint": "validation-fingerprint",
+        "candidate_id": "LRC-R0003-ALT080",
+        "candidate_fingerprint": "candidate-fingerprint",
+    }
+    assert item["demo_preview_only"] is False
+    assert item["route_source"] == OPERATIONAL_ROUTE_SOURCE
+    assert item["operationally_adopted"] is True
+    assert item["operational_route_provenance"] == expected
+
+    summary = service.radar_surveillance_layout_service.summary_snapshot()["items"][0]
+    assert summary["route_source"] == OPERATIONAL_ROUTE_SOURCE
+    assert summary["operationally_adopted"] is True
+    assert summary["operational_route_provenance"] == expected
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {},
+        {"source_type": "manual", "adoption_id": "MANUAL-001"},
+        {"source_type": LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE},
+    ],
+)
+def test_formal_legacy_or_manual_route_never_claims_layered_adoption(tmp_path, provenance):
+    service, provider = _service(tmp_path, surface="sea")
+    service.state["operational_routes"][0]["provenance"] = deepcopy(provenance)
+    _evaluate(service, provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert item["route_source"] == OPERATIONAL_ROUTE_SOURCE
+    assert item["operationally_adopted"] is False
+    assert item["operational_route_provenance"] == provenance
 
 
 def test_demo_preview_solves_current_alt080_candidate_without_operational_adoption(tmp_path):
     service, provider = _service(tmp_path, surface="sea")
+    _evaluate(service, provider)
+    formal = deepcopy(service.radar_surveillance_layout(ROUTE_ID)["items"][0])
     candidate, _profile, validation = _configure_demo_preview(service)
     service.state["operational_routes"] = []
     radar = service.radar_surveillance_layout_service
@@ -2193,6 +2251,10 @@ def test_demo_preview_solves_current_alt080_candidate_without_operational_adopti
     assert item["preview_provenance"]["layered_route_validations"][0]["status"] == "unresolved"
     assert item["solver"]["name"] == "scipy.optimize.milp"
     assert item["solver"]["library"] == "HiGHS"
+    assert item["solver"] == formal["solver"]
+    assert item["selected_panels"] == formal["selected_panels"]
+    assert item["coverage_summary"] == formal["coverage_summary"]
+    assert item["validation"] == formal["validation"]
     for key, value in protected.items():
         assert service.state.get(key) == value, key
 
