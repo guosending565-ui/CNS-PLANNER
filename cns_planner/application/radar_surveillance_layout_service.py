@@ -23,7 +23,8 @@ from copy import deepcopy
 
 from ..algorithms.coverage.geometric_3d import path_length_m
 from ..algorithms.radar_layout.v1 import (
-    SOFTWARE_BASELINE, build_route_samples, parameters_block, solve_layout,
+    SOFTWARE_BASELINE, actual_site_coverage, build_route_samples, parameters_block,
+    solve_layout,
 )
 from ..domain.radar_surveillance_layout import (
     ALGORITHM_ID, ALGORITHM_NAME, ALGORITHM_SEMANTICS, ALGORITHM_VERSION,
@@ -69,8 +70,22 @@ LAND_MASK_SOURCE_PROVENANCE = {
 FORBIDDEN_WRITE_KEYS = (
     "existing_cns_facilities", "coverage_3d", "cns_service_capability",
     "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan",
-    "cns_site_plan", "device_catalog", "operational_routes",
+    "cns_site_plan", "device_catalog", "operational_routes", "route_operating_layers",
+    "layered_route_validations", "layered_operational_adoptions",
 )
+
+DEMO_ROUTE_SOURCE = "current_layered_candidate"
+DEMO_PROPOSAL_TITLE = "80m固定高度航路方向性雷达几何初步划设方案（演示预览）"
+DEMO_WARNING = "演示预览：当前航路尚未完成建筑地面高程证据验证，不代表运行航路已发布。"
+DEMO_VALIDATION_REASON = "building_footprint_ground_elevation_unresolved"
+
+#: Map-only route-focus padding.  This value never enters solver, validation,
+#: feasibility, input fingerprints, stale determination, or the Radar algorithm version.
+DISPLAY_ROUTE_MARGIN_M = 25.0
+DISPLAY_GEOMETRY_SEMANTICS = (
+    "route_focused_sector_to_farthest_covered_validation_sample"
+)
+DISPLAY_GEOMETRY_FALLBACK = "physical_outer_radius_no_covered_sample_detail"
 
 #: 权威结果容器摘要形状（与 ``domain.result_statuses`` 对齐）。
 LAYOUT_STATUSES = (
@@ -289,6 +304,73 @@ def _finite(value):
     return number
 
 
+def _route_focused_display_panels(
+        selected_panels, coverage_samples, tower_metric_by_id, *,
+        margin_m=DISPLAY_ROUTE_MARGIN_M, covered_sample_detail=True):
+    """Attach display-only radii derived from actual covered validation samples.
+
+    ``coverage_samples`` is the validator's per-sample coverage fact shape: each sample
+    carries its EPSG:32651 ``metric`` coordinate and the selected ``panels`` that cover it.
+    Route chainage is deliberately ignored because it is not a tower-to-sample radius.
+    """
+
+    panels = deepcopy(selected_panels or [])
+    distances_by_panel = {str(panel.get("panel_id")): [] for panel in panels}
+    if covered_sample_detail:
+        for sample in coverage_samples or []:
+            metric = sample.get("metric") if isinstance(sample, dict) else None
+            if not (isinstance(metric, (list, tuple)) and len(metric) >= 2):
+                continue
+            sx, sy = _finite(metric[0]), _finite(metric[1])
+            if sx is None or sy is None:
+                continue
+            for match in sample.get("panels") or []:
+                panel_id = str((match or {}).get("panel_id") or "")
+                panel = next(
+                    (item for item in panels if str(item.get("panel_id")) == panel_id),
+                    None,
+                )
+                if panel is None:
+                    continue
+                tower_metric = tower_metric_by_id.get(str(panel.get("tower_id")))
+                if not (isinstance(tower_metric, (list, tuple)) and len(tower_metric) >= 2):
+                    continue
+                tx, ty = _finite(tower_metric[0]), _finite(tower_metric[1])
+                if tx is None or ty is None:
+                    continue
+                distances_by_panel[panel_id].append(
+                    ((sx - tx) ** 2 + (sy - ty) ** 2) ** 0.5
+                )
+
+    for panel in panels:
+        panel_id = str(panel.get("panel_id") or "")
+        physical_inner = _finite(panel.get("horizontal_inner_radius_m"))
+        physical_outer = _finite(panel.get("horizontal_outer_radius_m"))
+        distances = distances_by_panel.get(panel_id) or []
+        farthest = max(distances) if distances else None
+        fallback = None
+        if physical_outer is None:
+            display_outer = None
+        elif farthest is None:
+            display_outer = physical_outer
+            fallback = DISPLAY_GEOMETRY_FALLBACK
+        else:
+            display_outer = min(physical_outer, farthest + float(margin_m))
+        panel["display_geometry"] = {
+            "display_only": True,
+            "semantics": DISPLAY_GEOMETRY_SEMANTICS,
+            "margin_m": float(margin_m),
+            "physical_inner_radius_m": physical_inner,
+            "physical_outer_radius_m": physical_outer,
+            "display_inner_radius_m": physical_inner,
+            "display_outer_radius_m": display_outer,
+            "farthest_covered_validation_sample_horizontal_distance_m": farthest,
+            "covered_validation_sample_count": len(distances),
+            "display_geometry_fallback": fallback,
+        }
+    return panels
+
+
 def _state_route(state, route_id):
     for route in state.get("operational_routes") or []:
         if isinstance(route, dict) and str(route.get("route_id")) == str(route_id):
@@ -327,7 +409,7 @@ def _tower_items(state):
 class RadarSurveillanceLayoutService:
     """``radar_surveillance_policy`` / ``radar_surveillance_layout`` 的唯一写入者。"""
 
-    def __init__(self, session, invalidation, snapshot):
+    def __init__(self, session, invalidation, snapshot, layered_route_planner_service=None):
         self.session = session
         self.invalidation = invalidation
         self.snapshot = snapshot
@@ -336,6 +418,10 @@ class RadarSurveillanceLayoutService:
         self.to_geographic = None
         #: 由 composition root 注入的只读事实提供者。
         self.facts_provider = None
+        #: Demo preview 只读依赖；由 composition root 注入，不拥有它们的状态。
+        self.layered_route_planner_service = layered_route_planner_service
+        self.route_risk_profile_service = None
+        self.layered_route_validation_service = None
 
     # ------------------------------------------------------------------ containers
     def _policy(self):
@@ -369,21 +455,22 @@ class RadarSurveillanceLayoutService:
         self.session.save()
         return self.snapshot()
 
-    def source_status(self):
+    def source_status(self, *, facts_provider=None):
         return radar_layout_source_status(
-            self.session.state, self._source_paths(),
+            self.session.state, self._source_paths(facts_provider=facts_provider),
             layer_name=self._policy().get("land_mask_layer_name"),
             coastal_uncertainty_buffer_m=self._policy().get("coastal_uncertainty_buffer_m"),
         )
 
-    def _source_paths(self):
+    def _source_paths(self, *, facts_provider=None):
         """当前空间来源路径：优先注入的 provider，其次 ProjectState 内的来源记录。
 
         项目刚恢复 / provider 尚未注入时也要能报告真实 readiness，绝不把
         "provider 还没注入"误报成"land_mask 未配置"。
         """
 
-        provider = self.facts_provider or {}
+        provider = facts_provider if facts_provider is not None else self.facts_provider
+        provider = provider or {}
         paths = dict(provider.get("paths") or {}) if isinstance(provider, dict) else {}
         state = self.session.state
         if not paths.get("land_mask"):
@@ -400,17 +487,101 @@ class RadarSurveillanceLayoutService:
                     paths[key] = value
         return paths
 
-    def land_mask_readiness(self):
+    def land_mask_readiness(self, *, facts_provider=None):
         """land mask **深度** readiness（文件/图层/几何/CRS/米制变换）。"""
 
         policy = self._policy()
         return land_mask_readiness(
-            self.session.state, self._source_paths(),
+            self.session.state, self._source_paths(facts_provider=facts_provider),
             layer_name=policy.get("land_mask_layer_name"),
             coastal_uncertainty_buffer_m=policy.get("coastal_uncertainty_buffer_m"),
         )
 
-    def readiness_snapshot(self):
+    @staticmethod
+    def _demo_preview_requested(payload):
+        return isinstance(payload, dict) and payload.get("demo_preview_only") is True
+
+    def _current_demo_candidate(self):
+        service = self.layered_route_planner_service
+        selector = getattr(service, "current_candidate_snapshot", None)
+        if not callable(selector):
+            return None
+        try:
+            return selector(altitude_layer_id=FIXED_ALTITUDE_LAYER_ID)
+        except (TypeError, ValueError, RuntimeError):
+            return None
+
+    def _current_risk_profile(self, candidate):
+        if candidate is None or self.route_risk_profile_service is None:
+            return None
+        try:
+            collection = self.route_risk_profile_service.result_snapshot()
+        except (TypeError, ValueError, RuntimeError):
+            return None
+        candidate_id = candidate.get("candidate_id")
+        candidate_fingerprint = candidate.get("candidate_fingerprint")
+        eligible = []
+        for item in collection.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            reference = item.get("candidate") or {}
+            if (
+                item.get("status") == "passed"
+                and item.get("current_applicability") == "current"
+                and reference.get("candidate_id") == candidate_id
+                and reference.get("candidate_fingerprint") == candidate_fingerprint
+            ):
+                eligible.append(item)
+        active_id = collection.get("active_profile_id")
+        active = next(
+            (item for item in eligible if item.get("profile_id") == active_id), None,
+        )
+        if active is not None:
+            return deepcopy(active)
+        return deepcopy(eligible[0]) if len(eligible) == 1 else None
+
+    def _current_validation_evidence(self, candidate):
+        """Preserve current matching validation evidence exactly as projected.
+
+        Demo preview never upgrades this evidence.  Returning a list avoids inventing an
+        ordering rule when multiple current unresolved attempts exist for one candidate.
+        """
+
+        if candidate is None or self.layered_route_validation_service is None:
+            return []
+        try:
+            collection = self.layered_route_validation_service.result_snapshot()
+        except (TypeError, ValueError, RuntimeError):
+            return []
+        result = []
+        for item in collection.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            reference = item.get("candidate") or {}
+            if (
+                reference.get("candidate_id") == candidate.get("candidate_id")
+                and reference.get("candidate_fingerprint") == candidate.get(
+                    "candidate_fingerprint"
+                )
+                and item.get("current_applicability") == "current"
+            ):
+                result.append(deepcopy(item))
+        return result
+
+    @staticmethod
+    def _demo_route_view(candidate):
+        if not isinstance(candidate, dict):
+            return None
+        return {
+            "route_id": candidate.get("route_id"),
+            "path": deepcopy(candidate.get("path") or []),
+            "status": "demo_preview_candidate",
+            "source": DEMO_ROUTE_SOURCE,
+            "candidate_id": candidate.get("candidate_id"),
+            "altitude_layer_id": candidate.get("altitude_layer_id"),
+        }
+
+    def readiness_snapshot(self, payload=None, *, facts_provider=None):
         """只读 readiness：不打开任何大数据集。
 
         V1.1 的 ``passed`` 判据（BUG-RADAR-READINESS-004）：
@@ -423,6 +594,8 @@ class RadarSurveillanceLayoutService:
         **不再要求** radar mount height configured（V1.1 雷达原点 = 塔顶正高）。
         """
 
+        payload = payload if isinstance(payload, dict) else {}
+        demo_preview_only = self._demo_preview_requested(payload)
         state = self.session.state
         routes = [
             item for item in state.get("operational_routes") or []
@@ -431,6 +604,7 @@ class RadarSurveillanceLayoutService:
         passed_routes = [item for item in routes if str(item.get("status")) == "passed"]
         towers = _tower_items(state)
         profiles = (state.get("tower_obstacle_profiles") or {})
+        profiles_status = profiles.get("status") if isinstance(profiles, dict) else None
         profiles = profiles.get("items") if isinstance(profiles, dict) else {}
         profiles = profiles if isinstance(profiles, dict) else {}
         resolved = sum(
@@ -465,22 +639,43 @@ class RadarSurveillanceLayoutService:
                 isinstance(layer, dict) and (layer.get("confirmed") is True)
             ),
         }
-        land = self.land_mask_readiness()
-        metric = self._metric_transform_readiness()
+        candidate = self._current_demo_candidate() if demo_preview_only else None
+        risk_profile = self._current_risk_profile(candidate) if demo_preview_only else None
+        land = self.land_mask_readiness(facts_provider=facts_provider)
+        metric = self._metric_transform_readiness(facts_provider=facts_provider)
         solver = _solver_availability()
 
         blockers = []
-        if not passed_routes:
+        if demo_preview_only and payload.get("route_source") != DEMO_ROUTE_SOURCE:
+            blockers.append("demo_route_source_must_be_current_layered_candidate")
+        if demo_preview_only and candidate is None:
+            blockers.append("current_alt_080_layered_candidate_missing")
+        elif demo_preview_only:
+            if candidate.get("status") != "candidate":
+                blockers.append("current_alt_080_candidate_status_not_candidate")
+            if candidate.get("current_applicability") != "current":
+                blockers.append("current_alt_080_candidate_not_current")
+            if str(candidate.get("altitude_layer_id")) != FIXED_ALTITUDE_LAYER_ID:
+                blockers.append("current_layered_candidate_not_alt_080")
+            if candidate.get("route_id") in (None, ""):
+                blockers.append("current_alt_080_candidate_route_id_missing")
+            if len(candidate.get("path") or []) < 2:
+                blockers.append("current_alt_080_candidate_path_unavailable")
+        if demo_preview_only and risk_profile is None:
+            blockers.append("current_route_risk_profile_missing")
+        if not demo_preview_only and not passed_routes:
             blockers.append("passed_operational_route_missing")
         if not towers:
             blockers.append("real_tower_sites_missing")
         if not profiles:
             blockers.append("tower_obstacle_profiles_missing")
+        elif demo_preview_only and profiles_status != "passed":
+            blockers.append(f"tower_obstacle_profiles_not_ready:{profiles_status}")
         if not resolved:
             blockers.append("resolved_tower_top_orthometric_missing")
-        if not altitude["present"]:
+        if not demo_preview_only and not altitude["present"]:
             blockers.append("altitude_layer_alt_080_missing")
-        elif not altitude["confirmed"]:
+        elif not demo_preview_only and not altitude["confirmed"]:
             blockers.append("altitude_layer_alt_080_not_confirmed")
         if land.get("status") != "passed":
             blockers.append(f"land_mask_not_ready:{land.get('reason')}")
@@ -497,9 +692,31 @@ class RadarSurveillanceLayoutService:
             "algorithm_semantics": ALGORITHM_SEMANTICS,
             "model_scope": MODEL_SCOPE,
             "proposal_only": PROPOSAL_ONLY,
+            "demo_preview_only": demo_preview_only,
+            "route_source": DEMO_ROUTE_SOURCE if demo_preview_only else "operational_routes",
+            "operationally_adopted": False if demo_preview_only else None,
             "blockers": blockers,
             "passed_operational_route_count": len(passed_routes),
             "operational_route_count": len(routes),
+            "current_layered_candidate": (
+                {
+                    "candidate_id": candidate.get("candidate_id"),
+                    "route_id": candidate.get("route_id"),
+                    "altitude_layer_id": candidate.get("altitude_layer_id"),
+                    "status": candidate.get("status"),
+                    "current_applicability": candidate.get("current_applicability"),
+                    "candidate_fingerprint": candidate.get("candidate_fingerprint"),
+                }
+                if candidate else None
+            ),
+            "current_route_risk_profile": (
+                {
+                    "profile_id": risk_profile.get("profile_id"),
+                    "status": risk_profile.get("status"),
+                    "current_applicability": risk_profile.get("current_applicability"),
+                }
+                if risk_profile else None
+            ),
             "tower_count": len(towers),
             "tower_with_resolved_radar_base_count": resolved,
             "tower_obstacle_profile_count": len(profiles),
@@ -520,10 +737,11 @@ class RadarSurveillanceLayoutService:
             "not_evaluated": deepcopy(NOT_EVALUATED),
         }
 
-    def _metric_transform_readiness(self):
+    def _metric_transform_readiness(self, *, facts_provider=None):
         """EPSG:32651 米制变换是否可用（不打开任何数据集）。"""
 
-        provider = self.facts_provider or {}
+        provider = facts_provider if facts_provider is not None else self.facts_provider
+        provider = provider or {}
         projector = provider.get("to_metric") if isinstance(provider, dict) else None
         if not callable(projector):
             return {
@@ -574,7 +792,15 @@ class RadarSurveillanceLayoutService:
             entry = deepcopy(item)
             fingerprint = entry.get("input_fingerprint")
             if entry.get("status") != "stale":
-                current = self.input_fingerprint(entry.get("route_id"))
+                if entry.get("demo_preview_only") is True:
+                    candidate = self._current_demo_candidate()
+                    route = self._demo_route_view(candidate)
+                    current = self.input_fingerprint(
+                        entry.get("route_id"), route=route,
+                        demo_preview_only=True, candidate=candidate,
+                    )
+                else:
+                    current = self.input_fingerprint(entry.get("route_id"))
                 if fingerprint and current and fingerprint != current:
                     entry["status"] = "stale"
                     entry["stale_reason"] = "radar_surveillance_inputs_changed"
@@ -607,6 +833,116 @@ class RadarSurveillanceLayoutService:
         }
 
     # ------------------------------------------------------------------ summary
+    def _summary_selected_panels(self, item):
+        """Project display metadata for both new and pre-existing stored layouts.
+
+        New evaluations persist the block.  For an older result, the projection may derive
+        it only when the stored validation detail is demonstrably complete; otherwise it
+        records the explicit physical-radius fallback.  This is read-only and cannot stale
+        or mutate the Radar result.
+        """
+
+        panels = deepcopy(item.get("selected_panels") or [])
+        if panels and all(isinstance(panel.get("display_geometry"), dict) for panel in panels):
+            return panels
+
+        validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
+        samples = validation.get("samples") if isinstance(validation.get("samples"), list) else []
+        expected_count = (item.get("route_sampling") or {}).get(
+            "validation_review_sample_count"
+        )
+        detail_complete = bool(samples) and (
+            expected_count is None or int(expected_count) == len(samples)
+        ) and all(
+            isinstance(sample, dict)
+            and isinstance(sample.get("metric"), (list, tuple))
+            and isinstance(sample.get("panels"), list)
+            for sample in samples
+        )
+
+        provider = self.facts_provider if isinstance(self.facts_provider, dict) else {}
+        projector = provider.get("to_metric")
+        tower_metric_by_id = {}
+        if callable(projector):
+            for panel in panels:
+                longitude, latitude = panel.get("longitude"), panel.get("latitude")
+                if _finite(longitude) is None or _finite(latitude) is None:
+                    continue
+                try:
+                    metric = projector([float(longitude), float(latitude)])
+                except (TypeError, ValueError, RuntimeError):
+                    continue
+                if isinstance(metric, (list, tuple)) and len(metric) >= 2:
+                    tower_metric_by_id[str(panel.get("tower_id"))] = metric
+        detail_complete = detail_complete and bool(tower_metric_by_id)
+
+        # Older persisted layouts predate ``display_geometry`` and their bounded
+        # validation projection may omit the per-sample coverage detail.  Rebuild the
+        # independent validation chain read-only from the current route and provider,
+        # then recompute actual selected-panel coverage.  This is visualization-only:
+        # it never invokes the solver, mutates stored state, changes fingerprints, or
+        # participates in stale determination.
+        if not detail_complete and callable(projector) and tower_metric_by_id:
+            route = (
+                self._demo_route_view(self._current_demo_candidate())
+                if item.get("demo_preview_only") is True
+                else _state_route(self.session.state, item.get("route_id"))
+            )
+            path = (route or {}).get("path") or []
+            try:
+                metric_path = [
+                    projector([float(point[0]), float(point[1])]) for point in path
+                ]
+                spacing = float(
+                    (item.get("route_sampling") or {}).get(
+                        "validation_sample_spacing_m"
+                    )
+                    or (item.get("parameters") or {}).get(
+                        "validation_sample_spacing_m"
+                    )
+                    or 5.0
+                )
+                rebuilt = build_route_samples(
+                    metric_path=metric_path,
+                    spacing_m=spacing,
+                    route_id=str(item.get("route_id") or "route"),
+                    fixed_altitude_m=float(item.get("altitude_m") or FIXED_ALTITUDE_M),
+                    sample_id_prefix="V",
+                    coordinate_resolver=(
+                        provider.get("to_geographic")
+                        if callable(provider.get("to_geographic")) else None
+                    ),
+                )
+                tower_records = []
+                seen_towers = set()
+                for panel in panels:
+                    tower_id = str(panel.get("tower_id") or "")
+                    origin = _finite(panel.get("radar_origin_egm2008_m"))
+                    if (
+                        not tower_id or tower_id in seen_towers or origin is None
+                        or tower_id not in tower_metric_by_id
+                    ):
+                        continue
+                    seen_towers.add(tower_id)
+                    tower_records.append({
+                        "tower_id": tower_id,
+                        "metric": tower_metric_by_id[tower_id],
+                        "origin_egm2008_m": origin,
+                    })
+                samples = actual_site_coverage(
+                    panels=panels,
+                    samples=rebuilt["samples"],
+                    selected_panel_ids=[panel.get("panel_id") for panel in panels],
+                    tower_records=tower_records,
+                )
+                detail_complete = bool(samples)
+            except (TypeError, ValueError, KeyError, RuntimeError):
+                detail_complete = False
+        return _route_focused_display_panels(
+            panels, samples, tower_metric_by_id,
+            covered_sample_detail=detail_complete,
+        )
+
     def summary_snapshot(self):
         """有界摘要（供通用 workflow 快照使用，不含逐 sample 明细）。"""
 
@@ -614,6 +950,7 @@ class RadarSurveillanceLayoutService:
         items = []
         for item in full.get("items") or []:
             validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
+            selected_panels = self._summary_selected_panels(item)
             items.append({
                 "route_id": item.get("route_id"),
                 "status": item.get("status"),
@@ -650,7 +987,7 @@ class RadarSurveillanceLayoutService:
                 },
                 # 地图 overlay 需要**已选方案**的几何；未选 panel 的 coverage polygon 一律不下发
                 # （否则会一次产生数百个多边形，造成地图性能问题）。
-                "selected_panels": item.get("selected_panels") or [],
+                "selected_panels": selected_panels,
                 "selected_tower_ids": item.get("selected_tower_ids") or [],
                 "coverage_profile": validation.get("coverage_profile") or {
                     "entries": [], "count": 0, "truncated": False,
@@ -706,6 +1043,20 @@ class RadarSurveillanceLayoutService:
                 "input_fingerprint": item.get("input_fingerprint"),
                 "stale_reason": item.get("stale_reason"),
                 "proposal_only": True,
+                "demo_preview_only": item.get("demo_preview_only") is True,
+                "operationally_adopted": item.get("operationally_adopted"),
+                "route_source": item.get("route_source"),
+                "candidate_id": item.get("candidate_id"),
+                "route_validation_status": item.get("route_validation_status"),
+                "route_validation_reason": item.get("route_validation_reason"),
+                "not_for_operational_use": item.get("not_for_operational_use"),
+                "not_for_safety_claim": item.get("not_for_safety_claim"),
+                "not_for_final_confirmed_plan": item.get("not_for_final_confirmed_plan"),
+                "proposal_title": item.get("proposal_title"),
+                "preview_warning": item.get("preview_warning"),
+                "preview_provenance": item.get("preview_provenance"),
+                "demo_readiness": item.get("demo_readiness"),
+                "blockers": deepcopy(item.get("blockers") or []),
             })
         return {
             "status": full.get("status"),
@@ -724,20 +1075,27 @@ class RadarSurveillanceLayoutService:
         }
 
     # ------------------------------------------------------------------ fingerprints
-    def input_fingerprint(self, route_id):
+    def input_fingerprint(self, route_id, *, route=None, demo_preview_only=False,
+                          candidate=None):
         """当前上游输入的确定性指纹（route / towers / 设备 / 陆域 / 挂高 / 策略）。"""
 
         return stable_fingerprint(
-            self._fingerprint_components(route_id), prefix="radarlayout-",
+            self._fingerprint_components(
+                route_id, route=route, demo_preview_only=demo_preview_only,
+                candidate=candidate,
+            ), prefix="radarlayout-",
         )
 
-    def _fingerprint_components(self, route_id):
+    def _fingerprint_components(self, route_id, *, route=None, demo_preview_only=False,
+                                candidate=None):
         """指纹输入分量（同时供诊断使用：逐分量 diff 定位变化来源）。"""
 
         state = self.session.state
         policy = self._policy()
         land_mask_status = self.source_status()
-        route = _state_route(state, route_id) if route_id else None
+        route = route if isinstance(route, dict) else (
+            _state_route(state, route_id) if route_id else None
+        )
         profiles = (state.get("tower_obstacle_profiles") or {})
         profiles = profiles.get("items") if isinstance(profiles, dict) else {}
         profiles = profiles if isinstance(profiles, dict) else {}
@@ -858,6 +1216,18 @@ class RadarSurveillanceLayoutService:
                 "land_mask_layer_name": policy.get("land_mask_layer_name"),
             },
         }
+        if demo_preview_only:
+            components["demo_preview"] = {
+                "demo_preview_only": True,
+                "route_source": DEMO_ROUTE_SOURCE,
+                "candidate_id": (candidate or {}).get("candidate_id"),
+                "candidate_fingerprint": (candidate or {}).get("candidate_fingerprint"),
+                "candidate_status": (candidate or {}).get("status"),
+                "candidate_current_applicability": (
+                    (candidate or {}).get("current_applicability")
+                ),
+                "altitude_layer_id": (candidate or {}).get("altitude_layer_id"),
+            }
         return components
 
     # ------------------------------------------------------------------ evaluation
@@ -879,9 +1249,38 @@ class RadarSurveillanceLayoutService:
 
         policy = self._policy()
         provider = facts_provider if facts_provider is not None else self.facts_provider
-        route_ids = _route_ids(state, payload)
-        if not route_ids:
-            raise ValueError("当前没有运行航路：雷达初步划设需要已发布运行航路")
+        demo_preview_only = self._demo_preview_requested(payload)
+        demo_context = None
+        preflight_blockers = []
+        route_views = {}
+        if demo_preview_only:
+            readiness = self.readiness_snapshot(payload, facts_provider=provider)
+            candidate = self._current_demo_candidate()
+            route_view = self._demo_route_view(candidate)
+            route_id = str(
+                (route_view or {}).get("route_id")
+                or payload.get("route_id")
+                or DEMO_ROUTE_SOURCE
+            )
+            requested = payload.get("route_id")
+            if requested not in (None, "", "all", route_id):
+                readiness["blockers"] = list(readiness.get("blockers") or []) + [
+                    "requested_route_does_not_match_current_alt_080_candidate"
+                ]
+                readiness["status"] = "not_ready"
+            route_ids = [route_id]
+            route_views[route_id] = route_view
+            preflight_blockers = list(readiness.get("blockers") or [])
+            demo_context = {
+                "candidate": candidate,
+                "risk_profile": self._current_risk_profile(candidate),
+                "layered_route_validations": self._current_validation_evidence(candidate),
+                "readiness": readiness,
+            }
+        else:
+            route_ids = _route_ids(state, payload)
+            if not route_ids:
+                raise ValueError("当前没有运行航路：雷达初步划设需要已发布运行航路")
 
         records = self._stored()
         items_by_id = {
@@ -893,6 +1292,8 @@ class RadarSurveillanceLayoutService:
         for route_id in route_ids:
             record = self._evaluate_route(
                 route_id=route_id, policy=policy, provider=provider,
+                route_view=route_views.get(route_id), demo_context=demo_context,
+                preflight_blockers=preflight_blockers,
             )
             items_by_id[route_id] = record
             evaluated.append(deepcopy(record))
@@ -915,13 +1316,16 @@ class RadarSurveillanceLayoutService:
         self.session.save()
         return self.snapshot()
 
-    def _evaluate_route(self, *, route_id, policy, provider):
+    def _evaluate_route(self, *, route_id, policy, provider, route_view=None,
+                        demo_context=None, preflight_blockers=None):
         state = self.session.state
         provider = provider if isinstance(provider, dict) else {}
         projector = provider.get("to_metric")
         to_geographic = provider.get("to_geographic") or self.to_geographic
-        route = _state_route(state, route_id)
-        blockers, unknown_evidence = [], []
+        demo_preview_only = isinstance(demo_context, dict)
+        route = route_view if demo_preview_only else _state_route(state, route_id)
+        blockers = list(preflight_blockers or [])
+        unknown_evidence = []
 
         base = {
             "route_id": str(route_id),
@@ -934,7 +1338,10 @@ class RadarSurveillanceLayoutService:
             "algorithm_semantics": ALGORITHM_SEMANTICS,
             "model_scope": MODEL_SCOPE,
             "proposal_only": PROPOSAL_ONLY,
-            "proposal_title": "80m固定高度航路方向性雷达几何初步划设方案",
+            "proposal_title": (
+                DEMO_PROPOSAL_TITLE if demo_preview_only
+                else "80m固定高度航路方向性雷达几何初步划设方案"
+            ),
             "evaluated_at": utc_now(),
             "parameters": parameters_block(),
             "device_provenance": device_provenance(),
@@ -943,23 +1350,73 @@ class RadarSurveillanceLayoutService:
             "boundaries": deepcopy(BOUNDARIES),
             "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
         }
-        base["input_fingerprint"] = self.input_fingerprint(route_id)
+        if demo_preview_only:
+            candidate = demo_context.get("candidate") or {}
+            risk_profile = demo_context.get("risk_profile") or {}
+            base.update({
+                "demo_preview_only": True,
+                "operationally_adopted": False,
+                "route_source": DEMO_ROUTE_SOURCE,
+                "candidate_id": candidate.get("candidate_id"),
+                "route_validation_status": "unresolved",
+                "route_validation_reason": DEMO_VALIDATION_REASON,
+                "not_for_operational_use": True,
+                "not_for_safety_claim": True,
+                "not_for_final_confirmed_plan": True,
+                "preview_warning": DEMO_WARNING,
+                "blockers": list(preflight_blockers or []),
+                "preview_provenance": {
+                    "route_source": DEMO_ROUTE_SOURCE,
+                    "layered_route_candidate": {
+                        "candidate_id": candidate.get("candidate_id"),
+                        "route_id": candidate.get("route_id"),
+                        "altitude_layer_id": candidate.get("altitude_layer_id"),
+                        "status": candidate.get("status"),
+                        "current_applicability": candidate.get("current_applicability"),
+                        "candidate_fingerprint": candidate.get("candidate_fingerprint"),
+                    },
+                    "route_risk_profile": {
+                        "profile_id": risk_profile.get("profile_id"),
+                        "status": risk_profile.get("status"),
+                        "current_applicability": risk_profile.get("current_applicability"),
+                    },
+                    # 原样保留 current matching validation 的 status/reason/domains；
+                    # 演示预览绝不把 unresolved 改写成 passed。
+                    "layered_route_validations": deepcopy(
+                        demo_context.get("layered_route_validations") or []
+                    ),
+                },
+                "demo_readiness": deepcopy(demo_context.get("readiness") or {}),
+            })
+        else:
+            base["demo_preview_only"] = False
+        base["input_fingerprint"] = self.input_fingerprint(
+            route_id, route=route if demo_preview_only else None,
+            demo_preview_only=demo_preview_only,
+            candidate=(demo_context or {}).get("candidate"),
+        )
 
         if route is None:
+            missing = blockers or [
+                "current ALT-080 LayeredRouteCandidate 不存在"
+                if demo_preview_only else "运行航路不存在"
+            ]
             base.update({
                 "status": "not_ready",
-                "infeasibility_reasons": ["运行航路不存在"],
+                "blockers": missing,
+                "infeasibility_reasons": missing,
                 "unknown_evidence": [],
             })
             return base
         base["route_status"] = route.get("status")
         path = route.get("path") or []
-        if str(route.get("status")) != "passed":
+        if not demo_preview_only and str(route.get("status")) != "passed":
             blockers.append(
                 f"operational route 状态不是 passed（{route.get('status')}）"
             )
         if len(path) < 2:
-            blockers.append("operational route 顶点不足（需要 >= 2 个顶点）")
+            route_label = "layered candidate" if demo_preview_only else "operational route"
+            blockers.append(f"{route_label} 顶点不足（需要 >= 2 个顶点）")
 
         if projector is None:
             blockers.append(
@@ -1290,12 +1747,36 @@ class RadarSurveillanceLayoutService:
         )
 
         solved_validation = deepcopy(solved.get("validation"))
+        selected_panels = deepcopy(solved.get("selected_panels") or [])
+        # Visualization metadata is derived *after* solving from the independent final
+        # validation chain.  It does not feed back into candidates, MILP, coverage verdict,
+        # objective, validation fingerprint, or Radar input fingerprint.
+        display_validation_samples = (
+            validation_samples if validation_samples is not None else sampled["samples"]
+        )
+        display_coverage = []
+        if selected_panels and display_validation_samples:
+            display_coverage = actual_site_coverage(
+                panels=selected_panels,
+                samples=display_validation_samples,
+                selected_panel_ids=[panel["panel_id"] for panel in selected_panels],
+                tower_records=usable_towers,
+            )
+        selected_panels = _route_focused_display_panels(
+            selected_panels,
+            display_coverage,
+            {
+                str(tower["tower_id"]): tower.get("metric")
+                for tower in usable_towers
+            },
+            covered_sample_detail=bool(display_coverage),
+        )
         base.update({
             "status": _map_status(str(solved.get("status"))),
             "stage": solved.get("stage"),
             "stage_label": solved.get("stage_label"),
             "solver": deepcopy(solved.get("solver")),
-            "selected_panels": deepcopy(solved.get("selected_panels") or []),
+            "selected_panels": selected_panels,
             "selected_panel_count": solved.get("selected_panel_count"),
             "selected_tower_count": solved.get("selected_tower_count"),
             "selected_tower_ids": deepcopy(solved.get("selected_tower_ids") or []),
@@ -1511,7 +1992,9 @@ def normalize_radar_surveillance_layout(value):
 
 
 __all__ = [
-    "BOUNDARIES", "FORBIDDEN_WRITE_KEYS", "LAYOUT_KEY", "LAYOUT_STATUSES", "POLICY_KEY",
+    "BOUNDARIES", "DEMO_PROPOSAL_TITLE", "DEMO_ROUTE_SOURCE",
+    "DEMO_VALIDATION_REASON", "DEMO_WARNING", "FORBIDDEN_WRITE_KEYS", "LAYOUT_KEY",
+    "LAYOUT_STATUSES", "POLICY_KEY",
     "PROPOSAL_ONLY", "READINESS_SEMANTICS", "STATUS_KEY",
     "RadarSurveillanceLayoutService", "default_radar_surveillance_policy",
     "empty_radar_surveillance_layout", "normalize_radar_surveillance_layout",

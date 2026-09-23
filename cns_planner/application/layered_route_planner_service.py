@@ -272,6 +272,41 @@ class LayeredRoutePlannerService:
         collection["current_candidate_fingerprint"] = current_fingerprint
         return collection
 
+    def current_candidate_snapshot(self, *, altitude_layer_id=None):
+        """Return the authoritative current candidate without trusting stored applicability.
+
+        ``current_applicability`` is a read-time projection, so downstream consumers must
+        select from :meth:`result_snapshot` rather than taking the last persisted record.
+        The active candidate wins when it is still eligible; otherwise the current lane key
+        is used.  A legacy collection with neither pointer is accepted only when it has one
+        unambiguous eligible candidate.
+        """
+
+        collection = self.result_snapshot()
+        eligible = [
+            item for item in collection.get("items") or []
+            if isinstance(item, dict)
+            and item.get("status") == "candidate"
+            and item.get("current_applicability") == "current"
+            and (
+                altitude_layer_id is None
+                or str(item.get("altitude_layer_id")) == str(altitude_layer_id)
+            )
+        ]
+        active_id = collection.get("active_candidate_id")
+        active = next(
+            (item for item in eligible if item.get("candidate_id") == active_id), None,
+        )
+        if active is not None:
+            return deepcopy(active)
+        current_key = collection.get("current_key")
+        current_lane = [item for item in eligible if item.get("lane_key") == current_key]
+        if len(current_lane) == 1:
+            return deepcopy(current_lane[0])
+        if len(eligible) == 1:
+            return deepcopy(eligible[0])
+        return None
+
     def mask_snapshot(self, route_id=None, altitude_layer_id=None):
         collection = self.result_snapshot()
         return deepcopy((collection.get("masks") or {}).get(

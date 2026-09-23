@@ -106,7 +106,19 @@ class ApiRouter:
         # 「80m固定高度航路方向性雷达几何初步划设方案」。完整结果（含逐 sample 明细）走
         # 专用接口；通用快照只带上有界摘要。
         if path == "/api/radar-surveillance-layout/readiness":
-            return Response(workflow.radar_surveillance_layout_readiness())
+            demo_preview_only = str(
+                self._first(query, "demo_preview_only", "false")
+            ).lower() in ("1", "true", "yes", "on")
+            payload = (
+                {
+                    "demo_preview_only": True,
+                    "route_source": self._first(
+                        query, "route_source", "current_layered_candidate",
+                    ),
+                }
+                if demo_preview_only else None
+            )
+            return Response(workflow.radar_surveillance_layout_readiness(payload))
         if path == "/api/radar-surveillance-policy":
             return Response(workflow.radar_surveillance_policy())
         if path == "/api/radar-surveillance-layout":

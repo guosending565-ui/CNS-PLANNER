@@ -399,25 +399,25 @@ def test_clearance_policy_change_makes_validation_stale(tmp_path):
     assert service.state["layered_route_validations"]["items"][0]["status"] == "stale"
 
 
-def test_new_validation_fingerprint_carries_building_validator_v2(tmp_path):
+def test_new_validation_fingerprint_carries_building_validator_v3(tmp_path):
     """BUG-VALIDATION-BUILDING-003 审计修复：新执行的 validation fingerprint 必须含 building v2."""
 
     service, _, _ = prepared(tmp_path)
     service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
     record = latest(service)
     versions = record["fingerprints"]["components"]["validator_versions"]
-    assert versions["building"] == "real_footprint_building_validator_v2"
+    assert versions["building"] == "real_footprint_building_validator_v3"
     assert versions == VALIDATOR_VERSIONS
     # 本轮只升级 building 语义：schema 与其余 domain 版本保持不变。
     assert record["schema_version"] == "layered-route-validation-v1"
     assert versions["terrain"] == "source_native_terrain_validator_v1"
     assert versions["native_pixel_intervals"] == "native_pixel_interval_v1"
     assert versions["constant_vertical_context"] == "production_fixed_cruise_egm2008_v1"
-    assert ALGORITHM_VERSION == "1.1"
-    assert service.layered_route_validation_readiness()["algorithm"]["algorithm_version"] == "1.1"
+    assert ALGORITHM_VERSION == "1.2"
+    assert service.layered_route_validation_readiness()["algorithm"]["algorithm_version"] == "1.2"
     # 版本是 fingerprint 的组成部分：building 回退到 v1 必然得到不同的 fingerprint。
     legacy_versions = deepcopy(versions)
-    legacy_versions["building"] = "real_footprint_building_validator_v1"
+    legacy_versions["building"] = "real_footprint_building_validator_v2"
     legacy_components = deepcopy(record["fingerprints"]["components"])
     legacy_components["validator_versions"] = legacy_versions
     assert (
@@ -426,7 +426,7 @@ def test_new_validation_fingerprint_carries_building_validator_v2(tmp_path):
     )
 
 
-def test_legacy_building_validator_v1_validation_is_stale_inputs_changed(tmp_path):
+def test_legacy_building_validator_v2_validation_is_stale_inputs_changed(tmp_path):
     """旧 building-validator-v1 validation 在当前 v2 下必须变为 stale_inputs_changed，不得继续 current."""
 
     service, _, _ = prepared(tmp_path)
@@ -437,7 +437,7 @@ def test_legacy_building_validator_v1_validation_is_stale_inputs_changed(tmp_pat
 
     # 还原一条 v1 时代的记录：components 记录 v1 版本，fingerprint 也按 v1 计算。
     legacy_versions = deepcopy(VALIDATOR_VERSIONS)
-    legacy_versions["building"] = "real_footprint_building_validator_v1"
+    legacy_versions["building"] = "real_footprint_building_validator_v2"
     legacy_components = deepcopy(stored["fingerprints"]["components"])
     legacy_components["validator_versions"] = legacy_versions
     legacy_fingerprint = validation_fingerprint(legacy_components)

@@ -8,7 +8,8 @@ import test from 'node:test';
 
 import {
   COVERAGE_STATUS_LABELS, RADAR_LAYOUT_EVALUATE_ENDPOINT, RADAR_LAYOUT_ENDPOINT,
-  RADAR_LAYOUT_MODEL_SCOPE, RADAR_LAYOUT_PROPOSAL_ONLY_NOTE, RADAR_LAYOUT_TITLE,
+  RADAR_DEMO_PREVIEW_WARNING, RADAR_LAYOUT_MODEL_SCOPE,
+  RADAR_LAYOUT_PROPOSAL_ONLY_NOTE, RADAR_LAYOUT_TITLE,
   RADAR_LAYOUT_V1_1_SEMANTICS, RADAR_LAYOUT_VERSION, RADAR_POLICY_ENDPOINT,
   RADAR_TYPE_LABELS, REQUIRED_SITE_COUNT_LABELS, SOLVER_STATUS_LABELS,
   SURFACE_CLASS_LABELS, isCompleteCoverage, radarLayoutModel,
@@ -18,7 +19,7 @@ import {renderRadarSurveillanceLayoutPanel} from '../cns_planner/web/js/workflow
 import {render as renderStep5, radarLayoutModel as step5Model} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {
   RADAR_COVERAGE_COLORS, RADAR_PANEL_COLORS, drawRadarLayoutOverlay,
-  radarCoverageLegend,
+  groundMetresPerPixel, radarCoverageLegend, radarSectorPixelRadius,
 } from '../cns_planner/web/js/map/radar_layout_overlay.js';
 
 //: V1.1 一个已选单面阵的完整几何：塔顶 50 m ⇒ dz = +30 m，
@@ -49,6 +50,18 @@ const SURVEY = {
     altitude_plane_egm2008_m: 80, altitude_plane_geometry: PANEL_PLANE,
     horizontal_inner_radius_m: PANEL_PLANE.horizontal_inner_radius_m,
     horizontal_outer_radius_m: PANEL_PLANE.horizontal_outer_radius_m,
+    display_geometry: {
+      display_only: true,
+      semantics: 'route_focused_sector_to_farthest_covered_validation_sample',
+      margin_m: 25,
+      physical_inner_radius_m: PANEL_PLANE.horizontal_inner_radius_m,
+      physical_outer_radius_m: PANEL_PLANE.horizontal_outer_radius_m,
+      display_inner_radius_m: PANEL_PLANE.horizontal_inner_radius_m,
+      display_outer_radius_m: 1175,
+      farthest_covered_validation_sample_horizontal_distance_m: 1150,
+      covered_validation_sample_count: 231,
+      display_geometry_fallback: null,
+    },
     plane_intersection_status: 'intersects',
     slant_range_semantics: 'slant',
     slant_range_preset_m: {min_slant_range_m: 120, max_slant_range_m: 3000},
@@ -283,10 +296,12 @@ test('radar overlay model uses backend 80 m plane radii and never slant range', 
   assert.equal(model.panels.length, 1);
   const panel = model.panels[0];
   // V1.1：水平半径来自后端交截，绝不是 120 / 3000 斜距本身。
-  assert.equal(panel.radius_outer_m, PANEL_PLANE.horizontal_outer_radius_m);
-  assert.equal(panel.radius_inner_m, PANEL_PLANE.horizontal_inner_radius_m);
-  assert.ok(panel.radius_outer_m < 3000, '外半径必须小于最大斜距');
-  assert.notEqual(panel.radius_inner_m, 120);
+  assert.equal(panel.physicalRadiusOuterM, PANEL_PLANE.horizontal_outer_radius_m);
+  assert.equal(panel.physicalRadiusInnerM, PANEL_PLANE.horizontal_inner_radius_m);
+  assert.equal(panel.displayRadiusOuterM, 1175);
+  assert.equal(panel.displayRadiusInnerM, PANEL_PLANE.horizontal_inner_radius_m);
+  assert.ok(panel.physicalRadiusOuterM < 3000, '外半径必须小于最大斜距');
+  assert.notEqual(panel.physicalRadiusInnerM, 120);
   assert.equal(panel.dz_m, 30);
   assert.equal(panel.horizontal_radius_semantics, 'backend_plane_intersection_not_slant_range');
   assert.equal(panel.altitude_m, 80);
@@ -295,6 +310,42 @@ test('radar overlay model uses backend 80 m plane radii and never slant range', 
   // 候选铁塔：未选中的才弱化绘制。
   assert.deepEqual(model.candidateTowers.map((item) => item.tower_id), ['T2']);
   assert.ok(model.routeCoverageColours.length >= 1);
+});
+
+test('route-focused radius remains world-space geometry through zoom and pan', () => {
+  const latitude = 30;
+  const projectedAtFiveGroundM = 5 / Math.cos(latitude * Math.PI / 180);
+  const projectedAtTwoPointFiveGroundM = 2.5 / Math.cos(latitude * Math.PI / 180);
+  assert.ok(Math.abs(groundMetresPerPixel(projectedAtFiveGroundM, latitude) - 5) < 1e-9);
+  const radiusAtFive = radarSectorPixelRadius(1175, {res: projectedAtFiveGroundM}, latitude);
+  const radiusAtTwoPointFive = radarSectorPixelRadius(
+    1175, {res: projectedAtTwoPointFiveGroundM}, latitude,
+  );
+  assert.equal(radiusAtFive, 235);
+  assert.equal(radiusAtTwoPointFive, 470);
+  assert.ok(radiusAtTwoPointFive > 420, '旧 420px cap 不得再截断世界范围');
+  assert.equal(radiusAtFive * 5, 1175);
+  assert.equal(radiusAtTwoPointFive * 2.5, 1175);
+
+  const model = radarOverlayModel(flow(), []);
+  const before = structuredClone(model.panels[0]);
+  const context = {
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+    fill() {}, stroke() {}, arc() {},
+    set fillStyle(value) {}, set strokeStyle(value) {}, set globalAlpha(value) {},
+    set lineWidth(value) {}, set lineCap(value) {},
+  };
+  drawRadarLayoutOverlay({
+    ctx: context, view: {res: projectedAtFiveGroundM},
+    screenPoint: () => [100, 100], model,
+  });
+  drawRadarLayoutOverlay({
+    ctx: context, view: {res: projectedAtTwoPointFiveGroundM},
+    screenPoint: () => [450, -80], model,
+  });
+  assert.deepEqual(model.panels[0], before, 'zoom/pan 只能重绘，不得改变方位或显示几何');
+  assert.equal(model.panels[0].azimuth_deg, 0);
+  assert.equal(model.panels[0].half_width_deg, 45);
 });
 
 test('radar overlay model skips panels whose 80 m plane has no valid intersection', () => {
@@ -357,9 +408,30 @@ test('radar layout panel renders the required V1.1 summary fields', () => {
   assert.match(html, /海岸不确定带（按陆地处理）/);
   assert.match(html, /radarSurveillancePolicy|saveRadarSurveillancePolicy/);
   assert.match(html, /evaluateRadarSurveillanceLayout/);
+  assert.match(html, /地图雷达扇区采用航路聚焦显示/);
+  assert.match(html, /地图航路聚焦显示范围/);
+  assert.match(html, /真实物理水平范围/);
   // legacy 挂高输入框必须存在但被禁用（只读回显），不能作为必填项。
   assert.match(html, /id="radarMountHeight"[^>]*disabled/);
   assert.doesNotMatch(html, /<script/);
+});
+
+test('demo preview renders an unmistakable non-operational warning', () => {
+  const snapshot=flow();
+  snapshot.radar_surveillance_layout.items[0]={
+    ...snapshot.radar_surveillance_layout.items[0],
+    demo_preview_only:true,
+    preview_warning:RADAR_DEMO_PREVIEW_WARNING,
+    not_for_operational_use:true,
+    not_for_safety_claim:true,
+    not_for_final_confirmed_plan:true,
+  };
+  const model=radarLayoutModel(snapshot);
+  const html=renderRadarSurveillanceLayoutPanel(snapshot);
+  assert.equal(model.demoPreviewOnly,true);
+  assert.match(html, /演示预览：当前航路尚未完成建筑地面高程证据验证/);
+  assert.match(html, /not_for_operational_use=true/);
+  assert.match(html, /not_for_safety_claim=true/);
 });
 
 test('radar layout panel escapes user provided text', () => {

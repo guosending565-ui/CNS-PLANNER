@@ -24,6 +24,7 @@ export const RADAR_LAYOUT_TITLE='监视雷达初步划设';
 export const RADAR_LAYOUT_PROPOSAL_TITLE='80m固定高度航路方向性雷达几何初步划设方案';
 export const RADAR_LAYOUT_MODEL_SCOPE='geometric_initial_radar_layout';
 export const RADAR_LAYOUT_PROPOSAL_ONLY_NOTE='proposal_only：本结果不写入既有 CNS 设施、不写入 coverage_3d / 能力 / 走廊与站址提案，也不会自动 Apply。';
+export const RADAR_DEMO_PREVIEW_WARNING='演示预览：当前航路尚未完成建筑地面高程证据验证，不代表运行航路已发布。';
 
 export const RADAR_TYPE_LABELS={radar_i:'中近程雷达Ⅰ型',radar_ii:'中近程雷达Ⅱ型'};
 export const SURFACE_CLASS_LABELS={
@@ -80,6 +81,8 @@ export function radarLayoutModel(flow){
     detailEndpoint:RADAR_LAYOUT_ENDPOINT,
     readiness,
     item,
+    demoPreviewOnly:item?.demo_preview_only===true,
+    previewWarning:item?.preview_warning||null,
     solver,
     solverStatus:solver?.status||null,
     solverLabel:solver?SOLVER_STATUS_LABELS[solver.status]||solver.status:null,
@@ -119,7 +122,7 @@ export function radarLayoutModel(flow){
       ||readiness.sources?.land_mask?.reason||null,
     metricTransform:readiness.metric_transform||null,
     solverReadiness:readiness.solver||null,
-    readinessBlockers:readiness.blockers||[],
+    readinessBlockers:item?.blockers||readiness.blockers||[],
     routeSampling:item?.route_sampling||null,
     surfaceClassification:item?.surface_classification||null,
     semanticsFingerprint:item?.semantics_fingerprint||readiness.semantics_fingerprint||null,
@@ -200,9 +203,15 @@ export function radarOverlayModel(flow,candidateTowers=[]){
   for(const panel of model.selectedPanels){
     if(panel.longitude==null||panel.latitude==null)continue;
     const inner=panel.horizontal_inner_radius_m,outer=panel.horizontal_outer_radius_m;
+    const display=panel.display_geometry||{};
+    const displayInner=Number.isFinite(display.display_inner_radius_m)
+      ?display.display_inner_radius_m:inner;
+    const displayOuter=Number.isFinite(display.display_outer_radius_m)
+      ?display.display_outer_radius_m:outer;
     // 只消费后端水平半径：斜距绝不进入前端几何。
     if(panel.plane_intersection_status==='no_intersection'
-      ||!Number.isFinite(inner)||!Number.isFinite(outer)||outer<=0){
+      ||!Number.isFinite(inner)||!Number.isFinite(outer)||outer<=0
+      ||!Number.isFinite(displayInner)||!Number.isFinite(displayOuter)||displayOuter<=0){
       noIntersection+=1;
       continue;
     }
@@ -215,8 +224,15 @@ export function radarOverlayModel(flow,candidateTowers=[]){
       azimuth_deg:panel.azimuth_deg,
       half_width_deg:panel.panel_half_width_deg,
       altitude_m:item.altitude_m,
-      radius_inner_m:inner,
-      radius_outer_m:outer,
+      physicalRadiusInnerM:inner,
+      physicalRadiusOuterM:outer,
+      displayRadiusInnerM:displayInner,
+      displayRadiusOuterM:displayOuter,
+      displayGeometrySemantics:display.semantics
+        ||'physical_outer_radius_no_covered_sample_detail',
+      displayGeometryFallback:display.display_geometry_fallback||(
+        panel.display_geometry?null:'physical_outer_radius_no_covered_sample_detail'
+      ),
       plane_intersection_status:panel.plane_intersection_status,
       dz_m:panel.altitude_plane_geometry?.dz_m,
       horizontal_radius_semantics:'backend_plane_intersection_not_slant_range',
@@ -257,15 +273,24 @@ function panelList(panels){
   if(!panels.length)return '<div class="empty-note">尚无选中的单面阵</div>';
   return panels.slice(0,40).map(panel=>{
     const plane=panel.altitude_plane_geometry||{};
+    const display=panel.display_geometry||{};
     const geometryLine=panel.plane_intersection_status==='no_intersection'
       ?'80 m 平面：无有效交截（'+escapeHtml(plane.plane_intersection_reason||'no_intersection')+'）'
-      :'80 m 平面：dz '+num(plane.dz_m)+' m · 水平半径 '+num(panel.horizontal_inner_radius_m)
+      :'80 m 平面：dz '+num(plane.dz_m)+' m · 真实物理水平范围 '+num(panel.horizontal_inner_radius_m)
         +' – '+num(panel.horizontal_outer_radius_m)+' m（后端交截，非斜距）';
+    const displayLine=panel.plane_intersection_status==='no_intersection'
+      ?''
+      :'<br><small>地图航路聚焦显示范围：'
+        +num(Number.isFinite(display.display_inner_radius_m)
+          ?display.display_inner_radius_m:panel.horizontal_inner_radius_m)
+        +' – '+num(Number.isFinite(display.display_outer_radius_m)
+          ?display.display_outer_radius_m:panel.horizontal_outer_radius_m)
+        +' m（非设备最大探测边界）</small>';
     return '<div class="list-row"><span><b>'+(RADAR_TYPE_LABELS[panel.radar_type]||panel.radar_type)
       +'</b> · 铁塔 '+escapeHtml(panel.tower_id)
       +'<br><small>方位角 '+num(panel.azimuth_deg)+'°（±'+num(panel.panel_half_width_deg)+'°）'
       +' · 雷达原点 '+(Number.isFinite(panel.radar_origin_egm2008_m)?num(panel.radar_origin_egm2008_m)+' m EGM2008':'未解析')
-      +'</small><br><small>'+geometryLine+'</small>'
+      +'</small><br><small>'+geometryLine+'</small>'+displayLine
       +'<br><small>覆盖 '+text(panel.coverage?.sample_count)+' 个复核点 · 满足 '+text(panel.coverage?.satisfied_sample_count)
       +' · 里程 '+num(panel.coverage?.first_distance_along_route_m)+'–'+num(panel.coverage?.last_distance_along_route_m)+' m</small></span></div>';
   }).join('')
@@ -296,6 +321,10 @@ export function renderRadarSurveillanceLayoutPanel(flow){
   const parameters=model.parameters||{};
   const source=model.deviceSource||{};
   const buffer=(model.landMask?.coastal_uncertainty_buffer||{});
+  const demoWarning=model.demoPreviewOnly
+    ?'<div class="parameter-note"><b>'+escapeHtml(model.previewWarning||RADAR_DEMO_PREVIEW_WARNING)
+      +'</b><br><small>not_for_operational_use=true · not_for_safety_claim=true · not_for_final_confirmed_plan=true</small></div>'
+    :'';
 
   const readinessBlock='<div class="parameter-note">'
     +'<b>'+escapeHtml(RADAR_LAYOUT_PROPOSAL_TITLE)+'</b> · model_scope '+escapeHtml(RADAR_LAYOUT_MODEL_SCOPE)
@@ -361,7 +390,7 @@ export function renderRadarSurveillanceLayoutPanel(flow){
 
   if(!item){
     return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '+statusBadge(model.status)+'</h3>'
-      +readinessBlock+policyForm
+      +demoWarning+readinessBlock+policyForm
       +'<div class="empty-note">尚未运行「监视雷达初步划设」。本任务不会在后台自动生成，也不会自动 Apply。</div>';
   }
 
@@ -377,6 +406,10 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'<span>单面阵总数 '+text(model.panelCount)+' = Ⅰ型 '+text(model.radarICount)+' + Ⅱ型 '+text(model.radarIICount)+'</span>'
     +'<span>选中铁塔 '+text(model.towerCount)+' / 候选铁塔 '+text(model.candidateTowerCount)
     +' · 候选面阵 '+text(model.candidatePanelCount)+'</span></div>';
+
+  const routeFocusedDisplayNote='<div class="parameter-note"><b>地图雷达扇区采用航路聚焦显示</b>：'
+    +'扇区外缘仅绘制至该面阵实际覆盖的最远航路点附近，用于提高方案可读性。'
+    +'设备真实探测边界及后端规划约束未被截断。</div>';
 
   const coverageBlock=coverageLine('陆地航路',model.land,REQUIRED_SITE_COUNT_LABELS.land)
     +coverageLine('海上航路',model.sea,REQUIRED_SITE_COUNT_LABELS.sea)
@@ -411,9 +444,10 @@ export function renderRadarSurveillanceLayoutPanel(flow){
   })();
 
   return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '+statusBadge(model.status)+'</h3>'
-    +readinessBlock
+    +demoWarning+readinessBlock
     +solverBlock
     +counts
+    +routeFocusedDisplayNote
     +policyForm
     +'<h4>两型雷达真实资料摘要</h4>'
     +'<div class="parameter-note">来源：'+escapeHtml(source.title||'—')+' · SHA-256 '+escapeHtml((source.sha256||'—').slice(0,16))

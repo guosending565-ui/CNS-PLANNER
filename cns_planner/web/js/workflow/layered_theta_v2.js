@@ -982,8 +982,16 @@ function candidateSection(model){
   const density=shown.routeRiskDensity;
   const turns=shown.turnStatistics;
   const search=shown.searchStatistics||{};
-  const rejections=['rejected_terrain','rejected_building','rejected_regulatory','rejected_unknown',
-    'rejected_hard_constraint','rejected_outside_grid','rewired_parent_shortcuts'];
+  const rejections=[
+  'rejected_terrain',
+  'rejected_building',
+  'rejected_tower',
+  'rejected_regulatory',
+  'rejected_unknown',
+  'rejected_hard_constraint',
+  'rejected_outside_grid',
+  'rewired_parent_shortcuts'
+];
   const losRows=shown.los.segments.map((segment,index)=>
     '<div class="list-row route-row"><span><b>LOS-'+(index+1)+'</b>'
     +'<small>'+escapeHtml(short(segment.from_grid_id))+' → '+escapeHtml(short(segment.to_grid_id))

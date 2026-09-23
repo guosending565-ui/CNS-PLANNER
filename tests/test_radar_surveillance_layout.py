@@ -54,7 +54,9 @@ from cns_planner.algorithms.radar_layout.v1 import (
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
 from cns_planner.application.radar_surveillance_layout_service import (
-    LAYOUT_KEY, POLICY_KEY, normalize_radar_surveillance_layout,
+    DEMO_PROPOSAL_TITLE, DEMO_ROUTE_SOURCE, DEMO_VALIDATION_REASON, DEMO_WARNING,
+    DISPLAY_GEOMETRY_SEMANTICS, DISPLAY_ROUTE_MARGIN_M, LAYOUT_KEY, POLICY_KEY,
+    _route_focused_display_panels, normalize_radar_surveillance_layout,
     normalize_radar_surveillance_policy,
 )
 from cns_planner.application.workflow_service import WorkflowService
@@ -111,6 +113,81 @@ def solve(towers, samples, **kwargs):
 
 def selected(result):
     return {item["panel_id"]: item for item in result["selected_panels"]}
+
+
+def _selected_panel(panel_id, tower_id, azimuth_deg, *, inner=120.0, outer=3000.0):
+    return {
+        "panel_id": panel_id,
+        "tower_id": tower_id,
+        "radar_type": RADAR_TYPE_I,
+        "azimuth_deg": float(azimuth_deg),
+        "panel_half_width_deg": 45.0,
+        "horizontal_inner_radius_m": float(inner),
+        "horizontal_outer_radius_m": float(outer),
+        "plane_intersection_status": "intersects",
+    }
+
+
+def test_route_focused_display_outer_radius_uses_actual_validation_sample_distance():
+    tower_record = tower("T1", [0.0, 0.0], origin_egm2008_m=80.0)
+    panel = _selected_panel("P1", "T1", 0.0)
+    validation_samples = [sample(0, [0.0, 1150.0], distance_m=1150.0)]
+    coverage = actual_site_coverage(
+        panels=[panel], samples=validation_samples, selected_panel_ids=["P1"],
+        tower_records=[tower_record],
+    )
+    displayed = _route_focused_display_panels(
+        [panel], coverage, {"T1": tower_record["metric"]},
+    )[0]
+    geometry = displayed["display_geometry"]
+    assert DISPLAY_ROUTE_MARGIN_M == 25.0
+    assert geometry["semantics"] == DISPLAY_GEOMETRY_SEMANTICS
+    assert geometry["physical_outer_radius_m"] == 3000.0
+    assert geometry["display_outer_radius_m"] == pytest.approx(1175.0)
+    assert geometry["display_inner_radius_m"] == 120.0
+    assert geometry["farthest_covered_validation_sample_horizontal_distance_m"] == 1150.0
+    assert geometry["display_geometry_fallback"] is None
+
+
+def test_route_focused_display_radius_is_capped_by_physical_outer_not_pixels():
+    tower_record = tower("T1", [0.0, 0.0], origin_egm2008_m=80.0)
+    panel = _selected_panel("P1", "T1", 0.0)
+    validation_samples = [sample(0, [0.0, 2990.0], distance_m=2990.0)]
+    coverage = actual_site_coverage(
+        panels=[panel], samples=validation_samples, selected_panel_ids=["P1"],
+        tower_records=[tower_record],
+    )
+    geometry = _route_focused_display_panels(
+        [panel], coverage, {"T1": tower_record["metric"]},
+    )[0]["display_geometry"]
+    assert geometry["physical_outer_radius_m"] == 3000.0
+    assert geometry["display_outer_radius_m"] == 3000.0
+
+
+def test_route_focused_display_preserves_two_distinct_land_site_sectors():
+    towers = [
+        tower("T1", [-200.0, 0.0], origin_egm2008_m=80.0),
+        tower("T2", [200.0, 0.0], origin_egm2008_m=80.0),
+    ]
+    panels = [
+        _selected_panel("P1", "T1", 90.0),
+        _selected_panel("P2", "T2", 270.0),
+    ]
+    land_sample = sample(0, [0.0, 0.0], surface_class="land")
+    coverage = actual_site_coverage(
+        panels=panels, samples=[land_sample], selected_panel_ids=["P1", "P2"],
+        tower_records=towers,
+    )
+    assert coverage[0]["status"] == "satisfied"
+    assert coverage[0]["distinct_site_ids"] == ["T1", "T2"]
+    displayed = _route_focused_display_panels(
+        panels, coverage, {item["tower_id"]: item["metric"] for item in towers},
+    )
+    for panel in displayed:
+        geometry = panel["display_geometry"]
+        assert geometry["covered_validation_sample_count"] == 1
+        assert geometry["display_outer_radius_m"] == pytest.approx(225.0)
+        assert 200.0 <= geometry["display_outer_radius_m"]
 
 
 # --------------------------------------------------------------------------------------
@@ -1614,6 +1691,87 @@ def _evaluate(service, provider, payload=None):
     return service.evaluate_radar_surveillance_layout(body, facts_provider=provider)
 
 
+def _configure_demo_preview(service, *, validation_status="unresolved"):
+    """Inject read-only current projections without running the unrelated planner chain."""
+
+    path = deepcopy(service.state["operational_routes"][0]["path"])
+    candidate = {
+        "candidate_id": "LRC-DEMO-ALT080", "route_id": ROUTE_ID,
+        "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
+        "status": "candidate", "current_applicability": "current",
+        "candidate_fingerprint": "candidate-demo-current-fingerprint",
+        "lane_key": f"{ROUTE_ID}@{FIXED_ALTITUDE_LAYER_ID}", "path": path,
+    }
+    service.state["layered_route_candidates"] = {
+        "status": "passed", "active_candidate_id": candidate["candidate_id"],
+        "count": 1, "items": [deepcopy(candidate)], "masks": {},
+    }
+
+    class LayeredProjection:
+        def current_candidate_snapshot(self, *, altitude_layer_id=None):
+            if altitude_layer_id not in (None, FIXED_ALTITUDE_LAYER_ID):
+                return None
+            return deepcopy(candidate)
+
+    profile = {
+        "profile_id": "RRP-DEMO", "status": "passed",
+        "current_applicability": "current",
+        "candidate": {
+            "candidate_id": candidate["candidate_id"],
+            "candidate_fingerprint": candidate["candidate_fingerprint"],
+        },
+    }
+
+    class RiskProjection:
+        def result_snapshot(self):
+            return {"active_profile_id": profile["profile_id"], "items": [deepcopy(profile)]}
+
+    validation = {
+        "validation_id": "LRV-DEMO-UNRESOLVED", "status": validation_status,
+        "status_reason": "building_ground_elevation_missing_from_source",
+        "current_applicability": "current",
+        "candidate": {
+            "candidate_id": candidate["candidate_id"],
+            "candidate_fingerprint": candidate["candidate_fingerprint"],
+        },
+        "unresolved_evidence": [{"reason": "building_ground_elevation_missing"}],
+    }
+
+    class ValidationProjection:
+        def result_snapshot(self):
+            return {"items": [deepcopy(validation)]}
+
+    radar = service.radar_surveillance_layout_service
+    radar.layered_route_planner_service = LayeredProjection()
+    radar.route_risk_profile_service = RiskProjection()
+    radar.layered_route_validation_service = ValidationProjection()
+    return candidate, profile, validation
+
+
+def _demo_payload():
+    return {"demo_preview_only": True, "route_source": DEMO_ROUTE_SOURCE}
+
+
+def test_layered_current_candidate_selector_uses_projected_active_identity(tmp_path):
+    service, _provider = _service(tmp_path)
+    layered = service.layered_route_planner_service
+    active = {
+        "candidate_id": "ACTIVE", "status": "candidate",
+        "current_applicability": "current", "altitude_layer_id": "ALT-080",
+        "lane_key": "R1@ALT-080",
+    }
+    later_but_not_active = {
+        **active, "candidate_id": "LATER", "lane_key": "other@ALT-080",
+    }
+    layered.result_snapshot = lambda: {
+        "active_candidate_id": "ACTIVE", "current_key": "R1@ALT-080",
+        "items": [deepcopy(active), deepcopy(later_but_not_active)],
+    }
+    assert layered.current_candidate_snapshot(
+        altitude_layer_id="ALT-080"
+    )["candidate_id"] == "ACTIVE"
+
+
 def test_service_evaluation_persists_and_restores(tmp_path):
     service, provider = _service(tmp_path, surface="land")
     _evaluate(service, provider)
@@ -1635,6 +1793,13 @@ def test_service_evaluation_persists_and_restores(tmp_path):
     assert stored["sea_validation"]["sample_count"] == 0
     assert stored["device_provenance"]["source"]["sha256"].startswith("e0d9cc20")
     assert stored["device_provenance"]["source"]["source_modified"] is False
+    for panel in stored["selected_panels"]:
+        display = panel["display_geometry"]
+        assert display["display_only"] is True
+        assert display["display_geometry_fallback"] is None
+        assert display["covered_validation_sample_count"] > 0
+        assert display["display_inner_radius_m"] == panel["horizontal_inner_radius_m"]
+        assert display["display_outer_radius_m"] <= panel["horizontal_outer_radius_m"]
 
     # 保存 / 恢复：形状、结论与指纹都不被改写。
     reopened = WorkflowService(tmp_path / "project.json", DEFAULTS)
@@ -1858,6 +2023,30 @@ def test_service_snapshot_summary_omits_per_sample_detail_and_unselected_panels(
     assert summary["semantics"]["unselected_panel_coverage_polygons_not_emitted"] is True
 
 
+def test_existing_layout_summary_rebuilds_route_focused_display_from_5m_samples(tmp_path):
+    """Pre-display-metadata results remain readable without solver reruns or state writes."""
+
+    service, provider = _service(tmp_path)
+    _evaluate(service, provider)
+    radar = service.radar_surveillance_layout_service
+    radar.facts_provider = provider
+    stored = service.state[LAYOUT_KEY]["items"][0]
+    for panel in stored["selected_panels"]:
+        panel.pop("display_geometry", None)
+    stored["validation"].pop("samples", None)
+    state_before = deepcopy(service.state[LAYOUT_KEY])
+
+    summary = radar.summary_snapshot()
+    panels = summary["items"][0]["selected_panels"]
+    assert panels
+    for panel in panels:
+        display = panel["display_geometry"]
+        assert display["display_geometry_fallback"] is None
+        assert display["covered_validation_sample_count"] > 0
+        assert display["display_outer_radius_m"] <= panel["horizontal_outer_radius_m"]
+    assert service.state[LAYOUT_KEY] == state_before
+
+
 def test_service_unknown_land_mask_is_fail_closed_not_sea(tmp_path):
     service, provider = _service(tmp_path, land_mask_ok=False)
     _evaluate(service, provider)
@@ -1959,6 +2148,101 @@ def test_service_does_not_write_forbidden_state_keys(tmp_path):
     _evaluate(service, provider)
     for key, value in before.items():
         assert service.state.get(key) == value, key
+
+
+def test_normal_mode_without_passed_operational_route_is_not_ready(tmp_path):
+    service, provider = _service(tmp_path)
+    service.state["operational_routes"][0]["status"] = "candidate"
+    _evaluate(service, provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert item["status"] == "not_ready"
+    assert item["demo_preview_only"] is False
+    assert any("operational route 状态不是 passed" in reason for reason in item["blockers"])
+
+
+def test_demo_preview_solves_current_alt080_candidate_without_operational_adoption(tmp_path):
+    service, provider = _service(tmp_path, surface="sea")
+    candidate, _profile, validation = _configure_demo_preview(service)
+    service.state["operational_routes"] = []
+    radar = service.radar_surveillance_layout_service
+    radar.land_mask_readiness = lambda **_kwargs: {"status": "passed", "reason": None}
+    protected = {
+        key: deepcopy(service.state.get(key)) for key in (
+            "operational_routes", "route_operating_layers", "layered_route_validations",
+            "layered_operational_adoptions",
+        )
+    }
+
+    service.evaluate_radar_surveillance_layout(_demo_payload(), facts_provider=provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+
+    assert item["status"] == "proposal_ready"
+    assert item["demo_preview_only"] is True
+    assert item["route_source"] == DEMO_ROUTE_SOURCE
+    assert item["candidate_id"] == candidate["candidate_id"]
+    assert item["route_status"] == "demo_preview_candidate"
+    assert item["operationally_adopted"] is False
+    assert item["route_validation_status"] == "unresolved"
+    assert item["route_validation_reason"] == DEMO_VALIDATION_REASON
+    assert item["not_for_operational_use"] is True
+    assert item["not_for_safety_claim"] is True
+    assert item["not_for_final_confirmed_plan"] is True
+    assert item["proposal_title"] == DEMO_PROPOSAL_TITLE
+    assert item["preview_warning"] == DEMO_WARNING
+    assert item["preview_provenance"]["layered_route_validations"] == [validation]
+    assert item["preview_provenance"]["layered_route_validations"][0]["status"] == "unresolved"
+    assert item["solver"]["name"] == "scipy.optimize.milp"
+    assert item["solver"]["library"] == "HiGHS"
+    for key, value in protected.items():
+        assert service.state.get(key) == value, key
+
+
+def test_demo_preview_does_not_bypass_unknown_land_mask(tmp_path):
+    service, provider = _service(tmp_path, land_mask_ok=False)
+    _configure_demo_preview(service)
+    service.state["operational_routes"] = []
+    service.evaluate_radar_surveillance_layout(_demo_payload(), facts_provider=provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert item["status"] == "not_ready"
+    assert item["solver"] is None
+    assert any(reason.startswith("land_mask_not_ready:") for reason in item["blockers"])
+    assert item["not_for_operational_use"] is True
+
+
+def test_demo_preview_does_not_bypass_missing_tower_top(tmp_path):
+    service, provider = _service(tmp_path, tower_top=None)
+    _configure_demo_preview(service)
+    service.state["operational_routes"] = []
+    service.radar_surveillance_layout_service.land_mask_readiness = (
+        lambda **_kwargs: {"status": "passed", "reason": None}
+    )
+    service.evaluate_radar_surveillance_layout(_demo_payload(), facts_provider=provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert item["status"] == "not_ready"
+    assert item["solver"] is None
+    assert "resolved_tower_top_orthometric_missing" in item["blockers"]
+    assert item["radar_origin"]["resolved_count"] == 0
+
+
+def test_demo_preview_keeps_solver_readiness_as_a_hard_blocker(tmp_path, monkeypatch):
+    service, provider = _service(tmp_path)
+    _configure_demo_preview(service)
+    service.state["operational_routes"] = []
+    service.radar_surveillance_layout_service.land_mask_readiness = (
+        lambda **_kwargs: {"status": "passed", "reason": None}
+    )
+    import cns_planner.application.radar_surveillance_layout_service as radar_service_module
+
+    monkeypatch.setattr(radar_service_module, "_solver_availability", lambda: {
+        "available": False, "name": "HiGHS", "library": "scipy.optimize.milp/HiGHS",
+        "scipy_version": None, "reason": "test_solver_missing",
+        "greedy_fallback_used": False, "detail": "test",
+    })
+    service.evaluate_radar_surveillance_layout(_demo_payload(), facts_provider=provider)
+    item = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert item["status"] == "not_ready"
+    assert item["solver"] is None
+    assert "solver_unavailable:test_solver_missing" in item["blockers"]
 
 
 def test_layout_state_keys_are_independent_and_container_is_normalized(tmp_path):
@@ -2153,6 +2437,13 @@ def test_api_router_exposes_read_and_write_endpoints(tmp_path):
     assert readiness.data["algorithm_id"] == ALGORITHM_ID
     assert readiness.data["model_scope"] == MODEL_SCOPE
     assert readiness.data["proposal_only"] is True
+    demo_readiness = router.get(
+        "/api/radar-surveillance-layout/readiness",
+        {"demo_preview_only": ["true"]}, {},
+    )
+    assert demo_readiness.data["demo_preview_only"] is True
+    assert demo_readiness.data["route_source"] == DEMO_ROUTE_SOURCE
+    assert "current_alt_080_layered_candidate_missing" in demo_readiness.data["blockers"]
 
     layout = router.get("/api/radar-surveillance-layout", {}, {})
     assert layout.data["count"] == 1

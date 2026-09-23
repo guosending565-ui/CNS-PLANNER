@@ -800,9 +800,13 @@ class LayeredRiskAwareThetaStarV2:
     ):
         record = {
             "expanded_labels": 0, "generated_labels": 0, "los_checks": 0,
-            "los_shortcuts": 0, "rejected_terrain": 0, "rejected_building": 0,
-            "rejected_regulatory": 0, "rejected_unknown": 0,
-            "rejected_hard_constraint": 0, "rejected_outside_grid": 0,
+            "los_shortcuts": 0, "rejected_terrain": 0,
+"rejected_building": 0,
+"rejected_tower": 0,
+"rejected_regulatory": 0,
+"rejected_unknown": 0,
+"rejected_hard_constraint": 0,
+"rejected_outside_grid": 0,
             "rewired_parent_shortcuts": 0, "heading_bin_count": self.parameters["heading_bin_count"],
             "theta_min_deg": self.parameters["theta_min_deg"],
             "d_ref_m": _round(d_ref), "d_ref_provenance": D_REF_PROVENANCE,
@@ -1157,8 +1161,13 @@ def _theta_star(
     weight_turn = float(weights["turn"])
     statistics = {
         "expanded_labels": 0, "generated_labels": 0, "los_checks": 0, "los_shortcuts": 0,
-        "rejected_terrain": 0, "rejected_building": 0, "rejected_regulatory": 0,
-        "rejected_unknown": 0, "rejected_hard_constraint": 0, "rejected_outside_grid": 0,
+        "rejected_terrain": 0,
+"rejected_building": 0,
+"rejected_tower": 0,
+"rejected_regulatory": 0,
+"rejected_unknown": 0,
+"rejected_hard_constraint": 0,
+"rejected_outside_grid": 0,
         "rewired_parent_shortcuts": 0,
     }
 

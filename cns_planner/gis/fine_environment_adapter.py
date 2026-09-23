@@ -294,6 +294,81 @@ class _FabdemRasterBase:
             self._to_raster = self.osr.CoordinateTransformation(source, target)
         return self._to_raster.TransformPoint(float(coordinate[0]), float(coordinate[1]))
 
+    def _to_pixel(self, coordinate):
+        """Map one WGS84 coordinate to the source raster's fractional pixel index."""
+
+        try:
+            x, y, *_ = self._transform_to_raster_crs(coordinate)
+        except (TypeError, ValueError, RuntimeError):
+            return None
+        pixel, line = (
+            self.inverse[0] + self.inverse[1] * x + self.inverse[2] * y,
+            self.inverse[3] + self.inverse[4] * x + self.inverse[5] * y,
+        )
+        if pixel != pixel or line != line:
+            return None
+        return pixel, line
+
+    def _pixel_window(self, metric_bbox, transform):
+        """Conservative native-pixel window covering a metric rectangle."""
+
+        west, south, east, north = (float(value) for value in metric_bbox)
+        corners = [(west, south), (east, south), (east, north), (west, north)]
+        pixels = []
+        for x, y in corners:
+            geographic = transform.to_geographic([x, y])
+            if geographic is None:
+                return None
+            pixels.append(self._to_pixel(geographic))
+        if any(item is None for item in pixels):
+            return None
+        columns = [item[0] for item in pixels]
+        rows = [item[1] for item in pixels]
+        x0 = int(floor(min(columns)))
+        y0 = int(floor(min(rows)))
+        x1 = int(floor(max(columns))) + 1
+        y1 = int(floor(max(rows))) + 1
+        return x0, y0, x1 - x0, y1 - y0
+
+    def sample_footprint_ground(self, ring_metric, *, transform):
+        """Maximum valid EGM2008 elevation over a footprint (windowed, read-only).
+
+        This is the single authoritative implementation shared by the V3-B window
+        sampler and the production V3-C native-pixel source.  It reads exactly the
+        footprint bbox window: no resampling, interpolation, NoData filling, nearest
+        pixel, halo, or zero fallback is applied.
+        """
+
+        if self.vertical_status != "confirmed":
+            return None
+        xs = [point[0] for point in ring_metric]
+        ys = [point[1] for point in ring_metric]
+        window = self._pixel_window([min(xs), min(ys), max(xs), max(ys)], transform)
+        if not window:
+            return None
+        x0, y0, width, height = window
+        x0 = max(0, x0)
+        y0 = max(0, y0)
+        x1 = min(int(self.dataset.RasterXSize), window[0] + width)
+        y1 = min(int(self.dataset.RasterYSize), window[1] + height)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        array = self.band.ReadAsArray(x0, y0, x1 - x0, y1 - y0)
+        if array is None:
+            return None
+        rows = array.tolist() if hasattr(array, "tolist") else array
+        scale = self.band.GetScale()
+        offset = self.band.GetOffset()
+        scale = 1.0 if scale is None else float(scale)
+        offset = 0.0 if offset is None else float(offset)
+        values = [
+            row[column] * scale + offset
+            for row in rows
+            for column in range(len(row))
+        ]
+        fact = terrain_fact_from_pixels(values, nodata_value=self.nodata)
+        return fact.get("surface_elevation_max_egm2008_m")
+
     # ------------------------------------------------------------------ resolution
 
     def effective_resolution_m(self):
@@ -622,70 +697,6 @@ class FabdemWindowTerrainSource(_FabdemRasterBase):
             ]
             result[fine_cell_id] = terrain_fact_from_pixels(values, nodata_value=self.nodata)
         return result
-
-    def sample_footprint_ground(self, ring_metric, *, transform):
-        """Maximum valid EGM2008 elevation over a footprint (windowed, read-only)."""
-
-        if self.vertical_status != "confirmed":
-            return None
-        xs = [point[0] for point in ring_metric]
-        ys = [point[1] for point in ring_metric]
-        window = self._pixel_window([min(xs), min(ys), max(xs), max(ys)], transform)
-        if not window:
-            return None
-        x0, y0, width, height = window
-        x0 = max(0, x0)
-        y0 = max(0, y0)
-        x1 = min(int(self.dataset.RasterXSize), window[0] + width)
-        y1 = min(int(self.dataset.RasterYSize), window[1] + height)
-        if x1 <= x0 or y1 <= y0:
-            return None
-        array = self.band.ReadAsArray(x0, y0, x1 - x0, y1 - y0)
-        if array is None:
-            return None
-        rows = array.tolist() if hasattr(array, "tolist") else array
-        scale = self.band.GetScale() or 1.0
-        offset = self.band.GetOffset() or 0.0
-        values = [row[column] * float(scale) + float(offset) for row in rows for column in range(len(row))]
-        fact = terrain_fact_from_pixels(values, nodata_value=self.nodata)
-        return fact.get("surface_elevation_max_egm2008_m")
-
-    # ------------------------------------------------------------------ internals
-
-    def _pixel_window(self, metric_bbox, transform):
-        """Conservative pixel index window covering a metric rectangle."""
-
-        west, south, east, north = (float(value) for value in metric_bbox)
-        corners = [(west, south), (east, south), (east, north), (west, north)]
-        pixels = []
-        for x, y in corners:
-            geographic = transform.to_geographic([x, y])
-            if geographic is None:
-                return None
-            pixels.append(self._to_pixel(geographic))
-        if any(item is None for item in pixels):
-            return None
-        columns = [item[0] for item in pixels]
-        rows = [item[1] for item in pixels]
-        x0 = int(floor(min(columns)))
-        y0 = int(floor(min(rows)))
-        x1 = int(floor(max(columns))) + 1
-        y1 = int(floor(max(rows))) + 1
-        return x0, y0, x1 - x0, y1 - y0
-
-    def _to_pixel(self, coordinate):
-        try:
-            x, y, *_ = self._transform_to_raster_crs(coordinate)
-        except (TypeError, ValueError, RuntimeError):
-            return None
-        pixel, line = (
-            self.inverse[0] + self.inverse[1] * x + self.inverse[2] * y,
-            self.inverse[3] + self.inverse[4] * x + self.inverse[5] * y,
-        )
-        if pixel != pixel or line != line:
-            return None
-        return pixel, line
-
 
 def _unknown_terrain(reason):
     return {

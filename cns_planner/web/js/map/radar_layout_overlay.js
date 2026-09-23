@@ -24,8 +24,19 @@ export const RADAR_COVERAGE_LABELS={
 
 export const RADAR_PANEL_COLORS={radar_i:'#1565c0',radar_ii:'#6a1b9a'};
 
-/** 扇区绘制的像素上限：超过即截断绘制半径（只影响显示，不改变任何业务事实）。 */
-export const RADAR_SECTOR_MAX_PIXEL_RADIUS=420;
+/** EPSG:3857 projected units/pixel → local ground metres/pixel. */
+export function groundMetresPerPixel(projectedUnitsPerPixel,latitudeDeg){
+  const resolution=Number(projectedUnitsPerPixel);
+  const latitude=Number(latitudeDeg);
+  if(!Number.isFinite(resolution)||resolution<=0)return 1;
+  if(!Number.isFinite(latitude))return resolution;
+  const scale=Math.cos(Math.max(-85.05112878,Math.min(85.05112878,latitude))*Math.PI/180);
+  return resolution*Math.max(scale,1e-9);
+}
+
+export function radarSectorPixelRadius(radiusM,view,latitudeDeg){
+  return Number(radiusM)/groundMetresPerPixel(view?.res,latitudeDeg);
+}
 
 export function radarCoverageLegend(){
   return Object.keys(RADAR_COVERAGE_COLORS).map(status=>({
@@ -71,7 +82,6 @@ function sectorPath(ctx,center,innerPx,outerPx,azimuthDeg,halfWidthDeg){
  */
 export function drawRadarLayoutOverlay({ctx,view,screenPoint,model,radiusScaleM=1}){
   if(!view||!model)return {candidateTowers:0,selectedTowers:0,panels:0,routeSegments:0,legend:radarCoverageLegend()};
-  const metresPerPixel=view.res||1;
   const drawn={candidateTowers:0,selectedTowers:0,panels:0,routeSegments:0,sectorsClipped:0};
 
   // 1) 候选铁塔（弱化）
@@ -93,10 +103,13 @@ export function drawRadarLayoutOverlay({ctx,view,screenPoint,model,radiusScaleM=
   for(const panel of model.panels||[]){
     const [x,y]=screenPoint(panel.coordinate);
     if(!Number.isFinite(x)||!Number.isFinite(y))continue;
-    const innerPx=(panel.radius_inner_m*radiusScaleM)/metresPerPixel;
-    const outerRaw=(panel.radius_outer_m*radiusScaleM)/metresPerPixel;
-    const outerPx=Math.min(outerRaw,RADAR_SECTOR_MAX_PIXEL_RADIUS);
-    if(outerRaw>RADAR_SECTOR_MAX_PIXEL_RADIUS)drawn.sectorsClipped+=1;
+    const latitude=panel.coordinate[1];
+    const innerPx=radarSectorPixelRadius(
+      panel.displayRadiusInnerM*radiusScaleM,view,latitude
+    );
+    const outerPx=radarSectorPixelRadius(
+      panel.displayRadiusOuterM*radiusScaleM,view,latitude
+    );
     if(outerPx<2)continue;
     ctx.save();
     sectorPath(ctx,[x,y],Math.min(innerPx,outerPx),outerPx,panel.azimuth_deg,panel.half_width_deg);

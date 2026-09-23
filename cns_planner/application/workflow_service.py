@@ -382,6 +382,7 @@ class WorkflowService:
         # ``radar_surveillance_layout``，绝不写 existing CNS / coverage_3d / 走廊与站址提案。
         self.radar_surveillance_layout_service = RadarSurveillanceLayoutService(
             self.session, self.invalidation_service, snapshot,
+            self.layered_route_planner_service,
         )
         self.invalidation_service.radar_surveillance_layout_invalidator = (
             self.radar_surveillance_layout_service.stale_for_reason
@@ -408,12 +409,18 @@ class WorkflowService:
         self.invalidation_service.route_risk_profile_invalidator = (
             self.route_risk_profile_service.refresh_for_reason
         )
+        self.radar_surveillance_layout_service.route_risk_profile_service = (
+            self.route_risk_profile_service
+        )
         self.layered_route_validation_service = LayeredRouteValidationService(
             self.session, self.invalidation_service, snapshot,
             self.layered_route_planner_service, self.route_risk_profile_service,
         )
         self.invalidation_service.layered_route_validation_invalidator = (
             self.layered_route_validation_service.stale_for_reason
+        )
+        self.radar_surveillance_layout_service.layered_route_validation_service = (
+            self.layered_route_validation_service
         )
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
@@ -804,8 +811,8 @@ class WorkflowService:
         return self.radar_surveillance_layout_service.set_policy(payload)
     def radar_surveillance_layout(self, route_id=None):
         return self.radar_surveillance_layout_service.result_snapshot(route_id)
-    def radar_surveillance_layout_readiness(self):
-        return self.radar_surveillance_layout_service.readiness_snapshot()
+    def radar_surveillance_layout_readiness(self, payload=None):
+        return self.radar_surveillance_layout_service.readiness_snapshot(payload)
     def evaluate_radar_surveillance_layout(self, payload=None, *, facts_provider=None):
         result = self.radar_surveillance_layout_service.evaluate(
             payload, facts_provider=facts_provider,
