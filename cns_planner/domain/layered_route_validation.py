@@ -21,14 +21,17 @@ import json
 SCHEMA_VERSION = "layered-route-validation-v1"
 COLLECTION_SCHEMA_VERSION = "layered-route-validation-collection-v1"
 ALGORITHM_ID = "layered_candidate_continuous_validation_v1"
-ALGORITHM_VERSION = "1.0"
+# 1.1：validate_buildings 由「bbox 建筑先要求 ground/height」改为「只有 footprint 真正影响
+# route/buffer 时才要求 ground/height」（BUG-VALIDATION-BUILDING-003）。verdict 语义变化必须
+# 反映在版本上：validation_fingerprint 包含 VALIDATOR_VERSIONS，否则旧 validation 会被误判为 current。
+ALGORITHM_VERSION = "1.1"
 VALIDATION_STATUSES = {
     "validated_candidate", "failed", "unresolved", "not_ready",
     "validation_incomplete", "stale",
 }
 VALIDATOR_VERSIONS = {
     "terrain": "source_native_terrain_validator_v1",
-    "building": "real_footprint_building_validator_v1",
+    "building": "real_footprint_building_validator_v2",
     "native_pixel_intervals": "native_pixel_interval_v1",
     "constant_vertical_context": "production_fixed_cruise_egm2008_v1",
 }
