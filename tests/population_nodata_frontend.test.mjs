@@ -282,8 +282,10 @@ test('the shell remaps population through the dedicated endpoint only',()=>{
   const main=readFile('cns_planner/web/js/main.js');
   assert.match(main,/resourceAction\('\/api\/workspace\/grid\/population\/remap',\{\}\)/);
   assert.match(main,/remapPopulation:async\(\)=>\{/);
-  // 重算之后必须重新拉取逐 cell 的 grid_attributes（通用快照只带摘要）。
-  assert.match(main,/remapPopulation:async\(\)=>[\s\S]{0,240}await syncGridApis\(\)/);
+  // 重算之后必须重新 hydrate 逐 cell 的 grid_attributes（通用快照只带摘要）。
+  // BUG-GRID-POPUP-001 之后，这条 hydrate 由唯一的 applyWorkflowSnapshot 承担
+  // （resourceAction 本身已经走同一条路径，这里再显式保一次 latest snapshot）。
+  assert.match(main,/remapPopulation:async\(\)=>[\s\S]{0,240}await applyWorkflowSnapshot\(data\)/);
   assert.match(main,/remapPopulation:async\(\)=>[\s\S]{0,400}renderWorkflow\(\);paint\(\);return data;\}/);
   // 入口文件必须保持精简（tests/test_architecture.py）。
   assert.ok(main.split('\n').length<=450,'main.js 必须保持 450 行以内的轻入口');

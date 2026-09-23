@@ -486,6 +486,9 @@ class ApiRouter:
                 "terrain_dtm",
                 "buildings",
                 "building_grid",
+                # 陆域掩膜：Radar Surveillance Layout V1.1 的 land|sea 判定来源，
+                # 必须与其它空间来源一样可以被显式配置、校验与持久化。
+                "land_mask",
                 "reference_landing_sites",
                 "reference_routes",
                 "towers",

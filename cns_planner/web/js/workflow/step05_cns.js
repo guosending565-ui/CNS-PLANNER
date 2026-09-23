@@ -461,33 +461,25 @@ export function bind(c){
   c.actionButton('evaluateSitePlan',()=>{const policy=structuredClone(c.flow().site_planning_policy||{});policy.confirmed=c.$('sitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/cns-site-plan',{site_planning_policy:policy});});
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
   c.actionButton('applyClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/apply',{application_id:c.flow().closed_loop_assessment?.application?.application_id}));
-  // ---- Radar Surveillance Layout V1（独立任务卡；proposal-only，绝不自动 Apply） ----
-  // 保存划设参数：只写 radar_surveillance_policy（25/5/3 + 挂高工程假设）。
-  // 挂高为空时提交 null（=未配置），后端绝不写死任何塔高/安装高度。
+  // ---- Radar Surveillance Layout V1.1（独立任务卡；proposal-only，绝不自动 Apply） ----
+  // 保存划设参数：只写 radar_surveillance_policy（25/5/3 + 海岸不确定带 + 陆域图层）。
+  // V1.1：挂高不再是必填项；legacy 输入框是 disabled 的只读回显，这里绝不提交它。
   if(c.$('saveRadarSurveillancePolicy'))c.actionButton('saveRadarSurveillancePolicy',()=>{
-    const raw=c.$('radarMountHeight').value.trim();
     const policy=structuredClone(c.flow().radar_surveillance_policy||{});
-    policy.radar_mount_height={
-      radar_mount_height_m:raw===''?null:Number(raw),
-      mount_height_basis:'radar_above_tower_top',
-      source:c.$('radarMountSource').value.trim()||'user_supplied_engineering_example_parameter',
-      confirmed:false,
-      parameter_origin:'engineering_assumption',
-    };
+    const buffer=c.$('radarCoastalBuffer')?.value.trim();
+    if(buffer!==''&&buffer!=null)policy.coastal_uncertainty_buffer_m=Number(buffer);
+    const layer=c.$('radarLandMaskLayer')?.value.trim();
+    if(layer)policy.land_mask_layer_name=layer;
     policy.allow_mixed_radar_types=c.$('radarAllowMixed')?.checked!==false;
     return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
   });
-  // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 连续覆盖复核。
+  // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 独立连续覆盖复核。
   if(c.$('evaluateRadarSurveillanceLayout'))c.actionButton('evaluateRadarSurveillanceLayout',()=>{
-    const raw=c.$('radarMountHeight')?.value.trim();
     const payload={route_id:'all'};
-    if(raw!==''&&raw!=null)payload.radar_mount_height={
-      radar_mount_height_m:Number(raw),
-      mount_height_basis:'radar_above_tower_top',
-      source:c.$('radarMountSource')?.value.trim()||'user_supplied_engineering_example_parameter',
-      confirmed:false,
-      parameter_origin:'engineering_assumption',
-    };
+    const buffer=c.$('radarCoastalBuffer')?.value.trim();
+    if(buffer!==''&&buffer!=null)payload.coastal_uncertainty_buffer_m=Number(buffer);
+    const layer=c.$('radarLandMaskLayer')?.value.trim();
+    if(layer)payload.land_mask_layer_name=layer;
     return c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
   });
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(6);

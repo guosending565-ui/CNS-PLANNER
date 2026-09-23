@@ -23,6 +23,7 @@ import * as Step04 from './workflow/step04_operation.js';
 import * as Step05 from './workflow/step05_cns.js';
 import * as Step06 from './workflow/step06_review.js';
 import {createSourceCenter} from './sources/source_center.js';
+import {createWorkflowSnapshotApplier} from './state/workflow_snapshot.js';
 
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
@@ -49,25 +50,29 @@ const workbench=createWorkbench({
   setState:value=>store.set({ui:{...store.get().ui,workbench:value}})
 });
 function layers(){return layerSwitches($,LAYER_IDS);}
-async function applyWorkflow(data){flow=data;store.set({workflow:flow});rebuildGridRenderCache();try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}renderWorkflow();paint();return data;}
+// 唯一允许写入全局 flow 的地方：state/workflow_snapshot.js 统一「安装 snapshot → 按需
+// hydrate 逐 cell 网格明细 → render」，gridDataSerial 由它独占管理（防竞态）。
+// BUG-GRID-POPUP-001：通用 /api/workflow 快照是 slim 的（不含 cells），因此**所有**写入
+// 路径（bootstrap / mutate / refresh / resourceAction / 打开项目）都只能走这一条。
+const snapshotApplier=createWorkflowSnapshotApplier({
+  getFlow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},
+  nextSerial:()=>++gridDataSerial,currentSerial:()=>gridDataSerial,
+  fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),
+  onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();}});
+const applyWorkflowSnapshot=data=>snapshotApplier.applyWorkflowSnapshot(data);
+const applyWorkflow=data=>applyWorkflowSnapshot(data);
 async function mutate(action,payload={}){return applyWorkflow(await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 // GRID-L8-UNIFICATION：超限时后端返回 blocked（不是降级）并已把该状态落库；重新读取快照让界面显示阻断原因。
 async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow'));}
-// 局部 mutation：POST 响应只作返回值 → GET /api/workflow → applyWorkflow → 返回 POST 响应；resourceAction 仅用于确实返回完整 workflow 快照的端点（详见 api/client.js）。
+// 局部 mutation：POST 响应只作返回值 → GET /api/workflow → applyWorkflow → 返回 POST 响应（详见 api/client.js）。
 const resourceMutationAndRefresh=createResourceMutationAndRefresh({post:(path,payload)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),refresh:()=>api('/api/workflow'),apply:applyWorkflow});
-async function resourceAction(path,payload={}){const data=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});flow=data;store.set({workflow:flow});rebuildGridRenderCache();renderWorkflow();paint();return data;}
+async function resourceAction(path,payload={}){return applyWorkflowSnapshot(await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
 // V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
 async function loadRoutePlannerV3Detail(){
   const detail=await api('/api/route-planner-v3-experiments');
   flow={...flow,route_planner_v3_detail:detail};store.set({workflow:flow});renderWorkflow();paint();
   return detail;
-}
-async function syncGridApis(){
-  const request=++gridDataSerial;
-  const [grid,attributes]=await Promise.all([api('/api/workspace/grid'),api('/api/workspace/grid/attributes')]);
-  if(request!==gridDataSerial)return;
-  flow={...flow,grid,grid_attributes:attributes};store.set({workflow:flow});rebuildGridRenderCache();
 }
 function showError(message){$('error').hidden=!message;$('error').textContent=message||'';}
 function panelError(message){const target=$('panelError');if(target)target.textContent=message||'';else showError(message);}
@@ -137,11 +142,9 @@ function drawWorkflowOverlay(){
   updateLodBadge($('lodStatus'),currentPlan,escapeHtml);
   drawWorkflowLayers({
     ctx,view,flow,plan:currentPlan,layers:layers(),screenPoint,profileHoverCoordinate,gridTheme:GridTheme,
-    towerHighlight:towerReference.highlightedTower(),routeEvidenceHighlight,
-    proposedPlanActions,
+    towerHighlight:towerReference.highlightedTower(),routeEvidenceHighlight,proposedPlanActions,
     drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
-    drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint)
-  });
+    drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint)});
   // 参考层：只读参考数据；视觉层级 candidate > scenario / reference，因此参考线再压一层。
   const plan=currentPlan,switches=layers(),styles=plan.styles;
   drawReferenceOverlay({
@@ -152,11 +155,7 @@ function drawWorkflowOverlay(){
     pointRadius:styles.pointRadius,pointAlpha:styles.pointAlpha,
     labelMode:plan.level==='detail'?'detail':'hidden'
   });
-  if(selectedReference&&plan.selectedScreen){
-    const [x,y]=plan.selectedScreen;ctx.save();
-    ctx.fillStyle='#8f2f6b';ctx.strokeStyle='#fff';ctx.lineWidth=2;
-    ctx.beginPath();ctx.arc(x,y,8,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();
-  }
+  if(selectedReference&&plan.selectedScreen){const [x,y]=plan.selectedScreen;ctx.save();ctx.fillStyle='#8f2f6b';ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,8,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();}
 }
 function proposedPlanActions(value){
   const p16=value?.cns_corridor_site_plan||{},review=value?.cns_plan_review||{};
@@ -229,8 +228,7 @@ $('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').oncli
 function updateGridNotice(){
   const notice=$('gridNotice');if(!notice)return;
   const hasGrid=flow?.grid?.status==='passed'&&gridRenderCache.cells.length>0;
-  notice.hidden=!gridDisplay.outline||hasGrid;
-  notice.textContent='请先在第02步保存工作区以生成标准网格';
+  notice.hidden=!gridDisplay.outline||hasGrid;notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
   if(updateLayeredLegends({$,flow,formatNumber:GridTheme.formatNumber}))return;
@@ -265,13 +263,11 @@ function syncLayerControls(){
     $,layerIds:LAYER_IDS,queue,paint,
     setGridOutline(value){gridDisplay.outline=value;},
     updateGridNotice,updateGridThemeLegend,updateMapLegend,
-    onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked)
-  });
+    onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked)});
 }
 function statusText(status){return labelFor(status);}function statusBadge(status){return badgeFor(status);}function escapeHtml(value){return escapeValue(value);}
 function setStep(step){
-  currentStep=Number(step);interactionMode='pan';measure.sync();draftWorkspace=null;profileHoverCoordinate=null;
-  routeEvidenceHighlight=null;
+  currentStep=Number(step);interactionMode='pan';measure.sync();draftWorkspace=null;profileHoverCoordinate=null;routeEvidenceHighlight=null;
   store.set({ui:{...store.get().ui,step:currentStep,interactionMode}});
   workbench.clearState();
   $('cnsLayers').hidden=currentStep<5;
@@ -284,8 +280,7 @@ function renderWorkflow(){
   const referenceDiagnostics=referenceLayerDiagnostics(flow);
   for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites],['towerLayerStatus',referenceDiagnostics.towers]]){
     const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}
-  }
-  const step=STEPS[currentStep-1],body=workbench.body();
+  }  const step=STEPS[currentStep-1],body=workbench.body();
   // mutation / 重新渲染后保持当前一级与二级标签以及滚动位置
   const scroll=body?body.scrollTop:0;
   store.set({ui:{...store.get().ui,workbench:{...store.get().ui.workbench,scroll}}});
@@ -317,7 +312,7 @@ function stepBindings(){return {
     clear(){routeEvidenceHighlight=null;paint();},
   },
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
-  setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}renderWorkflow();paint();return data;},
+  setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});await applyWorkflowSnapshot(data);renderWorkflow();paint();return data;},
   startWorkspace(){interactionMode='workspace';measure.sync();draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
   clearWorkspace:async()=>{if(!Step02.confirmWorkspaceClear(flow))return;draftWorkspace=null;interactionMode='pan';measure.sync();await mutate('workspace-clear');},// BUG-WORKSPACE-CLEAR-002：破坏性操作执行前二次确认
   // 正式工作流只有一个 canonical 层级（MH/T 4063.1 L8）：grid_level 是常量，不来自任何下拉选择。
@@ -357,9 +352,10 @@ async function saveProject(projectDir,name){
   }catch(exc){panelError('保存项目失败：'+exc.message);}
   finally{if(button&&document.body.contains(button))button.disabled=false;}
 }
+// 打开项目：(1) 先按完整 workflow 快照 hydrate（含逐 cell 网格明细），(2) 再刷新 /api/state。
 async function openProject(projectDir){
   if(!projectDir)return panelError('请先选择项目文件夹');
-  const button=$('openProject');try{button.disabled=true;panelError('');const data=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})});update(data);bitmap?.close();bitmap=null;if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);else if(data.bounds)fit(data.bounds);}catch(exc){panelError('打开项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
+  const button=$('openProject');try{button.disabled=true;panelError('');const data=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})});await applyWorkflowSnapshot(data.workflow);update(data);bitmap?.close();bitmap=null;if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);else if(data.bounds)fit(data.bounds);}catch(exc){panelError('打开项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
 }
 function getTiandituKey(){
   for(const source of state?.online_sources||[]){
@@ -412,6 +408,8 @@ function update(data){
   $('building_gridPath').value=data.paths.building_grid||'';
   $('reference_landing_sitesPath').value=data.paths.reference_landing_sites||'';
   $('reference_routesPath').value=data.paths.reference_routes||'';
+  // V1.1：陆域掩膜与其它空间来源一样进入数据源中心（可配置、可校验、可持久化）。
+  $('land_maskPath').value=data.paths.land_mask||'';
   const population=data.population;
   $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
   const terrain=data.terrain||{},terrainDtm=data.terrain_dtm||{};
@@ -420,7 +418,9 @@ function update(data){
   $('sourceSummary').textContent=data.layers.length+' 个本地图层 · '+data.paths.basemap.split(/[\\/]/).pop();
   sourceCenter.render(data);
   renderWorkflow();
-  syncGridApis().then(()=>{renderWorkflow();paint();}).catch(exc=>showError('网格专题同步失败：'+exc.message));
+  // 通用 workflow 快照是 slim 的（不含逐 cell 明细）：统一由 snapshotApplier hydrate
+  // 网格明细后再渲染（BUG-GRID-POPUP-001）。
+  applyWorkflowSnapshot(data.workflow).then(()=>paint()).catch(exc=>showError('网格专题同步失败：'+exc.message));
   if(data.error)showError(data.error);
 }
 // ---- 启动装配（只调用一次，避免重复 document / menu listener） -------------

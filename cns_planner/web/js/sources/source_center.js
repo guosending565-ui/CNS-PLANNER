@@ -64,6 +64,8 @@ const payload=()=>({
   terrain_dtm:$('terrain_dtmPath').value,
   buildings:$('buildingsPath').value,
   building_grid:$('building_gridPath').value,
+  // V1.1：陆域掩膜必须与其它空间来源一样可以显式配置、校验并持久化。
+  land_mask:$('land_maskPath').value,
   reference_landing_sites:$('reference_landing_sitesPath').value,
   reference_routes:$('reference_routesPath').value,
   towers:$('towersPath').value
@@ -93,7 +95,7 @@ const payload=()=>({
     finally{button.disabled=false;button.textContent='检查在线服务';}
   }
   function openBrowser(kind,initialPath=''){
-    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体（.gpkg / .shp / .geojson，或引用建筑图层的 .qgz / .qgs 工程）',building_grid:'文件类型：建筑环境网格（.gpkg / .shp / .geojson，或引用该图层的 .qgz / .qgs 工程）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',towers:'文件类型：通信铁塔站址（.xlsx / .csv / .geojson）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
+    browseKind=kind;const filters={basemap:'文件类型：QGIS 项目（.qgz / .qgs）',buildings:'文件类型：建筑单体（.gpkg / .shp / .geojson，或引用建筑图层的 .qgz / .qgs 工程）',building_grid:'文件类型：建筑环境网格（.gpkg / .shp / .geojson，或引用该图层的 .qgz / .qgs 工程）',land_mask:'文件类型：陆域掩膜（.gpkg / .shp / .geojson；用于 land | coastal_uncertain | sea 判定）',population:'文件类型：人口栅格（.tif / .tiff）',terrain:'文件类型：GLO-30 DSM（.tif / .tiff）',terrain_dtm:'文件类型：FABDEM DTM（.tif / .tiff）',reference_landing_sites:'文件类型：参考起降点（.xlsx / .csv；.et 仅提示转换）',reference_routes:'文件类型：参考航线（.csv / .xlsx / .geojson；.et 仅提示转换）',towers:'文件类型：通信铁塔站址（.xlsx / .csv / .geojson）',existing_cns:'文件类型：已有 CNS 设施（.json / .csv / .geojson）',candidate_sites:'文件类型：候选站址（.json / .csv / .geojson）',project:'请选择项目数据存储文件夹'};$('fileFilter').textContent=filters[kind]||'请选择文件';$('selectFile').textContent=kind==='project'?'选择当前文件夹':'选择此文件';$('browser').showModal();browse(initialPath);
   }
   async function browse(path){
     $('browseError').textContent='';selectedFile='';$('selectFile').disabled=true;$('chosen').textContent=browseKind==='project'?'请选择项目文件夹':'请选择文件；单击文件后确认';

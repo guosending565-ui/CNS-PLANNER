@@ -1,4 +1,4 @@
-"""Radar Surveillance Layout V1 — 米制几何与航路采样（纯标准输入输出）。
+"""Radar Surveillance Layout V1.1 — 米制几何与航路采样（纯标准输入输出）。
 
 设计边界
 --------
@@ -7,8 +7,21 @@
 （``QgisMetricTransform`` → ``EPSG:32651``）或注入的 transform 完成，算法内部
 **绝不出现 degree-as-meter**。
 
-所有距离/角度计算都在米制平面内完成；高度使用既有 ALT-080 / Route3DProfile 的
+所有距离/角度计算都在米制平面内完成；高度使用固定高度层 ALT-080 的
 EGM2008 正高语义（``z`` 为米，正高）。
+
+高度语义（V1.1，BUG-RADAR-ALT-001）
+----------------------------------
+
+航路是 **80 m 固定巡航高度航路**，因此本模块消费的每个 sample 的 ``egm2008_m``
+都恒为 ``80.0``。FABDEM 地面正高只用于既有 ``tower_obstacle_profiles``
+（塔底/塔顶派生），**绝不**再被当作航路高度。
+
+方向语义（V1.1，BUG-RADAR-ELEV-002）
+-----------------------------------
+
+``vertical_delta_m = sample_egm2008_m − radar_origin_egm2008_m``（目标减雷达）。
+目标高于雷达 ⇒ 正仰角；等高 ⇒ 0°；低于雷达 ⇒ 负仰角（本模型不下倾，不覆盖）。
 """
 
 from __future__ import annotations
@@ -149,26 +162,94 @@ def bearing_deg(origin, target):
 
 
 def vertical_delta_m(*, origin_egm2008_m, sample_egm2008_m):
-    """雷达原点相对目标点的**高度优势**（米）：``origin − sample``。
+    """目标点相对雷达原点的**高差**（米）：``sample − origin``。
 
-    正值表示雷达原点**高于**被覆盖点（目标在雷达下方），这对应正的俯仰角
-    ``0 <= elevation_deg <= 45``；负值表示雷达原点低于目标点（不可覆盖）。
+    V1.1（BUG-RADAR-ELEV-002 修复）：唯一正确语义是
+
+        ``vertical_delta_m = target/sample_egm2008_m − radar_origin_egm2008_m``
+
+    因此：
+
+    * 目标**高于**雷达 ⇒ ``vertical_delta_m > 0`` ⇒ 正仰角（``0 <= elevation <= 45`` 才覆盖）；
+    * 目标与雷达等高 ⇒ ``0``；
+    * 目标**低于**雷达 ⇒ ``vertical_delta_m < 0`` ⇒ 负仰角 ⇒ 本模型（不下倾）不覆盖。
+
+    V1.0 曾经使用 ``origin − sample``，把"雷达高于目标"错误地解释成正仰角；
+    该错误语义已删除，并且原有锁定该错误语义的单测同步改为锁定正确语义。
     """
 
-    return float(origin_egm2008_m) - float(sample_egm2008_m)
+    return float(sample_egm2008_m) - float(origin_egm2008_m)
+
+
+def plane_intersection_radii_m(*, origin_egm2008_m, plane_egm2008_m, parameters):
+    """雷达与 **80 m 平面**的有效交截水平半径（V1.1，BUG-RADAR-OVERLAY-005）。
+
+    ``min_slant_range_m`` / ``max_slant_range_m`` 是**斜距**，绝不能被前端当作
+    80 m 平面的水平半径直接使用。给定雷达原点正高 ``origin_egm2008_m`` 与平面正高
+    ``plane_egm2008_m``：
+
+        ``dz_m = plane_egm2008_m − origin_egm2008_m``
+
+        ``horizontal_outer_radius_m = sqrt(max(0, Rmax² − dz²))``
+
+        ``horizontal_inner_radius_m = max(dz, sqrt(max(0, Rmin² − dz²)))``
+
+    其中 ``max(dz, ...)`` 项表达"0~45° 波束"这一约束：在平面高度上，
+    ``elevation <= 45°`` 等价于 ``horizontal >= dz``。
+
+    若 ``dz < 0``（平面低于雷达原点）或不存在有效交截（内半径 > 外半径），
+    输出 ``plane_intersection_status = "no_intersection"`` 并给出 ``None`` 半径 ——
+    **绝不**用斜距冒充水平半径，也不编造一个假圆环。
+    """
+
+    dz = float(plane_egm2008_m) - float(origin_egm2008_m)
+    inner_slant = float(parameters["min_slant_range_m"])
+    outer_slant = float(parameters["max_slant_range_m"])
+    if dz < 0.0:
+        return {
+            "dz_m": dz,
+            "horizontal_inner_radius_m": None,
+            "horizontal_outer_radius_m": None,
+            "plane_intersection_status": "no_intersection",
+            "plane_intersection_reason": "site_plane_below_radar_origin_no_down_tilt_in_this_model",
+            "slant_range_semantics": "slant",
+            "horizontal_radius_semantics": "not_computed_when_no_intersection",
+        }
+    outer = math.sqrt(max(0.0, outer_slant * outer_slant - dz * dz))
+    inner = max(dz, math.sqrt(max(0.0, inner_slant * inner_slant - dz * dz)))
+    if inner > outer:
+        return {
+            "dz_m": dz,
+            "horizontal_inner_radius_m": None,
+            "horizontal_outer_radius_m": None,
+            "plane_intersection_status": "no_intersection",
+            "plane_intersection_reason": "inner_radius_exceeds_outer_radius",
+            "slant_range_semantics": "slant",
+            "horizontal_radius_semantics": "not_computed_when_no_intersection",
+        }
+    return {
+        "dz_m": dz,
+        "horizontal_inner_radius_m": inner,
+        "horizontal_outer_radius_m": outer,
+        "plane_intersection_status": "intersects",
+        "plane_intersection_reason": None,
+        "slant_range_semantics": "slant",
+        "horizontal_radius_semantics": "slant_range_projected_onto_fixed_altitude_plane",
+    }
+
 
 
 def panel_coverage(*, origin_egm2008_m, sample_egm2008_m, sample_metric, tower_metric,
                    panel_azimuth_deg, parameters):
     """单面阵覆盖判定：同时满足斜距、俯仰、方位三个条件才算覆盖。
 
-    俯仰角约定（与用户给定的 ``0 <= elevation_deg <= 45`` 一致）::
+    V1.1 俯仰角约定（与用户给定的 ``0 <= elevation_deg <= 45`` 一致）::
 
-        vertical_delta_m = origin_egm2008_m − sample_egm2008_m
+        vertical_delta_m = sample_egm2008_m − origin_egm2008_m
         elevation_deg    = atan2(vertical_delta_m, horizontal_distance_m)
 
-    因此雷达原点高于被覆盖点 ⇒ 正仰角；原点低于目标点 ⇒ 负仰角（不可覆盖）。
-    斜距同样使用该高度差的绝对值。
+    因此目标高于雷达 ⇒ 正仰角（可覆盖）；目标与雷达等高 ⇒ 0°；目标低于雷达 ⇒ 负仰角
+    （本模型不下倾，不可覆盖）。斜距使用该高差的绝对值。
 
     ``parameters`` 是 :func:`cns_planner.domain.radar_surveillance_layout.
     radar_geometry_parameters` 的返回（含 ``min_slant_range_m`` / ``max_slant_range_m`` /
@@ -242,5 +323,6 @@ __all__ = [
     "bearing_deg", "circular_angle_delta_deg", "dedupe_azimuths", "elevation_deg",
     "geometry_evaluation", "horizontal_distance_m", "interpolate_metric_path",
     "metric_path_length_m", "normalize_azimuth_deg", "panel_coverage",
-    "physically_reachable", "sample_offsets_m", "slant_distance_m", "vertical_delta_m",
+    "physically_reachable", "plane_intersection_radii_m", "sample_offsets_m",
+    "slant_distance_m", "vertical_delta_m",
 ]

@@ -1,8 +1,23 @@
-"""Radar Surveillance Layout V1 — 领域契约、真实设备事实与 provenance。
+"""Radar Surveillance Layout V1.1 — 领域契约、真实设备事实与 provenance。
 
 本模块是 **additive** 的：它不修改任何既有契约（``GeometricCoverage3DV1`` 的
 sphere/hemisphere 语义、``Route3DProfile``、``LayeredRouteValidation`` /
 ``LayeredOperationalAdoption``、``Theta* V2`` 全部保持原样），也不写任何既有结果容器。
+
+V1.0 → V1.1（三个 P0 几何语义修复）
+-----------------------------------
+
+1. **航路采样高度**（BUG-RADAR-ALT-001）：航路是 80 m 固定巡航高度航路，因此所有采样点的
+   ``egm2008_m`` 恒为 ``80.0``；FABDEM 地面正高不再被当成航路高度。
+2. **俯仰符号**（BUG-RADAR-ELEV-002）：
+   ``vertical_delta_m = sample_egm2008_m − radar_origin_egm2008_m``（目标减雷达，
+   不再是 origin − sample）。目标高于雷达 ⇒ 正仰角。
+3. **雷达原点**（BUG-RADAR-ORIGIN-003）：
+   ``radar_origin_egm2008_m = tower_top_orthometric_m``，不再额外叠加
+   "统一工程示例挂高 30 m"。
+
+外加：陆域掩膜真实接入 + 显式 **海岸不确定带** ``coastal_uncertainty_buffer_m``
+（30 m，工程假设 / 未确认），以及 algorithm_version ``1.1``。
 
 正式名称
 --------
@@ -38,6 +53,21 @@ terrain_LOS、diffraction、building_blocking、clutter、multipath、interferen
 
 两个值都**同时**保留为设备事实（``source_inequality`` / ``source_value``），因此模型
 参数与来源证据可逐项对照，绝不是"把来源改掉"。
+
+陆域掩膜真实来源（只读）
+------------------------
+
+    D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\boundary\\zhejiang_boundary.gpkg
+
+* ``layer_name = zhejiang_boundary``；``source_crs = EPSG:4326``；
+  geometry ``Polygon/MultiPolygon``；
+* 发现自 QGIS 工程 ``D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\11.qgz``；
+* ``source_type = real`` / ``source_role = land_mask`` /
+  ``classification_basis = explicit_polygon`` / ``dem_nodata_used_to_infer_sea = false``。
+
+**该路径只作为本机 DEFAULT_PATHS 建议值**；算法与 GIS 适配器一律从
+``data_sources["land_mask"]`` 消费，绝不硬编码绝对路径。这是**工程化/简化**的省域边界，
+不是 5 m 高精度海岸线。
 """
 
 from __future__ import annotations
@@ -47,9 +77,20 @@ from copy import deepcopy
 SCHEMA_VERSION = "radar-surveillance-layout-v1"
 MODEL_SCOPE = "geometric_initial_radar_layout"
 ALGORITHM_ID = "radar_surveillance_layout"
-ALGORITHM_VERSION = "1.0"
-ALGORITHM_NAME = "Radar Surveillance Layout V1"
+#: V1.1：本轮修复了三个**真实的几何语义**缺陷（航路采样高度、俯仰符号、雷达原点），
+#: 因此算法版本必须升级，旧 V1.0 layout 一律 stale（见 ``application`` 侧失效链）。
+ALGORITHM_VERSION = "1.1"
+ALGORITHM_NAME = "Radar Surveillance Layout V1.1"
 ALGORITHM_SEMANTICS = "80m固定高度航路方向性雷达几何初步划设方案"
+
+#: V1.1 显式语义指纹分量（进入 input_fingerprint，旧 V1.0 layout 因此必然 stale）。
+SEMANTICS_FINGERPRINT = {
+    "route_altitude_semantics": "fixed_alt_080_egm2008",
+    "vertical_delta_semantics": "target_minus_radar_origin",
+    "radar_origin_semantics": "tower_top_orthometric",
+    "land_mask_semantics": "explicit_land_polygon_containment_plus_coastal_uncertainty_buffer",
+    "geometry_version": "radar_layout_geometry_v1_1",
+}
 
 #: 本模型绝不评估的物理/传播/环境项（逐项显式声明，不省略、不静默）。
 NOT_EVALUATED = {
@@ -63,6 +104,15 @@ NOT_EVALUATED = {
 FIXED_ALTITUDE_LAYER_ID = "ALT-080"
 FIXED_ALTITUDE_M = 80.0
 VERTICAL_REFERENCE = "egm2008_orthometric"
+
+#: 航路采样点高度的**唯一**语义（V1.1 P0 修复 BUG-RADAR-ALT-001）。
+#:
+#: 本模型业务定义是「80m 固定巡航高度航路」，因此**所有** optimization / validation /
+#: refinement 采样点的 ``sample.egm2008_m`` 必须**恒等于** ``80.0``。
+#: FABDEM 地面正高**绝不**再被当作航路高度代入：它仍然用于既有
+#: ``tower_obstacle_profiles``（塔底/塔顶派生），也留给未来 terrain LOS。
+ROUTE_SAMPLE_HEIGHT_SEMANTICS = "fixed_alt_080_egm2008_constant_for_every_sample"
+ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT = False
 
 #: 投影到米制平面使用的 CRS（舟山工程既有显式机制）。
 METRIC_CRS = "EPSG:32651"
@@ -94,11 +144,33 @@ RADAR_TYPE_LABELS = {
     RADAR_TYPE_II: "中近程雷达Ⅱ型",
 }
 
-#: 每条航路采样点的地表分类。``unknown`` fail-closed：绝不自动按 sea 处理。
-SURFACE_CLASSES = ("land", "sea", "unknown")
+#: 每条航路采样点的地表分类（V1.1 增加 ``coastal_uncertain``）。
+#:
+#: ``unknown`` 仍然 fail-closed：绝不自动按 sea 处理、绝不用 DEM NoData 推断海洋。
+#: ``coastal_uncertain`` 来自**显式工程参数** ``coastal_uncertainty_buffer_m``：
+#: 简化工程边界的海岸带不能被当成"确定的海洋"，因此按 land 处理（更保守，要求 2 个站址）。
+SURFACE_CLASSES = ("land", "sea", "coastal_uncertain", "unknown")
 
 #: 要求的不同站址数量（land 需要 2 个独立站址；sea 需要 1 个；unknown fail-closed）。
-REQUIRED_DISTINCT_SITE_COUNT = {"land": 2, "sea": 1, "unknown": None}
+#: ``coastal_uncertain`` 的 ``effective_requirement_class`` 是 ``land``。
+REQUIRED_DISTINCT_SITE_COUNT = {
+    "land": 2, "sea": 1, "coastal_uncertain": 2, "unknown": None,
+}
+
+#: ``surface_class -> effective_requirement_class``（V1.1 海岸不确定带按 land 处理）。
+EFFECTIVE_REQUIREMENT_CLASS = {
+    "land": "land", "sea": "sea", "coastal_uncertain": "land", "unknown": None,
+}
+
+#: 海岸不确定带默认值（米）——**工程假设，未确认**。
+#:
+#: 它绝不能被描述成数据真实精度：``zhejiang_boundary`` 是工程化/简化的省域边界，
+#: 与 5 m validation resolution 无关。参数显式进入 provenance 与 fingerprint。
+DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M = 30.0
+COASTAL_UNCERTAINTY_BUFFER_ORIGIN = "engineering_assumption"
+COASTAL_UNCERTAINTY_BUFFER_CONFIRMED = False
+COASTAL_UNCERTAINTY_BUFFER_SEMANTICS = "engineering_conservative_buffer_not_data_accuracy"
+
 
 #: 单面阵覆盖判定的固定几何参数（米 / 度）。
 RADAR_GEOMETRY_PARAMETERS = {
@@ -487,10 +559,17 @@ def device_summary():
 
 
 def default_radar_mount_assumption():
-    """雷达原点挂高策略。"无证据" ⇒ 无值（``None``），绝不写死虚假塔高/安装高度。
+    """**legacy** 雷达挂高策略（V1.1 不再使用）。
 
-    前端可以提交统一的**工程示例参数**；此时必须保存
-    ``source`` / ``confirmed=false`` / ``parameter_origin=engineering_assumption``。
+    V1.1 固定简化语义：``radar_origin_egm2008_m = tower_top_orthometric_m``
+    （``tower_top_orthometric_m`` = FABDEM 地形 + 楼面建筑高度 + 源数据塔身高度），
+    即**雷达相位中心位于塔顶**。因此在 V1.1 里：
+
+    * 挂高不再是 readiness 的必填项，也**不参与**任何 V1.1 几何；
+    * 本函数保留仅为**兼容读取**旧项目里已保存的 ``radar_mount_height``，
+      并且其结果恒被标记 ``legacy_not_used_by_v1_1``。
+
+    "无证据" ⇒ 无值（``None``），绝不写死虚假塔高/安装高度。
     """
 
     return {
@@ -500,7 +579,19 @@ def default_radar_mount_assumption():
         "confirmed": False,
         "parameter_origin": "not_configured",
         "status": "not_configured",
+        # V1.1 显式标记：该字段是历史遗留，**不参与** V1.1 几何。
+        "legacy_not_used_by_v1_1": True,
+        "used_by_algorithm_version": None,
     }
+
+
+#: ``radar_origin`` 的 V1.1 固定语义（进入结果与指纹）。
+RADAR_ORIGIN_SEMANTICS = "radar_origin_egm2008_equals_tower_top_orthometric_m"
+RADAR_ORIGIN_BASIS = "tower_top_orthometric_m"
+INSTALLATION_ASSUMPTION = "radar_phase_center_at_tower_top"
+INSTALLATION_ENGINEERING_CONFIRMED = False
+RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1 = False
+
 
 
 MOUNT_HEIGHT_ORIGINS = (
@@ -546,6 +637,9 @@ def normalize_radar_mount_assumption(value):
             "confirmed" if confirmed and origin == "user_confirmed"
             else "pending_confirmation"
         ),
+        # V1.1：兼容读取旧项目字段，但显式标记为历史遗留，且绝不进入 V1.1 几何。
+        "legacy_not_used_by_v1_1": True,
+        "used_by_algorithm_version": None,
     })
     return result
 
@@ -553,13 +647,20 @@ def normalize_radar_mount_assumption(value):
 __all__ = [
     "ALGORITHM_ID", "ALGORITHM_NAME", "ALGORITHM_SEMANTICS", "ALGORITHM_VERSION",
     "AZIMUTH_BEAMWIDTH_DEG", "AZIMUTH_HALF_WIDTH_DEG",
-    "DEVICE_SOURCE", "ELEVATION_CENTER_DEG", "ELEVATION_MAX_DEG", "ELEVATION_MIN_DEG",
-    "FIXED_ALTITUDE_LAYER_ID", "FIXED_ALTITUDE_M", "MAX_PANELS_PER_TOWER",
-    "METRIC_CRS", "MODEL_SCOPE", "MOUNT_HEIGHT_ORIGINS", "NOT_EVALUATED",
-    "PD_REFERENCE", "PFA_REFERENCE", "RADAR_DEVICE_FACTS", "RADAR_GEOMETRY_PARAMETERS",
+    "COASTAL_UNCERTAINTY_BUFFER_CONFIRMED", "COASTAL_UNCERTAINTY_BUFFER_ORIGIN",
+    "COASTAL_UNCERTAINTY_BUFFER_SEMANTICS", "DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M",
+    "DEVICE_SOURCE", "EFFECTIVE_REQUIREMENT_CLASS",
+    "ELEVATION_CENTER_DEG", "ELEVATION_MAX_DEG", "ELEVATION_MIN_DEG",
+    "FIXED_ALTITUDE_LAYER_ID", "FIXED_ALTITUDE_M",
+    "INSTALLATION_ASSUMPTION", "INSTALLATION_ENGINEERING_CONFIRMED",
+    "MAX_PANELS_PER_TOWER", "METRIC_CRS", "MODEL_SCOPE", "MOUNT_HEIGHT_ORIGINS",
+    "NOT_EVALUATED", "PD_REFERENCE", "PFA_REFERENCE",
+    "RADAR_DEVICE_FACTS", "RADAR_GEOMETRY_PARAMETERS", "RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1",
+    "RADAR_ORIGIN_BASIS", "RADAR_ORIGIN_SEMANTICS",
     "RADAR_TYPES", "RADAR_TYPE_I", "RADAR_TYPE_II", "RADAR_TYPE_LABELS",
-    "RCS_REFERENCE_M2", "REQUIRED_DISTINCT_SITE_COUNT", "SCHEMA_VERSION",
-    "SURFACE_CLASSES", "VERTICAL_REFERENCE",
+    "RCS_REFERENCE_M2", "REQUIRED_DISTINCT_SITE_COUNT",
+    "ROUTE_SAMPLE_HEIGHT_SEMANTICS", "ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT",
+    "SCHEMA_VERSION", "SEMANTICS_FINGERPRINT", "SURFACE_CLASSES", "VERTICAL_REFERENCE",
     "default_radar_mount_assumption", "device_provenance", "device_summary",
     "normalize_radar_mount_assumption", "radar_device_facts", "radar_geometry_parameters",
 ]

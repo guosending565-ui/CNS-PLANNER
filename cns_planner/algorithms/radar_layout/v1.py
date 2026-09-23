@@ -1,12 +1,15 @@
-"""Radar Surveillance Layout V1 — 算法编排（两阶段 MILP + 连续覆盖复核）。
+"""Radar Surveillance Layout V1.1 — 算法编排（两阶段 MILP + 连续覆盖复核）。
 
 流程
 ----
 
 1. **航路采样**：沿实际 operational route 里程按 ``optimization_sample_spacing_m = 25``
    采样（不是"每个 MH/T 栅格取一个点"；MH/T 网格不作为雷达覆盖离散基础）；
-2. **surface_class**：每个 sample 得到 ``land | sea | unknown`` 与
-   ``required_distinct_site_count``（land=2、sea=1、unknown fail-closed）；
+   **V1.1：每个 sample 的 ``egm2008_m`` 恒为固定高度层 ALT-080 的 80.0 m**
+   （BUG-RADAR-ALT-001：FABDEM 地面正高不再被当作航路高度）；
+2. **surface_class**：每个 sample 在**自己的真实位置**上独立得到
+   ``land | coastal_uncertain | sea | unknown`` 与 ``required_distinct_site_count``
+   （land=2、coastal_uncertain=2（按 land）、sea=1、unknown fail-closed）；
 3. **候选 panel**：见 :mod:`.candidates`（range/elevation 筛选 → bearing 派生方向 →
    去重 → dominated 剪枝，确定性）；
 4. **求解前不可行检查**：``candidate_distinct_site_count`` 不足的 sample 直接形成
@@ -15,9 +18,13 @@
 6. **Stage B**：**只有** Stage A 被 solver 明确证明 ``infeasible`` 才进入；
    B1 ``min total_panel_count``，B2 固定 ``N*`` 后 ``min Radar-II panel count``
    （词典序：总面阵数恒为第一目标）；
-7. **连续覆盖复核**：``validation_sample_spacing_m = 5`` 对整条航路独立复核；
+7. **连续覆盖复核**：``validation_sample_spacing_m = 5`` 对整条航路**重新生成真实 5 m
+   位置**并**再次独立分类**后复核（禁止最近 25 m 点分类继承，BUG-RADAR-REFINE-003）；
    发现 ``actual_distinct_site_count < required`` 的点即并入优化输入重新求解；
    最多 ``max_refinement_rounds = 3`` 轮。
+
+俯仰语义（V1.1，BUG-RADAR-ELEV-002）：``vertical_delta_m = sample − radar_origin``，
+目标高于雷达 ⇒ 正仰角；低于雷达 ⇒ 负仰角（不下倾，不覆盖）。
 
 最终业务事实（每个 sample 的 ``actual_distinct_site_count``）一律**根据 selected
 panels 重新计算**，绝不直接使用 MILP 的辅助变量 ``y``。
@@ -31,13 +38,15 @@ from ...domain.radar_surveillance_layout import (
     ALGORITHM_ID, ALGORITHM_NAME, ALGORITHM_SEMANTICS, ALGORITHM_VERSION,
     FIXED_ALTITUDE_LAYER_ID, FIXED_ALTITUDE_M, MAX_PANELS_PER_TOWER, METRIC_CRS,
     MODEL_SCOPE, NOT_EVALUATED, RADAR_TYPES, RADAR_TYPE_I, RADAR_TYPE_II,
-    REQUIRED_DISTINCT_SITE_COUNT, SCHEMA_VERSION, SURFACE_CLASSES, VERTICAL_REFERENCE,
+    REQUIRED_DISTINCT_SITE_COUNT, ROUTE_SAMPLE_HEIGHT_SEMANTICS, SCHEMA_VERSION,
+    SEMANTICS_FINGERPRINT, SURFACE_CLASSES, VERTICAL_REFERENCE,
     radar_geometry_parameters,
 )
 from . import milp as milp_module
 from .candidates import build_candidates
 from .geometry import (
-    interpolate_metric_path, panel_coverage, sample_offsets_m,
+    interpolate_metric_path, panel_coverage, plane_intersection_radii_m,
+    sample_offsets_m,
 )
 
 #: 软件 baseline 参数（显式，进入 provenance）。
@@ -88,18 +97,31 @@ def _surface_class_of(sample):
 
 
 def required_count_for(surface_class):
-    """``land`` ⇒ 2、``sea`` ⇒ 1、``unknown`` ⇒ ``None``（fail-closed）。"""
+    """``land`` ⇒ 2、``sea`` ⇒ 1、``coastal_uncertain`` ⇒ 2（按 land 处理）、
+    ``unknown`` ⇒ ``None``（fail-closed）。"""
 
     return REQUIRED_DISTINCT_SITE_COUNT.get(str(surface_class or "unknown"))
 
 
-def build_route_samples(*, metric_path, egm2008_by_offset, surface_by_offset, spacing_m,
-                        route_id, sample_id_prefix="O", coordinate_resolver=None):
+def build_route_samples(*, metric_path, spacing_m, route_id,
+                        fixed_altitude_m=FIXED_ALTITUDE_M,
+                        surface_by_offset=None, surface_resolver=None,
+                        sample_id_prefix="O", coordinate_resolver=None):
     """沿米制航路里程采样并逐点取高度、地表分类与（可选）地理坐标。
 
-    ``egm2008_by_offset`` / ``surface_by_offset`` 是回调：``offset_m -> value``。
-    高度缺失（``None``）时**该点不进入优化输入**并作为 unknown evidence 记录 ——
-    绝不填 0。
+    高度语义（V1.1，BUG-RADAR-ALT-001）
+    -----------------------------------
+
+    航路是 **80 m 固定巡航高度航路**，因此 ``sample.egm2008_m`` **恒等于**
+    ``fixed_altitude_m``（默认 ``80.0``）。FABDEM 地面正高**绝不**再被当作航路高度：
+    "route terrain elevation" 这个错误输入通道已从本函数签名中删除。
+
+    ``surface_by_offset`` 是回调：``offset_m -> surface_class``（25 m 优化 / 5 m 复核
+    各自独立的采样回调；调用方必须为两套采样**分别**建立回调，禁止以"最近 25 m 点"
+    继承分类）。
+    ``surface_resolver`` 是可选回调：``(index, offset_m, metric) -> 分类明细 dict``，
+    给定时其 ``surface_class`` / ``required_distinct_site_count`` 优先于
+    ``surface_by_offset``（用于逐个真实采样点独立分类的场景）。
 
     ``coordinate_resolver`` 是**可选**回调：``[x_m, y_m] -> [lon, lat]``。算法本身不
     做投影；这里只是把调用方提供的投影结果原样记录到 sample 上（供地图使用），
@@ -110,16 +132,24 @@ def build_route_samples(*, metric_path, egm2008_by_offset, surface_by_offset, sp
     offsets = sample_offsets_m(metric_path, spacing_m)
     samples, unresolved = [], []
     for index, (point, offset) in enumerate(zip(points, offsets)):
-        altitude = egm2008_by_offset(offset)
-        if not isinstance(altitude, (int, float)) or isinstance(altitude, bool):
-            unresolved.append({
-                "distance_along_route_m": offset,
-                "metric": list(point),
-                "reason": "route_sample_egm2008_altitude_unresolved",
-            })
-            continue
-        surface = surface_by_offset(offset)
-        surface_class = _surface_class_of({"surface_class": surface})
+        # V1.1：航路高度是固定高度层常量，与任何地形采样无关。
+        altitude = float(fixed_altitude_m)
+        detail = None
+        if callable(surface_resolver):
+            try:
+                detail = surface_resolver(index, offset, [float(point[0]), float(point[1])])
+            except Exception:
+                detail = None
+        if isinstance(detail, dict) and detail.get("surface_class") is not None:
+            surface_class = _surface_class_of(detail)
+            required = detail.get("required_distinct_site_count")
+            if required is None and detail.get("effective_requirement_class") is not None:
+                required = required_count_for(detail.get("effective_requirement_class"))
+        else:
+            surface_class = _surface_class_of(
+                {"surface_class": surface_by_offset(offset) if callable(surface_by_offset) else None}
+            )
+            required = required_count_for(surface_class)
         longitude = latitude = None
         if callable(coordinate_resolver):
             try:
@@ -135,16 +165,20 @@ def build_route_samples(*, metric_path, egm2008_by_offset, surface_by_offset, sp
             "metric": [float(point[0]), float(point[1])],
             "longitude": longitude,
             "latitude": latitude,
-            "egm2008_m": float(altitude),
+            "egm2008_m": altitude,
             "surface_class": surface_class,
-            "required_distinct_site_count": required_count_for(surface_class),
+            "required_distinct_site_count": required,
             "refinement": False,
         })
     return {
         "samples": samples,
+        # V1.1：高度恒为固定层，因此"缺少 EGM2008 正高"这一失败模式已不存在。
         "unresolved_samples": unresolved,
         "spacing_m": float(spacing_m),
         "route_length_m": float(offsets[-1]) if offsets else 0.0,
+        "fixed_altitude_m": float(fixed_altitude_m),
+        "altitude_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+        "terrain_elevation_used_as_route_height": False,
     }
 
 
@@ -347,6 +381,12 @@ def validation_report(*, per_sample, route_length_m, spacing_m=None):
         "land": summary["land"],
         "sea": summary["sea"],
         "unknown": summary["unknown"],
+        # V1.1：海岸不确定带单独报告（按 land 处理，要求 2 个站址），
+        # 绝不被并入 sea，也绝不被当成"已确认的陆地"。
+        "coastal_uncertain": summary["coastal_uncertain"],
+        "surface_class_semantics": (
+            "coastal_uncertain_is_treated_as_land_with_required_distinct_site_count_2"
+        ),
         "uncovered_segments": uncovered,
         "under_redundant_segments": under,
         "unknown_segments": unknown,
@@ -357,6 +397,9 @@ def validation_report(*, per_sample, route_length_m, spacing_m=None):
         "validated": not violations and not unknown_items,
         "validation_sample_spacing_m": effective_spacing,
         "semantics": "independent_continuous_coverage_review_over_the_whole_route",
+        "classification_independence": (
+            "each_validation_sample_classified_at_its_own_real_position_no_nearest_inheritance"
+        ),
     }
 
 
@@ -502,6 +545,12 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=True,
     给定时，每次求得方案都会在该采样上重新判定覆盖；发现的违反点会被并入优化输入
     重新求解（``max_refinement_rounds`` 上限）。未给定时退化为在优化采样上复核
     （此时新增点集合可能为空，循环会安全终止）。
+
+    **V1.1 明确约束（BUG-RADAR-REFINE-003）**：``validation_samples`` 必须是
+    **重新生成的、位于真实 5 m 位置**的采样点，其 ``surface_class`` /
+    ``required_distinct_site_count`` 必须由调用方在该真实位置上**独立执行**
+    land/sea/coastal 分类得到。禁止使用"最近 25 m 点继承分类"，也禁止在
+    ``solve_layout`` 内做任何最近邻 surface 传播 —— 本函数只消费传入的分类结果。
     """
 
     base_samples = [deepcopy(sample) for sample in samples]
@@ -755,6 +804,19 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
             if any(entry["panel_id"] == panel["panel_id"] for entry in item["panels"])
         ]
         tower = tower_by_id.get(str(panel["tower_id"])) or {}
+        origin_egm2008_m = tower.get("origin_egm2008_m")
+        # V1.1（BUG-RADAR-OVERLAY-005）：斜距是 slant range，前端绝不能再把它当作
+        # 80 m 平面的水平半径。这里由**后端**给出该站址与固定高度平面的真实交截半径。
+        plane = (
+            plane_intersection_radii_m(
+                origin_egm2008_m=origin_egm2008_m,
+                plane_egm2008_m=FIXED_ALTITUDE_M,
+                parameters=radar_geometry_parameters(panel["radar_type"]),
+            )
+            if isinstance(origin_egm2008_m, (int, float))
+            and not isinstance(origin_egm2008_m, bool)
+            else None
+        )
         selected_panels.append({
             "panel_id": panel["panel_id"],
             "tower_id": panel["tower_id"],
@@ -766,7 +828,22 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
             "radar_type_label": radar_geometry_parameters(panel["radar_type"])["label"],
             "azimuth_deg": panel["azimuth_deg"],
             "panel_half_width_deg": panel["panel_half_width_deg"],
-            "radar_origin_egm2008_m": tower.get("origin_egm2008_m"),
+            "radar_origin_egm2008_m": origin_egm2008_m,
+            # 80 m 平面交截几何（唯一允许前端消费的水平半径来源）。
+            "altitude_plane_egm2008_m": FIXED_ALTITUDE_M,
+            "altitude_plane_geometry": deepcopy(plane),
+            "horizontal_inner_radius_m": (plane or {}).get("horizontal_inner_radius_m"),
+            "horizontal_outer_radius_m": (plane or {}).get("horizontal_outer_radius_m"),
+            "plane_intersection_status": (plane or {}).get("plane_intersection_status"),
+            "slant_range_semantics": "slant",
+            "slant_range_preset_m": {
+                "min_slant_range_m": radar_geometry_parameters(
+                    panel["radar_type"]
+                )["min_slant_range_m"],
+                "max_slant_range_m": radar_geometry_parameters(
+                    panel["radar_type"]
+                )["max_slant_range_m"],
+            },
             "coverage": {
                 "sample_count": len(covered),
                 "satisfied_sample_count": sum(1 for item in covered if item["status"] == "satisfied"),
@@ -887,7 +964,7 @@ def _covered_length(items):
 
 
 def parameters_block(*, fixed_altitude_m=FIXED_ALTITUDE_M, extra=None):
-    """写入结果的参数块（含 25m / 5m / 3 轮与俯仰·方位 preset）。"""
+    """写入结果的参数块（含 25m / 5m / 3 轮与俯仰·方位 preset + V1.1 语义）。"""
 
     block = {
         "optimization_sample_spacing_m": SOFTWARE_BASELINE["optimization_sample_spacing_m"],
@@ -898,6 +975,16 @@ def parameters_block(*, fixed_altitude_m=FIXED_ALTITUDE_M, extra=None):
         "fixed_altitude_m": fixed_altitude_m,
         "vertical_reference": VERTICAL_REFERENCE,
         "metric_crs": METRIC_CRS,
+        # V1.1 显式语义（同时进入 input_fingerprint，旧 V1.0 layout 因此 stale）。
+        "route_altitude_semantics": SEMANTICS_FINGERPRINT["route_altitude_semantics"],
+        "vertical_delta_semantics": SEMANTICS_FINGERPRINT["vertical_delta_semantics"],
+        "radar_origin_semantics": SEMANTICS_FINGERPRINT["radar_origin_semantics"],
+        "geometry_version": SEMANTICS_FINGERPRINT["geometry_version"],
+        "route_sample_height_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+        "terrain_elevation_used_as_route_height": False,
+        "demo_no_down_tilt_elevation_note": (
+            "0<=elevation<=45 且不下倾：目标低于雷达原点时不可覆盖"
+        ),
         "elevation_preset": {
             "elevation_center_deg": 22.5,
             "elevation_min_deg": 0.0,
@@ -914,6 +1001,7 @@ def parameters_block(*, fixed_altitude_m=FIXED_ALTITUDE_M, extra=None):
         "algorithm_semantics": ALGORITHM_SEMANTICS,
         "schema_version": SCHEMA_VERSION,
         "model_scope": MODEL_SCOPE,
+        "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
         "software_baseline": deepcopy(SOFTWARE_BASELINE),
     }
     if isinstance(extra, dict):

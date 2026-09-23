@@ -578,7 +578,7 @@ class ApplicationContext:
         """
 
         from ..gis.radar_layout_adapter import (
-            LandMaskSource, land_mask_hint, sample_route_terrain,
+            LandMaskSource, land_mask_hint, land_mask_readiness, sample_route_terrain,
         )
 
         transform_cache = {}
@@ -603,12 +603,30 @@ class ApplicationContext:
 
         land_mask_cache = {}
 
+        def _land_policy():
+            """陆域判定的显式工程参数（图层名 + 海岸不确定带）来自当前 policy。"""
+
+            try:
+                policy = self.workflow.radar_surveillance_layout_service.policy_snapshot()
+            except Exception:
+                policy = {}
+            return (
+                policy.get("land_mask_layer_name"),
+                policy.get("coastal_uncertainty_buffer_m"),
+            )
+
         def land_mask_source():
             path = self.data.paths.get("land_mask")
-            key = str(path) if path else None
+            layer_name, buffer_m = _land_policy()
+            key = (str(path) if path else None, str(layer_name), str(buffer_m))
             if key not in land_mask_cache:
                 land_mask_cache.clear()
-                land_mask_cache[key] = LandMaskSource(path) if path else None
+                land_mask_cache[key] = (
+                    LandMaskSource(
+                        path, layer_name=layer_name, coastal_uncertainty_buffer_m=buffer_m,
+                    )
+                    if path else None
+                )
             return land_mask_cache[key]
 
         def sample_terrain(points):
@@ -624,6 +642,33 @@ class ApplicationContext:
                 return ["unknown"] * len(points or [])
             return source.classify_many(points)
 
+        def classify_surface_detailed(longitude, latitude):
+            """V1.1：单点**独立**分类 + 需求语义（含 coastal_uncertain）。
+
+            每个真实采样点都在自己的位置调用一次；绝不做最近邻继承。
+            """
+
+            source = land_mask_source()
+            if source is None:
+                return {
+                    "surface_class": "unknown",
+                    "effective_requirement_class": None,
+                    "required_distinct_site_count": None,
+                    "classification_confidence": "unknown",
+                    "evidence": {"reason": "land_mask_not_configured"},
+                }
+            return source.classify_detailed(longitude, latitude)
+
+        def land_mask_readiness_bundle():
+            layer_name, buffer_m = _land_policy()
+            return land_mask_readiness(
+                self.workflow.state if hasattr(self.workflow, "state") else {},
+                {"land_mask": self.data.paths.get("land_mask")},
+                layer_name=layer_name,
+                coastal_uncertainty_buffer_m=buffer_m,
+            )
+
+        policy_layer_name, policy_buffer_m = _land_policy()
         provider = {
             "adapter_id": "radar_surveillance_layout_real_source_facts_v1",
             "source_type": "configured_real_sources",
@@ -632,16 +677,26 @@ class ApplicationContext:
             "to_geographic": to_geographic,
             "sample_terrain": sample_terrain,
             "classify_surface": classify_surface,
+            "classify_surface_detailed": classify_surface_detailed,
             "land_mask": {
-                "ok": land_mask_hint(self.data.paths.get("land_mask"))["ok"],
-                "readiness": land_mask_hint(self.data.paths.get("land_mask")),
+                "ok": land_mask_hint(
+                    self.data.paths.get("land_mask"), layer_name=policy_layer_name,
+                )["ok"],
+                "readiness": land_mask_hint(
+                    self.data.paths.get("land_mask"), layer_name=policy_layer_name,
+                ),
             },
+            "land_mask_readiness": land_mask_readiness_bundle,
+            "land_mask_layer_name": policy_layer_name,
+            "coastal_uncertainty_buffer_m": policy_buffer_m,
             "paths": {
                 "terrain_dtm": self.data.paths.get("terrain_dtm"),
                 "land_mask": self.data.paths.get("land_mask"),
             },
             "dem_nodata_used_to_infer_sea": False,
             "backend_hardcoded_mount_height": False,
+            # V1.1：航路采样高度恒为 ALT-080 的 80 m，与地形采样无关。
+            "terrain_used_for_route_sample_height": False,
         }
         self.workflow.radar_surveillance_layout_service.facts_provider = provider
         return provider

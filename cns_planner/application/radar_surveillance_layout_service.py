@@ -27,14 +27,19 @@ from ..algorithms.radar_layout.v1 import (
 )
 from ..domain.radar_surveillance_layout import (
     ALGORITHM_ID, ALGORITHM_NAME, ALGORITHM_SEMANTICS, ALGORITHM_VERSION,
+    DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M, EFFECTIVE_REQUIREMENT_CLASS,
     FIXED_ALTITUDE_LAYER_ID, FIXED_ALTITUDE_M, METRIC_CRS, MODEL_SCOPE, NOT_EVALUATED,
-    SCHEMA_VERSION, VERTICAL_REFERENCE, default_radar_mount_assumption, device_provenance,
-    device_summary, normalize_radar_mount_assumption, radar_geometry_parameters,
+    RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1, RADAR_ORIGIN_BASIS, RADAR_ORIGIN_SEMANTICS,
+    ROUTE_SAMPLE_HEIGHT_SEMANTICS, ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT,
+    SCHEMA_VERSION, SEMANTICS_FINGERPRINT, SURFACE_CLASSES, VERTICAL_REFERENCE,
+    default_radar_mount_assumption, device_provenance, device_summary,
+    normalize_radar_mount_assumption, radar_geometry_parameters,
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
 from ..gis.radar_layout_adapter import (
-    LAND_MASK_SEMANTICS, radar_layout_source_status, radar_mount_assumption_status,
-    resolve_radar_origins,
+    LAND_MASK_CLASSIFICATION_BASIS, LAND_MASK_SEMANTICS, coastal_uncertainty_buffer_provenance,
+    land_mask_readiness, normalized_coastal_buffer_m, radar_layout_source_status,
+    radar_mount_assumption_status, radar_origin_assumption_status, resolve_radar_origins,
 )
 
 POLICY_KEY = "radar_surveillance_policy"
@@ -42,6 +47,23 @@ LAYOUT_KEY = "radar_surveillance_layout"
 STATUS_KEY = "radar_surveillance_layout"
 
 PROPOSAL_ONLY = True
+
+#: 陆域掩膜来源的 provenance（真实数据事实，不是"模型参数"）。
+LAND_MASK_SOURCE_PROVENANCE = {
+    "source_type": "real",
+    "source_role": "land_mask",
+    "source_crs": "EPSG:4326",
+    "layer_name": "zhejiang_boundary",
+    "classification_basis": LAND_MASK_CLASSIFICATION_BASIS,
+    "dem_nodata_used_to_infer_sea": False,
+    "discovered_from_qgis_project": (
+        "D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\11.qgz"
+    ),
+    "data_accuracy_claim": (
+        "工程化/简化省域边界，可表达浙江陆块与舟山岛间海域；"
+        "不是 5 m 高精度海岸线，也不等同于 5 m validation resolution。"
+    ),
+}
 
 #: 本服务**绝不**写入的状态键（写入即违规）。
 FORBIDDEN_WRITE_KEYS = (
@@ -76,12 +98,25 @@ BOUNDARIES = {
 
 READINESS_SEMANTICS = {
     "passed_operational_route_required": True,
+    "alt_080_present_and_current_required": True,
     "real_tower_sites_required": True,
-    "tower_radar_origin_egm2008_required": True,
-    "explicit_radar_mount_height_required_and_never_hardcoded": True,
-    "verified_fabdem_dtm_egm2008_required_for_route_sampling": True,
-    "explicit_land_mask_source_required_for_land_sea_classification": True,
+    "tower_obstacle_profiles_current_required": True,
+    "at_least_one_resolved_tower_top_orthometric_required": True,
+    "land_mask_configured_required": True,
+    "land_mask_file_and_layer_required": True,
+    "land_mask_polygon_geometry_required": True,
+    "land_mask_source_crs_resolvable_required": True,
+    "land_mask_classification_transform_required": True,
+    "metric_crs_transform_required": True,
+    "solver_availability_reported_before_evaluate": True,
+    "radar_origin_is_tower_top_orthometric": True,
+    # V1.1：挂高不再是 readiness 必填项。
+    "explicit_radar_mount_height_required_and_never_hardcoded": False,
+    "radar_mount_height_legacy_not_used_by_v1_1": True,
+    "fixed_route_altitude_is_not_terrain_elevation": True,
     "dem_nodata_is_never_used_to_infer_sea": True,
+    "coastal_uncertainty_buffer_is_engineering_assumption_not_data_accuracy": True,
+    "validation_samples_classified_independently_never_nearest_inherited": True,
     "unknown_surface_class_is_fail_closed": True,
     "explicit_user_evaluation_required": True,
     "missing_item_is_not_ready_and_not_zero": True,
@@ -92,7 +127,7 @@ READINESS_SEMANTICS = {
 
 
 def default_radar_surveillance_policy():
-    """策略默认值：25 m / 5 m / 3 轮 + 未配置挂高（绝不填 0）。"""
+    """策略默认值：25 m / 5 m / 3 轮 + 30 m 海岸不确定带 + legacy 挂高（未配置）。"""
 
     return {
         "status": "pending_confirmation",
@@ -101,11 +136,27 @@ def default_radar_surveillance_policy():
         "max_refinement_rounds": SOFTWARE_BASELINE["max_refinement_rounds"],
         "allow_mixed_radar_types": True,
         "solver_time_limit_s": None,
+        # V1.1：海岸不确定带（显式工程参数，进入 provenance 与 fingerprint）。
+        "coastal_uncertainty_buffer_m": DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M,
+        "coastal_uncertainty_buffer": coastal_uncertainty_buffer_provenance(
+            DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M
+        ),
+        # V1.1：land mask 的图层选择（显式优先，兜底才用关键词）。
+        "land_mask_layer_name": LAND_MASK_SOURCE_PROVENANCE["layer_name"],
+        # V1.1：legacy 字段，兼容读取但**不参与**几何，也**不是** readiness 门控。
         "radar_mount_height": default_radar_mount_assumption(),
+        "radar_origin_basis": RADAR_ORIGIN_BASIS,
+        "radar_origin_semantics": RADAR_ORIGIN_SEMANTICS,
+        "radar_mount_height_required": RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1,
         "software_baseline": deepcopy(SOFTWARE_BASELINE),
         "fixed_altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
         "fixed_altitude_m": FIXED_ALTITUDE_M,
         "vertical_reference": VERTICAL_REFERENCE,
+        "route_altitude_semantics": SEMANTICS_FINGERPRINT["route_altitude_semantics"],
+        "vertical_delta_semantics": SEMANTICS_FINGERPRINT["vertical_delta_semantics"],
+        "radar_origin_semantics_fingerprint": SEMANTICS_FINGERPRINT["radar_origin_semantics"],
+        "geometry_version": SEMANTICS_FINGERPRINT["geometry_version"],
+        "route_sample_height_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
         "metric_crs": METRIC_CRS,
         "source": "cns_planner_software_algorithm_baseline",
         "confirmed": False,
@@ -170,6 +221,19 @@ def normalize_radar_surveillance_policy(value):
             "parameter_origin": payload.get("mount_height_parameter_origin"),
         }
     result["radar_mount_height"] = normalize_radar_mount_assumption(mount_payload)
+    # V1.1：挂高不再是 readiness 门控（雷达原点 = 塔顶正高），因此 policy.status
+    # 只反映"是否存在显式确认过的工程参数"，不再由挂高决定。
+    result["radar_mount_height_required"] = RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1
+    buffer_m = normalized_coastal_buffer_m(
+        payload.get("coastal_uncertainty_buffer_m",
+                    result.get("coastal_uncertainty_buffer_m"))
+    )
+    result["coastal_uncertainty_buffer_m"] = buffer_m
+    result["coastal_uncertainty_buffer"] = coastal_uncertainty_buffer_provenance(buffer_m)
+    layer_name = payload.get("land_mask_layer_name")
+    if layer_name in (None, ""):
+        layer_name = result.get("land_mask_layer_name")
+    result["land_mask_layer_name"] = str(layer_name) if layer_name else None
     mount_status = str(result["radar_mount_height"].get("status") or "not_configured")
     result["status"] = (
         "confirmed" if mount_status == "confirmed" else "pending_confirmation"
@@ -183,18 +247,37 @@ def normalize_radar_surveillance_policy(value):
 
 
 def _source_fingerprint_component(record):
-    """来源 -> 指纹分量：只保留**稳定**事实（配置路径 + 可用性 + 格式声明）。"""
+    """来源 -> 指纹分量：只保留**稳定**事实（配置路径 + 可用性 + 格式声明）。
+
+    V1.1 追加陆域掩膜的**分类语义**分量（classification_basis / layer_name /
+    source_crs / coastal uncertainty buffer）：它们改变 surface_class 结果，
+    因此必须改变输入指纹。
+    """
 
     record = record if isinstance(record, dict) else {}
     configured = record.get("configured_path")
     if configured in (None, ""):
         configured = record.get("path")
-    return {
+    component = {
         "configured_path": str(configured) if configured else None,
         "available": bool(record.get("available") or record.get("ok")),
         "semantics": record.get("semantics"),
         "role": record.get("role"),
     }
+    if record.get("classification_basis") is not None:
+        component["classification_basis"] = record.get("classification_basis")
+    if record.get("layer_name") is not None:
+        component["layer_name"] = record.get("layer_name")
+    if record.get("source_crs") is not None:
+        component["source_crs"] = record.get("source_crs")
+    if record.get("metric_crs") is not None:
+        component["metric_crs"] = record.get("metric_crs")
+    buffer = record.get("coastal_uncertainty_buffer")
+    if isinstance(buffer, dict):
+        component["coastal_uncertainty_buffer_m"] = buffer.get("coastal_uncertainty_buffer_m")
+        component["coastal_uncertainty_buffer_origin"] = buffer.get("parameter_origin")
+        component["coastal_uncertainty_buffer_confirmed"] = buffer.get("confirmed")
+    return component
 
 
 def _finite(value):
@@ -287,12 +370,58 @@ class RadarSurveillanceLayoutService:
         return self.snapshot()
 
     def source_status(self):
+        return radar_layout_source_status(
+            self.session.state, self._source_paths(),
+            layer_name=self._policy().get("land_mask_layer_name"),
+            coastal_uncertainty_buffer_m=self._policy().get("coastal_uncertainty_buffer_m"),
+        )
+
+    def _source_paths(self):
+        """当前空间来源路径：优先注入的 provider，其次 ProjectState 内的来源记录。
+
+        项目刚恢复 / provider 尚未注入时也要能报告真实 readiness，绝不把
+        "provider 还没注入"误报成"land_mask 未配置"。
+        """
+
         provider = self.facts_provider or {}
-        paths = provider.get("paths") if isinstance(provider, dict) else {}
-        return radar_layout_source_status(self.session.state, paths or {})
+        paths = dict(provider.get("paths") or {}) if isinstance(provider, dict) else {}
+        state = self.session.state
+        if not paths.get("land_mask"):
+            recorded = ((state.get("result_index") or {}).get("land_mask")
+                        if isinstance(state.get("result_index"), dict) else None)
+            if isinstance(recorded, dict) and recorded.get("path"):
+                paths["land_mask"] = recorded["path"]
+        for key in ("land_mask", "terrain_dtm"):
+            if not paths.get(key):
+                value = (state.get("data_source_paths") or {}).get(key) if isinstance(
+                    state.get("data_source_paths"), dict
+                ) else None
+                if value:
+                    paths[key] = value
+        return paths
+
+    def land_mask_readiness(self):
+        """land mask **深度** readiness（文件/图层/几何/CRS/米制变换）。"""
+
+        policy = self._policy()
+        return land_mask_readiness(
+            self.session.state, self._source_paths(),
+            layer_name=policy.get("land_mask_layer_name"),
+            coastal_uncertainty_buffer_m=policy.get("coastal_uncertainty_buffer_m"),
+        )
 
     def readiness_snapshot(self):
-        """只读 readiness：不打开任何大数据集。"""
+        """只读 readiness：不打开任何大数据集。
+
+        V1.1 的 ``passed`` 判据（BUG-RADAR-READINESS-004）：
+        至少 1 条 passed operational route；ALT-080 存在且 confirmed/current；
+        真实铁塔存在；``tower_obstacle_profiles`` current；至少 1 个已解析
+        ``tower_top_orthometric_m``；land_mask 已配置且文件/图层/Polygon 可用、
+        源 CRS 可解析、分类转换可用；EPSG:32651 米制变换可用；
+        solver 可用性在 evaluate 之前即可明确报告。
+
+        **不再要求** radar mount height configured（V1.1 雷达原点 = 塔顶正高）。
+        """
 
         state = self.session.state
         routes = [
@@ -308,32 +437,123 @@ class RadarSurveillanceLayoutService:
             1 for item in profiles.values()
             if isinstance(item, dict) and item.get("tower_top_orthometric_m") is not None
         )
-        mount = radar_mount_assumption_status(state)
+        spatial = state.get("spatial_3d") or {}
+        layers = {
+            str(item.get("altitude_layer_id")): item
+            for item in spatial.get("altitude_layers") or []
+            if isinstance(item, dict)
+        }
+        layer = layers.get(FIXED_ALTITUDE_LAYER_ID)
+        altitude = {
+            "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
+            "altitude_m": FIXED_ALTITUDE_M,
+            "vertical_reference": VERTICAL_REFERENCE,
+            "semantics": "fixed_route_height_not_optimised",
+            "present": isinstance(layer, dict),
+            "confirmed": bool((layer or {}).get("confirmed") is True),
+            "layer_status": (layer or {}).get("status"),
+            "layer_definition": (
+                {
+                    "nominal_altitude_m": layer.get("nominal_altitude_m"),
+                    "lower_altitude_m": layer.get("lower_altitude_m"),
+                    "upper_altitude_m": layer.get("upper_altitude_m"),
+                    "vertical_reference": layer.get("vertical_reference"),
+                }
+                if isinstance(layer, dict) else None
+            ),
+            "confirmed_and_current": bool(
+                isinstance(layer, dict) and (layer.get("confirmed") is True)
+            ),
+        }
+        land = self.land_mask_readiness()
+        metric = self._metric_transform_readiness()
+        solver = _solver_availability()
+
+        blockers = []
+        if not passed_routes:
+            blockers.append("passed_operational_route_missing")
+        if not towers:
+            blockers.append("real_tower_sites_missing")
+        if not profiles:
+            blockers.append("tower_obstacle_profiles_missing")
+        if not resolved:
+            blockers.append("resolved_tower_top_orthometric_missing")
+        if not altitude["present"]:
+            blockers.append("altitude_layer_alt_080_missing")
+        elif not altitude["confirmed"]:
+            blockers.append("altitude_layer_alt_080_not_confirmed")
+        if land.get("status") != "passed":
+            blockers.append(f"land_mask_not_ready:{land.get('reason')}")
+        if metric.get("status") != "passed":
+            blockers.append(f"metric_crs_transform_not_ready:{metric.get('reason')}")
+        if not solver.get("available"):
+            blockers.append(f"solver_unavailable:{solver.get('reason')}")
+
         return {
-            "status": "passed" if (passed_routes and towers and resolved and mount["status"] != "not_configured") else "not_ready",
+            "status": "passed" if not blockers else "not_ready",
             "algorithm_id": ALGORITHM_ID,
             "algorithm_version": ALGORITHM_VERSION,
             "algorithm_name": ALGORITHM_NAME,
             "algorithm_semantics": ALGORITHM_SEMANTICS,
             "model_scope": MODEL_SCOPE,
             "proposal_only": PROPOSAL_ONLY,
+            "blockers": blockers,
             "passed_operational_route_count": len(passed_routes),
             "operational_route_count": len(routes),
             "tower_count": len(towers),
             "tower_with_resolved_radar_base_count": resolved,
-            "radar_mount_height": mount,
-            "fixed_altitude": {
-                "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
-                "altitude_m": FIXED_ALTITUDE_M,
-                "vertical_reference": VERTICAL_REFERENCE,
-                "semantics": "fixed_route_height_not_optimised",
-            },
+            "tower_obstacle_profile_count": len(profiles),
+            "fixed_altitude": altitude,
+            "land_mask": land,
+            "metric_transform": metric,
+            "solver": solver,
+            "radar_origin": radar_origin_assumption_status(state),
+            # legacy 字段：只报告，不门控。
+            "radar_mount_height": radar_mount_assumption_status(state),
             "parameters": parameters_block(),
+            "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
+            "land_mask_source_provenance": deepcopy(LAND_MASK_SOURCE_PROVENANCE),
             "device_summary": device_summary(),
             "sources": self.source_status(),
             "semantics": deepcopy(READINESS_SEMANTICS),
             "boundaries": deepcopy(BOUNDARIES),
             "not_evaluated": deepcopy(NOT_EVALUATED),
+        }
+
+    def _metric_transform_readiness(self):
+        """EPSG:32651 米制变换是否可用（不打开任何数据集）。"""
+
+        provider = self.facts_provider or {}
+        projector = provider.get("to_metric") if isinstance(provider, dict) else None
+        if not callable(projector):
+            return {
+                "status": "not_ready",
+                "metric_crs": METRIC_CRS,
+                "reason": "metric_projector_not_injected",
+                "detail": "尚未注入显式米制投影（EPSG:32651）；禁止 degree-as-meter。",
+            }
+        try:
+            projected = projector([122.2, 29.95])
+        except Exception as exc:
+            return {
+                "status": "not_ready",
+                "metric_crs": METRIC_CRS,
+                "reason": f"metric_projector_failed:{exc}",
+                "detail": "米制投影调用失败",
+            }
+        if not (isinstance(projected, (list, tuple)) and len(projected) >= 2):
+            return {
+                "status": "not_ready",
+                "metric_crs": METRIC_CRS,
+                "reason": "metric_projector_returned_invalid_point",
+                "detail": "米制投影返回非法坐标",
+            }
+        return {
+            "status": "passed",
+            "metric_crs": METRIC_CRS,
+            "reason": None,
+            "probe_metric": [float(projected[0]), float(projected[1])],
+            "detail": "显式米制变换可用；未使用 degree-as-meter。",
         }
 
     # ------------------------------------------------------------------ projection
@@ -408,17 +628,24 @@ class RadarSurveillanceLayoutService:
                 "radar_ii_panel_count": item.get("radar_ii_panel_count"),
                 "candidate_tower_count": item.get("candidate_tower_count"),
                 "candidate_panel_count": item.get("candidate_panel_count"),
-                # 雷达原点与挂高假设（含 pending_confirmation 语义）必须在摘要里可见。
+                # 雷达原点（V1.1：= tower_top_orthometric_m，不再有挂高叠加）。
                 "radar_origin": {
-                    "mount_assumption": (
-                        (item.get("radar_origin") or {}).get("mount_assumption")
-                    ),
-                    "mount_assumption_status": (
-                        (item.get("radar_origin") or {}).get("mount_assumption_status")
+                    "radar_origin_basis": (
+                        (item.get("radar_origin") or {}).get("radar_origin_basis")
                     ),
                     "resolve_status": (item.get("radar_origin") or {}).get("status"),
                     "resolved_count": (item.get("radar_origin") or {}).get("resolved_count"),
                     "unresolved_count": (item.get("radar_origin") or {}).get("unresolved_count"),
+                    "installation_assumption": (
+                        (item.get("radar_origin") or {}).get("installation_assumption")
+                    ),
+                    "engineering_confirmed": (
+                        (item.get("radar_origin") or {}).get("engineering_confirmed")
+                    ),
+                    "legacy_mount_height_used": False,
+                    "legacy_mount_assumption_status": (
+                        (item.get("radar_origin") or {}).get("legacy_mount_assumption_status")
+                    ),
                     "backend_hardcoded_mount_height": False,
                 },
                 # 地图 overlay 需要**已选方案**的几何；未选 panel 的 coverage polygon 一律不下发
@@ -446,8 +673,25 @@ class RadarSurveillanceLayoutService:
                 "land": validation.get("land"),
                 "sea": validation.get("sea"),
                 "unknown": validation.get("unknown"),
+                # V1.1：海岸不确定带按 land 处理，必须单独可见。
+                "coastal_uncertain": validation.get("coastal_uncertain"),
+                "surface_classification": item.get("surface_classification"),
+                "route_sampling": item.get("route_sampling"),
+                "land_mask_source_provenance": item.get("land_mask_source_provenance"),
+                "sources": (
+                    {
+                        "land_mask": (item.get("sources") or {}).get("land_mask"),
+                        "terrain_dtm": (item.get("sources") or {}).get("terrain_dtm"),
+                        "radar_origin": (item.get("sources") or {}).get("radar_origin"),
+                        "radar_mount_height": (
+                            (item.get("sources") or {}).get("radar_mount_height")
+                        ),
+                    }
+                    if isinstance(item.get("sources"), dict) else None
+                ),
                 "coverage_summary": item.get("coverage_summary"),
                 "parameters": item.get("parameters"),
+                "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
                 "refinement_rounds": [
                     {
                         "round_index": entry.get("round_index"),
@@ -509,6 +753,13 @@ class RadarSurveillanceLayoutService:
             "algorithm_id": ALGORITHM_ID,
             "algorithm_version": ALGORITHM_VERSION,
             "model_scope": MODEL_SCOPE,
+            # V1.1：几何语义分量必须进指纹 —— 语义一变，旧 layout 必然 stale。
+            "semantics": deepcopy(SEMANTICS_FINGERPRINT),
+            "route_altitude_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+            "vertical_delta_semantics": SEMANTICS_FINGERPRINT["vertical_delta_semantics"],
+            "radar_origin_semantics": RADAR_ORIGIN_SEMANTICS,
+            "radar_origin_basis": RADAR_ORIGIN_BASIS,
+            "geometry_version": SEMANTICS_FINGERPRINT["geometry_version"],
             "route": (
                 {
                     "route_id": str(route.get("route_id")),
@@ -527,7 +778,12 @@ class RadarSurveillanceLayoutService:
                 "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
                 # 只绑定**语义相关**的稳定字段：ALT-080 的目录条目在项目恢复时会被幂等
                 # 补建（`ensure_default_altitude_layers`），若把整条记录（含 created_at /
-                # evidence 等）纳入指纹，重新打开项目就会把刚求出的方案误判为 stale。
+                # evidence / 派生的 status 等）纳入指纹，重新打开项目就会把刚求出的方案
+                # 误判为 stale。
+                #
+                # V1.1 进一步收紧：只能绑定**几何输入**（高度值与垂向基准）。目录条目的
+                # `status` / `confirmed` 是配置门控，由 readiness 判定，会随目录补建/恢复
+                # 派生变化，但**不改变任何几何结果**，因此不属于输入指纹。
                 "definition": (
                     {
                         "altitude_layer_id": layer.get("altitude_layer_id"),
@@ -535,8 +791,6 @@ class RadarSurveillanceLayoutService:
                         "lower_altitude_m": layer.get("lower_altitude_m"),
                         "upper_altitude_m": layer.get("upper_altitude_m"),
                         "vertical_reference": layer.get("vertical_reference"),
-                        "status": layer.get("status"),
-                        "confirmed": layer.get("confirmed"),
                     }
                     if isinstance(layer, dict) else None
                 ),
@@ -589,13 +843,19 @@ class RadarSurveillanceLayoutService:
             # 方案误判为 stale。reason/detail 仍完整保存在结果的 `sources` 里供审计。
             "land_mask": _source_fingerprint_component(land_mask_status["land_mask"]),
             "terrain_dtm": _source_fingerprint_component(land_mask_status["terrain"]),
-            "radar_mount_height": policy.get("radar_mount_height"),
+            # legacy 字段仍进指纹（保持"改了就 stale"的可解释性），但明确标注不参与几何。
+            "radar_mount_height": {
+                **policy.get("radar_mount_height"),
+                "legacy_not_used_by_v1_1": True,
+            },
             "policy": {
                 "optimization_sample_spacing_m": policy.get("optimization_sample_spacing_m"),
                 "validation_sample_spacing_m": policy.get("validation_sample_spacing_m"),
                 "max_refinement_rounds": policy.get("max_refinement_rounds"),
                 "allow_mixed_radar_types": policy.get("allow_mixed_radar_types"),
                 "solver_time_limit_s": policy.get("solver_time_limit_s"),
+                "coastal_uncertainty_buffer_m": policy.get("coastal_uncertainty_buffer_m"),
+                "land_mask_layer_name": policy.get("land_mask_layer_name"),
             },
         }
         return components
@@ -681,6 +941,7 @@ class RadarSurveillanceLayoutService:
             "device_summary": device_summary(),
             "not_evaluated": deepcopy(NOT_EVALUATED),
             "boundaries": deepcopy(BOUNDARIES),
+            "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
         }
         base["input_fingerprint"] = self.input_fingerprint(route_id)
 
@@ -712,19 +973,24 @@ class RadarSurveillanceLayoutService:
         origins = resolve_radar_origins(
             towers=list(towers.values()),
             obstacle_profiles=state.get("tower_obstacle_profiles") or {},
+            # V1.1：legacy 挂高只被兼容读取并记录，**不影响**几何。
             mount_assumption=policy.get("radar_mount_height"),
         )
         base["radar_origin"] = {
             "status": origins["status"],
-            "mount_assumption": origins["mount_assumption"],
-            "mount_assumption_status": origins["mount_assumption_status"],
+            "radar_origin_basis": RADAR_ORIGIN_BASIS,
+            "semantics": origins["semantics"],
+            "installation_assumption": origins["installation_assumption"],
+            "engineering_confirmed": origins["engineering_confirmed"],
+            "legacy_mount_assumption": origins["legacy_mount_assumption"],
+            "legacy_mount_assumption_status": origins["legacy_mount_assumption_status"],
+            "legacy_mount_height_used": False,
             "tower_count": len(origins["records"]),
             "resolved_count": sum(
                 1 for item in origins["records"] if item["origin_egm2008_m"] is not None
             ),
             "unresolved_count": origins["unresolved_count"],
             "unresolved": deepcopy(origins["unresolved"][:200]),
-            "semantics": origins["semantics"],
             "backend_hardcoded_mount_height": False,
         }
         usable_towers = [
@@ -732,8 +998,8 @@ class RadarSurveillanceLayoutService:
         ]
         if not usable_towers:
             blockers.append(
-                "没有任何铁塔具备已解析的雷达原点 EGM2008 正高"
-                "（缺 FABDEM 地形正高或显式挂高）；缺关键垂向证据不得填 0"
+                "没有任何铁塔具备已解析的 tower_top_orthometric_m"
+                "（缺 FABDEM 地形正高 / 建筑高度 / 塔身高度）；缺关键垂向证据不得填 0"
             )
         else:
             # 塔站址 -> 显式米制平面坐标：与航路采样共用同一投影，算法因此只处理米。
@@ -801,70 +1067,25 @@ class RadarSurveillanceLayoutService:
         ):
             blockers.append("米制投影返回了非法坐标")
 
-        # ---- 逐点地形正高（禁用 0） ------------------------------------------------
+        # ---- V1.1 航路采样：固定 80 m 高度 + **逐采样点独立**地表分类 ---------------
+        #
+        # BUG-RADAR-ALT-001：航路是 80 m 固定巡航高度航路，sample.egm2008_m 恒为 80.0，
+        # 不再用 FABDEM 地面高程冒充航路高度。
+        # BUG-RADAR-REFINE-003：25 m 优化采样与 5 m 复核采样**各自**重新生成真实位置，
+        # 并在自己的位置独立执行 land/sea/coastal 分类；绝不允许"最近 25 m 点继承分类"。
         spacing = float(policy["optimization_sample_spacing_m"])
-        from ..algorithms.radar_layout.geometry import (
-            interpolate_metric_path, sample_offsets_m,
+        validation_spacing = float(policy["validation_sample_spacing_m"])
+
+        classify_detailed = (
+            provider.get("classify_surface_detailed") if isinstance(provider, dict) else None
         )
-
-        metric_samples = interpolate_metric_path(metric_path, spacing)
-        metric_offsets = sample_offsets_m(metric_path, spacing)
-        # 采样点 -> 地理坐标（用于地形采样与陆域判定）。
-        projected = []
-        for index, (point, offset) in enumerate(zip(metric_samples, metric_offsets)):
-            longitude = latitude = None
-            if callable(to_geographic):
-                try:
-                    geographic = to_geographic(point)
-                    longitude, latitude = float(geographic[0]), float(geographic[1])
-                except Exception:
-                    longitude = latitude = None
-            projected.append({
-                "key": f"O{index:06d}",
-                "metric": list(point),
-                "offset_m": float(offset),
-                "longitude": longitude,
-                "latitude": latitude,
-            })
-
-        terrain_facts = {}
-        terrain_sampler = provider.get("sample_terrain") if isinstance(provider, dict) else None
-        if callable(terrain_sampler):
-            terrain_facts = terrain_sampler([
-                {"key": item["key"], "longitude": item["longitude"], "latitude": item["latitude"]}
-                for item in projected
-            ]) or {}
-        ordered_terrain = [
-            terrain_facts.get(item["key"]) or {} for item in projected
-        ]
-
         land_classifier = provider.get("classify_surface") if isinstance(provider, dict) else None
         land_ready = (
             provider.get("land_mask") if isinstance(provider, dict) else None
         ) or {}
-        surface_classes = ["unknown"] * len(metric_samples)
-        surface_evidence = {"status": "unknown", "reason": "land_mask_not_configured"}
-        if callable(land_classifier):
-            geographic_points = []
-            for point in metric_samples:
-                if callable(to_geographic):
-                    try:
-                        geographic = to_geographic(point)
-                        geographic_points.append(
-                            (float(geographic[0]), float(geographic[1]))
-                        )
-                        continue
-                    except Exception:
-                        pass
-                geographic_points.append((None, None))
-            surface_classes = list(land_classifier(geographic_points) or [])
-            surface_evidence = {
-                "status": "passed" if "unknown" not in surface_classes else "partial",
-                "reason": None,
-                "mask": deepcopy(land_ready.get("readiness") or {}),
-                "semantics": LAND_MASK_SEMANTICS,
-            }
-        elif not land_ready.get("ok"):
+        coastal_buffer_m = policy.get("coastal_uncertainty_buffer_m")
+
+        if not callable(land_classifier) and not callable(classify_detailed):
             unknown_evidence.append({
                 "reason_code": "land_mask_not_configured_fail_closed",
                 "detail": (
@@ -872,82 +1093,136 @@ class RadarSurveillanceLayoutService:
                     "required_distinct_site_count 未知，绝不自动按 sea（1 站）处理，"
                     "也绝不用 DEM NoData 推断海洋。"
                 ),
-                "affected_sample_count": len(metric_samples),
+                "affected_sample_count": 0,
             })
-            surface_evidence = {
-                "status": "missing_data",
-                "reason": "land_mask_not_configured",
-                "mask": deepcopy(land_ready.get("readiness") or {}),
-                "semantics": LAND_MASK_SEMANTICS,
-            }
+        surface_evidence = {
+            "status": (
+                "passed"
+                if (callable(land_classifier) or callable(classify_detailed))
+                else "missing_data"
+            ),
+            "reason": (
+                None
+                if (callable(land_classifier) or callable(classify_detailed))
+                else "land_mask_not_configured"
+            ),
+            "mask": deepcopy(land_ready.get("readiness") or {}),
+            "semantics": LAND_MASK_SEMANTICS,
+            "classification_basis": LAND_MASK_CLASSIFICATION_BASIS,
+            "coastal_uncertainty_buffer": coastal_uncertainty_buffer_provenance(
+                coastal_buffer_m
+            ),
+            "classification_independence": (
+                "optimization_and_validation_samples_classified_independently"
+            ),
+            "source_provenance": deepcopy(LAND_MASK_SOURCE_PROVENANCE),
+        }
 
-        class _OffsetLookup:
-            """``offset_m -> value``：采样点与偏移一一对应，按最近偏移取。"""
+        #: 每个间距各自建立"沿里程一致的独立分类器"，两条采样链互不引用对方。
+        classification_cache = {}
 
-            def __init__(self, offsets, values):
-                self.offsets = [float(item) for item in offsets]
-                self.values = list(values)
+        def _classification_at(offset, index, metric_point, chain_key):
+            """在**该采样点自己的真实位置**上做一次独立地表分类。
 
-            def __call__(self, offset):
-                if not self.offsets:
-                    return None
-                target = float(offset)
-                best, best_delta = None, None
-                for index, candidate in enumerate(self.offsets):
-                    delta = abs(candidate - target)
-                    if best_delta is None or delta < best_delta:
-                        best, best_delta = index, delta
-                if best is None:
-                    return None
-                return self.values[best] if best < len(self.values) else None
+            ``chain_key`` 区分 25 m 优化链 / 5 m 复核链的缓存：两条链各自从自己的
+            真实位置出发做地理反投影与分类，绝不共享分类结果。
+            """
 
-        def _altitude_at(offset):
-            fact = _OffsetLookup(
-                metric_offsets,
-                [
-                    (
-                        item.get("elevation_m")
-                        if str(item.get("status")) == "passed" else None
-                    )
-                    for item in ordered_terrain
-                ],
-            )(offset)
-            return fact if isinstance(fact, (int, float)) and not isinstance(fact, bool) else None
+            cache = classification_cache.setdefault(chain_key, {})
+            key = round(float(offset), 6)
+            if key in cache:
+                return cache[key]
+            longitude = latitude = None
+            if callable(to_geographic):
+                try:
+                    geographic = to_geographic(metric_point)
+                    longitude, latitude = float(geographic[0]), float(geographic[1])
+                except Exception:
+                    longitude = latitude = None
+            record = None
+            if callable(classify_detailed):
+                try:
+                    record = classify_detailed(longitude, latitude)
+                except Exception:
+                    record = None
+            if not isinstance(record, dict):
+                surface = "unknown"
+                if callable(land_classifier):
+                    try:
+                        surface = (list(land_classifier([(longitude, latitude)])) or ["unknown"])[0]
+                    except Exception:
+                        surface = "unknown"
+                effective = EFFECTIVE_REQUIREMENT_CLASS.get(str(surface))
+                record = {
+                    "surface_class": str(surface or "unknown"),
+                    "effective_requirement_class": effective,
+                    "required_distinct_site_count": None,
+                    "classification_confidence": (
+                        "uncertain" if surface == "coastal_uncertain"
+                        else "unknown" if surface == "unknown" else "confirmed"
+                    ),
+                    "evidence": {"reason": "land_mask_adapter_legacy_classifier"},
+                }
+            cache[key] = record
+            return record
 
         sampled = build_route_samples(
             metric_path=metric_path,
-            egm2008_by_offset=_altitude_at,
-            surface_by_offset=_OffsetLookup(metric_offsets, surface_classes),
             spacing_m=spacing,
             route_id=str(route_id),
+            fixed_altitude_m=FIXED_ALTITUDE_M,
+            surface_resolver=(
+                lambda index, offset, metric: _classification_at(
+                    offset, index, metric, f"optimization@{spacing}",
+                )
+            ),
             coordinate_resolver=(to_geographic if callable(to_geographic) else None),
         )
-        # ---- 5 m 独立连续覆盖复核采样（与 25 m 优化采样共用同一套事实回调） --------
+        # ---- 5 m 独立连续覆盖复核采样：**重新生成真实 5 m 位置**并再次独立分类 --------
         validation_samples = None
-        validation_spacing = float(policy["validation_sample_spacing_m"])
         if validation_spacing > 0 and validation_spacing != spacing:
             validation_samples = build_route_samples(
                 metric_path=metric_path,
-                egm2008_by_offset=_altitude_at,
-                surface_by_offset=_OffsetLookup(metric_offsets, surface_classes),
                 spacing_m=validation_spacing,
                 route_id=str(route_id),
+                fixed_altitude_m=FIXED_ALTITUDE_M,
+                surface_resolver=(
+                    lambda index, offset, metric: _classification_at(
+                        offset, index, metric, f"validation@{validation_spacing}",
+                    )
+                ),
                 sample_id_prefix="V",
                 coordinate_resolver=(to_geographic if callable(to_geographic) else None),
             )["samples"]
 
-        terrain_missing = len(sampled["unresolved_samples"])
-        if terrain_missing:
-            unknown_evidence.append({
-                "reason_code": "route_sample_egm2008_altitude_unresolved",
-                "detail": "部分航路采样点缺少 FABDEM EGM2008 正高，已从优化输入中排除（绝不填 0）",
-                "affected_sample_count": terrain_missing,
-            })
+        surface_classes = [item["surface_class"] for item in sampled["samples"]]
+        if surface_classes:
+            surface_evidence["status"] = (
+                "partial" if "unknown" in surface_classes else "passed"
+            )
+        surface_evidence["sample_count"] = len(sampled["samples"])
+        surface_evidence["surface_class_counts"] = {
+            surface_class: sum(
+                1 for item in sampled["samples"] if item["surface_class"] == surface_class
+            )
+            for surface_class in SURFACE_CLASSES
+        }
+        surface_evidence["validation_sample_count"] = (
+            len(validation_samples) if validation_samples else len(sampled["samples"])
+        )
+        surface_evidence["validation_surface_class_counts"] = {
+            surface_class: sum(
+                1 for item in (validation_samples or [])
+                if item["surface_class"] == surface_class
+            )
+            for surface_class in SURFACE_CLASSES
+        } if validation_samples else None
+
         if not sampled["samples"]:
             base.update({
                 "status": "not_ready",
-                "blockers": blockers + ["没有任何航路采样点具备 EGM2008 正高"],
-                "infeasibility_reasons": ["航路采样点全部缺少 EGM2008 正高"],
+                "blockers": blockers + ["没有任何航路采样点"],
+                "infeasibility_reasons": ["航路采样点为空"],
                 "unknown_evidence": unknown_evidence,
                 "surface_classification": surface_evidence,
                 "candidate_tower_count": len(usable_towers),
@@ -963,13 +1238,22 @@ class RadarSurveillanceLayoutService:
             })
             return base
 
-        land_mask_status = radar_layout_source_status(state, provider.get("paths") or {})
+        land_mask_status = radar_layout_source_status(
+            state, provider.get("paths") or {},
+            layer_name=policy.get("land_mask_layer_name"),
+            coastal_uncertainty_buffer_m=coastal_buffer_m,
+        )
         base["sources"] = {
             "terrain_dtm": land_mask_status["terrain"],
             "land_mask": land_mask_status["land_mask"],
+            # V1.1：radar origin 不再依赖挂高；legacy 字段只报告。
+            "radar_origin": land_mask_status["radar_origin"],
             "radar_mount_height": land_mask_status["radar_mount_height"],
         }
         base["surface_classification"] = surface_evidence
+        base["radar_origin"]["legacy_mount_height_used"] = False
+        base["radar_origin"]["legacy_mount_height_status"] = "legacy_not_used_by_v1_1"
+        base["land_mask_source_provenance"] = deepcopy(LAND_MASK_SOURCE_PROVENANCE)
         base["route_sampling"] = {
             "optimization_sample_spacing_m": spacing,
             "validation_sample_spacing_m": policy["validation_sample_spacing_m"],
@@ -977,10 +1261,19 @@ class RadarSurveillanceLayoutService:
             "validation_review_sample_count": (
                 len(validation_samples) if validation_samples else len(sampled["samples"])
             ),
-            "unresolved_sample_count": terrain_missing,
+            "unresolved_sample_count": 0,
             "route_metric_length_m": sampled["route_length_m"],
             "metric_crs": METRIC_CRS,
             "mht_grid_used_as_coverage_discretisation": False,
+            "sample_egm2008_m": FIXED_ALTITUDE_M,
+            "sample_egm2008_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+            "terrain_elevation_used_as_route_height": (
+                ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT
+            ),
+            "classification_independence": (
+                "optimization_and_validation_samples_re_generated_and_classified_independently"
+            ),
+            "nearest_sample_classification_inheritance": False,
             "semantics": "sampled_along_actual_operational_route_distance",
         }
 
@@ -1104,6 +1397,29 @@ class RadarSurveillanceLayoutService:
             "stale_route_ids": changed,
             "downstream": ["radar_surveillance_layout", "report"],
         }
+
+
+def _solver_availability():
+    """求解器可用性（evaluate 之前就能明确报告，绝不退化为 greedy）。"""
+
+    from ..algorithms.radar_layout.milp import solver_backend
+
+    backend = solver_backend()
+    return {
+        "available": bool(backend.get("available")),
+        "name": backend.get("name"),
+        "library": backend.get("library"),
+        "scipy_version": backend.get("scipy_version"),
+        "reason": backend.get("reason"),
+        "greedy_fallback_used": False,
+        "detail": (
+            "scipy.optimize.milp + HiGHS 可用；不可用时只报告 solver_unavailable，"
+            "绝不用 greedy 冒充最优。"
+            if backend.get("available") else
+            "当前 Python 环境缺少 scipy；radar 划设将返回 solver_unavailable，"
+            "绝不退化为 greedy。"
+        ),
+    }
 
 
 def _map_status(value):

@@ -32,6 +32,17 @@ DEFAULT_PATHS = {
     "terrain_dtm": "D:/aaa2026project/UOM/舟山/规划系统/FABDEM/processed/Zhoushan_FABDEM_DTM_30m.tif",
     "buildings": "D:/aaa2026project/UOM/舟山/规划系统/building/processed/zhoushan_buildings.gpkg",
     "building_grid": "D:/aaa2026project/UOM/舟山/规划系统/building/processed/zhoushan_building_grid_L8.gpkg",
+    # 陆域掩膜（真实数据，只读来源）：浙江省级行政边界 Polygon/MultiPolygon GeoPackage，
+    # 来源 QGIS 工程 ``D:\aaa2026project\UOM\舟山\规划系统\GLO30\11.qgz`` 的
+    # ``zhejiang_boundary`` 图层，source CRS ``EPSG:4326``。
+    #
+    # 语义边界（不得夸大）：这是**工程化/简化的省域边界**，可以表达浙江陆块与舟山岛间海域，
+    # 但**不是** 5 m 高精度海岸线；因此海岸附近用显式 ``coastal_uncertainty_buffer_m``
+    # （工程假设，未确认）单独成类，绝不把它当成数据真实精度。
+    #
+    # 这里只是**本机默认建议值**：算法侧一律从 ``data_sources["land_mask"]`` 消费，
+    # radar algorithm / adapter 里不出现任何绝对路径。
+    "land_mask": "D:/aaa2026project/UOM/舟山/规划系统/GLO30/boundary/zhejiang_boundary.gpkg",
 }
 
 

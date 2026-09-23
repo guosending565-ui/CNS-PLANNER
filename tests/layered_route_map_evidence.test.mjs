@@ -218,7 +218,53 @@ test('the theta star candidate keeps its real start and end points and any-angle
   assert.equal(candidate.algorithm_id,'layered_risk_aware_theta_star_v2');
 });
 
-// ---- 4. stale candidate 不绘制 -------------------------------------------------
+// ---- 4. BUG-MAP-ROUTE-END-001：端点必须精确，且不得出现"越过端点再折回" ----------
+
+test('a candidate whose exact endpoint is off the cell centre still terminates at the marker',()=>{
+  // 真实现象：起点/终点 marker（例如 N004）看起来落在一条连续线中间，线在 marker 之后
+  // 还多出一小截。取证结论（见 docs 与 python 侧回归）：candidate.path[0] / [-1] **精确
+  // 等于** scenario 起终点（端点误差 0），多出来的一截来自 Theta* V2 的
+  // "exact start → source cell centre → chain"，即精确端点先回到本格中心再出发。
+  //
+  // 这里锁定两点：
+  //  1. 地图绘制必须使用 candidate.path 的**原样**几何（权威），不得裁剪、不得删点；
+  //  2. 端点坐标**精确等于** scenario 起终点 —— 所以"线越过 marker 继续"不可能来自
+  //     端点不精确，只可能来自 source/target cell centre 这一跳（该跳属于搜索账本，
+  //     前端不做任何显示期裁剪）。
+  const centre=[122.005,30.005];
+  const exactStart=[122.0099,30.005];      // 精确起点在 source cell 的**东**边缘
+  const exactEnd=[122.015,30.01];
+  const path=[exactStart,centre,[122.012,30.008],exactEnd];
+  const flow={
+    layered_route_planning_request:{scenario_route_id:'R-END',altitude_layer_id:'L8-LOW'},
+    scenario_routes:[{route_id:'R-END',path:[exactStart,exactEnd]}],
+    grid:{level:8,cells:[
+      {grid_id:'S',level:8,bbox:[122.0,30.0,122.01,30.01],center:centre},
+      {grid_id:'T',level:8,bbox:[122.01,30.0,122.02,30.01],center:[122.015,30.005]},
+    ]},
+    layered_route_candidates:{active_candidate_id:'C-END',items:[{
+      candidate_id:'C-END',status:'candidate',current_applicability:'current',
+      route_id:'R-END',altitude_layer_id:'L8-LOW',lane_key:'R-END@L8-LOW',
+      algorithm_id:'layered_risk_aware_theta_star_v2',path,grid_path:['S','T'],
+    }]},
+  };
+  const geometry=candidateMapGeometry(currentLayeredRouteCandidate(flow),{cells:flow.grid.cells});
+  // 权威几何原样透传（没有任何显示期裁剪 / 删点 / 跳过 connector）
+  assert.deepEqual(geometry.path,path);
+  assert.equal(geometry.geometrySource,LAYERED_CANDIDATE_GEOMETRY_SOURCE);
+  assert.equal(geometry.legacyGridPathFallback,false);
+  // 端点精确性：起终点就是 scenario 起终点，误差为 0
+  assert.deepEqual(geometry.path[0],exactStart);
+  assert.deepEqual(geometry.path[geometry.path.length-1],exactEnd);
+  // 并显式确认第二点确实是 source cell centre（这正是"多出一截"的来源）
+  assert.deepEqual(geometry.path[1],centre);
+  // 前端不得存在任何"按 marker 裁线"的逻辑
+  const source=read('js/map/layered_candidate_overlay.js');
+  assert.doesNotMatch(source,/slice\(|pop\(\)|clip|trimEnd|dropLast/,
+    'candidate overlay 绝不允许在显示层偷偷裁线');
+});
+
+// ---- 5. stale candidate 不绘制 -------------------------------------------------
 
 test('a stale or inactive candidate is never drawn as the current planning result',()=>{
   const stale=layeredFlow({items:[candidateFixture({current_applicability:'stale'})]});
@@ -369,7 +415,7 @@ test('validation never converts failed or unresolved intervals into map geometry
 test('the evidence highlight is pure UI: no state, no zoom, no layer, no LOD change',()=>{
   // main.js：只是一个模块作用域变量 + 只负责重绘的两个回调
   assert.match(MAIN_SOURCE,/let routeEvidenceHighlight=null;/);
-  assert.match(MAIN_SOURCE,/routeEvidenceHighlight,\n\s+proposedPlanActions/,'the highlight reaches the draw call');
+  assert.match(MAIN_SOURCE,/routeEvidenceHighlight,\s*proposedPlanActions/,'the highlight reaches the draw call');
   const bindings=MAIN_SOURCE.slice(MAIN_SOURCE.indexOf('function stepBindings(){'),
     MAIN_SOURCE.indexOf('async function previewPlanningReport(){'));
   assert.match(bindings,/routeEvidence:\{/);
