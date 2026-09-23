@@ -1,4 +1,4 @@
-"""launcher/health 的独立测试（BUG-STARTUP-001），不需要真实 QGIS。"""
+"""launcher/health 的独立测试（BUG-STARTUP-001 / BUG-STARTUP-002），不需要真实 QGIS。"""
 import json
 import launcher_process
 import map_app
@@ -8,10 +8,17 @@ def make_probe(**overrides):
     fields = {
         "occupied": True, "service": "cns-map", "ready": True,
         "project_root": str(map_app.ROOT), "pid": 4321,
-        "started_at": "2026-01-01T00:00:00+00:00", "git_commit": "abc", "data_error": None,
+        "started_at": "2026-01-01T00:00:00+00:00", "git_commit": map_app.git_commit(),
+        "data_error": None,
     }
     fields.update(overrides)
     return map_app.HealthProbe(**fields)
+
+
+def identity(commit):
+    """显式身份，避免测试结果依赖当前 git 工作树的真实状态。"""
+
+    return {"project_root": str(map_app.ROOT), "git_commit": commit}
 
 
 def test_identity_match_allows_reuse():
@@ -54,7 +61,7 @@ def test_probe_reports_non_http_occupant(monkeypatch):
 def test_probe_reads_identity_fields(monkeypatch):
     seen = {}
     payload = {"service": "cns-map", "ready": True, "pid": 77, "started_at": "t",
-               "project_root": str(map_app.ROOT), "git_commit": "deadbeef"}
+               "project_root": str(map_app.ROOT), "git_commit": map_app.git_commit()}
 
     class FakeResponse:
         def __enter__(self):
@@ -73,8 +80,49 @@ def test_probe_reads_identity_fields(monkeypatch):
     monkeypatch.setattr(map_app, "urlopen", fake_urlopen)
     probe = map_app.probe_health()
     assert seen["url"].endswith("/api/health")
-    assert (probe.pid, probe.started_at, probe.git_commit) == (77, "t", "deadbeef")
+    assert (probe.pid, probe.started_at) == (77, "t")
+    assert probe.git_commit == map_app.git_commit()
     assert map_app.health_matches(probe)
+
+
+# ---------------------------------------------------------------- BUG-STARTUP-002
+
+def test_same_root_and_same_commit_allows_reuse():
+    assert map_app.health_matches(make_probe(git_commit="commit-a"), identity("commit-a")) is True
+
+
+def test_same_root_with_different_commit_is_rejected():
+    assert map_app.health_matches(make_probe(git_commit="commit-a"), identity("commit-b")) is False
+
+
+def test_same_root_with_unknown_running_commit_is_rejected():
+    # 同目录、但后端未上报 commit（旧版本后端）：身份未知，不得静默复用。
+    assert map_app.health_matches(make_probe(git_commit=None), identity("commit-b")) is False
+    assert map_app.health_matches(make_probe(git_commit="commit-a"), identity("")) is False
+
+
+def test_both_sides_without_commit_stay_reusable():
+    # 非 git 工作树：双方都没有可比较的 commit 时退化为"不比较"，保证无 git 环境可用。
+    assert map_app.commit_identity_matches("", "") is True
+    assert map_app.health_matches(make_probe(git_commit=""), identity("")) is True
+
+
+def test_stale_backend_of_the_same_project_is_reported_with_restart_diagnostic(monkeypatch):
+    monkeypatch.setattr(map_app, "port_in_use", lambda *a, **k: True)
+    monkeypatch.setattr(map_app, "probe_health", lambda: make_probe(git_commit="old-commit"))
+    monkeypatch.setattr(map_app, "git_commit", lambda: "new-commit")
+    launched = []
+    monkeypatch.setattr(launcher_process.ProcessTree, "launch",
+                        lambda self, *a, **k: launched.append(a) or self)
+    try:
+        map_app.ensure_server(timeout=1)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("同项目旧版本后端不得被复用")
+    assert "旧版本" in message and "重启" in message
+    assert "old-commit" in message and "new-commit" in message
+    assert launched == []
 
 
 def test_ready_server_is_reused(monkeypatch):

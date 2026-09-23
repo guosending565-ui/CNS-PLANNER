@@ -753,12 +753,14 @@ function currentProfileHeader(model,profile){
       '<div class="parameter-note">'+profile.blocking_reasons
         .map(item=>escapeHtml(short(item.reason_code)+' · '+text(item.reason))).join('<br>')+'</div>')
     :'';
-  return wbBlock('当前 profile '+statusBadge(profile.status||'not_calculated'),
+  // BUG-RRP-BADGE-001：wbBlock 会转义 title，把 statusBadge 的 HTML 拼进 title 会在页面上
+  // 显示成字面量 &lt;span class="flow-badge …"&gt;。title 只传纯文本，徽章走第三参数。
+  return wbBlock('当前 profile',
     (stale?'<div class="parameter-note"><b>该 profile 已 stale</b>：'
       +'输入（candidate / grid_risk_v2 / policy）在生成后发生变化，'
       +'旧 profile 作为审计证据保留而不删除、不覆盖。继续使用前必须重新生成。</div>':'')
     +'<div class="scroll-list route-list">'+rows+'</div>'+blockerRows_,
-    stale?statusBadge('stale'):'');
+    statusBadge(profile.status||'not_calculated')+(stale?statusBadge('stale'):''));
 }
 
 function historyBlock(model){
@@ -775,11 +777,12 @@ function historyBlock(model){
       +'<small><button class="secondary" data-delete-route-risk-profile="'+escapeHtml(item.profileId)
       +'">删除该 profile</button>（只调用 /api/route-risk-profiles/delete）</small></span></div>';
   }).join('');
-  return wbBlock('历史 profiles '+statusBadge(model.collectionStatus),
+  return wbBlock('历史 profiles',
     '<div class="parameter-note">只有 <code>current_applicability=current</code> 的 profile 才是"当前 profile"；'
     +'stale profile 必须保留显示：它记录的是生成当时的候选、grid_risk_v2 与阈值证据，'
     +'绝不冒充 current 结论。删除仅移除该条记录，不影响 candidate、运行航路或 CNS 结果。</div>'
-    +'<div class="scroll-list route-list">'+rows+'</div>');
+    +'<div class="scroll-list route-list">'+rows+'</div>',
+    statusBadge(model.collectionStatus));
 }
 
 function boundaryBlock(model){
@@ -807,7 +810,7 @@ function boundaryBlock(model){
 export function renderRouteRiskProfile(flow,{routeEvidenceHighlight=null}={}){
   const model=routeRiskProfileModel(flow);
   const candidate=model.candidate||{};
-  const overview=wbBlock('RouteRiskProfile V1 '+statusBadge(model.readinessStatus),
+  const overview=wbBlock('RouteRiskProfile V1',
     '<div class="parameter-note">只分析 current LayeredRouteCandidate + current grid_risk_v2；'
     +'本面板不重算路径风险与距离，全部数值直接转印后端 profile。'+escapeHtml(RRP_SCOPE_NOTE)+'</div>'
     +'<div class="scroll-list route-list">'+readinessRows(model)+evalGateRow(model)+'</div>'
@@ -820,12 +823,13 @@ export function renderRouteRiskProfile(flow,{routeEvidenceHighlight=null}={}){
     +'<h3>blockers（后端 readiness 原样转印）</h3>'
     +blockerRows(model)
     +'<div class="parameter-note">candidate_status 原值 <code>'+escapeHtml(short(candidate.status))
-    +'</code> · 若它不是 candidate/current，后端会明确拒绝生成而不构造假画像。</div>');
+    +'</code> · 若它不是 candidate/current，后端会明确拒绝生成而不构造假画像。</div>',
+    statusBadge(model.readinessStatus));
 
   const domainCards=model.domains.map(domain=>wbBlock(
-    domain.label+' '+statusBadge(domain.thresholdsStatus),
+    domain.label,
     domainCard(model,model.current,domain.domainId),
-    domain.thresholdsStatus==='confirmed'?statusBadge('confirmed'):'')).join('');
+    statusBadge(domain.thresholdsStatus))).join('');
 
   const policy=policyPanel(model);
   const evidence=model.current?profileEvidenceBlock(model.current)
@@ -833,10 +837,11 @@ export function renderRouteRiskProfile(flow,{routeEvidenceHighlight=null}={}){
 
   const profileSection=model.current
     ?currentProfileHeader(model,model.current)
-    :wbBlock('当前 profile '+statusBadge('not_calculated'),
+    :wbBlock('当前 profile',
       '<div class="empty-note">当前没有 current_applicability=current 的 profile：'
       +'<b>生成 profile 不要求阈值</b>，只需后端 readiness 的 blocker 已清除；'
-      +'已存在的 stale profile 只作为历史证据保留，不会冒充当前 profile。</div>');
+      +'已存在的 stale profile 只作为历史证据保留，不会冒充当前 profile。</div>',
+      statusBadge('not_calculated'));
 
   return overview+domainCards+profileSection+policy+evidence+historyBlock(model)+boundaryBlock(model)+mapLinkageBlock(model,routeEvidenceHighlight);
 }

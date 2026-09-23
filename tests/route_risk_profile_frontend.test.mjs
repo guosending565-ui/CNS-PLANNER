@@ -1214,3 +1214,31 @@ test('the map linkage never fabricates geometry and never rewrites risk or class
     profile.segments[0].start_coordinate,profile.segments[0].end_coordinate,
   ]);
 });
+
+// ---- BUG-RRP-BADGE-001：wbBlock 的 title 只接受纯文本 -------------------------------
+
+test('section titles never render an escaped flow-badge literal',()=>{
+  const html=renderRouteRiskProfile(baseFlow());
+  // wbBlock 会转义 title：把 statusBadge 的 HTML 拼进 title 会在页面上显示成
+  // 字面量 <span class="flow-badge …">通过</span>。页面里不得出现被转义的 span。
+  assert.doesNotMatch(html,/&lt;span/,'title 只能包含纯文本，不得出现被转义的 span');
+  assert.doesNotMatch(html,/class=&quot;flow-badge/,'badge HTML 不得被当成 title 文本转义');
+  // 徽章本身仍然是正常 DOM。
+  assert.match(html,/<span class="flow-badge flow-/);
+  const heads=Array.from(html.matchAll(/<div class="wb-section-head"><h3>([\s\S]*?)<\/h3>/g));
+  assert.ok(heads.length>0,'至少要有可检查的 wb-section 标题');
+  for(const [,title] of heads){
+    assert.doesNotMatch(title,/<|&lt;/,'wbBlock title 必须是纯文本');
+  }
+  // 关键标题保持业务语言，状态徽章跟在 </h3> 之后（第三参数位置）。
+  for(const title of ['RouteRiskProfile V1','当前 profile','历史 profiles']){
+    assert.match(html,new RegExp('<h3>'+title+'</h3>\\s*<span class="flow-badge'),
+      `${title} 的徽章必须在 title 之外`);
+  }
+});
+
+test('route_risk_profile.js never concatenates a badge into a wbBlock title',()=>{
+  const source=readFileSync(new URL('../cns_planner/web/js/workflow/route_risk_profile.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/wbBlock\(\s*[^,\n]*statusBadge/,
+    'statusBadge 只能作为 wbBlock 的第三参数传入');
+});

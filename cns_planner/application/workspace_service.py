@@ -6,6 +6,7 @@ from copy import deepcopy
 from ..algorithms.grid.service import OperationalGridBlockedError
 from ..risk.v1 import RiskModelV1
 from ..domain.altitude_layer_defaults import ensure_default_altitude_layers
+from ..domain.layered_route import default_layered_route_request
 from ..domain.population_nodata import (
     POLICY_KEY, default_population_nodata_policy, normalize_population_nodata_policy,
 )
@@ -126,6 +127,20 @@ class WorkspaceService:
         return self.snapshot()
 
     def clear_workspace(self):
+        """清除工作区：删除项目节点、场景航路与运行航路，并让依赖它们的结果失效。
+
+        BUG-WORKSPACE-CLEAR-001/002：清工作区确实会删除 ``nodes`` / ``scenario_routes`` /
+        ``operational_routes``（这是既有业务语义，不改变）。但显式 ``layered_route_planning_request``
+        过去会**原样保留**，继续指向已经被删除的 scenario route 或 OD 节点 —— 于是 readiness
+        只报 ``scenario_route_not_found``（一个悬空引用），而不是如实报告"规划请求尚未配置"。
+
+        现在清工作区后请求被重置为 ``default_layered_route_request()``（未确认、无 route/node
+        引用、无高度层选择）；依赖它的 layered 候选 / mask、RouteRiskProfile、layered
+        validations、operational adoptions（及其拥有的运行航路状态）与 transition / Safety
+        Evidence 全部按既有 invalidation 语义被标为 stale —— 既不留悬空引用，也绝不把任何
+        结果伪装成 current。
+        """
+
         state = self.session.state
         self.invalidation.workflow("workspace")
         state.update({
@@ -134,6 +149,8 @@ class WorkspaceService:
             "grid_risk": RiskModelV1.empty(), "traffic_simulation": None,
             "nodes": [], "scenario_routes": [], "operational_routes": [],
             "coverage": None,
+            # 悬空引用清零：重置为默认（pending_confirmation）请求，不伪造 confirmed。
+            "layered_route_planning_request": default_layered_route_request(),
         })
         state["risks"]["environment"] = assessment(
             "not_calculated", "GRC 环境/航路规划风险接口"
@@ -142,5 +159,8 @@ class WorkspaceService:
             "workspace": "not_calculated", "grid": "not_calculated",
             "environment_risk": "not_calculated",
         })
+        # 定向失效 layered 依赖链（候选/mask → RouteRiskProfile → validations → adoptions →
+        # transition validation / Safety Evidence）；不触碰与其无关的 CNS 上游结果。
+        self.invalidation.layered_route("workspace_cleared")
         self.session.save()
         return self.snapshot()

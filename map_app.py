@@ -105,20 +105,60 @@ def port_in_use(host=HOST, port=PORT):
         return probe.connect_ex((host, port)) == 0
 
 
-def health_matches(probe, identity=None):
-    """对方是否就是**本项目**的 cns-map 服务。
+def same_project_root(probe, identity=None):
+    """对方上报的 project_root 是否就是本仓库根目录。"""
 
-    只接受同时满足三条的响应：service 名为 cns-map、ready 为真、project_root
-    与本仓库根目录一致。缺 project_root 的旧版本后端按"不属于本项目"处理，
-    不会被静默复用。
+    identity = identity or health_identity()
+    expected, actual = normalized(identity.get("project_root")), normalized(probe.project_root)
+    return bool(expected) and expected == actual
+
+
+def commit_identity_matches(expected, actual):
+    """git_commit 身份比较（BUG-STARTUP-002）。
+
+    * 双方都读不到 commit（例如都不是 git 工作树）：无法区分版本，退化为"不比较"，
+      这样没有 git 的环境仍然可以正常启动/复用；
+    * 只有一方能给出 commit：身份未知，一律按"版本可能过旧"处理，绝不静默复用；
+    * 双方都给出：必须逐字相同，否则同目录下的旧后端不得被复用。
     """
+
+    left = str(expected or "").strip()
+    right = str(actual or "").strip()
+    if not left and not right:
+        return True
+    return bool(left) and left == right
+
+
+def health_matches(probe, identity=None):
+    """对方是否就是**本项目当前 HEAD** 的 cns-map 服务。
+
+    只接受同时满足四条的响应：service 名为 cns-map、ready 为真、project_root
+    与本仓库根目录一致、git_commit 与当前 HEAD 一致。缺 project_root 的旧版本后端
+    按"不属于本项目"处理；project_root 相同但 git_commit 不同的旧后端同样**不得**
+    被静默复用（否则同目录里改过代码却仍在跑的旧进程会被当成新版本）。
+    """
+
     identity = identity or health_identity()
     if probe is None or not probe.occupied or probe.service != SERVICE:
         return False
     if probe.ready is not True:
         return False
-    expected, actual = normalized(identity.get("project_root")), normalized(probe.project_root)
-    return bool(expected) and expected == actual
+    if not same_project_root(probe, identity):
+        return False
+    return commit_identity_matches(identity.get("git_commit"), probe.git_commit)
+
+
+def stale_backend_message(probe, identity=None):
+    """同项目目录、但版本身份不匹配时的明确诊断（BUG-STARTUP-002）。"""
+
+    identity = identity or health_identity()
+    running = str(probe.git_commit or "").strip() or "未上报"
+    current = str(identity.get("git_commit") or "").strip() or "未上报"
+    return (
+        f"8765 上运行的是本项目目录（{identity.get('project_root')}）下的**旧版本**后端："
+        f"后端 git_commit={running}，当前 HEAD={current}。"
+        "后端版本过旧，请重启地图服务后再试；本启动器不会复用它，也不会结束它。"
+    )
 
 
 def is_ready():
@@ -140,6 +180,8 @@ def ensure_server(timeout=90):
 
     端口被占用时必须先确认身份：
     * 身份匹配 → 复用，返回 None；
+    * 是 cns-map 且 project_root 是本项目、但 git_commit 不是当前 HEAD → 报错说明
+      "后端版本过旧，请重启"；
     * 是 cns-map 但 project_root 不是本项目 → 报错指出是哪个项目；
     * 不是 cns-map / 不是 HTTP → 报错说明 8765 被未知服务占用。
     """
@@ -148,6 +190,8 @@ def ensure_server(timeout=90):
         if health_matches(probe):
             return None
         if probe.service == SERVICE:
+            if same_project_root(probe):
+                raise RuntimeError(stale_backend_message(probe))
             owner = probe.project_root or "未知（该后端未上报 project_root）"
             raise RuntimeError(
                 f"8765 已被另一个 CNS 地图服务占用（项目目录：{owner}）。"

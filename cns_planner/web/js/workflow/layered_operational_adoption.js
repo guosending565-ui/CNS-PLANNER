@@ -863,7 +863,9 @@ export function bindLayeredOperationalAdoption(c){
     if(!validationId)throw new Error('请先选择一个 eligible validation');
     // 第二次 Preview 必须读取 checkbox：replace_existing 的意图在这里冻结。
     const replaceExisting=selectedLayeredAdoptionReplaceExisting(c);
-    const response=await c.resourceAction('/api/layered-operational-adoptions/preview',
+    // BUG-STEP03-RESOURCEACTION-001：Preview 返回的是局部 preview 对象（side_effects=false），
+    // 不是完整 workflow，因此走 computeAction：只取响应，绝不覆盖全局 flow。
+    const response=await c.computeAction('/api/layered-operational-adoptions/preview',
       layeredAdoptionPreviewPayload(validationId,{replaceExisting}));
     // 只缓存响应：Preview 时刻的指纹与 replace_existing 就是 Apply 唯一被允许提交的值。
     cacheLayeredAdoptionPreview(response,validationId,{replaceExisting});
@@ -876,7 +878,9 @@ export function bindLayeredOperationalAdoption(c){
     const replaceExisting=selectedLayeredAdoptionReplaceExisting(c);
     const guard=layeredAdoptionApplyGuard(c.flow(),validationId,{confirmed,replaceExisting});
     if(!guard.allowed)throw new Error(guard.reason);
-    const result=await c.resourceAction('/api/layered-operational-adoptions/apply',guard.payload);
+    // Apply 返回局部 adoption 结果：mutation + refresh，随后用完整 workflow 重新渲染。
+    const result=await c.resourceMutationAndRefresh(
+      '/api/layered-operational-adoptions/apply',guard.payload);
     recordLayeredAdoptionApply(result);
     // Apply 成功后 Preview 立即作废：不允许用同一个 Preview 二次 Apply。
     clearLayeredAdoptionPreview();
@@ -888,7 +892,8 @@ export function bindLayeredOperationalAdoption(c){
     const confirmed=c.$('layeredAdoptionRevokeConfirmed')?c.$('layeredAdoptionRevokeConfirmed').checked:false;
     const guard=layeredAdoptionRevokeGuard(target,{confirmed});
     if(!guard.allowed)throw new Error(guard.reason);
-    await c.resourceAction('/api/layered-operational-adoptions/revoke',guard.payload);
+    // Revoke 同样返回局部对象（含 snapshot 字段，但那不是 workflow 根）：mutation + refresh。
+    await c.resourceMutationAndRefresh('/api/layered-operational-adoptions/revoke',guard.payload);
   });
   // 装载后立刻按"当前 Preview + 当前勾选状态"刷新一次按钮状态：
   // 未勾选确认、Preview 已过期或已被消费时，Apply 一律显示为 disabled。

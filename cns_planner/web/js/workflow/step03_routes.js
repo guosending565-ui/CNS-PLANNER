@@ -1446,7 +1446,9 @@ function v3dAdoptionPanel(flow){
 function optionalNumber(value){const text=String(value??'').trim();return text===''?null:Number(text);}
 
 export function bindRoutePlannerV3(c){
-  if(c.$('saveRoutePlannerV3Policy'))c.actionButton('saveRoutePlannerV3Policy',()=>c.resourceAction('/api/route-planner-v3/policy',{
+  // BUG-STEP03-RESOURCEACTION-001：/api/route-planner-v3/policy 返回 readiness 摘要（局部对象），
+  // 必须 mutation + refresh，绝不用局部 response 覆盖全局 flow。
+  if(c.$('saveRoutePlannerV3Policy'))c.actionButton('saveRoutePlannerV3Policy',()=>c.resourceMutationAndRefresh('/api/route-planner-v3/policy',{
     min_altitude_egm2008_m:optionalNumber(c.$('v3MinAltitude').value),
     max_altitude_egm2008_m:optionalNumber(c.$('v3MaxAltitude').value),
     vertical_step_m:optionalNumber(c.$('v3VerticalStep').value),
@@ -1473,7 +1475,8 @@ export function bindRoutePlannerV3(c){
       refinement_cell_size_m:optionalNumber(c.$('v3RefinementCellSize').value)});
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
-  if(c.$('saveRoutePlannerV3FinePolicy'))c.actionButton('saveRoutePlannerV3FinePolicy',()=>c.resourceAction('/api/route-planner-v3/fine-policy',{
+  // 同上：fine-policy 也返回 refinement readiness（局部对象）。
+  if(c.$('saveRoutePlannerV3FinePolicy'))c.actionButton('saveRoutePlannerV3FinePolicy',()=>c.resourceMutationAndRefresh('/api/route-planner-v3/fine-policy',{
     horizontal_crs:c.$('v3bFineCrs').value.trim()||null,
     resolution_source:c.$('v3bFineResolutionSource').value||null,
     resolution_m:optionalNumber(c.$('v3bFineResolution').value),
@@ -1501,7 +1504,8 @@ export function bindRoutePlannerV3(c){
     await c.resourceAction('/api/route-planner-v3-experiments/delete',{experiment_id:model.activeId});
   });
   // ---- V3-C -------------------------------------------------------------------
-  if(c.$('saveRoutePlannerV3ValidationPolicy'))c.actionButton('saveRoutePlannerV3ValidationPolicy',()=>c.resourceAction('/api/route-planner-v3/validation-policy',{
+  // 同上：validation-policy 返回 continuous readiness（局部对象）。
+  if(c.$('saveRoutePlannerV3ValidationPolicy'))c.actionButton('saveRoutePlannerV3ValidationPolicy',()=>c.resourceMutationAndRefresh('/api/route-planner-v3/validation-policy',{
     curve_chord_error_m:optionalNumber(c.$('v3cChordError').value),
     max_validation_samples:optionalNumber(c.$('v3cMaxSamples').value),
     max_runtime_s:optionalNumber(c.$('v3cMaxRuntime').value),
@@ -1517,7 +1521,8 @@ export function bindRoutePlannerV3(c){
   if(c.$('previewRoutePlannerV3Adoption'))c.actionButton('previewRoutePlannerV3Adoption',async()=>{
     const payload=v3dPayload(c);
     // Preview writes nothing; the response is cached only to show the projections.
-    const result=await c.resourceAction('/api/route-planner-v3-operational-adoptions/preview',payload);
+    // Preview 返回局部 preview 对象 → 用 computeAction，绝不覆盖全局 flow。
+    const result=await c.computeAction('/api/route-planner-v3-operational-adoptions/preview',payload);
     v3dPreviewCache=result?.data??result??null;
   });
   if(c.$('applyRoutePlannerV3Adoption'))c.actionButton('applyRoutePlannerV3Adoption',async()=>{
@@ -1528,7 +1533,8 @@ export function bindRoutePlannerV3(c){
     // validation is rejected instead of silently published.
     const fingerprint=v3dExpectedFingerprint(c.flow(),payload.validation_ids);
     if(fingerprint)payload.expected_validation_fingerprint=fingerprint;
-    await c.resourceAction('/api/route-planner-v3-operational-adoptions/apply',payload);
+    // Apply 返回局部 adoption 结果 → mutation + refresh。
+    await c.resourceMutationAndRefresh('/api/route-planner-v3-operational-adoptions/apply',payload);
     v3dPreviewCache=null;
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
@@ -1537,7 +1543,8 @@ export function bindRoutePlannerV3(c){
     const model=routePlannerV3AdoptionModel(c.flow());
     const target=model.adoptions.find(item=>item.status!=='revoked');
     if(!target)throw new Error('没有可撤销的 V3 operational adoption');
-    await c.resourceAction('/api/route-planner-v3-operational-adoptions/revoke',{
+    // Revoke 同样返回局部对象（含 snapshot 字段，但不是 workflow 根）→ mutation + refresh。
+    await c.resourceMutationAndRefresh('/api/route-planner-v3-operational-adoptions/revoke',{
       confirmed:true,adoption_id:target.adoptionId});
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });

@@ -893,6 +893,16 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
     minimum_vertical = None
     unresolved = []
     geometry_quality = empty_geometry_quality_report()
+    # BUG-VALIDATION-BUILDING-003：``query_route`` 返回的是 route bbox（+ clearance）内的建筑，
+    # 因此 bbox 里**完全不影响航路**的建筑过去也会先被要求 ground/height，缺失即 unresolved ——
+    # 真实验证里 terrain passed 而 building unresolved 全部落在这个原因上。判定顺序固定为：
+    #   ① footprint geometry quality 仍然最先 fail-closed；
+    #   ② 对所有 valid polygon part 先计算与 ``metric_route.line`` 的距离，并取
+    #      ``buffer_distance = horizontal_clearance + curve_error``；
+    #   ③ 所有 part 都不影响 route/buffer → 不要求 ground/height、不 unresolved，直接跳过；
+    #   ④ 至少一个 part 真正影响 route/buffer → 才要求 ground + height。
+    # 不给 ground 任何默认值，也不放松 fail-closed：真正相交但证据缺失仍然是 unresolved。
+    buffer_distance = float(horizontal) + float(curve_error)
     for footprint in footprints:
         identifier = footprint.get("building_id")
         # Geometry quality gate: the source ring is **never** rewritten, an invalid ring is
@@ -913,6 +923,30 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
                 "internal_geometry_quality": prepared["annotation"],
             })
             continue
+        # Every part of the footprint is considered separately: taking only the largest part
+        # could hide a part that really reaches into the route/buffer corridor.
+        affected = []
+        for piece_index, polygon in enumerate(prepared["polygons"]):
+            distance = float(polygon.distance(metric_route.line))
+            minimum_horizontal = (
+                distance if minimum_horizontal is None else min(minimum_horizontal, distance)
+            )
+            # Cheap and exact for the linearized representation: a part that stays farther than
+            # the buffer distance cannot intersect the buffered corridor.
+            if distance > buffer_distance + TOLERANCE:
+                continue
+            buffered = polygon.buffer(buffer_distance, quad_segs=metric_route.quad_segs)
+            intersection = metric_route.line.intersection(buffered)
+            if intersection.is_empty:
+                continue
+            distances = [metric_route.distance_of([x, y]) for x, y in _coordinates(intersection)]
+            if not distances:
+                continue
+            affected.append((piece_index, distance, min(distances), max(distances)))
+        if not affected:
+            # Inside the query bbox but provably not affecting the route/buffer corridor: no
+            # ground/height evidence is required and nothing becomes unresolved.
+            continue
         roof = building_roof_elevation(
             footprint.get("ground_elevation_max_egm2008_m"), footprint.get("height_m"),
         )
@@ -924,23 +958,9 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
             })
             continue
         roof_m = float(roof["roof_elevation_egm2008_m"])
-        # Every part of the footprint is evaluated separately: taking only the largest part
-        # could hide a penetrating roof on a smaller part.
-        for piece_index, polygon in enumerate(prepared["polygons"]):
-            distance = float(polygon.distance(metric_route.line))
-            minimum_horizontal = (
-                distance if minimum_horizontal is None else min(minimum_horizontal, distance)
-            )
-            buffered = polygon.buffer(
-                float(horizontal) + float(curve_error), quad_segs=metric_route.quad_segs,
-            )
-            intersection = metric_route.line.intersection(buffered)
-            if intersection.is_empty:
-                continue
-            distances = [metric_route.distance_of([x, y]) for x, y in _coordinates(intersection)]
-            if not distances:
-                continue
-            start, end = min(distances), max(distances)
+        # Every affected part is evaluated separately: taking only the largest part could hide a
+        # penetrating roof on a smaller part.
+        for piece_index, distance, start, end in affected:
             required_clearance = roof_m + float(vertical)
             observed = metric_route.minimum_z(start, end)
             if observed is None:

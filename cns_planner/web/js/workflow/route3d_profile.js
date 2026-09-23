@@ -301,7 +301,9 @@ export function bindRoute3DProfile(c){
   if(!actions.length&&!transitions.length)return;
   actions.forEach(button=>button.onclick=async()=>{
     const target=button.dataset.evaluateRoute3d;
-    try{button.disabled=true;await c.resourceAction('/api/route-3d-profiles/evaluate',target==='all'?{}:{route_id:target});}
+    // BUG-STEP03-RESOURCEACTION-001：evaluate 返回的是局部 route-3d profile 结果，
+    // 不是完整 workflow → mutation + refresh，绝不用局部 response 覆盖全局 flow。
+    try{button.disabled=true;await c.resourceMutationAndRefresh('/api/route-3d-profiles/evaluate',target==='all'?{}:{route_id:target});}
     catch(error){c.panelError(error.message);}
     finally{if(document.body.contains(button))button.disabled=false;}
   });
@@ -310,12 +312,14 @@ export function bindRoute3DProfile(c){
     const input=document.querySelector('[data-transition-crs="'+routeId+'"]');
     const horizontalCrs=input?String(input.value||'').trim():'';
     if(!horizontalCrs){c.panelError('必须显式输入 local metric horizontal_crs（例如 EPSG:32651）');return;}
-    try{button.disabled=true;await c.resourceAction(TRANSITION_ENDPOINT,{route_id:routeId,horizontal_crs:horizontalCrs});}
+    // 同上：transition validation 也返回局部结果。
+    try{button.disabled=true;await c.resourceMutationAndRefresh(TRANSITION_ENDPOINT,{route_id:routeId,horizontal_crs:horizontalCrs});}
     catch(error){c.panelError(error.message);}
     finally{if(document.body.contains(button))button.disabled=false;}
   });
   document.querySelectorAll('[data-delete-route-3d]').forEach(button=>button.onclick=async()=>{
-    try{button.disabled=true;await c.resourceAction('/api/route-3d-profiles/delete',{profile_id:button.dataset.deleteRoute3d});}
+    // 同上：delete 返回被删除的局部记录。
+    try{button.disabled=true;await c.resourceMutationAndRefresh('/api/route-3d-profiles/delete',{profile_id:button.dataset.deleteRoute3d});}
     catch(error){c.panelError(error.message);}
     finally{if(document.body.contains(button))button.disabled=false;}
   });

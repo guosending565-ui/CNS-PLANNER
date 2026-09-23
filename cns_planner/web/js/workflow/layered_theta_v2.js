@@ -73,6 +73,14 @@ const LEGACY_V1_BLOCKER_CODES=new Set([
   'cost_policy_not_confirmed','cost_weights_not_configured','layered_route_cost_policy_not_confirmed',
   'layered_route_cost_policy_not_runnable',
 ]);
+//: BUG-THETA-V2-LEGACY-STATUS-LABEL（低优先级 UX）：后端
+//: ``layered_route_planner_readiness.status`` 同时承载 legacy V1 layered planner 的 gate，
+//: 因此 Theta* V2 的 blockers=0 时它仍可能显示 raw=blocked。这里只澄清**文案**：
+//: 那一行是 legacy V1 的原始状态，不是 Theta* V2 的 gate；后端 readiness 语义不变。
+export const THETA_STAR_V2_LEGACY_READINESS_NOTE='readiness status 一行是后端 '
+  +'layered_route_planner_readiness.status 的**原始值**：它包含 legacy V1 layered planner 的 gate'
+  +'（例如 legacy LayeredRouteCostPolicy 的 λ），**不是** Theta* V2 的 gate。'
+  +'即使它显示 raw=blocked，只要下方「Theta* V2 blockers」为空，Theta* V2 本身就没有 blocking 项。';
 
 const finite=value=>Number.isFinite(value);
 const text=value=>String(value??'');
@@ -657,8 +665,10 @@ function readinessSection(model){
     +'视图完全由 <code>layered_route_planner_readiness.algorithm.algorithm_id</code> 决定：'
     +'只有 <code>'+escapeHtml(THETA_STAR_V2_ALGORITHM_ID)+'</code> 才显示本面板。</div>'
     +'<div class="parameter-note">'+escapeHtml(THETA_STAR_V2_BLOCKED_NOTE)+'</div>'
+    +'<div class="parameter-note" data-theta-v2-legacy-readiness-note="true">'
+    +escapeHtml(THETA_STAR_V2_LEGACY_READINESS_NOTE)+'</div>'
     +'<div class="scroll-list route-list">'
-    +row('readiness status',model.status+'（后端原值）')
+    +row('readiness status（legacy V1 原始状态，不是 Theta* V2 gate）',model.status+'（后端原值）')
     +row('layered planner',short(model.algorithmLabel)+' · '+short(model.plannerRole))
     +row('artifact_type','layered_route_candidate · 只分析候选，不写运行航路')
     +row('algorithm',short(model.algorithmId)+'@'+short(model.algorithmVersion||model.expectedAlgorithmVersion))

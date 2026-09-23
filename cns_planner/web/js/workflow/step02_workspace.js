@@ -337,11 +337,71 @@ export function populationNodataPanel(flow){
 
 // ---- 操作 · 工作区范围 -------------------------------------------------------
 
+/**
+ * 清工作区的破坏性后果（BUG-WORKSPACE-CLEAR-002）：只读计数，不推断任何结论。
+ *
+ * 清工作区**确实**会删除项目节点、场景航路与运行航路，并清除工作区与标准网格；
+ * 依赖它们的 layered 结果会按既有 invalidation 语义失效。前端只如实列出数量与范围，
+ * 不改变"清除即删除"的业务语义，也不把任何下游结果说成仍然 current。
+ */
+export function workspaceClearConsequences(flow){
+  const snapshot=flow||{};
+  const list=value=>Array.isArray(value)?value:[];
+  const items=value=>list((value||{}).items).length;
+  return {
+    nodes:list(snapshot.nodes).length,
+    scenarioRoutes:list(snapshot.scenario_routes).length,
+    operationalRoutes:list(snapshot.operational_routes).length,
+    layeredCandidates:items(snapshot.layered_route_candidates),
+    routeRiskProfiles:items(snapshot.route_risk_profiles),
+    layeredValidations:items(snapshot.layered_route_validations),
+    layeredAdoptions:items(snapshot.layered_operational_adoptions),
+  };
+}
+
+export const WORKSPACE_CLEAR_INVALIDATION_NOTE='清工作区后：layered planning request 被重置为「未配置」'
+  +'（不保留任何悬空的 route / node 引用），layered 候选与 feasibility mask、RouteRiskProfile、'
+  +'layered validations、operational adoptions 及其拥有的运行航路状态按既有 invalidation 语义全部变为 stale，'
+  +'必须由用户显式重算；这些结果绝不会被自动标成 current。';
+
+/** 二次确认正文：明确被删除的数量与将失效的下游范围（绝不淡化破坏性）。 */
+export function workspaceClearConfirmationMessage(flow){
+  const counts=workspaceClearConsequences(flow);
+  return '确认清除工作区？\n\n'
+    +'将被真实删除：项目节点 '+counts.nodes+' 个 · 场景航路 '+counts.scenarioRoutes+' 条 · '
+    +'运行航路 '+counts.operationalRoutes+' 条；工作区范围与 MH/T 标准网格同时被清除。\n\n'
+    +'下游将失效（标 stale，不会自动重算、也不会伪装成 current）：\n'
+    +'layered 候选 '+counts.layeredCandidates+' 条 · RouteRiskProfile '+counts.routeRiskProfiles+' 条 · '
+    +'layered validations '+counts.layeredValidations+' 条 · operational adoptions '+counts.layeredAdoptions+' 条。\n'
+    +'layered planning request 重置为「未配置」（不保留悬空 route / node 引用）。\n\n'
+    +'此操作不可撤销。';
+}
+
+/**
+ * 执行前的二次确认。
+ *
+ * 默认使用 ``window.confirm``；返回 ``true`` 才允许执行清除。没有可用确认通道时一律
+ * 返回 ``false``（破坏性操作在无法确认时绝不执行）。
+ */
+export function confirmWorkspaceClear(flow,confirmImpl){
+  const message=workspaceClearConfirmationMessage(flow);
+  const ask=typeof confirmImpl==='function'
+    ?confirmImpl
+    :(typeof window!=='undefined'&&typeof window.confirm==='function'
+      ?prompt=>window.confirm(prompt)
+      :null);
+  if(!ask)return false;
+  return ask(message)===true;
+}
+
 function workspaceRangePanel(draftWorkspace){
   return '<div class="button-row"><button class="primary" id="drawWorkspace">框选工作区</button><button class="secondary" id="clearWorkspace">清除</button></div>'
     +(draftWorkspace?'<div class="flow-summary">待保存：'+draftWorkspace.map(value=>value.toFixed(5)).join(', ')+'</div>':'')
     +'<button class="primary full" id="saveWorkspace" '+(!draftWorkspace?'disabled':'')+'>保存工作区范围</button>'
-    +'<div class="parameter-note">框选只产生草稿：未保存前不改变工作区，也不会触发网格、映射或风险重算。</div>';
+    +'<div class="parameter-note">框选只产生草稿：未保存前不改变工作区，也不会触发网格、映射或风险重算。</div>'
+    +'<div class="parameter-note" data-clear-workspace-warning><b>清除是破坏性操作</b>：'
+    +'会删除项目节点、场景航路与运行航路，并清除工作区与标准网格。点击后会二次确认，'
+    +'并明确列出将被删除的数量，以及将失效的下游（'+escapeHtml(WORKSPACE_CLEAR_INVALIDATION_NOTE)+'）。</div>';
 }
 
 // ---- 操作 · 标准网格与建筑环境 ------------------------------------------------

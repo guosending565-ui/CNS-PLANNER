@@ -1,4 +1,4 @@
-import {createApiClient} from './api/client.js';
+import {createApiClient,createResourceMutationAndRefresh} from './api/client.js';
 import {createStore} from './state/store.js';
 import {eventLonLat as projectEvent,lonLatToMercator,mercatorToLonLat,screenPoint as projectPoint} from './map/projection.js';
 import {buildGridOverlayCache,findGridCell as hitGridCell} from './map/grid_overlay.js';
@@ -53,6 +53,8 @@ async function applyWorkflow(data){flow=data;store.set({workflow:flow});rebuildG
 async function mutate(action,payload={}){return applyWorkflow(await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 // GRID-L8-UNIFICATION：超限时后端返回 blocked（不是降级）并已把该状态落库；重新读取快照让界面显示阻断原因。
 async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow'));}
+// 局部 mutation：POST 响应只作返回值 → GET /api/workflow → applyWorkflow → 返回 POST 响应；resourceAction 仅用于确实返回完整 workflow 快照的端点（详见 api/client.js）。
+const resourceMutationAndRefresh=createResourceMutationAndRefresh({post:(path,payload)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),refresh:()=>api('/api/workflow'),apply:applyWorkflow});
 async function resourceAction(path,payload={}){const data=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});flow=data;store.set({workflow:flow});rebuildGridRenderCache();renderWorkflow();paint();return data;}
 async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
 // V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
@@ -304,7 +306,7 @@ function renderWorkflow(){
     : ('项目保存位置：'+(storage.directory||'未选择'));
 }
 function stepBindings(){return {
-  $,flow:()=>flow,mutate,resourceAction,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
+  $,flow:()=>flow,mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
   loadRoutePlannerV3Detail,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
@@ -317,7 +319,7 @@ function stepBindings(){return {
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});try{await syncGridApis();}catch(exc){showError('网格专题同步失败：'+exc.message);}renderWorkflow();paint();return data;},
   startWorkspace(){interactionMode='workspace';measure.sync();draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
-  clearWorkspace:async()=>{draftWorkspace=null;interactionMode='pan';measure.sync();await mutate('workspace-clear');},
+  clearWorkspace:async()=>{if(!Step02.confirmWorkspaceClear(flow))return;draftWorkspace=null;interactionMode='pan';measure.sync();await mutate('workspace-clear');},// BUG-WORKSPACE-CLEAR-002：破坏性操作执行前二次确认
   // 正式工作流只有一个 canonical 层级（MH/T 4063.1 L8）：grid_level 是常量，不来自任何下拉选择。
   // 超限时后端返回 blocked（不是降级）并已把该状态落库：重新读取快照让界面如实显示
   // "已阻断 + 需求格数 / 上限 / 建议"，再把可读错误交给统一的 actionButton 显示。

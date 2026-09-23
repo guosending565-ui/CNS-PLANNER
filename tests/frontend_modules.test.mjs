@@ -2258,6 +2258,11 @@ test('theta v2 never treats the legacy lambda cost policy as a blocker',async()=
   const html=renderLayeredThetaV2Panel(flow);
   assert.match(html,/不是<\/b> Theta\* V2 的 blocker/);
   assert.match(html,/legacy V1 λ blocker/);
+  // BUG-THETA-V2-LEGACY-STATUS-LABEL：raw readiness status 必须被明确标注为
+  // "legacy V1 原始状态，不是 Theta* V2 gate"，避免 Theta* V2 blockers=0 时被误读。
+  assert.match(html,/legacy V1 原始状态，不是 Theta\* V2 gate/);
+  assert.match(html,/\*\*不是\*\* Theta\* V2 的 gate/);
+  assert.match(html,/data-theta-v2-legacy-readiness-note="true"/);
   assert.doesNotMatch(html,/必须补齐 λ|请先补齐 confirmed 的高度层、clearance 与 λ|λ 未全部确认[\s\S]{0,40}blocker/,
     'Theta* V2 视图不得提示"必须补齐 λ"');
   assert.doesNotMatch(html,/id="evaluateLayeredCandidate" disabled/,

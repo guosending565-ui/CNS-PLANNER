@@ -48,6 +48,13 @@ export const LAYERED_VALIDATION_RESOURCE_LIMIT_NOTE='resource_limit 是计算资
 export const LAYERED_VALIDATION_ALTITUDE_NOTE='高度完全由 AltitudeLayer → '
   +'confirmed EGM2008 cruise altitude 承载；二维 path 不携带高度第三坐标。';
 export const LAYERED_VALIDATION_STALE_LABEL='stale：只作为历史证据保留，绝不冒充当前验证';
+//: BUG-STEP03-VALIDATION-PAYLOAD-002：production adapter 明确要求**显式** horizontal_crs
+//: （米制 CRS），后端没有默认值、也不允许前端猜测。这里只提供当前舟山工程的**建议预填值**：
+//: 它必须作为显式 payload 提交，用户可在输入框里改写；留空时禁止运行。
+export const LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS='EPSG:32651';
+export const LAYERED_VALIDATION_HORIZONTAL_CRS_NOTE='horizontal_crs 是米制投影 CRS 的**显式输入**'
+  +'（当前舟山工程建议值 '+LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS+'）：后端 production adapter '
+  +'要求显式 horizontal_crs，绝不偷偷补默认值；留空时本按钮不执行任何请求。';
 
 const text=value=>String(value??'');
 const finite=value=>Number.isFinite(Number(value))&&value!==null&&value!=='';
@@ -262,6 +269,11 @@ function readinessBlock(model){
     +escapeHtml(LAYERED_VALIDATION_ALTITUDE_NOTE)+'</div>'
     +'<div class="scroll-list route-list">'+rows(rowsAll)+'</div>'
     +'<h4>blockers（原样转印）</h4><div class="scroll-list route-list">'+blockers+'</div>'
+    +'<div class="parameter-note">'+escapeHtml(LAYERED_VALIDATION_HORIZONTAL_CRS_NOTE)+'</div>'
+    +'<div class="form-grid"><label>horizontal_crs（米制 CRS，必填）'
+    +'<input class="panel-input" id="layeredValidationHorizontalCrs" type="text" '
+    +'value="'+escapeHtml(LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS)+'" '
+    +'placeholder="'+escapeHtml(LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS)+'"></label></div>'
     +'<div class="button-row"><button class="primary" id="evaluateLayeredRouteValidation"'+button
     +'>运行 LayeredRouteCandidate 连续验证</button></div>'
     +'<div class="parameter-note">验证不 replan、不 refine、不改 candidate，也不写入 operational_routes；'
@@ -422,10 +434,28 @@ export function renderLayeredRouteValidation(flow){
  * 副作用边界：唯一写入动作是
  *   POST /api/layered-route-validations/evaluate-real
  * 它只产生一条 validation 记录；本面板不发任何 operational 写入。
+ *
+ * BUG-STEP03-RESOURCEACTION-001：该端点返回的是**局部 validation collection**，不是完整
+ * workflow，因此必须走 resourceMutationAndRefresh（POST → GET /api/workflow → applyWorkflow），
+ * 绝不能用局部 response 覆盖全局 flow。
+ * BUG-STEP03-VALIDATION-PAYLOAD-002：必须显式提交米制 CRS，留空即拒绝运行。
  */
+export function layeredValidationHorizontalCrsPayload(value){
+  const horizontalCrs=String(value??'').trim();
+  if(!horizontalCrs){
+    throw new Error('必须显式填写 horizontal_crs（米制 CRS，例如 '
+      +LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS+'）后才能运行连续验证；后端没有默认值');
+  }
+  return {horizontal_crs:horizontalCrs};
+}
+
 export function bindLayeredRouteValidation(c){
   if(!c||typeof c.$!=='function')return;
   if(!c.$('evaluateLayeredRouteValidation'))return;
-  c.actionButton('evaluateLayeredRouteValidation',()=>c.resourceAction(
-    '/api/layered-route-validations/evaluate-real',{}));
+  c.actionButton('evaluateLayeredRouteValidation',()=>{
+    const field=c.$('layeredValidationHorizontalCrs');
+    const payload=layeredValidationHorizontalCrsPayload(field?field.value:'');
+    return c.resourceMutationAndRefresh(
+      '/api/layered-route-validations/evaluate-real',payload);
+  });
 }

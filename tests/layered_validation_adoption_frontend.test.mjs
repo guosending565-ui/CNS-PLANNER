@@ -742,7 +742,10 @@ test('the validation panel only calls the evaluate-real endpoint and writes noth
     const c={
       flow:()=>flow,$:id=>document.getElementById(id),
       panelError:message=>calls.push(['error',message]),
-      resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+      // BUG-STEP03-RESOURCEACTION-001：局部 mutation 必须走 resourceMutationAndRefresh，
+      // 不允许再用 resourceAction 把局部 response 当成完整 workflow。
+      resourceMutationAndRefresh:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+      resourceAction:(path,payload)=>{calls.push(['unexpected-resourceAction',path,payload]);return Promise.resolve({});},
       actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
     };
     bindStep3(c);
@@ -752,15 +755,58 @@ test('the validation panel only calls the evaluate-real endpoint and writes noth
       assert.equal(typeof document.getElementById(id).onclick,'function',`#${id} keeps its handler`);
     }
     return document.getElementById('evaluateLayeredRouteValidation').onclick().then(()=>{
-      assert.deepEqual(calls.pop(),['/api/layered-route-validations/evaluate-real',{}]);
+      assert.deepEqual(calls.pop(),['/api/layered-route-validations/evaluate-real',
+        {horizontal_crs:'EPSG:32651'}],
+      'evaluate-real 必须走 mutation+refresh，并显式提交 horizontal_crs');
     });
   });
   // 源码层契约：面板只使用既有的四个端点，不做 replan、不碰地图、不删路由。
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/layered_route_validation.js',import.meta.url),'utf8');
   assert.match(source,/\/api\/layered-route-validations\/evaluate-real/);
+  assert.match(source,/resourceMutationAndRefresh/,'局部 response 不得直接覆盖全局 flow');
+  assert.match(source,/horizontal_crs/,'payload 必须显式携带 horizontal_crs');
   assert.doesNotMatch(source,/c\.mutate\('|setLayer\(|setZoom|fitLonLatBbox|replan\(/);
   assert.doesNotMatch(source,/operational_routes\s*=/,'validation must never write operational_routes');
   assert.doesNotMatch(source,/import .*from '(?!\.\/common\.js)/,'no third-party dependency may be added');
+});
+
+test('the validation panel renders an explicit metric CRS input and refuses to run when it is empty',async()=>{
+  const flow=baseFlow();
+  const html=renderLayeredRouteValidation(flow);
+  assert.match(html,/id="layeredValidationHorizontalCrs"/,'必须提供显式 horizontal_crs 输入框');
+  assert.match(html,/EPSG:32651/,'当前舟山工程建议值必须可见/可预填');
+  await new Promise(resolve=>{
+    withStubDom(document=>{
+      mountStep3(document,flow);
+      document.querySelectorAll=selector=>findAll(document.body,selector);
+      document.querySelector=selector=>findAll(document.body,selector)[0]||null;
+      const calls=[];
+      const c={
+        flow:()=>flow,$:id=>document.getElementById(id),
+        panelError:message=>calls.push(['error',message]),
+        resourceMutationAndRefresh:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+        resourceAction:(path,payload)=>{calls.push(['unexpected-resourceAction',path,payload]);return Promise.resolve({});},
+        // 与 main.js 的 actionButton 同构：handler 抛错时落到 panelError。
+        actionButton:(id,handler)=>{
+          const node=document.getElementById(id);
+          if(node)node.onclick=async()=>{
+            try{await handler();}catch(error){calls.push(['error',error.message]);}
+          };
+        },
+      };
+      bindStep3(c);
+      const field=document.getElementById('layeredValidationHorizontalCrs');
+      assert.ok(field,'the CRS input must exist');
+      field.value='   ';
+      return document.getElementById('evaluateLayeredRouteValidation').onclick().then(()=>{
+        assert.equal(calls.some(item=>item[0]==='/api/layered-route-validations/evaluate-real'),false,
+          '空 horizontal_crs 时不得发起任何请求');
+        assert.match(calls.filter(item=>item[0]==='error').map(item=>item[1]).join(' '),
+          /horizontal_crs/,'必须给出清楚的空值提示');
+        resolve();
+      });
+    });
+  });
 });
 
 // ---- 7. Preview 无 Apply 副作用 ------------------------------------------------
@@ -1106,6 +1152,8 @@ test('the legacy scenarioRoutes and operationalRoutes entries keep their contrac
       flow:()=>mounted,$:id=>document.getElementById(id),
       panelError:()=>{},mutate:(action,payload)=>{calls.push([action,payload]);return Promise.resolve({});},
       resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+      resourceMutationAndRefresh:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+      computeAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
       actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
     };
     bindStep3(c);
@@ -1130,25 +1178,33 @@ test('bind wires preview apply and revoke with the contracted payloads and order
       document.querySelector=selector=>findAll(document.body,selector)[0]||null;
       const calls=[];
       let currentFlow=flow;
+      const localMutation=(path,payload)=>{
+        calls.push([path,payload]);
+        if(path.endsWith('/preview')){
+          return Promise.resolve({status:'ready',side_effects:false,publication_allowed:true,
+            validation_id:payload.validation_id,validation_fingerprint:'layeredvalidationv1-fp-1',
+            projection:{status:'ready',route_id:'R-1',conflict:null,
+              projection_fingerprint:'layeredprojectionv1-proj',
+              route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
+              route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}}});
+        }
+        if(path.endsWith('/apply')){
+          return Promise.resolve({status:'passed',adoption_id:'LRA-222222222222',route_id:'R-1',
+            route_operating_layer_created:true,route_altitude_profile_created:false,
+            departure_arrival_procedure_created:false});
+        }
+        return Promise.resolve({status:'passed'});
+      };
       const c={
         flow:()=>currentFlow,$:id=>document.getElementById(id),
         panelError:message=>calls.push(['error',message]),
+        // Preview 只读（side_effects=false）→ computeAction；apply/revoke 是局部 mutation
+        // → resourceMutationAndRefresh。两者都不得把局部 response 当成完整 workflow。
+        computeAction:localMutation,
+        resourceMutationAndRefresh:localMutation,
         resourceAction:(path,payload)=>{
-          calls.push([path,payload]);
-          if(path.endsWith('/preview')){
-            return Promise.resolve({status:'ready',side_effects:false,publication_allowed:true,
-              validation_id:payload.validation_id,validation_fingerprint:'layeredvalidationv1-fp-1',
-              projection:{status:'ready',route_id:'R-1',conflict:null,
-                projection_fingerprint:'layeredprojectionv1-proj',
-                route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
-                route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}}});
-          }
-          if(path.endsWith('/apply')){
-            return Promise.resolve({status:'passed',adoption_id:'LRA-222222222222',route_id:'R-1',
-              route_operating_layer_created:true,route_altitude_profile_created:false,
-              departure_arrival_procedure_created:false});
-          }
-          return Promise.resolve({status:'passed'});
+          calls.push(['unexpected-resourceAction',path,payload]);
+          return localMutation(path,payload);
         },
         // 与 main.js 的 actionButton 同构：handler 抛错时落到 panelError，不向外冒泡。
         actionButton:(id,handler)=>{
@@ -1289,12 +1345,19 @@ function mountAdoptionPanel(document,flow,selected='LRV-AAAAAAAAAAAA'){
 /** adoption 面板的 controller 桩：actionButton 与 main.js 同构（handler 抛错落到 panelError）。 */
 function adoptionController(document,flow,{resourceAction=null}={}){
   const calls=[];
+  const localMutation=(path,payload)=>{
+    calls.push([path,payload]);
+    return Promise.resolve(resourceAction?resourceAction(path,payload):{status:'passed'});
+  };
   const c={
     flow:()=>flow,$:id=>document.getElementById(id),
     panelError:message=>calls.push(['error',message]),
+    // Preview → computeAction（只读）；Apply / Revoke → resourceMutationAndRefresh（局部 mutation）。
+    computeAction:localMutation,
+    resourceMutationAndRefresh:localMutation,
     resourceAction:(path,payload)=>{
-      calls.push([path,payload]);
-      return Promise.resolve(resourceAction?resourceAction(path,payload):{status:'passed'});
+      calls.push(['unexpected-resourceAction',path,payload]);
+      return localMutation(path,payload);
     },
     actionButton:(id,handler)=>{
       const node=document.getElementById(id);

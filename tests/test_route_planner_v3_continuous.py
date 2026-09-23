@@ -736,6 +736,144 @@ def test_building_domain_records_unknown_height_as_unresolved_never_confirmed_sa
     assert building["semantics"]["unknown_never_confirmed_safe"] is True
 
 
+# --- BUG-VALIDATION-BUILDING-003：bbox 内、但不影响航路的建筑不再是 unresolved ---------------
+#
+# ``query_route`` 按 route bbox + clearance 取建筑，因此结果里必然有大量与航路毫无关系的
+# footprint。判定顺序必须是"先几何影响、后垂向证据"：只有真正落入 route/buffer 走廊的建筑
+# 才要求 ground/height；geometry quality 仍然最先 fail-closed。
+
+BUILDING_CLEARANCE_POLICY = {
+    "building_horizontal_clearance_m": 50.0,
+    "building_vertical_clearance_m": 25.0,
+    "use_curve_error_envelope": True,
+}
+
+
+def building_result(buildings, *, policy=None):
+    route = MetricRoute(realize(OPEN_POINTS)["route"])
+    return validate_buildings(
+        route,
+        evidence={"available": True, "buildings": buildings},
+        policy=dict(policy or BUILDING_CLEARANCE_POLICY),
+    )
+
+
+def test_a_building_inside_the_bbox_but_far_from_the_route_passes_without_ground_evidence():
+    buildings = [{
+        "building_id": "BBOX-FAR",
+        "ring_metric": [[400.0, 400.0], [460.0, 400.0], [460.0, 460.0], [400.0, 460.0]],
+        "height_m": None, "ground_elevation_max_egm2008_m": None,
+    }]
+    result = building_result(buildings)
+    assert result["status"] == "passed"
+    assert result["unresolved"] == []
+    assert result["violations"] == []
+    assert result["evidence"]["building_count"] == 1
+    # 距离仍然如实上报（它不参与判定，但必须可见，不能悄悄算成 0）。
+    assert result["evidence"]["minimum_horizontal_distance_m"] == pytest.approx(400.0)
+
+
+def test_b_a_building_reaching_into_the_route_still_requires_ground_evidence():
+    buildings = [{
+        "building_id": "NEAR-NO-GROUND",
+        "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
+        "height_m": 40.0, "ground_elevation_max_egm2008_m": None,
+    }]
+    result = building_result(buildings)
+    assert result["status"] == "unresolved"
+    assert [item["reason_id"] for item in result["unresolved"]] == [
+        "building_footprint_ground_elevation_unresolved"
+    ]
+    assert result["evidence"]["minimum_horizontal_distance_m"] == pytest.approx(0.0)
+
+
+def test_c_a_building_over_the_route_with_resolved_evidence_and_enough_clearance_passes():
+    buildings = [{
+        "building_id": "NEAR-RESOLVED",
+        "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
+        "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+    }]
+    result = building_result(buildings)
+    assert result["status"] == "passed"
+    # roof = 50 m，observed cruise 200 m，required clearance 25 m → margin 125 m。
+    assert result["minimum_margin"] == pytest.approx(125.0)
+
+
+def test_d_a_building_with_insufficient_clearance_is_failed():
+    buildings = [{
+        "building_id": "NEAR-TOO-TALL",
+        "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
+        "height_m": 180.0, "ground_elevation_max_egm2008_m": 10.0,
+    }]
+    result = building_result(buildings)
+    assert result["status"] == "failed"
+    assert result["reason"] == "building_vertical_clearance_violated"
+    assert result["minimum_margin"] == pytest.approx(-15.0)
+
+
+def test_e_positive_horizontal_clearance_decides_which_buildings_must_be_verified():
+    # 建筑与航路的距离恒为 30 m：horizontal_clearance=50（buffer 50.5 m）时必须验证，
+    # horizontal_clearance=10（buffer 10.5 m）时不进入验证 —— 判据是 buffer，不是 bbox。
+    buildings = [{
+        "building_id": "BUFFER-EDGE",
+        "ring_metric": [[400.0, 30.0], [460.0, 30.0], [460.0, 90.0], [400.0, 90.0]],
+        "height_m": None, "ground_elevation_max_egm2008_m": None,
+    }]
+    inside = building_result(buildings, policy={
+        "building_horizontal_clearance_m": 50.0,
+        "building_vertical_clearance_m": 25.0, "use_curve_error_envelope": True,
+    })
+    assert inside["status"] == "unresolved"
+    assert inside["evidence"]["minimum_horizontal_distance_m"] == pytest.approx(30.0)
+
+    outside = building_result(buildings, policy={
+        "building_horizontal_clearance_m": 10.0,
+        "building_vertical_clearance_m": 25.0, "use_curve_error_envelope": True,
+    })
+    assert outside["status"] == "passed"
+    assert outside["unresolved"] == []
+
+
+def test_f_a_multi_part_footprint_is_checked_part_by_part():
+    # 近 part 真正落在航路上，远 part 与航路无关：整条 footprint 不得因为"有 part 很远"
+    # 而被当作无影响跳过（近 part 一个都不能漏）。
+    parts = [
+        [[400.0, -20.0], [420.0, -20.0], [420.0, 20.0], [400.0, 20.0], [400.0, -20.0]],
+        [[400.0, 600.0], [460.0, 600.0], [460.0, 660.0], [400.0, 660.0], [400.0, 600.0]],
+    ]
+    unresolved = building_result([{
+        "building_id": "MULTI-NEAR-FAR", "ring_parts_metric": [list(part) for part in parts],
+        "height_m": None, "ground_elevation_max_egm2008_m": None,
+    }])
+    assert unresolved["status"] == "unresolved"
+    assert unresolved["unresolved"][0]["reason_id"] == (
+        "building_footprint_ground_elevation_unresolved"
+    )
+    assert unresolved["evidence"]["minimum_horizontal_distance_m"] == pytest.approx(0.0)
+
+    resolved = building_result([{
+        "building_id": "MULTI-NEAR-FAR", "ring_parts_metric": [list(part) for part in parts],
+        "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+    }])
+    assert resolved["status"] == "passed"
+    # 近 part 被真正评估：roof 50 m，observed 200 m，required 25 m → margin 125 m。
+    assert resolved["minimum_margin"] == pytest.approx(125.0)
+    assert resolved["evidence"]["building_quality_report"]["evaluated_footprint_count"] == 2
+
+
+def test_invalid_geometry_still_fails_closed_before_the_distance_check():
+    # geometry quality 仍然最先 fail-closed：不可修复的 footprint 依旧是 unresolved，
+    # 绝不因为"它可能离航路很远"而被跳过。
+    buildings = [{
+        "building_id": "FAR-BUT-BROKEN",
+        "ring_metric": [[9000.0, 9000.0], [9060.0, 9000.0], [9000.0, 9000.0]],
+        "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+    }]
+    result = building_result(buildings)
+    assert result["status"] == "unresolved"
+    assert result["unresolved"][0]["reason_id"] == "building_footprint_quality_unresolved"
+
+
 # --------------------------------------------------------------------------------------
 # 6. kinematics
 # --------------------------------------------------------------------------------------
