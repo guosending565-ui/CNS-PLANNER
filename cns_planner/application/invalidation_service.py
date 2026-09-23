@@ -57,6 +57,11 @@ class InvalidationService:
         #: Evidence V2 never stales a route, a candidate, a validation, an adoption or any CNS
         #: result.
         self.route_safety_evidence_invalidator = None
+        #: Radar Surveillance Layout V1（additive，proposal-only）。它消费已发布运行航路、
+        #: 真实铁塔站址 + 雷达原点高度、FABDEM 地形、陆域掩膜与自身策略。任何一项变化都
+        #: 只把 ``radar_surveillance_layout`` 标 stale —— 绝不动 routes / CNS / coverage_3d /
+        #: 走廊与站址提案，也绝不反向触发任何上游。
+        self.radar_surveillance_layout_invalidator = None
 
     def workflow(self, changed):
         state = self.session.state
@@ -115,6 +120,10 @@ class InvalidationService:
             # additive layered candidate product; legacy routes stay untouched.
             state.setdefault("result_statuses", {})["layered_route_candidate"] = "stale"
             self.layered_route(str(changed))
+        if changed in ("route", "workspace", "route_algorithm", "spatial_3d"):
+            # Radar Surveillance Layout V1 消费已发布运行航路与固定高度层：航路/工作区/高度层
+            # 配置变化只把该 additive 产物标 stale（proposal-only，unidirectional）。
+            self.radar_surveillance_layout(f"{changed}_changed")
 
     def grid_sources(self, changed_sources):
         state = self.session.state
@@ -154,6 +163,15 @@ class InvalidationService:
             # 真实铁塔源变化：派生事实（障碍物高度 / 共塔候选）先过时，再定向失效其下游。
             # 绝不经过 risk()/risk_v2()：塔不是风险输入。
             self.tower_data_changed("tower_source_changed", include_derived=True)
+        if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid", "land_mask"}:
+            # 雷达初步划设消费 FABDEM 地形正高与显式陆域掩膜；任一变化只 stale 它自己。
+            self.radar_surveillance_layout(
+                "source_changed:" + ",".join(
+                    sorted(set(changed_sources) & {
+                        "terrain_dtm", "buildings", "building_grid", "land_mask",
+                    })
+                )
+            )
 
     def tower_data_changed(self, reason="tower_data_changed", *, include_derived=False):
         """真实铁塔数据或其派生事实变化时的**定向**失效。
@@ -181,6 +199,8 @@ class InvalidationService:
         self.layered_route(str(reason))
         self.cns_site_plan()
         self.cns_corridor_site_plan()
+        # 雷达初步划设的雷达原点依赖塔顶 EGM2008 正高（= 障碍物派生事实）。
+        self.radar_surveillance_layout(str(reason))
         mark_active_report_stale(state, str(reason))
 
     def route_operating_layer(self, reason="route_operating_layer_changed"):
@@ -203,6 +223,22 @@ class InvalidationService:
         self.coverage_3d()
         self.building_clearance(reason)
         self.layered_route(reason)
+        # 固定巡航高度层（ALT-080）是雷达初步划设的显式输入之一。
+        self.radar_surveillance_layout(str(reason))
+
+    def radar_surveillance_layout(self, reason="radar_surveillance_input_changed"):
+        """Stale only the additive Radar Surveillance Layout V1 proposal.
+
+        该产物是 **proposal-only** 且严格下游：它消费已发布运行航路、真实铁塔站址与雷达
+        原点高度、FABDEM 地形、显式陆域掩膜和自身策略。它被这些输入的变化 stale，但它
+        本身**绝不** stale 或改写 ``operational_routes`` / ``coverage_3d`` /
+        ``cns_service_capability`` / 任何走廊或站址提案 / 设备目录。
+        """
+
+        invalidator = self.radar_surveillance_layout_invalidator
+        if callable(invalidator):
+            return invalidator(str(reason))
+        return {"stale_route_ids": []}
 
     def route_3d_profile(self, reason="route_3d_profile_input_changed", *, propagate=True):
         """Stale only the additive Production Route3DProfile V1 records.

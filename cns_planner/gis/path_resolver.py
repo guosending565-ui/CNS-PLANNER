@@ -37,6 +37,9 @@ SOURCE_FORMATS: dict[str, tuple[str, ...]] = {
     "terrain_dtm": RASTER_FORMATS,
     "buildings": BUILDING_FORMATS,
     "building_grid": BUILDING_FORMATS,
+    # 陆域掩膜（Radar Surveillance Layout V1 的 land|sea 判定来源）。
+    # 只接受**显式陆域 Polygon 矢量**；绝不从 DEM NoData 推断海洋。
+    "land_mask": VECTOR_FORMATS,
     "property_exposure": RASTER_FORMATS + VECTOR_FORMATS,
     "obstacles": VECTOR_FORMATS + (".csv",),
     "infrastructure": VECTOR_FORMATS,
@@ -58,6 +61,7 @@ ROLE_LABELS = {
     "terrain_dtm": "FABDEM DTM",
     "buildings": "建筑单体",
     "building_grid": "建筑环境网格",
+    "land_mask": "陆域掩膜（land|sea 判定）",
     "property_exposure": "财产暴露",
     "obstacles": "铁塔与高塔",
     "infrastructure": "关键基础设施",

@@ -74,6 +74,9 @@
       <div class="layer-row"><span><i class="swatch" style="background:#4c6ef5"></i> V3-A 战略候选（2D 投影，实验）</span><input type="checkbox" id="v3CandidateLayer" aria-label="V3-A 战略候选 2D 投影"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> Selected layer 可行性（coarse 垂向包络掩码）</span><input type="checkbox" id="layeredFeasibilityLayer" aria-label="Selected layer coarse 可行性掩码"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 分层候选航路（current candidate，当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" aria-label="分层候选航路 current candidate"></div>
+      <!-- Radar Surveillance Layout V1（proposal-only，默认关闭）：只画已选方案的铁塔/面阵扇区
+           与按覆盖结果着色的航路；不绘制未选 panel 的 coverage polygon。 -->
+      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> 监视雷达初步划设（80 m 方向性扇区与覆盖着色）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="监视雷达初步划设"></div>
      </div>
      <div class="layer-group" id="cnsLayers" hidden>
       <div class="layer-group-title">CNS</div>

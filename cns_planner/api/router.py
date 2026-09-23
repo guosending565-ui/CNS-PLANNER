@@ -102,6 +102,16 @@ class ApiRouter:
         # ---- Production Route3DProfile V1 (additive thin 3D-profile derivation) ---------
         if path == "/api/route-3d-profiles/readiness": return Response(workflow.route_3d_profile_readiness())
         if path == "/api/route-3d-profiles": return Response(workflow.route_3d_profiles())
+        # ---- Radar Surveillance Layout V1 (additive, proposal-only) ---------------------
+        # 「80m固定高度航路方向性雷达几何初步划设方案」。完整结果（含逐 sample 明细）走
+        # 专用接口；通用快照只带上有界摘要。
+        if path == "/api/radar-surveillance-layout/readiness":
+            return Response(workflow.radar_surveillance_layout_readiness())
+        if path == "/api/radar-surveillance-policy":
+            return Response(workflow.radar_surveillance_policy())
+        if path == "/api/radar-surveillance-layout":
+            route_id = self._first(query, "route_id", "") or None
+            return Response(workflow.radar_surveillance_layout(route_id))
         # ---- Vertical Transition Continuous Validation V1 (climb/descent geometry) ------
         if path == "/api/vertical-transition-validation/readiness":
             return Response(workflow.vertical_transition_validation_readiness(query))
@@ -373,6 +383,14 @@ class ApiRouter:
             # No automatic generation: the user explicitly evaluates one route (or "all").
             "/api/route-3d-profiles/evaluate": lambda: workflow.evaluate_route_3d_profile(payload),
             "/api/route-3d-profiles/delete": lambda: workflow.delete_route_3d_profile(payload),
+            # ---- Radar Surveillance Layout V1（proposal-only，additive） --------------
+            # 一次显式用户动作 = 一次求解；绝不自动生成，也绝不自动 apply proposal。
+            "/api/radar-surveillance-policy": lambda: workflow.set_radar_surveillance_policy(payload),
+            "/api/radar-surveillance-layout/evaluate": lambda: (
+                context.evaluate_radar_surveillance_layout(payload)
+                if hasattr(context, "evaluate_radar_surveillance_layout")
+                else workflow.evaluate_radar_surveillance_layout(payload)
+            ),
             # ---- Vertical Transition Continuous Validation V1 -----------------------
             # No automatic evaluation: one explicit POST evaluates the two transitions of one
             # route against the configured real FABDEM/buildings sources.

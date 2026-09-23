@@ -137,6 +137,7 @@ class ApplicationContext:
         self.configure_layered_route_planner_sources()
         self.configure_layered_route_validation_sources()
         self.configure_vertical_transition_validation_sources()
+        self.configure_radar_surveillance_layout_sources()
         return self.workflow
 
     def save_project_as(self, project_dir):
@@ -558,6 +559,103 @@ class ApplicationContext:
 
         return self.qgis.call(
             lambda: self.workflow.evaluate_vertical_transition_validation(payload)
+        )
+
+    # ------------------------------------------------- Radar Surveillance Layout V1
+
+    def configure_radar_surveillance_layout_sources(self):
+        """Bind the read-only real-source facts provider of the radar layout model.
+
+        The provider only exposes *facts*: an explicit metric projector
+        (``EPSG:32651``, the same frame the project already uses for terrain/building
+        queries), per-point FABDEM DTM orthometric height, and an explicit **land mask**
+        point classifier.  It never opens a dataset while merely rendering a panel:
+        ``sample_terrain`` / ``classify_surface`` read the sources only when an explicit
+        evaluate runs on the QGIS thread.
+
+        **陆域掩膜独立于 DEM**：本 provider 不含任何"用 NoData 推断海洋"的路径；未配置
+        陆域源时 ``classify_surface`` 返回 ``unknown``（fail-closed）。
+        """
+
+        from ..gis.radar_layout_adapter import (
+            LandMaskSource, land_mask_hint, sample_route_terrain,
+        )
+
+        transform_cache = {}
+
+        def to_metric(point):
+            from ..gis.fine_environment_adapter import QgisMetricTransform
+
+            transform = transform_cache.get("EPSG:32651")
+            if transform is None:
+                transform = QgisMetricTransform("EPSG:32651")
+                transform_cache["EPSG:32651"] = transform
+            return transform.to_metric(point)
+
+        def to_geographic(point):
+            from ..gis.fine_environment_adapter import QgisMetricTransform
+
+            transform = transform_cache.get("EPSG:32651")
+            if transform is None:
+                transform = QgisMetricTransform("EPSG:32651")
+                transform_cache["EPSG:32651"] = transform
+            return transform.to_geographic(point)
+
+        land_mask_cache = {}
+
+        def land_mask_source():
+            path = self.data.paths.get("land_mask")
+            key = str(path) if path else None
+            if key not in land_mask_cache:
+                land_mask_cache.clear()
+                land_mask_cache[key] = LandMaskSource(path) if path else None
+            return land_mask_cache[key]
+
+        def sample_terrain(points):
+            from ..gis.radar_layout_adapter import route_terrain_source
+
+            terrain_path = self.data.paths.get("terrain_dtm")
+            source = route_terrain_source(terrain_path) if terrain_path else None
+            return sample_route_terrain(points, terrain_source=source)
+
+        def classify_surface(points):
+            source = land_mask_source()
+            if source is None:
+                return ["unknown"] * len(points or [])
+            return source.classify_many(points)
+
+        provider = {
+            "adapter_id": "radar_surveillance_layout_real_source_facts_v1",
+            "source_type": "configured_real_sources",
+            "metric_crs": "EPSG:32651",
+            "to_metric": to_metric,
+            "to_geographic": to_geographic,
+            "sample_terrain": sample_terrain,
+            "classify_surface": classify_surface,
+            "land_mask": {
+                "ok": land_mask_hint(self.data.paths.get("land_mask"))["ok"],
+                "readiness": land_mask_hint(self.data.paths.get("land_mask")),
+            },
+            "paths": {
+                "terrain_dtm": self.data.paths.get("terrain_dtm"),
+                "land_mask": self.data.paths.get("land_mask"),
+            },
+            "dem_nodata_used_to_infer_sea": False,
+            "backend_hardcoded_mount_height": False,
+        }
+        self.workflow.radar_surveillance_layout_service.facts_provider = provider
+        return provider
+
+    def evaluate_radar_surveillance_layout(self, payload=None):
+        """Run one explicit radar layout evaluation (reads FABDEM + land mask).
+
+        The evaluation opens the FABDEM window and the land-mask polygons, so it runs on the
+        QGIS thread — the same shape as the other real-source entry points.  There is **no**
+        automatic evaluation and **no** automatic apply of the resulting proposal.
+        """
+
+        return self.qgis.call(
+            lambda: self.workflow.evaluate_radar_surveillance_layout(payload)
         )
 
     def _vertical_transition_evidence(

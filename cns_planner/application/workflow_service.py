@@ -54,6 +54,7 @@ from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
 from .tower_obstacle_service import TowerObstacleService
+from .radar_surveillance_layout_service import RadarSurveillanceLayoutService
 from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
@@ -375,6 +376,15 @@ class WorkflowService:
         # 谁都不进入 population×shelter 或 Risk Framework V2 数学。
         self.tower_obstacle_service = TowerObstacleService(
             self.session, self.invalidation_service, snapshot,
+        )
+        # Radar Surveillance Layout V1（additive，proposal-only）：「80m固定高度航路方向性
+        # 雷达几何初步划设方案」。它只写 ``radar_surveillance_policy`` /
+        # ``radar_surveillance_layout``，绝不写 existing CNS / coverage_3d / 走廊与站址提案。
+        self.radar_surveillance_layout_service = RadarSurveillanceLayoutService(
+            self.session, self.invalidation_service, snapshot,
+        )
+        self.invalidation_service.radar_surveillance_layout_invalidator = (
+            self.radar_surveillance_layout_service.stale_for_reason
         )
         # A Risk Framework V2 / layer / terrain-building / policy change stales only the
         # layered candidates and masks, never legacy routes, V3 or CNS results.
@@ -757,6 +767,16 @@ class WorkflowService:
             result["vertical_transition_validation_readiness"] = (
                 self.vertical_transition_validation_service.readiness_snapshot()
             )
+        # Radar Surveillance Layout V1（additive，proposal-only）：通用快照只带**有界摘要**
+        # （状态 / 计数 / 求解器 / 覆盖率），逐 sample 明细由专用接口按需获取 —— 与
+        # layered_route_candidates / grid_attributes 的既有做法一致。
+        if hasattr(self, "radar_surveillance_layout_service"):
+            result["radar_surveillance_layout"] = (
+                self.radar_surveillance_layout_service.summary_snapshot()
+            )
+            result["radar_surveillance_layout_readiness"] = (
+                self.radar_surveillance_layout_service.readiness_snapshot()
+            )
         result["review"] = self.review()
         return result
 
@@ -777,6 +797,21 @@ class WorkflowService:
     def tower_obstacle_profiles_snapshot(self): return self.tower_obstacle_service.result_snapshot()
     def tower_colocation_candidates_snapshot(self): return self.tower_obstacle_service.colocation_snapshot()
     def tower_integration_policies_snapshot(self): return self.tower_obstacle_service.policy_snapshot()
+    # ---- Radar Surveillance Layout V1（proposal-only，additive） -------------------
+    def radar_surveillance_policy(self):
+        return self.radar_surveillance_layout_service.policy_snapshot()
+    def set_radar_surveillance_policy(self, payload=None):
+        return self.radar_surveillance_layout_service.set_policy(payload)
+    def radar_surveillance_layout(self, route_id=None):
+        return self.radar_surveillance_layout_service.result_snapshot(route_id)
+    def radar_surveillance_layout_readiness(self):
+        return self.radar_surveillance_layout_service.readiness_snapshot()
+    def evaluate_radar_surveillance_layout(self, payload=None, *, facts_provider=None):
+        result = self.radar_surveillance_layout_service.evaluate(
+            payload, facts_provider=facts_provider,
+        )
+        self.invalidation_service.report("radar_surveillance_layout_evaluated")
+        return result
     def evaluate_tower_obstacle_profiles(self, payload=None, *, facts_provider=None):
         return self.tower_obstacle_service.evaluate(payload, facts_provider=facts_provider)
     def set_tower_clearance_policy(self, payload=None):

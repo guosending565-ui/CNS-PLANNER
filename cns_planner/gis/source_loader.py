@@ -29,7 +29,12 @@ REFERENCE_SOURCE_KEYS = (
 OPTIONAL_VECTOR_SOURCE_KEYS = (
     "buildings",
     "building_grid",
+    # 陆域掩膜：与建筑类不同，**不**要求"能解析出建筑图层"，
+    # 只需要是一个存在的、受支持的矢量文件（逐点判定在 radar adapter 里做）。
+    "land_mask",
 )
+#: 建筑类来源必须在加载时确认"能解析出可用建筑图层"（陆域掩膜不适用此规则）。
+BUILDING_VECTOR_SOURCE_KEYS = ("buildings", "building_grid")
 #: 必须是具体文件的来源角色（其余角色缺失只表示"未配置"）。
 REQUIRED_FILE_ROLES = ("basemap", "population", "terrain")
 #: 启动时执行统一 exists/is_file/格式校验的角色。
@@ -195,7 +200,7 @@ class QgisSourceLoader:
                 raise ValueError(record["reason"])
         # 建筑类来源还要在启动时确认"能解析出可用图层"：路径存在但工程里没有可用矢量图层，
         # 同样属于"路径存在但状态异常"，必须在加载阶段就说清楚。
-        for role in OPTIONAL_VECTOR_SOURCE_KEYS:
+        for role in BUILDING_VECTOR_SOURCE_KEYS:
             if not paths.get(role):
                 continue
             resolved = resolve_vector_layer_source(paths[role], role=role)

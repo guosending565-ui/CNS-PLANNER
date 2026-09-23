@@ -14,6 +14,8 @@ import {drawBuildingClearanceOverlay} from './building_clearance_overlay.js';
 import {drawV3CandidateOverlay,v3OverlayModel} from './route_planner_v3_overlay.js';
 import {drawLayeredFeasibilityOverlay} from './layered_feasibility_overlay.js';
 import {drawLayeredCandidateOverlay} from './layered_candidate_overlay.js';
+import {drawRadarLayoutOverlay} from './radar_layout_overlay.js';
+import {radarOverlayModel} from '../workflow/radar_surveillance_layout.js';
 import {clusterPoints,toGeographic,extentOf,hitCluster} from './point_clustering.js';
 import {
   displayStyle,TOWER_HIGHLIGHT_SIZE_PX,TOWER_SYMBOL_HALO_EXTRA_PX,TOWER_SYMBOL_STROKE_PX
@@ -453,6 +455,18 @@ export function drawWorkflowLayers({
     drawLayeredCandidateOverlay({
       ctx,screenPoint,flow,grid:flow.grid,
       style:{width,alpha:styles.operationalAlpha,dash:[]},
+    });
+  }
+  // Radar Surveillance Layout V1：**默认关闭**。只画已选方案的 selected towers / panel 扇区
+  // 与按覆盖结果着色的航路；候选铁塔用 plan.towers 的弱化单点（不走聚合，避免与塔层语义混淆）。
+  // 绝不绘制未选 panel 的 coverage polygon（数百个多边形会造成地图性能问题）。
+  if(layers.radarSurveillanceLayer===true){
+    const candidateTowers=(flow?.towers?.items||[])
+      .filter(tower=>Array.isArray(tower.coordinate))
+      .map(tower=>({tower_id:tower.tower_id,coordinate:tower.coordinate}));
+    drawRadarLayoutOverlay({
+      ctx,view,screenPoint,
+      model:radarOverlayModel(flow,candidateTowers),
     });
   }
 

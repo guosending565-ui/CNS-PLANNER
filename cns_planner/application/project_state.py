@@ -141,6 +141,10 @@ from ..domain.tower_obstacle import (
     empty_tower_obstacle_profiles, normalize_tower_clearance_policy,
     normalize_tower_obstacle_policy, normalize_tower_obstacle_profiles,
 )
+from .radar_surveillance_layout_service import (
+    empty_radar_surveillance_layout, normalize_radar_surveillance_layout,
+    normalize_radar_surveillance_policy,
+)
 
 
 SCHEMA_VERSION = 2
@@ -247,6 +251,11 @@ def blank_project(defaults):
         "tower_colocation_policy": normalize_tower_colocation_policy(None),
         "tower_obstacle_profiles": empty_tower_obstacle_profiles(),
         "tower_colocation_candidates": empty_tower_colocation_candidates(),
+        # Radar Surveillance Layout V1（additive，proposal-only）：
+        # 「80m固定高度航路方向性雷达几何初步划设方案」。独立保存策略与结果，
+        # 绝不写入 existing_cns_facilities / coverage_3d / 任何 CNS 走廊或站址提案。
+        "radar_surveillance_policy": normalize_radar_surveillance_policy(None),
+        "radar_surveillance_layout": empty_radar_surveillance_layout(),
         "v3_planning_policy": normalize_v3_planning_policy(None),
         "v3_fine_refinement_policy": default_v3_fine_refinement_policy(),
         "v3_continuous_validation_policy": default_v3_validation_policy(),
@@ -356,6 +365,7 @@ def blank_project(defaults):
                 "vertical_transition_validation",
                 "tower_obstacle_profiles",
                 "tower_colocation_candidates",
+                "radar_surveillance_layout",
             )
         },
         "last_saved_at": None,
@@ -501,6 +511,14 @@ def normalize_project(value, grid_service):
     )
     value["tower_colocation_candidates"] = normalize_tower_colocation_candidates(
         value.get("tower_colocation_candidates")
+    )
+    # Radar Surveillance Layout V1 additive backfill：旧项目得到未配置策略（25/5/3 软件
+    # baseline + 未配置挂高）与空结果容器，绝不凭空合成一次"已划设"结果。
+    value["radar_surveillance_policy"] = normalize_radar_surveillance_policy(
+        value.get("radar_surveillance_policy")
+    )
+    value["radar_surveillance_layout"] = normalize_radar_surveillance_layout(
+        value.get("radar_surveillance_layout")
     )
     value["v3_planning_policy"] = normalize_v3_planning_policy(value.get("v3_planning_policy"))
     value["v3_fine_refinement_policy"] = normalize_v3_fine_refinement_policy(
@@ -704,4 +722,7 @@ def normalize_project(value, grid_service):
     # Towers Operational Integration V2：旧项目没有铁塔派生层，按"未计算"回填。
     for name in ("tower_obstacle_profiles", "tower_colocation_candidates"):
         value.setdefault("result_statuses", {}).setdefault(name, "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault(
+        "radar_surveillance_layout", "not_calculated"
+    )
     return value

@@ -1,9 +1,14 @@
 import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint} from './common.js';
+import {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
+
+// Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
+// 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
+export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,renderRadarSurveillanceLayoutPanel};
 
 // 二级分段：同一一级标签下同屏只呈现一个任务，id 在整步内唯一。
 // 名称是业务语言；工程编号（P7…P18）只留在各面板的说明与证据里。
 const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']];
-const RESULT_SEGMENTS=[['cns-res-coverage','基础覆盖'],['cns-res-capability','3D与能力'],['cns-res-corridor','服务走廊'],['cns-res-gap','规划目标与缺口']];
+const RESULT_SEGMENTS=[['cns-res-coverage','基础覆盖'],['cns-res-capability','3D与能力'],['cns-res-corridor','服务走廊'],['cns-res-radar','监视雷达初步划设'],['cns-res-gap','规划目标与缺口']];
 const ADVANCED_SEGMENTS=[['cns-adv-site','走廊站址优化'],['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与 Gap V2'],['cns-adv-closedloop','Legacy与闭环']];
 
 function collectionList(collection,kind){
@@ -409,6 +414,7 @@ export function render({flow}){
       ['cns-res-coverage','基础覆盖',wbBlock('基础覆盖',wbSegHint(RESULT_SEGMENTS,'cns-res-coverage')+coverageResult+gapPanel)],
       ['cns-res-capability','3D与能力',wbBlock('3D与能力',wbSegHint(RESULT_SEGMENTS,'cns-res-capability')+coverage3dPanel+capabilityPanel)],
       ['cns-res-corridor','服务走廊',wbBlock('服务走廊',wbSegHint(RESULT_SEGMENTS,'cns-res-corridor')+corridorPanel)],
+      ['cns-res-radar','监视雷达初步划设',wbBlock('监视雷达初步划设',wbSegHint(RESULT_SEGMENTS,'cns-res-radar')+renderRadarSurveillanceLayoutPanel(flow))],
       ['cns-res-gap','规划目标与缺口',wbBlock('规划目标与缺口',wbSegHint(RESULT_SEGMENTS,'cns-res-gap')+objectivesGapPanel)]
     ]})
     +wbPanel('advanced','',{segments:[
@@ -455,5 +461,34 @@ export function bind(c){
   c.actionButton('evaluateSitePlan',()=>{const policy=structuredClone(c.flow().site_planning_policy||{});policy.confirmed=c.$('sitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/cns-site-plan',{site_planning_policy:policy});});
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
   c.actionButton('applyClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/apply',{application_id:c.flow().closed_loop_assessment?.application?.application_id}));
+  // ---- Radar Surveillance Layout V1（独立任务卡；proposal-only，绝不自动 Apply） ----
+  // 保存划设参数：只写 radar_surveillance_policy（25/5/3 + 挂高工程假设）。
+  // 挂高为空时提交 null（=未配置），后端绝不写死任何塔高/安装高度。
+  if(c.$('saveRadarSurveillancePolicy'))c.actionButton('saveRadarSurveillancePolicy',()=>{
+    const raw=c.$('radarMountHeight').value.trim();
+    const policy=structuredClone(c.flow().radar_surveillance_policy||{});
+    policy.radar_mount_height={
+      radar_mount_height_m:raw===''?null:Number(raw),
+      mount_height_basis:'radar_above_tower_top',
+      source:c.$('radarMountSource').value.trim()||'user_supplied_engineering_example_parameter',
+      confirmed:false,
+      parameter_origin:'engineering_assumption',
+    };
+    policy.allow_mixed_radar_types=c.$('radarAllowMixed')?.checked!==false;
+    return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
+  });
+  // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 连续覆盖复核。
+  if(c.$('evaluateRadarSurveillanceLayout'))c.actionButton('evaluateRadarSurveillanceLayout',()=>{
+    const raw=c.$('radarMountHeight')?.value.trim();
+    const payload={route_id:'all'};
+    if(raw!==''&&raw!=null)payload.radar_mount_height={
+      radar_mount_height_m:Number(raw),
+      mount_height_basis:'radar_above_tower_top',
+      source:c.$('radarMountSource')?.value.trim()||'user_supplied_engineering_example_parameter',
+      confirmed:false,
+      parameter_origin:'engineering_assumption',
+    };
+    return c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
+  });
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(6);
 }
