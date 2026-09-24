@@ -751,6 +751,82 @@ heuristic
 - Existing CNS 控件必须分别编辑 `knowledge_status` 与 `planning_mode`。选择“未知但按空基线规划”时不得把事实状态改成“确认无”，并在 Step 5、Step 6 和报告中显示“空既有设施工程规划基线；不表示现实中不存在 CNS”。
 - Radar 默认显示为可选 production 分支；只有 adopted Required CNS 或 surveillance policy 明确要求时才进入阻塞项/下一步门槛。
 
+### 11.5 Phase4-B4 前端中文优先规则（B2B-1 写入的契约）
+
+CNS-PLANNER 面向中文规划用户。**Phase4-B4 完成后，Production UI 默认以中文业务语言显示。**
+
+后端协议不因界面语言改变：
+
+- `enum`、API key、`algorithm_id`、`schema value`、`result_statuses` key、`state` key 一律继续使用英文；
+- 不得为了中文界面修改任何后端协议值、枚举字面量或指纹；
+- 前端必须建立**集中式中文显示映射**，不得在各 step 文件继续散落大量 raw enum 判断与裸值渲染。
+
+最低覆盖范围（显示映射必须逐项覆盖）：
+
+- `WorkflowStatus`、`ReadinessState`、`OutputMaturity`、`AssessmentOutcome`、`InputRequirementLevel`；
+- canonical node names；
+- assumption basis；
+- warning reason；
+- blocker reason。
+
+推荐显示（与 canonical 值一一对应）：
+
+| canonical value | 中文显示 |
+|---|---|
+| `ready` | 可继续 |
+| `ready_with_assumptions` | 可继续（采用工程假设） |
+| `blocked` | 暂不能继续 |
+| `running` | 正在计算 |
+| `completed` | 已完成 |
+| `completed_with_warnings` | 已完成（有提示） |
+| `stale` | 需要重新计算 |
+| workflow `failed` | 执行失败 |
+| assessment `passed` | 检查通过 |
+| assessment `failed` | 检查不通过 |
+| assessment `unknown` | 证据不足 |
+| `provisional` | 候选/试算结果 |
+| `authoritative` | 按业务节点显示：已采纳 / 已发布 / 已确认 |
+
+canonical node 的中文显示：
+
+| canonical node | 中文显示 |
+|---|---|
+| `environment` | 环境模型 |
+| `risk_field` | 航路风险场 |
+| `route_candidate` | 候选航路 |
+| `route_validation` | 航路安全验证 |
+| `operational_route` | 正式运行航路 |
+| `required_cns` | CNS 能力需求 |
+| `coverage` | 三维覆盖评估 |
+| `service_capability` | 服务能力评估 |
+| `service_corridor` | CNS 服务走廊 |
+| `capability_gap` | CNS 能力缺口 |
+| `facility_plan` | CNS 设施规划 |
+| `plan_review` | 方案评审 |
+| `report` | 规划报告 |
+
+Production UI 的页面标题、步骤名称、按钮、状态、阻塞项、警告、下一步、表格列名、地图图例、
+结果摘要、错误信息与空状态原则上**全部中文**。
+
+以下内部术语不得裸露在普通主界面：`legacy`、`workflow`、`readiness`、`provisional`、
+`authoritative`、`stale`、`pending_confirmation`、`not_calculated`、`missing_data`、
+`proposal_ready`、`fingerprint`、`voxel`、`supercover`、`heuristic`、`P7/P8/P14/P15/P16`、
+`V1/V2/V3`。只允许在"高级 / 审计信息"显示原始技术值。
+
+允许保留的必要专名/缩写：CNS、EGM2008、CRS、Theta*；`Radar` 在普通页面优先显示"雷达"。
+
+高度层展示统一采用业务化格式：
+
+```text
+ALT-080 · 80 m · EGM2008 正高
+```
+
+而不是仅展示 `egm2008_orthometric`。**绝不可写死 ALT-080**：`ALT-060` / `ALT-080` /
+`ALT-100` / `ALT-150` / `ALT-200` 以及未来新增高度层全部使用同一格式，且必须由高度层目录
+（`domain/altitude_layer_defaults.py`）数据驱动，一条航路巡航段只显示它实际选定的固定巡航层。
+
+本轮（B2B-1）只把该规则写入 Phase4 契约；全面中文化在 B4 实施。
+
 ---
 
 ## 12. Legacy Migration Strategy
