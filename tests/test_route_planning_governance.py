@@ -113,7 +113,12 @@ def test_no_constraints_is_a_genuine_empty_list_not_a_malformed_entry(tmp_path):
     workflow = workflow_with_routes(tmp_path)
     workflow.generate_scenario_od("N001", "N002", "ab")
     state = workflow.generate_operational([])
-    assert all(item["status"] == "passed" for item in state["operational_routes"])
+    # B2B-1R：兼容试算结果只在本次 response；canonical 运行航路不被旧 planner 写。
+    assert state["operational_routes"] == []
+    assert all(
+        item["status"] == "passed"
+        for item in state["compatibility_operational_routes"]["items"]
+    )
 
 
 def test_validator_error_is_actionable_and_indexed():
@@ -173,10 +178,14 @@ def test_explicit_od_reuses_identical_direction_and_retires_the_removed_one(tmp_
 def test_explicit_od_clears_operational_routes_and_marks_routes_not_calculated(tmp_path):
     workflow = workflow_with_routes(tmp_path)
     workflow.generate_scenario_od("N001", "N002", "ab")
-    workflow.generate_operational([])
-    assert workflow.state["operational_routes"]
+    response = workflow.generate_operational([])
+    # B2B-1R：旧版 planner 只写 runtime-only cache / response；canonical 运行航路保持为空。
+    assert workflow.state["operational_routes"] == []
+    assert response["compatibility_operational_routes"]["items"]
     state = workflow.generate_scenario_od("N002", "N003", "ab")
     assert state["operational_routes"] == []
+    assert "results" not in (state.get("compatibility") or {})
+    assert not workflow.session._runtime_compatibility_results
     assert state["result_statuses"]["routes"] == "not_calculated"
 
 

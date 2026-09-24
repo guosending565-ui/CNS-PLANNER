@@ -16,7 +16,7 @@ from .project_state import assessment
 class ClosedLoopService:
     def __init__(
         self, session, coverage_model, capability_model, timeline_model,
-        gap_model, snapshot,
+        gap_model, snapshot, invalidation=None,
     ):
         self.session = session
         self.coverage_model = coverage_model
@@ -24,6 +24,10 @@ class ClosedLoopService:
         self.timeline_model = timeline_model
         self.gap_model = gap_model
         self.snapshot = snapshot
+        #: 权威失效入口。P12 提交后必须经它使 P18 基线失效，而不是直接写
+        #: ``confirmed_cns_plan``；``confirmed_cns_plan`` 的唯一 content owner 是
+        #: ``PlanReviewService``（Phase4-B2B-1）。
+        self.invalidation = invalidation
 
     def result_snapshot(self):
         return deepcopy(self.session.state["closed_loop_assessment"])
@@ -88,12 +92,28 @@ class ClosedLoopService:
             _apply_post_commit_statuses(committed)
             current.clear()
             current.update(committed)
+            self._invalidate_after_commit()
             self.session.save()
         except Exception:
             current.clear()
             current.update(original)
             raise
         return self.snapshot()
+
+    def _invalidate_after_commit(self):
+        """P12 提交后的 P18 基线失效：委托权威失效入口。
+
+        ``ClosedLoopService`` 不持有 ``confirmed_cns_plan`` / ``cns_plan_review`` 的写权，
+        只声明"既有 CNS 基线已变化"这一事实，由 :class:`InvalidationService` 决定
+        哪些 canonical 产物失效。
+        """
+
+        reason = "P12 ExistingCNS application changed P18 baseline"
+        service = self.invalidation
+        if service is None:
+            return False
+        service.cns_plan_review(reason)
+        return True
 
     def _build_assessment(self, source_state):
         site_plan = source_state.get("cns_site_plan") or {}
@@ -367,14 +387,5 @@ def _apply_post_commit_statuses(state):
     state.setdefault("risks", {})["technical"] = assessment(
         "stale", "P12 application 已提交；Safety Event/technical risk 未自动重评",
     )
-    review = state.get("cns_plan_review") or {}
-    if review.get("status") not in (None, "not_initialized", "stale"):
-        review["status"] = "stale"
-        review["stale_reason"] = "P12 ExistingCNS application changed P18 baseline"
-        state["cns_plan_review"] = review
-        statuses["cns_plan_review"] = "stale"
-    confirmed = state.get("confirmed_cns_plan") or {}
-    if confirmed.get("status") in ("confirmed", "applied"):
-        confirmed["current_applicability"] = "stale"
-        confirmed["stale_reason"] = "P12 ExistingCNS application changed P18 baseline"
-        state["confirmed_cns_plan"] = confirmed
+    # NOTE: ``cns_plan_review`` / ``confirmed_cns_plan`` 的失效**不在这里**直接写状态；
+    # 由 ``ClosedLoopService._invalidate_after_commit`` 委托 InvalidationService 执行。

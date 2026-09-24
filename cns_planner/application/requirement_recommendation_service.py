@@ -14,8 +14,11 @@ from ..domain.reporting import mark_active_report_stale
 
 
 class RequirementRecommendationService:
-    def __init__(self, session, model, invalidation, snapshot):
+    def __init__(self, session, model, invalidation, snapshot, cns_input_service=None):
         self.session, self.model, self.invalidation, self.snapshot = session, model, invalidation, snapshot
+        #: canonical ``required_cns`` 的唯一 production content owner。``adopt`` 只委托它
+        #: 完成赋值；recommendation 服务自身永不直接写 canonical。
+        self.cns_input_service = cns_input_service
 
     def context_snapshot(self):
         return deepcopy(self.session.state.get("cns_operation_context") or empty_operation_context())
@@ -96,8 +99,7 @@ class RequirementRecommendationService:
             raise ValueError("Recommendation 已过期，请重新 evaluate")
         adopted = normalize_required_cns(result["recommended_required_cns"])
         adopted["source"] = "explicit_adoption_from_required_cns_recommendation"
-        state["required_cns"] = adopted
-        state["required_cns_adoption"] = {
+        adoption = {
             "status": "adopted", "recommendation_fingerprint": result.get("input_fingerprint"),
             "algorithm_id": result.get("algorithm_id"), "algorithm_version": result.get("algorithm_version"),
             "context_fingerprint": actual["operation_context"],
@@ -106,9 +108,16 @@ class RequirementRecommendationService:
             "source": str((payload or {}).get("source") or "explicit_user_adoption"),
             "provenance": deepcopy(result.get("field_provenance") or {}),
         }
-        self.invalidation.workflow("required_cns")
-        self.session.save()
-        return self.snapshot()
+        # B2B-1：recommendation 服务不再直接赋值 canonical ``required_cns``，改为委托
+        # 唯一命令 owner（``CNSInputService.adopt_required_cns``）。adoption 记录的业务
+        # 内容与 fingerprint 完全不变。
+        return self._cns_input_service().adopt_required_cns(adopted, adoption)
+
+    def _cns_input_service(self):
+        service = self.cns_input_service
+        if service is None:
+            raise RuntimeError("RequirementRecommendationService 缺少 RequiredCNS command owner")
+        return service
 
     def _input_fingerprints(self):
         state = self.session.state

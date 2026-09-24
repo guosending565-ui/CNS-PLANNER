@@ -1,6 +1,7 @@
 import json
 
 from cns_planner.algorithms.route_planner import RoutePlannerV1
+from cns_planner.application.production_write_authority import runtime_compatibility_result
 from cns_planner.services.workflow import WorkflowService
 
 
@@ -39,7 +40,14 @@ def test_complete_workflow_persists_exports_and_never_reuses_route_ids(tmp_path)
     assert "R0001" in state["retired_route_ids"]
     assert {route["route_id"] for route in state["scenario_routes"]} == {"R0002", "R0003"}
     state = service.generate_operational([])
-    assert all(route["status"] == "passed" for route in state["operational_routes"])
+    # Phase4-B2B-1：旧版 RoutePlannerV1 只是兼容试算，不再写 canonical operational_routes。
+    assert state["operational_routes"] == []
+    compatibility = state["compatibility_operational_routes"]
+    assert compatibility["authoritative"] is False
+    assert compatibility["compatibility"] is True
+    assert compatibility["deprecated"] is True
+    assert compatibility["source_algorithm"]["algorithm_id"] == "route_planner_v1"
+    assert all(route["status"] == "passed" for route in compatibility["items"])
     state = service.set_rules({
         "manufacturer": "测试厂家", "model": "T1", "cruise_speed": 25,
         "max_speed": 40, "mtbf": 10000, "route_id": "R0002",
@@ -48,7 +56,8 @@ def test_complete_workflow_persists_exports_and_never_reuses_route_ids(tmp_path)
         "delay_sensor": 500, "delay_command": 500,
     })
     assert state["rules"]["status"] == "passed"
-    assert state["result_statuses"]["routes"] == "stale"
+    # 兼容试算随 route 语义失效；canonical result_statuses 不再由兼容试算决定。
+    assert runtime_compatibility_result(service.session, "operational_routes")["status"] == "stale"
     try:
         service.plan_coverage()
     except ValueError as exc:
@@ -56,7 +65,8 @@ def test_complete_workflow_persists_exports_and_never_reuses_route_ids(tmp_path)
     else:
         raise AssertionError("布站不得使用 stale 运行航路")
     state = service.generate_operational([])
-    assert state["result_statuses"]["routes"] == "passed"
+    assert state["compatibility_operational_routes"]["status"] == "passed"
+    assert state["operational_routes"] == []
     devices = [{**item, "mtbf": item["mtbf_h"]} for item in state["devices"]]
     service.set_devices(devices)
     state = service.plan_coverage()

@@ -1129,8 +1129,8 @@ test('the legacy scenarioRoutes and operationalRoutes entries keep their contrac
   assert.match(html,/id="scenarioRoutes"/);
   assert.match(html,/id="operationalRoutes"/);
   assert.match(html,/生成场景航路（all-pairs，兼容）/);
-  assert.match(html,/生成运行航路/);
-  assert.match(html,/A\. 现有 \/ Legacy 运行航路生成（保持不变）/);
+  assert.match(html,/旧版航路试算（不发布）/);
+  assert.match(html,/A\. 旧版航路试算（不发布，兼容旧项目）/);
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
   // 旧端点与逻辑一字不改
   assert.match(source,/c\.actionButton\('scenarioRoutes',\(\)=>c\.mutate\('scenario',\{\}\)\)/);

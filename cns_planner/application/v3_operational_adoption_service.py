@@ -1,25 +1,37 @@
-"""V3-D: publish a current V3-C ``validated_route`` into the operational route surface.
+"""V3-D: archive a current V3-C ``validated_route`` as a compatibility/研究记录.
 
-This module is the **only** writer that turns a V3-C validated route into an
-``operational_routes`` record plus a locked ``spatial_3d`` altitude profile.  It never
-plans, never validates and never reimplements CNS: it **publishes** and it orchestrates
-the existing P7→P8→P9→P10 chain for assessment.
+Phase4-B2B-1 Production Write Authority：本服务**不再是** ``operational_routes`` 的
+production writer。canonical 运行航路的唯一 content owner 是
+``LayeredOperationalAdoptionService``。V3-D 仍然完整地：
+
+* 执行 publish gate（production Apply 只接受 ``configured_real_sources``）、projection
+  与 adoption 记录，保留研究/回放与 CNS Assessment 能力；
+* 把投影结果写入当前 ``WorkflowSession`` 的 runtime-only compatibility cache，
+  并显式标记 ``authoritative=false / compatibility=true / deprecated=true``；
+* 保留 V3-C validation history 的只读语义。
+
+它**绝不**：
+
+* 写 ``state["operational_routes"]``（apply/revoke 都不会产生或替换 canonical
+  operational route）；
+* 借用兼容归档结果去 stale canonical 下游（兼容结果不驱动 canonical coverage /
+  capabilities / facility plan / confirmed plan）；
+* 把 V3-C 验证结论写成 CNS 结论（或反之）。
+
+旧项目里已经存在的 canonical ``operational_routes`` 仍然可读、可显示、可导出 —— 兼容
+归档与 canonical 状态是两条互不覆盖的线。
 
 Hard rules enforced here:
 
 * production Apply accepts **only** ``configured_real_sources`` evidence; the canonical
-  synthetic exercise may be previewed (labelled test-only) but is never published to
-  ``operational_routes``;
+  synthetic exercise may be previewed (labelled test-only) but is never archived as a
+  publishable operational route;
 * Apply and Revoke are transactional: state is mutated on a deep copy and installed
   only after the whole operation succeeded and the result normalizes;
 * a batch Apply is **atomic**: if one validation fails its gate, nothing is written;
 * the V3-C validation history is read-only.  ``operational_route=false`` /
   ``cns_assessed=false`` are never written back to ``true``, and a CNS gap never
-  becomes a route validation failure (nor the reverse);
-* publishing does **not** call ``invalidation.workflow("route")`` -- that would
-  immediately mark the new route stale.  A dedicated ``v3_operational_route_published``
-  propagation keeps the published route and every V3 result intact and stales only the
-  downstream CNS chain plus results that depend on the operational route.
+  becomes a route validation failure (nor the reverse).
 """
 
 from __future__ import annotations
@@ -38,6 +50,14 @@ from ..domain.v3_operational_adoption import (
     normalize_v3_cns_assessment_bundle, normalize_v3_operational_adoptions,
     stable_fingerprint, utc_now,
 )
+from .production_write_authority import (
+    runtime_compatibility_items, runtime_compatibility_result,
+    write_runtime_compatibility_result,
+)
+
+#: V3-D 归档/研究结果在 compatibility namespace 下的名字。V3-D **不是**
+#: canonical ``operational_routes`` 的 production writer（Phase4-B2B-1）。
+COMPATIBILITY_V3_ROUTES = "v3_operational_routes"
 
 #: Result keys the publish propagation marks stale, in dependency order.  The published
 #: route itself and every V3 result are deliberately absent.
@@ -716,38 +736,64 @@ class V3OperationalAdoptionService:
         installed = _install_in_place(original, installed)
         self.session.state = installed
         self.session.save()
+        runtime_result = runtime_compatibility_result(
+            self.session, COMPATIBILITY_V3_ROUTES
+        )
         return {
             "status": "passed",
+            # Phase4-B2B-1：V3-D 不再拥有 canonical operational route 的发布权。
+            "authoritative": False,
+            "compatibility": True,
+            "deprecated": True,
+            "published_to_operational_routes": False,
+            "canonical_operational_routes_unchanged": True,
+            "source_algorithm": {
+                "algorithm_type": "route_planner_v3",
+                "algorithm_id": self.algorithm_id,
+                "algorithm_version": self.algorithm_version,
+            },
             "adoption_ids": [item["adoption_id"] for item in applied],
             "route_ids": [item["route_id"] for item in applied],
             "count": len(applied),
-            "downstream_invalidation": list(V3_DOWNSTREAM_RESULTS),
-            "operational_route_ids": sorted(
-                str(item.get("route_id"))
-                for item in self.session.state.get("operational_routes") or []
-            ),
+            "compatibility_storage": "runtime_only",
+            "compatibility_v3_operational_routes": deepcopy(runtime_result),
             "v3c_validation_history_unchanged": True,
             "snapshot": self.snapshot(),
         }
 
     def _publish_all(self, projections, evidence_source):
+        """记录 V3-D 归档结果；**不再**写 canonical ``operational_routes``。
+
+        Phase4-B2B-1：``operational_routes`` 的唯一 production content owner 是
+        ``LayeredOperationalAdoptionService``。V3-D 的 Apply 仍然完整执行 publish gate、
+        projection 与 adoption 记录（研究/回放能力不变），但投影结果只进入
+        当前会话的 runtime-only compatibility cache；canonical
+        ``operational_routes`` 与 ``spatial_3d`` 逐字节不变。
+        """
+
         state = self.session.state
         collection = normalize_v3_operational_adoptions(state.get("v3_operational_adoptions"))
         items = collection["items"]
-        routes = list(state.get("operational_routes") or [])
+        # 只读 canonical 视图：用于保持 adoption 记录里 before 快照的内容不变。
+        canonical_routes = list(state.get("operational_routes") or [])
+        # ``spatial_3d.route_altitude_profiles`` 不是本批次收敛的 canonical six；V3-D 仍
+        # 拥有它自己派生的锁定高度剖面（撤销时一并回收），但**绝不**写 operational_routes。
         spatial = state.setdefault("spatial_3d", {})
         profiles = spatial.setdefault("route_altitude_profiles", {})
+        archived = runtime_compatibility_items(self.session, COMPATIBILITY_V3_ROUTES)
+        archived_profiles = deepcopy(
+            runtime_compatibility_result(
+                self.session, COMPATIBILITY_V3_ROUTES
+            ).get("profiles") or {}
+        )
         applied, published_ids = [], set()
         for item in projections:
             entry, projection = item["entry"], item["projection"]
             route_id = projection["route_id"]
             previous_route = next(
-                (route for route in routes if str(route.get("route_id")) == route_id), None,
+                (route for route in canonical_routes if str(route.get("route_id")) == route_id), None,
             )
-            routes = [route for route in routes if str(route.get("route_id")) != route_id]
-            routes.append(deepcopy(projection["route"]))
             previous_profile = profiles.get(route_id)
-            profiles[route_id] = deepcopy(projection["profile"])
             previous_adoption = next(
                 (adoption for adoption in items if str(adoption.get("route_id")) == route_id),
                 None,
@@ -761,18 +807,44 @@ class V3OperationalAdoptionService:
                 other for other in items if str(other.get("route_id")) != route_id
             ]
             items.append(adoption)
+            profiles[route_id] = deepcopy(projection["profile"])
+            archived = [
+                route for route in archived if str(route.get("route_id")) != route_id
+            ]
+            archived.append(deepcopy(projection["route"]))
+            archived_profiles[route_id] = deepcopy(projection["profile"])
             published_ids.add(route_id)
             applied.append(adoption)
-        # Upsert only the adopted route_ids: unrelated operational routes are untouched.
-        routes.sort(key=lambda route: str(route.get("route_id")))
-        state["operational_routes"] = routes
+        archived.sort(key=lambda route: str(route.get("route_id")))
         state["spatial_3d"]["route_altitude_profiles"] = profiles
         collection["items"] = items
         collection["count"] = len(items)
         collection["status"] = "passed"
         state["v3_operational_adoptions"] = collection
-        state.setdefault("result_statuses", {})["routes"] = "passed"
-        self._propagate_publish(published_ids)
+        write_runtime_compatibility_result(
+            self.session, COMPATIBILITY_V3_ROUTES,
+            {
+                "status": "passed",
+                "stale_reason": None,
+                "count": len(archived),
+                "items": archived,
+                "profiles": archived_profiles,
+                "published_route_ids": sorted(published_ids),
+                "canonical_operational_routes_unchanged": True,
+                "consumed_by_canonical_workflow": False,
+                "drives_canonical_coverage": False,
+            },
+            source_algorithm={
+                "algorithm_type": "route_planner_v3",
+                "algorithm_id": self.algorithm_id,
+                "algorithm_version": self.algorithm_version,
+                "class": type(self).__name__,
+            },
+            note=(
+                "V3-D 归档/研究结果：V3-C 验证航路已不再是 canonical 运行航路来源，"
+                "只保留为可回放的兼容记录，不发布、不驱动 canonical 下游。"
+            ),
+        )
         return applied
 
     def _adoption_record(self, entry, projection, evidence_source, *, previous_route,
@@ -904,20 +976,28 @@ class V3OperationalAdoptionService:
     def _revoke_in_working_copy(self, target):
         state = self.session.state
         route_id = str(target.get("route_id"))
-        route = next(
-            (item for item in state.get("operational_routes") or []
-             if str(item.get("route_id")) == route_id), None,
-        )
         removed_route = False
-        if route is not None and self._route_is_owned_by(route, target):
-            state["operational_routes"] = [
-                item for item in state.get("operational_routes") or []
-                if str(item.get("route_id")) != route_id
+        removed_profile = False
+        archived_removed_profile = False
+        # Phase4-B2B-1：canonical ``operational_routes`` 不在 V3-D 的写权范围内。撤销只解除
+        # V3 adoption 记录与它在 runtime-only compatibility cache 中的条目；旧项目里已存在的 canonical
+        # 运行航路保持可读、可显示、可导出。V3 自己派生的锁定高度剖面仍按 ownership 回收。
+        archive = runtime_compatibility_result(self.session, COMPATIBILITY_V3_ROUTES)
+        archived_items = runtime_compatibility_items(self.session, COMPATIBILITY_V3_ROUTES)
+        archived_profiles = deepcopy(archive.get("profiles") or {})
+        if archived_items:
+            retained_archive = [
+                item for item in archived_items if str(item.get("route_id")) != route_id
             ]
-            removed_route = True
+            removed_route = len(retained_archive) != len(archived_items)
+            archive["items"] = retained_archive
+            archive["count"] = len(retained_archive)
+        if route_id in archived_profiles:
+            archived_profiles.pop(route_id, None)
+            archive["profiles"] = archived_profiles
+            archived_removed_profile = True
         profiles = (state.get("spatial_3d") or {}).get("route_altitude_profiles") or {}
         profile = profiles.get(route_id)
-        removed_profile = False
         if profile is not None and self._profile_is_owned_by(profile, target):
             state["spatial_3d"]["route_altitude_profiles"].pop(route_id, None)
             removed_profile = True
@@ -934,8 +1014,9 @@ class V3OperationalAdoptionService:
             revoked["provenance"] = {
                 **(revoked.get("provenance") or {}),
                 "revoked_at": utc_now(),
-                "revoke_removed_route": removed_route,
-                "revoke_removed_profile": removed_profile,
+                "revoke_removed_archive_entry": removed_route,
+                "revoke_removed_archive_profile": archived_removed_profile,
+                "canonical_operational_routes_unchanged": True,
                 "foreign_routes_preserved": True,
             }
             retained.append(revoked)
@@ -949,15 +1030,18 @@ class V3OperationalAdoptionService:
         ]
         bundles["count"] = len(bundles["items"])
         state["v3_cns_assessment_bundle"] = bundles
-        self._propagate_publish({route_id} if removed_route else set())
         return {
             "status": "passed",
+            "authoritative": False,
+            "compatibility": True,
+            "deprecated": True,
+            "published_to_operational_routes": False,
+            "canonical_operational_routes_unchanged": True,
             "adoption_id": target.get("adoption_id"),
             "route_id": route_id,
             "removed_route": removed_route,
             "removed_profile": removed_profile,
             "preserved_foreign_routes": True,
-            "downstream_invalidation": list(V3_DOWNSTREAM_RESULTS),
             "v3c_validation_history_unchanged": True,
         }
 

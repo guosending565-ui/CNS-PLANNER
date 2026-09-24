@@ -305,6 +305,13 @@ def test_airspace_policy_readiness_counts_only_explicit_values(tmp_path):
 def test_policy_change_does_not_stale_route_outputs(tmp_path):
     workflow = project_workflow(tmp_path)
     workflow.generate_operational([])
+    # B2B-1：旧版 planner 只产生 compatibility 试算；这里显式安装一条正式运行航路，
+    # 使本测试继续验证"airspace policy 变化不 stale 正式 route 输出"这一语义。
+    workflow.state["operational_routes"] = [
+        {"route_id": workflow.state["scenario_routes"][0]["route_id"], "status": "passed", "path": []}
+    ]
+    workflow.state["result_statuses"]["routes"] = "passed"
+    workflow.save()
     assert workflow.state["result_statuses"]["routes"] == "passed"
     workflow.set_airspace_policies({"items": [
         {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},

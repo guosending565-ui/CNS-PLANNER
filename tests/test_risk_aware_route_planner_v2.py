@@ -8,6 +8,7 @@ from cns_planner.algorithms.coverage.v1 import distance_m
 from cns_planner.algorithms.grid.service import WorkspaceGridService
 from cns_planner.algorithms.registry import build_default_algorithm_registry, default_algorithm_selection
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.application.production_write_authority import runtime_compatibility_result
 from cns_planner.route_planner.risk_aware_v2 import GridGraph, RiskAwareRoutePlannerV2
 
 
@@ -313,7 +314,10 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
         "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
         "version": "2.0", "parameters": {"risk_weight_lambda": 0},
     })
-    result = workflow.generate_operational([])["operational_routes"][0]
+    # B2B-1：V2 结果同样只进 compatibility namespace，不再是 canonical 运行航路。
+    response = workflow.generate_operational([])
+    assert workflow.state["operational_routes"] == []
+    result = response["compatibility_operational_routes"]["items"][0]
     assert result["status"] == "passed"
     assert result["grid_path"] == ["G-0-0", "G-0-1", "G-0-2"]
 
@@ -321,7 +325,11 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
         "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
         "version": "2.0", "parameters": {"risk_weight_lambda": 2},
     })
-    assert workflow.state["result_statuses"]["routes"] == "stale"
+    # B2B-1：canonical result_statuses["routes"] 不再由旧 planner 写成 passed；
+    # 算法参数变化使兼容试算失效。
+    assert runtime_compatibility_result(
+        workflow.session, "operational_routes"
+    )["status"] == "stale"
 
 
 def test_airspace_policy_change_does_not_stale_planning_or_dependents(tmp_path):

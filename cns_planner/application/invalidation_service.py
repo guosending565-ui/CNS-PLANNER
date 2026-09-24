@@ -5,6 +5,7 @@ from ..domain.layered_operational_adoption import SOURCE_TYPE as LAYERED_ADOPTIO
 from ..risk.v1 import RiskModelV1
 from ..domain.risk_v2 import empty_grid_risk_v2
 from ..services.invalidation import ResultLedger
+from .production_write_authority import mark_runtime_compatibility_stale
 from .project_state import assessment, empty_grid_attributes
 from ..domain.reporting import mark_active_report_stale
 
@@ -84,6 +85,11 @@ class InvalidationService:
                 ):
                     route["status"] = "stale"
                     route["stale_reason"] = f"{changed}_changed"
+            # 旧算法兼容试算同样随 route 语义失效；它只在 runtime-only cache 内
+            # 被标 stale，绝不触碰 canonical ``operational_routes`` 或 ProjectState。
+            mark_runtime_compatibility_stale(
+                self.session, "operational_routes", f"{changed}_changed"
+            )
         if "cns_gap" in affected and state.get("cns_gap_analysis", {}).get("status") != "not_calculated":
             state["cns_gap_analysis"]["status"] = "stale"
             state["result_statuses"]["cns_gap"] = "stale"
@@ -459,6 +465,11 @@ class InvalidationService:
         self.cns_corridor()
         mark_active_report_stale(state, str(reason))
         self.route_safety_evidence(str(reason))
+        # B2B-1 补漏：正式运行航路发布/撤销后，P17 recommendation 与雷达初步划设同样
+        # 消费该航路，必须一并失效。旧 Version V3-D 的 `_propagate_publish` 完全绕过
+        # 本方法，因此这两条边只能在唯一发布路径上补齐。
+        self.requirement_recommendation(str(reason))
+        self.radar_surveillance_layout(str(reason))
         if preserve_published_routes:
             for route in state.get("operational_routes") or []:
                 if str(route.get("route_id")) in route_ids:
@@ -467,6 +478,11 @@ class InvalidationService:
         return {
             "reason": str(reason), "route_ids": sorted(route_ids),
             "candidate_and_v3_untouched": True,
+            "downstream": [
+                "coverage_3d", "building_clearance", "cns_site_plan",
+                "cns_corridor_assessment", "route_safety_evidence_v2",
+                "required_cns_recommendation", "radar_surveillance_layout", "report",
+            ],
         }
 
     def grid_risk_routes(self):

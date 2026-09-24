@@ -10,6 +10,7 @@ from ..domain.layered_operational_adoption import (
 )
 from ..domain.layered_route_validation import stable_fingerprint, utc_now
 from ..domain.spatial_3d import normalize_route_operating_layer
+from .production_write_authority import assert_write_authority
 
 
 class LayeredOperationalAdoptionService:
@@ -244,6 +245,9 @@ class LayeredOperationalAdoptionService:
         assignment.setdefault("evidence", {}).update({
             "adoption_id": adoption_id, "adoption_fingerprint": identity,
         })
+        # Phase4-B2B-1：本服务是 canonical ``operational_routes`` 的唯一 production
+        # content owner；写入前必须通过 authority guard。
+        assert_write_authority(self, "operational_routes")
         state["operational_routes"] = [
             item for item in routes if str(item.get("route_id")) != route_id
         ] + [route]
@@ -338,6 +342,8 @@ class LayeredOperationalAdoptionService:
             if previous is not None:
                 routes.append(previous)
                 restored_route = True
+            # 撤销/恢复派生运行航路同样在 canonical 写点上受 guard 约束（revoke 白名单）。
+            assert_write_authority(self, "operational_routes", operation="revoke")
             state["operational_routes"] = routes
         if ownership["route_operating_layer_owned"]:
             assignments = [

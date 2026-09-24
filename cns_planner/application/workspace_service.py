@@ -10,6 +10,7 @@ from ..domain.layered_route import default_layered_route_request
 from ..domain.population_nodata import (
     POLICY_KEY, default_population_nodata_policy, normalize_population_nodata_policy,
 )
+from .production_write_authority import drop_runtime_compatibility_result
 from .project_state import assessment, empty_grid_attributes
 from .route_operating_layer_service import refresh_spatial_status
 
@@ -155,6 +156,9 @@ class WorkspaceService:
         state["risks"]["environment"] = assessment(
             "not_calculated", "GRC 环境/航路规划风险接口"
         )
+        # 旧算法兼容试算也属于被清除的派生航路：清工作区时一并回收，避免兼容副本
+        # 残留成"仍然存在的航路"。canonical ``operational_routes`` 的语义不变。
+        drop_runtime_compatibility_result(self.session, "operational_routes")
         state["result_statuses"].update({
             "workspace": "not_calculated", "grid": "not_calculated",
             "environment_risk": "not_calculated",

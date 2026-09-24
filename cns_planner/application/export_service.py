@@ -5,6 +5,9 @@ from hashlib import sha256
 import json
 
 from ..domain.reporting import sanitize_report_value
+from .production_write_authority import (
+    canonical_operational_routes, runtime_compatibility_operational_routes,
+)
 
 
 class ExportService:
@@ -15,11 +18,32 @@ class ExportService:
         return json.dumps(self.snapshot(), ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
 
     def routes(self):
-        features = [{
-            "type": "Feature",
-            "properties": {key: route.get(key) for key in ("route_id", "status", "reason", "algorithm_id", "algorithm_version")},
-            "geometry": {"type": "LineString", "coordinates": route.get("path", [])},
-        } for route in self.session.state["operational_routes"]]
+        """兼容导出：canonical 正式航路优先；没有正式航路时才导出旧算法兼容试算。
+
+        兼容试算的 feature 显式标注 ``authoritative=false / compatibility=true /
+        deprecated=true``，避免被下游当成正式运行航路。
+        """
+
+        state = self.session.state
+        canonical = canonical_operational_routes(state)
+        compatibility = not canonical
+        routes = canonical if canonical else runtime_compatibility_operational_routes(self.session)
+        features = []
+        for route in routes:
+            properties = {
+                key: route.get(key)
+                for key in ("route_id", "status", "reason", "algorithm_id", "algorithm_version")
+            }
+            if compatibility:
+                properties.update({
+                    "authoritative": False, "compatibility": True, "deprecated": True,
+                    "warning": "旧版兼容试算航路，不是正式运行航路",
+                })
+            features.append({
+                "type": "Feature",
+                "properties": properties,
+                "geometry": {"type": "LineString", "coordinates": route.get("path", [])},
+            })
         return self._collection(features)
 
     def sites(self):

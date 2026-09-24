@@ -1,7 +1,31 @@
-"""Route-node, scenario and operational-route use cases."""
+"""Route-node, scenario and operational-route use cases.
+
+Phase4-B2B-1 Production Write Authority（受限软隔离）：
+
+* ``operational_routes`` 的 canonical production content owner 是
+  ``LayeredOperationalAdoptionService``。本服务**不再**写 canonical ``operational_routes``。
+* ``generate_operational`` 仍可运行 ``RoutePlannerV1`` / ``RiskAwareRoutePlannerV2``，但结果只进入
+  当前 ``WorkflowSession`` 的 runtime-only cache，并显式携带
+  ``authoritative=false / compatibility=true / deprecated=true / source_algorithm``。
+  兼容试算不是正式运行航路，不驱动 canonical coverage / required_cns / facility plan /
+  confirmed plan / 正式报告，也**不会**把 ``result_statuses["routes"]`` 改成 passed。
+* ``generate_scenario`` / ``generate_scenario_od`` / ``delete_route`` / ``delete_node`` 仍然清空或
+  回收派生运行航路（删除派生结果，不是产生权威结果），这些写点经
+  :data:`DERIVED_REVOKE_ALLOWLIST` 显式白名单登记，语义保持不变。
+"""
+
+from copy import deepcopy
 
 from .constraint_validation import validate_hard_constraints
+from .production_write_authority import (
+    assert_write_authority, drop_runtime_compatibility_result,
+    runtime_compatibility_items, runtime_compatibility_result,
+    write_runtime_compatibility_result,
+)
 from .project_state import assessment
+
+#: 旧算法兼容试算结果在 runtime-only cache 下的名字。
+COMPATIBILITY_OPERATIONAL_ROUTES = "operational_routes"
 
 
 class RouteService:
@@ -79,11 +103,37 @@ class RouteService:
         state["scenario_routes"] = [
             item for item in state["scenario_routes"] if item["route_id"] not in retired
         ]
-        state["operational_routes"] = [
-            item for item in state["operational_routes"] if item["route_id"] not in retired
-        ]
+        self._revoke_derived_operational_routes(state, retired)
         self.invalidation.workflow("route")
         return self._save()
+
+    def _revoke_derived_operational_routes(self, state, retired_ids=()):
+        """派生回收：删除自己场景派生的运行航路及其兼容试算副本。
+
+        这不是产生权威结果，只是删除失效派生结果，因此经
+        ``DERIVED_REVOKE_ALLOWLIST`` 显式登记；canonical 与 compatibility 两侧必须
+        同步回收，避免兼容试算副本残留成"看起来还存在的航路"。
+        """
+
+        assert_write_authority(RouteService, "operational_routes", operation="revoke")
+        retired = {str(item) for item in retired_ids}
+        if not retired:
+            state["operational_routes"] = []
+            drop_runtime_compatibility_result(self.session, COMPATIBILITY_OPERATIONAL_ROUTES)
+            return
+        state["operational_routes"] = [
+            item for item in state.get("operational_routes") or []
+            if str(item.get("route_id")) not in retired
+        ]
+        record = runtime_compatibility_result(self.session, COMPATIBILITY_OPERATIONAL_ROUTES)
+        if record:
+            record["items"] = [
+                item for item in runtime_compatibility_items(
+                    self.session, COMPATIBILITY_OPERATIONAL_ROUTES
+                )
+                if str(item.get("route_id")) not in retired
+            ]
+            record["count"] = len(record["items"])
 
     def generate_scenario(self, direction):
         state = self.session.state
@@ -119,7 +169,8 @@ class RouteService:
         state["retired_route_ids"].extend(
             item for item in removed if item not in state["retired_route_ids"]
         )
-        state["scenario_routes"], state["operational_routes"] = created, []
+        state["scenario_routes"] = created
+        self._revoke_derived_operational_routes(state)
         state["result_statuses"]["routes"] = "not_calculated"
         self.invalidation.workflow("route")
         return self._save()
@@ -175,7 +226,8 @@ class RouteService:
         state["retired_route_ids"].extend(
             item for item in removed if item not in state["retired_route_ids"]
         )
-        state["scenario_routes"], state["operational_routes"] = created, []
+        state["scenario_routes"] = created
+        self._revoke_derived_operational_routes(state)
         state["result_statuses"]["routes"] = "not_calculated"
         self.invalidation.workflow("route")
         return self._save()
@@ -185,7 +237,7 @@ class RouteService:
         if route_id not in {item["route_id"] for item in state["scenario_routes"]}:
             raise ValueError("航路不存在")
         state["scenario_routes"] = [item for item in state["scenario_routes"] if item["route_id"] != route_id]
-        state["operational_routes"] = [item for item in state["operational_routes"] if item["route_id"] != route_id]
+        self._revoke_derived_operational_routes(state, [route_id])
         if route_id not in state["retired_route_ids"]:
             state["retired_route_ids"].append(route_id)
         self.invalidation.workflow("route")
@@ -232,6 +284,14 @@ class RouteService:
         ]
 
     def generate_operational(self, hard_constraints):
+        """旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 兼容试算（受限软隔离）。
+
+        仍可运行旧算法以兼容旧项目、测试与对照，但结果**只**写入
+        当前会话的 runtime-only compatibility cache：
+        canonical ``operational_routes`` 完全不变，``result_statuses["routes"]`` 也不改
+        （否则 canonical workflow readiness 会把兼容试算误认为正式运行航路已完成）。
+        """
+
         state, workspace = self.session.state, self.session.state.get("workspace")
         if not workspace or not state["scenario_routes"]:
             raise ValueError("请先保存工作区并生成场景航路")
@@ -240,20 +300,54 @@ class RouteService:
         constraints = validate_hard_constraints(hard_constraints)
         context = self.planner_context(constraints)
         results = self.plan_routes(self.planner, state["scenario_routes"], context, constraints)
-        state["operational_routes"] = results
         statuses = {item.get("status") for item in results}
-        state["result_statuses"]["routes"] = (
+        status = (
             "passed" if statuses == {"passed"}
             else "failed" if "failed" in statuses
             else "missing_data" if "missing_data" in statuses
             else "failed"
         )
+        record = write_runtime_compatibility_result(
+            self.session, COMPATIBILITY_OPERATIONAL_ROUTES,
+            {
+                "status": status,
+                "stale_reason": None,
+                "count": len(results),
+                "items": deepcopy(results),
+                "canonical_operational_routes_unchanged": True,
+                "consumed_by_canonical_workflow": False,
+                "drives_canonical_coverage": False,
+                "drives_required_cns": False,
+                "drives_facility_plan": False,
+                "drives_confirmed_plan": False,
+            },
+            source_algorithm=self._planner_identity(),
+            note=(
+                "旧版兼容试算（旧 RoutePlannerV1 / RiskAwareRoutePlannerV2）："
+                "不是正式运行航路，不发布、不驱动 canonical 下游、不进入正式报告。"
+            ),
+        )
         if not getattr(self.planner, "uses_canonical_grid_risk", False):
             state["risks"]["environment"] = assessment(
                 "pending_confirmation", "GRC 环境风险接口已接入，正式模型待确认"
             )
-        self.invalidation.workflow("route")
-        return self._save()
+        self.session.save()
+        response = self.snapshot()
+        response["compatibility_operational_routes"] = deepcopy(record)
+        response["compatibility_write"] = True
+        response["authoritative_operational_routes_unchanged"] = True
+        return response
+
+    def _planner_identity(self):
+        return {
+            "algorithm_type": "route_planner",
+            "algorithm_id": getattr(self.planner, "algorithm_id", None),
+            "algorithm_version": getattr(self.planner, "algorithm_version", None),
+            "class": type(self.planner).__name__,
+            "uses_canonical_grid_risk": bool(
+                getattr(self.planner, "uses_canonical_grid_risk", False)
+            ),
+        }
 
     def _save(self):
         self.session.save()

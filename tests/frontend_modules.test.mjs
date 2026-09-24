@@ -10,7 +10,7 @@ import {referenceLayerDiagnostics} from '../cns_planner/web/js/map/reference_ove
 import {algorithmManifestDetails,algorithmSelectionKey} from '../cns_planner/web/js/workflow/step01_project.js';
 import {render as renderStep4,withLegacyRequiredAliases,requirementRecommendationSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {render as renderStep2} from '../cns_planner/web/js/workflow/step02_workspace.js';
-import {bindLayeredCandidatePanel,filterReferenceSites,layeredCandidatePanel,referenceOverlayModel,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
+import {bindLayeredCandidatePanel,filterReferenceSites,layeredCandidatePanel,referenceOverlayModel,canonicalOperationalRoutes,compatibilityOperationalRoutes,comparisonRoutes,render as renderStep3,riskAwareRoutePanel,plannerCardModel,routePlannerComparisonModel,effectiveParameters,findAlgorithmManifest,routeExperimentModel,routePlanningDiagnosticsModel,referenceLinkModel,routePlannerV3Model,routePlannerV3ReadinessModel,routePlannerV3Panel,routePlannerV3ValidationPanel,routePlannerV3ContinuousModel,routePlannerV3ValidationModel,routePlannerV3AdoptionPanel,routePlannerV3AdoptionModel,v3dExpectedFingerprint,V3_RESULT_STATUSES,V3B_RESULT_STATUSES,V3B_REFINED_LABEL,V3C_RESULT_STATUSES,V3C_DOMAINS,V3C_EVIDENCE_SOURCES,V3C_OPERATIONAL_LABEL,V3D_ADOPTION_STATUSES,V3D_ASSESSMENT_STATUSES,V3D_REQUIREMENT_VERDICTS,V3D_STAGES,V3D_DOWNSTREAM_RESULTS,V3D_PUBLISH_LABEL,V3D_SYNTHETIC_LABEL,V3D_CNS_SEPARATION_LABEL} from '../cns_planner/web/js/workflow/step03_routes.js';
 import {routePlannerV3CnsSummary} from '../cns_planner/web/js/workflow/step04_operation.js';
 import {v3OverlayModel} from '../cns_planner/web/js/map/route_planner_v3_overlay.js';
 import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
@@ -158,6 +158,25 @@ test('step 3 overlay keeps reference route points scenario and operational route
   assert.equal(hidden.referenceLandingSites.length,0);
   assert.equal(hidden.scenarioRoutes.length,1);
   assert.equal(hidden.operationalRoutes.length,1);
+});
+
+test('formal route getters and map never fall back to compatibility results',()=>{
+  const compatibility={status:'passed',authoritative:false,compatibility:true,deprecated:true,
+    items:[{route_id:'LEGACY-TRY',status:'passed',path:[[122,30],[122.1,30.1]]}]};
+  const flow={workspace:{bbox:[122,29.9,122.2,30.2]},reference_routes:{items:[],points:[]},
+    reference_landing_sites:{items:[]},scenario_routes:[{route_id:'S1'}],operational_routes:[],
+    compatibility_operational_routes:compatibility,nodes:[],algorithm_selection:{route_planner:{}},
+    algorithm_catalog:[],retired_route_ids:[],risks:{environment:{status:'not_calculated'}},steps:{'3':false},
+    spatial_3d:{route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{}},
+    route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{}};
+  assert.deepEqual(canonicalOperationalRoutes(flow),[]);
+  assert.equal(compatibilityOperationalRoutes(flow).items[0].route_id,'LEGACY-TRY');
+  assert.equal(comparisonRoutes(flow).source,'runtime_compatibility');
+  assert.deepEqual(referenceOverlayModel(flow).operationalRoutes,[]);
+  const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
+  assert.match(html,/尚未发布正式运行航路/);
+  assert.match(html,/旧版试算航路（不发布 \/ 非正式）/);
+  assert.doesNotMatch(readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8'),/canonical\s*\|\|\s*compatibility/);
 });
 
 test('reference layer diagnostics expose counts and ET conversion reason',()=>{
@@ -1383,7 +1402,7 @@ test('V3-D adoption model surfaces the gate, projection and adoption state',()=>
   assert.equal(model.adoptions[0].ownership.route_owned,true);
   assert.equal(model.stageOrder.join(','),'P7,P8,P9,P10');
   assert.match(model.separationLabel,/route safety validation 与 CNS 结果严格分离/);
-  assert.match(model.publishLabel,/发布为运行分析航路/);
+  assert.match(model.publishLabel,/归档为兼容记录（不发布）/);
   assert.match(model.syntheticLabel,/不可正式发布/);
   assert.equal(model.neverFinalValidated,true);
 });
@@ -1398,7 +1417,7 @@ test('V3-D preview block shows route/profile/provenance and the downstream inval
     downstreamInvalidation:V3D_DOWNSTREAM_RESULTS,
     operationalRoutesUntouched:true,spatial3dUntouched:true,cnsNotRun:true};
   const html=routePlannerV3AdoptionPanel(flow,preview);
-  assert.match(html,/V3-D 发布为运行分析航路/);
+  assert.match(html,/V3-D 归档为兼容记录（不发布，运行采纳归档）/);
   assert.match(html,/状态链（V3-A → V3-B → V3-C → V3-D）/);
   assert.match(html,/V3-D Preview/);
   assert.match(html,/不可正式发布到 operational_routes/);
@@ -1434,7 +1453,7 @@ test('V3-D statuses and vocabulary are closed and never merge safety with compli
   assert.deepEqual(V3D_ASSESSMENT_STATUSES,['not_started','incomplete','complete','stale']);
   assert.deepEqual(V3D_REQUIREMENT_VERDICTS,['meets','does_not_meet','unknown']);
   assert.deepEqual(V3D_STAGES,['P7','P8','P9','P10']);
-  assert.equal(V3D_PUBLISH_LABEL,'发布为运行分析航路：只把 current V3-C validated route 投影进既有 operational_routes，不改变 V3 验证结论');
+  assert.equal(V3D_PUBLISH_LABEL,'归档为兼容记录（不发布）：只把当前 V3-C 已验证航路投影进会话级兼容缓存，不写入正式运行航路，也不改变 V3 验证结论');
   assert.equal(V3D_SYNTHETIC_LABEL,'canonical synthetic 证据仅用于测试，不可正式发布到 operational_routes');
   for(const wrong of ['operational_route','safe','cns_compliant']){
     assert.ok(!V3D_ASSESSMENT_STATUSES.includes(wrong));

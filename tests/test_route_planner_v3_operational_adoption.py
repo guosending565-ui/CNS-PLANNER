@@ -283,8 +283,37 @@ def preview_then_apply(service, adoption, *, relax=False, confirmed=True):
     })
 
 
+def install_v3_archive_as_canonical(service, projection):
+    """B2B-1：把 V3-D 的归档投影**显式**安装成 canonical 运行航路。
+
+    Phase4-B2B-1 之后 ``V3OperationalAdoptionService`` 不再拥有 ``operational_routes``
+    的 production 发布权：Apply 只返回/runtime-cache 兼容航路 + adoption 记录。
+    本文件的桥链 / stale 链测试需要有"旧项目里已存在的正式运行航路"这一前提，因此在
+    测试里显式安装一次，并明确标注它**不是** V3-D 的 production 行为。
+    """
+
+    state = service.state
+    route = deepcopy(projection["route"])
+    routes = [
+        item for item in state.get("operational_routes") or []
+        if str(item.get("route_id")) != str(route.get("route_id"))
+    ]
+    routes.append(route)
+    routes.sort(key=lambda item: str(item.get("route_id")))
+    state["operational_routes"] = routes
+    profiles = state.setdefault("spatial_3d", {}).setdefault("route_altitude_profiles", {})
+    profiles[route["route_id"]] = deepcopy(projection["profile"])
+    state.setdefault("result_statuses", {})["routes"] = "passed"
+    service.save()
+    return route
+
+
 def publish(service, **kwargs):
-    """Preview + Apply a synthetic validation (harness-only production relaxation)."""
+    """Preview + Apply a synthetic validation (harness-only production relaxation).
+
+    B2B-1 语义：Apply 只产生 V3 归档 + adoption 记录；随后由测试显式把归档投影安装为
+    canonical 运行航路（``install_v3_archive_as_canonical``），供下游桥链与 stale 链使用。
+    """
 
     adoption = adoption_service(service, relax_production=True)
     preview = service.preview_v3_operational_adoption({"evidence_source": REAL})
@@ -293,6 +322,7 @@ def publish(service, **kwargs):
         "confirmed": True, "evidence_source": REAL,
         "validation_ids": [preview["projections"][0]["validation_id"]],
     })
+    install_v3_archive_as_canonical(service, preview["projections"][0])
     return adoption, preview["projections"][0]
 
 
@@ -792,13 +822,18 @@ def test_revoke_removes_only_the_adoption_owned_route_and_profile(tmp_path):
     build_validated(service)
     projection = publish(service)[1]
     adoption = service.v3_operational_adoptions_snapshot()["items"][0]
+    before_routes = deepcopy(service.state["operational_routes"])
     outcome = service.revoke_v3_operational_adoption({
         "confirmed": True, "adoption_id": adoption["adoption_id"],
     })
+    # B2B-1：``removed_route`` 现在指 V3 自己的 compatibility 归档条目；canonical
+    # ``operational_routes`` 不再被 V3-D 撤销改写。
     assert outcome["removed_route"] is True
     assert outcome["removed_profile"] is True
+    assert outcome["canonical_operational_routes_unchanged"] is True
+    assert outcome["authoritative"] is False
     assert outcome["preserved_foreign_routes"] is True
-    assert service.state["operational_routes"] == []
+    assert service.state["operational_routes"] == before_routes
     assert projection["route_id"] not in service.state["spatial_3d"]["route_altitude_profiles"]
     statuses = {item["status"] for item in service.v3_operational_adoptions_snapshot()["items"]}
     assert statuses == {"revoked"}
@@ -821,7 +856,8 @@ def test_revoke_never_deletes_a_route_another_planner_regenerated(tmp_path):
     outcome = service.revoke_v3_operational_adoption({
         "confirmed": True, "adoption_id": adoption["adoption_id"],
     })
-    assert outcome["removed_route"] is False
+    # 任何情况下 V3-D 都不得删除 canonical 运行航路。
+    assert outcome["canonical_operational_routes_unchanged"] is True
     remaining = service.state["operational_routes"]
     assert len(remaining) == 1
     assert remaining[0]["algorithm_id"] == "route_planner_v1"
@@ -896,17 +932,34 @@ def test_publish_reports_the_downstream_invalidation_set(tmp_path):
 
     service = workflow(tmp_path)
     build_validated(service)
-    preview = None
     adoption = adoption_service(service, relax_production=True)
     preview = service.preview_v3_operational_adoption({"evidence_source": REAL})
+    # Preview 的候选下游集合保持不变（研究/诊断信息）。
     assert preview["downstream_invalidation"] == list(V3_DOWNSTREAM_RESULTS)
+    before_routes = deepcopy(service.state["operational_routes"])
     outcome = service.apply_v3_operational_adoption({
         "confirmed": True, "evidence_source": REAL,
         "validation_ids": [preview["projections"][0]["validation_id"]],
     })
-    assert outcome["downstream_invalidation"] == list(V3_DOWNSTREAM_RESULTS)
-    # coverage_3d and every later CNS stage must not silently stay "passed".
-    assert service.state["result_statuses"].get("coverage_3d") != "passed"
+    # B2B-1R：Apply 只产生 response/runtime-only compatibility 结果，不再发布 canonical 运行航路，
+    # 也不再因此 stale canonical 下游。
+    assert outcome["authoritative"] is False
+    assert outcome["compatibility"] is True
+    assert outcome["deprecated"] is True
+    assert outcome["published_to_operational_routes"] is False
+    assert outcome["canonical_operational_routes_unchanged"] is True
+    assert outcome["compatibility_storage"] == "runtime_only"
+    assert outcome["compatibility_v3_operational_routes"]["items"]
+    assert "downstream_invalidation" not in outcome
+    assert service.state["operational_routes"] == before_routes
+    assert "results" not in (service.state.get("compatibility") or {})
+    assert "compatibility_v3_operational_routes" not in service.snapshot()
+    service.save()
+    stored = json.loads((tmp_path / "project.json").read_text(encoding="utf-8"))
+    assert "results" not in (stored.get("compatibility") or {})
+    reloaded = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    assert "results" not in (reloaded.state.get("compatibility") or {})
+    assert service.state["result_statuses"].get("coverage_3d") != "stale"
 
 
 def test_a_source_change_stales_only_v3_adoptees(tmp_path):

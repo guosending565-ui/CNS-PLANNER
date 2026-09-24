@@ -326,6 +326,7 @@ class WorkflowService:
         self.cns_input_service.ensure_catalogs()
         self.requirement_recommendation_service = RequirementRecommendationService(
             self.session, self.requirement_model, self.invalidation_service, snapshot,
+            self.cns_input_service,
         )
         self.gap_analysis_service = GapAnalysisService(self.session, self.gap_analyzer, snapshot)
         self.gap_analysis_v2_service = GapAnalysisV2Service(
@@ -445,6 +446,7 @@ class WorkflowService:
         self.closed_loop_service = ClosedLoopService(
             self.session, self.coverage_model_3d, self.cns_service_model,
             self.timeline_model, self.gap_analyzer_v2, snapshot,
+            self.invalidation_service,
         )
         self.corridor_service = CNSCorridorService(
             self.session, self.corridor_model, self.invalidation_service, snapshot,

@@ -1,12 +1,25 @@
-"""CNS catalog, requirement, existing-facility and candidate-site use cases."""
+"""CNS catalog, requirement, existing-facility and candidate-site use cases.
+
+Phase4-B2B-1：``CNSInputService`` 是 canonical ``required_cns`` 的**唯一 production
+content owner**（迁移期的 RequiredCNS command facade）。两种命令都经过这里：
+``set_required_cns``（用户手工 direct confirm）与 ``adopt_required_cns``
+（recommendation 显式 Adopt）。``RequirementRecommendationService.adopt`` 只能委托本
+服务，自己不再持有 canonical 赋值语句。
+"""
 
 from copy import deepcopy
+from datetime import datetime, timezone
 
 from ..catalogs import AircraftCNSProfileCatalog, DeviceCatalog
 from ..domain.cns_inputs import (
     backfill_device_contract, normalize_aircraft_profile, normalize_candidate_site,
     normalize_existing_facility, normalize_required_cns,
 )
+from .production_write_authority import assert_write_authority
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def empty_collection(collection_id):
@@ -88,6 +101,7 @@ class CNSInputService:
     def set_required_cns(self, payload):
         if not isinstance(payload, dict):
             raise ValueError("RequiredCNS 请求必须是对象")
+        assert_write_authority(self, "required_cns")
         state = self.session.state
         current = deepcopy(state.get("required_cns"))
         scope, requirements = payload.get("scope", "project"), payload.get("requirements")
@@ -104,8 +118,45 @@ class CNSInputService:
             raise ValueError("RequiredCNS scope 必须是 project 或 route")
         current["source"] = str(payload.get("source") or "用户配置")
         state["required_cns"] = normalize_required_cns(current)
+        # manual direct confirm 覆盖了此前的 recommendation adoption：旧 adoption 记录
+        # 不得继续伪装成"当前有效依据"。
+        self._supersede_adoption_for_manual_set()
         self.invalidation.workflow("required_cns")
         return self._save()
+
+    def adopt_required_cns(self, required_cns, adoption, *, reason="required_cns_adopted"):
+        """唯一 canonical ``required_cns`` 写入命令（recommendation 显式 Adopt）。
+
+        ``required_cns`` / ``adoption`` 的业务内容与 fingerprint 由调用方
+        （``RequirementRecommendationService``）构造，本命令不改写其中任何字段，
+        只负责赋值、失效传播与保存。
+        """
+
+        assert_write_authority(self, "required_cns")
+        state = self.session.state
+        state["required_cns"] = normalize_required_cns(deepcopy(required_cns))
+        state["required_cns_adoption"] = deepcopy(adoption)
+        self.invalidation.workflow("required_cns")
+        return self._save()
+
+    def _supersede_adoption_for_manual_set(self):
+        """手工 direct confirm 后把此前 status=adopted 的采纳记录标为 superseded。
+
+        复用既有 ``required_cns_adoption.status`` 枚举，不引入第四套状态词；历史字段
+        一律保留，只追加 ``superseded_by`` / ``superseded_at`` / ``previous_status``。
+        """
+
+        state = self.session.state
+        adoption = state.get("required_cns_adoption")
+        if not isinstance(adoption, dict) or adoption.get("status") != "adopted":
+            return {}
+        superseded = deepcopy(adoption)
+        superseded["previous_status"] = "adopted"
+        superseded["status"] = "superseded"
+        superseded["superseded_by"] = "manual_direct_required_cns"
+        superseded["superseded_at"] = _utc_now()
+        state["required_cns_adoption"] = superseded
+        return superseded
 
     def import_existing(self, payload):
         self.session.state["existing_cns_facilities"] = self.adapter.load_existing(payload)

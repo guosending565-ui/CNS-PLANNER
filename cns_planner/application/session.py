@@ -40,8 +40,17 @@ class WorkflowSession:
         except JSONDecodeError as exc:
             raise ValueError("项目 JSON 损坏，未打开") from exc
         state = normalize_project(document, self.grid_service)
+        self._strip_persistent_compatibility_results(state)
         self._restore_altitude_layer_catalog(state)
         return state
+
+    @staticmethod
+    def _strip_persistent_compatibility_results(state):
+        """Keep compatibility metadata, but never restore result payloads as ProjectState."""
+
+        compatibility = state.get("compatibility")
+        if isinstance(compatibility, dict):
+            compatibility.pop("results", None)
 
     def _restore_altitude_layer_catalog(self, state):
         """项目恢复：旧项目没有巡航高度层目录时补建工程默认高度层。
@@ -97,6 +106,9 @@ class WorkflowSession:
             self.state["project"]["updated_at"] = now
             self.state["last_saved_at"] = now
             try:
+                # Defense in depth for callers/old branches that still inject result payloads
+                # under compatibility: metadata may persist, result bodies may not.
+                self._strip_persistent_compatibility_results(self.state)
                 document = compact_and_store(self.state, self.store_path)
                 self.repository.save(document)
             except Exception:
