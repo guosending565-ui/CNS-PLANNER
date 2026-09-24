@@ -204,14 +204,10 @@ export function radarOverlayModel(flow,candidateTowers=[]){
     if(panel.longitude==null||panel.latitude==null)continue;
     const inner=panel.horizontal_inner_radius_m,outer=panel.horizontal_outer_radius_m;
     const display=panel.display_geometry||{};
-    const displayInner=Number.isFinite(display.display_inner_radius_m)
-      ?display.display_inner_radius_m:inner;
-    const displayOuter=Number.isFinite(display.display_outer_radius_m)
-      ?display.display_outer_radius_m:outer;
-    // 只消费后端水平半径：斜距绝不进入前端几何。
+    // 地图直接消费后端固定高度平面交截半径；display_geometry 仅保留作审计。
+    // 斜距及 route-focused display 半径都绝不进入前端地图几何。
     if(panel.plane_intersection_status==='no_intersection'
-      ||!Number.isFinite(inner)||!Number.isFinite(outer)||outer<=0
-      ||!Number.isFinite(displayInner)||!Number.isFinite(displayOuter)||displayOuter<=0){
+      ||!Number.isFinite(inner)||!Number.isFinite(outer)||outer<=0){
       noIntersection+=1;
       continue;
     }
@@ -226,8 +222,8 @@ export function radarOverlayModel(flow,candidateTowers=[]){
       altitude_m:item.altitude_m,
       physicalRadiusInnerM:inner,
       physicalRadiusOuterM:outer,
-      displayRadiusInnerM:displayInner,
-      displayRadiusOuterM:displayOuter,
+      displayRadiusInnerM:inner,
+      displayRadiusOuterM:outer,
       displayGeometrySemantics:display.semantics
         ||'physical_outer_radius_no_covered_sample_detail',
       displayGeometryFallback:display.display_geometry_fallback||(
@@ -269,23 +265,19 @@ function segmentList(title,segments){
   return rows+(segments.length>20?'<div class="empty-note">另有 '+(segments.length-20)+' 段</div>':'');
 }
 
-function panelList(panels){
+function panelList(panels,altitudeLayerId='ALT-080'){
   if(!panels.length)return '<div class="empty-note">尚无选中的单面阵</div>';
   return panels.slice(0,40).map(panel=>{
     const plane=panel.altitude_plane_geometry||{};
-    const display=panel.display_geometry||{};
     const geometryLine=panel.plane_intersection_status==='no_intersection'
       ?'80 m 平面：无有效交截（'+escapeHtml(plane.plane_intersection_reason||'no_intersection')+'）'
       :'80 m 平面：dz '+num(plane.dz_m)+' m · 真实物理水平范围 '+num(panel.horizontal_inner_radius_m)
         +' – '+num(panel.horizontal_outer_radius_m)+' m（后端交截，非斜距）';
     const displayLine=panel.plane_intersection_status==='no_intersection'
       ?''
-      :'<br><small>地图航路聚焦显示范围：'
-        +num(Number.isFinite(display.display_inner_radius_m)
-          ?display.display_inner_radius_m:panel.horizontal_inner_radius_m)
-        +' – '+num(Number.isFinite(display.display_outer_radius_m)
-          ?display.display_outer_radius_m:panel.horizontal_outer_radius_m)
-        +' m（非设备最大探测边界）</small>';
+      :'<br><small>地图最大物理覆盖范围：'+num(panel.horizontal_inner_radius_m)
+        +' – '+num(panel.horizontal_outer_radius_m)+' m（'
+        +escapeHtml(altitudeLayerId)+' 平面交截）</small>';
     return '<div class="list-row"><span><b>'+(RADAR_TYPE_LABELS[panel.radar_type]||panel.radar_type)
       +'</b> · 铁塔 '+escapeHtml(panel.tower_id)
       +'<br><small>方位角 '+num(panel.azimuth_deg)+'°（±'+num(panel.panel_half_width_deg)+'°）'
@@ -407,9 +399,8 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'<span>选中铁塔 '+text(model.towerCount)+' / 候选铁塔 '+text(model.candidateTowerCount)
     +' · 候选面阵 '+text(model.candidatePanelCount)+'</span></div>';
 
-  const routeFocusedDisplayNote='<div class="parameter-note"><b>地图雷达扇区采用航路聚焦显示</b>：'
-    +'扇区外缘仅绘制至该面阵实际覆盖的最远航路点附近，用于提高方案可读性。'
-    +'设备真实探测边界及后端规划约束未被截断。</div>';
+  const physicalDisplayNote='<div class="parameter-note"><b>地图雷达扇区采用当前固定高度平面的最大物理覆盖范围</b>：'
+    +'直接绘制后端水平交截半径；设备斜距和航路聚焦审计范围都不作为地图半径。</div>';
 
   const coverageBlock=coverageLine('陆地航路',model.land,REQUIRED_SITE_COUNT_LABELS.land)
     +coverageLine('海上航路',model.sea,REQUIRED_SITE_COUNT_LABELS.sea)
@@ -447,7 +438,7 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +demoWarning+readinessBlock
     +solverBlock
     +counts
-    +routeFocusedDisplayNote
+    +physicalDisplayNote
     +policyForm
     +'<h4>两型雷达真实资料摘要</h4>'
     +'<div class="parameter-note">来源：'+escapeHtml(source.title||'—')+' · SHA-256 '+escapeHtml((source.sha256||'—').slice(0,16))
@@ -462,7 +453,9 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +((model.uncoveredSegments.length+model.underRedundantSegments.length+model.unknownSegments.length)?'':'<div class="empty-note">无连续违反段</div>')+'</div>'
     +'<h4>连续覆盖复核轮次</h4><div class="gap-results">'+refinementBlock+'</div>'
     +'<h4>选中的铁塔与单面阵</h4>'
-    +'<div class="scroll-list cns-input-list">'+panelList(model.selectedPanels)+'</div>'
+    +'<div class="scroll-list cns-input-list">'+panelList(
+      model.selectedPanels,item.altitude_layer_id||'ALT-080'
+    )+'</div>'
     +noIntersectionNote+infeasibleBlock+unknownBlock;
 }
 

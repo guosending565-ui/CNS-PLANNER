@@ -298,8 +298,13 @@ test('radar overlay model uses backend 80 m plane radii and never slant range', 
   // V1.1：水平半径来自后端交截，绝不是 120 / 3000 斜距本身。
   assert.equal(panel.physicalRadiusOuterM, PANEL_PLANE.horizontal_outer_radius_m);
   assert.equal(panel.physicalRadiusInnerM, PANEL_PLANE.horizontal_inner_radius_m);
-  assert.equal(panel.displayRadiusOuterM, 1175);
+  assert.equal(panel.displayRadiusOuterM, panel.physicalRadiusOuterM);
+  assert.equal(panel.displayRadiusOuterM, PANEL_PLANE.horizontal_outer_radius_m);
   assert.equal(panel.displayRadiusInnerM, PANEL_PLANE.horizontal_inner_radius_m);
+  assert.notEqual(panel.displayRadiusOuterM, 1175,
+    'display_geometry 的航路聚焦半径只能保留作审计，不得决定地图半径');
+  assert.ok(panel.displayRadiusOuterM > 2999 && panel.displayRadiusOuterM < 3000,
+    'Radar-I 在 ALT-080 平面的物理外半径应接近但小于 3000m 斜距');
   assert.ok(panel.physicalRadiusOuterM < 3000, '外半径必须小于最大斜距');
   assert.notEqual(panel.physicalRadiusInnerM, 120);
   assert.equal(panel.dz_m, 30);
@@ -312,20 +317,22 @@ test('radar overlay model uses backend 80 m plane radii and never slant range', 
   assert.ok(model.routeCoverageColours.length >= 1);
 });
 
-test('route-focused radius remains world-space geometry through zoom and pan', () => {
+test('maximum physical radius remains world-space geometry through zoom and pan', () => {
   const latitude = 30;
   const projectedAtFiveGroundM = 5 / Math.cos(latitude * Math.PI / 180);
   const projectedAtTwoPointFiveGroundM = 2.5 / Math.cos(latitude * Math.PI / 180);
   assert.ok(Math.abs(groundMetresPerPixel(projectedAtFiveGroundM, latitude) - 5) < 1e-9);
-  const radiusAtFive = radarSectorPixelRadius(1175, {res: projectedAtFiveGroundM}, latitude);
-  const radiusAtTwoPointFive = radarSectorPixelRadius(
-    1175, {res: projectedAtTwoPointFiveGroundM}, latitude,
+  const physicalOuterRadius = PANEL_PLANE.horizontal_outer_radius_m;
+  const radiusAtFive = radarSectorPixelRadius(
+    physicalOuterRadius, {res: projectedAtFiveGroundM}, latitude,
   );
-  assert.equal(radiusAtFive, 235);
-  assert.equal(radiusAtTwoPointFive, 470);
+  const radiusAtTwoPointFive = radarSectorPixelRadius(
+    physicalOuterRadius, {res: projectedAtTwoPointFiveGroundM}, latitude,
+  );
+  assert.equal(radiusAtTwoPointFive, radiusAtFive * 2);
   assert.ok(radiusAtTwoPointFive > 420, '旧 420px cap 不得再截断世界范围');
-  assert.equal(radiusAtFive * 5, 1175);
-  assert.equal(radiusAtTwoPointFive * 2.5, 1175);
+  assert.equal(radiusAtFive * 5, physicalOuterRadius);
+  assert.equal(radiusAtTwoPointFive * 2.5, physicalOuterRadius);
 
   const model = radarOverlayModel(flow(), []);
   const before = structuredClone(model.panels[0]);
@@ -408,8 +415,10 @@ test('radar layout panel renders the required V1.1 summary fields', () => {
   assert.match(html, /海岸不确定带（按陆地处理）/);
   assert.match(html, /radarSurveillancePolicy|saveRadarSurveillancePolicy/);
   assert.match(html, /evaluateRadarSurveillanceLayout/);
-  assert.match(html, /地图雷达扇区采用航路聚焦显示/);
-  assert.match(html, /地图航路聚焦显示范围/);
+  assert.match(html, /地图雷达扇区采用当前固定高度平面的最大物理覆盖范围/);
+  assert.match(html, /地图最大物理覆盖范围/);
+  assert.match(html, /ALT-080 平面交截/);
+  assert.doesNotMatch(html, /地图航路聚焦显示范围/);
   assert.match(html, /真实物理水平范围/);
   // legacy 挂高输入框必须存在但被禁用（只读回显），不能作为必填项。
   assert.match(html, /id="radarMountHeight"[^>]*disabled/);
