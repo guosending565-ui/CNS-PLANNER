@@ -298,6 +298,88 @@ def test_legacy_backfill_is_idempotent(tmp_path):
 # --------------------------------------------------------------------------- invalidation
 
 
+def test_aircraft_profile_change_preserves_layered_adoption_owned_route(tmp_path):
+    service = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    route = {
+        "route_id": "R0003", "status": "passed",
+        "path": [[122.0, 30.0], [122.001, 30.0]],
+        "provenance": {
+            "source_type": "layered_candidate_operational_adoption_v1",
+            "adoption_id": "LRA-TEST",
+            "adoption_fingerprint": "layeredadoptionv1-test",
+        },
+    }
+    service.state["operational_routes"] = [route]
+    original_path = deepcopy(route["path"])
+    original_provenance = deepcopy(route["provenance"])
+
+    service.invalidation_service.workflow("aircraft_profile")
+
+    assert route["status"] == "passed"
+    assert route["path"] == original_path
+    assert route["provenance"] == original_provenance
+    assert "stale_reason" not in route
+
+    route["status"] = "stale"
+    route["stale_reason"] = "terrain_source_changed"
+    service.invalidation_service.workflow("aircraft_profile")
+    assert route["status"] == "stale"
+    assert route["stale_reason"] == "terrain_source_changed"
+
+
+def test_aircraft_profile_change_stales_legacy_route(tmp_path):
+    service = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    route = {
+        "route_id": "R-LEGACY", "status": "passed",
+        "path": [[122.0, 30.0], [122.001, 30.0]],
+        "provenance": {"source_type": "manual"},
+    }
+    service.state["operational_routes"] = [route]
+
+    service.invalidation_service.workflow("aircraft_profile")
+
+    assert route["status"] == "stale"
+    assert route["stale_reason"] == "aircraft_profile_changed"
+
+
+def test_aircraft_profile_change_keeps_layered_route_but_stales_downstream(tmp_path):
+    service = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    route = {
+        "route_id": "R0003", "status": "passed",
+        "path": [[122.0, 30.0], [122.001, 30.0]],
+        "provenance": {
+            "source_type": "layered_candidate_operational_adoption_v1",
+            "adoption_id": "LRA-TEST",
+            "adoption_fingerprint": "layeredadoptionv1-test",
+        },
+    }
+    service.state["operational_routes"] = [route]
+    service.state["coverage"] = {"status": "passed"}
+    service.state["cns_gap_analysis"] = {"status": "passed"}
+    service.state["cns_service_capability"] = {"status": "passed"}
+    service.state["service_timeline"] = {"status": "passed"}
+    service.state["cns_gap_analysis_v2"] = {"status": "passed"}
+    service.state["cns_site_plan"] = {"status": "passed"}
+    service.state["cns_corridor_assessment"] = {"status": "passed"}
+    service.state["result_statuses"].update({
+        "routes": "passed", "coverage": "passed", "cns_gap": "passed",
+        "cns_service_capability": "passed", "service_timeline": "passed",
+        "cns_gap_v2": "passed", "cns_site_plan": "passed",
+        "cns_corridor_assessment": "passed", "technical_risk": "passed",
+        "report": "passed",
+    })
+
+    service.invalidation_service.workflow("aircraft_profile")
+
+    assert route["status"] == "passed"
+    for name in (
+        "coverage", "cns_gap", "cns_service_capability", "service_timeline",
+        "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment",
+        "technical_risk", "report",
+    ):
+        assert service.state["result_statuses"][name] == "stale"
+
+
 def test_current_fingerprint_change_supersedes_prior_validation(tmp_path):
     """candidate fingerprint 变化后，旧 validation 必须立即变为 stale，而不是继续 current."""
 

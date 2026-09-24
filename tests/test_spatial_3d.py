@@ -179,3 +179,69 @@ def test_workflow_evaluates_saves_and_restores_coverage_3d(tmp_path):
     assert result["route_count"] == 1
     restored = WorkflowService(path, DEFAULTS).coverage_3d_snapshot()
     assert restored["input_fingerprint"] == result["input_fingerprint"]
+
+
+def test_aircraft_selection_keeps_layered_route_eligible_for_coverage_3d(tmp_path):
+    workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    route = {
+        "route_id": "R0003", "status": "passed", "path_crs": "OGC:CRS84",
+        "path": [[122.0, 30.0], [122.001, 30.0]],
+        "provenance": {
+            "source_type": "layered_candidate_operational_adoption_v1",
+            "adoption_id": "LRA-TEST",
+            "adoption_fingerprint": "layeredadoptionv1-test",
+        },
+    }
+    workflow.state["operational_routes"] = [route]
+    workflow.state["result_statuses"]["routes"] = "passed"
+    workflow.state["spatial_3d"]["altitude_layers"] = [{
+        "altitude_layer_id": "ALT-080", "name": "80m",
+        "nominal_altitude_m": 80.0, "lower_altitude_m": 70.0,
+        "upper_altitude_m": 90.0, "vertical_reference": "egm2008_orthometric",
+        "source": "engineering", "evidence": {}, "confirmed": True,
+        "status": "confirmed", "geoid_undulation_m": None,
+    }]
+    workflow.state["spatial_3d"]["route_operating_layers"] = [{
+        "route_id": "R0003", "altitude_layer_id": "ALT-080",
+        "operating_mode": "fixed_cruise_layer",
+        "vertical_reference": "egm2008_orthometric",
+        "source": "layered_candidate_operational_adoption_v1",
+        "evidence": {"adoption_id": "LRA-TEST"},
+        "confirmed": True, "status": "confirmed", "active": True,
+        "current_applicability": "current",
+    }]
+    workflow.state["grid"] = deepcopy(GRID)
+    workflow.state["grid_attributes"].update(deepcopy(TERRAIN))
+    devices = [normalize_device({
+        "device_id": f"{code}-PRIMARY-SYN", "name": f"{code} primary",
+        "subsystem": code, "role": "existing", "radius_m": 350.0, "mtbf_h": 1000,
+        "type": {"technology": "unknown"},
+        "coverage_geometry": {
+            "model": "sphere", "slant_range_m": 350.0,
+            "source": "test", "confirmed": True,
+        },
+    }) for code in ("C", "N", "S")]
+    workflow.state["device_catalog"] = {"status": "passed", "items": devices}
+    workflow.state["existing_cns_facilities"] = {
+        "status": "passed", "items": [{
+            "facility_id": "F1", "coordinate": [122.0, 30.0], "status": "active",
+            "vertical_profile": {"service_origin_egm2008_m": 50.0, "confirmed": True},
+            "devices": [{
+                "device_id": device["device_id"], "subsystem": device["subsystem"],
+                "status": "active",
+            } for device in devices],
+        }],
+    }
+
+    aircraft_id = workflow.state["aircraft_profiles"]["items"][0]["aircraft_id"]
+    workflow.select_aircraft_profile(aircraft_id)
+    result = workflow.evaluate_coverage_3d({"parameters": {"sample_spacing_m": 100}})["coverage_3d"]
+    evaluated = result["routes"][0]
+
+    assert route["status"] == "passed"
+    assert evaluated["status"] in ("passed", "failed")
+    assert evaluated["route_length_m"] > 0
+    assert evaluated["altitude_profile"]["altitude_layer_id"] == "ALT-080"
+    assert evaluated["altitude_profile"]["source_kind"] == "production_fixed_cruise_layer"
+    assert evaluated["altitude_profile"]["vertical_reference"] == "egm2008_orthometric"
+    assert evaluated["altitude_profile"]["constant_altitude_m"] == 80.0

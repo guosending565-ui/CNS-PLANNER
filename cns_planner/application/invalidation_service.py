@@ -1,6 +1,7 @@
 """Single application-level authority for result invalidation."""
 
 from ..domain.status import ResultStatus
+from ..domain.layered_operational_adoption import SOURCE_TYPE as LAYERED_ADOPTION_SOURCE_TYPE
 from ..risk.v1 import RiskModelV1
 from ..domain.risk_v2 import empty_grid_risk_v2
 from ..services.invalidation import ResultLedger
@@ -77,7 +78,10 @@ class InvalidationService:
                 state["result_statuses"][name] = ledger.statuses[name].value
         if "routes" in affected:
             for route in state.get("operational_routes") or []:
-                if route.get("status") != "not_calculated":
+                if (
+                    route.get("status") != "not_calculated"
+                    and self._should_stale_operational_route(route, changed)
+                ):
                     route["status"] = "stale"
                     route["stale_reason"] = f"{changed}_changed"
         if "cns_gap" in affected and state.get("cns_gap_analysis", {}).get("status") != "not_calculated":
@@ -124,6 +128,26 @@ class InvalidationService:
             # Radar Surveillance Layout V1 消费已发布运行航路与固定高度层：航路/工作区/高度层
             # 配置变化只把该 additive 产物标 stale（proposal-only，unidirectional）。
             self.radar_surveillance_layout(f"{changed}_changed")
+
+    @staticmethod
+    def _should_stale_operational_route(route, changed):
+        """Keep aircraft invalidation selective without changing other route semantics.
+
+        A production layered adoption owns its route independently of the selected aircraft
+        profile.  Its downstream CNS products still invalidate through ``DEPENDENTS``; only
+        the owned operational route is preserved.  Existing stale routes are left untouched
+        rather than being promoted back to ``passed``.
+        """
+
+        if changed != "aircraft_profile":
+            return True
+        provenance = route.get("provenance") or {}
+        is_layered_adoption_owned = bool(
+            provenance.get("source_type") == LAYERED_ADOPTION_SOURCE_TYPE
+            and str(provenance.get("adoption_id") or "").strip()
+            and str(provenance.get("adoption_fingerprint") or "").strip()
+        )
+        return not is_layered_adoption_owned
 
     def grid_sources(self, changed_sources):
         state = self.session.state
