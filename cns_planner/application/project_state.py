@@ -102,6 +102,13 @@ from ..domain.population_shelter import (
 from ..domain.population_nodata import (
     default_population_nodata_policy, normalize_population_nodata_policy,
 )
+from ..domain.assumptions import empty_assumption_registry, normalize_assumption_registry
+from ..domain.cns_existing_baseline import (
+    empty_cns_existing_baseline, normalize_cns_existing_baseline,
+)
+from ..domain.canonical_workflow import (
+    empty_canonical_workflow_state, normalize_canonical_workflow_state,
+)
 from ..domain.planning_exposure import (
     default_planning_exposure_policy, normalize_planning_exposure_policy,
 )
@@ -218,6 +225,11 @@ def blank_project(defaults):
         },
         "workspace": None, "grid": None,
         "algorithm_selection": default_algorithm_selection(),
+        # Phase4-B1 canonical contracts are additive.  Existing result/status
+        # containers remain untouched until their dedicated migration batches.
+        "assumptions": empty_assumption_registry(),
+        "cns_existing_baseline": empty_cns_existing_baseline(),
+        "canonical_workflow": empty_canonical_workflow_state(),
         "data_source_profiles": default_source_profiles(),
         "grid_attributes": empty_grid_attributes(),
         "grid_risk": RiskModelV1.empty(), "traffic_simulation": None,
@@ -436,6 +448,15 @@ def normalize_project(value, grid_service):
         workspace = value.get("workspace")
         value["grid"] = grid_service.generate(workspace["bbox"]) if workspace else None
     value["algorithm_selection"] = normalize_algorithm_selection(value.get("algorithm_selection"))
+    # Phase4-B1 additive backfill.  Missing legacy state never infers facts
+    # from existing_cns_facilities (an empty collection is not confirmed_none).
+    value["assumptions"] = normalize_assumption_registry(value.get("assumptions"))
+    value["cns_existing_baseline"] = normalize_cns_existing_baseline(
+        value.get("cns_existing_baseline")
+    )
+    value["canonical_workflow"] = normalize_canonical_workflow_state(
+        value.get("canonical_workflow"), assumption_registry=value["assumptions"]
+    )
     profiles = value.setdefault("data_source_profiles", default_source_profiles())
     if not isinstance(profiles, dict):
         raise ValueError("data_source_profiles 格式无效")
