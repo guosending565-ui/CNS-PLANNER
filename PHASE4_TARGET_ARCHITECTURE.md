@@ -71,8 +71,8 @@
 | Step | 名称 | 业务目标 | production 入口与结果 | 下一步门槛 |
 |---|---|---|---|---|
 | 1 | 数据准备 | 建立项目、来源、范围、坐标与输入清单 | 权威数据源、来源审计、工作区准备情况 | 必需来源可解析；缺失项已被分类 |
-| 2 | 环境与风险 | 建立规划网格、地形建筑环境、人口与风险场 | `environment`、`risk_field` | Population 等候选必需输入齐备即可进入 provisional 规划；terrain 和 policy-applicable building evidence 可后补，但在发布前必须满足 authority gate |
-| 3 | 航路规划与发布 | 从 OD 和固定巡航高度生成候选，完成风险画像和连续验证，经人工确认发布 | `route_candidate` → `route_validation` → `operational_route` | 只有通过发布用例生成的运行航路可进入下游 |
+| 2 | 环境与风险 | 建立规划网格、地形/建筑/铁塔/空域/要地环境、Population × Shelter 风险场，并按选定固定高度层派生 Planning Constraint Field | `environment`（含 derived `planning_constraint_field` artifact）、`risk_field` | Risk Field 与 Constraint Field 分离；固定高度层约束单元必须为 `pass/blocked/unknown`，`unknown` 不得静默成为 `pass` |
+| 3 | 航路规划与发布 | 从 OD 和固定巡航高度生成候选；搜索同时消费 soft Risk Field 与 hard Planning Constraint Field；再完成风险画像和独立连续验证，经人工确认发布 | `route_candidate` → `route_validation` → `operational_route` | blocked 单元不可扩展；unknown 按显式 policy，production 默认不可扩展；只有通过独立连续/native validation 与 authority gate 的运行航路可进入下游 |
 | 4 | CNS需求 | 基于运行场景形成并确认 CNS 需求 | `required_cns` | 权威需求已确认；建议本身不具权威性 |
 | 5 | CNS能力与设施规划 | 评估三维覆盖和服务能力，识别走廊缺口，形成设施方案；包含监视雷达规划 | `coverage` → `service_capability` → `service_corridor` → `capability_gap` → `facility_plan` | 既有 CNS 基线已声明，方案证据完整或警告已披露 |
 | 6 | 方案评审与报告 | 比较、选择、确认、应用方案并形成报告 | `plan_review` → `confirmed_plan` → `report` | 确认与报告均引用同一组冻结输入和 artifact |
@@ -82,11 +82,12 @@
 唯一 production 航路主链为：
 
 ```text
-Population × Shelter
-  → fixed cruise altitude
+OD + fixed cruise altitude
+  ├──→ Population × Shelter Risk Field (soft planning cost)
+  └──→ Planning Constraint Field (terrain/building/tower/airspace/critical-site feasibility)
   → LayeredRiskAwareThetaStarV2
   → RouteRiskProfile
-  → terrain/building validation
+  → independent continuous/native constraint validation
   → Layered Operational Adoption
   → Operational Route
 ```
@@ -94,11 +95,20 @@ Population × Shelter
 约束：
 
 - `LayeredRiskAwareThetaStarV2` 是唯一 production planner。
+- `ALT-080` 的 canonical 含义固定为 **80 m EGM2008 orthometric**，不是 80 m AGL；任何 AGL、椭球高或未知垂向基准必须先有显式、可审计的转换证据，否则为 `unknown/blocked`，不得猜测。
+- Risk Field 与 Planning Constraint Field 是两个独立输入：前者仅为 `Population × Shelter` soft cost；后者承载 terrain/building/tower/airspace/critical-site 的 feasibility/hard constraint，禁止把障碍物高度或禁限区编码为风险惩罚。
+- Planning Constraint Field 是 `environment` 的 per-layer derived artifact，由 `route_candidate` 消费；它不新增顶级 canonical workflow node，六步 workflow 与 13-node canonical DAG 保持不变。
+- Constraint Field 每个单元至少使用 `pass/blocked/unknown`：`blocked` 单元不可扩展；`unknown` 必须经过显式 policy，production 默认 `block_search`，禁止 `unknown → pass`。任何允许 unknown 的非默认试算仍保持 provisional，且不能通过 Operational Adoption authority gate。
+- Terrain hard rule：当 `layer_orthometric_m < terrain_orthometric_m + terrain_vertical_clearance_m` 时为 `blocked`；缺高度、垂向基准或 clearance 为 `unknown`，不得补 0。
+- Building hard rule：`building_top_orthometric = resolved_ground_orthometric + building_height_m`；当 `layer_orthometric_m < building_top_orthometric + building_vertical_clearance_m` 时为 `blocked`。缺 ground、height、可接受的 `height_status` 或几何证据为 `unknown`。
+- 只有已确认的 `tower_top_orthometric` 才能形成 tower hard 判定；楼面塔、base datum 或 mounting semantics 不明确时保持 `unknown`。同一份 Tower Source Facts 分别派生 `tower_obstacle_profiles`（Step 2/3）与 `tower_colocation_candidates`（Step 5），不得复制源数据。
+- `RestrictedArea` / `ProtectedSite` 可保存 point/polygon/multipolygon source facts，但规划只消费最终确认的 protection geometry；confirmed `hard_exclusion` 直接进入 Constraint Field blocked mask。protection radius 只能来自 source 或显式 policy，禁止按 category 猜测。
+- 无要地数据时可按明确的 airspace/regulatory authority policy 生成带 `critical_site_not_evaluated` warning 的 provisional candidate；不得把“未提供要地数据”静默解释为“无禁飞区”。
 - Population 是候选规划的 REQUIRED 输入；Shelter coefficient 是 ASSUMABLE 输入，可用明确登记的 `value=1.0, basis=engineering_baseline` 继续，但不得描述为真实遮蔽事实。
-- 缺 terrain 时允许生成用于比较的 provisional candidate；该次执行为 `completed_with_warnings`，在取得可验证 terrain evidence 前不得发布运行航路。
-- 缺 buildings 时允许生成 provisional candidate，并标记 `building_not_evaluated`；若 validation policy 判定建筑净空适用且数据缺失，则发布被阻断。未知建筑高度不得按 0 处理。
+- 正式候选必须消费与选定高度层和输入指纹一致的 Planning Constraint Field。terrain/building/tower 等证据缺失时，对应空间为 `unknown`；默认不得扩展，也不得用风险惩罚替代 hard gate。
 - 候选航路不得直接成为 `operational_routes`。
-- 发布必须验证候选、风险画像、地形/建筑验证结果和期望指纹，保留现有防并发改动语义。
+- 发布必须验证候选、风险画像、Constraint Field、独立连续/native constraint validation 和期望指纹，保留现有防并发改动语义。搜索 mask 与连续验证必须分别运行；搜索 `pass` 不是连续验证证据。
+- 固定巡航高度障碍约束与起降场/进离场障碍分开：本阶段只覆盖 cruise altitude constraint；`Departure/Arrival Procedure Validation` 后续以 terminal protection volume 与 climb/descent obstacle penetration 独立实现，不塞入本轮 Theta* 搜索。
 - `RoutePlannerV1`、`RiskAwareRoutePlannerV2`、`LayeredRoutePlannerV1` 不再是 production planner，进入 compatibility/archive。
 - RoutePlannerV3 A/B/C/D 进入 research/archive；V3-D 最终不得写 `operational_routes` 或其他 production 权威容器。
 - `RiskAwareRoutePlannerV2` 中的 `GridGraph` 必须先抽取到公共基础模块，之后才能归档 planner。
@@ -182,10 +192,10 @@ environment
 
 | Node | output maturity | inputs | required / assumable dependencies | 常态 status / readiness | assumptions / warnings | fingerprint / artifact | invalidates | next |
 |---|---|---|---|---|---|---|---|---|
-| `environment` | provisional facts/summary | workspace、来源配置、规划网格、人口、可用 terrain/building | R: workspace、grid、population；A: population NoData policy；O/条件性: terrain、buildings | `completed` 或 `completed_with_warnings` / `ready` 或 `ready_with_assumptions` | terrain/building 缺失必须显式披露；建筑未知不得为 0 | 输入/来源/映射策略指纹；grid cells、attribute cells 在 artifact | 全部下游 | `risk_field` |
+| `environment` | provisional facts/summary + per-layer derived artifacts | workspace、来源配置、规划网格、人口、terrain/building/tower/airspace/critical-site facts、约束策略 | R: workspace、grid、population；A: population NoData policy；fixed-layer planning 对 terrain 与 applicable constraint evidence fail-closed | `completed` 或 `completed_with_warnings` / `ready` 或 `ready_with_assumptions` | 缺失 constraint evidence 映射为 `unknown/not_evaluated`，不得补 0 或声明无障碍/无禁飞区 | 输入/来源/映射策略指纹；grid/attribute cells 与 per-layer `planning_constraint_field` 在 artifact；ProjectState/snapshot 只留摘要、指纹与 locator | 全部下游 | `risk_field` |
 | `risk_field` | provisional derived result | environment 摘要、风险策略 | R: population；A: shelter coefficient、风险聚合软件基线；O: traffic/conflict/property/infrastructure | `completed[_with_warnings]` / `ready[_with_assumptions]` | shelter `1.0` 仅为 engineering baseline；未评估因子不能补 0 | 风险输入与策略指纹；risk cells 在 artifact | `route_candidate` 至 `report` | `route_candidate` |
-| `route_candidate` | **always provisional** | OD、固定巡航高度、environment、risk field、规划策略 | R: scenario route、高度层、planning request、population、cost policy；A: shelter coefficient、搜索参数、目标策略、风险阈值；terrain/buildings 可缺失以生成候选 | 完整输入可 `completed`；缺 terrain/buildings 或采用假设时 `completed_with_warnings` / `ready[_with_assumptions]` | 缺 terrain 标记 `terrain_not_evaluated`；缺 buildings 标记 `building_not_evaluated` | 候选输入/策略/实现指纹；候选几何和 masks 为 artifact | `route_validation` 及全部下游 | `route_validation` |
-| `route_validation` | provisional evidence；通过 authority gate 后 eligible | route candidate、RouteRiskProfile、terrain/building evidence、过渡程序 | R: candidate、risk profile、**可验证 terrain evidence**；建筑是否 R 由 validation policy/applicability 决定；A: 经批准采样参数 | 可执行则 `completed[_with_warnings]`；缺 REQUIRED evidence 为 `blocked`；领域结果另存 `passed/failed/unknown` | 建筑适用且缺失时 blocker；不适用时记录 applicability；`unknown` 不得伪装 pass | 验证输入指纹；详细证据为 artifact | `operational_route` 及全部下游 | `operational_route` |
+| `route_candidate` | **always provisional** | OD、固定巡航高度、environment、Risk Field、Planning Constraint Field、规划策略 | R: scenario route、高度层、planning request、population、cost policy、与高度层/输入指纹一致的 Constraint Field；A: shelter coefficient、搜索参数、目标策略、风险阈值 | 可搜索时 `completed[_with_warnings]` / `ready[_with_assumptions]`；blocked cell 不可扩展；unknown 按显式 policy，production 默认不可扩展 | Risk Field 只影响 soft cost；terrain/building/tower/airspace/critical-site 只影响 feasibility。要地数据未提供时必须 `critical_site_not_evaluated`，是否允许 provisional 由 authority policy 决定 | 候选、risk 与 constraint 输入/策略/实现指纹；候选几何和 Constraint Field locator 为 artifact | `route_validation` 及全部下游 | `route_validation` |
+| `route_validation` | provisional evidence；通过 authority gate 后 eligible | route candidate、RouteRiskProfile、Constraint Field lineage、source-native terrain/building/tower 与 confirmed protection geometry | R: candidate、risk profile、search Constraint Field lineage、独立 continuous/native validators；A: 经批准采样参数 | 可执行则 `completed[_with_warnings]`；缺 REQUIRED evidence 为 `blocked`；各域结果独立保存 `passed/failed/unknown` | continuous validation 不读取 mask verdict 充当证据；任何适用域 `unknown` 不得伪装 pass；search/continuous 不一致 fail-closed。terminal procedure 单列 deferred，不混入 cruise verdict | 验证输入/来源/策略/validator 指纹；详细区间、native pixel、footprint/tower/protection geometry evidence 为 artifact | `operational_route` 及全部下游 | `operational_route` |
 | `operational_route` | **authoritative** | eligible validation、用户确认、expected fingerprint | R: terrain validation passed、所有适用建筑验证 passed、确认、版本一致 | `completed` 或 `completed_with_warnings` / `ready[_with_assumptions]` | 允许已登记 ASSUMABLE 基线，但必须披露；任何 provisional-only 缺口阻断发布 | 发布记录指纹；ProjectState 保留权威 adoption record，重几何可引用 artifact | `required_cns` 至 `report` | `required_cns` |
 | `required_cns` | provisional recommendation → adopted **authoritative** canonical result | operational route、aircraft profile、要求来源/工程基线、用户 Adopt | R: operational route、canonical adopted `required_cns`（对下游）；A: Generic Engineering Aircraft Profile、正式 requirement source 的替代工程基线；O: recommendation policy | 采用真实来源可 `completed`；采用允许基线为 `completed_with_warnings` / `ready_with_assumptions` | Engineering Required CNS Baseline 必须先显式 Adopt；recommendation 不得自动写权威结果 | 需求内容、来源类型、assumption IDs 与确认指纹；通常内联保存 | `coverage` 至 `report` | `coverage` |
 | `coverage` | provisional → authoritative canonical result | adopted required CNS、设备、既有设施基线、route 3D profile、terrain | R: canonical adopted required CNS、route、可执行 existing baseline；A: sample spacing、demo catalog、`assume_empty_for_planning` | `completed[_with_warnings]` / `ready[_with_assumptions]` | assumed-empty 必须引用 assumption 且不得声称现实无设施；覆盖未知不等同零覆盖 | 覆盖输入/策略指纹；coverage samples 在 artifact | `service_capability` 至 `report` | `service_capability` |
@@ -195,6 +205,30 @@ environment
 | `facility_plan` | provisional proposal → authoritative plan | capability gap、已有设施基线、候选站址、共塔事实、策略 | R: gap、可执行 existing baseline；A: assumed-empty planning mode；O: candidate sites、towers；E: verified tower height | `completed[_with_warnings]` / `ready[_with_assumptions]` | 缺可选候选只影响 tier；假设为空时报告固定披露 | 方案输入指纹；方案摘要内联，计算明细为 artifact | `plan_review`、`report` | `plan_review` |
 | `plan_review` | provisional selection → authoritative confirmation | authoritative facility plan variants、证据摘要、用户选择/确认 | R: 至少一个 authority-eligible 方案、非 stale 上游、reviewer confirmation | `completed[_with_warnings]` / `ready[_with_assumptions]` | Select ≠ Confirm ≠ Apply；警告与 assumptions 必须确认；provisional proposal 不得 Confirm | review/adoption 指纹；权威 review record 内联 | `report`；Apply 后失效同 scope 旧 active report | `report` |
 | `report` | authoritative immutable artifact | active confirmed plan 及冻结的 route、requirements、coverage/capability/gap/plan/review 摘要 | R: scope 内 active confirmed plan；A: 无新增假设，只继承并披露 | `completed[_with_warnings]` / `ready[_with_assumptions]` | 未评估项、assumed-empty 固定声明和全部 active assumptions 必须进入报告 | manifest 指纹；HTML/PDF/交付包为 artifact | 无 | `[]` |
+
+`planning_constraint_field` 是 `environment` 的派生 artifact，不是第 14 个 canonical node。它按 `(workspace/grid, altitude_layer_id, source fingerprints, policy fingerprints)` 物化，最小摘要契约为：
+
+```json
+{
+  "artifact_type": "planning_constraint_field",
+  "constraint_field_id": "...",
+  "altitude_layer": {
+    "altitude_layer_id": "ALT-080",
+    "layer_orthometric_m": 80.0,
+    "vertical_reference": "egm2008_orthometric"
+  },
+  "cell_states": ["pass", "blocked", "unknown"],
+  "unknown_policy": "block_search",
+  "domains": ["terrain", "building", "tower", "airspace", "critical_site"],
+  "counts": {"pass": 0, "blocked": 0, "unknown": 0},
+  "source_fingerprints": {},
+  "policy_fingerprints": {},
+  "artifact": {"locator": "...", "sha256": "...", "schema_version": "..."},
+  "warnings": []
+}
+```
+
+逐 cell/domain evidence（高度、required floor、reason codes、constraint IDs、protection geometry refs）只保存在 artifact；ProjectState 与 workflow snapshot 不得内联。单元合成优先级为 `blocked > unknown > pass`，但必须保留所有 domain verdict，禁止用 dominant verdict 丢失证据。
 
 ### 3.3 输出成熟度与 authority gate
 
@@ -267,12 +301,15 @@ Archive 的含义是：冻结功能、禁止新增产品能力、禁止成为新
 | 输入 | 等级 | 主要节点 | 缺失或未确认时的契约 |
 |---|---|---|---|
 | workspace、规划网格、scenario OD | REQUIRED | environment、route_candidate | blocked |
-| fixed cruise altitude、vertical reference、planning request | REQUIRED | route_candidate | blocked；不得猜测垂向基准 |
+| fixed cruise altitude、vertical reference、planning request | REQUIRED | route_candidate | blocked；不得猜测垂向基准；`ALT-080 = 80 m EGM2008 orthometric`，不是 AGL |
 | Population | REQUIRED | environment、risk_field、route_candidate | 缺失时不能生成 route candidate，blocked |
 | Shelter coefficient | ASSUMABLE | risk_field、route_candidate | 无真实数据时允许 `value=1.0, basis=engineering_baseline`，readiness=`ready_with_assumptions`；不得描述为真实遮蔽事实 |
-| Terrain evidence | route_candidate 可缺失；route_validation/Operational Adoption REQUIRED | route_candidate、route_validation、operational_route | 缺失时可生成 provisional candidate，状态 `completed_with_warnings` 并标记 `terrain_not_evaluated`；未取得可验证 evidence 前禁止 Publish |
-| Building facts / clearance evidence | route_candidate OPTIONAL；validation 条件性 REQUIRED | route_candidate、route_validation、operational_route | 候选阶段缺失标记 `building_not_evaluated`；若 validation policy/applicability 要求建筑净空，则缺失使 Adoption blocked；未知高度不得按 0 |
-| building validation policy / applicability decision | REQUIRED for authority gate | route_validation、operational_route | 必须明确 required/not_applicable；不得以缺数据推导 not_applicable |
+| Planning Constraint Field | REQUIRED | environment artifact、route_candidate、route_validation lineage | 必须与选定高度层、来源和策略指纹一致；cells 至少 `pass/blocked/unknown`。`blocked` 不可扩展；production 默认 unknown 不可扩展，禁止 unknown→pass |
+| Terrain orthometric evidence + vertical clearance | REQUIRED for fixed-layer constraint | environment、route_candidate、route_validation、operational_route | `layer < terrain + clearance` 为 blocked；缺 height/datum/clearance 为 unknown，绝不补 0；搜索 mask 与 native continuous validation 分别执行 |
+| Building footprint/height/ground + clearance | 条件性 REQUIRED；覆盖范围内适用即 REQUIRED | environment、route_candidate、route_validation、operational_route | `top = resolved_ground + height`；`layer < top + clearance` 为 blocked；缺 ground/height、不可接受 `height_status`、无效 geometry 或 CRS 未解析为 unknown；不得以缺数据推导 not_applicable |
+| Tower Source Facts / confirmed tower top + clearance | 障碍约束条件性 REQUIRED；Step 5 共塔 OPTIONAL | environment、route_candidate、route_validation、facility_plan | 同一 source facts 双派生，不复制源数据；只有 confirmed `tower_top_orthometric` 可 hard 判定，楼面塔/base datum/mounting semantics 不明确为 unknown |
+| Airspace / regulatory constraint geometry and policy | 条件性 REQUIRED | environment、route_candidate、route_validation、operational_route | display-only 图层不能冒充规划约束；confirmed hard exclusion 进入 blocked。未配置/未确认必须 `not_evaluated/unknown`，authority gate 行为由显式 policy 决定 |
+| RestrictedArea / ProtectedSite facts + confirmed protection geometry | 条件性 REQUIRED | environment、route_candidate、route_validation、operational_route | 支持 point/polygon/multipolygon source facts，但规划仅消费 confirmed protection geometry；radius 必须来自 source 或显式 policy，禁止按 category 猜测；无数据可 provisional + warning，但不得静默视为无禁飞区 |
 | route cost policy | REQUIRED | route_candidate | 未确认 blocked；显式 0 是合法输入而非缺失 |
 | 搜索参数、目标策略、risk density | ASSUMABLE | route_candidate | ready_with_assumptions；保留来源与适用范围 |
 | population NoData policy | ASSUMABLE | environment、risk_field | ready_with_assumptions；默认解释是 missing，不是人口 0 |
@@ -281,9 +318,9 @@ Archive 的含义是：冻结功能、禁止新增产品能力、禁止成为新
 | formal Requirement source | ASSUMABLE | required_cns | 缺失时允许生成 Engineering Required CNS Baseline；必须由用户显式 Adopt 后才成为 canonical `required_cns`，并保持 `ready_with_assumptions` |
 | `cns_existing_baseline` | 条件性 REQUIRED/ASSUMABLE | coverage 至 facility_plan | `not_declared + factual` blocked；`not_declared + assume_empty_for_planning` 为 ready_with_assumptions；其余见 5.3 |
 | coverage sample spacing、明确允许的 demo device catalog | ASSUMABLE | coverage | ready_with_assumptions，并显著警告数据等级 |
-| candidate sites、towers | OPTIONAL | facility_plan、radar | 不阻塞；对应 reuse/colocation tier 未评估 |
-| regulatory、airspace、traffic/conflict、property、infrastructure、land mask | OPTIONAL | 风险、合规、radar | 对应 assessment unknown/not_evaluated；不得补 0 |
-| precise building footprints、provider independence、verified tower height、checksums | ENHANCEMENT | validation、gap、facility_plan、audit | 提升证据；缺失不改变核心节点可运行性 |
+| candidate sites | OPTIONAL | facility_plan、radar | 不阻塞；对应 reuse tier 未评估 |
+| traffic/conflict、property、infrastructure、land mask | OPTIONAL | 风险、radar | 对应 assessment unknown/not_evaluated；不得补 0；不得混入 Constraint Field 冒充 hard constraint |
+| provider independence、checksums | ENHANCEMENT | gap、facility_plan、audit | 提升证据；缺失不改变无关核心节点可运行性 |
 | Radar data/policy | OPTIONAL，条件满足时 REQUIRED | Step 5 Radar branch | 默认不阻塞；当 adopted Required CNS 或 surveillance policy 明确要求 Radar 时，该分支及其必要输入成为 REQUIRED |
 | Timeline / Protection / Reliability / Safety / DAA 输入 | OPTIONAL/ENHANCEMENT | Advanced | 仅影响 Advanced 分支，不阻塞核心六步 |
 
@@ -381,8 +418,8 @@ Archive 的含义是：冻结功能、禁止新增产品能力、禁止成为新
 | 无真实 Aircraft Profile | `field=aircraft_profile`、Generic Engineering Aircraft Profile ID/版本、适用范围 | `allowed_with_disclosure` | “采用通用工程飞行器能力基线；不是具体机型数据” |
 | 无正式 Requirement source | Engineering Required CNS Baseline 的内容、版本、依据及 Adopt 记录 | Adopt 前 `provisional_only`；显式 Adopt 后 `allowed_with_disclosure` | “CNS 需求来自工程基线，不是正式要求来源” |
 | Existing CNS 未声明但按空基线规划 | `field=cns_existing_baseline`、`value=empty`、`basis=engineering_baseline`、planning scope | `allowed_with_disclosure` | **“空既有设施工程规划基线；不表示现实中不存在 CNS”** |
-| route candidate 缺 terrain | `field=terrain_evidence`、`basis=source_limitation` | `provisional_only` | “地形尚未验证；候选不可发布” |
-| route candidate 缺 buildings | `field=building_evidence`、`basis=source_limitation` | policy 判定 required 时 `provisional_only`；not_applicable 时转为普通 warning | “建筑未评估；未知高度未按 0 处理” |
+| fixed-layer constraint evidence 缺 terrain/building/tower 高度事实 | 不得用 assumption 伪造事实；Constraint Field 对应 cell=`unknown`、production policy=`block_search` | 不产生可宣称 feasible 的正式候选；更不能 Publish | “障碍证据不足；unknown 未按 0 或 pass 处理” |
+| 无 RestrictedArea / ProtectedSite 数据 | `field=critical_site_dataset`、`basis=source_limitation`、适用 authority policy 与范围 | 仅在 policy 明确允许时 `provisional_only`；始终 `not_evaluated` | “要地/保护区未评估；不表示不存在禁限区” |
 
 ---
 
@@ -439,7 +476,7 @@ unknown
 - assessment `failed` 表示业务/工程检查不通过，不表示执行失败。
 - assessment `unknown` 表示证据不足或该维度未评估；不得映射为 `passed` 或数值 0。
 - 可选或增强输入缺失时，对应 assessment 为 `unknown`，workflow 可为 `completed_with_warnings`。
-- 当前动作的 REQUIRED 证据缺失时，在执行前 `blocked`；若节点契约允许 provisional 执行（例如候选阶段缺 terrain/buildings），可 `completed_with_warnings`，但 authority gate 保持 blocked。
+- 当前动作的 REQUIRED 证据缺失时，在执行前 `blocked`；若节点契约和显式 authority policy 允许 provisional 执行（例如要地数据未提供但 policy 允许试算），可 `completed_with_warnings`，但 authority gate 保持 blocked。terrain/building/tower 高度缺失产生 Constraint Field `unknown`，不得用 assumption 变成 `pass`。
 
 ### 7.4 Workflow status 与 output maturity 的组合规则
 
@@ -676,8 +713,8 @@ API 最小面：
 | Step | 主界面 | Advanced/审计 |
 |---|---|---|
 | 1 数据准备 | 项目、数据源、来源健康、工作区输入清单 | 算法 manifest、schema、来源校验细节 |
-| 2 环境与风险 | 工作区、规划网格、Population、Shelter 工程基线/真实值、terrain/building 可用性、风险摘要 | 风险因子细节、旧风险模型对照、可选数据层 |
-| 3 航路规划与发布 | OD、固定巡航高度、候选成熟度、风险画像、地形/建筑 authority gate、确认发布 | archived planner 对照、研究实验、详细搜索与验证证据 |
+| 2 环境与风险 | 工作区、规划网格、Population × Shelter Risk Field；terrain/building/tower/airspace/critical-site 来源与 per-layer Planning Constraint Field 摘要 | 风险因子细节、Constraint Field domain/cell evidence、旧风险模型对照、可选数据层 |
+| 3 航路规划与发布 | OD、固定巡航高度（明确显示 EGM2008 orthometric）、Risk Field + Constraint Field、候选成熟度、风险画像、独立 continuous/native authority gate、确认发布 | archived planner 对照、研究实验、详细搜索 mask 与连续验证证据；Departure/Arrival Procedure Validation 显示为 deferred 独立范围 |
 | 4 CNS需求 | 真实或 Generic Engineering Aircraft Profile、运行约束、Requirement source/Engineering Baseline、显式 Adopt | Timeline、Protection、Reliability、Safety、DAA |
 | 5 CNS能力与设施规划 | Existing CNS knowledge status + planning mode、三维覆盖、能力、服务走廊、缺口、站址方案、条件性 Radar | 旧二维覆盖/缺口/站址结果、详细空间证据 |
 | 6 方案评审与报告 | 比较、选择、确认、应用、报告与交付 | 指纹、provenance、artifact manifest、未评估清单 |
@@ -707,7 +744,7 @@ heuristic
 - `stale`：结果只读，主按钮变为“按当前输入重新计算”。
 - 领域 `failed/unknown` 以“检查不通过/证据不足”呈现，不复用 workflow 失败样式。
 - 所有结果卡同时显示业务化成熟度：“候选/试算”对应 `provisional`，“已采纳/已发布/已确认”对应 `authoritative`；不能用绿色 completed 徽章暗示 provisional 已正式生效。
-- terrain/buildings 缺失时仍允许“生成候选”，结果显示 `completed_with_warnings`、`terrain_not_evaluated`/`building_not_evaluated`；“发布运行航路”按钮保持 disabled，并列出缺失的 authority evidence。
+- terrain/building/tower 高度或适用 clearance 缺失时显示 Constraint Field `unknown` 与具体 blocker；production 默认不得扩展。无要地数据时只有在显式 authority policy 允许试算的条件下才显示“生成 provisional 候选”，并持续显示 `critical_site_not_evaluated`，不得显示“无禁飞区”。
 - Shelter 缺失时提供“采用遮蔽系数 1.0 工程基线”动作，明确说明它不是现场遮蔽事实。
 - Aircraft Profile 缺失时允许选择带固定版本的 Generic Engineering Aircraft Profile，并在 Step 4/6 持续显示 assumption。
 - 正式 Requirement source 缺失时允许生成 Engineering Required CNS Baseline；只有“显式 Adopt”后才出现 canonical Required CNS，下游显示 `ready_with_assumptions`。Recommendation 只显示建议，不提供隐式写入。
@@ -777,7 +814,8 @@ heuristic
 | B1 | Canonical contract foundation | workflow status/readiness DTO、provisional/authoritative maturity、assessment 三态、assumption registry、双维度 `cns_existing_baseline`、声明式 node registry | 不改 planner 算法语义 |
 | B2 | Production write authority | 五类 authoritative result 的 service owner、router 禁止直写、authority contract tests；先移除 V1/V2/V3-D publish 权 | 不删 archive 代码 |
 | B3 | Neutral dependency extraction | 抽取 `GridGraph`；抽取 continuous validators；production imports 改指向 neutral modules | 不改计算结果/指纹 |
-| B4 | Six-step frontend convergence | 六步重排、固定页面结构、候选/权威门槛、工程基线动作、主链唯一入口、Advanced/Archive 立即退出 production UI、禁用术语清理 | 不改变后端结果语义 |
+| B3A | Fixed-Layer Constraint Foundation | Planning Constraint Field domain/artifact、terrain/building/tower/airspace/critical-site adapters、三态与 unknown policy、Theta* V2 feasibility mask 接线、独立 continuous/native validation contract、状态/指纹/sidecar 契约与专项测试 | 不新增 canonical node；不把 Risk Field 与 Constraint Field 合并；不实现 terminal protection volume 或 climb/descent penetration |
+| B4 | Six-step frontend convergence | 六步重排、固定页面结构、候选/权威门槛、工程基线动作、主链唯一入口、Planning Constraint Field 状态与 warning、Advanced/Archive 立即退出 production UI、禁用术语清理 | 不改变后端结果语义 |
 | B5 | ProjectState/artifact migration | 扩展 compaction；外置 grid/attributes/risk/coverage/**corridor cells+evidence**/radar/experiment；旧项目读兼容；禁止新 legacy state | 不做无依据的数据推断 |
 | B6 | Heavy Task platform | 本机持久 worker process、持久任务队列、progress、heartbeat、cooperative cancellation、短锁原子发布、临时 artifact 清理 | 不引入 Redis/Celery/外部消息系统；不以断开 HTTP 充当取消 |
 | B7 | Compatibility/archive migration | 旧项目 adapter、archive namespace、selection/read path、deprecation metadata、兼容 fixtures；通过专项 delete gate 后才允许物理删除 | Phase4 全周期不得破坏旧项目读取 |
@@ -787,13 +825,13 @@ heuristic
 推荐依赖顺序：
 
 ```text
-B0 → B1 → B2 → B3 → B4
-          ├────→ B5 → B6
-          └────→ B7 → B8
+B0 → B1 → B2 → B3 → B3A → B4
+          ├──────────→ B5 → B6
+          └──────────→ B7 → B8
 B5 + B6 + 代表性数据准备 → B9
 ```
 
-B4 可在 B3 后与 B5 部分并行，但任何 UI production Publish 切换必须等待 B2 authority guard 生效。
+B3A 必须在 neutral continuous validators / `GridGraph` 抽取完成后实施，并在 B4 frontend convergence 前闭合后端契约。B4 可在 B3A 后与 B5 部分并行，但任何 UI production Publish 切换必须等待 B2 authority guard 生效；B3A 的 Constraint Field cells 与连续验证明细须按 B5 artifact 目标设计，禁止新增大对象内联债务。
 
 ---
 
@@ -803,6 +841,8 @@ B4 可在 B3 后与 B5 部分并行，但任何 UI production Publish 切换必�
 
 - 主导航精确呈现六步业务工作流，不出现按开发阶段或版本组织的 production 入口。
 - Step 3 只有一个 production“发布运行航路”入口，且只接受 Theta* V2 主链候选。
+- Step 2 明确分栏显示 Risk Field（Population × Shelter soft cost）与 Planning Constraint Field（feasibility/hard constraint）；二者 schema、指纹、状态和图例不得混用。
+- Step 3 对 `ALT-080` 明确显示 `80 m EGM2008 orthometric`，不得显示或解释为 `80 m AGL`；候选卡同时显示 Risk Field 与对应高度层 Constraint Field lineage。
 - Step 5 主链为三维覆盖 → 服务能力 → 服务走廊 → 走廊缺口 → 走廊站址规划；Radar 默认是 OPTIONAL production branch，仅在 adopted Required CNS 或 surveillance policy 明确要求时变为 REQUIRED。
 - Timeline、Protection、Reliability、Safety、DAA 均在 Advanced，关闭或未配置时不阻塞核心六步。
 - production 主界面禁用术语清单自动扫描为 0 命中；高级/审计区不受此限制。
@@ -815,7 +855,15 @@ B4 可在 B3 后与 B5 部分并行，但任何 UI production Publish 切换必�
 - 每个 `ready_with_assumptions` 都能解析到 assumption registry 的 active item。
 - 当前请求动作/成熟度的 REQUIRED 缺失必为 blocked；节点契约明确允许时可生成 provisional 结果，但 authority gate 仍 blocked。OPTIONAL/ENHANCEMENT 缺失不被补 0。
 - Population 缺失时 route candidate blocked；Shelter coefficient 缺失时可登记 `value=1.0, basis=engineering_baseline` 并得到 `ready_with_assumptions`，且所有 UI/报告均不把它描述为真实遮蔽事实。
-- Terrain 缺失和 buildings 未评估时可生成 `completed_with_warnings` 的 provisional candidate；无可验证 terrain evidence，或建筑净空适用而 evidence 缺失时，Operational Adoption blocked。
+- Planning Constraint Field 作为 `environment` derived artifact 存在，不增加 canonical node；其每个 cell 至少为 `pass/blocked/unknown`，测试证明 blocked 不可扩展、unknown 默认不可扩展且不存在 unknown→pass 或缺失高度→0。
+- Terrain 公式测试覆盖 `layer_orthometric_m < terrain_orthometric_m + terrain_vertical_clearance_m`；等于 floor 为 pass，低于 floor 为 blocked，缺高度/基准/clearance 为 unknown。
+- Building 公式测试覆盖 `building_top_orthometric = resolved_ground_orthometric + building_height_m` 与 `layer_orthometric_m < building_top_orthometric + building_vertical_clearance_m`；等于 floor 为 pass，缺 ground/height、不可接受 `height_status`、无效 geometry 或未解析 CRS 为 unknown。
+- `validate_buildings` 及其 evidence adapter 有专项测试证明消费 `height_status`，对 Polygon/MultiPolygon 的所有受影响部件分别做 ground sampling/clearance，并且 horizontal CRS 来自显式可验证配置而非固定 EPSG:32651。
+- `_FabdemRasterBase` 的 resolution/accessor 定义唯一，无重复方法遮蔽；回归测试覆盖 projected linear-unit 与 geographic geodesic resolution，degree 不得当 metre。
+- 同一 Tower Source Facts 仅存一份，并可追溯派生 `tower_obstacle_profiles` 与 `tower_colocation_candidates`；只有 confirmed tower top 进入 hard 判定，楼面塔/base datum/mounting semantics 不明确时为 unknown。tower 还必须在独立 continuous/native validation 中复核，不能只依赖 search mask。
+- `RestrictedArea` / `ProtectedSite` 支持 point/polygon/multipolygon source facts；只有 confirmed protection geometry + confirmed `hard_exclusion` 进入 blocked mask。测试证明 category 不会自动产生 protection radius，无数据产生 `not_evaluated` warning 而不是“无禁飞区”。
+- search feasibility mask 与 continuous/native validation 使用独立 evidence evaluation：前者 pass 不可替代后者；任何适用域 failed/unknown 或两层结果不一致均阻断 Operational Adoption。
+- fixed-cruise constraint 的验收不要求 terminal protection volume、climb/descent obstacle penetration；它们登记为独立 `Departure/Arrival Procedure Validation` deferred scope，不得以 fixed-layer pass 冒充 terminal pass。
 - 无真实 Aircraft Profile 时可显式采用版本化 Generic Engineering Aircraft Profile，并得到 `ready_with_assumptions`。
 - 无正式 Requirement source 时可生成 Engineering Required CNS Baseline；显式 Adopt 前保持 provisional，Adopt 后写 canonical `required_cns` 并保持 assumptions；recommendation 不自动写入。
 - `knowledge_status=not_declared + planning_mode=factual` 时下游 blocked；切换 `assume_empty_for_planning` 后为 `ready_with_assumptions`，事实状态仍为 unknown，且报告包含固定披露。
@@ -835,6 +883,7 @@ B4 可在 B3 后与 B5 部分并行，但任何 UI production Publish 切换必�
 
 - 新项目不产生 legacy state；旧项目可打开、可查看旧结果、保存后只新增 canonical state/artifact 引用。
 - grid cells、grid attribute cells、risk cells、coverage samples、corridor cells/voxels/evidence、radar detail、experiment traces 均不在 ProjectState 或 workflow snapshot 内联。
+- Planning Constraint Field cells、continuous/native interval/pixel/footprint/tower/protection evidence 均进入 artifact/sidecar；ProjectState 与 workflow snapshot 只保存状态、计数、domain 摘要、warnings、fingerprint 和 artifact locator。
 - 使用代表性 82 MB corridor 派生结果测试时，workflow snapshot 只随摘要大小增长，不随空间单元数量线性增长。
 - artifact sha256 不匹配、sidecar 缺失和 schema 不兼容均 fail explicit，不返回空结果冒充成功。
 - Save As/Open/Export 保持 artifact 可达性和校验结果一致。
@@ -852,6 +901,7 @@ B4 可在 B3 后与 B5 部分并行，但任何 UI production Publish 切换必�
 ### 15.6 迁移与回归
 
 - `GridGraph` 和 continuous validators 抽取前后，既有 production semantic/golden tests 与输出指纹不变。
+- B3A 在 B3 neutral dependency extraction 之后、B4 frontend convergence 之前通过专项 contract tests；不新增顶级 canonical node，不改变六步 workflow、13-node DAG、B1 assumptions/existing CNS、production writer authority 或 P14 性能候选文件。
 - archive/research 代码删除前，第 13 节对应 gate 全部有机器可验证证据。
 - 旧项目 fixture 覆盖旧 algorithm selection、空 existing facilities、内联大型结果和 legacy key。
 - Phase4 全周期旧项目 open/read/export 保持可用；archive 功能从 production UI 立即移除，物理删除仅在 B7/B8 对应 delete gate 通过后发生。
