@@ -5,6 +5,7 @@ import pytest
 
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
+from cns_planner.application.production_write_authority import runtime_compatibility_result
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.closed_loop import compare_gap_results
 from cns_planner.domain.cns_inputs import normalize_candidate_site, normalize_device
@@ -183,7 +184,7 @@ def test_preview_reruns_p7_p10_and_has_zero_upstream_pollution(tmp_path):
     )
 
 
-def test_apply_commits_once_is_idempotent_and_preserves_provenance(tmp_path):
+def test_apply_is_runtime_only_idempotent_and_preserves_canonical_state(tmp_path):
     workflow = _workflow(tmp_path)
     workflow.state["cns_corridor_assessment"] = {"status": "passed", "input_fingerprint": "before-apply"}
     workflow.state["result_statuses"]["cns_corridor_assessment"] = "passed"
@@ -193,46 +194,33 @@ def test_apply_commits_once_is_idempotent_and_preserves_provenance(tmp_path):
     workflow.state["cns_gap_analysis"] = {"status": "passed"}
     workflow.state["result_statuses"]["coverage"] = "passed"
     workflow.state["result_statuses"]["cns_gap"] = "passed"
-    upstream = {name: deepcopy(workflow.state[name]) for name in (
-        "grid", "operational_routes", "grid_risk",
+    canonical = {name: deepcopy(workflow.state[name]) for name in (
+        "grid", "operational_routes", "grid_risk", "existing_cns_facilities",
+        "coverage_3d", "cns_service_capability", "service_timeline",
+        "cns_gap_analysis_v2", "cns_corridor_assessment",
+        "cns_corridor_gap_assessment", "cns_corridor_site_plan",
+        "confirmed_cns_plan",
     )}
     preview = workflow.evaluate_closed_loop()["closed_loop_assessment"]
     application_id = preview["application"]["application_id"]
     applied = workflow.apply_closed_loop({"application_id": application_id})
     assessment = applied["closed_loop_assessment"]
-    assert assessment["commit_status"] == "committed"
-    facilities = workflow.state["existing_cns_facilities"]
-    assert facilities["count"] == 1
-    facility = facilities["items"][0]
-    assert facility["planning_origin"]["application_id"] == application_id
-    assert facility["devices"][0]["planning_origin"]["action_id"].startswith("candidate_site:")
-    assert {name: workflow.state[name] for name in upstream} == upstream
-    assert workflow.state["cns_site_plan"]["status"] == "stale"
-    assert workflow.state["result_statuses"]["coverage"] == "stale"
-    assert workflow.state["result_statuses"]["cns_gap"] == "stale"
-    assert workflow.state["result_statuses"]["technical_risk"] == "stale"
-    assert workflow.state["result_statuses"]["report"] == "stale"
-    assert workflow.state["result_statuses"]["cns_corridor_assessment"] == "stale"
-    assert workflow.state["cns_corridor_assessment"]["status"] == "stale"
-    assert workflow.state["result_statuses"]["cns_corridor_gap_assessment"] == "stale"
-    fingerprints = {
-        name: workflow.state[name]["input_fingerprint"]
-        for name in ("coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_analysis_v2")
-    }
+    assert assessment["commit_status"] == "compatibility_only"
+    assert assessment["authoritative"] is False
+    assert assessment["applied_to_canonical"] is False
+    assert {name: workflow.state[name] for name in canonical} == canonical
     repeated = workflow.apply_closed_loop({"application_id": application_id})
-    assert repeated["closed_loop_assessment"]["commit_status"] == "committed"
-    assert workflow.state["existing_cns_facilities"]["count"] == 1
-    assert {name: workflow.state[name]["input_fingerprint"] for name in fingerprints} == fingerprints
+    assert repeated["closed_loop_assessment"]["commit_status"] == "compatibility_only"
+    assert {name: workflow.state[name] for name in canonical} == canonical
 
     reopened = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    reopened_facility = reopened.state["existing_cns_facilities"]["items"][0]
-    assert reopened_facility["planning_origin"]["application_id"] == application_id
-    assert reopened_facility["devices"][0]["planning_origin"]["application_id"] == application_id
+    assert reopened.state["existing_cns_facilities"]["items"] == []
+    assert runtime_compatibility_result(reopened.session, "closed_loop_assessment") == {}
 
 
 def test_all_selected_actions_are_applied_together_before_real_rerun(tmp_path):
     workflow = _workflow(tmp_path, candidates=[_candidate("S1", 0.00225), _candidate("S2", 0.00675)], radius=400)
-    plan = workflow.state["cns_site_plan"]
+    plan = runtime_compatibility_result(workflow.session, "cns_site_plan")
     assert len(plan["candidate_actions"]) == 2
     plan["selected_actions"] = deepcopy(plan["candidate_actions"])
     plan["resolved_planning_gap_length_m"] = 1000.0
@@ -356,10 +344,12 @@ def test_backfill_persistence_api_and_invalidation(tmp_path):
     assert router.get("/api/cns-closed-loop", {}, {}).data["assessment_fingerprint"]
     application_id = preview["closed_loop_assessment"]["application"]["application_id"]
     applied = router.post("/api/cns-closed-loop/apply", {"application_id": application_id}).data
-    assert applied["closed_loop_assessment"]["commit_status"] == "committed"
+    assert applied["closed_loop_assessment"]["commit_status"] == "compatibility_only"
+    assert applied["closed_loop_assessment"]["applied_to_canonical"] is False
 
     reopened = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    assert reopened.closed_loop_snapshot()["commit_status"] == "committed"
+    assert reopened.closed_loop_snapshot()["status"] == "not_calculated"
+    assert runtime_compatibility_result(reopened.session, "closed_loop_assessment") == {}
     reopened.state["closed_loop_assessment"]["status"] = "passed"
     reopened.invalidation_service.cns_site_plan()
     assert reopened.state["closed_loop_assessment"]["status"] == "stale"

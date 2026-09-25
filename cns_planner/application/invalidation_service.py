@@ -95,6 +95,10 @@ class InvalidationService:
             state["result_statuses"]["cns_gap"] = "stale"
         if "coverage" in affected and state.get("coverage"):
             state["coverage"]["status"] = "stale"
+        if "coverage" in affected:
+            mark_runtime_compatibility_stale(
+                self.session, "coverage", f"{changed}_changed"
+            )
         if "coverage_3d" in affected:
             self.coverage_3d()
         if "cns_service_capability" in affected:
@@ -585,6 +589,9 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_site_plan"] = result
             state.setdefault("result_statuses", {})["cns_site_plan"] = "stale"
+        mark_runtime_compatibility_stale(
+            self.session, "cns_site_plan", "cns_site_plan_changed"
+        )
         mark_active_report_stale(state, "cns_site_plan_changed")
         self.closed_loop_assessment()
 
@@ -597,6 +604,9 @@ class InvalidationService:
             result["commit_status"] = "stale_assessment"
             state["closed_loop_assessment"] = result
             state.setdefault("result_statuses", {})["closed_loop_assessment"] = "stale"
+        mark_runtime_compatibility_stale(
+            self.session, "closed_loop_assessment", "closed_loop_input_changed"
+        )
 
     def cns_corridor(self):
         """Stale only the P14 corridor result; never mutate centerline products."""

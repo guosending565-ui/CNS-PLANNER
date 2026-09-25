@@ -461,7 +461,7 @@ class WorkflowService:
         self.plan_review_service = PlanReviewService(
             self.session, self.coverage_model_3d, self.cns_service_model,
             self.timeline_model, self.gap_analyzer_v2, self.corridor_model,
-            self.corridor_gap_analyzer, snapshot,
+            self.corridor_gap_analyzer, snapshot, self.invalidation_service,
         )
         self.export_service = ExportService(self.session, snapshot)
         self.report_service = PlanningReportService(
@@ -1046,8 +1046,25 @@ class WorkflowService:
         scenario_ok = bool(state["scenario_routes"])
         routes_ok = scenario_ok and state["result_statuses"].get("routes") == "passed" and bool(state["operational_routes"]) and all(item["status"] == "passed" for item in state["operational_routes"])
         rules_ok = bool(state["rules"] and state["rules"].get("status") == "passed" and state["aircraft"])
-        coverage_ok = bool(state["result_statuses"].get("coverage") == "passed" and state["coverage"] and state["coverage"].get("status") == "passed")
-        return {"1": True, "2": workspace_ok, "3": routes_ok, "4": rules_ok, "5": coverage_ok, "6": coverage_ok}
+        def current_result(name):
+            value = state.get(name) or {}
+            return bool(value) and value.get("status") not in (
+                None, "not_calculated", "missing_data", "stale",
+            )
+
+        facility_plan = state.get("cns_corridor_site_plan") or {}
+        facility_plan_ok = facility_plan.get("status") in (
+            "proposal_ready", "no_action_required", "no_eligible_proposal",
+            "evidence_required",
+        )
+        canonical_cns_ok = all(current_result(name) for name in (
+            "coverage_3d", "cns_service_capability",
+            "cns_corridor_assessment", "cns_corridor_gap_assessment",
+        )) and facility_plan_ok
+        return {
+            "1": True, "2": workspace_ok, "3": routes_ok, "4": rules_ok,
+            "5": canonical_cns_ok, "6": canonical_cns_ok,
+        }
 
     def set_project(self, payload): return self.project_service.set_project(payload)
     def set_workspace(self, bbox, health, preferred_grid_level=None, max_cells=None): return self.workspace_service.set_workspace(bbox, health, preferred_grid_level, max_cells)

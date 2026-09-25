@@ -9,6 +9,7 @@ from ..domain.altitude_layer_defaults import mark_altitude_layer_catalog_managed
 from .route_operating_layer_service import (
     refresh_spatial_status, resync_operating_layer_statuses,
 )
+from .production_write_authority import assert_write_authority
 
 
 def is_locked_v3_profile(profile):
@@ -76,6 +77,7 @@ class Spatial3DService:
         return self._save()
 
     def evaluate(self, payload=None):
+        assert_write_authority(self, "coverage_3d")
         state = self.session.state
         parameters = (payload or {}).get("parameters") if isinstance(payload, dict) else None
         if parameters:

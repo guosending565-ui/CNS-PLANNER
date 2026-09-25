@@ -7,6 +7,9 @@ from copy import deepcopy
 from ..catalogs import AircraftCNSProfileCatalog
 from ..domain.site_planning import TOWER_COLOCATION_REUSE_CLASS, normalize_site_planning_policy
 from ..gap.v2 import CNSGapAnalyzerV2
+from .production_write_authority import (
+    runtime_compatibility_result, write_runtime_compatibility_result,
+)
 
 
 class SitePlanningService:
@@ -22,6 +25,9 @@ class SitePlanningService:
         self.snapshot = snapshot
 
     def result_snapshot(self):
+        runtime = runtime_compatibility_result(self.session, "cns_site_plan")
+        if runtime:
+            return deepcopy(runtime)
         return deepcopy(self.session.state["cns_site_plan"])
 
     def evaluate(self, payload=None):
@@ -29,11 +35,11 @@ class SitePlanningService:
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("site planning 请求必须是对象")
-        if "site_planning_policy" in payload:
-            candidate = normalize_site_planning_policy(payload["site_planning_policy"])
-            if candidate != state["site_planning_policy"]:
-                state["site_planning_policy"] = candidate
-                self.invalidation.cns_site_plan()
+        policy = (
+            normalize_site_planning_policy(payload["site_planning_policy"])
+            if "site_planning_policy" in payload
+            else deepcopy(state.get("site_planning_policy") or {})
+        )
         targets = _planning_targets(
             state.get("cns_gap_analysis_v2") or {}, state.get("required_cns") or {},
         )
@@ -44,16 +50,28 @@ class SitePlanningService:
         )
         impacts = [self._what_if(action, targets) for action in actions]
         result = self.planner.plan(
-            targets, actions, impacts, state.get("site_planning_policy") or {},
+            targets, actions, impacts, policy,
         )
-        self.invalidation.closed_loop_assessment()
-        state["cns_site_plan"] = result
-        state["result_statuses"]["cns_site_plan"] = (
-            "passed" if result["status"] == "proposal_ready" else "missing_data"
+        record = write_runtime_compatibility_result(
+            self.session, "cns_site_plan", result,
+            source_algorithm={
+                "algorithm_type": "site_planner",
+                "algorithm_id": getattr(self.planner, "algorithm_id", None),
+                "algorithm_version": getattr(self.planner, "algorithm_version", None),
+                "class": type(self.planner).__name__,
+            },
+            note=(
+                "旧版站址试算：不用于正式规划，不写入项目状态；正式设施规划由"
+                "走廊站址规划服务生成。"
+            ),
         )
-        state["result_statuses"]["report"] = "not_calculated"
-        self.session.save()
-        return self.snapshot()
+        response = self.snapshot()
+        response["compatibility_cns_site_plan"] = record
+        # 旧 API 响应继续提供 cns_site_plan 视图，但只来自会话级缓存。
+        response["cns_site_plan"] = record
+        response["compatibility_write"] = True
+        response["canonical_facility_plan_unchanged"] = True
+        return response
 
     def _what_if(self, action, targets):
         eligibility = action.get("eligibility") or {}

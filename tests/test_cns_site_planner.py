@@ -6,6 +6,7 @@ import pytest
 from cns_planner.algorithms.registry import build_default_algorithm_registry
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
+from cns_planner.application.production_write_authority import runtime_compatibility_result
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.cns_inputs import (
     normalize_candidate_site, normalize_device, normalize_existing_facility,
@@ -328,7 +329,8 @@ def test_registry_backfill_persistence_api_and_directed_invalidation(tmp_path):
     assert response["cns_site_plan"]["proposal_only"] is True
     assert router.get("/api/cns-site-plan", {}, {}).data["algorithm_id"] == "reuse_first_site_planner_v1"
     reopened = WorkflowService(path, DEFAULTS)
-    assert reopened.cns_site_plan_snapshot()["input_fingerprint"] == response["cns_site_plan"]["input_fingerprint"]
+    assert reopened.cns_site_plan_snapshot()["status"] == "not_calculated"
+    assert runtime_compatibility_result(reopened.session, "cns_site_plan") == {}
 
     reopened.state["cns_site_plan"]["status"] = "proposal_ready"
     reopened.state["result_statuses"].update({

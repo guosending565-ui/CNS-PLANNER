@@ -1,4 +1,4 @@
-"""Transactional P12 preview/apply orchestration over the existing P7-P10 chain."""
+"""Advanced compatibility what-if orchestration over the existing P7-P10 chain."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ from ..domain.closed_loop import (
     algorithm_run_summary, build_plan_application, compare_gap_results,
     current_baseline_fingerprint, stable_fingerprint,
 )
-from .project_state import assessment
+from .production_write_authority import (
+    runtime_compatibility_result, write_runtime_compatibility_result,
+)
 
 
 class ClosedLoopService:
@@ -24,41 +26,48 @@ class ClosedLoopService:
         self.timeline_model = timeline_model
         self.gap_model = gap_model
         self.snapshot = snapshot
-        #: 权威失效入口。P12 提交后必须经它使 P18 基线失效，而不是直接写
-        #: ``confirmed_cns_plan``；``confirmed_cns_plan`` 的唯一 content owner 是
-        #: ``PlanReviewService``（Phase4-B2B-1）。
+        # 保留参数以兼容既有装配；ClosedLoop 已降为 working-copy 试算，不再触发
+        # canonical 失效或提交。
         self.invalidation = invalidation
 
     def result_snapshot(self):
+        runtime = runtime_compatibility_result(self.session, "closed_loop_assessment")
+        if runtime:
+            return deepcopy(runtime)
         return deepcopy(self.session.state["closed_loop_assessment"])
 
     def evaluate(self, payload=None):
-        original = deepcopy(self.session.state)
-        try:
-            result, _ = self._build_assessment(original)
-            self.session.state["closed_loop_assessment"] = result
-            self.session.state["result_statuses"]["closed_loop_assessment"] = _result_status(result)
-            # Preview is the only persisted change; avoid touching project timestamps.
-            self.session.repository.save(self.session.state)
-        except Exception:
-            self.session.state.clear()
-            self.session.state.update(original)
-            raise
-        return self.snapshot()
+        result, _ = self._build_assessment(deepcopy(self.session.state))
+        record = write_runtime_compatibility_result(
+            self.session, "closed_loop_assessment", result,
+            source_algorithm={
+                "algorithm_type": "closed_loop_compatibility",
+                "algorithm_id": "closed_loop_validation_v1",
+                "algorithm_version": "1.0",
+                "class": type(self).__name__,
+            },
+            note=(
+                "高级方案影响试算：只在工作副本运行，不写入正式覆盖、能力、走廊、"
+                "设施、确认方案或运行航路。"
+            ),
+        )
+        return self._response(record)
 
     def apply(self, payload=None):
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("closed-loop apply 请求必须是对象")
         current = self.session.state
-        stored = current.get("closed_loop_assessment") or {}
+        stored = runtime_compatibility_result(self.session, "closed_loop_assessment")
+        if not stored:
+            stored = current.get("closed_loop_assessment") or {}
         application = stored.get("application") or {}
         requested_id = payload.get("application_id")
         if not requested_id:
             return self._rejected("stale_assessment", "apply 必须显式提交当前 application_id")
-        if stored.get("commit_status") == "committed":
+        if stored.get("commit_status") == "compatibility_only":
             if requested_id == application.get("application_id"):
-                return self.snapshot()
+                return self._response(stored)
             return self._rejected("stale_assessment", "application_id 与已提交 assessment 不一致")
         if stored.get("validation_status") != "validated_improvement":
             return self._rejected("not_validated", "仅 validated_improvement assessment 可提交")
@@ -66,57 +75,36 @@ class ClosedLoopService:
             return self._rejected("stale_assessment", "application_id 与当前 assessment 不一致")
         if (
             current_baseline_fingerprint(current) != application.get("baseline_fingerprint")
-            or (current.get("cns_site_plan") or {}).get("input_fingerprint")
+            or self._site_plan(current).get("input_fingerprint")
             != application.get("site_plan_fingerprint")
-            or (current.get("cns_site_plan") or {}).get("status") != "proposal_ready"
+            or self._site_plan(current).get("status") != "proposal_ready"
         ):
             return self._rejected("stale_assessment", "project baseline 或 P11 site plan 已变化")
 
-        original = deepcopy(current)
-        try:
-            reassessed, planned = self._build_assessment(original)
-            if (
-                reassessed.get("assessment_fingerprint") != stored.get("assessment_fingerprint")
-                or reassessed.get("validation_status") != "validated_improvement"
-            ):
-                return self._rejected("stale_assessment", "重跑结果与 Preview assessment 不一致")
-            committed = deepcopy(original)
-            for name in (
-                "existing_cns_facilities", "coverage_3d",
-                "cns_service_capability", "service_timeline",
-                "cns_gap_analysis_v2",
-            ):
-                committed[name] = deepcopy(planned[name])
-            reassessed["commit_status"] = "committed"
-            committed["closed_loop_assessment"] = reassessed
-            _apply_post_commit_statuses(committed)
-            current.clear()
-            current.update(committed)
-            self._invalidate_after_commit()
-            self.session.save()
-        except Exception:
-            current.clear()
-            current.update(original)
-            raise
-        return self.snapshot()
-
-    def _invalidate_after_commit(self):
-        """P12 提交后的 P18 基线失效：委托权威失效入口。
-
-        ``ClosedLoopService`` 不持有 ``confirmed_cns_plan`` / ``cns_plan_review`` 的写权，
-        只声明"既有 CNS 基线已变化"这一事实，由 :class:`InvalidationService` 决定
-        哪些 canonical 产物失效。
-        """
-
-        reason = "P12 ExistingCNS application changed P18 baseline"
-        service = self.invalidation
-        if service is None:
-            return False
-        service.cns_plan_review(reason)
-        return True
+        reassessed, _ = self._build_assessment(deepcopy(current))
+        if (
+            reassessed.get("assessment_fingerprint") != stored.get("assessment_fingerprint")
+            or reassessed.get("validation_status") != "validated_improvement"
+        ):
+            return self._rejected("stale_assessment", "重跑结果与 Preview assessment 不一致")
+        reassessed["commit_status"] = "compatibility_only"
+        reassessed["authoritative"] = False
+        reassessed["applied_to_canonical"] = False
+        reassessed["canonical_results_unchanged"] = True
+        record = write_runtime_compatibility_result(
+            self.session, "closed_loop_assessment", reassessed,
+            source_algorithm={
+                "algorithm_type": "closed_loop_compatibility",
+                "algorithm_id": "closed_loop_validation_v1",
+                "algorithm_version": "1.0",
+                "class": type(self).__name__,
+            },
+            note="高级方案影响试算已复核；未应用到正式项目状态。",
+        )
+        return self._response(record)
 
     def _build_assessment(self, source_state):
-        site_plan = source_state.get("cns_site_plan") or {}
+        site_plan = self._site_plan(source_state)
         if site_plan.get("status") != "proposal_ready":
             raise ValueError("P12 需要当前 proposal_ready 的 P11 site plan")
         selected = list(site_plan.get("selected_actions") or [])
@@ -169,6 +157,18 @@ class ClosedLoopService:
         })
         return result, planned
 
+    def _site_plan(self, state):
+        runtime = runtime_compatibility_result(self.session, "cns_site_plan")
+        return runtime or state.get("cns_site_plan") or {}
+
+    def _response(self, result):
+        response = self.snapshot()
+        response["compatibility_closed_loop_assessment"] = deepcopy(result)
+        response["closed_loop_assessment"] = deepcopy(result)
+        response["compatibility_write"] = True
+        response["canonical_results_unchanged"] = True
+        return response
+
     def _run_chain(self, state):
         rerun_p7_p10_chain(
             state, self.coverage_model, self.capability_model,
@@ -176,12 +176,12 @@ class ClosedLoopService:
         )
 
     def _rejected(self, commit_status, reason):
-        response = self.snapshot()
-        assessment_value = deepcopy(self.session.state.get("closed_loop_assessment") or {})
+        assessment_value = deepcopy(self.result_snapshot())
         assessment_value["commit_status"] = commit_status
         assessment_value["reasons"] = [*(assessment_value.get("reasons") or []), reason]
-        response["closed_loop_assessment"] = assessment_value
-        return response
+        assessment_value["authoritative"] = False
+        assessment_value["applied_to_canonical"] = False
+        return self._response(assessment_value)
 
 
 def _clone_model(model, current_result):
@@ -347,45 +347,3 @@ def _assessment_status(validation):
         "inconclusive": "pending_confirmation",
         "not_applicable": "not_applicable",
     }[validation]
-
-
-def _result_status(result):
-    return _assessment_status(result.get("validation_status", "inconclusive"))
-
-
-def _apply_post_commit_statuses(state):
-    statuses = state.setdefault("result_statuses", {})
-    statuses["coverage_3d"] = state["coverage_3d"].get("status", "not_calculated")
-    statuses["cns_service_capability"] = {
-        "meets_under_model": "passed", "does_not_meet_under_model": "failed",
-        "unknown": "pending_confirmation", "unsupported_model": "missing_data",
-        "not_applicable": "not_applicable",
-    }.get(state["cns_service_capability"].get("status"), state["cns_service_capability"].get("status", "not_calculated"))
-    statuses["service_timeline"] = state["service_timeline"].get("status", "not_calculated")
-    statuses["cns_gap_v2"] = {
-        "confirmed_gap": "failed", "unknown": "pending_confirmation",
-        "missing_data": "missing_data", "not_applicable": "not_applicable",
-    }.get(state["cns_gap_analysis_v2"].get("status"), "passed")
-    statuses["closed_loop_assessment"] = _result_status(state["closed_loop_assessment"])
-    if state.get("coverage") is not None:
-        state["coverage"]["status"] = "stale"
-        statuses["coverage"] = "stale"
-    if (state.get("cns_gap_analysis") or {}).get("status") != "not_calculated":
-        state["cns_gap_analysis"]["status"] = "stale"
-        statuses["cns_gap"] = "stale"
-    if (state.get("cns_site_plan") or {}).get("status") != "not_calculated":
-        state["cns_site_plan"]["status"] = "stale"
-        statuses["cns_site_plan"] = "stale"
-    if (state.get("cns_corridor_assessment") or {}).get("status") != "not_calculated":
-        state["cns_corridor_assessment"]["status"] = "stale"
-        statuses["cns_corridor_assessment"] = "stale"
-    if (state.get("cns_corridor_gap_assessment") or {}).get("status") != "not_calculated":
-        state["cns_corridor_gap_assessment"]["status"] = "stale"
-        statuses["cns_corridor_gap_assessment"] = "stale"
-    statuses["technical_risk"] = "stale"
-    statuses["report"] = "stale"
-    state.setdefault("risks", {})["technical"] = assessment(
-        "stale", "P12 application 已提交；Safety Event/technical risk 未自动重评",
-    )
-    # NOTE: ``cns_plan_review`` / ``confirmed_cns_plan`` 的失效**不在这里**直接写状态；
-    # 由 ``ClosedLoopService._invalidate_after_commit`` 委托 InvalidationService 执行。

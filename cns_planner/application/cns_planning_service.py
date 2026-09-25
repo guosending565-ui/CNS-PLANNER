@@ -3,7 +3,7 @@
 from ..catalogs import DeviceCatalog
 from .production_write_authority import (
     canonical_operational_routes, compatibility_route_status,
-    operational_routes_for_legacy_consumers,
+    operational_routes_for_legacy_consumers, write_runtime_compatibility_result,
 )
 
 
@@ -52,9 +52,25 @@ class CNSPlanningService:
         if not routes or any(item.get("status") != "passed" for item in routes):
             raise ValueError("没有可用于布站的有效运行航路")
         devices = DeviceCatalog.to_coverage_v1(state.get("device_catalog") or {}, state["devices"])
-        state["coverage"] = self.planner.plan(routes, devices)
-        state["result_statuses"]["coverage"] = state["coverage"]["status"]
-        self.invalidation.coverage_3d()
-        state["result_statuses"]["report"] = "not_calculated"
-        self.session.save()
-        return self.snapshot()
+        result = self.planner.plan(routes, devices)
+        record = write_runtime_compatibility_result(
+            self.session, "coverage", result,
+            source_algorithm={
+                "algorithm_type": "coverage_planner",
+                "algorithm_id": getattr(self.planner, "algorithm_id", None),
+                "algorithm_version": getattr(self.planner, "algorithm_version", None),
+                "class": type(self.planner).__name__,
+            },
+            note=(
+                "旧版二维覆盖试算：不用于正式规划，不写入项目状态，不影响三维覆盖、"
+                "服务能力、设施规划或报告。"
+            ),
+        )
+        response = self.snapshot()
+        response["compatibility_coverage"] = record
+        # 兼容端点响应保留旧字段名，便于旧客户端显示；该值不在 ProjectState，
+        # 下一次通用 workflow snapshot 也不会携带这次新试算。
+        response["coverage"] = record
+        response["compatibility_write"] = True
+        response["canonical_coverage_3d_unchanged"] = True
+        return response

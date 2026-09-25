@@ -48,6 +48,14 @@ def test_user_variant_include_exclude_and_confirm_gate(tmp_path):
 
 def test_confirm_without_objectives_requires_ack_and_apply_is_idempotent(tmp_path):
     workflow = _ready(configured(tmp_path))
+    workflow.state["coverage_3d"].update({"status": "passed", "input_fingerprint": "coverage-before"})
+    workflow.state["cns_service_capability"].update({"status": "meets_under_model", "input_fingerprint": "capability-before"})
+    workflow.state["service_timeline"].update({"status": "passed", "input_fingerprint": "timeline-before"})
+    workflow.state["cns_gap_analysis_v2"].update({"status": "passed", "input_fingerprint": "gap-before"})
+    workflow.state["result_statuses"].update({
+        "coverage_3d": "passed", "cns_service_capability": "passed",
+        "service_timeline": "passed", "cns_gap_v2": "passed",
+    })
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     auto = review["variants"][1]
     workflow.select_cns_plan_variant({"variant_id": auto["variant_id"]})
@@ -65,9 +73,12 @@ def test_confirm_without_objectives_requires_ack_and_apply_is_idempotent(tmp_pat
     assert after_count >= before_count
     workflow.apply_confirmed_cns_plan({"plan_id": confirmed["plan_id"]})
     assert workflow.state["existing_cns_facilities"]["count"] == after_count
-    assert workflow.state["result_statuses"]["cns_corridor_assessment"] == "passed"
-    assert workflow.state["result_statuses"]["cns_corridor_gap_assessment"] == "passed"
-    assert workflow.state["result_statuses"]["cns_corridor_site_plan"] == "stale"
+    for name in (
+        "coverage_3d", "cns_service_capability", "service_timeline",
+        "cns_gap_v2", "cns_corridor_assessment",
+        "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report",
+    ):
+        assert workflow.state["result_statuses"][name] == "stale", name
 
 
 def test_stale_apply_and_backfill_and_api(tmp_path):

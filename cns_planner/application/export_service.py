@@ -7,6 +7,7 @@ import json
 from ..domain.reporting import sanitize_report_value
 from .production_write_authority import (
     canonical_operational_routes, runtime_compatibility_operational_routes,
+    runtime_compatibility_result,
 )
 
 
@@ -47,11 +48,19 @@ class ExportService:
         return self._collection(features)
 
     def sites(self):
+        runtime = runtime_compatibility_result(self.session, "coverage")
+        coverage = runtime or self.session.state.get("coverage") or {}
         features = []
-        for subsystem, layer in (self.session.state.get("coverage") or {}).get("layers", {}).items():
+        for subsystem, layer in coverage.get("layers", {}).items():
             for station in layer.get("stations", []):
                 properties = {key: value for key, value in station.items() if key != "coordinate"}
                 properties["subsystem"] = subsystem
+                properties.update({
+                    "authoritative": False,
+                    "compatibility": True,
+                    "deprecated": True,
+                    "warning": "旧版二维覆盖试算站点，不用于正式规划",
+                })
                 features.append({"type": "Feature", "properties": properties, "geometry": {"type": "Point", "coordinates": station["coordinate"]}})
         return self._collection(features)
 

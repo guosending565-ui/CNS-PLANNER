@@ -1021,8 +1021,8 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
 
 const STEP05_SEGMENTS={
   operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
-  result:[['cns-res-coverage','基础覆盖'],['cns-res-capability','3D与能力'],['cns-res-corridor','服务走廊'],['cns-res-gap','规划目标与缺口']],
-  advanced:[['cns-adv-site','走廊站址优化'],['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与 Gap V2'],['cns-adv-closedloop','Legacy与闭环']]
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','监视雷达初步划设']],
+  advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与 Gap V2'],['cns-adv-compat','旧版兼容试算'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
 /** Step05 的关键控件：既有业务 id，重组后必须一个不少。 */
@@ -1077,7 +1077,7 @@ test('step 05 task navigation keeps exactly one segment visible and every contro
       }
     }
 
-    // 11 个分段始终挂载 DOM（3 操作 + 4 结果 + 4 高级），只切 .wb-seg-active
+    // 13 个分段始终挂载 DOM（3 操作 + 6 结果 + 4 高级），只切 .wb-seg-active
     const expectedSegments=Object.values(STEP05_SEGMENTS).flat().map(item=>item[0]);
     assert.deepEqual(findAll(root,'[data-seg-name]').map(node=>node.dataset.segName).sort(),expectedSegments.slice().sort(),'every segment stays mounted');
     // 全部原关键控件仍然存在，并且落在正常正文里（不是 .wb-section-head）
@@ -1160,12 +1160,12 @@ test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
     assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['false','true','false']);
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false']);
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false']);
     assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),'tabpanel');
     assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),undefined);
 
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false']);
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false','false','false']);
   });
 });
 
@@ -1764,6 +1764,8 @@ function step06Flow(overrides={}){
     aircraft:null,
     rules:null,
     coverage:null,
+    coverage_3d:{},
+    steps:{'6':true},
     review:{risks:{},overall_status:'pending_confirmation',overall_pass:false},
     result_statuses:{},
     cns_plan_review:{},
@@ -2056,14 +2058,14 @@ test('step 06 status overview groups the existing statuses without recomputing t
     }));
     const valueOf=label=>rows.find(row=>row.label===label);
     assert.equal(valueOf('运行航路').badge,'通过','a passed result status is mapped as-is');
-    assert.equal(valueOf('基础覆盖').badge,'已失效','a stale result status stays stale');
-    assert.equal(valueOf('走廊空间缺口评估').badge,'通过','the corridor gap status is mapped as-is');
+    assert.equal(valueOf('旧版二维覆盖试算').badge,'已失效','a stale compatibility result stays stale');
+    assert.equal(valueOf('CNS 能力缺口').badge,'通过','the corridor gap status is mapped as-is');
     assert.equal(valueOf('技术风险').badge,'失败','the risk group reads flow.review.risks');
     assert.equal(valueOf('规划报告').badge,'已失效','the report status is mapped as-is');
     assert.equal(valueOf('总体状态').badge,'待确认','the overall status is not recomputed');
     assert.equal(valueOf('总体通过').value,'否','overall_pass is shown as a plain yes/no');
     // 未计算的条目显示"未计算"，而不是被省略或伪造成通过
-    assert.equal(valueOf('3D 几何覆盖').badge,'未计算','an untouched result stays not_calculated');
+    assert.equal(valueOf('三维几何覆盖').badge,'未计算','an untouched result stays not_calculated');
   });
 });
 

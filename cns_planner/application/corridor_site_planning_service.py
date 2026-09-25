@@ -8,6 +8,7 @@ from ..catalogs import AircraftCNSProfileCatalog
 from ..domain.corridor_site_planning import normalize_corridor_site_planning_policy
 from ..domain.site_planning import REUSE_TIERS
 from .site_planning_service import _candidate_actions
+from .production_write_authority import assert_write_authority
 
 
 class CorridorSitePlanningService:
@@ -21,6 +22,7 @@ class CorridorSitePlanningService:
         return deepcopy(self.session.state.get("cns_corridor_site_plan") or self.planner.empty())
 
     def evaluate(self, payload=None):
+        assert_write_authority(self, "cns_corridor_site_plan")
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("corridor site planning 请求必须是对象")
@@ -150,6 +152,7 @@ class CorridorSitePlanningService:
         return self.snapshot()
 
     def _save_missing(self, reason):
+        assert_write_authority(self, "cns_corridor_site_plan")
         self.invalidation.cns_plan_review("p16_became_missing")
         result = self.planner.empty("missing_data")
         result["reasons"] = [reason]

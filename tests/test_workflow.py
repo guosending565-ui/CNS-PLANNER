@@ -71,6 +71,8 @@ def test_complete_workflow_persists_exports_and_never_reuses_route_ids(tmp_path)
     service.set_devices(devices)
     state = service.plan_coverage()
     assert state["coverage"]["status"] == "passed"
+    assert state["coverage"]["authoritative"] is False
+    assert service.state["coverage"] is None
     assert set(state["coverage"]["layers"]) == {"C", "N", "S"}
     assert all(layer["statistics"]["stations"] > 0 for layer in state["coverage"]["layers"].values())
     assert state["review"]["overall_pass"] is None
@@ -79,7 +81,7 @@ def test_complete_workflow_persists_exports_and_never_reuses_route_ids(tmp_path)
     assert json.loads(service.export_sites())["features"]
     restored = WorkflowService(store, defaults).snapshot()
     assert restored["project"]["name"] == "端到端测试"
-    assert restored["coverage"]["status"] == "passed"
+    assert restored["coverage"] is None
 
 
 def test_a_star_fails_when_hard_constraint_blocks_the_workspace():

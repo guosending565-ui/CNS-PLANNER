@@ -11,7 +11,7 @@ DEPENDENTS = {
     "route": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "required_cns_recommendation", "report"),
     "rules": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "technical_risk", "report"),
     "aircraft_profile": ("routes", "coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "technical_risk", "report"),
-    "required_cns": ("coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report"),
+    "required_cns": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report"),
     "devices": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
     "existing_cns": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
     "candidate_sites": ("coverage", "cns_site_plan", "cns_corridor_site_plan", "technical_risk", "report"),

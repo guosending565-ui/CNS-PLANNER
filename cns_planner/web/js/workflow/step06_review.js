@@ -55,19 +55,20 @@ function reviewBlock(title,body,note){return '<div class="review-block"><b>'+esc
 const STATUS_GROUPS=[
   ['规划输入',[['workspace','工作区'],['grid','标准网格'],['routes','运行航路']]],
   ['CNS 规划',[
-    ['coverage','基础覆盖'],['coverage_3d','3D 几何覆盖'],['cns_service_capability','CNS 服务能力'],
-    ['service_timeline','服务时间线'],['protection_envelope','保护包络'],['cns_gap','规划缺口'],
-    ['cns_gap_v2','规划缺口 V2'],['cns_site_plan','布站方案'],['building_clearance','建筑净空'],
+    ['coverage_3d','三维几何覆盖'],['cns_service_capability','CNS 服务能力'],
+    ['cns_corridor_assessment','CNS 服务走廊'],
+    ['cns_corridor_gap_assessment','CNS 能力缺口'],['cns_corridor_site_plan','CNS 设施规划'],
+    ['service_timeline','服务时间线'],['protection_envelope','保护包络'],['cns_gap_v2','规划缺口 V2'],['building_clearance','建筑净空'],
     ['route_vertical_profiles','航路垂直剖面'],['encounter_3d_assessment','3D 相遇评估'],
     ['layered_route_candidate','分层航路候选']
   ]],
+  ['旧版兼容',[['coverage','旧版二维覆盖试算'],['cns_gap','旧版规划缺口'],['cns_site_plan','旧版站址试算']]],
   ['风险',[
     ['environment_risk','环境风险'],['grid_risk_v2','网格风险 V2'],['technical_risk','技术风险'],
     ['safety_assessment','安全评估']
   ]],
   ['方案与交付',[
-    ['cns_plan_review','方案审查'],['cns_corridor_assessment','服务走廊评估'],
-    ['cns_corridor_gap_assessment','走廊空间缺口评估'],['cns_corridor_site_plan','走廊布站提案'],
+    ['cns_plan_review','方案审查'],
     ['required_cns_recommendation','需求建议'],['report','规划报告']
   ]]
 ];
@@ -75,15 +76,14 @@ const EXTRA_RISK_LABELS=[['life','生命风险'],['property','财产风险']];
 
 // ---- 评审概览 ---------------------------------------------------------------
 function projectOverview(flow,state){
-  const layers=Object.entries(flow.coverage?.layers||{}).map(([key,value])=>key+'：'+value.statistics.stations+' 站 / '+statusText(value.status)).join('<br>');
+  const coverage=flow.coverage_3d||{},coverageRoutes=coverage.routes||[];
   return reviewBlock('项目概览',[
     kvRow('数据源',statusBadge(state.data_health.status)),
     kvRow('工作区',flow.workspace?flow.workspace.area_km2+' km²':'未定义'),
     kvRow('运行航路',String(flow.operational_routes.length),flow.operational_routes.map(item=>item.route_id).join('、')),
     kvRow('飞行器',flow.aircraft?escapeHtml(flow.aircraft.manufacturer+' '+flow.aircraft.model):'未设置'),
     kvRow('飞行规则',statusBadge(flow.rules?.status||'not_calculated')),
-    // 逐层级布站明细：整行留着说明，不塞进右对齐的取值列
-    layers?'<div class="review-row"><span>C/N/S 布站层级</span><span class="review-value">—</span></div><small>'+layers+'</small>':''
+    kvRow('三维覆盖评估',statusBadge(coverage.status||'not_calculated'),coverageRoutes.length+' 条航路')
   ].join(''));
 }
 
@@ -158,14 +158,16 @@ function editPanel(selected){
     +'<button class="secondary full" id="createPlanVariant" '+(!selected?'disabled':'')+'>克隆并创建方案</button>',
     '创建只追加人工编辑候选；不会自动选中，也不会改动设施。');
 }
-function confirmPanel(confirmed,selected,summary){
+function confirmPanel(flow,confirmed,selected,summary){
   const evaluation=selected?.evaluation||{},gate=evaluation.confirmation_gate||{},gateStatus=gate.status||'not_evaluated';
   const acknowledged=gate.requires_confirm_without_objectives_acknowledgement===true;
-  const canConfirm=Boolean(selected)&&(gateStatus==='ready_for_confirmation'||acknowledged);
+  const canonicalReady=flow.steps?.['6']===true;
+  const canConfirm=canonicalReady&&Boolean(selected)&&(gateStatus==='ready_for_confirmation'||acknowledged);
   const canApply=Boolean(summary.confirmedStatus==='confirmed'&&confirmed.current_applicability==='current');
   const applyId=String(confirmed.plan_id||'');
   return reviewBlock('1 选择 → 2 确认 → 3 应用',[
     kvRow('当前所选方案',selected?escapeHtml(selected.name||selected.variant_id)+'（'+escapeHtml(selected.variant_id)+'）':'尚未选择'),
+    kvRow('正式 CNS 链',statusBadge(canonicalReady?'ready':'not_available'),canonicalReady?'三维覆盖、能力、走廊、缺口与设施规划均已形成':'旧版二维覆盖或旧版站址试算不能解锁正式确认'),
     kvRow('确认门禁状态',statusBadge(gateStatus),acknowledged?'未配置规划目标：勾选知情确认并填写理由后才能确认':'仅 ready_for_confirmation 可直接确认')
   ].join(''),'三步语义不同：选择只切换候选，确认只冻结快照，应用才事务提交。')
     +reviewBlock('第 2 步 · 确认（冻结快照，不修改设施）',
@@ -421,11 +423,11 @@ function requirementPanel(flow){
 }
 function proposalPanel(flow){
   const proposal=flow.cns_corridor_site_plan||{};
-  return '<div class="review-block"><b>P16 走廊站址规划提案（Corridor Site Plan Proposal）</b>'
+  return '<div class="review-block"><b>CNS 设施规划方案</b>'
     +'<span>状态：'+statusText(proposal.status||'not_calculated')+'</span>'
     +'<span>目标体素：'+(proposal.target_voxel_count||0)+' · 已选动作：'+(proposal.selected_actions||[]).length+'</span>'
     +'<span>确认需求单位体积收益：'+(Number.isFinite(proposal.confirmed_requirement_unit_volume_gain)?proposal.confirmed_requirement_unit_volume_gain.toFixed(1)+' m³·unit':'—')+'</span>'
-    +'<small>Proposal only；本身不修改 Existing CNS，P18 负责人工比较、确认与受控 Apply。</small></div>';
+    +'<small>方案本身不修改已有 CNS 设施；方案评审负责人工比较、确认与受控应用。</small></div>';
 }
 
 // ---- 渲染 -------------------------------------------------------------------
@@ -438,7 +440,7 @@ export function render({state,flow}){
       ['review-op-overview','评审概览',wbBlock('评审概览',wbSegHint(OPERATE,'review-op-overview')+projectOverview(flow,state)+reviewStatusPanel(flow))],
       ['review-op-compare','方案比较',wbBlock('方案比较',wbSegHint(OPERATE,'review-op-compare')+comparisonPanel(review,selected))],
       ['review-op-edit','方案编辑',wbBlock('方案编辑',wbSegHint(OPERATE,'review-op-edit')+editPanel(selected))],
-      ['review-op-confirm','确认与应用',wbBlock('确认与应用',wbSegHint(OPERATE,'review-op-confirm')+confirmPanel(confirmed,selected,summary))]
+      ['review-op-confirm','确认与应用',wbBlock('确认与应用',wbSegHint(OPERATE,'review-op-confirm')+confirmPanel(flow,confirmed,selected,summary))]
     ]})
     +wbPanel('result','',{segments:[
       ['review-res-status','状态总览',wbBlock('状态总览',wbSegHint(RESULT,'review-res-status')+statusOverview(flow)+routeSafetyEvidencePanel(flow))],

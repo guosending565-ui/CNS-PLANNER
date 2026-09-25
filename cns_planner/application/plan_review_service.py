@@ -14,18 +14,20 @@ from ..domain.closed_loop import _interval_transitions, _subsystem_index
 from ..domain.reporting import mark_active_report_stale
 from .closed_loop_service import rerun_p7_p10_chain
 from .corridor_site_planning_service import rerun_corridor_chain
-from .project_state import assessment
+from .production_write_authority import assert_write_authority
 
 
 class PlanReviewService:
     """Application-only decision workflow; no planning formula lives here."""
 
     def __init__(self, session, coverage_model, capability_model, timeline_model,
-                 gap_model, corridor_model, corridor_gap_analyzer, snapshot):
+                 gap_model, corridor_model, corridor_gap_analyzer, snapshot,
+                 invalidation=None):
         self.session, self.snapshot = session, snapshot
         self.coverage_model, self.capability_model = coverage_model, capability_model
         self.timeline_model, self.gap_model = timeline_model, gap_model
         self.corridor_model, self.corridor_gap_analyzer = corridor_model, corridor_gap_analyzer
+        self.invalidation = invalidation
 
     def snapshot_result(self):
         return {
@@ -108,6 +110,7 @@ class PlanReviewService:
         return self.snapshot()
 
     def confirm(self, payload):
+        assert_write_authority(self, "confirmed_cns_plan")
         review = self._current_review()
         variant = self._variant(review, payload.get("variant_id") or review.get("selected_variant_id"))
         evaluation = variant.get("evaluation") or {}
@@ -155,6 +158,7 @@ class PlanReviewService:
         return self.snapshot()
 
     def apply(self, payload):
+        assert_write_authority(self, "confirmed_cns_plan")
         state = self.session.state
         confirmed = state.get("confirmed_cns_plan") or {}
         requested = str((payload or {}).get("plan_id") or "")
@@ -193,20 +197,31 @@ class PlanReviewService:
                 or planned_p15.get("input_fingerprint") != evaluation.get("planned_p15_fingerprint")
             ):
                 return self._rejected("validation_mismatch", "Apply P14/P15 与 confirmed variant Preview 不一致")
-            working["cns_corridor_assessment"], working["cns_corridor_gap_assessment"] = planned_p14, planned_p15
             committed_plan = deepcopy(confirmed)
             committed_plan["status"] = "applied"
             committed_plan["application"].update({
                 "status": "applied", "applied_refs": refs,
                 "planning_origin": {"plan_id": confirmed.get("plan_id"), "variant_id": confirmed.get("variant_id")},
             })
-            working["confirmed_cns_plan"] = committed_plan
-            _post_apply_statuses(working)
-            mark_active_report_stale(working, "P18 confirmed plan applied")
-            state.clear(); state.update(working)
+            facilities_changed = facilities != (original.get("existing_cns_facilities") or {})
+            if facilities_changed:
+                state["existing_cns_facilities"] = facilities
+                if self.invalidation is None:
+                    raise RuntimeError("PlanReview Apply 缺少统一 existing_cns 失效服务")
+                # 唯一 authoritative invalidation path：ExistingCNS 是事实变更，所有
+                # canonical 下游由依赖图统一标 stale，working-copy 试算结果不提交。
+                self.invalidation.workflow("existing_cns")
+            state["confirmed_cns_plan"] = committed_plan
+            review = state.get("cns_plan_review")
+            if isinstance(review, dict):
+                review["status"] = "applied"
+                review.pop("stale_reason", None)
+                state.setdefault("result_statuses", {})["cns_plan_review"] = "passed"
+            mark_active_report_stale(state, "P18 confirmed plan applied")
+            state.setdefault("result_statuses", {})["report"] = "stale"
             self.session.save()
         except Exception:
-            state.clear(); state.update(original)
+            _restore_failed_apply(state, original)
             raise
         return self.snapshot()
 
@@ -324,35 +339,11 @@ def _p10_gate(before, after):
     return {"status": "passed", "reason": None}
 
 
-def _post_apply_statuses(state):
-    statuses = state.setdefault("result_statuses", {})
-    statuses["coverage_3d"] = (state.get("coverage_3d") or {}).get("status", "not_calculated")
-    capability_status = (state.get("cns_service_capability") or {}).get("status")
-    statuses["cns_service_capability"] = {
-        "meets_under_model": "passed", "does_not_meet_under_model": "failed",
-        "unknown": "pending_confirmation", "unsupported_model": "missing_data",
-        "not_applicable": "not_applicable",
-    }.get(capability_status, capability_status or "not_calculated")
-    statuses["service_timeline"] = (state.get("service_timeline") or {}).get("status", "not_calculated")
-    gap_status = (state.get("cns_gap_analysis_v2") or {}).get("status")
-    statuses["cns_gap_v2"] = {
-        "confirmed_gap": "failed", "unknown": "pending_confirmation",
-        "missing_data": "missing_data", "not_applicable": "not_applicable",
-    }.get(gap_status, "passed")
-    for key in ("cns_corridor_assessment", "cns_corridor_gap_assessment"):
-        result_status = (state.get(key) or {}).get("status")
-        statuses[key] = {
-            "passed": "passed", "failed": "failed", "pending_confirmation": "pending_confirmation",
-            "missing_data": "missing_data", "not_applicable": "not_applicable",
-            "unresolved": "missing_data", "stale": "stale",
-        }.get(result_status, "pending_confirmation")
-    for key, value_key in (("coverage", "coverage"), ("cns_gap", "cns_gap_analysis"), ("cns_site_plan", "cns_site_plan"),
-                           ("closed_loop_assessment", "closed_loop_assessment"), ("cns_corridor_site_plan", "cns_corridor_site_plan")):
-        value = state.get(value_key)
-        if isinstance(value, dict) and value.get("status") != "not_calculated": value["status"] = "stale"
-        if value is not None: statuses[key] = "stale"
-    statuses["technical_risk"] = statuses["report"] = "stale"
-    if isinstance(state.get("cns_plan_review"), dict):
-        state["cns_plan_review"]["status"] = "applied"
-        statuses["cns_plan_review"] = "passed"
-    state.setdefault("risks", {})["technical"] = assessment("stale", "P18 controlled apply 已提交；P5/P6 safety 未自动重评")
+def _restore_failed_apply(state, original):
+    """Rollback only after a failed targeted commit; never use whole-table commit semantics."""
+
+    for key in tuple(state):
+        if key not in original:
+            del state[key]
+    for key, value in original.items():
+        state[key] = deepcopy(value)

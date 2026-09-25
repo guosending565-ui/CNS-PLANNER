@@ -29,9 +29,9 @@ from typing import Any, Iterable, Mapping
 
 #: canonical authoritative result key → 唯一 production content owner 类名。
 #:
-#: 六个 key 覆盖 Phase4-B2B-1 要求收敛的全部 canonical result。`coverage_3d` /
-#: `cns_corridor_site_plan` / `radar_surveillance_layout` 的写点本轮不改（留 B2B-2），
-#: 但同样登记，以便新旁路一出现就被 contract test 捕获。
+#: 六个 key 覆盖 Phase4-B2B/B2C 要求收敛的全部 canonical result。B2C 已在
+#: ``Spatial3DService`` 与 ``CorridorSitePlanningService`` 的实际写点接入 guard；
+#: registry 继续让任何新旁路立即被 contract test 捕获。
 WRITE_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "operational_routes": ("LayeredOperationalAdoptionService",),
     "required_cns": ("CNSInputService",),
