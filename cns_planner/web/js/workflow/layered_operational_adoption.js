@@ -2,9 +2,9 @@
 // Layered Candidate 的 Operational Adoption 工作台面板（production）
 //
 // 硬边界（全部只做"转印"）：
-//  * 本面板与既有「运行航路生成 / Legacy operationalRoutes」完全分开：
-//    Legacy 的 /api/workflow/operational 与 operational_routes 语义不变，
-//    本模块也绝不删除或改写它们；
+//  * 本面板与「旧版航路试算 / Legacy operationalRoutes」完全分开：
+//    Legacy 的 /api/workflow/operational 只返回 runtime-only 非正式试算，
+//    本模块绝不读取、删除或改写这份临时结果；
 //  * Select / Validate / Preview / Apply 互不等价：只有 Apply 才写 operational_routes；
 //  * Preview 不写 state（后端强制 side_effects=false，前端只缓存响应）；
 //  * 2D route path 不携带高度第三坐标：高度由 RouteOperatingLayer → AltitudeLayer 承载，
@@ -35,10 +35,11 @@ export const LAYERED_ADOPTION_CHAIN_STAGES=[
   'candidate','route_risk_profile','validation','operational'
 ];
 
-export const LAYERED_ADOPTION_LEGACY_LABEL='A. 现有 / Legacy 运行航路生成（保持不变）';
-export const LAYERED_ADOPTION_LEGACY_NOTE='「生成场景航路（all-pairs，兼容）」与「生成运行航路」'
-  +'仍走既有 /api/workflow/scenario 与 /api/workflow/operational，契约不变；'
-  +'本节的 Layered Candidate 发布流程不替代、不合并、不改写它们。';
+export const LAYERED_ADOPTION_LEGACY_LABEL='A. 旧版航路试算（不发布，兼容旧项目）';
+export const LAYERED_ADOPTION_LEGACY_NOTE='「生成场景航路（all-pairs，兼容）」与「旧版航路试算（不发布）」'
+  +'仍走既有 /api/workflow/scenario 与 /api/workflow/operational，但旧版试算结果只在当前运行会话临时保留'
+  +'（非权威、已弃用），不进入项目保存，也不发布正式运行航路；'
+  +'本节的 Layered Candidate 发布流程才是正式入口，两者不替代、不合并、不改写彼此的结果。';
 export const LAYERED_ADOPTION_PUBLISH_LABEL='B. Layered Candidate 发布（validation → operational adoption）';
 export const LAYERED_ADOPTION_SCOPE_NOTE='Select / Validate / Preview / Apply 互不等价：'
   +'只有 Apply 才写 operational_routes，Preview 不写 state。';
@@ -436,7 +437,7 @@ function legacyBlock(){
   return wbBlock(LAYERED_ADOPTION_LEGACY_LABEL,
     '<div class="parameter-note">'+escapeHtml(LAYERED_ADOPTION_LEGACY_NOTE)+'</div>'
     +'<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button>'
-    +'<button class="primary" id="operationalRoutes">生成运行航路</button></div>');
+    +'<button class="secondary" id="operationalRoutes">旧版航路试算（不发布 / 非正式）</button></div>');
 }
 
 function chainBlock(flow,model){

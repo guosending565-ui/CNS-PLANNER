@@ -66,8 +66,34 @@ export function referenceOverlayModel(flow,layers={routes:true,points:true,landi
     referencePoints:layers.points?(catalog.points||[]).filter(item=>pointInWorkspace(item.coordinate,flow?.workspace)):[],
     referenceLandingSites:layers.landingSites?filterReferenceSites(flow?.reference_landing_sites?.items||[],{workspace:flow?.workspace}):[],
     scenarioRoutes:flow?.scenario_routes||[],
-    operationalRoutes:flow?.operational_routes||[],
+    operationalRoutes:canonicalOperationalRoutes(flow),
   };
+}
+
+// ---- B2B-1：正式运行航路 vs 旧版兼容试算 -------------------------------------------
+//: 旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 已失去发布权：结果只存在于
+//: 单次 API response / 当前运行会话的临时 cache，标记为
+//: authoritative=false / compatibility=true / deprecated=true。
+//: canonical operational_routes 只由「Theta* V2 候选 → 风险画像 → 独立验证 → 发布」产生。
+export function canonicalOperationalRoutes(flow){
+  return Array.isArray(flow?.operational_routes)?flow.operational_routes:[];
+}
+
+export function compatibilityOperationalRoutes(flow){
+  // 特意不读取 flow.compatibility.results：持久 ProjectState 里的 compatibility 只允许
+  // metadata / migration notes，不能成为新结果仓库。
+  const record=flow?.compatibility_operational_routes||null;
+  const items=Array.isArray(record?.items)?record.items:[];
+  return {record,items,available:items.length>0,
+    label:'旧版航路试算（不发布 / 非正式）',authoritative:false,compatibility:true,deprecated:true};
+}
+
+export function comparisonRoutes(flow){
+  const compatibility=compatibilityOperationalRoutes(flow);
+  if(compatibility.available)return {items:compatibility.items,source:'runtime_compatibility',
+    label:compatibility.label,authoritative:false};
+  return {items:canonicalOperationalRoutes(flow),source:'project_operational_routes',
+    label:'项目运行航路（仅用于显式对比）',authoritative:true};
 }
 
 export function findAlgorithmManifest(catalog,algorithmType,algorithmId,version){
@@ -133,7 +159,7 @@ function plannerEntry(route,result,plannerId){
 }
 
 export function routePlannerComparisonModel(flow){
-  const results=flow?.operational_routes||[];
+  const comparison=comparisonRoutes(flow),results=comparison.items;
   const rows=(flow?.scenario_routes||[]).map(route=>{
     const result=results.find(item=>item.route_id===route.route_id);
     return {route_id:route.route_id,direction:route.direction||'',
@@ -143,6 +169,7 @@ export function routePlannerComparisonModel(flow){
   const hasV1=rows.some(row=>row[PLANNER_V1]),hasV2=rows.some(row=>row[PLANNER_V2]);
   const hasReference=(flow?.reference_routes?.items||[]).length>0;
   return {rows,hasV1,hasV2,bothPresent:hasV1&&hasV2,hasReference,
+    source:comparison.source,sourceLabel:comparison.label,authoritative:comparison.authoritative,
     referenceNote:hasReference?'真实参考航线只与运行航线作长度/几何并列，不作优劣结论。':'当前项目没有参考航线可比。',
     semantics:'factual_side_by_side_no_superiority_conclusion',automatic_ranking:false};
 }
@@ -151,7 +178,7 @@ function comparisonPanelV2(flow,model){
   if(!model.rows.length)return '';
   if(!model.bothPresent)return '<h3>V1 / V2 结果并列</h3><div class="parameter-note">当前只有 '+(model.hasV2?'V2':'V1')+' 结果；切换到另一个规划器并重新生成运行航路后才会出现并列比较。本面板只做事实并列，不作优劣结论。</div>';
   const body=model.rows.map(row=>'<div class="list-row route-row"><span><b>'+escapeHtml(row.route_id)+'</b> '+escapeHtml(row.direction)+'<small>V1 length '+metric(row[PLANNER_V1]?.path_length_m,'m')+' · vertices '+escapeHtml(String(row[PLANNER_V1]?.segment_count??'—'))+' · turns '+escapeHtml(String(row[PLANNER_V1]?.turn_count??'—'))+'</small><small>V2 length '+metric(row[PLANNER_V2]?.path_length_m,'m')+' · vertices '+escapeHtml(String(row[PLANNER_V2]?.segment_count??'—'))+' · turns '+escapeHtml(String(row[PLANNER_V2]?.turn_count??'—'))+' · risk exposure '+metric(row[PLANNER_V2]?.risk_exposure_index_m,'index·m')+'</small></span></div>').join('');
-  return '<h3>V1 / V2 结果并列</h3><div class="parameter-note">只并列展示：长度/几何来自各自 planner 的真实输出与已发布路径；risk exposure 为 V2 自报相对工程指数。'
+  return '<h3>V1 / V2 结果并列</h3><div class="parameter-note"><b>'+escapeHtml(model.sourceLabel)+'</b>。只并列展示：长度/几何来自各自 planner 的真实输出；risk exposure 为 V2 自报相对工程指数。'
     +'<b>本面板不判定“更好”</b>，不排名、不评分、不推荐算法。V1 顶点更少是因为它对共线点做了简化，V2 保留完整 grid path 与网格中心（无 smoothing），这只说明输出契约不同。</div><div class="scroll-list route-list">'+body+'</div>';
 }
 
@@ -280,15 +307,16 @@ export const V3D_ASSESSMENT_STATUSES=['not_started','incomplete','complete','sta
 export const V3D_REQUIREMENT_VERDICTS=['meets','does_not_meet','unknown'];
 export const V3D_STAGES=['P7','P8','P9','P10'];
 //: The boundary label every V3-D rendering must carry verbatim.
-export const V3D_PUBLISH_LABEL='发布为运行分析航路：只把 current V3-C validated route 投影进既有 operational_routes，不改变 V3 验证结论';
+export const V3D_PUBLISH_LABEL='归档为兼容记录（不发布）：只把当前 V3-C 已验证航路投影进会话级兼容缓存，不写入正式运行航路，也不改变 V3 验证结论';
 export const V3D_SYNTHETIC_LABEL='canonical synthetic 证据仅用于测试，不可正式发布到 operational_routes';
 export const V3D_CNS_SEPARATION_LABEL='route safety validation 与 CNS 结果严格分离：CNS 不满足不等于 route unsafe，route validated 也不等于 CNS 合规';
 //: The downstream results a V3-D publish stales (never the route it just published).
 export const V3D_DOWNSTREAM_RESULTS=['coverage_3d','cns_service_capability','service_timeline',
   'cns_gap_v2','cns_site_plan','closed_loop_assessment','building_clearance','route_vertical_profiles',
   'cns_corridor_assessment','cns_corridor_gap_assessment','cns_corridor_site_plan','report'];
-const V3D_NOTE_FALLBACK='V3-D：把 current V3-C validated route 以显式、可追溯、事务式方式发布到既有 operational_routes + spatial_3d 高度剖面接口，'
-  +'并复用既有 P7/P8/P9/P10 做 CNS Assessment。EGM2008 正高只写入 locked profile，绝不写入 GeoJSON 第三坐标；CNS 绝不反馈 V3 cost。';
+const V3D_NOTE_FALLBACK='V3-D：把 current V3-C validated route 以显式、可追溯、事务式方式归档为兼容记录（compatibility 命名空间），'
+  +'不再发布到正式运行航路（operational_routes），但保留 P7/P8/P9/P10 CNS 评估回放能力。'
+  +'EGM2008 正高只写入 locked profile，绝不写入 GeoJSON 第三坐标；CNS 绝不反馈 V3 cost。';
 //: Fallback V3-B note, used while a snapshot carries no ``v3b_note`` yet.
 const V3B_NOTE_FALLBACK='V3-B corridor-local 精化候选 ≠ validated route：只在选定且 current 的 V3-A strategic_candidate 的 corridor 内做米制细网格工程精化；未做 V3-C exact polygon/terrain/continuous clearance 验证，也不写 operational_routes、algorithm_selection 或 spatial_3d。';
 
@@ -1417,7 +1445,7 @@ export function routePlannerV3AdoptionPanel(flow,preview=null){
     :'<div class="empty-note">尚无 V3-C validation 记录</div>';
   const evidenceOptions=['configured_real_sources','canonical_synthetic']
     .map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('');
-  return '<h3>V3-D 发布为运行分析航路（operational adoption）'+statusBadge(model.status)+'</h3>'
+  return '<h3>V3-D 归档为兼容记录（不发布，运行采纳归档）'+statusBadge(model.status)+'</h3>'
     +v3dStatusChain(model,validation)
     +'<div class="parameter-note">'+escapeHtml(model.note)+'</div>'
     +'<div class="parameter-note"><b>'+escapeHtml(V3D_CNS_SEPARATION_LABEL)+'</b></div>'
@@ -1429,7 +1457,7 @@ export function routePlannerV3AdoptionPanel(flow,preview=null){
     +'<div class="form-grid"><label>evidence_source<select id="v3dEvidenceSource">'+evidenceOptions+'</select></label>'
     +'<label>validation_ids（逗号分隔，可空=全部 eligible）<input class="panel-input" id="v3dValidationIds" placeholder="V3C-..."></label></div>'
     +'<div class="button-row"><button class="secondary" id="previewRoutePlannerV3Adoption">Preview（只读）</button>'
-    +'<button class="primary" id="applyRoutePlannerV3Adoption">Apply（需显式确认）</button>'
+    +'<button class="secondary" id="applyRoutePlannerV3Adoption">归档（需显式确认，不发布正式航路）</button>'
     +'<button class="secondary" id="revokeRoutePlannerV3Adoption">Revoke（需显式确认）</button></div>'
     +'<label class="check-row"><input type="checkbox" id="v3dConfirmed">我已复核 Preview 内容并确认 Apply/Revoke</label>'
     +v3dPreviewBlock(model,preview)
@@ -1678,10 +1706,10 @@ function referenceRoutesPanel(flow,selected){
 }
 
 function comparisonPanel(flow,selected){
-  const references=flow.reference_routes?.items||[],operational=(flow.operational_routes||[]).filter(item=>item.status==='passed');
+  const references=flow.reference_routes?.items||[],operational=canonicalOperationalRoutes(flow).filter(item=>item.status==='passed');
   const reference=(selected?.kind==='route'&&references.find(item=>item.reference_route_id===selected.id))||references[0];
   const planned=operational[0];
-  return '<div class="route-comparison"><b>真实参考航线 vs 系统规划运行航线</b><br>参考航线：'+(reference?escapeHtml(reference.name)+' · '+metric(reference.length_m,'m'):'不存在')+'<br>运行航线：'+(planned?escapeHtml(planned.route_id)+' · '+metric(planned.distance_m??pathLengthM(planned.path),'m'):'不存在')+'<br>两者是否都存在：'+(reference&&planned?'是':'否')+'（仅并列展示，不作优劣评分）</div>';
+  return '<div class="route-comparison"><b>真实参考航线 vs 正式运行航路</b><br>参考航线：'+(reference?escapeHtml(reference.name)+' · '+metric(reference.length_m,'m'):'不存在')+'<br>正式运行航路：'+(planned?escapeHtml(planned.route_id)+' · '+metric(planned.distance_m??pathLengthM(planned.path),'m'):'尚未发布正式运行航路')+'<br>两者是否都存在：'+(reference&&planned?'是':'否')+'（仅并列展示，不作优劣评分）</div>';
 }
 
 function referenceLandingPanel(flow){
@@ -1729,7 +1757,7 @@ export function towerClearancePanel(flow){
 export function render({flow,interactionMode,selectedReference=null,routeEvidenceHighlight=null}){
   const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+node.node_id+'</b> '+escapeHtml(node.name)+'<small>'+node.coordinate.map(value=>value.toFixed(5)).join(', ')+(node.reference_site_id?' · 来源 '+escapeHtml(node.reference_site_id):' · 手工点')+'</small></span><button data-delete-node="'+node.node_id+'">×</button></div>').join('');
   const routes=routesFor(flow);
-  const routeOptions=(flow.operational_routes||[]).map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
+  const routeOptions=canonicalOperationalRoutes(flow).map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
   const profiles=Object.values(flow.spatial_3d?.route_altitude_profiles||{}).map(item=>{const locked=item.locked_by_adoption===true||item.locked===true;return '<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_altitude_m===null||item.constant_altitude_m===undefined?'无 constant 值':escapeHtml(String(item.constant_altitude_m))+' m')+' '+escapeHtml(item.vertical_reference)+' · '+escapeHtml(item.source||'')+(item.derived?' · derived':'')+'</small>'+(locked?'<small>V3-D locked · advanced_variable_profile / v3c_validated_route（只读）</small>':'')+'</span></div>';}).join('');
   // The naked "Constant altitude" production entry is gone: the production cruise layer is
   // chosen in the 巡航高度层 panel.  This panel stays as the independent advanced/V3 profile
@@ -1799,14 +1827,17 @@ function bindLayeredAdoptionPanel(c){
 }
 
 function routeOperateSection(flow,{interactionMode,nodes}){
-  // 生成运行航路是整步最高频动作，放在操作区首个分段内。
-  // A. 现有 / Legacy 运行航路生成完全保持原样：两个按钮的 id / 端点 / 逻辑都不变，
-  //    这里只把它们与 B. Layered Candidate 发布显式分成两块，避免语义混用。
-  const routeActions='<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="primary" id="operationalRoutes">生成运行航路</button></div>';
+  // A. 旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 入口已降级为「旧版航路试算」：
+  //    按钮 id / 端点 / 逻辑保持不变，但文案与提示必须如实说明它不再发布正式运行航路。
+  //    B. 真正的正式入口是「Layered Candidate → 风险画像 → 独立验证 → 发布」。
+  const compatibility=compatibilityOperationalRoutes(flow);
+  const routeActions='<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="secondary" id="operationalRoutes">旧版航路试算（不发布）</button></div>';
   const legacyOperationalBlock=wbBlock(LAYERED_ADOPTION_LEGACY_LABEL,routeActions
-    +'<div class="parameter-note">这两个入口沿用既有 /api/workflow/scenario 与 /api/workflow/operational，'
-    +'生成的是场景航路 / 运行航路；它们与下方 Layered Candidate 发布（validation → operational adoption）'
-    +'是两套语义、互不替代，也绝不自动覆盖彼此的结果。</div>');
+    +'<div class="parameter-note"><b>旧版航路试算不发布</b>：该入口沿用既有 /api/workflow/operational，'
+    +'结果只在当前运行会话临时保留，并标记为非权威、已弃用；'
+    +'它不会写入正式运行航路，也不驱动三维覆盖、CNS 能力需求、设施规划、方案确认与正式报告。'
+    +'正式运行航路请在下方「Layered Candidate 发布」按 候选 → 风险画像 → 独立验证 → 发布 生成。'
+    +(compatibility.available?'（当前已有 '+compatibility.items.length+' 条<b>旧版试算航路（不发布 / 非正式）</b>，状态 '+statusText(compatibility.record?.status||'not_calculated')+'）':'')+'</div>');
   const sitesPanel=referenceLandingPanel(flow)
     +'<h3>项目起降点</h3>'
     +'<button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button>'
@@ -1818,7 +1849,7 @@ function routeOperateSection(flow,{interactionMode,nodes}){
     ['op-candidates','分层候选',wbBlock('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+layeredCandidatePanel(flow))],
     ['op-operational','运行航路',
       wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+legacyOperationalBlock
-        +'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚无航路</div>')+'</div>')
+        +'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚未发布正式运行航路</div>')+'</div>')
         +wbBlock('Layered Candidate 发布',renderLayeredAdoptionPanel(flow))],
     ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow)+renderRoute3DProfilePanel(flow))]
   ]});
@@ -1837,7 +1868,7 @@ function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighligh
     +renderRouteRiskProfile(flow,{routeEvidenceHighlight});
   return wbPanel('result','',{segments:[
     ['res-route','当前航路',
-      wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚无航路</div>')+'</div>')
+      wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚未发布正式运行航路</div>')+'</div>')
         +wbBlock('航路剖面',renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes))],
     ['res-feasibility','可行性与净空',wbBlock('可行性与净空',feasibility)],
     [ROUTE_RISK_PROFILE_SEGMENT,'路径风险画像',riskProfile],
