@@ -82,6 +82,18 @@ class ApiRouter:
             return Response(workflow.planning_constraint_fields(
                 self._first(query, "altitude_layer_id", "") or None
             ))
+        # B4X 只读展示读取路径：地图友好的紧凑约束结果（grid_id / outcome / blocked_by）。
+        # 浏览器不接触任何文件系统路径；这里不返回 evidence、也不返回完整 raw artifact。
+        # 几何复用前端已有的 grid_id → cell.bbox 索引，因此不重复下发 GeoJSON。
+        if path == "/api/planning-constraint-field":
+            return Response(workflow.planning_constraint_fields(
+                self._first(query, "altitude_layer_id", "") or None
+            ))
+        if path == "/api/planning-constraint-field/map":
+            return Response(workflow.planning_constraint_field_map(
+                self._first(query, "altitude_layer_id", "") or None,
+                self._first(query, "bbox", "") or None,
+            ))
         # ---- Layered Risk-Aware Theta* V2 additive interfaces ------------------------
         if path == "/api/shelter-coefficient-policy": return Response(workflow.shelter_coefficient_policy())
         if path == "/api/population-nodata-policy": return Response(workflow.population_nodata_policy())

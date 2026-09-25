@@ -1,0 +1,104 @@
+/* =========================================================================
+ * B4X 产品 UI 收敛样式（Six-Step Product UI Convergence）
+ *
+ * 只新增 B4X 引入的展示元素，不覆盖任何既有布局规则：
+ *  - 六区结构标记（.wb-section-role）
+ *  - 主操作区 / 阻塞项 / 下一步（.wb-primary-action / .wb-blockers / .wb-next-step）
+ *  - 正式链条（.production-chain）
+ *  - 高度层选择器（.altitude-layer-selector）
+ *  - 规划约束场状态卡与图例（.constraint-*）
+ *  - 需求等级徽章（.requirement-badge）
+ *  - 高级 / 审计信息（.advanced-audit-note）
+ *  - 网格弹窗里的约束段落（.grid-info-constraint）
+ *
+ * 约定：状态色只表达"状态类别"，不表达通过 / 不通过的业务结论；
+ * 障碍单元（blocked）在约束类元素中始终拥有最高视觉权重。
+ * ========================================================================= */
+
+/* ---- 六区结构标记 ------------------------------------------------------ */
+.wb-section-role{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:baseline;
+  padding:.4rem .55rem;margin:0 0 .55rem;border-radius:6px;
+  background:color-mix(in srgb,currentColor 6%,transparent);
+  border-left:3px solid color-mix(in srgb,currentColor 30%,transparent);
+  font-size:.78rem;line-height:1.5;opacity:.92}
+.wb-section-role b{font-weight:600}
+.wb-section-role small{opacity:.75}
+
+/* ---- 主操作区：全段只允许一个 primary 按钮 ----------------------------- */
+.wb-primary-action{display:flex;flex-direction:column;gap:.35rem;margin:.5rem 0;
+  padding:.5rem;border-radius:6px;border:1px solid color-mix(in srgb,currentColor 18%,transparent)}
+.wb-primary-action .primary{width:100%}
+.wb-primary-note{font-size:.75rem;line-height:1.5;opacity:.8}
+
+/* ---- 阻塞项 / 工程假设 ------------------------------------------------- */
+.wb-blockers{display:flex;flex-direction:column;gap:.35rem;margin:.4rem 0}
+.wb-blocker{display:flex;flex-direction:column;gap:.15rem;padding:.4rem .5rem;border-radius:6px;
+  font-size:.78rem;line-height:1.5;border-left:3px solid transparent}
+.wb-blocker b{font-size:.72rem;letter-spacing:.02em;opacity:.85}
+.wb-blocker[data-kind="blocker"]{background:rgba(201,42,42,.08);border-left-color:#c92a2a}
+.wb-blocker[data-kind="assumption"]{background:rgba(240,160,32,.10);border-left-color:#f0a020}
+
+/* ---- 下一步 ------------------------------------------------------------ */
+.wb-next-step{display:flex;flex-direction:column;gap:.3rem;margin-top:.6rem}
+.wb-next-step .primary.full{width:100%}
+.wb-next-reason{font-size:.75rem;line-height:1.5;color:#a33}
+
+/* ---- 正式链条（Step3） ------------------------------------------------- */
+.production-chain{margin:.35rem 0 .55rem;padding-left:1.3rem;font-size:.8rem;line-height:1.7}
+.production-chain li::marker{font-weight:600;opacity:.75}
+
+/* ---- 高度层选择器（Step2 / Step3 共用） -------------------------------- */
+.altitude-layer-selector{display:flex;flex-direction:column;gap:.3rem;margin:.4rem 0}
+.altitude-layer-selector label{font-size:.78rem;font-weight:600}
+.altitude-layer-catalog-note{font-size:.72rem;opacity:.75}
+.altitude-layer-selector option[data-usable="false"]{color:#8a5a00}
+
+/* ---- 规划约束场状态卡 -------------------------------------------------- */
+.constraint-card{display:flex;flex-direction:column;gap:.45rem;margin:.4rem 0;
+  padding:.55rem;border-radius:8px;border:1px solid color-mix(in srgb,currentColor 18%,transparent)}
+.constraint-card-head{display:flex;flex-wrap:wrap;gap:.4rem;align-items:baseline;justify-content:space-between}
+.constraint-freshness{font-size:.72rem;padding:.1rem .4rem;border-radius:999px;
+  background:color-mix(in srgb,currentColor 10%,transparent)}
+.constraint-freshness[data-state="stale"]{background:rgba(240,160,32,.22)}
+.constraint-freshness[data-state="current"]{background:rgba(63,158,106,.20)}
+.constraint-freshness[data-state="unavailable"]{background:rgba(201,42,42,.16)}
+.constraint-freshness small{display:block;opacity:.8}
+.constraint-metrics b{display:flex;flex-direction:column}
+.constraint-metrics b[data-outcome="blocked"]{color:#c92a2a}
+.constraint-metrics b[data-outcome="unknown"]{color:#8a5a00}
+.constraint-metrics b[data-outcome="pass"]{color:#1d5c3d}
+.constraint-blockers{display:flex;flex-wrap:wrap;gap:.3rem .5rem;font-size:.78rem}
+.constraint-blockers b{font-weight:600}
+
+/* 约束图例 */
+#constraintFieldLegend .constraint-legend-row{display:flex;align-items:center;gap:.35rem;font-size:.75rem}
+#constraintFieldLegend .constraint-legend-row i{width:11px;height:11px;border-radius:2px;display:inline-block}
+#constraintFieldLegend .constraint-legend-row span{margin-left:auto;opacity:.8}
+#constraintFieldLegend .constraint-legend-row[data-outcome="blocked"]{font-weight:600}
+
+/* 网格弹窗里的约束段落：障碍 / 证据不足放在摘要之前，视觉权重最高 */
+.grid-info-constraint{display:block;margin-bottom:.45rem;padding:.45rem .5rem;border-radius:6px;
+  font-size:.78rem;line-height:1.55;border-left:3px solid transparent}
+.grid-info-constraint[data-outcome="blocked"]{background:rgba(201,42,42,.10);border-left-color:#c92a2a}
+.grid-info-constraint[data-outcome="unknown"]{background:rgba(240,160,32,.12);border-left-color:#f0a020}
+.grid-info-constraint[data-outcome="pass"]{background:rgba(63,158,106,.10);border-left-color:#3f9e6a}
+
+/* ---- 输入需求等级徽章（Step1） ----------------------------------------- */
+.requirement-badge{display:inline-block;padding:.05rem .38rem;border-radius:999px;font-size:.7rem;
+  background:color-mix(in srgb,currentColor 10%,transparent)}
+.requirement-badge[data-level="required"]{background:rgba(201,42,42,.16)}
+.requirement-badge[data-level="assumable"]{background:rgba(240,160,32,.18)}
+.requirement-badge[data-level="optional"]{background:rgba(63,158,106,.14)}
+.requirement-badge[data-level="enhanced"]{background:rgba(21,116,212,.14)}
+
+/* ---- 高级 / 审计信息 --------------------------------------------------- */
+.advanced-audit-note{display:flex;flex-wrap:wrap;gap:.35rem .5rem;align-items:baseline;
+  margin:.35rem 0;padding:.35rem .5rem;border-radius:6px;font-size:.74rem;line-height:1.55;
+  background:color-mix(in srgb,currentColor 5%,transparent);opacity:.9}
+.advanced-audit-tag{font-weight:600;font-size:.7rem;padding:.05rem .35rem;border-radius:4px;
+  background:color-mix(in srgb,currentColor 12%,transparent)}
+
+/* ---- 图层抽屉：约束子开关缩进 ------------------------------------------ */
+.layer-row.layer-sub{padding-left:1rem;font-size:.75rem;opacity:.9}
+.layer-row.layer-compat{opacity:.85}
+.layer-row.layer-compat span::after{content:" · 研究对照";font-size:.7rem;opacity:.75}

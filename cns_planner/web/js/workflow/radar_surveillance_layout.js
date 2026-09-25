@@ -13,7 +13,7 @@
  *
  * 本模块只产出 HTML 字符串与纯数据模型，不直接访问 DOM，便于 node 环境测试。
  */
-import {escapeHtml,statusBadge,statusText} from './common.js';
+import {escapeHtml,statusBadge,statusText,verticalReferenceText} from './common.js';
 
 export const RADAR_LAYOUT_ENDPOINT='/api/radar-surveillance-layout';
 export const RADAR_LAYOUT_EVALUATE_ENDPOINT='/api/radar-surveillance-layout/evaluate';
@@ -37,15 +37,42 @@ export const REQUIRED_SITE_COUNT_LABELS={
 //: V1.1 显式语义（前端只展示，不做任何推算）。
 export const RADAR_LAYOUT_VERSION='1.1';
 export const RADAR_LAYOUT_V1_1_SEMANTICS={
-  route_altitude:'固定巡航高度 ALT-080 / 80 m EGM2008（不是地形高程）',
-  vertical_delta:'vertical_delta = 目标 − 雷达原点；目标低于雷达原点 ⇒ 负仰角 ⇒ 不覆盖',
+  // 高度层不写死：实际值来自 readiness.fixed_altitude（B4X §17）。
+  route_altitude:'固定巡航高度层（EGM2008 正高，不是地形高程）',
+  vertical_delta:'高度差 = 目标 − 雷达原点；目标低于雷达原点 ⇒ 负仰角 ⇒ 不覆盖',
   radar_origin:'雷达原点 = tower_top_orthometric_m（塔顶即相位中心，不再叠加挂高）',
   coastal_buffer:'海岸不确定带：工程假设 / 未确认，不是数据真实精度',
-  plane_radii:'斜距 ≠ 80 m 平面水平半径；半径由后端交截计算提供',
+  plane_radii:'斜距 ≠ 平面水平半径；半径由后端交截计算提供',
+};
+
+// ---- 字段级中文取词（本面板只展示，不参与任何推算） --------------------------
+//: 雷达原点基准 raw 值 → 中文。
+export const RADAR_ORIGIN_BASIS_TEXT={
+  tower_top_orthometric_m:'塔顶 EGM2008 正高',
+  tower_top:'塔顶',ground:'地面',unknown:'基准未确认'
+};
+//: 安装假设 raw 值 → 中文。
+export const RADAR_INSTALLATION_TEXT={
+  radar_phase_center_at_tower_top:'相位中心位于塔顶',
+  radar_phase_center_at_mount_height:'相位中心位于挂高',
+  unknown:'安装假设未确认'
+};
+//: 陆域判定依据 raw 值 → 中文。
+export const SURFACE_BASIS_TEXT={
+  explicit_polygon:'显式多边形',
+  land_mask_polygon:'显式陆域多边形',
+  not_configured:'未配置'
+};
+//: 参数来源 raw 值 → 中文。
+export const PARAMETER_ORIGIN_TEXT={
+  engineering_assumption:'工程假设',user_configuration:'用户显式配置',
+  project_default:'项目默认值',algorithm_baseline:'算法基线'
 };
 
 const pct=value=>Number.isFinite(value)?(value*100).toFixed(1)+'%':'—';
 const num=(value,digits=1)=>Number.isFinite(value)?value.toFixed(digits):'—';
+/** 垂向基准 raw 值 → 用户可理解中文（绝不直接显示 `egm2008_orthometric`）。 */
+const referenceLabel=value=>verticalReferenceText(value);
 const text=value=>(value==null||value==='')?'—':String(value);
 
 /** 求解状态 → 用户可读标签（绝不含糊"未完成"与"不可行"）。 */
@@ -315,51 +342,54 @@ export function renderRadarSurveillanceLayoutPanel(flow){
   const buffer=(model.landMask?.coastal_uncertainty_buffer||{});
   const demoWarning=model.demoPreviewOnly
     ?'<div class="parameter-note"><b>'+escapeHtml(model.previewWarning||RADAR_DEMO_PREVIEW_WARNING)
-      +'</b><br><small>not_for_operational_use=true · not_for_safety_claim=true · not_for_final_confirmed_plan=true</small></div>'
+      +'</b><br><small>工程标识：not_for_operational_use=true · not_for_safety_claim=true'
+      +' · not_for_final_confirmed_plan=true（不用于运行、不用于安全声明、不作为最终确认方案）</small></div>'
     :'';
 
   const readinessBlock='<div class="parameter-note">'
-    +'<b>'+escapeHtml(RADAR_LAYOUT_PROPOSAL_TITLE)+'</b> · model_scope '+escapeHtml(RADAR_LAYOUT_MODEL_SCOPE)
-    +' · algorithm_version '+escapeHtml(String(readiness.algorithm_version||RADAR_LAYOUT_VERSION))+'<br>'
+    +'<b>'+escapeHtml(RADAR_LAYOUT_PROPOSAL_TITLE)+'</b>'
+    +' · 模型范围 '+escapeHtml(RADAR_LAYOUT_MODEL_SCOPE)
+    +' · 算法版本 '+escapeHtml(String(readiness.algorithm_version||RADAR_LAYOUT_VERSION))+'<br>'
     +'航路：'+(readiness.passed_operational_route_count||0)+' 条已发布（共 '+(readiness.operational_route_count||0)+' 条）'
-    +' · 固定高度层 '+escapeHtml(item?.altitude_layer_id||readiness.fixed_altitude?.altitude_layer_id||'ALT-080')
+    +' · 固定高度层 '+escapeHtml(item?.altitude_layer_id||readiness.fixed_altitude?.altitude_layer_id||'尚未选择高度层')
     +'（'+(Number.isFinite(item?.altitude_m)?num(item.altitude_m):num(readiness.fixed_altitude?.altitude_m))+' m，'
-    +escapeHtml(item?.vertical_reference||readiness.fixed_altitude?.vertical_reference||'egm2008_orthometric')+'）<br>'
+    +escapeHtml(referenceLabel(item?.vertical_reference||readiness.fixed_altitude?.vertical_reference))+'）<br>'
     +'<b>航路采样高度</b>：'+escapeHtml(RADAR_LAYOUT_V1_1_SEMANTICS.route_altitude)+'<br>'
     +'铁塔：'+(readiness.tower_count||0)+' 座 · 已解析雷达原点 '+(readiness.tower_with_resolved_radar_base_count||0)+' 座'
-    +' · tower_obstacle_profiles '+(readiness.tower_obstacle_profile_count||0)+' 条<br>'
-    +'<b>雷达原点</b>：'+escapeHtml(origin.radar_origin_basis||'tower_top_orthometric_m')
-    +'（'+escapeHtml(origin.installation_assumption||'radar_phase_center_at_tower_top')
-    +' · engineering_confirmed='+String(origin.engineering_confirmed===true)+'）<br>'
+    +' · 塔顶障碍事实 '+(readiness.tower_obstacle_profile_count||0)+' 条<br>'
+    +'<b>雷达原点</b>：'+escapeHtml(RADAR_ORIGIN_BASIS_TEXT[origin.radar_origin_basis]||origin.radar_origin_basis||'塔顶 EGM2008 正高')
+    +'（'+escapeHtml(RADAR_INSTALLATION_TEXT[origin.installation_assumption]||origin.installation_assumption||'相位中心位于塔顶')
+    +' · 工程确认='+(origin.engineering_confirmed===true?'是':'否')+'）<br>'
     +'<small>'+escapeHtml(RADAR_LAYOUT_V1_1_SEMANTICS.radar_origin)+'</small><br>'
     +'<small>'+escapeHtml(RADAR_LAYOUT_V1_1_SEMANTICS.vertical_delta)+'</small><br>'
-    +'legacy 挂高：'+statusBadge('legacy_not_used_by_v1_1')
+    +'历史兼容挂高：<b>不参与本版几何</b>'
     +(Number.isFinite(model.legacyMountHeight?.radar_mount_height_m)
-      ?' 记录值 '+num(model.legacyMountHeight.radar_mount_height_m)+' m · 不参与 V1.1 几何'
-      :' 未配置 · 不影响 V1.1 几何')+'<br>'
-    +'ALT-080：'+statusBadge(readiness.fixed_altitude?.present?(readiness.fixed_altitude?.confirmed?'passed':'pending_confirmation'):'missing_data')
-    +' · EPSG:32651 米制变换 '+statusBadge(readiness.metric_transform?.status||'not_checked')
-    +' · solver '+statusBadge(readiness.solver?.available?'passed':'solver_unavailable')
+      ?' 记录值 '+num(model.legacyMountHeight.radar_mount_height_m)+' m · 仅作历史读取'
+      :' 未配置 · 不影响几何')+'<br>'
+    +escapeHtml(String(item?.altitude_layer_id||readiness.fixed_altitude?.altitude_layer_id||'高度层'))
+    +'：'+statusBadge(readiness.fixed_altitude?.present?(readiness.fixed_altitude?.confirmed?'passed':'pending_confirmation'):'missing_data')
+    +' · 米制变换（EPSG:32651） '+statusBadge(readiness.metric_transform?.status||'not_checked')
+    +' · 求解器 '+statusBadge(readiness.solver?.available?'passed':'solver_unavailable')
     +(readiness.solver?.available?'（'+escapeHtml(String(readiness.solver.scipy_version||'—'))+'）'
-      :'（'+escapeHtml(readiness.solver?.reason||'scipy 不可用；绝不退化为 greedy')+'）')+'<br>'
-    +'land mask：'+statusBadge(model.landMaskReady?'passed':'missing_data')
+      :'（'+escapeHtml(readiness.solver?.reason||'求解器不可用；绝不退化为贪心近似')+'）')+'<br>'
+    +'陆域掩膜：'+statusBadge(model.landMaskReady?'passed':'missing_data')
     +(model.landMaskReady
       ?' '+escapeHtml(model.landMask?.layer_name||model.landMaskProvenance?.layer_name||'—')
-        +' · '+escapeHtml(model.landMask?.source_crs||model.landMaskProvenance?.source_crs||'CRS 未知')
-        +' · '+escapeHtml(model.landMask?.classification_basis||model.landMaskProvenance?.classification_basis||'explicit_polygon')
+        +' · '+escapeHtml(model.landMask?.source_crs||model.landMaskProvenance?.source_crs||'坐标基准未知')
+        +' · 判定依据 '+escapeHtml(SURFACE_BASIS_TEXT[model.landMask?.classification_basis||model.landMaskProvenance?.classification_basis]||model.landMask?.classification_basis||'显式多边形')
       :' '+escapeHtml(model.landMaskReason||'未配置显式陆域 Polygon 来源')
-        +'（surface_class 保持 unknown，fail-closed，绝不按 sea 处理，也不用 DEM NoData 推断海洋）')+'<br>'
+        +'（地表类别保持未知并 fail-closed，绝不按海域处理，也不用 DEM 无数据推断海洋）')+'<br>'
     +'海岸不确定带：'+num(Number.isFinite(buffer.coastal_uncertainty_buffer_m)
       ?buffer.coastal_uncertainty_buffer_m:item?.parameters?.coastal_uncertainty_buffer_m)+' m · '
-    +escapeHtml(buffer.parameter_origin||'engineering_assumption')
-    +' · confirmed='+String(buffer.confirmed===true)
+    +escapeHtml(PARAMETER_ORIGIN_TEXT[buffer.parameter_origin]||buffer.parameter_origin||'工程假设')
+    +' · 已确认='+(buffer.confirmed===true?'是':'否')
     +'<br><small>'+escapeHtml(RADAR_LAYOUT_V1_1_SEMANTICS.coastal_buffer)+'</small><br>'
-    +'采样参数：optimization '+num(parameters.optimization_sample_spacing_m||25)+' m'
-    +' · validation '+num(parameters.validation_sample_spacing_m||5)+' m'
-    +' · max refinement rounds '+text(parameters.max_refinement_rounds==null?3:parameters.max_refinement_rounds)+'<br>'
+    +'采样参数：优化 '+num(parameters.optimization_sample_spacing_m||25)+' m'
+    +' · 复核 '+num(parameters.validation_sample_spacing_m||5)+' m'
+    +' · 最大细化轮次 '+text(parameters.max_refinement_rounds==null?3:parameters.max_refinement_rounds)+'<br>'
     +'<small>'+escapeHtml(RADAR_LAYOUT_V1_1_SEMANTICS.plane_radii)+'</small><br>'
     +(model.readinessBlockers.length
-      ?'<b>readiness 阻断</b>：'+model.readinessBlockers.map(escapeHtml).join(' · ')+'<br>':'')
+      ?'<b>准备情况阻断</b>：'+model.readinessBlockers.map(escapeHtml).join(' · ')+'<br>':'')
     +escapeHtml(RADAR_LAYOUT_PROPOSAL_ONLY_NOTE)+'</div>';
 
   const policyForm='<div class="form-grid">'
@@ -367,14 +397,14 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +(Number.isFinite(buffer.coastal_uncertainty_buffer_m)?buffer.coastal_uncertainty_buffer_m:30)+'"></label>'
     +'<label>陆域图层名<input class="panel-input" id="radarLandMaskLayer" value="'
     +escapeHtml(model.landMask?.layer_name||model.landMaskProvenance?.layer_name||'zhejiang_boundary')+'"></label>'
-    +'<label>legacy 工程示例挂高 (m)<input class="panel-input" type="number" id="radarMountHeight" value="'
+    +'<label>历史兼容工程示例挂高 (m)<input class="panel-input" type="number" id="radarMountHeight" value="'
     +(Number.isFinite(model.legacyMountHeight?.radar_mount_height_m)?model.legacyMountHeight.radar_mount_height_m:'')
     +'" placeholder="留空=未配置" disabled></label>'
     +'</div>'
     +'<div class="parameter-note">海岸不确定带是<b>工程保守假设（未确认）</b>，不是边界数据真实精度，'
-    +'也不等同于 5 m validation resolution。legacy 挂高字段只作历史兼容读取，'
-    +'V1.1 雷达原点恒等于 tower_top_orthometric_m，该字段不参与任何几何。</div>'
-    +'<label class="check-row"><input type="checkbox" id="radarAllowMixed" '+(item?.stage==='radar_i_plus_radar_ii'?'checked':'')+'> 允许 I-only 被证明不可行后回退 I型+II型</label>'
+    +'也不等同于 5 m 复核分辨率。历史挂高字段只作兼容读取，'
+    +'本版雷达原点恒等于塔顶 EGM2008 正高，该字段不参与任何几何。</div>'
+    +'<label class="check-row"><input type="checkbox" id="radarAllowMixed" '+(item?.stage==='radar_i_plus_radar_ii'?'checked':'')+'> 允许仅Ⅰ型被证明不可行后回退 Ⅰ型+Ⅱ型</label>'
     +'<div class="button-row">'
     +'<button class="secondary" id="saveRadarSurveillancePolicy">保存划设参数</button>'
     +'<button class="primary" id="evaluateRadarSurveillanceLayout">运行初步划设</button>'
@@ -387,11 +417,12 @@ export function renderRadarSurveillanceLayoutPanel(flow){
   }
 
   const solverBlock='<div class="flow-summary">'
-    +'stage：'+escapeHtml(item.stage_label||item.stage||'—')
-    +' · solver '+escapeHtml(model.solver?.name||'—')+'（'+escapeHtml(model.solver?.library||'—')+'）'
+    +'阶段：'+escapeHtml(item.stage_label||item.stage||'—')
+    +' · 求解器 '+escapeHtml(model.solver?.name||'—')+'（'+escapeHtml(model.solver?.library||'—')+'）'
     +' · 状态 '+statusBadge(model.solverStatus||'not_run')+'（'+escapeHtml(model.solverLabel||'—')+'）<br>'
-    +'optimality_proven='+String(model.optimalityProven)+' · infeasibility_proven='+String(model.infeasibilityProven)
-    +' · mip_gap '+(model.solver?.mip_gap==null?'—':Number(model.solver.mip_gap).toExponential(2))
+    +'<small>工程标识：optimality_proven='+String(model.optimalityProven)
+    +' · infeasibility_proven='+String(model.infeasibilityProven)
+    +' · mip_gap '+(model.solver?.mip_gap==null?'—':Number(model.solver.mip_gap).toExponential(2))+'</small>'
     +'<br>'+escapeHtml(model.solver?.message||'')+'</div>';
 
   const counts='<div class="coverage-card"><b>面阵与站址</b>'
@@ -405,7 +436,7 @@ export function renderRadarSurveillanceLayoutPanel(flow){
   const coverageBlock=coverageLine('陆地航路',model.land,REQUIRED_SITE_COUNT_LABELS.land)
     +coverageLine('海上航路',model.sea,REQUIRED_SITE_COUNT_LABELS.sea)
     +coverageLine('海岸不确定带（按陆地处理）',model.coastalUncertain,REQUIRED_SITE_COUNT_LABELS.coastal_uncertain)
-    +coverageLine('未知地表（fail-closed）',model.unknown,'未知：不得自动按 sea 处理');
+    +coverageLine('未知地表（fail-closed）',model.unknown,'未知：不得自动按海域处理');
 
   const refinementBlock=(model.refinementRounds||[]).map(round=>'<div class="list-row"><span>第 '
     +(round.round_index+1)+' 轮复核（'+num(round.spacing_m)+' m）</span><small>违反点 '+text(round.violation_count)

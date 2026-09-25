@@ -16,6 +16,8 @@ import {riskV2LegendModel} from './workflow/risk_framework_v2.js';
 import {gridCellDetailsHtml,populationDisplayLabel} from './workflow/grid_details.js';
 import {attachMeasureTool} from './map/measure_tool.js';
 import {bindShell,bindLayerControls,updateLodBadge,renderRailSteps,layerSwitches} from './shell.js';
+import {createConstraintFieldView} from './workflow/constraint_view.js';
+import {createShellActions} from './workflow/shell_actions.js';
 import * as Step01 from './workflow/step01_project.js';
 import * as Step02 from './workflow/step02_workspace.js';
 import * as Step03 from './workflow/step03_routes.js';
@@ -29,14 +31,15 @@ const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // 统一的地图图层开关（图层抽屉里全部 checkbox 都在这里）：layeredFeasibilityLayer 只画
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer'];
+// B4X 新增「高度层障碍」（Planning Constraint Field）三个开关：主开关 + 证据不足 + 可通行；
+// 与其它图层一样默认关闭，数据按需从只读 HTTP 路径读取，不在启动时加载。
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
 // 临时 evidence highlight（RouteRiskProfile → 地图联动）：纯 UI 状态，不写 ProjectState、
 // 不调用 API、不改 zoom / layer / LOD，也不新增任何永久状态。
-let routeEvidenceHighlight=null;
-let gridDataSerial=0;
+let routeEvidenceHighlight=null,gridDataSerial=0;
 let gridDisplay={outline:false,theme:'none'};// 首次打开：网格边界默认关闭（图层抽屉里只有在线底图默认勾选）
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
 const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
@@ -50,6 +53,14 @@ const workbench=createWorkbench({
   setState:value=>store.set({ui:{...store.get().ui,workbench:value}})
 });
 function layers(){return layerSwitches($,LAYER_IDS);}
+// B4X：高度层障碍（Planning Constraint Field）在壳层的唯一装配点。全部逻辑
+// （按需读取 / 覆盖层绘制 / 图例 / 点击详情 / 显式生成）都在 workflow/constraint_view.js，
+// main.js 只做依赖注入，保持轻入口。
+const constraintView=createConstraintFieldView({
+  api,getFlow:()=>flow,getLayers:layers,visibleBounds:visibleLonLatBounds,
+  getGridCache:()=>gridRenderCache,getNode:$,
+  afterChange:()=>{renderWorkflow();updateMapLegend({$,flow});paint();}
+});
 // 唯一允许写入全局 flow 的地方：state/workflow_snapshot.js 统一「安装 snapshot → 按需
 // hydrate 逐 cell 网格明细 → render」，gridDataSerial 由它独占管理（防竞态）。
 // BUG-GRID-POPUP-001：通用 /api/workflow 快照是 slim 的（不含 cells），因此**所有**写入
@@ -71,8 +82,7 @@ async function computeAction(path,payload={}){return api(path,{method:'POST',hea
 // V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
 async function loadRoutePlannerV3Detail(){
   const detail=await api('/api/route-planner-v3-experiments');
-  flow={...flow,route_planner_v3_detail:detail};store.set({workflow:flow});renderWorkflow();paint();
-  return detail;
+  flow={...flow,route_planner_v3_detail:detail};store.set({workflow:flow});renderWorkflow();paint();return detail;
 }
 function showError(message){$('error').hidden=!message;$('error').textContent=message||'';}
 function panelError(message){const target=$('panelError');if(target)target.textContent=message||'';else showError(message);}
@@ -113,7 +123,13 @@ function rebuildGridRenderCache(){
 function findGridCell(lon,lat){return hitGridCell(gridRenderCache,lon,lat,GridTheme);}
 function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,display:gridDisplay,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme,palettes:{population:populationPalette,terrain:terrainPalette,buildings:buildingPalette,risk:riskPalette},riskBreaks});}
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
-function formatGridDetails(item){return gridCellDetailsHtml(item,flow,GridTheme.formatNumber,gridDisplay.theme);}
+// 网格边界之上、航路之下：可行性单元不遮挡规划结果，也不被网格线切碎。
+function drawConstraintLayer(){return constraintView.draw({ctx,view,screenPoint,gridTheme:GridTheme});}
+function formatGridDetails(item){
+  const gridId=String(item?.cell?.grid_id||'');
+  return constraintView.cellDetailsHtml(gridId)+gridCellDetailsHtml(item,flow,GridTheme.formatNumber,gridDisplay.theme,constraintView.cellFor(gridId),constraintView.altitudeLayerLabel());
+}
+
 // CNS 缺口段计数：只读汇总，用于状态栏提示；绘制本身在 map/display_layers.js
 function cnsGapSegments(){
   const analysis=flow?.cns_gap_analysis;
@@ -144,7 +160,8 @@ function drawWorkflowOverlay(){
     ctx,view,flow,plan:currentPlan,layers:layers(),screenPoint,profileHoverCoordinate,gridTheme:GridTheme,
     towerHighlight:towerReference.highlightedTower(),routeEvidenceHighlight,proposedPlanActions,
     drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
-    drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint)});
+    drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint),
+    drawConstraintLayer});
   // 参考层：只读参考数据；视觉层级 candidate > scenario / reference，因此参考线再压一层。
   const plan=currentPlan,switches=layers(),styles=plan.styles;
   drawReferenceOverlay({
@@ -231,6 +248,7 @@ function updateGridNotice(){
   notice.hidden=!gridDisplay.outline||hasGrid;notice.textContent='请先在第02步保存工作区以生成标准网格';
 }
 function updateGridThemeLegend(){
+  if(constraintView.updateLegend())return;
   if(updateLayeredLegends({$,flow,formatNumber:GridTheme.formatNumber}))return;
   if(updateRiskV2Legend())return;
   const legend=$('gridThemeLegend'),model=gridThemeLegendModel(flow,gridRenderCache,gridDisplay);
@@ -263,7 +281,9 @@ function syncLayerControls(){
     $,layerIds:LAYER_IDS,queue,paint,
     setGridOutline(value){gridDisplay.outline=value;},
     updateGridNotice,updateGridThemeLegend,updateMapLegend,
-    onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked)});
+    onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked),
+    // 勾选「高度层障碍」才按需读取逐格明细；取消勾选只停止绘制，不丢已读数据。
+    onConstraintLayer:()=>{constraintView.loadMap();paint();}});
 }
 function statusText(status){return labelFor(status);}function statusBadge(status){return badgeFor(status);}function escapeHtml(value){return escapeValue(value);}
 function setStep(step){
@@ -284,7 +304,7 @@ function renderWorkflow(){
   // mutation / 重新渲染后保持当前一级与二级标签以及滚动位置
   const scroll=body?body.scrollTop:0;
   store.set({ui:{...store.get().ui,workbench:{...store.get().ui.workbench,scroll}}});
-  const rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight}});
+  const rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight,constraint:constraintView.presentation()}});
   workbench.mount({root:rendered,step});
   step.bind(stepBindings());
   if(body)body.scrollTop=Math.min(scroll,Math.max(0,body.scrollHeight-body.clientHeight));
@@ -311,6 +331,9 @@ function stepBindings(){return {
     set(value){routeEvidenceHighlight=value||null;paint();},
     clear(){routeEvidenceHighlight=null;paint();},
   },
+  // 约束场（高度层障碍）展示层入口：选择高度层只切展示、不重算；生成必须显式点击。
+  // 绑定细节全部在 workflow/constraint_view.js，main.js 只做一次转发。
+  constraintField:constraintView.stepBindings(resourceAction,refreshWorkflow),
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});await applyWorkflowSnapshot(data);renderWorkflow();paint();return data;},
   startWorkspace(){interactionMode='workspace';measure.sync();draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
@@ -321,37 +344,14 @@ function stepBindings(){return {
   saveWorkspace:async()=>{try{await mutate('workspace',{bbox:draftWorkspace,grid_level:Step02.OPERATIONAL_GRID_LEVEL});}catch(exc){try{await refreshWorkflow();}catch(_){/* 读取失败时仍把原始错误暴露给用户 */}throw exc;}interactionMode='pan';measure.sync();draftWorkspace=null;fitLonLatBbox(flow.workspace?.bbox);},
   toggleNodeMode(){interactionMode=interactionMode==='node'?'pan':'node';measure.sync();renderWorkflow();}
 };}
-async function previewPlanningReport(){
-  const target=window.open('about:blank','_blank');
-  try{
-    const result=await computeAction('/api/cns-planning-report/preview',{}),blob=new Blob([result.html],{type:'text/html;charset=utf-8'}),url=URL.createObjectURL(blob);
-    if(target)target.location.href=url;else throw Error('浏览器阻止了预览窗口，请允许本地工作台打开新窗口');
-    setTimeout(()=>URL.revokeObjectURL(url),60000);
-    panelError('报告草稿已在新窗口打开；预览不会写入项目。');
-  }catch(exc){if(target)target.close();throw Error('报告预览失败：'+exc.message+'。请检查项目状态后重试。');}
-}
-async function downloadPlanningReport(kind){
-  const reports=flow?.cns_planning_reports||{},reportId=reports.active_report_id;
-  if(!reportId)throw Error('尚无正式报告。请先确认方案并点击“生成正式报告”。');
-  const url='/api/cns-planning-report/artifact?'+new URLSearchParams({report_id:reportId,kind});
-  const blob=await api(url),objectUrl=URL.createObjectURL(blob),link=document.createElement('a');
-  link.href=objectUrl;link.download={html:'cns-planning-report.html',pdf:'cns-planning-report.pdf',package:'cns-planning-package.zip',json:'cns-planning-report.json'}[kind]||'report.bin';link.click();
-  setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
-}
-// 顶部全局"保存项目"：沿用既有保存语义（step01 保存按钮仍是同一个入口）
-async function saveProject(projectDir,name){
-  const directory=projectDir||state?.project_storage?.directory||'';
-  if(!directory)return panelError('请先在第01步选择项目数据存储位置');
-  const button=$('saveProjectTop')||$('saveProject');
-  try{
-    if(button)button.disabled=true;panelError('');
-    const projectName=name||$('projectName')?.value||flow?.project?.name||'';
-    const data=await api('/api/workflow/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:projectName})});
-    flow=data;store.set({workflow:flow});
-    update(await api('/api/project/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})}));
-  }catch(exc){panelError('保存项目失败：'+exc.message);}
-  finally{if(button&&document.body.contains(button))button.disabled=false;}
-}
+// 报告预览 / 报告下载 / 保存项目：纯 UI 动作编排，实现在 workflow/shell_actions.js。
+const shellActions=createShellActions({getNode:$,panelError});
+const previewPlanningReport=()=>shellActions.previewReport(computeAction);
+const downloadPlanningReport=kind=>shellActions.downloadReport(kind,{api,flow,onMissing:message=>panelError(message)});
+const saveProject=(projectDir,name)=>shellActions.saveProject({projectDir,name},{
+  api,state,flow,applyFlow:async data=>{flow=data;store.set({workflow:flow});},
+  saveAs:directory=>api('/api/project/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})}),
+  applyState:update});
 // 打开项目：(1) 先按完整 workflow 快照 hydrate（含逐 cell 网格明细），(2) 再刷新 /api/state。
 async function openProject(projectDir){
   if(!projectDir)return panelError('请先选择项目文件夹');

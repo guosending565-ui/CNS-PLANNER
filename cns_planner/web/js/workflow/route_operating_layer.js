@@ -1,4 +1,4 @@
-import {escapeHtml,statusBadge,statusText} from './common.js';
+import {escapeHtml,statusBadge,statusText,verticalReferenceText} from './common.js';
 
 // Layered Operational Route Architecture V1 front-end contract.  The production route is
 // ``离场程序 → 固定巡航高度层 + 水平航路 → 进场程序``: one route carries exactly one cruise
@@ -106,15 +106,21 @@ export function routeOperatingModel(flow){
 }
 
 function layerRow(layer){
+  // 垂向基准必须转成用户可理解中文（B4X §9）：绝不直接把 `egm2008_orthometric`
+  // 丢给用户；raw 值仍保留在高级 / 审计区（由 general 说明与后端快照承载）。
   const nominal=layer.nominal_altitude_m===null?'nominal 未配置（'+LAYER_PENDING_LABEL+'）':escapeHtml(String(layer.nominal_altitude_m))+' m nominal';
+  const bounds=(layer.lower_altitude_m===null||layer.upper_altitude_m===null)
+    ?'高度范围未配置'
+    :escapeHtml(String(layer.lower_altitude_m))+' 至 '+escapeHtml(String(layer.upper_altitude_m))+' m';
   return '<div class="list-row"><span><b>'+escapeHtml(layer.name||layer.altitude_layer_id)+'</b> '+statusBadge(layer.status)
-    +'<small>'+escapeHtml(layer.altitude_layer_id)+' · '+nominal+' · '+escapeHtml(String(layer.lower_altitude_m))+'–'+escapeHtml(String(layer.upper_altitude_m))+' m · '+escapeHtml(layer.vertical_reference)+'</small>'
-    +'<small>来源 '+escapeHtml(layer.source)+' · confirmed '+escapeHtml(String(layer.confirmed))+'</small></span></div>';
+    +'<small>'+escapeHtml(layer.altitude_layer_id)+' · '+nominal+' · '+bounds+' · '+escapeHtml(verticalReferenceText(layer.vertical_reference))+'</small>'
+    +'<small>来源 '+escapeHtml(layer.source)+' · 工程确认 '+(layer.confirmed?'是':'否')+'</small></span></div>';
 }
 
 function cruiseLayerOptions(model,selected){
   const items=model.layers.map(layer=>'<option value="'+escapeHtml(layer.altitude_layer_id)+'" '+(layer.altitude_layer_id===selected?'selected':'')+'>'
-    +escapeHtml(layer.altitude_layer_id)+' · '+(layer.nominal_altitude_m===null?LAYER_PENDING_LABEL:escapeHtml(String(layer.nominal_altitude_m))+' m')+' · '+escapeHtml(layer.vertical_reference)+' · '+statusText(layer.status)+'</option>').join('');
+    +escapeHtml(layer.altitude_layer_id)+' · '+(layer.nominal_altitude_m===null?LAYER_PENDING_LABEL:escapeHtml(String(layer.nominal_altitude_m))+' m')
+    +' · '+escapeHtml(verticalReferenceText(layer.vertical_reference))+' · '+statusText(layer.status)+'</option>').join('');
   return (selected?'':'<option value="">请显式选择（不自动匹配）</option>')+items;
 }
 
@@ -122,7 +128,7 @@ function cruiseRouteRow(model,route){
   const selected=route.assignment?String(route.assignment.altitude_layer_id):'';
   return '<div class="list-row route-row"><span><b>'+escapeHtml(route.route_id)+'</b> '+statusBadge(route.cruise_status)
     +'<small>巡航高度层 '+(route.assignment?escapeHtml(selected)+' · '+escapeHtml(route.operating_mode):'未配置 · '+LAYER_PENDING_LABEL)+'</small>'
-    +'<small>nominal '+(route.nominal_altitude_m===null?LAYER_PENDING_LABEL:escapeHtml(String(route.nominal_altitude_m))+' m')+' · 垂向基准 '+escapeHtml(route.vertical_reference||'未确认')+'</small>'
+    +'<small>nominal '+(route.nominal_altitude_m===null?LAYER_PENDING_LABEL:escapeHtml(String(route.nominal_altitude_m))+' m')+' · 垂向基准 '+escapeHtml(verticalReferenceText(route.vertical_reference))+'</small>'
     +'<small>离场 '+statusText(route.departure_status)+' · 进场 '+statusText(route.arrival_status)+' · 高级剖面 '+(route.has_advanced_profile?'存在（仅供参考）':'无')+'</small></span>'
     +'<span class="button-row"><select data-cruise-layer-for="'+escapeHtml(route.route_id)+'">'+cruiseLayerOptions(model,selected)+'</select>'
     +'<button class="secondary" data-save-cruise-layer="'+escapeHtml(route.route_id)+'">保存分配</button>'

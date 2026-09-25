@@ -118,10 +118,7 @@ def restore_compacted_results(document, project_path):
     compressed = artifact_path.read_bytes()
     if hashlib.sha256(compressed).hexdigest() != index.get("sha256"):
         raise ValueError("项目结果文件指纹不匹配")
-    try:
-        payload = json.loads(gzip.decompress(compressed).decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("项目结果文件损坏") from exc
+    payload = _decode_artifact(compressed)
 
     restored = deepcopy(document)
     risk = restored.setdefault("grid_risk_v2", {})
@@ -140,3 +137,33 @@ def restore_compacted_results(document, project_path):
     ]
     restored.pop("_population_shelter_cache", None)
     return restored
+
+
+def read_result_artifact(document, project_path):
+    """只读读取项目结果 sidecar 的原始 payload（**不改写**任何状态）。
+
+    B4X 的只读展示读取路径（``GET /api/planning-constraint-field*``）使用它把
+    「内存里没有逐 cell 明细」的工程补齐成可展示结果。契约与
+    :func:`restore_compacted_results` 完全一致：
+      * 索引缺失 / 版本不符 / 文件缺失 / 指纹不符 / 内容损坏一律**抛异常**，
+        由调用方决定如何降级（绝不返回半份 payload 假装成功）；
+      * 文件系统路径不暴露给 HTTP 层：调用方只拿到解析后的 dict。
+    """
+
+    index = document.get("result_index") if isinstance(document, dict) else None
+    if not isinstance(index, dict) or not index.get("artifact"):
+        raise ValueError("当前项目没有结果索引")
+    if index.get("schema_version") != RESULT_INDEX_VERSION:
+        raise ValueError("不支持的项目结果索引版本")
+    artifact_path = ProjectRepository._result_artifact_path(document, project_path)
+    compressed = artifact_path.read_bytes()
+    if hashlib.sha256(compressed).hexdigest() != index.get("sha256"):
+        raise ValueError("项目结果文件指纹不匹配")
+    return _decode_artifact(compressed)
+
+
+def _decode_artifact(compressed: bytes) -> dict:
+    try:
+        return json.loads(gzip.decompress(compressed).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("项目结果文件损坏") from exc

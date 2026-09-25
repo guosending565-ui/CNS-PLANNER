@@ -151,6 +151,111 @@ class PlanningConstraintFieldService:
             "count": len(items), "items": items,
         }
 
+    # ---- B4X：只读展示读取路径 ------------------------------------------------
+    #
+    # B3X 已把 cell 明细放进内容寻址 sidecar（``.cns-results/<sha256>.json.gz``），
+    # 浏览器**不得**接触任何文件系统路径。这里因此提供一条最薄的、只读的读取路径：
+    #
+    #   * summary 走既有 ``result_snapshot()``（不含 cells，快照保持 slim）；
+    #   * 地图只拿到 ``grid_id`` / ``outcome`` / ``blocked_by``；
+    #   * 复用前端已有的 ``grid_id → geometry``（``/api/workspace/grid`` 的
+    #     ``cell.bbox`` / ``cell.geometry``），因此**不重复下发 GeoJSON**；
+    #   * 绝不返回 ``unknown_reasons`` 明细、``evidence_refs`` 或完整 raw artifact。
+    #
+    # 数据来源顺序：内存 state（打开项目时由 ``restore_compacted_results`` 从 sidecar
+    # 水合）→ 项目 sidecar 文件。两者都拿不到时如实返回 ``cells_unavailable``，绝不编造。
+
+    def field_map(self, altitude_layer_id=None, bbox=None):
+        """地图友好的紧凑约束结果。只读；不产生任何失效或写入。"""
+
+        layer_id = str(altitude_layer_id or "").strip()
+        if not layer_id:
+            return {
+                "schema_version": 1, "status": "altitude_layer_required",
+                "reason": "必须显式给出 altitude_layer_id",
+                "altitude_layer_id": None, "counts": None, "cells": [],
+            }
+        field = self._field(layer_id)
+        if field is None:
+            return {
+                "schema_version": 1, "status": "not_calculated",
+                "reason": f"高度层 {layer_id} 尚无 Planning Constraint Field",
+                "altitude_layer_id": layer_id, "counts": None, "cells": [],
+            }
+        cells = field.get("cells")
+        if not isinstance(cells, list) or not cells:
+            # 摘要存在但明细不可读：绝不把"读不到"当成"全部可通行"。
+            return {
+                "schema_version": 1, "status": "cells_unavailable",
+                "reason": "约束场明细尚未水合，且项目结果 sidecar 不可读",
+                "altitude_layer_id": layer_id,
+                "field_id": field.get("field_id"),
+                "counts": deepcopy(field.get("counts")),
+                "cells": [],
+            }
+        box = _normalize_bbox(bbox)
+        selected = [item for item in cells if _cell_in_bbox(item, box)] if box else cells
+        counts = summarize_constraint_cells(selected)
+        return {
+            "schema_version": 1,
+            "status": "passed",
+            "altitude_layer_id": layer_id,
+            "field_id": field.get("field_id"),
+            "nominal_altitude_m": field.get("nominal_altitude_m"),
+            "vertical_reference": field.get("vertical_reference"),
+            "grid_identity": field.get("grid_identity"),
+            "constraint_field_fingerprint": field.get("constraint_field_fingerprint"),
+            "bbox": box,
+            "geometry_source": "frontend_grid_index",
+            "counts": counts,
+            "total_count": len(cells),
+            "truncated": False,
+            "cells": [
+                {
+                    "grid_id": str(item.get("grid_id") or ""),
+                    "outcome": str(item.get("outcome") or "unknown"),
+                    "blocked_by": list(item.get("blocked_by") or []),
+                }
+                for item in selected
+            ],
+        }
+
+    def _field(self, altitude_layer_id):
+        """按 altitude_layer_id 找约束场；内存优先，其次项目 sidecar。"""
+
+        collection = self.session.state.get("planning_constraint_fields") or {}
+        for item in collection.get("items") or []:
+            if isinstance(item, dict) and str(item.get("altitude_layer_id") or "") == altitude_layer_id:
+                return item
+        sidecar = self._sidecar_fields()
+        for item in sidecar:
+            if str(item.get("altitude_layer_id") or "") == altitude_layer_id:
+                return item
+        return None
+
+    def _sidecar_fields(self):
+        """从项目结果 sidecar 读取约束场（只读；失败时返回空列表，不抛异常）。"""
+
+        state = self.session.state
+        store_path = getattr(self.session, "store_path", None)
+        if not store_path:
+            return []
+        collection = state.get("planning_constraint_fields") or {}
+        if not (collection.get("items") or []):
+            return []
+        try:
+            from ..persistence.project_compaction import read_result_artifact
+
+            payload = read_result_artifact(state, store_path)
+        except Exception:  # noqa: BLE001 - 损坏 / 缺失 / 指纹不符都按"明细不可用"处理
+            return []
+        cell_payload = payload.get("planning_constraint_field_cells") or {}
+        return [
+            {**item, "cells": cell_payload.get(str(item.get("field_id"))) or []}
+            for item in collection.get("items") or []
+            if isinstance(item, dict)
+        ]
+
     def generate(self, payload=None):
         payload = payload if isinstance(payload, dict) else {}
         state = self.session.state
@@ -366,6 +471,48 @@ def _artifact_ref(state):
     return {"artifact": index.get("artifact"), "sha256": index.get("sha256"), **details}
 
 
+def _normalize_bbox(value):
+    """把请求里的 bbox 规范成 ``[west, south, east, north]``；非法输入返回 None。
+
+    只接受 4 个有限数值；``west > east`` 视为跨反经线以外的非法输入（本产品工作区
+    从不跨越 180°，因此不做环绕推断，直接忽略该 bbox 而不是猜一个范围）。
+    """
+
+    if value in (None, ""):
+        return None
+    raw = value
+    if isinstance(raw, str):
+        raw = [item for item in raw.split(",")]
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    numbers = []
+    for item in raw:
+        number = _number(item)
+        if number is None:
+            return None
+        numbers.append(number)
+    west, south, east, north = numbers
+    if west > east or south > north:
+        return None
+    return numbers
+
+
+def _cell_in_bbox(cell, bbox):
+    """cell 的 bbox 是否与请求 bbox 相交（半开包含，与前端命中语义一致）。"""
+
+    raw = (cell or {}).get("bbox")
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        # 没有 bbox 的 cell 无法做视口过滤：保留它（宁可多返回一条紧凑记录，
+        # 也绝不因为缺少几何就把一个 blocked cell 从结果中丢掉）。
+        return True
+    west, south, east, north = (_number(item) for item in raw)
+    if None in (west, south, east, north):
+        return True
+    return not (
+        east <= bbox[0] or west >= bbox[2] or north <= bbox[1] or south >= bbox[3]
+    )
+
+
 def _number(value):
     if value in (None, "") or isinstance(value, bool):
         return None
@@ -376,4 +523,6 @@ def _number(value):
     return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
-__all__ = ["PlanningConstraintFieldService", "generate_planning_constraint_field"]
+__all__ = [
+    "PlanningConstraintFieldService", "generate_planning_constraint_field",
+]

@@ -150,8 +150,10 @@ test('the candidate route layer is a separate switch from the coarse feasibility
   // index.html：两个图层各自一个 checkbox，名称与职责都不混用
   assert.match(INDEX_SOURCE,/id="layeredFeasibilityLayer"/);
   assert.match(INDEX_SOURCE,/id="layeredCandidateLayer"/);
-  assert.match(INDEX_SOURCE,/分层候选航路/);
-  assert.match(INDEX_SOURCE,/coarse 垂向包络掩码/);
+  // B4X：图层名称改为纯中文业务语言（"候选航路（当前规划结果）"）；
+  // 旧版的研究对照候选已另行标注为「旧版试算航路（研究对照）」。
+  assert.match(INDEX_SOURCE,/候选航路（当前规划结果）/);
+  assert.match(INDEX_SOURCE,/coarse|粗判/);
   // main.js：两个 id 都进入统一 LAYER_IDS（因此可独立开关、独立持久化到抽屉）
   const layerIds=/const LAYER_IDS=\[([^\]]*)\]/.exec(MAIN_SOURCE);
   assert.ok(layerIds,'LAYER_IDS must stay a single literal list');
@@ -414,7 +416,7 @@ test('validation never converts failed or unresolved intervals into map geometry
 
 test('the evidence highlight is pure UI: no state, no zoom, no layer, no LOD change',()=>{
   // main.js：只是一个模块作用域变量 + 只负责重绘的两个回调
-  assert.match(MAIN_SOURCE,/let routeEvidenceHighlight=null;/);
+  assert.match(MAIN_SOURCE,/routeEvidenceHighlight=null[,;]/);
   assert.match(MAIN_SOURCE,/routeEvidenceHighlight,\s*proposedPlanActions/,'the highlight reaches the draw call');
   const bindings=MAIN_SOURCE.slice(MAIN_SOURCE.indexOf('function stepBindings(){'),
     MAIN_SOURCE.indexOf('async function previewPlanningReport(){'));

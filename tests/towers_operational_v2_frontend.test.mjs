@@ -327,10 +327,10 @@ test('FRONTEND: Step05 ships the Tower Colocation Policy form on the existing en
   assert.doesNotMatch(bind,/device_mount_confirmed:/,'不得再提交全局物理安装确认');
   assert.doesNotMatch(bind,/\/api\/tower-colocation-policy/,'不得新增共塔策略端点');
   assert.doesNotMatch(bind,/\/api\/tower-obstacle-profiles\/policy/);
-  // 未确认仍然 ineligible；只有两个条件
-  assert.match(form,/未启用（候选 ineligible）/);
+  // 未确认仍然 ineligible；只有两个条件（B4X：界面文案不再裸露 ineligible 这个 raw 值）
+  assert.match(form,/未启用（共塔候选尚不满足规划条件）/);
   assert.match(form,/两个条件（规划宿主允许 \+ 服务原点假设）满足才会进入规划/);
-  assert.match(form,/分系统是否真的装得上保持 unverified/);
+  assert.match(form,/分系统是否真的装得上保持未核实/);
   // 表单确实挂载在候选站址面板里
   assert.match(step05,/\+\s*towerColocationPolicyForm\(flow\)/);
 });
@@ -386,7 +386,7 @@ test('FRONTEND: both policy forms actually render the acceptance fields',async()
   assert.match(colocation,/物理安装条件：<b>未逐塔核实，需现场勘察<\/b>/);
   assert.match(colocation,/规划宿主/);
   assert.match(colocation,/eligible/);
-  assert.match(colocation,/分系统安装证据 unverified/);
+  assert.match(colocation,/分系统安装证据 未核实/);
   assert.match(colocation,/策略 已启用/);
   assert.match(colocation,/共塔候选 3 个 · 塔顶已解析 200 · 未解析 173/);
 
@@ -422,10 +422,13 @@ test('FRONTEND: the Proposal surfaces the two-layer host/mount status',()=>{
   assert.match(step05,/分系统安装 '\+escapeHtml\(action\.subsystem_mount_status\|\|'unverified'\)/);
   assert.match(step05,/物理安装'\+\(action\.physical_mount_confirmed===true\?'已确认':'未核实'\)/);
   assert.match(step05,/action\.requires_site_survey\?'（需现场勘察）':''/);
-  assert.match(step05,/规划宿主 '\+escapeHtml\(action\.planning_host_status\|\|'not_applicable'\)/);
+  // B4X：规划宿主状态仍显式回显后端字段，但显示文字经集中词表中文化
+  //（not_applicable → 不适用），因此断言改为锁定"字段仍被展示"这一点。
+  assert.match(step05,/规划宿主 '\+escapeHtml\(hostStatusLabel\(action\.planning_host_status\|\|'not_applicable'\)\)/);
+  assert.match(step05,/function hostStatusLabel\(value\)/);
   // 共塔候选列表也不再声称"设备挂载已确认"
   assert.doesNotMatch(step05,/设备挂载'\+\(host\.device_mount_confirmed/);
-  assert.match(step05,/物理安装 未核实（需现场勘察） · 分系统证据/);
+  assert.match(step05,/物理安装 未核实（需现场勘察） · 分系统证据状态/);
 });
 
 test('FRONTEND: the Step05 reuse-tier description matches the real code order',()=>{

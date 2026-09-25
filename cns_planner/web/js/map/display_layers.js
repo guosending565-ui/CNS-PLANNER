@@ -398,12 +398,12 @@ export function hitCnsTowerCandidate(plan,point,{radius=11}={}){
  * @param {{ctx,view,flow,plan,layers,screenPoint,profileHoverCoordinate,routeEvidenceHighlight,
  *          draftBounds,gridDisplay,gridCache,visibleBounds,gridTheme,palettes,riskBreaks,
  *          drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,
- *          proposedPlanActions}} input
+ *          drawConstraintLayer,proposedPlanActions}} input
  */
 export function drawWorkflowLayers({
   ctx,view,flow,plan,layers={},screenPoint,profileHoverCoordinate=null,routeEvidenceHighlight=null,gridTheme=null,
   towerHighlight=null,
-  drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,proposedPlanActions=()=>[]
+  drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,drawConstraintLayer,proposedPlanActions=()=>[]
 }){
   const styles=plan.styles;
   const placer=createLabelPlacer();
@@ -411,6 +411,10 @@ export function drawWorkflowLayers({
   drawWorkspace();
   drawGridThemes();
   drawGridBoundaries();
+  // 高度层障碍（Planning Constraint Field）：**可行性**图层，默认关闭。
+  // 放在网格边界之上、航路与候选航路之下，避免遮挡规划结果本身。
+  // 是否真的画由调用方按图层开关决定（main.js 的 drawConstraintLayer）。
+  if(typeof drawConstraintLayer==='function')drawConstraintLayer();
   // 建筑轮廓只读底图性质：画在网格之上、航路之下，避免遮挡规划结果。
   // 是否真的画、画多少由调用方（map/building_footprint_layer.js）按图层开关与 LOD 决定。
   if(typeof drawBuildingFootprints==='function')drawBuildingFootprints();

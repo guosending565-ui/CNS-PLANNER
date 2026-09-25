@@ -31,7 +31,7 @@ export function updateRasterLegends($){
  * @param {{$,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend}} options
  */
 export function bindLayerControls({
-  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend
+  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend,onConstraintLayer
 }){
   // 基础开关：air 只重绘；pop/terrain 同时刷新栅格图例
   if($('air'))$('air').onchange=queue;
@@ -41,6 +41,10 @@ export function bindLayerControls({
   updateRasterLegends($);
   if($('opacity'))$('opacity').oninput=()=>{$('opacityValue').textContent=$('opacity').value+'%';queue();};
   if($('terrainOpacity'))$('terrainOpacity').oninput=()=>{$('terrainOpacityValue').textContent=$('terrainOpacity').value+'%';queue();};
+  // 高度层障碍：勾选后按需读取逐格明细（**默认关闭**，不参与启动加载）。
+  for(const id of ['altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer']){
+    if($(id))$(id).onchange=()=>{onConstraintLayer?.();updateGridThemeLegend();updateMapLegend?.();paint();};
+  }
   // layerIds 是统一开关集合（含 referenceRoutePointLayer），这里再补 gridLayer
   for(const id of [...layerIds,'gridLayer']){
     const input=$(id);if(!input)continue;

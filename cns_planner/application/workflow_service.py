@@ -1261,6 +1261,10 @@ class WorkflowService:
         return self.layered_route_planner_service.result_snapshot()
     def planning_constraint_fields(self, altitude_layer_id=None):
         return self.planning_constraint_field_service.result_snapshot(altitude_layer_id)
+    def planning_constraint_field_map(self, altitude_layer_id=None, bbox=None):
+        """B4X 只读地图读取路径：紧凑 cell 投影，不返回 evidence / 完整 artifact。"""
+
+        return self.planning_constraint_field_service.field_map(altitude_layer_id, bbox)
     def generate_planning_constraint_field(self, payload=None):
         return self.planning_constraint_field_service.generate(payload)
     def set_layered_route_planning_request(self, payload):

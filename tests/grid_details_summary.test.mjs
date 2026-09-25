@@ -149,7 +149,10 @@ test('main.js renders the grid popup through the escaped summary and details bui
   const main=readFile('cns_planner/web/js/main.js');
   assert.match(main,/import \{gridCellDetailsHtml,populationDisplayLabel\} from '\.\/workflow\/grid_details\.js'/);
   assert.match(main,/info\.innerHTML=formatGridDetails\(item\)/);
-  assert.match(main,/gridCellDetailsHtml\(item,flow,GridTheme\.formatNumber,gridDisplay\.theme\)/);
+  // B4X：障碍格 / 证据不足格的约束结论先于摘要显示（网格弹窗的第一行就是"为什么不能飞"）；
+  // 约束区块由 constraint_view 提供，没有读到逐格明细时返回空串（绝不显示成"可通行"）。
+  assert.match(main,/constraintView\.cellDetailsHtml\(gridId\)/);
+  assert.match(main,/gridCellDetailsHtml\(item,flow,GridTheme\.formatNumber,gridDisplay\.theme,constraintView\.cellFor\(gridId\),constraintView\.altitudeLayerLabel\(\)\)/);
   assert.ok(!/info\.textContent=formatGridDetails/.test(main));
   // 转义只允许在 grid_details 内部完成：壳层不得自己拼 diagnostics 文本。
   assert.ok(!main.includes('Traffic Exposure'));

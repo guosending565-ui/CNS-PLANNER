@@ -291,20 +291,20 @@ test('step 06 route safety evidence transcribes the backend evidence status verb
   assert.equal('overall_risk' in model,false);
 
   const html=renderStep6({state:{data_health:{status:'passed'}},flow:safetyFlow()});
-  assert.match(html,/Route Safety Evidence/);
-  assert.match(html,/overall evidence status/);
+  assert.match(html,/航路安全证据/);
+  assert.match(html,/证据总体状态/);
   assert.ok(html.includes(ROUTE_SAFETY_EVIDENCE_STATUS_NOTE),
     'the disclaimer must be shown verbatim');
   for(const [id,label] of ROUTE_SAFETY_EVIDENCE_DOMAINS){
     assert.ok(html.includes('data-safety-domain="'+id+'"'),id+' card must be rendered');
     assert.ok(html.includes(label),label+' label must be rendered');
   }
-  assert.match(html,/Geometry \/ Obstacle/);
-  assert.match(html,/Ground Exposure/);
-  assert.match(html,/Regulatory/);
-  assert.match(html,/CNS Operational Support/);
-  // 高级 fingerprint / source lineage 折叠展示。
-  assert.match(html,/高级：fingerprint \/ source lineage/);
+  assert.match(html,/几何与障碍物/);
+  assert.match(html,/地面暴露/);
+  assert.match(html,/法规约束/);
+  assert.match(html,/CNS 运行支持/);
+  // 审计指纹 / 来源链路仍然折叠展示，但生产界面不再出现英文开发术语。
+  assert.match(html,/高级：审计指纹与来源链路/);
   assert.match(html,/routesafetyevidencev2-abc/);
   assert.match(html,/id="evaluateRouteSafetyEvidenceV2"/);
 });
@@ -333,7 +333,7 @@ test('a not_ready assessment stays explicit and never claims a current verdict',
   assert.equal(model.count,0);
   assert.equal(model.domains.every(item=>item.status==='not_ready'),true);
   const html=renderStep6({state:{data_health:{status:'passed'}},flow});
-  assert.match(html,/Route Safety Evidence/);
+  assert.match(html,/航路安全证据/);
   assert.match(html,/尚未评估/);
 });
 

@@ -505,8 +505,9 @@ test('step 03 discovers its segments from the active panel and restores selectio
     assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
       ['adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']);
     // 二级按钮名称来自分段自身的 data-seg-label，不是外部 manifest
+    // B4X：高级区的分段名称改为中文业务语言（旧版 / 研究对照不再作为导航语言）。
     assert.deepEqual(segButtons(document).map(node=>node.textContent),
-      ['参考数据与关联','Legacy / Risk-Aware V2','V3 实验','规划诊断','剖面与运动']);
+      ['参考数据与关联','旧版兼容 / 研究对照','研究对照实验','规划诊断','剖面与运动']);
 
     // 选择 adv-diagnostics 后重新 render + mount，仍恢复 advanced + adv-diagnostics
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='adv-diagnostics'));
@@ -1021,8 +1022,8 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
 
 const STEP05_SEGMENTS={
   operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
-  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','监视雷达初步划设']],
-  advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与 Gap V2'],['cns-adv-compat','旧版兼容试算'],['cns-adv-closedloop','高级方案影响试算']]
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','雷达监视规划']],
+  advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口分析'],['cns-adv-compat','旧版兼容试算'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
 /** Step05 的关键控件：既有业务 id，重组后必须一个不少。 */
@@ -1385,20 +1386,34 @@ test('step 04 keeps the chosen task after a re-render and returns to the top on 
   });
 });
 
-// ---- Step02：环境建模工作台 -------------------------------------------------
+// ---- Step02：环境与风险工作台 -----------------------------------------------
 //
 // Step02 曾经是"一页三块"（操作 / 结果 / 高级各一大段）。重组后每个一级标签下
 // 都是一组任务分段，这一组断言锁定：
-//  - 操作 2 段 / 结果 2 段 / 高级 2 段，逐个可切且严格只有 1 段可见；
+//  - 操作 2 段（+ B4X 的高度层选择段）/ 结果 3 段（+ B4X 的约束场段）/ 高级 2 段，
+//    逐个可切且严格只有 1 段可见；
 //  - 全部既有 DOM id 一个不少（无重复 id），bind() 无条件查询的控件都能命中；
 //  - 数据映射卡只转印 flow 现有状态：stale 保持 stale、未计算保持未计算；
 //  - 专题浏览只切 UI 任务与地图配色，不自动改工作区、网格、缩放或图层；
-//  - 工作区 / 网格层级 / Risk V2 / 高度层的 API 与语义契约保持不变。
+//  - 工作区 / 网格层级 / Risk V2 / 高度层 / 约束场的 API 与语义契约保持不变。
+//
+// B4X 变更（允许新增、不允许删除）：
+//  - 新增 `env-op-altitude`「固定巡航高度层」：Step2 与 Step3 共用同一个
+//    AltitudeLayer 选择器（不再把高度层只藏在高级区，也不写死 ALT-080）；
+//  - 新增 `env-res-constraint`「规划约束场」：只读展示当前高度层的约束摘要；
+//  - 原有 6 个分段 id 与顺序完全不变。
 
 const STEP02_SEGMENTS={
-  operate:[['env-op-workspace','工作区范围'],['env-op-grid','标准网格与建筑环境']],
-  result:[['env-res-mapping','数据映射'],['env-res-theme','专题浏览']],
+  operate:[['env-op-workspace','工作区范围'],['env-op-grid','标准网格与建筑环境'],['env-op-altitude','固定巡航高度层']],
+  result:[['env-res-mapping','数据映射'],['env-res-constraint','规划约束场'],['env-res-theme','专题浏览']],
   advanced:[['env-adv-risk','风险框架'],['env-adv-altitude','高度层']]
+};
+
+/** 与 step02_workspace.js 声明的分段表逐字一致（防止两处 metadata 漂移）。 */
+const STEP02_REQUIRED_SEGMENTS={
+  operate:['env-op-workspace','env-op-grid','env-op-altitude'],
+  result:['env-res-mapping','env-res-constraint','env-res-theme'],
+  advanced:['env-adv-risk','env-adv-altitude']
 };
 
 /** 专题清单：8 个基础专题 + riskV2ThemeOptions()（V2 因子 / V2 域 / Legacy V1）。 */
@@ -1413,6 +1428,10 @@ const STEP02_CONTROLS=[
   'drawWorkspace','clearWorkspace','saveWorkspace',
   // 操作 · 标准网格与建筑环境
   'workspaceGridLevel',
+  // 操作 · 固定巡航高度层（B4X 新增：Step2 / Step3 共用的统一 selector）
+  'altitudeLayerSelector',
+  // 结果 · 规划约束场（B4X 新增：唯一主操作 + 只读摘要）
+  'generateConstraintField',
   // 结果 · 专题浏览
   'gridOutlineToggle','gridThemeNone','gridPopulationTheme','gridTerrainTheme',
   // 高级 · 风险框架
@@ -1462,7 +1481,7 @@ function mountStep02(document,{tab='operate',segs={},flow=step02Flow()}={}){
   const store={step:2,tab,segs,scroll:0};
   const controller=createWorkbench({getState:()=>store,setState:value=>Object.assign(store,value)});
   const root=renderWorkflowSteps({step:{render:renderStep2},context});
-  controller.mount({root,step:{number:2,title:'环境建模',note:''}});
+  controller.mount({root,step:{number:2,title:'环境与风险',note:''}});
   return {controller,root,store,context};
 }
 
@@ -1479,10 +1498,10 @@ test('step 02 declares the documented task segments',()=>{
     // 第一视觉层不把工程编号 / 算法 id 当导航名称
     assert.doesNotMatch(label,/^[A-Za-z]|_v\d|\d+_/,`segment ${id} must use business language`);
   }
-  // 操作 2 段 / 结果 2 段 / 高级 2 段
-  assert.deepEqual(STEP02_SEGMENTS.operate.map(item=>item[0]),['env-op-workspace','env-op-grid']);
-  assert.deepEqual(STEP02_SEGMENTS.result.map(item=>item[0]),['env-res-mapping','env-res-theme']);
-  assert.deepEqual(STEP02_SEGMENTS.advanced.map(item=>item[0]),['env-adv-risk','env-adv-altitude']);
+  // 操作 3 段 / 结果 3 段 / 高级 2 段（B4X 新增高度层选择与约束场，原有分段顺序不变）
+  assert.deepEqual(STEP02_SEGMENTS.operate.map(item=>item[0]),STEP02_REQUIRED_SEGMENTS.operate);
+  assert.deepEqual(STEP02_SEGMENTS.result.map(item=>item[0]),STEP02_REQUIRED_SEGMENTS.result);
+  assert.deepEqual(STEP02_SEGMENTS.advanced.map(item=>item[0]),STEP02_REQUIRED_SEGMENTS.advanced);
 });
 
 test('step 02 task navigation keeps exactly one segment visible and every control mounted',()=>{
@@ -1719,10 +1738,13 @@ test('step 02 keeps the workspace, grid, risk V2 and altitude contracts',()=>{
     const registered=[];
     const c={$:id=>document.getElementById(id),actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
       clearWorkspace:()=>{},saveWorkspace:()=>{},remapPopulation:()=>{},
-      resourceAction:()=>{},panelError:()=>{},setGridTheme:()=>{},setGridOutline:()=>{}};
+      resourceAction:()=>{},panelError:()=>{},setGridTheme:()=>{},setGridOutline:()=>{},
+      // B4X：约束场展示层入口（选择高度层 / 读取展示模型 / 显式生成）。
+      constraintField:{select:()=>'',presentation:()=>({altitudeLayerId:'ALT-080'}),generate:()=>Promise.resolve()}};
     bindStep2(c);
-    // 本轮新增三项：保存 / 撤回 Population NoData 语义，以及 population-only remap。
-    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','savePopulationNodata','revokePopulationNodata','remapPopulation','saveAltitudeLayer'],'bind() registers exactly the existing actions');
+    // 本轮新增四项：保存 / 撤回 Population NoData 语义、population-only remap，
+    // 以及 B4X 的「生成该高度层的规划约束场」主操作。
+    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','generateConstraintField','savePopulationNodata','revokePopulationNodata','remapPopulation','saveAltitudeLayer'],'bind() registers exactly the existing actions');
     for(const id of registered)assert.ok(document.getElementById(id).onclick,`#${id} keeps its handler`);
   });
 });

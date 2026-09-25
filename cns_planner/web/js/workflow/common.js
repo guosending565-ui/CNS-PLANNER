@@ -1,12 +1,40 @@
-export const statusText=status=>({not_calculated:'未计算',not_initialized:'未初始化',not_evaluated:'未评价',missing_data:'缺少数据',not_available:'不可用',unknown:'证据不足/尚无法判断',unknown_category:'未知类别',pending_confirmation:'待确认',evidence_required:'需要补充证据',passed:'通过',partial:'部分覆盖',unsupported:'不可用',breach:'净空突破',gap:'缺口',confirmed_gap:'确认缺口',confirmed_deficit:'确认缺口',failed:'失败',not_applicable:'不适用',stale:'已失效',stale_current_project:'对应旧项目状态',current:'当前有效',confirmed:'已确认',applied:'已应用',not_confirmed:'尚未确认',not_applied:'尚未应用',draft:'草稿',blocked:'已阻断',recommendation_ready:'需求建议可采用',adopted:'已采用',not_adopted:'尚未采用',no_action_required:'无需规划动作',no_eligible_proposal:'无可行方案',proposal_ready:'提案可审查',ready_for_confirmation:'可确认',objectives_met:'规划目标满足',objectives_not_met:'规划目标未满足',objectives_unknown:'规划目标证据不足',objectives_not_configured:'未配置规划目标',ready:'正常',warning:'警告',error:'错误',no_coverage:'无覆盖',partial_intersection:'部分相交',full_coverage:'完全覆盖'}[status]||status);
+// =========================================================
+// 步骤面板公共出口
+//
+// B4X（Six-Step Product UI Convergence）之后，**全部中文取词**都收敛到
+// `presentation.js`：本模块不再自带第二份状态词表，只做转发与面板外壳。
+// 因此：
+//  - 旧的 `import {statusText} from './common.js'` 继续有效（同一个函数对象）；
+//  - 新增业务面板应当优先从 `presentation.js` 取词；
+//  - 任何地方都不得再手写 `ready/blocked/not_calculated/missing_data/stale` 的中文判断。
+// =========================================================
+
+import {statusText,statusBadge,escapeHtml} from './presentation.js';
+
+export {statusText,statusBadge,escapeHtml};
+
+// 集中映射的再导出：业务面板可以从这里一次取齐全部语境词表。
+export {
+  STATUS_TEXT,
+  WORKFLOW_STATUS_TEXT,workflowStatusText,
+  READINESS_TEXT,readinessText,readinessAllowsContinue,
+  MATURITY_TEXT,maturityText,AUTHORITATIVE_CONTEXT_TEXT,authoritativeText,
+  ASSESSMENT_TEXT,assessmentText,assessmentPassed,
+  INPUT_REQUIREMENT_TEXT,inputRequirementText,inputRequirementBadge,
+  CONSTRAINT_OUTCOME_TEXT,constraintOutcomeText,CONSTRAINT_OUTCOME_COLOR,
+  CONSTRAINT_BLOCKER_TEXT,CONSTRAINT_BLOCKER_ORDER,
+  CONSTRAINT_UNKNOWN_REASON_TEXT,constraintUnknownText,constraintUnknownReason,
+  constraintBlockerList,constraintBlockerText,constraintCellSummary,
+  CANONICAL_NODE_LABELS,canonicalNodeLabel,isCanonicalNode,
+  VERTICAL_REFERENCE_TEXT,verticalReferenceText,
+  altitudeLayerLabel,formatAltitude,
+  SOURCE_STATE_TEXT,sourceStateText,emptyReasonText,
+  advancedAuditNote,PRESENTATION_TABLES,PRESENTATION_VERSION
+} from './presentation.js';
+
+/** 数据来源模式 → 中文。 */
 export const sourceModeText=mode=>({real:'真实数据',synthetic:'模拟数据',manual:'人工录入'}[mode]||mode||'来源未标明');
-export const statusBadge=status=>'<span class="flow-badge flow-'+status+'">'+statusText(status)+'</span>';
-// 纯字符串转义：不依赖 DOM，因此在任何环境下行为一致。
-export function escapeHtml(value){
-  return String(value??'').replace(/[&<>"']/g,character=>({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  })[character]);
-}
+
 /**
  * 步骤面板外壳：返回**唯一根容器**。
  *
@@ -20,7 +48,52 @@ export const shell=(number,title,text,body)=>
   +'<div data-workbench-head data-workbench-number="'+number+'" data-workbench-title="'+escapeHtml(title)+'" data-workbench-note="'+escapeHtml(text)+'"></div>'
   +body
   +'</div>';
+
+/**
+ * 每个 Step 固定的六区结构（B4X §4）：目标 → 输入准备 → 阻塞项/工程假设 →
+ * 主操作 → 结果 → 下一步。
+ *
+ * 这只是**组织约定**：主操作区只允许一个 primary 按钮，次要操作进二级区或高级区。
+ * 各步骤自行决定把六区映射到哪些已有的 tab/segment，不强制新造 DOM 结构。
+ */
+export const STEP_SECTIONS=['目标','输入准备','阻塞项与工程假设','主操作','结果','下一步'];
+
+/**
+ * 主操作区：全步只允许一个 primary 按钮（其余一律 secondary 或移入高级区）。
+ * @param {string} body 按钮与说明
+ * @param {{note?:string}} [options]
+ */
+export function primaryAction(body,{note=''}=''){
+  return '<div class="wb-primary-action">'+(body||'')+(note?'<div class="wb-primary-note">'+escapeHtml(note)+'</div>':'')+'</div>';
+}
+
+/**
+ * 阻塞项 / 工程假设区。
+ * @param {Array<{text:string,kind?:'blocker'|'assumption',detail?:string}>} items
+ * @param {string} [emptyNote] 没有阻塞项时的说明（绝不写成"通过"）
+ */
+export function blockerList(items,emptyNote='当前没有阻塞项'){
+  const values=(items||[]).filter(item=>item&&item.text);
+  if(!values.length)return '<div class="wb-empty">'+escapeHtml(emptyNote)+'</div>';
+  return '<div class="wb-blockers">'+values.map(item=>{
+    const kind=item.kind==='assumption'?'assumption':'blocker';
+    const label=kind==='assumption'?'工程假设':'阻塞项';
+    return '<div class="wb-blocker" data-kind="'+kind+'"><b>'+escapeHtml(label)+'</b>'
+      +'<span>'+escapeHtml(item.text)+'</span>'
+      +(item.detail?'<small>'+escapeHtml(item.detail)+'</small>':'')+'</div>';
+  }).join('')+'</div>';
+}
+
+/** 下一步区：说明当前步骤推进到哪一步、以及为什么现在还不能推进。 */
+export function nextStepBar({enabled=false,label='下一步',reason='',note=''}={}){
+  return '<div class="wb-next-step">'
+    +'<button class="primary full" id="nextStep" '+(enabled?'':'disabled')+'>'+escapeHtml(label)+'</button>'
+    +(reason?'<div class="wb-next-reason">'+escapeHtml(reason)+'</div>':'')
+    +(note?'<div class="wb-primary-note">'+escapeHtml(note)+'</div>':'')
+    +'</div>';
+}
+
 /** 一级标签面板 / 二级分段面板的快捷构造，转发到 workbench 组件。
  *  wbSection 只接受"标题 + 状态徽章"；标题 + 整块正文请用 wbBlock，
  *  否则正文会落进 .wb-section-head 的 flex 行里被挤压。 */
-export {panel as wbPanel,segPanel as wbSegPanel,segmentHint as wbSegHint,section as wbSection,block as wbBlock,metricCard as wbCard,emptyState as wbEmpty,snapshotLine as wbLine,engineFacts as wbEngine,disclosure as wbDisclosure} from './workbench.js';
+export {panel as wbPanel,segPanel as wbSegPanel,segmentHint as wbSegHint,section as wbSection,block as wbBlock,metricCard as wbCard,metricGrid as wbCardGrid,emptyState as wbEmpty,snapshotLine as wbLine,engineFacts as wbEngine,disclosure as wbDisclosure,definitionList as wbList,dataTable as wbTable} from './workbench.js';

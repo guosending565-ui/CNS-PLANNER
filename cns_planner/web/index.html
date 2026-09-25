@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>低空航路CNS规划系统</title><link rel="stylesheet" href="/style.css"></head>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>低空航路CNS规划系统</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/css/b4x.css"></head>
 <body>
 <div class="workbench-app" id="appShell">
 
@@ -27,15 +27,17 @@
   </div>
  </header>
 
+ <!-- 六步主导航：只允许这六步。开发阶段编号（P1/P7/P8/P14/P15/P16）与旧版本代号
+      （V1/V2/V3）不得出现在主导航，只允许出现在「高级 / 审计信息」区。 -->
  <nav class="rail" id="rail" aria-label="六步规划流程">
-  <div class="rail-head"><span class="rail-title">规划流程</span><button class="rail-toggle" id="railToggle" title="折叠左侧导航">收起</button></div>
+  <div class="rail-head"><span class="rail-title">六步规划流程</span><button class="rail-toggle" id="railToggle" title="折叠左侧导航">收起</button></div>
   <div class="rail-list" id="steps">
-   <button class="rail-step active" data-step="1" data-state="active"><span class="rail-num">01</span><span class="rail-label">项目准备</span><span class="rail-state"><i></i>进行中</span><span class="rail-note">项目、路径与算法选择</span></button>
-   <button class="rail-step" data-step="2" data-state="todo"><span class="rail-num">02</span><span class="rail-label">环境建模</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">工作区、网格与风险框架</span></button>
-   <button class="rail-step" data-step="3" data-state="todo"><span class="rail-num">03</span><span class="rail-label">航路规划</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">OD、分层候选与运行航路</span></button>
-   <button class="rail-step" data-step="4" data-state="todo"><span class="rail-num">04</span><span class="rail-label">运行规则</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">能力、需求与运行约束</span></button>
-   <button class="rail-step" data-step="5" data-state="todo"><span class="rail-num">05</span><span class="rail-label">CNS规划</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">覆盖、缺口与布站提案</span></button>
-   <button class="rail-step" data-step="6" data-state="todo"><span class="rail-num">06</span><span class="rail-label">方案评审</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">比较、确认与报告</span></button>
+   <button class="rail-step active" data-step="1" data-state="active"><span class="rail-num">01</span><span class="rail-label">数据准备</span><span class="rail-state"><i></i>进行中</span><span class="rail-note">项目、数据源与必要输入清单</span></button>
+   <button class="rail-step" data-step="2" data-state="todo"><span class="rail-num">02</span><span class="rail-label">环境与风险</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">工作区、规划网格、风险场与约束场</span></button>
+   <button class="rail-step" data-step="3" data-state="todo"><span class="rail-num">03</span><span class="rail-label">航路规划与发布</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">候选航路、风险画像、安全验证与发布</span></button>
+   <button class="rail-step" data-step="4" data-state="todo"><span class="rail-num">04</span><span class="rail-label">CNS需求</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">航空器配置、运行约束与 CNS 能力需求</span></button>
+   <button class="rail-step" data-step="5" data-state="todo"><span class="rail-num">05</span><span class="rail-label">CNS能力与设施规划</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">三维覆盖、服务能力、走廊、缺口与设施规划</span></button>
+   <button class="rail-step" data-step="6" data-state="todo"><span class="rail-num">06</span><span class="rail-label">方案评审与报告</span><span class="rail-state"><i></i>待处理</span><span class="rail-note">比较、选择、确认、应用与报告</span></button>
   </div>
   <div class="rail-foot" id="projectRestore">项目自动保存 · 可重启恢复</div>
  </nav>
@@ -47,6 +49,8 @@
    <div class="map-stage-status"><span class="lod-status" id="lodStatus">显示层级 <b>概述</b></span></div>
    <div class="north">N<br>↑</div>
 
+   <!-- 图层抽屉。首次打开系统时**只有 QGIS 在线底图**默认勾选；网格、人口、风险、
+        约束、建筑、铁塔、航路、覆盖、雷达等分析层全部默认关闭，由用户按需开启。 -->
    <div class="layer-drawer" id="layerDrawer" data-open="false">
     <button class="drawer-toggle" id="layerDrawerToggle" aria-expanded="false">图层 <span class="drawer-caret">展开</span></button>
     <div class="layer-drawer-body">
@@ -56,11 +60,11 @@
       <div class="layer-row"><span><i class="swatch reference-route"></i> 真实参考航线<small id="referenceRouteStatus">等待数据</small></span><input type="checkbox" id="referenceRouteLayer" aria-label="真实参考航线"></div>
       <div class="layer-row"><span><i class="swatch reference-point"></i> 真实航路点<small id="referenceRoutePointStatus">等待数据</small></span><input type="checkbox" id="referenceRoutePointLayer" aria-label="真实航路点"></div>
       <div class="layer-row"><span><i class="swatch reference-landing"></i> 参考起降点<small id="referenceLandingStatus">等待数据</small></span><input type="checkbox" id="referenceLandingLayer" aria-label="参考起降点"></div>
-      <div class="layer-row"><span><i class="swatch reference-tower"></i> 通信铁塔站址<small id="towerLayerStatus">等待数据</small></span><input type="checkbox" id="towerLayer" aria-label="通信铁塔站址"></div>
+      <div class="layer-row"><span><i class="swatch reference-tower"></i> 通信铁塔站址<small id="towerLayerStatus">等待数据 · 默认关闭</small></span><input type="checkbox" id="towerLayer" aria-label="通信铁塔站址"></div>
      </div>
      <div class="layer-group">
       <div class="layer-group-title">环境</div>
-      <div class="layer-row"><span><i class="swatch grid"></i> 标准网格</span><input type="checkbox" id="gridLayer" aria-label="MH/T 4063标准网格"></div>
+      <div class="layer-row"><span><i class="swatch grid"></i> 标准规划网格</span><input type="checkbox" id="gridLayer" aria-label="MH/T 4063标准网格"></div>
       <div class="layer-row"><span><i class="swatch pop"></i> 人口栅格（原始）</span><input type="checkbox" id="pop" aria-label="人口原始栅格"></div>
       <div class="opacity"><label for="opacity">人口图层透明度 <span id="opacityValue">65%</span></label><input id="opacity" type="range" min="0" max="100" value="65"></div>
       <div class="layer-row"><span><i class="swatch terrain"></i> 地形栅格（原始）</span><input type="checkbox" id="terrain" aria-label="地形原始栅格"></div>
@@ -69,29 +73,39 @@
       <div class="layer-row"><span>QGIS 在线底图</span><input type="checkbox" id="online" checked aria-label="QGIS 在线底图"></div>
      </div>
      <div class="layer-group">
-      <div class="layer-group-title">规划结果</div>
+      <div class="layer-group-title">约束（可行性：能不能飞）</div>
+      <!-- 高度层障碍 = Planning Constraint Field。默认可只画障碍格，避免遮挡；
+           可通行 / 证据不足各自独立开关。证据不足的计数始终在状态卡中可见。 -->
+      <div class="layer-row"><span><i class="swatch" style="background:#c92a2a"></i> 高度层障碍<small id="altitudeConstraintLayerStatus">默认关闭 · 勾选后按当前高度层读取</small></span><input type="checkbox" id="altitudeConstraintLayer" aria-label="高度层障碍"></div>
+      <div class="layer-row layer-sub"><span><i class="swatch" style="background:#f0a020"></i> 显示证据不足单元</span><input type="checkbox" id="altitudeConstraintUnknownLayer" aria-label="显示证据不足单元"></div>
+      <div class="layer-row layer-sub"><span><i class="swatch" style="background:#3f9e6a"></i> 显示可通行单元</span><input type="checkbox" id="altitudeConstraintPassLayer" aria-label="显示可通行单元"></div>
+     </div>
+     <div class="layer-group">
+      <div class="layer-group-title">风险（软成本：哪里风险高）</div>
       <div class="layer-row"><span><i class="swatch" style="background:#d7263d"></i> 建筑净空突破</span><input type="checkbox" id="buildingClearanceLayer" aria-label="建筑净空突破"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#4c6ef5"></i> V3-A 战略候选（2D 投影，实验）</span><input type="checkbox" id="v3CandidateLayer" aria-label="V3-A 战略候选 2D 投影"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> Selected layer 可行性（coarse 垂向包络掩码）</span><input type="checkbox" id="layeredFeasibilityLayer" aria-label="Selected layer coarse 可行性掩码"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 分层候选航路（current candidate，当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" aria-label="分层候选航路 current candidate"></div>
-      <!-- Radar Surveillance Layout V1（proposal-only，默认关闭）：只画已选方案的铁塔/面阵扇区
-           与按覆盖结果着色的航路；不绘制未选 panel 的 coverage polygon。 -->
-      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> 监视雷达初步划设（80 m 方向性扇区与覆盖着色）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="监视雷达初步划设"></div>
+     </div>
+     <div class="layer-group">
+      <div class="layer-group-title">规划结果</div>
+      <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 候选航路（当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" aria-label="候选航路 current candidate"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> 高度层可行域（当前高度层粗判掩码）</span><input type="checkbox" id="layeredFeasibilityLayer" aria-label="当前高度层粗判可行域掩码"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> 雷达监视规划（方向性扇区与覆盖着色）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="雷达监视规划"></div>
+      <!-- 旧版/研究对照：只允许标注为"旧版试算航路 / 研究对照"，永不叫"运行航路 / 正式航路"。 -->
+      <div class="layer-row layer-compat"><span><i class="swatch" style="background:#4c6ef5"></i> 旧版试算航路（研究对照）</span><input type="checkbox" id="v3CandidateLayer" aria-label="旧版试算航路研究对照"></div>
      </div>
      <div class="layer-group" id="cnsLayers" hidden>
       <div class="layer-group-title">CNS</div>
-      <div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS</span><input type="checkbox" id="existingCnsLayer"></div>
+      <div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS 设施</span><input type="checkbox" id="existingCnsLayer"></div>
       <div class="layer-row"><span><i class="swatch candidate-site"></i>候选站址</span><input type="checkbox" id="candidateSiteLayer"></div>
-      <div class="layer-row"><span><i class="swatch cns-c"></i>通信 C</span><input type="checkbox" id="cLayer"></div>
-      <div class="layer-row"><span><i class="swatch cns-n"></i>导航 N</span><input type="checkbox" id="nLayer"></div>
-      <div class="layer-row"><span><i class="swatch cns-s"></i>监视 S</span><input type="checkbox" id="sLayer"></div>
+      <div class="layer-row"><span><i class="swatch cns-c"></i>通信 C 缺口</span><input type="checkbox" id="cLayer"></div>
+      <div class="layer-row"><span><i class="swatch cns-n"></i>导航 N 缺口</span><input type="checkbox" id="nLayer"></div>
+      <div class="layer-row"><span><i class="swatch cns-s"></i>监视 S 缺口</span><input type="checkbox" id="sLayer"></div>
      </div>
-     <p class="small">空域及底图只用于显示参考，不参与风险、航路规划、readiness、fingerprint 或失效传播。真实参考数据 CRS 仍为 pending_confirmation，不代表已确认 WGS84。</p>
+     <p class="small">空域及底图只用于显示参考，不参与风险、航路规划、可用性判定、数据指纹或失效传播。真实参考数据的坐标基准尚未确认，不代表已确认 WGS84。</p>
     </div>
    </div>
 
    <div class="legend legend-collapsed" id="legend">
-    <div class="legend-title" id="legendToggle">图层图例 <span>LOCAL DATA</span></div>
+    <div class="legend-title" id="legendToggle">图层图例 <span>本地数据</span></div>
     <div id="businessLegend" hidden></div>
     <div><i class="swatch air"></i>空域源图层 · QGIS 原始样式（非政策结论）</div>
     <div id="populationRasterLegend" class="raster-legend" hidden>
@@ -107,6 +121,7 @@
      <small>Copernicus DEM GLO-30</small>
     </div>
     <div id="gridThemeLegend" hidden><p><b id="gridThemeLegendTitle"></b><span id="gridThemeLegendUnit"></span></p><div id="gridThemeGradient" class="gradient"></div><div id="gridThemeTicks" class="ticks"></div><div class="no-data-key"><i></i>无数据</div><small id="gridThemeLegendNote"></small></div>
+    <div id="constraintFieldLegend" hidden></div>
     <div id="layeredFeasibilityLegend" hidden></div>
     <div id="layeredCandidateLegend" hidden></div>
    </div>
@@ -127,7 +142,7 @@
   <div class="workbench-head">
    <div class="workbench-title-row">
     <span class="workbench-step" id="workbenchStepNumber">01</span>
-    <div class="workbench-title"><h2 id="workbenchStepTitle">项目准备</h2><p id="workbenchStepNote">设置项目名称和数据存储位置，检查数据后进入工作区。</p></div>
+    <div class="workbench-title"><h2 id="workbenchStepTitle">数据准备</h2><p id="workbenchStepNote">设置项目名称和数据存储位置，检查数据后进入工作区。</p></div>
     <button class="workbench-collapse" id="workbenchToggle" title="折叠右侧工作台">收起</button>
    </div>
    <div class="tabbar" id="workbenchTabs" role="tablist" aria-label="工作台一级标签"></div>
@@ -148,7 +163,7 @@
  </footer>
 </div>
 
-<dialog id="settings" class="source-dialog"><div class="dialog-head"><div><span class="breadcrumb">DATA SOURCE CENTER</span><h2>统一数据源设置</h2></div><button class="close" id="closeSettings" aria-label="关闭设置">×</button></div><p>所有外部数据均在此配置。业务页面只使用已登记数据；原始文件保持只读。</p>
+<dialog id="settings" class="source-dialog"><div class="dialog-head"><div><span class="breadcrumb">数据源中心</span><h2>统一数据源设置</h2></div><button class="close" id="closeSettings" aria-label="关闭设置">×</button></div><p>所有外部数据均在此配置。业务页面只使用已登记数据；原始文件保持只读。</p>
 <div id="healthSummary" class="health-summary">正在检查…</div><div class="source-layout"><section class="source-editor"><h3>当前可配置</h3><label>基础地图 / QGIS 项目</label><div class="file-input"><input id="basemapPath" aria-label="底图文件路径"><button data-browse="basemap">浏览电脑…</button></div><small>支持 .qgz / .qgs；同时检查项目引用、图层和 CRS。</small><label>WorldPop 人口数 / GeoTIFF</label><div class="file-input"><input id="populationPath" aria-label="人口文件路径"><button data-browse="population">浏览电脑…</button></div><small>R2025A 原始量为 person/source pixel；映射时按面积权重守恒分配。</small><div id="rasterInfo" class="metadata"></div><label>地形高程 / Copernicus GLO-30 DSM</label><div class="file-input"><input id="terrainPath" aria-label="地形DEM文件路径"><button data-browse="terrain">浏览电脑…</button></div><small>1 arc-second；水平 WGS84/EPSG:4326，垂直 EGM2008/EPSG:3855，单位 m。</small><div id="terrainInfo" class="metadata"></div><label>裸地高程 / FABDEM DTM</label><div class="file-input"><input id="terrain_dtmPath" aria-label="FABDEM DTM文件路径"><button data-browse="terrain_dtm">浏览电脑…</button></div><small>建筑地面正高专用；不会替换 GLO-30 DSM。运行时校验垂向基准元数据。</small><div id="terrainDtmInfo" class="metadata"></div><label>建筑单体 / GBA LoD1 GeoPackage</label>
 <div class="file-input">
     <input
@@ -160,7 +175,7 @@
     </button>
 </div>
 <small>
-    GBA LoD1 单体建筑轮廓与高度；用于建筑三维净空、障碍物安全分析，以及**层级无关的建筑事实精确聚合**。
+    GBA LoD1 单体建筑轮廓与高度；用于建筑三维净空、障碍物安全分析，以及层级无关的建筑事实精确聚合。
     支持 .gpkg / .shp / .geojson，也可以直接指向引用建筑图层的 .qgz / .qgs 工程。
 </small>
 
@@ -177,6 +192,6 @@
 <small>
     预聚合的 MH/T L8 建筑数据；工作区恰好 L8 时直接映射，其它层级由上面的原始足迹精确聚合。
     支持 .gpkg / .shp / .geojson，也可以指向引用该图层的 .qgz / .qgs 工程。
-</small><label>陆域掩膜 / 陆海判定 GeoPackage</label><div class="file-input"><input id="land_maskPath" aria-label="陆域掩膜文件路径"><button data-browse="land_mask">浏览电脑…</button></div><small>Radar Surveillance Layout V1.1 的 land | coastal_uncertain | sea 判定来源；支持 .gpkg / .shp / .geojson。真实读取源 CRS（禁止 degree-as-meter）；未配置或 CRS 不可解析时 surface_class 保持 unknown（fail-closed），绝不用 DEM NoData 推断海洋。</small><label>参考起降点 / XLSX、CSV</label><div class="file-input"><input id="reference_landing_sitesPath" aria-label="参考起降点文件路径"><button data-browse="reference_landing_sites">浏览电脑…</button></div><small>只读参考层；ET 仅诊断并提示转换，不会解析。</small><label>真实参考航线 / CSV、XLSX、GeoJSON</label><div class="file-input"><input id="reference_routesPath" aria-label="真实参考航线文件路径"><button data-browse="reference_routes">浏览电脑…</button></div><small>保留全部中间航路点；不会自动进入项目航路。ET 需先转换。</small><label>通信铁塔站址 / XLSX、CSV、GeoJSON</label><div class="file-input"><input id="towersPath" aria-label="通信铁塔站址文件路径"><button data-browse="towers">浏览电脑…</button></div><small>只登记真实站址位置（CGCS2000/EPSG:4490，人工裁定）；不生成 CNS 覆盖，不转 C/N/S 设备，不进入规划与风险计算。</small></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
+</small><label>陆域掩膜 / 陆海判定 GeoPackage</label><div class="file-input"><input id="land_maskPath" aria-label="陆域掩膜文件路径"><button data-browse="land_mask">浏览电脑…</button></div><small>雷达监视规划的海域判定来源；支持 .gpkg / .shp / .geojson。真实读取源 CRS（禁止 degree-as-meter）；未配置或 CRS 不可解析时地表类别保持未知（fail-closed），绝不用 DEM 无数据推断海洋。</small><label>参考起降点 / XLSX、CSV</label><div class="file-input"><input id="reference_landing_sitesPath" aria-label="参考起降点文件路径"><button data-browse="reference_landing_sites">浏览电脑…</button></div><small>只读参考层；ET 仅诊断并提示转换，不会解析。</small><label>真实参考航线 / CSV、XLSX、GeoJSON</label><div class="file-input"><input id="reference_routesPath" aria-label="真实参考航线文件路径"><button data-browse="reference_routes">浏览电脑…</button></div><small>保留全部中间航路点；不会自动进入项目航路。ET 需先转换。</small><label>通信铁塔站址 / XLSX、CSV、GeoJSON</label><div class="file-input"><input id="towersPath" aria-label="通信铁塔站址文件路径"><button data-browse="towers">浏览电脑…</button></div><small>只登记真实站址位置（CGCS2000/EPSG:4490，人工裁定）；不生成 CNS 覆盖，不转 C/N/S 设备，不进入规划与风险计算。</small></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
 <dialog id="browser"><div class="dialog-head"><h2>浏览电脑文件</h2><button class="close" id="closeBrowser" aria-label="关闭文件浏览">×</button></div><div class="browse-bar"><button id="drives">此电脑</button><button id="parent">上一级</button><input id="folder" aria-label="当前目录"><button id="openFolder">转到</button></div><p class="small dark" id="fileFilter"></p><div id="entries"></div><div id="browseError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="chosen">请选择文件；单击文件后确认</span><button class="primary" id="selectFile" disabled>选择此文件</button></div></dialog>
 <script src="/tiles.js"></script><script src="/grid_theme.js"></script><script type="module" src="/app.js"></script></body></html>

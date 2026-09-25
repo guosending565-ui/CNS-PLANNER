@@ -403,13 +403,13 @@ test('protection budget shows all components and unknown without map geometry',(
 test('step 4 separates aircraft capability and required performance UI',()=>{
   globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}});return node;}};
   const html=renderStep4({flow:{aircraft_profiles:{count:1,items:[{aircraft_id:'A',name:'A',communication:{capabilities:['radio'],type:{technology:'4g'},confirmed:true},navigation:{},surveillance:{}}]},selected_aircraft_profile_id:'A',aircraft_source:'catalog',scenario_routes:[],required_cns:{project_default:{}},device_catalog:{items:[]},steps:{'4':false}}});
-  assert.match(html,/Aircraft Capability/);
-  assert.match(html,/Required CNS Performance/);
-  assert.match(html,/Operation Context → RequiredCNS Recommendation/);
-  assert.match(html,/Requirement Policies JSON/);
+  assert.match(html,/通用工程航空器配置/);
+  assert.match(html,/正式 CNS需求性能要求/);
+  assert.match(html,/运行上下文 → 正式 CNS需求建议/);
+  assert.match(html,/需求政策 JSON/);
   assert.match(html,/最大时延 s/);
-  assert.match(html,/Ground Device Capability/);
-  assert.match(html,/ReliabilitySpec/);
+  assert.match(html,/地面设备能力/);
+  assert.match(html,/可靠性参数/);
   assert.match(html,/Safety Assessment Policy/);
   assert.match(html,/ARP4761A\/FAA-inspired engineering assessment/);
   assert.match(html,/不是认证结论/);
@@ -420,7 +420,7 @@ test('step 4 separates aircraft capability and required performance UI',()=>{
   assert.match(html,/Response Time Budget/);
   assert.match(html,/Encounter Scenario/);
   assert.match(html,/P8 静态 capability 不会自动转为 P4 available/);
-  assert.match(html,/CNS Service Requirement Corridor/);
+  assert.match(html,/CNS 服务需求走廊/);
   assert.match(html,/DAA Encounter Lab/);
   assert.match(html,/regulatory well-clear not evaluated/);
   assert.match(html,/ServiceState ≠ EncounterEvent ≠ SafetyEvent ≠ UnacceptableEvent/);
@@ -450,6 +450,9 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   const step2=renderStep2({flow:base,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   const step3=renderStep3({flow:base,interactionMode:'pan'});
   const step5=renderStep5({flow:base});
+  // B4X：assume-empty 工程基线的逐字声明只在 planning_mode = assume_empty_for_planning
+  // 时持续显示；base 未声明规划模式，因此这里单独渲染一次该模式。
+  const step5Assumed=renderStep5({flow:{...base,existing_cns_facilities:{knowledge_status:'not_declared',planning_mode:'assume_empty_for_planning'}}});
   assert.match(step2,/EGM2008 orthometric/);
   assert.match(step2,/3D 高度层/);
   assert.match(step2,/建筑密度/);
@@ -467,10 +470,10 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/几何覆盖 ≠ 真实 CNS 性能/);
   assert.match(step5,/CNS 服务能力评估/);
   assert.match(step5,/静态能力满足不等于当前服务可用/);
-  assert.match(step5,/C\/N\/S Service Timeline/);
-  assert.match(step5,/Tactical Protection Envelope/);
+  assert.match(step5,/C\/N\/S 服务时间线/);
+  assert.match(step5,/战术保护包络/);
   assert.match(step5,/工程保护距离 ≠ 法规 Well-Clear/);
-  assert.match(step5,/CNS Gap Analysis V2/);
+  assert.match(step5,/保护与缺口分析/);
   assert.match(step5,/Unknown 表示证据不足/);
   assert.match(step5,/Gap 也不自动触发 Safety Event/);
   assert.match(step5,/旧版站址试算（不用于正式规划）/);
@@ -480,14 +483,36 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/不会写入正式覆盖、设施、确认方案或运行航路/);
   assert.match(step5,/CNS 服务走廊/);
   assert.match(step5,/离散体积代理/);
-  assert.match(step5,/CNS Spatial Planning Objectives/);
-  assert.match(step5,/Spatial continuous-deficit/);
-  assert.match(step5,/不是 runtime outage、正式 ICAO continuity/);
+  assert.match(step5,/CNS 空间规划目标/);
+  assert.match(step5,/空间连续缺口是服务走廊体元的保守纵向投影/);
+  assert.match(step5,/不是运行中断、正式 ICAO 连续性或可用度概率/);
   assert.match(step5,/CNS 设施规划/);
   assert.match(step5,/累计试算验证服务与独立冗余收益/);
   assert.match(step5,/证据不足不会触发建站/);
   assert.match(step5,/真实设备资料库/);
-  assert.match(step5,/与当前算法 DeviceCatalog 分离/);
+  assert.match(step5,/与当前算法的设备目录分离/);
+  // ---- B4X Phase4-B4X：Step05 六区结构 / canonical 链 / 雷达可选 / 兼容隔离 ----
+  assert.match(step5,/链条：三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划；当前环节：三维覆盖/);
+  assert.match(step5,/本段目标：/);
+  assert.match(step5,/阻塞项与工程假设/);
+  assert.match(step5,/class="wb-next-step"/);
+  assert.match(step5,/雷达监视规划/);
+  assert.match(step5,/本分支<b>默认是可选的<\/b>/);
+  assert.match(step5,/监视雷达规划默认是可选的：没有显式监视需求时不阻塞下一步/);
+  assert.match(step5Assumed,/空既有设施工程规划基线；不表示现实中不存在既有 CNS 设施。/);
+  assert.match(step5Assumed,/事实掌握情况：<b>尚未声明<\/b>/);
+  assert.match(step5Assumed,/规划模式：<b>按空既有设施工程基线规划<\/b>/);
+  // 未声明规划模式时，只显示"尚未声明 / 未配置"，绝不推断成任何一种模式
+  assert.match(step5,/事实掌握情况：<b>尚未声明<\/b>/);
+  assert.match(step5,/规划模式：<b>未配置<\/b>/);
+  assert.doesNotMatch(step5,/空既有设施工程规划基线/);
+  // 兼容结果必须显式声明不解锁下一步，且不得表述为"正式结果 / 已采纳 / 已应用"
+  assert.match(step5,/旧版兼容试算结果不解锁下一步，也不得表述为"正式结果 \/ 已采纳 \/ 已应用"/);
+  // 生产主界面不再泄漏旧版英文标题（这些词只允许出现在高级标签内）
+  for(const banned of [/C\/N\/S Service Timeline/,/Tactical Protection Envelope/,
+    /CNS Gap Analysis V2/,/CNS Spatial Planning Objectives/]){
+    assert.doesNotMatch(step5,banned,`生产主界面不应保留英文标题：${banned}`);
+  }
 });
 
 test('step 6 keeps the corridor site result visibly proposal-only',()=>{
@@ -495,7 +520,7 @@ test('step 6 keeps the corridor site result visibly proposal-only',()=>{
   const html=renderStep6({state:{data_health:{status:'passed'}},flow:{project:{name:'P'},workspace:null,operational_routes:[],aircraft:null,rules:null,coverage:null,review:{risks:{},overall_status:'pending_confirmation',overall_pass:false},result_statuses:{cns_corridor_site_plan:'passed'},cns_corridor_site_plan:{status:'proposal_ready',target_voxel_count:2,selected_actions:[{}],confirmed_requirement_unit_volume_gain:10}}});
   assert.match(html,/CNS 设施规划方案/);
   assert.match(html,/方案本身不修改已有 CNS 设施/);
-  assert.match(html,/方案审查（Plan Review）与受控应用/);
+  assert.match(html,/方案审查与受控应用/);
   assert.match(html,/无自动总分\/排名/);
   assert.match(html,/CNS规划方案报告/);
   assert.match(html,/预览报告/);
@@ -1718,10 +1743,10 @@ test('step 2 risk framework V2 workbench separates factors, domains and legacy V
   assert.doesNotMatch(html,/P1\b|P7\b|P13\b/);
   const step2=renderStep2({flow,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   assert.match(step2,/Risk Framework V2/);
-  assert.match(step2,new RegExp(LEGACY_RISK_V1_LABEL+' · 地面风险'));
-  assert.match(step2,new RegExp(LEGACY_RISK_V1_LABEL+' · 综合风险'));
-  assert.match(step2,/V2 因子 · 人口暴露/);
-  assert.match(step2,/V2 域 · Ground/);
+  assert.match(step2,/旧版相对风险指数 · 地面风险/);
+  assert.match(step2,/旧版相对风险指数 · 综合风险/);
+  assert.match(step2,/风险因子 · 人口暴露/);
+  assert.match(step2,/风险域 · 地面暴露/);
   assert.match(step2,/id="evaluateRiskV2"/);
 });
 
@@ -1736,7 +1761,7 @@ test('no production risk weight ships in the V2 frontend or default policy',()=>
   assert.ok(options.includes('ground_risk'));
   assert.ok(options.includes('overall_risk'));
   const labels=riskV2ThemeOptions().map(item=>item[1]).join('|');
-  assert.match(labels,new RegExp(LEGACY_RISK_V1_LABEL+' · 地面风险'));
+  assert.match(labels,/旧版相对风险指数 · 地面风险/);
   assert.doesNotMatch(labels,/地面交通/);
 });
 
@@ -2270,12 +2295,13 @@ test('theta v2 never treats the legacy lambda cost policy as a blocker',async()=
   assert.equal(isLegacyV1CostBlocker({reason_code:'population_shelter_field_missing'}),false);
 
   const html=renderLayeredThetaV2Panel(flow);
-  assert.match(html,/不是<\/b> Theta\* V2 的 blocker/);
-  assert.match(html,/legacy V1 λ blocker/);
-  // BUG-THETA-V2-LEGACY-STATUS-LABEL：raw readiness status 必须被明确标注为
-  // "legacy V1 原始状态，不是 Theta* V2 gate"，避免 Theta* V2 blockers=0 时被误读。
-  assert.match(html,/legacy V1 原始状态，不是 Theta\* V2 gate/);
-  assert.match(html,/\*\*不是\*\* Theta\* V2 的 gate/);
+  // B4X：这三行标签/说明改为中文业务语言（旧版的 λ 仍被如实保留并标注为"不是正式链条的阻塞项"）。
+  assert.match(html,/不是<\/b>正式航路规划的阻塞项/);
+  assert.match(html,/旧版 λ 阻塞项/);
+  // BUG-THETA-V2-LEGACY-STATUS-LABEL：raw 准备状态必须被明确标注为
+  // "旧版原始值，不是正式航路规划的门禁"，避免正式链条阻塞项为 0 时被误读。
+  assert.match(html,/准备状态（旧版原始值，不是 Theta\* V2 的门禁）/);
+  assert.match(html,/\*\*不是\*\*正式航路规划本身的门禁/);
   assert.match(html,/data-theta-v2-legacy-readiness-note="true"/);
   assert.doesNotMatch(html,/必须补齐 λ|请先补齐 confirmed 的高度层、clearance 与 λ|λ 未全部确认[\s\S]{0,40}blocker/,
     'Theta* V2 视图不得提示"必须补齐 λ"');

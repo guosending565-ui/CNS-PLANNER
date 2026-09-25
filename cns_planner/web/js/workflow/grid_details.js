@@ -14,6 +14,7 @@
 // =========================================================
 import {LEGACY_RISK_V1_LABEL,riskV2CellSummary} from './risk_framework_v2.js';
 import {escapeHtml,statusText as labelFor} from './common.js';
+import {constraintCellDetailsHtml} from './constraint_field.js';
 import {parseRiskV2Theme,riskV2Value} from '../map/grid_overlay.js';
 
 const statusText=status=>labelFor(status);
@@ -195,9 +196,22 @@ export function gridCellDetails(item,flow,formatNumber){
  *
  * 展开区里就是改造前那份完整诊断文本，因此任何诊断能力都没有丢失；全部文本已转义，
  * 调用方可以安全地赋给 ``innerHTML``。
+ *
+ * B4X 新增：``constraintCell``（来自 Planning Constraint Field 的只读地图结果）与
+ * ``altitudeLayerLabel``。当该格是**障碍**或**证据不足**时，约束结论放在摘要的**最前**——
+ * 用户点一个障碍格，第一眼要看到"为什么不能飞"，而不是先读到人口密度。
+ * 约束格缺失时**不显示任何约束行**（如实表达"这一层还没读明细"），
+ * 绝不显示成"可通行/通过"。
  */
-export function gridCellDetailsHtml(item,flow,formatNumber,theme){
-  return gridCellSummaryHtml(item,flow,formatNumber,theme)
+export function gridCellDetailsHtml(item,flow,formatNumber,theme,constraintCell=null,altitudeLayerLabel=''){
+  const summary=gridCellSummaryHtml(item,flow,formatNumber,theme);
+  const constraint=constraintCell
+    ?'<div class="grid-info-constraint" data-outcome="'+escapeHtml(String(constraintCell.outcome||'unknown'))+'">'
+      +constraintCellDetailsHtml(constraintCell,{
+        altitudeLayerLabelText:altitudeLayerLabel,gridId:String(item?.cell?.grid_id||'')
+      })+'</div>'
+    :'';
+  return constraint+summary
     +'<details class="grid-info-detail"><summary>详细信息</summary>'
     +'<div class="grid-info-detail-body">'+escapeHtml(gridCellDetails(item,flow,formatNumber))+'</div>'
     +'</details>';

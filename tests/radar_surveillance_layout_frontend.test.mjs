@@ -241,7 +241,10 @@ test('radar layout endpoints and V1.1 vocabulary are stable', () => {
   assert.equal(RADAR_LAYOUT_VERSION, '1.1');
   assert.match(SURFACE_CLASS_LABELS.coastal_uncertain, /海岸不确定带/);
   assert.match(REQUIRED_SITE_COUNT_LABELS.coastal_uncertain, /2 个不同铁塔站址/);
-  assert.match(RADAR_LAYOUT_V1_1_SEMANTICS.route_altitude, /80 m EGM2008/);
+  // B4X §17：高度层不再被写死在文案里（实际值来自 readiness.fixed_altitude）。
+  assert.match(RADAR_LAYOUT_V1_1_SEMANTICS.route_altitude, /EGM2008 正高/);
+  assert.doesNotMatch(RADAR_LAYOUT_V1_1_SEMANTICS.route_altitude, /ALT-0\d\d/,
+    '雷达语义文案不得写死高度层 id');
   assert.match(RADAR_LAYOUT_V1_1_SEMANTICS.vertical_delta, /目标 − 雷达原点/);
   assert.match(RADAR_LAYOUT_V1_1_SEMANTICS.radar_origin, /tower_top_orthometric_m/);
 });
@@ -394,7 +397,11 @@ test('radar layout panel renders the required V1.1 summary fields', () => {
   assert.match(html, /监视雷达初步划设/);
   assert.match(html, /80m固定高度航路方向性雷达几何初步划设方案/);
   assert.match(html, /geometric_initial_radar_layout/);
-  assert.match(html, /algorithm_version 1\.1/);
+  // B4X：工程标识本身允许保留，但界面标签必须是中文业务语言。
+  assert.match(html, /算法版本 1\.1/);
+  assert.doesNotMatch(html, /algorithm_version /, '不得把 raw 字段名直接显示给用户');
+  assert.doesNotMatch(html, /model_scope |land mask|solver |readiness 阻断/,
+    'B4X：雷达面板的字段标签必须中文化');
   assert.match(html, /ALT-080/);
   assert.match(html, /25(\.0)? m/);
   assert.match(html, /5(\.0)? m/);
@@ -402,14 +409,16 @@ test('radar layout panel renders the required V1.1 summary fields', () => {
   assert.match(html, /optimality_proven=true/);
   assert.match(html, /中近程雷达Ⅰ型/);
   assert.match(html, /最小斜距 120/);
-  // V1.1 关键事实必须出现在面板上。
+  // V1.1 关键事实必须出现在面板上（raw 事实值作为审计信息保留，中文标签用于展示）。
   assert.match(html, /tower_top_orthometric_m/);
-  assert.match(html, /radar_phase_center_at_tower_top/);
-  assert.match(html, /legacy_not_used_by_v1_1/);
+  assert.match(html, /相位中心位于塔顶/);
+  assert.match(html, /历史兼容挂高/);
   assert.match(html, /zhejiang_boundary/);
   assert.match(html, /EPSG:4326/);
   assert.match(html, /海岸不确定带/);
-  assert.match(html, /engineering_assumption/);
+  // B4X：参数来源 raw 值必须显示为中文（不可见 raw 字段名）。
+  assert.match(html, /工程假设/);
+  assert.doesNotMatch(html, /engineering_assumption/, '不得把 raw 参数来源显示给用户');
   assert.match(html, /radarCoastalBuffer/);
   assert.match(html, /radarLandMaskLayer/);
   assert.match(html, /海岸不确定带（按陆地处理）/);

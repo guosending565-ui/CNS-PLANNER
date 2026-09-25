@@ -3,23 +3,29 @@ import {RISK_V2_DOMAIN_IDS,parseRiskV2Theme,riskV2Breaks} from '../map/grid_over
 
 // Risk Framework V2 workbench.  Everything shown here is a relative engineering
 // index: no accident probability, no SORA GRC/ARC and no absolute safety risk.
+//
+// B4X：地图专题清单是**生产主界面**的一部分，因此标签一律使用中文业务语言，
+// 不再把版本代号（V1 / V2）当作用户可见的前缀。工程标识（risk_v2:factor:… 等
+// 专题取值本身、以及版本号）只允许出现在「高级 / 审计信息」区。
 export const LEGACY_RISK_V1_LABEL='Legacy Risk V1';
+//: 旧版风险模型的业务语言名称（生产界面使用；内部标识仍是 legacy Risk V1）。
+export const LEGACY_RISK_BUSINESS_LABEL='旧版相对风险指数';
 export const RISK_V2_PENDING_LABEL='聚合策略待确认';
 export const RISK_V2_PENDING_NOTE='当前没有 confirmed aggregation policy，也没有任何默认生产 risk weight；domain index 保持 null，不显示伪 0。';
 export const RISK_V2_FACTOR_LABELS={
   population_exposure:'人口暴露',
   property_exposure:'财产暴露（无数据源）',
   critical_infrastructure_exposure:'关键基础设施暴露（无数据源）',
-  uav_traffic_exposure:'UAV 交通暴露',
+  uav_traffic_exposure:'无人机交通暴露',
   conflict_exposure:'冲突暴露',
   terrain_relief:'地形起伏',
   building_coverage:'建筑覆盖率',
   building_height:'建筑高度',
 };
 export const RISK_V2_DOMAIN_LABELS={
-  ground:'Ground（地面暴露）',
-  air_traffic:'Air / Traffic（空中交通暴露）',
-  environment_obstacle:'Environment / Obstacle（工程环境-障碍物）',
+  ground:'地面暴露',
+  air_traffic:'空中交通暴露',
+  environment_obstacle:'工程环境与障碍物',
 };
 export const RISK_V2_FACTOR_DOMAIN={
   population_exposure:'ground',
@@ -35,10 +41,10 @@ const RISK_V2_MAP_FACTORS=['population_exposure','uav_traffic_exposure','conflic
 
 export function riskV2ThemeOptions(){
   return [
-    ...RISK_V2_MAP_FACTORS.map(factorId=>['risk_v2:factor:'+factorId,'V2 因子 · '+RISK_V2_FACTOR_LABELS[factorId]]),
-    ...RISK_V2_DOMAIN_IDS.map(domainId=>['risk_v2:domain:'+domainId,'V2 域 · '+RISK_V2_DOMAIN_LABELS[domainId]]),
-    ['ground_risk',LEGACY_RISK_V1_LABEL+' · 地面风险'],
-    ['overall_risk',LEGACY_RISK_V1_LABEL+' · 综合风险'],
+    ...RISK_V2_MAP_FACTORS.map(factorId=>['risk_v2:factor:'+factorId,'风险因子 · '+RISK_V2_FACTOR_LABELS[factorId]]),
+    ...RISK_V2_DOMAIN_IDS.map(domainId=>['risk_v2:domain:'+domainId,'风险域 · '+RISK_V2_DOMAIN_LABELS[domainId]]),
+    ['ground_risk',LEGACY_RISK_BUSINESS_LABEL+' · 地面风险'],
+    ['overall_risk',LEGACY_RISK_BUSINESS_LABEL+' · 综合风险'],
   ];
 }
 

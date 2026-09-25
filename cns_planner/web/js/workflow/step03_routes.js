@@ -1,4 +1,4 @@
-import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint} from './common.js';
+import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint,advancedAuditNote,nextStepBar} from './common.js';
 import {bindRouteVerticalProfile,renderRouteVerticalProfilePanel} from './route_vertical_profile.js';
 import {ADVANCED_PROFILE_LABEL,bindCruiseLayer,renderCruiseLayerPanel} from './route_operating_layer.js';
 import {bindRoute3DProfile,renderRoute3DProfilePanel} from './route3d_profile.js';
@@ -1754,7 +1754,7 @@ export function towerClearancePanel(flow){
     +'未解析塔顶的塔绝不当作"没有塔"。</div>';
 }
 
-export function render({flow,interactionMode,selectedReference=null,routeEvidenceHighlight=null}){
+export function render({flow,interactionMode,selectedReference=null,routeEvidenceHighlight=null,constraint=null}){
   const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+node.node_id+'</b> '+escapeHtml(node.name)+'<small>'+node.coordinate.map(value=>value.toFixed(5)).join(', ')+(node.reference_site_id?' · 来源 '+escapeHtml(node.reference_site_id):' · 手工点')+'</small></span><button data-delete-node="'+node.node_id+'">×</button></div>').join('');
   const routes=routesFor(flow);
   const routeOptions=canonicalOperationalRoutes(flow).map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
@@ -1765,17 +1765,22 @@ export function render({flow,interactionMode,selectedReference=null,routeEvidenc
   const altitude='<h3>高级/实验：Route 3D Altitude Profile</h3><div class="parameter-note">'+escapeHtml(ADVANCED_PROFILE_LABEL)+'。此处保存的 constant / waypoint 剖面不会创建或改写生产巡航高度层，也不会被自动匹配到任何 AltitudeLayer；V3-D validated route 导出的 locked profile 保持只读。系统不提供默认真实高度。</div><div class="panel-file-input"><select id="altitudeRoute">'+routeOptions+'</select><select id="routeVerticalReference"><option value="">请选择垂向基准（不猜）</option><option value="egm2008_orthometric">EGM2008 orthometric</option><option value="agl">AGL</option><option value="wgs84_ellipsoidal">WGS84 ellipsoidal</option></select></div><label>Constant altitude (m)<input class="panel-input" type="number" step="any" id="routeAltitude" placeholder="必须显式输入，无默认值"></label><button class="secondary full" id="saveRouteAltitude" '+(!routeOptions?'disabled':'')+'>保存高级高度剖面</button><div class="scroll-list">'+(profiles||'<div class="empty-note">尚未配置高级高度剖面</div>')+'</div>';
   const motionProfiles=Object.values(flow.operational_timing?.route_motion_profiles||{}).map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_ground_speed_mps??'待确认')+' m/s · '+escapeHtml(item.status)+'</small></span></div>').join('');
   const motion='<h3>Route Motion Profile</h3><div class="demo-note">P9 仅实现 confirmed constant ground speed；不会借用 Aircraft cruise speed。</div><label>运行航路<select id="motionRoute">'+routeOptions+'</select></label><label>Constant ground speed (m/s)<input class="panel-input" type="number" min="0" step="any" id="routeGroundSpeed" placeholder="必须显式输入"></label><button class="secondary full" id="saveRouteMotion" '+(!routeOptions?'disabled':'')+'>保存航路运动剖面</button><div class="scroll-list">'+(motionProfiles||'<div class="empty-note">尚未配置航路运动剖面</div>')+'</div>';
-  return shell('03','航路规划','地图点击增加起降点；场景与运行航路分别保存。',
-    routeOperateSection(flow,{interactionMode,nodes})
-    +routeResultSection(flow,{routes,selectedReference,routeEvidenceHighlight})
+  return shell('03','航路规划与发布','正式链条：OD → 固定巡航高度层 → 规划策略 → 正式候选 → 风险画像 → 安全验证 → 发布。',
+    routeOperateSection(flow,{interactionMode,nodes,constraint})
+    +routeResultSection(flow,{routes,selectedReference,routeEvidenceHighlight,constraint})
     +routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion})
-    +'<button class="primary full" id="nextStep" '+(!flow.steps?.['3']?'disabled':'')+'>下一步：运行规则</button>');
+    +nextStepBar({
+      enabled:Boolean(flow.steps&&flow.steps['3']),
+      label:'下一步：CNS需求',
+      reason:flow.steps&&flow.steps['3']?'':'请先完成正式候选航路的安全验证并发布运行航路',
+      note:'下一步不会自动计算 CNS 需求；需求建议与正式采用都由你在第 04 步显式发起。'
+    }));
 }
 
 // ---- 操作/结果/高级的二级分段定义（与 CSS 分段选择器一一对应） -------------------
-const OPERATE_SEGMENTS=[['op-sites','起降点与OD'],['op-candidates','分层候选'],['op-operational','运行航路'],['op-altitude','高度与程序']];
+const OPERATE_SEGMENTS=[['op-sites','起降点与OD'],['op-candidates','正式航路规划'],['op-operational','运行航路'],['op-altitude','高度与程序']];
 const RESULT_SEGMENTS=[['res-route','当前航路'],['res-feasibility','可行性与净空'],[ROUTE_RISK_PROFILE_SEGMENT,'路径风险画像'],['res-compare','对比与验证']];
-const ADVANCED_SEGMENTS=[['adv-reference','参考数据与关联'],['adv-legacy','Legacy / Risk-Aware V2'],['adv-experiment','V3实验'],['adv-diagnostics','规划诊断'],['adv-profile','剖面与运动']];
+const ADVANCED_SEGMENTS=[['adv-reference','参考数据与关联'],['adv-legacy','旧版兼容 / 研究对照'],['adv-experiment','研究对照实验'],['adv-diagnostics','规划诊断'],['adv-profile','剖面与运动']];
 
 // ---- 操作区：同屏只呈现当前任务 -------------------------------------------------
 
@@ -1826,7 +1831,71 @@ function bindLayeredAdoptionPanel(c){
   if(selected)layeredAdoptionSelection=selected;
 }
 
-function routeOperateSection(flow,{interactionMode,nodes}){
+//: 正式航路规划主链（B4X §14）：只允许这一条。
+const PRODUCTION_ROUTE_CHAIN=[
+  '选择 OD',
+  '选择固定巡航高度层',
+  '输入 / 确认规划策略',
+  '生成正式候选航路',
+  '航路风险画像',
+  '航路安全验证',
+  '发布运行航路'
+];
+
+/**
+ * 正式航路规划区（B4X §14 / §15）。
+ *
+ * 主界面只呈现上面这一条主链；实现算法是 `LayeredRiskAwareThetaStarV2`，但那是
+ * **高级信息**——普通用户看到的是「正式航路规划」，算法 ID 与版本只在高级 / 审计区出现。
+ */
+function productionRouteChainBlock(flow,constraint){
+  const context=constraint||{};
+  const ready=layeredPlannerUsesThetaStarV2(flow);
+  const algorithm=(flow?.layered_route_planner_readiness||{}).algorithm||{};
+  const chain='<ol class="production-chain">'
+    +PRODUCTION_ROUTE_CHAIN.map(step=>'<li>'+escapeHtml(step)+'</li>').join('')+'</ol>';
+  const algorithmNote=advancedAuditNote(
+    '正式航路规划实现：'+String(algorithm.algorithm_id||'layered_risk_aware_theta_star_v2')
+    +'@'+String(algorithm.version||'2.0')+'（工程标识，不作为业务标题）。'
+  );
+  return wbBlock('正式航路规划',chain
+    +'<div class="parameter-note">本步只保留这一条正式链条。'
+      +'旧版航路规划器已全部移入「高级 → 旧版兼容 / 研究对照」，'
+      +'<b>不得</b>与正式航路规划并列，也绝不会因为它们产生了试算航路就把本步标记为完成。</div>'
+    +(ready?'':'<div class="inline-error">当前项目的航路规划器不是正式实现（Theta* 主链）：'
+      +'请到「高级」确认算法选择。正式链条只在正式实现下可用。</div>')
+    +constraintStatusBlock(constraint)
+    +algorithmNote);
+}
+
+/** 约束场状态：正式候选取自同一高度层的 Planning Constraint Field。 */
+function constraintStatusBlock(constraint){
+  const context=constraint||{};
+  const model=context.model||null;
+  if(!context.altitudeLayerId){
+    return '<div class="parameter-note" data-constraint-status="unselected">'
+      +'<b>规划约束场</b>：尚未选择固定巡航高度层，因此没有可用的可行性证据。'
+      +'请在「高度与程序」中显式选择高度层，并在第 02 步生成该层的约束场。</div>';
+  }
+  if(!model||!model.present){
+    return '<div class="parameter-note" data-constraint-status="not_calculated">'
+      +'<b>规划约束场</b>（'+escapeHtml(context.altitudeLayerLabel||context.altitudeLayerId)+'）：'
+      +'尚未生成。候选航路在没有约束场时会按既有保守语义处理，请先在第 02 步生成。</div>';
+  }
+  const outcomes=model.outcomes||{};
+  const blocked=Number(outcomes.blocked)||0;
+  const unknown=Number(outcomes.unknown)||0;
+  const pass=Number(outcomes.pass)||0;
+  return '<div class="parameter-note" data-constraint-status="'+escapeHtml(model.status)+'">'
+    +'<b>规划约束场</b>（'+escapeHtml(context.altitudeLayerLabel||context.altitudeLayerId)+'）'
+    +(context.freshness?' · 新鲜度 '+escapeHtml(context.freshness.label):'')
+    +'<br>可通行 '+pass.toLocaleString()+' 格 · <b data-outcome="blocked">障碍 '+blocked.toLocaleString()
+    +' 格</b> · <b data-outcome="unknown">证据不足 '+unknown.toLocaleString()+' 格</b>'
+    +(unknown?'<br><b>证据不足不等于可通行</b>：穿越证据不足单元的候选可以试算，但永远不能发布为运行航路。':'')
+    +'<br>约束场是可行性证据（能不能飞）；航路风险画像是软成本（哪里风险高），两者独立评估。</div>';
+}
+
+function routeOperateSection(flow,{interactionMode,nodes,constraint}){
   // A. 旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 入口已降级为「旧版航路试算」：
   //    按钮 id / 端点 / 逻辑保持不变，但文案与提示必须如实说明它不再发布正式运行航路。
   //    B. 真正的正式入口是「Layered Candidate → 风险画像 → 独立验证 → 发布」。
@@ -1836,7 +1905,7 @@ function routeOperateSection(flow,{interactionMode,nodes}){
     +'<div class="parameter-note"><b>旧版航路试算不发布</b>：该入口沿用既有 /api/workflow/operational，'
     +'结果只在当前运行会话临时保留，并标记为非权威、已弃用；'
     +'它不会写入正式运行航路，也不驱动三维覆盖、CNS 能力需求、设施规划、方案确认与正式报告。'
-    +'正式运行航路请在下方「Layered Candidate 发布」按 候选 → 风险画像 → 独立验证 → 发布 生成。'
+    +'正式运行航路请在下方「Candidate 发布」按 候选 → 风险画像 → 独立验证 → 发布 生成。'
     +(compatibility.available?'（当前已有 '+compatibility.items.length+' 条<b>旧版试算航路（不发布 / 非正式）</b>，状态 '+statusText(compatibility.record?.status||'not_calculated')+'）':'')+'</div>');
   const sitesPanel=referenceLandingPanel(flow)
     +'<h3>项目起降点</h3>'
@@ -1846,17 +1915,20 @@ function routeOperateSection(flow,{interactionMode,nodes}){
   return wbPanel('operate','',{segments:[
     ['op-sites','起降点与OD',
       wbBlock('起降点与 OD',wbSegHint(OPERATE_SEGMENTS,'op-sites')+'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'+sitesPanel)],
-    ['op-candidates','分层候选',wbBlock('分层候选',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+layeredCandidatePanel(flow))],
+    ['op-candidates','正式航路规划',wbBlock('正式航路规划',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+productionRouteChainBlock(flow,constraint)+layeredCandidatePanel(flow))],
     ['op-operational','运行航路',
       wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+legacyOperationalBlock
         +'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚未发布正式运行航路</div>')+'</div>')
-        +wbBlock('Layered Candidate 发布',renderLayeredAdoptionPanel(flow))],
-    ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')+renderCruiseLayerPanel(flow)+renderRoute3DProfilePanel(flow))]
+        +wbBlock('候选 → 运行航路发布',renderLayeredAdoptionPanel(flow))],
+    ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')
+      +'<div class="parameter-note">正式规划针对<b>固定巡航高度层</b>；起飞、爬升、下降和进离场程序将在独立模块中评估，'
+      +'本步不生成任何 terminal 几何，也不假装系统已有完整 terminal procedure。</div>'
+      +renderCruiseLayerPanel(flow)+renderRoute3DProfilePanel(flow))]
   ]});
 }
 
 // ---- 结果区：当前航路 / 可行性与净空 / 路径风险画像 / 对比验证 -------------------
-function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighlight=null}){
+function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighlight=null,constraint=null}){
   // 建筑净空突破的详细分析在"高级 → 剖面与运动"，这里保持独立的可行性与净空汇总。
   // Continuous Validation 接在既有 data readiness / building clearance 之后，
   // 实现完全在 layered_route_validation.js：本文件只插入组合。
@@ -1868,7 +1940,8 @@ function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighligh
     +renderRouteRiskProfile(flow,{routeEvidenceHighlight});
   return wbPanel('result','',{segments:[
     ['res-route','当前航路',
-      wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚未发布正式运行航路</div>')+'</div>')
+      wbBlock('当前航路',wbSegHint(RESULT_SEGMENTS,'res-route')+constraintStatusBlock(constraint)
+        +'<div class="scroll-list route-list">'+(routes||'<div class="empty-note">尚未发布正式运行航路</div>')+'</div>')
         +wbBlock('航路剖面',renderRouteVerticalProfilePanel(flow.route_vertical_profiles,flow.operational_routes))],
     ['res-feasibility','可行性与净空',wbBlock('可行性与净空',feasibility)],
     [ROUTE_RISK_PROFILE_SEGMENT,'路径风险画像',riskProfile],
@@ -1878,22 +1951,29 @@ function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighligh
   ]});
 }
 
-// ---- 高级区：参考数据 / Legacy / 实验 / 诊断 / 剖面 -----------------------------
+// ---- 高级区：参考数据 / 旧版兼容 / 研究对照 / 诊断 / 剖面 -----------------------
 function routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion}){
+  const compatNote='<div class="parameter-note"><b>旧版兼容 / 研究对照</b>：本区内的规划器与实验'
+    +'<b>不参与</b>正式链条，其试算结果不得作为正式结论。地图上如显示它们的结果，'
+    +'图例固定标注为「旧版试算航路（研究对照）」，绝不称为运行航路或正式航路。</div>';
   return wbPanel('advanced','',{segments:[
     ['adv-reference','参考数据与关联',
       wbBlock('真实参考航线',wbSegHint(ADVANCED_SEGMENTS,'adv-reference')+referenceRoutesPanel(flow,null))
         +wbBlock('参考航线 ↔ 当前 OD 关联',referenceLinkPanel(flow))],
-    ['adv-legacy','Legacy / Risk-Aware V2',
-      wbBlock('Legacy 规划器',wbSegHint(ADVANCED_SEGMENTS,'adv-legacy')+plannerCard(plannerCardModel(flow)))
-        +wbBlock('Risk-Aware V2 参数',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是 Risk-Aware V2，V2 参数面板不适用。</div>')],
-    ['adv-experiment','V3 实验',
-      wbBlock('V3 实验',wbSegHint(ADVANCED_SEGMENTS,'adv-experiment')+experimentPanelV3(flow)+experimentPanel(flow))],
+    ['adv-legacy','旧版兼容 / 研究对照',
+      compatNote
+        +wbBlock('旧版航路规划器',wbSegHint(ADVANCED_SEGMENTS,'adv-legacy')+plannerCard(plannerCardModel(flow)))
+        +wbBlock('风险感知规划器 V2 参数（旧版）',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是风险感知规划器 V2，参数面板不适用。</div>')],
+    ['adv-experiment','研究对照实验',
+      compatNote
+        +wbBlock('研究对照实验',wbSegHint(ADVANCED_SEGMENTS,'adv-experiment')+experimentPanelV3(flow)+experimentPanel(flow))],
     ['adv-diagnostics','规划诊断',
       wbBlock('航路规划诊断',wbSegHint(ADVANCED_SEGMENTS,'adv-diagnostics')+routePlanningDiagnosticsPanel(flow))
         +'<div class="flow-summary">已退役编号：'+((flow.retired_route_ids||[]).join(', ')||'无')+'<br>环境风险：'+statusText(flow.risks?.environment?.status||'not_calculated')+'</div>'],
     ['adv-profile','剖面与运动',
-      wbBlock('高级 3D 剖面 / 运动剖面',wbSegHint(ADVANCED_SEGMENTS,'adv-profile')+altitude+motion)]
+      wbBlock('高级 3D 剖面 / 运动剖面',wbSegHint(ADVANCED_SEGMENTS,'adv-profile')+altitude+motion
+        +'<div class="parameter-note">起飞、爬升、下降和进离场程序将在独立模块中评估；'
+        +'本步不为任何航路生成 terminal 几何，也不推断 terminal 高度。</div>')]
   ]});
 }
 

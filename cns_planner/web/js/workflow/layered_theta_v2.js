@@ -1,4 +1,4 @@
-import {escapeHtml,statusBadge,wbBlock,wbDisclosure} from './common.js';
+import {escapeHtml,statusBadge,wbBlock,wbDisclosure,advancedAuditNote} from './common.js';
 import {
   LAYERED_CANDIDATE_LABEL,THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_ALGORITHM_VERSION,
   THETA_STAR_V2_BLOCKED_NOTE,layeredAlgorithmId,
@@ -77,10 +77,9 @@ const LEGACY_V1_BLOCKER_CODES=new Set([
 //: ``layered_route_planner_readiness.status`` 同时承载 legacy V1 layered planner 的 gate，
 //: 因此 Theta* V2 的 blockers=0 时它仍可能显示 raw=blocked。这里只澄清**文案**：
 //: 那一行是 legacy V1 的原始状态，不是 Theta* V2 的 gate；后端 readiness 语义不变。
-export const THETA_STAR_V2_LEGACY_READINESS_NOTE='readiness status 一行是后端 '
-  +'layered_route_planner_readiness.status 的**原始值**：它包含 legacy V1 layered planner 的 gate'
-  +'（例如 legacy LayeredRouteCostPolicy 的 λ），**不是** Theta* V2 的 gate。'
-  +'即使它显示 raw=blocked，只要下方「Theta* V2 blockers」为空，Theta* V2 本身就没有 blocking 项。';
+export const THETA_STAR_V2_LEGACY_READINESS_NOTE='「准备状态」一行是后端的原始值：'
+  +'它同时承载旧版分层规划器的门禁（例如旧版代价策略的 λ），**不是**正式航路规划本身的门禁。'
+  +'即使它显示"已阻断"，只要下方「正式航路规划阻塞项」为空，正式链条本身就没有阻塞项。';
 
 const finite=value=>Number.isFinite(value);
 const text=value=>String(value??'');
@@ -540,21 +539,90 @@ export function candidateModel(candidate,isCurrent){
 
 // ---------------------------------------------------------------- HTML helpers
 
+//: 面板行标签的本地化表（B4X §24）。
+//:
+//: 这里**只做标签本地化**：不映射任何业务状态、不发明语义，也不参与任何判定；
+//: 真正的状态取值一律仍然经 `statusText()` / 后端原值转印。未登记的标签原样返回。
+const LABEL_TEXT={
+  'readiness status（legacy V1 原始状态，不是 Theta* V2 gate）':'准备状态（旧版原始值，不是 Theta* V2 的门禁）',
+  'layered planner':'分层规划器',
+  'algorithm':'算法',
+  'artifact_type':'结果类型',
+  'candidates status':'候选状态',
+  'current_applicability':'当前适用性',
+  'search parameter fingerprint':'搜索参数指纹',
+  'parameter_origin':'参数来源',
+  'engineering_confirmed':'工程确认',
+  'source':'来源',
+  'purpose':'用途',
+  'evidence':'工程证据',
+  'feasibility policy':'可行域策略',
+  'feasibility fingerprint':'可行域指纹',
+  'selected layer mask':'当前高度层掩码',
+  'mask counts':'掩码计数',
+  'mask fingerprint':'掩码指纹',
+  'terrain source':'地形数据源',
+  'population source':'人口数据源',
+  'regulatory status':'法规约束状态',
+  'constraint dataset':'约束数据集',
+  'dataset fingerprint':'数据集指纹',
+  'communication status':'通信规划场状态',
+  'cell count':'格数',
+  'informational fingerprint':'信息性指纹',
+  'shelter policy status':'遮蔽系数策略状态',
+  'policy source':'策略来源',
+  'policy provenance':'策略出处',
+  'population_shelter status':'人口遮蔽场状态',
+  'field fingerprint':'场指纹',
+  'policy fingerprint':'策略指纹',
+  'readiness':'准备状态',
+  'formula':'公式',
+  'weights':'权重',
+  'threshold':'阈值',
+  'constraint':'约束',
+  'role':'作用',
+  'candidate':'候选',
+  'lane / layer':'航路 / 高度层',
+  'row/step':'序号 / 步长',
+  'search incomplete':'搜索未完成',
+  'rejections':'拒绝原因',
+  'segment count':'航段数',
+  'semantics':'语义',
+  'risk_exposure_index_m':'风险暴露指数 m',
+  'turn_count':'转弯次数',
+  'total_heading_change_deg':'总转向角度',
+  'turn_cost_m':'转弯代价 m',
+  'distance_m':'距离 m',
+  'risk_weight':'风险权重',
+  'turn_weight':'转弯权重',
+  'distance_weight':'距离权重',
+  'weighted_risk':'加权风险',
+  'weighted_turn':'加权转弯',
+  'weighted_distance':'加权距离',
+  'total_cost':'总代价'
+};
+
+/** 行标签 → 中文（只本地化标签，绝不改写标签携带的事实）。 */
+function labelText(label){
+  const key=String(label??'');
+  return Object.prototype.hasOwnProperty.call(LABEL_TEXT,key)?LABEL_TEXT[key]:key;
+}
+
 function row(label,value,note=''){
-  return '<div class="list-row"><span><b>'+escapeHtml(label)+'</b><small>'
+  return '<div class="list-row"><span><b>'+escapeHtml(labelText(label))+'</b><small>'
     +escapeHtml(value)+'</small>'+(note?'<small>'+note+'</small>':'')+'</span></div>';
 }
 
 function fieldRow(key,label,value,note=''){
   return '<div class="list-row" data-theta-v2-candidate-field="'+escapeHtml(key)+'"><span><b>'
-    +escapeHtml(label)+'</b><small>'+escapeHtml(value)+'</small>'
+    +escapeHtml(labelText(label))+'</b><small>'+escapeHtml(value)+'</small>'
     +(note?'<small>'+note+'</small>':'')+'</span></div>';
 }
 
 /** 陆地相对风险基线的只读展示行（与 candidate 转印行分开标注）。 */
 function planningExposureRow(key,label,value){
   return '<div class="list-row" data-planning-exposure-field="'+escapeHtml(key)+'"><span><b>'
-    +escapeHtml(label)+'</b><small>'+escapeHtml(value)+'</small></span></div>';
+    +escapeHtml(labelText(label))+'</b><small>'+escapeHtml(value)+'</small></span></div>';
 }
 
 /**
@@ -650,37 +718,37 @@ function blockerRows(blockers,emptyNote){
 
 function readinessSection(model){
   const thetaBlockers=blockerRows(model.blockers.thetaV2,
-    'Theta* V2 readiness 没有 blocking 项。');
+    '正式航路规划没有阻塞项。');
   const legacyRows=model.blockers.legacyV1.length
-    ?'<h3>legacy V1 λ blocker（<b>不是</b> Theta* V2 的 blocker）</h3>'
-      +'<div class="parameter-note">下面这些 blocker 来自 legacy LayeredRouteCostPolicy（V1 A* 的 λ）；'
-      +'Theta* V2 的搜索代价是 population × shelter risk，因此这些项既不禁用运行按钮，也不参与 Theta* V2 判断。'
-      +'后端 readiness.blockers 的原值仍然完整保留在这里。</div>'
-      +blockerRows(model.blockers.legacyV1,'没有 legacy λ blocker。')
+    ?'<h3>旧版 λ 阻塞项（<b>不是</b>正式航路规划的阻塞项）</h3>'
+      +'<div class="parameter-note">下面这些阻塞项来自旧版代价策略（旧版 A* 的 λ）；'
+      +'正式航路规划的搜索代价是 population × shelter risk，因此这些项既不禁用运行按钮，也不参与正式判断。'
+      +'后端准备状态里的原值仍然完整保留在这里（高级 / 审计信息）。</div>'
+      +blockerRows(model.blockers.legacyV1,'没有旧版 λ 阻塞项。')
     :'';
   return wbBlock(THETA_STAR_V2_PANEL_TITLE,
-    '<div class="parameter-note">algorithm_id <code>'+escapeHtml(short(model.algorithmId))+'</code>'
-    +'@'+escapeHtml(short(model.algorithmVersion||model.expectedAlgorithmVersion))
-    +' · theta_star_v2 readiness '+statusBadge(model.thetaStatus)+'。'
-    +'视图完全由 <code>layered_route_planner_readiness.algorithm.algorithm_id</code> 决定：'
-    +'只有 <code>'+escapeHtml(THETA_STAR_V2_ALGORITHM_ID)+'</code> 才显示本面板。</div>'
+    '<div class="parameter-note">'+advancedAuditNote(
+      '算法标识 '+'<code>'+escapeHtml(short(model.algorithmId))+'</code>'
+      +'@'+escapeHtml(short(model.algorithmVersion||model.expectedAlgorithmVersion))
+      +' · 准备状态 '+statusBadge(model.thetaStatus)+'。'
+      +'本面板只在文档化算法标识匹配时显示（可见性完全由后端的算法选择决定）。')+'</div>'
     +'<div class="parameter-note">'+escapeHtml(THETA_STAR_V2_BLOCKED_NOTE)+'</div>'
     +'<div class="parameter-note" data-theta-v2-legacy-readiness-note="true">'
     +escapeHtml(THETA_STAR_V2_LEGACY_READINESS_NOTE)+'</div>'
     +'<div class="scroll-list route-list">'
     +row('readiness status（legacy V1 原始状态，不是 Theta* V2 gate）',model.status+'（后端原值）')
     +row('layered planner',short(model.algorithmLabel)+' · '+short(model.plannerRole))
-    +row('artifact_type','layered_route_candidate · 只分析候选，不写运行航路')
+    +row('artifact_type','候选航路结果 · 只分析候选，不写运行航路')
     +row('algorithm',short(model.algorithmId)+'@'+short(model.algorithmVersion||model.expectedAlgorithmVersion))
     +'</div>'
-    +'<h3>Theta* V2 blockers（后端原样转印）</h3>'+thetaBlockers
+    +'<h3>正式航路规划阻塞项（后端原样转印）</h3>'+thetaBlockers
     +legacyRows
-    +'<h3>candidate 集合</h3>'
+    +'<h3>候选集合</h3>'
     +'<div class="scroll-list route-list">'
     +row('candidates status',model.candidates.status+' · 共 '+model.candidates.count+' 条')
     +row('current_applicability',model.candidates.shown
       ?(model.candidates.shown.applicability
-        +(model.candidates.shown.isCurrent?' · 这是 current candidate':' · 非 current，仅作证据'))
+        +(model.candidates.shown.isCurrent?' · 这是当前候选':' · 非当前候选，仅作证据'))
       :'—')
     +'</div>',
     model.blockers.thetaV2.length?statusBadge('blocked'):statusBadge(model.thetaStatus));
