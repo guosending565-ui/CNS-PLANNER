@@ -35,6 +35,7 @@ GROUND_MARKERS = ("地面", "落地", "ground")
 BASE_TYPES = ("ground", "rooftop", "unknown")
 
 #: 状态取值：``resolved`` 表示塔顶 EGM2008 正高已经由真实事实推出来；否则 ``unresolved``。
+# ``resolved`` is an algorithmic derivation state, not publication authority.
 TOWER_OBSTACLE_STATUSES = ("resolved", "unresolved")
 
 #: 垂直高度状态（unresolved 时说明到底缺什么，绝不含糊）。
@@ -172,6 +173,8 @@ def empty_tower_obstacle_profiles(status="not_calculated"):
         "not_a_risk_framework_v2_input": True,
         "count": 0,
         "resolved_count": 0,
+        "confirmed_count": 0,
+        "resolved_unconfirmed_count": 0,
         "unresolved_count": 0,
         "policy": normalize_tower_obstacle_policy(None),
         "source": None,
@@ -314,6 +317,16 @@ def build_tower_obstacle_profile(tower, *, terrain=None, building=None, policy=N
         limitations.append("楼面塔：塔顶 = FABDEM DTM 地形正高 + 建筑高度 + 源数据塔身高度")
 
     status = "resolved" if tower_top is not None else "unresolved"
+    confirmation = tower.get("tower_top_confirmation")
+    confirmation = confirmation if isinstance(confirmation, dict) else {}
+    confirmation_authority = str(
+        confirmation.get("authority") or confirmation.get("source") or ""
+    ).strip()
+    confirmed = bool(
+        status == "resolved"
+        and (tower.get("tower_top_confirmed") is True or confirmation.get("confirmed") is True)
+        and confirmation_authority
+    )
     if status == "unresolved":
         limitations.append(
             "塔顶高度未解析时不生成具体 tower clearance floor；相关空间保持 unknown，"
@@ -343,6 +356,13 @@ def build_tower_obstacle_profile(tower, *, terrain=None, building=None, policy=N
         "tower_structure_height_m": structure_height,
         "tower_structure_height_source": "source_file_height_m" if structure_height is not None else None,
         "tower_top_orthometric_m": tower_top,
+        "tower_top_status": (
+            "confirmed" if confirmed else
+            "resolved_unconfirmed" if status == "resolved" else "unknown"
+        ),
+        "confirmed": confirmed,
+        "confirmation_authority": confirmation_authority or None,
+        "confirmation_evidence": deepcopy(confirmation.get("evidence") or []),
         "horizontal_status": "source_coordinate_used_as_is",
         "vertical_status": vertical_status,
         "status": status,
@@ -375,7 +395,10 @@ def build_tower_obstacle_profiles(towers, *, terrain_by_tower=None, building_by_
         items[tower_id] = profile
         if profile["status"] == "unresolved":
             warnings.append(f"tower_obstacle_unresolved:{tower_id}:{profile['vertical_status']}")
+        elif profile.get("confirmed") is not True:
+            warnings.append(f"tower_obstacle_resolved_unconfirmed:{tower_id}")
     resolved = sum(1 for item in items.values() if item["status"] == "resolved")
+    confirmed = sum(1 for item in items.values() if item.get("confirmed") is True)
     return {
         "status": "passed" if items else "missing_data",
         "collection_id": TOWER_OBSTACLE_COLLECTION_ID,
@@ -385,6 +408,8 @@ def build_tower_obstacle_profiles(towers, *, terrain_by_tower=None, building_by_
         "not_a_risk_framework_v2_input": True,
         "count": len(items),
         "resolved_count": resolved,
+        "confirmed_count": confirmed,
+        "resolved_unconfirmed_count": resolved - confirmed,
         "unresolved_count": len(items) - resolved,
         "policy": normalized_policy,
         "source": (towers[0].get("source") if towers else None),
@@ -415,6 +440,11 @@ def normalize_tower_obstacle_profiles(value):
         record["status"] = (
             "resolved" if str(record.get("status") or "") == "resolved" else "unresolved"
         )
+        record["confirmed"] = record.get("confirmed") is True
+        record["tower_top_status"] = (
+            "confirmed" if record["confirmed"] and record["status"] == "resolved"
+            else "resolved_unconfirmed" if record["status"] == "resolved" else "unknown"
+        )
         record["base_type"] = (
             record.get("base_type") if record.get("base_type") in BASE_TYPES else "unknown"
         )
@@ -422,6 +452,12 @@ def normalize_tower_obstacle_profiles(value):
     result["items"] = kept
     result["count"] = len(kept)
     result["resolved_count"] = sum(1 for item in kept.values() if item["status"] == "resolved")
+    result["confirmed_count"] = sum(
+        1 for item in kept.values() if item.get("confirmed") is True
+    )
+    result["resolved_unconfirmed_count"] = (
+        result["resolved_count"] - result["confirmed_count"]
+    )
     result["unresolved_count"] = result["count"] - result["resolved_count"]
     result["warnings"] = [str(item) for item in (value.get("warnings") or [])][:50]
     return result

@@ -122,35 +122,47 @@ def _no_tower_fact():
         "data_status": "no_towers",
         "tower_count": 0,
         "resolved_count": 0,
+        "confirmed_count": 0,
         "unresolved_count": 0,
         "tower_top_max_egm2008_m": None,
+        "unconfirmed_tower_ids": [],
         "reason": None,
     }
 
 
 def _tower_fact(counts):
+    """一格内的铁塔净空事实。
+
+    ``resolved`` 只是**算法解析状态**（塔顶数值算得出来），``confirmed`` 才是**发布权威**。
+    两者必须分开表达：
+
+    * 有塔且**全部都 confirmed** → ``passed`` + 具体塔顶数值（可作硬障碍）；
+    * 有塔但**存在 resolved 未确认** → ``unknown``，仍然如实带出已解析塔顶数值与未确认塔 id：
+      数值本身可用于诊断/展示，但**不构成任何硬障碍证据**；
+    * 有塔但存在**未解析** → ``unknown``，不声称塔顶已知。
+    """
+
     if not counts or not counts.get("tower_count"):
         return _no_tower_fact()
     resolved = counts["resolved_count"]
+    confirmed = counts.get("confirmed_count", 0)
     unresolved = counts["unresolved_count"]
-    if unresolved:
-        # 有任何一塔高度未解析就不能声称该格无塔或塔顶已知：fail-closed。
-        return {
-            "data_status": "unknown",
-            "tower_count": counts["tower_count"],
-            "resolved_count": resolved,
-            "unresolved_count": unresolved,
-            "tower_top_max_egm2008_m": counts.get("tower_top_max_egm2008_m"),
-            "reason": "tower_height_unresolved",
-        }
-    return {
-        "data_status": "passed",
+    unconfirmed_ids = list(counts.get("unconfirmed_tower_ids") or [])
+    base = {
         "tower_count": counts["tower_count"],
         "resolved_count": resolved,
-        "unresolved_count": 0,
+        "confirmed_count": confirmed,
+        "unresolved_count": unresolved,
         "tower_top_max_egm2008_m": counts.get("tower_top_max_egm2008_m"),
-        "reason": None,
+        "unconfirmed_tower_ids": unconfirmed_ids,
     }
+    if unresolved:
+        # 有任何一塔高度未解析就不能声称该格无塔或塔顶已知：fail-closed。
+        return {**base, "data_status": "unknown", "reason": "tower_height_unresolved"}
+    if unconfirmed_ids:
+        # resolved 未确认：数值如实带出，但不是 hard obstacle 证据（data_status=unknown）。
+        return {**base, "data_status": "unknown", "reason": "tower_top_not_confirmed"}
+    return {**base, "data_status": "passed", "reason": None}
 
 
 def _horizontal_half_degrees(clearance_m, latitude):
@@ -193,12 +205,14 @@ def tower_facts_by_cell(grid_cells, state):
         profile = profiles.get(str(tower.get("tower_id") or "")) or {}
         top = profile.get("tower_top_orthometric_m")
         resolved = profile.get("status") == "resolved" and isinstance(top, (int, float))
+        confirmed = resolved and profile.get("confirmed") is True
         half_lat, half_lon = _horizontal_half_degrees(horizontal, latitude)
         towers.append({
             "tower_id": str(tower.get("tower_id") or ""),
             "longitude": float(longitude),
             "latitude": float(latitude),
             "resolved": resolved,
+            "confirmed": confirmed,
             "top": float(top) if resolved else None,
             "box": (
                 float(longitude) - half_lon, float(latitude) - half_lat,
@@ -223,8 +237,9 @@ def tower_facts_by_cell(grid_cells, state):
                 continue
             if counts is None:
                 counts = {
-                    "tower_count": 0, "resolved_count": 0, "unresolved_count": 0,
-                    "tower_top_max_egm2008_m": None,
+                    "tower_count": 0, "resolved_count": 0, "confirmed_count": 0,
+                    "unresolved_count": 0, "tower_top_max_egm2008_m": None,
+                    "unconfirmed_tower_ids": [],
                 }
             counts["tower_count"] += 1
             if tower["resolved"]:
@@ -233,6 +248,11 @@ def tower_facts_by_cell(grid_cells, state):
                 counts["tower_top_max_egm2008_m"] = (
                     tower["top"] if current is None else max(current, tower["top"])
                 )
+                if tower["confirmed"]:
+                    counts["confirmed_count"] += 1
+                else:
+                    # resolved 但未确认：数值如实保留，但绝不是 hard obstacle 证据。
+                    counts["unconfirmed_tower_ids"].append(tower["tower_id"])
             else:
                 counts["unresolved_count"] += 1
         if counts is not None:

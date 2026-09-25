@@ -78,6 +78,10 @@ class ApiRouter:
         if path == "/api/layered-route-feasibility-policy": return Response(workflow.layered_route_feasibility_policy())
         if path == "/api/layered-route-cost-policy": return Response(workflow.layered_route_cost_policy())
         if path == "/api/layered-route-candidates": return Response(workflow.layered_route_candidates())
+        if path == "/api/planning-constraint-fields":
+            return Response(workflow.planning_constraint_fields(
+                self._first(query, "altitude_layer_id", "") or None
+            ))
         # ---- Layered Risk-Aware Theta* V2 additive interfaces ------------------------
         if path == "/api/shelter-coefficient-policy": return Response(workflow.shelter_coefficient_policy())
         if path == "/api/population-nodata-policy": return Response(workflow.population_nodata_policy())
@@ -367,6 +371,7 @@ class ApiRouter:
             "/api/max-route-risk-density": lambda: workflow.set_max_route_risk_density(payload),
             "/api/planning-exposure-policy": lambda: workflow.set_planning_exposure_policy(payload),
             "/api/layered-route-candidates/evaluate": lambda: workflow.evaluate_layered_route_candidate(payload),
+            "/api/planning-constraint-fields/evaluate": lambda: workflow.generate_planning_constraint_field(payload),
             "/api/layered-route-candidates/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_layered_route_candidate(payload)
             ),

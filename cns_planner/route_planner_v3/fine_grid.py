@@ -26,6 +26,7 @@ from __future__ import annotations
 from math import ceil, hypot, isfinite
 import math
 
+from ..domain.building_clearance import building_height_status_is_resolved
 from .cost import BUILDING_EXPOSURE_INDEX_METHOD  # noqa: F401  (documented pairing)
 from .fine_contracts import (
     AIRSPACE_MAPPING_METHOD, BUILDING_MAPPING_METHOD, FINE_GRID_SPEC_SCHEMA_VERSION,
@@ -508,7 +509,7 @@ def building_facts_for_cells(
             if height is None or ground is None:
                 unresolved.append(str(footprint.get("building_id")))
                 continue
-            if str(footprint.get("height_status") or "").lower() in ("missing", "unknown", ""):
+            if not building_height_status_is_resolved(footprint.get("height_status")):
                 unresolved.append(str(footprint.get("building_id")))
                 continue
             affecting.append({

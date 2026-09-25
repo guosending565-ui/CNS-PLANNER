@@ -68,7 +68,7 @@ from ..route_planner_v3.contracts import (
 from ..route_planner_v3.fine_contracts import (
     default_v3_fine_refinement_policy, normalize_v3_fine_refinement_policy,
 )
-from ..route_planner_v3.continuous_contracts import (
+from ..validation.continuous_contracts import (
     default_v3_validation_policy, normalize_v3_validation_policy,
 )
 from ..domain.v3_operational_adoption import (
@@ -122,6 +122,10 @@ from ..domain.route_risk_profile import (
 from ..domain.layered_route_validation import (
     empty_layered_route_validation_collection,
     normalize_layered_route_validation_collection,
+)
+from ..domain.planning_constraint_field import (
+    empty_planning_constraint_field_collection,
+    normalize_planning_constraint_field_collection,
 )
 from ..domain.layered_operational_adoption import (
     empty_layered_operational_adoptions, normalize_layered_operational_adoptions,
@@ -319,6 +323,7 @@ def blank_project(defaults):
         "layered_route_feasibility_policy": default_layered_route_feasibility_policy(),
         "layered_route_cost_policy": default_layered_route_cost_policy(),
         "layered_route_candidates": empty_layered_route_candidate_collection(),
+        "planning_constraint_fields": empty_planning_constraint_field_collection(),
         # RouteRiskProfile V1 (additive analysis of a current layered candidate): per-domain
         # thresholds ship unconfirmed (no default), and the profile container starts empty.
         "route_risk_profile_policy": normalize_route_risk_profile_policy(None),
@@ -370,6 +375,7 @@ def blank_project(defaults):
                 "encounter_3d_assessment",
                 "technical_risk", "report",
                 "layered_route_candidate",
+                "planning_constraint_fields",
                 "route_risk_profile",
                 "layered_route_validation",
                 "route_safety_evidence_v2",
@@ -646,6 +652,9 @@ def normalize_project(value, grid_service):
     value["layered_route_candidates"] = normalize_layered_route_candidate_collection(
         value.get("layered_route_candidates")
     )
+    value["planning_constraint_fields"] = normalize_planning_constraint_field_collection(
+        value.get("planning_constraint_fields")
+    )
     # RouteRiskProfile V1 additive backfill: a legacy project gets the unconfirmed per-domain
     # thresholds (no default) and an empty profile container.
     value["route_risk_profile_policy"] = normalize_route_risk_profile_policy(
@@ -705,6 +714,9 @@ def normalize_project(value, grid_service):
         value.get("planning_exposure_policy") or default_planning_exposure_policy()
     )
     value.setdefault("result_statuses", {}).setdefault("layered_route_candidate", "not_calculated")
+    value.setdefault("result_statuses", {}).setdefault(
+        "planning_constraint_fields", "not_calculated"
+    )
     value.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault(
         "layered_route_validation", "not_calculated"

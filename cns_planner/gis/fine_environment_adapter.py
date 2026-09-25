@@ -42,6 +42,7 @@ from ..data.mapping.airspace_eligibility import (
     polygons_of, rect_covered_by_any, rect_intersects_any,
 )
 from ..domain.building_geometry_quality import annotate_footprint_geometry
+from .metric_crs import require_metric_crs
 from ..route_planner_v3.fine_contracts import AIRSPACE_MAPPING_METHOD, contract_fingerprint
 from ..route_planner_v3.fine_grid import (
     assemble_fine_environment, bind_fine_cells_to_parents, build_fine_grid_spec,
@@ -204,7 +205,7 @@ class QgisMetricTransform:
         )
 
         self._QgsPointXY = QgsPointXY
-        self.authority = str(crs_authority)
+        self.authority = require_metric_crs(explicit_crs=crs_authority)
         self.metric = QgsCoordinateReferenceSystem(self.authority)
         if not self.metric.isValid():
             raise ValueError(f"无效的 local metric CRS：{self.authority}")
@@ -339,7 +340,18 @@ class _FabdemRasterBase:
         pixel, halo, or zero fallback is applied.
         """
 
-        if self.vertical_status != "confirmed":
+        if (
+            isinstance(ring_metric, (list, tuple))
+            and ring_metric
+            and isinstance(ring_metric[0], (list, tuple))
+            and ring_metric[0]
+            and isinstance(ring_metric[0][0], (list, tuple))
+        ):
+            values = self.sample_footprint_ground_parts(ring_metric, transform=transform)
+            if not values or any(value is None for value in values):
+                return None
+            return max(values)
+        if self.vertical_status != "confirmed" or not ring_metric:
             return None
         xs = [point[0] for point in ring_metric]
         ys = [point[1] for point in ring_metric]
@@ -369,52 +381,13 @@ class _FabdemRasterBase:
         fact = terrain_fact_from_pixels(values, nodata_value=self.nodata)
         return fact.get("surface_elevation_max_egm2008_m")
 
-    # ------------------------------------------------------------------ resolution
+    def sample_footprint_ground_parts(self, rings_metric, *, transform):
+        """Sample every Polygon part independently, preserving unresolved parts."""
 
-    def effective_resolution_m(self):
-        """Horizontal pixel size in **metres**, with explicit provenance.
-
-        The affine ``GeoTransform`` pixel size is expressed in the raster CRS's own
-        units.  It is *not* metres in general:
-
-        * projected CRS ⇒ convert through the CRS's own verified linear unit
-          (``projected_crs_verified_linear_unit``);
-        * geographic CRS ⇒ the raw values are **degrees** and are never reported as
-          metres; the ground distance between adjacent pixel centres is measured
-          geodesically near the corridor/reference location
-          (``geographic_geodesic_adjacent_pixel_centres``).
-
-        Anything that cannot be resolved returns ``None`` (blocked), never a
-        degree-as-metre number.
-        """
-
-        detail = self.effective_resolution_detail()
-        if detail.get("status") != "passed":
-            return None
-        return detail.get("effective_resolution_m")
-
-    def effective_resolution_detail(self):
-        stat = self.path.stat()
-        detail = self.effective_resolution_detail()
-        self.resolution_detail = detail
-        return {
-            "role": self.role, "dataset": "FABDEM", "file_name": self.path.name,
-            "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
-            "driver": self.dataset.GetDriver().ShortName,
-            "width": int(self.dataset.RasterXSize), "height": int(self.dataset.RasterYSize),
-            "pixel_size": [abs(self.transform[1]), abs(self.transform[5])],
-            "pixel_size_unit": detail.get("native_pixel_size_unit"),
-            "effective_resolution_m": detail.get("effective_resolution_m"),
-            "effective_resolution_m_x": detail.get("effective_resolution_m_x"),
-            "effective_resolution_m_y": detail.get("effective_resolution_m_y"),
-            "resolution_method": detail.get("method"),
-            "resolution_status": detail.get("status"),
-            "resolution_detail": detail,
-            "nodata": self.nodata,
-            "vertical_reference": self.vertical_reference,
-            "vertical_status": self.vertical_status,
-            "read_mode": TERRAIN_READ_MODE,
-        }
+        return [
+            self.sample_footprint_ground(ring, transform=transform)
+            for ring in rings_metric or []
+        ]
 
     def effective_resolution_m(self):
         """Horizontal pixel size in **metres**, with explicit provenance.
@@ -736,7 +709,7 @@ class QgisGpkgBuildingSource:
     role = "buildings"
 
     def __init__(self, path, *, layer_name="buildings", height_field="height_m",
-                 height_status_field="height_status", gdal=None):
+                 height_status_field="height_status", crs_authority=None, gdal=None):
         from qgis.core import QgsCoordinateReferenceSystem, QgsVectorLayer
 
         self.path = Path(path).expanduser().resolve()
@@ -753,7 +726,8 @@ class QgisGpkgBuildingSource:
             raise ValueError(f"buildings 图层缺少高度字段 {height_field}")
         self.height_field = height_field
         self.height_status_field = height_status_field if height_status_field in fields else None
-        self.metric = QgsCoordinateReferenceSystem("EPSG:32651")
+        self.metric_crs = require_metric_crs(explicit_crs=crs_authority)
+        self.metric = QgsCoordinateReferenceSystem(self.metric_crs)
         self._transform = None
 
     def describe(self):
@@ -1775,7 +1749,7 @@ class RouteCorridorBuildingSource:
     role = "buildings"
 
     def __init__(self, path, *, layer_name="buildings", height_field="height_m",
-                 height_status_field="height_status", crs_authority="EPSG:32651", gdal=None):
+                 height_status_field="height_status", crs_authority=None, gdal=None):
         from qgis.core import QgsCoordinateReferenceSystem, QgsVectorLayer
 
         self.path = Path(path).expanduser().resolve()
@@ -1792,7 +1766,8 @@ class RouteCorridorBuildingSource:
             raise ValueError(f"buildings 图层缺少高度字段 {height_field}")
         self.height_field = height_field
         self.height_status_field = height_status_field if height_status_field in fields else None
-        self.metric = QgsCoordinateReferenceSystem(str(crs_authority))
+        self.metric_crs = require_metric_crs(explicit_crs=crs_authority)
+        self.metric = QgsCoordinateReferenceSystem(self.metric_crs)
         self._to_metric = None
 
     def usable(self):
@@ -1872,9 +1847,21 @@ class RouteCorridorBuildingSource:
                 if self.height_status_field else ("predicted" if height is not None else "unknown")
             )
             ground = None
-            if (len(ring) >= 3 and terrain_source is not None
+            ground_by_part = []
+            if (annotated["parts_metric"] and terrain_source is not None
                     and hasattr(terrain_source, "sample_footprint_ground")):
-                ground = terrain_source.sample_footprint_ground(ring, transform=transform)
+                sampler = getattr(terrain_source, "sample_footprint_ground_parts", None)
+                if callable(sampler):
+                    ground_by_part = sampler(
+                        annotated["parts_metric"], transform=transform,
+                    )
+                else:
+                    ground_by_part = [
+                        terrain_source.sample_footprint_ground(part, transform=transform)
+                        for part in annotated["parts_metric"]
+                    ]
+                if ground_by_part and all(value is not None for value in ground_by_part):
+                    ground = max(ground_by_part)
             buildings.append({
                 "building_id": identifier,
                 "source": str(feature["source"]) if "source" in {f.name() for f in self.layer.fields()} else "unknown",
@@ -1884,6 +1871,7 @@ class RouteCorridorBuildingSource:
                 "height_m": height,
                 "height_status": status or ("predicted" if height is not None else "unknown"),
                 "ground_elevation_max_egm2008_m": ground,
+                "ground_elevation_by_part_egm2008_m": ground_by_part,
                 "geometry_status": annotated["status"],
                 "geometry_quality": annotated["annotation"],
             })

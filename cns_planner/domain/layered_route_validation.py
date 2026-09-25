@@ -21,17 +21,18 @@ import json
 SCHEMA_VERSION = "layered-route-validation-v1"
 COLLECTION_SCHEMA_VERSION = "layered-route-validation-collection-v1"
 ALGORITHM_ID = "layered_candidate_continuous_validation_v1"
-# 1.2：production NativeTerrainWindowSource 与 V3-B 共享 footprint-ground sampling，
-# 正式 building verdict 不再因 capability mismatch 恒为 unresolved。版本进入
-# validation_fingerprint，因此修复前的 unresolved 记录不会继续冒充 current。
-ALGORITHM_VERSION = "1.2"
+# 1.3 adds independent tower and restricted-area authority evidence.  The version
+# participates in the validation fingerprint, so pre-B3X records become stale.
+ALGORITHM_VERSION = "1.3"
 VALIDATION_STATUSES = {
     "validated_candidate", "failed", "unresolved", "not_ready",
     "validation_incomplete", "stale",
 }
 VALIDATOR_VERSIONS = {
     "terrain": "source_native_terrain_validator_v1",
-    "building": "real_footprint_building_validator_v3",
+    "building": "real_footprint_building_validator_v4",
+    "tower": "confirmed_tower_top_validator_v1",
+    "restricted_area": "confirmed_restricted_area_validator_v1",
     "native_pixel_intervals": "native_pixel_interval_v1",
     "constant_vertical_context": "production_fixed_cruise_egm2008_v1",
 }
@@ -88,13 +89,16 @@ def empty_layered_route_validation(status="not_ready"):
             "two_dimensional_source_path": True,
         },
         "domains": {
-            "terrain": {}, "building": {},
+            "terrain": {}, "building": {}, "tower": {}, "restricted_area": {},
             "airspace": {
                 "status": "not_applicable", "applicability": "display_only",
                 "used_in_validation": False, "used_in_fingerprint": False,
             },
         },
-        "minimum_margins": {"terrain_vertical_m": None, "building_vertical_m": None},
+        "minimum_margins": {
+            "terrain_vertical_m": None, "building_vertical_m": None,
+            "tower_vertical_m": None,
+        },
         "failed_intervals": [],
         "unresolved_intervals": [],
         "critical_evidence": [],
@@ -104,6 +108,9 @@ def empty_layered_route_validation(status="not_ready"):
             "terrain_vertical_clearance_m": None,
             "building_horizontal_clearance_m": None,
             "building_vertical_clearance_m": None,
+            "tower_horizontal_clearance_m": None,
+            "tower_vertical_clearance_m": None,
+            "conditional_hard_exclusion_feature_ids": [],
         },
         "resource_limits": {
             "max_evidence_items": None, "observed_evidence_items": 0,
@@ -128,6 +135,9 @@ def empty_layered_route_validation(status="not_ready"):
             "turn_radius_and_climb_gradient_not_evaluated": True,
             "terrain_source_native_pixels": True,
             "building_real_footprints": True,
+            "tower_confirmed_top_required": True,
+            "restricted_area_protection_geometry_required": True,
+            "search_constraint_field_is_not_authority_evidence": True,
             "coarse_l8_building_height_not_a_final_verdict": True,
             "airspace_not_applicable_display_only": True,
             "resource_limit_is_computational_not_safety": True,
@@ -148,9 +158,10 @@ def normalize_layered_route_validation(value):
     result["operational_route"] = False
     result["cns_assessed"] = False
     result.setdefault("domains", {})
-    result["domains"]["airspace"] = deepcopy(
-        empty_layered_route_validation()["domains"]["airspace"]
-    )
+    for domain in ("terrain", "building", "tower", "restricted_area", "airspace"):
+        result["domains"].setdefault(
+            domain, deepcopy(empty_layered_route_validation()["domains"].get(domain) or {})
+        )
     result.setdefault("semantics", {}).update(empty_layered_route_validation()["semantics"])
     result.setdefault("validator_versions", deepcopy(VALIDATOR_VERSIONS))
     return result

@@ -25,10 +25,19 @@ def compact_and_store(state, project_path):
         state.get("layered_route_candidates")
         if isinstance(state.get("layered_route_candidates"), dict) else {}
     )
+    constraint_fields = (
+        state.get("planning_constraint_fields")
+        if isinstance(state.get("planning_constraint_fields"), dict) else {}
+    )
     payload = {
         "grid_risk_v2_cells": risk.get("cells") or {},
         "layered_route_candidate_items": candidates.get("items") or [],
         "layered_route_candidate_masks": candidates.get("masks") or {},
+        "planning_constraint_field_cells": {
+            str(item.get("field_id")): item.get("cells") or []
+            for item in constraint_fields.get("items") or []
+            if isinstance(item, dict) and item.get("field_id")
+        },
     }
     raw = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
@@ -49,6 +58,14 @@ def compact_and_store(state, project_path):
     compact_candidates["masks"] = {}
     document["grid_risk_v2"] = compact_risk
     document["layered_route_candidates"] = compact_candidates
+    compact_fields = {
+        key: value for key, value in constraint_fields.items() if key != "items"
+    }
+    compact_fields["items"] = [
+        {key: value for key, value in item.items() if key != "cells"}
+        for item in constraint_fields.get("items") or [] if isinstance(item, dict)
+    ]
+    document["planning_constraint_fields"] = compact_fields
     document["result_index"] = {
         "schema_version": RESULT_INDEX_VERSION,
         "artifact": relative.as_posix(),
@@ -70,6 +87,19 @@ def compact_and_store(state, project_path):
                 for item in payload["layered_route_candidate_items"]
                 if isinstance(item, dict)
                 and (item.get("fingerprint") or item.get("input_fingerprint"))
+            ],
+        },
+        "planning_constraint_fields": {
+            "status": constraint_fields.get("status"),
+            "count": constraint_fields.get("count", len(compact_fields["items"])),
+            "field_count": len(payload["planning_constraint_field_cells"]),
+            "cell_count": sum(
+                len(items) for items in payload["planning_constraint_field_cells"].values()
+            ),
+            "fingerprints": [
+                item.get("constraint_field_fingerprint")
+                for item in constraint_fields.get("items") or []
+                if isinstance(item, dict) and item.get("constraint_field_fingerprint")
             ],
         },
     }
@@ -99,5 +129,14 @@ def restore_compacted_results(document, project_path):
     candidates = restored.setdefault("layered_route_candidates", {})
     candidates["items"] = payload.get("layered_route_candidate_items") or []
     candidates["masks"] = payload.get("layered_route_candidate_masks") or {}
+    fields = restored.setdefault("planning_constraint_fields", {})
+    cell_payload = payload.get("planning_constraint_field_cells") or {}
+    fields["items"] = [
+        {
+            **item,
+            "cells": cell_payload.get(str(item.get("field_id"))) or [],
+        }
+        for item in fields.get("items") or [] if isinstance(item, dict)
+    ]
     restored.pop("_population_shelter_cache", None)
     return restored

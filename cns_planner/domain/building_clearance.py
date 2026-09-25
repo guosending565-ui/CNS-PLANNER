@@ -105,6 +105,21 @@ def _optional_nonnegative(value, field):
 # cannot appear.  Both helpers are fail-closed: anything unresolved stays unresolved
 # and is never reported as safe.
 
+RESOLVED_BUILDING_HEIGHT_STATUSES = frozenset({
+    "accepted", "confirmed", "measured", "predicted", "resolved", "valid", "verified",
+})
+
+
+def building_height_status_is_resolved(value):
+    """Whether a source explicitly marks its height value as usable.
+
+    A numeric height without this status is still unknown.  In particular, missing,
+    invalid, pending, unknown and unresolved values never become a zero-height building
+    and never silently pass a constraint gate.
+    """
+
+    return str(value or "").strip().lower() in RESOLVED_BUILDING_HEIGHT_STATUSES
+
 
 def building_roof_elevation(ground_elevation_m, height_m):
     """Canonical EGM2008 roof elevation = ground + predicted height.
@@ -207,6 +222,7 @@ def _finite_or_none(value):
 
 
 __all__ = [
+    "RESOLVED_BUILDING_HEIGHT_STATUSES", "building_height_status_is_resolved",
     "building_roof_elevation", "default_building_clearance_policy",
     "empty_building_clearance_assessment", "evaluate_vertical_clearance",
     "normalize_building_clearance_policy", "normalize_building_clearance_assessment",

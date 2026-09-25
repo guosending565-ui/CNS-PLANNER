@@ -621,7 +621,8 @@ def test_missing_building_height_is_unresolved_never_safe():
 def test_missing_building_ground_elevation_is_unresolved():
     buildings = [{
         "building_id": "B4", "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
-        "height_m": 40.0, "ground_elevation_max_egm2008_m": None,
+        "height_m": 40.0, "height_status": "confirmed",
+        "ground_elevation_max_egm2008_m": None,
     }]
     route = MetricRoute(realize(OPEN_POINTS)["route"])
     result = validate_buildings(
@@ -751,6 +752,9 @@ BUILDING_CLEARANCE_POLICY = {
 
 def building_result(buildings, *, policy=None):
     route = MetricRoute(realize(OPEN_POINTS)["route"])
+    buildings = deepcopy(buildings)
+    for building in buildings:
+        building.setdefault("height_status", "confirmed")
     return validate_buildings(
         route,
         evidence={"available": True, "buildings": buildings},

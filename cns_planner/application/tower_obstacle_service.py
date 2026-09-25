@@ -76,6 +76,7 @@ class TowerObstacleService:
         candidate = normalize_tower_clearance_policy(raw)
         if candidate != state.get("tower_clearance_policy"):
             state["tower_clearance_policy"] = candidate
+            self.invalidation.planning_constraint_field("tower_clearance_policy_changed")
             self.invalidation.layered_route("tower_clearance_policy_changed")
         self.session.save()
         return self.snapshot()

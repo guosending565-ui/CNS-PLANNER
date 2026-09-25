@@ -6,13 +6,15 @@ import json
 import math
 from pathlib import Path
 
+from .metric_crs import require_metric_crs
 from .source_inspection import inspect_geopackage
 
 
 class QgisBuildingClearanceAdapter:
     """Query only route-corridor buildings and produce exact polygon evidence."""
 
-    def __init__(self, buildings_path, terrain_dtm_path):
+    def __init__(self, buildings_path, terrain_dtm_path, *, horizontal_crs=None,
+                 geographic_bounds=None):
         from qgis.core import (
             QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsFeatureRequest,
             QgsGeometry, QgsPointXY, QgsProject, QgsRectangle, QgsVectorLayer,
@@ -31,7 +33,18 @@ class QgisBuildingClearanceAdapter:
         if not required <= fields:
             raise ValueError("buildings 图层缺少关键字段：" + ", ".join(sorted(required - fields)))
         self.wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
-        self.metric = QgsCoordinateReferenceSystem("EPSG:32651")
+        source_crs = self.layer.crs()
+        if geographic_bounds is None and source_crs.isGeographic():
+            extent = self.layer.extent()
+            geographic_bounds = [
+                extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum(),
+            ]
+        if horizontal_crs is None and not source_crs.isGeographic():
+            horizontal_crs = source_crs.authid()
+        self.horizontal_crs = require_metric_crs(
+            explicit_crs=horizontal_crs, geographic_bounds=geographic_bounds,
+        )
+        self.metric = QgsCoordinateReferenceSystem(self.horizontal_crs)
         context = QgsProject.instance().transformContext()
         self.to_metric = QgsCoordinateTransform(self.layer.crs(), self.metric, context)
         self.metric_to_source = QgsCoordinateTransform(self.metric, self.layer.crs(), context)
@@ -115,7 +128,8 @@ class QgisBuildingClearanceAdapter:
                 "evidence": {
                     "feature_id": int(feature.id()), "layer": "buildings",
                     "geometry_method": "polygon_buffer_route_intersection",
-                    "horizontal_crs": "EPSG:32651", "height_var_semantics": "raw_source_field_only",
+                    "horizontal_crs": self.horizontal_crs,
+                    "height_var_semantics": "raw_source_field_only",
                 },
             })
         return {

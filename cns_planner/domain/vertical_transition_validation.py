@@ -11,9 +11,9 @@ climb or the descent.  This artifact validates exactly those two terminal transi
 against the **real** native FABDEM pixels and the **real** building footprints, using the
 unchanged production geometry helpers:
 
-* :class:`cns_planner.route_planner_v3.continuous_validators.MetricRoute`;
-* :func:`cns_planner.route_planner_v3.continuous_validators.validate_terrain`;
-* :func:`cns_planner.route_planner_v3.continuous_validators.validate_buildings`;
+* :class:`cns_planner.validation.continuous_validators.MetricRoute`;
+* :func:`cns_planner.validation.continuous_validators.validate_terrain`;
+* :func:`cns_planner.validation.continuous_validators.validate_buildings`;
 * :func:`cns_planner.domain.building_clearance.building_roof_elevation`.
 
 What this artifact **is**::
@@ -492,7 +492,7 @@ def metric_route_from_phase(points_metric, *, z_start_m, z_end_m, waypoints, rou
     route-distance window of the profile.
     """
 
-    from ..route_planner_v3.continuous_validators import MetricRoute
+    from ..validation.continuous_validators import MetricRoute
 
     points = [
         [float(point[0]), float(point[1])]
@@ -641,10 +641,10 @@ def building_domain_result(metric_route, *, evidence, to_geographic=None):
     from .building_geometry_quality import (
         empty_geometry_quality_report, merge_geometry_quality, prepare_footprint_polygons,
     )
-    from ..route_planner_v3.continuous_contracts import (
+    from ..validation.continuous_contracts import (
         TOLERANCE, empty_domain_result, violation_interval,
     )
-    from ..route_planner_v3.continuous_validators import _coordinates
+    from ..validation.continuous_validators import _coordinates
 
     result = empty_domain_result("building", "passed")
     result["evaluated"] = True
@@ -793,7 +793,7 @@ def building_domain_result(metric_route, *, evidence, to_geographic=None):
 
 
 def _building_unresolved_only(result, reason, evidence):
-    from ..route_planner_v3.continuous_contracts import violation_interval
+    from ..validation.continuous_contracts import violation_interval
 
     result["status"] = "unresolved"
     result["reason"] = reason
@@ -819,7 +819,7 @@ def evaluate_phase(phase_id, *, metric_route, terrain_evidence, building_evidenc
     footprint penetration must produce.
     """
 
-    from ..route_planner_v3.continuous_validators import validate_terrain
+    from ..validation.continuous_validators import validate_terrain
 
     phase = empty_phase_result(phase_id)
     policy = {

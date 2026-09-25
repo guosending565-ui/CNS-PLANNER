@@ -28,7 +28,7 @@ from ..domain.route_risk_profile import (
     grid_risk_v2_cells_fingerprint, normalize_route_risk_profile_policy, path_fingerprint,
     profile_fingerprint, route_risk_profile_policy_fingerprint,
 )
-from ..route_planner.risk_aware_v2 import GridGraph
+from ..planning.grid_graph import GridGraph
 from .accessors_v2 import cell_factor_record
 from .route_exposure import DOMAIN_CELL_CONTAINER_KEY, integrate_path_exposure, resolve_cell_domain_indices
 

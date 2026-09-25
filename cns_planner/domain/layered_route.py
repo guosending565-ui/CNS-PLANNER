@@ -99,6 +99,8 @@ FEASIBILITY_REASON_CODES = (
     # Towers Operational Integration V2：真实铁塔塔高进入净空（**不是**风险因子）。
     "tower_clearance_not_configured",
     "tower_height_unresolved",
+    # B3X：`resolved` 只是解析状态；未确认的塔顶数值**不是** hard obstacle 证据。
+    "tower_top_not_confirmed",
     "altitude_below_tower_clearance_floor",
 )
 
@@ -137,6 +139,10 @@ COARSE_ENVELOPE_SEMANTICS = {
     "building_horizontal_clearance": "not_modeled_here_deferred_to_continuous_validation",
     "tower_clearance_has_no_default": True,
     "tower_height_unresolved_is_unknown_never_obstacle_free": True,
+    #: B3X：塔顶数值可解析（resolved）≠ 已确认（confirmed）。只有 confirmed 塔顶才能成为
+    #: hard obstacle；resolved-but-unconfirmed 只作诊断，所在格保持 unknown（fail-closed）。
+    "tower_top_resolved_is_not_tower_top_confirmed": True,
+    "tower_top_not_confirmed_is_unknown_never_obstacle_free": True,
     "tower_point_geometry_is_authoritative": True,
     "tower_obstacle_is_not_a_risk_factor": True,
 }

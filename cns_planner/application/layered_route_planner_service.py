@@ -526,6 +526,7 @@ class LayeredRoutePlannerService:
         candidate = normalize_layered_route_feasibility_policy(raw)
         if candidate != self.session.state["layered_route_feasibility_policy"]:
             self.session.state["layered_route_feasibility_policy"] = candidate
+            self.invalidation.planning_constraint_field("layered_route_feasibility_policy_changed")
             self.invalidation.layered_route("layered_route_feasibility_policy_changed")
             self.session.save()
         return self.snapshot()
@@ -708,6 +709,14 @@ class LayeredRoutePlannerService:
 
         if not self._uses_theta_star():
             return {}
+        selected_layer_id = str(
+            (state.get("layered_route_planning_request") or {}).get("altitude_layer_id") or ""
+        )
+        constraint_field = next((
+            item for item in (state.get("planning_constraint_fields") or {}).get("items") or []
+            if str(item.get("altitude_layer_id") or "") == selected_layer_id
+            and str(item.get("status") or "") in ("completed", "completed_with_warnings")
+        ), None)
         return {
             "population_shelter": self.population_shelter_snapshot(),
             "shelter_policy": self.shelter_policy_snapshot(),
@@ -718,6 +727,10 @@ class LayeredRoutePlannerService:
             or default_theta_v2_objective_policy(),
             "risk_density_constraint": state.get("max_route_risk_density")
             or default_risk_density_constraint(),
+            "constraint_field": constraint_field,
+            "unknown_constraint_policy": (
+                (constraint_field or {}).get("unknown_policy")
+            ),
         }
 
     def shelter_policy_snapshot(self):
@@ -872,6 +885,7 @@ class LayeredRoutePlannerService:
         state = self.ensure_state()
         if candidate != state["regulatory_constraints"]:
             state["regulatory_constraints"] = candidate
+            self.invalidation.planning_constraint_field("regulatory_constraints_changed")
             self.invalidation.layered_route("regulatory_constraints_changed")
             self.session.save()
         return self.snapshot()

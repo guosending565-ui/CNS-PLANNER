@@ -129,6 +129,8 @@ class InvalidationService:
             self.risk_v2(f"{changed}_changed")
         if changed in ("workspace", "route", "route_algorithm", "spatial_3d"):
             self.building_clearance(f"{changed}_changed")
+        if changed in ("workspace", "spatial_3d"):
+            self.planning_constraint_field(f"{changed}_changed")
         if changed == "layered_route_planner_algorithm":
             # Selecting another registered layered planner implementation stales only the
             # additive layered candidate product; legacy routes stay untouched.
@@ -183,6 +185,9 @@ class InvalidationService:
         if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
             self.building_clearance("building_source_changed")
         if set(changed_sources) & {"terrain_dtm", "buildings"}:
+            self.planning_constraint_field(
+                "source_changed:" + ",".join(sorted(changed_sources))
+            )
             self.layered_route_validation("source_changed:" + ",".join(sorted(changed_sources)))
             # The transition validation binds the terrain/building source audits, so its
             # stored records are stale as soon as those sources change.
@@ -197,6 +202,8 @@ class InvalidationService:
             # 真实铁塔源变化：派生事实（障碍物高度 / 共塔候选）先过时，再定向失效其下游。
             # 绝不经过 risk()/risk_v2()：塔不是风险输入。
             self.tower_data_changed("tower_source_changed", include_derived=True)
+        if set(changed_sources) & {"airspace"}:
+            self.planning_constraint_field("restricted_area_source_changed")
         if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid", "land_mask"}:
             # 雷达初步划设消费 FABDEM 地形正高与显式陆域掩膜；任一变化只 stale 它自己。
             self.radar_surveillance_layout(
@@ -230,6 +237,7 @@ class InvalidationService:
             for name in ("tower_obstacle_profiles", "tower_colocation_candidates"):
                 if statuses.get(name) not in (None, "not_calculated"):
                     statuses[name] = "stale"
+        self.planning_constraint_field(str(reason))
         self.layered_route(str(reason))
         self.cns_site_plan()
         self.cns_corridor_site_plan()
@@ -256,6 +264,7 @@ class InvalidationService:
         self.route_3d_profile(reason, propagate=False)
         self.coverage_3d()
         self.building_clearance(reason)
+        self.planning_constraint_field(reason)
         self.layered_route(reason)
         # 固定巡航高度层（ALT-080）是雷达初步划设的显式输入之一。
         self.radar_surveillance_layout(str(reason))
@@ -412,6 +421,26 @@ class InvalidationService:
             invalidator(str(reason))
         self.route_risk_profile(reason)
         self.layered_route_validation(reason)
+
+    def planning_constraint_field(self, reason="planning_constraint_field_input_changed"):
+        """Stale the new derived field, then propagate through its route consumers."""
+
+        state = self.session.state
+        collection = state.get("planning_constraint_fields")
+        changed = []
+        if isinstance(collection, dict):
+            for item in collection.get("items") or []:
+                if not isinstance(item, dict) or item.get("status") == "stale":
+                    continue
+                item["status"] = "stale"
+                item["stale_reason"] = str(reason)
+                changed.append(item.get("field_id"))
+            if changed:
+                collection["status"] = "stale"
+                state.setdefault("result_statuses", {})["planning_constraint_fields"] = "stale"
+        if changed:
+            self.layered_route(f"planning_constraint_field_changed:{reason}")
+        return {"stale_constraint_field_ids": changed}
 
     def route_risk_profile(self, reason="route_risk_profile_input_changed"):
         """Stale only the additive RouteRiskProfile product.

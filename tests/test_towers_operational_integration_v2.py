@@ -700,7 +700,13 @@ def test_tower_facts_use_the_source_point_geometry_and_horizontal_clearance():
     }
     zero_buffer = tower_facts_by_cell(cells, state)
     assert set(zero_buffer) == {cells[0]["grid_id"]}
+    # 塔顶数值是**已解析**的诊断事实（地形 100 + 塔身 45），与塔的现场坐标一样照原样带出；
+    # 但该塔没有确认权威，因此这一格的 data_status 必须是 unknown、reason 必须是
+    # tower_top_not_confirmed —— 未确认塔顶不是 hard obstacle 证据（B3X §6.5）。
     assert zero_buffer[cells[0]["grid_id"]]["tower_top_max_egm2008_m"] == 145.0
+    assert zero_buffer[cells[0]["grid_id"]]["data_status"] == "unknown"
+    assert zero_buffer[cells[0]["grid_id"]]["reason"] == "tower_top_not_confirmed"
+    assert zero_buffer[cells[0]["grid_id"]]["confirmed_count"] == 0
 
     # 显式水平净空把同一个塔扩展到相邻 cell（网格只是加速索引，塔坐标不变）
     state["tower_clearance_policy"] = normalize_tower_clearance_policy({

@@ -181,7 +181,10 @@ class ApplicationContext:
         terrain_dtm = self.data.paths.get("terrain_dtm")
         if not buildings or not terrain_dtm:
             raise ValueError("请先配置 GBA buildings 与 FABDEM terrain_dtm")
-        adapter = QgisBuildingClearanceAdapter(buildings, terrain_dtm)
+        adapter = QgisBuildingClearanceAdapter(
+            buildings, terrain_dtm,
+            geographic_bounds=((self.workflow.session.state.get("workspace") or {}).get("bbox")),
+        )
         return self.workflow.evaluate_building_clearance(adapter)
 
     def evaluate_route_vertical_profiles(self, payload=None):
@@ -362,6 +365,7 @@ class ApplicationContext:
             NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
         )
         from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
+        from ..gis.planning_constraint_field_adapter import restricted_area_continuous_evidence
 
         terrain_dtm = self.data.paths.get("terrain_dtm")
         buildings = self.data.paths.get("buildings")
@@ -405,10 +409,15 @@ class ApplicationContext:
             if building_evidence.get("available"):
                 for building in building_evidence.get("buildings") or []:
                     building["source"] = building.get("source") or "GBA"
-                    ring = building.get("ring_metric") or []
-                    if ring:
-                        building["ground_elevation_max_egm2008_m"] = terrain.sample_footprint_ground(
-                            ring, transform=transform,
+                    rings = building.get("ring_parts_metric") or []
+                    if rings:
+                        values = terrain.sample_footprint_ground_parts(
+                            rings, transform=transform,
+                        )
+                        building["ground_elevation_by_part_egm2008_m"] = values
+                        building["ground_elevation_max_egm2008_m"] = (
+                            max(values) if values and all(value is not None for value in values)
+                            else None
                         )
             sample_count = len(terrain_evidence.get("pixels") or []) + len(
                 building_evidence.get("buildings") or []
@@ -494,17 +503,50 @@ class ApplicationContext:
             horizontal_clearance_m=policy["building_horizontal_clearance_m"],
             curve_error_m=0.0, terrain_source=terrain,
         )
+        tower_collection = self.workflow.session.state.get("tower_obstacle_profiles") or {}
+        tower_items = []
+        for profile in (tower_collection.get("items") or {}).values():
+            if not isinstance(profile, dict):
+                continue
+            point = transform.to_metric([profile.get("longitude"), profile.get("latitude")])
+            if point is None:
+                continue
+            tower_items.append({**deepcopy(profile), "point_metric": [float(point[0]), float(point[1])]})
+        tower_evidence = {
+            "status": "passed" if tower_collection.get("status") == "passed" else "unresolved",
+            "applicability": "applicable",
+            "towers": tower_items,
+            "source": deepcopy(tower_collection.get("source")),
+        }
+        raw_restricted = (payload or {}).get("restricted_areas")
+        if raw_restricted is None:
+            restricted_evidence = {
+                "status": "unresolved", "applicability": "applicable", "areas": [],
+                "source": None,
+            }
+        else:
+            restricted_evidence = restricted_area_continuous_evidence(
+                raw_restricted, transform=transform,
+            )
         return {
             "adapter_id": "layered_candidate_real_source_validation_adapter_v1",
             "source_type": "configured_real_sources",
             "metric_path": metric_path, "metric_crs": horizontal_crs,
             "to_geographic": transform.to_geographic,
             "terrain": terrain_evidence, "buildings": building_evidence,
+            "towers": tower_evidence, "restricted_areas": restricted_evidence,
             "sample_count": len(terrain_evidence.get("pixels") or []) + len(
                 building_evidence.get("buildings") or []
-            ),
+            ) + len(tower_items) + len(restricted_evidence.get("areas") or []),
             "sources": {
                 "terrain_dtm": terrain.describe(), "buildings": buildings.describe(),
+                "towers": {
+                    "collection_id": tower_collection.get("collection_id"),
+                    "status": tower_collection.get("status"),
+                    "count": tower_collection.get("count"),
+                    "confirmed_count": tower_collection.get("confirmed_count"),
+                },
+                "restricted_areas": deepcopy(restricted_evidence.get("source")),
                 "metric_frame": transform.describe(),
             },
             "airspace": {
@@ -756,10 +798,15 @@ class ApplicationContext:
         if building_evidence.get("available"):
             for building in building_evidence.get("buildings") or []:
                 building["source"] = building.get("source") or "GBA"
-                ring = building.get("ring_metric") or []
-                if ring:
-                    building["ground_elevation_max_egm2008_m"] = terrain.sample_footprint_ground(
-                        ring, transform=transform,
+                rings = building.get("ring_parts_metric") or []
+                if rings:
+                    values = terrain.sample_footprint_ground_parts(
+                        rings, transform=transform,
+                    )
+                    building["ground_elevation_by_part_egm2008_m"] = values
+                    building["ground_elevation_max_egm2008_m"] = (
+                        max(values) if values and all(value is not None for value in values)
+                        else None
                     )
         return {
             "adapter_id": "vertical_transition_real_source_evidence_adapter_v1",
@@ -806,7 +853,9 @@ class ApplicationContext:
         return FineEnvironmentAdapter(
             transform=QgisMetricTransform(horizontal_crs),
             terrain_source=FabdemWindowTerrainSource(terrain_dtm),
-            building_source=QgisGpkgBuildingSource(buildings),
+            building_source=QgisGpkgBuildingSource(
+                buildings, crs_authority=horizontal_crs,
+            ),
             resolution_m=payload.get("refinement_cell_size_m") or fine_policy.get("resolution_m"),
             resolution_source=(
                 payload.get("resolution_source") or fine_policy.get("resolution_source")

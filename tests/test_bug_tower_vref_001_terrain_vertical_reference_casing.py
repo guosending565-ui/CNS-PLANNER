@@ -179,7 +179,12 @@ def test_unknown_base_type_stays_unresolved_even_with_real_casing():
 
 
 def test_collection_only_ground_and_rooftop_towers_become_resolved():
-    """同一批塔里：可解析的地面塔恢复 resolved，unknown 塔仍 unresolved。"""
+    """同一批塔里：可解析的地面塔恢复 resolved，unknown 塔仍 unresolved。
+
+    B3X 语义：``resolved`` 只是**算法解析状态**；该塔没有 ``tower_top_confirmation``，
+    因此 ``confirmed`` 为 False、``tower_top_status == "resolved_unconfirmed"``，并且必须
+    在 warnings 中如实出现 —— 未确认塔顶不是 hard obstacle 证据（绝不静默通过）。
+    """
 
     collection = build_tower_obstacle_profiles(
         [tower("T-GROUND", site_type="地面角钢塔", height_m=15.0),
@@ -194,9 +199,17 @@ def test_collection_only_ground_and_rooftop_towers_become_resolved():
     assert collection["unresolved_count"] == 1
     assert collection["items"]["T-GROUND"]["status"] == "resolved"
     assert collection["items"]["T-GROUND"]["terrain_vertical_reference"] == EGM2008_ORTHOMETRIC
+    # resolved ≠ confirmed：没有确认权威时塔顶只是诊断数值。
+    assert collection["items"]["T-GROUND"]["confirmed"] is False
+    assert collection["items"]["T-GROUND"]["tower_top_status"] == "resolved_unconfirmed"
+    assert collection["confirmed_count"] == 0
+    assert collection["resolved_unconfirmed_count"] == 1
     assert collection["items"]["T-UNKNOWN"]["status"] == "unresolved"
     assert collection["items"]["T-UNKNOWN"]["vertical_status"] == "base_type_unknown"
-    assert collection["warnings"] == ["tower_obstacle_unresolved:T-UNKNOWN:base_type_unknown"]
+    assert collection["warnings"] == [
+        "tower_obstacle_resolved_unconfirmed:T-GROUND",
+        "tower_obstacle_unresolved:T-UNKNOWN:base_type_unknown",
+    ]
 
 
 # ======================================================================================

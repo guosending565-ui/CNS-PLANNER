@@ -41,7 +41,7 @@ from ..domain.layered_route import (
 from ..domain.building_clearance import (
     building_roof_elevation, evaluate_vertical_clearance,
 )
-from ..route_planner.risk_aware_v2 import GridGraph
+from ..planning.grid_graph import GridGraph
 
 ALGORITHM_ID = "layered_route_planner_v1"
 ALGORITHM_VERSION = "1.0"
@@ -327,13 +327,24 @@ def build_layer_feasibility_mask(
                     "（垂直/水平净空都没有默认值）：塔净空未知，既不是 feasible 也不是 blocked"
                 )
             elif tower_fact.get("data_status") != "passed" or tower_top is None:
+                # resolved 只是解析状态；**未确认**的塔顶（或未解析）不构成 hard obstacle：
+                # 该格保持 unknown 并在搜索中 fail-closed，绝不静默当作"净空足够"。
                 tower_status = "unknown"
-                tower_reason_code = "tower_height_unresolved"
-                tower_reason = (
-                    f"该格有 {tower_count} 个真实铁塔，其中 {tower_unresolved} 个塔顶 EGM2008 "
-                    "正高未解析：不生成具体 tower clearance floor，该格保持 unknown，"
-                    "在路径搜索中 fail-closed，不得作为已验证安全可通行区域"
+                tower_reason_code = str(
+                    tower_fact.get("reason") or "tower_height_unresolved"
                 )
+                if tower_reason_code == "tower_top_not_confirmed":
+                    tower_reason = (
+                        f"该格有 {tower_count} 个真实铁塔，塔顶正高虽已解析（最高 "
+                        f"{_round(tower_top)} m 仅作诊断）但**未确认**："
+                        "未确认塔顶不是硬障碍证据，该格保持 unknown，fail-closed"
+                    )
+                else:
+                    tower_reason = (
+                        f"该格有 {tower_count} 个真实铁塔，其中 {tower_unresolved} 个塔顶 EGM2008 "
+                        "正高未解析：不生成具体 tower clearance floor，该格保持 unknown，"
+                        "在路径搜索中 fail-closed，不得作为已验证安全可通行区域"
+                    )
             else:
                 tower_floor = tower_top + tower_clearance_vertical
                 if altitude is None:

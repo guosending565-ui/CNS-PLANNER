@@ -454,6 +454,8 @@ class LayeredOperationalAdoptionService:
         })
         if candidate is None or candidate.get("current_applicability") != "current":
             reasons.append("referenced_candidate_not_current")
+        elif int(candidate.get("unknown_constraint_count") or 0) > 0:
+            reasons.append("candidate_traverses_unknown_constraints")
         if self.validations._current_risk_profile(candidate) is None:
             reasons.append("current_route_risk_profile_missing")
         if not self._projection_ready(validation):

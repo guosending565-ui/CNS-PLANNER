@@ -30,6 +30,7 @@ from .review_service import ReviewService
 from .risk_service import RiskService
 from .risk_v2_service import RiskFrameworkV2Service
 from .layered_route_planner_service import LayeredRoutePlannerService
+from .planning_constraint_field_service import PlanningConstraintFieldService
 from .route_risk_profile_service import RouteRiskProfileService
 from .layered_route_validation_service import LayeredRouteValidationService
 from .layered_operational_adoption_service import LayeredOperationalAdoptionService
@@ -108,6 +109,7 @@ _SNAPSHOT_OMITTED_STATE_KEYS = (
 #: 这些容器只会被整体替换（copy-on-write），快照序列化后即结束生命周期。
 _SNAPSHOT_SHARED_STATE_KEYS = (
     "grid", "grid_attributes", "grid_risk", "grid_risk_v2", "layered_route_candidates",
+    "planning_constraint_fields",
     # Towers Operational Integration V2：373 条派生事实，整体替换、只读消费。
     "tower_obstacle_profiles", "tower_colocation_candidates",
 )
@@ -370,6 +372,9 @@ class WorkflowService:
         # container are shared.  It never writes ``operational_routes`` / CNS results and
         # never switches the project's default ``route_planner`` (still ``route_planner_v1``).
         self.layered_route_planner_service = LayeredRoutePlannerService(
+            self.session, self.invalidation_service, snapshot,
+        )
+        self.planning_constraint_field_service = PlanningConstraintFieldService(
             self.session, self.invalidation_service, snapshot,
         )
         # Towers Operational Integration V2：真实铁塔的派生事实（障碍物高度 + 共塔宿主候选）。
@@ -1254,6 +1259,10 @@ class WorkflowService:
         return self.layered_route_planner_service.cost_policy_snapshot()
     def layered_route_candidates(self):
         return self.layered_route_planner_service.result_snapshot()
+    def planning_constraint_fields(self, altitude_layer_id=None):
+        return self.planning_constraint_field_service.result_snapshot(altitude_layer_id)
+    def generate_planning_constraint_field(self, payload=None):
+        return self.planning_constraint_field_service.generate(payload)
     def set_layered_route_planning_request(self, payload):
         return self.layered_route_planner_service.set_planning_request(payload)
     def set_layered_route_feasibility_policy(self, payload):

@@ -63,12 +63,13 @@ from ..domain.layered_theta_v2 import (
 from ..domain.population_shelter import (
     population_shelter_fingerprint, shelter_policy_fingerprint,
 )
+from ..domain.planning_constraint_field import normalize_unknown_policy
 from ..domain.regulatory_constraints import (
     evaluate_regulatory_intersection, is_configured as regulatory_is_configured,
     regulatory_compliance_record, regulatory_constraints_fingerprint,
 )
 from ..risk.accessors_v2 import cell_factor_index
-from ..route_planner.risk_aware_v2 import GridGraph
+from ..planning.grid_graph import GridGraph
 from .supercover import (
     CONSERVATIVE_BOUNDARY_TOUCH, CORNER_TOUCH_POLICY, LENGTH_ASSIGNMENT_SEMANTICS,
     supercover_traversal, traversal_cells_with_lengths,
@@ -103,7 +104,8 @@ PLANNER_CAPABILITY = {
 
 #: Traversal rejection vocabulary.
 LOS_REJECTION_REASONS = (
-    "terrain", "building", "tower", "regulatory", "unknown", "hard_constraint", "outside_grid",
+    "terrain", "building", "tower", "airspace", "critical_site", "regulatory",
+    "unknown", "hard_constraint", "outside_grid",
 )
 
 SEARCH_SEMANTICS = {
@@ -138,6 +140,7 @@ SEARCH_SEMANTICS = {
     "search_objective_risk_scope": "population_x_shelter_only",
     "communication_affects_path_or_cost": False,
     "airspace_not_used": True,
+    "airspace_hard_exclusion_from_constraint_field": True,
     # Terminal-status semantics (Phase 3.5).  Reaching the expansion cap stops the
     # search before reachability is decided, so it is reported as ``search_incomplete``
     # and is never evidence that the airspace is infeasible.
@@ -449,6 +452,7 @@ class LayeredRiskAwareThetaStarV2:
         regulatory_constraints=None, communication_field=None,
         hard_constraints=None, building_clearance_policy=None, source_audits=None,
         objective_policy=None, risk_density_constraint=None, cost_policy=None,
+        constraint_field=None, unknown_constraint_policy=None,
     ):
         """Plan one fixed-altitude any-angle Theta* candidate.
 
@@ -466,6 +470,11 @@ class LayeredRiskAwareThetaStarV2:
             risk_density_constraint if risk_density_constraint is not None
             else self.risk_density_constraint
         )
+        unknown_policy = normalize_unknown_policy(
+            unknown_constraint_policy
+            if unknown_constraint_policy is not None
+            else (constraint_field or {}).get("unknown_policy")
+        )
         fingerprints = self.fingerprints(
             request=request, scenario_route=scenario_route, grid=grid, layer_mask=mask,
             grid_risk_v2=grid_risk_v2, objective_policy=objective,
@@ -474,6 +483,8 @@ class LayeredRiskAwareThetaStarV2:
             hard_constraints=hard_constraints,
             building_clearance_policy=building_clearance_policy,
             feasibility_policy=feasibility_policy, source_audits=source_audits,
+            constraint_field=constraint_field,
+            unknown_constraint_policy=unknown_policy,
         )
         communication = communication_readiness(communication_field)
 
@@ -523,6 +534,15 @@ class LayeredRiskAwareThetaStarV2:
             return blocked(
                 "invalid_input", "LayerFeasibilityMask 缺失或不可用",
                 "feasibility_mask_unavailable",
+            )
+        if isinstance(constraint_field, dict) and (
+            str(constraint_field.get("altitude_layer_id") or "")
+            != str(request.get("altitude_layer_id") or "")
+        ):
+            return blocked(
+                "invalid_input",
+                "Planning Constraint Field 与所选 AltitudeLayer 不一致",
+                "constraint_field_altitude_layer_mismatch",
             )
 
         route = scenario_route if isinstance(scenario_route, dict) else {}
@@ -582,10 +602,8 @@ class LayeredRiskAwareThetaStarV2:
         gate, gate_diagnostics = _build_gate(
             graph=graph, index_map=index_map, mask=mask, hard_constraints=hard_constraints,
             regulatory=regulatory_constraints, altitude=altitude,
+            constraint_field=constraint_field, unknown_policy=unknown_policy,
         )
-        if source in gate_diagnostics["hard_blocked"] or target in gate_diagnostics["hard_blocked"]:
-            return blocked("blocked", "起点或终点落入显式硬约束范围", "endpoint_in_hard_constraint")
-
         statistics = self._statistics(
             None, d_ref=d_ref, risk_weight=risk_weight, turn_weight=turn_weight,
             distance_weight=float(weights["distance"]),
@@ -646,6 +664,15 @@ class LayeredRiskAwareThetaStarV2:
             ), "search_incomplete" if incomplete else "no_path")
 
         metrics = _objective_metrics(search, weights, d_ref, self.parameters["theta_min_deg"])
+        crossed = {
+            entry.get("grid_id")
+            for segment in search.get("los_segments") or []
+            for entry in segment.get("traversed_cells") or []
+            if entry.get("grid_id")
+        }
+        unknown_crossed = sorted(crossed & gate_diagnostics["constraint_unknown"])
+        statistics["unknown_constraint_count"] = len(unknown_crossed)
+        statistics["unknown_constraint_grid_ids"] = unknown_crossed
         evaluation = evaluate_route_risk_density(
             risk_exposure_index_m=metrics["risk_exposure_index_m"],
             distance_m=metrics["distance_m"], constraint=constraint,
@@ -673,6 +700,8 @@ class LayeredRiskAwareThetaStarV2:
             communication=communication,
             regulatory=regulatory_compliance_record(regulatory_constraints),
             search_incomplete=search["cap_reached"],
+            constraint_field=constraint_field, unknown_policy=unknown_policy,
+            unknown_constraint_count=len(unknown_crossed),
         ), "candidate")
 
     # ------------------------------------------------------------------ fingerprints
@@ -683,6 +712,7 @@ class LayeredRiskAwareThetaStarV2:
         regulatory_constraints=None, hard_constraints=None,
         building_clearance_policy=None, feasibility_policy=None, source_audits=None,
         cost_policy=None, communication_field=None,
+        constraint_field=None, unknown_constraint_policy=None,
     ):
         """Declared dependency fingerprint of one Theta* V2 candidate.
 
@@ -720,6 +750,23 @@ class LayeredRiskAwareThetaStarV2:
                 ((layer_mask or {}).get("cruise_altitude") or {}).get("altitude_egm2008_m")
             ),
             "request_fingerprint": request_fingerprint(request),
+            "selected_altitude_layer_identity": {
+                "altitude_layer_id": (request or {}).get("altitude_layer_id"),
+                "nominal_altitude_m": ((layer_mask or {}).get("cruise_altitude") or {}).get(
+                    "altitude_egm2008_m"
+                ),
+                "vertical_reference": ((layer_mask or {}).get("cruise_altitude") or {}).get(
+                    "vertical_reference", "egm2008_orthometric"
+                ),
+            },
+            "planning_constraint_field_fingerprint": (
+                (constraint_field or {}).get("constraint_field_fingerprint")
+            ),
+            "unknown_constraint_policy": normalize_unknown_policy(
+                unknown_constraint_policy
+                if unknown_constraint_policy is not None
+                else (constraint_field or {}).get("unknown_policy")
+            ),
             "hard_constraints": list(hard_constraints or []),
             "terrain_source_audit": _grid_audit(source_audits, "terrain_dtm"),
             "building_source_audit": _grid_audit(source_audits, "buildings"),
@@ -803,6 +850,8 @@ class LayeredRiskAwareThetaStarV2:
             "los_shortcuts": 0, "rejected_terrain": 0,
 "rejected_building": 0,
 "rejected_tower": 0,
+"rejected_airspace": 0,
+"rejected_critical_site": 0,
 "rejected_regulatory": 0,
 "rejected_unknown": 0,
 "rejected_hard_constraint": 0,
@@ -831,6 +880,7 @@ class LayeredRiskAwareThetaStarV2:
         risk_density=None, turn_statistics=None, los_segments=None, statistics=None,
         objective_policy=None, risk_density_constraint=None, communication=None,
         regulatory=None, search_incomplete=False, mask_status=None,
+        constraint_field=None, unknown_policy=None, unknown_constraint_count=0,
     ):
         objective_policy = objective_policy or default_theta_v2_objective_policy()
         risk_density_constraint = risk_density_constraint or default_risk_density_constraint()
@@ -929,6 +979,23 @@ class LayeredRiskAwareThetaStarV2:
                 "communication_informational_fingerprint"
             ),
             "feasibility_mask_fingerprint": (mask or {}).get("mask_fingerprint"),
+            "planning_constraint_field_fingerprint": fingerprints["components"].get(
+                "planning_constraint_field_fingerprint"
+            ),
+            "unknown_constraint_policy": deepcopy(
+                fingerprints["components"].get("unknown_constraint_policy")
+            ),
+            "unknown_constraint_count": int(unknown_constraint_count or 0),
+            "operational_adoption_allowed": not bool(unknown_constraint_count),
+            "maturity": "provisional",
+            "completion_status": (
+                "completed_with_warnings" if unknown_constraint_count else "completed"
+            ),
+            "warnings": ([{
+                "reason": "route_traverses_unknown_constraints",
+                "unknown_constraint_count": int(unknown_constraint_count),
+                "operational_adoption_allowed": False,
+            }] if unknown_constraint_count else []),
             "search_incomplete": bool(search_incomplete),
             "mask_status": mask_status,
             "provenance": {
@@ -956,10 +1023,23 @@ class LayeredRiskAwareThetaStarV2:
                     "status": "not_evaluated",
                 },
                 "communication": communication or communication_readiness(None),
+                "planning_constraint_field": {
+                    "fingerprint": fingerprints["components"].get(
+                        "planning_constraint_field_fingerprint"
+                    ),
+                    "used_as_feasibility": bool(
+                        fingerprints["components"].get("planning_constraint_field_fingerprint")
+                    ),
+                    "used_as_risk_cost": False,
+                    "airspace_and_protected_sites_are_hard_only_when_confirmed": True,
+                },
+                # The legacy display-only airspace product remains outside the planner.
+                # Confirmed hard exclusions enter only through the separately fingerprinted
+                # Planning Constraint Field above.
                 "airspace": {
                     "status": "not_applicable", "applicability": "display_only",
                     "used_in_search": False, "used_in_fingerprint": False,
-                    "semantics": "display_only_airspace_never_enters_theta_star_hard_gate_or_fingerprint",
+                    "semantics": "legacy_display_airspace_not_a_planner_input",
                 },
             },
         })
@@ -1039,7 +1119,10 @@ def _empty_turn_statistics():
 # --------------------------------------------------------------------------- hard gate
 
 
-def _build_gate(*, graph, index_map, mask, hard_constraints, regulatory, altitude):
+def _build_gate(
+    *, graph, index_map, mask, hard_constraints, regulatory, altitude,
+    constraint_field=None, unknown_policy=None,
+):
     """Per-cell hard gate derived from the **existing** feasibility mask semantics.
 
     ``mask`` is the existing ``LayerFeasibilityMask``: its cells already encode
@@ -1052,7 +1135,9 @@ def _build_gate(*, graph, index_map, mask, hard_constraints, regulatory, altitud
     blocked only when ``H`` is below the building floor, and it is traversable over the
     obstacle when ``H`` is at or above it.  ``building_count == 0`` carries no vertical
     building constraint at all, and an unresolved height/terrain/fact is ``unknown`` —
-    which the LOS traversal treats as non-crossable.
+    which the legacy LOS traversal treats as non-crossable when no explicit Planning
+    Constraint Field is supplied.  With a field, that field is the feasibility authority
+    and its explicit unknown policy controls provisional traversal.
     """
 
     mask_cells = mask.get("cells") or {}
@@ -1063,11 +1148,49 @@ def _build_gate(*, graph, index_map, mask, hard_constraints, regulatory, altitud
             for item in hard_constraints or []
         )
     }
-    diagnostics = {"hard_blocked": hard_blocked, "gate_reasons": {}, "gate_domains": {}}
+    field_cells = {
+        str(item.get("grid_id")): item
+        for item in (constraint_field or {}).get("cells") or []
+        if isinstance(item, dict) and item.get("grid_id")
+    }
+    explicit_field = isinstance(constraint_field, dict) and bool(field_cells)
+    allow_unknown = normalize_unknown_policy(unknown_policy)["allow_unknown_for_provisional"]
+    diagnostics = {
+        "hard_blocked": hard_blocked, "gate_reasons": {}, "gate_domains": {},
+        "constraint_blocked": set(), "constraint_unknown": set(),
+        "allow_unknown_for_provisional": allow_unknown,
+    }
 
     def classify(grid_id):
         if grid_id in hard_blocked:
             return "hard_constraint", "hard_constraint_intersection"
+        constraint = field_cells.get(grid_id)
+        if explicit_field and not isinstance(constraint, dict):
+            diagnostics["constraint_unknown"].add(grid_id)
+            if not allow_unknown:
+                return "unknown", "cell_outside_planning_constraint_field"
+        elif isinstance(constraint, dict):
+            outcome = str(constraint.get("outcome") or "unknown")
+            if outcome == "blocked":
+                blockers = [
+                    item for item in constraint.get("blocked_by") or []
+                    if item in ("terrain", "building", "tower", "airspace", "critical_site")
+                ]
+                domain = blockers[0] if blockers else "hard_constraint"
+                diagnostics["constraint_blocked"].add(grid_id)
+                return domain, "planning_constraint_field_blocked"
+            if outcome == "unknown":
+                diagnostics["constraint_unknown"].add(grid_id)
+                if not allow_unknown:
+                    return "unknown", "planning_constraint_field_unknown"
+            elif outcome != "pass":
+                diagnostics["constraint_unknown"].add(grid_id)
+                if not allow_unknown:
+                    return "unknown", "planning_constraint_field_outcome_invalid"
+            # An explicit field consumes the same obstacle facts and policies and is the
+            # production feasibility authority.  Do not apply the legacy mask a second time:
+            # doing so would silently turn an allowed provisional unknown back into blocked.
+            return None, None
         cell = mask_cells.get(grid_id)
         if not isinstance(cell, dict):
             return "unknown", "cell_outside_feasibility_mask"
@@ -1164,6 +1287,8 @@ def _theta_star(
         "rejected_terrain": 0,
 "rejected_building": 0,
 "rejected_tower": 0,
+"rejected_airspace": 0,
+"rejected_critical_site": 0,
 "rejected_regulatory": 0,
 "rejected_unknown": 0,
 "rejected_hard_constraint": 0,

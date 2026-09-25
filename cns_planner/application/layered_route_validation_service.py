@@ -16,8 +16,9 @@ from ..domain.layered_route_validation import (
     empty_layered_route_validation, normalize_layered_route_validation_collection,
     path_fingerprint, stable_fingerprint, utc_now, validation_fingerprint,
 )
-from ..route_planner_v3.continuous_validators import (
-    MetricRoute, validate_buildings, validate_terrain,
+from ..validation.continuous_validators import (
+    MetricRoute, validate_buildings, validate_restricted_areas, validate_terrain,
+    validate_towers,
 )
 
 
@@ -137,10 +138,16 @@ class LayeredRouteValidationService:
             state["layered_route_feasibility_policy"]["terrain_vertical_clearance_m"]
         )
         building_policy = state["building_clearance_policy"]
+        tower_policy = state.get("tower_clearance_policy") or {}
         policy = {
             "terrain_clearance_m": terrain_clearance,
             "building_horizontal_clearance_m": float(building_policy["horizontal_clearance_m"]),
             "building_vertical_clearance_m": float(building_policy["vertical_clearance_m"]),
+            "tower_horizontal_clearance_m": tower_policy.get("tower_horizontal_clearance_m"),
+            "tower_vertical_clearance_m": tower_policy.get("tower_vertical_clearance_m"),
+            "conditional_hard_exclusion_feature_ids": list(
+                payload.get("conditional_hard_exclusion_feature_ids") or []
+            ),
             # The production candidate has no curve realization error: its original polyline
             # is the validation geometry, not an approximation of another curve.
             "use_curve_error_envelope": False,
@@ -201,6 +208,8 @@ class LayeredRouteValidationService:
         observed = int(evidence.get("sample_count") or (
             len((evidence.get("terrain") or {}).get("pixels") or [])
             + len((evidence.get("buildings") or {}).get("buildings") or [])
+            + len((evidence.get("towers") or {}).get("towers") or [])
+            + len((evidence.get("restricted_areas") or {}).get("areas") or [])
         ))
         limit = _resource_limit(payload)
         limit_reached = bool(evidence.get("resource_limit_exceeded")) or (
@@ -225,7 +234,17 @@ class LayeredRouteValidationService:
             metric_route, evidence=evidence.get("buildings") or {}, policy=policy,
             to_geographic=evidence.get("to_geographic"),
         )
-        statuses = {terrain.get("status"), building.get("status")}
+        tower = validate_towers(
+            metric_route, evidence=evidence.get("towers") or {}, policy=policy,
+            to_geographic=evidence.get("to_geographic"),
+        )
+        restricted_area = validate_restricted_areas(
+            metric_route, evidence=evidence.get("restricted_areas") or {}, policy=policy,
+            vertical_reference=str(layer.get("vertical_reference") or ""),
+            to_geographic=evidence.get("to_geographic"),
+        )
+        domains = (terrain, building, tower, restricted_area)
+        statuses = {item.get("status") for item in domains}
         status = (
             "failed" if "failed" in statuses
             else "unresolved" if "unresolved" in statuses
@@ -237,19 +256,22 @@ class LayeredRouteValidationService:
         )
         record["domains"]["terrain"] = deepcopy(terrain)
         record["domains"]["building"] = deepcopy(building)
+        record["domains"]["tower"] = deepcopy(tower)
+        record["domains"]["restricted_area"] = deepcopy(restricted_area)
         record["minimum_margins"] = {
             "terrain_vertical_m": terrain.get("minimum_margin"),
             "building_vertical_m": building.get("minimum_margin"),
+            "tower_vertical_m": tower.get("minimum_margin"),
         }
         record["failed_intervals"] = [
-            deepcopy(item) for domain in (terrain, building)
+            deepcopy(item) for domain in domains
             for item in domain.get("violations") or []
         ]
         record["unresolved_intervals"] = [
-            deepcopy(item) for domain in (terrain, building)
+            deepcopy(item) for domain in domains
             for item in domain.get("unresolved") or []
         ]
-        record["critical_evidence"] = _critical_evidence(terrain, building)
+        record["critical_evidence"] = _critical_evidence(*domains)
         record["resource_limits"] = {
             "max_evidence_items": limit, "observed_evidence_items": observed,
             "limit_reached": False, "safety_parameter": False,
@@ -307,6 +329,11 @@ class LayeredRouteValidationService:
                 "terrain_vertical_clearance_m": policy["terrain_clearance_m"],
                 "building_horizontal_clearance_m": policy["building_horizontal_clearance_m"],
                 "building_vertical_clearance_m": policy["building_vertical_clearance_m"],
+                "tower_horizontal_clearance_m": policy.get("tower_horizontal_clearance_m"),
+                "tower_vertical_clearance_m": policy.get("tower_vertical_clearance_m"),
+                "conditional_hard_exclusion_feature_ids": sorted(
+                    policy.get("conditional_hard_exclusion_feature_ids") or []
+                ),
             },
             "fingerprints": {
                 "validation_fingerprint": fingerprint,
@@ -319,8 +346,10 @@ class LayeredRouteValidationService:
                 "source_adapter": evidence.get("adapter_id"),
                 "source_native_terrain": True, "real_building_footprints": True,
                 "shared_validators": [
-                    "route_planner_v3.continuous_validators.validate_terrain",
-                    "route_planner_v3.continuous_validators.validate_buildings",
+                    "validation.continuous_validators.validate_terrain",
+                    "validation.continuous_validators.validate_buildings",
+                    "validation.continuous_validators.validate_towers",
+                    "validation.continuous_validators.validate_restricted_areas",
                     "domain.building_clearance.building_roof_elevation",
                     "domain.building_clearance.evaluate_vertical_clearance",
                     # Footprint geometry quality gate (Phase 3.5): read-only check plus
@@ -476,10 +505,21 @@ class LayeredRouteValidationService:
                 "horizontal_clearance_m": policy["building_horizontal_clearance_m"],
                 "vertical_clearance_m": policy["building_vertical_clearance_m"],
             },
+            "tower_clearance": {
+                "horizontal_clearance_m": policy.get("tower_horizontal_clearance_m"),
+                "vertical_clearance_m": policy.get("tower_vertical_clearance_m"),
+            },
+            "conditional_hard_exclusion_feature_ids": sorted(
+                policy.get("conditional_hard_exclusion_feature_ids") or []
+            ),
             "source_audits": source_status["audits"],
             "source_evidence_fingerprints": {
                 "terrain": stable_fingerprint(sources.get("terrain_dtm") or {}, prefix="terrain-source-"),
                 "buildings": stable_fingerprint(sources.get("buildings") or {}, prefix="building-source-"),
+                "towers": stable_fingerprint(sources.get("towers") or {}, prefix="tower-source-"),
+                "restricted_areas": stable_fingerprint(
+                    sources.get("restricted_areas") or {}, prefix="restricted-area-source-",
+                ),
             },
             "metric_crs": metric_crs,
             "validator_versions": deepcopy(VALIDATOR_VERSIONS),
@@ -497,6 +537,7 @@ class LayeredRouteValidationService:
             projected["current_applicability"] = "stale_candidate"
             return projected
         layer = self._layer_for(candidate)
+        stored = (item.get("fingerprints") or {}).get("components") or {}
         policy = {
             "terrain_clearance_m": (self.session.state.get("layered_route_feasibility_policy") or {}).get(
                 "terrain_vertical_clearance_m"
@@ -507,13 +548,23 @@ class LayeredRouteValidationService:
             "building_vertical_clearance_m": (self.session.state.get("building_clearance_policy") or {}).get(
                 "vertical_clearance_m"
             ),
+            "tower_horizontal_clearance_m": (self.session.state.get("tower_clearance_policy") or {}).get(
+                "tower_horizontal_clearance_m"
+            ),
+            "tower_vertical_clearance_m": (self.session.state.get("tower_clearance_policy") or {}).get(
+                "tower_vertical_clearance_m"
+            ),
+            "conditional_hard_exclusion_feature_ids": list(
+                (stored.get("conditional_hard_exclusion_feature_ids") or [])
+            ),
         }
-        stored = (item.get("fingerprints") or {}).get("components") or {}
         expected = self._fingerprint_components(
             candidate, layer or {}, policy, stored.get("metric_crs"),
             {
                 "terrain_dtm": ((stored.get("source_evidence_fingerprints") or {}).get("terrain")),
                 "buildings": ((stored.get("source_evidence_fingerprints") or {}).get("buildings")),
+                "towers": ((stored.get("source_evidence_fingerprints") or {}).get("towers")),
+                "restricted_areas": ((stored.get("source_evidence_fingerprints") or {}).get("restricted_areas")),
             },
         )
         # Source evidence was already fingerprinted.  Preserve those two stored digests while
@@ -564,6 +615,8 @@ def _candidate_ref(candidate):
         "path_fingerprint": path_fingerprint(value.get("path") or []) if value.get("path") else None,
         "status": value.get("status"),
         "current_applicability": value.get("current_applicability"),
+        "constraint_field_fingerprint": value.get("constraint_field_fingerprint"),
+        "unknown_constraint_count": value.get("unknown_constraint_count"),
     }
 
 
@@ -605,9 +658,10 @@ def _resource_limit(payload):
     return value
 
 
-def _critical_evidence(terrain, building):
+def _critical_evidence(*domains):
     evidence = []
-    for domain_id, result in (("terrain", terrain), ("building", building)):
+    for result in domains:
+        domain_id = result.get("domain")
         evidence.append({
             "domain": domain_id, "status": result.get("status"),
             "minimum_margin": result.get("minimum_margin"),

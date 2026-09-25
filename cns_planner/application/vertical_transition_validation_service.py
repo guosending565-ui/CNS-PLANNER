@@ -849,9 +849,9 @@ class VerticalTransitionValidationService:
                 ),
             },
             "shared_validators": [
-                "route_planner_v3.continuous_validators.MetricRoute",
-                "route_planner_v3.continuous_validators.validate_terrain",
-                "route_planner_v3.continuous_validators.validate_buildings",
+                "validation.continuous_validators.MetricRoute",
+                "validation.continuous_validators.validate_terrain",
+                "validation.continuous_validators.validate_buildings",
                 "domain.building_clearance.building_roof_elevation",
                 "route_planner_v3.continuous_raster_window.resolve_native_pixel_intervals",
             ],

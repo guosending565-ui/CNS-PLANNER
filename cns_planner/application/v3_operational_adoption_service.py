@@ -636,7 +636,7 @@ class V3OperationalAdoptionService:
     def _metric_vertex_altitudes(self, route, metric_line):
         """EGM2008 altitude at every linearized metric vertex (V3-C remains the source)."""
 
-        from ..route_planner_v3.continuous_validators import MetricRoute
+        from ..validation.continuous_validators import MetricRoute
 
         try:
             metric_route = MetricRoute(route)
