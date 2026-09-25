@@ -19,6 +19,25 @@ class Response:
     cache: bool = False
 
 
+#: artifact 读取失败的**用户可见**中文提示（技术 code 另走 ``code`` 字段）。
+_ARTIFACT_ERROR_TEXT = {
+    "artifact_missing": "结果明细文件不可用（文件缺失或被移动）；请重新计算该结果",
+    "artifact_unavailable": "结果明细不可用；请重新计算该结果",
+    "artifact_sha256_mismatch": "结果明细数据已损坏，请重新计算该结果",
+    "artifact_gzip_corrupt": "结果明细数据已损坏，请重新计算该结果",
+    "artifact_json_corrupt": "结果明细数据已损坏，请重新计算该结果",
+    "artifact_envelope_invalid": "结果明细数据已损坏，请重新计算该结果",
+    "artifact_schema_unsupported": "结果明细版本不受支持；请重新计算该结果",
+    "artifact_encoding_unsupported": "结果明细编码不受支持；请重新计算该结果",
+    "artifact_ref_missing": "该结果尚未生成明细文件；请先运行对应计算",
+    "artifact_ref_outside_project": "结果明细路径无效，已拒绝访问",
+    "artifact_path_missing": "结果明细路径缺失，已拒绝访问",
+    "artifact_path_outside_project": "结果明细路径无效，已拒绝访问",
+    "artifact_scope_unknown": "未登记的结果明细类型",
+    "artifact_publish_failed": "结果明细写入失败，未替换任何已有结果",
+}
+
+
 class ApiRouter:
     def __init__(self, context):
         self.context = context
@@ -37,6 +56,26 @@ class ApiRouter:
         if path == "/api/data-sources": return Response(context.qgis.call(lambda: data.metadata()["data_sources"]))
         if path == "/api/data-health": return Response(context.qgis.call(lambda: data.metadata()["data_health"]))
         if path == "/api/workflow": return Response(workflow.snapshot())
+        # ---- Phase4-B5X：canonical artifact 只读读取（summary / bounded / GC） ----
+        # 全部经 Application 层的 ArtifactReadService；router 不打开 gzip、不读文件、
+        # 不解析 artifact、不改 state。失败一律翻译成中文业务提示 + 技术 code。
+        if path == "/api/artifacts": return Response(workflow.artifact_summaries())
+        if path == "/api/artifacts/manifest": return Response(workflow.artifact_manifest())
+        if path == "/api/artifacts/inventory": return Response(workflow.artifact_inventory())
+        if path == "/api/artifacts/summary":
+            return self._artifact_response(
+                lambda: workflow.artifact_summary(self._first(query, "logical_key", ""))
+            )
+        if path == "/api/artifacts/content":
+            return self._artifact_response(lambda: workflow.artifact_content({
+                "logical_key": self._first(query, "logical_key", ""),
+                "route_id": self._first(query, "route_id", "") or None,
+                "subsystem": self._first(query, "subsystem", "") or None,
+                "grid_ids": self._first(query, "grid_ids", "") or None,
+                "bbox": self._first(query, "bbox", "") or None,
+                "offset": self._first(query, "offset", "") or 0,
+                "limit": self._first(query, "limit", "") or None,
+            }))
         if path == "/api/workspace/grid": return Response(workflow.grid_snapshot())
         if path == "/api/workspace/grid/attributes": return Response(workflow.grid_attributes_snapshot())
         if path == "/api/aircraft-profiles": return Response(workflow.aircraft_profiles_snapshot())
@@ -202,6 +241,32 @@ class ApiRouter:
         if isinstance(value, (list, tuple)):
             return value[0] if value else default
         return default if value is None else value
+
+    @staticmethod
+    def _artifact_response(producer):
+        """artifact 读取的统一出口：失败变成中文业务提示 + 技术 code。
+
+        普通用户只看到"明细不可用 / 需要重新计算"；``code``（artifact_missing /
+        artifact_sha256_mismatch / artifact_gzip_corrupt …）供前端的"高级/审计"
+        区域展示。绝不把"读不到"降级成空结果或"全部可通行"。
+        """
+
+        from ..persistence.artifact_store import ArtifactError
+
+        try:
+            return Response(producer())
+        except ArtifactError as exc:
+            return Response(
+                {
+                    "error": _ARTIFACT_ERROR_TEXT.get(
+                        exc.code, "结果明细不可用，请重新计算该结果"
+                    ),
+                    "code": exc.code,
+                    "detail": exc.detail,
+                    "recompute_required": True,
+                },
+                status=409,
+            )
 
     def _building_footprints(self, query):
         """只读建筑轮廓 GeoJSON。

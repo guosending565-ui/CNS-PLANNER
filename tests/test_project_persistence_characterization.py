@@ -183,7 +183,11 @@ def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, def
     assert saved_document["grid_risk_v2"]["cells"] == {}
     assert saved_document["layered_route_candidates"]["items"] == []
     assert saved_document["layered_route_candidates"]["masks"] == {}
-    assert saved_document["result_index"] == original.state["result_index"]
+    # Phase4-B5X：落盘格式是统一 Artifact Contract（manifest + 内容寻址明细），
+    # 不再写 legacy ``result_index``；内存状态与重新打开后的状态都带同一 manifest。
+    assert "result_index" not in saved_document
+    assert saved_document["artifact_manifest"] == original.state["artifact_manifest"]
+    assert saved_document["artifact_manifest"]["refs"], "落盘文档必须记录 artifact 引用"
     for field in (
         "schema_version",
         "project",
@@ -203,7 +207,7 @@ def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, def
         "coverage",
         "risks",
         "result_statuses",
-        "last_saved_at", "result_index",
+        "last_saved_at", "artifact_manifest",
     ):
         assert restored.state[field] == original.state[field]
     assert not list(tmp_path.rglob("*.tmp"))
@@ -225,9 +229,21 @@ def test_save_as_copies_state_and_sources_then_uses_new_project(
     assert target.is_file()
     assert module.ACTIVE_PROJECT_FILE == target
     assert module.WORKFLOW.store_path == target
-    assert module.WORKFLOW.state == json.loads(target.read_text(encoding="utf-8"))
-    assert module.WORKFLOW.state["project"]["project_id"] == before["project"]["project_id"]
-    assert module.WORKFLOW.state["project"]["name"] == "持久化回归项目"
+    # Phase4-B5X：磁盘文档是 **compacted** 形态（大型派生明细外置为 artifact）。
+    # 因此"内存状态 == 磁盘 JSON"这条旧契约只对小型 authoritative 字段成立；
+    # 这里逐项断言业务等价性，并显式断言大型明细确实没有内联回 ProjectState。
+    saved_document = json.loads(target.read_text(encoding="utf-8"))
+    assert saved_document["artifact_manifest"]["refs"]
+    assert saved_document["grid"]["cells"] == [], "grid 逐 cell 明细必须外置"
+    in_memory = module.WORKFLOW.state
+    assert in_memory["project"] == saved_document["project"]
+    assert in_memory["workspace"] == saved_document["workspace"]
+    assert in_memory["result_statuses"] == saved_document["result_statuses"]
+    assert in_memory["artifact_manifest"] == saved_document["artifact_manifest"]
+    assert in_memory["artifact_manifest"]["refs"]["grid"]
+    assert in_memory["grid"]["level"] == saved_document["grid"]["level"]
+    assert in_memory["project"]["project_id"] == before["project"]["project_id"]
+    assert in_memory["project"]["name"] == "持久化回归项目"
     assert json.loads((destination / "data_sources.json").read_text(encoding="utf-8")) == module.DATA.paths
     assert metadata == {"paths": module.DATA.paths}
     assert not list(tmp_path.rglob("*.tmp"))

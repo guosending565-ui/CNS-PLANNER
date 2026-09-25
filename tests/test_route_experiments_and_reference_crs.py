@@ -94,7 +94,9 @@ def test_experiment_never_changes_current_planner_even_when_only_v2_requested(tm
 
 def test_experiment_records_required_provenance_fields(tmp_path):
     workflow = workflow_with_routes(tmp_path)
-    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
+    run_experiment(workflow)
+    # Phase4-B5X：通用快照只带实验记录摘要，冻结的 planner 输出走专用接口。
+    record = workflow.route_experiments_snapshot()["active_experiment"]
     assert record["experiment_id"].startswith("EXP-")
     for field in (
         "experiment_id", "scenario_fingerprint", "input_fingerprints", "planners",
@@ -133,7 +135,9 @@ def test_experiment_identity_is_deterministic_for_same_inputs_and_parameters(tmp
 
 def test_experiment_does_not_mutate_the_stored_planner_result_snapshot(tmp_path):
     workflow = workflow_with_routes(tmp_path)
-    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
+    run_experiment(workflow)
+    # Phase4-B5X：冻结的 planner 输出只在专用接口里读取（通用快照已外置它）。
+    record = workflow.route_experiments_snapshot()["active_experiment"]
     for run in record["runs"]:
         if not run["planner_invoked"]:
             continue

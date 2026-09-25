@@ -179,7 +179,8 @@ def test_two_actions_create_partial_then_joint_redundancy(tmp_path):
     assert len(result["selected_actions"]) == 2
     gains = [item["marginal_confirmed_requirement_unit_volume_gain"] for item in result["selected_actions"]]
     assert gains[0] > 0 and gains[1] > 0
-    final = result["final_hypothetical_evidence"]["corridor_gap"]
+    # Phase4-B5X：完整 P14+P15 的假想证据已外置，专用接口仍然给全量。
+    final = workflow.cns_corridor_site_plan_snapshot()["final_hypothetical_evidence"]["corridor_gap"]
     entry = next(item for item in final["routes"][0]["voxels"][0]["subsystems"] if item["subsystem"] == "C")
     assert entry["confirmed_independent_provider_count"] == 2
     assert entry["combined_status"] == "satisfied"
@@ -227,7 +228,11 @@ def test_confirmed_objectives_already_met_requires_no_action_even_with_target(tm
     assert result["status"] == "no_action_required"
     assert result["selected_actions"] == []
     assert result["before"] == result["after"]
-    assert result["final_hypothetical_evidence"]["corridor_gap"] == before
+    # Phase4-B5X：假想证据（完整 P15 结果副本）已外置，专用接口仍然给全量。
+    assert (
+        workflow.cns_corridor_site_plan_snapshot()["final_hypothetical_evidence"]["corridor_gap"]
+        == before
+    )
 
 
 def test_confirmed_target_without_positive_candidate_is_no_eligible_proposal(tmp_path):

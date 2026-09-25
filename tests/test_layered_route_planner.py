@@ -683,7 +683,8 @@ def test_positive_lambda_reports_no_path_when_a_required_domain_index_is_missing
         "search_completed_without_a_feasible_path"
     )
     assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
-    mask = list(collection["masks"].values())[0]
+    # Phase4-B5X：通用快照不再承载逐 cell 的 mask 明细，专用接口仍然给全量。
+    mask = list(service.layered_route_candidates()["masks"].values())[0]
     assert mask["counts"]["blocked"] == 2
     assert all(
         cell["reason_code"] == "risk_domain_unresolved" for cell in mask["cells"].values()
@@ -759,7 +760,8 @@ def test_hard_constraints_still_remove_cells_from_the_search(tmp_path):
     assert candidate["status"] == "candidate"
     assert grid[2]["grid_id"] not in candidate["grid_path"]
     assert len(candidate["grid_path"]) > 2
-    mask = list(collection["masks"].values())[0]
+    # Phase4-B5X：通用快照不再承载逐 cell 的 mask 明细，专用接口仍然给全量。
+    mask = list(service.layered_route_candidates()["masks"].values())[0]
     assert mask["cells"][grid[2]["grid_id"]]["reason_code"] == "hard_constraint"
 
 

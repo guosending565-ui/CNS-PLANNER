@@ -60,6 +60,9 @@ export function hasGridDetail(flow) {
 
 /** 当前 flow 是否声明「明细可以从专用接口取回」。 */
 export function declaresDetailAvailable(flow) {
+  // Phase4-B5X：grid 明细统一外置后，通用快照只带 summary + detail_available，
+  // 因此"可以取回明细"这一声明既可能挂在 grid 上，也可能挂在网格属性命名空间上。
+  if (flow?.grid?.detail_available === true) return true;
   const attributes = flow?.grid_attributes;
   if (!attributes || typeof attributes !== 'object') return false;
   return Object.values(attributes).some(
@@ -69,8 +72,13 @@ export function declaresDetailAvailable(flow) {
 
 /** 是否有 grid 可以 hydrate（没有 grid 就没有明细可拉）。 */
 export function hasGrid(flow) {
-  const cells = flow?.grid?.cells;
-  return Array.isArray(cells) && cells.length > 0;
+  const grid = flow?.grid;
+  if (!grid || typeof grid !== 'object') return false;
+  const cells = grid.cells;
+  if (Array.isArray(cells) && cells.length > 0) return true;
+  // B5X：通用快照里的 grid 是摘要（含 cell_count / detail_available），
+  // 逐 cell 明细只能从 GET /api/workspace/grid 取回。
+  return Number(grid.cell_count) > 0 || grid.detail_available === true;
 }
 
 /** 该 snapshot 是否应当触发一次 grid 明细 hydrate。 */
@@ -131,6 +139,8 @@ export function populationCellStructureDiagnostics(grid, attributes) {
 export function createWorkflowSnapshotApplier(deps) {
   const {
     getFlow, setFlow, nextSerial, currentSerial, fetchGrid, fetchAttributes,
+    // Phase4-B5X：其余外置型结果的按需读取入口（可选依赖，未提供时跳过）。
+    fetchRisk = null, fetchRiskV2 = null, fetchLayeredCandidates = null,
     onError = () => {}, afterApply = () => {},
   } = deps;
   for (const [name, fn] of Object.entries({
@@ -164,6 +174,50 @@ export function createWorkflowSnapshotApplier(deps) {
   }
 
   /**
+   * B5X：一次性 hydrate 所有**已外置**的大型明细（网格 / 风险 / 候选）。
+   *
+   * 通用快照只带 summary + `detail_available` + `detail_endpoint`；逐 cell 明细
+   * 一律走专用 GET。任何一步失败都不写业务状态，只通过 `onError` 给出中文提示。
+   */
+  async function hydrateExternalDetail() {
+    const snapshot = getFlow() || {};
+    const plan = [];
+    if (needsGridHydration(snapshot)) {
+      plan.push(['grid', () => Promise.all([fetchGrid(), fetchAttributes()])]);
+    }
+    if (typeof fetchRisk === 'function' && snapshot.grid_risk?.detail_available === true) {
+      plan.push(['grid_risk', () => fetchRisk()]);
+    }
+    if (typeof fetchRiskV2 === 'function' && snapshot.grid_risk_v2?.detail_available === true) {
+      plan.push(['grid_risk_v2', () => fetchRiskV2()]);
+    }
+    if (typeof fetchLayeredCandidates === 'function'
+        && snapshot.layered_route_candidates?.detail_available === true) {
+      plan.push(['layered_route_candidates', () => fetchLayeredCandidates()]);
+    }
+    if (!plan.length) return {applied: false, reason: 'no_detail'};
+    const serial = nextSerial();
+    const results = await Promise.all(plan.map(([, run]) => run()));
+    if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    const current = getFlow() || {};
+    const patch = {};
+    let diagnostics = [];
+    plan.forEach(([name], index) => {
+      const value = results[index];
+      if (name === 'grid') {
+        patch.grid = value[0];
+        patch.grid_attributes = value[1];
+        diagnostics = populationCellStructureDiagnostics(value[0], value[1]);
+      } else {
+        patch[name] = value;
+      }
+    });
+    setFlow({...current, ...patch});
+    hydrated = gridDetailIdentity(patch.grid || current.grid, patch.grid_attributes || current.grid_attributes);
+    return {applied: true, identity: hydrated, diagnostics, hydrated: plan.map(item => item[0])};
+  }
+
+  /**
    * 唯一的完整 workflow snapshot 应用路径。
    *
    * 语义：先原样安装 snapshot（它可能是 slim 的），**再**按需 hydrate 逐 cell 明细，
@@ -172,11 +226,11 @@ export function createWorkflowSnapshotApplier(deps) {
   async function applyWorkflowSnapshot(snapshot, {hydrate = true} = {}) {
     if (!snapshot || typeof snapshot !== 'object') return getFlow();
     setFlow(snapshot);
-    if (hydrate && needsGridHydration(snapshot)) {
+    if (hydrate) {
       try {
-        await hydrateGridDetail();
+        await hydrateExternalDetail();
       } catch (exc) {
-        onError('网格专题同步失败：' + (exc?.message || exc));
+        onError('专题明细同步失败：' + (exc?.message || exc));
       }
     }
     afterApply(getFlow());
@@ -186,6 +240,7 @@ export function createWorkflowSnapshotApplier(deps) {
   return {
     applyWorkflowSnapshot,
     hydrateGridDetail,
+    hydrateExternalDetail,
     state: {
       get hydratedIdentity() { return hydrated; },
       reset() { hydrated = null; },

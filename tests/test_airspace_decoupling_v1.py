@@ -351,7 +351,8 @@ def test_airspace_and_basemap_source_changes_do_not_stale_risk_or_routes(tmp_pat
         "buildings": {"status": "missing_data"}, "property": {"status": "missing_data"},
         "loaded_layer_count": 1, "covered_layer_count": 1,
     })
-    grid = state["grid"]
+    # Phase4-B5X：通用快照只带网格摘要，逐 cell 明细走专用读取接口。
+    grid = service.grid_snapshot()
     attributes = service.grid_attributes_snapshot()
     for kind in ("population", "terrain", "traffic", "conflict"):
         attributes[kind].update({

@@ -532,7 +532,12 @@ def test_constraint_cells_use_existing_content_addressed_sidecar(tmp_path):
     project_path = tmp_path / "current_project.json"
     compact = compact_and_store(state, project_path)
     assert compact["planning_constraint_fields"]["items"][0].get("cells") is None
-    assert compact["result_index"]["planning_constraint_fields"]["cell_count"] == 1
+    # Phase4-B5X：统一 Artifact Contract（manifest entry 取代 legacy result_index）。
+    manifest = compact["artifact_manifest"]
+    entry = manifest["entries"][manifest["refs"]["planning_constraint_fields"]]
+    assert entry["artifact_type"] == "planning_constraint_field.cells"
+    assert entry["summary"]["cell_count"] == 1
+    assert entry["relative_path"].startswith(".cns-results/")
     restored = restore_compacted_results(compact, project_path)
     assert restored["planning_constraint_fields"]["items"][0]["cells"] == field["cells"]
 

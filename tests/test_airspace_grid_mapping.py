@@ -279,7 +279,7 @@ def test_airspace_save_restore_workspace_reset_and_old_project_compatibility(tmp
     defaults = _defaults_path(tmp_path)
     service = WorkflowService(store, defaults)
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    attributes = _workflow_attributes(service, state["grid"])
+    attributes = _workflow_attributes(service, service.grid_snapshot())
     service.apply_grid_attributes(attributes)
 
     restored = WorkflowService(store, defaults)
@@ -307,7 +307,7 @@ def test_airspace_save_restore_workspace_reset_and_old_project_compatibility(tmp
 def test_basemap_change_is_display_only_and_does_not_stale_grid_attributes(tmp_path):
     service = WorkflowService(tmp_path / "project.json", _defaults_path(tmp_path))
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    attributes = _workflow_attributes(service, state["grid"])
+    attributes = _workflow_attributes(service, service.grid_snapshot())
     service.apply_grid_attributes(attributes)
 
     service.invalidate_grid_attributes({"basemap"})

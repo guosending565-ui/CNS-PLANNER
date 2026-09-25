@@ -52,7 +52,8 @@ export function createConstraintFieldView(deps){
   }
 
   //: 纯展示状态：用户当前选择的高度层 + 已读到的结果。不写任何业务状态。
-  let state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false};
+  //: B5X：``mapBbox`` 记录"这份明细是按哪个视口读回来的"，用于视口变化后按需重读。
+  let state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null};
   //: 地图数据加载的重入保护：同一高度层只允许一个进行中的请求。
   let mapRequest=null;
 
@@ -102,7 +103,7 @@ export function createConstraintFieldView(deps){
   /** 用户选择另一个高度层：只切展示并丢弃上一个层的地图明细（不发请求）。 */
   function select(altitudeLayerId){
     const wanted=String(altitudeLayerId||'').trim();
-    state={...state,altitudeLayerId:wanted,collection:null,map:null,mapLoaded:false,error:''};
+    state={...state,altitudeLayerId:wanted,collection:null,map:null,mapLoaded:false,mapBbox:null,error:''};
     afterChange();
     return wanted;
   }
@@ -121,19 +122,45 @@ export function createConstraintFieldView(deps){
     };
   }
 
-  /** 按需读取逐格明细（只读 GET；未选择高度层时**不发起任何请求**）。 */
-  async function loadMap(){
+  /** 当前视口经纬度 bbox（不可用时返回 null：绝不猜一个范围）。 */
+  function viewportBbox(){
+    const box=visibleBounds();
+    if(!Array.isArray(box)||box.length!==4)return null;
+    const numbers=box.map(Number);
+    if(numbers.some(value=>!Number.isFinite(value)))return null;
+    return numbers;
+  }
+
+  /** 已加载明细是否仍覆盖当前视口（不覆盖时才允许重新按 bbox 读取）。 */
+  function needsViewportReload(){
+    if(!state.mapLoaded||!Array.isArray(state.mapBbox))return false;
+    const current=viewportBbox();
+    if(!current)return false;
+    const [west,south,east,north]=state.mapBbox;
+    return !(current[0]>=west&&current[1]>=south&&current[2]<=east&&current[3]<=north);
+  }
+
+  /**
+   * 按需读取逐格明细（只读 GET；未选择高度层时**不发起任何请求**）。
+   *
+   * B5X：真正把**当前视口 bbox** 带给后端（``GET /api/planning-constraint-field/map``
+   * 早已支持 ``bbox``），不再固定拉全量数万格；视口移出已读区域时才重新读取。
+   * 非法 bbox 由后端忽略而不是猜一个范围，前端同样不编造。
+   */
+  async function loadMap({force=false}={}){
     const altitudeLayerId=state.altitudeLayerId;
     if(!altitudeLayerId||!layerNeedsData())return null;
-    if(state.mapLoaded)return state.map;
+    if(state.mapLoaded&&!force)return state.map;
     if(mapRequest)return mapRequest;
+    const bbox=viewportBbox();
     mapRequest=(async()=>{
       try{
-        const result=await loadConstraintField(api,altitudeLayerId,{bbox:null});
+        const result=await loadConstraintField(api,altitudeLayerId,{bbox});
+        const applied=result.map&&Array.isArray(result.map.bbox)?result.map.bbox:null;
         state={...state,collection:result.summary,map:result.map,
-          mapLoaded:Boolean(result.map&&result.map.usable),error:'',loading:false};
+          mapBbox:applied,mapLoaded:Boolean(result.map&&result.map.usable),error:'',loading:false};
       }catch(exc){
-        state={...state,error:exc.message||'数据源不可用',loading:false};
+        state={...state,error:exc.message||'约束明细不可用，请重新计算该结果',loading:false};
       }finally{
         mapRequest=null;
       }
@@ -145,9 +172,10 @@ export function createConstraintFieldView(deps){
 
   /** 绘制覆盖层：勾选但尚未加载时先触发加载，本轮不画（下一轮重绘补上）。 */
   function draw({ctx,view,screenPoint,gridTheme=null}){
-    if(layerNeedsData()&&!state.mapLoaded&&state.altitudeLayerId){
-      loadMap();
-      return {drawn:{blocked:0,unknown:0,pass:0},entries:0,unresolved:[]};
+    if(layerNeedsData()&&state.altitudeLayerId&&(!state.mapLoaded||needsViewportReload())){
+      const reloading=needsViewportReload();
+      loadMap({force:reloading});
+      if(!state.mapLoaded)return {drawn:{blocked:0,unknown:0,pass:0},entries:0,unresolved:[]};
     }
     return drawConstraintFieldOverlay({
       ctx,view,screenPoint,model:model(),cellsById:getGridCache()?.byId,
@@ -206,13 +234,13 @@ export function createConstraintFieldView(deps){
     if(!id)throw Error('请先选择固定巡航高度层');
     if(typeof post!=='function')throw Error('约束场生成入口不可用，请刷新项目状态');
     await post('/api/planning-constraint-fields/evaluate',{altitude_layer_id:id});
-    state={...state,altitudeLayerId:id,collection:null,map:null,mapLoaded:false,error:''};
+    state={...state,altitudeLayerId:id,collection:null,map:null,mapLoaded:false,mapBbox:null,error:''};
     return id;
   }
 
   /** 打开另一个项目 / 清工作区时重置展示状态（不自动加载）。 */
   function reset(){
-    state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false};
+    state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null};
     mapRequest=null;
   }
 

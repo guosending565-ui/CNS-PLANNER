@@ -337,7 +337,8 @@ def test_missing_canonical_domain_index_still_fails_closed_without_zero(tmp_path
     assert candidate["status"] == "no_path"
     assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
     assert candidate["search_incomplete"] is False
-    mask = list(collection["layered_route_candidates"]["masks"].values())[0]
+    # Phase4-B5X：逐 cell 的 mask 明细已外置，专用接口仍然给全量。
+    mask = list(service.layered_route_candidates()["masks"].values())[0]
     assert mask["cells"][target]["reason_code"] == "risk_domain_unresolved"
     resolved, unresolved = resolve_cell_domain_indices(tampered, (target,), ("ground",))
     assert resolved[target]["ground"] is None  # never 0

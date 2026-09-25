@@ -1,5 +1,5 @@
 import {advancedAuditNote,blockerList,escapeHtml,nextStepBar,shell,sourceModeText,statusBadge,statusText,wbBlock,wbPanel,wbSegHint} from './common.js';
-import {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
+import {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarSurveillanceDetail,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
 
 // Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
 // 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
@@ -731,7 +731,7 @@ export function render({flow}){
 
   // ---- 结果：canonical 生产链（三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划） ----
   const coverage3dPanel='<h3>三维几何覆盖评估 '+wbBadge(coverage3d.status||'not_calculated','未计算')+'</h3><div class="parameter-note">几何覆盖 ≠ 真实 CNS 性能；传播、视距、绕射、干扰、链路预算和传感器探测概率均未评估。</div><label>采样间距（米）<input class="panel-input" type="number" id="coverage3dSpacing" value="'+(coverage3d.parameters?.sample_spacing_m||flow.algorithm_selection?.coverage_model?.parameters?.sample_spacing_m||500)+'"></label><div class="button-row"><button class="primary" id="evaluateCoverage3d">运行三维几何覆盖</button></div><div class="gap-results">'+coverage3dList(coverage3d)+'</div>';
-  const capabilityPanel='<h3>CNS 服务能力评估 '+wbBadge(capability.status||'not_calculated','未计算')+'</h3><div class="parameter-note">静态能力满足不等于当前服务可用；视距、绕射、干扰、负载和切换等尚未评估。</div><button class="secondary full" id="evaluateServiceCapability">评估 CNS 服务能力</button><div class="gap-results">'+capabilityList(capability)+'</div>';
+  const capabilityPanel='<h3>CNS 服务能力评估 '+wbBadge(capability.status||'not_calculated','未计算')+'</h3><div class="parameter-note">静态能力满足不等于当前服务可用；视距、绕射、干扰、负载和切换等尚未评估。</div><div class="button-row"><button class="secondary full" id="evaluateServiceCapability">评估 CNS 服务能力</button><button class="secondary" id="loadCapabilityDetail">载入逐点证据</button></div><div class="parameter-note">逐点链路预算与提供者证据属大型明细，已外置保存；通用快照只带摘要，点此按需读取。</div><div class="gap-results">'+capabilityList(capability)+'</div>';
   const corridorPanel='<h3>CNS 服务走廊 '+wbBadge(corridor.status||'not_calculated','未计算')+'</h3><div class="parameter-note">这是工程 CNS 服务需求走廊，不是法规批准空间；水平范围采用保守网格纳入，体积为离散体积代理。</div><button class="secondary full" id="evaluateCorridor">评估 CNS 服务走廊</button><div class="gap-results">'+corridorSummary(corridor)+'</div>';
   const objectivesGapPanel=planningObjectivesPanel(flow)+'<div class="parameter-note">空间连续缺口是服务走廊体元的保守纵向投影，不是运行中断、正式 ICAO 连续性或可用度概率。</div><div class="gap-results">'+corridorGapSummary(corridorGap)+'</div>';
   const corridorSitePlanPanel='<h3>CNS 设施规划 '+wbBadge(corridorSitePlan.status||'not_calculated','未计算')+'</h3><div class="parameter-note">仅针对已确认的走廊缺口目标，通过累计试算验证服务与独立冗余收益；证据不足不会触发建站。</div><label class="check-row"><input type="checkbox" id="corridorSitePolicyConfirmed" '+(corridorSitePolicy.confirmed?'checked':'')+'> 确认走廊复用优先规划策略</label><button class="secondary full" id="evaluateCorridorSitePlan">生成 CNS 设施规划方案</button><div class="gap-results">'+corridorSitePlanSummary(corridorSitePlan)+'</div>';
@@ -878,6 +878,18 @@ export function bind(c){
     const layer=c.$('radarLandMaskLayer')?.value.trim();
     if(layer)payload.land_mask_layer_name=layer;
     return c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
+  });
+  // B5X：逐点明细按需载入（只读 GET）。通用快照只带有界摘要；明细绝不随快照下发。
+  if(c.$('loadRadarSurveillanceDetail'))c.actionButton('loadRadarSurveillanceDetail',()=>
+    loadRadarSurveillanceDetail({
+      api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange
+    }));
+  // B5X：服务能力的逐点证据（链路预算 / provider 明细）按需载入。
+  if(c.$('loadCapabilityDetail'))c.actionButton('loadCapabilityDetail',async()=>{
+    const detail=await c.api('/api/cns-service-capability');
+    c.setFlow({...c.flow(),cns_service_capability:detail});
+    c.afterFlowChange();
+    return detail;
   });
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(6);
 }

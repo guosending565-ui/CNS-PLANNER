@@ -16,7 +16,17 @@ export function createApiClient(token=()=>"",revision=()=>null){
     if(Number.isInteger(responseRevision))knownRevision=responseRevision;
     else if(Number.isInteger(data?.workflow?.revision))knownRevision=data.workflow.revision;
     else if(url==='/api/workflow'&&Number.isInteger(data?.revision))knownRevision=data.revision;
-    if(!response.ok){const error=Error(data.error||'请求失败');error.status=response.status;error.revision=data.revision;throw error;}
+    if(!response.ok){
+      // Phase4-B5X：错误 message 始终是**业务化中文**；技术码（artifact_missing /
+      // artifact_sha256_mismatch …）单独放在 error.code 上，只供"高级/审计"展示，
+      // 绝不作为普通用户可见文本。
+      const error=Error(data.error||'请求失败');
+      error.status=response.status;
+      error.revision=data.revision;
+      error.code=data.code||null;
+      error.detail=data.detail||null;
+      throw error;
+    }
     return data;
   }
   return function api(url,options={}){

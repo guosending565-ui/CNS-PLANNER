@@ -68,10 +68,9 @@ const constraintView=createConstraintFieldView({
 const snapshotApplier=createWorkflowSnapshotApplier({
   getFlow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},
   nextSerial:()=>++gridDataSerial,currentSerial:()=>gridDataSerial,
-  fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),
+  fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),fetchRisk:()=>api('/api/grid-risk'),fetchRiskV2:()=>api('/api/grid-risk-v2'),fetchLayeredCandidates:()=>api('/api/layered-route-candidates'),
   onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();}});
-const applyWorkflowSnapshot=data=>snapshotApplier.applyWorkflowSnapshot(data);
-const applyWorkflow=data=>applyWorkflowSnapshot(data);
+const applyWorkflowSnapshot=data=>snapshotApplier.applyWorkflowSnapshot(data),applyWorkflow=data=>applyWorkflowSnapshot(data);
 async function mutate(action,payload={}){return applyWorkflow(await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 // GRID-L8-UNIFICATION：超限时后端返回 blocked（不是降级）并已把该状态落库；重新读取快照让界面显示阻断原因。
 async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow'));}
@@ -321,7 +320,8 @@ function renderWorkflow(){
     : ('项目保存位置：'+(storage.directory||'未选择'));
 }
 function stepBindings(){return {
-  $,flow:()=>flow,mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
+  $,api,flow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},afterFlowChange:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
+  mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
   loadRoutePlannerV3Detail,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,

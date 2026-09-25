@@ -637,7 +637,7 @@ def test_source_change_stales_and_recomputes_v2_without_touching_routes(tmp_path
 def test_apply_grid_attributes_and_traffic_simulation_recompute_v2(tmp_path):
     service = _workflow(tmp_path, "recompute.json")
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    grid_ids = [cell["grid_id"] for cell in state["grid"]["cells"]]
+    grid_ids = [cell["grid_id"] for cell in service.grid_snapshot()["cells"]]
     mapped = _attributes()
     for name in ("population", "terrain", "airspace", "traffic", "conflict", "buildings"):
         mapped[name]["cells"] = {}

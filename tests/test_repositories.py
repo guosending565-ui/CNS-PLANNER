@@ -93,12 +93,26 @@ def test_large_derived_results_are_indexed_and_restored_from_sidecar(tmp_path):
     assert compact["grid_risk_v2"]["cells"] == {}
     assert compact["layered_route_candidates"]["items"] == []
     assert compact["layered_route_candidates"]["masks"] == {}
-    assert compact["result_index"]["grid_risk_v2"]["cell_count"] == 40
-    assert compact["result_index"]["layered_route_candidates"]["fingerprints"] == ["candidate-fp"]
+    # Phase4-B5X：统一 Artifact Contract（content-addressed + manifest），
+    # legacy ``result_index`` 不再是写入格式。
+    assert "result_index" not in compact
+    manifest = compact["artifact_manifest"]
+    risk_entry = manifest["entries"][manifest["refs"]["grid_risk_v2"]]
+    assert risk_entry["artifact_type"] == "risk.grid_risk_v2.cells"
+    assert risk_entry["content_encoding"] == "json.gz"
+    assert risk_entry["sha256"] == risk_entry["artifact_id"]
+    assert risk_entry["relative_path"].startswith(".cns-results/")
+    assert risk_entry["summary"]["cell_count"] == 40
+    candidates_entry = manifest["entries"][manifest["refs"]["layered_route_candidates"]]
+    assert candidates_entry["summary"]["detail_count"] == 2
+    # artifact 引用统一由 manifest 表达（不污染结果容器的业务键空间）。
+    assert compact["grid_risk_v2"].get("artifact_ref") is None
+    assert manifest["refs"]["grid_risk_v2"] == risk_entry["artifact_id"]
     assert restored["grid_risk_v2"]["cells"] == cells
     assert restored["layered_route_candidates"]["items"] == state["layered_route_candidates"]["items"]
     assert restored["layered_route_candidates"]["masks"] == masks
     assert path.stat().st_size < len(json.dumps(state, ensure_ascii=False).encode("utf-8")) / 4
+    assert not list(path.parent.glob("**/*.tmp"))
 
 
 def test_copy_project_copies_indexed_result_artifact(tmp_path):

@@ -376,7 +376,7 @@ def test_a_legacy_coarsened_project_upgrades_only_when_the_workspace_is_resaved(
     assert upgraded["grid"]["level"] == 8
     assert upgraded["grid"]["coarsened"] is False
     assert upgraded["grid"]["count"] == 6100
-    assert all(cell["level"] == 8 for cell in upgraded["grid"]["cells"])
+    assert all(cell["level"] == 8 for cell in reopened.grid_snapshot()["cells"])
 
 
 # ------------------------------------------------------------------ 6) 前端不再暴露 L6/L7

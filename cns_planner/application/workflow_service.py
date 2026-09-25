@@ -40,6 +40,7 @@ from .vertical_transition_validation_service import VerticalTransitionValidation
 from .route_service import RouteService
 from .safety_policy_service import SafetyPolicyService
 from .session import WorkflowSession
+from .artifact_read_service import ArtifactReadService
 from .workspace_service import WorkspaceService
 from .spatial_3d_service import Spatial3DService
 from .route_operating_layer_service import RouteOperatingLayerService
@@ -260,6 +261,104 @@ def slim_planning_exposure(attribute):
     return slim
 
 
+# ---------------------------------------------------------------------------
+# Phase4-B5X：外置型 canonical 结果在通用快照中的**有界投影**
+#
+# B5X 把逐 cell / 逐 sample / 逐 voxel 明细统一外置成 content-addressed artifact
+# （见 ``persistence/project_compaction.py``）。通用 workflow 快照因此**不再承载**
+# 这些明细：它只保留 status / counts / fingerprint / warnings / active ids /
+# ``artifact_ref`` 与"明细可用 + 专用读取入口"的声明。
+#
+# 这条投影只做"去细节"：不新增、不重算、不改写任何业务语义，也不解压任何
+# artifact。（前端需要明细时走下面登记的专用 GET 接口。）
+# ---------------------------------------------------------------------------
+
+#: 逐 cell / 逐 sample / 逐 voxel 明细字段名：快照里一律替换为计数与来源声明。
+_SNAPSHOT_DETAIL_FIELD_NAMES = (
+    "cells", "samples", "voxels", "evidence", "included_grid_ids",
+    "deficit_voxel_ids", "unknown_voxel_ids", "voxel_ids", "continuous_deficit_segments",
+    "uncovered_segments", "under_redundant_segments", "unknown_segments",
+    "selected_panels", "optimisation_samples", "refinement_rounds", "entries",
+    "presolve", "stage_a", "stage_b", "coverage_profile", "result", "context_basis",
+    "iteration_trace", "candidate_impacts", "final_hypothetical_evidence",
+    "included_grid_ids",
+)
+
+#: 需要在通用快照里去明细的结果容器 -> 专用只读读取入口（前端按需拉取）。
+_SNAPSHOT_DETAIL_ENDPOINTS = {
+    "grid": "/api/workspace/grid",
+    "grid_risk_v2": "/api/grid-risk-v2",
+    "layered_route_candidates": "/api/layered-route-candidates",
+    "planning_constraint_fields": "/api/planning-constraint-field",
+    "coverage_3d": "/api/coverage-3d",
+    "cns_service_capability": "/api/cns-service-capability",
+    "cns_corridor_assessment": "/api/cns-service-corridor",
+    "cns_corridor_gap_assessment": "/api/cns-corridor-gap",
+    "cns_corridor_site_plan": "/api/cns-corridor-site-plan",
+    "cns_gap_analysis_v2": "/api/cns-gap-analysis-v2",
+    "radar_surveillance_layout": "/api/radar-surveillance-layout",
+    "route_planning_experiments": "/api/route-experiments",
+}
+
+#: 顶层容器**额外**的明细字段（只对这些结果生效，不做全局字段名匹配）。
+_SNAPSHOT_ROOT_DETAIL_FIELDS = {
+    # 分层候选：mask 是逐 cell 明细（上万个 cell × 每个 cell 的净空诊断），必须外置；
+    # 候选记录本身（items：state/成本/航路点）是主界面需要的**有界**权威记录，保留。
+    "layered_route_candidates": ("masks",),
+}
+
+
+def _strip_snapshot_detail(value, *, root_key=None, depth=0):
+    """递归把大型明细字段替换成 ``<name>_count`` + ``<name>_detail`` 声明。
+
+    ``root_key`` 只用于顶层容器的**额外**明细字段（例如 layered candidates 的
+    ``items`` / ``masks``）：它们不是通用明细名，只在对应结果上外置。
+    """
+
+    if isinstance(value, dict):
+        extra = _SNAPSHOT_ROOT_DETAIL_FIELDS.get(root_key, ()) if depth == 0 else ()
+        slim = {}
+        for name, item in value.items():
+            if (name in _SNAPSHOT_DETAIL_FIELD_NAMES or name in extra) and isinstance(
+                item, (dict, list)
+            ):
+                slim[f"{name}_count"] = len(item)
+                slim[f"{name}_detail"] = "artifact"
+                continue
+            slim[name] = _strip_snapshot_detail(item, depth=depth + 1)
+        return slim
+    if isinstance(value, list):
+        # 列表本身保留（候选列表 / 记录列表是主界面需要的有界结构），逐项去明细。
+        return [_strip_snapshot_detail(item, depth=depth + 1) for item in value]
+    return value
+
+
+def _snapshot_detail_projection(result):
+    """构造外置型结果的快照投影（不解压、不深拷贝任何大型明细）。
+
+    投影以**快照自身的值**为基础（服务已做的有界投影会先安装进 result），
+    因此这里只做"减法"：去掉逐 cell / 逐 sample / 逐 voxel 明细，保留
+    status / counts / fingerprint / warnings / active ids / artifact_ref。
+    """
+
+    projection = {}
+    for key, endpoint in _SNAPSHOT_DETAIL_ENDPOINTS.items():
+        value = result.get(key)
+        if not isinstance(value, dict):
+            continue
+        slim = _strip_snapshot_detail(value, root_key=key)
+        if not isinstance(slim, dict):
+            continue
+        if key == "grid":
+            # grid 的既有消费方读 ``count`` 表达格数；这里同时给出 cell_count，
+            # 使"明细已外置、格数仍然权威"这一事实对新旧调用点都成立。
+            slim["cell_count"] = slim.get("cells_count", value.get("count"))
+        slim["detail_available"] = True
+        slim["detail_endpoint"] = endpoint
+        projection[key] = slim
+    return projection
+
+
 class WorkflowService:
     schema_version = SCHEMA_VERSION
     mapped_grid_attribute_names = RiskService.MAPPED_ATTRIBUTES
@@ -320,6 +419,9 @@ class WorkflowService:
         self.traffic_simulator, self.conflict_detector = TrafficSimulator(), ConflictDetector()
         self.traffic_grid_service, self.conflict_grid_service = TrafficGridService(), ConflictGridService()
         self.invalidation_service = InvalidationService(self.session)
+        # Phase4-B5X：canonical artifact 的唯一只读读取入口（summary / bounded
+        # content / dry-run GC）。router 只调用它，绝不自己打开 gzip 或解析 artifact。
+        self.artifact_read_service = ArtifactReadService(self.session)
         snapshot = self.snapshot
         self.safety_policy_service = SafetyPolicyService(
             self.session, self.invalidation_service, snapshot
@@ -792,7 +894,36 @@ class WorkflowService:
                 self.radar_surveillance_layout_service.readiness_snapshot()
             )
         result["review"] = self.review()
+        # B5X：外置型大型明细绝不随通用快照下发（只保留 summary + artifact_ref +
+        # 专用读取入口声明）。这是最后一步覆盖，避免任何分支把水合后的明细带出去。
+        result.update(_snapshot_detail_projection(result))
         return result
+
+    # ---- Phase4-B5X：canonical artifact 只读读取（summary / content / GC） ----
+
+    def artifact_manifest(self):
+        return self.artifact_read_service.manifest()
+
+    def artifact_summaries(self):
+        return self.artifact_read_service.summaries()
+
+    def artifact_summary(self, logical_key):
+        return self.artifact_read_service.summary(logical_key)
+
+    def artifact_content(self, payload=None):
+        payload = payload if isinstance(payload, dict) else {}
+        return self.artifact_read_service.content(
+            payload.get("logical_key"),
+            route_id=payload.get("route_id"),
+            subsystem=payload.get("subsystem"),
+            grid_ids=payload.get("grid_ids"),
+            bbox=payload.get("bbox"),
+            offset=payload.get("offset") or 0,
+            limit=payload.get("limit"),
+        )
+
+    def artifact_inventory(self):
+        return self.artifact_read_service.inventory()
 
     def grid_snapshot(self): return deepcopy(self.state.get("grid") or self.grid_service.empty())
     def grid_attributes_snapshot(self): return deepcopy(self.state.get("grid_attributes") or empty_grid_attributes())

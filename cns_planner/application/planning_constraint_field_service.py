@@ -184,6 +184,20 @@ class PlanningConstraintFieldService:
             }
         cells = field.get("cells")
         if not isinstance(cells, list) or not cells:
+            # 内存里只有 summary / artifact_ref（明细已外置）：按需从 canonical
+            # artifact 读取，仍然读不到才如实返回 cells_unavailable。
+            lazy = next(
+                (
+                    item for item in self._sidecar_fields()
+                    if str(item.get("altitude_layer_id") or "") == layer_id
+                ),
+                None,
+            )
+            lazy_cells = (lazy or {}).get("cells")
+            if isinstance(lazy_cells, list) and lazy_cells:
+                field = {**field, "cells": lazy_cells}
+                cells = lazy_cells
+        if not isinstance(cells, list) or not cells:
             # 摘要存在但明细不可读：绝不把"读不到"当成"全部可通行"。
             return {
                 "schema_version": 1, "status": "cells_unavailable",
@@ -464,6 +478,23 @@ def _source_fingerprints(state):
 
 
 def _artifact_ref(state):
+    """B5X：约束场逐 cell 明细的 canonical artifact 引用。
+
+    新格式从 ``artifact_manifest`` 取（统一 Artifact Contract）；旧项目仍从
+    legacy ``result_index`` 派生一个等价引用，保证既有工程的读取路径不退化。
+    返回的引用**只含相对项目目录的路径**，绝不暴露任何绝对本机路径。
+    """
+
+    manifest = state.get("artifact_manifest")
+    if isinstance(manifest, dict):
+        entries = manifest.get("entries")
+        refs = manifest.get("refs")
+        artifact_id = refs.get("planning_constraint_fields") if isinstance(refs, dict) else None
+        entry = entries.get(artifact_id) if isinstance(entries, dict) and artifact_id else None
+        if isinstance(entry, dict):
+            from ..persistence.artifact_store import artifact_ref as build_ref
+
+            return build_ref(entry)
     index = state.get("result_index") or {}
     details = index.get("planning_constraint_fields") or {}
     if not index.get("artifact"):

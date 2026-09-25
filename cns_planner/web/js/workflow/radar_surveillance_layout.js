@@ -490,4 +490,27 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +noIntersectionNote+infeasibleBlock+unknownBlock;
 }
 
+/**
+ * B5X（Phase4）：按需载入**逐点明细**（只读 GET ``/api/radar-surveillance-layout``）。
+ *
+ * 通用 workflow 快照只带**有界摘要**（状态 / 计数 / 求解器 / 覆盖率），逐 sample /
+ * panel 明细统一外置为 canonical artifact。因此明细只在用户显式点击「载入逐点明细」
+ * 时读取，并挂在 ``flow.radar_surveillance_layout.detail``（展示模型已经消费该字段）。
+ *
+ * 读取失败**不**改任何业务状态：错误由调用方按中文业务提示呈现（明细不可用 /
+ * 需要重新计算），绝不把"读不到"渲染成"未覆盖 0 段"。
+ */
+export async function loadRadarSurveillanceDetail({api,getFlow,setFlow,afterChange=()=>{},routeId=null}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarSurveillanceDetail 需要 api / getFlow / setFlow 三个依赖');
+  const id=routeId==null?'':String(routeId).trim();
+  const url=id?RADAR_LAYOUT_ENDPOINT+'?'+new URLSearchParams({route_id:id}):RADAR_LAYOUT_ENDPOINT;
+  const detail=await api(url);
+  const current=getFlow()||{};
+  const layout={...(current.radar_surveillance_layout||{}),detail};
+  setFlow({...current,radar_surveillance_layout:layout});
+  afterChange();
+  return detail;
+}
+
 export default renderRadarSurveillanceLayoutPanel;

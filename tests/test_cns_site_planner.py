@@ -226,7 +226,9 @@ def test_planning_profile_is_excluded_from_established_p7_p8_fingerprints(tmp_pa
         workflow.state["grid"], workflow.state["grid_attributes"],
         legacy_facilities, workflow.state["device_catalog"],
     )
-    actual_coverage = workflow.evaluate_coverage_3d()["coverage_3d"]
+    workflow.evaluate_coverage_3d()
+    # Phase4-B5X：逐点 sample 明细已外置，服务能力评估从专用接口取回全量输入。
+    actual_coverage = workflow.coverage_3d_snapshot()
     assert actual_coverage["input_fingerprint"] == expected_coverage["input_fingerprint"]
 
     expected_capability = workflow.cns_service_model.evaluate(

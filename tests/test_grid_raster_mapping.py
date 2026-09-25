@@ -233,7 +233,7 @@ def test_grid_attributes_save_restore_workspace_reset_and_legacy_compatibility(t
     defaults = _defaults_path(tmp_path)
     service = WorkflowService(store, defaults)
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    mapped = _mapped_results(state["grid"])
+    mapped = _mapped_results(service.grid_snapshot())
     service.apply_grid_attributes(mapped)
 
     restored = WorkflowService(store, defaults)
@@ -261,7 +261,7 @@ def test_grid_attributes_save_restore_workspace_reset_and_legacy_compatibility(t
 def test_population_and_terrain_source_changes_invalidate_only_matching_attributes(tmp_path):
     service = WorkflowService(tmp_path / "project.json", _defaults_path(tmp_path))
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    mapped = _mapped_results(state["grid"])
+    mapped = _mapped_results(service.grid_snapshot())
     service.apply_grid_attributes(mapped)
 
     service.invalidate_grid_attributes({"population"})

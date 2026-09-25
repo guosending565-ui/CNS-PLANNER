@@ -336,7 +336,7 @@ def test_workflow_calls_replaceable_model_and_persists_then_stales_risk(tmp_path
     model = ReplacementRiskModel()
     service = WorkflowService(store, _defaults_path(tmp_path), risk_model=model)
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    mapped = _workflow_mapped_attributes(state["grid"])
+    mapped = _workflow_mapped_attributes(service.grid_snapshot())
 
     applied = service.apply_grid_attributes(mapped)
 
@@ -362,7 +362,7 @@ def test_workflow_calls_replaceable_model_and_persists_then_stales_risk(tmp_path
 def test_new_future_source_invalidates_existing_risk_even_before_mapping(tmp_path):
     service = WorkflowService(tmp_path / "project.json", _defaults_path(tmp_path))
     state = service.set_workspace([120.001, 30.001, 120.02, 30.02], _health())
-    service.apply_grid_attributes(_workflow_mapped_attributes(state["grid"]))
+    service.apply_grid_attributes(_workflow_mapped_attributes(service.grid_snapshot()))
     assert service.state["grid_attributes"]["buildings"]["status"] == "not_calculated"
 
     service.invalidate_grid_attributes({"buildings"})

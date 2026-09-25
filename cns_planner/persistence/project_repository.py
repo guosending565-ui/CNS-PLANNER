@@ -60,11 +60,15 @@ class ProjectRepository:
     def copy_to(self, target: Path) -> None:
         target = Path(target)
         document = self.load()
-        artifact = self._result_artifact_path(document, self.path)
-        if artifact is not None:
-            relative = artifact.relative_to(self.path.parent.resolve())
-            artifact_target = target.parent / relative
-            ProjectRepository(artifact_target).save_bytes(artifact.read_bytes())
+        for relative in self._result_artifact_paths(document):
+            source = (self.path.parent.resolve() / relative).resolve()
+            try:
+                source.relative_to(self.path.parent.resolve())
+            except ValueError as exc:
+                raise ValueError("项目结果索引超出项目目录") from exc
+            if not source.is_file():
+                raise ValueError(f"项目结果文件缺失：{relative}")
+            ProjectRepository(target.parent / relative).save_bytes(source.read_bytes())
         target_lock = _path_lock(target)
         # Stable lock ordering avoids deadlock when two files are copied in
         # opposite directions by different request threads.
@@ -101,6 +105,26 @@ class ProjectRepository:
             self._atomic_replace(temporary, self.backup_path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _result_artifact_paths(document):
+        """项目文档引用的全部 artifact 相对路径（新 manifest + legacy result_index）。"""
+
+        if not isinstance(document, dict):
+            return []
+        relatives = []
+        manifest = document.get("artifact_manifest")
+        entries = manifest.get("entries") if isinstance(manifest, dict) else None
+        if isinstance(entries, dict):
+            for entry in entries.values():
+                relative = entry.get("relative_path") if isinstance(entry, dict) else None
+                if relative and str(relative) not in relatives:
+                    relatives.append(str(relative))
+        index = document.get("result_index")
+        legacy = index.get("artifact") if isinstance(index, dict) else None
+        if legacy and str(legacy) not in relatives:
+            relatives.append(str(legacy))
+        return relatives
 
     @staticmethod
     def _result_artifact_path(document, project_path):

@@ -7,7 +7,9 @@ from copy import deepcopy
 import threading
 
 from ..persistence.project_repository import ProjectRepository
-from ..persistence.project_compaction import compact_and_store, restore_compacted_results
+from ..persistence.project_compaction import (
+    compact_and_store, restore_compacted_results, sync_artifact_refs_to_state,
+)
 from ..domain.altitude_layer_defaults import ensure_default_altitude_layers
 from .project_state import blank_project, normalize_project, utc_now
 from .route_operating_layer_service import (
@@ -122,7 +124,7 @@ class WorkflowSession:
                     else:
                         workspace["revision"] = previous["workspace_revision"]
                 raise
-            self.state["result_index"] = deepcopy(document["result_index"])
+            sync_artifact_refs_to_state(self.state, document)
             self._workspace_signature = self._signature(self.state.get("workspace"))
 
     @staticmethod

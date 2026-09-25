@@ -85,9 +85,11 @@ def test_workspace_change_regenerates_grid_and_roundtrips(tmp_path):
     service = WorkflowService(store, defaults)
 
     first = service.set_workspace([120.001, 30.001, 120.01, 30.01], _health())
-    first_ids = [cell["grid_id"] for cell in first["grid"]["cells"]]
+    # Phase4-B5X：逐 cell 明细不再随通用快照下发，走既有专用读取接口。
+    first_ids = [cell["grid_id"] for cell in service.grid_snapshot()["cells"]]
     second = service.set_workspace([120.021, 30.021, 120.03, 30.03], _health())
-    second_ids = [cell["grid_id"] for cell in second["grid"]["cells"]]
+    second_ids = [cell["grid_id"] for cell in service.grid_snapshot()["cells"]]
+    assert "cells" not in first["grid"], "通用快照必须保持 slim（grid 明细外置）"
 
     assert first["grid"]["status"] == "passed"
     assert second["grid"]["status"] == "passed"

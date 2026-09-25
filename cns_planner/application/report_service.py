@@ -15,6 +15,7 @@ from ..domain.reporting import (
     REPORT_SCHEMA_VERSION, TEMPLATE_VERSION, deterministic_report_id,
     empty_report_collection, report_source_fingerprint, sanitize_report_value,
 )
+from ..persistence.project_compaction import artifact_references
 from ..reporting import HtmlReportRenderer, PlaywrightPdfRenderer, ReportBuilder
 
 
@@ -38,6 +39,7 @@ class PlanningReportService:
         now = _utc_now()
         model = self.builder.build(self.session.state, self.algorithm_catalog(), now, final=False)
         return {"status": "draft", "persisted": False, "report_data": model,
+                "source_artifacts": artifact_references(self.session.state),
                 "html": self.html_renderer.render(model)}
 
     def generate(self, payload=None):
@@ -67,6 +69,9 @@ class PlanningReportService:
         now = _utc_now()
         model = self.builder.build(state, catalog, now, final=True)
         html = self.html_renderer.render(model)
+        # Phase4-B5X：报告 manifest 登记本次报告引用的 canonical artifact（ID/指纹/
+        # 相对路径）。生成报告因此**不需要**把任何大型明细重新塞回 ProjectState。
+        source_artifacts = artifact_references(state)
         original = deepcopy(state)
         moved = False
         try:
@@ -85,7 +90,11 @@ class PlanningReportService:
                     provenance["derivation"][-1]["input_fingerprint"] = source_fp
                     provenance["derivation"][-1]["output_fingerprint"] = model["report_data_fingerprint"]
                 _write(stage / "provenance.json", json.dumps(provenance, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8"))
-                payload_names = ["report.html", "report.pdf", "report.json", "routes.geojson", "facilities.geojson", "algorithms.json", "provenance.json"]
+                _write(
+                    stage / "artifact-manifest.json",
+                    json.dumps(source_artifacts, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8"),
+                )
+                payload_names = ["report.html", "report.pdf", "report.json", "routes.geojson", "facilities.geojson", "algorithms.json", "provenance.json", "artifact-manifest.json"]
                 manifest = "".join(f"{_sha(stage / name)}  {name}\n" for name in payload_names)
                 _write(stage / "manifest-sha256.txt", manifest.encode("utf-8"))
                 with zipfile.ZipFile(stage / "planning-package.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -100,6 +109,8 @@ class PlanningReportService:
                 "report_data_fingerprint": model["report_data_fingerprint"], "generated_at": now,
                 "status": "passed", "current_applicability": "current",
                 "artifacts": {kind: f"{relative_root}/{name}" for kind, name in ARTIFACT_NAMES.items()},
+                # B5X：报告 manifest 记录它引用的 canonical artifact（只含相对路径）。
+                "source_artifacts": source_artifacts,
             }
             old_active = collection.get("active_report_id")
             for prior in collection.get("records") or []:

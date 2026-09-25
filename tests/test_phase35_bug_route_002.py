@@ -387,9 +387,11 @@ def test_the_selected_layer_mask_is_computable_and_reports_its_altitude_layer(tm
     })
     service.state["grid_risk_v2"] = risk_v2(grid)
     service.set_layered_route_feasibility_policy(human_payload())
-    collection = service.evaluate_layered_route_candidate(
+    service.evaluate_layered_route_candidate(
         {}, adapter=StubAdapter(stub_facts(grid)),
-    )["layered_route_candidates"]
+    )
+    # Phase4-B5X：通用快照只带候选摘要，逐 cell 的 mask 走专用读取接口。
+    collection = service.layered_route_candidates()
     assert collection["masks"], "confirmed feasibility policy 之后 selected-layer mask 必须可计算"
     readiness = service.layered_route_planner_readiness()
     assert readiness["feasibility_mask"]["status"] != "not_calculated"
