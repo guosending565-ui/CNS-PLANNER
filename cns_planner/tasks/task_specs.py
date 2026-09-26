@@ -11,9 +11,15 @@
 
 两个 task type 都满足同一套契约：
 
-``input_snapshot(state, payload)``
-    纯函数、只读 state，返回**权威输入**的确定性字典。HTTP 提交与 publish 阶段
-    分别调用它，得到相同指纹才允许发布（compare-and-publish）。
+``submit_plan(state, payload)``
+    纯函数、只读 state，返回 ``{scope_id, worker_payload, inputs}``。``inputs`` 是
+    这次计算的**权威输入事实**，提交时被原样写进 immutable snapshot
+    （``.cns-tasks/inputs/<sha256>.json.gz``），worker 只从它取输入。
+
+``algorithm_types``
+    Phase4-B6R：声明哪些算法选择**影响本任务结果**。它们与 ``inputs`` 一起进入同一份
+    immutable snapshot 的 ``algorithms`` 段，共同构成输入指纹；worker 只用 snapshot
+    里的清单重建算法，绝不回读当前 ``ProjectState`` 的算法选择。
 
 ``runner(context)``
     只在 worker 进程内运行。它不写 canonical state，只把结果 staged 成 artifact。
@@ -26,8 +32,8 @@ from __future__ import annotations
 from copy import deepcopy
 import time
 
-from ..algorithms.registry import build_default_algorithm_registry
 from ..domain.cns_corridor import normalize_cns_corridor_policy
+from .task_input import CORRIDOR_ALGORITHM_TYPES
 from .task_spec import (
     TaskCancelled, TaskInputChanged, TaskRunResult, TaskSpec, WorkerResultRef,
     fingerprint_payload,
@@ -77,16 +83,20 @@ def task_type_for_endpoint(path):
 def _corridor_inputs(state, payload):
     """服务走廊评估的权威输入（只读 state，确定性）。
 
-    corridor policy 的取值优先级是 **请求 → 归一化工程默认**：policy 是随请求
-    提交的显式输入（``apply_policy_input`` 会把它落到 state），因此把它作为
-    "任务输入"而不是"当下 state"来取，任务在 publish 时重新计算的输入指纹才
-    不会因为"上一次发布顺手写进 state 的 policy"而自己变成 stale。
+    B6R：**只**包含"输入事实"。算法选择（corridor_model / coverage_model /
+    service_model 的 id/version/parameters）由 :mod:`cns_planner.tasks.task_input`
+    作为同一份 immutable snapshot 的 ``algorithms`` 段记录，两者共同构成指纹。
+
+    corridor policy 是随请求提交的显式输入，不是"当下 state"：提交时它被归一化后写进
+    ``worker_payload``，此后任何一次重新生成（worker 变化检测 / publish compare）
+    都只从 payload 取它。请求里没给 policy 时才回落到 state 里已确认的 policy。
     """
 
     payload = payload if isinstance(payload, dict) else {}
     raw_policy = payload.get("cns_corridor_policy", payload.get("policy"))
-    policy = normalize_cns_corridor_policy(raw_policy if raw_policy is not None else {})
-    selections = state.get("algorithm_selection") or {}
+    if raw_policy is None:
+        raw_policy = deepcopy(state.get("cns_corridor_policy")) or {}
+    policy = normalize_cns_corridor_policy(raw_policy)
     return {
         "routes": deepcopy(state.get("operational_routes") or []),
         "spatial_3d": deepcopy(state.get("spatial_3d") or {}),
@@ -98,12 +108,6 @@ def _corridor_inputs(state, payload):
         "existing_cns_facilities": deepcopy(state.get("existing_cns_facilities") or {}),
         "device_catalog": deepcopy(state.get("device_catalog") or {}),
         "corridor_policy": policy,
-        "coverage_parameters": deepcopy(
-            ((selections.get("coverage_model") or {}).get("parameters") or {})
-        ),
-        "capability_parameters": deepcopy(
-            ((selections.get("service_model") or {}).get("parameters") or {})
-        ),
     }
 
 
@@ -113,48 +117,56 @@ def _corridor_scope(state, payload):
     return "cns_service_corridor:" + ("|".join(route_ids) if route_ids else "no-route")
 
 
-def _corridor_worker_payload(payload):
-    """worker 侧只需要影响输入指纹的两个可选字段。"""
+def _corridor_worker_payload(state, payload):
+    """worker 侧重建输入所需的最小覆盖项。
+
+    只保留请求显式给出的 policy（归一化后），请求未给出时**不**写入：这样
+    "本次请求的 policy"与"state 里已有的 policy"不会被混成两个不同的输入指纹。
+    """
 
     payload = payload if isinstance(payload, dict) else {}
     compact = {}
-    if payload.get("policy") is not None:
-        compact["policy"] = deepcopy(payload["policy"])
-    if payload.get("cns_corridor_policy") is not None:
-        compact["cns_corridor_policy"] = deepcopy(payload["cns_corridor_policy"])
+    raw_policy = payload.get("cns_corridor_policy", payload.get("policy"))
+    if raw_policy is not None:
+        compact["cns_corridor_policy"] = normalize_cns_corridor_policy(raw_policy)
     return compact
 
 
 def _corridor_plan(state, payload):
-    worker_payload = _corridor_worker_payload(payload)
+    worker_payload = _corridor_worker_payload(state, payload)
     return {
         "scope_id": _corridor_scope(state, payload),
-        "input_fingerprint": fingerprint_payload(_corridor_inputs(state, payload)),
         "worker_payload": worker_payload,
+        "inputs": _corridor_inputs(state, worker_payload),
     }
 
 
 def _corridor_runner(context):
     snapshot = context.inputs["snapshot"]
+    inputs = snapshot.get("inputs") or {}
+    algorithms = context.algorithms()
     context.check_cancel()
     context.progress(0.05, "正在准备服务走廊评估输入")
     from ..catalogs import AircraftCNSProfileCatalog
 
     profile = AircraftCNSProfileCatalog.find(
-        snapshot.get("aircraft_profiles") or {},
-        snapshot.get("selected_aircraft_profile_id") or "",
+        inputs.get("aircraft_profiles") or {},
+        inputs.get("selected_aircraft_profile_id") or "",
     )
-    model = context.model("corridor_model", "cns_service_corridor_v1")
+    # B6R：算法只从 snapshot 的 manifest 重建，绝不读当前 ProjectState 的算法选择。
+    model = algorithms.create("corridor_model")
+    coverage_parameters = algorithms.manifest("coverage_model").get("parameters") or {}
+    capability_parameters = algorithms.manifest("service_model").get("parameters") or {}
     context.check_cancel()
     context.progress(0.15, "正在计算服务走廊（体素探测与服务能力判定）")
     result = model.evaluate(
-        snapshot.get("routes") or [], snapshot.get("spatial_3d") or {},
-        snapshot.get("grid") or {}, snapshot.get("grid_attributes") or {},
-        snapshot.get("required_cns") or {}, profile,
-        snapshot.get("existing_cns_facilities") or {}, snapshot.get("device_catalog") or {},
-        snapshot.get("corridor_policy") or {},
-        coverage_parameters=snapshot.get("coverage_parameters") or {},
-        capability_parameters=snapshot.get("capability_parameters") or {},
+        inputs.get("routes") or [], inputs.get("spatial_3d") or {},
+        inputs.get("grid") or {}, inputs.get("grid_attributes") or {},
+        inputs.get("required_cns") or {}, profile,
+        inputs.get("existing_cns_facilities") or {}, inputs.get("device_catalog") or {},
+        inputs.get("corridor_policy") or {},
+        coverage_parameters=coverage_parameters,
+        capability_parameters=capability_parameters,
     )
     context.check_cancel()
     context.progress(0.9, "正在写入临时结果明细")
@@ -221,11 +233,10 @@ def _pcf_worker_payload(payload):
 
 
 def _pcf_plan(state, payload):
-    worker_payload = _pcf_worker_payload(payload)
     return {
         "scope_id": _pcf_scope(state, payload),
-        "input_fingerprint": fingerprint_payload(_pcf_components(state, payload)),
-        "worker_payload": worker_payload,
+        "worker_payload": _pcf_worker_payload(payload),
+        "inputs": _pcf_components(state, payload),
     }
 
 
@@ -234,7 +245,7 @@ def _pcf_runner(context):
         generate_planning_constraint_field,
     )
 
-    inputs = context.inputs["snapshot"]
+    inputs = context.inputs["snapshot"]["inputs"]
     context.check_cancel()
     context.progress(0.1, "正在判定逐格约束（地形 / 建筑 / 铁塔 / 空域 / 要地）")
     field = generate_planning_constraint_field(
@@ -310,8 +321,19 @@ def _probe_inputs(state, payload):
     }
 
 
+def _probe_plan(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    worker_payload = deepcopy(payload)
+    return {
+        "scope_id": _probe_scope(state, worker_payload),
+        "worker_payload": worker_payload,
+        # 探针的输入就是它的 payload（steps / crash 同时是控制字段与输入）。
+        "inputs": _probe_inputs(state, worker_payload),
+    }
+
+
 def _probe_runner(context):
-    inputs = context.inputs["snapshot"]
+    inputs = context.inputs["snapshot"]["inputs"]
     steps = max(1, int(inputs["steps"]))
     for index in range(steps):
         context.check_cancel()
@@ -365,6 +387,8 @@ _CORRIDOR_SPEC = TaskSpec(
     submit_plan=_corridor_plan,
     runner=_corridor_runner,
     release="cns_corridor_assessment",
+    # B6R：这三个算法选择真正影响 corridor 结果，必须进入 immutable snapshot。
+    algorithm_types=CORRIDOR_ALGORITHM_TYPES,
 )
 
 _PCF_SPEC = TaskSpec(
@@ -377,6 +401,8 @@ _PCF_SPEC = TaskSpec(
     submit_plan=_pcf_plan,
     runner=_pcf_runner,
     release="planning_constraint_fields",
+    # PCF 是纯判定：结果由逐格事实与 policy 决定，没有任何算法选择参与。
+    algorithm_types=(),
 )
 
 _PROBE_SPEC = TaskSpec(
@@ -386,7 +412,9 @@ _PROBE_SPEC = TaskSpec(
     business_endpoint="/api/tasks",
     scope_key=_probe_scope,
     input_snapshot=_probe_inputs,
+    submit_plan=_probe_plan,
     runner=_probe_runner,
+    algorithm_types=(),
 )
 
 for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _PROBE_SPEC):

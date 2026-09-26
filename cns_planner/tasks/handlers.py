@@ -1,12 +1,14 @@
-"""Phase4-B6X：heavy task 的提交 / 发布适配层。
+"""Phase4-B6X/B6R：heavy task 的提交 / 发布适配层。
 
 本模块是**唯一**把 task 运行时接到业务 use case 的地方：
 
-* 提交（HTTP 线程，短）：解析权威输入 → 计算输入指纹与 scope → 写 task store →
-  返回 ``202`` + ``task_id``。它**不**执行任何长计算。
-* 发布（publish 阶段，``mutation_lock`` 内极短）：校验输入指纹 → 原子
-  ``commit_staged`` → 调用对应业务 use case 的强制应用入口（该 use case 仍是
-  canonical result 的唯一 production owner）→ 立即释放锁。
+* 提交（HTTP 线程，短）：解析权威输入 → **真正生成并持久化 immutable input
+  snapshot**（``.cns-tasks/inputs/<sha256>.json.gz``）→ 写 task store → 返回
+  ``202`` + ``task_id``。它**不**执行任何长计算，也**不**在计算期间持锁。
+* 发布（publish 阶段，``mutation_lock`` 内极短）：用当前 canonical state 重新生成
+  同一份 snapshot 并比较指纹 → 一致才原子 ``commit_staged`` → 调用对应业务 use
+  case 的强制应用入口（该 use case 仍是 canonical result 的唯一 production
+  owner）→ 立即释放锁。
 
 业务 owner 没有被替换，也没有被复制：``CNSCorridorService.apply_computed`` 与
 ``PlanningConstraintFieldService.apply_field`` 就是同步路径本身使用的收尾逻辑。
@@ -17,8 +19,8 @@ from __future__ import annotations
 from copy import deepcopy
 import os
 
-from ..persistence.artifact_store import ArtifactStore, ArtifactError
-from .task_spec import fingerprint_payload
+from ..persistence.artifact_store import ArtifactStore
+from .task_input import InputSnapshotStore, snapshot_reference
 from .task_specs import (
     CORRIDOR_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY, PROBE_TASK_TYPE,
     has_task_type, task_spec,
@@ -45,25 +47,68 @@ def result_scope_text(task_type) -> str:
     return RESULT_SCOPE_TEXT.get(str(task_type), "业务结果")
 
 
-def plan_submission(workflow, task_type, payload):
-    """HTTP 线程内解析提交计划：scope + 输入指纹 + worker 最小覆盖项。不做长计算。"""
+def build_submission_snapshot(workflow, task_type, payload, *, registry=None):
+    """在一致 state 上组装 immutable snapshot（只读 state，不写盘）。"""
 
     spec = task_spec(task_type)
-    state = workflow.state
-    payload = payload if isinstance(payload, dict) else {}
-    plan = spec.plan_for(state, payload)
-    fingerprint = str(plan.get("input_fingerprint") or "")
+    registry = registry if registry is not None else workflow.algorithm_registry
+    plan = spec.plan_for(workflow.state, payload if isinstance(payload, dict) else {}, registry)
+    return spec, plan, _snapshot_from_plan(spec, plan, workflow.state, registry)
+
+
+def _snapshot_from_plan(spec, plan, state, registry):
+    """按提交计划组装 snapshot（``inputs`` 与 ``worker_payload`` 与计划完全一致）。"""
+
+    from .task_input import build_snapshot
+
+    return build_snapshot(
+        task_type=spec.task_type,
+        payload=deepcopy(plan.get("worker_payload") or {}),
+        state=state,
+        registry=registry,
+        algorithm_types=spec.algorithm_types,
+        inputs=deepcopy(plan.get("inputs") or spec.inputs_for(state, {})),
+    )
+
+
+def plan_submission(workflow, task_type, payload, *, registry=None, store=None):
+    """HTTP 线程内解析提交计划：scope + **immutable snapshot** + 输入指纹 + worker 覆盖项。
+
+    它做了三件必须**原子**（对 state 一致快照）完成的事：解析 scope、组装 snapshot、
+    持久化 snapshot。调用方（:class:`HeavyTaskService`）在 ``mutation_lock`` 内调用它，
+    随后立即释放锁——长计算期间绝不持锁。不做任何长计算。
+    """
+
+    spec = task_spec(task_type)
+    registry = registry if registry is not None else workflow.algorithm_registry
+    store = store if store is not None else InputSnapshotStore(workflow.store_path)
+    plan = spec.plan_for(workflow.state, payload if isinstance(payload, dict) else {}, registry)
+    snapshot = _snapshot_from_plan(spec, plan, workflow.state, registry)
+    metadata = store.store(snapshot)
+    reference = snapshot_reference(metadata.get("relative_path"))
     return {
         "task_type": spec.task_type,
         "scope_id": str(plan.get("scope_id") or ""),
-        "input_fingerprint": fingerprint,
-        "worker_payload": plan.get("worker_payload") or {},
-        "input_revision": int(state.get("revision") or 0),
-        "input_snapshot_ref": (
-            f"project-state@{spec.task_type}#{fingerprint[:16]}"
-        ),
+        "input_fingerprint": str(metadata.get("artifact_id") or ""),
+        "input_snapshot": snapshot,
+        "input_snapshot_metadata": metadata,
+        "worker_payload": deepcopy(plan.get("worker_payload") or {}),
+        "input_revision": int(workflow.state.get("revision") or 0),
+        "input_snapshot_ref": reference,
         "message": spec.message,
     }
+
+
+def current_input_fingerprint(workflow, record, *, registry=None):
+    """用当前 canonical state 重新生成输入指纹（publish compare-and-publish 用）。"""
+
+    spec = task_spec(str(record.get("task_type")))
+    worker_payload = record.get("worker_payload")
+    return spec.fingerprint_for(
+        workflow.state,
+        worker_payload if isinstance(worker_payload, dict) else {},
+        registry if registry is not None else workflow.algorithm_registry,
+    )
 
 
 def publish_staged_artifact(workdir, staged):
@@ -105,16 +150,17 @@ def publish_task_result(workflow, record, *, workdir):
     返回业务发布结果字典。**任何**失败都必须让当前 canonical result 保持不变：
     staged artifact 只有在真正写 state 之前才会被 commit，写入本身沿用同步路径
     的 ``session.save()`` 原子替换语义。
+
+    B6R compare-and-publish：用**当前 canonical state** 重新生成输入指纹（与提交
+    时同一实现、含算法选择清单），与 task record 里记录的 submitted 指纹比较；
+    不同即 ``stale``，绝不覆盖当前 canonical result。
     """
 
     task_type = str(record.get("task_type"))
     if not has_task_type(task_type):
         raise TaskPublishError(f"未登记的 heavy task 类型：{task_type}")
     spec = task_spec(task_type)
-    worker_payload = record.get("worker_payload")
-    current_fingerprint = spec.fingerprint_for(
-        workflow.state, worker_payload if isinstance(worker_payload, dict) else {}
-    )
+    current_fingerprint = current_input_fingerprint(workflow, record)
     if current_fingerprint != str(record.get("input_fingerprint") or ""):
         raise TaskInputChangedError("输入已变化，未覆盖当前正式结果")
 
@@ -174,6 +220,6 @@ def _staged_value(payload):
 
 __all__ = [
     "RESULT_SCOPE_TEXT", "TaskInputChangedError", "TaskPublishError",
-    "plan_submission", "publish_staged_artifact", "publish_task_result",
-    "result_scope_text",
+    "build_submission_snapshot", "current_input_fingerprint", "plan_submission",
+    "publish_staged_artifact", "publish_task_result", "result_scope_text",
 ]

@@ -1,18 +1,26 @@
-"""Phase4-B6X：HeavyTaskService —— 提交 / 监控 / 取消 / compare-and-publish。
+"""Phase4-B6X/B6R：HeavyTaskService —— 提交 / 监控 / 取消 / compare-and-publish。
 
 职责边界（严格保持）：
 
-* **提交路径**（HTTP 线程，极短）：解析输入指纹与 scope → 写 task store →
-  ``queued`` → 返回 ``task_id``。不执行长计算、不持有 ``mutation_lock``。
-* **worker 路径**（独立进程）：领取 ``queued`` → ``running``，定期写
-  progress/heartbeat，在 major phase 与 artifact publish 前做 cooperative cancel
-  检查，结果 staged 成 artifact。worker **绝不**写 ProjectState。
-* **publish 路径**（本进程，``mutation_lock`` 内极短）：校验输入指纹 → 原子
-  ``commit_staged`` → 调用唯一 production owner 写 canonical result → 立即释放。
-  输入已变化时任务变成 ``stale``，当前 canonical result 保持不变。
+* **提交路径**（HTTP 线程，极短）：在**短暂**的 ``workflow.mutation_lock`` 内于一致
+  state 上解析输入指纹与 scope、生成并持久化 immutable input snapshot
+  （``.cns-tasks/inputs/<sha256>.json.gz``）→ 写 task store → ``queued`` → 返回
+  ``task_id``。不执行长计算、计算期间绝不持有 ``mutation_lock``。
+* **worker 路径**（独立进程）：领取 ``queued`` → ``running``，**只从
+  ``input_snapshot_ref`` 加载 immutable snapshot 作为计算输入**（绝不再按当前
+  ``ProjectState`` 组装输入），定期写 progress/heartbeat，在 major phase 与 artifact
+  publish 前做 cooperative cancel 检查，结果 staged 成 artifact。worker **绝不**写
+  ProjectState。
+* **publish 路径**（本进程，``mutation_lock`` 内极短）：用当前 canonical state 重新
+  生成输入指纹并与 submitted 指纹比较 → 原子 ``commit_staged`` → 调用唯一 production
+  owner 写 canonical result → 立即释放。输入已变化时任务变成 ``stale``，当前 canonical
+  result 保持不变。
 * **恢复路径**：服务/worker 重启后 ``queued`` 继续可领取；``running`` /
   ``cancelling`` 且心跳超时的任务被显式标记为 ``stale`` / ``cancelled``（明确策略：
   不重算、绝不误判 succeeded）；历史终态原样保留可读。
+* **项目切换路径**：``bind_project`` 先终止旧项目的 active worker，并把旧 task store
+  里的 active 任务显式写成 ``cancelled``（``reason=project_switched``），绝不留永久
+  ``running`` 记录。关闭浏览器/进程退出不取消任务。
 
 业务语义（中文文案、release scope、业务 endpoint）全部来自
 :mod:`cns_planner.tasks.task_specs` 与 :mod:`cns_planner.tasks.handlers`；
@@ -33,6 +41,7 @@ import time
 from .handlers import (
     TaskInputChangedError, TaskPublishError, result_scope_text,
 )
+from .task_input import InputSnapshotStore
 from .task_spec import ADVANCED_STATUSES, TASK_STATUS_TEXT, status_message
 from .task_specs import has_task_type, task_spec, task_specs
 from .task_store import (
@@ -88,6 +97,8 @@ class HeavyTaskService:
         #: worker 子进程的工作目录（必须是 ``cns_planner`` 包所在的项目根）。
         self.project_root = Path(project_root) if project_root else Path(__file__).resolve().parents[2]
         self.store = TaskStore(store_directory or resolve_task_store_path(self.workdir))
+        #: B6R：immutable input snapshot 的内容寻址存储（与 task store 并列）。
+        self.snapshot_store = InputSnapshotStore(self.workdir)
         self.max_workers = max(1, int(max_workers))
         self.heartbeat_timeout = float(heartbeat_timeout)
         self.heartbeat_interval = float(heartbeat_interval)
@@ -106,16 +117,49 @@ class HeavyTaskService:
     # ---- 生命周期 -----------------------------------------------------------
 
     def bind_project(self, project_file):
-        """项目切换（Open / Save As）后重新绑定 task store 位置。"""
+        """项目切换（Open / Save As）后重新绑定 task store 位置。
+
+        B6R：旧项目的 active worker 被终止时，**对应旧 task store 必须明确写
+        ``cancelled``（reason=project_switched）**，绝不能留下永久 ``running`` 记录。
+        "关闭浏览器"不是项目切换：那条路径（``stop`` / 进程退出）不在这里，也不会
+        取消任何任务。
+        """
 
         with self._lock:
+            self._abandon_active_tasks()
             self._terminate_all()
             self.project_file = Path(project_file)
             self.workdir = Path(project_file)
             self.store = TaskStore(resolve_task_store_path(self.workdir))
+            self.snapshot_store = InputSnapshotStore(self.workdir)
             self._published = {}
             self._recovered = []
         return self
+
+    def _abandon_active_tasks(self):
+        """项目切换：旧 store 里的 active 任务显式收尾为 cancelled。"""
+
+        try:
+            records = self.store.list(status=ACTIVE_STATUSES)
+        except Exception:  # noqa: BLE001 - 切换项目不能因为旧 store 读失败而中断
+            return []
+        finished = []
+        for record in records:
+            task_id = str(record.get("task_id"))
+            try:
+                finished.append(self.store.finish(
+                    task_id, status=CANCELLED,
+                    message="项目已切换，任务已终止",
+                    error={
+                        "code": "task_project_switched",
+                        "reason": "project_switched",
+                        "message": "项目已切换（Open / Save As）：旧项目的任务不再计算，也不发布任何结果",
+                    },
+                    progress=float(record.get("progress") or 0.0),
+                ))
+            except Exception:  # noqa: BLE001
+                continue
+        return finished
 
     def start(self, *, recover=True):
         """启动编排线程，并按明确策略恢复重启前的任务。"""
@@ -159,7 +203,12 @@ class HeavyTaskService:
     # ---- 提交 --------------------------------------------------------------
 
     def submit(self, task_type, payload=None, *, conflict_policy=CONFLICT_RETURN_EXISTING):
-        """提交 heavy task：返回 ``(task_record, created)``。"""
+        """提交 heavy task：返回 ``(task_record, created)``。
+
+        B6R 提交契约：**短暂**获取 ``workflow.mutation_lock``，在一致 state 上完成
+        scope_id / immutable snapshot / 输入指纹 / input_revision / snapshot 持久化 /
+        task record 六件事，然后**立即释放**。长计算（worker）全程不持锁。
+        """
 
         if not has_task_type(task_type):
             raise TaskNotFoundError(f"未登记的 heavy task 类型：{task_type}")
@@ -167,24 +216,57 @@ class HeavyTaskService:
 
         with self._lock:
             self._drive_locked()
-            plan = plan_submission(self.workflow, task_type, payload)
-            existing = self.store.find_active(plan["scope_id"])
-            if existing is not None:
-                if conflict_policy == CONFLICT_REJECT:
-                    raise TaskConflictError(
-                        f"该范围已有进行中的任务（{existing.get('task_id')}），请先等待或取消它"
-                    )
-                return existing, False
-            record = self.store.create(
-                task_type=plan["task_type"], scope_id=plan["scope_id"],
-                message=plan["message"], input_fingerprint=plan["input_fingerprint"],
-                input_revision=plan["input_revision"],
-                input_snapshot_ref=plan["input_snapshot_ref"],
-                worker_payload=plan["worker_payload"],
-            )
+            lock = self._mutation_lock()
+            acquired = False
+            if lock is not None:
+                lock.acquire()
+                acquired = True
+            try:
+                # ---- 短锁区：只做"一致 state 上的登记"，绝无长计算 -------------
+                plan = plan_submission(
+                    self.workflow, task_type, payload, store=self.snapshot_store,
+                )
+                existing = self.store.find_active(plan["scope_id"])
+                if existing is not None:
+                    if conflict_policy == CONFLICT_REJECT:
+                        raise TaskConflictError(
+                            f"该范围已有进行中的任务（{existing.get('task_id')}），请先等待或取消它"
+                        )
+                    return existing, False
+                record = self.store.create(
+                    task_type=plan["task_type"], scope_id=plan["scope_id"],
+                    message=plan["message"], input_fingerprint=plan["input_fingerprint"],
+                    input_revision=plan["input_revision"],
+                    input_snapshot_ref=plan["input_snapshot_ref"],
+                    worker_payload=plan["worker_payload"],
+                )
+                # ---- 短锁区结束 ------------------------------------------------
+            finally:
+                if acquired:
+                    lock.release()
             self._recovered = []
         self.drive()
         return record, True
+
+    def _mutation_lock(self):
+        """与 canonical 写路径共用的锁（缺失时不阻塞提交，语义退化为 B6X）。"""
+
+        return getattr(self.workflow, "mutation_lock", None)
+
+    def snapshot_path(self, record):
+        """任务 immutable snapshot 的实际文件路径（诊断 / 测试用）。"""
+
+        reference = record.get("input_snapshot_ref") if isinstance(record, dict) else record
+        return self.snapshot_store.resolve(reference)
+
+    def _snapshot_present(self, record):
+        """snapshot 文件是否真的存在（业务视图里的只读诊断位，绝不抛异常）。"""
+
+        try:
+            self.snapshot_path(record)
+            return True
+        except Exception:  # noqa: BLE001 - 诊断位不参与业务语义
+            return False
 
     # ---- 查询 --------------------------------------------------------------
 
@@ -244,6 +326,7 @@ class HeavyTaskService:
                 "input_revision": record.get("input_revision"),
                 "input_fingerprint": record.get("input_fingerprint"),
                 "input_snapshot_ref": record.get("input_snapshot_ref"),
+                "input_snapshot_present": self._snapshot_present(record),
                 "result_artifact_ref": record.get("result_artifact_ref"),
                 "worker": deepcopy(record.get("worker")),
                 "error": deepcopy(record.get("error")),
@@ -269,6 +352,7 @@ class HeavyTaskService:
         code = str(error.get("code") or "")
         text = {
             "task_cancelled": "任务已取消，未产生正式结果",
+            "task_project_switched": "项目已切换，任务已终止，未产生正式结果",
             "task_input_changed": "输入已变化，请重新运行",
             "task_worker_lost": "计算进程已中断，请重新运行",
             "task_execution_failed": "计算未能完成，请检查输入后重试",

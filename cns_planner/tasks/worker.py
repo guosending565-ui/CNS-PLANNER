@@ -1,4 +1,4 @@
-"""Phase4-B6X：独立 worker 进程（长计算不在 API request thread 内）。
+"""Phase4-B6X/B6R：独立 worker 进程（长计算不在 API request thread 内）。
 
 用法（由 :class:`~cns_planner.tasks.service.HeavyTaskService` 拉起）::
 
@@ -10,8 +10,13 @@ worker 的职责严格限定为：
 
 1. 领取任务（``queued`` → ``running``），记录 ``started_at`` / ``heartbeat_at`` /
    ``worker`` 身份；
-2. **只读**项目 state，重新解析权威输入并计算输入指纹；与提交时记录的指纹不一致
-   时立即把任务置为 ``stale`` 并退出（绝不使用变化后的输入继续算，也绝不发布）；
+2. **从 ``input_snapshot_ref`` 加载 immutable snapshot，作为唯一的计算输入**。
+   B6R 起 worker **绝不**再按当前 ``ProjectState`` 组装计算输入：提交之后项目发生的
+   任何变化都不允许改变这次计算。快照缺失或损坏 = 任务 ``failed``（绝不用其它输入
+   "顶上"算完）。
+   ``ProjectState`` 只用于**检测**（重新计算当前指纹并与提交指纹比较 → 已变化则立刻
+   ``stale``，不浪费计算）与非业务 runtime 配置（算法注册表）；任何影响结果的值都
+   来自 snapshot。
 3. 定期写 ``progress`` / ``heartbeat_at`` / ``message``（心跳线程），并在 major
    phase 与 artifact publish 之前做 cooperative cancel 检查；
 4. 结果**先** staged 到 ``.cns-results/tmp/``（``ArtifactStore.publish_temporary``），
@@ -28,7 +33,6 @@ worker 进程崩溃/被杀时任务停在 ``running``；由服务端心跳超时
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -40,7 +44,10 @@ import traceback
 from ..algorithms.registry import build_default_algorithm_registry
 from ..persistence.artifact_store import ArtifactStore
 from ..process_identity import build_identity
-from .task_spec import TaskCancelled, TaskInputChanged, fingerprint_payload
+from .task_input import (
+    AlgorithmResolver, InputSnapshotCorrupt, InputSnapshotStore, fingerprint_of,
+)
+from .task_spec import TaskCancelled, TaskInputChanged
 from .task_specs import task_spec
 from .task_store import (
     CANCELLED, FAILED, QUEUED, RUNNING, STALE, SUCCEEDED, TERMINAL_STATUSES,
@@ -72,18 +79,46 @@ class WorkerContext:
         self._thread = None
         self._registry = None
         self._project_state = None
+        self._snapshot_store = InputSnapshotStore(self.workdir)
+        self._resolver = None
         self.inputs = None
         self.progress_value = float(record.get("progress") or 0.0)
 
-    # ---- 只读项目状态 --------------------------------------------------------
+    # ---- immutable 计算输入（唯一来源） ---------------------------------------
+
+    def load_snapshot(self):
+        """从 ``input_snapshot_ref`` 加载 immutable snapshot；失败一律抛异常。
+
+        这是 worker 计算输入的**唯一**来源：缺失 / 损坏 / 被篡改都必须让任务
+        ``failed``，绝不允许退回到"读当前 ProjectState 重新组装"。
+        """
+
+        return self._snapshot_store.load(self.record.get("input_snapshot_ref"))
+
+    def snapshot_store(self):
+        return self._snapshot_store
+
+    def algorithms(self):
+        """按 snapshot 的算法清单重建算法实例（绝不读当前算法选择）。"""
+
+        if self._resolver is None:
+            snapshot = (self.inputs or {}).get("snapshot") or {}
+            manifests = snapshot.get("algorithms")
+            self._resolver = AlgorithmResolver(
+                manifests if isinstance(manifests, dict) else {}, self.default_registry(),
+            )
+        return self._resolver
+
+    # ---- 只读项目状态（仅用于"是否已变化"的检测与 runtime 配置） --------------
 
     @property
     def project_state(self):
-        """以只读方式读取当前项目 state（绝不写盘）。
+        """以只读方式读取当前项目 state（绝不写盘、**绝不**作为计算输入）。
 
-        项目文件使用"写临时文件 + 原子替换"持久化，因此正常情况下读到的一定是
-        完整版本。这里仍然做有限重试：Word/杀软/并发替换偶发会短暂占用文件句柄，
-        重试一次比把任务误判为"失败"更符合语义（重试仍失败才交给失败路径）。
+        B6R：worker 的计算输入一律来自 immutable snapshot。这里读到的 state 只用于
+        :meth:`current_input_fingerprint` 检测"提交后是否已变化"：已变化就立刻
+        ``stale``，不浪费计算。项目文件使用"写临时文件 + 原子替换"持久化，因此正常
+        情况下读到的一定是完整版本；这里仍然做有限重试。
         """
 
         if self._project_state is None:
@@ -109,6 +144,21 @@ class WorkerContext:
                 self._project_state = {}
         return self._project_state
 
+    def current_input_fingerprint(self):
+        """当前 canonical state 的输入指纹（只用于检测变化，绝不用于计算）。
+
+        喂给 ``fingerprint_for`` 的 payload 与提交时完全一致：``worker_payload`` 是
+        task type 自己声明的"进指纹的最小覆盖项"，提交时组装快照用的就是它。用整份
+        请求 payload 会让两侧不可比（例如探针的 steps/crash 是运行时控制字段）。
+        """
+
+        worker_payload = self.record.get("worker_payload")
+        return self.spec.fingerprint_for(
+            self.project_state,
+            worker_payload if isinstance(worker_payload, dict) else {},
+            self.default_registry(),
+        )
+
     def default_config_path(self):
         return self.project_root / "cns_planner" / "config" / "defaults.json"
 
@@ -119,24 +169,15 @@ class WorkerContext:
             )
         return self._registry
 
-    def model(self, algorithm_type, fallback_id):
-        """按项目当前选择重建算法实例（精确 id/version/parameters）。"""
+    def model(self, algorithm_type, fallback_id=None):
+        """B6R：只按 immutable snapshot 的算法清单重建算法实例。
 
-        state = self.project_state
-        selected = ((state.get("algorithm_selection") or {}).get(algorithm_type) or {})
-        algorithm_id = str(selected.get("algorithm_id") or fallback_id)
-        version = str(selected.get("version") or selected.get("algorithm_version") or "")
-        parameters = selected.get("parameters") if isinstance(selected.get("parameters"), dict) else {}
-        registry = self.default_registry()
-        if version:
-            return registry.create(algorithm_type, algorithm_id, version, deepcopy(parameters))
-        for manifest in registry.manifests(algorithm_type):
-            if manifest.algorithm_id == algorithm_id:
-                return registry.create(
-                    algorithm_type, manifest.algorithm_id, manifest.version,
-                    deepcopy(parameters),
-                )
-        raise ValueError(f"未注册算法：{algorithm_type}/{algorithm_id}")
+        保留方法名只为兼容既有 runner 调用；它**不再**读取当前 ``ProjectState`` 的
+        ``algorithm_selection``（``fallback_id`` 已无意义，仅在对旧快照兼容时忽略）。
+        """
+
+        del fallback_id  # 只记录在 snapshot 里；当前 state 的选择一律不参与
+        return self.algorithms().create(algorithm_type)
 
     # ---- 心跳 / 取消 / 进度 --------------------------------------------------
 
@@ -227,21 +268,36 @@ class WorkerContext:
         self.start_heartbeat()
 
 
-def _solve_inputs(context):
-    """重新解析权威输入并与提交时记录的指纹比对。"""
+def _load_immutable_inputs(context):
+    """加载 immutable snapshot 并校验其自洽性（唯一的计算输入来源）。
 
-    worker_payload = context.record.get("worker_payload")
-    snapshot = context.spec.snapshot_for(
-        context.project_state, worker_payload if isinstance(worker_payload, dict) else {}
-    )
-    fingerprint = fingerprint_payload(snapshot)
+    B6R 契约：worker **不**重新组装计算输入。快照缺失 / 损坏 / 与 task record 记录的
+    指纹不一致，一律抛异常 → 任务 ``failed``，绝不"回读当前 ProjectState 顶上"。
+    """
+
+    snapshot = context.load_snapshot()
+    fingerprint = fingerprint_of(snapshot)
+    expected = str(context.record.get("input_fingerprint") or "")
+    if fingerprint != expected:
+        raise InputSnapshotCorrupt(
+            "输入快照与任务记录指纹不一致（快照可能被替换或损坏）",
+            code="input_snapshot_fingerprint_mismatch",
+            detail={"expected_fingerprint": expected, "actual_fingerprint": fingerprint},
+        )
+    if str(snapshot.get("task_type") or "") != str(context.spec.task_type):
+        raise InputSnapshotCorrupt(
+            "输入快照不属于本任务类型", code="input_snapshot_task_type_mismatch",
+        )
     return snapshot, fingerprint
 
 
-def _mark_stale(context, *, reason, message):
-    context.store.finish(
+def _mark_stale(context, *, reason, message, code="task_input_changed"):
+    current = context.store.find(context.task_id)
+    if current is not None and str(current.get("status")) in TERMINAL_STATUSES:
+        return current
+    return context.store.finish(
         context.task_id, status=STALE, message=message,
-        error={"code": "task_input_changed", "message": reason},
+        error={"code": code, "message": reason},
         progress=context.progress_value,
     )
 
@@ -281,10 +337,12 @@ def run_task(*, task_id, task_type, workdir, store_directory,
             raise TaskCancelled()
         if str(record.get("input_fingerprint") or "") == "":
             raise ValueError("任务缺少输入指纹")
-        snapshot, fingerprint = _solve_inputs(context)
+        # ---- 唯一输入来源：提交时持久化的 immutable snapshot -------------------
+        snapshot, fingerprint = _load_immutable_inputs(context)
         context.inputs = {"snapshot": snapshot, "fingerprint": fingerprint,
                           "expected_fingerprint": record.get("input_fingerprint")}
-        if fingerprint != str(record.get("input_fingerprint") or ""):
+        # ---- 变化检测（只检测，不参与组装）：已变化则不做无用计算 -------------
+        if context.current_input_fingerprint() != str(record.get("input_fingerprint") or ""):
             context.stop_heartbeat(finished=True)
             _mark_stale(
                 context,
@@ -294,6 +352,10 @@ def run_task(*, task_id, task_type, workdir, store_directory,
             return 0
         result = spec.runner(context)
         context.check_cancel()
+        current = store.find(task_id)
+        if current is None or str(current.get("status")) in TERMINAL_STATUSES:
+            # 计算期间任务已被别的路径收尾（取消 / 项目切换 / 中断）：不改写终态。
+            return 0
         context.store.finish(
             context.task_id, status=SUCCEEDED,
             message=result.message or "计算完成，等待发布",
@@ -302,11 +364,9 @@ def run_task(*, task_id, task_type, workdir, store_directory,
         )
         return 0
     except TaskCancelled:
-        store.finish(
-            task_id, status=CANCELLED,
-            message="已取消",
+        _finish_unless_terminal(
+            context, store, task_id, status=CANCELLED, message="已取消",
             error={"code": "task_cancelled", "message": "任务按请求取消，未发布任何结果"},
-            progress=context.progress_value,
         )
         return 0
     except TaskInputChanged as exc:
@@ -314,11 +374,9 @@ def run_task(*, task_id, task_type, workdir, store_directory,
         return 0
     except BaseException as exc:  # noqa: BLE001 - worker 必须把失败落盘而不是静默退出
         detail = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-        store.finish(
-            task_id, status=FAILED,
-            message="执行失败",
+        _finish_unless_terminal(
+            context, store, task_id, status=FAILED, message="执行失败",
             error={"code": "task_execution_failed", "message": detail[:500]},
-            progress=context.progress_value,
         )
         return 1
     finally:
@@ -326,6 +384,18 @@ def run_task(*, task_id, task_type, workdir, store_directory,
             context.stop_heartbeat(finished=True)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _finish_unless_terminal(context, store, task_id, *, status, message, error):
+    """收尾时**绝不覆盖已存在的终态**（例如项目切换已把任务写成 cancelled）。"""
+
+    current = store.find(task_id)
+    if current is not None and str(current.get("status")) in TERMINAL_STATUSES:
+        return current
+    return store.finish(
+        task_id, status=status, message=message, error=error,
+        progress=context.progress_value,
+    )
 
 
 def main(argv=None):
