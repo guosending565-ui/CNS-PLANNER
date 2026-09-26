@@ -46,6 +46,7 @@ from ..persistence.artifact_store import ArtifactStore
 from ..process_identity import build_identity
 from .task_input import (
     AlgorithmResolver, InputSnapshotCorrupt, InputSnapshotStore, fingerprint_of,
+    TaskAlgorithmVersionUnavailable,
 )
 from .task_spec import TaskCancelled, TaskInputChanged
 from .task_specs import task_spec
@@ -350,6 +351,9 @@ def run_task(*, task_id, task_type, workdir, store_directory,
                 message="输入已变化，请重新运行",
             )
             return 0
+        # immutable task contract 先完整验证精确算法身份，任一版本
+        # 不可用都在 runner 之前失败，不留下部分运行或静默迁移窗口。
+        context.algorithms().resolve_all(spec.algorithm_types)
         result = spec.runner(context)
         context.check_cancel()
         current = store.find(task_id)
@@ -372,6 +376,17 @@ def run_task(*, task_id, task_type, workdir, store_directory,
     except TaskInputChanged as exc:
         _mark_stale(context, reason=str(exc), message="输入已变化，请重新运行")
         return 0
+    except TaskAlgorithmVersionUnavailable as exc:
+        _finish_unless_terminal(
+            context, store, task_id, status=FAILED,
+            message="任务提交时使用的算法版本当前不可用，请重新运行。",
+            error={
+                "code": exc.code,
+                "message": str(exc),
+                "detail": dict(exc.detail),
+            },
+        )
+        return 1
     except BaseException as exc:  # noqa: BLE001 - worker 必须把失败落盘而不是静默退出
         detail = "".join(traceback.format_exception_only(type(exc), exc)).strip()
         _finish_unless_terminal(

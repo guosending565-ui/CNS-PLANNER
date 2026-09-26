@@ -38,6 +38,7 @@ from ..persistence.artifact_store import (
     CONTENT_ENCODING_JSON_GZ, content_digest, deserialize_payload, serialize_payload,
 )
 from ..persistence.project_repository import _path_lock
+from ..algorithms.registry import AlgorithmNotFoundError
 from .task_store import TASK_DIRECTORY
 
 
@@ -86,6 +87,12 @@ class InputSnapshotCorrupt(InputSnapshotError):
     """snapshot 存在但与记录不符（内容寻址名、编码、JSON 结构）。"""
 
     code = "input_snapshot_corrupt"
+
+
+class TaskAlgorithmVersionUnavailable(InputSnapshotError):
+    """snapshot 指定的精确算法版本在当前 runtime 不可用。"""
+
+    code = "task_algorithm_version_unavailable"
 
 
 # ---- 内容寻址存储 ------------------------------------------------------------
@@ -315,21 +322,31 @@ class AlgorithmResolver:
         algorithm_id = str(entry["algorithm_id"])
         version = str(entry.get("version") or "")
         try:
-            instance = self.registry.create(key, algorithm_id, version, deepcopy(parameters))
-        except Exception:
-            # 精确版本不可用时的唯一兜底：仍只用 snapshot 记录的 id + parameters，
-            # 只是换用注册表里同 id 的版本；绝不回读当前算法选择。
-            candidates = [
-                item for item in self.registry.manifests(key)
-                if str(item.algorithm_id) == algorithm_id
-            ]
-            if not candidates:
-                raise
             instance = self.registry.create(
-                key, algorithm_id, str(candidates[0].version), deepcopy(parameters),
+                key, algorithm_id, version, deepcopy(parameters),
             )
+        except AlgorithmNotFoundError as exc:
+            # algorithm_type / id / version / parameters 共同构成任务提交时的
+            # immutable 算法身份。精确版本不可用时必须失败，绝不
+            # 以同 ID 的其它版本静默迁移。
+            raise TaskAlgorithmVersionUnavailable(
+                "任务提交时使用的算法版本当前不可用，请重新运行。",
+                detail={
+                    "algorithm_type": key,
+                    "algorithm_id": algorithm_id,
+                    "version": version,
+                },
+            ) from exc
         self._instances[key] = instance
         return instance
+
+    def resolve_all(self, algorithm_types):
+        """runner 执行前预解析全部声明算法，防止部分运行后才发现版本缺失。"""
+
+        return {
+            str(algorithm_type): self.create(algorithm_type)
+            for algorithm_type in algorithm_types
+        }
 
 
 # ---- snapshot 组装与指纹 ------------------------------------------------------
@@ -369,7 +386,8 @@ __all__ = [
     "AlgorithmResolver", "CORRIDOR_ALGORITHM_TYPES", "INPUT_SNAPSHOT_FILENAME",
     "INPUT_SNAPSHOT_SCHEMA_VERSION", "INPUT_SNAPSHOT_SUBDIRECTORY",
     "InputSnapshotCorrupt", "InputSnapshotError", "InputSnapshotStore",
-    "InputSnapshotUnavailable", "algorithm_manifests", "build_snapshot",
+    "InputSnapshotUnavailable", "TaskAlgorithmVersionUnavailable",
+    "algorithm_manifests", "build_snapshot",
     "fingerprint_of", "normalized_selection", "snapshot_reference",
     "snapshot_store_for", "utc_now",
 ]

@@ -223,16 +223,21 @@ class HeavyTaskService:
                 acquired = True
             try:
                 # ---- 短锁区：只做"一致 state 上的登记"，绝无长计算 -------------
-                plan = plan_submission(
-                    self.workflow, task_type, payload, store=self.snapshot_store,
+                normalized_payload = payload if isinstance(payload, dict) else {}
+                scope_id = task_spec(task_type).scope_for(
+                    self.workflow.state, normalized_payload,
                 )
-                existing = self.store.find_active(plan["scope_id"])
+                existing = self.store.find_active(scope_id)
                 if existing is not None:
                     if conflict_policy == CONFLICT_REJECT:
                         raise TaskConflictError(
                             f"该范围已有进行中的任务（{existing.get('task_id')}），请先等待或取消它"
                         )
                     return existing, False
+                plan = plan_submission(
+                    self.workflow, task_type, normalized_payload,
+                    store=self.snapshot_store, scope_id=scope_id,
+                )
                 record = self.store.create(
                     task_type=plan["task_type"], scope_id=plan["scope_id"],
                     message=plan["message"], input_fingerprint=plan["input_fingerprint"],
@@ -354,6 +359,9 @@ class HeavyTaskService:
             "task_cancelled": "任务已取消，未产生正式结果",
             "task_project_switched": "项目已切换，任务已终止，未产生正式结果",
             "task_input_changed": "输入已变化，请重新运行",
+            "task_algorithm_version_unavailable": (
+                "任务提交时使用的算法版本当前不可用，请重新运行。"
+            ),
             "task_worker_lost": "计算进程已中断，请重新运行",
             "task_execution_failed": "计算未能完成，请检查输入后重试",
             "task_publish_failed": "结果发布失败，原有正式结果未被替换",

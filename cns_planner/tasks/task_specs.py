@@ -135,7 +135,6 @@ def _corridor_worker_payload(state, payload):
 def _corridor_plan(state, payload):
     worker_payload = _corridor_worker_payload(state, payload)
     return {
-        "scope_id": _corridor_scope(state, payload),
         "worker_payload": worker_payload,
         "inputs": _corridor_inputs(state, worker_payload),
     }
@@ -216,8 +215,11 @@ def _pcf_components(state, payload):
 
 
 def _pcf_scope(state, payload):
-    components = _pcf_components(state, payload)
-    layer_id = str((components.get("altitude_layer") or {}).get("altitude_layer_id") or "unresolved")
+    # scope 只需要高度层身份；完整 generation_arguments 留到通过
+    # active-task 查重后再组装，避免重复提交制造无用大 snapshot。
+    layer_id = str((payload if isinstance(payload, dict) else {}).get(
+        "altitude_layer_id"
+    ) or "unresolved")
     return f"planning_constraint_field:{layer_id}"
 
 
@@ -234,7 +236,6 @@ def _pcf_worker_payload(payload):
 
 def _pcf_plan(state, payload):
     return {
-        "scope_id": _pcf_scope(state, payload),
         "worker_payload": _pcf_worker_payload(payload),
         "inputs": _pcf_components(state, payload),
     }
@@ -325,7 +326,6 @@ def _probe_plan(state, payload):
     payload = payload if isinstance(payload, dict) else {}
     worker_payload = deepcopy(payload)
     return {
-        "scope_id": _probe_scope(state, worker_payload),
         "worker_payload": worker_payload,
         # 探针的输入就是它的 payload（steps / crash 同时是控制字段与输入）。
         "inputs": _probe_inputs(state, worker_payload),

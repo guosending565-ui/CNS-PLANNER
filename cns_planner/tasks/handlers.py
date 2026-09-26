@@ -71,7 +71,8 @@ def _snapshot_from_plan(spec, plan, state, registry):
     )
 
 
-def plan_submission(workflow, task_type, payload, *, registry=None, store=None):
+def plan_submission(workflow, task_type, payload, *, registry=None, store=None,
+                    scope_id=None):
     """HTTP 线程内解析提交计划：scope + **immutable snapshot** + 输入指纹 + worker 覆盖项。
 
     它做了三件必须**原子**（对 state 一致快照）完成的事：解析 scope、组装 snapshot、
@@ -82,7 +83,10 @@ def plan_submission(workflow, task_type, payload, *, registry=None, store=None):
     spec = task_spec(task_type)
     registry = registry if registry is not None else workflow.algorithm_registry
     store = store if store is not None else InputSnapshotStore(workflow.store_path)
-    plan = spec.plan_for(workflow.state, payload if isinstance(payload, dict) else {}, registry)
+    plan = spec.plan_for(
+        workflow.state, payload if isinstance(payload, dict) else {}, registry,
+        scope_id=scope_id,
+    )
     snapshot = _snapshot_from_plan(spec, plan, workflow.state, registry)
     metadata = store.store(snapshot)
     reference = snapshot_reference(metadata.get("relative_path"))

@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
 import gzip
 import json
 import threading
@@ -30,19 +32,24 @@ from pathlib import Path
 import pytest
 
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.algorithms.registry import AlgorithmNotFoundError
 from cns_planner.domain.altitude_layer_defaults import default_altitude_layers
 from cns_planner.persistence.artifact_store import deserialize_payload, serialize_payload
 from cns_planner.tasks.service import HeavyTaskService
 from cns_planner.tasks.task_input import (
-    INPUT_SNAPSHOT_SUBDIRECTORY, InputSnapshotCorrupt, InputSnapshotStore,
-    InputSnapshotUnavailable, fingerprint_of,
+    AlgorithmResolver, INPUT_SNAPSHOT_SUBDIRECTORY, InputSnapshotCorrupt,
+    InputSnapshotStore, InputSnapshotUnavailable,
+    TaskAlgorithmVersionUnavailable, fingerprint_of,
 )
+from cns_planner.tasks.task_spec import TaskRunResult
 from cns_planner.tasks.task_specs import (
     CORRIDOR_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY, PROBE_TASK_TYPE,
+    task_spec,
 )
 from cns_planner.tasks.task_store import (
     CANCELLED, FAILED, QUEUED, RUNNING, STALE, SUCCEEDED, TASK_DIRECTORY, TaskStore,
 )
+from cns_planner.tasks.worker import WorkerContext, run_task
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = REPO_ROOT / "cns_planner" / "config" / "defaults.json"
@@ -135,6 +142,23 @@ def probe_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def create_queued_record(runtime, task_type, payload):
+    """不启动子进程地创建真 queued task，便于在本进程精确控制 registry。"""
+
+    from cns_planner.tasks.handlers import plan_submission
+
+    plan = plan_submission(
+        runtime.workflow, task_type, payload, store=runtime.snapshots,
+    )
+    return runtime.store.create(
+        task_type=plan["task_type"], scope_id=plan["scope_id"],
+        message=plan["message"], input_fingerprint=plan["input_fingerprint"],
+        input_revision=plan["input_revision"],
+        input_snapshot_ref=plan["input_snapshot_ref"],
+        worker_payload=plan["worker_payload"],
+    )
 
 
 def corridor_project(workflow):
@@ -727,6 +751,205 @@ def test_tampered_snapshot_is_rejected(tmp_path):
     final = runtime.wait(record["task_id"], timeout=60)
     assert final["advanced"]["status"] == FAILED, final["advanced"]
     assert (runtime.workflow.state.get(PROBE_STATE_KEY) or {}).get("probe_id") != "hijacked"
+
+
+# ---- B6R.1：精确算法身份 + duplicate-scope hygiene ------------------------
+
+
+def test_exact_snapshot_algorithm_versions_resolve_before_runner(tmp_path, monkeypatch):
+    """snapshot 中的精确 id@version 都可用时，runner 正常执行。"""
+
+    runtime = Runtime(tmp_path, max_workers=1, autostart_workers=False)
+    corridor_project(runtime.workflow)
+    record = create_queued_record(runtime, CORRIDOR_TASK_TYPE, {})
+    snapshot = runtime.snapshot_of(record)
+    resolver = AlgorithmResolver(snapshot["algorithms"], runtime.workflow.algorithm_registry)
+    resolved = resolver.resolve_all(task_spec(CORRIDOR_TASK_TYPE).algorithm_types)
+    for algorithm_type, instance in resolved.items():
+        manifest = snapshot["algorithms"][algorithm_type]
+        assert instance.algorithm_id == manifest["algorithm_id"]
+        assert instance.algorithm_version == manifest["version"]
+
+    calls = []
+
+    def runner(_context):
+        calls.append("ran")
+        return TaskRunResult(summary={"exact_version": True}, message="exact", progress=1.0)
+
+    monkeypatch.setattr(task_spec(CORRIDOR_TASK_TYPE), "runner", runner)
+    code = run_task(
+        task_id=record["task_id"], task_type=CORRIDOR_TASK_TYPE,
+        workdir=runtime.workflow.store_path, store_directory=runtime.store.directory,
+        interval_seconds=0.05, project_root=REPO_ROOT,
+    )
+    assert code == 0
+    assert calls == ["ran"]
+    assert runtime.store.get(record["task_id"])["status"] == SUCCEEDED
+
+
+def test_old_queued_task_does_not_migrate_to_new_algorithm_version(
+        tmp_path, monkeypatch):
+    """X@1.0 提交后 runtime 只剩 X@1.1：failed，runner/publish 均不执行。"""
+
+    runtime = Runtime(tmp_path, max_workers=1, autostart_workers=False)
+    corridor_project(runtime.workflow)
+    runtime.workflow.state["cns_corridor_assessment"] = {"sentinel": "unchanged"}
+    runtime.workflow.save()
+    record = create_queued_record(runtime, CORRIDOR_TASK_TYPE, {})
+    submitted = runtime.snapshot_of(record)["algorithms"]["corridor_model"]
+    assert submitted["version"] == "1.0"
+
+    base_registry = runtime.workflow.algorithm_registry
+    newer_manifest = replace(
+        base_registry.manifests("corridor_model")[0], version="1.1",
+    )
+    create_calls = []
+
+    class UpgradedOnlyRegistry:
+        def manifests(self, algorithm_type=None):
+            if algorithm_type == "corridor_model":
+                return (newer_manifest,)
+            return base_registry.manifests(algorithm_type)
+
+        def create(self, algorithm_type, algorithm_id, version, parameters=None):
+            create_calls.append((algorithm_type, algorithm_id, version, deepcopy(parameters)))
+            if algorithm_type == "corridor_model" and version == "1.0":
+                raise AlgorithmNotFoundError("X@1.0 unavailable")
+            if algorithm_type == "corridor_model" and version == "1.1":
+                class NewerAlgorithm:
+                    pass
+
+                instance = NewerAlgorithm()
+                instance.algorithm_id = algorithm_id
+                instance.algorithm_version = version
+                instance.parameters = deepcopy(parameters)
+                return instance
+            return base_registry.create(algorithm_type, algorithm_id, version, parameters)
+
+    upgraded_registry = UpgradedOnlyRegistry()
+    monkeypatch.setattr(WorkerContext, "default_registry", lambda _self: upgraded_registry)
+    runner_calls = []
+
+    def forbidden_runner(_context):
+        runner_calls.append("ran")
+        raise AssertionError("缺少精确版本时不得调用 runner")
+
+    monkeypatch.setattr(task_spec(CORRIDOR_TASK_TYPE), "runner", forbidden_runner)
+    code = run_task(
+        task_id=record["task_id"], task_type=CORRIDOR_TASK_TYPE,
+        workdir=runtime.workflow.store_path, store_directory=runtime.store.directory,
+        interval_seconds=0.05, project_root=REPO_ROOT,
+    )
+
+    final = runtime.store.get(record["task_id"])
+    assert code == 1
+    assert final["status"] == FAILED
+    assert final["error"] == {
+        "code": "task_algorithm_version_unavailable",
+        "message": "任务提交时使用的算法版本当前不可用，请重新运行。",
+        "detail": {
+            "algorithm_type": "corridor_model",
+            "algorithm_id": submitted["algorithm_id"],
+            "version": "1.0",
+        },
+    }
+    assert runtime.service.get(record["task_id"])["business_error"] == {
+        "text": "任务提交时使用的算法版本当前不可用，请重新运行。",
+        "code": "task_algorithm_version_unavailable",
+    }
+    assert [call[2] for call in create_calls] == ["1.0"], "不得 fallback 到 1.1"
+    assert runner_calls == []
+    assert final["result_artifact_ref"] is None
+    assert runtime.workflow.state["cns_corridor_assessment"] == {"sentinel": "unchanged"}
+
+
+def test_algorithm_identity_fields_each_change_snapshot_fingerprint(tmp_path):
+    runtime = Runtime(tmp_path, max_workers=1, autostart_workers=False)
+    corridor_project(runtime.workflow)
+    spec = task_spec(CORRIDOR_TASK_TYPE)
+    selection = runtime.workflow.state["algorithm_selection"]["corridor_model"]
+    original = deepcopy(selection)
+    baseline = spec.fingerprint_for(
+        runtime.workflow.state, {}, runtime.workflow.algorithm_registry,
+    )
+
+    mutations = (
+        {"version": "1.0-r1"},
+        {"parameters": {"immutable_parameter": 1}},
+        {"algorithm_id": "cns_service_corridor_exact_identity_variant"},
+    )
+    for mutation in mutations:
+        selection.clear()
+        selection.update(deepcopy(original))
+        selection.update(mutation)
+        changed = spec.fingerprint_for(
+            runtime.workflow.state, {}, runtime.workflow.algorithm_registry,
+        )
+        assert changed != baseline, f"{next(iter(mutation))} 变化必须改变 fingerprint"
+
+
+def test_active_same_scope_does_not_create_snapshot_but_other_scope_does(tmp_path):
+    class DormantProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    process = DormantProcess()
+    runtime = Runtime(
+        tmp_path, max_workers=1, autostart_workers=False,
+        spawn=lambda _argv: process,
+    )
+    try:
+        first, created = runtime.service.submit(
+            PROBE_TASK_TYPE, probe_payload(probe_id="same-scope", marker="first"),
+        )
+        assert created is True
+        before = sorted(runtime.snapshots.directory.glob("*.json.gz"))
+
+        duplicate, duplicate_created = runtime.service.submit(
+            PROBE_TASK_TYPE, probe_payload(probe_id="same-scope", marker="would-differ"),
+        )
+        after_duplicate = sorted(runtime.snapshots.directory.glob("*.json.gz"))
+        assert duplicate_created is False
+        assert duplicate["task_id"] == first["task_id"]
+        assert after_duplicate == before, "active same scope 不得额外持久化 snapshot"
+
+        other, other_created = runtime.service.submit(
+            PROBE_TASK_TYPE, probe_payload(probe_id="other-scope", marker="other"),
+        )
+        after_other = sorted(runtime.snapshots.directory.glob("*.json.gz"))
+        assert other_created is True
+        assert other["task_id"] != first["task_id"]
+        assert len(after_other) == len(before) + 1
+        assert other["input_snapshot_ref"] != first["input_snapshot_ref"]
+    finally:
+        runtime.service.stop()
+
+
+def test_resolver_reports_structured_exact_version_error_without_fallback():
+    class Registry:
+        def create(self, algorithm_type, algorithm_id, version, parameters):
+            raise AlgorithmNotFoundError(f"missing {algorithm_id}@{version}")
+
+    resolver = AlgorithmResolver({
+        "example": {
+            "algorithm_type": "example", "algorithm_id": "X",
+            "version": "1.0", "parameters": {"p": 1},
+        },
+    }, Registry())
+    with pytest.raises(TaskAlgorithmVersionUnavailable) as caught:
+        resolver.create("example")
+    assert caught.value.code == "task_algorithm_version_unavailable"
+    assert caught.value.detail == {
+        "algorithm_type": "example", "algorithm_id": "X", "version": "1.0",
+    }
 
 
 # ---- 12. P14 四文件 SHA 不变 --------------------------------------------------

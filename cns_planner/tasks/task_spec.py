@@ -195,20 +195,40 @@ class TaskSpec:
             raise ValueError("计算输入指纹需要算法注册表")
         return fingerprint_of(self.build_snapshot(state, payload, registry))
 
-    def plan_for(self, state, payload, registry=None):
+    def scope_for(self, state, payload):
+        """只计算去重 scope；不组装完整输入，也不持久化 snapshot。"""
+
+        return str(self.scope_key(
+            state if isinstance(state, dict) else {},
+            payload if isinstance(payload, dict) else {},
+        ))
+
+    def plan_for(self, state, payload, registry=None, *, scope_id=None):
+        state = state if isinstance(state, dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        resolved_scope = None if scope_id is None else str(scope_id)
         if self.submit_plan is not None:
-            plan = self.submit_plan(state if isinstance(state, dict) else {}, payload or {})
+            plan = self.submit_plan(state, payload)
+            if resolved_scope is None:
+                # 兼容已有自定义 TaskSpec；service 新提交路径会显式传入
+                # 查重过的 scope，因此不会重复组装业务输入。
+                resolved_scope = str(
+                    plan.get("scope_id")
+                    if plan.get("scope_id") is not None
+                    else self.scope_for(state, payload)
+                )
             return {
-                "scope_id": str(plan.get("scope_id") or ""),
+                "scope_id": resolved_scope,
                 "input_fingerprint": str(plan.get("input_fingerprint") or ""),
                 "worker_payload": deepcopy(plan.get("worker_payload") or {}),
                 # B6R：计算输入由 task type 自己组装（避免从 payload 二次推导出
                 # 与 runner 实际使用不一致的输入）。
                 "inputs": deepcopy(plan.get("inputs") or {}),
             }
-        payload = payload if isinstance(payload, dict) else {}
+        if resolved_scope is None:
+            resolved_scope = self.scope_for(state, payload)
         return {
-            "scope_id": str(self.scope_key(state if isinstance(state, dict) else {}, payload)),
+            "scope_id": resolved_scope,
             "input_fingerprint": self.fingerprint_for(state, payload, registry),
             "worker_payload": deepcopy(payload),
             "inputs": self.inputs_for(state, payload),
