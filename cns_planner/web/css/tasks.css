@@ -1,0 +1,110 @@
+/* Phase4-B6X：通用"重任务"面板样式（独立文件，避免改动既有样式契约）。 */
+
+.cns-task-center {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 40;
+  width: min(26rem, calc(100vw - 2rem));
+  max-height: min(60vh, 34rem);
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 0.6rem;
+  box-shadow: 0 0.5rem 1.5rem rgba(15, 23, 42, 0.18);
+  padding: 0.7rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.cns-task-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.cns-task-panel-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.cns-task-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.cns-task-row {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.cns-task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.cns-task-status {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.cns-task-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #475569;
+  margin-top: 0.25rem;
+}
+
+.cns-task-message {
+  margin-top: 0.25rem;
+  color: #334155;
+}
+
+.cns-task-error {
+  margin-top: 0.35rem;
+  color: #b91c1c;
+}
+
+.cns-task-hint,
+.cns-task-done {
+  margin-top: 0.35rem;
+  color: #166534;
+}
+
+.cns-task-hint {
+  color: #92400e;
+}
+
+.cns-task-label {
+  display: inline-block;
+  min-width: 7.5rem;
+  color: #64748b;
+}
+
+.cns-task-empty,
+.cns-task-note {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.cns-task-note {
+  margin-top: 0.5rem;
+}
+
+.cns-task-cancel {
+  margin-top: 0.4rem;
+}
+
+.cns-task-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}

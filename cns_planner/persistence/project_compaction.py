@@ -425,6 +425,30 @@ def artifact_references(document):
     return sorted(listed, key=lambda item: str(item.get("logical_key")))
 
 
+def artifact_reference_for(document, logical_key):
+    """B6X：按 scope 返回 canonical artifact 引用（只含相对项目目录的路径）。
+
+    只读 ``artifact_manifest``：heavy task publish 之后用它把"这次发布到哪个
+    artifact"写进任务记录（``result_artifact_ref``），而 **不** 让任务框架
+    自己拼路径，也不暴露任何绝对本机路径。
+    """
+
+    scope = _SCOPES_BY_KEY.get(str(logical_key))
+    manifest = artifact_manifest_for(document) or {}
+    reference = None
+    if scope is not None:
+        container = (document or {}).get(scope["container_key"])
+        reference = _container_ref(container)
+    if reference is None:
+        reference = _entry_ref(manifest, str(logical_key))
+    if reference is None:
+        return None
+    resolved = artifact_ref(reference)
+    resolved["logical_key"] = str(logical_key)
+    resolved["detail_endpoint"] = scope_endpoint(logical_key)
+    return resolved
+
+
 def sync_artifact_refs_to_state(state, document):
     """把落盘 manifest 写回内存 state（``artifact_manifest`` + 迁移 legacy 索引）。
 
@@ -726,7 +750,8 @@ def _legacy_scope_payload(store, index, scope):
 __all__ = [
     "ARTIFACT_MANIFEST_KEY", "DETAIL_ENDPOINTS", "EXTERNAL_SCOPES",
     "MANIFEST_SCHEMA_VERSION", "RESULT_DIRECTORY", "RESULT_INDEX_VERSION",
-    "artifact_inventory", "artifact_manifest_for", "artifact_references",
+    "artifact_inventory", "artifact_manifest_for", "artifact_reference_for",
+    "artifact_references",
     "compact_and_store", "read_result_artifact", "read_scope_artifact",
     "restore_compacted_results", "scope_endpoint", "scope_keys",
     "sync_artifact_refs_to_state",

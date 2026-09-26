@@ -272,40 +272,17 @@ class PlanningConstraintFieldService:
 
     def generate(self, payload=None):
         payload = payload if isinstance(payload, dict) else {}
-        state = self.session.state
-        layer = _find_layer(state, payload.get("altitude_layer_id"))
-        attributes = state.get("grid_attributes") or {}
-        feasibility = state.get("layered_route_feasibility_policy") or {}
-        building_policy = state.get("building_clearance_policy") or {}
-        tower_policy = state.get("tower_clearance_policy") or {}
-        supplied_policy = payload.get("policies") or {}
-        effective_policy = {
-            "terrain_vertical_clearance_m": feasibility.get("terrain_vertical_clearance_m"),
-            "building_vertical_clearance_m": building_policy.get("vertical_clearance_m"),
-            "tower_vertical_clearance_m": tower_policy.get("tower_vertical_clearance_m"),
-            **deepcopy(supplied_policy),
-        }
         field = generate_planning_constraint_field(
-            altitude_layer=layer,
-            grid=payload.get("grid") or state.get("grid") or {},
-            terrain_by_cell=payload.get("terrain_by_cell") if "terrain_by_cell" in payload else (
-                (attributes.get("terrain") or {}).get("cells") or {}
-            ),
-            buildings_by_cell=payload.get("buildings_by_cell") if "buildings_by_cell" in payload else (
-                (attributes.get("buildings") or {}).get("cells") or {}
-            ),
-            tower_obstacle_profiles=(
-                payload.get("tower_obstacle_profiles")
-                if "tower_obstacle_profiles" in payload else state.get("tower_obstacle_profiles")
-            ),
-            restricted_areas=(
-                payload.get("restricted_areas")
-                if "restricted_areas" in payload else state.get("restricted_areas")
-            ),
-            policies=effective_policy,
-            source_fingerprints=payload.get("source_fingerprints") or _source_fingerprints(state),
-            workspace_identity=payload.get("workspace_identity") or _workspace_identity(state),
+            **generation_arguments(self.session.state, payload)
         )
+        return self.apply_field(field)
+
+    # ---- B6X：唯一写入路径（heavy task publish 阶段也走这里） -----------------
+
+    def apply_field(self, field):
+        """把一层的约束场写入 state：同步 use case 与 heavy task 发布共用。"""
+
+        state = self.session.state
         collection = state.setdefault("planning_constraint_fields", {
             "schema_version": 1, "status": "not_calculated",
             "collection_id": "planning_constraint_fields", "count": 0, "items": [],
@@ -325,6 +302,18 @@ class PlanningConstraintFieldService:
             self.invalidation.layered_route("planning_constraint_field_changed")
         self.session.save()
         return self.result_snapshot(field["altitude_layer_id"])
+
+    def result_artifact_ref(self, altitude_layer_id=None):
+        """B5X：约束场逐 cell 明细的 canonical artifact 引用（只含相对路径）。"""
+
+        reference = _artifact_ref(self.session.state)
+        if not reference:
+            return None
+        reference = deepcopy(reference)
+        reference["logical_key"] = "planning_constraint_fields"
+        if altitude_layer_id:
+            reference["altitude_layer_id"] = str(altitude_layer_id)
+        return reference
 
 
 def _terrain(layer, fact, policy, blocked, unknown, refs):
@@ -452,6 +441,49 @@ def _altitude_layer(value):
     }
 
 
+def generation_arguments(state, payload=None):
+    """组装 :func:`generate_planning_constraint_field` 的完整参数（只读 state）。
+
+    B6X 把"组装输入"从 :meth:`PlanningConstraintFieldService.generate` 里抽出来，
+    使同步 use case、heavy task 的输入指纹与 worker 进程内的计算共用**同一份**
+    语义：三处都调用它，不会出现"任务输入与同步输入不一致"的漂移。
+    """
+
+    payload = payload if isinstance(payload, dict) else {}
+    attributes = state.get("grid_attributes") or {}
+    feasibility = state.get("layered_route_feasibility_policy") or {}
+    building_policy = state.get("building_clearance_policy") or {}
+    tower_policy = state.get("tower_clearance_policy") or {}
+    supplied_policy = payload.get("policies") or {}
+    effective_policy = {
+        "terrain_vertical_clearance_m": feasibility.get("terrain_vertical_clearance_m"),
+        "building_vertical_clearance_m": building_policy.get("vertical_clearance_m"),
+        "tower_vertical_clearance_m": tower_policy.get("tower_vertical_clearance_m"),
+        **deepcopy(supplied_policy),
+    }
+    return {
+        "altitude_layer": _find_layer(state, payload.get("altitude_layer_id")),
+        "grid": payload.get("grid") or state.get("grid") or {},
+        "terrain_by_cell": payload.get("terrain_by_cell") if "terrain_by_cell" in payload else (
+            (attributes.get("terrain") or {}).get("cells") or {}
+        ),
+        "buildings_by_cell": payload.get("buildings_by_cell") if "buildings_by_cell" in payload else (
+            (attributes.get("buildings") or {}).get("cells") or {}
+        ),
+        "tower_obstacle_profiles": (
+            payload.get("tower_obstacle_profiles")
+            if "tower_obstacle_profiles" in payload else state.get("tower_obstacle_profiles")
+        ),
+        "restricted_areas": (
+            payload.get("restricted_areas")
+            if "restricted_areas" in payload else state.get("restricted_areas")
+        ),
+        "policies": effective_policy,
+        "source_fingerprints": payload.get("source_fingerprints") or _source_fingerprints(state),
+        "workspace_identity": payload.get("workspace_identity") or _workspace_identity(state),
+    }
+
+
 def _find_layer(state, altitude_layer_id):
     identifier = str(altitude_layer_id or "").strip()
     for layer in ((state.get("spatial_3d") or {}).get("altitude_layers") or []):
@@ -556,4 +588,5 @@ def _number(value):
 
 __all__ = [
     "PlanningConstraintFieldService", "generate_planning_constraint_field",
+    "generation_arguments",
 ]

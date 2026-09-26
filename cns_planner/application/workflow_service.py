@@ -985,6 +985,21 @@ class WorkflowService:
     def cns_site_plan_snapshot(self): return self.site_planning_service.result_snapshot()
     def closed_loop_snapshot(self): return self.closed_loop_service.result_snapshot()
     def cns_corridor_snapshot(self): return self.corridor_service.result_snapshot()
+    # Phase4-B6X：heavy task 与同步 use case 共用同一条写入路径与输入组装函数。
+    # 这两组方法只是转发，不构成第二个 production owner。
+    def cns_corridor_apply_computed(self, result, *, progress=None):
+        return self.corridor_service.apply_computed(result, progress=progress)
+    def cns_corridor_compute_input(self, payload=None):
+        return self.corridor_service.compute_input(payload)
+    def cns_corridor_result_artifact_ref(self):
+        return self.corridor_service.result_artifact_ref()
+    def planning_constraint_field_apply_field(self, field):
+        return self.planning_constraint_field_service.apply_field(field)
+    def planning_constraint_field_generation_arguments(self, payload=None):
+        from .planning_constraint_field_service import generation_arguments
+        return generation_arguments(self.state, payload)
+    def planning_constraint_field_result_artifact_ref(self, altitude_layer_id=None):
+        return self.planning_constraint_field_service.result_artifact_ref(altitude_layer_id)
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()

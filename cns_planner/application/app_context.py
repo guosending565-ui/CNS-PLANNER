@@ -10,6 +10,7 @@ from ..gis.qgis_runtime import QgisRuntime
 from ..tile_cache import TileCache
 from .project_directory_service import ProjectDirectoryService
 from .workflow_service import WorkflowService
+from ..tasks.service import HeavyTaskService
 from ..gis.building_clearance_adapter import QgisBuildingClearanceAdapter
 from ..gis.fine_environment_adapter import real_data_source_readiness
 from ..gis.layered_feasibility_adapter import layered_feasibility_source_status
@@ -48,6 +49,12 @@ class ApplicationContext:
         self.render_requests = RenderRequestTracker()
         self.mutation_lock = threading.RLock()
         self.workflow = WorkflowService(self.active_project_file, self.default_config)
+        # Phase4-B6X：把 mutation_lock 交给当前 workflow（heavy task 的短 publish
+        # 阶段必须与 HTTP 写路径共用同一把锁；worker 进程全程不持有它）。
+        self.workflow.mutation_lock = self.mutation_lock
+        self.heavy_tasks = HeavyTaskService(self.workflow, self.active_project_file)
+        self.workflow.heavy_tasks = self.heavy_tasks
+        self.heavy_tasks.start()
         self.project_directories = ProjectDirectoryService(
             self.automatic_project_file, self.default_config, DEFAULT_PATHS, WorkflowService
         )
@@ -121,6 +128,18 @@ class ApplicationContext:
         """
 
         self.workflow, self.active_project_file = workflow, target
+        # Phase4-B6X：项目切换后 heavy task store 与 mutation_lock 都要重新绑定到
+        # 新的 workflow 实例上，否则任务会发布到上一个项目的 state 里。
+        # 锁按需补建：``_activate_workflow`` 在常规构造路径之外也可能被调用
+        # （例如只替换 workflow 的轻量上下文），此时不能因为缺少锁属性而失败。
+        lock = getattr(self, "mutation_lock", None)
+        if lock is None:
+            lock = self.mutation_lock = threading.RLock()
+        self.workflow.mutation_lock = lock
+        heavy_tasks = getattr(self, "heavy_tasks", None)
+        if heavy_tasks is not None:
+            heavy_tasks.bind_project(target)
+            self.workflow.heavy_tasks = heavy_tasks
         self.workflow.configure_reference_sources(self.data.paths)
         self._bind_runtime_services()
         return workflow

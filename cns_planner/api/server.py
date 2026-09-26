@@ -5,8 +5,25 @@ import json
 import socket
 from urllib.parse import parse_qs, urlparse
 
-from .router import ApiRouter
+from .router import ApiRouter, _wants_async
 from .security import same_origin, valid_token
+
+
+def wants_async_submission(path, payload):
+    """本次 POST 是否是异步 heavy task 提交（只登记任务、不写 ProjectState）。
+
+    * ``/api/tasks``、``/api/tasks/<id>/cancel`` 本身就是任务端点；
+    * 已登记为 heavy 的业务 endpoint 必须显式带 ``async: true`` 才算异步，
+      否则保持原有同步语义（不改变任何既有调用方的行为）。
+    """
+
+    if str(path) == "/api/tasks" or str(path).startswith("/api/tasks/"):
+        return True
+    if not _wants_async(payload):
+        return False
+    from ..tasks.task_specs import task_type_for_endpoint
+
+    return task_type_for_endpoint(path) is not None
 
 
 class StaleRevisionError(ValueError):
@@ -49,7 +66,11 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.allowed(): return self.respond({"error": "仅允许本机同源访问"}, status=403)
         url = urlparse(self.path)
-        if url.path in ("/api/online-health", "/api/browse", "/api/cns-planning-report/artifact") and not valid_token(self.headers, self.context.token):
+        # 任务查询同样要求有效会话：任务记录里含有 fingerprint / artifact 引用等技术信息。
+        if (
+            url.path in ("/api/online-health", "/api/browse", "/api/cns-planning-report/artifact")
+            or url.path == "/api/tasks" or url.path.startswith("/api/tasks/")
+        ) and not valid_token(self.headers, self.context.token):
             return self.respond({"error": "无效会话"}, status=403)
         try:
             response = ApiRouter(self.context).get(url.path, parse_qs(url.query), self.headers)
@@ -68,6 +89,16 @@ class ApiHandler(BaseHTTPRequestHandler):
             if not 0 < length < 16384: raise ValueError("请求大小无效")
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict): raise ValueError("请求必须是 JSON 对象")
+            # Phase4-B6X：异步 heavy task 提交**不写 ProjectState**，因此不参与
+            # workflow revision 乐观锁（输入一致性由任务的输入指纹在 publish 阶段
+            # 校验）。同步写路径的 revision 契约完全不变。
+            if wants_async_submission(self.path, payload):
+                response = ApiRouter(self.context).post(self.path, payload)
+                current = int(self.context.workflow.state.get("revision") or 0)
+                return self.respond(
+                    response.data, response.content_type, response.status, response.cache,
+                    headers={"X-CNS-Revision": current},
+                )
             expected = self.headers.get("X-CNS-Revision")
             if expected is None:
                 raise StaleRevisionError("请求缺少 workflow revision，请刷新项目状态后重试")

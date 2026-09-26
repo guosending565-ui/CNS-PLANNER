@@ -9,6 +9,26 @@ from ..safety.fault_tree import evaluate_fault_tree
 from ..safety.coupling import evaluate_coupled_events
 from ..safety.service_state import evaluate_service_state
 from .file_browser import browse
+from ..tasks.task_specs import task_type_for_endpoint
+
+
+def _wants_async(payload):
+    """业务 endpoint 是否要求异步执行（``"async": true`` 或 ``async_mode``）。"""
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("async_mode") is True:
+        return True
+    value = payload.get("async")
+    if value is True:
+        return True
+    return str(value or "").strip().lower() in ("1", "true", "yes", "async")
+
+
+def _task_type_text(task_type):
+    from ..tasks.task_specs import has_task_type, task_spec
+
+    return task_spec(task_type).task_name if has_task_type(task_type) else str(task_type)
 
 
 @dataclass
@@ -44,6 +64,23 @@ class ApiRouter:
 
     def get(self, path, query, headers):
         context, workflow, data = self.context, self.context.workflow, self.context.data
+        # ---- Phase4-B6X：持久 Heavy Task 查询（只读，不触发任何长计算） --------
+        # 读取路径会按需"驱动"编排（收集已结束 worker、领取 queued 任务、心跳收尾），
+        # 但绝不等待任何计算，也不持有 mutation_lock。
+        if path == "/api/tasks":
+            return Response(self._task_service().list(
+                status=(query.get("status", [""])[0] or None),
+                limit=int(query.get("limit", ["50"])[0] or 50),
+            ))
+        if path == "/api/tasks/catalog":
+            return Response({"items": self._task_service().task_catalog()})
+        if path.startswith("/api/tasks/"):
+            task_id = path[len("/api/tasks/"):].strip("/")
+            if task_id and "/" not in task_id:
+                task = self._task_service().find(task_id)
+                if task is None:
+                    return Response({"error": "任务不存在"}, status=404)
+                return Response(task)
         if path == "/api/health":
             # 保留原有 field 契约（service/ready/data_error），只附加最小运行身份：
             # 启动器据此判断 8765 上的服务是否属于本项目，而不是仅凭 service 名复用。
@@ -313,6 +350,23 @@ class ApiRouter:
 
     def post(self, path, payload):
         context, workflow, data = self.context, self.context.workflow, self.context.data
+        # ---- Phase4-B6X：heavy task 提交（HTTP 202 + task_id） ------------------
+        # 真正重的动作不再在 HTTP 线程与 mutation_lock 内跑完：
+        #   * 业务 endpoint 带 ``async: true`` 时只登记任务；
+        #   * 轻任务完全不受影响（不传 ``async`` 时仍是原来的同步语义）。
+        if path == "/api/tasks" or path == "/api/tasks/submit":
+            return self._task_submit(payload.get("task_type"), payload)
+        if path == "/api/tasks/cancel":
+            return self._task_cancel(payload.get("task_id"))
+        if path.startswith("/api/tasks/") and path.endswith("/cancel"):
+            return self._task_cancel(path[len("/api/tasks/"):-len("/cancel")].strip("/"))
+        if path.startswith("/api/tasks/"):
+            task_id = path[len("/api/tasks/"):].strip("/")
+            if task_id and "/" not in task_id:
+                return self._task_submit(payload.get("task_type"), payload, task_id=task_id)
+        task_type = task_type_for_endpoint(path)
+        if task_type and _wants_async(payload):
+            return self._task_submit(task_type, payload)
         if path == "/api/cns/service-state/evaluate":
             return Response(evaluate_service_state(
                 payload.get("required_cns", payload.get("required")),
@@ -596,6 +650,72 @@ class ApiRouter:
     def _save_workflow(self):
         self.context.workflow.save()
         return self.context.workflow.snapshot()
+
+    # ---- Phase4-B6X：task 路由辅助 -------------------------------------------------
+
+    def _task_service(self):
+        service = getattr(self.context, "heavy_tasks", None)
+        if service is None:
+            raise RuntimeError("服务端未启用重任务运行时")
+        service.maybe_drive()
+        return service
+
+    def _task_submit(self, task_type, payload, *, task_id=None):
+        from ..tasks.handlers import plan_submission  # noqa: F401  (契约可读性)
+        from ..tasks.service import CONFLICT_REJECT, CONFLICT_RETURN_EXISTING
+        from ..tasks.task_store import TaskConflictError
+
+        payload = payload if isinstance(payload, dict) else {}
+        if not task_type:
+            return Response({"error": "请求未指明任务类型"}, status=400)
+        policy = (
+            CONFLICT_REJECT if str(payload.get("conflict_policy") or "") == "conflict"
+            else CONFLICT_RETURN_EXISTING
+        )
+        service = self._task_service()
+        try:
+            record, created = service.submit(task_type, payload, conflict_policy=policy)
+        except TaskConflictError as exc:
+            return Response({
+                "error": "该范围已有进行中的同类任务，请等待它完成或先取消它",
+                "detail": {"code": "task_conflict", "message": str(exc)},
+            }, status=409)
+        except ValueError as exc:
+            return Response({
+                "error": "无法提交该任务，请检查所需输入是否齐备",
+                "detail": {"code": getattr(exc, "code", "task_submit_failed"),
+                           "message": str(exc)},
+            }, status=400)
+        view = service.find(record["task_id"])
+        message = (
+            f"{_task_type_text(task_type)}已提交，正在后台计算"
+            if created else "该范围已有进行中的任务，已返回现有任务"
+        )
+        return Response({
+            "task": view,
+            "task_id": record["task_id"],
+            "created": created,
+            "message": message,
+        }, status=202 if created else 200)
+
+    def _task_cancel(self, task_id):
+        from ..tasks.task_store import TaskNotFoundError
+
+        identifier = str(task_id or "").strip()
+        if not identifier:
+            return Response({"error": "请求未指明任务"}, status=400)
+        service = self._task_service()
+        try:
+            view = service.cancel(identifier)
+        except TaskNotFoundError:
+            return Response({"error": "任务不存在"}, status=404)
+        outcome = view.pop("cancel_outcome", "cancel_requested")
+        message = {
+            "cancelled_queued": "任务已取消（尚未开始计算）",
+            "cancel_requested": "已请求取消，正在停止计算",
+            "already_finished": f"任务已经结束（{view.get('status_text')}），无需取消",
+        }.get(outcome, "已请求取消")
+        return Response({"task": view, "message": message, "cancel_outcome": outcome})
 
     def _static(self, path):
         relative = "index.html" if path == "/" else path.lstrip("/")

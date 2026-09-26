@@ -34,6 +34,8 @@ projects/
 /data/
 outputs/
 *.log
+# Phase4-B6X：本地持久 Heavy Task store（运行期数据，不是源码交付）
+.cns-tasks/
 
 # Temporary and generated inventory files
 *.tmp
