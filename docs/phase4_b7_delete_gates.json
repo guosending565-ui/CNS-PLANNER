@@ -1,0 +1,871 @@
+{
+  "schema_version": "phase4-b7x-delete-gates-v2",
+  "generated_from_head": "a8070c7067b26d2ddaa950fed228693b19ddf796",
+  "mode": "report_only_no_deletion",
+  "note": "B7 只报告：即使 ready_for_delete=true 也不删除任何模块；物理删除留给 B8。每项 checks 都是对当前工作区的真实扫描结果。",
+  "items": [
+    {
+      "gate_id": "B7-DELETE-ROUTEPLANNERV1",
+      "capability_id": "RoutePlannerV1",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": false,
+        "default_selection": true,
+        "service_fallback": false,
+        "old_fixture_read": false,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "frontend_production_actions",
+        "old_fixture_read",
+        "production_api_actions",
+        "production_imports",
+        "project_state_writer",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/algorithms/route/__init__.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/algorithms/route_planner.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/layered_route_planner_service.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "RoutePlannerV1"
+          }
+        ],
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/compatibility/route-planner"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/workflow/step03_routes.js",
+            "needle": "/api/compatibility/route-planner/evaluate"
+          }
+        ],
+        "project_state_writer": [
+          {
+            "file": "cns_planner/application/building_clearance_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/closed_loop_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/corridor_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/corridor_site_planning_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/gap_analysis_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/layered_route_planner_service.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/route_service.py",
+            "needle": "RoutePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "RoutePlannerV1"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "route_planner_v1"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "route_planner_v1"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/frontend_modules.test.mjs",
+            "needle": "route_planner_v1"
+          },
+          {
+            "file": "tests/layered_validation_adoption_frontend.test.mjs",
+            "needle": "route_planner_v1"
+          },
+          {
+            "file": "tests/route_risk_profile_frontend.test.mjs",
+            "needle": "route_planner_v1"
+          },
+          {
+            "file": "tests/route_safety_evidence_frontend.test.mjs",
+            "needle": "route_planner_v1"
+          },
+          {
+            "file": "tests/test_algorithm_registry.py",
+            "needle": "route_planner_v1"
+          },
+          {
+            "file": "tests/test_architecture.py",
+            "needle": "RoutePlannerV1"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-RISKAWAREROUTEPLANNERV2",
+      "capability_id": "RiskAwareRoutePlannerV2",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": false,
+        "default_selection": true,
+        "service_fallback": false,
+        "old_fixture_read": false,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "frontend_production_actions",
+        "old_fixture_read",
+        "production_api_actions",
+        "production_imports",
+        "project_state_writer",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/application/project_state.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/application/route_service.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/risk/model_v2.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          }
+        ],
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/compatibility/route-planner"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/workflow/step03_routes.js",
+            "needle": "/api/compatibility/selection"
+          }
+        ],
+        "project_state_writer": [
+          {
+            "file": "cns_planner/application/building_clearance_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/closed_loop_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/corridor_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/corridor_site_planning_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          },
+          {
+            "file": "cns_planner/application/gap_analysis_service.py",
+            "needle": "state.get(\"operational_routes\")"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/application/project_state.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "cns_planner/application/route_service.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "risk_aware_route_planner_v2"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "risk_aware_route_planner_v2"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/frontend_modules.test.mjs",
+            "needle": "risk_aware_route_planner_v2"
+          },
+          {
+            "file": "tests/test_airspace_decoupling_v1.py",
+            "needle": "RiskAwareRoutePlannerV2"
+          },
+          {
+            "file": "tests/test_algorithm_registry.py",
+            "needle": "risk_aware_route_planner_v2"
+          },
+          {
+            "file": "tests/test_production_write_authority.py",
+            "needle": "risk_aware_route_planner_v2"
+          },
+          {
+            "file": "tests/test_reference_comparison_and_readiness.py",
+            "needle": "risk_aware_route_planner_v2"
+          },
+          {
+            "file": "tests/test_risk_aware_route_planner_v2.py",
+            "needle": "risk_aware_route_planner_v2"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-LAYEREDROUTEPLANNERV1",
+      "capability_id": "LayeredRoutePlannerV1",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": true,
+        "frontend_production_actions": true,
+        "project_state_writer": true,
+        "default_selection": true,
+        "service_fallback": false,
+        "old_fixture_read": false,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "old_fixture_read",
+        "production_imports",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/application/layered_route_planner_service.py",
+            "needle": "LayeredRoutePlannerV1"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/layered_route_planner_service.py",
+            "needle": "LayeredRoutePlannerV1"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "layered_route_planner_v1"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "layered_route_planner_v1"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/frontend_modules.test.mjs",
+            "needle": "layered_route_planner_v1"
+          },
+          {
+            "file": "tests/route_safety_evidence_frontend.test.mjs",
+            "needle": "layered_route_planner_v1"
+          },
+          {
+            "file": "tests/test_algorithm_registry.py",
+            "needle": "layered_route_planner_v1"
+          },
+          {
+            "file": "tests/test_layered_planner_baseline.py",
+            "needle": "layered_route_planner_v1"
+          },
+          {
+            "file": "tests/test_layered_route_planner.py",
+            "needle": "layered_route_planner_v1"
+          },
+          {
+            "file": "tests/test_layered_theta_star_v2.py",
+            "needle": "layered_route_planner_v1"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-ROUTEPLANNERV3",
+      "capability_id": "RoutePlannerV3",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": false,
+        "default_selection": false,
+        "service_fallback": false,
+        "old_fixture_read": true,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "default_selection",
+        "frontend_production_actions",
+        "production_api_actions",
+        "production_imports",
+        "project_state_writer",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "RoutePlannerV3"
+          },
+          {
+            "file": "cns_planner/application/route_planner_v3_service.py",
+            "needle": "RoutePlannerV3"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "RoutePlannerV3"
+          }
+        ],
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/research/route-planner-v3"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/main.js",
+            "needle": "/api/research/route-planner-v3"
+          },
+          {
+            "file": "cns_planner/web/js/workflow/step03_routes.js",
+            "needle": "/api/research/route-planner-v3"
+          }
+        ],
+        "project_state_writer": [
+          {
+            "file": "cns_planner/application/route_planner_v3_service.py",
+            "needle": "state[\"route_planner_v3_experiments\"]"
+          },
+          {
+            "file": "cns_planner/application/v3_operational_adoption_service.py",
+            "needle": "state.get(\"route_planner_v3_experiments\")"
+          }
+        ],
+        "default_selection": [
+          {
+            "file": "cns_planner/application/project_state.py",
+            "needle": "route_planner_v3"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/route_planner_v3_service.py",
+            "needle": "RoutePlannerV3"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "RoutePlannerV3"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/frontend_modules.test.mjs",
+            "needle": "route_planner_v3"
+          },
+          {
+            "file": "tests/layered_validation_adoption_frontend.test.mjs",
+            "needle": "RoutePlannerV3"
+          },
+          {
+            "file": "tests/route_risk_profile_frontend.test.mjs",
+            "needle": "RoutePlannerV3"
+          },
+          {
+            "file": "tests/test_airspace_decoupling_v1.py",
+            "needle": "route_planner_v3"
+          },
+          {
+            "file": "tests/test_bug_route_003_runtime_rebind.py",
+            "needle": "route_planner_v3"
+          },
+          {
+            "file": "tests/test_layered_route_validation_adoption.py",
+            "needle": "route_planner_v3"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-COVERAGEPLANNERV1",
+      "capability_id": "CoveragePlannerV1",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": false,
+        "default_selection": true,
+        "service_fallback": false,
+        "old_fixture_read": false,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "frontend_production_actions",
+        "old_fixture_read",
+        "production_api_actions",
+        "production_imports",
+        "project_state_writer",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/algorithms/coverage/__init__.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/algorithms/coverage/geometric_3d.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/algorithms/coverage_planner.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/algorithms/radar_layout/geometry.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "CoveragePlannerV1"
+          }
+        ],
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/compatibility/coverage"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/workflow/step05_cns.js",
+            "needle": "/api/compatibility/coverage/evaluate"
+          }
+        ],
+        "project_state_writer": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "state.get(\"coverage\")"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "CoveragePlannerV1"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "coverage_planner_v1"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "coverage"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/test_algorithm_registry.py",
+            "needle": "coverage_planner_v1"
+          },
+          {
+            "file": "tests/test_architecture.py",
+            "needle": "CoveragePlannerV1"
+          },
+          {
+            "file": "tests/test_v1_algorithm_characterization.py",
+            "needle": "coverage_planner_v1"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-CNSGAPANALYZERV1",
+      "capability_id": "CNSGapAnalyzerV1",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": true,
+        "default_selection": true,
+        "service_fallback": false,
+        "old_fixture_read": false,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "frontend_production_actions",
+        "old_fixture_read",
+        "production_api_actions",
+        "production_imports",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "CNSGapAnalyzerV1"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "CNSGapAnalyzerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "CNSGapAnalyzerV1"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "CNSGapAnalyzerV1"
+          }
+        ],
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/compatibility/cns-gap-analysis-v1"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/workflow/step05_cns.js",
+            "needle": "/api/compatibility/cns-gap-analysis-v1/evaluate"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "CNSGapAnalyzerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "CNSGapAnalyzerV1"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "CNSGapAnalyzerV1"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "cns_gap_analysis_v1"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "cns_gap_analysis"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/test_algorithm_registry.py",
+            "needle": "cns_gap_analysis_v1"
+          },
+          {
+            "file": "tests/test_cns_gap_analysis.py",
+            "needle": "CNSGapAnalyzerV1"
+          },
+          {
+            "file": "tests/test_cns_gap_analysis_v2.py",
+            "needle": "cns_gap_analysis_v1"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-REUSEFIRSTSITEPLANNERV1",
+      "capability_id": "ReuseFirstSitePlannerV1",
+      "checks": {
+        "production_imports": false,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": false,
+        "default_selection": true,
+        "service_fallback": false,
+        "old_fixture_read": false,
+        "tests_migrated": false
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "frontend_production_actions",
+        "old_fixture_read",
+        "production_api_actions",
+        "production_imports",
+        "project_state_writer",
+        "service_fallback",
+        "tests_migrated"
+      ],
+      "evidence": {
+        "production_imports": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/site_planning_service.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          }
+        ],
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/compatibility/site-plan"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/workflow/step05_cns.js",
+            "needle": "/api/compatibility/site-plan/evaluate"
+          }
+        ],
+        "project_state_writer": [
+          {
+            "file": "cns_planner/application/closed_loop_service.py",
+            "needle": "state.get(\"cns_site_plan\")"
+          }
+        ],
+        "service_fallback": [
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/production_write_authority.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/site_planning_service.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "reuse_first_site_planner_v1"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "cns_site_plan"
+          }
+        ],
+        "tests_migrated": [
+          {
+            "file": "tests/test_algorithm_registry.py",
+            "needle": "reuse_first_site_planner_v1"
+          },
+          {
+            "file": "tests/test_cns_site_planner.py",
+            "needle": "reuse_first_site_planner_v1"
+          },
+          {
+            "file": "tests/test_corridor_site_planner_v2.py",
+            "needle": "reuse_first_site_planner_v1"
+          },
+          {
+            "file": "tests/test_towers_operational_integration_v2.py",
+            "needle": "ReuseFirstSitePlannerV1"
+          }
+        ]
+      }
+    },
+    {
+      "gate_id": "B7-DELETE-LEGACY-FACADE-UI",
+      "capability_id": "legacy facade/UI",
+      "checks": {
+        "production_imports": true,
+        "production_api_actions": false,
+        "frontend_production_actions": false,
+        "project_state_writer": false,
+        "default_selection": true,
+        "service_fallback": true,
+        "old_fixture_read": false,
+        "tests_migrated": true
+      },
+      "ready_for_delete": false,
+      "blockers": [
+        "frontend_production_actions",
+        "old_fixture_read",
+        "production_api_actions",
+        "project_state_writer"
+      ],
+      "evidence": {
+        "production_api_actions": [
+          {
+            "file": "cns_planner/api/router.py",
+            "needle": "/api/compatibility/"
+          }
+        ],
+        "frontend_production_actions": [
+          {
+            "file": "cns_planner/web/js/main.js",
+            "needle": "/api/research/"
+          },
+          {
+            "file": "cns_planner/web/js/workflow/step03_routes.js",
+            "needle": "/api/compatibility/"
+          },
+          {
+            "file": "cns_planner/web/js/workflow/step04_operation.js",
+            "needle": "/api/research/"
+          },
+          {
+            "file": "cns_planner/web/js/workflow/step05_cns.js",
+            "needle": "/api/compatibility/"
+          }
+        ],
+        "project_state_writer": [
+          {
+            "file": "cns_planner/application/closed_loop_service.py",
+            "needle": "state[\"cns_gap_analysis_v2\"]"
+          },
+          {
+            "file": "cns_planner/application/export_service.py",
+            "needle": "state.get(\"coverage\")"
+          },
+          {
+            "file": "cns_planner/application/invalidation_service.py",
+            "needle": "state.get(\"cns_gap_analysis_v2\")"
+          },
+          {
+            "file": "cns_planner/application/route_safety_evidence_service.py",
+            "needle": "state.get(\"cns_gap_analysis_v2\")"
+          },
+          {
+            "file": "cns_planner/application/site_planning_service.py",
+            "needle": "state.get(\"cns_gap_analysis_v2\")"
+          },
+          {
+            "file": "cns_planner/application/workflow_service.py",
+            "needle": "state.get(\"cns_gap_analysis_v2\")"
+          }
+        ],
+        "old_fixture_read": [
+          {
+            "file": "tests/b7x_compatibility_ui.test.mjs",
+            "needle": "coverage"
+          },
+          {
+            "file": "tests/test_phase4_b7x_compatibility.py",
+            "needle": "coverage"
+          }
+        ]
+      }
+    }
+  ]
+}

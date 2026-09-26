@@ -1,0 +1,29 @@
+{
+  "A_route_planner_v1": {
+    "algorithm_selection": {"route_planner": {"algorithm_type": "route_planner", "algorithm_id": "route_planner_v1", "version": "1.0", "parameters": {"grid_size": 24}}},
+    "operational_routes": [{"route_id": "OLD-R1", "status": "passed", "algorithm_id": "route_planner_v1", "algorithm_version": "1.0", "path": [[122.0, 30.0], [122.1, 30.1]]}],
+    "coverage": {"status": "passed", "algorithm_id": "coverage_planner_v1", "layers": {}}
+  },
+  "B_risk_aware_route_planner_v2": {
+    "algorithm_selection": {"route_planner": {"algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2", "version": "2.0", "parameters": {"risk_weight_lambda": 1.5}}}
+  },
+  "C_layered_route_planner_v1": {
+    "algorithm_selection": {"layered_route_planner": {"algorithm_type": "layered_route_planner", "algorithm_id": "layered_route_planner_v1", "version": "1.0", "parameters": {"max_expanded_states": 1000}}}
+  },
+  "D_inline_legacy_coverage": {
+    "coverage": {"status": "passed", "algorithm_id": "coverage_planner_v1", "layers": {"C": {"stations": [], "statistics": {"stations": 0}}}}
+  },
+  "E_cns_gap_analyzer_v1": {
+    "cns_gap_analysis": {"status": "gap", "algorithm_id": "cns_gap_analysis_v1", "routes": [{"route_id": "OLD-R1", "gaps": []}]}
+  },
+  "F_reuse_first_site_planner_v1": {
+    "cns_site_plan": {"status": "proposal_ready", "algorithm_id": "reuse_first_site_planner_v1", "candidate_actions": [{"action_id": "OLD-A1", "site_id": "OLD-S1"}]}
+  },
+  "G_v3_experiment_adoption_history": {
+    "route_planner_v3_experiments": {"status": "passed", "active_experiment_id": "V3-OLD", "records": [{"experiment_id": "V3-OLD", "result": {"status": "passed", "state_path": [[122.0, 30.0, 80.0]]}, "refinements": []}]},
+    "v3_operational_adoptions": {"status": "passed", "items": [{"adoption_id": "V3D-OLD", "route_id": "OLD-V3-R1", "status": "revoked", "validation_ids": [], "route_provenance": {}}]}
+  },
+  "H_empty_existing_cns_facilities": {
+    "existing_cns_facilities": {"status": "not_calculated", "collection_id": "existing-cns-facilities", "source": null, "metadata": {}, "count": 0, "items": []}
+  }
+}
