@@ -64,22 +64,25 @@ test('step 01 keeps an old project saved legacy selection visible and selectable
   assert.ok(!html.includes('· route_planner_v1@'), '未保存的归档实现仍不得成为新选择');
 });
 
-test('step 03 archived V2 parameter panel writes the runtime compatibility selection only', () => {
+test('step 03 archived V2 parameter panel is read-only history after legacy cleanup', () => {
   const runtime = riskAwareRoutePanel({
     compatibility_selection: {
       route_planner: {algorithm_type: 'route_planner', algorithm_id: 'risk_aware_route_planner_v2', version: '2.0', parameters: {risk_weight_lambda: 2.5}, selection_source: 'runtime_compatibility_selection'},
     },
     algorithm_selection: {},
   });
-  assert.match(runtime, /id="saveRiskRouteParameters"/);
-  assert.match(runtime, /runtime_compatibility_selection/);
-  assert.match(runtime, /value="2\.5"/, '面板必须显示运行期覆盖参数');
+  // B8X：运行期 compatibility selection 覆盖通道与 V2 参数入口已删除；面板只做只读审计，
+  // 但来源标识仍按原值转印（旧会话缓存里可能仍是 runtime_compatibility_selection）。
+  assert.match(runtime, /历史只读/);
+  assert.match(runtime, /risk_weight_lambda 2\.5/, '面板必须显示已保存的覆盖参数原值');
+  assert.doesNotMatch(runtime, /id="saveRiskRouteParameters"/);
 
   const saved = riskAwareRoutePanel({
     compatibility_selection: {},
     algorithm_selection: {route_planner: {algorithm_type: 'route_planner', algorithm_id: 'risk_aware_route_planner_v2', version: '2.0', parameters: {risk_weight_lambda: 0.5}}},
   });
   assert.match(saved, /saved_legacy_selection/, '旧项目已保存的 selection 是面板默认来源');
+  assert.match(saved, /risk_weight_lambda 0\.5/);
 
   assert.equal(riskAwareRoutePanel({compatibility_selection: {}, algorithm_selection: {layered_route_planner: {algorithm_id: 'layered_risk_aware_theta_star_v2'}}}), '',
     '正式分层规划器下不得显示归档 V2 参数面板');

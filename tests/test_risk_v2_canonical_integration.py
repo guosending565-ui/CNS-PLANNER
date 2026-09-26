@@ -140,34 +140,11 @@ def real_grid_risk_v2(cells, *, densities=POPULATION_DENSITIES):
     )
 
 
-def _bind_saved_legacy_layered_v1(service):
-    """旧项目已保存 LayeredRoutePlannerV1 selection 的等价种入。
-
-    B7X 之后 ``select_algorithm`` 不再允许为项目写入 compatibility/archive selection；
-    这里直接种入旧项目里本来就存在的同一个值，并在内存中绑定实例。
-    """
-
-    service.state["algorithm_selection"]["layered_route_planner"] = {
-        "algorithm_type": "layered_route_planner",
-        "algorithm_id": "layered_route_planner_v1",
-        "version": "1.0",
-        "parameters": {},
-    }
-    service._bind_algorithm(
-        "layered_route_planner",
-        service.algorithm_registry.create(
-            "layered_route_planner", "layered_route_planner_v1", "1.0", {},
-        ),
-    )
-
-
 def workflow(tmp_path, *, cells, ground_lambda=1.0, name="canonical.json"):
     service = WorkflowService(tmp_path / name, DEFAULTS)
-    # 本文件锁定的是 Layered Route Planner V1 的 canonical domain-index 集成；Theta* V2 已是
-    # 项目默认 layered planner，因此这里显式选择 V1。
-    _bind_saved_legacy_layered_v1(service)
+    # Canonical nested Risk V2 evidence feeds the production Theta* V2 planner.
     assert service.layered_route_planner_service.planner.algorithm_id == (
-        "layered_route_planner_v1"
+        "layered_risk_aware_theta_star_v2"
     )
     service.state["grid"] = {
         "status": "passed", "level": 8, "count": len(cells), "cells": cells,
@@ -204,7 +181,7 @@ def workflow(tmp_path, *, cells, ground_lambda=1.0, name="canonical.json"):
 
 
 def run_planner(service, cells):
-    """运行 Layered Route Planner V1，返回完整 collection（candidates + masks）。"""
+    """运行 production Theta* V2，返回完整 collection（candidates + masks）。"""
 
     return service.evaluate_layered_route_candidate(
         {}, adapter=StubAdapter(terrain_facts(cells)),
@@ -262,7 +239,7 @@ def test_flat_legacy_schema_is_exposed_as_missing_never_silently_read():
 # --------------------------------------------------------------------------------------
 
 
-def test_nested_producer_feeds_planner_cost_and_profile_exposure(tmp_path):
+def test_nested_producer_feeds_theta_v2_and_profile_exposure(tmp_path):
     cells = grid_cells()
     service = workflow(tmp_path, cells=cells)
     risk = service.state["grid_risk_v2"]
@@ -276,34 +253,16 @@ def test_nested_producer_feeds_planner_cost_and_profile_exposure(tmp_path):
     candidate = candidate_of(run_planner(service, cells))
     assert candidate["status"] == "candidate"
     assert candidate["candidate_id"] is not None
-    breakdown = candidate["cost_breakdown"]
-    assert breakdown["active_domains"] == ["ground"]
-    assert breakdown["lambdas"]["ground"] == pytest.approx(1.0)
-    assert breakdown["lambdas"]["air_traffic"] == 0.0
-    assert breakdown["domain_exposure_index_m"]["ground"] > 0.0
-    assert breakdown["mean_domain_index"]["ground"] > 0.0
-    assert breakdown["domain_exposure_index_m"]["air_traffic"] is None
-    # λ=1: optimization cost is exactly distance + ground exposure.
-    assert candidate["optimization_cost"] == pytest.approx(
-        breakdown["distance_contribution_m"] + breakdown["domain_exposure_index_m"]["ground"],
-        rel=1e-9,
-    )
-
-    # The profiler integrates the same canonical nested indices.
     profile = service.evaluate_route_risk_profile({})["route_risk_profiles"]["items"][-1]
     assert profile["status"] == "passed"
     assert profile["route_length_m"] == pytest.approx(candidate["distance_m"], abs=1e-9)
     ground = profile["domains"]["ground"]
-    assert ground["exposure_index_m"] == pytest.approx(
-        breakdown["domain_exposure_index_m"]["ground"], abs=1e-6
-    )
-    assert ground["mean_index"] == pytest.approx(
-        breakdown["mean_domain_index"]["ground"], abs=1e-9
-    )
+    assert ground["exposure_index_m"] > 0.0
+    assert ground["mean_index"] > 0.0
     assert ground["coverage"] == 1.0
     assert ground["unresolved_length_m"] == 0.0
     assert ground["status"] == "resolved"
-    assert ground["active_cost_domain"] is True
+    assert ground["active_cost_domain"] is False
     assert profile["consistency"]["status"] == "passed"
     # Non-active domains stay unrequired (λ=0 => not a planning input) and are unresolved
     # only because their aggregation policy is not confirmed — never because of a flat read.
@@ -329,8 +288,9 @@ def test_profile_ground_exposure_matches_a_direct_canonical_integral(tmp_path):
         grid_path=candidate["grid_path"], centers=centers, indices=indices,
         domain_ids=("ground",), integration_domains=("ground",),
     )
+    profile = service.evaluate_route_risk_profile({})["route_risk_profiles"]["items"][-1]
     assert integral["domain_exposure_index_m"]["ground"] == pytest.approx(
-        candidate["cost_breakdown"]["domain_exposure_index_m"]["ground"], abs=1e-9
+        profile["domains"]["ground"]["exposure_index_m"], abs=1e-9
     )
 
 
@@ -347,15 +307,12 @@ def test_missing_canonical_domain_index_still_fails_closed_without_zero(tmp_path
 
     collection = run_planner(service, cells)
     candidate = candidate_of(collection)
-    # Phase 3.5 terminal semantics: the unresolved domain index blocks that cell, the search
-    # then completes without a traversable path, so the honest result is ``no_path`` (a
-    # statement about this constraint set) and not ``blocked``/``search_incomplete``.
-    assert candidate["status"] == "no_path"
-    assert candidate["blocking_reasons"][0]["reason_code"] == "no_traversable_path"
-    assert candidate["search_incomplete"] is False
-    # Phase4-B5X：逐 cell 的 mask 明细已外置，专用接口仍然给全量。
-    mask = list(service.layered_route_candidates()["masks"].values())[0]
-    assert mask["cells"][target]["reason_code"] == "risk_domain_unresolved"
+    assert candidate["status"] == "candidate"
+    profile = service.evaluate_route_risk_profile({})["route_risk_profiles"]["items"][-1]
+    ground = profile["domains"]["ground"]
+    assert ground["status"] == "unresolved"
+    assert ground["exposure_index_m"] is None
+    assert target in ground["unresolved_cells"]
     resolved, unresolved = resolve_cell_domain_indices(tampered, (target,), ("ground",))
     assert resolved[target]["ground"] is None  # never 0
     assert unresolved[target] == ["ground:unresolved"]

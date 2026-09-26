@@ -1,6 +1,5 @@
-"""Replaceable CNS site-planning proposal algorithms."""
+"""Canonical corridor-aware CNS site-planning algorithm."""
 
-from .reuse_first_v1 import ReuseFirstSitePlannerV1
+from .corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
-__all__ = ["ReuseFirstSitePlannerV1"]
-
+__all__ = ["CorridorReuseFirstSitePlannerV2"]

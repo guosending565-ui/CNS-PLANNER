@@ -393,7 +393,9 @@ def test_defining_module_itself_is_not_a_production_import(tool):
     """legacy 模块自身的 re-export 不算 production import。"""
 
     gate = _gate(tool, "RoutePlannerV1")
-    text = (ROOT / "cns_planner/algorithms/route/__init__.py").read_text(encoding="utf-8")
+    path = ROOT / "cns_planner/algorithms/route/__init__.py"
+    assert not path.exists()
+    text = "from .v1 import RoutePlannerV1\n"
     assert tool.scan_production_imports([("cns_planner/algorithms/route/__init__.py", text)], gate) == []
 
 
@@ -415,20 +417,8 @@ def test_guard_test_mention_is_not_a_migration_blocker(tool):
     assert tool.scan_test_execution([("tests/test_guard_sample.py", guard_like)], gate) == []
 
 
-def test_guard_test_allowlist_is_explicit_and_effective(tool):
-    """guard allowlist 必须显式登记、可审计，并且真的让 guard 文件免于误判。"""
-
-    assert tool.GUARD_TEST_ALLOWLIST, "guard allowlist 不能为空"
-    for path, reason in tool.GUARD_TEST_ALLOWLIST.items():
-        assert reason.strip()
-        assert (ROOT / path).exists(), path
-
-    gate = _gate(tool, "RiskAwareRoutePlannerV2")
-    rel = "tests/test_production_write_authority.py"
-    text = (ROOT / rel).read_text(encoding="utf-8")
-    # 该文件确实构造了 legacy v2 planner（否则这条 allowlist 没有意义）。
-    assert '"risk_aware_route_planner_v2", "2.0"' in text
-    assert tool.scan_test_execution([(rel, text)], gate) == []
+def test_guard_test_allowlist_is_empty_after_test_migration(tool):
+    assert tool.GUARD_TEST_ALLOWLIST == {}
 
 
 def test_real_legacy_instantiation_is_a_migration_blocker(tool):
@@ -439,10 +429,9 @@ def test_real_legacy_instantiation_is_a_migration_blocker(tool):
     assert hits[0]["kind"] == "legacy_algorithm_instantiation"
     assert hits[0]["symbol"] == "CoveragePlannerV1"
 
-    # 真实仓库里 characterization 测试仍然算 blocker。
+    # B8X 已删除真实仓库中的 legacy characterization 测试。
     rel = "tests/test_v1_algorithm_characterization.py"
-    text = (ROOT / rel).read_text(encoding="utf-8")
-    assert tool.scan_test_execution([(rel, text)], gate)
+    assert not (ROOT / rel).exists()
 
 
 def test_registry_construction_requires_exact_registered_triple(tool):

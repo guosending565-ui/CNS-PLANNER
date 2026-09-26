@@ -108,17 +108,3 @@ def test_empty_workspace_grid_result_carries_the_capability_declaration():
     assert empty["capabilities"]["available_levels"] == list(range(1, 17))
     assert empty["capabilities"]["preferred_level"] == 8
     assert empty["capabilities"]["max_cells"] == 100
-
-
-def test_planner_module_declares_its_level_binding():
-    from cns_planner.layered_route_planner.planner import PLANNER_CAPABILITY as V1
-    from cns_planner.layered_route_planner.theta_star_v2 import (
-        PLANNER_CAPABILITY as V2,
-    )
-
-    for capability in (V1, V2):
-        assert capability["available_levels"] == [8]
-        assert capability["preferred_level"] == 8
-        assert capability["building_fact_level"] == 8
-        assert capability["level_binding"] == "current_workspace_grid_level_used_as_is"
-        assert capability["cross_level_aggregation_allowed"] is False

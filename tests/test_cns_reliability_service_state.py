@@ -184,32 +184,6 @@ def test_service_state_preview_api_is_pure_and_additive():
     assert result["fallback_used"] is None
 
 
-def test_gap_v1_compatibility_view_excludes_p4_reliability_from_fingerprint(tmp_path):
-    workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    workflow.state["operational_routes"] = [{
-        "route_id": "R1", "status": "passed", "path": [[120.0, 30.0], [120.01, 30.0]],
-    }]
-    workflow.state["required_cns"] = normalize_required_cns({"project_default": {
-        "communication": {"required": True, "coverage_requirement": 90, "max_gap_m": 1000, "latency_ms": 200, "redundancy": 1},
-        "navigation": {"required": False}, "surveillance": {"required": False},
-    }})
-    workflow.state["aircraft_profiles"] = {"status": "passed", "count": 1, "items": [normalize_aircraft_profile({
-        "aircraft_id": "A1", "name": "A1",
-        "communication": {"status": "confirmed", "capabilities": ["radio"]},
-        "navigation": [], "surveillance": [],
-    })]}
-    workflow.state["selected_aircraft_profile_id"] = "A1"
-    workflow.state["existing_cns_facilities"] = {"status": "passed", "items": []}
-    workflow.state["device_catalog"] = {"status": "passed", "items": []}
-    before = deepcopy(workflow.analyze_cns_gaps()["cns_gap_analysis"])
-    workflow.state["aircraft_profiles"]["items"][0]["communication"]["reliability"] = normalize_reliability_spec({
-        "model": "constant_rate_exponential", "mtbf_h": 1000, "source": "test", "confirmed": True,
-    })
-    workflow.state["aircraft_profiles"]["items"][0]["communication"]["fallbacks"] = [fallback()]
-    after = workflow.analyze_cns_gaps()["cns_gap_analysis"]
-    assert after == before
-
-
 def test_service_state_preview_api_is_pure_and_forwards_contract():
     router = ApiRouter(ApiContext())
     payload = {"required_cns": requirement(False), "aircraft_capability": None, "external_service_snapshot": None}

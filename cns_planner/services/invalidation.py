@@ -6,34 +6,28 @@ except ImportError:
     from models.status import ResultStatus
 
 DEPENDENTS = {
-    "data": ("workspace", "environment_risk", "routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
-    "workspace": ("environment_risk", "routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
-    "route": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "required_cns_recommendation", "report"),
-    "rules": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "technical_risk", "report"),
-    "aircraft_profile": ("routes", "coverage", "cns_gap", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "technical_risk", "report"),
-    "required_cns": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report"),
-    "devices": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
-    "existing_cns": ("coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
-    "candidate_sites": ("coverage", "cns_site_plan", "cns_corridor_site_plan", "technical_risk", "report"),
-    "sites": ("coverage", "technical_risk", "report"),
-    "route_algorithm": ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "report"),
-    # Layered Risk-Aware Route Planner V1: its own algorithm selection only stales the
-    # additive layered candidate product (plus the report); legacy routes are untouched.
+    "data": ("workspace", "environment_risk", "routes", "coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "report"),
+    "workspace": ("environment_risk", "routes", "coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "report"),
+    "route": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "required_cns_recommendation", "report"),
+    "rules": ("routes", "coverage_3d", "cns_service_capability", "service_timeline", "technical_risk", "report"),
+    "aircraft_profile": ("routes", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "technical_risk", "report"),
+    "required_cns": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report"),
+    "devices": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
+    "existing_cns": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
+    "candidate_sites": ("cns_corridor_site_plan", "technical_risk", "report"),
+    "sites": ("coverage_3d", "technical_risk", "report"),
+    # The production layered selection only stales its candidate product and report.
     "layered_route_planner_algorithm": ("report",),
     "airspace_policy": (),
-    "coverage_algorithm": ("coverage", "report"),
-    "gap_algorithm": ("cns_gap", "report"),
-    "coverage_model": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
-    "service_model": ("cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment", "report"),
-    "motion_profile": ("service_timeline", "cns_gap_v2", "report"),
-    "service_scenario": ("service_timeline", "cns_gap_v2", "report"),
-    "timeline_model": ("service_timeline", "cns_gap_v2", "report"),
-    "coverage_3d_result": ("cns_gap_v2", "report"),
-    "cns_service_capability_result": ("cns_gap_v2", "report"),
-    "service_timeline_result": ("cns_gap_v2", "report"),
-    "cns_gap_v2_result": ("cns_site_plan", "report"),
-    "site_planning_policy": ("cns_site_plan", "report"),
-    "site_planner": ("cns_site_plan", "cns_corridor_site_plan", "report"),
+    "coverage_model": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "report"),
+    "service_model": ("cns_service_capability", "service_timeline", "cns_corridor_assessment", "report"),
+    "motion_profile": ("service_timeline", "report"),
+    "service_scenario": ("service_timeline", "report"),
+    "timeline_model": ("service_timeline", "report"),
+    "coverage_3d_result": ("cns_service_capability", "cns_corridor_assessment", "report"),
+    "cns_service_capability_result": ("cns_corridor_assessment", "report"),
+    "service_timeline_result": ("report",),
+    "site_planner": ("cns_corridor_site_plan", "report"),
     "response_time_budget": ("protection_envelope", "report"),
     "encounter_scenario": ("protection_envelope", "report"),
     "protection_model": ("protection_envelope", "report"),
@@ -45,10 +39,26 @@ DEPENDENTS = {
     # P15 result is a one-way input to the P16 proposal.
     "cns_corridor_gap_result": ("cns_corridor_site_plan",),
     "corridor_site_planning_policy": ("cns_corridor_site_plan",),
+    "cns_corridor_site_plan_result": ("cns_plan_review", "report"),
+    "cns_plan_review_result": ("report",),
     "requirement_context": ("required_cns_recommendation",),
     "requirement_policies": ("required_cns_recommendation",),
     "requirement_model": ("required_cns_recommendation",),
     "safety_policy": ("safety_assessment", "technical_risk", "report"),
+}
+
+# Minimal contract surface between the canonical DAG vocabulary and this legacy-shaped
+# executor.  The canonical registry remains the dependency authority; these aliases only
+# document which executor trigger/result keys implement its critical production edges.
+CANONICAL_EXECUTOR_CONTRACT = {
+    "operational_route": ("route", {"coverage": "coverage_3d", "service_corridor": "cns_corridor_assessment"}),
+    "required_cns": ("required_cns", {"coverage": "coverage_3d", "service_capability": "cns_service_capability", "service_corridor": "cns_corridor_assessment", "capability_gap": "cns_corridor_gap_assessment", "facility_plan": "cns_corridor_site_plan", "report": "report"}),
+    "coverage": ("coverage_3d_result", {"service_capability": "cns_service_capability", "service_corridor": "cns_corridor_assessment", "report": "report"}),
+    "service_capability": ("cns_service_capability_result", {"service_corridor": "cns_corridor_assessment", "report": "report"}),
+    "service_corridor": ("corridor_result", {"capability_gap": "cns_corridor_gap_assessment"}),
+    "capability_gap": ("cns_corridor_gap_result", {"facility_plan": "cns_corridor_site_plan"}),
+    "facility_plan": ("cns_corridor_site_plan_result", {"plan_review": "cns_plan_review", "report": "report"}),
+    "plan_review": ("cns_plan_review_result", {"report": "report"}),
 }
 
 

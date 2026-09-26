@@ -527,21 +527,21 @@ test('step 03 keeps its segment count and mounts the validation panel after clea
   assert.ok(readinessAt>=0&&clearanceAt>=0&&validationAt>=0,'all three blocks must be present');
   assert.ok(readinessAt<clearanceAt&&clearanceAt<validationAt,
     'validation must follow data readiness and building clearance');
-  // B7X：旧版入口与旧版结果对照全部移入 Advanced 的「旧版兼容 / 研究对照」，
-  // 生产操作区只保留正式候选发布链；旧项目的历史结果仍可在高级区读取。
+  // B8X：旧版计算入口（operationalRoutes / scenarioRoutes）已从高级区撤下，旧项目历史
+  // 结果仍以只读方式展示；生产运行航路段同样不得暴露任何旧版试算入口。
   const legacySegment=html.slice(html.indexOf('data-seg-name="adv-legacy"'),
     html.indexOf('data-seg-name="adv-experiment"'));
   assert.match(legacySegment,/旧版兼容 \/ 研究对照/);
-  assert.match(legacySegment,/id="operationalRoutes"/,'旧版试算入口必须留在高级区');
-  assert.match(legacySegment,/id="scenarioRoutes"/,'旧版 all-pairs 场景生成必须留在高级区');
-  assert.match(legacySegment,/\/api\/compatibility\/route-planner\/evaluate/);
+  assert.doesNotMatch(legacySegment,/id="operationalRoutes"/,'旧版试算入口必须已撤下');
+  assert.doesNotMatch(legacySegment,/id="scenarioRoutes"/,'旧版 all-pairs 场景生成必须已撤下');
+  assert.doesNotMatch(legacySegment,/\/api\/compatibility\/route-planner\/evaluate/);
   const operationalSegment=html.slice(html.indexOf('data-seg-name="op-operational"'),
     html.indexOf('data-seg-name="op-altitude"'));
   assert.doesNotMatch(operationalSegment,/id="operationalRoutes"/,
     '生产运行航路段不得再暴露旧版试算入口');
   assert.doesNotMatch(operationalSegment,/id="scenarioRoutes"/,
     '生产运行航路段不得再暴露旧版 all-pairs 场景生成');
-  for(const id of ['scenarioRoutes','operationalRoutes','evaluateLayeredRouteValidation',
+  for(const id of ['evaluateLayeredRouteValidation',
     'previewLayeredAdoption','applyLayeredAdoption','revokeLayeredAdoption',
     'layeredAdoptionApplyConfirmed','layeredAdoptionRevokeConfirmed']){
     assert.match(html,new RegExp('id="'+id+'"'),`#${id} must be rendered`);
@@ -551,8 +551,9 @@ test('step 03 keeps its segment count and mounts the validation panel after clea
 test('step 03 keeps every original control and unique ids after the additive panels',()=>{
   withStubDom(document=>{
     const {root}=mountStep3(document,baseFlow());
+    // B8X：V3 可执行入口已撤下，其余 Step03 控件必须保持挂载。
     for(const id of ['createOdRoute','saveRouteAltitude','saveRouteMotion','saveBuildingClearancePolicy',
-      'evaluateRoutePlannerV3','scenarioRoutes','operationalRoutes','nextStep','evaluateRouteRiskProfile',
+      'nextStep','evaluateRouteRiskProfile',
       'evaluateLayeredRouteValidation','previewLayeredAdoption','applyLayeredAdoption','revokeLayeredAdoption']){
       assert.ok(document.getElementById(id),`#${id} must stay mounted`);
     }
@@ -1132,27 +1133,27 @@ test('the candidate to operational chain only transcribes backend state',()=>{
   assert.equal(layeredOperationalAdoptionModel(staleValidation).options[0].eligible,false);
 });
 
-// ---- 13. Legacy operationalRoutes 仍存在且契约不变 -----------------------------
+// ---- 13. B8X：legacy 计算入口已撤出 Advanced，旧结果只读 ----------------------
 
-test('the legacy scenarioRoutes and operationalRoutes entries stay in Advanced compatibility',()=>{
+test('the legacy operationalRoutes compute entries are withdrawn from Step03',()=>{
   const flow=baseFlow();
   const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
-  assert.match(html,/id="scenarioRoutes"/);
-  assert.match(html,/id="operationalRoutes"/);
-  assert.match(html,/生成场景航路（all-pairs，兼容）/);
-  assert.match(html,/旧版航路试算（不发布）/);
-  assert.match(html,/\/api\/compatibility\/route-planner\/evaluate/);
+  // B8X：旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 的 compatibility compute 入口
+  // 已随 delete gate 物理删除，前端不得再出现可再次运行旧算法的按钮或端点。
+  assert.doesNotMatch(html,/id="scenarioRoutes"/);
+  assert.doesNotMatch(html,/id="operationalRoutes"/);
+  assert.doesNotMatch(html,/\/api\/compatibility\/route-planner\/evaluate/);
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
-  // 场景生成保留原逻辑；旧规划计算改走显式 compatibility namespace。
-  assert.match(source,/c\.actionButton\('scenarioRoutes',\(\)=>c\.mutate\('scenario',\{\}\)\)/);
-  assert.match(source,/c\.actionButton\('operationalRoutes',\(\)=>c\.resourceAction\('\/api\/compatibility\/route-planner\/evaluate',\{\}\)\)/);
-  // 新模块不得触碰 legacy 生成入口
+  assert.doesNotMatch(source,/actionButton\('scenarioRoutes'/);
+  assert.doesNotMatch(source,/actionButton\('operationalRoutes'/);
+  assert.doesNotMatch(source,/\/api\/compatibility\/route-planner\/evaluate/);
+  // 新模块同样不得触碰 legacy 生成入口
   const validationSource=readFileSync(new URL('../cns_planner/web/js/workflow/layered_route_validation.js',import.meta.url),'utf8');
   const adoptionSource=readFileSync(new URL('../cns_planner/web/js/workflow/layered_operational_adoption.js',import.meta.url),'utf8');
   for(const source_ of [validationSource,adoptionSource]){
     assert.doesNotMatch(source_,/mutate\('scenario'|mutate\('operational'|generate_operational/);
   }
-  // 仍然通过真实 bind 注册两个 legacy 入口
+  // 旧项目的 canonical 运行航路仍只读可见（不因入口撤下而消失）。
   withStubDom(document=>{
     const mounted=baseFlow();
     mountStep3(document,mounted);
@@ -1167,12 +1168,9 @@ test('the legacy scenarioRoutes and operationalRoutes entries stay in Advanced c
       actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
     };
     bindStep3(c);
-    assert.ok(registered.includes('scenarioRoutes'));
-    assert.ok(registered.includes('operationalRoutes'));
-    document.getElementById('scenarioRoutes').onclick();
-    assert.deepEqual(calls.pop(),['scenario',{}]);
-    document.getElementById('operationalRoutes').onclick();
-    assert.deepEqual(calls.pop(),['/api/compatibility/route-planner/evaluate',{}]);
+    assert.ok(!registered.includes('scenarioRoutes'));
+    assert.ok(!registered.includes('operationalRoutes'));
+    assert.deepEqual(calls,[]);
   });
 });
 

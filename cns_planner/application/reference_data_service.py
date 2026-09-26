@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from ..algorithms.coverage.v1 import distance_m
+from ..domain.geodesy import distance_m
 from ..domain.source_audit import provenance_record, sha256_file, source_manifest
 from ..domain.geometry_health import inspect_geojson_geometries
 from ..reference_data import (

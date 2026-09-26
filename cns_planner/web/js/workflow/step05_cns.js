@@ -9,7 +9,7 @@ export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,
 // 名称是业务语言；工程编号（P7…P18）只允许出现在高级标签的 advancedAuditNote 里。
 const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']];
 const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','雷达监视规划']];
-const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口分析'],['cns-adv-compat','旧版兼容试算'],['cns-adv-closedloop','高级方案影响试算']];
+const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']];
 
 // ---- 六区结构（B4X §20） ----------------------------------------------------
 // 每个二级分段都是"一步完整任务"，因此每一段内部按固定六区组织：
@@ -746,12 +746,12 @@ export function render({flow}){
   // 兼容声明逐字展示（含引号），因此这里不做 HTML 转义：
   // 常量本身是固定的中文短语，不含任何用户输入。
   const compatDeclare=kind=>'<div class="parameter-note">'+kind+'：'+COMPATIBILITY_NOTE+'</div>';
-  const coverageResult='<h3>旧版二维覆盖试算（不用于正式规划） '+wbBadge(legacyCoverage.status||'not_calculated','未计算')+'</h3>'+compatDeclare('旧版二维覆盖试算')+'<div class="parameter-note">旧版兼容结果仅保存在当前会话，不写入项目状态，不决定正式规划是否完成。</div><button class="secondary full" id="planCoverage">运行旧版二维覆盖试算</button><div class="coverage-results">'+result+'</div>';
-  const gapPanel='<h3>旧版运行航路缺口分析（不用于正式规划） '+wbBadge(gaps.status||'not_calculated','未计算')+'</h3>'+compatDeclare('旧版运行航路缺口分析')+'<button class="secondary full" id="analyzeGaps">分析当前运行航路缺口</button><div class="gap-results">'+gapList(gaps)+'</div>';
-  const sitePlanPanel='<h3>旧版站址试算（不用于正式规划） '+wbBadge(sitePlan.status||'not_calculated','未计算')+'</h3>'+compatDeclare('旧版站址试算')+'<div class="parameter-note">旧版兼容试算仅保存在当前会话，不写入项目状态，不解锁方案评审。复用层级顺序：Existing CNS → Existing Shared Site → Tower Colocation Host（真实铁塔共塔宿主）→ Candidate Site → New-build Candidate；该顺序表示 prefer 共塔而不是 force。</div><label class="check-row"><input type="checkbox" id="sitePolicyConfirmed" '+(sitePolicy.confirmed?'checked':'')+'> 确认旧版复用优先试算策略</label><button class="secondary full" id="evaluateSitePlan">运行旧版站址试算</button><div class="gap-results">'+sitePlanSummary(sitePlan)+'</div>';
+  const coverageResult='<h3>旧版二维覆盖结果（只读） '+wbBadge(legacyCoverage.status||'not_calculated','未计算')+'</h3>'+compatDeclare('旧版二维覆盖结果')+'<div class="parameter-note">历史结果可查看和导出，但已无重新计算入口。</div><div class="coverage-results">'+result+'</div>';
+  const gapPanel='<h3>旧版运行航路缺口结果（只读） '+wbBadge(gaps.status||'not_calculated','未计算')+'</h3>'+compatDeclare('旧版运行航路缺口结果')+'<div class="gap-results">'+gapList(gaps)+'</div>';
+  const sitePlanPanel='<h3>旧版站址结果（只读） '+wbBadge(sitePlan.status||'not_calculated','未计算')+'</h3>'+compatDeclare('旧版站址结果')+'<div class="parameter-note">历史提案可查看和导出，不解锁方案评审，也不能重新运行。</div><div class="gap-results">'+sitePlanSummary(sitePlan)+'</div>';
   const timelinePanel='<h3>C/N/S 服务时间线 '+wbBadge(timeline.status||'not_calculated','未计算')+'</h3><div class="parameter-note">运行状态只来自显式服务场景事件；不从静态能力结论、可靠性规格或 MTBF 推断可用与中断。</div><button class="secondary full" id="evaluateServiceTimeline">生成服务时间线</button><div class="gap-results">'+timelineList(timeline)+'</div>';
   const protectionPanel='<h3>战术保护包络 '+wbBadge(protection.status||'not_calculated','未计算')+'</h3>'+advancedAuditNote('工程战术保护包络属于高级分析面（P15）；它对应开发阶段编号，仅在此高级标签中展示。')+'<div class="parameter-note">工程保护距离 ≠ 法规 Well-Clear / 正式 DAA Detection Volume。</div><button class="secondary full" id="evaluateProtectionEnvelope">计算工程保护距离</button><div class="gap-results">'+protectionSummary(protection)+'</div>';
-  const gapV2Panel='<h3>保护与缺口分析 '+wbBadge(gapV2.status||'not_calculated','未计算')+'</h3>'+advancedAuditNote('本分段合并 P7 几何覆盖、P8 静态能力与 P9 运行时间线（开发阶段编号，仅高级区展示）。')+'<div class="parameter-note">Unknown 表示证据不足，不是危险等级，Gap 也不自动触发 Safety Event。</div><label class="check-row"><input type="checkbox" id="gapV2Protection" '+(gapV2.parameters?.evaluate_protection_margin?'checked':'')+'> 可选工程保护余量（非 Well-Clear/认证判断）</label><button class="secondary full" id="evaluateGapV2">运行保护与缺口分析</button><div class="gap-results">'+gapV2List(gapV2)+'</div>';
+  const gapV2Panel='<h3>保护与缺口历史记录（只读） '+wbBadge(gapV2.status||'not_calculated','未计算')+'</h3>'+advancedAuditNote('该历史结果不属于当前 canonical corridor gap 链。')+'<div class="parameter-note">Unknown 表示证据不足，不是危险等级；历史记录可导出但不再重算。</div><div class="gap-results">'+gapV2List(gapV2)+'</div>';
   const closedLoopPanel='<h3>高级：方案影响试算 '+wbBadge(closedLoop.status||'not_calculated','未计算')+'</h3>'+compatDeclare('方案影响试算')+'<div class="parameter-note">只在工作副本比较方案前后影响；复核操作不会写入正式覆盖、设施、确认方案或运行航路。</div>'+advancedAuditNote('闭环复核对应开发阶段 P11 / P12（预测与实测对比），仅在此高级标签中展示。')+'<div class="button-row"><button class="secondary" id="evaluateClosedLoop">生成影响试算</button><button class="secondary" id="applyClosedLoop" '+(closedLoop.validation_status==='validated_improvement'&&closedLoop.commit_status==='preview'?'':'disabled')+'>复核试算结果（不写入正式项目）</button></div><div class="gap-results">'+closedLoopSummary(closedLoop)+'</div>';
 
   const body=wbPanel('operate','',{segments:[
@@ -817,8 +817,8 @@ export function render({flow}){
     ]})
     +wbPanel('advanced','',{segments:[
       ['cns-adv-timeline','运行时间线',wbBlock('运行时间线',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-timeline')+timelinePanel)],
-      ['cns-adv-gapv2','保护与缺口分析',wbBlock('保护与缺口分析',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-gapv2')+protectionPanel+gapV2Panel)],
-      ['cns-adv-compat','旧版兼容试算',wbBlock('旧版兼容试算',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-compat')+coverageResult+gapPanel+sitePlanPanel)],
+      ['cns-adv-gapv2','保护与缺口记录',wbBlock('保护与缺口记录',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-gapv2')+protectionPanel+gapV2Panel)],
+      ['cns-adv-compat','旧版历史（只读）',wbBlock('旧版历史（只读）',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-compat')+coverageResult+gapPanel+sitePlanPanel)],
       ['cns-adv-closedloop','高级方案影响试算',wbBlock('高级方案影响试算',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-closedloop')+closedLoopPanel)
         +'<div class="flow-summary">生命风险：'+riskState('life')+' · 财产风险：'+riskState('property')+'<br>高级与旧版兼容结果均不用于正式规划门禁。</div>']
     ]});
@@ -828,7 +828,6 @@ export function render({flow}){
 export function bind(c){
   const collect=()=>c.flow().devices.map((device,index)=>({...device,radius_m:Number(document.querySelector('[data-device-radius="'+index+'"]').value),mtbf:Number(document.querySelector('[data-device-mtbf="'+index+'"]').value)}));
   c.actionButton('saveDevices',()=>c.mutate('devices',{devices:collect()}));
-  c.actionButton('planCoverage',async()=>{await c.mutate('devices',{devices:collect()});await c.resourceAction('/api/compatibility/coverage/evaluate',{});});
   c.$('browseExisting').onclick=()=>c.openBrowser('existing_cns',c.$('existing_cnsPath').value);
   c.$('browseCandidates').onclick=()=>c.openBrowser('candidate_sites',c.$('candidate_sitesPath').value);
   c.actionButton('importExisting',()=>c.resourceAction('/api/existing-cns/import',{path:c.$('existing_cnsPath').value.trim()}));
@@ -845,7 +844,6 @@ export function bind(c){
       source:c.$('towerColocationSource').value.trim()||'user_configuration',
     },
   }));
-  c.actionButton('analyzeGaps',()=>c.resourceAction('/api/compatibility/cns-gap-analysis-v1/evaluate',{}));
   c.actionButton('evaluateCoverage3d',()=>c.resourceAction('/api/coverage-3d/evaluate',{parameters:{sample_spacing_m:Number(c.$('coverage3dSpacing').value),assumption:'user_engineering_sampling_assumption',confirmed:false}}));
   c.actionButton('evaluateServiceCapability',()=>c.resourceAction('/api/cns-service-capability/evaluate',{}));
   c.actionButton('evaluateCorridor',()=>c.resourceAction('/api/cns-service-corridor/evaluate',{}));
@@ -854,8 +852,6 @@ export function bind(c){
   c.actionButton('evaluateCorridorSitePlan',()=>{const policy=structuredClone(c.flow().corridor_site_planning_policy||{});policy.confirmed=c.$('corridorSitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/cns-corridor-site-plan/evaluate',{corridor_site_planning_policy:policy});});
   c.actionButton('evaluateServiceTimeline',()=>c.resourceAction('/api/service-timeline/evaluate',{}));
   c.actionButton('evaluateProtectionEnvelope',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
-  c.actionButton('evaluateGapV2',()=>c.resourceAction('/api/compatibility/cns-gap-analysis-v2/evaluate',{parameters:{evaluate_protection_margin:c.$('gapV2Protection').checked}}));
-  c.actionButton('evaluateSitePlan',()=>{const policy=structuredClone(c.flow().site_planning_policy||{});policy.confirmed=c.$('sitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/compatibility/site-plan/evaluate',{site_planning_policy:policy});});
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
   c.actionButton('applyClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/apply',{application_id:c.flow().closed_loop_assessment?.application?.application_id}));
   // ---- Radar Surveillance Layout V1.1（独立任务卡；proposal-only，绝不自动 Apply） ----

@@ -8,7 +8,6 @@ import pytest
 
 from cns_planner.algorithms.grid.service import WorkspaceGridService
 from cns_planner.algorithms.registry import default_algorithm_selection
-from cns_planner.algorithms.route_planner import RoutePlannerV1
 from cns_planner.route_planner_v3 import (
     HardConstraintEvaluator, MotionPrimitiveProvider, SoftCostModel, TransitionValidator,
     V3StrategicPlanner, build_candidate_refinement_corridor, build_v3_state,
@@ -1193,25 +1192,6 @@ def test_blocked_and_failed_results_carry_no_candidate_path_or_corridor():
 # --------------------------------------------------------------------------------------
 # V1 / V2 characterisation is untouched
 # --------------------------------------------------------------------------------------
-
-
-def test_v1_output_contract_is_unchanged():
-    planner = RoutePlannerV1(grid_size=6)
-    route = {"route_id": "R-GOLDEN-003", "start": [0.1, 0.1], "end": [0.9, 0.9]}
-    result = planner.plan(route, [0.0, 0.0, 1.0, 1.0], [])
-    assert list(result) == [
-        "route_id", "status", "path", "reason", "algorithm_id", "algorithm_version",
-        "input_fingerprint", "environment_risk",
-    ]
-    assert result["algorithm_id"] == "route_planner_v1"
-    assert result["algorithm_version"] == "1.0"
-    pinned = RoutePlannerV1(grid_size=6).plan(
-        {"route_id": "R-GOLDEN-001", "start": [0.1, 0.1], "end": [0.9, 0.9]},
-        [0.0, 0.0, 1.0, 1.0], [{"name": "中心硬约束", "bbox": [0.4, 0.4, 0.6, 0.6]}],
-    )
-    assert pinned["input_fingerprint"] == (
-        "ae10b604508d03f2445f36573156ba109e2ed30904d6e8ff5957f0dce8a936d4"
-    )
 
 
 def test_v3_is_additive_and_never_the_default_planner():

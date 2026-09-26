@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import re
 
-from ..algorithms.coverage.v1 import distance_m
+from ..domain.geodesy import distance_m
 from ..domain.reference_crs import CRS84, empty_crs_record, is_resolved, normalize_crs_record, unresolved_reason
 from .landing_sites import CRS_STATUS, parse_coordinate
 

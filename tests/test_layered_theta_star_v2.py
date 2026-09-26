@@ -43,9 +43,7 @@ from cns_planner.domain.regulatory_constraints import (
     regulatory_compliance_record,
 )
 from cns_planner.domain.spatial_3d import normalize_spatial_3d
-from cns_planner.layered_route_planner.planner import (
-    LayeredRoutePlannerV1, build_layer_feasibility_mask,
-)
+from cns_planner.layered_route_planner.feasibility import build_layer_feasibility_mask
 from cns_planner.layered_route_planner.supercover import (
     supercover_traversal, traversal_cells_with_lengths,
 )
@@ -53,7 +51,7 @@ from cns_planner.layered_route_planner.theta_star_v2 import (
     GridIndexMap, LayeredRiskAwareThetaStarV2, derive_d_ref_m, grid_bearing_deg,
     heading_bin_for_bearing,
 )
-from cns_planner.route_planner.risk_aware_v2 import GridGraph
+from cns_planner.planning.grid_graph import GridGraph
 
 DEFAULTS = Path(__file__).parents[1] / "cns_planner" / "config" / "defaults.json"
 REPO = Path(__file__).parents[1]
@@ -348,43 +346,6 @@ def test_open_grid_theta_star_really_rewires_parents_to_los_shortcuts():
     assert sum(len(item["traversed_cells"]) for item in candidate["los_segments"]) > len(
         candidate["los_segments"]
     )
-
-
-def test_open_grid_theta_star_has_fewer_vertices_than_the_v1_eight_neighbour_baseline():
-    # A shallow (nearly horizontal) OD pair: the any-angle optimum is a single straight
-    # shortcut, while an 8-neighbour A* has to walk the staircase.
-    grid = grid_cells(columns=9, rows=7)
-    centres = {cell["grid_id"]: cell["center"] for cell in grid}
-    route = route_for(grid, start=centres[cell_id(0, 0)], end=centres[cell_id(8, 0)])
-    v2 = plan_v2(grid, route=route)
-    v1 = LayeredRoutePlannerV1().plan(
-        request=request(), scenario_route=route,
-        grid={"level": LEVEL, "cells": grid}, layer_mask=build_mask(grid),
-        grid_risk_v2=risk_v2(grid), feasibility_policy=feasibility_policy(),
-        cost_policy=normalize_layered_route_cost_policy({
-            "ground_lambda": 1.0, "air_traffic_lambda": 0.0,
-            "environment_obstacle_lambda": 0.0, "source": "工程确认-测试", "confirmed": True,
-        }),
-        hard_constraints=[], building_clearance_policy=BUILDING_POLICY,
-    )
-    assert v1["status"] == "candidate"
-    assert v1["algorithm_id"] == "layered_route_planner_v1"
-    assert v2["status"] == "candidate"
-    assert v1["cell_count"] > 2, f"V1 baseline 未产生 8-neighbour 折线：{v1['grid_path']}"
-    # The 8-neighbour baseline visits a cell per grid step; Theta* skips the intermediate
-    # vertices with any-angle shortcuts, so it reports strictly fewer polyline vertices.
-    assert v2["cell_count"] < v1["cell_count"], (
-        f"Theta* vertex count {v2['cell_count']} 未少于 8-neighbour A* {v1['cell_count']}"
-    )
-    assert v2["cell_count"] <= 3
-    # A straight (or near-straight) corridor needs no turn above the threshold.
-    assert v2["turn_statistics"]["turn_count"] <= 1
-    assert v2["planning_objective"]["turn_cost_m"] <= 2000.0
-
-
-# --------------------------------------------------------------------------------------
-# 3-5. supercover LOS hard gate: terrain / building / fixed H
-# --------------------------------------------------------------------------------------
 
 
 def test_supercover_shortcut_crossing_an_intermediate_blocked_terrain_cell_is_rejected():
@@ -1003,38 +964,6 @@ def test_communication_field_present_absent_or_changed_never_changes_the_path_or
 # --------------------------------------------------------------------------------------
 
 
-def test_v1_baseline_characterization_is_unchanged_and_v2_is_the_explicit_default():
-    registry = build_default_algorithm_registry({})
-    manifests = {item.algorithm_id: item for item in registry.manifests("layered_route_planner")}
-    assert set(manifests) == {"layered_route_planner_v1", "layered_risk_aware_theta_star_v2"}
-    assert manifests["layered_route_planner_v1"].version == "1.0"
-    assert manifests["layered_risk_aware_theta_star_v2"].version == "2.0"
-    assert manifests["layered_risk_aware_theta_star_v2"].algorithm_type == "layered_route_planner"
-    # Theta* V2 is now the production layered planning baseline *and* the project default.
-    default = default_algorithm_selection()["layered_route_planner"]
-    assert default["algorithm_id"] == "layered_risk_aware_theta_star_v2"
-    assert default["version"] == "2.0"
-    # V1 stays fully characterized: same id, same version, same planner type, same rejection
-    # of unknown parameters, and still explicitly selectable.
-    v1 = LayeredRoutePlannerV1()
-    assert v1.algorithm_id == "layered_route_planner_v1"
-    assert v1.algorithm_version == "1.0"
-    assert getattr(v1, "uses_theta_star", False) is False
-    with pytest.raises(ValueError, match="不接受参数"):
-        LayeredRoutePlannerV1({"heading_bin_count": 8})
-    selected_v1 = registry.create(
-        "layered_route_planner", LayeredRoutePlannerV1.algorithm_id,
-        LayeredRoutePlannerV1.algorithm_version, {},
-    )
-    assert selected_v1.algorithm_id == "layered_route_planner_v1"
-    v2 = registry.create("layered_route_planner", ALGORITHM_ID, ALGORITHM_VERSION, {
-        "heading_bin_count": 12,
-    })
-    assert v2.algorithm_id == ALGORITHM_ID and v2.algorithm_version == "2.0"
-    assert v2.parameters["heading_bin_count"] == 12
-    assert v2.uses_theta_star is True
-
-
 def test_v2_candidate_stays_compatible_with_profile_validation_and_adoption(tmp_path):
     service, grid = service_for(tmp_path)
     candidate = evaluate(service, grid)
@@ -1111,7 +1040,7 @@ def test_test_runtime_is_no_longer_tracked_and_tests_directory_is_intact():
     gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
     assert ".test_runtime/" in gitignore
     # 正式 tests/ 目录没有被误删。
-    assert (REPO / "tests" / "test_layered_route_planner.py").is_file()
+    assert (REPO / "tests" / "test_layered_theta_star_v2.py").is_file()
 
 
 # --------------------------------------------------------------------------------------

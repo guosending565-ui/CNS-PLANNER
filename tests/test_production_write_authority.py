@@ -97,40 +97,6 @@ def test_layered_adoption_service_is_the_only_operational_routes_writer(workflow
     assert 'assert_write_authority(self, "operational_routes")' in source
 
 
-def test_route_service_operational_is_compatibility_only(workflow):
-    state = workflow.state
-    state["operational_routes"] = [
-        {"route_id": "CANONICAL-1", "status": "passed", "path": [[120.002, 30.002], [120.008, 30.008]]}
-    ]
-    before = deepcopy(state["operational_routes"])
-    response = workflow.generate_operational([])
-    assert state["operational_routes"] == before
-    record = runtime_compatibility_result(workflow.session, "operational_routes")
-    assert record["items"]
-    assert response["compatibility_operational_routes"]["authoritative"] is False
-    assert response["authoritative_operational_routes_unchanged"] is True
-    assert "compatibility_operational_routes" not in workflow.snapshot()
-    assert "results" not in (state.get("compatibility") or {})
-
-
-def test_route_service_v2_also_cannot_change_canonical_routes(workflow):
-    state = workflow.state
-    # B7: explicit compatibility compute selects the frozen/saved implementation in
-    # memory; it never writes a new route_planner selection into ProjectState.
-    workflow.route_service.planner = workflow.algorithm_registry.create(
-        "route_planner", "risk_aware_route_planner_v2", "2.0",
-        {"risk_weight_lambda": 0},
-    )
-    before = deepcopy(state["operational_routes"])
-    try:
-        workflow.generate_operational([])
-    except ValueError:
-        # Fail-closed on missing canonical grid risk is acceptable: the authority
-        # contract only requires that canonical operational_routes is untouched.
-        pass
-    assert state["operational_routes"] == before
-
-
 def test_v3_operational_adoption_cannot_write_canonical_routes(workflow):
     source = module_source(V3OperationalAdoptionService)
     assert not re.search(r'state\["operational_routes"\]\s*=', source)
@@ -382,55 +348,6 @@ def test_route_revoke_uses_the_same_publication_edges(workflow):
 # ---------------------------------------------------------------------------
 
 
-def test_compatibility_result_never_completes_the_canonical_node(workflow):
-    state = workflow.state
-    response = workflow.generate_operational([])
-    assert response["compatibility_write"] is True
-    assert canonical_operational_routes(state) == []
-    assert state["result_statuses"].get("routes") != "passed"
-    assert workflow._steps()["3"] is False
-
-    items = runtime_compatibility_operational_routes(workflow.session)
-    assert items
-    record = runtime_compatibility_result(workflow.session, "operational_routes")
-    assert record["authoritative"] is False
-    assert record["compatibility"] is True
-    assert record["deprecated"] is True
-    assert record["source_algorithm"]["algorithm_id"] == "route_planner_v1"
-    assert record["consumed_by_canonical_workflow"] is False
-    assert all(item["status"] == "passed" for item in items)
-
-
-def test_new_compatibility_routes_never_enter_save_reload_or_snapshot(workflow):
-    response = workflow.generate_operational([])
-    assert response["compatibility_operational_routes"]["items"]
-    assert "results" not in (workflow.state.get("compatibility") or {})
-    snapshot = workflow.snapshot()
-    assert "compatibility_operational_routes" not in snapshot
-    assert "results" not in (snapshot.get("compatibility") or {})
-
-    workflow.save()
-    document = json.loads(Path(workflow.store_path).read_text(encoding="utf-8"))
-    assert "results" not in (document.get("compatibility") or {})
-    reopened = WorkflowService(workflow.store_path, workflow.defaults_path)
-    assert "results" not in (reopened.state.get("compatibility") or {})
-    assert runtime_compatibility_result(reopened.session, "operational_routes") == {}
-
-
-def test_compatibility_routes_never_feed_canonical_consumers(workflow):
-    state = workflow.state
-    keys = (
-        "required_cns", "coverage_3d", "cns_service_capability",
-        "cns_corridor_assessment", "cns_corridor_site_plan",
-        "radar_surveillance_layout", "cns_planning_report",
-    )
-    before = {key: deepcopy(state.get(key)) for key in keys}
-    workflow.generate_operational([])
-    assert canonical_operational_routes(state) == []
-    for key in keys:
-        assert state.get(key) == before[key], key
-
-
 def test_legacy_project_operational_routes_stay_readable_and_exportable(workflow):
     state = workflow.state
     legacy = {
@@ -440,7 +357,6 @@ def test_legacy_project_operational_routes_stay_readable_and_exportable(workflow
     state["operational_routes"] = [deepcopy(legacy)]
     workflow.save()
 
-    workflow.generate_operational([])
     # guard 绝不删除旧项目已有的 canonical 运行航路。
     assert state["operational_routes"] == [legacy]
     exported = json.loads(workflow.export_routes().decode("utf-8"))
@@ -454,20 +370,6 @@ def test_legacy_project_operational_routes_stay_readable_and_exportable(workflow
 # ---------------------------------------------------------------------------
 
 
-def _prepare_legacy_coverage(workflow):
-    workflow.generate_operational([])
-    workflow.set_rules({
-        "manufacturer": "测试", "model": "B2C", "cruise_speed": 25,
-        "max_speed": 40, "mtbf": 10000, "route_id": "R0001",
-        "height_ab": 120, "height_ba": 120, "height_mode": "same",
-        "horizontal_separation": 100, "direction_rule": "双向分层",
-        "delay_sensor": 500, "delay_command": 500,
-    })
-    workflow.generate_operational([])
-    devices = [{**item, "mtbf": item["mtbf_h"]} for item in workflow.state["devices"]]
-    workflow.set_devices(devices)
-
-
 def test_spatial_3d_is_the_only_canonical_coverage_writer(workflow):
     from cns_planner.application.closed_loop_service import ClosedLoopService
     from cns_planner.application.spatial_3d_service import Spatial3DService
@@ -479,26 +381,6 @@ def test_spatial_3d_is_the_only_canonical_coverage_writer(workflow):
     assert 'assert_write_authority(self, "coverage_3d")' in module_source(Spatial3DService)
 
 
-def test_closed_loop_evaluate_and_apply_do_not_change_canonical_results(tmp_path):
-    from test_closed_loop import _workflow
-
-    service = _workflow(tmp_path)
-    protected_keys = (
-        "existing_cns_facilities", "coverage_3d", "cns_service_capability",
-        "service_timeline", "cns_gap_analysis_v2", "cns_corridor_assessment",
-        "cns_corridor_gap_assessment", "cns_corridor_site_plan",
-        "confirmed_cns_plan", "operational_routes",
-    )
-    before = {key: deepcopy(service.state[key]) for key in protected_keys}
-    preview = service.evaluate_closed_loop()["closed_loop_assessment"]
-    applied = service.apply_closed_loop({
-        "application_id": preview["application"]["application_id"],
-    })["closed_loop_assessment"]
-    assert applied["authoritative"] is False
-    assert applied["applied_to_canonical"] is False
-    assert {key: service.state[key] for key in protected_keys} == before
-
-
 def test_plan_review_apply_has_no_whole_state_commit():
     source = module_source("cns_planner/application/plan_review_service.py")
     assert "state.clear()" not in source
@@ -507,57 +389,19 @@ def test_plan_review_apply_has_no_whole_state_commit():
     assert 'invalidation.workflow("existing_cns")' in source
 
 
-def test_legacy_coverage_execution_is_runtime_only(workflow):
-    _prepare_legacy_coverage(workflow)
-    before = deepcopy(workflow.state.get("coverage"))
-    response = workflow.plan_coverage()
-    assert response["coverage"]["authoritative"] is False
-    assert response["coverage"]["compatibility"] is True
-    assert workflow.state.get("coverage") == before
-    assert runtime_compatibility_result(workflow.session, "coverage")["status"] == "passed"
-    workflow.save()
-    document = json.loads(Path(workflow.store_path).read_text(encoding="utf-8"))
-    assert document.get("coverage") == before
-    assert "results" not in (document.get("compatibility") or {})
-
-
 def test_legacy_project_coverage_stays_readable(workflow):
     legacy = {"status": "passed", "layers": {"C": {"status": "passed", "stations": []}}}
     workflow.state["coverage"] = deepcopy(legacy)
     assert workflow.snapshot()["coverage"] == legacy
 
 
-def test_legacy_coverage_never_stales_canonical_coverage(workflow):
-    _prepare_legacy_coverage(workflow)
-    sentinel = {"status": "passed", "input_fingerprint": "canonical-coverage"}
-    workflow.state["coverage_3d"] = deepcopy(sentinel)
-    workflow.state["result_statuses"]["coverage_3d"] = "passed"
-    workflow.plan_coverage()
-    assert workflow.state["coverage_3d"] == sentinel
-    assert workflow.state["result_statuses"]["coverage_3d"] == "passed"
-
-
 def test_corridor_site_planning_is_the_only_facility_plan_writer(workflow):
     from cns_planner.application.corridor_site_planning_service import CorridorSitePlanningService
-    from cns_planner.application.site_planning_service import SitePlanningService
 
     assert WRITE_ALLOWLIST["cns_corridor_site_plan"] == ("CorridorSitePlanningService",)
     assert_write_authority(workflow.corridor_site_planning_service, "cns_corridor_site_plan")
-    with pytest.raises(ProductionWriteAuthorityError):
-        assert_write_authority(SitePlanningService, "cns_corridor_site_plan")
     source = module_source(CorridorSitePlanningService)
     assert source.count('assert_write_authority(self, "cns_corridor_site_plan")') >= 2
-
-
-def test_legacy_site_plan_execution_is_runtime_only(tmp_path):
-    from test_cns_site_planner import configure_workflow
-
-    service = configure_workflow(tmp_path)
-    assert "cns_site_plan" not in service.state
-    response = service.evaluate_cns_site_plan()
-    assert response["cns_site_plan"]["authoritative"] is False
-    assert "cns_site_plan" not in service.state
-    assert runtime_compatibility_result(service.session, "cns_site_plan")["algorithm_id"]
 
 
 def test_legacy_project_site_plan_stays_readable(workflow):
@@ -568,19 +412,6 @@ def test_legacy_project_site_plan_stays_readable(workflow):
     assert view["status"] == legacy["status"]
     assert view["input_fingerprint"] == legacy["input_fingerprint"]
     assert view["authoritative"] is False
-
-
-def test_closed_loop_cannot_turn_legacy_site_plan_into_canonical_apply(tmp_path):
-    from test_closed_loop import _workflow
-
-    service = _workflow(tmp_path)
-    before = deepcopy(service.state)
-    preview = service.evaluate_closed_loop()["closed_loop_assessment"]
-    result = service.apply_closed_loop({
-        "application_id": preview["application"]["application_id"],
-    })["closed_loop_assessment"]
-    assert result["applied_to_canonical"] is False
-    assert service.state == before
 
 
 def test_step5_readiness_ignores_legacy_coverage_and_site_plan(workflow):
@@ -640,14 +471,3 @@ def test_required_cns_change_stales_canonical_coverage(workflow):
     workflow.invalidation_service.workflow("required_cns")
     assert workflow.state["coverage_3d"]["status"] == "stale"
     assert workflow.state["result_statuses"]["coverage_3d"] == "stale"
-
-
-def test_new_compatibility_results_never_persist(tmp_path):
-    from test_cns_site_planner import configure_workflow
-
-    service = configure_workflow(tmp_path)
-    service.evaluate_cns_site_plan()
-    service.save()
-    document = json.loads(Path(service.store_path).read_text(encoding="utf-8"))
-    assert "cns_site_plan" not in document
-    assert "results" not in (document.get("compatibility") or {})

@@ -5,20 +5,14 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..domain.algorithm_manifest import AlgorithmFactory, AlgorithmManifest
-from .coverage.v1 import CoveragePlannerV1
 from .coverage.geometric_3d import GeometricCoverage3DV1
 from .service_capability.v1 import CNSServiceCapabilityV1
 from .timeline.v1 import RouteServiceTimelineV1
 from .protection.v1 import TacticalProtectionEnvelopeV1
 from .corridor.v1 import CNSServiceCorridorV1
 from .corridor_gap.v1 import CNSCorridorGapAnalyzerV1
-from .route.v1 import RoutePlannerV1
-from ..route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
-from ..layered_route_planner.planner import LayeredRoutePlannerV1
 from ..layered_route_planner.theta_star_v2 import LayeredRiskAwareThetaStarV2
-from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
-from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 from ..risk.v1 import RiskModelV1
 from .requirements.manual_v1 import ManualRequiredCNSV1
@@ -139,17 +133,13 @@ def normalize_layered_theta_v2_selection_parameters(value):
 def default_algorithm_selection():
     """Selections persisted by a newly-created project.
 
-    Archive/compatibility algorithms stay registered, but are deliberately absent here.
-    Their old saved selections are resolved by ``CompatibilitySelectionAdapter`` and a
-    frozen compatibility baseline is used only for an explicit compatibility call.
+    Archived selections are preserved as passive project data by compatibility readers;
+    executable factories are registered only for current algorithms.
     """
     return {
         "risk_model": _selection("risk_model", RiskModelV1),
-        # Layered Risk-Aware Theta* V2 is the **production layered planning baseline**: its
-        # own algorithm type, so that selecting it can never be confused with (or replace)
-        # the project's default ``route_planner``.  Layered Risk-Aware Route Planner V1 stays
-        # registered as the legacy/baseline layered planner and is only ever selected
-        # explicitly — an existing project that saved V1 explicitly is never migrated.
+        # Layered Risk-Aware Theta* V2 is the production layered planning baseline.  Saved
+        # legacy selections are preserved by normalization but have no executable factory.
         "layered_route_planner": {
             **_selection("layered_route_planner", LayeredRiskAwareThetaStarV2),
             "parameters": default_layered_theta_v2_selection_parameters(),
@@ -180,8 +170,8 @@ def normalize_algorithm_selection(value):
         return defaults
     if not isinstance(value, dict):
         raise ValueError("algorithm_selection 格式无效")
-    # Add missing production/advanced defaults, while preserving every explicitly saved
-    # legacy selection.  In particular LayeredRoutePlannerV1 is never rewritten to Theta*.
+    # Add missing production/advanced defaults while preserving explicitly saved legacy
+    # selections as passive project data.
     result = {}
     for algorithm_type in dict.fromkeys((*defaults, *value)):
         if algorithm_type not in ALGORITHM_TYPES:
@@ -223,18 +213,12 @@ def normalize_algorithm_selection(value):
 def build_default_algorithm_registry(defaults):
     registry = AlgorithmRegistry()
     registry.register(_risk_manifest(), lambda parameters: RiskModelV1())
-    registry.register(_route_manifest(), lambda parameters: RoutePlannerV1(**parameters))
-    registry.register(_risk_aware_route_v2_manifest(), lambda parameters: RiskAwareRoutePlannerV2(parameters))
-    registry.register(_layered_route_planner_v1_manifest(), lambda parameters: LayeredRoutePlannerV1(parameters))
     registry.register(_layered_risk_aware_theta_star_v2_manifest(), lambda parameters: LayeredRiskAwareThetaStarV2(parameters))
-    registry.register(_coverage_manifest(), lambda parameters: CoveragePlannerV1(defaults))
-    registry.register(_gap_manifest(), lambda parameters: CNSGapAnalyzerV1())
     registry.register(_gap_v2_manifest(), lambda parameters: CNSGapAnalyzerV2(parameters))
     registry.register(_geometric_3d_manifest(), lambda parameters: GeometricCoverage3DV1(parameters))
     registry.register(_service_capability_manifest(), lambda parameters: CNSServiceCapabilityV1(parameters))
     registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
     registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
-    registry.register(_site_planner_manifest(), lambda parameters: ReuseFirstSitePlannerV1(parameters))
     registry.register(_corridor_site_planner_v2_manifest(), lambda parameters: CorridorReuseFirstSitePlannerV2(parameters))
     registry.register(_corridor_manifest(), lambda parameters: CNSServiceCorridorV1(parameters))
     registry.register(_corridor_gap_manifest(), lambda parameters: CNSCorridorGapAnalyzerV1(parameters))
@@ -261,116 +245,6 @@ def _risk_manifest():
         {"type": "object", "additionalProperties": True},
         ("输入指数可按有效分量重归一化",),
         ("输出不是事故概率或碰撞概率", "人口兼容输入仍由 V1 读取 value_mean"),
-        (),
-    )
-
-
-def _route_manifest():
-    return AlgorithmManifest(
-        "route_planner", RoutePlannerV1.algorithm_id, RoutePlannerV1.algorithm_version,
-        "Route Planner V1", "CNS-PLANNER", "engineering_baseline",
-        "在固定离散工作区中使用硬约束 BBOX 的确定性 A* 航路规划。",
-        ("scenario_route", "workspace_bbox", "hard_constraints", "grid_size"),
-        (
-            "operational_route", "path", "algorithm_id", "algorithm_version",
-            "input_fingerprint", "environment_risk", "reason",
-        ),
-        {
-            "type": "object",
-            "properties": {"grid_size": {"type": "integer", "minimum": 2, "default": 56}},
-            "additionalProperties": False,
-        },
-        (
-            "经纬度工作区离散为规则网格",
-            "grid_size 默认 56，实际输出即由该离散决定",
-            "硬约束仅使用图层 BBOX，并与路径规划同源",
-        ),
-        (
-            "经纬度固定格：不按米制等距离散，格内代价不是真实米制长度",
-            "非米制搜索：A* 代价为格步数，不是米制距离或风险代价",
-            "BBOX 硬约束：管制/禁飞区按外接矩形处理，不表达真实多边形边界",
-            "无风险/高度/运动学：不读取 grid_risk，不做高度剖面、爬升或转弯约束",
-        ),
-        (),
-    )
-
-
-def _risk_aware_route_v2_manifest():
-    return AlgorithmManifest(
-        "route_planner", RiskAwareRoutePlannerV2.algorithm_id,
-        RiskAwareRoutePlannerV2.algorithm_version,
-        "Risk-Aware Route Planner V2", "CNS-PLANNER", "engineering_baseline",
-        "在现有 MH/T grid_id 邻接图上，以米制距离和既有相对网格风险执行确定性 A*。",
-        (
-            "scenario_route", "grid.cells", "grid_risk.cells", "hard_constraints",
-        ),
-        ("operational_route", "grid_path", "distance_and_risk_metrics"),
-        {
-            "type": "object",
-            "properties": {
-                "risk_weight_lambda": {"type": "number", "minimum": 0, "default": 0},
-                "risk_component": {"enum": ["overall", "ground", "air"], "default": "overall"},
-                "unknown_risk_policy": {"enum": ["block", "penalize"], "default": "block"},
-                "unknown_penalty_index": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-                "max_relative_risk_index": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-            },
-            "additionalProperties": False,
-        },
-        (
-            "RiskModelV1 分数仅作为 0..1 relative engineering index",
-            "risk_weight_lambda 非负时直线米制 heuristic 可采纳",
-            "最大风险阈值仅为显式工程阈值",
-        ),
-        (
-            "不是事故概率、SORA GRC 或 TLS",
-            "二维战略水平规划；输出为 MH/T 网格中心连成的二维航路，不计算 P7 高度、三维/四维风险，也不做路径平滑",
-            "不在规划器内重算风险",
-        ),
-        (),
-    )
-
-
-def _layered_route_planner_v1_manifest():
-    return AlgorithmManifest(
-        "layered_route_planner", LayeredRoutePlannerV1.algorithm_id,
-        LayeredRoutePlannerV1.algorithm_version,
-        "Layered Risk-Aware Route Planner V1 (legacy/baseline)", "CNS-PLANNER",
-        "engineering_baseline",
-        "按显式 AltitudeLayer 建立 coarse 地形/建筑垂向可行性 mask，在 MH/T L8 feasible cells "
-        "上以 Risk Framework V2 domain index 作为 soft cost 执行单层 A*，输出 candidate。",
-        (
-            "scenario_or_od_route", "explicit_altitude_layer", "grid.cells",
-            "layer_feasibility_mask", "grid_risk_v2.cells", "layered_route_feasibility_policy",
-            "layered_route_cost_policy", "hard_constraints", "building_clearance_policy",
-        ),
-        (
-            "layered_route_candidate", "layer_feasibility_mask", "grid_path", "distance_m",
-            "optimization_cost", "cost_breakdown", "fingerprints",
-        ),
-        {
-            "type": "object",
-            "properties": {
-                "max_expanded_states": {"type": ["integer", "null"], "minimum": 1},
-            },
-            "additionalProperties": False,
-        },
-        (
-            "legacy/baseline layered planner：默认 layered_route_planner 已是 Theta* V2，"
-            "V1 只在项目显式选择时运行，且不会被静默迁移到 V2",
-            "高度层必须显式选择：不从 RouteAltitudeProfile 或 RouteOperatingLayer 推断",
-            "没有默认 terrain clearance，也没有默认 λ：null != 0，显式 0 合法",
-            "edge cost = d * (1 + λg·Rg + λa·Ra + λe·Re)，edge risk 取两端 domain index 平均",
-            "λ 均 >= 0，因此纯直线米制距离是 admissible heuristic",
-            "λ>0 的 domain 在任一候选 cell missing/unresolved/pending 时该 cell 不可遍历；λ=0 时该 domain 不作为规划输入",
-            "可行性只是 coarse_strategic_vertical_envelope",
-        ),
-        (
-            "输出只是 candidate：operational_route=false、continuous_validation_required=true，"
-            "不写 operational_routes/CNS，也不自动创建 RouteOperatingLayer",
-            "coarse mask 不是 exact footprint，也不做水平/精确建筑净空（留给后续 continuous validation）",
-            "Risk Framework V2 overall 不使用；适飞空域仍 display_only，不进入搜索或 fingerprint",
-            "不跨层、无自由 3D state、不做路径平滑或 Theta*",
-        ),
         (),
     )
 
@@ -439,32 +313,6 @@ def _layered_risk_aware_theta_star_v2_manifest():
             "communication 接口本轮 used_in_cost=false 且 used_as_constraint=false，不影响 path/cost",
             "不猜真实航空器转弯半径；D_ref 由当前 L8 典型网格步长派生并记录 provenance",
         ),
-        (),
-    )
-
-
-def _coverage_manifest():    return AlgorithmManifest(
-        "coverage_planner", CoveragePlannerV1.algorithm_id, CoveragePlannerV1.algorithm_version,
-        "Coverage Planner V1", "CNS-PLANNER", "demo",
-        "按设备水平覆盖半径生成 C/N/S 主站、补盲站与共址结果。",
-        ("operational_routes", "device_catalog_coverage_v1"), ("coverage_plan",),
-        {"type": "object", "additionalProperties": False},
-        ("二维圆覆盖", "设备参数由 DeviceCatalog 兼容转换提供"),
-        ("不计算传播、遮挡、干扰或三维服务体积",),
-        (),
-    )
-
-
-def _gap_manifest():
-    return AlgorithmManifest(
-        "cns_gap_analyzer", CNSGapAnalyzerV1.algorithm_id, CNSGapAnalyzerV1.algorithm_version,
-        "CNS Gap Analysis V1", "CNS-PLANNER", "engineering_baseline",
-        "按航路长度比较 RequiredCNS、机载能力和既有设施水平覆盖。",
-        ("operational_routes", "required_cns", "aircraft_profile", "existing_cns", "device_catalog"),
-        ("route_cns_gaps", "uncovered_segments", "coverage_ratio"),
-        {"type": "object", "additionalProperties": False},
-        ("既有设施使用设备 coverage radius 水平覆盖",),
-        ("不计算传播、遮挡、干扰或三维性能",),
         (),
     )
 
@@ -539,20 +387,6 @@ def _protection_manifest():
         {"type": "object", "additionalProperties": True},
         ("响应分量相加", "响应期内相对接近速度恒定"),
         ("不是法规 Well-Clear 或正式 DAA Detection Volume", "不评估飞机动力学"),
-        (),
-    )
-
-
-def _site_planner_manifest():
-    return AlgorithmManifest(
-        "site_planner", ReuseFirstSitePlannerV1.algorithm_id, ReuseFirstSitePlannerV1.algorithm_version,
-        "Reuse-first CNS Site Planner V1", "CNS-PLANNER", "engineering_baseline",
-        "按明确 reuse tier 和 P7/P8 what-if 正边际收益生成 proposal-only CNS 站址动作。",
-        ("gap_v2_planning_segments", "candidate_actions", "candidate_impacts", "site_planning_policy"),
-        ("selected_actions", "remaining_planning_gap", "cost_summary"),
-        {"type": "object", "additionalProperties": False},
-        ("target weight 仅为 confirmed planning-gap length", "无 confirmed cost 时使用 action-count proxy"),
-        ("proposal 不修改 ExistingCNS", "需要 P12 apply + rerun 闭环验证", "不求解联合动作冗余"),
         (),
     )
 

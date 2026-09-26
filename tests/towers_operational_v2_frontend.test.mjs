@@ -431,13 +431,13 @@ test('FRONTEND: the Proposal surfaces the two-layer host/mount status',()=>{
   assert.match(step05,/物理安装 未核实（需现场勘察） · 分系统证据状态/);
 });
 
-test('FRONTEND: the Step05 reuse-tier description matches the real code order',()=>{
-  const expected='Existing CNS → Existing Shared Site → Tower Colocation Host'
-    +'（真实铁塔共塔宿主）→ Candidate Site → New-build Candidate';
-  assert.ok(step05.includes(expected),'说明文字必须与 REUSE_TIERS 完全一致');
+test('FRONTEND: the Step05 corridor site planning keeps the real reuse-tier order',()=>{
+  // B8X：旧版复用优先站址试算（ReuseFirstSitePlannerV1）及其 tier 说明已随 delete gate
+  // 删除；production 设施规划只走 corridor site plan，并且仍然 prefer 复用而不是新建。
+  assert.doesNotMatch(step05,/ReuseFirstSitePlannerV1|旧版站址试算/);
   assert.doesNotMatch(step05,/tier 固定为 Existing CNS → Existing Shared Site → Candidate Site/,
     '不得保留缺少共塔 tier 的旧说明');
-  assert.match(step05,/prefer 共塔而不是 force/);
+  assert.match(step05,/走廊复用优先规划策略/);
   // 与代码里的真实顺序一致
   const tiers=['existing_cns_facility','existing_shared_site','tower_colocation_host',
     'candidate_site','new_build_candidate'];

@@ -3,8 +3,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from cns_planner.algorithms.registry import default_algorithm_selection
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import blank_project, normalize_project
@@ -130,66 +128,43 @@ def test_unresolvable_saved_selection_falls_back_to_frozen_baseline_without_writ
     assert read_existing_legacy(reopened.state, "operational_routes", "RoutePlannerV1")["existing"] is True
 
 
-def test_compatibility_compute_is_runtime_only_and_aliases_are_marked(tmp_path):
+def test_compatibility_catalog_remains_but_compute_and_selection_routes_are_gone(tmp_path):
     workflow = WorkflowService(tmp_path / "runtime.json", DEFAULTS)
-    algorithm_note = (workflow.state.get("algorithm_selection") or {}).get("route_planner")
-    assert algorithm_note is None, "新项目不得持久化 legacy route_planner selection"
-    workflow.snapshot()  # materialise pre-existing runtime-only derived caches
     before = deepcopy(workflow.state)
-    response = workflow.analyze_cns_gaps()
+    context = SimpleNamespace(
+        workflow=workflow,
+        data=SimpleNamespace(hard_constraints=[]),
+        static=tmp_path,
+    )
+    router = ApiRouter(context)
+
+    assert router.get("/api/compatibility/catalog", {}, {}).data == capability_catalog()
+    for path in (
+        "/api/compatibility/route-planner",
+        "/api/compatibility/coverage",
+        "/api/compatibility/cns-gap-analysis-v1",
+        "/api/compatibility/site-plan",
+        "/api/cns-gaps",
+        "/api/cns-site-plan",
+    ):
+        assert router.get(path, {}, {}).status == 404
+    for path in (
+        "/api/compatibility/route-planner/evaluate",
+        "/api/compatibility/coverage/evaluate",
+        "/api/compatibility/cns-gap-analysis-v1/evaluate",
+        "/api/compatibility/site-plan/evaluate",
+        "/api/compatibility/selection",
+    ):
+        assert router.post(path, {}).status == 404
     assert workflow.state == before
-    assert response["cns_gap_analysis"]["persistent_write"] is False
-    assert "cns_gap_analysis" not in workflow.state
-
-    context = SimpleNamespace(workflow=workflow, data=SimpleNamespace(hard_constraints=[]))
-    router = ApiRouter(context)
-    catalog = router.get("/api/compatibility/catalog", {}, {}).data
-    assert catalog == capability_catalog()
-    alias = router.get("/api/cns-gaps", {}, {}).data
-    assert alias["compatibility"] is True
-    assert alias["deprecated"] is True
-    assert alias["authoritative"] is False
-    assert alias["persistent_write"] is False
-    assert alias["namespace"] == "/api/compatibility/cns-gap-analysis-v1"
 
 
-def test_runtime_compatibility_selection_updates_only_the_session(tmp_path):
-    """归档规划器参数只能写运行期 compatibility selection，绝不写 ProjectState。"""
-
-    target = tmp_path / "selection" / "project.json"
-    target.parent.mkdir()
-    workflow = WorkflowService(target, DEFAULTS)
-    context = SimpleNamespace(workflow=workflow, data=SimpleNamespace(hard_constraints=[]))
-    router = ApiRouter(context)
-    before = deepcopy(workflow.state)
-
-    response = router.post("/api/compatibility/selection", {
-        "algorithm_type": "route_planner",
-        "algorithm_id": "risk_aware_route_planner_v2",
-        "parameters": {"risk_weight_lambda": 1.5, "unknown_risk_policy": "penalize",
-                       "unknown_penalty_index": 0.5},
-    }).data
-    assert response["capability_id"] == "RiskAwareRoutePlannerV2"
-    assert response["persistent_write"] is False
-    assert response["authoritative"] is False
-    assert workflow.state == before, "运行期 compatibility 参数不得写项目状态"
-    assert "route_planner" not in workflow.state.get("algorithm_selection", {})
+def test_compatibility_selection_is_passive_and_never_constructs_an_algorithm(tmp_path):
+    workflow = WorkflowService(tmp_path / "selection.json", DEFAULTS)
     selection = workflow.compatibility_selection.selection("route_planner")
-    assert selection["selection_source"] == "runtime_compatibility_selection"
-    assert selection["parameters"]["risk_weight_lambda"] == 1.5
-    # 后续 compatibility 试算必须按运行期覆盖现取实例，而不是沿用进程启动时的基线。
-    assert workflow.compatibility_selection.create("route_planner").algorithm_id == "risk_aware_route_planner_v2"
-    assert workflow.compatibility_selection.create("route_planner").parameters["risk_weight_lambda"] == 1.5
-
-    updated = WorkflowService(target, DEFAULTS)
-    assert updated.compatibility_selection.selection("route_planner")["algorithm_id"] == "route_planner_v1"
-    assert updated.compatibility_selection.selection("route_planner")["selection_source"] == "frozen_compatibility_baseline"
-
-    with pytest.raises(ValueError, match="compatibility capability"):
-        router.post("/api/compatibility/selection", {
-            "algorithm_type": "route_planner", "algorithm_id": "route_planner_v9",
-            "parameters": {},
-        })
+    assert selection["algorithm_id"] == "route_planner_v1"
+    assert selection["selection_source"] == "frozen_compatibility_baseline"
+    assert not hasattr(workflow.compatibility_selection, "create")
 
 
 def test_catalog_and_delete_gate_report_are_complete():

@@ -124,15 +124,15 @@ test('P17 recommendation summary preserves pending/conflict/divergence semantics
   assert.deepEqual(requirementRecommendationSummary({status:'conflict',matched_policies:[{}],unknown_policies:[{}],conflicts:[{}],current_vs_recommended_diff:[{},{}],current_required_cns_diverged:true}),{status:'conflict',matched:1,unknown:1,conflicts:1,changes:2,diverged:true});
 });
 
-test('step 3 exposes V2 risk parameters without changing the V1 panel',()=>{
+test('step 3 shows V2 risk parameters as read-only history without a run entry',()=>{
   globalThis.document={createElement:()=>{const node={innerHTML:''};Object.defineProperty(node,'textContent',{set(value){node.innerHTML=String(value)}});return node;}};
   assert.equal(riskAwareRoutePanel({algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'1.0'}}}), '');
   const html=riskAwareRoutePanel({algorithm_selection:{route_planner:{algorithm_id:'risk_aware_route_planner_v2',version:'2.0',parameters:{risk_weight_lambda:3,risk_component:'ground',unknown_risk_policy:'penalize',unknown_penalty_index:.8}}}});
   assert.match(html,/Risk-Aware Route Planner V2/);
-  assert.match(html,/Risk weight λ/);
-  assert.match(html,/Ground/);
-  assert.match(html,/Penalize/);
-  assert.match(html,/不是事故概率、SORA GRC 或 TLS/);
+  // B8X：V2 已物理删除，面板降级为历史只读；参数仍可审计，但不得再有运行/覆盖入口。
+  assert.match(html,/历史只读/);
+  assert.match(html,/risk_weight_lambda 3/);
+  assert.doesNotMatch(html,/id="saveRiskRouteParameters"|id="evaluateRiskAwareRoute"/);
 });
 
 test('reference landing sites stay separate and support workspace search filters',()=>{
@@ -175,8 +175,8 @@ test('formal route getters and map never fall back to compatibility results',()=
   assert.deepEqual(referenceOverlayModel(flow).operationalRoutes,[]);
   const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
   assert.match(html,/尚未发布正式运行航路/);
-  assert.match(html,/\/api\/compatibility\/route-planner\/evaluate/);
-  assert.match(html,/runtime-only/);
+  // B8X：旧版兼容结果只读；正式 getter 与地图叠加层绝不回退到 compatibility 结果。
+  assert.match(html,/旧版航路结果（只读）|旧版航路试算（不发布 \/ 非正式）/);
   assert.doesNotMatch(readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8'),/canonical\s*\|\|\s*compatibility/);
 });
 
@@ -270,7 +270,7 @@ test('step 3 side by side view never declares a winner',()=>{
   assert.doesNotMatch(html,/>更好</);
 });
 
-test('step 3 explicit OD panel creates a single pair and keeps the legacy generator',()=>{
+test('step 3 explicit OD panel creates a single pair and keeps no legacy generator',()=>{
   const flow={nodes:[{node_id:'N001',name:'A',coordinate:[0,0]},{node_id:'N002',name:'B',coordinate:[0.001,0]},{node_id:'N003',name:'C',coordinate:[0,0.001]}],scenario_routes:[],operational_routes:[],algorithm_selection:{route_planner:{algorithm_id:'route_planner_v1',version:'1.0',parameters:{}}},algorithm_catalog:[],retired_route_ids:[],risks:{environment:{status:'not_calculated'}},steps:{'3':false},spatial_3d:{route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{}},route_vertical_profiles:{},building_clearance_policy:{},building_clearance_assessment:{},reference_routes:{items:[],points:[]},reference_landing_sites:{items:[]},workspace:{bbox:[0,0,0.1,0.1]}};
   const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
   assert.match(html,/起点 → 终点 创建航路/);
@@ -278,9 +278,11 @@ test('step 3 explicit OD panel creates a single pair and keeps the legacy genera
   assert.match(html,/id="odEndNode"/);
   assert.match(html,/id="createOdRoute"/);
   assert.match(html,/不会因为参考点数量自动生成全连接/);
-  assert.match(html,/生成场景航路（all-pairs，兼容）/);
+  // B8X：旧版 all-pairs 场景生成已撤下，不再出现在任何区域。
+  assert.doesNotMatch(html,/生成场景航路（all-pairs，兼容）/);
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
   assert.match(source,/mutate\('scenario-od'/);
+  assert.doesNotMatch(source,/actionButton\('scenarioRoutes'/);
 });
 
 test('step 3 experiment panel shows both planners without pretending to be the operational route',()=>{
@@ -303,7 +305,9 @@ test('step 3 experiment panel shows both planners without pretending to be the o
   assert.match(html,/experiment ≠ current operational route/);
   assert.match(html,/不切换当前 planner/);
   assert.match(html,/不覆盖 operational_routes/);
-  assert.match(html,/运行 V1 \+ V2 比较实验/);
+  // B8X：V1/V2 比较实验不再提供重新运行入口，历史记录均为只读。
+  assert.match(html,/历史实验只读：不再提供 V1\/V2 重算或删除动作/);
+  assert.doesNotMatch(html,/运行 V1 \+ V2 比较实验/);
   assert.match(html,/risk_aware_route_planner_v2/);
   assert.match(html,/没有 confirmed allowed airspace/);
 });
@@ -474,11 +478,11 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/C\/N\/S 服务时间线/);
   assert.match(step5,/战术保护包络/);
   assert.match(step5,/工程保护距离 ≠ 法规 Well-Clear/);
-  assert.match(step5,/保护与缺口分析/);
+  assert.match(step5,/保护与缺口记录/);
   assert.match(step5,/Unknown 表示证据不足/);
-  assert.match(step5,/Gap 也不自动触发 Safety Event/);
-  assert.match(step5,/旧版站址试算（不用于正式规划）/);
-  assert.match(step5,/旧版兼容试算仅保存在当前会话/);
+  // B8X：旧版 Gap V2 / 旧版站址试算入口已随 delete gate 删除，只保留可导出的历史记录。
+  assert.match(step5,/历史记录可导出但不再重算/);
+  assert.match(step5,/旧版兼容试算结果不解锁下一步/);
   assert.match(step5,/高级：方案影响试算/);
   assert.match(step5,/只在工作副本比较方案前后影响/);
   assert.match(step5,/不会写入正式覆盖、设施、确认方案或运行航路/);
@@ -1028,10 +1032,11 @@ test('V3-B readiness, fine policy hand-off and staleness are rendered',()=>{
   assert.deepEqual(readiness.refinementReadiness.blockingReasons,['terrain_dtm_not_configured_or_missing']);
   assert.equal(readiness.scope.implementedInOtherStages.corridor_local_fine_refinement,'V3-B');
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
-  assert.match(source,/\/api\/research\/route-planner-v3\/fine-policy/);
-  assert.match(source,/\/api\/research\/route-planner-v3-refinements\/evaluate/);
-  assert.match(source,/loadRoutePlannerV3Detail/);
-  assert.match(source,/horizontal_crs:c\.\$\('v3bFineCrs'\)/);
+  // B8X：V3 的 research compute 入口（policy / fine-policy / evaluate）已随普通 Advanced
+  // 可执行入口一并撤下；V3 历史记录改为随项目只读读取。
+  assert.doesNotMatch(source,/\/api\/research\/route-planner-v3\//);
+  assert.doesNotMatch(source,/\/api\/research\/route-planner-v3-refinements\/evaluate/);
+  assert.match(source,/export function bindRoutePlannerV3\(\)\{\}/);
 });
 
 test('V3-B statuses are extended and never include a validated status',()=>{
@@ -1449,8 +1454,9 @@ test('V3-D preview block shows route/profile/provenance and the downstream inval
   assert.match(html,/path\/profile 顶点顺序与距离基准一致/);
   assert.match(html,/simplification_applied false/);
   assert.match(html,/crs_mixing false/);
-  assert.match(html,/operational_routes \/ spatial_3d \/ CNS/);
-  assert.match(html,/untouched=true \/ untouched=true \/ not_run=true/);
+  // B8X：旧版 RoutePlannerV1 已物理删除，V3-D preview 不再声明 operational_routes 未被触碰。
+  assert.match(html,/spatial_3d \/ CNS/);
+  assert.match(html,/untouched=true \/ not_run=true/);
   assert.match(html,/TOCTOU/);
   assert.match(html,/id="previewRoutePlannerV3Adoption"/);
   assert.match(html,/id="applyRoutePlannerV3Adoption"/);
@@ -1503,7 +1509,9 @@ test('V3-D CNS summary reports route validation and CNS compliance side by side'
   assert.match(html,/does_not_meet/);
   assert.match(html,/评估可以 complete 而 verdict 为 does_not_meet/);
   assert.match(html,/CNS 缺口绝不回写成 route validation failed/);
-  assert.match(html,/id="assessV3AdoptedRoute"/);
+  // B8X：V3-D CNS 桥接不再提供重新运行入口，只保留历史结果的只读审计视图。
+  assert.doesNotMatch(html,/id="assessV3AdoptedRoute"/);
+  assert.match(html,/历史 V3 CNS 评估仅供只读审计；本页面不再提供重新运行入口/);
   // A not-yet-published adoption disables the bridge and says so explicitly.
   const unpublished=v3dFlow({adoptions:{status:'not_calculated',count:0,current_count:0,
     stale_count:0,revoked_count:0,items:[]}});
@@ -2243,18 +2251,19 @@ function thetaV2BindHarness(flow,fields={}){
   return {c,calls,registered,handlers};
 }
 
-test('the layered candidate bind switch follows the same exact algorithm id',async()=>{
-  // V1：仍然绑定 legacy λ 流程（cost policy 保存 + evaluate 要求 λ）
+test('the layered candidate bind switch always uses the Theta* V2 production panel',async()=>{
+  // B8X：LayeredRoutePlannerV1 已物理删除，legacy λ cost policy 入口不再被注册。
   const v1=thetaV2BindHarness(layeredFlow());
   bindLayeredCandidatePanel(v1.c);
   assert.deepEqual(v1.registered,['saveLayeredRequest','saveLayeredFeasibilityPolicy',
-    'saveLayeredCostPolicy','evaluateLayeredCandidate']);
+    'saveThetaV2ShelterPolicy','saveThetaV2ObjectivePolicy','saveThetaV2RiskDensity',
+    'evaluateLayeredCandidate']);
+  assert.equal(v1.registered.includes('saveLayeredCostPolicy'),false,
+    'legacy cost policy 入口不得再注册');
   await v1.handlers.evaluateLayeredCandidate();
-  assert.equal(v1.calls.length,1);
-  assert.equal(v1.calls[0][0],'__error');
-  assert.match(v1.calls[0][1],/λ/,'V1 仍然要求 legacy λ');
+  assert.deepEqual(v1.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
 
-  // V2：绝不绑定 legacy cost policy，也不把 λ 当 blocker
+  // V2：同样只走 Theta* V2，且绝不把 λ 当 blocker
   const v2=thetaV2BindHarness(thetaV2Flow());
   bindLayeredCandidatePanel(v2.c);
   assert.deepEqual(v2.registered,['saveLayeredRequest','saveLayeredFeasibilityPolicy',
@@ -2266,17 +2275,18 @@ test('the layered candidate bind switch follows the same exact algorithm id',asy
   assert.deepEqual(v2.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
 });
 
-test('the layered candidate view is chosen by the exact algorithm id only',()=>{
+test('the layered candidate view is the Theta* V2 panel regardless of the saved legacy selection',()=>{
   assert.equal(layeredPlannerUsesThetaStarV2(thetaV2Flow()),true);
   assert.equal(layeredPlannerUsesThetaStarV2(layeredFlow()),false);
-  // 缺失算法信息或未知 id 时绝不冒充 Theta* V2：退回既有 V1 面板
   assert.equal(layeredPlannerUsesThetaStarV2({}),false);
   assert.equal(layeredPlannerUsesThetaStarV2({layered_route_planner_readiness:{algorithm:{algorithm_id:'risk_aware_route_planner_v2'}}}),false);
 
+  // B8X：项目里残留的 V1 selection 不再产生可执行的 V1 面板；面板固定为 Theta* V2。
   const v1Html=layeredCandidatePanel(layeredFlow());
-  assert.match(v1Html,/Layered Risk-Aware Route Planner V1/);
-  assert.match(v1Html,/id="layeredGroundLambda"/);
-  assert.doesNotMatch(v1Html,/Theta\* V2 candidate/);
+  assert.match(v1Html,/data-theta-v2-panel=/);
+  assert.doesNotMatch(v1Html,/id="layeredGroundLambda"|id="saveLayeredCostPolicy"/,
+    'V1 selection 不得再渲染 legacy λ cost policy 控件');
+  assert.ok(v1Html.includes(THETA_STAR_V2_PANEL_TITLE),'Theta* V2 标题必须出现');
 
   const v2Html=layeredCandidatePanel(thetaV2Flow());
   assert.ok(v2Html.includes(THETA_STAR_V2_PANEL_TITLE),'Theta* V2 标题必须出现');

@@ -8,7 +8,6 @@ from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.gis.fine_environment_adapter import FINE_SOURCE_ROLES, real_data_source_readiness
 from cns_planner.gis.v3_environment_adapter import V3RealEnvironmentAdapter
 from cns_planner.risk.v1 import RiskModelV1
-from cns_planner.route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 from cns_planner.route_planner_v3.continuous_contracts import validation_fingerprint_components
 from cns_planner.route_planner_v3.continuous_validation import _route_status
 from cns_planner.route_planner_v3.hard_constraints import HardConstraintEvaluator
@@ -111,23 +110,6 @@ def test_real_v3a_adapter_keeps_unknown_building_height_unresolved():
     assert cell["buildings"]["data_status"] == "unknown"
     assert cell["buildings"]["required_clearance_egm2008_m"] is None
     assert cell["airspace"]["status"] == "not_applicable"
-
-
-def test_v2_path_and_result_do_not_depend_on_airspace_eligibility():
-    grid = {"status": "passed", "level": 8, "cells": [
-        {"grid_id": "A", "center": [122.0, 30.0], "bbox": [121.9995, 29.9995, 122.0005, 30.0005], "column": 0, "row": 0, "level": 8},
-        {"grid_id": "B", "center": [122.001, 30.0], "bbox": [122.0005, 29.9995, 122.0015, 30.0005], "column": 1, "row": 0, "level": 8},
-    ]}
-    route = {"route_id": "R", "start": [122.0, 30.0], "end": [122.001, 30.0]}
-    risk = {"status": "passed", "cells": {
-        key: {"overall": {"status": "passed", "score": 0.1}} for key in ("A", "B")
-    }}
-    planner = RiskAwareRoutePlannerV2()
-    first = planner.plan(route, grid, risk, [], {"status": "blocked", "allowed_grid_ids": []})
-    second = planner.plan(route, grid, risk, [], {"status": "passed", "allowed_grid_ids": ["A"]})
-    assert first["status"] == second["status"] == "passed"
-    assert first["input_fingerprint"] == second["input_fingerprint"]
-    assert first["airspace_source"]["status"] == "not_applicable"
 
 
 def test_risk_value_and_inputs_do_not_depend_on_airspace_mapping():
@@ -373,5 +355,4 @@ def test_airspace_and_basemap_source_changes_do_not_stale_risk_or_routes(tmp_pat
     assert service.state["operational_routes"] == [{"route_id": "R0001", "status": "passed"}]
     assert service.state["result_statuses"].get("routes") != "stale"
     assert service.state["result_statuses"].get("environment_risk") != "stale"
-
 

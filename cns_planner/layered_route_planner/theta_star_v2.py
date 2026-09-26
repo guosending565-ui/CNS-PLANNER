@@ -41,7 +41,7 @@ from copy import deepcopy
 from heapq import heappop, heappush
 import math
 
-from ..algorithms.coverage.v1 import distance_m
+from ..domain.geodesy import distance_m
 from ..domain.building_clearance import building_roof_elevation, evaluate_vertical_clearance
 from ..domain.communication_planning_field import communication_readiness
 from ..domain.layered_route import (

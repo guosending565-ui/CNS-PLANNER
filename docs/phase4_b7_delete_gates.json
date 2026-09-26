@@ -1,7 +1,7 @@
 {
   "generator_schema_version": "phase4-b7r-delete-gates-v4",
   "schema_version": "phase4-b7r-delete-gates-v4",
-  "generated_from_head": "eb6e8c44ea52875bea9af9e2076a1d145f8779c5",
+  "generated_from_head": "1c48cd78d0ccba2d9c471b335cf97c9b6ce931b4",
   "mode": "report_only_no_deletion",
   "note": "B7R 只报告：即使 ready_for_delete=true 也不删除任何模块，物理删除留给 B8。每项 checks 都是对当前工作区的真实扫描结果；project_state_writer 只由目标 capability 自己拥有的 persistent ProjectState writer 阻塞，canonical/shared/runtime-only 写点保留为非阻塞证据；default_selection 用 default_algorithm_selection() 精确比较，old_fixture_read 由真实 open/read/export/roundtrip 实测得出。",
   "check_semantics": {
@@ -26,9 +26,7 @@
       "tests/b7x_compatibility_ui.test.mjs",
       "tests/fixtures/compatibility/"
     ],
-    "guard_test_allowlist": {
-      "tests/test_production_write_authority.py": "B2B/B7X production write authority guard：显式构造 legacy planner / registry 条目，只为断言 canonical ProjectState 不被旧算法改写。"
-    },
+    "guard_test_allowlist": {},
     "state_mutator_methods": [
       "update",
       "setdefault",
@@ -118,20 +116,16 @@
       "capability_id": "RoutePlannerV1",
       "checks": {
         "production_imports": true,
-        "production_api_actions": false,
-        "frontend_production_actions": false,
+        "production_api_actions": true,
+        "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
         "service_fallback": true,
         "old_fixture_read": true,
-        "tests_migrated": false
+        "tests_migrated": true
       },
-      "ready_for_delete": false,
-      "blockers": [
-        "frontend_production_actions",
-        "production_api_actions",
-        "tests_migrated"
-      ],
+      "ready_for_delete": true,
+      "blockers": [],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
@@ -141,36 +135,15 @@
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
-          "passed": false,
-          "total": 2,
-          "items": [
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 75,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/route-planner"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 412,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/route-planner/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1997,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/route-planner/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -191,18 +164,9 @@
             "RoutePlannerV1"
           ],
           "owned_writer_symbols": [],
-          "detected_writer_total": 10,
-          "non_blocking_writer_total": 10,
+          "detected_writer_total": 8,
+          "non_blocking_writer_total": 8,
           "non_blocking_writer_evidence": [
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 101,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "operational_routes",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'operational_routes', ...)"
-            },
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
               "line": 251,
@@ -232,7 +196,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 120,
+              "line": 102,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -241,7 +205,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 121,
+              "line": 103,
               "kind": "runtime_compatibility_cache_mutation",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -250,21 +214,12 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 123,
+              "line": 105,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
               "ownership_class": "canonical_writer",
               "detail": "state['operational_routes']"
-            },
-            {
-              "file": "cns_planner/application/route_service.py",
-              "line": 309,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "operational_routes",
-              "owner": "RouteService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'operational_routes', ...)"
             },
             {
               "file": "cns_planner/application/workspace_service.py",
@@ -322,58 +277,9 @@
         },
         "tests_migrated": {
           "semantics": "测试迁移：production tests 是否仍真实实例化/执行该 capability 的算法（直接实例化或 registry 精确 (type, id, version) 构造）。断言 legacy 不可写、compatibility guard、只读 manifest 与字符串提及不算。",
-          "passed": false,
-          "total": 8,
-          "items": [
-            {
-              "file": "tests/test_route_planner_v3.py",
-              "line": 1199,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_route_planner_v3.py",
-              "line": 1208,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_route_planning_governance.py",
-              "line": 301,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_route_planning_governance.py",
-              "line": 308,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_route_planning_governance.py",
-              "line": 32,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_route_planning_governance.py",
-              "line": 272,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_v1_algorithm_characterization.py",
-              "line": 16,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            },
-            {
-              "file": "tests/test_workflow.py",
-              "line": 88,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RoutePlannerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         }
       }
     },
@@ -382,20 +288,16 @@
       "capability_id": "RiskAwareRoutePlannerV2",
       "checks": {
         "production_imports": true,
-        "production_api_actions": false,
-        "frontend_production_actions": false,
+        "production_api_actions": true,
+        "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
         "service_fallback": true,
         "old_fixture_read": true,
-        "tests_migrated": false
+        "tests_migrated": true
       },
-      "ready_for_delete": false,
-      "blockers": [
-        "frontend_production_actions",
-        "production_api_actions",
-        "tests_migrated"
-      ],
+      "ready_for_delete": true,
+      "blockers": [],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
@@ -405,30 +307,15 @@
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 431,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/selection"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 2009,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/selection"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -449,18 +336,9 @@
             "RiskAwareRoutePlannerV2"
           ],
           "owned_writer_symbols": [],
-          "detected_writer_total": 10,
-          "non_blocking_writer_total": 10,
+          "detected_writer_total": 8,
+          "non_blocking_writer_total": 8,
           "non_blocking_writer_evidence": [
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 101,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "operational_routes",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'operational_routes', ...)"
-            },
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
               "line": 251,
@@ -490,7 +368,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 120,
+              "line": 102,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -499,7 +377,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 121,
+              "line": 103,
               "kind": "runtime_compatibility_cache_mutation",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -508,21 +386,12 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 123,
+              "line": 105,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
               "ownership_class": "canonical_writer",
               "detail": "state['operational_routes']"
-            },
-            {
-              "file": "cns_planner/application/route_service.py",
-              "line": 309,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "operational_routes",
-              "owner": "RouteService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'operational_routes', ...)"
             },
             {
               "file": "cns_planner/application/workspace_service.py",
@@ -580,116 +449,9 @@
         },
         "tests_migrated": {
           "semantics": "测试迁移：production tests 是否仍真实实例化/执行该 capability 的算法（直接实例化或 registry 精确 (type, id, version) 构造）。断言 legacy 不可写、compatibility guard、只读 manifest 与字符串提及不算。",
-          "passed": false,
-          "total": 17,
-          "items": [
-            {
-              "file": "tests/test_airspace_decoupling_v1.py",
-              "line": 125,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 175,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 226,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 313,
-              "kind": "legacy_algorithm_registry_construction",
-              "registry_entry": [
-                "route_planner",
-                "risk_aware_route_planner_v2",
-                "2.0"
-              ]
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 125,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 84,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 85,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 100,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 120,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 126,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 137,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 143,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 155,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 159,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 164,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_risk_aware_route_planner_v2.py",
-              "line": 198,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            },
-            {
-              "file": "tests/test_route_planning_governance.py",
-              "line": 297,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "RiskAwareRoutePlannerV2"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         }
       }
     },
@@ -697,63 +459,23 @@
       "gate_id": "B7-DELETE-LAYEREDROUTEPLANNERV1",
       "capability_id": "LayeredRoutePlannerV1",
       "checks": {
-        "production_imports": false,
+        "production_imports": true,
         "production_api_actions": true,
         "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
-        "service_fallback": false,
+        "service_fallback": true,
         "old_fixture_read": true,
-        "tests_migrated": false
+        "tests_migrated": true
       },
-      "ready_for_delete": false,
-      "blockers": [
-        "production_imports",
-        "service_fallback",
-        "tests_migrated"
-      ],
+      "ready_for_delete": true,
+      "blockers": [],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
-          "passed": false,
-          "total": 5,
-          "items": [
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 53,
-              "kind": "from_import",
-              "module": "cns_planner.layered_route_planner.planner",
-              "name": "ALGORITHM_ID"
-            },
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 53,
-              "kind": "from_import",
-              "module": "cns_planner.layered_route_planner.planner",
-              "name": "ALGORITHM_VERSION"
-            },
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 53,
-              "kind": "from_import",
-              "module": "cns_planner.layered_route_planner.planner",
-              "name": "PLANNER_CAPABILITY"
-            },
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 53,
-              "kind": "from_import",
-              "module": "cns_planner.layered_route_planner.planner",
-              "name": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 53,
-              "kind": "from_import",
-              "module": "cns_planner.layered_route_planner.planner",
-              "name": "build_layer_feasibility_mask"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
@@ -791,7 +513,7 @@
           "non_blocking_writer_evidence": [
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 186,
+              "line": 190,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -800,7 +522,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 554,
+              "line": 558,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -809,7 +531,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 667,
+              "line": 671,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -818,7 +540,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 957,
+              "line": 961,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -827,7 +549,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 1218,
+              "line": 1222,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -844,22 +566,9 @@
         },
         "service_fallback": {
           "semantics": "Application 服务层是否仍真实引用该 capability 的算法符号（ast Name/Attribute 引用；import 行与字符串不算）。",
-          "passed": false,
-          "total": 2,
-          "items": [
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 137,
-              "kind": "service_symbol_reference",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 168,
-              "kind": "service_symbol_reference",
-              "symbol": "LayeredRoutePlannerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "old_fixture_read": {
           "semantics": "旧项目 fixture 可用性：该 capability 是否有对应 legacy_archive_cases fixture，且 open / read / export / roundtrip 实测通过。true = 可用（即不是 blocker）。",
@@ -885,92 +594,9 @@
         },
         "tests_migrated": {
           "semantics": "测试迁移：production tests 是否仍真实实例化/执行该 capability 的算法（直接实例化或 registry 精确 (type, id, version) 构造）。断言 legacy 不可写、compatibility guard、只读 manifest 与字符串提及不算。",
-          "passed": false,
-          "total": 11,
-          "items": [
-            {
-              "file": "tests/test_layered_route_planner.py",
-              "line": 748,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_layered_route_planner.py",
-              "line": 805,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_layered_route_planner.py",
-              "line": 890,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_layered_route_planner.py",
-              "line": 918,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_layered_route_planner.py",
-              "line": 131,
-              "kind": "legacy_algorithm_registry_construction",
-              "registry_entry": [
-                "layered_route_planner",
-                "layered_route_planner_v1",
-                "1.0"
-              ]
-            },
-            {
-              "file": "tests/test_layered_theta_star_v2.py",
-              "line": 1019,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_layered_theta_star_v2.py",
-              "line": 1024,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_layered_theta_star_v2.py",
-              "line": 360,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "LayeredRoutePlannerV1"
-            },
-            {
-              "file": "tests/test_phase35_bug_route_002.py",
-              "line": 384,
-              "kind": "legacy_algorithm_registry_construction",
-              "registry_entry": [
-                "layered_route_planner",
-                "layered_route_planner_v1",
-                "1.0"
-              ]
-            },
-            {
-              "file": "tests/test_risk_v2_canonical_integration.py",
-              "line": 158,
-              "kind": "legacy_algorithm_registry_construction",
-              "registry_entry": [
-                "layered_route_planner",
-                "layered_route_planner_v1",
-                "1.0"
-              ]
-            },
-            {
-              "file": "tests/test_route_risk_profile.py",
-              "line": 89,
-              "kind": "legacy_algorithm_registry_construction",
-              "registry_entry": [
-                "layered_route_planner",
-                "layered_route_planner_v1",
-                "1.0"
-              ]
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         }
       }
     },
@@ -980,7 +606,7 @@
       "checks": {
         "production_imports": false,
         "production_api_actions": false,
-        "frontend_production_actions": false,
+        "frontend_production_actions": true,
         "project_state_writer": false,
         "default_selection": true,
         "service_fallback": false,
@@ -989,7 +615,6 @@
       },
       "ready_for_delete": false,
       "blockers": [
-        "frontend_production_actions",
         "production_api_actions",
         "production_imports",
         "project_state_writer",
@@ -1448,147 +1073,63 @@
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
           "passed": false,
-          "total": 9,
+          "total": 8,
           "items": [
             {
               "file": "cns_planner/api/router.py",
-              "line": 96,
+              "line": 71,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-experiments"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 97,
+              "line": 72,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 98,
+              "line": 73,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/refinement-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 99,
+              "line": 74,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-refinements"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 100,
+              "line": 75,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/continuous-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 101,
+              "line": 76,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-validations"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 102,
+              "line": 77,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-adoptions"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 103,
+              "line": 78,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-publish"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 444,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/research/route-planner-v3"
             }
           ]
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 11,
-          "items": [
-            {
-              "file": "cns_planner/web/js/main.js",
-              "line": 83,
-              "kind": "frontend_action",
-              "helper": "api",
-              "endpoint": "/api/research/route-planner-v3-experiments"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1479,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3/policy"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1493,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-experiments/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1507,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3/fine-policy"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1519,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-refinements/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1532,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-experiments/delete"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1536,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3/validation-policy"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1544,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-validations/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1553,
-              "kind": "frontend_action",
-              "helper": "computeAction",
-              "endpoint": "/api/research/route-planner-v3-operational-adoptions/preview"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1565,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3-operational-adoptions/apply"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1575,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3-operational-adoptions/revoke"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -1694,25 +1235,25 @@
           "items": [
             {
               "file": "tests/test_route_planner_v3.py",
-              "line": 133,
+              "line": 132,
               "kind": "legacy_algorithm_instantiation",
               "symbol": "V3StrategicPlanner"
             },
             {
               "file": "tests/test_route_planner_v3.py",
-              "line": 146,
+              "line": 145,
               "kind": "legacy_algorithm_instantiation",
               "symbol": "V3StrategicPlanner"
             },
             {
               "file": "tests/test_route_planner_v3.py",
-              "line": 698,
+              "line": 697,
               "kind": "legacy_algorithm_instantiation",
               "symbol": "V3StrategicPlanner"
             },
             {
               "file": "tests/test_route_planner_v3.py",
-              "line": 1221,
+              "line": 1201,
               "kind": "legacy_algorithm_instantiation",
               "symbol": "V3StrategicPlanner"
             },
@@ -1887,26 +1428,23 @@
       "capability_id": "CoveragePlannerV1",
       "checks": {
         "production_imports": false,
-        "production_api_actions": false,
-        "frontend_production_actions": false,
+        "production_api_actions": true,
+        "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
         "service_fallback": true,
         "old_fixture_read": true,
-        "tests_migrated": false
+        "tests_migrated": true
       },
       "ready_for_delete": false,
       "blockers": [
-        "frontend_production_actions",
-        "production_api_actions",
-        "production_imports",
-        "tests_migrated"
+        "production_imports"
       ],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
           "passed": false,
-          "total": 8,
+          "total": 2,
           "items": [
             {
               "file": "cns_planner/algorithms/corridor/v1.py",
@@ -1921,83 +1459,20 @@
               "kind": "from_import",
               "module": "cns_planner.algorithms.coverage.v1",
               "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/application/reference_data_service.py",
-              "line": 9,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/layered_route_planner/planner.py",
-              "line": 29,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/layered_route_planner/theta_star_v2.py",
-              "line": 44,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/reference_data/routes.py",
-              "line": 12,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/risk/route_exposure.py",
-              "line": 21,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/route_planner/risk_aware_v2.py",
-              "line": 14,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
             }
           ]
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
-          "passed": false,
-          "total": 2,
-          "items": [
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 78,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/coverage"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 415,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/coverage/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 831,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/coverage/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -2019,27 +1494,9 @@
             "CoveragePlannerV1"
           ],
           "owned_writer_symbols": [],
-          "detected_writer_total": 3,
-          "non_blocking_writer_total": 3,
+          "detected_writer_total": 1,
+          "non_blocking_writer_total": 1,
           "non_blocking_writer_evidence": [
-            {
-              "file": "cns_planner/application/cns_planning_service.py",
-              "line": 56,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "coverage",
-              "owner": "CNSPlanningService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'coverage', ...)"
-            },
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 109,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "coverage",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'coverage', ...)"
-            },
             {
               "file": "cns_planner/application/workspace_service.py",
               "line": 147,
@@ -2087,16 +1544,9 @@
         },
         "tests_migrated": {
           "semantics": "测试迁移：production tests 是否仍真实实例化/执行该 capability 的算法（直接实例化或 registry 精确 (type, id, version) 构造）。断言 legacy 不可写、compatibility guard、只读 manifest 与字符串提及不算。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "tests/test_v1_algorithm_characterization.py",
-              "line": 72,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CoveragePlannerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         }
       }
     },
@@ -2104,70 +1554,35 @@
       "gate_id": "B7-DELETE-CNSGAPANALYZERV1",
       "capability_id": "CNSGapAnalyzerV1",
       "checks": {
-        "production_imports": false,
-        "production_api_actions": false,
-        "frontend_production_actions": false,
+        "production_imports": true,
+        "production_api_actions": true,
+        "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
-        "service_fallback": false,
+        "service_fallback": true,
         "old_fixture_read": true,
-        "tests_migrated": false
+        "tests_migrated": true
       },
-      "ready_for_delete": false,
-      "blockers": [
-        "frontend_production_actions",
-        "production_api_actions",
-        "production_imports",
-        "service_fallback",
-        "tests_migrated"
-      ],
+      "ready_for_delete": true,
+      "blockers": [],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/application/workflow_service.py",
-              "line": 21,
-              "kind": "from_import",
-              "module": "cns_planner.gap.v1",
-              "name": "CNSGapAnalyzerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
-          "passed": false,
-          "total": 2,
-          "items": [
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 81,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v1"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 418,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v1/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 848,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v1/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -2188,28 +1603,9 @@
             "CNSGapAnalyzerV1"
           ],
           "owned_writer_symbols": [],
-          "detected_writer_total": 2,
-          "non_blocking_writer_total": 2,
-          "non_blocking_writer_evidence": [
-            {
-              "file": "cns_planner/application/gap_analysis_service.py",
-              "line": 26,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_gap_analysis",
-              "owner": "GapAnalysisService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'cns_gap_analysis', ...)"
-            },
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 105,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_gap_analysis",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'cns_gap_analysis', ...)"
-            }
-          ]
+          "detected_writer_total": 0,
+          "non_blocking_writer_total": 0,
+          "non_blocking_writer_evidence": []
         },
         "default_selection": {
           "semantics": "新项目默认 selection：capability 的 algorithm_id 是否精确出现在 default_algorithm_selection() 的 algorithm_id 集合中（精确相等，不做 substring）。",
@@ -2219,16 +1615,9 @@
         },
         "service_fallback": {
           "semantics": "Application 服务层是否仍真实引用该 capability 的算法符号（ast Name/Attribute 引用；import 行与字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/application/workflow_service.py",
-              "line": 384,
-              "kind": "service_symbol_reference",
-              "symbol": "CNSGapAnalyzerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "old_fixture_read": {
           "semantics": "旧项目 fixture 可用性：该 capability 是否有对应 legacy_archive_cases fixture，且 open / read / export / roundtrip 实测通过。true = 可用（即不是 blocker）。",
@@ -2254,52 +1643,9 @@
         },
         "tests_migrated": {
           "semantics": "测试迁移：production tests 是否仍真实实例化/执行该 capability 的算法（直接实例化或 registry 精确 (type, id, version) 构造）。断言 legacy 不可写、compatibility guard、只读 manifest 与字符串提及不算。",
-          "passed": false,
-          "total": 7,
-          "items": [
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 41,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            },
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 78,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            },
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 56,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            },
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 66,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            },
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 69,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            },
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 72,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            },
-            {
-              "file": "tests/test_cns_gap_analysis.py",
-              "line": 96,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "CNSGapAnalyzerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         }
       }
     },
@@ -2307,69 +1653,35 @@
       "gate_id": "B7-DELETE-REUSEFIRSTSITEPLANNERV1",
       "capability_id": "ReuseFirstSitePlannerV1",
       "checks": {
-        "production_imports": false,
-        "production_api_actions": false,
-        "frontend_production_actions": false,
+        "production_imports": true,
+        "production_api_actions": true,
+        "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
         "service_fallback": true,
         "old_fixture_read": true,
-        "tests_migrated": false
+        "tests_migrated": true
       },
-      "ready_for_delete": false,
-      "blockers": [
-        "frontend_production_actions",
-        "production_api_actions",
-        "production_imports",
-        "tests_migrated"
-      ],
+      "ready_for_delete": true,
+      "blockers": [],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/application/workflow_service.py",
-              "line": 76,
-              "kind": "from_import",
-              "module": "cns_planner.site_planner.reuse_first_v1",
-              "name": "ReuseFirstSitePlannerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
-          "passed": false,
-          "total": 2,
-          "items": [
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 87,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/site-plan"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 424,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/site-plan/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 1,
-          "items": [
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 858,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/site-plan/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -2390,28 +1702,9 @@
             "ReuseFirstSitePlannerV1"
           ],
           "owned_writer_symbols": [],
-          "detected_writer_total": 2,
-          "non_blocking_writer_total": 2,
-          "non_blocking_writer_evidence": [
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 622,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_site_plan",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'cns_site_plan', ...)"
-            },
-            {
-              "file": "cns_planner/application/site_planning_service.py",
-              "line": 58,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_site_plan",
-              "owner": "SitePlanningService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'cns_site_plan', ...)"
-            }
-          ]
+          "detected_writer_total": 0,
+          "non_blocking_writer_total": 0,
+          "non_blocking_writer_evidence": []
         },
         "default_selection": {
           "semantics": "新项目默认 selection：capability 的 algorithm_id 是否精确出现在 default_algorithm_selection() 的 algorithm_id 集合中（精确相等，不做 substring）。",
@@ -2449,28 +1742,9 @@
         },
         "tests_migrated": {
           "semantics": "测试迁移：production tests 是否仍真实实例化/执行该 capability 的算法（直接实例化或 registry 精确 (type, id, version) 构造）。断言 legacy 不可写、compatibility guard、只读 manifest 与字符串提及不算。",
-          "passed": false,
-          "total": 3,
-          "items": [
-            {
-              "file": "tests/test_cns_site_planner.py",
-              "line": 275,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "ReuseFirstSitePlannerV1"
-            },
-            {
-              "file": "tests/test_towers_operational_integration_v2.py",
-              "line": 479,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "ReuseFirstSitePlannerV1"
-            },
-            {
-              "file": "tests/test_towers_operational_integration_v2.py",
-              "line": 506,
-              "kind": "legacy_algorithm_instantiation",
-              "symbol": "ReuseFirstSitePlannerV1"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         }
       }
     },
@@ -2480,7 +1754,7 @@
       "checks": {
         "production_imports": true,
         "production_api_actions": false,
-        "frontend_production_actions": false,
+        "frontend_production_actions": true,
         "project_state_writer": true,
         "default_selection": true,
         "service_fallback": true,
@@ -2489,7 +1763,6 @@
       },
       "ready_for_delete": false,
       "blockers": [
-        "frontend_production_actions",
         "production_api_actions"
       ],
       "evidence": {
@@ -2502,292 +1775,75 @@
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",
           "passed": false,
-          "total": 25,
+          "total": 10,
           "items": [
             {
               "file": "cns_planner/api/router.py",
-              "line": 72,
+              "line": 68,
               "kind": "runtime_api_route",
               "endpoint": "/api/compatibility/catalog"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 75,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/route-planner"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 78,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/coverage"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 81,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v1"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 84,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v2"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 87,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/site-plan"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 96,
+              "line": 71,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-experiments"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 97,
+              "line": 72,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 98,
+              "line": 73,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/refinement-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 99,
+              "line": 74,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-refinements"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 100,
+              "line": 75,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/continuous-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 101,
+              "line": 76,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-validations"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 102,
+              "line": 77,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-adoptions"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 103,
+              "line": 78,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-publish"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 104,
+              "line": 79,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/v3-cns-assessment"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 412,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/route-planner/evaluate"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 415,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/coverage/evaluate"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 418,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v1/evaluate"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 421,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v2/evaluate"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 424,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/site-plan/evaluate"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 431,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/compatibility/selection"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 444,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/research/route-planner-v3"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 446,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/research/v3-cns-assessment"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 445,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/research/"
-            },
-            {
-              "file": "cns_planner/api/router.py",
-              "line": 447,
-              "kind": "runtime_api_route",
-              "endpoint": "/api/research/"
             }
           ]
         },
         "frontend_production_actions": {
           "semantics": "Advanced frontend action：前端是否仍有触发该 capability 运行的动作（只统计 api()/resourceAction()/computeAction()/resourceMutationAndRefresh() 的 URL 实参；HTML 说明文字中的端点字符串不算）。",
-          "passed": false,
-          "total": 18,
-          "items": [
-            {
-              "file": "cns_planner/web/js/main.js",
-              "line": 83,
-              "kind": "frontend_action",
-              "helper": "api",
-              "endpoint": "/api/research/route-planner-v3-experiments"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1479,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3/policy"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1493,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-experiments/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1507,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3/fine-policy"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1519,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-refinements/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1532,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-experiments/delete"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1536,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3/validation-policy"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1544,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/route-planner-v3-validations/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1553,
-              "kind": "frontend_action",
-              "helper": "computeAction",
-              "endpoint": "/api/research/route-planner-v3-operational-adoptions/preview"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1565,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3-operational-adoptions/apply"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1575,
-              "kind": "frontend_action",
-              "helper": "resourceMutationAndRefresh",
-              "endpoint": "/api/research/route-planner-v3-operational-adoptions/revoke"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 1997,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/route-planner/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step03_routes.js",
-              "line": 2009,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/selection"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step04_operation.js",
-              "line": 399,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/research/v3-cns-assessment/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 831,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/coverage/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 848,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v1/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 857,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/cns-gap-analysis-v2/evaluate"
-            },
-            {
-              "file": "cns_planner/web/js/workflow/step05_cns.js",
-              "line": 858,
-              "kind": "frontend_action",
-              "helper": "resourceAction",
-              "endpoint": "/api/compatibility/site-plan/evaluate"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "project_state_writer": {
           "semantics": "legacy persistent writer ownership：true = 目标 capability 已无自己拥有的 persistent ProjectState writer。AST 先识别真实 mutation（赋值 / del / update / setdefault / pop / clear / append / extend），再分类为 target_legacy_writer / canonical_writer / shared_neutral_writer / compatibility_runtime_only；只有 target_legacy_writer 阻止删除。纯读取（state.get(\"k\") 或 state[\"k\"] 取值）不算。",
@@ -2801,8 +1857,8 @@
           ],
           "owned_services": [],
           "owned_writer_symbols": [],
-          "detected_writer_total": 10,
-          "non_blocking_writer_total": 10,
+          "detected_writer_total": 3,
+          "non_blocking_writer_total": 3,
           "non_blocking_writer_evidence": [
             {
               "file": "cns_planner/application/closed_loop_service.py",
@@ -2814,24 +1870,6 @@
               "detail": "state['cns_gap_analysis_v2']"
             },
             {
-              "file": "cns_planner/application/cns_planning_service.py",
-              "line": 56,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "coverage",
-              "owner": "CNSPlanningService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'coverage', ...)"
-            },
-            {
-              "file": "cns_planner/application/gap_analysis_service.py",
-              "line": 26,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_gap_analysis",
-              "owner": "GapAnalysisService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'cns_gap_analysis', ...)"
-            },
-            {
               "file": "cns_planner/application/gap_analysis_v2_service.py",
               "line": 44,
               "kind": "runtime_compatibility_cache_mutation",
@@ -2839,51 +1877,6 @@
               "owner": "GapAnalysisV2Service",
               "ownership_class": "compatibility_runtime_only",
               "detail": "write_runtime_compatibility_result(..., 'cns_gap_analysis_v2', ...)"
-            },
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 105,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_gap_analysis",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'cns_gap_analysis', ...)"
-            },
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 109,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "coverage",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'coverage', ...)"
-            },
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 613,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_gap_analysis_v2",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'cns_gap_analysis_v2', ...)"
-            },
-            {
-              "file": "cns_planner/application/invalidation_service.py",
-              "line": 622,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_site_plan",
-              "owner": "InvalidationService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "mark_runtime_compatibility_stale(..., 'cns_site_plan', ...)"
-            },
-            {
-              "file": "cns_planner/application/site_planning_service.py",
-              "line": 58,
-              "kind": "runtime_compatibility_cache_mutation",
-              "result_key": "cns_site_plan",
-              "owner": "SitePlanningService",
-              "ownership_class": "compatibility_runtime_only",
-              "detail": "write_runtime_compatibility_result(..., 'cns_site_plan', ...)"
             },
             {
               "file": "cns_planner/application/workspace_service.py",

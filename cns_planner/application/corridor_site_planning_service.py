@@ -7,7 +7,7 @@ from copy import deepcopy
 from ..catalogs import AircraftCNSProfileCatalog
 from ..domain.corridor_site_planning import normalize_corridor_site_planning_policy
 from ..domain.site_planning import REUSE_TIERS
-from .site_planning_service import _candidate_actions
+from .site_candidate_actions import candidate_actions
 from .production_write_authority import assert_write_authority
 
 
@@ -40,7 +40,7 @@ class CorridorSitePlanningService:
             return self._save_missing("P15 cns_corridor_gap_assessment 必须是 current")
         targets, unknown = _targets(baseline_gap)
         unknown.extend(_objective_evidence_required(baseline_gap))
-        actions = _candidate_actions(
+        actions = candidate_actions(
             targets, state.get("existing_cns_facilities") or {},
             state.get("candidate_sites") or {}, state.get("device_catalog") or {},
             state.get("tower_colocation_candidates") or {},

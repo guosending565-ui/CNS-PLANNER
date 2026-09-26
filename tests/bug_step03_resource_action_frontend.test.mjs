@@ -85,18 +85,12 @@ const LOCAL_MUTATION_ENDPOINTS=[
   ['workflow/layered_route_validation.js','/api/layered-route-validations/evaluate-real'],
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/apply'],
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/revoke'],
-  ['workflow/step03_routes.js','/api/research/route-planner-v3/policy'],
-  ['workflow/step03_routes.js','/api/research/route-planner-v3/fine-policy'],
-  ['workflow/step03_routes.js','/api/research/route-planner-v3/validation-policy'],
-  ['workflow/step03_routes.js','/api/research/route-planner-v3-operational-adoptions/apply'],
-  ['workflow/step03_routes.js','/api/research/route-planner-v3-operational-adoptions/revoke'],
   ['workflow/route3d_profile.js','/api/route-3d-profiles/evaluate'],
   ['workflow/route3d_profile.js','/api/route-3d-profiles/delete'],
 ];
 
 const READ_ONLY_PREVIEW_ENDPOINTS=[
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/preview'],
-  ['workflow/step03_routes.js','/api/research/route-planner-v3-operational-adoptions/preview'],
 ];
 
 test('every local-object endpoint is called through mutation + refresh',()=>{
@@ -138,24 +132,24 @@ test('main.js wires the helper to the real api client and exposes it to the pane
   assert.doesNotMatch(helper,/flow=/,'helper 绝不能把局部 response 写进全局 flow');
 });
 
-test('B7 advanced actions use compatibility and research namespaces only',()=>{
+test('B8X legacy compute endpoints are gone from the Advanced frontend',()=>{
   const step03=read('workflow/step03_routes.js');
   const step04=read('workflow/step04_operation.js');
   const step05=read('workflow/step05_cns.js');
-  assert.match(step03,/\/api\/compatibility\/route-planner\/evaluate/);
-  assert.match(step03,/\/api\/compatibility\/selection/);
-  assert.match(step03,/\/api\/research\/route-planner-v3/);
-  assert.doesNotMatch(step03,/c\.mutate\('operational'/);
+  // B8X：旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 / CoveragePlannerV1 / CNSGapAnalyzerV1
+  // / ReuseFirstSitePlannerV1 的 compatibility compute 入口已随 delete gate 物理删除，
+  // 前端不得再发出这些请求（旧结果仍以只读方式投影到 flow）。
+  for(const source of [step03,step04,step05]){
+    assert.doesNotMatch(source,/\/api\/compatibility\/[\w-]+\/evaluate/,
+      '旧版 compatibility compute 端点不得再被前端调用');
+    assert.doesNotMatch(source,/\/api\/compatibility\/selection/,
+      '运行期 compatibility selection 覆盖已随 legacy 执行路径删除');
+  }
   assert.doesNotMatch(step03,/api\/algorithms\/select/,
     '归档规划器参数不得再走已关闭的 algorithm_selection 写入通道');
-  assert.match(step04,/\/api\/research\/v3-cns-assessment\/evaluate/);
-  assert.doesNotMatch(step04,/c\.mutate\('operational'/);
-  for(const endpoint of [
-    '/api/compatibility/coverage/evaluate',
-    '/api/compatibility/cns-gap-analysis-v1/evaluate',
-    '/api/compatibility/cns-gap-analysis-v2/evaluate',
-    '/api/compatibility/site-plan/evaluate',
-  ])assert.ok(step05.includes(endpoint),`Step5 Advanced must call ${endpoint}`);
+  // 旧项目历史结果仍只读可见：Step5 仍投影 compatibility_* 只读快照。
+  assert.match(step05,/flow\.compatibility_coverage/);
+  assert.match(step05,/flow\.compatibility_cns_site_plan/);
 });
 
 // ---- 3. 清工作区：执行前二次确认 + 明确的破坏性说明 --------------------------------

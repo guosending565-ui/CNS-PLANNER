@@ -55,10 +55,8 @@ def _populate(service):
             "delay_command": 500,
         }
     )
-    service.generate_operational([])
     devices = [{**item, "mtbf": item["mtbf_h"]} for item in service.snapshot()["devices"]]
     service.set_devices(devices)
-    service.plan_coverage()
     return service
 
 

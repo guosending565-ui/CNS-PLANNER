@@ -19,7 +19,7 @@ import math
 
 import pytest
 
-from cns_planner.algorithms.coverage.v1 import distance_m
+from cns_planner.domain.geodesy import distance_m
 from cns_planner.algorithms.grid.mht4063 import LEVEL_SIZE_DEGREES
 from cns_planner.algorithms.grid.service import WorkspaceGridService
 
@@ -178,4 +178,3 @@ def test_frontend_never_estimates_a_grid_level_or_cell_size():
     # 格网绘制仍然只使用后端 geometry（cell.bbox），不做前端网格重建。
     overlay = (root / "map" / "grid_overlay.js").read_text(encoding="utf-8")
     assert "item.cell.bbox" in overlay
-

@@ -167,7 +167,6 @@ class RiskService:
             raise ValueError("风险结果与当前 grid_id 不一致")
         if any("geometry" in cell for cell in result_cells.values()):
             raise ValueError("风险结果不得复制基础网格 geometry")
-        changed = state.get("grid_risk") != result
         state["grid_risk"] = deepcopy(result)
         status = result.get("status", "not_calculated")
         state["result_statuses"]["environment_risk"] = status
@@ -175,8 +174,9 @@ class RiskService:
             status,
             f"{result.get('algorithm_id', 'risk-model')}@{result.get('algorithm_version', 'unknown')}",
         )
-        if changed:
-            self.invalidation.grid_risk_routes()
+        # B8X：grid_risk 变化原来还会经 InvalidationService.grid_risk_routes() 判断
+        # Risk-Aware Route Planner V2 是否被显式选中。该 legacy 规划器已按 delete gate
+        # 物理删除，production 分层规划链消费的是 risk_v2 域，因此这里不再有该分支。
 
     def invalidate_grid_attributes(self, changed_sources):
         self.invalidation.grid_sources(changed_sources)

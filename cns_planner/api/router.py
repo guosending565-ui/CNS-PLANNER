@@ -10,10 +10,6 @@ from ..safety.coupling import evaluate_coupled_events
 from ..safety.service_state import evaluate_service_state
 from .file_browser import browse
 from ..tasks.task_specs import task_type_for_endpoint
-from ..compatibility.catalog import CAPABILITY_FOR_SELECTION as _CAPABILITY_FOR_SELECTION
-from ..compatibility.catalog import (
-    CAPABILITY_FOR_SELECTION_ALGORITHM as _CAPABILITY_FOR_SELECTION_ALGORITHM,
-)
 from ..compatibility.catalog import with_capability_metadata
 
 
@@ -71,27 +67,6 @@ class ApiRouter:
         context, workflow, data = self.context, self.context.workflow, self.context.data
         if path == "/api/compatibility/catalog":
             return Response(workflow.compatibility_catalog_snapshot())
-        compatibility_reads = {
-            "/api/compatibility/route-planner": (
-                "RoutePlannerV1", "compatibility_route_snapshot"
-            ),
-            "/api/compatibility/coverage": (
-                "CoveragePlannerV1", "compatibility_coverage_snapshot"
-            ),
-            "/api/compatibility/cns-gap-analysis-v1": (
-                "CNSGapAnalyzerV1", "cns_gap_snapshot"
-            ),
-            "/api/compatibility/cns-gap-analysis-v2": (
-                "CNSGapAnalyzerV2", "cns_gap_v2_snapshot"
-            ),
-            "/api/compatibility/site-plan": (
-                "ReuseFirstSitePlannerV1", "cns_site_plan_snapshot"
-            ),
-        }
-        if path in compatibility_reads:
-            capability_id, reader = compatibility_reads[path]
-            value = reader() if callable(reader) else getattr(workflow, reader)()
-            return Response(with_capability_metadata(value, capability_id))
         research_gets = {
             "/api/research/route-planner-v3-experiments": "route_planner_v3_snapshot",
             "/api/research/route-planner-v3/readiness": "route_planner_v3_readiness",
@@ -105,23 +80,6 @@ class ApiRouter:
         }
         if path in research_gets:
             return Response(with_capability_metadata(getattr(workflow, research_gets[path])(), "RoutePlannerV3"))
-        legacy_get_aliases = {
-            "/api/cns-gaps": ("CNSGapAnalyzerV1", "cns_gap_snapshot"),
-            "/api/cns-gap-analysis-v2": ("CNSGapAnalyzerV2", "cns_gap_v2_snapshot"),
-            "/api/cns-site-plan": ("ReuseFirstSitePlannerV1", "cns_site_plan_snapshot"),
-            "/api/route-planner-v3-experiments": ("RoutePlannerV3", "route_planner_v3_snapshot"),
-            "/api/route-planner-v3/readiness": ("RoutePlannerV3", "route_planner_v3_readiness"),
-            "/api/route-planner-v3/refinement-readiness": ("RoutePlannerV3", "route_planner_v3_refinement_readiness"),
-            "/api/route-planner-v3-refinements": ("RoutePlannerV3", "route_planner_v3_refinement_snapshot"),
-            "/api/route-planner-v3/continuous-readiness": ("RoutePlannerV3", "route_planner_v3_continuous_readiness"),
-            "/api/route-planner-v3-validations": ("RoutePlannerV3", "route_planner_v3_validation_snapshot"),
-            "/api/route-planner-v3-operational-adoptions": ("RoutePlannerV3", "v3_operational_adoptions_snapshot"),
-            "/api/route-planner-v3-operational-publish": ("RoutePlannerV3", "v3_operational_publish_status"),
-            "/api/v3-cns-assessment": ("RoutePlannerV3", "v3_cns_assessment_snapshot"),
-        }
-        if path in legacy_get_aliases:
-            capability_id, reader = legacy_get_aliases[path]
-            return Response(with_capability_metadata(getattr(workflow, reader)(), capability_id, alias=True))
         # ---- Phase4-B6X：持久 Heavy Task 查询（只读，不触发任何长计算） --------
         # 读取路径会按需"驱动"编排（收集已结束 worker、领取 queued 任务、心跳收尾），
         # 但绝不等待任何计算，也不持有 mutation_lock。
@@ -189,9 +147,6 @@ class ApiRouter:
         if path == "/api/tower-obstacle-profiles": return Response(workflow.tower_obstacle_profiles_snapshot())
         if path == "/api/tower-colocation-candidates": return Response(workflow.tower_colocation_candidates_snapshot())
         if path == "/api/tower-integration-policies": return Response(workflow.tower_integration_policies_snapshot())
-        if path == "/api/cns-gaps": return Response(workflow.cns_gap_snapshot())
-        if path == "/api/cns-gap-analysis-v2": return Response(workflow.cns_gap_v2_snapshot())
-        if path == "/api/cns-site-plan": return Response(workflow.cns_site_plan_snapshot())
         if path == "/api/cns-closed-loop": return Response(workflow.closed_loop_snapshot())
         if path == "/api/cns-service-corridor": return Response(workflow.cns_corridor_snapshot())
         if path == "/api/cns-planning-objectives": return Response(workflow.cns_planning_objectives_snapshot())
@@ -293,15 +248,6 @@ class ApiRouter:
         if path == "/api/risk-framework-v2/readiness": return Response(workflow.risk_framework_v2_readiness())
         if path == "/api/route-vertical-profiles": return Response(workflow.route_vertical_profiles_snapshot())
         if path == "/api/route-experiments": return Response(workflow.route_experiments_snapshot())
-        if path == "/api/route-planner-v3-experiments": return Response(workflow.route_planner_v3_snapshot())
-        if path == "/api/route-planner-v3/readiness": return Response(workflow.route_planner_v3_readiness())
-        if path == "/api/route-planner-v3/refinement-readiness": return Response(workflow.route_planner_v3_refinement_readiness())
-        if path == "/api/route-planner-v3-refinements": return Response(workflow.route_planner_v3_refinement_snapshot())
-        if path == "/api/route-planner-v3/continuous-readiness": return Response(workflow.route_planner_v3_continuous_readiness())
-        if path == "/api/route-planner-v3-validations": return Response(workflow.route_planner_v3_validation_snapshot())
-        if path == "/api/route-planner-v3-operational-adoptions": return Response(workflow.v3_operational_adoptions_snapshot())
-        if path == "/api/route-planner-v3-operational-publish": return Response(workflow.v3_operational_publish_status())
-        if path == "/api/v3-cns-assessment": return Response(workflow.v3_cns_assessment_snapshot())
         if path == "/api/reference-route-links": return Response(workflow.reference_route_links_snapshot())
         if path == "/api/reference-endpoint-candidates": return Response(workflow.reference_endpoint_candidates_snapshot())
         if path == "/api/data-readiness": return Response(workflow.data_readiness_snapshot())
@@ -408,43 +354,7 @@ class ApiRouter:
 
     def post(self, path, payload):
         context, workflow, data = self.context, self.context.workflow, self.context.data
-        compatibility_actions = {
-            "/api/compatibility/route-planner/evaluate": (
-                "RoutePlannerV1", lambda: workflow.generate_operational(data.hard_constraints)
-            ),
-            "/api/compatibility/coverage/evaluate": (
-                "CoveragePlannerV1", lambda: workflow.plan_coverage()
-            ),
-            "/api/compatibility/cns-gap-analysis-v1/evaluate": (
-                "CNSGapAnalyzerV1", lambda: workflow.analyze_cns_gaps()
-            ),
-            "/api/compatibility/cns-gap-analysis-v2/evaluate": (
-                "CNSGapAnalyzerV2", lambda: workflow.analyze_cns_gaps_v2(payload)
-            ),
-            "/api/compatibility/site-plan/evaluate": (
-                "ReuseFirstSitePlannerV1", lambda: workflow.evaluate_cns_site_plan(payload)
-            ),
-        }
-        if path in compatibility_actions:
-            capability_id, action = compatibility_actions[path]
-            return Response(with_capability_metadata(action(), capability_id))
-        if path == "/api/compatibility/selection":
-            # 运行期 compatibility 参数覆盖：只影响后续 compatibility 试算，绝不写
-            # ProjectState.algorithm_selection（旧 /api/algorithms/select 通道已关闭）。
-            selection = workflow.set_compatibility_selection(payload)
-            return Response(with_capability_metadata(
-                selection,
-                _CAPABILITY_FOR_SELECTION_ALGORITHM.get(
-                    str(selection.get("algorithm_id")),
-                    _CAPABILITY_FOR_SELECTION.get(selection["algorithm_type"], "RoutePlannerV1"),
-                ),
-            ))
-
         original_path = path
-        if path.startswith("/api/research/route-planner-v3"):
-            path = "/api/" + path[len("/api/research/"):]
-        elif path.startswith("/api/research/v3-cns-assessment"):
-            path = "/api/" + path[len("/api/research/"):]
         research_request = original_path != path
         # ---- Phase4-B6X：heavy task 提交（HTTP 202 + task_id） ------------------
         # 真正重的动作不再在 HTTP 线程与 mutation_lock 内跑完：
@@ -525,9 +435,6 @@ class ApiRouter:
             # Tower Clearance Policy（Step03 航路净空配置）：只写既有 state 字段，
             # 没有默认值，未配置时 readiness 明确 not_configured 且 mask 对含塔格 fail-closed。
             "/api/tower-clearance-policy": lambda: workflow.set_tower_clearance_policy(payload),
-            "/api/cns-gaps/analyze": workflow.analyze_cns_gaps,
-            "/api/cns-gap-analysis-v2": lambda: workflow.analyze_cns_gaps_v2(payload),
-            "/api/cns-site-plan": lambda: workflow.evaluate_cns_site_plan(payload),
             "/api/cns-closed-loop/evaluate": lambda: workflow.evaluate_closed_loop(payload),
             "/api/cns-closed-loop/apply": lambda: workflow.apply_closed_loop(payload),
             "/api/cns-service-corridor/evaluate": lambda: workflow.evaluate_cns_corridor(payload),
@@ -548,33 +455,6 @@ class ApiRouter:
             "/api/grid-risk-v2/evaluate": lambda: workflow.evaluate_grid_risk_v2(payload),
             "/api/building-clearance/evaluate": lambda: context.qgis.call(context.evaluate_building_clearance),
             "/api/route-vertical-profiles/evaluate": lambda: context.qgis.call(lambda: context.evaluate_route_vertical_profiles(payload)),
-            "/api/route-experiments/evaluate": lambda: workflow.evaluate_route_experiment(payload),
-            "/api/route-experiments/delete": lambda: workflow.delete_route_experiment(payload.get("experiment_id")),
-            "/api/route-planner-v3/policy": lambda: workflow.set_route_planner_v3_policy(payload),
-            "/api/route-planner-v3/fine-policy": lambda: workflow.set_route_planner_v3_fine_policy(payload),
-            "/api/route-planner-v3-experiments/evaluate": lambda: (
-                context.evaluate_route_planner_v3(payload)
-                if hasattr(context, "evaluate_route_planner_v3")
-                else workflow.evaluate_route_planner_v3(payload)
-            ),
-            "/api/route-planner-v3-experiments/delete": lambda: workflow.delete_route_planner_v3_experiment(payload.get("experiment_id")),
-            "/api/route-planner-v3-refinements/evaluate": lambda: workflow.evaluate_route_planner_v3_refinement(payload),
-            # GIS-wired variant: builds the real fine-environment adapter (needs QGIS/GDAL).
-            "/api/route-planner-v3-refinements/evaluate-real": lambda: context.qgis.call(
-                lambda: context.evaluate_route_planner_v3_refinement(payload)
-            ),
-            # ---- V3-C: continuous geometry + source-native validation ----------
-            "/api/route-planner-v3/validation-policy": lambda: workflow.set_route_planner_v3_validation_policy(payload),
-            "/api/route-planner-v3-validations/evaluate": lambda: workflow.evaluate_route_planner_v3_continuous_validation(payload),
-            # GIS-wired variant: builds the V3-C evidence adapter (needs QGIS/GDAL).
-            "/api/route-planner-v3-validations/evaluate-real": lambda: context.qgis.call(
-                lambda: context.evaluate_route_planner_v3_continuous_validation(payload)
-            ),
-            # ---- V3-D: operational adoption + CNS assessment bridge ------------
-            "/api/route-planner-v3-operational-adoptions/preview": lambda: workflow.preview_v3_operational_adoption(payload),
-            "/api/route-planner-v3-operational-adoptions/apply": lambda: workflow.apply_v3_operational_adoption(payload),
-            "/api/route-planner-v3-operational-adoptions/revoke": lambda: workflow.revoke_v3_operational_adoption(payload),
-            "/api/v3-cns-assessment/evaluate": lambda: workflow.assess_v3_adopted_route(payload),
             "/api/reference-route-links/create": lambda: workflow.create_reference_route_link(payload),
             "/api/reference-route-links/delete": lambda: workflow.delete_reference_route_link(payload.get("link_id")),
             "/api/algorithms/select": lambda: workflow.select_registered_algorithm(payload),
@@ -654,15 +534,7 @@ class ApiRouter:
         }
         if path in resource_actions:
             result = resource_actions[path]()
-            compatibility_aliases = {
-                "/api/cns-gaps/analyze": "CNSGapAnalyzerV1",
-                "/api/cns-gap-analysis-v2": "CNSGapAnalyzerV2",
-                "/api/cns-site-plan": "ReuseFirstSitePlannerV1",
-            }
-            capability_id = compatibility_aliases.get(path)
-            if capability_id:
-                result = with_capability_metadata(result, capability_id, alias=True)
-            elif research_request or path.startswith("/api/route-planner-v3") or path.startswith("/api/v3-cns-assessment"):
+            if research_request:
                 result = with_capability_metadata(
                     result, "RoutePlannerV3", alias=not research_request,
                 )
@@ -720,26 +592,15 @@ class ApiRouter:
                     payload.get("direction", "both"),
                 ),
                 "route-delete": lambda: workflow.delete_route(payload.get("route_id")),
-                "operational": lambda: workflow.generate_operational(data.hard_constraints),
                 "rules": lambda: workflow.set_rules(payload),
                 "aircraft-profile": lambda: workflow.select_aircraft_profile(payload.get("aircraft_id")),
                 "required-cns": lambda: workflow.set_required_cns(payload),
                 "candidate-sites-from-existing": workflow.candidate_sites_from_existing,
-                "gap-analysis": workflow.analyze_cns_gaps,
                 "devices": lambda: workflow.set_devices(payload.get("devices")),
-                "coverage": lambda: workflow.plan_coverage(),
                 "save": self._save_workflow,
             }
             if action not in actions: return Response({"error": "工作流操作不存在"}, status=404)
             result = actions[action]()
-            legacy_action_capabilities = {
-                "operational": "RoutePlannerV1",
-                "coverage": "CoveragePlannerV1",
-                "gap-analysis": "CNSGapAnalyzerV1",
-            }
-            capability_id = legacy_action_capabilities.get(action)
-            if capability_id:
-                result = with_capability_metadata(result, capability_id, alias=True)
             return Response(result)
         if path not in ("/api/sources", "/api/data-sources", "/api/data-sources/validate"):
             return Response({"error": "未找到"}, status=404)

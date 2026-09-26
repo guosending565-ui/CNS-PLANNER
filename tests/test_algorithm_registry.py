@@ -56,24 +56,18 @@ def register_dummy(registry, algorithm_type):
     return manifest
 
 
-def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
+def test_default_registry_contains_only_executable_current_manifests_and_no_python_paths():
     registry = build_default_algorithm_registry(defaults())
     actual = {(item.algorithm_type, item.algorithm_id, item.version) for item in registry.manifests()}
     assert actual == {
         ("risk_model", "risk-model-v1-relative-index", "1.1"),
-        ("route_planner", "route_planner_v1", "1.0"),
-        ("route_planner", "risk_aware_route_planner_v2", "2.0"),
-        ("layered_route_planner", "layered_route_planner_v1", "1.0"),
         ("layered_route_planner", "layered_risk_aware_theta_star_v2", "2.0"),
-        ("coverage_planner", "coverage_planner_v1", "1.0"),
-        ("cns_gap_analyzer", "cns_gap_analysis_v1", "1.0"),
         ("cns_gap_analyzer", "cns_gap_analysis_v2", "2.0"),
         ("coverage_model", "geometric_coverage_3d_v1", "1.0"),
         ("service_model", "cns_service_capability_v1", "1.0"),
         ("timeline_model", "route_service_timeline_v1", "1.0"),
         ("protection_model", "tactical_protection_envelope_v1", "1.0"),
-            ("site_planner", "reuse_first_site_planner_v1", "1.0"),
-            ("site_planner", "corridor_reuse_first_site_planner_v2", "2.0"),
+        ("site_planner", "corridor_reuse_first_site_planner_v2", "2.0"),
         ("corridor_model", "cns_service_corridor_v1", "1.0"),
         ("corridor_gap_analyzer", "cns_corridor_gap_v1", "1.0"),
         ("requirement_model", "manual_required_cns_v1", "1.0"),
@@ -91,7 +85,7 @@ def test_default_registry_has_exact_v1_manifests_and_no_python_paths():
 def test_registry_requires_exact_id_and_version_without_fallback():
     registry = build_default_algorithm_registry(defaults())
     with pytest.raises(AlgorithmNotFoundError, match="未注册精确算法"):
-        registry.create("route_planner", "route_planner_v1", "9.9")
+        registry.create("layered_route_planner", "layered_risk_aware_theta_star_v2", "9.9")
     with pytest.raises(AlgorithmNotFoundError, match="missing"):
         registry.create("risk_model", "missing", "1.0")
 
@@ -166,21 +160,18 @@ def test_same_selection_is_noop_and_invalid_selection_preserves_current(tmp_path
 @pytest.mark.parametrize(
     ("algorithm_type", "expected"),
     [
-        ("layered_route_planner", {"layered_route_candidate", "report"}),
         ("coverage_model", {"coverage_3d", "cns_service_capability", "service_timeline", "report"}),
         ("service_model", {"cns_service_capability", "service_timeline", "report"}),
         ("timeline_model", {"service_timeline", "report"}),
         ("protection_model", {"protection_envelope", "report"}),
-        # B7X：P11 站址试算是只读 compatibility 结果，定向失效只发生在 runtime-only
-        # cache，不再改写遗留的 result_statuses。
-        ("site_planner", {"report"}),
+        ("site_planner", {"cns_corridor_site_plan", "report"}),
     ],
 )
 def test_dummy_selection_uses_directed_invalidation(tmp_path, algorithm_type, expected):
     registry = build_default_algorithm_registry(defaults())
     manifest = register_dummy(registry, algorithm_type)
     workflow = WorkflowService(tmp_path / f"{algorithm_type}.json", DEFAULTS_PATH, algorithm_registry=registry)
-    workflow.state["result_statuses"].update({name: "passed" for name in ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "protection_envelope", "cns_site_plan", "technical_risk", "report")})
+    workflow.state["result_statuses"].update({name: "passed" for name in ("routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "protection_envelope", "cns_site_plan", "cns_corridor_site_plan", "technical_risk", "report")})
     workflow.state["coverage"] = {"status": "passed"}
     workflow.state["cns_gap_analysis"] = {"status": "passed"}
     workflow.state["cns_service_capability"]["status"] = "meets_under_model"
@@ -195,6 +186,21 @@ def test_dummy_selection_uses_directed_invalidation(tmp_path, algorithm_type, ex
         assert workflow.state["result_statuses"][name] == "stale"
     assert workflow.state["result_statuses"]["routes"] == "passed"
     assert workflow.state["result_statuses"]["technical_risk"] == "passed"
+
+
+def test_layered_theta_v2_selection_invalidation_is_candidate_only(tmp_path):
+    workflow = WorkflowService(tmp_path / "layered.json", DEFAULTS_PATH)
+    workflow.state["result_statuses"].update({
+        "layered_route_candidate": "passed",
+        "routes": "passed",
+        "coverage_3d": "passed",
+        "report": "passed",
+    })
+    workflow.invalidation_service.workflow("layered_route_planner_algorithm")
+    assert workflow.state["result_statuses"]["layered_route_candidate"] == "stale"
+    assert workflow.state["result_statuses"]["report"] == "stale"
+    assert workflow.state["result_statuses"]["routes"] == "passed"
+    assert workflow.state["result_statuses"]["coverage_3d"] == "passed"
 
 
 def test_dummy_risk_selection_only_stales_risk(tmp_path):

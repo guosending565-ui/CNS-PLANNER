@@ -277,15 +277,8 @@ COMPAT_TEST_ALLOWLIST = (
     "tests/fixtures/compatibility/",
 )
 
-#: guard 测试 allowlist：这些 production test 为了断言"legacy 不可写 / 不再拥有
-#: production authority"必须实例化 legacy 算法，属于 compatibility guard 而非
-#: legacy production characterization，因此不计入 tests_migrated blocker。
-GUARD_TEST_ALLOWLIST = {
-    "tests/test_production_write_authority.py": (
-        "B2B/B7X production write authority guard：显式构造 legacy planner / registry 条目，"
-        "只为断言 canonical ProjectState 不被旧算法改写。"
-    ),
-}
+# B8X 后 production tests 不再实例化 legacy 算法，因此无需扫描豁免。
+GUARD_TEST_ALLOWLIST = {}
 
 #: 识别为 state mutation 的方法名。
 STATE_MUTATOR_METHODS = (

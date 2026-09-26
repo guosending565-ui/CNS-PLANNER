@@ -7,7 +7,6 @@ from cns_planner.algorithms.registry import build_default_algorithm_registry, de
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
 from cns_planner.application.workflow_service import WorkflowService
-from cns_planner.gap.v1 import CNSGapAnalyzerV1
 from cns_planner.gap.v2 import CNSGapAnalyzerV2
 
 
@@ -168,45 +167,3 @@ class ApiContext:
     def __init__(self, workflow):
         self.workflow = workflow
         self.data = object()
-
-
-def test_registry_runtime_compatibility_api_and_no_new_persistence(tmp_path):
-    path = tmp_path / "project.json"
-    workflow = WorkflowService(path, DEFAULTS)
-    registry = build_default_algorithm_registry(workflow.defaults)
-    assert registry.manifest("cns_gap_analyzer", "cns_gap_analysis_v2", "2.0")
-    assert "cns_gap_analyzer" not in default_algorithm_selection()
-    assert workflow.gap_analysis_v2_service.analyzer.algorithm_id == "cns_gap_analysis_v2"
-    assert workflow.gap_analysis_service.analyzer.algorithm_id == "cns_gap_analysis_v1"
-    assert "cns_gap_analysis_v2" not in workflow.state
-    assert "cns_gap_v2" not in workflow.state["result_statuses"]
-
-    workflow.state["required_cns"] = required()
-    workflow.state["coverage_3d"] = p7()
-    workflow.state["cns_service_capability"] = p8()
-    workflow.state["service_timeline"] = timeline()
-    router = ApiRouter(ApiContext(workflow))
-    response = router.post("/api/cns-gap-analysis-v2", {"parameters": {"evaluate_protection_margin": False}}).data
-    assert response["cns_gap_analysis_v2"]["algorithm_version"] == "2.0"
-    assert response["persistent_write"] is False
-    assert response["deprecated"] is True  # old route is a compatibility alias
-    assert "cns_gap_analysis_v2" not in workflow.state
-    current = router.get("/api/compatibility/cns-gap-analysis-v2", {}, {}).data
-    assert current["routes"][0]["route_id"] == "R1"
-    assert current["authoritative"] is False
-
-    reopened = WorkflowService(path, DEFAULTS)
-    assert "cns_gap_analysis_v2" not in reopened.state
-    assert reopened.cns_gap_v2_snapshot()["status"] == "not_calculated"
-
-    workflow.invalidation_service.service_timeline()
-    assert workflow.cns_gap_v2_snapshot()["status"] == "stale"
-
-
-def test_gap_v1_contract_is_unchanged_by_v2_registration():
-    assert CNSGapAnalyzerV1.algorithm_id == "cns_gap_analysis_v1"
-    assert CNSGapAnalyzerV1.algorithm_version == "1.0"
-    assert set(CNSGapAnalyzerV1.empty()) == {
-        "status", "algorithm_id", "algorithm_version", "input_fingerprint",
-        "route_count", "routes",
-    }

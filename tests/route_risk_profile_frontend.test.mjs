@@ -660,10 +660,15 @@ test('step 03 result region exposes the four documented segments with exactly on
 test('the risk profile segment keeps every original step 03 control and unique ids',()=>{
   withStubDom(document=>{
     const {root}=mountStep3(document,baseFlow());
+    // B8X：V3 可执行入口（evaluateRoutePlannerV3 / saveRoutePlannerV3Policy）已撤下，
+    // 其余 Step03 业务控件必须保持挂载。
     for(const id of ['createOdRoute','saveRouteAltitude','saveRouteMotion','saveBuildingClearancePolicy',
-      'evaluateRoutePlannerV3','saveRoutePlannerV3Policy','referenceSiteSearch','nextStep',
+      'referenceSiteSearch','nextStep',
       'evaluateRouteRiskProfile','saveRouteRiskProfilePolicy']){
       assert.ok(document.getElementById(id),`#${id} must stay mounted`);
+    }
+    for(const id of ['evaluateRoutePlannerV3','saveRoutePlannerV3Policy']){
+      assert.equal(document.getElementById(id),null,`#${id} 的旧版运行入口必须已撤下`);
     }
     const ids=findAll(root,'[id]').map(node=>node.id).filter(Boolean);
     assert.equal(new Set(ids).size,ids.length,

@@ -5,11 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..algorithms.registry import (
-    ALGORITHM_TYPES, build_default_algorithm_registry, normalize_algorithm_selection,
+    ALGORITHM_TYPES, build_default_algorithm_registry, default_algorithm_selection,
+    normalize_algorithm_selection,
 )
 from ..compatibility.catalog import capability_catalog
 from ..compatibility.project_adapter import read_existing_legacy
-from ..compatibility.selection import CompatibilitySelectionAdapter, set_runtime_compatibility_selection
+from ..compatibility.selection import CompatibilitySelectionAdapter
 from ..risk.v1 import RiskModelV1
 from ..risk.model_v2 import GridRiskModelV2
 from ..data.mapping.conflict import ConflictGridService
@@ -18,10 +19,8 @@ from ..algorithms.grid.service import WorkspaceGridService
 from ..simulation.conflict_detector import ConflictDetector
 from ..simulation.traffic_simulator import TrafficSimulator
 from ..gis.cns_input_adapter import CNSInputAdapter
-from ..gap.v1 import CNSGapAnalyzerV1
 from ..gap.v2 import CNSGapAnalyzerV2
 from .cns_input_service import CNSInputService
-from .gap_analysis_service import GapAnalysisService
 from .gap_analysis_v2_service import GapAnalysisV2Service
 from .cns_planning_service import CNSPlanningService
 from .export_service import ExportService
@@ -49,7 +48,6 @@ from .spatial_3d_service import Spatial3DService
 from .route_operating_layer_service import RouteOperatingLayerService
 from .cns_service_capability_service import CNSServiceCapabilityService
 from .operational_timing_service import OperationalTimingService
-from .site_planning_service import SitePlanningService
 from .closed_loop_service import ClosedLoopService
 from .corridor_service import CNSCorridorService
 from .corridor_gap_service import CNSCorridorGapService
@@ -64,7 +62,6 @@ from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
 from .reference_link_service import ReferenceLinkService
-from .route_experiment_service import RoutePlanningExperimentService
 from .route_planner_v3_service import RoutePlannerV3ExperimentService, record_summary as _v3_record_summary
 from .source_audit_service import SourceAuditService
 from .v3_operational_adoption_service import V3OperationalAdoptionService
@@ -73,7 +70,6 @@ from .encounter_3d_service import Encounter3DService
 from .production_write_authority import runtime_compatibility_result
 from ..algorithms.encounter_3d import EncounterAssessment3DV1
 from ..domain.airspace import normalize_airspace_policies
-from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
 
 
@@ -377,12 +373,9 @@ class WorkflowService:
         self.compatibility_selection = CompatibilitySelectionAdapter(
             self.state, self.algorithm_registry, self.session,
         )
-        self.route_planner = self.compatibility_selection.create("route_planner")
-        self.coverage_planner = self.compatibility_selection.create("coverage_planner")
+        self.route_planner = None
+        self.coverage_planner = None
         self.risk_model = risk_model or self._selected_algorithm("risk_model")
-        self.gap_analyzer = gap_analyzer or self.compatibility_selection.create(
-            "cns_gap_analyzer", algorithm_id=CNSGapAnalyzerV1.algorithm_id,
-        )
         self.gap_analyzer_v2 = self.algorithm_registry.create(
             "cns_gap_analyzer", CNSGapAnalyzerV2.algorithm_id,
             CNSGapAnalyzerV2.algorithm_version,
@@ -392,16 +385,10 @@ class WorkflowService:
         self.cns_service_model = self._selected_algorithm("service_model")
         self.timeline_model = self._selected_algorithm("timeline_model")
         self.protection_model = self._selected_algorithm("protection_model")
-        selected_site_planner = self._selected_algorithm("site_planner")
-        self.site_planner = self.compatibility_selection.create("site_planner")
-        self.corridor_site_planner = (
-            selected_site_planner
-            if getattr(selected_site_planner, "algorithm_id", None) == CorridorReuseFirstSitePlannerV2.algorithm_id
-            else self.algorithm_registry.create(
-                "site_planner", CorridorReuseFirstSitePlannerV2.algorithm_id,
-                CorridorReuseFirstSitePlannerV2.algorithm_version,
-                (self.state.get("cns_corridor_site_plan") or {}).get("parameters") or {},
-            )
+        self.corridor_site_planner = self.algorithm_registry.create(
+            "site_planner", CorridorReuseFirstSitePlannerV2.algorithm_id,
+            CorridorReuseFirstSitePlannerV2.algorithm_version,
+            (self.state.get("cns_corridor_site_plan") or {}).get("parameters") or {},
         )
         self.corridor_model = self._selected_algorithm("corridor_model")
         self.corridor_gap_analyzer = self._selected_algorithm("corridor_gap_analyzer")
@@ -422,7 +409,6 @@ class WorkflowService:
             self.session, self.requirement_model, self.invalidation_service, snapshot,
             self.cns_input_service,
         )
-        self.gap_analysis_service = GapAnalysisService(self.session, self.gap_analyzer, snapshot)
         self.gap_analysis_v2_service = GapAnalysisV2Service(
             self.session, self.gap_analyzer_v2, self.invalidation_service, snapshot
         )
@@ -435,10 +421,6 @@ class WorkflowService:
         self.reference_data_service.ensure_equipment_catalog()
         self.reference_link_service = ReferenceLinkService(
             self.session, self.invalidation_service, snapshot,
-        )
-        self.route_experiment_service = RoutePlanningExperimentService(
-            self.session, self.route_service, self.algorithm_registry,
-            self.invalidation_service, snapshot,
         )
         self.route_planner_v3_service = RoutePlannerV3ExperimentService(
             self.session, None, self.invalidation_service, snapshot, self.grid_service,
@@ -490,10 +472,14 @@ class WorkflowService:
         self.invalidation_service.layered_route_invalidator = (
             self.layered_route_planner_service.refresh_for_reason
         )
-        # Resolve the registered layered planner (its own algorithm type; the project's
-        # ``route_planner`` default stays ``route_planner_v1``).  A project that explicitly
-        # saved ``layered_route_planner_v1`` keeps running V1 — no silent migration.
-        self.layered_route_planner = self._selected_algorithm("layered_route_planner")
+        # Production execution is pinned to the canonical Theta* V2 selection.  An old
+        # saved V1 selection remains untouched for passive compatibility/audit, but it is
+        # never instantiated and never used as a fallback.
+        production_layered = default_algorithm_selection()["layered_route_planner"]
+        self.layered_route_planner = self.algorithm_registry.create(
+            production_layered["algorithm_type"], production_layered["algorithm_id"],
+            production_layered["version"], production_layered["parameters"],
+        )
         self.layered_route_planner_service.planner = self.layered_route_planner
         # RouteRiskProfile V1 (additive, analysis only): current LayeredRouteCandidate +
         # current GridRiskV2 → path risk profile.  It never replans, never mutates the
@@ -535,10 +521,6 @@ class WorkflowService:
         self.operational_timing_service = OperationalTimingService(
             self.session, self.timeline_model, self.protection_model,
             self.invalidation_service, snapshot,
-        )
-        self.site_planning_service = SitePlanningService(
-            self.session, self.site_planner, self.coverage_model_3d,
-            self.cns_service_model, self.invalidation_service, snapshot,
         )
         self.closed_loop_service = ClosedLoopService(
             self.session, self.coverage_model_3d, self.cns_service_model,
@@ -699,9 +681,9 @@ class WorkflowService:
         result["compatibility_selection"] = self.compatibility_selection.selection_snapshot()
         if hasattr(self, "requirement_recommendation_service"):
             result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
-        if hasattr(self, "route_experiment_service"):
-            result["route_planning_experiments"] = self.route_experiment_service.result_snapshot()
-            result["route_planning_diagnostics"] = self.route_experiment_service.diagnostics_snapshot()
+        result["route_planning_experiments"] = deepcopy(
+            self.state.get("route_planning_experiments") or {}
+        )
         if hasattr(self, "route_planner_v3_service"):
             # Bounded, read-only projection: the full V3 state path is served by
             # GET /api/route-planner-v3-experiments so the snapshot stays small.
@@ -968,15 +950,6 @@ class WorkflowService:
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
     def compatibility_catalog_snapshot(self): return capability_catalog()
-    def set_compatibility_selection(self, payload):
-        """运行期 compatibility selection 覆盖：绝不写 ``algorithm_selection``。"""
-
-        return set_runtime_compatibility_selection(
-            self.session,
-            payload.get("algorithm_type"),
-            payload.get("parameters") or {},
-            algorithm_id=payload.get("algorithm_id"),
-        )
     def compatibility_route_snapshot(self):
         runtime = runtime_compatibility_result(self.session, "operational_routes")
         if runtime:
@@ -1006,7 +979,10 @@ class WorkflowService:
     def operational_timing_snapshot(self): return self.operational_timing_service.timing_snapshot()
     def service_timeline_snapshot(self): return self.operational_timing_service.timeline_snapshot()
     def protection_envelope_snapshot(self): return self.operational_timing_service.protection_snapshot()
-    def cns_site_plan_snapshot(self): return self.site_planning_service.result_snapshot()
+    def cns_site_plan_snapshot(self):
+        return deepcopy(read_existing_legacy(
+            self.state, "cns_site_plan", "ReuseFirstSitePlannerV1",
+        ))
     def closed_loop_snapshot(self): return self.closed_loop_service.result_snapshot()
     def cns_corridor_snapshot(self): return self.corridor_service.result_snapshot()
     # Phase4-B6X：heavy task 与同步 use case 共用同一条写入路径与输入组装函数。
@@ -1035,7 +1011,13 @@ class WorkflowService:
     def route_vertical_profiles_snapshot(self): return self.route_vertical_profile_service.result_snapshot()
     def reference_route_links_snapshot(self): return self.reference_link_service.links_snapshot()
     def reference_endpoint_candidates_snapshot(self): return self.reference_link_service.endpoint_candidates_snapshot()
-    def route_experiments_snapshot(self): return self.route_experiment_service.result_snapshot()
+    def route_experiments_snapshot(self):
+        # B8X：legacy 实验服务已删除，但"参考航线 ↔ 已发布运行航路"的只读对比仍是
+        # 通用审计能力（不依赖任何已删除算法），由 reference link service 现场计算。
+        return {
+            **deepcopy(self.state.get("route_planning_experiments") or {}),
+            "reference_comparisons": self.reference_link_service.reference_comparisons_snapshot(),
+        }
     def route_planner_v3_snapshot(self): return self.route_planner_v3_service.result_snapshot()
     def route_planner_v3_readiness(self): return self.route_planner_v3_service.readiness_snapshot()
     def route_planner_v3_refinement_readiness(self):
@@ -1139,12 +1121,9 @@ class WorkflowService:
             "layered_route_planner_v1", "reuse_first_site_planner_v1",
         }
         if compatibility_only and candidate != self.state["algorithm_selection"].get(algorithm_type):
-            # 幂等请求（项目当前已保存同一个 compatibility selection）不算"新写入"：
-            # 重放旧 UI 的同一个选择不会改写任何东西。任何真正会新增 / 改变
-            # compatibility selection 的请求仍然被拒绝。
             raise ValueError(
                 "Compatibility/Archive 算法不能写入新的 algorithm_selection；"
-                "请通过 /api/compatibility 执行 runtime-only 试算"
+                "旧项目中的已保存选择仅供只读解释"
             )
         instance = self.algorithm_registry.create(
             candidate["algorithm_type"], candidate["algorithm_id"],
@@ -1156,14 +1135,9 @@ class WorkflowService:
         self._bind_algorithm(algorithm_type, instance)
         if algorithm_type == "risk_model":
             self.invalidation_service.risk()
-        elif algorithm_type == "cns_gap_analyzer" and getattr(instance, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id:
-            self.invalidation_service.cns_gap_v2()
         else:
             changed = {
-                "route_planner": "route_algorithm",
                 "layered_route_planner": "layered_route_planner_algorithm",
-                "coverage_planner": "coverage_algorithm",
-                "cns_gap_analyzer": "gap_algorithm",
                 "coverage_model": "coverage_model",
                 "service_model": "service_model",
                 "timeline_model": "timeline_model",
@@ -1178,32 +1152,23 @@ class WorkflowService:
         return self.snapshot()
 
     def _bind_algorithm(self, algorithm_type, instance):
-        if algorithm_type == "route_planner":
-            self.route_planner = self.route_service.planner = instance
-        elif algorithm_type == "layered_route_planner":
+        if algorithm_type == "layered_route_planner":
             # The layered planner owns its own candidate/mask products; it never becomes the
             # project's ``route_planner`` and never writes operational routes.
             self.layered_route_planner = instance
             self.layered_route_planner_service.planner = instance
-        elif algorithm_type == "coverage_planner":
-            self.coverage_planner = self.cns_planning_service.planner = instance
         elif algorithm_type == "cns_gap_analyzer":
-            if getattr(instance, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id:
-                self.gap_analyzer_v2 = self.gap_analysis_v2_service.analyzer = instance
-                self.closed_loop_service.gap_model = instance
-                self.plan_review_service.gap_model = instance
-            else:
-                self.gap_analyzer = self.gap_analysis_service.analyzer = instance
+            self.gap_analyzer_v2 = self.gap_analysis_v2_service.analyzer = instance
+            self.closed_loop_service.gap_model = instance
+            self.plan_review_service.gap_model = instance
         elif algorithm_type == "risk_model":
             self.risk_model = self.risk_service.risk_model = instance
         elif algorithm_type == "coverage_model":
             self.coverage_model_3d = self.spatial_3d_service.model = instance
-            self.site_planning_service.coverage_model = instance
             self.closed_loop_service.coverage_model = instance
             self.plan_review_service.coverage_model = instance
         elif algorithm_type == "service_model":
             self.cns_service_model = self.cns_service_capability_service.model = instance
-            self.site_planning_service.capability_model = instance
             self.closed_loop_service.capability_model = instance
             self.plan_review_service.capability_model = instance
         elif algorithm_type == "timeline_model":
@@ -1213,10 +1178,7 @@ class WorkflowService:
         elif algorithm_type == "protection_model":
             self.protection_model = self.operational_timing_service.protection_model = instance
         elif algorithm_type == "site_planner":
-            if getattr(instance, "algorithm_id", None) == CorridorReuseFirstSitePlannerV2.algorithm_id:
-                self.corridor_site_planner = self.corridor_site_planning_service.planner = instance
-            else:
-                self.site_planner = self.site_planning_service.planner = instance
+            self.corridor_site_planner = self.corridor_site_planning_service.planner = instance
         elif algorithm_type == "corridor_model":
             self.corridor_model = self.corridor_service.model = instance
             self.corridor_site_planning_service.corridor_model = instance
@@ -1370,12 +1332,6 @@ class WorkflowService:
     def generate_scenario_od(self, start_node_id, end_node_id, direction="both"):
         return self.route_service.generate_scenario_od(start_node_id, end_node_id, direction)
     def delete_route(self, route_id): return self.route_service.delete_route(route_id)
-    def generate_operational(self, constraints):
-        # compatibility 试算按当前运行期 selection 现取实例：这样高级区对旧版
-        # Risk-Aware Route Planner V2 参数的运行期覆盖才真正生效，同时仍然没有任何
-        # ProjectState 写入。
-        self.route_planner = self.compatibility_selection.create("route_planner")
-        return self.route_service.generate_operational(constraints)
     def set_rules(self, payload): return self.operation_service.set_rules(payload)
     def select_aircraft_profile(self, aircraft_id): return self.cns_input_service.select_aircraft(aircraft_id)
     def import_aircraft_catalog(self, path): return self.cns_input_service.import_aircraft_catalog(path)
@@ -1388,9 +1344,7 @@ class WorkflowService:
     def import_existing_cns(self, payload): return self.cns_input_service.import_existing(payload)
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
-    def analyze_cns_gaps(self): return self.gap_analysis_service.analyze()
     def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)
-    def evaluate_cns_site_plan(self, payload=None): return self.site_planning_service.evaluate(payload)
     def evaluate_closed_loop(self, payload=None): return self.closed_loop_service.evaluate(payload)
     def apply_closed_loop(self, payload=None): return self.closed_loop_service.apply(payload)
     def evaluate_cns_corridor(self, payload=None): return self.corridor_service.evaluate(payload)
@@ -1410,13 +1364,10 @@ class WorkflowService:
     def set_building_clearance_policy(self, payload): return self.building_clearance_service.set_policy(payload)
     def evaluate_building_clearance(self, adapter): return self.building_clearance_service.evaluate(adapter)
     def evaluate_route_vertical_profiles(self, sampler, payload=None): return self.route_vertical_profile_service.evaluate(sampler, payload)
-    def evaluate_route_experiment(self, payload=None): return self.route_experiment_service.evaluate(payload)
-    def delete_route_experiment(self, experiment_id): return self.route_experiment_service.delete_experiment(experiment_id)
     def create_reference_route_link(self, payload): return self.reference_link_service.create_link(payload)
     def delete_reference_route_link(self, link_id): return self.reference_link_service.delete_link(link_id)
     def select_registered_algorithm(self, payload): return self.select_algorithm(payload)
     def set_devices(self, devices): return self.cns_planning_service.set_devices(devices)
-    def plan_coverage(self): return self.cns_planning_service.plan_coverage()
     def set_altitude_layers(self, payload): return self.spatial_3d_service.set_altitude_layers(payload)
     def set_route_altitude_profile(self, payload): return self.spatial_3d_service.set_route_profile(payload)
     # ---- Layered Operational Route Architecture V1 ---------------------------------

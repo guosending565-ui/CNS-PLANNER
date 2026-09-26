@@ -403,11 +403,11 @@ test('step 3 keeps exactly one formal route chain and isolates compatibility', (
     '正式链条区块不得内联显示算法实现标识');
   assert.doesNotMatch(step03, /wbBlock\('Layered Risk-Aware Theta\* V2'/,
     '算法名不得作为业务主标题');
-  // 兼容分段只在高级区，且名称明确为旧版 / 研究对照
+  // 兼容分段只在高级区，且名称明确为旧版 / 研究记录（B8X：可执行入口已撤下）
   assert.match(step03, /\['adv-legacy','旧版兼容 \/ 研究对照'\]/);
-  assert.match(step03, /\['adv-experiment','研究对照实验'\]/);
-  // 旧版试算航路绝不叫"运行航路 / 正式航路"
-  assert.match(step03, /旧版试算航路（研究对照）/);
+  assert.match(step03, /\['adv-experiment','研究记录（只读）'\]/);
+  // 旧版试算航路绝不叫"运行航路 / 正式航路"，且只以只读历史出现
+  assert.match(step03, /旧版航路结果（只读）/);
 });
 
 test('terminal procedures are declared as a separate module, not faked', () => {

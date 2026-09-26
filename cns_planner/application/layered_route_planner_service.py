@@ -50,12 +50,13 @@ from ..domain.regulatory_constraints import (
 
 from ..algorithms.grid.service import WorkspaceGridService
 from ..data.mapping.buildings import BuildingGridService
-from ..layered_route_planner.planner import (
-    ALGORITHM_ID, ALGORITHM_VERSION, PLANNER_CAPABILITY, LayeredRoutePlannerV1,
-    build_layer_feasibility_mask,
-)
+from ..layered_route_planner.feasibility import build_layer_feasibility_mask
 from ..layered_route_planner.theta_star_v2 import (
-    POPULATION_FACTOR_ID, grid_bearing_deg,
+    PLANNER_CAPABILITY, POPULATION_FACTOR_ID, LayeredRiskAwareThetaStarV2,
+    grid_bearing_deg,
+)
+from ..domain.layered_theta_v2 import (
+    ALGORITHM_ID, ALGORITHM_VERSION,
 )
 from ..risk.accessors_v2 import cell_factor_index
 
@@ -130,11 +131,15 @@ def _fingerprint_planner(planner):
     """A planner that exposes the declared dependency fingerprint (registry seam).
 
     A different registered ``layered_route_planner`` implementation may not expose
-    ``fingerprints``; the canonical V1 fingerprint definition is then used, so the staleness
-    semantics stay identical instead of silently degrading.
+    ``fingerprints``; the production Theta* V2 definition is then used, so a legacy or
+    malformed saved selection can never reactivate the archived V1 planner.
     """
 
-    return planner if callable(getattr(planner, "fingerprints", None)) else LayeredRoutePlannerV1()
+    return (
+        planner
+        if callable(getattr(planner, "fingerprints", None))
+        else LayeredRiskAwareThetaStarV2()
+    )
 
 
 def _existing_candidate(collection, key, request):
@@ -162,10 +167,9 @@ class LayeredRoutePlannerService:
         #: reported blocked instead of being fabricated.
         self.adapter = adapter
         self.source_status = source_status
-        #: Bound to the registry-selected ``layered_route_planner`` algorithm.  The default
-        #: is now the production Theta* V2 baseline; a project that explicitly saved V1 keeps
-        #: running V1.  The project's ``route_planner`` selection is untouched either way.
-        self.planner = LayeredRoutePlannerV1()
+        #: Production execution is always Theta* V2.  A saved V1 selection remains visible
+        #: to compatibility readers but is never executable.
+        self.planner = LayeredRiskAwareThetaStarV2()
         #: Optional read-only communication field provider (interface only in this round).
         self.communication_provider = None
         self.ensure_state()

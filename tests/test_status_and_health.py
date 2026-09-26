@@ -57,8 +57,8 @@ def test_health_is_stage_aware_and_keeps_online_services_separate():
 def test_dependency_changes_mark_existing_results_stale():
     ledger = ResultLedger()
     ledger.statuses["routes"] = ResultStatus.PASSED
-    ledger.statuses["coverage"] = ResultStatus.PASSED
+    ledger.statuses["coverage_3d"] = ResultStatus.PASSED
     affected = ledger.invalidate("rules")
-    assert "routes" in affected and "coverage" in affected
+    assert "routes" in affected and "coverage_3d" in affected
     assert ledger.statuses["routes"] == ResultStatus.STALE
-    assert ledger.statuses["coverage"] == ResultStatus.STALE
+    assert ledger.statuses["coverage_3d"] == ResultStatus.STALE

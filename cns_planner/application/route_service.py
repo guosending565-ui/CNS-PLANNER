@@ -1,26 +1,8 @@
-"""Route-node, scenario and operational-route use cases.
+"""Route-node and scenario use cases; legacy route computation has been removed."""
 
-Phase4-B2B-1 Production Write Authority（受限软隔离）：
-
-* ``operational_routes`` 的 canonical production content owner 是
-  ``LayeredOperationalAdoptionService``。本服务**不再**写 canonical ``operational_routes``。
-* ``generate_operational`` 仍可运行 ``RoutePlannerV1`` / ``RiskAwareRoutePlannerV2``，但结果只进入
-  当前 ``WorkflowSession`` 的 runtime-only cache，并显式携带
-  ``authoritative=false / compatibility=true / deprecated=true / source_algorithm``。
-  兼容试算不是正式运行航路，不驱动 canonical coverage / required_cns / facility plan /
-  confirmed plan / 正式报告，也**不会**把 ``result_statuses["routes"]`` 改成 passed。
-* ``generate_scenario`` / ``generate_scenario_od`` / ``delete_route`` / ``delete_node`` 仍然清空或
-  回收派生运行航路（删除派生结果，不是产生权威结果），这些写点经
-  :data:`DERIVED_REVOKE_ALLOWLIST` 显式白名单登记，语义保持不变。
-"""
-
-from copy import deepcopy
-
-from .constraint_validation import validate_hard_constraints
 from .production_write_authority import (
     assert_write_authority, drop_runtime_compatibility_result,
     runtime_compatibility_items, runtime_compatibility_result,
-    write_runtime_compatibility_result,
 )
 
 #: 旧算法兼容试算结果在 runtime-only cache 下的名字。
@@ -241,109 +223,6 @@ class RouteService:
             state["retired_route_ids"].append(route_id)
         self.invalidation.workflow("route")
         return self._save()
-
-    def planner_context(self, hard_constraints):
-        """Frozen, read-only planner inputs for the current project state.
-
-        Shared verbatim by the operational path and by comparison experiments so both
-        feed the planners exactly the same input view.  Building this mapping never
-        mutates project state.
-        """
-        state, workspace = self.session.state, self.session.state.get("workspace")
-        if not workspace:
-            raise ValueError("请先保存工作区")
-        return {
-            "workspace_bbox": list(workspace["bbox"]),
-            "grid": state.get("grid") or {},
-            "grid_risk": state.get("grid_risk") or {},
-            "uses_canonical_grid_risk": bool(
-                getattr(self.planner, "uses_canonical_grid_risk", False)
-            ),
-            "hard_constraints": list(hard_constraints or []),
-        }
-
-    @staticmethod
-    def plan_routes(planner, routes, context, constraints):
-        """Dispatch one planner over routes using an explicit, frozen input view.
-
-        The planner's own search core, cost function and output contract are not
-        touched here; only the argument shape is selected from its declared capability.
-        """
-        if getattr(planner, "uses_canonical_grid_risk", False):
-            return [
-                planner.plan(
-                    route, context.get("grid") or {}, context.get("grid_risk") or {},
-                    constraints,
-                )
-                for route in routes
-            ]
-        return [
-            planner.plan(route, context.get("workspace_bbox"), constraints)
-            for route in routes
-        ]
-
-    def generate_operational(self, hard_constraints):
-        """旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 兼容试算（受限软隔离）。
-
-        仍可运行旧算法以兼容旧项目、测试与对照，但结果**只**写入
-        当前会话的 runtime-only compatibility cache：
-        canonical ``operational_routes`` 完全不变，``result_statuses["routes"]`` 也不改
-        （否则 canonical workflow readiness 会把兼容试算误认为正式运行航路已完成）。
-        """
-
-        state, workspace = self.session.state, self.session.state.get("workspace")
-        if not workspace or not state["scenario_routes"]:
-            raise ValueError("请先保存工作区并生成场景航路")
-        # Fail closed before any planner runs: a malformed constraint is never
-        # dropped, repaired or silently downgraded to "no constraint".
-        constraints = validate_hard_constraints(hard_constraints)
-        context = self.planner_context(constraints)
-        results = self.plan_routes(self.planner, state["scenario_routes"], context, constraints)
-        statuses = {item.get("status") for item in results}
-        status = (
-            "passed" if statuses == {"passed"}
-            else "failed" if "failed" in statuses
-            else "missing_data" if "missing_data" in statuses
-            else "failed"
-        )
-        record = write_runtime_compatibility_result(
-            self.session, COMPATIBILITY_OPERATIONAL_ROUTES,
-            {
-                "status": status,
-                "stale_reason": None,
-                "count": len(results),
-                "items": deepcopy(results),
-                "canonical_operational_routes_unchanged": True,
-                "consumed_by_canonical_workflow": False,
-                "drives_canonical_coverage": False,
-                "drives_required_cns": False,
-                "drives_facility_plan": False,
-                "drives_confirmed_plan": False,
-            },
-            source_algorithm=self._planner_identity(),
-            note=(
-                "旧版兼容试算（旧 RoutePlannerV1 / RiskAwareRoutePlannerV2）："
-                "不是正式运行航路，不发布、不驱动 canonical 下游、不进入正式报告。"
-            ),
-        )
-        # Runtime compatibility compute has no ProjectState side effect at all: no risk
-        # marker, no revision bump, no artifact and no canonical invalidation.
-        response = self.snapshot()
-        response["compatibility_operational_routes"] = deepcopy(record)
-        response["compatibility_write"] = True
-        response["authoritative_operational_routes_unchanged"] = True
-        return response
-
-    def _planner_identity(self):
-        return {
-            "algorithm_type": "route_planner",
-            "algorithm_id": getattr(self.planner, "algorithm_id", None),
-            "algorithm_version": getattr(self.planner, "algorithm_version", None),
-            "class": type(self.planner).__name__,
-            "uses_canonical_grid_risk": bool(
-                getattr(self.planner, "uses_canonical_grid_risk", False)
-            ),
-        }
 
     def _save(self):
         self.session.save()

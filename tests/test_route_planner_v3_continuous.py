@@ -1872,23 +1872,6 @@ def test_supercover_corner_obstacle_is_included_through_the_public_helper():
 # --------------------------------------------------------------------------------------
 
 
-def test_v1_and_v2_route_planners_are_not_registered_or_modified_by_v3c():
-    from cns_planner.algorithms.registry import build_default_algorithm_registry
-    from cns_planner.route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
-
-    catalog = build_default_algorithm_registry({}).catalog()
-    route_entries = {
-        (entry["algorithm_id"], entry["version"])
-        for entry in catalog
-        if entry.get("algorithm_type") == "route_planner"
-    }
-    assert ("route_planner_v1", "1.0") in route_entries
-    assert ("risk_aware_route_planner_v2", "2.0") in route_entries
-    # V3-C registers nothing: it is not selectable as the project's route planner.
-    assert all("v3" not in algorithm_id for algorithm_id, _ in route_entries)
-    assert RiskAwareRoutePlannerV2.algorithm_id == "risk_aware_route_planner_v2"
-
-
 def test_v3c_never_writes_operational_routes_or_route_altitude_profiles(tmp_path):
     service = workflow(tmp_path)
     payload = prepare_validation_run(service)

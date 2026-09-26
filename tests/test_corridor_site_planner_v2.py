@@ -362,14 +362,14 @@ def test_registry_api_persistence_backfill_and_invalidation(tmp_path):
     assert normalized["cns_corridor_site_plan"]["status"] == "not_calculated"
 
 
-def test_site_planner_default_stays_v1_and_v2_selection_binds_only_v2_service(tmp_path):
+def test_site_planner_default_and_selection_bind_only_corridor_v2_service(tmp_path):
     workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    assert workflow.site_planner.algorithm_id == "reuse_first_site_planner_v1"
+    assert not hasattr(workflow, "site_planner")
+    assert workflow.corridor_site_planner.algorithm_id == "corridor_reuse_first_site_planner_v2"
     workflow.select_algorithm({
         "algorithm_type": "site_planner",
         "algorithm_id": "corridor_reuse_first_site_planner_v2",
         "version": "2.0", "parameters": {"audit_tag": "test"},
     })
-    assert workflow.site_planner.algorithm_id == "reuse_first_site_planner_v1"
     assert workflow.corridor_site_planner.algorithm_id == "corridor_reuse_first_site_planner_v2"
     assert workflow.corridor_site_planner.parameters == {"audit_tag": "test"}

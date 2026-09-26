@@ -68,6 +68,71 @@ class ReferenceLinkService:
             "note": "候选仅为端点距离提示；系统不会自动建立 link。",
         }
 
+    def reference_comparisons_snapshot(self):
+        """Read-only reference ↔ planned comparisons for explicitly linked pairs.
+
+        Never stored and never ranked: it only describes the difference between a
+        confirmed reference route and the current published operational path.
+        """
+
+        from ..benchmark.reference_comparison import (
+            compute_reference_comparison, reference_comparison_readiness,
+        )
+
+        state = self.session.state
+        reference_routes = {
+            item.get("reference_route_id"): item
+            for item in ((state.get("reference_routes") or {}).get("items") or [])
+        }
+        links = (state.get("reference_route_links") or {}).get("items") or []
+        scenario_routes = {
+            item.get("route_id"): item for item in (state.get("scenario_routes") or [])
+        }
+        operational = (state.get("operational_routes") or [])
+        comparisons, blocked = [], []
+        for link in links:
+            reference = reference_routes.get(link.get("reference_route_id"))
+            scenario = scenario_routes.get(link.get("scenario_route_id"))
+            planned_path = self._published_path(operational, link.get("scenario_route_id"))
+            readiness = reference_comparison_readiness(reference, link, scenario, planned_path)
+            if not readiness["ready"]:
+                blocked.append({
+                    "link_id": link.get("link_id"),
+                    "reference_route_id": link.get("reference_route_id"),
+                    "scenario_route_id": link.get("scenario_route_id"),
+                    "status": "not_ready",
+                    "reasons": readiness["reasons"],
+                    "requires_source_crs_confirmed": True,
+                    "requires_explicit_user_link": True,
+                })
+                continue
+            comparisons.append(compute_reference_comparison(
+                reference, scenario, link, planned_path=planned_path,
+            ))
+        return {
+            "status": "passed" if comparisons else ("blocked" if links else "not_calculated"),
+            "comparison_count": len(comparisons),
+            "blocked_count": len(blocked),
+            "comparisons": comparisons,
+            "blocked": blocked,
+            "reference_route_count": len(reference_routes),
+            "link_count": len(links),
+            "reference_source_crs_resolved": bool(
+                is_resolved((state.get("reference_routes") or {}).get("crs"), role="source_crs")
+            ),
+            "automatic_association": False,
+            "note": "仅描述差异；不产生 similarity score、排名或“更好”结论。",
+        }
+
+    @staticmethod
+    def _published_path(operational_routes, scenario_route_id):
+        """已发布运行航路的路径（只读；B8X 后不再从实验记录里取路径）。"""
+
+        for route in operational_routes:
+            if route.get("route_id") == scenario_route_id and route.get("path"):
+                return route.get("path")
+        return None
+
     def create_link(self, payload):
         if not isinstance(payload, dict):
             raise ValueError("reference route link 请求格式无效")

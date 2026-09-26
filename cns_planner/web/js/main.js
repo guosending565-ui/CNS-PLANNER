@@ -78,11 +78,6 @@ async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow')
 const resourceMutationAndRefresh=createResourceMutationAndRefresh({post:(path,payload)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),refresh:()=>api('/api/workflow'),apply:applyWorkflow});
 async function resourceAction(path,payload={}){return applyWorkflowSnapshot(await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
-// V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
-async function loadRoutePlannerV3Detail(){
-  const detail=await api('/api/research/route-planner-v3-experiments');
-  flow={...flow,route_planner_v3_detail:detail};store.set({workflow:flow});renderWorkflow();paint();return detail;
-}
 function showError(message){$('error').hidden=!message;$('error').textContent=message||'';}
 function panelError(message){const target=$('panelError');if(target)target.textContent=message||'';else showError(message);}
 function size(){return [Math.max(1,Math.round(map.clientWidth)),Math.max(1,Math.round(map.clientHeight))];}
@@ -322,7 +317,6 @@ function renderWorkflow(){
 function stepBindings(){return {
   $,api,flow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},afterFlowChange:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
   mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
-  loadRoutePlannerV3Detail,
   saveProject,openProject,
   previewPlanningReport,downloadPlanningReport,
   selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},

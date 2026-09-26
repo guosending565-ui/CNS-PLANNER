@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from cns_planner.algorithms.registry import build_default_algorithm_registry
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.benchmark.geodesy import (
     GEODESIC_BACKEND, geodesic_bearing_deg, geodesic_distance_m, heading_change_deg,
@@ -18,9 +17,6 @@ from cns_planner.benchmark.geodesy import (
 )
 from cns_planner.benchmark.quality import (
     HEADING_CHANGE_TOLERANCE_DEG, METRIC_SEMANTICS, polyline_metrics,
-)
-from cns_planner.domain.experiment import (
-    experiment_id_for, normalize_experiments, scenario_fingerprint,
 )
 from cns_planner.domain.reference_crs import (
     CRS84, empty_crs_record, is_resolved, normalize_crs_record, unresolved_reason,
@@ -35,8 +31,6 @@ DEFAULTS = Path("cns_planner/config/defaults.json")
 #: 本文件的用例只把工作区当作 experiment / reference 语义的前置条件（不做网格搜索），
 #: 因此用一个 L8 下 8281 格的小工作区，避免大范围在正式上限处被**明确阻断**。
 WORKSPACE = [122.0, 29.9, 122.10, 30.00]
-PLANNER_V1 = "route_planner_v1"
-PLANNER_V2 = "risk_aware_route_planner_v2"
 
 
 def workflow_with_routes(tmp_path, name="project.json"):
@@ -50,229 +44,6 @@ def workflow_with_routes(tmp_path, name="project.json"):
     workflow.generate_scenario_od("N001", "N002", "ab")
     return workflow
 
-
-def run_experiment(workflow, planners=None):
-    payload = {} if planners is None else {"planners": planners}
-    return workflow.evaluate_route_experiment(payload)
-
-
-# --------------------------------------------------------------------------------------
-# 1. experiment isolation
-# --------------------------------------------------------------------------------------
-
-
-def test_v1_and_v2_experiments_are_saved_together_without_touching_operational_routes(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    # Establish a real current operational result first.
-    workflow.generate_operational([])
-    operational_before = deepcopy(workflow.state["operational_routes"])
-    status_before = workflow.state["result_statuses"]["routes"]
-    selection_before = deepcopy(workflow.state["algorithm_selection"])
-
-    snapshot = run_experiment(workflow)
-    collection = snapshot["route_planning_experiments"]
-
-    assert collection["count"] == 1
-    record = collection["active_experiment"]
-    run_ids = {run["run_id"] for run in record["runs"]}
-    assert any(PLANNER_V1 in run_id for run_id in run_ids)
-    assert any(PLANNER_V2 in run_id for run_id in run_ids)
-    assert {run["algorithm_id"] for run in record["runs"]} == {PLANNER_V1, PLANNER_V2}
-
-    assert workflow.state["operational_routes"] == operational_before
-    assert workflow.state["result_statuses"]["routes"] == status_before
-    assert workflow.state["algorithm_selection"] == selection_before
-
-
-def test_experiment_never_changes_current_planner_even_when_only_v2_requested(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    # B7X：新项目不再持久化 legacy ``route_planner`` selection；兼容链只由
-    # CompatibilitySelectionAdapter 提供，实验也绝不能写回任何 selection。
-    selection_before = deepcopy(workflow.state["algorithm_selection"])
-    assert "route_planner" not in selection_before
-    run_experiment(workflow, [{"algorithm_id": PLANNER_V2, "version": "2.0"}])
-    assert workflow.state["algorithm_selection"] == selection_before
-
-
-def test_experiment_records_required_provenance_fields(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    run_experiment(workflow)
-    # Phase4-B5X：通用快照只带实验记录摘要，冻结的 planner 输出走专用接口。
-    record = workflow.route_experiments_snapshot()["active_experiment"]
-    assert record["experiment_id"].startswith("EXP-")
-    for field in (
-        "experiment_id", "scenario_fingerprint", "input_fingerprints", "planners",
-        "runs", "provenance", "created_at", "current_applicability",
-    ):
-        assert field in record, field
-    assert record["provenance"]["operational_routes_untouched"] is True
-    assert record["provenance"]["algorithm_selection_untouched"] is True
-    for planner in record["planners"]:
-        assert planner["algorithm_id"] and planner["algorithm_version"]
-        assert "manifest" in planner and "effective_parameters" in planner
-    for run in record["runs"]:
-        assert run["runtime"]["measurement"]
-        assert "result" in run and "quality" in run
-        assert run["result_snapshot_semantics"] == "frozen_copy_of_planner_output"
-        assert run["planner_output_mutated"] is False
-    assert record["scenario_fingerprint"] == scenario_fingerprint(workflow.state["scenario_routes"])
-    assert record["verdicts"] == {
-        "automatically_ranked": False, "automatically_scored": False, "preferred_algorithm": None,
-    }
-
-
-def test_experiment_identity_is_deterministic_for_same_inputs_and_parameters(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    first = run_experiment(workflow)["route_planning_experiments"]["active_experiment_id"]
-    second = run_experiment(workflow)["route_planning_experiments"]["active_experiment_id"]
-    assert first == second
-    # Same scenario, different parameters -> different identity.
-    changed = run_experiment(workflow, [
-        {"algorithm_id": PLANNER_V1, "version": "1.0"},
-        {"algorithm_id": PLANNER_V2, "version": "2.0", "parameters": {"risk_weight_lambda": 5.0}},
-    ])["route_planning_experiments"]
-    assert changed["active_experiment_id"] != first
-    assert changed["count"] == 2
-
-
-def test_experiment_does_not_mutate_the_stored_planner_result_snapshot(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    run_experiment(workflow)
-    # Phase4-B5X：冻结的 planner 输出只在专用接口里读取（通用快照已外置它）。
-    record = workflow.route_experiments_snapshot()["active_experiment"]
-    for run in record["runs"]:
-        if not run["planner_invoked"]:
-            continue
-        snapshot = deepcopy(run["result"])
-        # Re-snapshotting must be stable: the record is frozen evidence.
-        again = workflow.route_experiments_snapshot()["active_experiment"]
-        same_run = next(item for item in again["runs"] if item["run_id"] == run["run_id"])
-        assert same_run["result"] == snapshot
-        assert "quality" not in (same_run["result"] or {})
-
-
-def test_experiment_marks_itself_stale_when_scenario_inputs_change(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
-    assert record["current_applicability"] == "current"
-    workflow.generate_scenario_od("N002", "N001", "ab")
-    refreshed = workflow.route_experiments_snapshot()["records"][0]
-    assert refreshed["current_applicability"] == "stale_scenario_inputs"
-    # Staleness is reported, never destructive: the frozen record is still present.
-    assert refreshed["runs"]
-
-
-def test_experiment_marks_context_change_stale_without_scenario_change(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
-    assert record["current_applicability"] == "current"
-    assert record["scenario_inputs_changed"] is False
-    workflow.state["grid_risk"] = {
-        **(workflow.state.get("grid_risk") or {}), "diagnostic_context_revision": "changed",
-    }
-    refreshed = workflow.route_experiments_snapshot()["records"][0]
-    assert refreshed["current_applicability"] == "stale_context_inputs"
-    assert refreshed["scenario_inputs_changed"] is False
-    assert refreshed["context_inputs_changed"] is True
-
-
-def test_legacy_experiment_without_context_fingerprint_is_never_current(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    record = run_experiment(workflow)["route_planning_experiments"]["active_experiment"]
-    workflow.state["route_planning_experiments"]["records"][0].pop("planner_context_fingerprint")
-    refreshed = workflow.route_experiments_snapshot()["records"][0]
-    assert refreshed["current_applicability"] == "unknown_legacy_context_inputs"
-    assert refreshed["context_inputs_changed"] is True
-
-
-def test_multi_route_experiment_path_lookup_selects_matching_route(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    active = {"runs": [{"result": {"results": [
-        {"route_id": "R-A", "path": [[1, 1], [2, 2]]},
-        {"route_id": "R-B", "path": [[3, 3], [4, 4]]},
-    ]}}]}
-    path = workflow.route_experiment_service._planned_path(active, {"route_id": "R-B"})
-    assert path == [[3, 3], [4, 4]]
-
-
-def test_experiment_requires_scenario_routes(tmp_path):
-    workflow = WorkflowService(tmp_path / "empty.json", DEFAULTS)
-    workflow.set_workspace(WORKSPACE, {"status": "passed"}, 8)
-    with pytest.raises(ValueError, match="场景航路"):
-        workflow.evaluate_route_experiment({})
-
-
-def test_experiment_rejects_malformed_hard_constraints_without_invoking_planners(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    with pytest.raises(ValueError):
-        workflow.evaluate_route_experiment({
-            "hard_constraints": [{"name": "非法", "bbox": [122.2, 30.0, 122.0, 30.2]}],
-        })
-    assert workflow.state["route_planning_experiments"]["count"] == 0
-
-
-def test_unknown_planner_manifest_fails_explicitly(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    with pytest.raises(Exception):
-        run_experiment(workflow, [{"algorithm_id": "route_planner_v3", "version": "3.0"}])
-
-
-def test_experiment_delete_removes_only_that_record(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    first = run_experiment(workflow)["route_planning_experiments"]["active_experiment_id"]
-    run_experiment(workflow, [
-        {"algorithm_id": PLANNER_V1, "version": "1.0"},
-        {"algorithm_id": PLANNER_V2, "version": "2.0", "parameters": {"risk_weight_lambda": 3.0}},
-    ])
-    snapshot = workflow.delete_route_experiment(first)
-    assert snapshot["route_planning_experiments"]["count"] == 1
-    assert snapshot["route_planning_experiments"]["active_experiment_id"] != first
-    with pytest.raises(ValueError, match="不存在"):
-        workflow.delete_route_experiment("EXP-000000000000")
-
-
-def test_experiment_is_persisted_and_old_schema_backfills(tmp_path):
-    workflow = workflow_with_routes(tmp_path)
-    run_experiment(workflow)
-    restored = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    assert restored.state["route_planning_experiments"]["count"] == 1
-
-    # A legacy project has no experiment/link collections at all.
-    from cns_planner.application.project_state import blank_project, normalize_project
-
-    legacy = blank_project(workflow.defaults)
-    legacy.pop("route_planning_experiments")
-    legacy.pop("reference_route_links")
-    normalized = normalize_project(legacy, workflow.grid_service)
-    assert normalized["route_planning_experiments"]["status"] == "not_calculated"
-    assert normalized["route_planning_experiments"]["records"] == []
-    assert normalized["reference_route_links"]["count"] == 0
-
-
-def test_normalize_experiments_is_additive_and_validates_identity():
-    assert normalize_experiments(None)["count"] == 0
-    assert normalize_experiments([])["count"] == 0
-    record = {
-        "experiment_id": "EXP-0123456789AB", "scenario_fingerprint": "x",
-        "planners": [], "runs": [],
-    }
-    normalized = normalize_experiments({"records": [record]})
-    assert normalized["count"] == 1
-    assert normalized["records"][0]["verdicts"]["automatically_ranked"] is False
-    with pytest.raises(ValueError, match="experiment_id"):
-        normalize_experiments({"records": [{"experiment_id": "bad"}]})
-
-
-def test_experiment_id_helper_is_order_independent_for_parameters():
-    first = experiment_id_for("fp", {"a": "v1@1.0"}, {"a": {"lambda": 1}})
-    second = experiment_id_for("fp", {"a": "v1@1.0"}, {"a": {"lambda": 1}})
-    third = experiment_id_for("fp", {"a": "v1@1.0"}, {"a": {"lambda": 2}})
-    assert first == second != third
-
-
-# --------------------------------------------------------------------------------------
-# 2. geodesic measurement semantics
-# --------------------------------------------------------------------------------------
 
 
 def test_geodesic_backend_is_ellipsoidal_when_pyproj_is_present():
@@ -650,43 +421,3 @@ def test_reference_links_persist_and_backfill(tmp_path):
 # --------------------------------------------------------------------------------------
 # 5. registry / API wiring
 # --------------------------------------------------------------------------------------
-
-
-def test_experiment_and_link_api_endpoints_are_additive(tmp_path):
-    from cns_planner.api.router import ApiRouter
-
-    workflow = workflow_with_routes(tmp_path)
-    workflow.state["reference_routes"] = load_reference_routes(reference_csv(tmp_path))
-
-    class Context:
-        data = object()
-
-        def __init__(self, workflow):
-            self.workflow = workflow
-
-        def evaluate_route_vertical_profiles(self, payload):
-            raise AssertionError("not used")
-
-    router = ApiRouter(Context(workflow))
-    evaluated = router.post("/api/route-experiments/evaluate", {}).data
-    assert evaluated["route_planning_experiments"]["count"] == 1
-    assert router.get("/api/route-experiments", {}, {}).data["count"] == 1
-    assert router.get("/api/reference-route-links", {}, {}).data["count"] == 0
-    assert router.get("/api/reference-endpoint-candidates", {}, {}).data["status"] == "blocked"
-    assert router.get("/api/data-readiness", {}, {}).data["blocks"]["airspace_policies"]
-
-    reference_id = workflow.state["reference_routes"]["items"][0]["reference_route_id"]
-    scenario_id = workflow.state["scenario_routes"][0]["route_id"]
-    created = router.post("/api/reference-route-links/create", {
-        "reference_route_id": reference_id, "scenario_route_id": scenario_id,
-        "confirmed": True, "source": {"type": "user_confirmation"},
-    }).data
-    assert created["reference_route_links"]["count"] == 1
-    link_id = created["reference_route_links"]["items"][0]["link_id"]
-    assert router.post("/api/reference-route-links/delete", {"link_id": link_id}).data["reference_route_links"]["count"] == 0
-
-
-def test_registry_route_planners_are_unchanged():
-    registry = build_default_algorithm_registry(json.loads(DEFAULTS.read_text(encoding="utf-8")))
-    keys = {(item.algorithm_id, item.version) for item in registry.manifests("route_planner")}
-    assert keys == {(PLANNER_V1, "1.0"), (PLANNER_V2, "2.0")}

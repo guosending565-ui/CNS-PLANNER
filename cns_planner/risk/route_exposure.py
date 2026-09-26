@@ -18,7 +18,7 @@ RouteRiskProfile 的 ``exposure_index_m``、``route_length_m``、segment 积分�
 
 from __future__ import annotations
 
-from ..algorithms.coverage.v1 import distance_m
+from ..domain.geodesy import distance_m
 from ..domain.risk_v2 import DOMAIN_IDS
 from .accessors_v2 import (
     RESOLVED_DOMAIN_STATUS, cell_domain_index, domain_record_path, finite,

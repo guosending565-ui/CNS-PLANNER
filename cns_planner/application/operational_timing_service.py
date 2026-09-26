@@ -61,7 +61,9 @@ class OperationalTimingService:
             state.get("required_cns") or {}, profile,
             state.get("operational_timing") or {},
         )
-        self.invalidation.cns_gap_v2()
+        # B8X：原先这里还会 stale 掉已删除的 compatibility Gap V2 视图；现在沿 canonical
+        # 依赖事实源声明 service_timeline 的下游（report）失效，语义与 DEPENDENTS 一致。
+        self.invalidation.workflow("service_timeline")
         self.invalidation.encounter_3d("service_timeline_evaluated")
         state["service_timeline"] = result
         state["result_statuses"]["service_timeline"] = result["status"]

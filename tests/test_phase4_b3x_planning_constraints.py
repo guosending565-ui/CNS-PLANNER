@@ -15,11 +15,9 @@ from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.planning_constraint_field import stable_constraint_fingerprint
 from cns_planner.gis.fine_environment_adapter import _FabdemRasterBase
 from cns_planner.gis.metric_crs import resolve_metric_crs
-from cns_planner.layered_route_planner.planner import GridGraph as LayeredGridGraph
 from cns_planner.layered_route_planner.theta_star_v2 import LayeredRiskAwareThetaStarV2
 from cns_planner.planning.grid_graph import GridGraph
 from cns_planner.persistence.project_compaction import compact_and_store, restore_compacted_results
-from cns_planner.route_planner.risk_aware_v2 import GridGraph as CompatibilityGridGraph
 from cns_planner.route_planner_v3.continuous_validators import (
     validate_buildings as compatibility_validate_buildings,
 )
@@ -104,8 +102,6 @@ def metric_route(altitude=100.0):
 
 
 def test_neutral_grid_graph_is_the_single_definition():
-    assert CompatibilityGridGraph is GridGraph
-    assert LayeredGridGraph is GridGraph
     graph = GridGraph(one_cell()["cells"])
     assert graph.containing_cell([0.5, 0.5]) == "G0"
 

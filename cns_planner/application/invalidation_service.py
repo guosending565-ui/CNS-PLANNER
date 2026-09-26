@@ -12,12 +12,6 @@ from ..domain.reporting import mark_active_report_stale
 #: The direct downstream consumers of an explicit Production Route3DProfile V1 change.
 DOWNSTREAM_RESULTS = ("coverage_3d", "route_vertical_profiles", "route_safety_evidence_v2")
 
-#: compatibility/archive 结果键：它们在旧项目里只读，失效只作用于 runtime-only cache。
-COMPATIBILITY_RESULT_KEYS = frozenset({
-    "coverage", "cns_gap", "cns_gap_v2", "cns_site_plan",
-})
-
-
 class InvalidationService:
     SOURCE_ATTRIBUTES = {
         "population": ("population",), "terrain": ("terrain",),
@@ -80,12 +74,6 @@ class InvalidationService:
                 ledger.statuses[name] = ResultStatus.NOT_CALCULATED
         affected = ledger.invalidate(changed)
         for name in affected:
-            # B7X：compatibility/archive 结果（旧二维覆盖、旧 Gap V1/V2、旧站址试算）在
-            # 旧项目里是只读历史证据。它们的"失效"只发生在当前会话的 runtime-only
-            # compatibility cache 里，绝不改写 ProjectState 的任何字段——包括这一组
-            # 遗留的 ``result_statuses`` 记录。
-            if name in COMPATIBILITY_RESULT_KEYS:
-                continue
             if name in state["result_statuses"]:
                 state["result_statuses"][name] = ledger.statuses[name].value
         if "routes" in affected:
@@ -96,29 +84,12 @@ class InvalidationService:
                 ):
                     route["status"] = "stale"
                     route["stale_reason"] = f"{changed}_changed"
-            # 旧算法兼容试算同样随 route 语义失效；它只在 runtime-only cache 内
-            # 被标 stale，绝不触碰 canonical ``operational_routes`` 或 ProjectState。
-            mark_runtime_compatibility_stale(
-                self.session, "operational_routes", f"{changed}_changed"
-            )
-        if "cns_gap" in affected:
-            mark_runtime_compatibility_stale(
-                self.session, "cns_gap_analysis", f"{changed}_changed"
-            )
-        if "coverage" in affected:
-            mark_runtime_compatibility_stale(
-                self.session, "coverage", f"{changed}_changed"
-            )
         if "coverage_3d" in affected:
             self.coverage_3d()
         if "cns_service_capability" in affected:
             self.cns_service_capability()
         if "service_timeline" in affected:
             self.service_timeline()
-        if "cns_gap_v2" in affected:
-            self.cns_gap_v2()
-        if "cns_site_plan" in affected:
-            self.cns_site_plan()
         if "protection_envelope" in affected:
             self.protection_envelope()
         if "cns_corridor_assessment" in affected:
@@ -137,7 +108,7 @@ class InvalidationService:
             # This never stales routes/CNS: the current planner still consumes the
             # legacy Risk V1 ``grid_risk`` only.
             self.risk_v2(f"{changed}_changed")
-        if changed in ("workspace", "route", "route_algorithm", "spatial_3d"):
+        if changed in ("workspace", "route", "spatial_3d"):
             self.building_clearance(f"{changed}_changed")
         if changed in ("workspace", "spatial_3d"):
             self.planning_constraint_field(f"{changed}_changed")
@@ -146,7 +117,7 @@ class InvalidationService:
             # additive layered candidate product; legacy routes stay untouched.
             state.setdefault("result_statuses", {})["layered_route_candidate"] = "stale"
             self.layered_route(str(changed))
-        if changed in ("route", "workspace", "route_algorithm", "spatial_3d"):
+        if changed in ("route", "workspace", "spatial_3d"):
             # Radar Surveillance Layout V1 消费已发布运行航路与固定高度层：航路/工作区/高度层
             # 配置变化只把该 additive 产物标 stale（proposal-only，unidirectional）。
             self.radar_surveillance_layout(f"{changed}_changed")
@@ -233,7 +204,7 @@ class InvalidationService:
         * ``layered_route_candidate`` + ``LayerFeasibilityMask``（塔净空进入可行性判定），
           并沿用既有语义连带 ``route_risk_profiles`` / ``layered_route_validations`` /
           Safety Evidence —— 因为候选航路本身变了，这些剖面确实需要重算；
-        * ``cns_site_plan`` / ``cns_corridor_site_plan``（共塔宿主候选变了）；
+        * ``cns_corridor_site_plan``（共塔宿主候选变了）；
         * 当前 active report。
 
         **绝不**失效 ``grid_risk`` / ``grid_risk_v2`` / ``environment_risk``：
@@ -249,7 +220,6 @@ class InvalidationService:
                     statuses[name] = "stale"
         self.planning_constraint_field(str(reason))
         self.layered_route(str(reason))
-        self.cns_site_plan()
         self.cns_corridor_site_plan()
         # 雷达初步划设的雷达原点依赖塔顶 EGM2008 正高（= 障碍物派生事实）。
         self.radar_surveillance_layout(str(reason))
@@ -392,7 +362,6 @@ class InvalidationService:
         result["status"] = "stale"
         state["result_statuses"]["environment_risk"] = "stale"
         state["risks"]["environment"] = assessment("stale", "网格风险输入属性已变化")
-        self.grid_risk_routes()
 
     def risk_v2(self, reason="risk_v2_input_changed"):
         """Stale only the additive Risk Framework V2 result.
@@ -504,7 +473,6 @@ class InvalidationService:
         route_ids = {str(item) for item in route_ids or []}
         self.coverage_3d()
         self.building_clearance(str(reason))
-        self.cns_site_plan()
         self.cns_corridor()
         mark_active_report_stale(state, str(reason))
         self.route_safety_evidence(str(reason))
@@ -522,20 +490,11 @@ class InvalidationService:
             "reason": str(reason), "route_ids": sorted(route_ids),
             "candidate_and_v3_untouched": True,
             "downstream": [
-                "coverage_3d", "building_clearance", "cns_site_plan",
+                "coverage_3d", "building_clearance",
                 "cns_corridor_assessment", "route_safety_evidence_v2",
                 "required_cns_recommendation", "radar_surveillance_layout", "report",
             ],
         }
-
-    def grid_risk_routes(self):
-        """Only Risk-Aware Route Planner V2 makes routes depend on grid_risk."""
-        selection = (self.session.state.get("algorithm_selection") or {}).get("route_planner") or {}
-        if (
-            selection.get("algorithm_id") == "risk_aware_route_planner_v2"
-            and selection.get("version") == "2.0"
-        ):
-            self.workflow("route_algorithm")
 
     def safety_policy(self):
         """Invalidate only future safety/technical/report products."""
@@ -582,7 +541,6 @@ class InvalidationService:
             state["service_timeline"] = result
             state.setdefault("result_statuses", {})["service_timeline"] = "stale"
         mark_active_report_stale(state, "service_timeline_changed")
-        self.cns_gap_v2()
         self.encounter_3d("service_timeline_changed")
 
     def protection_envelope(self):
@@ -593,9 +551,6 @@ class InvalidationService:
             state["protection_envelope"] = result
             state.setdefault("result_statuses", {})["protection_envelope"] = "stale"
         mark_active_report_stale(state, "protection_envelope_changed")
-        parameters = (state.get("cns_gap_analysis_v2") or {}).get("parameters") or {}
-        if parameters.get("evaluate_protection_margin") is True:
-            self.cns_gap_v2()
         self.encounter_3d("protection_envelope_changed")
 
     def encounter_3d(self, reason="encounter_3d_input_changed"):
@@ -607,23 +562,6 @@ class InvalidationService:
             state["encounter_3d_assessment"] = result
             state.setdefault("result_statuses", {})["encounter_3d_assessment"] = "stale"
         mark_active_report_stale(state, reason)
-
-    def cns_gap_v2(self):
-        """Stale only the runtime Advanced/compatibility Gap V2 view."""
-        mark_runtime_compatibility_stale(
-            self.session, "cns_gap_analysis_v2", "cns_gap_v2_changed"
-        )
-        self.cns_site_plan()
-        self.route_safety_evidence("cns_gap_v2_changed")
-
-    def cns_site_plan(self):
-        """Stale only the P11 proposal and report; never mutate evaluated inputs."""
-        state = self.session.state
-        mark_runtime_compatibility_stale(
-            self.session, "cns_site_plan", "cns_site_plan_changed"
-        )
-        mark_active_report_stale(state, "cns_site_plan_changed")
-        self.closed_loop_assessment()
 
     def closed_loop_assessment(self):
         """Invalidate only the P12 verification product."""

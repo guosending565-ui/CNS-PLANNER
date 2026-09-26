@@ -71,39 +71,12 @@ def layer(**overrides):
     return payload
 
 
-def _bind_saved_legacy_layered_v1(service):
-    """旧项目已保存 LayeredRoutePlannerV1 selection 的等价种入。
-
-    B7X 之后 ``select_algorithm`` 不再允许为项目写入 compatibility/archive selection；
-    这里直接种入旧项目里本来就存在的同一个值，并在内存中绑定实例。
-    """
-
-    service.state["algorithm_selection"]["layered_route_planner"] = {
-        "algorithm_type": "layered_route_planner",
-        "algorithm_id": "layered_route_planner_v1",
-        "version": "1.0",
-        "parameters": {},
-    }
-    service._bind_algorithm(
-        "layered_route_planner",
-        service.algorithm_registry.create(
-            "layered_route_planner", "layered_route_planner_v1", "1.0", {},
-        ),
-    )
-
-
 def workflow(tmp_path, name="project.json", *, cells=None, route=True, endpoint_inset=0.0):
-    """A project whose ``layered_route_planner`` is **explicitly** Layered Planner V1.
-
-    RouteRiskProfile 的 per-domain cost/exposure characterization 属于 V1 A* 的 soft-cost
-    语义；Theta* V2 是项目默认 layered planner，因此这些 V1 characterization 必须显式选择
-    V1，否则它们测的就不再是同一个 planner。
-    """
+    """A project using the canonical production Theta* V2 planner."""
 
     service = WorkflowService(tmp_path / name, DEFAULTS)
-    _bind_saved_legacy_layered_v1(service)
     assert service.layered_route_planner_service.planner.algorithm_id == (
-        "layered_route_planner_v1"
+        "layered_risk_aware_theta_star_v2"
     )
     grid = grid_cells(columns=3, rows=1) if cells is None else cells
     service.state["grid"] = {
@@ -299,7 +272,7 @@ def evaluate_profile(service, payload=None):
 # --------------------------------------------------------------------------------------
 
 
-def test_shared_integral_keeps_the_candidate_cost_characterization(tmp_path):
+def test_shared_integral_matches_theta_v2_candidate_geometry_and_profile(tmp_path):
     grid = grid_cells(columns=3, rows=1)
     values = {cell["grid_id"]: value for cell, value in zip(grid, (0.2, 0.5, 0.9))}
     service, grid = prepare(
@@ -307,20 +280,7 @@ def test_shared_integral_keeps_the_candidate_cost_characterization(tmp_path):
     )
     candidate = service.layered_route_candidates()["items"][-1]
     assert candidate["status"] == "candidate"
-    # Golden values frozen before/after the shared-helper extraction.
     assert candidate["distance_m"] == pytest.approx(GOLDEN_DISTANCE_M, abs=1e-9)
-    breakdown = candidate["cost_breakdown"]
-    assert breakdown["domain_exposure_index_m"]["ground"] == pytest.approx(
-        GOLDEN_GROUND_EXPOSURE_INDEX_M, abs=1e-9
-    )
-    assert breakdown["mean_domain_index"]["ground"] == pytest.approx(
-        GOLDEN_GROUND_EXPOSURE_INDEX_M / GOLDEN_DISTANCE_M, rel=1e-9
-    )
-    assert candidate["optimization_cost"] == pytest.approx(
-        GOLDEN_DISTANCE_M + GOLDEN_GROUND_EXPOSURE_INDEX_M, rel=1e-12
-    )
-
-    # The same helper, called directly, must reproduce the planner numbers exactly.
     indices, _unresolved = resolve_cell_domain_indices(
         service.state["grid_risk_v2"], candidate["grid_path"], ("ground",),
     )
@@ -331,8 +291,9 @@ def test_shared_integral_keeps_the_candidate_cost_characterization(tmp_path):
         domain_ids=("ground",), integration_domains=("ground",),
     )
     assert integral["distance_m"] == pytest.approx(candidate["distance_m"], abs=1e-9)
+    profile = evaluate_profile(service)["items"][-1]
     assert integral["domain_exposure_index_m"]["ground"] == pytest.approx(
-        breakdown["domain_exposure_index_m"]["ground"], abs=1e-9
+        profile["domains"]["ground"]["exposure_index_m"], abs=1e-9
     )
     assert len(integral["segments"]) == len(candidate["grid_path"]) + 1
 
@@ -416,7 +377,7 @@ def test_domain_exposure_mean_and_max_follow_the_planner_formula(tmp_path):
     assert ground["coverage"] == 1.0
     assert ground["unresolved_length_m"] == 0.0
     assert ground["status"] == "resolved"
-    assert ground["active_cost_domain"] is True
+    assert ground["active_cost_domain"] is False
     assert profile["domains"]["air_traffic"]["active_cost_domain"] is False
 
 
@@ -495,23 +456,8 @@ def test_missing_factor_data_keeps_unresolved_length_and_marks_it(tmp_path):
 def test_domain_without_any_grid_risk_cell_is_unresolved_never_zero(tmp_path):
     service, grid = prepare(tmp_path, risk={"status": "passed", "cells": {}}, ground=0.0)
     candidate = service.layered_route_candidates()["items"][-1]
-    assert candidate["status"] == "candidate"  # λ=0 means no domain is a planning input
-    profile = evaluate_profile(service)["items"][-1]
-    assert profile["status"] == "passed"
-    for domain_id in DOMAIN_IDS:
-        domain = profile["domains"][domain_id]
-        assert domain["resolved_length_m"] == 0.0
-        assert domain["unresolved_length_m"] == pytest.approx(profile["route_length_m"], abs=1e-6)
-        assert domain["exposure_index_m"] is None
-        assert domain["mean_index"] is None
-        assert domain["max_index"] is None
-        assert domain["coverage"] == 0.0
-        assert domain["status"] == "unresolved"
-    assert profile["segments"]
-    assert all(
-        segment["domains"]["ground"]["exposure_index_m"] is None
-        for segment in profile["segments"]
-    )
+    assert candidate["status"] == "missing_data"
+    assert candidate["blocking_reasons"]
 
 
 # --------------------------------------------------------------------------------------
@@ -906,17 +852,6 @@ def test_candidate_distance_mismatch_returns_inconsistent_evidence(tmp_path):
     codes = {item["reason_code"] for item in profiles["last_evaluation"]["blocking_reasons"]}
     assert "route_length_mismatch" in codes
     assert service.state["result_statuses"]["route_risk_profile"] == "not_calculated"
-
-
-def test_candidate_exposure_mismatch_returns_inconsistent_evidence(tmp_path):
-    service, grid = prepare(tmp_path)
-    candidate = service.state["layered_route_candidates"]["items"][-1]
-    candidate["cost_breakdown"]["domain_exposure_index_m"]["ground"] = 0.0
-    profiles = evaluate_profile(service)
-    assert profiles["count"] == 0
-    assert profiles["last_evaluation"]["status"] == "inconsistent_evidence"
-    codes = {item["reason_code"] for item in profiles["last_evaluation"]["blocking_reasons"]}
-    assert "active_domain_exposure_mismatch" in codes
 
 
 def test_candidate_fingerprint_mismatch_is_inconsistent_evidence(tmp_path):

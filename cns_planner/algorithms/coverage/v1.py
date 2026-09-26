@@ -5,12 +5,7 @@ from hashlib import sha256
 import json
 import math
 
-
-def distance_m(a, b):
-    lat = math.radians((a[1] + b[1]) / 2)
-    dx = math.radians(b[0] - a[0]) * 6371008.8 * math.cos(lat)
-    dy = math.radians(b[1] - a[1]) * 6371008.8
-    return math.hypot(dx, dy)
+from ...domain.geodesy import distance_m
 
 
 def interpolate_path(path, spacing_m):

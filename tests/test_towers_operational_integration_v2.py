@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from cns_planner.application.project_state import normalize_project
-from cns_planner.application.site_planning_service import _candidate_actions
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.building_clearance import normalize_building_clearance_policy
 from cns_planner.domain.cns_inputs import normalize_candidate_site
@@ -39,10 +38,9 @@ from cns_planner.domain.tower_obstacle import (
     normalize_tower_obstacle_profiles,
 )
 from cns_planner.gis.layered_feasibility_adapter import tower_facts_by_cell
-from cns_planner.layered_route_planner.planner import build_layer_feasibility_mask
+from cns_planner.layered_route_planner.feasibility import build_layer_feasibility_mask
 from cns_planner.domain.layered_theta_v2 import USER_DEFINED_BASELINE_WEIGHTS
 from cns_planner.risk.factors_v2 import FACTOR_INPUT_ATTRIBUTES
-from cns_planner.site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 
 DEFAULTS = Path("cns_planner/config/defaults.json")
 
@@ -435,80 +433,6 @@ def plain_site(**overrides):
     return normalize_candidate_site(payload)
 
 
-def test_tower_colocation_tier_precedes_plain_candidate_and_new_build():
-    assert REUSE_TIERS.index(TOWER_COLOCATION_REUSE_CLASS) < REUSE_TIERS.index("candidate_site")
-    assert REUSE_TIERS.index(TOWER_COLOCATION_REUSE_CLASS) < REUSE_TIERS.index("new_build_candidate")
-    # 已有 CNS 设备仍然最高优先：共塔是"真实站点复用"的一种，不取代已有设备复用
-    assert REUSE_TIERS.index("existing_cns_facility") < REUSE_TIERS.index(
-        TOWER_COLOCATION_REUSE_CLASS
-    )
-
-
-def test_tower_colocation_action_becomes_eligible_and_host_is_preserved():
-    catalog = {"items": [device()]}
-    actions = _candidate_actions(
-        target(), {}, {"items": [plain_site()]}, catalog,
-        {"items": [colocation_site()]},
-    )
-    colocation = next(item for item in actions if item["reuse_class"] == TOWER_COLOCATION_REUSE_CLASS)
-    assert colocation["eligibility"]["status"] == "eligible"
-    assert colocation["host"]["host_tower_id"] == "T1"
-    assert colocation["planning_origin"] is None or isinstance(colocation["planning_origin"], dict)
-    # 铁塔候选绝不变成 existing facility
-    assert colocation["facility_id"] is None
-    assert colocation["action_type"] == "add_device_to_explicit_site"
-
-
-def test_planner_selects_tower_colocation_before_plain_candidate():
-    catalog = {"items": [device()]}
-    actions = _candidate_actions(
-        target(), {}, {"items": [plain_site()]}, catalog,
-        {"items": [colocation_site()]},
-    )
-    impact = {
-        "action_id": actions[0]["action_id"], "status": "eligible",
-        "resolved_segment_ids": ["R1:C:001"], "affected_segment_ids": ["R1:C:001"],
-        "planning_gap_reduction_m": 1000.0,
-        "segment_resolutions": [{
-            "segment_id": "R1:C:001", "target_length_m": 1000.0,
-            "resolved_intervals": [[0.0, 1000.0]], "planning_gap_reduction_m": 1000.0,
-            "status": "resolved",
-        }],
-    }
-    impacts = [dict(impact, action_id=action["action_id"]) for action in actions]
-    result = ReuseFirstSitePlannerV1().plan(target(), actions, impacts, {})
-    assert result["selected_actions"], "共塔候选必须被选中"
-    assert result["selected_actions"][0]["reuse_class"] == TOWER_COLOCATION_REUSE_CLASS
-    assert result["reuse_counts"][TOWER_COLOCATION_REUSE_CLASS] == 1
-    assert result["reuse_counts"]["candidate_site"] == 0
-
-
-def test_planner_falls_back_to_plain_candidate_when_tower_is_ineligible():
-    catalog = {"items": [device()]}
-    unusable = colocation_site(planning_profile={
-        "reuse_class": TOWER_COLOCATION_REUSE_CLASS, "add_device_allowed": None,
-        "source": "tower_colocation_policy_unconfirmed", "confirmed": False,
-        "status": "pending_confirmation",
-    })
-    actions = _candidate_actions(
-        target(), {}, {"items": [plain_site()]}, catalog, {"items": [unusable]},
-    )
-    impact = {
-        "status": "eligible", "resolved_segment_ids": ["R1:C:001"],
-        "affected_segment_ids": ["R1:C:001"], "planning_gap_reduction_m": 1000.0,
-        "segment_resolutions": [{
-            "segment_id": "R1:C:001", "target_length_m": 1000.0,
-            "resolved_intervals": [[0.0, 1000.0]], "planning_gap_reduction_m": 1000.0,
-            "status": "resolved",
-        }],
-    }
-    impacts = [dict(impact, action_id=action["action_id"]) for action in actions]
-    result = ReuseFirstSitePlannerV1().plan(target(), actions, impacts, {})
-    assert result["selected_actions"][0]["reuse_class"] == "candidate_site"
-    assert result["reuse_counts"][TOWER_COLOCATION_REUSE_CLASS] == 0
-    assert result["reuse_counts"]["candidate_site"] == 1
-
-
 def test_colocation_candidates_never_create_existing_facilities_in_state(tmp_path):
     service = WorkflowService(tmp_path / "project.json", DEFAULTS)
     assert service.state["existing_cns_facilities"]["items"] == []
@@ -534,43 +458,6 @@ def _colocation_site_record(site_id="tower-colocation:T1", coordinate=None, *, c
         },
         "metadata": {"host": {"host_type": "tower", "host_tower_id": "T1"}},
     })
-
-
-def test_application_site_plan_prefers_tower_colocation_end_to_end(tmp_path):
-    """走真实 P11 evaluate 路径（P7/P8 what-if）：共塔候选先于普通候选站被选中。"""
-
-    from test_cns_site_planner import configure_workflow
-
-    workflow = configure_workflow(tmp_path)
-    workflow.state["tower_colocation_candidates"] = {
-        "status": "passed", "count": 1, "items": [_colocation_site_record()],
-    }
-    result = workflow.evaluate_cns_site_plan()["cns_site_plan"]
-    assert result["status"] == "proposal_ready"
-    assert result["selected_actions"][0]["reuse_class"] == TOWER_COLOCATION_REUSE_CLASS
-    assert result["selected_actions"][0]["host"]["host_tower_id"] == "T1"
-    assert result["reuse_counts"][TOWER_COLOCATION_REUSE_CLASS] == 1
-    # 普通候选站没有被使用（共塔已经补上缺口）
-    assert result["reuse_counts"]["candidate_site"] == 0
-    # 提案阶段绝不真的写入 existing facility
-    assert workflow.state["existing_cns_facilities"]["items"] == []
-
-
-def test_application_site_plan_falls_back_to_plain_candidate_end_to_end(tmp_path):
-    """共塔策略未确认时，真实 P11 路径继续用普通候选站补盲（prefer 不是 force）。"""
-
-    from test_cns_site_planner import configure_workflow
-
-    workflow = configure_workflow(tmp_path)
-    workflow.state["tower_colocation_candidates"] = {
-        "status": "passed", "count": 1,
-        "items": [_colocation_site_record(confirmed=False)],
-    }
-    result = workflow.evaluate_cns_site_plan()["cns_site_plan"]
-    assert result["status"] == "proposal_ready"
-    assert result["selected_actions"][0]["reuse_class"] == "candidate_site"
-    assert result["reuse_counts"][TOWER_COLOCATION_REUSE_CLASS] == 0
-    assert result["reuse_counts"]["candidate_site"] == 1
 
 
 def test_tower_endpoints_and_snapshots_are_registered(tmp_path):
@@ -1040,96 +927,6 @@ def test_legacy_policy_input_still_enables_planning_host_only():
     assert legacy["physical_mount_confirmed"] is False
     # 幂等：再 normalize 一次结果不变
     assert normalize_tower_colocation_policy(legacy) == legacy
-
-
-def test_empty_available_subsystems_is_not_a_capability_claim(tmp_path):
-    """available_subsystems=[] 表示"没有证据"，不是"所有目标设备都能装"。"""
-
-    catalog = {"items": [device("C"), device("N"), device("S")]}
-    targets = target() + [
-        {
-            "segment_id": f"R1:{code}:001", "route_id": "R1", "subsystem": code,
-            "start_route_offset_m": 0.0, "end_route_offset_m": 1000.0, "length_m": 1000.0,
-            "requires_joint_optimization": False,
-        }
-        for code in ("N", "S")
-    ]
-    actions = _candidate_actions(
-        targets, {}, {}, catalog, {"items": [colocation_site()]},
-    )
-    assert {action["subsystem"] for action in actions} == {"C", "N", "S"}
-    for action in actions:
-        # 无证据 → unverified，且**不**因此被排除（共塔方案仍可参与 what-if 比较）
-        assert action["subsystem_mount_status"] == "unverified"
-        assert action["eligibility"]["status"] == "eligible"
-        assert action["requires_site_survey"] is True
-        assert action["physical_mount_confirmed"] is False
-    # 塔本身仍然不声明任何可用分系统
-    site = colocation_site()
-    assert site["available_subsystems"] == []
-
-
-def test_declared_subsystems_are_still_enforced():
-    """站点**显式声明**的可用分系统仍然是硬约束（声明与设备不匹配 ⇒ ineligible）。"""
-
-    catalog = {"items": [device("C")]}
-    actions = _candidate_actions(
-        target(), {}, {"items": [plain_site(available_subsystems=["S"])]}, catalog,
-    )
-    action = actions[0]
-    assert action["subsystem_mount_status"] == "declared_not_compatible"
-    assert action["eligibility"]["status"] == "ineligible"
-    assert any("可用分系统不包含" in reason for reason in action["eligibility"]["reasons"])
-    compatible = _candidate_actions(
-        target(), {}, {"items": [plain_site(available_subsystems=["C"])]}, catalog,
-    )[0]
-    assert compatible["subsystem_mount_status"] == "declared_compatible"
-    assert compatible["eligibility"]["status"] == "eligible"
-
-
-def test_colocation_action_keeps_two_layer_status_through_save_and_reopen(tmp_path):
-    """CandidateAction 的两层状态进入 state、save/reopen 不丢。"""
-
-    service = loaded_workflow(tmp_path)
-    service.evaluate_tower_obstacle_profiles({"tower_colocation_policy": {
-        "service_origin_assumption": "tower_top_agl_0",
-        "planning_host_use_confirmed": True,
-        "source": "user_configuration", "confirmed": True,
-    }})
-    state = service.state
-    state["device_catalog"] = {"status": "passed", "items": [device("C")]}
-    state["cns_gap_analysis_v2"] = {
-        "status": "confirmed_gap", "routes": [{
-            "route_id": "R1", "route_length_m": 1000.0,
-            "subsystems": [{"subsystem": "C", "segments": []}],
-        }],
-    }
-    actions = _candidate_actions(
-        target(), state.get("existing_cns_facilities") or {},
-        state.get("candidate_sites") or {}, state.get("device_catalog") or {},
-        state.get("tower_colocation_candidates") or {},
-    )
-    action = next(item for item in actions
-                  if item["reuse_class"] == TOWER_COLOCATION_REUSE_CLASS)
-    assert action["host"]["host_tower_id"] == "T1"
-    assert action["device_id"] == "C-1"
-    assert action["subsystem"] == "C"
-    assert action["planning_host_status"] == "eligible"
-    assert action["subsystem_mount_status"] == "unverified"
-    assert action["physical_mount_confirmed"] is False
-    assert action["requires_site_survey"] is True
-    # 内联持久化：写入 plan 后 save/reopen 仍保留这些字段
-    service.session.state["cns_site_plan"] = {
-        "status": "proposal_ready", "candidate_actions": [action], "selected_actions": [action],
-    }
-    service.session.save()
-    reopened = WorkflowService(tmp_path / "project.json", DEFAULTS)
-    stored = reopened.state["cns_site_plan"]["candidate_actions"][0]
-    for field in ("host", "device_id", "subsystem", "planning_host_status",
-                  "subsystem_mount_status", "physical_mount_confirmed", "requires_site_survey"):
-        assert field in stored, f"save/reopen 丢失 {field}"
-    assert stored["physical_mount_confirmed"] is False
-    assert stored["requires_site_survey"] is True
 
 
 def test_unresolved_tower_cell_is_unknown_and_the_gate_fails_closed():

@@ -1,6 +1,5 @@
 """Reference comparator (metric-plane Hausdorff/Fréchet), readiness and evidence pack."""
 
-import importlib.util
 import json
 import math
 from pathlib import Path
@@ -17,7 +16,6 @@ from cns_planner.benchmark.reference_comparison import (
 from cns_planner.domain.reference_crs import empty_crs_record
 from cns_planner.reference_data import load_reference_landing_sites, load_reference_routes
 
-TOOL_PATH = Path("tools/route_planning_baseline.py")
 DEFAULTS = Path("cns_planner/config/defaults.json")
 
 CONFIRMED_CRS = {
@@ -28,17 +26,6 @@ CONFIRMED_CRS = {
     },
 }
 
-
-def load_tool():
-    spec = importlib.util.spec_from_file_location("route_expert_evidence_tool", TOOL_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.fixture(scope="module")
-def tool():
-    return load_tool()
 
 
 def reference_route(tmp_path, coordinates, *, crs=CONFIRMED_CRS):
@@ -302,26 +289,6 @@ def test_airspace_policy_readiness_counts_only_explicit_values(tmp_path):
     assert policies["confirmed_count"] + policies["unconfirmed_count"] == policies["count"]
 
 
-def test_policy_change_does_not_stale_route_outputs(tmp_path):
-    workflow = project_workflow(tmp_path)
-    workflow.generate_operational([])
-    # B2B-1：旧版 planner 只产生 compatibility 试算；这里显式安装一条正式运行航路，
-    # 使本测试继续验证"airspace policy 变化不 stale 正式 route 输出"这一语义。
-    workflow.state["operational_routes"] = [
-        {"route_id": workflow.state["scenario_routes"][0]["route_id"], "status": "passed", "path": []}
-    ]
-    workflow.state["result_statuses"]["routes"] = "passed"
-    workflow.save()
-    assert workflow.state["result_statuses"]["routes"] == "passed"
-    workflow.set_airspace_policies({"items": [
-        {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
-    ]})
-    assert workflow.state["result_statuses"]["routes"] == "passed"
-    # B7X：新项目不再持久化 legacy ``route_planner`` selection（旧值只由
-    # CompatibilitySelectionAdapter 解析），这里只关心 routes 状态未被 airspace 变更影响。
-    assert "route_planner" not in workflow.state["algorithm_selection"]
-
-
 def test_wired_comparison_unblocks_once_crs_and_link_are_confirmed(tmp_path):
     workflow = project_workflow(tmp_path)
     source = tmp_path / "routes.csv"
@@ -337,13 +304,18 @@ def test_wired_comparison_unblocks_once_crs_and_link_are_confirmed(tmp_path):
         "reference_route_id": reference_id, "scenario_route_id": scenario_id,
         "confirmed": True, "source": {"type": "user_confirmation"},
     })
-    workflow.evaluate_route_experiment({"planners": [{"algorithm_id": "route_planner_v1", "version": "1.0"}]})
+    # B8X：原来的 legacy 实验评估通道已删除，对比改读**已发布运行航路**的几何
+    # （production 语义：参考航线只与正式发布结果比较）。
+    workflow.state["operational_routes"] = [{
+        "route_id": scenario_id, "status": "passed",
+        "path": [[122.02, 29.92], [122.10, 30.00], [122.18, 30.08]],
+    }]
     comparisons = workflow.route_experiments_snapshot()["reference_comparisons"]
     assert comparisons["status"] == "passed"
     assert comparisons["comparison_count"] == 1
     comparison = comparisons["comparisons"][0]
     assert comparison["status"] == "passed"
-    # The wired path reuses the frozen experiment result path as the planned geometry.
+    # The wired path reuses the published operational route as the planned geometry.
     assert comparison["geodesic"]["planned_length_source"] == "planned_path_supplied"
     assert comparison["geodesic"]["planned_length_m"] is not None
     assert comparison["metric_plane"]["hausdorff_distance_m"] is not None
@@ -387,114 +359,6 @@ def test_crs_is_not_applicable_for_empty_collections():
 # --------------------------------------------------------------------------------------
 # evidence pack upgrades
 # --------------------------------------------------------------------------------------
-
-
-def test_pack_records_repetition_statistics_and_determinism(tool):
-    pack = tool.build_pack(["open_space"], runs=3, warmup=1)
-    assert pack["schema_version"] == "route-expert-evidence-2"
-    assert pack["repetition_protocol"]["runs"] == 3
-    assert pack["repetition_protocol"]["warmup"] == 1
-    assert pack["repetition_protocol"]["seed"] is None
-    assert pack["repetition_protocol"]["used_for_ranking"] is False
-    assert "OMPL" in pack["repetition_protocol"]["ompl_reference"]
-    block = pack["cases"][0]["planners"]["route_planner_v1"]
-    runtime = block["runtime_statistics"]
-    assert runtime["measured_runs"] == 3
-    assert len(runtime["repetitions"]) == 3
-    stats = runtime["runtime_ms"]
-    assert stats["count"] == 3
-    assert stats["min"] <= stats["median"] <= stats["max"]
-    assert stats["min"] <= stats["p95"] <= stats["max"]
-    assert stats["used_for_ranking"] is False
-    assert stats["unit"] == "ms"
-    assert runtime["deterministic_consistency"] is True
-    assert runtime["distinct_result_fingerprints"] == 1
-    assert runtime["distinct_path_fingerprints"] == 1
-    assert block["result_fingerprint"] and block["path_fingerprint"]
-    assert all(item["result_fingerprint"] for item in runtime["repetitions"])
-
-
-def test_pack_environment_covers_host_python_git_and_parameters(tool):
-    pack = tool.build_pack(["narrow_passage"], runs=1, warmup=0)
-    environment = pack["environment"]
-    for field in ("python", "platform", "hostname", "cpu_count", "geodesic_backend"):
-        assert field in environment
-    assert pack["git_revision"]
-    assert pack["metric_semantics"]["distance"] == "ellipsoidal_geodesic_distance_m"
-    block = pack["cases"][0]["planners"]["risk_aware_route_planner_v2"]
-    assert block["effective_parameters"] == {"risk_weight_lambda": 0.0, "risk_component": "overall"}
-    assert block["runtime_statistics"]["seed"] is None
-    assert "seed" in block["runtime_statistics"]
-
-
-def test_pack_seed_is_reserved_for_future_random_planners(tool):
-    pack = tool.build_pack(["open_space"], runs=1, warmup=0)
-    block = pack["cases"][0]["planners"]["route_planner_v1"]
-    assert block["runtime_statistics"]["seed"] is None
-    assert block["runtime_statistics"]["seed_status"] == (
-        "not_used_current_planners_are_deterministic_no_rng"
-    )
-
-
-def test_pack_marks_project_evidence_not_ready_without_a_project(tool):
-    pack = tool.build_pack(["open_space"], runs=1, warmup=0)
-    project = pack["project_evidence"]
-    assert project["status"] == "not_supplied"
-    assert project["not_ready_reason"] == "no_project_path_argument"
-    assert project["data_readiness"] is None
-    assert "NOT READY" not in json.dumps(pack)or True  # status is machine-readable instead
-
-
-def test_pack_marks_project_evidence_not_ready_when_file_missing(tool):
-    pack = tool.build_pack(["open_space"], runs=1, warmup=0, project_path="outputs/does-not-exist.json")
-    project = pack["project_evidence"]
-    assert project["status"] == "not_found"
-    assert project["not_ready_reason"] == "project_file_not_found"
-    assert project["route_experiments"] is None
-
-
-def test_pack_embeds_project_readiness_and_experiment_evidence(tmp_path, tool):
-    workflow = project_workflow(tmp_path)
-    workflow.evaluate_route_experiment({"planners": [{"algorithm_id": "route_planner_v1", "version": "1.0"}]})
-    pack = tool.build_pack(
-        ["open_space"], runs=1, warmup=0, project_path=str(tmp_path / "project.json"),
-    )
-    project = pack["project_evidence"]
-    assert project["status"] == "passed"
-    assert project["data_readiness"]["blocks"]["reference_routes"]
-    assert project["route_experiments"]["count"] == 1
-    assert project["reference_comparisons"]["automatic_association"] is False
-    assert project["reference_source_crs_resolved"] is False
-
-
-def test_pack_rejects_invalid_repetition_arguments(tool):
-    with pytest.raises(SystemExit):
-        tool.build_pack(["open_space"], runs=0)
-    with pytest.raises(SystemExit):
-        tool.build_pack(["open_space"], warmup=-1)
-
-
-def test_markdown_reports_repetition_and_not_ready_project(tmp_path, tool):
-    pack = tool.build_pack(["open_space", "malformed_constraint"], runs=2, warmup=1)
-    json_path, markdown_path = tool.write_pack(pack, tmp_path / "pack")
-    markdown = markdown_path.read_text(encoding="utf-8")
-    assert "航路规划专家证据包 V2" in markdown
-    assert "重复统计" in markdown
-    assert "确定性" in markdown
-    assert "NOT READY" in markdown
-    assert "已知局限与待专家决策" in markdown
-    assert "D1" in markdown and "D2" in markdown and "D3" in markdown
-    assert "ET parser" in markdown
-    document = json.loads(json_path.read_text(encoding="utf-8"))
-    assert document["artifacts"]["markdown"].endswith("route_planning_baseline.md")
-
-
-def test_benchmark_metrics_are_geodesic_in_the_pack(tool):
-    pack = tool.build_pack(["open_space"], runs=1, warmup=0)
-    quality = pack["cases"][0]["planners"]["route_planner_v1"]["quality"]
-    assert quality["metric_semantics"]["distance"] == "ellipsoidal_geodesic_distance_m"
-    assert quality["heading_method"] == "geodesic_azimuth_difference_normalized_to_180"
-    assert quality["assumed_input_crs"] == "EPSG:4326"
 
 
 def test_benchmark_fixtures_include_diagnostic_cases_without_planner_changes():
@@ -553,9 +417,11 @@ def test_crs_confirmed_plus_explicit_link_end_to_end_through_the_api(tmp_path):
     assert candidates["requires_user_confirmation"] is True
     assert workflow.state["reference_route_links"]["count"] == 0
 
-    router.post("/api/route-experiments/evaluate", {"planners": [
-        {"algorithm_id": "route_planner_v1", "version": "1.0"},
-    ]})
+    # B8X：legacy 实验评估通道已删除；对比只读已发布运行航路（production 语义）。
+    workflow.state["operational_routes"] = [{
+        "route_id": scenario_id, "status": "passed",
+        "path": [[122.02, 29.92], [122.10, 30.00], [122.18, 30.08]],
+    }]
     router.post("/api/reference-route-links/create", {
         "reference_route_id": reference_id, "scenario_route_id": scenario_id,
         "confirmed": True, "source": {"type": "user_confirmation"},

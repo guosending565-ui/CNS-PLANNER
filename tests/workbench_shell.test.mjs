@@ -513,9 +513,9 @@ test('step 03 discovers its segments from the active panel and restores selectio
     assert.deepEqual(segButtons(document).map(node=>node.dataset.wbSeg),
       ['adv-reference','adv-legacy','adv-experiment','adv-diagnostics','adv-profile']);
     // 二级按钮名称来自分段自身的 data-seg-label，不是外部 manifest
-    // B4X：高级区的分段名称改为中文业务语言（旧版 / 研究对照不再作为导航语言）。
+    // B4X/B8X：高级区的分段名称改为中文业务语言（旧版 / 研究记录不再作为导航语言）。
     assert.deepEqual(segButtons(document).map(node=>node.textContent),
-      ['参考数据与关联','旧版兼容 / 研究对照','研究对照实验','规划诊断','剖面与运动']);
+      ['参考数据与关联','旧版兼容 / 研究对照','研究记录（只读）','规划诊断','剖面与运动']);
 
     // 选择 adv-diagnostics 后重新 render + mount，仍恢复 advanced + adv-diagnostics
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='adv-diagnostics'));
@@ -539,7 +539,7 @@ test('step 02/04/05/06 business controls live in a normal section body',()=>{
   const expected=[
     ['02',renderStep2,['drawWorkspace','clearWorkspace','saveWorkspace','gridOutlineToggle']],
     ['04',renderStep4,['manufacturer','model','cruise','saveRules','aircraftProfile']],
-    ['05',renderStep5,['saveDevices','planCoverage','analyzeGaps','sitePolicyConfirmed']],
+    ['05',renderStep5,['saveDevices','existing_cnsPath','candidate_sitesPath','evaluateCoverage3d','evaluateCorridorSitePlan']],
     ['06',renderStep6,['initializePlanReview','confirmPlan','applyPlan','previewPlanningReport','generatePlanningReport']]
   ];
   for(const [number,render,ids] of expected){
@@ -1019,7 +1019,7 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
     assert.equal(findAll(rows[0],'.device-role')[0].textContent,'primary','the role stays available as a weak badge');
     // 按钮保留：正常两列（窄屏换行由 @container 负责）
     assert.ok(document.getElementById('saveDevices'),'save devices stays mounted');
-    assert.ok(document.getElementById('planCoverage'),'run site planning stays mounted');
+    assert.ok(document.getElementById('evaluateCorridorSitePlan'),'run corridor site planning stays mounted');
   });
 });
 
@@ -1031,20 +1031,19 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
 const STEP05_SEGMENTS={
   operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
   result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','雷达监视规划']],
-  advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口分析'],['cns-adv-compat','旧版兼容试算'],['cns-adv-closedloop','高级方案影响试算']]
+  advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
-/** Step05 的关键控件：既有业务 id，重组后必须一个不少。 */
+/** Step05 的关键控件：既有业务 id，重组后必须一个不少（B8X 已删除的 legacy 计算入口除外）。 */
 const STEP05_CONTROLS=[
-  'saveDevices','planCoverage','existing_cnsPath','browseExisting','importExisting',
+  'saveDevices','existing_cnsPath','browseExisting','importExisting',
   'candidate_sitesPath','browseCandidates','importCandidates','deriveCandidates',
-  'analyzeGaps','coverage3dSpacing','evaluateCoverage3d','evaluateServiceCapability',
+  'coverage3dSpacing','evaluateCoverage3d','evaluateServiceCapability',
   'evaluateCorridor','planningObjectiveRoute','planningObjectiveSubsystem',
   'objectiveMinSatisfied','objectiveMaxDeficit','objectiveMaxUnknown','objectiveMinRedundancy',
   'objectiveMaxContinuous','planningObjectiveSource','planningObjectiveConfirmed',
   'savePlanningObjectives','evaluateCorridorGap','corridorSitePolicyConfirmed',
   'evaluateCorridorSitePlan','evaluateServiceTimeline','evaluateProtectionEnvelope',
-  'gapV2Protection','evaluateGapV2','sitePolicyConfirmed','evaluateSitePlan',
   'evaluateClosedLoop','applyClosedLoop','nextStep'
 ];
 
@@ -1227,8 +1226,7 @@ const STEP04_CONTROLS=[
   'safetyPolicySource','safetyPolicyConfirmed','safetyFailureCondition','safetyServiceState',
   'saveSafetyPolicy','previewSafetyEvent','safetyEventPreview','coupledCondition',
   'coupledObservations','coupledOperationalContext','previewCoupledEvent','coupledEventPreview',
-  // 高级 · V3 CNS评估
-  'assessV3AdoptedRoute',
+  // 高级 · V3 CNS评估（B8X：历史只读，不再有运行入口）
   // 步骤级
   'nextStep'
 ];
@@ -1308,8 +1306,7 @@ test('step 04 keeps every task owning its own controls',()=>{
       saveResponseBudget:'run-adv-timing',saveEncounterScenario:'run-adv-timing',
       evaluateProtectionBudget:'run-adv-timing',evaluateDaaEncounter:'run-adv-timing',
       saveSafetyPolicy:'run-adv-safety',previewSafetyEvent:'run-adv-safety',
-      coupledCondition:'run-adv-safety',previewCoupledEvent:'run-adv-safety',
-      assessV3AdoptedRoute:'run-adv-v3'
+      coupledCondition:'run-adv-safety',previewCoupledEvent:'run-adv-safety'
     };
     for(const [id,segment] of Object.entries(expected)){
       assert.equal(ownerOf(id),segment,`#${id} belongs to ${segment}`);
@@ -1337,18 +1334,23 @@ test('step 04 bind() resolves every control it queries',()=>{
     for(const id of ['saveRules','saveRequiredCns','saveOperationContext','saveRequirementPolicies',
       'evaluateRequiredRecommendation','adoptRequiredRecommendation','saveServiceScenario','saveResponseBudget',
       'saveEncounterScenario','evaluateProtectionBudget','saveCorridorPolicy','saveSafetyPolicy',
-      'previewSafetyEvent','previewCoupledEvent','saveDaaEncounter','evaluateDaaEncounter','assessV3AdoptedRoute']){
+      'previewSafetyEvent','previewCoupledEvent','saveDaaEncounter','evaluateDaaEncounter']){
       assert.ok(registered.includes(id),`bind() must still register ${id}`);
     }
+    // B8X：V3-D 运行入口已撤下，bind() 不得再注册它。
+    assert.ok(!registered.includes('assessV3AdoptedRoute'),'V3-D 运行入口必须已撤下');
     // 按钮契约不变：只重组展示层，端点与动作名保持原样
     const source=readFileSync(new URL('../cns_planner/web/js/workflow/step04_operation.js',import.meta.url),'utf8');
     for(const path of ['/api/cns-operation-context','/api/cns-requirement-policies',
       '/api/cns-required-recommendation/evaluate','/api/cns-required-recommendation/adopt',
       '/api/operational-timing','/api/protection-envelope/evaluate',
-      '/api/research/v3-cns-assessment/evaluate','/api/cns-service-corridor/evaluate','/api/cns/safety-policy',
+      '/api/cns-service-corridor/evaluate','/api/cns/safety-policy',
       '/api/cns/events/evaluate','/api/cns/coupled-events/evaluate']){
       assert.ok(source.includes(path),`step 04 must keep the ${path} contract`);
     }
+    // B8X：V3-D CNS 评估的 research compute 端点已随可执行入口撤下。
+    assert.ok(!source.includes('/api/research/v3-cns-assessment/evaluate'),
+      'V3-D CNS 评估不得再注册运行入口');
     // DAA Encounter Lab 仍由 Step04 组合进"时间与场景"任务，端点不变
     const daaSource=readFileSync(new URL('../cns_planner/web/js/workflow/daa_encounter_lab.js',import.meta.url),'utf8');
     assert.ok(daaSource.includes('/api/encounter-3d/evaluate'),'the DAA encounter lab keeps its endpoint');

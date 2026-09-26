@@ -252,8 +252,10 @@ def test_policy_invalidation_and_project_round_trip(tmp_path):
     assert restored.state["building_clearance_assessment"]["status"] == "stale"
 
 
-@pytest.mark.parametrize("changed", ["workspace", "route", "route_algorithm", "spatial_3d"])
+@pytest.mark.parametrize("changed", ["workspace", "route", "spatial_3d"])
 def test_workspace_route_and_spatial_changes_stale_clearance(tmp_path, changed):
+    # B8X：`route_algorithm` 触发键随 Risk-Aware Route Planner V2 一并删除；
+    # 建筑净空的失效边只由 workspace / route / spatial_3d 触发。
     workflow = WorkflowService(tmp_path / f"{changed}.json", DEFAULTS)
     workflow.state["building_clearance_assessment"] = BuildingClearanceV1.empty("passed")
     workflow.state["result_statuses"]["building_clearance"] = "passed"

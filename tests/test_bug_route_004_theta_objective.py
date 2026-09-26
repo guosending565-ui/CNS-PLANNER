@@ -34,7 +34,7 @@ from test_layered_theta_star_v2 import (  # noqa: E402
     BUILDING_POLICY, LEVEL, build_mask, building_cell, cell_id, grid_cells,
     layer, plan_v2, request, route_for, user_defined_baseline_policy,
 )
-from cns_planner.algorithms.coverage.v1 import distance_m  # noqa: E402
+from cns_planner.domain.geodesy import distance_m  # noqa: E402
 from cns_planner.domain.layered_theta_v2 import (  # noqa: E402
     normalize_theta_v2_objective_policy,
 )

@@ -134,33 +134,6 @@ def test_v3_experiment_normalization_rejects_a_non_object_and_keeps_records():
 # --------------------------------------------------------------------------------------
 
 
-def test_v3_evaluation_never_writes_operational_routes_or_switches_the_planner(tmp_path):
-    service = workflow(tmp_path)
-    service.generate_scenario_od("N001", "N002", "ab")
-    service.generate_operational([])
-    before_routes = deepcopy(service.state["operational_routes"])
-    before_selection = deepcopy(service.state["algorithm_selection"])
-    before_status = service.state["result_statuses"]["routes"]
-    before_spatial = deepcopy(service.state["spatial_3d"])
-    before_experiments = deepcopy(service.state["route_planning_experiments"])
-
-    snapshot = evaluate(service)
-
-    assert service.state["operational_routes"] == before_routes
-    assert service.state["algorithm_selection"] == before_selection
-    assert service.state["result_statuses"]["routes"] == before_status
-    assert service.state["spatial_3d"] == before_spatial
-    assert service.state["route_planning_experiments"] == before_experiments
-    collection = snapshot["route_planner_v3_experiments"]
-    assert collection["count"] == 1
-    assert collection["operational_routes_untouched"] is True
-    assert collection["algorithm_selection_untouched"] is True
-    record = latest_record(service)
-    assert record["provenance"]["operational_routes_untouched"] is True
-    assert record["provenance"]["algorithm_selection_untouched"] is True
-    assert record["provenance"]["spatial_3d_untouched"] is True
-
-
 def test_v3_result_is_never_the_operational_route_and_carries_the_disclaimer(tmp_path):
     service = workflow(tmp_path)
     snapshot = evaluate(service)
@@ -452,49 +425,11 @@ class ApiContext:
         self.data = object()
 
 
-def test_v3_api_endpoints_are_additive_and_forward_payloads():
-    context = ApiContext()
-    router = ApiRouter(context)
-    snapshot = router.get("/api/research/route-planner-v3-experiments", {}, {}).data
-    assert snapshot["status"] == "passed" and snapshot["count"] == 1
-    assert snapshot["namespace"] == "/api/research/route-planner-v3"
-    assert snapshot["authoritative"] is False
-    assert router.get("/api/research/route-planner-v3/readiness", {}, {}).data["stage"] == "V3-A"
-    assert router.post("/api/research/route-planner-v3/policy", {"min_altitude_egm2008_m": 100.0}).data["status"] == "passed"
-    assert router.post(
-        "/api/research/route-planner-v3-experiments/evaluate", {"environment_source": "canonical_synthetic"},
-    ).data["evaluated"] is True
-    assert router.post(
-        "/api/research/route-planner-v3-experiments/delete", {"experiment_id": "V3-AAAAAAAAAAAA"},
-    ).data["deleted"] == "V3-AAAAAAAAAAAA"
-    alias = router.get("/api/route-planner-v3-experiments", {}, {}).data
-    assert alias["compatibility"] is True and alias["deprecated"] is True
-    assert context.workflow.calls == [
-        ("v3-snapshot",),
-        ("v3-readiness",),
-        ("v3-policy", {"min_altitude_egm2008_m": 100.0}),
-        ("v3-evaluate", {"environment_source": "canonical_synthetic"}),
-        ("v3-delete", "V3-AAAAAAAAAAAA"),
-        ("v3-snapshot",),
-    ]
-
-
-def test_v3_api_paths_are_distinct_from_the_existing_route_experiment_api():
-    paths = ["/api/route-experiments", "/api/route-planner-v3-experiments"]
-    assert len(set(paths)) == 2
-    assert "/api/route-planner-v3-experiments/evaluate" != "/api/route-experiments/evaluate"
-
-
-# --------------------------------------------------------------------------------------
-# V1/V2/P7/P19 boundary
-# --------------------------------------------------------------------------------------
-
-
 def test_v3_does_not_change_the_algorithm_registry_catalog_or_default_selection():
     catalog = build_default_algorithm_registry({}).catalog()
     ids = {(item["algorithm_type"], item["algorithm_id"], item["version"]) for item in catalog}
-    assert ("route_planner", "route_planner_v1", "1.0") in ids
-    assert ("route_planner", "risk_aware_route_planner_v2", "2.0") in ids
+    assert ("route_planner", "route_planner_v1", "1.0") not in ids
+    assert ("route_planner", "risk_aware_route_planner_v2", "2.0") not in ids
     assert not any(item[1].startswith("route_planner_v3") for item in ids)
     selection = default_algorithm_selection()
     assert "route_planner" not in selection
@@ -506,7 +441,6 @@ def test_v3_service_is_wired_into_the_workflow_without_a_registry_entry(tmp_path
     assert isinstance(service.route_planner_v3_service, RoutePlannerV3ExperimentService)
     assert service.route_planner_v3_service.planner.algorithm_id == "route_planner_v3_strategic"
     assert service.route_planner_v3_service.planner.uses_v3_native_3d is True
-    assert service.route_planner_v3_service is not service.route_experiment_service
     assert service.route_planner_v3_service.refinement_planner.algorithm_id == (
         "route_planner_v3_corridor_refinement"
     )
@@ -813,20 +747,6 @@ def test_v3b_record_summary_projects_the_refinement_read_only(tmp_path):
     json.dumps(snapshot["route_planner_v3_refinements"], allow_nan=False)
 
 
-def test_v3b_fine_policy_endpoints_are_additive(tmp_path):
-    service = workflow(tmp_path)
-    readiness = set_fine_policy(service)
-    assert readiness["stage"] == "V3-B"
-    stored = service.state["v3_fine_refinement_policy"]
-    assert stored["resolution_m"] == 60.0
-    assert stored["horizontal_crs"] == "synthetic:local_equirectangular_m"
-    assert stored["resolution_source"] == "explicit_configuration"
-    assert stored["max_stride_cells"] == 3
-    assert stored["status"] == "confirmed"
-    with pytest.raises(ValueError, match="resolution_source"):
-        service.set_route_planner_v3_fine_policy({"resolution_source": "30m_constant"})
-
-
 def test_v3b_refinement_refuses_an_unconfirmed_fine_policy(tmp_path):
     """Like the V3-A policy, an unconfirmed fine configuration never runs."""
 
@@ -864,28 +784,3 @@ class RecordingRefinementWorkflow(RecordingWorkflow):
     def evaluate_route_planner_v3_refinement(self, payload):
         self.calls.append(("v3-refine", payload))
         return {"status": "passed", "refined": True}
-
-
-def test_v3b_api_endpoints_are_additive_and_forward_payloads():
-    context = ApiContext()
-    context.workflow = RecordingRefinementWorkflow()
-    router = ApiRouter(context)
-    assert router.get("/api/route-planner-v3/refinement-readiness", {}, {}).data["stage"] == "V3-B"
-    assert router.get("/api/route-planner-v3-refinements", {}, {}).data["count"] == 0
-    assert router.post(
-        "/api/route-planner-v3/fine-policy", {"resolution_m": 30.0},
-    ).data["status"] == "passed"
-    assert router.post(
-        "/api/route-planner-v3-refinements/evaluate",
-        {"environment_source": "canonical_synthetic"},
-    ).data["refined"] is True
-    assert context.workflow.calls == [
-        ("v3-refinement-readiness",),
-        ("v3-refinements",),
-        ("v3-fine-policy", {"resolution_m": 30.0}),
-        ("v3-refine", {"environment_source": "canonical_synthetic"}),
-    ]
-    # The GIS-wired real-source variant is a separate explicit endpoint.
-    assert "/api/route-planner-v3-refinements/evaluate" != (
-        "/api/route-planner-v3-refinements/evaluate-real"
-    )

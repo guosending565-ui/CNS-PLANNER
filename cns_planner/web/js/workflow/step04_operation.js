@@ -265,11 +265,9 @@ export function routePlannerV3CnsSummary(flow){
     +advancedAuditNote('开发阶段明细（研究对照 / 高级）：P7 geometry · P8 capability · P9 timeline · P10 gap')
     +rowList(stageRows)
     +blocking
-    +'<div class="button-row"><button class="primary" id="assessV3AdoptedRoute" '
-    +(publication?'':'disabled')+'>运行既有 P7→P8→P9→P10 CNS 评估</button></div>'
-    +'<div class="parameter-note">桥接只编排既有 P7/P8/P9/P10 服务，不复制或改写任何 CNS 公式；'
+    +'<div class="parameter-note">历史 V3 CNS 评估仅供只读审计；本页面不再提供重新运行入口。'
     +'stages '+escapeHtml((model.stageOrder||V3D_STAGES).join(' → '))
-    +' · 缺参数/正式 CNS需求/aircraft/timing 时返回 incomplete 与 blocking reason，不造默认值。</div>';
+    +'。</div>';
 }
 
 function stageText(assessment,stage){
@@ -395,8 +393,6 @@ export function bind(c){
   c.actionButton('saveResponseBudget',()=>{const timing=timingClone(),confirmed=c.$('rtConfirmed').checked,source=textValue('rtSource')||'user_configuration',ids={detect:'rtDetect',track:'rtTrack',processing:'rtProcessing',decision:'rtDecision',communication:'rtCommunication',aircraft_reaction:'rtReaction'};timing.response_time_budgets=timing.response_time_budgets||{};timing.response_time_budgets['default-response']={budget_id:'default-response',source,confirmed,components:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{value_s:optional(id),source,confirmed}]))};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('saveEncounterScenario',()=>{const timing=timingClone(),confirmed=c.$('encounterConfirmed').checked;timing.encounter_scenarios=timing.encounter_scenarios||{};timing.encounter_scenarios['default-encounter']={encounter_id:'default-encounter',relative_closing_speed_mps:optional('encounterRelativeSpeed'),maneuver_distance_m:optional('encounterManeuver'),uncertainty_distance_m:optional('encounterUncertainty'),source:textValue('encounterSource')||'user_configuration',confirmed};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('evaluateProtectionBudget',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
-  // 桥接只编排既有的 P7-P10 服务，绝不重新实现它们（高级 / 研究对照区）。
-  if(c.$('assessV3AdoptedRoute'))c.actionButton('assessV3AdoptedRoute',()=>c.resourceAction('/api/research/v3-cns-assessment/evaluate',{}));
   c.actionButton('saveCorridorPolicy',()=>{const policy=structuredClone(c.flow().cns_corridor_policy||{routes:{}}),routeId=c.$('corridorRoute').value;policy.routes=policy.routes||{};policy.routes[routeId]={route_id:routeId,horizontal_half_width_m:optional('corridorHalfWidth'),vertical_lower_margin_m:optional('corridorLower'),vertical_upper_margin_m:optional('corridorUpper'),source:textValue('corridorSource')||'user_configuration',confirmed:c.$('corridorConfirmed').checked};return c.resourceAction('/api/cns-service-corridor/evaluate',{cns_corridor_policy:policy});});
   c.actionButton('saveRequiredCns',()=>{
     const selectedScope=c.$('requiredScope').value;
