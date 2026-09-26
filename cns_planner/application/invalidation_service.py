@@ -12,6 +12,11 @@ from ..domain.reporting import mark_active_report_stale
 #: The direct downstream consumers of an explicit Production Route3DProfile V1 change.
 DOWNSTREAM_RESULTS = ("coverage_3d", "route_vertical_profiles", "route_safety_evidence_v2")
 
+#: compatibility/archive 结果键：它们在旧项目里只读，失效只作用于 runtime-only cache。
+COMPATIBILITY_RESULT_KEYS = frozenset({
+    "coverage", "cns_gap", "cns_gap_v2", "cns_site_plan",
+})
+
 
 class InvalidationService:
     SOURCE_ATTRIBUTES = {
@@ -75,6 +80,12 @@ class InvalidationService:
                 ledger.statuses[name] = ResultStatus.NOT_CALCULATED
         affected = ledger.invalidate(changed)
         for name in affected:
+            # B7X：compatibility/archive 结果（旧二维覆盖、旧 Gap V1/V2、旧站址试算）在
+            # 旧项目里是只读历史证据。它们的"失效"只发生在当前会话的 runtime-only
+            # compatibility cache 里，绝不改写 ProjectState 的任何字段——包括这一组
+            # 遗留的 ``result_statuses`` 记录。
+            if name in COMPATIBILITY_RESULT_KEYS:
+                continue
             if name in state["result_statuses"]:
                 state["result_statuses"][name] = ledger.statuses[name].value
         if "routes" in affected:
@@ -90,11 +101,10 @@ class InvalidationService:
             mark_runtime_compatibility_stale(
                 self.session, "operational_routes", f"{changed}_changed"
             )
-        if "cns_gap" in affected and state.get("cns_gap_analysis", {}).get("status") != "not_calculated":
-            state["cns_gap_analysis"]["status"] = "stale"
-            state["result_statuses"]["cns_gap"] = "stale"
-        if "coverage" in affected and state.get("coverage"):
-            state["coverage"]["status"] = "stale"
+        if "cns_gap" in affected:
+            mark_runtime_compatibility_stale(
+                self.session, "cns_gap_analysis", f"{changed}_changed"
+            )
         if "coverage" in affected:
             mark_runtime_compatibility_stale(
                 self.session, "coverage", f"{changed}_changed"
@@ -599,25 +609,16 @@ class InvalidationService:
         mark_active_report_stale(state, reason)
 
     def cns_gap_v2(self):
-        """Stale additive Gap V2 and report without touching upstream or Gap V1."""
-        state = self.session.state
-        result = state.get("cns_gap_analysis_v2") or {}
-        if result.get("status") != "not_calculated":
-            result["status"] = "stale"
-            state["cns_gap_analysis_v2"] = result
-            state.setdefault("result_statuses", {})["cns_gap_v2"] = "stale"
-        mark_active_report_stale(state, "cns_gap_v2_changed")
+        """Stale only the runtime Advanced/compatibility Gap V2 view."""
+        mark_runtime_compatibility_stale(
+            self.session, "cns_gap_analysis_v2", "cns_gap_v2_changed"
+        )
         self.cns_site_plan()
         self.route_safety_evidence("cns_gap_v2_changed")
 
     def cns_site_plan(self):
         """Stale only the P11 proposal and report; never mutate evaluated inputs."""
         state = self.session.state
-        result = state.get("cns_site_plan") or {}
-        if result.get("status") != "not_calculated":
-            result["status"] = "stale"
-            state["cns_site_plan"] = result
-            state.setdefault("result_statuses", {})["cns_site_plan"] = "stale"
         mark_runtime_compatibility_stale(
             self.session, "cns_site_plan", "cns_site_plan_changed"
         )

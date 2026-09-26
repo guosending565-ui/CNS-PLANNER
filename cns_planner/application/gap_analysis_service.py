@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog
+from .production_write_authority import write_runtime_compatibility_result
 
 
 class GapAnalysisService:
@@ -22,10 +23,20 @@ class GapAnalysisService:
             state.get("operational_routes") or [], state.get("required_cns") or {}, profile,
             facilities, catalog,
         )
-        state["cns_gap_analysis"] = result
-        state["result_statuses"]["cns_gap"] = "failed" if result["status"] == "gap" else result["status"]
-        self.session.save()
-        return self.snapshot()
+        record = write_runtime_compatibility_result(
+            self.session, "cns_gap_analysis", result,
+            source_algorithm={
+                "algorithm_type": "cns_gap_analyzer",
+                "algorithm_id": getattr(self.analyzer, "algorithm_id", None),
+                "algorithm_version": getattr(self.analyzer, "algorithm_version", None),
+                "class": type(self.analyzer).__name__,
+            },
+            note="旧版 CNS 缺口分析仅在当前会话运行，不写项目、不触发 canonical 失效。",
+        )
+        response = self.snapshot()
+        response["compatibility_cns_gap_analysis"] = deepcopy(record)
+        response["cns_gap_analysis"] = deepcopy(record)
+        return response
 
     @staticmethod
     def _v1_inputs(profile, catalog, facilities=None):

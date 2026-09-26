@@ -137,9 +137,14 @@ def normalize_layered_theta_v2_selection_parameters(value):
 
 
 def default_algorithm_selection():
+    """Selections persisted by a newly-created project.
+
+    Archive/compatibility algorithms stay registered, but are deliberately absent here.
+    Their old saved selections are resolved by ``CompatibilitySelectionAdapter`` and a
+    frozen compatibility baseline is used only for an explicit compatibility call.
+    """
     return {
         "risk_model": _selection("risk_model", RiskModelV1),
-        "route_planner": _selection("route_planner", RoutePlannerV1),
         # Layered Risk-Aware Theta* V2 is the **production layered planning baseline**: its
         # own algorithm type, so that selecting it can never be confused with (or replace)
         # the project's default ``route_planner``.  Layered Risk-Aware Route Planner V1 stays
@@ -149,8 +154,6 @@ def default_algorithm_selection():
             **_selection("layered_route_planner", LayeredRiskAwareThetaStarV2),
             "parameters": default_layered_theta_v2_selection_parameters(),
         },
-        "coverage_planner": _selection("coverage_planner", CoveragePlannerV1),
-        "cns_gap_analyzer": _selection("cns_gap_analyzer", CNSGapAnalyzerV1),
         "coverage_model": {
             **_selection("coverage_model", GeometricCoverage3DV1),
             "parameters": {
@@ -162,7 +165,9 @@ def default_algorithm_selection():
         "service_model": _selection("service_model", CNSServiceCapabilityV1),
         "timeline_model": _selection("timeline_model", RouteServiceTimelineV1),
         "protection_model": _selection("protection_model", TacticalProtectionEnvelopeV1),
-        "site_planner": _selection("site_planner", ReuseFirstSitePlannerV1),
+        # The site_planner type is shared by the archived proposal planner and the
+        # production corridor planner.  New projects persist only the production owner.
+        "site_planner": _selection("site_planner", CorridorReuseFirstSitePlannerV2),
         "corridor_model": _selection("corridor_model", CNSServiceCorridorV1),
         "corridor_gap_analyzer": _selection("corridor_gap_analyzer", CNSCorridorGapAnalyzerV1),
         "requirement_model": _selection("requirement_model", ManualRequiredCNSV1),
@@ -175,8 +180,15 @@ def normalize_algorithm_selection(value):
         return defaults
     if not isinstance(value, dict):
         raise ValueError("algorithm_selection 格式无效")
+    # Add missing production/advanced defaults, while preserving every explicitly saved
+    # legacy selection.  In particular LayeredRoutePlannerV1 is never rewritten to Theta*.
     result = {}
-    for algorithm_type, default in defaults.items():
+    for algorithm_type in dict.fromkeys((*defaults, *value)):
+        if algorithm_type not in ALGORITHM_TYPES:
+            continue
+        default = defaults.get(algorithm_type)
+        if algorithm_type not in value and default is None:
+            continue
         entry = deepcopy(value.get(algorithm_type, default))
         if not isinstance(entry, dict):
             raise ValueError(f"{algorithm_type} 算法选择格式无效")

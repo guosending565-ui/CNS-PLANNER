@@ -10,6 +10,7 @@ from ..gap.v2 import CNSGapAnalyzerV2
 from .production_write_authority import (
     runtime_compatibility_result, write_runtime_compatibility_result,
 )
+from ..compatibility.project_adapter import read_existing_legacy
 
 
 class SitePlanningService:
@@ -28,7 +29,9 @@ class SitePlanningService:
         runtime = runtime_compatibility_result(self.session, "cns_site_plan")
         if runtime:
             return deepcopy(runtime)
-        return deepcopy(self.session.state["cns_site_plan"])
+        return read_existing_legacy(
+            self.session.state, "cns_site_plan", "ReuseFirstSitePlannerV1",
+        )
 
     def evaluate(self, payload=None):
         state = self.session.state

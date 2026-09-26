@@ -61,8 +61,9 @@ def test_blank_project_ships_theta_star_v2_as_the_layered_planner_default():
     assert selection["algorithm_type"] == "layered_route_planner"
     assert selection["algorithm_id"] == ALGORITHM_ID
     assert selection["version"] == ALGORITHM_VERSION
-    # The traditional ``route_planner`` default is deliberately untouched this round.
-    assert project["algorithm_selection"]["route_planner"]["algorithm_id"] == "route_planner_v1"
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection；旧项目保存的旧值
+    # 由 CompatibilitySelectionAdapter 原样解析（见 test_phase4_b7x_compatibility）。
+    assert "route_planner" not in project["algorithm_selection"]
 
 
 def test_legacy_project_without_a_layered_selection_is_backfilled_to_theta_star_v2():

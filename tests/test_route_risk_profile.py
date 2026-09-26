@@ -71,6 +71,27 @@ def layer(**overrides):
     return payload
 
 
+def _bind_saved_legacy_layered_v1(service):
+    """旧项目已保存 LayeredRoutePlannerV1 selection 的等价种入。
+
+    B7X 之后 ``select_algorithm`` 不再允许为项目写入 compatibility/archive selection；
+    这里直接种入旧项目里本来就存在的同一个值，并在内存中绑定实例。
+    """
+
+    service.state["algorithm_selection"]["layered_route_planner"] = {
+        "algorithm_type": "layered_route_planner",
+        "algorithm_id": "layered_route_planner_v1",
+        "version": "1.0",
+        "parameters": {},
+    }
+    service._bind_algorithm(
+        "layered_route_planner",
+        service.algorithm_registry.create(
+            "layered_route_planner", "layered_route_planner_v1", "1.0", {},
+        ),
+    )
+
+
 def workflow(tmp_path, name="project.json", *, cells=None, route=True, endpoint_inset=0.0):
     """A project whose ``layered_route_planner`` is **explicitly** Layered Planner V1.
 
@@ -80,12 +101,7 @@ def workflow(tmp_path, name="project.json", *, cells=None, route=True, endpoint_
     """
 
     service = WorkflowService(tmp_path / name, DEFAULTS)
-    service.select_algorithm({
-        "algorithm_type": "layered_route_planner",
-        "algorithm_id": "layered_route_planner_v1",
-        "version": "1.0",
-        "parameters": {},
-    })
+    _bind_saved_legacy_layered_v1(service)
     assert service.layered_route_planner_service.planner.algorithm_id == (
         "layered_route_planner_v1"
     )

@@ -27,6 +27,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from ..compatibility.catalog import capability_metadata
+
 #: canonical authoritative result key → 唯一 production content owner 类名。
 #:
 #: 六个 key 覆盖 Phase4-B2B/B2C 要求收敛的全部 canonical result。B2C 已在
@@ -152,21 +154,49 @@ def write_runtime_compatibility_result(
     """
 
     record = deepcopy(dict(payload))
-    record["authoritative"] = False
-    record["compatibility"] = True
-    record["deprecated"] = True
+    algorithm_id = (
+        source_algorithm.get("algorithm_id")
+        if isinstance(source_algorithm, Mapping) else None
+    )
+    capability_id = {
+        "risk_aware_route_planner_v2": "RiskAwareRoutePlannerV2",
+        "route_planner_v1": "RoutePlannerV1",
+        "coverage_planner_v1": "CoveragePlannerV1",
+        "cns_gap_analysis_v1": "CNSGapAnalyzerV1",
+        "cns_gap_analysis_v2": "CNSGapAnalyzerV2",
+        "reuse_first_site_planner_v1": "ReuseFirstSitePlannerV1",
+    }.get(str(algorithm_id)) or {
+        "operational_routes": "RoutePlannerV1",
+        "coverage": "CoveragePlannerV1",
+        "cns_gap_analysis": "CNSGapAnalyzerV1",
+        "cns_gap_analysis_v2": "CNSGapAnalyzerV2",
+        "cns_site_plan": "ReuseFirstSitePlannerV1",
+    }.get(str(name))
+    if capability_id:
+        record.update(capability_metadata(capability_id))
+    else:
+        record.update({
+            "authoritative": False, "compatibility": True, "deprecated": True,
+            "persistent_write": False, "production_authority": False,
+        })
     record["result_key"] = str(name)
     record["source_algorithm"] = deepcopy(
         source_algorithm if source_algorithm is not None else record.get("source_algorithm")
     )
-    record["recorded_at"] = record.get("recorded_at") or _utc_now()
+    results = runtime_compatibility_results(session, create=True)
+    # ``recorded_at`` 是该 compatibility 结果**首次**写入当前会话的时间：重跑同一
+    # 结果（例如同一输入的幂等试算）不会因为时间戳漂移而产生"新记录"。
+    existing = results.get(str(name))
+    previous_recorded_at = (
+        existing.get("recorded_at") if isinstance(existing, dict) else None
+    )
+    record["recorded_at"] = record.get("recorded_at") or previous_recorded_at or _utc_now()
     record["note"] = str(
         note
         or "旧版/归档兼容结果：不是正式权威结果，不驱动 canonical 覆盖、能力缺口、"
         "设施规划或方案确认。"
     )
     record.setdefault("status", "not_calculated")
-    results = runtime_compatibility_results(session, create=True)
     results[str(name)] = record
     return record
 
@@ -180,6 +210,20 @@ def runtime_compatibility_result(session: Any, name: str) -> dict:
 def runtime_compatibility_items(session: Any, name: str) -> list:
     value = runtime_compatibility_result(session, name).get("items")
     return list(value) if isinstance(value, list) else []
+
+
+def read_compatibility_result(session: Any, state: Mapping[str, Any], name: str) -> dict:
+    """按 B7X 契约读取一个旧结果：当前会话 runtime-only 结果优先，其次旧项目保存值。
+
+    这是各 service 的统一读取入口：兼容结果缺失时返回 ``{}``，绝不 ``setdefault``
+    或写回 ``ProjectState``。
+    """
+
+    runtime = runtime_compatibility_result(session, name)
+    if runtime:
+        return deepcopy(runtime)
+    value = state.get(name)
+    return deepcopy(value) if isinstance(value, Mapping) else {}
 
 
 def drop_runtime_compatibility_result(session: Any, name: str) -> None:

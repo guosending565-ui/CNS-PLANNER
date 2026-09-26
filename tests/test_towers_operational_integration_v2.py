@@ -808,7 +808,9 @@ def test_tower_source_change_stales_tower_derived_facts_and_their_consumers(tmp_
     assert state["result_statuses"]["tower_obstacle_profiles"] == "stale"
     assert state["result_statuses"]["tower_colocation_candidates"] == "stale"
     assert state["result_statuses"]["layered_route_candidate"] == "stale"
-    assert state["result_statuses"]["cns_site_plan"] == "stale"
+    # B7X：P11 站址试算是只读 compatibility 结果，失效只发生在 runtime-only cache。
+    assert state["result_statuses"]["cns_site_plan"] == "passed"
+    assert state["cns_site_plan"]["status"] == "proposal_ready"
 
 
 def test_recomputing_tower_facts_stales_only_the_downstream(tmp_path):
@@ -820,7 +822,8 @@ def test_recomputing_tower_facts_stales_only_the_downstream(tmp_path):
     assert state["result_statuses"]["tower_colocation_candidates"] == "passed"
     # 消费它们的下游过时
     assert state["result_statuses"]["layered_route_candidate"] == "stale"
-    assert state["result_statuses"]["cns_site_plan"] == "stale"
+    # B7X：P11 站址试算是只读 compatibility 结果（见上一条测试）。
+    assert state["result_statuses"]["cns_site_plan"] == "passed"
     # 风险数学完全不受影响
     assert state["grid_risk"]["status"] == "passed"
     assert state["grid_risk_v2"]["status"] == "passed"

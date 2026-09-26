@@ -7,6 +7,9 @@ from pathlib import Path
 from ..algorithms.registry import (
     ALGORITHM_TYPES, build_default_algorithm_registry, normalize_algorithm_selection,
 )
+from ..compatibility.catalog import capability_catalog
+from ..compatibility.project_adapter import read_existing_legacy
+from ..compatibility.selection import CompatibilitySelectionAdapter, set_runtime_compatibility_selection
 from ..risk.v1 import RiskModelV1
 from ..risk.model_v2 import GridRiskModelV2
 from ..data.mapping.conflict import ConflictGridService
@@ -67,6 +70,7 @@ from .source_audit_service import SourceAuditService
 from .v3_operational_adoption_service import V3OperationalAdoptionService
 from ..algorithms.route_vertical_profile import RouteVerticalProfileV1
 from .encounter_3d_service import Encounter3DService
+from .production_write_authority import runtime_compatibility_result
 from ..algorithms.encounter_3d import EncounterAssessment3DV1
 from ..domain.airspace import normalize_airspace_policies
 from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
@@ -370,40 +374,26 @@ class WorkflowService:
         self.store_path, self.defaults_path = self.session.store_path, self.session.defaults_path
         self.repository, self.defaults, self.state = self.session.repository, self.session.defaults, self.session.state
         self.algorithm_registry = algorithm_registry or build_default_algorithm_registry(self.defaults)
-        self.route_planner = self._selected_algorithm("route_planner")
-        self.coverage_planner = self._selected_algorithm("coverage_planner")
-        self.risk_model = risk_model or self._selected_algorithm("risk_model")
-        selected_gap_analyzer = gap_analyzer or self._selected_algorithm("cns_gap_analyzer")
-        self.gap_analyzer = (
-            selected_gap_analyzer
-            if getattr(selected_gap_analyzer, "algorithm_id", None) != CNSGapAnalyzerV2.algorithm_id
-            else self.algorithm_registry.create(
-                "cns_gap_analyzer", CNSGapAnalyzerV1.algorithm_id,
-                CNSGapAnalyzerV1.algorithm_version, {},
-            )
+        self.compatibility_selection = CompatibilitySelectionAdapter(
+            self.state, self.algorithm_registry, self.session,
         )
-        self.gap_analyzer_v2 = (
-            selected_gap_analyzer
-            if getattr(selected_gap_analyzer, "algorithm_id", None) == CNSGapAnalyzerV2.algorithm_id
-            else self.algorithm_registry.create(
-                "cns_gap_analyzer", CNSGapAnalyzerV2.algorithm_id,
-                CNSGapAnalyzerV2.algorithm_version,
-                (self.state.get("cns_gap_analysis_v2") or {}).get("parameters") or {},
-            )
+        self.route_planner = self.compatibility_selection.create("route_planner")
+        self.coverage_planner = self.compatibility_selection.create("coverage_planner")
+        self.risk_model = risk_model or self._selected_algorithm("risk_model")
+        self.gap_analyzer = gap_analyzer or self.compatibility_selection.create(
+            "cns_gap_analyzer", algorithm_id=CNSGapAnalyzerV1.algorithm_id,
+        )
+        self.gap_analyzer_v2 = self.algorithm_registry.create(
+            "cns_gap_analyzer", CNSGapAnalyzerV2.algorithm_id,
+            CNSGapAnalyzerV2.algorithm_version,
+            (self.state.get("cns_gap_analysis_v2") or {}).get("parameters") or {},
         )
         self.coverage_model_3d = self._selected_algorithm("coverage_model")
         self.cns_service_model = self._selected_algorithm("service_model")
         self.timeline_model = self._selected_algorithm("timeline_model")
         self.protection_model = self._selected_algorithm("protection_model")
         selected_site_planner = self._selected_algorithm("site_planner")
-        self.site_planner = (
-            selected_site_planner
-            if getattr(selected_site_planner, "algorithm_id", None) == ReuseFirstSitePlannerV1.algorithm_id
-            else self.algorithm_registry.create(
-                "site_planner", ReuseFirstSitePlannerV1.algorithm_id,
-                ReuseFirstSitePlannerV1.algorithm_version, {},
-            )
-        )
+        self.site_planner = self.compatibility_selection.create("site_planner")
         self.corridor_site_planner = (
             selected_site_planner
             if getattr(selected_site_planner, "algorithm_id", None) == CorridorReuseFirstSitePlannerV2.algorithm_id
@@ -704,6 +694,9 @@ class WorkflowService:
         result["device_source"] = self.state.get("device_catalog", {}).get("source") or self.defaults.get("device_library", {}).get("source", "demo/default")
         result["aircraft_source"] = self.state.get("aircraft_profiles", {}).get("source") or self.defaults.get("aircraft_library", {}).get("source", "demo/default")
         result["algorithm_catalog"] = self.algorithm_registry.catalog()
+        # 只读兼容投影：新项目不再保存 legacy selection，但旧项目 / 运行期 compatibility
+        # 覆盖的实际生效 selection 必须可被高级区如实展示（不写回 ProjectState）。
+        result["compatibility_selection"] = self.compatibility_selection.selection_snapshot()
         if hasattr(self, "requirement_recommendation_service"):
             result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
         if hasattr(self, "route_experiment_service"):
@@ -974,7 +967,38 @@ class WorkflowService:
     def required_cns_recommendation_snapshot(self): return self.requirement_recommendation_service.result_snapshot()
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
-    def cns_gap_snapshot(self): return deepcopy(self.state.get("cns_gap_analysis") or CNSGapAnalyzerV1.empty())
+    def compatibility_catalog_snapshot(self): return capability_catalog()
+    def set_compatibility_selection(self, payload):
+        """运行期 compatibility selection 覆盖：绝不写 ``algorithm_selection``。"""
+
+        return set_runtime_compatibility_selection(
+            self.session,
+            payload.get("algorithm_type"),
+            payload.get("parameters") or {},
+            algorithm_id=payload.get("algorithm_id"),
+        )
+    def compatibility_route_snapshot(self):
+        runtime = runtime_compatibility_result(self.session, "operational_routes")
+        if runtime:
+            return deepcopy(runtime)
+        selection = (self.state.get("algorithm_selection") or {}).get("route_planner") or {}
+        if selection.get("algorithm_id") in {"route_planner_v1", "risk_aware_route_planner_v2"}:
+            view = read_existing_legacy(self.state, "operational_routes", "RoutePlannerV1")
+            if "value" in view:
+                view["items"] = view.pop("value")
+                view["count"] = len(view["items"])
+            return view
+        return read_existing_legacy({}, "operational_routes", "RoutePlannerV1")
+    def compatibility_coverage_snapshot(self):
+        return deepcopy(
+            runtime_compatibility_result(self.session, "coverage")
+            or read_existing_legacy(self.state, "coverage", "CoveragePlannerV1")
+        )
+    def cns_gap_snapshot(self):
+        return deepcopy(
+            runtime_compatibility_result(self.session, "cns_gap_analysis")
+            or read_existing_legacy(self.state, "cns_gap_analysis", "CNSGapAnalyzerV1")
+        )
     def cns_gap_v2_snapshot(self): return self.gap_analysis_v2_service.result_snapshot()
     def spatial_3d_snapshot(self): return self.spatial_3d_service.spatial_snapshot()
     def coverage_3d_snapshot(self): return self.spatial_3d_service.coverage_snapshot()
@@ -1109,11 +1133,24 @@ class WorkflowService:
                 "parameters": payload.get("parameters", {}),
             },
         })[algorithm_type]
+        compatibility_only = algorithm_type in {
+            "route_planner", "coverage_planner", "cns_gap_analyzer",
+        } or candidate["algorithm_id"] in {
+            "layered_route_planner_v1", "reuse_first_site_planner_v1",
+        }
+        if compatibility_only and candidate != self.state["algorithm_selection"].get(algorithm_type):
+            # 幂等请求（项目当前已保存同一个 compatibility selection）不算"新写入"：
+            # 重放旧 UI 的同一个选择不会改写任何东西。任何真正会新增 / 改变
+            # compatibility selection 的请求仍然被拒绝。
+            raise ValueError(
+                "Compatibility/Archive 算法不能写入新的 algorithm_selection；"
+                "请通过 /api/compatibility 执行 runtime-only 试算"
+            )
         instance = self.algorithm_registry.create(
             candidate["algorithm_type"], candidate["algorithm_id"],
             candidate["version"], candidate["parameters"],
         )
-        if candidate == self.state["algorithm_selection"][algorithm_type]:
+        if candidate == self.state["algorithm_selection"].get(algorithm_type):
             return self.snapshot()
         self.state["algorithm_selection"][algorithm_type] = candidate
         self._bind_algorithm(algorithm_type, instance)
@@ -1333,7 +1370,12 @@ class WorkflowService:
     def generate_scenario_od(self, start_node_id, end_node_id, direction="both"):
         return self.route_service.generate_scenario_od(start_node_id, end_node_id, direction)
     def delete_route(self, route_id): return self.route_service.delete_route(route_id)
-    def generate_operational(self, constraints): return self.route_service.generate_operational(constraints)
+    def generate_operational(self, constraints):
+        # compatibility 试算按当前运行期 selection 现取实例：这样高级区对旧版
+        # Risk-Aware Route Planner V2 参数的运行期覆盖才真正生效，同时仍然没有任何
+        # ProjectState 写入。
+        self.route_planner = self.compatibility_selection.create("route_planner")
+        return self.route_service.generate_operational(constraints)
     def set_rules(self, payload): return self.operation_service.set_rules(payload)
     def select_aircraft_profile(self, aircraft_id): return self.cns_input_service.select_aircraft(aircraft_id)
     def import_aircraft_catalog(self, path): return self.cns_input_service.import_aircraft_catalog(path)

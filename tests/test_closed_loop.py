@@ -166,8 +166,9 @@ def test_preview_reruns_p7_p10_and_has_zero_upstream_pollution(tmp_path):
     workflow = _workflow(tmp_path)
     protected = {name: deepcopy(workflow.state[name]) for name in (
         "existing_cns_facilities", "coverage_3d", "cns_service_capability",
-        "service_timeline", "cns_gap_analysis_v2", "cns_site_plan",
+        "service_timeline", "cns_gap_analysis_v2",
     )}
+    assert "cns_site_plan" not in workflow.state
     result = workflow.evaluate_closed_loop()["closed_loop_assessment"]
     assert result["validation_status"] == "validated_improvement"
     assert result["commit_status"] == "preview"
@@ -176,6 +177,7 @@ def test_preview_reruns_p7_p10_and_has_zero_upstream_pollution(tmp_path):
     assert result["algorithm_runs"]["baseline"]["coverage_3d"]["algorithm_version"] == "1.0"
     assert result["algorithm_runs"]["planned"]["cns_gap_analysis_v2"]["algorithm_version"] == "2.0"
     assert {name: workflow.state[name] for name in protected} == protected
+    assert "cns_site_plan" not in workflow.state
     prediction = result["prediction_comparison"]
     assert prediction["predicted_planning_gap_reduction_m"] == pytest.approx(1000.0)
     assert prediction["actual_planning_gap_reduction_m"] > 1000.0

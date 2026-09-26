@@ -108,15 +108,35 @@ def test_schema_v2_backfills_default_selection_and_roundtrips(tmp_path):
     assert restored["algorithm_selection"] == default_algorithm_selection()
 
 
-def test_unknown_saved_selection_fails_explicitly_on_workflow_assembly(tmp_path):
+def test_unknown_saved_selection_is_resolved_by_the_compatibility_adapter(tmp_path):
+    """未知的旧 ``route_planner`` selection 不能让旧项目打不开，也不得被改写。
+
+    B7X 之后 assembly 走 CompatibilitySelectionAdapter：无法解析的旧值回退到冻结
+    兼容基线（并如实标注来源），而**绝不**抛 AlgorithmNotFoundError 或写回 state。
+    """
+
     workflow = WorkflowService(tmp_path / "project.json", DEFAULTS_PATH)
-    workflow.state["algorithm_selection"]["route_planner"].update({"algorithm_id": "missing", "version": "3.0"})
+    workflow.state["algorithm_selection"]["route_planner"] = {
+        "algorithm_type": "route_planner", "algorithm_id": "missing",
+        "version": "3.0", "parameters": {},
+    }
     workflow.save()
+    reopened = WorkflowService(tmp_path / "project.json", DEFAULTS_PATH)
+    selection = reopened.compatibility_selection.selection("route_planner")
+    assert selection["algorithm_id"] == "route_planner_v1"
+    assert selection["selection_source"] == "frozen_compatibility_baseline_unresolvable_saved_selection"
+    assert reopened.state["algorithm_selection"]["route_planner"]["algorithm_id"] == "missing"
+    # 非 compatibility 类型的未知算法仍然 fail-closed。
+    reopened.state["algorithm_selection"]["risk_model"] = {
+        "algorithm_type": "risk_model", "algorithm_id": "missing", "version": "3.0",
+        "parameters": {},
+    }
+    reopened.save()
     with pytest.raises(AlgorithmNotFoundError, match="missing@3.0"):
         WorkflowService(tmp_path / "project.json", DEFAULTS_PATH)
 
 
-def test_dummy_route_selection_switches_instance_invalidates_and_persists(tmp_path):
+def test_new_project_rejects_persisting_a_compatibility_route_selection(tmp_path):
     registry = build_default_algorithm_registry(defaults())
     manifest = register_dummy(registry, "route_planner")
     workflow = WorkflowService(tmp_path / "project.json", DEFAULTS_PATH, algorithm_registry=registry)
@@ -124,18 +144,12 @@ def test_dummy_route_selection_switches_instance_invalidates_and_persists(tmp_pa
     workflow.state["coverage"] = {"status": "passed"}
     workflow.state["cns_gap_analysis"] = {"status": "passed"}
 
-    selected = workflow.select_algorithm({
-        "algorithm_type": "route_planner", "algorithm_id": manifest.algorithm_id,
-        "version": manifest.version, "parameters": {"fixture": 1},
-    })
-    assert isinstance(workflow.route_service.planner, DummyAlgorithm)
-    assert workflow.route_service.planner.parameters == {"fixture": 1}
-    assert selected["result_statuses"]["routes"] == "stale"
-    assert selected["result_statuses"]["coverage"] == "stale"
-    assert selected["result_statuses"]["cns_gap"] == "stale"
-    restored = WorkflowService(tmp_path / "project.json", DEFAULTS_PATH, algorithm_registry=registry)
-    assert restored.state["algorithm_selection"]["route_planner"]["algorithm_id"] == manifest.algorithm_id
-    assert isinstance(restored.route_service.planner, DummyAlgorithm)
+    with pytest.raises(ValueError, match="Compatibility/Archive"):
+        workflow.select_algorithm({
+            "algorithm_type": "route_planner", "algorithm_id": manifest.algorithm_id,
+            "version": manifest.version, "parameters": {"fixture": 1},
+        })
+    assert "route_planner" not in workflow.state["algorithm_selection"]
 
 
 def test_same_selection_is_noop_and_invalid_selection_preserves_current(tmp_path):
@@ -152,14 +166,14 @@ def test_same_selection_is_noop_and_invalid_selection_preserves_current(tmp_path
 @pytest.mark.parametrize(
     ("algorithm_type", "expected"),
     [
-        ("coverage_planner", {"coverage", "report"}),
-        ("cns_gap_analyzer", {"cns_gap", "report"}),
         ("layered_route_planner", {"layered_route_candidate", "report"}),
         ("coverage_model", {"coverage_3d", "cns_service_capability", "service_timeline", "report"}),
         ("service_model", {"cns_service_capability", "service_timeline", "report"}),
         ("timeline_model", {"service_timeline", "report"}),
         ("protection_model", {"protection_envelope", "report"}),
-        ("site_planner", {"cns_site_plan", "report"}),
+        # B7X：P11 站址试算是只读 compatibility 结果，定向失效只发生在 runtime-only
+        # cache，不再改写遗留的 result_statuses。
+        ("site_planner", {"report"}),
     ],
 )
 def test_dummy_selection_uses_directed_invalidation(tmp_path, algorithm_type, expected):
@@ -172,7 +186,7 @@ def test_dummy_selection_uses_directed_invalidation(tmp_path, algorithm_type, ex
     workflow.state["cns_service_capability"]["status"] = "meets_under_model"
     workflow.state["service_timeline"]["status"] = "passed"
     workflow.state["protection_envelope"]["status"] = "passed"
-    workflow.state["cns_site_plan"]["status"] = "proposal_ready"
+    workflow.state["cns_site_plan"] = {"status": "proposal_ready"}
     workflow.select_algorithm({
         "algorithm_type": algorithm_type, "algorithm_id": manifest.algorithm_id,
         "version": manifest.version, "parameters": {},

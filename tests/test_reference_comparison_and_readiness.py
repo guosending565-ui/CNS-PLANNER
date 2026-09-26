@@ -317,7 +317,9 @@ def test_policy_change_does_not_stale_route_outputs(tmp_path):
         {"feature_id": "A", "route_eligibility": "allowed", "confirmed": True, "source": {"type": "doc"}, "evidence": [{"type": "test"}]},
     ]})
     assert workflow.state["result_statuses"]["routes"] == "passed"
-    assert workflow.state["algorithm_selection"]["route_planner"]["algorithm_id"] == "route_planner_v1"
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection（旧值只由
+    # CompatibilitySelectionAdapter 解析），这里只关心 routes 状态未被 airspace 变更影响。
+    assert "route_planner" not in workflow.state["algorithm_selection"]
 
 
 def test_wired_comparison_unblocks_once_crs_and_link_are_confirmed(tmp_path):

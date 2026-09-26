@@ -336,7 +336,11 @@ class ApiContext:
 def test_registry_api_persistence_backfill_and_invalidation(tmp_path):
     workflow = configured(tmp_path)
     assert workflow.algorithm_registry.manifest("site_planner", "corridor_reuse_first_site_planner_v2", "2.0")
-    assert workflow.state["algorithm_selection"]["site_planner"]["algorithm_id"] == "reuse_first_site_planner_v1"
+    # B7X：新项目的 ``site_planner`` 默认只保存 production 的 corridor 实现；
+    # 归档的 ReuseFirstSitePlannerV1 只由 CompatibilitySelectionAdapter 解析。
+    assert workflow.state["algorithm_selection"]["site_planner"]["algorithm_id"] == (
+        "corridor_reuse_first_site_planner_v2"
+    )
     api = ApiRouter(ApiContext(workflow))
     response = api.post("/api/cns-corridor-site-plan/evaluate", {}).data
     assert response["cns_corridor_site_plan"]["input_fingerprint"]

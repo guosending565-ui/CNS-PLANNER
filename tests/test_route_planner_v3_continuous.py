@@ -1895,7 +1895,8 @@ def test_v3c_never_writes_operational_routes_or_route_altitude_profiles(tmp_path
     service.evaluate_route_planner_v3_continuous_validation(payload)
     assert service.state["operational_routes"] == []
     assert (service.state.get("spatial_3d") or {}).get("route_altitude_profiles", {}) == {}
-    assert service.state["algorithm_selection"]["route_planner"]["algorithm_id"] == "route_planner_v1"
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection；V3-C 也绝不能写入它。
+    assert "route_planner" not in service.state["algorithm_selection"]
     record = service.route_planner_v3_snapshot()["records"][0]
     validation = record["refinements"][0]["validations"][0]
     assert validation["provenance"]["operational_routes_untouched"] is True

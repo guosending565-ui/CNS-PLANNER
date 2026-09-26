@@ -87,8 +87,6 @@ const STATUS_GROUPS=[
     ['route_vertical_profiles','航路垂直剖面'],['encounter_3d_assessment','3D 相遇评估'],
     ['layered_route_candidate','分层航路候选']
   ]],
-  // 旧版兼容组只作审计对照：标题即写明它不参与正式确认（B4X §23）。
-  ['旧版兼容（不参与正式确认）',[['coverage','旧版二维覆盖试算'],['cns_gap','旧版规划缺口'],['cns_site_plan','旧版站址试算']]],
   ['风险',[
     ['environment_risk','环境风险'],['grid_risk_v2','网格风险'],['technical_risk','技术风险'],
     ['safety_assessment','安全评估']
@@ -199,7 +197,6 @@ function overviewPanel(flow,state){
     +reviewBlock(SIX_SECTIONS.action,
       nextStepNote('主操作按主链顺序分布在各分段，每个分段只有一个主操作按钮：方案比较 → 初始化方案审查；方案编辑 → 创建候选方案；确认与应用 → 应用已确认方案；报告与交付 → 生成正式报告。选择候选方案使用候选卡上的「选择此方案」，它只切换当前候选，不修改任何设施。'))
     +reviewBlock(SIX_SECTIONS.result,reviewStatusPanel(flow))
-    +compatibilityIsolation(flow)
     +reviewBlock(SIX_SECTIONS.next,
       nextStepNote('下一步：到「方案比较」初始化方案审查并选择候选方案；确认门禁打开后进入「确认与应用」。'));
 }
@@ -252,7 +249,6 @@ function comparisonPanel(flow,review,selected){
       '<div class="variant-grid">'+variantCards(review.selected_variant_id,review)+'</div>'
       +'<div class="button-row"><button class="primary" id="initializePlanReview">初始化方案审查</button><button class="secondary" id="evaluatePlanVariant" '+(!selected?'disabled':'')+'>重新评价所选方案</button></div>',
       '选择只改变当前候选方案，不修改任何设施；系统不排序、不评分、不自动选择。')
-    +compatibilityIsolation(flow)
     +reviewBlock(SIX_SECTIONS.blockers,blockerList(reviewBlockers(flow),
       '当前没有阻塞项：可以继续比较候选方案。'))
     +reviewBlock(SIX_SECTIONS.result,comparisonCards(selected)
@@ -297,11 +293,10 @@ function confirmPanel(flow,confirmed,selected,summary){
     +reviewBlock(SIX_SECTIONS.input,[
       kvRow('当前所选方案',selected?escapeHtml(selected.name||selected.variant_id)+'（方案编号：'+escapeHtml(selected.variant_id)+'）':'尚未选择'),
       kvRow('正式 CNS 链',statusBadge(canonicalReady?'ready':'not_available',readinessText(canonicalReady?'ready':'not_available')),
-        canonicalReady?'三维几何覆盖、CNS 服务能力、服务走廊、能力缺口与 CNS 设施规划均已形成当前结果':'旧版二维覆盖或旧版站址试算不能解锁正式确认'),
+        canonicalReady?'三维几何覆盖、CNS 服务能力、服务走廊、能力缺口与 CNS 设施规划均已形成当前结果':'仅正式 CNS 主链结果可解锁方案确认'),
       kvRow('确认门禁状态',statusBadge(gateStatus),
         acknowledged?'未配置规划目标：勾选知情确认并填写理由后才能确认':'门禁为「'+statusText('ready_for_confirmation')+'」时才可直接确认')
     ].join(''))
-    +compatibilityIsolation(flow)
     +reviewBlock(SIX_SECTIONS.blockers,blockerList(reviewBlockers(flow),
       '当前没有阻塞项：主链可以按「选择 → 确认 → 应用 → 生成报告」继续推进。'))
     +reviewBlock('主操作 · 第 2 步：确认方案（只冻结快照，不修改设施）',
@@ -524,7 +519,7 @@ function statusOverview(flow){
   const overall=reviewBlock('总体状态',
     kvRow('总体状态',statusBadge(flow.review?.overall_status||'not_calculated'))
     +kvRow('总体通过',flow.review?.overall_pass?'是':'否'),
-    '只映射后端现有状态，不在此重新计算任何结论；旧版兼容组只作审计对照，不参与正式确认。');
+    '只映射后端现有状态，不在此重新计算任何结论。');
   return groups+overall;
 }
 
@@ -569,7 +564,7 @@ function deliveryPanel(flow){
   const stale=active?.current_applicability==='stale_current_project';
   return reviewBlock('导出与保存',
     (stale?'<p class="inline-error">当前报告对应旧项目状态：仍可下载，系统不会自动覆盖或删除旧报告。</p>':'')
-    +'<div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">旧版兼容站址GeoJSON</a></div>'
+    +'<div class="button-row export-row"><a class="secondary button-link" download="project.json" href="/api/export/project">项目JSON</a><a class="secondary button-link" download="routes.geojson" href="/api/export/routes">航路GeoJSON</a></div>'
     +'<button class="secondary full" id="saveAll">保存当前项目</button>',
     '导出只读取当前项目状态；报告与项目状态各自独立，不会互相覆盖。预览草稿不写入项目，也不进入导出。');
 }
@@ -590,7 +585,9 @@ function proposalPanel(flow){
     +'<span>状态：'+statusText(proposal.status||'not_calculated')+'</span>'
     +'<span>目标体素：'+(proposal.target_voxel_count||0)+' · 已选动作：'+(proposal.selected_actions||[]).length+'</span>'
     +'<span>确认需求单位体积收益：'+(Number.isFinite(proposal.confirmed_requirement_unit_volume_gain)?proposal.confirmed_requirement_unit_volume_gain.toFixed(1)+' m³·unit':'—')+'</span>'
-    +'<small>方案本身不修改已有 CNS 设施；方案评审负责人工比较、确认与受控应用。</small></div>';
+    +'<small>方案本身不修改已有 CNS 设施；方案评审负责人工比较、确认与受控应用。</small></div>'
+    +compatibilityIsolation(flow)
+    +'<div class="button-row export-row"><a class="secondary button-link" download="sites.geojson" href="/api/export/sites">旧版兼容站址 GeoJSON</a></div>';
 }
 
 // ---- 渲染 -------------------------------------------------------------------

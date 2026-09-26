@@ -506,8 +506,11 @@ def test_layer_assignment_and_procedure_changes_stale_only_the_minimal_chain(tmp
     service = workflow(tmp_path)
     results = (
         "coverage_3d", "building_clearance", "route_vertical_profiles",
-        "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_corridor_assessment",
+        "cns_service_capability", "service_timeline", "cns_corridor_assessment",
     )
+    # B7X：Gap V2 是只读 compatibility 结果，失效只在 runtime-only cache 里，
+    # 不再改写遗留的 result_statuses。
+    compatibility_only = "cns_gap_v2"
     service.state["coverage_3d"] = {"status": "passed"}
     service.state["building_clearance_assessment"] = {"status": "passed"}
     service.state["route_vertical_profiles"] = {"status": "passed"}
@@ -524,6 +527,9 @@ def test_layer_assignment_and_procedure_changes_stale_only_the_minimal_chain(tmp
     service.set_altitude_layer(layer())
     for name in results:
         assert service.state["result_statuses"][name] == "stale", name
+    # B7X：Gap V2 是只读 compatibility 结果，失效只发生在 runtime-only cache，
+    # 遗留的 result_statuses 记录不会被创建或改写。
+    assert compatibility_only not in service.state["result_statuses"]
     assert service.state["grid_risk"]["status"] == "passed"
     assert service.state["result_statuses"]["environment_risk"] == "passed"
     assert service.state["result_statuses"]["routes"] == "passed"

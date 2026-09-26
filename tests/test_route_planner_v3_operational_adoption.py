@@ -1264,7 +1264,8 @@ def test_v1_and_v2_route_planners_are_untouched_by_v3d(tmp_path):
     service = workflow(tmp_path)
     build_validated(service)
     publish(service)
-    assert service.state["algorithm_selection"]["route_planner"]["algorithm_id"] == "route_planner_v1"
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection；V3-D 也绝不能写入它。
+    assert "route_planner" not in service.state["algorithm_selection"]
 
 
 def test_report_exposes_the_v3_provenance_without_merging_verdicts(tmp_path):

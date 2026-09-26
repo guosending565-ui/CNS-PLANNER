@@ -85,18 +85,18 @@ const LOCAL_MUTATION_ENDPOINTS=[
   ['workflow/layered_route_validation.js','/api/layered-route-validations/evaluate-real'],
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/apply'],
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/revoke'],
-  ['workflow/step03_routes.js','/api/route-planner-v3/policy'],
-  ['workflow/step03_routes.js','/api/route-planner-v3/fine-policy'],
-  ['workflow/step03_routes.js','/api/route-planner-v3/validation-policy'],
-  ['workflow/step03_routes.js','/api/route-planner-v3-operational-adoptions/apply'],
-  ['workflow/step03_routes.js','/api/route-planner-v3-operational-adoptions/revoke'],
+  ['workflow/step03_routes.js','/api/research/route-planner-v3/policy'],
+  ['workflow/step03_routes.js','/api/research/route-planner-v3/fine-policy'],
+  ['workflow/step03_routes.js','/api/research/route-planner-v3/validation-policy'],
+  ['workflow/step03_routes.js','/api/research/route-planner-v3-operational-adoptions/apply'],
+  ['workflow/step03_routes.js','/api/research/route-planner-v3-operational-adoptions/revoke'],
   ['workflow/route3d_profile.js','/api/route-3d-profiles/evaluate'],
   ['workflow/route3d_profile.js','/api/route-3d-profiles/delete'],
 ];
 
 const READ_ONLY_PREVIEW_ENDPOINTS=[
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/preview'],
-  ['workflow/step03_routes.js','/api/route-planner-v3-operational-adoptions/preview'],
+  ['workflow/step03_routes.js','/api/research/route-planner-v3-operational-adoptions/preview'],
 ];
 
 test('every local-object endpoint is called through mutation + refresh',()=>{
@@ -136,6 +136,26 @@ test('main.js wires the helper to the real api client and exposes it to the pane
     main.indexOf('async function resourceAction('));
   assert.notEqual(helper,'');
   assert.doesNotMatch(helper,/flow=/,'helper 绝不能把局部 response 写进全局 flow');
+});
+
+test('B7 advanced actions use compatibility and research namespaces only',()=>{
+  const step03=read('workflow/step03_routes.js');
+  const step04=read('workflow/step04_operation.js');
+  const step05=read('workflow/step05_cns.js');
+  assert.match(step03,/\/api\/compatibility\/route-planner\/evaluate/);
+  assert.match(step03,/\/api\/compatibility\/selection/);
+  assert.match(step03,/\/api\/research\/route-planner-v3/);
+  assert.doesNotMatch(step03,/c\.mutate\('operational'/);
+  assert.doesNotMatch(step03,/api\/algorithms\/select/,
+    '归档规划器参数不得再走已关闭的 algorithm_selection 写入通道');
+  assert.match(step04,/\/api\/research\/v3-cns-assessment\/evaluate/);
+  assert.doesNotMatch(step04,/c\.mutate\('operational'/);
+  for(const endpoint of [
+    '/api/compatibility/coverage/evaluate',
+    '/api/compatibility/cns-gap-analysis-v1/evaluate',
+    '/api/compatibility/cns-gap-analysis-v2/evaluate',
+    '/api/compatibility/site-plan/evaluate',
+  ])assert.ok(step05.includes(endpoint),`Step5 Advanced must call ${endpoint}`);
 });
 
 // ---- 3. 清工作区：执行前二次确认 + 明确的破坏性说明 --------------------------------

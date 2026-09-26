@@ -128,5 +128,8 @@ def test_cns_inputs_invalidate_only_downstream_results(tmp_path):
     }]})
     assert result["result_statuses"]["workspace"] == "passed"
     assert result["result_statuses"]["routes"] == "passed"
-    assert result["result_statuses"]["coverage"] == "stale"
+    # B7X：旧二维覆盖是只读 compatibility 结果——失效只发生在 runtime-only cache，
+    # 遗留的 result_statuses 与结果本体都不被改写。
+    assert result["result_statuses"]["coverage"] == "passed"
+    assert result["coverage"] == {"status": "passed"}
     assert result["result_statuses"]["technical_risk"] == "stale"

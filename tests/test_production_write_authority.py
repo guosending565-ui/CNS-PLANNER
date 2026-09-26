@@ -115,10 +115,12 @@ def test_route_service_operational_is_compatibility_only(workflow):
 
 def test_route_service_v2_also_cannot_change_canonical_routes(workflow):
     state = workflow.state
-    workflow.select_algorithm({
-        "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
-        "version": "2.0", "parameters": {"risk_weight_lambda": 0},
-    })
+    # B7: explicit compatibility compute selects the frozen/saved implementation in
+    # memory; it never writes a new route_planner selection into ProjectState.
+    workflow.route_service.planner = workflow.algorithm_registry.create(
+        "route_planner", "risk_aware_route_planner_v2", "2.0",
+        {"risk_weight_lambda": 0},
+    )
     before = deepcopy(state["operational_routes"])
     try:
         workflow.generate_operational([])
@@ -551,10 +553,10 @@ def test_legacy_site_plan_execution_is_runtime_only(tmp_path):
     from test_cns_site_planner import configure_workflow
 
     service = configure_workflow(tmp_path)
-    before = deepcopy(service.state["cns_site_plan"])
+    assert "cns_site_plan" not in service.state
     response = service.evaluate_cns_site_plan()
     assert response["cns_site_plan"]["authoritative"] is False
-    assert service.state["cns_site_plan"] == before
+    assert "cns_site_plan" not in service.state
     assert runtime_compatibility_result(service.session, "cns_site_plan")["algorithm_id"]
 
 
@@ -562,7 +564,10 @@ def test_legacy_project_site_plan_stays_readable(workflow):
     drop_runtime_compatibility_result(workflow.session, "cns_site_plan")
     legacy = {"status": "proposal_ready", "input_fingerprint": "legacy-site-plan"}
     workflow.state["cns_site_plan"] = deepcopy(legacy)
-    assert workflow.cns_site_plan_snapshot() == legacy
+    view = workflow.cns_site_plan_snapshot()
+    assert view["status"] == legacy["status"]
+    assert view["input_fingerprint"] == legacy["input_fingerprint"]
+    assert view["authoritative"] is False
 
 
 def test_closed_loop_cannot_turn_legacy_site_plan_into_canonical_apply(tmp_path):
@@ -600,10 +605,10 @@ def test_plan_review_apply_stales_canonical_existing_cns_dependents(tmp_path):
     service.state["coverage_3d"].update({"status": "passed", "input_fingerprint": "coverage-before"})
     service.state["cns_service_capability"].update({"status": "meets_under_model", "input_fingerprint": "capability-before"})
     service.state["service_timeline"].update({"status": "passed", "input_fingerprint": "timeline-before"})
-    service.state["cns_gap_analysis_v2"].update({"status": "passed", "input_fingerprint": "gap-before"})
+    service.state["cns_gap_analysis_v2"] = {"status": "passed", "input_fingerprint": "gap-before"}
     service.state["result_statuses"].update({
         "coverage_3d": "passed", "cns_service_capability": "passed",
-        "service_timeline": "passed", "cns_gap_v2": "passed",
+        "service_timeline": "passed",
     })
     review = service.initialize_cns_plan_review()["cns_plan_review"]
     auto = review["variants"][1]
@@ -619,11 +624,14 @@ def test_plan_review_apply_stales_canonical_existing_cns_dependents(tmp_path):
     for key, value in identity.items():
         assert applied[key] == value
     for name in (
-        "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2",
+        "coverage_3d", "cns_service_capability", "service_timeline",
         "cns_corridor_assessment", "cns_corridor_gap_assessment",
         "cns_corridor_site_plan", "report",
     ):
         assert service.state["result_statuses"][name] == "stale", name
+    assert service.state["cns_gap_analysis_v2"] == {
+        "status": "passed", "input_fingerprint": "gap-before",
+    }
 
 
 def test_required_cns_change_stales_canonical_coverage(workflow):
@@ -641,5 +649,5 @@ def test_new_compatibility_results_never_persist(tmp_path):
     service.evaluate_cns_site_plan()
     service.save()
     document = json.loads(Path(service.store_path).read_text(encoding="utf-8"))
-    assert document["cns_site_plan"]["status"] == "not_calculated"
+    assert "cns_site_plan" not in document
     assert "results" not in (document.get("compatibility") or {})

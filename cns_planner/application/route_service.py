@@ -22,7 +22,6 @@ from .production_write_authority import (
     runtime_compatibility_items, runtime_compatibility_result,
     write_runtime_compatibility_result,
 )
-from .project_state import assessment
 
 #: 旧算法兼容试算结果在 runtime-only cache 下的名字。
 COMPATIBILITY_OPERATIONAL_ROUTES = "operational_routes"
@@ -327,11 +326,8 @@ class RouteService:
                 "不是正式运行航路，不发布、不驱动 canonical 下游、不进入正式报告。"
             ),
         )
-        if not getattr(self.planner, "uses_canonical_grid_risk", False):
-            state["risks"]["environment"] = assessment(
-                "pending_confirmation", "GRC 环境风险接口已接入，正式模型待确认"
-            )
-        self.session.save()
+        # Runtime compatibility compute has no ProjectState side effect at all: no risk
+        # marker, no revision bump, no artifact and no canonical invalidation.
         response = self.snapshot()
         response["compatibility_operational_routes"] = deepcopy(record)
         response["compatibility_write"] = True

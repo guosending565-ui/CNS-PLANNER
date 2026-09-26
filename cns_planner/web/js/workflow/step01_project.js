@@ -97,18 +97,33 @@ export function inputRequirementPanel({state,flow}){
     +'绝不静默补默认值。</div>'+rows;
 }
 
+/** B7X：归档 / compatibility 算法不得再成为新项目的 persisted selection。
+ *  它们仍然注册（旧项目要能读、能由 compatibility adapter 解析），但不在生产算法设置里
+ *  提供新选择；只有项目**当前已保存**的那个归档选择会作为现状选项保留，绝不静默改写。 */
+const FROZEN_COMPATIBILITY_ALGORITHM_IDS=new Set([
+  'route_planner_v1','risk_aware_route_planner_v2','layered_route_planner_v1',
+  'coverage_planner_v1','cns_gap_analysis_v1','cns_gap_analysis_v2',
+  'reuse_first_site_planner_v1',
+]);
+
 function algorithmSettings(flow){
   const labels={risk_model:'风险模型',route_planner:'航路规划',coverage_planner:'CNS覆盖规划',cns_gap_analyzer:'CNS缺口分析',coverage_model:'3D几何覆盖模型',service_model:'CNS静态服务能力模型',timeline_model:'运行服务时间线模型',protection_model:'战术保护包络模型',requirement_model:'CNS需求模型'};
   const selection=flow.algorithm_selection||{},catalog=flow.algorithm_catalog||[];
   const rows=Object.entries(labels).map(([type,label])=>{
-    const current=selection[type]||{},items=catalog.filter(item=>item.algorithm_type===type);
+    const current=selection[type]||{},items=catalog.filter(item=>item.algorithm_type===type&&!frozenCompatibilityOnly(item,current));
     const options=items.map(item=>'<option value="'+escapeHtml(algorithmSelectionKey(item))+'" '+(item.algorithm_id===current.algorithm_id&&item.version===current.version?'selected':'')+'>'+escapeHtml(item.name)+' · '+escapeHtml(item.algorithm_id)+'@'+escapeHtml(item.version)+'</option>').join('');
     const manifest=items.find(item=>item.algorithm_id===current.algorithm_id&&item.version===current.version);
     const info=algorithmManifestDetails(manifest);
     const detail=manifest?'<details class="algorithm-detail"><summary>详情：'+escapeHtml(manifest.name)+' · '+escapeHtml(info.maturity)+'</summary><p>'+escapeHtml(manifest.description)+'</p><small>Provider：'+escapeHtml(info.provider)+'<br>Inputs：'+escapeHtml(info.inputs)+'<br>Outputs：'+escapeHtml(info.outputs)+'<br>Parameters：'+escapeHtml(JSON.stringify(manifest.parameter_schema||{}))+'<br>Assumptions：'+escapeHtml(info.assumptions)+'<br>Limitations：'+escapeHtml(info.limitations)+'<br>References：'+escapeHtml(info.references)+'</small></details>':'<p class="inline-error">当前精确算法未注册</p>';
     return '<div class="algorithm-setting"><label>'+label+'</label><select class="panel-input" data-algorithm-select="'+type+'">'+options+'</select>'+detail+'</div>';
   }).join('');
-  return '<div class="section-label">算法设置</div><div class="algorithm-settings">'+rows+'</div>';
+  return '<div class="section-label">算法设置</div><div class="parameter-note">归档 / compatibility 实现不再作为新项目可选算法（正式实现见「航路规划」与「3D几何覆盖模型」）；旧项目已保存的归档选择保持原样，只在高级区读取或试算。</div><div class="algorithm-settings">'+rows+'</div>';
+}
+
+/** 归档/compatibility 算法：不是项目当前已保存的那个就必须从下拉中排除。 */
+function frozenCompatibilityOnly(item,current){
+  if(!FROZEN_COMPATIBILITY_ALGORITHM_IDS.has(item.algorithm_id))return false;
+  return !(item.algorithm_id===current.algorithm_id&&item.version===current.version);
 }
 
 export function render({state,flow}){

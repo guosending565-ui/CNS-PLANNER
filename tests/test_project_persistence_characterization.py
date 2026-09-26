@@ -204,7 +204,6 @@ def test_current_project_auto_save_and_reload_preserves_full_state(tmp_path, def
         "aircraft",
         "rules",
         "devices",
-        "coverage",
         "risks",
         "result_statuses",
         "last_saved_at", "artifact_manifest",

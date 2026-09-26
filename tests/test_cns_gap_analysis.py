@@ -100,7 +100,7 @@ def test_route_override_and_redundancy_are_applied_per_route():
     assert communication["status"] == "gap"
 
 
-def test_workflow_persists_and_invalidates_gap_result(tmp_path):
+def test_workflow_gap_result_is_runtime_only_and_invalidates_in_session(tmp_path):
     workflow = WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json"))
     existing, catalog = facilities(radius=5000)
     workflow.state["operational_routes"] = [deepcopy(ROUTE)]
@@ -111,21 +111,24 @@ def test_workflow_persists_and_invalidates_gap_result(tmp_path):
     workflow.state["device_catalog"] = catalog
     result = workflow.analyze_cns_gaps()
     assert result["cns_gap_analysis"]["routes"][0]["subsystems"][0]["status"] == "passed"
-    assert WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json")).cns_gap_snapshot() == result["cns_gap_analysis"]
+    reopened = WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json"))
+    assert reopened.cns_gap_snapshot()["status"] == "not_calculated"
+    assert "cns_gap_analysis" not in reopened.state
     false_requirements = {name: {"required": False} for name in ("communication", "navigation", "surveillance")}
-    stale = workflow.set_required_cns({"scope": "project", "requirements": false_requirements})
-    assert stale["cns_gap_analysis"]["status"] == "stale"
-    assert stale["result_statuses"]["cns_gap"] == "stale"
+    workflow.set_required_cns({"scope": "project", "requirements": false_requirements})
+    assert workflow.cns_gap_snapshot()["status"] == "stale"
+    assert "cns_gap" not in workflow.state["result_statuses"]
 
 
-def test_old_schema_v2_backfills_gap_result(tmp_path):
+def test_old_schema_v2_does_not_backfill_gap_result(tmp_path):
     workflow = WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json"))
-    workflow.state.pop("cns_gap_analysis")
-    workflow.state["result_statuses"].pop("cns_gap")
+    workflow.state.pop("cns_gap_analysis", None)
+    workflow.state["result_statuses"].pop("cns_gap", None)
     workflow.repository.save(workflow.state)
     restored = WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json"))
-    assert restored.state["cns_gap_analysis"]["status"] == "not_calculated"
-    assert restored.state["result_statuses"]["cns_gap"] == "not_calculated"
+    assert "cns_gap_analysis" not in restored.state
+    assert "cns_gap" not in restored.state["result_statuses"]
+    assert restored.cns_gap_snapshot()["status"] == "not_calculated"
 
 
 def test_gap_api_and_step5_overlay_are_wired():
@@ -138,10 +141,12 @@ def test_gap_api_and_step5_overlay_are_wired():
 
 
 @pytest.mark.parametrize("changed", ["workspace", "route", "rules", "aircraft_profile", "required_cns", "devices", "existing_cns"])
-def test_every_gap_input_invalidates_saved_result(tmp_path, changed):
+def test_every_gap_input_preserves_saved_legacy_result(tmp_path, changed):
     workflow = WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json"))
     workflow.state["cns_gap_analysis"] = {**CNSGapAnalyzerV1.empty(), "status": "passed"}
     workflow.state["result_statuses"]["cns_gap"] = "passed"
     workflow.invalidation_service.workflow(changed)
-    assert workflow.state["cns_gap_analysis"]["status"] == "stale"
-    assert workflow.state["result_statuses"]["cns_gap"] == "stale"
+    # B7X：旧 Gap V1 结果是只读 compatibility 证据——本体、遗留 result_statuses 记录
+    # 都不被失效改写；"失效"只发生在当前会话的 runtime-only cache 里。
+    assert workflow.state["cns_gap_analysis"]["status"] == "passed"
+    assert workflow.state["result_statuses"]["cns_gap"] == "passed"

@@ -9,6 +9,8 @@ from .production_write_authority import (
     canonical_operational_routes, runtime_compatibility_operational_routes,
     runtime_compatibility_result,
 )
+from ..compatibility.catalog import capability_metadata
+from ..compatibility.project_adapter import read_existing_legacy
 
 
 class ExportService:
@@ -16,7 +18,32 @@ class ExportService:
         self.session, self.snapshot = session, snapshot
 
     def project(self):
-        return json.dumps(self.snapshot(), ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+        document = self.snapshot()
+        selection = (self.session.state.get("algorithm_selection") or {}).get("route_planner") or {}
+        route_capability = {
+            "route_planner_v1": "RoutePlannerV1",
+            "risk_aware_route_planner_v2": "RiskAwareRoutePlannerV2",
+        }.get(selection.get("algorithm_id"))
+        if route_capability:
+            metadata = capability_metadata(route_capability)
+            document["operational_routes"] = [
+                {**deepcopy(route), **metadata}
+                for route in self.session.state.get("operational_routes") or []
+            ]
+        compatibility_views = {}
+        for key, capability_id in (
+            ("coverage", "CoveragePlannerV1"),
+            ("cns_gap_analysis", "CNSGapAnalyzerV1"),
+            ("cns_gap_analysis_v2", "CNSGapAnalyzerV2"),
+            ("cns_site_plan", "ReuseFirstSitePlannerV1"),
+        ):
+            if key in self.session.state:
+                compatibility_views[key] = read_existing_legacy(
+                    self.session.state, key, capability_id,
+                )
+        if compatibility_views:
+            document["compatibility_views"] = compatibility_views
+        return json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
 
     def routes(self):
         """兼容导出：canonical 正式航路优先；没有正式航路时才导出旧算法兼容试算。
@@ -26,9 +53,15 @@ class ExportService:
         """
 
         state = self.session.state
-        canonical = canonical_operational_routes(state)
-        compatibility = not canonical
+        saved_route_selection = (state.get("algorithm_selection") or {}).get("route_planner") or {}
+        saved_legacy_route = saved_route_selection.get("algorithm_id") in {
+            "route_planner_v1", "risk_aware_route_planner_v2",
+        }
+        canonical = [] if saved_legacy_route else canonical_operational_routes(state)
+        compatibility = saved_legacy_route or not canonical
         routes = canonical if canonical else runtime_compatibility_operational_routes(self.session)
+        if saved_legacy_route and not routes:
+            routes = list(state.get("operational_routes") or [])
         features = []
         for route in routes:
             properties = {

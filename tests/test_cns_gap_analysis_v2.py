@@ -170,26 +170,16 @@ class ApiContext:
         self.data = object()
 
 
-def test_registry_backfill_persistence_api_and_directed_invalidation(tmp_path):
+def test_registry_runtime_compatibility_api_and_no_new_persistence(tmp_path):
     path = tmp_path / "project.json"
     workflow = WorkflowService(path, DEFAULTS)
     registry = build_default_algorithm_registry(workflow.defaults)
     assert registry.manifest("cns_gap_analyzer", "cns_gap_analysis_v2", "2.0")
-    assert default_algorithm_selection()["cns_gap_analyzer"]["algorithm_id"] == CNSGapAnalyzerV1.algorithm_id
-
-    workflow.select_algorithm({
-        "algorithm_type": "cns_gap_analyzer",
-        "algorithm_id": "cns_gap_analysis_v2", "version": "2.0",
-        "parameters": {"evaluate_protection_margin": False},
-    })
+    assert "cns_gap_analyzer" not in default_algorithm_selection()
     assert workflow.gap_analysis_v2_service.analyzer.algorithm_id == "cns_gap_analysis_v2"
     assert workflow.gap_analysis_service.analyzer.algorithm_id == "cns_gap_analysis_v1"
-
-    legacy = deepcopy(workflow.state)
-    legacy.pop("cns_gap_analysis_v2")
-    legacy["result_statuses"].pop("cns_gap_v2")
-    restored_legacy = normalize_project(legacy, workflow.grid_service)
-    assert restored_legacy["cns_gap_analysis_v2"]["status"] == "not_calculated"
+    assert "cns_gap_analysis_v2" not in workflow.state
+    assert "cns_gap_v2" not in workflow.state["result_statuses"]
 
     workflow.state["required_cns"] = required()
     workflow.state["coverage_3d"] = p7()
@@ -198,27 +188,19 @@ def test_registry_backfill_persistence_api_and_directed_invalidation(tmp_path):
     router = ApiRouter(ApiContext(workflow))
     response = router.post("/api/cns-gap-analysis-v2", {"parameters": {"evaluate_protection_margin": False}}).data
     assert response["cns_gap_analysis_v2"]["algorithm_version"] == "2.0"
-    assert router.get("/api/cns-gap-analysis-v2", {}, {}).data["routes"][0]["route_id"] == "R1"
+    assert response["persistent_write"] is False
+    assert response["deprecated"] is True  # old route is a compatibility alias
+    assert "cns_gap_analysis_v2" not in workflow.state
+    current = router.get("/api/compatibility/cns-gap-analysis-v2", {}, {}).data
+    assert current["routes"][0]["route_id"] == "R1"
+    assert current["authoritative"] is False
 
     reopened = WorkflowService(path, DEFAULTS)
-    assert reopened.cns_gap_v2_snapshot()["input_fingerprint"] == response["cns_gap_analysis_v2"]["input_fingerprint"]
-    reopened.state["result_statuses"].update({
-        "grid": "passed", "routes": "passed", "coverage": "passed", "cns_gap": "passed",
-        "coverage_3d": "passed", "cns_service_capability": "passed",
-        "service_timeline": "passed", "protection_envelope": "passed", "cns_gap_v2": "passed",
-    })
-    reopened.state["cns_gap_analysis_v2"]["status"] = "satisfied"
-    reopened.invalidation_service.service_timeline()
-    assert reopened.state["result_statuses"]["cns_gap_v2"] == "stale"
-    assert {reopened.state["result_statuses"][name] for name in ("grid", "routes", "coverage", "cns_gap")} == {"passed"}
+    assert "cns_gap_analysis_v2" not in reopened.state
+    assert reopened.cns_gap_v2_snapshot()["status"] == "not_calculated"
 
-    reopened.state["cns_gap_analysis_v2"] = CNSGapAnalyzerV2.empty("satisfied")
-    reopened.state["result_statuses"]["cns_gap_v2"] = "passed"
-    reopened.invalidation_service.protection_envelope()
-    assert reopened.state["result_statuses"]["cns_gap_v2"] == "passed"
-    reopened.state["cns_gap_analysis_v2"]["parameters"]["evaluate_protection_margin"] = True
-    reopened.invalidation_service.protection_envelope()
-    assert reopened.state["result_statuses"]["cns_gap_v2"] == "stale"
+    workflow.invalidation_service.service_timeline()
+    assert workflow.cns_gap_v2_snapshot()["status"] == "stale"
 
 
 def test_gap_v1_contract_is_unchanged_by_v2_registration():

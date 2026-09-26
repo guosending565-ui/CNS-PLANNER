@@ -321,7 +321,9 @@ def test_towers_source_is_a_tracked_source_for_directed_derived_invalidation(tmp
     # 铁塔真正消费的下游：定向失效
     assert service.state["result_statuses"]["tower_obstacle_profiles"] == "stale"
     assert service.state["result_statuses"]["tower_colocation_candidates"] == "stale"
-    assert service.state["result_statuses"]["cns_site_plan"] == "stale"
+    # B7X：P11 站址试算是只读 compatibility 结果，失效只发生在 runtime-only cache。
+    assert service.state["result_statuses"]["cns_site_plan"] == "passed"
+    assert service.state["cns_site_plan"]["status"] == "proposal_ready"
     # 铁塔自身的网格属性命名空间始终没有被写入（铁塔不是网格属性）。
     assert service.state["grid_attributes"]["towers"] == empty_grid_attributes()["towers"]
 

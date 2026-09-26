@@ -319,11 +319,11 @@ def test_registry_backfill_persistence_api_and_directed_invalidation(tmp_path):
     assert registry.manifest("site_planner", "reuse_first_site_planner_v1", "1.0")
     legacy = deepcopy(workflow.state)
     legacy.pop("site_planning_policy")
-    legacy.pop("cns_site_plan")
-    legacy["result_statuses"].pop("cns_site_plan")
+    legacy.pop("cns_site_plan", None)
+    legacy["result_statuses"].pop("cns_site_plan", None)
     normalized = normalize_project(legacy, workflow.grid_service)
     assert normalized["site_planning_policy"]["strategy"] == "reuse_first_weighted_greedy_set_cover"
-    assert normalized["cns_site_plan"]["status"] == "not_calculated"
+    assert "cns_site_plan" not in normalized
     assert normalized["candidate_sites"]["items"][0]["planning_profile"]["reuse_class"] == "candidate_site"
 
     router = ApiRouter(ApiContext(workflow))
@@ -334,12 +334,13 @@ def test_registry_backfill_persistence_api_and_directed_invalidation(tmp_path):
     assert reopened.cns_site_plan_snapshot()["status"] == "not_calculated"
     assert runtime_compatibility_result(reopened.session, "cns_site_plan") == {}
 
-    reopened.state["cns_site_plan"]["status"] = "proposal_ready"
+    reopened.state["cns_site_plan"] = {"status": "proposal_ready"}
     reopened.state["result_statuses"].update({
         "grid": "passed", "routes": "passed", "coverage": "passed", "cns_gap": "passed",
         "coverage_3d": "passed", "cns_service_capability": "passed",
         "service_timeline": "passed", "cns_gap_v2": "passed", "cns_site_plan": "passed",
     })
     reopened.invalidation_service.cns_site_plan()
-    assert reopened.state["result_statuses"]["cns_site_plan"] == "stale"
+    assert reopened.state["result_statuses"]["cns_site_plan"] == "passed"
+    assert reopened.state["cns_site_plan"]["status"] == "proposal_ready"
     assert {reopened.state["result_statuses"][name] for name in ("grid", "routes", "coverage", "cns_gap", "coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2")} == {"passed"}

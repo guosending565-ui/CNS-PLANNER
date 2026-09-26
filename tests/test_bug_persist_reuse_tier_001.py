@@ -201,7 +201,9 @@ def legacy_project_document(tmp_path):
     workflow.state["corridor_site_planning_policy"] = _legacy_policy(
         default_corridor_site_planning_policy(), status="confirmed"
     )
-    workflow.state["cns_site_plan"].update({
+    # B7X：旧版 P11 proposal 是 compatibility 结果，新项目不再预创建该 key；
+    # 这里显式构造"旧项目里本来就有旧 proposal"的形态。
+    workflow.state["cns_site_plan"] = {
         "status": "proposal_ready",
         "planning_policy": deepcopy(workflow.state["site_planning_policy"]),
         "input_fingerprint": "legacy-p11-fingerprint",
@@ -212,7 +214,7 @@ def legacy_project_document(tmp_path):
             "existing_cns_facility": 0, "existing_shared_site": 0,
             "candidate_site": 1, "new_build_candidate": 0,
         },
-    })
+    }
     workflow.state["cns_corridor_site_plan"].update({
         "status": "proposal_ready",
         "planning_policy": deepcopy(workflow.state["corridor_site_planning_policy"]),
@@ -305,11 +307,14 @@ def test_migration_keeps_every_fact_and_upstream_result_field_by_field(tmp_path,
 
     for field in FACT_FIELDS:
         assert state[field] == document[field], f"迁移改动了事实字段 {field}"
-    assert state["result_statuses"]["cns_gap_v2"] == document["result_statuses"]["cns_gap_v2"]
+    # B7X：Gap V2 是只读 compatibility 结果，迁移既不改写其本体，也不再生成
+    # 遗留的 ``result_statuses["cns_gap_v2"]`` 记录。
+    assert state["cns_gap_analysis_v2"] == document["cns_gap_analysis_v2"]
+    assert "cns_gap_v2" not in state["result_statuses"]
 
 
 def test_legacy_policy_migration_do_not_keep_old_proposals_current(tmp_path, legacy_store):
-    """有旧 P11/P16 proposal 时，迁移后必须失效，不能冒充新策略的 current 派生。"""
+    """有旧 P11/P16 proposal 时，P16 迁移后必须失效；P11 是只读 compat 结果，保持原样。"""
 
     document = json.loads(legacy_store.read_text(encoding="utf-8"))
     assert document["result_statuses"]["cns_site_plan"] == "passed"
@@ -318,16 +323,22 @@ def test_legacy_policy_migration_do_not_keep_old_proposals_current(tmp_path, leg
 
     state = WorkflowService(legacy_store, DEFAULTS).state
 
-    for key, status_key in (("cns_site_plan", "cns_site_plan"),
-                            ("cns_corridor_site_plan", "cns_corridor_site_plan")):
-        proposal = state[key]
-        assert proposal["status"] == "stale"
-        assert proposal["stale_reason"]
-        assert state["result_statuses"][status_key] == "stale"
-        # 旧 proposal 的内容原样保留（不删数据、不重算），只是不再 current。
-        assert proposal["selected_actions"] == document[key]["selected_actions"]
-        assert proposal["candidate_actions"] == document[key]["candidate_actions"]
-        assert proposal["input_fingerprint"] == document[key]["input_fingerprint"]
+    # P16（canonical corridor proposal）按原有规则失效。
+    corridor = state["cns_corridor_site_plan"]
+    assert corridor["status"] == "stale"
+    assert corridor["stale_reason"]
+    assert state["result_statuses"]["cns_corridor_site_plan"] == "stale"
+    assert corridor["selected_actions"] == document["cns_corridor_site_plan"]["selected_actions"]
+    assert corridor["candidate_actions"] == document["cns_corridor_site_plan"]["candidate_actions"]
+    assert corridor["input_fingerprint"] == document["cns_corridor_site_plan"]["input_fingerprint"]
+
+    # B7X：P11 是 compatibility/archive 结果，normalize 不得改写它或它的遗留状态。
+    legacy = state["cns_site_plan"]
+    assert legacy["status"] == "proposal_ready"
+    assert state["result_statuses"]["cns_site_plan"] == "passed"
+    assert legacy["selected_actions"] == document["cns_site_plan"]["selected_actions"]
+    assert legacy["candidate_actions"] == document["cns_site_plan"]["candidate_actions"]
+    assert legacy["input_fingerprint"] == document["cns_site_plan"]["input_fingerprint"]
 
 
 def test_legacy_proposal_absent_is_left_untouched(tmp_path, legacy_store):
@@ -361,9 +372,10 @@ def test_save_and_reopen_migrated_project_is_stable(tmp_path):
 
     assert reopened.state["site_planning_policy"]["reuse_tiers"] == list(REUSE_TIERS)
     assert reopened.state["corridor_site_planning_policy"]["reuse_tiers"] == list(REUSE_TIERS)
-    assert reopened.state["cns_site_plan"]["status"] == "stale"
+    # P16 按规则失效；B7X 之后 P11 只读，保持旧项目里保存的原样。
+    assert reopened.state["cns_site_plan"]["status"] == "proposal_ready"
     assert reopened.state["cns_corridor_site_plan"]["status"] == "stale"
-    assert reopened.state["result_statuses"]["cns_site_plan"] == "stale"
+    assert reopened.state["result_statuses"]["cns_site_plan"] == "passed"
     assert reopened.state["result_statuses"]["cns_corridor_site_plan"] == "stale"
 
     for field in FACT_FIELDS:
@@ -388,16 +400,23 @@ def test_current_five_tier_project_is_unchanged(tmp_path):
         "source": "current/towers.csv",
         "items": [{"tower_id": "T1", "longitude": 120.004, "latitude": 30.004}],
     }
-    workflow.state["cns_site_plan"].update({
+    # B7X：新项目不再预创建 legacy P11 proposal key；这里显式构造旧项目形态。
+    workflow.state["cns_site_plan"] = {
         "status": "proposal_ready", "input_fingerprint": "current-p11-fingerprint",
         "selected_actions": [{"action_id": "candidate_site:S9:C1"}],
         "candidate_actions": [{"action_id": "candidate_site:S9:C1"}],
-    })
+    }
     workflow.state["cns_corridor_site_plan"].update({
         "status": "proposal_ready", "input_fingerprint": "current-p16-fingerprint",
         "selected_actions": [{"action_id": "candidate_site:S9:C1"}],
         "candidate_actions": [{"action_id": "candidate_site:S9:C1"}],
     })
+    # B7X：新项目不再预创建 legacy 结果 key；这里显式构造"项目里已有这些 key"的形态，
+    # 只为验证 normalize 不会改写它们。
+    workflow.state["cns_gap_analysis_v2"] = {
+        "status": "confirmed_gap", "algorithm_id": "cns_gap_analysis_v2",
+        "algorithm_version": "2.0", "input_fingerprint": "current-gap-v2-fingerprint",
+    }
     workflow.state["result_statuses"]["cns_site_plan"] = "passed"
     workflow.state["result_statuses"]["cns_corridor_site_plan"] = "passed"
     snapshot = deepcopy(workflow.state)
@@ -417,9 +436,10 @@ def test_default_policies_are_not_treated_as_legacy_migration(tmp_path):
     workflow = WorkflowService(tmp_path / "defaults.json", DEFAULTS)
     state = workflow.state
     assert state["site_planning_policy"]["reuse_tiers"] == list(REUSE_TIERS)
-    assert state["cns_site_plan"]["status"] == "not_calculated"
+    # B7X：新项目不再预创建 compatibility 结果 key，也不再注册它们的遗留状态。
+    assert "cns_site_plan" not in state
+    assert "cns_site_plan" not in state["result_statuses"]
     assert state["cns_corridor_site_plan"]["status"] == "not_calculated"
-    assert state["result_statuses"]["cns_site_plan"] == "not_calculated"
     assert state["result_statuses"]["cns_corridor_site_plan"] == "not_calculated"
 
 

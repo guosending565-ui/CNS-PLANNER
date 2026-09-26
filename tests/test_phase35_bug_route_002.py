@@ -372,11 +372,19 @@ def test_saving_the_feasibility_policy_never_touches_the_building_clearance_poli
 
 def test_the_selected_layer_mask_is_computable_and_reports_its_altitude_layer(tmp_path):
     service, grid = project(tmp_path)
-    service.select_algorithm({
+    # 旧项目已保存 LayeredRoutePlannerV1 selection 的等价种入：B7X 之后
+    # ``select_algorithm`` 不再允许为项目写入 compatibility/archive selection。
+    service.state["algorithm_selection"]["layered_route_planner"] = {
         "algorithm_type": "layered_route_planner",
         "algorithm_id": "layered_route_planner_v1",
         "version": "1.0", "parameters": {},
-    })
+    }
+    service._bind_algorithm(
+        "layered_route_planner",
+        service.algorithm_registry.create(
+            "layered_route_planner", "layered_route_planner_v1", "1.0", {},
+        ),
+    )
     service.set_layered_route_cost_policy({
         "ground_lambda": 0.0, "air_traffic_lambda": 0.0,
         "environment_obstacle_lambda": 0.0, "source": "工程确认-测试", "confirmed": True,

@@ -113,6 +113,27 @@ class StubTerrainSource:
         return result
 
 
+def _bind_saved_legacy_layered_v1(service):
+    """旧项目已保存 LayeredRoutePlannerV1 selection 的等价种入。
+
+    B7X 之后 ``select_algorithm`` 不再允许为项目写入 compatibility/archive selection；
+    这里直接种入旧项目里本来就存在的同一个值，并在内存中绑定实例。
+    """
+
+    service.state["algorithm_selection"]["layered_route_planner"] = {
+        "algorithm_type": "layered_route_planner",
+        "algorithm_id": "layered_route_planner_v1",
+        "version": "1.0",
+        "parameters": {},
+    }
+    service._bind_algorithm(
+        "layered_route_planner",
+        service.algorithm_registry.create(
+            "layered_route_planner", "layered_route_planner_v1", "1.0", {},
+        ),
+    )
+
+
 def workflow(
     tmp_path, name="project.json", *, cells=None, route=True, altitude=LOW_ALTITUDE,
     lower=250.0, upper=350.0,
@@ -125,12 +146,7 @@ def workflow(
     """
 
     service = WorkflowService(tmp_path / name, DEFAULTS)
-    service.select_algorithm({
-        "algorithm_type": "layered_route_planner",
-        "algorithm_id": "layered_route_planner_v1",
-        "version": "1.0",
-        "parameters": {},
-    })
+    _bind_saved_legacy_layered_v1(service)
     assert service.layered_route_planner_service.planner.algorithm_id == (
         "layered_route_planner_v1"
     )
@@ -1174,7 +1190,9 @@ def test_candidate_collection_normalizer_is_idempotent():
 
 def test_layered_planner_has_its_own_algorithm_type_and_never_becomes_the_route_planner():
     selection = default_algorithm_selection()
-    assert selection["route_planner"]["algorithm_id"] == "route_planner_v1"
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection；旧值改由
+    # CompatibilitySelectionAdapter 解析（见 tests/test_phase4_b7x_compatibility.py）。
+    assert "route_planner" not in selection
     # The layered default is now the production Theta* V2 baseline; V1 stays registered and
     # explicitly selectable as the legacy/baseline layered planner.
     assert selection["layered_route_planner"]["algorithm_id"] == (

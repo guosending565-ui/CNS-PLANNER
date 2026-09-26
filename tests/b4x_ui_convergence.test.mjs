@@ -395,7 +395,12 @@ test('step 3 keeps exactly one formal route chain and isolates compatibility', (
   }
   // 算法 id 只在高级 / 审计区出现，不作为主标题
   assert.match(step03, /英文|advancedAuditNote\(/);
-  assert.match(step03, /advancedAuditNote\(\s*'正式航路规划实现/);
+  assert.match(step03, /advancedAuditNote\(\s*'当前正式规划器实现：'/);
+  // 正式链条区不得出现算法实现标识（它只在高级 / 审计区转印）
+  const productionCandidates = step03.slice(step03.indexOf('function productionRouteChainBlock('),
+    step03.indexOf('/** 约束场状态'));
+  assert.doesNotMatch(productionCandidates, /algorithm\.algorithm_id|algorithm\.version/,
+    '正式链条区块不得内联显示算法实现标识');
   assert.doesNotMatch(step03, /wbBlock\('Layered Risk-Aware Theta\* V2'/,
     '算法名不得作为业务主标题');
   // 兼容分段只在高级区，且名称明确为旧版 / 研究对照

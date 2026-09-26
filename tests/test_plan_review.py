@@ -51,10 +51,11 @@ def test_confirm_without_objectives_requires_ack_and_apply_is_idempotent(tmp_pat
     workflow.state["coverage_3d"].update({"status": "passed", "input_fingerprint": "coverage-before"})
     workflow.state["cns_service_capability"].update({"status": "meets_under_model", "input_fingerprint": "capability-before"})
     workflow.state["service_timeline"].update({"status": "passed", "input_fingerprint": "timeline-before"})
-    workflow.state["cns_gap_analysis_v2"].update({"status": "passed", "input_fingerprint": "gap-before"})
+    # B7X：Gap V2 是 compatibility 结果，新项目不再预创建该 key；这里显式构造。
+    workflow.state["cns_gap_analysis_v2"] = {"status": "passed", "input_fingerprint": "gap-before"}
     workflow.state["result_statuses"].update({
         "coverage_3d": "passed", "cns_service_capability": "passed",
-        "service_timeline": "passed", "cns_gap_v2": "passed",
+        "service_timeline": "passed",
     })
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     auto = review["variants"][1]
@@ -75,10 +76,15 @@ def test_confirm_without_objectives_requires_ack_and_apply_is_idempotent(tmp_pat
     assert workflow.state["existing_cns_facilities"]["count"] == after_count
     for name in (
         "coverage_3d", "cns_service_capability", "service_timeline",
-        "cns_gap_v2", "cns_corridor_assessment",
+        "cns_corridor_assessment",
         "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report",
     ):
         assert workflow.state["result_statuses"][name] == "stale", name
+    # B7X：Gap V2 是只读 compatibility 结果，apply 只让 runtime-only cache 失效，
+    # 不改写遗留的 result_statuses。
+    # B7X：Gap V2 是只读 compatibility 结果，apply 只让 runtime-only cache 失效，
+    # 既不改写遗留的 result_statuses，也不应该凭空注册该记录。
+    assert "cns_gap_v2" not in workflow.state["result_statuses"]
 
 
 def test_stale_apply_and_backfill_and_api(tmp_path):

@@ -12,6 +12,7 @@ from cns_planner.algorithms.route_planner import RoutePlannerV1
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.constraint_validation import validate_hard_constraints
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.compatibility.selection import CompatibilitySelectionAdapter
 from cns_planner.data.mapping.airspace_eligibility import AirspaceEligibilityService
 from cns_planner.route_planner.risk_aware_v2 import RiskAwareRoutePlannerV2
 
@@ -315,9 +316,15 @@ def test_v1_output_contract_is_unchanged_by_manifest_edits():
 
 
 def test_default_route_planner_selection_is_still_v1():
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection；冻结的 V1 基线改由
+    # CompatibilitySelectionAdapter 解析，新项目本身不再依赖它。
     selection = default_algorithm_selection()
-    assert selection["route_planner"]["algorithm_id"] == "route_planner_v1"
-    assert selection["route_planner"]["version"] == "1.0"
+    assert "route_planner" not in selection
+    adapter = CompatibilitySelectionAdapter({"algorithm_selection": {}}, None)
+    frozen = adapter.selection("route_planner")
+    assert frozen["algorithm_id"] == "route_planner_v1"
+    assert frozen["version"] == "1.0"
+    assert frozen["selection_source"] == "frozen_compatibility_baseline"
 
 
 # --------------------------------------------------------------------------------------

@@ -86,10 +86,12 @@ def test_v1_and_v2_experiments_are_saved_together_without_touching_operational_r
 
 def test_experiment_never_changes_current_planner_even_when_only_v2_requested(tmp_path):
     workflow = workflow_with_routes(tmp_path)
-    selection_before = deepcopy(workflow.state["algorithm_selection"]["route_planner"])
-    assert selection_before["algorithm_id"] == PLANNER_V1
+    # B7X：新项目不再持久化 legacy ``route_planner`` selection；兼容链只由
+    # CompatibilitySelectionAdapter 提供，实验也绝不能写回任何 selection。
+    selection_before = deepcopy(workflow.state["algorithm_selection"])
+    assert "route_planner" not in selection_before
     run_experiment(workflow, [{"algorithm_id": PLANNER_V2, "version": "2.0"}])
-    assert workflow.state["algorithm_selection"]["route_planner"] == selection_before
+    assert workflow.state["algorithm_selection"] == selection_before
 
 
 def test_experiment_records_required_provenance_fields(tmp_path):

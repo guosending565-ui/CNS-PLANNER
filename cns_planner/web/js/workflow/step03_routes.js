@@ -1476,7 +1476,7 @@ function optionalNumber(value){const text=String(value??'').trim();return text==
 export function bindRoutePlannerV3(c){
   // BUG-STEP03-RESOURCEACTION-001：/api/route-planner-v3/policy 返回 readiness 摘要（局部对象），
   // 必须 mutation + refresh，绝不用局部 response 覆盖全局 flow。
-  if(c.$('saveRoutePlannerV3Policy'))c.actionButton('saveRoutePlannerV3Policy',()=>c.resourceMutationAndRefresh('/api/route-planner-v3/policy',{
+  if(c.$('saveRoutePlannerV3Policy'))c.actionButton('saveRoutePlannerV3Policy',()=>c.resourceMutationAndRefresh('/api/research/route-planner-v3/policy',{
     min_altitude_egm2008_m:optionalNumber(c.$('v3MinAltitude').value),
     max_altitude_egm2008_m:optionalNumber(c.$('v3MaxAltitude').value),
     vertical_step_m:optionalNumber(c.$('v3VerticalStep').value),
@@ -1490,7 +1490,7 @@ export function bindRoutePlannerV3(c){
     source:c.$('v3PolicySource').value.trim(),
     confirmed:c.$('v3PolicyConfirmed').checked}));
   if(c.$('evaluateRoutePlannerV3'))c.actionButton('evaluateRoutePlannerV3',async()=>{
-    await c.resourceAction('/api/route-planner-v3-experiments/evaluate',{
+    await c.resourceAction('/api/research/route-planner-v3-experiments/evaluate',{
       environment_source:c.$('v3EnvironmentSource').value,
       synthetic_spec:{profile_id:'ui_synthetic',terrain_profile:c.$('v3TerrainProfile').value,
         base_surface_elevation_m:optionalNumber(c.$('v3BaseElevation').value)??0,
@@ -1504,7 +1504,7 @@ export function bindRoutePlannerV3(c){
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
   // 同上：fine-policy 也返回 refinement readiness（局部对象）。
-  if(c.$('saveRoutePlannerV3FinePolicy'))c.actionButton('saveRoutePlannerV3FinePolicy',()=>c.resourceMutationAndRefresh('/api/route-planner-v3/fine-policy',{
+  if(c.$('saveRoutePlannerV3FinePolicy'))c.actionButton('saveRoutePlannerV3FinePolicy',()=>c.resourceMutationAndRefresh('/api/research/route-planner-v3/fine-policy',{
     horizontal_crs:c.$('v3bFineCrs').value.trim()||null,
     resolution_source:c.$('v3bFineResolutionSource').value||null,
     resolution_m:optionalNumber(c.$('v3bFineResolution').value),
@@ -1516,7 +1516,7 @@ export function bindRoutePlannerV3(c){
     // direct request fields and inside the synthetic fine spec (never a hidden 30 m).
     const cellSize=optionalNumber(c.$('v3bRefinementCellSize').value);
     const stride=optionalNumber(c.$('v3bMaxStride').value);
-    await c.resourceAction('/api/route-planner-v3-refinements/evaluate',{
+    await c.resourceAction('/api/research/route-planner-v3-refinements/evaluate',{
       environment_source:c.$('v3bEnvironmentSource').value,
       refinement_cell_size_m:cellSize,
       max_stride_cells:stride,
@@ -1529,11 +1529,11 @@ export function bindRoutePlannerV3(c){
   if(c.$('deleteRoutePlannerV3'))c.actionButton('deleteRoutePlannerV3',async()=>{
     const model=routePlannerV3Model(c.flow());
     if(!model.activeId)throw new Error('没有可删除的 V3 实验');
-    await c.resourceAction('/api/route-planner-v3-experiments/delete',{experiment_id:model.activeId});
+    await c.resourceAction('/api/research/route-planner-v3-experiments/delete',{experiment_id:model.activeId});
   });
   // ---- V3-C -------------------------------------------------------------------
   // 同上：validation-policy 返回 continuous readiness（局部对象）。
-  if(c.$('saveRoutePlannerV3ValidationPolicy'))c.actionButton('saveRoutePlannerV3ValidationPolicy',()=>c.resourceMutationAndRefresh('/api/route-planner-v3/validation-policy',{
+  if(c.$('saveRoutePlannerV3ValidationPolicy'))c.actionButton('saveRoutePlannerV3ValidationPolicy',()=>c.resourceMutationAndRefresh('/api/research/route-planner-v3/validation-policy',{
     curve_chord_error_m:optionalNumber(c.$('v3cChordError').value),
     max_validation_samples:optionalNumber(c.$('v3cMaxSamples').value),
     max_runtime_s:optionalNumber(c.$('v3cMaxRuntime').value),
@@ -1541,7 +1541,7 @@ export function bindRoutePlannerV3(c){
     source:c.$('v3cPolicySource').value.trim(),
     confirmed:c.$('v3cPolicyConfirmed').checked}));
   if(c.$('evaluateRoutePlannerV3Validation'))c.actionButton('evaluateRoutePlannerV3Validation',async()=>{
-    await c.resourceAction('/api/route-planner-v3-validations/evaluate',{
+    await c.resourceAction('/api/research/route-planner-v3-validations/evaluate',{
       evidence_source:c.$('v3cEvidenceSource').value});
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
@@ -1550,7 +1550,7 @@ export function bindRoutePlannerV3(c){
     const payload=v3dPayload(c);
     // Preview writes nothing; the response is cached only to show the projections.
     // Preview 返回局部 preview 对象 → 用 computeAction，绝不覆盖全局 flow。
-    const result=await c.computeAction('/api/route-planner-v3-operational-adoptions/preview',payload);
+    const result=await c.computeAction('/api/research/route-planner-v3-operational-adoptions/preview',payload);
     v3dPreviewCache=result?.data??result??null;
   });
   if(c.$('applyRoutePlannerV3Adoption'))c.actionButton('applyRoutePlannerV3Adoption',async()=>{
@@ -1562,7 +1562,7 @@ export function bindRoutePlannerV3(c){
     const fingerprint=v3dExpectedFingerprint(c.flow(),payload.validation_ids);
     if(fingerprint)payload.expected_validation_fingerprint=fingerprint;
     // Apply 返回局部 adoption 结果 → mutation + refresh。
-    await c.resourceMutationAndRefresh('/api/route-planner-v3-operational-adoptions/apply',payload);
+    await c.resourceMutationAndRefresh('/api/research/route-planner-v3-operational-adoptions/apply',payload);
     v3dPreviewCache=null;
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
@@ -1572,7 +1572,7 @@ export function bindRoutePlannerV3(c){
     const target=model.adoptions.find(item=>item.status!=='revoked');
     if(!target)throw new Error('没有可撤销的 V3 operational adoption');
     // Revoke 同样返回局部对象（含 snapshot 字段，但不是 workflow 根）→ mutation + refresh。
-    await c.resourceMutationAndRefresh('/api/route-planner-v3-operational-adoptions/revoke',{
+    await c.resourceMutationAndRefresh('/api/research/route-planner-v3-operational-adoptions/revoke',{
       confirmed:true,adoption_id:target.adoptionId});
     if(c.loadRoutePlannerV3Detail)await c.loadRoutePlannerV3Detail();
   });
@@ -1682,8 +1682,7 @@ function odScenarioPanel(flow){
   return '<h3>起点 → 终点 创建航路</h3><div class="parameter-note">显式指定两个 node，只创建这一条（或这一对）场景航路，不会因为参考点数量自动生成全连接。创建后会替换当前场景航路并清空运行航路，需要重新生成运行航路。</div>'
     +'<div class="form-grid"><label>起点<select id="odStartNode">'+endpointOptions(nodes,first)+'</select></label><label>终点<select id="odEndNode">'+endpointOptions(nodes,last)+'</select></label></div>'
     +'<label>方向<select id="odDirection"><option value="ab">仅 起点→终点</option><option value="ba">仅 终点→起点</option><option value="both" selected>双向（两个 route_id）</option></select></label>'
-    +'<button class="primary full" id="createOdRoute" '+disabled+'>创建航路</button>'
-    +'<div class="parameter-note">兼容说明：下方“生成场景航路”保留原 all-pairs 行为，供旧项目继续使用；新项目优先使用本面板。</div>';
+    +'<button class="primary full" id="createOdRoute" '+disabled+'>创建航路</button>';
 }
 
 function selectedReferencePanel(flow,selected){
@@ -1721,10 +1720,15 @@ function referenceLandingPanel(flow){
 }
 
 export function riskAwareRoutePanel(flow){
-  const selection=flow.algorithm_selection?.route_planner||{};
-  if(selection.algorithm_id!=='risk_aware_route_planner_v2'||selection.version!=='2.0')return '';
-  const p=selection.parameters||{},lambda=p.risk_weight_lambda??0,component=p.risk_component||'overall',policy=p.unknown_risk_policy||'block';
-  return '<h3>Risk-Aware Route Planner V2</h3><div class="parameter-note">直接使用 MH/T grid_id 与 RiskModelV1 相对工程指数；不是事故概率、SORA GRC 或 TLS。P13 仅规划二维战略水平航路，高度剖面仍由 P7 独立配置。</div><label>Risk weight λ<input class="panel-input" type="number" min="0" step="any" id="routeRiskLambda" value="'+escapeHtml(lambda)+'"></label><label>Risk component<select id="routeRiskComponent"><option value="overall" '+(component==='overall'?'selected':'')+'>Overall</option><option value="ground" '+(component==='ground'?'selected':'')+'>Ground</option><option value="air" '+(component==='air'?'selected':'')+'>Air</option></select></label><label>Unknown risk policy<select id="routeUnknownPolicy"><option value="block" '+(policy==='block'?'selected':'')+'>Block（默认）</option><option value="penalize" '+(policy==='penalize'?'selected':'')+'>Penalize</option></select></label><label>Unknown penalty index（penalize 时必须显式填写）<input class="panel-input" type="number" min="0" max="1" step="any" id="routeUnknownPenalty" value="'+escapeHtml(p.unknown_penalty_index??'')+'"></label><label>Max relative risk index（可空；仅工程阈值）<input class="panel-input" type="number" min="0" max="1" step="any" id="routeMaxRisk" value="'+escapeHtml(p.max_relative_risk_index??'')+'"></label><button class="secondary full" id="saveRiskRouteParameters">保存 V2 参数</button>';
+  // B7X：旧版 Risk-Aware Route Planner V2 已降级为 compatibility capability，
+  // 不能再写 algorithm_selection；面板只读运行期 compatibility selection。
+  const selection=(flow.compatibility_selection||{})[ROUTE_PLANNER_TYPE]||{},
+    saved=flow.algorithm_selection?.[ROUTE_PLANNER_TYPE]||{};
+  const legacySaved=saved.algorithm_id==='risk_aware_route_planner_v2'&&saved.version==='2.0';
+  if(!legacySaved&&selection.algorithm_id!=='risk_aware_route_planner_v2')return '';
+  const source=legacySaved?'saved_legacy_selection':'runtime_compatibility_selection';
+  const p=(legacySaved?saved.parameters:selection.parameters)||{},lambda=p.risk_weight_lambda??0,component=p.risk_component||'overall',policy=p.unknown_risk_policy||'block';
+  return '<h3>Risk-Aware Route Planner V2（compatibility）</h3><div class="parameter-note">直接使用 MH/T grid_id 与 RiskModelV1 相对工程指数；不是事故概率、SORA GRC 或 TLS。P13 仅规划二维战略水平航路，高度剖面仍由 P7 独立配置。</div><div class="parameter-note">本面板只影响 compatibility 试算：参数不会写入项目 algorithm_selection（来源：'+escapeHtml(source)+'）。</div><label>Risk weight λ<input class="panel-input" type="number" min="0" step="any" id="routeRiskLambda" value="'+escapeHtml(lambda)+'"></label><label>Risk component<select id="routeRiskComponent"><option value="overall" '+(component==='overall'?'selected':'')+'>Overall</option><option value="ground" '+(component==='ground'?'selected':'')+'>Ground</option><option value="air" '+(component==='air'?'selected':'')+'>Air</option></select></label><label>Unknown risk policy<select id="routeUnknownPolicy"><option value="block" '+(policy==='block'?'selected':'')+'>Block（默认）</option><option value="penalize" '+(policy==='penalize'?'selected':'')+'>Penalize</option></select></label><label>Unknown penalty index（penalize 时必须显式填写）<input class="panel-input" type="number" min="0" max="1" step="any" id="routeUnknownPenalty" value="'+escapeHtml(p.unknown_penalty_index??'')+'"></label><label>Max relative risk index（可空；仅工程阈值）<input class="panel-input" type="number" min="0" max="1" step="any" id="routeMaxRisk" value="'+escapeHtml(p.max_relative_risk_index??'')+'"></label><button class="secondary full" id="saveRiskRouteParameters">保存 V2 试算参数（仅当前会话）</button>';
 }
 
 function buildingClearancePanel(flow){
@@ -1851,21 +1855,13 @@ const PRODUCTION_ROUTE_CHAIN=[
 function productionRouteChainBlock(flow,constraint){
   const context=constraint||{};
   const ready=layeredPlannerUsesThetaStarV2(flow);
-  const algorithm=(flow?.layered_route_planner_readiness||{}).algorithm||{};
   const chain='<ol class="production-chain">'
     +PRODUCTION_ROUTE_CHAIN.map(step=>'<li>'+escapeHtml(step)+'</li>').join('')+'</ol>';
-  const algorithmNote=advancedAuditNote(
-    '正式航路规划实现：'+String(algorithm.algorithm_id||'layered_risk_aware_theta_star_v2')
-    +'@'+String(algorithm.version||'2.0')+'（工程标识，不作为业务标题）。'
-  );
   return wbBlock('正式航路规划',chain
-    +'<div class="parameter-note">本步只保留这一条正式链条。'
-      +'旧版航路规划器已全部移入「高级 → 旧版兼容 / 研究对照」，'
-      +'<b>不得</b>与正式航路规划并列，也绝不会因为它们产生了试算航路就把本步标记为完成。</div>'
-    +(ready?'':'<div class="inline-error">当前项目的航路规划器不是正式实现（Theta* 主链）：'
-      +'请到「高级」确认算法选择。正式链条只在正式实现下可用。</div>')
-    +constraintStatusBlock(constraint)
-    +algorithmNote);
+    +'<div class="parameter-note">本步只保留这一条正式链条。对照规划器与归档选择只在高级区展示，'
+      +'<b>不得</b>与正式航路规划并列，也不能把本步标记为完成。</div>'
+    +(ready?'':'<div class="inline-error">当前项目保留了归档规划器选择；正式候选计算已阻断，请在高级区查看。</div>')
+    +constraintStatusBlock(constraint));
 }
 
 /** 约束场状态：正式候选取自同一高度层的 Planning Constraint Field。 */
@@ -1899,25 +1895,20 @@ function routeOperateSection(flow,{interactionMode,nodes,constraint}){
   // A. 旧版 RoutePlannerV1 / RiskAwareRoutePlannerV2 入口已降级为「旧版航路试算」：
   //    按钮 id / 端点 / 逻辑保持不变，但文案与提示必须如实说明它不再发布正式运行航路。
   //    B. 真正的正式入口是「Layered Candidate → 风险画像 → 独立验证 → 发布」。
-  const compatibility=compatibilityOperationalRoutes(flow);
-  const routeActions='<div class="button-row"><button class="secondary" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button><button class="secondary" id="operationalRoutes">旧版航路试算（不发布）</button></div>';
-  const legacyOperationalBlock=wbBlock(LAYERED_ADOPTION_LEGACY_LABEL,routeActions
-    +'<div class="parameter-note"><b>旧版航路试算不发布</b>：该入口沿用既有 /api/workflow/operational，'
-    +'结果只在当前运行会话临时保留，并标记为非权威、已弃用；'
-    +'它不会写入正式运行航路，也不驱动三维覆盖、CNS 能力需求、设施规划、方案确认与正式报告。'
-    +'正式运行航路请在下方「Candidate 发布」按 候选 → 风险画像 → 独立验证 → 发布 生成。'
-    +(compatibility.available?'（当前已有 '+compatibility.items.length+' 条<b>旧版试算航路（不发布 / 非正式）</b>，状态 '+statusText(compatibility.record?.status||'not_calculated')+'）':'')+'</div>');
   const sitesPanel=referenceLandingPanel(flow)
     +'<h3>项目起降点</h3>'
     +'<button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button>'
     +'<div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'
     +odScenarioPanel(flow);
+  const productionCandidate=layeredPlannerUsesThetaStarV2(flow)
+    ?layeredCandidatePanel(flow)
+    :'<div class="parameter-note">当前项目保留了归档规划器选择。该选择不会被静默改写；请在高级区读取或试算，正式候选链保持阻断。</div>';
   return wbPanel('operate','',{segments:[
     ['op-sites','起降点与OD',
       wbBlock('起降点与 OD',wbSegHint(OPERATE_SEGMENTS,'op-sites')+'<div class="parameter-note">显式 OD：只创建指定的这一对场景航路，不会因为参考点数量自动生成全连接。</div>'+sitesPanel)],
-    ['op-candidates','正式航路规划',wbBlock('正式航路规划',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+productionRouteChainBlock(flow,constraint)+layeredCandidatePanel(flow))],
+    ['op-candidates','正式航路规划',wbBlock('正式航路规划',wbSegHint(OPERATE_SEGMENTS,'op-candidates')+productionRouteChainBlock(flow,constraint)+productionCandidate)],
     ['op-operational','运行航路',
-      wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')+legacyOperationalBlock
+      wbBlock('运行航路',wbSegHint(OPERATE_SEGMENTS,'op-operational')
         +'<div class="scroll-list route-list">'+(routesFor(flow)||'<div class="empty-note">尚未发布正式运行航路</div>')+'</div>')
         +wbBlock('候选 → 运行航路发布',renderLayeredAdoptionPanel(flow))],
     ['op-altitude','高度与程序',wbBlock('高度与程序',wbSegHint(OPERATE_SEGMENTS,'op-altitude')
@@ -1946,13 +1937,15 @@ function routeResultSection(flow,{routes,selectedReference,routeEvidenceHighligh
     ['res-feasibility','可行性与净空',wbBlock('可行性与净空',feasibility)],
     [ROUTE_RISK_PROFILE_SEGMENT,'路径风险画像',riskProfile],
     ['res-compare','对比与验证',
-      wbBlock('参考航线 vs 运行航路',comparisonPanel(flow,selectedReference))
-        +wbBlock('规划器结果并列',comparisonPanelV2(flow,routePlannerComparisonModel(flow)))]
+      wbBlock('参考航线 vs 运行航路',comparisonPanel(flow,selectedReference))]
   ]});
 }
 
 // ---- 高级区：参考数据 / 旧版兼容 / 研究对照 / 诊断 / 剖面 -----------------------
 function routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion}){
+  const compatibility=compatibilityOperationalRoutes(flow);
+  const algorithm=(flow?.layered_route_planner_readiness||{}).algorithm||{};
+  const archivedLayered=layeredPlannerUsesThetaStarV2(flow)?'':layeredCandidatePanel(flow);
   const compatNote='<div class="parameter-note"><b>旧版兼容 / 研究对照</b>：本区内的规划器与实验'
     +'<b>不参与</b>正式链条，其试算结果不得作为正式结论。地图上如显示它们的结果，'
     +'图例固定标注为「旧版试算航路（研究对照）」，绝不称为运行航路或正式航路。</div>';
@@ -1962,8 +1955,17 @@ function routeAdvancedSection(flow,{routeOptions,profiles,altitude,motion}){
         +wbBlock('参考航线 ↔ 当前 OD 关联',referenceLinkPanel(flow))],
     ['adv-legacy','旧版兼容 / 研究对照',
       compatNote
+        +wbBlock('旧版场景生成','<button class="secondary full" id="scenarioRoutes">生成场景航路（all-pairs，兼容）</button>'
+          +'<div class="parameter-note">保留旧项目的全连接场景生成行为；新项目使用操作区的显式 OD 创建。</div>')
+        +wbBlock('旧版航路试算','<button class="secondary full" id="operationalRoutes">运行旧版航路试算（不发布）</button>'
+          +'<div class="parameter-note">仅调用 /api/compatibility/route-planner/evaluate；结果 runtime-only，不触发正式工作流。'
+          +(compatibility.available?'当前会话已有 '+compatibility.items.length+' 条'+escapeHtml(compatibility.label)+'。':'')+'</div>')
+        +(archivedLayered?wbBlock('归档分层规划器',archivedLayered):'')
+        +advancedAuditNote('当前正式规划器实现：'+String(algorithm.algorithm_id||'layered_risk_aware_theta_star_v2')
+          +'@'+String(algorithm.version||'2.0')+'。')
         +wbBlock('旧版航路规划器',wbSegHint(ADVANCED_SEGMENTS,'adv-legacy')+plannerCard(plannerCardModel(flow)))
-        +wbBlock('风险感知规划器 V2 参数（旧版）',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是风险感知规划器 V2，参数面板不适用。</div>')],
+        +wbBlock('风险感知规划器 V2 参数（旧版）',riskAwareRoutePanel(flow)||'<div class="empty-note">当前规划器不是风险感知规划器 V2，参数面板不适用。</div>')
+        +wbBlock('规划器结果并列',comparisonPanelV2(flow,routePlannerComparisonModel(flow)))],
     ['adv-experiment','研究对照实验',
       compatNote
         +wbBlock('研究对照实验',wbSegHint(ADVANCED_SEGMENTS,'adv-experiment')+experimentPanelV3(flow)+experimentPanel(flow))],
@@ -1992,7 +1994,7 @@ export function bind(c){
   // 兼容入口"生成场景航路"保持原 all-pairs 语义：不再读取已随面板移除的
   // routeDirection 控件（读它会抛 TypeError，导致按钮完全不可用），
   // direction 交给后端默认值 both，与旧行为一致。
-  c.$('addNodeMode').onclick=c.toggleNodeMode;c.actionButton('scenarioRoutes',()=>c.mutate('scenario',{}));c.actionButton('operationalRoutes',()=>c.mutate('operational'));
+  c.$('addNodeMode').onclick=c.toggleNodeMode;c.actionButton('scenarioRoutes',()=>c.mutate('scenario',{}));c.actionButton('operationalRoutes',()=>c.resourceAction('/api/compatibility/route-planner/evaluate',{}));
   if(c.$('createOdRoute'))c.actionButton('createOdRoute',()=>{const start=c.$('odStartNode').value,end=c.$('odEndNode').value;if(start===end)throw new Error('起点与终点不能相同');return c.mutate('scenario-od',{start_node_id:start,end_node_id:end,direction:c.$('odDirection').value});});
   if(c.$('evaluateRouteExperiment'))c.actionButton('evaluateRouteExperiment',()=>c.resourceAction('/api/route-experiments/evaluate',{grounding:'current_scenario_routes'}));
   if(c.$('deleteRouteExperiment'))c.actionButton('deleteRouteExperiment',()=>{const model=routeExperimentModel(c.flow());if(!model.active_experiment_id)throw new Error('没有可删除的实验');return c.resourceAction('/api/route-experiments/delete',{experiment_id:model.active_experiment_id});});
@@ -2004,7 +2006,7 @@ export function bind(c){
   c.$('referenceSiteSearch').oninput=applyReferenceFilter;c.$('referenceSiteRegion').onchange=applyReferenceFilter;c.$('referenceSiteType').onchange=applyReferenceFilter;
   document.querySelectorAll('[data-add-reference-site]').forEach(button=>button.onclick=async()=>{try{button.disabled=true;await c.resourceAction('/api/reference-landing-sites/add-to-project',{reference_site_id:button.dataset.addReferenceSite});}catch(error){c.panelError(error.message);button.disabled=false;}});
   document.querySelectorAll('[data-select-reference-route]').forEach(button=>button.onclick=()=>c.selectReference({kind:'route',id:button.dataset.selectReferenceRoute}));
-  if(c.$('saveRiskRouteParameters'))c.actionButton('saveRiskRouteParameters',()=>{const current=c.flow().algorithm_selection.route_planner,numberOrNull=id=>{const value=c.$(id).value.trim();return value===''?null:Number(value);};return c.resourceAction('/api/algorithms/select',{algorithm_type:'route_planner',algorithm_id:current.algorithm_id,version:current.version,parameters:{risk_weight_lambda:Number(c.$('routeRiskLambda').value),risk_component:c.$('routeRiskComponent').value,unknown_risk_policy:c.$('routeUnknownPolicy').value,unknown_penalty_index:numberOrNull('routeUnknownPenalty'),max_relative_risk_index:numberOrNull('routeMaxRisk')}});});
+  if(c.$('saveRiskRouteParameters'))c.actionButton('saveRiskRouteParameters',()=>{const current=((c.flow().compatibility_selection||{})[ROUTE_PLANNER_TYPE]||c.flow().algorithm_selection?.[ROUTE_PLANNER_TYPE]||{}),numberOrNull=id=>{const value=c.$(id).value.trim();return value===''?null:Number(value);};return c.resourceAction('/api/compatibility/selection',{algorithm_type:ROUTE_PLANNER_TYPE,algorithm_id:current.algorithm_id||PLANNER_V2,parameters:{risk_weight_lambda:Number(c.$('routeRiskLambda').value),risk_component:c.$('routeRiskComponent').value,unknown_risk_policy:c.$('routeUnknownPolicy').value,unknown_penalty_index:numberOrNull('routeUnknownPenalty'),max_relative_risk_index:numberOrNull('routeMaxRisk')}});});
   document.querySelectorAll('[data-delete-node]').forEach(button=>button.onclick=()=>c.mutate('node-delete',{node_id:button.dataset.deleteNode}).catch(error=>c.panelError(error.message)));
   document.querySelectorAll('[data-delete-route]').forEach(button=>button.onclick=()=>c.mutate('route-delete',{route_id:button.dataset.deleteRoute}).catch(error=>c.panelError(error.message)));
   c.actionButton('saveRouteAltitude',()=>{const altitudeField=c.$('routeAltitude'),altitudeValue=altitudeField.value.trim()===''?null:Number(altitudeField.value);return c.resourceAction('/api/spatial-3d/route-profile',{route_id:c.$('altitudeRoute').value,mode:'constant',vertical_reference:c.$('routeVerticalReference').value,constant_altitude_m:altitudeValue,source:'user_configuration',confirmed:true});});

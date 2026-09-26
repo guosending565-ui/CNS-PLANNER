@@ -455,21 +455,27 @@ class ApiContext:
 def test_v3_api_endpoints_are_additive_and_forward_payloads():
     context = ApiContext()
     router = ApiRouter(context)
-    assert router.get("/api/route-planner-v3-experiments", {}, {}).data == {"status": "passed", "count": 1}
-    assert router.get("/api/route-planner-v3/readiness", {}, {}).data["stage"] == "V3-A"
-    assert router.post("/api/route-planner-v3/policy", {"min_altitude_egm2008_m": 100.0}).data["status"] == "passed"
+    snapshot = router.get("/api/research/route-planner-v3-experiments", {}, {}).data
+    assert snapshot["status"] == "passed" and snapshot["count"] == 1
+    assert snapshot["namespace"] == "/api/research/route-planner-v3"
+    assert snapshot["authoritative"] is False
+    assert router.get("/api/research/route-planner-v3/readiness", {}, {}).data["stage"] == "V3-A"
+    assert router.post("/api/research/route-planner-v3/policy", {"min_altitude_egm2008_m": 100.0}).data["status"] == "passed"
     assert router.post(
-        "/api/route-planner-v3-experiments/evaluate", {"environment_source": "canonical_synthetic"},
+        "/api/research/route-planner-v3-experiments/evaluate", {"environment_source": "canonical_synthetic"},
     ).data["evaluated"] is True
     assert router.post(
-        "/api/route-planner-v3-experiments/delete", {"experiment_id": "V3-AAAAAAAAAAAA"},
+        "/api/research/route-planner-v3-experiments/delete", {"experiment_id": "V3-AAAAAAAAAAAA"},
     ).data["deleted"] == "V3-AAAAAAAAAAAA"
+    alias = router.get("/api/route-planner-v3-experiments", {}, {}).data
+    assert alias["compatibility"] is True and alias["deprecated"] is True
     assert context.workflow.calls == [
         ("v3-snapshot",),
         ("v3-readiness",),
         ("v3-policy", {"min_altitude_egm2008_m": 100.0}),
         ("v3-evaluate", {"environment_source": "canonical_synthetic"}),
         ("v3-delete", "V3-AAAAAAAAAAAA"),
+        ("v3-snapshot",),
     ]
 
 
@@ -491,7 +497,7 @@ def test_v3_does_not_change_the_algorithm_registry_catalog_or_default_selection(
     assert ("route_planner", "risk_aware_route_planner_v2", "2.0") in ids
     assert not any(item[1].startswith("route_planner_v3") for item in ids)
     selection = default_algorithm_selection()
-    assert selection["route_planner"]["algorithm_id"] == "route_planner_v1"
+    assert "route_planner" not in selection
     assert normalize_v3_planning_policy(None)["confirmed"] is False
 
 

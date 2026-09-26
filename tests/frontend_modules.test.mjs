@@ -175,7 +175,8 @@ test('formal route getters and map never fall back to compatibility results',()=
   assert.deepEqual(referenceOverlayModel(flow).operationalRoutes,[]);
   const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
   assert.match(html,/尚未发布正式运行航路/);
-  assert.match(html,/旧版试算航路（不发布 \/ 非正式）/);
+  assert.match(html,/\/api\/compatibility\/route-planner\/evaluate/);
+  assert.match(html,/runtime-only/);
   assert.doesNotMatch(readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8'),/canonical\s*\|\|\s*compatibility/);
 });
 
@@ -1027,8 +1028,8 @@ test('V3-B readiness, fine policy hand-off and staleness are rendered',()=>{
   assert.deepEqual(readiness.refinementReadiness.blockingReasons,['terrain_dtm_not_configured_or_missing']);
   assert.equal(readiness.scope.implementedInOtherStages.corridor_local_fine_refinement,'V3-B');
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
-  assert.match(source,/\/api\/route-planner-v3\/fine-policy/);
-  assert.match(source,/\/api\/route-planner-v3-refinements\/evaluate/);
+  assert.match(source,/\/api\/research\/route-planner-v3\/fine-policy/);
+  assert.match(source,/\/api\/research\/route-planner-v3-refinements\/evaluate/);
   assert.match(source,/loadRoutePlannerV3Detail/);
   assert.match(source,/horizontal_crs:c\.\$\('v3bFineCrs'\)/);
 });
@@ -2614,4 +2615,3 @@ test('step 03 shows an explicit notice when the altitude layer catalog is empty'
   assert.match(html,/id="evaluateLayeredCandidate" disabled/,'目录为空时不得放行 Theta* V2');
   assert.match(html,/没有可选高度层/);
 });
-

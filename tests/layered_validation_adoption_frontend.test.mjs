@@ -4,8 +4,8 @@
  *
  * 目标：锁定"只做前端集成"这一层契约，而不是重新验证后端数学：
  *  - Step03 结果区 res-feasibility 在既有 data readiness / building clearance 之后
- *    接入连续验证；操作区 op-operational 把 A. Legacy 运行航路生成 与
- *    B. Layered Candidate 发布 显式分开；
+ *    接入连续验证；操作区 op-operational 只保留 B. Layered Candidate 发布，
+ *    A. Legacy 运行航路生成（旧版试算）已按 B7X 移入高级区「旧版兼容 / 研究对照」；
  *  - readiness / blockers 原样转印，前端不重新判断；
  *  - validated_candidate / failed / unresolved / validation_incomplete / not_ready / stale
  *    严格转印、互不混淆：unresolved 与 validation_incomplete 绝不显示为 failed；
@@ -37,7 +37,7 @@ import {
 } from '../cns_planner/web/js/workflow/layered_route_validation.js';
 import {
   LAYERED_ADOPTION_CHAIN_STAGES,LAYERED_ADOPTION_EVIDENCE_CHANGED,LAYERED_ADOPTION_INTENT_CHANGED,
-  LAYERED_ADOPTION_LEGACY_LABEL,LAYERED_ADOPTION_REVOKE_LABEL,LAYERED_ADOPTION_REVOKE_TARGET_NAME,
+  LAYERED_ADOPTION_REVOKE_LABEL,LAYERED_ADOPTION_REVOKE_TARGET_NAME,
   LAYERED_ADOPTION_STATUSES,
   bindLayeredOperationalAdoption,
   cacheLayeredAdoptionPreview,clearLayeredAdoptionCache,layeredAdoptionApplyGuard,
@@ -527,9 +527,20 @@ test('step 03 keeps its segment count and mounts the validation panel after clea
   assert.ok(readinessAt>=0&&clearanceAt>=0&&validationAt>=0,'all three blocks must be present');
   assert.ok(readinessAt<clearanceAt&&clearanceAt<validationAt,
     'validation must follow data readiness and building clearance');
-  // 操作区 A/B 两块：Legacy 运行航路生成与 Layered 发布显式分开。
-  assert.match(html,new RegExp(LAYERED_ADOPTION_LEGACY_LABEL.replace(/[.*+?^${}()|[\]\\/]/g,'\\$&')));
-  assert.match(html,/B\. Layered Candidate 发布/);
+  // B7X：旧版入口与旧版结果对照全部移入 Advanced 的「旧版兼容 / 研究对照」，
+  // 生产操作区只保留正式候选发布链；旧项目的历史结果仍可在高级区读取。
+  const legacySegment=html.slice(html.indexOf('data-seg-name="adv-legacy"'),
+    html.indexOf('data-seg-name="adv-experiment"'));
+  assert.match(legacySegment,/旧版兼容 \/ 研究对照/);
+  assert.match(legacySegment,/id="operationalRoutes"/,'旧版试算入口必须留在高级区');
+  assert.match(legacySegment,/id="scenarioRoutes"/,'旧版 all-pairs 场景生成必须留在高级区');
+  assert.match(legacySegment,/\/api\/compatibility\/route-planner\/evaluate/);
+  const operationalSegment=html.slice(html.indexOf('data-seg-name="op-operational"'),
+    html.indexOf('data-seg-name="op-altitude"'));
+  assert.doesNotMatch(operationalSegment,/id="operationalRoutes"/,
+    '生产运行航路段不得再暴露旧版试算入口');
+  assert.doesNotMatch(operationalSegment,/id="scenarioRoutes"/,
+    '生产运行航路段不得再暴露旧版 all-pairs 场景生成');
   for(const id of ['scenarioRoutes','operationalRoutes','evaluateLayeredRouteValidation',
     'previewLayeredAdoption','applyLayeredAdoption','revokeLayeredAdoption',
     'layeredAdoptionApplyConfirmed','layeredAdoptionRevokeConfirmed']){
@@ -1123,19 +1134,18 @@ test('the candidate to operational chain only transcribes backend state',()=>{
 
 // ---- 13. Legacy operationalRoutes 仍存在且契约不变 -----------------------------
 
-test('the legacy scenarioRoutes and operationalRoutes entries keep their contract',()=>{
+test('the legacy scenarioRoutes and operationalRoutes entries stay in Advanced compatibility',()=>{
   const flow=baseFlow();
   const html=renderStep3({flow,interactionMode:'pan',selectedReference:null});
   assert.match(html,/id="scenarioRoutes"/);
   assert.match(html,/id="operationalRoutes"/);
   assert.match(html,/生成场景航路（all-pairs，兼容）/);
   assert.match(html,/旧版航路试算（不发布）/);
-  assert.match(html,/A\. 旧版航路试算（不发布，兼容旧项目）/);
+  assert.match(html,/\/api\/compatibility\/route-planner\/evaluate/);
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/step03_routes.js',import.meta.url),'utf8');
-  // 旧端点与逻辑一字不改
+  // 场景生成保留原逻辑；旧规划计算改走显式 compatibility namespace。
   assert.match(source,/c\.actionButton\('scenarioRoutes',\(\)=>c\.mutate\('scenario',\{\}\)\)/);
-  assert.match(source,/c\.actionButton\('operationalRoutes',\(\)=>c\.mutate\('operational'\)\)/);
-  assert.match(source,/api\/workflow\/operational/);
+  assert.match(source,/c\.actionButton\('operationalRoutes',\(\)=>c\.resourceAction\('\/api\/compatibility\/route-planner\/evaluate',\{\}\)\)/);
   // 新模块不得触碰 legacy 生成入口
   const validationSource=readFileSync(new URL('../cns_planner/web/js/workflow/layered_route_validation.js',import.meta.url),'utf8');
   const adoptionSource=readFileSync(new URL('../cns_planner/web/js/workflow/layered_operational_adoption.js',import.meta.url),'utf8');
@@ -1162,7 +1172,7 @@ test('the legacy scenarioRoutes and operationalRoutes entries keep their contrac
     document.getElementById('scenarioRoutes').onclick();
     assert.deepEqual(calls.pop(),['scenario',{}]);
     document.getElementById('operationalRoutes').onclick();
-    assert.deepEqual(calls.pop(),['operational',undefined]);
+    assert.deepEqual(calls.pop(),['/api/compatibility/route-planner/evaluate',{}]);
   });
 });
 

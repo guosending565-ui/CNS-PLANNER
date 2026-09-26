@@ -373,11 +373,19 @@ def test_aircraft_profile_change_keeps_layered_route_but_stales_downstream(tmp_p
 
     assert route["status"] == "passed"
     for name in (
-        "coverage", "cns_gap", "cns_service_capability", "service_timeline",
-        "cns_gap_v2", "cns_site_plan", "cns_corridor_assessment",
+        "cns_service_capability", "service_timeline",
+        "cns_corridor_assessment",
         "technical_risk", "report",
     ):
         assert service.state["result_statuses"][name] == "stale"
+    # B7X：旧二维覆盖 / Gap V1 / Gap V2 / P11 是只读 compatibility 结果：失效只发生在
+    # runtime-only cache，遗留的 result_statuses 与结果本体都保持原样。
+    for name in ("coverage", "cns_gap", "cns_gap_v2", "cns_site_plan"):
+        assert service.state["result_statuses"][name] == "passed", name
+    assert service.state["cns_gap_analysis_v2"] == {"status": "passed"}
+    assert service.state["cns_site_plan"] == {"status": "passed"}
+    assert service.state["coverage"] == {"status": "passed"}
+    assert service.state["cns_gap_analysis"] == {"status": "passed"}
 
 
 def test_current_fingerprint_change_supersedes_prior_validation(tmp_path):
@@ -582,7 +590,9 @@ def test_publication_stales_only_downstream_and_keeps_published_state(tmp_path):
     assert service.state["_v3_probe"] == {"records": [{"experiment_id": "V3-PROBE", "status": "passed"}]}
     assert service.state["result_statuses"]["coverage_3d"] == "stale"
     assert service.state["result_statuses"]["building_clearance"] == "stale"
-    assert service.state["result_statuses"]["cns_site_plan"] == "stale"
+    # B7X：旧站址试算是只读 compatibility 结果，失效只体现在 runtime-only cache，
+    # 不再改写遗留的 result_statuses / 结果本体。
+    assert service.state["result_statuses"]["cns_site_plan"] == "passed"
     assert service.state["result_statuses"]["cns_corridor_assessment"] == "stale"
 
 

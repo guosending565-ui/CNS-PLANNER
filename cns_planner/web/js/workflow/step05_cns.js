@@ -828,7 +828,7 @@ export function render({flow}){
 export function bind(c){
   const collect=()=>c.flow().devices.map((device,index)=>({...device,radius_m:Number(document.querySelector('[data-device-radius="'+index+'"]').value),mtbf:Number(document.querySelector('[data-device-mtbf="'+index+'"]').value)}));
   c.actionButton('saveDevices',()=>c.mutate('devices',{devices:collect()}));
-  c.actionButton('planCoverage',async()=>{await c.mutate('devices',{devices:collect()});await c.mutate('coverage');});
+  c.actionButton('planCoverage',async()=>{await c.mutate('devices',{devices:collect()});await c.resourceAction('/api/compatibility/coverage/evaluate',{});});
   c.$('browseExisting').onclick=()=>c.openBrowser('existing_cns',c.$('existing_cnsPath').value);
   c.$('browseCandidates').onclick=()=>c.openBrowser('candidate_sites',c.$('candidate_sitesPath').value);
   c.actionButton('importExisting',()=>c.resourceAction('/api/existing-cns/import',{path:c.$('existing_cnsPath').value.trim()}));
@@ -845,7 +845,7 @@ export function bind(c){
       source:c.$('towerColocationSource').value.trim()||'user_configuration',
     },
   }));
-  c.actionButton('analyzeGaps',()=>c.mutate('gap-analysis'));
+  c.actionButton('analyzeGaps',()=>c.resourceAction('/api/compatibility/cns-gap-analysis-v1/evaluate',{}));
   c.actionButton('evaluateCoverage3d',()=>c.resourceAction('/api/coverage-3d/evaluate',{parameters:{sample_spacing_m:Number(c.$('coverage3dSpacing').value),assumption:'user_engineering_sampling_assumption',confirmed:false}}));
   c.actionButton('evaluateServiceCapability',()=>c.resourceAction('/api/cns-service-capability/evaluate',{}));
   c.actionButton('evaluateCorridor',()=>c.resourceAction('/api/cns-service-corridor/evaluate',{}));
@@ -854,8 +854,8 @@ export function bind(c){
   c.actionButton('evaluateCorridorSitePlan',()=>{const policy=structuredClone(c.flow().corridor_site_planning_policy||{});policy.confirmed=c.$('corridorSitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/cns-corridor-site-plan/evaluate',{corridor_site_planning_policy:policy});});
   c.actionButton('evaluateServiceTimeline',()=>c.resourceAction('/api/service-timeline/evaluate',{}));
   c.actionButton('evaluateProtectionEnvelope',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
-  c.actionButton('evaluateGapV2',()=>c.resourceAction('/api/cns-gap-analysis-v2',{parameters:{evaluate_protection_margin:c.$('gapV2Protection').checked}}));
-  c.actionButton('evaluateSitePlan',()=>{const policy=structuredClone(c.flow().site_planning_policy||{});policy.confirmed=c.$('sitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/cns-site-plan',{site_planning_policy:policy});});
+  c.actionButton('evaluateGapV2',()=>c.resourceAction('/api/compatibility/cns-gap-analysis-v2/evaluate',{parameters:{evaluate_protection_margin:c.$('gapV2Protection').checked}}));
+  c.actionButton('evaluateSitePlan',()=>{const policy=structuredClone(c.flow().site_planning_policy||{});policy.confirmed=c.$('sitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/compatibility/site-plan/evaluate',{site_planning_policy:policy});});
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
   c.actionButton('applyClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/apply',{application_id:c.flow().closed_loop_assessment?.application?.application_id}));
   // ---- Radar Surveillance Layout V1.1（独立任务卡；proposal-only，绝不自动 Apply） ----

@@ -249,7 +249,7 @@ def test_grid_graph_prefers_mht_grid_id_and_has_bbox_fallback():
     assert fallback.neighbors("fallback-0") == ("fallback-1", "fallback-2", "fallback-3")
 
 
-def test_registry_adds_v2_but_default_and_legacy_backfill_remain_v1():
+def test_registry_keeps_v2_for_compatibility_but_new_default_omits_route_planner():
     registry = build_default_algorithm_registry({
         "engineering_parameters": {
             "primary_spacing_factor": {"value": 0.9},
@@ -258,10 +258,7 @@ def test_registry_adds_v2_but_default_and_legacy_backfill_remain_v1():
     })
     manifest = registry.manifest("route_planner", "risk_aware_route_planner_v2", "2.0")
     assert manifest.maturity == "engineering_baseline"
-    assert default_algorithm_selection()["route_planner"] == {
-        "algorithm_type": "route_planner", "algorithm_id": "route_planner_v1",
-        "version": "1.0", "parameters": {},
-    }
+    assert "route_planner" not in default_algorithm_selection()
 
 
 def _mark_route_downstream_passed(workflow):
@@ -275,8 +272,8 @@ def _mark_route_downstream_passed(workflow):
     workflow.state["coverage_3d"]["status"] = "passed"
     workflow.state["cns_service_capability"]["status"] = "meets_under_model"
     workflow.state["service_timeline"]["status"] = "passed"
-    workflow.state["cns_gap_analysis_v2"]["status"] = "satisfied"
-    workflow.state["cns_site_plan"]["status"] = "proposal_ready"
+    workflow.state["cns_gap_analysis_v2"] = {"status": "satisfied"}
+    workflow.state["cns_site_plan"] = {"status": "proposal_ready"}
     workflow.state["closed_loop_assessment"].update({"status": "passed", "commit_status": "preview"})
 
 
@@ -291,15 +288,18 @@ def test_grid_risk_change_invalidates_routes_only_when_v2_is_selected(tmp_path):
     assert workflow.state["result_statuses"]["routes"] == "passed"
     assert workflow.state["result_statuses"]["coverage_3d"] == "passed"
 
-    workflow.select_algorithm({
+    workflow.state["algorithm_selection"]["route_planner"] = {
         "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
         "version": "2.0", "parameters": {"risk_weight_lambda": 1},
-    })
+    }
     _mark_route_downstream_passed(workflow)
     workflow.risk_service.apply_result(_risk(grid, {"G-0-0": 0.3}))
     assert workflow.state["result_statuses"]["routes"] == "stale"
-    for name in ("coverage_3d", "cns_service_capability", "service_timeline", "cns_gap_v2", "cns_site_plan", "closed_loop_assessment"):
+    for name in ("coverage_3d", "cns_service_capability", "service_timeline", "closed_loop_assessment"):
         assert workflow.state["result_statuses"][name] == "stale"
+    # Existing archive results are read-only evidence and are not rewritten by invalidation.
+    assert workflow.state["cns_gap_analysis_v2"]["status"] == "satisfied"
+    assert workflow.state["cns_site_plan"]["status"] == "proposal_ready"
 
 
 def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_path):
@@ -310,10 +310,10 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
     workflow.state["grid_risk"] = _risk(grid)
     workflow.state["grid_attributes"]["airspace"]["airspace_eligibility"] = _eligibility(grid)
     workflow.state["scenario_routes"] = [_route(grid, "G-0-0", "G-0-2")]
-    workflow.select_algorithm({
-        "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
-        "version": "2.0", "parameters": {"risk_weight_lambda": 0},
-    })
+    workflow.route_service.planner = workflow.algorithm_registry.create(
+        "route_planner", "risk_aware_route_planner_v2", "2.0",
+        {"risk_weight_lambda": 0},
+    )
     # B2B-1：V2 结果同样只进 compatibility namespace，不再是 canonical 运行航路。
     response = workflow.generate_operational([])
     assert workflow.state["operational_routes"] == []
@@ -321,15 +321,13 @@ def test_workflow_v2_consumes_grid_risk_and_parameter_change_invalidates(tmp_pat
     assert result["status"] == "passed"
     assert result["grid_path"] == ["G-0-0", "G-0-1", "G-0-2"]
 
-    workflow.select_algorithm({
-        "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
-        "version": "2.0", "parameters": {"risk_weight_lambda": 2},
-    })
-    # B2B-1：canonical result_statuses["routes"] 不再由旧 planner 写成 passed；
-    # 算法参数变化使兼容试算失效。
-    assert runtime_compatibility_result(
-        workflow.session, "operational_routes"
-    )["status"] == "stale"
+    # B7: a new project cannot persist a new legacy selection/parameter override.
+    with pytest.raises(ValueError, match="Compatibility/Archive"):
+        workflow.select_algorithm({
+            "algorithm_type": "route_planner", "algorithm_id": "risk_aware_route_planner_v2",
+            "version": "2.0", "parameters": {"risk_weight_lambda": 2},
+        })
+    assert "route_planner" not in workflow.state["algorithm_selection"]
 
 
 def test_airspace_policy_change_does_not_stale_planning_or_dependents(tmp_path):

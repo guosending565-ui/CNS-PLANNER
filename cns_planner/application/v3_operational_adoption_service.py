@@ -51,6 +51,7 @@ from ..domain.v3_operational_adoption import (
     stable_fingerprint, utc_now,
 )
 from .production_write_authority import (
+    read_compatibility_result,
     runtime_compatibility_items, runtime_compatibility_result,
     write_runtime_compatibility_result,
 )
@@ -1323,7 +1324,10 @@ class V3OperationalAdoptionService:
             bundle["blocking_reasons"] = ["p10_service_unavailable"]
             return
         self.gap_analysis_v2_service.evaluate()
-        gap = self.session.state.get("cns_gap_analysis_v2") or {}
+        # B7X：Gap V2 只在当前会话的 runtime-only cache 里；旧项目保存的值仍可作为证据读取。
+        gap = read_compatibility_result(
+            self.session, self.session.state, "cns_gap_analysis_v2",
+        )
         stages["P10"] = _stage_entry(
             "P10", gap, "cns_gap_v2",
             route_statuses=_required_gap_statuses(gap, self.session.state),

@@ -25,8 +25,6 @@ from ..domain.site_planning import (
     default_site_planning_policy, normalize_site_planning_policy,
 )
 from ..domain.safety_policy import default_safety_policy, normalize_safety_policy
-from ..gap.v1 import CNSGapAnalyzerV1
-from ..gap.v2 import CNSGapAnalyzerV2
 from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
 from ..domain.spatial_3d import empty_spatial_3d, normalize_spatial_3d
 from ..domain.altitude_layer_defaults import INITIALIZED_KEY as ALTITUDE_LAYER_INITIALIZED_KEY
@@ -38,7 +36,6 @@ from ..algorithms.encounter_3d import EncounterAssessment3DV1
 from ..domain.encounter_3d import normalize_encounter_3d_assessment
 from ..domain.route_vertical_profile import normalize_route_vertical_profiles
 from ..domain.operational_timing import empty_operational_timing, normalize_operational_timing
-from ..site_planner.reuse_first_v1 import ReuseFirstSitePlannerV1
 from ..domain.closed_loop import empty_closed_loop_assessment
 from ..domain.cns_corridor import (
     default_cns_corridor_policy, empty_cns_corridor_assessment,
@@ -297,10 +294,9 @@ def blank_project(defaults):
         "device_catalog": empty_catalog("cns-device-catalog"),
         "existing_cns_facilities": empty_collection("existing-cns-facilities"),
         "candidate_sites": empty_collection("candidate-sites"),
-        "cns_gap_analysis": CNSGapAnalyzerV1.empty(),
-        "cns_gap_analysis_v2": CNSGapAnalyzerV2.empty(),
+        # Compatibility/archive results are intentionally absent from a new project.
+        # Read adapters return an empty view without materialising these keys.
         "site_planning_policy": default_site_planning_policy(),
-        "cns_site_plan": ReuseFirstSitePlannerV1.empty(),
         "closed_loop_assessment": empty_closed_loop_assessment(),
         "cns_corridor_policy": default_cns_corridor_policy(),
         "cns_corridor_assessment": empty_cns_corridor_assessment(),
@@ -356,11 +352,10 @@ def blank_project(defaults):
         # 阈值；未确认时它绝不生效，也绝不改变人口报告 / NoData 语义。
         "planning_exposure_policy": default_planning_exposure_policy(),
         "devices": deepcopy(defaults.get("device_library", {}).get("items", [])),
-        "coverage": None, "risks": risks,
+        "risks": risks,
         "result_statuses": {
             name: "not_calculated" for name in (
                 "workspace", "grid", "environment_risk", "routes",
-                "coverage", "cns_gap", "cns_gap_v2", "cns_site_plan",
                 "grid_risk_v2",
                 "closed_loop_assessment", "safety_assessment",
                 "building_clearance",
@@ -420,12 +415,9 @@ def _mark_migrated_policy_proposal_stale(state, proposal_key, status_key, reason
 def _mark_proposals_stale_after_reuse_tier_migration(state, p11_migrated, p16_migrated):
     """BUG-PERSIST-REUSE-TIER-001：legacy 4 层政策被迁移时，失效其派生 proposal。"""
 
-    if p11_migrated:
-        _mark_migrated_policy_proposal_stale(
-            state, "cns_site_plan", "cns_site_plan",
-            "site_planning_policy 由官方 legacy 4 层 reuse tier 顺序迁移为当前 5 层；"
-            "旧 proposal 不是新策略下的 current 派生",
-        )
+    # P11 is now a read-only compatibility result.  Normalizing an old project must not
+    # rewrite either that result or its recorded status, even when its old policy shape is
+    # recognized.  P16 remains the canonical corridor proposal and keeps its stale rule.
     if p16_migrated:
         _mark_migrated_policy_proposal_stale(
             state, "cns_corridor_site_plan", "cns_corridor_site_plan",
@@ -606,14 +598,13 @@ def normalize_project(value, grid_service):
         for index, item in enumerate(value["candidate_sites"].get("items") or [])
     ]
     value["candidate_sites"]["count"] = len(value["candidate_sites"]["items"])
-    value.setdefault("cns_gap_analysis", CNSGapAnalyzerV1.empty())
-    value.setdefault("cns_gap_analysis_v2", CNSGapAnalyzerV2.empty())
+    # Missing archive results stay missing.  Existing keys are preserved verbatim by
+    # normalization and exposed through the compatibility project adapter.
     # BUG-PERSIST-REUSE-TIER-001：先记住持久化的 tier 顺序是否为官方 legacy 4 层。
     # 只有**严格等于**官方旧顺序才迁移（见 ``canonicalize_reuse_tiers``）；迁移发生后，
     # 按旧顺序派生的 proposal 必须失效，不能冒充新策略下的 current 派生。
     p11_legacy_policy = _is_legacy_reuse_tier_policy(value.get("site_planning_policy"))
     value["site_planning_policy"] = normalize_site_planning_policy(value.get("site_planning_policy"))
-    value.setdefault("cns_site_plan", ReuseFirstSitePlannerV1.empty())
     value.setdefault("closed_loop_assessment", empty_closed_loop_assessment())
     p16_legacy_policy = _is_legacy_reuse_tier_policy(value.get("corridor_site_planning_policy"))
     value["cns_corridor_policy"] = normalize_cns_corridor_policy(value.get("cns_corridor_policy"))
@@ -730,10 +721,7 @@ def normalize_project(value, grid_service):
     # Production Route3DProfile V1 ships inside ``spatial_3d`` (additive, backfilled empty for
     # a legacy project by ``normalize_spatial_3d``); only its result status is registered here.
     value.setdefault("result_statuses", {}).setdefault("route_3d_profiles", "not_calculated")
-    value.setdefault("result_statuses", {}).setdefault("cns_gap", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
-    value.setdefault("result_statuses", {}).setdefault("cns_gap_v2", "not_calculated")
-    value.setdefault("result_statuses", {}).setdefault("cns_site_plan", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("closed_loop_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_assessment", "not_calculated")
     value.setdefault("result_statuses", {}).setdefault("cns_corridor_gap_assessment", "not_calculated")

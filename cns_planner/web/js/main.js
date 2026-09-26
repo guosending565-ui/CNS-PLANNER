@@ -80,7 +80,7 @@ async function resourceAction(path,payload={}){return applyWorkflowSnapshot(awai
 async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
 // V3 candidate paths are large: the workflow snapshot carries summaries only, so the read-only panel pulls the frozen detail on demand.
 async function loadRoutePlannerV3Detail(){
-  const detail=await api('/api/route-planner-v3-experiments');
+  const detail=await api('/api/research/route-planner-v3-experiments');
   flow={...flow,route_planner_v3_detail:detail};store.set({workflow:flow});renderWorkflow();paint();return detail;
 }
 function showError(message){$('error').hidden=!message;$('error').textContent=message||'';}

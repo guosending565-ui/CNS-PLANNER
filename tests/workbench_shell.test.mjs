@@ -235,6 +235,14 @@ function findByDataset(root,key,value){
   return found;
 }
 
+/** 子树（含自身）的可见文本，等价于浏览器 textContent 的读取。 */
+function textOf(node){
+  if(!node)return '';
+  let text=node.textContent||'';
+  forEachDescendant(node,child=>{text+=child.textContent||'';});
+  return text;
+}
+
 function createTemplateElement(){
   const node=new StubNode('template');
   Object.defineProperty(node,'innerHTML',{
@@ -1337,7 +1345,7 @@ test('step 04 bind() resolves every control it queries',()=>{
     for(const path of ['/api/cns-operation-context','/api/cns-requirement-policies',
       '/api/cns-required-recommendation/evaluate','/api/cns-required-recommendation/adopt',
       '/api/operational-timing','/api/protection-envelope/evaluate',
-      '/api/v3-cns-assessment/evaluate','/api/cns-service-corridor/evaluate','/api/cns/safety-policy',
+      '/api/research/v3-cns-assessment/evaluate','/api/cns-service-corridor/evaluate','/api/cns/safety-policy',
       '/api/cns/events/evaluate','/api/cns/coupled-events/evaluate']){
       assert.ok(source.includes(path),`step 04 must keep the ${path} contract`);
     }
@@ -2080,7 +2088,7 @@ test('step 06 status overview groups the existing statuses without recomputing t
     }));
     const valueOf=label=>rows.find(row=>row.label===label);
     assert.equal(valueOf('运行航路').badge,'通过','a passed result status is mapped as-is');
-    assert.equal(valueOf('旧版二维覆盖试算').badge,'已失效','a stale compatibility result stays stale');
+    assert.equal(valueOf('旧版二维覆盖试算'),undefined,'compatibility status is excluded from the production overview');
     assert.equal(valueOf('CNS 能力缺口').badge,'通过','the corridor gap status is mapped as-is');
     assert.equal(valueOf('技术风险').badge,'失败','the risk group reads flow.review.risks');
     assert.equal(valueOf('规划报告').badge,'已失效','the report status is mapped as-is');
@@ -2088,6 +2096,8 @@ test('step 06 status overview groups the existing statuses without recomputing t
     assert.equal(valueOf('总体通过').value,'否','overall_pass is shown as a plain yes/no');
     // 未计算的条目显示"未计算"，而不是被省略或伪造成通过
     assert.equal(valueOf('三维几何覆盖').badge,'未计算','an untouched result stays not_calculated');
+    const proposal=findByDataset(root,'segName','review-adv-proposal');
+    assert.match(textOf(proposal),/旧版二维覆盖试算/,'compatibility status remains readable in Advanced');
   });
 });
 

@@ -1216,8 +1216,7 @@ def test_v1_output_contract_is_unchanged():
 
 def test_v3_is_additive_and_never_the_default_planner():
     selection = default_algorithm_selection()
-    assert selection["route_planner"]["algorithm_id"] == "route_planner_v1"
-    assert selection["route_planner"]["version"] == "1.0"
+    assert "route_planner" not in selection
     assert V3StrategicPlanner.algorithm_id == "route_planner_v3_strategic"
     assert V3StrategicPlanner().uses_v3_native_3d is True
 
