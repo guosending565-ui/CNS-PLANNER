@@ -94,26 +94,47 @@ class CNSServiceCapabilityV1:
         )
 
 
-def evaluate_capability_point(code, sample, required, aircraft, devices):
-    """Evaluate one P7 geometry point with the exact P8 static capability rules."""
+def prepare_capability_context(code, required, aircraft):
+    """Resolve voxel-invariant aircraft/requirement capability evidence once."""
     if required.get("required") is False:
-        return _sample_result(sample, "not_applicable", ["该分系统不适用"])
+        return {"kind": "not_applicable"}
     if required.get("required") is not True or required.get("status") == "pending_confirmation":
-        return _sample_result(sample, "unknown", ["RequiredCNS 未确认"])
+        return {"kind": "unknown_requirement"}
     capability = (aircraft or {}).get(SUBSYSTEM_NAMES[code]) or {}
+    match_required = _without_redundancy(required)
     aircraft_ok, aircraft_evidence = evaluate_required_performance(
-        _without_redundancy(required), capability, require_capability=True
+        match_required, capability, require_capability=True
     )
-    if code == "N" and _technology(capability) in NON_SITE_NAVIGATION:
+    return {
+        "kind": "non_site_navigation" if code == "N" and _technology(capability) in NON_SITE_NAVIGATION else "site",
+        "capability": capability, "match_required": match_required,
+        "aircraft_ok": aircraft_ok, "aircraft_evidence": aircraft_evidence,
+    }
+
+
+def evaluate_capability_point(code, sample, required, aircraft, devices, *, context=None):
+    """Evaluate one P7 geometry point with the exact P8 static capability rules."""
+    context = context or prepare_capability_context(code, required, aircraft)
+    if context["kind"] == "not_applicable":
+        return _sample_result(sample, "not_applicable", ["该分系统不适用"])
+    if context["kind"] == "unknown_requirement":
+        return _sample_result(sample, "unknown", ["RequiredCNS 未确认"])
+    capability = context["capability"]
+    aircraft_ok, aircraft_evidence = context["aircraft_ok"], context["aircraft_evidence"]
+    if context["kind"] == "non_site_navigation":
         status = "meets_under_model" if aircraft_ok is True else "does_not_meet_under_model" if aircraft_ok is False else "unknown"
         reason = "已确认的机载导航性能满足 RequiredCNS" if aircraft_ok is True else "机载导航性能不满足 RequiredCNS" if aircraft_ok is False else "机载导航性能证据不足"
         return _sample_result(sample, status, [reason], [{"kind": "aircraft_navigation", **aircraft_evidence}])
     return _evaluate_site_capability_point(
-        code, sample, required, capability, aircraft_ok, aircraft_evidence, devices
+        code, sample, required, capability, aircraft_ok, aircraft_evidence, devices,
+        context["match_required"],
     )
 
 
-def _evaluate_site_capability_point(code, sample, required, capability, aircraft_ok, aircraft_evidence, devices):
+def _evaluate_site_capability_point(
+    code, sample, required, capability, aircraft_ok, aircraft_evidence, devices,
+    match_required=None,
+):
         evidence = []
         if sample.get("covered") is False:
             return _sample_result(sample, "does_not_meet_under_model", ["P7 三维几何覆盖门控未通过"], evidence)
@@ -138,7 +159,10 @@ def _evaluate_site_capability_point(code, sample, required, capability, aircraft
                 evaluations.append(type_evaluation)
                 continue
             evaluations.append(
-                _evaluate_provider(code, required, capability, provider, devices.get(str(provider.get("device_id"))))
+                _evaluate_provider(
+                    code, required, capability, provider,
+                    devices.get(str(provider.get("device_id"))), match_required,
+                )
             )
         evidence.append({
             "kind": "provider_multiplicity", "provider_count": len(evaluations),
@@ -199,7 +223,7 @@ def free_space_link_budget(slant_distance_m, parameters):
     }
 
 
-def _evaluate_provider(code, required, aircraft, geometry_provider, device):
+def _evaluate_provider(code, required, aircraft, geometry_provider, device, match_required=None):
     base = {
         "facility_id": geometry_provider.get("facility_id"),
         "device_id": geometry_provider.get("device_id"),
@@ -228,7 +252,9 @@ def _evaluate_provider(code, required, aircraft, geometry_provider, device):
     if technology != "unknown" and model_technology != "unknown" and technology != model_technology:
         return {**base, "status": "does_not_meet_under_model", "model_family": family, "reasons": ["ServiceModelSpec technology 与设备不一致"], "evidence": []}
     actual = _declared_actual(device, model)
-    performance_ok, performance_evidence = evaluate_required_performance(_without_redundancy(required), actual)
+    performance_ok, performance_evidence = evaluate_required_performance(
+        match_required if match_required is not None else _without_redundancy(required), actual
+    )
     evidence = [{"kind": "required_performance", **performance_evidence}]
     if family == "free_space_link_budget":
         if code != "C":

@@ -1,7 +1,7 @@
 {
   "generator_schema_version": "phase4-b7r-delete-gates-v4",
   "schema_version": "phase4-b7r-delete-gates-v4",
-  "generated_from_head": "1c48cd78d0ccba2d9c471b335cf97c9b6ce931b4",
+  "generated_from_head": "a1d0d286b9a7940599c0b99fa4175427a6f2ecf9",
   "mode": "report_only_no_deletion",
   "note": "B7R 只报告：即使 ready_for_delete=true 也不删除任何模块，物理删除留给 B8。每项 checks 都是对当前工作区的真实扫描结果；project_state_writer 只由目标 capability 自己拥有的 persistent ProjectState writer 阻塞，canonical/shared/runtime-only 写点保留为非阻塞证据；default_selection 用 default_algorithm_selection() 精确比较，old_fixture_read 由真实 open/read/export/roundtrip 实测得出。",
   "check_semantics": {
@@ -62,10 +62,10 @@
     ]
   },
   "protected_files": {
-    "cns_planner/algorithms/corridor/v1.py": "5AA3559E4B84C19D513BA6546A1A5435E4CC1C9401DCBB759FBA666E96920867",
-    "cns_planner/algorithms/coverage/geometric_3d.py": "045826BFEB8B7C74885F8DAF65DB67B26C8F3E60219989A59F124542E94E32B8",
+    "cns_planner/algorithms/corridor/v1.py": "06E0F3C0A141BC269FC3A2F683FF1E954595D72703F391B23851AEF7A048BFD6",
+    "cns_planner/algorithms/coverage/geometric_3d.py": "F2FC421253861D2A11FF7FB4F33EFE0D89E0BCC31F9B9536108B203EC40ACAE9",
     "cns_planner/algorithms/service_capability/v1.py": "79F9C56A97955847B74A5B6EDE244BEFCB8DC77CAF4739DAAD2C2B769BA57C28",
-    "tests/test_cns_corridor.py": "BFC08B5FC25B608FC035754714F127DED6E024F854AF6CA67A73ED2E8436A20C"
+    "tests/test_cns_corridor.py": "119BBE2C79F170BC69398FDCDCA24B38C0883FDAFA79F28F918F981463BBD3DF"
   },
   "protected_files_unchanged": true,
   "default_algorithm_selection_snapshot": [
@@ -1427,7 +1427,7 @@
       "gate_id": "B7-DELETE-COVERAGEPLANNERV1",
       "capability_id": "CoveragePlannerV1",
       "checks": {
-        "production_imports": false,
+        "production_imports": true,
         "production_api_actions": true,
         "frontend_production_actions": true,
         "project_state_writer": true,
@@ -1436,31 +1436,14 @@
         "old_fixture_read": true,
         "tests_migrated": true
       },
-      "ready_for_delete": false,
-      "blockers": [
-        "production_imports"
-      ],
+      "ready_for_delete": true,
+      "blockers": [],
       "evidence": {
         "production_imports": {
           "semantics": "production Python 代码是否仍通过真实 import 语句依赖目标 legacy 模块/符号（ast Import/ImportFrom；注释、docstring、错误消息与普通字符串不算）。",
-          "passed": false,
-          "total": 2,
-          "items": [
-            {
-              "file": "cns_planner/algorithms/corridor/v1.py",
-              "line": 18,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            },
-            {
-              "file": "cns_planner/algorithms/coverage/geometric_3d.py",
-              "line": 10,
-              "kind": "from_import",
-              "module": "cns_planner.algorithms.coverage.v1",
-              "name": "distance_m"
-            }
-          ]
+          "passed": true,
+          "total": 0,
+          "items": []
         },
         "production_api_actions": {
           "semantics": "runtime compute API：api 层是否仍注册了可触发该 capability 运行的 HTTP 路由。该字段只表示 runtime 可触发，**不表示** production authority，也不表示 compatibility endpoint 是正式权威通道。",

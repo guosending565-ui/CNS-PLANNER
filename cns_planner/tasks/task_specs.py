@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import threading
 import time
 
 from ..domain.cns_corridor import normalize_cns_corridor_policy
@@ -122,6 +123,9 @@ def _corridor_worker_payload(state, payload):
 
     只保留请求显式给出的 policy（归一化后），请求未给出时**不**写入：这样
     "本次请求的 policy"与"state 里已有的 policy"不会被混成两个不同的输入指纹。
+
+    B9R：``allow_beyond_validated_envelope`` 是请求显式给出的**风险接受**，因此与
+    policy 同样只在显式给出时写入。它随 snapshot 冻结，worker 绝不回读当前 state。
     """
 
     payload = payload if isinstance(payload, dict) else {}
@@ -129,6 +133,8 @@ def _corridor_worker_payload(state, payload):
     raw_policy = payload.get("cns_corridor_policy", payload.get("policy"))
     if raw_policy is not None:
         compact["cns_corridor_policy"] = normalize_cns_corridor_policy(raw_policy)
+    if payload.get("allow_beyond_validated_envelope") is True:
+        compact["allow_beyond_validated_envelope"] = True
     return compact
 
 
@@ -138,6 +144,51 @@ def _corridor_plan(state, payload):
         "worker_payload": worker_payload,
         "inputs": _corridor_inputs(state, worker_payload),
     }
+
+
+def _corridor_cancel_probe(context, interval_seconds=1.0):
+    """B9/P14：把"取消请求"从长循环内部暴露给 worker 而不阻塞 worker 线程。
+
+    ``WorkerContext.check_cancel()`` 每次都读 task store（磁盘）。P14 的体素循环
+    在本规模下要跑数十秒到数百秒，若在循环里直接调用它，取消在最坏情况下要等到
+    整个 ``model.evaluate`` 返回才生效。这里用一个低频守护线程轮询 store，取消一旦
+    被观察到就置位事件；长循环里的 ``cancel_check`` 只做一次 ``is_set()`` 判断，
+    因此既不引入明显的每单元 I/O，也不改变任何数学结果。
+
+    返回 ``(cancel_check, stop)``：``cancel_check`` 在已请求取消时抛
+    ``TaskCancelled``（由 worker 映射为 task ``cancelled`` 且不发布结果）。
+    """
+
+    event = threading.Event()
+
+    def loop():
+        while not event.wait(interval_seconds):
+            try:
+                current = context.store.find(context.task_id)
+            except Exception:  # noqa: BLE001 - 取消探测失败不掩盖计算错误
+                continue
+            if current is None:
+                event.set()
+                return
+            if current.get("cancel_requested") or str(current.get("status")) in TERMINAL_STATUSES:
+                event.set()
+                return
+
+    worker = threading.Thread(
+        target=loop, name=f"corridor-cancel-probe-{context.task_id}", daemon=True,
+    )
+    worker.start()
+
+    def cancel_check():
+        if event.is_set():
+            raise TaskCancelled()
+
+    def stop():
+        event.set()
+        if worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=max(1.0, interval_seconds * 2))
+
+    return cancel_check, stop
 
 
 def _corridor_runner(context):
@@ -158,15 +209,28 @@ def _corridor_runner(context):
     capability_parameters = algorithms.manifest("service_model").get("parameters") or {}
     context.check_cancel()
     context.progress(0.15, "正在计算服务走廊（体素探测与服务能力判定）")
-    result = model.evaluate(
-        inputs.get("routes") or [], inputs.get("spatial_3d") or {},
-        inputs.get("grid") or {}, inputs.get("grid_attributes") or {},
-        inputs.get("required_cns") or {}, profile,
-        inputs.get("existing_cns_facilities") or {}, inputs.get("device_catalog") or {},
-        inputs.get("corridor_policy") or {},
-        coverage_parameters=coverage_parameters,
-        capability_parameters=capability_parameters,
-    )
+    cancel_check, stop_probe = _corridor_cancel_probe(context)
+    worker_payload = snapshot.get("worker_payload") or {}
+    allow_beyond = worker_payload.get("allow_beyond_validated_envelope") is True
+    try:
+        result = model.evaluate(
+            inputs.get("routes") or [], inputs.get("spatial_3d") or {},
+            inputs.get("grid") or {}, inputs.get("grid_attributes") or {},
+            inputs.get("required_cns") or {}, profile,
+            inputs.get("existing_cns_facilities") or {}, inputs.get("device_catalog") or {},
+            inputs.get("corridor_policy") or {},
+            coverage_parameters=coverage_parameters,
+            capability_parameters=capability_parameters,
+            cancel_check=cancel_check,
+            progress_callback=lambda value, message: context.progress(value / 100.0, message),
+            # B9R：仅在快照里冻结了显式风险接受时才允许越过硬安全天花板。
+            allow_beyond_validated_envelope=allow_beyond,
+        )
+    except TaskCancelled:
+        stop_probe()
+        context.stop_heartbeat(finished=True)
+        raise
+    stop_probe()
     context.check_cancel()
     context.progress(0.9, "正在写入临时结果明细")
     payload = {"logical_key": "cns_corridor_assessment", "value": result}

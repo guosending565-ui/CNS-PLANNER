@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import heapq
 import json
 import math
 
-from .v1 import distance_m
+from ...domain.geodesy import distance_m
 from ...domain.spatial_3d import effective_route_vertical_context, resolve_egm2008_height
 
 
@@ -154,6 +155,8 @@ def evaluate_geometry_point(sample, providers):
     """Evaluate one EGM2008 point with the exact P7 geometric coverage rules."""
     if sample.get("vertical_status") != "passed":
         return {"covered": None, "providers": [], "nearest_slant_distance_m": None}
+    if isinstance(providers, GeometricProviderIndex):
+        return providers.evaluate(sample)
     matches, nearest = [], None
     point = [sample["longitude"], sample["latitude"]]
     for provider in providers:
@@ -170,6 +173,140 @@ def evaluate_geometry_point(sample, providers):
                 "vertical_delta_m": delta, "geometry_model": geometry["model"],
             })
     return {"covered": bool(matches), "providers": matches, "nearest_slant_distance_m": nearest}
+
+
+class GeometricProviderIndex:
+    """Deterministic exact-result spatial index for P7 point providers.
+
+    The tree only prunes a node when a conservative lower bound proves that it
+    can contain neither the nearest provider nor a provider whose declared
+    slant range reaches the probe.  Leaf evaluations still call the same
+    ``distance_m``/``math.hypot`` operations as the list implementation, and
+    matches are restored to provider input order before being returned.
+    """
+
+    _LEAF_SIZE = 16
+    _EARTH_RADIUS_M = 6_371_008.8
+    #: 与 ``math.radians`` 位级一致的换算常量，用于在热路径里省掉函数调用。
+    _DEGREE_TO_RADIAN = math.pi / 180.0
+
+    def __init__(self, providers):
+        self.providers = list(providers or [])
+        entries = list(range(len(self.providers)))
+        self._root = self._build(entries) if entries else None
+
+    def _build(self, indices):
+        west = min(float(self.providers[index]["coordinate"][0]) for index in indices)
+        east = max(float(self.providers[index]["coordinate"][0]) for index in indices)
+        south = min(float(self.providers[index]["coordinate"][1]) for index in indices)
+        north = max(float(self.providers[index]["coordinate"][1]) for index in indices)
+        low = min(float(self.providers[index]["service_origin_egm2008_m"]) for index in indices)
+        high = max(float(self.providers[index]["service_origin_egm2008_m"]) for index in indices)
+        maximum_range = max(float(self.providers[index]["coverage_geometry"]["slant_range_m"]) for index in indices)
+        # 节点纬度带内最小的 cos(|latitude|)：cos 在 [0°, 180°] 上单调递减，
+        # 因此区间最小值落在 |latitude| 最大的端点上。
+        node_cosine = max(min(math.cos(math.radians(south)), math.cos(math.radians(north))), 0.0)
+        bounds = (west, south, east, north, low, high, maximum_range, node_cosine)
+        if len(indices) <= self._LEAF_SIZE:
+            return (bounds, tuple(indices), None, None)
+        lon_span = east - west
+        lat_span = north - south
+        if lon_span >= lat_span:
+            ordered = sorted(indices, key=lambda index: (float(self.providers[index]["coordinate"][0]), index))
+        else:
+            ordered = sorted(indices, key=lambda index: (float(self.providers[index]["coordinate"][1]), index))
+        middle = len(ordered) // 2
+        return (bounds, None, self._build(ordered[:middle]), self._build(ordered[middle:]))
+
+    def _probe_context(self, sample):
+        """探针在整次查询里不变的部分：预计算一次，避免每个节点重复求三角。"""
+
+        latitude = float(sample["latitude"])
+        return (
+            float(sample["longitude"]), latitude, float(sample["altitude_egm2008_m"]),
+            max(math.cos(math.radians(latitude)), 0.0),
+        )
+
+    def _lower_bound(self, bounds, context):
+        """节点 AABB 到探针的保守距离下界（必不大于任何真实 slant 距离）。"""
+
+        west, south, east, north, low, high, _, node_cosine = bounds
+        longitude, latitude, altitude, sample_cosine = context
+        if longitude < west:
+            longitude_delta = west - longitude
+        elif longitude > east:
+            longitude_delta = longitude - east
+        else:
+            longitude_delta = 0.0
+        if latitude < south:
+            latitude_delta = south - latitude
+        elif latitude > north:
+            latitude_delta = latitude - north
+        else:
+            latitude_delta = 0.0
+        # min(sample, node) 覆盖了 [min(south, latitude), max(north, latitude)] 上
+        # 的最小 cos，因此经向换算只会低估、不会高估真实米制距离。
+        cosine = sample_cosine if sample_cosine < node_cosine else node_cosine
+        dx = (longitude_delta * self._DEGREE_TO_RADIAN) * self._EARTH_RADIUS_M * cosine
+        dy = (latitude_delta * self._DEGREE_TO_RADIAN) * self._EARTH_RADIUS_M
+        if altitude < low:
+            vertical = low - altitude
+        elif altitude > high:
+            vertical = altitude - high
+        else:
+            vertical = 0.0
+        return math.hypot(math.hypot(dx, dy), vertical)
+
+    def evaluate(self, sample):
+        if not self._root:
+            return {"covered": False, "providers": [], "nearest_slant_distance_m": None}
+        point = [sample["longitude"], sample["latitude"]]
+        altitude = sample["altitude_egm2008_m"]
+        context = self._probe_context(sample)
+        nearest = None
+        matches = []
+        sequence = 0
+        pending = [(self._lower_bound(self._root[0], context), sequence, self._root)]
+        while pending:
+            lower_bound, _, node = heapq.heappop(pending)
+            maximum_range = node[0][6]
+            if nearest is not None and lower_bound > nearest and lower_bound > maximum_range:
+                continue
+            indices, left, right = node[1], node[2], node[3]
+            if indices is None:
+                for child in (left, right):
+                    sequence += 1
+                    heapq.heappush(pending, (self._lower_bound(child[0], context), sequence, child))
+                continue
+            for index in indices:
+                provider = self.providers[index]
+                horizontal = distance_m(point, provider["coordinate"])
+                delta = altitude - provider["service_origin_egm2008_m"]
+                slant = math.hypot(horizontal, delta)
+                nearest = slant if nearest is None else min(nearest, slant)
+                geometry = provider["coverage_geometry"]
+                vertical_ok = geometry["model"] == "sphere" or delta >= 0
+                if vertical_ok and slant <= float(geometry["slant_range_m"]):
+                    matches.append((index, {
+                        "facility_id": provider.get("facility_id"),
+                        "device_id": provider.get("device_id"),
+                        "slant_distance_m": slant, "horizontal_distance_m": horizontal,
+                        "vertical_delta_m": delta, "geometry_model": geometry["model"],
+                    }))
+        matches.sort(key=lambda item: item[0])
+        return {
+            "covered": bool(matches),
+            "providers": [item[1] for item in matches],
+            "nearest_slant_distance_m": nearest,
+        }
+
+
+def index_geometric_providers(providers):
+    """Build one reusable exact-result spatial index per C/N/S provider list."""
+    return {
+        code: GeometricProviderIndex((providers or {}).get(code, []))
+        for code in ("C", "N", "S")
+    }
 
 
 def _sample_offsets(path, spacing):
