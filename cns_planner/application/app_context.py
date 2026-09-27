@@ -138,7 +138,8 @@ class ApplicationContext:
         self.workflow.mutation_lock = lock
         heavy_tasks = getattr(self, "heavy_tasks", None)
         if heavy_tasks is not None:
-            heavy_tasks.bind_project(target)
+            # 必须把新实例一并交给任务服务：否则切换后提交的任务会冻结旧项目的输入。
+            heavy_tasks.bind_project(target, workflow=self.workflow)
             self.workflow.heavy_tasks = heavy_tasks
         self.workflow.configure_reference_sources(self.data.paths)
         self._bind_runtime_services()

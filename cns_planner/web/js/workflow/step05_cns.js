@@ -101,12 +101,12 @@ function existingFieldText(field,value){
   return key;
 }
 
-/** `flow.existing_cns_facilities.knowledge_status` → 中文。 */
+/** `flow.cns_existing_baseline.knowledge_status` → 中文。 */
 export function existingKnowledgeLabel(knowledgeStatus){
   return existingFieldText('knowledge_status',knowledgeStatus)||'尚未声明';
 }
 
-/** `flow.existing_cns_facilities.planning_mode` → 中文。 */
+/** `flow.cns_existing_baseline.planning_mode` → 中文。 */
 export function existingPlanningModeLabel(planningMode){
   return existingFieldText('planning_mode',planningMode)||'未配置';
 }
@@ -679,7 +679,7 @@ export function render({flow}){
   const engineeringDefaults=(flow.defaults||{}).engineering_parameters||{};
   const params={...engineeringDefaults,primary_spacing_factor:engineeringDefaults.primary_spacing_factor||{value:'—',source:'未配置来源'},co_location_search_radius_m:engineeringDefaults.co_location_search_radius_m||{value:'—'}};
   const risks=flow.risks||{},riskState=key=>statusText((risks[key]||{}).status);
-  const existing=flow.existing_cns_facilities||{},candidates=flow.candidate_sites||{},colocation=flow.tower_colocation_candidates||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{},capability=flow.cns_service_capability||{},corridor=flow.cns_corridor_assessment||{},corridorGap=flow.cns_corridor_gap_assessment||{},corridorSitePolicy=flow.corridor_site_planning_policy||{},corridorSitePlan=flow.cns_corridor_site_plan||{},timeline=flow.service_timeline||{},protection=flow.protection_envelope||{},gapV2=flow.cns_gap_analysis_v2||{},sitePolicy=flow.site_planning_policy||{},sitePlan=flow.compatibility_cns_site_plan||flow.cns_site_plan||{},closedLoop=flow.compatibility_closed_loop_assessment||flow.closed_loop_assessment||{};
+  const existing=flow.existing_cns_facilities||{},existingBaseline=(flow.cns_existing_baseline&&flow.cns_existing_baseline.knowledge_status)?flow.cns_existing_baseline:existing,candidates=flow.candidate_sites||{},colocation=flow.tower_colocation_candidates||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{},capability=flow.cns_service_capability||{},corridor=flow.cns_corridor_assessment||{},corridorGap=flow.cns_corridor_gap_assessment||{},corridorSitePolicy=flow.corridor_site_planning_policy||{},corridorSitePlan=flow.cns_corridor_site_plan||{},timeline=flow.service_timeline||{},protection=flow.protection_envelope||{},gapV2=flow.cns_gap_analysis_v2||{},sitePolicy=flow.site_planning_policy||{},sitePlan=flow.compatibility_cns_site_plan||flow.cns_site_plan||{},closedLoop=flow.compatibility_closed_loop_assessment||flow.closed_loop_assessment||{};
   const devicesWithParams=(flow.devices||[]).filter(device=>Number.isFinite(Number(device.radius_m))||Number.isFinite(Number(device.mtbf_h??device.mtbf)));
 
   // ---- 阻塞项与工程假设（每个分段各自成立，互不代替） -------------------------
@@ -722,7 +722,12 @@ export function render({flow}){
   const deviceCatalogNote='<div class="demo-note">设备目录：'+escapeHtml(deviceCatalogSourceLabel(catalog.source||flow.device_source))+' · '+(catalog.count||0)+' 型设备</div>';
   const engineeringParameters='<div class="parameter-note">主站间距 '+params.primary_spacing_factor.value+'R · 共址半径 '+params.co_location_search_radius_m.value+'m<br>参数来源：'+escapeHtml(parameterSourceLabel(params.primary_spacing_factor.source))+'</div>';
   const deviceActions='<div class="device-list">'+devices+'</div><div class="button-row"><button class="secondary" id="saveDevices">保存设备参数</button></div>';  const existingPanel='<h3>已有 CNS 设施 '+wbBadge(existing.status||'not_calculated','未计算')+'</h3>'
-    +existingCnsStatusRows(existing)
+    +existingCnsStatusRows(existingBaseline)
+    +'<label>事实掌握情况<select class="panel-input" id="existingKnowledgeStatus"><option value="not_declared" '+(existingBaseline.knowledge_status==='not_declared'?'selected':'')+'>尚未声明</option><option value="confirmed_none" '+(existingBaseline.knowledge_status==='confirmed_none'?'selected':'')+'>已确认无</option><option value="confirmed_present" '+(existingBaseline.knowledge_status==='confirmed_present'?'selected':'')+'>已确认存在</option></select></label>'
+    +'<label>规划模式<select class="panel-input" id="existingPlanningMode"><option value="factual" '+(existingBaseline.planning_mode==='factual'?'selected':'')+'>按事实数据规划</option><option value="assume_empty_for_planning" '+(existingBaseline.planning_mode==='assume_empty_for_planning'?'selected':'')+'>按空既有设施工程基线规划</option></select></label>'
+    +'<label>声明来源<input class="panel-input" id="existingBaselineSource" value="'+escapeHtml(existingBaseline.source||'')+'" placeholder="用户声明 / 数据来源"></label>'
+    +'<label class="check-row"><input type="checkbox" id="confirmExistingBaseline"> 确认以上声明；按空基线时同时确认工程假设</label>'
+    +'<button class="secondary full" id="saveExistingBaseline">保存事实状态与规划模式</button>'
     +'<div class="panel-file-input"><input class="panel-input" id="existing_cnsPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseExisting">选择…</button></div><button class="secondary full" id="importExisting">导入已有设施</button><div class="scroll-list cns-input-list">'+collectionList(existing,'facility')+'</div>';
   const candidatePanel='<h3>候选站址 '+wbBadge(candidates.status||'not_calculated','未计算')+'</h3><div class="panel-file-input"><input class="panel-input" id="candidate_sitesPath" placeholder="JSON / CSV / GeoJSON"><button class="secondary" id="browseCandidates">选择…</button></div><div class="button-row"><button class="secondary" id="importCandidates">导入候选站址</button><button class="secondary" id="deriveCandidates">从已有设施生成</button></div><div class="scroll-list cns-input-list">'+collectionList(candidates,'candidate')+'</div>'
     +'<h3>共塔候选（真实铁塔宿主） '+wbBadge(colocation.status||'not_calculated','未计算')+'</h3>'
@@ -831,6 +836,7 @@ export function bind(c){
   c.$('browseExisting').onclick=()=>c.openBrowser('existing_cns',c.$('existing_cnsPath').value);
   c.$('browseCandidates').onclick=()=>c.openBrowser('candidate_sites',c.$('candidate_sitesPath').value);
   c.actionButton('importExisting',()=>c.resourceAction('/api/existing-cns/import',{path:c.$('existing_cnsPath').value.trim()}));
+  c.actionButton('saveExistingBaseline',()=>{const knowledge_status=c.$('existingKnowledgeStatus').value,planning_mode=c.$('existingPlanningMode').value,confirmed=c.$('confirmExistingBaseline').checked,source=c.$('existingBaselineSource').value.trim()||'user_declaration',payload={cns_existing_baseline:{knowledge_status,planning_mode,source,declared_by:'user'}};if(planning_mode==='assume_empty_for_planning')payload.assumption={assumption_id:'ASM-CNS-EMPTY-PLANNING',scope:'project',field:'cns_existing_baseline',value:'empty',basis:'engineering_baseline',reason:'既有 CNS 设施事实尚未取得，按空基线进行工程规划',source_ref:source,owner:'user',confirmed,authority_effect:'allowed_with_disclosure',report_disclosure:ASSUME_EMPTY_BASELINE_NOTE,invalidates_on:['existing-cns-source-change'],status:'active'};if(!confirmed)throw new Error('请先确认 Existing CNS baseline 声明');return c.resourceAction('/api/cns-existing-baseline',payload);});
   c.actionButton('importCandidates',()=>c.resourceAction('/api/candidate-sites/import',{path:c.$('candidate_sitesPath').value.trim()}));
   c.actionButton('deriveCandidates',()=>c.resourceAction('/api/candidate-sites/from-existing',{}));
   // 真实铁塔 → 共塔宿主候选 + 塔顶障碍物事实（一次显式动作；不生成任何设备参数）。

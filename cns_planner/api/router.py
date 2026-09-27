@@ -142,6 +142,7 @@ class ApiRouter:
         if path == "/api/cns-requirement-policies": return Response(workflow.cns_requirement_policies_snapshot())
         if path == "/api/cns-required-recommendation": return Response(workflow.required_cns_recommendation_snapshot())
         if path == "/api/existing-cns": return Response(workflow.existing_cns_snapshot())
+        if path == "/api/cns-existing-baseline": return Response(workflow.cns_existing_baseline_snapshot())
         if path == "/api/candidate-sites": return Response(workflow.candidate_sites_snapshot())
         # ---- Towers Operational Integration V2（铁塔派生事实；只读投影） --------------
         if path == "/api/tower-obstacle-profiles": return Response(workflow.tower_obstacle_profiles_snapshot())
@@ -422,6 +423,7 @@ class ApiRouter:
             "/api/cns-required-recommendation/evaluate": lambda: workflow.evaluate_required_cns_recommendation(payload),
             "/api/cns-required-recommendation/adopt": lambda: workflow.adopt_required_cns_recommendation(payload),
             "/api/existing-cns/import": lambda: workflow.import_existing_cns(payload),
+            "/api/cns-existing-baseline": lambda: workflow.set_cns_existing_baseline(payload),
             "/api/candidate-sites/import": lambda: workflow.import_candidate_sites(payload),
             "/api/candidate-sites/from-existing": workflow.candidate_sites_from_existing,
             # 铁塔派生事实（障碍物高度 + 共塔宿主候选）：真实源只在 QGIS 线程读取。

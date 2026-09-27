@@ -15,6 +15,11 @@ from ..domain.cns_inputs import (
     backfill_device_contract, normalize_aircraft_profile, normalize_candidate_site,
     normalize_existing_facility, normalize_required_cns,
 )
+from ..domain.assumptions import normalize_assumption, normalize_assumption_registry
+from ..domain.cns_existing_baseline import (
+    existing_cns_baseline_readiness,
+    normalize_cns_existing_baseline,
+)
 from .production_write_authority import assert_write_authority
 
 
@@ -160,6 +165,72 @@ class CNSInputService:
 
     def import_existing(self, payload):
         self.session.state["existing_cns_facilities"] = self.adapter.load_existing(payload)
+        self.invalidation.workflow("existing_cns")
+        return self._save()
+
+    def set_existing_baseline(self, payload):
+        """Declare the existing-CNS fact state and its separate planning mode.
+
+        An empty imported collection is deliberately not treated as evidence of
+        ``confirmed_none``.  ``assume_empty_for_planning`` is accepted only with
+        an explicitly confirmed, disclosure-bearing assumption in the same
+        command so the project can never persist a silent empty baseline.
+        """
+
+        if not isinstance(payload, dict):
+            raise ValueError("Existing CNS baseline 请求必须是对象")
+        requested = payload.get("cns_existing_baseline", payload)
+        baseline = normalize_cns_existing_baseline(requested)
+        baseline["declared_at"] = baseline.get("declared_at") or _utc_now()
+        state = self.session.state
+        registry = normalize_assumption_registry(state.get("assumptions"))
+        assumes_empty = baseline["planning_mode"] == "assume_empty_for_planning"
+
+        assumption = payload.get("assumption")
+        normalized_assumption = None
+        if assumes_empty:
+            if not isinstance(assumption, dict) or assumption.get("confirmed") is not True:
+                raise ValueError("按空既有设施工程基线规划必须显式确认 assumption")
+            normalized_assumption = normalize_assumption(assumption)
+            if (
+                normalized_assumption["field"] != "cns_existing_baseline"
+                or normalized_assumption["value"] != "empty"
+                or normalized_assumption["status"] != "active"
+            ):
+                raise ValueError("Existing CNS baseline assumption 必须是 active empty assumption")
+
+        # The command is repeatable: replace the same assumption id and retire
+        # other active assumptions for this field instead of accumulating
+        # contradictory planning declarations.
+        retained = []
+        replacement_id = (
+            normalized_assumption["assumption_id"] if normalized_assumption else None
+        )
+        for item in registry["items"]:
+            if replacement_id and item["assumption_id"] == replacement_id:
+                continue
+            if item["field"] == "cns_existing_baseline" and item["status"] == "active":
+                item = {**item, "status": "superseded"}
+            retained.append(item)
+        if normalized_assumption is not None:
+            retained.append(normalized_assumption)
+        registry["items"] = retained
+
+        readiness = existing_cns_baseline_readiness(
+            baseline,
+            facilities=state.get("existing_cns_facilities"),
+            assumption_registry=registry,
+        )
+        # Readiness 校验对所有模式生效：否则会持久化出一个 blocked 声明
+        # （例如无设施/无证据的 confirmed_present，或没有任何空基线 assumption
+        # 的 not_declared + factual），下游 coverage 至 facility_plan 只能拿到
+        # 永远无法满足的 blocked 前置。
+        if readiness["state"] == "blocked":
+            blockers = "、".join(readiness.get("blockers") or []) or "unknown"
+            raise ValueError(f"Existing CNS baseline 声明不满足 readiness contract：{blockers}")
+
+        state["cns_existing_baseline"] = baseline
+        state["assumptions"] = registry
         self.invalidation.workflow("existing_cns")
         return self._save()
 

@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from ..domain.cns_planning_objectives import normalize_cns_planning_objectives
+from .corridor_service import conclusion_changed
 
 
 class CNSCorridorGapService:
@@ -32,13 +33,17 @@ class CNSCorridorGapService:
                 self.session.state["cns_planning_objectives"] = normalized
                 self.invalidation.cns_corridor_gap()
         state = self.session.state
+        previous = state.get("cns_corridor_gap_assessment") or {}
         result = self.analyzer.evaluate(
             state.get("cns_corridor_assessment") or {},
             state.get("required_cns") or {},
             state.get("cns_planning_objectives") or {},
         )
         state["cns_corridor_gap_assessment"] = result
-        self.invalidation.cns_corridor_site_plan()
+        # 只有结论真的变化时 P16 才失效：重算得到同一 fingerprint 时 P16 的基线
+        # 仍然成立，把它标成 stale 只会让 P18 的门禁（要求 current P16）无法满足。
+        if conclusion_changed(previous, result):
+            self.invalidation.cns_corridor_site_plan()
         state.setdefault("result_statuses", {})["cns_corridor_gap_assessment"] = _result_status(result.get("status"))
         self.session.save()
         return self.snapshot()

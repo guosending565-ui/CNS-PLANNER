@@ -948,6 +948,7 @@ class WorkflowService:
     def cns_requirement_policies_snapshot(self): return self.requirement_recommendation_service.policies_snapshot()
     def required_cns_recommendation_snapshot(self): return self.requirement_recommendation_service.result_snapshot()
     def existing_cns_snapshot(self): return deepcopy(self.state.get("existing_cns_facilities") or {})
+    def cns_existing_baseline_snapshot(self): return deepcopy(self.state.get("cns_existing_baseline") or {})
     def candidate_sites_snapshot(self): return deepcopy(self.state.get("candidate_sites") or {})
     def compatibility_catalog_snapshot(self): return capability_catalog()
     def compatibility_route_snapshot(self):
@@ -1342,6 +1343,7 @@ class WorkflowService:
     def adopt_required_cns_recommendation(self, payload=None): return self.requirement_recommendation_service.adopt(payload)
     def import_device_catalog(self, path): return self.cns_input_service.import_device_catalog(path)
     def import_existing_cns(self, payload): return self.cns_input_service.import_existing(payload)
+    def set_cns_existing_baseline(self, payload): return self.cns_input_service.set_existing_baseline(payload)
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
     def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)

@@ -626,6 +626,45 @@ def test_project_switch_marks_old_project_active_tasks_cancelled(tmp_path):
         runtime.service.stop()
 
 
+def test_project_switch_rebinds_workflow_for_new_submissions(tmp_path):
+    """项目切换后提交的任务必须冻结**新项目**的输入，而不是旧项目实例的输入。
+
+    回归：``bind_project`` 过去只换 store/workdir，不换 ``self.workflow``；切换后
+    提交的任务会冻结旧项目 state，publish 与当前 state 比对必然
+    ``task_input_changed``，异步任务永远无法发布。
+    """
+
+    project_a = tmp_path / "a"
+    project_b = tmp_path / "b"
+    project_a.mkdir(mode=0o755)
+    project_b.mkdir(mode=0o755)
+    workflow_a = WorkflowService(project_a / "project.json", DEFAULTS)
+    workflow_a.mutation_lock = threading.RLock()
+    workflow_b = WorkflowService(project_b / "project.json", DEFAULTS)
+    workflow_b.mutation_lock = threading.RLock()
+    workflow_b.state["operational_routes"] = [{
+        "route_id": "R-B", "status": "passed", "path": [[0.0, 0.0], [0.01, 0.01]],
+    }]
+    workflow_b.save()
+
+    service = HeavyTaskService(
+        workflow_a, project_a / "project.json", max_workers=1, autostart_workers=False,
+    )
+    try:
+        service.bind_project(project_b / "project.json", workflow=workflow_b)
+        assert service.workflow is workflow_b
+        assert service.workdir == project_b / "project.json"
+        record, _ = service.submit(CORRIDOR_TASK_TYPE, {})
+        snapshot = service.snapshot_store.load(record["input_snapshot_ref"])
+        assert [route["route_id"] for route in snapshot["inputs"]["routes"]] == ["R-B"]
+
+        # 只传 project_file 的既有调用签名必须继续可用。
+        service.bind_project(project_a / "project.json")
+        assert service.workflow is workflow_b
+    finally:
+        service.stop()
+
+
 def test_closing_browser_does_not_cancel_tasks(tmp_path):
     """`stop()`（进程收尾/浏览器关闭路径）不取消任务，也不改写 terminal 之外的语义。"""
 

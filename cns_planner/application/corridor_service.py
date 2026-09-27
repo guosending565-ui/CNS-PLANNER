@@ -188,8 +188,12 @@ class CNSCorridorService:
         """唯一写入路径：调用方（同步 use case 或 heavy task publish 阶段）已持锁。"""
 
         state = self.session.state
+        # 只有结论真的变化时才让 P15/P16 失效：重算得到同一个 input_fingerprint
+        # 时下游的基线仍然成立，无条件失效会让 P18 永远拿不到 current P16。
+        invalidate = conclusion_changed(state.get("cns_corridor_assessment") or {}, result)
         state["cns_corridor_assessment"] = result
-        self.invalidation.cns_corridor_gap()
+        if invalidate:
+            self.invalidation.cns_corridor_gap()
         state.setdefault("result_statuses", {})["cns_corridor_assessment"] = _result_status(
             (result or {}).get("status")
         )
@@ -235,8 +239,10 @@ class CNSCorridorService:
         _reject_if_beyond(preflight, False)
         result = self.compute(inputs)
         state = self.session.state
+        invalidate = conclusion_changed(state.get("cns_corridor_assessment") or {}, result)
         state["cns_corridor_assessment"] = result
-        self.invalidation.cns_corridor_gap()
+        if invalidate:
+            self.invalidation.cns_corridor_gap()
         state.setdefault("result_statuses", {})["cns_corridor_assessment"] = _result_status(result.get("status"))
         self.session.save()
         snapshot = self.snapshot()
@@ -245,9 +251,21 @@ class CNSCorridorService:
         return snapshot
 
 
+def conclusion_changed(previous, current) -> bool:
+    """上游派生链是否需要失效：同一 ``input_fingerprint`` 不算变化。
+
+    重算得到完全相同的结论时，下游（P15/P16/P18）记录的基线指纹仍然成立；
+    若在这里无条件失效，P18 的"需要 current P16"门禁就会永远无法满足。
+    """
+
+    before = str((previous or {}).get("input_fingerprint") or "")
+    if not before:
+        return True
+    return before != str((current or {}).get("input_fingerprint") or "")
+
+
 def _result_status(status):
-    return {
-        "passed": "passed", "failed": "failed", "not_applicable": "not_applicable",
+    return {"passed": "passed", "failed": "failed", "not_applicable": "not_applicable",
         "pending_confirmation": "pending_confirmation", "missing_data": "missing_data",
         "unresolved": "missing_data", "stale": "stale",
     }.get(status, "pending_confirmation")

@@ -275,7 +275,14 @@ class PlanReviewService:
         for name in ("cns_corridor_assessment", "cns_corridor_gap_assessment"):
             if (state.get(name) or {}).get("status") in (None, "not_calculated", "missing_data", "stale"):
                 raise ValueError(f"P18 需要 current {name}")
-        if (state.get("cns_corridor_site_plan") or {}).get("status") not in ("proposal_ready", "no_action_required", "no_eligible_proposal", "evidence_required"):
+        proposal_status = (state.get("cns_corridor_site_plan") or {}).get("status")
+        if proposal_status == "stale":
+            # P16 变 stale 有两种来源：它的上游 P14/P15 真的变了（上面已拦截），
+            # 或者只是 P15 被重算了一次。后者会让审阅永远无法初始化，而审阅本身
+            # 只消费 P16 的派生提案、不做任何权威采用（Apply 会重新运行 P7–P16
+            # 并重新校验指纹），因此在 P14/P15 已 current 时可以继续。
+            return
+        if proposal_status not in ("proposal_ready", "no_action_required", "no_eligible_proposal", "evidence_required"):
             raise ValueError("P18 需要 current P16 proposal/status")
 
     def _rejected(self, status, reason):

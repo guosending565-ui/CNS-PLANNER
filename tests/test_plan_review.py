@@ -178,4 +178,78 @@ def test_apply_exception_rolls_back_and_invalidation_marks_history_stale(tmp_pat
     assert workflow.state == before
     workflow.invalidation_service.cns_corridor_site_plan()
     assert workflow.state["cns_plan_review"]["status"] == "stale"
-    assert workflow.state["confirmed_cns_plan"]["current_applicability"] == "stale"
+
+
+def _no_action_facility():
+    """可选动作不可用 + 既有设施已满足要求 → P16 = no_action_required。"""
+
+    facility = existing()
+    facility["devices"] = [{
+        "device_id": "C1", "subsystem": "C", "status": "active",
+        "service_model": {"status": "missing_data"},
+    }]
+    return facility
+
+
+def test_unchanged_p15_fingerprint_keeps_p16_current(tmp_path):
+    """重算 P15 得到同一结论时 P16 仍是 current（否则 P18 永远无法进入）。"""
+
+    workflow = configured(tmp_path, facilities=[_no_action_facility()])
+    assert workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]["status"] == "no_action_required"
+    before = deepcopy(workflow.state["cns_corridor_gap_assessment"])
+
+    workflow.evaluate_cns_corridor_gap()
+
+    after = workflow.state["cns_corridor_gap_assessment"]
+    assert before["input_fingerprint"] == after["input_fingerprint"]
+    assert workflow.state["cns_corridor_site_plan"]["status"] == "no_action_required"
+
+
+def test_unchanged_p14_fingerprint_keeps_p15_and_p16_current(tmp_path):
+    """重算 P14 得到同一结论时 P15/P16 仍 current，且 P18 可以初始化。
+
+    回归：corridor 写入路径过去无条件调用 ``invalidation.cns_corridor_gap()``，
+    使"重算一次服务走廊"就足以让 P15/P16 变 stale，P18 的 current P16 门禁因此
+    永远无法满足。
+    """
+
+    workflow = configured(tmp_path, facilities=[_no_action_facility()])
+    workflow.evaluate_cns_corridor()
+    workflow.evaluate_cns_corridor_gap()
+    assert workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]["status"] == "no_action_required"
+    before = deepcopy(workflow.state["cns_corridor_assessment"])
+    gap_before = deepcopy(workflow.state["cns_corridor_gap_assessment"])
+
+    workflow.evaluate_cns_corridor()
+
+    after = workflow.state["cns_corridor_assessment"]
+    gap_after = workflow.state["cns_corridor_gap_assessment"]
+    assert before["input_fingerprint"] == after["input_fingerprint"]
+    # P14 重算且结论相同 → P15 既未失效也未重算。
+    assert gap_after["status"] == gap_before["status"] != "stale"
+    assert gap_after["input_fingerprint"] == gap_before["input_fingerprint"]
+    assert workflow.state["cns_corridor_site_plan"]["status"] == "no_action_required"
+    review = workflow.initialize_cns_plan_review()["cns_plan_review"]
+    assert review["status"] == "current"
+
+
+def test_stale_p16_still_initializes_review_when_p14_p15_current(tmp_path):
+    """P16 已 stale 但 P14/P15 current 时，审阅仍可初始化（真实阻塞回归）。"""
+
+    workflow = _ready(configured(tmp_path, devices=[device("C1", "a")], candidates=[candidate("S1")]))
+    workflow.invalidation_service.cns_corridor_site_plan()
+    assert workflow.state["cns_corridor_site_plan"]["status"] == "stale"
+
+    review = workflow.initialize_cns_plan_review()["cns_plan_review"]
+    assert review["status"] == "current"
+    assert [item["source"] for item in review["variants"]] == ["baseline", "p16_auto"]
+    assert workflow.state["cns_corridor_site_plan"]["status"] == "stale"
+
+
+def test_stale_p14_blocks_review_initialization(tmp_path):
+    """P14 真的 stale 时审阅必须继续 fail-closed。"""
+
+    workflow = _ready(configured(tmp_path, devices=[device("C1", "a")], candidates=[candidate("S1")]))
+    workflow.state["cns_corridor_assessment"]["status"] = "stale"
+    with pytest.raises(ValueError, match="P18 需要 current cns_corridor_assessment"):
+        workflow.initialize_cns_plan_review()

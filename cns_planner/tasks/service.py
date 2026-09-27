@@ -116,18 +116,26 @@ class HeavyTaskService:
 
     # ---- 生命周期 -----------------------------------------------------------
 
-    def bind_project(self, project_file):
-        """项目切换（Open / Save As）后重新绑定 task store 位置。
+    def bind_project(self, project_file, workflow=None):
+        """项目切换（Open / Save As）后重新绑定 task store 与 workflow。
 
         B6R：旧项目的 active worker 被终止时，**对应旧 task store 必须明确写
         ``cancelled``（reason=project_switched）**，绝不能留下永久 ``running`` 记录。
         "关闭浏览器"不是项目切换：那条路径（``stop`` / 进程退出）不在这里，也不会
         取消任何任务。
+
+        project switch 同时会用一个**新的** ``WorkflowService`` 实例替换当前实例：
+        提交阶段的 immutable snapshot 与 publish 阶段的 compare-and-publish 都从
+        ``self.workflow.state`` 取输入。若这里只换 store 不换 workflow，切换后提交
+        的任务会冻结**旧项目**的输入，publish 与当前 state 比对必然
+        ``task_input_changed``，任务永远无法发布。
         """
 
         with self._lock:
             self._abandon_active_tasks()
             self._terminate_all()
+            if workflow is not None:
+                self.workflow = workflow
             self.project_file = Path(project_file)
             self.workdir = Path(project_file)
             self.store = TaskStore(resolve_task_store_path(self.workdir))
