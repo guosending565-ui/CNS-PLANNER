@@ -17,6 +17,7 @@ import pytest
 
 from cns_planner.services.workflow import WorkflowService
 from cns_planner.persistence.project_repository import ProjectRepository
+from cns_planner.application.project_directory_service import ProjectDirectoryService
 
 
 def _health():
@@ -246,6 +247,30 @@ def test_save_as_copies_state_and_sources_then_uses_new_project(
     assert not list(tmp_path.rglob("*.tmp"))
 
 
+def test_project_directory_save_and_open_preserve_tower_source(
+    tmp_path, defaults_path
+):
+    source = tmp_path / "towers.csv"
+    source.write_text("tower_id,longitude,latitude\nT-1,122.1,30.1\n", encoding="utf-8")
+    auto = tmp_path / "automatic" / "current_project.json"
+    workflow = WorkflowService(auto, defaults_path)
+    data = FakeMapData(paths={
+        "basemap": "fixture/map.qgz", "population": "fixture/population.tif",
+        "terrain": "fixture/terrain.tif", "towers": str(source),
+    })
+    directories = ProjectDirectoryService(auto, defaults_path, {}, WorkflowService)
+    folder = tmp_path / "tower-project"
+
+    saved_workflow, saved_file = directories.save_as(folder, workflow, auto, data)
+    assert saved_workflow.store_path == saved_file
+    assert json.loads((folder / "data_sources.json").read_text(encoding="utf-8"))["towers"] == str(source)
+
+    reopened_data = FakeMapData()
+    reopened, target = directories.open(folder, reopened_data)
+    assert reopened.store_path == target
+    assert reopened_data.paths["towers"] == str(source)
+
+
 def test_open_existing_project_switches_state_and_restores_sources(
     tmp_path, defaults_path, map_server_module
 ):
@@ -277,6 +302,68 @@ def test_open_existing_project_switches_state_and_restores_sources(
     assert module.DATA.load_calls == [(expected_sources, False)]
     assert _tree_bytes(project_dir) == files_before
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_open_legacy_project_recovers_verified_tower_source_without_losing_records(
+    tmp_path, defaults_path
+):
+    folder = tmp_path / "legacy-towers"
+    tower_source = tmp_path / "tower-source.csv"
+    tower_source.write_text("tower_id,longitude,latitude\nT-1,122.1,30.1\n", encoding="utf-8")
+    stat = tower_source.stat()
+    project = WorkflowService(folder / "project_state.json", defaults_path)
+    project.state["towers"] = {
+        "status": "passed", "count": 1,
+        "items": [{"tower_id": "T-1", "longitude": 122.1, "latitude": 30.1}],
+        "source": {"type": "file", "path": str(tower_source)},
+        "data_source": str(tower_source),
+        "metadata": {"source_path": str(tower_source)},
+    }
+    project.state["source_audits"] = {
+        "status": "passed", "count": 1, "items": {"towers": {
+            "status": "verified", "role": "towers",
+            "verification": {"sha256": "a" * 64, "size_bytes": stat.st_size,
+                             "mtime_ns": stat.st_mtime_ns},
+        }},
+    }
+    project.save()
+    (folder / "data_sources.json").write_text(json.dumps({"basemap": "map.qgz"}), encoding="utf-8")
+    data = FakeMapData()
+    directories = ProjectDirectoryService(
+        tmp_path / "automatic.json", defaults_path, {}, WorkflowService,
+    )
+
+    reopened, target = directories.open(folder, data)
+
+    assert target == folder / "project_state.json"
+    assert reopened.state["towers"]["count"] == 1
+    assert data.paths["towers"] == str(tower_source.resolve())
+    saved_sources = json.loads((folder / "data_sources.json").read_text(encoding="utf-8"))
+    assert saved_sources["towers"] == str(tower_source.resolve())
+
+
+def test_open_legacy_project_without_reliable_tower_path_never_guesses_or_drops_records(
+    tmp_path, defaults_path
+):
+    folder = tmp_path / "legacy-towers-no-path"
+    project = WorkflowService(folder / "project_state.json", defaults_path)
+    project.state["towers"] = {
+        "status": "passed", "count": 1,
+        "items": [{"tower_id": "T-1", "longitude": 122.1, "latitude": 30.1}],
+        "source": None, "data_source": None, "metadata": {},
+    }
+    project.save()
+    (folder / "data_sources.json").write_text(json.dumps({"basemap": "map.qgz"}), encoding="utf-8")
+    data = FakeMapData()
+    directories = ProjectDirectoryService(
+        tmp_path / "automatic.json", defaults_path, {}, WorkflowService,
+    )
+
+    reopened, _ = directories.open(folder, data)
+
+    assert reopened.state["towers"]["count"] == 1
+    assert not data.paths.get("towers")
+    assert "towers" not in json.loads((folder / "data_sources.json").read_text(encoding="utf-8"))
 
 
 def test_open_missing_project_file_preserves_current_project(

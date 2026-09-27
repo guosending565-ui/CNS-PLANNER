@@ -21,7 +21,21 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
 }
+
+.cns-task-panel-head button { cursor: pointer; touch-action: manipulation; }
+
+.cns-task-center[data-collapsed="true"] {
+  width: auto;
+  max-width: calc(100vw - 1rem);
+  max-height: none;
+  overflow: hidden;
+}
+
+.cns-task-panel-content[hidden] { display: none; }
 
 .cns-task-panel-head h3 {
   margin: 0;

@@ -16,6 +16,7 @@
  *    没有选择存储位置时如实提示，不猜路径。
  */
 import {sourceStateText} from './presentation.js';
+import {recordExplicitProject} from '../state/explicit_project.js';
 
 /**
  * @param {object} deps
@@ -100,7 +101,9 @@ export function createShellActions({getNode,panelError}){
       });
       if(typeof applyFlow==='function')await applyFlow(data);
       await saveAs(directory);
-      if(typeof applyState==='function')applyState(await api('/api/state'));
+      const freshState=await api('/api/state');
+      recordExplicitProject(freshState);
+      if(typeof applyState==='function')applyState(freshState);
       return true;
     }catch(exc){
       panelError('保存项目失败：'+exc.message);

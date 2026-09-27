@@ -356,6 +356,11 @@ def test_save_project_as_rebinds_new_workflow(app_context_module, tmp_path):
 
     assert context.workflow is not old, "另存为必须替换为新的 WorkflowService"
     assert context.active_project_file == folder / "project_state.json"
+    assert context.project_directories.storage_metadata(context.active_project_file) == {
+        "automatic": False,
+        "file": str(folder / "project_state.json"),
+        "directory": str(folder),
+    }
     _assert_runtime_bindings(context.workflow)
 
     readiness = context.workflow.layered_route_planner_readiness()

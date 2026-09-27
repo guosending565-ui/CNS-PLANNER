@@ -1,5 +1,11 @@
 import {escapeHtml,sourceModeText,statusText} from '../workflow/common.js';
 
+export function towerSourceCompatibilityNotice(data){
+  const count=Number(data?.workflow?.towers?.count)||0;
+  if(!count||data?.paths?.towers)return '';
+  return '已导入 '+count+' 个铁塔站址，但原始数据源路径未登记；请重新选择原始铁塔文件。';
+}
+
 export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
   let browseKind='basemap',browseParent='',selectedFile='';
   const healthLabel=status=>({ready:'正常',warning:'警告',error:'错误',checking:'检查中'}[status]||statusText(status));
@@ -49,9 +55,11 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
         +(item.id==='reference_routes'?'<button class="secondary compact" data-preview-routes>预览并导入航线</button>':'')
         +(item.id==='towers'?'<button class="secondary compact" data-import-towers '+(item.path?'':'disabled')+'>导入铁塔站址</button>':'')
         +'</div>';
+      const towerNotice=item.id==='towers'?towerSourceCompatibilityNotice(data):'';
       row.innerHTML='<div><strong>'+escapeHtml(item.label)+'</strong><span class="health-badge health-'+item.status+'">'+healthLabel(item.status)+'</span></div><p>'+escapeHtml(item.message)+'</p><small>'+escapeHtml(item.category)+' · '+escapeHtml(item.formats)+(item.required?' · 基础运行必需':' · 可选')+'</small>'+(metadata?'<p>'+escapeHtml(metadata)+'</p>':'')
         +'<p><b>数据可信度/审计</b> · configured '+escapeHtml(trust.configured||'—')+' · identity '+escapeHtml(trust.identity||'—')+' · schema '+escapeHtml(trust.schema||'—')+' · CRS '+escapeHtml(trust.crs||'—')+' · geometry '+escapeHtml(trust.geometry||'—')+' · version '+escapeHtml(trust.version||'—')+' · overall '+escapeHtml(trust.overall||'—')+'</p><small>source_id '+escapeHtml(audit.source_id||'—')+' · reasons '+escapeHtml(reasons)+'</small>'
         +pathCheckLine(data,item)+buildingSourceLine(data,item)
+        +(towerNotice?'<p class="inline-error">'+escapeHtml(towerNotice)+'</p>':'')
         +actions;list.append(row);
     }
     const parameters=$('parameterList');parameters.replaceChildren();const names={vertical_clearance_m:'垂直净空裕度',primary_spacing_factor:'主站间距系数',co_location_search_radius_m:'共址搜索半径'};

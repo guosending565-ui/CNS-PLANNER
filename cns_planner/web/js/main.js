@@ -25,7 +25,9 @@ import * as Step04 from './workflow/step04_operation.js';
 import * as Step05 from './workflow/step05_cns.js';
 import * as Step06 from './workflow/step06_review.js';
 import {createSourceCenter} from './sources/source_center.js';
+import {syncSourcePathInputs} from './sources/source_inputs.js';
 import {createWorkflowSnapshotApplier} from './state/workflow_snapshot.js';
+import {recordExplicitProject,restoreLastExplicitProject} from './state/explicit_project.js';
 
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
@@ -349,7 +351,7 @@ const saveProject=(projectDir,name)=>shellActions.saveProject({projectDir,name},
 // 打开项目：(1) 先按完整 workflow 快照 hydrate（含逐 cell 网格明细），(2) 再刷新 /api/state。
 async function openProject(projectDir){
   if(!projectDir)return panelError('请先选择项目文件夹');
-  const button=$('openProject');try{button.disabled=true;panelError('');const data=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})});await applyWorkflowSnapshot(data.workflow);update(data);bitmap?.close();bitmap=null;if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);else if(data.bounds)fit(data.bounds);}catch(exc){panelError('打开项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
+  const button=$('openProject');try{button.disabled=true;panelError('');const data=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})});recordExplicitProject(data);await applyWorkflowSnapshot(data.workflow);update(data);bitmap?.close();bitmap=null;if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);else if(data.bounds)fit(data.bounds);}catch(exc){panelError('打开项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
 }
 function getTiandituKey(){
   for(const source of state?.online_sources||[]){
@@ -394,16 +396,7 @@ function update(data){
   store.set({server:state,workflow:flow,mapView:view});
   rebuildGridRenderCache();buildingFootprints.reset();
   onlineTiles.configure(data.online_sources||[],data.revision);
-  $('basemapPath').value=data.paths.basemap;
-  $('populationPath').value=data.paths.population;
-  $('terrainPath').value=data.paths.terrain||'';
-  $('terrain_dtmPath').value=data.paths.terrain_dtm||'';
-  $('buildingsPath').value=data.paths.buildings||'';
-  $('building_gridPath').value=data.paths.building_grid||'';
-  $('reference_landing_sitesPath').value=data.paths.reference_landing_sites||'';
-  $('reference_routesPath').value=data.paths.reference_routes||'';
-  // V1.1：陆域掩膜与其它空间来源一样进入数据源中心（可配置、可校验、可持久化）。
-  $('land_maskPath').value=data.paths.land_mask||'';
+  syncSourcePathInputs(data.paths,$);
   const population=data.population;
   $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
   const terrain=data.terrain||{},terrainDtm=data.terrain_dtm||{};
@@ -433,9 +426,12 @@ function bootstrapFailure(message,exc){
   showError(message+'：'+(exc&&exc.message?exc.message:exc||''));
   $('loading').hidden=true;
 }
-api('/api/state').then(data=>{
+api('/api/state').then(data=>restoreLastExplicitProject(data,{api})).then(result=>{
+  const data=result.state;
   try{
     update(data);
+    if(result.restored)panelError('已恢复上次项目');
+    else if(result.attempted&&result.error)panelError('恢复上次项目失败：'+result.error.message+'；当前保留自动恢复项目，请重新选择项目文件夹。');
     if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
     else if(data.bounds)fit(data.bounds);
     else{$('loading').hidden=true;$('settings').showModal();}

@@ -66,8 +66,16 @@ class ProjectDirectoryService:
                 raise ValueError("该目录不是有效项目：缺少 project_state.json")
         candidate = self.workflow_factory(target, self.defaults_path)
         repository = DataSourceRepository(folder / "data_sources.json")
-        if repository.is_file():
-            saved = repository.load()
+        saved = repository.load() if repository.is_file() else {}
+        recovered_tower_source = None
+        if not saved.get("towers"):
+            recovered_tower_source = self._verified_legacy_tower_source(candidate.state)
+            if recovered_tower_source:
+                saved["towers"] = recovered_tower_source
+                # 这是确定性兼容迁移：只使用项目状态中明确登记、且与 verified audit
+                # 文件签名一致的原始路径；不扫描目录、不按文件名或修改时间猜测。
+                repository.save(saved)
+        if saved:
             clean = {key: saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key, "")
                      for key in ("basemap", "population", "terrain")}
             clean.update({
@@ -82,6 +90,51 @@ class ProjectDirectoryService:
             })
             current_data.load(clean, persist=False)
         return candidate, target
+
+    @staticmethod
+    def _verified_legacy_tower_source(state):
+        """Return an explicitly recorded tower path only when its audit still matches.
+
+        Older projects can contain imported tower records while ``data_sources.json`` lacks
+        ``towers``.  Import stored the exact source path in the tower collection and a verified
+        size/mtime signature in ``source_audits``.  Both facts must agree with the current file;
+        otherwise no path is invented and the imported records remain untouched.
+        """
+
+        towers = (state or {}).get("towers") or {}
+        if not (towers.get("count") or towers.get("items")):
+            return None
+        candidates = []
+        source = towers.get("source") or {}
+        if isinstance(source, dict) and source.get("path"):
+            candidates.append(source.get("path"))
+        if isinstance(towers.get("data_source"), str) and towers.get("data_source"):
+            candidates.append(towers.get("data_source"))
+        metadata = towers.get("metadata") or {}
+        if isinstance(metadata, dict) and metadata.get("source_path"):
+            candidates.append(metadata.get("source_path"))
+        try:
+            normalized = {str(Path(value).expanduser().resolve()) for value in candidates if value}
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if len(normalized) != 1:
+            return None
+        path = Path(next(iter(normalized)))
+        if not path.is_file():
+            return None
+        audit = ((((state or {}).get("source_audits") or {}).get("items") or {}).get("towers") or {})
+        verification = audit.get("verification") or {}
+        if audit.get("status") != "verified" or not verification.get("sha256"):
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        expected_size = verification.get("size_bytes", audit.get("size_bytes"))
+        expected_mtime = verification.get("mtime_ns", audit.get("mtime_ns"))
+        if expected_size != stat.st_size or expected_mtime != stat.st_mtime_ns:
+            return None
+        return str(path)
 
     @staticmethod
     def _project_folder(raw, create=False):

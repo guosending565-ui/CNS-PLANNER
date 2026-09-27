@@ -16,7 +16,51 @@
 const TASKS_ENDPOINT = '/api/tasks';
 const STATE_ENDPOINT = '/api/state';
 const STORAGE_KEY = 'cns.heavyTasks.v1';
+export const TASK_PANEL_UI_STORAGE_KEY = 'cns.taskPanel.ui.v1';
 const POLL_INTERVAL_MS = 1500;
+
+function resolveStorage(storage) {
+  if (storage) return storage;
+  try {
+    return globalThis.document?.defaultView?.localStorage || globalThis.localStorage;
+  } catch (_) { return null; }
+}
+
+export function readTaskPanelUiState(storage) {
+  const store = resolveStorage(storage);
+  try {
+    const parsed = JSON.parse(store?.getItem(TASK_PANEL_UI_STORAGE_KEY) || '{}');
+    return {
+      collapsed: parsed?.collapsed === true,
+      x: parsed?.x !== null && parsed?.x !== undefined && Number.isFinite(Number(parsed.x)) ? Number(parsed.x) : null,
+      y: parsed?.y !== null && parsed?.y !== undefined && Number.isFinite(Number(parsed.y)) ? Number(parsed.y) : null,
+    };
+  } catch (_) {
+    return {collapsed: false, x: null, y: null};
+  }
+}
+
+export function writeTaskPanelUiState(value, storage) {
+  const store = resolveStorage(storage);
+  const state = {
+    collapsed: value?.collapsed === true,
+    x: value?.x !== null && value?.x !== undefined && Number.isFinite(Number(value.x)) ? Number(value.x) : null,
+    y: value?.y !== null && value?.y !== undefined && Number.isFinite(Number(value.y)) ? Number(value.y) : null,
+  };
+  try { store?.setItem(TASK_PANEL_UI_STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* UI preference only */ }
+  return state;
+}
+
+export function clampTaskPanelPosition(position, viewport, panelSize) {
+  const width = Math.max(0, Number(panelSize?.width) || 0);
+  const height = Math.max(0, Number(panelSize?.height) || 0);
+  const viewportWidth = Math.max(0, Number(viewport?.width) || 0);
+  const viewportHeight = Math.max(0, Number(viewport?.height) || 0);
+  return {
+    x: Math.min(Math.max(0, Number(position?.x) || 0), Math.max(0, viewportWidth - width)),
+    y: Math.min(Math.max(0, Number(position?.y) || 0), Math.max(0, viewportHeight - height)),
+  };
+}
 
 /**
  * 会话令牌：任务端点与其它受保护端点一样要求有效会话。令牌只能由后端在
@@ -91,7 +135,7 @@ export function resultScopeText(task) {
 }
 
 export function readStoredTaskIds(storage) {
-  const store = storage || globalThis.localStorage;
+  const store = resolveStorage(storage);
   try {
     const raw = store?.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
@@ -102,7 +146,7 @@ export function readStoredTaskIds(storage) {
 }
 
 export function writeStoredTaskIds(ids, storage) {
-  const store = storage || globalThis.localStorage;
+  const store = resolveStorage(storage);
   try {
     store?.setItem(STORAGE_KEY, JSON.stringify(Array.from(new Set(ids)).slice(-20)));
   } catch (error) {
@@ -255,9 +299,12 @@ export function panelHtml(tasks, catalog = []) {
     '<div class="cns-task-panel" id="cnsTaskPanel">',
     '<div class="cns-task-panel-head"><h3>后台计算任务</h3>',
     '<button class="secondary compact" id="cnsTaskToggle">收起</button></div>',
+    '<div class="cns-task-panel-content" id="cnsTaskPanelContent">',
+    '<div class="cns-task-error-area" id="cnsTaskErrorArea" role="alert"></div>',
     `<div class="cns-task-panel-body" id="cnsTaskList">${body}</div>`,
     starters ? `<div class="cns-task-starters">${starters}</div>` : '',
     '<div class="cns-task-note">关闭页面不会取消任务；刷新页面后仍可按任务标识恢复进度。</div>',
+    '</div>',
     '</div>',
   ].join('');
 }
@@ -267,15 +314,78 @@ export function panelHtml(tasks, catalog = []) {
  */
 export function createTaskCenter(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
-  const storage = options.storage || globalThis.localStorage;
   const documentRef = options.document || globalThis.document;
+  const storage = resolveStorage(options.storage);
   const interval = Number(options.interval || POLL_INTERVAL_MS);
   let timer = null;
   let tasks = [];
   let catalog = [];
-  let collapsed = false;
+  let uiState = readTaskPanelUiState(storage);
+  let collapsed = uiState.collapsed;
+  let resizeBound = false;
+  let dragging = false;
+  let lastMarkup = null;
 
   const known = () => readStoredTaskIds(storage);
+
+  function viewport() {
+    const view = documentRef?.defaultView || globalThis;
+    return {width: Number(view?.innerWidth) || 0, height: Number(view?.innerHeight) || 0};
+  }
+
+  function applyPosition(host, persist = false) {
+    if (!host || uiState.x === null || uiState.y === null) return;
+    const rect = host.getBoundingClientRect();
+    const clamped = clampTaskPanelPosition(uiState, viewport(), rect);
+    uiState = {...uiState, ...clamped};
+    host.style.left = `${clamped.x}px`;
+    host.style.top = `${clamped.y}px`;
+    host.style.right = 'auto';
+    host.style.bottom = 'auto';
+    if (persist) writeTaskPanelUiState(uiState, storage);
+  }
+
+  function applyCollapsedState(host) {
+    const content = documentRef?.getElementById('cnsTaskPanelContent');
+    const toggle = documentRef?.getElementById('cnsTaskToggle');
+    if (content) content.hidden = collapsed;
+    if (toggle) toggle.textContent = collapsed ? '展开' : '收起';
+    if (host) host.dataset.collapsed = String(collapsed);
+  }
+
+  function bindDrag(host) {
+    const handle = host?.querySelector?.('.cns-task-panel-head');
+    if (!handle) return;
+    handle.onpointerdown = event => {
+      if (event.button !== undefined && event.button !== 0) return;
+      if (event.target?.closest?.('button')) return;
+      const rect = host.getBoundingClientRect();
+      const start = {pointerX: event.clientX, pointerY: event.clientY, x: rect.left, y: rect.top};
+      dragging = true;
+      handle.setPointerCapture?.(event.pointerId);
+      handle.dataset.dragging = 'true';
+      handle.onpointermove = move => {
+        if (handle.dataset.dragging !== 'true') return;
+        const next = clampTaskPanelPosition(
+          {x: start.x + move.clientX - start.pointerX, y: start.y + move.clientY - start.pointerY},
+          viewport(), host.getBoundingClientRect(),
+        );
+        uiState = {...uiState, ...next};
+        host.style.left = `${next.x}px`; host.style.top = `${next.y}px`;
+        host.style.right = 'auto'; host.style.bottom = 'auto';
+      };
+      const finish = up => {
+        if (handle.dataset.dragging !== 'true') return;
+        handle.dataset.dragging = 'false';
+        dragging = false;
+        handle.releasePointerCapture?.(up.pointerId);
+        writeTaskPanelUiState(uiState, storage);
+      };
+      handle.onpointerup = finish;
+      handle.onpointercancel = finish;
+      event.preventDefault?.();
+    };
+  }
 
   function mount() {
     if (!documentRef) return null;
@@ -286,17 +396,28 @@ export function createTaskCenter(options = {}) {
       host.className = 'cns-task-center';
       documentRef.body.appendChild(host);
     }
-    host.innerHTML = panelHtml(tasks, catalog);
+    const markup = panelHtml(tasks, catalog);
+    // Polling is frequent, but an unchanged task snapshot must not destroy focus,
+    // pointer capture or an in-progress drag.  Rebuild only when visible task data changes.
+    if (lastMarkup === markup && documentRef.getElementById('cnsTaskPanel')) {
+      applyCollapsedState(host);
+      applyPosition(host);
+      return host;
+    }
+    host.innerHTML = markup;
+    lastMarkup = markup;
     const toggle = documentRef.getElementById('cnsTaskToggle');
     if (toggle) {
-      toggle.textContent = collapsed ? '展开' : '收起';
       toggle.onclick = () => {
         collapsed = !collapsed;
-        const panel = documentRef.getElementById('cnsTaskList');
-        if (panel) panel.hidden = collapsed;
-        toggle.textContent = collapsed ? '展开' : '收起';
+        uiState = {...uiState, collapsed};
+        applyCollapsedState(host);
+        applyPosition(host, true);
       };
     }
+    applyCollapsedState(host);
+    applyPosition(host);
+    bindDrag(host);
     for (const button of documentRef.querySelectorAll('.cns-task-cancel')) {
       button.onclick = async () => {
         try {
@@ -321,13 +442,10 @@ export function createTaskCenter(options = {}) {
   }
 
   function showPanelError(message) {
-    const panel = documentRef?.getElementById('cnsTaskList');
+    const panel = documentRef?.getElementById('cnsTaskErrorArea');
     if (!panel) return;
-    const note = documentRef.createElement('div');
-    note.className = 'cns-task-error';
-    note.setAttribute('role', 'alert');
-    note.textContent = message;
-    panel.prepend(note);
+    panel.className = 'cns-task-error-area cns-task-error';
+    panel.textContent = message;
   }
 
   async function refresh() {
@@ -340,7 +458,7 @@ export function createTaskCenter(options = {}) {
     // 恢复语义：刷新页面后按 task_id 找回状态；同时展示当前活跃任务。
     tasks = all.filter((task) => isActiveStatus(task.advanced?.status) || ids.includes(task.task_id));
     tasks.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-    mount();
+    if (!dragging) mount();
     return tasks;
   }
 
@@ -348,11 +466,24 @@ export function createTaskCenter(options = {}) {
     if (timer !== null) return;
     refresh().catch(() => {});
     timer = setInterval(() => { refresh().catch(() => {}); }, interval);
+    const view = documentRef?.defaultView || globalThis;
+    if (!resizeBound && view?.addEventListener) {
+      view.addEventListener('resize', clampMountedPanel);
+      resizeBound = true;
+    }
+  }
+
+  function clampMountedPanel() {
+    const host = documentRef?.getElementById('cnsTaskCenter');
+    applyPosition(host, true);
   }
 
   function stop() {
     if (timer !== null) clearInterval(timer);
     timer = null;
+    const view = documentRef?.defaultView || globalThis;
+    if (resizeBound && view?.removeEventListener) view.removeEventListener('resize', clampMountedPanel);
+    resizeBound = false;
   }
 
   return {
