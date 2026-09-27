@@ -28,14 +28,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import gzip
 import json
 import os
 from pathlib import Path
 from uuid import uuid4
 
 from ..persistence.artifact_store import (
-    ArtifactCorrupt, ArtifactPublishError, ArtifactUnavailable,
-    CONTENT_ENCODING_JSON_GZ, content_digest, deserialize_payload, serialize_payload,
+    ArtifactCorrupt, ArtifactPublishError, ArtifactUnavailable, CONTENT_ENCODING_JSON_GZ,
+    GZIP_LEVEL, content_digest, deserialize_payload, payload_digest,
+    payload_envelope_bytes,
 )
 from ..persistence.project_repository import _path_lock
 from ..algorithms.registry import AlgorithmNotFoundError
@@ -146,11 +148,17 @@ class InputSnapshotStore:
 
         ``artifact_id`` = snapshot 确定性 JSON 的 SHA-256（内容身份，= 输入指纹）；
         ``sha256`` = 落盘文件字节的 SHA-256（文件完整性）。两者都进 task record。
+
+        B9R.2Q：payload 只序列化**一次**（信封 JSON → gzip）。内容寻址名、``artifact_id``
+        （= 输入指纹）与 ``sha256`` 仍与改前**逐字节一致**，但不再为了指纹把整个 payload
+        再序列化一遍——提交路径的整个 store 都在 ``mutation_lock`` 内，而 12 MB 输入的
+        确定性 JSON 编码实测约 0.16 s，重复编码纯粹是浪费短锁预算。
         """
 
-        content = serialize_payload(snapshot, schema_version=INPUT_SNAPSHOT_SCHEMA_VERSION)
+        raw = payload_envelope_bytes(snapshot, schema_version=INPUT_SNAPSHOT_SCHEMA_VERSION)
+        content = gzip.compress(raw, compresslevel=GZIP_LEVEL, mtime=0)
         file_digest = content_digest(content)
-        payload_digest = fingerprint_of(snapshot)
+        payload_digest = file_digest
         relative = self.relative_for_digest(payload_digest)
         target = self.root / relative
         with self._lock:
@@ -373,9 +381,7 @@ def build_snapshot(*, task_type, payload, state, registry, algorithm_types=(),
 def fingerprint_of(snapshot) -> str:
     """snapshot 的输入指纹（content-addressed 身份）：确定性 JSON → SHA-256。"""
 
-    return content_digest(
-        serialize_payload(snapshot, schema_version=INPUT_SNAPSHOT_SCHEMA_VERSION)
-    )
+    return payload_digest(snapshot, schema_version=INPUT_SNAPSHOT_SCHEMA_VERSION)
 
 
 def snapshot_store_for(workdir) -> InputSnapshotStore:

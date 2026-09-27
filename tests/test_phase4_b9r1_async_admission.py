@@ -1,6 +1,6 @@
-﻿"""Phase4-B9R.1：Async Performance Admission Closure —— 定向测试。
+"""Phase4-B9R.1 / B9R.2Q：Async Performance Admission Closure —— 定向测试。
 
-对应 B9R.1 验收要求 1–14：
+对应 B9R.1 验收要求 1–14（B9R.2Q 把 8 / 9 / 10 调整为"轻量策略 + 原始输入"语义）：
 
 1. sync within → 正常运行；
 2. sync beyond_validated → 估算后、计算前拒绝；
@@ -9,9 +9,10 @@
 5. async beyond_validated + ``allow_beyond_validated_envelope=true`` → 运行；
 6. async ceiling + 未显式接受 → 拒绝；
 7. async ceiling + 显式接受 → **仍然**拒绝（硬天花板不可绕过）；
-8. immutable snapshot 里冻结 ``complexity_estimate``；
-9. preflight 进入 input fingerprint（估算件变化 → 指纹变化）；
-10. 提交后修改 state 不改变 worker 使用的估算件；
+8. immutable snapshot 冻结**轻量准入策略 + 全部规模驱动原始输入**
+   （B9R.2Q：不再冻结派生估算件——估算在 worker 侧从快照原始输入确定性重算）；
+9. 规模驱动输入进入 input fingerprint（规模输入变 → 指纹变）；
+10. 提交后修改 state 不改变 worker 的判定（worker 只读快照）；
 11. 被阻断的任务不产生 staged / canonical artifact；
 12. canonical assessment schema 不含复杂度估算；
 13. 既有 P14 语义 SHA 测试保持（此处做保护清单回归）；
@@ -27,16 +28,18 @@
 5    ``test_async_beyond_validated_envelope_with_acceptance_runs``
 6    ``test_async_safety_ceiling_is_blocked_without_acceptance``
 7    ``test_async_safety_ceiling_cannot_be_bypassed_by_acceptance``
-8    ``test_snapshot_freezes_complexity_estimate``
-9    ``test_complexity_estimate_participates_in_input_fingerprint``
-10   ``test_worker_uses_frozen_estimate_after_state_becomes_worse``
+8    ``test_snapshot_freezes_admission_policy_and_raw_inputs``
+9    ``test_scale_inputs_participate_in_input_fingerprint``
+10   ``test_worker_uses_snapshot_inputs_after_state_becomes_worse``
 11   ``test_blocked_task_publishes_nothing``
 12   ``test_canonical_assessment_schema_has_no_complexity_estimate``
 13   ``test_p14_protected_baseline_matches_workspace``
 14   ``test_progress_and_cancel_contract_are_preserved``
 （另加）``test_compute_uses_frozen_estimate_and_never_reestimates``、
      ``test_compute_rejects_safety_ceiling_even_with_acceptance`` —— 需求 5 的
-     ``compute()`` 语义
+     ``compute()`` 语义；
+     ``test_submit_short_lock_does_not_run_complexity_preflight`` —— B9R.2Q 核心：
+     提交短锁内不得再做昂贵规模估算（B6「短锁 + 快速 202」契约）。
 ===  ==========================================================================
 
 全部走真实运行时组件：真 WorkflowService、真 immutable snapshot、真 P14 算法实例；
@@ -69,7 +72,10 @@ from cns_planner.tasks.task_input import (
     AlgorithmResolver, InputSnapshotStore, fingerprint_of,
 )
 from cns_planner.tasks.task_spec import TaskCancelled
-from cns_planner.tasks.task_specs import CORRIDOR_TASK_TYPE, _corridor_runner, task_spec
+from cns_planner.tasks.task_specs import (
+    CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION, CORRIDOR_TASK_TYPE,
+    _corridor_runner, task_spec,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = REPO_ROOT / "cns_planner" / "config" / "defaults.json"
@@ -463,13 +469,15 @@ def test_async_within_validated_envelope_runs_and_stages(project):
     project.load(data)
     plan = project.submit({})
     snapshot = project.snapshots.load(plan["input_snapshot_ref"])
-    assert snapshot["inputs"]["complexity_estimate"]["tier"] == COMPLEXITY_TIER_VALIDATED
-
-    context, result = run_corridor_runner(snapshot, project.workdir)
-
+    # B9R.2：快照冻结的是**轻量准入策略记录**；规模估算由 worker 从快照的原始输入
+    # 计算（结果必须仍落在同一档）。
+    assert snapshot["inputs"]["performance_admission_policy_version"] == (
+        CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION
+    )
+    _context, result = run_corridor_runner(snapshot, project.workdir)
     assert result.staged is not None
     assert result.summary.get("algorithm_id") == CNSServiceCorridorV1.algorithm_id
-    assert context.progress_events, "worker 必须上报进度"
+    assert _context.progress_events, "worker 必须上报进度"
     assert_no_canonical_result(project)
     assert estimate["tier"] == COMPLEXITY_TIER_VALIDATED
 
@@ -549,22 +557,35 @@ def test_async_safety_ceiling_cannot_be_bypassed_by_acceptance(project):
 # ---- 8 / 9 / 10. snapshot 冻结、指纹、state 变化 --------------------------------
 
 
-def test_snapshot_freezes_complexity_estimate(project):
-    """8. immutable snapshot 的 inputs 里带着冻结的 ``complexity_estimate``。"""
+def test_snapshot_freezes_admission_policy_and_raw_inputs(project):
+    """8. immutable snapshot 冻结**轻量准入策略**与全部规模驱动输入。
+
+    B9R.2：快照不再冻结派生估算件，而是冻结"提交那一刻的原始输入 + 准入策略版本"；
+    规模估算由 worker 从这些原始输入重算（确定性），因此规模事实仍只由提交时的输入
+    决定，绝不会回读当前 ``ProjectState``。
+    """
 
     data, estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
     project.load(data)
     plan = project.submit({})
-    stored = project.snapshots.load(plan["input_snapshot_ref"])["inputs"]["complexity_estimate"]
+    inputs = project.snapshots.load(plan["input_snapshot_ref"])["inputs"]
 
-    assert stored == estimate
-    assert stored["status"] == "estimated"
-    assert stored["is_precise_measurement"] is False
-    assert stored["tier"] == COMPLEXITY_TIER_VALIDATED
+    assert "complexity_estimate" not in inputs, "派生估算件不再冻结进快照"
+    assert inputs["performance_admission_policy_version"] == (
+        CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION
+    )
+    policy = inputs["performance_admission_policy"]
+    assert policy["validated_evaluation_limit"] == estimate["validated_evaluation_limit"]
+    assert policy["safety_evaluation_ceiling"] == estimate["safety_evaluation_ceiling"]
+    # 规模驱动的原始输入全部在快照里（估算可从它们确定性重算）。
+    for key in ("routes", "grid", "grid_attributes", "corridor_policy",
+                "existing_cns_facilities", "device_catalog"):
+        assert inputs.get(key), f"快照必须冻结原始输入：{key}"
+    assert estimate["tier"] == COMPLEXITY_TIER_VALIDATED
 
 
-def test_complexity_estimate_participates_in_input_fingerprint(project):
-    """9. preflight 进入 input fingerprint：规模变 → 结论变 → 指纹变。"""
+def test_scale_inputs_participate_in_input_fingerprint(project):
+    """9. 规模驱动输入进入 input fingerprint：规模变 → 指纹变。"""
 
     data, _estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
     project.load(data)
@@ -578,21 +599,28 @@ def test_complexity_estimate_participates_in_input_fingerprint(project):
 
     assert before != after
     assert estimate_for(bigger)["tier"] == COMPLEXITY_TIER_BEYOND
-    # 提交时持久化的指纹 == snapshot 的内容寻址身份（估算件确实在指纹覆盖范围内）。
+    # 提交时持久化的指纹 == snapshot 的内容寻址身份（规模输入确实在指纹覆盖范围内）。
     plan = project.submit({})
     snapshot = project.snapshots.load(plan["input_snapshot_ref"])
     assert plan["input_fingerprint"] == fingerprint_of(snapshot)
-    assert snapshot["inputs"]["complexity_estimate"]["tier"] == COMPLEXITY_TIER_BEYOND
+    # 同一档结论可由快照原始输入重算出来（worker 侧就是这样判定的）。
+    recomputed = estimate_corridor_complexity(
+        snapshot["inputs"]["routes"], snapshot["inputs"]["spatial_3d"],
+        snapshot["inputs"]["grid"], snapshot["inputs"]["grid_attributes"],
+        snapshot["inputs"]["corridor_policy"],
+        snapshot["inputs"]["existing_cns_facilities"],
+        snapshot["inputs"]["device_catalog"],
+    )
+    assert recomputed["tier"] == COMPLEXITY_TIER_BEYOND
 
 
-def test_worker_uses_frozen_estimate_after_state_becomes_worse(project):
-    """10. 提交后把 state 改成更坏的规模：worker 仍按快照冻结的估算件放行。"""
+def test_worker_uses_snapshot_inputs_after_state_becomes_worse(project):
+    """10. 提交后把 state 改成更坏的规模：worker 仍按**快照输入**判定并放行。"""
 
     data, _estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
     project.load(data)
     plan = project.submit({})
     snapshot = project.snapshots.load(plan["input_snapshot_ref"])
-    assert snapshot["inputs"]["complexity_estimate"]["tier"] == COMPLEXITY_TIER_VALIDATED
 
     # 提交之后把当前 state 推到 ceiling 档：worker 若回读 state 就必然被阻断。
     worse = corridor_fixture(**CEILING_FIXTURE)
@@ -602,7 +630,7 @@ def test_worker_uses_frozen_estimate_after_state_becomes_worse(project):
     assert project.fingerprint() != plan["input_fingerprint"], "当前输入确实已变化（publish 会 stale）"
 
     _context, result = run_corridor_runner(snapshot, project.workdir)
-    assert result.staged is not None, "worker 必须按冻结的估算件放行，而不是回读当前 state"
+    assert result.staged is not None, "worker 必须按快照输入放行，而不是回读当前 state"
 
 
 def test_blocked_task_publishes_nothing(project):
@@ -710,6 +738,67 @@ def test_compute_rejects_safety_ceiling_even_with_acceptance(project):
     with pytest.raises(CorridorScaleNotAccepted):
         service.compute(dict(inputs, allow_beyond_validated_envelope=True))
     assert estimate["tier"] == COMPLEXITY_TIER_CEILING
+
+
+def test_submit_short_lock_does_not_run_complexity_preflight(project, monkeypatch):
+    """B9R.2Q：提交短锁内不得再做昂贵规模估算（B6「短锁 + 快速 202」契约）。
+
+    规模估算由 worker 在拿到 immutable snapshot 后、进入 corridor 主计算前完成；
+    提交路径只冻结**原始输入 + 轻量准入策略**。
+    """
+
+    from cns_planner.domain import cns_corridor as domain_corridor
+
+    calls = []
+
+    def spy(inputs):
+        calls.append(1)
+        return original_preflight(inputs)
+
+    original_preflight = domain_corridor.corridor_complexity_preflight
+    monkeypatch.setattr(domain_corridor, "corridor_complexity_preflight", spy)
+
+    data, _estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
+    project.load(data)
+    plan = project.submit({})
+    snapshot = project.snapshots.load(plan["input_snapshot_ref"])
+
+    assert calls == [], "提交路径不得计算规模估算（那是锁内的昂贵派生计算）"
+    assert snapshot["inputs"]["performance_admission_policy_version"] == (
+        CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION
+    )
+
+    # worker 侧：从**快照的原始输入**重算规模准入（同一档 → 放行）。
+    from cns_planner.tasks.task_specs import _corridor_preflight_from_snapshot
+
+    recomputed = _corridor_preflight_from_snapshot(snapshot["inputs"])
+    assert recomputed["tier"] == COMPLEXITY_TIER_VALIDATED
+    assert calls == [], "重算规模准入只依赖快照输入，不经过同步入口的估算封装"
+
+    _context, result = run_corridor_runner(snapshot, project.workdir)
+    assert result.staged is not None
+
+
+def test_worker_scale_rejection_maps_to_business_text():
+    """B9R.2Q：worker 把规模拒绝落盘为 ``task_scale_not_accepted``，服务端给出中文说明。
+
+    这不是执行失败（不是数据错误、不是安全失败），因此必须与通用
+    ``task_execution_failed`` 区分开——用户看到的是"规模超过已验证性能范围"。
+    """
+
+    from cns_planner.tasks.service import HeavyTaskService
+
+    business = HeavyTaskService._business_error({
+        "error": {"code": "task_scale_not_accepted",
+                  "message": "规模超过当前已验证性能范围，请改用后台计算"},
+    })
+    assert business["code"] == "task_scale_not_accepted"
+    assert "规模超过当前已验证性能范围" in business["text"]
+    assert "超包线" in business["text"]
+
+    generic = HeavyTaskService._business_error(
+        {"error": {"code": "task_execution_failed", "message": "boom"}})
+    assert generic["text"] != business["text"]
 
 
 def test_progress_and_cancel_contract_are_preserved(project):

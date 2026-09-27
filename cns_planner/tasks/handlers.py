@@ -57,7 +57,13 @@ def build_submission_snapshot(workflow, task_type, payload, *, registry=None):
 
 
 def _snapshot_from_plan(spec, plan, state, registry):
-    """按提交计划组装 snapshot（``inputs`` 与 ``worker_payload`` 与计划完全一致）。"""
+    """按提交计划组装 snapshot（``inputs`` 与 ``worker_payload`` 与计划完全一致）。
+
+    B9R.2：``inputs`` 直接采用计划里那一份（它由 :meth:`TaskSpec.plan_for` 深拷贝出来，
+    已经与 ``state`` 解耦），这里**不再**重复深拷贝。提交短锁过去对同一份输入拷两次
+    （``plan_for`` 一次 + 这里一次），在 production-upper-bound 档实测每次约 0.3 s，
+    而这份拷贝对结果没有任何贡献——snapshot 只需要一份独立、不再被修改的输入。
+    """
 
     from .task_input import build_snapshot
 
@@ -67,7 +73,8 @@ def _snapshot_from_plan(spec, plan, state, registry):
         state=state,
         registry=registry,
         algorithm_types=spec.algorithm_types,
-        inputs=deepcopy(plan.get("inputs") or spec.inputs_for(state, {})),
+        inputs=plan.get("inputs") if isinstance(plan.get("inputs"), dict)
+        else spec.inputs_for(state, {}),
     )
 
 

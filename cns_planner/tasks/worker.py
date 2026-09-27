@@ -41,6 +41,7 @@ import threading
 import time
 import traceback
 
+from ..algorithms.corridor.v1 import CorridorComplexityBlocked
 from ..algorithms.registry import build_default_algorithm_registry
 from ..persistence.artifact_store import ArtifactStore
 from ..process_identity import build_identity
@@ -384,6 +385,21 @@ def run_task(*, task_id, task_type, workdir, store_directory,
                 "code": exc.code,
                 "message": str(exc),
                 "detail": dict(exc.detail),
+            },
+        )
+        return 1
+    except CorridorComplexityBlocked as exc:
+        # B9R.2：规模准入由 worker 从 immutable snapshot 的原始输入计算，并在进入
+        # corridor 主计算**之前**判定（见 ``task_specs._corridor_runner``）。拒绝是明确
+        # 的业务结论（不是执行失败），因此用独立 code 落盘，让服务端如实展示中文原因。
+        _finish_unless_terminal(
+            context, store, task_id, status=FAILED,
+            message="规模超过当前已验证性能范围，未执行计算",
+            error={
+                "code": "task_scale_not_accepted",
+                "message": str(exc),
+                "detail": {"tier": (exc.estimate or {}).get("tier", ""),
+                           "estimate": dict(exc.estimate or {})},
             },
         )
         return 1

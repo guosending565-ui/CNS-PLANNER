@@ -223,6 +223,9 @@ class TaskSpec:
                 "worker_payload": deepcopy(plan.get("worker_payload") or {}),
                 # B6R：计算输入由 task type 自己组装（避免从 payload 二次推导出
                 # 与 runner 实际使用不一致的输入）。
+                # B9R.2：这一份深拷贝就是"提交时冻结"的唯一一次拷贝——组装它的
+                # ``submit_plan`` 保证返回值是独立副本，snapshot 侧因此直接采用，
+                # 不再对同一份输入重复拷贝（重复拷贝只增加短锁内的耗时）。
                 "inputs": deepcopy(plan.get("inputs") or {}),
             }
         if resolved_scope is None:

@@ -83,6 +83,36 @@ def task_type_for_endpoint(path):
 
 # ---- corridor ----------------------------------------------------------------
 
+#: B9R.2 性能准入策略版本（写进 immutable snapshot 的轻量元数据，不是派生估算件）。
+#: 它让 worker 能如实回答"提交时用的是哪一版准入策略"，而不必把昂贵的估算结果本身
+#: 当成输入事实冻结。
+CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION = "corridor_performance_admission_v1"
+
+
+def _admission_policy_record():
+    """准入策略的**轻量**快照元数据（版本 + 两个阈值常量）。
+
+    它不含任何估算结果：估算的全部源输入（routes / grid / grid_attributes /
+    corridor_policy / existing_cns_facilities / device_catalog）都已经在
+    immutable snapshot 的 ``inputs`` 里，因此估算本身是**可从快照确定性重算**的
+    派生量，不需要（也不应该）在提交短锁内计算并冻结。
+    """
+
+    from ..algorithms.corridor.v1 import (
+        SAFETY_EVALUATION_CEILING, VALIDATED_EVALUATION_LIMIT,
+    )
+
+    return {
+        "performance_admission_policy_version": (
+            CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION
+        ),
+        "performance_admission_policy": {
+            "version": CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION,
+            "validated_evaluation_limit": VALIDATED_EVALUATION_LIMIT,
+            "safety_evaluation_ceiling": SAFETY_EVALUATION_CEILING,
+        },
+    }
+
 
 def _corridor_inputs(state, payload):
     """服务走廊评估的权威输入（只读 state，确定性）。
@@ -95,9 +125,15 @@ def _corridor_inputs(state, payload):
     ``worker_payload``，此后任何一次重新生成（worker 变化检测 / publish compare）
     都只从 payload 取它。请求里没给 policy 时才回落到 state 里已确认的 policy。
 
-    B9R.1：**规模准入估算件（``complexity_estimate``）在这里一起冻结**。它是本份输入
-    的确定性事实，因此与输入一起进入 immutable snapshot，也一起进入 input
-    fingerprint——worker 与同步入口都只消费这份冻结值，任何一侧都不重新估算。
+    B9R.2（本轮修复）：这里**不再**计算 ``complexity_estimate``。规模估算是对本份输入
+    的确定性函数，把它的结果再写回输入，等于在 ``mutation_lock`` 内做一次昂贵派生计算
+    （实测 B production-upper-bound 档约 0.25 s），并把"派生量"当成输入事实冻结。
+    现在改为只在快照里写入**轻量**的准入策略记录（版本 + 两个阈值常量），规模估算由
+    worker 在拿到 immutable snapshot 后**从原始输入**计算——因此：
+
+    * worker 仍然绝不回读当前 ``ProjectState``；
+    * 规模事实仍然完全由"提交那一刻的输入"决定（估算的全部源输入都在快照里）；
+    * 输入指纹仍然覆盖全部规模驱动因素（provider 目录、设施、网格、航路、policy）。
     """
 
     payload = payload if isinstance(payload, dict) else {}
@@ -117,10 +153,24 @@ def _corridor_inputs(state, payload):
         "device_catalog": deepcopy(state.get("device_catalog") or {}),
         "corridor_policy": policy,
     }
-    inputs["complexity_estimate"] = corridor_complexity_preflight({
-        **inputs, "existing_facilities": inputs["existing_cns_facilities"],
-    })
+    inputs.update(_admission_policy_record())
     return inputs
+
+
+def _corridor_preflight_from_snapshot(inputs):
+    """worker 侧：从 immutable snapshot 的**原始输入**计算规模准入估算。
+
+    ``inputs["complexity_estimate"]`` 若存在（B9R.1 时期的旧快照）直接复用；不存在时
+    用本份输入自己算一次。两条路径都只依赖快照内容，绝不读当前 ``ProjectState``。
+    """
+
+    inputs = inputs if isinstance(inputs, dict) else {}
+    frozen = inputs.get("complexity_estimate")
+    if isinstance(frozen, dict) and frozen:
+        return frozen
+    return corridor_complexity_preflight({
+        **inputs, "existing_facilities": inputs.get("existing_cns_facilities") or {},
+    })
 
 
 def _corridor_scope(state, payload):
@@ -221,13 +271,32 @@ def _corridor_runner(context):
     coverage_parameters = algorithms.manifest("coverage_model").get("parameters") or {}
     capability_parameters = algorithms.manifest("service_model").get("parameters") or {}
     context.check_cancel()
-    context.progress(0.15, "正在计算服务走廊（体素探测与服务能力判定）")
+    context.progress(0.15, "正在按提交时输入判定规模准入")
     cancel_check, stop_probe = _corridor_cancel_probe(context)
     worker_payload = snapshot.get("worker_payload") or {}
     allow_beyond = worker_payload.get("allow_beyond_validated_envelope") is True
-    # B9R.1：规模准入一律消费 snapshot 里冻结的估算件，**绝不**在当前 state 上重算。
-    # 估算件缺失（例如极旧的快照）时传 ``None``：算法层不做准入判定，行为退化为 B9。
-    preflight = inputs.get("complexity_estimate")
+    # B9R.2：规模准入在 worker 侧、**从 immutable snapshot 的原始输入**计算，
+    # 然后先做准入判定、再进入 corridor 主计算。worker 绝不回读当前 ProjectState，
+    # 估算的全部源输入都来自提交那一刻冻结的快照。
+    # 估算件缺失且快照没有准入策略记录（极旧快照）时不做准入判定，行为退化为 B9。
+    admission_known = (
+        isinstance(inputs.get("performance_admission_policy_version"), str)
+        or isinstance(inputs.get("complexity_estimate"), dict)
+    )
+    preflight = _corridor_preflight_from_snapshot(inputs) if admission_known else None
+    if admission_known:
+        # 统一准入规则（与同步入口 / ``CNSCorridorService.compute`` 同一份实现）：
+        # beyond_validated 默认拒绝、仅显式接受可继续；beyond_safety_ceiling 无条件阻断。
+        # worker 侧保留 B9R.1 的异常语义（``CorridorComplexityBlocked`` 携带估算件），
+        # worker 进程把它落盘成明确的业务拒绝（code=task_scale_not_accepted）。
+        from ..algorithms.corridor.v1 import CorridorComplexityBlocked
+        from ..application.corridor_service import _admission_rejection
+
+        reason = _admission_rejection(preflight, allow_beyond)
+        if reason is not None:
+            raise CorridorComplexityBlocked(dict(preflight, message=reason))
+    context.check_cancel()
+    context.progress(0.2, "正在计算服务走廊（体素探测与服务能力判定）")
     try:
         result = model.evaluate(
             inputs.get("routes") or [], inputs.get("spatial_3d") or {},
@@ -240,7 +309,7 @@ def _corridor_runner(context):
             cancel_check=cancel_check,
             progress_callback=lambda value, message: context.progress(value / 100.0, message),
             preflight=preflight if isinstance(preflight, dict) else None,
-            # B9R.1：快照里冻结的显式风险接受**只**解锁 beyond_validated_envelope 一档；
+            # B9R.1：显式风险接受**只**解锁 beyond_validated_envelope 一档；
             # beyond_safety_ceiling 由算法层无条件阻断，任何 flag 都不得绕过。
             allow_beyond_validated_envelope=allow_beyond,
         )

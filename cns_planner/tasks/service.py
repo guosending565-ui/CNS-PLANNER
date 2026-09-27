@@ -363,6 +363,10 @@ class HeavyTaskService:
                 "任务提交时使用的算法版本当前不可用，请重新运行。"
             ),
             "task_worker_lost": "计算进程已中断，请重新运行",
+            "task_scale_not_accepted": (
+                "规模超过当前已验证性能范围，未执行计算。"
+                "如确需继续，请在提交时显式确认超包线运行。"
+            ),
             "task_execution_failed": "计算未能完成，请检查输入后重试",
             "task_publish_failed": "结果发布失败，原有正式结果未被替换",
         }.get(code, "计算未能完成，请重试")

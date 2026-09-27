@@ -41,6 +41,8 @@ ARTIFACT_DIRECTORY = ".cns-results"
 ARTIFACT_TEMP_DIRECTORY = ".cns-results/tmp"
 CONTENT_ENCODING_JSON_GZ = "json.gz"
 _GZIP_LEVEL = 6
+#: gzip 压缩级别（deterministic：``mtime=0`` + 固定级别 ⇒ 相同内容相同字节）。
+GZIP_LEVEL = _GZIP_LEVEL
 _JSON_KWARGS = {
     "ensure_ascii": False, "sort_keys": True, "separators": (",", ":"),
     "allow_nan": False,
@@ -87,12 +89,33 @@ def utc_now():
 def serialize_payload(payload, *, schema_version=ARTIFACT_SCHEMA_VERSION):
     """deterministic serialize → gzip。相同 logical content ⇒ 相同字节。"""
 
+    raw = payload_envelope_bytes(payload, schema_version=schema_version)
+    return gzip.compress(raw, compresslevel=_GZIP_LEVEL, mtime=0)
+
+
+def payload_envelope_bytes(payload, *, schema_version=ARTIFACT_SCHEMA_VERSION):
+    """信封 JSON 的确定性字节（``serialize_payload`` 的前半段，不做 gzip）。
+
+    B9R.2Q：调用方需要"同一份 payload 的两个摘要"（文件字节 SHA-256 与
+    payload 指纹）时，可以直接复用这**一次** JSON 编码的字节，而不必把整个
+    payload 序列化两遍——后者在 12 MB 输入上实测约 0.16 s，且完全落在提交短锁内。
+    """
+
     envelope = {
         "artifact_schema_version": int(schema_version),
         "payload": payload,
     }
-    raw = json.dumps(envelope, **_JSON_KWARGS).encode("utf-8")
-    return gzip.compress(raw, compresslevel=_GZIP_LEVEL, mtime=0)
+    return json.dumps(envelope, **_JSON_KWARGS).encode("utf-8")
+
+
+def payload_digest(payload, *, schema_version=ARTIFACT_SCHEMA_VERSION):
+    """``serialize_payload`` 结果的 SHA-256（= 输入指纹 / 内容寻址名的同一口径）。
+
+    与 ``content_digest(serialize_payload(payload))`` 完全等价，但允许调用方复用已经
+    算出来的 ``serialize_payload`` 字节，不必为了指纹再序列化一次。
+    """
+
+    return content_digest(serialize_payload(payload, schema_version=schema_version))
 
 
 def deserialize_payload(compressed, *, expected_schema_version=None):
@@ -584,8 +607,10 @@ def collect_artifact_references(document):
 __all__ = [
     "ARTIFACT_DIRECTORY", "ARTIFACT_SCHEMA_VERSION", "ARTIFACT_TEMP_DIRECTORY",
     "ArtifactCorrupt", "ArtifactError", "ArtifactPublishError", "ArtifactStore",
-    "ArtifactUnavailable", "CONTENT_ENCODING_JSON_GZ", "PERMANENT_REFERENCE_PREFIXES",
+    "ArtifactUnavailable", "CONTENT_ENCODING_JSON_GZ", "GZIP_LEVEL",
+    "PERMANENT_REFERENCE_PREFIXES",
     "artifact_metadata", "artifact_ref", "collect_artifact_references",
-    "content_digest", "deserialize_payload", "is_artifact_ref", "serialize_payload",
+    "content_digest", "deserialize_payload", "is_artifact_ref",
+    "payload_digest", "payload_envelope_bytes", "serialize_payload",
     "utc_now",
 ]
