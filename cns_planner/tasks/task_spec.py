@@ -79,6 +79,15 @@ class TaskInputChanged(Exception):
         self.message = message
 
 
+class TaskPerformanceAdmissionUpgradeRequired(TaskInputChanged):
+    """极旧快照缺少性能准入元数据：fail-closed 并要求重新提交。"""
+
+    code = "task_performance_admission_upgrade_required"
+
+    def __init__(self, message="该后台任务创建于性能准入规则升级前，请重新提交任务。"):
+        super().__init__(message)
+
+
 @dataclass
 class WorkerInputs:
     """worker 侧解析出的权威输入。"""
@@ -248,6 +257,7 @@ class TaskSpec:
 
 __all__ = [
     "ADVANCED_STATUSES", "TASK_STATUS_TEXT", "TaskCancelled", "TaskInputChanged",
-    "TaskRunResult", "TaskSpec", "WorkerInputs", "WorkerResultRef",
+    "TaskPerformanceAdmissionUpgradeRequired", "TaskRunResult", "TaskSpec",
+    "WorkerInputs", "WorkerResultRef",
     "fingerprint_payload", "status_message",
 ]

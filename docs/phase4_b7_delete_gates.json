@@ -1,7 +1,7 @@
 {
   "generator_schema_version": "phase4-b7r-delete-gates-v4",
   "schema_version": "phase4-b7r-delete-gates-v4",
-  "generated_from_head": "8527ba45df33beb14e2986b898b0f312ea43561e",
+  "generated_from_head": "80003303f06fdf98a10560aaf324954d7486c182",
   "mode": "report_only_no_deletion",
   "note": "B7R 只报告：即使 ready_for_delete=true 也不删除任何模块，物理删除留给 B8。每项 checks 都是对当前工作区的真实扫描结果；project_state_writer 只由目标 capability 自己拥有的 persistent ProjectState writer 阻塞，canonical/shared/runtime-only 写点保留为非阻塞证据；default_selection 用 default_algorithm_selection() 精确比较，old_fixture_read 由真实 open/read/export/roundtrip 实测得出。",
   "check_semantics": {

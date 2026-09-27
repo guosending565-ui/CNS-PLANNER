@@ -3,7 +3,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from cns_planner.algorithms.registry import default_algorithm_selection
+import pytest
+
+from cns_planner.algorithms.registry import (
+    AlgorithmNotFoundError, build_default_algorithm_registry,
+    default_algorithm_selection,
+)
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import blank_project, normalize_project
 from cns_planner.application.workflow_service import WorkflowService
@@ -159,12 +164,60 @@ def test_compatibility_catalog_remains_but_compute_and_selection_routes_are_gone
     assert workflow.state == before
 
 
+def test_catalog_runtime_flags_match_actual_router_compute_routes(tmp_path):
+    """Catalog 只能声明 router 里实际存在的 runtime compute 能力。"""
+
+    workflow = WorkflowService(tmp_path / "catalog-contract.json", DEFAULTS)
+    router = ApiRouter(SimpleNamespace(
+        workflow=workflow, data=SimpleNamespace(hard_constraints=[]), static=tmp_path,
+    ))
+    for item in capability_catalog()["items"]:
+        candidates = (item["namespace"], item["namespace"].rstrip("/") + "/evaluate")
+        actual_compute = any(router.post(path, {}).status != 404 for path in candidates)
+        assert item["allow_runtime_compute"] is actual_compute
+        assert item["read_existing"] is True
+
+
 def test_compatibility_selection_is_passive_and_never_constructs_an_algorithm(tmp_path):
     workflow = WorkflowService(tmp_path / "selection.json", DEFAULTS)
     selection = workflow.compatibility_selection.selection("route_planner")
     assert selection["algorithm_id"] == "route_planner_v1"
     assert selection["selection_source"] == "frozen_compatibility_baseline"
+    coverage = workflow.compatibility_selection.selection("coverage_planner")
+    assert coverage["algorithm_id"] == "coverage_planner_v1"
+    assert coverage["selection_source"] == "frozen_compatibility_baseline"
     assert not hasattr(workflow.compatibility_selection, "create")
+
+
+def test_coverage_v1_implementation_is_removed_but_metadata_remains():
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "cns_planner/algorithms/coverage/v1.py").exists()
+    assert not (root / "cns_planner/algorithms/coverage_planner.py").exists()
+
+    item = next(
+        item for item in capability_catalog()["items"]
+        if item["capability_id"] == "CoveragePlannerV1"
+    )
+    assert item["algorithm_id"] == "coverage_planner_v1"
+    assert item["read_existing"] is True
+    assert item["allow_runtime_compute"] is False
+
+    registry = build_default_algorithm_registry(
+        json.loads(DEFAULTS.read_text(encoding="utf-8"))
+    )
+    with pytest.raises(AlgorithmNotFoundError):
+        registry.create("coverage_planner", "coverage_planner_v1", "1.0")
+
+
+def test_route_planner_v3_research_implementation_is_retained():
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "cns_planner/route_planner_v3").is_dir()
+    item = next(
+        item for item in capability_catalog()["items"]
+        if item["capability_id"] == "RoutePlannerV3"
+    )
+    assert item["lifecycle"] == "research"
+    assert item["allow_runtime_compute"] is False
 
 
 def test_catalog_and_delete_gate_report_are_complete():

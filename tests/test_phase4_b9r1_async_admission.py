@@ -71,11 +71,15 @@ from cns_planner.tasks.handlers import plan_submission
 from cns_planner.tasks.task_input import (
     AlgorithmResolver, InputSnapshotStore, fingerprint_of,
 )
-from cns_planner.tasks.task_spec import TaskCancelled
+from cns_planner.tasks.task_spec import (
+    TaskCancelled, TaskInputChanged, TaskPerformanceAdmissionUpgradeRequired,
+)
 from cns_planner.tasks.task_specs import (
     CORRIDOR_PERFORMANCE_ADMISSION_POLICY_VERSION, CORRIDOR_TASK_TYPE,
     _corridor_runner, task_spec,
 )
+from cns_planner.tasks.task_store import STALE, TaskStore, resolve_task_store_path
+from cns_planner.tasks.worker import WorkerContext, run_task
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = REPO_ROOT / "cns_planner" / "config" / "defaults.json"
@@ -779,6 +783,82 @@ def test_submit_short_lock_does_not_run_complexity_preflight(project, monkeypatc
     assert result.staged is not None
 
 
+def test_pre_b9_snapshot_without_admission_metadata_requires_resubmit(project):
+    """极旧快照必须 fail-closed，不能跳过准入进入 corridor 主计算。"""
+
+    data, _estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
+    project.load(data)
+    plan = project.submit({})
+    snapshot = project.snapshots.load(plan["input_snapshot_ref"])
+    snapshot["inputs"].pop("performance_admission_policy_version", None)
+    snapshot["inputs"].pop("performance_admission_policy", None)
+
+    before = staged_files(project.workdir)
+    with pytest.raises(TaskPerformanceAdmissionUpgradeRequired) as caught:
+        run_corridor_runner(snapshot, project.workdir)
+
+    assert caught.value.code == "task_performance_admission_upgrade_required"
+    assert "请重新提交任务" in str(caught.value)
+    assert isinstance(caught.value, TaskInputChanged), "worker 会将该受控异常落为 stale"
+    assert_no_new_staged(before, staged_files(project.workdir))
+    assert_no_canonical_result(project)
+
+
+def test_pre_b9_snapshot_is_persisted_as_stale_with_upgrade_code(project, monkeypatch):
+    """真实 worker 收口：专用异常必须落盘为 stale + 稳定业务 code。"""
+
+    data, _estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
+    project.load(data)
+    plan = project.submit({})
+    snapshot = project.snapshots.load(plan["input_snapshot_ref"])
+    snapshot["inputs"].pop("performance_admission_policy_version", None)
+    snapshot["inputs"].pop("performance_admission_policy", None)
+    stored = project.snapshots.store(snapshot)
+
+    store = TaskStore(resolve_task_store_path(project.workflow.store_path))
+    record = store.create(
+        task_type=plan["task_type"], scope_id=plan["scope_id"],
+        message=plan["message"], input_fingerprint=stored["artifact_id"],
+        input_revision=plan["input_revision"],
+        input_snapshot_ref=stored["relative_path"],
+        worker_payload=plan["worker_payload"],
+    )
+    # 本测试只隔离 runner 的升级门禁；模拟旧任务在输入事实未变化时被恢复。
+    monkeypatch.setattr(
+        WorkerContext, "current_input_fingerprint",
+        lambda self: str(self.record.get("input_fingerprint") or ""),
+    )
+
+    code = run_task(
+        task_id=record["task_id"], task_type=CORRIDOR_TASK_TYPE,
+        workdir=project.workflow.store_path, store_directory=store.directory,
+        interval_seconds=0.05, project_root=REPO_ROOT,
+    )
+    final = store.get(record["task_id"])
+    assert code == 0
+    assert final["status"] == STALE
+    assert final["error"] == {
+        "code": "task_performance_admission_upgrade_required",
+        "message": "该后台任务创建于性能准入规则升级前，请重新提交任务。",
+    }
+    assert final["result_artifact_ref"] is None
+
+
+def test_b9r1_snapshot_with_frozen_complexity_estimate_remains_runnable(project):
+    """B9R.1 旧快照虽无 policy version，只要有冻结 estimate 仍兼容运行。"""
+
+    data, estimate = fixture_with_tier(COMPLEXITY_TIER_VALIDATED)
+    project.load(data)
+    plan = project.submit({})
+    snapshot = project.snapshots.load(plan["input_snapshot_ref"])
+    snapshot["inputs"].pop("performance_admission_policy_version", None)
+    snapshot["inputs"].pop("performance_admission_policy", None)
+    snapshot["inputs"]["complexity_estimate"] = deepcopy(estimate)
+
+    _context, result = run_corridor_runner(snapshot, project.workdir)
+    assert result.staged is not None
+
+
 def test_worker_scale_rejection_maps_to_business_text():
     """B9R.2Q：worker 把规模拒绝落盘为 ``task_scale_not_accepted``，服务端给出中文说明。
 
@@ -788,17 +868,36 @@ def test_worker_scale_rejection_maps_to_business_text():
 
     from cns_planner.tasks.service import HeavyTaskService
 
-    business = HeavyTaskService._business_error({
+    validated = HeavyTaskService._business_error({
         "error": {"code": "task_scale_not_accepted",
-                  "message": "规模超过当前已验证性能范围，请改用后台计算"},
+                  "message": "blocked",
+                  "detail": {"tier": COMPLEXITY_TIER_BEYOND}},
     })
-    assert business["code"] == "task_scale_not_accepted"
-    assert "规模超过当前已验证性能范围" in business["text"]
-    assert "超包线" in business["text"]
+    assert validated["code"] == "task_scale_not_accepted"
+    assert validated["text"] == (
+        "规模超过当前已验证性能范围，未执行计算；"
+        "如确需继续，可显式确认超包线后台运行。"
+    )
+
+    ceiling = HeavyTaskService._business_error({
+        "error": {"code": "task_scale_not_accepted", "message": "blocked",
+                  "detail": {"tier": COMPLEXITY_TIER_CEILING}},
+    })
+    assert ceiling["text"] == (
+        "规模超过当前版本可安全承担的硬上限，已在计算前阻断；"
+        "请缩小航路/工作范围或减少输入规模。"
+    )
+    assert "显式确认" not in ceiling["text"]
+    assert "override" not in ceiling["text"].lower()
+
+    upgrade = HeavyTaskService._business_error({
+        "error": {"code": "task_performance_admission_upgrade_required"},
+    })
+    assert upgrade["text"] == "该后台任务创建于性能准入规则升级前，请重新提交任务。"
 
     generic = HeavyTaskService._business_error(
         {"error": {"code": "task_execution_failed", "message": "boom"}})
-    assert generic["text"] != business["text"]
+    assert generic["text"] != validated["text"]
 
 
 def test_progress_and_cancel_contract_are_preserved(project):

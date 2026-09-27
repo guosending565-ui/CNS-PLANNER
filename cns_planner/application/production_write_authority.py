@@ -161,13 +161,11 @@ def write_runtime_compatibility_result(
     capability_id = {
         "risk_aware_route_planner_v2": "RiskAwareRoutePlannerV2",
         "route_planner_v1": "RoutePlannerV1",
-        "coverage_planner_v1": "CoveragePlannerV1",
         "cns_gap_analysis_v1": "CNSGapAnalyzerV1",
         "cns_gap_analysis_v2": "CNSGapAnalyzerV2",
         "reuse_first_site_planner_v1": "ReuseFirstSitePlannerV1",
     }.get(str(algorithm_id)) or {
         "operational_routes": "RoutePlannerV1",
-        "coverage": "CoveragePlannerV1",
         "cns_gap_analysis": "CNSGapAnalyzerV1",
         "cns_gap_analysis_v2": "CNSGapAnalyzerV2",
         "cns_site_plan": "ReuseFirstSitePlannerV1",

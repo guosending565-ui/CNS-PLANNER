@@ -9,7 +9,7 @@ _CAPABILITIES = (
     {
         "capability_id": "RoutePlannerV1", "algorithm_id": "route_planner_v1",
         "lifecycle": "compatibility", "deprecated": True,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "LayeredRiskAwareThetaStarV2",
         "namespace": "/api/compatibility/route-planner",
@@ -18,7 +18,7 @@ _CAPABILITIES = (
     {
         "capability_id": "RiskAwareRoutePlannerV2", "algorithm_id": "risk_aware_route_planner_v2",
         "lifecycle": "compatibility", "deprecated": True,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "LayeredRiskAwareThetaStarV2",
         "namespace": "/api/compatibility/route-planner",
@@ -27,7 +27,7 @@ _CAPABILITIES = (
     {
         "capability_id": "LayeredRoutePlannerV1", "algorithm_id": "layered_route_planner_v1",
         "lifecycle": "compatibility", "deprecated": True,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "LayeredRiskAwareThetaStarV2",
         "namespace": "/api/compatibility/layered-route-planner",
@@ -36,7 +36,7 @@ _CAPABILITIES = (
     {
         "capability_id": "CoveragePlannerV1", "algorithm_id": "coverage_planner_v1",
         "lifecycle": "compatibility", "deprecated": True,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "GeometricCoverage3D",
         "namespace": "/api/compatibility/coverage",
@@ -45,7 +45,7 @@ _CAPABILITIES = (
     {
         "capability_id": "CNSGapAnalyzerV1", "algorithm_id": "cns_gap_analysis_v1",
         "lifecycle": "compatibility", "deprecated": True,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "CNSCorridorGapAnalyzerV1",
         "namespace": "/api/compatibility/cns-gap-analysis-v1",
@@ -54,7 +54,7 @@ _CAPABILITIES = (
     {
         "capability_id": "CNSGapAnalyzerV2", "algorithm_id": "cns_gap_analysis_v2",
         "lifecycle": "advanced", "deprecated": False,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "CNSCorridorGapAnalyzerV1",
         "namespace": "/api/compatibility/cns-gap-analysis-v2",
@@ -63,7 +63,7 @@ _CAPABILITIES = (
     {
         "capability_id": "ReuseFirstSitePlannerV1", "algorithm_id": "reuse_first_site_planner_v1",
         "lifecycle": "compatibility", "deprecated": True,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "CorridorReuseFirstSitePlannerV2",
         "namespace": "/api/compatibility/site-plan",
@@ -72,7 +72,7 @@ _CAPABILITIES = (
     {
         "capability_id": "RoutePlannerV3", "algorithm_id": "route_planner_v3_a_b_c_d",
         "lifecycle": "research", "deprecated": False,
-        "read_existing": True, "allow_runtime_compute": True,
+        "read_existing": True, "allow_runtime_compute": False,
         "persistent_write": False, "production_authority": False,
         "replacement": "LayeredRiskAwareThetaStarV2",
         "namespace": "/api/research/route-planner-v3",

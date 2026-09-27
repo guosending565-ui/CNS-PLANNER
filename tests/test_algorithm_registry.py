@@ -80,6 +80,9 @@ def test_default_registry_contains_only_executable_current_manifests_and_no_pyth
             "assumptions", "limitations", "references",
         }
         assert "python" not in item and "module" not in item and "class" not in item
+    assert not any(
+        item.algorithm_id == "coverage_planner_v1" for item in registry.manifests()
+    )
 
 
 def test_registry_requires_exact_id_and_version_without_fallback():

@@ -1,2 +1,5 @@
-from .v1 import CoveragePlannerV1
-__all__ = ["CoveragePlannerV1"]
+"""Production coverage algorithms."""
+
+from .geometric_3d import GeometricCoverage3DV1
+
+__all__ = ["GeometricCoverage3DV1"]

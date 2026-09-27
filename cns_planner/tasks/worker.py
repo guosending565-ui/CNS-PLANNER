@@ -375,7 +375,13 @@ def run_task(*, task_id, task_type, workdir, store_directory,
         )
         return 0
     except TaskInputChanged as exc:
-        _mark_stale(context, reason=str(exc), message="输入已变化，请重新运行")
+        code = str(getattr(exc, "code", "task_input_changed"))
+        message = (
+            str(exc)
+            if code == "task_performance_admission_upgrade_required"
+            else "输入已变化，请重新运行"
+        )
+        _mark_stale(context, reason=str(exc), message=message, code=code)
         return 0
     except TaskAlgorithmVersionUnavailable as exc:
         _finish_unless_terminal(

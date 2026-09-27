@@ -38,7 +38,8 @@ from ..domain.cns_corridor import (
 )
 from .task_input import CORRIDOR_ALGORITHM_TYPES
 from .task_spec import (
-    TaskCancelled, TaskInputChanged, TaskRunResult, TaskSpec, WorkerResultRef,
+    TaskCancelled, TaskInputChanged, TaskPerformanceAdmissionUpgradeRequired,
+    TaskRunResult, TaskSpec, WorkerResultRef,
     fingerprint_payload,
 )
 from .task_store import TERMINAL_STATUSES
@@ -257,6 +258,18 @@ def _corridor_cancel_probe(context, interval_seconds=1.0):
 def _corridor_runner(context):
     snapshot = context.inputs["snapshot"]
     inputs = snapshot.get("inputs") or {}
+    # 极旧快照既没有 B9R.1 冻结估算、也没有新版策略版本时必须 fail-closed：
+    # 不从当前 ProjectState 补数据、不套用当前 policy、更不能绕过准入继续计算。
+    admission_known = (
+        isinstance(inputs.get("performance_admission_policy_version"), str)
+        and bool(inputs.get("performance_admission_policy_version").strip())
+    ) or (
+        isinstance(inputs.get("complexity_estimate"), dict)
+        and bool(inputs.get("complexity_estimate"))
+    )
+    if not admission_known:
+        raise TaskPerformanceAdmissionUpgradeRequired()
+    preflight = _corridor_preflight_from_snapshot(inputs)
     algorithms = context.algorithms()
     context.check_cancel()
     context.progress(0.05, "正在准备服务走廊评估输入")
@@ -278,23 +291,17 @@ def _corridor_runner(context):
     # B9R.2：规模准入在 worker 侧、**从 immutable snapshot 的原始输入**计算，
     # 然后先做准入判定、再进入 corridor 主计算。worker 绝不回读当前 ProjectState，
     # 估算的全部源输入都来自提交那一刻冻结的快照。
-    # 估算件缺失且快照没有准入策略记录（极旧快照）时不做准入判定，行为退化为 B9。
-    admission_known = (
-        isinstance(inputs.get("performance_admission_policy_version"), str)
-        or isinstance(inputs.get("complexity_estimate"), dict)
-    )
-    preflight = _corridor_preflight_from_snapshot(inputs) if admission_known else None
-    if admission_known:
-        # 统一准入规则（与同步入口 / ``CNSCorridorService.compute`` 同一份实现）：
-        # beyond_validated 默认拒绝、仅显式接受可继续；beyond_safety_ceiling 无条件阻断。
-        # worker 侧保留 B9R.1 的异常语义（``CorridorComplexityBlocked`` 携带估算件），
-        # worker 进程把它落盘成明确的业务拒绝（code=task_scale_not_accepted）。
-        from ..algorithms.corridor.v1 import CorridorComplexityBlocked
-        from ..application.corridor_service import _admission_rejection
+    # 统一准入规则（与同步入口 / ``CNSCorridorService.compute`` 同一份实现）：
+    # beyond_validated 默认拒绝、仅显式接受可继续；beyond_safety_ceiling 无条件阻断。
+    # worker 侧保留 B9R.1 的异常语义（``CorridorComplexityBlocked`` 携带估算件），
+    # worker 进程把它落盘成明确的业务拒绝（code=task_scale_not_accepted）。
+    from ..algorithms.corridor.v1 import CorridorComplexityBlocked
+    from ..application.corridor_service import _admission_rejection
 
-        reason = _admission_rejection(preflight, allow_beyond)
-        if reason is not None:
-            raise CorridorComplexityBlocked(dict(preflight, message=reason))
+    reason = _admission_rejection(preflight, allow_beyond)
+    if reason is not None:
+        stop_probe()
+        raise CorridorComplexityBlocked(dict(preflight, message=reason))
     context.check_cancel()
     context.progress(0.2, "正在计算服务走廊（体素探测与服务能力判定）")
     try:
@@ -308,7 +315,7 @@ def _corridor_runner(context):
             capability_parameters=capability_parameters,
             cancel_check=cancel_check,
             progress_callback=lambda value, message: context.progress(value / 100.0, message),
-            preflight=preflight if isinstance(preflight, dict) else None,
+            preflight=preflight,
             # B9R.1：显式风险接受**只**解锁 beyond_validated_envelope 一档；
             # beyond_safety_ceiling 由算法层无条件阻断，任何 flag 都不得绕过。
             allow_beyond_validated_envelope=allow_beyond,
