@@ -275,13 +275,14 @@ class PlanReviewService:
         for name in ("cns_corridor_assessment", "cns_corridor_gap_assessment"):
             if (state.get(name) or {}).get("status") in (None, "not_calculated", "missing_data", "stale"):
                 raise ValueError(f"P18 需要 current {name}")
+        # P16 必须 current：candidate_sites / site_planner /
+        # corridor_site_planning_policy 的变化只让 P16 变 stale（P14/P15 仍 current），
+        # device catalog 的变化会连带 P14；两种情况下若放行，P18 都可能依据**旧**的
+        # P16 candidate_actions / selected_actions 初始化正式评审，基于已经变化的
+        # 候选站或设备。上游 P14/P15 的重算是否让 P16 失效由 ``conclusion_changed``
+        # 决定：同一 input_fingerprint 的无变化重算不会制造 stale，因此这里的
+        # fail-closed 不会让审阅无法初始化。
         proposal_status = (state.get("cns_corridor_site_plan") or {}).get("status")
-        if proposal_status == "stale":
-            # P16 变 stale 有两种来源：它的上游 P14/P15 真的变了（上面已拦截），
-            # 或者只是 P15 被重算了一次。后者会让审阅永远无法初始化，而审阅本身
-            # 只消费 P16 的派生提案、不做任何权威采用（Apply 会重新运行 P7–P16
-            # 并重新校验指纹），因此在 P14/P15 已 current 时可以继续。
-            return
         if proposal_status not in ("proposal_ready", "no_action_required", "no_eligible_proposal", "evidence_required"):
             raise ValueError("P18 需要 current P16 proposal/status")
 

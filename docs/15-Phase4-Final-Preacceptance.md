@@ -7,8 +7,8 @@
 
 | 项 | 值 |
 |---|---|
-| HEAD | `30281644731602bf967ee44d866da470ecb4f2b0` |
-| tag | `phase4-final-freeze`（与 HEAD 精确匹配） |
+| 冻结基线 | tag `phase4-final-freeze`（本报告记录的就是该 tag 上的验收；该 tag 之后 main 上继续做预验收稳定化修复，见第 16 节） |
+| HEAD（验收当时） | `30281644731602bf967ee44d866da470ecb4f2b0` |
 | 固定解释器 | `D:\tools\anaconda\python.exe`（Python 3.13.9） |
 | 地理依赖 | shapely 2.1.2 / geopandas 1.1.4 / pyproj / rasterio 在固定解释器内**可用**，本轮**未出现 ENVIRONMENT-LIMITED** |
 | 真实后端 | QGIS 3.44.14 自带 `python-qgis*.bat` 运行 `-m cns_planner.map_server`（`http://127.0.0.1:8765`），`/api/health` 如实上报 `git_commit` |
@@ -118,7 +118,7 @@ PHASE4_PREACCEPTANCE_READY=true
 | 修改文件 | `cns_planner/application/corridor_service.py`、`cns_planner/application/corridor_gap_service.py`、`cns_planner/application/plan_review_service.py` |
 | 回归结果 | `tests/test_plan_review.py` 12 passed（新增 3 项：P15 指纹不变保持 P16、P14 指纹不变保持 P15/P16 且 P18 可初始化、P14 真 stale 仍 fail-closed）；HTTP 验收 S6-INIT-1/2 起 Step 6 全链 PASS |
 
-修复要点：新增共享判定 `conclusion_changed(previous, current)` —— **只有 `input_fingerprint` 变化才让下游失效**，同一结论的重算不再让 P15/P16 变 stale；同时 P18 门禁在 P14/P15 已 current 时接受 stale P16（P18 只消费派生提案，Apply 会重跑 P7–P16 并重新校验指纹）。
+修复要点：新增共享判定 `conclusion_changed(previous, current)` —— **只有 `input_fingerprint` 变化才让下游失效**，同一结论的重算不再让 P15/P16 变 stale。P18 门禁的处置已由本轮 PREACCEPTANCE-R1 收紧，见第 16 节（当时临时接受 stale P16 的做法已撤销）。
 
 ### BUG-03（MAJOR/BLOCKER）项目切换后 heavy task 冻结旧项目输入，异步任务永不发布
 
@@ -307,8 +307,8 @@ python -m compileall cns_planner tests tools：通过
 
 | 项 | 值 |
 |---|---|
-| HEAD | `30281644731602bf967ee44d866da470ecb4f2b0` |
-| tag | `phase4-final-freeze` |
+| 冻结基线 | `phase4-final-freeze` |
+| HEAD（验收当时） | `30281644731602bf967ee44d866da470ecb4f2b0` |
 | smoke 项目 | `C:\Users\yiding\Documents\ChatGPT\CNS_VALIDATION\phase4_final_smoke\rc_acceptance_run` |
 | 六步结果 | Step1 PASS / Step2 PASS_WITH_WARNING / Step3 PASS / Step4 PASS / Step5 PASS_WITH_WARNING / Step6 PASS |
 | 是否真正走到最终报告 | **是**（`report status=passed`，`report.html` 431 746 B、`report.pdf` 186 029 B、`planning-package.zip` 250 638 B 均可读） |
@@ -326,4 +326,54 @@ python -m compileall cns_planner tests tools：通过
 | git diff --check | 通过 |
 | `PHASE4_PREACCEPTANCE_READY` | **true** |
 | 人工验收前剩余 blocker | **无**；剩余为数据前置（Step 5 三维几何 provider / 既有 CNS 设施）与 Step 2 真实 constraint evidence |
+
+## 16. 冻结基线之上的预验收稳定化修订（Phase4-PREACCEPTANCE-R1）
+
+> 范围：**只收紧 P16 stale → P18 review 门禁 + 文档对齐**。不重构、不改算法、不开新功能、不 commit / push / 打 tag。
+
+### 16.1 为什么撤销"接受 stale P16"
+
+BUG-02 一轮曾让 `PlanReviewService._require_current_inputs` 在 `cns_corridor_site_plan.status == "stale"` 时直接放行。这一放行不安全：
+
+- `candidate_sites` 与 `corridor_site_planning_policy`（DEPENDENTS 中 `candidate_sites` / `site_planner` / `corridor_site_planning_policy` 均只指向 `cns_corridor_site_plan`）的变化**只**让 P16 变 stale，P14/P15 仍是 current；
+- 此时放行，P18 会读取**旧** P16 的 `candidate_actions` / `selected_actions` 去初始化正式评审，可能基于已经变化的候选站或设备。
+
+### 16.2 修改
+
+| 文件 | 修改 |
+|---|---|
+| `cns_planner/application/plan_review_service.py` | 删除 `proposal_status == "stale" → return`；恢复 fail-closed：只有 `proposal_ready` / `no_action_required` / `no_eligible_proposal` / `evidence_required` 可进入 P18，其余（含 `stale` / `missing_data` / `not_calculated`）抛 `P18 需要 current P16 proposal/status`。P14/P15 判定未改。 |
+| `cns_planner/application/corridor_service.py`、`corridor_gap_service.py` | **保留** `conclusion_changed(previous, current)`：同一 `input_fingerprint` 的 P14/P15 重算仍不得让下游 stale。 |
+| `README.md` | 冻结基线不再写死 `HEAD <sha>`；改为"冻结基线 tag `phase4-final-freeze` + 当前 main 为冻结基线之上的预验收稳定化修复"。 |
+| `tests/test_plan_review.py` | 新增 A–E 回归（见 16.3），删除旧的"stale P16 仍可初始化"断言。 |
+
+### 16.3 回归测试 A–E
+
+| 用例 | 场景 | 断言 |
+|---|---|---|
+| A | 完整 current P14/P15/P16 → 重算相同 P14 | P15/P16 input_fingerprint 不变且非 stale；P18 initialize PASS |
+| B | 完整 current P14/P15/P16 → 重算相同 P15 | P16 保持 current；P18 initialize PASS |
+| C | 完整 current P14/P15/P16 → 导入新的 `candidate_sites` | 只有 P16 变 stale（旧 `candidate_actions` 仍在 state 中）；P14/P15 仍 current；P18 initialize **拒绝** |
+| D | site planning policy / device catalog 变化 | P16 stale；P18 initialize **拒绝**（device 同时 stale P14，因此按上游门禁拒绝） |
+| E | C 之后重新 evaluate P16 → `proposal_ready` | P18 initialize PASS |
+
+补充：`stale` / `missing_data` / `not_calculated` 三种 P16 状态均被拒绝；P14 真 stale 仍按上游门禁 fail-closed。
+
+**重点结论**："无变化重算"不再制造 stale（A/B PASS），但"真正 P16 输入变化"仍 fail-closed（C/D 拒绝、E 恢复）。
+
+### 16.4 本轮验证
+
+```text
+HEAD：f373fac45bd534df7a70594611e7b433a7960618（未 commit、未 push）
+定向：pytest -q tests/test_plan_review.py tests/test_corridor_site_planner_v2.py tests/test_cns_corridor_gap.py
+      → 47 passed
+full：pytest -q -p no:cacheprovider  → 1691 passed, 7 skipped
+git diff --check → 通过（无空白错误）
+PREACCEPTANCE_R1_READY=true
+```
+
+说明：full 首跑曾出现 1 项与本次改动无关的偶发失败
+（`tests/test_phase4_b6r_immutable_task_input.py::test_restart_can_read_snapshot_and_run_queued_task`
+——真实 worker 子进程时序导致的 `task_input_changed`）。该文件单独重复运行 3 次均 30 passed，
+且该文件在字母序上先于本轮改动的 `tests/test_plan_review.py` 执行；全套重跑 1691 passed 未复现。
 

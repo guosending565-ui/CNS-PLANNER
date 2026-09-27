@@ -9,7 +9,8 @@ CNS-PLANNER 是一个面向低空航路与 CNS（Communication / Navigation / Su
 
 ## 1. 当前定位与版本状态
 
-- **冻结基线**：tag `phase4-final-freeze`，HEAD `30281644731602bf967ee44d866da470ecb4f2b0`。
+- **冻结基线**：tag `phase4-final-freeze`。
+- **当前 main**：冻结基线之上的预验收稳定化修复（不含新算法、不改冻结数学）。
 - **当前阶段**：Phase 4 冻结版 Release Candidate。主流程（六步）与正式链已成型，本阶段只做预验收、收敛与文档对齐，**不引入新算法、不进入 Phase 5**。
 - **正式工作流只有一套**：下面第 3 节的六步流程。`P1`–`P20` 之类的阶段编号只用于开发历史，**不是**用户工作流。
 - 算法版本号（如 `layered_risk_aware_theta_star_v2 @ 2.0`）只出现在技术章节与审计视图，不出现在主界面叙事里。
