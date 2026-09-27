@@ -33,12 +33,15 @@ from copy import deepcopy
 import threading
 import time
 
-from ..domain.cns_corridor import normalize_cns_corridor_policy
+from ..domain.cns_corridor import (
+    corridor_complexity_preflight, normalize_cns_corridor_policy,
+)
 from .task_input import CORRIDOR_ALGORITHM_TYPES
 from .task_spec import (
     TaskCancelled, TaskInputChanged, TaskRunResult, TaskSpec, WorkerResultRef,
     fingerprint_payload,
 )
+from .task_store import TERMINAL_STATUSES
 
 
 #: 业务 endpoint → task type（router 用它判断某次 POST 是否异步提交）。
@@ -91,6 +94,10 @@ def _corridor_inputs(state, payload):
     corridor policy 是随请求提交的显式输入，不是"当下 state"：提交时它被归一化后写进
     ``worker_payload``，此后任何一次重新生成（worker 变化检测 / publish compare）
     都只从 payload 取它。请求里没给 policy 时才回落到 state 里已确认的 policy。
+
+    B9R.1：**规模准入估算件（``complexity_estimate``）在这里一起冻结**。它是本份输入
+    的确定性事实，因此与输入一起进入 immutable snapshot，也一起进入 input
+    fingerprint——worker 与同步入口都只消费这份冻结值，任何一侧都不重新估算。
     """
 
     payload = payload if isinstance(payload, dict) else {}
@@ -98,7 +105,7 @@ def _corridor_inputs(state, payload):
     if raw_policy is None:
         raw_policy = deepcopy(state.get("cns_corridor_policy")) or {}
     policy = normalize_cns_corridor_policy(raw_policy)
-    return {
+    inputs = {
         "routes": deepcopy(state.get("operational_routes") or []),
         "spatial_3d": deepcopy(state.get("spatial_3d") or {}),
         "grid": deepcopy(state.get("grid") or {}),
@@ -110,6 +117,10 @@ def _corridor_inputs(state, payload):
         "device_catalog": deepcopy(state.get("device_catalog") or {}),
         "corridor_policy": policy,
     }
+    inputs["complexity_estimate"] = corridor_complexity_preflight({
+        **inputs, "existing_facilities": inputs["existing_cns_facilities"],
+    })
+    return inputs
 
 
 def _corridor_scope(state, payload):
@@ -124,8 +135,10 @@ def _corridor_worker_payload(state, payload):
     只保留请求显式给出的 policy（归一化后），请求未给出时**不**写入：这样
     "本次请求的 policy"与"state 里已有的 policy"不会被混成两个不同的输入指纹。
 
-    B9R：``allow_beyond_validated_envelope`` 是请求显式给出的**风险接受**，因此与
+    B9R.1：``allow_beyond_validated_envelope`` 是请求显式给出的**风险接受**，因此与
     policy 同样只在显式给出时写入。它随 snapshot 冻结，worker 绝不回读当前 state。
+    它的语义**只**覆盖 ``beyond_validated_envelope`` 一档：``beyond_safety_ceiling``
+    由算法层无条件阻断，这个 flag 不得绕过。
     """
 
     payload = payload if isinstance(payload, dict) else {}
@@ -212,6 +225,9 @@ def _corridor_runner(context):
     cancel_check, stop_probe = _corridor_cancel_probe(context)
     worker_payload = snapshot.get("worker_payload") or {}
     allow_beyond = worker_payload.get("allow_beyond_validated_envelope") is True
+    # B9R.1：规模准入一律消费 snapshot 里冻结的估算件，**绝不**在当前 state 上重算。
+    # 估算件缺失（例如极旧的快照）时传 ``None``：算法层不做准入判定，行为退化为 B9。
+    preflight = inputs.get("complexity_estimate")
     try:
         result = model.evaluate(
             inputs.get("routes") or [], inputs.get("spatial_3d") or {},
@@ -223,7 +239,9 @@ def _corridor_runner(context):
             capability_parameters=capability_parameters,
             cancel_check=cancel_check,
             progress_callback=lambda value, message: context.progress(value / 100.0, message),
-            # B9R：仅在快照里冻结了显式风险接受时才允许越过硬安全天花板。
+            preflight=preflight if isinstance(preflight, dict) else None,
+            # B9R.1：快照里冻结的显式风险接受**只**解锁 beyond_validated_envelope 一档；
+            # beyond_safety_ceiling 由算法层无条件阻断，任何 flag 都不得绕过。
             allow_beyond_validated_envelope=allow_beyond,
         )
     except TaskCancelled:

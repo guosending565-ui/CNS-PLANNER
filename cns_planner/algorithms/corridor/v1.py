@@ -60,20 +60,28 @@ class CNSServiceCorridorV1:
         的返回值），默认 ``None`` 时本方法不做任何准入判定、也不额外估算（调用方
         若需要准入，应先自行估算并把结果传进来，避免重复准备 cell）。
 
-        传入 ``preflight`` 时：
+        传入 ``preflight`` 时按三档准入（B9R.1 统一语义）：
 
-        * ``tier == beyond_safety_ceiling`` 且未显式 ``allow_beyond_validated_envelope``
-          → 立即抛 :class:`CorridorComplexityBlocked`，**在构造任何结果之前**阻断；
-        * 其余情况照常计算，数学与 result schema 完全不变。
+        * ``tier == beyond_safety_ceiling`` → **无条件**抛
+          :class:`CorridorComplexityBlocked`，**在构造任何结果之前**阻断；
+          ``allow_beyond_validated_envelope`` 不得绕过这一档；
+        * ``tier == beyond_validated_envelope`` 且 ``allow_beyond_validated_envelope``
+          不为 ``True`` → 同样抛 :class:`CorridorComplexityBlocked`（计算前拒绝）；
+        * ``tier == within_validated_envelope`` → 照常计算。
 
-        准入判定只决定"当前版本是否承担这份工作量"，不改变任何计算结果。
+        准入判定只决定"当前版本是否承担这份工作量"，不改变任何计算结果：放行与否
+        都不影响数学与 result schema。
+
+        ``allow_beyond_validated_envelope=True`` 只表示调用方显式接受"超过已验证
+        性能包线"，**不**表示可以超过 ``beyond_safety_ceiling``。
         """
-        if (
-            isinstance(preflight, dict)
-            and preflight.get("tier") == COMPLEXITY_TIER_CEILING
-            and not allow_beyond_validated_envelope
-        ):
-            raise CorridorComplexityBlocked(preflight)
+        if isinstance(preflight, dict):
+            tier = preflight.get("tier")
+            if tier == COMPLEXITY_TIER_CEILING:
+                # 硬安全天花板：与调用方的风险接受无关，任何路径都不得越过。
+                raise CorridorComplexityBlocked(preflight)
+            if tier == COMPLEXITY_TIER_BEYOND and not allow_beyond_validated_envelope:
+                raise CorridorComplexityBlocked(preflight)
         cells = list((grid or {}).get("cells") or [])
         terrain = ((grid_attributes or {}).get("terrain") or {}).get("cells") or {}
         layers = list((spatial_3d or {}).get("altitude_layers") or [])
@@ -630,17 +638,27 @@ VALIDATED_EVALUATION_LIMIT = 3_000_000
 SAFETY_EVALUATION_CEILING = 10_000_000
 
 #: 判定分档（供 API / UI 如实展示，不解释为数据错误或安全失败）。
+#:
+#: B9R.1 统一准入语义（sync / async 一致）：
+#:
+#: * ``within_validated_envelope`` —— 同步与异步都正常计算；
+#: * ``beyond_validated_envelope`` —— 同步在计算前拒绝；异步**默认拒绝**，只有请求
+#:   显式给出 ``allow_beyond_validated_envelope=true`` 才继续；
+#: * ``beyond_safety_ceiling`` —— production 的同步与异步**永远**拒绝，
+#:   ``allow_beyond_validated_envelope`` 不得绕过；benchmark/research 若确需超过
+#:   ceiling，走 ``_dsh_prof`` 诊断脚本直接调用，不暴露 production override。
 COMPLEXITY_TIER_VALIDATED = "within_validated_envelope"
 COMPLEXITY_TIER_BEYOND = "beyond_validated_envelope"
 COMPLEXITY_TIER_CEILING = "beyond_safety_ceiling"
 
+#: ``beyond_validated_envelope`` 档的**准入**说明（"继续"仅指超过已验证包线）。
 COMPLEXITY_MESSAGE_BEYOND = (
-    "规模超过当前已验证性能范围，结果可能需要数分钟且占用数 GB 内存；"
-    "异步任务可显式继续，同步执行默认拒绝。"
+    "规模超过当前已验证性能范围，请改用后台计算；"
+    "如确需继续，请在后台任务中显式确认超包线运行。"
 )
+#: ``beyond_safety_ceiling`` 档的**阻断**说明（硬上限，无任何 production override）。
 COMPLEXITY_MESSAGE_CEILING = (
-    "规模超过当前版本可安全承担的硬上限，已在计算前阻断；"
-    "请缩小工作区/航路范围或提高资源上限后重试。"
+    "规模超过当前版本可安全承担的硬上限，已在计算前阻断。"
 )
 
 #: provider 覆盖半径换算成度时使用的**保守下限**米/度（纬度 1°≈110 574 m）；

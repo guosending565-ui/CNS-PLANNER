@@ -1,7 +1,7 @@
 {
   "generator_schema_version": "phase4-b7r-delete-gates-v4",
   "schema_version": "phase4-b7r-delete-gates-v4",
-  "generated_from_head": "a1d0d286b9a7940599c0b99fa4175427a6f2ecf9",
+  "generated_from_head": "8527ba45df33beb14e2986b898b0f312ea43561e",
   "mode": "report_only_no_deletion",
   "note": "B7R 只报告：即使 ready_for_delete=true 也不删除任何模块，物理删除留给 B8。每项 checks 都是对当前工作区的真实扫描结果；project_state_writer 只由目标 capability 自己拥有的 persistent ProjectState writer 阻塞，canonical/shared/runtime-only 写点保留为非阻塞证据；default_selection 用 default_algorithm_selection() 精确比较，old_fixture_read 由真实 open/read/export/roundtrip 实测得出。",
   "check_semantics": {
@@ -62,10 +62,10 @@
     ]
   },
   "protected_files": {
-    "cns_planner/algorithms/corridor/v1.py": "06E0F3C0A141BC269FC3A2F683FF1E954595D72703F391B23851AEF7A048BFD6",
+    "cns_planner/algorithms/corridor/v1.py": "A8F1DD23F3AE0570E3A86D3ED8CEF7DA2DDD0CA1D0A302433DAE3A82AF2F0402",
     "cns_planner/algorithms/coverage/geometric_3d.py": "F2FC421253861D2A11FF7FB4F33EFE0D89E0BCC31F9B9536108B203EC40ACAE9",
     "cns_planner/algorithms/service_capability/v1.py": "79F9C56A97955847B74A5B6EDE244BEFCB8DC77CAF4739DAAD2C2B769BA57C28",
-    "tests/test_cns_corridor.py": "119BBE2C79F170BC69398FDCDCA24B38C0883FDAFA79F28F918F981463BBD3DF"
+    "tests/test_cns_corridor.py": "E020D163EF61285BC9F72D946F0C25E82A9F5296EF13B40EA38CA65475706B3F"
   },
   "protected_files_unchanged": true,
   "default_algorithm_selection_snapshot": [

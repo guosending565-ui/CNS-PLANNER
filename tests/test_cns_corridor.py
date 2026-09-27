@@ -1028,15 +1028,26 @@ def test_corridor_complexity_blocked_raises_before_constructing_result():
             inputs["corridor_policy"], preflight=estimate,
         )
     assert caught.value.estimate["blocking"] is True
+    # B9R.1：硬天花板不可绕过——显式风险接受同样被无条件阻断。
+    with pytest.raises(CorridorComplexityBlocked):
+        CNSServiceCorridorV1().evaluate(
+            inputs["routes"], inputs["spatial_3d"], inputs["grid"],
+            inputs["grid_attributes"], requirement_set("C"), aircraft("C"),
+            inputs["existing_facilities"], inputs["device_catalog"],
+            inputs["corridor_policy"], preflight=estimate,
+            allow_beyond_validated_envelope=True,
+        )
 
 
-def test_beyond_validated_envelope_runs_unchanged_when_explicitly_allowed():
-    """超过已验证包线但未触及天花板时：不加 preflight 就照常算，加了也照常算。"""
+def test_beyond_validated_envelope_requires_explicit_acceptance_and_keeps_math():
+    """B9R.1：beyond 档默认拒绝；显式接受后照常算，且结果与"不传 preflight"逐字一致。"""
 
-    from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
+    from cns_planner.algorithms.corridor.v1 import (
+        CNSServiceCorridorV1, CorridorComplexityBlocked,
+    )
 
     inputs, estimate = _estimate_threshold_fixture(400, layers=20)
-    assert estimate["beyond_validated_envelope"] is True
+    assert estimate["tier"] == "beyond_validated_envelope"
     assert estimate["blocking"] is False
 
     plain = CNSServiceCorridorV1().evaluate(
@@ -1044,10 +1055,20 @@ def test_beyond_validated_envelope_runs_unchanged_when_explicitly_allowed():
         requirement_set("C"), aircraft("C"), inputs["existing_facilities"],
         inputs["device_catalog"], inputs["corridor_policy"],
     )
+    # beyond 档：未显式接受 → 计算前阻断（不再静默继续）。
+    with pytest.raises(CorridorComplexityBlocked) as caught:
+        CNSServiceCorridorV1().evaluate(
+            inputs["routes"], inputs["spatial_3d"], inputs["grid"], inputs["grid_attributes"],
+            requirement_set("C"), aircraft("C"), inputs["existing_facilities"],
+            inputs["device_catalog"], inputs["corridor_policy"], preflight=estimate,
+        )
+    assert caught.value.estimate["tier"] == "beyond_validated_envelope"
+    # 显式接受后照常计算，且准入判定不得改变任何数学结果。
     with_preflight = CNSServiceCorridorV1().evaluate(
         inputs["routes"], inputs["spatial_3d"], inputs["grid"], inputs["grid_attributes"],
         requirement_set("C"), aircraft("C"), inputs["existing_facilities"],
         inputs["device_catalog"], inputs["corridor_policy"], preflight=estimate,
+        allow_beyond_validated_envelope=True,
     )
     assert with_preflight == plain, "准入判定不得改变任何计算结果"
 

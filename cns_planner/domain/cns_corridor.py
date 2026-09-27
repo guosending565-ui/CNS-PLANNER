@@ -86,6 +86,35 @@ def corridor_disclaimers():
     return _disclaimers()
 
 
+# ---- Phase4-B9R.1：唯一的规模准入估算件 ------------------------------------------
+#
+# 异步提交路径（``cns_planner.tasks.task_specs``）与同步入口
+# （``cns_planner.application.corridor_service``）**必须**用同一份实现估算同一份输入，
+# 否则两条路径会出现"同一规模、两种准入"的第二种真值。这里只是把估算件的归属收到
+# domain 层，估算本身的数学仍完全属于
+# :func:`cns_planner.algorithms.corridor.v1.estimate_corridor_complexity`。
+
+
+def corridor_complexity_preflight(inputs):
+    """对一份已组装的服务走廊输入做规模估算（纯函数：不写 state、不改 result）。
+
+    ``inputs`` 的字段名以 P14 ``evaluate`` 的入参为准（``existing_facilities`` /
+    ``device_catalog`` / ``corridor_policy``）；估算结果里的每个量都显式标注为上界，
+    不参与任何数学判定，也不进入 canonical assessment schema。
+    """
+
+    from ..algorithms.corridor.v1 import estimate_corridor_complexity
+
+    inputs = inputs if isinstance(inputs, dict) else {}
+    return estimate_corridor_complexity(
+        inputs.get("routes") or [], inputs.get("spatial_3d") or {},
+        inputs.get("grid") or {}, inputs.get("grid_attributes") or {},
+        inputs.get("corridor_policy") or {},
+        inputs.get("existing_facilities") or {},
+        inputs.get("device_catalog") or {},
+    )
+
+
 def _disclaimers():
     return {
         "jarus_operational_volume": "not_evaluated",

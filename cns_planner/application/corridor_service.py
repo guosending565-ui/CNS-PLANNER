@@ -9,6 +9,11 @@ Phase4-B6X 把"计算"与"写入"拆成两段，**同步语义完全不变**：
 * :meth:`CNSCorridorService.evaluate` —— 原来的同步入口，行为与拆分前逐字等价
   （「先 evaluate、后取 snapshot」的既有契约保持不变，因此同步返回的是**上一次**
   的评估结果，而不是刚算出来的新结果）。
+
+Phase4-B9R.1 把**规模准入**收口成一条规则：``complexity_estimate`` 在组装输入时冻结，
+同步入口、``compute`` 与异步 worker 都只消费这份冻结值（绝不重新估算）；三档语义
+（within / beyond_validated / beyond_safety_ceiling）在算法层与这里保持同一份实现，
+``allow_beyond_validated_envelope`` **只**解锁 beyond_validated 一档，不得绕过硬天花板。
 """
 
 from __future__ import annotations
@@ -16,34 +21,66 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog
-from ..domain.cns_corridor import normalize_cns_corridor_policy
+from ..algorithms.corridor.v1 import COMPLEXITY_MESSAGE_BEYOND, COMPLEXITY_MESSAGE_CEILING
+from ..algorithms.corridor.v1 import COMPLEXITY_TIER_BEYOND, COMPLEXITY_TIER_CEILING
+from ..domain.cns_corridor import (
+    corridor_complexity_preflight, normalize_cns_corridor_policy,
+)
 
 
 class CorridorScaleNotAccepted(ValueError):
-    """同步入口拒绝执行：规模超过当前已验证性能包线。
+    """准入拒绝：当前版本不承担这份工作量（同步 / 异步共用同一文案）。
 
     这不是数据错误，也不是安全失败——它只表示"当前版本不承担这份工作量"。
     ``estimate`` 携带结构化规模事实与中文原因，供 API / UI 如实展示。
+    ``tier`` 区分两档拒绝（``beyond_validated_envelope`` / ``beyond_safety_ceiling``）。
     """
 
     def __init__(self, estimate, message=None):
         self.estimate = dict(estimate or {})
-        detail = message or self.estimate.get("message") or "规模超过当前已验证性能范围"
+        detail = message or self.estimate.get("message") or COMPLEXITY_MESSAGE_CEILING
         super().__init__(detail)
+        self.tier = str(self.estimate.get("tier") or "")
 
 
 def _complexity_preflight(inputs):
-    """对一份已组装输入做规模估算（纯函数，不写 state、不改 result）。"""
+    """对一份已组装输入做规模估算（纯函数，不写 state、不改 result）。
 
-    from ..algorithms.corridor.v1 import estimate_corridor_complexity
+    B9R.1：估算件的唯一实现归属 domain 层，异步提交路径与同步入口共用同一份，
+    避免"同一规模、两种准入"。估算的输入口径见
+    :func:`cns_planner.domain.cns_corridor.corridor_complexity_preflight`。
+    """
 
-    return estimate_corridor_complexity(
-        inputs.get("routes") or [], inputs.get("spatial_3d") or {},
-        inputs.get("grid") or {}, inputs.get("grid_attributes") or {},
-        inputs.get("corridor_policy") or {},
-        inputs.get("existing_facilities") or {},
-        inputs.get("device_catalog") or {},
-    )
+    return corridor_complexity_preflight(inputs)
+
+
+def _admission_rejection(preflight, allow_beyond_validated_envelope=False):
+    """统一准入规则（sync / async / worker 共用同一份判定）。
+
+    返回 ``None`` 表示放行，否则返回拒绝原因（中文文案）：
+
+    * ``within_validated_envelope`` → 放行；
+    * ``beyond_validated_envelope`` → 只有显式 ``allow_beyond_validated_envelope``
+      才放行，默认拒绝；
+    * ``beyond_safety_ceiling`` → **无条件**拒绝，
+      ``allow_beyond_validated_envelope`` 不得绕过硬天花板。
+    """
+
+    if not isinstance(preflight, dict) or not preflight.get("tier"):
+        return None
+    tier = str(preflight.get("tier"))
+    if tier == COMPLEXITY_TIER_CEILING:
+        return COMPLEXITY_MESSAGE_CEILING
+    if tier == COMPLEXITY_TIER_BEYOND and not allow_beyond_validated_envelope:
+        return COMPLEXITY_MESSAGE_BEYOND
+    return None
+
+
+def _reject_if_beyond(preflight, allow_beyond_validated_envelope=False):
+    reason = _admission_rejection(preflight, allow_beyond_validated_envelope)
+    if reason is None:
+        return
+    raise CorridorScaleNotAccepted(preflight, reason)
 
 
 class CNSCorridorService:
@@ -56,11 +93,18 @@ class CNSCorridorService:
 
     # ---- B6X：计算（纯） -----------------------------------------------------
 
-    def compute_input(self, payload=None):
-        """归一化策略并组装 ``model.evaluate`` 的完整输入（不写 state）。"""
+    def _assemble_inputs(self, payload=None):
+        """组装 ``model.evaluate`` 的完整输入 + **冻结**规模估算（不写 state）。
+
+        同步入口与异步提交路径（:func:`cns_planner.tasks.task_specs._corridor_inputs`）
+        共用同一份 domain 层估算实现；差别只在"policy 从哪来"：这里在请求未显式给出
+        时回落到 state 中已确认的 policy。B9R.1 起 ``complexity_estimate`` 与输入一起
+        生成，之后**不再重算**。
+        """
 
         state = self.session.state
-        raw_policy = payload.get("cns_corridor_policy", payload.get("policy")) if isinstance(payload, dict) else None
+        payload = payload if isinstance(payload, dict) else {}
+        raw_policy = payload.get("cns_corridor_policy", payload.get("policy"))
         policy = (
             normalize_cns_corridor_policy(raw_policy)
             if raw_policy is not None
@@ -84,22 +128,32 @@ class CNSCorridorService:
             "coverage_parameters": ((selections.get("coverage_model") or {}).get("parameters") or {}),
             "capability_parameters": ((selections.get("service_model") or {}).get("parameters") or {}),
         }
-        # B9R：把规模估算固化进 immutable snapshot（它是输入相关的确定性事实，
-        # 因此属于输入指纹的一部分，worker 侧无需重新估算）。
+        # B9R.1：把规模估算固化进输入（它是输入相关的确定性事实，因此属于输入指纹
+        # 的一部分，调用方——无论同步还是 worker——都只消费这份冻结值）。
         inputs["complexity_estimate"] = _complexity_preflight(inputs)
         return inputs
+
+    def compute_input(self, payload=None):
+        """组装 ``model.evaluate`` 的完整输入（不写 state；请求给出的 policy 覆盖 state）。"""
+
+        return self._assemble_inputs(payload)
 
     def compute(self, inputs):
         """纯计算：返回 canonical assessment result（不写 state）。
 
-        B9R：先看 immutable snapshot 里的规模估算与显式 override。超过硬安全天花板
-        且未显式 override 时**在构造结果之前**拒绝，不产生部分结果、不写 state。
+        B9R.1：一律消费 inputs 里**冻结**的 ``complexity_estimate``，绝不重新估算。
+        完全超界（``beyond_safety_ceiling``）无条件下拒绝；``beyond_validated_envelope``
+        只有 inputs 里带着显式 ``allow_beyond_validated_envelope=true`` 才继续。
         """
 
         from ..algorithms.corridor.v1 import CorridorComplexityBlocked
 
+        inputs = inputs if isinstance(inputs, dict) else {}
         preflight = inputs.get("complexity_estimate")
-        allow = bool(inputs.get("allow_beyond_validated_envelope"))
+        allow = inputs.get("allow_beyond_validated_envelope") is True
+        # 应用层先按统一规则判定（与算法层同一份语义），保证拒绝时连
+        # ``model.evaluate`` 都不会被调用。
+        _reject_if_beyond(preflight if isinstance(preflight, dict) else None, allow)
         try:
             return self.model.evaluate(
                 inputs.get("routes") or [], inputs.get("spatial_3d") or {},
@@ -154,50 +208,33 @@ class CNSCorridorService:
     # ---- 同步入口（行为不变） ------------------------------------------------
 
     def complexity_estimate(self, payload=None):
-        """只读规模估算：供 API / UI 在提交前如实展示规模与准入分档。"""
+        """只读规模估算：供 API / UI 在提交前如实展示规模与准入分档。
 
-        return _complexity_preflight(self.compute_input(payload))
+        只做组装与纯估算，**不**写 state（因此不改变任何 canonical 结果）。
+        """
+
+        return self._assemble_inputs(payload)["complexity_estimate"]
 
     def evaluate(self, payload=None):
-        """同步入口。
+        """同步入口（三档准入，B9R.1 统一语义）。
 
-        B9R：**只有超界时行为才改变**——超过当前版本可安全承担的硬上限时，
-        在计算前抛 :class:`CorridorScaleNotAccepted`（携带中文原因与结构化规模），
-        而不是先构造数 GB 结果再 OOM。落在包线内（已验证 / 仅超出已验证范围但未
-        触及天花板）时，计算与写入路径与既有实现逐字一致。
+        * ``within_validated_envelope`` → 照常计算与写入；
+        * ``beyond_validated_envelope`` → 计算前抛
+          :class:`CorridorScaleNotAccepted`（``COMPLEXITY_MESSAGE_BEYOND``）；
+        * ``beyond_safety_ceiling`` → 计算前抛
+          :class:`CorridorScaleNotAccepted`（``COMPLEXITY_MESSAGE_CEILING``）。
+
+        同步路径**不存在**任何 override：超过已验证包线一律改用后台计算。
+        拒绝时既不产生 canonical result，也不附加只读元数据。
         """
 
         self.apply_policy_input(payload)
+        inputs = self._assemble_inputs(payload)
+        preflight = inputs.get("complexity_estimate")
+        # 同步入口永不接受超包线运行（allow 恒为 False）。
+        _reject_if_beyond(preflight, False)
+        result = self.compute(inputs)
         state = self.session.state
-        policy = state.get("cns_corridor_policy") or normalize_cns_corridor_policy()
-        profile = AircraftCNSProfileCatalog.find(
-            state.get("aircraft_profiles") or {},
-            state.get("selected_aircraft_profile_id") or "",
-        )
-        selections = state.get("algorithm_selection") or {}
-        inputs = {
-            "routes": state.get("operational_routes") or [],
-            "spatial_3d": state.get("spatial_3d") or {},
-            "grid": state.get("grid") or {},
-            "grid_attributes": state.get("grid_attributes") or {},
-            "required_cns": state.get("required_cns") or {},
-            "aircraft_profile": profile,
-            "existing_facilities": state.get("existing_cns_facilities") or {},
-            "device_catalog": state.get("device_catalog") or {},
-            "corridor_policy": policy,
-            "coverage_parameters": ((selections.get("coverage_model") or {}).get("parameters") or {}),
-            "capability_parameters": ((selections.get("service_model") or {}).get("parameters") or {}),
-        }
-        preflight = _complexity_preflight(inputs)
-        if preflight.get("tier") == "beyond_safety_ceiling":
-            raise CorridorScaleNotAccepted(preflight)
-        result = self.model.evaluate(
-            inputs["routes"], inputs["spatial_3d"], inputs["grid"], inputs["grid_attributes"],
-            inputs["required_cns"], profile,
-            inputs["existing_facilities"], inputs["device_catalog"], policy,
-            coverage_parameters=inputs["coverage_parameters"],
-            capability_parameters=inputs["capability_parameters"],
-        )
         state["cns_corridor_assessment"] = result
         self.invalidation.cns_corridor_gap()
         state.setdefault("result_statuses", {})["cns_corridor_assessment"] = _result_status(result.get("status"))
