@@ -1,5 +1,13 @@
 import {advancedAuditNote,blockerList,escapeHtml,nextStepBar,shell,sourceModeText,statusBadge,statusText,wbBlock,wbPanel,wbSegHint} from './common.js';
 import {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarSurveillanceDetail,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
+import {
+  SURFACE_CLASSIFICATION_POLICY_ENDPOINT,SURFACE_CLASS_FACTS_EVALUATE_ENDPOINT,
+  facilityPlanCards,renderServiceProfiles,renderSurfaceFactsPanel,residualTargetsSummary,
+  serviceCorridorEvidence,serviceGapStatements,surfaceFactsModel,
+} from './cns_service_evidence.js';
+import {
+  SERVICE_KEY_LABELS,isSurfaceAwareServiceKey,serviceKeyLabel,surfaceClassText,
+} from '../map/service_semantics.js';
 
 // Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
 // 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
@@ -672,7 +680,21 @@ function stepNext(flow,segments){
 export function render({flow}){
   // 两层卡片式布局：名称 + 弱化 role（第一行）、R/MTBF 两个输入各占半宽（第二行）。
   // data-device-radius / data-device-mtbf 的索引契约保持不变，collect() 无需改动。
-  const devices=(flow.devices||[]).map((device,index)=>'<div class="device-row"><b class="device-name">'+escapeHtml(device.subsystem)+' · '+escapeHtml(device.model||device.name||device.device_id)+'</b><span class="device-role">'+escapeHtml(device.role||'')+'</span><label class="device-field device-field-radius">R(m)<input type="number" data-device-radius="'+index+'" value="'+device.radius_m+'"></label><label class="device-field device-field-mtbf">MTBF(h)<input type="number" data-device-mtbf="'+index+'" value="'+(device.mtbf_h||device.mtbf)+'"></label></div>').join('');
+  // Round 3：surface-aware service（Communication / RID）的**权威几何**是
+  // coverage_geometry.radius_by_surface，单一 radius_m 只是 legacy 兼容字段；
+  // 因此只要设备目录里存在该子系统的 canonical service 条目，该子系统的设备行
+  // R(m) 就是**只读**的（保留 DOM / 索引契约，但用户不得修改并误以为影响正式规划）。
+  // 目录里没有该 service 时（例如默认 demo 目录）保持可编辑，避免让用户无从表达半径。
+  const LEGACY_RADIUS_READONLY_NOTE='兼容字段，只读；正式规划使用按地表类型划分的几何规划半径。';
+  const deviceList=flow.devices||[];
+  const surfaceAwareDevice=subsystem=>{
+    const key=({C:'C:communication',S:'S:rid_cooperative'})[String(subsystem||'').toUpperCase()];
+    if(!key)return false;
+    return (flow.device_catalog?.items||[]).some(
+      item=>String(item?.service_key||'')===key&&isSurfaceAwareServiceKey(key)
+    );
+  };
+  const devices=deviceList.map((device,index)=>{const surfaceAware=surfaceAwareDevice(device.subsystem);return '<div class="device-row"'+(surfaceAware?' data-surface-aware="true"':'')+'><b class="device-name">'+escapeHtml(device.subsystem)+' · '+escapeHtml(device.model||device.name||device.device_id)+'</b><span class="device-role">'+escapeHtml(device.role||'')+'</span><label class="device-field device-field-radius'+(surfaceAware?' device-field-wide':'')+'">R(m)<input type="number" data-device-radius="'+index+'" '+(surfaceAware?'disabled ':'')+'value="'+device.radius_m+'"></label><label class="device-field device-field-mtbf'+(surfaceAware?' device-field-wide':'')+'">MTBF(h)<input type="number" data-device-mtbf="'+index+'" value="'+(device.mtbf_h||device.mtbf)+'"></label>'+(surfaceAware?'<small class="device-note">'+escapeHtml(LEGACY_RADIUS_READONLY_NOTE)+'</small>':'')+'</div>';}).join('');
   const legacyCoverage=flow.compatibility_coverage||flow.coverage||{};
   let result='<div class="empty-note">尚未运行旧版二维覆盖试算</div>';
   if(legacyCoverage.status&&legacyCoverage.status!=='not_calculated')result=Object.entries(legacyCoverage.layers||{}).map(([key,layer])=>{const stats=layer.statistics;return '<div class="coverage-card"><b>'+key+' '+wbBadge(layer.status)+'</b><span>站点 '+stats.stations+' · 主站 '+stats.primary+' · 补盲 '+stats.gap+' · 共址 '+stats.colocated+'</span><span>平均重数 '+stats.average_multiplicity+' · 未覆盖 '+stats.uncovered_samples+'</span></div>';}).join('');
@@ -680,7 +702,7 @@ export function render({flow}){
   const params={...engineeringDefaults,primary_spacing_factor:engineeringDefaults.primary_spacing_factor||{value:'—',source:'未配置来源'},co_location_search_radius_m:engineeringDefaults.co_location_search_radius_m||{value:'—'}};
   const risks=flow.risks||{},riskState=key=>statusText((risks[key]||{}).status);
   const existing=flow.existing_cns_facilities||{},existingBaseline=(flow.cns_existing_baseline&&flow.cns_existing_baseline.knowledge_status)?flow.cns_existing_baseline:existing,candidates=flow.candidate_sites||{},colocation=flow.tower_colocation_candidates||{},catalog=flow.device_catalog||{},gaps=flow.cns_gap_analysis||{},coverage3d=flow.coverage_3d||{},capability=flow.cns_service_capability||{},corridor=flow.cns_corridor_assessment||{},corridorGap=flow.cns_corridor_gap_assessment||{},corridorSitePolicy=flow.corridor_site_planning_policy||{},corridorSitePlan=flow.cns_corridor_site_plan||{},timeline=flow.service_timeline||{},protection=flow.protection_envelope||{},gapV2=flow.cns_gap_analysis_v2||{},sitePolicy=flow.site_planning_policy||{},sitePlan=flow.compatibility_cns_site_plan||flow.cns_site_plan||{},closedLoop=flow.compatibility_closed_loop_assessment||flow.closed_loop_assessment||{};
-  const devicesWithParams=(flow.devices||[]).filter(device=>Number.isFinite(Number(device.radius_m))||Number.isFinite(Number(device.mtbf_h??device.mtbf)));
+  const devicesWithParams=deviceList.filter(device=>Number.isFinite(Number(device.radius_m))||Number.isFinite(Number(device.mtbf_h??device.mtbf)));
 
   // ---- 阻塞项与工程假设（每个分段各自成立，互不代替） -------------------------
   const deviceBlockers=devicesWithParams.length
@@ -721,7 +743,13 @@ export function render({flow}){
   // ---- 操作：设备与参数 / 已有设施 / 候选站址 --------------------------------
   const deviceCatalogNote='<div class="demo-note">设备目录：'+escapeHtml(deviceCatalogSourceLabel(catalog.source||flow.device_source))+' · '+(catalog.count||0)+' 型设备</div>';
   const engineeringParameters='<div class="parameter-note">主站间距 '+params.primary_spacing_factor.value+'R · 共址半径 '+params.co_location_search_radius_m.value+'m<br>参数来源：'+escapeHtml(parameterSourceLabel(params.primary_spacing_factor.source))+'</div>';
-  const deviceActions='<div class="device-list">'+devices+'</div><div class="button-row"><button class="secondary" id="saveDevices">保存设备参数</button></div>';  const existingPanel='<h3>已有 CNS 设施 '+wbBadge(existing.status||'not_calculated','未计算')+'</h3>'
+  const deviceActions='<div class="device-list">'+devices+'</div><div class="button-row"><button class="secondary" id="saveDevices">保存设备参数</button></div>';
+  // ---- Round 3：陆海分类事实 + Communication / RID 工程规划 Profile -------------
+  // 两者都放在「设备与参数」（最合适的输入准备区）：它们决定 Communication / RID 的
+  // 分 surface 几何与站址重数要求，但**不**要求用户先运行雷达监视规划。
+  const surfaceFactsPanel=renderSurfaceFactsPanel(flow);
+  const serviceProfilesPanel=renderServiceProfiles(flow);
+  const existingPanel='<h3>已有 CNS 设施 '+wbBadge(existing.status||'not_calculated','未计算')+'</h3>'
     +existingCnsStatusRows(existingBaseline)
     +'<label>事实掌握情况<select class="panel-input" id="existingKnowledgeStatus"><option value="not_declared" '+(existingBaseline.knowledge_status==='not_declared'?'selected':'')+'>尚未声明</option><option value="confirmed_none" '+(existingBaseline.knowledge_status==='confirmed_none'?'selected':'')+'>已确认无</option><option value="confirmed_present" '+(existingBaseline.knowledge_status==='confirmed_present'?'selected':'')+'>已确认存在</option></select></label>'
     +'<label>规划模式<select class="panel-input" id="existingPlanningMode"><option value="factual" '+(existingBaseline.planning_mode==='factual'?'selected':'')+'>按事实数据规划</option><option value="assume_empty_for_planning" '+(existingBaseline.planning_mode==='assume_empty_for_planning'?'selected':'')+'>按空既有设施工程基线规划</option></select></label>'
@@ -737,9 +765,16 @@ export function render({flow}){
   // ---- 结果：canonical 生产链（三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划） ----
   const coverage3dPanel='<h3>三维几何覆盖评估 '+wbBadge(coverage3d.status||'not_calculated','未计算')+'</h3><div class="parameter-note">几何覆盖 ≠ 真实 CNS 性能；传播、视距、绕射、干扰、链路预算和传感器探测概率均未评估。</div><label>采样间距（米）<input class="panel-input" type="number" id="coverage3dSpacing" value="'+(coverage3d.parameters?.sample_spacing_m||flow.algorithm_selection?.coverage_model?.parameters?.sample_spacing_m||500)+'"></label><div class="button-row"><button class="primary" id="evaluateCoverage3d">运行三维几何覆盖</button></div><div class="gap-results">'+coverage3dList(coverage3d)+'</div>';
   const capabilityPanel='<h3>CNS 服务能力评估 '+wbBadge(capability.status||'not_calculated','未计算')+'</h3><div class="parameter-note">静态能力满足不等于当前服务可用；视距、绕射、干扰、负载和切换等尚未评估。</div><div class="button-row"><button class="secondary full" id="evaluateServiceCapability">评估 CNS 服务能力</button><button class="secondary" id="loadCapabilityDetail">载入逐点证据</button></div><div class="parameter-note">逐点链路预算与提供者证据属大型明细，已外置保存；通用快照只带摘要，点此按需读取。</div><div class="gap-results">'+capabilityList(capability)+'</div>';
-  const corridorPanel='<h3>CNS 服务走廊 '+wbBadge(corridor.status||'not_calculated','未计算')+'</h3><div class="parameter-note">这是工程 CNS 服务需求走廊，不是法规批准空间；水平范围采用保守网格纳入，体积为离散体积代理。</div><button class="secondary full" id="evaluateCorridor">评估 CNS 服务走廊</button><div class="gap-results">'+corridorSummary(corridor)+'</div>';
-  const objectivesGapPanel=planningObjectivesPanel(flow)+'<div class="parameter-note">空间连续缺口是服务走廊体元的保守纵向投影，不是运行中断、正式 ICAO 连续性或可用度概率。</div><div class="gap-results">'+corridorGapSummary(corridorGap)+'</div>';
-  const corridorSitePlanPanel='<h3>CNS 设施规划 '+wbBadge(corridorSitePlan.status||'not_calculated','未计算')+'</h3><div class="parameter-note">仅针对已确认的走廊缺口目标，通过累计试算验证服务与独立冗余收益；证据不足不会触发建站。</div><label class="check-row"><input type="checkbox" id="corridorSitePolicyConfirmed" '+(corridorSitePolicy.confirmed?'checked':'')+'> 确认走廊复用优先规划策略</label><button class="secondary full" id="evaluateCorridorSitePlan">生成 CNS 设施规划方案</button><div class="gap-results">'+corridorSitePlanSummary(corridorSitePlan)+'</div>';
+  const corridorPanel='<h3>CNS 服务走廊 '+wbBadge(corridor.status||'not_calculated','未计算')+'</h3><div class="parameter-note">这是工程 CNS 服务需求走廊，不是法规批准空间；水平范围采用保守网格纳入，体积为离散体积代理。每个体元的 surface_class 来自与三维覆盖共用的同一份陆海分类事实（按 L8 格心代表点）。</div><button class="secondary full" id="evaluateCorridor">评估 CNS 服务走廊</button><div class="gap-results">'+corridorSummary(corridor)+serviceCorridorEvidence(flow)+'</div>';
+  const objectivesGapPanel='<h3>service 级冗余结论（Communication / RID）</h3>'
+    +'<div class="parameter-note">服务与冗余分别统计：<b>服务</b>看该 surface 是否存在合格 provider，'
+    +'<b>冗余</b>看该 service 的 <b>不同物理站址</b>数是否达到要求（按 distinct_site_id 计数，'
+    +'绝不把"N 台设备"当成"N 重"）。</div>'
+    +'<div class="gap-results">'+serviceGapStatements(flow)+'</div>'
+    +planningObjectivesPanel(flow)+'<div class="parameter-note">空间连续缺口是服务走廊体元的保守纵向投影，不是运行中断、正式 ICAO 连续性或可用度概率。</div><div class="gap-results">'+corridorGapSummary(corridorGap)+'</div>';
+  const corridorSitePlanPanel='<h3>CNS 设施规划 '+wbBadge(corridorSitePlan.status||'not_calculated','未计算')+'</h3><div class="parameter-note">仅针对已确认的走廊缺口目标，通过累计试算验证服务与独立冗余收益；证据不足不会触发建站。</div><label class="check-row"><input type="checkbox" id="corridorSitePolicyConfirmed" '+(corridorSitePolicy.confirmed?'checked':'')+'> 确认走廊复用优先规划策略</label><button class="secondary full" id="evaluateCorridorSitePlan">生成 CNS 设施规划方案</button><div class="gap-results">'+corridorSitePlanSummary(corridorSitePlan)+'</div>'
+    +'<h4>service-aware 规划方案</h4><div class="gap-results">'+facilityPlanCards(corridorSitePlan)+'</div>'
+    +'<h4>残余确认目标</h4><div class="gap-results">'+residualTargetsSummary(corridorSitePlan)+'</div>';
 
   // ---- 雷达监视规划：独立 production 分支，默认 OPTIONAL -----------------------
   const radarPanel='<h3>雷达监视规划 '+wbBadge(flow.radar_surveillance_layout?.status||'not_calculated','未计算')+'</h3>'
@@ -762,11 +797,13 @@ export function render({flow}){
   const body=wbPanel('operate','',{segments:[
     ['cns-op-devices','设备与参数',
       wbBlock('设备与参数',wbSegHint(OPERATE_SEGMENTS,'cns-op-devices')
-        +segIntro('准备设备型号、作用半径与 MTBF，形成可复算的布站工程基线。','设备资料库（只读事实）与两台工程参数输入框。')
+        +segIntro('准备设备型号、作用半径与 MTBF，形成可复算的布站工程基线。','设备资料库（只读事实）、两台工程参数输入框、陆海分类事实，以及 Communication / RID 工程规划 Profile。')
         +deviceCatalogNote+equipmentReferencePanel(flow)+engineeringParameters)
       +wbBlock('阻塞项与工程假设',blockerList(deviceBlockers,'当前没有阻塞项'))
       +wbBlock('设备参数与布站',deviceActions)
-      +nextHint('保存设备参数后进入「已有设施」，声明既有设施的事实掌握情况与规划模式。')],
+      +wbBlock('陆海分类事实',surfaceFactsPanel)
+      +wbBlock('Communication / RID 工程规划 Profile',serviceProfilesPanel)
+      +nextHint('保存设备参数与分类策略、生成陆海分类事实后进入「已有设施」，声明既有设施的事实掌握情况与规划模式。')],
     ['cns-op-existing','已有设施',
       wbBlock('已有设施',wbSegHint(OPERATE_SEGMENTS,'cns-op-existing')
         +segIntro('掌握既有 CNS 设施的事实情况，并显式声明后续规划采用哪种模式。','已有设施数据文件路径；两条状态都来自后端字段，缺失时如实显示"尚未声明 / 未配置"。')
@@ -783,31 +820,31 @@ export function render({flow}){
     +wbPanel('result','',{segments:[
       ['cns-res-coverage','三维覆盖评估',
         wbBlock('三维覆盖评估',wbSegHint(RESULT_SEGMENTS,'cns-res-coverage')+chainNote('三维覆盖')
-          +segIntro('建立正式运行航路的三维几何覆盖事实基线。','已确认高度层目录与正式运行航路；采样间距为工程假设。')
+          +segIntro('建立正式运行航路的三维几何覆盖事实基线。','已确认高度层目录与正式运行航路；采样间距为工程假设；surface_class 来自「设备与参数」里的陆海分类事实。')
           +coverage3dPanel)
         +wbBlock('阻塞项与工程假设',blockerList(coverageBlockerItems,'当前没有阻塞项；几何覆盖不作为后续步骤的门禁'))
         +nextHint(chainNext('cns-res-coverage'))],
       ['cns-res-capability','服务能力评估',
         wbBlock('服务能力评估',wbSegHint(RESULT_SEGMENTS,'cns-res-capability')+chainNote('服务能力')
-          +segIntro('在几何覆盖基线之上评估 C / N / S 静态服务能力满足情况。','设备作用半径与 MTBF；几何覆盖结果作为口径基线。')
+          +segIntro('在几何覆盖基线之上评估 C / N / S 静态服务能力满足情况。','设备作用半径与 MTBF；surface-aware 服务（Communication / RID）按 surface 取后端 radius_by_surface。')
           +capabilityPanel)
         +wbBlock('阻塞项与工程假设',blockerList(deviceBlockers,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-capability'))],
       ['cns-res-corridor','CNS 服务走廊',
         wbBlock('CNS 服务走廊',wbSegHint(RESULT_SEGMENTS,'cns-res-corridor')+chainNote('服务走廊')
-          +segIntro('把服务能力转成沿航路的工程服务走廊与缺口体元。','三维几何覆盖结果与已确认的高度层定义。')
+          +segIntro('把服务能力转成沿航路的工程服务走廊与缺口体元。','三维几何覆盖结果、已确认的高度层定义与陆海分类事实。')
           +corridorPanel)
         +wbBlock('阻塞项与工程假设',blockerList(corridorBlockerItems,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-corridor'))],
       ['cns-res-gap','CNS 能力缺口',
         wbBlock('CNS 能力缺口',wbSegHint(RESULT_SEGMENTS,'cns-res-gap')+chainNote('能力缺口')
-          +segIntro('按已确认的规划目标判定服务走廊中的能力缺口。','当前有效的服务走廊结果；规划目标需要显式确认。')
+          +segIntro('按已确认的规划目标判定服务走廊中的能力缺口，并分 service 给出冗余结论。','当前有效的服务走廊结果；规划目标需要显式确认。')
           +objectivesGapPanel)
         +wbBlock('阻塞项与工程假设',blockerList(gapBlockerItems,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-gap'))],
       ['cns-res-site','CNS 设施规划',
         wbBlock('CNS 设施规划',wbSegHint(RESULT_SEGMENTS,'cns-res-site')+chainNote('设施规划')
-          +segIntro('针对已确认的走廊缺口目标生成复用优先的设施规划方案。','已确认的能力缺口目标与走廊复用优先规划策略。')
+          +segIntro('针对已确认的走廊缺口目标生成复用优先的设施规划方案。','已确认的能力缺口目标与走廊复用优先规划策略；方案按目标服务（Communication / RID）分别展示。')
           +corridorSitePlanPanel)
         +wbBlock('阻塞项与工程假设',blockerList(siteBlockerItems,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-site'))],
@@ -831,8 +868,47 @@ export function render({flow}){
 }
 
 export function bind(c){
-  const collect=()=>c.flow().devices.map((device,index)=>({...device,radius_m:Number(document.querySelector('[data-device-radius="'+index+'"]').value),mtbf:Number(document.querySelector('[data-device-mtbf="'+index+'"]').value)}));
+  // collect/save：**只**回写真正可编辑的设备字段。
+  // surface-aware device 的 legacy R(m) 是只读兼容字段，绝不因为一次保存而回写
+  // （否则会把 legacy radius_m 覆盖成新值，让人误以为影响了正式规划半径）；
+  // legacy 设备的 radius_m 照旧可编辑并原样提交。
+  const collect=()=>c.flow().devices.map((device,index)=>{
+    const radiusInput=document.querySelector('[data-device-radius="'+index+'"]');
+    const mtbfInput=document.querySelector('[data-device-mtbf="'+index+'"]');
+    const radiusEditable=Boolean(radiusInput)&&radiusInput.disabled!==true&&radiusInput.readOnly!==true;
+    return {...device,radius_m:radiusEditable?Number(radiusInput.value):device.radius_m,mtbf:Number(mtbfInput.value)};
+  });
   c.actionButton('saveDevices',()=>c.mutate('devices',{devices:collect()}));
+  // ---- Round 3：陆海分类事实（Step5 共用中立策略，独立于 Radar） -----------------
+  // 两个端点都只返回**局部对象**（policy / facts 本身），不是完整 workflow 快照，
+  // 因此策略保存必须走 resourceMutationAndRefresh（POST → 重新读取完整 workflow →
+  // 安装 → 返回局部响应）；事实生成后同样重新读取快照，让下游 stale 状态如实显示。
+  if(c.$('saveSurfaceClassificationPolicy'))c.actionButton('saveSurfaceClassificationPolicy',async()=>{
+    const current=c.flow().surface_classification_policy||{};
+    const layer=c.$('surfaceLandMaskLayer').value.trim();
+    const buffer=c.$('surfaceCoastalBuffer').value.trim();
+    // 显式提交用户可编辑字段；其余 canonical 字段由后端 normalize 决定（绝不前端编造）。
+    const policy={...structuredClone(current),land_mask_layer_name:layer||null};
+    if(buffer!=='')policy.coastal_uncertainty_buffer_m=Number(buffer);
+    policy.source=c.$('surfacePolicySource').value.trim()||'project_engineering_default';
+    policy.confirmed=c.$('surfacePolicyConfirmed').checked;
+    return c.resourceMutationAndRefresh(SURFACE_CLASSIFICATION_POLICY_ENDPOINT,{surface_classification_policy:policy});
+  });
+  if(c.$('evaluateSurfaceClassFacts'))c.actionButton('evaluateSurfaceClassFacts',async()=>{
+    const result=await c.resourceAction(SURFACE_CLASS_FACTS_EVALUATE_ENDPOINT,{});
+    // 事实生成会连带把 P7/P8/P14/P15/P16 标为 stale：重新读取快照，让界面如实显示。
+    const fresh=await c.api('/api/workflow');
+    c.setFlow(fresh);c.afterFlowChange();
+    return result;
+  });
+  if(c.$('loadServiceCorridorDetail')){
+    // 逐体元 service 证据按需载入：控件只在后端声明 detail_available 时才存在，
+    // 因此这里先确认控件已挂载再绑定（bind() 绝不探测不存在的控件）；
+    // refreshCorridorDetail 未注入时保持只读展示，不新增任何请求路径。
+    if(typeof c.refreshCorridorDetail==='function'){
+      c.actionButton('loadServiceCorridorDetail',()=>c.refreshCorridorDetail());
+    }
+  }
   c.$('browseExisting').onclick=()=>c.openBrowser('existing_cns',c.$('existing_cnsPath').value);
   c.$('browseCandidates').onclick=()=>c.openBrowser('candidate_sites',c.$('candidate_sitesPath').value);
   c.actionButton('importExisting',()=>c.resourceAction('/api/existing-cns/import',{path:c.$('existing_cnsPath').value.trim()}));

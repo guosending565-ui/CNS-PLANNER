@@ -15,6 +15,7 @@ import {drawV3CandidateOverlay,v3OverlayModel} from './route_planner_v3_overlay.
 import {drawLayeredFeasibilityOverlay} from './layered_feasibility_overlay.js';
 import {drawLayeredCandidateOverlay} from './layered_candidate_overlay.js';
 import {drawRadarLayoutOverlay} from './radar_layout_overlay.js';
+import {cnsServiceOverlayModel,drawCnsServiceOverlay,drawSurfaceFactsLayer} from './cns_service_overlay.js';
 import {radarOverlayModel} from '../workflow/radar_surveillance_layout.js';
 import {clusterPoints,toGeographic,extentOf,hitCluster} from './point_clustering.js';
 import {
@@ -402,7 +403,7 @@ export function hitCnsTowerCandidate(plan,point,{radius=11}={}){
  */
 export function drawWorkflowLayers({
   ctx,view,flow,plan,layers={},screenPoint,profileHoverCoordinate=null,routeEvidenceHighlight=null,gridTheme=null,
-  towerHighlight=null,
+  towerHighlight=null,visibleBounds=null,
   drawWorkspace,drawGridThemes,drawGridBoundaries,drawBuildingFootprints,drawConstraintLayer,proposedPlanActions=()=>[]
 }){
   const styles=plan.styles;
@@ -415,6 +416,14 @@ export function drawWorkflowLayers({
   // 放在网格边界之上、航路与候选航路之下，避免遮挡规划结果本身。
   // 是否真的画由调用方按图层开关决定（main.js 的 drawConstraintLayer）。
   if(typeof drawConstraintLayer==='function')drawConstraintLayer();
+  // 陆海分类（Surface Facts）：**默认关闭**的独立图层，只表达格心代表点分类。
+  // 画在网格边界之上、建筑/航路之下；unknown 用中性色，绝不按海面着色。
+  if(layers.surfaceFactsLayer===true&&typeof visibleBounds==='function'){
+    drawSurfaceFactsLayer({
+      ctx,grid:flow?.grid,facts:flow?.surface_class_facts,
+      screenPoint,visibleBounds,gridTheme,
+    });
+  }
   // 建筑轮廓只读底图性质：画在网格之上、航路之下，避免遮挡规划结果。
   // 是否真的画、画多少由调用方（map/building_footprint_layer.js）按图层开关与 LOD 决定。
   if(typeof drawBuildingFootprints==='function')drawBuildingFootprints();
@@ -471,6 +480,19 @@ export function drawWorkflowLayers({
     drawRadarLayoutOverlay({
       ctx,view,screenPoint,
       model:radarOverlayModel(flow,candidateTowers),
+    });
+  }
+
+  // CNS service overlay（Round 3）：**独立模块**，与 Radar 分支完全分离。
+  // 四个开关全部默认关闭；全部关闭时不构造模型、不绘制（零成本）。
+  // Communication / RID 只画全向圆与航路缺口段，**绝不**画 sector / 90° panel。
+  // 站点选取与既有原则一致：已有 active provider、P16 selected_actions、
+  // 方案审查当前选中 variant 的动作；**绝不**铺开全部候选站址。
+  const cnsServiceOn=layers.cnsCommunicationLayer===true||layers.cnsRidLayer===true;
+  if(cnsServiceOn||layers.cnsServiceGapLayer===true||layers.cnsFacilityPlanLayer===true){
+    drawCnsServiceOverlay({
+      ctx,view,screenPoint,layers,
+      model:cnsServiceOverlayModel(flow,{selectedActions:proposedPlanActions(flow)}),
     });
   }
 

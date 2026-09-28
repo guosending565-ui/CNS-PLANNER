@@ -318,6 +318,11 @@
 .legend-line small{margin-left:auto;color:var(--ink-faint);font-size:9px;white-space:nowrap}
 .legend-line .legend-state{margin-left:var(--sp-2)}
 .legend-stroke{display:inline-block;width:16px;height:0;border-top:2px dashed var(--map-route-reference)}
+/* Round 3：CNS service 图例符号（Communication / RID 的全向圆与 5 km 虚线）。
+   圆与虚线只表达"规划半径"，绝不表达实测覆盖。 */
+.legend-circle{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-radius:50%}
+.legend-circle.legend-dashed{border-style:dashed}
+.legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%}
 
 .raster-legend{display:block;margin-top:var(--sp-6);padding-top:var(--sp-5);border-top:1px solid var(--line-soft)}
 .raster-legend p{display:flex;justify-content:space-between;gap:var(--sp-4);margin:0 0 var(--sp-3)}

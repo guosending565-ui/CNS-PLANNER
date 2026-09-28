@@ -8,6 +8,7 @@ import {renderDaaEncounterLab,bindDaaEncounterLab} from './daa_encounter_lab.js'
 import {
   V3D_CNS_SEPARATION_LABEL, V3D_STAGES, routePlannerV3AdoptionModel,
 } from './step03_routes.js';
+import {requiredSiteCountText, serviceKeyLabel} from '../map/service_semantics.js';
 
 // 二级任务分段：id 稳定（run-*），标签是第一视觉层的业务语言。
 // 与 Step05 使用同一套 wbPanel/wbBlock/wbSegHint 机制：同一时刻只显示一个任务。
@@ -79,9 +80,44 @@ function selectInput(id,label,values,current,pending=false){return '<label>'+lab
 function header(prefix,title,data){return '<legend>'+title+' '+statusBadge(data.status||'pending_confirmation')+'</legend><label>是否需要<select id="'+prefix+'Required"><option value="pending" '+selected('pending',requiredValue(data.required))+'>待确认</option><option value="yes" '+selected('yes',requiredValue(data.required))+'>需要</option><option value="no" '+selected('no',requiredValue(data.required))+'>不需要</option></select></label>';}
 function confirmation(prefix,data){return input(prefix+'Source','来源',data.source,'text')+'<label class="check-row"><input type="checkbox" id="'+prefix+'Confirmed" '+(data.confirmed?'checked':'')+'>参数已确认</label>'+input(prefix+'Contingency','应急降级方案',typeof data.contingency==='string'?data.contingency:'','text');}
 
-function communication(data){const type=data.type||{},p=data.performance||{};return header('c','通信',data)+input('cServiceType','服务类型',type.service_type,'text')+selectInput('cTechnology','通信技术',C_TECH,type.technology||'unknown')+selectInput('cNetworkScope','网络范围',C_SCOPE,type.network_scope||'unknown')+input('cInterfaces','接口（逗号分隔）',(type.interfaces||[]).join(', '),'text')+input('cCoverage','覆盖要求 %',data.coverage_requirement)+input('cMaxGap','最大缺口 m',data.max_gap_m)+input('cMaxLatency','最大时延 s',p.max_latency_s)+input('cLostLink','失链阈值 s',p.lost_link_threshold_s)+input('cContinuousOutage','最大连续中断 s',p.max_continuous_outage_s)+input('cCumulativeOutage','最大累计中断 s',p.max_cumulative_outage_s)+input('cAvailability','最小可用度 0..1',p.min_availability)+input('cRedundancy','最小冗余',p.min_redundancy)+confirmation('c',data);}
-function navigation(data){const type=data.type||{},p=data.performance||{};return header('n','导航',data)+selectInput('nTechnology','导航技术',N_TECH,type.technology||'unknown')+input('nCoverage','覆盖要求 %',data.coverage_requirement)+input('nHorizontalError','最大水平误差 m',p.max_horizontal_error_m)+input('nVerticalError','最大垂直误差 m',p.max_vertical_error_m)+input('nIntegrity','完整性要求',p.integrity_required,'text')+input('nTimeToAlert','最大告警时间 s',p.max_time_to_alert_s)+input('nDegradation','最大降级时间 s',p.max_degradation_time_s)+input('nAvailability','最小可用度 0..1',p.min_availability)+input('nRedundancy','最小冗余',p.min_redundancy)+confirmation('n',data);}
-function surveillance(data){const type=data.type||{},p=data.performance||{};return header('s','监视',data)+selectInput('sTargetCooperation','目标协作能力',S_COOP,type.target_cooperation,true)+selectInput('sSensorMode','传感器模式',S_MODE,type.sensor_mode,true)+selectInput('sTechnology','监视技术',S_TECH,type.technology||'unknown')+input('sCoverage','覆盖要求 %',data.coverage_requirement)+input('sDetectionRange','最小探测距离 m',p.min_detection_range_m)+input('sDetectionProbability','最小探测概率 0..1',p.min_detection_probability)+input('sMaxUpdate','最大更新间隔 s',p.max_update_interval_s)+input('sTrackLoss','最大航迹丢失 s',p.max_track_loss_s)+input('sAlertLatency','最大告警时延 s',p.max_alert_latency_s)+input('sAvailability','最小可用度 0..1',p.min_availability)+input('sRedundancy','最小冗余',p.min_redundancy)+confirmation('s',data);}
+/**
+ * 正式需求的 **service identity 摘要**（只读，Round 3）。
+ *
+ * 需求背景：正式 CNS 需求在 Round 2 起可以显式携带 canonical service identity。
+ * 若此处不转印，`S:rid_cooperative` 会在需求摘要里退化成泛化 ``S``，与
+ * Radar Non-cooperative Surveillance 混为一谈。本函数只**如实转印**后端字段，
+ * 绝不由 technology / subtype **自动推断**任何需求（没有显式声明就什么都不显示）。
+ */
+export function requiredServiceIdentityNotes(data){
+  const type=data?.type||{},key=String(data?.service_key||'').trim();
+  const subtype=String(data?.service_subtype||type.service_subtype||'').trim();
+  const technology=String(type.technology||'').trim();
+  const targetCooperation=String(type.target_cooperation||'').trim();
+  const mapping=data?.redundancy_by_surface;
+  const hasRidFacts=key==='S:rid_cooperative'||subtype==='cooperative_surveillance'||technology==='network_remote_id';
+  const lines=[];
+  if(key)lines.push('服务身份 '+escapeHtml(serviceKeyLabel(key))+'（'+escapeHtml(key)+'）');
+  if(subtype)lines.push('service_subtype='+escapeHtml(subtype));
+  if(technology)lines.push('technology='+escapeHtml(technology));
+  if(targetCooperation)lines.push('target_cooperation='+escapeHtml(targetCooperation));
+  if(mapping&&typeof mapping==='object'){
+    const surfaces=[['land','陆地'],['coastal_uncertain','海岸不确定'],['sea','海上']]
+      .filter(([name])=>mapping[name]!==null&&mapping[name]!==undefined)
+      .map(([name,label])=>label+' '+requiredSiteCountText(mapping[name]));
+    if(surfaces.length)lines.push('要求的不同物理站址数：'+surfaces.map(escapeHtml).join(' · '));
+  }
+  if(!lines.length)return '';
+  return '<div class="parameter-note" data-service-identity="'+escapeHtml(key||subtype||technology)+'">'
+    +(hasRidFacts?'<b>合作监视 RID</b>：本需求显式声明了 RID 合作监视的服务身份；'
+      +'它与雷达非合作监视（Radar Non-cooperative Surveillance）是两种不同服务。'
+      :'')
+    +lines.join(' · ')
+    +'</div>';
+}
+
+function communication(data){const type=data.type||{},p=data.performance||{};return header('c','通信',data)+requiredServiceIdentityNotes(data)+input('cServiceType','服务类型',type.service_type,'text')+selectInput('cTechnology','通信技术',C_TECH,type.technology||'unknown')+selectInput('cNetworkScope','网络范围',C_SCOPE,type.network_scope||'unknown')+input('cInterfaces','接口（逗号分隔）',(type.interfaces||[]).join(', '),'text')+input('cCoverage','覆盖要求 %',data.coverage_requirement)+input('cMaxGap','最大缺口 m',data.max_gap_m)+input('cMaxLatency','最大时延 s',p.max_latency_s)+input('cLostLink','失链阈值 s',p.lost_link_threshold_s)+input('cContinuousOutage','最大连续中断 s',p.max_continuous_outage_s)+input('cCumulativeOutage','最大累计中断 s',p.max_cumulative_outage_s)+input('cAvailability','最小可用度 0..1',p.min_availability)+input('cRedundancy','最小冗余',p.min_redundancy)+confirmation('c',data);}
+function navigation(data){const type=data.type||{},p=data.performance||{};return header('n','导航',data)+requiredServiceIdentityNotes(data)+selectInput('nTechnology','导航技术',N_TECH,type.technology||'unknown')+input('nCoverage','覆盖要求 %',data.coverage_requirement)+input('nHorizontalError','最大水平误差 m',p.max_horizontal_error_m)+input('nVerticalError','最大垂直误差 m',p.max_vertical_error_m)+input('nIntegrity','完整性要求',p.integrity_required,'text')+input('nTimeToAlert','最大告警时间 s',p.max_time_to_alert_s)+input('nDegradation','最大降级时间 s',p.max_degradation_time_s)+input('nAvailability','最小可用度 0..1',p.min_availability)+input('nRedundancy','最小冗余',p.min_redundancy)+confirmation('n',data);}
+function surveillance(data){const type=data.type||{},p=data.performance||{};return header('s','监视',data)+requiredServiceIdentityNotes(data)+selectInput('sTargetCooperation','目标协作能力',S_COOP,type.target_cooperation,true)+selectInput('sSensorMode','传感器模式',S_MODE,type.sensor_mode,true)+selectInput('sTechnology','监视技术',S_TECH,type.technology||'unknown')+input('sCoverage','覆盖要求 %',data.coverage_requirement)+input('sDetectionRange','最小探测距离 m',p.min_detection_range_m)+input('sDetectionProbability','最小探测概率 0..1',p.min_detection_probability)+input('sMaxUpdate','最大更新间隔 s',p.max_update_interval_s)+input('sTrackLoss','最大航迹丢失 s',p.max_track_loss_s)+input('sAlertLatency','最大告警时延 s',p.max_alert_latency_s)+input('sAvailability','最小可用度 0..1',p.min_availability)+input('sRedundancy','最小冗余',p.min_redundancy)+confirmation('s',data);}
 
 export function withLegacyRequiredAliases(requirements){
   const result=structuredClone(requirements),c=result.communication,n=result.navigation,s=result.surveillance;

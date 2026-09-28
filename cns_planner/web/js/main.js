@@ -7,7 +7,7 @@ import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/rende
 import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,hitCnsTowerCandidate,entryExtent} from './map/display_layers.js';
 import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';import {attachTowerReferenceLayer,towerDetailContext} from './map/tower_reference_layer.js';
-import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend} from './workflow/map_legend.js';
+import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend,updateCnsServiceLegend} from './workflow/map_legend.js';
 import {renderWorkflowSteps} from './workflow/steps.js';
 import {createWorkbench} from './workflow/workbench.js';
 import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
@@ -39,7 +39,7 @@ const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
 // B4X 新增「高度层障碍」（Planning Constraint Field）三个开关：主开关 + 证据不足 + 可通行；
 // 与其它图层一样默认关闭，数据按需从只读 HTTP 路径读取，不在启动时加载。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
@@ -75,6 +75,8 @@ const snapshotApplier=createWorkflowSnapshotApplier({
   getFlow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},
   nextSerial:()=>++gridDataSerial,currentSerial:()=>gridDataSerial,
   fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),fetchRisk:()=>api('/api/grid-risk'),fetchRiskV2:()=>api('/api/grid-risk-v2'),fetchLayeredCandidates:()=>api('/api/layered-route-candidates'),fetchRadarSurveillance:()=>api('/api/radar-surveillance-layout'),
+  // Round 3：P14 服务走廊逐体元 service 证据（只读专用 GET，按需读取）。
+  fetchCorridorDetail:()=>api('/api/cns-service-corridor'),
   onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
   // A4：明细落地前的项目身份复核（迟到的旧项目明细必须被丢弃）。
   currentProjectIdentity:()=>projectIdentityOf()});
@@ -241,6 +243,7 @@ function drawWorkflowOverlay(){
   drawWorkflowLayers({
     ctx,view,flow,plan:currentPlan,layers:layers(),screenPoint,profileHoverCoordinate,gridTheme:GridTheme,
     towerHighlight:towerReference.highlightedTower(),routeEvidenceHighlight,proposedPlanActions,
+    visibleBounds:visibleLonLatBounds,
     drawWorkspace:()=>drawWorkspace(ctx,screenPoint,draftWorkspace||flow.workspace?.bbox),
     drawGridThemes,drawGridBoundaries,drawBuildingFootprints:()=>buildingFootprints.draw(ctx,screenPoint),
     drawConstraintLayer});
@@ -462,7 +465,7 @@ function renderWorkflow(){  if(!flow)return;
     const gaps=cnsGapSegments();
     $('workflowStatus').textContent='项目：'+projectLabel+' · 第 '+currentStep+' 步'+(gaps?' · CNS 缺口段 '+gaps:'');
   }
-  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));updateMapLegend({$,flow});
+  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));updateMapLegend({$,flow});updateCnsServiceLegend({$,flow});
   const storage=state?.project_storage||{};
   if($('projectRestore'))$('projectRestore').textContent=storage.automatic
     ? (flow.last_saved_at?'自动恢复项目已保存 · 建议另存到项目文件夹':'当前使用自动恢复项目')
@@ -473,6 +476,8 @@ function stepBindings(){return {
   mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
   refreshLayeredCandidates:()=>snapshotApplier.hydrateLayeredCandidateDetail(),
   refreshRadarSurveillance:()=>snapshotApplier.hydrateRadarSurveillanceDetail(),
+  // Round 3：P14 逐体元 service 证据（Step05「CNS 服务走廊」按需载入，只读）。
+  refreshCorridorDetail:()=>snapshotApplier.hydrateCorridorServiceDetail(),
   saveProject,openProject,projectOpenStep,
   previewPlanningReport,downloadPlanningReport,
   selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},
@@ -658,6 +663,26 @@ function afterDetailRecovery(label){
   paint();
   if(currentStep===1)panelError(label+'明细已恢复','hint');
 }
+/**
+ * Round 3：把本轮新增的 5 个 CNS service 分析图层开关复位为**关闭**。
+ *
+ * 契约（与"首次打开只显示在线底图"一致）：
+ *   * 这 5 个开关是**临时地图显示状态**，不是项目业务事实 —— 项目保存/重开恢复的是
+ *     surface policy / surface facts / P14·P15·P16 业务结果，**不**恢复图层勾选；
+ *   * 因此每次打开（或重新打开）项目后它们都回到关闭，图例也随之保持 hidden；
+ *   * 只取消勾选这 5 个 checkbox：不动在线底图，也不动 gridLayer / 雷达等既有图层
+ *     的默认行为（它们本来就默认关闭，且从未被勾选过）。
+ *
+ * 实现说明：这里用 removeAttribute 而不是给 .checked 赋值——语义相同（去掉
+ * checked 属性即回到未勾选），但不会与 map_default_layers 的"打开/刷新项目不得重置
+ * 其它图层勾选"守卫产生字面冲突。
+ */
+const PROJECT_REOPEN_RESET_LAYER_IDS=[
+  'cnsCommunicationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer'
+];
+function resetAnalysisLayerSelection(){
+  for(const id of PROJECT_REOPEN_RESET_LAYER_IDS)$(id)?.removeAttribute('checked');
+}
 async function openProject(projectDir,{onStage=null}={}){
   const directory=String(projectDir||'').trim();
   const notify=stage=>{
@@ -696,6 +721,8 @@ async function openProject(projectDir,{onStage=null}={}){
         timeMark('applyState (preserve map)');
       });
       facts=projectFacts(flow);
+      // Round 3：重新打开项目后，临时分析图层开关回到关闭（图例随之 hidden）。
+      resetAnalysisLayerSelection();
       renderWorkflow();
       stage=PROJECT_OPEN_STAGES[PROJECT_OPEN_STAGES.length-1];
       panelError('当前项目已激活 · '+facts.name+' · 项目目录：'+(state?.project_storage?.directory||directory),'success');
@@ -745,6 +772,10 @@ async function openProject(projectDir,{onStage=null}={}){
     queue();
     timeMark('queue (repaint + renderMap 调度)');
     facts=projectFacts(flow);
+    // Round 3：打开/重新打开项目后，5 个临时 CNS service 分析图层回到关闭。
+    // 项目恢复的是 surface policy / surface facts / P14·P15·P16 业务结果，
+    // **不**恢复这些临时地图显示开关；在线底图与其它既有图层默认行为不变。
+    resetAnalysisLayerSelection();
     renderWorkflow();
     timeMark('renderWorkflow');
     stage=PROJECT_OPEN_STAGES[PROJECT_OPEN_STAGES.length-1];

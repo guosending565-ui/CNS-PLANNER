@@ -10,6 +10,7 @@
 //  - 铁塔一行只说明"存在一个真实站址"，绝不表达覆盖、频率、功率或可用性。
 // =========================================================
 import {markerSymbolSvg,towerSymbolSvg} from '../map/display_layers.js';
+import {cnsServiceLegendModel} from '../map/cns_service_overlay.js';
 
 export const BASEMAP_LEGEND_LABEL='在线底图';
 export const BUSINESS_LEGEND_LABEL='真实业务数据';
@@ -105,5 +106,30 @@ export function updateMapLegend({$,flow}){
   const model=mapLegendModel({flow,towerLayerOn:$('towerLayer')?.checked===true});
   target.innerHTML=renderMapLegend(model);
   target.hidden=false;
+  return true;
+}
+
+/**
+ * Round 3：CNS service 图例（Communication / RID / 缺口状态）。
+ *
+ * 独立容器（``#cnsServiceLegend``），只在**至少一个** CNS service 图层打开时显示；
+ * 首次打开不会因为新增图例而改变默认地图显示。图例明确区分
+ * Communication / RID Cooperative Surveillance / Radar Non-cooperative Surveillance，
+ * 并且**只**把 5 km 虚线称为「RID 海上最大规划半径」。
+ */
+export function updateCnsServiceLegend({$,flow}){
+  const target=$('cnsServiceLegend');
+  if(!target)return false;
+  const lines=cnsServiceLegendModel();
+  const open=['cnsCommunicationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer']
+    .some(id=>$(id)?.checked===true);
+  target.hidden=!open;
+  if(!open)return false;
+  target.innerHTML='<div class="legend-group-label">CNS service</div>'
+    +lines.map(line=>'<div class="legend-line" data-legend-id="'+escapeHtml(line.id)+'">'
+      +'<span class="legend-symbol">'+line.symbol+'</span>'
+      +'<span class="legend-label">'+escapeHtml(line.label)+'</span>'
+      +(line.note?'<small>'+escapeHtml(line.note)+'</small>':'')
+      +'</div>').join('');
   return true;
 }

@@ -193,6 +193,8 @@ export function createWorkflowSnapshotApplier(deps) {
     // Phase4-B5X：其余外置型结果的按需读取入口（可选依赖，未提供时跳过）。
     fetchRisk = null, fetchRiskV2 = null, fetchLayeredCandidates = null,
     fetchRadarSurveillance = null,
+    // Round 3：P14 服务走廊逐体元 service 证据（可选依赖，未提供时跳过）。
+    fetchCorridorDetail = null,
     // A4：当前项目身份（只读）。提供时，明细响应落地前必须复核身份，
     // 迟到的旧项目明细一律丢弃，绝不污染刚切换过来的新项目。
     currentProjectIdentity = null,
@@ -333,6 +335,32 @@ export function createWorkflowSnapshotApplier(deps) {
   }
 
   /**
+   * Round 3：按需读取 P14 服务走廊的**逐体元 service 证据**（只读 GET）。
+   *
+   * 通用快照把逐 voxel 明细外置（``voxels`` → 计数 + ``voxels_detail``），因此
+   * ``surface_class`` / ``distinct_site_count`` / ``required_distinct_site_count``
+   * 这类 service 级证据只能从这里按需取回。它**不**写任何业务状态：
+   * 只在 flow 的 ``cns_corridor_assessment.detail`` 上挂一份只读明细。
+   */
+  async function hydrateCorridorServiceDetail() {
+    const snapshot = getFlow() || {};
+    if (typeof fetchCorridorDetail !== 'function'
+        || snapshot.cns_corridor_assessment?.detail_available !== true) {
+      return {applied: false, reason: 'no_corridor_detail'};
+    }
+    const serial = nextSerial();
+    const identity = projectIdentity();
+    const response = await fetchCorridorDetail();
+    if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    if (!detailBelongsToProject(identity)) return {applied: false, reason: 'project_changed'};
+    const current = getFlow() || {};
+    const assessment = {...(current.cns_corridor_assessment || {}), detail: response || null};
+    setFlow({...current, cns_corridor_assessment: assessment});
+    afterApply(getFlow());
+    return {applied: Boolean(response), hydrated: response ? ['cns_corridor_assessment'] : []};
+  }
+
+  /**
    * 唯一的完整 workflow snapshot 应用路径。
    *
    * 语义：先原样安装 snapshot（它可能是 slim 的），**再**按需 hydrate 逐 cell 明细，
@@ -372,6 +400,7 @@ export function createWorkflowSnapshotApplier(deps) {
     hydrateExternalDetail,
     hydrateLayeredCandidateDetail,
     hydrateRadarSurveillanceDetail,
+    hydrateCorridorServiceDetail,
     looksLikeWorkflowSnapshot,
     normalizeSnapshotInstall,
     state: {

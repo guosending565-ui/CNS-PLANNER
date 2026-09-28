@@ -97,6 +97,11 @@
      </div>
      <div class="layer-group" id="cnsLayers" hidden>
       <div class="layer-group-title">CNS</div>
+      <div class="layer-row"><span><i class="swatch" style="background:#0f8a78"></i> Communication 规划覆盖（全向，按 surface 半径）</span><input type="checkbox" id="cnsCommunicationLayer" aria-label="Communication 规划覆盖"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#0f8a78"></i> RID 合作监视规划覆盖（全向；虚线为海上最大规划半径）</span><input type="checkbox" id="cnsRidLayer" aria-label="RID 合作监视规划覆盖"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#c62828"></i> CNS service 缺口（按 service 状态着色）</span><input type="checkbox" id="cnsServiceGapLayer" aria-label="CNS service 缺口"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#d12f8a"></i> CNS 设施规划（P16 选中动作与残余目标）</span><input type="checkbox" id="cnsFacilityPlanLayer" aria-label="CNS 设施规划"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#7256a1"></i> 陆海分类（Surface Facts，格心代表点）</span><input type="checkbox" id="surfaceFactsLayer" aria-label="陆海分类图层"></div>
       <div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS 设施</span><input type="checkbox" id="existingCnsLayer"></div>
       <div class="layer-row"><span><i class="swatch candidate-site"></i>候选站址</span><input type="checkbox" id="candidateSiteLayer"></div>
       <div class="layer-row"><span><i class="swatch cns-c"></i>通信 C 缺口</span><input type="checkbox" id="cLayer"></div>
@@ -127,6 +132,9 @@
     <div id="constraintFieldLegend" hidden></div>
     <div id="layeredFeasibilityLegend" hidden></div>
     <div id="layeredCandidateLegend" hidden></div>
+    <!-- Round 3：CNS service 图例（Communication / RID / 缺口状态）。默认隐藏，
+         只有用户打开任一 CNS service 图层时才渲染，因此不影响默认地图显示。 -->
+    <div id="cnsServiceLegend" hidden></div>
    </div>
 
    <div id="gridNotice" class="grid-notice" hidden></div>
@@ -197,4 +205,61 @@
     支持 .gpkg / .shp / .geojson，也可以指向引用该图层的 .qgz / .qgs 工程。
 </small><label>陆域掩膜 / 陆海判定 GeoPackage</label><div class="file-input"><input id="land_maskPath" aria-label="陆域掩膜文件路径"><button data-browse="land_mask">浏览电脑…</button></div><small>雷达监视规划的海域判定来源；支持 .gpkg / .shp / .geojson。真实读取源 CRS（禁止 degree-as-meter）；未配置或 CRS 不可解析时地表类别保持未知（fail-closed），绝不用 DEM 无数据推断海洋。</small><label>参考起降点 / XLSX、CSV</label><div class="file-input"><input id="reference_landing_sitesPath" aria-label="参考起降点文件路径"><button data-browse="reference_landing_sites">浏览电脑…</button></div><small>只读参考层；ET 仅诊断并提示转换，不会解析。</small><label>真实参考航线 / CSV、XLSX、GeoJSON</label><div class="file-input"><input id="reference_routesPath" aria-label="真实参考航线文件路径"><button data-browse="reference_routes">浏览电脑…</button></div><small>保留全部中间航路点；不会自动进入项目航路。ET 需先转换。</small><label>通信铁塔站址 / XLSX、CSV、GeoJSON</label><div class="file-input"><input id="towersPath" aria-label="通信铁塔站址文件路径"><button data-browse="towers">浏览电脑…</button></div><small>只登记真实站址位置（CGCS2000/EPSG:4490，人工裁定）；不生成 CNS 覆盖，不转 C/N/S 设备，不进入规划与风险计算。</small></section><section class="source-overview"><div class="source-center-title"><h3>全部数据源</h3><button class="secondary compact" id="checkOnline">检查在线服务</button></div><div id="onlineCheckResult" class="online-check-result">尚未检查在线服务</div><div id="sourceHealthList" class="source-health-list"></div><h3>工程参数</h3><div id="parameterList" class="parameter-list"></div></section></div><div id="settingsError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="settingsMessage">修改后可先校验；只有“应用”会保存并切换地图</span><div><button class="secondary" id="validateSources">仅校验</button><button class="primary" id="applySources">应用数据源</button></div></div></dialog>
 <dialog id="browser"><div class="dialog-head"><h2>浏览电脑文件</h2><button class="close" id="closeBrowser" aria-label="关闭文件浏览">×</button></div><div class="browse-bar"><button id="drives">此电脑</button><button id="parent">上一级</button><input id="folder" aria-label="当前目录"><button id="openFolder">转到</button></div><p class="small dark" id="fileFilter"></p><div id="entries"></div><div id="browseError" class="inline-error" role="alert"></div><div class="dialog-actions"><span id="chosen">请选择文件；单击文件后确认</span><button class="primary" id="selectFile" disabled>选择此文件</button></div></dialog>
-<script src="/tiles.js"></script><script src="/grid_theme.js"></script><script type="module" src="/app.js"></script><script type="module" src="/js/tasks.js"></script></body></html>
+<script src="/tiles.js"></script><script src="/grid_theme.js"></script><script type="module" src="/app.js"></script><script type="module" src="/js/tasks.js"></script>
+<!-- BUG-STARTUP-003：后端 HTTP 服务可达性的最小兜底。
+     必须是**普通 inline script**（不是 module）：8765 在后端替换窗口里不可达时，
+     /app.js 及其整棵依赖树（js/main.js、js/shell.js、js/state/*、js/workflow/*）都会以
+     net::ERR_CONNECTION_REFUSED 失败，那时任何写在模块里的提示都来不及执行。
+     这里也刻意只用内联 style 属性，保证外部 CSS 同样拿不到时错误依然醒目可见。
+     它只是错误兜底，真正的修复在启动器生命周期（map_app.py）。 -->
+<div id="bootWatchdog" role="alert" hidden style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9999;max-width:min(520px,88vw);padding:24px 28px;border:2px solid #c62828;border-radius:10px;background:#fff5f5;color:#7f1d1d;font:14px/1.7 system-ui,'Microsoft YaHei',sans-serif;text-align:center;box-shadow:0 12px 32px rgba(0,0,0,.28)">
+ <p style="margin:0 0 16px;font-size:15px;font-weight:700">CNS 地图服务当前不可连接（127.0.0.1:8765）。<br>请重新启动地图工作台。</p>
+ <button type="button" id="bootWatchdogRetry" style="padding:8px 18px;border:0;border-radius:6px;background:#c62828;color:#fff;font-size:14px;font-weight:700;cursor:pointer">重新检查服务</button>
+</div>
+<script>
+(function () {
+  "use strict";
+  var DELAY_MS = 6000;      // 首次检查：页面加载后约 5~8 秒
+  var TIMEOUT_MS = 4000;    // 单次 /api/health 请求上限，避免按钮永久卡住
+  var busy = false;
+
+  function showFailure() {
+    var loading = document.getElementById("loading");
+    if (loading) { loading.hidden = true; loading.style.display = "none"; }
+    var box = document.getElementById("bootWatchdog");
+    if (box) box.hidden = false;
+  }
+
+  function healthOk(payload) {
+    return !!payload && payload.service === "cns-map" && payload.ready === true;
+  }
+
+  function check(reloadOnSuccess) {
+    if (busy) return;
+    busy = true;
+    var controller = (typeof AbortController === "function") ? new AbortController() : null;
+    var timer = controller ? window.setTimeout(function () { controller.abort(); }, TIMEOUT_MS) : null;
+    function settle() {
+      busy = false;
+      if (timer) window.clearTimeout(timer);
+    }
+    fetch("/api/health", { cache: "no-store", signal: controller ? controller.signal : undefined })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        settle();
+        if (healthOk(payload)) {
+          // 服务恢复：模块加载失败的页面无法自愈，直接刷新一次即可回到正常启动流程。
+          if (reloadOnSuccess) window.location.reload();
+          return;
+        }
+        showFailure();
+      })
+      .catch(function () { settle(); showFailure(); });
+  }
+
+  var retry = document.getElementById("bootWatchdogRetry");
+  if (retry) retry.addEventListener("click", function () { check(true); });
+  window.setTimeout(function () { check(false); }, DELAY_MS);
+})();
+</script>
+</body></html>
