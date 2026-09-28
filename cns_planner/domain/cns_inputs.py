@@ -193,6 +193,7 @@ def normalize_device(item: dict) -> CNSDevice:
     contract = normalize_subsystem_contract(subsystem, item, field=f"device.{device_id}")
     result.update(contract)
     result = sync_aliases(subsystem, result, field=f"device.{device_id}")
+    result.update(_normalize_service_identity(item, result))
     result["coverage_geometry"] = normalize_coverage_geometry(result, item.get("coverage_geometry"))
     result["service_model"] = normalize_service_model_spec(item.get("service_model"))
     return result
@@ -216,6 +217,7 @@ def backfill_device_contract(item: dict) -> dict:
     result["vertical_profile"] = normalize_vertical_profile(
         item.get("vertical_profile"), legacy_elevation_m=item.get("elevation_m")
     )
+    result.update(_normalize_service_identity(item, result))
     result["coverage_geometry"] = normalize_coverage_geometry(result, item.get("coverage_geometry"))
     result["service_model"] = normalize_service_model_spec(item.get("service_model"))
     return sync_aliases(subsystem, result, field=f"device.{item.get('device_id') or 'legacy'}")
@@ -346,12 +348,75 @@ def _normalize_requirement_set(value):
     return result
 
 
+#: ``radius_by_surface`` 只接受三个**可判定**的 surface；``unknown`` 一律 fail-closed，
+#: 因此不允许出现在映射里（缺省即 None，绝不回落 land/sea）。
+GEOMETRY_RADIUS_SURFACES = ("land", "coastal_uncertain", "sea")
+
+
+def _normalize_service_identity(item, contract=None):
+    """Additive service identity（``service_key`` / ``service_subtype``）。
+
+    只在显式提供时保留字段，因此旧设备的归一化输出形状与逐字节结果不变；
+    ``type`` 块里的 ``service_subtype`` 也一并保留，供 RID 类型契约追溯。
+    """
+
+    result = {}
+    explicit = str(item.get("service_key") or "").strip()
+    if explicit:
+        result["service_key"] = explicit
+    type_block = item.get("type") if isinstance(item.get("type"), dict) else {}
+    subtype = item.get("service_subtype") or type_block.get("service_subtype")
+    subtype = str(subtype).strip() if subtype not in (None, "") else ""
+    if subtype:
+        result["service_subtype"] = subtype
+        target = contract.get("type") if isinstance(contract, dict) and isinstance(contract.get("type"), dict) else None
+        if target is not None:
+            target["service_subtype"] = subtype
+    return result
+
+
+def normalize_radius_by_surface(value):
+    """Normalize an additive ``surface -> geometric planning radius`` mapping.
+
+    返回 ``None`` 表示"未声明"；声明了就只保留三个可判定 surface 的正数半径。
+    这些半径只是**几何规划半径**，不是实测覆盖，也不是保证距离。
+    """
+
+    if value in (None, ""):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("coverage_geometry.radius_by_surface 必须是对象")
+    result = {}
+    for name in GEOMETRY_RADIUS_SURFACES:
+        item = value.get(name)
+        if item in (None, ""):
+            continue
+        result[name] = _positive(item, f"coverage_geometry.radius_by_surface.{name}")
+    if not result:
+        raise ValueError("coverage_geometry.radius_by_surface 至少需要一个 land/coastal_uncertain/sea 半径")
+    return result
+
+
 def normalize_coverage_geometry(device, value=None):
-    """Normalize explicit geometry or expose a conservative legacy 2D-radius assumption."""
+    """Normalize explicit geometry or expose a conservative legacy 2D-radius assumption.
+
+    Round 1 additive：显式 ``radius_by_surface``（分 surface 几何规划半径）与
+    ``urban_radius_m`` / ``urban_enabled``（只保存为**设备事实**，本轮不做 urban 分类）。
+    未声明这些字段时输出形状与 legacy 完全一致；只声明 ``radius_by_surface`` 时
+    ``slant_range_m`` 保持 ``None``，legacy 读者仍按 legacy 语义处理。
+    """
     if value is not None and not isinstance(value, dict):
         raise ValueError("coverage_geometry 必须是对象")
     raw = value or {}
     model = str(raw.get("model") or "")
+    additive = {}
+    radius_by_surface = normalize_radius_by_surface(raw.get("radius_by_surface"))
+    if radius_by_surface is not None:
+        additive["radius_by_surface"] = radius_by_surface
+    if raw.get("urban_radius_m") not in (None, ""):
+        additive["urban_radius_m"] = _positive(raw.get("urban_radius_m"), "coverage_geometry.urban_radius_m")
+    if raw.get("urban_enabled") is not None:
+        additive["urban_enabled"] = bool(raw.get("urban_enabled"))
     if model:
         if model not in ("sphere", "hemisphere", "none", "unknown"):
             raise ValueError("coverage_geometry.model 无效")
@@ -362,13 +427,15 @@ def normalize_coverage_geometry(device, value=None):
             else _optional_nonnegative(radius_value, "coverage_geometry.slant_range_m")
         )
         confirmed = bool(raw.get("confirmed", False))
-        status = "confirmed" if confirmed and model in ("sphere", "hemisphere") and radius is not None else "missing_data" if model in ("none", "unknown") else "pending_confirmation"
+        declared = radius is not None or radius_by_surface is not None
+        status = "confirmed" if confirmed and model in ("sphere", "hemisphere") and declared else "missing_data" if model in ("none", "unknown") else "pending_confirmation"
         return {
             "model": model, "slant_range_m": radius,
             "model_scope": "geometric_only",
             "source": str(raw.get("source") or "未记录"),
             "confirmed": confirmed,
             "status": status,
+            **additive,
         }
     technology = str(((device.get("type") or {}).get("technology") or "unknown")).lower()
     non_site_based = technology in {"gnss", "inertial", "visual"}
@@ -378,10 +445,12 @@ def normalize_coverage_geometry(device, value=None):
             "model": "hemisphere", "slant_range_m": _positive(radius, "radius_m"),
             "model_scope": "geometric_only", "source": "legacy_engineering_assumption",
             "confirmed": False, "status": "pending_confirmation",
+            **additive,
         }
     return {
         "model": "none", "slant_range_m": None, "model_scope": "geometric_only",
         "source": "not_defined", "confirmed": False, "status": "missing_data",
+        **additive,
     }
 
 

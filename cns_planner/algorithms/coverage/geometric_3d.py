@@ -7,6 +7,10 @@ import heapq
 import json
 import math
 
+from ...domain.cns_service_contract import (
+    distinct_site_id_for, effective_radius_m, geometry_usable, index_max_range_m,
+    normalize_surface_class, resolve_surface_class, service_contract_for,
+)
 from ...domain.geodesy import distance_m
 from ...domain.spatial_3d import effective_route_vertical_context, resolve_egm2008_height
 
@@ -36,7 +40,15 @@ class GeometricCoverage3DV1:
             "not_evaluated": _not_evaluated(),
         }
 
-    def evaluate(self, routes, spatial_3d, grid, grid_attributes, existing_facilities, device_catalog):
+    def evaluate(self, routes, spatial_3d, grid, grid_attributes, existing_facilities, device_catalog,
+                 *, surface_class_provider=None):
+        """评估 P7 几何覆盖。
+
+        ``surface_class_provider`` 是**可选**的最薄注入点（Round 2 由唯一
+        LandMask ``classify_surface`` provider 提供）：默认 ``None`` 时每个 sample 的
+        ``surface_class`` 先取 terrain cell 的显式事实，否则保持 ``unknown``
+        （fail-closed，绝不猜测、绝不回落 land/sea）。
+        """
         terrain = ((grid_attributes or {}).get("terrain") or {}).get("cells") or {}
         cells = list((grid or {}).get("cells") or [])
         providers = build_geometric_providers(
@@ -46,7 +58,7 @@ class GeometricCoverage3DV1:
         results = []
         for route in routes or []:
             profile = effective_route_vertical_context(spatial_3d, route.get("route_id"))
-            results.append(self._route(route, profile, cells, terrain, providers))
+            results.append(self._route(route, profile, cells, terrain, providers, surface_class_provider))
         fingerprint_input = {
             "routes": routes or [], "spatial_3d": spatial_3d or {},
             "terrain": terrain, "providers": providers, "parameters": self.parameters,
@@ -61,15 +73,15 @@ class GeometricCoverage3DV1:
             "route_count": len(results), "routes": results, "not_evaluated": _not_evaluated(),
         }
 
-    def _route(self, route, profile, grid_cells, terrain, providers):
+    def _route(self, route, profile, grid_cells, terrain, providers, surface_class_provider=None):
         route_id, path = str(route.get("route_id") or ""), route.get("path") or []
         if route.get("status") != "passed" or len(path) < 2:
             return {"route_id": route_id, "status": "missing_data", "route_length_m": 0.0, "samples": [], "subsystems": []}
         if not profile:
             return {"route_id": route_id, "status": "missing_data", "route_length_m": path_length_m(path), "samples": [], "subsystems": [], "reasons": ["缺少航路高度剖面"]}
         offsets, total = _sample_offsets(path, self.parameters["sample_spacing_m"])
-        samples = [self._sample(route_id, path, offset, total, profile, grid_cells, terrain) for offset in offsets]
-        subsystems = [self._subsystem(code, route_id, path, offsets, total, profile, grid_cells, terrain, providers.get(code, [])) for code in ("C", "N", "S")]
+        samples = [self._sample(route_id, path, offset, total, profile, grid_cells, terrain, surface_class_provider) for offset in offsets]
+        subsystems = [self._subsystem(code, route_id, path, offsets, total, profile, grid_cells, terrain, providers.get(code, []), surface_class_provider) for code in ("C", "N", "S")]
         statuses = [item["status"] for item in subsystems]
         status = "missing_data" if any(value == "missing_data" for value in statuses) else "failed" if any(value == "failed" for value in statuses) else "passed"
         return {
@@ -78,7 +90,7 @@ class GeometricCoverage3DV1:
             "model_scope": self.model_scope,
         }
 
-    def _sample(self, route_id, path, offset, total, profile, grid_cells, terrain):
+    def _sample(self, route_id, path, offset, total, profile, grid_cells, terrain, surface_class_provider=None):
         coordinate = route_point_at(path, offset)
         cell = find_grid_cell(grid_cells, coordinate)
         terrain_cell = terrain.get(cell.get("grid_id")) if cell else None
@@ -98,10 +110,15 @@ class GeometricCoverage3DV1:
             "surface_elevation_m": surface, "altitude_agl_m": agl,
             "altitude_egm2008_m": egm, "vertical_status": resolved["status"],
             "vertical_reason": resolved["reason"],
+            # Round 1 additive：sample 明确携带 surface_class；缺省 unknown（不猜测）。
+            "surface_class": resolve_surface_class(
+                explicit=(terrain_cell or {}).get("surface_class"),
+                provider=surface_class_provider, coordinate=coordinate,
+            ),
         }
 
-    def _subsystem(self, code, route_id, path, offsets, total, profile, grid_cells, terrain, providers):
-        point_samples = [self._sample(route_id, path, value, total, profile, grid_cells, terrain) for value in offsets]
+    def _subsystem(self, code, route_id, path, offsets, total, profile, grid_cells, terrain, providers, surface_class_provider=None):
+        point_samples = [self._sample(route_id, path, value, total, profile, grid_cells, terrain, surface_class_provider) for value in offsets]
         for sample in point_samples:
             sample.update(evaluate_geometry_point(sample, providers))
         if not providers:
@@ -110,7 +127,7 @@ class GeometricCoverage3DV1:
             return _missing_subsystem(code, total, point_samples, "航路高度无法统一解析为 EGM2008")
         intervals = []
         for start, end in zip(offsets, offsets[1:]):
-            midpoint = self._sample(route_id, path, (start + end) / 2, total, profile, grid_cells, terrain)
+            midpoint = self._sample(route_id, path, (start + end) / 2, total, profile, grid_cells, terrain, surface_class_provider)
             covered = evaluate_geometry_point(midpoint, providers)
             intervals.append({"start_m": start, "end_m": end, "covered": covered["covered"]})
         covered_length = sum(item["end_m"] - item["start_m"] for item in intervals if item["covered"])
@@ -127,7 +144,17 @@ class GeometricCoverage3DV1:
 
 
 def build_geometric_providers(collection, catalog, site_profiles=None):
-    """Build the canonical P7 point-provider input from existing facilities only."""
+    """Build the canonical P7 point-provider input from existing facilities only.
+
+    Round 1 additive：每个 provider 额外携带
+
+    * ``subsystem`` / ``service_key`` / ``service_contract``（显式服务契约，含
+      :func:`service_contract_for` 解析出的 ``service_surface_dependent``）；
+    * ``distinct_site_id``（**物理站址身份**，解析顺序见
+      :func:`...domain.cns_service_contract.distinct_site_id_for`；无法确认即 ``None``）。
+
+    legacy 设备（无 ``service_key``、无 ``radius_by_surface``）的字段与几何行为不变。
+    """
     devices = {str(item.get("device_id")): item for item in (catalog or {}).get("items") or []}
     result = {"C": [], "N": [], "S": []}
     for facility in (collection or {}).get("items") or []:
@@ -141,24 +168,47 @@ def build_geometric_providers(collection, catalog, site_profiles=None):
             vertical = next((item for item in candidates if isinstance(item, dict) and item.get("service_origin_egm2008_m") is not None), {})
             origin = vertical.get("service_origin_egm2008_m") if isinstance(vertical, dict) else None
             subsystem = str(installed.get("subsystem") or device.get("subsystem") or "")
-            if subsystem not in result or geometry.get("model") not in ("sphere", "hemisphere") or geometry.get("slant_range_m") is None or origin is None:
+            #: 几何可用性：``sphere``/``hemisphere`` 且声明了 legacy ``slant_range_m``
+            #: **或** additive ``radius_by_surface``（两者都没有则不是 provider）。
+            if subsystem not in result or not geometry_usable(geometry) or origin is None:
                 continue
+            identity = {**installed, **device}
+            if isinstance(device.get("type"), dict) or isinstance(installed.get("type"), dict):
+                identity["type"] = {**(installed.get("type") or {}), **(device.get("type") or {})}
+            contract = service_contract_for(subsystem, identity)
             result[subsystem].append({
                 "facility_id": facility.get("facility_id"), "device_id": device.get("device_id"),
                 "coordinate": facility.get("coordinate"), "service_origin_egm2008_m": float(origin),
                 "coverage_geometry": geometry,
+                "subsystem": subsystem,
+                "service_key": contract["service_key"],
+                "service_contract": contract,
+                "service_surface_dependent": contract["service_surface_dependent"],
+                "distinct_site_id": distinct_site_id_for(facility, identity),
             })
     return result
 
 
 def evaluate_geometry_point(sample, providers):
-    """Evaluate one EGM2008 point with the exact P7 geometric coverage rules."""
+    """Evaluate one EGM2008 point with the exact P7 geometric coverage rules.
+
+    Round 1 additive：半径改为按 sample 的 ``surface_class`` 解析
+    （:func:`...domain.cns_service_contract.effective_radius_m`）。
+
+    * legacy 设备（只有 ``slant_range_m``）行为完全不变；
+    * 有 ``radius_by_surface`` 的设备：``land`` / ``coastal_uncertain`` / ``sea`` 各取
+      对应**几何规划半径**；
+    * ``surface_class = unknown`` 时半径不可判定 ⇒ ``covered = None``、
+      ``coverage_status = "unknown"``（fail-closed，绝不 false-positive）。
+    """
     if sample.get("vertical_status") != "passed":
-        return {"covered": None, "providers": [], "nearest_slant_distance_m": None}
+        return {"covered": None, "providers": [], "nearest_slant_distance_m": None,
+                "coverage_status": "unknown", "coverage_reason": "vertical_status_not_passed"}
     if isinstance(providers, GeometricProviderIndex):
         return providers.evaluate(sample)
-    matches, nearest = [], None
+    matches, nearest, unresolved = [], None, False
     point = [sample["longitude"], sample["latitude"]]
+    surface_class = normalize_surface_class(sample.get("surface_class"))
     for provider in providers:
         horizontal = distance_m(point, provider["coordinate"])
         delta = sample["altitude_egm2008_m"] - provider["service_origin_egm2008_m"]
@@ -166,13 +216,78 @@ def evaluate_geometry_point(sample, providers):
         nearest = slant if nearest is None else min(nearest, slant)
         geometry = provider["coverage_geometry"]
         vertical_ok = geometry["model"] == "sphere" or delta >= 0
-        if vertical_ok and slant <= float(geometry["slant_range_m"]):
-            matches.append({
-                "facility_id": provider.get("facility_id"), "device_id": provider.get("device_id"),
-                "slant_distance_m": slant, "horizontal_distance_m": horizontal,
-                "vertical_delta_m": delta, "geometry_model": geometry["model"],
-            })
-    return {"covered": bool(matches), "providers": matches, "nearest_slant_distance_m": nearest}
+        if not vertical_ok:
+            continue
+        #: 包络（max radius_by_surface）只用于空间剪枝：超出包络的 provider 不可能覆盖，
+        #: 也不可能产生 unknown 证据，从而保证 list 与 index 的逐项一致。
+        envelope = index_max_range_m(geometry)
+        if envelope is None or slant > envelope:
+            continue
+        resolution = effective_radius_m(geometry, surface_class)
+        if resolution["radius_m"] is None:
+            unresolved = True
+            continue
+        if slant <= resolution["radius_m"]:
+            matches.append(_match_entry(
+                provider, slant=slant, horizontal=horizontal, delta=delta,
+                geometry_model=geometry["model"], resolution=resolution,
+            ))
+    return _coverage_result(matches, nearest, unresolved, surface_class)
+
+
+def _service_dimensions(provider):
+    """service 维度只附加在**显式新服务** provider 上。
+
+    legacy provider（无 ``service_key`` 声明、无 ``radius_by_surface``）保持原有字段集：
+    P14 的超大走廊结果里每个 voxel 会重复上千条 provider 证据，因此 legacy 下**不得**
+    为了新维度膨胀 payload（否则 beyond-envelope 场景会 OOM）。
+    """
+
+    if provider.get("service_surface_dependent") is not True:
+        return {}
+    return {
+        "subsystem": provider.get("subsystem"),
+        "service_key": provider.get("service_key"),
+        "service_surface_dependent": True,
+        "distinct_site_id": provider.get("distinct_site_id"),
+    }
+
+
+def _match_entry(provider, *, slant, horizontal, delta, geometry_model, resolution):
+    """匹配证据条目：legacy provider 的字段集与 P14 优化前逐项一致。"""
+
+    entry = {
+        "facility_id": provider.get("facility_id"), "device_id": provider.get("device_id"),
+        "slant_distance_m": slant, "horizontal_distance_m": horizontal,
+        "vertical_delta_m": delta, "geometry_model": geometry_model,
+    }
+    if resolution["source"] == "radius_by_surface":
+        entry.update({
+            "coverage_radius_m": resolution["radius_m"],
+            "coverage_radius_source": resolution["source"],
+            "effective_surface_class": resolution["surface_class"],
+        })
+    entry.update(_service_dimensions(provider))
+    return entry
+
+
+def _coverage_result(matches, nearest, unresolved, surface_class):
+    """list 与 index 共用的结果整形，保证两者逐项一致。"""
+
+    if matches:
+        status, covered = "covered", True
+    elif unresolved:
+        status, covered = "unknown", None
+    else:
+        status, covered = "not_covered", False
+    return {
+        "covered": covered, "coverage_status": status,
+        "providers": matches, "nearest_slant_distance_m": nearest,
+        "surface_class": surface_class,
+        "coverage_reason": (
+            "surface_class_or_radius_unresolved_fail_closed" if status == "unknown" else None
+        ),
+    }
 
 
 class GeometricProviderIndex:
@@ -202,7 +317,12 @@ class GeometricProviderIndex:
         north = max(float(self.providers[index]["coordinate"][1]) for index in indices)
         low = min(float(self.providers[index]["service_origin_egm2008_m"]) for index in indices)
         high = max(float(self.providers[index]["service_origin_egm2008_m"]) for index in indices)
-        maximum_range = max(float(self.providers[index]["coverage_geometry"]["slant_range_m"]) for index in indices)
+        #: 节点包络半径 = max(radius_by_surface.values()) 或 legacy slant_range_m。
+        #: 它**只**用于空间剪枝；最终覆盖仍由 effective_radius_m(surface) 判定。
+        maximum_range = max(
+            (index_max_range_m(self.providers[index]["coverage_geometry"]) or 0.0)
+            for index in indices
+        )
         # 节点纬度带内最小的 cos(|latitude|)：cos 在 [0°, 180°] 上单调递减，
         # 因此区间最小值落在 |latitude| 最大的端点上。
         node_cosine = max(min(math.cos(math.radians(south)), math.cos(math.radians(north))), 0.0)
@@ -259,11 +379,13 @@ class GeometricProviderIndex:
 
     def evaluate(self, sample):
         if not self._root:
-            return {"covered": False, "providers": [], "nearest_slant_distance_m": None}
+            return _coverage_result([], None, False, normalize_surface_class(sample.get("surface_class")))
         point = [sample["longitude"], sample["latitude"]]
         altitude = sample["altitude_egm2008_m"]
+        surface_class = normalize_surface_class(sample.get("surface_class"))
         context = self._probe_context(sample)
         nearest = None
+        unresolved = False
         matches = []
         sequence = 0
         pending = [(self._lower_bound(self._root[0], context), sequence, self._root)]
@@ -286,19 +408,24 @@ class GeometricProviderIndex:
                 nearest = slant if nearest is None else min(nearest, slant)
                 geometry = provider["coverage_geometry"]
                 vertical_ok = geometry["model"] == "sphere" or delta >= 0
-                if vertical_ok and slant <= float(geometry["slant_range_m"]):
-                    matches.append((index, {
-                        "facility_id": provider.get("facility_id"),
-                        "device_id": provider.get("device_id"),
-                        "slant_distance_m": slant, "horizontal_distance_m": horizontal,
-                        "vertical_delta_m": delta, "geometry_model": geometry["model"],
-                    }))
+                if not vertical_ok:
+                    continue
+                envelope = index_max_range_m(geometry)
+                if envelope is None or slant > envelope:
+                    continue
+                resolution = effective_radius_m(geometry, surface_class)
+                if resolution["radius_m"] is None:
+                    unresolved = True
+                    continue
+                if slant <= resolution["radius_m"]:
+                    matches.append((index, _match_entry(
+                        provider, slant=slant, horizontal=horizontal, delta=delta,
+                        geometry_model=geometry["model"], resolution=resolution,
+                    )))
         matches.sort(key=lambda item: item[0])
-        return {
-            "covered": bool(matches),
-            "providers": [item[1] for item in matches],
-            "nearest_slant_distance_m": nearest,
-        }
+        return _coverage_result(
+            [item[1] for item in matches], nearest, unresolved, surface_class,
+        )
 
 
 def index_geometric_providers(providers):

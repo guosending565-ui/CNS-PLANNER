@@ -24,6 +24,7 @@ from ..service_capability.v1 import (
     prepare_capability_context,
 )
 from ...domain.cns_corridor import corridor_disclaimers, empty_cns_corridor_assessment
+from ...domain.cns_service_contract import resolve_surface_class
 from ...domain.geodesy import distance_m
 from ...domain.spatial_3d import (
     effective_route_vertical_context, resolve_egm2008_height, voxel_ref,
@@ -47,7 +48,7 @@ class CNSServiceCorridorV1:
         aircraft_profile, existing_facilities, device_catalog, corridor_policy,
         *, coverage_parameters=None, capability_parameters=None,
         cancel_check=None, progress_callback=None, preflight=None,
-        allow_beyond_validated_envelope=False,
+        allow_beyond_validated_envelope=False, surface_class_provider=None,
     ):
         """评估服务走廊。
 
@@ -74,6 +75,10 @@ class CNSServiceCorridorV1:
 
         ``allow_beyond_validated_envelope=True`` 只表示调用方显式接受"超过已验证
         性能包线"，**不**表示可以超过 ``beyond_safety_ceiling``。
+
+        ``surface_class_provider`` 是**可选**的最薄注入点（Round 2 由唯一 LandMask
+        分类器提供）：每个 voxel/sample 的 ``surface_class`` 先取 terrain cell 的显式
+        事实，否则再问该 provider，最后保持 ``unknown``（fail-closed，绝不猜测）。
         """
         if isinstance(preflight, dict):
             tier = preflight.get("tier")
@@ -92,7 +97,7 @@ class CNSServiceCorridorV1:
         )
         geometric_provider_indexes = index_geometric_providers(geometric_providers)
         provider_devices = build_provider_devices(device_catalog, existing_facilities)
-        prepared_cells = _prepare_cells(cells, terrain)
+        prepared_cells = _prepare_cells(cells, terrain, surface_class_provider)
         route_results = []
         total_routes = len(routes or [])
         tick = _ProgressThrottle(cancel_check, progress_callback)
@@ -257,6 +262,8 @@ class CNSServiceCorridorV1:
                 "route_id": route_id, "distance_along_route_m": nearest["route_offset_m"],
                 "longitude": center[0], "latitude": center[1], "grid_id": cell.get("grid_id"),
                 "surface_elevation_m": surface, "altitude_egm2008_m": probe_altitude,
+                #: Round 1 additive：surface_class 进入 voxel/sample 契约。
+                "surface_class": prepared.get("surface_class", "unknown"),
                 "vertical_status": vertical_status,
                 "vertical_reason": resolved_route["reason"] if resolved_route["status"] != "passed" else (
                     lower["reason"] if lower["status"] != "passed" else upper["reason"]
@@ -270,22 +277,30 @@ class CNSServiceCorridorV1:
                     code, capability_input, requirements.get(name) or {}, aircraft,
                     provider_devices, context=capability_contexts[code],
                 )
-                subsystems.append({
+                subsystem_entry = {
                     "subsystem": code,
                     "planning_status": _planning_status(capability["status"]),
                     "p8_status": capability["status"],
                     "geometry": geometry,
                     "providers": _clone_fresh(geometry.get("providers") or []),
                     "provider_evaluations": _clone_fresh(capability.get("provider_evaluations") or []),
+                    "surface_class": capability.get("surface_class") or probe["surface_class"],
                     "reasons": _clone_fresh(capability.get("reasons") or []),
                     "evidence": _clone_fresh(capability.get("evidence") or []),
-                })
+                }
+                #: additive：service 级冗余证据只在存在时输出；legacy 走廊 payload 不膨胀。
+                service_redundancy = capability.get("service_redundancy") or []
+                if service_redundancy:
+                    subsystem_entry["service_redundancy"] = _clone_fresh(service_redundancy)
+                subsystems.append(subsystem_entry)
             area = _prepared_cell_area(prepared)
             thickness = overlap[1] - overlap[0] if overlap else None
             output.append({
                 **ref, "route_id": route_id, "nearest_route_offset_m": nearest["route_offset_m"],
                 "nearest_route_distance_m": nearest["distance_m"],
                 "nearest_route_coordinate": nearest["coordinate"],
+                #: Round 1 additive：voxel 顶层携带 surface_class，供 P15 按 surface 解析冗余要求。
+                "surface_class": prepared.get("surface_class", "unknown"),
                 "cell_half_diagonal_m": prepared["half_diagonal"],
                 "corridor_height_egm2008_m": band,
                 "layer_height_egm2008_m": [lower["altitude_egm2008_m"], upper["altitude_egm2008_m"]],
@@ -433,7 +448,7 @@ class _MetricRoute:
         }
 
 
-def _prepare_cells(cells, terrain):
+def _prepare_cells(cells, terrain, surface_class_provider=None):
     prepared = []
     for cell in cells:
         bbox = cell.get("bbox") or []
@@ -450,6 +465,11 @@ def _prepare_cells(cells, terrain):
             "surface": (
                 terrain_cell.get("surface_elevation_mean_m")
                 if terrain_cell.get("status") == "passed" else None
+            ),
+            #: Round 1 additive：voxel/sample 的 surface_class 契约；缺失即 unknown。
+            "surface_class": resolve_surface_class(
+                explicit=terrain_cell.get("surface_class"),
+                provider=surface_class_provider, coordinate=center,
             ),
             "layer_bounds": {}, "area": None,
         })

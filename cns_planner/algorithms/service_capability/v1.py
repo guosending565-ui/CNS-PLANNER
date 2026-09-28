@@ -7,6 +7,10 @@ from copy import deepcopy
 import json
 import math
 
+from ...domain.cns_service_contract import (
+    legacy_min_redundancy, normalize_surface_class, not_evaluated_for,
+    required_distinct_site_count,
+)
 from ...safety.service_state import evaluate_required_performance
 
 
@@ -169,6 +173,12 @@ def _evaluate_site_capability_point(
             "independent_redundancy_count": confirmed_independent_provider_count(evaluations),
             "independence_claimed": confirmed_independent_provider_count(evaluations) is not None,
         })
+        #: Round 1 additive：按 **service_key** 分别计算冗余证据（每个 service 独立成池：
+        #: 合格 provider → 同一 service_key → unique distinct_site_id → 与要求数量比较）。
+        #: legacy 子系统级字段与判定完全保留在下方，未改语义。
+        service_redundancy = summarize_service_redundancy(
+            evaluations, required, surface_class=sample.get("surface_class"),
+        )
         required_redundancy = (required.get("performance") or {}).get("min_redundancy") or required.get("redundancy") or 1
         meets = [item for item in evaluations if item["status"] == "meets_under_model"]
         unknown = [item for item in evaluations if item["status"] in ("unknown", "unsupported_model")]
@@ -188,7 +198,10 @@ def _evaluate_site_capability_point(
             status, reasons = "unknown" if any(item["status"] == "unknown" for item in unknown) else "unsupported_model", ["提供者模型或关键证据不足"]
         else:
             status, reasons = "does_not_meet_under_model", ["已覆盖提供者在已声明模型下不满足 RequiredCNS"]
-        return _sample_result(sample, status, reasons, evidence, evaluations)
+        return _sample_result(
+            sample, status, reasons, evidence, evaluations,
+            service_redundancy=service_redundancy,
+        )
 
 
 def free_space_link_budget(slant_distance_m, parameters):
@@ -223,12 +236,34 @@ def free_space_link_budget(slant_distance_m, parameters):
     }
 
 
-def _evaluate_provider(code, required, aircraft, geometry_provider, device, match_required=None):
+def _provider_base(geometry_provider, *, stage=None):
+    """Provider 级 evidence 的公共字段。
+
+    Round 1 只用**显式新服务**的 provider 附加 service/站址身份维度：legacy provider
+    保持原有字段集，避免 P14 超大走廊结果里逐条 evidence 膨胀（beyond-envelope 场景）。
+    """
+
     base = {
         "facility_id": geometry_provider.get("facility_id"),
         "device_id": geometry_provider.get("device_id"),
         "slant_distance_m": geometry_provider.get("slant_distance_m"),
     }
+    if geometry_provider.get("service_surface_dependent") is True:
+        base.update({
+            #: service_key 用于**分 service 独立成池**，绝不按 subsystem=S 混池。
+            "subsystem": geometry_provider.get("subsystem"),
+            "service_key": geometry_provider.get("service_key"),
+            "service_surface_dependent": True,
+            #: 物理站址身份（无法确认时为 None，绝不静默计入独立站址数）。
+            "distinct_site_id": geometry_provider.get("distinct_site_id"),
+        })
+    if stage:
+        base["stage"] = stage
+    return base
+
+
+def _evaluate_provider(code, required, aircraft, geometry_provider, device, match_required=None):
+    base = _provider_base(geometry_provider)
     if not isinstance(device, dict):
         return {**base, "status": "unknown", "reasons": ["设备目录条目缺失"], "evidence": []}
     interface = _interface_compatibility(code, aircraft, device)
@@ -291,12 +326,7 @@ def _evaluate_provider(code, required, aircraft, geometry_provider, device, matc
 
 
 def _provider_type_evaluation(required, geometry_provider, device):
-    base = {
-        "facility_id": geometry_provider.get("facility_id"),
-        "device_id": geometry_provider.get("device_id"),
-        "slant_distance_m": geometry_provider.get("slant_distance_m"),
-        "stage": "provider_type_compatibility",
-    }
+    base = _provider_base(geometry_provider, stage="provider_type_compatibility")
     if not isinstance(device, dict):
         return {**base, "status": "unknown", "reasons": ["设备目录条目缺失"], "evidence": []}
     expected_type, actual_type = required.get("type") or {}, device.get("type") or {}
@@ -368,16 +398,22 @@ def _route_samples(route, geometry):
     return route.get("samples") or []
 
 
-def _sample_result(sample, status, reasons, evidence=None, providers=None):
+def _sample_result(sample, status, reasons, evidence=None, providers=None, service_redundancy=None):
     if status not in SAMPLE_STATES:
         raise ValueError(f"静态能力状态无效：{status}")
-    return {
+    result = {
         "distance_along_route_m": sample.get("distance_along_route_m"),
         "longitude": sample.get("longitude"), "latitude": sample.get("latitude"),
         "grid_id": sample.get("grid_id"), "status": status,
+        #: additive：sample 明确携带 surface_class（缺失即 unknown，不猜测）。
+        "surface_class": normalize_surface_class(sample.get("surface_class")),
         "reasons": list(reasons), "evidence": list(evidence or []),
         "provider_evaluations": list(providers or []),
     }
+    #: additive：service 级冗余证据只在存在时输出（subsystem 级字段与判定保持不变）。
+    if service_redundancy:
+        result["service_redundancy"] = list(service_redundancy)
+    return result
 
 
 def _summary(total, samples, forced=None):
@@ -430,6 +466,102 @@ def confirmed_independent_provider_count(evaluations):
     if any(item.get("independence_confirmed") is not True or not item.get("independence_group") for item in evaluations):
         return None
     return len({str(item["independence_group"]) for item in evaluations})
+
+
+def distinct_site_provider_count(evaluations):
+    """已确认**物理站址**数量（Round 1 新 service 的计数口径）。
+
+    * 任一 provider 缺 ``distinct_site_id`` ⇒ ``None``（未知，绝不静默计入）；
+    * 否则返回 unique ``distinct_site_id`` 数量；
+    * ``equipment_id`` / ``device_id`` **不是**站址身份，因此绝不参与计数。
+    """
+
+    entries = list(evaluations or [])
+    if not entries:
+        return 0
+    identities = [entry.get("distinct_site_id") for entry in entries]
+    if any(not identity for identity in identities):
+        return None
+    return len({str(identity) for identity in identities})
+
+
+def summarize_service_redundancy(evaluations, required, *, surface_class=None):
+    """按 ``service_key`` 分别汇总冗余（每个 service 一个独立池）。
+
+    池内口径：
+
+    * 新 service（``service_surface_dependent``）：合格 provider → 同一 service_key
+      → unique ``distinct_site_id`` → 与 ``required_distinct_site_count(required,
+      service_key, surface_class)`` 比较；``surface_class = unknown`` ⇒ 要求数量未知 ⇒
+      ``unknown``（fail-closed）；
+    * legacy service：保持 ``independence_group`` + ``min_redundancy`` 行为，完全不变。
+
+    **绝不**把 Communication 与 RID 混进同一个冗余池。
+    """
+
+    groups = {}
+    for item in evaluations or []:
+        if item.get("stage") == "provider_type_compatibility":
+            continue
+        key = str(item.get("service_key") or "")
+        if not key:
+            continue
+        groups.setdefault(key, []).append(item)
+    surface = normalize_surface_class(surface_class)
+    result = []
+    for key in sorted(groups):
+        entries = groups[key]
+        qualified = [item for item in entries if item.get("status") == "meets_under_model"]
+        surface_dependent = any(item.get("service_surface_dependent") is True for item in entries)
+        if surface_dependent:
+            required_count = required_distinct_site_count(required, key, surface)
+            counted = distinct_site_provider_count(qualified)
+            basis = "distinct_site_id"
+        else:
+            required_count = legacy_min_redundancy(required)
+            counted = confirmed_independent_provider_count(qualified)
+            basis = "independence_group"
+        status, reasons = _service_redundancy_status(entries, qualified, counted, required_count)
+        identities = sorted({
+            str(item["distinct_site_id"]) for item in qualified if item.get("distinct_site_id")
+        })
+        result.append({
+            "service_key": key, "subsystem": entries[0].get("subsystem"),
+            "surface_class": surface, "surface_dependent": surface_dependent,
+            "required_distinct_site_count": required_count,
+            "counting_basis": basis,
+            "qualified_provider_count": len(qualified),
+            "distinct_site_count": counted if basis == "distinct_site_id" else None,
+            "confirmed_independent_provider_count": counted if basis == "independence_group" else None,
+            "distinct_site_ids": identities or None,
+            "status": status, "reasons": reasons,
+            "not_evaluated": not_evaluated_for(key),
+        })
+    return result
+
+
+def _service_redundancy_status(entries, qualified, counted, required_count):
+    if required_count is None:
+        return "unknown", ["该 service 在当前位置的要求站址数未知（surface 或冗余契约缺失，fail-closed）"]
+    required = int(required_count)
+    complete_fail = bool(entries) and all(
+        item.get("status") == "does_not_meet_under_model" for item in entries
+    )
+    if required <= 1:
+        if qualified:
+            return "satisfied", ["该 service 至少一个合格 provider 即可满足要求"]
+        if complete_fail:
+            return "confirmed_deficit", ["该 service 的 provider 全部不合格"]
+        return "unknown", ["该 service 合格性证据不足"]
+    if not qualified:
+        if complete_fail:
+            return "confirmed_deficit", ["该 service 的 provider 全部不合格"]
+        return "unknown", ["该 service 合格 provider 证据不足"]
+    if counted is None:
+        return "unknown", ["缺少可确认的物理站址身份证据"]
+    if counted >= required:
+        return "satisfied", ["已确认的不同物理站址数满足要求"]
+    return "confirmed_deficit", ["已确认的不同物理站址数不足"]
 
 
 def _aggregate(statuses):

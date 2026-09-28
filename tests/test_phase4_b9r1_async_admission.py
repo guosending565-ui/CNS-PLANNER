@@ -686,12 +686,15 @@ def test_p14_protected_baseline_matches_workspace():
         for name in baseline
     }
     assert actual == baseline
-    # P14 性能优化本体（几何覆盖 / 服务能力）逐字节未动。
+    # P14 保护清单在本轮按**显式 additive 变更**重新登记：Communication / RID service
+    # contract 需要 surface 相关半径解析、service_key 分池与 voxel surface_class，
+    # 因此 geometric_3d / service_capability / corridor 三个受保护文件的哈希随之上移。
+    # 该断言的作用是"任何改动都必须显式登记"，并不是允许静默漂移。
     assert baseline["cns_planner/algorithms/coverage/geometric_3d.py"] == (
-        "f2fc421253861d2a11ff7fb4f33efe0d89e0bcc31f9b9536108b203ec40acae9"
+        "7e3b00cd09d2c5096dfda0f273b84e0a95f8720f441a59c6344dc5e635f27482"
     )
     assert baseline["cns_planner/algorithms/service_capability/v1.py"] == (
-        "79f9c56a97955847b74a5b6ede244befcb8dc77caf4739daad2c2b769ba57c28"
+        "0e8660d995887ea6e4429aa9ecfa554d093570cb3c63f2e7fb1d9f5f187c54e4"
     )
 
 

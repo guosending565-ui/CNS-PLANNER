@@ -9,10 +9,12 @@ import math
 
 from ..service_capability.v1 import (
     NON_SITE_NAVIGATION, confirmed_independent_provider_count,
+    summarize_service_redundancy,
 )
 from ...domain.cns_planning_objectives import (
     OBJECTIVE_NAMES, empty_cns_corridor_gap_assessment, planning_not_evaluated,
 )
+from ...domain.cns_service_contract import normalize_surface_class
 
 
 class CNSCorridorGapAnalyzerV1:
@@ -83,7 +85,12 @@ class CNSCorridorGapAnalyzerV1:
             entries = []
             for code, name in (("C", "communication"), ("N", "navigation"), ("S", "surveillance")):
                 source = next((item for item in voxel.get("subsystems") or [] if item.get("subsystem") == code), {})
-                entries.append(_evaluate_voxel_subsystem(code, source, requirements.get(name) or {}))
+                entries.append(_evaluate_voxel_subsystem(
+                    code, source, requirements.get(name) or {},
+                    #: Round 1：每个 corridor voxel/sample 必须携带 surface_class；
+                    #: 缺失即 unknown，冗余要求随之 fail-closed。
+                    surface_class=voxel.get("surface_class"),
+                ))
             assessed_voxels.append({
                 "voxel_id": voxel.get("voxel_id"), "grid_id": voxel.get("grid_id"),
                 "altitude_layer_id": voxel.get("altitude_layer_id"),
@@ -107,9 +114,10 @@ class CNSCorridorGapAnalyzerV1:
         }
 
 
-def _evaluate_voxel_subsystem(code, source, required):
+def _evaluate_voxel_subsystem(code, source, required, *, surface_class=None):
     service_status = str(source.get("planning_status") or "unknown")
     evaluations = deepcopy(source.get("provider_evaluations") or [])
+    surface = normalize_surface_class(surface_class)
     # P8 may retain provider_type_compatibility gates when the later aircraft or
     # service-model evaluation cannot run.  Those gates are evidence about type
     # compatibility, not provider service evaluations, and must never increase
@@ -124,6 +132,12 @@ def _evaluate_voxel_subsystem(code, source, required):
     required_flag = required.get("required")
     required_redundancy = ((required.get("performance") or {}).get("min_redundancy")
                            or required.get("redundancy"))
+    #: Round 1 additive：**按 service 分别计算**的冗余要求（surface-dependent）。
+    #: legacy 子系统级判定（下方）保持完全不变。
+    service_evidence = summarize_service_redundancy(
+        evaluations, required, surface_class=surface,
+    )
+    surface_services = [item for item in service_evidence if item.get("surface_dependent")]
     non_site_navigation = code == "N" and (
         str(((required.get("type") or {}).get("technology") or "")).lower() in NON_SITE_NAVIGATION
         or any(item.get("kind") == "aircraft_navigation" for item in source.get("evidence") or [])
@@ -177,6 +191,14 @@ def _evaluate_voxel_subsystem(code, source, required):
         causes.append("redundancy_deficit")
     elif redundancy_status == "unknown":
         causes.append("unknown_redundancy_evidence")
+    #: surface-dependent service 的独立池结论参与本 voxel 的最终判定；
+    #: 旧项目（无 service_key）时 ``surface_services`` 为空，输出逐项不变。
+    if any(item["status"] == "confirmed_deficit" for item in surface_services):
+        if "redundancy_deficit" not in causes:
+            causes.append("redundancy_deficit")
+    elif any(item["status"] == "unknown" for item in surface_services):
+        if "unknown_redundancy_evidence" not in causes:
+            causes.append("unknown_redundancy_evidence")
     if service_status == "not_applicable":
         combined = "not_applicable"
     elif "service_deficit" in causes or "redundancy_deficit" in causes:
@@ -192,6 +214,9 @@ def _evaluate_voxel_subsystem(code, source, required):
         "qualified_provider_count": qualified_count,
         "confirmed_independent_provider_count": independent_count,
         "required_redundancy": required_redundancy,
+        "surface_class": surface,
+        #: additive：每个 service_key 一条独立冗余结论（含要求的站址数与解析来源）。
+        "services": service_evidence,
         "combined_status": combined, "causes": causes,
         "reasons": [*deepcopy(source.get("reasons") or []), *reasons],
         "evidence": evidence,
@@ -263,6 +288,8 @@ def _summarize_subsystem(route_id, code, route_length, voxels, objective_config)
         "required_volume_proxy_m3": combined["required_volume_proxy_m3"],
         "service": service, "p14_service": deepcopy(service),
         "redundancy": redundancy, "combined": combined,
+        #: additive：service_key 级冗余汇总（旧项目为空列表，既有字段逐项不变）。
+        "service_redundancy": _summarize_services(applicable),
         "continuous_deficit_semantics": CNSCorridorGapAnalyzerV1.continuity_semantics,
         "continuous_deficit_segments": segments,
         "total_confirmed_deficit_projection_m": total_projection,
@@ -271,6 +298,45 @@ def _summarize_subsystem(route_id, code, route_length, voxels, objective_config)
         "confirmed_target_voxel_ids": confirmed_ids, "unknown_voxel_ids": unknown_ids,
         "causes": causes,
     }
+
+
+def _summarize_services(items):
+    """按 service_key 汇总 surface-dependent 的冗余结论（Communication / RID 分开）。"""
+
+    groups = {}
+    for _, item in items:
+        for entry in item.get("services") or []:
+            if entry.get("surface_dependent") is not True:
+                continue
+            key = str(entry.get("service_key") or "")
+            bucket = groups.setdefault(key, {
+                "service_key": key, "subsystem": entry.get("subsystem"),
+                "voxel_count": 0,
+                "status_counts": {"satisfied": 0, "confirmed_deficit": 0, "unknown": 0},
+                "required_distinct_site_count_by_surface": {},
+                "distinct_site_count_by_surface": {},
+                "surface_class_counts": {},
+            })
+            bucket["voxel_count"] += 1
+            status = entry.get("status")
+            if status in bucket["status_counts"]:
+                bucket["status_counts"][status] += 1
+            surface = normalize_surface_class(entry.get("surface_class"))
+            bucket["surface_class_counts"][surface] = bucket["surface_class_counts"].get(surface, 0) + 1
+            if entry.get("required_distinct_site_count") is not None:
+                bucket["required_distinct_site_count_by_surface"][surface] = entry["required_distinct_site_count"]
+            if entry.get("distinct_site_count") is not None:
+                bucket["distinct_site_count_by_surface"][surface] = entry["distinct_site_count"]
+    result = []
+    for key in sorted(groups):
+        bucket = groups[key]
+        counts = bucket["status_counts"]
+        bucket["status"] = (
+            "confirmed_deficit" if counts["confirmed_deficit"]
+            else "unknown" if counts["unknown"] else "satisfied"
+        )
+        result.append(bucket)
+    return result
 
 
 def _distribution(items, field, classes):
