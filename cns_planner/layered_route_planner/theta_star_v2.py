@@ -5,6 +5,7 @@ Pipeline::
     scenario/OD route -> explicit confirmed AltitudeLayer (fixed H = nominal_altitude_m)
       -> coarse terrain/building feasibility mask (existing LayerFeasibilityMask semantics)
       -> population x shelter risk field (per-grid, replaceable)
+      -> virtual endpoint anchoring (exact OD -> containing cell + 1-ring LOS anchors)
       -> heading-aware multi-label Theta* with parent LOS rewiring
       -> objective J = 0.8*E_risk + 0.1*C_turn + 0.1*L
       -> candidate evaluation: max_route_risk_density (wide temporary constraint)
@@ -17,10 +18,15 @@ grandparent and takes the straight ``parent -> target`` shortcut — the path is
 
 Heading awareness is what makes the turn term meaningful.  A node is labelled by
 ``(grid_id, incoming_heading_bin)`` so the search can tell "arrived heading north" from
-"arrived heading east" and price the turn.  The Theta* rewiring is nevertheless retained:
-the heading of a shortcut label comes from the **actual parent -> target bearing**, so the
-label stays consistent with the geometry.  A heading-aware A* (adjacent-cell moves only)
-is explicitly *not* what this planner does.
+"arrived heading east" and price the turn.  The bin is a **state key only**: the turn angle
+itself is always computed from the actual bearings of the two LOS segments the route flies
+(BUG-TURN-STAT-001).  A heading-aware A* (adjacent-cell moves only) is explicitly *not* what
+this planner does.
+
+The exact OD endpoints are not snapped onto a cell centre: each endpoint contributes a small
+set of candidate anchors (its containing cell plus the 1-ring) and each candidate is linked by
+a straight LOS connector that goes through the same supercover LOS and hard gate as every
+search segment.  The existing objective picks the entry/exit geometry (BUG-ROUTE-006).
 
 What this module deliberately is not:
 
@@ -81,6 +87,40 @@ from .supercover import (
 #: Risk Framework V2 factor used as the normalized population factor.
 POPULATION_FACTOR_ID = "population_exposure"
 
+#: Endpoint virtual-anchoring aperture (BUG-ROUTE-006).
+#: 候选锚点 = 精确端点所在格 + 1-ring；只有"明显位于起飞/进入方向前方"（与精确端点指向
+#: 另一端的方位夹角不超过该值）的锚点才进入候选集，避免候选里包含需要主动反向的几何。
+ENDPOINT_ANCHOR_APERTURE_DEG = 90.0
+
+#: Endpoint virtual-anchoring semantics recorded on every candidate (BUG-ROUTE-006).
+ENDPOINT_ANCHOR_SEMANTICS = {
+    "definition": "exact_od_virtual_endpoint_anchoring",
+    "anchor_candidates": "containing_cell_plus_one_ring",
+    "candidate_link": "straight_los_connector_checked_by_the_same_supercover_and_hard_gate",
+    "selection": "best_complete_exact_od_objective_over_all_anchor_combinations",
+    "fixed_cell_centre_connector_removed": True,
+    "connector_distance_and_risk_are_priced_in_the_full_od_objective": True,
+    "connector_turn_is_not_charged_to_cruise_turn_cost": True,
+    "connector_turn_semantics": "departure_climb_and_arrival_descent_belong_to_the_transition",
+    "first_path_point_is_the_exact_start": True,
+    "last_path_point_is_the_exact_end": True,
+    "no_fabricated_straight_segment": True,
+    "aperture_deg": ENDPOINT_ANCHOR_APERTURE_DEG,
+}
+
+#: Turn-accounting semantics (BUG-TURN-STAT-001).
+TURN_ACCOUNTING_SEMANTICS = {
+    "definition": "turn_angles_use_actual_los_segment_bearings",
+    "heading_bin_used_as_the_turn_angle": False,
+    "heading_bin_role": "state_partition_and_search_size_control_only",
+    "turn_delta_source": "actual_los_segment_bearing_previous_and_current",
+    "turn_state_input": "real_incoming_bearing_stored_per_label",
+    "start_connector_is_the_first_reference_bearing_when_it_has_length": True,
+    "endpoint_connector_turn_is_not_charged": True,
+    "recomputable_from_candidate_path": True,
+    "theta_min_deg_unchanged": True,
+}
+
 #: 能力声明（Phase 3.5，**只声明**，不改变搜索行为）。
 #: Theta* V2 在"当前工作区网格层级"的水平面上搜索；建筑事实来自 L8 building_grid，
 #: 因此 legacy / diagnostic 的 L7/L6 工作区（正式入口已不再产生）拿不到 L8 建筑事实
@@ -131,9 +171,20 @@ SEARCH_SEMANTICS = {
         "(distance_weight + risk_weight * min_risk_index) * "
         "max(0, straight_line_distance_to_target_centre - terminal_stub_length_m)"
     ),
+    # BUG-TURN-STAT-001：状态仍按 heading bin 离散（搜索规模控制），但 turn delta /
+    # turn_count / total_heading_change_deg / turn_cost 一律使用**实际 LOS segment
+    # bearing**，绝不用 bin center 代替真实方位。
+    "turn_is_priced_between_actual_los_segment_bearings": True,
+    "heading_bin_used_for": "state_partition_and_search_size_control_only",
+    "heading_bin_never_used_as_the_turn_angle": True,
+    # BUG-ROUTE-006：精确 OD 端点通过虚拟锚定进入搜索。
+    "endpoint_anchoring": "exact_od_virtual_endpoint_anchoring",
+    "endpoint_anchor_candidates": "containing_cell_plus_one_ring_los_candidates",
+    "endpoint_anchor_selection": "existing_objective_over_all_anchor_combinations",
     "exact_od_terminal_segments_are_priced": True,
-    "start_connector_is_a_ledger_segment": "exact_start_to_source_cell_centre_zero_when_coincident",
-    "end_connector_is_a_ledger_segment": "target_cell_centre_to_exact_end_zero_when_coincident",
+    "start_connector_is_a_ledger_segment": "exact_start_to_selected_source_anchor",
+    "end_connector_is_a_ledger_segment": "selected_target_anchor_to_exact_end",
+    "endpoint_connector_turn_is_excluded_from_cruise_turn_cost": True,
     "goal_acceptance": (
         "every_target_heading_label_is_priced_with_the_complete_exact_od_ledger_and_the_"
         "search_ends_only_when_the_queue_lower_bound_cannot_improve_the_best_complete_goal"
@@ -206,6 +257,75 @@ def heading_bin_center_deg(bin_index, bin_count):
 def normalize_heading_delta(from_deg, to_deg):
     delta = (float(to_deg) - float(from_deg)) % 360.0
     return delta - 360.0 if delta > 180.0 else delta
+
+
+def _inside_aperture(bearing_deg, forward_deg, aperture_deg):
+    """Whether ``bearing_deg`` is within ``aperture_deg`` of the forward heading.
+
+    Used **only** to bound the endpoint-anchor candidate set: an anchor behind the
+    departure heading (or behind the arrival heading) would add a deliberate reversal to the
+    route, which is never an entry/exit geometry worth proposing.  ``None`` means the
+    aperture cannot be evaluated, in which case the candidate is kept.
+    """
+
+    if bearing_deg is None or forward_deg is None:
+        return True
+    return abs(normalize_heading_delta(forward_deg, bearing_deg)) <= float(aperture_deg) + 1e-9
+
+
+def _opposite_bearing(bearing_deg):
+    return None if bearing_deg is None else round((float(bearing_deg) + 180.0) % 360.0, 9)
+
+
+def _endpoint_anchor_candidates(
+    *, graph, point, other_point, aperture_deg, which,
+):
+    """Virtual endpoint anchors: the cell the exact endpoint sits in plus its 1-ring.
+
+    BUG-ROUTE-006 的最小收口：精确 OD 端点不再被强制吸附到"所在格的格心"。候选锚点集
+    只包含
+
+    * 精确端点所在格（``containing_cell``，若它在当前网格内），以及
+    * 该格的 1-ring 邻居（同样必须属于当前网格）。
+
+    每一个候选锚点都会在搜索里生成一条 ``精确端点 -> 锚点格心`` 的 LOS connector；该
+    connector 与普通搜索段走**同一个** ``line_of_sight``（supercover + 硬约束 gate +
+    regulatory + risk 积分），因此不存在"只做端点检测"的捷径。最终由既有 objective 在
+    所有候选组合里选优，而不是固定经过所属格中心。
+
+    ``aperture_deg`` 只用于把明显反向的锚点排除出候选项（见 :func:`_inside_aperture`），
+    它不改变任何已入选 connector 的成本计算。候选的 ``link_bearing_deg`` 是 **connector
+    实际被飞行的方向**：source 锚点是 ``exact start -> anchor``，target 锚点是
+    ``anchor -> exact end``（即回到精确终点的方向），两端的入/出航向因此都能与
+    connector 几何一致。
+    """
+
+    anchor_grid = graph.containing_cell(point)
+    if anchor_grid is None or anchor_grid not in graph.cells:
+        return []
+    forward = grid_bearing_deg(point, other_point)
+    ordered = [anchor_grid] + [
+        neighbour for neighbour in graph.neighbors(anchor_grid)
+        if neighbour != anchor_grid
+    ]
+    candidates = []
+    for grid_id in ordered:
+        center = [float(value) for value in graph.centers[grid_id]]
+        if which == "source":
+            link_bearing = grid_bearing_deg(point, center)
+        else:
+            link_bearing = grid_bearing_deg(center, point)
+        if not _inside_aperture(link_bearing, forward, aperture_deg):
+            continue
+        candidates.append({
+            "grid_id": grid_id,
+            "point": center,
+            "link_bearing_deg": link_bearing,
+            "length_m": distance_m(point, center),
+            "which": which,
+            "anchor_grid_id": anchor_grid,
+        })
+    return candidates
 
 
 def derive_d_ref_m(graph):
@@ -286,7 +406,7 @@ class GridIndexMap:
 
 def line_of_sight(
     graph, index_map, *, source_id, target_id, source_point, target_point, gate, altitude_m,
-    regulatory, risk_indices, statistics,
+    regulatory, risk_indices, statistics, counted=True,
 ):
     """One supercover LOS traversal that also performs the whole hard gate.
 
@@ -300,13 +420,19 @@ def line_of_sight(
     Any crossed cell that is blocked *or unknown* makes ``ok = False``.  A cell that only
     touches the segment at a corner is included, so a shortcut can never pass between two
     blocked cells.
+
+    ``counted=False`` marks an audit re-traversal: it performs exactly the same checks and
+    returns exactly the same geometry, but it does not move the search's LOS counters (the
+    counters describe the search, not the audit).
     """
 
-    statistics["los_checks"] += 1
+    if counted:
+        statistics["los_checks"] += 1
     start_index = index_map.index_of(source_id)
     end_index = index_map.index_of(target_id)
     if start_index is None or end_index is None:
-        statistics["rejected_unknown"] += 1
+        if counted:
+            statistics["rejected_unknown"] += 1
         return _los_rejection("outside_grid", source_id, "cell_index_unavailable")
 
     traversed = supercover_traversal(start_index, end_index)
@@ -316,13 +442,15 @@ def line_of_sight(
     for entry in cells:
         grid_id = index_map.grid_id_at(entry["cell_index"])
         if grid_id is None:
-            statistics["rejected_unknown"] += 1
+            if counted:
+                statistics["rejected_unknown"] += 1
             return _los_rejection("outside_grid", None, "traversed_cell_not_in_grid")
         entry["grid_id"] = grid_id
         resolved.append(entry)
         rejection = gate(grid_id)
         if rejection is not None:
-            statistics[f"rejected_{rejection['domain']}"] += 1
+            if counted:
+                statistics[f"rejected_{rejection['domain']}"] += 1
             return {
                 "ok": False, "cells": [], "segment_length_m": segment_length,
                 "rejection": {**rejection, "grid_id": grid_id},
@@ -334,7 +462,8 @@ def line_of_sight(
             altitude_egm2008_m=altitude_m,
         )
         if evaluation["blocked"]:
-            statistics["rejected_regulatory"] += 1
+            if counted:
+                statistics["rejected_regulatory"] += 1
             return {
                 "ok": False, "cells": [], "segment_length_m": segment_length,
                 "rejection": {
@@ -348,7 +477,8 @@ def line_of_sight(
             }
         if evaluation["unresolved"]:
             # A configured but unresolved constraint is never treated as safe.
-            statistics["rejected_unknown"] += 1
+            if counted:
+                statistics["rejected_unknown"] += 1
             return {
                 "ok": False, "cells": [], "segment_length_m": segment_length,
                 "rejection": {
@@ -373,10 +503,12 @@ def line_of_sight(
         entry["risk_contribution_m"] = entry["length_m"] * float(index)
         exposure += entry["risk_contribution_m"]
     if not complete:
-        statistics["rejected_unknown"] += 1
+        if counted:
+            statistics["rejected_unknown"] += 1
         return _los_rejection("unknown", None, "risk_evidence_unresolved_inside_shortcut")
 
-    statistics["los_shortcuts"] += 1
+    if counted:
+        statistics["los_shortcuts"] += 1
     return {
         "ok": True,
         "cells": [
@@ -564,6 +696,22 @@ class LayeredRiskAwareThetaStarV2:
             return blocked(
                 "invalid_input", "起点或终点不在当前标准网格内", "endpoints_outside_grid",
             )
+        # ---- 虚拟端点锚定（BUG-ROUTE-006）：精确 OD 不再被强制吸附到所属格格心。
+        # 端点所在格 + 其 1-ring 可通行候选格各自生成一条 ``精确端点 -> 锚点格心`` 的 LOS
+        # connector，最终由既有 objective 在候选组合里选优（见 ``_theta_star``）。
+        endpoints = {
+            "start_point": [float(value) for value in start],
+            "end_point": [float(value) for value in end],
+            "aperture_deg": ENDPOINT_ANCHOR_APERTURE_DEG,
+            "source_anchors": _endpoint_anchor_candidates(
+                graph=graph, point=list(start), other_point=list(end),
+                aperture_deg=ENDPOINT_ANCHOR_APERTURE_DEG, which="source",
+            ),
+            "target_anchors": _endpoint_anchor_candidates(
+                graph=graph, point=list(end), other_point=list(start),
+                aperture_deg=ENDPOINT_ANCHOR_APERTURE_DEG, which="target",
+            ),
+        }
 
         weights = objective_weights(objective)
         risk_weight = float(weights["risk"])
@@ -612,15 +760,16 @@ class LayeredRiskAwareThetaStarV2:
             distance_weight=float(weights["distance"]),
         )
         search = _theta_star(
-            graph=graph, index_map=index_map, source=source, target=target,
-            start_point=list(start), end_point=list(end), gate=gate, altitude=altitude,
-            regulatory=regulatory_constraints, risk_indices=risk_indices,
-            weights=weights, d_ref=d_ref,
+            graph=graph, index_map=index_map, endpoints=endpoints, gate=gate,
+            altitude=altitude, regulatory=regulatory_constraints,
+            risk_indices=risk_indices, weights=weights, d_ref=d_ref,
             heading_bin_count=self.parameters["heading_bin_count"],
             theta_min_deg=self.parameters["theta_min_deg"],
             max_expanded_labels=self.parameters["max_expanded_labels"],
         )
         statistics.update(search["statistics"])
+        statistics["endpoint_anchors"] = search.get("endpoint_anchors")
+        statistics["endpoint_anchor_policy"] = ENDPOINT_ANCHOR_SEMANTICS
         statistics["d_ref_m"] = _round(d_ref)
         statistics["risk_unresolved_cell_count"] = len(risk_unresolved)
         # BUG-ROUTE-004 evidence: the ledger the search actually minimised and the ledger the
@@ -666,6 +815,11 @@ class LayeredRiskAwareThetaStarV2:
                 mask_status=mask.get("status"),
             ), "search_incomplete" if incomplete else "no_path")
 
+        # The reported objective is derived from the search's authoritative exact-OD ledger,
+        # which ``_theta_star`` recomputes from the finalized geometry and connector
+        # classification *after* the goal is chosen.  Deriving it from a stale search-phase
+        # ledger would make ``turn_statistics`` disagree with ``candidate.path``
+        # (BUG-TURN-STAT-001).
         metrics = _objective_metrics(search, weights, d_ref, self.parameters["theta_min_deg"])
         crossed = {
             entry.get("grid_id")
@@ -1049,13 +1203,18 @@ class LayeredRiskAwareThetaStarV2:
             "provenance": {
                 "pipeline": (
                     "scenario_or_od_route -> explicit_fixed_altitude_H -> terrain_building_"
-                    "feasibility_mask -> population_x_shelter_risk -> heading_aware_multi_label_"
-                    "theta_star_with_parent_los_rewiring -> candidate_evaluation -> "
-                    "layered_route_candidate"
+                    "feasibility_mask -> population_x_shelter_risk -> virtual_endpoint_"
+                    "anchoring -> heading_aware_multi_label_theta_star_with_parent_los_"
+                    "rewiring -> candidate_evaluation -> layered_route_candidate"
                 ),
                 "fingerprint_components": fingerprints["components"],
                 "search_semantics": SEARCH_SEMANTICS,
                 "search_parameters": search_view,
+                "endpoint_anchoring": deepcopy(ENDPOINT_ANCHOR_SEMANTICS),
+                "endpoint_anchors": deepcopy(
+                    (statistics or {}).get("endpoint_anchors")
+                ),
+                "turn_accounting": deepcopy(TURN_ACCOUNTING_SEMANTICS),
                 "feasibility_semantics": COARSE_ENVELOPE_SEMANTICS,
                 "objective": dict(PLANNING_OBJECTIVE_PROVENANCE),
                 "risk_density_constraint": {
@@ -1172,6 +1331,15 @@ def _empty_turn_statistics():
     return {
         "turn_count": 0, "total_heading_change_deg": 0.0, "turn_cost_m": 0.0,
         "turns": [], "theta_min_deg": None, "d_ref_m": None,
+        "cruise_turn_count": 0, "cruise_total_heading_change_deg": 0.0,
+        "cruise_turn_cost_m": 0.0, "connector_turn_count": 0,
+        "connector_total_heading_change_deg": 0.0, "connector_turn_cost_m": 0.0,
+        "cruise_turn_semantics": (
+            "endpoint_connector_turn_is_reported_separately_and_never_charged_to_"
+            "cruise_turn_cost"
+        ),
+        "bearing_semantics": TURN_ACCOUNTING_SEMANTICS["definition"],
+        "heading_bin_used_as_the_turn_angle": False,
         "semantics": "planning_smoothness_proxy_not_flight_dynamics_validation",
     }
 
@@ -1300,10 +1468,10 @@ def _constraint_bbox(item):
 
 
 def _theta_star(
-    *, graph, index_map, source, target, start_point, end_point, gate, altitude, regulatory,
+    *, graph, index_map, endpoints, gate, altitude, regulatory,
     risk_indices, weights, d_ref, heading_bin_count, theta_min_deg, max_expanded_labels,
 ):
-    """Heading-aware multi-label Theta* with parent LOS rewiring.
+    """Heading-aware multi-label Theta* with parent LOS rewiring and virtual OD endpoints.
 
     Labels are ``(grid_id, incoming_heading_bin)``.  For every generated label two routes
     are considered, exactly as in Theta*:
@@ -1316,27 +1484,30 @@ def _theta_star(
       the grandparent and the straight ``grandparent -> neighbour`` segment is taken.
 
     The heuristic is ``(distance_weight + risk_weight * min_risk_index) *
-    max(0, straight_line_distance_to_target_centre - terminal_stub_length)``: every
+    max(0, straight_line_distance_to_exact_end - max_terminal_stub_length)``: every
     remaining metre costs at least ``distance_weight`` plus ``risk_weight`` times the
-    smallest risk index on the grid, a turn is never negative, and the target-centre ->
-    exact-end connector is travelled inside the target cell.  It is therefore an
-    admissible, consistent lower bound on the *complete exact-OD objective*, which is what
-    the termination rule below needs.  No goal heading is required, which is what makes the
-    relaxation valid: a straight line is always available to every goal label.
+    smallest risk index on the grid, and a turn is never negative.  It is therefore an
+    admissible lower bound on the *complete exact-OD objective*, which is what the
+    termination rule below needs.
 
-    The search prices **complete exact-OD goal labels**, not the first arrival at the
-    target cell centre:
+    **Turn accounting (BUG-TURN-STAT-001).**  A label's state is still discretized by
+    ``heading_bin_count`` — that is what keeps the search finite — but the turn is priced
+    between the **actual LOS segment bearings** the route flies, never between heading-bin
+    centres.  Each label therefore stores the real bearing of its own incoming segment
+    (``real_bearing``); the bin is only a state key.  The start connector
+    (``exact start -> selected source anchor``) is a real flown segment and is the reference
+    for the first search segment when it has a positive length.
 
-    * ``exact start -> source centre`` is the start label's initial ledger segment (exactly
-      zero length, and therefore without a reference heading, when the origin is already the
-      cell centre);
-    * every edge prices its own real LOS ``segment_length_m``;
-    * ``target centre -> exact end`` is appended to every goal label before it is priced, so
-      two labels that reach the same target cell under different incoming headings are
-      compared on the *complete* OD objective (their terminal turn differs);
-    * the search only stops once no queued lower bound can still improve the best complete
-      goal, which is the point at which the winning goal ledger and the
-      :func:`_route_segment_audit` ledger describe the same route.
+    **Virtual endpoint anchoring (BUG-ROUTE-006).**  The exact OD endpoints are no longer
+    snapped onto the centre of the cell they fall in.  ``endpoints["source_anchors"]`` /
+    ``endpoints["target_anchors"]`` hold the candidate anchors (containing cell + its
+    1-ring), and every candidate contributes a straight ``exact endpoint <-> anchor centre``
+    connector that is gated, risk-integrated and measured by the **same** ``line_of_sight``
+    the search uses.  All combinations take part in one search, so the existing objective
+    selects the entry/exit geometry.  Connector distance and risk are fully priced in the
+    OD objective; connector turn is configured but **not charged to the cruise turn cost**,
+    because departure climb and arrival descent belong to the transition semantics that
+    follow this planner (``SEARCH_SEMANTICS["endpoint_connector_turn_is_excluded_..."]``).
     """
 
     weight_distance = float(weights["distance"])
@@ -1356,96 +1527,107 @@ def _theta_star(
         "rewired_parent_shortcuts": 0,
     }
 
-    def los(from_id, to_id, from_point, to_point):
+    def los(from_id, to_id, from_point, to_point, counted=True):
         return line_of_sight(
             graph, index_map, source_id=from_id, target_id=to_id,
             source_point=from_point, target_point=to_point, gate=gate,
             altitude_m=altitude, regulatory=regulatory, risk_indices=risk_indices,
-            statistics=statistics,
+            statistics=statistics, counted=counted,
         )
 
-    # ------------------------------------------------------------------ exact OD terminals
-    # The search runs on cell centres, but the candidate is the *exact* OD geometry:
-    # ``exact start -> source centre -> Theta* vertices -> target centre -> exact end``.
-    # Both connectors are terminal segments of the very same objective ledger, so they are
-    # gated, risk-integrated and measured exactly like any search segment.  When an endpoint
-    # already sits on its cell centre the connector is exactly zero length and contributes
-    # nothing -- and, having no bearing, it is not charged a turn either.
-    source_center = [float(value) for value in graph.centers[source]]
-    target_center = [float(value) for value in graph.centers[target]]
-    start_stub = los(source, source, list(start_point), source_center)
-    if not start_stub["ok"]:
-        # The origin cell itself is not traversable, so no departure LOS can ever succeed.
-        return _unsolved_search(
-            statistics, cap_reached=False, termination="origin_cell_not_traversable",
-            los_records={},
+    start_point = [float(value) for value in endpoints["start_point"]]
+    end_point = [float(value) for value in endpoints["end_point"]]
+
+    # ------------------------------------------------------------------ endpoint anchors
+    source_links = []
+    for candidate in endpoints.get("source_anchors") or []:
+        record = los(
+            candidate["grid_id"], candidate["grid_id"], start_point, candidate["point"],
         )
-    terminal_stub = los(target, target, target_center, list(end_point))
-    start_stub_bin = heading_bin_for_bearing(
-        grid_bearing_deg(start_point, source_center), heading_bin_count
-    )
-    terminal_stub_bin = heading_bin_for_bearing(
-        grid_bearing_deg(target_center, end_point), heading_bin_count
-    )
-    terminal_stub_heading = (
-        None if terminal_stub_bin is None
-        else heading_bin_center_deg(terminal_stub_bin, heading_bin_count)
-    )
-    terminal_length = float(terminal_stub.get("segment_length_m") or 0.0)
+        if not record["ok"]:
+            continue
+        source_links.append({
+            **candidate,
+            "record": record,
+            "length_m": float(record.get("segment_length_m") or 0.0),
+            "bearing_deg": candidate.get("link_bearing_deg"),
+        })
+    if not source_links:
+        # No gated/free departure connector exists at all: the exact origin cannot leave.
+        return _unsolved_search(
+            statistics, cap_reached=False, termination="no_traversable_source_anchor",
+            los_records={}, endpoint_anchors={
+                "source_anchor_count": len(endpoints.get("source_anchors") or []),
+                "admitted_source_anchor_count": 0,
+                "target_anchor_count": len(endpoints.get("target_anchors") or []),
+                "admitted_target_anchor_count": None,
+            },
+        )
+    target_links = []
+    for candidate in endpoints.get("target_anchors") or []:
+        record = los(
+            candidate["grid_id"], candidate["grid_id"], candidate["point"], end_point,
+        )
+        if not record["ok"]:
+            continue
+        target_links.append({
+            **candidate,
+            "record": record,
+            "length_m": float(record.get("segment_length_m") or 0.0),
+            "bearing_deg": candidate.get("link_bearing_deg"),
+        })
+    if not target_links:
+        return _unsolved_search(
+            statistics, cap_reached=False, termination="no_traversable_target_anchor",
+            los_records={}, endpoint_anchors={
+                "source_anchor_count": len(endpoints.get("source_anchors") or []),
+                "admitted_source_anchor_count": len(source_links),
+                "target_anchor_count": len(endpoints.get("target_anchors") or []),
+                "admitted_target_anchor_count": 0,
+            },
+        )
+    source_link_index = {item["grid_id"]: index for index, item in enumerate(source_links)}
+    target_link_index = {item["grid_id"]: index for index, item in enumerate(target_links)}
+    #: The start labels themselves: a segment *leaving* one of them is the departure
+    #: transition turn (never charged), exactly like the arrival connector turn.
+    start_label_keys = {
+        (item["grid_id"], heading_bin_for_bearing(item["bearing_deg"], heading_bin_count))
+        for item in source_links
+    }
+    endpoint_anchors = {
+        "source_anchor_count": len(endpoints.get("source_anchors") or []),
+        "admitted_source_anchor_count": len(source_links),
+        "target_anchor_count": len(endpoints.get("target_anchors") or []),
+        "admitted_target_anchor_count": len(target_links),
+        "source_anchor_grid_ids": sorted(source_link_index),
+        "target_anchor_grid_ids": sorted(target_link_index),
+        "aperture_deg": endpoints.get("aperture_deg"),
+        "candidate_search_space": len(source_links) * len(target_links),
+        "exact_start_equals_first_path_point": True,
+        "exact_end_equals_last_path_point": True,
+    }
 
     # Admissible lower bound on the remaining objective: every remaining metre costs at
-    # least ``distance_weight + risk_weight * min_risk_index`` (a cell's risk index is
-    # bounded below by the smallest index on the grid) and a turn is never negative.  The
-    # terminal connector is subtracted because it is travelled inside the target cell.
+    # least ``distance_weight + risk_weight * min_risk_index`` and a turn is never negative.
+    # The largest terminal connector is subtracted because at most that much of the
+    # remaining distance is already travelled inside the arrival anchor candidate.
+    max_terminal_length = max(float(item["length_m"]) for item in target_links)
     risk_floor = min(float(value) for value in risk_indices.values()) if risk_indices else 0.0
     heuristic_factor = weight_distance + weight_risk * risk_floor
 
     def heuristic(grid_id):
-        remaining = distance_m(graph.centers[grid_id], target_center) - terminal_length
+        remaining = distance_m(graph.centers[grid_id], end_point) - max_terminal_length
         return heuristic_factor * max(0.0, remaining)
 
-    start_grid = source
-    # The route has no preceding turn, so a start whose exact origin *is* the source centre
-    # carries **no** reference heading: the first real segment is never charged one.  When
-    # the exact origin is off-centre, the start connector is a real flown segment and its
-    # heading is the reference the first search segment is priced against.
-    start_reference_heading = (
-        None if start_stub_bin is None
-        else heading_bin_center_deg(start_stub_bin, heading_bin_count)
-    )
-    start_bin = (
-        start_stub_bin if start_stub_bin is not None
-        else heading_bin_for_bearing(
-            grid_bearing_deg(start_point, end_point), heading_bin_count
-        )
-    )
-    start_key = (start_grid, start_bin)
-
-    start_ledger = _extend_ledger(
-        _empty_ledger(),
-        risk_exposure=start_stub["risk_exposure_index_m"],
-        distance=start_stub["segment_length_m"],
-        previous_heading=None, new_heading=start_reference_heading,
-        weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
-        theta_min_deg=theta_min_deg,
-    )
-    start_cost = _ledger_total_cost(start_ledger, weight_risk, weight_turn, weight_distance)
-
-    costs = {start_key: start_cost}
-    parents = {start_key: None}        # grid_id of the label's Theta* parent (None at start)
-    incoming = {start_key: None}       # the parent label key the route actually comes from
-    edge_bearing = {start_key: None}   # bearing of the route into this label (None at start)
-    # ``accumulated`` is *derived* from the label chain, never carried incrementally: a
-    # Theta* rewiring replaces a label's parent, and an incrementally summed ledger would
-    # then describe a route the finalized chain no longer is.  Deriving it from the chain
-    # keeps ``costs`` and ``incoming`` describing exactly the same route.
-    accumulated = {start_key: start_ledger}
-    #: Number of labels on the label's own chain.  Used **only** as an equal-cost
-    #: tie-break: when two chains price the identical objective, the one with fewer
-    #: vertices wins.  That is what keeps the search's any-angle character (a straight LOS
-    #: shortcut instead of a staircase of equal cost) without touching any objective value.
-    depth = {start_key: 1}
-    queue = [(start_cost + heuristic(start_grid), start_cost, 0, start_grid, start_bin)]
+    costs = {}
+    parents = {}
+    incoming = {}
+    edge_bearing = {}
+    accumulated = {}
+    depth = {}
+    #: Real (never bin-centre) bearing of the segment that leads into each label.
+    real_bearing = {}
+    queue = []
     los_records = {}
     expanded = 0
     cap_reached = False
@@ -1453,6 +1635,35 @@ def _theta_star(
     best_goal = None
     goal_candidates = []
     closed = set()
+    label_sequence = 0
+
+    for index, link in enumerate(source_links):
+        key = (
+            link["grid_id"],
+            heading_bin_for_bearing(link["bearing_deg"], heading_bin_count),
+        )
+        start_ledger = _extend_ledger(
+            _empty_ledger(),
+            risk_exposure=link["record"]["risk_exposure_index_m"],
+            distance=link["length_m"],
+            previous_heading=None, new_heading=link["bearing_deg"],
+            weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
+            theta_min_deg=theta_min_deg,
+        )
+        start_cost = _ledger_total_cost(start_ledger, weight_risk, weight_turn, weight_distance)
+        label_sequence += 1
+        costs[key] = start_cost
+        parents[key] = None
+        incoming[key] = None
+        edge_bearing[key] = link["bearing_deg"]
+        accumulated[key] = start_ledger
+        depth[key] = 1
+        real_bearing[key] = link["bearing_deg"]
+        heappush(
+            queue,
+            (start_cost + heuristic(link["grid_id"]), start_cost, label_sequence,
+             link["grid_id"], key[1]),
+        )
 
     while queue:
         queue_bound, _, _, current_grid, current_bin = heappop(queue)
@@ -1477,61 +1688,75 @@ def _theta_star(
         closed.add(current_key)
         current_point = graph.centers[current_grid]
         current_ledger = accumulated[current_key]
-        # Turn cost is measured between the **discretized** headings, which is the whole
-        # reason the state carries a heading bin: two labels that reach the same cell with
-        # different incoming headings are genuinely different states.
+        current_bearing = real_bearing.get(current_key)
         current_bin_heading = (
-            start_reference_heading if current_key == start_key
+            None if current_bearing is None
             else heading_bin_center_deg(current_bin, heading_bin_count)
         )
-
-        if current_grid == target:
-            # A goal label is never accepted merely because it reached the target cell
-            # centre: the ``target centre -> exact end`` connector belongs to the same OD
-            # objective, and labels arriving under different incoming headings pay a
-            # different terminal turn.  Every goal label is priced completely and the
-            # cheapest complete OD objective wins.  The goal label is not expanded further.
-            if terminal_stub["ok"]:
-                complete_ledger = _extend_ledger(
-                    current_ledger,
-                    risk_exposure=terminal_stub["risk_exposure_index_m"],
-                    distance=terminal_stub["segment_length_m"],
-                    previous_heading=current_bin_heading, new_heading=terminal_stub_heading,
-                    weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
-                    theta_min_deg=theta_min_deg,
-                )
-                complete_cost = _ledger_total_cost(
-                    complete_ledger, weight_risk, weight_turn, weight_distance
-                )
-                goal_candidates.append({
-                    "grid_id": current_grid, "incoming_heading_bin": current_bin,
-                    "incoming_heading_deg": current_bin_heading,
-                    "terminal_heading_deg": terminal_stub_heading,
-                    "terminal_length_m": _round(terminal_stub.get("segment_length_m")),
-                    "risk_exposure_index_m": _round(complete_ledger["risk"]),
-                    "turn_cost_m": _round(complete_ledger["turn"]),
-                    "distance_m": _round(complete_ledger["distance"]),
-                    "total_cost": _round(complete_cost),
-                })
-                if best_goal is None or complete_cost < best_goal["total_cost"] - 1e-9:
-                    best_goal = {
-                        "key": current_key, "total_cost": complete_cost,
-                        "ledger": complete_ledger,
-                    }
+        terminal_index = target_link_index.get(current_grid)
+        if terminal_index is not None:
+            # A goal label is never accepted merely because it reached an arrival anchor:
+            # the ``anchor centre -> exact end`` connector belongs to the same OD objective,
+            # and labels arriving under different incoming bearings pay a different terminal
+            # turn.  Every goal label is priced completely and the cheapest complete OD
+            # objective wins.  The goal label is not expanded further.
+            terminal = target_links[terminal_index]
+            # Connector accounting: ``anchor centre -> exact end`` prices its distance and
+            # risk but is not charged a turn (departure/arrival transition semantics).  The
+            # search uses exactly the same accounting the final audit uses, which is what
+            # keeps ``search_goal_ledger`` and the recomputed exact-OD ledger identical.
+            complete_ledger = _extend_ledger(
+                current_ledger,
+                risk_exposure=terminal["record"]["risk_exposure_index_m"],
+                distance=terminal["length_m"],
+                previous_heading=None, new_heading=None,
+                is_connector_turn=True,
+                weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
+                theta_min_deg=theta_min_deg,
+            )
+            complete_cost = _ledger_total_cost(
+                complete_ledger, weight_risk, weight_turn, weight_distance
+            )
+            goal_candidates.append({
+                "grid_id": current_grid, "incoming_heading_bin": current_bin,
+                "incoming_heading_deg": current_bin_heading,
+                "incoming_bearing_deg": current_bearing,
+                "terminal_heading_deg": (
+                    None if terminal["bearing_deg"] is None
+                    else heading_bin_center_deg(
+                        heading_bin_for_bearing(terminal["bearing_deg"], heading_bin_count),
+                        heading_bin_count,
+                    )
+                ),
+                "terminal_bearing_deg": terminal["bearing_deg"],
+                "terminal_length_m": _round(terminal["length_m"]),
+                "terminal_link_index": terminal_index,
+                "risk_exposure_index_m": _round(complete_ledger["risk"]),
+                "turn_cost_m": _round(complete_ledger["turn"]),
+                "distance_m": _round(complete_ledger["distance"]),
+                "total_cost": _round(complete_cost),
+            })
+            if best_goal is None or complete_cost < best_goal["total_cost"] - 1e-9:
+                best_goal = {
+                    "key": current_key, "total_cost": complete_cost,
+                    "ledger": complete_ledger, "terminal_index": terminal_index,
+                }
             continue
 
         parent_key = incoming[current_key]
         grandparent_key = incoming.get(parent_key) if parent_key is not None else None
         grandparent_grid = parents.get(parent_key) if parent_key is not None else None
         path2_eligible = grandparent_grid is not None and grandparent_key is not None
+        source_anchor_grids = {
+            item["grid_id"] for item in source_links
+        }
 
         for neighbour in graph.neighbors(current_grid):
-            if neighbour == start_grid:
-                # The start label is the route's fixed origin: ``costs[start_key] == 0`` and
-                # its ledger is empty.  Re-relaxing it — which the Theta* shortcut can
-                # legitimately propose once an adjacent label is closed — would move the
-                # origin into the middle of the route and charge the first segment a turn
-                # against a heading that was never flown.
+            if neighbour in source_anchor_grids:
+                # A source anchor is the route's fixed virtual origin: its label ledger is
+                # exactly the ``exact start -> anchor`` connector and must not be re-relaxed
+                # from the middle of the search.  Doing so would move the origin into the
+                # route and charge the first segment a turn against a heading never flown.
                 continue
             guards = graph.diagonal_guards(current_grid, neighbour)
             if guards is not None and any(
@@ -1540,7 +1765,7 @@ def _theta_star(
                 continue
             neighbour_point = graph.centers[neighbour]
 
-            # ---- path 1: direct step, requires the parent -> neighbour LOS to be clear.
+            # ---- path 1: direct step, requires the current -> neighbour LOS to be clear.
             direct = los(current_grid, neighbour, current_point, neighbour_point)
             if not direct["ok"]:
                 continue
@@ -1552,8 +1777,15 @@ def _theta_star(
                 # objective's distance term must describe the chain actually being
                 # installed, not a repeatedly re-added origin-to-neighbour distance.
                 distance=direct["segment_length_m"],
-                previous_heading=current_bin_heading,
-                new_heading=heading_bin_center_deg(direct_bin, heading_bin_count),
+                previous_heading=current_bearing,
+                # BUG-TURN-STAT-001: the turn is priced between the **actual** bearings of
+                # the two LOS segments, never between their heading-bin centres.
+                new_heading=direct_bearing,
+                # A segment leaving a source anchor turns out of the departure connector:
+                # that turn belongs to the departure transition and is never charged to the
+                # cruise turn cost -- exactly like the arrival side.  Without this the search
+                # would minimise a cost the reported objective does not use.
+                is_connector_turn=current_key in start_label_keys,
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
             )
@@ -1568,10 +1800,12 @@ def _theta_star(
                 parent_grid=current_grid,
                 heuristic=heuristic,
                 costs=costs, parents=parents, incoming=incoming,
-                edge_bearing=edge_bearing, accumulated=accumulated, closed=closed,
+                edge_bearing=edge_bearing, real_bearing=real_bearing,
+                accumulated=accumulated, closed=closed, depth=depth,
                 statistics=statistics, queue=queue, los_records=los_records,
-                los_result=direct, depth=depth,
+                los_result=direct, label_sequence=label_sequence,
             )
+            label_sequence = statistics["generated_labels"]
 
             if not path2_eligible:
                 continue
@@ -1588,10 +1822,7 @@ def _theta_star(
             grandparent_ledger = accumulated.get(grandparent_key)
             if grandparent_ledger is None:
                 continue
-            grandparent_heading = (
-                start_reference_heading if grandparent_key == start_key
-                else heading_bin_center_deg(grandparent_key[1], heading_bin_count)
-            )
+            grandparent_bearing = real_bearing.get(grandparent_key)
             shortcut_bearing = grid_bearing_deg(grandparent_point, neighbour_point)
             shortcut_bin = heading_bin_for_bearing(shortcut_bearing, heading_bin_count)
             shortcut_ledger = _extend_ledger(
@@ -1602,8 +1833,8 @@ def _theta_star(
                 # cost of a route that no longer contains it.
                 grandparent_ledger, risk_exposure=shortcut["risk_exposure_index_m"],
                 distance=shortcut["segment_length_m"],
-                previous_heading=grandparent_heading,
-                new_heading=heading_bin_center_deg(shortcut_bin, heading_bin_count),
+                previous_heading=grandparent_bearing,
+                new_heading=shortcut_bearing,
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
             )
@@ -1623,15 +1854,18 @@ def _theta_star(
                 parent_grid=grandparent_grid,
                 heuristic=heuristic,
                 costs=costs, parents=parents, incoming=incoming,
-                edge_bearing=edge_bearing, accumulated=accumulated, closed=closed,
+                edge_bearing=edge_bearing, real_bearing=real_bearing,
+                accumulated=accumulated, closed=closed, depth=depth,
                 statistics=statistics, queue=queue, los_records=los_records,
-                los_result=shortcut, depth=depth, is_rewire=True,
+                los_result=shortcut, label_sequence=label_sequence, is_rewire=True,
             )
+            label_sequence = statistics["generated_labels"]
 
     if best_goal is None:
         return _unsolved_search(
             statistics, cap_reached=cap_reached, termination=termination,
             los_records=los_records, goal_candidates=goal_candidates,
+            endpoint_anchors=endpoint_anchors,
         )
 
     best_goal_key = best_goal["key"]
@@ -1639,9 +1873,7 @@ def _theta_star(
     # Reconstruct the label chain.  ``grid_path`` is the route's *vertex* cell sequence: the
     # cells the any-angle route actually turns at.  A straight segment between two
     # consecutive vertices is a Theta* LOS shortcut, so consecutive vertices are frequently
-    # non-adjacent -- that is the whole point.  ``los_records`` holds the traversal that
-    # admitted each of those segments, so the reported crossed-cell lists and the risk
-    # integral are the search's own, not a re-derivation.
+    # non-adjacent -- that is the whole point.
     chain = []
     key = best_goal_key
     while key is not None:
@@ -1649,6 +1881,8 @@ def _theta_star(
         key = incoming[key]
     chain.reverse()
     grid_path = [item[0] for item in chain]
+    start_link = source_links[source_link_index.get(grid_path[0], 0)]
+    terminal_link = target_links[best_goal["terminal_index"]]
 
     points = [list(start_point)] + [list(graph.centers[item]) for item in grid_path] + [
         list(end_point)
@@ -1660,31 +1894,47 @@ def _theta_star(
         route_points.append(point)
 
     los_segments = _route_segment_audit(
-        graph, index_map, grid_path, start_point, end_point, gate, altitude, regulatory,
-        risk_indices, statistics, heading_bin_count,
+        graph, index_map, grid_path, start_point, end_point, start_link, terminal_link,
+        gate, altitude, regulatory, risk_indices, statistics, heading_bin_count,
     )
 
-    # Authoritative ledger: recomputed from the *final* parent chain, so the reported
-    # objective can never describe a route the chain no longer is.  It is derived from the
-    # same exact-OD segment audit the goal labels were priced with, which is why the winning
+    # Authoritative ledger: recomputed from the *final* parent chain and the finalized
+    # endpoint connectors, with the **real** segment bearings.  It is derived from the same
+    # exact-OD segment audit the goal labels were priced with, which is why the winning
     # search ledger and this ledger describe one and the same route.
+    #
+    # Turn charging rule (BUG-TURN-STAT-001 + BUG-ROUTE-006): the first and the last segment
+    # are endpoint connectors, so a turn that touches either of them is a departure/arrival
+    # transition turn and is *not* charged to the cruise turn cost.  The rule is keyed on the
+    # segment positions of the finalized geometry, which makes ``turn_statistics`` exactly
+    # reproducible from ``candidate.path`` alone -- including the degenerate case where an
+    # endpoint already sits on its anchor centre and its connector therefore has zero length
+    # and does not appear in ``candidate.path`` at all.
+    connector_positions = {0, len(los_segments) - 1}
     ledger = _empty_ledger()
     previous_heading = None
-    for segment in los_segments:
-        heading = segment["outgoing_heading_deg"]
+    for position, segment in enumerate(los_segments):
+        heading = segment["outgoing_bearing_deg"]
         ledger = _extend_ledger(
             ledger,
             risk_exposure=segment["risk_exposure_index_m"],
             distance=segment["length_m"],
             previous_heading=previous_heading,
             new_heading=heading,
+            is_connector_turn=(
+                position in connector_positions
+                or (position - 1) in connector_positions
+            ),
             weights=(weights["risk"], weights["turn"], weights["distance"]),
-            d_ref=d_ref, theta_min_deg=theta_min_deg,
+            d_ref=d_ref, theta_min_deg=theta_min_deg, segment_index=position,
         )
-        segment["incoming_heading_deg"] = previous_heading
+        segment["incoming_heading_deg"] = (
+            None if previous_heading is None
+            else _bin_centre_heading(previous_heading, heading_bin_count)
+        )
+        segment["incoming_bearing_deg"] = previous_heading
         previous_heading = heading
     accumulated[best_goal_key] = ledger
-
     return {
         "path": route_points, "grid_path": grid_path,
         "label_chain": [
@@ -1696,6 +1946,7 @@ def _theta_star(
         "termination": termination,
         "los_segments": los_segments,
         "los_records": los_records,
+        "endpoint_anchors": endpoint_anchors,
         "statistics": statistics, "cap_reached": cap_reached,
     }
 
@@ -1703,10 +1954,10 @@ def _theta_star(
 def _bin_centre_heading(bearing_deg, bin_count):
     """Snap a raw bearing to its heading-bin centre in the search's own binning.
 
-    The reported audit headings are the discretized headings the turn cost was actually
-    priced between -- that is, the same ``heading_bin_count`` the search labels use -- so
-    ``turn_statistics`` and ``planning_objective`` can be reproduced from the reported
-    segments alone.
+    Used **only** for reporting/compatibility fields tied to the search's own discretization
+    (``label_chain``, ``guest_heading_deg`` style columns and the historical
+    ``outgoing_heading_deg``).  It is never used to compute a turn angle or a turn cost --
+    that always uses the real segment bearing (BUG-TURN-STAT-001).
     """
 
     if bearing_deg is None:
@@ -1717,15 +1968,27 @@ def _bin_centre_heading(bearing_deg, bin_count):
 
 
 def _route_segment_audit(
-    graph, index_map, grid_path, start_point, end_point, gate, altitude, regulatory,
-    risk_indices, statistics, heading_bin_count,
+    graph, index_map, grid_path, start_point, end_point, start_link, terminal_link,
+    gate, altitude, regulatory, risk_indices, statistics, heading_bin_count,
 ):
-    """One entry per route segment, in order, with its crossed cells and headings.
+    """One entry per route segment, in order, with its crossed cells and real headings.
 
     Each segment is re-traversed with the **same** supercover LOS routine the search used,
     so the reported crossed cells, in-cell lengths and risk integral are the authoritative
-    ones for the finalized geometry.  The re-traversal is an audit: it does not move any
-    search counter.
+    ones for the finalized geometry.  The re-traversal is an audit: it passes
+    ``counted=False`` and therefore does not move any search counter.
+
+    Two endpoint connectors always appear in the list and are marked as such:
+
+    * the first segment is the departure connector ``exact start -> selected source anchor``
+      (zero length when the exact origin already sits on the anchor centre);
+    * the last segment is the arrival connector ``selected target anchor -> exact end``.
+
+    Both carry their distance and risk into the OD objective; neither is charged a turn
+    (see ``SEARCH_SEMANTICS``).  ``start_link`` is retained here because it *is* the first
+    segment's geometry and provenance: the audit re-traverses it with ``counted=False``
+    rather than re-deriving it, so the audit can never describe a different connector than
+    the one the objective was minimised over.
     """
 
     audit_statistics = {key: 0 for key in statistics if key.startswith("rejected_")}
@@ -1743,9 +2006,17 @@ def _route_segment_audit(
             source_id=(previous_grid or grid_id), target_id=grid_id,
             source_point=entry, target_point=exit_point, gate=gate, altitude_m=altitude,
             regulatory=regulatory, risk_indices=risk_indices, statistics=audit_statistics,
+            counted=False,
         )
         outward = grid_bearing_deg(entry, exit_point)
+        # The route's first segment is always its departure connector: ``exact start ->
+        # selected source anchor``.  It can be zero length (the exact origin already sits on
+        # the anchor centre), in which case it contributes nothing to distance, risk or turn,
+        # but it still means the first search segment is not a cruise turn -- exactly like the
+        # arrival side.
+        is_start_connector = position == 0 and previous_grid is None
         segments.append({
+            "segment_index": len(segments),
             "from_grid_id": previous_grid or grid_id,
             "to_grid_id": grid_id,
             "from_coordinate": entry,
@@ -1753,49 +2024,89 @@ def _route_segment_audit(
             "length_m": _round(distance_m(entry, exit_point)),
             "traversed_cells": list((record or {}).get("cells") or []),
             "risk_exposure_index_m": _round((record or {}).get("risk_exposure_index_m")),
+            # Real geometry, and the value the ledger turns are computed from.
+            "outgoing_bearing_deg": outward,
+            # Discretized compatibility view of the same segment.
             "outgoing_heading_deg": _bin_centre_heading(outward, heading_bin_count),
+            "incoming_bearing_deg": None,
+            "incoming_heading_deg": None,
+            "connector": "start_connector" if is_start_connector else "cruise",
             "supercover": True,
             "shortcut": True,
         })
         previous_grid = grid_id
     if grid_path:
         exit_point = list(graph.centers[grid_path[-1]])
+        # The terminal connector must be audited with **exactly** the anchor the search
+        # priced it with (``terminal_link["grid_id"]``).  Re-deriving it with
+        # ``containing_cell(end_point)`` can name a different -- adjacent -- cell when the
+        # exact endpoint sits on or next to a cell boundary, which would make the audit
+        # describe a different connector than the one the objective was minimised over.
+        to_grid = (terminal_link or {}).get("grid_id") or (
+            graph.containing_cell(end_point) or grid_path[-1]
+        )
         record = line_of_sight(
             graph, index_map,
-            source_id=(previous_grid or grid_path[-1]),
-            target_id=(graph.containing_cell(end_point) or grid_path[-1]),
+            source_id=previous_grid or grid_path[-1],
+            target_id=to_grid,
             source_point=exit_point, target_point=list(end_point), gate=gate,
             altitude_m=altitude, regulatory=regulatory, risk_indices=risk_indices,
-            statistics=audit_statistics,
+            statistics=audit_statistics, counted=False,
         )
         outward = grid_bearing_deg(exit_point, end_point)
         segments.append({
+            "segment_index": len(segments),
             "from_grid_id": grid_path[-1],
-            "to_grid_id": graph.containing_cell(end_point) or grid_path[-1],
+            "to_grid_id": to_grid,
             "from_coordinate": exit_point,
             "to_coordinate": list(end_point),
             "length_m": _round(distance_m(exit_point, end_point)),
             "traversed_cells": list((record or {}).get("cells") or []),
             "risk_exposure_index_m": _round((record or {}).get("risk_exposure_index_m")),
+            "outgoing_bearing_deg": outward,
             "outgoing_heading_deg": _bin_centre_heading(outward, heading_bin_count),
+            "incoming_bearing_deg": None,
+            "incoming_heading_deg": None,
+            "connector": "terminal_connector",
             "supercover": True,
             "shortcut": True,
         })
     return segments
 
 
-def _zero_length_ledger_segments(segments):
-    """Drop the zero-length end connectors so the ledger only prices real motion."""
+def _cruise_turn_statistics(ledger):
+    """Turn statistics restricted to the cruise segments (endpoint connectors excluded).
 
-    return [item for item in segments if (item["length_m"] or 0.0) > 0.0 or item[
-        "outgoing_heading_deg"
-    ] is not None]
+    ``cruise_turn_*`` is what the *planning* turn term describes: the smoothness of the
+    cruise portion.  Departure/arrival transition turns are reported separately
+    (``connector_turn_*``) instead of being mixed into the cruise turn cost.
+    """
 
-
-def _empty_ledger():
+    cruise_turns = [
+        turn for turn in ledger.get("turns") or [] if not turn.get("connector")
+    ]
+    connector_turns = [
+        turn for turn in ledger.get("turns") or [] if turn.get("connector")
+    ]
     return {
-        "risk": 0.0, "turn": 0.0, "distance": 0.0, "turn_count": 0,
-        "heading_change": 0.0, "turns": [],
+        "cruise_turn_count": len(cruise_turns),
+        "cruise_total_heading_change_deg": round(
+            sum(float(item["heading_change_deg"]) for item in cruise_turns), 9
+        ),
+        "cruise_turn_cost_m": round(
+            sum(float(item.get("cost_m") or 0.0) for item in cruise_turns), 9
+        ),
+        "connector_turn_count": len(connector_turns),
+        "connector_total_heading_change_deg": round(
+            sum(float(item["heading_change_deg"]) for item in connector_turns), 9
+        ),
+        "connector_turn_cost_m": round(
+            sum(float(item.get("cost_m") or 0.0) for item in connector_turns), 9
+        ),
+        "cruise_turn_semantics": (
+            "endpoint_connector_turn_is_reported_separately_and_never_charged_to_"
+            "cruise_turn_cost"
+        ),
     }
 
 
@@ -1811,6 +2122,21 @@ def _ledger_total_cost(ledger, weight_risk, weight_turn, weight_distance):
         + weight_turn * float(ledger["turn"])
         + weight_distance * float(ledger["distance"])
     )
+
+
+def _zero_length_ledger_segments(segments):
+    """Drop the zero-length end connectors so the ledger only prices real motion."""
+
+    return [item for item in segments if (item["length_m"] or 0.0) > 0.0 or item[
+        "outgoing_heading_deg"
+    ] is not None]
+
+
+def _empty_ledger():
+    return {
+        "risk": 0.0, "turn": 0.0, "distance": 0.0, "turn_count": 0,
+        "heading_change": 0.0, "turns": [],
+    }
 
 
 def _goal_ledger_consistency(search, weights):
@@ -1847,7 +2173,10 @@ def _goal_ledger_consistency(search, weights):
     }
 
 
-def _unsolved_search(statistics, *, cap_reached, termination, los_records, goal_candidates=()):
+def _unsolved_search(
+    statistics, *, cap_reached, termination, los_records, goal_candidates=(),
+    endpoint_anchors=None,
+):
     """Structured "no goal label was priced" search result (never a fabricated ledger)."""
 
     return {
@@ -1855,6 +2184,7 @@ def _unsolved_search(statistics, *, cap_reached, termination, los_records, goal_
         "accumulated": None, "search_goal_ledger": None,
         "goal_candidates": list(goal_candidates), "termination": termination,
         "statistics": statistics, "cap_reached": cap_reached,
+        "endpoint_anchors": endpoint_anchors,
     }
 
 
@@ -1865,7 +2195,8 @@ def _ledger_distance(ledger):
 def _relax(
     *, grid_id, bin_index, bearing, ledger, risk_weight, turn_weight, distance_weight,
     parent_key, parent_grid, heuristic, costs, parents, incoming, edge_bearing,
-    accumulated, closed, statistics, queue, los_records, los_result, depth, is_rewire=False,
+    real_bearing, accumulated, closed, statistics, queue, los_records, los_result, depth,
+    label_sequence, is_rewire=False,
 ):
     """Install (or improve) one label.
 
@@ -1881,7 +2212,12 @@ def _relax(
     with fewer labels wins.  This never changes an objective value, never reopens a closed
     label and never introduces a post-processing smoother: it only makes the search prefer
     the straight LOS shortcut over an equally priced staircase, which is the any-angle
-    character of Theta* itself.
+    character of Theta* itself.  If both chains have the same length as well, the one with
+    the smaller accumulated turn is installed, so the label's stored real bearing (the input
+    of the next turn charge) is the best one available for that ``(grid, bin)`` state.
+
+    ``real_bearing`` stores the **actual** bearing of the segment leading into the label;
+    the ``bin_index`` only partitions the state space.
     """
 
     key = (grid_id, bin_index)
@@ -1894,13 +2230,20 @@ def _relax(
     if known is not None:
         if cost > known + 1e-9:
             return
-        if cost >= known - 1e-9 and new_depth >= int(depth.get(key, new_depth)):
-            return
+        if cost >= known - 1e-9:
+            if new_depth >= int(depth.get(key, new_depth)):
+                return
+            previous = accumulated.get(key) or _empty_ledger()
+            if new_depth == int(depth.get(key, new_depth)) and float(
+                ledger["turn"]
+            ) >= float(previous["turn"]) - 1e-12:
+                return
     costs[key] = cost
     depth[key] = new_depth
     parents[key] = parent_grid
     incoming[key] = parent_key
     edge_bearing[key] = bearing
+    real_bearing[key] = bearing
     accumulated[key] = ledger
     # The admitted traversal is recorded under the ``(from, to)`` grid pair the route
     # geometry actually uses, so the reported crossed cells are the search's own.
@@ -1909,20 +2252,25 @@ def _relax(
         statistics["rewired_parent_shortcuts"] += 1
     heappush(
         queue,
-        (cost + heuristic(grid_id), cost, statistics["generated_labels"], grid_id, bin_index),
+        (cost + heuristic(grid_id), cost, label_sequence, grid_id, bin_index),
     )
 
 
 def _extend_ledger(
     base, *, risk_exposure, distance, previous_heading, new_heading, weights, d_ref,
-    theta_min_deg,
+    theta_min_deg, is_connector_turn=False, segment_index=None,
 ):
     """Extend a label's objective ledger with one straight sub-segment.
 
-    ``previous_heading`` / ``new_heading`` are **discretized heading-bin centres**, not raw
-    bearings: the label state is ``(grid_id, incoming_heading_bin)``, so the turn is priced
-    between the bins the aircraft is modelled as holding.  A ``None`` previous heading means
-    there is no preceding turn (the route start), which is never charged.
+    ``previous_heading`` / ``new_heading`` are **real segment bearings** in the planning
+    frame, not heading-bin centres (BUG-TURN-STAT-001): the bin discretizes the state, never
+    the angle.  A ``None`` previous heading means there is no preceding turn (the route
+    start), which is never charged.
+
+    ``is_connector_turn=True`` marks a departure/arrival transition turn: it is recorded
+    (so ``turn_statistics`` can report it separately) but **never charged** to the cruise
+    turn cost.  The flag is decided by the caller from the finalized segment positions, so
+    the same rule can be replayed from ``candidate.path`` alone.
     """
 
     weight_risk, weight_turn, weight_distance = weights
@@ -1936,18 +2284,48 @@ def _extend_ledger(
     }
     if previous_heading is not None and new_heading is not None:
         delta = abs(normalize_heading_delta(previous_heading, new_heading))
-        if delta > float(theta_min_deg) and d_ref:
-            cost = float(d_ref) * (1.0 + delta / 180.0)
-            ledger["turn"] += cost
-            ledger["turn_count"] += 1
-            ledger["heading_change"] += delta
+        if delta > float(theta_min_deg):
+            cost = float(d_ref) * (1.0 + delta / 180.0) if d_ref else 0.0
+            if not is_connector_turn:
+                ledger["turn"] += cost
+                ledger["turn_count"] += 1
+                ledger["heading_change"] += delta
             ledger["turns"].append({
                 "from_heading_deg": round(float(previous_heading), 9),
                 "to_heading_deg": round(float(new_heading), 9),
                 "heading_change_deg": round(delta, 9),
                 "cost_m": _round(cost),
+                "segment_index": segment_index,
+                "connector": bool(is_connector_turn),
+                "charged": not is_connector_turn,
             })
     return ledger
+
+
+def _turn_statistics(ledger, *, d_ref, theta_min_deg):
+    """``turn_statistics`` for one finalized ledger.
+
+    ``turn_count`` / ``total_heading_change_deg`` / ``turn_cost_m`` are exactly the charged
+    cruise turns of the ledger the objective used, and they can be recomputed from
+    ``candidate.path`` plus the endpoint connector classification alone
+    (BUG-TURN-STAT-001).  Departure/arrival transition turns are reported separately in
+    ``turns`` (``connector=true``, ``charged=false``) and in the ``connector_*`` block, never
+    inside the cruise turn cost.
+    """
+
+    cruise = _cruise_turn_statistics(ledger)
+    return {
+        "turn_count": int(ledger["turn_count"]),
+        "total_heading_change_deg": round(float(ledger["heading_change"]), 9),
+        "turn_cost_m": _round(ledger["turn"]),
+        "turns": list(ledger.get("turns") or []),
+        "theta_min_deg": theta_min_deg,
+        "d_ref_m": _round(d_ref),
+        "semantics": "planning_smoothness_proxy_not_flight_dynamics_validation",
+        "bearing_semantics": TURN_ACCOUNTING_SEMANTICS["definition"],
+        "heading_bin_used_as_the_turn_angle": False,
+        **cruise,
+    }
 
 
 def _objective_metrics(search, weights, d_ref, theta_min_deg):
@@ -1959,28 +2337,25 @@ def _objective_metrics(search, weights, d_ref, theta_min_deg):
                                                  "turn_weight": weights["turn"],
                                                  "distance_weight": weights["distance"],
                                                  "confirmed": True})
+    cruise = _cruise_turn_statistics(accumulated)
     objective = {
         "risk_exposure_index_m": _round(risk),
         "turn_count": int(accumulated["turn_count"]),
         "total_heading_change_deg": round(float(accumulated["heading_change"]), 9),
         "turn_cost_m": _round(turn),
         "distance_m": _round(distance),
+        "cruise_turn_count": cruise["cruise_turn_count"],
+        "cruise_total_heading_change_deg": cruise["cruise_total_heading_change_deg"],
+        "cruise_turn_cost_m": cruise["cruise_turn_cost_m"],
         **{key: terms[key] for key in (
             "risk_weight", "turn_weight", "distance_weight",
             "weighted_risk", "weighted_turn", "weighted_distance", "total_cost",
         )},
         "formula": OBJECTIVE_FORMULA,
         "objective_population_shelter_only": True,
+        "turn_semantics": TURN_ACCOUNTING_SEMANTICS["definition"],
     }
-    turn_statistics = {
-        "turn_count": int(accumulated["turn_count"]),
-        "total_heading_change_deg": round(float(accumulated["heading_change"]), 9),
-        "turn_cost_m": _round(turn),
-        "turns": list(accumulated["turns"]),
-        "theta_min_deg": theta_min_deg,
-        "d_ref_m": _round(d_ref),
-        "semantics": "planning_smoothness_proxy_not_flight_dynamics_validation",
-    }
+    turn_statistics = _turn_statistics(accumulated, d_ref=d_ref, theta_min_deg=theta_min_deg)
     return {
         "risk_exposure_index_m": risk,
         "turn_cost_m": turn,
