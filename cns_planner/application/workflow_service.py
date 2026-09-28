@@ -1299,6 +1299,19 @@ class WorkflowService:
         )
     def add_reference_landing_site(self, reference_site_id): return self.reference_data_service.add_landing_site_to_project(reference_site_id)
     def configure_reference_sources(self, paths, save=False):
+        self._load_reference_sources(paths, save=save)
+        return self.snapshot()
+
+    def _load_reference_sources(self, paths, save=False):
+        """``configure_reference_sources`` 的业务本体（不做末尾的整份快照投影）。
+
+        项目打开链（``ApplicationContext._activate_workflow``）只需要"把参考数据源登记
+        并接上"这一副作用，调用方并不消费它的返回值。整份 ``snapshot()`` 在这条链上是
+        纯浪费：它会为本项目投影上百 MB 的逐 cell 结果（实测约 12 秒），而项目打开本来
+        还要再取一次权威快照。因此本体与投影拆开，投影只保留在公开方法上（HTTP 写入
+        路径的返回契约一个字都没变）。
+        """
+
         landing_path = (paths or {}).get("reference_landing_sites")
         route_path = (paths or {}).get("reference_routes")
         tower_path = (paths or {}).get("towers")
@@ -1336,7 +1349,7 @@ class WorkflowService:
                 )
         if save and (landing_path or route_path or tower_path):
             self.session.save()
-        return self.snapshot()
+        return self.state
     def delete_node(self, node_id): return self.route_service.delete_node(node_id)
     def generate_scenario(self, direction): return self.route_service.generate_scenario(direction)
     def generate_scenario_od(self, start_node_id, end_node_id, direction="both"):

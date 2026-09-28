@@ -75,7 +75,9 @@ const snapshotApplier=createWorkflowSnapshotApplier({
   getFlow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},
   nextSerial:()=>++gridDataSerial,currentSerial:()=>gridDataSerial,
   fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),fetchRisk:()=>api('/api/grid-risk'),fetchRiskV2:()=>api('/api/grid-risk-v2'),fetchLayeredCandidates:()=>api('/api/layered-route-candidates'),fetchRadarSurveillance:()=>api('/api/radar-surveillance-layout'),
-  onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();}});
+  onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
+  // A4：明细落地前的项目身份复核（迟到的旧项目明细必须被丢弃）。
+  currentProjectIdentity:()=>projectIdentityOf()});
 // Rescue Stable 主链默认只安装后端 workflow snapshot。逐格 grid/risk/mask 明细均为
 // 专题图层或高级 popup 数据；默认图层关闭时不应在每次 mutation 后重复下载约 155 MB，
 // 否则“保存 OD / 开启候选试算”等普通动作会长期停在“正在计算”。当前候选 path 与
@@ -563,6 +565,99 @@ function projectOpenStep(){
  * @param {{onStage?:(stage:string, index:number, total:number)=>void}} [options]
  * @returns {Promise<{ok:boolean, identity:string, stage:string, error:Error|null, facts:object|null}>}
  */
+// A1 诊断：项目打开各阶段耗时（只测量，不改变任何行为）。结果同时写入
+// window.__CNS_OPEN_TIMING 与浏览器控制台（console.info），浏览器里可随时取回。
+const openTiming={run:null};
+function timeMark(label){
+  const run=openTiming.run;if(!run)return 0;
+  const now=performance.now(),cost=now-run.last;run.last=now;run.stages.push({label,cost_ms:Math.round(cost*10)/10});
+  return cost;
+}
+function timeStart(label){
+  const run=openTiming.run;if(!run)return 0;
+  run.last=performance.now();run.stages.push({label,cost_ms:null});return run.last;
+}
+function reportOpenTiming(source){
+  const run=openTiming.run;if(!run)return;
+  const total=Math.round((performance.now()-run.started)*10)/10;
+  const result={source,directory:run.directory,generation:run.generation,total_ms:total,stages:run.stages};
+  openTiming.run=null;
+  try{window.__CNS_OPEN_TIMING=result;}catch(_){/* 诊断输出失败不影响打开流程 */}
+  try{console.info('[CNS 打开项目耗时]',result);}catch(_){/* 同上 */}
+}
+/**
+ * A2：目录比较（浏览器端没有 path 模块，因此只做"同一台机器上的路径文本"归一）。
+ *
+ * 统一分隔符、去掉尾部分隔符、Windows 下大小写不敏感。**不做**符号链接 / 短名解析：
+ * 真正确认"是不是同一个项目"始终以后端权威事实（project_storage / already_active）
+ * 为准，这里只是为了让前端能提前走轻量路径。
+ */
+function sameDirectory(left,right){
+  const normalize=value=>String(value||'').trim().replace(/[\\/]+$/,'').replace(/\//g,'\\').toLowerCase();
+  const a=normalize(left),b=normalize(right);
+  return Boolean(a)&&a===b;
+}
+/**
+ * A4：候选 / 雷达大 sidecar 的**渐进恢复**（不阻塞"项目已打开"）。
+ *
+ * 规则：
+ *  1. 打开结论与首屏只依赖 project / workspace / L8 summary / nodes / altitude layers /
+ *     map view；candidate 与 radar 明细在这里异步补齐，失败只提示、不回退打开结论；
+ *  2. 明细回来之前必须复核**项目身份**：期间用户若又切了项目，迟到结果一律丢弃，
+ *     绝不允许把旧项目的大 sidecar 装进新项目（request generation 由 identity 兜底）；
+ *  3. 同一项目已有 detail 时不重复 hydrate（由 snapshotApplier 的 detail_available
+ *     声明与本函数的身份复核共同保证）。
+ */
+function startProjectDetailRecovery(identity){
+  const expected=String(identity||'');
+  if(projectDetailsPresent(flow)){
+    // 同一项目已有 detail（刚 hydrate 过 / 快照已带）：不重复拉取。
+    return;
+  }
+  const started=performance.now();
+  const record=label=>{
+    // 不阻塞打开结论：明细耗时只追加到最近一次打开的性能记录里（供诊断读取）。
+    try{
+      const last=window.__CNS_OPEN_TIMING;
+      if(last)last.stages.push({label,cost_ms:Math.round((performance.now()-started)*10)/10});
+    }catch(_){/* 诊断输出失败不影响明细恢复 */}
+  };
+  Promise.resolve()
+    .then(()=>snapshotApplier.hydrateLayeredCandidateDetail())
+    .then(result=>{
+      if(projectIdentityOf()!==expected)return;
+      record('candidate hydrate（异步）');
+      if(result?.applied)afterDetailRecovery('候选方案');
+    })
+    .catch(exc=>showError('候选方案明细恢复失败：'+(exc?.message||exc)));
+  Promise.resolve()
+    .then(()=>snapshotApplier.hydrateRadarSurveillanceDetail())
+    .then(result=>{
+      if(projectIdentityOf()!==expected)return;
+      record('radar hydrate（异步）');
+      if(result?.applied)afterDetailRecovery('雷达划设方案');
+    })
+    .catch(exc=>showError('雷达划设明细恢复失败：'+(exc?.message||exc)));
+}
+/**
+ * A4：该 flow 是否已经带着候选 / 雷达明细（而不是只有 slim 摘要）。
+ *
+ * 只说"明细已经在手上"这一事实：候选看是否有 masks/items 实体，雷达看是否已有
+ * detail。真正决定要不要拉取仍由 snapshotApplier 的 detail_available 声明负责。
+ */
+function projectDetailsPresent(value){
+  const candidates=value?.layered_route_candidates;
+  const candidateReady=Boolean(candidates&&(candidates.items?.length||candidates.masks&&Object.keys(candidates.masks).length));
+  const radar=value?.radar_surveillance_layout;
+  const radarReady=Boolean(radar&&(radar.detail||radar.items?.length));
+  return candidateReady&&radarReady;
+}
+function afterDetailRecovery(label){
+  rebuildGridRenderCache();
+  renderWorkflow();
+  paint();
+  if(currentStep===1)panelError(label+'明细已恢复','hint');
+}
 async function openProject(projectDir,{onStage=null}={}){
   const directory=String(projectDir||'').trim();
   const notify=stage=>{
@@ -579,19 +674,57 @@ async function openProject(projectDir,{onStage=null}={}){
   const button=$('openProject');
   if(button)button.disabled=true;
   projectSwitchBusy=true;
+  openTiming.run={directory,generation:null,started:performance.now(),last:performance.now(),stages:[]};
   let identity=directory,facts=null,stage='failed';
   try{
     notify('opening');
+    // A2：同一项目（请求目录 == 服务器当前 active 目录）**不得**再执行一次真正的项目切换。
+    // 判据完全来自服务器权威事实：project_storage（automatic=false 时的 directory）
+    // 与后端新增的 already_active 回执。前端自己不做路径猜测。
+    const activeDirectory=String(state?.project_storage?.directory||'').trim();
+    const sameProject=(!state?.project_storage?.automatic&&activeDirectory&&sameDirectory(activeDirectory,directory));
+    if(sameProject){
+      await serializeProjectOperation(async()=>{
+        timeStart('same-project confirm');
+        const fresh=await api('/api/state');
+        timeMark('GET state (same-project)');
+        // 轻量落地：刷新 token / revision / 存储信息与面板事实，但**保留**当前
+        // flow 与整张地图（pan / zoom / bitmap / grid cache 都不重建）。
+        applyState(fresh,{preserveMapView:true});
+        identity=projectIdentityOf(fresh)||identity;
+        recordExplicitProject(fresh);
+        timeMark('applyState (preserve map)');
+      });
+      facts=projectFacts(flow);
+      renderWorkflow();
+      stage=PROJECT_OPEN_STAGES[PROJECT_OPEN_STAGES.length-1];
+      panelError('当前项目已激活 · '+facts.name+' · 项目目录：'+(state?.project_storage?.directory||directory),'success');
+      reportOpenTiming('already_active');
+      return {ok:true,identity,stage,error:null,facts,already_active:true};
+    }
+    let openedAlreadyActive=false;
     await serializeProjectOperation(async()=>{
+      timeStart('serialize-queue-wait');
       const response=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})});
+      timeMark('project/open POST');
       recordExplicitProject(response);
       identity=projectIdentityOf(response)||identity;
+      // 后端幂等保护的第二道防线：即使前端判据失效（例如服务器刚被别的会话切过），
+      // already_active=true 也说明 requested == active，同样不允许再做一次完整切换。
+      openedAlreadyActive=response?.already_active===true;
+      if(openedAlreadyActive&&state?.project_storage?.directory&&!state.project_storage.automatic){
+        applyState(response,{preserveMapView:true});
+        timeMark('apply project/open response (already_active)');
+        return;
+      }
       // 恢复链路唯一入口：先按项目响应把 state/workflow 完整落地（含逐 cell 明细 hydrate），
       // 再按 fresh state 校准 token / revision / 项目存储信息。
       notify('applying');
       await applyProjectState(response);
+      timeMark('apply project/open response');
       notify('refreshing');
       await applyProjectState(await api('/api/state'));
+      timeMark('GET state + apply');
       // BUG-WORKSPACE-RESTORE-002 兜底：`/api/project/open` 与 `/api/state` 都应携带
       // 新项目的 workflow 快照。万一装进来的 flow 为空、或连 `workspace` 键都没有
       // （这正是"第一次打开 Step02 认为没有工作区、按 F5 才出现"的现场），这里**明确**
@@ -599,29 +732,35 @@ async function openProject(projectDir,{onStage=null}={}){
       // 只在确实缺字段时才发这一次请求，正常路径不增加任何调用。
       if(!flow||typeof flow!=='object'||Object.keys(flow).length===0||flow.workspace===undefined){
         await applyProjectState({...state,workflow:await api('/api/workflow')});
+        timeMark('fallback GET workflow + apply');
       }
-      // Candidate geometry is stored in its sidecar rather than the slim
-      // workflow. Restore exactly this main-chain detail before map repaint;
-      // grid/risk details remain lazy and disabled by default.
-      await snapshotApplier.hydrateLayeredCandidateDetail();
-      await snapshotApplier.hydrateRadarSurveillanceDetail();
       // 项目已切换：旧位图/旧视图必须整体作废，再按**新项目身份**建立视图。
       notify('map');
       resetProjectMapState();
       ensureMapView();
+      timeMark('reset + ensureMapView');
     });
     // 收尾重绘：即使上面一步都没能改变视图，也必须让 renderMap 有机会重建位图，
     // 绝不出现"旧 bitmap 已关、新 renderMap 没触发"的空白地图。
     queue();
+    timeMark('queue (repaint + renderMap 调度)');
     facts=projectFacts(flow);
     renderWorkflow();
+    timeMark('renderWorkflow');
     stage=PROJECT_OPEN_STAGES[PROJECT_OPEN_STAGES.length-1];
-    panelError('项目已打开 · '+facts.name+' · 项目目录：'+(state?.project_storage?.directory||directory),'success');
-    return {ok:true,identity,stage,error:null,facts};
+    // A4：首屏只要求 project / workspace / L8 summary / nodes / altitude layers /
+    // map view —— 以上全部落地后即可宣布"项目已打开"。candidate / radar 这类大
+    // sidecar 改为**异步**恢复：不阻塞打开结论，且带回结果前必须复核项目身份，
+    // 迟到的旧项目明细一律丢弃（绝不允许污染刚切过来的新项目）。
+    startProjectDetailRecovery(identity);
+    panelError((openedAlreadyActive?'当前项目已激活 · ':'项目已打开 · ')+facts.name+' · 项目目录：'+(state?.project_storage?.directory||directory),'success');
+    reportOpenTiming(openedAlreadyActive?'opened_already_active':'opened');
+    return {ok:true,identity,stage,error:null,facts,already_active:openedAlreadyActive||undefined};
   }catch(exc){
     const reason=(exc&&exc.message)||String(exc);
     identity=identity||directory;
     panelError('打开项目失败：'+reason,'error');
+    reportOpenTiming('failed');
     return {ok:false,identity,stage:'failed',error:exc instanceof Error?exc:new Error(reason),facts:null};
   }finally{
     projectSwitchBusy=false;
@@ -734,12 +873,12 @@ function serializeProjectOperation(run){
  *
  * @returns {Promise<object>} 落地完成后的 state
  */
-function applyProjectState(data){
+function applyProjectState(data,options){
   if(!data||typeof data!=='object')return Promise.resolve(state);
   // 逐项 await 一个已 resolve 的 Promise，把异常统一交给调用方（bootstrapFailure /
   // openProject 的 catch），绝不在内部静默吞掉 —— 那会把"渲染中断"伪装成空白界面。
   return Promise.resolve()
-    .then(()=>{applyState(data);return applyWorkflowSnapshot(data.workflow);})
+    .then(()=>{applyState(data,options);return applyWorkflowSnapshot(data.workflow);})
     .then(()=>{paint();return state;});
 }
 
@@ -765,17 +904,22 @@ function update(data){
  * 同时推进"视图归属"：项目身份变化时，旧位图与旧视图必须一起作废，
  * 否则会出现"右栏是新项目、地图还是旧位图"的 split-brain。
  */
-function applyState(data){
+function applyState(data,{preserveMapView=false}={}){
   const previousIdentity=state===null?'':(viewProjectIdentity||projectIdentityOf());
   state=data;
   flow=data.workflow;
   const identity=projectIdentityOf(data);
-  if(identity!==previousIdentity){
+  // A5：只有项目身份**真的变化**才作废旧地图（pan / zoom / bitmap / grid cache）。
+  // 同一项目的 reopen / refresh 走 preserveMapView，保留用户当前的视图与位图，
+  // 不再因为点一次"打开当前项目"就重建整张地图。
+  const changed=identity!==previousIdentity;
+  if(changed&&!preserveMapView){
     // 项目（或项目文件）切换：只做清理，新视图由 ensureMapView 在安装完成后统一建立。
     serial++;renderController?.abort();renderController=null;
     try{bitmap?.close();}catch(_){/* 已被释放的 ImageBitmap 不影响后续重建 */}
     bitmap=null;imageView=null;viewProjectIdentity='';
   }
+  if(preserveMapView&&view&&Number.isFinite(view.res)&&view.res>0)viewProjectIdentity=identity;
   store.set({server:state,workflow:flow,mapView:view});
   rebuildGridRenderCache();buildingFootprints.reset();
   onlineTiles.configure(data.online_sources||[],data.revision);
@@ -841,6 +985,13 @@ function hideLoadingSoon(){
   // 收尾窗口：给 renderMap / 网格明细 hydrate 一点时间，但绝不无限期停留在占位文本上。
   loadingReleaseTimer=setTimeout(releaseLoading,1200);
 }
+// A1 诊断：启动恢复链各阶段耗时（与 openProject 同一套口径，只测量不改行为）。
+const bootstrapTiming=[];
+function reportBootstrapTiming(){
+  const result={source:'bootstrap',stages:bootstrapTiming.slice()};
+  try{window.__CNS_BOOTSTRAP_TIMING=result;}catch(_){/* 诊断输出失败不影响启动 */}
+  try{console.info('[CNS 启动恢复耗时]',result);}catch(_){/* 同上 */}
+}
 // 启动编排（BUG-PROJECT-RESTORE-001 / BUG-BOOTSTRAP-LOAD-001 的唯一调用点）：
 // 1) 先取一次 /api/state（带超时）；2) 先 update → token/revision 就位 + 服务器项目先渲染；
 // 3) 服务器已有明确项目 → 直接采用，不重新 open；4) 服务器是自动恢复项目且浏览器缓存有
@@ -854,6 +1005,8 @@ bootstrapProjectState({
   serialize:run=>serializeProjectOperation(run),
   update:async(data,meta)=>{
     try{
+      let mark=performance.now();
+      const stage=label=>{const now=performance.now();bootstrapTiming.push({reason:meta?.reason||'',label,cost_ms:Math.round((now-mark)*10)/10});mark=now;};
       if(meta?.reason==='server_state')$('loading').hidden=false;
       // bootstrapProjectState already serializes every restore transition with
       // `serializeProjectOperation`. Re-entering `update()` here queues behind
@@ -862,16 +1015,23 @@ bootstrapProjectState({
       // existing gate; the initial server_state landing occurs before restore
       // work is admitted, so it is safe on the same single bootstrap chain.
       await applyProjectState(data);
-      await snapshotApplier.hydrateLayeredCandidateDetail();
-      await snapshotApplier.hydrateRadarSurveillanceDetail();
+      stage('applyProjectState');
+      // A4：candidate / radar 明细不再阻塞启动链——先让首屏（project / workspace /
+      // L8 summary / nodes / altitude layers / map view）落地，大 sidecar 在后台补齐。
+      // 明细落地前的项目身份复核由 snapshotApplier 负责，迟到的旧项目结果会被丢弃。
+      startProjectDetailRecovery(projectIdentityOf());
+      stage('candidate/radar hydrate 已派发（不阻塞）');
       // BUG-MAP-RESTORE-001：启动阶段的视图初始化必须在这里**一次性**完成，并显式记录
       // "这个 view 属于哪个项目"。否则用户随后手工打开项目时，view 仍是非空但属于旧项目
       // 的值，ensureMapView() 会被 `view == null` 判断骗过而跳过，地图就停在旧视图。
       // 若此刻正有一个"打开项目"操作在执行（项目切换中），视图所有权已交给它，启动阶段
       // 不再插手，避免两次 fit 互相覆盖。
       if(!projectSwitchBusy)ensureMapView();
+      stage('ensureMapView');
       if(!flow?.workspace?.bbox&&!state?.bounds)$('settings').showModal();
       hideLoadingSoon();
+      stage('hideLoadingSoon');
+      reportBootstrapTiming();
     }catch(exc){bootstrapFailure('前端初始化失败',exc);}
   },
   onError:message=>{panelError(message);releaseLoading();},

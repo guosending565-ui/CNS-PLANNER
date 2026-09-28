@@ -1,6 +1,7 @@
 """Composition root for mutable runtime collaborators."""
 
 from copy import deepcopy
+import os
 from pathlib import Path
 import secrets
 import threading
@@ -16,6 +17,35 @@ from ..gis.fine_environment_adapter import real_data_source_readiness
 from ..gis.layered_feasibility_adapter import layered_feasibility_source_status
 from ..gis.route_vertical_profile_adapter import FabdemRouteSampler
 from ..process_identity import build_identity
+
+
+def _normalized_directory(value):
+    """项目文件夹的统一比较形式（大小写不敏感、分隔符一致、解析为绝对路径）。
+
+    解析失败（路径不存在等）时退回纯文本归一，**绝不**因此判定"同一项目"。
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(str(Path(text).expanduser().resolve())))
+    except (OSError, ValueError):
+        return os.path.normcase(os.path.normpath(text))
+
+
+def _same_project_directory(requested, active_project_file):
+    """请求的项目目录是否就是当前 active project 所在目录（A2 幂等判据）。
+
+    只比较"项目文件夹"这一层：active project 文件是文件夹里的 ``project_state.json``
+    （或 legacy ``current_project.json``），因此取它的父目录参与比较。
+    """
+
+    target = _normalized_directory(active_project_file)
+    wanted = _normalized_directory(requested)
+    if not target or not wanted:
+        return False
+    return wanted == os.path.dirname(target)
 
 
 class RenderRequestTracker:
@@ -141,7 +171,9 @@ class ApplicationContext:
             # 必须把新实例一并交给任务服务：否则切换后提交的任务会冻结旧项目的输入。
             heavy_tasks.bind_project(target, workflow=self.workflow)
             self.workflow.heavy_tasks = heavy_tasks
-        self.workflow.configure_reference_sources(self.data.paths)
+        # A2：项目打开链只消费"参考源已登记"这一副作用，不消费返回值。这里调用不带
+        # 末尾整份快照投影的本体，避免为同一个项目重复投影上百 MB 的逐 cell 结果。
+        self.workflow._load_reference_sources(self.data.paths)
         self._bind_runtime_services()
         return workflow
 
@@ -168,8 +200,44 @@ class ApplicationContext:
         return self.data.metadata()
 
     def open_project(self, project_dir):
+        """切换 active project；**同一项目**（requested == active）是幂等快速路径。
+
+        A2（打开/恢复性能收口）：同一项目再次打开时，绝不再做一次真正的项目切换 ——
+        不重新加载 project_state.json、不重建整套 service、不重新装载数据源。此时只把
+        当前权威 state 原样返回，并显式标记 ``already_active``，供前端与调用方区分
+        "真的切了项目"与"当前项目已激活"。
+
+        幂等判据只看项目文件夹解析后的真实路径（大小写 / 分隔符 / 相对路径都已归一），
+        绝不靠项目名或时间戳猜测。判断为同一项目时不改动任何状态，因此不会引入新的
+        revision 语义。
+        """
+
+        import time as _time
+
+        if _same_project_directory(project_dir, self.active_project_file):
+            # 只有确认"同一项目"之后才组装响应体：metadata() 会生成完整 workflow
+            # 快照，提前组装等于把省下的那一次切换又赔回去。
+            current = dict(self.data.metadata())
+            current["already_active"] = True
+            print(
+                "CNS-OPENSLOW project/open=skipped already_active=True target=%s" % (
+                    self.active_project_file,
+                ),
+                flush=True,
+            )
+            return current
+
+        started = _time.perf_counter()
         workflow, target = self.project_directories.open(project_dir, self.data)
+        loaded = _time.perf_counter()
         self._activate_workflow(workflow, target)
+        finished = _time.perf_counter()
+        print(
+            "CNS-OPENSLOW project/open=%.1fms activate=%.1fms target=%s" % (
+                (loaded - started) * 1000.0, (finished - loaded) * 1000.0, target,
+            ),
+            flush=True,
+        )
         return self.data.metadata()
 
     def replace_sources(self, paths):

@@ -40,6 +40,18 @@ export const PROJECT_OPEN_STAGE_TEXT={
 };
 
 /**
+ * A2：**同一项目**再次打开时的阶段文案。
+ *
+ * 此时不允许再出现"正在切换服务器 active project"——服务器上一次都没有切换。
+ * 这里只如实说明"确认当前项目 + 刷新状态"。
+ */
+export const PROJECT_OPEN_SAME_STAGE_TEXT={
+  opening:'正在确认当前项目…',
+  refreshing:'正在刷新当前项目状态…',
+  opened:'当前项目已激活',
+};
+
+/**
  * 对比两个输入框里的路径是否指向同一个目录。
  *
  * 只做**纯文本**归一化（分隔符 / 尾部斜杠 / Windows 大小写），不解析、不猜、
@@ -92,12 +104,14 @@ export function projectOpenPanel({getStep,draft=''}={}){
   const isCurrent=sameProjectPath(currentInput,savedDirectory);
   const statusKey=openStatusKey();
   const statusText=PROJECT_OPEN_STATE_TEXT[statusKey]||'';
-  const buttonLabel=busy?'正在打开…':(isCurrent&&savedIdentity?'重新打开当前项目':'打开项目');
+  const buttonLabel=busy?'正在打开…':(isCurrent&&savedIdentity?'确认当前项目':'打开项目');
+  const stageText=(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT:PROJECT_OPEN_STAGE_TEXT)[projectOpen.stage]
+    ||(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT.opening:PROJECT_OPEN_STAGE_TEXT.opening);
   const facts=(statusKey==='opened'?(projectOpen.facts||step.facts||null):null);
   const rows=[
     '<div class="project-open-status" id="projectOpenStatus" data-state="'+statusKey+'" aria-live="polite">'
       +'<b>'+escapeHtml(statusText)+'</b>'
-      +(busy?'<small>'+escapeHtml(PROJECT_OPEN_STAGE_TEXT[projectOpen.stage]||PROJECT_OPEN_STAGE_TEXT.opening)+'</small>':'')
+      +(busy?'<small>'+escapeHtml(stageText)+'</small>':'')
       +(statusKey==='failed'&&projectOpen.message?'<small class="project-open-error">'+escapeHtml(projectOpen.message)+'</small>':'')
       +((statusKey==='opened'&&facts)
         ?'<small>项目名称：'+escapeHtml(facts.name||'未命名项目')+'</small>'
@@ -113,7 +127,7 @@ export function projectOpenPanel({getStep,draft=''}={}){
       +'；点击「打开项目」会切换到上面输入的目录。</div>');
   }
   if(isCurrent&&savedIdentity&&!busy){
-    rows.push('<div class="parameter-note">当前已打开此项目；再次点击「打开项目」将重新从磁盘载入。</div>');
+    rows.push('<div class="parameter-note">当前项目已激活；再次点击会做一次轻量状态刷新，不再重新载入项目。</div>');
   }
   return '<label>项目数据存储位置</label>'
     +'<div class="panel-file-input"><input class="panel-input" id="projectPath" value="'+escapeHtml(currentInput)+'" placeholder="请选择项目文件夹"><button class="secondary" id="browseProject">选择…</button>'
@@ -438,7 +452,7 @@ export function bind(c){
   const pathInput=c.$('projectPath');
   const openButton=c.$('openProject');
   const statusNode=c.$('projectOpenStatus');
-  projectOpen=Object.assign({busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null},projectOpen||{});
+  projectOpen=Object.assign({busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null,sameProject:false},projectOpen||{});
   // 「正在打开…」必须跨重渲染存活：main.js 会在每个阶段重绘面板（用户要求看得见进度）。
   projectOpen.busy=_projectOpenInFlight;
   // 输入框显示 draft（用户刚选的 / 刚输入的）优先；否则显示服务器当前项目目录。
@@ -452,7 +466,7 @@ export function bind(c){
     const step=(statusNode&&statusNode.__projectOpenStep)||{};
     const isCurrent=Boolean(step.identity)&&sameProjectPath(pathInput?pathInput.value:'',step.directory);
     openButton.disabled=projectOpen.busy;
-    openButton.textContent=projectOpen.busy?'正在打开…':(isCurrent?'重新打开当前项目':'打开项目');
+    openButton.textContent=projectOpen.busy?'正在打开…':(isCurrent?'确认当前项目':'打开项目');
   };
   syncButtonLabel();
 
@@ -475,6 +489,11 @@ export function bind(c){
       _draftProjectDirectory=directory;
       _projectOpenInFlight=true;
       projectOpen.ok=false;projectOpen.message='';projectOpen.stage='opening';
+      // A2：先按服务器当前 active 项目判据给阶段文案定性。真正裁决仍在 main.js /
+      // 后端幂等保护（这里只决定"正在确认当前项目"还是"正在切换服务器 active project"）。
+      const openedStep=(statusNode&&statusNode.__projectOpenStep)||{};
+      projectOpen.sameProject=Boolean(openedStep.identity)
+        &&sameProjectPath(directory,openedStep.directory);
       syncButtonLabel();
       renderOpenStatus(statusNode);
       let result=null;

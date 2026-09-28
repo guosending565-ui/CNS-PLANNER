@@ -35,13 +35,26 @@ class WorkflowSession:
         self._workspace_signature = self._signature(self.state.get("workspace"))
 
     def _load(self):
+        # A1 诊断打点（仅耗时，不改行为）：read=<ms> normalize=<ms>
+        import time as _time
+
+        started = _time.perf_counter()
         if not self.repository.exists():
             return blank_project(self.defaults)
         try:
             document = restore_compacted_results(self.repository.load(), self.store_path)
         except JSONDecodeError as exc:
             raise ValueError("项目 JSON 损坏，未打开") from exc
+        loaded = _time.perf_counter()
         state = normalize_project(document, self.grid_service)
+        finished = _time.perf_counter()
+        print(
+            "CNS-OPENSLOW session/load read=%.1fms normalize=%.1fms bytes=%s" % (
+                (loaded - started) * 1000.0, (finished - loaded) * 1000.0,
+                self.store_path.stat().st_size if self.store_path.exists() else "n/a",
+            ),
+            flush=True,
+        )
         self._strip_persistent_compatibility_results(state)
         self._restore_altitude_layer_catalog(state)
         return state

@@ -193,6 +193,9 @@ export function createWorkflowSnapshotApplier(deps) {
     // Phase4-B5X：其余外置型结果的按需读取入口（可选依赖，未提供时跳过）。
     fetchRisk = null, fetchRiskV2 = null, fetchLayeredCandidates = null,
     fetchRadarSurveillance = null,
+    // A4：当前项目身份（只读）。提供时，明细响应落地前必须复核身份，
+    // 迟到的旧项目明细一律丢弃，绝不污染刚切换过来的新项目。
+    currentProjectIdentity = null,
     onError = () => {}, afterApply = () => {},
   } = deps;
   for (const [name, fn] of Object.entries({
@@ -206,6 +209,18 @@ export function createWorkflowSnapshotApplier(deps) {
 
   /** 结构性诊断（例如"把局部响应当成 workflow 安装"）：只报告事实，不修业务数据。 */
   const diagnostics = [];
+
+  /** A4：当前项目身份（未注入时为 null，等价于"不做身份复核"的既有行为）。 */
+  function projectIdentity() {
+    if (typeof currentProjectIdentity !== 'function') return null;
+    try { return String(currentProjectIdentity() || ''); } catch (_) { return null; }
+  }
+
+  /** A4：明细响应是否仍属于**发起该请求时**的项目。 */
+  function detailBelongsToProject(expected) {
+    if (expected === null) return true;
+    return projectIdentity() === expected;
+  }
 
   /**
    * 从专用接口 hydrate 逐 cell 明细。
@@ -284,8 +299,11 @@ export function createWorkflowSnapshotApplier(deps) {
       return {applied: false, reason: 'no_candidate_detail'};
     }
     const serial = nextSerial();
+    const identity = projectIdentity();
     const candidates = await fetchLayeredCandidates();
     if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    // A4：项目已经切走的迟到响应直接丢弃（不写 flow、不重绘）。
+    if (!detailBelongsToProject(identity)) return {applied: false, reason: 'project_changed'};
     setFlow({...getFlow(), layered_route_candidates: candidates});
     afterApply(getFlow());
     return {applied: true, hydrated: ['layered_route_candidates']};
@@ -299,8 +317,10 @@ export function createWorkflowSnapshotApplier(deps) {
       return {applied: false, reason: 'no_radar_detail'};
     }
     const serial = nextSerial();
+    const identity = projectIdentity();
     const response = await fetchRadarSurveillance();
     if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    if (!detailBelongsToProject(identity)) return {applied: false, reason: 'project_changed'};
     const items = Array.isArray(response?.items) ? response.items : [];
     const detail = [...items].reverse().find(item =>
       item?.demo_preview_only === true && item?.status !== 'stale'

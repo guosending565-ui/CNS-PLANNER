@@ -61,6 +61,13 @@ export async function restoreLastExplicitProject(serverState, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({project_dir: cached.directory}),
     });
+    // A6：后端把"请求目录就是当前 active 目录"如实回执为 already_active=true。
+    // 这表示**没有发生任何项目切换**，因此这里也不再当成"恢复成功"去重取 fresh state
+    // （那会为同一项目再付一次完整快照投影）。当前状态就是权威状态：直接采用。
+    if (restoredState?.already_active === true) {
+      recordExplicitProject(serverState, storage, now);
+      return {state: serverState, restored: false, attempted: true, error: null, already_active: true};
+    }
     recordExplicitProject(restoredState, storage, now);
     return {state: restoredState, restored: true, attempted: true, error: null};
   } catch (error) {
