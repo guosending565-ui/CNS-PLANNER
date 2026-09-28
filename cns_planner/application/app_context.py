@@ -707,10 +707,11 @@ class ApplicationContext:
         **陆域掩膜独立于 DEM**：本 provider 不含任何"用 NoData 推断海洋"的路径；未配置
         陆域源时 ``classify_surface`` 返回 ``unknown``（fail-closed）。
 
-        Round 2 P0 收口：本 provider 的陆域分类参数来自 Step5 共用的**中立**策略
-        ``surface_classification_policy``（``_land_policy()``），**不再**读
-        ``radar_surveillance_policy``。Step5 的 ``surface_class_facts`` 更是完全独立装配
-        （见 :meth:`configure_surface_classification_sources`），不经过本 provider。
+        Round 2.1：本 provider 是 **Radar 自己**的运行时事实源，因此陆域分类参数只读
+        ``radar_surveillance_policy``（Radar 的 canonical policy）。Step5 的
+        ``surface_class_facts`` 由 :meth:`configure_surface_classification_sources` 独立
+        装配，只消费中立 ``surface_classification_policy`` —— 两者共享 land-mask 数据源，
+        但各自读自己的 policy，运行时彼此没有 fallback。
         """
 
         from ..gis.radar_layout_adapter import (
@@ -740,26 +741,21 @@ class ApplicationContext:
         land_mask_cache = {}
 
         def _land_policy():
-            """陆域判定的显式工程参数（图层名 + 海岸不确定带）。
+            """**Radar 自己**的陆域判定工程参数（图层名 + 海岸不确定带）。
 
-            Round 2 P0 收口：**只**读取 Step5 共用的**中立**策略
-            ``surface_classification_policy``。这里**不再**有任何
-            ``radar_surveillance_policy`` 运行时回退 —— 旧项目的兼容参数已由
-            normalize/backfill 阶段的一次性迁移写入中立策略
-            （provenance：``legacy_radar_policy_migration``）。
-
-            因此：修改 Radar policy 不改变 surface classification；Communication /
-            RID 的正式 surface facts 只消费「中立策略 + land-mask 数据源」。
+            Round 2.1 冻结边界：Radar 继续读自己的 canonical
+            ``radar_surveillance_policy``（经 ``policy_snapshot()`` 归一化）。它**不**读
+            ``surface_classification_policy``，Communication / RID 也**不**读它 ——
+            双方的运行时解耦，共享的只有 land-mask 数据源本身。
             """
 
             try:
-                neutral = self.workflow.state.get("surface_classification_policy")
+                policy = self.workflow.radar_surveillance_layout_service.policy_snapshot()
             except Exception:
-                neutral = None
-            from ..domain.surface_classification import normalize_surface_classification_policy
-
-            policy = normalize_surface_classification_policy(neutral)
-            return policy["land_mask_layer_name"], policy["coastal_uncertainty_buffer_m"]
+                policy = {}
+            if not isinstance(policy, dict):
+                policy = {}
+            return policy.get("land_mask_layer_name"), policy.get("coastal_uncertainty_buffer_m")
 
         def land_mask_source():
             path = self.data.paths.get("land_mask")

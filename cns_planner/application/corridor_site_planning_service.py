@@ -5,7 +5,10 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog
-from ..domain.corridor_site_planning import normalize_corridor_site_planning_policy
+from ..domain.corridor_site_planning import (
+    TARGET_SCOPE_SERVICE, corridor_target_id, corridor_voxel_entry_index,
+    normalize_corridor_site_planning_policy,
+)
 from ..domain.site_planning import REUSE_TIERS
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
@@ -231,6 +234,27 @@ def rerun_corridor_chain(state, corridor_model_prototype, corridor_gap_prototype
 
 
 def _targets(assessment):
+    """P15 → P16 targets。
+
+    Round 2.1 契约：
+
+    * **优先 service-level target**：P15 的 ``entry.services[]`` 中任何
+      ``surface_dependent`` 的 service（Communication / RID）都会建立
+      ``route|voxel|<service_key>`` target，并只读该 service 自己的
+      ``required_distinct_site_count`` / ``distinct_site_count``（物理站址计数）。
+      ``independence_group`` / ``confirmed_independent_provider_count`` **绝不**被用来
+      代替 distinct-site 计数；
+    * service 状态语义：``confirmed_deficit`` → confirmed target；``unknown`` →
+      unknown evidence（绝不自动建站）；``satisfied`` → 不产生 target；缺少
+      ``distinct_site_count`` 证据同样进入 unknown；
+    * 只要该 voxel 存在**未满足**的 surface-dependent service evidence，就不再为其产生
+      legacy subsystem target —— 否则同一缺口会被 subsystem 与 service 各计一次，并让
+      RID 缺口被 S 类其它设备混池补盲；若该 voxel 的 surface service 全部 satisfied，
+      则保持旧口径，绝不丢失可能的 legacy 缺口；
+    * **legacy 项目**（没有任何 surface-dependent service evidence）保持旧的
+      subsystem-level 行为，逐字段不变。
+    """
+
     targets, unknown = [], []
     for route in assessment.get("routes") or []:
         route_id = str(route.get("route_id") or "")
@@ -249,7 +273,23 @@ def _targets(assessment):
             voxel_id = str(voxel.get("voxel_id") or "")
             for entry in voxel.get("subsystems") or []:
                 code = str(entry.get("subsystem") or "")
-                target_id = f"{route_id}|{voxel_id}|{code}"
+                surface_services = [
+                    item for item in entry.get("services") or []
+                    if isinstance(item, dict) and item.get("surface_dependent") is True
+                    and str(item.get("service_key") or "")
+                ]
+                # 只有**确实存在未满足**的 surface-dependent service 时才切换到 service 口径；
+                # 全部 satisfied 时该 voxel 的（可能的）legacy 缺口仍按旧口径处理，绝不丢失。
+                active_services = [
+                    item for item in surface_services
+                    if str(item.get("status") or "unknown") != "satisfied"
+                ]
+                if active_services:
+                    targets.extend(_service_targets(
+                        route_id, voxel_id, code, voxel, entry, active_services, unknown,
+                    ))
+                    continue
+                target_id = corridor_target_id(route_id, voxel_id, code)
                 if (code, voxel_id) in unknown_ids:
                     unknown.append({"target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
                                     "subsystem": code, "reasons": deepcopy(entry.get("reasons") or [])})
@@ -278,6 +318,54 @@ def _targets(assessment):
     return sorted(targets, key=lambda item: item["target_id"]), sorted(unknown, key=lambda item: item["target_id"])
 
 
+def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, unknown):
+    """由 surface-dependent service evidence 建立 service-level targets。"""
+
+    targets = []
+    for service in surface_services:
+        key = str(service.get("service_key") or "")
+        target_id = corridor_target_id(route_id, voxel_id, key)
+        status = str(service.get("status") or "unknown")
+        if status == "satisfied":
+            continue
+        required = service.get("required_distinct_site_count")
+        current = service.get("distinct_site_count")
+        if (
+            status != "confirmed_deficit"
+            or service.get("counting_basis") != "distinct_site_id"
+            or required is None
+            or current is None
+        ):
+            reasons = deepcopy(service.get("reasons") or [])
+            reasons.append(
+                "该 service 的物理 distinct-site 证据不足（或要求站址数未知）："
+                "只登记 unknown evidence，绝不自动建站"
+            )
+            unknown.append({
+                "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+                "subsystem": code, "service_key": key, "reasons": reasons,
+            })
+            continue
+        required_units = max(1, int(required))
+        current_units = min(required_units, int(current))
+        targets.append({
+            "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+            "grid_id": voxel.get("grid_id"), "altitude_layer_id": voxel.get("altitude_layer_id"),
+            "subsystem": code, "service_key": key, "target_scope": TARGET_SCOPE_SERVICE,
+            "surface_class": service.get("surface_class") or entry.get("surface_class"),
+            "counting_basis": "distinct_site_id",
+            "required_units": required_units,
+            "current_units": current_units,
+            "remaining_units": max(0, required_units - current_units),
+            "distinct_site_ids": deepcopy(service.get("distinct_site_ids")),
+            "discretized_volume_proxy_m3": voxel.get("discretized_volume_proxy_m3"),
+            "nearest_route_offset_m": voxel.get("nearest_route_offset_m"),
+            "causes": deepcopy(entry.get("causes") or []),
+            "source_status": entry.get("combined_status"),
+        })
+    return targets
+
+
 def _confirmed_units(entry, required_units):
     if entry.get("combined_status") == "unknown":
         return None
@@ -285,6 +373,32 @@ def _confirmed_units(entry, required_units):
         return min(1, int(entry.get("qualified_provider_count") or 0))
     value = entry.get("confirmed_independent_provider_count")
     return None if value is None else min(required_units, int(value))
+
+
+def _service_confirmed_units(entry, required_units):
+    """service-level target 的 current units：**只**取物理 distinct-site 计数。
+
+    ``independence_group`` / ``confirmed_independent_provider_count`` 在这里没有任何
+    位置：它们不是物理站址身份。缺 ``distinct_site_count`` 或状态为 ``unknown`` 时
+    返回 ``None``（fail-closed，绝不当作 0 或 1 猜测）。
+    """
+
+    if not isinstance(entry, dict):
+        return None
+    if str(entry.get("status") or "unknown") == "unknown":
+        return None
+    if entry.get("counting_basis") != "distinct_site_id":
+        return None
+    counted = entry.get("distinct_site_count")
+    if counted is None:
+        return None
+    return min(max(1, int(required_units or 1)), int(counted))
+
+
+def _units_for_target(target, entry):
+    if target.get("service_key"):
+        return _service_confirmed_units(entry, target.get("required_units"))
+    return _confirmed_units(entry, target["required_units"])
 
 
 def _impact(action, before, after, targets):
@@ -297,8 +411,8 @@ def _impact(action, before, after, targets):
         if not left or not right:
             unknown.append(key)
             continue
-        before_units = _confirmed_units(left, target["required_units"])
-        after_units = _confirmed_units(right, target["required_units"])
+        before_units = _units_for_target(target, left)
+        after_units = _units_for_target(target, right)
         if before_units is None or after_units is None or right.get("combined_status") == "unknown":
             unknown.append(key)
             continue
@@ -342,13 +456,13 @@ def _impact(action, before, after, targets):
 
 
 def _entry_map(assessment):
-    result = {}
-    for route in assessment.get("routes") or []:
-        route_id = str(route.get("route_id") or "")
-        for voxel in route.get("voxels") or []:
-            for entry in voxel.get("subsystems") or []:
-                result[f"{route_id}|{voxel.get('voxel_id')}|{entry.get('subsystem')}"] = entry
-    return result
+    """P15 assessment → ``{target_id: entry}``（subsystem + service 两类 target）。
+
+    与 planner 的 residual 判定共用 :func:`corridor_voxel_entry_index`，因此
+    service-aware target 的生命周期与 legacy target 完全同构。
+    """
+
+    return corridor_voxel_entry_index(assessment)
 
 
 def _regressions(before, after):
@@ -415,27 +529,67 @@ def _objective_evidence_required(assessment):
 
 
 def _apply_cumulative_action(existing, action):
+    """把一条 action 应用于**工作副本**，供 P16 cumulative what-if 使用。
+
+    Round 2.1：hypothetical 设备/站点必须**完整保留物理站址身份**，否则重跑 P14/P15
+    后会把"同一座塔上的新设备"误算成第二个 independent physical site：
+
+    * ``service_key``（**设备自身显式声明**的服务身份；canonical 推导值绝不写入，
+      否则会凭空把 legacy 设备升级成 surface-aware 服务）；
+    * ``distinct_site_id``（canonical 物理站址身份，显式保留）；
+    * ``planning_origin`` / ``host``（``distinct_site_id_for`` 的解析输入，按现有契约所需）。
+
+    这里只复制身份字段，**不**复制 action 里的其它无关大 payload（planning_profile /
+    vertical / eligibility 等都不写进 hypothetical 设备）。
+    """
+
     collection = deepcopy(existing or {})
     collection.setdefault("items", [])
+    identity_metadata = {"hypothetical_action_id": action["action_id"], "p16_proposal_only": True}
+    host = deepcopy(action.get("host")) if isinstance(action.get("host"), dict) else None
+    planning_origin = (
+        deepcopy(action.get("planning_origin"))
+        if isinstance(action.get("planning_origin"), dict)
+        else None
+    )
+    if host:
+        identity_metadata["host"] = host
     installed = {
         "device_id": action["device_id"], "subsystem": action["subsystem"],
         "status": "active", "service_model": {"status": "missing_data"},
-        "metadata": {"hypothetical_action_id": action["action_id"], "p16_proposal_only": True},
+        "metadata": identity_metadata,
     }
+    if action.get("device_service_key"):
+        installed["service_key"] = action["device_service_key"]
+    if isinstance(action.get("device_type"), dict) and action["device_type"]:
+        installed["type"] = deepcopy(action["device_type"])
+    if action.get("distinct_site_id"):
+        installed["distinct_site_id"] = action["distinct_site_id"]
+    if planning_origin:
+        installed["planning_origin"] = planning_origin
     if action.get("facility_id"):
         facility = next(item for item in collection["items"] if str(item.get("facility_id")) == str(action["facility_id"]))
     else:
         proposal_id = f"p16-proposal:{action.get('site_id')}"
         facility = next((item for item in collection["items"] if item.get("facility_id") == proposal_id), None)
         if facility is None:
+            facility_metadata = {
+                "proposal_only": True, "source_candidate_site_id": action.get("site_id"),
+            }
+            if host:
+                facility_metadata["host"] = deepcopy(host)
+            if planning_origin:
+                facility_metadata["planning_origin"] = deepcopy(planning_origin)
             facility = {
                 "facility_id": proposal_id, "site_id": action.get("site_id"),
                 "name": f"P16 Proposal {action.get('site_id')}",
                 "coordinate": deepcopy(action.get("coordinate")),
                 "vertical_profile": deepcopy(action.get("vertical")),
                 "devices": [], "status": "active", "source": "P16 cumulative hypothetical what-if",
-                "metadata": {"proposal_only": True, "source_candidate_site_id": action.get("site_id")},
+                "metadata": facility_metadata,
             }
+            if action.get("distinct_site_id"):
+                facility["distinct_site_id"] = action["distinct_site_id"]
             collection["items"].append(facility)
     if not any(str(item.get("device_id")) == str(installed["device_id"]) for item in facility.get("devices") or []):
         facility.setdefault("devices", []).append(installed)

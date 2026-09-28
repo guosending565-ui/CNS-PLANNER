@@ -11,11 +11,29 @@ from ..domain.site_planning import TOWER_COLOCATION_REUSE_CLASS
 
 
 def candidate_actions(targets, existing, candidates, catalog, tower_colocation=None):
-    target_subsystems = {item["subsystem"] for item in targets}
-    devices = [
-        item for item in (catalog or {}).get("items") or []
-        if item.get("enabled", True) and item.get("subsystem") in target_subsystems
-    ]
+    """P16 candidate actions（site × device 笛卡尔积）。
+
+    Round 2.1 service 过滤契约：
+
+    * target 声明 ``service_key``（例如 ``S:rid_cooperative``）⇒ 候选设备的
+      canonical ``service_key`` 必须**等于**它。因此 Radar / ADS-B / 普通
+      surveillance 设备不会被纳入 RID 缺口补盲，Communication 与 RID 也绝不互相补 gap；
+    * legacy target（无 ``service_key``）⇒ 保持旧的 subsystem filter，逐项兼容。
+    """
+
+    target_subsystems = {item["subsystem"] for item in targets if not item.get("service_key")}
+    target_services = {item["service_key"] for item in targets if item.get("service_key")}
+    devices = []
+    for item in (catalog or {}).get("items") or []:
+        if not item.get("enabled", True):
+            continue
+        if target_services:
+            key = service_contract_for(item.get("subsystem"), item).get("service_key")
+            if key in target_services:
+                devices.append(item)
+                continue
+        if item.get("subsystem") in target_subsystems:
+            devices.append(item)
     actions = []
     for facility in (existing or {}).get("items") or []:
         installed = {str(item.get("device_id") or "") for item in facility.get("devices") or []}
@@ -108,6 +126,12 @@ def _action(site, device, installed, is_existing):
     if isinstance(device.get("type"), dict):
         identity["type"] = deepcopy(device["type"])
     distinct_site_id = distinct_site_id_for(site, identity)
+    #: ``service_key`` 是 canonical 服务身份（用于 target 过滤与报告）；
+    #: ``device_service_key`` / ``device_type`` 是设备**自身显式声明**的事实，
+    #: 供 P16 hypothetical 设备在 catalog 缺失该 device 时原样保留服务语义 ——
+    #: 绝不把 canonical 推导值写成"显式声明"，那会凭空把 legacy 设备升级成
+    #: surface-aware 服务。
+    declared_service_key = str(device.get("service_key") or "").strip() or None
     return {
         "action_id": f"{reuse_class or 'unknown'}:{identifier}:{device_id}",
         "action_type": action_type,
@@ -116,6 +140,8 @@ def _action(site, device, installed, is_existing):
         "device_id": device_id,
         "subsystem": device.get("subsystem"),
         "service_key": contract.get("service_key"),
+        "device_service_key": declared_service_key,
+        "device_type": (deepcopy(device["type"]) if isinstance(device.get("type"), dict) else None),
         "distinct_site_id": distinct_site_id,
         "reuse_class": reuse_class,
         "coordinate": deepcopy(coordinate),

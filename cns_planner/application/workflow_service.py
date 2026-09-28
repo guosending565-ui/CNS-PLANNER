@@ -1646,6 +1646,10 @@ class WorkflowService:
         surface facts。旧项目的兼容参数已由 normalize/backfill 阶段的一次性迁移写入
         中立策略（provenance：``legacy_radar_policy_migration``），运行时不存在回退。
 
+        Round 2.1：facts 记录**稳定来源身份**（内容 SHA-256 优先，复用既有 source audit），
+        并进入 input fingerprint —— 换了一份 land-mask 来源即使逐格分类结果相同，指纹
+        也会改变；同时刻意不含绝对路径，项目搬迁不产生假变化。
+
         生成的是 **cell representative classification**（格心代表点判定），
         不是连续精确海岸线；无法判定时保持 ``unknown``（fail-closed）。
         """
@@ -1653,7 +1657,10 @@ class WorkflowService:
         from ..domain.surface_classification import (
             build_surface_class_facts, normalize_surface_classification_policy,
         )
-        from ..gis.land_mask_source import build_land_mask_source, land_mask_source_path
+        from ..gis.land_mask_source import (
+            audit_manifest_for, build_land_mask_source, land_mask_content_sha256,
+            land_mask_source_identity, land_mask_source_path,
+        )
 
         state = self.session.state
         payload = payload if isinstance(payload, dict) else {}
@@ -1664,8 +1671,13 @@ class WorkflowService:
         policy = state.get("surface_classification_policy")
         resolver = getattr(self, "surface_classification_land_mask_path", None)
         explicit_path = resolver() if callable(resolver) else None
-        land_mask_source = build_land_mask_source(
-            land_mask_source_path(state, explicit_path), policy,
+        path = land_mask_source_path(state, explicit_path)
+        land_mask_source = build_land_mask_source(path, policy)
+        describe = land_mask_source.describe() if land_mask_source is not None else None
+        audit_manifest = audit_manifest_for(state)
+        source_identity = land_mask_source_identity(
+            describe, audit_manifest=audit_manifest,
+            content_sha256=land_mask_content_sha256(path, audit_manifest),
         )
         facts = build_surface_class_facts(
             state.get("grid") or {}, policy=policy,
@@ -1673,6 +1685,7 @@ class WorkflowService:
             land_mask_describe=(
                 land_mask_source.describe if land_mask_source is not None else None
             ),
+            source_identity=source_identity,
         )
         state["surface_class_facts"] = facts
         state.setdefault("result_statuses", {})["surface_class_facts"] = (

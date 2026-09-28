@@ -6,7 +6,9 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 
-from ..domain.corridor_site_planning import empty_cns_corridor_site_plan
+from ..domain.corridor_site_planning import (
+    corridor_voxel_entry_index, empty_cns_corridor_site_plan,
+)
 
 
 class CorridorReuseFirstSitePlannerV2:
@@ -144,13 +146,9 @@ def _residual_targets(targets, final):
 
 
 def _voxel_entries(assessment):
-    output = {}
-    for route in (assessment or {}).get("routes") or []:
-        route_id = str(route.get("route_id") or "")
-        for voxel in route.get("voxels") or []:
-            for item in voxel.get("subsystems") or []:
-                output[f"{route_id}|{voxel.get('voxel_id')}|{item.get('subsystem')}"] = item
-    return output
+    """subsystem + service 两类 target_id → entry（与 P16 service 的索引同一契约）。"""
+
+    return corridor_voxel_entry_index(assessment)
 
 
 def _fingerprint(value):

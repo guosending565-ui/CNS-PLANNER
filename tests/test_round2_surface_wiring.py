@@ -31,6 +31,9 @@ import pytest
 
 from cns_planner.algorithms.coverage.geometric_3d import evaluate_geometry_point
 from cns_planner.application.corridor_service import CNSCorridorService
+from cns_planner.application.corridor_site_planning_service import (
+    _apply_cumulative_action, _impact, _targets, rerun_corridor_chain,
+)
 from cns_planner.application.site_candidate_actions import candidate_actions
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.cns_corridor import normalize_cns_corridor_policy
@@ -167,7 +170,8 @@ def facility(identifier, coordinate, devices, *, site_id=None):
     })
 
 
-def land_mask_geojson(tmp_path, *, name="land.geojson", offset=(0.0, 0.0), size=0.002):
+def land_mask_geojson(tmp_path, *, name="land.geojson", offset=(0.0, 0.0), size=0.002,
+                      properties=None, directory=None):
     """只读陆域矩形：相对 ``offset`` 的 ``size`` x ``size`` 方块（度）。"""
 
     west, south = offset
@@ -182,10 +186,12 @@ def land_mask_geojson(tmp_path, *, name="land.geojson", offset=(0.0, 0.0), size=
                     [west, south], [east, south], [east, north], [west, north], [west, south],
                 ]],
             },
-            "properties": {"name": "land"},
+            "properties": dict(properties or {"name": "land"}),
         }],
     }
-    path = tmp_path / name
+    folder = Path(directory) if directory else tmp_path
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -1431,6 +1437,11 @@ def test_surface_policy_change_stales_facts_and_changes_fingerprint(tmp_path):
         "records": [{"report_id": "RPT-1", "current_applicability": "current_project"}],
     }
     workflow.state["result_statuses"]["report"] = "passed"
+    # J：Radar 产物处于活跃状态，改中立策略**不得** stale 它。
+    workflow.state["radar_surveillance_layout"] = {
+        "status": "passed", "items": [{"route_id": "R1", "status": "passed"}],
+    }
+    workflow.state["result_statuses"]["radar_surveillance_layout"] = "passed"
 
     workflow.set_surface_classification_policy({"coastal_uncertainty_buffer_m": 400.0})
 
@@ -1441,6 +1452,8 @@ def test_surface_policy_change_stales_facts_and_changes_fingerprint(tmp_path):
         "cns_corridor_site_plan", "report",
     ):
         assert statuses[name] == "stale", name
+    # Radar 自己的 policy / 产物与中立 surface 策略完全解耦。
+    assert statuses["radar_surveillance_layout"] == "passed"
     assert workflow.state["surface_class_facts"]["status"] == "stale"
     assert surface_facts_input_fingerprint(workflow.state["surface_class_facts"]) is None
 
@@ -1450,6 +1463,63 @@ def test_surface_policy_change_stales_facts_and_changes_fingerprint(tmp_path):
     assert facts_after["status"] == "passed"
     assert facts_after["coastal_uncertainty"]["coastal_uncertainty_buffer_m"] == 400.0
     assert facts_after["input_fingerprint"] != facts_before["input_fingerprint"]
+
+
+def _surface_facts_for_source(tmp_path, land, *, name, policy=None, audit=None):
+    workflow = WorkflowService(tmp_path / name / "project.json", DEFAULTS)
+    workflow.state["grid"] = grid_cells({"G-IN": (0.0002, 0.0002, 0.0008, 0.0008)})
+    workflow.surface_classification_land_mask_path = lambda: str(land)
+    if audit is not None:
+        workflow.state["source_audits"] = {"status": "passed", "items": {"land_mask": audit}}
+    workflow.set_surface_classification_policy(
+        policy or {"coastal_uncertainty_buffer_m": 30.0, "confirmed": True}
+    )
+    return workflow.update_surface_class_facts()
+
+
+def test_surface_fingerprint_tracks_land_mask_source_identity(tmp_path):
+    """K：land-mask 来源身份变化（即使逐格分类完全相同）必须改变 facts 指纹。"""
+
+    grid = grid_cells({"G-IN": (0.0002, 0.0002, 0.0008, 0.0008)})
+    land_a = land_mask_geojson(tmp_path, name="land_a.geojson")
+    # 几何逐点相同、只是来源内容（属性）不同 ⇒ by_grid_id 必然一致。
+    land_b = land_mask_geojson(
+        tmp_path, name="land_b.geojson",
+        properties={"name": "land", "edition": "2026-rev-b"},
+    )
+    facts_a = _surface_facts_for_source(tmp_path, land_a, name="a")
+    facts_b = _surface_facts_for_source(tmp_path, land_b, name="b")
+    assert facts_a["by_grid_id"] == facts_b["by_grid_id"] == {"G-IN": "land"}
+    assert facts_a["land_mask"]["source_identity"]["identity_basis"] == "content_sha256"
+    assert (
+        facts_a["land_mask"]["source_identity"]["content_sha256"]
+        != facts_b["land_mask"]["source_identity"]["content_sha256"]
+    )
+    assert facts_a["input_fingerprint"] != facts_b["input_fingerprint"]
+
+    # 同一份来源 + 同 policy + 同 facts ⇒ 指纹稳定（可重复生成）。
+    again = _surface_facts_for_source(tmp_path, land_a, name="a2")
+    assert again["input_fingerprint"] == facts_a["input_fingerprint"]
+
+    # 来源**内容相同**、只是项目目录/路径变化 ⇒ 绝不产生假变化（身份不含绝对路径）。
+    import shutil
+
+    moved_dir = tmp_path / "moved"
+    moved_dir.mkdir(parents=True, exist_ok=True)
+    moved = moved_dir / "land_a.geojson"
+    shutil.copy2(land_a, moved)
+    relocated = _surface_facts_for_source(tmp_path, moved, name="moved")
+    assert relocated["input_fingerprint"] == facts_a["input_fingerprint"]
+    assert "configured_path" not in (facts_a["land_mask"]["source_identity"] or {})
+
+    # 项目既有 source audit 的 sha256 优先复用（不新造第二套 hash 系统）。
+    audited = _surface_facts_for_source(
+        tmp_path, land_a, name="audited",
+        audit={"role": "land_mask", "verification": {"sha256": "F" * 64}, "size_bytes": 123},
+    )
+    assert audited["land_mask"]["source_identity"]["content_sha256"] == "F" * 64
+    assert audited["input_fingerprint"] != facts_a["input_fingerprint"]
+    assert grid  # 保持 grid fixture 语义（格心判定见上面的 by_grid_id 断言）
 
 
 class _RadarRuntimeTrap:
@@ -1525,19 +1595,43 @@ def _function_identifiers(path, name):
     raise AssertionError(f"{path} 中找不到函数 {name}")
 
 
+def _module_identifiers(path):
+    """模块内**代码**（跳过全部 docstring）出现的标识符与字符串常量。"""
+
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", [])
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                docstrings.add(id(body[0].value))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and id(node) in docstrings:
+            continue
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names.add(node.value)
+    return names
+
+
 def test_runtime_surface_paths_never_reference_radar_policy():
-    """A/B/D 的结构性护栏：运行时 surface 路径的代码里没有 Radar policy 引用。"""
+    """Radar / neutral surface 的**冻结边界**（Round 2.1）。
+
+    * Step5 的 ``update_surface_class_facts`` 与中立 land-mask 源只消费
+      ``surface_classification_policy`` + land-mask 数据源，代码里**没有**任何 Radar
+      运行时引用；
+    * Radar provider 自己的 ``_land_policy()`` 反过来**必须**读 ``radar_surveillance_policy``
+      （那是 Radar 的 canonical policy），且**不得**读中立 surface policy。
+    """
 
     forbidden = {
         "radar_surveillance_policy", "policy_snapshot",
         "radar_surveillance_layout_service", "facts_provider",
     }
-    land_policy = _function_identifiers(
-        "cns_planner/application/app_context.py", "_land_policy",
-    )
-    assert "surface_classification_policy" in land_policy
-    assert not (forbidden & land_policy), forbidden & land_policy
-
     surface_update = _function_identifiers(
         "cns_planner/application/workflow_service.py", "update_surface_class_facts",
     )
@@ -1545,7 +1639,21 @@ def test_runtime_surface_paths_never_reference_radar_policy():
     assert "land_mask_source" in surface_update
     assert not (forbidden & surface_update), forbidden & surface_update
 
-    # 迁移只允许出现在 domain 的迁移函数与 project_state 的 normalize 阶段。
+    neutral_module = _module_identifiers("cns_planner/gis/land_mask_source.py")
+    assert "build_land_mask_source" in neutral_module
+    assert not (forbidden & neutral_module), forbidden & neutral_module
+
+    # Radar provider 的 _land_policy 必须读 Radar 自己的 policy（冻结规则）。
+    radar_land_policy = _function_identifiers(
+        "cns_planner/application/app_context.py", "_land_policy",
+    )
+    assert "policy_snapshot" in radar_land_policy
+    assert "radar_surveillance_layout_service" in radar_land_policy
+    assert "land_mask_layer_name" in radar_land_policy
+    assert "coastal_uncertainty_buffer_m" in radar_land_policy
+    assert "surface_classification_policy" not in radar_land_policy
+
+    # 一次性迁移仍然是唯一允许读 Radar policy 的 Step5 路径。
     migration = _function_identifiers(
         "cns_planner/domain/surface_classification.py",
         "migrate_surface_classification_policy_from_legacy_radar_policy",
@@ -1553,3 +1661,269 @@ def test_runtime_surface_paths_never_reference_radar_policy():
     assert "LEGACY_RADAR_POLICY_KEY" in migration
     assert "land_mask_layer_name" in migration
     assert "coastal_uncertainty_buffer_m" in migration
+
+
+def test_radar_policy_change_stales_only_radar_layout(tmp_path):
+    """I：改 Radar coastal buffer → Radar layout stale；neutral surface / Comm-RID 不动。"""
+
+    land = land_mask_geojson(tmp_path)
+    workflow = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    workflow.state["grid"] = grid_cells({"G-IN": (0.0002, 0.0002, 0.0008, 0.0008)})
+    workflow.surface_classification_land_mask_path = lambda: str(land)
+    facts = workflow.update_surface_class_facts()
+    assert facts["status"] == "passed"
+    policy_before = deepcopy(workflow.state["surface_classification_policy"])
+    fingerprint_before = workflow.state["surface_class_facts"]["input_fingerprint"]
+
+    # Radar 产物与 Comm/RID 链都处于活跃状态。
+    workflow.state["radar_surveillance_layout"] = {
+        "status": "passed", "items": [{"route_id": "R1", "status": "passed"}],
+    }
+    workflow.state["result_statuses"]["radar_surveillance_layout"] = "passed"
+    for key in ("coverage_3d", "cns_service_capability", "cns_corridor_assessment",
+                "cns_corridor_gap_assessment"):
+        workflow.state[key] = {"status": "passed", "input_fingerprint": f"F-{key}"}
+        workflow.state["result_statuses"][key] = "passed"
+
+    workflow.set_radar_surveillance_policy({"coastal_uncertainty_buffer_m": 900.0})
+
+    assert workflow.state["result_statuses"]["radar_surveillance_layout"] == "stale"
+    assert workflow.state["radar_surveillance_layout"]["items"][0]["status"] == "stale"
+    # neutral surface policy / facts 与 Communication-RID 链完全不受影响。
+    assert workflow.state["surface_classification_policy"] == policy_before
+    assert workflow.state["surface_class_facts"]["input_fingerprint"] == fingerprint_before
+    assert workflow.state["result_statuses"]["surface_class_facts"] == "passed"
+    for key in ("coverage_3d", "cns_service_capability", "cns_corridor_assessment",
+                "cns_corridor_gap_assessment"):
+        assert workflow.state["result_statuses"][key] == "passed", key
+
+
+# ---------------------------------------------------------------------------
+# 19. Round 2.1：P16 service-aware（A–H）
+#     A. RID land gap → service target（required=2 / current=1）
+#     B. 同一 voxel 的 RID target 只接受 RID action（Radar/ADS-B 被过滤）
+#     C. Communication target 绝不接受 RID action
+#     D/E/F. what-if 保持物理 distinct-site 身份（同塔 1 / 异塔 2）
+#     G. Existing Tower-A + TowerColocation Tower-A 仍是同一物理站址
+#     H. legacy subsystem-only fixture 行为不变
+# ---------------------------------------------------------------------------
+
+
+def radar_device(identifier="RAD1", *, radius=5000.0):
+    """普通 S 类雷达设备：service_key 推导为 ``S:surveillance``（非 RID）。"""
+
+    return normalize_device({
+        "device_id": identifier, "name": identifier, "subsystem": "S", "role": "existing",
+        "radius_m": radius, "mtbf_h": 1000,
+        "type": {"technology": "radar"},
+        "performance": {"min_redundancy": 1},
+        "coverage_geometry": {
+            "model": "hemisphere", "slant_range_m": radius, "model_scope": "geometric_only",
+            "source": "test", "confirmed": True, "status": "confirmed",
+        },
+        "service_model": {
+            "model_family": "declared_performance", "version": "1", "technology": "radar",
+            "parameters": {"performance": {"max_update_interval_s": 5.0},
+                           "independence_confirmed": True, "independence_group": identifier},
+            "source": "test", "confirmed": True,
+        },
+    })
+
+
+def _p16_chain(tmp_path, *, services, devices, facilities, towers=()):
+    """跑完整 P7 → P8 → P14 → P15 链，返回可执行 P16 的 workflow。"""
+
+    workflow = _configure(
+        tmp_path, devices=list(devices), facilities=list(facilities),
+        radius_surface=RID_RADIUS_BY_SURFACE, services=list(services),
+    )
+    if towers:
+        workflow.state["tower_colocation_candidates"] = tower_candidates(*towers)
+    facts, provider = _land_and_sea_facts(tmp_path, workflow)
+    _run_corridor_chain(workflow, facts, provider)
+    return workflow
+
+
+def _service_entry(assessment, service_key):
+    """P15 中该 service 的第一条 per-voxel service 结论。"""
+
+    for route in assessment.get("routes") or []:
+        for voxel in route.get("voxels") or []:
+            for entry in voxel.get("subsystems") or []:
+                for service in entry.get("services") or []:
+                    if service.get("service_key") == service_key:
+                        return service
+    return {}
+
+
+def test_p16_rid_land_gap_becomes_service_target(tmp_path):
+    """A/B：RID land 缺口 → ``S:rid_cooperative`` service target，Radar 不参与补盲。"""
+
+    workflow = _p16_chain(
+        tmp_path, services=["surveillance"],
+        devices=[rid_device("RID1"), radar_device("RAD1")],
+        facilities=[facility("F1", (0.0, 0.0005), [rid_device("RID1")])],
+        towers=[real_tower("T-A", (0.0005, 0.0005))],
+    )
+    result = workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
+    rid_targets = [
+        item for item in result["targets"]
+        if item.get("service_key") == SERVICE_KEY_RID_COOPERATIVE
+    ]
+    assert rid_targets, result["targets"]
+    for target in rid_targets:
+        assert target["target_id"].endswith(f"|{SERVICE_KEY_RID_COOPERATIVE}")
+        assert target["subsystem"] == "S"
+        assert target["counting_basis"] == "distinct_site_id"
+        assert target["required_units"] == 2
+        assert target["current_units"] == 1
+        assert target["remaining_units"] == 1
+        assert target["surface_class"] in ("land", "coastal_uncertain")
+    # 有 surface-dependent service evidence 时不再产生重复的 subsystem 级 target。
+    assert not [item for item in result["targets"] if not item.get("service_key")]
+
+    actions = result["candidate_actions"]
+    assert actions
+    assert {action["device_id"] for action in actions} == {"RID1"}
+    assert all(
+        action["service_key"] == SERVICE_KEY_RID_COOPERATIVE for action in actions
+    )
+
+
+def test_p16_communication_target_never_accepts_rid_action(tmp_path):
+    """C：Communication target 只接受 Communication 设备，RID action 无 confirmed gain。"""
+
+    workflow = _p16_chain(
+        tmp_path, services=["communication"],
+        devices=[communication_device("COM1"), rid_device("RID1")],
+        facilities=[facility("F1", (0.0, 0.0005), [communication_device("COM1")])],
+        towers=[real_tower("T-A", (0.0005, 0.0005))],
+    )
+    result = workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
+    comm_targets = [
+        item for item in result["targets"]
+        if item.get("service_key") == SERVICE_KEY_COMMUNICATION
+    ]
+    assert comm_targets
+    actions = result["candidate_actions"]
+    assert actions
+    assert {action["device_id"] for action in actions} == {"COM1"}
+    assert all(action["service_key"] == SERVICE_KEY_COMMUNICATION for action in actions)
+
+    # 即使把 RID action 硬喂给 Communication target，也不产生任何 confirmed gain。
+    baseline = workflow.state["cns_corridor_gap_assessment"]
+    impact = _impact(
+        {"action_id": "rid-into-communication", "service_key": SERVICE_KEY_RID_COOPERATIVE},
+        baseline, baseline, comm_targets,
+    )
+    assert impact["confirmed_requirement_unit_volume_gain"] == 0.0
+    assert impact["regressions"] == []
+
+
+def _existing_on_tower(identifier, coordinate, devices, tower_id):
+    record = facility(identifier, coordinate, devices)
+    for device in record["devices"]:
+        device["planning_origin"] = {"origin": "tower_colocation", "host_tower_id": tower_id}
+    return record
+
+
+TOWER_COORDINATES = {"T-A": (0.0005, 0.0005), "T-B": (0.0015, 0.0005)}
+
+
+@pytest.mark.parametrize("label,builder,service,service_key", [
+    ("communication", communication_device, "communication", SERVICE_KEY_COMMUNICATION),
+    ("rid", rid_device, "surveillance", SERVICE_KEY_RID_COOPERATIVE),
+])
+@pytest.mark.parametrize("scenario,tower_ids,expected", [
+    ("same-tower", ("T-A",), 1),
+    ("tower-a-plus-tower-b", ("T-A", "T-B"), 2),
+])
+def test_p16_what_if_preserves_physical_distinct_site(
+    tmp_path, label, builder, service, service_key, scenario, tower_ids, expected,
+):
+    """D/E/F/G：what-if 后仍然按**物理站址**计数（同塔=1、异塔=2）。"""
+
+    workdir = tmp_path / f"{label}-{scenario}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    existing_record = _existing_on_tower(
+        "F1", (0.0, 0.0005), [builder("D1")], "T-A",
+    )
+    workflow = _p16_chain(
+        workdir, services=[service], devices=[builder("D1"), builder("D2")],
+        facilities=[existing_record],
+        towers=[real_tower(tower_id, TOWER_COORDINATES[tower_id]) for tower_id in tower_ids],
+    )
+    baseline_gap = workflow.state["cns_corridor_gap_assessment"]
+    baseline_service = _service_entry(baseline_gap, service_key)
+    assert baseline_service["distinct_site_count"] == 1
+    assert baseline_service["distinct_site_ids"] == ["tower:T-A"]
+
+    targets, _unknown = _targets(baseline_gap)
+    assert [item["target_id"] for item in targets], "service 缺口必须产生 target"
+    actions = candidate_actions(
+        targets, workflow.state["existing_cns_facilities"], {},
+        workflow.state["device_catalog"],
+        workflow.state["tower_colocation_candidates"],
+    )
+    tower_actions = [
+        action for action in actions
+        if action["device_id"] == "D2"
+        and str(action.get("site_id") or "").startswith("tower-colocation:")
+    ]
+    assert tower_actions, [action["action_id"] for action in actions]
+    action = next(
+        item for item in tower_actions if item["site_id"] == f"tower-colocation:{tower_ids[-1]}"
+    )
+    assert action["distinct_site_id"] == f"tower:{tower_ids[-1]}"
+
+    applied = _apply_cumulative_action(
+        workflow.state["existing_cns_facilities"], action,
+    )
+    _corridor, after_gap = rerun_corridor_chain(
+        workflow.state, workflow.corridor_model, workflow.corridor_gap_analyzer, applied,
+    )
+    after_service = _service_entry(after_gap, service_key)
+    assert after_service["distinct_site_count"] == expected
+    assert sorted(after_service["distinct_site_ids"]) == sorted(
+        f"tower:{tower_id}" for tower_id in tower_ids
+    )
+
+
+def test_p16_legacy_subsystem_fixture_is_unchanged(tmp_path):
+    """H：legacy 项目（无 service evidence）保持 subsystem-level P16 行为。"""
+
+    workflow = _legacy_workflow(tmp_path)
+    # legacy 2 重缺口：1 个已装 provider + 1 个候选 provider（不同 independence_group）。
+    legacy_requirement = workflow.state["required_cns"]["project_default"]["communication"]
+    legacy_requirement["redundancy"] = 2
+    legacy_requirement["performance"]["min_redundancy"] = 2
+    workflow.state["device_catalog"] = {
+        "status": "passed", "items": [legacy_device("LEG1"), legacy_device("LEG2")],
+    }
+    workflow.state["candidate_sites"] = {
+        "status": "passed", "count": 1,
+        "items": [normalize_candidate_site({
+            "site_id": "S1", "coordinate": [0.0, 0.0005], "available_subsystems": ["C"],
+            "planning_profile": {
+                "reuse_class": "candidate_site", "add_device_allowed": True,
+                "source": "test", "confirmed": True,
+            },
+        })],
+    }
+    workflow.evaluate_coverage_3d()
+    workflow.evaluate_cns_corridor()
+    workflow.evaluate_cns_corridor_gap()
+    gap_entry = workflow.state["cns_corridor_gap_assessment"]["routes"][0]["voxels"][0]
+    for entry in gap_entry["subsystems"]:
+        assert entry["services"] == [], "legacy 项目不得凭空产生 service 池"
+
+    result = workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
+    assert result["status"] == "proposal_ready"
+    assert result["targets"]
+    for target in result["targets"]:
+        assert not target.get("service_key")
+        assert "target_scope" not in target
+        assert target["target_id"].endswith("|C")
+        assert target["required_units"] == 2
+    assert result["selected_actions"]
+    assert result["selected_actions"][0]["action_id"].endswith(":LEG2")

@@ -207,6 +207,9 @@ def empty_surface_class_facts(status="not_calculated") -> dict:
             "metric_crs": None,
             "crs_status": None,
             "reason": None,
+            #: Round 2.1：**稳定**来源身份（内容 hash 优先，其次声明事实）。
+            #: 它进入 input fingerprint，因此"换了一份来源但分类结果恰好相同"也会改变指纹。
+            "source_identity": None,
         },
         "policy": policy,
         "source": None,
@@ -221,19 +224,27 @@ def empty_surface_class_facts(status="not_calculated") -> dict:
 
 
 def surface_facts_input_fingerprint(facts) -> str | None:
-    """facts 的**稳定输入指纹**：逐格分类 + 分类语义 + 海岸不确定带政策。
+    """facts 的**稳定输入指纹**：逐格分类 + 分类语义 + 海岸不确定带政策 + 来源身份。
 
     它只取决于"分类事实与政策"，不依赖任何 callable / 运行期对象，因此可以
     直接进入 Coverage / Corridor 的 input fingerprint。
+
+    Round 2.1：``land_mask.source_identity`` 也进入指纹。它的 ``identity_basis``
+    优先是 **内容 SHA-256**（复用既有 source audit 的 ``verification.sha256``，
+    否则复用 :func:`cns_planner.domain.source_audit.sha256_file`），因此
+    "换了一份来源、分类结果碰巧逐格相同"同样会改变指纹；刻意**不**使用绝对路径，
+    项目搬迁不会造成假变化。
     """
 
     if not isinstance(facts, dict) or facts.get("status") in (None, "not_calculated", "stale"):
         return None
+    land_mask = facts.get("land_mask") if isinstance(facts.get("land_mask"), dict) else {}
     payload = {
         "schema_version": facts.get("schema_version"),
         "semantics": facts.get("semantics"),
         "classification_basis": facts.get("classification_basis"),
         "coastal_uncertainty": facts.get("coastal_uncertainty") or {},
+        "land_mask_source_identity": land_mask.get("source_identity"),
         "by_grid_id": facts.get("by_grid_id") or {},
     }
     return sha256(
@@ -297,7 +308,8 @@ def _cell_center(cell):
 
 
 def build_surface_class_facts(grid, *, policy=None, land_mask_source=None,
-                              land_mask_describe=None, coordinate_provider=None) -> dict:
+                              land_mask_describe=None, coordinate_provider=None,
+                              source_identity=None) -> dict:
     """对每个 grid cell 的**代表点**做一次 surface classification。
 
     参数：
@@ -308,6 +320,9 @@ def build_surface_class_facts(grid, *, policy=None, land_mask_source=None,
       陆域源身份信息（source identity）。
     * ``coordinate_provider`` —— 可选：格心经纬度解析（例如"经纬度 → 米制 → 经纬度"）。
       默认直接使用格心。
+    * ``source_identity`` —— 可选：**稳定**来源身份（见
+      :func:`cns_planner.gis.land_mask_source.land_mask_source_identity`）。它进入
+      input fingerprint，使"来源换了一份、分类结果恰好相同"也能被识别。
 
     结果显式记录它是 **cell representative classification**，不声称连续精确海岸线。
     """
@@ -354,7 +369,11 @@ def build_surface_class_facts(grid, *, policy=None, land_mask_source=None,
             "metric_crs": describe.get("metric_crs"),
             "crs_status": describe.get("crs_status"),
             "reason": describe.get("reason"),
+            "source_identity": None,
         }
+    facts["land_mask"]["source_identity"] = (
+        deepcopy(source_identity) if isinstance(source_identity, dict) else None
+    )
     facts["source"] = {
         "kind": "surface_classification",
         "land_mask_configured": land_mask_source is not None,
