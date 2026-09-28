@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +55,8 @@ KNOWN_SERVICE_KEYS = (
     SERVICE_KEY_RID_COOPERATIVE,
 )
 
-#: RID 的显式类型标识：任一命中即可判定为 ``S:rid_cooperative``（这些字段本身就是
-#: 显式声明，旧项目不会出现，因此不改变 legacy 行为）。
+#: RID 的**类型事实**字段（profile / device ``type`` 块的规范形状）。
+#: 注意：这几个字段是"类型描述"，**不是**判定谓词。
 RID_SERVICE_SUBTYPE = "cooperative_surveillance"
 RID_TARGET_COOPERATION = "cooperative"
 RID_TECHNOLOGY = "network_remote_id"
@@ -90,6 +91,10 @@ OMNIDIRECTIONAL_HEMISPHERE = {
 # ---------------------------------------------------------------------------
 
 SURFACE_CLASSES = ("land", "sea", "coastal_uncertain", "unknown")
+
+#: ``redundancy_by_surface`` 允许出现的 surface：只有可判定的三类。
+#: ``unknown`` **不得**被配置成数字结论（fail-closed）。
+REDUNDANCY_BY_SURFACE_SURFACES = ("land", "coastal_uncertain", "sea")
 
 #: 冻结的业务规则：surface → 几何规划半径（米）。
 #: 这些数字**只是几何规划半径**，不是实测覆盖，也不是保证通信/探测距离。
@@ -139,11 +144,34 @@ RID_NOT_EVALUATED = (
 )
 
 #: 只有列在这里的 service_key 才拥有 surface-dependent 覆盖/冗余规则。
+#:
+#: **半径权威性铁律（Round 2 冻结）**：surface-aware service 的 authoritative geometry
+#: = ``coverage_geometry.radius_by_surface``。设备条目上的单一 ``radius_m`` 只是
+#: legacy CoveragePlannerV1 适配器的 compatibility-only 字段，**不得**覆盖或替代它；
+#: 生产 Communication / RID 的 Coverage / Corridor / Gap / Site Planning 一律通过
+#: :func:`effective_radius_m` / :func:`index_max_range_m` 按 surface 解析半径。
+#:
+#: **成熟度铁律**：下列参数是 Round 2 用户冻结的**工程规划基线**
+#: （``engineering_planning_baseline``），**不是** manufacturer verified device
+#: specification。厂家 / 频率 / 功率 / 灵敏度 / Pd / 容量 / 吞吐率 / 链路预算一律
+#: 保持 ``not_evaluated``（``missing_evidence``），绝不虚构。
+ENGINEERING_PLANNING_BASELINE = "engineering_planning_baseline"
+PARAMETER_ORIGIN = "round2_frozen_engineering_planning_parameter"
+MISSING_DEVICE_EVIDENCE = (
+    "manufacturer", "model_number", "frequency", "tx_power", "sensitivity",
+    "detection_probability", "capacity", "throughput", "link_budget",
+)
+
 SERVICE_SURFACE_POLICY = {
     SERVICE_KEY_COMMUNICATION: {
         "service_key": SERVICE_KEY_COMMUNICATION,
         "subsystem": "C",
         "label": "通信（Communication）",
+        #: Round 2 工程规划 profile 来源标注（绝不是厂家实测规格）。
+        "maturity": ENGINEERING_PLANNING_BASELINE,
+        "parameter_origin": PARAMETER_ORIGIN,
+        "parameter_semantics": "engineering_planning_baseline_not_verified_device_specification",
+        "missing_device_evidence": list(MISSING_DEVICE_EVIDENCE),
         "geometry": dict(OMNIDIRECTIONAL_HEMISPHERE),
         "radius_by_surface": dict(COMMUNICATION_RADIUS_BY_SURFACE),
         "redundancy_by_surface": dict(COMMUNICATION_REDUNDANCY_BY_SURFACE),
@@ -154,6 +182,10 @@ SERVICE_SURFACE_POLICY = {
         "service_key": SERVICE_KEY_RID_COOPERATIVE,
         "subsystem": "S",
         "label": "合作监视 / 网络远程识别（Cooperative Surveillance / RID）",
+        "maturity": ENGINEERING_PLANNING_BASELINE,
+        "parameter_origin": PARAMETER_ORIGIN,
+        "parameter_semantics": "engineering_planning_baseline_not_verified_device_specification",
+        "missing_device_evidence": list(MISSING_DEVICE_EVIDENCE),
         "geometry": dict(OMNIDIRECTIONAL_HEMISPHERE),
         "type": dict(RID_TYPE_SEMANTICS),
         "radius_by_surface": dict(RID_RADIUS_BY_SURFACE),
@@ -184,6 +216,91 @@ def service_policy(service_key):
     return SERVICE_SURFACE_POLICY.get(str(service_key or ""))
 
 
+def validated_service_key(value, *, subsystem=None, field="service_key"):
+    """**fail-closed** 的显式 service identity 校验。
+
+    Round 2 收口：显式声明了一个不在 :data:`KNOWN_SERVICE_KEYS` 里的
+    ``service_key``（例如拼写错误 ``C:comunication``）**绝不**静默降级成 legacy
+    子系统默认值 —— 那会让一次拼写错误悄悄关掉整个 surface policy。此时直接
+    ``ValueError``。给出 ``subsystem`` 时还要求 key 的子系统前缀一致。
+
+    返回 ``None`` 表示"未显式声明"（调用方保持 legacy 语义）。
+    """
+
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text not in KNOWN_SERVICE_KEYS:
+        raise ValueError(f"{field} 无效：{text}；必须是 {', '.join(KNOWN_SERVICE_KEYS)} 之一")
+    if subsystem not in (None, ""):
+        code = str(subsystem).strip().upper()
+        if code in LEGACY_SERVICE_KEYS and text.split(":", 1)[0] != code:
+            raise ValueError(f"{field} 的子系统前缀与 {code} 不一致：{text}")
+    return text
+
+
+def validated_service_subtype(value):
+    """``service_subtype`` 只做形状校验；**它本身不足以判定 RID**。
+
+    ``cooperative_surveillance`` 是通用合作监视类型描述（ADS-B 亦可声称），
+    因此这里既不把它当 RID 谓词，也不拒绝其它显式类型字符串。
+    """
+
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_redundancy_by_surface(value, *, field="redundancy_by_surface"):
+    """规范化 ``surface -> required_distinct_site_count``（canonical validation）。
+
+    规则（Round 2 冻结）：
+
+    * 只接受 ``land`` / ``coastal_uncertain`` / ``sea`` 三个**可判定** surface；
+      ``unknown`` 不允许被配置成数字结论（出现即拒绝，fail-closed）；
+    * 每个值必须是**正整数**（``bool`` / 浮点非整数 / 0 / 负数一律拒绝）；
+    * 返回 ``None`` 表示"未声明"，调用方保持 legacy ``min_redundancy`` 语义。
+
+    旧项目只有 ``min_redundancy`` 时不会走到这里，行为完全不变。
+    """
+
+    if value in (None, ""):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是对象")
+    result = {}
+    for name in SURFACE_CLASSES:
+        if name not in value:
+            continue
+        item = value.get(name)
+        if item in (None, ""):
+            continue
+        if name == "unknown":
+            raise ValueError(
+                f"{field}.unknown 不允许配置：unknown surface 必须保持 fail-closed"
+            )
+        if name not in REDUNDANCY_BY_SURFACE_SURFACES:
+            raise ValueError(f"{field}.{name} 不是可判定的 surface")
+        if isinstance(item, bool):
+            raise ValueError(f"{field}.{name} 必须是正整数")
+        try:
+            number = float(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field}.{name} 必须是正整数") from exc
+        if not math.isfinite(number) or number <= 0 or not number.is_integer():
+            raise ValueError(f"{field}.{name} 必须是正整数")
+        result[name] = int(number)
+    for name in value:
+        if str(name) not in SURFACE_CLASSES:
+            raise ValueError(f"{field}.{name} 不是合法的 surface 名")
+    if not result:
+        raise ValueError(f"{field} 至少需要一个 land/coastal_uncertain/sea 正整数要求")
+    return result
+
+
 def service_key_for(subsystem, source=None):
     """解析 provider/设备的 service_key（additive 维度，subsystem 不变）。
 
@@ -208,16 +325,35 @@ def service_key_for(subsystem, source=None):
     return LEGACY_SERVICE_KEYS[code]
 
 
+#: 只有下列两个**排他**事实才足以认定 RID（Round 2 收口）：
+#:
+#: * 显式 ``service_key = S:rid_cooperative``；
+#: * ``technology = network_remote_id``（网络远程识别是 RID 的专属技术）。
+#:
+#: **不得**单独以 ``target_cooperation = cooperative`` 或泛化的
+#: ``service_subtype = cooperative_surveillance`` 判定：ADS-B 同样是
+#: cooperative 的合作监视，把它们误判成 RID 会错误启用 RID 的 surface 半径策略
+#: 与独立冗余池（跨 service 凑重数的风险）。这两个字段只在与上述显式事实
+#: 同时出现时，作为类型描述一并保留。
+RID_DECLARATION_PREDICATES = ("service_key", "technology")
+
+
 def is_rid_declaration(source):
-    """RID 判定只看显式类型标识，绝不看设备名/子系统/坐标。"""
+    """RID 判定只看显式 ``service_key`` / ``technology``，绝不看设备名/子系统/坐标。
+
+    Round 2 收口：``target_cooperation=cooperative`` 与泛化的
+    ``service_subtype=cooperative_surveillance`` **单独不足以**认定 RID
+    （ADS-B 等其它合作监视同样 cooperative）。
+    """
 
     item = source if isinstance(source, dict) else {}
     type_block = item.get("type") if isinstance(item.get("type"), dict) else {}
     for container in (type_block, item):
-        subtype = str(container.get("service_subtype") or "").strip().lower()
+        explicit_key = str(container.get("service_key") or "").strip()
+        if explicit_key == SERVICE_KEY_RID_COOPERATIVE:
+            return True
         technology = str(container.get("technology") or "").strip().lower()
-        cooperation = str(container.get("target_cooperation") or "").strip().lower()
-        if subtype == RID_SERVICE_SUBTYPE or technology == RID_TECHNOLOGY or cooperation == RID_TARGET_COOPERATION:
+        if technology == RID_TECHNOLOGY:
             return True
     return False
 
@@ -354,21 +490,15 @@ def redundancy_by_surface_of(required, service_key):
     顺序：RequiredCNS 的显式 ``redundancy_by_surface`` →
     该 service_key 的冻结 policy。两者都没有时返回 ``None``，
     由调用方回到 legacy ``min_redundancy``。
+
+    Round 2：显式声明一律经过 :func:`normalize_redundancy_by_surface` 的 canonical
+    校验（正整数、拒绝 ``unknown``、拒绝非法 key）。声明非法时**不静默回落** policy，
+    而是让异常上抛（fail-closed），避免"写错的配置被当成没配置"。
     """
 
     override = (required or {}).get("redundancy_by_surface")
     if isinstance(override, dict) and override:
-        result = {}
-        for name in SURFACE_CLASSES:
-            value = override.get(name)
-            if value in (None, ""):
-                result[name] = None
-                continue
-            try:
-                result[name] = int(value)
-            except (TypeError, ValueError):
-                return None
-        return result
+        return normalize_redundancy_by_surface(override)
     policy = service_policy(service_key)
     if policy:
         return dict(policy["redundancy_by_surface"])
@@ -458,6 +588,22 @@ def distinct_site_id_for(record=None, installed=None):
 # ---------------------------------------------------------------------------
 
 
+def _provider_member(provider, name):
+    """读取 provider 的成员：既支持既有 **dict 形状**，也支持对象形状。
+
+    Round 1 的 provider 是 dict（adapter 事实块）；Round 2 的
+    :class:`cns_planner.domain.surface_classification.SurfaceFactsProvider` 是对象。
+    两种形状都只暴露同一组接口（``classify_surface`` /
+    ``classify_surface_detailed``），因此这里统一取值、不复制任何分类算法。
+    """
+
+    if provider is None:
+        return None
+    if isinstance(provider, dict):
+        return provider.get(name)
+    return getattr(provider, name, None)
+
+
 def surface_class_from_provider(provider, coordinate):
     """从既有 ``classify_surface`` / ``classify_surface_detailed`` 取一个 surface_class。
 
@@ -471,7 +617,7 @@ def surface_class_from_provider(provider, coordinate):
     longitude, latitude = coordinate[0], coordinate[1]
     if longitude is None or latitude is None:
         return "unknown"
-    detailed = provider.get("classify_surface_detailed") if isinstance(provider, dict) else None
+    detailed = _provider_member(provider, "classify_surface_detailed")
     if callable(detailed):
         try:
             value = detailed(longitude, latitude)
@@ -480,7 +626,7 @@ def surface_class_from_provider(provider, coordinate):
         if isinstance(value, dict):
             return normalize_surface_class(value.get("surface_class"))
         return normalize_surface_class(value)
-    batch = provider.get("classify_surface") if isinstance(provider, dict) else None
+    batch = _provider_member(provider, "classify_surface")
     if callable(batch):
         try:
             values = batch([[longitude, latitude]])
@@ -516,8 +662,11 @@ def not_evaluated_for(service_key):
 
 __all__ = [
     "COMMUNICATION_NOT_EVALUATED", "COMMUNICATION_RADIUS_BY_SURFACE",
-    "COMMUNICATION_REDUNDANCY_BY_SURFACE", "KNOWN_SERVICE_KEYS",
-    "LEGACY_SERVICE_KEYS", "OMNIDIRECTIONAL_HEMISPHERE", "RID_FORBIDDEN_GEOMETRY",
+    "COMMUNICATION_REDUNDANCY_BY_SURFACE", "ENGINEERING_PLANNING_BASELINE",
+    "KNOWN_SERVICE_KEYS",
+    "LEGACY_SERVICE_KEYS", "MISSING_DEVICE_EVIDENCE", "OMNIDIRECTIONAL_HEMISPHERE",
+    "PARAMETER_ORIGIN", "REDUNDANCY_BY_SURFACE_SURFACES",
+    "RID_DECLARATION_PREDICATES", "RID_FORBIDDEN_GEOMETRY",
     "RID_NOT_EVALUATED", "RID_RADIUS_BY_SURFACE", "RID_REDUNDANCY_BY_SURFACE",
     "RID_SERVICE_SUBTYPE", "RID_TARGET_COOPERATION", "RID_TECHNOLOGY",
     "RID_TYPE_SEMANTICS", "RID_URBAN_CLASSIFICATION", "RID_URBAN_ENABLED",
@@ -526,8 +675,10 @@ __all__ = [
     "SERVICE_KEY_SURVEILLANCE", "SERVICE_SURFACE_POLICY", "SUBSYSTEMS",
     "SURFACE_CLASSES", "distinct_site_id_for", "effective_radius_m",
     "geometry_usable", "index_max_range_m", "is_rid_declaration",
-    "legacy_min_redundancy", "normalize_surface_class", "not_evaluated_for",
+    "legacy_min_redundancy", "normalize_redundancy_by_surface",
+    "normalize_surface_class", "not_evaluated_for",
     "radius_by_surface_of", "redundancy_by_surface_of",
     "required_distinct_site_count", "resolve_surface_class", "service_contract_for",
     "service_key_for", "service_policy", "surface_class_from_provider",
+    "validated_service_key", "validated_service_subtype",
 ]

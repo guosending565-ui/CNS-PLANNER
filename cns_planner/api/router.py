@@ -234,6 +234,13 @@ class ApiRouter:
         if path == "/api/radar-surveillance-layout":
             route_id = self._first(query, "route_id", "") or None
             return Response(workflow.radar_surveillance_layout(route_id))
+        # ---- Step5 共用 surface classification（Round 2，中立 / 独立于 Radar） ----------
+        # Communication / RID 的 surface 事实不要求先生成 Radar layout，因此由这三个
+        # 中立端点正式服务；逐格明细走 facts 容器本体（``by_grid_id``）。
+        if path == "/api/surface-classification-policy":
+            return Response(workflow.surface_classification_policy_snapshot())
+        if path == "/api/surface-class-facts":
+            return Response(workflow.surface_class_facts_snapshot())
         # ---- Vertical Transition Continuous Validation V1 (climb/descent geometry) ------
         if path == "/api/vertical-transition-validation/readiness":
             return Response(workflow.vertical_transition_validation_readiness(query))
@@ -533,6 +540,18 @@ class ApiRouter:
                 )
             ),
             "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
+            # ---- Step5 共用 surface classification（Round 2） -------------------------
+            # 中立策略写入不需要数据源读取；事实生成读真实陆域掩膜，因此走 QGIS 线程入口。
+            "/api/surface-classification-policy": lambda: (
+                context.set_surface_classification_policy(payload)
+                if hasattr(context, "set_surface_classification_policy")
+                else workflow.set_surface_classification_policy(payload)
+            ),
+            "/api/surface-class-facts/evaluate": lambda: (
+                context.update_surface_class_facts(payload)
+                if hasattr(context, "update_surface_class_facts")
+                else workflow.update_surface_class_facts(payload)
+            ),
             "/api/cns-service-capability/evaluate": lambda: workflow.evaluate_cns_service_capability(),
             "/api/operational-timing": lambda: workflow.set_operational_timing(payload),
             "/api/service-timeline/evaluate": lambda: workflow.evaluate_service_timeline(payload),

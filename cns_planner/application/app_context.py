@@ -190,6 +190,7 @@ class ApplicationContext:
         self.configure_layered_route_validation_sources()
         self.configure_vertical_transition_validation_sources()
         self.configure_radar_surveillance_layout_sources()
+        self.configure_surface_classification_sources()
         return self.workflow
 
     def save_project_as(self, project_dir):
@@ -705,6 +706,11 @@ class ApplicationContext:
 
         **陆域掩膜独立于 DEM**：本 provider 不含任何"用 NoData 推断海洋"的路径；未配置
         陆域源时 ``classify_surface`` 返回 ``unknown``（fail-closed）。
+
+        Round 2 P0 收口：本 provider 的陆域分类参数来自 Step5 共用的**中立**策略
+        ``surface_classification_policy``（``_land_policy()``），**不再**读
+        ``radar_surveillance_policy``。Step5 的 ``surface_class_facts`` 更是完全独立装配
+        （见 :meth:`configure_surface_classification_sources`），不经过本 provider。
         """
 
         from ..gis.radar_layout_adapter import (
@@ -734,16 +740,26 @@ class ApplicationContext:
         land_mask_cache = {}
 
         def _land_policy():
-            """陆域判定的显式工程参数（图层名 + 海岸不确定带）来自当前 policy。"""
+            """陆域判定的显式工程参数（图层名 + 海岸不确定带）。
+
+            Round 2 P0 收口：**只**读取 Step5 共用的**中立**策略
+            ``surface_classification_policy``。这里**不再**有任何
+            ``radar_surveillance_policy`` 运行时回退 —— 旧项目的兼容参数已由
+            normalize/backfill 阶段的一次性迁移写入中立策略
+            （provenance：``legacy_radar_policy_migration``）。
+
+            因此：修改 Radar policy 不改变 surface classification；Communication /
+            RID 的正式 surface facts 只消费「中立策略 + land-mask 数据源」。
+            """
 
             try:
-                policy = self.workflow.radar_surveillance_layout_service.policy_snapshot()
+                neutral = self.workflow.state.get("surface_classification_policy")
             except Exception:
-                policy = {}
-            return (
-                policy.get("land_mask_layer_name"),
-                policy.get("coastal_uncertainty_buffer_m"),
-            )
+                neutral = None
+            from ..domain.surface_classification import normalize_surface_classification_policy
+
+            policy = normalize_surface_classification_policy(neutral)
+            return policy["land_mask_layer_name"], policy["coastal_uncertainty_buffer_m"]
 
         def land_mask_source():
             path = self.data.paths.get("land_mask")
@@ -841,6 +857,47 @@ class ApplicationContext:
 
         return self.qgis.call(
             lambda: self.workflow.evaluate_radar_surveillance_layout(payload)
+        )
+
+    # ------------------------------------------------- Step5 共用 surface 事实（Round 2）
+
+    def configure_surface_classification_sources(self):
+        """绑定 **Step5 中立** surface classification 的只读陆域数据源路径。
+
+        这里只登记"当前项目配置的 land-mask 数据源路径"这一项事实（动态读取，因此
+        ``replace_sources`` 之后立即生效）。陆域分类参数**不**从这里来：它们只由
+        ``surface_classification_policy`` 决定（见
+        :mod:`cns_planner.gis.land_mask_source`）。
+
+        本方法**绝不**触碰 ``radar_surveillance_policy``，也不读取 Radar layout 的
+        ``facts_provider`` —— Communication / RID 的 surface facts 因此不要求任何
+        Radar 配置或 Radar layout 运行。
+        """
+
+        self.workflow.surface_classification_land_mask_path = (
+            lambda: self.data.paths.get("land_mask")
+        )
+        return self.workflow.surface_classification_land_mask_path
+
+    def set_surface_classification_policy(self, payload=None):
+        """设置 **Step5 共用中立**的 surface classification 工程参数。
+
+        该命令只写策略（图层名 + 海岸不确定带），并让依赖 surface 事实的结果过时；
+        它**不读**任何数据源，因此不需要 QGIS 线程，也**不要求**先生成 Radar layout。
+        """
+
+        return self.workflow.set_surface_classification_policy(payload)
+
+    def update_surface_class_facts(self, payload=None):
+        """用真实 LandMask 事实生成**可序列化**逐格 surface facts。
+
+        它打开显式配置的陆域掩膜矢量源（真实数据读取），因此与其它真实源入口一样
+        跑在 QGIS 线程。生成结果是 ``cell representative classification``，
+        不是连续精确海岸线；未配置陆域源时全部保持 ``unknown``（fail-closed）。
+        """
+
+        return self.qgis.call(
+            lambda: self.workflow.update_surface_class_facts(payload)
         )
 
     def _vertical_transition_evidence(

@@ -686,12 +686,17 @@ def test_p14_protected_baseline_matches_workspace():
         for name in baseline
     }
     assert actual == baseline
-    # P14 保护清单在本轮按**显式 additive 变更**重新登记：Communication / RID service
-    # contract 需要 surface 相关半径解析、service_key 分池与 voxel surface_class，
-    # 因此 geometric_3d / service_capability / corridor 三个受保护文件的哈希随之上移。
+    # P14 保护清单按**显式 additive 变更**重新登记：
+    # Round 1 加入 surface 相关半径解析、service_key 分池与 voxel surface_class；
+    # Round 2 再把**可序列化 surface 事实指纹**（surface_facts_fingerprint）接入
+    # Coverage / Corridor 的 input fingerprint（provider 本身是 callable，不能进指纹），
+    # 因此 geometric_3d / corridor 两个受保护文件的哈希随之上移。
     # 该断言的作用是"任何改动都必须显式登记"，并不是允许静默漂移。
     assert baseline["cns_planner/algorithms/coverage/geometric_3d.py"] == (
-        "7e3b00cd09d2c5096dfda0f273b84e0a95f8720f441a59c6344dc5e635f27482"
+        "68f39a884ce173d11ae943a85bdb9f7b66daea2f124cdd8e5bc716a745c5f01b"
+    )
+    assert baseline["cns_planner/algorithms/corridor/v1.py"] == (
+        "1a2117332b978f018726cd328dcd14923d2891d002ce027249566d6134c4d8a2"
     )
     assert baseline["cns_planner/algorithms/service_capability/v1.py"] == (
         "0e8660d995887ea6e4429aa9ecfa554d093570cb3c63f2e7fb1d9f5f187c54e4"

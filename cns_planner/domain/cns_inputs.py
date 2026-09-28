@@ -10,6 +10,10 @@ from .cns_performance import (
     empty_subsystem_contract, normalize_subsystem_contract, sync_aliases,
 )
 from .cns_reliability import normalize_reliability_spec
+from .cns_service_contract import (
+    normalize_redundancy_by_surface, validated_service_key,
+    validated_service_subtype,
+)
 from .spatial_3d import normalize_vertical_profile
 from .cns_service_model import normalize_service_model_spec
 
@@ -38,6 +42,11 @@ class CNSDevice(TypedDict, total=False):
     name: str
     subsystem: str
     role: str
+    #: **compatibility-only**：legacy CoveragePlannerV1 适配器的单一 2D 半径。
+    #: 它**不是** authority：surface-aware 服务的权威几何是
+    #: ``coverage_geometry.radius_by_surface``（Round 2 冻结）。生产
+    #: Communication / RID 的 Coverage（P7）/ Corridor（P14）/ Gap（P15）/
+    #: Site Planning（P16）都不读它做正式判定。
     radius_m: float
     latency_ms: float | None
     mtbf_h: float
@@ -237,9 +246,18 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
         subsystem = str(device.get("subsystem") or "").upper()
         if subsystem not in SUBSYSTEMS:
             raise ValueError("已有设施设备 subsystem 必须是 C/N/S")
-        normalized_devices.append({
+        #: Round 2：Existing CNS 的**内联设备**必须完整保留新服务事实，否则
+        #: "Existing CNS 内联 RID device、catalog 不重复提供该设备"的场景会在
+        #: normalize → save/reopen 后丢掉 service_key，被误判成 legacy S:surveillance。
+        contract = normalize_subsystem_contract(
+            subsystem, device, field=f"existing.device.{device.get('device_id') or 'inline'}",
+        )
+        identity = _normalize_service_identity(device, contract)
+        entry = {
             "device_id": str(device.get("device_id") or ""), "name": str(device.get("name") or ""),
             "subsystem": subsystem, "status": str(device.get("status") or "active"),
+            "type": deepcopy(contract.get("type") or {}),
+            "performance": deepcopy(contract.get("performance") or {}),
             "metadata": deepcopy(device.get("metadata") or {}),
             "vertical_profile": normalize_vertical_profile(
                 device.get("vertical_profile"), legacy_elevation_m=device.get("elevation_m")
@@ -247,7 +265,9 @@ def normalize_existing_facility(item: dict, index: int = 0) -> ExistingCNSFacili
             "coverage_geometry": normalize_coverage_geometry(device, device.get("coverage_geometry")),
             "service_model": normalize_service_model_spec(device.get("service_model")),
             "planning_origin": deepcopy(device.get("planning_origin")),
-        })
+        }
+        entry.update(identity)
+        normalized_devices.append(entry)
     return {
         "facility_id": facility_id, "site_id": str(item.get("site_id") or facility_id),
         "name": str(item.get("name") or facility_id), "coordinate": _coordinate(item),
@@ -323,6 +343,41 @@ def normalize_planning_profile(value: dict | None) -> dict:
     }
 
 
+def normalize_requirement_service_identity(value, *, field="required_cns"):
+    """RequiredCNS 的 **canonical service identity**（Round 2 formal）。
+
+    显式支持并 round-trip：
+
+    * ``service_key`` —— **fail-closed** 校验（拼写错误直接 ``ValueError``，
+      绝不静默降级成 legacy 子系统默认值，否则一次笔误就会关掉 surface policy）；
+    * ``service_subtype`` —— 合作监视服务类型描述（**不是** RID 判定谓词）；
+    * ``redundancy_by_surface`` —— canonical 校验（正整数要求、拒绝 ``unknown``）。
+
+    ``target_cooperation`` / ``technology`` 由既有 ``type`` 块承载（additive）。
+
+    只返回**显式声明**的字段，因此旧项目缺这些字段时输出形状完全不变。
+    """
+
+    item = value if isinstance(value, dict) else {}
+    type_block = item.get("type") if isinstance(item.get("type"), dict) else {}
+    result = {}
+    explicit_key = validated_service_key(item.get("service_key"), field=f"{field}.service_key")
+    if explicit_key:
+        result["service_key"] = explicit_key
+    #: ``service_subtype`` 既可能在顶层，也可能在 canonical ``type`` 块里；
+    #: 两处都是显式声明（**不是** RID 判定谓词）。
+    subtype = validated_service_subtype(
+        item.get("service_subtype") or type_block.get("service_subtype")
+    )
+    if subtype:
+        result["service_subtype"] = subtype
+    if "redundancy_by_surface" in item:
+        result["redundancy_by_surface"] = normalize_redundancy_by_surface(
+            item.get("redundancy_by_surface"), field=f"{field}.redundancy_by_surface",
+        )
+    return result
+
+
 def _normalize_requirement_set(value):
     if not isinstance(value, dict):
         raise ValueError("CNS 需求集合必须是对象")
@@ -342,6 +397,9 @@ def _normalize_requirement_set(value):
                 merged[key] = _optional_nonnegative(merged.get(key), f"{name}.{key}")
         contract = normalize_subsystem_contract(subsystem_codes[name], current, field=f"required_cns.{name}")
         merged.update(contract)
+        #: Round 2：service identity / redundancy_by_surface 与 type/performance 一起
+        #: 进入 canonical contract，因此 normalize → save → reopen 不再丢字段。
+        merged.update(normalize_requirement_service_identity(current, field=f"required_cns.{name}"))
         merged = sync_aliases(subsystem_codes[name], merged, field=f"required_cns.{name}")
         merged["status"] = "passed" if required is False or (required is True and _requirements_complete(name, merged)) else "pending_confirmation"
         result[name] = merged
@@ -358,15 +416,17 @@ def _normalize_service_identity(item, contract=None):
 
     只在显式提供时保留字段，因此旧设备的归一化输出形状与逐字节结果不变；
     ``type`` 块里的 ``service_subtype`` 也一并保留，供 RID 类型契约追溯。
+
+    Round 2：显式 ``service_key`` 走 **fail-closed** 校验（:func:`validated_service_key`），
+    拼写错误不再静默降级成 legacy 子系统默认值。
     """
 
     result = {}
-    explicit = str(item.get("service_key") or "").strip()
-    if explicit:
-        result["service_key"] = explicit
+    explicit_key = validated_service_key(item.get("service_key"), field="device.service_key")
+    if explicit_key:
+        result["service_key"] = explicit_key
     type_block = item.get("type") if isinstance(item.get("type"), dict) else {}
-    subtype = item.get("service_subtype") or type_block.get("service_subtype")
-    subtype = str(subtype).strip() if subtype not in (None, "") else ""
+    subtype = validated_service_subtype(item.get("service_subtype") or type_block.get("service_subtype"))
     if subtype:
         result["service_subtype"] = subtype
         target = contract.get("type") if isinstance(contract, dict) and isinstance(contract.get("type"), dict) else None

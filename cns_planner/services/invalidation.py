@@ -45,6 +45,19 @@ DEPENDENTS = {
     "requirement_policies": ("required_cns_recommendation",),
     "requirement_model": ("required_cns_recommendation",),
     "safety_policy": ("safety_assessment", "technical_risk", "report"),
+    # Step5 共用 surface 事实（Round 2）：策略/事实变化必须先过时**事实本身**，
+    # 再沿 P7 → P8 → P14 → P15 → P16 → report 传播。
+    "surface_classification_policy": (
+        "coverage_3d", "cns_service_capability", "cns_corridor_assessment",
+        "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report",
+    ),
+    "surface_class_facts": (
+        "coverage_3d", "cns_service_capability", "cns_corridor_assessment",
+        "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report",
+    ),
+    #: 陆域掩膜源变化：事实与 Radar 划设各自被显式定向失效（**不**经过 routes /
+    #: Theta* 候选 / Risk / RouteRiskProfile / Radar layout 之外的任何产物）。
+    "land_mask": (),
 }
 
 # Minimal contract surface between the canonical DAG vocabulary and this legacy-shaped

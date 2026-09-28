@@ -510,6 +510,11 @@ class WorkflowService:
         self.radar_surveillance_layout_service.layered_route_validation_service = (
             self.layered_route_validation_service
         )
+        # Step5 共用 surface classification（Round 2 P0）：surface facts 的陆域源只由
+        # **中立** surface_classification_policy + land-mask 数据源路径决定。这里只登记
+        # 一个可选的"路径解析器"（组合根注入，动态读取当前数据源配置），它**绝不**读取
+        # Radar policy，也不依赖 Radar layout 的 facts_provider。
+        self.surface_classification_land_mask_path = None
         self.cns_planning_service = CNSPlanningService(self.session, self.coverage_planner, self.invalidation_service, snapshot)
         self.spatial_3d_service = Spatial3DService(
             self.session, self.coverage_model_3d, self.invalidation_service, snapshot
@@ -1586,6 +1591,101 @@ class WorkflowService:
 
     def evaluate_coverage_3d(self, payload=None): return self.spatial_3d_service.evaluate(payload)
     def evaluate_cns_service_capability(self): return self.cns_service_capability_service.evaluate()
+
+    # ------------------------------------------------- Step5 共用 surface 事实（Round 2）
+
+    def surface_classification_policy_snapshot(self):
+        """中立 surface classification 策略快照（纯读取，不触发任何数据源读取）。"""
+
+        from ..domain.surface_classification import normalize_surface_classification_policy
+
+        state = self.session.state
+        return deepcopy(
+            normalize_surface_classification_policy(state.get("surface_classification_policy"))
+        )
+
+    def surface_class_facts_snapshot(self):
+        """逐格 surface 事实快照（可序列化；``status`` 非 passed 时下游 fail-closed）。"""
+
+        from ..domain.surface_classification import normalize_surface_class_facts
+
+        state = self.session.state
+        return deepcopy(normalize_surface_class_facts(state.get("surface_class_facts")))
+
+    def set_surface_classification_policy(self, payload):
+        """写入 **Step5 共用中立**的 surface classification 策略。
+
+        它与 ``radar_surveillance_layout`` policy 解耦：Communication / RID 的
+        surface classification **不要求**用户先生成 Radar layout。策略变化只影响
+        依赖 surface 事实的结果（P7/P8/P14/P15/P16 与报告），绝不触碰
+        ``operational_routes`` / Theta* 候选 / Risk / RouteRiskProfile / Radar layout。
+        """
+
+        from ..domain.surface_classification import normalize_surface_classification_policy
+
+        raw = payload.get("surface_classification_policy", payload) if isinstance(payload, dict) else payload
+        policy = normalize_surface_classification_policy(raw)
+        state = self.session.state
+        if policy != state.get("surface_classification_policy"):
+            state["surface_classification_policy"] = policy
+            self.invalidation_service.surface_classification_changed(
+                "surface_classification_policy_changed"
+            )
+            self.session.save()
+        return deepcopy(policy)
+
+    def update_surface_class_facts(self, payload=None):
+        """用真实 LandMask 事实**一次性**生成可序列化的逐格 surface facts。
+
+        事实来源只有一个：``LandMaskSource``（由 :mod:`cns_planner.gis.land_mask_source`
+        按**中立** ``surface_classification_policy`` + 显式 land-mask 数据源路径装配）。
+        本方法不复制任何 polygon / shapely land-sea 算法；DEM NoData 绝不用于推断海洋。
+
+        Round 2 P0 收口：本入口**绝不**读取 ``radar_surveillance_policy``，也**不**消费
+        Radar layout 的运行时 ``facts_provider`` —— 新项目无需任何 Radar 配置即可生成
+        surface facts。旧项目的兼容参数已由 normalize/backfill 阶段的一次性迁移写入
+        中立策略（provenance：``legacy_radar_policy_migration``），运行时不存在回退。
+
+        生成的是 **cell representative classification**（格心代表点判定），
+        不是连续精确海岸线；无法判定时保持 ``unknown``（fail-closed）。
+        """
+
+        from ..domain.surface_classification import (
+            build_surface_class_facts, normalize_surface_classification_policy,
+        )
+        from ..gis.land_mask_source import build_land_mask_source, land_mask_source_path
+
+        state = self.session.state
+        payload = payload if isinstance(payload, dict) else {}
+        if isinstance(payload.get("surface_classification_policy"), dict):
+            state["surface_classification_policy"] = normalize_surface_classification_policy(
+                payload["surface_classification_policy"]
+            )
+        policy = state.get("surface_classification_policy")
+        resolver = getattr(self, "surface_classification_land_mask_path", None)
+        explicit_path = resolver() if callable(resolver) else None
+        land_mask_source = build_land_mask_source(
+            land_mask_source_path(state, explicit_path), policy,
+        )
+        facts = build_surface_class_facts(
+            state.get("grid") or {}, policy=policy,
+            land_mask_source=land_mask_source,
+            land_mask_describe=(
+                land_mask_source.describe if land_mask_source is not None else None
+            ),
+        )
+        state["surface_class_facts"] = facts
+        state.setdefault("result_statuses", {})["surface_class_facts"] = (
+            "passed" if facts.get("status") == "passed" else "missing_data"
+        )
+        # surface 事实变了：P7 → P8 → P14 → P15 → P16 与报告依次过时（严格下游）。
+        # 刚生成的 facts 就是当前派生本身，因此**不**把它自己标 stale（``include_facts``
+        # 只用于"策略/数据源改变、已存事实不再代表当前策略"的那条路径）。
+        self.invalidation_service.surface_facts_changed(
+            "surface_class_facts_updated", include_facts=False,
+        )
+        self.session.save()
+        return deepcopy(facts)
     def set_operational_timing(self, payload): return self.operational_timing_service.set_timing(payload)
     def evaluate_service_timeline(self, payload=None): return self.operational_timing_service.evaluate_timeline(payload)
     def evaluate_protection_envelope(self, payload=None): return self.operational_timing_service.evaluate_protection(payload)

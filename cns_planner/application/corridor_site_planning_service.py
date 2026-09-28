@@ -7,6 +7,9 @@ from copy import deepcopy
 from ..catalogs import AircraftCNSProfileCatalog
 from ..domain.corridor_site_planning import normalize_corridor_site_planning_policy
 from ..domain.site_planning import REUSE_TIERS
+from ..domain.surface_classification import (
+    surface_class_provider_for, surface_facts_fingerprint_for,
+)
 from .site_candidate_actions import candidate_actions
 from .production_write_authority import assert_write_authority
 
@@ -211,6 +214,10 @@ def rerun_corridor_chain(state, corridor_model_prototype, corridor_gap_prototype
         state.get("device_catalog") or {}, state.get("cns_corridor_policy") or {},
         coverage_parameters=((selections.get("coverage_model") or {}).get("parameters") or {}),
         capability_parameters=((selections.get("service_model") or {}).get("parameters") or {}),
+        #: Round 2：P16 的 what-if 重算与正式 P14 共用同一份 surface facts，
+        #: 否则 what-if 的 surface 判定会与基线不一致。
+        surface_class_provider=surface_class_provider_for(state),
+        surface_facts_fingerprint=surface_facts_fingerprint_for(state),
     )
     analyzer = corridor_gap_prototype.__class__(
         (state.get("cns_corridor_gap_assessment") or {}).get("parameters")

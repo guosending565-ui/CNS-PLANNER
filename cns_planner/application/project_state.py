@@ -151,6 +151,10 @@ from ..domain.tower_obstacle import (
     empty_tower_obstacle_profiles, normalize_tower_clearance_policy,
     normalize_tower_obstacle_policy, normalize_tower_obstacle_profiles,
 )
+from ..domain.surface_classification import (
+    empty_surface_class_facts, migrate_surface_classification_policy_from_legacy_radar_policy,
+    normalize_surface_class_facts, normalize_surface_classification_policy,
+)
 from .radar_surveillance_layout_service import (
     empty_radar_surveillance_layout, normalize_radar_surveillance_layout,
     normalize_radar_surveillance_policy,
@@ -271,6 +275,10 @@ def blank_project(defaults):
         # 绝不写入 existing_cns_facilities / coverage_3d / 任何 CNS 走廊或站址提案。
         "radar_surveillance_policy": normalize_radar_surveillance_policy(None),
         "radar_surveillance_layout": empty_radar_surveillance_layout(),
+        # Step5 共用 surface classification（additive，独立 namespace）：
+        # 中立策略与可序列化逐格 surface 事实，serve P7 / P8 / P14 / P15 / P16。
+        "surface_classification_policy": normalize_surface_classification_policy(None),
+        "surface_class_facts": empty_surface_class_facts(),
         "v3_planning_policy": normalize_v3_planning_policy(None),
         "v3_fine_refinement_policy": default_v3_fine_refinement_policy(),
         "v3_continuous_validation_policy": default_v3_validation_policy(),
@@ -385,6 +393,8 @@ def blank_project(defaults):
                 "tower_obstacle_profiles",
                 "tower_colocation_candidates",
                 "radar_surveillance_layout",
+                # Step5 共用 surface 事实（输入事实，但必须登记状态以便被失效链标记）。
+                "surface_class_facts",
             )
         },
         "last_saved_at": None,
@@ -544,6 +554,33 @@ def normalize_project(value, grid_service):
     )
     value["radar_surveillance_layout"] = normalize_radar_surveillance_layout(
         value.get("radar_surveillance_layout")
+    )
+    # Step5 共用 surface classification（Round 2 additive，P0 收口）：**中立**策略 +
+    # 可序列化逐格 surface 事实。它是独立 namespace，绝不塞进 grid_attributes["terrain"]
+    # 的 elevation 语义。
+    #
+    # 旧项目兼容是**一次性迁移**，不是运行时回退：只有当持久化状态中**完全没有**
+    # ``surface_classification_policy`` 时，才在这里从旧 ``radar_surveillance_policy``
+    # 复制与 land-mask 分类有关的兼容参数（图层名 + 海岸不确定带），生成独立的中立
+    # policy，并写入 provenance ``origin = legacy_radar_policy_migration``。
+    #
+    # 迁移完成后（policy 已存在，含迁移结果本身）**绝不**再读 Radar policy：运行时
+    # 任何路径都只消费 ``surface_classification_policy`` + land-mask 数据源。
+    persisted_surface_policy = value.get("surface_classification_policy")
+    if persisted_surface_policy is None:
+        value["surface_classification_policy"] = (
+            migrate_surface_classification_policy_from_legacy_radar_policy(
+                value.get("radar_surveillance_policy")
+            )
+        )
+    else:
+        value["surface_classification_policy"] = normalize_surface_classification_policy(
+            persisted_surface_policy
+        )
+    # 旧项目得到空事实容器，绝不凭空合成一次"已分类"结果（surface_class 保持
+    # unknown / fail-closed）。
+    value["surface_class_facts"] = normalize_surface_class_facts(
+        value.get("surface_class_facts")
     )
     value["v3_planning_policy"] = normalize_v3_planning_policy(value.get("v3_planning_policy"))
     value["v3_fine_refinement_policy"] = normalize_v3_fine_refinement_policy(
@@ -757,6 +794,10 @@ def normalize_project(value, grid_service):
     # Towers Operational Integration V2：旧项目没有铁塔派生层，按"未计算"回填。
     for name in ("tower_obstacle_profiles", "tower_colocation_candidates"):
         value.setdefault("result_statuses", {}).setdefault(name, "not_calculated")
+    # Step5 共用 surface 事实（Round 2 additive）：状态登记值跟随事实容器本身。
+    value.setdefault("result_statuses", {}).setdefault(
+        "surface_class_facts", value.get("surface_class_facts", {}).get("status") or "not_calculated"
+    )
     value.setdefault("result_statuses", {}).setdefault(
         "radar_surveillance_layout", "not_calculated"
     )

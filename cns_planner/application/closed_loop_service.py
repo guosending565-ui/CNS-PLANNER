@@ -6,6 +6,9 @@ from copy import deepcopy
 from hashlib import sha256
 
 from ..catalogs import AircraftCNSProfileCatalog
+from ..domain.surface_classification import (
+    surface_class_provider_for, surface_facts_fingerprint_for,
+)
 from ..domain.closed_loop import (
     algorithm_run_summary, build_plan_application, compare_gap_results,
     current_baseline_fingerprint, stable_fingerprint,
@@ -211,6 +214,10 @@ def rerun_p7_p10_chain(state, coverage_prototype, capability_prototype,
         state.get("operational_routes") or [], state.get("spatial_3d") or {},
         state.get("grid") or {}, state.get("grid_attributes") or {},
         facilities, state.get("device_catalog") or {},
+        #: Round 2：闭环重算与正式 P7 共用同一份 surface facts（否则闭环验证会在
+        #: 另一套 surface 语义下重算 P7）。
+        surface_class_provider=surface_class_provider_for(state),
+        surface_facts_fingerprint=surface_facts_fingerprint_for(state),
     )
     state["cns_service_capability"] = capability_model.evaluate(
         state["coverage_3d"], state.get("required_cns") or {}, profile,

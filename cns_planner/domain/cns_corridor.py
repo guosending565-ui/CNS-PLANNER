@@ -112,6 +112,9 @@ def corridor_complexity_preflight(inputs):
         inputs.get("corridor_policy") or {},
         inputs.get("existing_facilities") or {},
         inputs.get("device_catalog") or {},
+        #: Round 2：估算与正式评估共用同一份 surface 事实（provider 为 callable，
+        #: 只在本进程内使用；它绝不进入 immutable snapshot）。
+        surface_class_provider=inputs.get("surface_class_provider"),
     )
 
 

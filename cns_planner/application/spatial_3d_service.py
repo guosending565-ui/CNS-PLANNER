@@ -6,6 +6,9 @@ from ..domain.spatial_3d import (
     normalize_altitude_layer, normalize_route_altitude_profile,
 )
 from ..domain.altitude_layer_defaults import mark_altitude_layer_catalog_managed
+from ..domain.surface_classification import (
+    surface_class_provider_for, surface_facts_fingerprint_for,
+)
 from .route_operating_layer_service import (
     refresh_spatial_status, resync_operating_layer_statuses,
 )
@@ -94,6 +97,12 @@ class Spatial3DService:
             state.get("operational_routes"), state.get("spatial_3d"),
             state.get("grid"), state.get("grid_attributes"),
             facilities, state.get("device_catalog"),
+            #: Round 2 接线：P7 的 sample surface_class 由**可序列化 surface facts**
+            #: 提供（唯一 LandMask 分类结果，经中立策略一次性生成）。facts 不可用时
+            #: provider 为 ``None``，surface_class 保持 ``unknown``（fail-closed）。
+            #: provider 是 callable、不进指纹，因此把事实指纹单独传入。
+            surface_class_provider=surface_class_provider_for(state),
+            surface_facts_fingerprint=surface_facts_fingerprint_for(state),
         )
         state["coverage_3d"] = result
         self.invalidation.cns_service_capability()

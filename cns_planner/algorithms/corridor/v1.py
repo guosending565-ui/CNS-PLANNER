@@ -24,7 +24,7 @@ from ..service_capability.v1 import (
     prepare_capability_context,
 )
 from ...domain.cns_corridor import corridor_disclaimers, empty_cns_corridor_assessment
-from ...domain.cns_service_contract import resolve_surface_class
+from ...domain.cns_service_contract import index_max_range_m, resolve_surface_class
 from ...domain.geodesy import distance_m
 from ...domain.spatial_3d import (
     effective_route_vertical_context, resolve_egm2008_height, voxel_ref,
@@ -49,6 +49,7 @@ class CNSServiceCorridorV1:
         *, coverage_parameters=None, capability_parameters=None,
         cancel_check=None, progress_callback=None, preflight=None,
         allow_beyond_validated_envelope=False, surface_class_provider=None,
+        surface_facts_fingerprint=None,
     ):
         """评估服务走廊。
 
@@ -79,6 +80,10 @@ class CNSServiceCorridorV1:
         ``surface_class_provider`` 是**可选**的最薄注入点（Round 2 由唯一 LandMask
         分类器提供）：每个 voxel/sample 的 ``surface_class`` 先取 terrain cell 的显式
         事实，否则再问该 provider，最后保持 ``unknown``（fail-closed，绝不猜测）。
+
+        ``surface_facts_fingerprint`` 是**可序列化**的 surface 事实身份（Round 2）：
+        provider 本身是 callable、不能进稳定指纹，因此显式传入事实指纹。它只参与
+        ``input_fingerprint``，不改变任何走廊数学；旧调用方不传时为 ``None``。
         """
         if isinstance(preflight, dict):
             tier = preflight.get("tier")
@@ -122,6 +127,8 @@ class CNSServiceCorridorV1:
             "corridor_policy": corridor_policy or {}, "parameters": self.parameters,
             "coverage_parameters": coverage_parameters or {},
             "capability_parameters": capability_parameters or {},
+            #: Round 2：surface 事实进入 P14 输入指纹（不含逐格明细本身）。
+            "surface_facts_fingerprint": surface_facts_fingerprint,
         }
         input_fingerprint = _fingerprint(fingerprint_input)
         geometry_fingerprint = _fingerprint([
@@ -700,7 +707,7 @@ class CorridorComplexityBlocked(RuntimeError):
 
 def estimate_corridor_complexity(
     routes, spatial_3d, grid, grid_attributes, corridor_policy,
-    existing_facilities, device_catalog,
+    existing_facilities, device_catalog, surface_class_provider=None,
 ):
     """纯估算 helper：计算前的规模上界与准入分档。
 
@@ -729,7 +736,7 @@ def estimate_corridor_complexity(
         code: len(geometric_providers.get(code) or []) for code in SUBSYSTEM_NAMES
     }
 
-    prepared_cells = _prepare_cells(cells, terrain)
+    prepared_cells = _prepare_cells(cells, terrain, surface_class_provider)
     confirmed_layers = [
         layer for layer in layers
         if layer.get("confirmed") is True and layer.get("status") == "confirmed"
@@ -807,7 +814,7 @@ def estimate_corridor_complexity(
             coordinate = provider.get("coordinate")
             if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
                 continue
-            radius_m = (provider.get("coverage_geometry") or {}).get("slant_range_m")
+            radius_m = index_max_range_m(provider.get("coverage_geometry") or {})
             if radius_m is None:
                 continue
             delta = float(radius_m) / _PROVIDER_COVERAGE_DEGREE_M

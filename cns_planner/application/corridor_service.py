@@ -26,6 +26,9 @@ from ..algorithms.corridor.v1 import COMPLEXITY_TIER_BEYOND, COMPLEXITY_TIER_CEI
 from ..domain.cns_corridor import (
     corridor_complexity_preflight, normalize_cns_corridor_policy,
 )
+from ..domain.surface_classification import (
+    surface_class_provider_for, surface_facts_fingerprint_for,
+)
 
 
 class CorridorScaleNotAccepted(ValueError):
@@ -127,6 +130,12 @@ class CNSCorridorService:
             "corridor_policy": policy,
             "coverage_parameters": ((selections.get("coverage_model") or {}).get("parameters") or {}),
             "capability_parameters": ((selections.get("service_model") or {}).get("parameters") or {}),
+            #: Round 2 接线：P14 的 voxel surface_class 与 P7 共用唯一 surface facts。
+            #: 这里只冻结**可序列化事实 + 事实指纹**（provider 是 callable，既不能进
+            #: immutable snapshot，也不进稳定指纹）；provider 由 ``compute`` 统一从
+            #: 这份事实重建，因此同步路径、重算路径与 worker 路径口径完全一致。
+            "surface_class_facts": deepcopy(state.get("surface_class_facts") or {}),
+            "surface_facts_fingerprint": surface_facts_fingerprint_for(state),
         }
         # B9R.1：把规模估算固化进输入（它是输入相关的确定性事实，因此属于输入指纹
         # 的一部分，调用方——无论同步还是 worker——都只消费这份冻结值）。
@@ -165,6 +174,17 @@ class CNSCorridorService:
                 capability_parameters=inputs.get("capability_parameters") or {},
                 preflight=preflight if isinstance(preflight, dict) else None,
                 allow_beyond_validated_envelope=allow,
+                #: Round 2：provider 统一由 inputs 里的**可序列化 surface 事实**重建
+                #: （同步 / 重算 / worker 三条路径同一份口径）；显式传入的 provider
+                #: 优先，供单进程内的定制化调用。
+                surface_class_provider=(
+                    inputs.get("surface_class_provider")
+                    or surface_class_provider_for(inputs)
+                ),
+                surface_facts_fingerprint=(
+                    inputs.get("surface_facts_fingerprint")
+                    or surface_facts_fingerprint_for(inputs)
+                ),
             )
         except CorridorComplexityBlocked as exc:
             raise CorridorScaleNotAccepted(exc.estimate, str(exc)) from exc

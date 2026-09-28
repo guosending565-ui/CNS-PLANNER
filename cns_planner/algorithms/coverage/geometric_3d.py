@@ -41,13 +41,17 @@ class GeometricCoverage3DV1:
         }
 
     def evaluate(self, routes, spatial_3d, grid, grid_attributes, existing_facilities, device_catalog,
-                 *, surface_class_provider=None):
+                 *, surface_class_provider=None, surface_facts_fingerprint=None):
         """评估 P7 几何覆盖。
 
         ``surface_class_provider`` 是**可选**的最薄注入点（Round 2 由唯一
         LandMask ``classify_surface`` provider 提供）：默认 ``None`` 时每个 sample 的
         ``surface_class`` 先取 terrain cell 的显式事实，否则保持 ``unknown``
         （fail-closed，绝不猜测、绝不回落 land/sea）。
+
+        ``surface_facts_fingerprint`` 是**可序列化**的 surface 事实身份（Round 2）：
+        provider 本身是 callable、不能进稳定指纹，因此显式传入事实指纹。它只参与
+        ``input_fingerprint``，**不**改变任何几何数学；旧调用方不传时该字段为 ``None``。
         """
         terrain = ((grid_attributes or {}).get("terrain") or {}).get("cells") or {}
         cells = list((grid or {}).get("cells") or [])
@@ -62,6 +66,8 @@ class GeometricCoverage3DV1:
         fingerprint_input = {
             "routes": routes or [], "spatial_3d": spatial_3d or {},
             "terrain": terrain, "providers": providers, "parameters": self.parameters,
+            #: Round 2：surface 事实进入 Coverage 输入指纹（不含逐格明细本身）。
+            "surface_facts_fingerprint": surface_facts_fingerprint,
         }
         fingerprint = sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         statuses = [item["status"] for item in results]

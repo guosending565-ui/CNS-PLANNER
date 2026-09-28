@@ -224,6 +224,14 @@ EXTERNAL_SCOPES = (
 
 _SCOPES_BY_KEY = {scope["logical_key"]: scope for scope in EXTERNAL_SCOPES}
 
+# Round 2（Step5 共用 surface facts）：``surface_class_facts`` **刻意不**外置。
+# 它是"逐格代表点分类"的**输入事实**（不是逐 cell / 逐 voxel 的派生明细）：
+#   * 规模是"每 grid cell 一条 surface_class"，不随 voxel/层数放大；
+#   * 它必须与 ``grid`` 一起被原子地读取（否则 surface 判定与网格身份会错配）；
+#   * Heavy Task 把它整份冻结进 immutable snapshot（见 tasks/task_specs.py），
+#     worker 侧从它重建 provider，绝不回读 ProjectState。
+# 因此这里既不需要外置，也不应该复制成第二份 artifact。
+
 #: 每个外置 scope 的专用只读读取入口（前端/HTTP 按需拉取明细用）。
 DETAIL_ENDPOINTS = {
     "grid": "/api/workspace/grid",

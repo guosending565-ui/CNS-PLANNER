@@ -36,6 +36,9 @@ import time
 from ..domain.cns_corridor import (
     corridor_complexity_preflight, normalize_cns_corridor_policy,
 )
+from ..domain.surface_classification import (
+    surface_class_provider_for, surface_facts_fingerprint_for,
+)
 from .task_input import CORRIDOR_ALGORITHM_TYPES
 from .task_spec import (
     TaskCancelled, TaskInputChanged, TaskPerformanceAdmissionUpgradeRequired,
@@ -153,6 +156,12 @@ def _corridor_inputs(state, payload):
         "existing_cns_facilities": deepcopy(state.get("existing_cns_facilities") or {}),
         "device_catalog": deepcopy(state.get("device_catalog") or {}),
         "corridor_policy": policy,
+        #: Round 2（P0）：surface classification 必须转成**可序列化**事实才能进
+        #: immutable snapshot。这里**只**冻结纯数据（``by_grid_id`` + 语义 + 政策 +
+        #: 来源身份 + 事实指纹）；provider 是 callable，**绝不**进入快照，
+        #: 由 worker 侧用 :func:`surface_class_provider_for` 从这份事实重建。
+        "surface_class_facts": deepcopy(state.get("surface_class_facts") or {}),
+        "surface_facts_fingerprint": surface_facts_fingerprint_for(state),
     }
     inputs.update(_admission_policy_record())
     return inputs
@@ -170,7 +179,11 @@ def _corridor_preflight_from_snapshot(inputs):
     if isinstance(frozen, dict) and frozen:
         return frozen
     return corridor_complexity_preflight({
-        **inputs, "existing_facilities": inputs.get("existing_cns_facilities") or {},
+        **inputs,
+        "existing_facilities": inputs.get("existing_cns_facilities") or {},
+        # Round 2：估算与正式评估共用同一份 surface 事实（provider 由快照事实重建，
+        # 绝不回读当前 ProjectState）。
+        "surface_class_provider": surface_class_provider_for(inputs),
     })
 
 
@@ -319,6 +332,11 @@ def _corridor_runner(context):
             # B9R.1：显式风险接受**只**解锁 beyond_validated_envelope 一档；
             # beyond_safety_ceiling 由算法层无条件阻断，任何 flag 都不得绕过。
             allow_beyond_validated_envelope=allow_beyond,
+            #: Round 2（P0）：worker 从 immutable snapshot 的**可序列化 surface 事实**
+            #: 重建 provider（绝不回读 ProjectState，也绝不把 callable 放进快照），
+            #: 事实指纹随快照一起进入 P14 输入指纹。
+            surface_class_provider=surface_class_provider_for(inputs),
+            surface_facts_fingerprint=inputs.get("surface_facts_fingerprint"),
         )
     except TaskCancelled:
         stop_probe()

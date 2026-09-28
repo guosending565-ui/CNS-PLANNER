@@ -97,6 +97,9 @@ class CNSCorridorGapAnalyzerV1:
                 "nearest_route_offset_m": voxel.get("nearest_route_offset_m"),
                 "cell_half_diagonal_m": voxel.get("cell_half_diagonal_m"),
                 "discretized_volume_proxy_m3": voxel.get("discretized_volume_proxy_m3"),
+                #: Round 1 additive：P15 逐 voxel 保留 surface_class，使"哪个 sample 按哪套
+                #: surface 要求判定"可从 canonical 结果本身核查（缺省 unknown，不猜测）。
+                "surface_class": normalize_surface_class(voxel.get("surface_class")),
                 "subsystems": entries,
             })
         subsystems = [

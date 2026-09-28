@@ -100,6 +100,10 @@ class InvalidationService:
             self.cns_corridor_site_plan()
         if "required_cns_recommendation" in affected:
             self.requirement_recommendation(f"{changed}_changed")
+        # Step5 共用 surface 事实（Round 2）：策略变化让**事实本身**先过时，然后严格
+        # 下游传播（P7 → P8 → P14 → P15 → P16 → report）。
+        if "surface_class_facts" in affected:
+            self.surface_facts_changed(f"{changed}_changed", include_facts=True)
         if affected:
             mark_active_report_stale(state, f"{changed}_changed")
         if "environment_risk" in affected:
@@ -194,6 +198,12 @@ class InvalidationService:
                     })
                 )
             )
+        if "land_mask" in changed_sources:
+            # Round 2：陆域掩膜源变化会让**已存的逐格 surface 事实**不再代表当前源，
+            # 因此把事实本身标 stale（绝不自动重新分类：重分类是显式真实源读取），
+            # 并严格向下游传播。它绝不反向污染 operational_routes / Theta* 候选 /
+            # Risk / RouteRiskProfile / Radar layout（Radar 只由上面那条边 stale）。
+            self.surface_facts_changed("land_mask_source_changed", include_facts=True)
 
     def tower_data_changed(self, reason="tower_data_changed", *, include_derived=False):
         """真实铁塔数据或其派生事实变化时的**定向**失效。
@@ -248,6 +258,51 @@ class InvalidationService:
         self.layered_route(reason)
         # 固定巡航高度层（ALT-080）是雷达初步划设的显式输入之一。
         self.radar_surveillance_layout(str(reason))
+
+    def surface_facts_changed(self, reason="surface_class_facts_changed", *, include_facts=True):
+        """Step5 共用 surface 事实变化时的**定向**失效（Round 2，P0）。
+
+        传播链（严格下游，绝不反向）：
+
+        * （可选）``surface_class_facts`` 事实本身 → ``stale``（保留已存事实作为审计
+          证据，绝不删除、也绝不静默重新分类）；
+        * ``coverage_3d`` → ``cns_service_capability`` → ``cns_corridor_assessment``
+          → ``cns_corridor_gap_assessment`` → ``cns_corridor_site_plan`` → ``report``。
+
+        **绝不**触碰 ``operational_routes`` / Theta* 候选 / Risk / RouteRiskProfile /
+        ``radar_surveillance_layout``：它们不消费 surface 分类事实。
+        """
+
+        state = self.session.state
+        if include_facts:
+            facts = state.get("surface_class_facts")
+            if isinstance(facts, dict) and facts.get("status") not in (None, "not_calculated"):
+                facts["status"] = "stale"
+                facts["stale_reason"] = str(reason)
+                state["surface_class_facts"] = facts
+                state.setdefault("result_statuses", {})["surface_class_facts"] = "stale"
+        self.coverage_3d()
+        mark_active_report_stale(state, str(reason))
+        return {
+            "reason": str(reason),
+            "downstream": [
+                "coverage_3d", "cns_service_capability", "cns_corridor_assessment",
+                "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report",
+            ],
+            "operational_routes_untouched": True,
+            "theta_star_candidates_untouched": True,
+            "risk_untouched": True,
+            "radar_surveillance_layout_untouched": True,
+        }
+
+    def surface_classification_changed(self, reason="surface_classification_policy_changed"):
+        """中立 surface classification **策略**变化：事实先过时，再严格下游传播。
+
+        ``self.coverage_3d()`` 已覆盖 P7 → P8 → P14 → P15 → P16 → 报告；这里只额外把
+        逐格事实本身标 stale（它已经不代表当前策略），并显式声明未受影响的链路。
+        """
+
+        return self.surface_facts_changed(str(reason), include_facts=True)
 
     def radar_surveillance_layout(self, reason="radar_surveillance_input_changed"):
         """Stale only the additive Radar Surveillance Layout V1 proposal.

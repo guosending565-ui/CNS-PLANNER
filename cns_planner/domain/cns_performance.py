@@ -118,6 +118,13 @@ def normalize_subsystem_contract(subsystem: str, value: dict | None, *, field: s
             "sensor_mode": _enum(type_value.get("sensor_mode"), SURVEILLANCE_SENSOR_MODES, f"{field}.type.sensor_mode"),
             "technology": _enum(type_value.get("technology", "unknown"), SURVEILLANCE_TECHNOLOGIES, f"{field}.type.technology", allow_null=False),
         }
+        #: Round 2 additive：``service_subtype`` 是**合作监视服务的类型描述**，
+        #: 显式给出时才保留（旧项目不会出现该键，输出形状与逐字节结果不变）。
+        #: 它本身**不是** RID 判定谓词（ADS-B 亦可声称 cooperative_surveillance）。
+        if "service_subtype" in type_value:
+            subtype = _optional_text(type_value.get("service_subtype"))
+            if subtype is not None:
+                result["type"]["service_subtype"] = subtype
         result["performance"] = {
             "min_detection_range_m": _optional_nonnegative(performance_value.get("min_detection_range_m"), f"{field}.performance.min_detection_range_m"),
             "min_detection_probability": _optional_probability(performance_value.get("min_detection_probability"), f"{field}.performance.min_detection_probability"),
