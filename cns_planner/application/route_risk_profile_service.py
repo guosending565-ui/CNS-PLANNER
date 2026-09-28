@@ -244,6 +244,27 @@ class RouteRiskProfileService:
             profile_policy=policy, expected=expected,
         )
         profile["policy"] = deepcopy(policy)
+        # 证据不足穿越的 provenance：**只读**记录，绝不进入风险数学，也不改变任何权重。
+        # 有了它，RouteRiskProfile 与后续 continuous validation / adoption 都能看到
+        # "这条候选是靠 provisional policy 才被搜索出来的"。
+        profile["constraint_field_applicability"] = {
+            "contains_unknown_constraints": bool(
+                candidate.get("contains_unknown_constraints")
+            ),
+            "traversed_unknown_cell_count": int(
+                candidate.get("traversed_unknown_cell_count")
+                or candidate.get("unknown_constraint_count") or 0
+            ),
+            "operational_applicability": str(
+                candidate.get("operational_applicability") or "current"
+            ),
+            "unknown_constraint_policy": deepcopy(candidate.get("unknown_constraint_policy")),
+            "unknown_affects_feasibility_only": True,
+            "unknown_is_never_zero_risk": True,
+            "risk_mathematics_unchanged": True,
+            "objective_weights_unchanged_by_unknown": True,
+            "provisional_only_never_publishable": True,
+        }
         if profile["status"] != "passed":
             reasons = profile.get("blocking_reasons") or [{
                 "reason_code": profile.get("status_reason") or "profile_not_available",

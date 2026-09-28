@@ -122,8 +122,10 @@ from ..domain.layered_route_validation import (
 )
 from ..domain.planning_constraint_field import (
     empty_planning_constraint_field_collection,
+    normalize_constraint_unknown_policy_configuration,
     normalize_planning_constraint_field_collection,
 )
+from ..domain.restricted_area import normalize_restricted_area_declarations
 from ..domain.layered_operational_adoption import (
     empty_layered_operational_adoptions, normalize_layered_operational_adoptions,
 )
@@ -320,6 +322,10 @@ def blank_project(defaults):
         "layered_route_cost_policy": default_layered_route_cost_policy(),
         "layered_route_candidates": empty_layered_route_candidate_collection(),
         "planning_constraint_fields": empty_planning_constraint_field_collection(),
+        # PCF 前置配置：provisional 穿越策略默认**未启用**（必须用户显式确认并给出
+        # source/evidence）；受限区域的 confirmed_none 只能由用户显式声明。
+        "planning_constraint_field_policy": normalize_constraint_unknown_policy_configuration(None),
+        "restricted_area_declarations": normalize_restricted_area_declarations(None),
         # RouteRiskProfile V1 (additive analysis of a current layered candidate): per-domain
         # thresholds ship unconfirmed (no default), and the profile container starts empty.
         "route_risk_profile_policy": normalize_route_risk_profile_policy(None),
@@ -645,6 +651,14 @@ def normalize_project(value, grid_service):
     )
     value["planning_constraint_fields"] = normalize_planning_constraint_field_collection(
         value.get("planning_constraint_fields")
+    )
+    # PCF 前置配置的 additive 回填：旧项目得到"未启用 provisional 穿越 + 未声明
+    # confirmed_none"。**绝不**把缺失的配置当成已确认——那正是全域 unknown 的成因之一。
+    value["planning_constraint_field_policy"] = normalize_constraint_unknown_policy_configuration(
+        value.get("planning_constraint_field_policy")
+    )
+    value["restricted_area_declarations"] = normalize_restricted_area_declarations(
+        value.get("restricted_area_declarations")
     )
     # RouteRiskProfile V1 additive backfill: a legacy project gets the unconfirmed per-domain
     # thresholds (no default) and an empty profile container.

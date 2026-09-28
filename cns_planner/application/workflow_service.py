@@ -287,6 +287,10 @@ _SNAPSHOT_DETAIL_FIELD_NAMES = (
 #: 需要在通用快照里去明细的结果容器 -> 专用只读读取入口（前端按需拉取）。
 _SNAPSHOT_DETAIL_ENDPOINTS = {
     "grid": "/api/workspace/grid",
+    # Rescue Stable：legacy Risk V1 的逐格 cells 约 24 MB，且不属于当前
+    # Project → L8 → population×shelter → Theta* V2 → Radar 主链。通用
+    # workflow 快照只保留其摘要，避免每次项目写入都把历史明细重新灌回前端。
+    "grid_risk": "/api/grid-risk",
     "grid_risk_v2": "/api/grid-risk-v2",
     "layered_route_candidates": "/api/layered-route-candidates",
     "planning_constraint_fields": "/api/planning-constraint-field",
@@ -1001,6 +1005,11 @@ class WorkflowService:
         return generation_arguments(self.state, payload)
     def planning_constraint_field_result_artifact_ref(self, altitude_layer_id=None):
         return self.planning_constraint_field_service.result_artifact_ref(altitude_layer_id)
+    def planning_constraint_field_configuration(self):
+        """PCF 前置配置（provisional 穿越策略 / confirmed_none 显式声明）。只读。"""
+        return self.planning_constraint_field_service.configuration_snapshot()
+    def set_planning_constraint_field_configuration(self, payload=None):
+        return self.planning_constraint_field_service.set_configuration(payload)
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
@@ -1222,7 +1231,7 @@ class WorkflowService:
     def population_nodata_policy(self): return self.workspace_service.population_nodata_policy_snapshot()
     def set_population_nodata_policy(self, payload): return self.workspace_service.set_population_nodata_policy(payload)
     def clear_workspace(self): return self.workspace_service.clear_workspace()
-    def add_node(self, coordinate, name=None): return self.route_service.add_node(coordinate, name)
+    def add_node(self, coordinate, name=None, coordinate_source=None): return self.route_service.add_node(coordinate, name, coordinate_source)
     def import_reference_landing_sites(self, path): return self.reference_data_service.import_landing_sites(path)
     def import_reference_routes(self, path): return self.reference_data_service.import_routes(path)
     def preview_reference_routes(self, path, conversion=None):

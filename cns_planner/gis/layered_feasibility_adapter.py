@@ -17,6 +17,8 @@ footprint / horizontal clearance is the later continuous-validation stage's job.
 
 from __future__ import annotations
 
+from .terrain_fact_adapter import canonical_terrain_fact
+
 #: The L8 bounding boxes are already OGC:CRS84 (same assumption as the existing V3-A
 #: real-source adapter).
 LAYERED_TERRAIN_MAPPING_METHOD = "same_l8_grid_cell_bbox_read_only_window"
@@ -30,6 +32,8 @@ TOWER_OBSTACLE_SEMANTICS = "obstacle_clearance_not_a_risk_factor"
 TERRAIN_FACT_KEYS = (
     "data_status", "surface_elevation_max_egm2008_m", "valid_pixel_count",
     "nodata_pixel_count", "sampling", "reason",
+    # 垂向基准来源：消费端据此审计"这个 EGM2008 值从哪来"，而不是各自猜。
+    "vertical_reference", "vertical_reference_source",
 )
 BUILDING_FACT_KEYS = (
     "data_status", "building_count", "height_max_m", "height_p95_m",
@@ -56,27 +60,28 @@ class _GeographicIdentityTransform:
 
 
 def _terrain_fact(raw):
+    """Canonical terrain fact（唯一实现见 :mod:`cns_planner.gis.terrain_fact_adapter`）。
+
+    coarse feasibility 只承认 EGM2008 正高地形高程：canonical 字段缺失、或垂向基准无法
+    由 terrain 自身证据确认时一律 ``unknown``（missing 绝不等于 0），**绝不**用所选
+    AltitudeLayer 的垂向基准反向兜底 terrain fact。
+    """
+
     fact = raw if isinstance(raw, dict) else {}
-    elevation = fact.get("surface_elevation_max_egm2008_m")
-    passed = str(fact.get("data_status") or "") == "passed" and isinstance(
-        elevation, (int, float),
-    ) and not isinstance(elevation, bool)
-    if passed:
-        return {
-            "data_status": "passed",
-            "surface_elevation_max_egm2008_m": float(elevation),
-            "valid_pixel_count": fact.get("valid_pixel_count"),
-            "nodata_pixel_count": fact.get("nodata_pixel_count"),
-            "sampling": fact.get("sampling"),
-            "reason": None,
-        }
+    canonical = canonical_terrain_fact(fact)
+    passed = canonical["data_status"] == "passed"
+    reason = None
+    if not passed:
+        reason = str(fact.get("reason") or canonical.get("reason") or "terrain_data_unavailable")
     return {
-        "data_status": "unknown",
-        "surface_elevation_max_egm2008_m": None,
+        "data_status": canonical["data_status"],
+        "surface_elevation_max_egm2008_m": canonical["surface_elevation_max_egm2008_m"],
+        "vertical_reference": canonical.get("vertical_reference"),
+        "vertical_reference_source": canonical.get("vertical_reference_source"),
         "valid_pixel_count": fact.get("valid_pixel_count"),
         "nodata_pixel_count": fact.get("nodata_pixel_count"),
         "sampling": fact.get("sampling"),
-        "reason": str(fact.get("reason") or "terrain_data_unavailable"),
+        "reason": reason,
     }
 
 
@@ -165,7 +170,7 @@ def _tower_fact(counts):
     return {**base, "data_status": "passed", "reason": None}
 
 
-def _horizontal_half_degrees(clearance_m, latitude):
+def horizontal_half_degrees(clearance_m, latitude):
     """把显式水平净空（米）换算成经纬度 bbox 半径；未配置即 0（不假设任何裕度）。"""
 
     if not isinstance(clearance_m, (int, float)) or isinstance(clearance_m, bool):
@@ -177,6 +182,10 @@ def _horizontal_half_degrees(clearance_m, latitude):
 
     cos_lat = max(0.05, abs(math.cos(math.radians(float(latitude or 0.0)))))
     return metres / _METRES_PER_DEGREE_LAT, metres / (_METRES_PER_DEGREE_LON_EQUATOR * cos_lat)
+
+
+#: 兼容旧名（B3X 起内部使用）；新代码请用 :func:`horizontal_half_degrees`。
+_horizontal_half_degrees = horizontal_half_degrees
 
 
 def tower_facts_by_cell(grid_cells, state):
@@ -206,7 +215,7 @@ def tower_facts_by_cell(grid_cells, state):
         top = profile.get("tower_top_orthometric_m")
         resolved = profile.get("status") == "resolved" and isinstance(top, (int, float))
         confirmed = resolved and profile.get("confirmed") is True
-        half_lat, half_lon = _horizontal_half_degrees(horizontal, latitude)
+        half_lat, half_lon = horizontal_half_degrees(horizontal, latitude)
         towers.append({
             "tower_id": str(tower.get("tower_id") or ""),
             "longitude": float(longitude),
@@ -432,5 +441,6 @@ def layered_feasibility_source_status(state, terrain_path=None):
 __all__ = [
     "LAYERED_BUILDING_MAPPING_METHOD", "LAYERED_TERRAIN_MAPPING_METHOD",
     "LAYERED_TOWER_MAPPING_METHOD", "TOWER_FACT_KEYS", "TOWER_OBSTACLE_SEMANTICS",
-    "LayeredFeasibilityAdapter", "layered_feasibility_source_status", "tower_facts_by_cell",
+    "LayeredFeasibilityAdapter", "horizontal_half_degrees",
+    "layered_feasibility_source_status", "tower_facts_by_cell",
 ]

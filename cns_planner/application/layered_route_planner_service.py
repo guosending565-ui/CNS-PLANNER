@@ -43,6 +43,7 @@ from ..domain.planning_exposure import (
     normalize_planning_exposure_policy, planning_exposure_factors,
     planning_exposure_policy_fingerprint, resolve_planning_exposure,
 )
+from ..domain.population_nodata import CONFIRMED_ZERO_COVERAGE_STATUS
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, is_configured as regulatory_is_configured,
     normalize_regulatory_constraints, regulatory_compliance_record,
@@ -89,12 +90,67 @@ def _candidate_key(route_id, altitude_layer_id):
     return f"{route_id or 'od'}@{altitude_layer_id or 'layer'}"
 
 
-def _shelter_input_fingerprint(grid, policy, grid_risk_v2, planning_exposure_policy=None):
+def _confirmed_zero_population_cells(population_attribute):
+    """当前人口属性里被显式确认为"已知 0 人口暴露"的格子集合。
+
+    只认 population 映射自己写下的逐格结论 ``nodata_confirmed_zero_population``，该标签由
+    ``population_nodata`` 契约在**已确认**的 ``nodata_is_zero_population`` 策略下产出，因此它
+    是"来源 extent 之内、全 NoData = 已知 0"的逐格证据；未确认的 NoData、``missing_data`` 与
+    ``outside_extent`` 都不会带上它，绝不补 0。
+
+    **结论的权威位置是 cell 里的 ``nodata_semantics.coverage_status``**（人口映射写入的
+    provenance，见 ``population_nodata.confirmed_zero_allocation``）；cell 顶层的
+    ``coverage_status`` 只是兼容回退。原因是 ``PopulationGridService.backfill_legacy`` 会给旧
+    项目重算顶层覆盖状态，而它的已知覆盖集合曾经不含 confirmed zero，于是历史 confirmed-zero
+    格的顶层 ``coverage_status`` 被改写成 ``full``/``partial``（舟山现场实测：6052 格的顶层
+    状态全是 ``full``，``nodata_semantics`` 仍完整保留）。只读顶层字段会得到**空集合**，派生场
+    便继续把这些已确认的 0 当成未解析。
+    """
+
+    attribute = population_attribute if isinstance(population_attribute, dict) else {}
+    cells = attribute.get("cells")
+    if not isinstance(cells, dict):
+        return frozenset()
+    found = set()
+    for grid_id, cell in cells.items():
+        if not isinstance(cell, dict):
+            continue
+        semantics = cell.get("nodata_semantics")
+        status = (
+            semantics.get("coverage_status") if isinstance(semantics, dict) else None
+        ) or cell.get("coverage_status")
+        if str(status or "") == CONFIRMED_ZERO_COVERAGE_STATUS:
+            found.add(str(grid_id))
+    return frozenset(found)
+
+
+def _confirmed_zero_population_signature(population_attribute, confirmed_zero_ids):
+    """Fingerprint of the shelter field's 人口来源依赖：属性状态 + 已确认 0 的格子集合。"""
+
+    attribute = population_attribute if isinstance(population_attribute, dict) else {}
+    ids = sorted(str(grid_id) for grid_id in confirmed_zero_ids or ())
+    status = str(attribute.get("status") or "")
+    if not ids and not status:
+        return None
+    return stable_fingerprint({
+        "population_attribute_status": status or None,
+        "confirmed_zero_population_cells": ids,
+    }, prefix="popzerov1-")
+
+
+def _shelter_input_fingerprint(
+    grid, policy, grid_risk_v2, planning_exposure_policy=None, population_attribute=None,
+):
     """Fingerprint of everything the derived per-grid shelter field depends on.
 
     Population source/normalization, the grid identity, the confirmed shelter policy and the
     planning-exposure policy — so a change in any of them rebuilds the field instead of
     silently reusing it.
+
+    ``confirmed_zero_population_signature`` 记录当前人口属性里被显式确认为"已知 0 人口暴露"
+    的格子集合：该集合是 shelter 人口因子的直接输入（见 ``_population_factors``），
+    ``grid_risk_v2`` 的指纹在风险结果只被标 stale、尚未重算时**不会**反映人口属性的更新，
+    因此这一个依赖必须显式参与，派生场才不会复用旧的自 0 集合。
     """
 
     return stable_fingerprint({
@@ -108,6 +164,9 @@ def _shelter_input_fingerprint(grid, policy, grid_risk_v2, planning_exposure_pol
         "shelter_policy_fingerprint": shelter_policy_fingerprint(policy),
         "planning_exposure_policy_fingerprint": planning_exposure_policy_fingerprint(
             planning_exposure_policy or default_planning_exposure_policy()
+        ),
+        "confirmed_zero_population_signature": _confirmed_zero_population_signature(
+            population_attribute, _confirmed_zero_population_cells(population_attribute)
         ),
     }, prefix="shelterinputv1-")
 
@@ -790,7 +849,22 @@ class LayeredRoutePlannerService:
 
     @staticmethod
     def _population_factors(state):
-        """Canonical Risk Framework V2 population factor per grid (``None`` never becomes 0)."""
+        """Canonical Risk Framework V2 population factor per grid (``None`` never becomes 0).
+
+        逐格因子 = canonical 记录里 ``status == "passed"`` 的 ``normalized_index``（含合法的
+        0.0：归一化指数是 ``log1p(p)/log1p(reference)``，所以"已知 0 人口"对应真实因子 0.0）。
+
+        补充（定向、fail-closed 保持）：canonical 结果里未解析、而**当前人口属性**已显式给出
+        "已知 0 人口暴露"结论（逐格 provenance ``nodata_semantics.coverage_status ==
+        nodata_confirmed_zero_population``，见 ``_confirmed_zero_population_cells``）的格子，
+        其人口因子是已确认的 0.0，必须在这里按 0.0 解析。原因是人口 NoData 语义被显式确认并
+        重跑人口映射之后，``grid_risk_v2`` 只被标记为 stale 而**尚未重算**，其中 6052 格仍带着
+        旧的 ``missing_data`` 记录，会让 population × shelter 派生场把它们当成未解析并 fail-closed。
+
+        边界：missing_data / nodata_only / outside_extent 一律**不**进入这个集合，仍然保持
+        unresolved；本函数绝不把缺失或来源范围之外当成 0。规划用暴露度层（planning_exposure）
+        已生效时，shelter 使用的是那一层的因子，本函数的补充不会被消费。
+        """
 
         factors = {}
         grid_risk_v2 = state.get("grid_risk_v2") or {}
@@ -798,6 +872,10 @@ class LayeredRoutePlannerService:
             index, status = cell_factor_index(cell, POPULATION_FACTOR_ID)
             if status == "passed" and index is not None:
                 factors[str(grid_id)] = index
+        population_attribute = (state.get("grid_attributes") or {}).get("population") or {}
+        for grid_id in _confirmed_zero_population_cells(population_attribute):
+            if grid_id not in factors:
+                factors[grid_id] = 0.0
         return factors
 
     def set_planning_exposure_policy(self, payload):
@@ -832,11 +910,13 @@ class LayeredRoutePlannerService:
         grid = state.get("grid") or {}
         policy = state["shelter_coefficient_policy"]
         grid_risk_v2 = state.get("grid_risk_v2") or {}
+        population_attribute = state["grid_attributes"].get("population") or {}
         attribute = state.get("_population_shelter_cache") or {}
         cells = attribute.get("cells") or {}
         derived_from = attribute.get("derived_from_fingerprint")
         if cells and derived_from == _shelter_input_fingerprint(
-            grid, policy, grid_risk_v2, state.get("planning_exposure_policy")
+            grid, policy, grid_risk_v2, state.get("planning_exposure_policy"),
+            population_attribute,
         ):
             return deepcopy(attribute)
         exposure = self.planning_exposure_snapshot()
@@ -849,7 +929,7 @@ class LayeredRoutePlannerService:
         )
         attribute = resolve_population_shelter(
             grid=grid,
-            population_attribute=state["grid_attributes"].get("population") or {},
+            population_attribute=population_attribute,
             normalized_population_factors=factors,
             policy=policy,
         )
@@ -878,7 +958,8 @@ class LayeredRoutePlannerService:
             if exposure.get("applied") is True else "canonical_risk_v2_population_factor"
         )
         attribute["derived_from_fingerprint"] = _shelter_input_fingerprint(
-            grid, policy, grid_risk_v2, state.get("planning_exposure_policy")
+            grid, policy, grid_risk_v2, state.get("planning_exposure_policy"),
+            population_attribute,
         )
         state["_population_shelter_cache"] = attribute
         return deepcopy(attribute)

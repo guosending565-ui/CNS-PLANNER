@@ -1,6 +1,126 @@
 import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbEmpty,wbLine,wbEngine,wbCard,
   inputRequirementText,inputRequirementBadge,sourceStateText,workflowStatusText,emptyReasonText,
   advancedAuditNote,blockerList,primaryAction,nextStepBar} from './common.js';
+import {workspaceGridReadiness} from '../state/readiness.js';
+
+/**
+ * =========================================================================
+ * 项目打开状态（BUG-PROJECT-OPEN-UX-001 的唯一 UI 状态）
+ * =========================================================================
+ *
+ * 修复前的真实缺陷：Step01 只有「选择…」+「打开项目」两个按钮，但
+ *   * 「选择…」返回后**没有任何反馈**——用户不知道只是选中了目录、还是项目
+ *     已经在后台被切换；
+ *   * 输入框的值来自 `state.project_storage.directory`（**服务器当前项目**），
+ *     面板一旦重渲染就会被服务器值覆盖，用户刚选的路径凭空消失；
+ *   * 「打开项目」既没有进行中状态，也没有成功/失败结论，失败只落在 panelError。
+ *
+ * 现在把语义彻底分开，并且只允许三种事实来源：
+ *   1. `projectOpen.draft`  —— 用户刚在目录选择器里选中的路径（**只是选中，不是打开**）；
+ *   2. `projectOpen.identity` —— 上一次成功打开的服务器 active project 身份；
+ *   3. `projectOpen.message` —— 服务器返回的明确结论（中文业务原因，失败不吞）。
+ *
+ * 本模块**不猜**项目是否已打开：`step` 由 main.js 在真实服务器事实之上给出。
+ */
+export const PROJECT_OPEN_STATE_TEXT={
+  empty:'尚未选择项目目录。',
+  selected:'已选择项目目录，尚未打开项目。',
+  opening:'正在打开项目…',
+  opened:'项目已打开',
+  failed:'打开项目失败',
+};
+
+/** 打开过程的可见阶段文案（与 main.js 的 PROJECT_OPEN_STAGES 一一对应）。 */
+export const PROJECT_OPEN_STAGE_TEXT={
+  opening:'正在切换服务器 active project…',
+  applying:'正在安装项目状态与工作流快照…',
+  refreshing:'正在校准会话令牌与项目存储位置…',
+  map:'正在初始化地图视图与工作区图层…',
+  opened:'项目已打开',
+};
+
+/**
+ * 对比两个输入框里的路径是否指向同一个目录。
+ *
+ * 只做**纯文本**归一化（分隔符 / 尾部斜杠 / Windows 大小写），不解析、不猜、
+ * 不访问文件系统（浏览器里也没有这个能力）。
+ */
+export function sameProjectPath(a,b){
+  const normalize=value=>String(value||'').trim().replace(/[\\/]+$/,'').replace(/\//g,'\\').toLowerCase();
+  const left=normalize(a),right=normalize(b);
+  return Boolean(left)&&left===right;
+}
+
+/** 路径最后一段（仅用于显示名，不参与任何判定）。 */
+function projectBasename(value){
+  const parts=String(value||'').trim().replace(/[\\/]+$/,'').split(/[\\/]/);
+  return parts[parts.length-1]||'';
+}
+
+function formatNumber(value){
+  const number=Number(value);
+  return Number.isFinite(number)?number.toLocaleString():'—';
+}
+
+/** 标准规划网格的一行事实（passed / blocked / 未生成三种如实转印）。 */
+function gridFactText(facts){
+  if(!facts)return '未生成';
+  if(facts.grid)return 'L'+String(facts.gridLevel??8)+' · '+formatNumber(facts.gridCells)+' 格';
+  if(facts.gridBlocked)return '已阻断（请缩小工作区或提高上限后重新保存工作区）';
+  return '未生成';
+}
+
+/** 工作区一行事实。 */
+function workspaceFactText(facts){
+  if(!facts)return '未配置';
+  if(!facts.workspace)return '未配置';
+  const area=Number.isFinite(Number(facts.areaKm2))?formatNumber(facts.areaKm2)+' km²':'范围已保存（面积未记录）';
+  return '已加载 · '+area;
+}
+
+/**
+ * 「项目数据存储位置 + 选择… + 打开项目 + 状态」的完整只读投影。
+ *
+ * @param {{flow?:object, getStep?:()=>object|null, draft?:string}} input
+ */
+export function projectOpenPanel({getStep,draft=''}={}){
+  const step=(typeof getStep==='function'?getStep():null)||{};
+  const busy=_projectOpenInFlight;                       // 打开中：由模块级在途标志裁决
+  const savedIdentity=String(step.identity||'');         // 服务器 active project（已打开）
+  const savedDirectory=String(step.directory||'');
+  const currentInput=String(draft||'');
+  const isCurrent=sameProjectPath(currentInput,savedDirectory);
+  const statusKey=openStatusKey();
+  const statusText=PROJECT_OPEN_STATE_TEXT[statusKey]||'';
+  const buttonLabel=busy?'正在打开…':(isCurrent&&savedIdentity?'重新打开当前项目':'打开项目');
+  const facts=(statusKey==='opened'?(projectOpen.facts||step.facts||null):null);
+  const rows=[
+    '<div class="project-open-status" id="projectOpenStatus" data-state="'+statusKey+'" aria-live="polite">'
+      +'<b>'+escapeHtml(statusText)+'</b>'
+      +(busy?'<small>'+escapeHtml(PROJECT_OPEN_STAGE_TEXT[projectOpen.stage]||PROJECT_OPEN_STAGE_TEXT.opening)+'</small>':'')
+      +(statusKey==='failed'&&projectOpen.message?'<small class="project-open-error">'+escapeHtml(projectOpen.message)+'</small>':'')
+      +((statusKey==='opened'&&facts)
+        ?'<small>项目名称：'+escapeHtml(facts.name||'未命名项目')+'</small>'
+          +'<small>项目目录：'+escapeHtml(projectOpen.displayDirectory||savedDirectory||'（服务器自动恢复项目）')+'</small>'
+          +'<small>工作区：'+escapeHtml(workspaceFactText(facts))+'</small>'
+          +'<small>标准规划网格：'+escapeHtml(gridFactText(facts))+'</small>'
+        :'')
+    +'</div>'
+  ];
+  if(savedIdentity&&savedDirectory&&!isCurrent&&!busy){
+    rows.push('<div class="parameter-note">服务器当前已打开的项目：'
+      +escapeHtml(projectBasename(savedDirectory)||savedDirectory)
+      +'；点击「打开项目」会切换到上面输入的目录。</div>');
+  }
+  if(isCurrent&&savedIdentity&&!busy){
+    rows.push('<div class="parameter-note">当前已打开此项目；再次点击「打开项目」将重新从磁盘载入。</div>');
+  }
+  return '<label>项目数据存储位置</label>'
+    +'<div class="panel-file-input"><input class="panel-input" id="projectPath" value="'+escapeHtml(currentInput)+'" placeholder="请选择项目文件夹"><button class="secondary" id="browseProject">选择…</button>'
+    +(busy?'':'<button class="secondary" id="openProject" '+(currentInput?'':'disabled')+'>'+escapeHtml(buttonLabel)+'</button>')
+    +'</div>'
+    +rows.join('');
+}
 
 export function algorithmSelectionKey(item){return [item?.algorithm_type,item?.algorithm_id,item?.version].join('|');}
 export function algorithmManifestDetails(item){return item?{
@@ -127,7 +247,9 @@ function frozenCompatibilityOnly(item,current){
 }
 
 export function render({state,flow}){
-  const storageDir=state?.project_storage?.directory||'';
+  // 服务器当前项目目录（权威事实，只在渲染时读取）：draft 为空时它就是输入框的值。
+  // 自动恢复项目的 directory 为空 —— 此时输入框留空，绝不编造一个"看起来像项目"的路径。
+  _serverProjectDirectory=String(state?.project_storage?.directory||'');
   const cnsSources=[
     ['航空器能力配置',flow.aircraft_profiles],['设备资料库',flow.device_catalog],
     ['既有 CNS 设施',flow.existing_cns_facilities],['候选站址',flow.candidate_sites],
@@ -137,7 +259,12 @@ export function render({state,flow}){
   const healthLabel={ready:'数据源正常',warning:'数据源有告警',error:'数据源错误',checking:'正在检查数据源'}[health.status]||health.status;
   const healthLine=wbLine(healthLabel||'数据源状态未知',health.status==='ready'?'ok':'warn',health.label||'');
   const project=flow.project||{};
-  const workspace=flow.workspace;
+  // BUG-PROJECT-OPEN-UX-002：workspace 存在但 area_km2 缺失时，`(undefined).toLocaleString()`
+  // 会让整个 Step01 以技术错误中断。这里只做**空值保护**，不补 0、不推断面积。
+  const workspaceArea=Number(flow.workspace?.area_km2);
+  const workspace=flow.workspace
+    ?{...flow.workspace,area_km2:Number.isFinite(workspaceArea)?workspaceArea:null}
+    :null;
 
   const objective='<div class="flow-summary"><b>本步目标</b>：准备项目容器与数据来源，'
     +'核对必要输入清单，确认哪些输入是必需的、哪些可以采用工程假设。'
@@ -147,20 +274,23 @@ export function render({state,flow}){
     wbBlock('项目与数据来源',
       objective
       +'<label>项目名称</label><input class="panel-input" id="projectName" value="'+escapeHtml(project.name||'')+'">'
-      +'<label>项目数据存储位置</label><div class="panel-file-input"><input class="panel-input" id="projectPath" value="'+escapeHtml(storageDir)+'" placeholder="请选择项目文件夹"><button class="secondary" id="browseProject">选择…</button></div>'
+      +projectOpenPanel({getStep:()=>projectOpen,draft:draftDirectory()})
       +'<div class="parameter-note">数据来源（人口 / 地形 / 建筑 / 铁塔 / 空域要地 / 设备 / 起降点）'
       +'统一在顶部「数据源」对话框中配置与校验；本页只显示它们的健康状态。</div>'
       +'<button class="secondary full" id="openSettingsFromStep1">打开数据源设置</button>')
       +wbBlock('工作区',
         workspace
-          ?'<div class="metric-grid"><b>'+(workspace.area_km2).toLocaleString()+' km²<small>工作区面积</small></b>'
+          ?'<div class="metric-grid"><b>'+(workspace.area_km2===null?'—':workspace.area_km2.toLocaleString())+' km²<small>工作区面积</small></b>'
             +'<b>'+escapeHtml(statusText((flow.grid||{}).status||'not_calculated'))+'<small>标准规划网格</small></b></div>'
             +'<div class="parameter-note">工作区在第 02 步框选与保存；本步不修改工作区。</div>'
           :'<div class="wb-empty">尚未保存工作区。请进入第 02 步「环境与风险」框选分析范围。</div>')
       +wbBlock('地名定位',
         '<label>地名搜索定位</label><input class="panel-input" id="placeSearch" type="search" placeholder="舟山市、朱家尖、普陀山"><button class="secondary full" id="searchPlace">搜索定位</button><div id="placeResults" class="place-results" hidden></div>')
       +wbBlock('项目动作',
-        '<div class="button-row"><button class="secondary" id="openProject">打开项目</button></div>')
+        // BUG-PROJECT-OPEN-UX-001：这里曾经再放一个「打开项目」按钮，与"项目数据存储位置"
+        // 下面的按钮重名同 id、语义重复。打开项目的**唯一**按钮与状态提示现在都在
+        // 「项目数据存储位置」块里（见 projectOpenPanel），此处只保留保存动作。
+        '<div class="parameter-note">打开项目在「项目数据存储位置」处显式提交；本步不会在后台偷偷切换项目。</div>')
       +primaryAction('<button class="primary" id="saveProject">保存项目</button>',
         {note:'保存会把项目写入上面选择的文件夹；之后的自动保存也写入该项目。'})
   );
@@ -226,10 +356,154 @@ function projectBlockerItems({state,flow}){
   return items;
 }
 
+/**
+ * Step01 的项目打开 UI 状态（模块级，因为它在多次面板重渲染之间必须存活）。
+ *
+ * `draft`      用户刚选中的目录（仅选中，**不代表**已打开）；
+ * `busy`       正在执行 POST /api/project/open 及安装链；
+ * `ok/message` 服务器给出的明确结论；`facts` 打开完成后的真实项目事实。
+ */
+let _draftProjectDirectory='';
+/** 服务器 active project 目录（每次 render 由 render() 刷新；bind 绝不覆盖 draft）。 */
+let _serverProjectDirectory='';
+/** 打开项目是否正在进行。必须是模块级：面板重渲染不能让"正在打开…"凭空消失。 */
+let _projectOpenInFlight=false;
+let projectOpen={busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null};
+
+/** 目录选择器的选择结果（壳层调用）：只写 draft，绝不打开项目。 */
+export function setProjectDirectoryDraft(directory){
+  const value=String(directory||'').trim();
+  if(value)_draftProjectDirectory=value;
+  return _draftProjectDirectory;
+}
+
+/**
+ * 显示给用户的 draft 目录。
+ *
+ * 稳定优先级（**不再依赖 bind 时机**）：
+ *   1. 用户刚选中的目录 / 刚手工编辑的路径（`_draftProjectDirectory`）；
+ *   2. 服务器当前 active project 目录 —— 仅在**渲染时**服务器已明确有项目时取值。
+ *
+ * 第 2 条只在渲染那一刻读权威事实，因此不会出现"面板重渲染把用户刚选的路径覆盖回
+ * 旧项目目录"这一类问题（BUG-PROJECT-OPEN-UX-001 §C 明确禁止）。
+ */
+function currentProjectDirectory(){
+  return _draftProjectDirectory||_serverProjectDirectory;
+}
+
+/** 当前 draft：优先用户输入框的实时值，其次上一次选择结果。 */
+function draftDirectory(){return currentProjectDirectory();}
+
+/**
+ * 当前项目打开状态的**唯一**判读（面板与增量刷新共用，避免两处各写一套 if/else）。
+ *
+ * 事实优先级：
+ *   busy（模块级在途标志） > 服务器返回的结论（message/ok） > draft 是否存在。
+ */
+function openStatusKey(){
+  if(_projectOpenInFlight)return 'opening';
+  if(projectOpen.message)return projectOpen.ok?'opened':'failed';
+  return draftDirectory()?'selected':'empty';
+}
+
+/** 只刷新状态提示区，不重建整个面板（避免输入焦点与滚动位置丢失）。 */
+function renderOpenStatus(node){
+  if(!node)return;
+  const saved=node.__projectOpenStep||{};
+  const busy=_projectOpenInFlight||saved.busy===true;
+  const statusKey=openStatusKey();
+  node.dataset.state=statusKey;
+  const lines=[];
+  lines.push('<b>'+escapeHtml(PROJECT_OPEN_STATE_TEXT[statusKey]||'')+'</b>');
+  if(busy)lines.push('<small>'+escapeHtml(PROJECT_OPEN_STAGE_TEXT[projectOpen.stage]||PROJECT_OPEN_STAGE_TEXT.opening)+'</small>');
+  if(statusKey==='failed'&&projectOpen.message)lines.push('<small class="project-open-error">'+escapeHtml(projectOpen.message)+'</small>');
+  if(statusKey==='opened'&&projectOpen.facts){
+    lines.push('<small>项目名称：'+escapeHtml(projectOpen.facts.name||'未命名项目')+'</small>');
+    lines.push('<small>项目目录：'+escapeHtml(projectOpen.displayDirectory||saved.directory||'（服务器自动恢复项目）')+'</small>');
+    lines.push('<small>工作区：'+escapeHtml(workspaceFactText(projectOpen.facts))+'</small>');
+    lines.push('<small>标准规划网格：'+escapeHtml(gridFactText(projectOpen.facts))+'</small>');
+  }
+  node.innerHTML=lines.join('');
+}
+
+/**
+ * Step01 绑定（BUG-PROJECT-OPEN-UX-001）。
+ *
+ * 语义边界（必须彻底分开）：
+ *   「选择…」  → 只打开目录选择器，把结果写进输入框（draft）+ 提示"已选择项目目录，
+ *                尚未打开项目"。**绝不**发任何项目切换请求。
+ *   「打开项目」→ 才调用唯一的 `openProject()`，并显示 正在打开… → 项目已打开 / 打开失败。
+ */
 export function bind(c){
-  c.$('browseProject').onclick=()=>c.openBrowser('project',c.$('projectPath').value);
-  c.$('saveProject').onclick=()=>c.saveProject(c.$('projectPath').value.trim(),c.$('projectName').value.trim());
-  c.$('openProject').onclick=()=>c.openProject(c.$('projectPath').value.trim());
+  const pathInput=c.$('projectPath');
+  const openButton=c.$('openProject');
+  const statusNode=c.$('projectOpenStatus');
+  projectOpen=Object.assign({busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null},projectOpen||{});
+  // 「正在打开…」必须跨重渲染存活：main.js 会在每个阶段重绘面板（用户要求看得见进度）。
+  projectOpen.busy=_projectOpenInFlight;
+  // 输入框显示 draft（用户刚选的 / 刚输入的）优先；否则显示服务器当前项目目录。
+  // 这里**只**赋值给输入框，不改 draft —— 保证任何一次重渲染都不会覆盖用户的选择。
+  if(pathInput)pathInput.value=currentProjectDirectory();
+  if(statusNode)statusNode.__projectOpenStep=c.projectOpenStep?.()||{};
+  renderOpenStatus(statusNode);
+
+  const syncButtonLabel=()=>{
+    if(!openButton)return;
+    const step=(statusNode&&statusNode.__projectOpenStep)||{};
+    const isCurrent=Boolean(step.identity)&&sameProjectPath(pathInput?pathInput.value:'',step.directory);
+    openButton.disabled=projectOpen.busy;
+    openButton.textContent=projectOpen.busy?'正在打开…':(isCurrent?'重新打开当前项目':'打开项目');
+  };
+  syncButtonLabel();
+
+  if(c.$('browseProject'))c.$('browseProject').onclick=()=>c.openBrowser('project',pathInput?pathInput.value:'');
+  // 「选择…」的回写由目录对话框负责；这里只跟踪用户对输入框的显式编辑，
+  // 保证 draft 始终等于输入框里的真实值（粘贴路径也算数）。
+  if(pathInput){
+    const onDraft=()=>{_draftProjectDirectory=pathInput.value;syncButtonLabel();};
+    pathInput.oninput=onDraft;pathInput.onchange=onDraft;
+    pathInput.onkeydown=event=>{
+      if(event.key!=='Enter')return;
+      event.preventDefault();
+      if(openButton&&!openButton.disabled)openButton.click();
+    };
+  }
+  if(openButton){
+    openButton.onclick=async()=>{
+      if(_projectOpenInFlight)return;
+      const directory=String(pathInput?pathInput.value:'').trim();
+      _draftProjectDirectory=directory;
+      _projectOpenInFlight=true;
+      projectOpen.ok=false;projectOpen.message='';projectOpen.stage='opening';
+      syncButtonLabel();
+      renderOpenStatus(statusNode);
+      let result=null;
+      try{
+        // 唯一的项目安装调用链（实现在 main.js）：只转发阶段，不复制任何安装逻辑。
+        // 每个阶段 main.js 都会 renderWorkflow() 重绘面板，因此这里不再直接改 DOM。
+        result=await c.openProject(directory,{onStage:stage=>{
+          projectOpen.stage=stage;
+          renderOpenStatus(statusNode);
+        }});
+      }catch(error){
+        // 唯一调用链内部已把失败转成中文结论；这里只兜底"连调用都没成功"的极端情况。
+        result={ok:false,error:error instanceof Error?error:new Error(String(error)),facts:null};
+      }finally{
+        _projectOpenInFlight=false;
+      }
+      projectOpen.ok=Boolean(result?.ok);
+      projectOpen.message=result?.ok?'':String(result?.error?.message||'打开项目失败');
+      projectOpen.identity=String(result?.identity||'');
+      projectOpen.displayDirectory=result?.ok?directory:'';
+      projectOpen.facts=result?.facts||null;
+      if(statusNode)statusNode.__projectOpenStep={busy:false,identity:projectOpen.identity,
+        directory:projectOpen.displayDirectory,facts:projectOpen.facts};
+      // 成功 / 失败都必须落到可见结论（服务器事实，不猜）。
+      renderOpenStatus(statusNode);
+      syncButtonLabel();
+    };
+  }
+  c.$('saveProject').onclick=()=>c.saveProject(pathInput?pathInput.value.trim():'',c.$('projectName').value.trim());
   // 数据源对话框挂在应用外壳上（不在工作台面板内），因此这里直接按 id 查找，
   // 不走 `c.$()`（它是"工作台内必须命中"的查询契约）。
   const settings=typeof document!=='undefined'&&document.getElementById?document.getElementById('settings'):null;

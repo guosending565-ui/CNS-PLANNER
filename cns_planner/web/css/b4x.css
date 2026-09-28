@@ -91,6 +91,27 @@
 .requirement-badge[data-level="optional"]{background:rgba(63,158,106,.14)}
 .requirement-badge[data-level="enhanced"]{background:rgba(21,116,212,.14)}
 
+/* ---- 规划约束场前置配置（provisional 穿越 / confirmed_none 显式声明） ---- */
+.constraint-config-block{margin:.4rem 0}
+.constraint-config{display:flex;flex-direction:column;gap:.4rem;margin:.4rem 0;padding:.55rem;
+  border-radius:8px;border:1px dashed color-mix(in srgb,currentColor 24%,transparent)}
+.constraint-config-head{display:flex;flex-wrap:wrap;gap:.4rem;align-items:baseline;
+  justify-content:space-between}
+.constraint-config-head small{opacity:.75;font-size:.72rem}
+.constraint-config-domain{margin:.3rem 0;padding:.4rem .5rem;border-radius:6px;
+  background:color-mix(in srgb,currentColor 5%,transparent)}
+.constraint-config-check{display:flex;gap:.4rem;align-items:flex-start;font-size:.78rem;
+  line-height:1.5;font-weight:600}
+.constraint-config-fields{display:flex;flex-direction:column;gap:.3rem;margin:.35rem 0 .2rem}
+.constraint-config-fields label{display:flex;flex-direction:column;gap:.15rem;font-size:.72rem;
+  opacity:.9}
+.constraint-config-fields input,.constraint-config-fields textarea{font:inherit;padding:.22rem .35rem}
+
+/* 黄色提示：已启用候选试算穿越证据不足单元（证据不足仍不是安全通过） */
+.parameter-note.constraint-provisional-notice{background:rgba(240,160,32,.16);
+  border-color:rgba(240,160,32,.55);color:#6d4600}
+.constraint-provisional-flag{color:#8a5a00}
+
 /* ---- 高级 / 审计信息 --------------------------------------------------- */
 .advanced-audit-note{display:flex;flex-wrap:wrap;gap:.35rem .5rem;align-items:baseline;
   margin:.35rem 0;padding:.35rem .5rem;border-radius:6px;font-size:.74rem;line-height:1.55;

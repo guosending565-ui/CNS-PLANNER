@@ -6,6 +6,12 @@ import {
   layeredFeasibilityModel,layeredFeasibilityPayloadFrom,layeredPlanningRequestModel,
   layeredRequestPayloadFrom,renderLayeredFeasibilityFields,renderLayeredPlanningRequestFields,
 } from './layered_route_planner.js';
+// BUG-TASK-FEEDBACK-001 §6：同步耗时请求的按钮态 / 已运行时长反馈。
+import {runWithBusyButton,elapsedText} from './busy_action.js';
+// 候选航路的 provisional / 证据不足语义：中文取词只来自 presentation.js（不另立词表）。
+import {
+  candidateApplicabilityText,provisionalRouteBlockText,PROVISIONAL_TRAVERSAL_NOTICE
+} from './presentation.js';
 
 // =========================================================
 // Layered Risk-Aware Theta* V2 前端（操作 → 分层候选，仅当
@@ -514,6 +520,15 @@ export function candidateModel(candidate,isCurrent){
     },
     blockingReasons:Array.isArray(candidate?.blocking_reasons)?candidate.blocking_reasons:[],
     searchIncomplete:candidate?.search_incomplete===true,
+    // 证据不足穿越：**只**转印后端字段（前端不重算、不推断）。
+    // unknown 只影响 feasibility，不参与风险成本，也不改变 objective 权重。
+    traversedUnknownCellCount:finite(candidate?.traversed_unknown_cell_count)
+      ?Number(candidate.traversed_unknown_cell_count)
+      :(finite(candidate?.unknown_constraint_count)?Number(candidate.unknown_constraint_count):0),
+    containsUnknownConstraints:candidate?.contains_unknown_constraints===true,
+    operationalApplicability:text(candidate?.operational_applicability||'current'),
+    operationalAdoptionAllowed:candidate?.operational_adoption_allowed!==false,
+    unknownConstraintPolicy:candidate?.unknown_constraint_policy||null,
     // Terminal status projection (Phase 3.5): ``no_path`` (搜索完整但无解) and
     // ``search_incomplete`` (搜索预算耗尽，可达性未证明) must never be shown as the same thing.
     terminalStatus:text(candidate?.terminal_status||candidate?.status),
@@ -599,7 +614,47 @@ const LABEL_TEXT={
   'weighted_risk':'加权风险',
   'weighted_turn':'加权转弯',
   'weighted_distance':'加权距离',
-  'total_cost':'总代价'
+  'total_cost':'总代价',
+  // BUG-I18N-001：candidate 结果区的行标签收口（主界面中文；raw 字段名只保留在
+  // 标题括号与 data-* 属性里，作为审计信息，供高级区与既有前端测试读取）。
+  'expanded / generated labels':'扩展 / 生成标签数',
+  'los_checks / los_shortcuts':'视线检查 / 视线捷径次数',
+  'rewired_parent_shortcuts':'父节点重连捷径',
+  'heading_bin_count / theta_min_deg':'航向分箱数 / 最小转角',
+  'search_completeness':'搜索完整性',
+  'risk_unresolved_cell_count':'风险未解析网格数',
+  'rejected_terrain':'地形约束拒绝',
+  'rejected_building':'建筑约束拒绝',
+  'rejected_tower':'铁塔约束拒绝',
+  'rejected_regulatory':'法规约束拒绝',
+  'rejected_unknown':'证据不足拒绝',
+  'rejected_hard_constraint':'硬约束拒绝',
+  'rejected_outside_grid':'网格外拒绝',
+  'is_current':'当前有效',
+  'cell_count':'格数',
+  'turns 明细':'转弯明细',
+  'LOS segment 明细':'视线航段明细',
+  'candidate fingerprints':'候选指纹',
+  'route_risk_density_definition':'航路风险密度定义',
+  'route_risk_density_value':'航路风险密度值',
+  'route_risk_density_threshold':'航路风险密度阈值',
+  'route_risk_density_margin':'航路风险密度余量',
+  'route_risk_density_status':'航路风险密度状态',
+  'route_risk_density_objective_term':'是否计入规划目标',
+  'route_risk_density_temporary':'临时约束',
+  'candidate_fingerprint':'候选指纹',
+  'feasibility_fingerprint':'可行域指纹',
+  'risk_fingerprint':'风险指纹',
+  'request_fingerprint':'规划请求指纹',
+  'input_fingerprint':'输入指纹',
+  'feasibility_mask_fingerprint':'可行域掩码指纹',
+  'communication_informational_fingerprint':'通信信息性指纹',
+  'pipeline':'处理链',
+  'search_semantics':'搜索语义',
+  'feasibility_semantics':'可行域语义',
+  'risk_density_constraint':'风险密度约束',
+  'communication':'通信',
+  'airspace':'空域'
 };
 
 /** 行标签 → 中文（只本地化标签，绝不改写标签携带的事实）。 */
@@ -704,14 +759,65 @@ function listRows(rows){
   return '<div class="scroll-list route-list">'+rows.join('')+'</div>';
 }
 
+/**
+ * 阻挡原因 reason_code → 中文业务结论（BUG-I18N-001 / BUG-TASK-FEEDBACK-001 §7）。
+ *
+ * 用户最关心的一件事是「算法到底跑完没有」：`no_path` / `no_traversable_path`
+ * 必须明确说成"搜索已完成，当前约束条件下没有可通行路径"，绝不能让用户误以为算法卡死。
+ * raw reason_code 仍然照原样显示在业务结论之后（审计信息，不删除）。
+ */
+const BLOCKER_REASON_TEXT={
+  no_path:'搜索已完成：当前约束条件下未找到可通行路径',
+  no_traversable_path:'搜索已完成：当前约束条件下未找到可通行路径（可达性已证明）',
+  search_incomplete:'搜索未完成（触达资源上限）：结论不完整，请缩小范围或提高资源上限后重跑',
+  expansion_cap_reached:'搜索触达扩展上限：未证明最优性',
+  grid_unavailable:'标准规划网格不可用：请先在第 02 步保存工作区',
+  scenario_route_endpoints_missing:'场景航路缺少起降点：请先选择 OD 并生成场景航路',
+  altitude_layer_unresolved:'固定巡航高度层未确认：请先补齐 nominal 高度与垂向基准',
+  constraint_field_unavailable:'规划约束场不可用：请先生成该高度层的约束场',
+  risk_density_exceeded:'航路风险密度超出阈值',
+  risk_v2_overall_used_forbidden:'禁止把 Risk V2 总体指数用于正式规划',
+  feasibility_mask_missing:'可行域掩码缺失：请先完成分层可行性输入',
+  cost_weights_not_configured:'搜索代价权重未确认',
+  v3_policy_not_confirmed:'规划策略尚未确认',
+  terrain_dtm_not_configured_or_missing:'FABDEM DTM 未配置或缺失',
+};
+
+/** 阻挡原因 → 中文业务结论（未登记时返回空串：宁可只显示技术码，也不编造解释）。 */
+function blockerReasonText(reasonCode){
+  const key=String(reasonCode??'');
+  return Object.prototype.hasOwnProperty.call(BLOCKER_REASON_TEXT,key)?BLOCKER_REASON_TEXT[key]:'';
+}
+
+/**
+ * 一次 evaluate 结束后的**唯一中文结论**（含 no_path 这类"搜索完成但无解"）。
+ *
+ * 用户最怕的是"点了没反应、以为算法卡死"：因此这里必须区分
+ * 「搜索已完成：没有可通行路径」与「搜索未完成：触达资源上限」两种情况。
+ */
+export function blockerOutcomeText(blockers){
+  const list=Array.isArray(blockers)?blockers:[];
+  if(!list.length)return '';
+  const parts=list.map(item=>{
+    const code=String(item?.reason_code||item?.reasonCode||'');
+    const business=blockerReasonText(code)||String(item?.reason||code||'未说明原因');
+    return code?business+'（'+code+'）':business;
+  });
+  return parts.join('；');
+}
+
 function blockerRows(blockers,emptyNote){
   if(!blockers.length)return '<div class="parameter-note">'+escapeHtml(emptyNote)+'</div>';
-  return listRows(blockers.map(item=>'<div class="list-row"><span><b>'+escapeHtml(item.reasonCode)
-    +'</b> '+statusBadge(item.terminalStatus==='search_incomplete'?'search_incomplete':(item.terminalStatus||'blocked'))
-    +'<small>'+escapeHtml(item.reason)+'</small>'
-    +(item.resourceLimit?'<small>resource_limit='+escapeHtml(String(item.resourceLimit))
-      +' · reachability_proven='+escapeHtml(String(item.reachabilityProven===true))+'</small>':'')
-    +'</span></div>'));
+  return listRows(blockers.map(item=>{
+    const business=blockerReasonText(item.reasonCode);
+    return '<div class="list-row"><span><b>'+escapeHtml(business||item.reasonCode)
+      +'</b> '+statusBadge(item.terminalStatus==='search_incomplete'?'search_incomplete':(item.terminalStatus||'blocked'))
+      +(business?'<small>技术原因码 '+escapeHtml(item.reasonCode)+'</small>':'')
+      +'<small>'+escapeHtml(item.reason)+'</small>'
+      +(item.resourceLimit?'<small>resource_limit='+escapeHtml(String(item.resourceLimit))
+        +' · reachability_proven='+escapeHtml(String(item.reachabilityProven===true))+'</small>':'')
+      +'</span></div>';
+  }));
 }
 
 // ---------------------------------------------------------------- sections
@@ -1080,38 +1186,56 @@ function candidateSection(model){
     '<div class="parameter-note">下面所有数值都直接转印后端 candidate 字段，前端不重算 objective、'
     +'不重算 risk、不重算距离。candidate 只是候选：'+escapeHtml(THETA_V2_CANDIDATE_SCOPE)+'</div>'
     +'<div class="scroll-list route-list">'
-    +row('candidate',short(shown.candidateId||LAYERED_CANDIDATE_LABEL)+' · status '+short(shown.status)
-      +' · applicability '+short(shown.applicability))
+    +row('candidate',short(shown.candidateId||LAYERED_CANDIDATE_LABEL)+' · 状态 '+short(shown.status)
+      +' · 适用性 '+short(shown.applicability))
     +row('lane / layer',short(shown.routeId)+' · '+short(shown.layerId))
-    +row('row/step',(shown.isCurrent?'current':(shown.applicability||'—'))
-      +' · cells '+String(shown.cellCount)+' · distance '+fmtNumber(shown.distanceM,3)+' m'
-    +' · optimization_cost '+fmtNumber(shown.optimizationCost,6))
-    +row('search incomplete',String(shown.searchIncomplete))
+    // BUG-I18N-001：主界面中文（"当前有效"），raw `current` 只保留在 data 属性/审计区。
+    +row('row/step',(shown.isCurrent?'当前有效':(shown.applicability||'—'))
+      +' · 格数 '+String(shown.cellCount)+' · 距离 '+fmtNumber(shown.distanceM,3)+' m'
+    +' · 优化总代价 '+fmtNumber(shown.optimizationCost,6))
+    +row('search incomplete',(shown.searchIncomplete===true?'是':'否'))
     +'</div>'
-    +'<h3>planning_objective</h3>'
+    // 证据不足穿越（第十条）：N=0 时正常显示"当前有效候选"，N>0 时显式标注"仅供试算"。
+    +'<div class="scroll-list route-list" data-theta-v2-unknown-traversal="candidate">'
+    +fieldRow('traversed_unknown_cell_count','证据不足穿越',
+      String(shown.traversedUnknownCellCount)+' 格')
+    +fieldRow('operational_applicability','候选适用性',
+      candidateApplicabilityText(shown.operationalApplicability)
+      +(shown.containsUnknownConstraints?'（provisional_only）':''))
+    +fieldRow('operational_adoption_allowed','可否发布为运行航路',
+      (shown.operationalAdoptionAllowed===true&&!shown.containsUnknownConstraints)
+        ?'未发现证据不足阻断' : '不可（含证据不足单元）')
+    +'</div>'
+    +(shown.containsUnknownConstraints
+      ?'<div class="parameter-note constraint-provisional-notice" data-provisional="enabled">'
+        +'<b>候选试算航路：包含证据不足网格，仅供规划分析，不代表安全通过。</b>'
+        +'<br>'+escapeHtml(provisionalRouteBlockText(shown.traversedUnknownCellCount))
+        +'<br>'+escapeHtml(PROVISIONAL_TRAVERSAL_NOTICE)+'</div>'
+      :'')
+    +'<h3>规划目标（planning_objective）</h3>'
     +'<div class="scroll-list route-list" data-theta-v2-objective="candidate">'
     +candidateObjectiveRows(shown).join('')
     +row('formula',objective.formula)
     +fieldRow('objective_population_shelter_only','objective_population_shelter_only',
-      String(objective.objectivePopulationShelterOnly))
-    +fieldRow('risk_v2_overall_used','risk_v2_overall_used',String(objective.riskV2OverallUsed))
+      (objective.objectivePopulationShelterOnly===true?'是（只含人口 × 遮蔽）':'否'))
+    +fieldRow('risk_v2_overall_used','risk_v2_overall_used',(objective.riskV2OverallUsed===true?'是':'否'))
     +fieldRow('route_risk_density_is_not_an_objective_term','route_risk_density_is_not_an_objective_term',
-      String(objective.routeRiskDensityIsNotAnObjectiveTerm))
+      (objective.routeRiskDensityIsNotAnObjectiveTerm===true?'是（风险密度不是目标项）':'否'))
     +fieldRow('policy_fingerprint','objective policy fingerprint',short(objective.policyFingerprint))
     +'</div>'
-    +'<h3>route_risk_density（candidate 评价约束）</h3>'
+    +'<h3>航路风险密度（route_risk_density · 候选评价约束）</h3>'
     +'<div class="scroll-list route-list" data-theta-v2-density="candidate">'
-    +fieldRow('route_risk_density_definition','definition',density.definition)
-    +fieldRow('route_risk_density_value','value',fmtNumber(density.value,6))
-    +fieldRow('route_risk_density_threshold','threshold',fmtNumber(density.threshold,6))
-    +fieldRow('route_risk_density_margin','margin',fmtNumber(density.margin,6))
-    +fieldRow('route_risk_density_status','status',density.status+' · reason '+short(density.reason))
-    +fieldRow('route_risk_density_objective_term','objective_term',String(density.objectiveTerm)
-      +' · changes_objective_weights '+String(density.changesObjectiveWeights))
-    +fieldRow('route_risk_density_temporary','temporary_constraint',String(density.temporaryConstraint)
-      +' · source '+short(density.source))
+    +fieldRow('route_risk_density_definition','route_risk_density_definition',density.definition)
+    +fieldRow('route_risk_density_value','route_risk_density_value',fmtNumber(density.value,6))
+    +fieldRow('route_risk_density_threshold','route_risk_density_threshold',fmtNumber(density.threshold,6))
+    +fieldRow('route_risk_density_margin','route_risk_density_margin',fmtNumber(density.margin,6))
+    +fieldRow('route_risk_density_status','route_risk_density_status',short(density.status)+' · 原因 '+short(density.reason))
+    +fieldRow('route_risk_density_objective_term','route_risk_density_objective_term',(density.objectiveTerm===true?'是':'否')
+      +' · 改变目标权重 '+(density.changesObjectiveWeights===true?'是':'否'))
+    +fieldRow('route_risk_density_temporary','route_risk_density_temporary',(density.temporaryConstraint===true?'是':'否')
+      +' · 来源 '+short(density.source))
     +'</div>'
-    +'<h3>turn_statistics</h3>'
+    +'<h3>转弯统计（turn_statistics）</h3>'
     +'<div class="scroll-list route-list" data-theta-v2-turns="candidate">'
     +row('turn_count',short(turns.turnCount))
     +row('total_heading_change_deg',fmtNumber(turns.totalHeadingChangeDeg,6)+' deg')
@@ -1119,30 +1243,30 @@ function candidateSection(model){
     +row('theta_min_deg / d_ref_m',short(turns.thetaMinDeg)+' / '+short(turns.dRefM))
     +row('semantics',short(turns.semantics)+'（规划平滑代理，不是飞行动力学验证）')
     +'</div>'
-    +(turns.turns.length?wbDisclosure('turns 明细（'+turns.turns.length+' 次）',listRows([turnRows])):'')
-    +'<h3>search_statistics（Theta* / LOS / rewire）</h3>'
+    +(turns.turns.length?wbDisclosure('转弯明细（'+turns.turns.length+' 次）',listRows([turnRows])):'')
+    +'<h3>搜索统计（search_statistics · Theta* / 视线 / 重连）</h3>'
     +'<div class="scroll-list route-list" data-theta-v2-search="candidate">'
     +row('expanded / generated labels',short(search.expanded_labels)+' / '+short(search.generated_labels))
     +row('los_checks / los_shortcuts',short(search.los_checks)+' / '+short(search.los_shortcuts))
     +row('rewired_parent_shortcuts',short(search.rewired_parent_shortcuts)
-      +'（parent LOS rewiring，不是 A* + 后处理平滑）')
+      +'（父节点视线重连，不是 A* + 后处理平滑）')
     +row('heading_bin_count / theta_min_deg',short(search.heading_bin_count)+' / '+short(search.theta_min_deg))
     +row('d_ref_m',short(search.d_ref_m)+' · '+short(search.d_ref_provenance))
     +row('search_completeness',short(search.search_completeness)
-      +' · limit reached '+String(search.search_limit?.limit_reached===true)
+      +' · 是否触达上限 '+(search.search_limit?.limit_reached===true?'是':'否')
       +' · max_expanded_labels '+short(search.search_limit?.max_expanded_labels))
     +row('risk_unresolved_cell_count',short(search.risk_unresolved_cell_count))
-    +row('rejections',rejections.map(key=>key+' '+short(search[key])).join(' · '))
+    +row('rejections',rejections.map(key=>labelText(key)+' '+short(search[key])).join(' · '))
     +'</div>'
-    +'<h3>LOS segments（后端审计）</h3>'
+    +'<h3>视线航段（LOS segments · 后端审计）</h3>'
     +'<div class="scroll-list route-list">'
-    +row('segment count',String(shown.los.segmentCount)+' · crossed cells '+String(shown.los.crossedCellCount))
+    +row('segment count',String(shown.los.segmentCount)+' · 穿越网格数 '+String(shown.los.crossedCellCount))
     +'</div>'
-    +(shown.los.segmentCount?wbDisclosure('LOS segment 明细',listRows([losRows])):'')
-    +'<h3>blocking_reasons</h3>'
-    +blockerRows(shown.blockingReasons.map(normalizeBlocker),'该 candidate 没有 blocking_reasons。')
-    +'<h3>fingerprints / provenance</h3>'
-    +wbDisclosure('candidate fingerprints',
+    +(shown.los.segmentCount?wbDisclosure('视线航段明细（LOS segment）',listRows([losRows])):'')
+    +'<h3>阻挡原因（blocking_reasons）</h3>'
+    +blockerRows(shown.blockingReasons.map(normalizeBlocker),'该候选航路没有阻挡原因。')
+    +'<h3>指纹与来源（fingerprints / provenance）</h3>'
+    +wbDisclosure('候选指纹（candidate fingerprints）',
       listRows([
         row('candidate_fingerprint',short(shown.fingerprints.candidate)),
         row('feasibility_fingerprint',short(shown.fingerprints.feasibility)),
@@ -1353,7 +1477,44 @@ export function bindLayeredThetaV2(c){
         c.panelError(THETA_V2_EVALUATE_BLOCKED_NOTE);
         return;
       }
-      await c.resourceAction('/api/layered-route-candidates/evaluate-real',{});
+      // BUG-TASK-FEEDBACK-001 §6/§7：「运行 Theta* V2 candidate」是同步耗时请求，
+      // 用户必须明确知道：已提交 / 正在执行 / 已完成 / no_path。
+      // 按钮自述状态 + 已运行时长；结论（含 no_path 的中文业务结论）走 c.panelError。
+      const button=c.$('evaluateLayeredCandidate');
+      c.panelError('已提交：正在计算 Theta* V2 候选航路…','hint');
+      const outcome=await runWithBusyButton({
+        button,
+        label:'航路规划 · Theta* V2',
+        run:async()=>{
+          const result=await c.resourceAction('/api/layered-route-candidates/evaluate-real',{});
+          if(typeof c.refreshLayeredCandidates==='function')await c.refreshLayeredCandidates();
+          return result;
+        },
+        // 提交后按钮文案改为"正在计算"，并让面板提示行同步给出业务任务名。
+        onError:message=>c.panelError('航路规划（Theta* V2）未完成：'+message,'error'),
+        onDone:async()=>{
+          const latest=model();
+          const blockers=latest.blockers.thetaV2||[];
+          const shown=latest.candidates&&latest.candidates.shown;
+          if(blockers.length){
+            // no_path / no_traversable_path 必须明确说成"搜索已完成但没有可通行路径"，
+            // 绝不能让用户以为算法卡死（blockerRows 已把 reason_code 转成中文业务结论）。
+            c.panelError('航路规划 · Theta* V2：'+blockerOutcomeText(blockers),'error');
+            return;
+          }
+          c.panelError(shown
+            ?'航路规划 · Theta* V2 已完成：候选结果已更新（审核后才会进入风险画像与安全验证）。'
+            :'航路规划 · Theta* V2 已完成：未产生可展示候选，请检查规划请求与可行域输入。','success');
+        },
+      });
+      if(outcome.ok&&outcome.elapsed_ms){
+        // 已运行时长属于业务事实，追加到提示行末尾（不覆盖结论）。
+        const currentText=c.$('panelError')?c.$('panelError').textContent:'';
+        if(currentText&&!currentText.includes('已运行')){
+          c.panelError(currentText+'（本次计算已运行 '+elapsedText(outcome.elapsed_ms/1000)+'）',
+            c.$('panelError')?.dataset?.tone||'hint');
+        }
+      }
     });
   }
 }

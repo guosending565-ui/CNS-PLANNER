@@ -227,6 +227,13 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 .inline-error:empty{display:none;padding:0;margin:0}
 .inline-error:not(:empty){padding:var(--sp-5) var(--sp-6);border:1px solid var(--danger-line)}
 
+/* BUG-UI-SAVE-001：同一个面板提示行按语义着色。
+   "项目已保存"这类成功结论必须是绿色确认，不能沿用错误的红色语义。 */
+.inline-error[data-tone="success"]{background:var(--ok-bg);color:var(--ok)}
+.inline-error[data-tone="success"]:not(:empty){border-color:var(--ok-line)}
+.inline-error[data-tone="hint"]{background:var(--bg-surface);color:var(--ink-muted)}
+.inline-error[data-tone="hint"]:not(:empty){border-color:var(--line)}
+
 .small{font-size:var(--fs-micro);color:var(--ink-faint);line-height:1.6}
 
 .section-label{
@@ -275,6 +282,43 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 .device-list{max-height:250px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
 .coverage-results{max-height:250px;overflow-y:auto}
 .reference-site-list,.equipment-reference-list{max-height:280px}
+
+/* BUG-UI-SITE-SEARCH-001：`.list-row{display:flex}` 会覆盖 HTML `hidden` 属性自带的
+   `display:none`，于是 `row.hidden=true` 完全失效——筛选显示 0 条时列表仍在显示其它项。
+   修复：用**更高优先级**的选择器（不放宽到全局、也不使用 `!important`）为需要按行隐藏的
+   列表兜底，而不是在每处筛选里改成 style.display（那会让"筛选"与"渲染"各写一套显隐语义）。 */
+.list-row[hidden],
+.reference-site-row[hidden],
+.equipment-reference-card[hidden] { display: none; }
+
+/* 参考起降点搜索：输入框 + 明确的「搜索」按钮（Enter 与点击等价）。 */
+.reference-site-search{display:flex;align-items:flex-end;gap:var(--sp-3);margin:var(--sp-3) 0}
+.reference-site-search>label{font-size:var(--fs-micro);color:var(--ink-muted);white-space:nowrap}
+.reference-site-search>input{flex:1 1 auto;min-width:0}
+.reference-site-search>button{flex:0 0 auto;padding:var(--sp-3) var(--sp-5);font-size:var(--fs-micro)}
+
+/* FEAT-NODE-COORD-001：输入经纬度添加起降点。 */
+.manual-node-form{display:grid;gap:var(--sp-3);margin:var(--sp-4) 0;padding:var(--sp-5);
+  border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg-surface)}
+.manual-node-form .grid-control-title{margin-bottom:0}
+.manual-node-form #manualNodeFeedback[data-state="error"]{color:var(--danger)}
+.manual-node-form #manualNodeFeedback[data-state="ok"]{color:var(--ok)}
+
+/* BUG-PROJECT-OPEN-UX-001：项目打开状态区。
+   「选择…」与「打开项目」的语义必须一眼可分——状态区永远给出当前唯一结论，
+   并且只转印服务器事实（打开 / 未打开 / 正在打开 / 失败）。 */
+.project-open-status{display:grid;gap:var(--sp-2);margin:var(--sp-3) 0;padding:var(--sp-4) var(--sp-5);
+  border:1px solid var(--line);border-left-width:3px;border-radius:var(--r-sm);background:var(--bg-surface)}
+.project-open-status[data-state="empty"]{border-left-color:var(--line)}
+.project-open-status[data-state="selected"]{border-left-color:var(--warn-line)}
+.project-open-status[data-state="opening"]{border-left-color:var(--accent)}
+.project-open-status[data-state="opened"]{border-left-color:var(--ok-line)}
+.project-open-status[data-state="failed"]{border-left-color:var(--danger-line)}
+.project-open-status>b{font-size:var(--fs-body)}
+.project-open-status[data-state="opened"]>b{color:var(--ok)}
+.project-open-status[data-state="failed"]>b{color:var(--danger)}
+.project-open-status>small{display:block;color:var(--ink-muted);font-size:var(--fs-micro);line-height:1.6}
+.project-open-status>small.project-open-error{color:var(--danger)}
 
 .list-row{
   display:flex;

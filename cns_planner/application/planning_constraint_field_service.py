@@ -6,18 +6,32 @@ from copy import deepcopy
 
 from ..domain.building_clearance import building_height_status_is_resolved
 from ..domain.planning_constraint_field import (
-    normalize_constraint_cell, normalize_unknown_policy,
+    EGM2008_ORTHOMETRIC, normalize_constraint_cell,
+    normalize_constraint_unknown_policy_configuration, normalize_unknown_policy,
     planning_constraint_field_summary, stable_constraint_fingerprint,
     summarize_constraint_cells,
 )
-from ..domain.restricted_area import altitude_applicability, normalize_restricted_area_collection
+from ..domain.restricted_area import (
+    altitude_applicability, normalize_restricted_area_collection,
+    normalize_restricted_area_declarations,
+)
 from ..gis.planning_constraint_field_adapter import restricted_areas_by_cell, towers_by_cell
+#: terrain 字段契约的唯一 canonical 化实现（字段兼容绝不在这里重复写第二遍）。
+from ..gis.terrain_fact_adapter import (
+    canonical_terrain_fact, terrain_dataset_metadata,
+)
+#: 受限区域输入的唯一组装点（显式 restricted_areas ⊕ regulatory_constraints ⊕ 用户声明）。
+from ..gis.restricted_area_input_adapter import (
+    declared_domain_states, regulatory_constraints_as_restricted_areas,
+    restricted_area_dataset_inputs,
+)
 
 
 def generate_planning_constraint_field(
     *, altitude_layer, grid, terrain_by_cell, buildings_by_cell,
     tower_obstacle_profiles=None, restricted_areas=None, policies=None,
     source_fingerprints=None, workspace_identity=None,
+    terrain_dataset=None, towers=None, tower_clearance_policy=None,
 ):
     """Pure generation entry point; risk scores are deliberately not accepted."""
 
@@ -29,23 +43,28 @@ def generate_planning_constraint_field(
     unknown_policy = normalize_unknown_policy(policy.get("unknown_policy"))
     source_fingerprints = deepcopy(source_fingerprints or {})
     grid_crs = str((grid or {}).get("crs") or (grid or {}).get("geometry_crs") or "OGC:CRS84")
-    tower_map = towers_by_cell(grid_cells, tower_obstacle_profiles or {})
-    tower_state = str((tower_obstacle_profiles or {}).get("status") or "not_provided")
+    # terrain 的垂向基准只来自 terrain **自身** 的 dataset metadata；层基准绝不参与兜底。
+    terrain_metadata = (
+        terrain_dataset if isinstance(terrain_dataset, dict) and "vertical_reference" in terrain_dataset
+        else terrain_dataset_metadata(terrain_dataset)
+    )
+    tower_policy = tower_clearance_policy if isinstance(tower_clearance_policy, dict) else {}
+    # 塔证据按**空间相关性**索引：网格只回答"哪些 cell 可能受该塔影响"。
+    tower_map = towers_by_cell(
+        grid_cells, tower_obstacle_profiles or {},
+        towers=towers, tower_clearance_policy=tower_policy,
+    )
     restricted_states, restricted_items = _restricted_collection(restricted_areas)
     area_map = restricted_areas_by_cell(grid_cells, restricted_items, grid_crs=grid_crs)
     cells = []
     for grid_cell in grid_cells:
         grid_id = str(grid_cell.get("grid_id") or "")
         blocked_by, unknown_reasons, evidence_refs = [], [], []
-        terrain_fact = _fact(terrain_by_cell, grid_id, "terrain")
+        terrain_fact = canonical_terrain_fact(
+            _fact(terrain_by_cell, grid_id, "terrain"), dataset_metadata=terrain_metadata,
+        )
         building_fact = deepcopy(_fact(buildings_by_cell, grid_id, "buildings"))
-        if (
-            building_fact.get("ground_elevation_max_egm2008_m") is None
-            and building_fact.get("surface_elevation_max_egm2008_m") is None
-        ):
-            building_fact["ground_elevation_max_egm2008_m"] = terrain_fact.get(
-                "surface_elevation_max_egm2008_m"
-            )
+        _ground_elevation_from_terrain(building_fact, terrain_fact)
         _terrain(
             layer, terrain_fact, policy,
             blocked_by, unknown_reasons, evidence_refs,
@@ -54,13 +73,11 @@ def generate_planning_constraint_field(
             layer, building_fact, policy,
             blocked_by, unknown_reasons, evidence_refs,
         )
-        if tower_state != "passed":
-            unknown_reasons.append({"domain": "tower", "reason": "tower_dataset_unresolved"})
-        else:
-            _tower(
-                layer, tower_map.get(grid_id) or [], policy,
-                blocked_by, unknown_reasons, evidence_refs,
-            )
+        # 塔**绝不**按派生层的全局状态封死全域：只有与该塔空间相关的 cell 才进入塔证据判定。
+        _tower(
+            layer, tower_map.get(grid_id) or [], policy,
+            blocked_by, unknown_reasons, evidence_refs,
+        )
         for domain, reason in (
             ("airspace", "restricted_area_dataset_unresolved"),
             ("critical_site", "protected_site_dataset_unresolved"),
@@ -277,6 +294,105 @@ class PlanningConstraintFieldService:
         )
         return self.apply_field(field)
 
+    # ---- PCF 前置配置：provisional 穿越策略 / confirmed_none 显式声明 -----------------
+    #
+    # 这两项都是**用户显式确认**的输入，系统永不自行判定：
+    #
+    #   * ``unknown_policy`` 默认 false；只有用户显式请求并同时给出 source / evidence
+    #     才允许候选航路试算穿越证据不足单元（unknown 仍是 unknown，且永不进入
+    #     operational adoption）；
+    #   * ``confirmed_none`` 只能由用户声明"当前项目范围内按当前依据无该类约束"，
+    #     **绝不**由"没有数据"推导；未声明时对应 domain 继续 unresolved（unknown）。
+
+    def configuration_snapshot(self):
+        state = self.session.state
+        configuration = normalize_constraint_unknown_policy_configuration(
+            state.get("planning_constraint_field_policy")
+        )
+        declarations = declared_domain_states(state.get("restricted_area_declarations"))
+        restricted = normalize_restricted_area_collection(state.get("restricted_areas"))
+        bridged = regulatory_constraints_as_restricted_areas(state.get("regulatory_constraints"))
+        domain_states = {}
+        for domain in ("airspace", "critical_site"):
+            stored = (restricted.get("domain_states") or {}).get(domain) or {}
+            status = str(stored.get("status") or "not_provided")
+            if status not in ("confirmed_none", "confirmed_present"):
+                status = "not_configured"
+            domain_states[domain] = {
+                "status": status,
+                "source": deepcopy(stored.get("source")),
+                "evidence": deepcopy(stored.get("evidence") or []),
+                "declared_confirmed_none": declarations[domain]["status"] == "confirmed_none",
+                "declaration_authority_complete": declarations[domain]["authority_complete"],
+                "regulation_configured_constraints": (
+                    bridged["provenance"]["converted_count"] if domain == "airspace" else 0
+                ),
+            }
+        return {
+            "schema_version": 1,
+            "unknown_policy_configuration": configuration,
+            "restricted_area_declarations": declarations,
+            "domain_states": domain_states,
+            "allowed_domain_states": ["confirmed_present", "confirmed_none", "not_configured"],
+            "regulatory_bridge": deepcopy(bridged["provenance"]),
+            "semantics": {
+                "confirmed_none_requires_explicit_user_confirmation": True,
+                "not_configured_never_becomes_confirmed_none": True,
+                "allow_unknown_defaults_to_false": True,
+                "provisional_never_publishable": True,
+                "operational_adoption_stays_fail_closed": True,
+            },
+        }
+
+    def set_configuration(self, payload=None):
+        payload = payload if isinstance(payload, dict) else {}
+        state = self.session.state
+        configuration = normalize_constraint_unknown_policy_configuration(
+            payload.get("unknown_policy")
+            if "unknown_policy" in payload
+            else state.get("planning_constraint_field_policy")
+        )
+        state["planning_constraint_field_policy"] = configuration
+
+        if "restricted_area_declarations" in payload:
+            declarations = declared_domain_states(payload.get("restricted_area_declarations"))
+            state["restricted_area_declarations"] = normalize_restricted_area_declarations(
+                payload.get("restricted_area_declarations")
+            )
+            existing = normalize_restricted_area_collection(state.get("restricted_areas"))
+            domain_states = {}
+            for domain in ("airspace", "critical_site"):
+                current = (existing.get("domain_states") or {}).get(domain) or {}
+                if declarations[domain]["status"] == "confirmed_none":
+                    domain_states[domain] = {
+                        "status": "confirmed_none",
+                        "source": deepcopy(declarations[domain].get("source")),
+                        "evidence": deepcopy(declarations[domain].get("evidence") or []),
+                    }
+                else:
+                    # 撤销勾选：回到未声明。已有显式 confirmed_present 数据保持不变，
+                    # 但**绝不**自动变成 confirmed_none。
+                    domain_states[domain] = {
+                        "status": (
+                            "confirmed_present"
+                            if str(current.get("status")) == "confirmed_present"
+                            else "not_provided"
+                        ),
+                        "source": deepcopy(current.get("source")),
+                        "evidence": deepcopy(current.get("evidence") or []),
+                    }
+            state["restricted_areas"] = normalize_restricted_area_collection({
+                "source": existing.get("source"),
+                "evidence": existing.get("evidence"),
+                "domain_states": domain_states,
+                "items": deepcopy(existing.get("items") or []),
+            })
+
+        # 配置变了 → 已生成的 PCF 不再对应当前输入，必须显式重算（绝不静默沿用）。
+        self.invalidation.planning_constraint_field("planning_constraint_field_configuration_changed")
+        self.session.save()
+        return self.configuration_snapshot()
+
     # ---- B6X：唯一写入路径（heavy task publish 阶段也走这里） -----------------
 
     def apply_field(self, field):
@@ -316,15 +432,60 @@ class PlanningConstraintFieldService:
         return reference
 
 
+def _ground_elevation_from_terrain(building_fact, terrain_fact):
+    """建筑缺显式地面高程时，用**同格已解析的 terrain 地表高程**作为地面高程证据。
+
+    前提（缺一不可）：
+
+    * building fact 自己没有 ``ground_elevation_max_egm2008_m`` /
+      ``surface_elevation_max_egm2008_m``；
+    * 同格 terrain fact 的高程已解析，且其垂向基准**已确认为 EGM2008**
+      （terrain fact 的基准来自 terrain 自身证据，绝不来自所选高度层）。
+
+    绝不修改建筑高度本身；provenance 显式记录 ``ground_elevation_source``，
+    因此下游审计能看到这个地面高程来自地形网格而不是实测楼面高程。
+    """
+
+    item = building_fact if isinstance(building_fact, dict) else {}
+    terrain = terrain_fact if isinstance(terrain_fact, dict) else {}
+    if (
+        item.get("ground_elevation_max_egm2008_m") is not None
+        or item.get("surface_elevation_max_egm2008_m") is not None
+    ):
+        return
+    reference = str(terrain.get("vertical_reference") or "")
+    ground = _number(terrain.get("surface_elevation_max_egm2008_m"))
+    if ground is None or reference != EGM2008_ORTHOMETRIC:
+        return
+    item["ground_elevation_max_egm2008_m"] = ground
+    item["ground_elevation_source"] = "terrain_grid_surface"
+    item["ground_elevation_terrain_vertical_reference"] = reference
+    item["ground_elevation_terrain_vertical_reference_source"] = terrain.get(
+        "vertical_reference_source"
+    )
+    item["ground_elevation_is_measured_roof_or_floor"] = False
+
+
 def _terrain(layer, fact, policy, blocked, unknown, refs):
     clearance = _number(policy.get("terrain_vertical_clearance_m"))
-    elevation = _number((fact or {}).get("surface_elevation_max_egm2008_m"))
-    status = str((fact or {}).get("data_status") or (fact or {}).get("status") or "")
-    reference = str((fact or {}).get("vertical_reference") or layer["vertical_reference"])
-    if clearance is None or status not in ("passed", "resolved") or elevation is None or reference != layer["vertical_reference"]:
+    item = fact or {}
+    elevation = _number(item.get("surface_elevation_max_egm2008_m"))
+    status = str(item.get("data_status") or item.get("status") or "")
+    # 垂向基准必须来自 terrain **自身** 证据：这里读到的就是 canonical fact 的判定结果，
+    # 未确认时是 None/其它值，绝不回退成所选高度层的基准。
+    reference = str(item.get("vertical_reference") or "")
+    if (
+        clearance is None or status not in ("passed", "resolved") or elevation is None
+        or reference != layer["vertical_reference"]
+    ):
         unknown.append({"domain": "terrain", "reason": "terrain_evidence_or_clearance_unresolved"})
         return
-    refs.append({"domain": "terrain", "source": (fact or {}).get("source")})
+    refs.append({
+        "domain": "terrain", "source": item.get("source"),
+        "vertical_reference": reference,
+        "vertical_reference_source": item.get("vertical_reference_source"),
+        "vertical_projection": item.get("vertical_projection"),
+    })
     if layer["nominal_altitude_m"] < elevation + clearance:
         blocked.append("terrain")
 
@@ -351,27 +512,52 @@ def _building(layer, fact, policy, blocked, unknown, refs):
     ):
         unknown.append({"domain": "building", "reason": "building_ground_height_or_status_unresolved"})
         return
-    refs.append({"domain": "building", "source": item.get("source")})
+    refs.append({
+        "domain": "building", "source": item.get("source"),
+        # 地面高程的来源必须可审计：是实测楼面/地面，还是同格地形网格推算。
+        "ground_elevation_source": item.get("ground_elevation_source") or "building_fact_declared",
+        "ground_elevation_terrain_vertical_reference_source": item.get(
+            "ground_elevation_terrain_vertical_reference_source"
+        ),
+        "height_source": item.get("height_field") or "height_max_m",
+    })
     if layer["nominal_altitude_m"] < ground + height + clearance:
         blocked.append("building")
 
 
 def _tower(layer, profiles, policy, blocked, unknown, refs):
+    """**空间相关**的塔净空判定：只对与该塔相关的 cell 生效（调用方已做空间索引）。"""
+
     if not profiles:
         return
     clearance = _number(policy.get("tower_vertical_clearance_m"))
     if clearance is None:
+        # 净空没有默认值：该格有塔且净空未配置 → unknown（不是 0、也不是"无塔"）。
         unknown.append({"domain": "tower", "reason": "tower_clearance_unresolved"})
         return
     for profile in profiles:
+        tower_id = profile.get("tower_id")
         top = _number(profile.get("tower_top_orthometric_m"))
-        if profile.get("confirmed") is not True or top is None:
+        if top is None:
+            # 派生高度未生成/未解析：如实记 unknown，绝不猜塔高、也绝不当作"没有塔"。
             unknown.append({
-                "domain": "tower", "reason": "tower_top_not_confirmed",
-                "tower_id": profile.get("tower_id"),
+                "domain": "tower", "reason": "tower_height_unresolved",
+                "tower_id": tower_id,
+                "tower_evidence_source": profile.get("evidence_source"),
             })
             continue
-        refs.append({"domain": "tower", "tower_id": profile.get("tower_id")})
+        if profile.get("confirmed") is not True:
+            unknown.append({
+                "domain": "tower", "reason": "tower_top_not_confirmed",
+                "tower_id": tower_id,
+            })
+            continue
+        refs.append({
+            "domain": "tower", "tower_id": tower_id,
+            "tower_top_orthometric_m": top,
+            "tower_vertical_clearance_m": clearance,
+            "tower_evidence_source": profile.get("evidence_source"),
+        })
         if layer["nominal_altitude_m"] < top + clearance:
             blocked.append("tower")
 
@@ -447,6 +633,16 @@ def generation_arguments(state, payload=None):
     B6X 把"组装输入"从 :meth:`PlanningConstraintFieldService.generate` 里抽出来，
     使同步 use case、heavy task 的输入指纹与 worker 进程内的计算共用**同一份**
     语义：三处都调用它，不会出现"任务输入与同步输入不一致"的漂移。
+
+    本轮新增三处**唯一**的输入组装：
+
+    * ``terrain_dataset``：terrain attribute 自身（垂向基准只从它解析）；
+    * ``towers`` / ``tower_clearance_policy``：塔证据按空间相关性索引（派生层状态
+      不再封死全域）；
+    * ``restricted_areas``：显式集合 ⊕ ``regulatory_constraints`` 单向桥接 ⊕ 用户显式
+      ``confirmed_none`` 声明；
+    * ``unknown_policy``：只有"用户显式请求 + 已确认 + 有 source/evidence"才允许
+      provisional 穿越，否则恒为 false。
     """
 
     payload = payload if isinstance(payload, dict) else {}
@@ -455,12 +651,25 @@ def generation_arguments(state, payload=None):
     building_policy = state.get("building_clearance_policy") or {}
     tower_policy = state.get("tower_clearance_policy") or {}
     supplied_policy = payload.get("policies") or {}
+    unknown_configuration = normalize_constraint_unknown_policy_configuration(
+        supplied_policy.get("unknown_policy")
+        if "unknown_policy" in supplied_policy
+        else state.get("planning_constraint_field_policy")
+    )
     effective_policy = {
         "terrain_vertical_clearance_m": feasibility.get("terrain_vertical_clearance_m"),
         "building_vertical_clearance_m": building_policy.get("vertical_clearance_m"),
         "tower_vertical_clearance_m": tower_policy.get("tower_vertical_clearance_m"),
-        **deepcopy(supplied_policy),
+        **{
+            key: deepcopy(value) for key, value in supplied_policy.items()
+            if key != "unknown_policy"
+        },
+        "unknown_policy": deepcopy(unknown_configuration["unknown_policy"]),
     }
+    terrain_dataset = (
+        payload.get("terrain_dataset") if "terrain_dataset" in payload
+        else attributes.get("terrain")
+    )
     return {
         "altitude_layer": _find_layer(state, payload.get("altitude_layer_id")),
         "grid": payload.get("grid") or state.get("grid") or {},
@@ -474,10 +683,10 @@ def generation_arguments(state, payload=None):
             payload.get("tower_obstacle_profiles")
             if "tower_obstacle_profiles" in payload else state.get("tower_obstacle_profiles")
         ),
-        "restricted_areas": (
-            payload.get("restricted_areas")
-            if "restricted_areas" in payload else state.get("restricted_areas")
-        ),
+        "towers": payload.get("towers") if "towers" in payload else state.get("towers"),
+        "tower_clearance_policy": tower_policy,
+        "terrain_dataset": terrain_dataset if isinstance(terrain_dataset, dict) else {},
+        "restricted_areas": restricted_area_dataset_inputs(state, payload=payload),
         "policies": effective_policy,
         "source_fingerprints": payload.get("source_fingerprints") or _source_fingerprints(state),
         "workspace_identity": payload.get("workspace_identity") or _workspace_identity(state),

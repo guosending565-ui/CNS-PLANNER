@@ -873,13 +873,25 @@ export function bind(c){
     return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
   });
   // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 独立连续覆盖复核。
-  if(c.$('evaluateRadarSurveillanceLayout'))c.actionButton('evaluateRadarSurveillanceLayout',()=>{
+  if(c.$('evaluateRadarSurveillanceLayout'))c.actionButton('evaluateRadarSurveillanceLayout',async()=>{
     const payload={route_id:'all'};
+    const demoCandidate=(c.flow().layered_route_candidates?.items||[]).find(
+      item=>item?.status==='candidate'&&item?.current_applicability==='current'
+    );
+    if(c.$('radarDemoPreviewOnly')?.checked===true){
+      payload.demo_preview_only=true;
+      payload.route_source='current_layered_candidate';
+    }
     const buffer=c.$('radarCoastalBuffer')?.value.trim();
     if(buffer!==''&&buffer!=null)payload.coastal_uncertainty_buffer_m=Number(buffer);
     const layer=c.$('radarLandMaskLayer')?.value.trim();
     if(layer)payload.land_mask_layer_name=layer;
-    return c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
+    const result=await c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
+    await loadRadarSurveillanceDetail({
+      api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,
+      routeId:payload.demo_preview_only?(demoCandidate?.route_id||null):null,
+    });
+    return result;
   });
   // B5X：逐点明细按需载入（只读 GET）。通用快照只带有界摘要；明细绝不随快照下发。
   if(c.$('loadRadarSurveillanceDetail'))c.actionButton('loadRadarSurveillanceDetail',()=>

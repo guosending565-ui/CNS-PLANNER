@@ -30,8 +30,13 @@
 // =========================================================
 import {escapeHtml,shell,statusBadge,statusText,wbPanel,wbBlock,wbSegHint,wbCard,wbDisclosure,primaryAction,blockerList,nextStepBar,readinessText,workflowStatusText,assessmentText,emptyReasonText,inputRequirementText,constraintOutcomeText,CONSTRAINT_OUTCOME_TEXT,sourceStateText,advancedAuditNote,canonicalNodeLabel} from './common.js';
 import {LEGACY_RISK_V1_LABEL,renderRiskFrameworkV2Panel,riskFrameworkV2Model,riskV2ThemeOptions} from './risk_framework_v2.js';
-import {altitudeLayerSelector,altitudeLayerCatalogSummary,bindAltitudeLayerSelector,selectedAltitudeLayerId,altitudeLayerDetailRows,ALTITUDE_LAYER_EMPTY_NOTE} from './altitude_layers.js';
-import {constraintSummaryHtml,constraintLoadErrorHtml} from './constraint_field.js';
+import {altitudeLayerSelector,altitudeLayerCatalogSummary,bindAltitudeLayerSelector,selectedAltitudeLayerId,altitudeLayerDetailRows,ALTITUDE_LAYER_EMPTY_NOTE,altitudeLayerUsable} from './altitude_layers.js';
+import {constraintSummaryHtml,constraintLoadErrorHtml,constraintConfigurationHtml} from './constraint_field.js';
+// BUG-CONSTRAINT-UI-001 / BUG-WORKSPACE-RESTORE-002：工作区 / 标准网格 / 约束场门禁
+// **只**从 state/readiness.js 取结论，本文件不再手写第二套存在性判断。
+import {workspaceGridReadiness,workspaceGridReason,gridReadiness} from '../state/readiness.js';
+// BUG-TASK-FEEDBACK-001 §6：同步耗时请求的按钮态 / 已运行时长反馈。
+import {runWithBusyButton,elapsedText} from './busy_action.js';
 
 // ---- 二级任务分段 -----------------------------------------------------------
 // id 稳定（env-*），标签是第一视觉层的业务语言；工程编号与算法 id 只出现在
@@ -465,36 +470,34 @@ export const OPERATIONAL_GRID_LEVEL=8;
  */
 export function standardGridPanel(flow){
   const grid=flow?.grid||{};
-  const canonical=Number.isFinite(Number(grid.canonical_level))
-    ?Number(grid.canonical_level):OPERATIONAL_GRID_LEVEL;
-  const ceiling=Number.isFinite(Number(grid.max_cells))?Number(grid.max_cells):null;
+  const readiness=gridReadiness(flow);
+  const canonical=readiness.canonicalLevel;
+  const ceiling=readiness.maxCells;
   const header='<div class="flow-summary" id="workspaceGridLevel" data-grid-level="'+OPERATIONAL_GRID_LEVEL+'">'
     +'<b>标准规划网格</b><br>MH/T 4063.1 · L'+OPERATIONAL_GRID_LEVEL
     +'<br><small>用于人口 / 地形 / 建筑 / 风险 / TowerObstacle / Theta* V2</small></div>';
-  if(grid.status==='blocked'){
-    const required=Number(grid.required_cells);
-    const code=grid.blocked_code||grid.error?.code||'operational_grid_cell_ceiling_exceeded';
-    const message=grid.blocked_message||grid.error?.message||'工作区超出标准网格资源上限';
-    const detail='L'+canonical+' 需求 '+count(required)+' 格 · 资源上限 '+count(ceiling)+' 格';
+  if(readiness.blocked){
+    const message=readiness.blockedMessage||'工作区超出标准网格资源上限';
+    const detail='L'+canonical+' 需求 '+count(readiness.requiredCells)+' 格 · 资源上限 '+count(ceiling)+' 格';
     return header
-      +'<div class="parameter-note" id="workspaceGridBlocked"><b>标准规划网格：已阻断</b>（'+escapeHtml(code)+'）'
+      +'<div class="parameter-note" id="workspaceGridBlocked"><b>标准规划网格：已阻断</b>（'+escapeHtml(readiness.blockedCode||'operational_grid_cell_ceiling_exceeded')+'）'
       +'<br>'+escapeHtml(detail)
       +'<br>'+escapeHtml(message)
       +'<br>正式工作流不允许降级到 L7/L6：请缩小工作区范围，或显式提高 max_cells 资源上限。</div>';
   }
-  if(grid.status!=='passed'){
+  if(!readiness.generated){
     return header+'<div class="parameter-note">标准规划网格：未生成。保存工作区范围后会在 L8 上生成标准网格。</div>';
   }
   const metadata=grid.level_metadata||null;
   const size=metadata&&Number.isFinite(metadata.resolution_x)&&Number.isFinite(metadata.resolution_y)
     ?' · 格网 '+Math.round(metadata.resolution_x)+' × '+Math.round(metadata.resolution_y)+' m（后端 level_metadata，非前端估算）'
     :'';
-  const legacy=Number(grid.level)!==OPERATIONAL_GRID_LEVEL||grid.coarsened===true
+  const legacy=readiness.coarsened
     ?' · <b>实际层级低于 canonical L'+OPERATIONAL_GRID_LEVEL+'</b>：这是旧项目快照，'
       +'请重新保存工作区范围以在 L8 上重建空间索引'
     :'';
-  return header+'<div class="flow-summary">canonical level L'+canonical+' · actual level L'+grid.level
-    +' · 格数 '+count(grid.count)+' / 上限 '+count(ceiling)+size+legacy+'</div>';
+  return header+'<div class="flow-summary">canonical level L'+canonical+' · actual level L'+readiness.actualLevel
+    +' · 格数 '+count(readiness.cellCount)+' / 上限 '+count(ceiling)+size+legacy+'</div>';
 }
 
 function count(value){
@@ -518,9 +521,10 @@ function gridEnvironmentPanel(flow){
 
 /** 工作区摘要（面积 / 数据可用性 / 已加载图层）与缺失项提示：取值与原来一致。 */
 function workspaceMappingSummary(flow){
-  const workspace=flow?.workspace,health=workspace?.health,attributes=flow?.grid_attributes||{};
-  if(!workspace)return '<div class="empty-note">尚未保存工作区。点击“框选工作区”后在地图拖出矩形。</div>';
-  return '<div class="metric-grid"><b>'+(workspace.area_km2).toLocaleString()+' km²<small>工作区面积</small></b>'
+  const readiness=workspaceGridReadiness(flow);
+  if(!readiness.workspace.present)return '<div class="empty-note">尚未保存工作区。点击“框选工作区”后在地图拖出矩形。</div>';
+  const workspace=readiness.workspace,health=workspace.health,attributes=flow?.grid_attributes||{};
+  return '<div class="metric-grid"><b>'+(workspace.areaKm2===null?'—':workspace.areaKm2.toLocaleString())+' km²<small>工作区面积</small></b>'
     +'<b>'+escapeHtml(statusText(health?.population?.status||'missing_data'))+'<small>人口数据</small></b>'
     +'<b>'+escapeHtml(statusText(health?.airspace?.status||'missing_data'))+'<small>空域数据</small></b>'
     +'<b>'+escapeHtml(String(health?.loaded_layer_count||0))+'<small>已加载图层</small></b></div>'
@@ -647,12 +651,17 @@ export function constraintFieldPanel(flow,constraint){
   const model=context.model||null;
   const altitudeLayerId=context.altitudeLayerId||'';
   const blockerItems=constraintBlockerItems(model);
-  const canGenerate=Boolean(altitudeLayerId)&&flow?.grid?.status==='passed';
-  const generateReason=!altitudeLayerId
-    ?'请先在上方「固定巡航高度层」中选择一个高度层'
-    :flow?.grid?.status!=='passed'
-      ?'请先保存工作区范围以生成标准规划网格'
-      :'';
+  // BUG-CONSTRAINT-UI-001：门禁顺序必须是**高度层 → 工作区/网格**，且原因只取一条。
+  // 修复前这里把 `flow?.grid?.status!=='passed'` 当成"没框选工作区"，于是在已经有
+  // canonical L8 的项目里也会显示"请先框选并保存工作区范围"；同时按钮禁用原因与
+  // 卡片自身的状态文案互相矛盾（"该高度层尚未生成" + "请先框选工作区" + 页面底部异常）。
+  const readiness=workspaceGridReadiness(flow);
+  const selectedLayer=(readiness.altitude.layers||[]).find(
+    item=>String(item.altitude_layer_id||'')===String(altitudeLayerId))||null;
+  const layerUsable=Boolean(selectedLayer)&&altitudeLayerUsable(selectedLayer);
+  const reason=workspaceGridReason(readiness,{altitudeLayerId,altitudeUsable:layerUsable});
+  const canGenerate=reason.ready;
+  const generateReason=reason.text;
   const body=[
     sectionRoleLine('result'),
     '<div class="parameter-note" data-semantic-split="risk-vs-constraint">'
@@ -669,16 +678,59 @@ export function constraintFieldPanel(flow,constraint){
       }),
     blockerList(blockerItems,
       altitudeLayerId?'当前高度层没有阻塞项记录':'尚未选择高度层，因此没有可评估的阻塞项'),
+    constraintConfigurationPanel(context),
     primaryAction(
       '<button class="primary" id="generateConstraintField" '+(canGenerate?'':'disabled')+'>生成该高度层的规划约束场</button>',
       {note:canGenerate?'生成会写入项目结果（可重算），但不会修改任何净空策略、风险模型或航路。':generateReason}
     ),
+    constraintReadinessNote(readiness,reason),
     '<div class="parameter-note">约束场生成使用<b>已确认</b>的净空策略与<b>已确认</b>的障碍源；'
       +'任何缺证据的域都会如实保留为「证据不足」，绝不会被当成可通行。'
       +'证据不足的单元不允许发布为运行航路。</div>',
     mapLayerHint(altitudeLayerId)
   ].join('');
   return body;
+}
+
+/**
+ * PCF 前置配置面板（本轮新增）。
+ *
+ * 两项输入都**只能由用户显式确认**：
+ *  - 「允许候选航路试算穿越证据不足单元」默认关闭，且必须同时填写 source / evidence；
+ *  - 「我已确认当前项目范围内没有已知受限空域 / 保护要地约束」必须同时填写 source / evidence。
+ *
+ * 前端只呈现后端事实并原样提交：勾选但缺依据时后端仍按"未启用 / 未声明"处理，
+ * 前端**不**代用户确认，也**不**把"没有数据"显示成"已确认没有约束"。
+ */
+function constraintConfigurationPanel(context){
+  const model=(context&&context.configuration)||null;
+  return '<div class="constraint-config-block" data-pcf-configuration-block="true">'
+    +'<div class="parameter-note" data-semantic-split="pcf-configuration">'
+    +'<b>前置配置</b>：证据不足（unknown）永远是 unknown。'
+    +'只有用户显式确认后，候选航路才允许<b>试算</b>穿越证据不足单元；'
+    +'此类候选永远不能发布为运行航路，正式校验与运行采用始终 fail-closed。</div>'
+    +constraintConfigurationHtml(model,{})
+    +'</div>';
+}
+
+/**
+ * 约束场门禁的**事实行**：把"工作区 / 标准网格 / 高度层"三项真实状态摆出来，
+ * 用户一眼能看出到底缺什么，而不是从一个禁用按钮猜原因。
+ */
+function constraintReadinessNote(readiness,reason){
+  const grid=readiness.grid||{},workspace=readiness.workspace||{},altitude=readiness.altitude||{};
+  const facts=[
+    '工作区 '+(workspace.present
+      ?(workspace.areaKm2===null?'已保存':workspace.areaKm2.toLocaleString()+' km²')
+      :'未保存'),
+    '标准网格 '+(grid.generated
+      ?((grid.cellCount||0).toLocaleString()+' 格 · L'+(grid.actualLevel===null?'—':grid.actualLevel))
+      :(grid.blocked?'已阻断':'未生成')),
+    '高度层目录 '+altitude.total+' 层',
+  ];
+  return '<div class="parameter-note" data-constraint-readiness="'+escapeHtml(reason.code)+'">'
+    +'<b>约束场前置条件</b>：'+escapeHtml(facts.join(' · '))
+    +(reason.ready?'':'<br>'+escapeHtml(reason.text))+'</div>';
 }
 
 /** 约束场的阻塞项/工程假设清单（只读模型，不推断）。 */
@@ -725,12 +777,13 @@ function mapLayerHint(altitudeLayerId){
  * 而不是让用户从一长串表单里自己猜。
  */
 function objectivePanel(flow){
-  const workspace=flow?.workspace,grid=flow?.grid||{};
+  const readiness=workspaceGridReadiness(flow);
+  const workspace=readiness.workspace,grid=readiness.grid;
   const lines=[
-    {label:'工作区',value:workspace?(workspace.area_km2).toLocaleString()+' km²':'尚未保存'},
-    {label:'标准规划网格',value:grid.status==='passed'?(grid.count||0).toLocaleString()+' 格（L'+String(grid.level??'—')+'）'
-      :grid.status==='blocked'?'已阻断':sourceStateText('not_calculated')},
-    {label:'固定巡航高度层',value:(flow?.spatial_3d?.altitude_layers||[]).length+' 层可选'}
+    {label:'工作区',value:workspace.present?(workspace.areaKm2===null?'已保存':workspace.areaKm2.toLocaleString()+' km²'):'尚未保存'},
+    {label:'标准规划网格',value:grid.generated?(grid.cellCount||0).toLocaleString()+' 格（L'+(grid.actualLevel===null?'—':grid.actualLevel)+'）'
+      :grid.blocked?'已阻断':sourceStateText('not_calculated')},
+    {label:'固定巡航高度层',value:readiness.altitude.total+' 层可选'}
   ];
   return '<div class="flow-summary"><b>本步目标</b>：确定分析范围与标准规划网格，建立环境模型与航路风险场，'
     +'并按固定巡航高度层生成 Planning Constraint Field（哪里不能飞）。'
@@ -744,11 +797,11 @@ function objectivePanel(flow){
  * 不满足时给出**中文原因**，绝不显示一个原因不明的灰按钮。
  */
 function environmentNextStep(flow){
-  const gridPassed=flow?.grid?.status==='passed';
-  const blocked=flow?.grid?.status==='blocked';
-  const reason=gridPassed?'':(blocked
-    ?'标准规划网格已阻断：请缩小工作区范围，或显式提高资源上限后重新保存工作区'
-    :'请先框选并保存工作区范围，生成标准规划网格');
+  const readiness=workspaceGridReadiness(flow);
+  // 推进门禁只看 canonical 网格是否真实通过；原因统一取 readiness 的中文业务原因。
+  const reason=readiness.grid.generated
+    ?''
+    :workspaceGridReason(readiness,{requireAltitude:false}).text;
   return nextStepBar({
     enabled:Boolean(flow?.steps&&flow.steps['2']),
     label:'下一步：航路规划与发布',
@@ -825,12 +878,39 @@ export function bind(c){
     onChange:value=>{if(c.constraintField)c.constraintField.select(value);}
   });
   // 主操作：生成该高度层的约束场（后端 POST，成功后重读 workflow 快照）。
+  // BUG-TASK-FEEDBACK-001 §6：逐格约束判定是同步耗时请求，按钮必须自述状态
+  // （正在提交 → 正在计算，请勿重复提交 + 已运行时长），结束后恢复。
   c.actionButton('generateConstraintField',async()=>{
     const altitudeLayerId=(c.constraintField&&c.constraintField.presentation().altitudeLayerId)
       ||selectedAltitudeLayerId(document,'altitudeLayerSelector');
     if(!c.constraintField)throw Error('约束场入口不可用，请刷新项目状态');
     if(!altitudeLayerId)throw Error('请先选择固定巡航高度层');
-    await c.constraintField.generate(altitudeLayerId);
+    c.panelError('已提交：正在生成高度层 '+altitudeLayerId+' 的规划约束场…','hint');
+    const outcome=await runWithBusyButton({
+      button:c.$('generateConstraintField'),
+      label:'规划约束场生成',
+      run:()=>c.constraintField.generate(altitudeLayerId),
+      onError:message=>c.panelError('规划约束场生成未完成：'+message,'error'),
+      onDone:async()=>c.panelError('规划约束场已生成并写入项目结果（高度层 '+altitudeLayerId+'）。','success'),
+    });
+    if(outcome.ok&&outcome.elapsed_ms){
+      c.panelError('规划约束场已生成并写入项目结果（高度层 '+altitudeLayerId
+        +'；本次计算已运行 '+elapsedText(outcome.elapsed_ms/1000)+'）。','success');
+    }
+  });
+  // PCF 前置配置：显式保存（provisional 穿越策略 + confirmed_none 显式声明）。
+  // 保存后已生成的约束场会被后端标记为"需要重新计算"，绝不静默沿用旧结果。
+  c.actionButton('saveConstraintConfiguration',async()=>{
+    if(!c.constraintField)throw Error('约束场前置配置入口不可用，请刷新项目状态');
+    c.panelError('正在保存规划约束场前置配置…','hint');
+    const model=await c.constraintField.saveConfiguration();
+    const enabled=Boolean(model&&model.allowUnknownForProvisional);
+    c.panelError(
+      enabled
+        ?'已保存：已启用候选试算穿越证据不足单元。证据不足仍不是安全通过，仅允许生成候选航路；'
+          +'包含证据不足单元的候选不能发布为运行航路。'
+        :'已保存规划约束场前置配置：当前不允许候选航路穿越证据不足单元。',
+      'success');
   });
   // Population NoData 语义：保存即显式工程确认；撤回回到"未确认"（绝不补 0）。
   c.actionButton('savePopulationNodata',()=>c.resourceAction('/api/population-nodata-policy',populationNodataPayload({

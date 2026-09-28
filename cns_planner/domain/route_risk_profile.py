@@ -399,6 +399,18 @@ def empty_route_risk_profile(status="not_calculated", *, candidate_id=None, rout
         },
         "layer": {"altitude_layer_id": altitude_layer_id, "grid_level": None},
         "policy": default_route_risk_profile_policy(),
+        # 证据不足穿越的只读 provenance（feasibility 语义，绝不进入风险数学）。
+        "constraint_field_applicability": {
+            "contains_unknown_constraints": False,
+            "traversed_unknown_cell_count": 0,
+            "operational_applicability": "current",
+            "unknown_constraint_policy": None,
+            "unknown_affects_feasibility_only": True,
+            "unknown_is_never_zero_risk": True,
+            "risk_mathematics_unchanged": True,
+            "objective_weights_unchanged_by_unknown": True,
+            "provisional_only_never_publishable": True,
+        },
         "route_length_m": None,
         "domains": {
             domain_id: empty_domain_profile(domain_id) for domain_id in DOMAIN_IDS

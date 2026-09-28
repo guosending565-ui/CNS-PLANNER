@@ -7,6 +7,7 @@ from copy import deepcopy
 from ..source_profiles import COPERNICUS_GLO30
 from ...domain.quantities import quantity_value
 from ...gis.raster_adapter import GdalRasterAdapter
+from ...gis.terrain_fact_adapter import canonical_vertical_reference
 
 
 class TerrainGridService:
@@ -28,6 +29,22 @@ class TerrainGridService:
             "covered_count": 0,
             "quantity_status": "not_calculated",
             "source_profile": deepcopy(COPERNICUS_GLO30),
+            # terrain **自身** 的垂向基准声明（产品契约 / 栅格元数据）。缺失即为 None：
+            # 消费端必须据此保持 unknown，绝不用高度层的垂向基准反向兜底。
+            "vertical_reference": canonical_vertical_reference(
+                (COPERNICUS_GLO30.get("crs") or {}).get("vertical")
+            ),
+            "vertical_reference_source": "terrain_source_profile_crs_vertical",
+            "vertical_reference_evidence": {
+                "scope": "terrain_dataset_metadata_production",
+                "declarations": [{
+                    "field": "source_profile.crs.vertical",
+                    "observed": str((COPERNICUS_GLO30.get("crs") or {}).get("vertical") or ""),
+                    "accepted": True,
+                }],
+                "verification_status": (COPERNICUS_GLO30.get("verification") or {}).get("status"),
+                "file_identity": (COPERNICUS_GLO30.get("verification") or {}).get("file_identity"),
+            },
             "cells": {},
         }
         if message:
@@ -65,6 +82,10 @@ class TerrainGridService:
                     }
                 else:
                     attributes[cell["grid_id"]] = self._empty_cell()
+            profile = self._source_profile(source)
+            vertical_reference, vertical_source, vertical_evidence = (
+                self._vertical_declaration(profile, source)
+            )
             return {
                 "status": "passed" if covered == len(cells) else "missing_data",
                 "source": source,
@@ -75,7 +96,10 @@ class TerrainGridService:
                 "quantity_status": "passed" if covered == len(cells) else "missing_data",
                 "quantity": "surface_elevation",
                 "surface_model": "DSM",
-                "source_profile": self._source_profile(source),
+                "source_profile": profile,
+                "vertical_reference": vertical_reference,
+                "vertical_reference_source": vertical_source,
+                "vertical_reference_evidence": vertical_evidence,
                 "grid_level": grid.get("level"),
                 "count": len(cells),
                 "covered_count": covered,
@@ -93,6 +117,60 @@ class TerrainGridService:
         result["unit_status"] = "glo30_product_contract"
         result["quantity_status"] = status
         return result
+
+    @staticmethod
+    def _vertical_declaration(profile, source):
+        """terrain **自身** 的垂向基准声明（产品契约优先，其次栅格实测元数据）。
+
+        这是产出端的**唯一**声明点：消费端只读这里写出的 canonical
+        ``vertical_reference``（或兼容读 ``source_profile.crs``），不再各自造一套判定。
+        无法明确声明时返回 ``None``——绝不猜、也不用高度层的基准兜底。
+        """
+
+        crs = (profile or {}).get("crs") or {}
+        verification = (profile or {}).get("verification") or {}
+        declarations = []
+        for field in ("vertical", "vertical_name"):
+            observed = crs.get(field)
+            if observed in (None, ""):
+                continue
+            canonical = canonical_vertical_reference(observed)
+            declarations.append({
+                "field": f"source_profile.crs.{field}",
+                "observed": str(observed),
+                "accepted": canonical is not None,
+            })
+            if canonical is not None:
+                return canonical, f"terrain_source_profile_crs_{field}", {
+                    "scope": "terrain_dataset_metadata_production",
+                    "declarations": declarations,
+                    "verification_status": verification.get("status"),
+                    "file_identity": verification.get("file_identity"),
+                    "raster_metadata_vertical": (source or {}).get("vertical_reference"),
+                }
+        observed = (source or {}).get("vertical_reference")
+        if observed not in (None, ""):
+            canonical = canonical_vertical_reference(observed)
+            declarations.append({
+                "field": "raster_metadata.vertical_reference",
+                "observed": str(observed),
+                "accepted": canonical is not None,
+            })
+            if canonical is not None:
+                return canonical, "terrain_raster_metadata_vertical_reference", {
+                    "scope": "terrain_dataset_metadata_production",
+                    "declarations": declarations,
+                    "verification_status": verification.get("status"),
+                    "file_identity": verification.get("file_identity"),
+                    "raster_metadata_vertical": str(observed),
+                }
+        return None, None, {
+            "scope": "terrain_dataset_metadata_production",
+            "declarations": declarations,
+            "verification_status": verification.get("status"),
+            "file_identity": verification.get("file_identity"),
+            "raster_metadata_vertical": (source or {}).get("vertical_reference"),
+        }
 
     @staticmethod
     def _empty_cell():

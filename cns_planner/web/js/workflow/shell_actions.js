@@ -74,26 +74,40 @@ export function createShellActions({getNode,panelError}){
   /**
    * 顶部全局“保存项目”（Step01 的保存按钮是同一个入口）。
    *
+   * BUG-UI-SAVE-001：保存协议**完全不变**（POST /api/workflow/project → POST /api/project/save-as
+   * → GET /api/state），修复的是"点击后毫无反馈"：
+   *  * 点击后按钮立即进入「正在保存…」并禁用，避免重复提交；
+   *  * 成功给出中文结论 + **当前项目目录**（来自保存后 fresh state 的 project_storage）；
+   *  * 失败给出中文原因，并把技术细节（error.name / HTTP 状态）一并回传，
+   *    由壳层放进「高级 / 审计信息」式的错误行，而不是只说一句"失败"；
+   *  * 无论成功失败都恢复按钮（面板被重渲染时按需重挂）。
+   *
    * @param {object} input
    * @param {(url:string,options:object)=>Promise<object>} input.api
    * @param {object} input.state 服务器状态（只读 `project_storage`）
    * @param {object} input.flow 当前 workflow
    * @param {(projectDir:string,name:string)=>Promise<void>} input.saveAs
    * @param {(flow:object)=>Promise<void>|void} input.applyFlow 把新的 workflow 写回壳层
-   * @param {(data:object)=>void} input.applyState 保存成功后刷新服务器状态
+   * @param {(data:object)=>Promise<void>|void} input.applyState 保存成功后刷新服务器状态
+   * @returns {Promise<{ok:boolean, message:string, directory:string, error:Error|null}>}
    */
   async function saveProject({projectDir,name}={},{
     api,state,flow,saveAs,applyFlow,applyState
   }={}){
-    const directory=projectDir||state?.project_storage?.directory||'';
+    const requestedDir=String(projectDir||'').trim();
+    const directory=requestedDir||state?.project_storage?.directory||'';
+    // 面板提示行同时承载"错误"与"确认"，因此按语义着色（第二个参数是可选的 tone）。
+    const say=(message,tone)=>panelError(message,tone);
     if(!directory){
-      panelError('请先在第 01 步选择项目数据存储位置');
-      return false;
+      const message='请先在第 01 步选择项目数据存储位置（当前尚未选择项目目录）。';
+      say(message,'error');
+      return {ok:false,message,directory:'',error:null};
     }
     const button=getNode('saveProjectTop')||getNode('saveProject');
+    const original=button?button.textContent:null;
     try{
-      if(button)button.disabled=true;
-      panelError('');
+      if(button){button.disabled=true;button.textContent='正在保存…';}
+      say('正在保存项目…','hint');
       const projectName=name||getNode('projectName')?.value||flow?.project?.name||'';
       const data=await api('/api/workflow/project',{
         method:'POST',headers:{'Content-Type':'application/json'},
@@ -103,13 +117,24 @@ export function createShellActions({getNode,panelError}){
       await saveAs(directory);
       const freshState=await api('/api/state');
       recordExplicitProject(freshState);
-      if(typeof applyState==='function')applyState(freshState);
-      return true;
+      if(typeof applyState==='function')await applyState(freshState);
+      const savedDir=String(freshState?.project_storage?.directory||directory);
+      const message='项目已保存'+(freshState?.project_storage?.automatic===true?'（仍为自动恢复项目）':'')
+        +' · 项目目录：'+savedDir;
+      say(message,'success');
+      return {ok:true,message,directory:savedDir,error:null};
     }catch(exc){
-      panelError('保存项目失败：'+exc.message);
-      return false;
+      // 技术细节（error.name / HTTP 状态码）如实保留，供"高级 / 审计信息"使用。
+      const detail=[exc?.name,exc?.status?('HTTP '+exc.status):''].filter(Boolean).join(' · ');
+      const message='保存项目失败：'+(exc?.message||exc)+(detail?'（技术细节：'+detail+'）':'')
+        +' · 项目目录：'+directory;
+      say(message,'error');
+      return {ok:false,message,directory,error:exc||new Error(String(exc))};
     }finally{
-      if(button&&document.body.contains(button))button.disabled=false;
+      if(button&&document.body.contains(button)){
+        button.disabled=false;
+        if(original!==null)button.textContent=original;
+      }
     }
   }
 

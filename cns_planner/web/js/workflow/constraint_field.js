@@ -22,12 +22,15 @@
  */
 import {
   constraintOutcomeText,constraintBlockerText,constraintBlockerList,
-  constraintUnknownSummary,constraintFreshness,CONSTRAINT_OUTCOME_COLOR
+  constraintUnknownSummary,constraintFreshness,CONSTRAINT_OUTCOME_COLOR,
+  PROVISIONAL_TRAVERSAL_SCOPE
 } from './presentation.js';
 
 /** 只读读取端点（B4X 新增；仅用于展示）。 */
 export const CONSTRAINT_FIELD_SUMMARY_ENDPOINT='/api/planning-constraint-field';
 export const CONSTRAINT_FIELD_MAP_ENDPOINT='/api/planning-constraint-field/map';
+/** PCF 前置配置（provisional 穿越策略 / confirmed_none 显式声明）读写端点。 */
+export const CONSTRAINT_CONFIGURATION_ENDPOINT='/api/planning-constraint-field/configuration';
 
 /** 地图图层开关 id（必须与 index.html 中的 checkbox id 逐字一致）。 */
 export const CONSTRAINT_LAYER_ID='altitudeConstraintLayer';
@@ -241,12 +244,18 @@ export function constraintSummaryHtml(model,{
   const blockerText=blockerRows.length
     ?blockerRows.map(row=>constraintBlockerText([row.domain])+' '+formatNumber(row.value)).join(' · ')
     :'没有阻挡单元';
+  // provisional 是否生效：读后端 unknown_policy（落库事实），而不是前端开关状态。
+  const provisionalEnabled=Boolean(
+    (item.unknownPolicy&&item.unknownPolicy.allow_unknown_for_provisional===true)
+    ||(item.unknownWarning&&item.unknownWarning.provisional_traversal_allowed===true)
+  );
   const unknownNote=count(outcomes.unknown)
     ?'<div class="parameter-note" data-unknown-warning="true"><b>证据不足 '+formatNumber(count(outcomes.unknown))
       +' 格</b>：这些格子既不是可通行也不是障碍——规划不能把它们当作安全。'
       +'<b>证据不足不等于可通行</b>。'
-      +(item.unknownWarning&&item.unknownWarning.provisional_traversal_allowed
-        ?'当前 unknown policy 允许候选航路<b>试算</b>穿越证据不足单元，但此类候选永远不能发布为运行航路。'
+      +(provisionalEnabled
+        ?'<b class="constraint-provisional-flag">已启用候选试算穿越证据不足单元。</b>'
+          +'证据不足仍不是安全通过，仅允许生成候选航路；此类候选永远不能发布为运行航路。'
         :'当前 unknown policy 不允许穿越证据不足单元。')
       +'</div>'
     :'';
@@ -403,6 +412,151 @@ export function constraintLoadErrorHtml(altitudeLayerId,error){
     +'<span class="constraint-freshness" data-state="unavailable">数据源不可用</span></div>'
     +'<div class="wb-empty">高度层 '+escapeHtml(altitudeLayerId||'—')+' 的约束场读取失败：'
     +escapeHtml(reason)+'</div></div>';
+}
+
+// ---- 前置配置：provisional 穿越策略 / confirmed_none 显式声明 -------------------
+
+/** 域状态 → 中文（只有这三个状态，且 confirmed_none 只能由用户显式确认）。 */
+export const DOMAIN_DATASET_STATE_TEXT={
+  confirmed_present:'已确认存在该类约束数据',
+  confirmed_none:'已由用户显式确认范围内无该类约束',
+  not_configured:'未配置（保持证据不足）'
+};
+
+/** 前置配置读取 URL（只读 GET）。 */
+export function constraintConfigurationUrl(){return CONSTRAINT_CONFIGURATION_ENDPOINT;}
+
+function evidenceToText(value){
+  if(Array.isArray(value)){
+    return value.map(item=>typeof item==='string'?item:JSON.stringify(item)).join('\n');
+  }
+  if(value===null||value===undefined)return '';
+  return typeof value==='string'?value:JSON.stringify(value);
+}
+
+/**
+ * 后端前置配置 → 前端表单模型。
+ *
+ * 缺失 / 读不到一律按"未启用 provisional 穿越、未声明 confirmed_none"处理：
+ * 前端**绝不**自行推断某个域"没有约束"。
+ */
+export function constraintConfigurationModel(response){
+  const data=response&&typeof response==='object'?response:{};
+  const policy=data.unknown_policy_configuration&&typeof data.unknown_policy_configuration==='object'
+    ?data.unknown_policy_configuration:{};
+  const unknownPolicy=policy.unknown_policy&&typeof policy.unknown_policy==='object'
+    ?policy.unknown_policy:{};
+  const declarations=data.restricted_area_declarations
+    &&typeof data.restricted_area_declarations==='object'?data.restricted_area_declarations:{};
+  const domainStates=data.domain_states&&typeof data.domain_states==='object'?data.domain_states:{};
+  const domains={};
+  for(const domain of ['airspace','critical_site']){
+    const item=declarations[domain]&&typeof declarations[domain]==='object'?declarations[domain]:{};
+    const state=domainStates[domain]&&typeof domainStates[domain]==='object'?domainStates[domain]:{};
+    // 兼容两种来源：后端配置快照（domain_states.status）与 workflow 快照里的持久化声明
+    // （declarations[domain].confirmed_none）。两者都缺 → 未声明。
+    const status=String(state.status||(item.confirmed_none===true?'confirmed_none':'not_configured'));
+    domains[domain]={
+      confirmedNone:item.confirmed_none===true||status==='confirmed_none',
+      source:item.source===null||item.source===undefined?'':String(item.source),
+      evidence:evidenceToText(item.evidence),
+      status:['confirmed_present','confirmed_none','not_configured'].includes(status)
+        ?status:'not_configured',
+      authorityComplete:state.declaration_authority_complete===true
+    };
+  }
+  return {
+    present:Boolean(data&&typeof data==='object'&&Object.keys(data).length),
+    allowUnknownForProvisional:unknownPolicy.allow_unknown_for_provisional===true,
+    policyStatus:String(policy.status||'not_configured'),
+    policyRequested:policy.requested===true,
+    policyConfirmed:policy.confirmed===true,
+    policyAuthorityComplete:policy.authority_complete===true,
+    statement:String(policy.statement||PROVISIONAL_TRAVERSAL_SCOPE),
+    provisionalSource:policy.source===null||policy.source===undefined?'':String(policy.source),
+    provisionalEvidence:evidenceToText(policy.evidence),
+    declarations:domains,
+    domainStates,
+    regulatoryBridge:data.regulatory_bridge||null,
+    semantics:data.semantics||null
+  };
+}
+
+/** 前置配置表单 HTML（Step2 规划约束场面板内；纯函数，便于审计与测试）。 */
+export function constraintConfigurationHtml(model,{disabled=false}={}){
+  const item=model||constraintConfigurationModel(null);
+  const domainRows=[
+    ['airspace','pcfAirspace','受限空域','我已确认当前项目范围内没有已知受限空域数据/约束'],
+    ['critical_site','pcfCriticalSite','保护要地','我已确认当前项目范围内没有已知保护要地约束']
+  ].map(([key,id,label,text])=>{
+    const value=(item.declarations&&item.declarations[key])||{};
+    const stateText=DOMAIN_DATASET_STATE_TEXT[value.status]||DOMAIN_DATASET_STATE_TEXT.not_configured;
+    return '<div class="constraint-config-domain" data-domain="'+key+'">'
+      +'<label class="constraint-config-check"><input type="checkbox" id="'+id+'ConfirmedNone"'
+      +(value.confirmedNone?' checked':'')+(disabled?' disabled':'')+'>'+escapeHtml(text)+'</label>'
+      +'<div class="constraint-config-fields">'
+      +'<label>source<input type="text" id="'+id+'Source" value="'+escapeHtml(value.source||'')+'"'
+      +' placeholder="例如：Phase4人工验收工程确认"'+(disabled?' disabled':'')+'></label>'
+      +'<label>evidence<textarea id="'+id+'Evidence" rows="2"'
+      +' placeholder="例如：当前项目范围内未提供受限区数据，仅用于候选规划试算"'
+      +(disabled?' disabled':'')+'>'+escapeHtml(value.evidence||'')+'</textarea></label>'
+      +'</div>'
+      +'<div class="parameter-note" data-domain-state="'+escapeHtml(value.status)+'">'
+      +'<b>'+escapeHtml(label)+'</b> 当前状态：'+escapeHtml(stateText)
+      +'。confirmed_none 的语义是「用户显式确认当前项目范围内按当前依据无该类约束」，'
+      +'<b>不是</b>「系统自动判断没有」；未勾选或缺少 source / evidence 时继续按证据不足处理。</div>'
+      +'</div>';
+  }).join('');
+  const notice=item.allowUnknownForProvisional
+    ?'<div class="parameter-note constraint-provisional-notice" data-provisional="enabled">'
+      +'<b>已启用候选试算穿越证据不足单元。证据不足仍不是安全通过，仅允许生成候选航路。</b></div>'
+    :'<div class="parameter-note" data-provisional="disabled">'
+      +'当前<b>不允许</b>候选航路穿越证据不足单元：证据不足单元在路径搜索中保持不可穿越。</div>';
+  return '<div class="constraint-config" data-configuration="true">'
+    +'<div class="constraint-card-head"><b>规划约束场前置配置</b>'
+    +'<small>全部需要用户显式确认，系统不提供任何默认值</small></div>'
+    +'<label class="constraint-config-check"><input type="checkbox" id="pcfAllowUnknownProvisional"'
+    +(item.allowUnknownForProvisional?' checked':'')+(disabled?' disabled':'')+'>'
+    +'允许候选航路试算穿越证据不足单元</label>'
+    +'<div class="parameter-note">'+escapeHtml(item.statement||PROVISIONAL_TRAVERSAL_SCOPE)+'</div>'
+    +'<div class="constraint-config-fields">'
+    +'<label>source<input type="text" id="pcfProvisionalSource"'
+    +' value="'+escapeHtml(item.provisionalSource||'')+'"'
+    +' placeholder="例如：Phase4人工验收工程确认"'+(disabled?' disabled':'')+'></label>'
+    +'<label>evidence<textarea id="pcfProvisionalEvidence" rows="2"'
+    +' placeholder="例如：当前项目范围证据不足，仅用于候选规划试算"'
+    +(disabled?' disabled':'')+'>'+escapeHtml(item.provisionalEvidence||'')+'</textarea></label>'
+    +'</div>'
+    +notice+domainRows
+    +'<div class="parameter-note">保存后已生成的约束场会标记为「需要重新计算」：'
+    +'配置变化绝不静默沿用旧结果。</div>'
+    +'<button class="primary" id="saveConstraintConfiguration"'+(disabled?' disabled':'')
+    +'>保存前置配置</button>'
+    +'</div>';
+}
+
+/** 从表单读取提交 payload（只读 DOM；缺字段如实为空，绝不补默认值）。 */
+export function constraintConfigurationPayload($){
+  const node=id=>(typeof $==='function'?$(id):null);
+  const value=id=>{const item=node(id);return item?String(item.value??'').trim():'';};
+  const checked=id=>{const item=node(id);return item?item.checked===true:false;};
+  const evidence=raw=>raw?raw.split('\n').map(line=>line.trim()).filter(Boolean):[];
+  const declarations={};
+  for(const [key,id] of [['airspace','pcfAirspace'],['critical_site','pcfCriticalSite']]){
+    declarations[key]={
+      confirmed_none:checked(id+'ConfirmedNone'),
+      source:value(id+'Source')||null,
+      evidence:evidence(value(id+'Evidence'))
+    };
+  }
+  return {
+    unknown_policy:{
+      allow_unknown_for_provisional:checked('pcfAllowUnknownProvisional'),
+      source:value('pcfProvisionalSource')||null,
+      evidence:evidence(value('pcfProvisionalEvidence'))
+    },
+    restricted_area_declarations:declarations
+  };
 }
 
 export {constraintOutcomeText,constraintBlockerText,constraintBlockerList};

@@ -36,6 +36,12 @@ export function recordExplicitProject(state, storage, now = () => new Date().toI
  * Bootstrap contract: server state wins.  Only an automatic/empty server project may
  * restore the one directory this browser recorded after a successful Save As/Open.
  * The caller invokes this once per page load, so a failure cannot create a retry loop.
+ *
+ * BUG-PROJECT-RESTORE-001：本函数的调用者**必须**在服务器状态已经落地（`update(state)`
+ * 已执行、API 客户端的 token getter 能取到 `/api/state` 下发的会话令牌）之后再调用它。
+ * 恢复请求走 `POST /api/project/open`，服务端要求 `X-CNS-Token` / `X-CNS-Revision`
+ * 与**当前**会话一致；在 token 就绪之前发起，只会得到 403「无效会话或来源」。
+ * 启动编排见 `state/bootstrap.js`。
  */
 export async function restoreLastExplicitProject(serverState, {
   api, storage, now,

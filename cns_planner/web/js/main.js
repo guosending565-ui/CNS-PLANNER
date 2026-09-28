@@ -28,6 +28,10 @@ import {createSourceCenter} from './sources/source_center.js';
 import {syncSourcePathInputs} from './sources/source_inputs.js';
 import {createWorkflowSnapshotApplier} from './state/workflow_snapshot.js';
 import {recordExplicitProject,restoreLastExplicitProject} from './state/explicit_project.js';
+import {bootstrapProjectState} from './state/bootstrap.js';
+import {workspaceGridReadiness} from './state/readiness.js';
+import {setupTaskCenter} from './tasks.js';
+import {elapsedText} from './workflow/busy_action.js';
 
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
 const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
@@ -70,9 +74,13 @@ const constraintView=createConstraintFieldView({
 const snapshotApplier=createWorkflowSnapshotApplier({
   getFlow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},
   nextSerial:()=>++gridDataSerial,currentSerial:()=>gridDataSerial,
-  fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),fetchRisk:()=>api('/api/grid-risk'),fetchRiskV2:()=>api('/api/grid-risk-v2'),fetchLayeredCandidates:()=>api('/api/layered-route-candidates'),
+  fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),fetchRisk:()=>api('/api/grid-risk'),fetchRiskV2:()=>api('/api/grid-risk-v2'),fetchLayeredCandidates:()=>api('/api/layered-route-candidates'),fetchRadarSurveillance:()=>api('/api/radar-surveillance-layout'),
   onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();}});
-const applyWorkflowSnapshot=data=>snapshotApplier.applyWorkflowSnapshot(data),applyWorkflow=data=>applyWorkflowSnapshot(data);
+// Rescue Stable 主链默认只安装后端 workflow snapshot。逐格 grid/risk/mask 明细均为
+// 专题图层或高级 popup 数据；默认图层关闭时不应在每次 mutation 后重复下载约 155 MB，
+// 否则“保存 OD / 开启候选试算”等普通动作会长期停在“正在计算”。当前候选 path 与
+// radar proposal 摘要已经包含在同一 snapshot 中，足够立即恢复主链地图与结果面板。
+const applyWorkflowSnapshot=data=>snapshotApplier.applyWorkflowSnapshot(data,{hydrate:false}),applyWorkflow=data=>applyWorkflowSnapshot(data);
 async function mutate(action,payload={}){return applyWorkflow(await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 // GRID-L8-UNIFICATION：超限时后端返回 blocked（不是降级）并已把该状态落库；重新读取快照让界面显示阻断原因。
 async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow'));}
@@ -81,9 +89,28 @@ const resourceMutationAndRefresh=createResourceMutationAndRefresh({post:(path,pa
 async function resourceAction(path,payload={}){return applyWorkflowSnapshot(await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 async function computeAction(path,payload={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
 function showError(message){$('error').hidden=!message;$('error').textContent=message||'';}
-function panelError(message){const target=$('panelError');if(target)target.textContent=message||'';else showError(message);}
+/**
+ * 面板提示行（右栏底部）。
+ *
+ * BUG-UI-SAVE-001：这里同时承担"错误"与"确认"两类结论，因此必须能表达语义——
+ * "项目已保存"绝不能被渲染成红色错误。第二个参数是**可选**的语义标记
+ * （`error` / `success` / `hint`），旧调用点（只传 message）行为完全不变。
+ */
+function panelError(message,tone='error'){
+  const target=$('panelError');
+  if(!target){showError(message);return;}
+  target.dataset.tone=tone;
+  target.textContent=message||'';
+}
 function size(){return [Math.max(1,Math.round(map.clientWidth)),Math.max(1,Math.round(map.clientHeight))];}
-function fit(box){if(!box)return;const [w,h]=size();view={x:(box[0]+box[2])/2,y:(box[1]+box[3])/2,res:Math.max((box[2]-box[0])/w,(box[3]-box[1])/h)*1.1};queue();}
+function fit(box){
+  if(!box)return false;
+  const values=(Array.isArray(box)?box:[box[0],box[1],box[2],box[3]]).map(Number);
+  if(values.length!==4||!values.every(Number.isFinite))return false;
+  const [w,h]=size();view={x:(values[0]+values[2])/2,y:(values[1]+values[3])/2,res:Math.max((values[2]-values[0])/w,(values[3]-values[1])/h)*1.1};
+  if(!Number.isFinite(view.x)||!Number.isFinite(view.y)||!Number.isFinite(view.res)||view.res<=0){view=null;return false;}
+  queue();return true;
+}
 function mapBounds(){const [w,h]=size();return [view.x-w*view.res/2,view.y-h*view.res/2,view.x+w*view.res/2,view.y+h*view.res/2];}
 function screenPoint(coordinate){const [w,h]=size();return projectPoint(coordinate,view,w,h);}
 // fromScreen：屏幕像素 → EPSG:3857（fitScreenBox 与聚类放大沿用此语义）
@@ -96,9 +123,10 @@ function visibleLonLatBounds(){
   return [southwest[0],southwest[1],northeast[0],northeast[1]];
 }
 function fitLonLatBbox(bbox){
-  if(!bbox)return;
-  const southwest=lonLatToMercator(bbox[0],bbox[1]),northeast=lonLatToMercator(bbox[2],bbox[3]);
-  fit([southwest[0],southwest[1],northeast[0],northeast[1]]);
+  if(!Array.isArray(bbox)||bbox.length!==4)return false;
+  const values=bbox.map(Number);
+  if(!values.every(Number.isFinite))return false;
+  return fit([lonLatToMercator(values[0],values[1]),lonLatToMercator(values[2],values[3])].flat());
 }
 function fitScreenBox(box){
   if(!box)return;
@@ -110,6 +138,62 @@ function paint(){
   ctx.fillStyle='#f3f4f2';ctx.fillRect(0,0,w,h);onlineTiles.paint(ctx,view,w,h,'base');
   if(bitmap&&view&&imageView){const b=imageView;ctx.drawImage(bitmap,w/2+(b[0]-view.x)/view.res,h/2-(b[3]-view.y)/view.res,(b[2]-b[0])/view.res,(b[3]-b[1])/view.res);}
   onlineTiles.paint(ctx,view,w,h,'annotation');drawWorkflowOverlay();if(view)measure.draw(ctx,screenPoint);
+}
+// ---------------------------------------------------------------- 项目身份与地图视图生命周期
+// BUG-MAP-RESTORE-001 的真实根因：`view` 是模块级变量，而"是否初始化视图"过去只判断
+// `view == null`。切换项目时 view 仍是非空的**旧项目**视图，于是 ensureMapView() 直接
+// 跳过；同时 openProject 在安装完成后 `bitmap?.close(); bitmap=null`，却没有一次收尾的
+// repaint/queue —— 旧位图已清、新 renderMap 从未触发，用户看到的就是"地图空白"。
+// 现在：视图的归属由 viewProjectIdentity 显式记录，身份变化必须重新初始化。
+let viewProjectIdentity='';
+/** 当前项目身份（只读服务器事实；缺失时用项目名 + revision 兜底，绝不猜路径）。 */
+function projectIdentityOf(data){
+  const storage=(data||state)?.project_storage||{};
+  const id=String(storage.file||'').trim()||String(storage.directory||'').trim();
+  if(id)return id;
+  const workflow=(data||state)?.workflow||flow||{};
+  return 'workflow:'+String(workflow.project?.name||'')+':'+String(workflow.revision??'');
+}
+/** 中止上一次渲染 + 释放旧位图 + 失效 view 归属。只负责清理，不负责建立新视图。 */
+function resetProjectMapState(){
+  serial++;                       // 让任何在途 /api/render 响应在回执时被丢弃
+  renderController?.abort();      // 并且尽早取消它
+  renderController=null;
+  try{bitmap?.close();}catch(_){/* 已被释放的 ImageBitmap 不影响后续重建 */}
+  bitmap=null;imageView=null;
+  viewProjectIdentity='';
+}
+/**
+ * 按固定优先级确定视图，并保证**一定有收尾重绘**。
+ *
+ *   0. view 已属于本项目且有效 → 同一项目内导航，保留用户 pan/zoom，绝不自动 fit；
+ *   1. 项目保存过 map view（后端当前尚未持久化该字段，保留显式分支）；
+ *   2. 工作区 bbox → fit workspace（打开新项目的正常路径）；
+ *   3. 项目 bounds → fit bounds；
+ *   4. 都没有 → 保持现有视图（若有），否则只 paint 不编造范围。
+ *
+ * 返回实际采用的分支，调用方据此判断"项目是否真的有了可用视图"。
+ */
+function ensureMapView(){
+  const identity=projectIdentityOf();
+  const saved=state?.map_view||flow?.map_view||null;
+  const savedUsable=saved&&Number.isFinite(Number(saved.x))&&Number.isFinite(Number(saved.y))&&Number.isFinite(Number(saved.res))&&Number(saved.res)>0;
+  if(view&&viewProjectIdentity===identity&&Number.isFinite(view.res)&&view.res>0)return 'unchanged';
+  let branch='unchanged';
+  if(savedUsable){
+    view={x:Number(saved.x),y:Number(saved.y),res:Number(saved.res)};queue();branch='saved';
+  }else if(fitLonLatBbox(flow?.workspace?.bbox)){
+    branch='workspace';
+  }else if(state?.bounds&&fit(state.bounds)){
+    branch='bounds';
+  }else if(view){
+    queue();
+  }else{
+    paint();
+  }
+  // 只有真的拿到视图（或后端给了显式 map view）才算"视图归属本项目"。
+  viewProjectIdentity=(view&&Number.isFinite(view.res)&&view.res>0)?identity:'';
+  return branch;
 }
 function rebuildGridRenderCache(){
   gridRenderCache=buildGridOverlayCache(flow?.grid,flow?.grid_attributes||{},flow?.grid_risk||{},GridTheme,flow?.grid_risk_v2||null);
@@ -187,11 +271,11 @@ async function renderMap(){
     opacity:$('opacity').value/100,terrainOpacity:$('terrainOpacity').value/100,
     rev:state.revision,client,seq:request
   });
-  renderController=new AbortController();$('loading').hidden=false;$('loading').textContent='更新本地图层…';
+  renderController=new AbortController();const loading=$('loading');if(loading){loading.hidden=false;loading.textContent='更新本地图层…';}
   try{
     const response=await fetch('/api/render?'+q,{signal:renderController.signal});if(!response.ok)throw Error((await response.json()).error);
     const next=await createImageBitmap(await response.blob());if(request!==serial){next.close();return;}bitmap?.close();bitmap=next;imageView=box;paint();showError('');$('viewStatus').textContent='本地图层 '+(performance.now()-started).toFixed(0)+' ms';
-  }catch(exc){if(request===serial&&exc.name!=='AbortError')showError(exc.message);}finally{if(request===serial)$('loading').hidden=true;}
+  }catch(exc){if(request===serial&&exc.name!=='AbortError')showError(exc.message);}finally{if(request===serial&&loading)loading.hidden=true;}
 }
 function zoom(factor,x,y){if(!view)return;const [w,h]=size();x??=w/2;y??=h/2;const before=view.res;view.res=Math.max(.5,Math.min(200000,view.res*factor));view.x+=(x-w/2)*(before-view.res);view.y-=(y-h/2)*(before-view.res);queue();}
 bindMapInteraction({
@@ -276,7 +360,7 @@ function syncLayerControls(){
   bindLayerControls({
     $,layerIds:LAYER_IDS,queue,paint,
     setGridOutline(value){gridDisplay.outline=value;},
-    updateGridNotice,updateGridThemeLegend,updateMapLegend,
+    updateGridNotice,updateGridThemeLegend,updateMapLegend:()=>updateMapLegend({$,flow}),
     onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked),
     // 勾选「高度层障碍」才按需读取逐格明细；取消勾选只停止绘制，不丢已读数据。
     onConstraintLayer:()=>{constraintView.loadMap();paint();}});
@@ -290,9 +374,58 @@ function setStep(step){
   renderWorkflow();paint();
 }
 for(const button of document.querySelectorAll('#steps [data-step]'))button.onclick=()=>setStep(button.dataset.step);
-function actionButton(id,handler){const button=$(id);if(button)button.onclick=async()=>{try{button.disabled=true;await handler();}catch(exc){panelError(exc.message);}finally{if(document.body.contains(button))button.disabled=false;}};}
-function renderWorkflow(){
-  if(!flow)return;
+/**
+ * 统一按钮绑定。
+ *
+ * BUG-TASK-FEEDBACK-001 §6：正式业务里仍有一部分是**同步耗时 POST**（Coverage3D /
+ * Service Capability / Corridor / Gap / Site Planning / Radar Surveillance Layout /
+ * Theta* V2 candidate 等）。它们不适合在本轮改造成后台任务，但绝不允许"点了毫无反馈"。
+ * 因此这里统一做到：
+ *   1. 点击后立即禁用按钮并标注「正在计算，请勿重复提交」（避免重复提交同一计算）；
+ *   2. 已运行时长写在 title 上（不劫持按钮文案，避免与面板重渲染的文案冲突）；
+ *   3. 请求结束后恢复按钮；失败把中文原因写到面板提示行（不吞异常）。
+ * 后台任务路径（/api/tasks、async:true）仍然由 tasks.js 的面板负责排队 / 进度 / 取消。
+ */
+function actionButton(id,handler){
+  const button=$(id);if(!button)return;
+  button.onclick=async()=>{
+    const originalTitle=button.title;
+    const started=Date.now();
+    let ticker=null;
+    try{
+      button.disabled=true;
+      button.dataset.busy='true';
+      button.title=(originalTitle?originalTitle+' · ':'')+'正在计算，请勿重复提交';
+      ticker=setInterval(()=>{
+        if(!document.body.contains(button))return;
+        button.title=(originalTitle?originalTitle+' · ':'')+'正在计算，请勿重复提交（已运行 '
+          +elapsedText((Date.now()-started)/1000)+'）';
+      },1000);
+      await handler();
+    }catch(exc){panelError(exc.message);}
+    finally{
+      if(ticker!==null)clearInterval(ticker);
+      if(document.body.contains(button)){
+        button.disabled=false;
+        delete button.dataset.busy;
+        button.title=originalTitle;
+      }
+    }
+  };
+}
+/**
+ * 项目显示名（只读，缺失时为中文占位）。
+ *
+ * `flow.project` 在 slim 快照 / 半落地状态下可能不存在；直接读 `.name` 会让整条
+ * 渲染链以技术错误中断（BUG-CONSTRAINT-UI-001 的 `.name` 现象之一）。
+ */
+function projectNameText(value){
+  const name=value?.project?.name;
+  if(name===null||name===undefined)return '未命名项目';
+  const text=String(name).trim();
+  return text||'未命名项目';
+}
+function renderWorkflow(){  if(!flow)return;
   const referenceDiagnostics=referenceLayerDiagnostics(flow);
   for(const [id,item] of [['referenceRouteStatus',referenceDiagnostics.routes],['referenceRoutePointStatus',referenceDiagnostics.points],['referenceLandingStatus',referenceDiagnostics.landingSites],['towerLayerStatus',referenceDiagnostics.towers]]){
     const target=$(id);if(target){target.textContent=item.label;target.title=item.status+' · '+item.reason;}
@@ -300,15 +433,32 @@ function renderWorkflow(){
   // mutation / 重新渲染后保持当前一级与二级标签以及滚动位置
   const scroll=body?body.scrollTop:0;
   store.set({ui:{...store.get().ui,workbench:{...store.get().ui.workbench,scroll}}});
-  const rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight,constraint:constraintView.presentation()}});
+  // 渲染保护（BUG-CONSTRAINT-UI-001 的 `.name` 异常现场）：面板渲染一旦抛错，
+  // 修复前是**静默中断**——右侧只渲染了一半、地图不再 paint、用户只看到页面底部
+  // 一句 "Cannot read properties of undefined (reading 'name')"，无法判断是哪个步骤坏了。
+  // 现在：异常仍然原样抛给控制台（含步骤编号与完整栈），同时把可读中文结论写到页面，
+  // 并且**不再**让"约束场门禁"这类业务判断受连带影响（门禁读的是 flow，不读渲染结果）。
+  let rendered;
+  try{
+    rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight,constraint:constraintView.presentation()}});
+  }catch(exc){
+    console.error('[CNS Planner] 第 '+currentStep+' 步面板渲染失败',exc);
+    panelError('第 '+currentStep+' 步面板渲染失败：'+(exc?.message||exc)+'（技术细节见浏览器控制台）');
+    return;
+  }
   workbench.mount({root:rendered,step});
   step.bind(stepBindings());
   if(body)body.scrollTop=Math.min(scroll,Math.max(0,body.scrollHeight-body.clientHeight));
+  // BUG-CONSTRAINT-UI-001：这里曾经直接读 `flow.project.name`——slim / 半落地快照一旦
+  // 缺少 project，整条 renderWorkflow 就会以 "Cannot read properties of undefined
+  // (reading 'name')" 中断，用户只看到页面底部一句技术错误、右侧面板半渲染。
+  // 现在：缺失时显示明确的中文占位（"未命名项目"），而不是抛异常。
+  const projectLabel=projectNameText(flow);
   const projectName=document.querySelector('[data-project-name]');
-  if(projectName)projectName.textContent=flow.project.name;
+  if(projectName)projectName.textContent=projectLabel;
   if($('workflowStatus')){
     const gaps=cnsGapSegments();
-    $('workflowStatus').textContent='项目：'+flow.project.name+' · 第 '+currentStep+' 步'+(gaps?' · CNS 缺口段 '+gaps:'');
+    $('workflowStatus').textContent='项目：'+projectLabel+' · 第 '+currentStep+' 步'+(gaps?' · CNS 缺口段 '+gaps:'');
   }
   renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));updateMapLegend({$,flow});
   const storage=state?.project_storage||{};
@@ -319,7 +469,9 @@ function renderWorkflow(){
 function stepBindings(){return {
   $,api,flow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},afterFlowChange:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
   mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
-  saveProject,openProject,
+  refreshLayeredCandidates:()=>snapshotApplier.hydrateLayeredCandidateDetail(),
+  refreshRadarSurveillance:()=>snapshotApplier.hydrateRadarSurveillanceDetail(),
+  saveProject,openProject,projectOpenStep,
   previewPlanningReport,downloadPlanningReport,
   selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},
   // RouteRiskProfile → 地图的临时联动：只改纯 UI 高亮状态并重绘。
@@ -345,13 +497,136 @@ const shellActions=createShellActions({getNode:$,panelError});
 const previewPlanningReport=()=>shellActions.previewReport(computeAction);
 const downloadPlanningReport=kind=>shellActions.downloadReport(kind,{api,flow,onMissing:message=>panelError(message)});
 const saveProject=(projectDir,name)=>shellActions.saveProject({projectDir,name},{
-  api,state,flow,applyFlow:async data=>{flow=data;store.set({workflow:flow});},
+  api,state,flow,
+  // BUG-UI-SAVE-001：保存后的 POST 快照同样必须走唯一的水合路径，否则保存后
+  // 逐 cell 明细会停留在 slim 状态（摘要 passed、popup 缺数据）。
+  applyFlow:data=>applyWorkflowSnapshot(data),
   saveAs:directory=>api('/api/project/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})}),
-  applyState:update});
-// 打开项目：(1) 先按完整 workflow 快照 hydrate（含逐 cell 网格明细），(2) 再刷新 /api/state。
-async function openProject(projectDir){
-  if(!projectDir)return panelError('请先选择项目文件夹');
-  const button=$('openProject');try{button.disabled=true;panelError('');const data=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:projectDir})});recordExplicitProject(data);await applyWorkflowSnapshot(data.workflow);update(data);bitmap?.close();bitmap=null;if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);else if(data.bounds)fit(data.bounds);}catch(exc){panelError('打开项目失败：'+exc.message);}finally{if(document.body.contains(button))button.disabled=false;}
+  applyState:data=>update(data)});
+// BUG-PROJECT-OPEN-UX-001：Step01「选择…」只写 draft；真正切换项目**只**走这里。
+// BUG-WORKSPACE-RESTORE-002 / BUG-MAP-RESTORE-001：安装步骤与地图视图初始化必须同属
+// 一个闸门操作，并且只有九步全部落地后才允许对外宣布"项目已打开"。
+/** 打开项目的可见阶段（Step01 转印服务器事实，用于「正在打开…」的分段反馈）。 */
+const PROJECT_OPEN_STAGES=['opening','applying','refreshing','map','opened'];
+/**
+ * 从服务器事实读出"这个项目到底有什么"（只读，不推断）。
+ *
+ * BUG-PROJECT-OPEN-UX-001 §9：Step01 必须能在不进 Step02 的情况下如实告诉用户
+ * 工作区 / 标准网格是否已经存在；这些结论只能来自 flow 快照，不能前端猜。
+ */
+function projectFacts(value){
+  const current=value||{};
+  const readiness=workspaceGridReadiness(current);
+  return {
+    name:projectNameText(current),
+    workspace:readiness.workspace.present,
+    areaKm2:readiness.workspace.areaKm2,
+    grid:readiness.grid.generated,
+    gridBlocked:readiness.grid.blocked,
+    gridLevel:readiness.grid.actualLevel,
+    gridCells:readiness.grid.cellCount,
+  };
+}
+
+/**
+ * 当前（服务器已安装的）项目事实，供 Step01 在"打开项目"完成后如实转印。
+ * 不读 draft、不推断、不发请求。
+ */
+function projectOpenStep(){
+  const storage=state?.project_storage||{};
+  return {
+    identity:state?projectIdentityOf():'',
+    directory:storage.automatic?'':String(storage.directory||''),
+    automatic:storage.automatic===true,
+    facts:flow?projectFacts(flow):null,
+  };
+}
+
+/**
+ * 打开（或重新打开）一个明确的项目文件夹 —— **唯一**的项目安装调用链。
+ *
+ *   openProject(path)
+ *     → serializeProjectOperation(
+ *         POST /api/project/open          （切换服务器 active project）
+ *         recordExplicitProject(response) （自动恢复缓存，不替代显式打开）
+ *         applyProjectState(response)     （安装 fresh state + fresh workflow + hydrate + render）
+ *         applyProjectState(GET /api/state)（用 fresh state 校准 token / revision / 存储信息）
+ *         resetProjectMapState()          （中止旧渲染、释放旧位图、作废旧视图归属）
+ *         ensureMapView()                 （按 project identity 建立新视图）
+ *         queue()                         （paint + renderMap：新位图必然被创建或明确失败）
+ *         renderWorkflow()                （用最终 flow 重绘右栏）
+ *       )
+ *
+ * 内部**不**调用 `update()`（那会再进一次队列）；每一步都可单独诊断。
+ *
+ * @param {string} projectDir 项目文件夹
+ * @param {{onStage?:(stage:string, index:number, total:number)=>void}} [options]
+ * @returns {Promise<{ok:boolean, identity:string, stage:string, error:Error|null, facts:object|null}>}
+ */
+async function openProject(projectDir,{onStage=null}={}){
+  const directory=String(projectDir||'').trim();
+  const notify=stage=>{
+    if(typeof onStage==='function')onStage(stage,PROJECT_OPEN_STAGES.indexOf(stage),PROJECT_OPEN_STAGES.length);
+    // 打开过程必须**可见**：每个阶段都重绘面板（Step01 的状态区因此才可能显示
+    // "正在切换服务器 active project / 正在安装项目状态 / …"），而不是长时间静默。
+    // renderWorkflow 内部已经做过渲染保护（异常会给出中文结论），不会影响打开流程。
+    if(currentStep===1)renderWorkflow();
+  };
+  if(!directory){
+    panelError('请先选择项目文件夹','error');
+    return {ok:false,identity:'',stage:'failed',error:new Error('请先选择项目文件夹'),facts:null};
+  }
+  const button=$('openProject');
+  if(button)button.disabled=true;
+  projectSwitchBusy=true;
+  let identity=directory,facts=null,stage='failed';
+  try{
+    notify('opening');
+    await serializeProjectOperation(async()=>{
+      const response=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})});
+      recordExplicitProject(response);
+      identity=projectIdentityOf(response)||identity;
+      // 恢复链路唯一入口：先按项目响应把 state/workflow 完整落地（含逐 cell 明细 hydrate），
+      // 再按 fresh state 校准 token / revision / 项目存储信息。
+      notify('applying');
+      await applyProjectState(response);
+      notify('refreshing');
+      await applyProjectState(await api('/api/state'));
+      // BUG-WORKSPACE-RESTORE-002 兜底：`/api/project/open` 与 `/api/state` 都应携带
+      // 新项目的 workflow 快照。万一装进来的 flow 为空、或连 `workspace` 键都没有
+      // （这正是"第一次打开 Step02 认为没有工作区、按 F5 才出现"的现场），这里**明确**
+      // 再取一次服务器权威快照（GET /api/workflow），而不是让用户去按 F5 才发现数据存在。
+      // 只在确实缺字段时才发这一次请求，正常路径不增加任何调用。
+      if(!flow||typeof flow!=='object'||Object.keys(flow).length===0||flow.workspace===undefined){
+        await applyProjectState({...state,workflow:await api('/api/workflow')});
+      }
+      // Candidate geometry is stored in its sidecar rather than the slim
+      // workflow. Restore exactly this main-chain detail before map repaint;
+      // grid/risk details remain lazy and disabled by default.
+      await snapshotApplier.hydrateLayeredCandidateDetail();
+      await snapshotApplier.hydrateRadarSurveillanceDetail();
+      // 项目已切换：旧位图/旧视图必须整体作废，再按**新项目身份**建立视图。
+      notify('map');
+      resetProjectMapState();
+      ensureMapView();
+    });
+    // 收尾重绘：即使上面一步都没能改变视图，也必须让 renderMap 有机会重建位图，
+    // 绝不出现"旧 bitmap 已关、新 renderMap 没触发"的空白地图。
+    queue();
+    facts=projectFacts(flow);
+    renderWorkflow();
+    stage=PROJECT_OPEN_STAGES[PROJECT_OPEN_STAGES.length-1];
+    panelError('项目已打开 · '+facts.name+' · 项目目录：'+(state?.project_storage?.directory||directory),'success');
+    return {ok:true,identity,stage,error:null,facts};
+  }catch(exc){
+    const reason=(exc&&exc.message)||String(exc);
+    identity=identity||directory;
+    panelError('打开项目失败：'+reason,'error');
+    return {ok:false,identity,stage:'failed',error:exc instanceof Error?exc:new Error(reason),facts:null};
+  }finally{
+    projectSwitchBusy=false;
+    if(button&&document.body.contains(button))button.disabled=false;
+  }
 }
 function getTiandituKey(){
   for(const source of state?.online_sources||[]){
@@ -387,29 +662,157 @@ async function downloadExport(kind){
 }
 const sourceCenter=createSourceCenter({
   $,api,onlineTiles,actionButton,
-  onApplied(data){update(data);bitmap?.close();bitmap=null;fit(data.bounds);}
+  // 数据源应用：同样走唯一的 state/workflow 落地路径（失败必须可见，不静默）。
+  onApplied(data){update(data).catch(exc=>showError('数据源应用后状态刷新失败：'+(exc?.message||exc)));bitmap?.close();bitmap=null;fit(data.bounds);},
+  /**
+   * BUG-PROJECT-OPEN-UX-001：目录选择器只回写 draft —— 它**不是**打开项目的动作。
+   *
+   * 这里必须做两件事：
+   *  1. 让 Step01 的输入框显示用户刚选中的目录（并给出"已选择，尚未打开"的结论）；
+   *  2. 明确**不**调用 openProject()：项目是否切换只能由用户点「打开项目」决定。
+   * 关键实现细节：Step01 的输入框值只来自 `state.project_storage.directory`（服务器
+   * 当前项目），不能直接写 `projectPath` —— 面板一旦重渲染就会被服务器值覆盖。
+   * 所以这里把选择结果交给 Step01 的模块级 draft（`Step01.setProjectDirectoryDraft`），
+   * 再由它驱动"已选择项目目录，尚未打开项目"这一明确结论。
+   */
+  onProjectDirectorySelected(directory){
+    Step01.setProjectDirectoryDraft(directory);
+    renderWorkflow();
+  }
 });
 sourceCenter.bind();
+/**
+ * 项目级状态落地的**唯一**串行化闸门（BUG-WORKSPACE-RESTORE-002 / BUG-MAP-RESTORE-001）。
+ *
+ * 修复前的真实缺陷：bootstrap 先 `update(serverState)`，其中 `renderWorkflow()` / `paint()`
+ * 是同步的，而 `applyWorkflowSnapshot()` 的逐 cell 明细 hydrate 是异步的；打开项目 /
+ * 恢复项目又会各自再触发一次 `update()`。于是"自动恢复项目的旧 flow"与"新项目 fresh
+ * workflow"会在同一条时间线上交错：
+ *
+ *   * 右栏用 A 项目的 flow 渲染，而地图 view 仍引用 B 项目；
+ *   * 水合回来的明细写进已经切换过的 flow；
+ *   * bitmap / imageView 被清空后没有任何一次 repaint 收尾。
+ *
+ * 现在所有会改变"当前项目"的异步操作都必须经这里排队，且每个 `update()` 返回的 Promise
+ * 只有在「snapshot 安装 → 明细 hydrate → render → paint」全部完成后才 resolve，
+ * 因此调用方（bootstrap / 打开项目）可以在稳定态里再初始化地图视图。
+ *
+ * 重入保护（BUG-WORKSPACE-RESTORE-002 复测回归）
+ * ------------------------------------------------
+ * 闸门本身不能嵌套：同一操作内部若再次进入队列（`openProject → update()`、
+ * `saveProject → update()`），内层会排在**外层之后**，而外层正等内层 —— 形成自等待。
+ * 现场表现就是"点击打开项目后没有任何落地反馈，右栏 / 地图停在旧状态"。
+ * 因此：正在闸门内执行的那条链允许**直接执行**（等价于 `*Unlocked`），
+ * 只有链路之外的调用才真正排队。
+ */
+let projectOperation=Promise.resolve(),projectOperationToken=null;
+/** 是否有"打开项目"正在执行。为真时视图所有权归 `openProject`，bootstrap 不再插手。 */
+let projectSwitchBusy=false;
+function inProjectOperation(){return projectOperationToken!==null&&projectOperationToken===projectOperation;}
+function serializeProjectOperation(run){
+  // 已在闸门链上：直接执行，绝不再次排队（否则 = 自等待/死锁）。
+  if(inProjectOperation())return Promise.resolve().then(()=>run());
+  const queued=projectOperation.then(()=>{
+    projectOperationToken=queued;
+    return run();
+  });
+  // 队列本身不能被拒绝，否则后续操作会永久短路；失败向上抛给本次调用方。
+  projectOperation=queued.then(()=>undefined,()=>undefined);
+  return queued;
+}
+
+/**
+ * 一次完整的 /api/state 落地：token / revision / 项目存储 → 图层与数据源摘要 →
+ * workflow 快照 → 逐 cell 明细 hydrate → render → paint。
+ *
+ * **任何**写入 `state` / `flow` 的入口都必须走这里（含 bootstrap、打开项目），
+ * 这样"右栏已恢复但地图没恢复"与"地图恢复了但 Step02 认为工作区不存在"这两种
+ * split-brain 状态在结构上不可能出现。
+ *
+ * 本函数**不进入** `serializeProjectOperation` 闸门：它要么被 `update()`（已持闸门）
+ * 调用，要么被 `openProject()` 的闸门操作直接调用（等价于 `applyProjectStateUnlocked`）。
+ *
+ * @returns {Promise<object>} 落地完成后的 state
+ */
+function applyProjectState(data){
+  if(!data||typeof data!=='object')return Promise.resolve(state);
+  // 逐项 await 一个已 resolve 的 Promise，把异常统一交给调用方（bootstrapFailure /
+  // openProject 的 catch），绝不在内部静默吞掉 —— 那会把"渲染中断"伪装成空白界面。
+  return Promise.resolve()
+    .then(()=>{applyState(data);return applyWorkflowSnapshot(data.workflow);})
+    .then(()=>{paint();return state;});
+}
+
+/** 兼容入口：既有调用点（资源变更 / 数据源应用 / 菜单动作）继续用 update(data)。
+ *
+ * BUG-WORKSPACE-RESTORE-002：它同时进入项目串行闸门——否则 bootstrap 的
+ * `update(serverState)` 的明细 hydrate 会与用户此刻触发的"打开项目"落地交错，
+ * 让旧项目的响应覆盖新项目的 flow（split-brain）。返回的 Promise 在整条链
+ * （applyState → snapshot 安装 → hydrate → render → paint）完成后才 resolve。
+ *
+ * 重入语义：若调用方**已经**在闸门内（openProject / saveProject 的操作体），
+ * `serializeProjectOperation` 会直接执行而不是再排一次队——同一 operation 内部
+ * 不得再次进入同一队列。
+ */
 function update(data){
+  return serializeProjectOperation(()=>applyProjectState(data));
+}
+
+/**
+ * 把同步的 state 落地（不含 workflow hydrate）。只在 applyProjectState 内部使用，
+ * 保证"先有 state.token/revision，再发任何写请求"这一时序不被破坏。
+ *
+ * 同时推进"视图归属"：项目身份变化时，旧位图与旧视图必须一起作废，
+ * 否则会出现"右栏是新项目、地图还是旧位图"的 split-brain。
+ */
+function applyState(data){
+  const previousIdentity=state===null?'':(viewProjectIdentity||projectIdentityOf());
   state=data;
   flow=data.workflow;
+  const identity=projectIdentityOf(data);
+  if(identity!==previousIdentity){
+    // 项目（或项目文件）切换：只做清理，新视图由 ensureMapView 在安装完成后统一建立。
+    serial++;renderController?.abort();renderController=null;
+    try{bitmap?.close();}catch(_){/* 已被释放的 ImageBitmap 不影响后续重建 */}
+    bitmap=null;imageView=null;viewProjectIdentity='';
+  }
   store.set({server:state,workflow:flow,mapView:view});
   rebuildGridRenderCache();buildingFootprints.reset();
   onlineTiles.configure(data.online_sources||[],data.revision);
-  syncSourcePathInputs(data.paths,$);
-  const population=data.population;
+  syncSourcePathInputs(data.paths||{},$);
+  const population=data.population||{};
   $('rasterInfo').textContent=population.width?'WorldPop R2025A：'+population.width.toLocaleString()+' × '+population.height.toLocaleString()+' · '+population.crs+'\nquantity：'+(population.quantity||'population_count_per_source_pixel')+' · unit：'+(population.unit||'person/source_pixel')+'\nresolution：3 arc-second · NoData：'+population.nodata+' · '+(population.verification?.status||'unverified'):'尚未加载有效人口数据';
   const terrain=data.terrain||{},terrainDtm=data.terrain_dtm||{};
   $('terrainDtmInfo').textContent=terrainDtm.width?'FABDEM DTM：'+terrainDtm.width.toLocaleString()+' × '+terrainDtm.height.toLocaleString()+' · '+terrainDtm.crs+'\n'+terrainDtm.dtype+' · NoData：'+terrainDtm.nodata+' · '+terrainDtm.vertical_reference+' ('+terrainDtm.vertical_status+')':'尚未加载有效 FABDEM DTM';
   $('terrainInfo').textContent=terrain.width?'GLO-30 DSM：'+terrain.width.toLocaleString()+' × '+terrain.height.toLocaleString()+' · '+terrain.crs+'\nNoData：'+terrain.nodata+'\n像元大小：'+(terrain.pixel_size||[]).join(' × ')+'\n单位：'+(terrain.unit||'m')+' · 水平 WGS84/EPSG:4326 · 垂直 EGM2008/EPSG:3855 · 1 arc-second':'尚未加载有效地形 DEM';
-  $('sourceSummary').textContent=data.layers.length+' 个本地图层 · '+data.paths.basemap.split(/[\\/]/).pop();
+  // BUG-WORKSPACE-RESTORE-002：`layers` / `paths` 在局部或半落地响应里可能缺失。
+  // 这里只做**空值保护**，不编造图层数量、也不猜底图文件名 —— 缺字段时如实留空，
+  // 而不是让整条 applyState 以 "Cannot read properties of undefined" 中断
+  // （那会把一次可恢复的状态刷新变成"右栏空白 + 地图没反应"）。
+  const layers=Array.isArray(data.layers)?data.layers:[];
+  const basemapName=String(data.paths?.basemap||'').split(/[\\/]/).pop()||'未配置';
+  $('sourceSummary').textContent=layers.length+' 个本地图层 · '+basemapName;
   sourceCenter.render(data);
+  // 用 slim 快照先渲染一次：字段齐全但逐 cell 明细尚未 hydrate，用户立刻看到业务结论。
   renderWorkflow();
-  // 通用 workflow 快照是 slim 的（不含逐 cell 明细）：统一由 snapshotApplier hydrate
-  // 网格明细后再渲染（BUG-GRID-POPUP-001）。
-  applyWorkflowSnapshot(data.workflow).then(()=>paint()).catch(exc=>showError('网格专题同步失败：'+exc.message));
   if(data.error)showError(data.error);
 }
+
+/**
+ * 地图视图初始化已上移到「项目身份与地图视图生命周期」一节（紧跟 paint 之后）：
+ * `ensureMapView` 必须与 `viewProjectIdentity` / `resetProjectMapState` 放在一起，
+ * 否则"视图属于哪个项目"这一判定会被分散到多个分支，正是 BUG-MAP-RESTORE-001 的成因。
+ */
+// ---- 后台任务装配（BUG-TASK-FEEDBACK-001 / BUG-TASK-PROGRESS-001） ----------------
+// 任务框架本身（tasks.js 的排队 / 进度 / 心跳 / 取消 / 恢复）**不重写**，这里只做两件
+// 壳层必须负责的事：
+//  1. 把带会话令牌的 API 客户端交给任务中心（与业务端点完全同一套令牌 / revision 语义）；
+//  2. 任务成功后自动重读正式 workflow 快照并重渲染——用户不需要自己 F5 才能看到结果。
+setupTaskCenter({
+  request:(path,options)=>api(path,options),
+  refreshWorkflow:async()=>{await applyProjectState(await api('/api/state'));return true;},
+});
+
 // ---- 启动装配（只调用一次，避免重复 document / menu listener） -------------
 bindShell({
   $,downloadExport,saveProject,panelError,
@@ -426,14 +829,51 @@ function bootstrapFailure(message,exc){
   showError(message+'：'+(exc&&exc.message?exc.message:exc||''));
   $('loading').hidden=true;
 }
-api('/api/state').then(data=>restoreLastExplicitProject(data,{api})).then(result=>{
-  const data=result.state;
-  try{
-    update(data);
-    if(result.restored)panelError('已恢复上次项目');
-    else if(result.attempted&&result.error)panelError('恢复上次项目失败：'+result.error.message+'；当前保留自动恢复项目，请重新选择项目文件夹。');
-    if(data.workflow?.workspace?.bbox)fitLonLatBbox(data.workflow.workspace.bbox);
-    else if(data.bounds)fit(data.bounds);
-    else{$('loading').hidden=true;$('settings').showModal();}
-  }catch(exc){bootstrapFailure('前端初始化失败',exc);}
+let loadingReleaseTimer=null;
+// 明确的“正在加载空间数据…”收尾窗口：bootstrap 的每个阶段（服务器状态 / 恢复 / 渲染）
+// 都必须落到可见结论，不允许把页面永久留在初始占位文本上（BUG-BOOTSTRAP-LOAD-001）。
+function releaseLoading(){
+  clearTimeout(loadingReleaseTimer);loadingReleaseTimer=null;
+  const target=$('loading');if(target)target.hidden=true;
+}
+function hideLoadingSoon(){
+  clearTimeout(loadingReleaseTimer);
+  // 收尾窗口：给 renderMap / 网格明细 hydrate 一点时间，但绝不无限期停留在占位文本上。
+  loadingReleaseTimer=setTimeout(releaseLoading,1200);
+}
+// 启动编排（BUG-PROJECT-RESTORE-001 / BUG-BOOTSTRAP-LOAD-001 的唯一调用点）：
+// 1) 先取一次 /api/state（带超时）；2) 先 update → token/revision 就位 + 服务器项目先渲染；
+// 3) 服务器已有明确项目 → 直接采用，不重新 open；4) 服务器是自动恢复项目且浏览器缓存有
+//    明确目录 → 用当前会话的合法 token/revision 恰好恢复一次；5) 恢复成功再取 fresh
+//    state 并以 fresh workflow 渲染，之后才由该 flow 驱动项目空间数据 hydrate。
+bootstrapProjectState({
+  api,
+  restore:serverState=>restoreLastExplicitProject(serverState,{api}),
+  // 恢复动作与 UI 落地共用同一条项目串行链：恢复 POST 只在队列轮到它时发出，
+  // 因此不会与"上一次 update 的 workflow hydrate"交错（BUG-WORKSPACE-RESTORE-002）。
+  serialize:run=>serializeProjectOperation(run),
+  update:async(data,meta)=>{
+    try{
+      if(meta?.reason==='server_state')$('loading').hidden=false;
+      // bootstrapProjectState already serializes every restore transition with
+      // `serializeProjectOperation`. Re-entering `update()` here queues behind
+      // the operation that is awaiting this callback and deadlocks forever at
+      // “正在打开项目…”. Land the authoritative state directly inside that
+      // existing gate; the initial server_state landing occurs before restore
+      // work is admitted, so it is safe on the same single bootstrap chain.
+      await applyProjectState(data);
+      await snapshotApplier.hydrateLayeredCandidateDetail();
+      await snapshotApplier.hydrateRadarSurveillanceDetail();
+      // BUG-MAP-RESTORE-001：启动阶段的视图初始化必须在这里**一次性**完成，并显式记录
+      // "这个 view 属于哪个项目"。否则用户随后手工打开项目时，view 仍是非空但属于旧项目
+      // 的值，ensureMapView() 会被 `view == null` 判断骗过而跳过，地图就停在旧视图。
+      // 若此刻正有一个"打开项目"操作在执行（项目切换中），视图所有权已交给它，启动阶段
+      // 不再插手，避免两次 fit 互相覆盖。
+      if(!projectSwitchBusy)ensureMapView();
+      if(!flow?.workspace?.bbox&&!state?.bounds)$('settings').showModal();
+      hideLoadingSoon();
+    }catch(exc){bootstrapFailure('前端初始化失败',exc);}
+  },
+  onError:message=>{panelError(message);releaseLoading();},
+  onNotice:message=>panelError(message),
 }).catch(exc=>bootstrapFailure('无法连接本机地图服务',exc));

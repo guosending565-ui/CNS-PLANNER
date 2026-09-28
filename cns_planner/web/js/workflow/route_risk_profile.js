@@ -501,10 +501,10 @@ function evalGateRow(model){
   const evaluation=model.lastEvaluation;
   if(!evaluation)return '';
   const reasons=(evaluation.blocking_reasons||[]).map(item=>text(item.reason||item.reason_code)).filter(Boolean);
-  return listRow('最后一次 evaluate',statusBadge(evaluation.status||'not_calculated')
-    +' · reason_code <code>'+escapeHtml(short(evaluation.reason_code))
+  return listRow('最后一次 evaluate（评估）',statusBadge(evaluation.status||'not_calculated')
+    +' · 原因码 <code>'+escapeHtml(short(evaluation.reason_code))
     +'</code>'+(evaluation.reason?' · '+escapeHtml(text(evaluation.reason)):'')
-    +(reasons.length?'<br>blocking_reasons：'+escapeHtml(reasons.join('；')):''));
+    +(reasons.length?'<br>阻挡原因（blocking_reasons）：'+escapeHtml(reasons.join('；')):''));
 }
 
 function domainCard(model,profile,domainId){
@@ -704,23 +704,24 @@ function profileEvidenceBlock(profile){
     :'';
 
   return wbBlock('工程证据（默认折叠）',
-    wbDisclosure('factor contributors（relative engineering contribution）',
+    // BUG-I18N-001：主界面中文标题 + 括号内保留原披露项英文名（审计信息，不删除）。
+    wbDisclosure('因子贡献（factor contributors · relative engineering contribution）',
       '<div class="parameter-note">'+escapeHtml(RRP_CONTRIBUTOR_NOTE)+'</div>'
       +'<div class="scroll-list route-list">'+factorRows+'</div>')
-    +wbDisclosure('contributor ranking（relative engineering contribution）',
+    +wbDisclosure('贡献排名（contributor ranking · relative engineering contribution）',
       '<div class="parameter-note">排名只反映 relative engineering contribution，'
       +'不是事故原因概率，也不是优劣结论。</div><div class="scroll-list route-list">'+rankingRows+'</div>')
-    +wbDisclosure('consistency（profile 与 candidate 数值一致性 gate）',
-      '<div class="parameter-note">status '+statusBadge(consistency.status||'not_evaluated')
-      +' · tolerance '+escapeHtml(String(consistency.tolerance??'—'))
+    +wbDisclosure('一致性校验（consistency · profile 与 candidate 数值一致性 gate）',
+      '<div class="parameter-note">状态 '+statusBadge(consistency.status||'not_evaluated')
+      +' · 容差 '+escapeHtml(String(consistency.tolerance??'—'))
       +' · '+escapeHtml(short(consistency.semantics))+'</div>'
       +'<div class="scroll-list route-list">'+consistencyRows+'</div>')
-    +wbDisclosure('fingerprints',
+    +wbDisclosure('指纹（fingerprints）',
       '<div class="scroll-list route-list">'+fingerprintRows+'</div>')
-    +wbDisclosure('provenance',
+    +wbDisclosure('来源与出处（provenance）',
       '<div class="scroll-list route-list">'+provenanceRows+'</div>'
-      +'<div class="parameter-note">airspace 是 display_only，不进入任何数值或 fingerprint；'
-      +'absolute risk / SORA GRC / ARC 一律 not_computed。</div>')
+      +'<div class="parameter-note">空域是 display_only（仅展示），不进入任何数值或指纹；'
+      +'absolute risk / SORA GRC / ARC 一律 not_computed（不计算）。</div>')
     +notes);
 }
 
@@ -749,7 +750,7 @@ function currentProfileHeader(model,profile){
     ['artifact_type',escapeHtml(short(profile.artifact_type))+' · 只分析 LayeredRouteCandidate'],
   ].map(row=>listRow(row[0],row[1])).join('');
   const blockerRows_=(profile.blocking_reasons||[]).length
-    ?wbDisclosure('blocking_reasons',
+    ?wbDisclosure('阻挡原因（blocking_reasons）',
       '<div class="parameter-note">'+profile.blocking_reasons
         .map(item=>escapeHtml(short(item.reason_code)+' · '+text(item.reason))).join('<br>')+'</div>')
     :'';

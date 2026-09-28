@@ -63,7 +63,10 @@ from ..domain.layered_theta_v2 import (
 from ..domain.population_shelter import (
     population_shelter_fingerprint, shelter_policy_fingerprint,
 )
-from ..domain.planning_constraint_field import normalize_unknown_policy
+from ..domain.planning_constraint_field import (
+    CONTAINS_UNKNOWN_CONSTRAINTS_REASON, PROVISIONAL_ROUTE_BLOCK_STATEMENT,
+    normalize_unknown_policy,
+)
 from ..domain.regulatory_constraints import (
     evaluate_regulatory_intersection, is_configured as regulatory_is_configured,
     regulatory_compliance_record, regulatory_constraints_fingerprint,
@@ -672,6 +675,9 @@ class LayeredRiskAwareThetaStarV2:
         }
         unknown_crossed = sorted(crossed & gate_diagnostics["constraint_unknown"])
         statistics["unknown_constraint_count"] = len(unknown_crossed)
+        # 逐 cell 的**穿越证据不足单元数**：与 candidate 上的字段同名同义，
+        # RouteRiskProfile / validation 直接读它，不必再去数 los_segments。
+        statistics["traversed_unknown_cell_count"] = len(unknown_crossed)
         statistics["unknown_constraint_grid_ids"] = unknown_crossed
         evaluation = evaluate_route_risk_density(
             risk_exposure_index_m=metrics["risk_exposure_index_m"],
@@ -702,6 +708,8 @@ class LayeredRiskAwareThetaStarV2:
             search_incomplete=search["cap_reached"],
             constraint_field=constraint_field, unknown_policy=unknown_policy,
             unknown_constraint_count=len(unknown_crossed),
+            traversed_unknown_cell_count=len(unknown_crossed),
+            contains_unknown_constraints=bool(unknown_crossed),
         ), "candidate")
 
     # ------------------------------------------------------------------ fingerprints
@@ -881,6 +889,7 @@ class LayeredRiskAwareThetaStarV2:
         objective_policy=None, risk_density_constraint=None, communication=None,
         regulatory=None, search_incomplete=False, mask_status=None,
         constraint_field=None, unknown_policy=None, unknown_constraint_count=0,
+        traversed_unknown_cell_count=None, contains_unknown_constraints=None,
     ):
         objective_policy = objective_policy or default_theta_v2_objective_policy()
         risk_density_constraint = risk_density_constraint or default_risk_density_constraint()
@@ -889,6 +898,17 @@ class LayeredRiskAwareThetaStarV2:
             (request or {}).get("altitude_layer_id"), status,
         )
         weights = objective_weights(objective_policy)
+        # 证据不足穿越的**唯一**读数：优先用显式的 traversed 计数，回退到既有
+        # unknown_constraint_count（两者语义一致，都是"实际穿越的 unknown 格数"）。
+        traversed_unknown = int(
+            traversed_unknown_cell_count
+            if traversed_unknown_cell_count is not None else (unknown_constraint_count or 0)
+        )
+        contains_unknown = (
+            bool(contains_unknown_constraints) if contains_unknown_constraints is not None
+            else traversed_unknown > 0
+        )
+        unknown_constraint_count = traversed_unknown
         # The effective search parameters of this run, including the grid-derived D_ref when
         # it was not supplied explicitly.  ``statistics`` already carries that value, so the
         # candidate and the readiness view never have to re-derive it.
@@ -947,6 +967,32 @@ class LayeredRiskAwareThetaStarV2:
             "risk_v2_overall_used": False,
             "risk_density_added_to_objective": False,
         }
+        # ---- 证据不足穿越的显式 provenance（provisional only） ----------------------
+        # unknown 只影响 **feasibility**：它既不参与风险成本，也不改变 objective 权重，
+        # 更不会被当成 0 风险。这里只把"这条候选穿越了几个证据不足单元"如实写进
+        # candidate 的 warnings / blocking_reasons，供 RouteRiskProfile 与 validation 读取。
+        provisional_statement = PROVISIONAL_ROUTE_BLOCK_STATEMENT.format(
+            count=traversed_unknown
+        )
+        unknown_warnings = [{
+            "reason": "route_traverses_unknown_constraints",
+            CONTAINS_UNKNOWN_CONSTRAINTS_REASON: True,
+            "traversed_unknown_cell_count": traversed_unknown,
+            "unknown_constraint_count": traversed_unknown,
+            "operational_applicability": "provisional_only",
+            "operational_adoption_allowed": False,
+            "statement": provisional_statement,
+        }] if contains_unknown else []
+        unknown_blockers = [{
+            "reason_code": CONTAINS_UNKNOWN_CONSTRAINTS_REASON,
+            "reason": provisional_statement,
+            CONTAINS_UNKNOWN_CONSTRAINTS_REASON: True,
+            "traversed_unknown_cell_count": traversed_unknown,
+            "unknown_constraint_count": traversed_unknown,
+            "status": "candidate",
+            "operational_applicability": "provisional_only",
+            "operational_adoption_allowed": False,
+        }] if contains_unknown else []
         candidate.update({
             "algorithm_id": ALGORITHM_ID,
             "algorithm_version": ALGORITHM_VERSION,
@@ -968,7 +1014,7 @@ class LayeredRiskAwareThetaStarV2:
             "search_statistics": statistics or {},
             "statistics": statistics or {},
             "reason": reason,
-            "blocking_reasons": list(blocking_reasons or []),
+            "blocking_reasons": list(blocking_reasons or []) + unknown_blockers,
             "input_fingerprint": fingerprints["input_fingerprint"],
             "feasibility_fingerprint": fingerprints["feasibility_fingerprint"],
             "risk_fingerprint": fingerprints["risk_fingerprint"],
@@ -985,17 +1031,19 @@ class LayeredRiskAwareThetaStarV2:
             "unknown_constraint_policy": deepcopy(
                 fingerprints["components"].get("unknown_constraint_policy")
             ),
-            "unknown_constraint_count": int(unknown_constraint_count or 0),
-            "operational_adoption_allowed": not bool(unknown_constraint_count),
+            "unknown_constraint_count": traversed_unknown,
+            # 逐 cell 的穿越计数（与 unknown_constraint_count 同义，名字与需求逐字一致）；
+            # contains_unknown_constraints 是 RouteRiskProfile / validation / adoption 的
+            # 统一判定入口。
+            "traversed_unknown_cell_count": traversed_unknown,
+            "contains_unknown_constraints": contains_unknown,
+            "operational_applicability": "provisional_only" if contains_unknown else "current",
+            "operational_adoption_allowed": not contains_unknown,
             "maturity": "provisional",
             "completion_status": (
-                "completed_with_warnings" if unknown_constraint_count else "completed"
+                "completed_with_warnings" if contains_unknown else "completed"
             ),
-            "warnings": ([{
-                "reason": "route_traverses_unknown_constraints",
-                "unknown_constraint_count": int(unknown_constraint_count),
-                "operational_adoption_allowed": False,
-            }] if unknown_constraint_count else []),
+            "warnings": unknown_warnings,
             "search_incomplete": bool(search_incomplete),
             "mask_status": mask_status,
             "provenance": {
@@ -1032,6 +1080,18 @@ class LayeredRiskAwareThetaStarV2:
                     ),
                     "used_as_risk_cost": False,
                     "airspace_and_protected_sites_are_hard_only_when_confirmed": True,
+                    # 证据不足只影响 feasibility：unknown 永远不会被当作 0 风险，也不会
+                    # 改变 population × shelter 风险数学或 objective 权重。
+                    "unknown_policy": normalize_unknown_policy(unknown_policy),
+                    "traversed_unknown_cell_count": traversed_unknown,
+                    "contains_unknown_constraints": contains_unknown,
+                    "operational_applicability": (
+                        "provisional_only" if contains_unknown else "current"
+                    ),
+                    "unknown_affects_feasibility_only": True,
+                    "unknown_is_never_zero_risk": True,
+                    "objective_weights_unchanged_by_unknown": True,
+                    "provisional_only_never_publishable": True,
                 },
                 # The legacy display-only airspace product remains outside the planner.
                 # Confirmed hard exclusions enter only through the separately fingerprinted

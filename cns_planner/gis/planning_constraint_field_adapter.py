@@ -7,6 +7,8 @@ from copy import deepcopy
 from ..domain.restricted_area import (
     normalize_restricted_area, normalize_restricted_area_collection,
 )
+#: 水平净空换算复用既有塔障碍适配器的实现：绝不新造第二套空间模型。
+from .layered_feasibility_adapter import horizontal_half_degrees
 
 
 def restricted_areas_by_cell(grid_cells, restricted_areas, *, grid_crs="OGC:CRS84"):
@@ -42,23 +44,159 @@ def restricted_areas_by_cell(grid_cells, restricted_areas, *, grid_crs="OGC:CRS8
     return result
 
 
-def towers_by_cell(grid_cells, tower_profiles):
-    profiles = (
-        tower_profiles.get("items") if isinstance(tower_profiles, dict) else tower_profiles
-    ) or {}
-    values = profiles.values() if isinstance(profiles, dict) else profiles
+def towers_by_cell(
+    grid_cells, tower_obstacle_profiles, *, towers=None, tower_clearance_policy=None,
+):
+    """把**真实塔点**归到它们可能影响到的 grid cell（网格只是加速索引）。
+
+    为什么不能按"派生层状态"封死全域
+    --------------------------------
+    铁塔是点几何事实。``tower_obstacle_profiles`` 只是**派生**高度层：它没算出来
+    只说明"该塔的高度未知"，**不说明**工作区里每一格都有塔。因此这里的判定必须是
+    **空间相关**的：
+
+    * profile 已生成 → 用 profile 的经纬度与塔顶派生事实；
+    * profile 未生成（``not_calculated``）→ **仍然**用 ``state["towers"]`` 的原始
+      点坐标确定相关 cell，并如实标记 ``evidence_source = "source_point_only"``；
+    * 与任何塔点都不相关的 cell → 返回空列表，调用方**不得**因为塔派生层的全局状态
+      把它判成 unknown；
+    * 相关 cell 的塔高度无法解析 → 由调用方如实判 unknown（fail-closed）。
+
+    水平影响范围来自显式配置的 ``tower_clearance_policy.tower_horizontal_clearance_m``；
+    未配置时为 0（只影响塔点所在 cell），绝不假设任何裕度。塔坐标本身**从不**被网格
+    聚合或取整——网格只回答"哪些 cell 可能受该塔影响"。
+    """
+
+    policy = tower_clearance_policy if isinstance(tower_clearance_policy, dict) else {}
+    entries = _tower_evidence_entries(
+        tower_obstacle_profiles, towers, policy.get("tower_horizontal_clearance_m"),
+    )
     result = {str(cell.get("grid_id")): [] for cell in grid_cells or [] if cell.get("grid_id")}
-    for profile in values:
-        if not isinstance(profile, dict):
+    if not entries:
+        return result
+    for cell in grid_cells or []:
+        grid_id, bbox = str(cell.get("grid_id") or ""), cell.get("bbox")
+        if not grid_id or not _bbox(bbox):
             continue
-        point = [profile.get("longitude"), profile.get("latitude")]
-        if not _point(point):
-            continue
-        for cell in grid_cells or []:
-            grid_id, bbox = str(cell.get("grid_id") or ""), cell.get("bbox")
-            if grid_id and _bbox(bbox) and _point_in_bbox(point, bbox):
-                result[grid_id].append(profile)
+        for entry in entries:
+            if _tower_entry_intersects_bbox(entry, bbox):
+                result[grid_id].append(deepcopy(entry))
     return result
+
+
+def _profile_items(tower_obstacle_profiles):
+    """``tower_obstacle_profiles`` 的 ``{tower_id: profile}`` 视图（兼容三种既有形态）。"""
+
+    raw = tower_obstacle_profiles
+    if isinstance(raw, dict) and isinstance(raw.get("items"), (dict, list, tuple)):
+        raw = raw.get("items")
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+    if isinstance(raw, (list, tuple)):
+        return {
+            str(item.get("tower_id") or ""): item
+            for item in raw if isinstance(item, dict) and item.get("tower_id")
+        }
+    return {}
+
+
+def _tower_points(towers):
+    """``state["towers"]`` → ``{tower_id: (longitude, latitude)}``（原始点坐标，权威事实）。"""
+
+    raw = towers
+    if isinstance(raw, dict):
+        raw = raw.get("items") or []
+    points = {}
+    for tower in raw if isinstance(raw, (list, tuple)) else []:
+        if not isinstance(tower, dict):
+            continue
+        tower_id = str(tower.get("tower_id") or "")
+        longitude, latitude = _number(tower.get("longitude")), _number(tower.get("latitude"))
+        if tower_id and longitude is not None and latitude is not None:
+            points[tower_id] = (longitude, latitude)
+    return points
+
+
+def _tower_evidence_entries(tower_obstacle_profiles, towers, horizontal_clearance_m):
+    """塔证据条目：profile 优先，缺失时退回**源点**（并如实标注证据来源）。"""
+
+    profiles = _profile_items(tower_obstacle_profiles)
+    points = _tower_points(towers)
+    entries, seen = [], set()
+    for tower_id, profile in profiles.items():
+        longitude, latitude = _number(profile.get("longitude")), _number(profile.get("latitude"))
+        if longitude is None or latitude is None:
+            point = points.get(tower_id)
+            if point is None:
+                continue
+            longitude, latitude = point
+        seen.add(tower_id)
+        entries.append(_tower_evidence_entry(
+            tower_id, longitude, latitude, profile=profile,
+            evidence_source="tower_obstacle_profile",
+            horizontal_clearance_m=horizontal_clearance_m,
+        ))
+    for tower_id, (longitude, latitude) in points.items():
+        if tower_id in seen:
+            continue
+        entries.append(_tower_evidence_entry(
+            tower_id, longitude, latitude, profile=None,
+            evidence_source="source_point_only",
+            horizontal_clearance_m=horizontal_clearance_m,
+        ))
+    return entries
+
+
+def _tower_evidence_entry(
+    tower_id, longitude, latitude, *, profile, evidence_source, horizontal_clearance_m,
+):
+    """一个塔证据条目：保留 profile 的派生事实，缺失时**如实**留空（绝不猜高度）。"""
+
+    base = deepcopy(profile) if isinstance(profile, dict) else {}
+    base.update({
+        "tower_id": tower_id,
+        "longitude": float(longitude),
+        "latitude": float(latitude),
+        # 派生层未生成时，塔顶事实一律为 None：绝不用源 elevation_m 或任何默认值代替。
+        "tower_top_orthometric_m": (
+            _number(base.get("tower_top_orthometric_m"))
+            if evidence_source == "tower_obstacle_profile" else None
+        ),
+        "confirmed": bool(
+            evidence_source == "tower_obstacle_profile" and base.get("confirmed") is True
+        ),
+        "status": (
+            str(base.get("status") or "unresolved")
+            if evidence_source == "tower_obstacle_profile" else "not_calculated"
+        ),
+        "evidence_source": evidence_source,
+    })
+    half_lat, half_lon = horizontal_half_degrees(horizontal_clearance_m, latitude)
+    base["horizontal_clearance_half_degrees"] = [half_lon, half_lat]
+    return base
+
+
+def _tower_entry_intersects_bbox(entry, bbox):
+    """塔的水平影响范围（点 + 显式水平净空包络）是否与 grid cell 相交。"""
+
+    half_lon, half_lat = entry.get("horizontal_clearance_half_degrees") or (0.0, 0.0)
+    longitude, latitude = float(entry["longitude"]), float(entry["latitude"])
+    west, south = longitude - float(half_lon or 0.0), latitude - float(half_lat or 0.0)
+    east, north = longitude + float(half_lon or 0.0), latitude + float(half_lat or 0.0)
+    return not (
+        east < float(bbox[0]) or west > float(bbox[2])
+        or north < float(bbox[1]) or south > float(bbox[3])
+    )
+
+
+def _number(value):
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
 def restricted_area_continuous_evidence(value, *, transform):

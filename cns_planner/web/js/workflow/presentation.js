@@ -83,7 +83,22 @@ export const STATUS_TEXT={
   uncovered:'未覆盖',covered:'已覆盖',
   // 运行语义
   not_declared_for_planning:'规划模式尚未声明',assumed_empty:'按空既有设施工程基线规划',
-  factual:'按事实数据规划',assume_empty_for_planning:'按空既有设施工程基线规划'
+  factual:'按事实数据规划',assume_empty_for_planning:'按空既有设施工程基线规划',
+  // BUG-I18N-001：主界面可见的既有 raw 值补齐（未登记的取值仍然原样返回，绝不猜）。
+  no_path:'未找到路径',no_traversable_path:'无可通行路径',
+  search_incomplete:'搜索未完成（触达资源上限）',
+  optimal_path_found:'已找到最优路径',queue_exhausted_optimality_proven:'搜索已穷尽（最优性已证明）',
+  expansion_cap_reached_optimality_not_proven:'触达扩展上限（未证明最优性）',
+  search_did_not_run:'搜索未运行',
+  complete:'完整',incomplete_search:'搜索不完整',
+  current_project:'当前项目',stale_input:'输入已变化',
+  provisional:'候选 / 试算结果',authoritative:'已确认',
+  display_only:'仅展示（不参与判定）',not_computed:'不计算',
+  rejected:'已拒绝',accepted:'已接受',eligible:'符合条件',ineligible:'不符合条件',
+  configured:'已配置',not_configured:'未配置',confirmed_zero:'已确认零人口暴露',
+  nodata_only:'仅 NoData',missing:'缺失',outside_extent:'来源范围之外',
+  full:'完全覆盖',partial_coverage:'部分覆盖',
+  within_operating_envelope:'在已验证性能包线内',beyond_safety_ceiling:'超过安全硬上限'
 };
 
 /**
@@ -256,6 +271,7 @@ export const CONSTRAINT_UNKNOWN_REASON_TEXT={
   tower_dataset_unresolved:'铁塔数据尚未解析',
   tower_clearance_unresolved:'铁塔垂直净空未配置',
   tower_top_not_confirmed:'塔顶高程尚未确认',
+  tower_height_unresolved:'铁塔塔高证据未解析（仅限与该塔空间相关的单元）',
   restricted_area_dataset_unresolved:'禁飞/受限区域数据尚未解析',
   protected_site_dataset_unresolved:'保护要地数据尚未解析',
   restricted_area_unconfirmed:'受限区域尚未确认',
@@ -264,6 +280,33 @@ export const CONSTRAINT_UNKNOWN_REASON_TEXT={
   source_point_only_no_protection_geometry:'仅有源点，缺少保护几何',
   unknown:'证据不足'
 };
+
+// ---- 8.1 候选航路的 provisional / 证据不足语义 --------------------------------
+
+/**
+ * 候选航路适用性 → 中文。键与后端 `candidate.operational_applicability` 一一对应；
+ * `provisional_only` 表示"仅供规划试算"，永远不能发布为运行航路。
+ */
+export const CANDIDATE_APPLICABILITY_TEXT={
+  current:'当前有效候选',
+  provisional_only:'仅供试算'
+};
+
+export function candidateApplicabilityText(value){return textOr(CANDIDATE_APPLICABILITY_TEXT,value);}
+
+/** 含证据不足单元的候选/航路的固定文案（与后端 `PROVISIONAL_ROUTE_BLOCK_STATEMENT` 逐字一致）。 */
+export const PROVISIONAL_ROUTE_BLOCK_TEMPLATE='候选航路包含 {count} 个证据不足单元，仅可用于规划试算，不能发布为运行航路。';
+
+export function provisionalRouteBlockText(count){
+  const value=Number.isFinite(Number(count))?Number(count):0;
+  return PROVISIONAL_ROUTE_BLOCK_TEMPLATE.replace('{count}',String(value));
+}
+
+/** 已启用"候选试算穿越证据不足单元"时的黄色提示（与用户契约逐字一致）。 */
+export const PROVISIONAL_TRAVERSAL_NOTICE='已启用候选试算穿越证据不足单元。证据不足仍不是安全通过，仅允许生成候选航路。';
+
+/** 该入口的完整语义（前端必须原样展示，不得简化成"允许穿越"）。 */
+export const PROVISIONAL_TRAVERSAL_SCOPE='仅允许生成候选航路用于规划试算，不代表安全通过；包含证据不足单元的候选不得发布为运行航路。';
 
 /** 证据不足原因 → 中文。 */
 export function constraintUnknownText(reason){
@@ -491,6 +534,7 @@ export const PRESENTATION_TABLES=[
   'AUTHORITATIVE_CONTEXT_TEXT','ASSESSMENT_TEXT','INPUT_REQUIREMENT_TEXT',
   'CONSTRAINT_OUTCOME_TEXT','CONSTRAINT_OUTCOME_COLOR','CONSTRAINT_BLOCKER_TEXT',
   'CONSTRAINT_BLOCKER_ORDER','CONSTRAINT_UNKNOWN_REASON_TEXT','CONSTRAINT_FRESHNESS_TEXT',
+  'CANDIDATE_APPLICABILITY_TEXT',
   'CANONICAL_NODE_LABELS','VERTICAL_REFERENCE_TEXT','SOURCE_STATE_TEXT'
 ];
 

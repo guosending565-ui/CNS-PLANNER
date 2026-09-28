@@ -6,7 +6,7 @@ export function towerSourceCompatibilityNotice(data){
   return '已导入 '+count+' 个铁塔站址，但原始数据源路径未登记；请重新选择原始铁塔文件。';
 }
 
-export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton}){
+export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton,onProjectDirectorySelected}){
   let browseKind='basemap',browseParent='',selectedFile='';
   const healthLabel=status=>({ready:'正常',warning:'警告',error:'错误',checking:'检查中'}[status]||statusText(status));
   // 统一路径校验结论（后端每次 metadata() 都重新 exists/is_file，不做缓存）。
@@ -94,7 +94,18 @@ const payload=()=>({
       if(event.target.closest?.('[data-preview-routes]')){try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/reference-routes/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const refreshedState=await api('/api/state');onApplied(refreshedState);const routes=refreshedState?.workflow?.reference_routes||{},crs=(routes.crs||{}).source_crs||{};$('settingsMessage').textContent=routes.count>0?(crs.confirmed===true?'已按源文件声明的 '+crs.value+' 导入 '+routes.count+' 条真实参考航线（'+(routes.point_count??0)+' 个航路点），无需再次确认':'已导入 '+routes.count+' 条真实参考航线（坐标系待确认）'):'航线预览已生成；请在航路设计页核对后确认导入';}catch(error){$('settingsError').textContent=error.message;}return;}
     });
     $('closeBrowser').onclick=()=>$('browser').close();$('drives').onclick=()=>browse('');$('parent').onclick=()=>browse(browseParent);$('openFolder').onclick=()=>browse($('folder').value);
-    $('selectFile').onclick=()=>{const target=$(browseKind+'Path');if(selectedFile&&target)target.value=selectedFile;$('browser').close();};
+    $('selectFile').onclick=()=>{
+      const target=$(browseKind+'Path');
+      const selected=selectedFile||'';
+      if(selected&&target)target.value=selected;
+      $('browser').close();
+      // BUG-PROJECT-OPEN-UX-001：「选择…」只把目录写进输入框（draft），**绝不**切换项目。
+      // 选区结果必须回传给壳层，否则 draft 与输入框会不一致，用户根本无法判断
+      // "只是选中了目录"还是"已经打开了项目"。
+      if(browseKind==='project'&&selected&&typeof onProjectDirectorySelected==='function'){
+        try{onProjectDirectorySelected(selected);}catch(_){/* 纯 UI 通知，失败不影响选择结果 */}
+      }
+    };
   }
   async function checkOnline(){
     const button=$('checkOnline'),result=$('onlineCheckResult');button.disabled=true;button.textContent='检查中…';result.className='online-check-result checking';result.textContent='正在重新请求在线服务，请稍候…';$('settingsMessage').textContent='正在检查在线服务…';

@@ -184,6 +184,10 @@ class ApiRouter:
                 self._first(query, "altitude_layer_id", "") or None,
                 self._first(query, "bbox", "") or None,
             ))
+        # PCF 前置配置：provisional 穿越策略（默认 false，需显式确认 + source/evidence）
+        # 与受限空域 / 保护要地的 confirmed_none 显式声明。只读。
+        if path == "/api/planning-constraint-field/configuration":
+            return Response(workflow.planning_constraint_field_configuration())
         # ---- Layered Risk-Aware Theta* V2 additive interfaces ------------------------
         if path == "/api/shelter-coefficient-policy": return Response(workflow.shelter_coefficient_policy())
         if path == "/api/population-nodata-policy": return Response(workflow.population_nodata_policy())
@@ -481,6 +485,7 @@ class ApiRouter:
             "/api/planning-exposure-policy": lambda: workflow.set_planning_exposure_policy(payload),
             "/api/layered-route-candidates/evaluate": lambda: workflow.evaluate_layered_route_candidate(payload),
             "/api/planning-constraint-fields/evaluate": lambda: workflow.generate_planning_constraint_field(payload),
+            "/api/planning-constraint-field/configuration": lambda: workflow.set_planning_constraint_field_configuration(payload),
             "/api/layered-route-candidates/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_layered_route_candidate(payload)
             ),
@@ -586,7 +591,10 @@ class ApiRouter:
             actions = {
                 "workspace-clear": lambda: workflow.clear_workspace(),
                 "traffic-simulate": lambda: workflow.run_traffic_simulation(payload),
-                "node": lambda: workflow.add_node(payload.get("coordinate", []), payload.get("name")),
+                "node": lambda: workflow.add_node(
+                    payload.get("coordinate", []), payload.get("name"),
+                    payload.get("coordinate_source"),
+                ),
                 "node-delete": lambda: workflow.delete_node(payload.get("node_id")),
                 "scenario": lambda: workflow.generate_scenario(payload.get("direction", "both")),
                 "scenario-od": lambda: workflow.generate_scenario_od(

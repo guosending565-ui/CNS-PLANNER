@@ -515,7 +515,11 @@ class RadarSurveillanceLayoutService:
         if not callable(selector):
             return None
         try:
-            return selector(altitude_layer_id=FIXED_ALTITUDE_LAYER_ID)
+            # Rescue Stable demo follows the authoritative active Theta* V2
+            # candidate and its explicitly selected altitude layer (ALT-100 in
+            # the acceptance project).  The operational path remains fixed to
+            # the legacy published-route contract.
+            return selector()
         except (TypeError, ValueError, RuntimeError):
             return None
 
@@ -625,10 +629,20 @@ class RadarSurveillanceLayoutService:
             for item in spatial.get("altitude_layers") or []
             if isinstance(item, dict)
         }
-        layer = layers.get(FIXED_ALTITUDE_LAYER_ID)
+        candidate = self._current_demo_candidate() if demo_preview_only else None
+        target_layer_id = (
+            str(candidate.get("altitude_layer_id"))
+            if isinstance(candidate, dict) and candidate.get("altitude_layer_id")
+            else FIXED_ALTITUDE_LAYER_ID
+        )
+        layer = layers.get(target_layer_id)
+        target_altitude_m = (
+            layer.get("nominal_altitude_m")
+            if isinstance(layer, dict) else FIXED_ALTITUDE_M
+        )
         altitude = {
-            "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
-            "altitude_m": FIXED_ALTITUDE_M,
+            "altitude_layer_id": target_layer_id,
+            "altitude_m": target_altitude_m,
             "vertical_reference": VERTICAL_REFERENCE,
             "semantics": "fixed_route_height_not_optimised",
             "present": isinstance(layer, dict),
@@ -647,7 +661,6 @@ class RadarSurveillanceLayoutService:
                 isinstance(layer, dict) and (layer.get("confirmed") is True)
             ),
         }
-        candidate = self._current_demo_candidate() if demo_preview_only else None
         risk_profile = self._current_risk_profile(candidate) if demo_preview_only else None
         land = self.land_mask_readiness(facts_provider=facts_provider)
         metric = self._metric_transform_readiness(facts_provider=facts_provider)
@@ -657,20 +670,16 @@ class RadarSurveillanceLayoutService:
         if demo_preview_only and payload.get("route_source") != DEMO_ROUTE_SOURCE:
             blockers.append("demo_route_source_must_be_current_layered_candidate")
         if demo_preview_only and candidate is None:
-            blockers.append("current_alt_080_layered_candidate_missing")
+            blockers.append("current_layered_candidate_missing")
         elif demo_preview_only:
             if candidate.get("status") != "candidate":
-                blockers.append("current_alt_080_candidate_status_not_candidate")
+                blockers.append("current_candidate_status_not_candidate")
             if candidate.get("current_applicability") != "current":
-                blockers.append("current_alt_080_candidate_not_current")
-            if str(candidate.get("altitude_layer_id")) != FIXED_ALTITUDE_LAYER_ID:
-                blockers.append("current_layered_candidate_not_alt_080")
+                blockers.append("current_candidate_not_current")
             if candidate.get("route_id") in (None, ""):
-                blockers.append("current_alt_080_candidate_route_id_missing")
+                blockers.append("current_candidate_route_id_missing")
             if len(candidate.get("path") or []) < 2:
-                blockers.append("current_alt_080_candidate_path_unavailable")
-        if demo_preview_only and risk_profile is None:
-            blockers.append("current_route_risk_profile_missing")
+                blockers.append("current_candidate_path_unavailable")
         if not demo_preview_only and not passed_routes:
             blockers.append("passed_operational_route_missing")
         if not towers:
@@ -681,7 +690,11 @@ class RadarSurveillanceLayoutService:
             blockers.append(f"tower_obstacle_profiles_not_ready:{profiles_status}")
         if not resolved:
             blockers.append("resolved_tower_top_orthometric_missing")
-        if not demo_preview_only and not altitude["present"]:
+        if demo_preview_only and not altitude["present"]:
+            blockers.append("current_candidate_altitude_layer_missing")
+        elif demo_preview_only and not altitude["confirmed"]:
+            blockers.append("current_candidate_altitude_layer_not_confirmed")
+        elif not demo_preview_only and not altitude["present"]:
             blockers.append("altitude_layer_alt_080_missing")
         elif not demo_preview_only and not altitude["confirmed"]:
             blockers.append("altitude_layer_alt_080_not_confirmed")
@@ -1116,7 +1129,17 @@ class RadarSurveillanceLayoutService:
             for item in spatial.get("altitude_layers") or []
             if isinstance(item, dict)
         }
-        layer = layers.get(FIXED_ALTITUDE_LAYER_ID)
+        target_layer_id = (
+            str(candidate.get("altitude_layer_id"))
+            if demo_preview_only and isinstance(candidate, dict)
+            and candidate.get("altitude_layer_id")
+            else FIXED_ALTITUDE_LAYER_ID
+        )
+        layer = layers.get(target_layer_id)
+        target_altitude_m = (
+            layer.get("nominal_altitude_m")
+            if isinstance(layer, dict) else FIXED_ALTITUDE_M
+        )
         towers = _tower_items(state)
         components = {
             "algorithm_id": ALGORITHM_ID,
@@ -1144,7 +1167,7 @@ class RadarSurveillanceLayoutService:
                 if route else None
             ),
             "fixed_altitude_layer": {
-                "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
+                "altitude_layer_id": target_layer_id,
                 # 只绑定**语义相关**的稳定字段：ALT-080 的目录条目在项目恢复时会被幂等
                 # 补建（`ensure_default_altitude_layers`），若把整条记录（含 created_at /
                 # evidence / 派生的 status 等）纳入指纹，重新打开项目就会把刚求出的方案
@@ -1163,7 +1186,7 @@ class RadarSurveillanceLayoutService:
                     }
                     if isinstance(layer, dict) else None
                 ),
-                "altitude_m": FIXED_ALTITUDE_M,
+                "altitude_m": target_altitude_m,
                 "vertical_reference": VERTICAL_REFERENCE,
             },
             "towers": {
@@ -1276,7 +1299,7 @@ class RadarSurveillanceLayoutService:
             requested = payload.get("route_id")
             if requested not in (None, "", "all", route_id):
                 readiness["blockers"] = list(readiness.get("blockers") or []) + [
-                    "requested_route_does_not_match_current_alt_080_candidate"
+                    "requested_route_does_not_match_current_layered_candidate"
                 ]
                 readiness["status"] = "not_ready"
             route_ids = [route_id]
@@ -1337,11 +1360,30 @@ class RadarSurveillanceLayoutService:
         route = route_view if demo_preview_only else _state_route(state, route_id)
         blockers = list(preflight_blockers or [])
         unknown_evidence = []
+        candidate = (demo_context or {}).get("candidate") or {}
+        altitude_layer_id = (
+            str(candidate.get("altitude_layer_id"))
+            if demo_preview_only and candidate.get("altitude_layer_id")
+            else FIXED_ALTITUDE_LAYER_ID
+        )
+        layers = {
+            str(item.get("altitude_layer_id")): item
+            for item in (state.get("spatial_3d") or {}).get("altitude_layers") or []
+            if isinstance(item, dict)
+        }
+        altitude_layer = layers.get(altitude_layer_id) or {}
+        route_altitude_m = float(
+            altitude_layer.get("nominal_altitude_m")
+            if altitude_layer.get("nominal_altitude_m") is not None
+            else FIXED_ALTITUDE_M
+        )
+        parameter_values = parameters_block(fixed_altitude_m=route_altitude_m)
+        parameter_values["fixed_altitude_layer_id"] = altitude_layer_id
 
         base = {
             "route_id": str(route_id),
-            "altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
-            "altitude_m": FIXED_ALTITUDE_M,
+            "altitude_layer_id": altitude_layer_id,
+            "altitude_m": route_altitude_m,
             "vertical_reference": VERTICAL_REFERENCE,
             "algorithm_id": ALGORITHM_ID,
             "algorithm_version": ALGORITHM_VERSION,
@@ -1354,7 +1396,7 @@ class RadarSurveillanceLayoutService:
                 else "80m固定高度航路方向性雷达几何初步划设方案"
             ),
             "evaluated_at": utc_now(),
-            "parameters": parameters_block(),
+            "parameters": parameter_values,
             "device_provenance": device_provenance(),
             "device_summary": device_summary(),
             "not_evaluated": deepcopy(NOT_EVALUATED),
@@ -1362,7 +1404,6 @@ class RadarSurveillanceLayoutService:
             "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
         }
         if demo_preview_only:
-            candidate = demo_context.get("candidate") or {}
             risk_profile = demo_context.get("risk_profile") or {}
             base.update({
                 "demo_preview_only": True,
@@ -1428,7 +1469,7 @@ class RadarSurveillanceLayoutService:
 
         if route is None:
             missing = blockers or [
-                "current ALT-080 LayeredRouteCandidate 不存在"
+                "current LayeredRouteCandidate 不存在"
                 if demo_preview_only else "运行航路不存在"
             ]
             base.update({
@@ -1657,7 +1698,7 @@ class RadarSurveillanceLayoutService:
             metric_path=metric_path,
             spacing_m=spacing,
             route_id=str(route_id),
-            fixed_altitude_m=FIXED_ALTITUDE_M,
+            fixed_altitude_m=route_altitude_m,
             surface_resolver=(
                 lambda index, offset, metric: _classification_at(
                     offset, index, metric, f"optimization@{spacing}",
@@ -1672,7 +1713,7 @@ class RadarSurveillanceLayoutService:
                 metric_path=metric_path,
                 spacing_m=validation_spacing,
                 route_id=str(route_id),
-                fixed_altitude_m=FIXED_ALTITUDE_M,
+                fixed_altitude_m=route_altitude_m,
                 surface_resolver=(
                     lambda index, offset, metric: _classification_at(
                         offset, index, metric, f"validation@{validation_spacing}",
@@ -1752,7 +1793,7 @@ class RadarSurveillanceLayoutService:
             "route_metric_length_m": sampled["route_length_m"],
             "metric_crs": METRIC_CRS,
             "mht_grid_used_as_coverage_discretisation": False,
-            "sample_egm2008_m": FIXED_ALTITUDE_M,
+            "sample_egm2008_m": route_altitude_m,
             "sample_egm2008_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
             "terrain_elevation_used_as_route_height": (
                 ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT
@@ -1876,7 +1917,7 @@ class RadarSurveillanceLayoutService:
             ),
             "infeasibility_reasons": _infeasibility_reasons(solved),
             "parameters": parameters_block(
-                fixed_altitude_m=FIXED_ALTITUDE_M,
+                fixed_altitude_m=route_altitude_m,
                 extra={
                     "optimization_sample_spacing_m": spacing,
                     "validation_sample_spacing_m": policy["validation_sample_spacing_m"],
@@ -1884,6 +1925,7 @@ class RadarSurveillanceLayoutService:
                 },
             ),
         })
+        base["parameters"]["fixed_altitude_layer_id"] = altitude_layer_id
         return base
 
     # ------------------------------------------------------------------ invalidation

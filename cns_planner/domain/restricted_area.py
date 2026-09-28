@@ -129,6 +129,40 @@ def altitude_applicability(area, *, altitude_m, vertical_reference):
     return "applicable"
 
 
+def normalize_restricted_area_declarations(value=None):
+    """用户**显式**「本项目范围内无该类约束」声明的持久化形态（唯一实现）。
+
+    这是 ``confirmed_none`` 的唯一合法来源。语义是"用户显式确认当前项目范围内按当前
+    依据无该类约束"，**不是**"系统自动判断没有"。因此：
+
+    * 未勾选 / 缺失 → ``confirmed_none = False``（调用方必须保持 unresolved/unknown）；
+    * ``source`` 与 ``evidence`` 是必填依据，缺一即不被承认（由消费端 fail-closed 判为
+      ``not_configured``）；
+    * 本函数只做形态规范化，**绝不**把 ``not_configured`` 升级为 ``confirmed_none``。
+    """
+
+    raw = value if isinstance(value, dict) else {}
+    result = {}
+    for domain in ("airspace", "critical_site"):
+        item = raw.get(domain)
+        item = item if isinstance(item, dict) else {}
+        evidence = item.get("evidence")
+        if isinstance(evidence, str):
+            evidence = [evidence] if evidence.strip() else []
+        elif isinstance(evidence, dict):
+            evidence = [deepcopy(evidence)]
+        elif isinstance(evidence, (list, tuple)):
+            evidence = [deepcopy(entry) for entry in evidence]
+        else:
+            evidence = []
+        result[domain] = {
+            "confirmed_none": bool(item.get("confirmed_none")),
+            "source": deepcopy(item.get("source")),
+            "evidence": evidence,
+        }
+    return result
+
+
 def _number(value):
     if value in (None, "") or isinstance(value, bool):
         return None
@@ -142,4 +176,5 @@ def _number(value):
 __all__ = [
     "CONSTRAINT_TYPES", "DATASET_STATES", "GEOMETRY_TYPES", "altitude_applicability",
     "normalize_restricted_area", "normalize_restricted_area_collection",
+    "normalize_restricted_area_declarations",
 ]

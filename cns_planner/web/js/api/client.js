@@ -1,8 +1,18 @@
 export function createApiClient(token=()=>"",revision=()=>null){
   let sequence=0,writeQueue=Promise.resolve(),knownRevision=null;
   const clientId=globalThis.crypto?.randomUUID?.()||('client-'+Math.random().toString(36).slice(2));
+  let warnedMissingToken=false;
   async function execute(url,options,requestId){
-    const method=String(options.method||'GET').toUpperCase(),headers={'X-CNS-Token':token()||'',...options.headers};
+    const method=String(options.method||'GET').toUpperCase(),sessionToken=token()||'';
+    // BUG-PROJECT-RESTORE-001：写入端点要求会话令牌。token 只能由 /api/state 下发，
+    // 因此在"服务器状态还没落地"时发 POST 必然被服务端拒成 403「无效会话或来源」，
+    // 这个提示会与真实原因（启动阶段太早发请求）完全脱节。这里只加一条可诊断的
+    // console 记录：不改协议、不改请求、不阻断任何既有成功路径。
+    if(method==='POST'&&!sessionToken&&!warnedMissingToken){
+      warnedMissingToken=true;
+      console.warn('[CNS Planner] 写请求发出时会话令牌尚未就绪，服务端将拒绝该请求（请先落地 /api/state）');
+    }
+    const headers={'X-CNS-Token':sessionToken,...options.headers};
     if(method==='POST'){
       const current=knownRevision??revision();
       if(!Number.isInteger(current))throw Error('当前 workflow revision 不可用，请刷新项目状态');

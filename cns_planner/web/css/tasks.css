@@ -37,6 +37,38 @@
 
 .cns-task-panel-content[hidden] { display: none; }
 
+/* BUG-TASK-FEEDBACK-001：顶栏常驻任务徽标（默认隐藏，有活跃任务才出现）。 */
+.task-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid rgba(28, 79, 120, 0.45);
+  border-radius: 0.3rem;
+  background: rgba(238, 245, 251, 0.95);
+  color: #1c4f78;
+  font-size: 0.72rem;
+  cursor: pointer;
+  max-width: 44ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-status-badge::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: cns-task-pulse 1.4s ease-in-out infinite;
+}
+.task-status-badge[hidden] { display: none; }
+@keyframes cns-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* BUG-TASK-PROGRESS-001：预计剩余时间。"可靠估算"与"暂无法估算"必须可区分。 */
+.cns-task-eta { font-size: 0.72rem; color: #52616f; }
+.cns-task-eta[data-eta-known="false"] { font-style: italic; }
+
 .cns-task-panel-head h3 {
   margin: 0;
   font-size: 0.95rem;

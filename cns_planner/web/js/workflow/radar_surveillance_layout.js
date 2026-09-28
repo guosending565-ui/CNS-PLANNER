@@ -98,7 +98,11 @@ export function isCompleteCoverage(status){
 export function radarLayoutModel(flow){
   const layout=flow?.radar_surveillance_layout||{},readiness=flow?.radar_surveillance_layout_readiness||{};
   const detail=layout.detail||null;
-  const item=detail||(layout.items||[])[0]||null;
+  const summaryItems=Array.isArray(layout.items)?layout.items:[];
+  const item=detail
+    ||[...summaryItems].reverse().find(entry=>entry?.demo_preview_only===true&&entry?.status!=='stale')
+    ||summaryItems[summaryItems.length-1]
+    ||null;
   const solver=item?.solver||null;
   const validation=item?.validation||null;
   const sources=item?.sources||readiness.sources||{};
@@ -405,6 +409,10 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'也不等同于 5 m 复核分辨率。历史挂高字段只作兼容读取，'
     +'本版雷达原点恒等于塔顶 EGM2008 正高，该字段不参与任何几何。</div>'
     +'<label class="check-row"><input type="checkbox" id="radarAllowMixed" '+(item?.stage==='radar_i_plus_radar_ii'?'checked':'')+'> 允许仅Ⅰ型被证明不可行后回退 Ⅰ型+Ⅱ型</label>'
+    +'<label class="check-row"><input type="checkbox" id="radarDemoPreviewOnly" '
+    +(model.demoPreviewOnly?'checked':'')+'> 使用当前 Theta* V2 候选航路进行演示预览</label>'
+    +'<div class="parameter-note">基于真实候选航路执行雷达几何初步划设。'
+    +'结果为 proposal-only，不代表运行航路已经发布。</div>'
     +'<div class="button-row">'
     +'<button class="secondary" id="saveRadarSurveillancePolicy">保存划设参数</button>'
     +'<button class="primary" id="evaluateRadarSurveillanceLayout">运行初步划设</button>'
@@ -505,7 +513,11 @@ export async function loadRadarSurveillanceDetail({api,getFlow,setFlow,afterChan
     throw new Error('loadRadarSurveillanceDetail 需要 api / getFlow / setFlow 三个依赖');
   const id=routeId==null?'':String(routeId).trim();
   const url=id?RADAR_LAYOUT_ENDPOINT+'?'+new URLSearchParams({route_id:id}):RADAR_LAYOUT_ENDPOINT;
-  const detail=await api(url);
+  const response=await api(url);
+  const items=Array.isArray(response?.items)?response.items:[];
+  const detail=[...items].reverse().find(item=>
+    item?.demo_preview_only===true&&item?.status!=='stale'
+  )||items[items.length-1]||response;
   const current=getFlow()||{};
   const layout={...(current.radar_surveillance_layout||{}),detail};
   setFlow({...current,radar_surveillance_layout:layout});

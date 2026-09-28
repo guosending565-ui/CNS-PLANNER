@@ -7,6 +7,9 @@
   <div class="topbar-brand"><strong>CNS Planner</strong><span class="topbar-project" data-project-name>未命名项目</span></div>
   <button id="connection" class="status status-checking" title="打开数据源设置"><i class="dot"></i><span>正在检查数据源</span></button>
   <div class="topbar-spacer"></div>
+  <!-- BUG-TASK-FEEDBACK-001：后台任务常驻徽标。只要有任何任务在排队 / 计算就显示
+       「N 个任务正在计算 · 业务名」，但**不**强制展开大面板、不遮挡页面。 -->
+  <button id="taskStatusBadge" class="task-status-badge" hidden aria-live="polite"></button>
   <div class="topbar-actions">
    <button id="workbenchOpen" class="secondary compact" title="展开当前步骤工作台">工作台</button>
    <button id="settingsBtn" class="secondary compact">数据源</button>
@@ -86,9 +89,9 @@
      </div>
      <div class="layer-group">
       <div class="layer-group-title">规划结果</div>
-      <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 候选航路（当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" aria-label="候选航路 current candidate"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 候选航路（当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" aria-label="候选航路 current candidate" checked></div>
       <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> 高度层可行域（当前高度层粗判掩码）</span><input type="checkbox" id="layeredFeasibilityLayer" aria-label="当前高度层粗判可行域掩码"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> 雷达监视规划（方向性扇区与覆盖着色）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="雷达监视规划"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> 雷达监视规划（方向性扇区与覆盖着色）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="雷达监视规划" checked></div>
       <!-- 旧版/研究对照：只允许标注为"旧版试算航路 / 研究对照"，永不叫"运行航路 / 正式航路"。 -->
       <div class="layer-row layer-compat"><span><i class="swatch" style="background:#4c6ef5"></i> 旧版试算航路（研究对照）</span><input type="checkbox" id="v3CandidateLayer" aria-label="旧版试算航路研究对照"></div>
      </div>

@@ -25,7 +25,8 @@
  */
 import {
   CONSTRAINT_LAYER_ID,loadConstraintField,constraintFieldModel,
-  constraintFieldFreshness,constraintLegendModel,constraintCellDetailsHtml
+  constraintFieldFreshness,constraintLegendModel,constraintCellDetailsHtml,
+  constraintConfigurationUrl,constraintConfigurationModel,constraintConfigurationPayload
 } from './constraint_field.js';
 import {drawConstraintFieldOverlay} from '../map/constraint_field_overlay.js';
 
@@ -53,7 +54,8 @@ export function createConstraintFieldView(deps){
 
   //: 纯展示状态：用户当前选择的高度层 + 已读到的结果。不写任何业务状态。
   //: B5X：``mapBbox`` 记录"这份明细是按哪个视口读回来的"，用于视口变化后按需重读。
-  let state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null};
+  //: 本轮新增 ``configuration``：PCF 前置配置（provisional 穿越 / confirmed_none 声明）。
+  let state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null,configuration:null};
   //: 地图数据加载的重入保护：同一高度层只允许一个进行中的请求。
   let mapRequest=null;
 
@@ -89,8 +91,55 @@ export function createConstraintFieldView(deps){
       mapLoaded:Boolean(state.mapLoaded||(state.map&&state.map.usable)),
       error:state.error,
       loading:state.loading,
-      altitudeLayerId:state.altitudeLayerId
+      altitudeLayerId:state.altitudeLayerId,
+      configuration:configurationModel()
     };
+  }
+
+  /**
+   * 前置配置展示模型。
+   *
+   * 优先用本次显式读到的后端配置；尚未读取时回退到 workflow 快照里的
+   * ``planning_constraint_field_policy`` / ``restricted_area_declarations``（若快照带出）。
+   * 两者都没有时返回 ``null``：面板如实显示"未配置"，**绝不**假装某个域没有约束。
+   */
+  function configurationModel(){
+    if(state.configuration)return constraintConfigurationModel(state.configuration);
+    const flow=getFlow()||{};
+    const policy=flow.planning_constraint_field_policy;
+    const declarations=flow.restricted_area_declarations;
+    if(!policy&&!declarations)return null;
+    return constraintConfigurationModel({
+      unknown_policy_configuration:policy||null,
+      restricted_area_declarations:declarations||null
+    });
+  }
+
+  /** 只读读取前置配置（GET；失败时如实记录错误，不猜默认值）。 */
+  async function loadConfiguration(){
+    try{
+      const response=await api(constraintConfigurationUrl());
+      state={...state,configuration:response};
+      return configurationModel();
+    }catch(exc){
+      state={...state,error:exc.message||'约束场前置配置不可用，请刷新项目状态'};
+      return null;
+    }
+  }
+
+  /**
+   * 显式保存前置配置。
+   *
+   * 语义：只有用户勾选并同时填写 source / evidence，后端才会启用
+   * ``allow_unknown_for_provisional``；``confirmed_none`` 同样只能由用户显式确认。
+   * 保存成功后已生成的约束场会被标记为「需要重新计算」，绝不静默沿用。
+   */
+  async function saveConfiguration(post){
+    if(typeof post!=='function')throw Error('约束场前置配置入口不可用，请刷新项目状态');
+    const payload=constraintConfigurationPayload(getNode);
+    const response=await post(constraintConfigurationUrl(),payload);
+    state={...state,configuration:response,collection:null,map:null,mapLoaded:false,mapBbox:null,error:''};
+    return configurationModel();
   }
 
   /** 高度层的中文显示文本（`ALT-080 · 80 m · EGM2008 正高`）。 */
@@ -240,7 +289,7 @@ export function createConstraintFieldView(deps){
 
   /** 打开另一个项目 / 清工作区时重置展示状态（不自动加载）。 */
   function reset(){
-    state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null};
+    state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null,configuration:null};
     mapRequest=null;
   }
 
@@ -262,6 +311,13 @@ export function createConstraintFieldView(deps){
         if(typeof refresh==='function')await refresh();
         return presentation();
       },
+      // 前置配置：只读读取 + 显式保存（保存后重读 workflow 快照，状态卡随之更新）。
+      loadConfiguration:()=>loadConfiguration(),
+      saveConfiguration:async()=>{
+        const result=await saveConfiguration(post);
+        if(typeof refresh==='function')await refresh();
+        return result;
+      },
       // 读取当前高度层的逐格明细（只读；已读过则直接复用）。
       loadMap:()=>loadMap(),
       refreshLegend:()=>updateLegend(),
@@ -271,7 +327,8 @@ export function createConstraintFieldView(deps){
   return {
     select,model,presentation,draw,cellFor,loadMap,updateLegend,cellDetailsHtml,
     altitudeLayerLabel:altitudeLayerLabelText,
-    layerNeedsData,layerState,generate,reset,paint,stepBindings,
+    layerNeedsData,layerState,generate,reset,paint,stepBindings,configurationModel,
+    loadConfiguration,saveConfiguration,
     state(){return {...state};}
   };
 }

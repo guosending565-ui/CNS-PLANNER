@@ -124,6 +124,57 @@ export function populationCellStructureDiagnostics(grid, attributes) {
 }
 
 /**
+ * 该对象是否**声明**自己是一份完整 workflow 快照。
+ *
+ * 契约依据（不做"像不像"的启发式猜测）：
+ *   * 完整快照一定带 ``project``（后端 `WorkflowService.snapshot()` 的固定顶层键）；
+ *   * 局部资源响应（validation collection / projection / preview / readiness / 删除回执）
+ *     只有自己的字段。
+ *
+ * BUG-CONSTRAINT-UI-001 的真实上游：某个 `resourceAction(path)` 拿到的是**局部对象**，
+ * 它被当成 workflow 直接安装后，``flow.project`` 立即变成 undefined，界面随即在
+ * `flow.project.name` 抛 "Cannot read properties of undefined (reading 'name')"。
+ * 后端数据并没有丢——只是前端把不该当快照的东西当成了快照。
+ */
+export function looksLikeWorkflowSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return false;
+  // `schema_version` 不是 workflow 身份：PCF 配置、候选、雷达 proposal 等局部
+  // 资源都有自己的 schema_version。完整 workflow 的稳定契约是顶层 `project`；
+  // 放宽到 schema_version 会把一次局部保存响应安装成“未命名空项目”，直接造成
+  // 右栏 / 地图 split-brain。
+  return snapshot.project !== undefined;
+}
+
+//: 局部响应安装时**必须**从旧 flow 继承的顶层键（业务基础事实，局部响应永远不拥有）。
+const INHERITED_SNAPSHOT_KEYS = [
+  'project', 'schema_version', 'revision', 'steps', 'workspace', 'grid',
+  'grid_attributes', 'grid_risk', 'grid_risk_v2', 'nodes', 'node_seq', 'route_seq',
+  'scenario_routes', 'operational_routes', 'spatial_3d', 'defaults',
+];
+
+/**
+ * 把一份"被当成 workflow 安装的对象"规范化。
+ *
+ * @returns {{flow:object, partial:boolean, inherited:string[]}}
+ *   `inherited` 是**这次安装实际保留下来**的业务基础键：局部响应不该带走
+ *   `project` / `workspace` / `grid` 这些事实，因此必须显式列出以便诊断。
+ */
+export function normalizeSnapshotInstall(current, snapshot) {
+  const base = current && typeof current === 'object' ? current : {};
+  if (looksLikeWorkflowSnapshot(snapshot)) return {flow: snapshot, partial: false, inherited: []};
+  const incoming = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const merged = {...base, ...incoming};
+  const inherited = [];
+  for (const key of INHERITED_SNAPSHOT_KEYS) {
+    if (key in incoming) continue;
+    if (base[key] === undefined) continue;
+    merged[key] = base[key];
+    inherited.push(key);
+  }
+  return {flow: merged, partial: true, inherited};
+}
+
+/**
  * 建立「applyWorkflowSnapshot / hydrateGridDetail」两件套。
  *
  * @param {object} deps
@@ -141,6 +192,7 @@ export function createWorkflowSnapshotApplier(deps) {
     getFlow, setFlow, nextSerial, currentSerial, fetchGrid, fetchAttributes,
     // Phase4-B5X：其余外置型结果的按需读取入口（可选依赖，未提供时跳过）。
     fetchRisk = null, fetchRiskV2 = null, fetchLayeredCandidates = null,
+    fetchRadarSurveillance = null,
     onError = () => {}, afterApply = () => {},
   } = deps;
   for (const [name, fn] of Object.entries({
@@ -151,6 +203,9 @@ export function createWorkflowSnapshotApplier(deps) {
 
   /** 最近一次成功 hydrate 的身份（只作诊断 / 测试可见性，不参与竞态裁决）。 */
   let hydrated = null;
+
+  /** 结构性诊断（例如"把局部响应当成 workflow 安装"）：只报告事实，不修业务数据。 */
+  const diagnostics = [];
 
   /**
    * 从专用接口 hydrate 逐 cell 明细。
@@ -218,14 +273,68 @@ export function createWorkflowSnapshotApplier(deps) {
   }
 
   /**
+   * Rescue Stable map path: hydrate only the LayeredRouteCandidate sidecar.
+   * Candidate geometry is externalized from the generic workflow snapshot, but
+   * fetching all external detail would also download grid/risk payloads.
+   */
+  async function hydrateLayeredCandidateDetail() {
+    const snapshot = getFlow() || {};
+    if (typeof fetchLayeredCandidates !== 'function'
+        || snapshot.layered_route_candidates?.detail_available !== true) {
+      return {applied: false, reason: 'no_candidate_detail'};
+    }
+    const serial = nextSerial();
+    const candidates = await fetchLayeredCandidates();
+    if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    setFlow({...getFlow(), layered_route_candidates: candidates});
+    afterApply(getFlow());
+    return {applied: true, hydrated: ['layered_route_candidates']};
+  }
+
+  /** Rescue Stable map path: hydrate the current proposal-only radar geometry. */
+  async function hydrateRadarSurveillanceDetail() {
+    const snapshot = getFlow() || {};
+    if (typeof fetchRadarSurveillance !== 'function'
+        || snapshot.radar_surveillance_layout?.detail_available !== true) {
+      return {applied: false, reason: 'no_radar_detail'};
+    }
+    const serial = nextSerial();
+    const response = await fetchRadarSurveillance();
+    if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    const items = Array.isArray(response?.items) ? response.items : [];
+    const detail = [...items].reverse().find(item =>
+      item?.demo_preview_only === true && item?.status !== 'stale'
+    ) || items[items.length - 1] || null;
+    const current = getFlow() || {};
+    const layout = {...(current.radar_surveillance_layout || {}), detail};
+    setFlow({...current, radar_surveillance_layout: layout});
+    afterApply(getFlow());
+    return {applied: Boolean(detail), hydrated: detail ? ['radar_surveillance_layout'] : []};
+  }
+
+  /**
    * 唯一的完整 workflow snapshot 应用路径。
    *
    * 语义：先原样安装 snapshot（它可能是 slim 的），**再**按需 hydrate 逐 cell 明细，
    * 最后才 render / paint —— 因此用户不会看到「摘要 passed 但 popup 缺数据」的中间态。
    */
   async function applyWorkflowSnapshot(snapshot, {hydrate = true} = {}) {
-    if (!snapshot || typeof snapshot !== 'object') return getFlow();
-    setFlow(snapshot);
+    // BUG-WORKSPACE-RESTORE-002：半落地 / 失败响应可能根本没有 workflow 字段。
+    // 此时（null / undefined / 非对象）**保持当前 flow 不变**，绝不用空值覆盖它
+    // ——那会让右栏与地图同时认为"这个项目什么都没有"，而服务器上其实是有数据的。
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return getFlow();
+    const install = normalizeSnapshotInstall(getFlow(), snapshot);
+    setFlow(install.flow);
+    if (install.partial) {
+      // 只报告事实，不改写任何业务语义：局部响应不该出现在这条路径上，
+      // 因此明确给出中文诊断（含继承的键名），而不是静默让 project 消失。
+      diagnostics.push({
+        code: 'partial_snapshot_installed',
+        detail: '该对象不是完整 workflow 快照（缺少 project / schema_version）；'
+          + '已按局部响应处理并继承既有业务基础事实：' + install.inherited.join('、'),
+        inherited: install.inherited,
+      });
+    }
     if (hydrate) {
       try {
         await hydrateExternalDetail();
@@ -241,9 +350,14 @@ export function createWorkflowSnapshotApplier(deps) {
     applyWorkflowSnapshot,
     hydrateGridDetail,
     hydrateExternalDetail,
+    hydrateLayeredCandidateDetail,
+    hydrateRadarSurveillanceDetail,
+    looksLikeWorkflowSnapshot,
+    normalizeSnapshotInstall,
     state: {
       get hydratedIdentity() { return hydrated; },
-      reset() { hydrated = null; },
+      get diagnostics() { return diagnostics.slice(); },
+      reset() { hydrated = null; diagnostics.length = 0; },
     },
   };
 }

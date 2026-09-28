@@ -16,6 +16,9 @@ from ..domain.layered_route_validation import (
     empty_layered_route_validation, normalize_layered_route_validation_collection,
     path_fingerprint, stable_fingerprint, utc_now, validation_fingerprint,
 )
+from ..domain.planning_constraint_field import (
+    CONTAINS_UNKNOWN_CONSTRAINTS_REASON, PROVISIONAL_ROUTE_BLOCK_STATEMENT,
+)
 from ..validation.continuous_validators import (
     MetricRoute, validate_buildings, validate_restricted_areas, validate_terrain,
     validate_towers,
@@ -250,10 +253,33 @@ class LayeredRouteValidationService:
             else "unresolved" if "unresolved" in statuses
             else "validated_candidate"
         )
+        # ---- 正式发布门禁**不放松** ---------------------------------------------------
+        # 候选航路只要穿越了证据不足（unresolved / unknown）单元，continuous validation 的
+        # verdict 就**不得**是 validated_candidate。这里判成 ``unresolved`` 而不是
+        # ``failed``：证据不足既证明不了"违反"，也证明不了"安全"，因此它绝不能通过正式
+        # 发布门禁，但也绝不冒充一个违反结论。
+        traversed_unknown = int(
+            (candidate or {}).get("traversed_unknown_cell_count")
+            or (candidate or {}).get("unknown_constraint_count") or 0
+        )
+        unknown_blockers = []
+        if (candidate or {}).get("contains_unknown_constraints") is True or traversed_unknown > 0:
+            unknown_blockers.append(_block(
+                CONTAINS_UNKNOWN_CONSTRAINTS_REASON,
+                PROVISIONAL_ROUTE_BLOCK_STATEMENT.format(count=traversed_unknown),
+            ))
+            if status == "validated_candidate":
+                status = "unresolved"
         record = self._record_base(
             candidate, layer, route, evidence, policy, components, fingerprint,
             status=status, reason=None if status == "validated_candidate" else f"{status}_domain_evidence",
         )
+        if unknown_blockers:
+            record["status_reason"] = "candidate_contains_unknown_constraints"
+            record["blocking_reasons"] = unknown_blockers
+            record["traversed_unknown_cell_count"] = traversed_unknown
+            record["contains_unknown_constraints"] = True
+            record["provisional_only"] = True
         record["domains"]["terrain"] = deepcopy(terrain)
         record["domains"]["building"] = deepcopy(building)
         record["domains"]["tower"] = deepcopy(tower)
@@ -617,6 +643,10 @@ def _candidate_ref(candidate):
         "current_applicability": value.get("current_applicability"),
         "constraint_field_fingerprint": value.get("constraint_field_fingerprint"),
         "unknown_constraint_count": value.get("unknown_constraint_count"),
+        # 证据不足穿越的显式 provenance：validation 记录与 adoption gate 都读它。
+        "traversed_unknown_cell_count": value.get("traversed_unknown_cell_count"),
+        "contains_unknown_constraints": value.get("contains_unknown_constraints"),
+        "operational_applicability": value.get("operational_applicability"),
     }
 
 

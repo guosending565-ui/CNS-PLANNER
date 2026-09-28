@@ -10,6 +10,9 @@ import {ROUTE_RISK_PROFILE_SEGMENT,bindRouteRiskProfile,renderRouteRiskProfile} 
 import {bindLayeredRouteValidation,renderLayeredRouteValidation} from './layered_route_validation.js';
 import {LAYERED_ADOPTION_LEGACY_LABEL,bindLayeredOperationalAdoption,renderLayeredOperationalAdoption,
   selectedLayeredAdoptionValidation} from './layered_operational_adoption.js';
+// FEAT-NODE-COORD-001：起降点手动录入必须与 Step02 用同一个工作区就绪判读，
+// 不能在这里手写第二套 `flow.workspace` 存在性判断。
+import {workspaceGridReadiness} from '../state/readiness.js';
 
 function jsonInline(value){
   try{return JSON.stringify(value);}catch(error){return String(value);}
@@ -49,6 +52,198 @@ export function filterReferenceSites(items,{workspace=null,search='',region='',s
 function pointInWorkspace(point,workspace){
   const bbox=workspace?.bbox;
   return Array.isArray(point)&&point.length===2&&(!bbox||(bbox[0]<=point[0]&&point[0]<=bbox[2]&&bbox[1]<=point[1]&&point[1]<=bbox[3]));
+}
+
+// ---- BUG-UI-SITE-SEARCH-001：参考起降点搜索（显式按钮 + Enter 等价） ----------------
+//
+// 修复前的真实缺陷（三条，全部已复现）：
+//  1. 输入「蚂蚁岛」后按 Enter 没有任何动作，也没有「搜索」按钮，用户无法确认搜索是否生效；
+//  2. 筛选在 `oninput` 上执行，每敲一个字就重算 + `paint()`，列表在打字过程中反复跳动；
+//  3. 命中 0 条时列表仍然显示其它项 —— `.list-row{display:flex}` 覆盖了 HTML 的
+//     `hidden` 默认样式 `display:none`，`row.hidden=true` 根本不生效。
+//
+// 修复语义：
+//  * 可见列表 = 唯一的筛选事实来源：`visible` 计数只统计**同时满足**关键词 / 区域 / 类型的行；
+//  * 「当前筛选 N 条」的 N 恒等于实际可见条数（同一循环里累加，不可能不一致）；
+//  * 清空关键词（或点「清空」）恢复完整列表，且**不修改 source data、不自动加入项目**。
+function bindReferenceSiteSearch(c){
+  const search=c.$('referenceSiteSearch'),regionNode=c.$('referenceSiteRegion'),typeNode=c.$('referenceSiteType');
+  if(!search)return;
+  // 只在参考起降点所属的 wb-section 内查找行：避免把其它面板里的同名 data 属性算进来。
+  const host=search.closest('.wb-section')||document;
+  const rows=()=>Array.from(host.querySelectorAll('[data-reference-site]'));
+  const apply=()=>{
+    const keyword=String(search.value||'').trim().toLocaleLowerCase();
+    const region=String(regionNode?.value||''),siteType=String(typeNode?.value||'');
+    let visible=0;
+    for(const row of rows()){
+      const haystack=String(row.dataset.search||'');
+      const show=(!keyword||haystack.includes(keyword))
+        &&(!region||row.dataset.region===region)
+        &&(!siteType||row.dataset.siteType===siteType);
+      row.hidden=!show;
+      if(show)visible+=1;
+    }
+    const count=c.$('referenceSiteCount');
+    if(count){
+      const total=Number(count.dataset.total||0);
+      const catalogTotal=typeof c.flow==='function'?(c.flow()?.reference_landing_sites?.count||0):0;
+      count.dataset.visible=String(visible);
+      count.textContent='工作区内 '+total+' / 全部 '+catalogTotal
+        +' 条 · 当前筛选 '+visible+' 条；疑似重复只标记、不合并。'
+        +(visible?'':'（没有匹配项：请检查关键词，或点击「清空」恢复完整列表）');
+    }
+    c.paint();
+    return visible;
+  };
+  // Enter == 点击「搜索」；单独抽出便于两处共用同一条语义。
+  const submit=event=>{if(event)event.preventDefault();apply();};
+  c.$('referenceSiteSearchButton')&&(c.$('referenceSiteSearchButton').onclick=submit);
+  c.$('referenceSiteSearchClear')&&(c.$('referenceSiteSearchClear').onclick=()=>{
+    search.value='';
+    if(regionNode)regionNode.value='';
+    if(typeNode)typeNode.value='';
+    apply();
+  });
+  search.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();submit();}};
+  // 失焦 / 换区域 / 换类型同样按"搜索"语义应用（不再逐字符筛选）。
+  search.onchange=submit;
+  if(regionNode)regionNode.onchange=submit;
+  if(typeNode)typeNode.onchange=submit;
+  // 首次渲染后按当前控件值统一应用一次：保证"计数 == 可见条数"从一开始就成立。
+  apply();
+}
+
+// ---- FEAT-NODE-COORD-001：输入经纬度添加起降点（WGS84 · [lon, lat]） ----------------
+// 语义边界：
+//  * 坐标语义固定为 WGS84 / [lon, lat]，与地图点击、参考起降点、L8 网格完全同一套；
+//  * 校验只做"是不是合法经纬度 + 在不在工作区内"，**不猜测、不纠偏、不自动改数值**；
+//  * 创建走既有 canonical mutation `POST /api/workflow/node`（与地图点击同一个入口），
+//    绝不新建第二套 node 数据结构；
+//  * 来源如实标记为 coordinate_source='manual_entry'（渲染为「人工录入（经纬度）」），
+//    不会被伪装成 reference landing site。
+export const MANUAL_NODE_SOURCE='manual_entry';
+
+/** 起降点坐标文本：非法坐标如实显示，不猜一个值。 */
+function coordinateText(coordinate){
+  if(!Array.isArray(coordinate)||coordinate.length<2)return '坐标缺失';
+  return coordinate.slice(0,2).map(value=>Number(value).toFixed(5)).join(', ');
+}
+
+/** 起降点来源中文（只读节点自身字段，不推断）。 */
+export function nodeSourceLabel(node){
+  const item=node&&typeof node==='object'?node:{};
+  if(item.reference_site_id)return '参考起降点（'+String(item.reference_site_id)+'）';
+  const source=String(item.coordinate_source||'');
+  if(source==='manual_entry')return '人工录入（经纬度）';
+  if(source==='map_click')return '地图点击';
+  // 旧项目没有 coordinate_source：如实说明"未记录来源"，绝不冒充 reference landing site。
+  return '人工添加（旧记录未标来源）';
+}
+
+/**
+ * 校验手工录入的经纬度。
+ *
+ * @returns {{ok:boolean, code:string, message:string, coordinate:number[]|null}}
+ */
+export function validateManualNodeInput({longitude,latitude,name='',workspace=null}={}){
+  const lon=Number(String(longitude??'').trim()),lat=Number(String(latitude??'').trim());
+  if(String(longitude??'').trim()===''||String(latitude??'').trim()===''){
+    return {ok:false,code:'empty',message:'请填写经度与纬度（WGS84 · [lon, lat]）',coordinate:null};
+  }
+  if(!Number.isFinite(lon)||!Number.isFinite(lat)){
+    return {ok:false,code:'not_finite',message:'经纬度必须是有限数值',coordinate:null};
+  }
+  if(lon< -180||lon>180){
+    return {ok:false,code:'longitude_range',message:'经度必须在 [-180, 180] 之间（WGS84）',coordinate:null};
+  }
+  if(lat< -90||lat>90){
+    return {ok:false,code:'latitude_range',message:'纬度必须在 [-90, 90] 之间（WGS84）',coordinate:null};
+  }
+  const bbox=workspace?.bbox;
+  if(!Array.isArray(bbox)||bbox.length!==4){
+    return {ok:false,code:'workspace_missing',message:'尚未保存工作区范围：请先在第 02 步框选并保存工作区，起降点必须位于工作区内。',coordinate:null};
+  }
+  if(!(bbox[0]<=lon&&lon<=bbox[2]&&bbox[1]<=lat&&lat<=bbox[3])){
+    return {ok:false,code:'outside_workspace',message:'该坐标不在当前工作区内（工作区 '+bbox.map(value=>Number(value).toFixed(5)).join(', ')+'）：请检查经纬度顺序为 [lon, lat]。',coordinate:null};
+  }
+  return {ok:true,code:'ready',message:'',coordinate:[lon,lat],name:String(name||'').trim()};
+}
+
+/** 手工录入节点的 mutation payload（与地图点击共用同一个 canonical 入口）。 */
+export function manualNodePayload(coordinate,name=''){
+  const payload={coordinate:[Number(coordinate[0]),Number(coordinate[1])],coordinate_source:MANUAL_NODE_SOURCE};
+  const label=String(name||'').trim();
+  if(label)payload.name=label;
+  return payload;
+}
+
+/** 「输入经纬度添加起降点」表单（Step03 → 操作 → 起降点与 OD → 项目起降点）。 */
+function manualNodeForm(flow){
+  const readiness=workspaceGridReadiness(flow);
+  const bbox=readiness.workspace.bbox;
+  const hint=bbox
+    ?'工作区范围 '+bbox.map(value=>Number(value).toFixed(5)).join(', ')+'（WGS84），坐标必须落在这里面。'
+    :'尚未保存工作区范围：保存后才能在项目里添加起降点。';
+  return '<div class="manual-node-form" data-manual-node-form>'
+    +'<div class="grid-control-title">输入经纬度添加起降点</div>'
+    +'<div class="form-grid">'
+    +'<label>名称（可空）<input class="panel-input" id="manualNodeName" placeholder="留空自动命名：手工起降点 N"></label>'
+    +'<label>经度 Longitude (WGS84)<input class="panel-input" type="number" step="any" id="manualNodeLon" placeholder="例如 122.267222"></label>'
+    +'<label>纬度 Latitude (WGS84)<input class="panel-input" type="number" step="any" id="manualNodeLat" placeholder="例如 29.866667"></label>'
+    +'</div>'
+    +'<button class="primary full" id="addManualNode" '+(!bbox?'disabled':'')+'>添加起降点</button>'
+    +'<div class="parameter-note" id="manualNodeFeedback" data-state="idle">坐标语义固定为 WGS84 · [lon, lat]；'
+    +'必须位于工作区内。'+escapeHtml(hint)+'</div>'
+    +'</div>';
+}
+
+/**
+ * 绑定「输入经纬度添加起降点」。
+ *
+ * 成功路径：canonical mutation → 快照应用 → 重新渲染（列表 / 地图 / OD 下拉同时更新）。
+ * 失败路径：把**中文业务原因**写到表单下方，绝不静默失败。
+ */
+export function bindManualNodeForm(c){
+  const button=c.$('addManualNode');
+  if(!button)return;
+  const feedback=c.$('manualNodeFeedback');
+  const say=(message,state)=>{if(!feedback)return;feedback.dataset.state=state||'idle';feedback.textContent=message;};
+  const source=()=>({flow:typeof c.flow==='function'?c.flow():null,
+    longitude:c.$('manualNodeLon')?.value,
+    latitude:c.$('manualNodeLat')?.value,
+    name:c.$('manualNodeName')?.value});
+  button.disabled=button.disabled===true;
+  button.onclick=async()=>{
+    const input=source();
+    const check=validateManualNodeInput({
+      longitude:input.longitude,latitude:input.latitude,name:input.name,
+      workspace:input.flow?.workspace,
+    });
+    if(!check.ok){say(check.message,'error');c.panelError(check.message);return;}
+    button.disabled=true;
+    const original=button.textContent;
+    button.textContent='正在添加…';
+    try{
+      const payload=manualNodePayload(check.coordinate,check.name);
+      // 与地图点击同一个 canonical mutation：POST /api/workflow/node。
+      await c.mutate('node',payload);
+      // mutation 会重渲染整个面板（DOM 被替换），因此状态写回要重新取节点。
+      const fresh=c.$('manualNodeFeedback');
+      if(fresh){fresh.dataset.state='ok';
+        fresh.textContent='已添加起降点：'+check.coordinate[0].toFixed(5)+', '+check.coordinate[1].toFixed(5)
+          +'（来源标记为「人工录入（经纬度）」，可直接参与 OD 选择）。';}
+      const nameNode=c.$('manualNodeName');if(nameNode)nameNode.value='';
+      const lonNode=c.$('manualNodeLon');if(lonNode)lonNode.value='';
+      const latNode=c.$('manualNodeLat');if(latNode)latNode.value='';
+    }catch(error){
+      say('添加起降点失败：'+(error?.message||error),'error');
+      c.panelError('添加起降点失败：'+(error?.message||error));
+    }finally{
+      // 面板可能已被重渲染：只在原按钮仍挂载时恢复（否则新按钮由渲染结果决定）。
+      if(document.body.contains(button)){button.disabled=false;button.textContent=original;}
+    }
+  };
 }
 
 function routeTouchesWorkspace(route,workspace){
@@ -645,7 +840,9 @@ function v3bSearchBlock(refinement){
     ['multi-cell stride edges / traversed cell checks',escapeHtml(String(refinement.multiCellStrideEdgeCount??'—'))+' / '+escapeHtml(String(refinement.traversedCellCheckCount??'—'))],
     ['max heading change / max climb gradient',metric(refinement.maxHeadingChangeDeg,'°')+' / '+metric(refinement.maxClimbGradient)],
     ['altitude range EGM2008 (m)',refinement.altitudeRange?metric(refinement.altitudeRange[0],'m')+' – '+metric(refinement.altitudeRange[1],'m'):'—'],
-    ['search_completeness',escapeHtml(refinement.searchCompleteness||'—')]];
+    ['search_completeness（搜索完整性）',escapeHtml(statusText(refinement.searchCompleteness)||'—')
+      +(refinement.searchCompleteness&&statusText(refinement.searchCompleteness)!==refinement.searchCompleteness
+        ?' <small>'+escapeHtml(refinement.searchCompleteness)+'</small>':'')]];
   return '<h3>search 规模与 hard rejection</h3>'
     +'<div class="scroll-list route-list">'+v3bRows(rows)+'</div>'
     +'<div class="parameter-note">state_space_shape '+escapeHtml(jsonInline(refinement.stateSpaceShape||{}))
@@ -1611,7 +1808,24 @@ function referenceLandingPanel(flow){
   const regions=[...new Set(items.map(item=>item.region).filter(Boolean))].sort(),types=[...new Set(items.map(item=>item.site_type).filter(Boolean))].sort();
   const added=new Set((flow.nodes||[]).map(item=>item.reference_site_id).filter(Boolean));
   const rows=items.map(item=>'<div class="list-row reference-site-row" data-reference-site data-search="'+escapeHtml([item.name,item.location,item.reference_site_id].join(' ').toLocaleLowerCase())+'" data-region="'+escapeHtml(item.region||'')+'" data-site-type="'+escapeHtml(item.site_type||'')+'"><span><b>'+escapeHtml(item.name)+'</b><small>'+escapeHtml(item.region||'未标地区')+' · '+escapeHtml(item.site_type||'类型未标')+' · '+escapeHtml(item.quality)+' · '+item.coordinate.map(value=>Number(value).toFixed(5)).join(', ')+'</small><small>'+escapeHtml(item.reference_site_id)+(item.possible_duplicate?' · 疑似重复':'')+'</small></span><button class="secondary" data-add-reference-site="'+escapeHtml(item.reference_site_id)+'" '+(added.has(item.reference_site_id)?'disabled':'')+'>'+(added.has(item.reference_site_id)?'已加入':'加入项目')+'</button></div>').join('');
-  return '<h3>参考起降点 '+statusBadge(catalog.status||'not_calculated')+'</h3><div class="parameter-note">reference_landing_sites 与 flow.nodes 严格分离。源文件未声明 CRS，全部保持 pending_confirmation；地图位置仅按源数值 [lon,lat] 临时展示，点击“加入项目”后才创建 node。</div><label>搜索<input class="panel-input" id="referenceSiteSearch" placeholder="名称、位置或稳定 ID"></label><div class="form-grid"><label>区域<select id="referenceSiteRegion"><option value="">全部区域</option>'+regions.map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('')+'</select></label><label>类型<select id="referenceSiteType"><option value="">全部类型</option>'+types.map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('')+'</select></label></div><div class="flow-summary" id="referenceSiteCount">工作区内 '+items.length+' / 全部 '+(catalog.count||0)+' 条；疑似重复只标记、不合并。</div><div class="scroll-list reference-site-list">'+(rows||'<div class="empty-note">当前工作区没有可展示的参考起降点</div>')+'</div>';
+  return '<h3>参考起降点 '+statusBadge(catalog.status||'not_calculated')+'</h3>'
+    +'<div class="parameter-note">reference_landing_sites 与 flow.nodes 严格分离。源文件未声明 CRS，全部保持 pending_confirmation；'
+    +'地图位置仅按源数值 [lon,lat] 临时展示，点击“加入项目”后才创建 node。</div>'
+    // BUG-UI-SITE-SEARCH-001：显式「搜索」按钮 + Enter 等价；筛选只作用于可见列表，
+    // 绝不修改源数据、也绝不自动加入项目。
+    +'<div class="reference-site-search"><label for="referenceSiteSearch">搜索</label>'
+    +'<input class="panel-input" id="referenceSiteSearch" placeholder="名称、位置或稳定 ID" autocomplete="off">'
+    +'<button class="secondary" id="referenceSiteSearchButton">搜索</button>'
+    +'<button class="secondary" id="referenceSiteSearchClear">清空</button></div>'
+    +'<div class="form-grid"><label>区域<select id="referenceSiteRegion"><option value="">全部区域</option>'
+    +regions.map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('')
+    +'</select></label><label>类型<select id="referenceSiteType"><option value="">全部类型</option>'
+    +types.map(value=>'<option value="'+escapeHtml(value)+'">'+escapeHtml(value)+'</option>').join('')
+    +'</select></label></div>'
+    +'<div class="flow-summary" id="referenceSiteCount" data-visible="'+items.length+'" data-total="'+items.length+'">'
+    +'工作区内 '+items.length+' / 全部 '+(catalog.count||0)+' 条 · 当前筛选 '+items.length+' 条；疑似重复只标记、不合并。</div>'
+    +'<div class="scroll-list reference-site-list">'
+    +(rows||'<div class="empty-note">当前工作区没有可展示的参考起降点</div>')+'</div>';
 }
 
 export function riskAwareRoutePanel(flow){
@@ -1658,7 +1872,7 @@ export function towerClearancePanel(flow){
 }
 
 export function render({flow,interactionMode,selectedReference=null,routeEvidenceHighlight=null,constraint=null}){
-  const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+node.node_id+'</b> '+escapeHtml(node.name)+'<small>'+node.coordinate.map(value=>value.toFixed(5)).join(', ')+(node.reference_site_id?' · 来源 '+escapeHtml(node.reference_site_id):' · 手工点')+'</small></span><button data-delete-node="'+node.node_id+'">×</button></div>').join('');
+  const nodes=(flow.nodes||[]).map(node=>'<div class="list-row"><span><b>'+escapeHtml(String(node.node_id||''))+'</b> '+escapeHtml(String(node.name||''))+'<small>'+coordinateText(node.coordinate)+' · 来源 '+escapeHtml(nodeSourceLabel(node))+'</small></span><button data-delete-node="'+escapeHtml(String(node.node_id||''))+'">×</button></div>').join('');
   const routes=routesFor(flow);
   const routeOptions=canonicalOperationalRoutes(flow).map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
   const profiles=Object.values(flow.spatial_3d?.route_altitude_profiles||{}).map(item=>{const locked=item.locked_by_adoption===true||item.locked===true;return '<div class="list-row"><span><b>'+escapeHtml(item.route_id)+'</b><small>'+escapeHtml(item.mode)+' · '+(item.constant_altitude_m===null||item.constant_altitude_m===undefined?'无 constant 值':escapeHtml(String(item.constant_altitude_m))+' m')+' '+escapeHtml(item.vertical_reference)+' · '+escapeHtml(item.source||'')+(item.derived?' · derived':'')+'</small>'+(locked?'<small>V3-D locked · advanced_variable_profile / v3c_validated_route（只读）</small>':'')+'</span></div>';}).join('');
@@ -1793,6 +2007,7 @@ function routeOperateSection(flow,{interactionMode,nodes,constraint}){
   //    B. 真正的正式入口是「Layered Candidate → 风险画像 → 独立验证 → 发布」。
   const sitesPanel=referenceLandingPanel(flow)
     +'<h3>项目起降点</h3>'
+    +manualNodeForm(flow)
     +'<button class="'+(interactionMode==='node'?'primary':'secondary')+' full" id="addNodeMode">地图点击增加起降点</button>'
     +'<div class="scroll-list">'+(nodes||'<div class="empty-note">至少添加两个点</div>')+'</div>'
     +odScenarioPanel(flow);
@@ -1889,11 +2104,11 @@ export function bind(c){
   if(c.$('createReferenceLink'))c.actionButton('createReferenceLink',()=>c.resourceAction('/api/reference-route-links/create',{reference_route_id:c.$('linkReferenceRoute').value,scenario_route_id:c.$('linkScenarioRoute').value,confirmed:true}));
   document.querySelectorAll('[data-delete-reference-link]').forEach(button=>button.onclick=()=>c.resourceAction('/api/reference-route-links/delete',{link_id:button.dataset.deleteReferenceLink}).catch(error=>c.panelError(error.message)));
   document.querySelectorAll('[data-confirm-reference-link]').forEach(button=>button.onclick=()=>{const [referenceRouteId,scenarioRouteId]=button.dataset.confirmReferenceLink.split('|');return c.resourceAction('/api/reference-route-links/create',{reference_route_id:referenceRouteId,scenario_route_id:scenarioRouteId,confirmed:true,origin:'user',source:{type:'user_confirmation_from_endpoint_candidate'}}).catch(error=>c.panelError(error.message));});
-  const applyReferenceFilter=()=>{const search=c.$('referenceSiteSearch').value.trim().toLocaleLowerCase(),region=c.$('referenceSiteRegion').value,siteType=c.$('referenceSiteType').value;let visible=0;document.querySelectorAll('[data-reference-site]').forEach(row=>{const show=(!search||row.dataset.search.includes(search))&&(!region||row.dataset.region===region)&&(!siteType||row.dataset.siteType===siteType);row.hidden=!show;if(show)visible++;});const count=c.$('referenceSiteCount');if(count)count.textContent='当前筛选 '+visible+' 条；疑似重复只标记、不合并。';c.paint();};
-  c.$('referenceSiteSearch').oninput=applyReferenceFilter;c.$('referenceSiteRegion').onchange=applyReferenceFilter;c.$('referenceSiteType').onchange=applyReferenceFilter;
+  bindReferenceSiteSearch(c);
   document.querySelectorAll('[data-add-reference-site]').forEach(button=>button.onclick=async()=>{try{button.disabled=true;await c.resourceAction('/api/reference-landing-sites/add-to-project',{reference_site_id:button.dataset.addReferenceSite});}catch(error){c.panelError(error.message);button.disabled=false;}});
   document.querySelectorAll('[data-select-reference-route]').forEach(button=>button.onclick=()=>c.selectReference({kind:'route',id:button.dataset.selectReferenceRoute}));
 
+  bindManualNodeForm(c);
   document.querySelectorAll('[data-delete-node]').forEach(button=>button.onclick=()=>c.mutate('node-delete',{node_id:button.dataset.deleteNode}).catch(error=>c.panelError(error.message)));
   document.querySelectorAll('[data-delete-route]').forEach(button=>button.onclick=()=>c.mutate('route-delete',{route_id:button.dataset.deleteRoute}).catch(error=>c.panelError(error.message)));
   c.actionButton('saveRouteAltitude',()=>{const altitudeField=c.$('routeAltitude'),altitudeValue=altitudeField.value.trim()===''?null:Number(altitudeField.value);return c.resourceAction('/api/spatial-3d/route-profile',{route_id:c.$('altitudeRoute').value,mode:'constant',vertical_reference:c.$('routeVerticalReference').value,constant_altitude_m:altitudeValue,source:'user_configuration',confirmed:true});});

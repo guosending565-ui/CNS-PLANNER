@@ -16,17 +16,34 @@ class RouteService:
         self.invalidation = invalidation
         self.snapshot = snapshot
 
-    def add_node(self, coordinate, name=None):
+    #: 起降点坐标来源（只做**如实标记**，不改变任何业务语义）。
+    #:  * ``manual_entry``        —— 用户在「输入经纬度添加起降点」里手工录入 WGS84 [lon, lat]；
+    #:  * ``map_click``           —— 用户在地图上点击落点；
+    #:  * ``reference_site``      —— 从参考起降点目录加入项目（另见 ``add_reference_site``）。
+    #:  该字段只用于来源展示（前端绝不把它伪装成 reference landing site），
+    #:  不参与可行性、风险、验证或发布判定。
+    COORDINATE_SOURCES = ("manual_entry", "map_click", "reference_site")
+
+    def add_node(self, coordinate, name=None, coordinate_source=None):
         state, workspace = self.session.state, self.session.state.get("workspace")
         if not workspace:
             raise ValueError("请先保存工作区")
         lon, lat = self._coordinate_in_workspace(coordinate, workspace)
+        source = str(coordinate_source or "").strip()
+        if source and source not in self.COORDINATE_SOURCES:
+            raise ValueError("起降点坐标来源无效")
         state["node_seq"] += 1
-        state["nodes"].append({
-            "node_id": f"N{state['node_seq']:03d}",
-            "name": str(name or f"起降点 {state['node_seq']}"),
+        sequence = state["node_seq"]
+        # 默认名一律中文：手工录入用「手工起降点 N」，地图落点用「起降点 N」。
+        default_name = f"手工起降点 {sequence}" if source == "manual_entry" else f"起降点 {sequence}"
+        node = {
+            "node_id": f"N{sequence:03d}",
+            "name": str(name or default_name),
             "coordinate": [lon, lat],
-        })
+        }
+        if source:
+            node["coordinate_source"] = source
+        state["nodes"].append(node)
         self.invalidation.workflow("route")
         return self._save()
 

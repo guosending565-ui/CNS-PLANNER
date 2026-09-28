@@ -432,11 +432,21 @@ class PopulationGridService:
 
     @classmethod
     def backfill_legacy(cls, value):
-        """Add coverage/value semantics to saved V1.0 results without inventing data."""
+        """Add coverage/value semantics to saved V1.0 results without inventing data.
+
+        "没有观测值"与"已知 0 人口"不是同一件事：已确认的零人口格把结论写在
+        ``nodata_semantics.coverage_status``（``population_nodata`` 契约的 provenance），
+        顶层 ``coverage_status`` 只是它的投影。回填必须按 provenance 恢复该结论，否则它会把
+        confirmed zero 按"有值/无值"重算成 ``full``/``partial``，让"已知 0"退化成"观测覆盖"，
+        逐格状态与 dataset 级 ``confirmed_zero_population_count`` 随即自相矛盾。
+        """
         if not isinstance(value, dict):
             return cls.empty()
         cells = value.get("cells") if isinstance(value.get("cells"), dict) else {}
-        counts = {"full": 0, "partial": 0, "nodata_only": 0, "outside_extent": 0}
+        counts = {
+            "full": 0, "partial": 0, "nodata_only": 0, "outside_extent": 0,
+            CONFIRMED_ZERO_COVERAGE_STATUS: 0,
+        }
         valid_area_total = target_area_total = 0.0
         value_covered = 0
         for cell in cells.values():
@@ -447,6 +457,12 @@ class PopulationGridService:
             fraction = cell.get("source_coverage_fraction")
             fraction = float(fraction) if isinstance(fraction, (int, float)) and math.isfinite(fraction) else 0.0
             coverage = cell.get("coverage_status")
+            semantics = cell.get("nodata_semantics")
+            if isinstance(semantics, dict) and (
+                semantics.get("coverage_status") == CONFIRMED_ZERO_COVERAGE_STATUS
+            ):
+                # 人口映射自己写下的 canonical 结论优先于被重算过的顶层投影。
+                coverage = CONFIRMED_ZERO_COVERAGE_STATUS
             if coverage not in counts:
                 coverage = "full" if canonical and fraction >= 0.999999 else "partial" if canonical and fraction > 0 else "nodata_only"
             value_status = cell.get("value_status") or ("passed" if canonical else "missing_data")
@@ -468,7 +484,10 @@ class PopulationGridService:
             valid_area_total += valid_area
             target_area_total += area
         total = int(value.get("count", len(cells)))
-        missing = total - counts["full"] - counts["partial"]
+        missing = (
+            total - counts["full"] - counts["partial"]
+            - counts[CONFIRMED_ZERO_COVERAGE_STATUS]
+        )
         value_status = "stale" if value.get("status") == "stale" else value.get("value_status") or ("passed" if total and value_covered == total else "missing_data")
         value.update({
             "value_status": value_status,
@@ -478,6 +497,7 @@ class PopulationGridService:
             "full_count": counts["full"], "partial_count": counts["partial"],
             "missing_count": missing, "outside_count": counts["outside_extent"],
             "nodata_only_count": counts["nodata_only"],
+            "confirmed_zero_population_count": counts[CONFIRMED_ZERO_COVERAGE_STATUS],
             "coverage_summary": value.get("coverage_summary") or {
                 "full": counts["full"], "partial": counts["partial"], "missing": missing,
                 "outside_extent": counts["outside_extent"], "nodata_only": counts["nodata_only"],

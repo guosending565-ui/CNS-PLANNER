@@ -9,6 +9,7 @@ from ..domain.layered_operational_adoption import (
     normalize_layered_operational_adoptions,
 )
 from ..domain.layered_route_validation import stable_fingerprint, utc_now
+from ..domain.planning_constraint_field import PROVISIONAL_ROUTE_BLOCK_STATEMENT
 from ..domain.spatial_3d import normalize_route_operating_layer
 from .production_write_authority import assert_write_authority
 
@@ -56,6 +57,7 @@ class LayeredOperationalAdoptionService:
                 "status": item.get("status"),
                 "current_applicability": item.get("current_applicability"),
                 "eligible": gate["eligible"], "reasons": gate["reasons"],
+                "blocking_reasons": gate["blocking_reasons"],
             })
         return {
             "status": "ready" if any(item["eligible"] for item in options) else "not_ready",
@@ -81,7 +83,11 @@ class LayeredOperationalAdoptionService:
         if not gate["eligible"]:
             return {
                 "status": "not_ready", "reason": "publish_gate_blocked",
-                "validation_id": validation.get("validation_id"), "reasons": gate["reasons"],
+                "validation_id": validation.get("validation_id"),
+                "reasons": gate["reasons"],
+                "blocking_reasons": gate["blocking_reasons"],
+                # 用户可读的固定文案（含"候选航路包含 N 个证据不足单元…"）。
+                "reason_text": gate["reason_text"],
             }
         candidate = validation.get("candidate") or {}
         route_id = str(candidate.get("route_id") or "")
@@ -186,7 +192,10 @@ class LayeredOperationalAdoptionService:
             raise ValueError("Layered operational Apply 必须显式 confirmed=true")
         projection = self.projection(payload)
         if projection.get("status") != "ready":
-            raise ValueError("Layered operational Apply gate 未通过：" + str(projection.get("reason")))
+            raise ValueError(
+                "Layered operational Apply gate 未通过："
+                + str(projection.get("reason_text") or projection.get("reason"))
+            )
         if projection.get("apply_blocked_by_conflict"):
             raise ValueError("route_id 已有非本 adoption-owned route；必须显式 replace_existing=true")
         expected = payload.get("expected_validation_fingerprint")
@@ -442,28 +451,57 @@ class LayeredOperationalAdoptionService:
     # ------------------------------------------------------------------ helpers
 
     def _gate(self, validation):
-        reasons = []
+        """正式发布门禁（**不放松**）。
+
+        只要候选/航路含证据不足（unknown / unresolved）约束，Apply 一律不得成功，并给出
+        用户可读的固定文案：``PROVISIONAL_ROUTE_BLOCK_STATEMENT``。
+        """
+
+        reasons, blocking_reasons = [], []
+
+        def block(code, reason):
+            reasons.append(code)
+            blocking_reasons.append({"reason_code": code, "reason": str(reason)})
+
         if validation.get("status") != "validated_candidate":
-            reasons.append(f"validation_status:{validation.get('status')}")
+            block(
+                f"validation_status:{validation.get('status')}",
+                "validation 尚未判定为 validated_candidate：正式发布门禁未通过",
+            )
         if validation.get("current_applicability") != "current":
-            reasons.append("validation_not_current")
+            block("validation_not_current", "validation 已不是当前有效的证据链")
         if validation.get("source_type") != "configured_real_sources":
-            reasons.append("configured_real_sources_required")
+            block(
+                "configured_real_sources_required",
+                "production 发布只接受 verified configured real FABDEM/buildings source chain",
+            )
         candidate = self.validations._select_current_candidate({
             "candidate_id": (validation.get("candidate") or {}).get("candidate_id")
         })
         if candidate is None or candidate.get("current_applicability") != "current":
-            reasons.append("referenced_candidate_not_current")
-        elif int(candidate.get("unknown_constraint_count") or 0) > 0:
-            reasons.append("candidate_traverses_unknown_constraints")
+            block("referenced_candidate_not_current", "被引用的候选航路已不是当前候选")
+        else:
+            traversed_unknown = int(
+                candidate.get("traversed_unknown_cell_count")
+                or candidate.get("unknown_constraint_count") or 0
+            )
+            if candidate.get("contains_unknown_constraints") is True or traversed_unknown > 0:
+                block(
+                    "candidate_traverses_unknown_constraints",
+                    PROVISIONAL_ROUTE_BLOCK_STATEMENT.format(count=traversed_unknown),
+                )
         if self.validations._current_risk_profile(candidate) is None:
-            reasons.append("current_route_risk_profile_missing")
+            block("current_route_risk_profile_missing", "缺少当前有效的 RouteRiskProfile")
         if not self._projection_ready(validation):
-            reasons.append("projection_not_ready")
+            block("projection_not_ready", "validation 的航路几何不可用于发布")
         source = self.validations._source_readiness()
         if source["status"] != "ready":
-            reasons.append("configured_real_source_chain_not_ready")
-        return {"eligible": not reasons, "reasons": reasons}
+            block("configured_real_source_chain_not_ready", "configured real source chain 未就绪")
+        return {
+            "eligible": not reasons, "reasons": reasons,
+            "blocking_reasons": blocking_reasons,
+            "reason_text": "；".join(item["reason"] for item in blocking_reasons) or None,
+        }
 
     @staticmethod
     def _projection_ready(validation):
