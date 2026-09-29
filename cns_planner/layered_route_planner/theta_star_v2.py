@@ -7,8 +7,10 @@ Pipeline::
       -> population x shelter risk field (per-grid, replaceable)
       -> virtual endpoint anchoring (exact OD -> containing cell + 1-ring LOS anchors)
       -> heading-aware multi-label Theta* with parent LOS rewiring
-      -> objective J = 0.8*E_risk + 0.1*C_turn + 0.1*L
+      -> endpoint transition admissibility (feasibility gate, never an objective term)
+      -> objective J = 0.8*E_risk + 0.1*C_turn + 0.1*L (strict min over feasible goals)
       -> candidate evaluation: max_route_risk_density (wide temporary constraint)
+      -> route surface distance (segment -> traversed cells -> surface classifier)
       -> LayeredRouteCandidate
 
 This is a **real Theta-star** search, not A* followed by a smoother.  When a ``parent`` has a
@@ -121,6 +123,87 @@ TURN_ACCOUNTING_SEMANTICS = {
     "theta_min_deg_unchanged": True,
 }
 
+#: 端点过渡**可采纳性**（admissibility）阈值：一个航向离散单元的宽度（BUG-ROUTE-007）。
+#:
+#: ``360 / heading_bin_count``（``heading_bin_count = 8`` ⇒ 45°）由既有搜索参数派生，
+#: **不是**新造的工程常数，也**不是**无人机飞行动力学极限：搜索本身就把到达航向离散成
+#: ``heading_bin_count`` 个单元，一次超过一个单元的端点转折就是搜索意义上不连续的出发/到达
+#: 几何。它只决定"该端点几何是否 admissible（可行）"，不参与任何代价加权。
+ENDPOINT_TRANSITION_ADMISSIBILITY_DEG = 45.0
+
+#: 端点过渡语义（BUG-ROUTE-007 收口版）。
+#:
+#: 端点几何的角色是 **feasibility（可行性证据）**，不是隐藏的第四个 objective：
+#:
+#:   1. **departure feasibility（标签层剪枝）**：从某个 source anchor 出发的第一段巡航必须
+#:      满足 ``angle(exact_start->source_anchor, source_anchor->first_cruise_point) <=``
+#:      ``ENDPOINT_TRANSITION_ADMISSIBILITY_DEG``；不满足则该 source anchor 的这个 first
+#:      cruise expansion 根本不进入搜索（不产生标签），不存在"先偏离再折回"的候选；
+#:   2. **arrival feasibility（目标层准入）**：``angle(last_cruise_point->target_anchor,``
+#:      ``target_anchor->exact_end) <=`` 同一阈值；不满足的 goal 不是 endpoint-feasible 候选；
+#:   3. **最终选路（严格 min J）**：在所有 endpoint-feasible goal 里**只**比较核心 J =
+#:      ``0.8*E_risk + 0.1*C_turn + 0.1*L``（数值并列时依次比较 departure / arrival 角度
+#:      与候选序号，纯确定性 tie-break）。
+#:
+#: ``endpoint_transition_cost`` 仍按与 cruise turn **完全相同**的公式（同一 ``d_ref`` /
+#: ``theta_min_deg``）计算，但**只作为 diagnostics**输出：它不进入 J、不作为排序键、不再
+#: 参与任何候选选优。
+ENDPOINT_TRANSITION_SEMANTICS = {
+    "definition": "endpoint_transition_geometry_is_feasibility_not_a_fourth_objective",
+    "role": "admissibility_evidence",
+    "departure_heading_change_deg": (
+        "angle(exact_start->selected_source_anchor, selected_source_anchor->first_cruise_point)"
+    ),
+    "arrival_heading_change_deg": (
+        "angle(last_cruise_point->selected_target_anchor, selected_target_anchor->exact_end)"
+    ),
+    "threshold_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+    "threshold_name": "endpoint_transition_admissibility_deg",
+    "threshold_provenance": {
+        "source": "derived_from_heading_bin_resolution",
+        "formula": "360 / heading_bin_count",
+        "heading_bin_count": 8,
+        "value_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+        "is_new_engineering_constant": False,
+        "is_uav_flight_dynamics_limit": False,
+        "meaning": "planning_geometric_continuity_threshold_of_the_search_own_heading_bins",
+    },
+    "departure_feasibility": (
+        "first_cruise_expansion_from_a_source_anchor_is_admissible_only_if_its_heading_change_"
+        "is_within_the_threshold"
+    ),
+    "arrival_feasibility": (
+        "a_goal_is_endpoint_feasible_only_if_the_terminal_connector_heading_change_is_within_"
+        "the_threshold"
+    ),
+    "infeasible_departure_branch_is_never_expanded": True,
+    "infeasible_goal_is_never_selected": True,
+    "selection_semantics": "strict_minimum_core_objective_over_endpoint_feasible_goals",
+    "endpoint_transition_cost_in_core_objective": False,
+    "endpoint_transition_cost_role": "diagnostics_only",
+    "endpoint_transition_cost_used_as_sort_key": False,
+    "charged_to_cruise_turn_cost": False,
+    "charged_to_cruise_turn_count": False,
+    "reported_separately_from_cruise_turns": True,
+    "enters_planning_objective_weights": False,
+    "objective_weights_unchanged": {"risk": 0.8, "turn": 0.1, "distance": 0.1},
+    "cost_formula": (
+        "d_ref_m * (1 + delta_deg / 180) for each connector end with delta > theta_min_deg"
+    ),
+    "cost_formula_same_as_cruise_turn": True,
+    "cost_uses_existing_d_ref_and_theta_min": True,
+    "new_engineering_constants_introduced": False,
+    "source_anchor_identity_in_label_state": (
+        "distinguished_until_the_departure_transition_is_completed_then_dropped"
+    ),
+    "geometry_sanity": "no_axial_regression_along_the_connector_axis_at_either_end",
+    "geometry_sanity_method": "projection_of_the_adjacent_los_segment_onto_the_connector_axis",
+    "geometry_sanity_role": "diagnostics_only_implied_by_the_admissibility_threshold",
+    "direction_hardcoded": False,
+    "fail_open_when_undecidable": True,
+    "recomputable_from_candidate_path": True,
+}
+
 #: 能力声明（Phase 3.5，**只声明**，不改变搜索行为）。
 #: Theta* V2 在"当前工作区网格层级"的水平面上搜索；建筑事实来自 L8 building_grid，
 #: 因此 legacy / diagnostic 的 L7/L6 工作区（正式入口已不再产生）拿不到 L8 建筑事实
@@ -185,6 +268,17 @@ SEARCH_SEMANTICS = {
     "start_connector_is_a_ledger_segment": "exact_start_to_selected_source_anchor",
     "end_connector_is_a_ledger_segment": "selected_target_anchor_to_exact_end",
     "endpoint_connector_turn_is_excluded_from_cruise_turn_cost": True,
+    # BUG-ROUTE-007：端点过渡几何是 **feasibility（可行性证据）**，不是隐藏的第四个
+    # objective：departure 不 admissible 的分支不产生标签，arrival 不 admissible 的 goal
+    # 不参与选优；最终只在 endpoint-feasible goal 里严格取 min J。
+    "endpoint_transition_role": "admissibility_evidence_not_an_objective_term",
+    "endpoint_transition_enters_cruise_turn_cost": False,
+    "endpoint_transition_enters_planning_objective_weights": False,
+    "endpoint_transition_cost_used_as_sort_key": False,
+    "endpoint_transition_admissibility_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+    "endpoint_transition_admissibility_provenance": "derived_from_heading_bin_resolution",
+    "endpoint_feasibility_is_a_hard_gate_before_the_objective": True,
+    "final_selection": "strict_minimum_core_objective_over_endpoint_feasible_goals",
     "goal_acceptance": (
         "every_target_heading_label_is_priced_with_the_complete_exact_od_ledger_and_the_"
         "search_ends_only_when_the_queue_lower_bound_cannot_improve_the_best_complete_goal"
@@ -326,6 +420,257 @@ def _endpoint_anchor_candidates(
             "anchor_grid_id": anchor_grid,
         })
     return candidates
+
+
+#: 端点过渡判定的数值容差（度）：仅用于吸收浮点噪声（例如起终点与锚点格心经度完全
+#: 相同时 ``atan2`` 给出的 1e-6 度量级偏差），**不是**工程阈值。
+ENDPOINT_CONTINUITY_TOLERANCE_DEG = 1e-4
+
+
+def _heading_change_deg(previous_bearing, new_bearing):
+    """两段真实航向之间的转角（度），0 表示完全顺行。"""
+
+    if previous_bearing is None or new_bearing is None:
+        return None
+    return abs(normalize_heading_delta(previous_bearing, new_bearing))
+
+
+def _endpoint_transition_feasible(
+    *, departure_heading_change_deg, arrival_heading_change_deg,
+    threshold_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+):
+    """端点过渡是否 **admissible（可行）**（BUG-ROUTE-007 收口版）。
+
+    这是**可行性判据**，不是目标函数项：某端没有相邻巡航段（零长连接器）时该端不可判定，
+    按 fail-open 视为通过（与 :func:`_inside_aperture` 对不可判定输入的处理一致）；可判定的
+    端必须满足 ``|航向变化| <= threshold_deg``。
+
+    ``threshold_deg`` 由既有搜索参数派生（``360 / heading_bin_count`` ⇒ 45°），它不是新的
+    工程常数，也不是无人机飞行动力学极限，而是"搜索自身一个航向离散单元"的几何连续性。
+    """
+
+    limit = float(threshold_deg) + ENDPOINT_CONTINUITY_TOLERANCE_DEG
+    for delta in (departure_heading_change_deg, arrival_heading_change_deg):
+        if delta is None:
+            continue
+        if abs(float(delta)) > limit:
+            return False
+    return True
+
+
+def _admissible_transition(
+    *, departure_bearing, arrival_bearing, threshold_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+):
+    """标签层的出发过渡可行性：连接器航向 → 第一段巡航航向。
+
+    ``departure_bearing`` 是 ``exact start -> source anchor`` 的真实航向，
+    ``arrival_bearing`` 是 ``source anchor -> first cruise`` 的真实航向（即该标签的
+    ``real_bearing``）。两者任一不可判定时 fail-open。
+    """
+
+    return _endpoint_transition_feasible(
+        departure_heading_change_deg=_heading_change_deg(
+            departure_bearing, arrival_bearing
+        ),
+        arrival_heading_change_deg=None, threshold_deg=threshold_deg,
+    )
+
+
+def _no_axial_regression(axis_start, axis_end, point):
+    """``point`` 是否没有沿 ``axis_start -> axis_end`` 这条 connector 轴**回退**。
+
+    判据是纯投影：把 ``point - axis_end`` 投影到 connector 的单位方向上，要求投影不为负
+    （即相邻巡航段没有把航迹带回 connector 起点一侧）。这样"折回"等价于航向变化 > 90°，
+    判据本身**不硬编码任何朝向**（不假设北/东），也不需要任何新的角度阈值。
+
+    返回 ``None`` 表示 connector 轴退化（零长连接器 / 坐标不可用）：此时 fail-open，
+    与 :func:`_inside_aperture` 对不可判定输入的处理一致。
+
+    收口后它只作为**诊断**证据上报：45° 的可采纳性阈值已经严格强于本判据（> 90° 才判 False），
+    因此它不再参与任何剪枝或选优。
+    """
+
+    latitude = math.radians((float(axis_start[1]) + float(axis_end[1])) / 2.0)
+    scale = math.cos(latitude)
+    axis_x = (float(axis_end[0]) - float(axis_start[0])) * scale
+    axis_y = float(axis_end[1]) - float(axis_start[1])
+    norm = math.hypot(axis_x, axis_y)
+    if not math.isfinite(norm) or norm <= 0.0:
+        return None
+    advance_x = (float(point[0]) - float(axis_end[0])) * scale
+    advance_y = float(point[1]) - float(axis_end[1])
+    projection = (advance_x * axis_x + advance_y * axis_y) / norm
+    return bool(projection >= -1e-9)
+
+
+def _endpoint_transition_cost(transition, *, d_ref, theta_min_deg):
+    """端点过渡的**独立**代价（米），与 cruise turn 完全同一公式、同一 ``d_ref`` / ``theta_min_deg``。
+
+    收口后它**只作为 diagnostics**：既不进入核心 J，也不作为任何排序键，更不写进
+    ``ledger["turn"]`` / ``turn_count`` / ``cruise_turn_cost`` / ``planning_objective``。
+    """
+
+    if not isinstance(transition, dict) or not d_ref:
+        return 0.0
+    total = 0.0
+    for name in ("departure_heading_change_deg", "arrival_heading_change_deg"):
+        delta = transition.get(name)
+        if delta is None:
+            continue
+        delta = abs(float(delta))
+        if delta > float(theta_min_deg):
+            total += float(d_ref) * (1.0 + delta / 180.0)
+    return total
+
+
+def _endpoint_transition_audit(*, chain, graph, start_point, end_point):
+    """一个 label 链的端点过渡几何（BUG-ROUTE-007）。
+
+    ``chain`` 是该 label 的标签链（source anchor → … → 当前标签）。链上还没有 cruise 段时
+    （链长 < 2）两端都返回 ``None``：没有相邻段可以判定。
+
+    返回：
+
+    * ``departure_heading_change_deg``：``angle(exact start -> source anchor,
+      source anchor -> first cruise point)``；
+    * ``arrival_heading_change_deg``：``angle(last cruise point -> target anchor,
+      target anchor -> exact end)``；
+    * ``departure_admissible`` / ``arrival_admissible``：上面两个转角是否落在
+      ``endpoint_transition_admissibility_deg``（45°）之内（不可判定 ⇒ fail-open True）；
+    * ``endpoint_feasible``：两端都 admissible；
+    * ``along_track_source_ok`` / ``along_track_target_ok`` / ``geometry_sanity_ok``：
+      connector 轴回退诊断（**只报告**，不再参与剪枝或选优）。
+
+    这些值只描述端点几何的可行性，绝不进入 cruise turn cost / turn count / 核心 J。
+    """
+
+    grids = [item[0] for item in chain if item and item[0] in graph.centers]
+    centers = [[float(value) for value in graph.centers[grid_id]] for grid_id in grids]
+    departure = arrival = None
+    source_ok = target_ok = None
+    if len(centers) >= 2:
+        source_anchor, first_cruise_point = centers[0], centers[1]
+        last_cruise_point, target_anchor = centers[-2], centers[-1]
+        departure = _heading_change_deg(
+            grid_bearing_deg(start_point, source_anchor),
+            grid_bearing_deg(source_anchor, first_cruise_point),
+        )
+        arrival = _heading_change_deg(
+            grid_bearing_deg(last_cruise_point, target_anchor),
+            grid_bearing_deg(target_anchor, end_point),
+        )
+        source_ok = _no_axial_regression(start_point, source_anchor, first_cruise_point)
+        target_ok = _no_axial_regression(last_cruise_point, target_anchor, end_point)
+    geometry_ok = (
+        None if source_ok is None or target_ok is None else bool(source_ok and target_ok)
+    )
+    departure_admissible = _endpoint_transition_feasible(
+        departure_heading_change_deg=departure, arrival_heading_change_deg=None,
+    )
+    arrival_admissible = _endpoint_transition_feasible(
+        departure_heading_change_deg=None, arrival_heading_change_deg=arrival,
+    )
+    total = None
+    if departure is not None or arrival is not None:
+        total = float(departure or 0.0) + float(arrival or 0.0)
+    return {
+        "source_anchor_grid_id": grids[0] if grids else None,
+        "target_anchor_grid_id": grids[-1] if grids else None,
+        "departure_heading_change_deg": None if departure is None else _round(departure),
+        "arrival_heading_change_deg": None if arrival is None else _round(arrival),
+        "total_heading_change_deg": None if total is None else _round(total),
+        "departure_admissible": departure_admissible,
+        "arrival_admissible": arrival_admissible,
+        "endpoint_feasible": bool(departure_admissible and arrival_admissible),
+        "threshold_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+        "threshold_provenance": "derived_from_heading_bin_resolution",
+        "along_track_source_ok": source_ok,
+        "along_track_target_ok": target_ok,
+        "geometry_sanity_ok": geometry_ok,
+    }
+
+
+def _endpoint_feasibility_view(transition, *, threshold_deg):
+    """把一个 transition audit 压成 goal 层用于**准入判定**的证据视图。"""
+
+    item = transition if isinstance(transition, dict) else {}
+    departure = item.get("departure_heading_change_deg")
+    arrival = item.get("arrival_heading_change_deg")
+    departure_admissible = _endpoint_transition_feasible(
+        departure_heading_change_deg=departure, arrival_heading_change_deg=None,
+        threshold_deg=threshold_deg,
+    )
+    arrival_admissible = _endpoint_transition_feasible(
+        departure_heading_change_deg=None, arrival_heading_change_deg=arrival,
+        threshold_deg=threshold_deg,
+    )
+    return {
+        "endpoint_feasible": bool(departure_admissible and arrival_admissible),
+        "departure_admissible": departure_admissible,
+        "arrival_admissible": arrival_admissible,
+        "threshold_deg": float(threshold_deg),
+        "departure_heading_change_deg": departure,
+        "arrival_heading_change_deg": arrival,
+    }
+
+
+def _label_chain_keys(key, incoming):
+    """从 ``key`` 回溯到 source anchor 的完整标签链（起点标签在前）。
+
+    ``incoming`` 是搜索的父标签映射，因此这条链**就是**最终被飞行的顶点序列（Theta* 的
+    LOS 捷径会直接跳过中间格，链上相邻两点之间就是一条真实巡航段）。端点过渡角与
+    connector 轴 sanity 都从这条链直接得出，因此可以从 ``candidate.path`` 独立复算。
+    """
+
+    chain = []
+    current = key
+    guard = len(incoming) + 2
+    while current is not None and guard > 0:
+        chain.append(current)
+        current = incoming.get(current)
+        guard -= 1
+    chain.reverse()
+    return chain
+
+
+def _prefer_endpoint_candidate(candidate, incumbent):
+    """端点候选选优（BUG-ROUTE-007 收口版）：**严格 min J**。
+
+    1. 只有 ``endpoint_feasible`` 的候选有资格（不可行候选永不入选）；
+    2. 可行候选之间**只**比较核心 ``J``（``total_cost``）；``endpoint_transition_cost``
+       **不参与**（它只是 diagnostics），也不存在任何几何优先的字典序；
+    3. J 数值并列时依次比较 departure / arrival 转角（更小者优先），最后比较候选序号
+       （确定性 tie-break，不改变任何目标值）。
+
+    ``candidate`` / ``incumbent`` 是 ``{"total_cost", "endpoint_feasible", "transition_deg",
+    "departure_heading_change_deg", "arrival_heading_change_deg", "sequence"}``。
+    """
+
+    if candidate.get("endpoint_feasible") is not True:
+        return False
+    if incumbent is None:
+        return True
+    if (incumbent.get("endpoint_feasibility") or {}).get("endpoint_feasible") is not True \
+            and incumbent.get("endpoint_feasible") is not True:
+        return True
+    candidate_total = float(candidate["total_cost"])
+    incumbent_total = float(incumbent["total_cost"])
+    if candidate_total < incumbent_total - 1e-9:
+        return True
+    if candidate_total > incumbent_total + 1e-9:
+        return False
+    for name in (
+        "transition_deg", "departure_heading_change_deg", "arrival_heading_change_deg",
+    ):
+        candidate_deg = candidate.get(name)
+        incumbent_deg = incumbent.get(name)
+        if candidate_deg is None or incumbent_deg is None:
+            continue
+        if float(candidate_deg) < float(incumbent_deg) - 1e-9:
+            return True
+        if float(candidate_deg) > float(incumbent_deg) + 1e-9:
+            return False
+    return int(candidate.get("sequence") or 0) < int(incumbent.get("sequence") or 0)
 
 
 def derive_d_ref_m(graph):
@@ -588,6 +933,7 @@ class LayeredRiskAwareThetaStarV2:
         hard_constraints=None, building_clearance_policy=None, source_audits=None,
         objective_policy=None, risk_density_constraint=None, cost_policy=None,
         constraint_field=None, unknown_constraint_policy=None,
+        planning_exposure=None, surface_class_provider=None,
     ):
         """Plan one fixed-altitude any-angle Theta* candidate.
 
@@ -595,6 +941,12 @@ class LayeredRiskAwareThetaStarV2:
         registry and the application service drive both layered planners through one call
         shape, and V2's objective is ``J = 0.8*E_risk + 0.1*C_turn + 0.1*L`` rather than the
         legacy ``Σ λ_domain · mean_index`` soft cost.
+
+        ``planning_exposure`` / ``surface_class_provider``（BUG-SURFACE-METRIC-001）**只影响
+        candidate 上的 ``route_surface_distance`` 报告字段**：前者提供 ``planning_exposure``
+        自己的 terrain-threshold 逐格陆海分类，后者提供项目权威 surface classifier（
+        ``LandMaskSource`` / ``SurfaceFactsProvider``）。它们都不进入搜索、不改变任何代价、
+        权重或可行性。
         """
         grid = grid if isinstance(grid, dict) else {}
         mask = layer_mask if isinstance(layer_mask, dict) else {}
@@ -770,6 +1122,10 @@ class LayeredRiskAwareThetaStarV2:
         statistics.update(search["statistics"])
         statistics["endpoint_anchors"] = search.get("endpoint_anchors")
         statistics["endpoint_anchor_policy"] = ENDPOINT_ANCHOR_SEMANTICS
+        # BUG-ROUTE-007：端点过渡几何是**可行性证据 + diagnostics**（绝不进入 cruise turn
+        # cost，也绝不进入核心 J）。
+        statistics["endpoint_transition"] = deepcopy(search.get("endpoint_transition"))
+        statistics["endpoint_transition_policy"] = ENDPOINT_TRANSITION_SEMANTICS
         statistics["d_ref_m"] = _round(d_ref)
         statistics["risk_unresolved_cell_count"] = len(risk_unresolved)
         # BUG-ROUTE-004 evidence: the ledger the search actually minimised and the ledger the
@@ -838,6 +1194,31 @@ class LayeredRiskAwareThetaStarV2:
             distance_m=metrics["distance_m"], constraint=constraint,
         )
         straight = distance_m(start, end)
+        # BUG-SURFACE-METRIC-001：正式 route surface distance。唯一口径是
+        # "最终 segment → traversed cells → cell 内长度 → surface classifier"；
+        # planning_exposure 的 terrain-threshold 分类**并列**输出，两者绝不合并。
+        grid_cells_by_id = {
+            str(cell.get("grid_id")): cell for cell in (grid.get("cells") or [])
+            if isinstance(cell, dict) and cell.get("grid_id")
+        }
+        planning_exposure_cells = (
+            (planning_exposure or {}).get("cells")
+            if isinstance(planning_exposure, dict) else None
+        )
+        surface_distances = _route_surface_distances(
+            segments=search["los_segments"], grid_cells=grid_cells_by_id,
+            distance_m_total=metrics["distance_m"],
+            land_mask_provider=surface_class_provider,
+            planning_exposure_class_by_grid_id={
+                str(grid_id): str((cell or {}).get("land_status") or "unknown")
+                for grid_id, cell in (planning_exposure_cells or {}).items()
+                if isinstance(cell, dict)
+            },
+            planning_exposure_policy=(
+                planning_exposure if isinstance(planning_exposure, dict) else {}
+            ),
+        )
+        statistics["route_surface_distance"] = deepcopy(surface_distances)
         statistics["search_completeness"] = (
             "expansion_cap_reached_optimality_not_proven"
             if search["cap_reached"] else "optimal_path_found"
@@ -855,7 +1236,7 @@ class LayeredRiskAwareThetaStarV2:
             risk_density=evaluation, evaluation={"route_risk_density": evaluation},
             turn_statistics=metrics["turn_statistics"],
             los_segments=search["los_segments"],
-            statistics=statistics,
+            statistics=statistics, route_surface_distance=surface_distances,
             objective_policy=objective, risk_density_constraint=constraint,
             communication=communication,
             regulatory=regulatory_compliance_record(regulatory_constraints),
@@ -875,6 +1256,7 @@ class LayeredRiskAwareThetaStarV2:
         building_clearance_policy=None, feasibility_policy=None, source_audits=None,
         cost_policy=None, communication_field=None,
         constraint_field=None, unknown_constraint_policy=None,
+        planning_exposure=None, surface_class_provider=None,
     ):
         """Declared dependency fingerprint of one Theta* V2 candidate.
 
@@ -882,6 +1264,11 @@ class LayeredRiskAwareThetaStarV2:
         accepted for call-shape compatibility and are **not** fingerprinted: V2 does not
         consume the legacy domain lambdas, and the communication field is not a planning
         input this round (it has a separate informational fingerprint).
+
+        ``planning_exposure`` / ``surface_class_provider``（BUG-SURFACE-METRIC-001）同样
+        **不进入**fingerprint：它们只产生 candidate 上只读的 ``route_surface_distance``
+        报告字段，既不进入搜索、也不改变任何代价、权重或可行性，因此换一个 surface 数据源
+        不应让规划结果指纹变化。
         """
         route = scenario_route if isinstance(scenario_route, dict) else {}
         grid_cells = (grid or {}).get("cells") or []
@@ -1010,6 +1397,9 @@ class LayeredRiskAwareThetaStarV2:
         record = {
             "expanded_labels": 0, "generated_labels": 0, "los_checks": 0,
             "los_shortcuts": 0, "rejected_terrain": 0,
+            # BUG-ROUTE-007：被端点过渡可行性剪枝掉的 first-cruise / shortcut 扩展数。
+            # 它不是搜索失败，而是"该 source anchor 的这个出发几何不 admissible"的证据。
+            "rejected_endpoint_transition": 0,
 "rejected_building": 0,
 "rejected_tower": 0,
 "rejected_airspace": 0,
@@ -1044,6 +1434,7 @@ class LayeredRiskAwareThetaStarV2:
         regulatory=None, search_incomplete=False, mask_status=None,
         constraint_field=None, unknown_policy=None, unknown_constraint_count=0,
         traversed_unknown_cell_count=None, contains_unknown_constraints=None,
+        route_surface_distance=None,
     ):
         objective_policy = objective_policy or default_theta_v2_objective_policy()
         risk_density_constraint = risk_density_constraint or default_risk_density_constraint()
@@ -1165,6 +1556,15 @@ class LayeredRiskAwareThetaStarV2:
             "route_risk_density": risk_density,
             "turn_statistics": turn_statistics or _empty_turn_statistics(),
             "los_segments": list(los_segments or []),
+            # BUG-SURFACE-METRIC-001：正式 route surface distance（landmask 口径）
+            # 与 planning_exposure 自己的 terrain-threshold 口径并列，绝不合并成单一 ratio。
+            "route_surface_distance": deepcopy(
+                route_surface_distance
+                or {
+                    "semantics": dict(ROUTE_SURFACE_DISTANCE_SEMANTICS),
+                    "status": "not_computed_no_final_segments",
+                }
+            ),
             "search_statistics": statistics or {},
             "statistics": statistics or {},
             "reason": reason,
@@ -1214,7 +1614,14 @@ class LayeredRiskAwareThetaStarV2:
                 "endpoint_anchors": deepcopy(
                     (statistics or {}).get("endpoint_anchors")
                 ),
+                # BUG-ROUTE-007：所选端点锚点的过渡几何与选择语义（与 cruise turn 解耦）。
+                "endpoint_transition": {
+                    **deepcopy(ENDPOINT_TRANSITION_SEMANTICS),
+                    "selected": deepcopy((statistics or {}).get("endpoint_transition")),
+                },
                 "turn_accounting": deepcopy(TURN_ACCOUNTING_SEMANTICS),
+                # BUG-SURFACE-METRIC-001：正式 surface distance 的口径（只读报告，不是代价）。
+                "route_surface_distance": deepcopy(ROUTE_SURFACE_DISTANCE_SEMANTICS),
                 "feasibility_semantics": COARSE_ENVELOPE_SEMANTICS,
                 "objective": dict(PLANNING_OBJECTIVE_PROVENANCE),
                 "risk_density_constraint": {
@@ -1589,11 +1996,14 @@ def _theta_star(
     source_link_index = {item["grid_id"]: index for index, item in enumerate(source_links)}
     target_link_index = {item["grid_id"]: index for index, item in enumerate(target_links)}
     #: The start labels themselves: a segment *leaving* one of them is the departure
-    #: transition turn (never charged), exactly like the arrival connector turn.
+    #: transition turn (never charged), exactly like the arrival connector turn.  The raw
+    #: ``(grid_id, bin)`` projection is what the finalized segment audit sees, while the
+    #: ``source_anchor_id``-tagged start-slot key is what the search state uses (BUG-ROUTE-007).
     start_label_keys = {
         (item["grid_id"], heading_bin_for_bearing(item["bearing_deg"], heading_bin_count))
         for item in source_links
     }
+    start_slot_keys = set()
     endpoint_anchors = {
         "source_anchor_count": len(endpoints.get("source_anchors") or []),
         "admitted_source_anchor_count": len(source_links),
@@ -1638,9 +2048,15 @@ def _theta_star(
     label_sequence = 0
 
     for index, link in enumerate(source_links):
+        # BUG-ROUTE-007：start-slot 标签以 ``source_anchor_id``（= 该锚点格）作为 key 的第三维，
+        # 因此不同 source anchor 在 departure 过渡完成前**不会**被压缩进同一个
+        # ``(grid_id, incoming_heading_bin)`` 状态。该维度在离开 start-slot 时立即丢弃
+        # （被扩展后的子标签一律回到 ``(grid_id, incoming_heading_bin)``）。
+        anchor_id = link["grid_id"]
         key = (
-            link["grid_id"],
+            anchor_id,
             heading_bin_for_bearing(link["bearing_deg"], heading_bin_count),
+            anchor_id,
         )
         start_ledger = _extend_ledger(
             _empty_ledger(),
@@ -1650,8 +2066,11 @@ def _theta_star(
             weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
             theta_min_deg=theta_min_deg,
         )
-        start_cost = _ledger_total_cost(start_ledger, weight_risk, weight_turn, weight_distance)
+        start_cost = _ledger_total_cost(
+            start_ledger, weight_risk, weight_turn, weight_distance,
+        )
         label_sequence += 1
+        start_slot_keys.add(key)
         costs[key] = start_cost
         parents[key] = None
         incoming[key] = None
@@ -1662,18 +2081,25 @@ def _theta_star(
         heappush(
             queue,
             (start_cost + heuristic(link["grid_id"]), start_cost, label_sequence,
-             link["grid_id"], key[1]),
+             link["grid_id"], key[1], anchor_id),
         )
 
     while queue:
-        queue_bound, _, _, current_grid, current_bin = heappop(queue)
-        current_key = (current_grid, current_bin)
+        queue_bound, _, _, current_grid, current_bin, current_anchor = heappop(queue)
+        current_key = (
+            (current_grid, current_bin) if current_anchor is None
+            else (current_grid, current_bin, current_anchor)
+        )
         current_cost = costs.get(current_key)
         if current_cost is None:
             continue
-        # A queued entry is ranked by ``cost + admissible_remaining``, so once the best
-        # queued bound can no longer beat the best *complete* OD goal, no unexplored or
-        # unpriced route can improve it either.
+        # A queued entry is ranked by ``J + admissible_remaining``.  Every label in the queue
+        # is endpoint-feasible by construction (an inadmissible departure branch never produced
+        # a label and an inadmissible goal is never selected), so once the best queued bound can
+        # no longer beat the best **feasible** complete goal, no unexplored or unpriced route can
+        # improve it either: the search then stops with the strict minimum core objective.
+        #
+        # ``heuristic`` 是核心 J 的可采纳下界（BUG-ROUTE-007 收口版：端点过渡代价已不进入 J）。
         if best_goal is not None and queue_bound >= best_goal["total_cost"] - 1e-9:
             termination = "queue_lower_bound_exceeds_best_goal"
             break
@@ -1698,8 +2124,9 @@ def _theta_star(
             # A goal label is never accepted merely because it reached an arrival anchor:
             # the ``anchor centre -> exact end`` connector belongs to the same OD objective,
             # and labels arriving under different incoming bearings pay a different terminal
-            # turn.  Every goal label is priced completely and the cheapest complete OD
-            # objective wins.  The goal label is not expanded further.
+            # turn.  Every goal label is priced completely; only the **endpoint-feasible**
+            # ones are eligible, and among them the strictly minimal core objective wins.
+            # The goal label is not expanded further.
             terminal = target_links[terminal_index]
             # Connector accounting: ``anchor centre -> exact end`` prices its distance and
             # risk but is not charged a turn (departure/arrival transition semantics).  The
@@ -1716,6 +2143,20 @@ def _theta_star(
             )
             complete_cost = _ledger_total_cost(
                 complete_ledger, weight_risk, weight_turn, weight_distance
+            )
+            # BUG-ROUTE-007：这条 goal 标签的**端点过渡几何**（departure / arrival 真实航向
+            # 变化 + connector 轴 sanity）。它是**可行性证据 + diagnostics**：departure /
+            # arrival 的 admissible 判定决定这条 goal 是否有资格，但过渡代价绝不进入
+            # ``complete_cost``，也绝不作为排序键。
+            transition = _endpoint_transition_audit(
+                chain=_label_chain_keys(current_key, incoming),
+                graph=graph, start_point=start_point, end_point=end_point,
+            )
+            transition_cost = _endpoint_transition_cost(
+                transition, d_ref=d_ref, theta_min_deg=theta_min_deg,
+            )
+            feasibility = _endpoint_feasibility_view(
+                transition, threshold_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
             )
             goal_candidates.append({
                 "grid_id": current_grid, "incoming_heading_bin": current_bin,
@@ -1735,11 +2176,34 @@ def _theta_star(
                 "turn_cost_m": _round(complete_ledger["turn"]),
                 "distance_m": _round(complete_ledger["distance"]),
                 "total_cost": _round(complete_cost),
+                "endpoint_transition": transition,
+                "endpoint_transition_cost_m": _round(transition_cost),
+                "endpoint_feasible": feasibility["endpoint_feasible"],
+                "departure_admissible": feasibility["departure_admissible"],
+                "arrival_admissible": feasibility["arrival_admissible"],
             })
-            if best_goal is None or complete_cost < best_goal["total_cost"] - 1e-9:
+            decision = _prefer_endpoint_candidate(
+                {
+                    "total_cost": complete_cost,
+                    "endpoint_feasible": feasibility["endpoint_feasible"],
+                    "transition_deg": transition.get("total_heading_change_deg"),
+                    "departure_heading_change_deg": transition.get(
+                        "departure_heading_change_deg"
+                    ),
+                    "arrival_heading_change_deg": transition.get(
+                        "arrival_heading_change_deg"
+                    ),
+                    "sequence": label_sequence,
+                },
+                best_goal,
+            )
+            if decision:
                 best_goal = {
                     "key": current_key, "total_cost": complete_cost,
                     "ledger": complete_ledger, "terminal_index": terminal_index,
+                    "endpoint_transition": transition,
+                    "endpoint_transition_cost": transition_cost,
+                    "endpoint_feasibility": feasibility,
                 }
             continue
 
@@ -1771,6 +2235,18 @@ def _theta_star(
                 continue
             direct_bearing = grid_bearing_deg(current_point, neighbour_point)
             direct_bin = heading_bin_for_bearing(direct_bearing, heading_bin_count)
+            # 出发连接器上的这一步就是 departure 过渡本身（``exact start -> source anchor``
+            # 的真实航向 = 起点 raw key 的 ``current_bearing``）。它的可采纳性决定该 source
+            # anchor 的 first cruise expansion 是否进入搜索：不可采纳 ⇒ 不生成标签，因此
+            # "先偏离再折回"的几何在搜索里**不存在**（BUG-ROUTE-007 收口）。
+            is_departure_transition = current_key in start_slot_keys
+            if is_departure_transition and not _admissible_transition(
+                departure_bearing=current_bearing, arrival_bearing=direct_bearing,
+            ):
+                statistics["rejected_endpoint_transition"] = (
+                    statistics.get("rejected_endpoint_transition", 0) + 1
+                )
+                continue
             direct_ledger = _extend_ledger(
                 current_ledger, risk_exposure=direct["risk_exposure_index_m"],
                 # The ledger accumulates the **real length of this LOS segment**: the
@@ -1785,7 +2261,7 @@ def _theta_star(
                 # that turn belongs to the departure transition and is never charged to the
                 # cruise turn cost -- exactly like the arrival side.  Without this the search
                 # would minimise a cost the reported objective does not use.
-                is_connector_turn=current_key in start_label_keys,
+                is_connector_turn=is_departure_transition,
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
             )
@@ -1825,6 +2301,16 @@ def _theta_star(
             grandparent_bearing = real_bearing.get(grandparent_key)
             shortcut_bearing = grid_bearing_deg(grandparent_point, neighbour_point)
             shortcut_bin = heading_bin_for_bearing(shortcut_bearing, heading_bin_count)
+            # path 2 也可能**直接**从某个 source anchor 出发（shortcut 到它自己的邻居格）：
+            # 那时这条 shortcut 就是 departure 过渡本身，必须走同一套可采纳性判据。
+            is_departure_transition = grandparent_key in start_slot_keys
+            if is_departure_transition and not _admissible_transition(
+                departure_bearing=grandparent_bearing, arrival_bearing=shortcut_bearing,
+            ):
+                statistics["rejected_endpoint_transition"] = (
+                    statistics.get("rejected_endpoint_transition", 0) + 1
+                )
+                continue
             shortcut_ledger = _extend_ledger(
                 # The rewritten chain is ``... -> grandparent -> neighbour``, so the ledger
                 # must extend the **grandparent's** ledger and price the real
@@ -1835,6 +2321,7 @@ def _theta_star(
                 distance=shortcut["segment_length_m"],
                 previous_heading=grandparent_bearing,
                 new_heading=shortcut_bearing,
+                is_connector_turn=is_departure_transition,
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
             )
@@ -1947,6 +2434,30 @@ def _theta_star(
         "los_segments": los_segments,
         "los_records": los_records,
         "endpoint_anchors": endpoint_anchors,
+        # BUG-ROUTE-007：被选中候选的端点过渡几何（departure / arrival 航向变化、
+        # connector 轴 sanity、可采纳性判定与**仅作 diagnostics**的端点过渡代价）。
+        # 它独立于 cruise turn cost，也不进入核心 J，因此可以单独审计、单独复算。
+        "endpoint_transition": {
+            **deepcopy(best_goal.get("endpoint_transition") or {}),
+            "endpoint_transition_cost_m": _round(
+                best_goal.get("endpoint_transition_cost")
+            ),
+            "endpoint_feasible": (
+                best_goal.get("endpoint_feasibility") or {}
+            ).get("endpoint_feasible"),
+            "departure_admissible": (
+                best_goal.get("endpoint_feasibility") or {}
+            ).get("departure_admissible"),
+            "arrival_admissible": (
+                best_goal.get("endpoint_feasibility") or {}
+            ).get("arrival_admissible"),
+            "endpoint_transition_admissibility_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+            "endpoint_transition_admissibility_provenance": (
+                "derived_from_heading_bin_resolution"
+            ),
+            "endpoint_transition_cost_in_core_objective": False,
+            "selection_semantics": ENDPOINT_TRANSITION_SEMANTICS["selection_semantics"],
+        },
         "statistics": statistics, "cap_reached": cap_reached,
     }
 
@@ -2136,6 +2647,13 @@ def _empty_ledger():
     return {
         "risk": 0.0, "turn": 0.0, "distance": 0.0, "turn_count": 0,
         "heading_change": 0.0, "turns": [],
+        # BUG-ROUTE-007：端点过渡**独立记账**（只作为 diagnostics）。它们从不进入上面的
+        # risk / turn / distance 三项，也不进入核心 J，因此 reported
+        # ``planning_objective``、``cruise_turn_cost`` 与 ``goal_ledger_consistency``
+        # 完全不受影响。
+        "endpoint_transition_cost": 0.0,
+        "departure_heading_change_deg": None,
+        "departure_admissible": None,
     }
 
 
@@ -2208,6 +2726,13 @@ def _relax(
     prefix ledger of every descendant stay the authoritative description of the chain it
     actually hangs from.
 
+    **Objective label dominance.**  Label comparison is the **core objective** ``J`` alone:
+    端点几何不是排序键，端点过渡代价也不是排序键（BUG-ROUTE-007 收口）。端点几何在标签层
+    通过**可行性剪枝**进入搜索：从某个 source anchor 出发、departure 过渡不 admissible 的
+    first cruise expansion 根本不生成标签；而每个 source anchor 的 start-slot 又用自己的
+    ``source_anchor_id`` 区分标签状态，所以"objective 更低但出发点折回"的分支不可能提前吞掉
+    其它 source anchor 的分支。
+
     **Equal-cost tie-break.**  When two chains price the *identical* objective, the one
     with fewer labels wins.  This never changes an objective value, never reopens a closed
     label and never introduces a post-processing smoother: it only makes the search prefer
@@ -2252,7 +2777,7 @@ def _relax(
         statistics["rewired_parent_shortcuts"] += 1
     heappush(
         queue,
-        (cost + heuristic(grid_id), cost, label_sequence, grid_id, bin_index),
+        (cost + heuristic(grid_id), cost, label_sequence, grid_id, bin_index, None),
     )
 
 
@@ -2271,6 +2796,11 @@ def _extend_ledger(
     (so ``turn_statistics`` can report it separately) but **never charged** to the cruise
     turn cost.  The flag is decided by the caller from the finalized segment positions, so
     the same rule can be replayed from ``candidate.path`` alone.
+
+    BUG-ROUTE-007：出发连接器与第一段巡航之间的过渡还会被**独立记账**到
+    ``endpoint_transition_cost`` / ``departure_heading_change_deg`` /
+    ``departure_admissible`` 上。它们是端点几何的**可行性证据 + diagnostics**：既不进入
+    risk / turn / distance 三项，也不进入核心 J。
     """
 
     weight_risk, weight_turn, weight_distance = weights
@@ -2281,9 +2811,25 @@ def _extend_ledger(
         "turn_count": int(base["turn_count"]),
         "heading_change": float(base["heading_change"]),
         "turns": list(base["turns"]),
+        "endpoint_transition_cost": float(base.get("endpoint_transition_cost") or 0.0),
+        "departure_heading_change_deg": base.get("departure_heading_change_deg"),
+        "departure_admissible": base.get("departure_admissible"),
     }
     if previous_heading is not None and new_heading is not None:
         delta = abs(normalize_heading_delta(previous_heading, new_heading))
+        if is_connector_turn and ledger["departure_heading_change_deg"] is None:
+            # 出发过渡：几何事实先记录（无论是否超过 theta_min），可采纳性按既有
+            # ``endpoint_transition_admissibility_deg``（= 一个航向离散单元）判定；代价按与
+            # cruise turn **完全相同**的公式计算，但只写进独立的 endpoint_transition_cost。
+            ledger["departure_heading_change_deg"] = _round(delta)
+            ledger["departure_admissible"] = _endpoint_transition_feasible(
+                departure_heading_change_deg=delta, arrival_heading_change_deg=None,
+            )
+            if delta > float(theta_min_deg) and d_ref:
+                ledger["endpoint_transition_cost"] = (
+                    float(ledger["endpoint_transition_cost"])
+                    + float(d_ref) * (1.0 + delta / 180.0)
+                )
         if delta > float(theta_min_deg):
             cost = float(d_ref) * (1.0 + delta / 180.0) if d_ref else 0.0
             if not is_connector_turn:
@@ -2328,6 +2874,276 @@ def _turn_statistics(ledger, *, d_ref, theta_min_deg):
     }
 
 
+# --------------------------------------------------------------------- route surface distance
+
+#: 正式 route surface distance 的分类口径（BUG-SURFACE-METRIC-001）。
+#:
+#: 唯一的计算路径是：**每条最终 candidate segment → 该 segment 的 traversed cells → 该 cell
+#: 内被穿越的长度 → 该 cell 的 surface classifier 判定**。四条距离之和等于 candidate 的
+#: ``distance_m``（允许正常几何数值误差），因此"land/water 标签反转"在结构上不再可能：
+#: 每个 cell 都有自己的分类，绝不再使用 "cruise=land / connector=water" 这类代理规则。
+ROUTE_SURFACE_DISTANCE_SEMANTICS = {
+    "definition": "route_surface_distance_from_segment_traversed_cells",
+    "method": (
+        "per_final_candidate_segment -> traversed_cells(length_m) -> per_cell_surface_class -> "
+        "sum_of_length_by_class"
+    ),
+    "length_source": "segment_traversed_cells_length_m_from_the_same_supercover_los",
+    "classification_unit": "grid_cell_center_representative_point",
+    "distance_split_used_for_the_sum_check": "per_index_segment_length_m",
+    "distances_are_attributed_per_segment": True,
+    "proxy_rules_removed": ["cruise_equals_land", "connector_equals_water"],
+    "proxy_rules_used": False,
+    "sum_equals_candidate_distance_m": True,
+    "sum_tolerance_m": 1e-3,
+    "sources_are_never_merged_into_one_land_ratio": True,
+}
+
+
+def _normalized_surface_class(value):
+    """surface classifier 的返回值归一化到本模块的四个类别。"""
+
+    text = str(value or "").strip().lower()
+    if text == "sea":
+        return "sea"
+    if text == "water":
+        return "sea"
+    if text == "coastal_uncertain":
+        return "coastal_uncertain"
+    if text == "land":
+        return "land"
+    return "unknown"
+
+
+def _surface_class_provider_surface(provider, points):
+    """一次批量判定格心代表点 → surface_class 列表（provider 缺失即全部 ``unknown``）。
+
+    provider 的既有接口优先：``classify_many``（``LandMaskSource``）/ ``classify_surface``
+    （``SurfaceFactsProvider``）。两者都不可用时逐点 ``classify``。**不猜测**：无法判定一律
+    ``unknown``（fail-closed），绝不把未知当海或当陆。
+    """
+
+    points = [list(point) for point in (points or [])]
+    if not points:
+        return []
+    if provider is None:
+        return ["unknown"] * len(points)
+    batch = getattr(provider, "classify_many", None)
+    if callable(batch):
+        values = batch([(float(point[0]), float(point[1])) for point in points])
+        return [_normalized_surface_class(value) for value in (values or [])]
+    batch = getattr(provider, "classify_surface", None)
+    if callable(batch):
+        values = batch([(float(point[0]), float(point[1])) for point in points])
+        return [_normalized_surface_class(value) for value in (values or [])]
+    single = getattr(provider, "classify", None)
+    if callable(single):
+        found = []
+        for point in points:
+            result = single(float(point[0]), float(point[1]))
+            if isinstance(result, (tuple, list)) and result:
+                result = result[0]
+            found.append(_normalized_surface_class(result))
+        return found
+    return ["unknown"] * len(points)
+
+
+def _length_weighted_surface_distances(*, segments, surfaces_by_grid_id, distance_m_total):
+    """按**逐段 traversed cells 长度**把最终航路长度分到四个 surface 类别。
+
+    ``surfaces_by_grid_id`` 是某个分类口径给出的逐格 ``surface_class``；缺失/不可判定的格
+    一律计入 ``unknown_surface_distance_m``（fail-closed），绝不当成 land 或 sea。
+
+    ``segment_length`` 一律取该 segment 的 **traversed cells 长度之和**（与 candidate 的
+    ``distance_m`` 同源），因此四类之和 = 全部 segment 长度之和，不依赖线段离心率的假设。
+    """
+
+    classes = ("land", "sea", "coastal_uncertain", "unknown")
+    per_class = {name: 0.0 for name in classes}
+    per_segment = []
+    segment_total = 0.0
+    zero_length_segment_count = 0
+    segment_count = 0
+    cell_count = 0
+    for segment in segments or []:
+        entries = list(segment.get("traversed_cells") or [])
+        segment_count += 1
+        cell_total = 0.0
+        counts = {name: 0 for name in classes}
+        for entry in entries:
+            grid_id = str(entry.get("grid_id"))
+            length = float(entry.get("length_m") or 0.0)
+            surface = str(surfaces_by_grid_id.get(grid_id) or "unknown")
+            if surface not in per_class:
+                surface = "unknown"
+            per_class[surface] += length
+            cell_total += length
+            counts[surface] += 1
+            cell_count += 1
+        if cell_total <= 0.0:
+            zero_length_segment_count += 1
+        segment_total += cell_total
+        per_segment.append({
+            "segment_index": segment.get("segment_index"),
+            "connector": segment.get("connector"),
+            "segment_length_m": _round(cell_total),
+            "cell_count": len(entries),
+            "surface_cell_counts": counts,
+        })
+    unknown_floor = max(0.0, float(distance_m_total or 0.0) - segment_total)
+    per_class["unknown"] += unknown_floor
+    total = sum(per_class.values())
+    return {
+        "distance_m": {name: _round(per_class[name]) for name in classes},
+        "fraction": {
+            name: (round(per_class[name] / total, 9) if total > 0.0 else None)
+            for name in classes
+        },
+        "total_m": _round(total),
+        "segment_total_m": _round(segment_total),
+        #: ``distance_m - sum(traversed cell lengths)``：0 表示逐格长度与 candidate 的
+        #: ``distance_m`` 完全同源；正值是"该源未覆盖的几何"被计入 unknown 的部分。
+        "unknown_floor_m": _round(unknown_floor),
+        "segment_count": segment_count,
+        "cell_count": cell_count,
+        "zero_length_segment_count": zero_length_segment_count,
+        "per_segment": per_segment,
+    }
+
+
+def _grid_center(cell):
+    center = (cell or {}).get("center")
+    if isinstance(center, (list, tuple)) and len(center) >= 2:
+        return [float(center[0]), float(center[1])]
+    bbox = (cell or {}).get("bbox")
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        return [(float(bbox[0]) + float(bbox[2])) / 2.0, (float(bbox[1]) + float(bbox[3])) / 2.0]
+    return None
+
+
+def _classification_coverage(surfaces_by_grid_id, grid_ids):
+    """一个分类口径的证据覆盖率（unknown 不计入已覆盖）。"""
+
+    total = len(grid_ids)
+    counts = {"land": 0, "sea": 0, "coastal_uncertain": 0, "unknown": 0}
+    for grid_id in grid_ids:
+        surface = str(surfaces_by_grid_id.get(grid_id) or "unknown")
+        counts[surface if surface in counts else "unknown"] += 1
+    usable = total - counts["unknown"]
+    return {
+        "cell_count": total,
+        "classified_cell_count": usable,
+        "unknown_cell_count": counts["unknown"],
+        "coverage_fraction": (round(usable / total, 9) if total else None),
+        "surface_class_counts": counts,
+        "unclassified_is_unknown_fail_closed": True,
+    }
+
+
+def _route_surface_distances(
+    *, segments, grid_cells, distance_m_total,
+    land_mask_provider=None, planning_exposure_class_by_grid_id=None,
+    planning_exposure_policy=None,
+):
+    """正式 route surface distance（BUG-SURFACE-METRIC-001）。
+
+    两种口径**分别**输出、绝不合并成一个 ``land_ratio``：
+
+    * ``landmask``：项目权威 surface classifier（``LandMaskSource`` /
+      ``SurfaceFactsProvider``）对每个被穿越 cell 的**格心代表点**独立分类；
+    * ``planning_exposure_threshold``：``planning_exposure`` 自己的 terrain-threshold
+      陆海分类（``land_status``），本轮**不改**它的数学，只把它作为独立口径并列报告。
+
+    两者都按"segment → traversed cells → cell 内长度"聚合，因此各自四项之和都 ≈
+    ``candidate.distance_m``，并且可以直接给出 ``mismatch_cell_count`` /
+    ``mismatch_distance_m``。
+    """
+
+    grid_cells = grid_cells if isinstance(grid_cells, dict) else {}
+    ordered_grid_ids = []
+    seen = set()
+    for segment in segments or []:
+        for entry in segment.get("traversed_cells") or []:
+            grid_id = str(entry.get("grid_id"))
+            if not grid_id or grid_id in seen:
+                continue
+            seen.add(grid_id)
+            ordered_grid_ids.append(grid_id)
+    centers = [center for center in (_grid_center(grid_cells.get(g)) for g in ordered_grid_ids)
+               if center is not None]
+    classes = _surface_class_provider_surface(land_mask_provider, centers)
+    land_mask_by_grid_id = dict(zip(ordered_grid_ids, classes))
+    exposure_by_grid_id = {
+        str(grid_id): _normalized_surface_class(value)
+        for grid_id, value in (planning_exposure_class_by_grid_id or {}).items()
+    }
+    landmask = _length_weighted_surface_distances(
+        segments=segments, surfaces_by_grid_id=land_mask_by_grid_id,
+        distance_m_total=distance_m_total,
+    )
+    exposure = _length_weighted_surface_distances(
+        segments=segments, surfaces_by_grid_id=exposure_by_grid_id,
+        distance_m_total=distance_m_total,
+    )
+    mismatch_cells = sorted(
+        grid_id for grid_id in ordered_grid_ids
+        if land_mask_by_grid_id.get(grid_id, "unknown") != "unknown"
+        and exposure_by_grid_id.get(grid_id, "unknown") != "unknown"
+        and land_mask_by_grid_id.get(grid_id) != exposure_by_grid_id.get(grid_id)
+    )
+    mismatch_cell_set = set(mismatch_cells)
+    mismatch_distance = 0.0
+    for segment in segments or []:
+        for entry in segment.get("traversed_cells") or []:
+            if str(entry.get("grid_id")) in mismatch_cell_set:
+                mismatch_distance += float(entry.get("length_m") or 0.0)
+    delivery = _round(abs(landmask["total_m"] - float(distance_m_total or 0.0)))
+    result = {
+        "semantics": dict(ROUTE_SURFACE_DISTANCE_SEMANTICS),
+        "candidate_distance_m": _round(distance_m_total),
+        "landmask": {
+            **landmask,
+            "source": (
+                "canonical_surface_class_provider_land_mask"
+                if land_mask_provider is not None else "not_injected_fail_closed_unknown"
+            ),
+            "coverage": _classification_coverage(
+                land_mask_by_grid_id, ordered_grid_ids
+            ),
+        },
+        "planning_exposure_threshold": {
+            **exposure,
+            "source": "planning_exposure_terrain_threshold_land_status",
+            "land_min_surface_elevation_m": (
+                (planning_exposure_policy or {}).get("land_min_surface_elevation_m")
+            ),
+            "formula_unchanged_this_round": True,
+            "coverage": _classification_coverage(
+                exposure_by_grid_id, ordered_grid_ids
+            ),
+        },
+        "mismatch_cell_count": len(mismatch_cells),
+        "mismatch_cells": mismatch_cells,
+        "mismatch_distance_m": _round(mismatch_distance),
+        "mismatch_semantics": (
+            "cells_where_the_two_independent_classifications_disagree_both_decidable"
+        ),
+        "surface_sum_error": {
+            "landmask_m": delivery,
+            "planning_exposure_threshold_m": _round(
+                abs(exposure["total_m"] - float(distance_m_total or 0.0))
+            ),
+            "tolerance_m": ROUTE_SURFACE_DISTANCE_SEMANTICS["sum_tolerance_m"],
+            "landmask_within_tolerance": bool(
+                delivery <= ROUTE_SURFACE_DISTANCE_SEMANTICS["sum_tolerance_m"]
+            ),
+        },
+        "proxy_rules_used": False,
+        "two_sources_merged_into_one_land_ratio": False,
+    }
+    return result
+
+
 def _objective_metrics(search, weights, d_ref, theta_min_deg):
     accumulated = search["accumulated"]
     risk = float(accumulated["risk"])
@@ -2367,7 +3183,9 @@ def _objective_metrics(search, weights, d_ref, theta_min_deg):
 
 
 __all__ = [
-    "ALGORITHM_ID", "ALGORITHM_VERSION", "GridIndexMap", "LOS_REJECTION_REASONS",
+    "ALGORITHM_ID", "ALGORITHM_VERSION", "ENDPOINT_ANCHOR_SEMANTICS",
+    "ENDPOINT_TRANSITION_ADMISSIBILITY_DEG", "ENDPOINT_TRANSITION_SEMANTICS",
+    "GridIndexMap", "LOS_REJECTION_REASONS",
     "PLANNING_OBJECTIVE_PROVENANCE", "POPULATION_FACTOR_ID", "SEARCH_SEMANTICS",
     "LayeredRiskAwareThetaStarV2", "derive_d_ref_m", "grid_bearing_deg",
     "heading_bin_center_deg", "heading_bin_for_bearing", "line_of_sight",

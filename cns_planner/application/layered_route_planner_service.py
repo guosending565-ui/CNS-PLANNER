@@ -77,6 +77,9 @@ REQUEST_SEMANTICS = {
     "route_operating_layer_is_an_operational_contract_not_a_planning_input": True,
 }
 
+#: 惰性缓存哨兵：区分"还没装配过"与"装配过但项目未配置 land-mask（null）"。
+_UNSET = object()
+
 
 def _route_ids(state):
     return [str(item.get("route_id")) for item in state.get("operational_routes") or []]
@@ -231,6 +234,11 @@ class LayeredRoutePlannerService:
         self.planner = LayeredRiskAwareThetaStarV2()
         #: Optional read-only communication field provider (interface only in this round).
         self.communication_provider = None
+        #: BUG-SURFACE-METRIC-001：惰性装配的项目权威 land-mask provider（只用于
+        #: candidate 上的 route surface distance 报告口径；不进入搜索、不改变代价）。
+        self._land_mask_source_cache = _UNSET
+        #: 装配失败的原因（仅诊断；``None`` = 未失败或项目本来就未配置 land-mask）。
+        self._land_mask_source_error = None
         self.ensure_state()
 
     # ------------------------------------------------------------------ state
@@ -763,6 +771,53 @@ class LayeredRoutePlannerService:
             **theta_v2_search_parameter_view(getattr(self.planner, "search_parameters", None)),
         }
 
+    def _land_mask_source(self):
+        """BUG-SURFACE-METRIC-001：项目权威 surface classifier（land-mask provider）。
+
+        与 Step5 的 ``surface_class_facts`` 共享**同一个**唯一分类实现
+        （``gis.land_mask_source.build_land_mask_source`` → ``LandMaskSource``），但这里
+        按需在内存中装配一次并缓存：它只被 planner 用于 candidate 上的
+        ``route_surface_distance`` 报告字段，不进入搜索、不改变任何代价。
+
+        未配置 land-mask 数据源时返回 ``None`` —— provider 缺失即 fail-closed，逐格分类
+        保持 ``unknown``，绝不猜测成海或陆。
+        """
+
+        if self._land_mask_source_cache is not _UNSET:
+            return self._land_mask_source_cache
+        self._land_mask_source_cache = None
+        try:
+            from ..gis.land_mask_source import build_land_mask_source, land_mask_source_path
+
+            state = self.session.state
+            explicit = None
+            # 正式链：ApplicationContext 把 ``surface_classification_land_mask_path`` 挂在
+            # WorkflowService 上（见 ``configure_surface_classification_sources``），而本服务
+            # 只拿到它的 ``snapshot`` **绑定方法** —— 因此先沿 ``__self__`` 找回宿主对象。
+            # 诊断/测试链可以在 session 上放一个等价 resolver；两者都没有时回退到 canonical
+            # state 里已登记的 land-mask 路径。
+            holders = [self.session]
+            bound_to = getattr(self.snapshot, "__self__", None)
+            if bound_to is not None:
+                holders.append(bound_to)
+            for holder in holders:
+                resolver = getattr(
+                    holder, "surface_classification_land_mask_path", None,
+                )
+                if callable(resolver):
+                    explicit = resolver()
+                    if explicit:
+                        break
+            path = land_mask_source_path(state, explicit)
+            if path:
+                self._land_mask_source_cache = build_land_mask_source(
+                    path, state.get("surface_classification_policy") or {},
+                )
+        except Exception as exc:  # noqa: BLE001 - 报告口径不可用绝不阻断规划
+            self._land_mask_source_error = f"{type(exc).__name__}: {exc}"
+            self._land_mask_source_cache = None
+        return self._land_mask_source_cache
+
     def _planner_specific_inputs(self, state, grid):
         """The Theta* V2-only planning inputs; empty for the V1 A* baseline.
 
@@ -772,6 +827,9 @@ class LayeredRoutePlannerService:
 
         if not self._uses_theta_star():
             return {}
+        # 规划前重新读一次 land-mask 数据源路径：项目可能在服务构造与本次规划之间（重新）
+        # 配置了数据源，报告口径必须跟随当前配置，而不是启动那一刻的结论。
+        self._land_mask_source_cache = _UNSET
         selected_layer_id = str(
             (state.get("layered_route_planning_request") or {}).get("altitude_layer_id") or ""
         )
@@ -794,6 +852,11 @@ class LayeredRoutePlannerService:
             "unknown_constraint_policy": (
                 (constraint_field or {}).get("unknown_policy")
             ),
+            # BUG-SURFACE-METRIC-001：只读报告口径。``planning_exposure`` 提供 terrain
+            # threshold 分类，``surface_class_provider`` 提供权威 land-mask 分类；两者都
+            # 不进入搜索，也不改变任何权重、代价或可行性。
+            "planning_exposure": self.planning_exposure_snapshot(),
+            "surface_class_provider": self._land_mask_source(),
         }
 
     def shelter_policy_snapshot(self):
