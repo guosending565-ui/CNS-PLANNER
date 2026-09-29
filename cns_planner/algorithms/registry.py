@@ -279,6 +279,11 @@ def _layered_risk_aware_theta_star_v2_manifest():
                 "search_parameter_provenance": {"type": "object"},
                 "objective_policy": {"type": "object"},
                 "max_route_risk_density": {"type": "object"},
+                # 显式 planning policy：端点过渡可采纳性门限（度）。它不是 search parameter，
+                # 也**不**由 heading_bin_count 派生；缺省 45.0，合法范围 (0, 180]。
+                "endpoint_transition_admissibility_deg": {
+                    "type": "number", "exclusiveMinimum": 0, "maximum": 180,
+                },
             },
             "additionalProperties": False,
         },
@@ -294,6 +299,11 @@ def _layered_risk_aware_theta_star_v2_manifest():
             "本 planner 不建模航空器运动学",
             "显式改写 8/5 后 parameter_origin 变为 explicit_algorithm_selection；"
             "除非调用方同时提供明确 evidence 与 confirmed，engineering_confirmed 一律保持 false",
+            "endpoint_transition_admissibility_deg 是**显式 planning policy**（默认 45.0，合法范围 "
+            "(0, 180]）：source=explicit_planning_policy、"
+            "semantics=planning_geometry_transition_admissibility_not_flight_dynamics_limit。"
+            "它只作 endpoint feasibility 硬门限，不进入 0.8/0.1/0.1 objective，"
+            "也**不**由 heading_bin_count 派生（改 heading_bin_count 不会改变它）",
             "固定 H：z(x, y) 恒等于 selected AltitudeLayer 的 confirmed nominal_altitude_m",
             "真正的 Theta*：搜索过程中即发生 parent LOS rewiring，不是 A* + 后期平滑",
             "state = (grid_id, incoming_heading_bin)，保留 parent LOS rewiring，不退化为 heading A*",

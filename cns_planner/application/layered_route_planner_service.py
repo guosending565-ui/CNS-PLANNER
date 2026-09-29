@@ -43,6 +43,7 @@ from ..domain.planning_exposure import (
     normalize_planning_exposure_policy, planning_exposure_factors,
     planning_exposure_policy_fingerprint, resolve_planning_exposure,
 )
+from ..domain.surface_classification import surface_facts_input_fingerprint
 from ..domain.population_nodata import CONFIRMED_ZERO_COVERAGE_STATUS
 from ..domain.regulatory_constraints import (
     default_regulatory_constraints, is_configured as regulatory_is_configured,
@@ -53,7 +54,8 @@ from ..algorithms.grid.service import WorkspaceGridService
 from ..data.mapping.buildings import BuildingGridService
 from ..layered_route_planner.feasibility import build_layer_feasibility_mask
 from ..layered_route_planner.theta_star_v2 import (
-    PLANNER_CAPABILITY, POPULATION_FACTOR_ID, LayeredRiskAwareThetaStarV2,
+    ENDPOINT_TRANSITION_ADMISSIBILITY_DEG, PLANNER_CAPABILITY, POPULATION_FACTOR_ID,
+    LayeredRiskAwareThetaStarV2, endpoint_transition_admissibility_provenance,
     grid_bearing_deg,
 )
 from ..domain.layered_theta_v2 import (
@@ -143,6 +145,7 @@ def _confirmed_zero_population_signature(population_attribute, confirmed_zero_id
 
 def _shelter_input_fingerprint(
     grid, policy, grid_risk_v2, planning_exposure_policy=None, population_attribute=None,
+    planning_exposure_surface_source_fingerprint=None,
 ):
     """Fingerprint of everything the derived per-grid shelter field depends on.
 
@@ -168,14 +171,26 @@ def _shelter_input_fingerprint(
         "planning_exposure_policy_fingerprint": planning_exposure_policy_fingerprint(
             planning_exposure_policy or default_planning_exposure_policy()
         ),
+        # planning_exposure 的**surface 分类来源**（canonical facts / land-mask provider /
+        # legacy fallback）：它改变时本层的人口因子输入语义也改变，派生场必须重建。
+        "planning_exposure_surface_source_fingerprint": (
+            planning_exposure_surface_source_fingerprint
+        ),
         "confirmed_zero_population_signature": _confirmed_zero_population_signature(
             population_attribute, _confirmed_zero_population_cells(population_attribute)
         ),
     }, prefix="shelterinputv1-")
 
 
-def _planning_exposure_input_fingerprint(grid, policy, grid_risk_v2):
-    """Fingerprint of everything the derived planning-exposure layer depends on."""
+def _planning_exposure_input_fingerprint(
+    grid, policy, grid_risk_v2, surface_source_fingerprint=None,
+):
+    """Fingerprint of everything the derived planning-exposure layer depends on.
+
+    ``surface_source_fingerprint`` 是 canonical surface facts / Land-Mask provider 的身份
+    （没有 canonical 来源时为 ``None`` = legacy terrain threshold 回退）：输入事实变了就不
+    允许复用上一次派生的暴露度层。
+    """
 
     return stable_fingerprint({
         "grid_level": (grid or {}).get("level"),
@@ -186,6 +201,7 @@ def _planning_exposure_input_fingerprint(grid, policy, grid_risk_v2):
         "grid_risk_v2_input_fingerprint": (grid_risk_v2 or {}).get("input_fingerprint"),
         "grid_risk_v2_policy_fingerprint": (grid_risk_v2 or {}).get("policy_fingerprint"),
         "planning_exposure_policy_fingerprint": planning_exposure_policy_fingerprint(policy),
+        "planning_exposure_surface_source_fingerprint": surface_source_fingerprint,
     }, prefix="planningexpinputv1-")
 
 
@@ -769,6 +785,14 @@ class LayeredRoutePlannerService:
         return {
             "applicable": True,
             **theta_v2_search_parameter_view(getattr(self.planner, "search_parameters", None)),
+            # 显式 planning policy（**不是** search parameter）：端点过渡可采纳性门限。
+            # 它与 heading_bin_count 解耦，默认 45.0，只作 endpoint feasibility。
+            "endpoint_transition": endpoint_transition_admissibility_provenance(
+                getattr(
+                    self.planner, "endpoint_transition_admissibility_deg",
+                    ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+                )
+            ),
         }
 
     def _land_mask_source(self):
@@ -877,6 +901,44 @@ class LayeredRoutePlannerService:
             self.session.save()
         return self.snapshot()
 
+    def _planning_exposure_surface_source(self, state):
+        """planning_exposure 的**首选**陆海分类来源（canonical surface facts / LandMask）。
+
+        返回 ``(surface_class_by_grid_id, surface_class_provider, source_fingerprint)``：
+
+        * 项目已有 canonical ``surface_class_facts``（``status == passed`` 且有逐格分类）
+          ⇒ 直接用它的**逐格**分类（与 canonical 网格同源，不做坐标查询）；
+        * 否则用项目权威 land-mask provider（``LandMaskSource``，唯一分类实现）按格心判定；
+        * 两者都不可用 ⇒ ``(None, None, None)``，planning_exposure 才允许走
+          **legacy terrain threshold 回退**（并在 provenance 里明确记录）。
+
+        这条链**只**决定 planning_exposure 的陆海分类来源：它不进入搜索、不改变任何代价、
+        权重或可行性。
+        """
+
+        facts = state.get("surface_class_facts")
+        if isinstance(facts, dict) and str(facts.get("status") or "") == "passed":
+            by_grid_id = facts.get("by_grid_id")
+            if isinstance(by_grid_id, dict) and by_grid_id:
+                return (
+                    {str(key): value for key, value in by_grid_id.items()},
+                    None,
+                    surface_facts_input_fingerprint(facts),
+                )
+        provider = self._land_mask_source()
+        if provider is not None:
+            describe = getattr(provider, "describe", None)
+            descriptor = describe() if callable(describe) else None
+            return (
+                None,
+                provider,
+                stable_fingerprint(
+                    {"source_role": "land_mask_provider", "describe": descriptor},
+                    prefix="landmasksrcv1-",
+                ),
+            )
+        return None, None, None
+
     def planning_exposure_snapshot(self):
         """BUG-ROUTE-005（收口后）：规划用暴露度层（**派生**，永远不进人口报告 / 审计）。
 
@@ -889,13 +951,25 @@ class LayeredRoutePlannerService:
         显式确认的 ``land_relative_risk_baseline``）：同一 ``p`` 下陆海差值恒等于 ``b``，
         人口相对差异统一保留 ``(1-b)``，输出天然落在 ``[0, 1]`` 且不做 clip。真实人口密度、
         人口报告、Population NoData 与 Risk V2 canonical 因子都不受影响。
+
+        **surface source 收口**：``L`` 的陆海分类优先消费项目已有 canonical surface facts /
+        LandMask provider（``land`` / ``sea`` / ``coastal_uncertain`` / ``unknown``；
+        ``coastal_uncertain`` 复用项目 canonical 的 ``effective_requirement_class = land``，
+        ``unknown`` 保持 unresolved / fail-closed）。只有项目**没有**
+        canonical 来源时才回退 legacy terrain threshold，并记录
+        ``surface_class_source = legacy_terrain_threshold_fallback``。
         """
 
         state = self.ensure_state()
         policy = state["planning_exposure_policy"]
         grid = state.get("grid") or {}
         grid_risk_v2 = state.get("grid_risk_v2") or {}
-        fingerprint = _planning_exposure_input_fingerprint(grid, policy, grid_risk_v2)
+        by_grid_id, provider, source_fingerprint = (
+            self._planning_exposure_surface_source(state)
+        )
+        fingerprint = _planning_exposure_input_fingerprint(
+            grid, policy, grid_risk_v2, source_fingerprint,
+        )
         cached = state.get("_planning_exposure_cache")
         if isinstance(cached, dict) and cached.get("derived_from_fingerprint") == fingerprint:
             return deepcopy(cached)
@@ -905,8 +979,11 @@ class LayeredRoutePlannerService:
             terrain_attribute=state["grid_attributes"].get("terrain") or {},
             normalized_population_factors=self._population_factors(state),
             policy=policy, grid_risk_v2=grid_risk_v2,
+            surface_class_by_grid_id=by_grid_id,
+            surface_class_provider=provider,
         )
         attribute["derived_from_fingerprint"] = fingerprint
+        attribute["surface_source_fingerprint"] = source_fingerprint
         state["_planning_exposure_cache"] = attribute
         return deepcopy(attribute)
 
@@ -977,9 +1054,11 @@ class LayeredRoutePlannerService:
         attribute = state.get("_population_shelter_cache") or {}
         cells = attribute.get("cells") or {}
         derived_from = attribute.get("derived_from_fingerprint")
+        # planning_exposure 的 surface 分类来源也是本派生场的输入：来源改变时必须重建。
+        _, _, surface_source_fingerprint = self._planning_exposure_surface_source(state)
         if cells and derived_from == _shelter_input_fingerprint(
             grid, policy, grid_risk_v2, state.get("planning_exposure_policy"),
-            population_attribute,
+            population_attribute, surface_source_fingerprint,
         ):
             return deepcopy(attribute)
         exposure = self.planning_exposure_snapshot()
@@ -1006,6 +1085,14 @@ class LayeredRoutePlannerService:
             "land_water_gap": exposure.get("land_water_gap"),
             "population_difference_retention": exposure.get("population_difference_retention"),
             "land_min_surface_elevation_m": exposure.get("land_min_surface_elevation_m"),
+            "surface_class_source": exposure.get("surface_class_source"),
+            "surface_class_source_semantics": exposure.get("surface_class_source_semantics"),
+            "legacy_terrain_threshold_fallback_used": exposure.get(
+                "legacy_terrain_threshold_fallback_used"
+            ),
+            "canonical_surface_class_counts": exposure.get(
+                "canonical_surface_class_counts"
+            ),
             "land_count": exposure.get("land_count"),
             "water_count": exposure.get("water_count"),
             "unresolved_land_status_count": exposure.get("unresolved_land_status_count"),
@@ -1022,7 +1109,7 @@ class LayeredRoutePlannerService:
         )
         attribute["derived_from_fingerprint"] = _shelter_input_fingerprint(
             grid, policy, grid_risk_v2, state.get("planning_exposure_policy"),
-            population_attribute,
+            population_attribute, surface_source_fingerprint,
         )
         state["_population_shelter_cache"] = attribute
         return deepcopy(attribute)

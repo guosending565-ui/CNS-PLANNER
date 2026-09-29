@@ -75,6 +75,7 @@ from ..domain.planning_constraint_field import (
     CONTAINS_UNKNOWN_CONSTRAINTS_REASON, PROVISIONAL_ROUTE_BLOCK_STATEMENT,
     normalize_unknown_policy,
 )
+from ..domain.planning_exposure import planning_exposure_fingerprint
 from ..domain.regulatory_constraints import (
     evaluate_regulatory_intersection, is_configured as regulatory_is_configured,
     regulatory_compliance_record, regulatory_constraints_fingerprint,
@@ -123,13 +124,69 @@ TURN_ACCOUNTING_SEMANTICS = {
     "theta_min_deg_unchanged": True,
 }
 
-#: 端点过渡**可采纳性**（admissibility）阈值：一个航向离散单元的宽度（BUG-ROUTE-007）。
+#: 端点过渡**可采纳性**（admissibility）阈值的**默认值**（BUG-ROUTE-007 收口 / 语义收口）。
 #:
-#: ``360 / heading_bin_count``（``heading_bin_count = 8`` ⇒ 45°）由既有搜索参数派生，
-#: **不是**新造的工程常数，也**不是**无人机飞行动力学极限：搜索本身就把到达航向离散成
-#: ``heading_bin_count`` 个单元，一次超过一个单元的端点转折就是搜索意义上不连续的出发/到达
-#: 几何。它只决定"该端点几何是否 admissible（可行）"，不参与任何代价加权。
+#: 它是一个**显式 planning policy**：规划几何的端点过渡门限，只决定"该端点几何是否
+#: admissible（可行）"，既不参与任何代价加权，也**不是**无人机飞行动力学极限。
+#:
+#: 它**独立于** ``heading_bin_count``：后者是搜索状态的离散参数（决定搜索规模），本门限是
+#: 规划几何的工程门限。``heading_bin_count`` 改变时本门限**不跟着改变** —— 历史上它曾被记成
+#: ``360 / heading_bin_count`` 的派生物，那是**不合理耦合**，现已解除（数值仍是 45.0，因此
+#: 既有项目行为逐位不变）。
 ENDPOINT_TRANSITION_ADMISSIBILITY_DEG = 45.0
+
+#: 端点过渡门限的**声明来源**：显式 planning policy（取代旧的 ``derived_from_heading_bin_resolution``）。
+ENDPOINT_TRANSITION_ADMISSIBILITY_SOURCE = "explicit_planning_policy"
+
+#: 端点过渡门限的语义：规划几何过渡可采纳性，**不是**飞行动力学限制。
+ENDPOINT_TRANSITION_ADMISSIBILITY_SEMANTICS = (
+    "planning_geometry_transition_admissibility_not_flight_dynamics_limit"
+)
+
+#: 合法范围 ``(0, 180]``：0 或负值会把任何端点几何都判成不可行，> 180 没有几何意义。
+ENDPOINT_TRANSITION_ADMISSIBILITY_DEG_RANGE = (0.0, 180.0)
+
+
+def normalize_endpoint_transition_admissibility_deg(value):
+    """显式 planning policy 的端点过渡门限（度）。
+
+    ``None`` / 空值 ⇒ 默认 :data:`ENDPOINT_TRANSITION_ADMISSIBILITY_DEG`（45.0）。显式值必须
+    落在 ``(0, 180]``；越界**报错**而不是被静默夹取，也不做任何隐含换算（绝不再由
+    ``heading_bin_count`` 派生）。
+    """
+
+    if value in (None, ""):
+        return ENDPOINT_TRANSITION_ADMISSIBILITY_DEG
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("endpoint_transition_admissibility_deg 必须是数值（度）") from exc
+    lower, upper = ENDPOINT_TRANSITION_ADMISSIBILITY_DEG_RANGE
+    if not math.isfinite(number) or not lower < number <= upper:
+        raise ValueError("endpoint_transition_admissibility_deg 必须位于 (0, 180]")
+    return number
+
+
+def endpoint_transition_admissibility_provenance(value=None):
+    """该门限的 provenance：来源、语义、与 ``heading_bin_count`` 解耦、不进入 objective。"""
+
+    threshold = normalize_endpoint_transition_admissibility_deg(value)
+    return {
+        "threshold_name": "endpoint_transition_admissibility_deg",
+        "value_deg": _round(threshold),
+        "source": ENDPOINT_TRANSITION_ADMISSIBILITY_SOURCE,
+        "semantics": ENDPOINT_TRANSITION_ADMISSIBILITY_SEMANTICS,
+        "default_value_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+        "valid_range_deg": {"exclusive_minimum": 0.0, "maximum": 180.0},
+        "explicitly_overridable": True,
+        "independent_of_heading_bin_count": True,
+        "derived_from_heading_bin_count": False,
+        "is_new_engineering_constant": False,
+        "is_uav_flight_dynamics_limit": False,
+        "role": "endpoint_feasibility_only",
+        "enters_planning_objective_weights": False,
+        "objective_weights_unchanged": {"risk": 0.8, "turn": 0.1, "distance": 0.1},
+    }
 
 #: 端点过渡语义（BUG-ROUTE-007 收口版）。
 #:
@@ -160,13 +217,18 @@ ENDPOINT_TRANSITION_SEMANTICS = {
     "threshold_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
     "threshold_name": "endpoint_transition_admissibility_deg",
     "threshold_provenance": {
-        "source": "derived_from_heading_bin_resolution",
-        "formula": "360 / heading_bin_count",
-        "heading_bin_count": 8,
-        "value_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+        "source": ENDPOINT_TRANSITION_ADMISSIBILITY_SOURCE,
+        "semantics": ENDPOINT_TRANSITION_ADMISSIBILITY_SEMANTICS,
+        "default_value_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+        "valid_range_deg": {"exclusive_minimum": 0.0, "maximum": 180.0},
+        "explicitly_overridable": True,
+        "independent_of_heading_bin_count": True,
+        "derived_from_heading_bin_count": False,
         "is_new_engineering_constant": False,
         "is_uav_flight_dynamics_limit": False,
-        "meaning": "planning_geometric_continuity_threshold_of_the_search_own_heading_bins",
+        "role": "endpoint_feasibility_only",
+        "enters_planning_objective_weights": False,
+        "meaning": "planning_geometric_transition_admissibility_of_the_endpoint_geometry",
     },
     "departure_feasibility": (
         "first_cruise_expansion_from_a_source_anchor_is_admissible_only_if_its_heading_change_"
@@ -276,7 +338,9 @@ SEARCH_SEMANTICS = {
     "endpoint_transition_enters_planning_objective_weights": False,
     "endpoint_transition_cost_used_as_sort_key": False,
     "endpoint_transition_admissibility_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
-    "endpoint_transition_admissibility_provenance": "derived_from_heading_bin_resolution",
+    "endpoint_transition_admissibility_provenance": ENDPOINT_TRANSITION_ADMISSIBILITY_SOURCE,
+    "endpoint_transition_admissibility_semantics": ENDPOINT_TRANSITION_ADMISSIBILITY_SEMANTICS,
+    "endpoint_transition_admissibility_is_independent_of_heading_bin_count": True,
     "endpoint_feasibility_is_a_hard_gate_before_the_objective": True,
     "final_selection": "strict_minimum_core_objective_over_endpoint_feasible_goals",
     "goal_acceptance": (
@@ -445,8 +509,9 @@ def _endpoint_transition_feasible(
     按 fail-open 视为通过（与 :func:`_inside_aperture` 对不可判定输入的处理一致）；可判定的
     端必须满足 ``|航向变化| <= threshold_deg``。
 
-    ``threshold_deg`` 由既有搜索参数派生（``360 / heading_bin_count`` ⇒ 45°），它不是新的
-    工程常数，也不是无人机飞行动力学极限，而是"搜索自身一个航向离散单元"的几何连续性。
+    ``threshold_deg`` 来自**显式 planning policy**（``explicit_planning_policy``，默认 45.0，
+    合法范围 ``(0, 180]``），它**不是**由 ``heading_bin_count`` 派生，也**不是**无人机飞行动力学
+    极限，而是端点几何的规划可采纳性门限（改为 ``heading_bin_count`` 不改变它）。
     """
 
     limit = float(threshold_deg) + ENDPOINT_CONTINUITY_TOLERANCE_DEG
@@ -523,7 +588,10 @@ def _endpoint_transition_cost(transition, *, d_ref, theta_min_deg):
     return total
 
 
-def _endpoint_transition_audit(*, chain, graph, start_point, end_point):
+def _endpoint_transition_audit(
+    *, chain, graph, start_point, end_point,
+    threshold_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+):
     """一个 label 链的端点过渡几何（BUG-ROUTE-007）。
 
     ``chain`` 是该 label 的标签链（source anchor → … → 当前标签）。链上还没有 cruise 段时
@@ -536,7 +604,8 @@ def _endpoint_transition_audit(*, chain, graph, start_point, end_point):
     * ``arrival_heading_change_deg``：``angle(last cruise point -> target anchor,
       target anchor -> exact end)``；
     * ``departure_admissible`` / ``arrival_admissible``：上面两个转角是否落在
-      ``endpoint_transition_admissibility_deg``（45°）之内（不可判定 ⇒ fail-open True）；
+      ``endpoint_transition_admissibility_deg``（显式 planning policy，默认 45°）之内
+      （不可判定 ⇒ fail-open True）；
     * ``endpoint_feasible``：两端都 admissible；
     * ``along_track_source_ok`` / ``along_track_target_ok`` / ``geometry_sanity_ok``：
       connector 轴回退诊断（**只报告**，不再参与剪枝或选优）。
@@ -566,9 +635,11 @@ def _endpoint_transition_audit(*, chain, graph, start_point, end_point):
     )
     departure_admissible = _endpoint_transition_feasible(
         departure_heading_change_deg=departure, arrival_heading_change_deg=None,
+        threshold_deg=threshold_deg,
     )
     arrival_admissible = _endpoint_transition_feasible(
         departure_heading_change_deg=None, arrival_heading_change_deg=arrival,
+        threshold_deg=threshold_deg,
     )
     total = None
     if departure is not None or arrival is not None:
@@ -582,8 +653,8 @@ def _endpoint_transition_audit(*, chain, graph, start_point, end_point):
         "departure_admissible": departure_admissible,
         "arrival_admissible": arrival_admissible,
         "endpoint_feasible": bool(departure_admissible and arrival_admissible),
-        "threshold_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
-        "threshold_provenance": "derived_from_heading_bin_resolution",
+        "threshold_deg": normalize_endpoint_transition_admissibility_deg(threshold_deg),
+        "threshold_provenance": ENDPOINT_TRANSITION_ADMISSIBILITY_SOURCE,
         "along_track_source_ok": source_ok,
         "along_track_target_ok": target_ok,
         "geometry_sanity_ok": geometry_ok,
@@ -899,11 +970,21 @@ class LayeredRiskAwareThetaStarV2:
         allowed = {
             "heading_bin_count", "theta_min_deg", "max_expanded_labels", "d_ref_m",
             "objective_policy", "max_route_risk_density", "search_parameter_provenance",
+            # 显式 planning policy（BUG-ROUTE-007 语义收口）：端点过渡可采纳性门限。
+            # 它**不是** search parameter，也**不**由 heading_bin_count 派生；默认 45.0。
+            "endpoint_transition_admissibility_deg",
         }
         extra = set(supplied) - allowed
         if extra:
             raise ValueError(f"Layered Risk-Aware Theta* V2 不接受参数：{sorted(extra)}")
         self.search_parameters = normalize_theta_v2_search_parameters(supplied)
+        #: 显式 planning policy：端点过渡可采纳性门限（度）。与 ``heading_bin_count`` 解耦，
+        #: 默认 45.0，合法范围 ``(0, 180]``；只作 endpoint feasibility，不进入任何 objective。
+        self.endpoint_transition_admissibility_deg = (
+            normalize_endpoint_transition_admissibility_deg(
+                supplied.get("endpoint_transition_admissibility_deg")
+            )
+        )
         #: The declared provenance of the two search parameters.  The default is the
         #: project's software algorithm baseline; an explicit algorithm selection that
         #: changes either value is reported as ``explicit_algorithm_selection``.
@@ -922,6 +1003,10 @@ class LayeredRiskAwareThetaStarV2:
             "max_expanded_labels": self.search_parameters["max_expanded_labels"],
             "d_ref_m": self.search_parameters["d_ref_m"],
             "search_parameter_provenance": deepcopy(self.search_parameter_provenance),
+            #: 显式 planning policy（不是 search parameter，也不由 heading_bin_count 派生）。
+            "endpoint_transition_admissibility_deg": (
+                self.endpoint_transition_admissibility_deg
+            ),
         }
 
     # ------------------------------------------------------------------ public API
@@ -934,6 +1019,7 @@ class LayeredRiskAwareThetaStarV2:
         objective_policy=None, risk_density_constraint=None, cost_policy=None,
         constraint_field=None, unknown_constraint_policy=None,
         planning_exposure=None, surface_class_provider=None,
+        endpoint_transition_admissibility_deg=None,
     ):
         """Plan one fixed-altitude any-angle Theta* candidate.
 
@@ -942,14 +1028,24 @@ class LayeredRiskAwareThetaStarV2:
         shape, and V2's objective is ``J = 0.8*E_risk + 0.1*C_turn + 0.1*L`` rather than the
         legacy ``Σ λ_domain · mean_index`` soft cost.
 
+        ``endpoint_transition_admissibility_deg`` 是**显式 planning policy 覆盖**（端点过渡
+        可采纳性门限，默认 45.0，合法范围 ``(0, 180]``）：它只作 endpoint feasibility 硬门限，
+        既不进入 0.8/0.1/0.1 objective，也不由 ``heading_bin_count`` 派生。
+
         ``planning_exposure`` / ``surface_class_provider``（BUG-SURFACE-METRIC-001）**只影响
         candidate 上的 ``route_surface_distance`` 报告字段**：前者提供 ``planning_exposure``
-        自己的 terrain-threshold 逐格陆海分类，后者提供项目权威 surface classifier（
-        ``LandMaskSource`` / ``SurfaceFactsProvider``）。它们都不进入搜索、不改变任何代价、
-        权重或可行性。
+        自己的逐格陆海分类（已收口为 canonical surface facts / LandMask provider 优先），
+        后者提供项目权威 surface classifier（``LandMaskSource`` / ``SurfaceFactsProvider``）。
+        它们都不进入搜索、不改变任何代价、权重或可行性。
         """
         grid = grid if isinstance(grid, dict) else {}
         mask = layer_mask if isinstance(layer_mask, dict) else {}
+        # 端点过渡门限：显式调用参数优先，其次 planner policy，最后默认 45.0。
+        endpoint_threshold = normalize_endpoint_transition_admissibility_deg(
+            endpoint_transition_admissibility_deg
+            if endpoint_transition_admissibility_deg is not None
+            else self.endpoint_transition_admissibility_deg
+        )
         objective = normalize_theta_v2_objective_policy(
             objective_policy if objective_policy is not None else self.objective_policy
         )
@@ -972,6 +1068,8 @@ class LayeredRiskAwareThetaStarV2:
             feasibility_policy=feasibility_policy, source_audits=source_audits,
             constraint_field=constraint_field,
             unknown_constraint_policy=unknown_policy,
+            planning_exposure=planning_exposure,
+            endpoint_transition_admissibility_deg=endpoint_threshold,
         )
         communication = communication_readiness(communication_field)
 
@@ -1118,14 +1216,22 @@ class LayeredRiskAwareThetaStarV2:
             heading_bin_count=self.parameters["heading_bin_count"],
             theta_min_deg=self.parameters["theta_min_deg"],
             max_expanded_labels=self.parameters["max_expanded_labels"],
+            endpoint_transition_admissibility_deg=endpoint_threshold,
         )
         statistics.update(search["statistics"])
         statistics["endpoint_anchors"] = search.get("endpoint_anchors")
         statistics["endpoint_anchor_policy"] = ENDPOINT_ANCHOR_SEMANTICS
         # BUG-ROUTE-007：端点过渡几何是**可行性证据 + diagnostics**（绝不进入 cruise turn
-        # cost，也绝不进入核心 J）。
+        # cost，也绝不进入核心 J）。门限来自显式 planning policy（默认 45.0，与
+        # heading_bin_count 解耦）。
         statistics["endpoint_transition"] = deepcopy(search.get("endpoint_transition"))
-        statistics["endpoint_transition_policy"] = ENDPOINT_TRANSITION_SEMANTICS
+        statistics["endpoint_transition_policy"] = {
+            **deepcopy(ENDPOINT_TRANSITION_SEMANTICS),
+            "threshold_deg": endpoint_threshold,
+            "threshold_provenance": endpoint_transition_admissibility_provenance(
+                endpoint_threshold
+            ),
+        }
         statistics["d_ref_m"] = _round(d_ref)
         statistics["risk_unresolved_cell_count"] = len(risk_unresolved)
         # BUG-ROUTE-004 evidence: the ledger the search actually minimised and the ledger the
@@ -1196,7 +1302,8 @@ class LayeredRiskAwareThetaStarV2:
         straight = distance_m(start, end)
         # BUG-SURFACE-METRIC-001：正式 route surface distance。唯一口径是
         # "最终 segment → traversed cells → cell 内长度 → surface classifier"；
-        # planning_exposure 的 terrain-threshold 分类**并列**输出，两者绝不合并。
+        # planning_exposure 自己的陆海分类（canonical surface facts / LandMask 优先，
+        # legacy terrain threshold 仅作回退）**并列**输出，两者绝不合并。
         grid_cells_by_id = {
             str(cell.get("grid_id")): cell for cell in (grid.get("cells") or [])
             if isinstance(cell, dict) and cell.get("grid_id")
@@ -1257,6 +1364,7 @@ class LayeredRiskAwareThetaStarV2:
         cost_policy=None, communication_field=None,
         constraint_field=None, unknown_constraint_policy=None,
         planning_exposure=None, surface_class_provider=None,
+        endpoint_transition_admissibility_deg=None,
     ):
         """Declared dependency fingerprint of one Theta* V2 candidate.
 
@@ -1265,10 +1373,14 @@ class LayeredRiskAwareThetaStarV2:
         consume the legacy domain lambdas, and the communication field is not a planning
         input this round (it has a separate informational fingerprint).
 
-        ``planning_exposure`` / ``surface_class_provider``（BUG-SURFACE-METRIC-001）同样
-        **不进入**fingerprint：它们只产生 candidate 上只读的 ``route_surface_distance``
-        报告字段，既不进入搜索、也不改变任何代价、权重或可行性，因此换一个 surface 数据源
-        不应让规划结果指纹变化。
+        ``surface_class_provider`` 同样**不进入**fingerprint：它只描述 land-mask 数据源本身，
+        既不进入搜索、也不改变任何代价。但 ``planning_exposure`` 的**输入事实语义指纹**
+        （含 ``surface_class_source`` 与陆海计数）是 candidate 报告字段
+        ``route_surface_distance`` 的输入语义，因此它进入 fingerprint：surface 事实来源收口后
+        旧 candidate 必须 stale，绝不静默沿用旧口径的报告字段。
+
+        ``endpoint_transition_admissibility_deg`` 是显式 planning policy，进入 policy
+        fingerprint（改它会让旧 candidate stale），但**不进入** 0.8/0.1/0.1 objective。
         """
         route = scenario_route if isinstance(scenario_route, dict) else {}
         grid_cells = (grid or {}).get("cells") or []
@@ -1334,6 +1446,22 @@ class LayeredRiskAwareThetaStarV2:
             "shelter_field_fingerprint": population_shelter_fingerprint(population_attribute),
             "shelter_policy_fingerprint": shelter_policy_fingerprint(policy),
             "objective_policy": objective_policy_fingerprint(objective_policy),
+            # 显式 planning policy：端点过渡可采纳性门限（与 heading_bin_count 解耦）。
+            # 它只作 endpoint feasibility 硬门限，不进入 0.8/0.1/0.1 objective；改它会让上一轮
+            # candidate 的可行性证据失效，因此必须进入 policy fingerprint。
+            "endpoint_transition_admissibility": endpoint_transition_admissibility_provenance(
+                normalize_endpoint_transition_admissibility_deg(
+                    endpoint_transition_admissibility_deg
+                    if endpoint_transition_admissibility_deg is not None
+                    else self.endpoint_transition_admissibility_deg
+                )
+            ),
+            # planning_exposure 的**输入事实语义**（含 surface_class_source 与陆海计数）：
+            # candidate 的 ``route_surface_distance`` 报告字段直接由它派生，因此 surface 事实
+            # 来源收口后旧 candidate 必须 stale，绝不静默沿用旧口径。
+            "planning_exposure_semantics": planning_exposure_fingerprint(
+                planning_exposure
+            ),
             # The effective search parameters *and* their declared provenance: an explicit
             # algorithm selection that rewrites heading_bin_count / theta_min_deg changes
             # the candidate fingerprint instead of silently keeping the software baseline.
@@ -1377,6 +1505,10 @@ class LayeredRiskAwareThetaStarV2:
                 "theta_parameters": components["theta_parameters"],
                 "risk_density_constraint": components["risk_density_constraint"],
                 "regulatory_constraints": components["regulatory_constraints"],
+                "endpoint_transition_admissibility": components[
+                    "endpoint_transition_admissibility"
+                ],
+                "planning_exposure_semantics": components["planning_exposure_semantics"],
             }, prefix="layeredpolicyv2-"),
             # Informational only: the communication field is not a planning input in this
             # round, so it must never influence the optimization fingerprint.
@@ -1557,7 +1689,7 @@ class LayeredRiskAwareThetaStarV2:
             "turn_statistics": turn_statistics or _empty_turn_statistics(),
             "los_segments": list(los_segments or []),
             # BUG-SURFACE-METRIC-001：正式 route surface distance（landmask 口径）
-            # 与 planning_exposure 自己的 terrain-threshold 口径并列，绝不合并成单一 ratio。
+            # 与 planning_exposure 自己的陆海分类口径并列，绝不合并成单一 ratio。
             "route_surface_distance": deepcopy(
                 route_surface_distance
                 or {
@@ -1877,6 +2009,7 @@ def _constraint_bbox(item):
 def _theta_star(
     *, graph, index_map, endpoints, gate, altitude, regulatory,
     risk_indices, weights, d_ref, heading_bin_count, theta_min_deg, max_expanded_labels,
+    endpoint_transition_admissibility_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
 ):
     """Heading-aware multi-label Theta* with parent LOS rewiring and virtual OD endpoints.
 
@@ -1920,6 +2053,11 @@ def _theta_star(
     weight_distance = float(weights["distance"])
     weight_risk = float(weights["risk"])
     weight_turn = float(weights["turn"])
+    # 端点过渡门限：本搜索用**同一个**显式 planning policy 值判定 departure / arrival
+    # 的 admissible，并在结果里原样上报（与 heading_bin_count 无关）。
+    endpoint_threshold = normalize_endpoint_transition_admissibility_deg(
+        endpoint_transition_admissibility_deg
+    )
     statistics = {
         "expanded_labels": 0, "generated_labels": 0, "los_checks": 0, "los_shortcuts": 0,
         "rejected_terrain": 0,
@@ -2151,12 +2289,13 @@ def _theta_star(
             transition = _endpoint_transition_audit(
                 chain=_label_chain_keys(current_key, incoming),
                 graph=graph, start_point=start_point, end_point=end_point,
+                threshold_deg=endpoint_threshold,
             )
             transition_cost = _endpoint_transition_cost(
                 transition, d_ref=d_ref, theta_min_deg=theta_min_deg,
             )
             feasibility = _endpoint_feasibility_view(
-                transition, threshold_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+                transition, threshold_deg=endpoint_threshold,
             )
             goal_candidates.append({
                 "grid_id": current_grid, "incoming_heading_bin": current_bin,
@@ -2242,6 +2381,7 @@ def _theta_star(
             is_departure_transition = current_key in start_slot_keys
             if is_departure_transition and not _admissible_transition(
                 departure_bearing=current_bearing, arrival_bearing=direct_bearing,
+                threshold_deg=endpoint_threshold,
             ):
                 statistics["rejected_endpoint_transition"] = (
                     statistics.get("rejected_endpoint_transition", 0) + 1
@@ -2264,6 +2404,7 @@ def _theta_star(
                 is_connector_turn=is_departure_transition,
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
+                endpoint_transition_admissibility_deg=endpoint_threshold,
             )
             _relax(
                 grid_id=neighbour,
@@ -2306,6 +2447,7 @@ def _theta_star(
             is_departure_transition = grandparent_key in start_slot_keys
             if is_departure_transition and not _admissible_transition(
                 departure_bearing=grandparent_bearing, arrival_bearing=shortcut_bearing,
+                threshold_deg=endpoint_threshold,
             ):
                 statistics["rejected_endpoint_transition"] = (
                     statistics.get("rejected_endpoint_transition", 0) + 1
@@ -2324,6 +2466,7 @@ def _theta_star(
                 is_connector_turn=is_departure_transition,
                 weights=(weight_risk, weight_turn, weight_distance), d_ref=d_ref,
                 theta_min_deg=theta_min_deg,
+                endpoint_transition_admissibility_deg=endpoint_threshold,
             )
             # ``grandparent_key`` becomes the new label's parent: the shortcut *replaces*
             # the two-segment detour through ``current_key`` with the single straight
@@ -2414,6 +2557,7 @@ def _theta_star(
             ),
             weights=(weights["risk"], weights["turn"], weights["distance"]),
             d_ref=d_ref, theta_min_deg=theta_min_deg, segment_index=position,
+            endpoint_transition_admissibility_deg=endpoint_threshold,
         )
         segment["incoming_heading_deg"] = (
             None if previous_heading is None
@@ -2451,9 +2595,9 @@ def _theta_star(
             "arrival_admissible": (
                 best_goal.get("endpoint_feasibility") or {}
             ).get("arrival_admissible"),
-            "endpoint_transition_admissibility_deg": ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+            "endpoint_transition_admissibility_deg": endpoint_threshold,
             "endpoint_transition_admissibility_provenance": (
-                "derived_from_heading_bin_resolution"
+                endpoint_transition_admissibility_provenance(endpoint_threshold)
             ),
             "endpoint_transition_cost_in_core_objective": False,
             "selection_semantics": ENDPOINT_TRANSITION_SEMANTICS["selection_semantics"],
@@ -2784,6 +2928,7 @@ def _relax(
 def _extend_ledger(
     base, *, risk_exposure, distance, previous_heading, new_heading, weights, d_ref,
     theta_min_deg, is_connector_turn=False, segment_index=None,
+    endpoint_transition_admissibility_deg=None,
 ):
     """Extend a label's objective ledger with one straight sub-segment.
 
@@ -2818,12 +2963,16 @@ def _extend_ledger(
     if previous_heading is not None and new_heading is not None:
         delta = abs(normalize_heading_delta(previous_heading, new_heading))
         if is_connector_turn and ledger["departure_heading_change_deg"] is None:
-            # 出发过渡：几何事实先记录（无论是否超过 theta_min），可采纳性按既有
-            # ``endpoint_transition_admissibility_deg``（= 一个航向离散单元）判定；代价按与
-            # cruise turn **完全相同**的公式计算，但只写进独立的 endpoint_transition_cost。
+            # 出发过渡：几何事实先记录（无论是否超过 theta_min），可采纳性按显式 planning
+            # policy ``endpoint_transition_admissibility_deg``（默认 45°，与 heading_bin_count
+            # 解耦）判定；代价按与 cruise turn **完全相同**的公式计算，但只写进独立的
+            # endpoint_transition_cost。
             ledger["departure_heading_change_deg"] = _round(delta)
             ledger["departure_admissible"] = _endpoint_transition_feasible(
                 departure_heading_change_deg=delta, arrival_heading_change_deg=None,
+                threshold_deg=normalize_endpoint_transition_admissibility_deg(
+                    endpoint_transition_admissibility_deg
+                ),
             )
             if delta > float(theta_min_deg) and d_ref:
                 ledger["endpoint_transition_cost"] = (
@@ -3051,8 +3200,11 @@ def _route_surface_distances(
 
     * ``landmask``：项目权威 surface classifier（``LandMaskSource`` /
       ``SurfaceFactsProvider``）对每个被穿越 cell 的**格心代表点**独立分类；
-    * ``planning_exposure_threshold``：``planning_exposure`` 自己的 terrain-threshold
-      陆海分类（``land_status``），本轮**不改**它的数学，只把它作为独立口径并列报告。
+    * ``planning_exposure_threshold``：``planning_exposure`` 自己的陆海分类
+      （``land_status``）。收口后它**优先**消费 canonical surface facts / LandMask provider
+      （``land_status`` 用 canonical 的 ``land`` / ``sea`` 词汇），只有项目没有 canonical
+      来源时才回退 legacy terrain threshold（``land_status`` 为 ``land`` / ``water``）。
+      它仍是独立口径，与 ``landmask`` 并列报告、绝不合并。
 
     两者都按"segment → traversed cells → cell 内长度"聚合，因此各自四项之和都 ≈
     ``candidate.distance_m``，并且可以直接给出 ``mismatch_cell_count`` /
@@ -3113,7 +3265,23 @@ def _route_surface_distances(
         },
         "planning_exposure_threshold": {
             **exposure,
-            "source": "planning_exposure_terrain_threshold_land_status",
+            "source": (
+                "planning_exposure_land_status"
+                if (planning_exposure_policy or {}).get("surface_class_source")
+                == "canonical_land_mask"
+                else "planning_exposure_terrain_threshold_land_status"
+            ),
+            "surface_class_source": (
+                (planning_exposure_policy or {}).get("surface_class_source")
+            ),
+            "surface_class_source_semantics": (
+                (planning_exposure_policy or {}).get("surface_class_source_semantics")
+            ),
+            "legacy_terrain_threshold_fallback_used": (
+                (planning_exposure_policy or {}).get(
+                    "legacy_terrain_threshold_fallback_used"
+                )
+            ),
             "land_min_surface_elevation_m": (
                 (planning_exposure_policy or {}).get("land_min_surface_elevation_m")
             ),
@@ -3184,10 +3352,16 @@ def _objective_metrics(search, weights, d_ref, theta_min_deg):
 
 __all__ = [
     "ALGORITHM_ID", "ALGORITHM_VERSION", "ENDPOINT_ANCHOR_SEMANTICS",
-    "ENDPOINT_TRANSITION_ADMISSIBILITY_DEG", "ENDPOINT_TRANSITION_SEMANTICS",
+    "ENDPOINT_TRANSITION_ADMISSIBILITY_DEG",
+    "ENDPOINT_TRANSITION_ADMISSIBILITY_DEG_RANGE",
+    "ENDPOINT_TRANSITION_ADMISSIBILITY_SEMANTICS",
+    "ENDPOINT_TRANSITION_ADMISSIBILITY_SOURCE",
+    "ENDPOINT_TRANSITION_SEMANTICS",
     "GridIndexMap", "LOS_REJECTION_REASONS",
     "PLANNING_OBJECTIVE_PROVENANCE", "POPULATION_FACTOR_ID", "SEARCH_SEMANTICS",
-    "LayeredRiskAwareThetaStarV2", "derive_d_ref_m", "grid_bearing_deg",
+    "LayeredRiskAwareThetaStarV2", "derive_d_ref_m",
+    "endpoint_transition_admissibility_provenance", "grid_bearing_deg",
     "heading_bin_center_deg", "heading_bin_for_bearing", "line_of_sight",
+    "normalize_endpoint_transition_admissibility_deg",
     "normalize_heading_delta",
 ]

@@ -361,6 +361,8 @@ export function layeredThetaV2Model(flow){
   const searchReadiness=theta.search_parameters||{};
   const searchProvenance=searchReadiness.provenance||{};
   const searchSource=text(searchProvenance.source);
+  // 端点过渡可采纳性门限：**显式 planning policy**，与 heading_bin_count 解耦。
+  const endpointTransition=searchReadiness.endpoint_transition||{};
   const searchParameterModel={
     applicable:searchReadiness.applicable!==false,
     reason:text(searchReadiness.reason),
@@ -370,6 +372,12 @@ export function layeredThetaV2Model(flow){
       ?Number(searchReadiness.max_expanded_labels):null,
     dRefM:number(searchReadiness.d_ref_m),
     dRefProvenance:text(searchReadiness.d_ref_provenance),
+    endpointTransitionDeg:number(endpointTransition.value_deg),
+    endpointTransitionSource:text(endpointTransition.source),
+    endpointTransitionSemantics:text(endpointTransition.semantics),
+    endpointTransitionDefaultDeg:number(endpointTransition.default_value_deg),
+    endpointTransitionIndependent:endpointTransition.independent_of_heading_bin_count===true,
+    endpointTransitionEntersObjective:endpointTransition.enters_planning_objective_weights===true,
     parameterOrigin:text(searchReadiness.parameter_origin||searchProvenance.parameter_origin),
     engineeringConfirmed:searchReadiness.engineering_confirmed===true,
     softwareAlgorithmBaseline:searchReadiness.software_algorithm_baseline===true,
@@ -881,6 +889,11 @@ function searchParameterSection(model){
     +row('heading_bin_count',short(p.headingBinCount)+'（生效值）')
     +row('theta_min_deg',short(p.thetaMinDeg)+'（生效值 · 规划转向平滑度代理阈值）')
     +row('max_expanded_labels',p.maxExpandedLabels===null?'null（不设上限）':short(p.maxExpandedLabels))
+    +row('endpoint_transition_admissibility_deg',
+      (p.endpointTransitionDeg===null?'—':short(p.endpointTransitionDeg))
+      +'（生效值 · 显式 planning policy · 与 heading_bin_count 解耦）')
+    +row('endpoint threshold source / semantics',
+      short(p.endpointTransitionSource)+' · '+short(p.endpointTransitionSemantics))
     +row('parameter_origin',short(p.parameterOrigin))
     +row('engineering_confirmed',p.engineeringConfirmed?'true':'false')
     +row('search parameter fingerprint',short(p.fingerprint))
@@ -900,6 +913,10 @@ function searchParameterSection(model){
     +'<label>max_expanded_labels（空 = null，不设上限）'
     +'<input class="panel-input" id="thetaV2MaxExpandedLabels" type="number" step="1" '
     +'value="'+inputValue(p.maxExpandedLabels)+'"></label>'
+    +'<label>endpoint_transition_admissibility_deg（0 &lt; x ≤ 180；空 = 默认 45，'
+    +'与 heading_bin_count 解耦）'
+    +'<input class="panel-input" id="thetaV2EndpointTransitionDeg" type="number" step="any" min="0" '
+    +'max="180" value="'+inputValue(p.endpointTransitionDeg)+'"></label>'
     +'<label>source（工程来源，可空）'
     +'<input class="panel-input" id="thetaV2SearchParamSource" value="'
     +escapeHtml(p.sourceInput)+'" placeholder="例如 engineering_review"></label>'
@@ -918,7 +935,12 @@ function searchParameterSection(model){
     +'<code>explicit_algorithm_selection</code>；除非同时提供明确 evidence 并勾选 confirmed 与 '
     +'engineering_confirmed，后端仍保持 engineering_confirmed=false。'
     +'heading_bin_count / theta_min_deg / parameter_origin / engineering_confirmed 全部来自后端 readiness，'
-    +'前端不推导结论。</div>');
+    +'前端不推导结论。'
+    +'<b>endpoint_transition_admissibility_deg</b> 是显式 planning policy（默认 45.0，合法范围 '
+    +'(0, 180]）：source=<code>explicit_planning_policy</code>、'
+    +'semantics=<code>planning_geometry_transition_admissibility_not_flight_dynamics_limit</code>。'
+    +'它只作端点可行性门限，不进入 0.8/0.1/0.1 objective，也<b>不</b>由 heading_bin_count 派生'
+    +'（改 heading_bin_count 不会改变它）。</div>');
 }
 
 function requestSection(model){
@@ -1392,6 +1414,9 @@ export function thetaV2RiskDensityPayload(c,current){
  * baseline 补默认值，因此前端必须在 bind 中先拦截空值）。``max_expanded_labels`` 空即 null
  * （不设上限）。provenance 里 ``engineering_confirmed`` 只有在同时提供 evidence 且勾选
  * confirmed 时才可能为 true；后端仍是最终裁决者。
+ *
+ * ``endpoint_transition_admissibility_deg`` 是**显式 planning policy**（不是 search
+ * parameter）：留空即**不提交该键**，后端保持默认 45.0；填了才显式覆盖（合法范围 (0, 180]）。
  */
 export function thetaV2SearchParametersPayload(c,current){
   const model=current||{};
@@ -1399,6 +1424,9 @@ export function thetaV2SearchParametersPayload(c,current){
   const thetaMinDeg=numberFromField(c.$('thetaV2ThetaMinDeg'));
   const maxRaw=fieldValue(c.$('thetaV2MaxExpandedLabels')).trim();
   const maxExpandedLabels=maxRaw===''?null:numberFromField(c.$('thetaV2MaxExpandedLabels'));
+  const endpointRaw=fieldValue(c.$('thetaV2EndpointTransitionDeg')).trim();
+  const endpointTransitionDeg=endpointRaw===''
+    ?null:numberFromField(c.$('thetaV2EndpointTransitionDeg'));
   const source=fieldValue(c.$('thetaV2SearchParamSource')).trim();
   const evidenceReference=fieldValue(c.$('thetaV2SearchParamEvidence')).trim();
   const confirmed=checkedFrom(c.$('thetaV2SearchParamConfirmed'));
@@ -1421,6 +1449,9 @@ export function thetaV2SearchParametersPayload(c,current){
       theta_min_deg:thetaMinDeg,
       max_expanded_labels:maxExpandedLabels,
       search_parameter_provenance:provenance,
+      // 留空 = 不声明该 planning policy：后端保持默认 45.0，绝不由前端猜一个值。
+      ...(endpointTransitionDeg===null
+        ?{}:{endpoint_transition_admissibility_deg:endpointTransitionDeg}),
     },
   };
 }
@@ -1465,6 +1496,13 @@ export function bindLayeredThetaV2(c){
       if(parameters.heading_bin_count===null||!Number.isFinite(parameters.heading_bin_count)
         ||parameters.theta_min_deg===null||!Number.isFinite(parameters.theta_min_deg)){
         c.panelError('heading_bin_count 与 theta_min_deg 必须是明确数值：前端不会用软件 baseline 静默替换空值。');
+        return;
+      }
+      // 端点过渡门限是显式 planning policy：给了值就必须落在 (0, 180]，前端不静默夹取。
+      const endpointTransition=parameters.endpoint_transition_admissibility_deg;
+      if(endpointTransition!==undefined
+        &&(!Number.isFinite(endpointTransition)||endpointTransition<=0||endpointTransition>180)){
+        c.panelError('endpoint_transition_admissibility_deg 必须位于 (0, 180]：前端不会静默夹取该 planning policy。');
         return;
       }
       return c.resourceAction('/api/algorithms/select',payload);
