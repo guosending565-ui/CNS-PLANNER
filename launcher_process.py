@@ -18,6 +18,9 @@ Job 内的整棵进程树被内核终止，8765 必然释放。
 约束（与本 BUG 的验收条件一致）：
 * 只管理本启动器自己创建的进程：一切动作都经由 ``subprocess.Popen`` 返回的对象
   和该进程被放入的 Job，绝不按进程名扫描或批量结束 python 进程；
+* BUG-STARTUP-003 追加的唯一例外是 ``terminate_verified_process()``：当
+  ``/api/health`` 明确指认"同仓库旧版本后端"时，只结束那**一个**已校验的 pid，
+  仍然不按进程名匹配、不批量结束、不触碰身份不明的占用者；
 * 不新增第三方依赖：只用标准库 ``ctypes`` 调用 kernel32；
 * 非 Windows 平台退回 POSIX 进程组方案，语义相同（只结束自己创建的会话）。
 """
@@ -42,9 +45,15 @@ _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
+_SYNCHRONIZE = 0x00100000
 _THREAD_SUSPEND_RESUME = 0x0002
 _TH32CS_SNAPTHREAD = 0x00000004
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+# WaitForSingleObject 返回值
+_WAIT_OBJECT_0 = 0x00000000
+# Windows 错误码：OpenProcess 对一个已不存在的 pid 会返回"参数错误"。
+_ERROR_INVALID_PARAMETER = 87
 
 
 def _debug(message):
@@ -143,6 +152,10 @@ def _kernel32():
         ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
         ctypes.POINTER(ctypes.c_uint32),
     ]
+    library.TerminateProcess.restype = ctypes.c_int
+    library.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    library.WaitForSingleObject.restype = ctypes.c_uint32
+    library.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     return library
 
 
@@ -364,6 +377,90 @@ class ProcessTree:
     def __exit__(self, exc_type, exc, traceback):
         self.close()
         return False
+
+
+def terminate_verified_process(pid, timeout=5.0):
+    """结束**唯一一个已被身份校验过的 pid**（BUG-STARTUP-003）。
+
+    这是"自动替换本仓库旧版本后端"的底层动作，它被刻意限制到最小能力：
+
+    * 身份校验不在这里做，也不由进程名推断；调用方必须先拿到 ``/api/health`` 的
+      明确结论（``service == "cns-map"``、``ready is True``、``project_root`` 就是
+      当前仓库、``pid`` 是有效正整数），只有满足全部条件才允许调用本函数；
+    * 本函数只对传入的这一个 pid 动手：不按进程名匹配，不枚举 ``python.exe`` /
+      ``cmd.exe``，不使用 ``taskkill /IM``，也从不触碰进程树之外的任何进程；
+    * 永不结束当前进程自己。
+
+    返回值：``True`` 表示该 pid 现在已经不存在（被结束，或调用前就已经退出）；
+    ``False`` 表示无法确认它已退出（权限不足、终止调用失败或等待超时）。
+    """
+    if isinstance(pid, bool):
+        return False
+    try:
+        target = int(str(pid).strip())
+    except (TypeError, ValueError):
+        _debug(f"拒绝结束无效 pid：{pid!r}")
+        return False
+    if target <= 0:
+        _debug(f"拒绝结束非正 pid：{target}")
+        return False
+    if target == os.getpid():
+        _debug("拒绝结束当前启动器进程自身")
+        return False
+    if IS_WINDOWS:
+        return _terminate_verified_windows(target, timeout)
+    return _terminate_verified_posix(target, timeout)
+
+
+def _terminate_verified_windows(pid, timeout):
+    """Windows：OpenProcess + TerminateProcess + 等待退出，只针对单个 pid。"""
+    library = _kernel32()
+    handle = library.OpenProcess(_PROCESS_TERMINATE | _SYNCHRONIZE, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        # 87（ERROR_INVALID_PARAMETER）= 该 pid 已不存在，目的已经达成。
+        if error == _ERROR_INVALID_PARAMETER:
+            return True
+        _debug(f"OpenProcess({pid}) 失败：错误码 {error}")
+        return False
+    try:
+        if not library.TerminateProcess(ctypes.c_void_p(handle), 1):
+            _debug(f"TerminateProcess({pid}) 失败：错误码 {ctypes.get_last_error()}")
+            return False
+        waited = library.WaitForSingleObject(
+            ctypes.c_void_p(handle), int(max(float(timeout), 0.0) * 1000),
+        )
+        return waited == _WAIT_OBJECT_0
+    finally:
+        library.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _terminate_verified_posix(pid, timeout):
+    """POSIX：SIGTERM 单个 pid，然后轮询确认它真的退出了。"""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError as exc:
+        _debug(f"kill({pid}) 失败：{exc}")
+        return False
+    deadline = time.monotonic() + max(float(timeout), 0.0)
+    while True:
+        if not _posix_process_alive(pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _posix_process_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def release_job_handle(job):
