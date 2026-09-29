@@ -59,10 +59,12 @@ def _install_pytest_stub():
 
 _install_pytest_stub()
 
-#: 只跑这三条：其余制图测试在普通解释器里已经覆盖。
+#: 只跑这几条：其余制图测试在普通解释器里已经覆盖。
 TARGETS = (
     "test_map_figures_review_fixes:test_mapdata_startup_survives_missing_cartographic_land",
     "test_map_figures_review_fixes:test_land_polygon_holes_reach_the_renderer_geometry",
+    "test_map_figures_review_fixes:test_polygon_with_hole_source_reaches_renderer_interior_rings",
+    "test_map_figures_review_fixes:test_damaged_and_non_polygon_cartographic_land_are_unavailable",
     "test_map_figures_review_fixes:test_300dpi_smoke_in_real_qgis_lifecycle",
 )
 
@@ -70,10 +72,15 @@ TARGETS = (
 def main():
     import importlib
     import shutil
+    from uuid import uuid4
 
     module = importlib.import_module("test_map_figures_review_fixes")
     # 临时目录放在工作区内的 ``projects/`` 下：受限沙箱下 QGIS 解释器可能无法写系统
     # 临时目录或 ``_diag``，而项目目录是它一直在读写的区域。
+    #
+    # 注意：这里**不用** ``tempfile.mkdtemp`` —— 它会 chmod 0700，抹掉父目录继承下来的
+    # ACL，于是在受限沙箱下"目录建得出来、文件写不进去"。用普通 ``mkdir`` 创建唯一子目录
+    # 即可继承父目录权限。
     base = ROOT / "projects" / "tmp"
     base.mkdir(parents=True, exist_ok=True)
     passed, failed = [], []
@@ -83,7 +90,8 @@ def main():
         if function is None:
             failed.append((function_name, "测试函数不存在"))
             continue
-        directory = tempfile.mkdtemp(prefix="mf-qgis-", dir=str(base))
+        directory = base / ("mf-qgis-" + uuid4().hex[:12])
+        directory.mkdir(parents=True, exist_ok=True)
         tmp_path = Path(directory)
         try:
             if function.__code__.co_argcount == 0:

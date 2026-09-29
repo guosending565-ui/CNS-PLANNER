@@ -50,12 +50,29 @@ DEFAULT_METRIC_CRS = "EPSG:32651"
 MAX_LABEL_CHARS = 14
 #: 受控产物目录（相对 active project 目录，与既有 reports/ 同级）。
 MAP_FIGURE_DIRECTORY = "artifacts/map_figures"
+#: **route-first** 归档子目录：``artifacts/map_figures/routes/<route>/<template>/<figure>/``。
+#:
+#: 同一条航路以后会有多张专题图（route_overview_v1 / route_detail_v1 /
+#: communication_layout_v1 / navigation_layout_v1 / surveillance_layout_v1 /
+#: cns_combined_v1），按航路归档才便于人工查找与后续"按航路浏览"的界面。
+#: 旧的平铺布局 ``artifacts/map_figures/<figure_id>/`` **只读兼容**：已有历史产物
+#: 原地保留，不自动搬迁、不删除；新产物一律写入 route-first 结构。
+MAP_FIGURE_ROUTES_DIRECTORY = "routes"
 #: 图件索引文件名（位于受控目录内）。
 #:
 #: 专题图记录**不进入 ProjectState**：ProjectState 的 ``revision`` 是业务语义的乐观锁，
 #: 而"渲染了一张专题图"不改变任何业务事实。因此记录写在受控目录的索引文件里，
 #: ``session.save()`` 在这条链路上一次都不会被调用（业务 revision 因此完全不变）。
 MAP_FIGURE_INDEX_NAME = "index.json"
+#: 记录里"由产物本身决定"的固定审计字段：metadata.json 与 index.json 必须逐字段一致。
+MAP_FIGURE_AUDIT_FIELDS = (
+    "figure_id", "template_id", "template_version", "route_id", "format", "dpi",
+    "generated_at", "project_revision", "spec_fingerprint", "image_bytes",
+    "image_sha256", "relative_path", "spec_relative_path", "record_relative_path",
+    "artifact_ref",
+)
+#: index.json 额外允许存在的**动态投影**字段（不写盘、只读计算）。
+MAP_FIGURE_PROJECTION_FIELDS = ("current_applicability",)
 #: state 中登记专题图记录的容器键。
 #:
 #: **只读兼容**：早期版本把记录写进这个容器（并 ``session.save()``，因此会推进 revision）。
@@ -73,6 +90,12 @@ MAX_FIGURE_PIXELS = 40_000_000
 MIN_EXPORT_DPI = 72.0
 MAX_EXPORT_DPI = 600.0
 _FIGURE_ID_PATTERN = re.compile(r"^MF-[0-9a-f]{32}$")
+#: 模板 id 白名单：route-first 目录的第二层目录名只能来自这个字符集。
+_TEMPLATE_ID_PATTERN = re.compile(r"^[0-9a-z_]{1,64}$")
+#: 航路 id 里不允许出现在目录名中的字符（其余一律替换为 ``_``）。
+_UNSAFE_ROUTE_CHARS = re.compile(r"[^0-9A-Za-z_\-]+")
+#: 清洗后可读前缀的最大长度（后面还会拼接一个稳定摘要，保证不碰撞）。
+MAX_ROUTE_DIRECTORY_PREFIX = 48
 
 
 class MapFigureError(Exception):
@@ -354,8 +377,21 @@ def _supports_subset(layer):
     return False
 
 
-def _geometry_to_wgs84_rings(geometry, layer):
-    """QGIS 几何（任意 CRS）→ WGS84 多边形环列表。"""
+def _geometry_to_wgs84_polygons(geometry, layer):
+    """QGIS 几何（任意 CRS）→ WGS84 **结构化多边形**列表。
+
+    真实结构逐层保留，绝不平坦化：
+
+        [{"exterior": [[lon, lat], ...], "holes": [[[lon, lat], ...], ...]}, ...]
+
+    * MultiPolygon 的每个 part 都是一个**独立多边形**（不合并、不丢 part）；
+    * Polygon 的第一个环是外环，其余是**内环（洞）**；内环绝不作为独立陆地多边形
+      出现在结果里 —— 历史 bug 正是把 exterior 与 holes 拍平成多个平级 ring，
+      于是湖面 / 内湾被当成"独立陆地"填上陆色。
+
+    本函数是制图几何链的**唯一**入口：source reader → materialize → FigureSpec →
+    renderer 全程传递同一个结构，洞只在渲染器里被重建为 QGIS 内环。
+    """
 
     if geometry is None or geometry.isEmpty():
         return []
@@ -370,13 +406,35 @@ def _geometry_to_wgs84_rings(geometry, layer):
         if geometry is None or geometry.isEmpty():
             return []
     parts = geometry.asMultiPolygon() if geometry.isMultipart() else [geometry.asPolygon()]
-    rings = []
+    polygons = []
     for part in parts:
-        for ring in part or []:
-            points = [[float(point.x()), float(point.y())] for point in ring]
-            if len(points) >= 4:
-                rings.append(points)
-    return rings
+        rings = [ring for ring in (part or []) if ring]
+        if not rings:
+            continue
+        exterior = _ring_points(rings[0])
+        if len(exterior) < 4:
+            continue
+        holes = []
+        for ring in rings[1:]:
+            hole = _ring_points(ring)
+            if len(hole) >= 4:
+                holes.append(hole)
+        polygons.append({"exterior": exterior, "holes": holes})
+    return polygons
+
+
+def _ring_points(ring):
+    return [[float(point.x()), float(point.y())] for point in ring]
+
+
+def _polygon_rings(polygons):
+    """结构化多边形 → 平级外环列表（只用于确实不区分内环的场合）。
+
+    **不要**用它构建陆地/海域：那会把内环丢掉。它只服务于"以区域集合表达、不需要
+    洞语义"的图层（如空域格网），并且调用点必须明说这一点。
+    """
+
+    return [item["exterior"] for item in polygons or [] if item.get("exterior")]
 
 
 def _transformed(geometry, transform):
@@ -388,7 +446,11 @@ def _transformed(geometry, transform):
 
 
 def _read_polygons(path, layer_name, viewport, *, max_features=4000):
-    """按视图范围读取 Polygon/MultiPolygon → ``[[[lon, lat], ...], ...]``。"""
+    """按视图范围读取 Polygon/MultiPolygon → **结构化**多边形列表。
+
+    返回 ``([{"exterior": [...], "holes": [[...], ...]}, ...], reason)``：
+    外环与内环（洞）从数据源开始就被分开保存，MultiPolygon 的 part 也各自独立。
+    """
 
     from qgis.core import QgsVectorLayer
 
@@ -409,7 +471,7 @@ def _read_polygons(path, layer_name, viewport, *, max_features=4000):
             continue
         if not geometry.boundingBox().intersects(viewport):
             continue
-        polygons.extend(_geometry_to_wgs84_rings(geometry, layer))
+        polygons.extend(_geometry_to_wgs84_polygons(geometry, layer))
         if len(polygons) >= max_features:
             break
     if not polygons:
@@ -424,6 +486,8 @@ def _land_polygons(ctx, viewport):
     :func:`_cartographic_land_polygons`）：这份数据是省域行政边界，在舟山群岛
     （尤其嵊泗列岛）局部残缺，直接当成陆地底图会制造"站址位于海上"的假象。
     它的**业务语义完全不变**：surface classification 仍然只消费它。
+
+    返回结构化多边形（``exterior`` + ``holes``），与制图陆地面同一条几何链。
     """
 
     from ..gis.qgis_project_layers import resolve_vector_layer_source
@@ -485,7 +549,16 @@ def _cartographic_land_metadata_contract(metadata):
 
 
 def _cartographic_land_state(ctx):
-    """制图专用的陆海表达数据源状态（**不是**业务 land_mask）。"""
+    """制图专用的陆海表达数据源状态（**不是**业务 land_mask）。
+
+    可用性的判定是**严格**的（code review 修复项）：文件存在还不够，必须
+
+        ``inspection["status"] == "passed"`` **且** ``inspection["is_polygon"] is True``
+
+    才允许报告 ``SOURCE_AVAILABLE``。"文件在、但读不出来 / 不是矢量 / 不是面 / CRS 或
+    图层异常"一律是 ``SOURCE_UNAVAILABLE`` + 自省给出的中文原因，绝不降格成
+    "当前范围内没有面要素"（后者会让"数据坏了"看起来像"这里本来就没有陆地"）。
+    """
 
     base = {
         "role": "cartographic_land",
@@ -495,6 +568,7 @@ def _cartographic_land_state(ctx):
         "semantics": "cartographic_presentation_only_not_surface_classification",
         "not_replacing": "canonical land_mask (business surface classification unchanged)",
         "is_business_surface_evidence": False,
+        "availability_rule": "inspection.status == passed AND inspection.is_polygon is True",
     }
     path = str((ctx.paths or {}).get("cartographic_land") or "")
     if not path:
@@ -524,41 +598,66 @@ def _cartographic_land_state(ctx):
         contract.get("not_replacing")
         or "canonical land_mask (business surface classification unchanged)"
     )
+    passed = str((inspection or {}).get("status") or "") == "passed"
+    is_polygon = (inspection or {}).get("is_polygon") is True
+    if not passed or not is_polygon:
+        reason = str((inspection or {}).get("reason") or "").strip() or (
+            "制图陆地面自省未通过（必须是通过自省的面矢量数据集："
+            f"status={((inspection or {}).get('status'))}，"
+            f"is_polygon={((inspection or {}).get('is_polygon'))}）"
+        )
+        detail["unavailable_reason"] = reason
+        return SOURCE_UNAVAILABLE, reason, detail
     return SOURCE_AVAILABLE, "", detail
 
 
 def _read_geojson_polygons(path, viewport, *, max_features=4000):
-    """读取制图陆地面（GeoPackage / Shapefile / GeoJSON）→ 视图范围内的多边形环。
+    """读取制图陆地面（GeoPackage / Shapefile / GeoJSON）→ 视图范围内的**结构化**多边形。
 
     读取沿用与建筑、陆域掩膜相同的 OGR 路径（逐要素 bbox 过滤），因此覆盖舟山全域的
-    制图陆地面（637 个多边形）不会把整份几何塞进 FigureSpec。
+    制图陆地面（637 个多边形）不会把整份几何塞进 FigureSpec。每个多边形都保留自己的
+    外环与内环（洞），MultiPolygon 的 part 也彼此独立。
     """
 
     from ..gis.qgis_project_layers import resolve_vector_layer_source
 
     resolved = resolve_vector_layer_source(path, role="cartographic_land")
     if not resolved.get("ok"):
-        return [], [], resolved.get("reason") or "制图陆地面无法解析成可读取的图层"
-    rings, reason = _read_polygons(resolved.get("path"), resolved.get("layer_name"),
-                                   viewport, max_features=max_features)
-    return rings, [], reason
+        return [], resolved.get("reason") or "制图陆地面无法解析成可读取的图层"
+    return _read_polygons(resolved.get("path"), resolved.get("layer_name"),
+                          viewport, max_features=max_features)
 
 
 def _cartographic_land_polygons(ctx, viewport):
-    """制图陆地面（``cartographic_land``）→ 视图范围内的多边形环。"""
+    """制图陆地面（``cartographic_land``）→ 视图范围内的结构化多边形。"""
 
     path = (ctx.paths or {}).get("cartographic_land")
     if not path:
-        return [], [], "未配置制图陆地面"
+        return [], "未配置制图陆地面"
     return _read_geojson_polygons(path, viewport)
 
 
-def _sea_complement_polygons(extent, land_rings):
+def _holes_of_polygons(polygons):
+    """结构化多边形列表 → ``{外环下标: [hole, ...]}``（渲染器的内环契约）。"""
+
+    result = {}
+    for index, item in enumerate(polygons or []):
+        holes = [hole for hole in (item.get("holes") or []) if len(hole) >= 4]
+        if holes:
+            result[str(index)] = holes
+    return result
+
+
+def _sea_complement_polygons(extent, land_polygons):
     """海域 = **地图画布矩形 − cartographic_land**（真正的多边形面积差集）。
 
     实现方式：用可靠的多边形差集库（shapely，QGIS 环境自带）做
     ``canvas_rectangle.difference(land_union)``，并把结果的 exterior **与内环（holes）
     一并保留**。陆地多边形带洞时，洞会被原样保留为独立的海域环，而不是被填实。
+
+    输入是**结构化**多边形（``{"exterior": [...], "holes": [[...], ...]}``，见
+    :func:`_geometry_to_wgs84_polygons`）：陆地自己的内环会参与差集，因此"岛中湖"不会被
+    当成陆地面积填掉。为兼容只给外环的历史调用点，裸环列表也被接受（此时视为无洞）。
 
     为什么不再自己实现扫描线：自制扫描线/网格采样只是为了绕开"没依赖多边形库"，
     但它会把海域近似成矩形条带（面积与拓扑都不精确，也无法表达内环）。差集是
@@ -567,7 +666,7 @@ def _sea_complement_polygons(extent, land_rings):
     找不到多边形库时**如实失败**（返回不可用理由），绝不用近似几何冒充面积差集。
     """
 
-    if not land_rings:
+    if not land_polygons:
         return [], [], 0.0, "制图陆地面在范围内没有可用于差集的环"
     try:
         import shapely
@@ -584,15 +683,10 @@ def _sea_complement_polygons(extent, land_rings):
         (extent.east, extent.north), (extent.west, extent.north),
         (extent.west, extent.south),
     ])
-    land_polygons = []
-    for ring in land_rings:
-        if len(ring) < 4:
-            continue
-        try:
-            candidate = Polygon([(float(point[0]), float(point[1])) for point in ring])
-        except (TypeError, ValueError):
-            continue
-        if candidate.is_empty:
+    shapes = []
+    for item in land_polygons:
+        candidate = _land_shape(item, Polygon)
+        if candidate is None:
             continue
         if not candidate.is_valid:
             # 自相交/重复点等：修复一次；仍无效则跳过该环（不参与差集，也不伪造）。
@@ -603,15 +697,16 @@ def _sea_complement_polygons(extent, land_rings):
                 list(candidate.geoms) if candidate.geom_type == "MultiPolygon"
                 else [candidate]
             )
-            land_polygons.extend(
-                item for item in candidates if item.geom_type == "Polygon" and not item.is_empty
+            shapes.extend(
+                entry for entry in candidates
+                if entry.geom_type == "Polygon" and not entry.is_empty
             )
             continue
-        land_polygons.append(candidate)
+        shapes.append(candidate)
 
-    if not land_polygons:
+    if not shapes:
         return [], [], 0.0, "制图陆地面的环都无法构成有效多边形"
-    land_union = unary_union(land_polygons)
+    land_union = unary_union(shapes)
     complement = canvas.difference(land_union)
     if complement.is_empty:
         return [], [], 1.0, ""
@@ -637,6 +732,31 @@ def _sea_complement_polygons(extent, land_rings):
             records.append({"exterior": exterior, "holes": holes})
     sea_ratio = (sea_deg2 / total_deg2) if total_deg2 else 0.0
     return exteriors, records, sea_ratio, ""
+
+
+def _land_shape(item, polygon_class):
+    """结构化多边形（或裸外环）→ shapely ``Polygon``；不可用时返回 ``None``。
+
+    内环（``holes``）在构造时就进入 shapely Polygon，因此它参与后续的面积差集 ——
+    这是"洞不被填实"的**唯一**正确做法（只在渲染末尾补洞无法修正面积与拓扑）。
+    """
+
+    if isinstance(item, dict):
+        exterior_ring = item.get("exterior")
+        hole_rings = item.get("holes") or []
+    else:
+        exterior_ring, hole_rings = item, []
+    if not exterior_ring or len(exterior_ring) < 4:
+        return None
+    try:
+        shell = [(float(point[0]), float(point[1])) for point in exterior_ring]
+        holes = [
+            [(float(point[0]), float(point[1])) for point in hole]
+            for hole in hole_rings if hole and len(hole) >= 4
+        ]
+        return polygon_class(shell, holes)
+    except (TypeError, ValueError):
+        return None
 
 
 def _land_attributes(ctx):
@@ -676,7 +796,10 @@ def _land_attributes(ctx):
 
 
 def _airspace_polygons(ctx, viewport):
-    """适飞空域：从已配置的 QGIS 工程中挑出本地面图层并按视图范围过滤。"""
+    """适飞空域：从已配置的 QGIS 工程中挑出本地面图层并按视图范围过滤。
+
+    返回**结构化**多边形（外环 + 内环）以及命中的图层名，绝不把内环拍平成独立面。
+    """
 
     from ..gis.qgis_project_layers import read_project_layers
 
@@ -744,8 +867,11 @@ def _polygon_layers(ctx, extent):
 
     viewport = QgsRectangle(extent.west, extent.south, extent.east, extent.north)
     status, reason, detail = _cartographic_land_state(ctx)
-    rings, hole_records, land_reason = ([], [], reason) if status != SOURCE_AVAILABLE \
+    land_polygons, land_reason = ([], reason) if status != SOURCE_AVAILABLE \
         else _cartographic_land_polygons(ctx, viewport)
+    # 陆地自己的内环（洞）从**数据源**一路带到这里，既不丢也不拍平成独立陆地。
+    land_exteriors = _polygon_rings(land_polygons)
+    land_holes = _holes_of_polygons(land_polygons)
     # 覆盖结论只能来自数据源的派生记录，**不得**在图代码里硬编码"覆盖全部岛群"这类结论。
     coverage_reason = _coverage_reason(detail)
 
@@ -764,14 +890,15 @@ def _polygon_layers(ctx, extent):
     land_detail = deepcopy(detail)
     land_detail.update({
         "coverage_reason": coverage_reason,
-        "feature_count": len(rings),
-        "hole_ring_count": sum(len(item.get("holes") or []) for item in hole_records),
+        "feature_count": len(land_exteriors),
+        "hole_ring_count": sum(len(holes) for holes in land_holes.values()),
+        "geometry_structure": "exterior_with_interior_rings_from_source",
     })
 
     layers = []
-    if status == SOURCE_AVAILABLE and rings:
+    if status == SOURCE_AVAILABLE and land_exteriors:
         sea_exteriors, sea_records, sea_ratio, sea_reason = _sea_complement_polygons(
-            extent, rings,
+            extent, land_polygons,
         )
         if sea_exteriors:
             holes_in_sea = sum(len(item.get("holes") or []) for item in sea_records)
@@ -785,7 +912,7 @@ def _polygon_layers(ctx, extent):
                 data={"polygons": sea_exteriors,
                       "polygon_holes": _holes_by_exterior(sea_records, sea_exteriors),
                       "derivation": "canvas_rectangle_minus_cartographic_land",
-                      "land_polygon_count": len(rings)},
+                      "land_polygon_count": len(land_exteriors)},
             ))
         else:
             layers.append(_layer(
@@ -797,9 +924,9 @@ def _polygon_layers(ctx, extent):
         layers.append(_layer(
             ctx, "land", display_name="陆地区域", geometry_type=GEOMETRY_POLYGON,
             source_role="cartographic_land", status=SOURCE_AVAILABLE, reason="",
-            detail=land_detail, feature_count=len(rings),
-            data={"polygons": rings,
-                  "polygon_holes": _holes_by_exterior(hole_records, rings),
+            detail=land_detail, feature_count=len(land_exteriors),
+            data={"polygons": land_exteriors,
+                  "polygon_holes": land_holes,
                   "feature_attributes": {}},
         ))
     else:
@@ -916,7 +1043,9 @@ def _airspace_layer(ctx, extent):
         ctx, "airspace", display_name="已确认适飞空域", geometry_type=GEOMETRY_POLYGON,
         source_role="basemap", status=SOURCE_AVAILABLE, reason="", detail=detail,
         feature_count=len(polygons),
-        data={"polygons": polygons, "layer_name": layer_names,
+        data={"polygons": _polygon_rings(polygons),
+              "polygon_holes": _holes_of_polygons(polygons),
+              "layer_name": layer_names,
               "semantics": "configured_airspace_grid_cells_from_qgis_project"},
     )
 
@@ -1014,8 +1143,12 @@ def _component_to_polygon(sub, slices, transform, x0, y0, shapely_box, unary_uni
     return unary_union(geometries)
 
 
-def _shapely_to_rings_wgs84(geometry, authority):
-    """源 CRS 多边形 → WGS84 环（只做坐标换算，不做几何简化）。"""
+def _shapely_to_polygons_wgs84(geometry, authority):
+    """源 CRS 多边形 → WGS84 **结构化**多边形（只做坐标换算，不做几何简化）。
+
+    与 :func:`_geometry_to_wgs84_polygons` 同一契约：外环与内环分开保留，
+    MultiPolygon 的每个 part 各自独立。
+    """
 
     from pyproj import CRS, Transformer
 
@@ -1030,14 +1163,8 @@ def _shapely_to_rings_wgs84(geometry, authority):
         transformer = Transformer.from_crs(
             CRS.from_user_input(authority), CRS.from_epsg(4326), always_xy=True,
         )
-    polygons = []
-    for part in parts:
-        exterior = getattr(part, "exterior", None)
-        if exterior is None:
-            continue
-        ring = list(exterior.coords)
-        if len(ring) < 4:
-            continue
+
+    def convert(ring):
         converted = []
         for x, y in ring:
             if transformer is not None:
@@ -1046,8 +1173,22 @@ def _shapely_to_rings_wgs84(geometry, authority):
                 longitude, latitude = float(x), float(y)
             if math.isfinite(longitude) and math.isfinite(latitude):
                 converted.append([float(longitude), float(latitude)])
-        if len(converted) >= 4:
-            polygons.append(converted)
+        return converted if len(converted) >= 4 else None
+
+    polygons = []
+    for part in parts:
+        exterior = getattr(part, "exterior", None)
+        if exterior is None:
+            continue
+        shell = convert(list(exterior.coords))
+        if shell is None:
+            continue
+        holes = []
+        for interior in getattr(part, "interiors", None) or []:
+            hole = convert(list(interior.coords))
+            if hole is not None:
+                holes.append(hole)
+        polygons.append({"exterior": shell, "holes": holes})
     return polygons
 
 
@@ -1119,7 +1260,7 @@ def _raster_threshold_polygons(path, extent, threshold_m):
         if not geometries:
             stats["note"] = "所有连通区域都小于最小显示像素数"
             return [], stats, None
-        return _shapely_to_rings_wgs84(unary_union(geometries), authority), stats, None
+        return _shapely_to_polygons_wgs84(unary_union(geometries), authority), stats, None
     finally:
         dataset = None
 
@@ -1165,7 +1306,8 @@ def _terrain_obstacle_layer(ctx, extent, threshold_m):
         ctx, "terrain_obstacle", display_name="地形障碍（≥ 显示阈值）",
         geometry_type=GEOMETRY_POLYGON, source_role="terrain_dtm",
         status=SOURCE_AVAILABLE, reason="", detail=detail, feature_count=len(polygons),
-        data={"polygons": polygons,
+        data={"polygons": _polygon_rings(polygons),
+              "polygon_holes": _holes_of_polygons(polygons),
               "semantics": "display_only_figure_threshold_derived_from_dem",
               "not_a_planning_constraint": True,
               "not_used_for_route_search": True},
@@ -1173,7 +1315,11 @@ def _terrain_obstacle_layer(ctx, extent, threshold_m):
 
 
 def _building_grid_obstacles(ctx, extent, threshold_m):
-    """建筑环境网格（L8 聚合事实）→ 超过显示阈值的格（每格按其 bbox 成面）。"""
+    """建筑环境网格（L8 聚合事实）→ 超过显示阈值的格（每格按其 bbox 成面）。
+
+    返回结构化多边形（格网矩形没有内环，因此 ``holes`` 为空列表）——与建筑足迹、
+    制图陆地面共用同一个"外环 + 内环"契约，调用点无需区分两种来源。
+    """
 
     from qgis.core import QgsVectorLayer
 
@@ -1203,9 +1349,9 @@ def _building_grid_obstacles(ctx, extent, threshold_m):
             continue
         stats["valid_height_cells"] += 1
         if height >= float(threshold_m):
-            features.append([
+            features.append({"exterior": [
                 [west, south], [east, south], [east, north], [west, north], [west, south],
-            ])
+            ], "holes": []})
     stats["obstacle_cells"] = len(features)
     return features, stats, None
 
@@ -1255,7 +1401,7 @@ def _building_footprint_obstacles(ctx, extent, threshold_m):
         stats["valid_height_footprints"] += 1
         if height < float(threshold_m):
             continue
-        features.extend(_geometry_to_wgs84_rings(geometry, layer))
+        features.extend(_geometry_to_wgs84_polygons(geometry, layer))
         if len(features) >= 6000:
             stats["truncated"] = True
             break
@@ -1311,7 +1457,8 @@ def _building_obstacle_layer(ctx, extent, threshold_m):
         ctx, "building_obstacle", display_name="建筑障碍（≥ 显示阈值）",
         geometry_type=GEOMETRY_POLYGON, source_role=source_role,
         status=SOURCE_AVAILABLE, reason="", detail=detail, feature_count=len(features),
-        data={"polygons": features,
+        data={"polygons": _polygon_rings(features),
+              "polygon_holes": _holes_of_polygons(features),
               "semantics": "display_only_figure_threshold_on_real_building_heights",
               "not_a_planning_constraint": True,
               "not_used_for_route_search": True},
@@ -1736,10 +1883,23 @@ def materialize(ctx: MaterializationContext):
 # =========================================================================== 产物存储
 
 class MapFigureStore:
-    """受控专题图产物目录（``<项目目录>/artifacts/map_figures/<figure_id>/``）。
+    """受控专题图产物目录。
 
-    安全契约：**只有服务端**能决定路径；客户端提供的任何字符串都不参与路径拼接，
-    图号必须匹配 ``MF-<32 hex>``，子目录名取自记录中的白名单值。
+    布局（route-first，见 :data:`MAP_FIGURE_ROUTES_DIRECTORY`）::
+
+        <active project>/artifacts/map_figures/
+          index.json                                   # 跨 route 的总索引（保留）
+          routes/<sanitized_route_id>/
+            index.json                                 # route 级索引（人工查找 / 按航路浏览）
+            <template_id>/<figure_id>/
+              figure.png  figure_spec.json  metadata.json
+
+    旧布局 ``artifacts/map_figures/<figure_id>/`` 继续**只读兼容**：已有历史产物原地保留，
+    不自动搬迁、不删除；读取时新结构优先、旧结构兜底。
+
+    安全契约：**只有服务端**能决定路径；客户端提供的任何字符串都不参与路径拼接。
+    图号必须匹配 ``MF-<32 hex>``；航路目录名由 :meth:`sanitize_route_id` 从 route_id
+    派生（清洗 + 稳定摘要），模板目录名必须是白名单字符集，因此客户端无法注入任意路径。
     """
 
     def __init__(self, project_directory):
@@ -1752,75 +1912,225 @@ class MapFigureStore:
     def valid_figure_id(figure_id):
         return bool(_FIGURE_ID_PATTERN.fullmatch(str(figure_id or "").strip()))
 
-    def figure_directory(self, figure_id, *, create=False):
-        if not self.valid_figure_id(figure_id):
-            raise MapFigurePathDenied("专题图编号无效，已拒绝访问")
-        target = (self.directory / str(figure_id)).resolve()
+    @staticmethod
+    def sanitize_route_id(route_id):
+        """把任意 ``route_id`` 转成**安全且稳定**的目录名（服务端唯一决定）。
+
+        规则：非 ``[0-9A-Za-z_-]`` 的字符（含路径分隔符、``..``、中文标点等）一律替换为
+        ``_``，再截断到 :data:`MAX_ROUTE_DIRECTORY_PREFIX`，最后拼接 route_id 原文的
+        sha256 前 8 位。因此：
+
+        * 结果只含安全字符，不可能逃出受控目录；
+        * 结果对同一个 route_id 稳定（同一航路的多张图永远进同一个目录）；
+        * 清洗后同名的不同 route_id 也不会碰撞（摘要不同）。
+        """
+
+        text = str(route_id or "").strip()
+        prefix = _UNSAFE_ROUTE_CHARS.sub("_", text).strip("._-")
+        if len(prefix) > MAX_ROUTE_DIRECTORY_PREFIX:
+            prefix = prefix[:MAX_ROUTE_DIRECTORY_PREFIX].strip("._-")
+        if not prefix:
+            prefix = "route"
+        digest = sha256(text.encode("utf-8")).hexdigest()[:8]
+        return f"{prefix}-{digest}"
+
+    @property
+    def routes_directory(self):
+        return self.directory / MAP_FIGURE_ROUTES_DIRECTORY
+
+    def _contained(self, candidate, parent, message):
+        target = Path(candidate).resolve()
         try:
-            target.relative_to(self.directory.resolve())
+            target.relative_to(Path(parent).resolve())
         except ValueError as exc:
-            raise MapFigurePathDenied("专题图路径超出受控目录，已拒绝访问") from exc
+            raise MapFigurePathDenied(message) from exc
+        return target
+
+    def route_directory(self, route_id, *, create=False):
+        """``routes/<sanitized_route_id>/``（目录名由服务端从 route_id 派生）。"""
+
+        name = self.sanitize_route_id(route_id)
+        target = self._contained(
+            self.routes_directory / name, self.routes_directory,
+            "专题图航路目录超出受控目录，已拒绝访问",
+        )
         if create:
             target.mkdir(parents=True, exist_ok=True)
         return target
 
-    def artifact_path(self, figure_id, name):
-        """受控目录内的白名单文件名（``name`` 只允许单层、无分隔符）。"""
+    def template_directory(self, route_id, template_id, *, create=False):
+        """``routes/<route>/<template_id>/``（模板 id 必须匹配白名单）。"""
 
+        text = str(template_id or "").strip()
+        if not _TEMPLATE_ID_PATTERN.fullmatch(text):
+            raise MapFigurePathDenied("专题图模板目录名无效，已拒绝访问")
+        base = self.route_directory(route_id, create=create)
+        target = self._contained(base / text, base, "专题图模板目录超出受控目录，已拒绝访问")
+        if create:
+            target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def figure_directory(self, figure_id, *, route_id=None, template_id=None, create=False):
+        """图件产物目录。
+
+        给了 ``route_id`` 与 ``template_id`` 时使用 route-first 结构；否则使用旧的
+        平铺结构（只读兼容路径，供历史调用点与既有测试使用）。
+        """
+
+        if not self.valid_figure_id(figure_id):
+            raise MapFigurePathDenied("专题图编号无效，已拒绝访问")
+        if route_id and template_id:
+            base = self.template_directory(route_id, template_id, create=create)
+        else:
+            base = self.directory
+        target = self._contained(
+            base / str(figure_id), base, "专题图路径超出受控目录，已拒绝访问",
+        )
+        if create:
+            target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def locate_directory(self, figure_id):
+        """找到图件目录：**新结构优先**，旧平铺结构兜底；找不到返回 ``None``。"""
+
+        if not self.valid_figure_id(figure_id):
+            return None
+        if self.routes_directory.is_dir():
+            for candidate in self.routes_directory.glob(f"*/*/{figure_id}"):
+                if candidate.is_dir():
+                    return candidate.resolve()
+        flat = self.directory / str(figure_id)
+        if flat.is_dir():
+            return flat.resolve()
+        return None
+
+    def artifact_path(self, figure_id, name):
+        """受控目录内的白名单文件名（``name`` 只允许单层、无分隔符）。
+
+        未指定布局时按**旧平铺结构**解析（历史产物读取路径）；新结构的读取请用
+        :meth:`artifact_path_in` 配合 :meth:`figure_directory`。
+        """
+
+        return self.artifact_path_in(self.figure_directory(figure_id), name)
+
+    def artifact_path_in(self, directory, name):
         if not name or "/" in str(name) or "\\" in str(name) or str(name).startswith("."):
             raise MapFigurePathDenied("专题图产物文件名无效，已拒绝访问")
-        target = (self.figure_directory(figure_id) / str(name)).resolve()
-        try:
-            target.relative_to(self.figure_directory(figure_id).resolve())
-        except ValueError as exc:
-            raise MapFigurePathDenied("专题图产物路径超出受控目录，已拒绝访问") from exc
-        return target
+        base = Path(directory).resolve()
+        return self._contained(
+            base / str(name), base, "专题图产物路径超出受控目录，已拒绝访问",
+        )
+
+    def relative_path(self, path):
+        """受控目录内路径 → 相对 active project 的 POSIX 相对路径（记录里只用它）。"""
+
+        return Path(path).resolve().relative_to(self.root).as_posix()
 
     # ---- 读写 -----------------------------------------------------------------
 
-    def write(self, figure_id, *, image_bytes, spec_payload, record):
-        directory = self.figure_directory(figure_id, create=True)
+    def write(self, figure_id, *, image_bytes, spec_payload, record,
+              route_id=None, template_id=None):
+        """一次性写出 PNG / FigureSpec / metadata.json，并返回**完整记录**。
+
+        code review 修复项：以前先把 record 写进 metadata.json，之后才往 index 里的
+        记录补 ``image_sha256`` / ``relative_path`` / ``artifact_ref``，于是
+        metadata.json 与 index.json 的审计事实不一致。现在先确定全部产物事实
+        （摘要、相对路径、artifact 引用），形成**最终完整记录**，再落三份文件：
+
+            metadata.json 里的记录 == index.json 里对应记录的固定审计字段
+
+        index 允许额外存在动态投影字段（``current_applicability``），但产物本身的
+        固定审计事实（见 :data:`MAP_FIGURE_AUDIT_FIELDS`）必须逐字段相同。
+        """
+
+        directory = self.figure_directory(
+            figure_id, route_id=route_id, template_id=template_id, create=True,
+        )
         image_path = directory / "figure.png"
         spec_path = directory / "figure_spec.json"
         record_path = directory / "metadata.json"
+        image_digest = sha256(image_bytes).hexdigest()
+        relative_image = self.relative_path(image_path)
+        complete = {
+            **deepcopy(record),
+            "figure_id": str(figure_id),
+            "relative_path": relative_image,
+            "spec_relative_path": self.relative_path(spec_path),
+            "record_relative_path": self.relative_path(record_path),
+            "image_bytes": len(image_bytes),
+            "image_sha256": image_digest,
+            "artifact_ref": {
+                "artifact_id": image_digest,
+                "relative_path": relative_image,
+                "figure_id": str(figure_id),
+                "content_type": "image/png",
+            },
+        }
+        if route_id and template_id:
+            complete["route_directory"] = self.sanitize_route_id(route_id)
         _atomic_write(image_path, image_bytes)
         _atomic_write(spec_path, json.dumps(
             spec_payload, ensure_ascii=False, indent=2, allow_nan=False,
         ).encode("utf-8"))
+        # metadata.json **最后**写：此时 record 已经包含全部固定审计事实。
         _atomic_write(record_path, json.dumps(
-            record, ensure_ascii=False, indent=2, allow_nan=False,
+            complete, ensure_ascii=False, indent=2, allow_nan=False,
         ).encode("utf-8"))
-        return {
-            "figure_id": figure_id,
-            "relative_path": f"{MAP_FIGURE_DIRECTORY}/{figure_id}/figure.png",
-            "spec_relative_path": f"{MAP_FIGURE_DIRECTORY}/{figure_id}/figure_spec.json",
-            "record_relative_path": f"{MAP_FIGURE_DIRECTORY}/{figure_id}/metadata.json",
-            "bytes": len(image_bytes),
-            "sha256": sha256(image_bytes).hexdigest(),
-        }
+        return complete
 
-    def read_image(self, figure_id):
-        return self._read(figure_id, "figure.png", "专题图文件缺失；请重新生成该图")
+    def read_image(self, figure_id, record=None):
+        return self._read(figure_id, "figure.png", "专题图文件缺失；请重新生成该图", record)
 
-    def read_spec(self, figure_id):
-        return self._read(figure_id, "figure_spec.json", "专题图规格文件缺失；请重新生成该图")
+    def read_spec(self, figure_id, record=None):
+        return self._read(figure_id, "figure_spec.json", "专题图规格文件缺失；请重新生成该图",
+                          record)
 
-    def _read(self, figure_id, name, missing_text):
-        path = self.artifact_path(figure_id, name)
+    def _directory_for(self, figure_id, record=None):
+        """按记录里的相对路径定位（校验仍在受控目录内），否则自动查找。"""
+
+        candidates = []
+        if isinstance(record, dict) and record.get("relative_path"):
+            recorded = Path(str(record["relative_path"]))
+            if not recorded.is_absolute():
+                candidates.append(self.root / recorded.parent)
+        located = self.locate_directory(figure_id)
+        if located is not None:
+            candidates.append(located)
+        for candidate in candidates:
+            try:
+                resolved = self._contained(
+                    candidate, self.directory, "专题图路径超出受控目录，已拒绝访问",
+                )
+            except MapFigurePathDenied:
+                continue
+            if resolved.is_dir():
+                return resolved
+        return None
+
+    def _read(self, figure_id, name, missing_text, record=None):
+        if not self.valid_figure_id(figure_id):
+            raise MapFigurePathDenied("专题图编号无效，已拒绝访问")
+        directory = self._directory_for(figure_id, record)
+        if directory is None:
+            raise MapFigureNotFound(missing_text)
+        path = self.artifact_path_in(directory, name)
         if not path.is_file():
             raise MapFigureNotFound(missing_text)
         return path.read_bytes()
 
-    def exists(self, figure_id):
+    def exists(self, figure_id, record=None):
         if not self.valid_figure_id(figure_id):
             return False
         try:
-            return self.artifact_path(figure_id, "figure.png").is_file()
+            directory = self._directory_for(figure_id, record)
+            if directory is None:
+                return False
+            return self.artifact_path_in(directory, "figure.png").is_file()
         except MapFigureError:
             return False
 
     def list_relative(self):
-        """只读盘点受控目录下的图号目录清单（不打开任何产物）。"""
+        """只读盘点**旧平铺结构**下的图号目录清单（不打开任何产物）。"""
 
         if not self.directory.is_dir():
             return []
@@ -1833,7 +2143,7 @@ class MapFigureStore:
 
     @property
     def index_path(self):
-        """受控目录内的图件索引文件（``artifacts/map_figures/index.json``）。"""
+        """跨 route 的总索引（``artifacts/map_figures/index.json``）。"""
 
         return self.directory / MAP_FIGURE_INDEX_NAME
 
@@ -1870,6 +2180,63 @@ class MapFigureStore:
         _atomic_write(self.index_path, json.dumps(
             payload, ensure_ascii=False, indent=2, allow_nan=False,
         ).encode("utf-8"))
+
+    # ---- route 级索引（人工查找 / 后续按航路浏览） --------------------------------
+
+    def route_index_path(self, route_id):
+        return self.route_directory(route_id) / MAP_FIGURE_INDEX_NAME
+
+    def read_route_index(self, route_id):
+        """读取 route 级索引；缺失返回空骨架，损坏则**如实失败**（与总索引一致）。"""
+
+        path = self.route_index_path(route_id)
+        empty = {
+            "schema_version": 1,
+            "route_id": str(route_id or ""),
+            "sanitized_route_id": self.sanitize_route_id(route_id),
+            "templates": {},
+        }
+        if not path.is_file():
+            return empty
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise MapFigureNotFound(
+                "航路专题图索引文件损坏；请重新生成专题图（原索引不会被自动覆盖）"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise MapFigureNotFound("航路专题图索引文件格式无效；请重新生成专题图")
+        templates = payload.get("templates")
+        return {
+            "schema_version": int(payload.get("schema_version") or 1),
+            "route_id": str(payload.get("route_id") or empty["route_id"]),
+            "sanitized_route_id": str(
+                payload.get("sanitized_route_id") or empty["sanitized_route_id"]
+            ),
+            "templates": {
+                str(key): value for key, value in (templates or {}).items()
+                if isinstance(value, dict)
+            },
+        }
+
+    def write_route_index(self, route_id, templates):
+        """原子写入 route 级索引：每个模板一个 active 图号 + 该模板的图件清单。"""
+
+        directory = self.route_directory(route_id, create=True)
+        payload = {
+            "schema_version": 1,
+            "route_id": str(route_id or ""),
+            "sanitized_route_id": self.sanitize_route_id(route_id),
+            "count": sum(
+                len(entry.get("items") or []) for entry in (templates or {}).values()
+                if isinstance(entry, dict)
+            ),
+            "templates": deepcopy(templates or {}),
+        }
+        _atomic_write(directory / MAP_FIGURE_INDEX_NAME, json.dumps(
+            payload, ensure_ascii=False, indent=2, allow_nan=False,
+        ).encode("utf-8"))
+        return payload
 
 
 def _atomic_write(path, content):
@@ -1955,7 +2322,17 @@ class MapFigureService:
     # ---- 只读：已生成图件 -----------------------------------------------------
 
     def records(self):
-        """图件记录（受控索引为主，旧版 state 容器只读兼容）。"""
+        """图件记录（受控索引为主，旧版 state 容器只读兼容）+ **只读**适用性投影。
+
+        ``current_applicability`` 是**每次调用现算**的投影，不写回索引：
+
+        * 图件的 ``project_revision`` 与当前 ``session.state["revision"]`` 不一致
+          → ``stale_revision``（图件来源于旧项目 revision，必须重新生成）；
+        * revision 一致且是当前 active 图件 → ``current``；
+        * revision 一致但不是 active → ``superseded`` / ``inactive``（按已存语义稳定处理）。
+
+        **禁止**：改 index、``session.save()``、推进业务 revision。本方法只读。
+        """
 
         index = self.store.read_index()
         items = index["items"]
@@ -1969,10 +2346,40 @@ class MapFigureService:
             active = legacy["active_figure_id"]
         return {
             "schema_version": 1,
-            "items": deepcopy(merged),
+            "items": self._project_applicability(merged, active),
             "active_figure_id": active,
             "count": len(merged),
+            "project_revision": self._current_revision(),
         }
+
+    def _current_revision(self):
+        """当前业务 revision（只读；缺失即 0，不推断、不写入）。"""
+
+        return int(self.session.state.get("revision") or 0)
+
+    def _project_applicability(self, items, active_figure_id):
+        """把适用性投影到记录副本上（不触碰磁盘上的索引）。"""
+
+        revision = self._current_revision()
+        projected = []
+        for item in items:
+            entry = deepcopy(item)
+            stored = str(entry.get("current_applicability") or "")
+            try:
+                item_revision = int(entry.get("project_revision"))
+            except (TypeError, ValueError):
+                item_revision = None
+            if item_revision != revision:
+                # revision 不一致（含缺失 project_revision）：一律是旧 revision 的图件。
+                entry["current_applicability"] = "stale_revision"
+            elif str(entry.get("figure_id")) == str(active_figure_id):
+                entry["current_applicability"] = "current"
+            elif stored in ("current", "superseded"):
+                entry["current_applicability"] = "superseded"
+            else:
+                entry["current_applicability"] = stored or "inactive"
+            projected.append(entry)
+        return projected
 
     def _legacy_records(self):
         """只读兼容：早期版本写在 ``state["map_figures"]`` 里的记录。"""
@@ -1990,7 +2397,11 @@ class MapFigureService:
         return None
 
     def figures_snapshot(self):
-        """给前端的只读投影：记录 + 当前可用航路 + 模板目录。"""
+        """给前端的只读投影：模板目录 + 图件记录（含动态适用性）。
+
+        这是 ``GET /api/map-figures/state`` 的唯一数据来源；它**不**把图件索引写回
+        workflow state，因此读取它不会改变任何业务 revision。
+        """
 
         return {
             "catalog": self.catalog(),
@@ -2006,7 +2417,7 @@ class MapFigureService:
         wanted = str(kind or "png").lower()
         if wanted == "spec":
             return {
-                "image": self.store.read_spec(figure_id),
+                "image": self.store.read_spec(figure_id, record),
                 "record": deepcopy(record),
                 "content_type": "application/json; charset=utf-8",
                 "filename": f"{figure_id}.spec.json",
@@ -2016,7 +2427,7 @@ class MapFigureService:
                 f"暂不支持读取 {kind} 产物；本轮仅支持 PNG 与规格 JSON"
             )
         return {
-            "image": self.store.read_image(figure_id),
+            "image": self.store.read_image(figure_id, record),
             "record": deepcopy(record),
             "content_type": "image/png",
             "filename": f"{figure_id}.png",
@@ -2193,8 +2604,7 @@ class MapFigureService:
         parameters = spec.parameters
         px_per_mm = _finite(parameters.get("preview_px_per_mm"), 3.0)
         width = _preview_width(width_px, layout, px_per_mm)
-        if width * layout["document_height_mm"] / layout["document_width_mm"] > MAX_PREVIEW_PIXELS:
-            width = int(MAX_PREVIEW_PIXELS / (layout["document_height_mm"] / layout["document_width_mm"]))
+        width = _bounded_preview_width(width, layout)
         dpi = width / (layout["document_width_mm"] / 25.4)
         cache_key = (spec.fingerprint(), int(width))
         cached = self._preview_cache.get(cache_key)
@@ -2229,13 +2639,13 @@ class MapFigureService:
             )
         figure_id = _figure_id(spec, export_dpi, format_name)
         record = self._record(figure_id)
-        if record is not None and self.store.exists(figure_id):
+        if record is not None and self.store.exists(figure_id, record):
             # 幂等复用：同一业务 revision + 同一 FigureSpec（含 DPI / 格式）必然同图号。
             # 这里只把索引里的 active 指向它 —— **不** 写 ProjectState，也 **不** 调用
             # ``session.save()``，因此业务 revision 不会因为重复导出而变化。
             self._activate(figure_id)
             return {
-                "figure_id": figure_id, "record": deepcopy(record),
+                "figure_id": figure_id, "record": self._record(figure_id) or deepcopy(record),
                 "spec": spec.to_dict(), "reused": True, "image_bytes": 0,
             }
         image = self._render(spec, dpi=float(export_dpi))
@@ -2281,27 +2691,18 @@ class MapFigureService:
             "boundaries": deepcopy(spec.boundaries),
             "spec_summary": spec.summary(),
         }
-        stored = self.store.write(
+        # 产物目录是 **route-first**：同一条航路的所有专题图归档在同一个 route 目录下。
+        # 目录名由 store 从 route_id 派生（客户端无法控制任何路径）。
+        complete = self.store.write(
             figure_id, image_bytes=image, spec_payload=spec.to_dict(), record=record,
+            route_id=spec.route_id, template_id=spec.template_id,
         )
-        record.update({
-            "relative_path": stored["relative_path"],
-            "spec_relative_path": stored["spec_relative_path"],
-            "record_relative_path": stored["record_relative_path"],
-            "image_bytes": stored["bytes"],
-            "image_sha256": stored["sha256"],
-            "artifact_ref": {
-                "artifact_id": stored["sha256"],
-                "relative_path": stored["relative_path"],
-                "figure_id": figure_id,
-                "content_type": "image/png",
-            },
-        })
-        self._register(record, spec)
-        return record
+        # metadata.json 与 index 里的记录是**同一个**完整记录：固定审计字段逐字段一致。
+        self._register(complete, spec)
+        return complete
 
     def _register(self, record, spec):
-        """把图件记录写进制图模块**自己的受控索引**。
+        """把图件记录写进制图模块**自己的受控索引**（总索引 + route 级索引）。
 
         关键契约（本轮的 code review 修复）：**不调用 ``session.save()``**。
         ProjectState 的 ``revision`` 是业务语义的乐观锁；"渲染了一张专题图"不改变任何
@@ -2323,6 +2724,58 @@ class MapFigureService:
         items.append(record)
         items.sort(key=lambda item: str(item.get("generated_at") or ""))
         self.store.write_index(items, record["figure_id"])
+        self._write_route_index(record.get("route_id"), items, record["figure_id"])
+
+    def _write_route_index(self, route_id, items, active_figure_id):
+        """重建并写入该航路的 route 级索引（人工查找 + 后续按航路浏览）。"""
+
+        if not str(route_id or "").strip():
+            return None
+        return self.store.write_route_index(
+            route_id, self._route_templates(items, route_id, active_figure_id),
+        )
+
+    @staticmethod
+    def _route_templates(items, route_id, active_figure_id):
+        """按模板归集某条航路的图件（每个模板一个 active 图号 + 图件清单）。"""
+
+        templates = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("route_id") or "") != str(route_id):
+                continue
+            template_id = str(item.get("template_id") or "")
+            if not template_id:
+                continue
+            entry = templates.setdefault(
+                template_id,
+                {"template_id": template_id, "active_figure_id": None, "items": []},
+            )
+            entry["items"].append({
+                "figure_id": str(item.get("figure_id") or ""),
+                "template_id": template_id,
+                "title": item.get("title"),
+                "generated_at": item.get("generated_at"),
+                "project_revision": item.get("project_revision"),
+                "relative_path": item.get("relative_path"),
+                "spec_relative_path": item.get("spec_relative_path"),
+                "record_relative_path": item.get("record_relative_path"),
+                "image_sha256": item.get("image_sha256"),
+                "image_bytes": item.get("image_bytes"),
+                "dpi": item.get("dpi"),
+                "format": item.get("format"),
+            })
+        for entry in templates.values():
+            chosen = next(
+                (item["figure_id"] for item in entry["items"]
+                 if item["figure_id"] == str(active_figure_id or "")),
+                None,
+            )
+            entry["active_figure_id"] = chosen or (
+                entry["items"][-1]["figure_id"] if entry["items"] else None
+            )
+        return templates
 
     def _remember_preview(self, key, image):
         self._preview_cache[key] = image
@@ -2336,12 +2789,16 @@ class MapFigureService:
 
         index = self.store.read_index()
         items = list(index["items"])
+        route_id = None
         for item in items:
             if isinstance(item, dict) and str(item.get("figure_id")) == str(figure_id):
                 item["current_applicability"] = "current"
+                route_id = item.get("route_id")
             elif item.get("current_applicability") == "current":
                 item["current_applicability"] = "superseded"
         self.store.write_index(items, figure_id)
+        if route_id:
+            self._write_route_index(route_id, items, figure_id)
 
 
 def _legend_layout_entries(legend_items):
@@ -2354,16 +2811,20 @@ def _legend_layout_entries(legend_items):
 
 
 def _layout_plan(parameters, legend_items=()):
-    """A4 竖版版面（毫米）：标题带 → 地图 → 间距 → 图例框 → 页脚。
+    """A4 竖版版面（毫米）：标题带 → 地图 →（薄审计条）→ 图例框 → 页脚。
 
     分配目标（用户要求）：标题 4~5% · 地图 68~72% · 间距 1~2% · 图例 18~22% · 最小页边距。
     做法：先用 :mod:`cns_planner.gis.figure_legend` 的**同一套分列算法**算出图例框
     真实高度（贴合内容），再把剩余高度全部给地图——因此图例条目少时地图自动变大，
     **不会出现"图例框很高、下方大片空白"**。
+
+    地图框与图例框之间保留一条独立的**薄审计条**（坐标系 / 项目 revision / 未显示图层）：
+    三段间距固定（``footer_map_gap`` + ``footer_strip`` + ``footer_legend_gap``），
+    因此这行小字绝不会压到地图边框、比例尺或图例标题上。
     """
 
     from ..gis.figure_legend import legend_geometry
-    from ..gis.figure_style import LAYOUT
+    from ..gis.figure_style import LAYOUT, LEGEND_GROUP_COLUMNS
 
     width = float(parameters.get("document_width_mm") or 210.0)
     height = float(parameters.get("document_height_mm") or 297.0)
@@ -2372,23 +2833,41 @@ def _layout_plan(parameters, legend_items=()):
     columns = max(1, min(int(LAYOUT.get("max_legend_columns", 3)),
                          int(parameters.get("legend_columns") or 2)))
     title_band = float(LAYOUT["title_band_mm"])
+    title_gap = float(LAYOUT["title_gap_mm"])
+    title_map_gap = float(LAYOUT["title_map_gap_mm"])
+    subtitle_height = float(LAYOUT["subtitle_band_mm"])
+    # 标题带内部：主标题 → 固定间距 → 副标题 → 固定间距 → 地图框。
+    # 因此 title_band 必须把"副标题与地图框之间的间距"也算进去，否则副标题会贴住上边框。
+    title_main_height = max(
+        4.0, title_band - title_gap - subtitle_height - title_map_gap,
+    )
     footer_band = float(LAYOUT["footer_band_mm"])
-    gap = float(LAYOUT["map_legend_gap_mm"])
+    footer_map_gap = float(LAYOUT["footer_map_gap_mm"])
+    footer_strip = float(LAYOUT["footer_strip_mm"])
+    footer_legend_gap = float(LAYOUT["footer_legend_gap_mm"])
+    gap = footer_map_gap + footer_strip + footer_legend_gap
     map_width = width - 2 * margin
     map_top = margin + title_band
     total_height = height - margin - footer_band
     row_height = float(LAYOUT["legend_row_mm"])
     group_row = float(LAYOUT["legend_group_row_mm"])
-    geometry = legend_geometry(
-        list(legend_items or ()), row_height=row_height, group_row=group_row,
-        columns=columns, header_height=float(LAYOUT["legend_header_mm"]),
-    )
+    group_gap = float(LAYOUT["legend_group_gap_mm"])
+    group_item_gap = float(LAYOUT["legend_group_item_gap_mm"])
+    top_padding = float(LAYOUT["legend_top_padding_mm"])
+    header = float(LAYOUT["legend_header_mm"])
+
+    def geometry_for(row, group):
+        return legend_geometry(
+            list(legend_items or ()), row_height=row, group_row=group,
+            columns=columns, header_height=header, group_gap=group_gap,
+            group_item_gap=group_item_gap, group_columns=LEGEND_GROUP_COLUMNS,
+            top_padding=top_padding,
+        )
+
+    geometry = geometry_for(row_height, group_row)
     # 下界：按**最小可用行距**重算一次，保证图例一定放得下（宁可地图小一点，也不截断图例）。
-    compact = legend_geometry(
-        list(legend_items or ()), row_height=float(LAYOUT["legend_min_row_mm"]),
-        group_row=float(LAYOUT["legend_min_group_row_mm"]),
-        columns=columns, header_height=float(LAYOUT["legend_header_mm"]),
-    )
+    compact = geometry_for(float(LAYOUT["legend_min_row_mm"]),
+                           float(LAYOUT["legend_min_group_row_mm"]))
     needed = max(float(geometry["box_height_mm"]), float(compact["box_height_mm"]))
     effective_columns = int(geometry["columns"])
     # 地图是主体：先按 map_fraction（0.72）拿高度，再为图例让出必要空间；
@@ -2396,10 +2875,11 @@ def _layout_plan(parameters, legend_items=()):
     preferred_map = total_height * map_fraction
     map_height = min(preferred_map, total_height - map_top - needed - gap)
     map_height = max(150.0, map_height)
-    legend_top = map_top + map_height + gap
+    footer_strip_top = map_top + map_height + footer_map_gap
+    legend_top = footer_strip_top + footer_strip + footer_legend_gap
     available_legend = max(18.0, height - margin - footer_band - legend_top)
     legend_height = min(needed, available_legend)
-    # 只有在空间确实不足时才压缩行距（下限 3.8 mm 仍可读），绝不截断图例条目。
+    # 只有在空间确实不足时才压缩行距（下限 3.9 mm 仍可读），绝不截断图例条目。
     if float(geometry["box_height_mm"]) > legend_height:
         ratio = max(0.60, legend_height / float(geometry["box_height_mm"]))
         row_height = max(float(LAYOUT["legend_min_row_mm"]), row_height * ratio)
@@ -2409,7 +2889,16 @@ def _layout_plan(parameters, legend_items=()):
         "document_height_mm": height,
         "margin_mm": margin,
         "title_band_mm": title_band,
+        "title_gap_mm": title_gap,
+        "title_map_gap_mm": float(LAYOUT["title_map_gap_mm"]),
+        "title_main_height_mm": title_main_height,
+        "subtitle_height_mm": subtitle_height,
+        "subtitle_top_mm": margin + title_main_height + title_gap,
         "footer_band_mm": footer_band,
+        "footer_strip_mm": footer_strip,
+        "footer_map_gap_mm": footer_map_gap,
+        "footer_legend_gap_mm": footer_legend_gap,
+        "footer_strip_top_mm": footer_strip_top,
         "title_top_mm": margin,
         "map_top_mm": map_top,
         "map_left_mm": margin,
@@ -2423,11 +2912,17 @@ def _layout_plan(parameters, legend_items=()):
         "legend_columns": effective_columns,
         "legend_row_mm": row_height,
         "legend_group_row_mm": group_row,
+        "legend_group_gap_mm": group_gap,
+        "legend_group_item_gap_mm": group_item_gap,
+        "legend_top_padding_mm": top_padding,
+        "legend_side_padding_mm": float(LAYOUT["legend_side_padding_mm"]),
+        "legend_column_gap_mm": float(LAYOUT["legend_column_gap_mm"]),
+        "legend_text_gutter_mm": float(LAYOUT["legend_text_gutter_mm"]),
         "legend_symbol_box_mm": float(LAYOUT["legend_symbol_box_mm"]),
         "scale_bar_margin_mm": float(LAYOUT["scale_bar_margin_mm"]),
         "north_arrow_size_mm": float(LAYOUT["north_arrow_size_mm"]),
         "north_arrow_margin_mm": float(LAYOUT["north_arrow_margin_mm"]),
-        "fixed_layout": "a4_portrait_map_above_legend_below",
+        "fixed_layout": "a4_portrait_map_above_legend_below_with_audit_strip",
     }
 
 
@@ -2436,6 +2931,33 @@ def _preview_width(requested, layout, px_per_mm):
     if target is None:
         target = layout["document_width_mm"] * _finite(px_per_mm, 3.0)
     return int(max(320, min(4000, round(float(target)))))
+
+
+def _bounded_preview_width(width_px, layout):
+    """把预览宽度压进**总像素**上限（宽 × 高 <= :data:`MAX_PREVIEW_PIXELS`）。
+
+    code review 修复项：以前只把 ``width × aspect`` 与上限比较（量纲不对，等于只约束了
+    高度），总像素仍可能远超上限。现在按真实定义计算：
+
+        height_px = width_px * document_height_mm / document_width_mm
+        total_px  = width_px * height_px
+
+    超限时反解 ``width_px = floor(sqrt(MAX_PREVIEW_PIXELS / aspect))``，其中
+    ``aspect = document_height_mm / document_width_mm``。这样缩放是**等比**的，
+    长宽比不发生变化；preview 与 export 各自保留自己的上限
+    （preview: :data:`MAX_PREVIEW_PIXELS`，export: :data:`MAX_FIGURE_PIXELS`）。
+    """
+
+    try:
+        aspect = float(layout["document_height_mm"]) / float(layout["document_width_mm"])
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return int(width_px)
+    width = int(width_px)
+    if width <= 0 or aspect <= 0:
+        return width
+    if width * (width * aspect) <= MAX_PREVIEW_PIXELS:
+        return width
+    return max(1, int(math.floor(math.sqrt(MAX_PREVIEW_PIXELS / aspect))))
 
 
 def _figure_title(display_name, route):

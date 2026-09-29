@@ -100,12 +100,23 @@ LABEL_STYLES = {
 }
 
 #: 版面常量（毫米）。与模板参数互补：这里是"固定版式"，不是业务参数。
-#: A4 竖版 210×297：标题带 → 地图 → 间距 → 图例框 → 页脚（目标占比见 _layout_plan）。
+#: A4 竖版 210×297：标题带 → 地图 →（薄审计条）→ 图例框（目标占比见 _layout_plan）。
 LAYOUT = {
     "page_margin_mm": 14.0,
-    "title_band_mm": 13.0,
-    "footer_band_mm": 6.0,
-    "map_legend_gap_mm": 4.5,
+    # 标题带 = 主标题 + 固定间距 + 副标题 + 固定间距（副标题绝不贴地图上边框）。
+    "title_band_mm": 17.0,
+    "title_gap_mm": 1.4,
+    "title_map_gap_mm": 3.0,
+    "subtitle_band_mm": 4.0,
+    "footer_band_mm": 7.0,
+    # 地图框下沿的三段式薄审计条（坐标系 / revision / 未显示图层）。
+    "footer_strip_mm": 3.4,
+    "footer_map_gap_mm": 1.6,
+    "footer_legend_gap_mm": 2.6,
+    # 兼容键：地图与图例之间的总间距 = 上面三段之和（_layout_plan 会显式给出三段）。
+    "map_legend_gap_mm": 7.6,
+    "footer_strip_font_size": 4.6,
+    "footer_strip_color": "#8a94a0",
     "map_frame_color": "#2b3a4a",
     "map_frame_width_mm": 0.4,
     "map_background": "#cfe6f5",
@@ -116,19 +127,26 @@ LAYOUT = {
     "legend_box_fill": "#ffffff",
     "legend_box_border": "#2b3a4a",
     "legend_box_width_mm": 0.35,
+    # 图例：标题独占一行（位于框内左上），标题与内容之间不留大块空白。
     "legend_title_font_size": 8.5,
     "legend_group_font_size": 7.0,
     "legend_item_font_size": 6.8,
     "legend_item_text_color": "#1c2733",
     "legend_group_text_color": "#38424d",
-    "legend_symbol_box_mm": 4.6,
-    "legend_header_mm": 7.0,
-    "legend_row_mm": 4.2,
-    "legend_group_row_mm": 4.4,
-    "legend_group_gap_mm": 1.2,
-    "legend_column_gap_mm": 4.0,
-    "legend_min_row_mm": 3.8,
-    "legend_min_group_row_mm": 4.0,
+    # 统一二维网格：符号框固定宽度、文本固定起始 x、行高统一。
+    "legend_symbol_box_mm": 5.0,
+    "legend_text_gutter_mm": 1.6,
+    "legend_header_mm": 5.6,
+    "legend_top_padding_mm": 1.6,
+    "legend_row_mm": 4.4,
+    "legend_group_row_mm": 4.2,
+    # 组标题 → 组内条目：小间距；组与组之间：更大但统一的间距。
+    "legend_group_item_gap_mm": 0.5,
+    "legend_group_gap_mm": 2.2,
+    "legend_column_gap_mm": 6.0,
+    "legend_side_padding_mm": 4.5,
+    "legend_min_row_mm": 3.9,
+    "legend_min_group_row_mm": 3.9,
     "legend_default_columns": 2,
     "max_legend_columns": 3,
     "grid_interval_deg": 0.1,
@@ -136,20 +154,53 @@ LAYOUT = {
     "grid_color": "#3b4652",
     "grid_line_color": "#c3ccd4",
     "grid_frame_color": "#8593a1",
-    "scale_bar_margin_mm": 3.0,
+    # 比例尺（程序化绘制的黑白分段条）：与左边框 / 下边框保持合理内距，
+    # 数字与单位位于条上方且留有固定间隙，"20 km" 绝不贴条。
+    "scale_bar_margin_mm": 5.4,
     "scalebar_font_size": 6.0,
+    "scalebar_height_mm": 2.4,
+    "scalebar_segments": 2,
+    "scalebar_target_min_mm": 22.0,
+    "scalebar_target_max_mm": 46.0,
+    "scalebar_border_width_mm": 0.3,
+    "scalebar_label_gap_mm": 0.9,
+    "scalebar_label_height_mm": 3.6,
+    "scalebar_fill_light": "#ffffff",
+    "scalebar_fill_dark": "#111111",
+    "scalebar_line_color": "#111111",
     "north_arrow_size_mm": 10.0,
-    "north_arrow_margin_mm": 3.0,
-    "map_credit_font_size": 5.0,
+    "north_arrow_margin_mm": 4.0,
+    "map_credit_font_size": 4.6,
+    # 标注：起终点统一留出"星标半径 + 间距"，长中文名有足够横向空间。
+    "label_box_width_mm": 44.0,
+    "label_box_height_mm": 5.0,
+    "label_endpoint_offset_mm": 5.4,
+    "label_turn_offset_mm": 3.0,
 }
 
 #: 图例分组标题与顺序（与 template_catalog.ROUTE_OVERVIEW_LEGEND_ORDER 同序）。
+#: 当前项目没有机场数据，因此分组名就是"既有设施"；以后机场进入模板时由模板
+#: 动态决定对应分组名，不在这里硬编码"与机场"。
 LEGEND_GROUPS = (
     ("environment", "地理环境"),
     ("obstacle", "障碍物"),
-    ("facility", "既有设施与机场"),
+    ("facility", "既有设施"),
     ("route", "规划航路"),
 )
+
+#: 图例**两列布局**的语义分列（组名 → 列号 0/1）。
+#:
+#: 分组本身已经决定了最自然的左右划分：左列放地理环境与障碍物，右列放既有设施与
+#: 规划航路。这既是产品建议的分组，也让两列条目数接近（4 : 5），因此图例框不会出现
+#: "一列很高、另一列一半空白"。某些组整体缺席时（例如当前没有机场 / 没有障碍物），
+#: :func:`cns_planner.gis.figure_legend.legend_geometry` 会按**实际出现的组**分列；
+#: 一旦出现未登记的组，则回退到自动均衡分列算法。
+LEGEND_GROUP_COLUMNS = {
+    "environment": 0,
+    "obstacle": 0,
+    "facility": 1,
+    "route": 1,
+}
 
 #: 图层键 → 图例分组。
 #: 注意：``airspace`` 仍然登记在册（供其它模板复用），但 route_overview_v1
@@ -484,7 +535,7 @@ def _join_style(value):
 
 __all__ = [
     "FIGURE_STYLES", "FONT_CANDIDATES", "FONT_FILE_CANDIDATES", "LABEL_STYLES", "LAYOUT",
-    "LEGEND_GROUP_OF", "LEGEND_GROUPS", "fill_symbol", "label_style", "legend_order_key",
-    "line_symbol", "marker_shape_enum", "marker_symbol", "style", "symbol_for",
-    "symbol_preview_image",
+    "LEGEND_GROUP_COLUMNS", "LEGEND_GROUP_OF", "LEGEND_GROUPS", "fill_symbol",
+    "label_style", "legend_order_key", "line_symbol", "marker_shape_enum", "marker_symbol",
+    "style", "symbol_for", "symbol_preview_image",
 ]

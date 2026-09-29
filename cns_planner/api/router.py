@@ -177,6 +177,14 @@ class ApiRouter:
             except MapFigureError as exc:
                 return Response(self._map_figure_error(exc), status=exc.status)
             return Response(artifact["image"], artifact["content_type"])
+        if path == "/api/map-figures/state":
+            # 只读投影：图件记录来自**外部**受控索引 artifacts/map_figures/index.json，
+            # 绝不写回 workflow state，也不推进业务 revision。前端用它在首次进入、
+            # 页面刷新与导出成功后重新读取真实图件状态（不再依赖 flow.map_figures）。
+            try:
+                return Response(self._map_figures().figures_snapshot())
+            except MapFigureError as exc:
+                return Response(self._map_figure_error(exc), status=exc.status)
         if path == "/api/aircraft-profiles": return Response(workflow.aircraft_profiles_snapshot())
         if path == "/api/device-catalog": return Response(workflow.device_catalog_snapshot())
         if path == "/api/reference-landing-sites": return Response(workflow.reference_landing_sites_snapshot())

@@ -22,6 +22,7 @@ QgsSymbol 渲染（地图走图层渲染器，图例走 ``symbol_preview_image``
 
 from __future__ import annotations
 
+import math
 import os
 
 from ..reporting.map_templates import LAYER_DISPLAY_NAMES
@@ -31,8 +32,8 @@ from .figure_spec import (
     GEOMETRY_POLYGON,
 )
 from .figure_style import (
-    FONT_CANDIDATES, FONT_FILE_CANDIDATES, LAYOUT, fill_symbol, label_style,
-    line_symbol, marker_symbol, style, symbol_preview_image,
+    FONT_CANDIDATES, FONT_FILE_CANDIDATES, LAYOUT, LEGEND_GROUP_COLUMNS, fill_symbol,
+    label_style, line_symbol, marker_symbol, style, symbol_preview_image,
 )
 
 
@@ -77,7 +78,7 @@ class QgisFigureRenderer:
             font_family = self.font_family
             _build_title_band(layout, spec, page, font_family)
             _build_legend_block(layout, spec, page, font_family)
-            _build_map_decorations(layout, spec, font_family)
+            _build_map_decorations(layout, spec, map_extent, font_family)
             _build_labels(layout, spec, map_extent, font_family)
 
             buffer = QBuffer()
@@ -128,7 +129,7 @@ def _size(width_mm, height_mm):
 
 
 def _add_label(layout, text, *, x_mm, y_mm, width_mm, height_mm, font_family,
-               font_size, color, bold=False, halo=None, align=None):
+               font_size, color, bold=False, halo=None, align=None, valign=None):
     """加一个文本版面项；``halo`` 给出底色时会先叠一层轻微偏移的同文本描边。"""
 
     from qgis.PyQt.QtGui import QColor, QFont
@@ -146,6 +147,8 @@ def _add_label(layout, text, *, x_mm, y_mm, width_mm, height_mm, font_family,
         item.setMarginY(0.0)
         if align is not None:
             item.setHAlign(align)
+        if valign is not None:
+            item.setVAlign(valign)
         item.attemptMove(_position(x_mm + dx_mm, y_mm + dy_mm))
         item.attemptResize(_size(width_mm, height_mm))
         layout.addLayoutItem(item)
@@ -160,10 +163,11 @@ def _add_label(layout, text, *, x_mm, y_mm, width_mm, height_mm, font_family,
 # --------------------------------------------------------------------------- 标题
 
 def _build_title_band(layout, spec, page, font_family):
-    """标题带：只放**图名**（主标题）与简短航路名（副标题）。
+    """标题带：主标题 → **固定间距** → 副标题 → **固定间距** → 地图框。
 
-    project revision / FigureSpec / 图面范围 / source 状态一律不再出现在显著位置 ——
-    它们继续写在 metadata 与 figure_spec 里。
+    project revision / FigureSpec / 图面范围 / source 状态一律不出现在显著位置 ——
+    它们继续写在 metadata 与 figure_spec 里（坐标系与 revision 另有一条极小的审计条，
+    见 :func:`_build_map_decorations`）。
     """
 
     from qgis.PyQt.QtCore import Qt
@@ -171,21 +175,29 @@ def _build_title_band(layout, spec, page, font_family):
     plan = spec.layout or {}
     margin = float(plan.get("margin_mm") or LAYOUT["page_margin_mm"])
     title_top = float(plan.get("title_top_mm") or margin)
-    band = float(LAYOUT["title_band_mm"])
+    band = float(plan.get("title_band_mm") or LAYOUT["title_band_mm"])
+    gap = float(plan.get("title_gap_mm") or LAYOUT["title_gap_mm"])
+    subtitle_height = float(
+        plan.get("subtitle_height_mm") or LAYOUT["subtitle_band_mm"]
+    )
+    main_height = float(
+        plan.get("title_main_height_mm") or max(4.0, band - gap - subtitle_height)
+    )
+    subtitle_top = float(plan.get("subtitle_top_mm") or (title_top + main_height + gap))
     width = page[0] - 2 * margin
     _add_label(
         layout, spec.title, x_mm=margin, y_mm=title_top, width_mm=width,
-        height_mm=band * 0.56, font_family=font_family,
+        height_mm=main_height, font_family=font_family,
         font_size=float(LAYOUT["map_title_font_size"]), color=LAYOUT["map_title_color"],
-        bold=True, align=Qt.AlignHCenter,
+        bold=True, align=Qt.AlignHCenter, valign=Qt.AlignVCenter,
     )
     subtitle = spec_subtitle(spec)
     if subtitle:
         _add_label(
-            layout, subtitle, x_mm=margin, y_mm=title_top + band * 0.60,
-            width_mm=width, height_mm=band * 0.38,
+            layout, subtitle, x_mm=margin, y_mm=subtitle_top,
+            width_mm=width, height_mm=subtitle_height,
             font_family=font_family, font_size=float(LAYOUT["subtitle_font_size"]),
-            color=LAYOUT["subtitle_color"], align=Qt.AlignHCenter,
+            color=LAYOUT["subtitle_color"], align=Qt.AlignHCenter, valign=Qt.AlignTop,
         )
 
 
@@ -469,84 +481,181 @@ def _grid_interval(spec):
 
 # --------------------------------------------------------------------------- 比例尺 / 北箭头
 
-def _build_map_decorations(layout, spec, font_family):
-    """地图内装饰：左下角**黑白分段比例尺** + 右下角**简洁北箭头** + 页脚审计小字。"""
+def _build_map_decorations(layout, spec, map_extent, font_family):
+    """地图装饰：左下角**黑白分段比例尺**（程序化绘制）+ 右下角**简洁北箭头**；另加图外审计条。
 
-    from qgis.PyQt.QtGui import QColor, QFont
-    from qgis.core import QgsLayoutItemPicture, QgsLayoutItemScaleBar, QgsUnitTypes
+    比例尺为什么自己画：QGIS 原生 ``QgsLayoutItemScaleBar`` 在**地理 CRS**（EPSG:4326）
+    的地图上把 "20 km" 换算成极小的地图单位，实测条宽接近 0，而所有数字与单位标签被挤在
+    同一位置相互重叠（V4 的现场）。改成本地程序化绘制后，段宽由**实际渲染范围**精确换算，
+    数字 / 单位 / 分段条对齐清楚，文本与条之间还有固定间隙。
+
+    审计条（坐标系 / 项目 revision / 未显示图层）位于**地图框下沿之外、图例框之上**的
+    独立薄条里，三段各自对齐。它绝不进入地图绘图区、不压地图边框、不压比例尺，
+    也不与图例标题重叠 —— 之前那一串小字挤在地图边线上的问题由此消除。
+    """
+
+    from qgis.PyQt.QtCore import Qt
+    from qgis.core import QgsLayoutItemPicture
 
     plan = spec.layout or {}
-    margin = float(plan.get("scale_bar_margin_mm") or 3.0)
-    segment_km = _scale_bar_segment_km(spec)
-    scale_bar = QgsLayoutItemScaleBar(layout)
-    scale_bar.setStyle("Single Box")
-    scale_bar.setUnits(QgsUnitTypes.DistanceKilometers)
-    scale_bar.setUnitLabel("km")
-    scale_bar.setNumberOfSegments(2)
-    scale_bar.setNumberOfSegmentsLeft(0)
-    scale_bar.setUnitsPerSegment(segment_km)
-    font = QFont(font_family)
-    font.setPointSizeF(float(LAYOUT["scalebar_font_size"]))
-    font.setBold(True)
-    scale_bar.setFont(font)
-    scale_bar.setFontColor(QColor("#111111"))
-    scale_bar.setLineColor(QColor("#111111"))
-    # 黑白分段：第一段白底黑框、第二段黑底白框，边界清晰。
-    scale_bar.setFillColor(QColor(255, 255, 255, 255))
-    scale_bar.setFillColor2(QColor(17, 17, 17, 255))
-    scale_bar.setHeight(2.4)
-    scale_bar.setLineWidth(0.3)
-    scale_bar.setMinimumBarWidth(20.0)
-    scale_bar.setMaximumBarWidth(34.0)
-    scale_bar.attemptMove(_position(
-        float(plan["map_left_mm"]) + margin,
-        float(plan["map_top_mm"]) + float(plan["map_height_mm"]) - margin - 9.5,
-    ))
-    layout.addLayoutItem(scale_bar)
+    _build_scale_bar(layout, spec, map_extent, plan, font_family, Qt)
 
-    size = float(plan.get("north_arrow_size_mm") or 10.0)
+    size = float(plan.get("north_arrow_size_mm") or LAYOUT["north_arrow_size_mm"])
+    arrow_margin = float(
+        plan.get("north_arrow_margin_mm") or LAYOUT["north_arrow_margin_mm"]
+    )
     arrow = QgsLayoutItemPicture(layout)
     path = north_arrow_path()
     if path:
         arrow.setPicturePath(path)
         arrow.setResizeMode(QgsLayoutItemPicture.ZoomResizeFrame)
     arrow.attemptMove(_position(
-        float(plan["map_left_mm"]) + float(plan["map_width_mm"]) - margin - size,
-        float(plan["map_top_mm"]) + float(plan["map_height_mm"]) - margin - size,
+        float(plan["map_left_mm"]) + float(plan["map_width_mm"]) - arrow_margin - size,
+        float(plan["map_top_mm"]) + float(plan["map_height_mm"]) - arrow_margin - size,
     ))
     arrow.attemptResize(_size(size, size))
     layout.addLayoutItem(arrow)
 
-    # 审计脚注：位于地图框与图例框之间的间隙，字号极小，不干扰图面。
-    footer_y = float(plan["map_top_mm"]) + float(plan["map_height_mm"]) + 0.6
-    _add_label(
-        layout, _footer_note(spec),
-        x_mm=float(plan["map_left_mm"]),
-        y_mm=footer_y,
-        width_mm=float(plan["map_width_mm"]), height_mm=3.6,
-        font_family=font_family, font_size=float(LAYOUT["map_credit_font_size"]),
-        color="#6b7683",
+    _build_audit_strip(layout, spec, plan, font_family, Qt)
+
+
+def scale_bar_geometry(spec, map_extent, layout=None):
+    """黑白分段比例尺的几何（毫米，纯计算、可单测）。
+
+    段长取 1/2/5 十进制档，使总长度落在 :data:`LAYOUT` 的目标区间内；段宽按**实际渲染
+    范围**换算：``段宽 = 地图框宽 × 段长_km / 渲染范围宽_km``。因此"20 km"在图上就是
+    真实的 20 km。
+    """
+
+    plan = layout if layout is not None else (spec.layout or {})
+    map_width_mm = float(plan["map_width_mm"])
+    map_height_mm = float(plan["map_height_mm"])
+    map_left = float(plan["map_left_mm"])
+    map_top = float(plan["map_top_mm"])
+    extent = spec.extent
+    data_width_deg = float(extent.east) - float(extent.west)
+    width_km = float(extent.width_km or 0.0)
+    if (data_width_deg > 0 and map_extent is not None and not map_extent.isEmpty()
+            and float(map_extent.width()) > 0):
+        width_km = width_km * (float(map_extent.width()) / data_width_deg)
+    if not math.isfinite(width_km) or width_km <= 0:
+        width_km = 1.0
+    margin = float(plan.get("scale_bar_margin_mm") or LAYOUT["scale_bar_margin_mm"])
+    segments = max(1, int(LAYOUT["scalebar_segments"]))
+    bar_height = float(LAYOUT["scalebar_height_mm"])
+    target_min = float(LAYOUT["scalebar_target_min_mm"])
+    target_max = float(LAYOUT["scalebar_target_max_mm"])
+    target_mid = (target_min + target_max) / 2.0
+    steps = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0,
+             500.0, 1000.0, 2000.0)
+    chosen = None
+    for step in steps:
+        width_mm = map_width_mm * (step * segments) / width_km
+        if chosen is None or abs(width_mm - target_mid) < abs(chosen[1] - target_mid):
+            chosen = (step, width_mm)
+        if target_min <= width_mm <= target_max:
+            chosen = (step, width_mm)
+            break
+    segment_km, bar_width_mm = chosen
+    # 绝不超出地图框（左右各留同样的内距）。
+    ceiling = max(6.0, map_width_mm - 2.0 * margin)
+    bar_width_mm = min(bar_width_mm, ceiling)
+    return {
+        "segment_km": float(segment_km),
+        "segments": segments,
+        "total_km": float(segment_km) * segments,
+        "width_mm": bar_width_mm,
+        "segment_width_mm": bar_width_mm / segments,
+        "height_mm": bar_height,
+        "left_mm": map_left + margin,
+        "top_mm": map_top + map_height_mm - margin - bar_height,
+        "margin_mm": margin,
+        "label_gap_mm": float(LAYOUT["scalebar_label_gap_mm"]),
+        "label_height_mm": float(LAYOUT["scalebar_label_height_mm"]),
+        "rendered_width_km": width_km,
+    }
+
+
+def _build_scale_bar(layout, spec, map_extent, plan, font_family, qt):
+    """程序化黑白分段比例尺：分段矩形 + 条上方的数字 / 单位标签。"""
+
+    from qgis.core import QgsLayoutItemShape
+
+    geometry = scale_bar_geometry(spec, map_extent, plan)
+    segment_width = float(geometry["segment_width_mm"])
+    for index in range(int(geometry["segments"])):
+        shape = QgsLayoutItemShape(layout)
+        shape.setShapeType(QgsLayoutItemShape.Rectangle)
+        fill = (LAYOUT["scalebar_fill_dark"] if index % 2 else LAYOUT["scalebar_fill_light"])
+        shape.setSymbol(_rectangle_symbol(
+            fill, LAYOUT["scalebar_line_color"], LAYOUT["scalebar_border_width_mm"],
+        ))
+        shape.attemptMove(_position(
+            float(geometry["left_mm"]) + index * segment_width, float(geometry["top_mm"]),
+        ))
+        shape.attemptResize(_size(segment_width, float(geometry["height_mm"])))
+        layout.addLayoutItem(shape)
+
+    label_height = float(geometry["label_height_mm"])
+    label_top = float(geometry["top_mm"]) - float(geometry["label_gap_mm"]) - label_height
+    label_width = max(18.0, segment_width)
+    labels = (
+        (float(geometry["left_mm"]), "0"),
+        (float(geometry["left_mm"]) + float(geometry["width_mm"]),
+         f"{geometry['total_km']:g} km"),
     )
+    for anchor_x, text in labels:
+        _add_label(
+            layout, text, x_mm=anchor_x - label_width / 2.0, y_mm=label_top,
+            width_mm=label_width, height_mm=label_height, font_family=font_family,
+            font_size=float(LAYOUT["scalebar_font_size"]),
+            color=LAYOUT["scalebar_line_color"], bold=True,
+            align=qt.AlignHCenter, valign=qt.AlignVCenter,
+        )
 
 
-def _footer_note(spec):
-    """页脚审计脚注（极小字号）：只放最短的事实，不干扰图面。"""
+def _build_audit_strip(layout, spec, plan, font_family, qt):
+    """地图框与图例框之间的**薄审计条**：左坐标系 / 中 revision / 右未显示图层。
 
-    omitted = len(spec.omitted_layers or [])
-    return f"WGS84 · revision {spec.generated_from_revision} · 未显示图层 {omitted} 项"
+    字号明显小于图例条目（:data:`LAYOUT['footer_strip_font_size']`），颜色弱化但可读；
+    三段各自对齐到同一行的左 / 中 / 右，不进入地图绘图区、不压边框与比例尺。
+    """
+
+    from qgis.PyQt.QtGui import QColor
+
+    left = float(plan["map_left_mm"])
+    width = float(plan["map_width_mm"])
+    top = float(
+        plan.get("footer_strip_top_mm")
+        or (float(plan["map_top_mm"]) + float(plan["map_height_mm"]) + 1.6)
+    )
+    strip_height = float(plan.get("footer_strip_mm") or LAYOUT["footer_strip_mm"])
+    font_size = float(LAYOUT["footer_strip_font_size"])
+    color = QColor(LAYOUT["footer_strip_color"]).name()
+    third = width / 3.0
+    segments = (
+        (left, third, qt.AlignLeft, _coordinate_note(spec)),
+        (left + third, third, qt.AlignHCenter, _revision_note(spec)),
+        (left + 2 * third, third, qt.AlignRight, _omitted_note(spec)),
+    )
+    for x_mm, width_mm, align, text in segments:
+        _add_label(
+            layout, text, x_mm=x_mm, y_mm=top + 0.3, width_mm=width_mm,
+            height_mm=strip_height, font_family=font_family,
+            font_size=font_size, color=color, align=align, valign=qt.AlignVCenter,
+        )
 
 
-def _scale_bar_segment_km(spec):
-    """比例尺分段长度：按图面宽度取 1/2/5 十进制档，使总长约 30~45 mm。"""
+def _coordinate_note(spec):
+    return f"坐标系：{WGS84_AUTHID.replace('EPSG:', 'WGS84 / EPSG:')}"
 
-    width_km = float(spec.extent.width_km or 0.0)
-    if width_km <= 0:
-        return 5.0
-    target = width_km / 6.0
-    for step in (0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0):
-        if step >= target:
-            return step
-    return 100.0
+
+def _revision_note(spec):
+    return f"项目 revision：{spec.generated_from_revision}"
+
+
+def _omitted_note(spec):
+    return f"未显示图层：{len(spec.omitted_layers or [])} 项"
 
 
 # --------------------------------------------------------------------------- 标注
@@ -556,6 +665,14 @@ def _build_labels(layout, spec, map_extent, font_family):
 
     实现方式：每个标注一个 ``QgsLayoutItemLabel``（外加同文本的浅色偏移拷贝作为 halo）。
     不使用覆盖整页的自绘版面项——那会遮住地图与图例。
+
+    版式收口：
+
+    * 起点 / 终点使用**同一套偏移规则**（沿航路外法向向外偏移
+      :data:`LAYOUT['label_endpoint_offset_mm']`），偏移量大于星标半径，因此标签不压星标；
+    * 标注框宽度固定为 :data:`LAYOUT['label_box_width_mm']`，为长中文名称预留空间；
+    * 外侧在锚点左边时改用右对齐，标签始终**向外**展开（既不压星标也不出图）；
+    * 转弯点标签保持次级视觉优先级（更小字号、更小偏移）。
     """
 
     if not spec.labels or map_extent is None or map_extent.isEmpty():
@@ -569,6 +686,12 @@ def _build_labels(layout, spec, map_extent, font_family):
     lat_span = map_extent.height()
     if lon_span <= 0 or lat_span <= 0:
         return []
+    box_width = float(LAYOUT["label_box_width_mm"])
+    box_height = float(LAYOUT["label_box_height_mm"])
+    directions = {
+        "start": _endpoint_direction(spec, "start"),
+        "end": _endpoint_direction(spec, "end"),
+    }
     items = []
     for label in spec.labels:
         if label.longitude is None or label.latitude is None:
@@ -580,22 +703,84 @@ def _build_labels(layout, spec, map_extent, font_family):
         fy = (map_extent.yMaximum() - float(label.latitude)) / lat_span
         if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
             continue
-        offset_x, offset_y = _label_offset(label, style_item)
+        anchor_x = frame["x"] + fx * frame["width"]
+        anchor_y = frame["y"] + fy * frame["height"]
+        placement = _label_placement(
+            label, style_item, directions.get(label.kind), anchor_x, anchor_y,
+            frame, box_width,
+        )
         items.append(_label_item(
-            layout, label.text,
-            x_mm=frame["x"] + fx * frame["width"] + offset_x,
-            y_mm=frame["y"] + fy * frame["height"] + offset_y,
+            layout, label.text, x_mm=placement["x"], y_mm=placement["y"],
             font_family=font_family, style_item=style_item,
+            box_width=box_width, box_height=box_height, align=placement["align"],
         ))
     return items
 
 
-def _label_item(layout, text, *, x_mm, y_mm, font_family, style_item):
+def _label_style_safe(style_key):
+    try:
+        return label_style(style_key)
+    except KeyError:
+        return None
+
+
+def _endpoint_direction(spec, kind):
+    """端点处的**向外**单位方向（经纬度空间）：起终点各自背离航路内部。"""
+
+    points = [
+        point for point in (spec.route_geometry or [])
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+    if len(points) < 2:
+        return None
+    if kind == "start":
+        anchor, neighbour = points[0], points[1]
+    else:
+        anchor, neighbour = points[-1], points[-2]
+    dx = float(anchor[0]) - float(neighbour[0])
+    dy = float(anchor[1]) - float(neighbour[1])
+    norm = math.hypot(dx, dy)
+    if not math.isfinite(norm) or norm <= 0:
+        return None
+    return dx / norm, dy / norm
+
+
+def _label_placement(label, style_item, direction, anchor_x, anchor_y, frame, box_width):
+    """由锚点、偏移与地图框算出标签的落点与对齐方式（纯几何，不画任何东西）。"""
+
+    from qgis.PyQt.QtCore import Qt
+
+    if label.kind in ("start", "end"):
+        base = float(LAYOUT["label_endpoint_offset_mm"])
+        vx, vy = direction if direction else (1.0, 1.0)
+        screen_x, screen_y = vx, -vy
+        # 偏移方向过于水平时补一点垂直分量，避免标签与星标在同一水平线上。
+        if abs(screen_y) < 0.35:
+            screen_y = 0.35 if screen_y >= 0 else -0.35
+        offset_x = screen_x * base
+        offset_y = screen_y * base
+        if offset_x < 0:
+            return {"x": anchor_x + offset_x - box_width, "y": anchor_y + offset_y,
+                    "align": Qt.AlignRight}
+        return {"x": anchor_x + offset_x, "y": anchor_y + offset_y, "align": Qt.AlignLeft}
+    if label.kind == "turn":
+        base = float(LAYOUT["label_turn_offset_mm"])
+        return {"x": anchor_x + base, "y": anchor_y - base, "align": Qt.AlignLeft}
+    base = float(style_item["offset_mm"])
+    return {"x": anchor_x - 7.0, "y": anchor_y - base, "align": Qt.AlignLeft}
+
+
+def _label_item(layout, text, *, x_mm, y_mm, font_family, style_item,
+                box_width=None, box_height=None, align=None):
     """一个标注文本（含白色 halo 与定位点）。"""
 
     from qgis.PyQt.QtCore import Qt
     from qgis.PyQt.QtGui import QColor, QFont
     from qgis.core import QgsLayoutItemLabel
+
+    width = float(box_width if box_width is not None else LAYOUT["label_box_width_mm"])
+    height = float(box_height if box_height is not None else LAYOUT["label_box_height_mm"])
+    horizontal = align if align is not None else Qt.AlignLeft
 
     def make(content, color, dx, dy, size):
         item = QgsLayoutItemLabel(layout)
@@ -607,10 +792,10 @@ def _label_item(layout, text, *, x_mm, y_mm, font_family, style_item):
         item.setFontColor(QColor(color))
         item.setMarginX(0.0)
         item.setMarginY(0.0)
-        item.setHAlign(Qt.AlignLeft)
+        item.setHAlign(horizontal)
         item.setVAlign(Qt.AlignTop)
         item.attemptMove(_position(x_mm + dx, y_mm + dy))
-        item.attemptResize(_size(30.0, 5.0))
+        item.attemptResize(_size(width, height))
         layout.addLayoutItem(item)
         return item
 
@@ -622,37 +807,19 @@ def _label_item(layout, text, *, x_mm, y_mm, font_family, style_item):
     return item
 
 
-def _label_style_safe(style_key):
-    try:
-        return label_style(style_key)
-    except KeyError:
-        return None
-
-
-def _label_offset(label, style_item):
-    """简单、可解释的偏移：起终点向外，转弯点向上，地名向左上。"""
-
-    base = float(style_item["offset_mm"])
-    if label.kind == "start":
-        return (base, base)
-    if label.kind == "end":
-        return (base, -base)
-    if label.kind == "turn":
-        return (base, -base)
-    return (-7.0, -base)
-
-
 # --------------------------------------------------------------------------- 图例
 
 def _build_legend_block(layout, spec, page, font_family):
-    """地图下方的独立图例区：白底 + 边框 + **横向多列紧凑排列**。
+    """地图下方的独立图例区：白底 + 边框 + **统一的二维网格**（默认 2 列）。
 
-    版式要点（按产品要求）：
+    版式要点（本轮收口）：
 
-    * 标题「图 例」在地图框下方**居中**；
-    * 条目按语义分组**横向展开**为 2~3 列（不再是纵向长列表）；
-    * 符号与文字同行，行距紧凑；
-    * 不存在的图层不占位，因此图例高度随实际条目数自动收缩。
+    * 「图例」标题**独占一行**，位于框内左上，与内容之间不留大块空白；
+    * 2 列横向展开，左右两列按语义分组均衡（左 = 地理环境 + 障碍物，
+      右 = 既有设施 + 规划航路，见 :data:`~cns_planner.gis.figure_style.LEGEND_GROUP_COLUMNS`）；
+    * **符号框固定宽度、文本固定起始 x、行高统一**，因此面 / 线 / 点符号基线一致；
+    * 组标题略粗；组标题 → 组内条目间距小，组与组之间间距更大但统一；
+    * 不存在的图层不占位，因此图例框高度随实际条目数自适应，不出现大块空白。
     """
 
     from qgis.PyQt.QtCore import Qt
@@ -663,7 +830,10 @@ def _build_legend_block(layout, spec, page, font_family):
     left = float(plan["legend_left_mm"])
     width = float(plan["legend_width_mm"])
     height = float(plan["legend_height_mm"])
-    columns = max(1, int(plan.get("legend_columns") or 2))
+    side_padding = float(
+        plan.get("legend_side_padding_mm") or LAYOUT["legend_side_padding_mm"]
+    )
+    title_height = float(LAYOUT["legend_header_mm"])
 
     background = QgsLayoutItemShape(layout)
     background.setShapeType(QgsLayoutItemShape.Rectangle)
@@ -675,49 +845,64 @@ def _build_legend_block(layout, spec, page, font_family):
     background.attemptResize(_size(width, height))
     layout.addLayoutItem(background)
 
-    title_height = float(LAYOUT["legend_header_mm"])
+    # 标题独占一行：位于框内左上，垂直居中于标题行。
     _add_label(
-        layout, "图　例", x_mm=left + 4.0, y_mm=top - 0.4,
-        width_mm=float(LAYOUT["legend_symbol_box_mm"]) + 12.0, height_mm=title_height,
+        layout, "图　例", x_mm=left + side_padding, y_mm=top + 0.5,
+        width_mm=side_padding + float(LAYOUT["legend_symbol_box_mm"]) + 14.0,
+        height_mm=title_height - 1.2,
         font_family=font_family,
         font_size=float(LAYOUT["legend_title_font_size"]), color="#12233a",
-        bold=True, align=Qt.AlignLeft,
+        bold=True, align=Qt.AlignLeft, valign=Qt.AlignVCenter,
     )
 
     entries = _legend_entries(spec)
     if not entries:
         _add_label(
-            layout, "本图没有可独立成项的图层。", x_mm=left + 3.0,
-            y_mm=top + title_height + 1.0, width_mm=width - 6.0, height_mm=5.0,
+            layout, "本图没有可独立成项的图层。", x_mm=left + side_padding,
+            y_mm=top + title_height + 1.0, width_mm=width - 2 * side_padding,
+            height_mm=5.0,
             font_family=font_family, font_size=float(LAYOUT["legend_item_font_size"]),
             color="#4a5560",
         )
         return background
 
     row_height = float(plan.get("legend_row_mm") or LAYOUT["legend_row_mm"])
+    group_row = float(plan.get("legend_group_row_mm") or LAYOUT["legend_group_row_mm"])
+    group_gap = float(plan.get("legend_group_gap_mm") or LAYOUT["legend_group_gap_mm"])
+    group_item_gap = float(
+        plan.get("legend_group_item_gap_mm") or LAYOUT["legend_group_item_gap_mm"]
+    )
+    top_padding = float(
+        plan.get("legend_top_padding_mm") or LAYOUT["legend_top_padding_mm"]
+    )
     symbol_box = float(plan.get("legend_symbol_box_mm") or LAYOUT["legend_symbol_box_mm"])
-    column_gap = float(LAYOUT["legend_column_gap_mm"])
-    # 分列与版面规划**共用** gis/figure_legend 的同一套算法（含同样的行距），
+    gutter = float(plan.get("legend_text_gutter_mm") or LAYOUT["legend_text_gutter_mm"])
+    column_gap = float(
+        plan.get("legend_column_gap_mm") or LAYOUT["legend_column_gap_mm"]
+    )
+    # 分列与版面规划**共用** gis/figure_legend 的同一套算法（含同样的行距与语义分列），
     # 保证"框高"与"实际画出来的行"完全一致。
     geometry = legend_geometry(
-        entries, row_height=row_height,
-        group_row=float(plan.get("legend_group_row_mm") or LAYOUT["legend_group_row_mm"]),
+        entries, row_height=row_height, group_row=group_row,
         columns=max(1, int(plan.get("legend_columns") or LAYOUT["legend_default_columns"])),
-        header_height=title_height,
+        header_height=title_height, group_gap=group_gap,
+        group_item_gap=group_item_gap, group_columns=LEGEND_GROUP_COLUMNS,
+        top_padding=top_padding,
     )
     columns = max(1, int(geometry["columns"]))
-    column_width = (width - 2 * 4.0 - (columns - 1) * column_gap) / columns
-    start_y = top
+    column_width = (width - 2 * side_padding - (columns - 1) * column_gap) / columns
+    text_width = max(6.0, column_width - symbol_box - gutter)
     for column, y_offset, kind, text, style_key in geometry["rows"]:
-        x = left + 4.0 + column * (column_width + column_gap)
-        y = start_y + y_offset
+        x = left + side_padding + column * (column_width + column_gap)
+        y = top + y_offset
         if kind == "group":
             _add_label(
                 layout, text, x_mm=x, y_mm=y, width_mm=column_width,
-                height_mm=row_height * 1.05,
+                height_mm=group_row,
                 font_family=font_family,
                 font_size=float(LAYOUT["legend_group_font_size"]),
                 color=LAYOUT["legend_group_text_color"], bold=True,
+                valign=Qt.AlignVCenter,
             )
             continue
         if style_key:
@@ -726,14 +911,19 @@ def _build_legend_block(layout, spec, page, font_family):
                 picture = QgsLayoutItemPicture(layout)
                 picture.setPicturePath(picture_path)
                 picture.setResizeMode(QgsLayoutItemPicture.Zoom)
-                picture.attemptMove(_position(x, y + 0.25))
-                picture.attemptResize(_size(symbol_box, symbol_box * 0.8))
+                # 符号框固定宽度、行内垂直居中：面 / 线 / 点三种符号基线一致。
+                symbol_height = symbol_box * 0.8
+                picture.attemptMove(_position(
+                    x, y + max(0.0, (row_height - symbol_height) / 2.0),
+                ))
+                picture.attemptResize(_size(symbol_box, symbol_height))
                 layout.addLayoutItem(picture)
+        # 文本起始 x 固定 = 符号框右缘 + 固定间距（与符号形状无关）。
         _add_label(
-            layout, text, x_mm=x + symbol_box + 1.4, y_mm=y + 0.55,
-            width_mm=column_width - symbol_box - 2.0, height_mm=row_height * 1.05,
+            layout, text, x_mm=x + symbol_box + gutter, y_mm=y,
+            width_mm=text_width, height_mm=row_height,
             font_family=font_family, font_size=float(LAYOUT["legend_item_font_size"]),
-            color=LAYOUT["legend_item_text_color"],
+            color=LAYOUT["legend_item_text_color"], valign=Qt.AlignVCenter,
         )
     return background
 
@@ -893,5 +1083,5 @@ def _color(value):
 
 __all__ = [
     "FigureRenderError", "QgisFigureRenderer", "build_layers", "choose_font_family",
-    "ensure_fonts_registered", "north_arrow_path", "spec_subtitle",
+    "ensure_fonts_registered", "north_arrow_path", "scale_bar_geometry", "spec_subtitle",
 ]

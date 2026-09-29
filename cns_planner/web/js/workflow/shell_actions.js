@@ -17,6 +17,7 @@
  */
 import {sourceStateText} from './presentation.js';
 import {recordExplicitProject} from '../state/explicit_project.js';
+import {activeMapFigure,getMapFigureState,refreshMapFigureState} from './map_figure_state.js';
 
 /**
  * @param {object} deps
@@ -184,20 +185,22 @@ export function createShellActions({getNode,panelError}){
   /**
    * 打开/下载已生成的专题图产物（或它的 FigureSpec JSON）。
    *
-   * 只接受**已有图件记录**的 figure_id；没有生成过时给出明确中文原因，
-   * 绝不自动触发生成。
+   * **图号来源（code review 修复项）**：一律取独立的 `mapFigureState.active_figure_id`
+   * （由 `GET /api/map-figures/state` 投影），**不再**读 `flow.map_figures` —— 图件索引
+   * 不进入 ProjectState，flow 里永远看不到新生成的图件。
+   *
+   * 状态尚未读取时先读一次（页面 refresh 后的第一次点击也不会误报"没有图件"）。
+   * `kind=spec` 才会返回 FigureSpec JSON；缺少它时服务端按默认的 png 产物返回，
+   * 于是"下载规格"会下载到一张 PNG。
    */
-  async function downloadMapFigure(specOnly,{api,flow,onMissing}={}){
-    const collection=(flow&&flow.map_figures)||{},records=Array.isArray(collection.items)?collection.items:[];
-    const active=records.find(item=>item.figure_id===collection.active_figure_id)
-      ||records[records.length-1]||null;
+  async function downloadMapFigure(specOnly,{api,onMissing}={}){
+    if(!getMapFigureState().loaded)await refreshMapFigureState({api});
+    const active=activeMapFigure();
     if(!active||!active.figure_id){
       const message='尚无可下载的专题成果图。请先在上方选择模板与航路，然后点击「生成 PNG」。';
       if(typeof onMissing==='function')onMissing(message);
       throw Error(message);
     }
-    // kind=spec 才会返回 FigureSpec JSON；缺少它时服务端按默认的 png 产物返回，
-    // 于是"下载规格"会下载到一张 PNG（code review 修复项）。
     const url='/api/map-figures/artifact?'+new URLSearchParams({
       figure_id:active.figure_id,kind:specOnly?'spec':'png'});
     const blob=await api(url);

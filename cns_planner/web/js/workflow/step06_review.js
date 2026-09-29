@@ -29,6 +29,8 @@
 // =========================================================
 import {escapeHtml,shell,statusBadge,statusText,readinessText,emptyReasonText,
   advancedAuditNote,blockerList,wbPanel,wbBlock,wbSegHint,wbDisclosure} from './common.js';
+import {activeMapFigure,applicabilityText,getMapFigureState,refreshMapFigureState} from
+  './map_figure_state.js';
 
 // ---- 二级任务分段 -----------------------------------------------------------
 // id 稳定（review-*），标签是第一视觉层的业务语言：
@@ -578,6 +580,13 @@ function deliveryPanel(flow){
  *  - 不重算任何业务结论，也不回写航路 / CNS 规划状态；
  *  - 缺数据的图层会被省略并在服务端 FigureSpec 中登记原因，这里如实显示；
  *  - **绝不自动生成**：只有用户点击「预览」/「生成 PNG」才会制图。
+ *
+ * 状态来源（code review 修复项）
+ *  - 图件记录来自 `GET /api/map-figures/state` 的独立只读投影
+ *    （`workflow/map_figure_state.js`），**不再**依赖 `flow.map_figures`：
+ *    图件索引不进入 ProjectState，所以 flow 里永远看不到新图件；
+ *  - 首次进入读取一次，整页 refresh 后重新读取，导出成功后重新读取；
+ *  - 下载 PNG / 规格 JSON 一律按 `mapFigureState.active_figure_id`。
  */
 const MAP_FIGURE_TEMPLATES=[
   ['route_overview_v1','航路周边状况图',true],
@@ -605,12 +614,15 @@ function mapFigureRouteOptions(flow){
   }).join('');
 }
 
-export function mapFiguresModel(flow){
+export function mapFiguresModel(flow,figureState){
   const routes=flow.operational_routes||[],plottable=routes.filter(route=>(route.path||[]).length>=2);
-  const collection=flow.map_figures||{},records=Array.isArray(collection.items)?collection.items:[];
-  const active=records.find(item=>item.figure_id===collection.active_figure_id)||records[records.length-1]||null;
+  const state=figureState||getMapFigureState();
+  const collection=state?.records||{},records=Array.isArray(collection.items)?collection.items:[];
+  const active=records.find(item=>item.figure_id===collection.active_figure_id)||null;
   return {
     routeCount:routes.length,plottableCount:plottable.length,records,active,
+    loaded:Boolean(state?.loaded),loading:Boolean(state?.loading),error:String(state?.error||''),
+    catalog:state?.catalog||null,
     canGenerate:plottable.length>0,
     reason:plottable.length>0?'':(routes.length>0
       ?'当前运行航路的几何顶点不足，无法制图。'
@@ -626,13 +638,36 @@ function omittedLayerLines(active){
     +'：'+escapeHtml(item.reason||'数据不可用')+'</small>').join('');
 }
 
-function mapFigurePanel(flow){
+/** 当前图件状态的中文结论：current / stale_revision 各自说清含义。 */
+function mapFigureStatusNote(model){
+  const active=model.active;
+  if(active){
+    const applicability=active.current_applicability||'current';
+    if(applicability==='stale_revision')return applicabilityText(applicability);
+    return applicabilityText(applicability);
+  }
+  if(model.error)return '读取图件状态失败：'+model.error;
+  if(!model.loaded)return '正在读取图件状态…';
+  if(model.records.length)return '已有历史图件，但没有指向当前航路的有效图件；请重新生成。';
+  return '尚未生成任何图件。';
+}
+
+/**
+ * 专题图区域正文（**可单独重渲染**）。
+ *
+ * 之所以拆出来：导出成功后只需局部刷新这一块，绝不整页重渲染（那会丢掉用户在其它
+ * 分段里填写的草稿与滚动位置）。
+ */
+function mapFigureRegionBody(flow){
   const model=mapFiguresModel(flow),active=model.active;
   const routeOptions=mapFigureRouteOptions(flow);
   const generatedAt=active&&active.generated_at?escapeHtml(active.generated_at):'—';
   const bytes=active&&Number.isFinite(active.image_bytes)?(active.image_bytes/1024).toFixed(0)+' KB':'—';
+  const applicability=active?(active.current_applicability||'current'):null;
+  const stale=applicability==='stale_revision';
   return reviewBlock('专题成果图',
     '<p class="parameter-note">专题图只读消费当前权威运行航路与已配置 GIS 数据源，用 QGIS 版面程序化生成（上方地图、下方图例），不会重算或回写任何业务结论。缺数据的图层会被省略并写明原因。</p>'
+    +(stale?'<p class="inline-error">'+escapeHtml(applicabilityText('stale_revision'))+'</p>':'')
     +'<label>模板<select id="mapFigureTemplate">'+mapFigureTemplateOptions()+'</select></label>'
     +'<label>航路<select id="mapFigureRoute">'+routeOptions
       +(routeOptions?'':'<option value="">（当前没有可制图的运行航路）</option>')+'</select></label>'
@@ -644,12 +679,75 @@ function mapFigurePanel(flow){
     +reviewBlock('当前图件',
       kvRow('模板',active?escapeHtml((active.title||active.template_id)):'尚未生成')
       +kvRow('航路',active?escapeHtml(active.route_id||'—'):'—')
-      +kvRow('状态',active?statusBadge(active.current_applicability||'current'):statusBadge('not_calculated'))
+      +kvRow('状态',active?statusBadge(applicability,applicabilityText(applicability))
+        :statusBadge('not_calculated'),mapFigureStatusNote(model))
       +kvRow('图件 revision',active?escapeHtml(String(active.project_revision??'—')):'—','项目当前 revision '+String(flow.revision??'—'))
       +kvRow('格式 / DPI',active?escapeHtml(String(active.format||'png').toUpperCase())+' · '+escapeHtml(String(active.dpi??'—')):'—')
       +kvRow('生成时间',generatedAt)+kvRow('文件大小',bytes))
     +reviewBlock('本图未显示的图层',omittedLayerLines(active)),
-    '图件记录保存在当前项目目录的 artifacts/map_figures/ 下；项目变更后旧图仍可打开，但会标记为旧 revision，不代表当前项目。');
+    '图件记录保存在当前项目目录的 artifacts/map_figures/routes/<航路>/ 下；图件索引不进入项目状态，因此项目变更后旧图仍可打开，但会被标记为「'+applicabilityText('stale_revision')+'」。');
+}
+
+function mapFigurePanel(flow){
+  // 稳定容器 id：导出成功后只替换这一块（局部刷新，不整页重渲染）。
+  return '<div id="mapFigureRegion" data-map-figure-region="true">'
+    +mapFigureRegionBody(flow)+'</div>';
+}
+
+/**
+ * 局部刷新专题图区域（并重新绑定该区域内的按钮）。
+ *
+ * @param {object} c 步骤上下文（需要 `flow()` 与 `api`）
+ * @returns {boolean} 是否真的刷新了已挂载的容器
+ */
+export function refreshMapFigureRegion(c){
+  if(!c||typeof document==='undefined')return false;
+  const host=document.getElementById('mapFigureRegion');
+  if(!host)return false;
+  host.innerHTML=mapFigureRegionBody(c.flow?c.flow():{});
+  bindMapFigureActions(c);
+  return true;
+}
+
+/** 首次进入 / 首次渲染读取一次真实图件状态，然后局部刷新。 */
+export function ensureMapFigureState(c){
+  const state=getMapFigureState();
+  if(state.loaded||state.loading)return false;
+  if(!c||typeof c.api!=='function')return false;
+  refreshMapFigureState({api:c.api})
+    .then(()=>refreshMapFigureRegion(c))
+    .catch(()=>{/* 失败已记进 mapFigureState.error，界面会如实显示 */});
+  return true;
+}
+
+/** 导出流程：POST export → GET state → 局部刷新（**绝不**安装成 workflow）。 */
+async function exportMapFigure(c){
+  const template=c.$('mapFigureTemplate')?.value||'route_overview_v1';
+  const routeId=c.$('mapFigureRoute')?.value||c.flow().operational_routes?.[0]?.route_id||null;
+  // computeAction：原样返回 POST 响应，不把它当 workflow 快照安装（resourceAction 会），
+  // 因此 export 的局部响应不可能污染 flow。
+  const response=await c.computeAction('/api/map-figures/export',{
+    template_id:template,route_id:routeId||null,format:'png',dpi:300,
+  });
+  await refreshMapFigureState({api:c.api});
+  refreshMapFigureRegion(c);
+  const figureId=response?.figure_id||activeMapFigure()?.figure_id||'';
+  if(c.panelError)c.panelError('专题图已生成'
+    +(response?.reused?'（复用已有图件）':'')+'：'+figureId,'success');
+  return response;
+}
+
+/** 专题图区域内的按钮绑定（初次渲染与局部刷新共用同一份）。 */
+function bindMapFigureActions(c){
+  // 专题成果图：三个入口都不自动触发——预览 / 生成 / 下载全部由用户显式点击。
+  c.actionButton('previewMapFigure',async()=>{
+    const template=c.$('mapFigureTemplate')?.value||'route_overview_v1';
+    const routeId=c.$('mapFigureRoute')?.value||'';
+    await c.previewMapFigure({template_id:template,route_id:routeId});
+  });
+  c.actionButton('exportMapFigure',()=>exportMapFigure(c));
+  c.actionButton('downloadMapFigure',()=>c.downloadMapFigure());
+  c.actionButton('downloadMapFigureSpec',()=>c.downloadMapFigure('spec'));
 }
 // ---- 高级：需求依据 / 布站提案证据 ------------------------------------------
 function requirementPanel(flow){
@@ -716,19 +814,9 @@ export function bind(c){
   c.actionButton('downloadReportHtml',()=>c.downloadPlanningReport('html'));
   c.actionButton('downloadReportPdf',()=>c.downloadPlanningReport('pdf'));
   c.actionButton('downloadReportPackage',()=>c.downloadPlanningReport('package'));
-  // 专题成果图：三个入口都不自动触发——预览 / 生成 / 下载全部由用户显式点击。
-  c.actionButton('previewMapFigure',async()=>{
-    const template=c.$('mapFigureTemplate')?.value||'route_overview_v1';
-    const routeId=c.$('mapFigureRoute')?.value||'';
-    await c.previewMapFigure({template_id:template,route_id:routeId});
-  });
-  c.actionButton('exportMapFigure',()=>c.resourceAction('/api/map-figures/export',{
-    template_id:c.$('mapFigureTemplate')?.value||'route_overview_v1',
-    route_id:c.$('mapFigureRoute')?.value||c.flow().operational_routes?.[0]?.route_id||null,
-    format:'png',dpi:300,
-  }));
-  c.actionButton('downloadMapFigure',()=>c.downloadMapFigure());
-  c.actionButton('downloadMapFigureSpec',()=>c.downloadMapFigure('spec'));
+  // 专题成果图：首次进入读取一次真实图件状态（来自外部 index，不读 flow.map_figures）。
+  ensureMapFigureState(c);
+  bindMapFigureActions(c);
   // 显式评价：不存在任何自动后台评价，前端只提交一次 POST 并转印后端结果。
   c.actionButton('evaluateRouteSafetyEvidenceV2',()=>c.resourceAction(
     '/api/route-safety-evidence-v2/evaluate',{}));

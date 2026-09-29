@@ -349,7 +349,6 @@ def test_land_polygon_holes_reach_the_renderer_geometry():
 
 def test_coverage_reason_never_hardcodes_a_coverage_claim():
     """覆盖说明只能来自数据源记录；无记录时如实说明，不得声称"覆盖全部岛群"。"""
-
     empty = _coverage_reason({})
     assert "覆盖全部" not in empty and "全部岛群" not in empty
     assert "未记录" in empty
@@ -363,8 +362,147 @@ def test_coverage_reason_never_hardcodes_a_coverage_claim():
     assert "1/2" in derived and "99.98%" in derived and "372/373" in derived
 
 
-# ---- 6. 参数契约 ------------------------------------------------------------
+# ---- 5b. 带洞 Polygon 完整链 + 自省严格化（需要真实 PyQGIS / OGR） -----------
 
+#: 真实带洞多边形数据源的几何（WGS84 经纬度）。
+_HOLE_OUTER = [(122.05, 30.02), (122.22, 30.02), (122.22, 30.09), (122.05, 30.09), (122.05, 30.02)]
+_HOLE_INNER = [(122.11, 30.045), (122.16, 30.045), (122.16, 30.065), (122.11, 30.065), (122.11, 30.045)]
+
+
+def _write_polygon_geojson(path, ring_pairs, *, layer_name="land", geometry_type="polygon"):
+    """用 OGR 写一个**真实**数据源（用于端到端链测试，绝不用内存几何冒充数据源）。"""
+
+    from osgeo import ogr, osr
+
+    driver = ogr.GetDriverByName("GeoJSON")
+    if path.exists():
+        driver.DeleteDataSource(str(path))
+    dataset = driver.CreateDataSource(str(path))
+    spatial = osr.SpatialReference()
+    spatial.ImportFromEPSG(4326)
+    kind = ogr.wkbPolygon if geometry_type == "polygon" else ogr.wkbPoint
+    layer = dataset.CreateLayer(layer_name, spatial, kind)
+    for rings in ring_pairs:
+        if geometry_type == "polygon":
+            geometry = ogr.Geometry(ogr.wkbPolygon)
+            for ring in rings:
+                linear = ogr.Geometry(ogr.wkbLinearRing)
+                for longitude, latitude in ring:
+                    linear.AddPoint_2D(float(longitude), float(latitude))
+                geometry.AddGeometry(linear)
+        else:
+            geometry = ogr.Geometry(ogr.wkbPoint)
+            geometry.AddPoint_2D(float(rings[0]), float(rings[1]))
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(geometry)
+        layer.CreateFeature(feature)
+        feature = None
+    dataset = None
+
+
+def test_polygon_with_hole_source_reaches_renderer_interior_rings(tmp_path):
+    """完整链：真实带洞 Polygon 数据源 → ``_read_polygons`` → materialize → FigureSpec → QGIS 图层。
+
+    断言两条事实：
+
+    1. QGIS 几何的 ``numInteriorRings() > 0``（内环真的进了渲染器）；
+    2. 内环**没有**被当成独立的陆地多边形（陆地要素数仍为 1）。
+    """
+
+    qgis = pytest.importorskip("qgis", reason="需要 PyQGIS 走真实渲染器几何")
+    del qgis
+    from qgis.core import QgsProject, QgsRectangle
+
+    from cns_planner.application.map_figure_service import (
+        MaterializationContext, _read_polygons, materialize,
+    )
+    from cns_planner.gis.figure_spec import FigureSpec
+    from cns_planner.gis.qgis_figure_renderer import build_layers
+
+    source = tmp_path / "land_with_hole.geojson"
+    _write_polygon_geojson(source, [[_HOLE_OUTER, _HOLE_INNER]])
+
+    viewport = QgsRectangle(122.0, 30.0, 122.4, 30.1)
+    polygons, reason = _read_polygons(str(source), "land", viewport)
+    assert reason == ""
+    assert len(polygons) == 1, "一个带洞多边形必须仍然只是一个多边形"
+    assert len(polygons[0]["exterior"]) == 5
+    assert len(polygons[0]["holes"]) == 1, "内环必须在 holes 里（不是第二个平级 ring）"
+
+    extent = _extent()
+    result = materialize(MaterializationContext(
+        state={}, paths={"cartographic_land": str(source)}, route={},
+        extent=extent, parameters={},
+    ))
+    land = next(layer for layer in result.layers if layer.layer_key == "land")
+    assert land.source_status == "available"
+    assert land.feature_count == 1, "内环不得被当作独立陆地多边形"
+    holes = (land.data or {}).get("polygon_holes") or {}
+    assert sum(len(items or []) for items in holes.values()) == 1
+    assert land.source_detail["hole_ring_count"] == 1
+
+    spec = FigureSpec(
+        template_id="route_overview_v1", template_version=1, title="带洞完整链",
+        route_id="R0007", route_source="operational_routes",
+        route_geometry=[[122.05, 30.02], [122.22, 30.09]],
+        extent=extent, extent_mode="chain_test", layers=[land],
+    )
+    project = QgsProject()
+    try:
+        built = build_layers(spec, project)
+        assert built, "带洞陆地图层必须仍然可绘制"
+        features = list(built[0].getFeatures())
+        assert len(features) == 1
+        geometry = features[0].geometry()
+        assert geometry.constGet().numInteriorRings() > 0
+    finally:
+        project.clear()
+
+
+def test_damaged_and_non_polygon_cartographic_land_are_unavailable(tmp_path):
+    """自省严格化：损坏文件与非面矢量都必须报告 unavailable（不是"范围内没有面要素"）。"""
+
+    qgis = pytest.importorskip("qgis", reason="需要 PyQGIS/OSGeo 做真实自省")
+    del qgis
+
+    from cns_planner.application.map_figure_service import (
+        MaterializationContext, _cartographic_land_state,
+    )
+
+    def state_for(path):
+        return _cartographic_land_state(MaterializationContext(
+            state={}, paths={"cartographic_land": str(path)}, route={},
+            extent=_extent(), parameters={},
+        ))
+
+    # a) 文件存在但内容不是矢量数据集（损坏 / 非矢量）。
+    broken = tmp_path / "cartographic_land_broken.gpkg"
+    broken.write_bytes(b"this is definitely not a geopackage")
+    status, reason, detail = state_for(broken)
+    assert status == "unavailable"
+    assert reason and detail["inspection"]["status"] != "passed"
+    assert "没有面要素" not in reason
+
+    # b) 真实可读但**不是面**的矢量数据集（点图层）。
+    points = tmp_path / "cartographic_land_points.geojson"
+    _write_polygon_geojson(
+        points, [[122.10, 30.05], [122.20, 30.06]], layer_name="stations",
+        geometry_type="point",
+    )
+    status, reason, detail = state_for(points)
+    assert status == "unavailable"
+    assert detail["inspection"]["is_polygon"] is False
+    assert "Polygon" in reason or "面" in reason
+
+    # c) 真实的面矢量数据集：只有同时通过自省且是面才允许 available。
+    good = tmp_path / "cartographic_land_ok.geojson"
+    _write_polygon_geojson(good, [[_HOLE_OUTER, _HOLE_INNER]])
+    status, reason, detail = state_for(good)
+    assert status == "available" and reason == ""
+    assert detail["inspection"]["is_polygon"] is True
+
+
+# ---- 6. 参数契约 ------------------------------------------------------------
 def test_parameter_contract_rejects_invalid_values():
     from cns_planner.reporting.map_templates import (
         MapFigureParameterInvalid, parameters,

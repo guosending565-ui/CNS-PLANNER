@@ -26,36 +26,53 @@ def legend_segments(entries):
     return segments
 
 
-def segment_heights(segments, *, row_height=None, group_row=None):
-    """每一段的高度（组标题行 + 该组条目行）。"""
+def segment_heights(segments, *, row_height=None, group_row=None, group_gap=None,
+                    group_item_gap=None):
+    """每一段的高度（组标题行 + 组内条目行 + 组与组之间的统一间距）。"""
 
     row = float(row_height if row_height is not None else LAYOUT["legend_row_mm"])
     group = float(group_row if group_row is not None else LAYOUT["legend_group_row_mm"])
-    gap = float(LAYOUT["legend_group_gap_mm"])
+    gap = float(group_gap if group_gap is not None else LAYOUT["legend_group_gap_mm"])
+    item_gap = float(
+        group_item_gap if group_item_gap is not None
+        else LAYOUT["legend_group_item_gap_mm"]
+    )
     heights = []
     for segment in segments:
-        header = (group + gap) if segment["group"] else 0.0
+        header = (group + item_gap + gap) if segment["group"] else 0.0
         heights.append(header + len(segment["items"]) * row)
     return heights
 
 
-def plan_columns(segments, *, row_height=None, group_row=None, columns=None):
+def plan_columns(segments, *, row_height=None, group_row=None, columns=None,
+                 group_gap=None, group_item_gap=None, group_columns=None):
     """把分组段分到各列（保持顺序、整组不拆分）。
 
     返回 ``(columns_used, [(segment_index, column), ...], heights)``。
 
-    目标：**列数尽量少（横向紧凑）且各列高度尽量均衡**（避免"框很高、只有左侧有内容"）。
-    做法：对 1 / 2 / 3 列分别穷举所有保序分列方案（段数很少，枚举代价可忽略），
-    取"最大列高最小"的方案；列数相同时取更矮的那一个。
+    分列优先级：
+
+    1. ``group_columns`` 给出**语义分列**（组名 → 列号）且实际出现的组都有登记
+       → 直接采用。这正是产品建议的两列分组：左列 = 地理环境 + 障碍物，
+       右列 = 既有设施 + 规划航路；4 : 5 的条目分布本身就很均衡；
+    2. 否则回退到**自动均衡**：对 1 / 2 / 3 列分别穷举保序分列方案（段数很少，
+       枚举代价可忽略），取"最大列高最小"的方案；列数相同时取更矮的那一个。
     """
 
     row = float(row_height if row_height is not None else LAYOUT["legend_row_mm"])
     group = float(group_row if group_row is not None else LAYOUT["legend_group_row_mm"])
-    heights = segment_heights(segments, row_height=row, group_row=group)
+    heights = segment_heights(
+        segments, row_height=row, group_row=group, group_gap=group_gap,
+        group_item_gap=group_item_gap,
+    )
     limit = MAX_LEGEND_COLUMNS if columns is None else max(1, min(MAX_LEGEND_COLUMNS, int(columns)))
     preferred = limit
     if not heights:
         return 1, [], []
+    semantic = _semantic_placement(segments, group_columns, limit)
+    if semantic is not None:
+        used, placement = semantic
+        return used, list(enumerate(placement)), heights
     best = None
     for candidate in range(1, min(limit, len(heights)) + 1):
         for placement in _placements(len(heights), candidate):
@@ -70,6 +87,27 @@ def plan_columns(segments, *, row_height=None, group_row=None, columns=None):
     if best is None:  # pragma: no cover - heights 非空时前面的循环必然给出结果
         return 1, [(index, 0) for index in range(len(heights))], heights
     return best[1], list(enumerate(best[2])), heights
+
+
+def _semantic_placement(segments, group_columns, limit):
+    """语义分列：``{组名: 列号}``。任何未登记的组都让整体回退到自动分列。"""
+
+    if not group_columns:
+        return None
+    placement, used = [], set()
+    for segment in segments:
+        group = segment.get("group") or ""
+        column = group_columns.get(group)
+        if column is None:
+            return None
+        column = int(column)
+        if column < 0 or column >= limit:
+            return None
+        placement.append(column)
+        used.add(column)
+    if not used or sorted(used) != list(range(len(used))):
+        return None
+    return len(used), placement
 
 
 def _placements(count, columns):
@@ -90,34 +128,60 @@ def _placements(count, columns):
 
 
 def legend_geometry(entries, *, row_height=None, group_row=None, columns=None,
-                    header_height=None):
+                    header_height=None, group_gap=None, group_item_gap=None,
+                    group_columns=None, top_padding=None):
     """一次性给出图例的列数、每行位置与整框高度。
 
     ``entries`` 是**图例条目**列表（每项含 ``group``）。返回：
 
     * ``columns``：实际列数；
     * ``rows``：``[(column, y_offset_mm, kind, text, style_key), ...]``；
-    * ``height_mm``：框高（含标题行），列高取最大值。
+    * ``height_mm`` / ``box_height_mm``：框高（含标题行），列高取最大值。
+
+    统一的二维网格模型（版式收口的关键）：
+
+    * **标题独占一行**（``title_height_mm``），位于框内左上；
+    * 每列内容从 ``header_height + top_padding`` 开始，标题与内容之间不留大块空白；
+    * 组标题与组内条目行高统一（``group_row_mm`` / ``row_mm``），符号框宽度固定、
+      文本起始 x 固定，因此面 / 线 / 点符号在同一基线上对齐；
+    * 组标题 → 组内条目用**小**间距（``group_item_gap``），组与组之间用**更大但统一**
+      的间距（``group_gap``）。
     """
 
     row = float(row_height if row_height is not None else LAYOUT["legend_row_mm"])
     group = float(group_row if group_row is not None else LAYOUT["legend_group_row_mm"])
-    gap = float(LAYOUT["legend_group_gap_mm"])
+    gap = float(group_gap if group_gap is not None else LAYOUT["legend_group_gap_mm"])
+    item_gap = float(
+        group_item_gap if group_item_gap is not None
+        else LAYOUT["legend_group_item_gap_mm"]
+    )
+    padding = float(
+        top_padding if top_padding is not None else LAYOUT["legend_top_padding_mm"]
+    )
     title_header = float(header_height if header_height is not None else LAYOUT["legend_header_mm"])
     segments = legend_segments(entries)
-    columns, placement, heights = plan_columns(
+    columns, placement, _heights = plan_columns(
         segments, row_height=row, group_row=group, columns=columns,
+        group_gap=gap, group_item_gap=item_gap, group_columns=group_columns,
     )
     titles = dict(LEGEND_GROUPS)
-    offsets = [title_header] * columns
+    offsets = [title_header + padding] * columns
+    started = [False] * columns
     rows = []
     for index, column in placement:
         segment = segments[index]
         if segment["group"]:
-            rows.append((column, offsets[column] + gap, "group",
+            if started[column]:
+                offsets[column] += gap
+            rows.append((column, offsets[column], "group",
                          titles.get(segment["group"], segment["group"]), None))
-            offsets[column] += group + gap
+            offsets[column] += group
+            started[column] = True
+        first = True
         for entry in segment["items"]:
+            if first and segment["group"]:
+                offsets[column] += item_gap
+                first = False
             rows.append((column, offsets[column], "item", entry["text"], entry["style_key"]))
             offsets[column] += row
     content = max(offsets) if offsets else title_header
@@ -131,6 +195,9 @@ def legend_geometry(entries, *, row_height=None, group_row=None, columns=None,
         "title_height_mm": title_header,
         "row_mm": row,
         "group_row_mm": group,
+        "group_gap_mm": gap,
+        "group_item_gap_mm": item_gap,
+        "top_padding_mm": padding,
     }
 
 

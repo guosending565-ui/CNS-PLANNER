@@ -98,7 +98,10 @@ def inspect_vector_dataset(path, *, expect_polygon=True):
     source = Path(path)
     if not source.is_file():
         raise ValueError("矢量数据源不存在")
-    dataset = ogr.Open(str(source), 0)
+    try:
+        dataset = ogr.Open(str(source), 0)
+    except Exception as exc:  # noqa: BLE001 - OGR 对损坏文件会抛 RuntimeError
+        raise ValueError(f"矢量数据源无法打开：{exc}") from exc
     if dataset is None:
         raise ValueError("矢量数据源无法打开")
     try:
@@ -173,7 +176,16 @@ def inspect_cartographic_land(path):
 
     try:
         record = inspect_vector_dataset(path, expect_polygon=True)
-    except (ValueError, OSError) as exc:
+    except ImportError as exc:
+        # 没有 OGR/GDAL 运行时：**不能**报告可用（那会让上层在真正读取时才发现失败）。
+        return {
+            "status": "unavailable",
+            "path": str(path) if path else None,
+            "reason": f"缺少 OGR/GDAL 运行时，无法自省制图陆地面：{exc}",
+            "is_polygon": None,
+            "feature_count": None,
+        }
+    except (ValueError, OSError, RuntimeError) as exc:
         return {
             "status": "unavailable",
             "path": str(path) if path else None,

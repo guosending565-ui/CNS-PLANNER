@@ -249,3 +249,53 @@ def test_export_dpi_is_bounded_and_recorded(tmp_path, dpi):
     })
     assert response.status == 200
     assert response.data["record"]["dpi"] > 0
+
+
+# ---- GET /api/map-figures/state：外部索引的只读投影 ---------------------------
+
+def test_state_endpoint_returns_the_external_index_projection(tmp_path):
+    """``GET /api/map-figures/state`` 读的是受控索引，**不**回写 workflow state。"""
+
+    router, state = _router(tmp_path, [ROUTE])
+    empty = router.get("/api/map-figures/state", {}, {})
+    assert empty.status == 200
+    assert empty.data["records"]["items"] == []
+    assert empty.data["records"]["active_figure_id"] is None
+    assert empty.data["records"]["count"] == 0
+    assert empty.data["catalog"]["available_template_ids"] == ["route_overview_v1"]
+
+    exported = router.post("/api/map-figures/export", {
+        "template_id": "route_overview_v1", "route_id": "R0001", "format": "png", "dpi": 300,
+    })
+    figure_id = exported.data["figure_id"]
+    payload = router.get("/api/map-figures/state", {}, {}).data
+    assert payload["records"]["active_figure_id"] == figure_id
+    assert payload["records"]["count"] == 1
+    item = payload["records"]["items"][0]
+    assert item["figure_id"] == figure_id
+    assert item["current_applicability"] == "current"
+    # 图件索引**不进 ProjectState**（否则每次出图都会推进业务 revision）。
+    assert "map_figures" not in state
+
+
+def test_state_endpoint_projects_stale_revision_read_only(tmp_path):
+    """项目 revision 前进后，旧图件在 state 投影里变成 ``stale_revision``（只读）。"""
+
+    router, state = _router(tmp_path, [ROUTE])
+    exported = router.post("/api/map-figures/export", {
+        "template_id": "route_overview_v1", "route_id": "R0001", "dpi": 300,
+    })
+    figure_id = exported.data["figure_id"]
+    index_path = router.context.map_figures.store.index_path
+    index_before = index_path.read_bytes()
+
+    state["revision"] = 42
+    payload = router.get("/api/map-figures/state", {}, {}).data
+    item = next(entry for entry in payload["records"]["items"]
+                if entry["figure_id"] == figure_id)
+    assert item["current_applicability"] == "stale_revision"
+    assert item["project_revision"] == 3
+    assert payload["records"]["project_revision"] == 42
+    # 只读投影：索引字节不变，也没有 ProjectState 写入。
+    assert index_path.read_bytes() == index_before
+    assert "map_figures" not in state

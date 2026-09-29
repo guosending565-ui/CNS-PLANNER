@@ -355,7 +355,10 @@ def test_store_paths_stay_inside_the_controlled_directory(tmp_path):
 
 
 def test_client_cannot_inject_output_paths(tmp_path):
-    """Service 层不接受任何路径参数：图号与目录全部由服务端派生。"""
+    """Service 层不接受任何路径参数：图号与目录全部由服务端派生。
+
+    归档采用 **route-first** 结构：``artifacts/map_figures/routes/<route>/<template>/<figure>/``。
+    """
 
     service, _, _ = _service(tmp_path, routes=[ROUTE])
     exported = service.export(template_id="route_overview_v1", route_id="R0001")
@@ -363,6 +366,8 @@ def test_client_cannot_inject_output_paths(tmp_path):
     assert record["relative_path"].endswith("figure.png")
     assert ".." not in record["relative_path"]
     assert Path(record["relative_path"]).is_absolute() is False
-    assert (tmp_path / record["relative_path"]).resolve().parent.parent == (
-        tmp_path / "artifacts" / "map_figures"
-    ).resolve()
+    assert Path(record["relative_path"]).parts[:3] == ("artifacts", "map_figures", "routes")
+    resolved = (tmp_path / record["relative_path"]).resolve()
+    assert resolved.is_relative_to((tmp_path / "artifacts" / "map_figures").resolve())
+    # 图号目录名仍必须是受控白名单值。
+    assert resolved.parent.name == exported["figure_id"]
