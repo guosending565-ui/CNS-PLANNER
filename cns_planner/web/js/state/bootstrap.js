@@ -95,8 +95,14 @@ export function withTimeout(promise, {timeout_ms = DEFAULT_BOOTSTRAP_TIMEOUT_MS,
  *   项目级操作串行化闸门（BUG-WORKSPACE-RESTORE-002）。**恢复请求必须在闸门内发出**，
  *   否则它可能与"上一次 update 的 workflow 明细 hydrate"交错，出现
  *   "右栏已恢复、地图未恢复"或"地图已恢复、Step02 认为工作区不存在"的 split-brain。
+ * @param {()=>Promise<object>} [deps.probeActive] A3 轻量探测（`GET /api/project/active`）：
+ *   服务器已持有明确项目时，首屏只等这一次毫秒级投影，完整 state 由调用方渐进加载。
+ *   不提供时的行为与修复前完全一致（既有调用方与测试不受影响）。
+ * @param {(active:object)=>any} [deps.landActive] A3 轻量落地（token / revision / 项目身份）。
  * @returns {Promise<{ok:boolean, state:object|null, restored:boolean, attempted:boolean,
- *   reason:string, error:Error|null, timeout:boolean}>}
+ *   reason:string, error:Error|null, timeout:boolean, light?:boolean}>}
+ *   ``light:true`` 表示本次只落地了轻量 active 投影（``probeActive`` / ``landActive`` 路径）：
+ *   返回值里的 ``state`` **不是**完整 state，调用方必须随后自行加载完整 ``/api/state``。
  */
 export async function bootstrapProjectState({
   api, restore, update,
@@ -105,6 +111,8 @@ export async function bootstrapProjectState({
   onError = () => {},
   onNotice = () => {},
   serialize = null,
+  probeActive = null,
+  landActive = null,
 } = {}) {
   for (const [name, value] of Object.entries({api, restore, update})) {
     if (typeof value !== 'function') throw new Error('bootstrapProjectState 缺少依赖：' + name);
@@ -116,6 +124,33 @@ export async function bootstrapProjectState({
   const queue = typeof serialize === 'function' ? serialize : run => run();
   const controller = typeof newAbortController === 'function' ? newAbortController() : null;
   const budget = {timeout_ms, signal: controller?.signal || null};
+
+  // A3 轻量启动：服务器已经持有**明确项目**时，首屏不等待完整 /api/state。
+  //
+  // 实测根因：same-project / 启动恢复的 fast path 虽然已经命中，但完整 /api/state 每次都会
+  // 重新投影整份 workflow snapshot（11.5-15 s、约 3.8 MB），于是"当前项目已激活"仍然要
+  // 等十几秒。轻量投影只回答 token / revision / project_storage / project / workspace /
+  // grid 摘要这一组装配事实，代价与项目规模无关。
+  //
+  // 只有"服务器确实持有明确项目"这一个分支走轻量返回：自动恢复项目仍走下面的完整流程，
+  // 因为那条流程随后无论如何都要以 fresh /api/state 建立权威 flow；轻量探测本身失败时
+  // 同样原样回退到完整流程，绝不因为一次探测失败改变任何既有语义。
+  if (typeof probeActive === 'function' && typeof landActive === 'function') {
+    let active = null;
+    try {
+      active = await withTimeout(Promise.resolve(probeActive()), {...budget, label: '读取当前项目'});
+    } catch (_) {
+      active = null;
+    }
+    const storage = (active && typeof active === 'object' && active.project_storage) || {};
+    if (active && typeof active === 'object' && storage.automatic === false && storage.directory) {
+      await landActive(active);
+      return {
+        ok: true, state: active, restored: false, attempted: false,
+        reason: 'active_project', error: null, timeout: false, light: true,
+      };
+    }
+  }
 
   let serverState;
   try {

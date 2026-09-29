@@ -105,6 +105,24 @@ class ApiRouter:
             if identity:
                 payload.update(identity)
             return Response(payload)
+        if path == "/api/project/active":
+            # A3：同项目再次打开 / 启动恢复的**轻量**只读投影。
+            #
+            # 它只回答一组装配事实：当前 active project 是谁、workflow revision 是多少、
+            # 写请求需要的会话 token 是什么、工作区 / 标准网格是否已生成。它**刻意**不走
+            # ``data.metadata()`` / ``workflow.snapshot()`` / 任何 ``result_snapshot()``，
+            # 也不打开任何 artifact：那条路径每次都会重新投影完整 workflow（实测
+            # 11.5-15 s、约 3.8 MB），正是"同一项目再次打开仍然很慢"的根因。
+            #
+            # 取值只有三处，全部是 O(1) 的既有轻量事实：
+            #   * ``data.token`` —— 会话令牌（写请求的 X-CNS-Token）；
+            #   * ``data.project_metadata_provider`` —— 与 ``/api/state`` 的
+            #     ``project_storage`` **同一个** provider（存储身份）；
+            #   * ``workflow.state`` 里已经存在的 project / workspace / grid 摘要与 revision。
+            #
+            # 不返回 ``grid_risk_v2``、候选 / 雷达明细、任何 artifact body，也不返回完整
+            # workflow snapshot —— 那些仍由各自的专用只读接口按需提供。
+            return Response(self._project_active())
         if path == "/api/state": return Response(context.qgis.call(data.metadata))
         if path == "/api/data-sources": return Response(context.qgis.call(lambda: data.metadata()["data_sources"]))
         if path == "/api/data-health": return Response(context.qgis.call(lambda: data.metadata()["data_health"]))
@@ -294,6 +312,81 @@ class ApiRouter:
         if isinstance(value, (list, tuple)):
             return value[0] if value else default
         return default if value is None else value
+
+    def _project_active(self):
+        """``GET /api/project/active`` 的轻量投影（见 GET 分派处的完整说明）。
+
+        只做"直接取值"：读当前 session state 与 active project 的存储身份，不做任何
+        业务重算、不深拷贝大容器、不打开文件、不调用 ``snapshot()``。因此它的代价与
+        项目规模无关（实测毫秒级），可以安全地放在"同一项目再次打开"与启动首屏上。
+        """
+
+        import hashlib
+
+        context = self.context
+        data = context.data
+        workflow = context.workflow
+        state = getattr(workflow, "state", None)
+        state = state if isinstance(state, dict) else {}
+        project = state.get("project")
+        project = project if isinstance(project, dict) else {}
+        workspace = state.get("workspace")
+        workspace = workspace if isinstance(workspace, dict) else None
+        grid = state.get("grid")
+        grid = grid if isinstance(grid, dict) else None
+        cells = grid.get("cells") if grid else None
+        try:
+            revision = int(state.get("revision") or 0)
+        except (TypeError, ValueError):
+            revision = 0
+        try:
+            project_revision = int(project.get("revision") or 0)
+        except (TypeError, ValueError):
+            project_revision = 0
+        # 与 ``/api/state`` 的 ``project_storage`` 完全同一个 provider：前端用它做项目
+        # 身份判定（file / directory / automatic），因此这里绝不能另算一套。
+        provider = getattr(data, "project_metadata_provider", None)
+        storage = provider() if callable(provider) else {}
+        storage = storage if isinstance(storage, dict) else {}
+        # 轻量身份指纹：只由"已经存在的标量事实"派生，供前端校验"我拿到的 active 与
+        # 我正在渲染的项目是不是同一个版本"。它不替代任何业务 fingerprint。
+        fingerprint = hashlib.sha256(
+            "\x1f".join(str(item) for item in (
+                project.get("project_id"), revision, project_revision,
+                (workspace or {}).get("revision"), (grid or {}).get("level"),
+                (grid or {}).get("status"), storage.get("file"),
+            )).encode("utf-8")
+        ).hexdigest()
+        return {
+            "token": getattr(data, "token", None) or getattr(context, "token", ""),
+            "revision": revision,
+            "project_storage": {
+                "automatic": bool(storage.get("automatic")),
+                "directory": storage.get("directory") or "",
+                "file": storage.get("file") or "",
+            },
+            "project": {
+                "project_id": project.get("project_id"),
+                "name": project.get("name"),
+                "revision": project_revision,
+            },
+            "workspace": {
+                "present": bool(workspace),
+                "revision": (workspace or {}).get("revision"),
+                "area_km2": (workspace or {}).get("area_km2"),
+            },
+            "grid": {
+                "generated": bool(cells),
+                "level": (grid or {}).get("level"),
+                "count": len(cells) if isinstance(cells, (list, dict)) else 0,
+            },
+            "workflow_revision": revision,
+            "workflow_fingerprint": fingerprint,
+            "semantics": (
+                "lightweight_active_project_projection_excluding_workflow_snapshot_"
+                "artifact_bodies_grid_risk_v2_and_candidate_or_radar_detail"
+            ),
+        }
 
     @staticmethod
     def _artifact_response(producer):

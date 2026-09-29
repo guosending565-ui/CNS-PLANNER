@@ -28,6 +28,7 @@ import {createSourceCenter} from './sources/source_center.js';
 import {syncSourcePathInputs} from './sources/source_inputs.js';
 import {createWorkflowSnapshotApplier} from './state/workflow_snapshot.js';
 import {recordExplicitProject,restoreLastExplicitProject} from './state/explicit_project.js';
+import {applyActiveProject} from './state/active_project.js';
 import {bootstrapProjectState} from './state/bootstrap.js';
 import {workspaceGridReadiness} from './state/readiness.js';
 import {setupTaskCenter} from './tasks.js';
@@ -711,14 +712,21 @@ async function openProject(projectDir,{onStage=null}={}){
     if(sameProject){
       await serializeProjectOperation(async()=>{
         timeStart('same-project confirm');
-        const fresh=await api('/api/state');
-        timeMark('GET state (same-project)');
-        // 轻量落地：刷新 token / revision / 存储信息与面板事实，但**保留**当前
-        // flow 与整张地图（pan / zoom / bitmap / grid cache 都不重建）。
-        applyState(fresh,{preserveMapView:true});
-        identity=projectIdentityOf(fresh)||identity;
-        recordExplicitProject(fresh);
-        timeMark('applyState (preserve map)');
+        // A3：同一项目不再 GET /api/state（那会重算完整 workflow 投影，实测 11.5-15 s）。
+        // 只读轻量 active 投影，校验 identity / revision，然后**保留当前 flow 与整张地图**。
+        const active=await api('/api/project/active');
+        timeMark('GET project/active (same-project)');
+        const applied=applyProjectActive(active);
+        timeMark('applyProjectActive (preserve flow + map)');
+        identity=applied.identity||identity;
+        recordExplicitProject({project_storage:active?.project_storage,workflow:{project:active?.project||{}}});
+        if(applied.revisionChanged){
+          // workflow revision 变了：当前 flow 已不是权威快照，这时才按需触发正式 refresh
+          // （唯一会把完整 state 重新落地并 hydrate 的分支）。
+          await applyProjectState(await api('/api/state'));
+          timeMark('GET state + apply (revision changed)');
+        }
+        // revision 没变：不做任何 hydrate —— 当前 flow / grid cache / bitmap / view 全部保留。
       });
       facts=projectFacts(flow);
       // Round 3：重新打开项目后，临时分析图层开关回到关闭（图例随之 hidden）。
@@ -974,6 +982,24 @@ function applyState(data,{preserveMapView=false}={}){
 }
 
 /**
+ * A3：轻量 active 落地 —— `GET /api/project/active` 的唯一安装点。
+ *
+ * 纯逻辑在 `state/active_project.js`（token / workflow revision / project_storage，
+ * 绝不触碰 layers / paths / bounds / 地图视图，也绝不把 `state.revision` 这个**渲染**
+ * 缓存版本与 workflow 乐观锁版本混用）；这里只做"赋回模块变量 + 通知 store"。
+ *
+ * @returns {{ok:boolean, revisionChanged:boolean, identity:string, revision:number|null}}
+ */
+function applyProjectActive(active){
+  const applied=applyActiveProject({state,flow,active});
+  if(!applied.ok)return{ok:false,revisionChanged:false,identity:'',revision:null};
+  state=applied.state;flow=applied.flow;
+  store.set({server:state,workflow:flow,mapView:view});
+  return {ok:true,revisionChanged:applied.revisionChanged,
+    identity:applied.identity||projectIdentityOf(),revision:applied.revision};
+}
+
+/**
  * 地图视图初始化已上移到「项目身份与地图视图生命周期」一节（紧跟 paint 之后）：
  * `ensureMapView` 必须与 `viewProjectIdentity` / `resetProjectMapState` 放在一起，
  * 否则"视图属于哪个项目"这一判定会被分散到多个分支，正是 BUG-MAP-RESTORE-001 的成因。
@@ -1023,48 +1049,109 @@ function reportBootstrapTiming(){
   try{window.__CNS_BOOTSTRAP_TIMING=result;}catch(_){/* 诊断输出失败不影响启动 */}
   try{console.info('[CNS 启动恢复耗时]',result);}catch(_){/* 同上 */}
 }
-// 启动编排（BUG-PROJECT-RESTORE-001 / BUG-BOOTSTRAP-LOAD-001 的唯一调用点）：
-// 1) 先取一次 /api/state（带超时）；2) 先 update → token/revision 就位 + 服务器项目先渲染；
-// 3) 服务器已有明确项目 → 直接采用，不重新 open；4) 服务器是自动恢复项目且浏览器缓存有
-//    明确目录 → 用当前会话的合法 token/revision 恰好恢复一次；5) 恢复成功再取 fresh
-//    state 并以 fresh workflow 渲染，之后才由该 flow 驱动项目空间数据 hydrate。
+/**
+ * 启动链上"完整 state 落地"的**唯一**实现（原内联 update 回调）。
+ *
+ * 它被两条路径共用：
+ *   * 既有完整启动链（自动恢复项目 / 轻量探测失败）的 update 回调；
+ *   * A3 轻量首屏之后的渐进加载（loadFullProjectStateAfterLightLanding）。
+ *
+ * 因为两条路径共用同一段代码，"右栏已恢复但地图没恢复"与"地图恢复了但 Step02 认为
+ * 工作区不存在"这两种 split-brain 在轻量启动下同样不可能出现。
+ */
+async function landBootstrapState(data,meta){
+  try{
+    let mark=performance.now();
+    const stage=label=>{const now=performance.now();bootstrapTiming.push({reason:meta?.reason||'',label,cost_ms:Math.round((now-mark)*10)/10});mark=now;};
+    if(meta?.reason==='server_state'||meta?.reason==='light_followup')$('loading').hidden=false;
+    // bootstrapProjectState already serializes every restore transition with
+    // `serializeProjectOperation`. Re-entering `update()` here queues behind
+    // the operation that is awaiting this callback and deadlocks forever at
+    // “正在打开项目…”. Land the authoritative state directly inside that
+    // existing gate; the initial server_state landing occurs before restore
+    // work is admitted, so it is safe on the same single bootstrap chain.
+    await applyProjectState(data);
+    stage('applyProjectState');
+    // A4：candidate / radar 明细不再阻塞启动链——先让首屏（project / workspace /
+    // L8 summary / nodes / altitude layers / map view）落地，大 sidecar 在后台补齐。
+    // 明细落地前的项目身份复核由 snapshotApplier 负责，迟到的旧项目结果会被丢弃。
+    startProjectDetailRecovery(projectIdentityOf());
+    stage('candidate/radar hydrate 已派发（不阻塞）');
+    // BUG-MAP-RESTORE-001：启动阶段的视图初始化必须在这里**一次性**完成，并显式记录
+    // "这个 view 属于哪个项目"。否则用户随后手工打开项目时，view 仍是非空但属于旧项目
+    // 的值，ensureMapView() 会被 `view == null` 判断骗过而跳过，地图就停在旧视图。
+    // 若此刻正有一个"打开项目"操作在执行（项目切换中），视图所有权已交给它，启动阶段
+    // 不再插手，避免两次 fit 互相覆盖。
+    if(!projectSwitchBusy)ensureMapView();
+    stage('ensureMapView');
+    if(!flow?.workspace?.bbox&&!state?.bounds)$('settings').showModal();
+    hideLoadingSoon();
+    stage('hideLoadingSoon');
+    reportBootstrapTiming();
+  }catch(exc){bootstrapFailure('前端初始化失败',exc);}
+}
+/**
+ * A3：轻量首屏的落地回调（`GET /api/project/active`）。
+ *
+ * 首屏只承诺一条**服务器事实**："当前项目已激活"，并让 token / revision / 项目身份
+ * 就地就位（写请求因此不会丢 token，也不会撞 revision 乐观锁）。它**不**渲染地图、
+ * 不 hydrate 明细 —— 那些属于随后渐进加载的完整 state。
+ */
+function landActiveProject(active){
+  const applied=applyProjectActive(active);
+  recordExplicitProject({project_storage:active?.project_storage,workflow:{project:active?.project||{}}});
+  const loading=$('loading');
+  if(loading){loading.hidden=false;loading.textContent='正在加载项目数据…';}
+  renderWorkflow();
+  const directory=String(active?.project_storage?.directory||'');
+  panelError('当前项目已激活 · '+projectNameText({project:active?.project})
+    +' · 项目目录：'+(directory||'—'),'success');
+  bootstrapTiming.push({reason:'active_project',label:'GET project/active（轻量首屏）',cost_ms:null});
+  return applied;
+}
+/**
+ * A3：轻量首屏之后的**渐进**加载：完整 state / workflow 落地 → 视图建立 → 明细恢复。
+ *
+ * 整条链走 update()（项目串行闸门），因此不会与"用户此刻触发的打开项目"交错。
+ * 首屏已经给出结论，所以这里失败只报可读原因，绝不把已经可用的界面退回空白。
+ */
+async function loadFullProjectStateAfterLightLanding(){
+  try{
+    // 与 bootstrap 的完整链共用同一条项目串行闸门与同一个落地实现：拿完整 state →
+    // landBootstrapState（安装 flow → 派发明细恢复 → 建立视图 → 收起 loading → 上报耗时）。
+    return await serializeProjectOperation(async()=>{
+      const data=await api('/api/state');
+      await landBootstrapState(data,{reason:'light_followup'});
+      return data;
+    });
+  }catch(exc){
+    bootstrapFailure('项目数据加载失败',exc);
+    return null;
+  }
+}
+// 启动编排（BUG-PROJECT-RESTORE-001 / BUG-BOOTSTRAP-LOAD-001 / A3 的唯一调用点）：
+// 1) A3：服务器已经持有明确项目时，首屏只等一次轻量 `GET /api/project/active`
+//    （毫秒级），token / revision / 项目身份就地就位并给出"当前项目已激活"结论；
+//    完整 state / workflow 由 loadFullProjectStateAfterLightLanding() 在首屏之后加载。
+// 2) 服务器是自动恢复项目（或轻量探测失败）时，沿用原有完整链：
+//    先取一次 /api/state（带超时）→ update → token/revision 就位 + 服务器项目先渲染；
+// 3) 服务器已有明确项目 → 直接采用，不重新 open；
+// 4) 自动恢复项目且浏览器缓存有明确目录 → 用当前会话的合法 token/revision 恰好恢复一次；
+// 5) 恢复成功再取 fresh state 并以 fresh workflow 渲染，之后才由该 flow 驱动项目空间数据 hydrate。
 bootstrapProjectState({
   api,
   restore:serverState=>restoreLastExplicitProject(serverState,{api}),
   // 恢复动作与 UI 落地共用同一条项目串行链：恢复 POST 只在队列轮到它时发出，
   // 因此不会与"上一次 update 的 workflow hydrate"交错（BUG-WORKSPACE-RESTORE-002）。
   serialize:run=>serializeProjectOperation(run),
-  update:async(data,meta)=>{
-    try{
-      let mark=performance.now();
-      const stage=label=>{const now=performance.now();bootstrapTiming.push({reason:meta?.reason||'',label,cost_ms:Math.round((now-mark)*10)/10});mark=now;};
-      if(meta?.reason==='server_state')$('loading').hidden=false;
-      // bootstrapProjectState already serializes every restore transition with
-      // `serializeProjectOperation`. Re-entering `update()` here queues behind
-      // the operation that is awaiting this callback and deadlocks forever at
-      // “正在打开项目…”. Land the authoritative state directly inside that
-      // existing gate; the initial server_state landing occurs before restore
-      // work is admitted, so it is safe on the same single bootstrap chain.
-      await applyProjectState(data);
-      stage('applyProjectState');
-      // A4：candidate / radar 明细不再阻塞启动链——先让首屏（project / workspace /
-      // L8 summary / nodes / altitude layers / map view）落地，大 sidecar 在后台补齐。
-      // 明细落地前的项目身份复核由 snapshotApplier 负责，迟到的旧项目结果会被丢弃。
-      startProjectDetailRecovery(projectIdentityOf());
-      stage('candidate/radar hydrate 已派发（不阻塞）');
-      // BUG-MAP-RESTORE-001：启动阶段的视图初始化必须在这里**一次性**完成，并显式记录
-      // "这个 view 属于哪个项目"。否则用户随后手工打开项目时，view 仍是非空但属于旧项目
-      // 的值，ensureMapView() 会被 `view == null` 判断骗过而跳过，地图就停在旧视图。
-      // 若此刻正有一个"打开项目"操作在执行（项目切换中），视图所有权已交给它，启动阶段
-      // 不再插手，避免两次 fit 互相覆盖。
-      if(!projectSwitchBusy)ensureMapView();
-      stage('ensureMapView');
-      if(!flow?.workspace?.bbox&&!state?.bounds)$('settings').showModal();
-      hideLoadingSoon();
-      stage('hideLoadingSoon');
-      reportBootstrapTiming();
-    }catch(exc){bootstrapFailure('前端初始化失败',exc);}
-  },
+  // A3：轻量探测 + 轻量落地。只有"服务器确实持有明确项目"这一个分支会走轻量返回。
+  probeActive:()=>api('/api/project/active'),
+  landActive:active=>landActiveProject(active),
+  update:async(data,meta)=>landBootstrapState(data,meta),
   onError:message=>{panelError(message);releaseLoading();},
   onNotice:message=>panelError(message),
+}).then(result=>{
+  // A3：首屏结论已经可见（"当前项目已激活"），这里再渐进加载完整 state / workflow。
+  if(result?.light)return loadFullProjectStateAfterLightLanding();
+  return null;
 }).catch(exc=>bootstrapFailure('无法连接本机地图服务',exc));
