@@ -78,6 +78,120 @@ def inspect_geopackage(path, kind, *, deep_geometry=False):
         connection.close()
 
 
+def inspect_vector_dataset(path, *, expect_polygon=True):
+    """**通用**矢量数据集自省（不套用任何业务 schema）。
+
+    为什么需要它：``inspect_geopackage`` 是**建筑专用**契约——它要求
+    ``height_m`` / ``source`` 等 buildings 字段，并强制要求空间索引。把制图陆地面
+    （``cartographic_land``）塞进那套 schema 会得到"缺少字段 height_m"这种与数据无关
+    的失败。本函数只回答与"能不能当矢量面用"直接相关的事实：
+
+    * 驱动 / 图层名 / 几何类型 / 要素数 / 图层范围 / 字段名 / CRS；
+    * 是否面几何（``expect_polygon`` 时非面即失败）；
+    * 是否带空间索引（仅作**事实**报告，不强制——小体量 GeoJSON 没有 rtree 也完全可用）。
+
+    只用 OGR 读取元数据（不遍历几何），失败即抛 ``ValueError``（调用方负责翻译）。
+    """
+
+    from osgeo import ogr, osr
+
+    source = Path(path)
+    if not source.is_file():
+        raise ValueError("矢量数据源不存在")
+    dataset = ogr.Open(str(source), 0)
+    if dataset is None:
+        raise ValueError("矢量数据源无法打开")
+    try:
+        if dataset.GetLayerCount() < 1:
+            raise ValueError("矢量数据源中没有图层")
+        layer = dataset.GetLayerByIndex(0)
+        name = str(layer.GetName() or "")
+        spatial = layer.GetSpatialRef()
+        authority = None
+        if spatial is not None:
+            code = spatial.GetAuthorityCode(None)
+            if code:
+                authority = f"EPSG:{code}"
+            elif spatial.ExportToProj4():
+                authority = spatial.ExportToProj4().strip()
+        definition = layer.GetLayerDefn()
+        fields = [
+            str(definition.GetFieldDefn(index).GetName())
+            for index in range(definition.GetFieldCount())
+        ]
+        declared = layer.GetGeomType() or ogr.wkbUnknown
+        geometry_type = ogr.GeometryTypeToName(declared)
+        is_polygon = "POLYGON" in str(geometry_type).upper()
+        if not is_polygon:
+            # 图层可能声明为 wkbUnknown（混合 Polygon / MultiPolygon 数据集的常见写法），
+            # 这时按**第一个非空要素**的真实几何类型判定，而不是按声明字符串。
+            layer.ResetReading()
+            for feature in layer:
+                geometry = feature.GetGeometryRef()
+                if geometry is None or geometry.IsEmpty():
+                    continue
+                actual = ogr.GeometryTypeToName(geometry.GetGeometryType())
+                geometry_type = f"{geometry_type} (first feature: {actual})"
+                is_polygon = "POLYGON" in str(actual).upper()
+                break
+            layer.ResetReading()
+        extent = layer.GetExtent(force=True)
+        options = []
+        try:
+            options = list(layer.GetMetadataItem("GEOMETRY_INDEX") or [])
+        except (AttributeError, TypeError):
+            options = []
+        return {
+            "status": "passed",
+            "path": str(source.resolve()),
+            "format": source.suffix.lower().lstrip("."),
+            "layer": name,
+            "geometry_type": geometry_type,
+            "is_polygon": is_polygon,
+            "feature_count": int(layer.GetFeatureCount(force=True)),
+            "crs": authority,
+            "extent": (
+                [float(extent[0]), float(extent[2]), float(extent[1]), float(extent[3])]
+                if extent else None
+            ),
+            "fields": fields,
+            "has_geometry_index": bool(layer.TestCapability(ogr.OLCFastSpatialFilter)),
+            "geometry_index_metadata": options,
+            "driver": str(dataset.GetDriver().GetDescription() or ""),
+            "read_only": True,
+        }
+    finally:
+        dataset = None
+
+
+def inspect_cartographic_land(path):
+    """制图陆地面（``cartographic_land``）的**独立**自省：只读，失败不抛异常。
+
+    与 :func:`inspect_geopackage` 的 buildings schema **完全无关**：它不要求任何业务
+    字段、也不要求空间索引，只判断"是不是一个可用的面矢量数据集"。
+    """
+
+    try:
+        record = inspect_vector_dataset(path, expect_polygon=True)
+    except (ValueError, OSError) as exc:
+        return {
+            "status": "unavailable",
+            "path": str(path) if path else None,
+            "reason": f"制图陆地面矢量自省失败：{exc}",
+            "is_polygon": None,
+            "feature_count": None,
+        }
+    if record is None:  # pragma: no cover - 上面的分支已覆盖
+        return {"status": "unavailable", "path": str(path), "reason": "制图陆地面无法自省"}
+    if not record["is_polygon"]:
+        return {
+            **record,
+            "status": "not_polygon",
+            "reason": f"制图陆地面必须是 Polygon/MultiPolygon，实际为 {record['geometry_type']}",
+        }
+    return record
+
+
 def _quote(identifier):
     return '"' + str(identifier).replace('"', '""') + '"'
 

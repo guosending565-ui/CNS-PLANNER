@@ -52,6 +52,13 @@ DEFAULT_SOURCE_FILES = ("projects/map_sources.json", "projects/data_sources.json
 #: 默认项目状态文件（站址落陆校验；缺失时跳过站址校验并如实说明）。
 DEFAULT_STATE_FILE = "projects/current_project.json"
 DEFAULT_OUTPUT_DIRECTORY = "projects/derived/cartographic_land"
+#: **运行时真正消费的文件名**。默认输出与它必须一致（code review 修复项）：
+#: ``cns_planner/gis/map_data.py::DEFAULT_PATHS["cartographic_land"]`` 指向的正是
+#: 这个 GPKG，所以"跑一次 derive"就等于"装好了运行时要读的数据源"，不需要人工改名。
+DEFAULT_OUTPUT_BASENAME = "cartographic_land_v1"
+DEFAULT_OUTPUT_EXTENSION = ".gpkg"
+#: 允许的输出矢量格式（GeoJSON 保留给调试与人工检查）。
+SUPPORTED_OUTPUT_EXTENSIONS = (".gpkg", ".geojson")
 DEFAULT_BBOX = (121.40, 29.45, 123.00, 31.20)
 
 #: 派生参数默认值（全部写进元数据，可被命令行覆盖）。
@@ -144,10 +151,14 @@ def parse_arguments():
     parser.add_argument("--dem", default=None, help="显式指定 DEM（覆盖角色解析）")
     parser.add_argument("--crosscheck-dem", default=None, help="显式指定交叉校验 DEM")
     parser.add_argument("--buildings", default=None, help="显式指定建筑足迹数据集")
+    # 默认输出与**运行时消费路径**一致：同一目录、同一基名、GPKG 格式。
     parser.add_argument("--out-geojson",
-                        default=f"{DEFAULT_OUTPUT_DIRECTORY}/cartographic_land_v1.geojson")
+                        default=(f"{DEFAULT_OUTPUT_DIRECTORY}/"
+                                 f"{DEFAULT_OUTPUT_BASENAME}{DEFAULT_OUTPUT_EXTENSION}"),
+                        help="输出矢量陆地面（默认 GPKG，即运行时消费的文件；"
+                             "可选 .geojson 供人工检查）")
     parser.add_argument("--out-metadata",
-                        default=f"{DEFAULT_OUTPUT_DIRECTORY}/cartographic_land_v1.json")
+                        default=f"{DEFAULT_OUTPUT_DIRECTORY}/{DEFAULT_OUTPUT_BASENAME}.json")
     parser.add_argument("--bbox", default=",".join(str(value) for value in DEFAULT_BBOX),
                         help="派生窗口 west,south,east,north（EPSG:4326）")
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
@@ -383,6 +394,80 @@ def validate(lands, *, buildings_path, state_path):
     return result
 
 
+def write_land_dataset(path, lands):
+    """把陆地面写成矢量数据集：``.geojson`` 直接写，``.gpkg`` 经 OGR 写（带空间索引）。
+
+    运行时消费的是 GeoPackage（``map_data.DEFAULT_PATHS["cartographic_land"]``），
+    因此默认输出 GPKG；GeoJSON 仍可用于人工检查与调试。
+    """
+
+    payload = json.dumps({
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"fid": index, "area_deg2": polygon.area},
+             "geometry": polygon.__geo_interface__}
+            for index, polygon in enumerate(lands)
+        ],
+    }, ensure_ascii=False)
+    suffix = Path(path).suffix.lower()
+    if suffix == ".geojson":
+        Path(path).write_text(payload, encoding="utf-8")
+        return
+    from osgeo import gdal, ogr, osr
+
+    gdal.UseExceptions()
+    spatial = osr.SpatialReference()
+    spatial.ImportFromEPSG(4326)
+    driver = ogr.GetDriverByName("GPKG")
+    if Path(path).exists():
+        driver.DeleteDataSource(str(path))
+    dataset = driver.CreateDataSource(str(path))
+    if dataset is None:
+        raise ValueError(f"无法创建 GeoPackage：{path}")
+    try:
+        # 几何类型用 wkbUnknown：本数据集同时含 Polygon 与 MultiPolygon，
+        # 声明成 MultiPolygon 会让驱动对 Polygon 要素报"不合规"警告。
+        layer = dataset.CreateLayer("cartographic_land", spatial, ogr.wkbUnknown)
+        layer.CreateField(ogr.FieldDefn("fid", ogr.OFTInteger))
+        layer.CreateField(ogr.FieldDefn("area_deg2", ogr.OFTReal))
+        for index, polygon in enumerate(lands):
+            geometry = ogr.CreateGeometryFromJson(json.dumps(polygon.__geo_interface__))
+            if geometry is None:
+                continue
+            feature = ogr.Feature(layer.GetLayerDefn())
+            feature.SetField("fid", index)
+            feature.SetField("area_deg2", float(polygon.area))
+            feature.SetGeometry(geometry)
+            layer.CreateFeature(feature)
+            feature = None
+        # 空间索引让运行时的逐要素 bbox 过滤走 rtree（637 个多边形也要保证出图速度）。
+        layer = None
+    finally:
+        dataset = None
+    if not Path(path).is_file():
+        raise ValueError(f"GeoPackage 写入失败：{path}")
+
+
+def derive_coverage_reason(validation):
+    """由**校验结论**生成覆盖说明（供制图侧直接引用，不硬编码任何结论）。"""
+
+    validation = validation if isinstance(validation, dict) else {}
+    probes = validation.get("probes") if isinstance(validation.get("probes"), dict) else {}
+    passed = sum(1 for value in probes.values() if value is True)
+    parts = []
+    if probes:
+        parts.append(f"陆地覆盖探针 {passed}/{len(probes)} 命中")
+    ratio = validation.get("buildings_inside_ratio")
+    if isinstance(ratio, (int, float)):
+        parts.append(f"建筑落陆率 {float(ratio) * 100:.2f}%")
+    inside, total = validation.get("towers_inside"), validation.get("towers_total")
+    if isinstance(inside, int) and isinstance(total, int):
+        parts.append(f"通信站址落陆 {inside}/{total}")
+    if not parts:
+        return "派生时未记录覆盖校验结论"
+    return "；".join(parts) + "（派生时记录，仅供参考）"
+
+
 def main():
     arguments = parse_arguments()
     bbox = tuple(float(value) for value in arguments.bbox.split(","))
@@ -449,16 +534,19 @@ def main():
         print("**没有生成任何陆地面**", flush=True)
         return 2
 
-    features = [
-        {"type": "Feature", "properties": {"fid": index, "area_deg2": polygon.area},
-         "geometry": polygon.__geo_interface__}
-        for index, polygon in enumerate(lands)
-    ]
     output = Path(arguments.out_geojson)
+    suffix = output.suffix.lower()
+    if suffix not in SUPPORTED_OUTPUT_EXTENSIONS:
+        print(f"**不支持的输出格式 {suffix}**：支持 "
+              f"{'、'.join(SUPPORTED_OUTPUT_EXTENSIONS)}", flush=True)
+        return 3
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"type": "FeatureCollection", "features": features},
-                                 ensure_ascii=False), encoding="utf-8")
-    print(f"GeoJSON={output.resolve()} ({output.stat().st_size / 1024:.0f} KB)", flush=True)
+    write_land_dataset(output, lands)
+    print(f"矢量陆地面={output.resolve()} ({output.stat().st_size / 1024:.0f} KB)"
+          f"  格式={suffix.lstrip('.')}", flush=True)
+    if suffix != DEFAULT_OUTPUT_EXTENSION:
+        print(f"  [提示] 运行时默认消费 {DEFAULT_OUTPUT_EXTENSION}；"
+              f"调试用的 {suffix} 不会被自动读取。", flush=True)
 
     metadata = {
         "role": "cartographic_land",
@@ -498,13 +586,22 @@ def main():
                            (actual_bbox[3] - actual_bbox[1]) / height],
         "land_pixel_ratio": float(mask.mean()),
         "polygon_count": len(lands),
-        "output_geojson": str(output.resolve()),
+        # 输出路径：``output_gpkg`` 是运行时真正消费的文件（缺省就是它）；
+        # ``output_geojson`` 保留字段名以兼容早期元数据，内容为实际写出的文件。
+        "output_gpkg": str(output.resolve()) if suffix == ".gpkg" else None,
+        "output_geojson": str(output.resolve()) if suffix == ".geojson" else None,
+        "output_path": str(output.resolve()),
+        "output_format": suffix.lstrip("."),
+        "consumed_by": "cns_planner/gis/map_data.py::DEFAULT_PATHS['cartographic_land']",
         "crs": OUTPUT_CRS,
     }
     if not arguments.skip_validation:
         validation = validate(lands, buildings_path=str(buildings_path),
                               state_path=str(state_path))
         metadata["validation"] = validation
+        # ``coverage_reason`` 必须由**数据源自己**的校验结论生成，供制图侧直接引用；
+        # 制图代码不硬编码任何"覆盖全部岛群"之类的结论。
+        metadata["coverage_reason"] = derive_coverage_reason(validation)
         print(f"建筑落陆={validation['buildings_inside']}/{validation['buildings_total']} "
               f"= {validation['buildings_inside_ratio'] * 100:.2f}%", flush=True)
         print(f"通信站址落陆={validation['towers_inside']}/{validation['towers_total']} "

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 TEMPLATE_SCHEMA_VERSION = 1
 ROUTE_OVERVIEW_V1 = "route_overview_v1"
@@ -152,7 +153,107 @@ ROUTE_OVERVIEW_PARAMETERS = {
     "preview_dpi": 130,
     "export_dpi": 300,
     "preview_px_per_mm": 3.0,
+    # 布尔开关（显式列出，避免客户端传入非布尔值悄悄生效）。
+    "label_turn_points": True,
 }
+
+#: 模板参数的**类型与范围契约**：``key -> (类型, 最小值, 最大值)``。
+#:
+#: 为什么需要它：``parameters()`` 之前只判断"键是否存在"，于是
+#: ``extent_buffer_km="abc"`` / ``legend_columns=999`` / ``document_width_mm=-1``
+#: 这类值会一路进到版面与几何计算里。这里给出每个参数的合法类型与闭区间范围，
+#: 非法值一律**拒绝**（抛 :class:`MapFigureParameterInvalid`），绝不静默截断成别的值。
+PARAMETER_CONSTRAINTS = {
+    "extent_buffer_km": ("number", 0.1, 100.0),
+    "extent_max_padding_km": ("number", 0.0, 500.0),
+    "extent_source_crs": ("crs", None, None),
+    "terrain_threshold_m": ("number", 0.0, 10000.0),
+    "building_threshold_m": ("number", 0.0, 10000.0),
+    "terrain_threshold_basis": ("text", 1, 200),
+    "building_threshold_basis": ("text", 1, 200),
+    "document_width_mm": ("number", 80.0, 1000.0),
+    "document_height_mm": ("number", 80.0, 1000.0),
+    "margin_mm": ("number", 0.0, 80.0),
+    "map_fraction": ("number", 0.30, 0.95),
+    "legend_columns": ("integer", 1, 3),
+    "segments_per_degree": ("integer", 1, 60),
+    "show_landmark_labels": ("boolean", None, None),
+    "show_place_labels": ("boolean", None, None),
+    "label_turn_points": ("boolean", None, None),
+    "preview_dpi": ("number", 36.0, 600.0),
+    "export_dpi": ("number", 36.0, 600.0),
+    "preview_px_per_mm": ("number", 0.5, 12.0),
+}
+
+#: 模板允许的最大画布总像素（宽 × 高）；超过即拒绝，避免 QGIS 版面渲染失控。
+MAX_PARAMETER_PIXELS = 40_000_000
+
+
+class MapFigureParameterInvalid(ValueError):
+    """模板参数不满足类型 / 范围契约（中文原因 + 参数名）。"""
+
+    code = "map_figure_parameter_invalid"
+
+    def __init__(self, parameter, reason):
+        self.parameter = str(parameter)
+        self.reason = str(reason)
+        super().__init__(f"模板参数「{self.parameter}」不可用：{self.reason}")
+
+
+def _validate_parameter(key, value):
+    """按 :data:`PARAMETER_CONSTRAINTS` 校验单个参数；返回规范化后的值。"""
+
+    kind, low, high = PARAMETER_CONSTRAINTS[key]
+    if kind == "boolean":
+        if not isinstance(value, bool):
+            raise MapFigureParameterInvalid(key, "必须是布尔值 true / false")
+        return value
+    if kind == "integer":
+        # 注意：bool 是 int 的子类，绝不能把 True 当成 1 接受。
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise MapFigureParameterInvalid(key, "必须是整数")
+        if low is not None and not (low <= value <= high):
+            raise MapFigureParameterInvalid(key, f"必须在 {low} ~ {high} 之间（收到 {value}）")
+        return value
+    if kind == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise MapFigureParameterInvalid(key, "必须是数字")
+        number = float(value)
+        if not math.isfinite(number):
+            raise MapFigureParameterInvalid(key, "必须是有限数字")
+        if low is not None and not (low <= number <= high):
+            raise MapFigureParameterInvalid(key, f"必须在 {low} ~ {high} 之间（收到 {number}）")
+        return number
+    if kind == "crs":
+        text = str(value or "").strip()
+        if not text or len(text) > 64:
+            raise MapFigureParameterInvalid(key, "必须是非空且不超过 64 字符的 CRS 标识")
+        return text
+    if kind == "text":
+        text = str(value or "").strip()
+        if low is not None and not (low <= len(text) <= high):
+            raise MapFigureParameterInvalid(key, f"长度必须在 {low} ~ {high} 字符之间")
+        return text
+    raise MapFigureParameterInvalid(key, f"未登记的参数类型 {kind}")
+
+
+def _validate_parameter_pixels(parameters):
+    """**真正的总像素上限**：宽 × 高（毫米→英寸→像素）必须 <= MAX_PARAMETER_PIXELS。"""
+
+    for dpi_key in ("export_dpi", "preview_dpi"):
+        dpi = float(parameters.get(dpi_key) or 0.0)
+        if dpi <= 0:
+            continue
+        width_px = float(parameters["document_width_mm"]) / 25.4 * dpi
+        height_px = float(parameters["document_height_mm"]) / 25.4 * dpi
+        total = width_px * height_px
+        if total > MAX_PARAMETER_PIXELS:
+            raise MapFigureParameterInvalid(
+                dpi_key,
+                f"该 DPI 下页面为 {int(width_px)}×{int(height_px)} = {int(total)} 像素，"
+                f"超过总像素上限 {MAX_PARAMETER_PIXELS}",
+            )
+    return parameters
 
 
 def _template(template_id, *, display_name, purpose, availability, parameters=None,
@@ -237,19 +338,29 @@ def is_available(template_id):
 
 
 def parameters(template_id, overrides=None):
-    """模板默认参数 + 调用方覆盖（只接受已知键，未知键被忽略而不是静默生效）。"""
+    """模板默认参数 + 调用方覆盖。
+
+    覆盖值必须过 :data:`PARAMETER_CONSTRAINTS` 的类型 / 范围校验，并再过一次
+    **总像素**上限校验；非法值一律抛 :class:`MapFigureParameterInvalid`。
+    未知键仍被忽略（不是"静默生效"，而是根本不进入参数集）。
+    """
 
     item = template(template_id)
     base = deepcopy(item["parameters"]) if item else {}
     for key, value in (overrides or {}).items():
-        if key in base and value is not None:
+        if key not in base or value is None:
+            continue
+        if key in PARAMETER_CONSTRAINTS:
+            base[key] = _validate_parameter(key, value)
+        else:
             base[key] = value
-    return base
+    return _validate_parameter_pixels(base)
 
 
 __all__ = [
     "AVAILABLE", "COMMERCIAL_TEMPLATES", "LAYER_DISPLAY_NAMES", "LAYER_SOURCE_ROLES",
-    "PLANNED", "ROUTE_OVERVIEW_LEGEND_ORDER", "ROUTE_OVERVIEW_PARAMETERS",
+    "MAX_PARAMETER_PIXELS", "PARAMETER_CONSTRAINTS", "PLANNED",
+    "MapFigureParameterInvalid", "ROUTE_OVERVIEW_LEGEND_ORDER", "ROUTE_OVERVIEW_PARAMETERS",
     "ROUTE_OVERVIEW_V1", "ROUTE_OVERVIEW_V1_TEMPLATE", "TEMPLATE_SCHEMA_VERSION",
     "catalog", "is_available", "parameters", "template",
 ]

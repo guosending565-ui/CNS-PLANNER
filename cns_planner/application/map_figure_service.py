@@ -36,6 +36,7 @@ from ..gis.figure_spec import (
     LegendItem,
 )
 from ..gis.figure_style import LEGEND_GROUP_OF, legend_order_key
+from ..gis.source_inspection import inspect_cartographic_land
 from ..reporting.map_templates import (
     ROUTE_OVERVIEW_V1, catalog as template_catalog, is_available, parameters as template_parameters,
     template as template_definition,
@@ -49,16 +50,28 @@ DEFAULT_METRIC_CRS = "EPSG:32651"
 MAX_LABEL_CHARS = 14
 #: 受控产物目录（相对 active project 目录，与既有 reports/ 同级）。
 MAP_FIGURE_DIRECTORY = "artifacts/map_figures"
+#: 图件索引文件名（位于受控目录内）。
+#:
+#: 专题图记录**不进入 ProjectState**：ProjectState 的 ``revision`` 是业务语义的乐观锁，
+#: 而"渲染了一张专题图"不改变任何业务事实。因此记录写在受控目录的索引文件里，
+#: ``session.save()`` 在这条链路上一次都不会被调用（业务 revision 因此完全不变）。
+MAP_FIGURE_INDEX_NAME = "index.json"
 #: state 中登记专题图记录的容器键。
+#:
+#: **只读兼容**：早期版本把记录写进这个容器（并 ``session.save()``，因此会推进 revision）。
+#: 现在仍然读取它以便旧项目继续显示历史图件，但**不再写入**。
 MAP_FIGURE_COLLECTION = "map_figures"
 #: 允许的输出格式（本轮只有 PNG；PDF/SVG 属后续轮次，未实现前明确拒绝）。
 SUPPORTED_FORMATS = ("png",)
-#: 预览尺寸上限（像素），避免客户端要求超大预览。
+#: 预览尺寸上限（像素）：真正约束"宽 × 高"的总像素，而不是只约束宽度。
 MAX_PREVIEW_PIXELS = 12_000_000
-#: 海域补集（画布矩形 − cartographic_land）的采样带宽度（米）。带宽决定海陆边界在图上
-#: 的贴合程度：30 m 级别的陆地面用 ~150 m 的条带足以贴合岸线，同时把矩形数量压到几千个
-#: （否则 4000 个要素的显示上限会被海域吃光，陆地反而画不出来）。
-SEA_COMPLEMENT_BAND_M = 150.0
+#: 单个专题图渲染的**绝对**总像素上限（宽 × 高）。A4 竖版在 600 dpi 下约 34.8 MP，
+#: 再往上没有制图意义，只会让 QGIS 版面渲染的内存/时间失控。所有路径（预览与 300/600
+#: dpi 导出）都必须过这一关。
+MAX_FIGURE_PIXELS = 40_000_000
+#: 导出 DPI 的硬范围（低于 72 不可读，高于 600 无意义且会撞像素上限）。
+MIN_EXPORT_DPI = 72.0
+MAX_EXPORT_DPI = 600.0
 _FIGURE_ID_PATTERN = re.compile(r"^MF-[0-9a-f]{32}$")
 
 
@@ -447,44 +460,70 @@ def _cartographic_land_metadata(path):
     return payload if isinstance(payload, dict) else {}
 
 
+#: 制图陆地面派生元数据的**字段契约**（``cartographic_land_v1.json``）。
+#:
+#: 每一项都必须是数据源可核验的派生事实；缺失时写入 ``None`` 而不是编造值。
+#: ``coverage_reason`` 只能来自数据源自己的记录，**不得**在图代码里硬编码结论。
+CARTOGRAPHIC_LAND_METADATA_FIELDS = (
+    "role", "semantics", "not_replacing", "derivation",
+    "source_dem", "source_dem_origin", "crosscheck_dem", "crosscheck_dem_origin",
+    "source_buildings", "source_buildings_origin",
+    "dem_threshold_m", "morphology_structure", "closing_iterations",
+    "building_dilation_px", "building_raster_resolution_deg",
+    "polygonize_connectivity", "min_polygon_pixels", "hole_policy", "simplify_deg",
+    "decimation", "grid", "bbox", "pixel_size_deg", "land_pixel_ratio",
+    "polygon_count", "output_geojson", "output_gpkg", "crs",
+    "coverage_reason", "validation",
+)
+
+
+def _cartographic_land_metadata_contract(metadata):
+    """按字段契约投影派生元数据：**只**取数据源真实写出的字段，缺失即 ``None``。"""
+
+    recorded = metadata if isinstance(metadata, dict) else {}
+    return {key: deepcopy(recorded.get(key)) for key in CARTOGRAPHIC_LAND_METADATA_FIELDS}
+
+
 def _cartographic_land_state(ctx):
     """制图专用的陆海表达数据源状态（**不是**业务 land_mask）。"""
 
-    path = str((ctx.paths or {}).get("cartographic_land") or "")
-    if not path:
-        return SOURCE_UNKNOWN, "本机未配置制图陆地面（cartographic_land）", {
-            "role": "cartographic_land", "path": None,
-            "semantics": "cartographic_presentation_only_not_surface_classification",
-        }
-    if not os.path.isfile(path):
-        return SOURCE_UNAVAILABLE, "配置的制图陆地面文件不存在", {
-            "role": "cartographic_land", "path": path,
-            "semantics": "cartographic_presentation_only_not_surface_classification",
-        }
-    metadata = _cartographic_land_metadata(path)
-    detail = {
+    base = {
         "role": "cartographic_land",
-        "path": path,
-        "crs": metadata.get("crs"),
-        "derivation": metadata.get("derivation"),
-        "source_dem": metadata.get("source_dem"),
-        "crosscheck_dem": metadata.get("crosscheck_dem"),
-        "source_buildings": metadata.get("source_buildings"),
-        "threshold_m": metadata.get("threshold_m"),
-        "closing_iterations": metadata.get("closing_iterations"),
-        "building_dilation_px": metadata.get("building_dilation_px"),
-        "pixel_size_deg": metadata.get("pixel_size_deg"),
-        "polygon_count": metadata.get("polygon_count"),
-        "semantics": str(
-            metadata.get("semantics")
-            or "cartographic_presentation_only_not_surface_classification"
-        ),
-        "not_replacing": str(
-            metadata.get("not_replacing")
-            or "canonical land_mask (business surface classification unchanged)"
-        ),
+        "path": None,
+        "metadata_contract": list(CARTOGRAPHIC_LAND_METADATA_FIELDS),
+        "metadata_recorded": False,
+        "semantics": "cartographic_presentation_only_not_surface_classification",
+        "not_replacing": "canonical land_mask (business surface classification unchanged)",
         "is_business_surface_evidence": False,
     }
+    path = str((ctx.paths or {}).get("cartographic_land") or "")
+    if not path:
+        return SOURCE_UNKNOWN, "本机未配置制图陆地面（cartographic_land）", base
+    if not os.path.isfile(path):
+        return SOURCE_UNAVAILABLE, "配置的制图陆地面文件不存在", {**base, "path": path}
+
+    metadata = _cartographic_land_metadata(path)
+    contract = _cartographic_land_metadata_contract(metadata)
+    # 矢量数据集的客观事实（图层名 / 几何类型 / CRS / 要素数 / 范围）由**独立**的矢量
+    # 自省提供，绝不套用 buildings 的 GeoPackage schema（见 gis/source_inspection）。
+    inspection = inspect_cartographic_land(path)
+    detail = {
+        **base,
+        **contract,
+        "path": path,
+        "metadata_recorded": bool(metadata),
+        "inspection": inspection,
+        # 元数据里的 CRS 只是声明；以自省读到的图层 CRS 为准（读不到才回退声明）。
+        "crs": (inspection or {}).get("crs") or contract.get("crs"),
+    }
+    detail["semantics"] = str(
+        contract.get("semantics")
+        or "cartographic_presentation_only_not_surface_classification"
+    )
+    detail["not_replacing"] = str(
+        contract.get("not_replacing")
+        or "canonical land_mask (business surface classification unchanged)"
+    )
     return SOURCE_AVAILABLE, "", detail
 
 
@@ -515,116 +554,89 @@ def _cartographic_land_polygons(ctx, viewport):
 
 
 def _sea_complement_polygons(extent, land_rings):
-    """海域 = **地图画布矩形 − cartographic_land**（真正的面积差集，不是叠色技巧）。
+    """海域 = **地图画布矩形 − cartographic_land**（真正的多边形面积差集）。
 
-    实现口径与 GS(2025)2427 附录采样算法一致：扫描线按多边形边界纬度切分，每个带内用
-    位于带心的水平线求交、奇偶规则取"矩形内但不在陆地内"的区间，再纵向采样成矩形条带。
-    因此陆地越完整，海域越贴合真实岸线，绝不会在陆地缺失处留下"假海面"。
+    实现方式：用可靠的多边形差集库（shapely，QGIS 环境自带）做
+    ``canvas_rectangle.difference(land_union)``，并把结果的 exterior **与内环（holes）
+    一并保留**。陆地多边形带洞时，洞会被原样保留为独立的海域环，而不是被填实。
+
+    为什么不再自己实现扫描线：自制扫描线/网格采样只是为了绕开"没依赖多边形库"，
+    但它会把海域近似成矩形条带（面积与拓扑都不精确，也无法表达内环）。差集是
+    几何精确运算，且直接给出正确的 exterior + holes。
+
+    找不到多边形库时**如实失败**（返回不可用理由），绝不用近似几何冒充面积差集。
     """
 
     if not land_rings:
-        return [], 0.0
-    band_m = SEA_COMPLEMENT_BAND_M
-    metres_per_degree_lat = 111_320.0
-    mean_latitude = (extent.south + extent.north) / 2.0
-    metres_per_degree_lon = 111_320.0 * math.cos(math.radians(mean_latitude))
-    if metres_per_degree_lon <= 0 or metres_per_degree_lat <= 0:
-        return [], 0.0
+        return [], [], 0.0, "制图陆地面在范围内没有可用于差集的环"
+    try:
+        import shapely
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+    except ImportError:
+        return [], [], 0.0, (
+            "缺少多边形几何库（shapely），无法计算"
+            "「画布矩形 − 制图陆地面」的真实面积差集；本图不表达海域"
+        )
 
-    scan_step = band_m / metres_per_degree_lat
-    sample_step = band_m / metres_per_degree_lat
-    borders = sorted({point[1] for ring in land_rings for point in ring}
-                     | {extent.south, extent.north})
-
-    def edges_of(ring):
-        items = []
-        for index in range(len(ring) - 1):
-            x1, y1 = ring[index][0], ring[index][1]
-            x2, y2 = ring[index + 1][0], ring[index + 1][1]
-            if y1 != y2:
-                items.append((x1, y1, x2, y2))
-        return items
-
-    edges = [edges_of(ring) for ring in land_rings]
-    rows = []
-    row_bounds = []
-    covered_deg2 = 0.0
-    index = 0
-    while index < len(borders) - 1:
-        lower, upper = borders[index], borders[index + 1]
-        if upper - lower <= 1e-12:
-            index += 1
+    canvas = Polygon([
+        (extent.west, extent.south), (extent.east, extent.south),
+        (extent.east, extent.north), (extent.west, extent.north),
+        (extent.west, extent.south),
+    ])
+    land_polygons = []
+    for ring in land_rings:
+        if len(ring) < 4:
             continue
-        # 带内纵向采样：每 band_m 一条（至少一条），保持矩形相邻不重叠。
-        count = max(1, int(math.ceil((upper - lower) / scan_step)))
-        height = (upper - lower) / count
-        for sample in range(count):
-            centre = lower + (sample + 0.5) * height
-            crossings = []
-            for ring_edges in edges:
-                for x1, y1, x2, y2 in ring_edges:
-                    if (y1 > centre) != (y2 > centre):
-                        crossings.append(x1 + (centre - y1) * (x2 - x1) / (y2 - y1))
-            crossings.sort()
-            row = []
-            for position in range(0, len(crossings) - 1, 2):
-                west = max(crossings[position], extent.west)
-                east = min(crossings[position + 1], extent.east)
-                if east - west <= 1e-12:
-                    continue
-                row.append((west, east))
-                covered_deg2 += (east - west) * (upper - lower)
-            if row:
-                rows.append(row)
-                row_bounds.append([lower, upper])
-        index += 1
-
-    rectangles = _merge_sea_cells(rows, row_bounds, extent)
-    total_deg2 = (extent.east - extent.west) * (extent.north - extent.south)
-    return rectangles, max(0.0, total_deg2 - covered_deg2)
-
-
-def _merge_sea_cells(rows, row_bounds, extent, *, columns_per_degree=0.0025):
-    """把"每行若干水平区间"的原始补集，合并成尽量少且尽量大的矩形。
-
-    不合并的话，一张 55 km × 60 km 的图会产生约 5500 个矩形要素，QGIS 版面渲染会直接
-    崩溃。这里按固定经度网格对齐列、并在同一列内合并纵向相邻的行：既把要素数量压到
-    几百个，又保持 ~150 m 的边界贴合精度（列宽仅用于对齐，不改变覆盖面积）。
-    """
-
-    if not rows:
-        return []
-    west_edge, east_edge = extent.west, extent.east
-    column_width = columns_per_degree
-    # 列号 → 该列上所有行覆盖的区间
-    columns = {}
-    for row_index, row in enumerate(rows):
-        lower, upper = row_bounds[row_index]
-        for west, east in row:
-            first = int(math.floor((west - west_edge) / column_width))
-            last = int(math.ceil((east - west_edge) / column_width)) - 1
-            for column in range(first, last + 1):
-                columns.setdefault(column, []).append((lower, upper, row_index))
-
-    rectangles = []
-    for column, spans in columns.items():
-        column_west = max(west_edge, west_edge + column * column_width)
-        column_east = min(east_edge, west_edge + (column + 1) * column_width)
-        if column_east - column_west <= 1e-12:
+        try:
+            candidate = Polygon([(float(point[0]), float(point[1])) for point in ring])
+        except (TypeError, ValueError):
             continue
-        # 同一行可能在多列重复登记，这里去重后按纵向合并相邻行。
-        unique = sorted({(lower, upper, row_index) for lower, upper, row_index in spans})
-        merged = []
-        for lower, upper, _row_index in unique:
-            if merged and abs(merged[-1][1] - lower) <= 1e-12:
-                merged[-1][1] = upper
-            else:
-                merged.append([lower, upper])
-        for lower, upper in merged:
-            rectangles.append([[column_west, lower], [column_east, lower],
-                               [column_east, upper], [column_west, upper],
-                               [column_west, lower]])
-    return rectangles
+        if candidate.is_empty:
+            continue
+        if not candidate.is_valid:
+            # 自相交/重复点等：修复一次；仍无效则跳过该环（不参与差集，也不伪造）。
+            candidate = shapely.make_valid(candidate)
+            if candidate.is_empty:
+                continue
+            candidates = (
+                list(candidate.geoms) if candidate.geom_type == "MultiPolygon"
+                else [candidate]
+            )
+            land_polygons.extend(
+                item for item in candidates if item.geom_type == "Polygon" and not item.is_empty
+            )
+            continue
+        land_polygons.append(candidate)
+
+    if not land_polygons:
+        return [], [], 0.0, "制图陆地面的环都无法构成有效多边形"
+    land_union = unary_union(land_polygons)
+    complement = canvas.difference(land_union)
+    if complement.is_empty:
+        return [], [], 1.0, ""
+
+    parts = list(complement.geoms) if complement.geom_type == "MultiPolygon" else [complement]
+    parts = sorted(
+        (item for item in parts if item.geom_type == "Polygon" and not item.is_empty),
+        key=lambda item: -item.area,
+    )
+    total_deg2 = canvas.area
+    sea_deg2 = 0.0
+    records = []
+    exteriors = []
+    for part in parts:
+        sea_deg2 += part.area
+        exterior = [[float(x), float(y)] for x, y in part.exterior.coords]
+        holes = [
+            [[float(x), float(y)] for x, y in interior.coords]
+            for interior in part.interiors
+        ]
+        exteriors.append(exterior)
+        if holes:
+            records.append({"exterior": exterior, "holes": holes})
+    sea_ratio = (sea_deg2 / total_deg2) if total_deg2 else 0.0
+    return exteriors, records, sea_ratio, ""
 
 
 def _land_attributes(ctx):
@@ -707,39 +719,45 @@ def _polygon_layers(ctx, extent):
       风险计算或航路规划，也不会写回任何 canonical 结果；
     * 业务 ``land_mask``（surface classification 的判据）语义与取值一律不变。
 
-    制图陆地面缺失时**如实报告不可用**（不静默回退到省域边界、不伪造海岸线）。
+    制图陆地面缺失时**如实报告不可用**（不静默回退到省域边界、不伪造海岸线）；
+    数据源可用但当前解释器没有 QGIS 时，原因写"缺少 QGIS 运行时"而不是"未配置数据源"。
     """
 
     if not _qgis_available():
+        status, reason, detail = _cartographic_land_state(ctx)
+        land_reason = reason or _QGIS_MISSING_REASON
+        sea_detail = {
+            **detail,
+            "derivation": "canvas_rectangle_minus_cartographic_land",
+            "geometry_method": "polygon_difference_with_holes",
+            "coverage_reason": _coverage_reason(detail),
+            "is_business_surface_evidence": False,
+        }
         return [
             _layer(ctx, key, display_name=name, geometry_type=GEOMETRY_POLYGON,
-                   source_role=role, status=SOURCE_UNKNOWN,
-                   reason=_QGIS_MISSING_REASON, feature_count=0)
-            for key, name, role in (
-                ("sea", "海域", "cartographic_land"),
-                ("land", "陆地区域", "cartographic_land"),
-            )
+                   source_role="cartographic_land",
+                   status=status if status != SOURCE_AVAILABLE else SOURCE_UNKNOWN,
+                   reason=land_reason, detail=sea_detail, feature_count=0)
+            for key, name in (("sea", "海域"), ("land", "陆地区域"))
         ]
     from qgis.core import QgsRectangle
 
     viewport = QgsRectangle(extent.west, extent.south, extent.east, extent.north)
     status, reason, detail = _cartographic_land_state(ctx)
-    rings, hole_rings, land_reason = ([], [], reason) if status != SOURCE_AVAILABLE \
+    rings, hole_records, land_reason = ([], [], reason) if status != SOURCE_AVAILABLE \
         else _cartographic_land_polygons(ctx, viewport)
+    # 覆盖结论只能来自数据源的派生记录，**不得**在图代码里硬编码"覆盖全部岛群"这类结论。
+    coverage_reason = _coverage_reason(detail)
 
-    coverage_reason = str(
-        (detail or {}).get("coverage_reason")
-        or "制图陆地面覆盖舟山群岛全部岛群（含嵊泗列岛）；省域行政边界在嵊泗残缺，"
-           "故本图不使用它作为陆地底图"
-    )
     sea_detail = deepcopy(detail)
     sea_detail.update({
         "derivation": "canvas_rectangle_minus_cartographic_land",
+        "geometry_method": "polygon_difference_with_holes",
         "coverage_reason": coverage_reason,
-        "band_m": SEA_COMPLEMENT_BAND_M,
         "semantics": (
-            "海域由地图画布矩形与制图陆地面的面积差集表达（真实面积差，不是叠色）；"
-            "陆地数据缺失处不会被视为海面 —— 此时海域图层整体标记为不可用"
+            "海域由地图画布矩形与制图陆地面的多边形差集表达（真实面积差，不是叠色、"
+            "也不是矩形条带近似）；陆地多边形带洞时洞按原样保留。陆地数据缺失处"
+            "不会被视为海面 —— 此时海域图层整体标记为不可用"
         ),
         "is_business_surface_evidence": False,
     })
@@ -747,20 +765,25 @@ def _polygon_layers(ctx, extent):
     land_detail.update({
         "coverage_reason": coverage_reason,
         "feature_count": len(rings),
-        "hole_ring_count": len(hole_rings),
+        "hole_ring_count": sum(len(item.get("holes") or []) for item in hole_records),
     })
 
     layers = []
     if status == SOURCE_AVAILABLE and rings:
-        rectangles, sea_area_deg2 = _sea_complement_polygons(extent, rings)
-        if rectangles:
+        sea_exteriors, sea_records, sea_ratio, sea_reason = _sea_complement_polygons(
+            extent, rings,
+        )
+        if sea_exteriors:
+            holes_in_sea = sum(len(item.get("holes") or []) for item in sea_records)
             layers.append(_layer(
                 ctx, "sea", display_name="海域", geometry_type=GEOMETRY_POLYGON,
                 source_role="cartographic_land", status=SOURCE_AVAILABLE, reason="",
-                detail={**sea_detail, "rectangle_count": len(rectangles),
-                        "sea_area_deg2": sea_area_deg2},
-                feature_count=len(rectangles),
-                data={"polygons": rectangles,
+                detail={**sea_detail, "polygon_count": len(sea_exteriors),
+                        "hole_count": holes_in_sea,
+                        "sea_area_ratio": round(sea_ratio, 6)},
+                feature_count=len(sea_exteriors),
+                data={"polygons": sea_exteriors,
+                      "polygon_holes": _holes_by_exterior(sea_records, sea_exteriors),
                       "derivation": "canvas_rectangle_minus_cartographic_land",
                       "land_polygon_count": len(rings)},
             ))
@@ -768,14 +791,15 @@ def _polygon_layers(ctx, extent):
             layers.append(_layer(
                 ctx, "sea", display_name="海域", geometry_type=GEOMETRY_POLYGON,
                 source_role="cartographic_land", status=SOURCE_UNAVAILABLE,
-                reason="图面范围内没有可表达的海域（制图陆地面已覆盖整个画布）",
+                reason=sea_reason or "图面范围内没有可表达的海域",
                 detail=sea_detail, feature_count=0,
             ))
         layers.append(_layer(
             ctx, "land", display_name="陆地区域", geometry_type=GEOMETRY_POLYGON,
             source_role="cartographic_land", status=SOURCE_AVAILABLE, reason="",
             detail=land_detail, feature_count=len(rings),
-            data={"polygons": rings, "hole_rings": hole_rings,
+            data={"polygons": rings,
+                  "polygon_holes": _holes_by_exterior(hole_records, rings),
                   "feature_attributes": {}},
         ))
     else:
@@ -792,6 +816,72 @@ def _polygon_layers(ctx, extent):
             detail=land_detail, feature_count=0,
         ))
     return layers
+
+
+def _holes_by_exterior(records, exteriors):
+    """把带洞记录整理成 ``{exterior_index: [hole, ...]}``（渲染器据此重建内环）。"""
+
+    if not records:
+        return {}
+    lookup = {}
+    for item in records:
+        exterior = item.get("exterior")
+        if not exterior:
+            continue
+        lookup[_ring_key(exterior)] = item.get("holes") or []
+    result = {}
+    for index, exterior in enumerate(exteriors):
+        holes = lookup.get(_ring_key(exterior))
+        if holes:
+            result[str(index)] = holes
+    return result
+
+
+def _ring_key(ring):
+    if not ring:
+        return ""
+    first, last = ring[0], ring[-1]
+    return "%.7f,%.7f|%.7f,%.7f|%d" % (
+        float(first[0]), float(first[1]), float(last[0]), float(last[1]), len(ring),
+    )
+
+
+def _coverage_reason(detail):
+    """陆地覆盖说明：只引用**数据源自己记录**的派生事实，绝不硬编码结论。
+
+    数据源的 ``cartographic_land_v1.json`` 若给了 ``coverage_reason`` 就原样使用；
+    否则只叙述记录下来的校验事实（校验点命中数 / 建筑与站址落陆率），既不声称
+    "覆盖全部岛群"，也不声称"不覆盖"。完全没有记录时如实返回"未记录"。
+    """
+
+    recorded = str((detail or {}).get("coverage_reason") or "").strip()
+    if recorded:
+        return recorded
+    validation = (detail or {}).get("validation") or {}
+    if not isinstance(validation, dict) or not validation:
+        return "数据源未记录覆盖校验结论（无法据此声称覆盖或不覆盖任何区域）"
+    probes = validation.get("probes") if isinstance(validation.get("probes"), dict) else {}
+    passed = sum(1 for value in probes.values() if value is True)
+    parts = []
+    if probes:
+        parts.append(f"陆地覆盖探针 {passed}/{len(probes)} 命中（数据源派生时记录）")
+    for label, ratio_key, inside_key, total_key in (
+        ("建筑", "buildings_inside_ratio", "buildings_inside", "buildings_total"),
+        ("通信站址", None, "towers_inside", "towers_total"),
+    ):
+        ratio = validation.get(ratio_key) if ratio_key else None
+        # 注意：bool 是 int 的子类，绝不能把 True 当成 1 个计数。
+        if (isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+                and math.isfinite(float(ratio))):
+            parts.append(f"{label}落陆率 {float(ratio) * 100:.2f}%")
+        inside = validation.get(inside_key)
+        total = validation.get(total_key)
+        if (isinstance(inside, int) and not isinstance(inside, bool)
+                and isinstance(total, int) and not isinstance(total, bool)):
+            parts.append(f"{label}落陆 {inside}/{total}")
+    if not parts:
+        return "数据源未记录覆盖校验结论（无法据此声称覆盖或不覆盖任何区域）"
+    return "；".join(parts) + "（由数据源派生记录提供，非本图结论）"
 
 
 def _airspace_layer(ctx, extent):
@@ -1524,17 +1614,39 @@ def _node_name(ctx, node_id):
     return ""
 
 
+def _endpoint_label_name(ctx, route, key, node_field):
+    """终点名称解析：只读真实字段，绝不因为 schema 形态不同而抛异常。
+
+    canonical ``operational_routes`` 的 ``start`` / ``end`` 是**坐标数组**
+    ``[lon, lat]``（见 :mod:`cns_planner.application.route_service` /
+    :mod:`cns_planner.domain.v3_operational_adoption`），**没有** ``name`` 字段；
+    历史/兼容记录里也可能写成 ``{"name": ...}`` 字典或纯字符串。这里按三种真实形态
+    解析，任何一种都不是错误，因此不抛异常、也不猜名字：
+
+    1. ``{"name": ...}`` → 用其中的名称；
+    2. 字符串 → 直接当名称；
+    3. 坐标数组 / 其它 → 退回节点名（``start_node_id`` / ``end_node_id``）。
+    """
+
+    value = route.get(key)
+    name = ""
+    if isinstance(value, dict):
+        name = _short(value.get("name"))
+    elif isinstance(value, str):
+        name = _short(value)
+    if name:
+        return name
+    return _short(_node_name(ctx, route.get(node_field)))
+
+
 def _labels(ctx, geometry, turns, layers):
     """中文标注：起终点必标，转弯点少量标注，地名来自真实字段而非硬编码。"""
 
+    route = ctx.route or {}
     labels = []
     if geometry:
-        start_name = _short((ctx.route.get("start") or {}).get("name")) or _node_name(
-            ctx, ctx.route.get("start_node_id"),
-        )
-        end_name = _short((ctx.route.get("end") or {}).get("name")) or _node_name(
-            ctx, ctx.route.get("end_node_id"),
-        )
+        start_name = _endpoint_label_name(ctx, route, "start", "start_node_id")
+        end_name = _endpoint_label_name(ctx, route, "end", "end_node_id")
         labels.append(LabelSpec(
             kind="start", text=start_name or "起点",
             longitude=geometry[0][0], latitude=geometry[0][1],
@@ -1717,6 +1829,48 @@ class MapFigureStore:
             if item.is_dir() and self.valid_figure_id(item.name)
         )
 
+    # ---- 图件索引（不进入 ProjectState，也不推进业务 revision） -------------------
+
+    @property
+    def index_path(self):
+        """受控目录内的图件索引文件（``artifacts/map_figures/index.json``）。"""
+
+        return self.directory / MAP_FIGURE_INDEX_NAME
+
+    def read_index(self):
+        """读取图件索引；损坏时**如实失败**，绝不静默重建成空索引。"""
+
+        path = self.index_path
+        if not path.is_file():
+            return {"schema_version": 1, "items": [], "active_figure_id": None}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise MapFigureNotFound(
+                "专题图索引文件损坏；请重新生成专题图（原索引不会被自动覆盖）"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise MapFigureNotFound("专题图索引文件格式无效；请重新生成专题图")
+        items = [item for item in (payload.get("items") or []) if isinstance(item, dict)]
+        return {
+            "schema_version": int(payload.get("schema_version") or 1),
+            "items": items,
+            "active_figure_id": payload.get("active_figure_id"),
+        }
+
+    def write_index(self, items, active_figure_id):
+        """原子写入图件索引（只写制图模块自己的受控文件）。"""
+
+        payload = {
+            "schema_version": 1,
+            "active_figure_id": active_figure_id,
+            "count": len(items),
+            "items": list(items),
+        }
+        _atomic_write(self.index_path, json.dumps(
+            payload, ensure_ascii=False, indent=2, allow_nan=False,
+        ).encode("utf-8"))
+
 
 def _atomic_write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1801,16 +1955,33 @@ class MapFigureService:
     # ---- 只读：已生成图件 -----------------------------------------------------
 
     def records(self):
+        """图件记录（受控索引为主，旧版 state 容器只读兼容）。"""
+
+        index = self.store.read_index()
+        items = index["items"]
+        active = index["active_figure_id"]
+        legacy = self._legacy_records()
+        known = {str(item.get("figure_id")) for item in items}
+        merged = list(items) + [
+            item for item in legacy["items"] if str(item.get("figure_id")) not in known
+        ]
+        if active is None:
+            active = legacy["active_figure_id"]
+        return {
+            "schema_version": 1,
+            "items": deepcopy(merged),
+            "active_figure_id": active,
+            "count": len(merged),
+        }
+
+    def _legacy_records(self):
+        """只读兼容：早期版本写在 ``state["map_figures"]`` 里的记录。"""
+
         collection = self.session.state.get(MAP_FIGURE_COLLECTION)
         if not isinstance(collection, dict):
-            return {"schema_version": 1, "items": [], "active_figure_id": None, "count": 0}
-        items = collection.get("items") or []
-        return {
-            "schema_version": int(collection.get("schema_version") or 1),
-            "items": deepcopy(items),
-            "active_figure_id": collection.get("active_figure_id"),
-            "count": len(items),
-        }
+            return {"items": [], "active_figure_id": None}
+        items = [item for item in (collection.get("items") or []) if isinstance(item, dict)]
+        return {"items": items, "active_figure_id": collection.get("active_figure_id")}
 
     def _record(self, figure_id):
         for item in self.records()["items"]:
@@ -2043,15 +2214,26 @@ class MapFigureService:
         )
         parameters = spec.parameters
         export_dpi = _finite(dpi, None) or _finite(parameters.get("export_dpi"), 300.0)
-        export_dpi = max(72.0, min(600.0, export_dpi))
+        if not (MIN_EXPORT_DPI <= export_dpi <= MAX_EXPORT_DPI):
+            raise MapFigureFormatUnsupported(
+                f"导出 DPI {export_dpi} 超出允许范围 "
+                f"（{MIN_EXPORT_DPI:g} ~ {MAX_EXPORT_DPI:g}）"
+            )
+        # 真正的总像素上限：宽 × 高（A4 竖版 600 dpi ≈ 34.8 MP）。
+        width_px = float(spec.layout["document_width_mm"]) / 25.4 * export_dpi
+        height_px = float(spec.layout["document_height_mm"]) / 25.4 * export_dpi
+        if width_px * height_px > MAX_FIGURE_PIXELS:
+            raise MapFigureFormatUnsupported(
+                f"该 DPI 下图面为 {int(width_px)}×{int(height_px)} = "
+                f"{int(width_px * height_px)} 像素，超过上限 {MAX_FIGURE_PIXELS}"
+            )
         figure_id = _figure_id(spec, export_dpi, format_name)
         record = self._record(figure_id)
         if record is not None and self.store.exists(figure_id):
-            collection = self.session.state.get(MAP_FIGURE_COLLECTION)
-            if isinstance(collection, dict):
-                collection["active_figure_id"] = figure_id
-                collection["status"] = "passed"
-            self.session.save()
+            # 幂等复用：同一业务 revision + 同一 FigureSpec（含 DPI / 格式）必然同图号。
+            # 这里只把索引里的 active 指向它 —— **不** 写 ProjectState，也 **不** 调用
+            # ``session.save()``，因此业务 revision 不会因为重复导出而变化。
+            self._activate(figure_id)
             return {
                 "figure_id": figure_id, "record": deepcopy(record),
                 "spec": spec.to_dict(), "reused": True, "image_bytes": 0,
@@ -2119,44 +2301,28 @@ class MapFigureService:
         return record
 
     def _register(self, record, spec):
-        """把图件记录写回项目 state（只新增自己的容器，绝不触碰其它 canonical 结果）。"""
+        """把图件记录写进制图模块**自己的受控索引**。
 
-        state = self.session.state
-        collection = state.get(MAP_FIGURE_COLLECTION)
-        if not isinstance(collection, dict):
-            collection = {"schema_version": 1, "items": [], "active_figure_id": None}
+        关键契约（本轮的 code review 修复）：**不调用 ``session.save()``**。
+        ProjectState 的 ``revision`` 是业务语义的乐观锁；"渲染了一张专题图"不改变任何
+        业务事实，因此既不动 ``state["map_figures"]``（旧版本会写，现已只读兼容），
+        也不动 ``artifact_manifest`` —— 图件索引与元数据都在
+        ``artifacts/map_figures/`` 内，业务 revision 逐字节不变。
+        """
+
+        index = self.store.read_index()
+        previous_active = index["active_figure_id"]
         items = [
-            item for item in collection.get("items") or []
+            item for item in index["items"]
             if isinstance(item, dict) and str(item.get("figure_id")) != record["figure_id"]
         ]
-        previous_active = collection.get("active_figure_id")
         for item in items:
             if item.get("figure_id") == previous_active:
                 item["current_applicability"] = "superseded"
         record["current_applicability"] = "current"
         items.append(record)
         items.sort(key=lambda item: str(item.get("generated_at") or ""))
-        collection["items"] = items
-        collection["active_figure_id"] = record["figure_id"]
-        collection["status"] = "passed"
-        collection["schema_version"] = 1
-        state[MAP_FIGURE_COLLECTION] = collection
-        manifest = state.setdefault("artifact_manifest", {})
-        if isinstance(manifest, dict):
-            entries = manifest.setdefault("map_figures", {})
-            if isinstance(entries, dict):
-                entries[record["figure_id"]] = {
-                    "artifact_type": "map_figure_png",
-                    "relative_path": record["relative_path"],
-                    "spec_relative_path": record["spec_relative_path"],
-                    "sha256": record["image_sha256"],
-                    "figure_id": record["figure_id"],
-                    "template_id": spec.template_id,
-                    "route_id": spec.route_id,
-                    "project_revision": int(spec.generated_from_revision),
-                    "created_at": record["generated_at"],
-                }
-        self.session.save()
+        self.store.write_index(items, record["figure_id"])
 
     def _remember_preview(self, key, image):
         self._preview_cache[key] = image
@@ -2164,6 +2330,18 @@ class MapFigureService:
         while len(self._preview_cache_order) > 8:
             oldest = self._preview_cache_order.pop(0)
             self._preview_cache.pop(oldest, None)
+
+    def _activate(self, figure_id):
+        """把索引里的 active 图号指向该图件（只写受控索引，不碰 ProjectState）。"""
+
+        index = self.store.read_index()
+        items = list(index["items"])
+        for item in items:
+            if isinstance(item, dict) and str(item.get("figure_id")) == str(figure_id):
+                item["current_applicability"] = "current"
+            elif item.get("current_applicability") == "current":
+                item["current_applicability"] = "superseded"
+        self.store.write_index(items, figure_id)
 
 
 def _legend_layout_entries(legend_items):

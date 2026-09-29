@@ -196,7 +196,10 @@ export function createShellActions({getNode,panelError}){
       if(typeof onMissing==='function')onMissing(message);
       throw Error(message);
     }
-    const url='/api/map-figures/artifact?'+new URLSearchParams({figure_id:active.figure_id});
+    // kind=spec 才会返回 FigureSpec JSON；缺少它时服务端按默认的 png 产物返回，
+    // 于是"下载规格"会下载到一张 PNG（code review 修复项）。
+    const url='/api/map-figures/artifact?'+new URLSearchParams({
+      figure_id:active.figure_id,kind:specOnly?'spec':'png'});
     const blob=await api(url);
     const objectUrl=URL.createObjectURL(blob),link=document.createElement('a');
     link.href=objectUrl;

@@ -66,9 +66,15 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.allowed(): return self.respond({"error": "仅允许本机同源访问"}, status=403)
         url = urlparse(self.path)
-        # 任务查询同样要求有效会话：任务记录里含有 fingerprint / artifact 引用等技术信息。
+        # 这些 GET 端点会返回会话级/服务端产物：任务记录（含 fingerprint 与 artifact 引用）、
+        # 在线健康探测、文件浏览、已生成的专题图（PNG 与 FigureSpec），以及 CNS 规划报告
+        # artifact。它们与写请求同级，必须带有效会话令牌（X-CNS-Token）；其余只读端点保持
+        # 原样（本机同源即可读）。
         if (
-            url.path in ("/api/online-health", "/api/browse", "/api/cns-planning-report/artifact")
+            url.path in (
+                "/api/online-health", "/api/browse", "/api/cns-planning-report/artifact",
+                "/api/map-figures/preview", "/api/map-figures/artifact",
+            )
             or url.path == "/api/tasks" or url.path.startswith("/api/tasks/")
         ) and not valid_token(self.headers, self.context.token):
             return self.respond({"error": "无效会话"}, status=403)

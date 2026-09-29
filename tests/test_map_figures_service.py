@@ -29,11 +29,16 @@ from cns_planner.gis.figure_spec import FigureSpec
 from cns_planner.reporting.map_templates import catalog
 
 
+#: **真实 canonical** ``operational_routes`` 记录形态（务必与生产 writer 一致）：
+#: ``route_service.generate_scenario`` 与 ``LayeredOperationalAdoptionService._apply_working``
+#: 写出的 ``start`` / ``end`` 是**坐标数组** ``[lon, lat]``，**不是** ``{"name": ...}`` 字典；
+#: 起终点名称只存在于 ``scenario_routes`` / ``nodes`` 一侧，制图必须容忍这种形态。
 ROUTE = {
     "route_id": "R0001", "status": "passed", "path_crs": "OGC:CRS84",
     "kind": "layered_risk_aware_operational_route",
     "path": [[122.05, 29.95], [122.20, 30.01], [122.35, 29.98]],
-    "start": {"name": "起点甲"}, "end": {"name": "终点乙"},
+    "start": [122.05, 29.95], "end": [122.35, 29.98],
+    "start_node_id": "N0001", "end_node_id": "N0002",
     "provenance": {"source_type": "layered_operational_adoption"},
 }
 ROUTE_TWO = {
@@ -261,6 +266,7 @@ def test_preview_is_read_only_and_not_registered(tmp_path):
 
 def test_export_registers_record_and_reuses_same_figure_id(tmp_path):
     service, session, renderer = _service(tmp_path, routes=[ROUTE])
+    saved_before = session.saved
     first = service.export(template_id="route_overview_v1", route_id="R0001")
     assert first["reused"] is False
     record = first["record"]
@@ -269,13 +275,18 @@ def test_export_registers_record_and_reuses_same_figure_id(tmp_path):
     assert record["artifact_ref"]["relative_path"].startswith("artifacts/map_figures/")
     assert (tmp_path / record["relative_path"]).is_file()
     assert (tmp_path / record["spec_relative_path"]).is_file()
-    assert session.state[MAP_FIGURE_COLLECTION]["active_figure_id"] == first["figure_id"]
-    assert session.state["artifact_manifest"]["map_figures"][first["figure_id"]]
+    # 图件记录写在受控索引里，**不**进入 ProjectState、也**不**推进业务 revision。
+    assert session.saved == saved_before
+    assert MAP_FIGURE_COLLECTION not in session.state
+    assert "artifact_manifest" not in session.state
+    assert service.records()["active_figure_id"] == first["figure_id"]
+    assert service.store.index_path.is_file()
     calls_after_first = len(renderer.calls)
     second = service.export(template_id="route_overview_v1", route_id="R0001")
     assert second["reused"] is True
     assert second["figure_id"] == first["figure_id"]
     assert len(renderer.calls) == calls_after_first  # 复用不重新渲染
+    assert session.saved == saved_before  # 重复导出同样不写 ProjectState
 
 
 def test_records_are_revision_tagged_not_assumed_current(tmp_path):
@@ -284,7 +295,7 @@ def test_records_are_revision_tagged_not_assumed_current(tmp_path):
     session.state["revision"] = 8
     service.export(template_id="route_overview_v1", route_id="R0001",
                    dpi=150)
-    items = session.state[MAP_FIGURE_COLLECTION]["items"]
+    items = service.records()["items"]
     revisions = sorted(item["project_revision"] for item in items)
     assert revisions == [7, 8]
     assert all("spec_fingerprint" in item for item in items)
@@ -305,9 +316,9 @@ def test_do_not_touch_operational_routes_on_publish(tmp_path):
     before = json.dumps(session.state["operational_routes"], ensure_ascii=False)
     service.export(template_id="route_overview_v1", route_id="R0001")
     assert json.dumps(session.state["operational_routes"], ensure_ascii=False) == before
+    # 导出前后 ProjectState 的键集合与 revision 逐字节不变（图件记录在受控索引里）。
     assert set(session.state) - {"revision", "operational_routes", "source_audits",
-                                "towers", MAP_FIGURE_COLLECTION,
-                                "artifact_manifest"} == set()
+                                "towers"} == set()
 
 
 # ---- 5. 产物路径安全 --------------------------------------------------------

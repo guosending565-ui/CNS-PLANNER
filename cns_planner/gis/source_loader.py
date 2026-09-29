@@ -18,7 +18,7 @@ from ..data.source_profiles import COPERNICUS_GLO30, FABDEM_V12, WORLDPOP_R2025A
 from .building_footprint_aggregation import discover_vector_layer
 from .path_resolver import STATUS_OK, resolve_source_path
 from .qgis_project_layers import resolve_vector_layer_source
-from .source_inspection import inspect_geopackage
+from .source_inspection import inspect_geopackage, inspect_vector_dataset
 from .constraints import hard_constraints, layer_extents
 
 gdal.UseExceptions()
@@ -39,8 +39,19 @@ OPTIONAL_VECTOR_SOURCE_KEYS = (
 BUILDING_VECTOR_SOURCE_KEYS = ("buildings", "building_grid")
 #: 必须是具体文件的来源角色（其余角色缺失只表示"未配置"）。
 REQUIRED_FILE_ROLES = ("basemap", "population", "terrain")
-#: 启动时执行统一 exists/is_file/格式校验的角色。
+#: 启动时执行统一 exists/is_file/格式校验的角色（**阻断性**校验：格式或路径不对就拒绝启动）。
 CHECKED_FILE_ROLES = REQUIRED_FILE_ROLES + ("terrain_dtm",) + OPTIONAL_VECTOR_SOURCE_KEYS
+
+#: **非阻断**的可选矢量角色：配置了才读取信息，路径/格式有问题也**只降级**、不影响启动。
+#:
+#: ``cartographic_land``（制图陆地面）属于这里：它只服务专题地图表达，缺少或损坏时
+#: 专题图的陆海图层如实标记 unavailable 并把原因写进 FigureSpec，而 MapData / 项目启动、
+#: surface classification、风险与规划都不受影响。放进 CHECKED_FILE_ROLES 会让"没有派生
+#: 数据"直接阻断整个工作台启动 —— 那是把可选的制图数据升级成了启动前提。
+NON_BLOCKING_VECTOR_SOURCE_KEYS = ("cartographic_land",)
+CHECKED_FILE_ROLES = tuple(
+    role for role in CHECKED_FILE_ROLES if role not in NON_BLOCKING_VECTOR_SOURCE_KEYS
+)
 
 @dataclass
 class LoadedSources:
@@ -97,7 +108,8 @@ class QgisSourceLoader:
         terrain_dtm, terrain_dtm_info = self._load_terrain_dtm(terrain_dtm_tif) if terrain_dtm_tif else (None, {})
         vector_info = {
             key: self.vector_source_info(paths[key], key)
-            for key in OPTIONAL_VECTOR_SOURCE_KEYS if paths.get(key)
+            for key in (OPTIONAL_VECTOR_SOURCE_KEYS + NON_BLOCKING_VECTOR_SOURCE_KEYS)
+            if paths.get(key)
         }
         projected_extents = layer_extents(local, project, self.map_crs)
         layers = [{"id": layer.id(), "name": layer.name(), "bbox": projected_extents[layer.id()]}
@@ -113,7 +125,7 @@ class QgisSourceLoader:
         clean_paths.update({
             key: str(Path(paths[key]).resolve()) for key in REFERENCE_SOURCE_KEYS if paths.get(key)
         })
-        for key in OPTIONAL_VECTOR_SOURCE_KEYS:
+        for key in (OPTIONAL_VECTOR_SOURCE_KEYS + NON_BLOCKING_VECTOR_SOURCE_KEYS):
             if paths.get(key):
                 clean_paths[key] = str(
                     Path(paths[key]).resolve()
@@ -145,11 +157,13 @@ class QgisSourceLoader:
 
     @staticmethod
     def vector_source_info(value, role):
-        """建筑单体 / 建筑环境网格的只读来源描述。
+        """可选矢量来源的只读描述（建筑单体 / 建筑环境网格 / 制图陆地面）。
 
-        配置值可以是 ``.gpkg`` / ``.shp`` / ``.geojson``，也可以是**引用建筑图层的 QGIS
-        工程**（``.qgz`` / ``.qgs``）。GeoPackage 走既有的严格 schema 校验；其它格式走通用
-        矢量发现并显式标注"深层字段未校验"，绝不把未校验的源说成已验证。
+        配置值可以是 ``.gpkg`` / ``.shp`` / ``.geojson``，也可以是引用图层的 QGIS 工程
+        （``.qgz`` / ``.qgs``）。**只有当 role 属于建筑类**时才走 buildings GeoPackage
+        schema 校验（那个 schema 要求 ``height_m`` / ``source`` 等字段与空间索引）；
+        其余角色（尤其 ``cartographic_land``）走**通用**矢量自省，绝不套用业务 schema。
+        非阻断角色读取失败时只返回 ``failed`` 描述，**不抛异常**。
         """
 
         resolved = resolve_vector_layer_source(value, role=role)
@@ -166,26 +180,42 @@ class QgisSourceLoader:
             "configured_path": str(value), "via": resolved.get("source"),
             "project_path": resolved.get("project_path"), "layer_name": layer_name,
         }
-        if suffix == ".gpkg":
+        if role in BUILDING_VECTOR_SOURCE_KEYS:
+            if suffix == ".gpkg":
+                try:
+                    info = dict(inspect_geopackage(resolved_path, role))
+                except (OSError, ValueError) as exc:
+                    return {
+                        **common, "status": "failed", "reason": str(exc),
+                        "path": resolved_path, "schema_verified": False,
+                    }
+                return {**info, **common, "schema_verified": True}
             try:
-                info = dict(inspect_geopackage(resolved_path, role))
-            except (OSError, ValueError) as exc:
+                info = dict(discover_vector_layer(resolved_path, layer_name))
+            except (OSError, ValueError, RuntimeError) as exc:
                 return {
                     **common, "status": "failed", "reason": str(exc),
                     "path": resolved_path, "schema_verified": False,
                 }
-            return {**info, **common, "schema_verified": True}
+            info.pop("_features", None)
+            return {
+                **info, **common, "status": "passed", "schema_verified": False,
+                "schema_note": f"{role} 的深层字段校验只在 GeoPackage 上执行",
+            }
+        # 非建筑角色：通用矢量自省（不要求任何业务字段、不强制空间索引）。
         try:
-            info = dict(discover_vector_layer(resolved_path, layer_name))
-        except (OSError, ValueError, RuntimeError) as exc:
+            inspection = inspect_vector_dataset(resolved_path)
+        except (OSError, ValueError) as exc:
             return {
                 **common, "status": "failed", "reason": str(exc),
                 "path": resolved_path, "schema_verified": False,
+                "blocking": False,
             }
-        info.pop("_features", None)
         return {
-            **info, **common, "status": "passed", "schema_verified": False,
-            "schema_note": f"{role} 的深层字段校验只在 GeoPackage 上执行",
+            **inspection, **common, "status": inspection.get("status", "passed"),
+            "schema_verified": False,
+            "schema_note": f"{role} 使用通用矢量自省，不套用建筑 GeoPackage schema",
+            "blocking": False,
         }
 
     @staticmethod

@@ -22,7 +22,9 @@ from cns_planner.application.map_figure_service import MapFigureService
 ROUTE = {
     "route_id": "R0001", "status": "passed", "path_crs": "OGC:CRS84",
     "path": [[122.05, 29.95], [122.20, 30.01], [122.35, 29.98]],
-    "start": {"name": "起点甲"}, "end": {"name": "终点乙"},
+    # 真实 canonical 形态：``start`` / ``end`` 是坐标数组，不是 ``{"name": ...}``。
+    "start": [122.05, 29.95], "end": [122.35, 29.98],
+    "start_node_id": "N0001", "end_node_id": "N0002",
 }
 
 
@@ -79,6 +81,16 @@ def _router(tmp_path, routes):
     return ApiRouter(_Context(service, state)), state
 
 
+def _service(tmp_path, routes):
+    state = {"revision": 3, "operational_routes": list(routes), "source_audits": {"items": {}},
+             "towers": {"count": 0, "items": []}}
+    return MapFigureService(
+        _Session(state, tmp_path / "project_state.json"), lambda: {},
+        lambda action: action(), renderer_factory=lambda: _Renderer(),
+        project_directory=tmp_path,
+    ), state
+
+
 def test_catalog_reports_available_and_planned_templates(tmp_path):
     router, _ = _router(tmp_path, [ROUTE])
     response = router.get("/api/map-figures/catalog", {}, {})
@@ -127,13 +139,16 @@ def test_export_registers_record_and_artifact_reads_it_back(tmp_path):
     assert response.status == 200
     figure_id = response.data["figure_id"]
     assert response.data["record"]["project_revision"] == 3
-    assert state["map_figures"]["active_figure_id"] == figure_id
+    # 记录写在受控索引里，**不**进入 ProjectState（业务 revision 也因此不变）。
+    assert "map_figures" not in state
+    assert router.context.map_figures.records()["active_figure_id"] == figure_id
     png = router.get("/api/map-figures/artifact", {"figure_id": [figure_id]}, {})
     assert png.status == 200 and bytes(png.data).startswith(b"\x89PNG")
     spec = router.get(
         "/api/map-figures/artifact", {"figure_id": [figure_id], "kind": ["spec"]}, {},
     )
     assert spec.status == 200
+    assert spec.content_type == "application/json; charset=utf-8"
     payload = json.loads(bytes(spec.data).decode("utf-8"))
     assert payload["template_id"] == "route_overview_v1"
     assert payload["boundaries"]["presentation_only"] is True

@@ -262,7 +262,8 @@ def _layer_entry(spec, layer):
         if not polygons:
             return None
         return {"key": layer.layer_key, "z": style_item["z"], "style_key": layer.style_key,
-                "kind": "polygon", "polygons": polygons, "name": layer.display_name}
+                "kind": "polygon", "polygons": polygons, "name": layer.display_name,
+                "holes": _holes_of(polygons, data)}
     if layer.geometry_type == GEOMETRY_LINE:
         geometry = data.get("geometry") or []
         if len(geometry) < 2:
@@ -284,15 +285,36 @@ def _layer_entry(spec, layer):
 
 
 def _polygons_of(spec, layer, data):
-    """图层多边形来源。
+    """图层多边形外环。
 
-    海域（``sea``）现在来自 FigureSpec 的**真实面积差集**
-    （地图画布矩形 − ``cartographic_land``，由装配层计算），因此这里与其它面图层一样
-    只读 ``data["polygons"]``；不再用"整个画布矩形铺海色"的做法，那会把陆地缺失的地方
-    一律画成海面。
+    海域（``sea``）来自 FigureSpec 的**真实多边形差集**
+    （地图画布矩形 − ``cartographic_land``，由装配层用可靠的多边形库计算），因此这里与
+    其它面图层一样只读 ``data["polygons"]``；不再用"整个画布矩形铺海色"，也不再用
+    矩形条带近似。内环（洞）由 :func:`_holes_of` 单独取出，并在
+    :func:`_vector_layer` 里重建为真正的 QGIS 多边形内环。
     """
 
     return [ring for ring in (data.get("polygons") or []) if len(ring) >= 4]
+
+
+def _holes_of(polygons, data):
+    """把装配层给出的内环映射成 ``{polygon_index: [hole, ...]}``（数据驱动，绝不发明洞）。"""
+
+    raw = data.get("polygon_holes")
+    if not isinstance(raw, dict):
+        return {}
+    result = {}
+    for key, holes in raw.items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= index < len(polygons):
+            continue
+        cleaned = [hole for hole in (holes or []) if len(hole) >= 4]
+        if cleaned:
+            result[index] = cleaned
+    return result
 
 
 def _vector_layer(entry):
@@ -305,9 +327,13 @@ def _vector_layer(entry):
     features = []
     if entry["kind"] == "polygon":
         symbol = fill_symbol(entry["style_key"])
-        for ring in entry["polygons"]:
+        holes = entry.get("holes") or {}
+        for index, ring in enumerate(entry["polygons"]):
             feature = QgsFeature()
-            feature.setGeometry(QgsGeometry.fromPolygonXY([_ring(ring, QgsPointXY)]))
+            # QgsGeometry.fromPolygonXY 的第一个环是外环，其余是内环（洞）。
+            rings = [_ring(ring, QgsPointXY)]
+            rings.extend(_ring(hole, QgsPointXY) for hole in (holes.get(index) or []))
+            feature.setGeometry(QgsGeometry.fromPolygonXY(rings))
             features.append(feature)
     elif entry["kind"] == "line":
         symbol = line_symbol(entry["style_key"])
