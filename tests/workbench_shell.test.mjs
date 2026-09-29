@@ -2059,6 +2059,9 @@ test('step 06 report gate, stale semantics and bind contract stay unchanged',()=
     bindStep6(c);
     assert.deepEqual(registered,['saveAll','initializePlanReview','evaluatePlanVariant','createPlanVariant','confirmPlan','applyPlan',
       'previewPlanningReport','generatePlanningReport','downloadReportHtml','downloadReportPdf','downloadReportPackage',
+      // 专题成果图（Presentation / Cartographic Export）：只新增这四个显式动作，
+      // 全部由用户点击触发，没有任何自动生成路径。
+      'previewMapFigure','exportMapFigure','downloadMapFigure','downloadMapFigureSpec',
       'evaluateRouteSafetyEvidenceV2']);
     for(const button of document.querySelectorAll('.selectPlanVariant'))assert.ok(button.onclick,'every variant card keeps its select handler');
   });

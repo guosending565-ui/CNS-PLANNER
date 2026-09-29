@@ -43,6 +43,20 @@ DEFAULT_PATHS = {
     # 这里只是**本机默认建议值**：算法侧一律从 ``data_sources["land_mask"]`` 消费，
     # radar algorithm / adapter 里不出现任何绝对路径。
     "land_mask": "D:/aaa2026project/UOM/舟山/规划系统/GLO30/boundary/zhejiang_boundary.gpkg",
+    # 制图陆地面（cartographic_land）：**只**用于专题地图的陆海表达。
+    #
+    # 为什么不能直接用 land_mask：本机现有的矢量陆地/岸线数据只有省界、国界与
+    # Natural Earth 1:10m，它们在嵊泗列岛是残缺的（枸杞、嵊山落在几何之外 26.6 km /
+    # 32.2 km），会在地图上制造大量"通信站址位于海上"的假象。
+    #
+    # 该文件由 ``tools/derive_cartographic_land.py`` 从项目**已有**数据派生：
+    # FABDEM 30 m DTM（高程 > 0 m）+ 建筑足迹（538 228 个真实建筑面，栅格化后膨胀），
+    # 经闭运算与 Polygonize 得到 EPSG:4326 多边形；派生参数与校验结论记录在同目录
+    # ``cartographic_land_v1.json``。它**不**参与 surface classification、风险计算或
+    # 航路规划，也不会替换 canonical ``land_mask`` 的业务语义。
+    "cartographic_land": (
+        "projects/derived/cartographic_land/cartographic_land_v1.gpkg"
+    ),
 }
 
 

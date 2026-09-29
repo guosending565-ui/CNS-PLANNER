@@ -1,0 +1,255 @@
+"""专题成果图模板目录（Presentation / Cartographic Export）。
+
+本模块只描述**制图模板**，不含任何业务算法：
+
+* 每个模板声明 id / version / 状态（``available`` / ``planned``）、中文名称、用途说明、
+  可用图层键、图例分组顺序与显示阈值；
+* ``route_overview_v1`` 是本轮唯一 ``available`` 的模板；其余 5 个模板在本轮只做
+  **类型与说明的预留**（``planned``），目录会明确返回"尚未实现"，绝不生成假结果；
+* 数据源角色（哪一项 FigureSpec 图层读哪个真实数据源）由模板声明，装配与读取在
+  Application / GIS 层完成，模板本身不打开任何数据集。
+
+阈值语义（重要）：
+    ``terrain_threshold_m`` / ``building_threshold_m`` 是 **figure display threshold**：
+    只决定"这一张图上哪些格被显示为障碍物"，它们
+    不进入 Planning Constraint Field、不改变航路安全判断、也不是新的业务 gate。
+    阈值与依据会原样写进 FigureSpec，成为可审计事实。
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+
+TEMPLATE_SCHEMA_VERSION = 1
+ROUTE_OVERVIEW_V1 = "route_overview_v1"
+
+#: 模板状态：``available`` 表示本实现已能真实出图；``planned`` 表示只登记类型与说明。
+AVAILABLE = "available"
+PLANNED = "planned"
+
+#: 本轮预留的后续模板（不生成任何结果，只声明类型与用途）。
+_PLANNED_TEMPLATES = (
+    {
+        "template_id": "route_detail_v1",
+        "display_name": "航路细节放大图",
+        "purpose": "以更小的缓冲区放大航路局部，展示转弯、净空与周边障碍细节。",
+        "status": PLANNED,
+        "planned_inputs": ["operational_route", "terrain", "buildings", "towers"],
+        "next_round_note": "复用同一 FigureSpec 边界与渲染器，只更换 extent buffer 与图层集合。",
+    },
+    {
+        "template_id": "communication_layout_v1",
+        "display_name": "通信设施布设图",
+        "purpose": "展示通信子系统已确认设施与覆盖半径。",
+        "status": PLANNED,
+        "planned_inputs": ["operational_route", "confirmed_plan", "existing_baseline"],
+        "next_round_note": "只读消费 Step5 已形成的设施结果，不在制图层重算选址。",
+    },
+    {
+        "template_id": "navigation_layout_v1",
+        "display_name": "导航设施布设图",
+        "purpose": "展示导航子系统已确认设施与覆盖半径。",
+        "status": PLANNED,
+        "planned_inputs": ["operational_route", "confirmed_plan", "existing_baseline"],
+        "next_round_note": "与通信布设图共用设施渲染原语。",
+    },
+    {
+        "template_id": "surveillance_layout_v1",
+        "display_name": "监视设施布设图",
+        "purpose": "展示监视子系统已确认设施与雷达几何划设方案（proposal 只作为提案图层）。",
+        "status": PLANNED,
+        "planned_inputs": ["operational_route", "confirmed_plan", "radar_surveillance_layout"],
+        "next_round_note": "雷达方案只作为已有 proposal 事实的展示，不重新求解。",
+    },
+    {
+        "template_id": "cns_combined_v1",
+        "display_name": "CNS 综合布设图",
+        "purpose": "在同一版面上叠加通信 / 导航 / 监视设施与航路。",
+        "status": PLANNED,
+        "planned_inputs": ["operational_route", "confirmed_plan"],
+        "next_round_note": "复用前三张图的设施图层与统一图例分组顺序。",
+    },
+)
+
+
+#: ``route_overview_v1`` 的稳定图例顺序（只显示实际存在且可用的项）。
+#: 顺序即语义分组顺序：地理环境 → 障碍物 → 既有设施与机场 → 规划航路。
+#: **不含适飞空域**：图1按产品要求不表达空域（空域能力与其它模板不受影响）。
+ROUTE_OVERVIEW_LEGEND_ORDER = (
+    "sea",
+    "land",
+    "terrain_obstacle",
+    "building_obstacle",
+    "tower_existing",
+    "tower_obstacle",
+    "airport",
+    "airport_protection",
+    "planned_route",
+    "turn_point",
+    "start_point",
+    "end_point",
+)
+
+#: :data:`ROUTE_OVERVIEW_LEGEND_ORDER` 的中文名（供前端与图例标题使用）。
+LAYER_DISPLAY_NAMES = {
+    "sea": "海域",
+    "land": "陆地区域",
+    "airspace": "已确认适飞空域",
+    "terrain_obstacle": "地形障碍（≥ 显示阈值）",
+    "building_obstacle": "建筑障碍（≥ 显示阈值）",
+    # 源 Excel 的"铁塔细分类型"含楼面抱杆、楼面拉线塔、美化外罩、落地塔、H 杆塔、
+    # 单管塔等，373 个点实际是**通信站址集合**，不全部是独立铁塔。
+    "tower_existing": "既有通信站址",
+    "tower_obstacle": "铁塔障碍",
+    "airport": "机场",
+    "airport_protection": "机场净空/保护范围",
+    "planned_route": "规划航路",
+    "turn_point": "航路转弯点",
+    "start_point": "起点",
+    "end_point": "终点",
+}
+
+#: 图层键 → 默认读取的真实数据源角色（Application 层据此装配；未配置即为不可用）。
+#: ``sea`` / ``land`` 指向**制图专用**的 ``cartographic_land``（只影响地图表达），
+#: 业务 ``land_mask``（surface classification 的判据）取值与语义都不受此表影响。
+LAYER_SOURCE_ROLES = {
+    "sea": "cartographic_land",
+    "land": "cartographic_land",
+    "airspace": "basemap",
+    "terrain_obstacle": "terrain_dtm",
+    "building_obstacle": "building_grid",
+    "tower_existing": "towers",
+    "tower_obstacle": "tower_obstacle_profiles",
+    "airport": "airports",
+    "airport_protection": "airports",
+}
+
+#: 本轮模板参数默认值。全部可在调用时覆盖，且会被记录进 FigureSpec。
+ROUTE_OVERVIEW_PARAMETERS = {
+    # 图1 的定义是"**航路周边**状况图"，不是舟山市区域总览：范围 = 选定航路 bbox +
+    # 制图缓冲（米制计算），默认 10 km。站址只在范围确定**之后**按范围筛选，
+    # 绝不为了显示更多站址而扩大范围。
+    "extent_buffer_km": 10.0,
+    "extent_max_padding_km": 30.0,
+    "extent_source_crs": "EPSG:32651",
+    # figure display threshold（只是显示口径，不是业务约束）。
+    "terrain_threshold_m": 100.0,
+    "building_threshold_m": 100.0,
+    "terrain_threshold_basis": "figure_display_threshold_from_spec",
+    "building_threshold_basis": "figure_display_threshold_from_spec",
+    # 版面（毫米）：A4 竖版 210×297。标题带 / 地图 / 间距 / 图例 / 页脚由 _layout_plan
+    # 按实际图例条目数分配：``map_fraction`` 是地图的**最大**占比（0.72）。
+    "document_width_mm": 210.0,
+    "document_height_mm": 297.0,
+    "margin_mm": 14.0,
+    "map_fraction": 0.72,
+    # 图例：横向 **2 列**（按语义分组横向展开）；条目更多时由图例算法自动均衡列高。
+    "legend_columns": 2,
+    # 显示控制。
+    "segments_per_degree": 5,
+    "show_landmark_labels": True,
+    "show_place_labels": True,
+    "preview_dpi": 130,
+    "export_dpi": 300,
+    "preview_px_per_mm": 3.0,
+}
+
+
+def _template(template_id, *, display_name, purpose, availability, parameters=None,
+              legend_order=(), layers=(), notes=""):
+    return {
+        "template_id": template_id,
+        "template_version": TEMPLATE_SCHEMA_VERSION,
+        "display_name": display_name,
+        "purpose": purpose,
+        "status": availability,
+        "parameters": deepcopy(parameters or {}),
+        "legend_order": list(legend_order),
+        "layer_keys": list(layers),
+        "notes": notes,
+    }
+
+
+ROUTE_OVERVIEW_V1_TEMPLATE = _template(
+    ROUTE_OVERVIEW_V1,
+    display_name="航路周边状况图",
+    purpose=(
+        "以上方地图、下方独立图例的固定 A4 竖版，展示选定权威运行航路及其周边海陆、"
+        "障碍物与既有通信站址的环境关系。"
+    ),
+    availability=AVAILABLE,
+    parameters=ROUTE_OVERVIEW_PARAMETERS,
+    legend_order=ROUTE_OVERVIEW_LEGEND_ORDER,
+    layers=tuple(ROUTE_OVERVIEW_LEGEND_ORDER),
+    notes=(
+        "只读消费 canonical operational route 与已配置 GIS 数据源；不含适飞空域表达；"
+        "缺数据的图层会被省略，并在 FigureSpec.source_status / omitted_layers 中记录原因，"
+        "绝不补 0 或伪造。"
+    ),
+)
+
+#: ``route_detail_v1`` 等后续模板仍可以使用空域图层（能力未删除）。
+PLANNED_LAYER_KEYS = ("airspace",)
+
+#: 模板目录：id → 模板声明。顺序即接口返回顺序。
+COMMERCIAL_TEMPLATES = {ROUTE_OVERVIEW_V1: ROUTE_OVERVIEW_V1_TEMPLATE}
+for _entry in _PLANNED_TEMPLATES:
+    COMMERCIAL_TEMPLATES[_entry["template_id"]] = {
+        "template_id": _entry["template_id"],
+        "template_version": TEMPLATE_SCHEMA_VERSION,
+        "display_name": _entry["display_name"],
+        "purpose": _entry["purpose"],
+        "status": _entry["status"],
+        "parameters": {},
+        "legend_order": [],
+        "layer_keys": [],
+        "planned_inputs": list(_entry["planned_inputs"]),
+        "notes": _entry["next_round_note"],
+    }
+
+
+def catalog():
+    """模板目录（JSON-safe）：本轮哪些可生成、哪些只是预留，一目了然。"""
+
+    return {
+        "schema_version": TEMPLATE_SCHEMA_VERSION,
+        "available_template_ids": [
+            template_id for template_id, item in COMMERCIAL_TEMPLATES.items()
+            if item["status"] == AVAILABLE
+        ],
+        "templates": [deepcopy(item) for item in COMMERCIAL_TEMPLATES.values()],
+        "notes": (
+            "本目录只登记模板。status=planned 的模板尚未实现，调用生成接口会被明确拒绝，"
+            "系统不会为它们生成任何占位结果。"
+        ),
+    }
+
+
+def template(template_id):
+    """按 id 取模板声明；不存在时返回 ``None``。"""
+
+    return COMMERCIAL_TEMPLATES.get(str(template_id or "").strip())
+
+
+def is_available(template_id):
+    item = template(template_id)
+    return bool(item and item["status"] == AVAILABLE)
+
+
+def parameters(template_id, overrides=None):
+    """模板默认参数 + 调用方覆盖（只接受已知键，未知键被忽略而不是静默生效）。"""
+
+    item = template(template_id)
+    base = deepcopy(item["parameters"]) if item else {}
+    for key, value in (overrides or {}).items():
+        if key in base and value is not None:
+            base[key] = value
+    return base
+
+
+__all__ = [
+    "AVAILABLE", "COMMERCIAL_TEMPLATES", "LAYER_DISPLAY_NAMES", "LAYER_SOURCE_ROLES",
+    "PLANNED", "ROUTE_OVERVIEW_LEGEND_ORDER", "ROUTE_OVERVIEW_PARAMETERS",
+    "ROUTE_OVERVIEW_V1", "ROUTE_OVERVIEW_V1_TEMPLATE", "TEMPLATE_SCHEMA_VERSION",
+    "catalog", "is_available", "parameters", "template",
+]

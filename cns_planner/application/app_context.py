@@ -103,6 +103,8 @@ class ApplicationContext:
         self.workflow.register_source_paths(self.data.paths, self._source_details())
         # 启动即把 runtime provider/adapter 绑定到当前 workflow（与 open/save-as 同一条路径）。
         self._activate_workflow(self.workflow, self.active_project_file)
+        # 专题成果图：只读消费 canonical state 与已配置数据源（不参与任何业务算法）。
+        self.configure_map_figures()
 
     @property
     def health_identity(self):
@@ -175,6 +177,10 @@ class ApplicationContext:
         # 末尾整份快照投影的本体，避免为同一个项目重复投影上百 MB 的逐 cell 结果。
         self.workflow._load_reference_sources(self.data.paths)
         self._bind_runtime_services()
+        if getattr(self, "map_figures", None) is not None:
+            # 专题图产物目录随 active project 变化，但 session/workflow 已经是新实例，
+            # 因此这里只重建服务对象（无状态、无数据集打开）。
+            self.configure_map_figures()
         return workflow
 
     def _bind_runtime_services(self):
@@ -192,6 +198,24 @@ class ApplicationContext:
         self.configure_radar_surveillance_layout_sources()
         self.configure_surface_classification_sources()
         return self.workflow
+
+    def configure_map_figures(self):
+        """装配**专题成果图**（Presentation / Cartographic Export）服务。
+
+        * 只读消费 ``self.data.paths``（真实数据源）与当前 workflow 的 canonical state；
+        * 真正的 QGIS 制图通过 ``self.qgis.call(...)`` 在 QGIS owner 线程上执行；
+        * 产物写入 active project 目录下的受控目录 ``artifacts/map_figures/``。
+        """
+
+        from .map_figure_service import MapFigureService
+
+        self.map_figures = MapFigureService(
+            self.workflow.session,
+            lambda: self.data.paths,
+            self.qgis.call,
+            project_directory=self.active_project_file.parent,
+        )
+        return self.map_figures
 
     def save_project_as(self, project_dir):
         workflow, target = self.project_directories.save_as(

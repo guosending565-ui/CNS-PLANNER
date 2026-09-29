@@ -481,6 +481,12 @@ function stepBindings(){return {
   refreshCorridorDetail:()=>snapshotApplier.hydrateCorridorServiceDetail(),
   saveProject,openProject,projectOpenStep,
   previewPlanningReport,downloadPlanningReport,
+  // 专题成果图：预览为只读 GET；下载只读已生成产物；绝不自动触发制图。
+  previewMapFigure:input=>shellActions.previewMapFigure(input,{api,onError:panelError}),
+  downloadMapFigure:specOnly=>{
+    if(!document.getElementById('downloadMapFigure'))return Promise.resolve({ok:false});
+    return shellActions.downloadMapFigure(specOnly==='spec',{api,flow,onMissing:message=>panelError(message)});
+  },
   selectReference(value){selectedReference=value;renderWorkflow();paint();},setProfileHover(value){profileHoverCoordinate=value;paint();},
   // RouteRiskProfile → 地图的临时联动：只改纯 UI 高亮状态并重绘。
   routeEvidence:{

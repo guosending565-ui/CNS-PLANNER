@@ -14,7 +14,9 @@ class ProjectDirectoryService:
     #: Layout V1.1 从 ``data_sources["land_mask"]`` 消费真实陆域掩膜，而它属于
     #: Save As / Open Project 必须原样带回的一组空间来源。缺了它，保存项目 → 重开之后
     #: land_mask 路径会静默丢失，radar surface_class 全部回落 unknown（fail-closed 但不可用）。
-    SPATIAL_SOURCE_KEYS = ("terrain_dtm", "buildings", "building_grid", "land_mask")
+    SPATIAL_SOURCE_KEYS = (
+        "terrain_dtm", "buildings", "building_grid", "land_mask", "cartographic_land",
+    )
     def __init__(self, automatic_file, defaults_path, default_sources, workflow_factory):
         self.automatic_file = Path(automatic_file)
         self.defaults_path = Path(defaults_path)

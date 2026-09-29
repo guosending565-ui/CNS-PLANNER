@@ -32,6 +32,8 @@ OPTIONAL_VECTOR_SOURCE_KEYS = (
     # 陆域掩膜：与建筑类不同，**不**要求"能解析出建筑图层"，
     # 只需要是一个存在的、受支持的矢量文件（逐点判定在 radar adapter 里做）。
     "land_mask",
+    # 制图陆地面：只影响专题地图表达，同样只要求"存在且格式受支持"。
+    "cartographic_land",
 )
 #: 建筑类来源必须在加载时确认"能解析出可用建筑图层"（陆域掩膜不适用此规则）。
 BUILDING_VECTOR_SOURCE_KEYS = ("buildings", "building_grid")

@@ -141,5 +141,70 @@ export function createShellActions({getNode,panelError}){
   /** 没有正式报告时的中文原因（供状态栏 / 空状态复用）。 */
   function reportMissingReason(){return sourceStateText('no_result');}
 
-  return {previewReport,downloadReport,saveProject,reportMissingReason};
+  // ---- 专题成果图（Presentation / Cartographic Export） ----------------------
+
+  /**
+   * 预览专题成果图。
+   *
+   * **不自动生成**：只有用户显式点击才会请求；预览是只读 GET（不写项目状态、
+   * 不占 revision 契约）。图片用 object URL 打开，浏览器阻止新窗口时如实提示。
+   *
+   * @param {{template_id:string,route_id:string}} input
+   * @param {{api:Function,onError:Function}} deps
+   */
+  async function previewMapFigure(input,{api,onError}={}){
+    const template=String(input?.template_id||'route_overview_v1');
+    const routeId=String(input?.route_id||'');
+    try{
+      if(!routeId){
+        throw Error('请先选择一条权威运行航路；当前项目没有可制图的运行航路时无法预览。');
+      }
+      const query={template:template,route_id:routeId};
+      const blob=await api('/api/map-figures/preview?'+new URLSearchParams(query));
+      const objectUrl=URL.createObjectURL(blob);
+      const opened=window.open(objectUrl,'_blank');
+      if(!opened){
+        // 新窗口被拦截时改为同页下载，绝不静默失败。
+        const link=document.createElement('a');
+        link.href=objectUrl;link.download=template+'-preview.png';link.click();
+        if(typeof onError==='function')onError('浏览器阻止了预览窗口，已改为下载同目录预览图。');
+      }else if(typeof onError==='function'){
+        onError('专题图预览已生成（预览不写入项目）。','hint');
+      }
+      setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
+      return {ok:true,message:'预览已生成'};
+    }catch(exc){
+      const message='专题图预览失败：'+(exc?.message||exc)
+        +'。常见原因：当前项目尚无权威运行航路，或所需数据源不可用。';
+      if(typeof onError==='function')onError(message,'error');
+      return {ok:false,message};
+    }
+  }
+
+  /**
+   * 打开/下载已生成的专题图产物（或它的 FigureSpec JSON）。
+   *
+   * 只接受**已有图件记录**的 figure_id；没有生成过时给出明确中文原因，
+   * 绝不自动触发生成。
+   */
+  async function downloadMapFigure(specOnly,{api,flow,onMissing}={}){
+    const collection=(flow&&flow.map_figures)||{},records=Array.isArray(collection.items)?collection.items:[];
+    const active=records.find(item=>item.figure_id===collection.active_figure_id)
+      ||records[records.length-1]||null;
+    if(!active||!active.figure_id){
+      const message='尚无可下载的专题成果图。请先在上方选择模板与航路，然后点击「生成 PNG」。';
+      if(typeof onMissing==='function')onMissing(message);
+      throw Error(message);
+    }
+    const url='/api/map-figures/artifact?'+new URLSearchParams({figure_id:active.figure_id});
+    const blob=await api(url);
+    const objectUrl=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=objectUrl;
+    link.download=(active.figure_id||'map-figure')+(specOnly?'.spec.json':'.png');
+    link.click();
+    setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
+    return {ok:true,figureId:active.figure_id};
+  }
+
+  return {previewReport,downloadReport,saveProject,reportMissingReason,previewMapFigure,downloadMapFigure};
 }

@@ -9,6 +9,7 @@ from ..safety.fault_tree import evaluate_fault_tree
 from ..safety.coupling import evaluate_coupled_events
 from ..safety.service_state import evaluate_service_state
 from .file_browser import browse
+from ..application.map_figure_service import MapFigureError
 from ..tasks.task_specs import task_type_for_endpoint
 from ..compatibility.catalog import with_capability_metadata
 
@@ -149,6 +150,33 @@ class ApiRouter:
             }))
         if path == "/api/workspace/grid": return Response(workflow.grid_snapshot())
         if path == "/api/workspace/grid/attributes": return Response(workflow.grid_attributes_snapshot())
+        # ---- 专题成果图（Presentation / Cartographic Export，只读 catalog / preview） -----
+        # 只暴露模板目录、预览与受控产物读取；**没有**通用 QGIS 执行接口，也不接受任何
+        # 客户端提供的脚本、表达式或输出路径。
+        if path == "/api/map-figures/catalog":
+            try:
+                return Response(self._map_figures().catalog())
+            except MapFigureError as exc:
+                return Response(self._map_figure_error(exc), status=exc.status)
+        if path == "/api/map-figures/preview":
+            try:
+                result = self._map_figures().render_preview(
+                    template_id=self._first(query, "template", "") or "route_overview_v1",
+                    route_id=self._first(query, "route_id", "") or None,
+                    width_px=self._first(query, "width", "") or None,
+                )
+            except MapFigureError as exc:
+                return Response(self._map_figure_error(exc), status=exc.status)
+            return Response(result["image"], "image/png")
+        if path == "/api/map-figures/artifact":
+            try:
+                artifact = self._map_figures().artifact(
+                    self._first(query, "figure_id", ""),
+                    self._first(query, "kind", "png") or "png",
+                )
+            except MapFigureError as exc:
+                return Response(self._map_figure_error(exc), status=exc.status)
+            return Response(artifact["image"], artifact["content_type"])
         if path == "/api/aircraft-profiles": return Response(workflow.aircraft_profiles_snapshot())
         if path == "/api/device-catalog": return Response(workflow.device_catalog_snapshot())
         if path == "/api/reference-landing-sites": return Response(workflow.reference_landing_sites_snapshot())
@@ -313,6 +341,26 @@ class ApiRouter:
             return value[0] if value else default
         return default if value is None else value
 
+    # ---- 专题成果图（Presentation / Cartographic Export） -------------------------
+
+    def _map_figures(self):
+        """当前运行时装配的专题图服务；未启用时给出明确中文错误。"""
+
+        service = getattr(self.context, "map_figures", None)
+        if service is None:
+            raise MapFigureError("服务端未启用专题成果图模块", code="map_figure_disabled")
+        return service
+
+    @staticmethod
+    def _map_figure_error(exc):
+        """把业务错误翻译成统一的 JSON 结构（中文提示 + 技术 code）。"""
+
+        return {
+            "error": str(exc),
+            "code": getattr(exc, "code", "map_figure_error"),
+            "detail": getattr(exc, "detail", None),
+        }
+
     def _project_active(self):
         """``GET /api/project/active`` 的轻量投影（见 GET 分派处的完整说明）。
 
@@ -475,6 +523,28 @@ class ApiRouter:
             task_id = path[len("/api/tasks/"):].strip("/")
             if task_id and "/" not in task_id:
                 return self._task_submit(payload.get("task_type"), payload, task_id=task_id)
+        # ---- 专题成果图正式导出（POST：需要 token + revision 契约） ------------------
+        # payload 只接受 template_id / route_id / format / dpi / 受控模板参数覆盖；
+        # 输出路径永远由服务端在 active project 的受控目录内决定，客户端不能指定路径。
+        if path == "/api/map-figures/export":
+            try:
+                return Response(self._map_figures().export(
+                    template_id=payload.get("template_id") or payload.get("template")
+                    or "route_overview_v1",
+                    route_id=payload.get("route_id") or None,
+                    format_name=payload.get("format") or "png",
+                    dpi=payload.get("dpi"),
+                    parameter_overrides=payload.get("parameters") or None,
+                ))
+            except MapFigureError as exc:
+                return Response(self._map_figure_error(exc), status=exc.status)
+        # 任何其它 /api/map-figures/* POST 都明确不存在（没有通用 QGIS 执行入口）。
+        if path.startswith("/api/map-figures/"):
+            return Response(
+                {"error": "专题成果图没有该操作；本模块只提供 catalog / preview / export / artifact",
+                 "code": "map_figure_unknown_operation"},
+                status=404,
+            )
         task_type = task_type_for_endpoint(path)
         if task_type and _wants_async(payload):
             return self._task_submit(task_type, payload)
