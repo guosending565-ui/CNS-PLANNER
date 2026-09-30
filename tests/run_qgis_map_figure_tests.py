@@ -66,6 +66,7 @@ TARGETS = (
     "test_map_figures_review_fixes:test_polygon_with_hole_source_reaches_renderer_interior_rings",
     "test_map_figures_review_fixes:test_damaged_and_non_polygon_cartographic_land_are_unavailable",
     "test_map_figures_review_fixes:test_300dpi_smoke_in_real_qgis_lifecycle",
+    "test_map_figures_qgis_render:test_existing_site_legend_triangle_is_readable_without_changing_map_marker_size",
 )
 
 
@@ -74,7 +75,6 @@ def main():
     import shutil
     from uuid import uuid4
 
-    module = importlib.import_module("test_map_figures_review_fixes")
     # 临时目录放在工作区内的 ``projects/`` 下：受限沙箱下 QGIS 解释器可能无法写系统
     # 临时目录或 ``_diag``，而项目目录是它一直在读写的区域。
     #
@@ -85,7 +85,8 @@ def main():
     base.mkdir(parents=True, exist_ok=True)
     passed, failed = [], []
     for target in TARGETS:
-        _, function_name = target.split(":", 1)
+        module_name, function_name = target.split(":", 1)
+        module = importlib.import_module(module_name)
         function = getattr(module, function_name, None)
         if function is None:
             failed.append((function_name, "测试函数不存在"))

@@ -74,6 +74,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             url.path in (
                 "/api/online-health", "/api/browse", "/api/cns-planning-report/artifact",
                 "/api/map-figures/preview", "/api/map-figures/artifact",
+                "/api/map-figures/state",
             )
             or url.path == "/api/tasks" or url.path.startswith("/api/tasks/")
         ) and not valid_token(self.headers, self.context.token):

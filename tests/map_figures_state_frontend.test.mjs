@@ -51,8 +51,14 @@ function installDom(){
       for(const match of this._html.matchAll(/<(?:select|div|input)[^>]*id="([^"]+)"[^>]*>/g)){
         ensure(match[1]);
       }
-      // 浏览器里 <select> 默认选中第一个 option；这里按模板下拉的真实默认值模拟。
-      ensure('mapFigureTemplate').value='route_overview_v1';
+      // 模拟浏览器 select：优先 selected，否则取第一条未 disabled 的 option。
+      for(const select of this._html.matchAll(
+        /<select[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/select>/g)){
+        const options=[...select[2].matchAll(/<option value="([^"]*)"([^>]*)>/g)];
+        const chosen=options.find(option=>/\sselected(?:\s|$)/.test(option[2]))
+          ||options.find(option=>!/\sdisabled(?:\s|$)/.test(option[2]));
+        ensure(select[1]).value=chosen?.[1]||'';
+      }
     },
   };
   nodes.set('mapFigureRegion',region);
@@ -79,7 +85,9 @@ function installDom(){
 
 /** 假服务端：图件索引在**项目目录外部**，只有 GET /api/map-figures/state 能读到。 */
 function fakeServer(){
-  const server={items:[],active:null,exportCalls:0,stateCalls:0,artifactCalls:[]};
+  const server={
+    items:[],active:null,exportCalls:0,stateCalls:0,artifactCalls:[],exportPayloads:[],
+  };
   const api=async url=>{
     const text=String(url);
     if(text==='/api/map-figures/state'){
@@ -99,6 +107,7 @@ function fakeServer(){
   const computeAction=async (path,payload)=>{
     assert.equal(path,'/api/map-figures/export');
     server.exportCalls+=1;
+    server.exportPayloads.push({...payload});
     const record={
       figure_id:FIGURE_ID,template_id:payload.template_id,title:'航路周边状况图',
       route_id:payload.route_id,format:'png',dpi:payload.dpi,project_revision:9,
@@ -113,10 +122,10 @@ function fakeServer(){
   return {server,api,computeAction};
 }
 
-function flowFixture(legacyRecords=[],legacyActive=null){
+function flowFixture(legacyRecords=[],legacyActive=null,routes=[ROUTE]){
   return {
     revision:9,
-    operational_routes:[ROUTE],
+    operational_routes:routes,
     map_figures:{items:legacyRecords,active_figure_id:legacyActive},
     cns_planning_reports:{records:[],active_report_id:null},
     confirmed_cns_plan:{status:'not_confirmed'},
@@ -215,6 +224,101 @@ test('flow.map_figures 里的历史记录不会污染面板，也不会被当作
     await assert.rejects(
       ()=>dom.nodes.get('downloadMapFigure').onclick(),
       /尚无.*专题成果图/);
+  }finally{
+    dom.restore();
+  }
+});
+
+test('项目 A → B → A：按 authoritative identity 清空并重新读取各自图件索引',async()=>{
+  const dom=installDom();
+  try{
+    resetMapFigureState();
+    const route={route_id:'R-A',path:[[122.0,30.0],[122.2,30.0]]};
+    const a1={
+      figure_id:'MF-'+'1'.repeat(32),template_id:'route_overview_v1',title:'A1',
+      route_id:'R-A',format:'png',dpi:300,project_revision:1,
+      generated_at:'2026-09-30T00:00:00Z',image_bytes:900,
+      current_applicability:'current',omitted_layers:[],
+    };
+    const projects={
+      A:{items:[a1],active:a1.figure_id},
+      B:{items:[],active:null},
+    };
+    let project='A';
+    let flow=flowFixture([],null,[route]);
+    const calls=[];
+    const api=async url=>{
+      assert.equal(String(url),'/api/map-figures/state');
+      calls.push(project);
+      const current=projects[project];
+      return {catalog:{available_template_ids:['route_overview_v1']},records:{
+        items:current.items.map(item=>({...item})),active_figure_id:current.active,
+        count:current.items.length,project_revision:1,
+      }};
+    };
+    const context={
+      $:id=>dom.nodes.get(id)||null,api,flow:()=>flow,
+      projectOpenStep:()=>({identity:'project:'+project}),
+      computeAction:async()=>{throw Error('本测试不应导出');},panelError:()=>{},
+      actionButton:(id,handler)=>{const node=dom.nodes.get(id);if(node)node.onclick=handler;},
+      previewMapFigure:async()=>({ok:true}),downloadMapFigure:async()=>({ok:true}),
+    };
+
+    dom.region.innerHTML=renderStep06({state:STATE,flow});
+    bind(context);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(dom.region.innerHTML,/A1/);
+
+    project='B';
+    flow=flowFixture([],null,[route]);
+    dom.region.innerHTML=renderStep06({state:STATE,flow});
+    bind(context);
+    assert.doesNotMatch(dom.region.innerHTML,/A1/,'发起 B 的 GET 前就必须擦掉 A1');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(dom.region.innerHTML,/尚未生成任何图件/);
+
+    project='A';
+    dom.region.innerHTML=renderStep06({state:STATE,flow});
+    bind(context);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(dom.region.innerHTML,/A1/);
+    assert.deepEqual(calls,['A','B','A']);
+  }finally{
+    dom.restore();
+  }
+});
+
+test('R1 → R2：export 局部刷新后保持 R2，后续 preview/export 仍发送 R2',async()=>{
+  const dom=installDom();
+  try{
+    resetMapFigureState();
+    const r1={route_id:'R1',path:[[122.0,30.0],[122.1,30.0]]};
+    const r2={route_id:'R2',path:[[122.2,30.0],[122.3,30.0]]};
+    const flow=flowFixture([],null,[r1,r2]);
+    const {server,api,computeAction}=fakeServer();
+    const previews=[];
+    const context={
+      $:id=>dom.nodes.get(id)||null,api,computeAction,flow:()=>flow,
+      projectOpenStep:()=>({identity:'project:routes'}),panelError:()=>{},
+      actionButton:(id,handler)=>{const node=dom.nodes.get(id);if(node)node.onclick=handler;},
+      previewMapFigure:async input=>{previews.push({...input});return {ok:true};},
+      downloadMapFigure:async()=>({ok:true}),
+    };
+
+    dom.region.innerHTML=renderStep06({state:STATE,flow});
+    bind(context);
+    await new Promise(resolve=>setImmediate(resolve));
+    dom.nodes.get('mapFigureRoute').value='R2';
+
+    await dom.nodes.get('exportMapFigure').onclick();
+    assert.equal(server.exportPayloads[0].route_id,'R2');
+    assert.equal(dom.nodes.get('mapFigureRoute').value,'R2');
+
+    await dom.nodes.get('previewMapFigure').onclick();
+    assert.equal(previews.at(-1).route_id,'R2');
+    await dom.nodes.get('exportMapFigure').onclick();
+    assert.equal(server.exportPayloads.at(-1).route_id,'R2');
+    assert.equal(dom.nodes.get('mapFigureRoute').value,'R2');
   }finally{
     dom.restore();
   }

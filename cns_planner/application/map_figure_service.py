@@ -1521,6 +1521,37 @@ def _tower_coordinate(tower, conflicts=None):
     return longitude, latitude
 
 
+def _sites_within_route_buffer(points, route_path, *, buffer_km, metric_crs=DEFAULT_METRIC_CRS):
+    """返回距航路线不超过展示缓冲的站址（只用于专题图 DISPLAY）。
+
+    输入、输出都保留 WGS84 站址记录；距离唯一在显式米制 CRS 中计算。该函数不读取、
+    不修改 canonical ``state["towers"]``，也不参与通信/CNS 规划或业务 land-mask。
+    """
+
+    route = [
+        (_finite(point[0]), _finite(point[1]))
+        for point in (route_path or [])
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+    route = [(longitude, latitude) for longitude, latitude in route
+             if longitude is not None and latitude is not None]
+    if not points or len(route) < 2:
+        return []
+    from pyproj import CRS, Transformer
+    from shapely.geometry import LineString, Point
+    transformer = Transformer.from_crs(
+        CRS.from_epsg(4326), CRS.from_user_input(metric_crs), always_xy=True,
+    )
+    route_metric = LineString([transformer.transform(*point) for point in route])
+    limit_m = float(buffer_km) * 1000.0
+    kept = []
+    for item in points:
+        x, y = transformer.transform(float(item["longitude"]), float(item["latitude"]))
+        if Point(x, y).distance(route_metric) <= limit_m:
+            kept.append(item)
+    return kept
+
+
 def _tower_layers(ctx, extent, threshold_m):
     """既有**通信站址**（真实站址清单）与铁塔障碍（已确认障碍物高度 ≥ 显示阈值）。
 
@@ -1543,7 +1574,7 @@ def _tower_layers(ctx, extent, threshold_m):
     from qgis.core import QgsRectangle
 
     viewport = QgsRectangle(extent.west, extent.south, extent.east, extent.north)
-    points = []
+    extent_points = []
     axis_conflicts = []
     for tower in towers:
         if not isinstance(tower, dict):
@@ -1553,7 +1584,7 @@ def _tower_layers(ctx, extent, threshold_m):
             continue
         if not viewport.contains(longitude, latitude):
             continue
-        points.append({
+        extent_points.append({
             "longitude": longitude, "latitude": latitude,
             "name": _short(tower.get("name")),
             "tower_id": str(tower.get("tower_id") or ""),
@@ -1561,12 +1592,22 @@ def _tower_layers(ctx, extent, threshold_m):
             "site_type": tower.get("site_type"),
             "coordinate_source": tower.get("coordinate_source") or "tower_record",
         })
+    site_buffer_km = _finite(ctx.parameters.get("site_display_buffer_km"), 10.0)
+    site_metric_crs = "EPSG:32651"
+    points = _sites_within_route_buffer(
+        extent_points, ctx.route.get("path") or [], buffer_km=site_buffer_km,
+        metric_crs=site_metric_crs,
+    )
     tower_detail = {
         "role": "towers",
         "collection_id": collection.get("collection_id"),
         "total_count": len(towers),
-        "within_extent": len(points),
-        "out_of_extent": max(0, len(towers) - len(points)),
+        "within_extent": len(extent_points),
+        "within_route_buffer": len(points),
+        "omitted_by_route_distance": max(0, len(extent_points) - len(points)),
+        "out_of_extent": max(0, len(towers) - len(extent_points)),
+        "site_display_buffer_km": float(site_buffer_km),
+        "distance_crs": site_metric_crs,
         "source_crs": ((collection.get("crs") or {}).get("source_crs") or {}).get("value"),
         "source_crs_status": ((collection.get("crs") or {}).get("source_crs") or {}).get("status"),
         "crs_confirmed": bool(((collection.get("crs") or {}).get("source_crs") or {}).get("confirmed")),
@@ -1574,9 +1615,11 @@ def _tower_layers(ctx, extent, threshold_m):
         "axis_order_conflict_count": len(axis_conflicts),
         "coordinate_field": (
             "coordinate" if any(item.get("coordinate_source") == "coordinate_field"
-                                for item in points) else "longitude/latitude"
+                                for item in extent_points) else "longitude/latitude"
         ),
-        "semantics": "confirmed_tower_records_from_project_state",
+        "semantics": "confirmed_tower_records_filtered_for_route_overview_display_only",
+        "affects_state_towers": False,
+        "affects_communication_or_cns_planning": False,
     }
     layers = []
     if towers:
@@ -1592,7 +1635,9 @@ def _tower_layers(ctx, extent, threshold_m):
                 ctx, "tower_existing", display_name="既有通信站址",
                 geometry_type=GEOMETRY_POINT, source_role="towers",
                 status=SOURCE_AVAILABLE, reason="",
-                detail={**tower_detail, "note": "已导入铁塔，但当前图面范围内没有铁塔"},
+                detail={**tower_detail,
+                        "note": f"已导入通信站址，但当前图面范围内没有距航路 "
+                                f"{site_buffer_km:g} km 内的站址；未显示不代表站址不存在"},
                 feature_count=0,
             ))
     else:

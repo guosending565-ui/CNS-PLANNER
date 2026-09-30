@@ -115,8 +115,8 @@ LAYOUT = {
     "footer_legend_gap_mm": 2.6,
     # 兼容键：地图与图例之间的总间距 = 上面三段之和（_layout_plan 会显式给出三段）。
     "map_legend_gap_mm": 7.6,
-    "footer_strip_font_size": 4.6,
-    "footer_strip_color": "#8a94a0",
+    "footer_strip_font_size": 5.7,
+    "footer_strip_color": "#687581",
     "map_frame_color": "#2b3a4a",
     "map_frame_width_mm": 0.4,
     "map_background": "#cfe6f5",
@@ -388,6 +388,10 @@ def symbol_preview_image(style_key, width_mm=6.0, height_mm=6.0):
     width = max(8, int(round(width_mm * scale)))
     height = max(8, int(round(height_mm * scale)))
     item = style(style_key)
+    # 地图 marker 保持原尺寸；仅把图例里的紫色空心三角提升到与星标/转弯点相近的
+    # 阅读等级。这里复制后的预览样式不会回写 FIGURE_STYLES。
+    if style_key == "tower_existing":
+        item["size"] = 4.4
     image = QImage(width, height, QImage.Format_ARGB32)
     image.fill(0)
     painter = QPainter(image)

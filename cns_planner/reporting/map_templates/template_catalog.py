@@ -133,6 +133,9 @@ ROUTE_OVERVIEW_PARAMETERS = {
     "extent_buffer_km": 10.0,
     "extent_max_padding_km": 30.0,
     "extent_source_crs": "EPSG:32651",
+    # 通信站址是图 1 的展示层：地图范围仍按 A4 版式正常扩展，但站址只显示航路
+    # 10 km 邻域内的记录。该参数不参与任何 Communication/CNS 规划或 land-mask。
+    "site_display_buffer_km": 10.0,
     # figure display threshold（只是显示口径，不是业务约束）。
     "terrain_threshold_m": 100.0,
     "building_threshold_m": 100.0,
@@ -167,6 +170,7 @@ PARAMETER_CONSTRAINTS = {
     "extent_buffer_km": ("number", 0.1, 100.0),
     "extent_max_padding_km": ("number", 0.0, 500.0),
     "extent_source_crs": ("crs", None, None),
+    "site_display_buffer_km": ("number", 0.1, 100.0),
     "terrain_threshold_m": ("number", 0.0, 10000.0),
     "building_threshold_m": ("number", 0.0, 10000.0),
     "terrain_threshold_basis": ("text", 1, 200),

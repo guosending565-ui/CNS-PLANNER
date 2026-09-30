@@ -154,6 +154,26 @@ def test_legend_symbol_previews_are_not_empty():
         assert len(payload) > 200, (style_key, len(payload))
 
 
+def test_existing_site_legend_triangle_is_readable_without_changing_map_marker_size():
+    _qgis_app()
+    from PIL import Image
+    import io
+
+    def ink_box(style_key):
+        image = Image.open(io.BytesIO(
+            figure_style_module.symbol_preview_image(style_key)
+        )).convert("RGBA")
+        return image.getchannel("A").getbbox()
+
+    site = ink_box("tower_existing")
+    turn = ink_box("turn_point")
+    assert site is not None and turn is not None
+    site_width = site[2] - site[0]
+    turn_width = turn[2] - turn[0]
+    assert site_width >= turn_width * 0.9
+    assert figure_style_module.FIGURE_STYLES["tower_existing"]["size"] == 2.8
+
+
 def test_chinese_font_is_resolved_and_registered():
     _qgis_app()
     from cns_planner.gis.qgis_figure_renderer import (

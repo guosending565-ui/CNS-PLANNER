@@ -29,7 +29,8 @@
 // =========================================================
 import {escapeHtml,shell,statusBadge,statusText,readinessText,emptyReasonText,
   advancedAuditNote,blockerList,wbPanel,wbBlock,wbSegHint,wbDisclosure} from './common.js';
-import {activeMapFigure,applicabilityText,getMapFigureState,refreshMapFigureState} from
+import {activeMapFigure,applicabilityText,getMapFigureState,refreshMapFigureState,
+  resetMapFigureState} from
   './map_figure_state.js';
 
 // ---- 二级任务分段 -----------------------------------------------------------
@@ -598,18 +599,21 @@ const MAP_FIGURE_TEMPLATES=[
 ];
 
 /** 模板下拉：只有 status=available 的模板可选，其余如实标注「尚未实现」。 */
-function mapFigureTemplateOptions(){
+function mapFigureTemplateOptions(selectedTemplateId=''){
   return MAP_FIGURE_TEMPLATES.map(([id,label,available])=>
-    '<option value="'+escapeHtml(id)+'"'+(available?'':' disabled')+'>'
+    '<option value="'+escapeHtml(id)+'"'
+    +(available&&id===selectedTemplateId?' selected':'')+(available?'':' disabled')+'>'
     +escapeHtml(label)+(available?'':'（尚未实现）')+'</option>').join('');
 }
 
 /** 可选权威运行航路（只认 geometry 顶点 >= 2 的航路）。 */
-function mapFigureRouteOptions(flow){
+function mapFigureRouteOptions(flow,selectedRouteId=''){
   const routes=flow.operational_routes||[];
   return routes.map(route=>{
     const points=(route.path||[]).length,plottable=points>=2;
-    return '<option value="'+escapeHtml(route.route_id||'')+'"'+(plottable?'':' disabled')+'>'
+    return '<option value="'+escapeHtml(route.route_id||'')+'"'
+      +(plottable&&route.route_id===selectedRouteId?' selected':'')
+      +(plottable?'':' disabled')+'>'
       +escapeHtml(route.route_id||'')+(plottable?'':'（几何顶点不足，无法制图）')+'</option>';
   }).join('');
 }
@@ -658,9 +662,21 @@ function mapFigureStatusNote(model){
  * 之所以拆出来：导出成功后只需局部刷新这一块，绝不整页重渲染（那会丢掉用户在其它
  * 分段里填写的草稿与滚动位置）。
  */
-function mapFigureRegionBody(flow){
+function mapFigureRegionBody(flow,selection={}){
   const model=mapFiguresModel(flow),active=model.active;
-  const routeOptions=mapFigureRouteOptions(flow);
+  const plottable=(flow.operational_routes||[]).filter(route=>(route.path||[]).length>=2);
+  const requestedRoute=String(selection.selected_route_id||'');
+  const activeRoute=String(active?.route_id||'');
+  const selectedRoute=(plottable.some(route=>route.route_id===requestedRoute)&&requestedRoute)
+    ||(plottable.some(route=>route.route_id===activeRoute)&&activeRoute)
+    ||String(plottable[0]?.route_id||'');
+  const requestedTemplate=String(selection.selected_template_id||'');
+  const activeTemplate=String(active?.template_id||'');
+  const availableTemplates=MAP_FIGURE_TEMPLATES.filter(item=>item[2]).map(item=>item[0]);
+  const selectedTemplate=(availableTemplates.includes(requestedTemplate)&&requestedTemplate)
+    ||(availableTemplates.includes(activeTemplate)&&activeTemplate)
+    ||availableTemplates[0]||'';
+  const routeOptions=mapFigureRouteOptions(flow,selectedRoute);
   const generatedAt=active&&active.generated_at?escapeHtml(active.generated_at):'—';
   const bytes=active&&Number.isFinite(active.image_bytes)?(active.image_bytes/1024).toFixed(0)+' KB':'—';
   const applicability=active?(active.current_applicability||'current'):null;
@@ -668,7 +684,8 @@ function mapFigureRegionBody(flow){
   return reviewBlock('专题成果图',
     '<p class="parameter-note">专题图只读消费当前权威运行航路与已配置 GIS 数据源，用 QGIS 版面程序化生成（上方地图、下方图例），不会重算或回写任何业务结论。缺数据的图层会被省略并写明原因。</p>'
     +(stale?'<p class="inline-error">'+escapeHtml(applicabilityText('stale_revision'))+'</p>':'')
-    +'<label>模板<select id="mapFigureTemplate">'+mapFigureTemplateOptions()+'</select></label>'
+    +'<label>模板<select id="mapFigureTemplate">'
+      +mapFigureTemplateOptions(selectedTemplate)+'</select></label>'
     +'<label>航路<select id="mapFigureRoute">'+routeOptions
       +(routeOptions?'':'<option value="">（当前没有可制图的运行航路）</option>')+'</select></label>'
     +(!model.canGenerate?'<p class="empty">'+escapeHtml(model.reason)+'</p>':'')
@@ -704,7 +721,11 @@ export function refreshMapFigureRegion(c){
   if(!c||typeof document==='undefined')return false;
   const host=document.getElementById('mapFigureRegion');
   if(!host)return false;
-  host.innerHTML=mapFigureRegionBody(c.flow?c.flow():{});
+  const selection={
+    selected_route_id:c.$?.('mapFigureRoute')?.value||'',
+    selected_template_id:c.$?.('mapFigureTemplate')?.value||'',
+  };
+  host.innerHTML=mapFigureRegionBody(c.flow?c.flow():{},selection);
   bindMapFigureActions(c);
   return true;
 }
@@ -712,9 +733,16 @@ export function refreshMapFigureRegion(c){
 /** 首次进入 / 首次渲染读取一次真实图件状态，然后局部刷新。 */
 export function ensureMapFigureState(c){
   const state=getMapFigureState();
-  if(state.loaded||state.loading)return false;
+  const identity=String(c?.projectOpenStep?.()?.identity||'');
+  if(state.project_identity!==identity){
+    resetMapFigureState();
+    // 先同步擦掉旧项目图件，再等待新项目 GET；切换过程中也绝不继续展示 A 的图件。
+    refreshMapFigureRegion(c);
+  }
+  const current=getMapFigureState();
+  if(current.loaded||current.loading)return false;
   if(!c||typeof c.api!=='function')return false;
-  refreshMapFigureState({api:c.api})
+  refreshMapFigureState({api:c.api,projectIdentity:identity})
     .then(()=>refreshMapFigureRegion(c))
     .catch(()=>{/* 失败已记进 mapFigureState.error，界面会如实显示 */});
   return true;
@@ -729,7 +757,9 @@ async function exportMapFigure(c){
   const response=await c.computeAction('/api/map-figures/export',{
     template_id:template,route_id:routeId||null,format:'png',dpi:300,
   });
-  await refreshMapFigureState({api:c.api});
+  await refreshMapFigureState({
+    api:c.api,projectIdentity:String(c?.projectOpenStep?.()?.identity||''),
+  });
   refreshMapFigureRegion(c);
   const figureId=response?.figure_id||activeMapFigure()?.figure_id||'';
   if(c.panelError)c.panelError('专题图已生成'

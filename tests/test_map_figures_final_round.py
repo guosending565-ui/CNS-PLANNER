@@ -27,7 +27,7 @@ from cns_planner.application.map_figure_service import (
     MAP_FIGURE_AUDIT_FIELDS, MAX_FIGURE_PIXELS, MAX_PREVIEW_PIXELS, MapFigurePathDenied,
     MapFigureService, MapFigureStore, MaterializationContext, _bounded_preview_width,
     _cartographic_land_state, _geometry_to_wgs84_polygons, _layout_plan, _polygon_rings,
-    _sea_complement_polygons, materialize,
+    _sea_complement_polygons, _sites_within_route_buffer, _tower_layers, materialize,
 )
 from cns_planner.gis.figure_spec import ExtentSpec, FigureSpec
 
@@ -103,6 +103,51 @@ def _stub_pyqgis(monkeypatch):
     monkeypatch.setitem(sys.modules, "qgis", package)
     monkeypatch.setitem(sys.modules, "qgis.core", core)
     return QgsRectangle
+
+
+def test_route_overview_sites_use_10km_metric_route_buffer_and_report_counts(monkeypatch):
+    """A4 纵向扩展只扩底图；通信站址仍按 EPSG:32651 航路距离筛选。"""
+
+    pytest.importorskip("pyproj")
+    pytest.importorskip("shapely")
+    _stub_pyqgis(monkeypatch)
+    monkeypatch.setattr(service_module, "_qgis_available", lambda: True)
+    route = {"path": [[122.00, 30.00], [122.40, 30.00]]}
+    towers = [
+        {"tower_id": "ON", "coordinate": [122.10, 30.00]},
+        {"tower_id": "NEAR", "coordinate": [122.20, 30.05]},
+        {"tower_id": "FAR", "coordinate": [122.20, 30.15]},
+    ]
+    extent = ExtentSpec(west=121.9, south=29.8, east=122.5, north=30.2,
+                        width_km=58.0, height_km=44.0)
+    ctx = MaterializationContext(
+        state={"towers": {"items": towers, "count": 3}}, paths={}, route=route,
+        extent=extent, parameters={"site_display_buffer_km": 10.0},
+    )
+
+    existing = next(layer for layer in _tower_layers(ctx, extent, 100.0)
+                    if layer.layer_key == "tower_existing")
+
+    assert [item["tower_id"] for item in existing.data["points"]] == ["ON", "NEAR"]
+    assert existing.source_detail["total_count"] == 3
+    assert existing.source_detail["within_extent"] == 3
+    assert existing.source_detail["within_route_buffer"] == 2
+    assert existing.source_detail["omitted_by_route_distance"] == 1
+    assert existing.source_detail["distance_crs"] == "EPSG:32651"
+    assert existing.source_detail["affects_communication_or_cns_planning"] is False
+
+
+def test_route_buffer_filter_keeps_near_site_and_omits_far_site():
+    pytest.importorskip("pyproj")
+    pytest.importorskip("shapely")
+    points = [
+        {"tower_id": "near", "longitude": 122.2, "latitude": 30.05},
+        {"tower_id": "far", "longitude": 122.2, "latitude": 30.15},
+    ]
+    kept = _sites_within_route_buffer(
+        points, [[122.0, 30.0], [122.4, 30.0]], buffer_km=10.0,
+    )
+    assert [item["tower_id"] for item in kept] == ["near"]
 
 
 # =========================================================================== A2

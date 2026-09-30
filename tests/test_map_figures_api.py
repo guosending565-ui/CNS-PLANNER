@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from cns_planner.api.router import ApiRouter
+from cns_planner.api.server import ApiHandler
 from cns_planner.application.map_figure_service import MapFigureService
 
 ROUTE = {
@@ -89,6 +91,33 @@ def _service(tmp_path, routes):
         lambda action: action(), renderer_factory=lambda: _Renderer(),
         project_directory=tmp_path,
     ), state
+
+
+@pytest.mark.parametrize("token,expected", [(None, 403), ("wrong", 403), ("token", 200)])
+def test_map_figure_state_get_requires_current_session_token(tmp_path, token, expected):
+    """state 与 preview/artifact 共用 GET token 契约，不扩大其它 GET 的保护范围。"""
+
+    service, state = _service(tmp_path, [ROUTE])
+    context = _Context(service, state)
+    handler = object.__new__(ApiHandler)
+    handler.path = "/api/map-figures/state"
+    handler.server = SimpleNamespace(context=context)
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    if token is not None:
+        handler.headers["X-CNS-Token"] = token
+    handler.allowed = lambda: True
+    responses = []
+    handler.respond = lambda data, *args, **kwargs: responses.append(
+        (data, kwargs.get("status", args[1] if len(args) > 1 else 200))
+    )
+
+    handler.do_GET()
+
+    assert responses[-1][1] == expected
+    if expected == 200:
+        assert responses[-1][0]["records"]["count"] == 0
+    else:
+        assert responses[-1][0] == {"error": "无效会话"}
 
 
 def test_catalog_reports_available_and_planned_templates(tmp_path):

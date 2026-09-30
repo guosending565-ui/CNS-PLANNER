@@ -36,8 +36,11 @@ function normalizeRecords(value){
   };
 }
 
-let mapFigureState={catalog:null,records:emptyRecords(),loaded:false,loading:false,error:''};
+let mapFigureState={
+  catalog:null,records:emptyRecords(),loaded:false,loading:false,error:'',project_identity:'',
+};
 let inflight=null;
+let requestSerial=0;
 
 /** 当前只读快照（调用方只读，不要改返回对象）。 */
 export function getMapFigureState(){return mapFigureState;}
@@ -50,6 +53,7 @@ export function setMapFigureState(value){
     loaded:value?.loaded!==false,
     loading:false,
     error:String(value?.error||''),
+    project_identity:String(value?.project_identity||''),
   };
   return mapFigureState;
 }
@@ -57,7 +61,10 @@ export function setMapFigureState(value){
 /** 复位（测试用）：清掉快照与进行中的请求。 */
 export function resetMapFigureState(){
   inflight=null;
-  mapFigureState={catalog:null,records:emptyRecords(),loaded:false,loading:false,error:''};
+  requestSerial+=1;
+  mapFigureState={
+    catalog:null,records:emptyRecords(),loaded:false,loading:false,error:'',project_identity:'',
+  };
   return mapFigureState;
 }
 
@@ -82,24 +89,37 @@ export function activeMapFigure(){
  * 并发去重：同一时刻只发一次请求（首次进入、refresh 与导出后刷新可能同时触发）。
  * 失败时**如实记录** error 并保留上一次快照，绝不伪造空记录冒充"没有图件"。
  *
- * @param {{api:Function}} deps
+ * @param {{api:Function,projectIdentity?:string}} deps
  * @returns {Promise<object>} 更新后的状态
  */
-export async function refreshMapFigureState({api}={}){
+export async function refreshMapFigureState({api,projectIdentity=''}={}){
   if(typeof api!=='function')throw new Error('refreshMapFigureState 缺少 api 依赖');
-  if(inflight)return inflight;
-  mapFigureState={...mapFigureState,loading:true};
+  const identity=String(projectIdentity||'');
+  if(inflight&&mapFigureState.project_identity===identity)return inflight;
+  const serial=++requestSerial;
+  // 项目一旦变化，先清空旧项目快照再发请求；旧请求即使稍后返回，也会被 serial 丢弃。
+  if(mapFigureState.project_identity!==identity){
+    mapFigureState={
+      catalog:null,records:emptyRecords(),loaded:false,loading:true,error:'',
+      project_identity:identity,
+    };
+  }else{
+    mapFigureState={...mapFigureState,loading:true};
+  }
   inflight=(async()=>{
     try{
       const data=await api('/api/map-figures/state');
+      if(serial!==requestSerial)return mapFigureState;
       mapFigureState={
         catalog:data?.catalog??null,
         records:normalizeRecords(data?.records),
         loaded:true,
         loading:false,
         error:'',
+        project_identity:identity,
       };
     }catch(exc){
+      if(serial!==requestSerial)return mapFigureState;
       mapFigureState={
         ...mapFigureState,
         loaded:true,
@@ -107,7 +127,7 @@ export async function refreshMapFigureState({api}={}){
         error:exc?.message||String(exc),
       };
     }finally{
-      inflight=null;
+      if(serial===requestSerial)inflight=null;
     }
     return mapFigureState;
   })();
