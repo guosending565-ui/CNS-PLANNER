@@ -24,7 +24,16 @@ from ..service_capability.v1 import (
     prepare_capability_context,
 )
 from ...domain.cns_corridor import corridor_disclaimers, empty_cns_corridor_assessment
-from ...domain.cns_service_contract import index_max_range_m, resolve_surface_class
+from ...domain.cns_service_contract import (
+    SERVICE_KEY_COMMUNICATION, SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+    SERVICE_KEY_RADAR_NONCOOPERATIVE, index_max_range_m, resolve_surface_class,
+)
+from ...domain.cns_service_registry import normalize_service_requirements
+from ...domain.navigation_augmentation import (
+    delivery_dependency_from_communication,
+    evidence_for_probe as navigation_evidence_for_probe,
+)
+from ...domain.radar_service_evidence import evidence_for_probe
 from ...domain.geodesy import distance_m
 from ...domain.spatial_3d import (
     effective_route_vertical_context, resolve_egm2008_height, voxel_ref,
@@ -49,7 +58,9 @@ class CNSServiceCorridorV1:
         *, coverage_parameters=None, capability_parameters=None,
         cancel_check=None, progress_callback=None, preflight=None,
         allow_beyond_validated_envelope=False, surface_class_provider=None,
-        surface_facts_fingerprint=None,
+        surface_facts_fingerprint=None, radar_service_evidence=None,
+        radar_metric_projector=None, navigation_service_evidence=None,
+        navigation_metric_projector=None,
     ):
         """评估服务走廊。
 
@@ -117,6 +128,8 @@ class CNSServiceCorridorV1:
                 specs.get(route_id), prepared_cells,
                 layers, required_cns or {}, aircraft_profile or {},
                 geometric_provider_indexes, provider_devices, tick,
+                radar_service_evidence, radar_metric_projector,
+                navigation_service_evidence, navigation_metric_projector,
             ))
         tick.progress(96.0, "服务走廊评估完成")
         fingerprint_input = {
@@ -130,6 +143,10 @@ class CNSServiceCorridorV1:
             #: Round 2：surface 事实进入 P14 输入指纹（不含逐格明细本身）。
             "surface_facts_fingerprint": surface_facts_fingerprint,
         }
+        if radar_service_evidence is not None:
+            fingerprint_input["radar_service_evidence"] = radar_service_evidence
+        if navigation_service_evidence is not None:
+            fingerprint_input["navigation_service_evidence"] = navigation_service_evidence
         input_fingerprint = _fingerprint(fingerprint_input)
         geometry_fingerprint = _fingerprint([
             {"route_id": item.get("route_id"), "path": item.get("path")} for item in routes or []
@@ -167,6 +184,8 @@ class CNSServiceCorridorV1:
     def _route(
         self, route, profile, spec, cells, layers, required_cns,
         aircraft, geometric_providers, provider_devices, tick=None,
+        radar_service_evidence=None, radar_metric_projector=None,
+        navigation_service_evidence=None, navigation_metric_projector=None,
     ):
         route_id, path = str(route.get("route_id") or ""), route.get("path") or []
         metric_route = _MetricRoute(path) if len(path) >= 2 else None
@@ -211,6 +230,8 @@ class CNSServiceCorridorV1:
                 route_id, total, profile, spec, prepared, nearest,
                 candidate_layers, requirements, aircraft,
                 geometric_providers, provider_devices, capability_contexts,
+                radar_service_evidence, radar_metric_projector,
+                navigation_service_evidence, navigation_metric_projector,
             ))
         summaries = [_summary(code, voxels) for code in ("C", "N", "S")]
         statuses = [item["status"] for item in summaries]
@@ -234,7 +255,8 @@ class CNSServiceCorridorV1:
     def _cell_voxels(
         self, route_id, total, profile, spec, prepared, nearest,
         layers, requirements, aircraft, geometric_providers, provider_devices,
-        capability_contexts,
+        capability_contexts, radar_service_evidence=None, radar_metric_projector=None,
+        navigation_service_evidence=None, navigation_metric_projector=None,
     ):
         cell, center = prepared["cell"], prepared["center"]
         surface = prepared["surface"]
@@ -297,6 +319,83 @@ class CNSServiceCorridorV1:
                 }
                 #: additive：service 级冗余证据只在存在时输出；legacy 走廊 payload 不膨胀。
                 service_redundancy = capability.get("service_redundancy") or []
+                explicit_service_map = normalize_service_requirements(
+                    code, requirements.get(name) or {}, field=f"required_cns.{name}",
+                )
+                explicit_services = [
+                    item for item in (explicit_service_map or {}).values()
+                    if item.get("required") is True
+                ]
+                if explicit_services:
+                    from ..service_capability.v1 import summarize_service_redundancy
+                    by_key = {str(item.get("service_key")): item for item in service_redundancy}
+                    for service_requirement in explicit_services:
+                        service_key = str(service_requirement.get("service_key") or "")
+                        if service_key in (
+                            SERVICE_KEY_RADAR_NONCOOPERATIVE,
+                            SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+                        ):
+                            # 这两类服务的证据由各自的 canonical adapter 提供
+                            # （directional radar geometry / navigation augmentation），
+                            # 绝不用地面 subsystem 冗余池冒充。
+                            continue
+                        matches = summarize_service_redundancy(
+                            capability.get("provider_evaluations") or [],
+                            service_requirement,
+                            surface_class=probe.get("surface_class"),
+                        )
+                        match = next(
+                            (item for item in matches if item.get("service_key") == service_key), None,
+                        )
+                        if match is not None:
+                            by_key[service_key] = match
+                    service_redundancy = list(by_key.values())
+                if code == "S":
+                    radar = evidence_for_probe(
+                        radar_service_evidence, route_id, {
+                            **probe,
+                            "voxel_id": ref.get("voxel_id"),
+                            "nearest_route_offset_m": nearest.get("route_offset_m"),
+                        },
+                        metric_projector=radar_metric_projector,
+                    )
+                    if radar is not None:
+                        service_redundancy = [
+                            item for item in service_redundancy
+                            if item.get("service_key") != SERVICE_KEY_RADAR_NONCOOPERATIVE
+                        ] + [radar]
+                if code == "N" and _navigation_augmentation_required(explicit_services):
+                    #: Round C：地面导航增强（reference station 网络）的逐 voxel canonical 证据。
+                    #: 它**只**由 ``N:rtk_augmentation`` 的显式服务要求驱动 —— 机载
+                    #: ``technology = gnss_rtk`` 与 legacy ``N`` 能力都不会走到这里。
+                    #: correction delivery 依赖**只消费**同一个 voxel 上已经算好的
+                    #: canonical ``C:communication`` 服务证据，绝不重新计算通信。
+                    delivery = _delivery_dependency(
+                        subsystems, service_redundancy, requirements,
+                    )
+                    navigation = navigation_evidence_for_probe(
+                        navigation_service_evidence, route_id, {
+                            **probe,
+                            "voxel_id": ref.get("voxel_id"),
+                            "nearest_route_offset_m": nearest.get("route_offset_m"),
+                        },
+                        delivery=delivery,
+                    )
+                    if navigation is not None:
+                        service_redundancy = [
+                            item for item in service_redundancy
+                            if item.get("service_key") != SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION
+                        ] + [navigation]
+                if explicit_services:
+                    statuses = {
+                        str(item.get("service_key")): str(item.get("status") or "unknown")
+                        for item in service_redundancy
+                    }
+                    required_keys = [str(item.get("service_key")) for item in explicit_services]
+                    required_statuses = [statuses.get(key, "unknown") for key in required_keys]
+                    subsystem_entry["planning_status"] = aggregate_required_service_status(
+                        required_statuses,
+                    )
                 if service_redundancy:
                     subsystem_entry["service_redundancy"] = _clone_fresh(service_redundancy)
                 subsystems.append(subsystem_entry)
@@ -320,6 +419,62 @@ class CNSServiceCorridorV1:
                 "subsystems": subsystems,
             })
         return output
+
+
+def aggregate_required_service_status(statuses):
+    """Aggregate an ``all_required`` service set without mixing provider pools."""
+
+    values = [str(value or "unknown") for value in statuses]
+    if "confirmed_deficit" in values:
+        return "confirmed_deficit"
+    if "unknown" in values or not values:
+        return "unknown"
+    return "satisfied" if all(value == "satisfied" for value in values) else "unknown"
+
+
+def _navigation_augmentation_required(explicit_services):
+    """只有**显式** ``N:rtk_augmentation`` 要求才生成地面增强服务证据。
+
+    legacy ``N`` 子系统要求、``service_key = N:navigation``、以及机载
+    ``technology = gnss_rtk`` 都不在这里出现，因此旧项目绝不会凭空产生
+    地面 RTK 规划需求。
+    """
+
+    return any(
+        str(item.get("service_key") or "") == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION
+        for item in explicit_services or []
+    )
+
+
+def _delivery_dependency(previous_subsystems, service_redundancy, requirements):
+    """取同一 voxel 上 canonical ``C:communication`` 的服务事实作为 delivery 依赖。
+
+    只**读取**已经算好的 C 子系统结论，绝不重新计算通信，也绝不因为
+    ``available_subsystems`` 含 ``C`` 之类声明就假定传输存在。
+    """
+
+    communication = next(
+        (item for item in previous_subsystems or [] if item.get("subsystem") == "C"),
+        None,
+    )
+    entry = next(
+        (item for item in service_redundancy or []
+         if str(item.get("service_key") or "") == SERVICE_KEY_COMMUNICATION),
+        None,
+    )
+    if entry is not None:
+        dependency = delivery_dependency_from_communication(entry)
+        if dependency is not None:
+            return dependency
+    if communication is None:
+        return None
+    return {
+        "service_key": SERVICE_KEY_COMMUNICATION,
+        "status": str(communication.get("planning_status") or "unknown"),
+        "reason": "communication_subsystem_planning_status_without_service_bucket",
+        "target_id": None,
+        "evidence_fingerprint": (communication.get("geometry") or {}).get("input_fingerprint"),
+    }
 
 
 class _ProgressThrottle:

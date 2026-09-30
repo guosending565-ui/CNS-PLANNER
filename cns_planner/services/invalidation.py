@@ -58,6 +58,14 @@ DEPENDENTS = {
     #: 陆域掩膜源变化：事实与 Radar 划设各自被显式定向失效（**不**经过 routes /
     #: Theta* 候选 / Risk / RouteRiskProfile / Radar layout 之外的任何产物）。
     "land_mask": (),
+    #: Round D：站址的 ``navigation_site_suitability`` 事实变化（该站址是否可以进入
+    #: RTK 基准站工程规划候选）。它只让消费站址事实的 P14 → P15 → P16 与报告过时：
+    #: **绝不**触碰 Theta* / Risk / RouteRiskProfile / Validation / Adoption，
+    #: 也不触碰 Radar 划设（Radar 有自己的站址与几何模型）。
+    "navigation_site_suitability": (
+        "cns_corridor_assessment", "cns_corridor_gap_assessment",
+        "cns_corridor_site_plan", "report",
+    ),
 }
 
 # Minimal contract surface between the canonical DAG vocabulary and this legacy-shaped

@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import math
 from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 
 from ..domain.radar_surveillance_layout import (
@@ -528,6 +529,31 @@ def _point_to_metric(longitude, latitude, transformer):
 
     x, y = transformer.transform(float(longitude), float(latitude))
     return float(x), float(y)
+
+
+@lru_cache(maxsize=4)
+def _geographic_to_metric_transformer(metric_crs):
+    """Return the existing, self-checked Radar CRS transform for WGS84 probes."""
+
+    forward, _backward, reason = _resolve_transformers("EPSG:4326", metric_crs)
+    return forward, reason
+
+
+def radar_metric_coordinate(longitude, latitude, *, metric_crs=COASTAL_BUFFER_METRIC_CRS):
+    """Project one canonical ``(longitude, latitude)`` Radar probe to metres.
+
+    This is the public probe-side entry to the same CRS implementation already
+    used by the Radar GIS adapter.  It deliberately contains no coverage,
+    bearing, sector, elevation, or range predicate.
+    """
+
+    transformer, _reason = _geographic_to_metric_transformer(str(metric_crs))
+    if transformer is None:
+        return None
+    try:
+        return list(_point_to_metric(longitude, latitude, transformer))
+    except Exception:
+        return None
 
 
 class LandMaskSource:
@@ -1278,5 +1304,5 @@ __all__ = [
     "land_mask_hint", "land_mask_readiness", "normalized_coastal_buffer_m",
     "ogr_layer_crs", "radar_layout_source_status", "radar_mount_assumption_status",
     "radar_origin_assumption_status", "resolve_radar_origins", "route_terrain_source",
-    "sample_route_terrain",
+    "sample_route_terrain", "radar_metric_coordinate",
 ]

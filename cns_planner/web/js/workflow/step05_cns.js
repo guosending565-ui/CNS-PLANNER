@@ -2,11 +2,18 @@ import {advancedAuditNote,blockerList,escapeHtml,nextStepBar,shell,sourceModeTex
 import {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarSurveillanceDetail,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
 import {
   SURFACE_CLASSIFICATION_POLICY_ENDPOINT,SURFACE_CLASS_FACTS_EVALUATE_ENDPOINT,
-  facilityPlanCards,renderServiceProfiles,renderSurfaceFactsPanel,residualTargetsSummary,
-  serviceCorridorEvidence,serviceGapStatements,surfaceFactsModel,
+  NAVIGATION_SITE_SUITABILITY_ENDPOINT,REQUIRED_CNS_ENDPOINT,
+  NAVIGATION_SUITABILITY_DOM_IDS,NAVIGATION_SUITABILITY_FIELDS,
+  facilityPlanCards,renderCorridorServiceEvidence,renderNavigationPlanningPanel,
+  renderNavigationSuitabilityPanel,renderRadarServicePanel,renderRequiredCnsServicesPanel,
+  renderServiceProfiles,renderSurfaceFactsPanel,renderSurveillanceDualChannelPanel,
+  residualTargetsSummary,rounddRequiredServicesModel,navigationPlanningModel,
+  navigationSuitabilitySites,serviceCorridorEvidence,serviceGapStatements,serviceRequirementDomId,
+  surfaceFactsModel,
 } from './cns_service_evidence.js';
 import {
-  SERVICE_KEY_LABELS,isSurfaceAwareServiceKey,serviceKeyLabel,surfaceClassText,
+  CNS_ROUNDD_SERVICE_KEYS,CNS_SERVICE_REQUIREMENT_ROWS,SERVICE_KEY_LABELS,
+  isSurfaceAwareServiceKey,serviceKeyLabel,surfaceClassText,
 } from '../map/service_semantics.js';
 
 // Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
@@ -148,6 +155,9 @@ function collectionList(collection,kind){
 
 // ---- 共塔候选（真实铁塔宿主） -------------------------------------------------
 // 共塔候选是**宿主候选**，不是已有 CNS 设备：列表只展示宿主事实与确认状态。
+// 复用类别词表在本文件（共塔语境的唯一来源）；Round D 的"站址来源"标签由
+// ``../map/service_semantics.js`` 的 :func:`navigationSiteSourceText` 提供，
+// 两者语义相关但各自服务不同语境，不互相复制。
 export const REUSE_CLASS_LABEL={
   existing_cns_facility:'已有站点',
   existing_shared_site:'共享站址',
@@ -748,7 +758,24 @@ export function render({flow}){
   // 两者都放在「设备与参数」（最合适的输入准备区）：它们决定 Communication / RID 的
   // 分 surface 几何与站址重数要求，但**不**要求用户先运行雷达监视规划。
   const surfaceFactsPanel=renderSurfaceFactsPanel(flow);
+  // ---- Round D：四服务统一工作台（Communication / 导航增强 / RID / Radar） ----
+  // 每个面板都是**纯转印**后端 canonical 字段：CNS 服务需求（required_cns.services）、
+  // 导航增强工程规划（planning）、站址适用性（既有站址 metadata）、双通道监视、
+  // 四服务 P14 / P15 / P16 与 Radar 非合作监视卡片。前端不新增任何业务数值。
+  const requiredServicesPanel=renderRequiredCnsServicesPanel(flow);
   const serviceProfilesPanel=renderServiceProfiles(flow);
+  // Round D：导航增强工程规划卡**始终**挂在「设备与参数」里，保证控件契约与可绑定 id
+  // 稳定；未显式要求该服务时先在卡片上方给出明确提示，且绝不预填任何工程参数。
+  const navigationPlanningPanel=(navigationPlanningModel(flow).required
+    ?''
+    :'<div class="parameter-note">导航增强（GNSS/RTK）尚未在本项目显式要求：'
+      +'保存本区工程参数会同时把该服务写为"要求"并进入后续服务证据；'
+      +'未启用时不会产生任何导航增强服务证据。</div>')
+    +renderNavigationPlanningPanel(flow);
+  const navigationSuitabilityPanel=renderNavigationSuitabilityPanel(flow);
+  const radarServicePanel=renderRadarServicePanel(flow);
+  const surveillancePanel=renderSurveillanceDualChannelPanel(flow);
+  const corridorServicePanel=renderCorridorServiceEvidence(flow);
   const existingPanel='<h3>已有 CNS 设施 '+wbBadge(existing.status||'not_calculated','未计算')+'</h3>'
     +existingCnsStatusRows(existingBaseline)
     +'<label>事实掌握情况<select class="panel-input" id="existingKnowledgeStatus"><option value="not_declared" '+(existingBaseline.knowledge_status==='not_declared'?'selected':'')+'>尚未声明</option><option value="confirmed_none" '+(existingBaseline.knowledge_status==='confirmed_none'?'selected':'')+'>已确认无</option><option value="confirmed_present" '+(existingBaseline.knowledge_status==='confirmed_present'?'selected':'')+'>已确认存在</option></select></label>'
@@ -770,6 +797,7 @@ export function render({flow}){
     +'<div class="parameter-note">服务与冗余分别统计：<b>服务</b>看该 surface 是否存在合格 provider，'
     +'<b>冗余</b>看该 service 的 <b>不同物理站址</b>数是否达到要求（按 distinct_site_id 计数，'
     +'绝不把"N 台设备"当成"N 重"）。</div>'
+    +surveillancePanel
     +'<div class="gap-results">'+serviceGapStatements(flow)+'</div>'
     +planningObjectivesPanel(flow)+'<div class="parameter-note">空间连续缺口是服务走廊体元的保守纵向投影，不是运行中断、正式 ICAO 连续性或可用度概率。</div><div class="gap-results">'+corridorGapSummary(corridorGap)+'</div>';
   const corridorSitePlanPanel='<h3>CNS 设施规划 '+wbBadge(corridorSitePlan.status||'not_calculated','未计算')+'</h3><div class="parameter-note">仅针对已确认的走廊缺口目标，通过累计试算验证服务与独立冗余收益；证据不足不会触发建站。</div><label class="check-row"><input type="checkbox" id="corridorSitePolicyConfirmed" '+(corridorSitePolicy.confirmed?'checked':'')+'> 确认走廊复用优先规划策略</label><button class="secondary full" id="evaluateCorridorSitePlan">生成 CNS 设施规划方案</button><div class="gap-results">'+corridorSitePlanSummary(corridorSitePlan)+'</div>'
@@ -780,7 +808,8 @@ export function render({flow}){
   const radarPanel='<h3>雷达监视规划 '+wbBadge(flow.radar_surveillance_layout?.status||'not_calculated','未计算')+'</h3>'
     +'<div class="parameter-note">本分支<b>默认是可选的</b>：没有显式监视需求时，雷达监视规划不阻塞下一步，其结果也只是候选划设方案，不构成"正式结果已采纳"。</div>'
     +advancedAuditNote('雷达监视规划来自独立的雷达划设任务卡（算法标识 radar_surveillance_layout_v1）；卡片内部的算法版本号、就绪状态与挂高历史字段等术语均为工程内部标识。卡片同时原样回显后端字段取值（例如 unverified / eligible / confirmed），用户可读解释见括号内中文或下方阻塞项说明。')
-    +renderRadarSurveillanceLayoutPanel(flow);
+    +renderRadarSurveillanceLayoutPanel(flow)
+    +radarServicePanel;
 
   // ---- 高级：兼容分支与闭环（全部不参与正式规划门禁） -------------------------
   // 兼容声明逐字展示（含引号），因此这里不做 HTML 转义：
@@ -802,7 +831,9 @@ export function render({flow}){
       +wbBlock('阻塞项与工程假设',blockerList(deviceBlockers,'当前没有阻塞项'))
       +wbBlock('设备参数与布站',deviceActions)
       +wbBlock('陆海分类事实',surfaceFactsPanel)
+      +wbBlock('CNS 服务需求',requiredServicesPanel)
       +wbBlock('Communication / RID 工程规划 Profile',serviceProfilesPanel)
+      +wbBlock('导航增强（GNSS/RTK）工程规划',navigationPlanningPanel)
       +nextHint('保存设备参数与分类策略、生成陆海分类事实后进入「已有设施」，声明既有设施的事实掌握情况与规划模式。')],
     ['cns-op-existing','已有设施',
       wbBlock('已有设施',wbSegHint(OPERATE_SEGMENTS,'cns-op-existing')
@@ -815,6 +846,7 @@ export function render({flow}){
         +segIntro('准备候选站址与共塔规划宿主，供后续设施规划复用。','候选站址文件路径，或由已有设施派生；共塔候选需要真实铁塔与规划宿主允许。')
         +candidatePanel)
       +wbBlock('阻塞项与工程假设',blockerList(candidateBlockers,'当前没有阻塞项'))
+      +wbBlock('导航基准站候选适用性',navigationSuitabilityPanel)
       +nextHint('候选准备完成后进入结果标签的「三维覆盖评估」，开始生产链评估。')]
   ]})
     +wbPanel('result','',{segments:[
@@ -834,6 +866,7 @@ export function render({flow}){
         wbBlock('CNS 服务走廊',wbSegHint(RESULT_SEGMENTS,'cns-res-corridor')+chainNote('服务走廊')
           +segIntro('把服务能力转成沿航路的工程服务走廊与缺口体元。','三维几何覆盖结果、已确认的高度层定义与陆海分类事实。')
           +corridorPanel)
+        +wbBlock('四服务走廊证据（service-aware）',corridorServicePanel)
         +wbBlock('阻塞项与工程假设',blockerList(corridorBlockerItems,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-corridor'))],
       ['cns-res-gap','CNS 能力缺口',
@@ -980,6 +1013,109 @@ export function bind(c){
     c.setFlow({...c.flow(),cns_service_capability:detail});
     c.afterFlowChange();
     return detail;
+  });
+  // ---- Round D：CNS 服务需求 / 导航增强工程参数 / 站址适用性 -------------------
+  // 三个写动作都只改**既有** canonical 字段，并复用既有端点：
+  //   * 服务需求与 RTK 工程参数 → POST /api/required-cns（整体 requirements，
+  //     保留其它子系统与其它服务的既有声明）；
+  //   * 站址适用性 → POST /api/navigation-site-suitability（写既有站址条目的 metadata）。
+  // 前端不新建站址容器，也不提供任何默认距离；只有用户显式启用/取消的服务才写入 services。
+  const projectRequirements=()=>structuredClone((c.flow().required_cns||{}).project_default||{});
+  const writeServiceRequirement=(bucket,serviceKey,required)=>{
+    const services={...(bucket.services||{})};
+    const existed=Object.prototype.hasOwnProperty.call(services,serviceKey);
+    if(required||existed){
+      services[serviceKey]={...(services[serviceKey]||{}),service_key:serviceKey,required};
+    }
+    if(Object.keys(services).length)bucket.services=services;
+    return existed||required;
+  };
+  if(c.$('saveRequiredCnsServices'))c.actionButton('saveRequiredCnsServices',()=>{
+    const requirements=projectRequirements();
+    for(const spec of CNS_SERVICE_REQUIREMENT_ROWS){
+      const input=c.$(serviceRequirementDomId(spec.serviceKey));
+      if(!input)continue;
+      const bucket=requirements[spec.subsystem]||(requirements[spec.subsystem]={});
+      writeServiceRequirement(bucket,spec.serviceKey,input.checked===true);
+    }
+    return c.resourceAction(REQUIRED_CNS_ENDPOINT,{scope:'project',requirements,source:'user_configuration'});
+  });
+  if(c.$('saveNavigationPlanning'))c.actionButton('saveNavigationPlanning',()=>{
+    const requirements=projectRequirements();
+    const bucket=requirements.navigation||(requirements.navigation={});
+    const services={...(bucket.services||{})};
+    const entry={...(services['N:rtk_augmentation']||{})};
+    const planning={...(entry.planning||{})};
+    const baselineRaw=String(c.$('navigationBaselineM').value??'').trim();
+    const countRaw=String(c.$('navigationDistinctSiteCount').value??'').trim();
+    planning.model='reference_station_baseline';
+    planning.max_reference_baseline_m=baselineRaw===''?null:Number(baselineRaw);
+    planning.required_distinct_site_count=countRaw===''?null:Number(countRaw);
+    planning.delivery_service_key=planning.delivery_service_key||'C:communication';
+    planning.confirmed=c.$('navigationPlanningConfirmed').checked===true;
+    planning.source=String(c.$('navigationPlanningSource').value??'').trim()||null;
+    entry.planning=planning;
+    entry.service_key='N:rtk_augmentation';
+    entry.required=true;
+    services['N:rtk_augmentation']=entry;
+    bucket.services=services;
+    return c.resourceAction(REQUIRED_CNS_ENDPOINT,{scope:'project',requirements,source:'user_configuration'});
+  });
+  const suitabilitySelection=()=>{
+    const raw=String(c.$('navigationSuitabilitySite')?.value??'');
+    const index=raw.indexOf('|');
+    if(index<0)return null;
+    return {siteSource:raw.slice(0,index),siteId:raw.slice(index+1)};
+  };
+  const suitabilitySiteKeys=selection=>selection.siteSource==='tower_colocation_host'
+    ?{tower_id:selection.siteId}:{site_id:selection.siteId};
+  const collectSuitability=()=>{
+    const checked=id=>{const node=c.$(id);return node?node.checked===true:null;};
+    const text=id=>String(c.$(id)?.value??'').trim()||null;
+    const payload={};
+    for(const [field] of NAVIGATION_SUITABILITY_FIELDS)payload[field]=checked(NAVIGATION_SUITABILITY_DOM_IDS[field]);
+    payload.source=text(NAVIGATION_SUITABILITY_DOM_IDS.source);
+    payload.notes=text(NAVIGATION_SUITABILITY_DOM_IDS.notes);
+    return payload;
+  };
+  if(c.$('loadNavigationSuitabilitySite'))c.actionButton('loadNavigationSuitabilitySite',()=>{
+    const selection=suitabilitySelection();
+    if(!selection)throw new Error('请先选择要编辑的站址');
+    const site=navigationSuitabilitySites(c.flow()).find(item=>
+      item.siteSource===selection.siteSource&&item.siteId===selection.siteId)||null;
+    const suitability=site?.suitability||null;
+    for(const [field] of NAVIGATION_SUITABILITY_FIELDS){
+      const node=c.$(NAVIGATION_SUITABILITY_DOM_IDS[field]);
+      if(node)node.checked=suitability?.[field]===true;
+    }
+    const source=c.$(NAVIGATION_SUITABILITY_DOM_IDS.source);
+    if(source)source.value=String(suitability?.source??'');
+    const notes=c.$(NAVIGATION_SUITABILITY_DOM_IDS.notes);
+    if(notes)notes.value=String(suitability?.notes??'');
+    if(typeof document!=='undefined'&&typeof document.querySelector==='function'){
+      const card=document.querySelector('.cns-navigation-suitability');
+      if(card){
+        card.dataset.selectedSiteSource=selection.siteSource;
+        card.dataset.selectedSiteId=selection.siteId;
+      }
+    }
+    return {status:suitability?'loaded':'no_declared_suitability'};
+  });
+  if(c.$('saveNavigationSiteSuitability'))c.actionButton('saveNavigationSiteSuitability',()=>{
+    const selection=suitabilitySelection();
+    if(!selection)throw new Error('请先选择要编辑的站址');
+    return c.resourceAction(NAVIGATION_SITE_SUITABILITY_ENDPOINT,{
+      site_source:selection.siteSource,...suitabilitySiteKeys(selection),
+      navigation_site_suitability:collectSuitability(),
+    });
+  });
+  if(c.$('clearNavigationSiteSuitability'))c.actionButton('clearNavigationSiteSuitability',()=>{
+    const selection=suitabilitySelection();
+    if(!selection)throw new Error('请先选择要编辑的站址');
+    return c.resourceAction(NAVIGATION_SITE_SUITABILITY_ENDPOINT,{
+      site_source:selection.siteSource,...suitabilitySiteKeys(selection),
+      navigation_site_suitability:null,
+    });
   });
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(6);
 }

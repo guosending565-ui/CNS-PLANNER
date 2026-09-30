@@ -37,6 +37,7 @@ from ..domain.radar_surveillance_layout import (
     normalize_radar_mount_assumption, radar_geometry_parameters,
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
+from ..domain.radar_service_evidence import radar_required_for
 from ..gis.radar_layout_adapter import (
     LAND_MASK_CLASSIFICATION_BASIS, LAND_MASK_SEMANTICS, coastal_uncertainty_buffer_provenance,
     land_mask_readiness, normalized_coastal_buffer_m, radar_layout_source_status,
@@ -79,6 +80,7 @@ OPERATIONAL_ROUTE_SOURCE = "operational_routes"
 LAYERED_OPERATIONAL_ADOPTION_SOURCE_TYPE = (
     "layered_candidate_operational_adoption_v1"
 )
+from ..algorithms.radar_layout.candidates import build_candidates
 OPERATIONAL_ROUTE_PROVENANCE_FIELDS = (
     "source_type", "adoption_id", "validation_id", "validation_fingerprint",
     "candidate_id", "candidate_fingerprint",
@@ -1317,6 +1319,10 @@ class RadarSurveillanceLayoutService:
                 raise ValueError("当前没有运行航路：雷达初步划设需要已发布运行航路")
 
         records = self._stored()
+        previous_fingerprints = {
+            str(item.get("route_id")): item.get("input_fingerprint")
+            for item in records.get("items") or [] if isinstance(item, dict)
+        }
         items_by_id = {
             str(item.get("route_id")): item
             for item in records.get("items") or []
@@ -1347,6 +1353,15 @@ class RadarSurveillanceLayoutService:
                 str(item.get("status")) == "proposal_ready" for item in evaluated
             ) else "pending_confirmation"
         )
+        if any(
+            previous_fingerprints.get(str(item.get("route_id")))
+            != item.get("input_fingerprint")
+            for item in evaluated
+        ) and any(
+            radar_required_for(state.get("required_cns") or {}, item.get("route_id"))
+            for item in evaluated
+        ):
+            self.invalidation.cns_corridor()
         self.session.save()
         return self.snapshot()
 
@@ -1819,6 +1834,7 @@ class RadarSurveillanceLayoutService:
 
         solved_validation = deepcopy(solved.get("validation"))
         selected_panels = deepcopy(solved.get("selected_panels") or [])
+        canonical_selected_panels = deepcopy(selected_panels)
         # Visualization metadata is derived *after* solving from the independent final
         # validation chain.  It does not feed back into candidates, MILP, coverage verdict,
         # objective, validation fingerprint, or Radar input fingerprint.
@@ -1842,6 +1858,15 @@ class RadarSurveillanceLayoutService:
             },
             covered_sample_detail=bool(display_coverage),
         )
+        # Round B adapter input: these are the exact metric samples/towers and candidate
+        # panels consumed by the canonical Radar geometry.  P16 hypothetical evaluation
+        # reuses ``actual_site_coverage`` with this block; it never invents circle geometry.
+        service_candidates = build_candidates(
+            # Candidate generation follows the canonical optimisation chain (25 m),
+            # while hypothetical verdicts below are still rerun on the independent
+            # validation samples through ``actual_site_coverage``.
+            towers=usable_towers, samples=sampled["samples"],
+        )
         base.update({
             "status": _map_status(str(solved.get("status"))),
             "stage": solved.get("stage"),
@@ -1851,6 +1876,13 @@ class RadarSurveillanceLayoutService:
             "selected_panel_count": solved.get("selected_panel_count"),
             "selected_tower_count": solved.get("selected_tower_count"),
             "selected_tower_ids": deepcopy(solved.get("selected_tower_ids") or []),
+            "service_evidence_inputs": {
+                "samples": deepcopy(display_validation_samples),
+                "tower_records": deepcopy(service_candidates.get("towers") or []),
+                "candidate_panels": deepcopy(service_candidates.get("panels") or []),
+                "selected_panels": canonical_selected_panels,
+                "semantics": "canonical_radar_geometry_inputs_for_hypothetical_re_evaluation",
+            },
             "radar_i_panel_count": solved.get("radar_i_panel_count"),
             "radar_ii_panel_count": solved.get("radar_ii_panel_count"),
             "candidate_tower_count": solved.get("candidate_tower_count"),
@@ -1946,9 +1978,18 @@ class RadarSurveillanceLayoutService:
         if changed:
             state[LAYOUT_KEY] = records
             state.setdefault("result_statuses", {})[STATUS_KEY] = "stale"
+            if any(
+                radar_required_for(state.get("required_cns") or {}, route_id)
+                for route_id in changed
+            ):
+                self.invalidation.cns_corridor()
         return {
             "stale_route_ids": changed,
-            "downstream": ["radar_surveillance_layout", "report"],
+            "downstream": [
+                "radar_surveillance_layout", "radar_service_evidence",
+                "cns_corridor_assessment", "cns_corridor_gap_assessment",
+                "cns_corridor_site_plan", "report",
+            ],
         }
 
 

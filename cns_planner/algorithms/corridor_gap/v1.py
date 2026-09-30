@@ -14,7 +14,9 @@ from ..service_capability.v1 import (
 from ...domain.cns_planning_objectives import (
     OBJECTIVE_NAMES, empty_cns_corridor_gap_assessment, planning_not_evaluated,
 )
-from ...domain.cns_service_contract import normalize_surface_class
+from ...domain.cns_service_contract import (
+    SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, normalize_surface_class,
+)
 
 
 class CNSCorridorGapAnalyzerV1:
@@ -137,11 +139,23 @@ def _evaluate_voxel_subsystem(code, source, required, *, surface_class=None):
                            or required.get("redundancy"))
     #: Round 1 additive：**按 service 分别计算**的冗余要求（surface-dependent）。
     #: legacy 子系统级判定（下方）保持完全不变。
-    service_evidence = summarize_service_redundancy(
-        evaluations, required, surface_class=surface,
-    )
-    surface_services = [item for item in service_evidence if item.get("surface_dependent")]
-    non_site_navigation = code == "N" and (
+    service_evidence = deepcopy(source.get("service_redundancy") or [])
+    if not service_evidence:
+        service_evidence = summarize_service_redundancy(
+            evaluations, required, surface_class=surface,
+        )
+    planned_services = [
+        item for item in service_evidence
+        if item.get("surface_dependent") is True or item.get("supports_site_planning") is True
+    ]
+    #: Round C：地面导航增强（``N:rtk_augmentation``）是**显式地面服务要求**，
+    #: 不能被 legacy/aircraft 的 ``NON_SITE_NAVIGATION`` 语义吞掉；只有它自己出现在
+    #: 显式服务证据里时才覆盖非站基判定。普通 legacy ``N``（无该服务）行为逐项不变。
+    navigation_augmentation = [
+        item for item in planned_services
+        if str(item.get("service_key") or "") == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION
+    ]
+    non_site_navigation = code == "N" and not navigation_augmentation and (
         str(((required.get("type") or {}).get("technology") or "")).lower() in NON_SITE_NAVIGATION
         or any(item.get("kind") == "aircraft_navigation" for item in source.get("evidence") or [])
     )
@@ -196,12 +210,30 @@ def _evaluate_voxel_subsystem(code, source, required, *, surface_class=None):
         causes.append("unknown_redundancy_evidence")
     #: surface-dependent service 的独立池结论参与本 voxel 的最终判定；
     #: 旧项目（无 service_key）时 ``surface_services`` 为空，输出逐项不变。
-    if any(item["status"] == "confirmed_deficit" for item in surface_services):
+    if any(item["status"] == "confirmed_deficit" for item in planned_services):
         if "redundancy_deficit" not in causes:
             causes.append("redundancy_deficit")
-    elif any(item["status"] == "unknown" for item in surface_services):
+    elif any(item["status"] == "unknown" for item in planned_services):
         if "unknown_redundancy_evidence" not in causes:
             causes.append("unknown_redundancy_evidence")
+    #: Round C：``N:rtk_augmentation`` 的最终状态是"站址基线几何 + correction delivery
+    #: 依赖"的合成结论，**不能**被 aircraft 非站基语义或 legacy 冗余池改写。已知缺口
+    #: 优先于未知，但 ``unknown`` 证据必须原样保留在 entry.services[] 里。
+    if navigation_augmentation:
+        # 地面增强服务**不是**机载非站基能力：它的冗余槽位由 canonical service
+        # evidence 承载，因此 legacy ``min_redundancy`` 未配置时不得追加
+        # "未知冗余证据"，否则会把已确认的站址缺口/通信缺口降级成 unknown。
+        reasons = [
+            reason for reason in reasons
+            if reason != "RequiredCNS min_redundancy 未确认"
+        ]
+        redundancy_status = ground_status = _aggregate_service_status(navigation_augmentation)
+        if any(item["status"] == "confirmed_deficit" for item in navigation_augmentation):
+            if "redundancy_deficit" not in causes:
+                causes.append("redundancy_deficit")
+        elif any(item["status"] == "unknown" for item in navigation_augmentation):
+            if "unknown_redundancy_evidence" not in causes:
+                causes.append("unknown_redundancy_evidence")
     if service_status == "not_applicable":
         combined = "not_applicable"
     elif "service_deficit" in causes or "redundancy_deficit" in causes:
@@ -224,6 +256,17 @@ def _evaluate_voxel_subsystem(code, source, required, *, surface_class=None):
         "reasons": [*deepcopy(source.get("reasons") or []), *reasons],
         "evidence": evidence,
     }
+
+
+def _aggregate_service_status(services):
+    """service 证据集合 → 单一冗余槽位状态（已知缺口优先于未知）。"""
+
+    values = [str(item.get("status") or "unknown") for item in services or []]
+    if "confirmed_deficit" in values:
+        return "confirmed_deficit"
+    if "unknown" in values or not values:
+        return "unknown"
+    return "satisfied"
 
 
 def _summarize_subsystem(route_id, code, route_length, voxels, objective_config):
@@ -304,12 +347,15 @@ def _summarize_subsystem(route_id, code, route_length, voxels, objective_config)
 
 
 def _summarize_services(items):
-    """按 service_key 汇总 surface-dependent 的冗余结论（Communication / RID 分开）。"""
+    """按 service_key 汇总独立的 site-planned service 结论。"""
 
     groups = {}
     for _, item in items:
         for entry in item.get("services") or []:
-            if entry.get("surface_dependent") is not True:
+            if not (
+                entry.get("surface_dependent") is True
+                or entry.get("supports_site_planning") is True
+            ):
                 continue
             key = str(entry.get("service_key") or "")
             bucket = groups.setdefault(key, {
@@ -330,6 +376,8 @@ def _summarize_services(items):
                 bucket["required_distinct_site_count_by_surface"][surface] = entry["required_distinct_site_count"]
             if entry.get("distinct_site_count") is not None:
                 bucket["distinct_site_count_by_surface"][surface] = entry["distinct_site_count"]
+            if key == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
+                _accumulate_navigation_bucket(bucket, entry)
     result = []
     for key in sorted(groups):
         bucket = groups[key]
@@ -338,8 +386,64 @@ def _summarize_services(items):
             "confirmed_deficit" if counts["confirmed_deficit"]
             else "unknown" if counts["unknown"] else "satisfied"
         )
+        if key == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
+            _finalize_navigation_bucket(bucket)
         result.append(bucket)
     return result
+
+
+def _accumulate_navigation_bucket(bucket, entry):
+    """``N:rtk_augmentation`` 的独立汇总字段（几何 / 交付 / 缺口类型 / target 列表）。
+
+    这些字段是 P16 判定"该建导航站，还是只应交给 Communication planner"的**唯一**
+    依据：只有 ``gap_causes`` 含 ``reference_station_deficit`` 才允许生成导航站 action。
+    """
+
+    voxel_id = entry.get("voxel_id")
+    geometry = str(entry.get("geometry_status") or "unknown")
+    delivery = str(entry.get("delivery_status") or "not_evaluated")
+    geometry_counts = bucket.setdefault(
+        "geometry_status_counts", {"satisfied": 0, "confirmed_deficit": 0, "unknown": 0},
+    )
+    if geometry in geometry_counts:
+        geometry_counts[geometry] += 1
+    delivery_counts = bucket.setdefault("delivery_status_counts", {})
+    delivery_counts[delivery] = delivery_counts.get(delivery, 0) + 1
+    reasons = bucket.setdefault("evidence_required_reasons", set())
+    reasons.update(str(value) for value in entry.get("reasons") or [])
+    causes = bucket.setdefault("gap_cause_counts", {})
+    for cause in entry.get("gap_causes") or []:
+        causes[cause] = causes.get(cause, 0) + 1
+    if entry.get("required_distinct_site_count") is not None:
+        bucket["required_distinct_site_count"] = entry["required_distinct_site_count"]
+    if entry.get("distinct_site_count") is not None:
+        bucket["distinct_site_count"] = entry["distinct_site_count"]
+    if entry.get("max_reference_baseline_m") is not None:
+        bucket["max_reference_baseline_m"] = entry["max_reference_baseline_m"]
+    bucket["delivery_service_key"] = entry.get("delivery_service_key")
+    if str(entry.get("status") or "") == "confirmed_deficit":
+        bucket.setdefault("confirmed_target_voxel_ids", []).append(voxel_id)
+        if "reference_station_deficit" in (entry.get("gap_causes") or []):
+            bucket.setdefault("station_deficit_voxel_ids", []).append(voxel_id)
+        else:
+            bucket.setdefault("dependency_only_voxel_ids", []).append(voxel_id)
+    elif str(entry.get("status") or "") == "unknown":
+        bucket.setdefault("unknown_voxel_ids", []).append(voxel_id)
+
+
+def _finalize_navigation_bucket(bucket):
+    for name in (
+        "confirmed_target_voxel_ids", "station_deficit_voxel_ids",
+        "dependency_only_voxel_ids", "unknown_voxel_ids",
+    ):
+        bucket[name] = sorted({str(value) for value in bucket.get(name) or [] if value is not None})
+    bucket["evidence_required_reasons"] = sorted(bucket.get("evidence_required_reasons") or [])
+    bucket["dependency_only"] = (
+        bool(bucket["confirmed_target_voxel_ids"]) and not bucket["station_deficit_voxel_ids"]
+    )
+    bucket["recommended_dependency_service"] = (
+        "C:communication" if bucket["dependency_only"] else None
+    )
 
 
 def _distribution(items, field, classes):

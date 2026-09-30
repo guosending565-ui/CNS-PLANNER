@@ -29,6 +29,8 @@ from ..domain.cns_corridor import (
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
 )
+from ..domain.navigation_augmentation import build_navigation_service_evidence
+from ..domain.radar_service_evidence import build_radar_service_evidence
 
 
 class CorridorScaleNotAccepted(ValueError):
@@ -137,6 +139,23 @@ class CNSCorridorService:
             "surface_class_facts": deepcopy(state.get("surface_class_facts") or {}),
             "surface_facts_fingerprint": surface_facts_fingerprint_for(state),
         }
+        radar_evidence = build_radar_service_evidence(
+            state.get("required_cns") or {}, state.get("radar_surveillance_layout") or {},
+            route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
+        )
+        if radar_evidence is not None:
+            inputs["radar_service_evidence"] = radar_evidence
+        #: Round C：地面导航增强证据（``N:rtk_augmentation``）**只**在项目显式声明该
+        #: 服务时生成；legacy 项目下为 ``None``，P14 shape/fingerprint 逐项不变。
+        navigation_evidence = build_navigation_service_evidence(
+            state.get("required_cns") or {},
+            route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
+            existing_facilities=state.get("existing_cns_facilities") or {},
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+        )
+        if navigation_evidence is not None:
+            inputs["navigation_service_evidence"] = navigation_evidence
         # B9R.1：把规模估算固化进输入（它是输入相关的确定性事实，因此属于输入指纹
         # 的一部分，调用方——无论同步还是 worker——都只消费这份冻结值）。
         inputs["complexity_estimate"] = _complexity_preflight(inputs)
@@ -185,6 +204,8 @@ class CNSCorridorService:
                     inputs.get("surface_facts_fingerprint")
                     or surface_facts_fingerprint_for(inputs)
                 ),
+                radar_service_evidence=inputs.get("radar_service_evidence"),
+                navigation_service_evidence=inputs.get("navigation_service_evidence"),
             )
         except CorridorComplexityBlocked as exc:
             raise CorridorScaleNotAccepted(exc.estimate, str(exc)) from exc

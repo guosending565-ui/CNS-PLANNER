@@ -1373,6 +1373,9 @@ class WorkflowService:
     def set_cns_existing_baseline(self, payload): return self.cns_input_service.set_existing_baseline(payload)
     def import_candidate_sites(self, payload): return self.cns_input_service.import_candidates(payload)
     def candidate_sites_from_existing(self): return self.cns_input_service.candidates_from_existing()
+    #: Round D：在**既有**站址条目上声明/清除 ``navigation_site_suitability``。
+    #: 它不新建站址容器，也不改任何几何或判定算法（见 CNSInputService 的说明）。
+    def set_navigation_site_suitability(self, payload): return self.cns_input_service.set_navigation_site_suitability(payload)
     def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)
     def evaluate_closed_loop(self, payload=None): return self.closed_loop_service.evaluate(payload)
     def apply_closed_loop(self, payload=None): return self.closed_loop_service.apply(payload)

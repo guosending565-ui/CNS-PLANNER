@@ -488,7 +488,7 @@ export function drawWorkflowLayers({
   // Communication / RID 只画全向圆与航路缺口段，**绝不**画 sector / 90° panel。
   // 站点选取与既有原则一致：已有 active provider、P16 selected_actions、
   // 方案审查当前选中 variant 的动作；**绝不**铺开全部候选站址。
-  const cnsServiceOn=layers.cnsCommunicationLayer===true||layers.cnsRidLayer===true;
+  const cnsServiceOn=layers.cnsCommunicationLayer===true||layers.cnsRidLayer===true||layers.cnsNavigationLayer===true;
   if(cnsServiceOn||layers.cnsServiceGapLayer===true||layers.cnsFacilityPlanLayer===true){
     drawCnsServiceOverlay({
       ctx,view,screenPoint,layers,

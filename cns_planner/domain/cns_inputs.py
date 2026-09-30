@@ -14,6 +14,7 @@ from .cns_service_contract import (
     normalize_redundancy_by_surface, validated_service_key,
     validated_service_subtype,
 )
+from .cns_service_registry import normalize_service_requirements
 from .spatial_3d import normalize_vertical_profile
 from .cns_service_model import normalize_service_model_spec
 
@@ -136,11 +137,18 @@ def normalize_required_cns(value: dict | None) -> RequiredCNS:
     if not isinstance(value, dict):
         raise ValueError("RequiredCNS 必须是对象")
     result.update({key: deepcopy(current) for key, current in value.items() if key not in ("project_default", "route_overrides")})
-    result["project_default"] = _normalize_requirement_set(value.get("project_default") or result["project_default"])
+    result["project_default"] = _normalize_requirement_set(
+        value.get("project_default") or result["project_default"], field="required_cns.project_default",
+    )
     overrides = value.get("route_overrides") or {}
     if not isinstance(overrides, dict):
         raise ValueError("RequiredCNS route_overrides 必须是对象")
-    result["route_overrides"] = {str(route_id): _normalize_requirement_set(item) for route_id, item in overrides.items()}
+    result["route_overrides"] = {
+        str(route_id): _normalize_requirement_set(
+            item, field=f"required_cns.route_overrides[{route_id}]",
+        )
+        for route_id, item in overrides.items()
+    }
     statuses = [item["status"] for item in result["project_default"].values()]
     result["status"] = "passed" if all(item == "passed" for item in statuses) else "pending_confirmation"
     return result
@@ -378,7 +386,7 @@ def normalize_requirement_service_identity(value, *, field="required_cns"):
     return result
 
 
-def _normalize_requirement_set(value):
+def _normalize_requirement_set(value, *, field="required_cns"):
     if not isinstance(value, dict):
         raise ValueError("CNS 需求集合必须是对象")
     template = pending_required_cns()["project_default"]
@@ -395,12 +403,24 @@ def _normalize_requirement_set(value):
         for key in ("coverage_requirement", "max_gap_m"):
             if key in merged:
                 merged[key] = _optional_nonnegative(merged.get(key), f"{name}.{key}")
-        contract = normalize_subsystem_contract(subsystem_codes[name], current, field=f"required_cns.{name}")
+        item_field = f"{field}.{name}"
+        contract = normalize_subsystem_contract(subsystem_codes[name], current, field=item_field)
         merged.update(contract)
         #: Round 2：service identity / redundancy_by_surface 与 type/performance 一起
         #: 进入 canonical contract，因此 normalize → save → reopen 不再丢字段。
-        merged.update(normalize_requirement_service_identity(current, field=f"required_cns.{name}"))
-        merged = sync_aliases(subsystem_codes[name], merged, field=f"required_cns.{name}")
+        merged.update(normalize_requirement_service_identity(current, field=item_field))
+        merged = sync_aliases(subsystem_codes[name], merged, field=item_field)
+        services = normalize_service_requirements(
+            subsystem_codes[name], current, field=item_field,
+        )
+        if services is not None:
+            merged["services"] = services
+            explicit_mode = current.get("service_requirement_mode")
+            required_keys = [key for key, item in services.items() if item.get("required") is True]
+            if explicit_mode not in (None, "", "all_required"):
+                raise ValueError(f"{item_field}.service_requirement_mode 必须是 all_required")
+            if explicit_mode == "all_required" or len(required_keys) > 1:
+                merged["service_requirement_mode"] = "all_required"
         merged["status"] = "passed" if required is False or (required is True and _requirements_complete(name, merged)) else "pending_confirmation"
         result[name] = merged
     return result

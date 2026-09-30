@@ -8,6 +8,7 @@ import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,reference
 import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,hitCnsTowerCandidate,entryExtent} from './map/display_layers.js';
 import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';import {attachTowerReferenceLayer,towerDetailContext} from './map/tower_reference_layer.js';
 import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend,updateCnsServiceLegend} from './workflow/map_legend.js';
+import {cnsMapFeatureAt,cnsMapFeatureTooltip} from './map/cns_service_overlay.js';
 import {renderWorkflowSteps} from './workflow/steps.js';
 import {createWorkbench} from './workflow/workbench.js';
 import {POPULATION_PALETTE,RISK_PALETTE,TERRAIN_PALETTE,BUILDING_PALETTE,gridThemeLegendModel,gridThemeLegendNote} from './workflow/grid_theme_legend.js';
@@ -40,7 +41,7 @@ const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
 // B4X 新增「高度层障碍」（Planning Constraint Field）三个开关：主开关 + 证据不足 + 可通行；
 // 与其它图层一样默认关闭，数据按需从只读 HTTP 路径读取，不在启动时加载。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
@@ -297,6 +298,21 @@ canvas.addEventListener('click',event=>{
   // 可见聚合点的"放大到范围"优先于其下方被隐藏/弱化的参考对象命中
   const clusterTarget=hitClusterAt(event);
   if(clusterTarget&&clusterTarget.count>1){const box=entryExtent(clusterTarget);if(box)fitScreenBox(box);info.hidden=true;return;}
+  // Round D：CNS 四服务缺口 / 设施规划 / 导航增强基线的只读地图 tooltip。
+  // 三个图层都默认关闭；全部关闭时不构造任何要素、不发请求（零成本），
+  // 也绝不影响既有铁塔 / 参考对象 / 网格详情的命中顺序。
+  const cnsLayers=layers();
+  if(cnsLayers.cnsServiceGapLayer===true||cnsLayers.cnsFacilityPlanLayer===true||cnsLayers.cnsNavigationLayer===true){
+    const click=[event.clientX-rect.left,event.clientY-rect.top];
+    const feature=cnsMapFeatureAt({click,flow,layers:cnsLayers,screenPoint});
+    if(feature){
+      info.innerHTML=cnsMapFeatureTooltip(feature,flow);
+      info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
+      info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
+      info.hidden=false;
+      return;
+    }
+  }
   if(towerReference.candidateClick(event))return;
   if(towerReference.detail(clusterTarget,event))return;// 铁塔详情：字段与"不派生通信能力"声明都在 tower_reference_layer.js
   // 参考对象交互只在 detail 档保留：overview/medium 下参考层被弱化或隐藏，不参与命中
@@ -685,7 +701,7 @@ function afterDetailRecovery(label){
  * 其它图层勾选"守卫产生字面冲突。
  */
 const PROJECT_REOPEN_RESET_LAYER_IDS=[
-  'cnsCommunicationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer'
+  'cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer'
 ];
 function resetAnalysisLayerSelection(){
   for(const id of PROJECT_REOPEN_RESET_LAYER_IDS)$(id)?.removeAttribute('checked');

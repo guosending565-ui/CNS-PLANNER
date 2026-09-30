@@ -5,7 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..domain.cns_service_contract import (
-    distinct_site_id_for, geometry_usable, service_contract_for,
+    SERVICE_KEY_RADAR_NONCOOPERATIVE, distinct_site_id_for, geometry_usable,
+    service_contract_for,
 )
 from ..domain.site_planning import TOWER_COLOCATION_REUSE_CLASS
 
@@ -22,7 +23,11 @@ def candidate_actions(targets, existing, candidates, catalog, tower_colocation=N
     """
 
     target_subsystems = {item["subsystem"] for item in targets if not item.get("service_key")}
-    target_services = {item["service_key"] for item in targets if item.get("service_key")}
+    target_services = {
+        item["service_key"] for item in targets
+        if item.get("service_key")
+        and item.get("service_key") != SERVICE_KEY_RADAR_NONCOOPERATIVE
+    }
     devices = []
     for item in (catalog or {}).get("items") or []:
         if not item.get("enabled", True):

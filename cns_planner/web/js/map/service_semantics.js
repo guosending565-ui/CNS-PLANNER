@@ -25,8 +25,11 @@ export const CNS_FOCUS_SERVICES = ['C:communication', 'S:rid_cooperative'];
 export const SERVICE_KEY_LABELS = {
   'C:communication': '通信',
   'N:navigation': '导航',
+  //: Round D：显式登记 RTK 地面增强与 Radar 非合作监视，未登记取值仍原样返回。
+  'N:rtk_augmentation': '导航增强（GNSS/RTK）',
   'S:surveillance': '监视',
   'S:rid_cooperative': 'RID 合作监视',
+  'S:radar_noncooperative': '非合作监视（Radar）',
 };
 
 /** 主界面使用的短标签（不含括号说明）。 */
@@ -234,3 +237,259 @@ export const CNS_SERVICE_AUTHORITY_NOTE =
 
 /** 5 km 虚线圆的**唯一**允许叫法。 */
 export const RID_SEA_PLANNING_RADIUS_LABEL = 'RID 海上最大规划半径';
+
+// =========================================================
+// Round D：统一 CNS 四服务（Communication / RTK Navigation / RID / Radar）
+//
+// 本节只补**展示语义**（正式中文名、planner family 名、导航工程基线与缺口原因的中文），
+// 依然不含任何业务数值：
+//  * 四服务的半径、要求站址数、工程基线距离、Radar 面板几何一律来自 backend canonical；
+//  * 前端不把 RID 与 Radar 合并成模糊的「监视」，也不把导航增强写成「RTK 覆盖半径」。
+// =========================================================
+
+/** Round D 统一呈现的四个 CNS 服务（顺序即界面顺序）。 */
+export const CNS_ROUNDD_SERVICE_KEYS = [
+  'C:communication',
+  'N:rtk_augmentation',
+  'S:rid_cooperative',
+  'S:radar_noncooperative',
+];
+
+/**
+ * 四服务正式中文名（Round D 冻结）。
+ *
+ * `S:rid_cooperative` 与 `S:radar_noncooperative` **必须**分别显示为
+ * 「合作监视（RID）」与「非合作监视（Radar）」，绝不合并成一个「监视」。
+ */
+export const CNS_SERVICE_FORMAL_LABELS = {
+  'C:communication': '通信',
+  'N:rtk_augmentation': '导航增强（GNSS/RTK）',
+  'S:rid_cooperative': '合作监视（RID）',
+  'S:radar_noncooperative': '非合作监视（Radar）',
+};
+
+/** RequiredCNS 编辑区的服务行定义（label / 复选框文案 / 所属子系统名）。 */
+export const CNS_SERVICE_REQUIREMENT_ROWS = [
+  {
+    serviceKey: 'C:communication', subsystem: 'communication', subsystemCode: 'C',
+    label: '通信', checkboxLabel: '要求通信服务',
+  },
+  {
+    serviceKey: 'N:rtk_augmentation', subsystem: 'navigation', subsystemCode: 'N',
+    label: '导航增强', checkboxLabel: '要求 GNSS/RTK 地面增强',
+  },
+  {
+    serviceKey: 'S:rid_cooperative', subsystem: 'surveillance', subsystemCode: 'S',
+    label: '合作监视', checkboxLabel: '要求 RID',
+  },
+  {
+    serviceKey: 'S:radar_noncooperative', subsystem: 'surveillance', subsystemCode: 'S',
+    label: '非合作监视', checkboxLabel: '要求 Radar',
+  },
+];
+
+/** 双通道监视三行（**绝不**把两通道相加成一个"监视站点总数"）。 */
+export const SURVEILLANCE_DUAL_CHANNEL_LABELS = {
+  rid: '合作监视（RID）',
+  radar: '非合作监视（Radar）',
+  dual: '双通道监视',
+};
+
+/** 双通道监视语义声明（逐字）：两通道独立，任一路径缺口即监视未满足。 */
+export const SURVEILLANCE_DUAL_CHANNEL_NOTE =
+  '合作监视（RID）与非合作监视（Radar）是两条独立通道，统计与证据一律分服务给出；'
+  + '双通道监视只有在两通道都满足时才成立，任一通道存在已确认缺口即存在监视缺口。';
+
+/** 后端 all_required 语义的只读显示文案（用户不得改成"任选一个即可"）。 */
+export const ALL_REQUIRED_MODE_LABEL = '双通道均需满足（all_required）';
+
+/** 导航增强工程基线的**唯一**图例名（绝不叫 "RTK 无线覆盖范围"）。 */
+export const NAVIGATION_BASELINE_LEGEND_LABEL = '导航增强工程基线范围';
+
+/** 导航增强规划模型的正式中文名。 */
+export const NAVIGATION_BASELINE_MODEL_LABEL = 'GNSS/RTK 基准站工程基线模型';
+
+/** 工程规划参数（不是厂家保证性能）的逐字声明。 */
+export const NAVIGATION_BASELINE_DISCLAIMER =
+  '该值为项目确认的工程规划参数，不是厂家保证的无线覆盖距离或实测 RTK 服务半径。';
+
+/** 全图统一的几何/基线免责声明。 */
+export const CNS_SERVICE_GEOMETRY_LEGEND_NOTE =
+  '图示范围为工程规划几何/基线表达；不代表实测传播或设备保证性能。';
+
+/** 导航增强的 delivery 依赖声明（RTK 修正数据必须经通信服务交付）。 */
+export const NAVIGATION_DELIVERY_DEPENDENCY_LABEL = 'RTK 修正数据依赖通信服务';
+
+/** Planner family → 业务中文（内部标识只在高级详情出现）。 */
+export const PLANNER_FAMILY_LABELS = {
+  omnidirectional_site: '全向站点（通信 / RID）',
+  navigation_reference_station: '导航基准站',
+  directional_radar: '方向性雷达面阵',
+  legacy_subsystem: '旧版子系统口径',
+};
+
+/** Radar 型号显示名（**只是名字**；I/II 的几何与计数一律来自 backend canonical 结果）。 */
+export const RADAR_TYPE_TEXT = {
+  radar_i: 'Radar-I（中近程雷达Ⅰ型）',
+  radar_ii: 'Radar-II（中近程雷达Ⅱ型）',
+};
+
+/** 导航增强规划单元说明（不是设备型号）。 */
+export const NAVIGATION_PLANNING_UNIT_LABEL = '新增 GNSS/RTK 基准站规划单元';
+export const NAVIGATION_EQUIPMENT_NOT_SELECTED_NOTE =
+  '当前仅完成站址与服务规划，具体设备型号尚未选择。';
+
+/** Radar 几何声明：与 Communication / RID 的全向圆模型**不同**。 */
+export const RADAR_DIRECTIONAL_GEOMETRY_NOTE =
+  'Radar 使用方向性面阵几何规划，不使用 Communication/RID 的全向圆形模型。';
+
+/** 导航增强 gap cause → 业务中文（后端只有这两个 cause）。 */
+export const NAVIGATION_GAP_CAUSE_TEXT = {
+  reference_station_deficit: '基准站工程基线 / 独立站址不足',
+  correction_delivery_deficit: 'RTK 修正数据通信交付不足',
+};
+
+/** 导航增强 delivery 状态 → 业务中文。 */
+export const NAVIGATION_DELIVERY_STATUS_TEXT = {
+  satisfied: '满足',
+  confirmed_deficit: '缺口',
+  unknown: '证据不足',
+  not_configured: '未配置交付服务',
+  not_evaluated: '未评估',
+};
+
+/** 导航增强 geometry 状态 → 业务中文（站址基线几何）。 */
+export const NAVIGATION_GEOMETRY_STATUS_TEXT = {
+  satisfied: '满足',
+  confirmed_deficit: '缺口',
+  unknown: '证据不足',
+};
+
+/** planning readiness → 业务中文。 */
+export const NAVIGATION_PLANNING_READINESS_TEXT = {
+  ready: '已就绪',
+  pending_confirmation: '待确认',
+};
+
+/** 导航增强证据不足原因 → 业务中文。 */
+export const NAVIGATION_REASON_TEXT = {
+  navigation_augmentation_policy_not_confirmed: '导航增强工程策略尚未确认',
+  max_reference_baseline_m_missing: '尚未确认最大工程基线距离',
+  required_distinct_site_count_missing: '尚未确认要求的独立站址数',
+  correction_delivery_service_not_configured: '未配置 RTK 修正数据交付服务',
+  correction_delivery_unknown: '通信交付证据不足',
+  correction_delivery_confirmed_deficit: '通信交付存在缺口',
+  navigation_augmentation_route_evidence_missing: '缺少该航路的导航增强证据',
+  navigation_site_suitability_unconfirmed_candidates: '存在尚未确认适用性的候选站址',
+};
+
+/**
+ * 站址来源（``planning_origin`` / ``reuse_class``）→ 业务中文。
+ *
+ * Round D 的站址来源标签：Step05 的共塔语境另有自己的 ``REUSE_CLASS_LABEL``
+ * （措辞面向"复用类别"），两者语义相关但不互相复制数值或 authority。
+ */
+export const NAVIGATION_SITE_SOURCE_TEXT = {
+  existing_cns_facility: '已有 CNS 设施',
+  existing_shared_site: '共享站址',
+  tower_colocation_host: '共塔候选',
+  candidate_site: '候选站址',
+  new_build_candidate: '新建候选',
+};
+
+/**
+ * 站址条目上已声明的 ``navigation_site_suitability``（顶层优先，其次 ``metadata``）。
+ *
+ * **纯读取**：未声明返回 ``null``（= 无证据），绝不推断合格性。
+ */
+export function navigationSuitabilityOf(site) {
+  const item = site && typeof site === 'object' ? site : {};
+  const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+  const raw = item.navigation_site_suitability ?? metadata.navigation_site_suitability ?? null;
+  return raw && typeof raw === 'object' ? raw : null;
+}
+
+/**
+ * 「已有参考站」还是「可规划候选」——后端 ``_reference_station_installed`` 的**只读转印**。
+ *
+ * 语义（与 backend 一致，因此地图线型与正式判定不会打架）：
+ *  * 显式 ``reference_station_installed`` 优先；
+ *  * 未声明时，只有 ``existing_cns_facility`` 来源可视为**已建成**；
+ *    共塔 / 候选站址上的适用性确认只表示"获准安装"，**不**等于已建成。
+ *
+ * 它只决定地图用实线还是虚线，**不**参与任何业务判定（判定唯一来自 backend）。
+ */
+export function navigationReferenceStationInstalled(suitability, planningOrigin) {
+  const declared = suitability?.reference_station_installed;
+  if (declared === true) return true;
+  if (declared === false) return false;
+  return String(planningOrigin ?? '').trim() === 'existing_cns_facility';
+}
+
+/** service_key → 四服务正式中文名（未登记时退回既有词表，绝不编造）。 */
+export function cnsServiceFormalLabel(serviceKey) {
+  const key = String(serviceKey ?? '').trim();
+  if (!key) return '未声明服务';
+  return CNS_SERVICE_FORMAL_LABELS[key] || serviceKeyLabel(key);
+}
+
+/** 该 service_key 是否属于 Round D 四服务。 */
+export function isRounddServiceKey(serviceKey) {
+  return CNS_ROUNDD_SERVICE_KEYS.includes(String(serviceKey ?? ''));
+}
+
+/** planner family → 业务中文（未登记原样返回）。 */
+export function plannerFamilyLabel(value) {
+  const key = String(value ?? '').trim();
+  if (!key) return '未声明规划家族';
+  return PLANNER_FAMILY_LABELS[key] || key;
+}
+
+/** 导航增强 gap cause → 业务中文（未登记原样返回，绝不编造原因）。 */
+export function navigationGapCauseText(value) {
+  return vocabularyText(value, NAVIGATION_GAP_CAUSE_TEXT, '未给出结构化原因');
+}
+
+/** 导航增强 delivery 状态 → 业务中文。 */
+export function navigationDeliveryStatusText(value) {
+  return vocabularyText(value, NAVIGATION_DELIVERY_STATUS_TEXT);
+}
+
+/** 导航增强 geometry 状态 → 业务中文。 */
+export function navigationGeometryStatusText(value) {
+  return vocabularyText(value, NAVIGATION_GEOMETRY_STATUS_TEXT);
+}
+
+/** planning readiness → 业务中文。 */
+export function navigationPlanningReadinessText(value) {
+  const key = String(value ?? '').trim();
+  if (!key) return NAVIGATION_PLANNING_READINESS_TEXT.pending_confirmation;
+  return NAVIGATION_PLANNING_READINESS_TEXT[key] || key;
+}
+
+/** 导航增强证据不足原因 → 业务中文（未登记原样返回）。 */
+export function navigationReasonText(value) {
+  const key = String(value ?? '').trim();
+  if (!key) return '未给出原因';
+  return NAVIGATION_REASON_TEXT[key] || key;
+}
+
+/** 站址来源 → 业务中文。 */
+export function navigationSiteSourceText(value) {
+  const key = String(value ?? '').trim();
+  if (!key) return '未声明来源';
+  return NAVIGATION_SITE_SOURCE_TEXT[key] || key;
+}
+
+/**
+ * 导航增强工程基线的**显示**文本（米 → km）。
+ *
+ * 只做单位换算：数值缺失返回「未配置」，**绝不**补任何默认距离。
+ * 前端不得用该文本参与任何判定——正式判定一律来自 backend。
+ */
+export function navigationBaselineText(baselineM) {
+  const value = Number(baselineM);
+  if (!Number.isFinite(value) || value <= 0) return '未配置';
+  const km = value / 1000;
+  return (Number.isInteger(km) ? km.toFixed(1) : String(km)) + ' km';
+}

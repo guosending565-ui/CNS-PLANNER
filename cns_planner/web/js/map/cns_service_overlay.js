@@ -19,20 +19,28 @@
 // 所有图层默认关闭（index.html 的 checkbox 默认未勾选）。
 // =========================================================
 import {
-  CNS_GAP_COLORS, CNS_GAP_STATE_LABELS, COMBINED_STATUS_MAP_STATE,
-  REDUNDANCY_STATUS_MAP_STATE, RID_SEA_PLANNING_RADIUS_LABEL,
+  ALL_REQUIRED_MODE_LABEL, CNS_GAP_COLORS, CNS_GAP_STATE_LABELS, CNS_ROUNDD_SERVICE_KEYS,
+  CNS_SERVICE_GEOMETRY_LEGEND_NOTE, COMBINED_STATUS_MAP_STATE, NAVIGATION_BASELINE_LEGEND_LABEL,
+  RADAR_DIRECTIONAL_GEOMETRY_NOTE, REDUNDANCY_STATUS_MAP_STATE, RID_SEA_PLANNING_RADIUS_LABEL,
   SERVICE_LEGEND_LABELS, SERVICE_STATUS_TEXT, SURFACE_CLASS_TEXT,
-  isSurfaceAwareServiceKey, serviceKeyLabel, subsystemServiceLabel,
+  SURVEILLANCE_DUAL_CHANNEL_LABELS, cnsServiceFormalLabel, distinctSiteCountText,
+  isSurfaceAwareServiceKey, navigationBaselineText, navigationGapCauseText,
+  navigationReferenceStationInstalled, navigationSiteSourceText, navigationSuitabilityOf,
+  plannerFamilyLabel, serviceKeyLabel, subsystemServiceLabel, surfaceClassText,
 } from './service_semantics.js';
 
 /** 图层开关 id（与 index.html 中的 checkbox 一一对应，默认未勾选）。 */
 export const CNS_SERVICE_LAYER_IDS = [
   'cnsCommunicationLayer',
   'cnsRidLayer',
+  'cnsNavigationLayer',
   'cnsServiceGapLayer',
   'cnsFacilityPlanLayer',
   'surfaceFactsLayer',
 ];
+
+/** 导航增强工程基线图层 id（Round D 新增；默认关闭，reopen 后仍关闭）。 */
+export const CNS_NAVIGATION_LAYER_ID = 'cnsNavigationLayer';
 
 /** 线条/圆样式（Communication 与 RID 是同一组语义色，区分只靠几何与线型）。 */
 export const CNS_COVERAGE_STYLE = {
@@ -52,6 +60,18 @@ export const SURFACE_FACTS_LEGEND = [
   {surface: 'coastal_uncertain', label: SURFACE_CLASS_TEXT.coastal_uncertain},
   {surface: 'unknown', label: SURFACE_CLASS_TEXT.unknown},
 ];
+
+/**
+ * 导航增强工程基线 envelope 的样式（Round D）。
+ *
+ * 实线 = 已建成的参考站；虚线 = P16 提出的规划候选站。
+ * 它**只**是 ``max_reference_baseline_m`` 的地图表达，绝不叫"RTK 无线覆盖范围"。
+ */
+export const CNS_NAVIGATION_STYLE = {
+  existing: {color: '#b8840f', fill: '#b8840f14', lineWidth: 1.8},
+  proposed: {color: '#b8840f', lineWidth: 1.5, dash: [6, 4], alpha: 0.85},
+  candidatePoint: {color: '#8b949e'},
+};
 
 /** 陆海分类图层配色（**只**是分类事实，不表达风险或通过与否）。 */
 export const SURFACE_FACTS_COLORS = {
@@ -398,6 +418,9 @@ export function cnsServiceOverlayModel(flow, {selectedActions = null} = {}) {
     existingCount: existing.length,
     gapSegments: gapSegmentGeometry(flow, null),
     gapState: activeService ? 'service' : 'combined',
+    //: Round D：导航增强工程基线 envelope（实线=已建成参考站 / 虚线=规划候选站）。
+    //: 只有 policy confirmed 且 canonical baseline 为正数时才可能绘制。
+    navigation: navigationBaselineModel(flow, {selectedActions}),
     facilityPlan: {
       selected_action_count: (flow?.cns_corridor_site_plan?.selected_actions || []).length,
       residual_count: (flow?.cns_corridor_site_plan?.residual_confirmed_targets || []).length,
@@ -414,6 +437,19 @@ export function cnsServiceOverlayModel(flow, {selectedActions = null} = {}) {
  * RID 的 5 km 虚线**只能**叫「RID 海上最大规划半径」，绝不允许叫"全域覆盖半径"。
  */
 export function cnsServiceLegendModel() {
+  const serviceColors = {
+    'C:communication': CNS_COVERAGE_STYLE.communication.color,
+    'S:rid_cooperative': CNS_COVERAGE_STYLE.rid.color,
+    'N:rtk_augmentation': CNS_NAVIGATION_STYLE.existing.color,
+    'S:radar_noncooperative': '#1565c0',
+  };
+  const serviceNotes = {
+    'C:communication': '全向几何规划范围；半径按 site 所在 surface 取后端 radius_by_surface',
+    'S:rid_cooperative': '合作监视：全向几何。RID 绝不画 sector / 90° panel',
+    'N:rtk_augmentation': '导航增强：' + NAVIGATION_BASELINE_LEGEND_LABEL
+      + '；不使用全向覆盖圆模型，也不使用方向性面阵',
+    'S:radar_noncooperative': RADAR_DIRECTIONAL_GEOMETRY_NOTE,
+  };
   return [
     {
       id: 'cns-communication',
@@ -457,6 +493,34 @@ export function cnsServiceLegendModel() {
           ? '证据不足：地表分类未知或 provider 独立性证据缺失（fail-closed）'
           : '',
     })),
+    // ---- Round D：导航增强工程基线 + 四服务正式名 + 统一免责声明 --------------
+    {
+      id: 'cns-navigation-baseline',
+      label: NAVIGATION_BASELINE_LEGEND_LABEL + '（实线：已建成参考站 / 虚线：规划候选站）',
+      symbol: '<span class="legend-circle legend-dashed" style="border-color:'
+        + CNS_NAVIGATION_STYLE.existing.color + '"></span>',
+      note: '圆半径只来自 required_cns 的 canonical max_reference_baseline_m；'
+        + '它是工程规划参数，不代表实测 RTK 服务半径，也不是厂家保证值',
+    },
+    ...CNS_ROUNDD_SERVICE_KEYS.map(key => ({
+      id: 'cns-service-' + key.replace(/[^A-Za-z0-9]/g, '-').toLowerCase(),
+      label: cnsServiceFormalLabel(key),
+      symbol: '<span class="legend-dot" style="background:'
+        + (serviceColors[key] || CNS_GAP_COLORS.unknown) + '"></span>',
+      note: serviceNotes[key] || '',
+    })),
+    {
+      id: 'cns-dual-channel',
+      label: SURVEILLANCE_DUAL_CHANNEL_LABELS.dual + '（' + ALL_REQUIRED_MODE_LABEL + '）',
+      symbol: '<span class="legend-stroke" style="border-top-color:#c62828"></span>',
+      note: '合作监视（RID）与非合作监视（Radar）分服务统计与着色，绝不把两类站址相加',
+    },
+    {
+      id: 'cns-legend-disclaimer',
+      label: '图示范围说明',
+      symbol: '<span class="legend-dot" style="background:#8b949e"></span>',
+      note: CNS_SERVICE_GEOMETRY_LEGEND_NOTE,
+    },
   ];
 }
 
@@ -471,7 +535,7 @@ export const CNS_SERVICE_STATUS_TEXT = SERVICE_STATUS_TEXT;
  * @returns {{sites:number,circles:number,gapSegments:number}}
  */
 export function drawCnsServiceOverlay({ctx, view, screenPoint, model, layers = {}} = {}) {
-  const drawn = {sites: 0, circles: 0, gapSegments: 0};
+  const drawn = {sites: 0, circles: 0, gapSegments: 0, navigationBaseline: 0};
   if (!view || !model) return drawn;
 
   const communicationOn = layers.cnsCommunicationLayer === true;
@@ -559,12 +623,338 @@ export function drawCnsServiceOverlay({ctx, view, screenPoint, model, layers = {
     }
     ctx.restore();
   }
+
+  // 导航增强工程基线（Round D）：**默认关闭**，且只有后端 canonical 基线可画时才画。
+  if (layers.cnsNavigationLayer === true) {
+    drawn.navigationBaseline = drawCnsNavigationEnvelope({
+      ctx, view, screenPoint, model: model.navigation,
+    });
+  }
   return drawn;
 }
 
 /** 站点半径：Communication 统一全向，RID 分 land / sea 两档（都来自后端）。 */
 function radiusForSite(site, surface) {
   return radiusBySurfaceOf(site?.radius_by_surface, surface);
+}
+
+// =========================================================
+// Round D：导航增强工程基线 envelope
+//
+// 本区刻意放在 ``radiusForSite`` **之后**：它需要业务状态词（满足 / 缺口 / 证据不足），
+// 而绘制区间（``drawCnsServiceOverlay`` … ``radiusForSite``）有"不得出现状态词"的护栏。
+//
+// 铁律：envelope 只是 canonical ``max_reference_baseline_m`` 的**地图表达**；
+// 它**不**参与 P14 / P15 / P16 的任何判定，前端也绝不根据地图圆圈重算
+// ``within_baseline``。缺失或未确认 ⇒ 不画正式 envelope。
+// =========================================================
+
+/** 导航增强政策块（只读 canonical ``planning``）。 */
+export function navigationBaselinePolicy(flow) {
+  const requirement = ((flow?.required_cns || {}).project_default || {}).navigation || {};
+  const services = requirement.services && typeof requirement.services === 'object'
+    ? requirement.services : null;
+  const entry = services ? services['N:rtk_augmentation'] : null;
+  const planning = entry && typeof entry.planning === 'object' ? entry.planning : null;
+  const raw = planning ? Number(planning.max_reference_baseline_m) : NaN;
+  return {
+    declared: Boolean(planning),
+    required: entry?.required === true,
+    confirmed: planning?.confirmed === true,
+    baselineM: Number.isFinite(raw) && raw > 0 ? raw : null,
+    deliveryServiceKey: planning?.delivery_service_key ?? null,
+  };
+}
+
+/**
+ * 导航增强工程基线模型。
+ *
+ * * ``drawable`` 只有"policy 已确认 + canonical 基线为正数 + 确有站址"才为真；
+ * * 已建成参考站 → 实线；P16 规划候选站 → 虚线；
+ * * 声明了 suitability 但**未确认**的站址只作候选点，**绝不**画正式 envelope。
+ */
+export function navigationBaselineModel(flow, {selectedActions = null} = {}) {
+  const policy = navigationBaselinePolicy(flow);
+  const sites = [];
+  const candidates = [];
+  if (policy.required) {
+    const collections = [
+      ['existing_cns_facility', 'existing_cns_facilities'],
+      ['tower_colocation_host', 'tower_colocation_candidates'],
+      ['candidate_site', 'candidate_sites'],
+    ];
+    for (const [origin, collectionKey] of collections) {
+      for (const item of flow?.[collectionKey]?.items || []) {
+        const coordinate = coordinateOf(item?.coordinate);
+        if (!coordinate) continue;
+        const suitability = navigationSuitabilityOf(item);
+        if (!suitability) continue;
+        const identity = String(
+          item.distinct_site_id || item.facility_id || item.site_id || '',
+        );
+        if (suitability.confirmed !== true || suitability.planning_use_confirmed !== true) {
+          candidates.push({
+            kind: 'unconfirmed_suitability',
+            service_key: 'N:rtk_augmentation',
+            distinct_site_id: identity,
+            label: String(item.name || item.site_id || '未确认适用性站址'),
+            coordinate, planning_origin: origin,
+          });
+          continue;
+        }
+        const installed = navigationReferenceStationInstalled(suitability, origin);
+        sites.push({
+          kind: installed ? 'existing_reference_station' : 'proposed_reference_station',
+          service_key: 'N:rtk_augmentation',
+          distinct_site_id: identity,
+          label: String(item.name || item.site_id || '导航基准站'),
+          coordinate, planning_origin: origin,
+          reference_station_installed: installed,
+        });
+      }
+    }
+  }
+  // P16 selected actions：用户正在检查的规划候选站 → 虚线 envelope。
+  if (policy.required) {
+    for (const action of resolveSelectedActions(flow, selectedActions)) {
+      if (String(action?.service_key || '') !== 'N:rtk_augmentation') continue;
+      const coordinate = coordinateOf(action?.coordinate);
+      if (!coordinate) continue;
+      sites.push({
+        kind: 'proposed_reference_station',
+        service_key: 'N:rtk_augmentation',
+        action_id: action?.action_id || null,
+        distinct_site_id: String(action?.distinct_site_id || ''),
+        label: String(action?.action_id || '规划候选参考站'),
+        coordinate,
+        planning_origin: String(action?.planning_origin || action?.reuse_class || ''),
+        reference_station_installed: false,
+      });
+    }
+  }
+  return {
+    declared: policy.declared,
+    required: policy.required,
+    confirmed: policy.confirmed,
+    baselineM: policy.baselineM,
+    deliveryServiceKey: policy.deliveryServiceKey,
+    //: 未确认策略或缺少 canonical 基线 ⇒ 不画正式 envelope（fail-closed）。
+    drawable: policy.confirmed && policy.baselineM !== null && sites.length > 0,
+    sites, candidates,
+    baselineText: navigationBaselineText(policy.baselineM),
+  };
+}
+
+/** 绘制导航增强工程基线 envelope（实线=已建成参考站 / 虚线=规划候选站）。 */
+export function drawCnsNavigationEnvelope({ctx, view, screenPoint, model} = {}) {
+  let drawn = 0;
+  const baselineM = Number(model?.baselineM);
+  if (model?.drawable !== true || !Number.isFinite(baselineM) || baselineM <= 0) return drawn;
+  for (const site of model.sites || []) {
+    const installed = site.kind === 'existing_reference_station';
+    const style = installed ? CNS_NAVIGATION_STYLE.existing : CNS_NAVIGATION_STYLE.proposed;
+    const [x, y] = screenPoint(site.coordinate);
+    if (drawCircle({
+      ctx, view, screenPoint, coordinate: site.coordinate, radiusM: baselineM, style,
+    })) drawn += 1;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, installed ? 3.4 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = CNS_NAVIGATION_STYLE.existing.color;
+    ctx.lineWidth = 1.6;
+    if (!installed) ctx.setLineDash([4, 3]);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  for (const site of model.candidates || []) {
+    const [x, y] = screenPoint(site.coordinate);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = CNS_NAVIGATION_STYLE.candidatePoint.color;
+    ctx.setLineDash([2, 2]);
+    ctx.lineWidth = 1.4;
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    drawn += 1;
+  }
+  return drawn;
+}
+
+// ---- 地图要素命中与只读 tooltip ----------------------------------------------
+
+function escapeTip(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+}
+
+/** 点到线段距离（屏幕像素；纯几何，不做任何业务判定）。 */
+function pointSegmentDistance(point, from, to) {
+  const dx = to[0] - from[0], dy = to[1] - from[1];
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= 0) return Math.hypot(point[0] - from[0], point[1] - from[1]);
+  const raw = ((point[0] - from[0]) * dx + (point[1] - from[1]) * dy) / lengthSquared;
+  const t = Math.max(0, Math.min(1, raw));
+  return Math.hypot(point[0] - (from[0] + t * dx), point[1] - (from[1] + t * dy));
+}
+
+/** P15 里某个 service 的 canonical 桶（route 内第一个命中；不存在即 ``null``）。 */
+export function corridorServiceBucket(flow, serviceKey) {
+  const assessment = flow?.cns_corridor_gap_assessment || {};
+  for (const route of assessment.routes || []) {
+    for (const subsystem of route.subsystems || []) {
+      for (const entry of subsystem.service_redundancy || []) {
+        if (String(entry?.service_key || '') === String(serviceKey || '')) return entry;
+      }
+    }
+  }
+  return null;
+}
+
+/** 当前开启的 CNS 图层里可命中的要素（四服务分列，**绝不**相加）。 */
+export function cnsMapFeatures(flow, {selectedActions = null, layers = {}} = {}) {
+  const features = [];
+  if (layers.cnsServiceGapLayer === true) {
+    for (const segment of gapSegmentGeometry(flow, null)) {
+      features.push({kind: 'gap_segment', ...segment});
+    }
+  }
+  if (layers.cnsFacilityPlanLayer === true) {
+    const plan = flow?.cns_corridor_site_plan || {};
+    if (String(plan.status || '') !== 'not_calculated') {
+      for (const action of resolveSelectedActions(flow, selectedActions)) {
+        const coordinate = coordinateOf(action?.coordinate);
+        if (!coordinate) continue;
+        features.push({kind: 'facility_action', action, coordinate});
+      }
+    }
+  }
+  if (layers.cnsNavigationLayer === true) {
+    const model = navigationBaselineModel(flow, {selectedActions});
+    for (const site of model.sites || []) features.push({kind: 'navigation_site', site});
+    for (const site of model.candidates || []) features.push({kind: 'navigation_candidate', site});
+  }
+  return features;
+}
+
+/** 命中测试：段用点到线段距离，点用半径；只返回最近的一个要素。 */
+export function cnsMapFeatureAt({
+  click, flow, layers = {}, screenPoint, radiusPx = 12, selectedActions = null,
+} = {}) {
+  if (!Array.isArray(click) || typeof screenPoint !== 'function') return null;
+  let best = null, bestDistance = Infinity;
+  for (const feature of cnsMapFeatures(flow, {selectedActions, layers})) {
+    if (feature.kind === 'gap_segment') {
+      const from = screenPoint(feature.from), to = screenPoint(feature.to);
+      if (![from[0], from[1], to[0], to[1]].every(Number.isFinite)) continue;
+      const distance = pointSegmentDistance(click, from, to);
+      if (distance <= radiusPx && distance < bestDistance) {
+        best = feature; bestDistance = distance;
+      }
+      continue;
+    }
+    const point = screenPoint(feature.coordinate);
+    if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) continue;
+    const distance = Math.hypot(click[0] - point[0], click[1] - point[1]);
+    if (distance <= radiusPx && distance < bestDistance) {
+      best = feature; bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * 地图 tooltip 内容（只读）。
+ *
+ * 服务 / 状态 / 缺口原因 / 航路与体元 / surface / 要求的与实际的独立站址数，
+ * 全部转印 backend canonical 字段；**不**在前端重算 gap，也**不**把多服务相加。
+ */
+export function cnsMapFeatureTooltip(feature, flow) {
+  if (!feature) return '';
+  const row = (label, value, note = '') => '<div class="cns-map-tip-row"><b>'
+    + escapeTip(label) + '</b><span>' + escapeTip(value) + '</span>'
+    + (note ? '<small>' + escapeTip(note) + '</small>' : '') + '</div>';
+  if (feature.kind === 'gap_segment') {
+    const serviceKey = String(feature.service_key || '');
+    const bucket = corridorServiceBucket(flow, serviceKey);
+    const causes = (feature.causes || []).map(cause => navigationGapCauseText(cause)).join(' / ');
+    return '<div class="cns-map-tip"><h4>CNS 服务缺口</h4>'
+      + row('服务', cnsServiceFormalLabel(serviceKey || feature.subsystem))
+      + row('状态', CNS_GAP_STATE_LABELS[feature.state] || String(feature.state || '证据不足'))
+      + row('航路', String(feature.route_id || '—'),
+        '里程 ' + Math.round(feature.from_m ?? 0) + '–' + Math.round(feature.to_m ?? 0) + ' m'
+        + ' · 长度 ' + Math.round(feature.length_m ?? 0) + ' m')
+      + row('缺口原因', causes || '未提供结构化原因')
+      + row('surface / 体元分布',
+        surfaceSummaryText(bucket),
+        '体元 ' + String(bucket?.voxel_count ?? '—'))
+      + row('要求的 / 实际的独立站址数',
+        distinctSiteSummaryText(bucket))
+      + row('说明', CNS_SERVICE_GEOMETRY_LEGEND_NOTE)
+      + '</div>';
+  }
+  if (feature.kind === 'facility_action') {
+    const action = feature.action || {};
+    const siblings = resolveSelectedActions(flow, null).filter(item =>
+      String(item?.distinct_site_id || '') === String(action?.distinct_site_id || '')
+      && String(action?.distinct_site_id || '') !== '');
+    const coLocated = siblings.length > 1
+      ? siblings.map(item => cnsServiceFormalLabel(item?.service_key)).join('、')
+      : '';
+    return '<div class="cns-map-tip"><h4>CNS 设施规划动作</h4>'
+      + row('服务', cnsServiceFormalLabel(action?.service_key || action?.subsystem))
+      + row('站址', String(action?.site_id || action?.distinct_site_id || '—'),
+        '站址来源 ' + navigationSiteSourceText(action?.reuse_class))
+      + row('动作', plannerFamilyLabel(action?.planner_family),
+        String(action?.device_id || '') ? '设备 ' + String(action.device_id) : '设备型号未选择')
+      + row('distinct_site_id', String(action?.distinct_site_id || '—'),
+        coLocated ? '同一物理站址共址了 ' + siblings.length + ' 类服务：' + coLocated : '')
+      + row('说明', CNS_SERVICE_GEOMETRY_LEGEND_NOTE)
+      + '</div>';
+  }
+  if (feature.kind === 'navigation_site') {
+    const site = feature.site || {};
+    const installed = site.reference_station_installed === true;
+    return '<div class="cns-map-tip"><h4>' + escapeTip(NAVIGATION_BASELINE_LEGEND_LABEL) + '</h4>'
+      + row('服务', cnsServiceFormalLabel('N:rtk_augmentation'))
+      + row('站址', String(site.label || '—'),
+        '站址来源 ' + navigationSiteSourceText(site.planning_origin))
+      + row('工程基线距离', navigationBaselineText(navigationBaselineModel(flow).baselineM))
+      + row('状态', installed ? '已建成参考站（实线）' : '规划候选站（虚线）')
+      + row('说明', '该圆只是工程基线参数的地图表达，不是无线覆盖范围，也不参与任何判定')
+      + '</div>';
+  }
+  if (feature.kind === 'navigation_candidate') {
+    const site = feature.site || {};
+    return '<div class="cns-map-tip"><h4>导航基准站候选（未确认适用性）</h4>'
+      + row('服务', cnsServiceFormalLabel('N:rtk_augmentation'))
+      + row('站址', String(site.label || '—'),
+        '站址来源 ' + navigationSiteSourceText(site.planning_origin))
+      + row('状态', '尚未确认适用性：不画正式工程基线范围')
+      + '</div>';
+  }
+  return '';
+}
+
+/** 桶级 surface 分布（只转印计数）。 */
+function surfaceSummaryText(bucket) {
+  const counts = bucket?.surface_class_counts || {};
+  const parts = Object.entries(counts).map(([surface, count]) =>
+    surfaceClassText(surface) + ' ' + count);
+  return parts.length ? parts.join(' · ') : '证据不足';
+}
+
+/** 桶级"要求的 / 实际的独立站址数"（任一侧缺失即证据不足）。 */
+function distinctSiteSummaryText(bucket) {
+  if (!bucket) return '证据不足';
+  return distinctSiteCountText(bucket.distinct_site_count, bucket.required_distinct_site_count);
 }
 
 /** 语义名（面板/图例共用；这里只转发 service_semantics 的词表）。 */

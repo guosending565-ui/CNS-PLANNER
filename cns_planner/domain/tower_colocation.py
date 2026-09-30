@@ -163,6 +163,24 @@ def empty_tower_colocation_candidates(status="not_calculated"):
     }
 
 
+def declared_navigation_site_suitability(tower):
+    """铁塔上**已声明**的 ``navigation_site_suitability``（顶层优先，其次 ``metadata``）。
+
+    这是**纯值搬运**：只判断"用户是否显式声明过 suitability"，绝不判断该站址是否合格
+    （``confirmed`` / ``planning_use_confirmed`` 的合格性判定唯一归属
+    :mod:`cns_planner.domain.navigation_augmentation` 的 fail-closed 规则）。
+    未声明时返回 ``None``，因此 legacy payload 的键集合与指纹完全不变。
+    """
+
+    item = tower if isinstance(tower, dict) else {}
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    for container in (item, metadata):
+        value = container.get("navigation_site_suitability")
+        if isinstance(value, dict):
+            return deepcopy(value)
+    return None
+
+
 def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
     """把一个真实铁塔派生为一条共塔候选（CandidateSite 形状）。
 
@@ -187,6 +205,7 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
     resolved = profile.get("status") == "resolved" and isinstance(top, (int, float))
     assumption = normalized.get("service_origin_assumption")
     origin_confirmed = bool(resolved and normalized["enabled"] and assumption == "tower_top_agl_0")
+    suitability = declared_navigation_site_suitability(tower)
 
     limitations = [
         "共塔候选只是宿主候选，不代表铁塔上已有或可以安装任何 CNS 设备",
@@ -290,6 +309,14 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
             "source": deepcopy(tower.get("source")),
             "evidence": deepcopy(tower.get("evidence") or []),
             "limitations": limitations,
+            #: Round D：铁塔上**已显式声明**的导航基准站站址适用性必须原样过继到共塔
+            #: 候选，否则每次重新派生共塔候选都会把用户已确认的 suitability 丢掉。
+            #: 缺失即**不写该键**（保持既有 payload 形状与指纹不变）；这里只搬运事实，
+            #: 不做任何合格性判定（判定只在 navigation_augmentation 的 fail-closed 规则里）。
+            **(
+                {"navigation_site_suitability": suitability}
+                if suitability is not None else {}
+            ),
         },
     }
 
@@ -350,7 +377,8 @@ __all__ = [
     "SUBSYSTEM_MOUNT_STATUSES",
     "TOWER_COLOCATION_COLLECTION_ID", "TOWER_COLOCATION_ORIGIN",
     "TOWER_COLOCATION_SCHEMA_VERSION",
-    "build_tower_colocation_candidates", "default_tower_colocation_policy",
-    "empty_tower_colocation_candidates", "normalize_tower_colocation_candidates",
-    "normalize_tower_colocation_policy", "tower_colocation_candidate",
+    "build_tower_colocation_candidates", "declared_navigation_site_suitability",
+    "default_tower_colocation_policy", "empty_tower_colocation_candidates",
+    "normalize_tower_colocation_candidates", "normalize_tower_colocation_policy",
+    "tower_colocation_candidate",
 ]

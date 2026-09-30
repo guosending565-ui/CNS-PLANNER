@@ -608,6 +608,12 @@ class ApiRouter:
             "/api/cns-existing-baseline": lambda: workflow.set_cns_existing_baseline(payload),
             "/api/candidate-sites/import": lambda: workflow.import_candidate_sites(payload),
             "/api/candidate-sites/from-existing": workflow.candidate_sites_from_existing,
+            # ---- Round D：navigation_site_suitability（既有站址上的显式声明） ----------
+            # 最薄的写入口：只把规范化后的 suitability 写到**既有**站址条目
+            # （existing_cns_facilities / candidate_sites / towers）的 metadata 上，
+            # 继续走既有 normalization / invalidation / session.save 链路；
+            # 前端**不能**指定任意 session JSON 路径，也没有第二个站址容器。
+            "/api/navigation-site-suitability": lambda: workflow.set_navigation_site_suitability(payload),
             # 铁塔派生事实（障碍物高度 + 共塔宿主候选）：真实源只在 QGIS 线程读取。
             "/api/tower-obstacle-profiles/evaluate": lambda: (
                 context.evaluate_tower_obstacle_profiles(payload)

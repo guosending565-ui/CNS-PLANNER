@@ -13,6 +13,23 @@ from ..domain.site_planning import REUSE_TIERS
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
 )
+from ..domain.cns_service_contract import (
+    SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, SERVICE_KEY_RADAR_NONCOOPERATIVE,
+)
+from ..domain.cns_service_registry import planner_family_for
+from ..domain.navigation_augmentation import (
+    build_navigation_service_evidence,
+)
+from ..domain.radar_service_evidence import (
+    build_radar_service_evidence, radar_candidate_actions,
+    radar_what_if_service_evidence,
+)
+from .navigation_reference_station_planning_service import (
+    PLANNER_FAMILY as NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY,
+    hypothetical_navigation_sites,
+    navigation_evidence_required,
+    navigation_reference_station_candidate_actions,
+)
 from .site_candidate_actions import candidate_actions
 from .production_write_authority import assert_write_authority
 
@@ -29,6 +46,7 @@ class CorridorSitePlanningService:
 
     def evaluate(self, payload=None):
         assert_write_authority(self, "cns_corridor_site_plan")
+        self.__dict__.pop("_navigation_evidence_cache", None)
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("corridor site planning 请求必须是对象")
@@ -46,16 +64,38 @@ class CorridorSitePlanningService:
             return self._save_missing("P15 cns_corridor_gap_assessment 必须是 current")
         targets, unknown = _targets(baseline_gap)
         unknown.extend(_objective_evidence_required(baseline_gap))
+        ordinary_targets = [
+            item for item in targets
+            if item.get("service_key") != SERVICE_KEY_RADAR_NONCOOPERATIVE
+        ]
         actions = candidate_actions(
-            targets, state.get("existing_cns_facilities") or {},
+            ordinary_targets, state.get("existing_cns_facilities") or {},
             state.get("candidate_sites") or {}, state.get("device_catalog") or {},
             state.get("tower_colocation_candidates") or {},
         )
+        actions.extend(radar_candidate_actions(
+            targets, state.get("radar_surveillance_layout") or {},
+        ))
+        #: Round C：导航增强站址候选**不**走普通 site × device 笛卡尔积，也**不**用
+        #: radius circle planner；它只由显式的 navigation_site_suitability 站址产生。
+        baseline_navigation_evidence = self._navigation_evidence(state)
+        actions.extend(navigation_reference_station_candidate_actions(
+            targets,
+            existing_facilities=state.get("existing_cns_facilities") or {},
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+            navigation_evidence=baseline_navigation_evidence,
+        ))
+        if baseline_navigation_evidence is not None:
+            unknown.extend(navigation_evidence_required(baseline_navigation_evidence))
+        actions = sorted(actions, key=lambda item: item["action_id"])
         policy = state.get("corridor_site_planning_policy") or normalize_corridor_site_planning_policy()
         selected, trace, all_impacts = [], [], []
         facilities = deepcopy(state.get("existing_cns_facilities") or {})
         current_corridor, current_gap = deepcopy(baseline_corridor), deepcopy(baseline_gap)
         selected_ids = set()
+        selected_radar_actions = []
+        selected_navigation_actions = []
         stop_reason = None
         for tier in REUSE_TIERS:
             while True:
@@ -71,6 +111,9 @@ class CorridorSitePlanningService:
                     impact, _, _ = self._what_if(
                         action, facilities, current_gap, targets,
                         iteration=len(selected) + 1,
+                        radar_actions=selected_radar_actions,
+                        navigation_actions=selected_navigation_actions,
+                        baseline_navigation_evidence=baseline_navigation_evidence,
                     )
                     evaluated.append(impact)
                     all_impacts.append(deepcopy(impact))
@@ -79,8 +122,19 @@ class CorridorSitePlanningService:
                     break
                 winner = ranked[0]
                 action, impact = winner["action"], winner["impact"]
-                facilities = _apply_cumulative_action(facilities, action)
-                current_corridor, current_gap = self._rerun(facilities)
+                if action.get("planner_family") == "directional_radar":
+                    selected_radar_actions.append(deepcopy(action))
+                elif action.get("planner_family") == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
+                    # 导航站是 caller-owned 假想 provider：**不**写入正式 ExistingCNS，
+                    # 也不并入 facilities，只作为重算 P14/P15 的显式输入累积。
+                    selected_navigation_actions.append(deepcopy(action))
+                else:
+                    facilities = _apply_cumulative_action(facilities, action)
+                current_corridor, current_gap = self._rerun(
+                    facilities, radar_actions=selected_radar_actions,
+                    navigation_actions=selected_navigation_actions,
+                    baseline_navigation_evidence=baseline_navigation_evidence,
+                )
                 selected_ids.add(action["action_id"])
                 chosen = {
                     **deepcopy(action), "impact": deepcopy(impact),
@@ -101,10 +155,22 @@ class CorridorSitePlanningService:
             if stop_reason:
                 break
         final_facilities = deepcopy(state.get("existing_cns_facilities") or {})
+        final_radar_actions = []
+        final_navigation_actions = []
         for action in selected:
-            final_facilities = _apply_cumulative_action(final_facilities, action)
+            family = action.get("planner_family")
+            if family == "directional_radar":
+                final_radar_actions.append(deepcopy(action))
+            elif family == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
+                final_navigation_actions.append(deepcopy(action))
+            else:
+                final_facilities = _apply_cumulative_action(final_facilities, action)
         final_corridor, final_gap = (
-            self._rerun(final_facilities) if selected
+            self._rerun(
+                final_facilities, radar_actions=final_radar_actions,
+                navigation_actions=final_navigation_actions,
+                baseline_navigation_evidence=baseline_navigation_evidence,
+            ) if selected
             else (deepcopy(baseline_corridor), deepcopy(baseline_gap))
         )
         consistency = (
@@ -167,7 +233,10 @@ class CorridorSitePlanningService:
         self.session.save()
         return self.snapshot()
 
-    def _what_if(self, action, facilities, before_gap, targets, iteration):
+    def _what_if(
+        self, action, facilities, before_gap, targets, iteration, radar_actions=None,
+        navigation_actions=None, baseline_navigation_evidence=None,
+    ):
         eligibility = action.get("eligibility") or {}
         if eligibility.get("status") != "eligible":
             return ({
@@ -178,7 +247,26 @@ class CorridorSitePlanningService:
                 "reasons": deepcopy(eligibility.get("reasons") or []),
                 "evidence": [], "regressions": [],
             }, None, None)
-        after_corridor, after_gap = self._rerun(_apply_cumulative_action(facilities, action))
+        family = action.get("planner_family")
+        if family == "directional_radar":
+            after_corridor, after_gap = self._rerun(
+                facilities, radar_actions=[*(radar_actions or []), action],
+                navigation_actions=navigation_actions,
+                baseline_navigation_evidence=baseline_navigation_evidence,
+            )
+        elif family == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
+            after_corridor, after_gap = self._rerun(
+                facilities, radar_actions=radar_actions,
+                navigation_actions=[*(navigation_actions or []), action],
+                baseline_navigation_evidence=baseline_navigation_evidence,
+            )
+        else:
+            after_corridor, after_gap = self._rerun(
+                _apply_cumulative_action(facilities, action),
+                radar_actions=radar_actions,
+                navigation_actions=navigation_actions,
+                baseline_navigation_evidence=baseline_navigation_evidence,
+            )
         impact = _impact(action, before_gap, after_gap, targets)
         impact.update({
             "iteration": iteration,
@@ -193,14 +281,61 @@ class CorridorSitePlanningService:
         })
         return impact, after_corridor, after_gap
 
-    def _rerun(self, facilities):
+    def _navigation_evidence(self, state, navigation_actions=None):
+        """构造 navigation augmentation 证据；未显式要求该服务时返回 ``None``。
+
+        P16 的 what-if 会对同一批候选反复重跑，因此同一组导航动作的证据在**一次
+        evaluate 内**缓存复用（证据只依赖 state 与动作集合，是确定性纯函数）。
+        """
+
+        key = tuple(sorted(str(item.get("action_id")) for item in navigation_actions or []))
+        cache = self.__dict__.setdefault("_navigation_evidence_cache", {})
+        if key and key in cache:
+            return deepcopy(cache[key])
+        evidence = build_navigation_service_evidence(
+            state.get("required_cns") or {},
+            route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
+            existing_facilities=state.get("existing_cns_facilities") or {},
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+        )
+        if evidence is not None and navigation_actions:
+            _, evidence = hypothetical_navigation_sites(evidence, navigation_actions)
+        if key:
+            cache[key] = deepcopy(evidence)
+        return evidence
+
+    def _rerun(
+        self, facilities, radar_actions=None, navigation_actions=None,
+        baseline_navigation_evidence=None,
+    ):
+        radar_evidence = None
+        if radar_actions:
+            radar_evidence = radar_what_if_service_evidence(
+                self.session.state.get("required_cns") or {},
+                self.session.state.get("radar_surveillance_layout") or {},
+                radar_actions,
+            )
+        navigation_evidence = baseline_navigation_evidence
+        if navigation_evidence is None:
+            # 与正式 P14 同一口径：显式要求该服务才构造证据（否则保持 legacy shape）。
+            navigation_evidence = self._navigation_evidence(self.session.state)
+        if navigation_actions:
+            navigation_evidence = self._navigation_evidence(
+                self.session.state, navigation_actions,
+            )
         return rerun_corridor_chain(
             self.session.state, self.corridor_model,
             self.corridor_gap_analyzer, facilities,
+            radar_service_evidence=radar_evidence,
+            navigation_service_evidence=navigation_evidence,
         )
 
 
-def rerun_corridor_chain(state, corridor_model_prototype, corridor_gap_prototype, facilities):
+def rerun_corridor_chain(
+    state, corridor_model_prototype, corridor_gap_prototype, facilities,
+    *, radar_service_evidence=None, navigation_service_evidence=None,
+):
     """Run the existing P14→P15 chain on caller-owned working data."""
     profile = AircraftCNSProfileCatalog.find(
         state.get("aircraft_profiles") or {}, state.get("selected_aircraft_profile_id") or "",
@@ -210,6 +345,11 @@ def rerun_corridor_chain(state, corridor_model_prototype, corridor_gap_prototype
         (state.get("cns_corridor_assessment") or {}).get("parameters")
         or getattr(corridor_model_prototype, "parameters", {})
     )
+    if radar_service_evidence is None:
+        radar_service_evidence = build_radar_service_evidence(
+            state.get("required_cns") or {}, state.get("radar_surveillance_layout") or {},
+            route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
+        )
     corridor = corridor_model.evaluate(
         state.get("operational_routes") or [], state.get("spatial_3d") or {},
         state.get("grid") or {}, state.get("grid_attributes") or {},
@@ -221,6 +361,8 @@ def rerun_corridor_chain(state, corridor_model_prototype, corridor_gap_prototype
         #: 否则 what-if 的 surface 判定会与基线不一致。
         surface_class_provider=surface_class_provider_for(state),
         surface_facts_fingerprint=surface_facts_fingerprint_for(state),
+        radar_service_evidence=radar_service_evidence,
+        navigation_service_evidence=navigation_service_evidence,
     )
     analyzer = corridor_gap_prototype.__class__(
         (state.get("cns_corridor_gap_assessment") or {}).get("parameters")
@@ -275,7 +417,10 @@ def _targets(assessment):
                 code = str(entry.get("subsystem") or "")
                 surface_services = [
                     item for item in entry.get("services") or []
-                    if isinstance(item, dict) and item.get("surface_dependent") is True
+                    if isinstance(item, dict) and (
+                        item.get("surface_dependent") is True
+                        or item.get("supports_site_planning") is True
+                    )
                     and str(item.get("service_key") or "")
                 ]
                 # 只有**确实存在未满足**的 surface-dependent service 时才切换到 service 口径；
@@ -319,7 +464,7 @@ def _targets(assessment):
 
 
 def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, unknown):
-    """由 surface-dependent service evidence 建立 service-level targets。"""
+    """由 surface-dependent / site-planned service evidence 建立 service-level targets。"""
 
     targets = []
     for service in surface_services:
@@ -327,6 +472,11 @@ def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, u
         target_id = corridor_target_id(route_id, voxel_id, key)
         status = str(service.get("status") or "unknown")
         if status == "satisfied":
+            continue
+        if key == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
+            _navigation_target(
+                targets, unknown, route_id, voxel_id, code, voxel, entry, service, target_id,
+            )
             continue
         required = service.get("required_distinct_site_count")
         current = service.get("distinct_site_count")
@@ -352,6 +502,7 @@ def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, u
             "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
             "grid_id": voxel.get("grid_id"), "altitude_layer_id": voxel.get("altitude_layer_id"),
             "subsystem": code, "service_key": key, "target_scope": TARGET_SCOPE_SERVICE,
+            "planner_family": planner_family_for(key),
             "surface_class": service.get("surface_class") or entry.get("surface_class"),
             "counting_basis": "distinct_site_id",
             "required_units": required_units,
@@ -375,6 +526,76 @@ def _confirmed_units(entry, required_units):
     return None if value is None else min(required_units, int(value))
 
 
+def _navigation_target(targets, unknown, route_id, voxel_id, code, voxel, entry, service, target_id):
+    """``N:rtk_augmentation`` 的 P16 target：**只有站址缺口才生成建站 target**。
+
+    Round C 冻结：
+
+    * ``gap_causes`` 含 ``reference_station_deficit`` ⇒ 生成
+      ``navigation_reference_station`` planner family 的建站 target（``remaining_units``
+      只表示**站址**缺口，"correction delivery 未解决"另由 ``delivery_resolved = false``
+      如实记录）；
+    * 只有 ``correction_delivery_deficit``（站址几何已 satisfied）⇒ **绝不**生成导航站
+      target，只登记 ``dependency_only = true`` 与
+      ``recommended_dependency_service = C:communication``，把建设动作交给
+      Communication planner；
+    * 其它（``unknown`` / 证据不足）⇒ 只登记 unknown evidence，绝不自动建站。
+    """
+
+    causes = list(service.get("gap_causes") or [])
+    status = str(service.get("status") or "unknown")
+    required = service.get("required_distinct_site_count")
+    current = service.get("distinct_site_count")
+    if status != "confirmed_deficit" or "reference_station_deficit" not in causes:
+        reasons = list(service.get("reasons") or [])
+        reasons.append(
+            "该 voxel 的 Navigation augmentation 缺口不含已确认的 reference-station 站址"
+            "缺口：只登记 unknown / 依赖证据，绝不自动建导航站"
+        )
+        unknown.append({
+            "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+            "subsystem": code, "service_key": SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+            "dependency_only": "reference_station_deficit" not in causes
+            and "correction_delivery_deficit" in causes,
+            "recommended_dependency_service": (
+                "C:communication" if "correction_delivery_deficit" in causes else None
+            ),
+            "reasons": reasons,
+        })
+        return
+    if required is None or current is None:
+        unknown.append({
+            "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+            "subsystem": code, "service_key": SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+            "reasons": ["Navigation augmentation 缺少 required/current distinct-site 证据"],
+        })
+        return
+    required_units = max(1, int(required))
+    current_units = min(required_units, int(current))
+    targets.append({
+        "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+        "grid_id": voxel.get("grid_id"), "altitude_layer_id": voxel.get("altitude_layer_id"),
+        "subsystem": code, "service_key": SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+        "target_scope": TARGET_SCOPE_SERVICE,
+        "planner_family": planner_family_for(SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION),
+        "surface_class": service.get("surface_class") or entry.get("surface_class"),
+        "counting_basis": "distinct_site_id",
+        "required_units": required_units,
+        "current_units": current_units,
+        "remaining_units": max(0, required_units - current_units),
+        "distinct_site_ids": deepcopy(service.get("distinct_site_ids")),
+        "gap_causes": causes,
+        "delivery_resolved": "correction_delivery_deficit" not in causes,
+        "delivery_status": service.get("delivery_status"),
+        "delivery_service_key": service.get("delivery_service_key"),
+        "max_reference_baseline_m": service.get("max_reference_baseline_m"),
+        "discretized_volume_proxy_m3": voxel.get("discretized_volume_proxy_m3"),
+        "nearest_route_offset_m": voxel.get("nearest_route_offset_m"),
+        "causes": deepcopy(entry.get("causes") or []),
+        "source_status": entry.get("combined_status"),
+    })
+
+
 def _service_confirmed_units(entry, required_units):
     """service-level target 的 current units：**只**取物理 distinct-site 计数。
 
@@ -396,9 +617,33 @@ def _service_confirmed_units(entry, required_units):
 
 
 def _units_for_target(target, entry):
+    if not isinstance(entry, dict):
+        return None
+    if target.get("service_key") == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
+        return _navigation_confirmed_units(target, entry)
     if target.get("service_key"):
         return _service_confirmed_units(entry, target.get("required_units"))
     return _confirmed_units(entry, target["required_units"])
+
+
+def _navigation_confirmed_units(target, entry):
+    """Navigation augmentation target 的 current units：**只**计已确认的站址基线几何。
+
+    Correction delivery（``C:communication``）**绝不**计入导航站选址收益：纯通信缺口
+    的 voxel 根本不会产生导航建站 target。这里只读 ``distinct_site_count``——**不**读
+    ``gap_causes``，因为"缺口刚被补上"的那一刻 ``gap_causes`` 已经清空，若依赖它就会
+    把真实收益误判成 0。缺物理站址证据（``None``）时返回 ``None``（fail-closed）。
+    """
+
+    if not isinstance(entry, dict):
+        return None
+    if str(entry.get("geometry_status") or "") == "unknown":
+        return None
+    counted = entry.get("distinct_site_count")
+    if counted is None:
+        return None
+    required = max(1, int(target.get("required_units") or 1))
+    return min(required, int(counted))
 
 
 def _impact(action, before, after, targets):
@@ -545,6 +790,12 @@ def _apply_cumulative_action(existing, action):
 
     collection = deepcopy(existing or {})
     collection.setdefault("items", [])
+    if action.get("planner_family") == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
+        #: Round C：导航站 action **绝不**写进正式 ExistingCNS / 工作设施集合。
+        #: 它是 caller-owned 假想 provider，只经
+        #: :func:`...navigation_reference_station_planning_service.hypothetical_navigation_sites`
+        #: 作为重算 P14/P15 的显式输入累积。
+        return collection
     identity_metadata = {"hypothetical_action_id": action["action_id"], "p16_proposal_only": True}
     host = deepcopy(action.get("host")) if isinstance(action.get("host"), dict) else None
     planning_origin = (

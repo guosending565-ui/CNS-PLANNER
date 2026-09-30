@@ -121,7 +121,7 @@ export function updateCnsServiceLegend({$,flow}){
   const target=$('cnsServiceLegend');
   if(!target)return false;
   const lines=cnsServiceLegendModel();
-  const open=['cnsCommunicationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer']
+  const open=['cnsCommunicationLayer','cnsRidLayer','cnsNavigationLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer']
     .some(id=>$(id)?.checked===true);
   target.hidden=!open;
   if(!open)return false;
