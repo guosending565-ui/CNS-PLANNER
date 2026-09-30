@@ -126,6 +126,7 @@ def test_rtk_registry_contains_no_invented_distance_or_site_count():
     }
     assert not ({"radius_m", "radius_by_surface", "baseline_m", "max_reference_baseline_m",
                  "required_distinct_site_count"} & set(entry))
+    assert entry["planning_maturity"] == "engineering_planning_baseline"
 
 
 def test_legacy_required_cns_shape_does_not_gain_services_or_new_requirements():

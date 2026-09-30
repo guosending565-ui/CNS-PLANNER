@@ -702,7 +702,7 @@ export function navigationBaselineModel(flow, {selectedActions = null} = {}) {
           });
           continue;
         }
-        const installed = navigationReferenceStationInstalled(suitability, origin);
+        const installed = navigationReferenceStationInstalled(suitability, origin, item);
         sites.push({
           kind: installed ? 'existing_reference_station' : 'proposed_reference_station',
           service_key: 'N:rtk_augmentation',

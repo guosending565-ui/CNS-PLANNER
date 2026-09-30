@@ -631,8 +631,11 @@ test('K: a plain tower without confirmed suitability is never an existing statio
 test('L: reference_station_installed separates installed stations from planning candidates', () => {
   assert.equal(navigationReferenceStationInstalled({reference_station_installed: true}, 'candidate_site'), true);
   assert.equal(navigationReferenceStationInstalled({reference_station_installed: false}, 'existing_cns_facility'), false);
-  assert.equal(navigationReferenceStationInstalled({}, 'existing_cns_facility'), true);
+  assert.equal(navigationReferenceStationInstalled({}, 'existing_cns_facility'), false);
   assert.equal(navigationReferenceStationInstalled({}, 'tower_colocation_host'), false);
+  assert.equal(navigationReferenceStationInstalled({}, 'existing_cns_facility', {
+    devices: [{service_key: 'N:rtk_augmentation', status: 'active'}],
+  }), true);
 
   const model = navigationBaselineModel(rounddFlow());
   const kinds = model.sites.map(site => site.kind).sort();

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
+from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1, _delivery_dependency
 from cns_planner.algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from cns_planner.application.corridor_site_planning_service import _targets
 from cns_planner.application.navigation_reference_station_planning_service import (
@@ -722,9 +722,10 @@ def test_u_available_subsystems_n_alone_is_not_suitability():
     ] is False
 
 
-def test_unconfirmed_suitability_stays_unknown_not_confirmed_deficit():
+def test_unconfirmed_suitability_is_planning_evidence_not_current_service_authority():
     pending = tower_colocation_site(
-        "T1", 122.0, 30.0, suitability_value=suitability(planning_use=False),
+        # 与当前 voxel 完全无关且距离很远的未确认候选站。
+        "T1", 130.0, 40.0, suitability_value=suitability(planning_use=False),
     )
     evidence = site_evidence(towers={"items": [pending]})
     assert evidence["providers"] == []
@@ -735,8 +736,53 @@ def test_unconfirmed_suitability_stays_unknown_not_confirmed_deficit():
         evidence, "R1", {"voxel_id": "V1", "longitude": 122.0, "latitude": 30.0},
         delivery={"service_key": COMMUNICATION, "status": "satisfied"},
     )
-    assert entry["status"] == "unknown"
-    assert entry["geometry_status"] == "unknown"
+    assert entry["status"] == "confirmed_deficit"
+    assert entry["geometry_status"] == "confirmed_deficit"
+    assert entry["gap_causes"] == [CAUSE_REFERENCE_STATION_DEFICIT]
+
+
+def test_existing_facility_requires_explicit_installed_fact_to_count_as_provider():
+    missing = existing_facility(
+        "F-MISSING", "S-MISSING", 122.0, 30.0,
+        suitability_value=suitability(),
+    )
+    providers, unconfirmed, candidates = collect_navigation_sites(
+        existing_facilities={"items": [missing]},
+    )
+    assert providers == [] and unconfirmed == []
+    assert [item["distinct_site_id"] for item in candidates] == ["site:S-MISSING"]
+
+    installed = existing_facility(
+        "F-INSTALLED", "S-INSTALLED", 122.0, 30.0,
+        suitability_value=suitability(reference_station_installed=True),
+    )
+    providers, unconfirmed, candidates = collect_navigation_sites(
+        existing_facilities={"items": [installed]},
+    )
+    assert [item["distinct_site_id"] for item in providers] == ["site:S-INSTALLED"]
+    assert unconfirmed == [] and candidates == []
+
+
+def test_canonical_rtk_device_is_an_explicit_installed_provider_fact():
+    facility = existing_facility(
+        "F-CANONICAL", "S-CANONICAL", 122.0, 30.0,
+        suitability_value=suitability(),
+    )
+    facility["devices"] = [{
+        "device_id": "RTK-1", "subsystem": "N", "service_key": RTK, "status": "active",
+    }]
+    providers, _, candidates = collect_navigation_sites(
+        existing_facilities={"items": [facility]},
+    )
+    assert [item["distinct_site_id"] for item in providers] == ["site:S-CANONICAL"]
+    assert candidates == []
+
+
+def test_planning_candidate_changes_do_not_change_current_service_fingerprint():
+    first = planning_evidence(sites=[not_installed_tower("T1", 122.0, 30.0)])
+    second = planning_evidence(sites=[not_installed_tower("T2", 130.0, 40.0)])
+    assert first["planning_candidates"] != second["planning_candidates"]
+    assert first["input_fingerprint"] == second["input_fingerprint"]
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +814,45 @@ def test_p14_only_explicit_rtk_service_produces_evidence():
     assert "service_redundancy" not in legacy_n or all(
         item.get("service_key") != RTK for item in legacy_n.get("service_redundancy") or []
     )
+
+
+def test_navigation_inherits_delivery_target_and_fingerprint_from_communication_bucket():
+    communication = {
+        "subsystem": "C",
+        "planning_status": "confirmed_deficit",
+        "service_redundancy": [{
+            "service_key": COMMUNICATION,
+            "status": "satisfied",
+            "target_id": "R1|V1|C:communication",
+            "input_fingerprint": "communication-service-fingerprint",
+        }],
+    }
+    dependency = _delivery_dependency([communication], [], {})
+    assert dependency["target_id"] == "R1|V1|C:communication"
+    assert dependency["evidence_fingerprint"] == "communication-service-fingerprint"
+
+    entry = evidence_for_probe(
+        site_evidence(towers={"items": [tower_colocation_site(
+            "T1", 122.0, 30.0, suitability_value=suitability(),
+        )]}),
+        "R1", {"voxel_id": "V1", "longitude": 122.0, "latitude": 30.0},
+        delivery=dependency,
+    )
+    assert entry["delivery_target_id"] == "R1|V1|C:communication"
+    assert entry["delivery_evidence_fingerprint"] == "communication-service-fingerprint"
+    assert entry["delivery_legacy_fallback"] is False
+
+
+def test_communication_planning_status_fallback_is_explicitly_legacy_only():
+    legacy = _delivery_dependency([{
+        "subsystem": "C", "planning_status": "satisfied",
+        "geometry": {"input_fingerprint": "legacy-geometry"},
+    }], [], {})
+    assert legacy["legacy_fallback"] is True
+    assert legacy["evidence_fingerprint"] == "legacy-geometry"
+    assert _delivery_dependency([{
+        "subsystem": "C", "planning_status": "satisfied", "service_redundancy": [],
+    }], [], {}) is None
 
 
 def test_p15_summarizes_navigation_service_independently():
@@ -805,7 +890,8 @@ def test_p15_summarizes_navigation_service_independently():
     satisfied_corridor = run_p14(
         explicit,
         navigation_evidence=site_evidence(existing={"items": [existing_facility(
-            "F1", "S1", 122.0, 30.0, suitability_value=suitability(),
+            "F1", "S1", 122.0, 30.0,
+            suitability_value=suitability(reference_station_installed=True),
         )]}),
         facilities=communication_facilities(count=2),
     )
@@ -1093,7 +1179,8 @@ def test_p16_end_to_end_adds_navigation_reference_station_and_reruns_chain():
         required_cns=required(planning=planning, communication_required=True),
         # NAV-1 是已确认的现存地面导航增强站；TOWER-2 是尚未使用的已确认共塔候选。
         existing_sites=[existing_facility(
-            "NAV-1", "NAVS-1", 122.0, 30.0, suitability_value=suitability(),
+            "NAV-1", "NAVS-1", 122.0, 30.0,
+            suitability_value=suitability(reference_station_installed=True),
         )],
         tower_sites={"items": [
             tower_colocation_site(
@@ -1133,7 +1220,8 @@ def test_p16_never_adds_navigation_station_for_pure_communication_deficit():
     state = p16_state(
         required_cns=required(planning=ready_planning(), communication_required=True),
         existing_sites=[existing_facility(
-            "NAV-1", "NAVS-1", 122.0, 30.0, suitability_value=suitability(),
+            "NAV-1", "NAVS-1", 122.0, 30.0,
+            suitability_value=suitability(reference_station_installed=True),
         )],
         tower_sites={"items": [tower_colocation_site(
             "T2", 122.02, 30.0, suitability_value=suitability(), tower_id="TOWER-2",
@@ -1159,7 +1247,8 @@ def test_p16_navigation_action_never_enters_formal_facilities_or_device_catalog(
     state = p16_state(
         required_cns=required(planning=planning, communication_required=True),
         existing_sites=[existing_facility(
-            "NAV-1", "NAVS-1", 122.0, 30.0, suitability_value=suitability(),
+            "NAV-1", "NAVS-1", 122.0, 30.0,
+            suitability_value=suitability(reference_station_installed=True),
         )],
         tower_sites={"items": [
             tower_colocation_site(

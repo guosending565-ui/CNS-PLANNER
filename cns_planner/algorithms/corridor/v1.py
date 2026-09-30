@@ -446,7 +446,7 @@ def _navigation_augmentation_required(explicit_services):
     )
 
 
-def _delivery_dependency(previous_subsystems, service_redundancy, requirements):
+def _delivery_dependency(previous_subsystems, _service_redundancy, _requirements):
     """取同一 voxel 上 canonical ``C:communication`` 的服务事实作为 delivery 依赖。
 
     只**读取**已经算好的 C 子系统结论，绝不重新计算通信，也绝不因为
@@ -457,8 +457,11 @@ def _delivery_dependency(previous_subsystems, service_redundancy, requirements):
         (item for item in previous_subsystems or [] if item.get("subsystem") == "C"),
         None,
     )
+    communication_services = (
+        communication.get("service_redundancy") or [] if communication is not None else []
+    )
     entry = next(
-        (item for item in service_redundancy or []
+        (item for item in communication_services
          if str(item.get("service_key") or "") == SERVICE_KEY_COMMUNICATION),
         None,
     )
@@ -468,12 +471,18 @@ def _delivery_dependency(previous_subsystems, service_redundancy, requirements):
             return dependency
     if communication is None:
         return None
+    # 只有旧 payload **完全没有** service bucket 时才能降级读取子系统状态。
+    # 新 payload 已声明 bucket 却缺 canonical C service 时必须 fail-closed，
+    # 不得用子系统级 planning_status 冒充服务事实。
+    if "service_redundancy" in communication:
+        return None
     return {
         "service_key": SERVICE_KEY_COMMUNICATION,
         "status": str(communication.get("planning_status") or "unknown"),
         "reason": "communication_subsystem_planning_status_without_service_bucket",
         "target_id": None,
         "evidence_fingerprint": (communication.get("geometry") or {}).get("input_fingerprint"),
+        "legacy_fallback": True,
     }
 
 

@@ -55,8 +55,8 @@ SUITABILITY_FIELDS = (
     "stable_mount_confirmed",
     "backhaul_available",
     #: **Round C 扩展（显式）**：该站址上是否**已经建成**地面导航增强参考站。
-    #: 未声明（``None``）时只有"已有 CNS 设施"来源被视为已建成；共塔 / 候选站址上的
-    #: suitability 确认只表示"获准安装"，**不**等于"已建成"，因此不得在基线里充数。
+    #: 未声明（``None``）时绝不由站址来源推断已建成；只有已有设施中明确的
+    #: canonical ``N:rtk_augmentation`` 设备事实可作为等价的 installed provider 证据。
     "reference_station_installed",
     "source",
     "notes",
@@ -214,7 +214,8 @@ def collect_navigation_sites(
     返回 ``(confirmed, unconfirmed, planning_candidates)``：
 
     * ``confirmed``：**已建成**且 suitability 确认的导航站 → 基线 provider 池；
-    * ``unconfirmed``：声明了 suitability 但未确认 → 保持 ``unknown`` 的证据；
+    * ``unconfirmed``：声明了 suitability 但未确认 → 仅供 P16
+      ``evidence_required`` 使用，不参与 P14/P15 当前服务状态；
     * ``planning_candidates``：suitability 已确认但**尚未建成**的站址 → 只有它们才是
       P16 的建站候选（"获批安装"不等于"已在服务"）。
 
@@ -316,7 +317,7 @@ def _site_entries(collection, origin):
             "planning_unit": REFERENCE_STATION_PLANNING_UNIT,
             "maturity": PLANNING_UNIT_MATURITY,
         }
-        if _reference_station_installed(suitability, origin):
+        if _reference_station_installed(suitability, site, origin):
             provider["reference_station_installed"] = True
             confirmed.append(provider)
         else:
@@ -326,15 +327,23 @@ def _site_entries(collection, origin):
     return confirmed, unconfirmed, not_installed
 
 
-def _reference_station_installed(suitability, origin):
+def _reference_station_installed(suitability, site, origin):
     """该站址上是否**已经建成**地面导航增强参考站（默认 fail-closed）。"""
 
     declared = suitability.get("reference_station_installed")
-    if declared is not None:
-        return declared is True
-    # 未显式声明时：只有"已有 CNS 设施"来源可视为已建成；共塔 / 候选站址上的
-    # suitability 确认只表示"获准安装"，绝不在基线 provider 池里充数。
-    return origin == "existing_cns_facility"
+    if declared is True:
+        return True
+    # ``existing_cns_facility`` 只是站址来源，不是参考站已安装事实。
+    # 旧数据若已有明确的 canonical RTK 设备，该设备列表本身就是 installed
+    # provider 事实；停用/失效设备不计入。其余情况一律按未安装处理。
+    if origin != "existing_cns_facility":
+        return False
+    return any(
+        str(device.get("service_key") or "") == SERVICE_KEY
+        and str(device.get("status") or "active") in ("active", "passed", "installed")
+        for device in (site or {}).get("devices") or []
+        if isinstance(device, dict)
+    )
 
 
 def _distinct_site_id(site):
@@ -451,7 +460,6 @@ def build_navigation_service_evidence(
             "type": {"service_subtype": "navigation_augmentation", "technology": "gnss_rtk"},
             "routes": routes,
             "providers": providers,
-            "planning_candidates": planning_candidates,
             "model": BASELINE_MODEL,
             "planning_unit": REFERENCE_STATION_PLANNING_UNIT,
         },
@@ -577,15 +585,6 @@ def evidence_for_probe(evidence, route_id, probe, *, delivery=None):
     if len(counted) >= required:
         base["geometry_status"] = STATUS_SATISFIED
         base["status"] = STATUS_SATISFIED
-    elif _has_unconfirmed_site_evidence(evidence):
-        # 仍有 suitability **未确认**的候选站：它既不能作为 confirmed eligible
-        # action，也不构成"已确认没有站"的反证 ⇒ 结论保持 unknown（fail-closed），
-        # 绝不把未确认候选当成已确认缺口。
-        base["geometry_status"] = STATUS_UNKNOWN
-        base["status"] = STATUS_UNKNOWN
-        base["evidence_required_reasons"] = [
-            "navigation_site_suitability_unconfirmed_candidates",
-        ]
     else:
         base["geometry_status"] = STATUS_CONFIRMED_DEFICIT
         base["status"] = STATUS_CONFIRMED_DEFICIT
@@ -621,13 +620,6 @@ def _providers_within_baseline(evidence, coordinate, baseline):
             "planning_unit": REFERENCE_STATION_PLANNING_UNIT,
         })
     return sorted(result, key=lambda item: (item["baseline_distance_m"], str(item["distinct_site_id"])))
-
-
-def _has_unconfirmed_site_evidence(evidence):
-    return any(
-        str(provider.get("status") or "") == "unconfirmed_suitability"
-        for provider in (evidence or {}).get("unconfirmed_providers") or []
-    )
 
 
 def _resolve_dependency(base, evidence, delivery):
@@ -671,6 +663,7 @@ def _resolve_dependency(base, evidence, delivery):
         base["delivery_reason"] = dependency.get("reason")
         base["delivery_evidence_fingerprint"] = dependency.get("evidence_fingerprint")
         base["delivery_target_id"] = dependency.get("target_id")
+        base["delivery_legacy_fallback"] = dependency.get("legacy_fallback") is True
 
     delivery_status = base["delivery_status"]
     causes = []
@@ -705,7 +698,7 @@ def _resolve_dependency(base, evidence, delivery):
     elif geometry == STATUS_SATISFIED:
         base["status"] = STATUS_SATISFIED
     else:
-        # 站址几何仍未确认（例如 suitability 未确认的候选站、或 policy 未确认）：
+        # 站址几何仍未确认（例如 policy 未确认）：
         # 即使 delivery 已满足，也**绝不**判成 satisfied（fail-closed）。
         base["status"] = STATUS_UNKNOWN
     return _finish(base, evidence)

@@ -414,16 +414,19 @@ export function navigationSuitabilityOf(site) {
  *
  * 语义（与 backend 一致，因此地图线型与正式判定不会打架）：
  *  * 显式 ``reference_station_installed`` 优先；
- *  * 未声明时，只有 ``existing_cns_facility`` 来源可视为**已建成**；
- *    共塔 / 候选站址上的适用性确认只表示"获准安装"，**不**等于已建成。
+ *  * 未声明时一律不由 ``planningOrigin`` 单独推断已建成；仅已有设施中明确的
+ *    canonical ``N:rtk_augmentation`` active/installed device 可作为等价事实。
  *
  * 它只决定地图用实线还是虚线，**不**参与任何业务判定（判定唯一来自 backend）。
  */
-export function navigationReferenceStationInstalled(suitability, planningOrigin) {
+export function navigationReferenceStationInstalled(suitability, planningOrigin, site = null) {
   const declared = suitability?.reference_station_installed;
   if (declared === true) return true;
-  if (declared === false) return false;
-  return String(planningOrigin ?? '').trim() === 'existing_cns_facility';
+  if (String(planningOrigin ?? '').trim() !== 'existing_cns_facility') return false;
+  return (site?.devices || []).some(device =>
+    String(device?.service_key || '') === 'N:rtk_augmentation'
+    && ['active', 'passed', 'installed'].includes(String(device?.status || 'active'))
+  );
 }
 
 /** service_key → 四服务正式中文名（未登记时退回既有词表，绝不编造）。 */

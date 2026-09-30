@@ -50,7 +50,7 @@ SERVICE_REGISTRY = {
         "planner_family": "navigation_reference_station",
         "provider_model": "reference_station_network",
         "requirement_semantics": "explicit_ground_augmentation_requirement",
-        "planning_maturity": "contract_only_pending_confirmation",
+        "planning_maturity": "engineering_planning_baseline",
         "dependencies": [SERVICE_KEY_COMMUNICATION],
         "surface_dependent": False,
         "supports_site_planning": True,
