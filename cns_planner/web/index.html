@@ -91,7 +91,7 @@
       <div class="layer-group-title">规划结果</div>
       <div class="layer-row"><span><i class="swatch" style="background:#123a5c"></i> 候选航路（当前规划结果）</span><input type="checkbox" id="layeredCandidateLayer" aria-label="候选航路 current candidate"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#2f9e6f"></i> 高度层可行域（当前高度层粗判掩码）</span><input type="checkbox" id="layeredFeasibilityLayer" aria-label="当前高度层粗判可行域掩码"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> 雷达监视规划（方向性扇区与覆盖着色）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="雷达监视规划"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#0d3b66"></i> Radar 非合作补充覆盖（方向性扇区与覆盖着色；求解不可行时不画任何扇区）</span><input type="checkbox" id="radarSurveillanceLayer" aria-label="Radar 非合作补充覆盖"></div>
       <!-- 旧版/研究对照：只允许标注为"旧版试算航路 / 研究对照"，永不叫"运行航路 / 正式航路"。 -->
       <div class="layer-row layer-compat"><span><i class="swatch" style="background:#4c6ef5"></i> 旧版试算航路（研究对照）</span><input type="checkbox" id="v3CandidateLayer" aria-label="旧版试算航路研究对照"></div>
      </div>
@@ -99,11 +99,11 @@
       <div class="layer-group-title">CNS</div>
       <div class="layer-row"><span><i class="swatch" style="background:#0f8a78"></i> Communication 规划覆盖（全向，按 surface 半径）</span><input type="checkbox" id="cnsCommunicationLayer" aria-label="Communication 规划覆盖"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#b8840f"></i> 导航增强工程基线范围（实线：已建成参考站 / 虚线：规划候选站）</span><input type="checkbox" id="cnsNavigationLayer" aria-label="导航增强工程基线范围"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#0f8a78"></i> RID 合作监视规划覆盖（全向；虚线为海上最大规划半径）</span><input type="checkbox" id="cnsRidLayer" aria-label="RID 合作监视规划覆盖"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#0f8a78"></i> RID cooperative protection（合作监视保护范围；虚线为海上最大规划半径）</span><input type="checkbox" id="cnsRidLayer" aria-label="RID cooperative protection 合作监视保护范围"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#c62828"></i> CNS service 缺口（按 service 状态着色）</span><input type="checkbox" id="cnsServiceGapLayer" aria-label="CNS service 缺口"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#d12f8a"></i> CNS 设施规划（P16 选中动作与残余目标）</span><input type="checkbox" id="cnsFacilityPlanLayer" aria-label="CNS 设施规划"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#1f6f8b"></i> Route Protection Corridor（水平保护走廊）</span><input type="checkbox" id="routeProtectionCorridorLayer" aria-label="水平航路保护走廊"></div>
-      <div class="layer-row"><span><i class="swatch" style="background:#8b1f6f"></i> Surveillance Protection Coverage（监视保护覆盖）</span><input type="checkbox" id="surveillanceProtectionLayer" aria-label="监视保护覆盖"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#8b1f6f"></i> Surveillance Protection Coverage（监视保护覆盖：合作 RID / 非合作 Radar 分层着色）</span><input type="checkbox" id="surveillanceProtectionLayer" aria-label="监视保护覆盖"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#7256a1"></i> 陆海分类（Surface Facts，格心代表点）</span><input type="checkbox" id="surfaceFactsLayer" aria-label="陆海分类图层"></div>
       <div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS 设施</span><input type="checkbox" id="existingCnsLayer"></div>
       <div class="layer-row"><span><i class="swatch candidate-site"></i>候选站址</span><input type="checkbox" id="candidateSiteLayer"></div>

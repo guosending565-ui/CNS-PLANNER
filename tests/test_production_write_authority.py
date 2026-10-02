@@ -239,6 +239,16 @@ def seed_review(workflow):
     if selected is not None:
         selected["cruise_speed_mps"] = 20.0
     prepare_p17(workflow, source="test_production_write_authority fixture")
+    #: Round 2.6：Confirm 还会校验**该 variant 自己**的 P17 投影门禁。本测试只验证
+    #: 写权限分离，因此这里用生产代码把每个 variant 的投影结论按真实规则填好
+    #: （两个 variant 都没有 action ⇒ 评估对象就是当前权威状态）。
+    from cns_planner.application.plan_review_service import PlanReviewService
+
+    def _variant_projection(actions):
+        return PlanReviewService._variant_p17_projection(
+            state, actions, None, None, None,
+        )
+
     review = {
         "review_id": "PR-B2B1", "status": "current", "model_scope": "engineering_review",
         "baseline_fingerprint": review_baseline_fingerprint(state),
@@ -251,6 +261,7 @@ def seed_review(workflow):
                     "status": "evaluated", "actions": [],
                     "confirmation_gate": {"status": "ready_for_confirmation"},
                     "planned_p14_fingerprint": None, "planned_p15_fingerprint": None,
+                    "continuous_service_projection": _variant_projection([]),
                 },
             },
             {
@@ -260,6 +271,7 @@ def seed_review(workflow):
                     "status": "evaluated", "actions": [],
                     "confirmation_gate": {"status": "ready_for_confirmation"},
                     "planned_p14_fingerprint": None, "planned_p15_fingerprint": None,
+                    "continuous_service_projection": _variant_projection([]),
                 },
             },
         ],

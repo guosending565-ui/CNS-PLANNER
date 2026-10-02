@@ -13,6 +13,7 @@ from ..domain.plan_review import (
 from ..domain.closed_loop import _interval_transitions, _subsystem_index
 from ..domain.reporting import mark_active_report_stale
 from .closed_loop_service import rerun_p7_p10_chain
+from .continuous_service_service import STEP6_ALLOWED_ACCEPTABILITY
 from .corridor_site_planning_service import rerun_corridor_chain
 from .production_write_authority import assert_write_authority
 
@@ -22,7 +23,7 @@ class PlanReviewService:
 
     def __init__(self, session, coverage_model, capability_model, timeline_model,
                  gap_model, corridor_model, corridor_gap_analyzer, snapshot,
-                 invalidation=None, continuous_service=None):
+                 invalidation=None, continuous_service=None, plan_projection=None):
         self.session, self.snapshot = session, snapshot
         self.coverage_model, self.capability_model = coverage_model, capability_model
         self.timeline_model, self.gap_model = timeline_model, gap_model
@@ -31,6 +32,10 @@ class PlanReviewService:
         #: Round 2.5：P17 连续服务可接受性的门禁投影。它为 None 时（旧装配）P18 不施加
         #: P17 门禁——但生产组合根一定会注入它。
         self.continuous_service = continuous_service
+        #: Round 2.6：投影态构建器。每个 Plan Variant 都要用它算出**自己的**
+        #: post-plan P17 结论（不再复制权威结论）。为 None 时该变体如实记录
+        #: ``evaluated_for_this_variant=false``（fail-closed，绝不冒充）。
+        self.plan_projection = plan_projection
 
     def snapshot_result(self):
         return {
@@ -38,6 +43,17 @@ class PlanReviewService:
             "confirmed_cns_plan": deepcopy(self.session.state.get("confirmed_cns_plan") or empty_confirmed_plan()),
             #: Round 2.5：P17 的 Step6 门禁投影（只读；前端据此显示"是否放行 + 强制披露"）。
             "continuous_service_gate": self._p17_gate(raise_on_block=False),
+            #: Round 2.6：每个 variant **自己的** P17 投影门禁（Step6 实际依据）。
+            "variant_continuous_service_gates": self._variant_gates(),
+        }
+
+    def _variant_gates(self):
+        review = self.session.state.get("cns_plan_review") or {}
+        return {
+            str(variant.get("variant_id")): self._variant_p17_gate(
+                variant, raise_on_block=False,
+            )
+            for variant in review.get("variants") or []
         }
 
     def _p17_gate(self, *, raise_on_block=True):
@@ -46,6 +62,9 @@ class PlanReviewService:
         * ``fully_satisfied`` / ``acceptable_with_managed_gap`` ⇒ 放行
           （managed_gap 必须在 review/report 中强制披露，绝不表述为"全覆盖"）；
         * ``unacceptable`` / ``unknown``（含"尚未评估"/"已 stale"）⇒ 阻止。
+
+        Round 2.6：权威 ``status`` 已经是 **post-plan 投影态**结论；``baseline_status``
+        与投影结果一并返回，Step6 必须同时显示两层。
         """
 
         if self.continuous_service is None:
@@ -63,6 +82,46 @@ class PlanReviewService:
             gate = {**gate, "blocking_reason": reason}
             if raise_on_block:
                 raise ValueError(f"P18 需要可接受的 P17 结论：{reason}")
+        return gate
+
+    def _variant_p17_gate(self, variant, *, raise_on_block=True):
+        """**变体级** P17 门禁（Round 2.6）。
+
+        Step6 评审必须依据【该 variant 实施后的 P17】，而不是复制当前权威 P17。
+        ``evaluated_for_this_variant != true`` 时一律 fail-closed（阻止）。
+        """
+
+        projection = (
+            (variant.get("evaluation") or {}).get("continuous_service_projection") or {}
+        )
+        gate = projection.get("variant_specific_gate") or {
+            "status": "unknown", "confirmation_allowed": False,
+            "variant_specific": True,
+        }
+        gate = {
+            **gate,
+            "allowed_statuses": list(STEP6_ALLOWED_ACCEPTABILITY),
+            "evaluated_for_this_variant": projection.get("evaluated_for_this_variant") is True,
+            "baseline_status": projection.get("baseline_status"),
+            "projected_status": projection.get("projected_status"),
+            "managed_gap_count": int(projection.get("projected_managed_gap_count") or 0),
+            "limitations": deepcopy(projection.get("limitations") or []),
+            "requires_managed_gap_disclosure": bool(
+                projection.get("disclosure_lines")
+            ),
+            "disclosure_lines": deepcopy(projection.get("disclosure_lines") or []),
+        }
+        if gate.get("confirmation_allowed") is not True:
+            status = str(gate.get("status") or "unknown")
+            reason = (
+                "本 variant 的 P17 投影结论不可用或为 unknown（证据缺失）——fail-closed，"
+                "不得进入正式确认"
+                if status in ("unknown", "stale", "not_calculated")
+                else f"本 variant 实施后的 P17 投影结论为 {status}——不可接受，不得确认"
+            )
+            gate = {**gate, "blocking_reason": reason}
+            if raise_on_block:
+                raise ValueError(f"P18 需要该 variant 自身可接受的 P17 投影结论：{reason}")
         return gate
 
     def initialize(self, payload=None):
@@ -149,6 +208,9 @@ class PlanReviewService:
         p17_gate = self._p17_gate()
         review = self._current_review()
         variant = self._variant(review, payload.get("variant_id") or review.get("selected_variant_id"))
+        #: Round 2.6：确认还必须通过**该 variant 自己**的 P17 投影门禁
+        #: （Step6 依据【该 variant 实施后的 P17】，而不是权威 P17）。
+        variant_p17_gate = self._variant_p17_gate(variant)
         evaluation = variant.get("evaluation") or {}
         gate = evaluation.get("confirmation_gate") or {}
         acknowledgement = None
@@ -187,7 +249,16 @@ class PlanReviewService:
             },
             "acknowledgements": [acknowledgement] if acknowledgement else [],
             "continuous_service_gate": deepcopy(p17_gate),
-            "managed_gap_disclosure": deepcopy(p17_gate.get("disclosure_lines") or []),
+            #: Round 2.6：被确认的方案携带**它自己的**投影态 P17 结论与门禁。
+            "variant_continuous_service_gate": deepcopy(variant_p17_gate),
+            "variant_continuous_service_projection": deepcopy(
+                evaluation.get("continuous_service_projection") or {}
+            ),
+            "managed_gap_disclosure": deepcopy(
+                (variant_p17_gate.get("disclosure_lines") or [])
+                or (p17_gate.get("disclosure_lines") or [])
+            ),
+            "limitation_disclosure": deepcopy(variant_p17_gate.get("limitations") or []),
             "confirmation": {"source": str(payload.get("source") or "user_confirmation"), "reason": str(payload.get("reason") or "")},
             "application": {"status": "not_applied", "application_id": f"PVAPP-{variant['variant_id']}"},
         })
@@ -271,6 +342,9 @@ class PlanReviewService:
         )
         p14, p15 = rerun_corridor_chain(state, self.corridor_model, self.corridor_gap_analyzer, facilities)
         baseline = state.get("cns_corridor_gap_assessment") or {}
+        #: Round 2.6：本 variant **自己的** post-plan P17 投影结论。
+        #: 绝不再复制权威 P17 结论，也绝不在 Confirm 之前改写现网事实。
+        projection_result, projected, projection_meta = self._variant_p17(actions)
         variant["evaluation"] = {
             "status": "evaluated", "actions": actions, "applied_refs": refs,
             "before_p15": deepcopy(baseline), "after_p15": deepcopy(p15),
@@ -280,24 +354,135 @@ class PlanReviewService:
             "comparison_matrix": comparison_matrix(p15),
             "confirmation_gate": confirmation_gate(baseline, p15),
             "action_summary": action_summary(actions),
-            #: Round 2.5：P17 结论**只针对当前权威状态**。这里如实记录
-            #: "本 variant 的假设尚未做过 P17 评估"，绝不把权威 P17 结论冒充成本 variant 的结论。
-            "continuous_service_projection": {
-                "authoritative_status": (state.get("continuous_service_acceptability") or {}).get("status"),
-                "authoritative_managed_gap_count": (state.get("continuous_service_acceptability") or {}).get("managed_gap_count"),
-                "evaluated_for_this_variant": False,
-                "note": (
-                    "P17 连续服务可接受性只针对当前权威状态评估；本 variant 的假设改动"
-                    "（新增站址/设备）在 Apply 后需要重新评估 P17。"
-                ),
-                "after_p15_max_continuous_deficit_projection_m": {
-                    item.get("subsystem"): item.get("max_continuous_deficit_projection_m")
-                    for route in (p15 or {}).get("routes") or []
-                    for item in route.get("subsystems") or []
-                },
-            },
+            "continuous_service_projection": self._variant_p17_projection(
+                state, actions, projection_result, projected, projection_meta,
+            ),
         }
         variant["status"] = "evaluated"
+
+    def _variant_p17(self, actions):
+        """算本 variant 的 projected P17（只读；不写任何状态）。"""
+
+        if self.plan_projection is None or self.continuous_service is None:
+            return None, None, {
+                "available": False,
+                "unavailable_reason": "projection_builder_not_configured",
+            }
+        projection, result = self.continuous_service.evaluate_actions(
+            actions, projection_label="plan_variant",
+        )
+        return (result, result, projection) if result is not None else (
+            None, None, projection or {"available": False},
+        )
+
+    @staticmethod
+    def _variant_p17_projection(state, actions, projection_result, projected, projection_meta):
+        """把本 variant 的投影结论整理成前端 / Step6 消费的结构。
+
+        三种情形必须**严格区分**（Round 2.6）：
+
+        1. ``selected_action_ids`` 为空 ⇒ 本 variant 就是**当前权威状态的 no-op**，
+           因此它的 P17 结论**就是**权威 P17 结论。这不算"没有评估"，也不算"复制别人的
+           结论"——它评估的对象确实是同一个状态（``evaluated_basis =
+           "authoritative_current_state"``）。
+        2. 有 action 且投影可评估 ⇒ 本 variant **自己的**投影态结论
+           （``evaluated_basis = "variant_projection"``）。
+        3. 有 action 但投影不可用 ⇒ 如实记录 ``evaluated_for_this_variant=false``，
+           并 fail-closed（绝不复用权威结论冒充）。
+        """
+
+        authoritative = state.get("continuous_service_acceptability") or {}
+        comparison = ((projected or {}).get("post_plan_projection") or {}).get("comparison") or {}
+        has_actions = bool(actions)
+        evaluated = (projected is not None) or not has_actions
+        status = (
+            (projected or {}).get("status") if projected is not None
+            else authoritative.get("status")
+        )
+        disclosure = (
+            (projected or {}).get("disclosure_lines") if projected is not None
+            else authoritative.get("disclosure_lines")
+        ) or []
+        limitations = (
+            (projected or {}).get("limitations") if projected is not None
+            else authoritative.get("limitations")
+        ) or []
+        return {
+            #: Round 2.6 关键修复：本字段由 false 收口为**真实评估结果**。
+            "evaluated_for_this_variant": evaluated,
+            "evaluated_basis": (
+                "variant_projection" if projected is not None
+                else "authoritative_current_state" if not has_actions
+                else "unavailable"
+            ),
+            "projected_status": status,
+            "status": status,
+            "baseline_status": (
+                (projected or {}).get("baseline_status") if projected is not None
+                else authoritative.get("baseline_status")
+            ),
+            "post_plan_status": (
+                (projected or {}).get("post_plan_status") if projected is not None
+                else authoritative.get("post_plan_status")
+            ),
+            "projected_managed_gap_count": (
+                (projected or {}).get("managed_gap_count") if projected is not None
+                else authoritative.get("managed_gap_count")
+            ),
+            "projected_unacceptable_count": (
+                (projected or {}).get("unacceptable_count") if projected is not None
+                else authoritative.get("unacceptable_count")
+            ),
+            "projected_unknown_count": (
+                (projected or {}).get("unknown_count") if projected is not None
+                else authoritative.get("unknown_count")
+            ),
+            "primary_threat_status": (
+                (projected or {}).get("primary_threat_status") if projected is not None
+                else authoritative.get("primary_threat_status")
+            ),
+            "supplementary_threat_status": (
+                (projected or {}).get("supplementary_threat_status") if projected is not None
+                else authoritative.get("supplementary_threat_status")
+            ),
+            "limitations": deepcopy(limitations),
+            "disclosure_lines": deepcopy(disclosure),
+            "variant_specific_gate": {
+                "status": status if evaluated else "unknown",
+                "confirmation_allowed": bool(
+                    evaluated and status in STEP6_ALLOWED_ACCEPTABILITY
+                ),
+                "variant_specific": True,
+                "evaluated_basis": (
+                    "variant_projection" if projected is not None
+                    else "authoritative_current_state" if not has_actions
+                    else "unavailable"
+                ),
+                "blocking_reason": None if evaluated else (
+                    "本 variant 的 P17 投影结论不可用（fail-closed）"
+                ),
+            },
+            "comparison": deepcopy(comparison),
+            "applied_action_ids": deepcopy(
+                (projection_meta or {}).get("applied_action_ids")
+                or [str(item.get("action_id") or "") for item in actions or []]
+            ),
+            "projection_semantics": (projection_meta or {}).get("projection_semantics"),
+            "persisted_as_upstream": False,
+            "written_into_existing_cns": False,
+            "authoritative_status": authoritative.get("status"),
+            "authoritative_managed_gap_count": authoritative.get("managed_gap_count"),
+            "note": (
+                "本结论是**本 variant 假设实施后**的投影态评估（hypothetical），"
+                "不是现网事实；Apply 之前绝不写入 ExistingCNS。"
+                if projected is not None else
+                "本 variant 没有 plan action：它的评估对象**就是**当前权威状态，"
+                "因此复用权威 P17 结论（这不是「复制别人的结论」，而是同一个评估对象）。"
+                if not has_actions else
+                "本 variant 的 P17 投影结论不可用：如实保持不可判定（fail-closed），"
+                "绝不复用权威结论冒充本 variant 的结论。"
+            ),
+        }
 
     def _actions(self, action_ids):
         wanted = set(str(item) for item in action_ids)

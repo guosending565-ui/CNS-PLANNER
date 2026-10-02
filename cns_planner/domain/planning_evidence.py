@@ -116,13 +116,14 @@ CONTINUOUS_SERVICE_PARAMETER_NAMES = (
     # C 通信
     "c_full_outage_max_s",
     "c_redundancy_degradation_max_s",
-    # 保护走廊
+    # 保护走廊（Round 2.6 正式公式的四项）
     "T_chain_detect_track_s",
     "T_chain_sensor_to_platform_s",
     "T_chain_platform_processing_s",
     "T_chain_platform_to_aircraft_s",
     "T_chain_aircraft_response_manoeuvre_s",
-    "D_safety_m",
+    "D_separation_m",
+    "D_maneuver_m",
     "D_uncertainty_m",
     "design_intruder_speed_mps",
     "nominal_closing_speed_mps",
@@ -137,12 +138,35 @@ CONTINUOUS_SERVICE_PARAMETER_NAMES = (
     "navigation_degradation_time_s",
 )
 
+#: Round 2.5 旧参数名（仍可被显式记录）：正式名没有记录时作为**回退**读取。
+#: 它们不出现在 :data:`CONTINUOUS_SERVICE_PARAMETER_NAMES` 里（因此不会在 UI 中出现
+#: 第二个输入框），但旧项目保存过的证据仍然有效。
+LEGACY_CONTINUOUS_SERVICE_PARAMETER_NAMES = (
+    "D_safety_m",
+)
+
 #: 布尔型枚举（fail-closed：只接受这两个字面量之一，绝不接受自由文本）。
 _CONTINUOUS_BOOLEAN_ALLOWED = ("available", "not_available")
 
 
 def _continuous_fields():
     fields = {}
+    #: 兼容读取用的 Round 2.5 旧名：**必须**仍在清单里，否则旧项目保存过的证据
+    #: 会在规范化时被判为"非法字段"而拒绝加载（这是迁移可用性问题，不是策略问题）。
+    #: 它不出现在 CONTINUOUS_SERVICE_PARAMETER_NAMES 中，因此前端不会出现第二个输入框。
+    for name in LEGACY_CONTINUOUS_SERVICE_PARAMETER_NAMES:
+        fields[name] = {
+            "label": _CONTINUOUS_LABELS[name],
+            "subsystem": _CONTINUOUS_SUBSYSTEMS[name],
+            "kind": "continuous_service_parameter",
+            "value_type": "number",
+            "allowed": "非负有限数值",
+            "unit": _CONTINUOUS_UNITS[name],
+            "demand_field": None,
+            "declared_field": name,
+            "legacy_alias": True,
+            "semantics": _CONTINUOUS_SEMANTICS[name],
+        }
     for name in CONTINUOUS_SERVICE_PARAMETER_NAMES:
         if name in ("rtk_availability", "gnss_availability"):
             fields[name] = {
@@ -189,8 +213,10 @@ _CONTINUOUS_LABELS = {
     "T_chain_platform_processing_s": "保护链：平台处理",
     "T_chain_platform_to_aircraft_s": "保护链：平台→航空器",
     "T_chain_aircraft_response_manoeuvre_s": "保护链：航空器响应机动",
-    "D_safety_m": "安全边界距离（航路中心线起算）",
-    "D_uncertainty_m": "不确定度距离",
+    "D_safety_m": "分隔距离（Round 2.5 旧名，兼容读取）",
+    "D_separation_m": "分隔距离（D_separation）",
+    "D_maneuver_m": "机动附加距离（D_maneuver，工程基线 50 m）",
+    "D_uncertainty_m": "不确定度距离（D_uncertainty）",
     "design_intruder_speed_mps": "设计入侵者速度",
     "nominal_closing_speed_mps": "标称接近速度",
     "conservative_closing_speed_mps": "保守接近速度",
@@ -212,6 +238,8 @@ _CONTINUOUS_SUBSYSTEMS = {
     "T_chain_platform_to_aircraft_s": "S",
     "T_chain_aircraft_response_manoeuvre_s": "S",
     "D_safety_m": "S",
+    "D_separation_m": "S",
+    "D_maneuver_m": "S",
     "D_uncertainty_m": "S",
     "design_intruder_speed_mps": "S",
     "nominal_closing_speed_mps": "S",
@@ -234,6 +262,8 @@ _CONTINUOUS_UNITS = {
     "T_chain_platform_to_aircraft_s": "s",
     "T_chain_aircraft_response_manoeuvre_s": "s",
     "D_safety_m": "m",
+    "D_separation_m": "m",
+    "D_maneuver_m": "m",
     "D_uncertainty_m": "m",
     "design_intruder_speed_mps": "m/s",
     "nominal_closing_speed_mps": "m/s",
@@ -269,10 +299,23 @@ _CONTINUOUS_SEMANTICS = {
     "T_chain_platform_to_aircraft_s": "保护链分量：平台到航空器的指令传递时间。",
     "T_chain_aircraft_response_manoeuvre_s": "保护链分量：航空器响应与机动完成时间。",
     "D_safety_m": (
-        "安全边界距离：从航路中心线起算。它同时进入保护走廊宽度与监视可用时间"
-        "``T_available``。"
+        "**Round 2.5 旧名**，等同 Round 2.6 的 ``D_separation_m``。正式参数请用新名；"
+        "旧项目里以旧名登记的证据仍会被读取（仅在新名没有显式记录时回退使用）。"
     ),
-    "D_uncertainty_m": "不确定度距离：定位/航迹/航路几何不确定度的保守附加量。",
+    "D_separation_m": (
+        "分隔距离：从航路中心线起算的内边界。它同时进入保护走廊宽度与监视可用时间"
+        "``T_available``。**必须提供显式工程依据**：没有依据时保持 evidence_required，"
+        "不再静默按 0 m 计算。"
+    ),
+    "D_maneuver_m": (
+        "机动附加距离 ``D_maneuver``：本轮不研究机动模型，只保留算法接口。"
+        "内置取 50 m，身份是 **engineering_baseline**（不是法规值，也不是某机型的普遍"
+        "制动距离事实），可由显式工程依据替换。"
+    ),
+    "D_uncertainty_m": (
+        "不确定度距离 ``D_uncertainty``：定位/航迹/航路几何不确定度的保守附加量。"
+        "**必须提供显式工程依据**：没有依据时保持 evidence_required，不再静默按 0 m 计算。"
+    ),
     "design_intruder_speed_mps": "设计入侵者速度（同时是操作场景输入）。",
     "nominal_closing_speed_mps": "标称接近速度（本机航路速度 + 设计入侵者速度）。",
     "conservative_closing_speed_mps": "保守接近速度（工程保守取值，用于保护链时延判定）。",
@@ -696,6 +739,17 @@ def param_targets_continuous_service(scope: str, field: str) -> bool:
     return str(scope or "aircraft") in ("aircraft", "project")
 
 
+def _parameter_aliases(name: str) -> tuple:
+    """该参数的**兼容别名**（Round 2.5 旧名 → Round 2.6 正式名）。
+
+    只在正式名**没有任何显式记录**时才回退读旧名；两者绝不合并，也绝不互相覆盖。
+    """
+
+    from .cns_continuous_service import PARAMETER_ALIASES
+
+    return tuple(PARAMETER_ALIASES.get(name) or ())
+
+
 def resolve_continuous_parameter(registry: dict | None, name: str) -> dict:
     """解析一个 P17 评估参数：**显式记录优先，否则内置工程基线**。
 
@@ -707,6 +761,9 @@ def resolve_continuous_parameter(registry: dict | None, name: str) -> dict:
                         ``engineering_assumption`` / ``internal_baseline`` / ``unknown``
     ``participating``   是否允许参与判定（``unknown`` 永不参与）
     ``reason``          可读原因（前端 / 报告逐字使用）
+
+    Round 2.6：内置基线为 ``None`` 的参数（``D_separation_m`` / ``D_uncertainty_m``）在
+    没有显式记录时返回 ``evidence_required`` —— 调用方必须 fail-closed，**不得**用 0 代替。
     """
 
     if name not in PLANNING_EVIDENCE_FIELDS:
@@ -718,11 +775,23 @@ def resolve_continuous_parameter(registry: dict | None, name: str) -> dict:
         item for item in continuous_service_parameter_items(registry)
         if item["field"] == name
     ]
+    alias_used = None
+    if not items:
+        for alias in _parameter_aliases(name):
+            items = [
+                item for item in continuous_service_parameter_items(registry)
+                if item["field"] == alias
+            ]
+            if items:
+                alias_used = alias
+                break
     baseline = continuous_service_parameter_baseline(name)
     base = {
         "field": name, "label": spec["label"], "subsystem": spec["subsystem"],
         "unit": spec.get("unit"), "value_type": spec["value_type"],
         "semantics": spec["semantics"],
+        "alias_of": None,
+        "read_from_legacy_field": alias_used,
     }
     if items:
         item = items[-1]
@@ -747,13 +816,21 @@ def resolve_continuous_parameter(registry: dict | None, name: str) -> dict:
                 else "采用显式登记的工程证据 / 规划假设"
                 if item["source_type"] == "engineering_assumption"
                 else "采用显式登记的正式资料事实"
+            ) + (
+                f"（读自 Round 2.5 旧字段名 {alias_used}）" if alias_used else ""
             ),
         }
     if baseline["value"] is None:
         return {
-            **base, "value": None, "authority": "unknown",
+            **base, "value": None, "authority": "evidence_required",
             "source_type": "unknown", "participating": False,
-            "reason": "尚无任何依据（无显式记录、也无内置工程基线）",
+            "statement": baseline["statement"],
+            "report_disclosure": baseline["report_disclosure"],
+            "reason": (
+                "尚无任何依据（无显式记录、也无内置工程基线）：必须由用户 / 工程依据"
+                "显式提供，系统保持 evidence_required（fail-closed），"
+                "**绝不用 0 或其它默认值代替**"
+            ),
         }
     return {
         **base, "value": baseline["value"],
@@ -780,7 +857,12 @@ def continuous_service_parameter_baseline(name: str) -> dict:
 
 
 def continuous_service_parameter_projection(registry: dict | None) -> list[dict]:
-    """全部 P17 参数的只读投影（前端 / 报告用；逐项带来源与出处）。"""
+    """全部 P17 参数的只读投影（前端 / 报告用；逐项带来源与出处）。
+
+    Round 2.5 的旧名（``D_safety_m``）**不**出现在投影里：它只是兼容读取路径，
+    不应在前端出现第二个输入框。旧记录被读取时会通过 ``read_from_legacy_field``
+    在结果里如实标注。
+    """
 
     return [resolve_continuous_parameter(registry, name) for name in CONTINUOUS_SERVICE_PARAMETER_NAMES]
 

@@ -188,11 +188,21 @@ def prepare_p17(workflow, *, source="test fixture", outage_limit_s=8.0,
       "超阈值必须被阻止"由 tests/test_continuous_service_acceptability.py 覆盖。
     """
 
-    for field, statement in (
-        ("rtk_availability", "本测试场景假设机载 RTK 增强在整个航路内可用。"),
-        ("gnss_availability", "本测试场景假设机载 GNSS 定位在整个航路内可用。"),
+    for field, value, statement in (
+        ("rtk_availability", "available",
+         "本测试场景假设机载 RTK 增强在整个航路内可用。"),
+        ("gnss_availability", "available",
+         "本测试场景假设机载 GNSS 定位在整个航路内可用。"),
+        #: Round 2.6：保护走廊的分隔/不确定度距离**必须**显式提供（不再静默默认 0，
+        #: 否则 S 子系统如实保持 evidence_required ⇒ unknown ⇒ 阻止 P18）。
+        ("D_separation_m", 30.0, "本测试场景假设分隔距离为 30 m（工程规划假设）。"),
+        ("D_uncertainty_m", 10.0, "本测试场景假设不确定度附加量为 10 m（工程规划假设）。"),
+        #: Round 2.6：C 的**完全中断阈值**不再有内置基线（设备 failsafe 的 3 s 不等于
+        #: 规划阈值），因此这里必须由用户显式登记。
+        ("c_full_outage_max_s", outage_limit_s,
+         "本测试场景显式登记的完全通信中断规划阈值。"),
     ):
-        workflow.add_planning_evidence(p17_evidence(field, "available", statement))
+        workflow.add_planning_evidence(p17_evidence(field, value, statement))
     payload = {"source": source, "confirmed": True}
     if include_thresholds:
         payload["service_acceptability_limits"] = {

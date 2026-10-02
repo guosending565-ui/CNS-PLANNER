@@ -15,7 +15,8 @@ import {drawV3CandidateOverlay,v3OverlayModel} from './route_planner_v3_overlay.
 import {drawLayeredFeasibilityOverlay} from './layered_feasibility_overlay.js';
 import {drawLayeredCandidateOverlay} from './layered_candidate_overlay.js';
 import {drawRadarLayoutOverlay} from './radar_layout_overlay.js';
-import {cnsServiceOverlayModel,drawCnsServiceOverlay,drawSurfaceFactsLayer} from './cns_service_overlay.js';
+import {cnsServiceOverlayModel,drawCnsServiceOverlay,drawSurfaceFactsLayer,
+  radarCapabilityLimitationSummary,radarSurveillanceLayoutState} from './cns_service_overlay.js';
 import {radarOverlayModel} from '../workflow/radar_surveillance_layout.js';
 import {clusterPoints,toGeographic,extentOf,hitCluster} from './point_clustering.js';
 import {
@@ -42,12 +43,24 @@ const ROUTE_EVIDENCE_COLOR='#c0392b';
 //: （水平航路保护走廊 / 监视保护覆盖）。颜色只表达"这属于哪个图层"，
 //: 绝不表达通过与否，也不参与任何业务判定。
 const PROTECTION_CORRIDOR_COLOR='#1f6f8b';
-const SURVEILLANCE_PROTECTION_COLOR='#8b1f6f';
-const SURVEILLANCE_UNUSABLE_COLOR='#8b949e';
+//: Round 2.6：**合作监视（RID）** 与 **非合作监视（Radar 补充）** 必须用不同的颜色类，
+//: 图例与地图绝不混同；能力限制用警告色（黄色 / 橙色），**不是** error 红。
+const SURVEILLANCE_COOPERATIVE_COLOR='#0f8a78';
+const SURVEILLANCE_NONCOOPERATIVE_COLOR='#1565c0';
+const CAPABILITY_LIMITATION_COLOR='#d98b0b';
 //: 走廊单侧偏移的像素上限：20 px → 走廊带总宽 ≤ 40 px（远景不至于消失、近景不至于糊屏）。
 const PROTECTION_CORRIDOR_MAX_HALF_PX=20;
 //: view.res 不可用时的退化半宽（px）：只画一条粗半透明中心带，绝不假装知道米制宽度。
 const PROTECTION_CORRIDOR_FALLBACK_HALF_PX=3;
+//: 图层说明文字（**不**依赖 plan.styles，保证任何 LOD 档都留下真实说明）。
+const LAYER_NOTE_COLOR='#33424f';
+const LAYER_NOTE_FONT='600 10px "Segoe UI",sans-serif';
+/** 图层说明画在画布内左上角：只写"后端真实事实"，绝不写通过与否。 */
+function drawLayerNote(ctx,text,index,color=LAYER_NOTE_COLOR){
+  if(!text)return false;
+  drawText(ctx,text,10,18+index*13,{color,font:LAYER_NOTE_FONT});
+  return true;
+}
 
 const CLUSTER_COLORS={nodes:'#c25233',sites:LANDING_COLOR.cluster,referencePoints:'#783b69',towers:TOWER_COLOR.cluster};
 
@@ -283,20 +296,40 @@ function drawRouteProtectionCorridors({ctx,view,screenPoint,flow}){
   return drawn;
 }
 
+/** 该监视证据的 service_key 是否属于**非合作**（Radar）分层。 */
+function isNoncooperativeServiceKey(serviceKey){
+  const key=String(serviceKey||'').toLowerCase();
+  return key.includes('radar')||key.includes('noncooperative')||key.includes('non_cooperative');
+}
+
+/** 监视分层标签（图例 / 图层说明共用，绝不把两类混同成一个"监视结论"）。 */
+export function surveillanceLayerLabelOf(serviceKey){
+  return isNoncooperativeServiceKey(serviceKey)
+    ?'非合作监视（Radar 补充威胁）':'合作监视（RID 主要威胁）';
+}
+
 /**
- * 监视保护覆盖（Round 2.5 / P17）：**默认关闭**的地图图层。
+ * 监视保护覆盖（Round 2.5 / P17；Round 2.6 分层修正）：**默认关闭**的地图图层。
  *
- * 只画后端已经给出的三类事实：
+ * 只画后端已经给出的三类事实，并且**合作（RID）**与**非合作（Radar 补充）分开**：
  *   * ``events_by_kind.surveillance_detection_gap``（沿航路**里程**的探测缺口段）→ 虚线；
- *   * ``first_detection_evidence.usable`` → 航路两端的监视覆盖点（不可用为空心灰点）；
+ *   * ``first_detection_evidence.usable`` → 航路两端的监视覆盖点
+ *     （不可用为空心灰点；``usable=false`` 时**不画实心覆盖点**，因为没有覆盖几何）；
  *   * ``surveillance_acceptance.t_margin_s`` → 时间余量标注（缺值写 ``T_margin=—``）。
+ *
+ * Round 2.6 关键约束：Radar 求解不可行（``infeasible`` / ``solver.status=infeasible``）时
+ * **绝不绘制任何非合作（Radar）几何** —— 不画扇区、也不画覆盖点，不得伪造覆盖；
+ * 改为在图层说明里如实写出**能力限制（黄色 / 橙色，不是系统错误）**与真实候选摘要。
+ * 合作（RID）分层不受影响：补充威胁的能力限制不改变主要威胁的判定。
+ *
  * 里程 → 经纬度由 routeOffsetToCoordinate 在真实 route_path 上插值，绝不外推。
  *
- * @returns {{gaps:number,points:number}}
+ * @returns {{gaps:number,points:number,skippedNoncooperative:number,notes:number}}
  */
-function drawSurveillanceProtectionCoverage({ctx,view,screenPoint,flow}){
+function drawSurveillanceProtectionCoverage({ctx,view,screenPoint,flow,radarState=null}){
+  const state=radarState||radarSurveillanceLayoutState(flow);
   const routes=flow?.cns_continuous_service?.result?.routes||[];
-  let gaps=0,points=0;
+  let gaps=0,points=0,skipped=0,notes=0;
   for(const route of routes){
     const corridor=route?.corridor||{};
     const path=corridor.route_path;
@@ -305,35 +338,75 @@ function drawSurveillanceProtectionCoverage({ctx,view,screenPoint,flow}){
       ?Number(corridor.route_length_m)
       :Number(route.route_length_m);
     for(const gap of route.events_by_kind?.surveillance_detection_gap||[]){
+      const noncooperative=isNoncooperativeServiceKey(gap?.service||gap?.service_key);
+      //: 非合作（Radar）几何在求解不可行时**一律不画**（不存在的覆盖绝不画）。
+      if(noncooperative&&state.infeasible){skipped+=1;continue;}
       const from=routeOffsetToCoordinate(path,routeLengthM,gap?.start_offset_m);
       const to=routeOffsetToCoordinate(path,routeLengthM,gap?.end_offset_m);
       if(!from||!to)continue;
-      drawLine(ctx,screenPoint,view,[from,to],SURVEILLANCE_PROTECTION_COLOR,2.6,[6,4]);
+      drawLine(ctx,screenPoint,view,[from,to],
+        noncooperative?SURVEILLANCE_NONCOOPERATIVE_COLOR:SURVEILLANCE_COOPERATIVE_COLOR,2.6,[6,4]);
       gaps+=1;
     }
-    const usable=route.first_detection_evidence?.usable===true;
-    for(const coordinate of [path[0],path[path.length-1]]){
-      const [x,y]=screenPoint(coordinate);
-      if(!Number.isFinite(x)||!Number.isFinite(y))continue;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x,y,4,0,Math.PI*2);
-      ctx.fillStyle=usable?SURVEILLANCE_PROTECTION_COLOR:'#ffffff';
-      ctx.strokeStyle=usable?SURVEILLANCE_PROTECTION_COLOR:SURVEILLANCE_UNUSABLE_COLOR;
-      ctx.lineWidth=1.6;
-      if(usable)ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-      points+=1;
+    const detection=route.first_detection_evidence||{};
+    const usable=detection.usable===true;
+    const noncooperativePrimary=isNoncooperativeServiceKey(detection.service_key);
+    //: 求解不可行时非合作分层的"可用证据"不成立：绝不画覆盖点（不得伪造扇区 / 覆盖）。
+    //: ``usable !== true`` 本身也**不画覆盖点** —— "没有覆盖几何"绝不用一个点冒充。
+    const cooperativePoint=usable&&!noncooperativePrimary;
+    const noncooperativePoint=usable&&noncooperativePrimary&&!state.infeasible;
+    for(const [enabled,color] of [
+      [cooperativePoint,SURVEILLANCE_COOPERATIVE_COLOR],
+      [noncooperativePoint,SURVEILLANCE_NONCOOPERATIVE_COLOR],
+    ]){
+      if(!enabled)continue;
+      for(const coordinate of [path[0],path[path.length-1]]){
+        const [x,y]=screenPoint(coordinate);
+        if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x,y,4,0,Math.PI*2);
+        ctx.fillStyle=color;
+        ctx.strokeStyle=color;
+        ctx.lineWidth=1.6;
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        points+=1;
+      }
     }
     const [marginX,marginY]=screenPoint(path[0]);
     if(!Number.isFinite(marginX)||!Number.isFinite(marginY))continue;
     const margin=Number(route.surveillance_acceptance?.t_margin_s);
-    drawText(ctx,
-      Number.isFinite(margin)?'T_margin='+formatMetric(margin,1)+' s':'T_margin=—',
-      marginX+7,marginY-7,{color:SURVEILLANCE_PROTECTION_COLOR});
+    //: 两类分层的 T_margin **各自标注**（颜色、文字、行位置都区分），
+    //: 绝不合并成一个监视结论，也绝不把补充威胁并入主要威胁。
+    const layers=route.threat_layers||{};
+    const layerEntries=[
+      ['cooperative',layers.cooperative,SURVEILLANCE_COOPERATIVE_COLOR,'[合作 RID 主要]',0],
+      ['noncooperative',layers.noncooperative,SURVEILLANCE_NONCOOPERATIVE_COLOR,'[非合作 Radar 补充]',13],
+    ];
+    const noLayerEntry=!layers.cooperative&&!layers.noncooperative;
+    for(const [,entry,color,prefix,offsetY] of layerEntries){
+      const hasEntry=Boolean(entry)||(noLayerEntry&&prefix==='[合作 RID 主要]');
+      if(!hasEntry)continue;
+      const layerMargin=entry?entry.t_margin_s:margin;
+      drawText(ctx,
+        prefix+' '+(Number.isFinite(Number(layerMargin))
+          ?'T_margin='+formatMetric(layerMargin,1)+' s':'T_margin=—'),
+        marginX+7,marginY-7+offsetY,{color});
+    }
   }
-  return {gaps,points};
+  //: 图层说明：能力限制（警告色文字）+ 真实候选 / 限制摘要（**不**画任何 Radar 几何）。
+  if(skipped>0||state.infeasible){
+    const summary=radarCapabilityLimitationSummary(flow)
+      ||'非合作监视（Radar）不可行：不绘制任何 Radar 扇区 / 覆盖几何。';
+    drawLayerNote(ctx,'[能力限制（黄色/橙色，不是系统错误）] '+skipped
+      +' 段非合作监视几何未绘制（求解不可行，绝不伪造扇区 / 覆盖）',0,
+    CAPABILITY_LIMITATION_COLOR);
+    drawLayerNote(ctx,summary,1,CAPABILITY_LIMITATION_COLOR);
+    notes=2;
+  }
+  return {gaps,points,skippedNoncooperative:skipped,notes};
 }
 
 // ---- 通信铁塔矢量符号（地图符号与图例符号的唯一来源） ------------------------
@@ -714,14 +787,28 @@ export function drawWorkflowLayers({
   // Radar Surveillance Layout V1：**默认关闭**。只画已选方案的 selected towers / panel 扇区
   // 与按覆盖结果着色的航路；候选铁塔用 plan.towers 的弱化单点（不走聚合，避免与塔层语义混淆）。
   // 绝不绘制未选 panel 的 coverage polygon（数百个多边形会造成地图性能问题）。
+  //
+  // Round 2.6：如果雷达求解**不可行**（`radar_surveillance_layout.status === 'infeasible'`
+  // 或 `solver.status === 'infeasible'`），**绝不绘制任何 Radar 扇区 / 覆盖几何** ——
+  // 不得伪造扇区。此时只在画布上如实写出**能力限制（黄色 / 橙色，不是系统错误）**与
+  // 真实候选 / 限制摘要。
   if(layers.radarSurveillanceLayer===true){
-    const candidateTowers=(flow?.towers?.items||[])
-      .filter(tower=>Array.isArray(tower.coordinate))
-      .map(tower=>({tower_id:tower.tower_id,coordinate:tower.coordinate}));
-    drawRadarLayoutOverlay({
-      ctx,view,screenPoint,
-      model:radarOverlayModel(flow,candidateTowers),
-    });
+    const radarState=radarSurveillanceLayoutState(flow);
+    if(radarState.infeasible){
+      const summary=radarCapabilityLimitationSummary(flow)
+        ||'非合作监视（Radar）求解不可行：能力限制，不是系统错误。';
+      drawLayerNote(ctx,'[能力限制（黄色/橙色，不是系统错误）] Radar 求解不可行：'
+        +'不绘制任何 Radar 扇区 / 覆盖几何（绝不伪造扇区）',0,CAPABILITY_LIMITATION_COLOR);
+      drawLayerNote(ctx,summary,1,CAPABILITY_LIMITATION_COLOR);
+    }else{
+      const candidateTowers=(flow?.towers?.items||[])
+        .filter(tower=>Array.isArray(tower.coordinate))
+        .map(tower=>({tower_id:tower.tower_id,coordinate:tower.coordinate}));
+      drawRadarLayoutOverlay({
+        ctx,view,screenPoint,
+        model:radarOverlayModel(flow,candidateTowers),
+      });
+    }
   }
 
   // CNS service overlay（Round 3）：**独立模块**，与 Radar 分支完全分离。
@@ -737,14 +824,18 @@ export function drawWorkflowLayers({
     });
   }
 
-  // Round 2.5 / P17 连续服务可接受性：两个**默认关闭**的独立图层。
+  // Round 2.6：连续服务可接受性的**默认关闭**独立图层。
   // 只读 flow.cns_continuous_service 的 result（后端已给出的走廊几何与缺口里程），
-  // 不构造模型、不推导结论、不写业务状态；两个开关都关闭时零成本（不进入循环）。
+  // 不构造模型、不推导结论、不写业务状态；开关都关闭时零成本（不进入循环）。
+  // 监视覆盖按**合作（RID）/ 非合作（Radar 补充）**分层着色，且与雷达求解状态联动：
+  // 求解不可行时非合作几何一律不画（能力限制，不是系统错误）。
   if(layers.routeProtectionCorridorLayer===true){
     drawRouteProtectionCorridors({ctx,view,screenPoint,flow});
   }
   if(layers.surveillanceProtectionLayer===true){
-    drawSurveillanceProtectionCoverage({ctx,view,screenPoint,flow});
+    drawSurveillanceProtectionCoverage({
+      ctx,view,screenPoint,flow,radarState:radarSurveillanceLayoutState(flow),
+    });
   }
 
   // 3) 参考航线与航路点由 main.js 的 drawWorkflowOverlay 显式调用

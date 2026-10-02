@@ -152,19 +152,40 @@ def _aircraft(*, route_speed=20.0, detection_range=3000.0):
     }
 
 
+def _corridor_evidence():
+    """保护走廊的**显式工程依据**（Round 2.6 起 D_separation / D_uncertainty 必须显式提供）。
+
+    这两个参数由"静默默认 0"改为 evidence_required 之后，任何期望 S 子系统可判定的
+    场景都必须像真实用户一样，**显式登记工程假设**。
+    """
+
+    return (
+        _assumption("D_separation_m", 30.0),
+        _assumption("D_uncertainty_m", 10.0),
+    )
+
+
+def _registry_with_corridor(*items):
+    return _registry(*_corridor_evidence(), *items)
+
+
 def _evaluate(**overrides):
     inputs = {
         "corridor_assessment": _p14(),
         "corridor_gap_assessment": _p15([_route()]),
         "site_plan": {},
         "aircraft_profile": _aircraft(),
-        "planning_evidence": {},
+        #: 默认带上保护走廊的显式工程依据；``planning_evidence=None`` 表示"完全不提供
+        #: 任何依据"（用于验证 fail-closed 的场景）。
+        "planning_evidence": None,
         "operation_scenario": default_operation_scenario(),
         "continuous_service_policy": default_continuous_service_policy(),
         "device_catalog": {},
         "radar_surveillance_layout": {},
     }
     inputs.update(overrides)
+    if inputs["planning_evidence"] is None:
+        inputs["planning_evidence"] = _registry(*_corridor_evidence())
     return MODEL.evaluate(**inputs)
 
 
@@ -184,17 +205,38 @@ def _registry(*items):
     return {"schema_version": "round2.4-engineering-evidence", "items": list(items)}
 
 
-def _with_navigation(**overrides):
-    """补上导航证据（RTK/GNSS 可用）后再评估，使 C/S 断言不被 N 的 unknown 掩盖。
+#: 保护走廊的显式工程依据字段（Round 2.6 起由 `_with_navigation` 统一补齐）。
+_CORRIDOR_FIELDS = ("D_separation_m", "D_uncertainty_m")
 
-    调用方显式传入 ``planning_evidence`` 时**以调用方为准**（不再叠加默认证据），
-    否则"缺证据 ⇒ unknown"这类断言会被这里的默认证据悄悄改掉。
+
+def _with_navigation(*, with_rtk=True, with_gnss=True, **overrides):
+    """补上导航证据（RTK/GNSS 可用）与**必需的保护走廊工程依据**后再评估。
+
+    调用方可显式传入 ``planning_evidence``（其内容以调用方为准）；本助手只负责保证
+    「RTK/GNSS 可用」与「D_separation / D_uncertainty 有显式依据」这两组**场景前提**
+    存在，从而让 C/S 断言不被 N 或 S 的 unknown 掩盖。
+
+    ``with_rtk=False`` 用于验证"RTK 可用性由**航路服务证据**推导"的场景：此时绝不能
+    再塞一条 project 级 RTK 假设，否则推导路径会被显式证据掩盖。
     """
 
-    overrides.setdefault("planning_evidence", _registry(
-        _assumption("rtk_availability", "available"),
-        _assumption("gnss_availability", "available"),
-    ))
+    provided = overrides.pop("planning_evidence", None)
+    items = list(provided.get("items") or []) if isinstance(provided, dict) else []
+    present = {item.get("field") for item in items}
+    for field, value, enabled in (
+        ("rtk_availability", "available", with_rtk),
+        ("gnss_availability", "available", with_gnss),
+        #: Round 2.6：最大允许完全通信中断时间必须由用户显式登记（无内置基线）。
+        ("c_full_outage_max_s", 3.0, True),
+    ):
+        if enabled and field not in present:
+            items.append(_assumption(field, value))
+    #: 调用方一旦自己提供了**任何**走廊距离依据（例如故意把 D_separation 设得很大来
+    #: 验证 fail-closed），就不再补默认值 —— 否则会同时出现两套走廊前提。
+    if not present & set(_CORRIDOR_FIELDS):
+        for field, value in zip(_CORRIDOR_FIELDS, (30.0, 10.0)):
+            items.append(_assumption(field, value))
+    overrides["planning_evidence"] = _registry(*items)
     return _evaluate(**overrides)
 
 
@@ -461,14 +503,41 @@ def test_c_limits_are_explicit_evidence_and_report_the_authority():
     assert parameter["authority"] == "explicit_evidence"
     assert parameter["source_type"] == "engineering_assumption"
 
-    defaulted = _evaluate()
-    builtin = defaulted["parameters"]["c_full_outage_max_s"]
-    assert builtin["value"] == pytest.approx(3.0)
-    assert builtin["authority"] == "builtin_engineering_assumption"
-    assert builtin["source_type"] == "internal_baseline"
-    #: 内置基线的依据必须写明是 FC30 failsafe 触发**事实**，不是法规阈值。
-    assert "failsafe" in builtin["source"]
-    assert defaulted["service_acceptability_limits"]["C"]["service_outage"] == pytest.approx(3.0)
+
+def test_c_full_outage_threshold_has_no_builtin_and_stays_evidence_required():
+    """Round 2.6（用户裁定）：设备 failsafe 的 3 s **不再**自动成为规划阈值。
+
+    未显式登记"最大允许完全通信中断时间"时：
+
+    * 参数保持 ``evidence_required``（``value=None``、不参与判定）；
+    * 该阈值不可判定 ⇒ 通信子系统保持 ``unknown``（fail-closed），绝不放行；
+    * 结果里必须出现 ``no_outage_threshold_evidence``，与"缺航路速度"区分开。
+    """
+
+    result = _evaluate(corridor_gap_assessment=_p15([_route(length_m=60.0)]))
+    parameter = result["parameters"]["c_full_outage_max_s"]
+    assert parameter["value"] is None
+    assert parameter["authority"] == "evidence_required"
+    assert parameter["participating"] is False
+    assert result["service_acceptability_limits"]["C"]["service_outage"] is None
+    subsystem = _subsystem_entry(result, "C")
+    assert subsystem["status"] == "unknown"
+    assert "no_outage_threshold_evidence" in result["reason_codes"]
+    assert result["status"] == "unknown"
+
+    #: 冗余退化阈值与完全中断阈值**互相独立**：前者仍有内置基线，不受影响。
+    degradation = result["parameters"]["c_redundancy_degradation_max_s"]
+    assert degradation["value"] == pytest.approx(10.0)
+    assert degradation["authority"] == "builtin_engineering_assumption"
+
+    #: FC30 的设备 failsafe 事实仍然存在，但**只登记为设备事实**。
+    from cns_planner.domain.fc30_profile import FC30_DECLARED_FACTS
+    failsafe = next(
+        item for item in FC30_DECLARED_FACTS
+        if item["parameter"] == "rc_loss_failsafe_trigger_s"
+    )
+    assert failsafe["value"] == pytest.approx(3.0)
+    assert failsafe["not_a_regulatory_threshold"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +557,7 @@ def _navigation_result(*, rtk=None, gnss=None, accuracy=None, containment=None):
         items.append(_assumption("navigation_route_containment_accuracy_m", containment))
     return _evaluate(
         corridor_gap_assessment=_p15([_route(length_m=0.0)]),
-        planning_evidence=_registry(*items),
+        planning_evidence=_registry_with_corridor(*items),
     )
 
 
@@ -558,6 +627,7 @@ def test_navigation_rtk_loss_from_route_service_evidence_is_structural():
         ],
     }])
     result = _with_navigation(
+        with_rtk=False,
         corridor_gap_assessment=p15,
         planning_evidence=_registry(
             _assumption("gnss_availability", "available"),
@@ -580,7 +650,8 @@ def test_protection_corridor_uses_explicit_parameters():
     result = _with_navigation(planning_evidence=_registry(
         _assumption("rtk_availability", "available"),
         _assumption("gnss_availability", "available"),
-        _assumption("D_safety_m", 50.0),
+        _assumption("D_separation_m", 50.0),
+        _assumption("D_maneuver_m", 50.0),
         _assumption("D_uncertainty_m", 30.0),
         _assumption("T_chain_detect_track_s", 2.0),
         _assumption("T_chain_sensor_to_platform_s", 1.0),
@@ -594,8 +665,15 @@ def test_protection_corridor_uses_explicit_parameters():
     assert corridor["T_chain_s"] == pytest.approx(7.0)
     assert corridor["V_relative_mps"] == pytest.approx(40.0)
     assert corridor["relative_speed_basis"] == "conservative"
-    assert corridor["D_protection_m"] == pytest.approx(50.0 + 40.0 * 7.0 + 30.0)
-    assert corridor["outer_half_width_m"] == pytest.approx(500.0 + 360.0)
+    #: Round 2.6 四分量公式：D_separation + V_relative×T_chain + D_maneuver + D_uncertainty。
+    assert corridor["D_separation_m"] == pytest.approx(50.0)
+    assert corridor["D_maneuver_m"] == pytest.approx(50.0)
+    assert corridor["D_uncertainty_m"] == pytest.approx(30.0)
+    assert corridor["D_protection_m"] == pytest.approx(50.0 + 40.0 * 7.0 + 50.0 + 30.0)
+    assert corridor["outer_half_width_m"] == pytest.approx(500.0 + 410.0)
+    assert corridor["formula"] == (
+        "D_protection = D_separation + V_relative * T_chain + D_maneuver + D_uncertainty"
+    )
     assert corridor["semantics"] == (
         "horizontal_route_protection_corridor_not_route_centerline_only"
     )
@@ -625,8 +703,9 @@ def test_surveillance_tmargin_positive_accepts_but_still_reports_the_corridor():
     assert evidence["coverage_status"] == "satisfied"
     acceptance = route["surveillance_acceptance"]
     assert acceptance["status"] == "acceptable"
-    assert acceptance["t_available_s"] == pytest.approx(125.0)
-    assert acceptance["t_margin_s"] == pytest.approx(115.0)
+    #: (5000 − 30) / 40 = 124.25 s；T_chain = 10 s ⇒ 余量 114.25 s。
+    assert acceptance["t_available_s"] == pytest.approx(124.25)
+    assert acceptance["t_margin_s"] == pytest.approx(114.25)
     corridor_route = next(
         item for item in route["subsystems"] if item["subsystem"] == "S"
         and "acceptance" in item
@@ -652,11 +731,12 @@ def test_surveillance_tmargin_negative_is_unacceptable():
     )
     acceptance = _route_result(result)["surveillance_acceptance"]
     assert acceptance["status"] == "unacceptable"
-    assert acceptance["t_margin_s"] == pytest.approx(5.0 - 10.0)
+    #: (200 − 30) / 40 = 4.25 s；T_chain = 10 s ⇒ 余量 −5.75 s。
+    assert acceptance["t_margin_s"] == pytest.approx(4.25 - 10.0)
     assert "tmargin_negative" in result["reason_codes"]
 
 
-def test_detection_range_below_safety_distance_is_not_usable():
+def test_detection_range_below_separation_distance_is_not_usable():
     p15 = _p15([_route(length_m=0.0, gap_causes=[], surplus=[{
         "service_key": "S:rid_cooperative", "subsystem": "S", "status": "satisfied",
         "required_distinct_site_count_by_surface": {"sea": 1},
@@ -670,19 +750,18 @@ def test_detection_range_below_safety_distance_is_not_usable():
             "coverage_geometry": {"radius_by_surface": {"sea": 100.0}, "source": "test"},
         }]},
         planning_evidence=_registry(
-            _assumption("rtk_availability", "available"),
-            _assumption("gnss_availability", "available"),
-            _assumption("D_safety_m", 200.0),
+            _assumption("D_separation_m", 200.0),
+            _assumption("D_uncertainty_m", 10.0),
         ),
     )
     evidence = _route_result(result)["first_detection_evidence"]
     assert evidence["usable"] is False
     assert evidence["coverage_status"] == "not_satisfied"
-    assert "安全边界" in evidence["not_usable_reason"]
+    assert "分隔距离" in evidence["not_usable_reason"]
     assert "detection_range_below_safety_distance" in result["reason_codes"]
 
 
-def test_surveillance_without_evidence_is_unknown_fail_closed():
+def test_surveillance_without_detection_evidence_is_unknown_fail_closed():
     #: 机载没有声明探测距离、也没有任何地面监视 service ⇒ 首次探测距离不可判定。
     result = _evaluate(aircraft_profile=_aircraft(detection_range=None))
     route = _route_result(result)
@@ -744,6 +823,13 @@ def _ready_workflow(tmp_path, *, rtk="available", gnss="available", **overrides)
         if value is None:
             continue
         workflow.add_planning_evidence({**_assumption(field, value), "scope": "project"})
+    #: Round 2.6：保护走廊的分隔/不确定度距离**必须**显式提供（不再静默默认 0）。
+    workflow.add_planning_evidence({
+        **_assumption("D_separation_m", 30.0), "scope": "project",
+    })
+    workflow.add_planning_evidence({
+        **_assumption("D_uncertainty_m", 10.0), "scope": "project",
+    })
     workflow.set_cns_continuous_service_policy({
         "service_acceptability_limits": {
             "C": {"service_outage": 8.0, "redundancy_degradation": 20.0},
@@ -852,6 +938,13 @@ def test_confirmed_plan_carries_the_managed_gap_disclosure(tmp_path):
     workflow = configured(tmp_path)
     for field, value in (("rtk_availability", "available"), ("gnss_availability", "available")):
         workflow.add_planning_evidence({**_assumption(field, value), "scope": "project"})
+    #: Round 2.6：走廊距离分量必须显式提供（evidence_required），否则 S 不可判定。
+    workflow.add_planning_evidence({
+        **_assumption("D_separation_m", 30.0), "scope": "project",
+    })
+    workflow.add_planning_evidence({
+        **_assumption("D_uncertainty_m", 10.0), "scope": "project",
+    })
     #: 阈值刚好覆盖该场景的 C 缺口 ⇒ 结论必须是 acceptable_with_managed_gap，
     #: 而不是"全覆盖"。
     workflow.set_cns_continuous_service_policy({
@@ -870,8 +963,18 @@ def test_confirmed_plan_carries_the_managed_gap_disclosure(tmp_path):
     assert review["continuous_service_gate"]["requires_managed_gap_disclosure"] is True
     variants = review["variants"]
     projection = variants[0]["evaluation"]["continuous_service_projection"]
-    assert projection["evaluated_for_this_variant"] is False
+    #: Round 2.6：baseline variant 没有 plan action，因此它的评估对象**就是**当前权威
+    #: 状态 —— 这是"已评估"，但依据必须如实标注为 authoritative_current_state。
+    assert projection["evaluated_for_this_variant"] is True
+    assert projection["evaluated_basis"] == "authoritative_current_state"
+    assert projection["projected_status"] == "acceptable_with_managed_gap"
+    assert projection["variant_specific_gate"]["confirmation_allowed"] is True
     assert projection["authoritative_status"] == "acceptable_with_managed_gap"
+    #: 快照必须逐 variant 暴露**它自己**的门禁（Step6 依据）。
+    plan_review = workflow.cns_plan_review_snapshot()
+    variant_gates = plan_review["variant_continuous_service_gates"]
+    assert variant_gates[variants[0]["variant_id"]]["confirmation_allowed"] is True
+    assert plan_review["continuous_service_gate"]["requires_managed_gap_disclosure"] is True
 
 
 def test_operation_scenario_contract_is_fail_closed():

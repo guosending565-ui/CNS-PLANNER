@@ -55,6 +55,7 @@ from .corridor_service import CNSCorridorService
 from .corridor_gap_service import CNSCorridorGapService
 from .corridor_site_planning_service import CorridorSitePlanningService
 from .continuous_service_service import ContinuousServiceService
+from .plan_projection import PlanProjectionBuilder
 from ..algorithms.continuous_service.v1 import ContinuousServiceAcceptabilityV1
 from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
@@ -646,18 +647,26 @@ class WorkflowService:
             self.session, self.corridor_site_planner, self.corridor_model,
             self.corridor_gap_analyzer, self.invalidation_service, snapshot,
         )
+        #: Round 2.6：P16 方案实施后的**投影态**构建器。P17 与 Step6 都消费它，
+        #: 保证"P16 的内部 what-if"与"P17 评估的投影态"是**同一套**设施应用语义。
+        self.plan_projection_builder = PlanProjectionBuilder(
+            self.session, self.corridor_model, self.corridor_gap_analyzer,
+        )
         #: Round 2.5：P17 连续服务 / 不可接受事件评估。它是**严格下游**的消费者
         #: （P14/P15/P16 + 机载档案 + 显式工程证据 + 操作场景 + 参数策略 + Radar 证据），
         #: 绝不重算 P14/P15/P16，也绝不反向让上游过时。
+        #: Round 2.6：它现在**必须**评估"P16 selected_actions 实施后的投影态"。
         self.continuous_service_service = ContinuousServiceService(
             self.session, ContinuousServiceAcceptabilityV1(),
             self.invalidation_service, snapshot,
+            plan_projection=self.plan_projection_builder,
         )
         self.plan_review_service = PlanReviewService(
             self.session, self.coverage_model_3d, self.cns_service_model,
             self.timeline_model, self.gap_analyzer_v2, self.corridor_model,
             self.corridor_gap_analyzer, snapshot, self.invalidation_service,
             continuous_service=self.continuous_service_service,
+            plan_projection=self.plan_projection_builder,
         )
         self.export_service = ExportService(self.session, snapshot)
         self.report_service = PlanningReportService(

@@ -29,6 +29,10 @@
 // =========================================================
 import {escapeHtml,shell,statusBadge,statusText,readinessText,emptyReasonText,
   advancedAuditNote,blockerList,wbPanel,wbBlock,wbSegHint,wbDisclosure} from './common.js';
+import {
+  ACCEPTABILITY_TEXT,STEP6_ALLOWED_ACCEPTABILITY,continuousServiceModel,limitationRows,
+  parameterRows,step6GateAllows,step6GateModel,threatLayerRows,
+} from './continuous_service.js';
 import {activeMapFigure,applicabilityText,getMapFigureState,refreshMapFigureState,
   resetMapFigureState} from
   './map_figure_state.js';
@@ -142,6 +146,21 @@ function reviewBlockers(flow){
     detail:'只有在人工勾选知情确认并填写确认理由后，才能确认该方案；系统不会自动勾选，也不会替用户确认。'});
   else if(selected&&gateStatus!=='ready_for_confirmation')items.push({kind:'blocker',text:'确认门禁尚未打开',
     detail:'当前确认门禁状态：'+statusText(gateStatus)+'。'});
+  //: Round 2.6：每个 variant 必须有自己的 P17 投影结论；未评估 / 投影结论不可接受
+  //: 时一律 fail-closed（与后端 _variant_p17_gate 一致，前端只如实显示）。
+  if(selected){
+    const p17=variantContinuousServiceProjection(selected);
+    if(!p17.evaluated){
+      items.push({kind:'blocker',text:'本 variant 尚未做 P17 评估',
+        detail:'projected_status='+String(p17.projectedStatus??'缺失')
+          +'：该 variant 的 P17 投影结论不可用，因此保持不可判定并阻止确认（fail-closed）；'
+          +'绝不把它显示为通过。请重新评价该方案或调整动作后重试。'});
+    }else if(!p17.passes){
+      items.push({kind:'blocker',text:'本 variant 实施后的 P17 结论不允许确认',
+        detail:'本 variant 实施后的 P17 结论：'+p17.label
+          +'。只有 fully_satisfied / acceptable_with_managed_gap 才允许进入正式评审。'});
+    }
+  }
   if(confirmed.status==='confirmed'&&confirmed.current_applicability!=='current')items.push({kind:'blocker',
     text:'已确认方案对应旧项目状态',detail:'需要重新初始化方案审查并重新确认，才能再次应用。'});
   if(active&&active.current_applicability==='stale_current_project')items.push({kind:'blocker',
@@ -229,6 +248,95 @@ function comparisonMatrixTable(selected){
 }
 
 // ---- 方案选择 / 方案编辑 / 确认与应用 ----------------------------------------
+
+/**
+ * 某个 Plan Variant 的 P17 投影结论（Round 2.6）。
+ *
+ * 契约：``variant.evaluation.continuous_service_projection``，只转印不推导：
+ * ``{evaluated_for_this_variant, projected_status, projected_managed_gap_count,
+ *   projected_unacceptable_count, projected_unknown_count, status, comparison,
+ *   limitations[], applied_action_ids[], ...}``。
+ *
+ * fail-closed 规则：``evaluated_for_this_variant !== true`` ⇒ 该 variant **尚未做
+ * P17 评估**；``projected_status`` 缺失时**绝不显示为通过**，而是「不可判定 / 阻止」。
+ */
+export function variantContinuousServiceProjection(variant){
+  const evaluation=variant?.evaluation||{};
+  const raw=evaluation.continuous_service_projection||null;
+  const projection=raw||{};
+  const evaluated=projection.evaluated_for_this_variant===true;
+  const projectedStatus=projection.projected_status??projection.status??null;
+  const gate=projection.variant_specific_gate||{};
+  //: 没有完成本 variant 评估时，`projected_status` 即使存在也不得当作通过。
+  const effectiveStatus=evaluated?(projectedStatus||'unknown'):null;
+  const passes=step6GateAllows(effectiveStatus);
+  const text=effectiveStatus
+    ?(ACCEPTABILITY_TEXT[effectiveStatus]||{label:String(effectiveStatus),note:''})
+    :(ACCEPTABILITY_TEXT.unknown||{label:'不可判定',note:''});
+  return {
+    present:Boolean(raw),
+    evaluated,
+    evaluatedBasis:projection.evaluated_basis||null,
+    projectedStatus,
+    effectiveStatus,
+    passes,
+    label:evaluated?String(text.label):'不可判定（尚未评估 ⇒ 阻止）',
+    statusText:String(text.label),
+    note:evaluated
+      ?String(text.note||'')
+      :'本 variant 尚未做 P17 评估，因此保持不可判定/阻止（fail-closed）。',
+    baselineStatus:projection.baseline_status??null,
+    postPlanStatus:projection.post_plan_status??null,
+    managedGapCount:projection.projected_managed_gap_count??null,
+    unacceptableCount:projection.projected_unacceptable_count??null,
+    unknownCount:projection.projected_unknown_count??null,
+    comparison:projection.comparison||null,
+    limitations:projection.limitations||[],
+    disclosureLines:projection.disclosure_lines||[],
+    appliedActionIds:projection.applied_action_ids||[],
+    projectionSemantics:projection.projection_semantics||null,
+    persistedAsUpstream:projection.persisted_as_upstream===true,
+    writtenIntoExistingCns:projection.written_into_existing_cns===true,
+    primaryThreatStatus:projection.primary_threat_status??null,
+    supplementaryThreatStatus:projection.supplementary_threat_status??null,
+    blockingReason:gate.blocking_reason||null,
+    //: 后端自己的 note 原样保留（审计用），但**不覆盖**上面的 fail-closed 说明。
+    backendNote:projection.note||null,
+    //: 该结论属于**该 variant 的投影态**，不是现网事实 —— 由渲染层逐字写出。
+    isProjection:true,
+  };
+}
+
+//: 「该结论属于本 variant 的投影态，不是现网事实」——必须逐字出现在 variant 卡上。
+export const VARIANT_P17_PROJECTION_NOTE='该结论属于本 variant 的投影态，不是现网事实。';
+
+/** 每个 Plan Variant 卡片上的 P17 投影结论区块（本 variant 自己的结论）。 */
+function variantP17Line(variant){
+  const model=variantContinuousServiceProjection(variant);
+  const badge=model.evaluated
+    ?statusBadge(model.effectiveStatus||'unknown')
+    :statusBadge('unknown');
+  return '<div class="review-row" data-variant-p17="'+escapeHtml(String(variant?.variant_id||''))+'">'
+    +'<span>本 variant 实施后的 P17 结论</span>'
+    +'<span class="review-value">'+badge
+    +'<small data-variant-p17-status="'+escapeHtml(String(model.effectiveStatus||'—'))+'">'
+    +'本 variant 实施后的 P17 结论：'+escapeHtml(model.label)
+    +'（projected_status='+escapeHtml(String(model.projectedStatus??'—'))
+    +' · evaluated_for_this_variant='+escapeHtml(String(model.evaluated))+'）</small>'
+    +'<small>'+escapeHtml(VARIANT_P17_PROJECTION_NOTE)+'</small>'
+    +(model.evaluated
+      ?'<small>managed gap '+escapeHtml(String(model.managedGapCount??'—'))
+        +' · unacceptable '+escapeHtml(String(model.unacceptableCount??'—'))
+        +' · unknown '+escapeHtml(String(model.unknownCount??'—'))+'</small>'
+        +'<small>P17 门禁：'+escapeHtml(model.passes?'允许（需逐段披露 managed gap）':'阻止确认（fail-closed）')
+        +'</small>'
+      :'<small><b>本 variant 尚未做 P17 评估</b>：projected_status '
+        +escapeHtml(String(model.projectedStatus??'缺失'))
+        +'，因此**不可判定 / 阻止**，绝不显示为通过。</small>')
+    +(model.blockingReason?'<small>'+escapeHtml(model.blockingReason)+'</small>':'')
+    +'</span></div>';
+}
+
 /**
  * 候选方案卡：每个候选一个「选择此方案」按钮（secondary）。
  * 选择按钮不设 primary：候选可能有多个，设成 primary 会让同一分段出现多个主操作，
@@ -242,22 +350,165 @@ function variantCards(selectedVariantId,review){
     return '<div class="review-block plan-variant '+(selected?'selected':'')+'"><b>'+escapeHtml(variant.name||variant.variant_id)+'</b>'
       +'<span>'+(selected?'当前已选候选':'候选方案')+' · '+actions.length+' 个动作 · 确认门禁：'+statusText(gate.status||'not_evaluated')+'</span>'
       +'<small>方案编号：'+escapeHtml(variant.variant_id||'')+(variant.source?' · 来源标识：'+escapeHtml(variant.source):'')+'</small>'
+      +variantP17Line(variant)
       +'<button class="secondary selectPlanVariant" data-variant-id="'+escapeHtml(variant.variant_id||'')+'">'+(selected?'当前已选（重新选择）':'选择此方案')+'</button></div>';
   }).join('')||'<div class="empty">尚未初始化方案审查。</div>';
 }
+
+/**
+ * Step6 强制披露中心：managed gap、工程假设、能力限制 limitations 原文、
+ * FC30 profile、通信阈值、route protection 参数 —— 全部集中显示。
+ *
+ * 只转印后端字段；任何一个来源缺失都如实写"（后端未提供）"，绝不冒充。
+ */
+export function mandatoryDisclosureModel(flow){
+  const model=continuousServiceModel(flow);
+  const gate=step6GateModel(flow);
+  const fc30=model.fc30||{};
+  const limits=limitationRows(model);
+  const parameters=parameterRows(model);
+  const byField=Object.fromEntries(parameters.map(item=>[item.field,item]));
+  return {
+    gate,
+    managedGapCount:gate.managedGapCount,
+    managedGapDisclosureLines:model.result.disclosure_lines||[],
+    //: 工程假设：内置工程基线 / 尚无依据（evidence_required）的参数逐项列出。
+    engineeredAssumptions:parameters
+      .filter(item=>item.authority==='builtin_engineering_assumption'
+        ||item.authority==='evidence_required'
+        ||item.authority==='policy_override')
+      .map(item=>({
+        field:item.field,label:item.label,value:item.value,unit:item.unit,
+        authority:item.authority,authorityText:item.authorityText,
+        sourceTypeText:item.sourceTypeText,reason:item.reason,
+        evidenceRequired:item.evidenceRequired,
+      })),
+    //: 能力限制（Radar 非合作监视）原文：**不得**被渲染成 error / 系统错误。
+    limitations:limits,
+    //: FC30 profile 与通信阈值（设备事实 / 规划阈值 / 冗余退化阈值三件分开）。
+    fc30:{
+      selectedAircraftId:fc30.selected_aircraft_id||null,
+      isSelected:fc30.is_selected===true,
+      disclosure:fc30.disclosure||null,
+      deviceFailsafeFact:fc30.device_failsafe_fact||null,
+      projectPlanningThreshold:fc30.project_planning_threshold||null,
+      redundancyDegradationThreshold:fc30.redundancy_degradation_threshold||null,
+      thresholdsAreSeparate:fc30.thresholds_are_separate===true,
+      thresholdMergeForbidden:fc30.threshold_merge_forbidden===true,
+    },
+    //: route protection 参数（保护走廊四分量）。
+    routeProtection:['D_separation_m','D_maneuver_m','D_uncertainty_m']
+      .map(field=>byField[field]).filter(Boolean),
+    threatLayers:threatLayerRows(model),
+    allowedStatuses:STEP6_ALLOWED_ACCEPTABILITY,
+  };
+}
+
+/** 强制披露中心的渲染（与 Step5 面板同一份后端字段，绝不出现第二套结论）。 */
+function mandatoryDisclosureBlock(flow){
+  const model=mandatoryDisclosureModel(flow);
+  const fc30=model.fc30||{};
+  const fact=fc30.deviceFailsafeFact||{};
+  const threshold=fc30.projectPlanningThreshold||{};
+  const redundancy=fc30.redundancyDegradationThreshold||{};
+  const gapLines=model.managedGapDisclosureLines||[];
+  return reviewBlock('强制披露（managed gap / 工程假设 / 能力限制 / FC30 与阈值 / 保护参数）',
+    // ---- managed gap -------------------------------------------------------
+    '<h3>managed gap（有管理的缺口）</h3>'
+    +'<div class="parameter-note">可接受 '+escapeHtml(String(model.managedGapCount))
+    +' 段；缺口真实存在，只因连续时长在工程阈值内被接受：<b>绝不是全覆盖</b>。</div>'
+    +(gapLines.length
+      ?'<div class="scroll-list cns-input-list">'+gapLines.map(line=>
+        '<div class="coverage-card"><small>'+escapeHtml(String(line))+'</small></div>').join('')
+        +'</div>'
+      :'<div class="wb-empty">当前没有 managed gap 披露行。</div>')
+    // ---- 工程假设 ----------------------------------------------------------
+    +'<h3>工程假设（engineering_assumption / 内置工程基线 / 尚无依据）</h3>'
+    +(model.engineeredAssumptions.length
+      ?'<div class="scroll-list cns-input-list">'+model.engineeredAssumptions.map(item=>
+        '<div class="coverage-card" data-engineered-assumption="'+escapeHtml(item.field)+'">'
+        +'<b>'+escapeHtml(item.label||item.field)+'（'+escapeHtml(item.field)+'）</b>'
+        +'<span>取值 '+(item.value!==null&&item.value!==undefined&&item.value!==''
+          ?escapeHtml(String(item.value)):'—')
+        +(item.unit?' '+escapeHtml(item.unit):'')
+        +' · 来源：'+escapeHtml(item.authorityText||'—')
+        +' · '+escapeHtml(item.sourceTypeText||'—')+'</span>'
+        +(item.evidenceRequired?'<span><b>尚无依据（必须显式登记）</b>：判定保持 '
+          +'evidence_required / unknown（fail-closed）</span>':'')
+        +(item.reason?'<small>'+escapeHtml(String(item.reason))+'</small>':'')
+        +'</div>').join('')+'</div>'
+      :'<div class="wb-empty">没有使用内置基线或工程假设的参数。</div>')
+    // ---- 能力限制（limitations）原文 ---------------------------------------
+    +'<h3>能力限制 limitations（Radar 非合作监视，原文披露）</h3>'
+    +(model.limitations.length
+      ?model.limitations.map(item=>
+        '<div class="coverage-card" data-capability-limitation="true" '
+        +'style="border-left:3px solid var(--warn);background:var(--warn-bg)">'
+        +'<b><span class="flow-badge flow-warning">能力限制（黄色 / 橙色）</span>'
+        +escapeHtml(String(item.capability||item.limitationId||'—'))+'</b>'
+        +'<span>'+escapeHtml(String(item.disclosure||'（后端未提供 disclosure）'))+'</span>'
+        +'<span><b>该限制不改变主要威胁（合作无人机 / RID）的判定；'
+        +'不得表述为「监视已完全满足」。</b></span>'
+        +'<small>limitation_id='+escapeHtml(String(item.limitationId||'—'))
+        +' · status='+escapeHtml(String(item.status||'—'))
+        +' · blocking_primary_threat='+escapeHtml(String(item.blockingPrimaryThreat))
+        +' · must_disclose_in_report='+escapeHtml(String(item.mustDiscloseInReport))+'</small>'
+        +'</div>').join('')
+      :'<div class="wb-empty">后端未登记任何能力限制（limitation）。</div>')
+    // ---- FC30 profile 与通信阈值 -------------------------------------------
+    +'<h3>FC30 profile 与通信阈值（设备事实 ≠ 规划阈值；冗余退化是独立阈值）</h3>'
+    +'<div class="coverage-card" data-step6-threshold="device_failsafe_fact">'
+    +'<b>设备事实：失联 &gt; '+escapeHtml(String(fact.value_s??'—'))+' s 可触发 Failsafe RTH</b>'
+    +'<span>is_planning_threshold='+escapeHtml(String(fact.is_planning_threshold))
+    +' · kind='+escapeHtml(String(fact.kind||'—'))+'</span>'
+    +'<small>'+escapeHtml(String(fact.statement||'（后端未提供 statement）'))+'</small></div>'
+    +'<div class="coverage-card" data-step6-threshold="project_planning_threshold"'
+    +(threshold.evidence_required===true?' data-evidence-required="true"':'')+'>'
+    +'<b>本项目规划阈值：用户填写 '
+    +(threshold.value_s===null||threshold.value_s===undefined||threshold.value_s===''
+      ?'—（尚未登记）':escapeHtml(String(threshold.value_s))+' s')+'</b>'
+    +'<span>evidence_required='+escapeHtml(String(threshold.evidence_required))
+    +' · authority='+escapeHtml(String(threshold.authority||'—'))+'</span>'
+    +(threshold.evidence_required===true
+      ?'<span><b>尚未登记 ⇒ 判定保持 evidence_required / unknown（fail-closed）。</b>'
+        +'设备 failsafe 门限不会被自动采用。</span>':'')
+    +'<small>'+escapeHtml(String(threshold.statement||'（后端未提供 statement）'))+'</small></div>'
+    +'<div class="coverage-card" data-step6-threshold="redundancy_degradation_threshold">'
+    +'<b>冗余退化最大允许时间 '+escapeHtml(String(redundancy.value_s??'—'))+' s（独立阈值）</b>'
+    +'<span>separate_from_full_outage='+escapeHtml(String(redundancy.separate_from_full_outage))
+    +' · thresholds_are_separate='+escapeHtml(String(fc30.thresholdsAreSeparate))
+    +' · threshold_merge_forbidden='+escapeHtml(String(fc30.thresholdMergeForbidden))+'</span>'
+    +'<small>'+escapeHtml(String(redundancy.statement||'（后端未提供 statement）'))+'</small></div>'
+    // ---- route protection 参数 --------------------------------------------
+    +'<h3>route protection 参数（保护走廊四分量）</h3>'
+    +(model.routeProtection.length
+      ?'<div class="scroll-list cns-input-list">'+model.routeProtection.map(item=>
+        '<div class="coverage-card" data-route-protection-parameter="'+escapeHtml(item.field)+'">'
+        +'<b>'+escapeHtml(item.label||item.field)+'（'+escapeHtml(item.field)+'）</b>'
+        +'<span>取值 '+(item.value!==null&&item.value!==undefined&&item.value!==''
+          ?escapeHtml(String(item.value)):'—')
+        +(item.unit?' '+escapeHtml(item.unit):'')
+        +' · 来源：'+escapeHtml(item.authorityText||'—')+'</span>'
+        +'</div>').join('')+'</div>'
+      :'<div class="wb-empty">后端未下发 route protection 参数。</div>'),
+    '本区块只转印后端字段：门禁允许值 '+model.allowedStatuses.join(' / ')
+      +'；能力限制不是系统错误，managed gap 绝不是全覆盖。');
+}
+
 function comparisonPanel(flow,review,selected){
   return reviewBlock(SIX_SECTIONS.goal,
       nextStepNote('本分段负责主链的前两步：先初始化方案审查得到候选方案，再由人工选择一个候选。选择只切换当前候选，不等于确认。'))
     +reviewBlock(SIX_SECTIONS.action,
       '<div class="variant-grid">'+variantCards(review.selected_variant_id,review)+'</div>'
       +'<div class="button-row"><button class="primary" id="initializePlanReview">初始化方案审查</button><button class="secondary" id="evaluatePlanVariant" '+(!selected?'disabled':'')+'>重新评价所选方案</button></div>',
-      '选择只改变当前候选方案，不修改任何设施；系统不排序、不评分、不自动选择。')
+      '选择只改变当前候选方案，不修改任何设施；系统不排序、不评分、不自动选择。P17 结论按 variant 各自的投影态显示，绝不把权威结论冒充成本 variant 的结论。')
     +reviewBlock(SIX_SECTIONS.blockers,blockerList(reviewBlockers(flow),
       '当前没有阻塞项：可以继续比较候选方案。'))
     +reviewBlock(SIX_SECTIONS.result,comparisonCards(selected)
       +'<small>满足/缺口/未知均为体素计数；缺口长度为保守纵向投影，不是运行中断时长。</small>'
       +comparisonMatrixTable(selected)
-      +reviewBlock('显式费用',escapeHtml(formatCosts(selected?.evaluation?.action_summary)),'按单位分组，不做跨单位合计；未提供显式费用时使用动作数量代理口径。'))
+      +reviewBlock('显式费用',escapeHtml(formatCosts(selected?.evaluation?.action_summary)),'按单位分组，不做跨单位合计；未提供显式费用时使用动作数量代理口径。')
+      +mandatoryDisclosureBlock(flow))
     +reviewBlock(SIX_SECTIONS.next,
       nextStepNote('下一步：选定候选后到「确认与应用」冻结快照并确认；需要人工增删动作时先到「方案编辑」克隆候选。'));
 }

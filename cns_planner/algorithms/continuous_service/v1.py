@@ -38,10 +38,14 @@ from ...domain.cns_continuous_service import (
     ACCEPTABILITY_STATUSES, BASELINE_VALUES, CONTINUOUS_SERVICE_ALGORITHM_ID,
     CONTINUOUS_SERVICE_ALGORITHM_VERSION, CONTINUOUS_SERVICE_REASONS,
     CONTINUOUS_SERVICE_SCHEMA_VERSION, DEFAULT_SERVICE_ACCEPTABILITY_LIMITS,
-    OPERATION_SCENARIO_DEFAULTS, T_CHAIN_COMPONENTS,
-    aggregate_acceptability, continuous_gap_duration, default_continuous_service_policy,
-    managed_gap_disclosure, protection_distance, subsystem_acceptability_counts,
-    subsystem_status_from_events, surveillance_acceptance, time_chain_total,
+    LIMITATION_SEMANTICS, OPERATION_SCENARIO_DEFAULTS, PRIMARY_THREAT_LAYER,
+    ROUTE_PROTECTION_FORMULA, SUPPLEMENTARY_THREAT_LAYER, T_CHAIN_COMPONENTS,
+    THREAT_LAYER_LABELS, THREAT_LAYERS, aggregate_acceptability,
+    compare_plan_stages, continuous_gap_duration, default_continuous_service_policy,
+    layer_conclusion_status, limitation_disclosure_lines, managed_gap_disclosure,
+    noncooperative_limitations, protection_distance, subsystem_acceptability_counts,
+    subsystem_status_from_events, surveillance_acceptance, surveillance_threat_layers,
+    time_chain_total,
 )
 from ...domain.fc30_profile import (
     FC30_AIRCRAFT_ID, fc30_aircraft_profile, fc30_planning_speeds,
@@ -104,6 +108,14 @@ class ContinuousServiceAcceptabilityV1:
             "unacceptable_count": 0,
             "unknown_count": 0,
             "disclosure_lines": [],
+            #: Round 2.6：两层结论（baseline / post_plan）与强制披露。
+            "baseline_status": status,
+            "post_plan_status": None,
+            "baseline": None,
+            "post_plan_projection": None,
+            "primary_threat_status": None,
+            "supplementary_threat_status": None,
+            "limitations": [],
             "not_evaluated": _not_evaluated(),
         }
 
@@ -113,50 +125,108 @@ class ContinuousServiceAcceptabilityV1:
         aircraft_profile=None, planning_evidence=None, operation_scenario=None,
         continuous_service_policy=None, device_catalog=None,
         radar_surveillance_layout=None,
+        post_plan_projection=None, plan_stage="baseline",
     ) -> dict:
+        """P17 评估入口。
+
+        Round 2.6 核心修复：**P17 必须评估 P16 方案实施后的 projected state**。
+
+        * ``corridor_assessment`` / ``corridor_gap_assessment`` 传入的是
+          :data:`cns_planner.domain.cns_continuous_service.PLAN_STAGES` 里
+          ``plan_stage`` 对应的那一层；``baseline`` 使用当前权威 ExistingCNS，
+          ``post_plan`` 使用"当前权威状态 + P16 ``selected_actions``"的投影态；
+        * ``post_plan_projection`` 是**已经算好的投影层输入**（含 facilities / radar /
+          navigation 证据下的 P14/P15、以及投影来源指纹）。评估器**不重算上游**，
+          只消费调用方（应用层）给出的投影；
+        * 顶层 ``status`` 在存在投影时**跟随投影态**（``post_plan``）——这正是 Step6
+          需要判断的对象；``baseline`` 的完整结论原样保留在 ``baseline`` 字段里。
+
+        绝不"为了出结果"放宽上游：任何输入缺失都如实返回 ``unknown``（fail-closed）。
+        """
+
         policy = continuous_service_policy or default_continuous_service_policy()
         scenario = _operation_scenario(operation_scenario)
-        reason_codes: list[str] = []
 
-        gap_status = (corridor_gap_assessment or {}).get("status")
+        baseline = self._assessment(
+            corridor_assessment=corridor_assessment,
+            corridor_gap_assessment=corridor_gap_assessment, site_plan=site_plan,
+            aircraft_profile=aircraft_profile, planning_evidence=planning_evidence,
+            scenario=scenario, policy=policy, device_catalog=device_catalog,
+            radar_surveillance_layout=radar_surveillance_layout,
+            plan_stage="baseline",
+        )
+
+        if isinstance(post_plan_projection, dict) and post_plan_projection.get("available") is True:
+            post = self._assessment(
+                corridor_assessment=post_plan_projection.get("corridor_assessment"),
+                corridor_gap_assessment=post_plan_projection.get("corridor_gap_assessment"),
+                site_plan=post_plan_projection.get("site_plan") or site_plan,
+                aircraft_profile=aircraft_profile, planning_evidence=planning_evidence,
+                scenario=scenario, policy=policy,
+                device_catalog=post_plan_projection.get("device_catalog") or device_catalog,
+                radar_surveillance_layout=post_plan_projection.get("radar_surveillance_layout")
+                or radar_surveillance_layout,
+                plan_stage="post_plan",
+            )
+            post_payload = self._assessment_payload(post)
+            projection = {
+                **{key: deepcopy(value) for key, value in post_plan_projection.items()
+                   if key not in ("corridor_assessment", "corridor_gap_assessment")},
+                "available": True,
+                "status": post_payload.get("status"),
+                "route_count": post_payload.get("route_count"),
+                #: 完整的两层比较（改进项 + 剩余缺口）。
+                "comparison": compare_plan_stages(
+                    self._assessment_payload(baseline),
+                    post_payload,
+                    {
+                        "baseline_fingerprint": baseline.get("input_fingerprint"),
+                        "post_plan_fingerprint": post.get("input_fingerprint"),
+                        "applied_action_ids": deepcopy(
+                            post_plan_projection.get("applied_action_ids") or []
+                        ),
+                        "projection_semantics": post_plan_projection.get(
+                            "projection_semantics"
+                        ),
+                        "persisted_as_upstream": False,
+                    },
+                ),
+            }
+            post_result = self._assemble(post, projection=projection, baseline=None)
+            baseline_result = self._assemble(baseline, projection=None, baseline=None)
+            result = {
+                **post_result,
+                #: Round 2.6：两层结论都必须**完整保留**；顶层跟随投影态（Step6 判定对象）。
+                "baseline_status": baseline_result.get("status"),
+                "post_plan_status": post_result.get("status"),
+                "baseline": baseline_result,
+            }
+        else:
+            result = self._assemble(baseline, projection=None, baseline=None)
+        result["plan_stage"] = plan_stage
+        result["post_plan_projection_semantics"] = (
+            "post_plan_projection_is_hypothetical_never_written_into_existing_cns"
+        )
+        return result
+
+    # -------------------------------------------------------------- 单层评估
+    def _assessment(
+        self, *, corridor_assessment, corridor_gap_assessment, site_plan,
+        aircraft_profile, planning_evidence, scenario, policy, device_catalog,
+        radar_surveillance_layout, plan_stage,
+    ) -> dict:
+        """对**一层**（baseline 或 post_plan）的 P14/P15 输入做完整评估（不聚合披露）。"""
+
         corridor_status = (corridor_assessment or {}).get("status")
+        gap_status = (corridor_gap_assessment or {}).get("status")
         if corridor_status in (None, "not_calculated", "stale", "missing_data"):
-            return self.empty("unknown", [CONTINUOUS_SERVICE_REASONS["no_upstream_p15"]])
+            return {"__not_evaluable__": CONTINUOUS_SERVICE_REASONS["no_upstream_p15"]}
         if gap_status in (None, "not_calculated", "stale", "missing_data"):
-            return self.empty("unknown", [CONTINUOUS_SERVICE_REASONS["no_upstream_p15"]])
+            return {"__not_evaluable__": CONTINUOUS_SERVICE_REASONS["no_upstream_p15"]}
 
         speed_facts = fc30_planning_speeds(aircraft_profile)
         route_speed = speed_facts["route_speed_mps"]
-        speed_basis = {
-            "route_speed_mps": route_speed,
-            "route_speed_source": "selected_aircraft_profile.cruise_speed_mps",
-            "max_horizontal_speed_mps": speed_facts["max_horizontal_speed_mps"],
-            "selected_aircraft_id": (aircraft_profile or {}).get("aircraft_id"),
-            #: FC30 canonical 参考值：当前项目若选了别的档案，这里如实并列，
-            #: 便于"为什么 R0005 的持续时间和 FC30 的 15 m/s 不一致"可核查。
-            "fc30_route_speed_mps": FC30_ROUTE_SPEED_MPS,
-            "fc30_route_speed_source": "fc30_canonical_profile.route_speed（仅作为参考基线）",
-            "duration_formula": "along_route_gap_m / current_route_speed_mps",
-            "semantics": "duration_uses_the_selected_profile_route_speed_never_max_speed",
-        }
-
-        parameters = {
-            name: resolve_continuous_parameter(planning_evidence, name)
-            for name in PLANNING_EVIDENCE_FIELDS
-            if PLANNING_EVIDENCE_FIELDS[name].get("kind") == "continuous_service_parameter"
-        }
-        for name, override in (policy.get("parameter_overrides") or {}).items():
-            #: 显式覆盖容器优先于"证据 + 内置基线"（它在 UI 里就是一次显式动作）。
-            if name in parameters and override is not None:
-                parameters[name] = {
-                    **parameters[name],
-                    "value": override,
-                    "authority": "policy_override",
-                    "source_type": "engineering_assumption",
-                    "participating": True,
-                    "reason": "由 cns_continuous_service_policy 显式覆盖",
-                }
-
+        parameters = self._parameters(planning_evidence, policy)
         limits = {
             code: {
                 kind: _limit(parameters, code, kind, policy)
@@ -164,7 +234,6 @@ class ContinuousServiceAcceptabilityV1:
             }
             for code in _SERVICE_SUBSYSTEMS
         }
-
         gap_routes = {
             str(route.get("route_id") or ""): route
             for route in (corridor_gap_assessment or {}).get("routes") or []
@@ -173,10 +242,8 @@ class ContinuousServiceAcceptabilityV1:
             str(route.get("route_id") or ""): route
             for route in (corridor_assessment or {}).get("routes") or []
         }
-        requirement_sets = _requirement_index(
-            (site_plan or {}).get("route_requirements")
-        )
-
+        requirement_sets = _requirement_index((site_plan or {}).get("route_requirements"))
+        reason_codes: list[str] = []
         routes = []
         for route_id, gap_route in gap_routes.items():
             corridor_route = corridor_routes.get(route_id)
@@ -194,44 +261,19 @@ class ContinuousServiceAcceptabilityV1:
                 route_speed=route_speed, device_catalog=device_catalog or {},
                 radar_layout=radar_surveillance_layout or {},
                 requirement_set=requirement_sets.get(route_id) or {},
-                aircraft_profile=aircraft_profile,
+                aircraft_profile=aircraft_profile, plan_stage=plan_stage,
             ))
-
-        statuses = [route.get("status") for route in routes]
-        status = aggregate_acceptability(statuses)
-        if status == "not_applicable":
-            #: 空集与"评估对象存在但结论无法归属"必须分开：
-            #: 没有任何航路可评估 ⇒ 本层没有可拒绝的对象（fully_satisfied）；
-            #: 有航路却全部 not_applicable ⇒ 保持 unknown（fail-closed）。
-            status = "fully_satisfied" if not routes else "unknown"
-            if routes:
-                reason_codes.append("no_applicable_route_scope")
-        if route_speed in (None, ""):
-            reason_codes.append("no_route_speed")
-        disclosure = []
-        managed = 0
-        unacceptable = 0
-        unknown = 0
-        unacceptable_subsystems = 0
-        unknown_subsystems = 0
-        for route in routes:
-            for entry in route.get("managed_gaps") or []:
-                managed += 1
-                disclosure.extend(managed_gap_disclosure(
-                    {**entry, "route_id": route.get("route_id")}
-                ))
-            unacceptable += int(route.get("status") == "unacceptable")
-            unknown += int(route.get("status") == "unknown")
-            unacceptable_subsystems += len(route.get("unacceptable_subsystems") or [])
-            unknown_subsystems += len(route.get("unknown_subsystems") or [])
-            reason_codes.extend(route.get("reason_codes") or [])
-
         return {
-            "status": status,
-            "algorithm_id": self.algorithm_id,
-            "algorithm_version": self.algorithm_version,
-            "model_scope": self.model_scope,
-            "schema_version": CONTINUOUS_SERVICE_SCHEMA_VERSION,
+            "__evaluated__": True,
+            "routes": routes,
+            "reason_codes": reason_codes,
+            "route_speed": route_speed,
+            "speed_facts": speed_facts,
+            "parameters": parameters,
+            "limits": limits,
+            "scenario": scenario,
+            "policy": policy,
+            "aircraft_profile": aircraft_profile,
             "input_fingerprint": _fingerprint({
                 "corridor": (corridor_assessment or {}).get("input_fingerprint"),
                 "gap": (corridor_gap_assessment or {}).get("input_fingerprint"),
@@ -249,34 +291,189 @@ class ContinuousServiceAcceptabilityV1:
                 "scenario": scenario,
                 "policy": _policy_identity(policy),
             }),
-            "status_vocabulary": list(ACCEPTABILITY_STATUSES),
-            "operation_scenario": scenario,
-            "route_speed_mps": route_speed,
-            "max_horizontal_speed_mps": speed_facts["max_horizontal_speed_mps"],
-            "speed_basis": speed_basis,
-            "service_acceptability_limits": limits,
-            "route_count": len(routes),
+        }
+
+    @staticmethod
+    def _assessment_payload(assessment) -> dict:
+        """把内部单层评估压成公开的两层比较所需形状（**只含 routes 级结论**）。
+
+        完整字段（参数、阈值、速度基线、指纹）由 :meth:`_assemble` 从同一份评估里取，
+        因此两层比较与公开结果**不会**出现两套聚合逻辑。
+        """
+
+        if not isinstance(assessment, dict) or assessment.get("__evaluated__") is not True:
+            return {
+                "status": "unknown", "routes": [], "route_count": 0,
+                "reasons": [CONTINUOUS_SERVICE_REASONS["no_upstream_p15"]],
+                "reason_codes": ["no_upstream_p15"], "input_fingerprint": None,
+                "managed_gap_count": 0, "unacceptable_count": 0, "unknown_count": 0,
+                "unacceptable_subsystem_count": 0, "unknown_subsystem_count": 0,
+                "disclosure_lines": [],
+            }
+        routes = assessment["routes"]
+        return {
+            "status": _route_set_status(routes),
             "routes": routes,
-            "parameters": _parameter_projection(parameters),
+            "route_count": len(routes),
             "reasons": sorted({
                 reason for route in routes for reason in (route.get("reasons") or [])
             }),
+            "reason_codes": sorted(set(assessment.get("reason_codes") or [])),
+            "input_fingerprint": None,
+            "managed_gap_count": sum(
+                len(route.get("managed_gaps") or []) for route in routes
+            ),
+            "unacceptable_count": sum(
+                int(route.get("status") == "unacceptable") for route in routes
+            ),
+            "unknown_count": sum(
+                int(route.get("status") == "unknown") for route in routes
+            ),
+            "unacceptable_subsystem_count": sum(
+                len(route.get("unacceptable_subsystems") or []) for route in routes
+            ),
+            "unknown_subsystem_count": sum(
+                len(route.get("unknown_subsystems") or []) for route in routes
+            ),
+            "disclosure_lines": [
+                line for route in routes
+                for entry in (route.get("managed_gaps") or [])
+                for line in managed_gap_disclosure(
+                    {**entry, "route_id": route.get("route_id")}
+                )
+            ],
+        }
+
+    def _assemble(self, assessment, *, projection, baseline) -> dict:
+        """把单层评估结果组装成公开结果（含两层比较与强制披露）。"""
+
+        payload = self._assessment_payload(assessment)
+        routes = payload.get("routes") or []
+        status = payload.get("status") or "unknown"
+        #: 原因码必须**同时**聚合"逐 route 的原因码"与"评估级别的原因码"：
+        #: 只取后者会让"探测证据不足"这类真实原因在前端/报告里消失。
+        reason_codes = list(payload.get("reason_codes") or [])
+        reason_codes.extend(
+            code for route in routes for code in (route.get("reason_codes") or [])
+        )
+        if status == "not_applicable":
+            #: 空集与"评估对象存在但结论无法归属"必须分开：
+            #: 没有任何航路可评估 ⇒ 本层没有可拒绝的对象（fully_satisfied）；
+            #: 有航路却全部 not_applicable ⇒ 保持 unknown（fail-closed）。
+            status = "fully_satisfied" if not routes else "unknown"
+            if routes:
+                reason_codes.append("no_applicable_route_scope")
+        route_speed = assessment.get("route_speed") if isinstance(assessment, dict) else None
+        speed_facts = (assessment or {}).get("speed_facts") or {}
+        if route_speed in (None, ""):
+            reason_codes.append("no_route_speed")
+        parameters = (assessment or {}).get("parameters") or {}
+        scenario = (assessment or {}).get("scenario") or {}
+
+        limitations = [
+            deepcopy(item) for route in routes for item in (route.get("limitations") or [])
+        ]
+        seen_limitations = set()
+        unique_limitations = []
+        for item in limitations:
+            key = str(item.get("limitation_id") or "")
+            if key in seen_limitations:
+                continue
+            seen_limitations.add(key)
+            unique_limitations.append(item)
+        disclosure = list(payload.get("disclosure_lines") or [])
+        disclosure.extend(limitation_disclosure_lines(unique_limitations))
+
+        return {
+            "status": status,
+            "algorithm_id": self.algorithm_id,
+            "algorithm_version": self.algorithm_version,
+            "model_scope": self.model_scope,
+            "schema_version": CONTINUOUS_SERVICE_SCHEMA_VERSION,
+            "plan_stage": "baseline",
+            "input_fingerprint": (assessment or {}).get("input_fingerprint"),
+            "status_vocabulary": list(ACCEPTABILITY_STATUSES),
+            "operation_scenario": scenario,
+            "route_speed_mps": route_speed,
+            "max_horizontal_speed_mps": speed_facts.get("max_horizontal_speed_mps"),
+            "speed_basis": {
+                "route_speed_mps": route_speed,
+                "route_speed_source": "selected_aircraft_profile.cruise_speed_mps",
+                "max_horizontal_speed_mps": speed_facts.get("max_horizontal_speed_mps"),
+                "selected_aircraft_id": ((assessment or {}).get("aircraft_profile") or {}).get(
+                    "aircraft_id"
+                ),
+                #: FC30 canonical 参考值：当前项目若选了别的档案，这里如实并列，
+                #: 便于"为什么 R0005 的持续时间和 FC30 的 15 m/s 不一致"可核查。
+                "fc30_route_speed_mps": FC30_ROUTE_SPEED_MPS,
+                "fc30_route_speed_source": "fc30_canonical_profile.route_speed（仅作为参考基线）",
+                "duration_formula": "along_route_gap_m / current_route_speed_mps",
+                "semantics": "duration_uses_the_selected_profile_route_speed_never_max_speed",
+            },
+            "service_acceptability_limits": (assessment or {}).get("limits") or {},
+            "route_count": len(routes),
+            "routes": routes,
+            "parameters": _parameter_projection(parameters),
+            "reasons": payload.get("reasons") or [],
             "reason_codes": sorted(set(reason_codes)),
-            "managed_gap_count": managed,
-            "unacceptable_count": unacceptable,
-            "unknown_count": unknown,
+            "managed_gap_count": payload.get("managed_gap_count") or 0,
+            "unacceptable_count": payload.get("unacceptable_count") or 0,
+            "unknown_count": payload.get("unknown_count") or 0,
             #: 子系统级计数：路线结论为 unacceptable 时仍可能有 unknown 子系统，
             #: 两者都如实披露（不隐藏任何一类）。
-            "unacceptable_subsystem_count": unacceptable_subsystems,
-            "unknown_subsystem_count": unknown_subsystems,
+            "unacceptable_subsystem_count": payload.get("unacceptable_subsystem_count") or 0,
+            "unknown_subsystem_count": payload.get("unknown_subsystem_count") or 0,
             "disclosure_lines": disclosure,
+            "baseline_status": status,
+            "post_plan_status": (
+                projection.get("status") if isinstance(projection, dict) else None
+            ),
+            "baseline": baseline,
+            "post_plan_projection": projection,
+            "primary_threat_status": _merged_threat_status(routes, PRIMARY_THREAT_LAYER),
+            "supplementary_threat_status": _merged_threat_status(
+                routes, SUPPLEMENTARY_THREAT_LAYER
+            ),
+            "limitations": unique_limitations,
+            "threat_layer_semantics": (
+                "cooperative_rid_primary_and_noncooperative_radar_supplementary_"
+                "evaluated_separately_never_merged"
+            ),
             "not_evaluated": _not_evaluated(),
         }
+
+    @staticmethod
+    def _parameters(planning_evidence, policy) -> dict:
+        """解析全部 P17 参数，并叠加**显式策略覆盖**（覆盖优先于证据与内置基线）。"""
+
+        parameters = {
+            name: resolve_continuous_parameter(planning_evidence, name)
+            for name in PLANNING_EVIDENCE_FIELDS
+            if PLANNING_EVIDENCE_FIELDS[name].get("kind") == "continuous_service_parameter"
+        }
+        for name, override in (policy.get("parameter_overrides") or {}).items():
+            #: 显式覆盖容器优先于"证据 + 内置基线"（它在 UI 里就是一次显式动作）。
+            if name in parameters and override is not None:
+                parameters[name] = {
+                    **parameters[name],
+                    "value": override,
+                    "authority": "policy_override",
+                    "source_type": "engineering_assumption",
+                    "participating": True,
+                    "reason": "由 cns_continuous_service_policy 显式覆盖",
+                }
+        return parameters
+
+    def evaluate_legacy(self, **kwargs) -> dict:
+        """（保留给旧调用点的签名兼容入口；行为与 :meth:`evaluate` 一致。）"""
+
+        return self.evaluate(**kwargs)
 
     # ------------------------------------------------------------------ 单航路
     def _route(
         self, *, route_id, corridor_route, gap_route, parameters, limits, scenario,
         route_speed, device_catalog, radar_layout, requirement_set, aircraft_profile=None,
+        plan_stage="baseline",
     ):
         reasons: list[str] = []
         reason_codes: list[str] = []
@@ -286,24 +483,37 @@ class ContinuousServiceAcceptabilityV1:
             "horizontal_half_width_m"
         )
 
-        # ---- 保护走廊 ------------------------------------------------------
-        speed_basis = str(parameters["relative_speed_basis"]["value"] or "conservative")
-        relative_speed = parameters[
+        # ---- 保护走廊（Round 2.6 四分量公式） -------------------------------
+        speed_basis = str(_parameter_value(parameters, "relative_speed_basis") or "conservative")
+        relative_speed = _parameter_value(
+            parameters,
             "conservative_closing_speed_mps" if speed_basis == "conservative"
-            else "nominal_closing_speed_mps"
-        ]["value"]
+            else "nominal_closing_speed_mps",
+        )
         t_chain = time_chain_total({
-            name: parameters[f"T_chain_{name}_s"]["value"] for name in T_CHAIN_COMPONENTS
+            name: _parameter_value(parameters, f"T_chain_{name}_s")
+            for name in T_CHAIN_COMPONENTS
         })
         if t_chain is None:
             reason_codes.append("no_time_chain")
             reasons.append(CONTINUOUS_SERVICE_REASONS["no_time_chain"])
-        d_safety = parameters["D_safety_m"]["value"]
-        d_uncertainty = parameters["D_uncertainty_m"]["value"]
-        d_protection = protection_distance(d_safety, relative_speed, t_chain, d_uncertainty)
+        d_separation = _parameter_value(parameters, "D_separation_m")
+        d_maneuver = _parameter_value(parameters, "D_maneuver_m")
+        d_uncertainty = _parameter_value(parameters, "D_uncertainty_m")
+        d_protection = protection_distance(
+            d_separation, relative_speed, t_chain, d_uncertainty, d_maneuver,
+        )
         if d_protection is None and "no_time_chain" not in reason_codes:
-            reason_codes.append("no_time_chain")
-            reasons.append(CONTINUOUS_SERVICE_REASONS["no_time_chain"])
+            #: 四分量里缺任何一项都不可判定；如实区分"链时延缺失"与"距离分量缺证据"，
+            #: 绝不把"没有工程依据"说成"链时延算不出来"。
+            if t_chain is None:
+                reason_codes.append("no_time_chain")
+                reasons.append(CONTINUOUS_SERVICE_REASONS["no_time_chain"])
+            else:
+                reason_codes.append("protection_distance_evidence_required")
+                reasons.append(
+                    CONTINUOUS_SERVICE_REASONS["protection_distance_evidence_required"]
+                )
         if not route_path:
             reason_codes.append("no_p13_geometry")
             reasons.append(CONTINUOUS_SERVICE_REASONS["no_p13_geometry"])
@@ -312,21 +522,34 @@ class ContinuousServiceAcceptabilityV1:
             "route_path": deepcopy(route_path),
             "route_length_m": route_length,
             "cns_requirement_corridor_half_width_m": half_width,
-            "D_safety_m": d_safety,
+            #: Round 2.6 四个分量逐项给出（含各自的 authority），前端逐项显示。
+            "D_separation_m": d_separation,
+            "D_separation_authority": _parameter_authority(parameters, "D_separation_m"),
+            "D_maneuver_m": d_maneuver,
+            "D_maneuver_authority": _parameter_authority(parameters, "D_maneuver_m"),
+            "D_maneuver_semantics": "engineering_baseline_interface_not_regulatory_value",
             "D_uncertainty_m": d_uncertainty,
+            "D_uncertainty_authority": _parameter_authority(parameters, "D_uncertainty_m"),
+            #: 兼容：Round 2.5 字段名保留为**同一物理量的镜像**（不是第二个真值）。
+            "D_safety_m": d_separation,
             "V_relative_mps": relative_speed,
             "relative_speed_basis": speed_basis,
             "T_chain_s": t_chain,
             "T_chain_components_s": {
-                name: parameters[f"T_chain_{name}_s"]["value"] for name in T_CHAIN_COMPONENTS
+                name: _parameter_value(parameters, f"T_chain_{name}_s")
+                for name in T_CHAIN_COMPONENTS
             },
             "D_protection_m": d_protection,
             "outer_half_width_m": (
                 None if d_protection is None or half_width in (None, "")
                 else float(half_width) + float(d_protection)
             ),
-            "formula": "D_protection = D_safety + V_relative * T_chain + D_uncertainty",
-            "status": "evaluated" if d_protection is not None and route_path else "unknown",
+            "formula": ROUTE_PROTECTION_FORMULA,
+            "status": (
+                "evaluated" if d_protection is not None and route_path
+                else "evidence_required" if route_path
+                else "unknown"
+            ),
         }
 
         # ---- 逐 service 的首次探测距离证据 ---------------------------------
@@ -336,18 +559,18 @@ class ContinuousServiceAcceptabilityV1:
             aircraft_profile=aircraft_profile,
         )
         #: 几何一致性：声明的探测范围必须真的能覆盖到安全边界之外，否则该距离
-        #: 不构成"首次探测距离"证据。服务几何与 D_safety 是两套独立输入，任一变化
+        #: 不构成"首次探测距离"证据。服务几何与 D_separation 是两套独立输入，任一变化
         #: 都不应让另一个被静默忽略（不制造结果）。
         if (
             detection.get("usable")
-            and d_safety not in (None, "")
+            and d_separation not in (None, "")
             and detection.get("first_detection_distance_m") is not None
-            and float(detection["first_detection_distance_m"]) < float(d_safety)
+            and float(detection["first_detection_distance_m"]) < float(d_separation)
         ):
             detection = {
                 **detection, "usable": False, "coverage_status": "not_satisfied",
                 "not_usable_reason": (
-                    "声明的探测范围小于安全边界距离：无法在安全边界之外完成探测-响应"
+                    "声明的探测范围小于分隔距离：无法在分隔边界之外完成探测-响应"
                 ),
             }
             detection_reason = CONTINUOUS_SERVICE_REASONS["detection_range_below_safety_distance"]
@@ -356,7 +579,7 @@ class ContinuousServiceAcceptabilityV1:
         chain_configured = t_chain is not None
         acceptance = surveillance_acceptance(
             detection.get("first_detection_distance_m") if detection.get("usable") else None,
-            d_safety, relative_speed, t_chain,
+            d_separation, relative_speed, t_chain,
         )
         if acceptance["status"] == "unacceptable":
             reason_codes.append("tmargin_negative")
@@ -403,9 +626,26 @@ class ContinuousServiceAcceptabilityV1:
         all_events = [
             event for kind in events_by_kind for event in events_by_kind[kind]
         ]
+        #: Round 2.6：监视威胁**分层**结论（合作 RID 主要 / 非合作 Radar 补充）。
+        #: 两者分开评估、分开披露，绝不合并成一个 surveillance 结论。
+        threat_layers = surveillance_threat_layers({"subsystems": subsystems})
+        limitations = noncooperative_limitations(radar_layout)
+        cooperative_status = layer_conclusion_status(threat_layers[PRIMARY_THREAT_LAYER])
+        noncooperative_entry = threat_layers[SUPPLEMENTARY_THREAT_LAYER]
+        noncooperative_status = layer_conclusion_status(noncooperative_entry)
+        if limitations:
+            #: Radar 求解不可行是**真实工程结论**，登记为能力限制；
+            #: 它不改变主要威胁（合作无人机）的判定。
+            noncooperative_status = "limitation"
+        elif noncooperative_status == "not_applicable":
+            #: 没有非合作监视证据既不是"满足"也不是"限制"：如实保持 unknown。
+            noncooperative_status = "unknown"
+        for item in limitations:
+            item["route_id"] = route_id
         return {
             "route_id": route_id,
             "status": status,
+            "plan_stage": plan_stage,
             "subsystem_acceptability_counts": subsystem_counts,
             "unacceptable_subsystems": sorted(
                 f"{item['subsystem']}:{item.get('service')}"
@@ -420,6 +660,18 @@ class ContinuousServiceAcceptabilityV1:
             "corridor": corridor,
             "first_detection_evidence": detection,
             "surveillance_acceptance": acceptance,
+            #: 分层结果：合作（主要威胁）/ 非合作（补充威胁）。
+            "threat_layers": threat_layers,
+            "primary_threat_layer": PRIMARY_THREAT_LAYER,
+            "primary_threat_status": cooperative_status,
+            "supplementary_threat_layer": SUPPLEMENTARY_THREAT_LAYER,
+            "supplementary_threat_status": noncooperative_status,
+            "supplementary_threat_is_limitation": bool(limitations),
+            "limitations": limitations,
+            "threat_layer_note": (
+                "合作无人机（RID）是主要威胁、非合作无人机（Radar）是补充威胁；"
+                "两者分开判定，补充威胁的能力限制不改变主要威胁的结论。"
+            ),
             "subsystems": subsystems,
             "events": all_events,
             "events_by_kind": {
@@ -487,8 +739,13 @@ class ContinuousServiceAcceptabilityV1:
             degradation_limit_s=limits["redundancy_degradation"],
         )
         if status == "unknown":
-            reason_codes.append("no_route_speed")
-            reasons.append(CONTINUOUS_SERVICE_REASONS["no_route_speed"])
+            if any(limit is None for limit in limits.values()):
+                #: 阈值本身缺失（不是缺口长度不可判定）：原因必须与"缺航路速度"区分开。
+                reason_codes.append("no_outage_threshold_evidence")
+                reasons.append(CONTINUOUS_SERVICE_REASONS["no_outage_threshold_evidence"])
+            else:
+                reason_codes.append("no_route_speed")
+                reasons.append(CONTINUOUS_SERVICE_REASONS["no_route_speed"])
         if status == "unacceptable":
             for event in events:
                 if event.get("exceeds_limit"):
@@ -531,10 +788,10 @@ class ContinuousServiceAcceptabilityV1:
         gnss = _navigation_state(
             parameters, gap_route=gap_route, entry=entry, key="gnss_availability",
         )
-        containment = parameters["navigation_route_containment_accuracy_m"]["value"]
-        accuracy = parameters["gnss_accuracy_along_route_m"]["value"]
-        accuracy_basis = parameters["gnss_accuracy_along_route_m"]
-        containment_basis = parameters["navigation_route_containment_accuracy_m"]
+        containment = _parameter_value(parameters, "navigation_route_containment_accuracy_m")
+        accuracy = _parameter_value(parameters, "gnss_accuracy_along_route_m")
+        accuracy_basis = parameters.get("gnss_accuracy_along_route_m") or {}
+        containment_basis = parameters.get("navigation_route_containment_accuracy_m") or {}
 
         events = []
         reasons_local: list[str] = []
@@ -717,16 +974,69 @@ def _operation_scenario(value) -> dict:
     return scenario
 
 
+def _parameter_value(parameters, name):
+    """参数值（缺参数或 ``value=None`` ⇒ 返回 ``None``，绝不猜）。"""
+
+    item = (parameters or {}).get(name)
+    return item.get("value") if isinstance(item, dict) else None
+
+
+def _parameter_authority(parameters, name):
+    item = (parameters or {}).get(name)
+    return item.get("authority") if isinstance(item, dict) else None
+
+
+def _route_set_status(routes) -> str:
+    """一组 route 结论 → 单层可接受性结论（含"空集／全部不适用"的显式区分）。"""
+
+    status = aggregate_acceptability([route.get("status") for route in routes])
+    if status == "not_applicable":
+        return "fully_satisfied" if not routes else "unknown"
+    return status
+
+
+#: 威胁分层结论的严重度（后者覆盖前者；``limitation`` 略高于"有管理的缺口"）。
+_THREAT_STATUS_SEVERITY = (
+    "not_applicable", "satisfied", "acceptable_with_managed_gap",
+    "limitation", "unknown", "unacceptable",
+)
+
+
+def _merged_threat_status(routes, layer) -> str:
+    """把逐 route 的某个威胁分层结论合并为全局分层结论（fail-closed，取最差）。"""
+
+    rank = {name: index for index, name in enumerate(_THREAT_STATUS_SEVERITY)}
+    worst = None
+    for route in routes or []:
+        value = (
+            route.get("primary_threat_status") if layer == PRIMARY_THREAT_LAYER
+            else route.get("supplementary_threat_status")
+            if layer == SUPPLEMENTARY_THREAT_LAYER
+            else None
+        )
+        if value in (None, "not_applicable"):
+            continue
+        if worst is None or rank.get(value, 0) > rank.get(worst, 0):
+            worst = value
+    return worst or "not_applicable"
+
+
 def _limit(parameters, code, kind, policy):
     """C/S 阈值解析：显式策略覆盖 → 显式工程证据 → 内置工程基线。
 
     顺序在 Round 2.5 是**契约**：空策略（默认）绝不压过用户在证据入口里显式登记的
     阈值；只有用户真的覆盖了策略/参数时，覆盖才生效。
+
+    Round 2.6（用户裁定）：``C`` 的 **服务中断阈值**不再有内置默认值。
+    FC30 的"遥控信号丢失 > 3 s 触发 Failsafe RTH"只是**设备 failsafe 事实**，
+    不得自动成为规划阈值；用户未显式登记时返回 ``None`` ⇒ 事件时长不可判定
+    ⇒ 该子系统 ``unknown``（fail-closed），绝不放行。
     """
 
     override = ((policy.get("service_acceptability_limits") or {}).get(code) or {}).get(kind)
-    if override is None:
-        override = (policy.get("parameter_overrides") or {}).get(_KIND_LIMIT_PARAMETER[kind])
+    if override is not None:
+        return float(override)
+    override = (policy.get("parameter_overrides") or {}).get(_KIND_LIMIT_PARAMETER[kind])
     if override is not None:
         return float(override)
     if code == "C":
@@ -734,7 +1044,10 @@ def _limit(parameters, code, kind, policy):
         value = parameters.get(name, {}).get("value")
         if value is not None:
             return float(value)
-    return float(DEFAULT_SERVICE_ACCEPTABILITY_LIMITS[code][kind])
+        #: 显式证据缺失 ⇒ 该阈值不可判定（evidence_required）。
+        if DEFAULT_SERVICE_ACCEPTABILITY_LIMITS[code][kind] is None:
+            return None
+    return DEFAULT_SERVICE_ACCEPTABILITY_LIMITS[code][kind]
 
 
 def _parameter_projection(parameters):
@@ -743,6 +1056,7 @@ def _parameter_projection(parameters):
             "value": item.get("value"),
             "authority": item.get("authority"),
             "source_type": item.get("source_type"),
+            "participating": item.get("participating"),
             "source": item.get("source"),
             "statement": item.get("statement"),
             "report_disclosure": item.get("report_disclosure"),
@@ -751,6 +1065,8 @@ def _parameter_projection(parameters):
             "reason": item.get("reason"),
             "unit": item.get("unit"),
             "label": item.get("label"),
+            #: Round 2.6：`D_separation_m` 可能读自 Round 2.5 旧字段名。
+            "read_from_legacy_field": item.get("read_from_legacy_field"),
         }
         for name, item in sorted(parameters.items())
     }

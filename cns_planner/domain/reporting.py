@@ -51,6 +51,11 @@ def report_source_snapshot(state, algorithm_catalog):
         "operational_routes", "spatial_3d", "cns_corridor_policy",
         "cns_gap_analysis_v2", "cns_corridor_assessment",
         "cns_corridor_gap_assessment", "cns_corridor_site_plan",
+        #: Round 2.6：P17 连续服务可接受性（含 post-plan 投影态）、其参数策略与
+        #: 人工工程证据 / 规划假设都是**报告输入**（报告必须披露 managed gap、
+        #: 工程假设与能力限制），缺失会让报告无法自证其在披露什么。
+        "continuous_service_acceptability", "cns_continuous_service_policy",
+        "cns_operation_scenario", "planning_evidence",
         "existing_cns_facilities", "candidate_sites", "device_catalog",
         "data_source_profiles", "algorithm_selection", "grid_risk",
         "grid_attributes", "building_clearance_policy", "building_clearance_assessment",

@@ -58,6 +58,10 @@ class ReportBuilder:
                 "centerline_gap_p10": source.get("cns_gap_analysis_v2") or {},
                 "spatial_service_p14": source.get("cns_corridor_assessment") or {},
                 "corridor_gap_objectives_p15": p15,
+                #: Round 2.6：P17 连续服务可接受性（含 **post-plan 投影态** 结论、
+                #: 强制披露、威胁分层与能力限制）。它必须出现在报告里，且
+                #: 绝不把 managed gap / limitation 表述为"全覆盖"或"监视完全满足"。
+                "continuous_service_acceptability_p17": _continuous_service_section(source),
                 "plan_review_p18": {
                     "review": source.get("cns_plan_review") or {},
                     "confirmed_plan": plan,
@@ -87,6 +91,11 @@ class ReportBuilder:
                     "fabdem": "FABDEM is not survey-grade DTM",
                     "gba_height": "GBA predicted height is not measured truth",
                     "building_clearance": "engineering assessment only; not certification or regulatory compliance",
+                    #: Round 2.6：能力限制（例如 Radar 非合作监视不可行）必须作为
+                    #: **报告级限制**登记，并与 managed gap 一样强制披露原文。
+                    "capability_limitations": _continuous_service_section(source).get(
+                        "limitations"
+                    ),
                 },
             },
         }
@@ -234,6 +243,115 @@ def _building_section(source):
             "FABDEM ≠ survey-grade DTM", "GBA height ≠ measured truth",
             "engineering assessment only; no safety certification or regulatory conclusion",
         ],
+    }
+
+
+def _continuous_service_section(source):
+    """Round 2.6：P17 连续服务可接受性的报告分段（含 post-plan 投影态与强制披露）。
+
+    报告读者必须能只凭这一段回答：
+
+    * baseline（当前现网）与 post_plan（P16 方案实施后的投影态）分别是什么结论；
+    * 哪些服务被方案改善、哪些缺口仍然存在（含长度 / 时长 / 阈值）；
+    * 有哪些**工程假设**与**能力限制**（例如 Radar 非合作监视不可行）；
+    * 保护走廊四个分量与当前生效的通信阈值（以及它们的来源身份）。
+    """
+
+    result = source.get("continuous_service_acceptability") or {}
+    projection = result.get("post_plan_projection") or {}
+    comparison = (projection.get("comparison") or {}) if isinstance(projection, dict) else {}
+    policy = source.get("cns_continuous_service_policy") or {}
+    parameters = result.get("parameters") or {}
+    evidence = source.get("planning_evidence") or {}
+    engineered = [
+        {
+            "evidence_id": item.get("evidence_id"),
+            "field": item.get("field"),
+            "scope": item.get("scope"),
+            "target_id": item.get("target_id"),
+            "value": item.get("value"),
+            "source_type": item.get("source_type"),
+            "source": item.get("source"),
+            "statement": item.get("statement"),
+            "report_disclosure": item.get("report_disclosure"),
+            "confirmed_by_user": item.get("confirmed_by_user"),
+        }
+        for item in (evidence.get("items") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "semantics": (
+            "post_plan_projection_is_hypothetical_state_never_written_into_existing_cns"
+        ),
+        "status": result.get("status"),
+        "baseline_status": result.get("baseline_status"),
+        "post_plan_status": result.get("post_plan_status"),
+        "evaluates_post_plan_projection": projection.get("available") is True,
+        "applied_action_ids": deepcopy(projection.get("applied_action_ids") or []),
+        "route_protection": {
+            "formula": (
+                "D_protection = D_separation + V_relative * T_chain + D_maneuver "
+                "+ D_uncertainty"
+            ),
+            "routes": [
+                {
+                    "route_id": route.get("route_id"),
+                    "D_separation_m": (route.get("corridor") or {}).get("D_separation_m"),
+                    "V_relative_mps": (route.get("corridor") or {}).get("V_relative_mps"),
+                    "T_chain_s": (route.get("corridor") or {}).get("T_chain_s"),
+                    "D_maneuver_m": (route.get("corridor") or {}).get("D_maneuver_m"),
+                    "D_maneuver_semantics": (route.get("corridor") or {}).get(
+                        "D_maneuver_semantics"
+                    ),
+                    "D_uncertainty_m": (route.get("corridor") or {}).get("D_uncertainty_m"),
+                    "D_protection_m": (route.get("corridor") or {}).get("D_protection_m"),
+                    "status": (route.get("corridor") or {}).get("status"),
+                }
+                for route in result.get("routes") or []
+            ],
+        },
+        "communication_thresholds": {
+            "service_acceptability_limits": deepcopy(
+                result.get("service_acceptability_limits") or {}
+            ),
+            "policy_source": policy.get("source"),
+            "full_outage_parameter": parameters.get("c_full_outage_max_s"),
+            "redundancy_degradation_parameter": parameters.get(
+                "c_redundancy_degradation_max_s"
+            ),
+            "device_failsafe_fact_is_not_a_planning_threshold": True,
+            "thresholds_are_separate": True,
+        },
+        "threat_layers": {
+            "primary": "cooperative_rid",
+            "supplementary": "noncooperative_radar",
+            "primary_threat_status": result.get("primary_threat_status"),
+            "supplementary_threat_status": result.get("supplementary_threat_status"),
+            "semantics": "cooperative_and_noncooperative_evaluated_separately_never_merged",
+            "routes": [
+                {
+                    "route_id": route.get("route_id"),
+                    "primary_threat_status": route.get("primary_threat_status"),
+                    "supplementary_threat_status": route.get("supplementary_threat_status"),
+                    "threat_layers": deepcopy(route.get("threat_layers") or {}),
+                }
+                for route in result.get("routes") or []
+            ],
+        },
+        "managed_gaps": [
+            deepcopy(gap)
+            for route in result.get("routes") or []
+            for gap in route.get("managed_gaps") or []
+        ],
+        "improved_services": deepcopy(comparison.get("improved_services") or []),
+        "remaining_gaps": deepcopy(comparison.get("remaining_gaps") or []),
+        "limitations": deepcopy(result.get("limitations") or []),
+        #: **强制披露原文**：报告必须逐字包含这些行。
+        "disclosure_lines": deepcopy(result.get("disclosure_lines") or []),
+        "engineering_assumptions": engineered,
+        "no_full_coverage_claim": True,
+        "no_surveillance_fully_satisfied_claim": True,
+        "not_evaluated": deepcopy(result.get("not_evaluated") or {}),
     }
 
 

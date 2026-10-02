@@ -38,10 +38,14 @@ STEP6_ALLOWED_ACCEPTABILITY = ("fully_satisfied", "acceptable_with_managed_gap")
 
 
 class ContinuousServiceService:
-    def __init__(self, session, model, invalidation, snapshot=None):
+    def __init__(self, session, model, invalidation, snapshot=None,
+                 plan_projection=None):
         self.session, self.model = session, model
         self.invalidation = invalidation
         self.snapshot_fn = snapshot or (lambda: self.session.state)
+        #: Round 2.6：P16 方案实施后的**投影态**构建器。为 None 时 P17 只评估 baseline
+        #: （旧装配），绝不因此伪造一个"已经考虑方案"的结论。
+        self.plan_projection = plan_projection
 
     # ------------------------------------------------------------------ 读取
     def result_snapshot(self):
@@ -120,16 +124,27 @@ class ContinuousServiceService:
         )
 
     def step6_gate(self):
-        """Step6（P18 计划评审）的 P17 门禁（fail-closed）。"""
+        """Step6（P18 计划评审）的**权威** P17 门禁（fail-closed）。
+
+        Round 2.6：``status`` 已经是 **post-plan 投影态**结论（存在投影时）；这里额外
+        把两层结论、威胁分层与能力限制一并披露，供 Step6 与报告强制显示。
+        """
 
         result = self.result_snapshot()
         status = str(result.get("status") or "not_calculated")
         allowed = status in STEP6_ALLOWED_ACCEPTABILITY
         disclosure = list(result.get("disclosure_lines") or [])
+        projection = result.get("post_plan_projection") or {}
         return {
             "status": status,
             "confirmation_allowed": allowed,
             "allowed_statuses": list(STEP6_ALLOWED_ACCEPTABILITY),
+            "variant_specific": False,
+            "evaluates": "authoritative_post_plan_projection"
+            if projection.get("available") is True else "authoritative_baseline_only",
+            "projected_status": status if projection.get("available") is True else None,
+            "baseline_status": result.get("baseline_status"),
+            "post_plan_status": result.get("post_plan_status"),
             "managed_gap_count": int(result.get("managed_gap_count") or 0),
             "unacceptable_count": int(result.get("unacceptable_count") or 0),
             "unknown_count": int(result.get("unknown_count") or 0),
@@ -137,11 +152,22 @@ class ContinuousServiceService:
                 result.get("unacceptable_subsystem_count") or 0
             ),
             "unknown_subsystem_count": int(result.get("unknown_subsystem_count") or 0),
+            "primary_threat_status": result.get("primary_threat_status"),
+            "supplementary_threat_status": result.get("supplementary_threat_status"),
+            "limitations": deepcopy(result.get("limitations") or []),
+            "limitation_disclosure": [
+                item.get("disclosure") for item in (result.get("limitations") or [])
+                if item.get("disclosure")
+            ],
+            "applied_action_ids": deepcopy(projection.get("applied_action_ids") or []),
+            "projection_available": projection.get("available") is True,
             "routes": [
                 {
                     "route_id": route.get("route_id"), "status": route.get("status"),
                     "unacceptable_subsystems": deepcopy(route.get("unacceptable_subsystems") or []),
                     "unknown_subsystems": deepcopy(route.get("unknown_subsystems") or []),
+                    "primary_threat_status": route.get("primary_threat_status"),
+                    "supplementary_threat_status": route.get("supplementary_threat_status"),
                 }
                 for route in result.get("routes") or []
             ],
@@ -183,7 +209,7 @@ class ContinuousServiceService:
                 state[POLICY_STATE_KEY] = normalized
                 self.invalidation.continuous_service()
 
-        inputs = self.compute_inputs()
+        inputs = self.build_evaluation_inputs()
         result = self.model.evaluate(**inputs)
         state[ACCEPTABILITY_STATE_KEY] = result
         state.setdefault("result_statuses", {})[RESULT_STATUS_KEY] = _result_status(
@@ -191,6 +217,68 @@ class ContinuousServiceService:
         )
         self.session.save()
         return self.snapshot_fn()
+
+    # ------------------------------------------------------ 单一变体的投影评估
+    def evaluate_actions(self, actions, *, projection_label="plan_variant"):
+        """对**任意一组 action** 做 baseline + post_plan 两层 P17 评估（只读，不写 state）。
+
+        Round 2.6：每个 Plan Variant 必须绑定**自己的** P17 投影结论；本方法就是那条
+        路径。它绝不写 ``continuous_service_acceptability``（那是权威容器），
+        也绝不写 ExistingCNS。
+
+        返回 ``(projection_input, result)``；投影不可用时 ``result`` 为 ``None``。
+        """
+
+        if self.plan_projection is None:
+            return None, None
+        projection = self.plan_projection.p17_projection_input(
+            actions, projection_id=projection_label,
+            original_action_ids=[
+                str(item.get("action_id") or "") for item in actions or []
+            ],
+        )
+        if projection.get("available") is not True:
+            return projection, None
+        inputs = self.compute_inputs()
+        inputs["post_plan_projection"] = projection
+        return projection, self.model.evaluate(**inputs)
+
+    def projected_step6_gate(self, result):
+        """从**任意** P17 结果推导 Step6 门禁（与权威门禁同一套允许值）。"""
+
+        if not isinstance(result, dict):
+            return {
+                "status": "unknown", "confirmation_allowed": False,
+                "blocking_reason": "本变体没有可用的 P17 投影结论（fail-closed）",
+                "variant_specific": True,
+            }
+        status = str(result.get("status") or "not_calculated")
+        allowed = status in STEP6_ALLOWED_ACCEPTABILITY
+        return {
+            "status": status,
+            "confirmation_allowed": allowed,
+            "allowed_statuses": list(STEP6_ALLOWED_ACCEPTABILITY),
+            "variant_specific": True,
+            "projected_status": status,
+            "baseline_status": result.get("baseline_status"),
+            "post_plan_status": result.get("post_plan_status"),
+            "managed_gap_count": int(result.get("managed_gap_count") or 0),
+            "unacceptable_count": int(result.get("unacceptable_count") or 0),
+            "unknown_count": int(result.get("unknown_count") or 0),
+            "primary_threat_status": result.get("primary_threat_status"),
+            "supplementary_threat_status": result.get("supplementary_threat_status"),
+            "limitations": deepcopy(result.get("limitations") or []),
+            "requires_managed_gap_disclosure": bool(result.get("disclosure_lines")),
+            "disclosure_lines": deepcopy(result.get("disclosure_lines") or []),
+            "input_fingerprint": result.get("input_fingerprint"),
+            "reasons": deepcopy(result.get("reasons") or []),
+            "blocking_reason": (
+                None if allowed else
+                "本变体实施后的 P17 投影结论为 unknown（证据缺失）——fail-closed"
+                if status in ("unknown", "stale", "not_calculated")
+                else f"本变体实施后的 P17 投影结论为 {status}——不可接受"
+            ),
+        }
 
     # -------------------------------------------------------------- 输入组装
     def compute_inputs(self):
@@ -210,12 +298,83 @@ class ContinuousServiceService:
             "radar_surveillance_layout": deepcopy(state.get("radar_surveillance_layout") or {}),
         }
 
+    # ---------------------------------------------------------- P16 投影态输入
+    def selected_plan_actions(self):
+        """当前权威 P16 的 ``selected_actions``（严格只读）。"""
+
+        plan = self.session.state.get("cns_corridor_site_plan") or {}
+        return list(plan.get("selected_actions") or [])
+
+    def post_plan_projection_input(self):
+        """构建 P16 ``selected_actions`` 的**投影态** P17 输入。
+
+        Round 2.6 最高优先级架构修复：P17 不能再只看当前 ExistingCNS。
+
+        * 没有 ``selected_actions``（或未配置投影构建器）⇒ 返回
+          ``{"available": False, ...}``，评估器如实保持 **只评估 baseline**，
+          绝不把"没有方案"说成"方案已评估通过"；
+        * 有方案 ⇒ 用与 P16 cumulative what-if **同一套设施应用语义**重跑 P14/P15，
+          产出投影态输入；投影态**绝不**写入 ExistingCNS。
+        """
+
+        actions = self.selected_plan_actions()
+        if not actions:
+            return {
+                "available": False,
+                "unavailable_reason": "no_selected_actions",
+                "projection_semantics": "post_plan_projection_requires_p16_selected_actions",
+                "persisted_as_upstream": False,
+                "written_into_existing_cns": False,
+            }
+        if self.plan_projection is None:
+            return {
+                "available": False,
+                "unavailable_reason": "projection_builder_not_configured",
+                "applied_action_ids": sorted(
+                    str(item.get("action_id") or "") for item in actions
+                ),
+                "projection_semantics": "post_plan_projection_builder_missing",
+                "persisted_as_upstream": False,
+                "written_into_existing_cns": False,
+            }
+        plan = self.session.state.get("cns_corridor_site_plan") or {}
+        return self.plan_projection.p17_projection_input(
+            actions,
+            projection_id="p16_selected_actions",
+            original_action_ids=[
+                str(item.get("action_id") or "") for item in actions
+            ],
+        ) | {
+            "p16_status": plan.get("status"),
+            "p16_input_fingerprint": plan.get("input_fingerprint"),
+        }
+
+    def build_evaluation_inputs(self):
+        """``compute_inputs()`` + 投影态输入（评估入口使用的完整输入）。"""
+
+        inputs = self.compute_inputs()
+        inputs["post_plan_projection"] = self.post_plan_projection_input()
+        return inputs
+
     def fc30_facts_snapshot(self):
-        """FC30 canonical 事实（含 provenance）与"3 s 是设备 failsafe 事实"的定位。"""
+        """FC30 canonical 事实（含 provenance）与"3 s 是设备 failsafe 事实"的定位。
+
+        Round 2.6 关键裁定（用户）：FC30 的 ``remote signal lost > 3 s → Failsafe RTH``
+        **只**保存为**设备 failsafe 事实**，**不再**自动成为
+        ``c_full_outage_max_s`` 的默认值。前端必须把两件事**分开**显示：
+
+        * :attr:`device_failsafe_fact` —— 厂家/档案层面的设备行为事实；
+        * :attr:`project_planning_threshold` —— 本项目规划阈值（用户显式登记，身份为
+          ``engineering_assumption``）；**未登记时为 None**。
+        """
 
         from ..domain.fc30_profile import FC30_FAILSAFE_TRIGGER_SEMANTICS
 
-        profile = _selected_profile(self.session.state) or {}
+        state = self.session.state
+        profile = _selected_profile(state) or {}
+        parameters = self.parameters_snapshot().get("parameters") or {}
+        outage = parameters.get("c_full_outage_max_s") or {}
+        redundancy = parameters.get("c_redundancy_degradation_max_s") or {}
         return {
             "aircraft_id": FC30_AIRCRAFT_ID,
             "selected_aircraft_id": profile.get("aircraft_id"),
@@ -223,9 +382,57 @@ class ContinuousServiceService:
             "facts": fc30_declared_facts(),
             "failsafe_trigger_semantics": FC30_FAILSAFE_TRIGGER_SEMANTICS,
             "not_a_regulatory_threshold": True,
+            #: Round 2.6：两件事**分开**、各有身份，绝不合并成一个"允许中断时间"。
+            "device_failsafe_fact": {
+                "parameter": "rc_loss_failsafe_trigger_s",
+                "value_s": 3.0,
+                "authority": "confirmed_source_fact",
+                "source_type": "confirmed_source_fact",
+                "semantics": FC30_FAILSAFE_TRIGGER_SEMANTICS,
+                "kind": "device_failsafe_fact",
+                "is_planning_threshold": False,
+                "statement": (
+                    "FC30 设备事实：在 Failsafe RTH 已配置的前提下，遥控（RC）信号丢失"
+                    "超过 3 s 触发自动返航。它**不是**法规阈值，也**不是**本项目的规划"
+                    "阈值。"
+                ),
+            },
+            "project_planning_threshold": {
+                "parameter": "c_full_outage_max_s",
+                "value_s": outage.get("value"),
+                "authority": outage.get("authority"),
+                "source_type": outage.get("source_type"),
+                "kind": "project_planning_threshold",
+                "is_planning_threshold": True,
+                "must_be_engineering_assumption": True,
+                "evidence_required": outage.get("value") in (None, ""),
+                "statement": (
+                    "本项目的「最大允许完全通信中断时间」由用户显式登记，身份必须是"
+                    "**工程规划假设**。未登记时 P17 的通信判定保持 evidence_required / "
+                    "unknown（fail-closed），绝不自动采用设备 failsafe 的 3 s。"
+                ),
+                "source": outage.get("source"),
+                "reason": outage.get("reason"),
+            },
+            "redundancy_degradation_threshold": {
+                "parameter": "c_redundancy_degradation_max_s",
+                "value_s": redundancy.get("value"),
+                "authority": redundancy.get("authority"),
+                "source_type": redundancy.get("source_type"),
+                "kind": "project_planning_threshold",
+                "is_planning_threshold": True,
+                "separate_from_full_outage": True,
+                "statement": (
+                    "冗余退化阈值与完全中断阈值是**两个独立阈值**，绝不合并。"
+                ),
+            },
+            "thresholds_are_separate": True,
+            "threshold_merge_forbidden": True,
             "disclosure": (
                 "FC30 的 3 s 是**设备 failsafe 触发门限**（遥控信号丢失超过 3 s 触发 RTH），"
-                "不是法规阈值；P17 的 C 全失联阈值以该事实为依据，但它是可覆盖的工程基线。"
+                "不是法规阈值，也**不自动**作为本项目的规划阈值；本项目的最大允许完全"
+                "通信中断时间由用户以 engineering_assumption 显式登记（未登记时判定保持"
+                "evidence_required / unknown）。"
             ),
         }
 

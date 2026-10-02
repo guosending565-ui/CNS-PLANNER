@@ -63,3 +63,9 @@ _runtime_projects/
 # C 盘 → D 盘迁移的取证材料与 smoke 产物（运行期证据，不是源码交付）
 _cscan/
 _migration_smoke/
+
+# Round 2.6 实机验收的临时驱动脚本与产物（运行期证据，不是源码交付）
+_round26_*.py
+_round26_*.json
+_round26_*.log
+_diag_round26_*.py

@@ -1021,7 +1021,7 @@ export function render({flow}){
         +wbBlock('阻塞项与工程假设',blockerList(siteBlockerItems,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-site'))],
       ['cns-res-continuous','连续服务可接受性',
-        wbBlock('连续服务可接受性（P17）',wbSegHint(RESULT_SEGMENTS,'cns-res-continuous')
+        wbBlock('连续服务可接受性',wbSegHint(RESULT_SEGMENTS,'cns-res-continuous')
           +chainNote('连续服务可接受性')
           +segIntro('判定"走廊缺口是否已经超出可接受的服务连续中断"，以及监视/导航链路是否来得及介入。',
             '当前 P14/P15/P16 结果；选定机载档案的航路速度；显式登记的服务阈值与保护链参数（工程依据入口）。')

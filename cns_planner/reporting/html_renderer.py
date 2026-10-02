@@ -40,11 +40,12 @@ class HtmlReportRenderer:
 <section><h2>7. P10中心线CNS缺口</h2>{_result_summary(sections.get('centerline_gap_p10'))}</section>
 <section><h2>8. P14三维服务空间</h2><p class="note">离散体积代理 / 代表点评价，不是整个体素的性能保证。</p>{_result_summary(sections.get('spatial_service_p14'))}</section>
 <section><h2>9. P15服务、冗余、空间连续缺口与规划目标</h2>{_statistics(rows)}<p class="note">空间连续缺口投影，不是运行时连续性概率。</p></section>
-<section><h2>10. P18方案比较与人工决策</h2>{_decision(sections.get('plan_review_p18') or {})}</section>
-<section><h2>11. 最终设施方案</h2>{_facility_svg(sections)}{_json_details(sections.get('final_facility_plan'))}</section>
-<section><h2>12. Before / After 与残余问题</h2>{_json_details(sections.get('before_after_residual'))}</section>
-<section><h2>13. 算法、数据、指纹与来源审计</h2>{_audit(sections.get('audit') or {})}</section>
-<section><h2>14. 局限与未评估事项</h2>{_limitations(sections.get('limitations') or {})}</section>
+<section><h2>10. P17 连续服务可接受性（含 post-plan 投影态）</h2>{_continuous_service(sections.get('continuous_service_acceptability_p17') or {})}</section>
+<section><h2>11. P18方案比较与人工决策</h2>{_decision(sections.get('plan_review_p18') or {})}</section>
+<section><h2>12. 最终设施方案</h2>{_facility_svg(sections)}{_json_details(sections.get('final_facility_plan'))}</section>
+<section><h2>13. Before / After 与残余问题</h2>{_json_details(sections.get('before_after_residual'))}</section>
+<section><h2>14. 算法、数据、指纹与来源审计</h2>{_audit(sections.get('audit') or {})}</section>
+<section><h2>15. 局限与未评估事项</h2>{_limitations(sections.get('limitations') or {})}</section>
 </main></body></html>"""
 
 
@@ -101,6 +102,103 @@ def _audit(value):
 
 def _limitations(value):
     return '<table><tbody>'+''.join(f'<tr><th>{e(key)}</th><td>{e(zh(item))}</td></tr>' for key,item in value.items())+'</tbody></table>'
+
+
+def _continuous_service(value):
+    """Round 2.6：P17 分段渲染 —— 两层结论、强制披露、威胁分层与能力限制。
+
+    报告**必须**逐字保留披露原文；绝不把 managed gap 说成"全覆盖"，也绝不把
+    Radar 不可行说成"监视完全满足"。
+    """
+
+    value = value or {}
+    disclosure = value.get("disclosure_lines") or []
+    limitations = value.get("limitations") or []
+    gaps = value.get("managed_gaps") or []
+    remaining = value.get("remaining_gaps") or []
+    improved = value.get("improved_services") or []
+    header = (
+        f'<p>当前结论：<b>{e(zh(value.get("status")))}</b>；'
+        f'baseline（现网）：<b>{e(zh(value.get("baseline_status")))}</b>；'
+        f'post-plan（P16 方案实施后投影态）：<b>{e(zh(value.get("post_plan_status")))}</b></p>'
+        f'<p>评估对象：{"该方案实施后的投影态（hypothetical，未写入现网事实）" if value.get("evaluates_post_plan_projection") else "仅当前权威状态（没有可用的 post-plan 投影）"}'
+        f'；纳入的动作：{e("、".join(value.get("applied_action_ids") or []) or "（无）")}</p>'
+        f'<p>主要威胁（合作无人机 / RID）：<b>{e(zh(value.get("primary_threat_status")))}</b>；'
+        f'补充威胁（非合作无人机 / Radar）：<b>{e(zh(value.get("supplementary_threat_status")))}</b></p>'
+    )
+    risk_lines = [
+        "本分段的 managed gap 与能力限制**不是**全覆盖：缺口真实存在，仅因连续时长在工程阈值内被接受。",
+        "能力限制（例如 Radar 非合作监视不可行）**不改变**主要威胁（合作无人机 / RID）的判定，但不得表述为「监视完全满足」。",
+    ]
+    protection = value.get("route_protection") or {}
+    protection_rows = "".join(
+        f'<tr><td>{e(row.get("route_id"))}</td><td>{e(row.get("D_separation_m"))}</td>'
+        f'<td>{e(row.get("V_relative_mps"))}</td><td>{e(row.get("T_chain_s"))}</td>'
+        f'<td>{e(row.get("D_maneuver_m"))}</td><td>{e(row.get("D_uncertainty_m"))}</td>'
+        f'<td>{e(row.get("D_protection_m"))}</td><td>{e(zh(row.get("status")))}</td></tr>'
+        for row in protection.get("routes") or []
+    )
+    protection_table = (
+        f'<p>保护走廊公式：<code>{e(protection.get("formula"))}</code>'
+        f'（D_maneuver 为 engineering_baseline 接口，不代表法规值或某机型普遍制动距离）</p>'
+        '<table><thead><tr><th>航路</th><th>D_separation(m)</th><th>V_relative(m/s)</th>'
+        '<th>T_chain(s)</th><th>D_maneuver(m)</th><th>D_uncertainty(m)</th>'
+        '<th>D_protection(m)</th><th>状态</th></tr></thead><tbody>'
+        + protection_rows + '</tbody></table>'
+    )
+    thresholds = value.get("communication_thresholds") or {}
+    threshold_text = (
+        f'<p>通信阈值（**互相独立，绝不合并**）：C 完全中断 '
+        f'{e((thresholds.get("service_acceptability_limits") or {}).get("C", {}).get("service_outage"))} s'
+        f' · C 冗余退化 '
+        f'{e((thresholds.get("service_acceptability_limits") or {}).get("C", {}).get("redundancy_degradation"))} s'
+        f'；来源：{e(thresholds.get("policy_source"))}</p>'
+        '<p>FC30 的「遥控信号丢失 &gt; 3 s 触发 Failsafe RTH」只是<b>设备 failsafe 事实</b>，'
+        '不等于本项目的规划阈值；规划阈值由用户以工程规划假设显式登记（未登记时判定保持 '
+        'evidence_required / unknown）。</p>'
+    )
+    gap_rows = "".join(
+        f'<tr><td>{e(item.get("route_id"))}</td><td>{e(item.get("service"))}</td>'
+        f'<td>{e(zh(item.get("kind")))}</td><td>{e(item.get("length_m"))}</td>'
+        f'<td>{e(item.get("duration_s"))}</td><td>{e(item.get("limit_s"))}</td></tr>'
+        for item in gaps
+    )
+    gap_table = (
+        '<p>已接受为 managed gap 的连续缺口（真实存在，非全覆盖）：</p>'
+        '<table><thead><tr><th>航路</th><th>服务</th><th>类型</th><th>长度(m)</th>'
+        '<th>持续时间(s)</th><th>阈值(s)</th></tr></thead><tbody>'
+        + gap_rows + '</tbody></table>'
+    ) if gaps else '<p>没有被接受为 managed gap 的连续缺口。</p>'
+    remaining_rows = "".join(
+        f'<tr><td>{e(item.get("route_id"))}</td><td>{e(item.get("service"))}</td>'
+        f'<td>{e(item.get("length_m"))}</td><td>{e(item.get("duration_s"))}</td>'
+        f'<td>{e(item.get("limit_s"))}</td><td>{e(item.get("improvement_kind"))}</td></tr>'
+        for item in remaining
+    )
+    remaining_table = (
+        '<p>方案实施后**仍然存在**的连续缺口：</p>'
+        '<table><thead><tr><th>航路</th><th>服务</th><th>长度(m)</th><th>持续时间(s)</th>'
+        '<th>阈值(s)</th><th>改善依据</th></tr></thead><tbody>'
+        + remaining_rows + '</tbody></table>'
+    ) if remaining else '<p>方案实施后没有剩余连续缺口。</p>'
+    improvement_table = (
+        f'<p>被方案改善的服务数：{e(len(improved))}（改善必须有可核查依据：缺口事件消失或 P15 显式声明缓解量）。</p>'
+    )
+    limitation_html = (
+        '<aside class="warning"><b>能力限制（不是系统错误）</b><ul>'
+        + ''.join(f'<li>{e(item.get("disclosure") or item.get("capability"))}</li>' for item in limitations)
+        + '</ul></aside>'
+    ) if limitations else '<p>当前没有登记能力限制。</p>'
+    disclosure_html = (
+        '<aside class="warning"><b>强制披露原文</b><ul>'
+        + ''.join(f'<li>{e(line)}</li>' for line in disclosure)
+        + '</ul></aside>'
+    ) if disclosure else ''
+    return (
+        header + _warnings(risk_lines) + protection_table + threshold_text
+        + gap_table + remaining_table + improvement_table
+        + limitation_html + disclosure_html + _json_details(value)
+    )
 
 
 def _json_details(value):

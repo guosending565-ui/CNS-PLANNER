@@ -31,12 +31,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from math import isfinite
 
 #: 契约版本与算法标识。
-CONTINUOUS_SERVICE_SCHEMA_VERSION = "round2.5-continuous-service-acceptability"
+CONTINUOUS_SERVICE_SCHEMA_VERSION = "round2.6-post-plan-continuous-service-acceptability"
 CONTINUOUS_SERVICE_ALGORITHM_ID = "continuous_service_acceptability_v1"
-CONTINUOUS_SERVICE_ALGORITHM_VERSION = "1.0"
+CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.0"
 
 #: 四种运行可接受性结论（**顺序即严重度**）。
 ACCEPTABILITY_STATUSES = (
@@ -98,16 +99,18 @@ OPERATION_SCENARIO_DEFAULTS = {
 BASELINE_SOURCES = {
     "c_full_outage_max_s": {
         "source": (
-            "Round 2.5 v1 engineering baseline：取 FC30 failsafe 触发门限（遥控信号丢失"
-            "超过 3 s 触发 RTH）作为**设备故障保护事实**驱动的工程基线，"
-            "**不是**法规阈值。"
+            "Round 2.6（用户裁定）：**不再提供内置数值**。FC30 的 `遥控信号丢失超过 3 s "
+            "触发 Failsafe RTH` 只是**设备 failsafe 事实**，不得自动成为本项目的规划阈值。"
         ),
-        "statement": "通信全失联可接受最长时长＝3 s（工程基线，可由规划证据显式覆盖）。",
+        "statement": (
+            "最大允许完全通信中断时间必须由用户显式登记（engineering_assumption）；"
+            "未登记时保持 evidence_required / unknown，绝不采用 3 s。"
+        ),
         "report_disclosure": (
-            "本阈值为工程基线，其依据是 FC30 设备 failsafe 触发事实；"
-            "不代表任何法规或适航要求。"
+            "本阈值必须由用户确认并登记为工程规划假设；设备 failsafe 门限（3 s）不等于"
+            "本项目的规划阈值。未登记时通信判定 fail-closed。"
         ),
-        "basis": "fc30_failsafe_trigger_fact",
+        "basis": "evidence_required_by_user_decision_round2_6",
     },
     "c_redundancy_degradation_max_s": {
         "source": "Round 2.5 v1 engineering baseline（冗余退化专用，独立于全失联阈值）。",
@@ -146,16 +149,52 @@ BASELINE_SOURCES = {
         "basis": "round2_5_v1_engineering_baseline",
     },
     "D_safety_m": {
-        "source": "Round 2.5 v1 engineering baseline：安全边界取 0 m（即保护走廊内边界＝航路中心线）。",
-        "statement": "D_safety＝0 m（工程基线；保守性来自链时延与不确定度项）。",
-        "report_disclosure": "安全边界距离为工程基线；未由法规或权威资料确认。",
-        "basis": "round2_5_v1_engineering_baseline",
+        "source": (
+            "Round 2.5 v1 engineering baseline：安全边界取 0 m（即保护走廊内边界＝航路中心线）。"
+            "Round 2.6 起本参数被 **D_separation_m** 取代（见该条目）：它只在读取旧项目时作为"
+            "兼容别名继续被识别，自身不再提供内置数值。"
+        ),
+        "statement": "D_safety 是 Round 2.5 的旧名；Round 2.6 的正式参数是 D_separation。",
+        "report_disclosure": "本参数已由 D_separation 取代，仅为旧项目兼容而保留。",
+        "basis": "round2_5_legacy_alias_of_d_separation",
+    },
+    "D_separation_m": {
+        "source": (
+            "Round 2.6：分隔距离（D_separation）属于**必须由用户 / 工程依据提供的输入**。"
+            "系统**不再**默认它为 0 m——静默的 0 会凭空把保护走廊收窄到航路中心线，"
+            "把'没有依据'显示成'已经算过'。"
+        ),
+        "statement": "D_separation 未提供显式工程依据时保持 evidence_required（不得静默取 0）。",
+        "report_disclosure": (
+            "分隔距离必须有显式工程依据；未提供时保护走廊与监视验收均如实保持 unknown"
+            "（fail-closed），不得放行。"
+        ),
+        "basis": "evidence_required",
+    },
+    "D_maneuver_m": {
+        "source": (
+            "Round 2.6 工程基线（engineering_baseline）：机动附加距离固定取 50 m。"
+            "它**不是**法规值，也**不是** FC30 的普遍制动距离事实；本轮不深入研究机动模型，"
+            "只保留算法接口 ``maneuver_distance_m``，该固定值可被显式工程依据替换。"
+        ),
+        "statement": "D_maneuver＝50 m（engineering_baseline，可被显式工程依据替换）。",
+        "report_disclosure": (
+            "机动附加距离为工程基线固定值（50 m），不代表法规要求，也不代表该机型的"
+            "真实制动距离；后续可按机型/场景替换。"
+        ),
+        "basis": "round2_6_engineering_baseline_maneuver_distance",
     },
     "D_uncertainty_m": {
-        "source": "Round 2.5 v1 engineering baseline：不确定度附加量取 0 m（无显式证据时不留白）。",
-        "statement": "D_uncertainty＝0 m（工程基线）。",
-        "report_disclosure": "不确定度距离为工程基线；定位/航迹不确定度尚未由权威资料确认。",
-        "basis": "round2_5_v1_engineering_baseline",
+        "source": (
+            "Round 2.6：不确定度附加量属于**必须由用户 / 工程依据提供的输入**。"
+            "系统**不再**默认它为 0 m（静默 0 会把'未知不确定度'显示成'零不确定度'）。"
+        ),
+        "statement": "D_uncertainty 未提供显式工程依据时保持 evidence_required（不得静默取 0）。",
+        "report_disclosure": (
+            "不确定度距离必须有显式工程依据；未提供时保护走廊与监视验收均如实保持 unknown"
+            "（fail-closed）。"
+        ),
+        "basis": "evidence_required",
     },
     "design_intruder_speed_mps": {
         "source": "Round 2.5 操作场景（engineering_assumption）：设计入侵者速度 20 m/s。",
@@ -223,16 +262,31 @@ BASELINE_SOURCES = {
 }
 
 #: 内置工程基线的**数值**（``None`` = 不提供内置假设，必须由显式证据提供）。
+#:
+#: Round 2.6 变化（用户裁定）：
+#:
+#: * ``c_full_outage_max_s`` 由"内置 3 s（取自 FC30 failsafe 事实）"改为 **``None``
+#:   （evidence_required）**：FC30 的 ``遥控信号丢失 > 3 s → Failsafe RTH`` 只作为
+#:   **设备 failsafe 事实**保存，**不再自动**成为本项目的规划阈值。用户没有确认
+#:   "最大允许完全通信中断时间"时，通信判定必须保持 ``evidence_required`` / ``unknown``；
+#: * ``c_redundancy_degradation_max_s`` 保持内置 10 s（它与设备 failsafe 事实无关）；
+#: * ``D_separation_m`` / ``D_uncertainty_m`` 同样改为 ``None``（evidence_required）：
+#:   没有用户 / 工程依据时如实 ``unknown``，绝不用 0 假装"已经算过"；
+#: * 新增 ``D_maneuver_m = 50.0``，身份是 **engineering_baseline**（不是法规值，
+#:   也不是 FC30 普遍制动距离事实），只提供算法接口 ``maneuver_distance_m``；
+#: * ``D_safety_m`` 降级为 **兼容别名**（旧项目里可能仍以该名记录证据）。
 BASELINE_VALUES = {
-    "c_full_outage_max_s": 3.0,
+    "c_full_outage_max_s": None,
     "c_redundancy_degradation_max_s": 10.0,
     "T_chain_detect_track_s": 3.0,
     "T_chain_sensor_to_platform_s": 1.0,
     "T_chain_platform_processing_s": 2.0,
     "T_chain_platform_to_aircraft_s": 1.0,
     "T_chain_aircraft_response_manoeuvre_s": 3.0,
-    "D_safety_m": 0.0,
-    "D_uncertainty_m": 0.0,
+    "D_safety_m": None,
+    "D_separation_m": None,
+    "D_maneuver_m": 50.0,
+    "D_uncertainty_m": None,
     "design_intruder_speed_mps": 20.0,
     "nominal_closing_speed_mps": 35.0,
     "conservative_closing_speed_mps": 40.0,
@@ -245,9 +299,76 @@ BASELINE_VALUES = {
     "navigation_degradation_time_s": None,
 }
 
+#: Round 2.5 → Round 2.6 的**参数改名**（同一物理量，旧名作为兼容别名）。
+#:
+#: ``D_safety_m`` 是 Round 2.5 的名字；Round 2.6 的正式名字是 ``D_separation_m``。
+#: 两者**不合并数值**：正式参数只读新名；旧名只在"新名没有显式记录"时作为回退。
+PARAMETER_ALIASES = {
+    "D_separation_m": ("D_safety_m",),
+}
+
+#: Route Protection 的四个分量（缺任何一个 ⇒ D_protection 不可判定）。
+#:
+#: ``D_protection = D_separation + V_relative × T_chain + D_maneuver + D_uncertainty``
+PROTECTION_COMPONENTS = (
+    "separation", "chain", "maneuver", "uncertainty",
+)
+
+#: Round 2.6 的正式公式字符串（前端 / 报告逐字显示，与算法同源）。
+ROUTE_PROTECTION_FORMULA = (
+    "D_protection = D_separation + V_relative * T_chain + D_maneuver + D_uncertainty"
+)
+
+#: ``D_maneuver`` 的工程基线固定值（m）；身份是 engineering_baseline，不是法规值。
+D_MANEUVER_BASELINE_M = 50.0
+
+#: 监视威胁分层（Round 2.6 用户裁定）：两者**分开**评估，绝不合并成单一结论。
+#:
+#: * ``cooperative``     —— 主要威胁；主要服务 = RID 合作监视；
+#: * ``noncooperative``  —— 补充威胁；补充服务 = Radar 非合作监视。
+THREAT_LAYERS = ("cooperative", "noncooperative")
+
+PRIMARY_THREAT_LAYER = "cooperative"
+SUPPLEMENTARY_THREAT_LAYER = "noncooperative"
+
+#: 威胁分层 → 中文标签（前端 / 报告共用，避免两套说法）。
+THREAT_LAYER_LABELS = {
+    "cooperative": "合作无人机 / RID 合作监视（主要威胁）",
+    "noncooperative": "非合作无人机 / Radar 非合作监视（补充威胁）",
+}
+
+#: 分层状态词汇（与四层可接受性词汇**不同**：它描述的是"该分层自己的监视链结论"）。
+THREAT_LAYER_STATUSES = (
+    "satisfied",
+    "acceptable_with_managed_gap",
+    "limitation",
+    "unacceptable",
+    "unknown",
+    "not_applicable",
+)
+
+#: Radar 布局不可行时的**固定披露文本**（Round 2.6 用户裁定，逐字保留）。
+NONCOOPERATIVE_LIMITATION_DISCLOSURE = (
+    "当前方案对合作无人机的监视链满足当前规划要求；非合作无人机补充监视能力因 Radar "
+    "布局不可行尚未闭合，属于当前方案能力限制。"
+)
+
+#: 能力限制（limitation）不是系统错误，也不是 primary threat 的不通过。
+LIMITATION_SEMANTICS = (
+    "supplementary_capability_limitation_does_not_change_primary_threat_verdict"
+)
+
+#: 判定的两个层次：baseline（当前 ExistingCNS）与 post_plan（实施 P16 方案后的投影态）。
+PLAN_STAGES = ("baseline", "post_plan")
+
 #: 默认的 C 服务门限（**服务中断**与**冗余退化**各自独立）。
+#:
+#: Round 2.6：``C.service_outage`` 为 ``None`` —— 它**必须**由用户以
+#: engineering_assumption 显式登记（见 :data:`BASELINE_VALUES` 的说明）；
+#: 未登记时评估器 fail-closed，绝不采用设备 failsafe 的 3 s。
+#: ``S`` 侧保持 Round 2.5 的内置工程基线（监视服务的连续中断口径与设备 failsafe 无关）。
 DEFAULT_SERVICE_ACCEPTABILITY_LIMITS = {
-    "C": {"service_outage": 3.0, "redundancy_degradation": 10.0},
+    "C": {"service_outage": None, "redundancy_degradation": 10.0},
     "S": {"service_outage": 3.0, "redundancy_degradation": 10.0},
 }
 
@@ -265,8 +386,16 @@ CONTINUOUS_SERVICE_REASONS = {
     "no_applicable_route_scope": "存在航路但没有任何可适用的连续服务评估范围",
     "no_p14_route": "P15 中存在 P14 无法对应的航路",
     "no_route_speed": "选定机载档案未提供航路速度，无法把缺口长度换算为持续时间",
+    "no_outage_threshold_evidence": (
+        "最大允许完全通信中断时间缺少用户显式登记：设备 failsafe 门限（FC30 为 3 s）"
+        "不等于本项目的规划阈值，用户未确认前该阈值不可判定（evidence_required）"
+    ),
     "no_p13_geometry": "P14 未提供航路几何，保护走廊无法构造",
     "no_time_chain": "保护链时延分量不完整，T_chain 不可判定",
+    "protection_distance_evidence_required": (
+        "保护走廊的分隔距离 / 不确定度距离缺少显式工程依据（D_separation / "
+        "D_uncertainty 必须由用户或工程依据提供，系统不再静默按 0 计算）"
+    ),
     "no_detection_evidence": "监视探测证据（首次探测距离）不足",
     "detection_range_below_safety_distance": "声明的探测范围小于安全边界距离（无法在安全边界之外探测）",
     "no_navigation_evidence": "导航证据（RTK/GNSS 可用性与精度）不足",
@@ -404,20 +533,30 @@ def time_chain_total(components):
     return total
 
 
-def protection_distance(d_safety_m, relative_speed_mps, t_chain_s, d_uncertainty_m):
-    """保护走廊：``D_protection = D_safety + V_relative × T_chain + D_uncertainty``。
+def protection_distance(
+    d_separation_m, relative_speed_mps, t_chain_s, d_uncertainty_m,
+    d_maneuver_m=0.0,
+):
+    """保护走廊（Round 2.6 公式）：
 
-    三个输入中任何一个不可判定 ⇒ 返回 ``None``（调用方必须保持 unknown）。
+    ``D_protection = D_separation + V_relative × T_chain + D_maneuver + D_uncertainty``
+
+    输入中任何一个不可判定 ⇒ 返回 ``None``（调用方**必须**保持 ``unknown``）。
+
+    ``d_maneuver_m`` 默认 ``0.0`` 只为"旧调用点/纯公式测试"保留位置参数兼容；
+    **生产路径**（``ContinuousServiceAcceptabilityV1``）一律显式传入
+    ``D_maneuver_m`` 参数解析结果（工程基线 50 m，或用户的显式工程依据）。
     """
 
-    if d_safety_m in (None, "") or relative_speed_mps in (None, "") or t_chain_s in (None, ""):
+    if d_separation_m in (None, "") or relative_speed_mps in (None, "") or t_chain_s in (None, ""):
         return None
-    if d_uncertainty_m in (None, ""):
+    if d_uncertainty_m in (None, "") or d_maneuver_m in (None, ""):
         return None
     return (
-        _nonnegative(d_safety_m, "D_safety_m")
+        _nonnegative(d_separation_m, "D_separation_m")
         + _nonnegative(relative_speed_mps, "V_relative")
         * _nonnegative(t_chain_s, "T_chain")
+        + _nonnegative(d_maneuver_m, "D_maneuver_m")
         + _nonnegative(d_uncertainty_m, "D_uncertainty_m")
     )
 
@@ -662,7 +801,16 @@ def default_continuous_service_limits() -> dict:
 
 
 def empty_continuous_service_acceptability(status="not_calculated") -> dict:
-    """新项目的 P17 容器（**未评估**；不预置任何结论）。"""
+    """新项目的 P17 容器（**未评估**；不预置任何结论）。
+
+    Round 2.6 新增两个**显式分层**字段：
+
+    * ``baseline`` —— 当前权威 ExistingCNS 下的结论（与原行为一致）；
+    * ``post_plan_projection`` —— 实施 P16 ``selected_actions`` 之后**投影态**的结论。
+
+    顶层 ``status`` 在有投影时跟随 ``post_plan_projection.status``（Step6 依据该结论）；
+    没有投影时等于 ``baseline`` 的结论。
+    """
 
     return {
         "status": status,
@@ -681,6 +829,14 @@ def empty_continuous_service_acceptability(status="not_calculated") -> dict:
         "unacceptable_count": 0,
         "unknown_count": 0,
         "disclosure_lines": [],
+        #: Round 2.6：两层结论与投影态。
+        "baseline_status": status,
+        "post_plan_status": None,
+        "baseline": None,
+        "post_plan_projection": None,
+        "primary_threat_status": None,
+        "supplementary_threat_status": None,
+        "limitations": [],
         "not_evaluated": {
             name: "not_evaluated" for name in (
                 "formal_continuity_probability", "common_cause", "shared_power",
@@ -705,18 +861,335 @@ def _nonnegative(value, field):
     return number
 
 
+# ---------------------------------------------------------------------------
+# Round 2.6：监视威胁分层 + 分层结论
+# ---------------------------------------------------------------------------
+
+
+def _service_key_of(item) -> str:
+    return str((item or {}).get("service") or (item or {}).get("service_key") or "")
+
+
+def classify_surveillance_threat_layer(service_key: str) -> str:
+    """把一条监视 service 归入威胁分层。
+
+    * 只要包含 ``radar`` / ``noncooperative`` 关键字 → ``noncooperative``
+      （非合作无人机 / Radar 非合作监视，补充威胁）；
+    * 其余（``S:rid_*``、``S:airborne_*`` 等）→ ``cooperative``
+      （合作无人机 / RID 合作监视，主要威胁）。
+
+    Round 2.5 的 ``_primary_service_key`` 可能把多个 service_key 拼成
+    ``"A、B"``；这里按分隔符拆分后逐项判定，**全部**为 radar 才算非合作分层，
+    避免"同一条 subsystem 里既有 RID 又有 Radar"被误判成单一分层。
+    """
+
+    keys = [
+        part.strip() for part in str(service_key or "").replace("、", "\n").splitlines()
+        if part.strip()
+    ] or [str(service_key or "")]
+    for key in keys:
+        lowered = key.lower()
+        if "radar" not in lowered and "noncooperative" not in lowered and "non_cooperative" not in lowered:
+            return PRIMARY_THREAT_LAYER
+    return SUPPLEMENTARY_THREAT_LAYER
+
+
+def classify_surveillance_service_keys(service_key: str) -> dict:
+    """把一条（可能由 ``、`` 拼接的）service_key 串**逐项**分到两个威胁分层。"""
+
+    keys = [
+        part.strip() for part in str(service_key or "").replace("、", "\n").splitlines()
+        if part.strip()
+    ]
+    return {
+        name: sorted({
+            key for key in keys
+            if classify_surveillance_threat_layer(key) == name
+        })
+        for name in THREAT_LAYERS
+    }
+
+
+def surveillance_threat_layers(route_result) -> dict:
+    """逐 route 的监视威胁分层明细（**分开**给出，绝不合并）。"""
+
+    layers = {
+        name: {
+            "layer": name,
+            "label": THREAT_LAYER_LABELS[name],
+            "service_keys": [],
+            "subsystems": [],
+            "status": "not_applicable",
+            "t_margin_s": None,
+            "first_detection_distance_m": None,
+            "limitations": [],
+            "reasons": [],
+        }
+        for name in THREAT_LAYERS
+    }
+    for subsystem in (route_result or {}).get("subsystems") or []:
+        if str(subsystem.get("subsystem") or "") != "S":
+            continue
+        key = _service_key_of(subsystem)
+        by_layer = classify_surveillance_service_keys(key)
+        #: 同一条 subsystem 同时涉及 RID 与 Radar 时，**两层都要登记**（绝不把复合串
+        #: 当成单一分层），但"结论"只归入按该串判定的主分层，避免同一条子系统被计两次。
+        layer_name = classify_surveillance_threat_layer(key)
+        acceptance = subsystem.get("acceptance") or {}
+        detection = subsystem.get("first_detection_evidence") or {}
+        entry = layers[layer_name]
+        for name, keys in by_layer.items():
+            for item in keys:
+                if item not in layers[name]["service_keys"]:
+                    layers[name]["service_keys"].append(item)
+        entry["subsystems"].append(subsystem.get("status"))
+        #: 同一分层里出现多条 service 时，按严重度取最差（fail-closed）。
+        candidate = subsystem.get("status")
+        entry["status"] = _worst_layer_status(entry["status"], candidate)
+        margin = acceptance.get("t_margin_s")
+        if margin is not None:
+            entry["t_margin_s"] = (
+                margin if entry["t_margin_s"] is None else min(entry["t_margin_s"], margin)
+            )
+        distance = detection.get("first_detection_distance_m")
+        if detection.get("usable") is True and distance is not None:
+            entry["first_detection_distance_m"] = (
+                distance if entry["first_detection_distance_m"] is None
+                else max(entry["first_detection_distance_m"], distance)
+            )
+        for reason in subsystem.get("reasons") or []:
+            if reason and reason not in entry["reasons"]:
+                entry["reasons"].append(reason)
+    for name, entry in layers.items():
+        entry["service_keys"] = sorted(entry["service_keys"])
+    return layers
+
+
+#: 分层内部状态 → 分层结论的严重度顺序（后者覆盖前者）。
+_LAYER_SEVERITY = (
+    "not_applicable", "satisfied", "acceptable_with_managed_gap",
+    "limitation", "unknown", "unacceptable",
+)
+
+
+def _worst_layer_status(current, candidate) -> str:
+    current = str(current or "not_applicable")
+    candidate = str(candidate or "not_applicable")
+    rank = {name: index for index, name in enumerate(_LAYER_SEVERITY)}
+    if rank.get(candidate, 0) >= rank.get(current, 0):
+        return candidate
+    return current
+
+
+def layer_conclusion_status(layer_entry) -> str:
+    """把某个威胁分层的子系统状态映射为**分层结论**。
+
+    注意：``limitation`` 只能由调用方（Radar 布局不可行）显式置入，**绝不**由
+    "没有证据"自动推出——缺证据是 ``unknown``。
+    """
+
+    status = str((layer_entry or {}).get("status") or "not_applicable")
+    return {
+        "nominal": "satisfied",
+        "acceptable_degraded": "acceptable_with_managed_gap",
+        "acceptable_with_managed_gap": "acceptable_with_managed_gap",
+        "unacceptable": "unacceptable",
+        "unknown": "unknown",
+        "not_applicable": "not_applicable",
+        "satisfied": "satisfied",
+        "limitation": "limitation",
+    }.get(status, "unknown")
+
+
+def noncooperative_limitations(radar_layout) -> list[dict]:
+    """从 Radar layout 结论推导**非合作监视能力限制**（不是系统错误）。
+
+    只识别**显式**的不可行/失败结论（``infeasible`` / ``failed`` 的求解状态）；
+    证据缺失（``not_calculated`` / ``missing_data``）不是"能力限制"，而是 ``unknown``
+    —— 前者是真实工程结论，后者是没有结论。
+    """
+
+    layout = radar_layout or {}
+    status = str(layout.get("status") or "")
+    solver_status = str(
+        (layout.get("solver") or {}).get("status")
+        or layout.get("solver_status")
+        or ""
+    )
+    if status not in ("infeasible", "failed") and solver_status not in ("infeasible", "failed"):
+        return []
+    return [{
+        "limitation_id": "noncooperative_surveillance_limitation",
+        "layer": SUPPLEMENTARY_THREAT_LAYER,
+        "capability": "Radar 非合作监视（补充威胁分层）",
+        "status": "limitation",
+        "blocking_primary_threat": False,
+        "semantics": LIMITATION_SEMANTICS,
+        "source_status": status or solver_status,
+        "solver_status": solver_status or None,
+        "disclosure": NONCOOPERATIVE_LIMITATION_DISCLOSURE,
+        "must_disclose_in_report": True,
+        "no_relaxation_applied": (
+            "本轮**没有**为了得到方案而扩大覆盖半径、改动 90° 面板或使用假塔；"
+            "求解不可行是真实工程结论。"
+        ),
+    }]
+
+
+def limitation_disclosure_lines(limitations) -> list[str]:
+    """能力限制的**强制披露**行（逐字保留用户裁定的表述）。"""
+
+    lines = []
+    for item in limitations or []:
+        lines.append(f"[能力限制] {item.get('capability') or item.get('layer')}")
+        lines.append(f"  {item.get('disclosure') or NONCOOPERATIVE_LIMITATION_DISCLOSURE}")
+        lines.append(
+            "  披露语义：本限制**不改变**主要威胁（合作无人机 / RID）的判定，"
+            "但报告与方案评审必须同时显示；不得把本方案表述为全覆盖或已满足。"
+        )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Round 2.6：post-plan 投影态的比较（baseline vs post_plan）
+# ---------------------------------------------------------------------------
+
+
+def _service_delta(assessment) -> dict:
+    """把一份评估结果压缩成 ``{(route_id, subsystem, service): 最长事件}``。"""
+
+    result = {}
+    for route in (assessment or {}).get("routes") or []:
+        route_id = str(route.get("route_id") or "")
+        for subsystem in route.get("subsystems") or []:
+            code = str(subsystem.get("subsystem") or "")
+            key = f"{route_id}|{code}|{_service_key_of(subsystem) or code}"
+            event = subsystem.get("longest_event") or {}
+            result[key] = {
+                "route_id": route_id,
+                "subsystem": code,
+                "service": _service_key_of(subsystem) or code,
+                "status": subsystem.get("status"),
+                "kind": event.get("kind"),
+                "length_m": event.get("length_m"),
+                "duration_s": event.get("duration_s"),
+                "limit_s": event.get("limit_s"),
+                "exceeds_limit": event.get("exceeds_limit"),
+                "declared_improvement_m": None,
+            }
+    return result
+
+
+def declared_improvement_index(assessment) -> dict:
+    """P15 的 ``declared_improvements`` → ``{(route_id, subsystem): 声明改善量}``。"""
+
+    result = {}
+    for route in (assessment or {}).get("routes") or []:
+        route_id = str(route.get("route_id") or "")
+        for item in route.get("declared_improvements") or []:
+            entry = result.setdefault(
+                (route_id, str(item.get("subsystem") or "")), {}
+            )
+            for key in ("declared_max_continuous_deficit_reduction_m", "declared_reduction_m"):
+                if item.get(key) is not None:
+                    entry[key] = item[key]
+    return result
+
+
+def compare_plan_stages(baseline_assessment, post_plan_assessment, projection) -> dict:
+    """**baseline vs post_plan** 的逐 service 比较（改进项 + 剩余缺口）。
+
+    改进（improved）的判据必须**可核查**，因此只承认两种：
+
+    * ``confirmed_gap_resolved``：该 service 在 baseline 有连续缺口事件，而投影态**没有**
+      任何缺口事件（长度与持续时间都归零）；
+    * ``declared_improvement``：该 service 在 baseline 有缺口，投影态仍有缺口，但 P15 的
+      ``declared_improvements`` **显式声明**了缓解量（按声明给出，不自行推导）。
+
+    只有"事件消失但没有任何声明"的情况才记为 ``unexplained_disappearance`` —— 它仍然
+    是改进，但必须如实标注"缺少声明依据"，绝不静默当成正常。
+    """
+
+    baseline_index = _service_delta(baseline_assessment)
+    post_index = _service_delta(post_plan_assessment)
+    declarations = declared_improvement_index(post_plan_assessment)
+    improved, remaining = [], []
+    for key in sorted(set(baseline_index) | set(post_index)):
+        before = baseline_index.get(key)
+        after = post_index.get(key)
+        reference = before or after
+        route_id = reference["route_id"]
+        subsystem = reference["subsystem"]
+        service = reference["service"]
+        declared = declarations.get((route_id, subsystem)) or {}
+        declared_m = (
+            declared.get("declared_max_continuous_deficit_reduction_m")
+            if declared.get("declared_max_continuous_deficit_reduction_m") is not None
+            else declared.get("declared_reduction_m")
+        )
+        before_event = bool(before) and before.get("length_m") not in (None, 0)
+        after_event = bool(after) and after.get("length_m") not in (None, 0)
+        if after is not None:
+            after = {**after, "declared_improvement_m": declared_m}
+        if before_event and not after_event:
+            improved.append({
+                **(after or before),
+                "improvement_kind": (
+                    "declared_improvement" if declared_m is not None
+                    else "confirmed_gap_resolved"
+                ),
+                "declared_improvement_m": declared_m,
+                "baseline_length_m": before.get("length_m"),
+                "baseline_duration_s": before.get("duration_s"),
+                "reduction_m": before.get("length_m"),
+                "semantics": (
+                    "p15_declared_reduction" if declared_m is not None
+                    else "gap_event_absent_in_post_plan_state"
+                ),
+            })
+        elif after_event:
+            remaining.append({
+                **after,
+                "improvement_kind": (
+                    "declared_partial_improvement" if declared_m is not None
+                    else "no_declared_improvement"
+                ),
+                "declared_improvement_m": declared_m,
+                "baseline_length_m": (before or {}).get("length_m"),
+                "baseline_duration_s": (before or {}).get("duration_s"),
+                "semantics": "gap_event_still_present_in_post_plan_state",
+            })
+    return {
+        "improved_service_count": len(improved),
+        "remaining_gap_count": len(remaining),
+        "improved_services": improved,
+        "remaining_gaps": remaining,
+        "projection": deepcopy(projection) if projection is not None else None,
+        "comparison_basis": "longest_continuous_event_per_route_subsystem_service",
+    }
+
+
 __all__ = [
     "ACCEPTABILITY_STATUSES", "BASELINE_SOURCES", "BASELINE_VALUES",
     "CONTINUOUS_EVENT_KINDS", "CONTINUOUS_SERVICE_ALGORITHM_ID",
     "CONTINUOUS_SERVICE_ALGORITHM_VERSION", "CONTINUOUS_SERVICE_REASONS",
     "CONTINUOUS_SERVICE_SCHEMA_VERSION", "DEFAULT_SERVICE_ACCEPTABILITY_LIMITS",
-    "NAVIGATION_STATES", "OPERATION_SCENARIO_DEFAULTS", "SUBSYSTEM_ACCEPTABILITY",
-    "SUBSYSTEM_TO_ACCEPTABILITY", "T_CHAIN_COMPONENTS",
-    "aggregate_acceptability", "continuous_gap_duration",
-    "default_continuous_service_limits", "default_continuous_service_policy",
-    "default_operation_scenario", "empty_continuous_service_acceptability",
-    "managed_gap_disclosure", "normalize_continuous_service_policy",
+    "D_MANEUVER_BASELINE_M", "LIMITATION_SEMANTICS", "NAVIGATION_STATES",
+    "NONCOOPERATIVE_LIMITATION_DISCLOSURE", "OPERATION_SCENARIO_DEFAULTS",
+    "PARAMETER_ALIASES", "PLAN_STAGES", "PRIMARY_THREAT_LAYER",
+    "PROTECTION_COMPONENTS", "ROUTE_PROTECTION_FORMULA", "SUBSYSTEM_ACCEPTABILITY",
+    "SUBSYSTEM_TO_ACCEPTABILITY", "SUPPLEMENTARY_THREAT_LAYER", "T_CHAIN_COMPONENTS",
+    "THREAT_LAYER_LABELS", "THREAT_LAYER_STATUSES", "THREAT_LAYERS",
+    "aggregate_acceptability", "classify_surveillance_service_keys",
+    "classify_surveillance_threat_layer",
+    "compare_plan_stages", "continuous_gap_duration",
+    "declared_improvement_index", "default_continuous_service_limits",
+    "default_continuous_service_policy", "default_operation_scenario",
+    "empty_continuous_service_acceptability", "layer_conclusion_status",
+    "limitation_disclosure_lines", "managed_gap_disclosure",
+    "noncooperative_limitations", "normalize_continuous_service_policy",
     "normalize_operation_scenario", "parameter_baseline", "protection_distance",
-    "subsystem_status_from_events", "surveillance_acceptance", "time_chain_total",
+    "subsystem_status_from_events", "surveillance_acceptance",
+    "surveillance_threat_layers", "time_chain_total",
     "subsystem_acceptability_counts",
 ]

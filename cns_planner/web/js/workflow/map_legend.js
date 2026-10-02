@@ -10,13 +10,16 @@
 //  - 铁塔一行只说明"存在一个真实站址"，绝不表达覆盖、频率、功率或可用性。
 // =========================================================
 import {markerSymbolSvg,towerSymbolSvg} from '../map/display_layers.js';
-import {cnsServiceLegendModel} from '../map/cns_service_overlay.js';
+import {
+  cnsServiceLegendModel,continuousServiceLegendModel,radarCapabilityLimitationSummary,
+  radarSurveillanceLayoutState,
+} from '../map/cns_service_overlay.js';
 
 export const BASEMAP_LEGEND_LABEL='在线底图';
 export const BUSINESS_LEGEND_LABEL='真实业务数据';
 export const TOWER_LEGEND_LABEL='通信铁塔';
-//: Round 2.5 / P17 连续服务可接受性：两个**默认关闭**图层的图例分区。
-export const CONTINUOUS_SERVICE_LEGEND_LABEL='CNS 连续服务（P17）';
+//: Round 2.6：连续服务可接受性的**默认关闭**图层图例分区（名称不再带（P17）代号）。
+export const CONTINUOUS_SERVICE_LEGEND_LABEL='CNS 连续服务可接受性';
 
 //: 与 map/display_layers.js 绘制用色一致的图例配色（只为辨认，不表示通过与否）。
 const LEGEND_COLORS={
@@ -76,21 +79,28 @@ export function mapLegendModel({
           {id:'tower-reference',label:TOWER_LEGEND_LABEL,symbol:towerSymbolSvg({size:20,color:LEGEND_COLORS.tower,strokePx:1.8}),note:collectionNote(towers,'个'),state:towerLayerOn?'图层已打开':'图层默认关闭'}
         ]
       },
-      // Round 2.5 / P17：两个**默认关闭**的连续服务图层。
+      // Round 2.6：连续服务可接受性的**默认关闭**图层。
       // 与铁塔一行同一策略：条目常显，但用 state 字段如实说明当前开关状态
       // （默认关闭 / 已打开），绝不暗示这些几何是默认显示的业务事实。
+      // 图例必须**显式区分且不得混同**三类：合作监视（RID）/ 非合作监视（Radar 补充）/
+      // 能力限制（黄色 / 橙色，不是系统错误）。
       {
         title:CONTINUOUS_SERVICE_LEGEND_LABEL,
         lines:[
-          {id:'route-protection-corridor',label:'水平航路保护走廊',
+          {id:'route-protection-corridor',label:'水平航路保护走廊（D_separation / D_maneuver / D_uncertainty）',
             symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.routeProtection+';border-top-style:solid"></span>',
-            note:'走廊外半宽来自后端 outer_half_width_m（D_protection 余量），中心线为真实航路几何',
+            note:'走廊外半宽来自后端 outer_half_width_m；四分量与公式来自后端 corridor，前端不推导。'
+              +'D_maneuver 的身份是 engineering_baseline（不是法规值）',
             state:routeProtectionLayerOn?'图层已打开':'图层默认关闭'},
           {id:'surveillance-protection-coverage',label:'监视保护覆盖（探测缺口段 / T_margin）',
             symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.surveillanceProtection+'"></span>',
-            note:'虚线为后端 surveillance_detection_gap 里程段；两端监视点按 first_detection_evidence.usable 着色',
-            state:surveillanceProtectionLayerOn?'图层已打开':'图层默认关闭'}
-        ]
+            note:'虚线为后端 surveillance_detection_gap 里程段；两端监视点按 first_detection_evidence.usable 着色。'
+              +'该图层只表示**已经存在的真实几何**，不存在的覆盖一律不画',
+            state:surveillanceProtectionLayerOn?'图层已打开':'图层默认关闭'},
+          ...continuousServiceLegendModel({flow,radarState:radarSurveillanceLayoutState(flow)}),
+        ],
+        //: Radar 求解不可行时，图例里如实给出真实候选 / 限制摘要（绝不伪造扇区）。
+        note:radarCapabilityLimitationSummary(flow)||null,
       }
     ]
   };
@@ -107,13 +117,16 @@ export function renderMapLegend(model){
   return (model?.groups||[]).map(group=>
     '<div class="legend-group-label">'+escapeHtml(group.title)+'</div>'
     +group.lines.map(line=>
-      '<div class="legend-line" data-legend-id="'+escapeHtml(line.id)+'">'
+      '<div class="legend-line" data-legend-id="'+escapeHtml(line.id)+'"'
+      +(line.limitation?' data-capability-limitation="true"':'')+'>'
       +'<span class="legend-symbol">'+line.symbol+'</span>'
       +'<span class="legend-label">'+escapeHtml(line.label)+'</span>'
       +(line.note?'<small>'+escapeHtml(line.note)+'</small>':'')
       +(line.state?'<small class="legend-state">'+escapeHtml(line.state)+'</small>':'')
       +'</div>'
     ).join('')
+    +(group.note?'<div class="legend-group-note" data-legend-note="true"><small>'
+      +escapeHtml(group.note)+'</small></div>':'')
   ).join('');
 }
 

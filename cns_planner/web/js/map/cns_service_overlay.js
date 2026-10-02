@@ -966,6 +966,139 @@ export function overlaySubsystemLabel(code) {
   return subsystemServiceLabel(code);
 }
 
+// ============================================================================
+// Round 2.6：监视分层图例 + Radar 不可行的**能力限制**（不是系统错误）
+// ============================================================================
+
+//: P17 连续服务两个图层的配色（与 map/display_layers.js 的绘制用色同源）。
+export const CONTINUOUS_SERVICE_LEGEND_COLORS = {
+  routeProtection: '#1f6f8b',
+  cooperativeSurveillance: '#0f8a78',
+  noncooperativeSurveillance: '#1565c0',
+  capabilityLimitation: '#d98b0b',
+};
+
+/**
+ * Radar 监视布局的**求解状态**（只转印后端字段，不推导）。
+ *
+ * 后端把不可行登记为 ``status === 'infeasible'`` 或 ``solver.status === 'infeasible'``
+ * （也接受 ``failed``）。两者任一命中即为**能力限制** —— 此时前端**绝不绘制任何
+ * Radar 扇区 / 覆盖几何**（不得伪造扇区），只显示真实候选 / 限制摘要。
+ */
+export function radarSurveillanceLayoutState(flow) {
+  const layout = flow?.radar_surveillance_layout || {};
+  const detail = layout.detail || null;
+  const items = Array.isArray(layout.items) ? layout.items : [];
+  const current = detail || items[items.length - 1] || null;
+  const solver = current?.solver || layout.solver || null;
+  const status = String(layout.status || current?.status || '');
+  const solverStatus = String(solver?.status || current?.solver_status || '');
+  const infeasibleStates = ['infeasible', 'failed'];
+  const infeasible = infeasibleStates.includes(status) || infeasibleStates.includes(solverStatus);
+  return {
+    status,
+    solverStatus,
+    infeasible,
+    //: 真实候选规模（绝不伪造扇区，只如实转印计数）。
+    candidateTowerCount: current?.candidate_tower_count ?? null,
+    candidatePanelCount: current?.candidate_panel_count ?? null,
+    selectedTowerCount: current?.selected_tower_count ?? null,
+    selectedPanelCount: current?.selected_panel_count ?? null,
+    infeasibilityReasons: current?.infeasibility_reasons || [],
+    //: 能力限制（黄色 / 橙色），**不是**系统错误。
+    stateLabel: infeasible ? '能力限制（黄色 / 橙色）' : (status || 'not_calculated'),
+  };
+}
+
+/** Radar 不可行时的一句话说明（图例与图层说明共用，逐字保留裁定表述）。 */
+export const RADAR_CAPABILITY_LIMITATION_NOTE =
+  '非合作监视（Radar）求解不可行属**能力限制**，不是系统错误，也不是主要威胁的不通过：'
+  + '该限制不改变主要威胁（合作无人机 / RID）的判定，也不得表述为「监视已完全满足」。';
+
+/**
+ * P17 连续服务图层图例（Round 2.6）。
+ *
+ * 三类必须**显式区分且不得混同**：
+ *   1. 合作监视（RID）；
+ *   2. 非合作监视（Radar 补充）；
+ *   3. 能力限制（黄色 / 橙色）。
+ *
+ * Radar 不可行时：图例项状态标为「能力限制（黄色 / 橙色）」，
+ * 并说明"不绘制任何 Radar 扇区 / 覆盖几何（绝不伪造扇区）"。
+ */
+export function continuousServiceLegendModel({flow, radarState = null} = {}) {
+  const state = radarState || radarSurveillanceLayoutState(flow);
+  const colors = CONTINUOUS_SERVICE_LEGEND_COLORS;
+  return [
+    {
+      id: 'layer-rid-cooperative-protection',
+      label: 'RID cooperative protection（合作监视保护范围）',
+      symbol: '<span class="legend-circle" style="border-color:' + colors.cooperativeSurveillance + '"></span>',
+      //: 合作监视与非合作监视必须显式区分：这条**只**表示 RID 合作监视。
+      note: '合作监视（RID）：只表示合作无人机 / RID 的保护范围与探测缺口段；'
+        + '它不是非合作监视能力，也绝不与非合作监视合并统计。',
+      state: '合作监视（RID）',
+    },
+    {
+      id: 'layer-radar-noncooperative-supplementary',
+      label: 'Radar non-cooperative supplementary coverage（非合作补充覆盖）',
+      symbol: '<span class="legend-circle" style="border-color:' + colors.noncooperativeSurveillance + '"></span>',
+      note: state.infeasible
+        ? '非合作监视（Radar 补充）：当前求解不可行，**不绘制任何 Radar 扇区 / 覆盖几何**'
+          + '（绝不伪造扇区）；候选铁塔 ' + String(state.candidateTowerCount ?? '—')
+          + ' 个 · 候选面板 ' + String(state.candidatePanelCount ?? '—')
+          + ' 个（真实候选 / 限制摘要，见能力限制项）。'
+        : '非合作监视（Radar 补充）：仅在**真实几何存在**时绘制'
+          + '（后端已给出平面交截半径的已选面板）；不存在的覆盖一律不画。',
+      //: 不可行 ⇒ 图例项状态标为「能力限制（黄色 / 橙色）」。
+      state: state.infeasible ? '能力限制（黄色 / 橙色）' : '非合作监视（Radar 补充）',
+      limitation: state.infeasible,
+    },
+    {
+      id: 'capability-limitation',
+      label: '能力限制（capability limitation）',
+      symbol: '<span class="legend-stroke" style="border-top-color:' + colors.capabilityLimitation + '"></span>',
+      note: state.infeasible
+        ? RADAR_CAPABILITY_LIMITATION_NOTE + (state.infeasibilityReasons.length
+          ? ' 不可行原因：' + state.infeasibilityReasons.map(String).join('；')
+          : '')
+        : '能力限制是真实工程结论（黄色 / 橙色），**不是**系统错误，'
+          + '也**不是**主要威胁（合作无人机 / RID）的不通过。',
+      state: state.infeasible ? '能力限制（黄色 / 橙色）' : '未登记能力限制',
+      limitation: state.infeasible,
+    },
+    {
+      id: 'route-protection-corridor-legend',
+      label: 'Route Protection Corridor（水平保护走廊）',
+      symbol: '<span class="legend-stroke" style="border-top-color:' + colors.routeProtection + '"></span>',
+      note: 'D_protection = D_separation + V_relative × T_chain + D_maneuver + D_uncertainty；'
+        + '四分量逐项来自后端 corridor，前端不推导。',
+      state: '默认关闭',
+    },
+  ];
+}
+
+/**
+ * Radar 不可行时图例 / 图层说明里的**真实候选与限制摘要**（绝不伪造扇区）。
+ *
+ * @returns {string} 一句话摘要（无不可行结论时返回空串）
+ */
+export function radarCapabilityLimitationSummary(flow) {
+  const state = radarSurveillanceLayoutState(flow);
+  if (!state.infeasible) return '';
+  const parts = [
+    'Radar 非合作监视求解状态：' + (state.solverStatus || state.status || 'infeasible'),
+    '候选铁塔 ' + String(state.candidateTowerCount ?? '—') + ' 个',
+    '候选面板 ' + String(state.candidatePanelCount ?? '—') + ' 个',
+  ];
+  if (state.infeasibilityReasons.length) {
+    parts.push('不可行原因：' + state.infeasibilityReasons.map(String).join('；'));
+  }
+  parts.push(RADAR_CAPABILITY_LIMITATION_NOTE);
+  return parts.join(' · ');
+}
+
+
 /**
  * 陆海分类图层：默认关闭，勾选后按 **surface facts** 给 L8 格填色。
  *

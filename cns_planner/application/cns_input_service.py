@@ -59,6 +59,10 @@ class CNSInputService:
                 normalize_aircraft_profile(item) for item in state["aircraft_profiles"].get("items", [])
             ]
             state["aircraft_profiles"]["count"] = len(state["aircraft_profiles"]["items"])
+        #: Round 2.6：canonical 机载档案（FC30）必须**可通过正式 UI 选中**。
+        #: 已保存项目的 ``aircraft_profiles`` 是冻结目录，旧项目里可能只有合成档案；
+        #: 这里按规范 id **幂等补齐**（绝不覆盖项目里已有的同 id 条目，也绝不改选中项）。
+        self.ensure_canonical_aircraft_profiles()
         if state.get("device_catalog", {}).get("status") == "passed":
             state["device_catalog"]["items"] = [
                 backfill_device_contract(item) for item in state["device_catalog"].get("items", [])
@@ -78,6 +82,30 @@ class CNSInputService:
             for index, item in enumerate(state["candidate_sites"].get("items") or [])
         ]
         state["candidate_sites"]["count"] = len(state["candidate_sites"]["items"])
+
+    def ensure_canonical_aircraft_profiles(self):
+        """把 canonical 机载档案（FC30）**幂等**并入项目目录，使其可在正式 UI 中选中。
+
+        Round 2.6 规则：
+
+        * 只补齐**缺失**的 canonical 条目；项目里已有的同 ``aircraft_id`` 条目**原样保留**
+          （正式导入的目录不得被内置档案静默覆盖）；
+        * 绝不改变 ``selected_aircraft_profile_id``（补齐 ≠ 选中）；官方验收机型的切换必须
+          由用户在正式 UI / API 上显式执行；
+        * 因为不改变选中项，所以补齐本身**不触发 invalidation**（不制造无意义的 stale）。
+        """
+
+        from ..domain.fc30_profile import FC30_AIRCRAFT_ID, fc30_aircraft_profile
+
+        catalog = self.session.state.get("aircraft_profiles") or {}
+        if catalog.get("status") != "passed":
+            return
+        items = catalog.setdefault("items", [])
+        existing = {str(item.get("aircraft_id") or "") for item in items}
+        if FC30_AIRCRAFT_ID in existing:
+            return
+        items.append(fc30_aircraft_profile())
+        catalog["count"] = len(items)
 
     def select_aircraft(self, aircraft_id):
         profile = AircraftCNSProfileCatalog.find(self.session.state["aircraft_profiles"], str(aircraft_id or ""))
