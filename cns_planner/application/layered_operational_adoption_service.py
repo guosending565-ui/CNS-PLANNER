@@ -27,9 +27,11 @@ class LayeredOperationalAdoptionService:
 
     def ensure_state(self):
         state = self.session.state
-        state["layered_operational_adoptions"] = normalize_layered_operational_adoptions(
-            state.get("layered_operational_adoptions")
-        )
+        #: BUG-SHOT-011：内容不变就不写回（等价重建会改变对象身份，破坏快照缓存键）。
+        current = state.get("layered_operational_adoptions")
+        normalized = normalize_layered_operational_adoptions(current)
+        if current is not normalized and normalized != current:
+            state["layered_operational_adoptions"] = normalized
         return state
 
     def result_snapshot(self):

@@ -270,9 +270,11 @@ class LayeredRoutePlannerService:
         state["layered_route_cost_policy"] = normalize_layered_route_cost_policy(
             state.get("layered_route_cost_policy")
         )
-        state["layered_route_candidates"] = normalize_layered_route_candidate_collection(
-            state.get("layered_route_candidates")
-        )
+        #: BUG-SHOT-011：内容不变就不写回（等价重建会改变对象身份，破坏快照缓存键）。
+        current = state.get("layered_route_candidates")
+        normalized = normalize_layered_route_candidate_collection(current)
+        if current is not normalized and normalized != current:
+            state["layered_route_candidates"] = normalized
         # Additive Theta* V2 inputs.  Each ships *not configured* rather than with an assumed
         # value, except the shelter policy: the user explicitly confirmed the 1.0 baseline,
         # and that value is stored as real per-grid data in ``grid_attributes``.

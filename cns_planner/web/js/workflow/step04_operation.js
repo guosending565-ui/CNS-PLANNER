@@ -9,6 +9,7 @@ import {
   V3D_CNS_SEPARATION_LABEL, V3D_STAGES, routePlannerV3AdoptionModel,
 } from './step03_routes.js';
 import {requiredSiteCountText, serviceKeyLabel} from '../map/service_semantics.js';
+import {renderAdoptedRequiredCnsServices} from './cns_service_evidence.js';
 
 // 二级任务分段：id 稳定（run-*），标签是第一视觉层的业务语言。
 // 与 Step05 使用同一套 wbPanel/wbBlock/wbSegHint 机制：同一时刻只显示一个任务。
@@ -256,7 +257,11 @@ function requirementPolicyPanel(flow){
     +zone('结果','<div class="flow-summary">需求建议 '+statusBadge(summary.status)+' · 已匹配政策 '+summary.matched+' · 证据不足未匹配 '+summary.unknown+' · 冲突 '+summary.conflicts+' · 与正式需求差异 '+summary.changes+(summary.diverged?' · <strong>正式需求已与建议分叉</strong>':'')
       +'<br>采用状态 '+statusBadge(adoption)+' · '+escapeHtml(adoptionBasisText(adoption))
       +wbDisclosure('建议差异 / 字段来源追溯','<pre>'+escapeHtml(diff)+'\n\n'+escapeHtml(provenance)+'</pre>')
-      +'</div>')
+      +'</div>'
+      //: 采用之后用户必须能直接看到 Communication / RID 各自的服务事实（半径、
+      //: 独立站址数要求、工程依据），不需要理解内部 service_key。
+      +'<h4>正式 CNS需求中的服务要求</h4>'
+      +'<div class="gap-results">'+renderAdoptedRequiredCnsServices(flow)+'</div>')
     +zone('主操作',primaryAction('<button class="secondary" id="evaluateRequiredRecommendation">重新评估需求建议</button><button class="primary" id="adoptRequiredRecommendation" '+(summary.status!=='recommendation_ready'||summary.diverged?'disabled':'')+'>采用为正式 CNS需求</button>',
       {note:'需求建议不会自动成为正式 CNS需求：只有点击「采用为正式 CNS需求」后，系统才会把当前建议写入正式需求；重新评估建议不会改动正式需求。'}));
 }

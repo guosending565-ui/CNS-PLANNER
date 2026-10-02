@@ -43,9 +43,11 @@ class LayeredRouteValidationService:
 
     def ensure_state(self):
         state = self.session.state
-        state["layered_route_validations"] = normalize_layered_route_validation_collection(
-            state.get("layered_route_validations")
-        )
+        #: BUG-SHOT-011：内容不变就不写回（等价重建会改变对象身份，破坏快照缓存键）。
+        current = state.get("layered_route_validations")
+        normalized = normalize_layered_route_validation_collection(current)
+        if current is not normalized and normalized != current:
+            state["layered_route_validations"] = normalized
         state.setdefault("result_statuses", {}).setdefault(
             "layered_route_validation", "not_calculated",
         )

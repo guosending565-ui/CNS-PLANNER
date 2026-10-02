@@ -25,6 +25,7 @@ from .cns_service_contract import (
     SERVICE_KEY_RID_COOPERATIVE,
     SERVICE_KEY_SURVEILLANCE,
     normalize_redundancy_by_surface,
+    service_policy,
     validated_service_key,
     validated_service_subtype,
 )
@@ -178,6 +179,114 @@ def service_requirement_for(subsystem, requirement, service_key):
     )
 
 
+#: 只有拥有**冻结 surface 工程规划基线**的服务才允许从"已确认的 subsystem
+#: ``service_key``"确定性派生 canonical ``services`` 条目。
+#:
+#: Radar（非合作监视）与 Navigation RTK augmentation 各有独立的 canonical adapter 与
+#: 证据来源，**不**在此列；legacy ``S:surveillance`` / ``N:navigation`` 更不允许被
+#: 升级成正式服务要求。
+CANONICAL_SERVICE_DERIVATION_KEYS = (
+    SERVICE_KEY_COMMUNICATION,
+    SERVICE_KEY_RID_COOPERATIVE,
+)
+
+#: 派生来源标注：这些数值来自 Round 2 冻结的**工程规划基线**，
+#: 既不是厂家实测规格，也不是从设备数据反推出来的结论。
+DERIVED_SERVICE_REQUIREMENT_SOURCE = "derived_from_confirmed_subsystem_service_key"
+
+
+def derive_canonical_service_requirement(subsystem, requirement, *, field="required_cns"):
+    """从**已确认**的 subsystem 要求确定性派生一个 canonical service requirement。
+
+    fail-closed 规则：只有以下条件**全部**成立才派生，否则返回 ``None``，调用方必须
+    保持 legacy 语义（绝不猜测、绝不把未确认要求升级成正式服务要求）：
+
+    * ``required is True``；
+    * ``confirmed is True``；
+    * 显式 ``service_key`` 属于 :data:`CANONICAL_SERVICE_DERIVATION_KEYS`；
+    * 该 ``service_key`` 在 ``SERVICE_SURFACE_POLICY`` 里有冻结的 surface policy。
+
+    派生内容**全部**取自既有 canonical 常量（surface policy 的全向半球几何、
+    ``radius_by_surface``、``redundancy_by_surface``、RID 类型语义），不引入任何新
+    数值，也不读取设备数据。返回 ``{service_key: requirement}``。
+    """
+
+    code = str(subsystem or "").strip().upper()
+    item = requirement if isinstance(requirement, dict) else {}
+    if item.get("required") is not True or item.get("confirmed") is not True:
+        return None
+    key = validated_service_key(
+        item.get("service_key"), subsystem=code, field=f"{field}.service_key",
+    )
+    if key not in CANONICAL_SERVICE_DERIVATION_KEYS:
+        return None
+    policy = service_policy(key)
+    if policy is None:
+        return None
+    derived = {
+        "service_key": key,
+        "required": True,
+        "confirmed": True,
+        "status": "passed",
+        "source": str(item.get("source") or DERIVED_SERVICE_REQUIREMENT_SOURCE),
+        "service_requirement_source": DERIVED_SERVICE_REQUIREMENT_SOURCE,
+        "geometry": deepcopy(policy.get("geometry") or {}),
+        "radius_by_surface": deepcopy(policy.get("radius_by_surface") or {}),
+        "redundancy_by_surface": deepcopy(policy.get("redundancy_by_surface") or {}),
+        "radius_basis": policy.get("radius_basis"),
+        "maturity": policy.get("maturity"),
+        "parameter_origin": policy.get("parameter_origin"),
+        "parameter_semantics": policy.get("parameter_semantics"),
+        "missing_device_evidence": list(policy.get("missing_device_evidence") or []),
+        "not_evaluated": list(policy.get("not_evaluated") or []),
+    }
+    if item.get("coverage_requirement") is not None:
+        derived["coverage_requirement"] = item.get("coverage_requirement")
+    if policy.get("type"):
+        derived["type"] = deepcopy(policy["type"])
+    return {key: derived}
+
+
+def canonicalize_requirement_services(subsystem, requirement, *, field="required_cns"):
+    """解析一个 subsystem 要求上的正式 ``services``（显式优先，其次确定性派生）。
+
+    返回 ``(services, provenance)``：
+
+    * 显式 ``services`` 存在 ⇒ 原样返回该映射，``provenance.derived = False``；
+      形状/合法性的 canonical 校验仍由 ``normalize_required_cns`` 完成。
+    * 否则尝试 :func:`derive_canonical_service_requirement`；成功则返回派生映射与
+      可审计的 ``provenance``。
+    * 两者都不成立 ⇒ ``(None, None)``：调用方必须保持 legacy 形状，**不得**自行
+      构造任何 service 要求。
+
+    本函数是"Adopt 后 authoritative ``required_cns`` 必须携带正式 service
+    requirements"这一裁定的唯一派生入口；它不修改任何既有数值。
+    """
+
+    item = requirement if isinstance(requirement, dict) else {}
+    explicit = normalize_service_requirements(subsystem, item, field=field)
+    if explicit is not None:
+        #: 提前跑一遍 canonical 校验（fail-closed），但**原样**返回调用方声明的映射，
+        #: 让 ``normalize_required_cns`` 成为唯一规范化写入点（避免双重规范化差异）。
+        return deepcopy(item.get("services")), {
+            "source": "explicit_required_cns_services",
+            "derived": False,
+            "reason": "requirement 已显式声明 services，原样采用",
+        }
+    derived = derive_canonical_service_requirement(subsystem, item, field=field)
+    if derived is None:
+        return None, None
+    return derived, {
+        "source": DERIVED_SERVICE_REQUIREMENT_SOURCE,
+        "derived": True,
+        "basis": "confirmed_subsystem_service_key_plus_frozen_surface_policy",
+        "reason": (
+            "该 subsystem 已确认显式 service_key 且存在冻结 surface 工程规划基线，"
+            "按既有 canonical 常量确定性派生正式 service requirement"
+        ),
+    }
+
+
 def _normalize_service_requirement(subsystem, key, value, *, field):
     explicit = validated_service_key(
         value.get("service_key"), subsystem=subsystem, field=f"{field}.service_key",
@@ -291,6 +400,9 @@ def _optional_positive_integer(value, field):
 
 
 __all__ = [
-    "SERVICE_REGISTRY", "normalize_service_requirements", "planner_family_for",
-    "required_services_for", "service_registry_entry", "service_requirement_for",
+    "CANONICAL_SERVICE_DERIVATION_KEYS", "DERIVED_SERVICE_REQUIREMENT_SOURCE",
+    "SERVICE_REGISTRY", "canonicalize_requirement_services",
+    "derive_canonical_service_requirement", "normalize_service_requirements",
+    "planner_family_for", "required_services_for", "service_registry_entry",
+    "service_requirement_for",
 ]

@@ -566,22 +566,64 @@ function corridorGapSummary(result){
   return result.routes.map(route=>'<div class="gap-route"><b>'+escapeHtml(route.route_id)+' · '+escapeHtml(statusText(route.status||'unknown'))+'</b>'+route.subsystems.map(item=>{const service=item.service||{},redundancy=item.redundancy||{},segments=item.continuous_deficit_segments||[],objectiveRows=(item.objective_results||[]).map(value=>'<div class="list-row"><span>'+escapeHtml(objectiveLabel(value.objective))+'</span><small>实际值 '+(value.actual==null?'—':Number(value.actual).toFixed(3))+' '+escapeHtml(value.operator||'')+' '+(value.target??'—')+' · '+escapeHtml(statusText(value.status))+'</small></div>').join('');return '<div class="coverage-card"><b>'+item.subsystem+' · '+escapeHtml(statusText(item.status))+' · '+escapeHtml(statusText(item.objective_status))+'</b><span>服务 满足 '+pct(service.fractions?.satisfied)+' · 确认缺口 '+pct(service.fractions?.confirmed_deficit)+' · 证据不足 '+pct(service.fractions?.unknown)+'</span><span>冗余 满足 '+pct(redundancy.fractions?.satisfied)+' · 确认缺口 '+pct(redundancy.fractions?.confirmed_deficit)+' · 证据不足 '+pct(redundancy.fractions?.unknown)+'</span><span>空间连续缺口合计 '+formatMetric(item.total_confirmed_deficit_projection_m,'m')+' · 最大 '+formatMetric(item.max_continuous_deficit_projection_m,'m')+' · 分段 '+segments.length+'</span>'+objectiveRows+'</div>';}).join('')+'</div>').join('');
 }
 
-function corridorSitePlanSummary(result){
+export function corridorSitePlanSummary(result){
   if(!result||result.status==='not_calculated')return '<div class="empty-note">尚未运行走廊感知设施规划</div>';
   const selected=(result.selected_actions||[]).map(action=>'<div class="coverage-card"><b>'+escapeHtml(action.action_id)+'</b><span>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.subsystem||'')+' · 单位体积收益 '+formatMetric(action.marginal_confirmed_requirement_unit_volume_gain,'m³·单元')+'</span><small>评分口径：'+escapeHtml(scoreSemanticsLabel(action.score_semantics))+'</small></div>').join('');
   const trace=(result.iteration_trace||[]).map(item=>'<div class="list-row"><span>第 '+item.iteration+' 轮 '+escapeHtml(item.selected_action_id)+'</span><small>'+escapeHtml(reuseClassLabel(item.reuse_class))+' · 边际收益 '+formatMetric(item.marginal_impact?.confirmed_requirement_unit_volume_gain,'m³·单元')+'</small></div>').join('');
   const objectiveRows=[];for(const route of result.after?.routes||[])for(const subsystem of route.subsystems||[])for(const item of subsystem.objective_results||[])objectiveRows.push('<div class="list-row"><span>'+escapeHtml(route.route_id)+' '+escapeHtml(subsystem.subsystem)+' · '+escapeHtml(objectiveLabel(item.objective))+'</span><small>实际值 '+(item.actual==null?'—':Number(item.actual).toFixed(3))+' · '+escapeHtml(statusText(item.status))+'</small></div>');
-  return '<div class="coverage-card"><b>'+escapeHtml(statusText(result.status||'unknown'))+' · 仅提案（未应用）</b><span>目标 '+(result.target_voxel_count||0)+' · 已选动作 '+(result.selected_actions||[]).length+' · 已确认单位体积收益 '+formatMetric(result.confirmed_requirement_unit_volume_gain,'m³·单元')+'</span><span>残余 '+(result.residual_confirmed_targets||[]).length+' · 待补证据 '+(result.unknown_evidence_required||[]).length+' · '+escapeHtml(stopReasonLabel(result.stop_reason))+'</span><small>仅提案；既有 CNS 设施、走廊评估与能力缺口结果均未修改，需用户确认后另行应用。</small></div><h4>已选动作与迭代收益</h4>'+(selected||'<div class="empty-note">没有确认缺口边际改善为正的可行动作</div>')+trace+'<h4>规划目标前后对比</h4>'+(objectiveRows.join('')||'<div class="empty-note">未配置已确认的规划目标</div>');
+  //: P16 面板必须让用户直接看到候选规模、已确认改善、残余缺口与仍缺证据的规模，
+  //: 且 confirmed 与 unknown 分开计数（unknown 绝不算作满足）。
+  const candidateActions=(result.candidate_actions||[]).length;
+  const prefiltered=(result.candidate_impacts||[]).filter(item=>item.evidence_status==='prefiltered_no_corridor_interaction').length;
+  const unknownEvidence=result.residual_unknown_evidence||{};
+  const selectedCount=(result.selected_actions||[]).length;
+  const emptyState=(selectedCount||result.status==='proposal_ready')?''
+    :'<div class="parameter-note">没有产生可行动作属于<strong>工程结论</strong>（不是程序错误）：'
+      +escapeHtml(stopReasonLabel(result.stop_reason))+'。系统不会为了"有方案"而降低覆盖要求、'
+      +'扩大设备半径或使用未解析的铁塔。</div>';
+  //: "为什么无法确认任何改善"必须可读：unknown 绝不算作满足，但也不能只留一句结论。
+  const reasonSummary=result.candidate_unknown_reason_summary||{};
+  const reasonRows=Object.entries(reasonSummary.reason_counts||{}).slice(0,6)
+    .map(([reason,count])=>'<div class="list-row"><span>'+escapeHtml(reason)
+      +'</span><small>'+escapeHtml(String(count))+' 个缺口目标</small></div>').join('');
+  const unknownReasonBlock=reasonRows
+    ? '<h4>为什么没有可确认的改善</h4><div class="gap-results">'
+      +'<div class="parameter-note">候选动作覆盖到缺口后，其服务证据仍然不足'
+      +'（证据不足绝不算作满足），因此系统无法确认任何已确认增益。'
+      +'受影响候选动作 '+escapeHtml(String(reasonSummary.candidates_with_unknown_targets??0))
+      +' 个，按原因聚合如下：</div>'+reasonRows+'</div>'
+    : '';
+  return '<div class="coverage-card"><b>'+escapeHtml(statusText(result.status||'unknown'))+' · 仅提案（未应用）</b>'
+    +'<span>候选动作 '+candidateActions+' · 已选动作 '+selectedCount
+      +(prefiltered?(' · 几何上不可能触及走廊而预筛跳过 '+prefiltered):'')+'</span>'
+    +'<span>已确认单位体积改善 '+formatMetric(result.confirmed_requirement_unit_volume_gain,'m³·单元')
+      +' · 残余确认缺口目标 '+(result.residual_confirmed_targets||[]).length+' / 目标总数 '+(result.target_voxel_count||0)+'</span>'
+    +'<span>仍缺证据的缺口目标 '+(unknownEvidence.final_unknown_target_count??0)
+      +' · 已选动作登记的未知证据 '+(unknownEvidence.selected_action_unknown_target_count??0)
+      +' · 待补证据条目 '+(result.unknown_evidence_required||[]).length+'</span>'
+    +'<span>停止原因：'+escapeHtml(stopReasonLabel(result.stop_reason))+'</span>'
+    +'<small>仅提案；既有 CNS 设施、走廊评估与能力缺口结果均未修改，需用户确认后另行应用。'
+      +'证据不足的目标始终单独统计，既不算作满足，也不会被静默丢弃。</small></div>'
+    +emptyState
+    +unknownReasonBlock
+    +'<h4>已选动作与迭代收益</h4>'+(selected||'<div class="empty-note">没有确认缺口边际改善为正的可行动作</div>')+trace
+    +'<h4>规划目标前后对比</h4>'+(objectiveRows.join('')||'<div class="empty-note">未配置已确认的规划目标</div>');
 }
 
 /** 停止原因 raw 值 → 中文（未登记取值原样显示，绝不编造）。 */
-function stopReasonLabel(value){
+export function stopReasonLabel(value){
   const key=String(value??'').trim();
   if(!key)return '未给出停止原因';
   if(key==='target_resolved')return '目标已闭合';
   if(key==='no_eligible_action')return '没有可用动作';
   if(key==='evidence_insufficient')return '证据不足，需补充证据';
   if(key==='iteration_limit_reached')return '达到迭代上限';
+  //: 后端 P16 的 canonical 停止原因（cns_corridor_site_plan.stop_reason）。
+  if(key==='all_evaluable_confirmed_objectives_met')return '所有可评估的已确认规划目标已满足';
+  if(key==='confirmed_objectives_already_met')return '已确认规划目标在基线即已满足，无需新增站址';
+  if(key==='no_confirmed_targets_or_unknown_evidence')return '没有已确认缺口，也没有待补证据';
+  if(key==='only_unknown_or_missing_evidence')return '只存在证据不足的缺口：不自动建站，需先补齐证据';
+  if(key==='no_positive_confirmed_marginal_gain')return '没有任何候选动作产生已确认的正边际改善';
   return key;
 }
 

@@ -903,7 +903,16 @@ def test_p15_summarizes_navigation_service_independently():
 
 
 def test_p15_keeps_unknown_delivery_evidence_alongside_station_deficit():
-    """已知站址缺口优先于未知，但 Communication 的 unknown 证据必须保留。"""
+    """已知站址缺口优先于未知；而"一个 provider 都没有"本身就是**已确认缺口**。
+
+    Round 2.2 语义裁定（P14 服务证据）：
+
+    * ``vertical_status`` 通过而 ``covered is False`` 表示 P7 已**确认**该采样点没有任何
+      覆盖 provider —— 这是确认事实，不是证据不足；因此 Communication 的缺口是
+      ``confirmed_deficit``，依赖它的导航增强 correction delivery 也随之确认；
+    * 旧行为把"一个 provider 都没有"记成 ``unknown``，等于把**已确认缺口**降级成
+      "证据不足"，会让下游 P15/P16 既不敢补盲、又不敢如实登记缺口。
+    """
 
     planning = ready_planning(required_distinct_site_count=2)
     explicit = required(planning=planning, communication_required=True)
@@ -911,7 +920,6 @@ def test_p15_keeps_unknown_delivery_evidence_alongside_station_deficit():
         "T1", 122.0, 30.0, suitability_value=suitability(),
     )]})
     evidence["routes"][0]["policy"]["required_distinct_site_count"] = 2
-    # 通信子系统没有任何已确认 provider 证据 ⇒ C:communication = unknown（不是 deficit）。
     corridor = run_p14(explicit, navigation_evidence=evidence)
     bucket = next(
         item for item in p15(corridor, explicit)["routes"][0]["subsystems"]
@@ -919,9 +927,11 @@ def test_p15_keeps_unknown_delivery_evidence_alongside_station_deficit():
     )["service_redundancy"]
     rtk = next(item for item in bucket if item["service_key"] == RTK)
     assert rtk["status"] == "confirmed_deficit"
-    assert rtk["gap_cause_counts"] == {CAUSE_REFERENCE_STATION_DEFICIT: 1}
-    assert rtk["delivery_status_counts"] == {"unknown": 1}
-    assert rtk["evidence_required_reasons"] == ["correction_delivery_unknown"]
+    assert rtk["gap_cause_counts"] == {
+        CAUSE_REFERENCE_STATION_DEFICIT: 1, CAUSE_CORRECTION_DELIVERY_DEFICIT: 1,
+    }
+    assert rtk["delivery_status_counts"] == {"confirmed_deficit": 1}
+    assert rtk["evidence_required_reasons"] == []
 
 
 def test_p15_keeps_both_deficit_causes_when_station_and_delivery_both_fail():

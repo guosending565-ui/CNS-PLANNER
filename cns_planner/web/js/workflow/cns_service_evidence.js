@@ -684,6 +684,21 @@ function sharedPhysicalSite(selected, action) {
  * 同一站址上的第二条设备**不增加独立站址重数**，把它的 after_units 当成
  * "新增后重数"会误导用户。
  */
+/**
+ * 复用**既有**物理站址的 reuse 类别（真实铁塔宿主 / 已有 CNS 设施 / 共享站址）。
+ *
+ * 用户必须能一眼看出"这条动作是复用真实铁塔，不新增物理站址"，而不是把
+ * `tower_colocation_host` 误读成一个新建候选。
+ */
+export const REUSED_EXISTING_SITE_CLASSES = Object.freeze([
+  'existing_cns_facility', 'existing_shared_site', 'tower_colocation_host',
+]);
+
+/** 该 reuse 类别是否复用既有物理站址。 */
+export function reusesExistingPhysicalSite(reuseClass) {
+  return REUSED_EXISTING_SITE_CLASSES.includes(String(reuseClass || '').trim());
+}
+
 export function facilityPlanCards(result) {
   const selected = result?.selected_actions || [];
   if (!selected.length) {
@@ -720,6 +735,10 @@ export function facilityPlanCards(result) {
       + ' · 服务 ' + escapeHtml(serviceKeyLabel(action?.service_key)) + '</span>'
       + '<span>站址来源：' + escapeHtml(navigationSiteSourceText(action?.reuse_class))
       + ' · distinct_site_id：' + escapeHtml(String(action?.distinct_site_id || '—')) + '</span>'
+      //: 复用真实铁塔必须显式标注"复用既有站址"，避免被误读成新建站址。
+      + (reusesExistingPhysicalSite(action?.reuse_class)
+        ? '<span class="cns-reuse-existing-site">复用既有站址：本动作复用真实既有物理站址，'
+          + '不新增独立站址</span>' : '')
       + afterClaim
       + (action?.surface_class
         ? '<span>surface_class：' + escapeHtml(surfaceClassText(action.surface_class)) + '</span>' : '')
@@ -932,6 +951,82 @@ export function renderRequiredCnsServicesPanel(flow) {
     + '<div class="button-row"><button class="secondary" id="saveRequiredCnsServices">'
     + '保存 CNS 服务需求</button></div>'
     + '<div class="parameter-note">' + escapeHtml(CNS_SERVICE_GEOMETRY_LEGEND_NOTE) + '</div>';
+}
+
+// ---- 4.1b 已采用的正式服务要求（Adopt 后的权威事实，业务语言展示） -----------
+//
+// 用户在 STEP4 点「采用为正式 CNS需求」之后，必须能直接看到 Communication / RID
+// **各自**的覆盖半径、要求的独立物理站址数与工程依据，不需要知道内部 service_key
+// 才能判断发生了什么。这里只**转印** canonical ``required_cns.services`` 的既有字段：
+// 缺失即显示「未声明」，绝不补默认值、绝不改任何判定。
+
+/** 规划成熟度 raw 值 → 中文（未登记取值原样显示，绝不编造）。 */
+export const CNS_SERVICE_MATURITY_TEXT = {
+  engineering_planning_baseline: '工程规划基线（非厂家实测规格）',
+};
+
+const SERVICE_SURFACE_LABELS = {
+  land: '陆地', coastal_uncertain: '海岸不确定', sea: '海上', unknown: '地表未判定',
+};
+
+/** ``{surface: value}`` → "陆地 4000 m · 海岸不确定 4000 m · 海上 4000 m"；缺失即「未声明」。 */
+export function surfacePolicyLine(mapping, unit = '') {
+  const source = mapping && typeof mapping === 'object' ? mapping : null;
+  if (!source) return '未声明';
+  const parts = ['land', 'coastal_uncertain', 'sea']
+    .filter(key => source[key] !== null && source[key] !== undefined && source[key] !== '')
+    .map(key => SERVICE_SURFACE_LABELS[key] + ' ' + String(source[key]) + (unit ? ' ' + unit : ''));
+  return parts.length ? parts.join(' · ') : '未声明';
+}
+
+/** 一个已声明服务的**事实卡**（只读；未声明返回空串）。 */
+function requiredCnsServiceFactCard(item) {
+  const entry = item.entry;
+  if (!item.declared || !entry || typeof entry !== 'object') return '';
+  const geometry = entry.geometry && typeof entry.geometry === 'object' ? entry.geometry : {};
+  const horizontal = geometry.horizontal_coverage_deg;
+  const maturity = String(entry.maturity || '');
+  const source = String(entry.source || '');
+  const notEvaluated = Array.isArray(entry.not_evaluated) ? entry.not_evaluated.length : 0;
+  const radiusLine = entry.radius_by_surface
+    ? '<span>覆盖半径（按地表类型的几何规划半径）：'
+      + escapeHtml(surfacePolicyLine(entry.radius_by_surface, 'm')) + '</span>'
+    : '<span>覆盖半径：该服务未按地表类型分级（由设备能力决定）</span>';
+  return '<div class="coverage-card cns-service-facts" data-service-key="'
+    + escapeHtml(item.serviceKey) + '">'
+    //: 用 Round D 冻结的**正式中文服务名**（RID 必须写成「合作监视（RID）」，
+    //: 绝不与 Radar 合并成模糊的「监视」），用户不需要理解内部 service_key。
+    + '<b>' + escapeHtml(cnsServiceFormalLabel(item.serviceKey) || item.label) + '</b>'
+    + radiusLine
+    + '<span>要求的独立物理站址数：'
+    + escapeHtml(surfacePolicyLine(entry.redundancy_by_surface)) + '</span>'
+    + '<span>覆盖形态：' + (geometry.omnidirectional === true ? '全向' : '未声明全向')
+    + (horizontal === null || horizontal === undefined
+      ? '' : '（水平 ' + escapeHtml(String(horizontal)) + '°）')
+    + ' · 本项目是否要求：' + (entry.required === true ? '要求' : '不要求') + '</span>'
+    + '<span>工程依据：'
+    + escapeHtml(maturity ? (CNS_SERVICE_MATURITY_TEXT[maturity] || maturity) : '未声明')
+    + (source ? ' · 来源 ' + escapeHtml(source) : '') + '</span>'
+    + '<small>按不同**物理站址**（distinct site）计数，绝不把"N 台设备"当成"N 重"；'
+    + (notEvaluated
+      ? '链路预算、传播、干扰、接收灵敏度等 ' + notEvaluated + ' 项仍未评估。'
+      : '')
+    + '</small></div>';
+}
+
+/**
+ * 已采用的正式服务要求（只读）。STEP4 采用之后用它把 Communication / RID 的
+ * 半径、独立站址数要求与工程依据直接呈现给用户。
+ */
+export function renderAdoptedRequiredCnsServices(flow) {
+  const model = rounddRequiredServicesModel(flow);
+  const declared = model.rows.filter(item => item.declared);
+  if (!declared.length) {
+    return '<div class="parameter-note">正式 CNS需求当前只有旧版子系统口径'
+      + '（尚未声明任何服务级要求）：Communication / RID 的按地表类型半径与独立站址数'
+      + '要求尚未写入正式需求，下游会按子系统口径规划。</div>';
+  }
+  return declared.map(requiredCnsServiceFactCard).join('');
 }
 
 // ---- 4.2 导航增强（GNSS/RTK）工程规划参数 -----------------------------------

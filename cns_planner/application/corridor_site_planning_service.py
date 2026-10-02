@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 
+from ..algorithms.corridor.v1 import nearest_route_position
 from ..catalogs import AircraftCNSProfileCatalog
 from ..domain.corridor_site_planning import (
     TARGET_SCOPE_SERVICE, corridor_target_id, corridor_voxel_entry_index,
@@ -15,6 +17,7 @@ from ..domain.surface_classification import (
 )
 from ..domain.cns_service_contract import (
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, SERVICE_KEY_RADAR_NONCOOPERATIVE,
+    SERVICE_SURFACE_POLICY, index_max_range_m, service_policy,
 )
 from ..domain.cns_service_registry import planner_family_for
 from ..domain.navigation_augmentation import (
@@ -47,6 +50,8 @@ class CorridorSitePlanningService:
     def evaluate(self, payload=None):
         assert_write_authority(self, "cns_corridor_site_plan")
         self.__dict__.pop("_navigation_evidence_cache", None)
+        #: 走廊单元缓存的失效点：一次 P16 evaluate 内网格事实不变，跨 evaluate 必须重算。
+        self.__dict__.pop("_prepared_cells_cache", None)
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("corridor site planning 请求必须是对象")
@@ -90,6 +95,13 @@ class CorridorSitePlanningService:
             unknown.extend(navigation_evidence_required(baseline_navigation_evidence))
         actions = sorted(actions, key=lambda item: item["action_id"])
         policy = state.get("corridor_site_planning_policy") or normalize_corridor_site_planning_policy()
+        #: Round 2.2 性能：同一份 grid / terrain / surface facts 下的走廊单元只准备一次，
+        #: 并在所有 what-if 之间复用（实测每轮重复准备 8008 个单元约 6.4 s）。
+        #: 另对"几何上不可能触及任何走廊体素"的候选做**保守预筛**：这类动作重算前后
+        #: 逐字段相同（P14 的 envelope 剪枝保证超出包络的 provider 连 unknown 都不产生），
+        #: 因此预筛只否决 confirmed 增益必然为 0 的动作，绝不改变任何判定规则。
+        prepared_cells = self._prepared_cells(state)
+        prefilter = _build_prefilter_context(state, prepared_cells)
         selected, trace, all_impacts = [], [], []
         facilities = deepcopy(state.get("existing_cns_facilities") or {})
         current_corridor, current_gap = deepcopy(baseline_corridor), deepcopy(baseline_gap)
@@ -114,6 +126,7 @@ class CorridorSitePlanningService:
                         radar_actions=selected_radar_actions,
                         navigation_actions=selected_navigation_actions,
                         baseline_navigation_evidence=baseline_navigation_evidence,
+                        prepared_cells=prepared_cells, prefilter=prefilter,
                     )
                     evaluated.append(impact)
                     all_impacts.append(deepcopy(impact))
@@ -134,6 +147,7 @@ class CorridorSitePlanningService:
                     facilities, radar_actions=selected_radar_actions,
                     navigation_actions=selected_navigation_actions,
                     baseline_navigation_evidence=baseline_navigation_evidence,
+                    prepared_cells=prepared_cells,
                 )
                 selected_ids.add(action["action_id"])
                 chosen = {
@@ -170,6 +184,7 @@ class CorridorSitePlanningService:
                 final_facilities, radar_actions=final_radar_actions,
                 navigation_actions=final_navigation_actions,
                 baseline_navigation_evidence=baseline_navigation_evidence,
+                prepared_cells=prepared_cells,
             ) if selected
             else (deepcopy(baseline_corridor), deepcopy(baseline_gap))
         )
@@ -236,6 +251,7 @@ class CorridorSitePlanningService:
     def _what_if(
         self, action, facilities, before_gap, targets, iteration, radar_actions=None,
         navigation_actions=None, baseline_navigation_evidence=None,
+        prepared_cells=None, prefilter=None,
     ):
         eligibility = action.get("eligibility") or {}
         if eligibility.get("status") != "eligible":
@@ -247,18 +263,23 @@ class CorridorSitePlanningService:
                 "reasons": deepcopy(eligibility.get("reasons") or []),
                 "evidence": [], "regressions": [],
             }, None, None)
+        prefiltered = _prefilter_impact(action, iteration, prefilter)
+        if prefiltered is not None:
+            return (prefiltered, None, None)
         family = action.get("planner_family")
         if family == "directional_radar":
             after_corridor, after_gap = self._rerun(
                 facilities, radar_actions=[*(radar_actions or []), action],
                 navigation_actions=navigation_actions,
                 baseline_navigation_evidence=baseline_navigation_evidence,
+                prepared_cells=prepared_cells,
             )
         elif family == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
             after_corridor, after_gap = self._rerun(
                 facilities, radar_actions=radar_actions,
                 navigation_actions=[*(navigation_actions or []), action],
                 baseline_navigation_evidence=baseline_navigation_evidence,
+                prepared_cells=prepared_cells,
             )
         else:
             after_corridor, after_gap = self._rerun(
@@ -266,6 +287,7 @@ class CorridorSitePlanningService:
                 radar_actions=radar_actions,
                 navigation_actions=navigation_actions,
                 baseline_navigation_evidence=baseline_navigation_evidence,
+                prepared_cells=prepared_cells,
             )
         impact = _impact(action, before_gap, after_gap, targets)
         impact.update({
@@ -280,6 +302,26 @@ class CorridorSitePlanningService:
             ],
         })
         return impact, after_corridor, after_gap
+
+    def _prepared_cells(self, state):
+        """准备（并缓存）走廊候选单元，供一次 evaluate 内的所有 what-if 复用。
+
+        只依赖 ``grid`` / ``grid_attributes`` / surface facts，因此在整个 evaluate 内
+        是常量；缓存在 :meth:`evaluate` 入口清空，绝不跨请求复用。
+        """
+
+        cached = self.__dict__.get("_prepared_cells_cache")
+        if cached is not None:
+            return cached
+        prepare = getattr(self.corridor_model, "prepare_cells", None)
+        if prepare is None:
+            return None
+        cells = prepare(
+            state.get("grid") or {}, state.get("grid_attributes") or {},
+            surface_class_provider_for(state),
+        )
+        self.__dict__["_prepared_cells_cache"] = cells
+        return cells
 
     def _navigation_evidence(self, state, navigation_actions=None):
         """构造 navigation augmentation 证据；未显式要求该服务时返回 ``None``。
@@ -307,7 +349,7 @@ class CorridorSitePlanningService:
 
     def _rerun(
         self, facilities, radar_actions=None, navigation_actions=None,
-        baseline_navigation_evidence=None,
+        baseline_navigation_evidence=None, prepared_cells=None,
     ):
         radar_evidence = None
         if radar_actions:
@@ -329,14 +371,20 @@ class CorridorSitePlanningService:
             self.corridor_gap_analyzer, facilities,
             radar_service_evidence=radar_evidence,
             navigation_service_evidence=navigation_evidence,
+            prepared_cells=prepared_cells,
         )
 
 
 def rerun_corridor_chain(
     state, corridor_model_prototype, corridor_gap_prototype, facilities,
     *, radar_service_evidence=None, navigation_service_evidence=None,
+    prepared_cells=None,
 ):
-    """Run the existing P14→P15 chain on caller-owned working data."""
+    """Run the existing P14→P15 chain on caller-owned working data.
+
+    ``prepared_cells`` 只用于跳过**同一份** grid / terrain / surface facts 下的重复准备
+    （P16 cumulative what-if）。不传时 P14 自行准备，行为与结果逐字段不变。
+    """
     profile = AircraftCNSProfileCatalog.find(
         state.get("aircraft_profiles") or {}, state.get("selected_aircraft_profile_id") or "",
     )
@@ -363,6 +411,7 @@ def rerun_corridor_chain(
         surface_facts_fingerprint=surface_facts_fingerprint_for(state),
         radar_service_evidence=radar_service_evidence,
         navigation_service_evidence=navigation_service_evidence,
+        prepared_cells=prepared_cells,
     )
     analyzer = corridor_gap_prototype.__class__(
         (state.get("cns_corridor_gap_assessment") or {}).get("parameters")
@@ -647,20 +696,51 @@ def _navigation_confirmed_units(target, entry):
 
 
 def _impact(action, before, after, targets):
+    """一条 candidate action 的 what-if 影响（Round 2.2 unknown 语义）。
+
+    **unknown 语义铁律（本轮裁定）**：
+
+    * ``UNKNOWN ≠ PASS``：证据不足的 target **绝不**计入 ``confirmed_gain``，也绝不
+      计入 ``service_resolved_volume_proxy_m3`` / ``redundancy_progress_volume_proxy_m3``；
+    * ``UNKNOWN ≠ ZERO ENTIRE ACTION``：证据不足的 target 只被**独立登记与披露**，
+      不得把一个动作对其它 confirmed target 的已确认增益整体抹掉；
+    * 只有**真实的 confirmed 恶化**（原 satisfied voxel 变为 confirmed gap）才让整个
+      动作变为 ``ineligible`` 并把增益归零；
+    * ``confirmed_gain > 0`` 即允许进入候选评分，即便仍有 unknown target；此时
+      ``evidence_status = confirmed_with_unknown_evidence``，且 unknown 清单照常保留。
+    """
+
     before_entries, after_entries = _entry_map(before), _entry_map(after)
     gain = service_volume = redundancy_volume = 0.0
-    progress, unknown = [], []
+    progress, unknown, confirmed_targets = [], [], []
+    remaining_confirmed = remaining_unknown = 0
+    unknown_reasons = Counter()
     for target in targets:
         key = target["target_id"]
         left, right = before_entries.get(key), after_entries.get(key)
-        if not left or not right:
+        if left is None or right is None:
             unknown.append(key)
+            remaining_unknown += 1
+            if left is not None and right is None:
+                #: 该动作**覆盖到了**这个目标，但目标的服务证据在 what-if 里没有出现：
+                #: 这正是"覆盖存在、合格性证据不足"的形态，必须如实说明，而不是复用
+                #: baseline（已确认缺口）的原因文本。
+                unknown_reasons[
+                    "该动作覆盖到该目标后其服务证据仍未确认"
+                    "（provider 类型/合格性证据不足）：缺口无法升级为已确认改善"
+                ] += 1
+            else:
+                unknown_reasons[_target_unknown_reason(right or left, "target_entry_missing")] += 1
             continue
         before_units = _units_for_target(target, left)
         after_units = _units_for_target(target, right)
         if before_units is None or after_units is None or right.get("combined_status") == "unknown":
             unknown.append(key)
+            remaining_unknown += 1
+            unknown_reasons[_target_unknown_reason(right, "provider_evidence_incomplete")] += 1
             continue
+        if right.get("combined_status") == "confirmed_gap":
+            remaining_confirmed += 1
         unit_gain = max(0, after_units - before_units)
         volume = float(target.get("discretized_volume_proxy_m3") or 0.0)
         gain += volume * unit_gain
@@ -674,29 +754,207 @@ def _impact(action, before, after, targets):
                 "unit_gain": unit_gain, "unit_volume_gain": volume * unit_gain,
                 "after_combined_status": right.get("combined_status"),
             })
+            confirmed_targets.append(key)
     regressions, unknown_regressions = _regressions(before_entries, after_entries)
     total_reduction, max_reduction = _continuous_reduction(before, after)
     newly_met = _newly_met_objectives(before, after)
+    has_unknown = bool(unknown or unknown_regressions)
     if regressions:
         status, reasons = "ineligible", ["候选 what-if 使原 satisfied voxel 变为 confirmed gap"]
-    elif unknown_regressions or unknown:
-        status, reasons = "unknown", ["what-if 产生 unknown 或关键 provider 证据不完整"]
         gain = service_volume = redundancy_volume = 0.0
     elif gain > 0:
+        #: 已确认增益成立 ⇒ 允许进入候选评分；unknown 只被独立保留与披露。
         status, reasons = "eligible", []
+        if has_unknown:
+            reasons.append(
+                "该动作对部分 target 仍缺可确认证据：已确认增益有效，"
+                "但 unknown 独立保留、不计入 satisfied、不计入冗余满足"
+            )
+    elif has_unknown:
+        status, reasons = "unknown", [
+            "what-if 产生 unknown 或关键 provider 证据不完整，且没有已确认增益"
+        ]
     else:
         status, reasons = "ineligible", ["候选未产生 confirmed requirement-unit progress"]
+    evidence_status = (
+        "ineligible_confirmed_regression" if regressions
+        else "no_confirmed_progress" if status == "ineligible"
+        else "unknown_only" if status == "unknown"
+        else "confirmed_with_unknown_evidence" if has_unknown
+        else "fully_confirmed"
+    )
     return {
         "action_id": action.get("action_id"), "status": status,
         "confirmed_requirement_unit_volume_gain": gain,
+        #: 新语义的显式别名：与上面同值，供"只读已确认增益"的消费方直接使用。
+        "confirmed_gain": gain,
+        "confirmed_targets": confirmed_targets,
         "service_resolved_volume_proxy_m3": service_volume,
         "redundancy_progress_volume_proxy_m3": redundancy_volume,
         "newly_met_confirmed_objectives": newly_met,
         "total_continuous_deficit_projection_reduction_m": total_reduction,
         "max_continuous_deficit_projection_reduction_m": max_reduction,
-        "target_progress": progress, "regressions": regressions,
-        "unknown_regressions": unknown_regressions,
+        "target_progress": progress,
+        #: 动作应用**之后**仍存在的缺口：confirmed 与 unknown 分开计数，绝不合并。
+        "remaining_deficit": {
+            "assessed_target_count": len(targets or []),
+            "confirmed_deficit_targets": remaining_confirmed,
+            "unknown_targets": remaining_unknown,
+        },
+        "evidence_status": evidence_status,
+        "regressions": regressions, "unknown_regressions": unknown_regressions,
         "unknown_targets": unknown, "reasons": reasons,
+        #: 不能确认增益的**原因分布**（小字段）：让"没有方案"成为可解释的工程结论，
+        #: 而不是把几千条 target_id 丢给用户自己去猜。unknown 仍逐条保留在
+        #: ``unknown_targets`` 里，这里只是可读聚合。
+        "unknown_reason_counts": dict(unknown_reasons.most_common(8)),
+    }
+
+
+def _target_unknown_reason(entry, fallback):
+    """从 P15/P16 entry 提取"为什么这条 target 证据不足"的可读原因（只读）。"""
+
+    if not isinstance(entry, dict):
+        return fallback
+    for reason in entry.get("reasons") or []:
+        text = str(reason or "").strip()
+        if text:
+            return text[:160]
+    status = str(entry.get("status") or entry.get("combined_status") or "").strip()
+    return f"{fallback}（{status}）" if status else fallback
+
+
+def _build_prefilter_context(state, prepared_cells):
+    """构造 P16 候选的**保守几何预筛**上下文；无法安全判定时返回 ``None``。
+
+    预筛依据（全部来自既有事实，不引入任何新口径）：
+
+    * 走廊体素的代表点都是某个网格单元的中心，且只可能出现在航路两侧
+      ``horizontal_half_width_m + cell_half_diagonal`` 之内（P14 的走廊包含规则）；
+    * P14 的几何判定先按 ``index_max_range_m``（设备包络）剪枝：**超出包络的 provider
+      既不产生覆盖匹配，也不产生 unknown 证据**。
+
+    因此：若某候选的新设备站点到航路的最近水平距离
+    ``> envelope + max_half_width + max_cell_half_diagonal``，则该候选重算前后逐字段
+    相同 ⇒ 它不可能产生任何 confirmed 增益、regression 或 unknown_regression。
+
+    ``None`` 表示"缺少足够的静态事实进行安全判定"，此时**不做任何预筛**。
+    """
+
+    paths = [
+        (str(route.get("route_id") or ""), list(route.get("path") or []))
+        for route in state.get("operational_routes") or []
+        if len(route.get("path") or []) >= 2
+    ]
+    if not paths:
+        return None
+    specs = ((state.get("cns_corridor_policy") or {}).get("routes") or {})
+    half_widths = []
+    for route_id, _ in paths:
+        value = (specs.get(route_id) or {}).get("horizontal_half_width_m")
+        if value is None:
+            return None
+        half_widths.append(float(value))
+    diagonals = [
+        float(item.get("half_diagonal") or 0.0) for item in prepared_cells or []
+    ]
+    if not diagonals:
+        return None
+    return {
+        "state": state,
+        "paths": paths,
+        "max_half_width_m": max(half_widths),
+        "max_cell_half_diagonal_m": max(diagonals),
+    }
+
+
+def _action_provider_envelope_m(action, state):
+    """候选新设备在 P14 里的几何包络（``index_max_range_m``）。
+
+    只读**设备目录**中该 ``device_id`` 的 canonical ``coverage_geometry``（
+    ``_apply_cumulative_action`` 写入的 hypothetical 设备不带几何，P14 也是从设备目录
+    合并几何的）。查不到时回落到该 service 的冻结 surface policy 上界；两者都不可用
+    时返回 ``None``（调用方必须放弃预筛，绝不猜测）。
+    """
+
+    values = []
+    device_id = str(action.get("device_id") or "")
+    if device_id:
+        for item in (state.get("device_catalog") or {}).get("items") or []:
+            if str(item.get("device_id") or "") != device_id:
+                continue
+            value = index_max_range_m(item.get("coverage_geometry") or {})
+            if value:
+                values.append(float(value))
+            break
+    policy = service_policy(str(action.get("device_service_key") or ""))
+    mapping = (policy or {}).get("radius_by_surface") or {}
+    if mapping:
+        values.append(max(float(item) for item in mapping.values()))
+    return max(values) if values else None
+
+
+def _prefilter_impact(action, iteration, prefilter):
+    """对被预筛否决的候选返回**显式披露**的 impact；不满足预筛条件时返回 ``None``。
+
+    返回的 impact 完整保留"为什么没有增益"的证据（最近航路距离、所需净空、包络半径），
+    并显式声明它只用于候选预筛、最终方案仍由完整 target 集复核。
+    """
+
+    if prefilter is None:
+        return None
+    #: 挂在既有设施上的动作（复用既有站址）坐标不取自 action，保守起见不做预筛。
+    if action.get("facility_id"):
+        return None
+    state = prefilter.get("state")
+    coordinate = action.get("coordinate")
+    if not coordinate or len(coordinate) < 2:
+        return None
+    envelope = _action_provider_envelope_m(action, state)
+    if envelope is None:
+        return None
+    nearest = None
+    for _, path in prefilter["paths"]:
+        distance = float(nearest_route_position(path, coordinate)["distance_m"])
+        nearest = distance if nearest is None else min(nearest, distance)
+    if nearest is None:
+        return None
+    required_clearance = (
+        envelope + prefilter["max_half_width_m"] + prefilter["max_cell_half_diagonal_m"]
+    )
+    if nearest <= required_clearance:
+        return None
+    return {
+        "action_id": action.get("action_id"), "iteration": iteration,
+        "status": "ineligible",
+        "confirmed_requirement_unit_volume_gain": 0.0,
+        "confirmed_gain": 0.0,
+        "confirmed_targets": [], "unknown_targets": [], "unknown_regressions": [],
+        "newly_met_confirmed_objectives": 0,
+        "service_resolved_volume_proxy_m3": 0.0,
+        "redundancy_progress_volume_proxy_m3": 0.0,
+        "total_continuous_deficit_projection_reduction_m": 0.0,
+        "max_continuous_deficit_projection_reduction_m": 0.0,
+        "target_progress": [], "regressions": [],
+        "evidence_status": "prefiltered_no_corridor_interaction",
+        "prefilter": {
+            "applied": True,
+            "reason": "candidate_provider_envelope_cannot_reach_any_corridor_voxel",
+            "nearest_route_distance_m": nearest,
+            "required_clearance_m": required_clearance,
+            "provider_envelope_m": envelope,
+            "corridor_max_half_width_m": prefilter["max_half_width_m"],
+            "max_cell_half_diagonal_m": prefilter["max_cell_half_diagonal_m"],
+            "semantics": (
+                "conservative_prefilter_provably_zero_impact_"
+                "final_selection_reconfirmed_on_full_target_set"
+            ),
+        },
+        "reasons": [
+            "该候选的新设备几何包络无法触及任何走廊体素（超出 P14 包络剪枝范围）："
+            "confirmed 增益必然为 0，因此不执行完整 what-if 重算"
+        ],
+        "evidence": [],
     }
 
 

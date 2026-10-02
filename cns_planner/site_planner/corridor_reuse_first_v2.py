@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -66,6 +67,7 @@ class CorridorReuseFirstSitePlannerV2:
             for tier in (policy or {}).get("reuse_tiers") or []
         }
         residual = _residual_targets(targets, final)
+        unknown_residual = _residual_unknown_evidence(targets, final, selected)
         cost_summary = _cost_summary(selected)
         fingerprint_input = {
             "baseline_fingerprint": (baseline or {}).get("input_fingerprint"),
@@ -84,6 +86,10 @@ class CorridorReuseFirstSitePlannerV2:
             "benefit_semantics": "confirmed_requirement_unit_volume_gain_planning_proxy_not_risk_or_probability",
             "before": before, "after": after,
             "residual_confirmed_targets": residual,
+            "residual_unknown_evidence": unknown_residual,
+            #: 即使一个动作都没选中，"为什么无法确认任何增益"也必须可读、可审计：
+            #: 否则 no_eligible_proposal 只是一句无解释的结论。
+            "candidate_unknown_reason_summary": _candidate_unknown_reason_summary(impacts),
             "unknown_evidence_required": deepcopy(unknown_evidence or []),
             "reuse_counts": reuse_counts, "cost_summary": cost_summary,
             "authoritative_combined_what_if_consistent": bool(consistency),
@@ -121,6 +127,10 @@ def _assessment_metrics(assessment):
     for route in (assessment or {}).get("routes") or []:
         routes.append({
             "route_id": route.get("route_id"),
+            #: Round 2.2：unknown 体素与 confirmed target 体素的规模必须与 confirmed
+            #: 结论并列披露，前端/报告才能显示"已确认改善 + 仍缺证据"。
+            "confirmed_target_voxel_count": len(route.get("confirmed_target_voxel_ids") or []),
+            "unknown_voxel_count": len(route.get("unknown_voxel_ids") or []),
             "subsystems": [{
                 "subsystem": item.get("subsystem"),
                 "service": deepcopy(item.get("service") or {}),
@@ -143,6 +153,76 @@ def _residual_targets(targets, final):
         if not current or current.get("combined_status") == "confirmed_gap":
             residual.append({**deepcopy(target), "final_status": (current or {}).get("combined_status", "missing")})
     return residual
+
+
+def _residual_unknown_evidence(targets, final, selected):
+    """最终方案里仍然**证据不足**的 target（与 confirmed 残差分开、绝不合并）。
+
+    两个来源分开计数、分开披露：
+
+    * ``final_unknown_target_*`` —— 最终 what-if 走廊里 ``combined_status = unknown``
+      或缺条目的 target；
+    * ``selected_action_unknown_target_*`` —— 已选动作的 impact 中登记的 unknown target
+      （这些 target 从未被当作 satisfied，也不会因为动作入选而消失）。
+
+    ``semantics`` 明确写死"unknown 不得计入 satisfied / 冗余满足"，供报告与前端引用。
+    """
+
+    entries = _voxel_entries(final)
+    final_unknown, final_missing = [], []
+    for target in targets or []:
+        current = entries.get(target["target_id"])
+        if current is None:
+            final_missing.append(target["target_id"])
+        elif current.get("combined_status") == "unknown":
+            final_unknown.append(target["target_id"])
+    action_unknown = sorted({
+        str(target_id)
+        for action in selected or []
+        for target_id in ((action.get("impact") or {}).get("unknown_targets") or [])
+    })
+    unknown_regressions = sorted({
+        str(target_id)
+        for action in selected or []
+        for target_id in ((action.get("impact") or {}).get("unknown_regressions") or [])
+    })
+    selected_reason_counts = Counter()
+    for action in selected or []:
+        for reason, count in (((action.get("impact") or {}).get("unknown_reason_counts")) or {}).items():
+            selected_reason_counts[str(reason)] += int(count or 0)
+    return {
+        "semantics": "unknown_evidence_is_disclosed_and_never_counted_as_satisfied_or_redundancy_met",
+        "final_unknown_target_count": len(final_unknown),
+        "final_unknown_target_ids": final_unknown,
+        "final_missing_target_count": len(final_missing),
+        "final_missing_target_ids": final_missing,
+        "selected_action_unknown_target_count": len(action_unknown),
+        "selected_action_unknown_target_ids": action_unknown,
+        "selected_action_unknown_regression_count": len(unknown_regressions),
+        "selected_action_unknown_regression_target_ids": unknown_regressions,
+        "selected_action_unknown_reason_counts": dict(selected_reason_counts.most_common(8)),
+    }
+
+
+def _candidate_unknown_reason_summary(impacts):
+    """全部候选 what-if 的"无法确认增益"原因聚合（只读、供报告与前端解释）。"""
+
+    counts = Counter()
+    candidates_with_unknown = 0
+    for impact in impacts or []:
+        reasons = (impact or {}).get("unknown_reason_counts") or {}
+        if reasons:
+            candidates_with_unknown += 1
+        for reason, count in reasons.items():
+            counts[str(reason)] += int(count or 0)
+    return {
+        "semantics": (
+            "why_candidate_actions_confirm_no_gain_aggregated_over_all_what_ifs_"
+            "unknown_is_never_counted_as_satisfied"
+        ),
+        "candidates_with_unknown_targets": candidates_with_unknown,
+        "reason_counts": dict(counts.most_common(8)),
+    }
 
 
 def _voxel_entries(assessment):

@@ -31,7 +31,11 @@ class RiskFrameworkV2Service:
 
         state = self.session.state
         state["risk_policy_v2"] = normalize_risk_policy_v2(state.get("risk_policy_v2"))
-        state["grid_risk_v2"] = normalize_grid_risk_v2(state.get("grid_risk_v2"))
+        #: BUG-SHOT-011：内容不变就不写回（等价重建会改变对象身份，破坏快照缓存键）。
+        current = state.get("grid_risk_v2")
+        normalized = normalize_grid_risk_v2(current)
+        if current is not normalized and normalized != current:
+            state["grid_risk_v2"] = normalized
         state.setdefault("result_statuses", {}).setdefault("grid_risk_v2", "not_calculated")
         return state
 

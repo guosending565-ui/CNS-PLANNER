@@ -45,9 +45,13 @@ class RouteRiskProfileService:
         state["route_risk_profile_policy"] = normalize_route_risk_profile_policy(
             state.get("route_risk_profile_policy")
         )
-        state["route_risk_profiles"] = normalize_route_risk_profile_collection(
-            state.get("route_risk_profiles")
-        )
+        #: BUG-SHOT-011：只在**内容确实需要修正**时才写回。逐帧重建一个等价集合会让对象
+        #: 身份每帧都变，而快照结构指纹正是用对象身份识别大对象 ⇒ 缓存永不命中，
+        #: 每次 ``/api/workflow`` / ``/api/state`` 都要重付 48–56 s 的投影成本。
+        current = state.get("route_risk_profiles")
+        normalized = normalize_route_risk_profile_collection(current)
+        if current is not normalized and normalized != current:
+            state["route_risk_profiles"] = normalized
         state.setdefault("result_statuses", {}).setdefault("route_risk_profile", "not_calculated")
         return state
 

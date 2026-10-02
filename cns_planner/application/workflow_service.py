@@ -128,6 +128,58 @@ def _snapshot_state_value(key, value):
 _SNAPSHOT_STRUCTURE_DETAIL_LIMIT = 8192
 
 
+def _serialized_size_exceeds(value, limit):
+    """**不序列化**地判断 ``value`` 的 JSON 长度是否确定超过 ``limit``。
+
+    BUG-SHOT-010（性能回归）：旧实现先 ``json.dumps`` 再比较长度，而通用状态里有
+    ``grid``（8008 个格）、整条服务走廊的逐体元结果与 373 条塔事实 —— 等于每次快照
+    都把上百 MB 状态完整序列化一遍（sort_keys=True）。实测 ``/api/workflow`` 因此
+    需要 100 s、``/api/state`` 需要 **960 s**，前端首屏事实上不可用。
+
+    本函数只做**上界估算**并带提前退出：累计估算一旦超过 ``limit`` 立即返回 ``True``。
+    估算值不小于真实 JSON 长度（字符串的引号、容器的括号与分隔符、字典键名都计入），
+    因此"判定为小对象"必然真的小；边界附近的对象只会被**保守地**当成大对象，
+    绝不会再对大对象做序列化。容器的元素个数本身超过 ``limit`` 时直接判定超限，
+    因此遍历永远不会展开超大容器。
+    """
+
+    total = 0
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            total += len(item) + 2
+        elif item is None or isinstance(item, bool):
+            total += 5
+        elif isinstance(item, int):
+            total += len(str(item))
+        elif isinstance(item, float):
+            total += 8
+        elif isinstance(item, dict):
+            if len(item) > limit:
+                return True
+            total += 2 + len(item)
+            if total > limit:
+                return True
+            for key, sub in item.items():
+                total += len(str(key)) + 4
+                if total > limit:
+                    return True
+                stack.append(sub)
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            if len(item) > limit:
+                return True
+            total += 2 + len(item)
+            if total > limit:
+                return True
+            stack.extend(item)
+        else:
+            total += 32
+        if total > limit:
+            return True
+    return False
+
+
 def _snapshot_structure_key(state):
     """状态结构指纹：与 revision 一起构成缓存键。
 
@@ -138,6 +190,9 @@ def _snapshot_structure_key(state):
     * 大对象退化为 ``(类型, 长度, 对象身份)``：逐 cell 明细在生产代码里一律整体替换
       （copy-on-write），身份变化即内容变化，同时避免逐帧序列化大结果。
 
+    是否"小对象"由 :func:`_serialized_size_exceeds` 在不序列化的前提下判定，
+    因此这条路径的代价与状态规模**无关**（旧实现是 O(状态字节数)）。
+
     这是纯只读摘要，不改写任何字段，也不进入任何业务结果。
     """
 
@@ -145,15 +200,16 @@ def _snapshot_structure_key(state):
     for key, value in state.items():
         if key in _SNAPSHOT_OMITTED_STATE_KEYS:
             continue
-        try:
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError):
-            text = None
-        if text is not None and len(text) <= _SNAPSHOT_STRUCTURE_DETAIL_LIMIT:
-            digest.append((key, text))
-        else:
-            size = len(value) if isinstance(value, (dict, list, tuple, str)) else None
-            digest.append((key, type(value).__name__, size, id(value)))
+        if not _serialized_size_exceeds(value, _SNAPSHOT_STRUCTURE_DETAIL_LIMIT):
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                text = None
+            if text is not None:
+                digest.append((key, text))
+                continue
+        size = len(value) if isinstance(value, (dict, list, tuple, str)) else None
+        digest.append((key, type(value).__name__, size, id(value)))
     return tuple(digest)
 
 

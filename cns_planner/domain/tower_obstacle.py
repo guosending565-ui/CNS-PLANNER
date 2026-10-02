@@ -178,6 +178,13 @@ def empty_tower_obstacle_profiles(status="not_calculated"):
         "unresolved_count": 0,
         "policy": normalize_tower_obstacle_policy(None),
         "source": None,
+        #: TOWER-ORIGIN-DIAG-001：塔原点/塔顶正高的**诊断证据**（事实来源与建筑源）。
+        #: 它们是塔事实评估的可复核证据链，**不是**高度结论，因此在 save/reopen 往返中
+        #: 必须原样保留；缺失一律为 ``None``（绝不回落成"已提供"）。
+        "facts_status": None,
+        "fact_method": None,
+        "building_source": None,
+        "tower_source": None,
         "items": {},
         "warnings": [],
     }
@@ -419,7 +426,13 @@ def build_tower_obstacle_profiles(towers, *, terrain_by_tower=None, building_by_
 
 
 def normalize_tower_obstacle_profiles(value):
-    """Persistence round-trip：只保留契约字段，绝不重建或重新推断高度。"""
+    """Persistence round-trip：只保留契约字段，绝不重建或重新推断高度。
+
+    TOWER-ORIGIN-DIAG-001：``facts_status`` / ``fact_method`` / ``building_source`` /
+    ``tower_source`` 是塔事实评估的**诊断证据链**（哪一份地形/建筑事实来源、用什么
+    方法得到），过去在 save 往返中被顶层重建丢弃，导致"这座塔为什么 unresolved"
+    无法复核。这里按 additive 方式原样保留；缺失仍为 ``None``。
+    """
 
     empty = empty_tower_obstacle_profiles()
     if not isinstance(value, dict):
@@ -428,6 +441,9 @@ def normalize_tower_obstacle_profiles(value):
     result["status"] = str(value.get("status") or empty["status"])
     result["policy"] = normalize_tower_obstacle_policy(value.get("policy"))
     result["source"] = deepcopy(value.get("source"))
+    for key in ("facts_status", "fact_method", "building_source", "tower_source"):
+        if key in value:
+            result[key] = deepcopy(value.get(key))
     items = value.get("items")
     if not isinstance(items, dict):
         items = {}
@@ -463,12 +479,102 @@ def normalize_tower_obstacle_profiles(value):
     return result
 
 
+#: TOWER-ORIGIN-DIAG-001：塔原点/塔顶正高**未解析原因**的稳定审计分类码。
+#: 它们只做分类（把既有 ``vertical_status`` 与坐标事实映射到审计词汇），
+#: 绝不重新推断高度、绝不生成默认塔基、也绝不把缺数据伪装成已解析。
+TOWER_ORIGIN_UNRESOLVED_REASONS = (
+    "resolved",
+    "missing_coordinate",
+    "missing_origin_type",
+    "missing_height",
+    "missing_ground_elevation",
+    "rooftop_not_in_building_footprint",
+    "other",
+)
+
+
+def tower_origin_unresolved_reason(profile):
+    """把一个塔障碍档案归类到稳定的**未解析原因**审计码。
+
+    判定顺序与 :func:`build_tower_obstacle_profile` 的短路链一致，因此分类**互斥且完备**：
+
+    1. 坐标缺失/非法 ⇒ ``missing_coordinate``（塔原点即使能算出高度也无法定位，
+       因此这是比"是否解析出高度"更根本的不可用原因）；
+    2. 已解析 ⇒ ``resolved``；
+    3. ``vertical_status = base_type_unknown`` ⇒ ``missing_origin_type``
+       （源数据无法判定地面/楼面，不能假定从地面起算）；
+    4. ``tower_structure_height_missing`` ⇒ ``missing_height``；
+    5. ``terrain_elevation_unresolved`` ⇒ ``missing_ground_elevation``；
+    6. ``building_height_unresolved`` ⇒ ``rooftop_not_in_building_footprint``；
+    7. 其它 ⇒ ``other``。
+
+    本函数**只读**档案：不修改任何字段、不产生任何塔顶高度、不猜任何默认值。
+    """
+
+    item = profile if isinstance(profile, dict) else {}
+    vertical_status = str(item.get("vertical_status") or "")
+    if item.get("longitude") is None or item.get("latitude") is None:
+        reason = "missing_coordinate"
+    elif (
+        str(item.get("status") or "") == "resolved"
+        or vertical_status == "egm2008_orthometric_resolved"
+    ):
+        reason = "resolved"
+    elif vertical_status == "base_type_unknown":
+        reason = "missing_origin_type"
+    elif vertical_status == "tower_structure_height_missing":
+        reason = "missing_height"
+    elif vertical_status == "terrain_elevation_unresolved":
+        reason = "missing_ground_elevation"
+    elif vertical_status == "building_height_unresolved":
+        reason = "rooftop_not_in_building_footprint"
+    else:
+        reason = "other"
+    return {
+        "tower_id": str(item.get("tower_id") or ""),
+        "reason": reason,
+        "vertical_status": vertical_status or None,
+        "detail": (
+            item.get("building_height_reason")
+            or item.get("terrain_reason")
+            or item.get("reason")
+        ),
+    }
+
+
+def tower_origin_unresolved_summary(profiles):
+    """对一整份 ``tower_obstacle_profiles`` 做**原因分类统计**（只读汇总）。
+
+    返回 ``{"total", "resolved", "unresolved", "by_reason"}``。``by_reason`` 覆盖
+    :data:`TOWER_ORIGIN_UNRESOLVED_REASONS` 的**全部**分类码（缺失记 0），因此
+    ``sum(by_reason.values()) == total`` 恒成立，可直接作为审计回归断言。
+    """
+
+    items = (profiles or {}).get("items") if isinstance(profiles, dict) else None
+    items = items if isinstance(items, dict) else {}
+    by_reason = {code: 0 for code in TOWER_ORIGIN_UNRESOLVED_REASONS}
+    resolved = 0
+    for profile in items.values():
+        classified = tower_origin_unresolved_reason(profile)
+        by_reason[classified["reason"]] += 1
+        if classified["reason"] == "resolved":
+            resolved += 1
+    return {
+        "total": len(items),
+        "resolved": resolved,
+        "unresolved": len(items) - resolved,
+        "by_reason": by_reason,
+    }
+
+
 __all__ = [
     "BASE_TYPES", "EGM2008_ORTHOMETRIC", "GROUND_MARKERS", "ROOFTOP_MARKERS",
     "TOWER_OBSTACLE_COLLECTION_ID", "TOWER_OBSTACLE_SCHEMA_VERSION",
-    "TOWER_OBSTACLE_STATUSES", "TOWER_CLEARANCE_POLICY_FIELDS", "VERTICAL_STATUSES",
+    "TOWER_OBSTACLE_STATUSES", "TOWER_CLEARANCE_POLICY_FIELDS",
+    "TOWER_ORIGIN_UNRESOLVED_REASONS", "VERTICAL_STATUSES",
     "build_tower_obstacle_profile", "build_tower_obstacle_profiles", "classify_base_type",
     "default_tower_clearance_policy", "default_tower_obstacle_policy",
     "empty_tower_obstacle_profiles", "normalize_tower_clearance_policy",
     "normalize_tower_obstacle_policy", "normalize_tower_obstacle_profiles",
+    "tower_origin_unresolved_reason", "tower_origin_unresolved_summary",
 ]

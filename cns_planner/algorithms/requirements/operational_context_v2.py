@@ -7,10 +7,14 @@ from hashlib import sha256
 import json
 
 from ...domain.cns_inputs import normalize_required_cns
+from ...domain.cns_service_registry import canonicalize_requirement_services
 from ...domain.requirement_policy import (
     effective_context, empty_required_cns_recommendation,
     normalize_operation_context, normalize_requirement_policies,
 )
+
+#: RequiredCNS 的三个子系统字段与其 subsystem 码。
+_SUBSYSTEM_FIELDS = (("communication", "C"), ("navigation", "N"), ("surveillance", "S"))
 
 
 class OperationalContextRequiredCNSV2:
@@ -131,12 +135,50 @@ class OperationalContextRequiredCNSV2:
             else:
                 _set_path(requirements, path.split("."), entries[0]["value"])
         if not conflicts:
+            requirements, service_provenance = _attach_canonical_services(requirements, scope)
+            field_provenance.update(service_provenance)
             requirements = normalize_required_cns({"project_default": requirements})["project_default"]
         return {
             "requirements": requirements, "matched": matched, "not_matched": not_matched,
             "unknown": unknown, "conflicts": conflicts, "missing_evidence": missing,
             "field_provenance": field_provenance,
         }
+
+
+def _attach_canonical_services(requirements, scope):
+    """给每个子系统要求补上正式 ``services``（显式优先，其次确定性派生）。
+
+    这是"Required CNS recommendation 给出 services、Adopt 后 authoritative
+    ``required_cns`` 必须携带正式 service requirements"的**唯一**接线点：
+
+    * 只**新增** ``services`` 字段，绝不改写任何既有字段或数值；
+    * 派生规则、半径/冗余与全向几何全部取自 ``cns_service_registry`` /
+      ``cns_service_contract`` 的既有 canonical 常量；
+    * 无法确定性派生时保持原样（绝不猜测，legacy 项目形状完全不变）；
+    * 派生与显式声明都在 ``field_provenance`` 上留下可审计记录。
+    """
+
+    provenance = {}
+    for name, code in _SUBSYSTEM_FIELDS:
+        entry = requirements.get(name)
+        if not isinstance(entry, dict):
+            continue
+        services, record = canonicalize_requirement_services(
+            code, entry, field=f"required_cns.{name}",
+        )
+        if services is None or record is None:
+            continue
+        if "services" not in entry:
+            entry["services"] = deepcopy(services)
+            if len([key for key, item in services.items() if item.get("required") is True]) > 1:
+                entry.setdefault("service_requirement_mode", "all_required")
+        provenance[f"{scope}.{name}.services"] = [{
+            "policy_id": None, "version": None,
+            "source_type": record["source"], "source": record["source"],
+            "reference": None, "clause": None,
+            "derived": record["derived"], "reason": record["reason"],
+        }]
+    return requirements, provenance
 
 
 def _match(applicability, context):

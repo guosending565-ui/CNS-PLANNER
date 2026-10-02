@@ -21,12 +21,14 @@ from ..service_capability.v1 import (
     SUBSYSTEM_NAMES,
     build_provider_devices,
     evaluate_capability_point,
+    not_evaluated_for,
     prepare_capability_context,
 )
 from ...domain.cns_corridor import corridor_disclaimers, empty_cns_corridor_assessment
 from ...domain.cns_service_contract import (
     SERVICE_KEY_COMMUNICATION, SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
-    SERVICE_KEY_RADAR_NONCOOPERATIVE, index_max_range_m, resolve_surface_class,
+    SERVICE_KEY_RADAR_NONCOOPERATIVE, index_max_range_m, normalize_surface_class,
+    required_distinct_site_count, resolve_surface_class,
 )
 from ...domain.cns_service_registry import normalize_service_requirements
 from ...domain.navigation_augmentation import (
@@ -60,7 +62,7 @@ class CNSServiceCorridorV1:
         allow_beyond_validated_envelope=False, surface_class_provider=None,
         surface_facts_fingerprint=None, radar_service_evidence=None,
         radar_metric_projector=None, navigation_service_evidence=None,
-        navigation_metric_projector=None,
+        navigation_metric_projector=None, prepared_cells=None,
     ):
         """评估服务走廊。
 
@@ -95,6 +97,12 @@ class CNSServiceCorridorV1:
         ``surface_facts_fingerprint`` 是**可序列化**的 surface 事实身份（Round 2）：
         provider 本身是 callable、不能进稳定指纹，因此显式传入事实指纹。它只参与
         ``input_fingerprint``，不改变任何走廊数学；旧调用方不传时为 ``None``。
+
+        ``prepared_cells`` 是**可选**的预计算走廊单元（来自 :meth:`prepare_cells`），
+        只用于让**同一份** ``grid`` / ``terrain`` / ``surface_class_provider`` 下的多次
+        调用（P16 cumulative what-if）跳过重复准备。默认 ``None`` 时本方法自己准备，
+        因此旧调用方的行为、结果与指纹逐字段不变；传入时结果与不传必须逐字段一致
+        （``prepared`` 条目只含对该组合幂等的记忆化字段，见 :meth:`prepare_cells`）。
         """
         if isinstance(preflight, dict):
             tier = preflight.get("tier")
@@ -113,7 +121,10 @@ class CNSServiceCorridorV1:
         )
         geometric_provider_indexes = index_geometric_providers(geometric_providers)
         provider_devices = build_provider_devices(device_catalog, existing_facilities)
-        prepared_cells = _prepare_cells(cells, terrain, surface_class_provider)
+        prepared_cells = (
+            list(prepared_cells) if prepared_cells is not None
+            else self.prepare_cells(grid, grid_attributes, surface_class_provider)
+        )
         route_results = []
         total_routes = len(routes or [])
         tick = _ProgressThrottle(cancel_check, progress_callback)
@@ -180,6 +191,27 @@ class CNSServiceCorridorV1:
             },
             "disclaimers": corridor_disclaimers(),
         }
+
+    def prepare_cells(self, grid, grid_attributes, surface_class_provider=None):
+        """准备（并可安全复用）走廊候选单元。
+
+        P16 的 cumulative what-if 会对**同一份** grid / terrain / surface facts 反复调用
+        :meth:`evaluate`；逐轮重新准备 8008 个单元是纯重复工作（实测约 6.4 s/次）。本方法
+        把这一步提出来，使调用方在一次 P16 evaluate 内只准备一次。
+
+        复用契约（必须遵守，否则结果可能漂移）：
+
+        * ``prepared`` 条目只包含对同一 ``(cell, terrain, surface facts)`` 组合**幂等**的
+          记忆化字段（``surface`` / ``half_diagonal`` / ``area`` / ``layer_bounds``）；
+        * grid、terrain 或 surface facts 任一变化后**不得**复用旧结果；
+        * 调用方不得修改返回的条目。
+        """
+
+        return _prepare_cells(
+            list((grid or {}).get("cells") or []),
+            ((grid_attributes or {}).get("terrain") or {}).get("cells") or {},
+            surface_class_provider,
+        )
 
     def _route(
         self, route, profile, spec, cells, layers, required_cns,
@@ -329,6 +361,13 @@ class CNSServiceCorridorV1:
                 if explicit_services:
                     from ..service_capability.v1 import summarize_service_redundancy
                     by_key = {str(item.get("service_key")): item for item in service_redundancy}
+                    #: P7 已经**明确判定**"本采样点没有任何覆盖 provider"（``covered is False``）。
+                    #: 这是确认事实，不是证据不足：一个显式要求的 surface-aware service 在这种
+                    #: 体元上必然是**已确认缺口**。若因为"没有任何 provider 评估可汇总"就把它记成
+                    #: unknown，会把已确认缺口降级成证据不足，下游 P15/P16 于是不再把它当作
+                    #: confirmed target（P16 因此永远拿不到候选动作）。这里只在几何门控**确认
+                    #: 不通过**时补一条 confirmed_deficit 服务证据；覆盖状态未知时仍然 unknown。
+                    coverage_confirmed_absent = geometry.get("covered") is False
                     for service_requirement in explicit_services:
                         service_key = str(service_requirement.get("service_key") or "")
                         if service_key in (
@@ -349,6 +388,12 @@ class CNSServiceCorridorV1:
                         )
                         if match is not None:
                             by_key[service_key] = match
+                        elif coverage_confirmed_absent and service_key not in by_key:
+                            uncovered = _uncovered_service_entry(
+                                code, service_key, service_requirement, probe,
+                            )
+                            if uncovered is not None:
+                                by_key[service_key] = uncovered
                     service_redundancy = list(by_key.values())
                 if code == "S":
                     radar = evidence_for_probe(
@@ -419,6 +464,44 @@ class CNSServiceCorridorV1:
                 "subsystems": subsystems,
             })
         return output
+
+
+def _uncovered_service_entry(code, service_key, service_requirement, probe):
+    """构造"几何门控已确认无覆盖"的 ``confirmed_deficit`` 服务证据。
+
+    **只**用于 P7 已判定 ``covered is False`` 的采样点：此时该 service 在本体元确认没有
+    任何覆盖 provider，因此缺口是**已确认结论**，而不是证据不足。字段形状与
+    :func:`...service_capability.v1.summarize_service_redundancy` 的输出保持一致，
+    下游（P15 缺口、P16 站址规划）无需区分证据来源。
+
+    本函数**不**猜测任何数值：要求站址数仍由 canonical
+    :func:`required_distinct_site_count` 按 surface 解析；解析不出（例如 surface 未知）
+    时返回 ``None``，调用方必须保持 ``unknown`` —— 覆盖虽然确认不存在，但"要求多少站址"
+    未知时缺口**不得**被升级成已确认结论。
+    """
+
+    surface = normalize_surface_class(probe.get("surface_class"))
+    required_count = required_distinct_site_count(service_requirement, service_key, surface)
+    if required_count is None:
+        return None
+    return {
+        "service_key": service_key,
+        "subsystem": code,
+        "surface_class": surface,
+        "surface_dependent": True,
+        "required_distinct_site_count": required_count,
+        "counting_basis": "distinct_site_id",
+        "qualified_provider_count": 0,
+        "distinct_site_count": 0,
+        "confirmed_independent_provider_count": None,
+        "distinct_site_ids": None,
+        "status": "confirmed_deficit",
+        "reasons": [
+            "P7 三维几何覆盖门控已确认本采样点没有任何覆盖 provider："
+            "该服务的缺口是已确认结论，不是证据不足",
+        ],
+        "not_evaluated": not_evaluated_for(service_key),
+    }
 
 
 def aggregate_required_service_status(statuses):
