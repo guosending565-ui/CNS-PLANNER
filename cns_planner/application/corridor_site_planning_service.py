@@ -290,8 +290,41 @@ class CorridorSitePlanningService:
                 prepared_cells=prepared_cells,
             )
         impact = _impact(action, before_gap, after_gap, targets)
+        profile = provider_reason_profile(after_corridor)
+        #: Round 2.3：把"哪一层拿不到证据"直接并入原因聚合 —— 否则真实项目里
+        #: Communication（provider 类型门禁）与 RID（机载能力/服务模型）会被同一句
+        #: 笼统文本淹没，`no_eligible_proposal` 无法自证是工程结论。
+        if impact.get("unknown_targets"):
+            aircraft = "、".join(
+                f"{key}×{count}" for key, count in
+                sorted((profile.get("p8_status_counts") or {}).items(),
+                       key=lambda item: -item[1])[:3]
+            )
+            if aircraft:
+                impact["unknown_reason_counts"][f"P8 判定汇总：{aircraft}"] = len(
+                    impact["unknown_targets"]
+                )
+            summary = "、".join(
+                f"{key}×{count}" for key, count in
+                sorted((profile.get("provider_status_counts") or {}).items(),
+                       key=lambda item: -item[1])[:4]
+            )
+            if summary:
+                impact["unknown_reason_counts"][f"provider 判定汇总：{summary}"] = len(
+                    impact["unknown_targets"]
+                )
+            services = "、".join(
+                f"{key}×{count}" for key, count in
+                sorted((profile.get("service_evidence_counts") or {}).items(),
+                       key=lambda item: -item[1])[:4]
+            )
+            if services:
+                impact["unknown_reason_counts"][f"P14 服务证据汇总：{services}"] = len(
+                    impact["unknown_targets"]
+                )
         impact.update({
             "iteration": iteration,
+            "provider_reason_profile": profile,
             "evidence": [
                 {"kind": "p14_cumulative_what_if", "algorithm_id": after_corridor.get("algorithm_id"),
                  "algorithm_version": after_corridor.get("algorithm_version"),
@@ -725,19 +758,41 @@ def _impact(action, before, after, targets):
                 #: 该动作**覆盖到了**这个目标，但目标的服务证据在 what-if 里没有出现：
                 #: 这正是"覆盖存在、合格性证据不足"的形态，必须如实说明，而不是复用
                 #: baseline（已确认缺口）的原因文本。
-                unknown_reasons[
+                _finalize_unknown_reason(
                     "该动作覆盖到该目标后其服务证据仍未确认"
-                    "（provider 类型/合格性证据不足）：缺口无法升级为已确认改善"
-                ] += 1
+                    "（provider 类型/合格性证据不足）：缺口无法升级为已确认改善",
+                    1, unknown_reasons,
+                )
             else:
-                unknown_reasons[_target_unknown_reason(right or left, "target_entry_missing")] += 1
+                _finalize_unknown_reason(
+                    _target_unknown_reason(right or left, "target_entry_missing"),
+                    1, unknown_reasons,
+                )
             continue
         before_units = _units_for_target(target, left)
         after_units = _units_for_target(target, right)
         if before_units is None or after_units is None or right.get("combined_status") == "unknown":
             unknown.append(key)
             remaining_unknown += 1
-            unknown_reasons[_target_unknown_reason(right, "provider_evidence_incomplete")] += 1
+            #: Round 2.3：原因必须能区分"哪一层拿不到可计数的单位"。站址计数契约
+            #: （``counting_basis`` / ``distinct_site_count``）与服务状态（``status``）
+            #: 一起披露，否则无法判断是几何、类型门禁还是站址身份导致的证据不足。
+            if before_units is None or after_units is None:
+                _finalize_unknown_reason(
+                    f"{_target_unknown_reason(right, 'target_entry_missing')}"
+                    f"｜计数契约 target={target.get('service_key') or target.get('subsystem')}"
+                    f" before_units={before_units} after_units={after_units}"
+                    f" before({left.get('counting_basis')}/{left.get('distinct_site_count')}"
+                    f"/{left.get('status')})"
+                    f" after({right.get('counting_basis')}/{right.get('distinct_site_count')}"
+                    f"/{right.get('status')})",
+                    1, unknown_reasons,
+                )
+            else:
+                _finalize_unknown_reason(
+                    _target_unknown_reason(right, "provider_evidence_incomplete"),
+                    1, unknown_reasons,
+                )
             continue
         if right.get("combined_status") == "confirmed_gap":
             remaining_confirmed += 1
@@ -812,16 +867,150 @@ def _impact(action, before, after, targets):
 
 
 def _target_unknown_reason(entry, fallback):
-    """从 P15/P16 entry 提取"为什么这条 target 证据不足"的可读原因（只读）。"""
+    """从 P15/P16 entry 提取"为什么这条 target 证据不足"的可读原因（只读）。
+
+    Round 2.3：原因文本必须**可区分**，否则 ``no_eligible_proposal`` 只能得到一句笼统的
+    "证据不足"，无法判断是几何、类型门禁、服务模型、站址身份还是 surface 契约造成的。
+    因此这里在既有 ``reasons`` 之前先带上**判定维度**（覆盖/服务/冗余/组合状态）。
+    """
 
     if not isinstance(entry, dict):
         return fallback
+    dimensions = []
+    for label, key in (
+        ("覆盖", "geometry_status"), ("服务", "service_status"),
+        ("冗余", "redundancy_status"), ("组合", "combined_status"),
+    ):
+        value = entry.get(key)
+        if value not in (None, ""):
+            dimensions.append(f"{label}={value}")
+    prefix = "（" + "、".join(dimensions) + "）" if dimensions else ""
     for reason in entry.get("reasons") or []:
         text = str(reason or "").strip()
         if text:
-            return text[:160]
+            return (prefix + text)[:200]
     status = str(entry.get("status") or entry.get("combined_status") or "").strip()
     return f"{fallback}（{status}）" if status else fallback
+
+
+#: 上限：单条 action 的原因聚合最多保留的候选 reason 条数（小字段）。
+#: Round 2.3：至少覆盖"每个 subsystem × 每个判定维度"一类，否则真实项目里
+#: Communication（类型门禁）与 RID（机载能力）两类原因会互相挤掉。
+PROVIDER_REASON_SAMPLE_LIMIT = 24
+
+
+def _finalize_unknown_reason(reason, count, counter):
+    """把候选 reason 文本规范化后并入计数（截断防爆，保留可读语义）。"""
+
+    text = str(reason or "").strip() or "未记录原因"
+    counter[text[:220]] += count
+
+
+def provider_reason_profile(corridor):
+    """what-if 之后 P14 的 provider 证据**原因画像**（只读聚合，小字段）。
+
+    目的：让"这个动作覆盖到了目标，但增益无法确认"变成可审计的工程结论 —— 直接给出
+    P8 的 ``provider_type_compatibility`` / ServiceModelSpec / 性能层各自的 status 分布、
+    P14 体元的 **service 证据分布**（``service_redundancy`` 的 status / 计数契约），
+    以及"覆盖存在却没拿到 qualified provider"时的**前几条真实 reason 文本**。
+
+    只统计 ``covered is True`` 的体元（未覆盖的体元是已知缺口，不是证据不足）。
+    """
+
+    status_counts = Counter()
+    stage_status_counts = Counter()
+    aircraft_counts = Counter()
+    service_counts = Counter()
+    aircraft_reason_samples = []
+    reason_samples = []
+    covered_voxels = 0
+    aircraft_reason_limit = 4
+    for route in (corridor or {}).get("routes") or []:
+        for voxel in route.get("voxels") or []:
+            for entry in voxel.get("subsystems") or []:
+                code = str(entry.get("subsystem") or "")
+                if code not in ("C", "S"):
+                    continue
+                if (entry.get("geometry") or {}).get("covered") is not True:
+                    continue
+                covered_voxels += 1
+                p8_status = str(entry.get("p8_status"))
+                aircraft_counts[f"{code}:{p8_status}"] += 1
+                if (
+                    p8_status in ("does_not_meet_under_model", "unknown")
+                    and len(aircraft_reason_samples) < aircraft_reason_limit
+                ):
+                    #: 覆盖成立却没走到服务证据层时，先披露**机载能力层**的真实结论
+                    #: （否则只看到"没有服务条目"，无法区分是机载还是地面 provider 的问题）。
+                    aircraft_reason_samples.append({
+                        "subsystem": code, "voxel_id": voxel.get("voxel_id"),
+                        "p8_status": p8_status,
+                        "reasons": list(entry.get("reasons") or [])[:3],
+                        "aircraft_evidence": [
+                            item for item in entry.get("evidence") or []
+                            if item.get("kind") == "aircraft_capability"
+                        ][:1],
+                    })
+                services = entry.get("service_redundancy") or []
+                if not services:
+                    service_counts[f"{code}:no_service_entry"] += 1
+                for service in services:
+                    service_counts[
+                        f"{code}:{service.get('service_key')}:{service.get('status')}"
+                        f":{service.get('counting_basis')}:"
+                        f"{service.get('distinct_site_count')}/"
+                        f"{service.get('required_distinct_site_count')}"
+                    ] += 1
+                evaluations = entry.get("provider_evaluations") or []
+                if not evaluations:
+                    status_counts[f"{code}:no_provider_evaluation"] += 1
+                    if len(reason_samples) < PROVIDER_REASON_SAMPLE_LIMIT:
+                        reason_samples.append({
+                            "subsystem": code, "voxel_id": voxel.get("voxel_id"),
+                            "stage": None, "status": "missing",
+                            "reason": f"覆盖成立但无 provider_evaluations（p8_status={entry.get('p8_status')}）",
+                        })
+                    continue
+                for evaluation in evaluations:
+                    status = str(evaluation.get("status"))
+                    stage = evaluation.get("stage")
+                    status_counts[f"{code}:{status}"] += 1
+                    stage_status_counts[f"{code}:{stage or 'service_evaluation'}:{status}"] += 1
+                    if (
+                        stage == "provider_type_compatibility"
+                        and status != "meets_under_model"
+                        and len(reason_samples) < PROVIDER_REASON_SAMPLE_LIMIT
+                    ):
+                        reason_samples.append({
+                            "subsystem": code, "voxel_id": voxel.get("voxel_id"),
+                            "stage": stage, "status": status,
+                            "reason": (evaluation.get("reasons") or [None])[0],
+                            "canonical_service_identity": evaluation.get("service_key"),
+                            "provider_device_id": evaluation.get("device_id"),
+                        })
+                    elif (
+                        stage != "provider_type_compatibility"
+                        and status == "unknown"
+                        and len(reason_samples) < PROVIDER_REASON_SAMPLE_LIMIT
+                    ):
+                        reason_samples.append({
+                            "subsystem": code, "voxel_id": voxel.get("voxel_id"),
+                            "stage": stage or "service_evaluation", "status": status,
+                            "reason": (evaluation.get("reasons") or [None])[0],
+                            "canonical_service_identity": evaluation.get("service_key"),
+                            "provider_device_id": evaluation.get("device_id"),
+                        })
+            if covered_voxels and len(reason_samples) >= PROVIDER_REASON_SAMPLE_LIMIT:
+                break
+    return {
+        "covered_voxel_count": covered_voxels,
+        "p8_status_counts": dict(aircraft_counts.most_common(12)),
+        "aircraft_reason_samples": aircraft_reason_samples,
+        "provider_status_counts": dict(status_counts.most_common(12)),
+        "provider_stage_status_counts": dict(stage_status_counts.most_common(12)),
+        "service_evidence_counts": dict(service_counts.most_common(12)),
+        "reason_samples": reason_samples,
+    }
 
 
 def _build_prefilter_context(state, prepared_cells):

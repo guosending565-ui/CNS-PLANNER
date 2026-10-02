@@ -28,6 +28,48 @@ SURVEILLANCE_TECHNOLOGIES = (
     "network_remote_id", "other", "unknown",
 )
 
+#: 参与「类型资格」判定的 ``type`` 字段 = 被判定方**必须能够声明的物理/技术事实**。
+#:
+#: Round 2.3 业务裁定（收敛"结构字段缺失造成的假 unknown"）：
+#:
+#: * 下面这些**有枚举约束的结构化维度**才构成类型门禁；它们表达的是"这一侧在物理上 /
+#:   技术上能不能承担该要求"，设备目录**可以**声明也必须声明，未声明即证据不足
+#:   （``unknown``，fail-closed）。
+#: * ``service_type`` **不在**此列。它是**需求侧的用途/任务描述**（前端 RequiredCNS 的
+#:   「服务类型」自由文本输入，例如 ``command_control``），既无枚举约束，也不是设备目录
+#:   的字段：``catalogs/device_catalog.py`` 与 ``domain/cns_inputs.py::normalize_device``
+#:   都**不写入** ``device.type.service_type``，因此设备侧永远无法声明它。设备的服务身份
+#:   由 canonical ``service_key``（``C:communication`` / ``S:rid_cooperative`` …）承载；
+#:   再要求一个语义重复、设备侧永远为空的字段，属于**同一事实被要求两次**，只会产生
+#:   假 ``unknown``。该字段仍完整保留在 RequiredCNS、前端与结果里（纯描述性，不参与门禁）。
+TYPE_GATE_FIELDS = (
+    "technology", "network_scope", "interfaces",
+    "target_cooperation", "sensor_mode", "service_subtype",
+)
+
+
+def type_gate_items(type_value: dict | None):
+    """产出**参与类型门禁**的 ``(字段名, 要求值)``，保持声明顺序、跳过空值。
+
+    需求侧声明的非门禁字段（当前只有 ``service_type``）被如实忽略 —— 调用方若需要
+    登记它们，可自行对比 ``type_value`` 与 :data:`TYPE_GATE_FIELDS`。
+    """
+
+    if not isinstance(type_value, dict):
+        return []
+    return [
+        (name, value) for name, value in type_value.items()
+        if name in TYPE_GATE_FIELDS and value not in (None, "", "unknown", [])
+    ]
+
+
+def descriptive_type_fields(type_value: dict | None):
+    """需求侧声明了、但**不参与**类型门禁的字段名（当前只有 ``service_type``）。"""
+
+    if not isinstance(type_value, dict):
+        return []
+    return sorted(str(name) for name in type_value if name not in TYPE_GATE_FIELDS)
+
 
 def empty_subsystem_contract(subsystem: str) -> dict:
     """Return a JSON-safe contract without inventing performance thresholds."""

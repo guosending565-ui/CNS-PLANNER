@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from cns_planner.application.corridor_site_planning_service import (  # noqa: E402
-    _impact,
+    _impact, provider_reason_profile,
 )
 from cns_planner.domain.corridor_site_planning import corridor_target_id  # noqa: E402
 from cns_planner.site_planner.corridor_reuse_first_v2 import (  # noqa: E402
@@ -249,3 +249,123 @@ def _placeholder_deepcopy_guard():
     """防止本文件意外依赖可变共享状态。"""
 
     return deepcopy({})
+
+
+# ---------------------------------------------------------------------------
+# Round 2.3：`provider_reason_profile()` —— "为什么没有方案"必须逐层可审计
+# ---------------------------------------------------------------------------
+#
+# 真实项目取证显示：只给出一句"服务证据仍未确认"无法区分是 provider 类型门禁、
+# 机载能力层、ServiceModelSpec 还是 P14 未生成 service 条目。本函数只读聚合这些
+# 维度，绝不改变任何判定。
+
+
+def _provider_corridor(*, covered=True, p8_status="unknown", evaluations, services,
+                       reasons=None, aircraft_evidence=None, subsystem="C"):
+    return {"status": "passed", "routes": [{"route_id": ROUTE, "voxels": [{
+        "voxel_id": VOXEL,
+        "subsystems": [{
+            "subsystem": subsystem,
+            "geometry": {"covered": covered},
+            "p8_status": p8_status,
+            "reasons": list(reasons or []),
+            "evidence": list(aircraft_evidence or []),
+            "provider_evaluations": list(evaluations),
+            "service_redundancy": list(services),
+        }],
+    }]}]}
+
+
+def _provider_evaluation(status, *, stage=None, reasons=None, service_key=COMM, device_id="D1"):
+    return {
+        "status": status, "stage": stage, "reasons": list(reasons or []),
+        "service_key": service_key, "device_id": device_id,
+    }
+
+
+def test_provider_reason_profile_aggregates_every_layer_for_covered_voxels():
+    corridor = _provider_corridor(
+        p8_status="unknown",
+        evaluations=[_provider_evaluation(
+            "unknown", stage="provider_type_compatibility",
+            reasons=["缺少提供者类型字段 network_scope"],
+        )],
+        services=[],
+        reasons=["提供者技术/类型证据不足"],
+        aircraft_evidence=[],
+    )
+    profile = provider_reason_profile(corridor)
+
+    assert profile["covered_voxel_count"] == 1
+    assert profile["p8_status_counts"] == {"C:unknown": 1}
+    assert profile["provider_status_counts"] == {"C:unknown": 1}
+    assert profile["provider_stage_status_counts"] == {
+        "C:provider_type_compatibility:unknown": 1
+    }
+    #: 覆盖成立但没有 service 条目 ⇒ 必须能被识别为"P14 没有生成服务证据"。
+    assert profile["service_evidence_counts"] == {"C:no_service_entry": 1}
+    assert profile["reason_samples"][0]["reason"] == "缺少提供者类型字段 network_scope"
+    assert profile["reason_samples"][0]["canonical_service_identity"] == COMM
+    assert profile["aircraft_reason_samples"][0]["reasons"] == ["提供者技术/类型证据不足"]
+
+
+def test_provider_reason_profile_separates_aircraft_layer_from_provider_layer():
+    """地面 provider 通过、机载能力不兼容 ⇒ 两层必须各自可见。"""
+
+    corridor = _provider_corridor(
+        subsystem="S", p8_status="does_not_meet_under_model",
+        evaluations=[_provider_evaluation(
+            "meets_under_model", stage="provider_type_compatibility", service_key=RID,
+        )],
+        services=[],
+        reasons=["机载能力与 RequiredCNS 不兼容"],
+        aircraft_evidence=[{
+            "kind": "aircraft_capability", "satisfied": False, "reason": "sensor_mode 不匹配",
+        }],
+    )
+    profile = provider_reason_profile(corridor)
+
+    assert profile["p8_status_counts"] == {"S:does_not_meet_under_model": 1}
+    assert profile["provider_status_counts"] == {"S:meets_under_model": 1}
+    sample = profile["aircraft_reason_samples"][0]
+    assert sample["aircraft_evidence"][0]["reason"] == "sensor_mode 不匹配"
+    #: provider 层全部合格时不得产生 provider 级 reason 样本。
+    assert profile["reason_samples"] == []
+
+
+def test_provider_reason_profile_ignores_uncovered_voxels_and_records_service_contract():
+    uncovered = _provider_corridor(
+        covered=False, p8_status="does_not_meet_under_model",
+        evaluations=[_provider_evaluation("unknown")], services=[],
+    )
+    covered = _provider_corridor(
+        p8_status="meets_under_model",
+        evaluations=[_provider_evaluation("meets_under_model", service_key=COMM)],
+        services=[_service(COMM, "satisfied", required=1, current=1)],
+    )
+    combined = {"status": "passed", "routes": [{
+        "route_id": ROUTE,
+        "voxels": [
+            uncovered["routes"][0]["voxels"][0],
+            covered["routes"][0]["voxels"][0],
+        ],
+    }]}
+    profile = provider_reason_profile(combined)
+
+    #: 未覆盖的体元是"已知缺口"，不算证据不足，因此不进入画像。
+    assert profile["covered_voxel_count"] == 1
+    assert profile["provider_status_counts"] == {"C:meets_under_model": 1}
+    assert profile["service_evidence_counts"] == {
+        "C:C:communication:satisfied:distinct_site_id:1/1": 1,
+    }
+
+
+def test_provider_reason_profile_flags_missing_provider_evaluations():
+    corridor = _provider_corridor(
+        p8_status="unknown", evaluations=[],
+        services=[_service(COMM, "unknown", required=1, current=None)],
+    )
+    profile = provider_reason_profile(corridor)
+
+    assert profile["provider_status_counts"] == {"C:no_provider_evaluation": 1}
+    assert "无 provider_evaluations" in profile["reason_samples"][0]["reason"]

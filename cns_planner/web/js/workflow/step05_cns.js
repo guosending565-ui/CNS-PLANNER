@@ -582,8 +582,10 @@ export function corridorSitePlanSummary(result){
       +escapeHtml(stopReasonLabel(result.stop_reason))+'。系统不会为了"有方案"而降低覆盖要求、'
       +'扩大设备半径或使用未解析的铁塔。</div>';
   //: "为什么无法确认任何改善"必须可读：unknown 绝不算作满足，但也不能只留一句结论。
+  //: Round 2.3：后端额外给出"provider 判定汇总 / P14 服务证据汇总"两个可审计键，
+  //: 因此这里放宽到 12 条，保证"哪一层拿不到证据"不会被截断掉。
   const reasonSummary=result.candidate_unknown_reason_summary||{};
-  const reasonRows=Object.entries(reasonSummary.reason_counts||{}).slice(0,6)
+  const reasonRows=Object.entries(reasonSummary.reason_counts||{}).slice(0,12)
     .map(([reason,count])=>'<div class="list-row"><span>'+escapeHtml(reason)
       +'</span><small>'+escapeHtml(String(count))+' 个缺口目标</small></div>').join('');
   const unknownReasonBlock=reasonRows

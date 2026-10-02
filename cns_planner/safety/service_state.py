@@ -9,6 +9,8 @@ from __future__ import annotations
 from copy import deepcopy
 from math import isfinite
 
+from ..domain.cns_performance import type_gate_items
+
 
 EXTERNAL_STATES = ("available", "degraded", "unavailable", "unknown")
 EFFECTIVE_STATES = ("available", "available_degraded", "contingency", "lost", "unknown")
@@ -138,9 +140,11 @@ def _satisfies(required, actual, *, require_capability=False):
         if not actual.get("capabilities") and not _has_meaningful_type(actual.get("type")):
             return False, {"satisfied": False, "reason": "机载能力未声明"}
     required_type, actual_type = required.get("type") or {}, actual.get("type") or {}
-    for key, expected in required_type.items():
-        if expected in (None, "", "unknown", []):
-            continue
+    #: Round 2.3：类型门禁只判定**被判定方必须能够声明的物理/技术事实**
+    #: （:data:`TYPE_GATE_FIELDS`）。需求侧的 ``service_type`` 是用途/任务描述，
+    #: 设备目录不承载该字段（设备导入链从不写入 ``device.type.service_type``），
+    #: 因此不得要求被判定方重复声明 canonical ``service_key`` 已经表达过的服务身份。
+    for key, expected in type_gate_items(required_type):
         observed = actual_type.get(key)
         if observed in (None, "", "unknown", []):
             return None, {"satisfied": None, "reason": f"缺少类型字段 {key}"}

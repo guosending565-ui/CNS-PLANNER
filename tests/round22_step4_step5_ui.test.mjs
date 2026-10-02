@@ -201,15 +201,38 @@ test('p16 summary explains why no gain could be confirmed', () => {
     residual_unknown_evidence: {final_unknown_target_count: 0},
     candidate_unknown_reason_summary: {
       candidates_with_unknown_targets: 20,
-      reason_counts: {'缺少 provider 类型字段 service_type': 1362, '机载能力或关键性能证据不足': 12},
+      reason_counts: {
+        '该动作覆盖到该目标后其服务证据仍未确认（provider 类型/合格性证据不足）：缺口无法升级为已确认改善': 25397,
+        'provider 判定汇总：C:unknown×1362、S:meets_under_model×1641': 3003,
+        'P14 服务证据汇总：C:no_service_entry×1362、S:no_service_entry×1641': 3003,
+      },
     },
     unknown_evidence_required: [], confirmed_requirement_unit_volume_gain: 0,
     stop_reason: 'no_positive_confirmed_marginal_gain', after: {routes: []},
   });
   assert.match(html, /为什么没有可确认的改善/);
-  assert.match(html, /缺少 provider 类型字段 service_type/);
-  assert.match(html, /1362 个缺口目标/);
-  assert.match(html, /机载能力或关键性能证据不足/);
+  assert.match(html, /provider 类型\/合格性证据不足/);
+  assert.match(html, /25397 个缺口目标/);
+  //: Round 2.3：必须能看到"哪一层拿不到证据"，而不是只有一句笼统结论。
+  assert.match(html, /provider 判定汇总/);
+  assert.match(html, /P14 服务证据汇总/);
   assert.match(html, /受影响候选动作 20 个/);
   assert.match(html, /证据不足绝不算作满足/);
+});
+
+test('p16 reason aggregation renders more than six distinct reasons', () => {
+  const reason_counts = {};
+  for (let index = 1; index <= 10; index += 1) {
+    reason_counts[`第 ${index} 类原因`] = index;
+  }
+  const html = corridorSitePlanSummary({
+    status: 'no_eligible_proposal', target_voxel_count: 10,
+    candidate_actions: [{}], candidate_impacts: [], selected_actions: [],
+    residual_confirmed_targets: [], residual_unknown_evidence: {},
+    candidate_unknown_reason_summary: {candidates_with_unknown_targets: 1, reason_counts},
+    unknown_evidence_required: [], confirmed_requirement_unit_volume_gain: 0,
+    stop_reason: 'no_positive_confirmed_marginal_gain', after: {routes: []},
+  });
+  assert.match(html, /第 1 类原因/);
+  assert.match(html, /第 10 类原因/);
 });

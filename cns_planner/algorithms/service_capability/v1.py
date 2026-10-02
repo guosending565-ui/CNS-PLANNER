@@ -11,6 +11,9 @@ from ...domain.cns_service_contract import (
     legacy_min_redundancy, normalize_surface_class, not_evaluated_for,
     required_distinct_site_count,
 )
+from ...domain.cns_performance import (
+    TYPE_GATE_FIELDS, descriptive_type_fields, type_gate_items,
+)
 from ...safety.service_state import evaluate_required_performance
 
 
@@ -325,23 +328,60 @@ def _evaluate_provider(code, required, aircraft, geometry_provider, device, matc
     return {**base, "status": "unsupported_model", "model_family": family, "reasons": ["未实现的 model_family"], "evidence": evidence}
 
 
+#: 参与「提供者类型资格」判定的 ``type`` 字段 = **提供者必须能够声明的物理/技术事实**。
+#: 权威定义与理由见 :data:`cns_planner.domain.cns_performance.TYPE_GATE_FIELDS`
+#: （Round 2.3 业务裁定）：``service_type`` 是**需求侧的用途/任务描述**，设备导入链
+#: 与 ``normalize_device()`` 从不写入 ``device.type.service_type``，因此不得作为门禁；
+#: 需要按服务身份匹配时请用 ``geometry_provider["service_key"]`` —— 那是唯一权威的
+#: canonical service identity。
+PROVIDER_TYPE_COMPATIBILITY_FIELDS = TYPE_GATE_FIELDS
+
+
 def _provider_type_evaluation(required, geometry_provider, device):
     base = _provider_base(geometry_provider, stage="provider_type_compatibility")
     if not isinstance(device, dict):
         return {**base, "status": "unknown", "reasons": ["设备目录条目缺失"], "evidence": []}
     expected_type, actual_type = required.get("type") or {}, device.get("type") or {}
-    for key, expected in expected_type.items():
-        if expected in (None, "", "unknown", []):
-            continue
+    descriptive = descriptive_type_fields(expected_type)
+    evaluated = {}
+    for key, expected in type_gate_items(expected_type):
+        evaluated[key] = expected
         observed = actual_type.get(key)
         if observed in (None, "", "unknown", []):
-            return {**base, "status": "unknown", "reasons": [f"缺少提供者类型字段 {key}"], "evidence": []}
+            return {
+                **base, "status": "unknown", "reasons": [f"缺少提供者类型字段 {key}"],
+                "evidence": [{
+                    "required_type": expected_type, "provider_type": actual_type,
+                    "evaluated_type_fields": sorted(evaluated),
+                    "descriptive_type_fields": descriptive,
+                }],
+            }
         if key == "interfaces":
             if not set(expected).issubset(set(observed)):
-                return {**base, "status": "does_not_meet_under_model", "reasons": ["provider interfaces 不满足"], "evidence": []}
+                return {
+                    **base, "status": "does_not_meet_under_model", "reasons": ["provider interfaces 不满足"],
+                    "evidence": [{
+                        "required_type": expected_type, "provider_type": actual_type,
+                        "evaluated_type_fields": sorted(evaluated),
+                    }],
+                }
         elif observed != expected:
-            return {**base, "status": "does_not_meet_under_model", "reasons": [f"provider {key} 不匹配"], "evidence": []}
-    return {**base, "status": "meets_under_model", "reasons": [], "evidence": [{"required_type": expected_type, "provider_type": actual_type}]}
+            return {
+                **base, "status": "does_not_meet_under_model", "reasons": [f"provider {key} 不匹配"],
+                "evidence": [{
+                    "required_type": expected_type, "provider_type": actual_type,
+                    "evaluated_type_fields": sorted(evaluated),
+                }],
+            }
+    return {
+        **base, "status": "meets_under_model", "reasons": [],
+        "evidence": [{
+            "required_type": expected_type, "provider_type": actual_type,
+            "evaluated_type_fields": sorted(evaluated),
+            "canonical_service_identity": geometry_provider.get("service_key"),
+            "descriptive_type_fields": descriptive,
+        }],
+    }
 
 
 def _declared_actual(device, model):
