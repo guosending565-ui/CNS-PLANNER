@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from contextlib import contextmanager
+import json
 from pathlib import Path
 
 from ..algorithms.registry import (
@@ -120,6 +121,40 @@ def _snapshot_state_value(key, value):
     """快照取值：小对象深拷贝（保持既有隔离语义），大结果只共享只读引用。"""
 
     return value if key in _SNAPSHOT_SHARED_STATE_KEYS else deepcopy(value)
+
+
+#: 结构指纹里"直接保留序列化文本"的最大长度（字符）。超过就退化为结构摘要，
+#: 以免每帧对上百 MB 的逐 cell 明细做一次序列化。
+_SNAPSHOT_STRUCTURE_DETAIL_LIMIT = 8192
+
+
+def _snapshot_structure_key(state):
+    """状态结构指纹：与 revision 一起构成缓存键。
+
+    只回答"自上次投影以来 state 有没有变"，因此必须**廉价**且**稳定**：
+
+    * 小对象（序列化后 ≤ ``_SNAPSHOT_STRUCTURE_DETAIL_LIMIT``）直接保留文本：
+      能捕捉原地修改（`state["coverage"] = ...`、`source_audits` 回填等）；
+    * 大对象退化为 ``(类型, 长度, 对象身份)``：逐 cell 明细在生产代码里一律整体替换
+      （copy-on-write），身份变化即内容变化，同时避免逐帧序列化大结果。
+
+    这是纯只读摘要，不改写任何字段，也不进入任何业务结果。
+    """
+
+    digest = []
+    for key, value in state.items():
+        if key in _SNAPSHOT_OMITTED_STATE_KEYS:
+            continue
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            text = None
+        if text is not None and len(text) <= _SNAPSHOT_STRUCTURE_DETAIL_LIMIT:
+            digest.append((key, text))
+        else:
+            size = len(value) if isinstance(value, (dict, list, tuple, str)) else None
+            digest.append((key, type(value).__name__, size, id(value)))
+    return tuple(digest)
 
 
 def _short_text(value, limit=200):
@@ -668,6 +703,32 @@ class WorkflowService:
                 session.commit_deferred()
 
     def snapshot(self):
+        # BUG-SHOT-006：通用快照是**纯读投影**（逐项浅拷贝 + 各服务的有界只读投影），
+        # 但它每次都要遍历上百个状态键、对中等规模容器做 deepcopy，实测单次 74-83 s。
+        # 首屏（/api/state）与每次刷新（/api/workflow）都走这条路径，因此这里做缓存。
+        #
+        # 缓存键 = 权威 revision + **廉价结构指纹**。只看 revision 是不够的：
+        # `revision` 只在 `WorkflowSession._commit` 成功提交时自增，而代码里存在
+        # "直接改 state、不落盘"的写路径（`register_source_paths()`、
+        # `workflow.state["coverage"] = ...` 这类命令式赋值、各 service 的原地更新）。
+        # 结构指纹对每个顶层键取摘要：小对象直接保留序列化文本（能捕捉原地修改），
+        # 大对象用 (类型, 长度, 对象身份)——逐 cell 明细一律整体替换，身份变化即内容变化。
+        #
+        # 这仍然只是纯缓存：不改变任何字段、不跳过任何守卫、也不写回任何状态。
+        cache_key = (self.state.get("revision"), _snapshot_structure_key(self.state))
+        cached = getattr(self, "_snapshot_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return dict(cached[1])
+        projected = self._project_snapshot()
+        self._snapshot_cache = (cache_key, projected)
+        return dict(projected)
+
+    def invalidate_snapshot_cache(self):
+        """显式丢弃快照缓存：供"直接改 state 且不递增 revision"的写路径调用。"""
+
+        self._snapshot_cache = None
+
+    def _project_snapshot(self):
         # 轻量 workflow 状态：逐 cell 大结果与派生缓存不随通用状态返回，
         # 由既有专用接口按需提供（见模块顶部说明）。业务语义完全不变。
         #
@@ -1255,6 +1316,12 @@ class WorkflowService:
                 )
         if save:
             self.session.save()
+        else:
+            #: 本条路径**直接改 state 且不落盘**（因此 revision 不变）：
+            #: 必须显式丢弃快照缓存，否则调用方会拿到改动前的投影
+            #: （BUG-SHOT-006 复核：`tests/test_towers_real_data.py` 的
+            #: "源内容变化 → needs_revalidation" 用例正是被过期缓存打回的）。
+            self.invalidate_snapshot_cache()
         return self.snapshot()
     def set_airspace_policies(self, payload, *, require_evidence=True):
         previous = self.state.get("airspace_policies")

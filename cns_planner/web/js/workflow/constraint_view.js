@@ -58,6 +58,10 @@ export function createConstraintFieldView(deps){
   let state={altitudeLayerId:'',collection:null,map:null,error:'',loading:false,mapLoaded:false,mapBbox:null,configuration:null};
   //: 地图数据加载的重入保护：同一高度层只允许一个进行中的请求。
   let mapRequest=null;
+  //: BUG-SHOT-009：网格几何（``grid_id → bbox``）的按需水合重入保护与"本会话已试过"
+  //: 标记。可选依赖；未注入时该层的行为与修复前完全一致（如实报告 unresolved，不假装画成功）。
+  let gridGeometryRequest=null;
+  let gridGeometryAttempted=false;
 
   /** 摘要数据来源：本地已读结果优先，否则用 workflow 快照里的 slim 摘要。 */
   function collection(){
@@ -152,6 +156,8 @@ export function createConstraintFieldView(deps){
   /** 用户选择另一个高度层：只切展示并丢弃上一个层的地图明细（不发请求）。 */
   function select(altitudeLayerId){
     const wanted=String(altitudeLayerId||'').trim();
+    // 用户显式操作：允许重新尝试补齐网格几何（上一层可能已经失败过）。
+    gridGeometryAttempted=false;
     state={...state,altitudeLayerId:wanted,collection:null,map:null,mapLoaded:false,mapBbox:null,error:''};
     afterChange();
     return wanted;
@@ -219,9 +225,58 @@ export function createConstraintFieldView(deps){
     return mapRequest;
   }
 
-  /** 绘制覆盖层：勾选但尚未加载时先触发加载，本轮不画（下一轮重绘补上）。 */
+  /** 网格几何是否就绪：约束接口只下发 grid_id/outcome/blocked_by，几何来自网格索引。 */
+  function gridGeometryReady(){
+    const cells=getGridCache()?.cells;
+    return Array.isArray(cells)&&cells.length>0;
+  }
+
+  /**
+   * 确保网格几何（``grid_id → bbox``）可用。
+   *
+   * BUG-SHOT-009：几何缺失时按需 hydrate 一次。**作废（superseded）不算失败**：
+   * `state/workflow_snapshot.js` 用 serial 做竞态裁决，项目切换 / 并发明细请求会让
+   * 本次 hydrate 被丢弃；那种情况下必须允许下一次重绘再试，否则图层会永久停在
+   * "几何缺失"（实测：勾选后 `gridCells` 一直是 0，明细请求永不发出）。
+   *
+   * 为防止渲染循环变成请求风暴，只有"未生效"的结果才重置重试标记；
+   * 真正的失败（异常 / 明确 not applied）保持一次性，由 onError 如实提示。
+   */
+  function ensureGridGeometry(){
+    if(gridGeometryReady()||gridGeometryAttempted)return;
+    if(typeof deps.hydrateGridGeometry!=='function')return;
+    gridGeometryAttempted=true;
+    if(gridGeometryRequest)return;
+    gridGeometryRequest=Promise.resolve(deps.hydrateGridGeometry())
+      .then(outcome=>{
+        const applied=outcome===undefined||outcome===null?true:Boolean(outcome.applied);
+        const superseded=Boolean(outcome&&outcome.reason==='superseded');
+        if(!applied||superseded)gridGeometryAttempted=false;
+        return outcome;
+      })
+      .catch(()=>{gridGeometryAttempted=false;return null;})
+      .finally(()=>{gridGeometryRequest=null;});
+  }
+
+  /**
+   * 绘制覆盖层。
+   *
+   * BUG-SHOT-009：约束接口（``geometry_source = frontend_grid_index``）**不下发几何**，
+   * bbox 只能由前端既有的 ``gridRenderCache.byId`` 补齐；而通用 workflow 快照已把逐格
+   * 明细外置，首屏时该索引为空。此前该层在这种状态下会走完整个绘制流程却一个格子也
+   * 画不出来（``unresolved`` 全量、Canvas 零 fill），而图例计数来自后端 counts，
+   * 于是出现"数据正确、图例对、地图空白"。现在：
+   *   * 几何缺失时先触发一次按需 hydrate，并如实返回"本轮未画"；
+   *   * 几何就绪后按三态开关真实落图，计入 drawn 计数。
+   */
   function draw({ctx,view,screenPoint,gridTheme=null}){
-    if(layerNeedsData()&&state.altitudeLayerId&&(!state.mapLoaded||needsViewportReload())){
+    if(!layerNeedsData()||!state.altitudeLayerId)return drawConstraintFieldOverlay({
+      ctx,view,screenPoint,model:model(),cellsById:getGridCache()?.byId,
+      layers:layerState(),visibleBounds:visibleBounds(),gridTheme
+    });
+    ensureGridGeometry();
+    if(!gridGeometryReady())return {drawn:{blocked:0,unknown:0,pass:0},entries:0,unresolved:[]};
+    if(!state.mapLoaded||needsViewportReload()){
       const reloading=needsViewportReload();
       loadMap({force:reloading});
       if(!state.mapLoaded)return {drawn:{blocked:0,unknown:0,pass:0},entries:0,unresolved:[]};
@@ -329,6 +384,9 @@ export function createConstraintFieldView(deps){
     altitudeLayerLabel:altitudeLayerLabelText,
     layerNeedsData,layerState,generate,reset,paint,stepBindings,configurationModel,
     loadConfiguration,saveConfiguration,
+    //: 诊断入口：网格几何是否就绪 / 本轮是否已尝试补几何（BUG-SHOT-009）。
+    gridGeometryReady,
+    gridGeometryAttempted:()=>gridGeometryAttempted,
     state(){return {...state};}
   };
 }

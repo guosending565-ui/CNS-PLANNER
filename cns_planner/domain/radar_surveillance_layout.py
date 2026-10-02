@@ -77,15 +77,17 @@ from copy import deepcopy
 SCHEMA_VERSION = "radar-surveillance-layout-v1"
 MODEL_SCOPE = "geometric_initial_radar_layout"
 ALGORITHM_ID = "radar_surveillance_layout"
-#: V1.1：本轮修复了三个**真实的几何语义**缺陷（航路采样高度、俯仰符号、雷达原点），
+#: V1.1：修复了三个**真实的几何语义**缺陷（航路采样高度、俯仰符号、雷达原点），
 #: 因此算法版本必须升级，旧 V1.0 layout 一律 stale（见 ``application`` 侧失效链）。
 ALGORITHM_VERSION = "1.1"
 ALGORITHM_NAME = "Radar Surveillance Layout V1.1"
-ALGORITHM_SEMANTICS = "80m固定高度航路方向性雷达几何初步划设方案"
+#: BUG-SHOT-008：名称不再写死 "80m" —— 高度层是数据驱动的，
+#: 旧名 ``ALGORITHM_SEMANTICS`` 保留为别名以兼容既有调用点。
+ALGORITHM_SEMANTICS = "固定高度航路方向性雷达几何初步划设方案"
+ALGORITHM_SEMANTICS_LEGACY = "80m固定高度航路方向性雷达几何初步划设方案"
 
-#: V1.1 显式语义指纹分量（进入 input_fingerprint，旧 V1.0 layout 因此必然 stale）。
-SEMANTICS_FINGERPRINT = {
-    "route_altitude_semantics": "fixed_alt_080_egm2008",
+#: ``geometry_version`` / 俯仰 / 原点 / 陆域掩膜四项是**固定**语义分量（不随高度层变化）。
+_SEMANTICS_FINGERPRINT_FIXED = {
     "vertical_delta_semantics": "target_minus_radar_origin",
     "radar_origin_semantics": "tower_top_orthometric",
     "land_mask_semantics": "explicit_land_polygon_containment_plus_coastal_uncertainty_buffer",
@@ -100,18 +102,199 @@ NOT_EVALUATED = {
     )
 }
 
-#: 固定高度层：80 m，EGM2008 正高。
+#: 固定高度层：默认 80 m，EGM2008 正高。
+#:
+#: BUG-SHOT-008：本常量**不再是架构硬编码**。它只表示"策略里没有显式给出高度层时
+#: 的工程默认值"，真正的运行高度层由
+#: :func:`resolve_radar_altitude_layer_id` 从数据解析：
+#: ``radar_surveillance_policy.fixed_altitude_layer_id`` → 当前权威运行航路的
+#: ``altitude_layer_id`` → 唯一 current layered candidate → 本默认值。
 FIXED_ALTITUDE_LAYER_ID = "ALT-080"
 FIXED_ALTITUDE_M = 80.0
 VERTICAL_REFERENCE = "egm2008_orthometric"
 
+#: 数据驱动解析的候选来源标记（进入结果的 ``altitude_layer_source``，可用于审计）。
+ALTITUDE_LAYER_SOURCE_POLICY = "radar_surveillance_policy.fixed_altitude_layer_id"
+ALTITUDE_LAYER_SOURCE_ROUTE = "operational_route.altitude_layer_id"
+ALTITUDE_LAYER_SOURCE_CANDIDATE = "current_layered_candidate.altitude_layer_id"
+ALTITUDE_LAYER_SOURCE_DEFAULT = "engineering_default_alt_080"
+
+
+def _altitude_layer_entry(state):
+    return {
+        str(item.get("altitude_layer_id")): item
+        for item in ((state or {}).get("spatial_3d") or {}).get("altitude_layers") or []
+        if isinstance(item, dict) and item.get("altitude_layer_id")
+    }
+
+
+def _route_altitude_candidates(state):
+    """当前**正式**运行航路声明的高度层（按 operational_routes 顺序，去重）。
+
+    高度层分配的实际存储位置是 ``spatial_3d.route_operating_layers``
+    （``operational_routes`` 条目本身只有 ``route_id`` / ``path`` / ``status``），
+    因此两个来源都要读；``operational_routes`` 上若直接带 ``altitude_layer_id`` 也一并采纳。
+    只取 **status = confirmed** 的分配：stale / pending 的旧分配不得参与。
+    """
+
+    assignments = {}
+    for item in ((state or {}).get("spatial_3d") or {}).get("route_operating_layers") or []:
+        if not isinstance(item, dict):
+            continue
+        route_id = str(item.get("route_id") or "").strip()
+        layer_id = str(item.get("altitude_layer_id") or "").strip()
+        if not route_id or not layer_id:
+            continue
+        if str(item.get("status") or "") != "confirmed":
+            continue
+        if item.get("confirmed") is not True:
+            continue
+        assignments[route_id] = layer_id
+
+    seen, ordered = set(), []
+    for route in (state or {}).get("operational_routes") or []:
+        if not isinstance(route, dict):
+            continue
+        if str(route.get("status") or "") != "passed":
+            continue
+        route_id = str(route.get("route_id") or "").strip()
+        layer_id = str(route.get("altitude_layer_id") or "").strip() or assignments.get(route_id, "")
+        if layer_id and layer_id not in seen:
+            seen.add(layer_id)
+            ordered.append(layer_id)
+    if not ordered:
+        #: 还没有已发布运行航路时的兜底：任何 confirmed 的分配都算（保持确定性顺序）。
+        for layer_id in assignments.values():
+            if layer_id not in seen:
+                seen.add(layer_id)
+                ordered.append(layer_id)
+    return ordered
+
+
+def resolve_radar_altitude_layer_id(state, *, explicit=None, layers=None):
+    """解析 Radar 本次求解使用的固定高度层，并如实给出解析来源。
+
+    BUG-SHOT-008 之前，Radar 的高度层在 domain / algorithms / geometry / application /
+    readiness 五处被硬编码成 ``ALT-080`` + 80 m，因此**无法**跟随项目当前正式运行
+    航路的高度层（例如 ALT-100），也与"航路固定高度层由项目状态决定"的既有语义冲突。
+
+    解析优先级（每一级都只能来自权威数据，绝不猜）：
+
+    1. 调用方显式给出（例如 demo preview 的当前候选高度层）；
+    2. ``radar_surveillance_policy.fixed_altitude_layer_id`` —— **仅在用户真的显式
+       配置过该字段时**（``fixed_altitude_layer_id_explicitly_configured``）。
+       默认值 ALT-080 只是软件基线，不代表用户选择，因此不得遮蔽运行航路；
+    3. 当前**权威** ``operational_routes`` 声明的 ``altitude_layer_id``：
+       所有已发布航路一致时直接采用；不一致时取**第一条**并如实标注歧义；
+    4. 唯一的 current layered candidate 的高度层（尚未发布运行航路的中间态）；
+    5. 回退到工程默认 ``ALT-080``（标注为 ``engineering_default_alt_080``）。
+
+    返回 ``(altitude_layer_id, altitude_m, source, layer_entry, ambiguous)``；
+    高度取自该高度层目录条目的 ``nominal_altitude_m``，目录缺失时才回退默认值。
+    """
+
+    state = state if isinstance(state, dict) else {}
+    catalog = layers if isinstance(layers, dict) else _altitude_layer_entry(state)
+    route_layers = _route_altitude_candidates(state)
+    ambiguous = len(set(route_layers)) > 1
+
+    requested = str(explicit or "").strip()
+    source = None
+    if requested:
+        source = ALTITUDE_LAYER_SOURCE_CANDIDATE
+    else:
+        policy = state.get("radar_surveillance_policy")
+        policy_layer = (
+            str((policy or {}).get("fixed_altitude_layer_id") or "").strip()
+            if isinstance(policy, dict) else ""
+        )
+        policy_explicit = bool(
+            isinstance(policy, dict)
+            and policy.get("fixed_altitude_layer_id_explicitly_configured") is True
+            #: 未确认的策略只是软件基线：其高度层默认值不得遮蔽运行航路。
+            and str(policy.get("status") or "") == "confirmed"
+        )
+        if policy_explicit and policy_layer:
+            # 用户显式配置优先，即使他就是想用 ALT-080。
+            requested, source = policy_layer, ALTITUDE_LAYER_SOURCE_POLICY
+        elif route_layers:
+            # 用户从未显式配置高度层：跟随**当前权威运行航路**（例如 ALT-100）。
+            requested, source = route_layers[0], ALTITUDE_LAYER_SOURCE_ROUTE
+        elif policy_layer:
+            # 没有已发布运行航路时才回落到策略值（此时它就是唯一可用的声明）。
+            requested, source = policy_layer, ALTITUDE_LAYER_SOURCE_POLICY
+
+    if not requested:
+        candidate = state.get("current_layered_candidate")
+        candidate_layer = (
+            str(candidate.get("altitude_layer_id") or "").strip()
+            if isinstance(candidate, dict) else ""
+        )
+        if candidate_layer:
+            requested, source = candidate_layer, ALTITUDE_LAYER_SOURCE_CANDIDATE
+
+    if not requested:
+        requested, source = FIXED_ALTITUDE_LAYER_ID, ALTITUDE_LAYER_SOURCE_DEFAULT
+
+    entry = catalog.get(requested)
+    if isinstance(entry, dict) and entry.get("nominal_altitude_m") is not None:
+        altitude_m = float(entry.get("nominal_altitude_m"))
+    elif source == ALTITUDE_LAYER_SOURCE_DEFAULT:
+        # 目录里连默认层都没有：工程默认高度仍然可用（readiness 会另行报缺失）。
+        altitude_m = FIXED_ALTITUDE_M
+    else:
+        # 显式要求的高度层不在目录里：**绝不**默默套用 80 m —— 如实返回 None，
+        # 由调用方按 readiness 门控报"该高度层不存在/未确认"。
+        altitude_m = None
+    return requested, altitude_m, str(source), entry, ambiguous
+
+
+def altitude_layer_semantics(altitude_layer_id):
+    """航路采样高度的语义标识：**数据驱动**，不再是固定的 ``fixed_alt_080``。
+
+    图层编号的 ``ALT-`` 前缀会被去掉，因此 ``ALT-080`` 仍得到与修复前**逐字相同**的
+    ``fixed_alt_080_egm2008``（既有 fingerprint 不变），而 ``ALT-100`` 得到
+    ``fixed_alt_100_egm2008``（换层即换语义）。
+    """
+
+    layer_id = str(altitude_layer_id or FIXED_ALTITUDE_LAYER_ID).strip().lower()
+    if layer_id.startswith("alt-"):
+        layer_id = layer_id[len("alt-"):]
+    return f"fixed_alt_{layer_id}_egm2008"
+
+
+def semantics_fingerprint(altitude_layer_id):
+    """语义指纹：随实际使用的高度层变化，因此换层后旧 layout 必然 stale。
+
+    四项非高度分量（俯仰符号 / 雷达原点 / 陆域掩膜 / 几何版本）保持逐字不变。
+    """
+
+    layer_id = str(altitude_layer_id or FIXED_ALTITUDE_LAYER_ID).strip()
+    return {
+        "route_altitude_semantics": altitude_layer_semantics(layer_id),
+        **_SEMANTICS_FINGERPRINT_FIXED,
+        "fixed_altitude_layer_id": layer_id,
+    }
+
+
+#: 兼容常量：默认高度层（ALT-080）下的语义指纹。尚未改造的调用点读它时行为与
+#: 修复前完全一致；已改造的调用点一律改用 :func:`semantics_fingerprint`。
+SEMANTICS_FINGERPRINT = semantics_fingerprint(FIXED_ALTITUDE_LAYER_ID)
+
+
+def route_sample_height_semantics(altitude_layer_id):
+    """航路采样点高度的语义标识（数据驱动，替代固定的 ``fixed_alt_080`` 字符串）。"""
+
+    return altitude_layer_semantics(altitude_layer_id) + "_constant_for_every_sample"
+
+
 #: 航路采样点高度的**唯一**语义（V1.1 P0 修复 BUG-RADAR-ALT-001）。
 #:
-#: 本模型业务定义是「80m 固定巡航高度航路」，因此**所有** optimization / validation /
-#: refinement 采样点的 ``sample.egm2008_m`` 必须**恒等于** ``80.0``。
-#: FABDEM 地面正高**绝不**再被当作航路高度代入：它仍然用于既有
-#: ``tower_obstacle_profiles``（塔底/塔顶派生），也留给未来 terrain LOS。
-ROUTE_SAMPLE_HEIGHT_SEMANTICS = "fixed_alt_080_egm2008_constant_for_every_sample"
+#: 本模型的业务定义是「**固定巡航高度航路**」：所有 optimization / validation /
+#: refinement 采样点的 ``sample.egm2008_m`` 必须**恒等于**该固定高度层的名义高度。
+#: BUG-SHOT-008：这个高度层是**数据驱动**的（默认 ALT-080，可跟随正式运行航路，
+#: 例如 ALT-100）；FABDEM 地面正高**绝不**被当作航路高度代入。
+ROUTE_SAMPLE_HEIGHT_SEMANTICS = route_sample_height_semantics(FIXED_ALTITUDE_LAYER_ID)
 ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT = False
 
 #: 投影到米制平面使用的 CRS（舟山工程既有显式机制）。
@@ -645,7 +828,10 @@ def normalize_radar_mount_assumption(value):
 
 
 __all__ = [
-    "ALGORITHM_ID", "ALGORITHM_NAME", "ALGORITHM_SEMANTICS", "ALGORITHM_VERSION",
+    "ALGORITHM_ID", "ALGORITHM_NAME", "ALGORITHM_SEMANTICS", "ALGORITHM_SEMANTICS_LEGACY",
+    "ALGORITHM_VERSION",
+    "ALTITUDE_LAYER_SOURCE_CANDIDATE", "ALTITUDE_LAYER_SOURCE_DEFAULT",
+    "ALTITUDE_LAYER_SOURCE_POLICY", "ALTITUDE_LAYER_SOURCE_ROUTE",
     "AZIMUTH_BEAMWIDTH_DEG", "AZIMUTH_HALF_WIDTH_DEG",
     "COASTAL_UNCERTAINTY_BUFFER_CONFIRMED", "COASTAL_UNCERTAINTY_BUFFER_ORIGIN",
     "COASTAL_UNCERTAINTY_BUFFER_SEMANTICS", "DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M",
@@ -661,6 +847,8 @@ __all__ = [
     "RCS_REFERENCE_M2", "REQUIRED_DISTINCT_SITE_COUNT",
     "ROUTE_SAMPLE_HEIGHT_SEMANTICS", "ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT",
     "SCHEMA_VERSION", "SEMANTICS_FINGERPRINT", "SURFACE_CLASSES", "VERTICAL_REFERENCE",
-    "default_radar_mount_assumption", "device_provenance", "device_summary",
-    "normalize_radar_mount_assumption", "radar_device_facts", "radar_geometry_parameters",
+    "altitude_layer_semantics", "default_radar_mount_assumption", "device_provenance",
+    "device_summary", "normalize_radar_mount_assumption", "radar_device_facts",
+    "radar_geometry_parameters", "resolve_radar_altitude_layer_id",
+    "route_sample_height_semantics", "semantics_fingerprint",
 ]

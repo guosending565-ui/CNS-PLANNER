@@ -5,8 +5,10 @@
 
 1. **航路采样**：沿实际 operational route 里程按 ``optimization_sample_spacing_m = 25``
    采样（不是"每个 MH/T 栅格取一个点"；MH/T 网格不作为雷达覆盖离散基础）；
-   **V1.1：每个 sample 的 ``egm2008_m`` 恒为固定高度层 ALT-080 的 80.0 m**
-   （BUG-RADAR-ALT-001：FABDEM 地面正高不再被当作航路高度）；
+   **每个 sample 的 ``egm2008_m`` 恒为本次解析出的固定高度层的名义高度**
+   （BUG-RADAR-ALT-001：FABDEM 地面正高不再被当作航路高度；
+   BUG-SHOT-008：该高度层由数据驱动 —— 策略 ``fixed_altitude_layer_id`` 或当前权威
+   运行航路的高度层，默认 ALT-080 / 80 m，例如 ALT-100 / 100 m）；
 2. **surface_class**：每个 sample 在**自己的真实位置**上独立得到
    ``land | coastal_uncertain | sea | unknown`` 与 ``required_distinct_site_count``
    （land=2、coastal_uncertain=2（按 land）、sea=1、unknown fail-closed）；
@@ -32,6 +34,7 @@ panels 重新计算**，绝不直接使用 MILP 的辅助变量 ``y``。
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 
 from ...domain.radar_surveillance_layout import (
@@ -40,7 +43,7 @@ from ...domain.radar_surveillance_layout import (
     MODEL_SCOPE, NOT_EVALUATED, RADAR_TYPES, RADAR_TYPE_I, RADAR_TYPE_II,
     REQUIRED_DISTINCT_SITE_COUNT, ROUTE_SAMPLE_HEIGHT_SEMANTICS, SCHEMA_VERSION,
     SEMANTICS_FINGERPRINT, SURFACE_CLASSES, VERTICAL_REFERENCE,
-    radar_geometry_parameters,
+    altitude_layer_semantics, radar_geometry_parameters, route_sample_height_semantics,
 )
 from . import milp as milp_module
 from .candidates import build_candidates
@@ -59,6 +62,13 @@ SOFTWARE_BASELINE = {
     "parameter_origin": "software_baseline",
     "engineering_confirmed": False,
 }
+
+#: BUG-SHOT-008：整体求解时间预算的软件默认值（秒）。
+#:
+#: 真实舟山 R0005 规模实测：在没有整体预算时，两阶段 MILP + 最多 3 轮 5 m 独立复核
+#: 可以跑 >45 min 仍不返回。这里给出一个硬上限，到点即用**当前最好可行解**装配结果，
+#: 并如实报告 ``time_budget.exhausted``；策略显式给出 ``solver_time_limit_s`` 时以策略为准。
+RADAR_DEFAULT_TOTAL_TIME_BUDGET_S = 900.0
 
 #: 求解阶段标识。
 STAGE_I_ONLY = "radar_i_only"
@@ -571,12 +581,53 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=True,
             solve_options["time_limit"] = float(options["time_limit_s"])
         if isinstance(options.get("mip_rel_gap"), (int, float)):
             solve_options["mip_rel_gap"] = float(options["mip_rel_gap"])
+    #: BUG-SHOT-008：固定高度平面由调用方传入（数据驱动），默认仍是 80 m，
+    #: 因此水平交截半径不再被钉在 ALT-080 上。
+    altitude_plane_m = (
+        float(options["fixed_altitude_m"])
+        if isinstance(options, dict)
+        and isinstance(options.get("fixed_altitude_m"), (int, float))
+        and not isinstance(options.get("fixed_altitude_m"), bool)
+        else float(FIXED_ALTITUDE_M)
+    )
+    altitude_layer_id = (
+        str(options.get("altitude_layer_id"))
+        if isinstance(options, dict) and options.get("altitude_layer_id")
+        else FIXED_ALTITUDE_LAYER_ID
+    )
 
     current_samples = base_samples
     refinement_rounds = []
     stage_used = None
     final = None
     extra_requirements = {}
+
+    #: BUG-SHOT-008：**整体**求解预算（含全部 refinement 轮次）。此前
+    #: ``solver_time_limit_s`` 只作为单次 MILP 的 time_limit 下发，而 refinement 最多
+    #: 还要再解 3 轮、每轮都要独立复核整条航路，因此 R0005 实测 >45 min 不返回。
+    #: 现在给出一个硬预算：到点即停止迭代，并用**当前已经求得的最好可行解**装配结果
+    #: （status 由 solver 自己的 incomplete/optimal 语义决定，绝不伪造"完整覆盖"）。
+    budget_s = (
+        float(options["time_limit_s"])
+        if isinstance(options, dict)
+        and isinstance(options.get("time_limit_s"), (int, float))
+        and not isinstance(options.get("time_limit_s"), bool)
+        and float(options["time_limit_s"]) > 0
+        else float(RADAR_DEFAULT_TOTAL_TIME_BUDGET_S)
+    )
+    budget_source = (
+        "policy.solver_time_limit_s"
+        if isinstance(options, dict) and isinstance(options.get("time_limit_s"), (int, float))
+        and not isinstance(options.get("time_limit_s"), bool)
+        else "software_default_total_budget"
+    )
+    started_at = time.monotonic()
+
+    def elapsed_s():
+        return max(0.0, time.monotonic() - started_at)
+
+    def remaining_s():
+        return budget_s - elapsed_s()
 
     def run_pipeline(active_samples, extra):
         """跑一次完整两阶段管线，返回统一形状的 ``outcome``。
@@ -637,6 +688,9 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=True,
         return stage_a
 
     for round_index in range(int(SOFTWARE_BASELINE["max_refinement_rounds"]) + 1):
+        #: 预算耗尽即停止迭代：保留上一轮的最好可行解，绝不无限等待。
+        if round_index and remaining_s() <= 0:
+            break
         outcome = run_pipeline(current_samples, extra_requirements)
         stage_used = outcome["stage"]
         final = outcome
@@ -711,6 +765,24 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=True,
     status, message = _final_status(
         final=final, refinement_rounds=refinement_rounds,
     )
+    elapsed = elapsed_s()
+    budget_exhausted = elapsed >= budget_s
+    if budget_exhausted:
+        message = (
+            f"{message}；整体求解预算 {budget_s:g} s 已用尽（已用 {elapsed:.1f} s，"
+            f"来源 {budget_source}），返回的是当前已求得的最好可行解，"
+            "未完成部分不得视为已覆盖"
+        )
+    time_budget = {
+        "budget_s": budget_s,
+        "budget_source": budget_source,
+        "elapsed_s": round(elapsed, 3),
+        "remaining_s": round(max(0.0, budget_s - elapsed), 3),
+        "exhausted": budget_exhausted,
+        "refinement_rounds_completed": len(refinement_rounds),
+        "max_refinement_rounds": int(SOFTWARE_BASELINE["max_refinement_rounds"]),
+        "returns_best_feasible_so_far": True,
+    }
 
     per_sample = []
     if final is not None and final["solve"].get("selected_panel_ids") is not None:
@@ -726,6 +798,8 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=True,
         final=final, per_sample=per_sample, refinement_rounds=refinement_rounds,
         samples=samples, towers=towers,
         optimisation_samples=current_samples,
+        altitude_plane_m=altitude_plane_m, altitude_layer_id=altitude_layer_id,
+        time_budget=time_budget,
     )
 
 
@@ -791,7 +865,14 @@ def _blocked_result(*, status, reason, samples):
 
 
 def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
-                     refinement_rounds, samples, towers, optimisation_samples=None):
+                     refinement_rounds, samples, towers, optimisation_samples=None,
+                     altitude_plane_m=None, altitude_layer_id=None, time_budget=None):
+    plane_egm2008_m = (
+        float(altitude_plane_m) if isinstance(altitude_plane_m, (int, float))
+        and not isinstance(altitude_plane_m, bool)
+        else float(FIXED_ALTITUDE_M)
+    )
+    layer_id = str(altitude_layer_id or FIXED_ALTITUDE_LAYER_ID)
     candidates = final["candidates"] if final else {"panels": [], "towers": [], "samples": []}
     selected_ids = set(final["solve"].get("selected_panel_ids") or []) if final else set()
     selected = [panel for panel in candidates["panels"] if panel["panel_id"] in selected_ids]
@@ -806,11 +887,12 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
         tower = tower_by_id.get(str(panel["tower_id"])) or {}
         origin_egm2008_m = tower.get("origin_egm2008_m")
         # V1.1（BUG-RADAR-OVERLAY-005）：斜距是 slant range，前端绝不能再把它当作
-        # 80 m 平面的水平半径。这里由**后端**给出该站址与固定高度平面的真实交截半径。
+        # 固定高度平面的水平半径。这里由**后端**给出该站址与该平面的真实交截半径。
+        # BUG-SHOT-008：平面高度来自数据（ALT-100 ⇒ 100 m），不再是 ALT-080 的 80 m。
         plane = (
             plane_intersection_radii_m(
                 origin_egm2008_m=origin_egm2008_m,
-                plane_egm2008_m=FIXED_ALTITUDE_M,
+                plane_egm2008_m=plane_egm2008_m,
                 parameters=radar_geometry_parameters(panel["radar_type"]),
             )
             if isinstance(origin_egm2008_m, (int, float))
@@ -829,8 +911,9 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
             "azimuth_deg": panel["azimuth_deg"],
             "panel_half_width_deg": panel["panel_half_width_deg"],
             "radar_origin_egm2008_m": origin_egm2008_m,
-            # 80 m 平面交截几何（唯一允许前端消费的水平半径来源）。
-            "altitude_plane_egm2008_m": FIXED_ALTITUDE_M,
+            # 固定高度平面交截几何（唯一允许前端消费的水平半径来源）。
+            "altitude_plane_egm2008_m": plane_egm2008_m,
+            "altitude_layer_id": layer_id,
             "altitude_plane_geometry": deepcopy(plane),
             "horizontal_inner_radius_m": (plane or {}).get("horizontal_inner_radius_m"),
             "horizontal_outer_radius_m": (plane or {}).get("horizontal_outer_radius_m"),
@@ -873,6 +956,9 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
         "message": message,
         "stage": stage,
         "stage_label": STAGE_LABELS.get(stage),
+        #: BUG-SHOT-008：整体求解时间预算（含 refinement 轮次）必须对上层可见：
+        #: 超预算时这里如实报告"已用尽 + 当前返回的是哪一轮的最好可行解"。
+        "time_budget": deepcopy(time_budget),
         "solver": solve_block,
         "selected_panels": selected_panels,
         "selected_panel_count": len(selected_panels),
@@ -963,24 +1049,33 @@ def _covered_length(items):
     return float(ordered[-1]["distance_along_route_m"]) - float(ordered[0]["distance_along_route_m"])
 
 
-def parameters_block(*, fixed_altitude_m=FIXED_ALTITUDE_M, extra=None):
-    """写入结果的参数块（含 25m / 5m / 3 轮与俯仰·方位 preset + V1.1 语义）。"""
+def parameters_block(
+    *, fixed_altitude_m=FIXED_ALTITUDE_M, altitude_layer_id=None,
+    altitude_layer_source=None, extra=None,
+):
+    """写入结果的参数块（含 25m / 5m / 3 轮与俯仰·方位 preset + V1.1 语义）。
 
+    BUG-SHOT-008：高度层标识与航路高度**由调用方传入**（来自数据解析：
+    ``radar_surveillance_policy.fixed_altitude_layer_id`` 或权威运行航路），
+    默认值仍与修复前逐字相同（ALT-080 / 80 m），因此既有调用点行为不变。
+    """
+
+    layer_id = str(altitude_layer_id or FIXED_ALTITUDE_LAYER_ID)
     block = {
         "optimization_sample_spacing_m": SOFTWARE_BASELINE["optimization_sample_spacing_m"],
         "validation_sample_spacing_m": SOFTWARE_BASELINE["validation_sample_spacing_m"],
         "max_refinement_rounds": SOFTWARE_BASELINE["max_refinement_rounds"],
         "max_panels_per_tower": SOFTWARE_BASELINE["max_panels_per_tower"],
-        "fixed_altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
+        "fixed_altitude_layer_id": layer_id,
         "fixed_altitude_m": fixed_altitude_m,
         "vertical_reference": VERTICAL_REFERENCE,
         "metric_crs": METRIC_CRS,
-        # V1.1 显式语义（同时进入 input_fingerprint，旧 V1.0 layout 因此 stale）。
-        "route_altitude_semantics": SEMANTICS_FINGERPRINT["route_altitude_semantics"],
+        # BUG-SHOT-008 显式语义（同时进入 input_fingerprint，换高度层后旧 layout 因此 stale）。
+        "route_altitude_semantics": altitude_layer_semantics(layer_id),
         "vertical_delta_semantics": SEMANTICS_FINGERPRINT["vertical_delta_semantics"],
         "radar_origin_semantics": SEMANTICS_FINGERPRINT["radar_origin_semantics"],
         "geometry_version": SEMANTICS_FINGERPRINT["geometry_version"],
-        "route_sample_height_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+        "route_sample_height_semantics": route_sample_height_semantics(layer_id),
         "terrain_elevation_used_as_route_height": False,
         "demo_no_down_tilt_elevation_note": (
             "0<=elevation<=45 且不下倾：目标低于雷达原点时不可覆盖"

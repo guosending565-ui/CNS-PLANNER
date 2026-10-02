@@ -133,10 +133,18 @@ export function constraintFieldModel({collection,map,altitudeLayerId,workspaceId
   const blockedBy=(counts&&counts.blocked_by)||{};
   const warnings=summary&&Array.isArray(summary.warnings)?summary.warnings:[];
   const unknownWarning=warnings.find(item=>String(item.reason||'')==='unknown_constraints_remain')||null;
+  // BUG-SHOT-009：``usable`` 是"这份展示模型是否**真的拿到了可绘制的逐格明细**"。
+  // 地图覆盖层（``constraint_field_overlay.js``）与图例末句都按 ``model.usable`` 判定，
+  // 而本函数此前**没有**返回该字段，于是 ``model.usable`` 恒为 undefined：
+  // 明细已经读到（``map.usable === true``、cells 非空）也不会画、图例也一直显示
+  // "逐格明细尚未读取"。这里只补上这个派生布尔，语义来源仍是 map.usable，
+  // 不新增、不改写任何业务字段。
+  const mapUsable=Boolean(map&&map.usable);
   return {
     altitudeLayerId:wanted,
     summary,
     map:map||null,
+    usable:mapUsable,
     present:Boolean(summary),
     status:summary?String(summary.status||'not_calculated'):'not_calculated',
     fieldId:summary?String(summary.field_id||''):'',

@@ -59,7 +59,25 @@ export function drawConstraintFieldOverlay({
   const switches=layers||{};
   const enabled=switches.enabled===true;
   if(!enabled)return result;
-  const lonLatBounds=Array.isArray(visibleBounds)?visibleBounds:(view.__lonLatBounds||null);
+  //: 视口过滤统一用**经纬度 bbox**：约束接口不下发几何，entry.bbox 来自标准网格索引，
+  //: 本身就是经纬度，与 visibleBounds 同一坐标系。
+  //:
+  //: BUG-SHOT-009 的第三个根因：这里此前还会调用
+  //: ``gridTheme.bboxIntersects(entry.bbox, view)``，但 ``grid_theme.bboxIntersects``
+  //: 期望的是 bbox 数组 ``[west, south, east, north]``，而 ``view`` 是
+  //: ``{x, y, res}`` 对象 —— 数组与对象比较恒为 ``undefined``（falsy），
+  //: 于是 8008 个 cell 全被过滤掉、Canvas 零 fill。前端既有的经纬度过滤
+  //: （``lonLatBounds``）已经完全覆盖该语义，因此不再叠加一个坐标系不匹配的守卫。
+  //: 兼容旧调用点：``visibleBounds`` 允许是函数/可迭代序列。
+  let lonLatBounds=null;
+  const rawBounds=typeof visibleBounds==='function'?visibleBounds():visibleBounds;
+  if(Array.isArray(rawBounds)){
+    lonLatBounds=rawBounds;
+  }else if(rawBounds&&typeof rawBounds[Symbol.iterator]==='function'){
+    const values=[...rawBounds];
+    if(values.length===4)lonLatBounds=values;
+  }
+  if(!lonLatBounds)lonLatBounds=Array.isArray(view.__lonLatBounds)?view.__lonLatBounds:null;
 
   const {entries,unresolved}=constraintOverlayEntries({cells:model.cells,cellsById});
   result.entries=entries.length;
@@ -75,7 +93,6 @@ export function drawConstraintFieldOverlay({
       const [west,south,east,north]=entry.bbox;
       if(east<lonLatBounds[0]||west>lonLatBounds[2]||north<lonLatBounds[1]||south>lonLatBounds[3])continue;
     }
-    if(gridTheme&&typeof gridTheme.bboxIntersects==='function'&&!gridTheme.bboxIntersects(entry.bbox,view))continue;
     buckets[key].push(entry);
   }
   for(const outcome of CONSTRAINT_DRAW_ORDER){

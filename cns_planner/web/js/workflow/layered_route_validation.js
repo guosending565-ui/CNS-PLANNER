@@ -49,12 +49,74 @@ export const LAYERED_VALIDATION_ALTITUDE_NOTE='高度完全由 AltitudeLayer →
   +'confirmed EGM2008 cruise altitude 承载；二维 path 不携带高度第三坐标。';
 export const LAYERED_VALIDATION_STALE_LABEL='stale：只作为历史证据保留，绝不冒充当前验证';
 //: BUG-STEP03-VALIDATION-PAYLOAD-002：production adapter 明确要求**显式** horizontal_crs
-//: （米制 CRS），后端没有默认值、也不允许前端猜测。这里只提供当前舟山工程的**建议预填值**：
-//: 它必须作为显式 payload 提交，用户可在输入框里改写；留空时禁止运行。
+//: （米制 CRS），后端没有默认值、也不允许前端猜测。
+//:
+//: BUG-SHOT-003：该值必须来自**项目正式 CRS**，由 orchestration 自动取得并显式提交，
+//: 不允许依赖人工临时补 ``EPSG:32651``。下面的常量只作为"解析不到任何项目 CRS 时"的
+//: 最后显示占位（并如实标注来源），解析顺序见 :func:`layeredValidationMetricCrs`。
 export const LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS='EPSG:32651';
-export const LAYERED_VALIDATION_HORIZONTAL_CRS_NOTE='horizontal_crs 是米制投影 CRS 的**显式输入**'
-  +'（当前舟山工程建议值 '+LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS+'）：后端 production adapter '
-  +'要求显式 horizontal_crs，绝不偷偷补默认值；留空时本按钮不执行任何请求。';
+export const LAYERED_VALIDATION_HORIZONTAL_CRS_NOTE='horizontal_crs 是米制投影 CRS 的**显式输入**：'
+  +'优先自动采用项目已发布成果里的正式米制 CRS（当前 LayeredRouteCandidate 的 metric_crs，'
+  +'其次运行航路 / 细网格策略），解析不到时才回退到工程建议值 '
+  +LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS+'；后端 production adapter 要求显式 horizontal_crs，'
+  +'绝不偷偷补默认值。';
+
+/** 单个取值只接受非空字符串（不把对象/数字当成 CRS）。 */
+function crsText(value){
+  if(typeof value!=='string')return '';
+  return value.trim();
+}
+
+/** 递归找出第一个像 CRS 的字符串字段（限定字段名，避免误取任意文本）。 */
+function firstCrsField(value,depth=0){
+  if(!value||typeof value!=='object'||depth>3)return '';
+  if(Array.isArray(value)){
+    for(const item of value) {
+      const found=firstCrsField(item,depth+1);
+      if(found)return found;
+    }
+    return '';
+  }
+  for(const key of ['metric_crs','horizontal_crs','crs']){
+    const found=crsText(value[key]);
+    if(found)return found;
+  }
+  for(const key of ['route','parameters','policy','fine_policy','v3_fine_refinement_policy','input_provenance']){
+    const found=firstCrsField(value[key],depth+1);
+    if(found)return found;
+  }
+  return '';
+}
+
+/**
+ * BUG-SHOT-003：从项目权威状态解析本次连续验证要显式提交的米制 CRS。
+ *
+ * 顺序（每一步都只读项目已发布成果，**不猜、不新建坐标**）：
+ *  1. 当前 LayeredRouteCandidate 的 ``route.metric_crs``：与本次验证对象同一来源；
+ *  2. ``layered_route_validations`` 历史记录里的 ``metric_crs``（同项目已确认过的值）；
+ *  3. 运行航路相关投影（``route_operating_plan`` / 细网格策略）里的 CRS 字段；
+ *  4. 工程建议值（如实标注 ``source='engineering_suggested_default'``）。
+ *
+ * @returns {{value:string,source:string}}
+ */
+export function layeredValidationMetricCrs(flow){
+  const state=flow&&typeof flow==='object'?flow:{};
+  const candidates=state.layered_route_candidates||{};
+  const items=Array.isArray(candidates.items)?candidates.items:[];
+  for(const item of items){
+    const found=firstCrsField(item&&item.route?item.route:null)||crsText(item&&item.metric_crs);
+    if(found)return {value:found,source:'layered_route_candidate.route.metric_crs'};
+  }
+  const validations=state.layered_route_validations||{};
+  const records=Array.isArray(validations.items)?validations.items:[];
+  for(const record of records){
+    const found=crsText(record&&record.metric_crs)||firstCrsField(record&&record.evidence);
+    if(found)return {value:found,source:'layered_route_validations.metric_crs'};
+  }
+  const operating=firstCrsField(state.route_operating_plan)||firstCrsField(state.v3_fine_refinement_policy);
+  if(operating)return {value:operating,source:'route_operating_plan'};
+  return {value:LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS,source:'engineering_suggested_default'};
+}
 
 const text=value=>String(value??'');
 const finite=value=>Number.isFinite(Number(value))&&value!==null&&value!=='';
@@ -213,7 +275,7 @@ export function layeredValidationFingerprint(flow,validationId){
 
 // ---------------------------------------------------------------- render
 
-function readinessBlock(model){
+function readinessBlock(model,flow){
   const candidate=model.candidate||{},layer=model.altitudeLayer||{},cruise=model.cruiseAltitude||{};
   const profile=model.riskProfile||{},chain=model.sourceChain||{};
   const terrainAudit=model.sourceAudits.terrain_dtm||{},buildingAudit=model.sourceAudits.buildings||{};
@@ -256,6 +318,8 @@ function readinessBlock(model){
     ?rows(model.blockers.map(item=>[short(item.reason_code),escapeHtml(short(item.reason))]))
     :'<div class="empty-note">readiness 无 blocker</div>';
   const button=model.readinessStatus==='ready'?'':' disabled';
+  //: BUG-SHOT-003：预填值来自项目权威成果（不是硬编码常量）。
+  const metricCrs=layeredValidationMetricCrs(flow);
   // 标题只允许静态业务语言：状态徽章一律放在正文里（wbBlock 的第二个参数只能是徽章，
   // 标题会被转义，动态状态放进标题会显示成 &lt;span …&gt; 文本）。
   return wbBlock('连续验证就绪（Continuous Validation readiness）',
@@ -272,8 +336,11 @@ function readinessBlock(model){
     +'<div class="parameter-note">'+escapeHtml(LAYERED_VALIDATION_HORIZONTAL_CRS_NOTE)+'</div>'
     +'<div class="form-grid"><label>horizontal_crs（米制 CRS，必填）'
     +'<input class="panel-input" id="layeredValidationHorizontalCrs" type="text" '
-    +'value="'+escapeHtml(LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS)+'" '
+    +'value="'+escapeHtml(metricCrs.value)+'" '
+    +'data-crs-source="'+escapeHtml(metricCrs.source)+'" '
     +'placeholder="'+escapeHtml(LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS)+'"></label></div>'
+    +'<div class="parameter-note">本次将显式提交的米制 CRS 来源：'
+    +escapeHtml(metricCrs.source)+'（解析自项目正式成果，可人工改写）。</div>'
     +'<div class="button-row"><button class="primary" id="evaluateLayeredRouteValidation"'+button
     +'>运行 LayeredRouteCandidate 连续验证</button></div>'
     +'<div class="parameter-note">验证不 replan、不 refine、不改 candidate，也不写入 operational_routes；'
@@ -419,7 +486,7 @@ function historyBlock(model){
 export function renderLayeredRouteValidation(flow){
   const model=layeredRouteValidationModel(flow);
   const current=model.current;
-  return readinessBlock(model)
+  return readinessBlock(model,flow)
     +(current?validationBlock(current):wbBlock('当前有效验证（current_applicability=current）',
       '<div class="empty-note">当前没有 current_applicability=current 的 validation；'
       +'stale / not_ready 记录只在下方历史中保留，绝不冒充当前验证。</div>'))
@@ -438,15 +505,20 @@ export function renderLayeredRouteValidation(flow){
  * BUG-STEP03-RESOURCEACTION-001：该端点返回的是**局部 validation collection**，不是完整
  * workflow，因此必须走 resourceMutationAndRefresh（POST → GET /api/workflow → applyWorkflow），
  * 绝不能用局部 response 覆盖全局 flow。
- * BUG-STEP03-VALIDATION-PAYLOAD-002：必须显式提交米制 CRS，留空即拒绝运行。
+ * BUG-STEP03-VALIDATION-PAYLOAD-002：必须显式提交米制 CRS。
+ * BUG-SHOT-003：该值由 orchestration **自动**从项目正式 CRS 取得（当前候选的
+ * ``route.metric_crs`` → 历史 validation → 运行航路投影 → 工程建议值），因此不需要人工
+ * 临时补 ``EPSG:32651``；人工改写输入框仍然优先。
  */
-export function layeredValidationHorizontalCrsPayload(value){
-  const horizontalCrs=String(value??'').trim();
-  if(!horizontalCrs){
-    throw new Error('必须显式填写 horizontal_crs（米制 CRS，例如 '
-      +LAYERED_VALIDATION_SUGGESTED_HORIZONTAL_CRS+'）后才能运行连续验证；后端没有默认值');
+export function layeredValidationHorizontalCrsPayload(value,flow){
+  const typed=String(value??'').trim();
+  if(typed)return {horizontal_crs:typed};
+  const resolved=layeredValidationMetricCrs(flow);
+  if(!resolved.value){
+    throw new Error('项目状态里解析不到米制 CRS（metric_crs）；'
+      +'请先发布 current LayeredRouteCandidate 成果，再运行连续验证');
   }
-  return {horizontal_crs:horizontalCrs};
+  return {horizontal_crs:resolved.value,horizontal_crs_source:resolved.source};
 }
 
 export function bindLayeredRouteValidation(c){
@@ -454,7 +526,11 @@ export function bindLayeredRouteValidation(c){
   if(!c.$('evaluateLayeredRouteValidation'))return;
   c.actionButton('evaluateLayeredRouteValidation',()=>{
     const field=c.$('layeredValidationHorizontalCrs');
-    const payload=layeredValidationHorizontalCrsPayload(field?field.value:'');
+    //: 面板每次 renderWorkflow 都会重画输入框，因此预填值在构造时按当前 flow 解析；
+    //: 这里仍优先读用户当下输入，留空才回落到项目正式 CRS。
+    const payload=layeredValidationHorizontalCrsPayload(
+      field?field.value:'',
+      typeof c.flow==='function'?c.flow():null);
     return c.resourceMutationAndRefresh(
       '/api/layered-route-validations/evaluate-real',payload);
   });

@@ -477,8 +477,8 @@ class ApplicationContext:
         from ..gis.fine_environment_adapter import (
             NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
         )
-        from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
         from ..gis.planning_constraint_field_adapter import restricted_area_continuous_evidence
+        from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
 
         terrain_dtm = self.data.paths.get("terrain_dtm")
         buildings = self.data.paths.get("buildings")
@@ -579,6 +579,7 @@ class ApplicationContext:
         from ..gis.fine_environment_adapter import (
             NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
         )
+        from ..gis.planning_constraint_field_adapter import restricted_area_continuous_evidence
         from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
 
         terrain_path = self.data.paths.get("terrain_dtm")

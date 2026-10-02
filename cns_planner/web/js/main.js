@@ -67,7 +67,34 @@ function layers(){return layerSwitches($,LAYER_IDS);}
 const constraintView=createConstraintFieldView({
   api,getFlow:()=>flow,getLayers:layers,visibleBounds:visibleLonLatBounds,
   getGridCache:()=>gridRenderCache,getNode:$,
+  // BUG-SHOT-009：约束接口不下发几何（geometry_source = frontend_grid_index），
+  // bbox 只能由网格索引补齐，因此该层必须能在几何缺失时按需把 /api/workspace/grid
+  // 水合回来；否则数据正确、图例计数正确，地图上却一个障碍格都画不出来。
+  hydrateGridGeometry:()=>ensureGridGeometry(),
   afterChange:()=>{renderWorkflow();updateMapLegend({$,flow});paint();}
+});
+//: 只读诊断投影：自动化验收与排障用它读取前端真实状态，**不做任何写入**。
+//: 覆盖本轮修复涉及的三处口径：网格几何索引、约束视图状态、以及 bootstrap 计时。
+window.__CNS_DIAG__=()=>({
+  gridCells:gridRenderCache.cells.length,
+  gridById:gridRenderCache.byId.size,
+  gridStatus:flow?.grid?.status??null,
+  gridDetailAvailable:flow?.grid?.detail_available??null,
+  gridSnapshotCellsCount:flow?.grid?.cells_count??null,
+  gridLiveCellCount:Array.isArray(flow?.grid?.cells)?flow.grid.cells.length:null,
+  gridHydrateOutcome:gridGeometryLastOutcome?{
+    applied:gridGeometryLastOutcome.applied??null,
+    reason:gridGeometryLastOutcome.reason??null,
+    error:gridGeometryLastOutcome.error??null
+  }:null,
+  constraint:constraintView.state(),
+  constraintDraw:constraintDrawResult,
+  constraintGeometryReady:constraintView.gridGeometryReady(),
+  constraintGeometryAttempted:constraintView.gridGeometryAttempted(),
+  layers:layers(),
+  view:view?{x:view.x,y:view.y,res:view.res}:null,
+  canvas:(()=>{const node=document.getElementById('canvas');return node?[node.width,node.height,node.clientHeight]:null;})(),
+  bootstrap:window.__CNS_BOOTSTRAP_TIMING||null
 });
 // 唯一允许写入全局 flow 的地方：state/workflow_snapshot.js 统一「安装 snapshot → 按需
 // hydrate 逐 cell 网格明细 → render」，gridDataSerial 由它独占管理（防竞态）。
@@ -206,11 +233,39 @@ function rebuildGridRenderCache(){
   if($('gridInfo'))$('gridInfo').hidden=true;
   updateGridNotice();updateGridThemeLegend();
 }
+//: BUG-SHOT-009：网格几何按需水合的重入保护。约束覆盖层、图层勾选与高度层切换都
+//: 依赖 ``gridRenderCache.byId``（grid_id → cell.bbox）；通用 workflow 快照已把逐格
+//: 明细外置，首屏时该索引为空，因此这些入口都必须先确保几何就绪。
+let gridGeometryRestore=null;
+let gridGeometryLastOutcome=null;
+function ensureGridGeometry(){
+  if(gridRenderCache.cells.length)return Promise.resolve(gridRenderCache);
+  if(gridGeometryRestore)return gridGeometryRestore;
+  gridGeometryRestore=Promise.resolve(snapshotApplier.hydrateGridDetail())
+    .then(outcome=>{gridGeometryLastOutcome=outcome??null;return outcome;})
+    .catch(exc=>{
+      gridGeometryLastOutcome={error:String(exc?.message||exc)};
+      showError('网格几何明细恢复失败：'+(exc?.message||exc));
+      return null;
+    })
+    .finally(()=>{gridGeometryRestore=null;});
+  return gridGeometryRestore;
+}
 function findGridCell(lon,lat){return hitGridCell(gridRenderCache,lon,lat,GridTheme);}
 function drawGridThemes(){drawGridTheme({ctx,view,flow,cache:gridRenderCache,display:gridDisplay,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme,palettes:{population:populationPalette,terrain:terrainPalette,buildings:buildingPalette,risk:riskPalette},riskBreaks});}
 function drawGridBoundaries(){drawStandardGrid({ctx,view,grid:flow?.grid,display:gridDisplay,enabled:$('gridLayer')?.checked,visibleBounds:visibleLonLatBounds,screenPoint,gridTheme:GridTheme});}
 // 网格边界之上、航路之下：可行性单元不遮挡规划结果，也不被网格线切碎。
-function drawConstraintLayer(){return constraintView.draw({ctx,view,screenPoint,gridTheme:GridTheme});}
+//: 最近一次约束覆盖层的绘制结论（只读诊断；BUG-SHOT-009 验收用它证明"真的画了"）。
+let constraintDrawResult=null;
+function drawConstraintLayer(){
+  const result=constraintView.draw({ctx,view,screenPoint,gridTheme:GridTheme});
+  constraintDrawResult=result&&typeof result==='object'?{
+    drawn:result.drawn??null,entries:result.entries??null,
+    unresolvedCount:Array.isArray(result.unresolved)?result.unresolved.length:null,
+    unresolvedSample:Array.isArray(result.unresolved)?result.unresolved.slice(0,3):null,
+  }:null;
+  return result;
+}
 function formatGridDetails(item){
   const gridId=String(item?.cell?.grid_id||'');
   return constraintView.cellDetailsHtml(gridId)+gridCellDetailsHtml(item,flow,GridTheme.formatNumber,gridDisplay.theme,constraintView.cellFor(gridId),constraintView.altitudeLayerLabel());
@@ -385,7 +440,17 @@ function syncLayerControls(){
     updateGridNotice,updateGridThemeLegend,updateMapLegend:()=>updateMapLegend({$,flow}),
     onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked),
     // 勾选「高度层障碍」才按需读取逐格明细；取消勾选只停止绘制，不丢已读数据。
-    onConstraintLayer:()=>{constraintView.loadMap();paint();}});
+    // BUG-SHOT-009：几何缺失时必须先补齐网格索引，否则明细读到了也画不出格子。
+    onConstraintLayer:()=>{
+      if($('altitudeConstraintLayer')?.checked){
+        ensureGridGeometry()
+          .then(()=>constraintView.loadMap())
+          .then(()=>paint())
+          .catch(exc=>showError('高度层障碍图层读取失败：'+(exc?.message||exc)));
+        return;
+      }
+      constraintView.loadMap();paint();
+    }});
 }
 function statusText(status){return labelFor(status);}function statusBadge(status){return badgeFor(status);}function escapeHtml(value){return escapeValue(value);}
 function setStep(step){

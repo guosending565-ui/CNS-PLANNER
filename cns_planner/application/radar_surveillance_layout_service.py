@@ -35,6 +35,9 @@ from ..domain.radar_surveillance_layout import (
     SCHEMA_VERSION, SEMANTICS_FINGERPRINT, SURFACE_CLASSES, VERTICAL_REFERENCE,
     default_radar_mount_assumption, device_provenance, device_summary,
     normalize_radar_mount_assumption, radar_geometry_parameters,
+    # BUG-SHOT-008：固定高度层不再是架构硬编码 —— 由数据解析（策略 / 运行航路）。
+    resolve_radar_altitude_layer_id, route_sample_height_semantics,
+    semantics_fingerprint,
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
 from ..domain.radar_service_evidence import radar_required_for
@@ -123,6 +126,15 @@ BOUNDARIES = {
 
 READINESS_SEMANTICS = {
     "passed_operational_route_required": True,
+    #: BUG-SHOT-008：要求的是"**本次解析出的**固定高度层存在且 confirmed/current"，
+    #: 不是"ALT-080 存在"。高度层由策略或权威运行航路数据驱动（例如 ALT-100）。
+    "fixed_altitude_layer_present_and_current_required": True,
+    "fixed_altitude_layer_source": (
+        "radar_surveillance_policy.fixed_altitude_layer_id | "
+        "operational_route.altitude_layer_id | engineering_default_alt_080"
+    ),
+    #: 兼容别名：旧调用方按名字读 ``alt_080_present_and_current_required`` 时语义不变
+    #: （默认高度层就是 ALT-080），但它**不再是**架构硬编码。
     "alt_080_present_and_current_required": True,
     "real_tower_sites_required": True,
     "tower_obstacle_profiles_current_required": True,
@@ -175,6 +187,9 @@ def default_radar_surveillance_policy():
         "radar_mount_height_required": RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1,
         "software_baseline": deepcopy(SOFTWARE_BASELINE),
         "fixed_altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
+        #: 默认值**不**代表用户显式配置：BUG-SHOT-008 的数据驱动解析据此让
+        #: "当前权威运行航路的高度层"在用户未显式配置时真正生效。
+        "fixed_altitude_layer_id_explicitly_configured": False,
         "fixed_altitude_m": FIXED_ALTITUDE_M,
         "vertical_reference": VERTICAL_REFERENCE,
         "route_altitude_semantics": SEMANTICS_FINGERPRINT["route_altitude_semantics"],
@@ -259,7 +274,34 @@ def normalize_radar_surveillance_policy(value):
     if layer_name in (None, ""):
         layer_name = result.get("land_mask_layer_name")
     result["land_mask_layer_name"] = str(layer_name) if layer_name else None
+    #: BUG-SHOT-008：策略里的 ``fixed_altitude_layer_id`` **默认值就是 ALT-080**，
+    #: 因此"策略总是显式给出高度层"会让 Radar 永远停在 ALT-080，运行航路的 ALT-100
+    #: 被静默遮蔽。
+    #:
+    #: 判定"用户是否真的选择了这个高度层"有两个必要条件，缺一不可：
+    #:   * 该字段被显式提交（``fixed_altitude_layer_id`` 非空）；
+    #:   * 整份策略处于 ``confirmed`` 状态（``status == "confirmed"``，即用户确认过策略）。
+    #: 旧项目里可能残留 ``..._explicitly_configured=True``，但那只是历史序列化痕迹；
+    #: 策略本身仍是 ``pending_confirmation`` 时，这里一律归一化为 False，绝不把
+    #: 未确认的策略默认值当成用户选择。
+    explicit_layer = payload.get("fixed_altitude_layer_id")
     mount_status = str(result["radar_mount_height"].get("status") or "not_configured")
+    policy_confirmed = (
+        payload.get("confirmed") is True
+        and str(payload.get("status") or "") == "confirmed"
+    )
+    result["fixed_altitude_layer_id_explicitly_configured"] = bool(
+        isinstance(explicit_layer, str) and explicit_layer.strip() and policy_confirmed
+    )
+    if result["fixed_altitude_layer_id_explicitly_configured"]:
+        result["fixed_altitude_layer_id"] = str(explicit_layer).strip()
+        result["fixed_altitude_layer_source"] = "user_confirmed_policy"
+    else:
+        #: 未确认策略 → 高度层交给数据驱动解析（当前权威运行航路优先）。
+        result["fixed_altitude_layer_id"] = FIXED_ALTITUDE_LAYER_ID
+        result["fixed_altitude_layer_source"] = (
+            "policy_pending_confirmation_altitude_layer_deferred_to_data"
+        )
     result["status"] = (
         "confirmed" if mount_status == "confirmed" else "pending_confirmation"
     )
@@ -436,6 +478,49 @@ class RadarSurveillanceLayoutService:
     # ------------------------------------------------------------------ containers
     def _policy(self):
         return normalize_radar_surveillance_policy(self.session.state.get(POLICY_KEY))
+
+    def _altitude_layer_context(self, explicit=None):
+        """本次求解使用的固定高度层（**数据驱动**，BUG-SHOT-008）。
+
+        修复前，本服务在生产路径上恒定使用 ``FIXED_ALTITUDE_LAYER_ID``（ALT-080）与
+        80 m，因此无法跟随项目当前正式运行航路的高度层（例如 ALT-100）。现在统一走
+        :func:`resolve_radar_altitude_layer_id`：策略显式配置 → 当前权威运行航路 →
+        唯一 current layered candidate → 工程默认 ALT-080。
+
+        返回 dict：``layer_id / altitude_m / source / layer / ambiguous /
+        semantics_fingerprint / route_sample_height_semantics``。
+        """
+
+        state = self.session.state
+        layer_id, altitude_m, source, layer, ambiguous = resolve_radar_altitude_layer_id(
+            state, explicit=explicit,
+        )
+        return {
+            "layer_id": layer_id,
+            "altitude_m": altitude_m,
+            "source": source,
+            "layer": layer,
+            "ambiguous": ambiguous,
+            "semantics_fingerprint": semantics_fingerprint(layer_id),
+            "route_sample_height_semantics": route_sample_height_semantics(layer_id),
+        }
+
+    def _fixed_altitude_fields(self, explicit=None):
+        """策略快照里"当前生效的固定高度层"三件套（策略字段优先，否则按数据解析）。"""
+
+        context = self._altitude_layer_context(explicit)
+        layer = context["layer"] if isinstance(context["layer"], dict) else {}
+        return {
+            "fixed_altitude_layer_id": context["layer_id"],
+            "fixed_altitude_m": (
+                context["altitude_m"]
+                if context["altitude_m"] is not None else FIXED_ALTITUDE_M
+            ),
+            "fixed_altitude_layer_source": context["source"],
+            "fixed_altitude_layer_ambiguous": bool(context["ambiguous"]),
+            "fixed_altitude_layer_present": bool(layer),
+            "fixed_altitude_layer_confirmed": bool(layer.get("confirmed") is True),
+        }
 
     def _stored(self):
         value = self.session.state.get(LAYOUT_KEY)
@@ -632,21 +717,24 @@ class RadarSurveillanceLayoutService:
             if isinstance(item, dict)
         }
         candidate = self._current_demo_candidate() if demo_preview_only else None
-        target_layer_id = (
-            str(candidate.get("altitude_layer_id"))
-            if isinstance(candidate, dict) and candidate.get("altitude_layer_id")
-            else FIXED_ALTITUDE_LAYER_ID
+        #: BUG-SHOT-008：目标高度层来自数据（demo preview 的当前候选优先，
+        #: 否则由策略 / 权威运行航路解析），不再回落到架构常量 ALT-080。
+        altitude_context = self._altitude_layer_context(
+            (candidate or {}).get("altitude_layer_id") if isinstance(candidate, dict) else None
         )
-        layer = layers.get(target_layer_id)
+        target_layer_id = altitude_context["layer_id"]
+        layer = altitude_context["layer"] if isinstance(altitude_context["layer"], dict) else {}
         target_altitude_m = (
-            layer.get("nominal_altitude_m")
-            if isinstance(layer, dict) else FIXED_ALTITUDE_M
+            altitude_context["altitude_m"]
+            if altitude_context["altitude_m"] is not None else FIXED_ALTITUDE_M
         )
         altitude = {
             "altitude_layer_id": target_layer_id,
             "altitude_m": target_altitude_m,
             "vertical_reference": VERTICAL_REFERENCE,
             "semantics": "fixed_route_height_not_optimised",
+            "source": altitude_context["source"],
+            "ambiguous_operational_routes": bool(altitude_context["ambiguous"]),
             "present": isinstance(layer, dict),
             "confirmed": bool((layer or {}).get("confirmed") is True),
             "layer_status": (layer or {}).get("status"),
@@ -697,9 +785,15 @@ class RadarSurveillanceLayoutService:
         elif demo_preview_only and not altitude["confirmed"]:
             blockers.append("current_candidate_altitude_layer_not_confirmed")
         elif not demo_preview_only and not altitude["present"]:
-            blockers.append("altitude_layer_alt_080_missing")
+            # BUG-SHOT-008：blocker 名随**实际解析出的**高度层变化，
+            # 不再把 ALT-100 的缺失写成 alt_080。
+            blockers.append(
+                f"altitude_layer_{str(altitude['altitude_layer_id']).lower().replace('-', '_')}_missing"
+            )
         elif not demo_preview_only and not altitude["confirmed"]:
-            blockers.append("altitude_layer_alt_080_not_confirmed")
+            blockers.append(
+                f"altitude_layer_{str(altitude['altitude_layer_id']).lower().replace('-', '_')}_not_confirmed"
+            )
         if land.get("status") != "passed":
             blockers.append(f"land_mask_not_ready:{land.get('reason')}")
         if metric.get("status") != "passed":
@@ -750,8 +844,18 @@ class RadarSurveillanceLayoutService:
             "radar_origin": radar_origin_assumption_status(state),
             # legacy 字段：只报告，不门控。
             "radar_mount_height": radar_mount_assumption_status(state),
-            "parameters": parameters_block(),
-            "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
+            # BUG-SHOT-008：参数块必须带**本次解析出的**高度层，不再固定 ALT-080。
+            "parameters": {
+                **parameters_block(
+                    fixed_altitude_m=(
+                        target_altitude_m if target_altitude_m is not None
+                        else FIXED_ALTITUDE_M
+                    ),
+                    altitude_layer_id=target_layer_id,
+                ),
+                "fixed_altitude_layer_source": altitude_context["source"],
+            },
+            "semantics_fingerprint": semantics_fingerprint(target_layer_id),
             "land_mask_source_provenance": deepcopy(LAND_MASK_SOURCE_PROVENANCE),
             "device_summary": device_summary(),
             "sources": self.source_status(),
@@ -1135,7 +1239,7 @@ class RadarSurveillanceLayoutService:
             str(candidate.get("altitude_layer_id"))
             if demo_preview_only and isinstance(candidate, dict)
             and candidate.get("altitude_layer_id")
-            else FIXED_ALTITUDE_LAYER_ID
+            else self._altitude_layer_context()["layer_id"]
         )
         layer = layers.get(target_layer_id)
         target_altitude_m = (
@@ -1147,9 +1251,9 @@ class RadarSurveillanceLayoutService:
             "algorithm_id": ALGORITHM_ID,
             "algorithm_version": ALGORITHM_VERSION,
             "model_scope": MODEL_SCOPE,
-            # V1.1：几何语义分量必须进指纹 —— 语义一变，旧 layout 必然 stale。
-            "semantics": deepcopy(SEMANTICS_FINGERPRINT),
-            "route_altitude_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+            # BUG-SHOT-008：几何语义分量必须进指纹 —— 高度层与语义一变，旧 layout 必然 stale。
+            "semantics": semantics_fingerprint(target_layer_id),
+            "route_altitude_semantics": route_sample_height_semantics(target_layer_id),
             "vertical_delta_semantics": SEMANTICS_FINGERPRINT["vertical_delta_semantics"],
             "radar_origin_semantics": RADAR_ORIGIN_SEMANTICS,
             "radar_origin_basis": RADAR_ORIGIN_BASIS,
@@ -1376,24 +1480,22 @@ class RadarSurveillanceLayoutService:
         blockers = list(preflight_blockers or [])
         unknown_evidence = []
         candidate = (demo_context or {}).get("candidate") or {}
-        altitude_layer_id = (
-            str(candidate.get("altitude_layer_id"))
-            if demo_preview_only and candidate.get("altitude_layer_id")
-            else FIXED_ALTITUDE_LAYER_ID
+        #: BUG-SHOT-008：高度层由数据解析（demo preview 的当前候选优先，否则
+        #: 策略 / 权威运行航路），不再架构硬编码 ALT-080 + 80 m。
+        altitude_context = self._altitude_layer_context(
+            candidate.get("altitude_layer_id") if isinstance(candidate, dict) else None
         )
-        layers = {
-            str(item.get("altitude_layer_id")): item
-            for item in (state.get("spatial_3d") or {}).get("altitude_layers") or []
-            if isinstance(item, dict)
-        }
-        altitude_layer = layers.get(altitude_layer_id) or {}
+        altitude_layer_id = altitude_context["layer_id"]
+        altitude_layer = (
+            altitude_context["layer"] if isinstance(altitude_context["layer"], dict) else {}
+        )
         route_altitude_m = float(
-            altitude_layer.get("nominal_altitude_m")
-            if altitude_layer.get("nominal_altitude_m") is not None
-            else FIXED_ALTITUDE_M
+            altitude_context["altitude_m"]
+            if altitude_context["altitude_m"] is not None else FIXED_ALTITUDE_M
         )
         parameter_values = parameters_block(fixed_altitude_m=route_altitude_m)
         parameter_values["fixed_altitude_layer_id"] = altitude_layer_id
+        parameter_values["fixed_altitude_layer_source"] = altitude_context["source"]
 
         base = {
             "route_id": str(route_id),
@@ -1406,9 +1508,15 @@ class RadarSurveillanceLayoutService:
             "algorithm_semantics": ALGORITHM_SEMANTICS,
             "model_scope": MODEL_SCOPE,
             "proposal_only": PROPOSAL_ONLY,
+            #: BUG-SHOT-008：标题与语义指纹都随**实际使用的高度层**变化，
+            #: 因此 ALT-100 的运行方案不会被写成"80m 方案"，旧层方案也必然 stale。
             "proposal_title": (
                 DEMO_PROPOSAL_TITLE if demo_preview_only
-                else "80m固定高度航路方向性雷达几何初步划设方案"
+                else f"固定高度航路方向性雷达几何初步划设方案（{altitude_layer_id} · {route_altitude_m:g} m）"
+            ),
+            "altitude_layer_source": (
+                "current_layered_candidate" if demo_preview_only
+                else "explicit_altitude_layer"
             ),
             "evaluated_at": utc_now(),
             "parameters": parameter_values,
@@ -1416,7 +1524,11 @@ class RadarSurveillanceLayoutService:
             "device_summary": device_summary(),
             "not_evaluated": deepcopy(NOT_EVALUATED),
             "boundaries": deepcopy(BOUNDARIES),
-            "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
+            "semantics_fingerprint": {
+                **deepcopy(SEMANTICS_FINGERPRINT),
+                **semantics_fingerprint(altitude_layer_id),
+            },
+            "route_sample_height_semantics": route_sample_height_semantics(altitude_layer_id),
         }
         if demo_preview_only:
             risk_profile = demo_context.get("risk_profile") or {}
@@ -1823,6 +1935,9 @@ class RadarSurveillanceLayoutService:
         options = {}
         if policy.get("solver_time_limit_s"):
             options["time_limit_s"] = policy["solver_time_limit_s"]
+        #: BUG-SHOT-008：固定高度层随数据进入求解（水平交截半径与参数块都消费它）。
+        options["fixed_altitude_m"] = route_altitude_m
+        options["altitude_layer_id"] = altitude_layer_id
 
         # ---- 5 m 独立连续覆盖复核采样（与 25 m 优化采样共用同一套事实回调） --------
         solved = solve_layout(
@@ -1948,8 +2063,13 @@ class RadarSurveillanceLayoutService:
                 deepcopy((solved_validation or {}).get("unknown_evidence") or [])
             ),
             "infeasibility_reasons": _infeasibility_reasons(solved),
+            #: BUG-SHOT-008：求解时间预算必须对前端与报告可见 ——
+            #: 超预算时返回的是"当前最好可行解"，未完成部分不得视为已覆盖。
+            "time_budget": deepcopy(solved.get("time_budget")),
             "parameters": parameters_block(
                 fixed_altitude_m=route_altitude_m,
+                altitude_layer_id=altitude_layer_id,
+                altitude_layer_source=altitude_context["source"],
                 extra={
                     "optimization_sample_spacing_m": spacing,
                     "validation_sample_spacing_m": policy["validation_sample_spacing_m"],

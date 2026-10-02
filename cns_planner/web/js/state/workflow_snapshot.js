@@ -238,6 +238,11 @@ export function createWorkflowSnapshotApplier(deps) {
     const current = getFlow() || {};
     setFlow({...current, grid, grid_attributes: attributes});
     hydrated = gridDetailIdentity(grid, attributes);
+    // BUG-SHOT-009：网格逐 cell 明细落地后必须重建下游视图 —— `main.js` 的
+    // ``afterApply`` 会重建 ``gridRenderCache``（约束覆盖层唯一的几何来源）并重绘。
+    // 漏掉这一步时，``flow.grid.cells`` 已经有 8008 条，但渲染缓存仍是空，
+    // 于是"明细读到了、地图上一个障碍格都没有"。
+    afterApply(getFlow());
     return {
       applied: true,
       identity: hydrated,
@@ -286,6 +291,8 @@ export function createWorkflowSnapshotApplier(deps) {
     });
     setFlow({...current, ...patch});
     hydrated = gridDetailIdentity(patch.grid || current.grid, patch.grid_attributes || current.grid_attributes);
+    // 与 hydrateGridDetail 同理：明细落地后必须重建下游视图（gridRenderCache / 重绘）。
+    afterApply(getFlow());
     return {applied: true, identity: hydrated, diagnostics, hydrated: plan.map(item => item[0])};
   }
 

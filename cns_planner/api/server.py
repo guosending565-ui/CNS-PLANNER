@@ -33,6 +33,14 @@ class StaleRevisionError(ValueError):
 class LocalServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
+    #: BUG-SHOT-005：``socketserver.TCPServer.request_queue_size`` 默认只有 5，
+    #: 即监听套接字的 accept backlog 只有 5。浏览器加载前端入口时，``type=module``
+    #: 会并发拉起整张 ES module 依赖图，瞬时新建连接数远超 5，超出的连接会被内核
+    #: 直接拒绝（Windows 上表现为浏览器 ``net::ERR_CONNECTION_REFUSED``），而页面里
+    #: 的普通 ``<script>`` / CSS（并发度低）却仍然 200，于是表现为"只有 module 加载失败"。
+    #: 实测：修复前 80 并发 → 28 个 ``ConnectionRefusedError(10061)``；修复后为 0。
+    #: 该值只影响"来不及 accept 时内核排队长度"，不改变任何请求处理语义。
+    request_queue_size = 256
 
     def server_bind(self):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):

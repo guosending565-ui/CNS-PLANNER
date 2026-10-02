@@ -22,6 +22,9 @@ class ProjectDirectoryService:
         self.defaults_path = Path(defaults_path)
         self.default_sources = dict(default_sources)
         self.workflow_factory = workflow_factory
+        #: BUG-SHOT-002 诊断：最近一次打开项目时"兼容迁移未能持久化"的真实原因
+        #: （只读项目目录会被拒）。它只如实记录，绝不影响项目是否打开成功。
+        self.migration_write_error = None
 
     def storage_metadata(self, active_file):
         path = Path(active_file)
@@ -76,7 +79,15 @@ class ProjectDirectoryService:
                 saved["towers"] = recovered_tower_source
                 # 这是确定性兼容迁移：只使用项目状态中明确登记、且与 verified audit
                 # 文件签名一致的原始路径；不扫描目录、不按文件名或修改时间猜测。
-                repository.save(saved)
+                #
+                # BUG-SHOT-002：**打开项目绝不因为"写不进去"而失败**。迁移结果在本次
+                # 会话里已经完整生效；持久化只是让下一次打开少做一次推导，因此只读
+                # 项目目录（例如外部只读基线）下写入被拒时跳过持久化即可，绝不把
+                # ``data_sources.tmp`` 的 PermissionError 变成"项目打不开"。
+                try:
+                    repository.save(saved)
+                except OSError as exc:
+                    self.migration_write_error = str(exc)
         if saved:
             clean = {key: saved.get(key) or current_data.paths.get(key) or self.default_sources.get(key, "")
                      for key in ("basemap", "population", "terrain")}

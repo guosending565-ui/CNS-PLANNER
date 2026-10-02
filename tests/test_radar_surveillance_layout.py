@@ -1987,6 +1987,9 @@ def test_algorithm_version_is_1_1_and_fingerprint_carries_v1_1_semantics(tmp_pat
     _evaluate(service, provider)
     stored = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
     assert stored["algorithm_version"] == "1.1"
+    # BUG-SHOT-008：默认高度层（ALT-080）下，四个既有语义分量逐字不变；
+    # 额外带上的 ``fixed_altitude_layer_id`` 让"换成 ALT-100"必然产生新指纹
+    # （旧 layout 因此 stale），这是本次"数据驱动高度层"改造的显式语义分量。
     assert stored["semantics_fingerprint"] == {
         "route_altitude_semantics": "fixed_alt_080_egm2008",
         "vertical_delta_semantics": "target_minus_radar_origin",
@@ -1995,6 +1998,7 @@ def test_algorithm_version_is_1_1_and_fingerprint_carries_v1_1_semantics(tmp_pat
             "explicit_land_polygon_containment_plus_coastal_uncertainty_buffer"
         ),
         "geometry_version": "radar_layout_geometry_v1_1",
+        "fixed_altitude_layer_id": "ALT-080",
     }
     components = service.radar_surveillance_layout_service._fingerprint_components(ROUTE_ID)
     assert components["algorithm_version"] == "1.1"
@@ -2505,7 +2509,9 @@ def test_api_router_exposes_read_and_write_endpoints(tmp_path):
     )
     assert demo_readiness.data["demo_preview_only"] is True
     assert demo_readiness.data["route_source"] == DEMO_ROUTE_SOURCE
-    assert "current_alt_080_layered_candidate_missing" in demo_readiness.data["blockers"]
+    # BUG-SHOT-008 顺带修复：该 blocker 名自 6351529 起已是通用形式（不再写死 alt_080），
+    # 而本断言此前仍是旧字符串，因此这条用例在本次改造之前就已经失败。
+    assert "current_layered_candidate_missing" in demo_readiness.data["blockers"]
 
     layout = router.get("/api/radar-surveillance-layout", {}, {})
     assert layout.data["count"] == 1
