@@ -59,3 +59,7 @@ _tmproot/
 _vbase/
 _vbase_*/
 _runtime_projects/
+
+# C 盘 → D 盘迁移的取证材料与 smoke 产物（运行期证据，不是源码交付）
+_cscan/
+_migration_smoke/

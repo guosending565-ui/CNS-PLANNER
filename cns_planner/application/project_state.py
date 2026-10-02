@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from ..risk.v1 import RiskModelV1
@@ -462,6 +463,16 @@ def _mark_proposals_stale_after_reuse_tier_migration(state, p11_migrated, p16_mi
         )
 
 
+def repo_root():
+    """本仓库根目录（由 ``__file__`` 推导，绝不硬编码盘符）。
+
+    迁移（C 盘 → D 盘）后的可移植性依赖这一点：任何"旧仓库内部文件"的 persisted
+    绝对路径都能被确定性地换算到**当前**仓库位置。
+    """
+
+    return Path(__file__).resolve().parents[2]
+
+
 def normalize_project(value, grid_service):
     """Validate the schema and backfill fields added without a schema bump."""
     if not isinstance(value, dict):
@@ -470,6 +481,12 @@ def normalize_project(value, grid_service):
         raise ValueError(f"不支持的项目 schema：{value.get('schema_version')}")
     if not isinstance(value.get("project"), dict):
         raise ValueError("项目状态缺少 project")
+    #: Round 2.6 迁移收口：已保存状态里的"旧仓库内部文件"绝对路径确定性迁移到当前
+    #: 仓库根（无法解析/文件不存在时原样保留），并逐条留下 source_migrated_from
+    #: provenance。必须在下游 normalizer 之前执行，否则路径类校验会先看到旧值。
+    from ..domain.path_migration import migrate_persisted_paths
+
+    migrate_persisted_paths(value, repo_root())
     value["revision"] = max(0, int(value.get("revision") or 0))
     value["project"]["revision"] = max(
         0, int(value["project"].get("revision") or value["revision"])
