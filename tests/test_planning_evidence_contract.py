@@ -27,9 +27,10 @@ from cns_planner.domain.cns_service_contract import (  # noqa: E402
     AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD,
 )
 from cns_planner.domain.planning_evidence import (  # noqa: E402
-    EVIDENCE_SOURCE_TYPES, PLANNING_EVIDENCE_FIELDS, active_evidence_items,
-    apply_aircraft_evidence, empty_planning_evidence, evidence_disclosure_lines,
-    normalize_engineering_evidence, normalize_planning_evidence_registry,
+    EVIDENCE_AUTHORITY_EFFECT, EVIDENCE_SOURCE_TYPES, PLANNING_EVIDENCE_FIELDS,
+    active_evidence_items, apply_aircraft_evidence, empty_planning_evidence,
+    evidence_disclosure_lines, normalize_engineering_evidence,
+    normalize_planning_evidence_registry,
 )
 from cns_planner.safety.service_state import evaluate_required_performance  # noqa: E402
 
@@ -84,13 +85,49 @@ def assumption(field, value, **overrides):
 
 
 # --------------------------------------------------------------------------- 1
-def test_only_three_source_types_and_no_free_text():
+def test_source_types_are_closed_enum_with_external_reference():
+    """Round 2.5：来源类型是**四类闭枚举**（新增 external_reference）。
+
+    ``external_reference`` 的语义是"外部研究 / 公开资料参考值"：它允许参与判定，
+    但权威效应是 ``allowed_as_external_reference``，报告必须把它与"法规/厂家事实"
+    逐字区分（例如 RTK 恢复 9–13 s 只作外部参考、不作硬门）。
+    """
+
     assert EVIDENCE_SOURCE_TYPES == (
-        "confirmed_source_fact", "engineering_assumption", "unknown",
+        "confirmed_source_fact", "external_reference",
+        "engineering_assumption", "unknown",
     )
+    assert EVIDENCE_AUTHORITY_EFFECT["external_reference"] == "allowed_as_external_reference"
     with pytest.raises(ValueError):
         normalize_engineering_evidence(assumption(
             "remote_id_participation", ["network_remote_id"], source_type="manufacturer_claim",
+        ))
+
+
+def test_external_reference_requires_provenance_and_disclosure():
+    item = normalize_engineering_evidence(assumption(
+        "navigation_degradation_time_s", 13.0,
+        scope="project", target_id=None,
+        source_type="external_reference",
+        source="公开研究资料（RTK 恢复时长区间）",
+        external_reference="公开资料 REF-001：RTK 恢复约 9–13 s",
+    ))
+    assert item["source_type"] == "external_reference"
+    assert item["authority_effect"] == "allowed_as_external_reference"
+    assert item["external_reference"].startswith("公开资料 REF-001")
+
+    with pytest.raises(ValueError, match="external_reference 缺少必填字段"):
+        normalize_engineering_evidence(assumption(
+            "navigation_degradation_time_s", 13.0,
+            scope="project", target_id=None,
+            source_type="external_reference", source=None,
+            external_reference="REF-001",
+        ))
+    with pytest.raises(ValueError, match="必须声明 external_reference"):
+        normalize_engineering_evidence(assumption(
+            "navigation_degradation_time_s", 13.0,
+            scope="project", target_id=None,
+            source_type="external_reference",
         ))
 
 

@@ -2,7 +2,8 @@
   "metadata": {
     "version": "1.0",
     "semantics": "aircraft capabilities only; not mission requirements",
-    "status": "pending_confirmation"
+    "status": "pending_confirmation",
+    "fc30_entry": "FC30 是 Round 2.5 引入的 canonical 机载档案：航路速度 15 m/s、最大水平速度 20 m/s、MTOW 95 kg、RTK→GNSS→ATTI 回退链、Failsafe RTH（遥控信号丢失>3 s）。3 s 是**设备 failsafe 触发事实**，不是法规阈值；逐条 provenance 见 metadata.fc30_facts。"
   },
   "items": [
     {
@@ -13,11 +14,254 @@
       "cruise_speed_mps": 25,
       "max_speed_mps": 35,
       "mtbf_h": 10000,
-      "communication": {"status": "pending_confirmation", "capabilities": []},
-      "navigation": {"status": "pending_confirmation", "capabilities": []},
-      "surveillance": {"status": "pending_confirmation", "capabilities": []},
+      "communication": {
+        "status": "pending_confirmation",
+        "capabilities": []
+      },
+      "navigation": {
+        "status": "pending_confirmation",
+        "capabilities": []
+      },
+      "surveillance": {
+        "status": "pending_confirmation",
+        "capabilities": []
+      },
       "source": "demo/default 工程测试数据",
-      "metadata": {"authority": "engineering_placeholder", "confirmed": false}
+      "metadata": {
+        "authority": "engineering_placeholder",
+        "confirmed": false
+      }
+    },
+    {
+      "aircraft_id": "FC30",
+      "name": "FC30",
+      "manufacturer": "FC30",
+      "model": "FC30",
+      "communication": {
+        "status": "confirmed",
+        "capabilities": [],
+        "type": {
+          "service_type": "command_control",
+          "technology": "dedicated_radio",
+          "network_scope": "unknown",
+          "interfaces": []
+        },
+        "performance": {
+          "max_latency_s": null,
+          "lost_link_threshold_s": 3.0,
+          "max_continuous_outage_s": null,
+          "max_cumulative_outage_s": null,
+          "min_availability": null,
+          "min_redundancy": null
+        },
+        "contingency": null,
+        "source": "FC30 机载档案（canonical）",
+        "confirmed": true,
+        "confirmation_status": "confirmed",
+        "latency_ms": null,
+        "redundancy": null,
+        "reliability": {
+          "model": "unknown",
+          "mtbf_h": null,
+          "mttr_h": null,
+          "failure_rate_per_h": null,
+          "availability": null,
+          "availability_type": "unknown",
+          "empirical_failure_probability": null,
+          "failure_mode": null,
+          "operating_conditions": null,
+          "reference_conditions": null,
+          "confidence": null,
+          "sample_size": null,
+          "source": null,
+          "confirmed": false,
+          "status": "missing_data"
+        },
+        "fallbacks": []
+      },
+      "navigation": {
+        "status": "confirmed",
+        "capabilities": [],
+        "type": {
+          "technology": "gnss_rtk"
+        },
+        "performance": {
+          "max_horizontal_error_m": null,
+          "max_vertical_error_m": null,
+          "integrity_required": null,
+          "max_time_to_alert_s": null,
+          "max_degradation_time_s": null,
+          "min_availability": null,
+          "min_redundancy": 1
+        },
+        "contingency": null,
+        "source": "FC30 机载档案（canonical）",
+        "confirmed": true,
+        "confirmation_status": "confirmed",
+        "accuracy_m": null,
+        "integrity": null,
+        "redundancy": 1,
+        "reliability": {
+          "model": "unknown",
+          "mtbf_h": null,
+          "mttr_h": null,
+          "failure_rate_per_h": null,
+          "availability": null,
+          "availability_type": "unknown",
+          "empirical_failure_probability": null,
+          "failure_mode": null,
+          "operating_conditions": null,
+          "reference_conditions": null,
+          "confidence": null,
+          "sample_size": null,
+          "source": null,
+          "confirmed": false,
+          "status": "missing_data"
+        },
+        "fallbacks": []
+      },
+      "surveillance": {
+        "status": "confirmed",
+        "capabilities": [],
+        "type": {
+          "target_cooperation": "cooperative",
+          "sensor_mode": null,
+          "technology": "adsb"
+        },
+        "performance": {
+          "min_detection_range_m": null,
+          "min_detection_probability": null,
+          "max_update_interval_s": null,
+          "max_track_loss_s": null,
+          "max_alert_latency_s": null,
+          "min_availability": null,
+          "min_redundancy": null
+        },
+        "contingency": null,
+        "source": "FC30 机载档案（canonical）",
+        "confirmed": true,
+        "confirmation_status": "confirmed",
+        "update_interval_s": null,
+        "redundancy": null,
+        "reliability": {
+          "model": "unknown",
+          "mtbf_h": null,
+          "mttr_h": null,
+          "failure_rate_per_h": null,
+          "availability": null,
+          "availability_type": "unknown",
+          "empirical_failure_probability": null,
+          "failure_mode": null,
+          "operating_conditions": null,
+          "reference_conditions": null,
+          "confidence": null,
+          "sample_size": null,
+          "source": null,
+          "confirmed": false,
+          "status": "missing_data"
+        },
+        "fallbacks": []
+      },
+      "source": "FC30 机载档案（canonical）：航路速度 / 最大水平速度 / MTOW / 导航回退链 / failsafe RTH",
+      "metadata": {
+        "authority": "canonical_aircraft_profile",
+        "profile_class": "fc30_canonical",
+        "confirmed": true,
+        "parameter_origin": "fc30_canonical_profile_round2_5",
+        "failsafe_trigger_semantics": "device_failsafe_trigger_fact_not_regulatory_threshold",
+        "not_regulatory_threshold": true,
+        "fc30_facts": [
+          {
+            "fact_id": "fc30.route_speed",
+            "parameter": "route_speed_mps",
+            "value": 15.0,
+            "unit": "m/s",
+            "source_type": "confirmed_source_fact",
+            "source": "FC30 机载档案（canonical，随本仓库冻结）",
+            "statement": "FC30 航路（巡航）速度为 15 m/s；作为规划基线使用。",
+            "semantics": "planning_baseline_cruise_speed"
+          },
+          {
+            "fact_id": "fc30.max_horizontal_speed",
+            "parameter": "max_horizontal_speed_mps",
+            "value": 20.0,
+            "unit": "m/s",
+            "source_type": "confirmed_source_fact",
+            "source": "FC30 机载档案（canonical，随本仓库冻结）",
+            "statement": "FC30 最大水平速度为 20 m/s；仅作为机型包线事实登记。",
+            "semantics": "airframe_envelope_fact"
+          },
+          {
+            "fact_id": "fc30.mtow",
+            "parameter": "mtow_kg",
+            "value": 95.0,
+            "unit": "kg",
+            "source_type": "confirmed_source_fact",
+            "source": "FC30 机载档案（canonical，随本仓库冻结）",
+            "statement": "FC30 最大起飞重量（MTOW）为 95 kg。",
+            "semantics": "airframe_envelope_fact"
+          },
+          {
+            "fact_id": "fc30.navigation.fallback.rtk_to_gnss",
+            "parameter": "rtk_loss_fallback",
+            "value": "gnss",
+            "unit": null,
+            "source_type": "confirmed_source_fact",
+            "source": "FC30 机载档案（canonical，随本仓库冻结）",
+            "statement": "RTK 丢失时 FC30 回退到 GNSS 定位（RTK loss → GNSS fallback）。",
+            "semantics": "declared_navigation_fallback_chain"
+          },
+          {
+            "fact_id": "fc30.navigation.fallback.gnss_loss",
+            "parameter": "gnss_loss_fallback",
+            "value": "atti_descend_asap",
+            "unit": null,
+            "source_type": "confirmed_source_fact",
+            "source": "FC30 机载档案（canonical，随本仓库冻结）",
+            "statement": "GNSS 也失效时 FC30 进入 ATTI（姿态）模式并尽快降落；该状态**不**提供航路保持（route containment）能力。",
+            "semantics": "declared_navigation_fallback_chain"
+          },
+          {
+            "fact_id": "fc30.failsafe.rc_loss_rth",
+            "parameter": "rc_loss_failsafe_trigger_s",
+            "value": 3.0,
+            "unit": "s",
+            "source_type": "confirmed_source_fact",
+            "source": "FC30 机载档案（canonical）：Failsafe RTH 配置下，遥控信号丢失超过 3 s 触发自动返航。",
+            "statement": "在 Failsafe RTH 已配置的前提下，遥控（RC）信号丢失超过 3 s 触发 RTH。",
+            "semantics": "device_failsafe_trigger_fact_not_regulatory_threshold",
+            "not_a_regulatory_threshold": true
+          }
+        ],
+        "fc30_navigation_fallbacks": [
+          {
+            "from": "rtk",
+            "to": "gnss",
+            "capability": "route_containment_depends_on_gnss_accuracy",
+            "source": "FC30 机载档案（canonical）",
+            "source_type": "confirmed_source_fact"
+          },
+          {
+            "from": "gnss",
+            "to": "atti_descend_asap",
+            "capability": "no_route_containment",
+            "source": "FC30 机载档案（canonical）",
+            "source_type": "confirmed_source_fact"
+          }
+        ],
+        "fc30_controllability": {
+          "rc_link_loss_failsafe": "rth",
+          "rc_link_loss_failsafe_trigger_s": 3.0,
+          "rc_link_loss_failsafe_trigger_semantics": "device_failsafe_trigger_fact_not_regulatory_threshold",
+          "source": "FC30 机载档案 failsafe 配置事实",
+          "source_type": "confirmed_source_fact",
+          "not_a_regulatory_threshold": true
+        }
+      },
+      "cruise_speed_mps": 15.0,
+      "max_speed_mps": 20.0,
+      "max_horizontal_speed_mps": 20.0,
+      "mtow_kg": 95.0
     }
   ]
 }

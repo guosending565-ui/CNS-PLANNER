@@ -17,7 +17,7 @@ from uuid import uuid4
 from ..domain.planning_evidence import (
     active_evidence_items, apply_aircraft_evidence, empty_planning_evidence,
     evidence_disclosure_lines, normalize_engineering_evidence,
-    normalize_planning_evidence_registry,
+    normalize_planning_evidence_registry, param_targets_continuous_service,
 )
 
 
@@ -32,6 +32,8 @@ class PlanningEvidenceService:
     # ---- 读取 ---------------------------------------------------------------
 
     def snapshot(self):
+        from ..domain.planning_evidence import continuous_service_parameter_projection
+
         state = self.session.state
         registry = normalize_planning_evidence_registry(state.get("planning_evidence"))
         return {
@@ -40,6 +42,10 @@ class PlanningEvidenceService:
             "disclosure_lines": evidence_disclosure_lines(registry),
             "aircraft_evidence": deepcopy(self.aircraft_evidence_summary()),
             "field_status": self.field_status(),
+            #: Round 2.5：P17 的连续服务参数是**另一类**证据（kind =
+            #: continuous_service_parameter），它们没有"需求侧字段"，因此不进入
+            #: aircraft 逐项核对列表，而是单独下发一份带 authority 的投影。
+            "continuous_parameters": continuous_service_parameter_projection(registry),
         }
 
     def field_status(self):
@@ -61,6 +67,10 @@ class PlanningEvidenceService:
         requirements = _requirement_blocks(state)
         result = []
         for field, spec in PLANNING_EVIDENCE_FIELDS.items():
+            #: Round 2.5：连续服务参数不是"机载能力 vs 需求类型"的核对对象，
+            #: 它们由 ``continuous_parameters`` 单独投影（带 authority）。
+            if spec["kind"] == "continuous_service_parameter":
+                continue
             subsystem = _subsystem_name(spec["subsystem"])
             #: ``_requirement_blocks`` 返回的是 **subsystem 名** 键
             #: （``communication`` / ``navigation`` / ``surveillance``）。
@@ -164,7 +174,12 @@ class PlanningEvidenceService:
         registry["items"] = retained
         state["planning_evidence"] = registry
         #: 工程证据改变机载能力 ⇒ 下游能力/走廊/缺口/站址规划全部失效。
-        self.invalidation.workflow("aircraft_profile")
+        #: Round 2.5 例外：**连续服务参数**不参与机载能力叠加，它只让 P17 失效，
+        #: 绝不动 P8/P14/P15/P16（否则改一个阈值就要重跑 360 s 的 P16）。
+        if param_targets_continuous_service(normalized["scope"], normalized["field"]):
+            self.invalidation.continuous_service("continuous_service_parameters_changed")
+        else:
+            self.invalidation.workflow("aircraft_profile")
         #: 响应必须是**完整 workflow 快照**：前端 `resourceAction` 会把 POST 响应
         #: 当作状态落地。返回服务自己的聚合对象会让 `flow` 被替换成不含 project /
         #: workspace 的对象，界面既不刷新也看不到错误（BUG-PLANNING-EVIDENCE-001）。
@@ -179,16 +194,19 @@ class PlanningEvidenceService:
             raise ValueError("evidence_id 必填")
         state = self.session.state
         registry = normalize_planning_evidence_registry(state.get("planning_evidence"))
-        found = False
+        target = None
         for item in registry["items"]:
             if item["evidence_id"] == evidence_id:
                 item["status"] = "withdrawn"
-                found = True
+                target = item
                 break
-        if not found:
+        if target is None:
             raise KeyError(evidence_id)
         state["planning_evidence"] = registry
-        self.invalidation.workflow("aircraft_profile")
+        if param_targets_continuous_service(target["scope"], target["field"]):
+            self.invalidation.continuous_service("continuous_service_parameters_changed")
+        else:
+            self.invalidation.workflow("aircraft_profile")
         self.session.save()
         return self.snapshot_fn()
 

@@ -210,6 +210,13 @@ class ApiRouter:
         if path == "/api/cns-planning-objectives": return Response(workflow.cns_planning_objectives_snapshot())
         if path == "/api/cns-corridor-gap": return Response(workflow.cns_corridor_gap_snapshot())
         if path == "/api/cns-corridor-site-plan": return Response(workflow.cns_corridor_site_plan_snapshot())
+        # ---- Round 2.5：P17 连续服务可接受性（只读消费者） --------------------
+        if path == "/api/cns-continuous-service": return Response(workflow.cns_continuous_service_snapshot())
+        if path == "/api/cns-continuous-service/parameters": return Response(workflow.cns_continuous_service_parameters())
+        if path == "/api/cns-continuous-service/policy": return Response(workflow.cns_continuous_service_policy())
+        if path == "/api/cns-continuous-service/scenario": return Response(workflow.cns_operation_scenario())
+        if path == "/api/cns-continuous-service/step6-gate": return Response(workflow.cns_continuous_service_step6_gate())
+        if path == "/api/fc30-profile": return Response(workflow.fc30_profile_facts())
         if path == "/api/cns-plan-review": return Response(workflow.cns_plan_review_snapshot())
         if path == "/api/cns-planning-report": return Response(workflow.cns_planning_report_snapshot())
         if path == "/api/cns-planning-report/artifact":
@@ -641,6 +648,10 @@ class ApiRouter:
             "/api/cns-planning-objectives": lambda: workflow.set_cns_planning_objectives(payload),
             "/api/cns-corridor-gap/evaluate": lambda: workflow.evaluate_cns_corridor_gap(payload),
             "/api/cns-corridor-site-plan/evaluate": lambda: workflow.evaluate_cns_corridor_site_plan(payload),
+            # ---- Round 2.5：P17 连续服务可接受性 ------------------------------
+            "/api/cns-continuous-service/evaluate": lambda: workflow.evaluate_cns_continuous_service(payload),
+            "/api/cns-continuous-service/policy": lambda: workflow.set_cns_continuous_service_policy(payload),
+            "/api/cns-continuous-service/scenario": lambda: workflow.set_cns_operation_scenario(payload),
             "/api/cns-plan-review/initialize": lambda: workflow.initialize_cns_plan_review(payload),
             "/api/cns-plan-review/variant": lambda: workflow.create_cns_plan_variant(payload),
             "/api/cns-plan-review/evaluate": lambda: workflow.evaluate_cns_plan_variant(payload),

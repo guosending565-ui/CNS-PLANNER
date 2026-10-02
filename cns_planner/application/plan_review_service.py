@@ -22,22 +22,53 @@ class PlanReviewService:
 
     def __init__(self, session, coverage_model, capability_model, timeline_model,
                  gap_model, corridor_model, corridor_gap_analyzer, snapshot,
-                 invalidation=None):
+                 invalidation=None, continuous_service=None):
         self.session, self.snapshot = session, snapshot
         self.coverage_model, self.capability_model = coverage_model, capability_model
         self.timeline_model, self.gap_model = timeline_model, gap_model
         self.corridor_model, self.corridor_gap_analyzer = corridor_model, corridor_gap_analyzer
         self.invalidation = invalidation
+        #: Round 2.5：P17 连续服务可接受性的门禁投影。它为 None 时（旧装配）P18 不施加
+        #: P17 门禁——但生产组合根一定会注入它。
+        self.continuous_service = continuous_service
 
     def snapshot_result(self):
         return {
             "cns_plan_review": deepcopy(self.session.state.get("cns_plan_review") or empty_plan_review()),
             "confirmed_cns_plan": deepcopy(self.session.state.get("confirmed_cns_plan") or empty_confirmed_plan()),
+            #: Round 2.5：P17 的 Step6 门禁投影（只读；前端据此显示"是否放行 + 强制披露"）。
+            "continuous_service_gate": self._p17_gate(raise_on_block=False),
         }
+
+    def _p17_gate(self, *, raise_on_block=True):
+        """P17 连续服务可接受性的 Step6 门禁（**fail-closed**）。
+
+        * ``fully_satisfied`` / ``acceptable_with_managed_gap`` ⇒ 放行
+          （managed_gap 必须在 review/report 中强制披露，绝不表述为"全覆盖"）；
+        * ``unacceptable`` / ``unknown``（含"尚未评估"/"已 stale"）⇒ 阻止。
+        """
+
+        if self.continuous_service is None:
+            return {"status": "not_configured", "confirmation_allowed": True,
+                    "allowed_statuses": [], "blocking_reason": None}
+        gate = self.continuous_service.step6_gate()
+        if gate.get("confirmation_allowed") is not True:
+            status = str(gate.get("status") or "not_calculated")
+            reason = (
+                "P17 连续服务可接受性为 unknown（证据缺失）——必须 fail-closed，"
+                "请先补齐工程依据并重新评估"
+                if status in ("unknown", "stale", "not_calculated")
+                else f"P17 连续服务可接受性为 {status}——不可接受，不得进入正式评审"
+            )
+            gate = {**gate, "blocking_reason": reason}
+            if raise_on_block:
+                raise ValueError(f"P18 需要可接受的 P17 结论：{reason}")
+        return gate
 
     def initialize(self, payload=None):
         state = self.session.state
         self._require_current_inputs(state)
+        p17 = self._p17_gate()
         baseline_fp = review_baseline_fingerprint(state)
         p16 = state.get("cns_corridor_site_plan") or {}
         p16_fp = p16.get("input_fingerprint")
@@ -49,10 +80,13 @@ class PlanReviewService:
         review.update({
             "review_id": f"PR-{baseline_fp[:20]}", "baseline_fingerprint": baseline_fp,
             "input_fingerprints": review_input_fingerprints(state), "variants": variants,
+            "continuous_service_gate": deepcopy(p17),
             "initialized_from": {
                 "p14_fingerprint": (state.get("cns_corridor_assessment") or {}).get("input_fingerprint"),
                 "p15_fingerprint": (state.get("cns_corridor_gap_assessment") or {}).get("input_fingerprint"),
                 "p16_fingerprint": p16_fp, "p16_status": p16.get("status"),
+                "p17_status": p17.get("status"),
+                "p17_input_fingerprint": p17.get("input_fingerprint"),
             },
         })
         for variant in review["variants"]:
@@ -111,6 +145,8 @@ class PlanReviewService:
 
     def confirm(self, payload):
         assert_write_authority(self, "confirmed_cns_plan")
+        #: Round 2.5：P17 门禁在 Confirm 时**再次**校验（review 初始化后证据可能已变化）。
+        p17_gate = self._p17_gate()
         review = self._current_review()
         variant = self._variant(review, payload.get("variant_id") or review.get("selected_variant_id"))
         evaluation = variant.get("evaluation") or {}
@@ -150,6 +186,8 @@ class PlanReviewService:
                 "planned_p15": evaluation.get("planned_p15_fingerprint"),
             },
             "acknowledgements": [acknowledgement] if acknowledgement else [],
+            "continuous_service_gate": deepcopy(p17_gate),
+            "managed_gap_disclosure": deepcopy(p17_gate.get("disclosure_lines") or []),
             "confirmation": {"source": str(payload.get("source") or "user_confirmation"), "reason": str(payload.get("reason") or "")},
             "application": {"status": "not_applied", "application_id": f"PVAPP-{variant['variant_id']}"},
         })
@@ -242,6 +280,22 @@ class PlanReviewService:
             "comparison_matrix": comparison_matrix(p15),
             "confirmation_gate": confirmation_gate(baseline, p15),
             "action_summary": action_summary(actions),
+            #: Round 2.5：P17 结论**只针对当前权威状态**。这里如实记录
+            #: "本 variant 的假设尚未做过 P17 评估"，绝不把权威 P17 结论冒充成本 variant 的结论。
+            "continuous_service_projection": {
+                "authoritative_status": (state.get("continuous_service_acceptability") or {}).get("status"),
+                "authoritative_managed_gap_count": (state.get("continuous_service_acceptability") or {}).get("managed_gap_count"),
+                "evaluated_for_this_variant": False,
+                "note": (
+                    "P17 连续服务可接受性只针对当前权威状态评估；本 variant 的假设改动"
+                    "（新增站址/设备）在 Apply 后需要重新评估 P17。"
+                ),
+                "after_p15_max_continuous_deficit_projection_m": {
+                    item.get("subsystem"): item.get("max_continuous_deficit_projection_m")
+                    for route in (p15 or {}).get("routes") or []
+                    for item in route.get("subsystems") or []
+                },
+            },
         }
         variant["status"] = "evaluated"
 

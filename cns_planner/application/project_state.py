@@ -49,6 +49,14 @@ from ..domain.corridor_site_planning import (
     default_corridor_site_planning_policy, empty_cns_corridor_site_plan,
     normalize_corridor_site_planning_policy,
 )
+#: Round 2.5：P17 连续服务可接受性。这里只导入**算法层的空契约**（纯 domain 组合），
+#: 不去 import application 服务，避免 project_state ↔ 服务的循环依赖。
+from ..algorithms.continuous_service.v1 import ContinuousServiceAcceptabilityV1
+from ..domain.cns_continuous_service import (
+    default_continuous_service_policy, default_operation_scenario,
+    empty_continuous_service_acceptability, normalize_continuous_service_policy,
+    normalize_operation_scenario,
+)
 from ..domain.requirement_policy import (
     empty_operation_context, empty_required_cns_adoption,
     empty_required_cns_recommendation, empty_requirement_policies,
@@ -321,6 +329,11 @@ def blank_project(defaults):
         "cns_corridor_gap_assessment": empty_cns_corridor_gap_assessment(),
         "corridor_site_planning_policy": default_corridor_site_planning_policy(),
         "cns_corridor_site_plan": empty_cns_corridor_site_plan(),
+        # Round 2.5：P17 连续服务可接受性（**下游**消费者：只读 P14/P15/P16 与显式
+        # 工程证据；它的容器与策略随项目保存，重开后 unknown 仍是 unknown）。
+        "continuous_service_acceptability": empty_continuous_service_acceptability(),
+        "cns_continuous_service_policy": default_continuous_service_policy(),
+        "cns_operation_scenario": default_operation_scenario(),
         "cns_plan_review": empty_plan_review(),
         "confirmed_cns_plan": empty_confirmed_plan(),
         "cns_planning_reports": empty_report_collection(),
@@ -668,6 +681,17 @@ def normalize_project(value, grid_service):
     value.setdefault("cns_corridor_gap_assessment", empty_cns_corridor_gap_assessment())
     value["corridor_site_planning_policy"] = normalize_corridor_site_planning_policy(value.get("corridor_site_planning_policy"))
     value.setdefault("cns_corridor_site_plan", empty_cns_corridor_site_plan())
+    # Round 2.5：P17 容器 / 策略 / 操作场景。旧项目 backfill 为"未评估 + 默认策略"，
+    # 因此重开后 P17 仍如实显示 unknown（绝不因为"缺容器"就崩溃或伪造结论）。
+    value.setdefault(
+        "continuous_service_acceptability", empty_continuous_service_acceptability()
+    )
+    value["cns_continuous_service_policy"] = normalize_continuous_service_policy(
+        value.get("cns_continuous_service_policy")
+    )
+    value["cns_operation_scenario"] = normalize_operation_scenario(
+        value.get("cns_operation_scenario")
+    )
     # 两条 policy 都规范化完成后统一处理迁移派生失效（P11 与 P16 同一规则）。
     _mark_proposals_stale_after_reuse_tier_migration(
         value, p11_legacy_policy, p16_legacy_policy

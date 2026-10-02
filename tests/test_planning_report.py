@@ -11,7 +11,7 @@ from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.reporting import deterministic_report_id, sanitize_report_value
-from test_corridor_site_planner_v2 import configured
+from test_corridor_site_planner_v2 import configured, prepare_p17
 
 
 class FakePdfRenderer:
@@ -33,6 +33,8 @@ class Context:
 def confirmed_workflow(tmp_path, applied=False):
     workflow = configured(tmp_path)
     workflow.evaluate_cns_corridor_site_plan()
+    #: Round 2.5：P18 以 P17 连续服务可接受性为前置门禁（fail-closed）。
+    prepare_p17(workflow, source="test_planning_report fixture 显式工程阈值")
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     auto = review["variants"][-1]
     confirmed = workflow.confirm_cns_plan({

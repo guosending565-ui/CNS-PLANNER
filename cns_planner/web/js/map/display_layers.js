@@ -38,6 +38,16 @@ const OPERATIONAL_COLOR='#0b6bbd';
 //: 临时 evidence highlight（RRP segment / high-risk interval hover）视觉权重最高：
 //: 它画在正常路线与 candidate 之上，且只是纯 UI 状态，不影响任何业务层。
 const ROUTE_EVIDENCE_COLOR='#c0392b';
+//: Round 2.5 / P17 连续服务可接受性：两个**默认关闭**的地图图层配色
+//: （水平航路保护走廊 / 监视保护覆盖）。颜色只表达"这属于哪个图层"，
+//: 绝不表达通过与否，也不参与任何业务判定。
+const PROTECTION_CORRIDOR_COLOR='#1f6f8b';
+const SURVEILLANCE_PROTECTION_COLOR='#8b1f6f';
+const SURVEILLANCE_UNUSABLE_COLOR='#8b949e';
+//: 走廊单侧偏移的像素上限：20 px → 走廊带总宽 ≤ 40 px（远景不至于消失、近景不至于糊屏）。
+const PROTECTION_CORRIDOR_MAX_HALF_PX=20;
+//: view.res 不可用时的退化半宽（px）：只画一条粗半透明中心带，绝不假装知道米制宽度。
+const PROTECTION_CORRIDOR_FALLBACK_HALF_PX=3;
 
 const CLUSTER_COLORS={nodes:'#c25233',sites:LANDING_COLOR.cluster,referencePoints:'#783b69',towers:TOWER_COLOR.cluster};
 
@@ -93,6 +103,237 @@ function drawAggregate(ctx,x,y,count,color){
   drawMarker(ctx,'circle',x,y,10.5,'#ffffff',color,2);
   drawMarker(ctx,'circle',x,y,3,color,color,1);
   drawText(ctx,String(count),x+14,y-11,{color,font:'700 11px "Segoe UI",sans-serif'});
+}
+
+// ---- P17 连续服务可接受性：里程 → 坐标 / 屏幕空间走廊偏移 --------------------
+
+/**
+ * 航路里程（米）→ 经纬度：沿折线按**累计距离**取点，越界时 clamp 到端点。
+ *
+ * ``routeLengthM`` 是后端给出的米制航路长度；折线的累计长度只用来确定"落在哪一段"，
+ * 因此本函数**不做米制投影、不外推、不改变后端结论**：它只是把后端已经给出的里程
+ * （缺口段的 ``start_offset_m`` / ``end_offset_m``）落回后端已经给出的 ``route_path``。
+ * ``routeLengthM`` 缺失或非法时退化为"offset 即折线比例"（与 cns_service_overlay 的
+ * ``routeOffsetFraction`` 同口径），并同样 clamp 到 [0,1]。
+ *
+ * @returns {[number,number]|null} 经纬度；路径为空返回 null
+ */
+export function routeOffsetToCoordinate(path,routeLengthM,offsetM){
+  if(!Array.isArray(path)||!path.length)return null;
+  const points=path
+    .filter(point=>Array.isArray(point)&&point.length>=2)
+    .map(point=>[Number(point[0]),Number(point[1])]);
+  if(!points.length)return null;
+  if(points.length===1)return [points[0][0],points[0][1]];
+  const offset=Number(offsetM);
+  if(!Number.isFinite(offset))return null;
+  const segments=[];
+  let total=0;
+  for(let index=1;index<points.length;index+=1){
+    const length=Math.hypot(
+      points[index][0]-points[index-1][0],
+      points[index][1]-points[index-1][1]
+    );
+    segments.push(length);total+=length;
+  }
+  if(!(total>0))return [points[0][0],points[0][1]];
+  const routeLength=Number(routeLengthM);
+  const ratio=Number.isFinite(routeLength)&&routeLength>0?offset/routeLength:offset;
+  let target=Math.max(0,Math.min(1,ratio))*total;
+  for(let index=1;index<points.length;index+=1){
+    const length=segments[index-1];
+    if(length<=0)continue;
+    if(target<=length){
+      const local=target/length;
+      return [
+        points[index-1][0]+(points[index][0]-points[index-1][0])*local,
+        points[index-1][1]+(points[index][1]-points[index-1][1])*local
+      ];
+    }
+    target-=length;
+  }
+  const last=points[points.length-1];
+  return [last[0],last[1]];
+}
+
+/** 屏幕折线的顶点法向（首尾沿用单侧方向；零长度段退化为 [0,0]）。 */
+function screenNormals(points){
+  const normals=[];
+  for(let index=0;index<points.length;index+=1){
+    const previous=points[Math.max(0,index-1)];
+    const next=points[Math.min(points.length-1,index+1)];
+    let dx=next[0]-previous[0],dy=next[1]-previous[1];
+    const length=Math.hypot(dx,dy);
+    if(length>0){dx/=length;dy/=length;}else{dx=0;dy=0;}
+    normals.push([-dy,dx]);
+  }
+  return normals;
+}
+
+/**
+ * 走廊半宽（米）→ 单侧像素偏移。
+ *
+ * ``view.res`` 是 EPSG:3857 米/像素，因此地面米/像素 = res·cos(lat) ——
+ * 与 cns_service_overlay / radar_layout_overlay 的既有换算**同式**，
+ * 这里不引入第二套投影。结果 clamp 到 [1, 20] px。
+ *
+ * @returns {number|null} view.res 不可用时返回 null（调用方退化为固定线宽的粗带）
+ */
+function protectionHalfWidthPx(halfWidthM,view,latitudeDeg){
+  const half=Number(halfWidthM);
+  const res=Number(view?.res);
+  if(!Number.isFinite(half)||half<=0)return null;
+  if(!Number.isFinite(res)||res<=0)return null;
+  const latitude=Number(latitudeDeg);
+  const scale=Number.isFinite(latitude)
+    ?Math.max(Math.cos(Math.max(-85.05112878,Math.min(85.05112878,latitude*Math.PI/180))),1e-9)
+    :1;
+  return Math.max(1,Math.min(half/(res*scale),PROTECTION_CORRIDOR_MAX_HALF_PX));
+}
+
+/** 标注数值：有限值按位数取整 / 保留小数，缺值（null / undefined / 空串 / 非数）一律写「—」，
+ *  绝不把"没有证据"格式化成 0 冒充已评估的数值。 */
+function formatMetric(value,digits=0){
+  if(value===null||value===undefined||value==='')return '—';
+  const number=Number(value);
+  if(!Number.isFinite(number))return '—';
+  return digits>0?number.toFixed(digits):String(Math.round(number));
+}
+
+/** 单条走廊：半透明带（外边界为 outer_half_width_m，屏幕空间法向偏移）+ 端面 + 参数标注。 */
+function drawProtectionCorridor({ctx,view,screenPoint,path,corridor}){
+  const screens=path
+    .map(point=>screenPoint(point))
+    .filter(point=>Number.isFinite(point?.[0])&&Number.isFinite(point?.[1]));
+  if(screens.length<2)return false;
+  const computed=protectionHalfWidthPx(corridor.outer_half_width_m,view,Number(path[0]?.[1]));
+  const halfPx=computed??PROTECTION_CORRIDOR_FALLBACK_HALF_PX;
+  const normals=screenNormals(screens);
+  const offset=side=>screens.map((point,index)=>[
+    point[0]+normals[index][0]*halfPx*side,
+    point[1]+normals[index][1]*halfPx*side
+  ]);
+  const left=offset(1),right=offset(-1);
+
+  // 半透明填充：只表达"走廊覆盖到这条带"，不表达通过与否。
+  ctx.save();
+  ctx.globalAlpha=computed===null?0.1:0.16;
+  ctx.fillStyle=PROTECTION_CORRIDOR_COLOR;
+  ctx.beginPath();
+  ctx.moveTo(left[0][0],left[0][1]);
+  for(const point of left.slice(1))ctx.lineTo(point[0],point[1]);
+  for(const point of [...right].reverse())ctx.lineTo(point[0],point[1]);
+  ctx.closePath();
+  ctx.fill();
+  // 外边界描边（走廊的左右两条边界）。
+  ctx.globalAlpha=0.78;
+  ctx.strokeStyle=PROTECTION_CORRIDOR_COLOR;
+  ctx.lineWidth=1.1;
+  ctx.setLineDash([]);
+  for(const boundary of [left,right]){
+    ctx.beginPath();
+    ctx.moveTo(boundary[0][0],boundary[0][1]);
+    for(const point of boundary.slice(1))ctx.lineTo(point[0],point[1]);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // 中心线：真实航路几何原样绘制（复用既有 drawLine）。
+  drawLine(ctx,screenPoint,view,path,PROTECTION_CORRIDOR_COLOR,1.6,[]);
+
+  // 走廊端面（起点法向短横线）+ 参数标注：全部来自后端 corridor，缺值写「—」。
+  const [x,y]=screens[0];
+  const [nx,ny]=normals[0];
+  const faceHalf=Math.max(halfPx,6);
+  ctx.save();
+  ctx.strokeStyle=PROTECTION_CORRIDOR_COLOR;
+  ctx.lineWidth=1.6;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(x-nx*faceHalf,y-ny*faceHalf);
+  ctx.lineTo(x+nx*faceHalf,y+ny*faceHalf);
+  ctx.stroke();
+  ctx.restore();
+  drawText(ctx,
+    'D_protection='+formatMetric(corridor.D_protection_m,0)+' m · V_rel='
+      +formatMetric(corridor.V_relative_mps,1)+' m/s · T_chain='
+      +formatMetric(corridor.T_chain_s,1)+' s',
+    x-nx*faceHalf+6,y-ny*faceHalf-4,{color:PROTECTION_CORRIDOR_COLOR});
+  return true;
+}
+
+/**
+ * 水平航路保护走廊（Round 2.5 / P17）：**默认关闭**的地图图层。
+ *
+ * 只读 ``flow.cns_continuous_service.result.routes[].corridor``：
+ * route_path（真实航路几何）、outer_half_width_m（D_protection + 安全/不确定度余量）、
+ * D_protection_m / V_relative_mps / T_chain_s（标注）。前端不推导任何新结论。
+ *
+ * @returns {number} 实际绘制的走廊条数
+ */
+function drawRouteProtectionCorridors({ctx,view,screenPoint,flow}){
+  const routes=flow?.cns_continuous_service?.result?.routes||[];
+  let drawn=0;
+  for(const route of routes){
+    const corridor=route?.corridor;
+    const path=corridor?.route_path;
+    if(!Array.isArray(path)||path.length<2)continue;
+    if(drawProtectionCorridor({ctx,view,screenPoint,path,corridor}))drawn+=1;
+  }
+  return drawn;
+}
+
+/**
+ * 监视保护覆盖（Round 2.5 / P17）：**默认关闭**的地图图层。
+ *
+ * 只画后端已经给出的三类事实：
+ *   * ``events_by_kind.surveillance_detection_gap``（沿航路**里程**的探测缺口段）→ 虚线；
+ *   * ``first_detection_evidence.usable`` → 航路两端的监视覆盖点（不可用为空心灰点）；
+ *   * ``surveillance_acceptance.t_margin_s`` → 时间余量标注（缺值写 ``T_margin=—``）。
+ * 里程 → 经纬度由 routeOffsetToCoordinate 在真实 route_path 上插值，绝不外推。
+ *
+ * @returns {{gaps:number,points:number}}
+ */
+function drawSurveillanceProtectionCoverage({ctx,view,screenPoint,flow}){
+  const routes=flow?.cns_continuous_service?.result?.routes||[];
+  let gaps=0,points=0;
+  for(const route of routes){
+    const corridor=route?.corridor||{};
+    const path=corridor.route_path;
+    if(!Array.isArray(path)||path.length<2)continue;
+    const routeLengthM=Number.isFinite(Number(corridor.route_length_m))
+      ?Number(corridor.route_length_m)
+      :Number(route.route_length_m);
+    for(const gap of route.events_by_kind?.surveillance_detection_gap||[]){
+      const from=routeOffsetToCoordinate(path,routeLengthM,gap?.start_offset_m);
+      const to=routeOffsetToCoordinate(path,routeLengthM,gap?.end_offset_m);
+      if(!from||!to)continue;
+      drawLine(ctx,screenPoint,view,[from,to],SURVEILLANCE_PROTECTION_COLOR,2.6,[6,4]);
+      gaps+=1;
+    }
+    const usable=route.first_detection_evidence?.usable===true;
+    for(const coordinate of [path[0],path[path.length-1]]){
+      const [x,y]=screenPoint(coordinate);
+      if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x,y,4,0,Math.PI*2);
+      ctx.fillStyle=usable?SURVEILLANCE_PROTECTION_COLOR:'#ffffff';
+      ctx.strokeStyle=usable?SURVEILLANCE_PROTECTION_COLOR:SURVEILLANCE_UNUSABLE_COLOR;
+      ctx.lineWidth=1.6;
+      if(usable)ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      points+=1;
+    }
+    const [marginX,marginY]=screenPoint(path[0]);
+    if(!Number.isFinite(marginX)||!Number.isFinite(marginY))continue;
+    const margin=Number(route.surveillance_acceptance?.t_margin_s);
+    drawText(ctx,
+      Number.isFinite(margin)?'T_margin='+formatMetric(margin,1)+' s':'T_margin=—',
+      marginX+7,marginY-7,{color:SURVEILLANCE_PROTECTION_COLOR});
+  }
+  return {gaps,points};
 }
 
 // ---- 通信铁塔矢量符号（地图符号与图例符号的唯一来源） ------------------------
@@ -494,6 +735,16 @@ export function drawWorkflowLayers({
       ctx,view,screenPoint,layers,
       model:cnsServiceOverlayModel(flow,{selectedActions:proposedPlanActions(flow)}),
     });
+  }
+
+  // Round 2.5 / P17 连续服务可接受性：两个**默认关闭**的独立图层。
+  // 只读 flow.cns_continuous_service 的 result（后端已给出的走廊几何与缺口里程），
+  // 不构造模型、不推导结论、不写业务状态；两个开关都关闭时零成本（不进入循环）。
+  if(layers.routeProtectionCorridorLayer===true){
+    drawRouteProtectionCorridors({ctx,view,screenPoint,flow});
+  }
+  if(layers.surveillanceProtectionLayer===true){
+    drawSurveillanceProtectionCoverage({ctx,view,screenPoint,flow});
   }
 
   // 3) 参考航线与航路点由 main.js 的 drawWorkflowOverlay 显式调用

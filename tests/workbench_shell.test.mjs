@@ -1030,7 +1030,8 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
 
 const STEP05_SEGMENTS={
   operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
-  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','雷达监视规划']],
+  //: Round 2.5：新增「连续服务可接受性」分段（P17）；它是 canonical 链的最后一环。
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划']],
   advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
@@ -1044,7 +1045,13 @@ const STEP05_CONTROLS=[
   'objectiveMaxContinuous','planningObjectiveSource','planningObjectiveConfirmed',
   'savePlanningObjectives','evaluateCorridorGap','corridorSitePolicyConfirmed',
   'evaluateCorridorSitePlan','evaluateServiceTimeline','evaluateProtectionEnvelope',
-  'evaluateClosedLoop','applyClosedLoop','nextStep'
+  'evaluateClosedLoop','applyClosedLoop',
+  //: Round 2.5：P17 连续服务可接受性的显式动作与参数控件。
+  'evaluateContinuousService','continuousOutageLimit','continuousDegradationLimit',
+  'continuousPolicySource','continuousPolicyConfirmed','saveContinuousPolicy',
+  'scenarioIntruderSpeed','scenarioNominalClosing','scenarioConservativeClosing',
+  'saveOperationScenario',
+  'nextStep'
 ];
 
 test('step 05 declares the documented task segments',()=>{
@@ -1168,12 +1175,13 @@ test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
     assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['false','true','false']);
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false']);
+    //: Round 2.5：结果标签新增「连续服务可接受性」分段（第三个之外的第六个之后又加一个）。
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false','false']);
     assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),'tabpanel');
     assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),undefined);
 
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false','false','false']);
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false','false','false','false']);
   });
 });
 

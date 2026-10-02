@@ -153,13 +153,22 @@ def test_snapshot_ships_the_field_catalogue_so_the_ui_never_guesses():
     fields = WorkflowService.planning_evidence_fields(None)
     assert fields["never_written_to_device_catalog"] is True
     assert fields["container"] == "project_state.planning_evidence"
+    #: Round 2.5：`fields` 只承载**机载能力叠加**类证据；连续服务参数是另一类，
+    #: 单独下发（前端不得把"评估参数"当成"机载能力声明"）。
     assert set(fields["fields"]) == {
         "communication_network_scope", "communication_airborne_interfaces",
         "remote_id_participation",
     }
+    continuous = fields["continuous_service_parameters"]
+    assert continuous["c_full_outage_max_s"]["value_type"] == "number"
+    assert continuous["c_full_outage_max_s"]["unit"] == "s"
+    assert continuous["rtk_availability"]["value_type"] == "enum_scalar"
+    assert continuous["relative_speed_basis"]["allowed"] == ("nominal", "conservative")
     assert fields["source_types"] == [
-        "confirmed_source_fact", "engineering_assumption", "unknown",
+        "confirmed_source_fact", "external_reference",
+        "engineering_assumption", "unknown",
     ]
+    assert fields["authority_effects"]["external_reference"] == "allowed_as_external_reference"
 
 
 # --------------------------------------------------------------------------- 2

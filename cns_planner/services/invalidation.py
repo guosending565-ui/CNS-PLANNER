@@ -10,7 +10,7 @@ DEPENDENTS = {
     "workspace": ("environment_risk", "routes", "coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "report"),
     "route": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "required_cns_recommendation", "report"),
     "rules": ("routes", "coverage_3d", "cns_service_capability", "service_timeline", "technical_risk", "report"),
-    "aircraft_profile": ("routes", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "technical_risk", "report"),
+    "aircraft_profile": ("routes", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "continuous_service_acceptability", "technical_risk", "report"),
     "required_cns": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "cns_corridor_gap_assessment", "cns_corridor_site_plan", "report"),
     "devices": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
     "existing_cns": ("coverage_3d", "cns_service_capability", "service_timeline", "cns_corridor_assessment", "cns_corridor_site_plan", "technical_risk", "report"),
@@ -37,9 +37,17 @@ DEPENDENTS = {
     "planning_objectives": ("cns_corridor_gap_assessment",),
     "corridor_gap_analyzer": ("cns_corridor_gap_assessment",),
     # P15 result is a one-way input to the P16 proposal.
-    "cns_corridor_gap_result": ("cns_corridor_site_plan",),
+    "cns_corridor_gap_result": ("cns_corridor_site_plan", "continuous_service_acceptability"),
     "corridor_site_planning_policy": ("cns_corridor_site_plan",),
-    "cns_corridor_site_plan_result": ("cns_plan_review", "report"),
+    #: P16 result 与 P16 policy 都进入 P17（P17 披露"缺口是否已被规划动作影响"），
+    #: 因此两者都必须让 P17 过时；P17 绝不反向让 P16 过时。
+    "cns_corridor_site_plan_result": ("cns_plan_review", "continuous_service_acceptability", "report"),
+    #: P17（Round 2.5 连续服务可接受性）：P18 计划评审 / 报告的下游输入。
+    "continuous_service_acceptability_result": ("cns_plan_review", "report"),
+    #: P17 自己的输入：显式工程证据、操作场景、参数策略覆盖。
+    "continuous_service_parameters": ("continuous_service_acceptability",),
+    "continuous_service_policy": ("continuous_service_acceptability",),
+    "operation_scenario": ("continuous_service_acceptability",),
     "cns_plan_review_result": ("report",),
     "requirement_context": ("required_cns_recommendation",),
     "requirement_policies": ("required_cns_recommendation",),

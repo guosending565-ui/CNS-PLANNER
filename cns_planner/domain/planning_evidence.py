@@ -1,4 +1,4 @@
-"""Round 2.4 —— **工程证据 / 规划假设** 的正式输入契约（纯 domain，无 I/O）。
+"""Round 2.4 / 2.5 —— **工程证据 / 规划假设** 的正式输入契约（纯 domain，无 I/O）。
 
 背景（本轮要解决的真实产品缺口）
 --------------------------------
@@ -8,8 +8,10 @@ Round 2.3 为止，一旦主链缺一条工程证据（例如"地面通信设备
 这不满足"人工可使用系统"。本模块把这类缺口变成一等公民：
 
 * **事实与假设严格分开**：每条记录必须显式声明
-  :data:`EVIDENCE_SOURCE_TYPES` 之一，且 `engineering_assumption` 必须携带
-  ``statement`` / ``source`` / ``confirmed_by_user`` / ``report_disclosure``；
+  :data:`EVIDENCE_SOURCE_TYPES` 之一（Round 2.5 起共四种，新增
+  ``external_reference`` 用于外部研究参考值），且 `engineering_assumption` 必须携带
+  ``statement`` / ``source`` / ``reason`` / ``confirmed_by_user`` /
+  ``report_disclosure``；
 * **绝不写入 device catalog**：工程假设不是厂家设备事实，因此它落在**独立的**
   ``project_state["planning_evidence"]`` 里，并由
   :func:`apply_aircraft_evidence` 在**规划消费点**叠加到机载能力上
@@ -18,6 +20,20 @@ Round 2.3 为止，一旦主链缺一条工程证据（例如"地面通信设备
   ``confirmation_status`` / ``provenance`` / ``report_disclosure``；
 * **绝不按 device_id 硬编码**：``field`` 是唯一路由键，值域由
   :data:`PLANNING_EVIDENCE_FIELDS` **枚举校验**（非法值直接 ``ValueError``）。
+
+Round 2.5 扩展（**additive**）
+------------------------------
+
+* 新增 ``kind = continuous_service_parameter`` 的数值/枚举参数域（C 全失联与冗余
+  降级阈值、保护走廊链时延分量、``D_safety`` / ``D_uncertainty``、入侵者与接近速度、
+  导航 RTK/GNSS 证据）。它们的**唯一**消费入口是
+  :func:`resolve_continuous_parameter`：显式记录优先，缺失时回落到
+  :mod:`cns_planner.domain.cns_continuous_service` 的内置工程基线，并在结果里把
+  权威来源标注为 ``builtin_engineering_assumption`` —— **绝不当成法规事实**。
+* ``external_reference`` 允许参与判定，但权威效应是
+  ``allowed_as_external_reference``，披露行必须写明"外部研究参考"。
+* ``schema_version`` 常量保持不变：旧项目保存的 registry 会被规范化到同一形状，
+  不做数据迁移，也不需要重开时补齐字段。
 
 与既有 ``assumptions``（Phase4-B1）的关系：这是**另一个**、更窄的容器，专门承载
 "参与 CNS 判定的工程证据"，因此它有自己的 field 注册表与披露语义；
@@ -35,23 +51,35 @@ PLANNING_EVIDENCE_SCHEMA_VERSION = "round2.4-engineering-evidence"
 #: 来源类型 —— **事实与假设必须严格分开**。
 #:
 #: * ``confirmed_source_fact``：有正式资料支持（本模块只登记，绝不代填）；
+#: * ``external_reference``（Round 2.5 新增）：**外部研究 / 公开资料**的参考值。
+#:   它既不是本项目确认的正式资料，也不是本项目的工程假设；参与判定时**必须**在
+#:   报告里与"法规 / 厂家事实"逐字区分（例如 RTK 恢复 9–13 s 的外部研究参考）；
 #: * ``engineering_assumption``：为规划目的采用的工程假设，**必须**带
-#:   ``statement`` / ``source`` / ``confirmed_by_user`` / ``report_disclosure``；
+#:   ``statement`` / ``source`` / ``reason`` / ``confirmed_by_user`` /
+#:   ``report_disclosure``；
 #: * ``unknown``：尚无依据（保持 unknown，绝不升级为事实或假设）。
 EVIDENCE_SOURCE_TYPES = (
     "confirmed_source_fact",
+    "external_reference",
     "engineering_assumption",
     "unknown",
 )
 
 #: 来源类型的权威效应：只有它决定该记录**是否被允许参与判定**。
 #:
-#: ``unknown`` 永不参与判定（它的作用是如实登记"这里确实没有依据"）。
+#: ``unknown`` 永不参与判定（它的作用是如实登记"这里确实没有依据"）；
+#: ``external_reference`` 允许参与，但带**外部参考**披露语义。
 EVIDENCE_AUTHORITY_EFFECT = {
     "confirmed_source_fact": "allowed_with_disclosure",
+    "external_reference": "allowed_as_external_reference",
     "engineering_assumption": "allowed_with_disclosure",
     "unknown": "not_participating",
 }
+
+#: 允许参与判定的权威效应（``unknown`` 是唯一不参与的）。
+PARTICIPATING_AUTHORITY_EFFECTS = (
+    "allowed_with_disclosure", "allowed_as_external_reference",
+)
 
 PROJECT_EVIDENCE_SCOPES = ("project", "aircraft")
 
@@ -72,7 +100,198 @@ COOPERATIVE_SURVEILLANCE_TECHNOLOGIES = (
 #: * ``allowed``：合法值域（**fail-closed**，绝不放任自由文本）；
 #: * ``demand_field``：它在需求侧由哪个 ``type`` 字段表达（用于"为什么需要它"）；
 #: * ``label`` / ``semantics``：前端与报告的可读说明。
+#: ---------------------------------------------------------------------------
+#: Round 2.5：**P17 连续服务可接受性**的显式参数（可由规划证据 UI 修改）。
+#: ---------------------------------------------------------------------------
+#:
+#: 这些字段与机载"能力叠加"无关（``kind = continuous_service_parameter``），
+#: 它们的值是**评估参数**：C 全失联 / 冗余降级阈值、保护走廊链时延分量、
+#: 安全边界距离、不确定度距离、入侵者速度与接近速度、导航证据。
+#:
+#: 每一条都必须是显式记录（``confirmed_source_fact`` / ``external_reference`` /
+#: ``engineering_assumption`` / ``unknown``）；**未提供记录时**，评估使用
+#: :mod:`cns_planner.domain.cns_continuous_service` 的内置工程基线，并在结果里
+#: 逐项标注 ``authority = builtin_engineering_assumption``（绝不是法规事实）。
+CONTINUOUS_SERVICE_PARAMETER_NAMES = (
+    # C 通信
+    "c_full_outage_max_s",
+    "c_redundancy_degradation_max_s",
+    # 保护走廊
+    "T_chain_detect_track_s",
+    "T_chain_sensor_to_platform_s",
+    "T_chain_platform_processing_s",
+    "T_chain_platform_to_aircraft_s",
+    "T_chain_aircraft_response_manoeuvre_s",
+    "D_safety_m",
+    "D_uncertainty_m",
+    "design_intruder_speed_mps",
+    "nominal_closing_speed_mps",
+    "conservative_closing_speed_mps",
+    "relative_speed_basis",
+    # 导航
+    "navigation_route_containment_accuracy_m",
+    "rtk_availability",
+    "rtk_unavailable_along_route",
+    "gnss_availability",
+    "gnss_accuracy_along_route_m",
+    "navigation_degradation_time_s",
+)
+
+#: 布尔型枚举（fail-closed：只接受这两个字面量之一，绝不接受自由文本）。
+_CONTINUOUS_BOOLEAN_ALLOWED = ("available", "not_available")
+
+
+def _continuous_fields():
+    fields = {}
+    for name in CONTINUOUS_SERVICE_PARAMETER_NAMES:
+        if name in ("rtk_availability", "gnss_availability"):
+            fields[name] = {
+                "label": _CONTINUOUS_LABELS[name],
+                "subsystem": _CONTINUOUS_SUBSYSTEMS[name],
+                "kind": "continuous_service_parameter",
+                "value_type": "enum_scalar",
+                "allowed": _CONTINUOUS_BOOLEAN_ALLOWED,
+                "demand_field": None,
+                "declared_field": name,
+                "semantics": _CONTINUOUS_SEMANTICS[name],
+            }
+        elif name in ("relative_speed_basis", "rtk_unavailable_along_route"):
+            fields[name] = {
+                "label": _CONTINUOUS_LABELS[name],
+                "subsystem": _CONTINUOUS_SUBSYSTEMS[name],
+                "kind": "continuous_service_parameter",
+                "value_type": "enum",
+                "allowed": _CONTINUOUS_ENUMS[name],
+                "demand_field": None,
+                "declared_field": name,
+                "semantics": _CONTINUOUS_SEMANTICS[name],
+            }
+        else:
+            fields[name] = {
+                "label": _CONTINUOUS_LABELS[name],
+                "subsystem": _CONTINUOUS_SUBSYSTEMS[name],
+                "kind": "continuous_service_parameter",
+                "value_type": "number",
+                "allowed": "非负有限数值",
+                "unit": _CONTINUOUS_UNITS[name],
+                "demand_field": None,
+                "declared_field": name,
+                "semantics": _CONTINUOUS_SEMANTICS[name],
+            }
+    return fields
+
+
+_CONTINUOUS_LABELS = {
+    "c_full_outage_max_s": "通信全失联可接受最长时长",
+    "c_redundancy_degradation_max_s": "通信冗余退化可接受最长时长",
+    "T_chain_detect_track_s": "保护链：探测/跟踪",
+    "T_chain_sensor_to_platform_s": "保护链：传感器→平台",
+    "T_chain_platform_processing_s": "保护链：平台处理",
+    "T_chain_platform_to_aircraft_s": "保护链：平台→航空器",
+    "T_chain_aircraft_response_manoeuvre_s": "保护链：航空器响应机动",
+    "D_safety_m": "安全边界距离（航路中心线起算）",
+    "D_uncertainty_m": "不确定度距离",
+    "design_intruder_speed_mps": "设计入侵者速度",
+    "nominal_closing_speed_mps": "标称接近速度",
+    "conservative_closing_speed_mps": "保守接近速度",
+    "relative_speed_basis": "链路时延计算采用的接近速度口径",
+    "navigation_route_containment_accuracy_m": "航路保持所需水平精度",
+    "rtk_availability": "RTK 可用性",
+    "rtk_unavailable_along_route": "航路内 RTK 不可用区间",
+    "gnss_availability": "GNSS 可用性",
+    "gnss_accuracy_along_route_m": "航路内 GNSS 水平精度",
+    "navigation_degradation_time_s": "导航降级允许时长（外部参考，不作为硬门）",
+}
+
+_CONTINUOUS_SUBSYSTEMS = {
+    "c_full_outage_max_s": "C",
+    "c_redundancy_degradation_max_s": "C",
+    "T_chain_detect_track_s": "S",
+    "T_chain_sensor_to_platform_s": "S",
+    "T_chain_platform_processing_s": "S",
+    "T_chain_platform_to_aircraft_s": "S",
+    "T_chain_aircraft_response_manoeuvre_s": "S",
+    "D_safety_m": "S",
+    "D_uncertainty_m": "S",
+    "design_intruder_speed_mps": "S",
+    "nominal_closing_speed_mps": "S",
+    "conservative_closing_speed_mps": "S",
+    "relative_speed_basis": "S",
+    "navigation_route_containment_accuracy_m": "N",
+    "rtk_availability": "N",
+    "rtk_unavailable_along_route": "N",
+    "gnss_availability": "N",
+    "gnss_accuracy_along_route_m": "N",
+    "navigation_degradation_time_s": "N",
+}
+
+_CONTINUOUS_UNITS = {
+    "c_full_outage_max_s": "s",
+    "c_redundancy_degradation_max_s": "s",
+    "T_chain_detect_track_s": "s",
+    "T_chain_sensor_to_platform_s": "s",
+    "T_chain_platform_processing_s": "s",
+    "T_chain_platform_to_aircraft_s": "s",
+    "T_chain_aircraft_response_manoeuvre_s": "s",
+    "D_safety_m": "m",
+    "D_uncertainty_m": "m",
+    "design_intruder_speed_mps": "m/s",
+    "nominal_closing_speed_mps": "m/s",
+    "conservative_closing_speed_mps": "m/s",
+    "navigation_route_containment_accuracy_m": "m",
+    "gnss_accuracy_along_route_m": "m",
+    "navigation_degradation_time_s": "s",
+}
+
+_CONTINUOUS_ENUMS = {
+    "relative_speed_basis": ("nominal", "conservative"),
+    "rtk_unavailable_along_route": (
+        "none", "whole_route", "explicit_segments", "unknown",
+    ),
+}
+
+#: 单值枚举（``enum`` 的多值语义会把一个标量包成长度 1 的列表，P17 需要标量比较）。
+_CONTINUOUS_SCALAR_ENUMS = ("relative_speed_basis", "rtk_unavailable_along_route")
+
+_CONTINUOUS_SEMANTICS = {
+    "c_full_outage_max_s": (
+        "**服务中断**（service_outage）的独立阈值：连续全失联时长不超过它时可作为"
+        "``managed_gap``。Round 2.5 内置工程基线取 3 s，其依据是 FC30 的 failsafe 触发"
+        "事实（遥控信号丢失>3 s 触发 RTH）——它是**设备 failsafe 事实**，不是法规阈值。"
+    ),
+    "c_redundancy_degradation_max_s": (
+        "**冗余退化**（redundancy_degradation）的独立阈值：链路仍可用但独立 provider"
+        "数量不足的连续时长。它与全失联阈值**互相独立**，绝不共用同一个数。"
+    ),
+    "T_chain_detect_track_s": "保护链分量：探测并建立跟踪所需时间（可配置，非法规事实）。",
+    "T_chain_sensor_to_platform_s": "保护链分量：传感器到平台的数据传递时间。",
+    "T_chain_platform_processing_s": "保护链分量：平台处理/判定时间。",
+    "T_chain_platform_to_aircraft_s": "保护链分量：平台到航空器的指令传递时间。",
+    "T_chain_aircraft_response_manoeuvre_s": "保护链分量：航空器响应与机动完成时间。",
+    "D_safety_m": (
+        "安全边界距离：从航路中心线起算。它同时进入保护走廊宽度与监视可用时间"
+        "``T_available``。"
+    ),
+    "D_uncertainty_m": "不确定度距离：定位/航迹/航路几何不确定度的保守附加量。",
+    "design_intruder_speed_mps": "设计入侵者速度（同时是操作场景输入）。",
+    "nominal_closing_speed_mps": "标称接近速度（本机航路速度 + 设计入侵者速度）。",
+    "conservative_closing_speed_mps": "保守接近速度（工程保守取值，用于保护链时延判定）。",
+    "relative_speed_basis": "保护链时延判定采用标称还是保守接近速度（默认保守）。",
+    "navigation_route_containment_accuracy_m": "维持航路保持所需的机载水平精度上限。",
+    "rtk_availability": "机载 RTK 增强是否可用（available / not_available）。",
+    "rtk_unavailable_along_route": "航路内 RTK 不可用区间的形态（none / whole_route / explicit_segments / unknown）。",
+    "gnss_availability": "机载 GNSS 定位是否可用（available / not_available）。",
+    "gnss_accuracy_along_route_m": "航路内 GNSS 水平精度（用于与航路保持要求逐项比较）。",
+    "navigation_degradation_time_s": (
+        "**外部研究参考**（例如公开研究中的 RTK 恢复 9–13 s），Round 2.5 **不**把它"
+        "作为硬门；这里只登记来源可追溯的参考值。"
+    ),
+}
+
+
 PLANNING_EVIDENCE_FIELDS = {
+    #: Round 2.5：连续服务可接受性参数（数值 / 枚举；无 demand_field）。
+    **_continuous_fields(),
     "communication_network_scope": {
         "label": "通信网络归属范围（机载侧）",
         "subsystem": "C",
@@ -174,6 +393,19 @@ def normalize_engineering_evidence(value: dict, *, now: str | None = None) -> di
             raise ValueError("confirmed_source_fact 必须声明 source（正式资料出处）")
         if not confirmed:
             raise ValueError("confirmed_source_fact 必须显式 confirmed=true")
+    elif source_type == "external_reference":
+        #: Round 2.5：外部研究 / 公开资料的参考值。它必须能追溯到出处，且
+        #: **明确**声明它不是本项目的正式资料、也不是本项目的工程假设。
+        missing = [
+            name for name, current in (
+                ("source", source), ("statement", statement),
+                ("report_disclosure", report_disclosure),
+            ) if not current
+        ]
+        if missing:
+            raise ValueError("external_reference 缺少必填字段：" + ", ".join(missing))
+        if not _optional_text(value.get("external_reference")):
+            raise ValueError("external_reference 必须声明 external_reference（外部资料名称/编号）")
     else:  # engineering_assumption
         missing = [
             name for name, current in (
@@ -200,6 +432,7 @@ def normalize_engineering_evidence(value: dict, *, now: str | None = None) -> di
         "value": normalized_value,
         "source_type": source_type,
         "source": source,
+        "external_reference": _optional_text(value.get("external_reference")),
         "statement": statement,
         "reason": reason,
         "declared_by": _optional_text(value.get("declared_by")),
@@ -351,13 +584,17 @@ def evidence_disclosure_lines(registry: dict | None) -> list[str]:
         if item["source_type"] == "unknown":
             lines.append(f"{spec['label']}：尚无依据（unknown），不参与判定。")
             continue
-        prefix = (
-            "有正式资料支持" if item["source_type"] == "confirmed_source_fact"
-            else "工程规划假设（不代表厂家既有设备事实）"
-        )
+        prefix = {
+            "confirmed_source_fact": "有正式资料支持",
+            "external_reference": "外部研究参考（非本项目正式资料、非法规事实、非工程假设）",
+            "engineering_assumption": "工程规划假设（不代表厂家既有设备事实）",
+        }.get(item["source_type"], "来源未分类")
+        reference = item.get("external_reference")
         lines.append(
             f"{spec['label']}＝{_render_value(item['value'])}（{prefix}；"
-            f"来源：{item['source'] or '未记录'}）。"
+            f"来源：{item['source'] or '未记录'}"
+            + (f"；外部参考：{reference}" if reference else "")
+            + "）。"
             f"{item['report_disclosure'] or ''}"
         )
     return lines
@@ -406,9 +643,158 @@ def evidence_satisfies_requirement(
         return None, "需求未声明该字段"
     if value in (None, "", "unknown", []):
         return None, "尚未提供取值"
+    if spec["value_type"] == "number":
+        #: Round 2.5：数值型工程参数的逐项核对（例如导航证据要求 GNSS 精度
+        #: **满足**航路保持要求）。绝不把"数值写反了"当成"已具备可用依据"。
+        actual, target = _optional_number(value), _optional_number(required_value)
+        if actual is None or target is None:
+            return None, "数值不可比较"
+        if spec.get("requirement_operator") == "<=":
+            return actual <= target, (
+                f"取值 {actual} 满足上限 {target}" if actual <= target
+                else f"取值 {actual} 超过上限 {target}"
+            )
+        return actual >= target, (
+            f"取值 {actual} 满足下限 {target}" if actual >= target
+            else f"取值 {actual} 低于下限 {target}"
+        )
     return value == required_value, (
         "取值与需求一致" if value == required_value else "取值与需求不一致"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 2.5：连续服务可接受性参数的解析（**唯一**消费入口）
+# ---------------------------------------------------------------------------
+
+
+def continuous_service_parameter_items(registry: dict | None) -> list[dict]:
+    """registry 中所有 ``kind = continuous_service_parameter`` 的参与记录。"""
+
+    return [
+        item for item in active_evidence_items(registry)
+        if item.get("kind") == "continuous_service_parameter"
+    ]
+
+
+def is_continuous_service_field(field: str) -> bool:
+    """该字段是否是 P17 连续服务参数（而不是机载能力叠加字段）。"""
+
+    spec = PLANNING_EVIDENCE_FIELDS.get(str(field or ""))
+    return bool(spec) and spec.get("kind") == "continuous_service_parameter"
+
+
+def param_targets_continuous_service(scope: str, field: str) -> bool:
+    """一条证据记录的变化是否只应让 **P17** 失效（而不是 P8/P14/P15/P16）。
+
+    ``scope=aircraft`` 的连续服务参数（例如航路保持精度要求）会被 P17 直接消费，
+    **不**参与机载能力叠加，因此它绝不触发 ``aircraft_profile`` 全链失效。
+    """
+
+    if not is_continuous_service_field(field):
+        return False
+    return str(scope or "aircraft") in ("aircraft", "project")
+
+
+def resolve_continuous_parameter(registry: dict | None, name: str) -> dict:
+    """解析一个 P17 评估参数：**显式记录优先，否则内置工程基线**。
+
+    返回（绝不抛异常，缺证据就如实返回 unknown）：
+
+    ``value``           实际参与评估的数值 / 枚举（无记录且有内置基线时 = 内置值）
+    ``authority``       ``explicit_evidence`` / ``builtin_engineering_assumption`` / ``unknown``
+    ``source_type``     ``confirmed_source_fact`` / ``external_reference`` /
+                        ``engineering_assumption`` / ``internal_baseline`` / ``unknown``
+    ``participating``   是否允许参与判定（``unknown`` 永不参与）
+    ``reason``          可读原因（前端 / 报告逐字使用）
+    """
+
+    if name not in PLANNING_EVIDENCE_FIELDS:
+        raise ValueError(f"不是合法的证据字段：{name}")
+    spec = PLANNING_EVIDENCE_FIELDS[name]
+    if spec.get("kind") != "continuous_service_parameter":
+        raise ValueError(f"{name} 不是连续服务可接受性参数")
+    items = [
+        item for item in continuous_service_parameter_items(registry)
+        if item["field"] == name
+    ]
+    baseline = continuous_service_parameter_baseline(name)
+    base = {
+        "field": name, "label": spec["label"], "subsystem": spec["subsystem"],
+        "unit": spec.get("unit"), "value_type": spec["value_type"],
+        "semantics": spec["semantics"],
+    }
+    if items:
+        item = items[-1]
+        if item["source_type"] == "unknown" or item["value"] is None:
+            return {
+                **base, "value": None, "authority": "unknown",
+                "source_type": "unknown", "participating": False,
+                "evidence_id": item["evidence_id"],
+                "reason": "已显式登记为 unknown（无依据），保持 unknown 并 fail-closed",
+            }
+        return {
+            **base, "value": item["value"], "authority": "explicit_evidence",
+            "source_type": item["source_type"], "participating": True,
+            "evidence_id": item["evidence_id"], "source": item["source"],
+            "external_reference": item.get("external_reference"),
+            "statement": item.get("statement"),
+            "report_disclosure": item.get("report_disclosure"),
+            "confirmed_by_user": item.get("confirmed_by_user"),
+            "reason": (
+                "采用显式登记的外部研究参考值（external_reference）"
+                if item["source_type"] == "external_reference"
+                else "采用显式登记的工程证据 / 规划假设"
+                if item["source_type"] == "engineering_assumption"
+                else "采用显式登记的正式资料事实"
+            ),
+        }
+    if baseline["value"] is None:
+        return {
+            **base, "value": None, "authority": "unknown",
+            "source_type": "unknown", "participating": False,
+            "reason": "尚无任何依据（无显式记录、也无内置工程基线）",
+        }
+    return {
+        **base, "value": baseline["value"],
+        "authority": "builtin_engineering_assumption",
+        "source_type": "internal_baseline",
+        "participating": True,
+        "source": baseline["source"],
+        "statement": baseline["statement"],
+        "report_disclosure": baseline["report_disclosure"],
+        "confirmed_by_user": False,
+        "reason": (
+            "未提供显式工程依据：采用内置工程基线（默认值），"
+            "**不代表法规或厂家事实**，可在工程依据入口显式覆盖"
+        ),
+    }
+
+
+def continuous_service_parameter_baseline(name: str) -> dict:
+    """P17 参数的内置工程基线（延迟导入，避免 domain 层循环依赖）。"""
+
+    from .cns_continuous_service import parameter_baseline
+
+    return parameter_baseline(name)
+
+
+def continuous_service_parameter_projection(registry: dict | None) -> list[dict]:
+    """全部 P17 参数的只读投影（前端 / 报告用；逐项带来源与出处）。"""
+
+    return [resolve_continuous_parameter(registry, name) for name in CONTINUOUS_SERVICE_PARAMETER_NAMES]
+
+
+def _optional_number(value):
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +802,39 @@ def evidence_satisfies_requirement(
 # ---------------------------------------------------------------------------
 
 
+def is_continuous_service_scalar_enum(field: str) -> bool:
+    """该连续服务参数是否是**单值枚举**（返回值是标量，不是长度 1 的列表）。"""
+
+    return str(field or "") in _CONTINUOUS_SCALAR_ENUMS
+
+
 def _normalize_value(spec, value):
+    if spec["value_type"] == "number":
+        number = _optional_number(value)
+        if number is None:
+            return None
+        if number < 0:
+            raise ValueError("value 必须是非负有限数值")
+        return number
+    if spec["value_type"] == "enum_scalar" or (
+        spec["value_type"] == "enum"
+        and is_continuous_service_scalar_enum(spec.get("declared_field"))
+    ):
+        #: 单值枚举：返回**标量**（P17 的 ``relative_speed_basis`` 等需要直接比较）。
+        if value in (None, ""):
+            return None
+        if isinstance(value, (list, tuple)):
+            items = [str(item).strip().lower() for item in value if str(item or "").strip()]
+            if len(items) != 1:
+                raise ValueError("该字段是单值枚举，只能声明一个取值")
+            text = items[0]
+        else:
+            text = str(value).strip().lower()
+        if text not in spec["allowed"]:
+            raise ValueError(
+                f"value 无效：{text}；必须是 {', '.join(spec['allowed'])} 之一"
+            )
+        return text
     if spec["value_type"] == "enum_scalar":
         if value in (None, ""):
             return None
@@ -500,11 +918,17 @@ def _utc_now():
 
 
 __all__ = [
-    "COMMUNICATION_AIRBORNE_INTERFACES", "COOPERATIVE_SURVEILLANCE_TECHNOLOGIES",
+    "COMMUNICATION_AIRBORNE_INTERFACES", "CONTINUOUS_SERVICE_PARAMETER_NAMES",
+    "COOPERATIVE_SURVEILLANCE_TECHNOLOGIES",
     "EVIDENCE_AUTHORITY_EFFECT", "EVIDENCE_SOURCE_TYPES",
+    "PARTICIPATING_AUTHORITY_EFFECTS",
     "PLANNING_EVIDENCE_FIELDS", "PLANNING_EVIDENCE_SCHEMA_VERSION",
     "PROJECT_EVIDENCE_SCOPES",
-    "active_evidence_items", "apply_aircraft_evidence", "empty_planning_evidence",
+    "active_evidence_items", "apply_aircraft_evidence",
+    "continuous_service_parameter_baseline", "continuous_service_parameter_items",
+    "continuous_service_parameter_projection", "empty_planning_evidence",
     "evidence_disclosure_lines", "evidence_satisfies_requirement",
-    "normalize_engineering_evidence", "normalize_planning_evidence_registry",
+    "is_continuous_service_field", "normalize_engineering_evidence",
+    "normalize_planning_evidence_registry", "param_targets_continuous_service",
+    "resolve_continuous_parameter",
 ]

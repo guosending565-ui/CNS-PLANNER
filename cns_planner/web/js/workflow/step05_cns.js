@@ -15,6 +15,10 @@ import {
   CNS_ROUNDD_SERVICE_KEYS,CNS_SERVICE_REQUIREMENT_ROWS,SERVICE_KEY_LABELS,
   isSurfaceAwareServiceKey,serviceKeyLabel,surfaceClassText,
 } from '../map/service_semantics.js';
+// Round 2.5：P17 连续服务 / 不可接受事件评估（独立模块；只转印后端 canonical 字段）。
+import {
+  bindContinuousServicePanel,continuousServiceModel,renderContinuousServicePanel,step6GateModel,
+} from './continuous_service.js';
 
 // Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
 // 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
@@ -23,7 +27,7 @@ export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,
 // 二级分段：同一一级标签下同屏只呈现一个任务，id 在整步内唯一。
 // 名称是业务语言；工程编号（P7…P18）只允许出现在高级标签的 advancedAuditNote 里。
 const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']];
-const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-radar','雷达监视规划']];
+const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划']];
 const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']];
 
 // ---- 六区结构（B4X §20） ----------------------------------------------------
@@ -38,7 +42,9 @@ export const CNS_CANONICAL_CHAIN=[
   ['cns-res-capability','服务能力'],
   ['cns-res-corridor','服务走廊'],
   ['cns-res-gap','能力缺口'],
-  ['cns-res-site','设施规划']
+  ['cns-res-site','设施规划'],
+  //: Round 2.5：P17 连续服务可接受性是 canonical 链的最后一环，也是进入方案评审的门禁。
+  ['cns-res-continuous','连续服务可接受性']
 ];
 
 /** 分段抬头：说明本段在 canonical 链中的位置。 */
@@ -767,6 +773,37 @@ export function radarBlocksNextStep(flow){
   return policy.surveillance_required===true||policy.required===true;
 }
 
+/** Round 2.5：P17 连续服务可接受性的阻塞项与工程假设（只读判定，不改变任何门禁）。 */
+function continuousServiceBlockerItems(flow){
+  const model=continuousServiceModel(flow);
+  const gate=step6GateModel(flow);
+  const items=[];
+  if(model.status==='not_calculated'){
+    items.push({text:'尚未运行连续服务可接受性评估',
+      detail:'它是进入正式方案评审的前置门禁（fail-closed）：未评估时不得进入评审。'});
+  }else if(model.status==='unknown'){
+    items.push({text:'连续服务结论为不可判定（unknown）',
+      detail:'证据不足时系统保持 unknown 并阻止进入评审；请在「工程依据 / 规划假设」补齐显式依据后重新评估。'});
+  }else if(model.status==='unacceptable'){
+    items.push({text:'连续服务结论为不可接受（unacceptable）',
+      detail:'已确认的连续缺口超过阈值，或保护链时间余量为负；调整方案后重新评估。'});
+  }
+  if(gate.managedGapCount>0){
+    items.push({kind:'assumption',
+      text:'存在 '+gate.managedGapCount+' 段「有管理的缺口」（managed gap）',
+      detail:'缺口真实存在，只因连续时长在工程阈值内被接受；方案评审与报告必须逐段披露，绝不得表述为"全覆盖"。'});
+  }
+  const parameters=(model.parameters||{}).parameters||{};
+  const builtin=Object.values(parameters).filter(item=>item.authority==='builtin_engineering_assumption');
+  if(builtin.length){
+    items.push({kind:'assumption',
+      text:'有 '+builtin.length+' 项评估参数正在使用内置工程基线',
+      detail:'内置基线不是法规阈值，也不是厂家事实（例如 C 全失联 3 s 的依据是 FC30 设备 failsafe 触发事实）；'
+        +'可在「工程依据 / 规划假设」显式覆盖。'});
+  }
+  return items;
+}
+
 /** 监视雷达规划：默认可选，因此没有阻塞项时给出明确说明（不写"通过"）。 */
 function radarBlockerItemsFor(flow){
   if(radarBlocksNextStep(flow)){
@@ -983,6 +1020,16 @@ export function render({flow}){
           +corridorSitePlanPanel)
         +wbBlock('阻塞项与工程假设',blockerList(siteBlockerItems,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-site'))],
+      ['cns-res-continuous','连续服务可接受性',
+        wbBlock('连续服务可接受性（P17）',wbSegHint(RESULT_SEGMENTS,'cns-res-continuous')
+          +chainNote('连续服务可接受性')
+          +segIntro('判定"走廊缺口是否已经超出可接受的服务连续中断"，以及监视/导航链路是否来得及介入。',
+            '当前 P14/P15/P16 结果；选定机载档案的航路速度；显式登记的服务阈值与保护链参数（工程依据入口）。')
+          +renderContinuousServicePanel(flow,RESULT_SEGMENTS))
+        +wbBlock('阻塞项与工程假设',blockerList(continuousServiceBlockerItems(flow),'当前没有与连续服务可接受性相关的阻塞项'))
+        +nextHint(step6GateModel(flow).confirmationAllowed
+          ? '连续服务结论允许进入方案评审；若存在 managed gap，方案评审与报告中必须逐段披露，不得表述为"全覆盖"。'
+          : '连续服务结论为不可接受或不可判定（unknown）：请先补齐工程依据或调整方案后重新评估，再进入方案评审。')],
       ['cns-res-radar','雷达监视规划',
         wbBlock('雷达监视规划',wbSegHint(RESULT_SEGMENTS,'cns-res-radar')
           +segIntro('在监视能力被显式要求或需要工程对照时，给出雷达布站的候选划设方案。','真实铁塔障碍物事实、陆域图层与可用的雷达设备资料。')
@@ -1220,4 +1267,6 @@ export function bind(c){
     });
   });
   if(c.$('nextStep'))c.$('nextStep').onclick=()=>c.setStep(6);
+  // ---- Round 2.5：P17 连续服务可接受性（独立面板；只读写自己的端点） ----------
+  bindContinuousServicePanel(c);
 }

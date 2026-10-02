@@ -6,7 +6,7 @@ from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
 from cns_planner.domain.plan_review import variant_id
 from test_corridor_site_planner_v2 import (
-    candidate, configured, device, existing, planning_profile, vertical,
+    candidate, configured, device, existing, planning_profile, prepare_p17, vertical,
 )
 
 
@@ -18,6 +18,19 @@ class _Context:
 
 def _ready(workflow):
     workflow.evaluate_cns_corridor_site_plan()
+    return _p17_ready(workflow)
+
+
+def _p17_ready(workflow):
+    """通过**正式接口**补齐 P17 需要的工程依据，并评估 P17。
+
+    Round 2.5：P17 连续服务可接受性是 P18 的**前置门禁**（fail-closed）；具体说明见
+    ``test_corridor_site_planner_v2.prepare_p17``。重新评估 P16（新的 what-if / 新的
+    候选）之后必须重新调用本函数：P17 的结论只针对**当前**权威状态，任何上游变化都会
+    把它标成 stale 并继续 fail-closed。
+    """
+
+    prepare_p17(workflow, source="test_plan_review fixture 显式工程阈值（绝不是法规阈值）")
     return workflow
 
 
@@ -126,6 +139,7 @@ def test_no_action_required_baseline_can_be_confirmed_and_noop_applied(tmp_path)
     facility["devices"] = [{"device_id": "C1", "subsystem": "C", "status": "active", "service_model": {"status": "missing_data"}}]
     workflow = configured(tmp_path, facilities=[facility])
     assert workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]["status"] == "no_action_required"
+    _p17_ready(workflow)
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     assert len(review["variants"]) == 1
     baseline = review["variants"][0]
@@ -280,6 +294,7 @@ def test_unchanged_p14_fingerprint_keeps_p15_and_p16_current_no_action(tmp_path)
     assert gap_after["status"] == gap_before["status"] != "stale"
     assert gap_after["input_fingerprint"] == gap_before["input_fingerprint"]
     assert workflow.state["cns_corridor_site_plan"]["status"] == "no_action_required"
+    _p17_ready(workflow)
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     assert review["status"] == "current"
 
@@ -340,6 +355,9 @@ def test_E_reevaluating_p16_restores_p18_initialization(tmp_path):
 
     assert result["status"] == "proposal_ready"
     assert workflow.state["cns_corridor_site_plan"]["status"] == "proposal_ready"
+    #: Round 2.5：P16 一旦重算/失效，P17 结论也随之失效（它是严格下游），
+    #: 必须重新评估才能让 P18 恢复初始化。
+    _p17_ready(workflow)
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     assert review["status"] == "current"
     assert review["initialized_from"]["p16_status"] == "proposal_ready"

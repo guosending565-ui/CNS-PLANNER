@@ -497,7 +497,8 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/真实设备资料库/);
   assert.match(step5,/与当前算法的设备目录分离/);
   // ---- B4X Phase4-B4X：Step05 六区结构 / canonical 链 / 雷达可选 / 兼容隔离 ----
-  assert.match(step5,/链条：三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划；当前环节：三维覆盖/);
+  //: Round 2.5：canonical 链末尾新增「连续服务可接受性」（P17，进入方案评审的门禁）。
+  assert.match(step5,/链条：三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划 → 连续服务可接受性；当前环节：三维覆盖/);
   assert.match(step5,/本段目标：/);
   assert.match(step5,/阻塞项与工程假设/);
   assert.match(step5,/class="wb-next-step"/);

@@ -54,6 +54,8 @@ from .closed_loop_service import ClosedLoopService
 from .corridor_service import CNSCorridorService
 from .corridor_gap_service import CNSCorridorGapService
 from .corridor_site_planning_service import CorridorSitePlanningService
+from .continuous_service_service import ContinuousServiceService
+from ..algorithms.continuous_service.v1 import ContinuousServiceAcceptabilityV1
 from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
@@ -644,10 +646,18 @@ class WorkflowService:
             self.session, self.corridor_site_planner, self.corridor_model,
             self.corridor_gap_analyzer, self.invalidation_service, snapshot,
         )
+        #: Round 2.5：P17 连续服务 / 不可接受事件评估。它是**严格下游**的消费者
+        #: （P14/P15/P16 + 机载档案 + 显式工程证据 + 操作场景 + 参数策略 + Radar 证据），
+        #: 绝不重算 P14/P15/P16，也绝不反向让上游过时。
+        self.continuous_service_service = ContinuousServiceService(
+            self.session, ContinuousServiceAcceptabilityV1(),
+            self.invalidation_service, snapshot,
+        )
         self.plan_review_service = PlanReviewService(
             self.session, self.coverage_model_3d, self.cns_service_model,
             self.timeline_model, self.gap_analyzer_v2, self.corridor_model,
             self.corridor_gap_analyzer, snapshot, self.invalidation_service,
+            continuous_service=self.continuous_service_service,
         )
         self.export_service = ExportService(self.session, snapshot)
         self.report_service = PlanningReportService(
@@ -1010,6 +1020,18 @@ class WorkflowService:
                 self.radar_surveillance_layout_service.readiness_snapshot()
             )
         result["review"] = self.review()
+        #: Round 2.5：P17 投影。通用状态循环已经带出 ``continuous_service_acceptability``
+        #: 容器本身；这里额外下发**有界的只读投影**（参数逐项 authority、策略、操作场景、
+        #: FC30 事实与 Step6 门禁结论），使前端不需要猜字段、也不需要额外草稿请求。
+        if hasattr(self, "continuous_service_service"):
+            result["cns_continuous_service"] = {
+                "result": self.continuous_service_service.result_snapshot(),
+                "parameters": self.continuous_service_service.parameters_snapshot(),
+                "policy": self.continuous_service_service.policy_snapshot(),
+                "operation_scenario": self.continuous_service_service.operation_scenario_snapshot(),
+                "fc30": self.continuous_service_service.fc30_facts_snapshot(),
+                "step6_gate": self.continuous_service_service.step6_gate(),
+            }
         # B5X：外置型大型明细绝不随通用快照下发（只保留 summary + artifact_ref +
         # 专用读取入口声明）。这是最后一步覆盖，避免任何分支把水合后的明细带出去。
         result.update(_snapshot_detail_projection(result))
@@ -1150,6 +1172,16 @@ class WorkflowService:
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
+    #: Round 2.5 P17 连续服务可接受性（严格下游：只读上游结果与显式工程证据）。
+    def cns_continuous_service_snapshot(self): return self.continuous_service_service.result_snapshot()
+    def cns_continuous_service_parameters(self): return self.continuous_service_service.parameters_snapshot()
+    def cns_continuous_service_policy(self): return self.continuous_service_service.policy_snapshot()
+    def cns_operation_scenario(self): return self.continuous_service_service.operation_scenario_snapshot()
+    def cns_continuous_service_step6_gate(self): return self.continuous_service_service.step6_gate()
+    def fc30_profile_facts(self): return self.continuous_service_service.fc30_facts_snapshot()
+    def set_cns_continuous_service_policy(self, payload): return self.continuous_service_service.set_policy(payload)
+    def set_cns_operation_scenario(self, payload): return self.continuous_service_service.set_operation_scenario(payload)
+    def evaluate_cns_continuous_service(self, payload=None): return self.continuous_service_service.evaluate(payload)
     def cns_plan_review_snapshot(self): return self.plan_review_service.snapshot_result()
     def cns_planning_report_snapshot(self): return self.report_service.result_snapshot()
     def safety_policy_snapshot(self): return self.safety_policy_service.policy_snapshot()
@@ -1520,12 +1552,25 @@ class WorkflowService:
     def withdraw_planning_evidence(self, payload): return self.planning_evidence_service.withdraw(payload)
     def planning_evidence_fields(self):
         from ..domain.planning_evidence import (
-            EVIDENCE_SOURCE_TYPES, PLANNING_EVIDENCE_FIELDS,
+            EVIDENCE_AUTHORITY_EFFECT, EVIDENCE_SOURCE_TYPES, PLANNING_EVIDENCE_FIELDS,
         )
 
+        #: Round 2.5：`fields` 只保留**机载能力叠加**类字段（Round 2.4 的既有契约逐字
+        #: 不变）；连续服务参数是另一类证据，单独放在 `continuous_service_parameters`
+        #: 里，避免前端把"评估参数"误当成"机载能力声明"。
+        capability_fields = {
+            name: spec for name, spec in PLANNING_EVIDENCE_FIELDS.items()
+            if spec.get("kind") != "continuous_service_parameter"
+        }
+        continuous_fields = {
+            name: spec for name, spec in PLANNING_EVIDENCE_FIELDS.items()
+            if spec.get("kind") == "continuous_service_parameter"
+        }
         return {
-            "fields": deepcopy(PLANNING_EVIDENCE_FIELDS),
+            "fields": deepcopy(capability_fields),
+            "continuous_service_parameters": deepcopy(continuous_fields),
             "source_types": list(EVIDENCE_SOURCE_TYPES),
+            "authority_effects": deepcopy(EVIDENCE_AUTHORITY_EFFECT),
             "container": "project_state.planning_evidence",
             "never_written_to_device_catalog": True,
         }

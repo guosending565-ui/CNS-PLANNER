@@ -213,6 +213,32 @@ def test_closed_loop_never_writes_the_confirmed_plan_directly():
 
 def seed_review(workflow):
     state = workflow.state
+    #: Round 2.5：Confirm 以 P17 连续服务可接受性为门禁。本测试只验证
+    #: Select / Confirm / Apply 的写权限分离，因此这里先按正式入口把 P17 准备到
+    #: "可接受"，再冻结 review 的 baseline fingerprint（指纹包含 planning_evidence）。
+    from test_corridor_site_planner_v2 import prepare_p17
+
+    #: P17 的输入（P14/P15）在本 fixture 中并不存在；这里显式注入**最小且自洽**的
+    #: 空缺口结论（status=passed、无连续缺口段），使 P17 能得出 fully_satisfied。
+    #: 这是测试前置状态的显式声明，不是放宽任何判定。
+    state["cns_corridor_assessment"] = {
+        "status": "passed", "algorithm_id": "cns_service_corridor_v1",
+        "algorithm_version": "1.0", "input_fingerprint": "authority-p14",
+        "route_count": 0, "routes": [],
+    }
+    state["cns_corridor_gap_assessment"] = {
+        "status": "passed", "algorithm_id": "cns_corridor_gap_v1",
+        "algorithm_version": "1.0", "input_fingerprint": "authority-p15",
+        "route_count": 0, "routes": [],
+    }
+    selected = next(
+        (item for item in (state.get("aircraft_profiles") or {}).get("items") or []
+         if item.get("aircraft_id") == state.get("selected_aircraft_profile_id")),
+        None,
+    )
+    if selected is not None:
+        selected["cruise_speed_mps"] = 20.0
+    prepare_p17(workflow, source="test_production_write_authority fixture")
     review = {
         "review_id": "PR-B2B1", "status": "current", "model_scope": "engineering_review",
         "baseline_fingerprint": review_baseline_fingerprint(state),
@@ -429,10 +455,11 @@ def test_step6_readiness_ignores_legacy_coverage_and_site_plan(workflow):
 
 
 def test_plan_review_apply_stales_canonical_existing_cns_dependents(tmp_path):
-    from test_corridor_site_planner_v2 import configured
+    from test_corridor_site_planner_v2 import configured, prepare_p17
 
     service = configured(tmp_path)
     service.evaluate_cns_corridor_site_plan()
+    prepare_p17(service, source="test_production_write_authority fixture")
     service.state["coverage_3d"].update({"status": "passed", "input_fingerprint": "coverage-before"})
     service.state["cns_service_capability"].update({"status": "meets_under_model", "input_fingerprint": "capability-before"})
     service.state["service_timeline"].update({"status": "passed", "input_fingerprint": "timeline-before"})

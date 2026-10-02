@@ -41,7 +41,7 @@ const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
 // B4X 新增「高度层障碍」（Planning Constraint Field）三个开关：主开关 + 证据不足 + 可通行；
 // 与其它图层一样默认关闭，数据按需从只读 HTTP 路径读取，不在启动时加载。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','routeProtectionCorridorLayer','surveillanceProtectionLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
 let selectedReference=null,profileHoverCoordinate=null;
@@ -752,13 +752,13 @@ function afterDetailRecovery(label){
   if(currentStep===1)panelError(label+'明细已恢复','hint');
 }
 /**
- * Round 3：把本轮新增的 5 个 CNS service 分析图层开关复位为**关闭**。
+ * Round 3 / Round 2.5：把本轮新增的 CNS service 与 P17 连续服务分析图层开关复位为**关闭**。
  *
  * 契约（与"首次打开只显示在线底图"一致）：
- *   * 这 5 个开关是**临时地图显示状态**，不是项目业务事实 —— 项目保存/重开恢复的是
- *     surface policy / surface facts / P14·P15·P16 业务结果，**不**恢复图层勾选；
+ *   * 这些开关是**临时地图显示状态**，不是项目业务事实 —— 项目保存/重开恢复的是
+ *     surface policy / surface facts / P14·P15·P16·P17 业务结果，**不**恢复图层勾选；
  *   * 因此每次打开（或重新打开）项目后它们都回到关闭，图例也随之保持 hidden；
- *   * 只取消勾选这 5 个 checkbox：不动在线底图，也不动 gridLayer / 雷达等既有图层
+ *   * 只取消勾选这些 checkbox：不动在线底图，也不动 gridLayer / 雷达等既有图层
  *     的默认行为（它们本来就默认关闭，且从未被勾选过）。
  *
  * 实现说明：这里用 removeAttribute 而不是给 .checked 赋值——语义相同（去掉
@@ -766,7 +766,8 @@ function afterDetailRecovery(label){
  * 其它图层勾选"守卫产生字面冲突。
  */
 const PROJECT_REOPEN_RESET_LAYER_IDS=[
-  'cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer'
+  'cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer',
+  'routeProtectionCorridorLayer','surveillanceProtectionLayer'
 ];
 function resetAnalysisLayerSelection(){
   for(const id of PROJECT_REOPEN_RESET_LAYER_IDS)$(id)?.removeAttribute('checked');

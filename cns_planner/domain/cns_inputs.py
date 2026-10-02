@@ -169,7 +169,10 @@ def normalize_aircraft_profile(item: dict) -> AircraftCNSProfile:
         "source": str(item.get("source") or "未记录"),
         "metadata": deepcopy(item.get("metadata") or {}),
     }
-    for key in ("cruise_speed_mps", "max_speed_mps", "mtbf_h"):
+    for key in (
+        "cruise_speed_mps", "max_speed_mps", "max_horizontal_speed_mps", "mtow_kg",
+        "mtbf_h",
+    ):
         if item.get(key) is not None:
             result[key] = _positive(item[key], key)
     return result

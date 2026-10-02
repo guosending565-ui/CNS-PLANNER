@@ -1266,3 +1266,21 @@ brief 新增 `observed_findings`（OBS-LAMBDA / OBS-GRID / OBS-DIRECTION-BIAS）
 9. 设计 GapV2 到 P5/P6 Safety Event 的显式、可确认映射，仍禁止 Gap 自动等同 SafetyEvent。
 10. 在正常 QGIS 桌面启动器进程中手工验证真实航路的建筑 polygon/DTM mask 净空结果与 V3-C native-raster 验证，确认项目水平/垂直阈值来源；财产/基础设施仍待后续真实映射。
 11. 补 ApplicationContext 并发事务、schema migrations、项目 manifest/audit、application rollback 和真实 QGIS 集成 CI/验收脚本。
+12. **Round 2.5 收口（P17 连续服务可接受性，已完成）**：新增
+    `continuous_service_acceptability_v1`（状态键 `continuous_service_acceptability`）——
+    它在 P16 之后回答"走廊缺口是否已超出可接受的服务连续中断、监视/导航是否来得及介入"，
+    实现 **coverage gap ≠ 自动 planning failure**。注意**编号重名**：代码里的 `P17`
+    仍然指 Round 2.1 的「运行上下文 → RequiredCNS recommendation」
+    （`required_cns_recommendation`）；本轮的新阶段只用契约名与本面板标题
+    「连续服务可接受性（P17）」区分。契约要点：C 的**服务中断**与**冗余退化**各自独立
+    阈值；N 用显式状态机（RTK → GNSS → ATTI），**禁止**"RTK 断 X 秒＝失败"，RTK 恢复
+    9–13 s 只作 `external_reference`；S 评估**水平保护走廊**
+    `D_protection = D_safety + V_relative×T_chain + D_uncertainty` 与
+    `T_margin = T_available − T_chain`。所有参数都带 `authority`
+    （显式证据 / 外部参考 / 内置工程基线），内置基线**绝不是法规或厂家事实**；
+    `unknown` 继续 fail-closed。详见 `_diag/production_stabilization.md` 的 Round 2.5 分节。
+13. **FC30 canonical 机载档案（已完成）**：`domain/fc30_profile.py` +
+    `config/aircraft_profiles.json` 的 `FC30` 条目（逐字一致）：航路速度 15 m/s、
+    最大水平速度 20 m/s、MTOW 95 kg、RTK 丢失→GNSS、GNSS 也失效→ATTI 尽快降落、
+    遥控信号丢失 > 3 s 触发 Failsafe RTH。**3 s 是设备 failsafe 触发事实**，
+    不是法规阈值（`device_failsafe_trigger_fact_not_regulatory_threshold`）。

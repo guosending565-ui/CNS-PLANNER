@@ -98,6 +98,8 @@ class InvalidationService:
             self.cns_corridor_gap()
         if "cns_corridor_site_plan" in affected:
             self.cns_corridor_site_plan()
+        if "continuous_service_acceptability" in affected:
+            self.continuous_service(f"{changed}_changed")
         if "required_cns_recommendation" in affected:
             self.requirement_recommendation(f"{changed}_changed")
         # Step5 共用 surface 事实（Round 2）：策略变化让**事实本身**先过时，然后严格
@@ -660,7 +662,24 @@ class InvalidationService:
             result["status"] = "stale"
             state["cns_corridor_site_plan"] = result
             state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = "stale"
-        self.cns_plan_review("p16_or_review_baseline_changed")
+        self.continuous_service("p16_or_upstream_changed")
+
+    def continuous_service(self, reason="continuous_service_input_changed"):
+        """Stale only P17（连续服务可接受性）；保留 P14/P15/P16 与既有正式结论。
+
+        P17 是**下游消费者**：它的输入（走廊缺口、机载档案、工程证据、操作场景、
+        参数策略、Radar 证据）变化只让 ``continuous_service_acceptability`` 过时，
+        绝不反向让 P14/P15/P16 或 Radar 划设过时。
+        """
+
+        state = self.session.state
+        result = state.get("continuous_service_acceptability") or {}
+        if result and result.get("status") != "not_calculated":
+            result["status"] = "stale"
+            result["stale_reason"] = reason
+            state["continuous_service_acceptability"] = result
+            state.setdefault("result_statuses", {})["continuous_service_acceptability"] = "stale"
+        self.cns_plan_review(reason)
 
     def cns_plan_review(self, reason="review_baseline_changed"):
         """Stale an active P18 review while retaining confirmed history snapshots."""

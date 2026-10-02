@@ -72,7 +72,13 @@ def required(redundancy=1, *, navigation=False):
 
 
 def aircraft(*, navigation=False):
-    result = {"aircraft_id": "A1", "name": "A1", "communication": {}, "navigation": {}, "surveillance": {}}
+    result = {
+        "aircraft_id": "A1", "name": "A1", "communication": {}, "navigation": {},
+        "surveillance": {},
+        #: Round 2.5：P17 把"连续缺口长度 → 持续时间"的换算需要**显式**航路速度。
+        #: 不提供时 P17 如实返回 unknown（fail-closed），绝不猜测。
+        "cruise_speed_mps": 20.0, "max_speed_mps": 25.0,
+    }
     if navigation:
         result["navigation"] = {
             "confirmed": True, "status": "confirmed", "capabilities": ["pnt"],
@@ -85,6 +91,12 @@ def aircraft(*, navigation=False):
             "type": {"technology": "dedicated_radio", "interfaces": ["ip"]},
             "performance": {"max_latency_s": 0.2, "min_redundancy": 1},
         }
+    #: 机载协作监视探测距离：保护走廊 T_margin 的"首次探测距离"证据来源之一。
+    result["surveillance"] = {
+        "confirmed": True, "status": "confirmed", "capabilities": ["adsb_in"],
+        "type": {"technology": "adsb", "target_cooperation": "cooperative"},
+        "performance": {"min_detection_range_m": 3000.0},
+    }
     return result
 
 
@@ -144,6 +156,51 @@ def configured(tmp_path, *, redundancy=1, devices=None, candidates=None, facilit
     workflow.state["cns_planning_objectives"] = normalize_cns_planning_objectives(objectives)
     workflow.evaluate_cns_corridor()
     workflow.evaluate_cns_corridor_gap()
+    return workflow
+
+
+def p17_evidence(field, value, statement):
+    """构造一条 P17 连续服务参数的工程证据（测试用）。"""
+
+    return {
+        "field": field, "scope": "project", "value": value,
+        "source_type": "engineering_assumption",
+        "source": "test fixture",
+        "statement": statement,
+        "reason": "使 P17 在本测试场景中可判定",
+        "report_disclosure": "本项为测试场景工程假设，不代表任何厂家或法规事实。",
+        "declared_by": "test", "confirmed": True, "confirmed_by_user": True,
+    }
+
+
+def prepare_p17(workflow, *, source="test fixture", outage_limit_s=8.0,
+                degradation_limit_s=20.0, include_thresholds=True):
+    """把 P17（连续服务可接受性）准备到"可判定"状态。
+
+    P18（计划评审）以 P17 为**前置门禁**（fail-closed），因此所有走到 P18 的既有
+    合成场景都必须先按正式入口声明 P17 需要的工程依据：
+
+    * 导航可用性（RTK / GNSS）——缺它 P17 对 N 保持 unknown；
+    * C 全失联 / 冗余退化阈值。本 fixture 的合成航路只有一个 L1 格
+      （半对角线 ~78.6 m），P15 保守投影出的缺口时长约 7.9 s
+      （157.25 m ÷ 20 m/s）；阈值必须覆盖它，否则 P17 会如实判 unacceptable 并
+      **阻止** P18 —— 那正是 P17 门禁的正确行为，只是不是这些测试要验证的语义。
+      "超阈值必须被阻止"由 tests/test_continuous_service_acceptability.py 覆盖。
+    """
+
+    for field, statement in (
+        ("rtk_availability", "本测试场景假设机载 RTK 增强在整个航路内可用。"),
+        ("gnss_availability", "本测试场景假设机载 GNSS 定位在整个航路内可用。"),
+    ):
+        workflow.add_planning_evidence(p17_evidence(field, "available", statement))
+    payload = {"source": source, "confirmed": True}
+    if include_thresholds:
+        payload["service_acceptability_limits"] = {
+            "C": {"service_outage": outage_limit_s,
+                  "redundancy_degradation": degradation_limit_s},
+        }
+    workflow.set_cns_continuous_service_policy(payload)
+    workflow.evaluate_cns_continuous_service()
     return workflow
 
 
