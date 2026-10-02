@@ -5,7 +5,7 @@
 # 每次执行 append 到 dsh-web-restart.log。
 
 $ErrorActionPreference = 'SilentlyContinue'
-$log = 'C:\Users\yiding\Documents\ChatGPT\CNS规划系统\dsh-web-restart.log'
+$log = Join-Path $PSScriptRoot 'dsh-web-restart.log'
 
 function Log([string]$m) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Out-File -LiteralPath $log -Append -Encoding utf8
@@ -13,7 +13,7 @@ function Log([string]$m) {
 
 $node = 'C:\Program Files\nodejs\node.exe'
 $bin  = 'D:\tools\npm-cache\_npx\1e7f6d9597241db0\node_modules\@deepseek-ai\dsh\lib\bin.js'
-$wd   = 'C:\Users\yiding\Documents\ChatGPT\CNS规划系统'
+$wd   = $PSScriptRoot
 $port = 3080
 
 $listenPattern = ":$port\s+0\.0\.0\.0:0\s+LISTENING"

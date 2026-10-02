@@ -3,9 +3,10 @@
 Builds a real corridor route for 桃花岛 -> 函景湾, runs the *production* corridor
 building source, and reports the geometry quality it now returns.
 """
+from pathlib import Path
 import sys
 
-sys.path.insert(0, r"C:\Users\yiding\Documents\ChatGPT\CNS规划系统")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qgis.core import QgsApplication  # noqa: E402
 
