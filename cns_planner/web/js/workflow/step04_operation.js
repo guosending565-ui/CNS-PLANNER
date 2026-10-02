@@ -10,6 +10,7 @@ import {
 } from './step03_routes.js';
 import {requiredSiteCountText, serviceKeyLabel} from '../map/service_semantics.js';
 import {renderAdoptedRequiredCnsServices} from './cns_service_evidence.js';
+import {bindPlanningEvidence,renderPlanningEvidence} from './planning_evidence.js';
 
 // 二级任务分段：id 稳定（run-*），标签是第一视觉层的业务语言。
 // 与 Step05 使用同一套 wbPanel/wbBlock/wbSegHint 机制：同一时刻只显示一个任务。
@@ -388,6 +389,7 @@ export function render({flow}){
     zone('输入准备','<label>需求作用域<select id="requiredScope">'+scopeOptions+'</select></label><div class="cns-requirements"><fieldset class="cns-requirement">'+communication(c)+'</fieldset><fieldset class="cns-requirement">'+navigation(n)+'</fieldset><fieldset class="cns-requirement">'+surveillance(s)+'</fieldset></div>')+
     zone('阻塞项与工程假设',blockerList(requiredCnsBlockers,'当前没有阻塞项。未确认的参数保持待确认，不代表已满足。'))+
     zone('主操作',primaryAction('<button class="primary full" id="saveRequiredCns">保存正式 CNS需求</button>',{note:'保存后按所选作用域写入正式需求；重新评估需求建议不会自动改动正式需求。'}))+
+    renderPlanningEvidence(flow)+
     zone('结果说明','<div class="parameter-note">时间规范字段统一使用秒；旧毫秒/精度/更新间隔字段由兼容层同步。未知参数保持待确认，系统不提供安全阈值默认值。</div>');
   const groundCapabilityPanel='<div class="demo-note">可靠性参数是统计属性，不会随机决定当前服务状态；演示数据与未确认参数只作为待核实输入。地面设备能力独立于航空器配置与正式 CNS需求。</div><div class="flow-summary"><strong>地面设备能力</strong><br>'+escapeHtml(devices)+'</div><div class="parameter-note">设备目录状态：'+sourceStateText(deviceItems.length?'ready':'not_configured')+'。设备能力不会自动成为任务需求，也不会自动写入正式 CNS需求。</div>';
   // ---- 高级：时间与场景 / 安全与耦合 / V3 CNS评估（研究对照） -----------------
@@ -419,6 +421,8 @@ export function render({flow}){
 export function bind(c){
   const flow=c.flow();if(flow.rules)c.$('heightMode').value=flow.rules.height_mode;
   bindDaaEncounterLab(c);
+  // Round 2.4：工程依据 / 规划假设的人工录入（缺证据时的正式入口，非开发者改 JSON）。
+  bindPlanningEvidence(c);
   c.$('aircraftProfile').onchange=event=>{const profile=flow.aircraft_profiles.items.find(item=>item.aircraft_id===event.target.value);if(!profile)return;c.$('manufacturer').value=profile.manufacturer||'';c.$('model').value=profile.model||'';for(const [id,key] of [['cruise','cruise_speed_mps'],['maximum','max_speed_mps'],['mtbf','mtbf_h']])if(profile[key]!=null)c.$(id).value=profile[key];};
   c.actionButton('saveRules',()=>c.mutate('rules',{aircraft_id:c.$('aircraftProfile').value,manufacturer:c.$('manufacturer').value,model:c.$('model').value,cruise_speed:c.$('cruise').value,max_speed:c.$('maximum').value,mtbf:c.$('mtbf').value,route_id:c.$('aircraftRoute').value,height_ab:c.$('heightAB').value,height_ba:c.$('heightBA').value,height_mode:c.$('heightMode').value,horizontal_separation:c.$('separation').value,direction_rule:c.$('directionRule').value,delay_sensor:c.$('delaySensor').value,delay_command:c.$('delayCommand').value}));
   const optional=id=>c.$(id).value===''?null:Number(c.$(id).value),textValue=id=>c.$(id).value.trim()||null,required=id=>({yes:true,no:false,pending:null})[c.$(id).value],interfaces=id=>(c.$(id).value||'').split(',').map(item=>item.trim()).filter(Boolean);

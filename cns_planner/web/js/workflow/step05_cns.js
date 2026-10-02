@@ -566,6 +566,63 @@ function corridorGapSummary(result){
   return result.routes.map(route=>'<div class="gap-route"><b>'+escapeHtml(route.route_id)+' · '+escapeHtml(statusText(route.status||'unknown'))+'</b>'+route.subsystems.map(item=>{const service=item.service||{},redundancy=item.redundancy||{},segments=item.continuous_deficit_segments||[],objectiveRows=(item.objective_results||[]).map(value=>'<div class="list-row"><span>'+escapeHtml(objectiveLabel(value.objective))+'</span><small>实际值 '+(value.actual==null?'—':Number(value.actual).toFixed(3))+' '+escapeHtml(value.operator||'')+' '+(value.target??'—')+' · '+escapeHtml(statusText(value.status))+'</small></div>').join('');return '<div class="coverage-card"><b>'+item.subsystem+' · '+escapeHtml(statusText(item.status))+' · '+escapeHtml(statusText(item.objective_status))+'</b><span>服务 满足 '+pct(service.fractions?.satisfied)+' · 确认缺口 '+pct(service.fractions?.confirmed_deficit)+' · 证据不足 '+pct(service.fractions?.unknown)+'</span><span>冗余 满足 '+pct(redundancy.fractions?.satisfied)+' · 确认缺口 '+pct(redundancy.fractions?.confirmed_deficit)+' · 证据不足 '+pct(redundancy.fractions?.unknown)+'</span><span>空间连续缺口合计 '+formatMetric(item.total_confirmed_deficit_projection_m,'m')+' · 最大 '+formatMetric(item.max_continuous_deficit_projection_m,'m')+' · 分段 '+segments.length+'</span>'+objectiveRows+'</div>';}).join('')+'</div>').join('');
 }
 
+/**
+ * P16 目标按 **canonical service** 分组统计（Round 2.4）。
+ *
+ * 分组由后端（`target_service_groups`）给出，前端只做展示与兜底换算：
+ * 每个 target 都必须能回答"为什么需要它"，来源只能是
+ * `C:communication` / `S:rid_cooperative` / `N:rtk_augmentation`；
+ * 没有 `service_key` 的目标归入 `legacy:<子系统>`，绝不混进正式服务口径。
+ */
+export function sitePlanServiceGroups(result){
+  const backend=result?.target_service_groups;
+  if(Array.isArray(backend)&&backend.length){
+    return backend.map(item=>{
+      const bucket=String(item.bucket||'');
+      const legacySubsystem=item.legacy_subsystem
+        ||(bucket.startsWith('legacy:')?bucket.slice('legacy:'.length):null);
+      return {
+        service_key:item.service_key||(legacySubsystem?('legacy:'+legacySubsystem):bucket)||'未声明服务',
+        label:item.service_key
+          ?(serviceKeyLabel(item.service_key)||item.service_key)
+          :(legacySubsystem?('未声明服务（子系统 '+legacySubsystem+'）'):'未声明服务'),
+        required:item.required||0,confirmed_gap:item.confirmed_gap||0,
+        unknown:item.unknown||0,selected:item.selected||0,
+      };
+    });
+  }
+  const groups=new Map();
+  const ensure=key=>{
+    if(!groups.has(key))groups.set(key,{
+      service_key:key,label:serviceKeyLabel(key)||(key||'未声明服务'),
+      required:0,confirmed_gap:0,unknown:0,selected:0,
+    });
+    return groups.get(key);
+  };
+  const bucketOf=target=>String(target?.service_key||'').trim()
+    ||('legacy:'+(target?.subsystem||'?'));
+  for(const target of result?.targets||[])ensure(bucketOf(target)).required+=1;
+  for(const target of result?.residual_confirmed_targets||[])ensure(bucketOf(target)).confirmed_gap+=1;
+  for(const item of (result?.residual_unknown_evidence?.final_unknown_targets||[])){
+    ensure(bucketOf(item)).unknown+=1;
+  }
+  return [...groups.values()].sort((left,right)=>left.service_key.localeCompare(right.service_key));
+}
+
+/** 依 service 分组的 P16 目标一行（required / confirmed gap / unknown / selected）。 */
+export function sitePlanServiceGroupRows(result){
+  const groups=sitePlanServiceGroups(result);
+  if(!groups.length)return '';
+  return '<h4>按服务分组的规划目标</h4><div class="gap-results">'
+    +groups.map(item=>'<div class="list-row" data-service="'+escapeHtml(item.service_key)+'">'
+      +'<span>'+escapeHtml(item.label)+'</span><small>目标 '
+      +item.required+' · 已确认缺口 '+item.confirmed_gap+' · 仍缺证据 '+item.unknown
+      +' · 已选动作 '+item.selected+'</small></div>').join('')
+    +'<div class="parameter-note">没有 <code>service_key</code> 的目标显示为'
+    +'<code>legacy:子系统</code>：它们只有在该服务确实支持站址规划时才会成为建站目标；'
+    +'否则如实登记为"不属于站址规划形态"，绝不产生无法被候选动作满足的目标。</div></div>';
+}
+
 export function corridorSitePlanSummary(result){
   if(!result||result.status==='not_calculated')return '<div class="empty-note">尚未运行走廊感知设施规划</div>';
   const selected=(result.selected_actions||[]).map(action=>'<div class="coverage-card"><b>'+escapeHtml(action.action_id)+'</b><span>'+escapeHtml(reuseClassLabel(action.reuse_class))+' · '+escapeHtml(action.subsystem||'')+' · 单位体积收益 '+formatMetric(action.marginal_confirmed_requirement_unit_volume_gain,'m³·单元')+'</span><small>评分口径：'+escapeHtml(scoreSemanticsLabel(action.score_semantics))+'</small></div>').join('');
@@ -607,6 +664,7 @@ export function corridorSitePlanSummary(result){
     +'<small>仅提案；既有 CNS 设施、走廊评估与能力缺口结果均未修改，需用户确认后另行应用。'
       +'证据不足的目标始终单独统计，既不算作满足，也不会被静默丢弃。</small></div>'
     +emptyState
+    +sitePlanServiceGroupRows(result)
     +unknownReasonBlock
     +'<h4>已选动作与迭代收益</h4>'+(selected||'<div class="empty-note">没有确认缺口边际改善为正的可行动作</div>')+trace
     +'<h4>规划目标前后对比</h4>'+(objectiveRows.join('')||'<div class="empty-note">未配置已确认的规划目标</div>');

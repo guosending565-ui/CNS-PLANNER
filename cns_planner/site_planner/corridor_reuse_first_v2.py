@@ -87,6 +87,12 @@ class CorridorReuseFirstSitePlannerV2:
             "before": before, "after": after,
             "residual_confirmed_targets": residual,
             "residual_unknown_evidence": unknown_residual,
+            #: Round 2.4：每个 P16 target 都必须能回答"为什么需要它"。按 canonical
+            #: service 分组统计（required / 已确认缺口 / 仍缺证据 / 已选动作），
+            #: 没有 ``service_key`` 的目标归入 ``legacy:<子系统>``，绝不混进正式服务口径。
+            "target_service_groups": _target_service_groups(
+                targets, residual, unknown_residual, selected,
+            ),
             #: 即使一个动作都没选中，"为什么无法确认任何增益"也必须可读、可审计：
             #: 否则 no_eligible_proposal 只是一句无解释的结论。
             "candidate_unknown_reason_summary": _candidate_unknown_reason_summary(impacts),
@@ -202,6 +208,63 @@ def _residual_unknown_evidence(targets, final, selected):
         "selected_action_unknown_regression_target_ids": unknown_regressions,
         "selected_action_unknown_reason_counts": dict(selected_reason_counts.most_common(8)),
     }
+
+
+def _target_bucket(target):
+    """target 的 canonical 分组键：显式 ``service_key``，否则 ``legacy:<子系统>``。"""
+
+    key = str((target or {}).get("service_key") or "").strip()
+    if key:
+        return key
+    return "legacy:" + str((target or {}).get("subsystem") or "?")
+
+
+def _target_service_groups(targets, residual, unknown_residual, selected):
+    """按 canonical service 分组的目标统计（只读聚合，供前端与报告分 service 展示）。
+
+    * ``required``：该 service 的规划目标总数；
+    * ``confirmed_gap``：最终仍然**已确认缺口**的目标数；
+    * ``unknown``：最终仍然**证据不足**的目标数（绝不并入 confirmed 或 satisfied）；
+    * ``selected``：已选动作中服务该 service 的动作数。
+    """
+
+    groups = {}
+
+    def ensure(bucket):
+        if bucket not in groups:
+            is_legacy = bucket.startswith("legacy:")
+            groups[bucket] = {
+                #: 只有真正的 canonical service 才填 ``service_key``；
+                #: ``legacy:<子系统>`` / ``unresolved:<target_id>`` 明确为 ``None``，
+                #: 前端与报告据此绝不把 legacy 口径读成正式服务。
+                "service_key": None if (is_legacy or bucket.startswith("unresolved:"))
+                else bucket,
+                "bucket": bucket,
+                "legacy_subsystem": bucket.split(":", 1)[1] if is_legacy else None,
+                "required": 0, "confirmed_gap": 0, "unknown": 0, "selected": 0,
+            }
+        return groups[bucket]
+
+    by_target = {}
+    for target in targets or []:
+        bucket = _target_bucket(target)
+        by_target[str(target.get("target_id"))] = bucket
+        ensure(bucket)["required"] += 1
+    for target in residual or []:
+        ensure(_target_bucket(target))["confirmed_gap"] += 1
+    for target_id in (unknown_residual or {}).get("final_unknown_target_ids") or []:
+        #: 优先按 target 的 canonical service 归组；反查不到时**如实**归入
+        #: ``unresolved:<target_id>``，绝不猜测所属服务。
+        bucket = by_target.get(str(target_id)) or ("unresolved:" + str(target_id))
+        ensure(bucket)["unknown"] += 1
+    for action in selected or []:
+        bucket = str(action.get("service_key") or "").strip()
+        if not bucket:
+            bucket = by_target.get(str(action.get("target_id") or ""), "")
+        if not bucket:
+            bucket = "legacy:" + str(action.get("subsystem") or "?")
+        ensure(bucket)["selected"] += 1
+    return [groups[key] for key in sorted(groups)]
 
 
 def _candidate_unknown_reason_summary(impacts):

@@ -198,6 +198,9 @@ class ApiRouter:
         if path == "/api/existing-cns": return Response(workflow.existing_cns_snapshot())
         if path == "/api/cns-existing-baseline": return Response(workflow.cns_existing_baseline_snapshot())
         if path == "/api/candidate-sites": return Response(workflow.candidate_sites_snapshot())
+        # ---- Round 2.4：人工工程证据 / 规划假设（独立容器；只读投影 + 字段清单） ----
+        if path == "/api/planning-evidence": return Response(workflow.planning_evidence_snapshot())
+        if path == "/api/planning-evidence/fields": return Response(workflow.planning_evidence_fields())
         # ---- Towers Operational Integration V2（铁塔派生事实；只读投影） --------------
         if path == "/api/tower-obstacle-profiles": return Response(workflow.tower_obstacle_profiles_snapshot())
         if path == "/api/tower-colocation-candidates": return Response(workflow.tower_colocation_candidates_snapshot())
@@ -608,6 +611,13 @@ class ApiRouter:
             "/api/cns-existing-baseline": lambda: workflow.set_cns_existing_baseline(payload),
             "/api/candidate-sites/import": lambda: workflow.import_candidate_sites(payload),
             "/api/candidate-sites/from-existing": workflow.candidate_sites_from_existing,
+            # ---- Round 2.4：人工工程证据 / 规划假设的正式写入口 ----------------------
+            # 只写 ``project_state.planning_evidence``（独立容器），**绝不**写
+            # device catalog / aircraft profile 源文件；每条记录必须显式声明
+            # source_type，且 engineering_assumption 必须带 statement / source /
+            # confirmed_by_user / report_disclosure。缺证据时普通用户由此完成补充。
+            "/api/planning-evidence": lambda: workflow.add_planning_evidence(payload),
+            "/api/planning-evidence/withdraw": lambda: workflow.withdraw_planning_evidence(payload),
             # ---- Round D：navigation_site_suitability（既有站址上的显式声明） ----------
             # 最薄的写入口：只把规范化后的 suitability 写到**既有**站址条目
             # （existing_cns_facilities / candidate_sites / towers）的 metadata 上，

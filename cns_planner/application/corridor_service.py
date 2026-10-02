@@ -21,6 +21,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog
+from .planning_evidence_service import aircraft_profile_with_evidence
 from ..algorithms.corridor.v1 import COMPLEXITY_MESSAGE_BEYOND, COMPLEXITY_MESSAGE_CEILING
 from ..algorithms.corridor.v1 import COMPLEXITY_TIER_BEYOND, COMPLEXITY_TIER_CEILING
 from ..domain.cns_corridor import (
@@ -115,10 +116,7 @@ class CNSCorridorService:
             if raw_policy is not None
             else state.get("cns_corridor_policy") or normalize_cns_corridor_policy()
         )
-        profile = AircraftCNSProfileCatalog.find(
-            state.get("aircraft_profiles") or {},
-            state.get("selected_aircraft_profile_id") or "",
-        )
+        profile = aircraft_profile_with_evidence(state)
         selections = state.get("algorithm_selection") or {}
         inputs = {
             "routes": state.get("operational_routes") or [],

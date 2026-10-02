@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from ..catalogs import AircraftCNSProfileCatalog
+from .planning_evidence_service import aircraft_profile_with_evidence
 
 
 class CNSServiceCapabilityService:
@@ -15,10 +15,9 @@ class CNSServiceCapabilityService:
 
     def evaluate(self):
         state = self.session.state
-        profile = AircraftCNSProfileCatalog.find(
-            state.get("aircraft_profiles") or {},
-            state.get("selected_aircraft_profile_id") or "",
-        )
+        #: Round 2.4：机载能力必须经**唯一入口**取得，否则人工补录的工程证据会在
+        #: 这条路径上被静默忽略（工程事实与工程假设的分离也就失去意义）。
+        profile = aircraft_profile_with_evidence(state)
         facilities = deepcopy(state.get("existing_cns_facilities") or {})
         for facility in facilities.get("items") or []:
             if isinstance(facility, dict):

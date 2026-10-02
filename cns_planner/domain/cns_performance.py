@@ -71,6 +71,31 @@ def descriptive_type_fields(type_value: dict | None):
     return sorted(str(name) for name in type_value if name not in TYPE_GATE_FIELDS)
 
 
+def airborne_type_items(type_value: dict | None, *, subsystem=None, service_key=None):
+    """需求侧 ``type`` → **机载参与能力**的 ``(机载字段名, 期望声明属性)``。
+
+    Round 2.4 修正（角色分离）：需求侧 ``type`` 块此前被**同一个**门禁同时用于
+    地面提供者与机载两侧，于是机载被要求逐字段重复声明地面接收节点的事实。
+    RID 的 ``sensor_mode = passive`` 描述的是**地面网络 RID 接收节点**只接收、
+    不发射的工作模式；把它拿去要求 ``aircraft.sensor_mode`` 等于要求"无人机必须
+    是地面被动传感器"，属角色错用。
+
+    机载参与谓词只由**服务身份**裁决（见
+    :func:`cns_service_contract.airborne_type_items`）：
+
+    * ``sensor_mode`` / ``target_cooperation`` 绝不参与机载判定
+      （前者是地面接收节点属性，后者由需求侧自身承载——无人机**就是**该目标）；
+    * ``technology`` / ``service_subtype`` 由 ``cooperative_surveillance_services``
+      列表承载，匹配语义是"列表中**存在**一条声明"。
+
+    返回值第二项是**期望的声明属性字典**，调用方按成员匹配判定，**不做等值比较**。
+    """
+
+    from .cns_service_contract import airborne_type_items as _airborne_items
+
+    return _airborne_items(type_value, subsystem=subsystem, service_key=service_key)
+
+
 def empty_subsystem_contract(subsystem: str) -> dict:
     """Return a JSON-safe contract without inventing performance thresholds."""
     code = subsystem.upper()
@@ -167,6 +192,17 @@ def normalize_subsystem_contract(subsystem: str, value: dict | None, *, field: s
             subtype = _optional_text(type_value.get("service_subtype"))
             if subtype is not None:
                 result["type"]["service_subtype"] = subtype
+        #: Round 2.4 additive：``cooperative_surveillance_services`` 是**机载参与**
+        #: 该合作监视服务的显式声明列表（``[{"technology": ..., "service_subtype": ...}]``）。
+        #: 它由 :func:`cns_service_contract.cooperative_surveillance_declarations`
+        #: 归一化，只在显式给出且至少有一条可用声明时保留；旧项目不出现该键，
+        #: 因此输出形状与逐字节结果不变。
+        if "cooperative_surveillance_services" in type_value:
+            from .cns_service_contract import cooperative_surveillance_declarations
+
+            declarations = cooperative_surveillance_declarations(type_value)
+            if declarations:
+                result["type"]["cooperative_surveillance_services"] = declarations
         result["performance"] = {
             "min_detection_range_m": _optional_nonnegative(performance_value.get("min_detection_range_m"), f"{field}.performance.min_detection_range_m"),
             "min_detection_probability": _optional_probability(performance_value.get("min_detection_probability"), f"{field}.performance.min_detection_probability"),

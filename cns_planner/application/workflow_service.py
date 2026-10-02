@@ -47,6 +47,7 @@ from .artifact_read_service import ArtifactReadService
 from .workspace_service import WorkspaceService
 from .spatial_3d_service import Spatial3DService
 from .route_operating_layer_service import RouteOperatingLayerService
+from .planning_evidence_service import PlanningEvidenceService
 from .cns_service_capability_service import CNSServiceCapabilityService
 from .operational_timing_service import OperationalTimingService
 from .closed_loop_service import ClosedLoopService
@@ -618,6 +619,12 @@ class WorkflowService:
         self.cns_service_capability_service = CNSServiceCapabilityService(
             self.session, self.cns_service_model, self.invalidation_service, snapshot
         )
+        #: Round 2.4：人工工程证据 / 规划假设的**正式输入入口**。它落在独立的
+        #: ``planning_evidence`` 状态里（绝不写入 device catalog），由
+        #: ``aircraft_profile_with_evidence`` 在 P8 / P14 / P16 三个消费点统一叠加。
+        self.planning_evidence_service = PlanningEvidenceService(
+            self.session, self.invalidation_service, snapshot
+        )
         self.operational_timing_service = OperationalTimingService(
             self.session, self.timeline_model, self.protection_model,
             self.invalidation_service, snapshot,
@@ -807,6 +814,14 @@ class WorkflowService:
         result["compatibility_selection"] = self.compatibility_selection.selection_snapshot()
         if hasattr(self, "requirement_recommendation_service"):
             result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
+        #: Round 2.4：工程依据字段清单是**静态契约**（可接受的字段与枚举取值），
+        #: 随快照一起下发，前端无需猜测可填字段，也不需要额外的草稿请求。
+        if hasattr(self, "planning_evidence_service"):
+            #: 通用状态循环给出的只是**原始 registry**（``items`` / ``schema_version``），
+            #: 而前端需要 ``field_status`` / ``active`` / ``disclosure_lines`` 才能
+            #: 如实显示"缺哪条工程依据"。这里用只读投影覆盖它（不写回 state）。
+            result["planning_evidence"] = self.planning_evidence_service.snapshot()
+            result["planning_evidence_fields"] = self.planning_evidence_fields()
         result["route_planning_experiments"] = deepcopy(
             self.state.get("route_planning_experiments") or {}
         )
@@ -1499,6 +1514,21 @@ class WorkflowService:
     #: Round D：在**既有**站址条目上声明/清除 ``navigation_site_suitability``。
     #: 它不新建站址容器，也不改任何几何或判定算法（见 CNSInputService 的说明）。
     def set_navigation_site_suitability(self, payload): return self.cns_input_service.set_navigation_site_suitability(payload)
+    #: Round 2.4：工程证据 / 规划假设的正式人工输入入口（绝不写入 device catalog）。
+    def planning_evidence_snapshot(self): return self.planning_evidence_service.snapshot()
+    def add_planning_evidence(self, payload): return self.planning_evidence_service.add(payload)
+    def withdraw_planning_evidence(self, payload): return self.planning_evidence_service.withdraw(payload)
+    def planning_evidence_fields(self):
+        from ..domain.planning_evidence import (
+            EVIDENCE_SOURCE_TYPES, PLANNING_EVIDENCE_FIELDS,
+        )
+
+        return {
+            "fields": deepcopy(PLANNING_EVIDENCE_FIELDS),
+            "source_types": list(EVIDENCE_SOURCE_TYPES),
+            "container": "project_state.planning_evidence",
+            "never_written_to_device_catalog": True,
+        }
     def analyze_cns_gaps_v2(self, payload=None): return self.gap_analysis_v2_service.evaluate(payload)
     def evaluate_closed_loop(self, payload=None): return self.closed_loop_service.evaluate(payload)
     def apply_closed_loop(self, payload=None): return self.closed_loop_service.apply(payload)

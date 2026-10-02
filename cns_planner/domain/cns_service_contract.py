@@ -86,6 +86,108 @@ RID_TYPE_SEMANTICS = {
     "technology": RID_TECHNOLOGY,
 }
 
+# ---------------------------------------------------------------------------
+# 1b. Round 2.4：**机载参与能力** vs **地面提供者能力**（角色分离契约）
+# ---------------------------------------------------------------------------
+#
+# 旧语义缺陷（Round 2.3 遗留，本轮修正）：需求侧 ``type`` 块被**同一个**
+# ``type_gate_items()`` 同时用于两侧判定，于是要求"机载 aircraft 也必须逐字段
+# 重复声明地面侧的类型事实"。对 RID 这直接产生了错误谓词：
+#
+#   ``S:rid_cooperative`` 需求 ``sensor_mode = passive``
+#
+# 描述的是**地面网络 RID 接收节点**的工作模式（它只接收、不发射）。而无人机的
+# 角色是 **cooperative target**：它**广播/网络上报** Remote ID，既不是"被动
+# sensor"，也不该被要求声明接收端的工作模式。把地面接收方的 ``sensor_mode``
+# 拿去要求 ``aircraft.sensor_mode``，属**角色错用**。
+#
+# 正确模型（三方分离，各自成立、各自形成 evidence）：
+#
+#   Required Service   ：``S:rid_cooperative`` + 半径/冗余/地表策略（需求侧）
+#   Ground Provider    ：地面 RID 接收节点能力（``technology`` / ``sensor_mode`` …）
+#   Aircraft Particip. ：机载是否具备**参与**该服务的合作能力（协作目标 + 上报能力）
+#
+# 因此：
+#
+#   * ``type_gate_items()``（默认）＝ 地面提供者门禁字段，语义**逐字段不变**；
+#   * :func:`airborne_type_items()` ＝ 机载参与能力门禁字段，由**服务身份**裁决
+#     （见 :data:`AIRBORNE_PARTICIPATION_EQUIVALENTS`）；
+#   * ``sensor_mode`` **绝不**出现在任何机载参与谓词里。
+
+#: 机载参与能力的**唯一权威字段**：本机载平台支持的合作监视参与/上报服务列表。
+#:
+#: 形状（每一项是一条**显式声明**的合作监视参与能力）：:
+#:
+#:     cooperative_surveillance_services: [
+#:       {"technology": "network_remote_id", "service_subtype": "cooperative_surveillance"},
+#:     ]
+#:
+#: * 元素必须显式声明 ``technology``；
+#: * ``service_subtype`` 可选，只在需求侧也要求该字段时才参与判定；
+#: * 该列表是**机载事实/声明的载体**，绝不由 device_id / 机型名 / subsystem 推断；
+#: * 缺该声明时，机载参与能力**保持 unknown（evidence_required）**，
+#:   绝不自动降级为 "does_not_meet_under_model"。
+AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD = "cooperative_surveillance_services"
+
+#: 只有**门禁字段**才可能参与机载参与谓词。
+#
+#: ``service_type`` 是需求侧的用途/任务描述（自由文本），Round 2.3 已裁定它**不是**
+#: 类型门禁 —— 因此它同样不得出现在机载谓词里（机载 profile 也不承载该键）。
+AIRBORNE_PARTICIPATION_SOURCE_FIELDS = (
+    "technology", "network_scope", "interfaces",
+    "target_cooperation", "sensor_mode", "service_subtype",
+)
+
+#: 机载参与谓词里**禁止出现**的需求侧 ``type`` 字段。
+#:
+#: ``sensor_mode`` 描述"传感器/接收节点本身的工作模式"（雷达主动发射 = active，
+#: 网络 RID 接收节点只接收 = passive）。它对 cooperative target **没有意义**：
+#: 把地面接收端的 ``passive`` 拿去要求机载，等于要求"飞机必须是地面被动传感器"。
+AIRBORNE_PARTICIPATION_FORBIDDEN_FIELDS = ("sensor_mode",)
+
+#: ``type`` 字段 → 机载侧承载它的参与能力字段（等价载体映射），**按子系统**区分。
+#:
+#: **只有合作监视（S）的机载能力具有"参与"语义**：地面 RID 接收节点要求机载
+#: 具备某种合作监视**参与/上报**能力。通信与导航的 ``type`` 字段描述的是机载
+#: 自身的通信/导航装备事实，由机载 profile 直接承载，不需要任何重映射。
+#:
+#: * ``technology``：地面侧要求"提供者用何技术"，S 侧对应"本机支持哪种参与服务"；
+#: * ``target_cooperation``：机载**就是**该服务的目标方，其目标属性由**需求侧**
+#:   声明承载（机载不重复声明）。
+#:
+#: **``service_subtype`` 不在此列**：它是合作监视服务的**类型描述**
+#: （Round 2.3 已裁定它本身不是判定谓词 —— ADS-B 亦可声称
+#: ``cooperative_surveillance``）。判定 RID 的排他事实是 ``technology =
+#: network_remote_id``；若再要求机载重复声明 ``service_subtype``，就又把一个
+#: **描述性**字段变成了门禁，会产生新的假 unknown。
+AIRBORNE_PARTICIPATION_EQUIVALENTS_BY_SUBSYSTEM = {
+    "S": {
+        "technology": AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD,
+    },
+}
+
+#: **描述性**字段：机载侧可以如实保留（供审计），但**绝不参与**参与能力门禁。
+AIRBORNE_PARTICIPATION_DESCRIPTIVE_FIELDS = ("service_subtype",)
+
+#: 兼容投影：S 的等价映射（旧断言使用）。
+AIRBORNE_PARTICIPATION_EQUIVALENTS = dict(
+    AIRBORNE_PARTICIPATION_EQUIVALENTS_BY_SUBSYSTEM["S"]
+)
+
+#: ``type`` 字段 → 由需求侧自身承载、机载侧**不参与判定**的字段，**按子系统**区分。
+#:
+#: ``target_cooperation``：需求说"目标是合作的"，机载就是这个目标本身；要求它
+#: 再声明一次是同一事实被要求两次（且无人机会被要求声明 non_cooperative 等
+#: 与自身角色无关的值）。
+AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS_BY_SUBSYSTEM = {
+    "S": ("target_cooperation",),
+}
+
+#: 兼容投影：S 的自承载字段。
+AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS = tuple(
+    AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS_BY_SUBSYSTEM["S"]
+)
+
 #: RID 明确禁止的几何形态：雷达 90° 面阵 / sector / 水平半圆 / panel azimuth。
 #: 该元组是契约的一部分，供测试与 Round 2 接线断言，绝不描述为实测性能。
 RID_FORBIDDEN_GEOMETRY = (
@@ -345,8 +447,128 @@ def service_key_for(subsystem, source=None):
     return LEGACY_SERVICE_KEYS[code]
 
 
+def airborne_participation_field_for(type_name, *, subsystem=None):
+    """机载参与能力承载 ``type_name`` 的字段名；不由机载重复声明时返回 ``None``。
+
+    只有**合作监视（S）**才有"参与能力"重映射：
+    :data:`AIRBORNE_PARTICIPATION_EQUIVALENTS_BY_SUBSYSTEM`。通信与导航的
+    ``type`` 描述机载自身装备事实，由机载 profile 直接承载 —— 返回 ``None``
+    表示"沿用机载自身字段"，绝不是"不判定"。
+    """
+
+    name = str(type_name or "").strip()
+    if name in AIRBORNE_PARTICIPATION_FORBIDDEN_FIELDS:
+        return None
+    if name in AIRBORNE_PARTICIPATION_DESCRIPTIVE_FIELDS:
+        #: 描述性字段（``service_subtype``）**不是**判定谓词：既不重映射，也不判定。
+        return None
+    code = str(subsystem or "").strip().upper()
+    if name in AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS_BY_SUBSYSTEM.get(code, ()):
+        return None
+    return AIRBORNE_PARTICIPATION_EQUIVALENTS_BY_SUBSYSTEM.get(code, {}).get(name)
+
+
+def cooperative_surveillance_declarations(value):
+    """规范化机载参与服务声明列表（**只读**，不新增任何事实）。
+
+    * 只接受**显式**声明；缺失/非列表 → ``[]``（调用方据此保持 unknown）；
+    * 每一项必须显式给出非空 ``technology``，否则该项被忽略（不猜测）；
+    * 保持声明顺序，相同 ``(technology, service_subtype)`` 去重；
+    * **向后兼容回退**：没有该列表、但机载 ``technology`` **本身就是**
+      ``network_remote_id`` 时，等价于一条"网络远程识别参与"声明
+      （旧项目用类型字段表达同一事实，此时不引入任何新数据）。
+    """
+
+    block = value if isinstance(value, dict) else {}
+    raw = block.get(AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD)
+    result = []
+    seen = set()
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            technology = str(item.get("technology") or "").strip().lower()
+            if not technology:
+                continue
+            subtype = item.get("service_subtype")
+            subtype = str(subtype).strip() if subtype not in (None, "") else None
+            key = (technology, subtype)
+            if key in seen:
+                continue
+            seen.add(key)
+            entry = {"technology": technology}
+            if subtype:
+                entry["service_subtype"] = subtype
+            result.append(entry)
+        if result:
+            return result
+    legacy_technology = str(block.get("technology") or "").strip().lower()
+    if legacy_technology == RID_TECHNOLOGY:
+        legacy_subtype = block.get("service_subtype")
+        entry = {"technology": RID_TECHNOLOGY}
+        if legacy_subtype not in (None, ""):
+            entry["service_subtype"] = str(legacy_subtype).strip()
+        return [entry]
+    return []
+
+
+def airborne_type_items(required_type, *, subsystem=None, service_key=None):
+    """把需求侧 ``type`` 块映射为**机载参与能力**的 ``(机载字段名, 期望值)``。
+
+    子系统解析顺序：显式 ``subsystem`` → ``service_key`` 前缀 → 无从判断时
+    **保持机载自身字段**（不做任何重映射，最保守）。
+
+    * ``sensor_mode`` / ``target_cooperation`` **绝不**进入机载谓词
+      （前者是地面接收节点的属性，后者由需求侧自身承载）；
+    * 只有合作监视（S）的 ``technology`` / ``service_subtype`` 被映射到
+      :data:`AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD`：期望"本机参与服务声明列表
+      中**存在一条**声明，其属性**同时**满足全部映射期望"（因此同一承载字段的多个
+      期望被合并为一条，绝不拆成两个各自独立的谓词——那会要求两条不同的声明，
+      与"一条声明同时声明技术与类型"的规范形状不符）；
+    * 通信 / 导航的字段**沿用机载自身同名字段**（机载装备事实本就在那里）；
+    * 保留需求侧声明顺序、跳过空值；
+    * 返回值里第二项对映射字段是**期望的声明属性**字典（成员匹配），对非映射
+      字段是**期望值本身**（等值匹配）。调用方据此区分判定方式。
+    """
+
+    if not isinstance(required_type, dict):
+        return []
+    code = str(subsystem or "").strip().upper()
+    if code not in LEGACY_SERVICE_KEYS:
+        code = str(service_key or "").strip().split(":", 1)[0].upper()
+    items = []
+    mapped_index = {}
+    for name, value in required_type.items():
+        if value in (None, "", "unknown", []):
+            continue
+        if name not in AIRBORNE_PARTICIPATION_SOURCE_FIELDS:
+            #: 非门禁字段（``service_type``）绝不进入机载谓词。
+            continue
+        field = airborne_participation_field_for(name, subsystem=code)
+        if field is None:
+            if name in AIRBORNE_PARTICIPATION_FORBIDDEN_FIELDS:
+                continue
+            if name in AIRBORNE_PARTICIPATION_DESCRIPTIVE_FIELDS:
+                #: 描述性字段只如实保留，绝不参与机载参与谓词。
+                continue
+            if name in AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS_BY_SUBSYSTEM.get(code, ()):
+                continue
+            items.append((name, value))
+            continue
+        if field in mapped_index:
+            #: 同一承载字段的多个期望合并为**一条**声明要求。
+            position = mapped_index[field]
+            merged = dict(items[position][1])
+            merged[name] = value
+            items[position] = (field, merged)
+            continue
+        mapped_index[field] = len(items)
+        items.append((field, {name: value}))
+    return items
+
+
 #: 只有下列两个**排他**事实才足以认定 RID（Round 2 收口）：
-#:
+#
 #: * 显式 ``service_key = S:rid_cooperative``；
 #: * ``technology = network_remote_id``（网络远程识别是 RID 的专属技术）。
 #:
@@ -681,6 +903,12 @@ def not_evaluated_for(service_key):
 
 
 __all__ = [
+    "AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD", "AIRBORNE_PARTICIPATION_DESCRIPTIVE_FIELDS",
+    "AIRBORNE_PARTICIPATION_EQUIVALENTS", "AIRBORNE_PARTICIPATION_EQUIVALENTS_BY_SUBSYSTEM",
+    "AIRBORNE_PARTICIPATION_FORBIDDEN_FIELDS",
+    "AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS",
+    "AIRBORNE_PARTICIPATION_SELF_CARRIED_FIELDS_BY_SUBSYSTEM",
+    "AIRBORNE_PARTICIPATION_SOURCE_FIELDS",
     "COMMUNICATION_NOT_EVALUATED", "COMMUNICATION_RADIUS_BY_SURFACE",
     "COMMUNICATION_REDUNDANCY_BY_SURFACE", "ENGINEERING_PLANNING_BASELINE",
     "KNOWN_SERVICE_KEYS",
@@ -697,7 +925,9 @@ __all__ = [
     "SERVICE_KEY_NAVIGATION", "SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION",
     "SERVICE_KEY_RADAR_NONCOOPERATIVE", "SERVICE_KEY_RID_COOPERATIVE",
     "SERVICE_KEY_SURVEILLANCE", "SERVICE_SURFACE_POLICY", "SUBSYSTEMS",
-    "SURFACE_CLASSES", "distinct_site_id_for", "effective_radius_m",
+    "SURFACE_CLASSES", "airborne_participation_field_for", "airborne_type_items",
+    "cooperative_surveillance_declarations",
+    "distinct_site_id_for", "effective_radius_m",
     "geometry_usable", "index_max_range_m", "is_rid_declaration",
     "legacy_min_redundancy", "normalize_redundancy_by_surface",
     "normalize_surface_class", "not_evaluated_for",

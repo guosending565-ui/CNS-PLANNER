@@ -162,8 +162,17 @@ def _corridor_inputs(state, payload):
         #: 由 worker 侧用 :func:`surface_class_provider_for` 从这份事实重建。
         "surface_class_facts": deepcopy(state.get("surface_class_facts") or {}),
         "surface_facts_fingerprint": surface_facts_fingerprint_for(state),
+        #: Round 2.4：人工工程证据 / 规划假设必须随输入一起冻结进 immutable
+        #: snapshot —— 否则异步 worker 会拿"没有工程证据"的机载能力去重算，
+        #: 与同步入口得到两份不同判定（同一输入必须得到同一结论）。
+        "planning_evidence": deepcopy(state.get("planning_evidence") or {}),
     }
     inputs.update(_admission_policy_record())
+    #: Round 2.4：机载能力**叠加工程证据后**冻结为显式输入，同步入口、重算路径与
+    #: worker 因此消费同一份权威机载能力。
+    from ..application.planning_evidence_service import aircraft_profile_with_evidence
+
+    inputs["aircraft_profile"] = aircraft_profile_with_evidence(inputs) or {}
     return inputs
 
 
@@ -288,7 +297,9 @@ def _corridor_runner(context):
     context.progress(0.05, "正在准备服务走廊评估输入")
     from ..catalogs import AircraftCNSProfileCatalog
 
-    profile = AircraftCNSProfileCatalog.find(
+    #: Round 2.4：快照里若有**已叠加工程证据**的机载能力，一律优先 —— 人工补录的
+    #: 工程证据不得在异步路径上被静默忽略。缺失时才按旧口径从 catalog 解析。
+    profile = inputs.get("aircraft_profile") or AircraftCNSProfileCatalog.find(
         inputs.get("aircraft_profiles") or {},
         inputs.get("selected_aircraft_profile_id") or "",
     )

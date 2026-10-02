@@ -6,7 +6,6 @@ from collections import Counter
 from copy import deepcopy
 
 from ..algorithms.corridor.v1 import nearest_route_position
-from ..catalogs import AircraftCNSProfileCatalog
 from ..domain.corridor_site_planning import (
     TARGET_SCOPE_SERVICE, corridor_target_id, corridor_voxel_entry_index,
     normalize_corridor_site_planning_policy,
@@ -17,9 +16,9 @@ from ..domain.surface_classification import (
 )
 from ..domain.cns_service_contract import (
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, SERVICE_KEY_RADAR_NONCOOPERATIVE,
-    SERVICE_SURFACE_POLICY, index_max_range_m, service_policy,
+    SERVICE_SURFACE_POLICY, index_max_range_m, service_key_for, service_policy,
 )
-from ..domain.cns_service_registry import planner_family_for
+from ..domain.cns_service_registry import planner_family_for, service_registry_entry
 from ..domain.navigation_augmentation import (
     build_navigation_service_evidence,
 )
@@ -33,6 +32,7 @@ from .navigation_reference_station_planning_service import (
     navigation_evidence_required,
     navigation_reference_station_candidate_actions,
 )
+from .planning_evidence_service import aircraft_profile_with_evidence
 from .site_candidate_actions import candidate_actions
 from .production_write_authority import assert_write_authority
 
@@ -418,9 +418,7 @@ def rerun_corridor_chain(
     ``prepared_cells`` 只用于跳过**同一份** grid / terrain / surface facts 下的重复准备
     （P16 cumulative what-if）。不传时 P14 自行准备，行为与结果逐字段不变。
     """
-    profile = AircraftCNSProfileCatalog.find(
-        state.get("aircraft_profiles") or {}, state.get("selected_aircraft_profile_id") or "",
-    )
+    profile = aircraft_profile_with_evidence(state)
     selections = state.get("algorithm_selection") or {}
     corridor_model = corridor_model_prototype.__class__(
         (state.get("cns_corridor_assessment") or {}).get("parameters")
@@ -524,6 +522,38 @@ def _targets(assessment):
                     continue
                 if entry.get("ground_provider_redundancy_status") == "not_applicable_to_site_provider_redundancy":
                     continue
+                #: Round 2.4：**只有支持站址规划的 canonical 服务才产生建站目标**。
+                #:
+                #: 缺口登记在 legacy 子系统口径上时，其规范服务身份是
+                #: ``N:navigation`` / ``S:surveillance`` —— 注册表把这两个身份的
+                #: ``supports_site_planning`` 明确置为 ``False``（它们没有新的
+                #: planner family，设备目录也不承载这类设备）。若仍然为它们产生
+                #: 建站 target，就会造出一批**永远无法被任何候选动作满足**的目标
+                #: （Round 2.3 实测：2745 个 N legacy target × 0 个候选动作），
+                #: 从而把 Step6 的规划目标永久卡在 ``not_met``。
+                #:
+                #: 正确语义：**如实登记该缺口，但绝不把它当作新的建站规划目标**。
+                #: 用户若确实要求地面导航增强，应显式声明 ``N:rtk_augmentation``
+                #: （走 canonical adapter），而不是让 legacy 子系统缺口自动变成
+                #: 规划目标。
+                legacy_key = service_key_for(code)
+                legacy_entry = service_registry_entry(legacy_key)
+                if legacy_entry.get("supports_site_planning") is not True:
+                    unknown.append({
+                        "kind": "non_site_plannable_gap",
+                        "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+                        "subsystem": code, "service_key": legacy_key,
+                        "planner_family": legacy_entry.get("planner_family"),
+                        "requires_canonical_service_requirement": True,
+                        "reasons": [
+                            f"{legacy_entry.get('label')} 缺口不属于站址规划形态"
+                            "（该服务没有 canonical planner family，设备目录也不承载这类设备）："
+                            "如实登记，绝不产生无法被候选动作满足的建站目标。",
+                            "如确实需要地面设备，请在 RequiredCNS 显式声明对应的 canonical 服务"
+                            "（例如 Navigation 的 N:rtk_augmentation）。",
+                        ],
+                    })
+                    continue
                 required = entry.get("required_redundancy")
                 required_units = max(1, int(required or 1))
                 current_units = _confirmed_units(entry, required_units)
@@ -554,6 +584,21 @@ def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, u
         target_id = corridor_target_id(route_id, voxel_id, key)
         status = str(service.get("status") or "unknown")
         if status == "satisfied":
+            continue
+        #: Round 2.4：不支持站址规划的 canonical 服务**绝不产生建站 target**
+        #: （否则会造出永远无法被候选动作满足的规划目标，把 Step6 永久卡在 not_met）。
+        entry_spec = service_registry_entry(key)
+        if entry_spec.get("supports_site_planning") is not True:
+            unknown.append({
+                "kind": "non_site_plannable_gap",
+                "target_id": target_id, "route_id": route_id, "voxel_id": voxel_id,
+                "subsystem": code, "service_key": key,
+                "planner_family": entry_spec.get("planner_family"),
+                "requires_canonical_service_requirement": True,
+                "reasons": [
+                    f"{entry_spec.get('label')} 缺口不属于站址规划形态：如实登记，绝不建站。",
+                ],
+            })
             continue
         if key == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
             _navigation_target(

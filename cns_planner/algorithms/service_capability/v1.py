@@ -82,7 +82,11 @@ class CNSServiceCapabilityV1:
             return {**base, "status": "unknown", "samples": [], "reasons": ["RequiredCNS 未确认"], **_summary(total, [], "unknown")}
         capability = aircraft.get(SUBSYSTEM_NAMES[code]) or {}
         match_required = _without_redundancy(required)
-        aircraft_ok, aircraft_evidence = evaluate_required_performance(match_required, capability, require_capability=True)
+        #: Round 2.4：机载侧走**机载参与能力**谓词（角色分离），绝不要求机载重复
+        #: 声明地面接收节点的类型事实（RID 的 ``sensor_mode`` 是地面接收端属性）。
+        aircraft_ok, aircraft_evidence = evaluate_required_performance(
+            match_required, capability, require_capability=True, airborne=True,
+        )
         if code == "N" and _technology(capability) in NON_SITE_NAVIGATION:
             status = "meets_under_model" if aircraft_ok is True else "does_not_meet_under_model" if aircraft_ok is False else "unknown"
             reason = "已确认的机载导航性能满足 RequiredCNS" if aircraft_ok is True else "机载导航性能不满足 RequiredCNS" if aircraft_ok is False else "机载导航性能证据不足"
@@ -109,8 +113,9 @@ def prepare_capability_context(code, required, aircraft):
         return {"kind": "unknown_requirement"}
     capability = (aircraft or {}).get(SUBSYSTEM_NAMES[code]) or {}
     match_required = _without_redundancy(required)
+    #: Round 2.4：机载侧走**机载参与能力**谓词（角色分离）。
     aircraft_ok, aircraft_evidence = evaluate_required_performance(
-        match_required, capability, require_capability=True
+        match_required, capability, require_capability=True, airborne=True,
     )
     return {
         "kind": "non_site_navigation" if code == "N" and _technology(capability) in NON_SITE_NAVIGATION else "site",

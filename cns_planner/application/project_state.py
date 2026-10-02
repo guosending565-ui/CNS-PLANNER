@@ -100,6 +100,9 @@ from ..domain.population_nodata import (
     default_population_nodata_policy, normalize_population_nodata_policy,
 )
 from ..domain.assumptions import empty_assumption_registry, normalize_assumption_registry
+from ..domain.planning_evidence import (
+    empty_planning_evidence, normalize_planning_evidence_registry,
+)
 from ..domain.cns_existing_baseline import (
     empty_cns_existing_baseline, normalize_cns_existing_baseline,
 )
@@ -235,6 +238,10 @@ def blank_project(defaults):
         # Phase4-B1 canonical contracts are additive.  Existing result/status
         # containers remain untouched until their dedicated migration batches.
         "assumptions": empty_assumption_registry(),
+        #: Round 2.4：人工工程证据 / 规划假设（**独立容器**，绝不写入 device catalog）。
+        #: 缺证据时普通用户可在此正式补录，并显式区分"有正式资料支持的事实"、
+        #: "为规划目的采用的工程假设"与"尚无依据"。
+        "planning_evidence": empty_planning_evidence(),
         "cns_existing_baseline": empty_cns_existing_baseline(),
         "canonical_workflow": empty_canonical_workflow_state(),
         "data_source_profiles": default_source_profiles(),
@@ -465,6 +472,11 @@ def normalize_project(value, grid_service):
     # Phase4-B1 additive backfill.  Missing legacy state never infers facts
     # from existing_cns_facilities (an empty collection is not confirmed_none).
     value["assumptions"] = normalize_assumption_registry(value.get("assumptions"))
+    #: Round 2.4：工程证据 registry 的规范化 backfill（缺失时为空 registry，
+    #: 绝不从既有字段推断出任何"事实"）。
+    value["planning_evidence"] = normalize_planning_evidence_registry(
+        value.get("planning_evidence")
+    )
     value["cns_existing_baseline"] = normalize_cns_existing_baseline(
         value.get("cns_existing_baseline")
     )

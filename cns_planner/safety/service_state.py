@@ -88,9 +88,15 @@ def normalize_external_service_snapshot(value: dict | None) -> dict:
     }
 
 
-def evaluate_required_performance(required, actual, *, require_capability=False):
-    """Public pure wrapper around the P4 matcher; keeps ServiceState semantics unchanged."""
-    return _satisfies(required or {}, actual, require_capability=require_capability)
+def evaluate_required_performance(required, actual, *, require_capability=False, airborne=False):
+    """Public pure wrapper around the P4 matcher; keeps ServiceState semantics unchanged.
+
+    ``airborne=True`` 时类型判定切换到**机载参与能力**谓词（Round 2.4 角色分离）：
+    只判定机载是否具备参与该服务的合作能力，绝不要求机载重复声明地面提供者
+    （更不是地面**接收节点**）的类型事实。默认 ``False`` ⇒ 逐字段保持地面语义。
+    """
+
+    return _satisfies(required or {}, actual, require_capability=require_capability, airborne=airborne)
 
 
 def _select_fallback(required, candidates, snapshot):
@@ -130,7 +136,7 @@ def _select_fallback(required, candidates, snapshot):
     return {"fallback": None, "evidence": evidence, "reasons": reasons}
 
 
-def _satisfies(required, actual, *, require_capability=False):
+def _satisfies(required, actual, *, require_capability=False, airborne=False):
     if not isinstance(actual, dict):
         return None, {"satisfied": None, "reason": "输入缺失"}
     if require_capability:
@@ -140,6 +146,8 @@ def _satisfies(required, actual, *, require_capability=False):
         if not actual.get("capabilities") and not _has_meaningful_type(actual.get("type")):
             return False, {"satisfied": False, "reason": "机载能力未声明"}
     required_type, actual_type = required.get("type") or {}, actual.get("type") or {}
+    if airborne:
+        return _satisfies_airborne_participation(required, actual, required_type, actual_type)
     #: Round 2.3：类型门禁只判定**被判定方必须能够声明的物理/技术事实**
     #: （:data:`TYPE_GATE_FIELDS`）。需求侧的 ``service_type`` 是用途/任务描述，
     #: 设备目录不承载该字段（设备导入链从不写入 ``device.type.service_type``），
@@ -153,6 +161,90 @@ def _satisfies(required, actual, *, require_capability=False):
                 return False, {"satisfied": False, "reason": "interfaces 不满足"}
         elif observed != expected:
             return False, {"satisfied": False, "reason": f"{key} 不匹配"}
+    return _satisfies_performance(required, actual)
+
+
+def _satisfies_airborne_participation(required, actual, required_type, actual_type):
+    """**机载参与能力**判定（Round 2.4 角色分离契约）。
+
+    与地面提供者判定的区别只有一点：需求侧 ``type`` 字段先经
+    :func:`airborne_type_items` 映射为**机载参与能力字段**，匹配语义是
+    "机载参与服务声明列表中存在一条满足全部期望属性的条目"。
+
+    * ``sensor_mode`` **绝不**参与机载判定（它描述地面接收节点的工作模式）；
+    * ``target_cooperation`` 由需求侧自身承载，机载不重复声明；
+    * 机载**没有**该参与声明时返回 ``None``（``unknown`` / evidence required），
+      **绝不**自动降级为 ``does_not_meet_under_model`` —— 缺证据不是"确认不支持"；
+    * 只有机载**显式声明了**参与服务、但没有任何一条匹配需求时，才是
+      ``does_not_meet_under_model``（真实不兼容）。
+    """
+
+    from ..domain.cns_service_contract import cooperative_surveillance_declarations
+    from ..domain.cns_performance import airborne_type_items
+
+    items = airborne_type_items(
+        required_type, service_key=_requirement_service_key(required),
+    )
+    if not items:
+        #: 该服务没有机载参与谓词（例如通信/导航只判性能）：直接进入性能判定。
+        return _satisfies_performance(required, actual)
+    #: Round 2.4：机载参与能力的**证据来源**（事实 / 工程假设 / 未知）必须随判定
+    #: 一起披露，绝不让工程假设在下游被读成厂家确认事实。
+    source = _airborne_evidence_source(actual)
+    needs_declaration = [
+        (name, expected) for name, expected in items if isinstance(expected, dict)
+    ]
+    if needs_declaration:
+        declarations = cooperative_surveillance_declarations(actual_type)
+        if not declarations:
+            return None, {
+                "satisfied": None,
+                "reason": "缺少机载参与能力声明",
+                "required_airborne_fields": sorted({name for name, _ in needs_declaration}),
+                "airborne_evidence_source": source,
+            }
+        for field, expected in needs_declaration:
+            for declaration in declarations:
+                if all(declaration.get(name) == value for name, value in expected.items()):
+                    break
+            else:
+                return False, {
+                    "satisfied": False,
+                    "reason": "机载参与能力与 RequiredCNS 不兼容",
+                    "required_airborne_fields": sorted({name for name, _ in needs_declaration}),
+                    "declared_airborne_services": declarations,
+                    "airborne_evidence_source": source,
+                }
+    for field, expected in items:
+        if isinstance(expected, dict):
+            continue
+        observed = actual_type.get(field)
+        if observed in (None, "", "unknown", []):
+            return None, {
+                "satisfied": None, "reason": f"缺少机载类型字段 {field}",
+                "airborne_evidence_source": source,
+            }
+        if observed != expected:
+            return False, {
+                "satisfied": False, "reason": f"机载 {field} 不匹配",
+                "airborne_evidence_source": source,
+            }
+    return _satisfies_performance(required, actual, airborne_evidence_source=source)
+
+
+def _airborne_evidence_source(actual):
+    """机载能力的证据来源标注（无标注时如实返回 ``declared_capability``）。"""
+
+    if not isinstance(actual, dict):
+        return "unknown"
+    evidence = actual.get("airborne_evidence")
+    if isinstance(evidence, dict):
+        return str(evidence.get("source_type") or evidence.get("source") or "unknown")
+    declared = actual.get("confirmed") is True or actual.get("status") in ("confirmed", "passed")
+    return "declared_capability" if declared else "unknown"
+
+
+def _satisfies_performance(required, actual, *, airborne_evidence_source=None):
     required_performance, actual_performance = required.get("performance") or {}, actual.get("performance") or {}
     aliases = {
         "max_latency_s": ("latency_s", "max_latency_s"),
@@ -187,7 +279,11 @@ def _satisfies(required, actual, *, require_capability=False):
             return False, {"satisfied": False, "reason": f"{key} 不足"}
         if key == "integrity_required" and observed != expected:
             return False, {"satisfied": False, "reason": "integrity_required 不满足"}
-    return True, {"satisfied": True, "reason": "类型与性能满足"}
+    result = {"satisfied": True, "reason": "类型与性能满足"}
+    if airborne_evidence_source is not None:
+        #: Round 2.4：机载参与能力成立时也必须披露证据来源（事实 / 工程假设 / 声明）。
+        result["airborne_evidence_source"] = airborne_evidence_source
+    return True, result
 
 
 def _required_duration_limit(required):
@@ -221,6 +317,18 @@ def _main_duration_satisfied(required, snapshot):
 
 def _has_meaningful_type(value):
     return isinstance(value, dict) and any(item not in (None, "", "unknown", []) for item in value.values())
+
+
+def _requirement_service_key(required):
+    """需求块的 canonical ``service_key``（顶层优先，其次唯一的 ``services`` 条目）。"""
+
+    explicit = str((required or {}).get("service_key") or "").strip()
+    if explicit:
+        return explicit
+    services = (required or {}).get("services")
+    if isinstance(services, dict) and len(services) == 1:
+        return str(next(iter(services)) or "").strip() or None
+    return None
 
 
 def _result(state, reasons, *, evidence=None, fallback_used=None):
