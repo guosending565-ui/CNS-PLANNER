@@ -23,6 +23,7 @@ from ..domain.cns_service_registry import planner_family_for, service_registry_e
 from ..domain.navigation_augmentation import (
     build_navigation_service_evidence,
 )
+from ..domain.navigation_integrity_monitoring import navigation_integrity_monitor_actions
 from ..domain.radar_service_evidence import (
     build_radar_service_evidence, radar_candidate_actions,
     radar_what_if_service_evidence,
@@ -98,6 +99,9 @@ class CorridorSitePlanningService:
             candidate_sites=state.get("candidate_sites") or {},
             tower_colocation=state.get("tower_colocation_candidates") or {},
             navigation_evidence=baseline_navigation_evidence,
+        ))
+        actions.extend(navigation_integrity_monitor_actions(
+            baseline_gap.get("endpoint_service_gaps") or {},
         ))
         if baseline_navigation_evidence is not None:
             unknown.extend(navigation_evidence_required(baseline_navigation_evidence))

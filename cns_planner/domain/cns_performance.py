@@ -19,7 +19,8 @@ COMMUNICATION_NETWORK_SCOPES = (
     "public", "private", "dedicated", "managed_service", "other", "unknown",
 )
 NAVIGATION_TECHNOLOGIES = (
-    "gnss", "gnss_rtk", "inertial", "visual", "terrestrial", "hybrid", "other", "unknown",
+    "gnss", "gnss_rtk", "gnss_integrity_monitoring", "inertial", "visual",
+    "terrestrial", "hybrid", "other", "unknown",
 )
 SURVEILLANCE_TARGET_COOPERATION = ("cooperative", "non_cooperative", "mixed")
 SURVEILLANCE_SENSOR_MODES = ("active", "passive", "mixed")

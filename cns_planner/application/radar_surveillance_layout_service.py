@@ -171,7 +171,15 @@ def default_radar_surveillance_policy():
         "optimization_sample_spacing_m": SOFTWARE_BASELINE["optimization_sample_spacing_m"],
         "validation_sample_spacing_m": SOFTWARE_BASELINE["validation_sample_spacing_m"],
         "max_refinement_rounds": SOFTWARE_BASELINE["max_refinement_rounds"],
-        "allow_mixed_radar_types": True,
+        "allowed_radar_types": ["radar_i"],
+        "orientation_optimization": True,
+        "orientation_policy": "bearing_derived_critical_angles",
+        "existing_tower_first": True,
+        "max_panels_per_tower": 4,
+        "allow_automatic_radar_ii_escalation": False,
+        "allow_range_relaxation": False,
+        "gap_after_proven_infeasibility": True,
+        "allow_mixed_radar_types": False,
         "solver_time_limit_s": None,
         # V1.1：海岸不确定带（显式工程参数，进入 provenance 与 fingerprint）。
         "coastal_uncertainty_buffer_m": DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M,
@@ -241,7 +249,15 @@ def normalize_radar_surveillance_policy(value):
         if rounds < 0:
             raise ValueError("max_refinement_rounds 不能为负")
         result["max_refinement_rounds"] = rounds
-    result["allow_mixed_radar_types"] = payload.get("allow_mixed_radar_types") is not False
+    # Legacy projects persisted the former default ``allow_mixed_radar_types=true``.
+    # Migrate that value to the frozen I-only policy; a new explicit automatic
+    # escalation flag is rejected instead of being silently honored.
+    if payload.get("allow_automatic_radar_ii_escalation") is True:
+        raise ValueError("Round29-E 正式方案禁止自动升级 Radar-II")
+    if payload.get("allowed_radar_types") not in (None, ["radar_i"], ("radar_i",)):
+        raise ValueError("Round29-E 正式方案 allowed_radar_types 只能是 ['radar_i']")
+    result["allow_mixed_radar_types"] = False
+    result["allowed_radar_types"] = ["radar_i"]
     limit = payload.get("solver_time_limit_s")
     if limit in (None, ""):
         result["solver_time_limit_s"] = None
@@ -1944,7 +1960,7 @@ class RadarSurveillanceLayoutService:
             towers=usable_towers, samples=sampled["samples"],
             validation_samples=validation_samples,
             options=options,
-            allow_mixed=bool(policy.get("allow_mixed_radar_types", True)),
+            allow_mixed=False,
         )
 
         solved_validation = deepcopy(solved.get("validation"))

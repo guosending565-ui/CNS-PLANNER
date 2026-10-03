@@ -18,9 +18,11 @@ from .cns_service_contract import (
     RADAR_TYPE_SEMANTICS,
     RID_TYPE_SEMANTICS,
     RTK_AUGMENTATION_TYPE_SEMANTICS,
+    NAVIGATION_INTEGRITY_TYPE_SEMANTICS,
     SERVICE_KEY_COMMUNICATION,
     SERVICE_KEY_NAVIGATION,
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+    SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
     SERVICE_KEY_RADAR_NONCOOPERATIVE,
     SERVICE_KEY_RID_COOPERATIVE,
     SERVICE_KEY_SURVEILLANCE,
@@ -43,6 +45,7 @@ SERVICE_REGISTRY = {
         "dependencies": [],
         "surface_dependent": True,
         "supports_site_planning": True,
+        "service_scope": "corridor",
     },
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION: {
         "service_key": SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
@@ -55,7 +58,26 @@ SERVICE_REGISTRY = {
         "dependencies": [SERVICE_KEY_COMMUNICATION],
         "surface_dependent": False,
         "supports_site_planning": True,
+        "service_scope": "corridor",
         "type": deepcopy(RTK_AUGMENTATION_TYPE_SEMANTICS),
+    },
+    SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING: {
+        "service_key": SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
+        "subsystem": "N",
+        "label": "导航完整性监测",
+        "planner_family": "endpoint_integrity_monitor",
+        "provider_model": "ground_navigation_integrity_monitor",
+        "requirement_semantics": "route_endpoint_navigation_integrity_monitoring",
+        "planning_maturity": "engineering_planning_baseline",
+        "dependencies": [SERVICE_KEY_COMMUNICATION],
+        "surface_dependent": False,
+        "supports_site_planning": True,
+        "service_scope": "route_endpoints",
+        "type": deepcopy(NAVIGATION_INTEGRITY_TYPE_SEMANTICS),
+        "exclusions": [
+            "not_gbas_certification", "not_rtk_correction_station",
+            "not_airborne_raim_or_abas", "no_device_model_or_vendor_performance_claim",
+        ],
     },
     SERVICE_KEY_RID_COOPERATIVE: {
         "service_key": SERVICE_KEY_RID_COOPERATIVE,
@@ -68,6 +90,7 @@ SERVICE_REGISTRY = {
         "dependencies": [],
         "surface_dependent": True,
         "supports_site_planning": True,
+        "service_scope": "corridor",
         "type": deepcopy(RID_TYPE_SEMANTICS),
     },
     SERVICE_KEY_RADAR_NONCOOPERATIVE: {
@@ -81,7 +104,20 @@ SERVICE_REGISTRY = {
         "dependencies": [],
         "surface_dependent": False,
         "supports_site_planning": True,
+        "service_scope": "corridor",
         "type": deepcopy(RADAR_TYPE_SEMANTICS),
+        "planning_policy": {
+            "required": True,
+            "allowed_radar_types": ["radar_i"],
+            "orientation_optimization": True,
+            "orientation_policy": "bearing_derived_critical_angles",
+            "existing_tower_first": True,
+            "max_panels_per_tower": 4,
+            "allow_automatic_radar_ii_escalation": False,
+            "allow_range_relaxation": False,
+            "gap_after_proven_infeasibility": True,
+            "validation_sample_spacing_m": 5.0,
+        },
     },
     # Legacy identities remain addressable, but do not acquire a new planner.
     SERVICE_KEY_NAVIGATION: {
@@ -91,6 +127,7 @@ SERVICE_REGISTRY = {
         "requirement_semantics": "legacy_single_service_requirement",
         "planning_maturity": "legacy_compatible", "dependencies": [],
         "surface_dependent": False, "supports_site_planning": False,
+        "service_scope": "legacy",
     },
     SERVICE_KEY_SURVEILLANCE: {
         "service_key": SERVICE_KEY_SURVEILLANCE, "subsystem": "S",
@@ -99,6 +136,7 @@ SERVICE_REGISTRY = {
         "requirement_semantics": "legacy_single_service_requirement",
         "planning_maturity": "legacy_compatible", "dependencies": [],
         "surface_dependent": False, "supports_site_planning": False,
+        "service_scope": "legacy",
     },
 }
 
@@ -112,6 +150,12 @@ def service_registry_entry(service_key):
 
 def planner_family_for(service_key):
     return service_registry_entry(service_key)["planner_family"]
+
+
+def service_scope_for(service_key):
+    """Explicit P14/P15/P16 dispatch scope for a canonical service."""
+
+    return service_registry_entry(service_key)["service_scope"]
 
 
 def normalize_service_requirements(subsystem, requirement, *, field="required_cns"):
@@ -311,6 +355,8 @@ def _normalize_service_requirement(subsystem, key, value, *, field):
 
     normalized = {**source, **normalize_subsystem_contract(subsystem, source, field=field)}
     normalized = sync_aliases(subsystem, normalized, field=field)
+    if registry_type:
+        normalized["type"] = {**(normalized.get("type") or {}), **registry_type}
     normalized["required"] = required
     normalized["service_key"] = key
     subtype = validated_service_subtype(
@@ -326,6 +372,12 @@ def _normalize_service_requirement(subsystem, key, value, *, field):
         )
     if key == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
         normalized["planning"] = _normalize_rtk_planning(
+            source.get("planning"), field=f"{field}.planning",
+            fallback_confirmed=normalized.get("confirmed", False),
+            fallback_source=normalized.get("source"),
+        )
+    if key == SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING:
+        normalized["planning"] = _normalize_navigation_integrity_planning(
             source.get("planning"), field=f"{field}.planning",
             fallback_confirmed=normalized.get("confirmed", False),
             fallback_source=normalized.get("source"),
@@ -376,6 +428,42 @@ def _normalize_rtk_planning(value, *, field, fallback_confirmed=False, fallback_
     }
 
 
+NAVIGATION_INTEGRITY_POLICY_SOURCE = (
+    "Round29-E 用户确认：导航完整性监测设备优先布设在航路起点和终点起降场，"
+    "两端各至少1套独立设备；当前不沿航路中段强制布站；"
+    "10 km 为 CNS-PLANNER 舟山案例局地监测关联范围工程假设，"
+    "不代表 RTK baseline 或认证 GBAS service volume。"
+)
+
+
+def _normalize_navigation_integrity_planning(value, *, field, fallback_confirmed=False,
+                                             fallback_source=None):
+    raw = value if isinstance(value, dict) else {}
+    if value is not None and not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是对象")
+    fixed = {
+        "placement_scope": "route_endpoints",
+        "required_monitor_per_endpoint": 1,
+        "required_endpoint_roles": ["origin", "destination"],
+        "require_distinct_physical_site_per_endpoint": True,
+        "preferred_site_binding": "takeoff_landing_site",
+        "local_monitoring_radius_m": 10000.0,
+        "local_monitoring_radius_semantics": (
+            "engineering_local_monitoring_context_not_rtk_baseline_not_certified_gbas_service_volume"
+        ),
+        "corridor_monitoring_required": False,
+        "delivery_service_key": SERVICE_KEY_COMMUNICATION,
+        "confirmed": True,
+        "maturity": "engineering_assumption",
+        "source": NAVIGATION_INTEGRITY_POLICY_SOURCE,
+    }
+    for name, expected in fixed.items():
+        supplied = raw.get(name)
+        if supplied not in (None, "") and supplied != expected:
+            raise ValueError(f"{field}.{name} 与 Round29-E canonical policy 不一致")
+    return fixed
+
+
 def _optional_positive_number(value, field):
     if value in (None, ""):
         return None
@@ -401,8 +489,9 @@ def _optional_positive_integer(value, field):
 
 __all__ = [
     "CANONICAL_SERVICE_DERIVATION_KEYS", "DERIVED_SERVICE_REQUIREMENT_SOURCE",
+    "NAVIGATION_INTEGRITY_POLICY_SOURCE",
     "SERVICE_REGISTRY", "canonicalize_requirement_services",
     "derive_canonical_service_requirement", "normalize_service_requirements",
     "planner_family_for", "required_services_for", "service_registry_entry",
-    "service_requirement_for",
+    "service_requirement_for", "service_scope_for",
 ]

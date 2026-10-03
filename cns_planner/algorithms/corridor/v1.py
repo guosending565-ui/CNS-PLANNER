@@ -30,10 +30,13 @@ from ...domain.cns_service_contract import (
     SERVICE_KEY_RADAR_NONCOOPERATIVE, index_max_range_m, normalize_surface_class,
     required_distinct_site_count, resolve_surface_class,
 )
-from ...domain.cns_service_registry import normalize_service_requirements
+from ...domain.cns_service_registry import normalize_service_requirements, service_registry_entry
 from ...domain.navigation_augmentation import (
     delivery_dependency_from_communication,
     evidence_for_probe as navigation_evidence_for_probe,
+)
+from ...domain.navigation_integrity_monitoring import (
+    build_navigation_integrity_endpoint_evidence,
 )
 from ...domain.radar_service_evidence import evidence_for_probe
 from ...domain.geodesy import distance_m
@@ -62,7 +65,8 @@ class CNSServiceCorridorV1:
         allow_beyond_validated_envelope=False, surface_class_provider=None,
         surface_facts_fingerprint=None, radar_service_evidence=None,
         radar_metric_projector=None, navigation_service_evidence=None,
-        navigation_metric_projector=None, prepared_cells=None,
+        navigation_metric_projector=None, navigation_endpoint_evidence=None,
+        prepared_cells=None,
     ):
         """评估服务走廊。
 
@@ -158,6 +162,8 @@ class CNSServiceCorridorV1:
             fingerprint_input["radar_service_evidence"] = radar_service_evidence
         if navigation_service_evidence is not None:
             fingerprint_input["navigation_service_evidence"] = navigation_service_evidence
+        if navigation_endpoint_evidence is not None:
+            fingerprint_input["navigation_endpoint_evidence"] = navigation_endpoint_evidence
         input_fingerprint = _fingerprint(fingerprint_input)
         geometry_fingerprint = _fingerprint([
             {"route_id": item.get("route_id"), "path": item.get("path")} for item in routes or []
@@ -172,9 +178,31 @@ class CNSServiceCorridorV1:
             voxel["voxel_id"] for route in route_results for voxel in route.get("voxels") or []
             if any(item.get("planning_status") == "unknown" for item in voxel.get("subsystems") or [])
         })
+        if navigation_endpoint_evidence is None:
+            navigation_endpoint_evidence = build_navigation_integrity_endpoint_evidence(
+                required_cns, routes,
+                existing_facilities=existing_facilities,
+                communication_delivery=_endpoint_communication_delivery(route_results),
+            )
+        if navigation_endpoint_evidence is not None:
+            fingerprint_input["navigation_endpoint_evidence"] = navigation_endpoint_evidence
+            input_fingerprint = _fingerprint(fingerprint_input)
+        endpoint_by_route = {
+            str(item.get("route_id")): deepcopy(item)
+            for item in (navigation_endpoint_evidence or {}).get("routes") or []
+        }
+        for route_result in route_results:
+            endpoint = endpoint_by_route.get(str(route_result.get("route_id")))
+            if endpoint is not None:
+                route_result.setdefault("endpoint_services", []).append(endpoint)
+                endpoint_status = endpoint.get("status")
+                if endpoint_status == "confirmed_deficit":
+                    route_result["status"] = "failed"
+                elif endpoint_status == "unknown" and route_result.get("status") == "passed":
+                    route_result["status"] = "pending_confirmation"
         statuses = [item["status"] for item in route_results]
         status = _aggregate_status(statuses)
-        return {
+        result = {
             "status": status, "algorithm_id": self.algorithm_id,
             "algorithm_version": self.algorithm_version, "model_scope": self.model_scope,
             "parameters": deepcopy(self.parameters), "input_fingerprint": input_fingerprint,
@@ -191,6 +219,9 @@ class CNSServiceCorridorV1:
             },
             "disclaimers": corridor_disclaimers(),
         }
+        if navigation_endpoint_evidence is not None:
+            result["endpoint_service_evidence"] = deepcopy(navigation_endpoint_evidence)
+        return result
 
     def prepare_cells(self, grid, grid_attributes, surface_class_provider=None):
         """准备（并可安全复用）走廊候选单元。
@@ -393,6 +424,8 @@ class CNSServiceCorridorV1:
                     coverage_confirmed_absent = geometry.get("covered") is False
                     for service_requirement in explicit_services:
                         service_key = str(service_requirement.get("service_key") or "")
+                        if service_registry_entry(service_key).get("service_scope") == "route_endpoints":
+                            continue
                         if service_key in (
                             SERVICE_KEY_RADAR_NONCOOPERATIVE,
                             SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
@@ -459,11 +492,15 @@ class CNSServiceCorridorV1:
                         str(item.get("service_key")): str(item.get("status") or "unknown")
                         for item in service_redundancy
                     }
-                    required_keys = [str(item.get("service_key")) for item in explicit_services]
-                    required_statuses = [statuses.get(key, "unknown") for key in required_keys]
-                    subsystem_entry["planning_status"] = aggregate_required_service_status(
-                        required_statuses,
-                    )
+                    required_keys = [
+                        str(item.get("service_key")) for item in explicit_services
+                        if service_registry_entry(item.get("service_key")).get("service_scope") == "corridor"
+                    ]
+                    if required_keys:
+                        required_statuses = [statuses.get(key, "unknown") for key in required_keys]
+                        subsystem_entry["planning_status"] = aggregate_required_service_status(
+                            required_statuses,
+                        )
                 if service_redundancy:
                     subsystem_entry["service_redundancy"] = _clone_fresh(service_redundancy)
                 subsystems.append(subsystem_entry)
@@ -487,6 +524,40 @@ class CNSServiceCorridorV1:
                 "subsystems": subsystems,
             })
         return output
+
+
+def _endpoint_communication_delivery(route_results):
+    """Project already-computed corridor Communication evidence onto route endpoints."""
+
+    result = {}
+    for route in route_results or []:
+        voxels = list(route.get("voxels") or [])
+        if not voxels:
+            continue
+        ordered = sorted(voxels, key=lambda item: float(item.get("nearest_route_offset_m") or 0.0))
+        result[str(route.get("route_id") or "")] = {
+            "origin": _communication_delivery_at_voxel(ordered[0]),
+            "destination": _communication_delivery_at_voxel(ordered[-1]),
+        }
+    return result
+
+
+def _communication_delivery_at_voxel(voxel):
+    subsystem = next(
+        (item for item in (voxel or {}).get("subsystems") or [] if item.get("subsystem") == "C"),
+        {},
+    )
+    service = next(
+        (item for item in subsystem.get("service_redundancy") or []
+         if item.get("service_key") == SERVICE_KEY_COMMUNICATION),
+        None,
+    )
+    if service is None:
+        return {"status": "unknown", "reason": "endpoint_communication_evidence_missing"}
+    return {
+        "status": str(service.get("status") or "unknown"),
+        "evidence_fingerprint": service.get("input_fingerprint"),
+    }
 
 
 def _uncovered_service_entry(code, service_key, service_requirement, probe):

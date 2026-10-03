@@ -322,6 +322,20 @@ RADAR_TYPE_I = "radar_i"
 RADAR_TYPE_II = "radar_ii"
 RADAR_TYPES = (RADAR_TYPE_I, RADAR_TYPE_II)
 
+# Round29-E formal planning policy.  Radar-II remains in the device facts for
+# compatibility and audit, but is never an automatic formal-plan escalation.
+RADAR_ORIENTATION_FIRST_POLICY = {
+    "required": True,
+    "allowed_radar_types": [RADAR_TYPE_I],
+    "orientation_optimization": True,
+    "orientation_policy": "bearing_derived_critical_angles",
+    "existing_tower_first": True,
+    "max_panels_per_tower": MAX_PANELS_PER_TOWER,
+    "allow_automatic_radar_ii_escalation": False,
+    "allow_range_relaxation": False,
+    "gap_after_proven_infeasibility": True,
+}
+
 RADAR_TYPE_LABELS = {
     RADAR_TYPE_I: "中近程雷达Ⅰ型",
     RADAR_TYPE_II: "中近程雷达Ⅱ型",
@@ -844,6 +858,7 @@ __all__ = [
     "RADAR_DEVICE_FACTS", "RADAR_GEOMETRY_PARAMETERS", "RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1",
     "RADAR_ORIGIN_BASIS", "RADAR_ORIGIN_SEMANTICS",
     "RADAR_TYPES", "RADAR_TYPE_I", "RADAR_TYPE_II", "RADAR_TYPE_LABELS",
+    "RADAR_ORIENTATION_FIRST_POLICY",
     "RCS_REFERENCE_M2", "REQUIRED_DISTINCT_SITE_COUNT",
     "ROUTE_SAMPLE_HEIGHT_SEMANTICS", "ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT",
     "SCHEMA_VERSION", "SEMANTICS_FINGERPRINT", "SURFACE_CLASSES", "VERTICAL_REFERENCE",

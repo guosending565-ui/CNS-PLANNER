@@ -17,6 +17,7 @@ from ...domain.cns_planning_objectives import (
 from ...domain.cns_service_contract import (
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, normalize_surface_class,
 )
+from ...domain.navigation_integrity_monitoring import endpoint_gap_evidence
 
 
 class CNSCorridorGapAnalyzerV1:
@@ -43,12 +44,26 @@ class CNSCorridorGapAnalyzerV1:
             })
             return result
         routes = []
+        endpoint_gap = endpoint_gap_evidence(
+            (corridor_assessment or {}).get("endpoint_service_evidence")
+        )
+        endpoint_by_route = {
+            str(item.get("route_id")): item for item in endpoint_gap.get("routes") or []
+        }
         objective_routes = (planning_objectives or {}).get("routes") or {}
         for corridor_route in (corridor_assessment or {}).get("routes") or []:
             route_id = str(corridor_route.get("route_id") or "")
             requirements = ((required_cns or {}).get("route_overrides") or {}).get(route_id) or (required_cns or {}).get("project_default") or {}
             objective_config = ((objective_routes.get(route_id) or {}).get("subsystems") or {})
-            routes.append(self._route(corridor_route, requirements, objective_config))
+            assessed = self._route(corridor_route, requirements, objective_config)
+            endpoint = deepcopy(endpoint_by_route.get(route_id))
+            if endpoint is not None:
+                assessed["endpoint_services"] = [endpoint]
+                if endpoint.get("status") == "confirmed_deficit":
+                    assessed["status"] = "failed"
+                elif endpoint.get("status") == "unknown" and assessed.get("status") == "passed":
+                    assessed["status"] = "pending_confirmation"
+            routes.append(assessed)
         fingerprint = _fingerprint({
             "corridor_assessment": corridor_assessment or {},
             "required_cns": required_cns or {},
@@ -70,6 +85,7 @@ class CNSCorridorGapAnalyzerV1:
             "continuity_semantics": self.continuity_semantics,
             "formal_continuity_probability": "not_evaluated",
             "input_fingerprint": fingerprint, "route_count": len(routes), "routes": routes,
+            "endpoint_service_gaps": endpoint_gap,
             "confirmed_target_voxel_ids": target_ids, "unknown_voxel_ids": unknown_ids,
             "input_provenance": {
                 "corridor_algorithm_id": (corridor_assessment or {}).get("algorithm_id"),

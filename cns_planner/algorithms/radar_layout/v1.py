@@ -48,7 +48,7 @@ from ...domain.radar_surveillance_layout import (
 from . import milp as milp_module
 from .candidates import build_candidates
 from .geometry import (
-    interpolate_metric_path, panel_coverage, plane_intersection_radii_m,
+    geometry_evaluation, interpolate_metric_path, panel_coverage, plane_intersection_radii_m,
     sample_offsets_m,
 )
 
@@ -543,7 +543,7 @@ def _refine(*, towers, samples, options, selected_panel_ids, panels, radar_types
     return result
 
 
-def solve_layout(*, towers, samples, options=None, allow_mixed=True,
+def solve_layout(*, towers, samples, options=None, allow_mixed=False,
                  validation_samples=None):
     """完整求解：Stage A →（必要时）Stage B → 5 m 独立连续覆盖复核与补点重解。
 
@@ -861,6 +861,13 @@ def _blocked_result(*, status, reason, samples):
         "selected_panel_count": None,
         "validation": None,
         "refinement_rounds": [],
+        "gap_reason": "tower_origin_unresolved" if status == "not_ready" else "search_incomplete",
+        "gap_classification": "unknown",
+        "managed_physical_gap": False,
+        "orientation_optimization": True,
+        "orientation_policy": "bearing_derived_critical_angles",
+        "allowed_radar_types": [RADAR_TYPE_I],
+        "automatic_radar_ii_escalation": False,
     }
 
 
@@ -950,6 +957,9 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
     radar_i_count = sum(1 for item in selected_panels if item["radar_type"] == RADAR_TYPE_I)
     radar_ii_count = sum(1 for item in selected_panels if item["radar_type"] == RADAR_TYPE_II)
     selected_tower_ids = sorted({item["tower_id"] for item in selected_panels})
+    gap_reason, gap_classification = _radar_gap_classification(
+        status, final, candidates, towers,
+    )
 
     return {
         "status": status,
@@ -964,6 +974,13 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
         "selected_panel_count": len(selected_panels),
         "radar_i_panel_count": radar_i_count,
         "radar_ii_panel_count": radar_ii_count,
+        "orientation_optimization": True,
+        "orientation_policy": "bearing_derived_critical_angles",
+        "allowed_radar_types": [RADAR_TYPE_I] if stage != STAGE_MIXED else list(RADAR_TYPES),
+        "automatic_radar_ii_escalation": stage == STAGE_MIXED,
+        "gap_reason": gap_reason,
+        "gap_classification": gap_classification,
+        "managed_physical_gap": gap_classification == "confirmed_gap",
         "selected_tower_count": len(selected_tower_ids),
         "selected_tower_ids": selected_tower_ids,
         "candidate_tower_count": len(candidates["towers"]),
@@ -993,6 +1010,49 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
         "not_evaluated": deepcopy(NOT_EVALUATED),
         "model_scope": MODEL_SCOPE,
     }
+
+
+def _radar_gap_classification(status, final, candidates, towers):
+    """Only proven I-only infeasibility may become a confirmed radar gap."""
+
+    if status in ("search_incomplete", "refinement_incomplete"):
+        return "search_incomplete", "unknown"
+    if status in ("solver_error", "solver_unavailable", "unresolved", "not_ready"):
+        unusable = (candidates or {}).get("unusable_towers") or []
+        reason = "tower_origin_unresolved" if unusable and not (candidates or {}).get("towers") else "search_incomplete"
+        return reason, "unknown"
+    if status != "infeasible":
+        return None, "none"
+    if (candidates or {}).get("unusable_towers") and not (candidates or {}).get("towers"):
+        return "tower_origin_unresolved", "unknown"
+    presolve = (final or {}).get("presolve") or {}
+    evidence = presolve.get("insufficient_samples") or presolve.get("evidence") or []
+    if evidence:
+        # Presolve proves too few physically reachable independent sites.  Preserve
+        # the most specific reason available without weakening any device fact.
+        if all((item.get("candidate_distinct_site_count") or 0) == 0 for item in evidence):
+            return _zero_candidate_physical_reason(candidates), "confirmed_gap"
+        return "independent_site_count_limited", "confirmed_gap"
+    solver = ((final or {}).get("solve") or {}).get("solver") or {}
+    if solver.get("infeasibility_proven") is True:
+        return "orientation_configuration_infeasible", "confirmed_gap"
+    return "search_incomplete", "unknown"
+
+
+def _zero_candidate_physical_reason(candidates):
+    parameters = radar_geometry_parameters(RADAR_TYPE_I)
+    any_in_range = False
+    for tower in (candidates or {}).get("towers") or []:
+        for sample in (candidates or {}).get("samples") or []:
+            geometry = geometry_evaluation(
+                origin_egm2008_m=tower["origin_egm2008_m"],
+                sample_egm2008_m=sample["egm2008_m"],
+                sample_metric=sample["metric"], tower_metric=tower["metric"],
+            )
+            if (parameters["min_slant_range_m"] <= geometry["slant_distance_m"]
+                    <= parameters["max_slant_range_m"]):
+                any_in_range = True
+    return "elevation_limited" if any_in_range else "range_limited"
 
 
 def coverage_profile(per_sample, *, max_entries=400):

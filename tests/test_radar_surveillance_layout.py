@@ -475,7 +475,7 @@ def test_stage_b_is_entered_only_after_radar_i_is_proven_infeasible():
     # 5000 m 外的点：Radar-I 的 3000 m 上限物理上不可能覆盖 ⇒ I-only 被证明不可行。
     samples = [sample(0, [0.0, 4500.0])]
     towers = [tower("T1", [0.0, 0.0])]
-    result = solve(towers, samples)
+    result = solve(towers, samples, allow_mixed=True)
     assert result["status"] == "optimal_coverage"
     assert result["stage"] == "radar_i_plus_radar_ii"
     assert result["radar_ii_panel_count"] >= 1
@@ -552,7 +552,7 @@ def test_mixed_stage_minimises_total_panel_count_first():
         sample(2, [0.0, 4500.0]), sample(3, [0.0, 4800.0]),
     ]
     towers = [tower("T1", [0.0, 0.0]), tower("T2", [3000.0, 0.0])]
-    result = solve(towers, samples)
+    result = solve(towers, samples, allow_mixed=True)
     assert result["status"] == "optimal_coverage"
     assert result["stage"] == "radar_i_plus_radar_ii"
     b1 = result["stage_b"]["b1"]
@@ -584,7 +584,7 @@ def test_minimising_radar_ii_count_subject_to_the_same_total():
 
     # 强制 mixed（关掉 I-only 的上限不可能，因此用一个 4500 m 的点）。
     samples_mixed = [sample(0, [0.0, 2500.0]), sample(1, [0.0, 4500.0])]
-    mixed = solve(towers, samples_mixed)
+    mixed = solve(towers, samples_mixed, allow_mixed=True)
     assert mixed["stage"] == "radar_i_plus_radar_ii"
     assert mixed["status"] == "optimal_coverage"
     # 2 个点都在 5000 m 内 ⇒ 1 个 II 面阵即可覆盖全部，而 I+II 需要 2 个 ⇒ 必须取 1。
@@ -627,7 +627,7 @@ def test_unknown_surface_class_is_fail_closed_and_never_treated_as_sea():
 def test_presolve_reports_insufficient_candidate_sites_with_evidence():
     samples = [sample(0, [0.0, 4500.0], surface_class="land")]
     towers = [tower("T1", [0.0, 0.0])]
-    result = solve(towers, samples)
+    result = solve(towers, samples, allow_mixed=True)
     # Radar-II 能覆盖，但 land 要求 2 个不同站址，而只有 1 座塔 ⇒ mixed 也不可能。
     assert result["status"] == "infeasible"
     assert result["solver"]["infeasibility_proven"] is True
