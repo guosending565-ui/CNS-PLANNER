@@ -398,9 +398,9 @@ export function renderRadarSurveillanceLayoutPanel(flow){
 
   const policyForm='<div class="form-grid">'
     +'<label>海岸不确定带 (m)<input class="panel-input" type="number" min="0" id="radarCoastalBuffer" value="'
-    +(Number.isFinite(buffer.coastal_uncertainty_buffer_m)?buffer.coastal_uncertainty_buffer_m:30)+'"></label>'
+    +(Number.isFinite(buffer.coastal_uncertainty_buffer_m)?buffer.coastal_uncertainty_buffer_m:'')+'"></label>'
     +'<label>陆域图层名<input class="panel-input" id="radarLandMaskLayer" value="'
-    +escapeHtml(model.landMask?.layer_name||model.landMaskProvenance?.layer_name||'zhejiang_boundary')+'"></label>'
+    +escapeHtml(model.landMask?.layer_name||model.landMaskProvenance?.layer_name||'')+'"></label>'
     +'<label>历史兼容工程示例挂高 (m)<input class="panel-input" type="number" id="radarMountHeight" value="'
     +(Number.isFinite(model.legacyMountHeight?.radar_mount_height_m)?model.legacyMountHeight.radar_mount_height_m:'')
     +'" placeholder="留空=未配置" disabled></label>'

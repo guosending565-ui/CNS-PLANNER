@@ -2010,7 +2010,9 @@ def test_algorithm_version_is_1_1_and_fingerprint_carries_v1_1_semantics(tmp_pat
     assert components["radar_origin_semantics"] == (
         "radar_origin_egm2008_equals_tower_top_orthometric_m"
     )
-    assert components["land_mask"]["classification_basis"] == "explicit_polygon"
+    assert components["land_mask"]["classification_basis"] == (
+        "explicit_land_polygon_containment_plus_coastal_uncertainty_buffer"
+    )
     assert components["policy"]["coastal_uncertainty_buffer_m"] == 30.0
     # legacy 挂高仍进指纹（改了就 stale），但被显式标注为不参与几何。
     assert components["radar_mount_height"]["legacy_not_used_by_v1_1"] is True

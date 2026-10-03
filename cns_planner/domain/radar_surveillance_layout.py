@@ -54,20 +54,9 @@ terrain_LOS、diffraction、building_blocking、clutter、multipath、interferen
 两个值都**同时**保留为设备事实（``source_inequality`` / ``source_value``），因此模型
 参数与来源证据可逐项对照，绝不是"把来源改掉"。
 
-陆域掩膜真实来源（只读）
-------------------------
-
-    D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\boundary\\zhejiang_boundary.gpkg
-
-* ``layer_name = zhejiang_boundary``；``source_crs = EPSG:4326``；
-  geometry ``Polygon/MultiPolygon``；
-* 发现自 QGIS 工程 ``D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\11.qgz``；
-* ``source_type = real`` / ``source_role = land_mask`` /
-  ``classification_basis = explicit_polygon`` / ``dem_nodata_used_to_infer_sea = false``。
-
-**该路径只作为本机 DEFAULT_PATHS 建议值**；算法与 GIS 适配器一律从
-``data_sources["land_mask"]`` 消费，绝不硬编码绝对路径。这是**工程化/简化**的省域边界，
-不是 5 m 高精度海岸线。
+陆域掩膜来源由项目当前 ``data_sources`` 与 canonical
+``surface_classification_policy`` / ``surface_class_facts`` 动态决定。Radar 不在
+Python 契约中声明特定路径、图层、CRS 或数据精度。
 """
 
 from __future__ import annotations
@@ -361,8 +350,9 @@ EFFECTIVE_REQUIREMENT_CLASS = {
 
 #: 海岸不确定带默认值（米）——**工程假设，未确认**。
 #:
-#: 它绝不能被描述成数据真实精度：``zhejiang_boundary`` 是工程化/简化的省域边界，
-#: 与 5 m validation resolution 无关。参数显式进入 provenance 与 fingerprint。
+#: 它绝不能被描述成当前 canonical 数据的真实精度，也与 5 m
+#: validation resolution 无关。该值仅作 legacy Radar policy 兼容默认；
+#: 运行时 Radar 消费 canonical surface classification policy 中的值。
 DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M = 30.0
 COASTAL_UNCERTAINTY_BUFFER_ORIGIN = "engineering_assumption"
 COASTAL_UNCERTAINTY_BUFFER_CONFIRMED = False

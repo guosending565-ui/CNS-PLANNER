@@ -732,11 +732,9 @@ class ApplicationContext:
         **陆域掩膜独立于 DEM**：本 provider 不含任何"用 NoData 推断海洋"的路径；未配置
         陆域源时 ``classify_surface`` 返回 ``unknown``（fail-closed）。
 
-        Round 2.1：本 provider 是 **Radar 自己**的运行时事实源，因此陆域分类参数只读
-        ``radar_surveillance_policy``（Radar 的 canonical policy）。Step5 的
-        ``surface_class_facts`` 由 :meth:`configure_surface_classification_sources` 独立
-        装配，只消费中立 ``surface_classification_policy`` —— 两者共享 land-mask 数据源，
-        但各自读自己的 policy，运行时彼此没有 fallback。
+        Radar 不维护第二套 land-mask authority：运行时图层名与海岸不确定带统一读取
+        canonical ``surface_classification_policy`` / ``surface_class_facts``。只有旧项目
+        的两个 canonical 容器都完全不存在时，才由服务层读取 legacy Radar policy。
         """
 
         from ..gis.radar_layout_adapter import (
@@ -766,21 +764,19 @@ class ApplicationContext:
         land_mask_cache = {}
 
         def _land_policy():
-            """**Radar 自己**的陆域判定工程参数（图层名 + 海岸不确定带）。
-
-            Round 2.1 冻结边界：Radar 继续读自己的 canonical
-            ``radar_surveillance_policy``（经 ``policy_snapshot()`` 归一化）。它**不**读
-            ``surface_classification_policy``，Communication / RID 也**不**读它 ——
-            双方的运行时解耦，共享的只有 land-mask 数据源本身。
-            """
+            """Canonical surface authority（legacy Radar 字段仅作旧项目回退）。"""
 
             try:
-                policy = self.workflow.radar_surveillance_layout_service.policy_snapshot()
+                authority = (
+                    self.workflow.radar_surveillance_layout_service.land_mask_authority()
+                )
             except Exception:
-                policy = {}
-            if not isinstance(policy, dict):
-                policy = {}
-            return policy.get("land_mask_layer_name"), policy.get("coastal_uncertainty_buffer_m")
+                authority = {}
+            if not isinstance(authority, dict):
+                authority = {}
+            return authority.get("layer_name"), authority.get(
+                "coastal_uncertainty_buffer_m"
+            )
 
         def land_mask_source():
             path = self.data.paths.get("land_mask")
@@ -856,6 +852,9 @@ class ApplicationContext:
             "land_mask_readiness": land_mask_readiness_bundle,
             "land_mask_layer_name": policy_layer_name,
             "coastal_uncertainty_buffer_m": policy_buffer_m,
+            "land_mask_authority": (
+                self.workflow.radar_surveillance_layout_service.land_mask_authority()
+            ),
             "paths": {
                 "terrain_dtm": self.data.paths.get("terrain_dtm"),
                 "land_mask": self.data.paths.get("land_mask"),

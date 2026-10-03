@@ -1624,8 +1624,8 @@ def test_runtime_surface_paths_never_reference_radar_policy():
     * Step5 的 ``update_surface_class_facts`` 与中立 land-mask 源只消费
       ``surface_classification_policy`` + land-mask 数据源，代码里**没有**任何 Radar
       运行时引用；
-    * Radar provider 自己的 ``_land_policy()`` 反过来**必须**读 ``radar_surveillance_policy``
-      （那是 Radar 的 canonical policy），且**不得**读中立 surface policy。
+    * Radar provider 的 ``_land_policy()`` 统一通过 Radar service 解析
+      canonical surface authority，不再直接维护第二套 policy。
     """
 
     forbidden = {
@@ -1643,15 +1643,14 @@ def test_runtime_surface_paths_never_reference_radar_policy():
     assert "build_land_mask_source" in neutral_module
     assert not (forbidden & neutral_module), forbidden & neutral_module
 
-    # Radar provider 的 _land_policy 必须读 Radar 自己的 policy（冻结规则）。
+    # Radar provider 只消费 service 已解析的 canonical authority。
     radar_land_policy = _function_identifiers(
         "cns_planner/application/app_context.py", "_land_policy",
     )
-    assert "policy_snapshot" in radar_land_policy
+    assert "land_mask_authority" in radar_land_policy
     assert "radar_surveillance_layout_service" in radar_land_policy
-    assert "land_mask_layer_name" in radar_land_policy
     assert "coastal_uncertainty_buffer_m" in radar_land_policy
-    assert "surface_classification_policy" not in radar_land_policy
+    assert "policy_snapshot" not in radar_land_policy
 
     # 一次性迁移仍然是唯一允许读 Radar policy 的 Step5 路径。
     migration = _function_identifiers(

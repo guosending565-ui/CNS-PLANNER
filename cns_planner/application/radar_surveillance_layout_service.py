@@ -41,6 +41,9 @@ from ..domain.radar_surveillance_layout import (
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
 from ..domain.radar_service_evidence import radar_required_for
+from ..domain.surface_classification import (
+    normalize_surface_classification_policy, surface_facts_input_fingerprint,
+)
 from ..gis.radar_layout_adapter import (
     LAND_MASK_CLASSIFICATION_BASIS, LAND_MASK_SEMANTICS, coastal_uncertainty_buffer_provenance,
     land_mask_readiness, normalized_coastal_buffer_m, radar_layout_source_status,
@@ -52,23 +55,6 @@ LAYOUT_KEY = "radar_surveillance_layout"
 STATUS_KEY = "radar_surveillance_layout"
 
 PROPOSAL_ONLY = True
-
-#: 陆域掩膜来源的 provenance（真实数据事实，不是"模型参数"）。
-LAND_MASK_SOURCE_PROVENANCE = {
-    "source_type": "real",
-    "source_role": "land_mask",
-    "source_crs": "EPSG:4326",
-    "layer_name": "zhejiang_boundary",
-    "classification_basis": LAND_MASK_CLASSIFICATION_BASIS,
-    "dem_nodata_used_to_infer_sea": False,
-    "discovered_from_qgis_project": (
-        "D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\11.qgz"
-    ),
-    "data_accuracy_claim": (
-        "工程化/简化省域边界，可表达浙江陆块与舟山岛间海域；"
-        "不是 5 m 高精度海岸线，也不等同于 5 m validation resolution。"
-    ),
-}
 
 #: 本服务**绝不**写入的状态键（写入即违规）。
 FORBIDDEN_WRITE_KEYS = (
@@ -186,8 +172,10 @@ def default_radar_surveillance_policy():
         "coastal_uncertainty_buffer": coastal_uncertainty_buffer_provenance(
             DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M
         ),
-        # V1.1：land mask 的图层选择（显式优先，兜底才用关键词）。
-        "land_mask_layer_name": LAND_MASK_SOURCE_PROVENANCE["layer_name"],
+        # Legacy compatibility mirror only. Runtime authority is the canonical
+        # surface_classification_policy / surface_class_facts pair.
+        "land_mask_layer_name": None,
+        "land_mask_policy_semantics": "legacy_compatibility_mirror_not_runtime_authority",
         # V1.1：legacy 字段，兼容读取但**不参与**几何，也**不是** readiness 门控。
         "radar_mount_height": default_radar_mount_assumption(),
         "radar_origin_basis": RADAR_ORIGIN_BASIS,
@@ -355,6 +343,14 @@ def _source_fingerprint_component(record):
         component["source_crs"] = record.get("source_crs")
     if record.get("metric_crs") is not None:
         component["metric_crs"] = record.get("metric_crs")
+    if record.get("content_sha256") is not None:
+        component["content_sha256"] = record.get("content_sha256")
+    if record.get("source_identity") is not None:
+        component["source_identity"] = deepcopy(record.get("source_identity"))
+    if record.get("surface_facts_fingerprint") is not None:
+        component["surface_facts_fingerprint"] = record.get(
+            "surface_facts_fingerprint"
+        )
     buffer = record.get("coastal_uncertainty_buffer")
     if isinstance(buffer, dict):
         component["coastal_uncertainty_buffer_m"] = buffer.get("coastal_uncertainty_buffer_m")
@@ -495,6 +491,116 @@ class RadarSurveillanceLayoutService:
     def _policy(self):
         return normalize_radar_surveillance_policy(self.session.state.get(POLICY_KEY))
 
+    def land_mask_authority(self):
+        """Resolve Radar's land-mask inputs from the project's canonical surface state.
+
+        ``radar_surveillance_policy`` retains its two historical fields only for old
+        projects.  They are consulted exclusively when both canonical containers are
+        absent from the persisted state; once either canonical container exists, a
+        legacy Radar value can never override it.
+        """
+
+        state = self.session.state if isinstance(self.session.state, dict) else {}
+        raw_surface_policy = state.get("surface_classification_policy")
+        raw_surface_facts = state.get("surface_class_facts")
+        policy_present = (
+            "surface_classification_policy" in state
+            and isinstance(raw_surface_policy, dict)
+        )
+        facts_present = "surface_class_facts" in state and isinstance(raw_surface_facts, dict)
+        canonical_present = policy_present or facts_present
+        facts = raw_surface_facts if facts_present else {}
+        facts_policy = facts.get("policy") if isinstance(facts.get("policy"), dict) else None
+
+        if policy_present:
+            policy = normalize_surface_classification_policy(raw_surface_policy)
+            policy_source = "surface_classification_policy"
+        elif facts_policy is not None:
+            policy = normalize_surface_classification_policy(facts_policy)
+            policy_source = "surface_class_facts.policy"
+        elif canonical_present:
+            policy = normalize_surface_classification_policy(None)
+            policy_source = "canonical_surface_default"
+        else:
+            legacy = self._policy()
+            policy = normalize_surface_classification_policy({
+                "land_mask_layer_name": legacy.get("land_mask_layer_name"),
+                "coastal_uncertainty_buffer_m": legacy.get(
+                    "coastal_uncertainty_buffer_m"
+                ),
+                "source": "legacy_radar_policy_runtime_fallback",
+            })
+            policy_source = "legacy_radar_policy_runtime_fallback"
+
+        facts_land = facts.get("land_mask") if isinstance(facts.get("land_mask"), dict) else {}
+        policy_layer = policy.get("land_mask_layer_name")
+        facts_layer = facts_land.get("layer_name")
+        layer_name = policy_layer or facts_layer
+        layer_consistent = not (
+            policy_layer and facts_layer and str(policy_layer) != str(facts_layer)
+        )
+        facts_fingerprint = facts.get("input_fingerprint")
+        if not facts_fingerprint and facts_present:
+            facts_fingerprint = surface_facts_input_fingerprint(facts)
+        source_identity = (
+            deepcopy(facts_land.get("source_identity"))
+            if isinstance(facts_land.get("source_identity"), dict) else None
+        )
+        return {
+            "authority": (
+                "canonical_surface_classification"
+                if canonical_present else "legacy_radar_policy_fallback"
+            ),
+            "policy_source": policy_source,
+            "canonical_policy_present": policy_present,
+            "canonical_facts_present": facts_present,
+            "legacy_fallback_used": not canonical_present,
+            "layer_name": str(layer_name) if layer_name not in (None, "") else None,
+            "policy_layer_name": policy_layer,
+            "facts_layer_name": facts_layer,
+            "layer_consistent": layer_consistent,
+            "coastal_uncertainty_buffer_m": policy.get(
+                "coastal_uncertainty_buffer_m"
+            ),
+            "classification_basis": (
+                facts.get("classification_basis")
+                or policy.get("classification_basis")
+                or LAND_MASK_CLASSIFICATION_BASIS
+            ),
+            "source_crs": facts_land.get("source_crs"),
+            "source_identity": source_identity,
+            "surface_facts_fingerprint": facts_fingerprint,
+        }
+
+    def _land_mask_source_provenance(self, *, facts_provider=None, source_record=None):
+        authority = self.land_mask_authority()
+        paths = self._source_paths(facts_provider=facts_provider)
+        identity = authority.get("source_identity") or {}
+        source_record = source_record if isinstance(source_record, dict) else {}
+        return {
+            "source_type": source_record.get("source_type") or "real",
+            "source_role": "land_mask",
+            "configured_path": (
+                str(paths.get("land_mask")) if paths.get("land_mask") else None
+            ),
+            "layer_name": authority.get("layer_name"),
+            "source_crs": source_record.get("source_crs") or authority.get("source_crs"),
+            "content_sha256": identity.get("content_sha256"),
+            "source_identity": deepcopy(authority.get("source_identity")),
+            "classification_basis": authority.get("classification_basis"),
+            "coastal_uncertainty_buffer_m": authority.get(
+                "coastal_uncertainty_buffer_m"
+            ),
+            "surface_facts_fingerprint": authority.get("surface_facts_fingerprint"),
+            "authority": authority.get("authority"),
+            "policy_source": authority.get("policy_source"),
+            "canonical_policy_present": authority.get("canonical_policy_present"),
+            "canonical_facts_present": authority.get("canonical_facts_present"),
+            "legacy_fallback_used": authority.get("legacy_fallback_used"),
+            "layer_consistent": authority.get("layer_consistent"),
+            "dem_nodata_used_to_infer_sea": False,
+        }
+
     def _altitude_layer_context(self, explicit=None):
         """本次求解使用的固定高度层（**数据驱动**，BUG-SHOT-008）。
 
@@ -567,11 +673,20 @@ class RadarSurveillanceLayoutService:
         return self.snapshot()
 
     def source_status(self, *, facts_provider=None):
-        return radar_layout_source_status(
+        authority = self.land_mask_authority()
+        status = radar_layout_source_status(
             self.session.state, self._source_paths(facts_provider=facts_provider),
-            layer_name=self._policy().get("land_mask_layer_name"),
-            coastal_uncertainty_buffer_m=self._policy().get("coastal_uncertainty_buffer_m"),
+            layer_name=authority.get("layer_name"),
+            coastal_uncertainty_buffer_m=authority.get("coastal_uncertainty_buffer_m"),
         )
+        status["land_mask"].update(self._land_mask_source_provenance(
+            facts_provider=facts_provider, source_record=status["land_mask"],
+        ))
+        if not authority.get("layer_consistent"):
+            status["land_mask"]["ok"] = False
+            status["land_mask"]["available"] = False
+            status["land_mask"]["reason"] = "canonical_surface_layer_mismatch"
+        return status
 
     def _source_paths(self, *, facts_provider=None):
         """当前空间来源路径：优先注入的 provider，其次 ProjectState 内的来源记录。
@@ -601,12 +716,22 @@ class RadarSurveillanceLayoutService:
     def land_mask_readiness(self, *, facts_provider=None):
         """land mask **深度** readiness（文件/图层/几何/CRS/米制变换）。"""
 
-        policy = self._policy()
-        return land_mask_readiness(
+        authority = self.land_mask_authority()
+        readiness = land_mask_readiness(
             self.session.state, self._source_paths(facts_provider=facts_provider),
-            layer_name=policy.get("land_mask_layer_name"),
-            coastal_uncertainty_buffer_m=policy.get("coastal_uncertainty_buffer_m"),
+            layer_name=authority.get("layer_name"),
+            coastal_uncertainty_buffer_m=authority.get("coastal_uncertainty_buffer_m"),
         )
+        readiness.update(self._land_mask_source_provenance(
+            facts_provider=facts_provider, source_record=readiness,
+        ))
+        if not authority.get("layer_consistent"):
+            readiness["status"] = "not_ready"
+            readiness["reason"] = "canonical_surface_layer_mismatch"
+            readiness.setdefault("checks", {})["canonical_layer_consistent"] = False
+        else:
+            readiness.setdefault("checks", {})["canonical_layer_consistent"] = True
+        return readiness
 
     @staticmethod
     def _demo_preview_requested(payload):
@@ -872,9 +997,11 @@ class RadarSurveillanceLayoutService:
                 "fixed_altitude_layer_source": altitude_context["source"],
             },
             "semantics_fingerprint": semantics_fingerprint(target_layer_id),
-            "land_mask_source_provenance": deepcopy(LAND_MASK_SOURCE_PROVENANCE),
+            "land_mask_source_provenance": self._land_mask_source_provenance(
+                facts_provider=facts_provider, source_record=land,
+            ),
             "device_summary": device_summary(),
-            "sources": self.source_status(),
+            "sources": self.source_status(facts_provider=facts_provider),
             "semantics": deepcopy(READINESS_SEMANTICS),
             "boundaries": deepcopy(BOUNDARIES),
             "not_evaluated": deepcopy(NOT_EVALUATED),
@@ -1238,6 +1365,7 @@ class RadarSurveillanceLayoutService:
 
         state = self.session.state
         policy = self._policy()
+        surface_authority = self.land_mask_authority()
         land_mask_status = self.source_status()
         route = route if isinstance(route, dict) else (
             _state_route(state, route_id) if route_id else None
@@ -1368,8 +1496,11 @@ class RadarSurveillanceLayoutService:
                 "max_refinement_rounds": policy.get("max_refinement_rounds"),
                 "allow_mixed_radar_types": policy.get("allow_mixed_radar_types"),
                 "solver_time_limit_s": policy.get("solver_time_limit_s"),
-                "coastal_uncertainty_buffer_m": policy.get("coastal_uncertainty_buffer_m"),
-                "land_mask_layer_name": policy.get("land_mask_layer_name"),
+                "coastal_uncertainty_buffer_m": surface_authority.get(
+                    "coastal_uncertainty_buffer_m"
+                ),
+                "land_mask_layer_name": surface_authority.get("layer_name"),
+                "land_mask_authority": surface_authority.get("authority"),
             },
         }
         if demo_preview_only:
@@ -1495,6 +1626,9 @@ class RadarSurveillanceLayoutService:
         route = route_view if demo_preview_only else _state_route(state, route_id)
         blockers = list(preflight_blockers or [])
         unknown_evidence = []
+        surface_authority = self.land_mask_authority()
+        if not surface_authority.get("layer_consistent"):
+            blockers.append("canonical_surface_layer_mismatch")
         candidate = (demo_context or {}).get("candidate") or {}
         #: BUG-SHOT-008：高度层由数据解析（demo preview 的当前候选优先，否则
         #: 策略 / 权威运行航路），不再架构硬编码 ALT-080 + 80 m。
@@ -1754,7 +1888,7 @@ class RadarSurveillanceLayoutService:
         land_ready = (
             provider.get("land_mask") if isinstance(provider, dict) else None
         ) or {}
-        coastal_buffer_m = policy.get("coastal_uncertainty_buffer_m")
+        coastal_buffer_m = surface_authority.get("coastal_uncertainty_buffer_m")
 
         if not callable(land_classifier) and not callable(classify_detailed):
             unknown_evidence.append({
@@ -1779,14 +1913,16 @@ class RadarSurveillanceLayoutService:
             ),
             "mask": deepcopy(land_ready.get("readiness") or {}),
             "semantics": LAND_MASK_SEMANTICS,
-            "classification_basis": LAND_MASK_CLASSIFICATION_BASIS,
+            "classification_basis": surface_authority.get("classification_basis"),
             "coastal_uncertainty_buffer": coastal_uncertainty_buffer_provenance(
                 coastal_buffer_m
             ),
             "classification_independence": (
                 "optimization_and_validation_samples_classified_independently"
             ),
-            "source_provenance": deepcopy(LAND_MASK_SOURCE_PROVENANCE),
+            "source_provenance": self._land_mask_source_provenance(
+                facts_provider=provider,
+            ),
         }
 
         #: 每个间距各自建立"沿里程一致的独立分类器"，两条采样链互不引用对方。
@@ -1909,11 +2045,7 @@ class RadarSurveillanceLayoutService:
             })
             return base
 
-        land_mask_status = radar_layout_source_status(
-            state, provider.get("paths") or {},
-            layer_name=policy.get("land_mask_layer_name"),
-            coastal_uncertainty_buffer_m=coastal_buffer_m,
-        )
+        land_mask_status = self.source_status(facts_provider=provider)
         base["sources"] = {
             "terrain_dtm": land_mask_status["terrain"],
             "land_mask": land_mask_status["land_mask"],
@@ -1924,7 +2056,9 @@ class RadarSurveillanceLayoutService:
         base["surface_classification"] = surface_evidence
         base["radar_origin"]["legacy_mount_height_used"] = False
         base["radar_origin"]["legacy_mount_height_status"] = "legacy_not_used_by_v1_1"
-        base["land_mask_source_provenance"] = deepcopy(LAND_MASK_SOURCE_PROVENANCE)
+        base["land_mask_source_provenance"] = self._land_mask_source_provenance(
+            facts_provider=provider, source_record=land_mask_status["land_mask"],
+        )
         base["route_sampling"] = {
             "optimization_sample_spacing_m": spacing,
             "validation_sample_spacing_m": policy["validation_sample_spacing_m"],

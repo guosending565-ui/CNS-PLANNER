@@ -15,8 +15,7 @@
 陆域判定规则（V1.1，保守且 CRS 安全）
 -------------------------------------
 
-真实来源：``zhejiang_boundary.gpkg`` / ``layer_name = zhejiang_boundary`` /
-``source_crs = EPSG:4326`` / ``Polygon|MultiPolygon``。
+真实来源的路径、图层与 CRS 由项目 canonical surface authority 动态注入。
 
 * 点在陆域 polygon 内部 **或落在边界上** ⇒ ``land``；
 * 点在 polygon 外、但到陆域边界距离 ``<= coastal_uncertainty_buffer_m`` ⇒
