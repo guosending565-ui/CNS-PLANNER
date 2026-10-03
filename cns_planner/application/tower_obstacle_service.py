@@ -148,10 +148,18 @@ class TowerObstacleService:
         statuses["tower_colocation_candidates"] = (
             "passed" if colocation.get("status") == "passed" else "missing_data"
         )
-        # towers 派生事实变化：只失效真正消费它们的下游（绝不失效 Risk V2）。
-        self.invalidation.tower_data_changed(
-            "tower_obstacle_profiles_evaluated" if not changed else ",".join(changed),
-        )
+        # A planning-host/origin policy is not a physical tower fact.  When it is the only
+        # change, keep Route Safety (candidate/validation/adoption/R0005) current and stale
+        # only P16 -> P17 -> review/report.  A real obstacle-policy change or an explicit
+        # facts re-evaluation still follows the physical tower invalidation chain.
+        if changed and set(changed) <= {"tower_colocation_policy"}:
+            self.invalidation.tower_planning_policy_changed(
+                "tower_colocation_policy_changed"
+            )
+        else:
+            self.invalidation.tower_data_changed(
+                "tower_obstacle_profiles_evaluated" if not changed else ",".join(changed),
+            )
         self.session.save()
         return self.snapshot()
 

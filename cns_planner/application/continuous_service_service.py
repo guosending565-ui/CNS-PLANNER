@@ -173,6 +173,14 @@ class ContinuousServiceService:
             ],
             "requires_managed_gap_disclosure": bool(disclosure),
             "disclosure_lines": disclosure,
+            "estimated_origin_dependency_count": int(
+                result.get("estimated_origin_dependency_count") or 0
+            ),
+            "estimated_origin_tower_ids": deepcopy(
+                result.get("estimated_origin_tower_ids") or []
+            ),
+            "site_survey_required": result.get("site_survey_required") is True,
+            "planning_height_assumptions": result.get("planning_height_assumptions") is True,
             "input_fingerprint": result.get("input_fingerprint"),
             "reasons": deepcopy(result.get("reasons") or []),
         }
@@ -211,6 +219,7 @@ class ContinuousServiceService:
 
         inputs = self.build_evaluation_inputs()
         result = self.model.evaluate(**inputs)
+        _add_estimated_origin_disclosure(result, self.selected_plan_actions())
         state[ACCEPTABILITY_STATE_KEY] = result
         state.setdefault("result_statuses", {})[RESULT_STATUS_KEY] = _result_status(
             result.get("status")
@@ -241,7 +250,9 @@ class ContinuousServiceService:
             return projection, None
         inputs = self.compute_inputs()
         inputs["post_plan_projection"] = projection
-        return projection, self.model.evaluate(**inputs)
+        result = self.model.evaluate(**inputs)
+        _add_estimated_origin_disclosure(result, actions)
+        return projection, result
 
     def projected_step6_gate(self, result):
         """从**任意** P17 结果推导 Step6 门禁（与权威门禁同一套允许值）。"""
@@ -270,6 +281,14 @@ class ContinuousServiceService:
             "limitations": deepcopy(result.get("limitations") or []),
             "requires_managed_gap_disclosure": bool(result.get("disclosure_lines")),
             "disclosure_lines": deepcopy(result.get("disclosure_lines") or []),
+            "estimated_origin_dependency_count": int(
+                result.get("estimated_origin_dependency_count") or 0
+            ),
+            "estimated_origin_tower_ids": deepcopy(
+                result.get("estimated_origin_tower_ids") or []
+            ),
+            "site_survey_required": result.get("site_survey_required") is True,
+            "planning_height_assumptions": result.get("planning_height_assumptions") is True,
             "input_fingerprint": result.get("input_fingerprint"),
             "reasons": deepcopy(result.get("reasons") or []),
             "blocking_reason": (
@@ -450,6 +469,40 @@ def _selected_profile(state):
         state.get("aircraft_profiles") or {},
         state.get("selected_aircraft_profile_id") or "",
     )
+
+
+def _add_estimated_origin_disclosure(result, actions):
+    """Keep Tier-B planning usable without presenting it as deployed physical truth."""
+
+    if not isinstance(result, dict):
+        return result
+    ids = sorted({
+        str(item.get("tower_id")) for item in actions or []
+        if item.get("origin_status") == "estimated" and item.get("tower_id")
+    })
+    result["estimated_origin_dependency_count"] = len(ids)
+    result["estimated_origin_tower_ids"] = ids
+    result["site_survey_required"] = bool(ids) or any(
+        item.get("requires_site_survey") is True for item in actions or []
+    )
+    result["planning_height_assumptions"] = bool(ids)
+    if ids:
+        line = "部分共塔站址高程为工程估计，实施前需现场勘察确认。"
+        disclosures = result.setdefault("disclosure_lines", [])
+        if line not in disclosures:
+            disclosures.append(line)
+        result.setdefault("planning_limitations", []).append({
+            "kind": "planning_height_assumption",
+            "authority": "engineering_estimate",
+            "tower_ids": ids,
+            "physical_deployment_confirmed": False,
+            "site_survey_required": True,
+            "unconfirmed_items": [
+                "承重", "供电", "传输", "结构安全", "安装空间", "电磁兼容",
+                "真实安装高度", "业主许可",
+            ],
+        })
+    return result
 
 
 def _result_status(status):

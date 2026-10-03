@@ -119,20 +119,21 @@ def _representation_crs(suffix):
 def _mapped_row(raw):
     """Map one raw source row onto contract fields via the alias table."""
 
-    mapped, unknown = {}, {}
+    mapped, unknown, source_columns = {}, {}, {}
     for column, value in (raw or {}).items():
         field = _field_from_key(column)
         if field and mapped.get(field) in (None, "") and value not in (None, ""):
             mapped[field] = value
+            source_columns[field] = str(column)
         elif field is None:
             unknown[str(column)] = _text(value)
-    return mapped, unknown
+    return mapped, unknown, source_columns
 
 
 def _rows_to_items(rows, *, source_file):
     items, invalid = [], []
     for sheet, row_number, raw in rows:
-        mapped, unknown = _mapped_row(raw)
+        mapped, unknown, source_columns = _mapped_row(raw)
         reference = {
             "type": "file_row",
             "file": source_file,
@@ -155,6 +156,7 @@ def _rows_to_items(rows, *, source_file):
             "source": reference,
             "evidence": [dict(reference)],
             "raw_attributes": unknown,
+            "source_columns": source_columns,
         }
         if not candidate["tower_id"]:
             invalid.append({"sheet": sheet, "row": row_number, "reason": "missing_tower_id"})
@@ -187,12 +189,16 @@ def _read_xlsx(path):
                 if headers is None and (
                     set(_IDENTITY_HEADERS) <= fields and set(_COORDINATE_HEADERS) <= fields
                 ):
-                    headers = {_field_from_key(value): index for index, value in enumerate(values)}
+                    headers = {
+                        _field_from_key(value): (index, str(value))
+                        for index, value in enumerate(values)
+                        if _field_from_key(value)
+                    }
                     continue
                 if headers and any(value not in (None, "") for value in values):
                     rows.append((sheet.title, row_number, {
-                        name: (values[index] if index < len(values) else None)
-                        for name, index in headers.items()
+                        original: (values[index] if index < len(values) else None)
+                        for _, (index, original) in headers.items()
                     }))
     finally:
         workbook.close()
@@ -321,6 +327,25 @@ def load_towers(path, crs=None, *, source_crs=None, crs_confirmed=False,
     record["metadata"]["source_path"] = str(source)
     record["metadata"]["invalid_row_count"] = len(invalid)
     record["metadata"]["preserved_source_fields"] = list(SOURCE_ATTRIBUTE_FIELDS)
+    height_columns = sorted({
+        str((item.get("source_columns") or {}).get("height_m"))
+        for item in record["items"]
+        if (item.get("source_columns") or {}).get("height_m")
+    })
+    record["metadata"]["height_field_semantics"] = {
+        "canonical_field": "height_m",
+        "source_columns": height_columns,
+        "unit": "m",
+        "original_statement": (
+            f"源字段 {height_columns[0]}，单位 m" if len(height_columns) == 1
+            else "源表将塔高字段映射为 height_m"
+        ),
+        "authority": "engineering_assumption",
+        "assumption_statement": (
+            "原始列名明确为塔身高度，规划阶段将其解释为相对安装基面的铁塔结构高度；"
+            "不使用海拔高度粗档位替代。"
+        ),
+    }
     record["metadata"]["schema_version"] = TOWER_SCHEMA_VERSION
     record["metadata"]["collection_id"] = COLLECTION_ID
     record["warnings"] = (

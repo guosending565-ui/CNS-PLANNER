@@ -10,6 +10,7 @@ from ..domain.corridor_site_planning import (
     TARGET_SCOPE_SERVICE, corridor_target_id, corridor_voxel_entry_index,
     normalize_corridor_site_planning_policy,
 )
+from ..domain.cns_performance import type_gate_items
 from ..domain.site_planning import REUSE_TIERS
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
@@ -32,7 +33,11 @@ from .navigation_reference_station_planning_service import (
     navigation_evidence_required,
     navigation_reference_station_candidate_actions,
 )
-from .planning_evidence_service import aircraft_profile_with_evidence
+from .planning_evidence_service import (
+    #: 需求块与机载档案必须与 P8 使用**同一份**入口，否则 P16 的残余原因会与
+    #: 真实门禁口径分叉（Round 2.6.1 收口）。
+    _requirement_blocks, _subsystem_name, aircraft_profile_with_evidence,
+)
 from .site_candidate_actions import candidate_actions
 from .production_write_authority import assert_write_authority
 
@@ -158,6 +163,7 @@ class CorridorSitePlanningService:
                     "score_semantics": winner["score_semantics"],
                     "explicit_cost": winner["explicit_cost"], "cost_unit": winner["cost_unit"],
                 }
+                chosen.update(_selected_action_audit(chosen, targets, state))
                 selected.append(chosen)
                 trace.append({
                     "iteration": len(selected), "reuse_class": tier,
@@ -216,6 +222,20 @@ class CorridorSitePlanningService:
                 "persisted_as_upstream": False,
             },
         })
+        result["origin_tier_statistics"] = _origin_tier_statistics(actions, selected)
+        estimated_ids = sorted({
+            str(item.get("tower_id")) for item in selected
+            if item.get("origin_status") == "estimated" and item.get("tower_id")
+        })
+        result["estimated_origin_dependency_count"] = len(estimated_ids)
+        result["estimated_origin_tower_ids"] = estimated_ids
+        result["site_survey_required"] = bool(estimated_ids) or any(
+            item.get("requires_site_survey") is True for item in selected
+        )
+        result["planning_height_assumptions"] = (
+            ["部分共塔站址高程为工程估计，实施前需现场勘察确认。"]
+            if estimated_ids else []
+        )
         if not selected and (_confirmed_objectives_met(baseline_gap) or (not targets and not unknown)):
             result["status"] = "no_action_required"
             result["stop_reason"] = (
@@ -228,6 +248,9 @@ class CorridorSitePlanningService:
             result["stop_reason"] = "only_unknown_or_missing_evidence"
         elif not selected:
             result["status"] = "no_eligible_proposal"
+        result["residual_gap_diagnostics"] = _residual_gap_diagnostics(
+            baseline_gap, actions, state,
+        ) if result.get("status") == "no_eligible_proposal" else []
         self.invalidation.cns_plan_review("p16_reevaluated")
         state["cns_corridor_site_plan"] = result
         state.setdefault("result_statuses", {})["cns_corridor_site_plan"] = {
@@ -453,6 +476,294 @@ def rerun_corridor_chain(
         state.get("cns_planning_objectives") or {},
     )
     return corridor, gap
+
+
+def _selected_action_audit(action, targets, state):
+    """Attach the compact, evidence-tiered audit record required for each P16 selection."""
+
+    target_ids = set(((action.get("impact") or {}).get("confirmed_targets") or []))
+    matched = [item for item in targets or [] if item.get("target_id") in target_ids]
+    surfaces = sorted({str(item.get("surface_class")) for item in matched if item.get("surface_class")})
+    required = [int(item.get("required_units") or 1) for item in matched]
+    coordinate = action.get("coordinate")
+    distances = []
+    if isinstance(coordinate, list) and len(coordinate) >= 2:
+        for route in state.get("operational_routes") or []:
+            if len(route.get("path") or []) >= 2:
+                distances.append(float(nearest_route_position(route["path"], coordinate)["distance_m"]))
+    radius_values = []
+    device_id = str(action.get("device_id") or "")
+    for device in (state.get("device_catalog") or {}).get("items") or []:
+        if str(device.get("device_id") or "") != device_id:
+            continue
+        geometry = device.get("coverage_geometry") or {}
+        mapping = geometry.get("radius_by_surface") or {}
+        for surface in surfaces:
+            value = mapping.get(surface)
+            if isinstance(value, (int, float)):
+                radius_values.append(float(value))
+        if not radius_values:
+            envelope = index_max_range_m(geometry)
+            if envelope:
+                radius_values.append(float(envelope))
+        break
+    return {
+        "distance_to_route_m": min(distances) if distances else None,
+        "coverage_radius_m": max(radius_values) if radius_values else None,
+        "surface_class": surfaces[0] if len(surfaces) == 1 else (
+            "mixed" if surfaces else None
+        ),
+        "surface_classes": surfaces,
+        "required_redundancy": max(required) if required else None,
+        "physical_mount_confirmed": False
+        if action.get("reuse_class") == "tower_colocation_host"
+        else action.get("physical_mount_confirmed"),
+        "requires_site_survey": True
+        if action.get("reuse_class") == "tower_colocation_host"
+        else action.get("requires_site_survey"),
+    }
+
+
+def _origin_tier_statistics(actions, selected):
+    """Candidate/eligible/selected counts split by service and origin evidence tier."""
+
+    selected_ids = {str(item.get("action_id")) for item in selected or []}
+    result = {}
+    for service_key in ("C:communication", "S:rid_cooperative"):
+        service_actions = [
+            item for item in actions or []
+            if item.get("service_key") == service_key
+            and item.get("reuse_class") == "tower_colocation_host"
+        ]
+        service_result = {}
+        for status, label in (("confirmed", "confirmed_origin"), ("estimated", "estimated_origin")):
+            tier = [item for item in service_actions if item.get("origin_status") == status]
+            service_result[label] = {
+                "candidate": len(tier),
+                "eligible": sum(
+                    (item.get("eligibility") or {}).get("status") == "eligible" for item in tier
+                ),
+                "selected": sum(str(item.get("action_id")) in selected_ids for item in tier),
+            }
+        result[service_key] = service_result
+    return result
+
+
+def _residual_gap_diagnostics(baseline_gap, actions, state, *, nearby_limit=5):
+    """Explain every unresolved continuous gap using nearby real-tower candidates.
+
+    This is diagnostic only: it does not relax geometry, redundancy, device, or evidence
+    gates and does not turn an unknown provider evaluation into confirmed coverage.
+    """
+
+    routes = {
+        str(item.get("route_id") or ""): item
+        for item in state.get("operational_routes") or []
+    }
+    profile = aircraft_profile_with_evidence(state) or {}
+    required_blocks = _requirement_blocks(state)
+    route_speed = _planning_route_speed_mps(profile)
+    device_by_id = {
+        str(item.get("device_id") or ""): item
+        for item in (state.get("device_catalog") or {}).get("items") or []
+    }
+    diagnostics = []
+    for route_gap in (baseline_gap or {}).get("routes") or []:
+        route_id = str(route_gap.get("route_id") or "")
+        route = routes.get(route_id) or {}
+        path = route.get("path") or []
+        if len(path) < 2:
+            continue
+        for subsystem in route_gap.get("subsystems") or []:
+            service_entries = subsystem.get("service_redundancy") or []
+            for segment in subsystem.get("continuous_deficit_segments") or []:
+                start = segment.get("start_route_offset_m")
+                end = segment.get("end_route_offset_m")
+                length = segment.get("length_m")
+                for service in service_entries:
+                    service_key = str(service.get("service_key") or "")
+                    tower_actions = [
+                        item for item in actions or []
+                        if item.get("reuse_class") == "tower_colocation_host"
+                        and item.get("service_key") == service_key
+                        and isinstance(item.get("coordinate"), list)
+                        and len(item["coordinate"]) >= 2
+                    ]
+                    nearby = []
+                    surfaces = sorted((service.get("surface_class_counts") or {}).keys())
+                    surface = surfaces[0] if len(surfaces) == 1 else (
+                        "mixed" if surfaces else None
+                    )
+                    required = service.get("required_distinct_site_count_by_surface") or {}
+                    required_redundancy = max(required.values()) if required else None
+                    for action in tower_actions:
+                        nearest = nearest_route_position(path, action["coordinate"])
+                        offset = float(nearest.get("route_offset_m") or 0.0)
+                        if start is not None and end is not None and not (
+                            float(start) <= offset <= float(end)
+                        ):
+                            continue
+                        device = device_by_id.get(str(action.get("device_id") or "")) or {}
+                        radius = _action_coverage_radius_m(device, surfaces)
+                        category, reason = _tower_residual_reason(
+                            action, service_key, profile, required_blocks,
+                            float(nearest.get("distance_m") or 0.0), radius,
+                        )
+                        nearby.append({
+                            "tower_id": action.get("tower_id"),
+                            "origin_tier": action.get("origin_status"),
+                            "distance_to_route_m": float(nearest.get("distance_m") or 0.0),
+                            "nearest_route_chainage_m": offset,
+                            "service_key": service_key,
+                            "device_id": action.get("device_id"),
+                            "coverage_radius_m": radius,
+                            "eligibility": (action.get("eligibility") or {}).get("status"),
+                            "residual_reason_category": category,
+                            "why_cannot_eliminate_gap": reason,
+                        })
+                    nearby.sort(key=lambda item: (
+                        item["distance_to_route_m"], str(item.get("tower_id") or "")
+                    ))
+                    diagnostics.append({
+                        "route_id": route_id,
+                        "segment_id": segment.get("segment_id"),
+                        "service_key": service_key,
+                        "start_chainage_m": start,
+                        "end_chainage_m": end,
+                        "length_m": length,
+                        "duration_s": (
+                            float(length) / route_speed
+                            if isinstance(length, (int, float)) and route_speed else None
+                        ),
+                        "route_speed_mps": route_speed,
+                        "surface_class": surface,
+                        "required_redundancy": required_redundancy,
+                        "nearby_real_towers": nearby[:nearby_limit],
+                        "nearby_limit": nearby_limit,
+                    })
+    return diagnostics
+
+
+def _planning_route_speed_mps(profile):
+    value = profile.get("cruise_speed_mps")
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    for item in (profile.get("metadata") or {}).get("fc30_facts") or []:
+        if item.get("parameter") == "route_speed_mps":
+            value = item.get("value")
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+    return None
+
+
+def _action_coverage_radius_m(device, surfaces):
+    geometry = device.get("coverage_geometry") or {}
+    mapping = geometry.get("radius_by_surface") or {}
+    values = [
+        float(mapping[surface]) for surface in surfaces
+        if isinstance(mapping.get(surface), (int, float))
+    ]
+    if values:
+        return max(values)
+    value = index_max_range_m(geometry)
+    return float(value) if value else None
+
+
+def _provider_type_gaps(required_type, device_type):
+    """提供者（设备目录）相对需求类型门禁的**逐字段**缺口（P8 第一步的同一口径）。
+
+    Round 2.6.1：缺声明一律是证据不足（``unknown``），只有真实冲突（接口无交集 /
+    取值不匹配）才是确认不满足 —— 两者绝不混为一谈。
+    """
+
+    gaps = []
+    for key, expected in type_gate_items(required_type):
+        observed = (device_type or {}).get(key)
+        if observed in (None, "", "unknown", []):
+            gaps.append(f"provider 未声明 {key}（需求要求 {expected}）")
+        elif key == "interfaces":
+            if not set(expected).issubset(set(observed)):
+                gaps.append(
+                    f"provider interfaces 不满足（需求要求 {expected}，设备声明 {observed}）"
+                )
+        elif observed != expected:
+            gaps.append(f"provider {key} 不匹配（需求要求 {expected}，设备声明 {observed}）")
+    return gaps
+
+
+def _aircraft_participation_gaps(required_type, profile, code, service_key):
+    """机载档案相对**机载参与谓词**的逐字段缺口（P8 第二步的同一口径）。"""
+
+    from ..domain.cns_service_contract import airborne_type_items
+
+    capability = (profile or {}).get(_subsystem_name(code)) or {}
+    declared_type = capability.get("type") if isinstance(capability.get("type"), dict) else {}
+    gaps = []
+    for field, expected in airborne_type_items(
+        required_type, subsystem=code, service_key=service_key,
+    ):
+        declared = declared_type.get(field)
+        if isinstance(expected, dict):
+            entries = declared if isinstance(declared, list) else []
+            matched = any(
+                isinstance(entry, dict)
+                and all(str(entry.get(key)) == str(value) for key, value in expected.items())
+                for entry in entries
+            )
+            if not matched:
+                gaps.append(f"机载未声明满足 {expected} 的 {field} 条目")
+            continue
+        if declared in (None, "", "unknown", []):
+            gaps.append(f"机载未声明 {field}（需求要求 {expected}）")
+        elif field == "interfaces":
+            if not set(expected).issubset(set(declared)):
+                gaps.append(
+                    f"机载 interfaces 不满足（需求要求 {expected}，档案声明 {declared}）"
+                )
+        elif declared != expected:
+            gaps.append(f"机载 {field} 不匹配（需求要求 {expected}，档案声明 {declared}）")
+    return gaps
+
+
+def _tower_residual_reason(action, service_key, profile, required_blocks, distance_m, radius_m):
+    """这条共塔动作为什么不能把残余缺口升级为**已确认改善**（权威门禁口径）。
+
+    Round 2.6.1 收口：原因必须来自真实门禁，而不是把某一侧写死。P8 的判定顺序是
+    "先 provider 类型资格、后机载参与能力"，本函数按同一顺序披露。
+    """
+
+    eligibility = action.get("eligibility") or {}
+    if eligibility.get("status") != "eligible":
+        reasons = [str(item) for item in (eligibility.get("reasons") or [])]
+        category = "device_incompatibility" if any(
+            "不包含" in item or "unsupported" in item for item in reasons
+        ) else "evidence_blocker"
+        return category, "；".join(reasons) or "候选动作不可用"
+    if radius_m is not None and distance_m > radius_m:
+        return (
+            "coverage_radius_insufficient",
+            f"距航路 {distance_m:.1f} m，超过冻结覆盖半径 {radius_m:.1f} m",
+        )
+    code = str(service_key or "").split(":", 1)[0].strip().upper()
+    required = (required_blocks or {}).get(_subsystem_name(code)) or {}
+    required_type = required.get("type") if isinstance(required.get("type"), dict) else {}
+    provider_gaps = _provider_type_gaps(required_type, action.get("device_type"))
+    if provider_gaps:
+        return (
+            "provider_type_incompatibility",
+            "提供者类型资格未确认（P8 第一步门禁）：" + "；".join(provider_gaps),
+        )
+    aircraft_gaps = _aircraft_participation_gaps(required_type, profile, code, service_key)
+    if aircraft_gaps:
+        return (
+            "aircraft_participation_evidence_required",
+            "机载参与能力证据不足（P8 第二步门禁）：" + "；".join(aircraft_gaps),
+        )
+    return (
+        "other",
+        "provider 类型资格与机载参与能力均已声明，但累计 what-if 仍未产生可确认的正向增益；"
+        "详见 candidate_unknown_reason_summary 与 provider evidence profile",
+    )
 
 
 def _targets(assessment):

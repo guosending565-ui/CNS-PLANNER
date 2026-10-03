@@ -237,6 +237,30 @@ class InvalidationService:
         self.radar_surveillance_layout(str(reason))
         mark_active_report_stale(state, str(reason))
 
+    def tower_planning_policy_changed(self, reason="tower_colocation_policy_changed"):
+        """Invalidate only the planning proposal chain for a host/origin planning policy.
+
+        Allowing a real tower as a Preferred Planning Host, including an explicitly accepted
+        planning-only height estimate, changes no physical tower fact and no Route Safety
+        input.  Therefore it must never stale Theta*, route validation/adoption, risk, or the
+        authoritative operational route.  P16 owns its projected P14/P15 working copies and
+        propagates forward to P17, review, and report.
+        """
+
+        self.cns_corridor_site_plan()
+        mark_active_report_stale(self.session.state, str(reason))
+        return {
+            "reason": str(reason),
+            "downstream": [
+                "cns_corridor_site_plan", "continuous_service_acceptability",
+                "cns_plan_review", "report",
+            ],
+            "route_candidate_untouched": True,
+            "route_validation_untouched": True,
+            "operational_adoption_untouched": True,
+            "risk_untouched": True,
+        }
+
     def route_operating_layer(self, reason="route_operating_layer_changed"):
         """Minimal Layered Operational Route Architecture V1 invalidation chain.
 

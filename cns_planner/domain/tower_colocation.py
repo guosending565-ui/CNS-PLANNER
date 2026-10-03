@@ -32,6 +32,7 @@ TOWER_COLOCATION_ORIGIN = "tower_colocation"
 
 #: 服务原点假设：只有显式确认后，才允许把"塔顶"当作设备服务原点。
 SERVICE_ORIGIN_ASSUMPTIONS = (None, "tower_top_agl_0")
+PLANNING_SERVICE_ORIGIN_POLICIES = (None, "terrain_plus_source_tower_height")
 
 #: 宿主可用性语义（三层，严格区分）：
 #:
@@ -74,6 +75,9 @@ def default_tower_colocation_policy():
         "reuse_class": TOWER_COLOCATION_REUSE_CLASS,
         "host_pool": "real_tower_sites",
         "service_origin_assumption": None,
+        # Explicit opt-in for planning-only estimates on towers whose physical tower-top
+        # fact remains unresolved.  This is independent from host-use permission.
+        "planning_service_origin_policy": None,
         #: 规划层：允许把真实铁塔作为 Preferred Host Site（工程规划假设）。
         "planning_host_use_confirmed": False,
         #: 物理实施层：恒 False / 恒 True（本阶段无逐塔调查数据）。
@@ -121,6 +125,10 @@ def normalize_tower_colocation_policy(value):
     if assumption not in SERVICE_ORIGIN_ASSUMPTIONS:
         raise ValueError("tower_colocation_policy.service_origin_assumption 无效")
     result["service_origin_assumption"] = assumption
+    estimate_policy = result.get("planning_service_origin_policy")
+    if estimate_policy not in PLANNING_SERVICE_ORIGIN_POLICIES:
+        raise ValueError("tower_colocation_policy.planning_service_origin_policy 无效")
+    result["planning_service_origin_policy"] = estimate_policy
 
     # 规划层：新字段优先；未提供时按 legacy 语义（confirmed + device_mount_confirmed）
     # 从**原始输入**推断 —— 不能读 result，因为 result 已经带上了默认值 False。
@@ -137,7 +145,9 @@ def normalize_tower_colocation_policy(value):
     result["confirmed"] = result["planning_host_use_confirmed"]
     result["device_mount_confirmed"] = False
 
-    enabled = result["planning_host_use_confirmed"] and assumption is not None
+    enabled = result["planning_host_use_confirmed"] and (
+        assumption is not None or estimate_policy is not None
+    )
     result["status"] = "confirmed" if enabled else "pending_confirmation"
     result["enabled"] = enabled
     result["planning_host_status"] = "eligible" if enabled else "not_confirmed"
@@ -156,6 +166,10 @@ def empty_tower_colocation_candidates(status="not_calculated"):
         "creates_existing_facilities": False,
         "invents_device_parameters": False,
         "count": 0,
+        "tower_count": 0,
+        "confirmed_origin_count": 0,
+        "estimated_planning_origin_count": 0,
+        "unusable_count": 0,
         "items": [],
         "policy": normalize_tower_colocation_policy(None),
         "source": None,
@@ -178,6 +192,20 @@ def declared_navigation_site_suitability(tower):
         value = container.get("navigation_site_suitability")
         if isinstance(value, dict):
             return deepcopy(value)
+    return None
+
+
+def _source_height_column(tower):
+    """Return persisted source-column evidence, with one audited legacy-source migration."""
+
+    column = (tower.get("source_columns") or {}).get("height_m")
+    if column:
+        return str(column)
+    source = tower.get("source") if isinstance(tower.get("source"), dict) else {}
+    if source.get("file_name") == "航路航线规划-铁塔数据.xlsx":
+        # Pre-Round-2.6.1 project states did not retain matched headers.  The immutable
+        # source workbook has been audited: column 8 is exactly 塔身高度(m).
+        return "塔身高度(m)"
     return None
 
 
@@ -204,7 +232,36 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
     top = profile.get("tower_top_orthometric_m")
     resolved = profile.get("status") == "resolved" and isinstance(top, (int, float))
     assumption = normalized.get("service_origin_assumption")
-    origin_confirmed = bool(resolved and normalized["enabled"] and assumption == "tower_top_agl_0")
+    origin_confirmed = bool(
+        resolved and normalized["planning_host_use_confirmed"]
+        and assumption == "tower_top_agl_0"
+    )
+    terrain = profile.get("terrain_elevation_m")
+    structure_height = profile.get("tower_structure_height_m")
+    estimate_allowed = (
+        normalized["planning_host_use_confirmed"]
+        and normalized.get("planning_service_origin_policy")
+        == "terrain_plus_source_tower_height"
+    )
+    estimate_calculable = (
+        not resolved and isinstance(terrain, (int, float))
+        and isinstance(structure_height, (int, float))
+    )
+    planning_estimated = bool(estimate_allowed and estimate_calculable)
+    planning_origin = (
+        float(top) if origin_confirmed else
+        float(terrain) + float(structure_height) if planning_estimated else None
+    )
+    origin_status = "confirmed" if origin_confirmed else "estimated" if planning_estimated else "unusable"
+    origin_method = (
+        "confirmed_tower_top" if origin_confirmed else
+        "terrain_plus_source_tower_height" if planning_estimated else None
+    )
+    origin_authority = (
+        "derived_confirmed" if origin_confirmed else
+        "engineering_estimate" if planning_estimated else None
+    )
+    source_height_column = _source_height_column(tower)
     suitability = declared_navigation_site_suitability(tower)
 
     limitations = [
@@ -218,6 +275,11 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
             "塔顶 EGM2008 正高未解析：不生成具体 tower clearance floor，"
             "相关空间保持 unknown 并在路径搜索中 fail-closed"
         )
+        if planning_estimated:
+            limitations.append(
+                "未计入潜在建筑屋面高度；该值仅作为规划服务原点估计，可能低估真实安装高程，"
+                "实际安装需现场勘察确认。"
+            )
     elif not normalized["enabled"]:
         limitations.append("共塔规划宿主尚未确认：候选不会被选中，普通候选站照常可用")
     elif assumption != "tower_top_agl_0":
@@ -233,6 +295,30 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
         "source": "tower_colocation:tower_top_egm2008_from_fabdem_dtm_plus_structure_height",
         "confirmed": origin_confirmed,
         "status": "confirmed" if origin_confirmed else "pending_confirmation",
+        "planning_service_origin_egm2008_m": planning_origin,
+        "planning_origin_status": origin_status,
+        "planning_origin_authority": origin_authority,
+        "planning_origin_method": origin_method,
+        "planning_origin_components": {
+            "terrain_elevation_egm2008_m": terrain,
+            "source_tower_height_m": structure_height,
+            "building_height_m": profile.get("building_height_m") if resolved else None,
+            "mount_offset_m": 0.0 if planning_origin is not None else None,
+            "mount_offset_authority": "engineering_assumption" if planning_origin is not None else None,
+            "source_column": source_height_column,
+            "original_statement": (
+                f"源字段 {source_height_column}，单位 m"
+                if structure_height is not None and source_height_column else None
+            ),
+            "assumption_statement": (
+                "将源塔身高度解释为相对安装基面的铁塔结构高度" if structure_height is not None else None
+            ),
+        },
+        "planning_origin_limitations": deepcopy(limitations),
+        "planning_origin_estimated": planning_estimated,
+        "origin_status": origin_status,
+        "origin_authority": origin_authority,
+        "origin_method": origin_method,
     }
     planning_host = normalized["planning_host_use_confirmed"]
     planning_profile = {
@@ -272,6 +358,8 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
                 "host_district": tower.get("district"),
                 "host_elevation_m": tower.get("elevation_m"),
                 "host_structure_height_m": tower.get("height_m"),
+                "terrain_elevation_egm2008_m": terrain,
+                "source_tower_height_m": structure_height,
                 # 三层语义：位置是事实；规划层由策略确认；物理层永远是未核实。
                 "site_position_available": HOST_AVAILABILITY_DEFAULTS["site_position_available"],
                 "planning_host_use_confirmed": planning_host,
@@ -297,6 +385,11 @@ def tower_colocation_candidate(tower, *, obstacle_profile=None, policy=None):
                 "origin": TOWER_COLOCATION_ORIGIN,
                 "host_tower_id": tower_id,
                 "source": deepcopy(tower.get("source")),
+                "status": origin_status,
+                "authority": origin_authority,
+                "method": origin_method,
+                "service_origin_egm2008_m": planning_origin,
+                "estimated": planning_estimated,
             },
             "obstacle_profile": {
                 "status": profile.get("status"),
@@ -339,6 +432,14 @@ def build_tower_colocation_candidates(towers, *, obstacle_profiles=None, policy=
             ))
         except ValueError as exc:
             warnings.append(f"tower_colocation_candidate_skipped:{tower_id or 'unknown'}:{exc}")
+    confirmed_count = sum(
+        (item.get("vertical_profile") or {}).get("planning_origin_status") == "confirmed"
+        for item in items
+    )
+    estimated_count = sum(
+        (item.get("vertical_profile") or {}).get("planning_origin_status") == "estimated"
+        for item in items
+    )
     return {
         "status": "passed" if items else "missing_data",
         "collection_id": TOWER_COLOCATION_COLLECTION_ID,
@@ -348,6 +449,9 @@ def build_tower_colocation_candidates(towers, *, obstacle_profiles=None, policy=
         "creates_existing_facilities": False,
         "invents_device_parameters": False,
         "count": len(items),
+        "confirmed_origin_count": confirmed_count,
+        "estimated_planning_origin_count": estimated_count,
+        "unusable_count": len(items) - confirmed_count - estimated_count,
         "items": items,
         "policy": normalized,
         "source": (towers[0].get("source") if towers else None),
@@ -368,12 +472,16 @@ def normalize_tower_colocation_candidates(value):
     items = value.get("items")
     result["items"] = [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
     result["count"] = len(result["items"])
+    result["tower_count"] = int(value.get("tower_count") or result["count"])
+    for key in ("confirmed_origin_count", "estimated_planning_origin_count", "unusable_count"):
+        result[key] = int(value.get(key) or 0)
     result["warnings"] = [str(item) for item in (value.get("warnings") or [])][:50]
     return result
 
 
 __all__ = [
     "HOST_AVAILABILITY_DEFAULTS", "PLANNING_HOST_STATUSES", "SERVICE_ORIGIN_ASSUMPTIONS",
+    "PLANNING_SERVICE_ORIGIN_POLICIES",
     "SUBSYSTEM_MOUNT_STATUSES",
     "TOWER_COLOCATION_COLLECTION_ID", "TOWER_COLOCATION_ORIGIN",
     "TOWER_COLOCATION_SCHEMA_VERSION",

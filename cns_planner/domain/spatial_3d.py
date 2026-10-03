@@ -441,6 +441,17 @@ def normalize_vertical_profile(value=None, legacy_elevation_m=None):
         result["service_origin_egm2008_m"] = result["surface_elevation_m"] + result["mount_height_agl_m"]
     if result["confirmed"] and result["service_origin_egm2008_m"] is not None:
         result["status"] = "confirmed"
+    # Planning-only tower-origin evidence is additive and must survive the shared
+    # CandidateSite normalizer.  It never upgrades the canonical confirmed origin.
+    for key in (
+        "planning_service_origin_egm2008_m", "planning_origin_status",
+        "planning_origin_authority", "planning_origin_method",
+        "planning_origin_components", "planning_origin_limitations",
+        "planning_origin_estimated", "origin_status", "origin_authority",
+        "origin_method",
+    ):
+        if key in raw:
+            result[key] = deepcopy(raw.get(key))
     return result
 
 

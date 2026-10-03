@@ -72,12 +72,17 @@ export function towerDetailHtml(tower,escapeHtml,{obstacleProfile=null,colocatio
 /** 共塔候选详情：说明"这是宿主候选，不是已安装设备"。 */
 export function towerColocationDetailHtml(candidate,escapeHtml){
   if(!candidate)return '';
-  const safe=typeof escapeHtml==='function'?escapeHtml:value=>String(value??''),metadata=candidate.metadata||{},host=metadata.host||{};
+  const safe=typeof escapeHtml==='function'?escapeHtml:value=>String(value??''),metadata=candidate.metadata||{},host=metadata.host||{},vertical=candidate.vertical_profile||{};
+  const origin=number(vertical.planning_service_origin_egm2008_m);
+  const originLabel=vertical.planning_origin_status==='confirmed'?'已确认塔顶高程'
+    :vertical.planning_origin_status==='estimated'?'规划估计高程':'规划原点不可用';
   return '<b>CNS 共塔候选（宿主）</b><br>'+safe(candidate.site_id)
     +'<br>Tower ID '+safe(host.host_tower_id||'—')+' · '+safe(host.host_tower_name||'—')
     +'<br>Tower Type '+safe(host.host_site_type||'—')
     +'<br>经度 '+candidate.coordinate[0]+' · 纬度 '+candidate.coordinate[1]
     +'<br>宿主可用性 位置'+(host.site_position_available?'可用':'未知')+' · 设备挂载'+(host.device_mount_confirmed?'已确认':'未确认')
+    +'<br>'+safe(originLabel)+(origin===null?'：—':'：<b>'+origin.toFixed(1)+' m EGM2008</b>')
+    +(vertical.planning_origin_status==='estimated'?'<br><b>需现场勘察</b>：估计值不代表真实安装高度':'')
     +'<br><small>共塔候选只表示"可以作为宿主"，不代表已安装任何 CNS 设备，也不声明覆盖能力</small>';
 }
 

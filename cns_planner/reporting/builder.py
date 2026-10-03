@@ -348,6 +348,15 @@ def _continuous_service_section(source):
         "limitations": deepcopy(result.get("limitations") or []),
         #: **强制披露原文**：报告必须逐字包含这些行。
         "disclosure_lines": deepcopy(result.get("disclosure_lines") or []),
+        "estimated_origin_dependency_count": int(
+            result.get("estimated_origin_dependency_count") or 0
+        ),
+        "estimated_origin_tower_ids": deepcopy(
+            result.get("estimated_origin_tower_ids") or []
+        ),
+        "site_survey_required": result.get("site_survey_required") is True,
+        "planning_height_assumptions": result.get("planning_height_assumptions") is True,
+        "planning_limitations": deepcopy(result.get("planning_limitations") or []),
         "engineering_assumptions": engineered,
         "no_full_coverage_claim": True,
         "no_surveillance_fully_satisfied_claim": True,

@@ -610,6 +610,7 @@ export function buildDisplayPlan({
       screen:site.coordinate?screenPoint(site.coordinate):null,
       site,
       hostTowerId:String((((site.metadata||{}).host)||{}).host_tower_id||'')||null,
+      originTier:String((site.vertical_profile||{}).planning_origin_status||'unusable'),
     })).filter(entry=>entry.screen);
 
   // 参考航路点的显示条件 = 图层开关 → LOD 语义：
@@ -931,7 +932,8 @@ export function drawWorkflowLayers({
     if(!entry.hostTowerId)continue;
     const highlighted=String(towerHighlight||'')===entry.hostTowerId;
     drawTowerSymbol(ctx,x,y,{
-      sizePx:plan.towerCandidateSizePx,color:CNS_COLORS.candidate,
+      sizePx:plan.towerCandidateSizePx,
+      color:entry.originTier==='estimated'?'#d97706':CNS_COLORS.candidate,
       strokePx:plan.towerSymbolStrokePx
     });
     if(highlighted){

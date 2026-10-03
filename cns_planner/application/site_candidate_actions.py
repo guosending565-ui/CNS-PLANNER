@@ -68,6 +68,13 @@ def _action(site, device, installed, is_existing):
         else None
     )
     is_tower_host = reuse_class == TOWER_COLOCATION_REUSE_CLASS
+    planning_origin_status = vertical.get("planning_origin_status")
+    planning_service_origin = vertical.get("planning_service_origin_egm2008_m")
+    tower_planning_origin_usable = bool(
+        is_tower_host
+        and planning_origin_status in ("confirmed", "estimated")
+        and isinstance(planning_service_origin, (int, float))
+    )
     declared = [
         str(item).upper()
         for item in (site.get("available_subsystems") or [])
@@ -88,8 +95,16 @@ def _action(site, device, installed, is_existing):
         reasons.append("CandidateSite locked")
     if device_id in installed:
         reasons.append("设施已安装同一 device")
-    if vertical.get("confirmed") is not True or vertical.get("service_origin_egm2008_m") is None:
+    if (
+        vertical.get("confirmed") is not True
+        or vertical.get("service_origin_egm2008_m") is None
+    ) and not tower_planning_origin_usable:
         unknown.append("缺少 confirmed EGM2008 service origin")
+    if tower_planning_origin_usable and vertical.get("service_origin_egm2008_m") is None:
+        # The P16 working copy needs a numeric origin for geometric coverage, while the
+        # source candidate keeps its canonical confirmed field null.  Evidence tier remains
+        # explicit; this does not turn an estimate into a confirmed tower-top fact.
+        vertical["service_origin_egm2008_m"] = float(planning_service_origin)
     geometry = device.get("coverage_geometry") or {}
     #: Round 2 修复：不再要求 legacy ``slant_range_m``。surface-aware 服务
     #: （Communication / RID）的几何由 ``coverage_geometry.radius_by_surface``
@@ -154,6 +169,25 @@ def _action(site, device, installed, is_existing):
         "planning_profile": profile,
         "host": deepcopy(host),
         "planning_origin": deepcopy(metadata.get("planning_origin")),
+        "tower_id": (host or {}).get("host_tower_id") if is_tower_host else None,
+        "longitude": coordinate[0] if isinstance(coordinate, list) and len(coordinate) > 1 else None,
+        "latitude": coordinate[1] if isinstance(coordinate, list) and len(coordinate) > 1 else None,
+        "terrain_elevation_egm2008_m": (
+            (vertical.get("planning_origin_components") or {}).get("terrain_elevation_egm2008_m")
+        ),
+        "source_tower_height_m": (
+            (vertical.get("planning_origin_components") or {}).get("source_tower_height_m")
+        ),
+        "service_origin_egm2008_m": (
+            float(planning_service_origin) if tower_planning_origin_usable
+            else vertical.get("service_origin_egm2008_m")
+        ),
+        "origin_status": planning_origin_status if is_tower_host else (
+            "confirmed" if vertical.get("confirmed") is True else None
+        ),
+        "origin_method": vertical.get("planning_origin_method") if is_tower_host else None,
+        "origin_authority": vertical.get("planning_origin_authority") if is_tower_host else None,
+        "planning_origin_estimated": planning_origin_status == "estimated" if is_tower_host else False,
         "planning_host_status": (
             (planning_host or {}).get("planning_host_status") if is_tower_host else None
         ),

@@ -337,6 +337,8 @@ function selectedActionSites(flow, serviceKeys, selectedActions = null) {
       device_id: action?.device_id || null,
       subsystem: action?.subsystem || null,
       device_type: action?.device_type || null,
+      origin_status: action?.origin_status || null,
+      tower_id: action?.tower_id || null,
     });
   }
   return sites;
@@ -478,6 +480,18 @@ export function cnsServiceLegendModel() {
         + '方向性面阵只属于 Radar Non-cooperative Surveillance',
     },
     {
+      id: 'cns-selected-confirmed-origin',
+      label: '已确认塔顶高程的选中共塔站址',
+      symbol: '<span class="legend-dot" style="background:#d12f8a"></span>',
+      note: '规划动作；物理安装仍未确认，实施前需现场勘察',
+    },
+    {
+      id: 'cns-selected-estimated-origin',
+      label: '规划估计高程的选中共塔站址',
+      symbol: '<span class="legend-dot" style="background:#d97706"></span>',
+      note: 'FABDEM 地形正高 + 源铁塔高度；需现场勘察',
+    },
+    {
       id: 'cns-surface-facts',
       label: '地表分类（按 L8 格心代表点）',
       symbol: '<span class="legend-dot" style="background:#7256a1"></span>',
@@ -578,7 +592,7 @@ export function drawCnsServiceOverlay({ctx, view, screenPoint, model, layers = {
     ctx.arc(x, y, site.kind === 'planned' ? 3.6 : 3, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.strokeStyle = site.kind === 'planned'
-      ? CNS_COVERAGE_STYLE.planned.color
+      ? (site.origin_status === 'estimated' ? '#d97706' : CNS_COVERAGE_STYLE.planned.color)
       : (serviceKey === 'C:communication'
         ? CNS_COVERAGE_STYLE.communication.color
         : CNS_COVERAGE_STYLE.rid.color);
@@ -914,6 +928,9 @@ export function cnsMapFeatureTooltip(feature, flow) {
         '站址来源 ' + navigationSiteSourceText(action?.reuse_class))
       + row('动作', plannerFamilyLabel(action?.planner_family),
         String(action?.device_id || '') ? '设备 ' + String(action.device_id) : '设备型号未选择')
+      + row('服务原点', action?.origin_status === 'estimated'
+        ? '规划估计高程（需现场勘察）' : '已确认塔顶高程',
+        String(action?.service_origin_egm2008_m ?? '—') + ' m EGM2008')
       + row('distinct_site_id', String(action?.distinct_site_id || '—'),
         coLocated ? '同一物理站址共址了 ' + siblings.length + ' 类服务：' + coLocated : '')
       + row('说明', CNS_SERVICE_GEOMETRY_LEGEND_NOTE)

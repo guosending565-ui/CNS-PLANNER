@@ -142,6 +142,11 @@ def normalize_tower(item, index=0, *, source=None):
             deepcopy(source) if source is not None else None
         ),
         "evidence": deepcopy(item.get("evidence") or []),
+        "source_columns": {
+            str(key): str(value)
+            for key, value in (item.get("source_columns") or {}).items()
+            if value not in (None, "")
+        },
     }
     for field in SOURCE_ATTRIBUTE_FIELDS:
         if field in ("elevation_m", "height_m"):
