@@ -7,7 +7,7 @@ import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/rende
 import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,hitCnsTowerCandidate,entryExtent} from './map/display_layers.js';
 import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';import {attachTowerReferenceLayer,towerDetailContext} from './map/tower_reference_layer.js';
-import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend,updateCnsServiceLegend} from './workflow/map_legend.js';
+import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend,updateCnsServiceLegend,updateCompactMapLegend} from './workflow/map_legend.js';
 import {cnsMapFeatureAt,cnsMapFeatureTooltip} from './map/cns_service_overlay.js';
 import {renderWorkflowSteps} from './workflow/steps.js';
 import {createWorkbench} from './workflow/workbench.js';
@@ -71,7 +71,7 @@ const constraintView=createConstraintFieldView({
   // bbox 只能由网格索引补齐，因此该层必须能在几何缺失时按需把 /api/workspace/grid
   // 水合回来；否则数据正确、图例计数正确，地图上却一个障碍格都画不出来。
   hydrateGridGeometry:()=>ensureGridGeometry(),
-  afterChange:()=>{renderWorkflow();updateMapLegend({$,flow});paint();}
+  afterChange:()=>{renderWorkflow();refreshLegends();paint();}
 });
 //: 只读诊断投影：自动化验收与排障用它读取前端真实状态，**不做任何写入**。
 //: 覆盖本轮修复涉及的三处口径：网格几何索引、约束视图状态、以及 bootstrap 计时。
@@ -399,6 +399,47 @@ function hitReferenceObject(event){
   return hitReferenceOverlay(click,{...overlay,referencePoints:points},screenPoint);
 }
 $('zoomIn').onclick=()=>zoom(.5);$('zoomOut').onclick=()=>zoom(2);$('fit').onclick=()=>fit(state?.bounds);
+
+/**
+ * Round 2.8：**缩放至航路**（新增能力，绝不修改 ``#fit`` 的历史语义）。
+ *
+ * ``#fit`` 是"回到全数据域"（``state.bounds``），对 CNS 结果验收没有意义：全域视野里
+ * R0005 只占几像素，站点与覆盖圆全部糊在一起。本函数只消费**权威运行航路**
+ * （``flow.operational_routes``，Apply 之后才存在）的 ``path``，取其经纬度包围盒后
+ * 加适度 padding 自动缩放；没有任何运行航路时如实返回 false 并写出状态提示，
+ * **绝不**退化成全域 fit（否则用户会以为航路已经缩放进来了）。
+ *
+ * @returns {boolean} 是否真的把视图缩放到运行航路
+ */
+export function operationalRouteBounds(paths){  let bbox=null;
+  for(const path of paths||[]){
+    for(const point of path||[]){
+      if(!Array.isArray(point)||point.length<2)continue;
+      const lon=Number(point[0]),lat=Number(point[1]);
+      if(!Number.isFinite(lon)||!Number.isFinite(lat))continue;
+      if(!bbox)bbox=[lon,lat,lon,lat];
+      else bbox=[Math.min(bbox[0],lon),Math.min(bbox[1],lat),Math.max(bbox[2],lon),Math.max(bbox[3],lat)];
+    }
+  }
+  return bbox;
+}
+function fitOperationalRoute(){
+  const routes=flow?.operational_routes||[];
+  const bbox=operationalRouteBounds(routes.map(route=>route?.path));
+  if(!bbox){
+    $('viewStatus').textContent='当前没有权威运行航路（请先在第04步应用运行航路）';
+    return false;
+  }
+  //: padding 由 ``fit`` 的 1.1 统一提供（与 #fit 的适配语义一致，不引入第二套公式）。
+  const ok=fitLonLatBbox(bbox);
+  if(ok){
+    const ids=routes.map(route=>String(route?.route_id||'')).filter(Boolean).join('、');
+    $('viewStatus').textContent='已缩放至运行航路 '+(ids||'(未命名)');
+  }
+  return ok;
+}
+const fitRouteButton=$('fitRoute');
+if(fitRouteButton)fitRouteButton.onclick=()=>fitOperationalRoute();
 function updateGridNotice(){
   const notice=$('gridNotice');if(!notice)return;
   const hasGrid=flow?.grid?.status==='passed'&&gridRenderCache.cells.length>0;
@@ -437,7 +478,7 @@ function syncLayerControls(){
   bindLayerControls({
     $,layerIds:LAYER_IDS,queue,paint,
     setGridOutline(value){gridDisplay.outline=value;},
-    updateGridNotice,updateGridThemeLegend,updateMapLegend:()=>updateMapLegend({$,flow}),
+    updateGridNotice,updateGridThemeLegend,updateMapLegend:()=>refreshLegends(),
     onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked),
     // 勾选「高度层障碍」才按需读取逐格明细；取消勾选只停止绘制，不丢已读数据。
     // BUG-SHOT-009：几何缺失时必须先补齐网格索引，否则明细读到了也画不出格子。
@@ -453,6 +494,24 @@ function syncLayerControls(){
     }});
 }
 function statusText(status){return labelFor(status);}function statusBadge(status){return badgeFor(status);}function escapeHtml(value){return escapeValue(value);}
+
+/**
+ * Round 2.8：图例刷新的**唯一**入口。
+ *
+ * 三件事必须一起做，否则会出现"地图上画了、图例里没有"或"图例里列了、地图上没画"：
+ *
+ * 1. ``updateCompactMapLegend`` —— 正式地图图例：只列**当前激活图层**拥有的符号，
+ *    默认收起，限宽限高（这是本轮修掉"图例遮挡规划结果"的入口）；
+ * 2. ``updateMapLegend`` —— 旧容器 ``#businessLegend`` 的兼容投影（保持既有回归）；
+ * 3. ``updateCnsServiceLegend`` —— 旧容器 ``#cnsServiceLegend`` 的兼容投影。
+ *
+ * 旧容器的宿主 ``#legend`` 会被新图例隐藏，因此不会出现两套图例同时占地图。
+ */
+function refreshLegends(){
+  updateCompactMapLegend({$,flow});
+  updateMapLegend({$,flow});
+  updateCnsServiceLegend({$,flow});
+}
 function setStep(step){
   currentStep=Number(step);interactionMode='pan';measure.sync();draftWorkspace=null;profileHoverCoordinate=null;routeEvidenceHighlight=null;
   store.set({ui:{...store.get().ui,step:currentStep,interactionMode}});
@@ -547,7 +606,7 @@ function renderWorkflow(){  if(!flow)return;
     const gaps=cnsGapSegments();
     $('workflowStatus').textContent='项目：'+projectLabel+' · 第 '+currentStep+' 步'+(gaps?' · CNS 缺口段 '+gaps:'');
   }
-  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));updateMapLegend({$,flow});updateCnsServiceLegend({$,flow});
+  renderRailSteps($,flow,currentStep,selector=>document.querySelectorAll(selector));refreshLegends();
   const storage=state?.project_storage||{};
   if($('projectRestore'))$('projectRestore').textContent=storage.automatic
     ? (flow.last_saved_at?'自动恢复项目已保存 · 建议另存到项目文件夹':'当前使用自动恢复项目')

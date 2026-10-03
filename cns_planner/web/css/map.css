@@ -250,6 +250,97 @@
    4. 图例（默认收起，不长期占地图面积）
    ========================================================= */
 
+/* ---------------------------------------------------------
+   Round 2.8：紧凑 / 可折叠 / 激活图层驱动的**正式**地图图例。
+   实机截图暴露的三个问题与硬约束：
+     * 不得横跨地图下方：宽度上限 340px（收起时只有按钮宽）；
+     * 不得覆盖地图下半屏：展开高度上限 40vh，超出内部滚动；
+     * 不得显示未激活图层：条目由 JS 按激活图层过滤后传入。
+   地图是主要结果区，本浮层永远只占左下角一小块。
+   --------------------------------------------------------- */
+.map-legend{
+  position:absolute;
+  z-index:7;
+  left:var(--sp-6);
+  bottom:var(--sp-9);
+  width:min(340px,calc(100% - 2 * var(--sp-6)));
+  max-width:340px;
+  max-height:40vh;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  padding:0;
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  background:rgba(255,255,255,.96);
+  box-shadow:var(--shadow-1);
+  font-size:var(--fs-micro);
+  line-height:1.5;
+  color:var(--ink-muted);
+}
+.map-legend[hidden]{display:none}
+.map-legend-collapsed{
+  /*: 收起态只有一个按钮：按内容自适应，但绝不塌成 0 宽 / 0 高。
+     实测 Chromium 会把该 flex column 容器压成 2px 高（子项被裁切），
+     因此这里显式给出内容高度下限，避免"图例按钮被压扁成一条线"。 */
+  width:max-content;
+  min-width:min(176px,100%);
+  max-width:340px;
+  max-height:none;
+  min-height:30px;
+  height:auto !important;
+  flex:none;
+}
+.map-legend-head{
+  display:flex;
+  align-items:center;
+  gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-4);
+  cursor:pointer;
+  user-select:none;
+  /*: 头部必须单行显示：换行会把收起态宽度压到只剩几个像素。 */
+  white-space:nowrap;
+  /*: 头部是 flex 子项，必须显式不允许收缩并给出最小高度，否则会被压扁。 */
+  flex:0 0 auto;
+  min-height:28px;
+  box-sizing:border-box;
+}
+.map-legend-head:focus-visible{outline:2px solid var(--line-strong,#1c4f78);outline-offset:1px}
+.map-legend-title{font-weight:700;letter-spacing:.4px;color:var(--ink-soft);flex:0 0 auto}
+.map-legend-count{color:var(--ink-faint);font-size:9px;white-space:nowrap;flex:0 0 auto}
+.map-legend-caret{margin-left:auto;color:var(--ink-faint);font-size:11px;flex:0 0 auto}
+.map-legend-body{
+  max-height:calc(40vh - 2.2rem);
+  overflow-y:auto;
+  padding:0 var(--sp-4) var(--sp-4);
+  border-top:1px solid var(--line-soft);
+}
+.map-legend-group{margin-top:var(--sp-3)}
+.map-legend-group-label{
+  margin:0 0 var(--sp-1);
+  padding-bottom:2px;
+  border-bottom:1px solid var(--line-soft);
+  color:var(--ink-faint);
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:.8px;
+  text-transform:uppercase;
+}
+.map-legend-line{display:flex;align-items:center;gap:var(--sp-3);margin:2px 0;min-height:18px}
+.map-legend-line .map-legend-symbol{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:18px;height:18px;flex:0 0 auto;
+}
+.map-legend-line .map-legend-label{color:var(--ink-muted)}
+.map-legend-empty{padding:var(--sp-3) 0;color:var(--ink-faint)}
+
+/*: 新图例接管后，旧的一体式图例整体隐藏：绝不出现"两套图例同时占地图"。 */
+#mapLegend:not([hidden]) ~ #legend{display:none}
+
+/* ---------------------------------------------------------
+   旧式图例（``#legend``）保留给未迁移到新图例的页面；CNS 结果页由上面的
+   ``#mapLegend`` 接管。它的样式逐字段保持不变，避免影响既有回归。
+   --------------------------------------------------------- */
 .legend{
   position:absolute;
   z-index:7;
@@ -462,10 +553,19 @@
 @media (max-width:1180px){
   .layer-drawer-body{width:228px}
   .legend{width:190px;max-height:52%}
+  .map-legend{max-width:264px;width:min(264px,calc(100% - 2 * var(--sp-6)))}
+  .map-legend-collapsed{width:max-content;min-width:min(168px,100%);max-width:264px}
+  .map-legend{max-height:36vh}
+  .map-legend-body{max-height:calc(36vh - 2.2rem)}
 }
 
 @media (max-width:900px){
   .layer-drawer{max-height:calc(100% - 40px)}
   .legend{display:none}
+  /*: 窄屏也绝不遮挡地图：新图例收缩为左下角单按钮，展开高度进一步受限。 */
+  .map-legend{max-width:220px;width:min(220px,calc(100% - 2 * var(--sp-6)))}
+  .map-legend-collapsed{width:max-content;min-width:min(160px,100%);max-width:220px}
+  .map-legend{max-height:32vh}
+  .map-legend-body{max-height:calc(32vh - 2.2rem)}
   .map-hint{display:none}
 }

@@ -72,6 +72,28 @@
 .cns-task-panel-head h3 {
   margin: 0;
   font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Round 2.8：标题里的活跃任务数。0 任务时面板自动收起，收起态只剩这一行，
+   因此"当前没有后台计算任务"不再长期占据地图右下角、遮住规划结果。 */
+.cns-task-panel-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 0.6rem;
+  background: rgba(28, 79, 120, 0.12);
+  color: #1c4f78;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.cns-task-center[data-collapsed="true"] .cns-task-panel-count {
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
 }
 
 .cns-task-panel-body {

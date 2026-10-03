@@ -110,17 +110,73 @@ class CorridorSitePlanningService:
         #: 因此预筛只否决 confirmed 增益必然为 0 的动作，绝不改变任何判定规则。
         prepared_cells = self._prepared_cells(state)
         prefilter = _build_prefilter_context(state, prepared_cells)
+        #: Round 2.8：**连续服务目标**的阈值与速度必须与 P17 同源（用户显式登记的
+        #: ``c_full_outage_max_s`` × 选定机载档案航路速度）。解析不出就保持不可判定，
+        #: 绝不回落到 3 s 之类的默认值。
+        continuous_inputs = self._continuous_inputs(state)
+        continuous_threshold_m = continuous_inputs.get("threshold_m")
+        continuous_route_speed_mps = continuous_inputs.get("route_speed_mps")
+        continuous_aircraft_id = continuous_inputs.get("aircraft_id")
+        selection_limit = _intervention_selection_limit(policy)
         selected, trace, all_impacts = [], [], []
+        continuous_impacts = []
         facilities = deepcopy(state.get("existing_cns_facilities") or {})
         current_corridor, current_gap = deepcopy(baseline_corridor), deepcopy(baseline_gap)
         selected_ids = set()
         selected_radar_actions = []
         selected_navigation_actions = []
         stop_reason = None
+
+        def apply_winner(action, impact, score, cost, cost_unit, score_semantics, tier):
+            """把一条中选动作应用到工作副本，并登记 selected / trace（唯一实现）。"""
+
+            nonlocal facilities, current_corridor, current_gap
+            if action.get("planner_family") == "directional_radar":
+                selected_radar_actions.append(deepcopy(action))
+            elif action.get("planner_family") == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
+                # 导航站是 caller-owned 假想 provider：**不**写入正式 ExistingCNS，
+                # 也不并入 facilities，只作为重算 P14/P15 的显式输入累积。
+                selected_navigation_actions.append(deepcopy(action))
+            else:
+                facilities = _apply_cumulative_action(facilities, action)
+            current_corridor, current_gap = self._rerun(
+                facilities, radar_actions=selected_radar_actions,
+                navigation_actions=selected_navigation_actions,
+                baseline_navigation_evidence=baseline_navigation_evidence,
+                prepared_cells=prepared_cells,
+            )
+            selected_ids.add(action["action_id"])
+            chosen = {
+                **deepcopy(action), "impact": deepcopy(impact),
+                "iteration": len(selected) + 1,
+                "marginal_confirmed_requirement_unit_volume_gain": impact["confirmed_requirement_unit_volume_gain"],
+                "marginal_continuous_service_gain": deepcopy(impact.get("continuous_service_gain")),
+                "selection_score": score,
+                "score_semantics": score_semantics,
+                "explicit_cost": cost, "cost_unit": cost_unit,
+            }
+            chosen.update(_selected_action_audit(chosen, targets, state))
+            selected.append(chosen)
+            trace.append({
+                "iteration": len(selected), "reuse_class": tier,
+                "selected_action_id": action["action_id"],
+                "marginal_impact": deepcopy(impact),
+                "corridor_fingerprint": current_corridor.get("input_fingerprint"),
+                "corridor_gap_fingerprint": current_gap.get("input_fingerprint"),
+            })
+
         for tier in REUSE_TIERS:
             while True:
-                if _confirmed_objectives_met(current_gap):
-                    stop_reason = "all_evaluable_confirmed_objectives_met"
+                #: 停止条件（Round 2.8 与 P17 一致化）：
+                #: 离散 objective 满足 **且** 连续服务投影达到可接受（或阈值证据不足，
+                #: 此时不得声称"已满足连续服务"，只能如实继续/报告）。
+                if _confirmed_objectives_met(current_gap) and (
+                    _continuous_service_acceptance(
+                        current_gap, continuous_threshold_m,
+                        continuous_route_speed_mps, continuous_aircraft_id,
+                    ).get("acceptable") is not False
+                ):
+                    stop_reason = "all_required_services_acceptable"
                     break
                 tier_actions = [
                     action for action in actions
@@ -135,46 +191,52 @@ class CorridorSitePlanningService:
                         navigation_actions=selected_navigation_actions,
                         baseline_navigation_evidence=baseline_navigation_evidence,
                         prepared_cells=prepared_cells, prefilter=prefilter,
+                        continuous_threshold_m=continuous_threshold_m,
+                        route_speed_mps=continuous_route_speed_mps,
+                        aircraft_id=continuous_aircraft_id,
                     )
                     evaluated.append(impact)
                     all_impacts.append(deepcopy(impact))
                 ranked = self.planner.rank(tier_actions, evaluated)
-                if not ranked:
-                    break
-                winner = ranked[0]
-                action, impact = winner["action"], winner["impact"]
-                if action.get("planner_family") == "directional_radar":
-                    selected_radar_actions.append(deepcopy(action))
-                elif action.get("planner_family") == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
-                    # 导航站是 caller-owned 假想 provider：**不**写入正式 ExistingCNS，
-                    # 也不并入 facilities，只作为重算 P14/P15 的显式输入累积。
-                    selected_navigation_actions.append(deepcopy(action))
-                else:
-                    facilities = _apply_cumulative_action(facilities, action)
-                current_corridor, current_gap = self._rerun(
-                    facilities, radar_actions=selected_radar_actions,
-                    navigation_actions=selected_navigation_actions,
-                    baseline_navigation_evidence=baseline_navigation_evidence,
-                    prepared_cells=prepared_cells,
+                #: Round 2.8：连续服务排名通道。只在"离散排名拿不到任何正向候选、
+                #: 且当前投影态连续服务**明确不合格**"时启用，因此绝不改变既有选中序列。
+                #:
+                #: 性能与语义边界（Round 2.8 实测收口）：该通道**只**接受"使连续服务从
+                #: 不可接受变为可接受"（``threshold_crossed``）的候选。仅把缺口缩短、
+                #: 却仍超过阈值并不构成停止理由，因此不进入候选池 —— 否则在真实项目
+                #: （750 个候选 / 2745 个目标）里会为大量"只缩短一部分"的塔反复执行完整
+                #: P14/P15 重算，并把 P16 选站数推到干预上限（实测单次评估劣化到数十分钟）。
+                #: 只做部分缩短的候选仍照常登记在 ``continuous_service_candidate_impacts``
+                #: 与各候选的 impact 里，可审计、不回退。
+                rankable_continuous = (
+                    [item for item in evaluated if _continuous_rankable(item)]
+                    if (not ranked and _continuous_service_unacceptable(
+                        current_gap, continuous_threshold_m,
+                        continuous_route_speed_mps, continuous_aircraft_id))
+                    else []
                 )
-                selected_ids.add(action["action_id"])
-                chosen = {
-                    **deepcopy(action), "impact": deepcopy(impact),
-                    "iteration": len(selected) + 1,
-                    "marginal_confirmed_requirement_unit_volume_gain": impact["confirmed_requirement_unit_volume_gain"],
-                    "selection_score": winner["selection_score"],
-                    "score_semantics": winner["score_semantics"],
-                    "explicit_cost": winner["explicit_cost"], "cost_unit": winner["cost_unit"],
-                }
-                chosen.update(_selected_action_audit(chosen, targets, state))
-                selected.append(chosen)
-                trace.append({
-                    "iteration": len(selected), "reuse_class": tier,
-                    "selected_action_id": action["action_id"],
-                    "marginal_impact": deepcopy(impact),
-                    "corridor_fingerprint": current_corridor.get("input_fingerprint"),
-                    "corridor_gap_fingerprint": current_gap.get("input_fingerprint"),
-                })
+                continuous_ranked = (
+                    self.planner.rank_continuous_service(tier_actions, rankable_continuous)
+                    if rankable_continuous else []
+                )
+                if not ranked and not continuous_ranked:
+                    continuous_impacts.extend(
+                        deepcopy(item) for item in evaluated
+                        if (item or {}).get("status") == "eligible"
+                    )
+                    break
+                if len(selected) >= selection_limit:
+                    stop_reason = "intervention_selection_limit_reached"
+                    break
+                if not ranked:
+                    winner = continuous_ranked[0]
+                else:
+                    winner = ranked[0]
+                apply_winner(
+                    winner["action"], winner["impact"], winner["selection_score"],
+                    winner["explicit_cost"], winner["cost_unit"],
+                    winner["score_semantics"], tier,
+                )
             if stop_reason:
                 break
         final_facilities = deepcopy(state.get("existing_cns_facilities") or {})
@@ -207,15 +269,47 @@ class CorridorSitePlanningService:
             selected=selected, iteration_trace=trace,
             unknown_evidence=unknown, consistency=consistency,
         )
-        final_impact = _impact({"action_id": "final-combined"}, baseline_gap, final_gap, targets)
+        final_impact = _impact(
+            {"action_id": "final-combined"}, baseline_gap, final_gap, targets,
+            continuous_threshold_m=continuous_threshold_m,
+            route_speed_mps=continuous_route_speed_mps,
+            aircraft_id=continuous_aircraft_id,
+        )
         cumulative_gain = result.get("confirmed_requirement_unit_volume_gain", 0.0)
         authoritative_gain = final_impact.get("confirmed_requirement_unit_volume_gain", 0.0)
+        baseline_acceptance = _continuous_service_acceptance(
+            baseline_gap, continuous_threshold_m, continuous_route_speed_mps,
+            continuous_aircraft_id,
+        )
+        final_acceptance = _continuous_service_acceptance(
+            final_gap, continuous_threshold_m, continuous_route_speed_mps,
+            continuous_aircraft_id,
+        )
+        stop_reason = stop_reason or _no_positive_candidate_stop_reason(
+            final_acceptance, result.get("status"),
+            threshold_available=continuous_threshold_m is not None,
+        )
         result.update({
             "baseline_corridor_fingerprint": baseline_corridor.get("input_fingerprint"),
             "baseline_corridor_gap_fingerprint": baseline_gap.get("input_fingerprint"),
             "final_hypothetical_corridor_fingerprint": final_corridor.get("input_fingerprint"),
             "final_hypothetical_corridor_gap_fingerprint": final_gap.get("input_fingerprint"),
-            "stop_reason": stop_reason or "no_positive_confirmed_marginal_gain",
+            "stop_reason": stop_reason,
+            #: Round 2.8：连续服务停止条件与本轮基线/最终投影态的可读摘要。
+            "continuous_service_stop_policy": (
+                "continuous_service_objective_uses_the_same_threshold_and_the_same_"
+                "projection_metric_as_p17"
+            ),
+            "continuous_service_threshold_m": continuous_threshold_m,
+            "continuous_service_route_speed_mps": continuous_route_speed_mps,
+            "baseline_continuous_service_acceptance": baseline_acceptance,
+            "final_continuous_service_acceptance": final_acceptance,
+            "continuous_service_acceptable": final_acceptance.get("acceptable"),
+            "continuous_service_residual_segments": _continuous_residual_segments(
+                final_gap, continuous_threshold_m,
+            ),
+            "continuous_service_candidate_impacts": continuous_impacts,
+            "intervention_selection_limit": selection_limit,
             "cumulative_predicted_requirement_unit_volume_gain": cumulative_gain,
             "confirmed_requirement_unit_volume_gain": authoritative_gain,
             "combined_what_if_gain_difference": authoritative_gain - cumulative_gain,
@@ -239,13 +333,14 @@ class CorridorSitePlanningService:
             ["部分共塔站址高程为工程估计，实施前需现场勘察确认。"]
             if estimated_ids else []
         )
-        if not selected and (_confirmed_objectives_met(baseline_gap) or (not targets and not unknown)):
+        if not selected and _confirmed_objectives_met(baseline_gap) and (
+            baseline_acceptance.get("acceptable") is not False
+        ):
             result["status"] = "no_action_required"
-            result["stop_reason"] = (
-                "confirmed_objectives_already_met"
-                if _confirmed_objectives_met(baseline_gap)
-                else "no_confirmed_targets_or_unknown_evidence"
-            )
+            result["stop_reason"] = "confirmed_objectives_already_met"
+        elif not selected and not targets and not unknown:
+            result["status"] = "no_action_required"
+            result["stop_reason"] = "no_confirmed_targets_or_unknown_evidence"
         elif not selected and not targets and unknown:
             result["status"] = "evidence_required"
             result["stop_reason"] = "only_unknown_or_missing_evidence"
@@ -274,10 +369,55 @@ class CorridorSitePlanningService:
         self.session.save()
         return self.snapshot()
 
+    def _continuous_inputs(self, state):
+        """P16 连续服务停止条件所需的阈值 / 速度（与 P17 **同源**，只读）。
+
+        Round 2.8：P16 必须能回答"实施本方案后连续服务是否可接受"。它**不允许**
+        自己另立一份阈值或速度，因此这里直接复用 P17 的评估器与参数解析：
+
+        * ``c_full_outage_max_s`` —— ``ContinuousServiceAcceptabilityV1._parameters``
+          经 ``resolve_continuous_parameter``（显式证据优先，``C`` 无内置基线）；
+        * 航路速度 —— ``fc30_planning_speeds(aircraft_profile_with_evidence(state))``，
+          与 P17 把缺口长度换算成时长用的是**同一个**事实。
+
+        任何一项不可判定时返回 ``threshold_m=None``，P16 会如实披露
+        ``threshold_evidence_required``，**绝不**假装连续服务已满足。
+        """
+
+        from ..algorithms.continuous_service.v1 import (
+            ContinuousServiceAcceptabilityV1, _limit as _resolve_limit,
+        )
+        from ..domain.fc30_profile import fc30_planning_speeds
+
+        profile = aircraft_profile_with_evidence(state)
+        policy = state.get("cns_continuous_service_policy") or {}
+        parameters = ContinuousServiceAcceptabilityV1._parameters(
+            state.get("planning_evidence") or {}, policy,
+        )
+        seconds = _resolve_limit(parameters, "C", "service_outage", policy)
+        speeds = fc30_planning_speeds(profile)
+        speed = speeds.get("route_speed_mps")
+        speed_value = float(speed) if isinstance(speed, (int, float)) and float(speed) > 0 else None
+        threshold_m = (
+            None if (seconds is None or speed_value is None or float(seconds) <= 0)
+            else float(seconds) * speed_value
+        )
+        return {
+            "threshold_m": threshold_m,
+            "threshold_s": None if seconds is None else float(seconds),
+            "route_speed_mps": speed_value,
+            "aircraft_id": (profile or {}).get("aircraft_id"),
+            "threshold_parameter": "c_full_outage_max_s",
+            "threshold_authority": (
+                (parameters.get("c_full_outage_max_s") or {}).get("authority")
+            ),
+        }
+
     def _what_if(
         self, action, facilities, before_gap, targets, iteration, radar_actions=None,
         navigation_actions=None, baseline_navigation_evidence=None,
-        prepared_cells=None, prefilter=None,
+        prepared_cells=None, prefilter=None, continuous_threshold_m=None,
+        route_speed_mps=None, aircraft_id=None,
     ):
         eligibility = action.get("eligibility") or {}
         if eligibility.get("status") != "eligible":
@@ -285,6 +425,10 @@ class CorridorSitePlanningService:
                 "action_id": action.get("action_id"), "iteration": iteration,
                 "status": eligibility.get("status", "ineligible"),
                 "confirmed_requirement_unit_volume_gain": 0.0,
+                "confirmed_gain": 0.0,
+                "continuous_service_gain": None,
+                "continuous_service_gain_threshold_crossed": False,
+                "continuous_service_gain_improved": False,
                 "newly_met_confirmed_objectives": 0,
                 "reasons": deepcopy(eligibility.get("reasons") or []),
                 "evidence": [], "regressions": [],
@@ -315,7 +459,11 @@ class CorridorSitePlanningService:
                 baseline_navigation_evidence=baseline_navigation_evidence,
                 prepared_cells=prepared_cells,
             )
-        impact = _impact(action, before_gap, after_gap, targets)
+        impact = _impact(
+            action, before_gap, after_gap, targets,
+            continuous_threshold_m=continuous_threshold_m,
+            route_speed_mps=route_speed_mps, aircraft_id=aircraft_id,
+        )
         profile = provider_reason_profile(after_corridor)
         #: Round 2.3：把"哪一层拿不到证据"直接并入原因聚合 —— 否则真实项目里
         #: Communication（provider 类型门禁）与 RID（机载能力/服务模型）会被同一句
@@ -1087,7 +1235,8 @@ def _navigation_confirmed_units(target, entry):
     return min(required, int(counted))
 
 
-def _impact(action, before, after, targets):
+def _impact(action, before, after, targets, continuous_threshold_m=None,
+            route_speed_mps=None, aircraft_id=None):
     """一条 candidate action 的 what-if 影响（Round 2.2 unknown 语义）。
 
     **unknown 语义铁律（本轮裁定）**：
@@ -1100,7 +1249,25 @@ def _impact(action, before, after, targets):
       动作变为 ``ineligible`` 并把增益归零；
     * ``confirmed_gain > 0`` 即允许进入候选评分，即便仍有 unknown target；此时
       ``evidence_status = confirmed_with_unknown_evidence``，且 unknown 清单照常保留。
+
+    Round 2.8 additive：本函数同时给出 **continuous_service_gain**（连续服务收益）。
+    离散 unit 增益为 0 但能把连续缺口缩短 / 跨过阈值（例如 143.54 m → 0 m，
+    9.57 s → 0 s）的真实候选，**必须**能被 P16 当作正向动作看见，否则会再次出现
+    "P16 已停止、P17 仍 unacceptable" 的矛盾。
     """
+
+    before_acceptance = _continuous_service_acceptance(
+        before, continuous_threshold_m, route_speed_mps, aircraft_id,
+    )
+    after_acceptance = _continuous_service_acceptance(
+        after, continuous_threshold_m, route_speed_mps, aircraft_id,
+    )
+    continuous_gain = _continuous_service_gain(
+        before, after, before_acceptance, after_acceptance,
+    )
+    continuous_reduction_m = float(
+        continuous_gain.get("longest_outage_reduction_m") or 0.0
+    )
 
     before_entries, after_entries = _entry_map(before), _entry_map(after)
     gain = service_volume = redundancy_volume = 0.0
@@ -1184,6 +1351,33 @@ def _impact(action, before, after, targets):
                 "该动作对部分 target 仍缺可确认证据：已确认增益有效，"
                 "但 unknown 独立保留、不计入 satisfied、不计入冗余满足"
             )
+    elif continuous_reduction_m > 0 and continuous_gain.get("threshold_available") is True:
+        #: Round 2.8：离散 unit 增益为 0，但**连续服务缺口确实被缩短**。
+        #: 旧模型会把它归入 unknown/ineligible 并静默丢弃，于是出现"P16 停止、
+        #: P17 仍 unacceptable"。这里明确登记为连续服务正向动作。
+        #:
+        #: **fail-closed 边界**：只有本项目确实登记了 C 全失联阈值（阈值可判定）时，
+        #: "缺口缩短"才允许作为正向动作。阈值不可判定时保持原有 unknown / ineligible
+        #: 结论——``UNKNOWN ≠ PASS`` 在连续服务维度同样成立，绝不因为"缺口变小了"
+        #: 就绕过"没有阈值证据"这件事。
+        status, reasons = "eligible", [
+            "该动作未产生新的已确认 requirement-unit 进度（离散目标已满足），"
+            "但缩短了连续服务缺口投影："
+            f"最长 {continuous_gain['before_longest_deficit_m']:.3f} m → "
+            f"{continuous_gain['after_longest_deficit_m']:.3f} m"
+            "（与 P17 同一指标、同一阈值，绝不作为风险或概率解释）"
+        ]
+        if has_unknown:
+            reasons.append(
+                "该动作对部分 target 仍缺可确认证据：连续服务收益有效，"
+                "但 unknown 独立保留、不计入 satisfied、不计入冗余满足"
+            )
+    elif continuous_reduction_m > 0:
+        #: 缺口缩短但阈值证据缺失：如实登记"不可判定"，不得升级为合格动作。
+        status, reasons = "unknown", [
+            "该动作缩短了连续服务缺口投影，但本项目未登记 C 全失联阈值证据，"
+            "连续服务收益**不可判定**（fail-closed，绝不按默认阈值放行）"
+        ]
     elif has_unknown:
         status, reasons = "unknown", [
             "what-if 产生 unknown 或关键 provider 证据不完整，且没有已确认增益"
@@ -1195,6 +1389,7 @@ def _impact(action, before, after, targets):
         else "no_confirmed_progress" if status == "ineligible"
         else "unknown_only" if status == "unknown"
         else "confirmed_with_unknown_evidence" if has_unknown
+        else "continuous_service_only" if gain <= 0 < continuous_reduction_m
         else "fully_confirmed"
     )
     return {
@@ -1202,6 +1397,13 @@ def _impact(action, before, after, targets):
         "confirmed_requirement_unit_volume_gain": gain,
         #: 新语义的显式别名：与上面同值，供"只读已确认增益"的消费方直接使用。
         "confirmed_gain": gain,
+        #: Round 2.8：连续服务收益（与离散体积增益**分开**披露，绝不混同）。
+        "continuous_service_gain": continuous_gain,
+        "continuous_service_gain_threshold_crossed": continuous_gain["threshold_crossed"],
+        "continuous_service_gain_improved": continuous_reduction_m > 0,
+        "continuous_service_gain_semantics": CONTINUOUS_SERVICE_GAIN_SEMANTICS,
+        "before_continuous_service_acceptance": before_acceptance,
+        "after_continuous_service_acceptance": after_acceptance,
         "confirmed_targets": confirmed_targets,
         "service_resolved_volume_proxy_m3": service_volume,
         "redundancy_progress_volume_proxy_m3": redundancy_volume,
@@ -1477,6 +1679,12 @@ def _prefilter_impact(action, iteration, prefilter):
         "status": "ineligible",
         "confirmed_requirement_unit_volume_gain": 0.0,
         "confirmed_gain": 0.0,
+        #: Round 2.8：预筛结论同样必须显式声明连续服务收益为**不可确认**，
+        #: 而不是留空让消费方误读成"没有连续收益"。
+        "continuous_service_gain": None,
+        "continuous_service_gain_threshold_crossed": False,
+        "continuous_service_gain_improved": False,
+        "continuous_service_gain_unavailable_reason": "prefiltered_no_corridor_interaction",
         "confirmed_targets": [], "unknown_targets": [], "unknown_regressions": [],
         "newly_met_confirmed_objectives": 0,
         "service_resolved_volume_proxy_m3": 0.0,
@@ -1556,11 +1764,262 @@ def _newly_met_objectives(before, after):
     return count
 
 
+def _continuous_service_unacceptable(assessment, threshold_m, route_speed_mps, aircraft_id=None):
+    """当前投影态的连续服务是否**明确**不合格（阈值可判定且超限）。"""
+
+    return _continuous_service_acceptance(
+        assessment, threshold_m, route_speed_mps, aircraft_id,
+    ).get("acceptable") is False
+
+
+def _continuous_rankable(impact):
+    """该候选是否构成"连续服务可接受性被建立"的可停止理由（Round 2.8 收口）。
+
+    只有 ``threshold_crossed`` 为真才进入连续服务候选池。理由：
+
+    * "把不合格缩短为另一个不合格"**不是**停止理由，也不改变 P17 的 unacceptable；
+    * 真实项目里有大量这样的候选，逐个执行完整 P14/P15 重算会把 P16 单次评估从数分钟
+      推到数十分钟，并把选站数无意义地推到干预上限；
+    * 该候选的连续收益仍然完整登记在它的 ``impact`` 与
+      ``continuous_service_candidate_impacts`` 里，**不**丢证据。
+    """
+
+    if not isinstance(impact, dict) or impact.get("status") != "eligible":
+        return False
+    gain = impact.get("continuous_service_gain") or {}
+    return gain.get("threshold_crossed") is True
+
+
 def _confirmed_objectives_met(assessment):
     confirmed = []
     for item in _summary_map(assessment).values():
         confirmed.extend(value for value in item.get("objective_results") or [] if value.get("confirmed") is True)
     return bool(confirmed) and all(item.get("status") in ("met", "not_applicable") for item in confirmed)
+
+
+#: Round 2.8：单次 P16 提案最多选中的干预动作数（**工程上限**，不是结论放宽）。
+#: 超过它意味着"再多选站也无法收敛到可接受"，必须停下来把残余缺口作为正式结论披露，
+#: 而不是无限迭代。可由 ``corridor_site_planning_policy.parameters`` 显式覆盖。
+DEFAULT_INTERVENTION_SELECTION_LIMIT = 6
+
+
+def _intervention_selection_limit(policy):
+    """本次 P16 的干预选择上限（正整数；非法值退回工程默认）。"""
+
+    raw = ((policy or {}).get("parameters") or {}).get("max_selected_interventions")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_INTERVENTION_SELECTION_LIMIT
+    return value if value > 0 else DEFAULT_INTERVENTION_SELECTION_LIMIT
+
+
+def _no_positive_candidate_stop_reason(acceptance, plan_status, threshold_available):
+    """没有正向候选时的**可区分**停止原因（Round 2.8）。
+
+    旧实现无论哪种情况都写 ``no_positive_confirmed_marginal_gain``，于是
+    "离散覆盖目标已满足、但连续服务仍不合格"会被读成"全部目标已满足"。
+
+    与循环内的 ``all_required_services_acceptable`` 配合使用，形成完整的停止原因词表：
+
+    * ``all_required_services_acceptable``                        —— 离散 + 连续全部达标
+    * ``continuous_service_acceptable_no_remaining_improvement``  —— 连续达标，无剩余可改善
+    * ``coverage_objectives_met_but_continuous_service_unacceptable``
+                                                                  —— 离散达标但连续不合格
+    * ``no_positive_remaining_candidate_continuous_service_threshold_unknown``
+                                                                  —— 阈值证据缺失，不得声称达标
+    * ``no_positive_confirmed_marginal_gain``                     —— 本项目未登记连续服务
+      阈值证据（该阈值不在本轮判据内），保持既有词表逐字不变
+    * ``no_positive_remaining_candidate``                         —— 其它情形
+
+    ``threshold_available=False`` 时的关键裁定：**没有阈值证据 ⇒ 连续服务不是本轮
+    判据**，因此停止原因必须保持既有措辞，而不是给出一个暗示"连续服务不合格"的
+    ``..._threshold_unknown``。否则没有登记该阈值的项目（例如 Round 2.7 的 fixture）
+    会凭空多出一条并不存在的工程结论。
+    """
+
+    acceptable = (acceptance or {}).get("acceptable")
+    if acceptable is False:
+        return "coverage_objectives_met_but_continuous_service_unacceptable"
+    if acceptable is None:
+        return (
+            "no_positive_remaining_candidate_continuous_service_threshold_unknown"
+            if threshold_available else "no_positive_confirmed_marginal_gain"
+        )
+    if plan_status == "proposal_ready":
+        return "continuous_service_acceptable_no_remaining_improvement"
+    return "no_positive_remaining_candidate"
+
+
+def _continuous_service_acceptance(assessment, threshold_m, route_speed_mps, aircraft_id=None):
+    """P15 连续亏空投影的**可接受性**判定（Round 2.8，与 P17 同一口径）。
+
+    为什么必须存在这一层：Round 2.8 之前 P16 的停止条件只看 P15 的**离散** objective
+    （体积分数 / 冗余满足分数 / unknown 比例）。真实项目 R0005 里这三个目标在投影态
+    **全部满足**（C 的 ``min_satisfied_volume_fraction >= 0.95`` 达标），于是 P16 打印
+    ``all_evaluable_confirmed_objectives_met`` 并停止；而同一份投影态的**最长连续缺口**
+    仍是 143.54 m ＝ 9.57 s ＞ 3.0 s（P17 判定 ``unacceptable``）。两者不是矛盾，而是
+    P16 的停止条件根本不消费"连续服务"这一目标。
+
+    本函数**不做任何新的假设**：
+
+    * 阈值来自 :meth:`...ContinuousServiceService.continuous_service_threshold_m`，
+      即"用户在规划证据里显式登记的 ``c_full_outage_max_s`` × 选定机载档案航路速度"；
+      阈值不可判定（``None``）时返回 ``threshold_available=False``，绝不回落到任何默认值；
+    * 指标直接用 P15 自己的 ``max_continuous_deficit_projection_m``（P17 的
+      ``service_outage`` 事件长度正是它，Round 2.8 已逐字段核对：两者同为 143.5437… m）。
+    """
+
+    subsystems, longest, longest_key, unacceptable = [], 0.0, None, 0
+    for key, item in sorted(_summary_map(assessment).items()):
+        deficit = item.get("max_continuous_deficit_projection_m")
+        deficit = 0.0 if deficit is None else float(deficit)
+        duration = (
+            None if route_speed_mps in (None, 0) else deficit / float(route_speed_mps)
+        )
+        exceeds = (
+            None if threshold_m is None else bool(deficit > float(threshold_m) + 1e-9)
+        )
+        subsystems.append({
+            "key": key, "subsystem": item.get("subsystem"),
+            "max_continuous_deficit_projection_m": deficit,
+            "longest_outage_duration_s": duration,
+            "threshold_m": None if threshold_m is None else float(threshold_m),
+            "exceeds_threshold": exceeds,
+        })
+        if exceeds:
+            unacceptable += 1
+        if deficit > longest:
+            longest, longest_key = deficit, key
+    if threshold_m is None:
+        acceptable = None
+        status = "threshold_evidence_required"
+    elif unacceptable:
+        acceptable, status = False, "continuous_service_unacceptable"
+    else:
+        acceptable, status = True, "continuous_service_acceptable"
+    return {
+        "semantics": (
+            "p16_continuous_service_objective_uses_the_same_threshold_and_the_same_"
+            "projection_metric_as_p17_never_a_second_formula"
+        ),
+        "status": status,
+        "acceptable": acceptable,
+        "threshold_available": threshold_m is not None,
+        "threshold_s": (
+            None if (threshold_m is None or route_speed_mps in (None, 0))
+            else float(threshold_m) / float(route_speed_mps)
+        ),
+        "threshold_m": None if threshold_m is None else float(threshold_m),
+        "route_speed_mps": None if route_speed_mps is None else float(route_speed_mps),
+        "aircraft_id": aircraft_id,
+        "longest_deficit_m": longest,
+        "longest_deficit_key": longest_key,
+        "longest_outage_duration_s": (
+            None if route_speed_mps in (None, 0) else longest / float(route_speed_mps)
+        ),
+        "exceeds_threshold": None if threshold_m is None else bool(unacceptable),
+        "unacceptable_subsystem_count": unacceptable,
+        "subsystems": subsystems,
+    }
+
+
+#: 连续服务收益的语义（前端 / 报告逐字引用；绝不与离散体积增益混同）。
+CONTINUOUS_SERVICE_GAIN_SEMANTICS = (
+    "continuous_service_gain_is_longest_projected_outage_reduction_on_the_same_"
+    "conservative_longitudinal_projection_used_by_p17"
+)
+
+
+def _continuous_service_gain(before, after, before_acceptance, after_acceptance):
+    """一条候选动作的**连续服务收益**（Round 2.8 P16 收益模型修复）。
+
+    P16 原来的收益模型只有"已确认 requirement-unit 体积增益"。真实项目里存在这样的
+    候选：离散 unit 增益为 0（P15 离散目标已满足，没有新的 unit 可确认），但它把
+    连续缺口从 143.54 m 直接降到 0 m（9.57 s → 0 s，跨过 3.0 s 阈值）。这类动作在旧
+    模型里被静默丢弃，正是"P16 停止但 P17 仍不合格"的第二条根因。
+
+    本函数只**减少量**与**阈值跨越**，绝不改变任何判定规则，也绝不把收益说成风险或概率。
+    """
+
+    before_map, after_map = _summary_map(before), _summary_map(after)
+    before_subs = {item["key"]: item for item in (before_acceptance or {}).get("subsystems") or []}
+    after_subs = {item["key"]: item for item in (after_acceptance or {}).get("subsystems") or []}
+    per_subsystem, total = [], 0.0
+    for key, left in sorted(before_map.items()):
+        right = after_map.get(key) or {}
+        before_deficit = float(left.get("max_continuous_deficit_projection_m") or 0.0)
+        after_deficit = float(right.get("max_continuous_deficit_projection_m") or 0.0)
+        reduction = max(0.0, before_deficit - after_deficit)
+        before_entry, after_entry = before_subs.get(key) or {}, after_subs.get(key) or {}
+        became_acceptable = bool(
+            before_entry.get("exceeds_threshold") is True
+            and after_entry.get("exceeds_threshold") is False
+        )
+        total += reduction
+        per_subsystem.append({
+            "key": key, "subsystem": left.get("subsystem"),
+            "before_max_continuous_deficit_projection_m": before_deficit,
+            "after_max_continuous_deficit_projection_m": after_deficit,
+            "reduction_m": reduction,
+            "before_outage_duration_s": before_entry.get("longest_outage_duration_s"),
+            "after_outage_duration_s": after_entry.get("longest_outage_duration_s"),
+            "threshold_m": after_entry.get("threshold_m"),
+            "before_exceeds_threshold": before_entry.get("exceeds_threshold"),
+            "after_exceeds_threshold": after_entry.get("exceeds_threshold"),
+            "became_acceptable": became_acceptable,
+        })
+    acceptable_gain = bool(
+        (before_acceptance or {}).get("acceptable") is False
+        and (after_acceptance or {}).get("acceptable") is True
+    )
+    before_longest = float((before_acceptance or {}).get("longest_deficit_m") or 0.0)
+    after_longest = float((after_acceptance or {}).get("longest_deficit_m") or 0.0)
+    return {
+        "semantics": CONTINUOUS_SERVICE_GAIN_SEMANTICS,
+        "threshold_available": bool((after_acceptance or {}).get("threshold_available")),
+        "threshold_m": (after_acceptance or {}).get("threshold_m"),
+        "route_speed_mps": (after_acceptance or {}).get("route_speed_mps"),
+        "before_acceptable": (before_acceptance or {}).get("acceptable"),
+        "after_acceptable": (after_acceptance or {}).get("acceptable"),
+        "before_longest_deficit_m": before_longest,
+        "after_longest_deficit_m": after_longest,
+        "longest_outage_reduction_m": max(0.0, before_longest - after_longest),
+        "longest_outage_reduction_s": max(
+            0.0,
+            float((before_acceptance or {}).get("longest_outage_duration_s") or 0.0)
+            - float((after_acceptance or {}).get("longest_outage_duration_s") or 0.0),
+        ),
+        "total_projection_reduction_m": total,
+        "threshold_crossed": acceptable_gain,
+        "acceptability_improved": bool(
+            (before_acceptance or {}).get("acceptable") is False
+            and (after_acceptance or {}).get("acceptable") is True
+        ),
+        "per_subsystem": per_subsystem,
+    }
+
+
+def _continuous_residual_segments(assessment, threshold_m):
+    """投影态里仍然超过阈值的连续缺口段（可读诊断用；不改任何判定）。"""
+
+    segments = []
+    for route in (assessment or {}).get("routes") or []:
+        for item in route.get("subsystems") or []:
+            for segment in item.get("continuous_deficit_segments") or []:
+                length = float(segment.get("length_m") or 0.0)
+                segments.append({
+                    "route_id": route.get("route_id"),
+                    "subsystem": item.get("subsystem"),
+                    "start_chainage_m": float(segment.get("start_route_offset_m") or 0.0),
+                    "end_chainage_m": float(segment.get("end_route_offset_m") or 0.0),
+                    "length_m": length,
+                    "causes": list(segment.get("causes") or []),
+                    "exceeds_threshold": (
+                        None if threshold_m is None else bool(length > float(threshold_m) + 1e-9)
+                    ),
+                })
+    return segments
 
 
 def _objective_evidence_required(assessment):
@@ -1648,6 +2107,8 @@ def _apply_cumulative_action(existing, action):
             if action.get("distinct_site_id"):
                 facility["distinct_site_id"] = action["distinct_site_id"]
             collection["items"].append(facility)
+    #: Round 2.8 幂等性：连续服务迭代会反复对同一 facilities 集合应用动作，同一 device
+    #: **绝不**因为重复应用而被计入两次（否则独立站址数会被自己虚增）。
     if not any(str(item.get("device_id")) == str(installed["device_id"]) for item in facility.get("devices") or []):
         facility.setdefault("devices", []).append(installed)
     collection["count"] = len(collection["items"])

@@ -36,8 +36,10 @@ import json
 
 from ...domain.cns_continuous_service import (
     ACCEPTABILITY_STATUSES, BASELINE_VALUES, CONTINUOUS_SERVICE_ALGORITHM_ID,
-    CONTINUOUS_SERVICE_ALGORITHM_VERSION, CONTINUOUS_SERVICE_REASONS,
+    CONTINUOUS_SERVICE_ALGORITHM_VERSION, CONTINUOUS_SERVICE_KIND_PARAMETER,
+    CONTINUOUS_SERVICE_REASONS,
     CONTINUOUS_SERVICE_SCHEMA_VERSION, DEFAULT_SERVICE_ACCEPTABILITY_LIMITS,
+    DEFICIT_CAUSE_TO_EVENT_KIND,
     LIMITATION_SEMANTICS, OPERATION_SCENARIO_DEFAULTS, PRIMARY_THREAT_LAYER,
     ROUTE_PROTECTION_FORMULA, SUPPLEMENTARY_THREAT_LAYER, T_CHAIN_COMPONENTS,
     THREAT_LAYER_LABELS, THREAT_LAYERS, aggregate_acceptability,
@@ -56,14 +58,10 @@ from ...domain.planning_evidence import (
 
 #: 逐 service 的连续事件参数来源（阈值只对 C / S 定义）。
 _SERVICE_SUBSYSTEMS = ("C", "S")
-_CAUSE_KINDS = {
-    "service_deficit": "service_outage",
-    "redundancy_deficit": "redundancy_degradation",
-}
-_KIND_LIMIT_PARAMETER = {
-    "service_outage": "c_full_outage_max_s",
-    "redundancy_degradation": "c_redundancy_degradation_max_s",
-}
+#: Round 2.8：P15 缺口原因 → P17 事件种类的映射与 P16 **共用同一份 domain 常量**，
+#: 否则"同一物理量的两个词表"会各自漂移，P16 的连续服务停止条件与 P17 的判定分叉。
+_CAUSE_KINDS = dict(DEFICIT_CAUSE_TO_EVENT_KIND)
+_KIND_LIMIT_PARAMETER = dict(CONTINUOUS_SERVICE_KIND_PARAMETER)
 
 #: 监视 service 的近似优先级（仅在"多个 service 同时可用"时用于稳定排序）。
 _MITIGATION_BY_KIND = {

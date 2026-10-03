@@ -489,7 +489,11 @@ export function panelHtml(tasks, catalog = [], options = {}) {
     ].join('')).join('');
   return [
     '<div class="cns-task-panel" id="cnsTaskPanel">',
-    '<div class="cns-task-panel-head"><h3>后台计算任务</h3>',
+    //: Round 2.8：标题里常驻活跃任务数（``data-task-count``）。0 任务时面板自动收起，
+    //: 收起态只剩这一行「后台计算任务 0」，不再占据地图右下角。
+    '<div class="cns-task-panel-head"><h3>后台计算任务',
+    '<span class="cns-task-panel-count" id="cnsTaskPanelCount" data-task-count="0">0</span>',
+    '</h3>',
     '<button class="secondary compact" id="cnsTaskToggle">收起</button></div>',
     '<div class="cns-task-panel-content" id="cnsTaskPanelContent">',
     '<div class="cns-task-error-area" id="cnsTaskErrorArea" role="alert"></div>',
@@ -519,6 +523,9 @@ export function createTaskCenter(options = {}) {
   let catalog = [];
   let uiState = readTaskPanelUiState(storage);
   let collapsed = uiState.collapsed;
+  //: Round 2.8：**本次会话**的手动覆盖标记。0 活跃任务时它才是"用户真的要看着空面板"
+  //: 的唯一依据；它绝不写回持久化偏好（否则一次手动展开会让空面板永远占着地图）。
+  let manualOverride = false;
   let resizeBound = false;
   let dragging = false;
   let lastMarkup = null;
@@ -563,9 +570,27 @@ export function createTaskCenter(options = {}) {
   function applyCollapsedState(host) {
     const content = documentRef?.getElementById('cnsTaskPanelContent');
     const toggle = documentRef?.getElementById('cnsTaskToggle');
-    if (content) content.hidden = collapsed;
+    //: Round 2.8（用户实机截图）：**没有活跃任务时面板自动收起**，只留一个很小的
+    //: 「后台计算任务 0」入口。旧行为把持久化的"未收起"当成永远展开，于是
+    //: "当前没有后台计算任务"的窗口长期占据地图右下角，遮挡规划结果。
+    //:
+    //: 手动展开 / 收起能力必须保留（本轮硬要求）：用户点击「展开 / 收起」会写入
+    //: ``manualOverride``，此后自动收起不再覆盖用户意图；一旦有活跃任务就自动展开并
+    //: 清除该标记，因此任务结束后仍会回到"0 任务自动收起"的默认状态。
+    const activeCount = activeTaskSummary(tasks).count;
+    if (activeCount === 0 && !manualOverride) collapsed = true;
+    if (activeCount > 0) manualOverride = false;
+    if (content) {
+      content.hidden = collapsed;
+      content.dataset.autoCollapsed = String(activeCount === 0 && !manualOverride);
+    }
     if (toggle) toggle.textContent = collapsed ? '展开' : '收起';
     if (host) host.dataset.collapsed = String(collapsed);
+    const count = documentRef?.getElementById('cnsTaskPanelCount');
+    if (count) {
+      count.textContent = activeCount === 0 ? '0' : String(activeCount);
+      count.dataset.taskCount = String(activeCount);
+    }
   }
 
   function bindDrag(host) {
@@ -624,14 +649,7 @@ export function createTaskCenter(options = {}) {
     host.innerHTML = markup;
     lastMarkup = markup;
     const toggle = documentRef.getElementById('cnsTaskToggle');
-    if (toggle) {
-      toggle.onclick = () => {
-        collapsed = !collapsed;
-        uiState = {...uiState, collapsed};
-        applyCollapsedState(host);
-        applyPosition(host, true);
-      };
-    }
+    if (toggle) toggle.onclick = () => togglePanel();
     applyCollapsedState(host);
     applyPosition(host);
     bindDrag(host);
@@ -688,12 +706,28 @@ export function createTaskCenter(options = {}) {
     badge.dataset.activeCount = String(summary.count);
     badge.textContent = summary.text;
     badge.title = summary.text + '（点击展开 / 收起后台任务面板）';
-    badge.onclick = () => {
-      collapsed = !collapsed;
-      uiState = {...uiState, collapsed};
-      const host = documentRef.getElementById('cnsTaskCenter');
-      if (host) {applyCollapsedState(host);applyPosition(host, true);}
-    };
+    badge.onclick = () => togglePanel();
+  }
+
+  /**
+   * 面板的展开 / 收起（徽标与「收起 / 展开」按钮共用**同一份**语义）。
+   *
+   * Round 2.8：手动能力必须始终可用（本轮的硬要求之一）。
+   *
+   * * **有**活跃任务：与既有契约逐字段一致（写回 ``collapsed`` 偏好）；
+   * * **0** 活跃任务：本次会话内允许手动展开查看空面板，但**绝不**写回持久化偏好，
+   *   因此刷新 / 下次挂载仍回到"0 任务自动收起"。
+   */
+  function togglePanel() {
+    const host = documentRef?.getElementById?.('cnsTaskCenter');
+    const activeCount = activeTaskSummary(tasks).count;
+    collapsed = !collapsed;
+    manualOverride = true;
+    if (activeCount > 0) uiState = {...uiState, collapsed};
+    if (host) {
+      applyCollapsedState(host);
+      applyPosition(host, true);
+    }
   }
 
   function showPanelError(message) {

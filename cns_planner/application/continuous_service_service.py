@@ -375,6 +375,61 @@ class ContinuousServiceService:
         inputs["post_plan_projection"] = self.post_plan_projection_input()
         return inputs
 
+    def evaluate_for_corridor(self, corridor=None, gap=None, *, inputs=None):
+        """对**任意一层**走廊状态求 P17 结论（只读；绝不写 state）。
+
+        Round 2.8：P16 的连续服务收益与停止条件必须与 P17 使用**同一套**阈值解析与
+        同一套事件语义。因此这里把 P17 的评估入口暴露为一个可复用方法，调用方
+        （P16 what-if / 计划评审 variant）传入自己重算出来的 P14/P15 工作副本，
+        绝不自己复制一份"最长中断"公式。
+        """
+
+        if inputs is None:
+            inputs = self.compute_inputs()
+        evaluated = dict(inputs)
+        if corridor is not None:
+            evaluated["corridor_assessment"] = corridor
+        if gap is not None:
+            evaluated["corridor_gap_assessment"] = gap
+        evaluated.pop("post_plan_projection", None)
+        evaluated["site_plan"] = self.session.state.get("cns_corridor_site_plan") or {}
+        return self.model.evaluate(**evaluated)
+
+    def continuous_service_threshold_m(self, inputs=None):
+        """本项目 ``C`` 服务中断阈值对应的**沿航路长度**（m）；不可判定时为 ``None``。
+
+        ``None`` 的三个来源都被如实保留，绝不回落到任何默认值：
+
+        * 阈值本身未显式登记（``c_full_outage_max_s`` unknown ⇒ P17 判定 fail-closed）；
+        * 机载档案缺少航路速度；
+        * 策略覆盖给了非正的时间阈值。
+        """
+
+        from ..domain.fc30_profile import fc30_planning_speeds
+
+        if inputs is None:
+            inputs = self.compute_inputs()
+        parameters = self.model._parameters(
+            inputs.get("planning_evidence") or {},
+            inputs.get("continuous_service_policy") or {},
+        )
+        from ..algorithms.continuous_service.v1 import _limit as _resolve_limit
+
+        seconds = _resolve_limit(
+            parameters, "C", "service_outage",
+            inputs.get("continuous_service_policy") or {},
+        )
+        if seconds is None:
+            return None
+        value = float(seconds)
+        if value <= 0:
+            return None
+        speeds = fc30_planning_speeds(inputs.get("aircraft_profile"))
+        speed = speeds.get("route_speed_mps")
+        if not isinstance(speed, (int, float)) or float(speed) <= 0:
+            return None
+        return value * float(speed)
+
     def fc30_facts_snapshot(self):
         """FC30 canonical 事实（含 provenance）与"3 s 是设备 failsafe 事实"的定位。
 

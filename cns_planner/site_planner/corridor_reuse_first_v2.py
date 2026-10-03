@@ -25,6 +25,7 @@ class CorridorReuseFirstSitePlannerV2:
 
     def rank(self, actions, impacts):
         """Rank one reuse tier; application owns what-if execution and iteration."""
+
         candidates = []
         by_id = {str(action.get("action_id")): action for action in actions or []}
         for impact in impacts or []:
@@ -52,6 +53,72 @@ class CorridorReuseFirstSitePlannerV2:
             -int(item["impact"].get("newly_met_confirmed_objectives") or 0),
             -float(item["selection_score"]),
             -float(item["impact"].get("confirmed_requirement_unit_volume_gain") or 0.0),
+            -float(item["impact"].get("max_continuous_deficit_projection_reduction_m") or 0.0),
+            str(item["action"].get("action_id") or ""),
+        ))
+        return ranked
+
+    def rank_continuous_service(self, actions, impacts):
+        """Round 2.8：**连续服务**收益排名通道（离散增益为 0 时的第二通道）。
+
+        为什么必须有它：真实项目 R0005 的 C 侧三个离散 objective 在投影态全部满足，
+        于是所有"再加一座塔"的候选离散 unit 增益都是 0；但它们把连续缺口投影从
+        143.54 m（9.57 s）直接降到 0 m，跨过用户显式登记的 3.0 s 阈值。旧排名通道只
+        看离散增益，把这些真实收益静默丢弃，直接导致"P16 停止、P17 仍 unacceptable"。
+
+        语义边界（绝不越界）：
+
+        * 只在 ``status == eligible`` 且**连续缺口确实缩短**时进入候选；
+        * 排序优先"跨越可接受阈值"，其次按最长中断缩减量、再按总投影缩减量；
+        * 成本口径与 :meth:`rank` 完全一致（同 tier 内 gain / explicit cost，缺成本时
+          退化为动作数代理），**绝不**因为换了收益维度就换一套成本假设。
+        """
+
+        candidates = []
+        by_id = {str(action.get("action_id")): action for action in actions or []}
+        for impact in impacts or []:
+            action = by_id.get(str(impact.get("action_id")))
+            if not action or action.get("eligibility", {}).get("status") != "eligible":
+                continue
+            if impact.get("status") != "eligible" or impact.get("regressions"):
+                continue
+            continuous = impact.get("continuous_service_gain") or {}
+            reduction = float(continuous.get("longest_outage_reduction_m") or 0.0)
+            total = float(continuous.get("total_projection_reduction_m") or 0.0)
+            if reduction <= 0 and total <= 0:
+                continue
+            if continuous.get("threshold_available") is not True:
+                #: 阈值不可判定时不得声称"跨越阈值"，但**真实缺口缩短**仍然是可确认收益。
+                crossed = False
+            else:
+                crossed = continuous.get("threshold_crossed") is True
+            cost, unit = _confirmed_cost(action)
+            candidates.append((action, impact, cost, unit, crossed, reduction, total))
+        comparable = bool(candidates) and all(
+            item[2] is not None and item[2] > 0 and item[3] for item in candidates
+        )
+        comparable = comparable and len({item[3] for item in candidates}) == 1
+        ranked = []
+        for action, impact, cost, unit, crossed, reduction, total in candidates:
+            score = reduction / cost if (comparable and cost) else reduction
+            ranked.append({
+                "action": deepcopy(action), "impact": deepcopy(impact),
+                "selection_score": score,
+                "score_semantics": (
+                    "longest_continuous_service_outage_reduction_m_per_explicit_cost"
+                    if comparable else
+                    "longest_continuous_service_outage_reduction_m_per_action_count_proxy"
+                ),
+                "benefit_semantics": (
+                    "longest_continuous_service_outage_reduction_m_same_projection_metric_as_p17"
+                ),
+                "threshold_crossed": crossed,
+                "explicit_cost": cost, "cost_unit": unit,
+            })
+        ranked.sort(key=lambda item: (
+            -int(bool(item.get("threshold_crossed"))),
+            -float((item["impact"].get("continuous_service_gain") or {}).get("longest_outage_reduction_m") or 0.0),
+            -float((item["impact"].get("continuous_service_gain") or {}).get("total_projection_reduction_m") or 0.0),
             -float(item["impact"].get("max_continuous_deficit_projection_reduction_m") or 0.0),
             str(item["action"].get("action_id") or ""),
         ))

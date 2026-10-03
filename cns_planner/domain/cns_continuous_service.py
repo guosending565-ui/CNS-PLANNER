@@ -372,6 +372,23 @@ DEFAULT_SERVICE_ACCEPTABILITY_LIMITS = {
     "S": {"service_outage": 3.0, "redundancy_degradation": 10.0},
 }
 
+#: 连续服务事件种类 → 对应阈值参数（Round 2.8：P16 与 P17 共用**同一份**映射）。
+#:
+#: P15 的 ``continuous_deficit_segments`` 的 ``causes`` 与 P17 的事件 ``kind`` 是同一
+#: 物理量的两个词表（``service_deficit`` ⇄ ``service_outage``、
+#: ``redundancy_deficit`` ⇄ ``redundancy_degradation``）。P16 的连续服务停止条件必须
+#: 用 **service_outage** 那一档，否则会把"冗余退化"当成"全失联"判定。
+CONTINUOUS_SERVICE_KIND_PARAMETER = {
+    "service_outage": "c_full_outage_max_s",
+    "redundancy_degradation": "c_redundancy_degradation_max_s",
+}
+
+#: P15 缺口原因 → P17 事件种类（同一物理量的两个词表，唯一映射）。
+DEFICIT_CAUSE_TO_EVENT_KIND = {
+    "service_deficit": "service_outage",
+    "redundancy_deficit": "redundancy_degradation",
+}
+
 #: 导航状态机的显式词汇。
 NAVIGATION_STATES = (
     "nominal",
@@ -1172,8 +1189,10 @@ def compare_plan_stages(baseline_assessment, post_plan_assessment, projection) -
 __all__ = [
     "ACCEPTABILITY_STATUSES", "BASELINE_SOURCES", "BASELINE_VALUES",
     "CONTINUOUS_EVENT_KINDS", "CONTINUOUS_SERVICE_ALGORITHM_ID",
-    "CONTINUOUS_SERVICE_ALGORITHM_VERSION", "CONTINUOUS_SERVICE_REASONS",
+    "CONTINUOUS_SERVICE_ALGORITHM_VERSION", "CONTINUOUS_SERVICE_KIND_PARAMETER",
+    "CONTINUOUS_SERVICE_REASONS",
     "CONTINUOUS_SERVICE_SCHEMA_VERSION", "DEFAULT_SERVICE_ACCEPTABILITY_LIMITS",
+    "DEFICIT_CAUSE_TO_EVENT_KIND",
     "D_MANEUVER_BASELINE_M", "LIMITATION_SEMANTICS", "NAVIGATION_STATES",
     "NONCOOPERATIVE_LIMITATION_DISCLOSURE", "OPERATION_SCENARIO_DEFAULTS",
     "PARAMETER_ALIASES", "PLAN_STAGES", "PRIMARY_THREAT_LAYER",

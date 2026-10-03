@@ -55,8 +55,12 @@ test('任务 panel content 统一包含 list/starters/note/error，收起与展�
   const storage=memoryStorage(),document=fakeDocument(),center=createTaskCenter({storage,document,fetch:async()=>({ok:true,json:async()=>[]})});
   center.mount();
   const toggle=document.getElementById('cnsTaskToggle'),contentNode=document.getElementById('cnsTaskPanelContent');
-  toggle.onclick();assert.equal(contentNode.hidden,true);assert.equal(toggle.textContent,'展开');
+  //: Round 2.8：0 活跃任务时面板**默认自动收起**（不再长期占据地图右下角），
+  //: 但手动展开 / 收起能力与既有契约逐字段一致（只是起始状态改为收起）。
+  assert.equal(contentNode.hidden,true);
+  assert.equal(contentNode.dataset.autoCollapsed,'true');
   toggle.onclick();assert.equal(contentNode.hidden,false);assert.equal(toggle.textContent,'收起');
+  toggle.onclick();assert.equal(contentNode.hidden,true);assert.equal(toggle.textContent,'展开');
 });
 
 test('polling remount 后保持 collapsed，且 localStorage 可跨控制器恢复',async()=>{

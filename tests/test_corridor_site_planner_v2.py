@@ -320,6 +320,14 @@ def test_strict_reuse_tier_precedes_later_tier(tmp_path):
 
 
 def test_objective_met_stops_and_unconfigured_runs_until_no_gain(tmp_path):
+    """Round 2.8：停止原因把"离散目标满足"与"连续服务可接受"分开表述。
+
+    旧值 ``all_evaluable_confirmed_objectives_met`` 只覆盖离散目标，与 P17 的连续服务
+    判定分叉（真实项目 R0005 因此出现"P16 停止但 P17 仍 unacceptable"）。现在
+    离散与连续都达标时报告 ``all_required_services_acceptable``；只有离散达标、连续
+    仍不可接受时报告 ``coverage_objectives_met_but_continuous_service_unacceptable``。
+    """
+
     objectives = {"routes": {"R1": {"subsystems": {"C": {"objectives": {
         "min_satisfied_volume_fraction": {"value": 0.5, "operator": ">=", "source": "test", "confirmed": True},
     }}}}}}
@@ -329,14 +337,19 @@ def test_objective_met_stops_and_unconfigured_runs_until_no_gain(tmp_path):
         objectives=objectives,
     )
     stopped = configured_objective.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
-    assert stopped["stop_reason"] == "all_evaluable_confirmed_objectives_met"
+    assert stopped["stop_reason"] == "all_required_services_acceptable"
+    assert stopped["continuous_service_acceptable"] is not False
     assert len(stopped["selected_actions"]) == 2
 
     no_objectives = configured(
         tmp_path / "none", redundancy=2,
         devices=[device("C1", "a"), device("C2", "b")], candidates=[candidate("S1")],
     ).evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
+    #: 该 fixture 没有登记任何 P17 中断阈值证据 ⇒ 连续服务**不是本轮判据**：停止原因
+    #: 逐字保持既有措辞，绝不凭空多出一条"连续服务不合格"的结论。
     assert no_objectives["stop_reason"] == "no_positive_confirmed_marginal_gain"
+    assert no_objectives["continuous_service_acceptable"] is None
+    assert no_objectives["continuous_service_threshold_m"] is None
     assert len(no_objectives["selected_actions"]) == 2
 
 

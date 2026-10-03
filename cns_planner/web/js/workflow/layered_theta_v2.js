@@ -53,12 +53,23 @@ export const THETA_V2_ALTITUDE_NOTE='Theta* V2 固定 z(x, y) = H：H 必须能�
 export const THETA_V2_PLANNING_FACTOR_FORMULA='planning_population_factor = (1-b)*p + b*L';
 //: 首轮工程**建议**值：只是输入框的可选预填，绝不是自动生效的默认值（必须显式 confirmed）。
 export const THETA_V2_LAND_RISK_BASELINE_SUGGESTED=0.08;
-export const THETA_V2_LAND_RISK_BASELINE_DEFINITION='陆地统一相对风险基线：p = canonical Risk V2 归一化人口因子，'
-  +'L = 陆地 1 / 海面 0，b = land_relative_risk_baseline（0 ≤ b < 1，必须显式 confirmed）。';
+//: Round 2.8-A：对外**业务名称**（用户裁定的前端文案优先用词）。
+//: canonical 字段名 land_relative_risk_baseline 并列保留，便于审计对账。
+export const THETA_V2_GROUND_RISK_WEIGHT_LABEL='陆地相对风险权重';
+export const THETA_V2_LAND_RISK_BASELINE_DEFINITION='陆地相对风险权重 b（canonical 字段 land_relative_risk_baseline）：'
+  +'p = canonical Risk V2 归一化人口因子，L = 陆地 1 / 海面 0，b = land_relative_risk_baseline'
+  +'（0 ≤ b < 1，必须显式 confirmed）。';
 export const THETA_V2_LAND_RISK_BASELINE_NOTE='同一 p 下陆地 − 海面差值恒等于 b；所有人口相对差异统一保留 (1-b)，'
   +'不是只抬低人口区域。输出天然落在 [0,1]（不做 clip，因此高风险陆地不会饱和），land / water 内部排序保持不变。'
   +'它**不改**真实人口密度、人口报告、Population NoData 与 Risk V2 canonical 因子；'
   +'旧的 land_population_floor（person/km²）已废弃：不会被换算成任何 b，旧项目必须重新显式确认。';
+//: Round 2.8-A：面向用户的工程说明（按用户裁定文案）。
+export const THETA_V2_GROUND_RISK_WEIGHT_BEHAVIOR_NOTE=
+  '提高陆地相对于海面的风险基线差异，使航路更偏向低地面风险区域；'
+  +'不把陆地设为禁行，也不把海面风险设为 0。'
+  +'海面风险仍是 normalized_population_factor × shelter_coefficient，b 只把"陆地"这一项按权重叠加进去；'
+  +'coastal_uncertain 按项目 canonical 的 land policy 处理，绝不自动当成纯海面；'
+  +'地形/人口证据缺失的格保持 unresolved（fail-closed）。';
 //: catalog 为空时的明确提示：目录本身为空，因此没有任何可选巡航高度层。
 //: 这里只提示"目录为空"，绝不放行高度检查（planning request 仍必须显式选择高度层）。
 export const THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE='高度层目录为空（共 0 层）：没有可选巡航高度层，'
@@ -701,9 +712,11 @@ function planningExposureSection(model){
   const deprecatedFloor=policy.deprecatedFloorPresent
     ?fmtNumber(policy.deprecatedFloor,6)+' person/km²（deprecated：不参与规划，绝不被换算成 b）'
     :'—（无旧 land_population_floor 记录）';
-  return '<h3>陆地相对风险基线：planning_exposure_policy</h3>'
+  return '<h3>陆地相对风险权重（planning_exposure_policy · land_relative_risk_baseline）</h3>'
     +'<div class="parameter-note">'+escapeHtml(THETA_V2_LAND_RISK_BASELINE_DEFINITION)+' '
     +'<code>'+escapeHtml(field.formula)+'</code>。'+escapeHtml(THETA_V2_LAND_RISK_BASELINE_NOTE)+'</div>'
+    +'<div class="parameter-note" data-ground-risk-weight-behavior="1">'
+    +escapeHtml(THETA_V2_GROUND_RISK_WEIGHT_BEHAVIOR_NOTE)+'</div>'
     +'<div class="scroll-list route-list" data-planning-exposure-summary="1">'
     +planningExposureRow('policy_status','policy status',
       policy.status+' · '+short(policy.statusReason))
@@ -736,8 +749,9 @@ function planningExposureSection(model){
     +planningExposureRow('used_population_nodata_as_sea_proxy','used_population_nodata_as_sea_proxy',
       String(field.usedPopulationNoDataAsSeaProxy))
     +'</div>'
-    +'<h3>可编辑：planning_exposure_policy</h3>'
-    +'<label>land_relative_risk_baseline（0 ≤ b &lt; 1，可空 = 未配置）'
+    +'<h3>可编辑：陆地相对风险权重 planning_exposure_policy</h3>'
+    +'<label>'+THETA_V2_GROUND_RISK_WEIGHT_LABEL
+    +'（land_relative_risk_baseline，0 ≤ b &lt; 1，可空 = 未配置）'
     +'<input class="panel-input" id="thetaV2LandRiskBaseline" type="number" min="0" max="1" step="any" '
     +'data-planning-exposure-suggested="'+escapeHtml(policy.baselineSuggested)+'" '
     +'placeholder="'+escapeHtml(policy.baselineSuggested)+'（工程建议值，须显式确认）" '
@@ -753,13 +767,19 @@ function planningExposureSection(model){
     +'<label class="checkbox-row"><input type="checkbox" id="thetaV2LandRiskConfirmed"'
     +(policy.confirmed?' checked':'')+'> planning_exposure_policy 已由项目工程依据确认</label>'
     +'<div class="button-row">'
-    +'<button class="secondary" id="saveThetaV2PlanningExposure">保存陆地相对风险基线</button>'
+    +'<button class="secondary" id="saveThetaV2PlanningExposure">保存陆地相对风险权重</button>'
     +'</div>'
     +'<div class="parameter-note"><b>0.08 只是首轮工程建议值</b>：它只作为可选预填出现，'
     +'未勾选 confirmed（或未勾选启用）时后端保持 not_configured / pending_confirmation，'
     +'规划人口因子原样使用 canonical Risk V2 因子。旧项目已保存的 land_population_floor '
     +'既不生效也不会被自动换算成基线，必须由用户重新显式确认新参数；'
-    +'地形证据缺失的格保持 unresolved（fail-closed），绝不被当成海面。</div>';
+    +'地形证据缺失的格保持 unresolved（fail-closed），绝不被当成海面。'
+    +'<b>Round 2.8-A 实测</b>：真实 R0005 在 b=0.08 时的最优解会穿过地面暴露较高的格；'
+    +'提高到 <b>0.30（真实扫描得到的最低有效跳变值，已定为默认值）</b> 后最优解整体转移到'
+    +'低地面风险段（航程 +0.6%，规划风险暴露 −86%），0.30 以上不再产生进一步的最优解变化。'
+    +'该 0.30 最优解仍是 <b>candidate</b>：因为缺少已审计的受限区域数据源，'
+    +'validation 保持 unresolved，<b>尚未</b> adoption；'
+    +'它绝不与当前 authoritative 运行航路混为同一条正式航路。</div>';
 }
 
 function listRows(rows){

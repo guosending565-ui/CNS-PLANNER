@@ -132,7 +132,14 @@ def default_corridor_site_planning_policy():
         "reuse_tiers": list(REUSE_TIERS),
         "benefit_semantics": "confirmed_requirement_unit_volume_gain",
         "cost_policy": "same_confirmed_cost_unit_else_action_count_proxy",
-        "stop_policy": "confirmed_objectives_met_else_no_positive_marginal_gain",
+        #: Round 2.8：停止条件是**两条同时成立**：离散 objective 满足 **且** 连续服务
+        #: 缺口投影在该项目的显式中断阈值内。旧值
+        #: ``confirmed_objectives_met_else_no_positive_marginal_gain`` 只看离散目标，
+        #: 会在"离散满足、连续不合格"时错误停止（真实项目 R0005 的 9.57 s > 3.0 s）。
+        "stop_policy": (
+            "discrete_objectives_met_and_continuous_service_projection_within_"
+            "explicit_threshold_else_no_positive_remaining_candidate"
+        ),
         "allow_arbitrary_new_coordinates": False,
         "source": "project_engineering_default",
         "confirmed": False,
