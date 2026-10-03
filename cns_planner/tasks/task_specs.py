@@ -170,9 +170,15 @@ def _corridor_inputs(state, payload):
     inputs.update(_admission_policy_record())
     #: Round 2.4：机载能力**叠加工程证据后**冻结为显式输入，同步入口、重算路径与
     #: worker 因此消费同一份权威机载能力。
-    from ..application.planning_evidence_service import aircraft_profile_with_evidence
+    from ..application.planning_evidence_service import (
+        aircraft_profile_with_evidence, device_catalog_with_evidence,
+    )
 
     inputs["aircraft_profile"] = aircraft_profile_with_evidence(inputs) or {}
+    #: Round 2.7：设备侧的工程规划假设（``scope=device``）与机载同为"消费点叠加"，
+    #: 因此异步 worker 冻结的必须是**叠加后**的设备目录，否则同一条 P14 在同步与
+    #: 异步两条路径上会得到两份不同的判定（同一输入必须得到同一结论）。
+    inputs["device_catalog"] = device_catalog_with_evidence(inputs) or {}
     return inputs
 
 

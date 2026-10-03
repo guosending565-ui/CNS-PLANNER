@@ -36,7 +36,10 @@ from .navigation_reference_station_planning_service import (
 from .planning_evidence_service import (
     #: 需求块与机载档案必须与 P8 使用**同一份**入口，否则 P16 的残余原因会与
     #: 真实门禁口径分叉（Round 2.6.1 收口）。
+    #: Round 2.7：设备目录同理 —— 设备侧的工程规划假设（``scope=device``）必须
+    #: 在 P16 的每一个 provider 判定消费点都生效，否则"同一份输入两种判定"会再现。
     _requirement_blocks, _subsystem_name, aircraft_profile_with_evidence,
+    device_catalog_with_evidence,
 )
 from .site_candidate_actions import candidate_actions
 from .production_write_authority import assert_write_authority
@@ -80,7 +83,7 @@ class CorridorSitePlanningService:
         ]
         actions = candidate_actions(
             ordinary_targets, state.get("existing_cns_facilities") or {},
-            state.get("candidate_sites") or {}, state.get("device_catalog") or {},
+            state.get("candidate_sites") or {}, device_catalog_with_evidence(state),
             state.get("tower_colocation_candidates") or {},
         )
         actions.extend(radar_candidate_actions(
@@ -456,7 +459,7 @@ def rerun_corridor_chain(
         state.get("operational_routes") or [], state.get("spatial_3d") or {},
         state.get("grid") or {}, state.get("grid_attributes") or {},
         state.get("required_cns") or {}, profile, facilities,
-        state.get("device_catalog") or {}, state.get("cns_corridor_policy") or {},
+        device_catalog_with_evidence(state), state.get("cns_corridor_policy") or {},
         coverage_parameters=((selections.get("coverage_model") or {}).get("parameters") or {}),
         capability_parameters=((selections.get("service_model") or {}).get("parameters") or {}),
         #: Round 2：P16 的 what-if 重算与正式 P14 共用同一份 surface facts，
@@ -493,7 +496,7 @@ def _selected_action_audit(action, targets, state):
                 distances.append(float(nearest_route_position(route["path"], coordinate)["distance_m"]))
     radius_values = []
     device_id = str(action.get("device_id") or "")
-    for device in (state.get("device_catalog") or {}).get("items") or []:
+    for device in (device_catalog_with_evidence(state)).get("items") or []:
         if str(device.get("device_id") or "") != device_id:
             continue
         geometry = device.get("coverage_geometry") or {}
@@ -565,7 +568,7 @@ def _residual_gap_diagnostics(baseline_gap, actions, state, *, nearby_limit=5):
     route_speed = _planning_route_speed_mps(profile)
     device_by_id = {
         str(item.get("device_id") or ""): item
-        for item in (state.get("device_catalog") or {}).get("items") or []
+        for item in (device_catalog_with_evidence(state)).get("items") or []
     }
     diagnostics = []
     for route_gap in (baseline_gap or {}).get("routes") or []:
@@ -1425,7 +1428,7 @@ def _action_provider_envelope_m(action, state):
     values = []
     device_id = str(action.get("device_id") or "")
     if device_id:
-        for item in (state.get("device_catalog") or {}).get("items") or []:
+        for item in (device_catalog_with_evidence(state)).get("items") or []:
             if str(item.get("device_id") or "") != device_id:
                 continue
             value = index_max_range_m(item.get("coverage_geometry") or {})

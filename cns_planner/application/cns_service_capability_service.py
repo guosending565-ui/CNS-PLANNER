@@ -2,7 +2,9 @@
 
 from copy import deepcopy
 
-from .planning_evidence_service import aircraft_profile_with_evidence
+from .planning_evidence_service import (
+    aircraft_profile_with_evidence, device_catalog_with_evidence,
+)
 
 
 class CNSServiceCapabilityService:
@@ -28,7 +30,7 @@ class CNSServiceCapabilityService:
                         device.pop("planning_origin", None)
         result = self.model.evaluate(
             state.get("coverage_3d") or {}, state.get("required_cns") or {}, profile,
-            facilities, state.get("device_catalog") or {},
+            facilities, device_catalog_with_evidence(state),
         )
         state["cns_service_capability"] = result
         self.invalidation.service_timeline()

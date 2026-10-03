@@ -45,7 +45,13 @@ const STATUS_TEXT = {
 const VALUE_TYPE_HINT = {
   enum_scalar: '单选（枚举校验）',
   enum: '可多选（枚举校验）',
+  number: '数值（非负有限）',
 };
+
+/** 数值型证据字段的输入控件（Round 2.7：机载/运行场景性能声明）。 */
+function numberInput(name) {
+  return `<input type="number" step="any" min="0" id="${name}" value="">`;
+}
 
 function valueText(value) {
   if (value === null || value === undefined || value === '') return '未声明';
@@ -109,6 +115,99 @@ export function planningEvidenceSummary(flow) {
   };
 }
 
+/** 作用对象（与后端 `PROJECT_EVIDENCE_SCOPES` 一一对应）。 */
+export const EVIDENCE_SCOPE_TEXT = {
+  project: '项目级参数',
+  aircraft: '机载平台能力',
+  device: '设备 / 提供者',
+  operation: '本次运行场景',
+};
+
+/** 某个作用对象下可供选择的 `target_id`（来自活项目，绝不手填自由文本）。 */
+export function evidenceScopeTargets(flow, scope) {
+  if (scope === 'device') {
+    return (((flow || {}).device_catalog || {}).items || [])
+      .map((item) => String(item.device_id || '')).filter(Boolean);
+  }
+  if (scope === 'operation') {
+    return ((flow || {}).operational_routes || [])
+      .map((item) => String(item.route_id || '')).filter(Boolean);
+  }
+  if (scope === 'aircraft') {
+    return [String((flow || {}).selected_aircraft_profile_id || '')].filter(Boolean);
+  }
+  return [];
+}
+
+/**
+ * 需要**显式作用对象**才能登记的字段（Round 2.7）。
+ *
+ * 机载能力字段仍走既有的逐项核对表单；这里只列出必须以
+ * `scope=device`（地面提供者）或 `scope=operation`（本次运行场景）登记的字段，
+ * 每行固定一个作用对象，避免用户在界面上选出"不存在的组合"。
+ */
+export function scopedEvidenceModels(flow) {
+  const fields = (((flow || {}).planning_evidence_fields || {}).fields) || {};
+  const models = [];
+  for (const [field, spec] of Object.entries(fields)) {
+    const scopes = spec.scopes || null;
+    if (!scopes) continue;
+    for (const scope of scopes) {
+      if (scope !== 'device' && scope !== 'operation') continue;
+      models.push({
+        field, spec, scope, targets: evidenceScopeTargets(flow, scope),
+      });
+    }
+  }
+  return models;
+}
+
+function scopedEvidenceRow(model) {
+  const { field, spec, scope, targets } = model;
+  const name = `pevs_${field}_${scope}`;
+  const multiple = spec.value_type === 'enum';
+  const label = spec.label || field;
+  const scopeText = EVIDENCE_SCOPE_TEXT[scope] || scope;
+  if (!targets.length) {
+    return '<fieldset class="cns-requirement" data-evidence-field="' + escapeHtml(field)
+      + '" data-evidence-scope="' + escapeHtml(scope) + '">'
+      + `<legend>${escapeHtml(label)} · ${escapeHtml(scopeText)}</legend>`
+      + '<div class="demo-note">当前项目没有可用的作用对象，无法登记该工程假设'
+      + '（设备侧需要至少一条设备目录条目；运行场景侧需要至少一条运行航路）。</div>'
+      + '</fieldset>';
+  }
+  const targetHint = scope === 'device' ? '目标设备（device_id）' : '目标运行航路（route_id）';
+  return '<fieldset class="cns-requirement" data-evidence-field="' + escapeHtml(field)
+    + '" data-evidence-scope="' + escapeHtml(scope) + '">'
+    + `<legend>${escapeHtml(label)} · ${escapeHtml(scopeText)}</legend>`
+    + `<div class="demo-note">${escapeHtml(spec.semantics || '')}</div>`
+    + '<div class="form-grid">'
+    + `<label>${escapeHtml(targetHint)}${optionList(name + '_target', targets, {})}</label>`
+    + `<label>取值（${escapeHtml(VALUE_TYPE_HINT[spec.value_type] || spec.value_type)}）`
+    + (spec.value_type === 'number' ? numberInput(name) : optionList(name, spec.allowed || [], { multiple }))
+    + '</label>'
+    + '</div>'
+    + '<div class="parameter-note">本记录是**本项目的规划输入**（工程假设），'
+    + '不是厂家设备事实，也不会写入设备目录 / 机载档案：它只在规划消费点叠加，'
+    + '并在结果与报告中带来源标注披露。</div>'
+    + `<label>来源类型<select id="${name}_source_type">`
+    + Object.keys(EVIDENCE_SOURCE_TYPE_TEXT)
+      .map((key) => `<option value="${escapeHtml(key)}">`
+        + `${escapeHtml(EVIDENCE_SOURCE_TYPE_TEXT[key].label)}</option>`).join('')
+    + '</select></label>'
+    + '<div class="form-grid">'
+    + `<label>来源 / 依据出处<input id="${name}_source" value=""></label>`
+    + `<label>录入人<input id="${name}_declared_by" value=""></label>`
+    + '</div>'
+    + `<label>假设陈述（工程规划假设必填）<input id="${name}_statement" value=""></label>`
+    + `<label>采用依据 / 理由（工程规划假设必填）<input id="${name}_reason" value=""></label>`
+    + `<label>报告披露文本（工程规划假设必填）<input id="${name}_disclosure" value=""></label>`
+    + `<label><input type="checkbox" id="${name}_confirmed"> 我确认以上内容（事实需有资料支持；`
+    + '假设须明确标注为工程规划假设，不得冒充厂家设备事实）</label>'
+    + `<button class="primary" id="save_${escapeHtml(name)}">保存该工程依据</button>`
+    + '</fieldset>';
+}
+
 /**
  * 渲染「工程依据 / 规划假设」区块。
  *
@@ -142,7 +241,9 @@ export function renderPlanningEvidence(flow) {
       + `机载档案声明：<b>${escapeHtml(valueText(item.declared_by_aircraft_profile))}</b> · `
       + `当前生效值：<b>${escapeHtml(valueText(item.effective_value))}</b><br>`
       + `逐项核对：<b>${escapeHtml(item.status_reason || '—')}</b></div>`
-      + `<label>取值（${escapeHtml(typeHint)}）${optionList(name, options, { multiple })}</label>`
+      + `<label>取值（${escapeHtml(typeHint)}）`
+      + (item.value_type === 'number' ? numberInput(name) : optionList(name, options, { multiple }))
+      + '</label>'
       + `<label>来源类型<select id="${name}_source_type">`
       + (summary.sourceTypes.length ? summary.sourceTypes : Object.keys(EVIDENCE_SOURCE_TYPE_TEXT))
         .map((key) => `<option value="${escapeHtml(key)}">`
@@ -160,6 +261,9 @@ export function renderPlanningEvidence(flow) {
       + `<button class="primary" id="save_${escapeHtml(item.field)}">保存该工程依据</button>`
       + '</fieldset>';
   }).join('');
+
+  //: Round 2.7：设备侧 / 运行场景假设的录入行（每行固定一个作用对象）。
+  const scopedRows = scopedEvidenceModels(flow).map(scopedEvidenceRow).join('');
 
   const blockers = summary.pending.length
     ? summary.pending.map((item) => ({
@@ -205,6 +309,15 @@ export function renderPlanningEvidence(flow) {
     + wbBlock('缺失工程证据', blockerList([...incompatibleRows, ...blockers],
       '当前没有因缺工程依据而无法确认的字段。'))
     + wbBlock('录入 / 确认工程依据', '<div class="cns-requirements">' + rows + '</div>')
+    + wbBlock('设备侧 / 运行场景工程假设（Round 2.7）',
+      '<div class="demo-note">这里登记的是**显式作用对象**的规划假设：'
+      + '<b>设备侧</b>（地面提供者的类型事实，例如网络归属范围）与 '
+      + '<b>本次运行场景</b>（例如本次运行的机载接口 / RID 参与能力）。'
+      + '它们只作用于所选的设备 / 运行航路，绝不写入设备目录，也绝不改写机载档案；'
+      + '报告与结果会逐条披露"这条输入来自工程假设"。</div>'
+      + '<div class="cns-requirements">'
+      + (scopedRows || '<div class="demo-note">当前字段清单没有需要设备侧 / 运行场景作用对象的字段。</div>')
+      + '</div>')
     + wbBlock('已录入的工程依据', activeBlock + disclosureBlock
       + '<div class="demo-note">来源类型徽标说明：'
       + Object.entries(EVIDENCE_SOURCE_TYPE_TEXT).map(([key, item]) => (
@@ -243,6 +356,17 @@ export function bindPlanningEvidence(c, deps = {}) {
     return trimmed || null;
   };
   const checked = (id) => Boolean(c.$(id) && c.$(id).checked);
+  const numberValue = (id) => {
+    const element = c.$(id);
+    if (!element) return null;
+    const raw = String(element.value || '').trim();
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const valueOf = (id, valueType) => (
+    valueType === 'number' ? numberValue(id) : selectedValues(id, valueType === 'enum')
+  );
 
   for (const item of summary().status) {
     const button = c.$('save_' + item.field);
@@ -253,7 +377,7 @@ export function bindPlanningEvidence(c, deps = {}) {
     button.onclick = async () => {
       try {
         const sourceType = c.$(prefix + '_source_type').value;
-        const value = selectedValues(prefix, item.value_type === 'enum');
+        const value = valueOf(prefix, item.value_type);
         return await action('/api/planning-evidence', {
           planning_evidence: {
             field: item.field,
@@ -268,6 +392,38 @@ export function bindPlanningEvidence(c, deps = {}) {
             declared_by: text(prefix + '_declared_by') || 'user',
             confirmed: checked(prefix + '_confirmed'),
             confirmed_by_user: checked(prefix + '_confirmed'),
+          },
+        });
+      } catch (error) {
+        reportError('保存工程依据失败：' + ((error && error.message) || error));
+        throw error;
+      }
+    };
+  }
+
+  for (const model of scopedEvidenceModels(flow())) {
+    const name = `pevs_${model.field}_${model.scope}`;
+    const button = c.$('save_' + name);
+    if (!button) continue;
+    button.onclick = async () => {
+      try {
+        const sourceType = c.$(name + '_source_type').value;
+        const value = valueOf(name, model.spec.value_type);
+        return await action('/api/planning-evidence', {
+          planning_evidence: {
+            field: model.field,
+            //: 作用对象由本行固定（设备侧 / 本次运行场景），用户只能选目标实例。
+            scope: model.scope,
+            target_id: c.$(name + '_target').value || null,
+            source_type: sourceType,
+            value: sourceType === 'unknown' ? null : value,
+            source: text(name + '_source'),
+            statement: text(name + '_statement'),
+            reason: text(name + '_reason'),
+            report_disclosure: text(name + '_disclosure'),
+            declared_by: text(name + '_declared_by') || 'user',
+            confirmed: checked(name + '_confirmed'),
+            confirmed_by_user: checked(name + '_confirmed'),
           },
         });
       } catch (error) {

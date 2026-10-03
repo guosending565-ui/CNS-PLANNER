@@ -45,6 +45,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 
+from .cns_performance import COMMUNICATION_NETWORK_SCOPES
+
 
 PLANNING_EVIDENCE_SCHEMA_VERSION = "round2.4-engineering-evidence"
 
@@ -81,7 +83,21 @@ PARTICIPATING_AUTHORITY_EFFECTS = (
     "allowed_with_disclosure", "allowed_as_external_reference",
 )
 
-PROJECT_EVIDENCE_SCOPES = ("project", "aircraft")
+#: 证据的**作用对象**（fail-closed 闭枚举）。
+#:
+#: * ``project``：项目级评估参数（连续服务阈值等），无 target；
+#: * ``aircraft``：某个机载档案的平台能力声明，``target_id`` = ``aircraft_id``；
+#: * ``device``（Round 2.7 新增）：某个**地面设备 / 提供者**的类型事实规划假设，
+#:   ``target_id`` = ``device_catalog`` 里的 ``device_id``。它是本项目的**规划输入**，
+#:   **绝不**写回 device catalog，也**绝不**是厂家事实；
+#: * ``operation``（Round 2.7 新增）：**本次运行场景**（某条运行航路）的假设，
+#:   ``target_id`` = ``route_id``。它只在该航路被评估时叠加到能力的**副本**上，
+#:   绝不写回机载档案，也绝不影响其它航路。
+PROJECT_EVIDENCE_SCOPES = ("project", "aircraft", "device", "operation")
+
+#: 需要 ``target_id`` 的作用对象（``project`` 是唯一无目标的）。
+TARGETED_EVIDENCE_SCOPES = ("aircraft", "device", "operation")
+
 
 #: 子系统证据的合法取值（枚举校验，绝不是自由文本）。
 COMMUNICATION_AIRBORNE_INTERFACES = ("ip",)
@@ -343,26 +359,32 @@ PLANNING_EVIDENCE_FIELDS = {
         "allowed": ("public", "private", "dedicated", "managed_service", "other"),
         "demand_field": "network_scope",
         "declared_field": "network_scope",
+        "scopes": ("aircraft", "project"),
         "semantics": (
             "需求侧 ``type.network_scope`` 是**真实类型门禁**（有枚举约束）。机载能力档案"
             "未声明该字段时判定保持 unknown；本记录为该机载平台显式提供该声明。"
         ),
     },
     "communication_airborne_interfaces": {
-        "label": "通信机载接口（机载侧）",
+        "label": "通信机载接口（机载侧 / 运行场景）",
         "subsystem": "C",
         "kind": "aircraft_type_interfaces",
         "value_type": "enum",
         "allowed": COMMUNICATION_AIRBORNE_INTERFACES,
         "demand_field": "interfaces",
         "declared_field": "interfaces",
+        #: Round 2.7：机载接口声明既可作为**平台能力**（``aircraft``）登记，
+        #: 也可作为**本次运行场景**的假设（``operation``，target = 运行航路 ID）登记。
+        #: 两者都只在消费点叠加到副本，绝不改写机载档案本体。
+        "scopes": ("aircraft", "operation"),
         "semantics": (
             "需求侧 ``type.interfaces`` 是**真实类型门禁**，且要求机载与地面提供者接口"
             "**有交集**才算兼容。本记录显式追加该机载平台的接口声明（不删除既有声明）。"
+            "以 ``scope=operation``（target = 运行航路）登记时，它只作用于该运行场景。"
         ),
     },
     "remote_id_participation": {
-        "label": "机载网络远程识别参与能力",
+        "label": "机载网络远程识别参与能力（机载侧 / 运行场景）",
         "subsystem": "S",
         "kind": "airborne_cooperative_surveillance_services",
         "value_type": "enum",
@@ -371,12 +393,101 @@ PLANNING_EVIDENCE_FIELDS = {
         #: （``network_remote_id``）；机载侧由参与服务声明列表承载同一事实。
         "demand_field": "technology",
         "declared_field": "cooperative_surveillance_services",
+        #: Round 2.7：与机载接口同理，可作平台能力或运行场景假设登记。
+        "scopes": ("aircraft", "operation"),
         "semantics": (
             "机载在 RID 服务里的角色是 **cooperative target**（广播 / 网络上报 Remote ID），"
             "**不是**被动 sensor。需求侧 ``sensor_mode`` 描述的是**地面网络 RID 接收节点**"
             "的工作模式，绝不用于机载判定。本记录显式声明该机载平台**支持参与**的合作监视"
             "技术；机载未声明时判定保持 unknown（evidence required），"
             "绝不自动降级为 does_not_meet_under_model。"
+        ),
+    },
+    #: -----------------------------------------------------------------------
+    #: Round 2.7：**设备 / 提供者侧**的规划假设（``scope=device``）。
+    #:
+    #: 背景：P8/P14/P16 的「提供者类型资格」门禁要求地面设备**自己声明**结构化技术
+    #: 维度（``technology`` / ``network_scope`` / ``interfaces``）。工程基线设备目录
+    #: （例如 ``COMM-BASELINE-4KM``）只有几何与性能基线，没有网络归属范围的厂家事实，
+    #: 于是门禁返回 ``unknown``（"缺少提供者类型字段 network_scope"），候选动作因此
+    #: 永远无法把已确认缺口升级为**已确认改善**（P16 selected = 0）。
+    #:
+    #: 本字段把该缺口变成一等公民：它是一条 **engineering_assumption**，落在独立的
+    #: ``planning_evidence`` 容器里，由 :func:`apply_device_evidence` 在**规划消费点**
+    #: 叠加到设备目录的**副本**上，并带 ``provider_evidence`` 来源标注供下游披露。
+    #: 它**绝不**写入 device catalog，也**绝不**是厂家事实。
+    #: -----------------------------------------------------------------------
+    "provider_network_scope": {
+        "label": "地面通信提供者网络归属范围（设备侧）",
+        "subsystem": "C",
+        "kind": "provider_type_field",
+        "value_type": "enum_scalar",
+        "allowed": COMMUNICATION_NETWORK_SCOPES,
+        "demand_field": "network_scope",
+        "declared_field": "network_scope",
+        "scopes": ("device",),
+        "semantics": (
+            "需求侧 ``type.network_scope`` 是**真实类型门禁**。地面提供者的网络归属范围是"
+            "**设备事实**，工程基线设备目录没有该声明时判定保持 unknown（fail-closed）。"
+            "本记录为该设备在**本项目的规划输入**里显式提供该声明（``source_type`` 必须"
+            "如实声明为 ``engineering_assumption`` / ``confirmed_source_fact`` / "
+            "``external_reference``），它绝不改写设备目录，也绝不代表厂家规格。"
+        ),
+    },
+    #: -----------------------------------------------------------------------
+    #: Round 2.7：**机载 / 运行场景侧的性能声明**（``kind=aircraft_performance_field``）。
+    #:
+    #: 背景：P8 的机载判定（``evaluate_required_performance(..., airborne=True)``）会用
+    #: RequiredCNS 的 ``performance`` 逐项核对机载能力。工程基线机载档案（FC30 canonical）
+    #: 只声明 ``lost_link_threshold_s``（failsafe 事实）而**不**声明链路时延，于是
+    #: ``max_latency_s`` 判定返回 unknown（"缺少性能字段 max_latency_s"），P8 因此无法
+    #: 确认任何改善，P16 永远选不出站址。
+    #:
+    #: 该字段把这一缺口变成一等公民：它是一条 **engineering_assumption**（可由 FC30 本体
+    #: 或配套机载通信终端实现），由 :func:`apply_aircraft_evidence` 在**消费点**叠加到
+    #: 机载档案副本的 ``performance`` 上，**绝不**改写 canonical 机载档案。
+    #: -----------------------------------------------------------------------
+    "communication_airborne_latency_s": {
+        "label": "通信机载链路时延（机载侧 / 运行场景）",
+        "subsystem": "C",
+        "kind": "aircraft_performance_field",
+        "value_type": "number",
+        "unit": "s",
+        "allowed": "非负有限数值（秒）",
+        #: 时延是**上限**要求：取值必须 ≤ 需求值。
+        "requirement_operator": "<=",
+        "demand_section": "performance",
+        "demand_field": "max_latency_s",
+        "declared_field": "max_latency_s",
+        "scopes": ("aircraft", "operation"),
+        "semantics": (
+            "需求侧 ``performance.max_latency_s`` 是机载判定会逐项核对的性能门槛。机载"
+            "档案未声明该字段时判定保持 unknown（fail-closed，绝不是「确认不满足」）。"
+            "本记录显式声明该机载平台 / 本次运行场景在规划模型下的链路时延上限"
+            "（工程规划假设），它绝不改写机载档案本体。"
+        ),
+    },
+    #: 与 ``communication_airborne_latency_s`` 同一契约的 **RID 侧性能声明**：
+    #: 需求侧 ``surveillance.performance.max_update_interval_s`` 同样会被 P8 的机载
+    #: 判定逐项核对；工程基线机载档案只声明探测距离而不声明更新间隔，缺该声明时
+    #: 判定只能保持 unknown（fail-closed），S:rid_cooperative 因此无法确认任何改善。
+    "surveillance_airborne_update_interval_s": {
+        "label": "机载网络远程识别更新间隔（机载侧 / 运行场景）",
+        "subsystem": "S",
+        "kind": "aircraft_performance_field",
+        "value_type": "number",
+        "unit": "s",
+        "allowed": "非负有限数值（秒）",
+        "requirement_operator": "<=",
+        "demand_section": "performance",
+        "demand_field": "max_update_interval_s",
+        "declared_field": "max_update_interval_s",
+        "scopes": ("aircraft", "operation"),
+        "semantics": (
+            "需求侧 ``performance.max_update_interval_s`` 是 RID 合作监视的更新间隔上限，"
+            "P8 的机载判定会逐项核对它。机载档案未声明该字段时判定保持 unknown"
+            "（fail-closed，绝不是「确认不满足」）。本记录显式声明该机载平台 / 本次运行"
+            "场景在规划模型下的更新间隔上限（工程规划假设），绝不改写机载档案本体。"
         ),
     },
 }
@@ -413,10 +524,15 @@ def normalize_engineering_evidence(value: dict, *, now: str | None = None) -> di
         )
     scope = str(value.get("scope") or "aircraft").strip()
     if scope not in PROJECT_EVIDENCE_SCOPES:
-        raise ValueError("scope 必须是 project / aircraft")
+        raise ValueError("scope 必须是 " + " / ".join(PROJECT_EVIDENCE_SCOPES))
+    allowed_scopes = spec.get("scopes")
+    if allowed_scopes and scope not in allowed_scopes:
+        raise ValueError(
+            f"field {field} 只允许 scope=" + " / ".join(allowed_scopes)
+        )
     target_id = _optional_text(value.get("target_id"))
-    if scope == "aircraft" and not target_id:
-        raise ValueError("scope=aircraft 的工程证据必须声明 target_id（机载档案 ID）")
+    if scope in TARGETED_EVIDENCE_SCOPES and not target_id:
+        raise ValueError(f"scope={scope} 的工程证据必须声明 target_id")
 
     normalized_value = _normalize_value(spec, value.get("value"))
     statement = _optional_text(value.get("statement"))
@@ -519,7 +635,7 @@ def active_evidence_items(
             continue
         if item["authority_effect"] == "not_participating":
             continue
-        if target_id is not None and item["scope"] == "aircraft" and item["target_id"] != target_id:
+        if target_id is not None and item["scope"] in TARGETED_EVIDENCE_SCOPES and item["target_id"] != target_id:
             continue
         if field is not None and item["field"] != field:
             continue
@@ -532,14 +648,19 @@ def active_evidence_items(
 # ---------------------------------------------------------------------------
 
 
-def apply_aircraft_evidence(profile: dict | None, registry: dict | None) -> dict | None:
+def apply_aircraft_evidence(
+    profile: dict | None, registry: dict | None, *, route_ids=None,
+) -> dict | None:
     """把工程证据叠加到**选定机载档案**的一份副本上。
 
     * 输入 ``profile`` / ``registry`` 都**不被修改**；返回新对象；
-    * 只叠加 ``scope=aircraft`` 且 ``target_id`` 与该档案匹配的记录；
+    * 叠加 ``scope=aircraft`` 且 ``target_id`` 与该档案匹配的记录；
+    * Round 2.7 起**另**叠加 ``scope=operation`` 且 ``target_id`` 落在本次评估的
+      运行航路集合（``route_ids``）里的记录：它们是**本次运行场景**的假设，只作用于
+      该场景，绝不写回机载档案本体，也绝不泄漏到其它航路；
     * ``source_type=unknown`` 的记录**不参与**（它们只登记缺口）；
-    * 叠加结果在 ``aircraft_evidence`` 上保留逐字段来源，供 P8/P14/P15/P16
-      与报告披露"这条能力来自事实还是工程假设"；
+    * 叠加结果在 ``airborne_evidence`` 上保留逐字段来源（含 ``scope``），供
+      P8/P14/P15/P16 与报告披露"这条能力来自事实、平台声明还是本次运行假设"；
     * 没有任何有效记录时**逐字节返回原档案的深拷贝**（旧项目行为完全不变）。
     """
 
@@ -547,10 +668,15 @@ def apply_aircraft_evidence(profile: dict | None, registry: dict | None) -> dict
     if not isinstance(result, dict):
         return result
     target_id = str(result.get("aircraft_id") or "")
-    items = active_evidence_items(registry, target_id=target_id) if target_id else []
+    route_id_set = {str(item) for item in (route_ids or []) if str(item)}
+    items = active_evidence_items(registry) if target_id else []
     items = [
         item for item in items
-        if item["scope"] == "aircraft" and item["target_id"] == target_id
+        if (
+            item["scope"] == "aircraft" and item["target_id"] == target_id
+        ) or (
+            item["scope"] == "operation" and item["target_id"] in route_id_set
+        )
     ]
     if not items:
         return result
@@ -566,6 +692,13 @@ def apply_aircraft_evidence(profile: dict | None, registry: dict | None) -> dict
             continue
         if spec["kind"] == "aircraft_type_field":
             type_block[spec["declared_field"]] = item["value"]
+        elif spec["kind"] == "aircraft_performance_field":
+            #: Round 2.7：机载 / 运行场景的**性能声明**（例如链路时延上限）。
+            #: 与类型字段同一契约：只写副本的 ``performance``，绝不改写档案本体。
+            performance_block = block.setdefault("performance", {})
+            if not isinstance(performance_block, dict):
+                continue
+            performance_block[spec["declared_field"]] = item["value"]
         elif spec["kind"] == "aircraft_type_interfaces":
             existing = [str(entry) for entry in type_block.get("interfaces") or []]
             for entry in item["value"]:
@@ -585,6 +718,8 @@ def apply_aircraft_evidence(profile: dict | None, registry: dict | None) -> dict
             type_block[AIRBORNE_COOPERATIVE_SURVEILLANCE_FIELD] = declared
         sources[item["field"]] = {
             "evidence_id": item["evidence_id"],
+            "scope": item["scope"],
+            "target_id": item["target_id"],
             "source_type": item["source_type"],
             "source": item["source"],
             "confirmed": item["confirmed"],
@@ -604,6 +739,10 @@ def apply_aircraft_evidence(profile: dict | None, registry: dict | None) -> dict
         "planning_input_only": any(
             item["source_type"] == "engineering_assumption" for item in items
         ),
+        #: Round 2.7：哪些记录是**本次运行场景**假设（而非平台能力声明）。
+        "operation_scope_fields": sorted({
+            item["field"] for item in items if item["scope"] == "operation"
+        }),
     }
     result["airborne_evidence"] = deepcopy(summary)
     #: P8 的机载判定只收到**子系统 capability 子树**，因此来源标注必须同时写到
@@ -613,6 +752,75 @@ def apply_aircraft_evidence(profile: dict | None, registry: dict | None) -> dict
         block = result.get(_subsystem_name(spec["subsystem"]))
         if isinstance(block, dict):
             block["airborne_evidence"] = deepcopy(summary)
+    return result
+
+
+def apply_device_evidence(catalog: dict | None, registry: dict | None) -> dict | None:
+    """把 ``scope=device`` 的工程证据叠加到**设备目录的一份副本**上。
+
+    与 :func:`apply_aircraft_evidence` 同一契约，但作用对象是**地面提供者**：
+
+    * 输入 ``catalog`` / ``registry`` 都**不被修改**；返回新对象；
+    * 只叠加 ``scope=device`` 且 ``target_id`` 等于该 ``device_id`` 的记录；
+    * 只处理 ``kind=provider_type_field`` 的字段（Round 2.7 只有
+      ``provider_network_scope``），写入设备 ``type`` 的 ``declared_field``；
+    * 叠加结果在设备的 ``provider_evidence`` 上保留逐字段来源，供 P8/P14/P16 与
+      报告披露"这条设备类型声明来自本项目的工程假设，不是厂家事实"；
+    * 没有任何有效记录时**逐字节返回原目录的深拷贝**（旧项目行为完全不变）。
+    """
+
+    result = deepcopy(catalog) if isinstance(catalog, dict) else catalog
+    if not isinstance(result, dict):
+        return result
+    items = [
+        item for item in active_evidence_items(registry) if item["scope"] == "device"
+    ]
+    if not items:
+        return result
+    by_target = {}
+    for item in items:
+        by_target.setdefault(str(item.get("target_id") or ""), []).append(item)
+    for device in result.get("items") or []:
+        if not isinstance(device, dict):
+            continue
+        applied = by_target.get(str(device.get("device_id") or ""))
+        if not applied:
+            continue
+        type_block = device.setdefault("type", {})
+        if not isinstance(type_block, dict):
+            continue
+        sources = {}
+        for item in applied:
+            spec = PLANNING_EVIDENCE_FIELDS[item["field"]]
+            if spec.get("kind") != "provider_type_field":
+                continue
+            type_block[spec["declared_field"]] = item["value"]
+            sources[item["field"]] = {
+                "evidence_id": item["evidence_id"],
+                "scope": item["scope"],
+                "target_id": item["target_id"],
+                "source_type": item["source_type"],
+                "source": item["source"],
+                "statement": item["statement"],
+                "confirmed": item["confirmed"],
+                "confirmed_by_user": item["confirmed_by_user"],
+                "report_disclosure": item["report_disclosure"],
+            }
+        if not sources:
+            continue
+        device["provider_evidence"] = {
+            "source_types": sorted({item["source_type"] for item in applied}),
+            "source_type": (
+                applied[0]["source_type"]
+                if len({item["source_type"] for item in applied}) == 1 else "mixed"
+            ),
+            "fields": sources,
+            "semantics": "engineering_planning_input_disclosed_not_manufacturer_fact",
+            "planning_input_only": any(
+                item["source_type"] == "engineering_assumption" for item in applied
+            ),
+            "device_catalog_modified": False,
+        }
     return result
 
 

@@ -15,8 +15,8 @@ from copy import deepcopy
 from uuid import uuid4
 
 from ..domain.planning_evidence import (
-    active_evidence_items, apply_aircraft_evidence, empty_planning_evidence,
-    evidence_disclosure_lines, normalize_engineering_evidence,
+    active_evidence_items, apply_aircraft_evidence, apply_device_evidence,
+    empty_planning_evidence, evidence_disclosure_lines, normalize_engineering_evidence,
     normalize_planning_evidence_registry, param_targets_continuous_service,
 )
 
@@ -71,14 +71,21 @@ class PlanningEvidenceService:
             #: 它们由 ``continuous_parameters`` 单独投影（带 authority）。
             if spec["kind"] == "continuous_service_parameter":
                 continue
+            #: Round 2.7：非机载作用对象的字段（例如设备侧 ``provider_network_scope``）
+            #: 不属于"机载能力 vs 需求类型"的核对对象，绝不用机载档案去比对它们。
+            if spec.get("scopes") and "aircraft" not in spec["scopes"]:
+                continue
             subsystem = _subsystem_name(spec["subsystem"])
             #: ``_requirement_blocks`` 返回的是 **subsystem 名** 键
             #: （``communication`` / ``navigation`` / ``surveillance``）。
             requirement = requirements.get(subsystem) or {}
-            required_type = requirement.get("type") or {}
+            #: Round 2.7：需求侧的核对段可以是 ``type`` 或 ``performance``
+            #: （机载性能字段例如 ``max_latency_s`` 落在 ``performance``）。
+            demand_section = spec.get("demand_section") or "type"
+            required_block = requirement.get(demand_section) or {}
             demand_field = spec["demand_field"]
-            required_value = required_type.get(demand_field)
-            demanded = demand_field in required_type and required_value not in (
+            required_value = required_block.get(demand_field)
+            demanded = demand_field in required_block and required_value not in (
                 None, "", "unknown", [],
             )
             declared = _declared_value(profile, subsystem, spec)
@@ -142,8 +149,11 @@ class PlanningEvidenceService:
         item.setdefault("evidence_id", f"PEV-{uuid4().hex[:12].upper()}")
         normalized = normalize_engineering_evidence(item)
 
+        state = self.session.state
+        #: fail-closed：``target_id`` 必须指向**本项目已载入的对象**。
+        #: 绝不允许为不存在的机载档案 / 设备 / 运行航路登记假设（那会让
+        #: "这条假设作用在什么上"在项目里失去唯一的权威答案）。
         if normalized["scope"] == "aircraft":
-            state = self.session.state
             known = {
                 str(entry.get("aircraft_id") or "")
                 for entry in (state.get("aircraft_profiles") or {}).get("items") or []
@@ -152,8 +162,22 @@ class PlanningEvidenceService:
                 raise ValueError(
                     f"target_id 不是已载入的机载档案：{normalized['target_id']}"
                 )
+        elif normalized["scope"] == "device":
+            known = {
+                str(entry.get("device_id") or "")
+                for entry in (state.get("device_catalog") or {}).get("items") or []
+            }
+            if normalized["target_id"] not in known:
+                raise ValueError(
+                    f"target_id 不是已载入的设备：{normalized['target_id']}"
+                )
+        elif normalized["scope"] == "operation":
+            known = set(_active_route_ids(state))
+            if normalized["target_id"] not in known:
+                raise ValueError(
+                    f"target_id 不是已载入的运行航路：{normalized['target_id']}"
+                )
 
-        state = self.session.state
         registry = normalize_planning_evidence_registry(state.get("planning_evidence"))
         #: 同一 ``(scope, target_id, field)`` 只保留最新一条 active 记录：
         #: 其余同类记录被置为 ``superseded``（绝不累积互相矛盾的规划声明）。
@@ -242,6 +266,10 @@ def _declared_value(profile, subsystem, spec):
     type_block = block.get("type") if isinstance(block.get("type"), dict) else {}
     if spec["kind"] == "aircraft_type_field":
         return type_block.get(spec["demand_field"])
+    if spec["kind"] == "aircraft_performance_field":
+        #: Round 2.7：机载 / 运行场景的性能声明落在 ``performance`` 段。
+        performance_block = block.get("performance") if isinstance(block.get("performance"), dict) else {}
+        return performance_block.get(spec["demand_field"])
     if spec["kind"] == "aircraft_type_interfaces":
         return type_block.get("interfaces")
     if spec["kind"] == "airborne_cooperative_surveillance_services":
@@ -264,12 +292,56 @@ def aircraft_profile_with_evidence(state):
     P8（``cns_service_capability``）/ P14（``corridor``）/ P16 what-if 重算
     都必须经此取得机载能力，否则工程证据会在某条路径上被静默忽略，
     "同一份输入应当得到同一份判定"就不成立。
+
+    Round 2.7：连同 ``scope=operation``（target = 本项目运行航路 ID）的**运行场景
+    假设**一起叠加 —— 它们只作用于本次评估的运行场景，绝不写回机载档案本体。
     """
 
     profile = _selected_profile(state)
     if profile is None:
         return None
-    return apply_aircraft_evidence(profile, state.get("planning_evidence"))
+    return apply_aircraft_evidence(
+        profile, state.get("planning_evidence"), route_ids=_active_route_ids(state),
+    )
 
 
-__all__ = ["PlanningEvidenceService", "aircraft_profile_with_evidence"]
+def _active_route_ids(state):
+    """本项目当前载入的运行航路 ID（``scope=operation`` 证据的 target 域）。
+
+    兼容两种既有状态形状：正式 ``ProjectState`` 用 ``operational_routes``，
+    异步 worker 的 immutable snapshot 用 ``routes``；两者都缺失时返回空集合
+    （``scope=operation`` 的证据因此**不叠加**，fail-closed）。
+    """
+
+    routes = state.get("operational_routes")
+    if routes is None:
+        routes = state.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        return []
+    return [
+        str(item.get("route_id") or "")
+        for item in routes if isinstance(item, dict)
+    ]
+
+
+def device_catalog_with_evidence(state):
+    """**所有提供者类型判定消费点唯一的设备目录入口**。
+
+    Round 2.7：把 ``scope=device`` 的工程证据（例如某地面通信基线的
+    ``network_scope`` 规划假设）叠加到设备目录的**副本**上。
+
+    * 绝不写入 ``state["device_catalog"]``：登记的证据仍只存在于
+      ``state["planning_evidence"]``，重开项目后仍是同一份假设；
+    * 没有有效设备证据时逐字节等价于原目录（旧项目行为完全不变）；
+    * P8 / P14 / P16 必须共用本入口，否则"同一份输入两种判定"会再次出现。
+    """
+
+    return apply_device_evidence(
+        state.get("device_catalog") or {}, state.get("planning_evidence"),
+    )
+
+
+__all__ = [
+    "PlanningEvidenceService", "aircraft_profile_with_evidence",
+    "device_catalog_with_evidence",
+]

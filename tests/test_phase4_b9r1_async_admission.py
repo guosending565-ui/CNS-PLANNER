@@ -691,15 +691,18 @@ def test_p14_protected_baseline_matches_workspace():
     # Round 2 再把**可序列化 surface 事实指纹**（surface_facts_fingerprint）接入
     # Coverage / Corridor 的 input fingerprint（provider 本身是 callable，不能进指纹），
     # 因此 geometric_3d / corridor 两个受保护文件的哈希随之上移。
+    # Round 2.7 再把「缺几何输入 ⇒ missing_data」与「待确认 ⇒ pending_confirmation」
+    # 在 corridor/v1.py 里显式分开（走廊内无可用网格单元时不再静默产出 0 体元），
+    # 因此 corridor 的哈希随之上移。
     # 该断言的作用是"任何改动都必须显式登记"，并不是允许静默漂移。
     assert baseline["cns_planner/algorithms/coverage/geometric_3d.py"] == (
         "68f39a884ce173d11ae943a85bdb9f7b66daea2f124cdd8e5bc716a745c5f01b"
     )
     assert baseline["cns_planner/algorithms/corridor/v1.py"] == (
-        "1a2117332b978f018726cd328dcd14923d2891d002ce027249566d6134c4d8a2"
+        "4e2bfe9dd94a668f7497e53893a651ff70721f93e9b944053ba8c31b627b52e3"
     )
     assert baseline["cns_planner/algorithms/service_capability/v1.py"] == (
-        "0e8660d995887ea6e4429aa9ecfa554d093570cb3c63f2e7fb1d9f5f187c54e4"
+        "4632d2996e2fc59b8d21ec79e98676e1731d87106d53b2b600a9d176f2352a1c"
     )
 
 

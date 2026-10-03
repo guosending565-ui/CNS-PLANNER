@@ -21,7 +21,9 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..catalogs import AircraftCNSProfileCatalog
-from .planning_evidence_service import aircraft_profile_with_evidence
+from .planning_evidence_service import (
+    aircraft_profile_with_evidence, device_catalog_with_evidence,
+)
 from ..algorithms.corridor.v1 import COMPLEXITY_MESSAGE_BEYOND, COMPLEXITY_MESSAGE_CEILING
 from ..algorithms.corridor.v1 import COMPLEXITY_TIER_BEYOND, COMPLEXITY_TIER_CEILING
 from ..domain.cns_corridor import (
@@ -126,7 +128,9 @@ class CNSCorridorService:
             "required_cns": state.get("required_cns") or {},
             "aircraft_profile": profile,
             "existing_facilities": state.get("existing_cns_facilities") or {},
-            "device_catalog": state.get("device_catalog") or {},
+            #: Round 2.7：设备侧的工程规划假设（``scope=device``）只在**消费点**叠加到
+            #: 设备目录副本上；``state["device_catalog"]`` 本身逐字节不变。
+            "device_catalog": device_catalog_with_evidence(state),
             "corridor_policy": policy,
             "coverage_parameters": ((selections.get("coverage_model") or {}).get("parameters") or {}),
             "capability_parameters": ((selections.get("service_model") or {}).get("parameters") or {}),

@@ -158,6 +158,14 @@ def test_snapshot_ships_the_field_catalogue_so_the_ui_never_guesses():
     assert set(fields["fields"]) == {
         "communication_network_scope", "communication_airborne_interfaces",
         "remote_id_participation",
+        #: Round 2.7：设备侧（提供者类型）工程假设是**能力叠加类**字段的第四个成员。
+        #: 它同样只在规划消费点叠加到设备目录的**副本**上，绝不写入 device catalog。
+        "provider_network_scope",
+        #: Round 2.7：机载 / 运行场景的**性能声明**（链路时延上限）。P8 的机载判定会用
+        #: RequiredCNS 的 performance 逐项核对，canonical 机载档案未声明时只能是 unknown。
+        "communication_airborne_latency_s",
+        #: 同一契约的 RID 侧性能声明（合作监视更新间隔上限）。
+        "surveillance_airborne_update_interval_s",
     }
     continuous = fields["continuous_service_parameters"]
     assert continuous["c_full_outage_max_s"]["value_type"] == "number"

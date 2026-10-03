@@ -244,6 +244,29 @@ class CNSServiceCorridorV1:
             nearest = metric_route.nearest(prepared["center"])
             if nearest["distance_m"] <= half_width + prepared["half_diagonal"]:
                 horizontal.append((prepared, nearest))
+        if not horizontal:
+            #: Round 2.7：「缺**几何输入**」与「等用户确认」是两件事，必须严格区分：
+            #: 后者确认后就有体元，前者无论确认多少次都不会有体元。网格单元缺失
+            #: （grid 明细不可用）或没有任何单元与航路相交时，如实报 ``missing_data``
+            #: 并给出可核查原因；绝不静默产出 0 体元的 ``pending_confirmation``
+            #: —— 那会把"输入不可用"伪装成"只差一次确认"，下游 P15/P16 随之空转。
+            corridor_geometry = {
+                "route_path": deepcopy(path), "included_grid_ids": [],
+                "horizontal_half_width_m": half_width,
+                "horizontal_discretization": "conservative_grid_cell_inclusion_not_exact_buffer",
+            }
+            return {
+                **base, "status": "missing_data", "spec": deepcopy(spec),
+                "voxels": [], "voxel_count": 0, "subsystems": [],
+                "horizontal_cell_count": 0,
+                "corridor_geometry": corridor_geometry,
+                "corridor_geometry_fingerprint": _fingerprint(corridor_geometry),
+                "horizontal_discretization": "conservative_grid_cell_inclusion_not_exact_buffer",
+                "evaluation_semantics": "representative_voxel_probe_not_entire_voxel_guarantee",
+                "reasons": [
+                    "走廊内没有可用网格单元：网格几何输入缺失，或没有任何网格单元与航路相交"
+                ],
+            }
         requirements = ((required_cns.get("route_overrides") or {}).get(route_id)
                         or required_cns.get("project_default") or {})
         capability_contexts = {
@@ -1167,6 +1190,11 @@ def _aggregate_status(statuses):
         return "missing_data"
     if any(status == "failed" for status in statuses):
         return "failed"
+    #: Round 2.7：全部航路都是 ``missing_data``（缺几何输入）时如实上报，
+    #: 不再被折叠成 ``pending_confirmation`` —— "输入不可用"不等于"待确认"。
+    #: 混合情况（部分待确认）保持既有语义不变。
+    if all(status == "missing_data" for status in statuses):
+        return "missing_data"
     if any(status in ("pending_confirmation", "missing_data", "unresolved") for status in statuses):
         return "pending_confirmation"
     if all(status == "not_applicable" for status in statuses):
