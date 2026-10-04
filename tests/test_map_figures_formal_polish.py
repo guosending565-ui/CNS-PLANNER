@@ -157,8 +157,8 @@ def test_map_frame_is_not_shrunk_and_is_identical_across_five_figures(tmp_path):
             ("facility", ["既有通信站址"]),
             ("proposal", ["通信规划提案（未确认）", "RID 规划提案（未确认）",
                           "导航完整性监测点提案（未确认）"]),
-            ("coverage", ["通信规划服务半径 4 km", "RID 陆上/沿海规划半径 2 km",
-                          "RID 海上最大规划半径 5 km"]),
+            ("coverage", ["通信规划服务半径 4 km", "RID 陆地/沿海规划范围 2 km",
+                          "RID 海上延伸规划范围 2–5 km"]),
             ("limitation", ["非合作监视能力限制（无可行布设）"]),
             ("route", ["规划航路", "航路转弯点", "起点", "终点"]),
         )

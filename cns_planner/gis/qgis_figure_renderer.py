@@ -462,11 +462,14 @@ def _layer_entry(spec, layer):
                 "kind": "polygon", "polygons": polygons, "name": layer.display_name,
                 "holes": _holes_of(polygons, data)}
     if layer.geometry_type == GEOMETRY_LINE:
-        geometry = data.get("geometry") or []
-        if len(geometry) < 2:
+        lines = data.get("lines")
+        if not isinstance(lines, list):
+            lines = [data.get("geometry") or []]
+        lines = [line for line in lines if isinstance(line, list) and len(line) >= 2]
+        if not lines:
             return None
         return {"key": layer.layer_key, "z": style_item["z"], "style_key": layer.style_key,
-                "kind": "line", "lines": [geometry], "name": layer.display_name}
+                "kind": "line", "lines": lines, "name": layer.display_name}
     if layer.geometry_type == GEOMETRY_POINT:
         points = [
             (float(item["longitude"]), float(item["latitude"]))
@@ -2705,8 +2708,8 @@ LEGEND_COMPACT_LABELS = {
     "cns_rid_proposal": ("RID 规划提案（未确认）", "RID 提案（未确认）"),
     "cns_nav_proposal": ("导航完整性监测点提案（未确认）", "导航监测点提案"),
     "cns_coverage_comm": ("通信规划服务半径 4 km", "通信半径 4 km"),
-    "cns_coverage_rid_land": ("RID 陆上/沿海规划半径 2 km", "RID 陆上沿海 2 km"),
-    "cns_coverage_rid_sea": ("RID 海上最大规划半径 5 km", "RID 海上最大 5 km"),
+    "cns_coverage_rid_land": ("RID 陆地/沿海规划范围 2 km", "RID 陆地/沿海 2 km"),
+    "cns_coverage_rid_sea": ("RID 海上延伸规划范围 2–5 km", "RID 海上延伸 2–5 km"),
     "cns_radar_context": ("Radar-I 评估候选站址（未选中）", "Radar 候选站址（未选中）"),
     "cns_radar_limitation": (
         "非合作监视能力限制（无可行布设）", "非合作监视能力限制",

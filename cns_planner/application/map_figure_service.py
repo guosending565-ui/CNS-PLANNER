@@ -38,6 +38,7 @@ from ..gis.figure_spec import (
 from ..gis.figure_style import (
     CNS_LABEL_CARD_ORDER, LABEL_STYLES, LEGEND_GROUP_OF, legend_order_key,
 )
+from ..gis.land_mask_source import build_land_mask_source, land_mask_source_path
 from ..gis.source_inspection import inspect_cartographic_land
 from ..reporting.map_templates import (
     CNS_COMBINED_V1, CNS_COVERAGE_POLICY, CNS_EXTENT_POLICY_ID, CNS_LAYOUT_PROFILE,
@@ -53,6 +54,7 @@ from .cns_facility_assembler import (
     assemble as assemble_cns_facilities, coverage_circle_ring, coverage_radius_for,
     rid_radius_pair,
 )
+from .rid_surface_footprint import build_surface_aware_rid_footprint
 
 #: 权威运行航路的 canonical state 容器。
 OPERATIONAL_ROUTE_SOURCE = "operational_routes"
@@ -2145,6 +2147,108 @@ def _cns_coverage_layer(ctx, layer_key, display_name, records, radius_m, assembl
     )
 
 
+def _cns_surface_aware_rid_layers(ctx, records, assembly, *, metric_crs):
+    """RID map-only footprint: 2 km base + confirmed-sea part of the 2--5 km annulus."""
+
+    land_radius, sea_radius = rid_radius_pair()
+    facts = ctx.state.get("surface_class_facts")
+    policy = ctx.state.get("surface_classification_policy") or {}
+    path = land_mask_source_path(ctx.state, (ctx.paths or {}).get("land_mask"))
+    try:
+        land_mask = build_land_mask_source(path, policy)
+    except (OSError, ValueError):
+        land_mask = None
+
+    base_records, extension_records, extension_lines, per_site = [], [], [], []
+    for record in records:
+        footprint = build_surface_aware_rid_footprint(
+            record.longitude, record.latitude,
+            land_radius_m=land_radius, sea_radius_m=sea_radius,
+            land_mask_source=land_mask, surface_class_facts=facts,
+            metric_crs=metric_crs,
+        )
+        base_records.extend(footprint["base_polygons"])
+        extension_records.extend(footprint["sea_extension_polygons"])
+        extension_lines.extend(footprint["sea_extension_boundary_lines"])
+        per_site.append({
+            "record_id": record.record_id,
+            "site_id": record.site_id,
+            "extension_polygon_count": len(footprint["sea_extension_polygons"]),
+            **deepcopy(footprint["metadata"]),
+        })
+
+    shared = _cns_frame_detail(assembly, service_key=SERVICE_RID, extra={
+        "surface_aware_visualization": True,
+        "affects_planning": False,
+        "is_business_evidence": False,
+        "is_measured_propagation_contour": False,
+        "land_radius_m": float(land_radius),
+        "sea_radius_m": float(sea_radius),
+        "registered_radii_unchanged": True,
+        "surface_class_facts_status": facts.get("status") if isinstance(facts, dict) else None,
+        "surface_class_facts_input_fingerprint": (
+            facts.get("input_fingerprint") if isinstance(facts, dict) else None
+        ),
+        "land_mask_path_configured": bool(path),
+        "unknown_is_fail_closed_to_2km": True,
+        "site_footprints": per_site,
+    })
+    base = _layer(
+        ctx, "cns_coverage_rid_land",
+        display_name="RID 陆地/沿海规划范围 2 km",
+        geometry_type=GEOMETRY_POLYGON, source_role="cns_corridor_site_plan",
+        status=SOURCE_AVAILABLE, reason="", feature_count=len(base_records),
+        detail={
+            **shared,
+            "geometry_method": "true_metric_2km_omnidirectional_base",
+            "radius_m": float(land_radius),
+            "polygon_count": len(base_records),
+            "radius_semantics": "rid_land_coastal_unknown_maximum_planning_range_2km",
+        },
+        data={
+            "polygons": _polygon_rings(base_records),
+            "polygon_holes": _holes_of_polygons(base_records),
+            "radius_m": float(land_radius),
+        },
+    )
+    extension = _layer(
+        ctx, "cns_coverage_rid_sea",
+        display_name="RID 海上延伸规划范围 2–5 km",
+        geometry_type=GEOMETRY_LINE, source_role="cns_corridor_site_plan",
+        status=SOURCE_AVAILABLE, reason="", feature_count=len(extension_lines),
+        detail={
+            **shared,
+            "geometry_method": (
+                "metric_annulus_2_to_5km_intersection_confirmed_sea_from_authoritative_land_mask"
+            ),
+            "radius_m": float(sea_radius),
+            "inner_radius_m": float(land_radius),
+            "outer_radius_m": float(sea_radius),
+            "polygon_count": len(extension_records),
+            "outer_boundary_line_count": len(extension_lines),
+            "radius_semantics": "rid_confirmed_sea_extension_planning_range_2_to_5km",
+        },
+        data={
+            "lines": extension_lines,
+            # Retain the complete clipped footprint in FigureSpec for audit/inspection;
+            # the renderer draws only the supplied 5 km boundary arcs.
+            "polygons": _polygon_rings(extension_records),
+            "polygon_holes": _holes_of_polygons(extension_records),
+            "radius_m": float(sea_radius),
+            "inner_radius_m": float(land_radius),
+            "outer_radius_m": float(sea_radius),
+        },
+    )
+    return [base, extension], {
+        "surface_aware_visualization": True,
+        "affects_planning": False,
+        "rid_footprint_semantics": "2km_omnidirectional_plus_2_to_5km_confirmed_sea",
+        "rid_extension_polygon_count": len(extension_records),
+        "rid_extension_outer_boundary_line_count": len(extension_lines),
+        "rid_extension_fail_closed": not bool(extension_records),
+    }
+
+
 def _cns_declared_layer(ctx, layer_key, display_name, assembly, *, service_key, detail_extra,
                         source_role="radar_surveillance_layout"):
     """**声明型图层**：只在图例中出现，不画任何几何，因此不可能伪装成要素。"""
@@ -2389,9 +2493,10 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
             SURVEILLANCE_SERVICE_RID:
         entries.append({
             "disclosure_id": "rid_radius_disclosure",
-            "title": "RID 规划半径",
+            "title": "RID surface-aware 规划范围",
             "lines": [
-                "实线圆 = RID 陆上 / 沿海规划半径 2 km；虚线圆 = RID 海上最大规划半径 5 km。",
+                "RID footprint = 2 km 全向基础区 +（2–5 km 环带 ∩ confirmed sea）。",
+                "陆地 / 沿海不确定 / unknown 最大 2 km；仅 confirmed sea 延伸至 5 km。",
                 "RID 是合作监视（omnidirectional），不是 Radar，图上没有任何扇区 / panel。",
                 "设施为 P16 规划提案（未确认）。",
             ],
@@ -2509,23 +2614,16 @@ def materialize_cns(ctx):
                 assembly, service_key=SERVICE_COMMUNICATION, metric_crs=metric_crs,
                 semantics="communication_omnidirectional_planning_service_radius_4km",
             ))
+    rid_footprint_metadata = {}
     if SERVICE_RID in services:
         rid_records = [
             record for record in assembly.proposals if record.service_key == SERVICE_RID
         ]
-        land_radius, sea_radius = rid_radius_pair()
-        if rid_records and land_radius:
-            layers.append(_cns_coverage_layer(
-                ctx, "cns_coverage_rid_land", "RID 陆上/沿海规划半径 2 km", rid_records,
-                land_radius, assembly, service_key=SERVICE_RID, metric_crs=metric_crs,
-                semantics="rid_cooperative_land_coastal_planning_radius_2km_solid",
-            ))
-        if rid_records and sea_radius:
-            layers.append(_cns_coverage_layer(
-                ctx, "cns_coverage_rid_sea", "RID 海上最大规划半径 5 km", rid_records,
-                sea_radius, assembly, service_key=SERVICE_RID, metric_crs=metric_crs,
-                semantics="rid_cooperative_sea_maximum_planning_radius_5km_dashed",
-            ))
+        if rid_records:
+            rid_layers, rid_footprint_metadata = _cns_surface_aware_rid_layers(
+                ctx, rid_records, assembly, metric_crs=metric_crs,
+            )
+            layers.extend(rid_layers)
 
     # ---- Radar：只有上下文与限制，绝无站址 / panel / 扇区 -------------------------
     if SERVICE_RADAR in services or template_id == CNS_COMBINED_V1:
@@ -2608,6 +2706,7 @@ def materialize_cns(ctx):
             "layout_profile": CNS_LAYOUT_PROFILE,
             "disclosures": disclosures,
             "map_disclosure": map_disclosure,
+            **rid_footprint_metadata,
         },
         boundaries=deepcopy(assembly.boundaries),
     )
@@ -3427,6 +3526,22 @@ class MapFigureService:
                 "map_disclosure": layout.get("map_disclosure") or "",
                 "map_internal_annotations": False,
                 "disclosures": deepcopy((result.metadata or {}).get("disclosures") or []),
+                **({
+                    "surface_aware_visualization": True,
+                    "affects_planning": False,
+                    "rid_footprint_semantics": (
+                        (result.metadata or {}).get("rid_footprint_semantics")
+                    ),
+                    "rid_extension_polygon_count": (
+                        (result.metadata or {}).get("rid_extension_polygon_count")
+                    ),
+                    "rid_extension_outer_boundary_line_count": (
+                        (result.metadata or {}).get("rid_extension_outer_boundary_line_count")
+                    ),
+                    "rid_extension_fail_closed": (
+                        (result.metadata or {}).get("rid_extension_fail_closed")
+                    ),
+                } if (result.metadata or {}).get("surface_aware_visualization") else {}),
             },
             boundaries={
                 "presentation_only": True,

@@ -180,8 +180,8 @@ LAYER_DISPLAY_NAMES = {
     "cns_rid_proposal": "RID 规划提案（未确认）",
     "cns_nav_proposal": "导航完整性监测点提案（未确认）",
     "cns_coverage_comm": "通信规划服务半径 4 km",
-    "cns_coverage_rid_land": "RID 陆上/沿海规划半径 2 km",
-    "cns_coverage_rid_sea": "RID 海上最大规划半径 5 km",
+    "cns_coverage_rid_land": "RID 陆地/沿海规划范围 2 km",
+    "cns_coverage_rid_sea": "RID 海上延伸规划范围 2–5 km",
     "cns_radar_context": "Radar-I 评估候选站址（未选中）",
     "cns_radar_limitation": "非合作监视能力限制（无可行布设）",
 }

@@ -105,9 +105,8 @@ FIGURE_STYLES = {
         "outline_width": 0.55, "outline_style": "solid", "shape": "circle",
     },
     "cns_coverage_rid_sea": {
-        "kind": "fill", "geometry": "polygon", "z": 7,
-        "fill": "transparent", "outline": "#e8720c",
-        "outline_width": 0.55, "outline_style": "dash", "shape": "circle",
+        "kind": "line", "geometry": "line", "z": 7,
+        "color": "#e8720c", "width": 0.55, "line_style": "dash",
     },
     "cns_radar_context": {
         "kind": "marker", "geometry": "point", "z": 11,
@@ -587,6 +586,7 @@ def line_symbol(style_key):
     if item["kind"] != "line":
         raise ValueError(f"{style_key} 不是线样式")
     layer = api["QgsSimpleLineSymbolLayer"](_color(item["color"]), float(item["width"]))
+    layer.setPenStyle(_stroke_style(item.get("line_style")))
     layer.setPenCapStyle(_cap_style(item.get("capstyle")))
     layer.setPenJoinStyle(_join_style(item.get("joinstyle")))
     symbol = api["QgsLineSymbol"]()
@@ -694,6 +694,7 @@ def _draw_line(painter, item, width, height):
 
     pen = QPen(QColor(str(item["color"])))
     pen.setWidthF(max(1.2, float(item["width"]) * 1.6))
+    pen.setStyle(_stroke_style(item.get("line_style")))
     pen.setCapStyle(_cap_style(item.get("capstyle")))
     painter.setPen(pen)
     painter.drawLine(QPointF(width * 0.08, height * 0.5), QPointF(width * 0.92, height * 0.5))

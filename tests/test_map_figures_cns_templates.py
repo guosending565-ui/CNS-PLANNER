@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -439,7 +440,7 @@ def test_real_existing_facility_is_drawn_and_opt_in_synthetic_is_disclosed(tmp_p
 
 # ---- 4. RID -----------------------------------------------------------------
 
-def test_rid_consumes_only_rid_and_draws_2km_solid_plus_5km_dashed(tmp_path):
+def test_rid_consumes_only_rid_and_fails_closed_to_2km_without_surface_facts(tmp_path):
     service, _, _ = _service(tmp_path)
     spec = service.build_figure(
         template_id="surveillance_layout_v1", route_id="R0005",
@@ -456,15 +457,21 @@ def test_rid_consumes_only_rid_and_draws_2km_solid_plus_5km_dashed(tmp_path):
         "cns_coverage_rid_land": 2000.0, "cns_coverage_rid_sea": 5000.0,
     }
     assert FIGURE_STYLES["cns_coverage_rid_land"]["outline_style"] == "solid"
-    assert FIGURE_STYLES["cns_coverage_rid_sea"]["outline_style"] == "dash"
+    assert FIGURE_STYLES["cns_coverage_rid_sea"]["kind"] == "line"
+    assert FIGURE_STYLES["cns_coverage_rid_sea"]["line_style"] == "dash"
     # RID ≠ Radar：RID 图上没有任何 90° 扇区 / panel / azimuth 表达。
     for layer in spec.layers:
         assert "panel" not in layer.layer_key
         assert "sector" not in layer.layer_key
         assert "azimuth" not in json.dumps(layer.source_detail, ensure_ascii=False).lower()
-    assert "RID 海上最大规划半径 5 km" in [
+    assert "RID 陆地/沿海规划范围 2 km" in [item.display_name for item in spec.legend_items]
+    assert "RID 海上延伸规划范围 2–5 km" not in [
         item.display_name for item in spec.legend_items
     ]
+    assert layers["cns_coverage_rid_sea"].feature_count == 0
+    assert spec.metadata["surface_aware_visualization"] is True
+    assert spec.metadata["affects_planning"] is False
+    assert spec.metadata["rid_extension_fail_closed"] is True
 
 
 # ---- 5. Radar ---------------------------------------------------------------
@@ -741,6 +748,33 @@ def test_five_figures_never_call_session_save_and_keep_the_revision(tmp_path):
         "communication_layout_v1", "surveillance_layout_v1", "surveillance_layout_v1",
         "navigation_layout_v1", "cns_combined_v1",
     ]
+
+
+def test_rid_and_combined_build_leave_p14_to_p17_revision_and_state_sha_unchanged(tmp_path):
+    state = _state(
+        cns_corridor_assessment={"status": "passed", "fingerprint": "p14"},
+        cns_corridor_gap_assessment={"status": "failed", "fingerprint": "p15"},
+    )
+    service, session, _ = _service(tmp_path, state=state)
+    keys = (
+        "cns_corridor_assessment", "cns_corridor_gap_assessment",
+        "cns_corridor_site_plan", "continuous_service_acceptability",
+    )
+    before_values = {key: json.loads(json.dumps(state[key])) for key in keys}
+    before_payload = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    before_sha256 = sha256(before_payload.encode("utf-8")).hexdigest()
+
+    service.build_figure(
+        template_id="surveillance_layout_v1", route_id="R0005",
+        parameter_overrides={"surveillance_service": "rid_cooperative"},
+    )
+    service.build_figure(template_id="cns_combined_v1", route_id="R0005")
+
+    after_payload = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    assert {key: state[key] for key in keys} == before_values
+    assert state["revision"] == 410
+    assert sha256(after_payload.encode("utf-8")).hexdigest() == before_sha256
+    assert session.saved == 0
 
 
 def test_five_figures_land_in_one_route_first_directory(tmp_path):

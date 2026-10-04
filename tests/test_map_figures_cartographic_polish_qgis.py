@@ -113,11 +113,15 @@ def _circle_spec(*, services=("communication",)) -> FigureSpec:
     for key in services:
         radius = RADII_M[key]
         style_key = COVERAGE_STYLE_KEYS[key]
+        ring = _ring(*COLOCATED, radius)
+        geometry_type = GEOMETRY_LINE if key == "rid_sea" else GEOMETRY_POLYGON
+        data = {"lines": [ring], "radius_m": radius} if key == "rid_sea" else {
+            "polygons": [ring], "radius_m": radius,
+        }
         layers.append(LayerSpec(
             style_key, f"覆盖圈 {radius:g} m", style_key,
-            GEOMETRY_POLYGON, "cns_corridor_site_plan", source_status="available",
-            feature_count=1, data={"polygons": [_ring(*COLOCATED, radius)],
-                                   "radius_m": radius},
+            geometry_type, "cns_corridor_site_plan", source_status="available",
+            feature_count=1, data=data,
         ))
     spec.layers = layers
     return spec
