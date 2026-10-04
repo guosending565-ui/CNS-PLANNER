@@ -178,7 +178,10 @@ def test_existing_site_legend_triangle_is_readable_without_changing_map_marker_s
     site_width = site[2] - site[0]
     turn_width = turn[2] - turn[0]
     assert site_width >= turn_width * 0.9
-    assert figure_style_module.FIGURE_STYLES["tower_existing"]["size"] == 2.8
+    # Round30-B1.1：普通既有铁塔**退到背景层**（尺寸缩小、透明度 78%），
+    # 地图上的 marker 尺寸随之变小；图例预览仍保持可读等级。
+    assert figure_style_module.FIGURE_STYLES["tower_existing"]["size"] == 2.3
+    assert figure_style_module.FIGURE_STYLES["tower_existing"]["opacity"] == 0.78
 
 
 def test_chinese_font_is_resolved_and_registered():

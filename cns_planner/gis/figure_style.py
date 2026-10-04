@@ -35,12 +35,14 @@ FIGURE_STYLES = {
         "fill": "#9fd9a3", "outline": "#4c9c58", "outline_width": 0.25, "opacity": 0.38,
     },
     "terrain_obstacle": {
+        # Round30-B1.1：只降低 fill 的视觉重量（opacity / saturation 下调、轮廓略细），
+        # 不改变 threshold、不改变几何、不改变任何业务数据。
         "kind": "fill", "geometry": "polygon", "z": 4,
-        "fill": "#ff9412", "outline": "#b25f00", "outline_width": 0.25, "opacity": 0.85,
+        "fill": "#ffa64d", "outline": "#c4761f", "outline_width": 0.18, "opacity": 0.55,
     },
     "building_obstacle": {
         "kind": "fill", "geometry": "polygon", "z": 5,
-        "fill": "#e02020", "outline": "#8c1010", "outline_width": 0.25, "opacity": 0.9,
+        "fill": "#e85c5c", "outline": "#a83a3a", "outline_width": 0.18, "opacity": 0.55,
     },
     "airport_protection": {
         "kind": "fill", "geometry": "polygon", "z": 6,
@@ -48,9 +50,11 @@ FIGURE_STYLES = {
         "outline_width": 0.5, "outline_style": "dash",
     },
     "tower_existing": {
+        # 普通既有铁塔**退到背景层**：尺寸缩小约 18%、描边略细、整体 ~78% 不透明。
+        # 只改样式，不删数据、不动坐标。
         "kind": "marker", "geometry": "point", "z": 8,
-        "shape": "triangle", "size": 2.8, "fill": "#ffffff",
-        "outline": "#7b2fbe", "outline_width": 0.5, "angle": 0.0,
+        "shape": "triangle", "size": 2.3, "fill": "#ffffff",
+        "outline": "#8a5ec0", "outline_width": 0.4, "angle": 0.0, "opacity": 0.78,
     },
     "tower_obstacle": {
         "kind": "marker", "geometry": "point", "z": 9,
@@ -128,6 +132,7 @@ FIGURE_STYLES = {
     "cns_nav_proposal": {
         # 导航完整性监测点与**起降点星标完全同址**（坐标逐字节一致，绝不偏移）。
         # 因此它用**更大的空心圆环**表达"同心环"，既不会被星标盖住，也不遮住星标本身。
+        # Round30-B1.2：符号本身不动；同址的文字卡不再单独出图（并入起降点主卡第二行）。
         "kind": "marker", "geometry": "point", "z": 24,
         "shape": "circle", "size": 11.6, "fill": "transparent",
         "outline": "#d19a00", "outline_width": 0.75, "outline_style": "dash",
@@ -139,121 +144,243 @@ FIGURE_STYLES = {
     },
 }
 
-#: 标注样式（中文 + 白色 halo）。优先级数值越大越优先显示。
+#: 标注样式（中文 + 背景卡）。优先级数值越大越优先显示。
+#:
+#: Round30-B1.1（Formal Figure Visual Polish）在 B1 基础上再放大一档，并冻结为**正式字号**：
+#:
+#:     起终点（12.5 pt，bold，白底 + 服务色强边框）
+#:       > selected CNS proposal（11.5 pt，bold）
+#:       > 既有 CNS 设施（10 pt，bold）
+#:       > 普通地名 / 转弯点（9 pt）
+#:       > ordinary tower context（不标名）
+#:
+#: ``max_width_mm`` / ``max_lines`` 控制**自动换行**（正式图禁止用省略号）：文字先按
+#: 自然断点折行，只有超过最大行数时才退回截断（``ellipsis``）。
 LABEL_STYLES = {
     "label_endpoint": {
-        "font_size": 8.0, "color": "#12233a", "halo_color": "#ffffff",
-        "halo_size": 1.4, "bold": True, "offset_mm": 2.2,
+        "font_size": 12.5, "color": "#12233a", "halo_color": "#ffffff",
+        "halo_size": 1.6, "bold": True, "offset_mm": 9.0, "card_padding_mm": 1.8,
+        "card_fill": "#ffffff", "card_border": "#12a150", "card_border_width_mm": 0.9,
+        "max_width_mm": 52.0, "max_lines": 3, "leader": True,
+    },
+    "label_endpoint_end": {
+        # 终点：同一套几何，但边框与 leader 用终点红（由渲染器按 kind 选用）。
+        "font_size": 12.5, "color": "#12233a", "halo_color": "#ffffff",
+        "halo_size": 1.6, "bold": True, "offset_mm": 9.0, "card_padding_mm": 1.8,
+        "card_fill": "#ffffff", "card_border": "#d81b1b", "card_border_width_mm": 0.9,
+        "max_width_mm": 52.0, "max_lines": 3, "leader": True,
     },
     "label_turn": {
-        "font_size": 6.5, "color": "#123a6b", "halo_color": "#ffffff",
-        "halo_size": 1.1, "bold": False, "offset_mm": 1.8,
+        "font_size": 9.0, "color": "#123a6b", "halo_color": "#ffffff",
+        "halo_size": 1.2, "bold": False, "offset_mm": 4.2, "card_padding_mm": 1.1,
+        "max_width_mm": 50.0, "max_lines": 2, "leader": False,
     },
     "label_place": {
-        "font_size": 7.0, "color": "#55606b", "halo_color": "#ffffff",
-        "halo_size": 1.0, "bold": False, "offset_mm": 1.4,
+        "font_size": 9.0, "color": "#4a5560", "halo_color": "#ffffff",
+        "halo_size": 1.2, "bold": False, "offset_mm": 3.6, "card_padding_mm": 1.1,
+        "max_width_mm": 50.0, "max_lines": 2, "leader": False,
     },
-    # CNS 服务站点标签：字号略小、颜色取服务主色的深色版本，仍带白色 halo。
+    # CNS 站点标签：浅色背景卡（多业务等分分块），文字深色、加粗。
     "label_cns_facility": {
-        "font_size": 6.6, "color": "#1c2733", "halo_color": "#ffffff",
-        "halo_size": 1.2, "bold": True, "offset_mm": 1.8,
+        "font_size": 10.0, "color": "#16212b", "halo_color": "#ffffff",
+        "halo_size": 1.2, "bold": True, "offset_mm": 4.6, "card_padding_mm": 1.5,
+        "max_width_mm": 54.0, "max_lines": 3, "leader": True,
     },
     "label_cns_proposal": {
-        "font_size": 6.4, "color": "#1c2733", "halo_color": "#ffffff",
-        "halo_size": 1.2, "bold": False, "offset_mm": 1.8,
+        "font_size": 11.5, "color": "#111b24", "halo_color": "#ffffff",
+        "halo_size": 1.2, "bold": True, "offset_mm": 5.4, "card_padding_mm": 1.8,
+        "max_width_mm": 54.0, "max_lines": 3, "leader": True,
     },
 }
 
+#: CNS 标签背景卡的**官方配色**（Round30-B1.1 起为"很浅的底 + 稍清楚的边"）。
+#:
+#: 顺序固定为 communication → RID → radar → navigation，同址多业务按**该顺序**等分
+#: 分块着色（左侧第一块永远是通信绿），因此同一组服务在五张图上永远是同一套分块颜色。
+CNS_LABEL_CARD_COLORS = {
+    "communication": {
+        "fill": "#e8f7ec", "border": "#2f9d5b", "border_width_mm": 0.5,
+        "leader": "#1a9c4a", "service_key": "C:communication",
+    },
+    "rid": {
+        "fill": "#fff3e4", "border": "#d97b1e", "border_width_mm": 0.5,
+        "leader": "#e8720c", "service_key": "S:rid_cooperative",
+    },
+    "radar": {
+        "fill": "#e9f2fd", "border": "#3a7fc4", "border_width_mm": 0.5,
+        "leader": "#1f6fd0", "service_key": "S:radar_noncooperative",
+    },
+    "navigation": {
+        "fill": "#fdf8dd", "border": "#a98a12", "border_width_mm": 0.5,
+        "leader": "#d19a00", "service_key": "N:navigation_integrity_monitoring",
+    },
+}
+
+#: 多业务标签卡的分块顺序（**唯一**顺序来源；分块宽度 = 卡宽 / 服务数）。
+CNS_LABEL_CARD_ORDER = ("communication", "rid", "radar", "navigation")
+
+#: Round30-B1.2：同址「起降点 + 导航监测提案」合并后，主卡**第二行**（Navigation
+#: service tag）的样式。它只描述那一行的文字与浅黄色底纹：
+#:
+#: * 主卡外框仍是起终点色（起点绿 / 终点红），第二行只加一条浅黄底带；
+#: * 因此"起降点"与"导航监测提案（未确认）"各占一行、同一张卡、同一条引线；
+#: * 配色取自 :data:`CNS_LABEL_CARD_COLORS` 的 ``navigation``，与雷达 / 通信 / RID
+#:   的分色方案**同源**，不引入第二套颜色定义。
+CNS_LABEL_SECONDARY_STYLE = {
+    "fill_family": "navigation",
+    "text_color": "#4a3a00",
+    "font_size": 9.5,
+    "bold": True,
+}
+
 #: 版面常量（毫米）。与模板参数互补：这里是"固定版式"，不是业务参数。
-#: A4 竖版 210×297：标题带 → 地图 →（薄审计条）→ 图例框（目标占比见 _layout_plan）。
+#: A4 竖版 210×297：标题带 → 地图 →（可选披露条 / 审计条）→ 图例框 → 页脚。
+#:
+#: Round30-B1.1：整体文字再放大一档（主标题 19 pt / 图例条目 10.5 pt），
+#: 但**地图框尺寸不缩小**（182.0 × 176.2 mm，与 B1 的 176.4 mm 基本一致），
+#: 放大的图例利用 A4 页面底部剩余空间展开。
 LAYOUT = {
     "page_margin_mm": 14.0,
-    # 标题带 = 主标题 + 固定间距 + 副标题 + 固定间距（副标题绝不贴地图上边框）。
-    "title_band_mm": 17.0,
-    "title_gap_mm": 1.4,
+    # 标题带 = 主标题（19 pt）+ 固定间距 + 副标题（10.5 pt）+ 固定间距。
+    "title_band_mm": 25.0,
+    "title_gap_mm": 1.8,
     "title_map_gap_mm": 3.0,
-    "subtitle_band_mm": 4.0,
-    "footer_band_mm": 7.0,
-    # 地图框下沿的三段式薄审计条（坐标系 / revision / 未显示图层）。
-    "footer_strip_mm": 3.4,
-    "footer_map_gap_mm": 1.6,
-    "footer_legend_gap_mm": 2.6,
+    "subtitle_band_mm": 5.2,
+    "footer_band_mm": 4.0,
+    # CNS 五图的**地图框高度**（毫米）：五图严格一致，且不因图例内容变化。
+    # 182 × 176.2 mm；B1 为 176.4 mm，差值 0.2 mm（正文尺寸不变，仅消除版面舍入差）。
+    "cns_fixed_map_height_mm": 176.2,
+    # 地图框下沿之外的两条薄带（都可开关）：
+    #   1) 图面披露短句（Radar 能力限制等，属**业务披露**，正式图也保留）；
+    #   2) 工程审计条（地图 CRS / 经纬网 CRS / revision / 未显示图层，**正式图默认关闭**）。
+    "footer_disclosure_mm": 4.6,
+    "footer_strip_mm": 3.8,
+    # Round30-B1.2：经度标注移到**地图框之外**的下侧，因此"地图框 → 披露条"的间距从
+    # 1.8 mm 放宽到 5.0 mm，保证框外经度标注带**完全不与披露条重叠**。
+    "footer_map_gap_mm": 5.0,
+    "footer_legend_gap_mm": 3.0,
     # 兼容键：地图与图例之间的总间距 = 上面三段之和（_layout_plan 会显式给出三段）。
-    "map_legend_gap_mm": 7.6,
-    "footer_strip_font_size": 5.7,
+    "map_legend_gap_mm": 13.2,
+    "footer_disclosure_font_size": 9.0,
+    "footer_disclosure_color": "#33414f",
+    "footer_strip_font_size": 6.8,
     "footer_strip_color": "#687581",
     "map_frame_color": "#2b3a4a",
     "map_frame_width_mm": 0.4,
     "map_background": "#cfe6f5",
-    "map_title_font_size": 11.0,
+    "map_title_font_size": 19.0,
     "map_title_color": "#12233a",
-    "subtitle_font_size": 7.0,
-    "subtitle_color": "#4a5560",
+    "subtitle_font_size": 10.5,
+    "subtitle_color": "#41505e",
     "legend_box_fill": "#ffffff",
     "legend_box_border": "#2b3a4a",
     "legend_box_width_mm": 0.35,
-    # 图例：标题独占一行（位于框内左上），标题与内容之间不留大块空白。
-    "legend_title_font_size": 8.5,
-    "legend_group_font_size": 7.0,
-    "legend_item_font_size": 6.8,
+    # 图例：标题独占一行、**横跨整个图例框内容宽度并水平居中**（见 renderer）。
+    "legend_title_font_size": 14.0,
+    "legend_group_font_size": 11.0,
+    "legend_item_font_size": 10.5,
     "legend_item_text_color": "#1c2733",
-    "legend_group_text_color": "#38424d",
+    "legend_group_text_color": "#2f3a45",
     # 统一二维网格：符号框固定宽度、文本固定起始 x、行高统一。
-    "legend_symbol_box_mm": 5.0,
+    "legend_symbol_box_mm": 5.8,
     "legend_text_gutter_mm": 1.6,
-    "legend_header_mm": 5.6,
-    "legend_top_padding_mm": 1.6,
-    "legend_row_mm": 4.4,
-    "legend_group_row_mm": 4.2,
+    # 行高 / 组标题行高：与 10.5 / 11 pt 字号配套（约 1.55 倍 / 1.45 倍行距）。
+    "legend_header_mm": 8.0,
+    "legend_top_padding_mm": 1.5,
+    "legend_row_mm": 5.8,
+    "legend_group_row_mm": 5.8,
     # 组标题 → 组内条目：小间距；组与组之间：更大但统一的间距。
-    "legend_group_item_gap_mm": 0.5,
-    "legend_group_gap_mm": 2.2,
+    "legend_group_item_gap_mm": 0.9,
+    "legend_group_gap_mm": 1.8,
     "legend_column_gap_mm": 6.0,
     "legend_side_padding_mm": 4.5,
-    "legend_min_row_mm": 3.9,
-    "legend_min_group_row_mm": 3.9,
+    "legend_min_row_mm": 4.6,
+    "legend_min_group_row_mm": 4.6,
     "legend_default_columns": 2,
-    "max_legend_columns": 3,
-    "grid_interval_deg": 0.1,
-    "grid_font_size": 5.6,
-    "grid_color": "#3b4652",
-    "grid_line_color": "#c3ccd4",
-    "grid_frame_color": "#8593a1",
-    # 比例尺（程序化绘制的黑白分段条）：与左边框 / 下边框保持合理内距，
-    # 数字与单位位于条上方且留有固定间隙，"20 km" 绝不贴条。
-    "scale_bar_margin_mm": 5.4,
-    "scalebar_font_size": 6.0,
-    "scalebar_height_mm": 2.4,
-    "scalebar_segments": 2,
-    "scalebar_target_min_mm": 22.0,
-    "scalebar_target_max_mm": 46.0,
+    # B1.1：字号放大后单条图例文字更宽，列数上限放宽到 4（实际列数仍由均衡算法决定）。
+    "max_legend_columns": 4,
+    "cns_legend_columns": 4,
+    # 经纬网（adaptive interval）：目标每轴 5~7 个主刻度。
+    "grid_interval_deg": 0.05,
+    "grid_target_ticks": 6,
+    "grid_min_ticks": 3,
+    "grid_max_ticks": 9,
+    # 经纬网标注：次要视觉等级（必须低于普通地名等正文标注），B1.1 取目标区间的下沿，
+    # 因为同一轴上的刻度比地名更密，字号一致反而会更抢眼。
+    "grid_font_size": 8.5,
+    "grid_color": "#33414f",
+    "grid_line_color": "#ccd5dd",
+    "grid_line_width_mm": 0.14,
+    "grid_frame_color": "#93a1ae",
+    # 比例尺（程序化绘制的黑白分段条）：0 | 2 | 4 km 三段，刻度与数字放大。
+    #
+    # Round30-B1.2：经度标注移到**地图框之外**的下侧，因此比例尺要在地图**内部**再上移
+    # 一档：``margin`` = 12.0 mm（原 6.4 mm）使比例尺（含数字标签与刻度）与框外经度标注
+    # 完全不重叠，同时仍留在图框内、不压北箭头。
+    "scale_bar_margin_mm": 12.0,
+    "scalebar_font_size": 9.5,
+    "scalebar_height_mm": 2.6,
+    "scalebar_segments": 3,
+    "scalebar_target_min_mm": 20.0,
+    "scalebar_target_max_mm": 56.0,
     "scalebar_border_width_mm": 0.3,
-    "scalebar_label_gap_mm": 0.9,
-    "scalebar_label_height_mm": 3.6,
+    "scalebar_label_gap_mm": 1.1,
+    "scalebar_label_height_mm": 4.2,
+    "scalebar_tick_height_mm": 0.9,
     "scalebar_fill_light": "#ffffff",
     "scalebar_fill_dark": "#111111",
     "scalebar_line_color": "#111111",
-    "north_arrow_size_mm": 10.0,
+    # 北箭头：比 B1 放大 20%（10 → 12 mm），但仍在图框内、不压地图内容。
+    "north_arrow_size_mm": 12.0,
     "north_arrow_margin_mm": 4.0,
     "map_credit_font_size": 4.6,
-    # 标注：起终点统一留出"星标半径 + 间距"，长中文名有足够横向空间。
-    "label_box_width_mm": 44.0,
-    "label_box_height_mm": 5.0,
-    "label_endpoint_offset_mm": 6.4,
-    "label_turn_offset_mm": 3.0,
-    # 标注避让：已放置标注之间保留的最小间隙（毫米）。优先级高的标注先占位，
-    # 后来的重叠候选被抑制（起终点永不抑制）。
-    "label_collision_gap_mm": 0.8,
+    # ---- 标签卡 --------------------------------------------------------------
+    # 卡片尺寸按"折行后的文字宽度 + 字号 + padding"计算（不再用固定框硬顶）。
+    "label_char_width_ratio": 1.0,
+    "label_ascii_width_ratio": 0.54,
+    "label_card_text_padding_mm": 1.4,
+    "label_card_border_width_mm": 0.5,
+    "label_point_clearance_mm": 1.8,
+    # 标注避让：已放置标签卡之间保留的最小净空（毫米）。
+    "label_collision_gap_mm": 1.0,
+    # 标签卡避让矩形的额外安全余量（吸收"估算文字宽度 vs 实际渲染宽度"的差异）。
+    "label_card_safety_mm": 0.6,
+    # 被别的卡片挡住时，允许沿垂直方向按该步长试探避让的档数。
+    "label_reposition_step_mm": 3.0,
+    "label_reposition_limit": 12,
+    # ---- leader line ---------------------------------------------------------
+    # Round30-B1.2：引线只做"归属提示"，不再做"穿越大半张图的连线"。
+    #
+    # * 线宽 1.1 → 0.45 mm（约 0.4~0.5 mm 目标区间）；
+    # * **硬上限** :data:`LAYOUT['leader_line_max_length_mm']` = 15 mm：
+    #   超过它就不再拉长引线，而是**为标签换一个靠近锚点的位置**；
+    #   换不到位置时该卡按既有优先级规则被抑制（宁可少一张卡，也不画超大 L 形折线）；
+    # * 走线优先级：**短直线 > 短折线**，折线只在直线被标注卡挡住时才使用。
+    "leader_line_threshold_mm": 4.0,
+    "leader_line_width_mm": 0.45,
+    "leader_line_endpoint_gap_mm": 1.4,
+    "leader_line_elbow_mm": 2.6,
+    "leader_line_min_length_mm": 4.0,
+    #: 引线**建议最大长度**（毫米）：超限时重新选标签位置，而不是继续拉长引线。
+    "leader_line_max_length_mm": 15.0,
+    #: 引线颜色的视觉权重（alpha）：跟业务色不变，只降低不透明度。
+    "leader_line_alpha": 0.82,
+    # 引线走线避让已放置标签卡时，障碍矩形四周额外留出的净空。
+    "leader_line_obstacle_margin_mm": 1.0,
+    "leader_line_start_color": "#12a150",
+    "leader_line_end_color": "#d81b1b",
+    # 顺移后 card 与 anchor 距离超过该值时发起"锚点净空搜索"（避免 leader 过长）。
+    # B1.2：门槛收到引线上限附近，使"搜索"成为常规路径而不是兜底路径。
+    "label_anchor_search_threshold_mm": 12.0,
     # ---- CNS 五图统一版式 ------------------------------------------------------
-    # 图例行预算：按**最大**模板的两列最高列估算（约 4 个组头 + 10 个条目）。
-    # 它只用于决定地图框高度，使五张图的地图框尺寸完全一致，从而 extent / 比例尺 /
-    # 经纬网逐图可比（产品明确要求"五图统一"）。图例框本身仍**贴合各自内容**，
-    # 因此不会出现"框很高、内容只占左上角"。
-    "cns_legend_budget_rows": 10,
-    "cns_legend_budget_groups": 4,
-    # 图面说明框（CNS 能力限制 / 服务半径声明）：多行文本 + 细边框。
-    # 行高按 QgsLayoutItemLabel 的**实际**渲染行距取值（实测约 4.4~4.6 mm @ 6.1 pt）；
-    # 偏小会让文字溢出背景框，偏大只是多留一点白，因此这里取偏保守的大值。
+    # 图例预算：按综合图在三列下的真实需求取值（B1.1 实测 62.2 mm）+ 少量余量。
+    "cns_legend_budget_height_mm": 64.0,
+    "cns_min_map_height_mm": 140.0,
+    # 工程审计条（地图 CRS / 经纬网 CRS / revision / 未显示图层）的默认开关：
+    # **正式图默认关闭**，review 模式可由模板参数打开。
+    "audit_footer_default": False,
+    # 图面说明框（通用 AnnotationSpec，供 route_overview / route_detail 等模板使用）。
+    # CNS 五图不消费地图内部大说明框，但这项能力本身保留。
     "annotation_font_size": 6.1,
     "annotation_title_font_size": 6.9,
     "annotation_line_mm": 4.6,
@@ -446,6 +573,9 @@ def marker_symbol(style_key):
     layer.setStrokeStyle(_stroke_style(item.get("outline_style")))
     symbol = api["QgsMarkerSymbol"]()
     symbol.changeSymbolLayer(0, layer)
+    if item.get("opacity") is not None:
+        # 普通既有铁塔"退到背景层"靠的就是这里：只降透明度，不删数据、不动坐标。
+        symbol.setOpacity(float(item["opacity"]))
     return symbol
 
 
@@ -514,14 +644,17 @@ def symbol_preview_image(style_key, width_mm=6.0, height_mm=6.0):
     height = max(8, int(round(height_mm * scale)))
     item = style(style_key)
     # 地图 marker 保持原尺寸；仅把图例里的紫色空心三角提升到与星标/转弯点相近的
-    # 阅读等级。这里复制后的预览样式不会回写 FIGURE_STYLES。
-    if style_key == "tower_existing":
+    # 阅读等级（普通铁塔已缩小并降低不透明度，图例里若照搬会看不清）。
+    if style_key in ("tower_existing", "tower_obstacle"):
         item["size"] = 4.4
+        item["opacity"] = 1.0
     image = QImage(width, height, QImage.Format_ARGB32)
     image.fill(0)
     painter = QPainter(image)
     try:
         painter.setRenderHint(QPainter.Antialiasing, True)
+        if item.get("opacity") is not None:
+            painter.setOpacity(float(item["opacity"]))
         if item["kind"] == "fill":
             _draw_fill(painter, item, width, height)
         elif item["kind"] == "line":
@@ -678,7 +811,9 @@ def _join_style(value):
 
 
 __all__ = [
-    "CNS_LEGEND_GROUP_COLUMNS", "FIGURE_STYLES", "FONT_CANDIDATES", "FONT_FILE_CANDIDATES",
+    "CNS_LABEL_CARD_COLORS", "CNS_LABEL_CARD_ORDER", "CNS_LABEL_SECONDARY_STYLE",
+    "CNS_LEGEND_GROUP_COLUMNS",
+    "FIGURE_STYLES", "FONT_CANDIDATES", "FONT_FILE_CANDIDATES",
     "LABEL_STYLES", "LAYOUT", "LEGEND_GROUP_COLUMNS", "LEGEND_GROUP_OF", "LEGEND_GROUPS",
     "fill_symbol", "label_style", "legend_order_key", "line_symbol", "marker_shape_enum",
     "marker_symbol", "style", "symbol_for", "symbol_preview_image",

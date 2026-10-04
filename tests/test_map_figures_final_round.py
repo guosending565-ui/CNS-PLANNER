@@ -620,14 +620,20 @@ def _figure_for_layout(layout):
 
 
 def test_scale_bar_geometry_is_exact_and_stays_inside_the_frame():
-    """黑白分段比例尺：段宽由真实渲染范围换算，且整体（含标签）都在地图框内。"""
+    """黑白分段比例尺：段宽由真实渲染范围换算，且整体（含标签）都在地图框内。
+
+    Round30-B1 起地图画布是**米制**（``layout['map_crs'] = EPSG:32651``），
+    因此这里传入的渲染范围也必须是米（QGIS 交回来的就是这个 CRS 下的矩形）。
+    """
 
     from cns_planner.gis.figure_style import LAYOUT
-    from cns_planner.gis.qgis_figure_renderer import scale_bar_geometry
+    from cns_planner.gis.qgis_figure_renderer import DEFAULT_MAP_CRS, scale_bar_geometry
 
     layout = _layout_plan({})
     spec = _figure_for_layout(layout)
-    geometry = scale_bar_geometry(spec, _Box(122.43 - 122.0, 30.16 - 30.0), layout)
+    assert layout["map_crs"] == DEFAULT_MAP_CRS
+    # 与 FigureSpec.extent（122.00~122.43°E ≈ 42 km）等价的米制渲染范围。
+    geometry = scale_bar_geometry(spec, _Box(42_000.0, 17_800.0), layout)
 
     # 条宽与"真实公里数"严格一致：width_mm / map_width_mm == total_km / rendered_width_km
     assert geometry["width_mm"] / layout["map_width_mm"] == pytest.approx(
@@ -639,6 +645,12 @@ def test_scale_bar_geometry_is_exact_and_stays_inside_the_frame():
     assert geometry["total_km"] > 0 and geometry["rendered_width_km"] > 0
     assert (LAYOUT["scalebar_target_min_mm"] <= geometry["width_mm"]
             <= LAYOUT["scalebar_target_max_mm"])
+    # Round30-B1.1：分段比例尺每段一个刻度 + 数字（0 | 2 | 4 km），而不是只给两端。
+    assert int(geometry["segments"]) >= 3
+    total_km = float(geometry["total_km"])
+    segment_km = float(geometry["segment_km"])
+    assert segment_km > 0
+    assert total_km == pytest.approx(segment_km * int(geometry["segments"]), rel=1e-9)
 
     # 与左边框 / 下边框保留内距，且不越出地图框。
     map_left, map_top = layout["map_left_mm"], layout["map_top_mm"]
@@ -667,10 +679,14 @@ def test_title_band_keeps_two_fixed_gaps():
 
 
 def test_audit_strip_sits_between_map_and_legend_without_overlap():
-    """审计条严格位于地图框之下、图例框之上，三段互不重叠且都不压图例标题。"""
+    """审计条严格位于地图框之下、图例框之上，三段互不重叠且都不压图例标题。
+
+    Round30-B1.1 起审计条由 ``audit_footer`` 参数控制（**正式图默认关闭**），
+    因此这里显式打开它来验证几何关系仍然成立。
+    """
 
     for legend_items in ((), _legend_entries_fixture()):
-        layout = _layout_plan({}, legend_items)
+        layout = _layout_plan({"audit_footer": True}, legend_items)
         map_bottom = layout["map_top_mm"] + layout["map_height_mm"]
         strip_top = layout["footer_strip_top_mm"]
         strip_bottom = strip_top + layout["footer_strip_mm"]
@@ -679,6 +695,10 @@ def test_audit_strip_sits_between_map_and_legend_without_overlap():
         # 图例标题独占一行且位于框内（框顶 + 少量内边距）。
         assert layout["legend_top_mm"] < strip_bottom + layout["map_legend_gap_mm"]
         assert layout["legend_height_mm"] > 0
+        # 正式图默认关闭审计条：同一套图例条目的正式版面里它是 None。
+        formal = _layout_plan({}, legend_items)
+        assert formal["audit_footer"] is False
+        assert formal["footer_strip_top_mm"] is None
 
 
 def _legend_entries_fixture():

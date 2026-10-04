@@ -98,7 +98,7 @@ class LayerSpec:
 
 @dataclass
 class LabelSpec:
-    """一个地图标注（中文 + 白色 halo 由渲染器统一施加）。"""
+    """一个地图标注（正式**标签背景卡** + 白色 halo 由渲染器统一施加）。"""
 
     kind: str
     text: str
@@ -107,6 +107,22 @@ class LabelSpec:
     geometry: list = field(default_factory=list)
     priority: int = 50
     style_key: str = "label_place"
+    #: 该标签代表的**服务家族**列表（例如同一站址的 ``["communication", "rid"]``）。
+    #: 渲染器据此把标签的背景卡按服务数**等分分块着色**（顺序见
+    #: :data:`~cns_planner.gis.figure_style.CNS_LABEL_CARD_ORDER`）。
+    #: 空列表 = 不画背景卡（普通地名 / 转弯点）；起终点为白底 + 起终点色强边框。
+    #: Round30-B1.2：与导航监测提案**同址**的起降点在保留起终点外框的同时带上
+    #: ``["navigation"]``，用于给第二行画浅黄 service tag。
+    services: list = field(default_factory=list)
+    #: Round30-B1.2：合并进主卡的**第二行**文字（当前只用于"起降点 + 导航监测提案"）。
+    #:
+    #: 为什么要有这个字段：N005 / N006 的导航完整性监测点与起降点**完全同址**。
+    #: 同址画两张独立文字卡会各带一条引线，既重复又必然拉出长折线。合并后主卡
+    #: 第一行是起降点名、第二行是"导航监测提案（未确认）"，只用一条引线。
+    #: 它是**纯显示字段**：Navigation 的图层 / 符号 / 图例 / metadata 一律不受影响。
+    secondary_text: str = ""
+    #: 第二行所属的服务家族（决定第二行底纹颜色，见 ``CNS_LABEL_CARD_COLORS``）。
+    secondary_service: str = ""
 
     def to_dict(self):
         return {
@@ -117,6 +133,9 @@ class LabelSpec:
             "geometry": deepcopy(self.geometry),
             "priority": int(self.priority),
             "style_key": str(self.style_key),
+            "services": [str(value) for value in (self.services or [])],
+            "secondary_text": str(self.secondary_text or ""),
+            "secondary_service": str(self.secondary_service or ""),
         }
 
     @classmethod
@@ -131,6 +150,9 @@ class LabelSpec:
             geometry=deepcopy(payload.get("geometry") or []),
             priority=int(payload.get("priority") or 50),
             style_key=str(payload.get("style_key") or "label_place"),
+            services=[str(value) for value in (payload.get("services") or [])],
+            secondary_text=str(payload.get("secondary_text") or ""),
+            secondary_service=str(payload.get("secondary_service") or ""),
         )
 
 
@@ -250,6 +272,9 @@ class FigureSpec:
     route_source: str
     extent: ExtentSpec
     extent_mode: str
+    #: 副标题（可选）：由 canonical facts 组成（例如 ``R0005 · ALT-100 · 固定巡航高度 100 m``）。
+    #: 为空时渲染器回退到"起点 → 终点"的简短航路名。
+    subtitle: str = ""
     layers: list = field(default_factory=list)
     labels: list = field(default_factory=list)
     annotations: list = field(default_factory=list)
@@ -270,6 +295,9 @@ class FigureSpec:
     extent_evidence: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     boundaries: dict = field(default_factory=dict)
+    #: 图件级**可审计元数据**：版式档位、图面披露全文（Round30-B1 起 CNS 五图的
+    #: 说明不再画进地图主体，但披露内容逐字保留在这里）、允许放在地图框之外的短披露等。
+    metadata: dict = field(default_factory=dict)
 
     # ---- 序列化 ---------------------------------------------------------------
 
@@ -281,6 +309,7 @@ class FigureSpec:
             "template_id": str(self.template_id),
             "template_version": int(self.template_version),
             "title": str(self.title),
+            "subtitle": str(self.subtitle),
             "route_id": str(self.route_id),
             "route_source": str(self.route_source),
             "route_crs": str(self.route_crs),
@@ -303,6 +332,7 @@ class FigureSpec:
             "parameters": deepcopy(self.parameters),
             "warnings": deepcopy(self.warnings),
             "boundaries": deepcopy(self.boundaries),
+            "metadata": deepcopy(self.metadata),
             "generated_from_revision": int(self.generated_from_revision),
         }
 
@@ -314,6 +344,7 @@ class FigureSpec:
             template_id=str(payload.get("template_id") or ""),
             template_version=int(payload.get("template_version") or 0),
             title=str(payload.get("title") or ""),
+            subtitle=str(payload.get("subtitle") or ""),
             route_id=str(payload.get("route_id") or ""),
             route_source=str(payload.get("route_source") or ""),
             route_crs=str(payload.get("route_crs") or DEFAULT_CRS),
@@ -338,6 +369,7 @@ class FigureSpec:
             parameters=deepcopy(payload.get("parameters") or {}),
             warnings=deepcopy(payload.get("warnings") or []),
             boundaries=deepcopy(payload.get("boundaries") or {}),
+            metadata=deepcopy(payload.get("metadata") or {}),
             generated_from_revision=int(payload.get("generated_from_revision") or 0),
         )
 
@@ -381,6 +413,8 @@ class FigureSpec:
             "turn_point_count": len(self.turn_points),
             "label_count": len(self.labels),
             "annotation_count": len(self.annotations),
+            "disclosure_count": len((self.metadata or {}).get("disclosures") or []),
+            "layout_profile": (self.metadata or {}).get("layout_profile"),
             "generated_from_revision": int(self.generated_from_revision),
             "spec_fingerprint": self.fingerprint(),
         }

@@ -60,6 +60,9 @@ def _install_pytest_stub():
 _install_pytest_stub()
 
 #: 只跑这几条：其余制图测试在普通解释器里已经覆盖。
+#:
+#: Round30-B1 的正圆 / CRS / 标签背景卡量化验收**不在这里**，而是由
+#: :mod:`tests.run_qgis_cartographic_polish_tests` 独立运行（它需要参数化用例）。
 TARGETS = (
     "test_map_figures_review_fixes:test_mapdata_startup_survives_missing_cartographic_land",
     "test_map_figures_review_fixes:test_land_polygon_holes_reach_the_renderer_geometry",

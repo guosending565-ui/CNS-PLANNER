@@ -1,4 +1,4 @@
-"""专题成果图模板目录（Presentation / Cartographic Export）。
+﻿"""专题成果图模板目录（Presentation / Cartographic Export）。
 
 本模块只描述**制图模板**，不含任何业务算法：
 
@@ -42,8 +42,21 @@ PLANNED = "planned"
 
 #: 五张 CNS 专题图（不含 route_overview / route_detail）的统一 extent 口径标识。
 CNS_EXTENT_POLICY_ID = "cns_route_context_v1"
-#: CNS 五图共用同一个版式档位：地图框尺寸固定 ⇒ extent / 比例尺 / 可比性都固定。
-CNS_LAYOUT_PROFILE = "cns_five_figure_v1"
+#: 当前 CNS 五图共用的版式档位：地图框尺寸固定 ⇒ extent / 比例尺 / 可比性都固定。
+#:
+#: 版本沿革（Round30-B1 起）：
+#:
+#: * ``cns_five_figure_v1`` = Round30-A 首版（标题 11 pt / 图例条目 6.8 pt / 2 列图例 /
+#:   地图框 182 × 193 mm / 地图内部带大说明框）；
+#: * ``cns_five_figure_v2`` = Round30-B1 Cartographic Polish：整体文字放大并建立视觉等级、
+#:   删除地图内部说明框、标签改为正式背景卡、图例标题真正居中、图例 3 列重排、
+#:   map canvas 改 EPSG:32651（覆盖圈在纸面上是真正的正圆）。地图框统一为 182 × 171 mm。
+#:
+#: 模板参数与 FigureSpec.metadata 都会带上这个版本号，因此 Round30-A 与 Round30-B 的
+#: 图件在 metadata 中**可区分**，不会出现"两张图看起来不一样但元数据完全一致"。
+CNS_LAYOUT_PROFILE = "cns_five_figure_v2"
+#: 历史档位标识，只用于识别 Round30-A 已导出的旧图件（不参与新图生成）。
+CNS_LAYOUT_PROFILE_V1 = "cns_five_figure_v1"
 #: 监视布设图的 variant 参数名与两个合法取值。
 SURVEILLANCE_SERVICE_PARAMETER = "surveillance_service"
 SURVEILLANCE_SERVICE_RID = "rid_cooperative"
@@ -165,7 +178,7 @@ LAYER_DISPLAY_NAMES = {
     "cns_existing": "既有 CNS 设施（已建）",
     "cns_comm_proposal": "通信规划提案（未确认）",
     "cns_rid_proposal": "RID 规划提案（未确认）",
-    "cns_nav_proposal": "导航完整性监测点规划提案（未确认）",
+    "cns_nav_proposal": "导航完整性监测点提案（未确认）",
     "cns_coverage_comm": "通信规划服务半径 4 km",
     "cns_coverage_rid_land": "RID 陆上/沿海规划半径 2 km",
     "cns_coverage_rid_sea": "RID 海上最大规划半径 5 km",
@@ -235,16 +248,23 @@ ROUTE_OVERVIEW_PARAMETERS = {
 
 #: 五张 CNS 专题图共用的模板参数。与 route_overview 的差别只有：
 #:
-#: * ``legend_columns`` 仍为 2，但图例分组更多（分组顺序由 :data:`CNS_LEGEND_ORDER` 决定）；
-#: * ``layout_profile`` 固定为 :data:`CNS_LAYOUT_PROFILE`：地图框尺寸在五图之间**完全一致**，
-#:   因此 extent、比例尺、经纬网都逐图可比 —— 这是产品明确要求的"五图统一"；
+#: * ``legend_columns`` 取 :data:`~cns_planner.gis.figure_style.LAYOUT` 的
+#:   ``cns_legend_columns``（3 列）：CNS 分组多（最多 8 组），2 列会把右列压到近百毫米，
+#:   放大字号后地图被挤到 140 mm 以下；3 列仍保持"整组不拆、保序"；
+#: * ``layout_profile`` 固定为 :data:`CNS_LAYOUT_PROFILE`（``cns_five_figure_v2``）：
+#:   地图框尺寸在五图之间**完全一致**，因此 extent、比例尺、经纬网都逐图可比 ——
+#:   这是产品明确要求的"五图统一"；
 #: * ``extent_policy_id`` 记录统一 extent 口径，便于审计与测试断言；
 #: * ``extent_aspect_locked`` 让 extent 的计算长宽比取固定档位值，不随图例条目数浮动。
 CNS_SHARED_PARAMETERS = {
     **ROUTE_OVERVIEW_PARAMETERS,
     "extent_policy_id": CNS_EXTENT_POLICY_ID,
     "layout_profile": CNS_LAYOUT_PROFILE,
+    "legend_columns": 4,
     "extent_aspect_locked": True,
+    # 工程审计条（地图 CRS / 经纬网 CRS / revision / 未显示图层）**默认关闭**：
+    # 正式图只保留业务披露，审计信息仍完整保存在 FigureSpec.metadata 与导出报告里。
+    "audit_footer": False,
     # 覆盖圈全部位于航路 10 km 邻域内（通信 4 km / RID 5 km，站址距航路 ≤ 2 km），
     # 因此 10 km 缓冲足够容纳覆盖圈；该参数只是把这条判断写进 FigureSpec 供审计。
     "coverage_display_margin_km": 7.0,
@@ -269,6 +289,8 @@ PARAMETER_CONSTRAINTS = {
     "coverage_display_margin_km": ("number", 0.0, 50.0),
     "show_synthetic_existing_facilities": ("boolean", None, None),
     "show_navigation_local_monitoring_radius": ("boolean", None, None),
+    # 工程审计条开关：正式图默认 false（review 模式可显式打开）。
+    "audit_footer": ("boolean", None, None),
     "terrain_threshold_m": ("number", 0.0, 10000.0),
     "building_threshold_m": ("number", 0.0, 10000.0),
     "terrain_threshold_basis": ("text", 1, 200),
@@ -277,7 +299,7 @@ PARAMETER_CONSTRAINTS = {
     "document_height_mm": ("number", 80.0, 1000.0),
     "margin_mm": ("number", 0.0, 80.0),
     "map_fraction": ("number", 0.30, 0.95),
-    "legend_columns": ("integer", 1, 3),
+    "legend_columns": ("integer", 1, 4),
     "segments_per_degree": ("integer", 1, 60),
     "show_landmark_labels": ("boolean", None, None),
     "show_place_labels": ("boolean", None, None),
@@ -574,7 +596,8 @@ def required_parameters(template_id):
 
 __all__ = [
     "AVAILABLE", "CNS_COMBINED_V1", "CNS_COMBINED_V1_TEMPLATE", "CNS_COVERAGE_POLICY",
-    "CNS_EXTENT_POLICY_ID", "CNS_LAYOUT_PROFILE", "CNS_LEGEND_ORDER", "CNS_SERVICE_COLORS",
+    "CNS_EXTENT_POLICY_ID", "CNS_LAYOUT_PROFILE", "CNS_LAYOUT_PROFILE_V1", "CNS_LEGEND_ORDER",
+    "CNS_SERVICE_COLORS",
     "CNS_SHARED_PARAMETERS", "COMMERCIAL_TEMPLATES", "COMMUNICATION_LAYOUT_V1",
     "COMMUNICATION_LAYOUT_V1_TEMPLATE", "LAYER_DISPLAY_NAMES", "LAYER_SOURCE_ROLES",
     "MAX_PARAMETER_PIXELS", "MapFigureParameterInvalid", "NAVIGATION_LAYOUT_V1",

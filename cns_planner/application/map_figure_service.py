@@ -35,7 +35,9 @@ from ..gis.figure_spec import (
     SOURCE_AVAILABLE, SOURCE_UNKNOWN, SOURCE_UNAVAILABLE, AnnotationSpec, ExtentSpec,
     FigureSpec, LabelSpec, LayerSpec, LegendItem,
 )
-from ..gis.figure_style import LEGEND_GROUP_OF, legend_order_key
+from ..gis.figure_style import (
+    CNS_LABEL_CARD_ORDER, LABEL_STYLES, LEGEND_GROUP_OF, legend_order_key,
+)
 from ..gis.source_inspection import inspect_cartographic_land
 from ..reporting.map_templates import (
     CNS_COMBINED_V1, CNS_COVERAGE_POLICY, CNS_EXTENT_POLICY_ID, CNS_LAYOUT_PROFILE,
@@ -46,7 +48,7 @@ from ..reporting.map_templates import (
     required_parameters as template_required, template as template_definition,
 )
 from .cns_facility_assembler import (
-    IDENTITY_EXISTING, IDENTITY_PROPOSAL, SERVICE_COMMUNICATION,
+    IDENTITY_EXISTING, IDENTITY_PROPOSAL, RADAR_LAYOUT_KEY, SERVICE_COMMUNICATION,
     SERVICE_LABEL_SUFFIX, SERVICE_NAVIGATION_INTEGRITY, SERVICE_RADAR, SERVICE_RID,
     assemble as assemble_cns_facilities, coverage_circle_ring, coverage_radius_for,
     rid_radius_pair,
@@ -56,8 +58,12 @@ from .cns_facility_assembler import (
 OPERATIONAL_ROUTE_SOURCE = "operational_routes"
 #: 制图模块内部使用的米制 CRS（与项目其它真实几何一致，可被模板参数覆盖）。
 DEFAULT_METRIC_CRS = "EPSG:32651"
-#: 起点 / 终点名称的最大长度（避免版面被超长名称撑开）。
+#: 起点 / 终点名称的最大长度（放长以容纳完整站名；正式图由标签卡自动换行）。
 MAX_LABEL_CHARS = 14
+#: 起终点名称的硬上限：比普通标注宽松得多，避免"正式站名被截断成省略号"。
+MAX_ENDPOINT_LABEL_CHARS = 48
+#: 普通地名的硬上限：正式图也由标签卡换行，这里只防极端超长。
+MAX_PLACE_LABEL_CHARS = 24
 #: 受控产物目录（相对 active project 目录，与既有 reports/ 同级）。
 MAP_FIGURE_DIRECTORY = "artifacts/map_figures"
 #: **route-first** 归档子目录：``artifacts/map_figures/routes/<route>/<template>/<figure>/``。
@@ -195,6 +201,7 @@ class MaterializationResult:
     omitted_layers: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     annotations: list = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
     boundaries: dict = field(default_factory=dict)
 
 
@@ -1823,12 +1830,18 @@ def _route_layers(ctx):
     return layers, geometry, turns
 
 
-def _node_name(ctx, node_id):
+def _node_name(ctx, node_id, limit=MAX_LABEL_CHARS):
+    """节点名（只读 canonical ``nodes``）；``limit`` 控制是否截断。
+
+    Round30-B1.1：起终点标签改用更宽的上限（:data:`MAX_ENDPOINT_LABEL_CHARS`），
+    使正式站名能完整交给标签卡**自动换行**，而不是在图面上留下省略号。
+    """
+
     if not node_id:
         return ""
     for node in ctx.state.get("nodes") or []:
         if isinstance(node, dict) and str(node.get("node_id")) == str(node_id):
-            return _short(node.get("name"))
+            return _short(node.get("name"), limit)
     return ""
 
 
@@ -1844,17 +1857,23 @@ def _endpoint_label_name(ctx, route, key, node_field):
     1. ``{"name": ...}`` → 用其中的名称；
     2. 字符串 → 直接当名称；
     3. 坐标数组 / 其它 → 退回节点名（``start_node_id`` / ``end_node_id``）。
+
+    Round30-B1.1：起终点名称**不再截断**（放长到 :data:`MAX_ENDPOINT_LABEL_CHARS`），
+    正式图由标签卡**自动换行**展示完整名称；省略号只在极端超长时才会出现。
     """
 
     value = route.get(key)
     name = ""
     if isinstance(value, dict):
-        name = _short(value.get("name"))
+        name = _short(value.get("name"), MAX_ENDPOINT_LABEL_CHARS)
     elif isinstance(value, str):
-        name = _short(value)
+        name = _short(value, MAX_ENDPOINT_LABEL_CHARS)
     if name:
         return name
-    return _short(_node_name(ctx, route.get(node_field)))
+    return _short(
+        _node_name(ctx, route.get(node_field), MAX_ENDPOINT_LABEL_CHARS),
+        MAX_ENDPOINT_LABEL_CHARS,
+    )
 
 
 def _labels(ctx, geometry, turns, layers):
@@ -1890,7 +1909,7 @@ def _labels(ctx, geometry, turns, layers):
                 if not coordinate:
                     continue
                 labels.append(LabelSpec(
-                    kind="place", text=_short(name, 10),
+                    kind="place", text=_short(name, MAX_PLACE_LABEL_CHARS),
                     longitude=coordinate[0], latitude=coordinate[1],
                     priority=30, style_key="label_place",
                 ))
@@ -1935,7 +1954,7 @@ def _cns_services_for_template(template_id, parameters):
 _PROPOSAL_LAYER_OF_SERVICE = {
     SERVICE_COMMUNICATION: ("cns_comm_proposal", "通信规划提案（未确认）"),
     SERVICE_RID: ("cns_rid_proposal", "RID 规划提案（未确认）"),
-    SERVICE_NAVIGATION_INTEGRITY: ("cns_nav_proposal", "导航完整性监测点规划提案（未确认）"),
+    SERVICE_NAVIGATION_INTEGRITY: ("cns_nav_proposal", "导航完整性监测点提案（未确认）"),
 }
 
 #: 图例标签里追加的服务后缀（只有真实拥有对应 action 的站才追加）。
@@ -1943,6 +1962,37 @@ _SERVICE_TAG = {
     SERVICE_COMMUNICATION: "通信",
     SERVICE_RID: "RID",
     SERVICE_NAVIGATION_INTEGRITY: "导航",
+}
+
+#: 服务键 → 服务家族（背景卡分块配色按家族取色）。
+_SERVICE_FAMILY = {
+    SERVICE_COMMUNICATION: "communication",
+    SERVICE_RID: "rid",
+    SERVICE_RADAR: "radar",
+    SERVICE_NAVIGATION_INTEGRITY: "navigation",
+}
+
+#: 服务家族 → 站名后缀（与 :data:`_SERVICE_TAG` 同源，避免两处漂移）。
+_FAMILY_TAG = {
+    "communication": _SERVICE_TAG[SERVICE_COMMUNICATION],
+    "rid": _SERVICE_TAG[SERVICE_RID],
+    "radar": "雷达",
+    "navigation": _SERVICE_TAG[SERVICE_NAVIGATION_INTEGRITY],
+}
+
+#: Round30-B1.2：允许被**并入起终点主卡**的服务家族。
+#:
+#: 当前唯一成员是 ``navigation``：N005 / N006 的导航完整性监测点与起降点完全同址，
+#: 单独出卡只会产生"两个文字卡 + 两条引线"的重复表达。通信 / RID 同址仍按既有
+#: 分色分块方案处理（它们的服务语义与"起降点"不是同一个对象）。
+ENDPOINT_MERGE_SERVICES = ("navigation",)
+
+#: 同址判定容差（度）：约 0.1 mm 量级，只吸收浮点表示差异，不做任何近似匹配。
+ENDPOINT_MERGE_TOLERANCE_DEG = 1e-9
+
+#: 合并进起降点主卡第二行时的显示文本（只影响**文字**，不改任何业务语义）。
+_ENDPOINT_MERGE_LINE = {
+    "navigation": "导航监测提案（未确认）",
 }
 
 
@@ -2148,7 +2198,19 @@ def _radar_context_points(ctx, assembly, radar):
 
 
 def _cns_labels(ctx, assembly, services, geometry, *, parameters):
-    """CNS 站点标签：同址多业务合并成一条标签并追加真实服务后缀。"""
+    """CNS 站点标签：同址多业务合并成一条标签，并带上**服务家族列表**。
+
+    ``LabelSpec.services`` 是"同址多业务分块背景"的数据来源：同一坐标上的
+    Communication + RID 会得到 ``["communication", "rid"]``，渲染器据此把标签卡的
+    背景按服务数**等分**（左半浅绿 / 右半浅橙），顺序固定、可复现。
+
+    服务家族列表由 :func:`cns_planner.application.cns_facility_assembler.assemble`
+    的真实记录导出，**不猜测**任何服务：图上没有的服务永远不会出现在标签里。
+
+    Round30-B1.2：与**起降点完全同址**的导航完整性监测点**不再单独出卡**，而是并入
+    起降点主卡的第二行（``LabelSpec.secondary_text``）。图层 / 符号 / 图例 / metadata
+    全部不变，只是文字表达从"两张卡 + 两条引线"收成"一张卡 + 一条引线"。
+    """
 
     labels = []
     if geometry:
@@ -2166,70 +2228,180 @@ def _cns_labels(ctx, assembly, services, geometry, *, parameters):
         ))
     if not parameters.get("show_cns_site_labels", True):
         return labels
-    grouped = {}
-    for record in assembly.proposals:
-        if services and record.service_key not in services:
-            continue
-        key = (round(record.longitude, 9), round(record.latitude, 9), record.display_name)
-        entry = grouped.setdefault(key, {
-            "longitude": record.longitude, "latitude": record.latitude,
-            "name": record.display_name, "services": set(), "identity": record.identity,
-        })
-        entry["services"].add(record.service_key)
-    for entry in grouped.values():
-        tags = [
-            _SERVICE_TAG.get(service_key, "")
-            for service_key in sorted(entry["services"])
-        ]
-        tags = [tag for tag in tags if tag]
-        text = entry["name"] or "CNS 规划提案"
-        if tags:
-            text = f"{text} /{'/'.join(tags)}"
+    records = _cns_label_records(assembly, services)
+    if geometry:
+        records = _merge_endpoint_colocated_records(labels, records)
+    for record, kind, style_key, priority in records:
         labels.append(LabelSpec(
-            kind="cns_proposal", text=_short(text, 22),
-            longitude=entry["longitude"], latitude=entry["latitude"],
-            priority=80, style_key="label_cns_proposal",
+            kind=kind, text=_short(record["text"], 22),
+            longitude=record["longitude"], latitude=record["latitude"],
+            priority=priority, style_key=style_key, services=list(record["services"]),
+            secondary_text=str(record.get("secondary_text") or ""),
+            secondary_service=str(record.get("secondary_service") or ""),
         ))
     return labels
 
 
-def _cns_annotations(template_id, assembly, services, parameters, radar):
-    """图面说明框：把"这是规划值 / 这是能力限制"写在图上，而不是只藏在元数据里。"""
+def _merge_endpoint_colocated_records(endpoint_labels, records):
+    """把与起降点**完全同址**的导航提案并入起终点卡，并从记录表里移除。
+
+    ``endpoint_labels`` 是刚构造好的起终点 :class:`LabelSpec`（起点的经度/纬度就是
+    航路首点、终点是末点），``records`` 是 :func:`_cns_label_records` 的结果。
+
+    合并规则（确定性、可单测）：
+
+    * 只有**允许合并的服务家族**（:data:`ENDPOINT_MERGE_SERVICES`，当前 = navigation）
+      才参与；通信 / RID 同址仍按既有分色方案独立出卡；
+    * 坐标必须在 :data:`ENDPOINT_MERGE_TOLERANCE_DEG` 内**完全一致**，不做任何近似；
+    * 合并后：起终点卡的 ``services`` 追加该家族（第二行据此取浅黄底纹），
+      ``secondary_text`` 为该家族的服务标签行，被合并的记录从记录表里删除。
+
+    这样**Navigation 提案的业务数据一条都没少**：它只是从一张独立卡片变成了主卡的
+    第二行，图层、符号、图例项与 metadata 全部照旧。
+    """
+
+    matched = {}
+    for label in endpoint_labels:
+        if label.longitude is None or label.latitude is None:
+            continue
+        for index, record in enumerate(records):
+            item = record[0]
+            if index in matched:
+                continue
+            families = [family for family in item["services"]
+                        if family in ENDPOINT_MERGE_SERVICES]
+            if not families:
+                continue
+            if abs(float(item["longitude"]) - float(label.longitude)) \
+                    > ENDPOINT_MERGE_TOLERANCE_DEG:
+                continue
+            if abs(float(item["latitude"]) - float(label.latitude)) \
+                    > ENDPOINT_MERGE_TOLERANCE_DEG:
+                continue
+            family = families[0]
+            line = _ENDPOINT_MERGE_LINE.get(family)
+            if not line:
+                continue
+            label.secondary_service = family
+            label.secondary_text = line
+            if family not in label.services:
+                label.services = _cns_label_service_order([*label.services, family])
+            matched[index] = family
+    if not matched:
+        return records
+    return [
+        record for index, record in enumerate(records) if index not in matched
+    ]
+
+
+def _cns_label_records(assembly, services):
+    """装配结果 → 去重合并后的标签记录（同址同身份同名的多业务合成一条）。
+
+    返回值是 ``(record, kind, style_key, priority)`` 列表，顺序稳定（按坐标、名称排）。
+    提案与既有设施**分别**成组：既有设施是已建基线，不能与规划提案共用一张卡片。
+    """
+
+    grouped = {}
+    for identity, records, kind, style_key, priority in (
+        ("proposal", assembly.proposals, "cns_proposal", "label_cns_proposal", 80),
+        ("existing", assembly.existing, "cns_existing", "label_cns_facility", 90),
+    ):
+        for record in records:
+            if services and record.service_key not in services:
+                continue
+            key = (
+                identity, round(record.longitude, 9), round(record.latitude, 9),
+                record.display_name,
+            )
+            entry = grouped.setdefault(key, {
+                "kind": kind, "style_key": style_key, "priority": priority,
+                "longitude": record.longitude, "latitude": record.latitude,
+                "name": record.display_name, "services": set(),
+            })
+            family = _SERVICE_FAMILY.get(record.service_key) or str(record.family or "")
+            if family:
+                entry["services"].add(family)
+    result = []
+    for key in sorted(grouped):
+        entry = grouped[key]
+        families = _cns_label_service_order(entry["services"])
+        tags = [_FAMILY_TAG.get(family, "") for family in families]
+        # 站名**不在这里截断**：正式图由标签卡自动换行（最多 max_lines 行）展示完整名称，
+        # 省略号只在极端超长时才由渲染器的最后手段产生。
+        text = str(entry["name"] or "CNS 规划提案").strip() or "CNS 规划提案"
+        tags = [tag for tag in tags if tag]
+        if tags:
+            text = f"{text} /{'/'.join(tags)}"
+        result.append((
+            {
+                "text": text, "longitude": entry["longitude"],
+                "latitude": entry["latitude"], "services": families,
+            },
+            entry["kind"], entry["style_key"], entry["priority"],
+        ))
+    return result
+
+
+def _cns_label_service_order(families):
+    """服务家族按 :data:`CNS_LABEL_CARD_ORDER` 的固定顺序输出（分块顺序唯一来源）。"""
+
+    values = {str(value) for value in (families or ())}
+    ordered = [family for family in CNS_LABEL_CARD_ORDER if family in values]
+    ordered.extend(sorted(values - set(ordered)))
+    return ordered
+
+
+def _cns_disclosures(template_id, assembly, services, parameters, radar):
+    """CNS 图面披露文本（**FigureSpec.metadata**，不再画进地图主体）。
+
+    Round30-B1：CNS 五图原先在地图左下角画一块大说明框，它会遮住地图内容。本轮改为
+
+    * ``FigureSpec.metadata["disclosures"]``：完整的分条披露（服务半径语义 / 确认状态 /
+      Radar 能力限制 / 导航交付赤字 / 综合图配色说明）；
+    * ``FigureSpec.metadata["map_disclosure"]``：允许放在**地图框之外**的一句话短披露
+      （Radar 图给"当前既有站址与模型约束下无可行布设"）；
+    * ``FigureSpec.metadata["layout_profile"]``：版式档位（``cns_five_figure_v2``），
+      使 Round30-A 与 Round30-B 的图件在 metadata 中可区分。
+
+    披露内容与以前**逐字一致**：它们只是从图面移到了 metadata，没有删掉任何限制说明。
+    """
 
     confirmation = assembly.evidence.get("confirmation") or {}
     step6 = assembly.evidence.get("step6_gate") or {}
-    rows = []
+    step6_line = (
+        "规划设施来自 P16 proposal_ready；因 P17 连续服务仍为 "
+        f"{step6.get('continuous_service_status') or 'unacceptable'}，"
+        "方案未通过 Step6 正式确认。"
+    )
+    entries = []
+    map_disclosure = ""
     if template_id == COMMUNICATION_LAYOUT_V1:
-        rows.append(AnnotationSpec(
-            annotation_id="communication_radius_disclosure",
-            title="通信规划服务半径",
-            lines=[
+        entries.append({
+            "disclosure_id": "communication_radius_disclosure",
+            "title": "通信规划服务半径",
+            "lines": [
                 "绿色圆圈为 omnidirectional 规划服务半径 4 km（陆 / 海 / 沿海一致）。",
                 "它是 planning service radius，不是实测无线传播等值线。",
                 "设施为 P16 规划提案（未确认），未通过 Step6 正式确认。",
             ],
-            anchor="map_bottom_left",
-            width_mm=96.0,
-        ))
+        })
     elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
             SURVEILLANCE_SERVICE_RID:
-        rows.append(AnnotationSpec(
-            annotation_id="rid_radius_disclosure",
-            title="RID 规划半径",
-            lines=[
+        entries.append({
+            "disclosure_id": "rid_radius_disclosure",
+            "title": "RID 规划半径",
+            "lines": [
                 "实线圆 = RID 陆上 / 沿海规划半径 2 km；虚线圆 = RID 海上最大规划半径 5 km。",
                 "RID 是合作监视（omnidirectional），不是 Radar，图上没有任何扇区 / panel。",
                 "设施为 P16 规划提案（未确认）。",
             ],
-            anchor="map_bottom_left",
-            width_mm=96.0,
-        ))
+        })
     elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
             SURVEILLANCE_SERVICE_RADAR:
-        rows.append(AnnotationSpec(
-            annotation_id="radar_capability_limitation",
-            title="Radar-I 能力限制",
-            lines=[
+        entries.append({
+            "disclosure_id": "radar_capability_limitation",
+            "title": "Radar-I 能力限制",
+            "lines": [
                 "Radar-I 在当前既有站址与模型约束下未形成可行布设；",
                 "非合作监视能力为已证明的补充能力限制。",
                 f"selected_panels={radar.get('selected_panel_count')} · "
@@ -2238,43 +2410,36 @@ def _cns_annotations(template_id, assembly, services, parameters, radar):
                 "约束：3 km · 90° panel · Radar-II 未启用 · 未放宽 range。",
                 "图中不表示任何 Radar 站址、panel 或覆盖扇区。",
             ],
-            anchor="map_bottom_left",
-            width_mm=104.0,
-        ))
+        })
+        # 地图框**之外**的一句话披露（能力限制不允许因为删除说明框而消失）。
+        map_disclosure = "Radar-I：当前既有站址与模型约束下无可行布设"
     elif template_id == NAVIGATION_LAYOUT_V1:
-        rows.append(AnnotationSpec(
-            annotation_id="navigation_delivery_deficit",
-            title="导航完整性监测点",
-            lines=[
+        entries.append({
+            "disclosure_id": "navigation_delivery_deficit",
+            "title": "导航完整性监测点",
+            "lines": [
                 "N005 / N006 为真实起降点上的导航完整性监测点规划提案（未确认）。",
                 "monitor placement 已满足规划位置要求；",
                 "但 Communication delivery 仍 residual deficit，",
                 "因此 endpoint overall 仍为 confirmed_deficit / integrity_monitor_delivery_deficit。",
                 "该监测点不是 RTK station、不是 RTK base station、不是 GBAS。",
             ],
-            anchor="map_bottom_left",
-            width_mm=104.0,
-        ))
+        })
     elif template_id == CNS_COMBINED_V1:
-        rows.append(AnnotationSpec(
-            annotation_id="cns_combined_disclosure",
-            title="CNS 综合布设",
-            lines=[
+        entries.append({
+            "disclosure_id": "cns_combined_disclosure",
+            "title": "CNS 综合布设",
+            "lines": [
                 "绿 = 通信 · 橙 = RID · 黄 = 导航完整性 · 蓝 = Radar 能力限制。",
                 "所有设施均为 existing baseline 或 P16 规划提案（未确认）。",
                 "Radar 在 R0005 无选中站址：已证明的补充能力限制，未新增任何 Radar 设施。",
             ],
-            anchor="map_bottom_left",
-            width_mm=104.0,
-        ))
-    footer = (
-        "规划设施来自 P16 proposal_ready；因 P17 连续服务仍为 "
-        f"{step6.get('continuous_service_status') or 'unacceptable'}，"
-        "方案未通过 Step6 正式确认。"
-    )
-    if rows:
-        rows[-1].lines = list(rows[-1].lines) + [footer]
-    return rows
+        })
+        if SERVICE_RADAR in services:
+            map_disclosure = "Radar-I：当前既有站址与模型约束下无可行布设"
+    for entry in entries:
+        entry["lines"] = list(entry["lines"]) + [step6_line]
+    return entries, map_disclosure
 
 
 def _surveillance_variant(parameters):
@@ -2363,7 +2528,6 @@ def materialize_cns(ctx):
             ))
 
     # ---- Radar：只有上下文与限制，绝无站址 / panel / 扇区 -------------------------
-    annotations = []
     if SERVICE_RADAR in services or template_id == CNS_COMBINED_V1:
         context_points, context_detail = _radar_context_points(ctx, assembly, radar)
         if template_id == SURVEILLANCE_LAYOUT_V1 and context_points:
@@ -2402,7 +2566,11 @@ def materialize_cns(ctx):
     layers.extend(route_layers)
 
     labels = _cns_labels(ctx, assembly, services, geometry, parameters=parameters)
-    annotations = _cns_annotations(template_id, assembly, services, parameters, radar)
+    # 图面说明从"地图主体里的大白框"改为 **FigureSpec.metadata**：地图正文只留给地图，
+    # 完整披露（服务半径语义 / 确认状态 / 能力限制）逐字保留在 metadata 里。
+    disclosures, map_disclosure = _cns_disclosures(
+        template_id, assembly, services, parameters, radar,
+    )
     legend_items = _legends(layers, CNS_LEGEND_ORDER)
 
     source_status, omitted = {}, []
@@ -2433,7 +2601,15 @@ def materialize_cns(ctx):
     return MaterializationResult(
         layers=layers, labels=labels, legend_items=legend_items,
         source_status=source_status, omitted_layers=omitted, warnings=warnings,
-        annotations=annotations, boundaries=deepcopy(assembly.boundaries),
+        # CNS 五图**不再**产生地图内部的说明框（annotations 恒为空）；
+        # 完整披露进入 metadata，短披露进入地图框之外的一条薄带。
+        annotations=[],
+        metadata={
+            "layout_profile": CNS_LAYOUT_PROFILE,
+            "disclosures": disclosures,
+            "map_disclosure": map_disclosure,
+        },
+        boundaries=deepcopy(assembly.boundaries),
     )
 
 
@@ -3116,7 +3292,10 @@ class MapFigureService:
             source_audits=self.session.state.get("source_audits") or {},
             template_id=template["template_id"],
         ))
-        layout = _layout_plan(parameters, legend_items=_legend_layout_entries(probe.legend_items))
+        layout = _layout_plan(
+            parameters, legend_items=_legend_layout_entries(probe.legend_items),
+            layout_disclosure=str((probe.metadata or {}).get("map_disclosure") or ""),
+        )
         aspect = layout["map_width_mm"] / layout["map_height_mm"]
         extent, extent_evidence = _expand_extent(
             route.get("path") or [],
@@ -3150,15 +3329,47 @@ class MapFigureService:
             ),
             template_id=template["template_id"],
         ))
+        # 第二次装配可能带来不同的 map_disclosure（图层/图例已定稿），这里同步一次。
+        # 版面依赖"是否真的有披露句"与审计条开关，因此带披露句**二次规划**一次版面，
+        # 保证图例能利用页面底部剩余空间（地图框高度固定，不受影响）。
+        _sync_layout_after_disclosure(layout, parameters, result)
+        aspect = layout["map_width_mm"] / layout["map_height_mm"]
+        extent, extent_evidence = _expand_extent(
+            route.get("path") or [],
+            buffer_km=parameters.get("extent_buffer_km", 10.0),
+            max_padding_km=parameters.get("extent_max_padding_km", 30.0),
+            aspect=aspect, metric_crs=parameters.get("extent_source_crs") or DEFAULT_METRIC_CRS,
+        )
+        if extent is None:
+            raise MapFigureRouteError(
+                f"航路 {route.get('route_id')} 的几何不足以计算图面范围（需要至少 2 个顶点）",
+                detail=extent_evidence,
+            )
+        extent_evidence = {
+            **extent_evidence,
+            "layout_profile": layout.get("layout_profile"),
+            "extent_policy_id": parameters.get("extent_policy_id"),
+            "extent_aspect_locked": bool(parameters.get("extent_aspect_locked")),
+            "layout_map_width_mm": layout.get("map_width_mm"),
+            "layout_map_height_mm": layout.get("map_height_mm"),
+            "aspect_used": aspect,
+            "cns_five_figure_shared_extent": bool(
+                parameters.get("layout_profile") == CNS_LAYOUT_PROFILE
+            ),
+        }
         extent_evidence = _annotate_extent_evidence(extent_evidence, result, extent, parameters)
         path_points = [
             list(point) for point in (route.get("path") or [])
             if isinstance(point, (list, tuple)) and len(point) >= 2
         ]
+        subtitle = _figure_subtitle(self.session.state, route.get("route_id"))
         spec = FigureSpec(
             template_id=template["template_id"],
             template_version=int(template["template_version"]),
-            title=_figure_title(template["display_name"], route, template_id),
+            title=_figure_title(
+                template["display_name"], route, template["template_id"], parameters,
+            ),
+            subtitle=subtitle,
             route_id=str(route.get("route_id") or ""),
             route_source=OPERATIONAL_ROUTE_SOURCE,
             route_crs=str(route.get("path_crs") or DEFAULT_CRS),
@@ -3196,10 +3407,27 @@ class MapFigureService:
                     "tower_context", "ordinary_context",
                 ],
                 "tower_labels_are_suppressed_not_relocated": True,
+                # Round30-B1：标签带**正式浅色背景卡**；同址多业务按服务数等分分块。
+                "label_background_card": True,
+                "colocated_multi_service_split_background": True,
+                "label_service_order": list(CNS_LABEL_CARD_ORDER),
+                "start_end_never_suppressed": True,
+                "selected_proposal_suppresses_ordinary_labels": True,
             },
             layout=layout,
             parameters=deepcopy(parameters),
             warnings=list(result.warnings),
+            metadata={
+                # 版面档位 + 完整图面披露（Round30-A 与 Round30-B 的图件据此可区分）。
+                "layout_profile": layout.get("layout_profile"),
+                "layout_profile_version": _layout_profile_version(layout.get("layout_profile")),
+                "layout_engine": "cns_canonical_figurespec_to_qgis_printlayout",
+                "map_crs": layout.get("map_crs"),
+                "grid_crs": layout.get("grid_crs"),
+                "map_disclosure": layout.get("map_disclosure") or "",
+                "map_internal_annotations": False,
+                "disclosures": deepcopy((result.metadata or {}).get("disclosures") or []),
+            },
             boundaries={
                 "presentation_only": True,
                 "writes_operational_routes_or_cns": False,
@@ -3464,6 +3692,33 @@ class MapFigureService:
             self._write_route_index(route_id, items, figure_id)
 
 
+def _sync_layout_after_disclosure(layout, parameters, result):
+    """把"最终披露句"同步进版面，并保持所有几何字段自洽。
+
+    为什么需要它：披露句要等图例/图层定稿（第二次装配）才知道，而"有没有披露句"决定
+    图例框的位置与高度。这里在最终 ``map_disclosure`` 确定后重算一次版面，
+    并保证 ``footer_disclosure_top_mm`` / ``footer_strip_top_mm`` / ``legend_top_mm`` /
+    ``legend_height_mm`` 与之一致 —— 正式图（无审计条、无披露）时它们分别是合理值或
+    ``None``，绝不出现"参数里为 None、报告里又是数值"的自相矛盾。
+    """
+
+    from ..gis.figure_legend import legend_geometry
+    from ..gis.figure_style import CNS_LEGEND_GROUP_COLUMNS, LAYOUT
+
+    disclosure = str((result.metadata or {}).get("map_disclosure") or "")
+    return _layout_plan(
+        parameters, legend_items=_legend_layout_entries(result.legend_items),
+        layout_disclosure=disclosure,
+    )
+
+
+def _layout_profile_version(profile):
+    """从版式档位名里取版本号（``cns_five_figure_v2`` → ``2``）；取不到时为 ``1``。"""
+
+    tail = str(profile or "").rsplit("_v", 1)[-1]
+    return int(tail) if tail.isdigit() else 1
+
+
 def _legend_layout_entries(legend_items):
     """把图例条目转成版面几何需要的形状（分组 + 显示名）。"""
 
@@ -3473,25 +3728,23 @@ def _legend_layout_entries(legend_items):
     ]
 
 
-def _layout_plan(parameters, legend_items=()):
-    """A4 竖版版面（毫米）：标题带 → 地图 →（薄审计条）→ 图例框 → 页脚。
+def _layout_plan(parameters, legend_items=(), layout_disclosure=""):
+    """A4 竖版版面（毫米）：标题带 → 地图 →（披露条 / 审计条）→ 图例框 → 页脚。
 
-    分配目标（用户要求）：标题 4~5% · 地图 68~72% · 间距 1~2% · 图例 18~22% · 最小页边距。
-    做法：先用 :mod:`cns_planner.gis.figure_legend` 的**同一套分列算法**算出图例框
-    真实高度（贴合内容），再把剩余高度全部给地图——因此图例条目少时地图自动变大，
-    **不会出现"图例框很高、下方大片空白"**。
+    Round30-B1.1 的硬约束与做法：
 
-    CNS 五图的差别（``layout_profile = cns_five_figure_v1``）：
+    * **地图框尺寸不因图例而变**：CNS 档位使用固定地图高度
+      （``LAYOUT['cns_fixed_map_height_mm']`` = 176.2 mm），五图严格一致；
+    * **图例用页面底部剩余空间放大**，只在真的放不下时才按比例压缩行距，
+      绝不反向挤压地图框；
+    * 地图框之外的两条薄带都可开关：
 
-    * 地图高度按**固定图例预算**计算，而不是按各自的实际图例高度 —— 这样五张图的
-      地图框尺寸完全一致，extent / 比例尺 / 经纬网才真正可比；
-    * 图例框仍按各自内容**贴合**高度，只是它的顶边位置由固定地图高度决定，
-      因此条目少的图会在图例框**下方**留白，而框内绝不出现大片空白；
-    * 图例分列改用 :data:`~cns_planner.gis.figure_style.CNS_LEGEND_GROUP_COLUMNS`。
+      - **图面披露条**（Radar 能力限制等业务披露）→ 正式图也保留；
+      - **工程审计条**（地图 CRS / 经纬网 CRS / revision / 未显示图层）→
+        ``audit_footer`` 控制，**正式图默认关闭**（信息仍完整保存在 FigureSpec.metadata
+        与导出报告里）。
 
-    地图框与图例框之间保留一条独立的**薄审计条**（坐标系 / 项目 revision / 未显示图层）：
-    三段间距固定（``footer_map_gap`` + ``footer_strip`` + ``footer_legend_gap``），
-    因此这行小字绝不会压到地图边框、比例尺或图例标题上。
+    版式档位：``cns_five_figure_v2``（B1.1 沿用同一档位，字号/网格/图例几何在档位内演进）。
     """
 
     from ..gis.figure_legend import CNS_LEGEND_BALANCE_TOLERANCE, legend_geometry
@@ -3503,25 +3756,32 @@ def _layout_plan(parameters, legend_items=()):
     height = float(parameters.get("document_height_mm") or 297.0)
     margin = float(parameters.get("margin_mm") or LAYOUT["page_margin_mm"])
     map_fraction = float(parameters.get("map_fraction") or 0.72)
-    columns = max(1, min(int(LAYOUT.get("max_legend_columns", 3)),
-                         int(parameters.get("legend_columns") or 2)))
+    columns = max(1, min(int(LAYOUT.get("max_legend_columns", 4)),
+                         int(parameters.get("legend_columns") or 3)))
     title_band = float(LAYOUT["title_band_mm"])
     title_gap = float(LAYOUT["title_gap_mm"])
     title_map_gap = float(LAYOUT["title_map_gap_mm"])
     subtitle_height = float(LAYOUT["subtitle_band_mm"])
-    # 标题带内部：主标题 → 固定间距 → 副标题 → 固定间距 → 地图框。
-    # 因此 title_band 必须把"副标题与地图框之间的间距"也算进去，否则副标题会贴住上边框。
     title_main_height = max(
         4.0, title_band - title_gap - subtitle_height - title_map_gap,
     )
     footer_band = float(LAYOUT["footer_band_mm"])
     footer_map_gap = float(LAYOUT["footer_map_gap_mm"])
+    footer_disclosure = float(LAYOUT["footer_disclosure_mm"])
     footer_strip = float(LAYOUT["footer_strip_mm"])
     footer_legend_gap = float(LAYOUT["footer_legend_gap_mm"])
-    gap = footer_map_gap + footer_strip + footer_legend_gap
+    show_audit = bool(parameters.get("audit_footer", LAYOUT.get("audit_footer_default", False)))
+    disclosure_text = str(
+        parameters.get("map_disclosure") or layout_disclosure or ""
+    ).strip()
+    show_disclosure = bool(disclosure_text)
+    band_total = footer_map_gap + footer_legend_gap
+    if show_disclosure:
+        band_total += footer_disclosure
+    if show_audit:
+        band_total += footer_strip
     map_width = width - 2 * margin
     map_top = margin + title_band
-    total_height = height - margin - footer_band
     row_height = float(LAYOUT["legend_row_mm"])
     group_row = float(LAYOUT["legend_group_row_mm"])
     group_gap = float(LAYOUT["legend_group_gap_mm"])
@@ -3546,37 +3806,37 @@ def _layout_plan(parameters, legend_items=()):
         )
 
     geometry = geometry_for(row_height, group_row)
-    # 下界：按**最小可用行距**重算一次，保证图例一定放得下（宁可地图小一点，也不截断图例）。
     compact = geometry_for(float(LAYOUT["legend_min_row_mm"]),
                            float(LAYOUT["legend_min_group_row_mm"]))
     actual_needed = max(float(geometry["box_height_mm"]), float(compact["box_height_mm"]))
-    needed = actual_needed
+    # 地图高度：CNS 档位**固定**（五图一致、不随图例变化）；其它模板沿用比例分配。
     if cns_profile:
-        # 固定预算：只用于**决定地图框高度**，不改变图例框自身的贴合高度。
-        budget = (
-            header + top_padding
-            + int(LAYOUT["cns_legend_budget_groups"]) * (group_row + group_item_gap + group_gap)
-            + int(LAYOUT["cns_legend_budget_rows"]) * row_height
-        )
-        # 恒定等于预算：即使某张图的图例比预算更高，也只压缩该图的行距，
-        # **绝不**改变地图框高度 —— 否则五图的 extent 与比例尺就不再可比。
-        needed = budget
-    effective_columns = int(geometry["columns"])
-    # 地图是主体：先按 map_fraction（0.72）拿高度，再为图例让出必要空间；
-    # 图例框最终**贴合内容**，因此不会出现"框很高、内容只占左上角 + 下方大片空白"。
-    preferred_map = total_height * map_fraction
-    map_height = min(preferred_map, total_height - map_top - needed - gap)
-    map_height = max(150.0, map_height)
-    footer_strip_top = map_top + map_height + footer_map_gap
-    legend_top = footer_strip_top + footer_strip + footer_legend_gap
-    available_legend = max(18.0, height - margin - footer_band - legend_top)
-    # 图例框高度**始终贴合内容**；available_legend 只是"放不下时压缩行距"的上限。
+        map_height = float(LAYOUT["cns_fixed_map_height_mm"])
+    else:
+        preferred = (height - footer_band) * map_fraction
+        map_height = min(preferred, height - footer_band - map_top - actual_needed - band_total)
+    map_height = max(float(LAYOUT["cns_min_map_height_mm"]), map_height)
+    cursor = map_top + map_height
+    disclosure_top = None
+    if show_disclosure:
+        disclosure_top = cursor + footer_map_gap
+        cursor = disclosure_top + footer_disclosure
+    footer_strip_top = None
+    if show_audit:
+        footer_strip_top = cursor + (footer_map_gap if not show_disclosure else 0.0)
+        cursor = footer_strip_top + footer_strip
+    legend_top = cursor + footer_legend_gap
+    # 图例可用高度 = 页面下沿（页脚上沿）− 图例框上沿：图例**绝不允许溢出页面**。
+    available_legend = max(18.0, (height - footer_band) - legend_top)
     legend_height = min(actual_needed, available_legend)
-    # 只有在空间确实不足时才压缩行距（下限 3.9 mm 仍可读），绝不截断图例条目。
     if float(geometry["box_height_mm"]) > legend_height:
         ratio = max(0.60, legend_height / float(geometry["box_height_mm"]))
         row_height = max(float(LAYOUT["legend_min_row_mm"]), row_height * ratio)
         group_row = max(float(LAYOUT["legend_min_group_row_mm"]), group_row * ratio)
+        geometry = geometry_for(row_height, group_row)
+        actual_needed = float(geometry["box_height_mm"])
+        legend_height = min(actual_needed, available_legend)
+    effective_columns = int(geometry["columns"])
     return {
         "document_width_mm": width,
         "document_height_mm": height,
@@ -3589,15 +3849,24 @@ def _layout_plan(parameters, legend_items=()):
         "subtitle_top_mm": margin + title_main_height + title_gap,
         "footer_band_mm": footer_band,
         "footer_strip_mm": footer_strip,
+        "footer_disclosure_mm": footer_disclosure,
         "footer_map_gap_mm": footer_map_gap,
         "footer_legend_gap_mm": footer_legend_gap,
+        "footer_disclosure_top_mm": disclosure_top,
         "footer_strip_top_mm": footer_strip_top,
+        "map_disclosure": disclosure_text,
+        "audit_footer": show_audit,
+        "disclosure_visible": show_disclosure,
         "title_top_mm": margin,
         "map_top_mm": map_top,
         "map_left_mm": margin,
         "map_width_mm": map_width,
         "map_height_mm": map_height,
-        "map_legend_gap_mm": gap,
+        # 地图画布 CRS：本地米制。几何 / extent / 标注锚点都由渲染器投影到这个 CRS，
+        # 因此"按米制 buffer 生成的覆盖圈"在纸面上是正圆。
+        "map_crs": DEFAULT_METRIC_CRS,
+        "grid_crs": "EPSG:4326",
+        "map_legend_gap_mm": band_total,
         "legend_top_mm": legend_top,
         "legend_left_mm": margin,
         "legend_width_mm": map_width,
@@ -3608,18 +3877,32 @@ def _layout_plan(parameters, legend_items=()):
         "legend_group_gap_mm": group_gap,
         "legend_group_item_gap_mm": group_item_gap,
         "legend_top_padding_mm": top_padding,
+        "legend_header_mm": header,
         "legend_side_padding_mm": float(LAYOUT["legend_side_padding_mm"]),
         "legend_column_gap_mm": float(LAYOUT["legend_column_gap_mm"]),
         "legend_text_gutter_mm": float(LAYOUT["legend_text_gutter_mm"]),
         "legend_symbol_box_mm": float(LAYOUT["legend_symbol_box_mm"]),
+        "legend_title_font_size": float(LAYOUT["legend_title_font_size"]),
+        "legend_group_font_size": float(LAYOUT["legend_group_font_size"]),
+        "legend_item_font_size": float(LAYOUT["legend_item_font_size"]),
+        "map_title_font_size": float(LAYOUT["map_title_font_size"]),
+        "subtitle_font_size": float(LAYOUT["subtitle_font_size"]),
+        "grid_font_size": float(LAYOUT["grid_font_size"]),
+        "scalebar_font_size": float(LAYOUT["scalebar_font_size"]),
+        "label_font_sizes": {
+            key: float(value["font_size"]) for key, value in LABEL_STYLES.items()
+        },
         "scale_bar_margin_mm": float(LAYOUT["scale_bar_margin_mm"]),
         "north_arrow_size_mm": float(LAYOUT["north_arrow_size_mm"]),
         "north_arrow_margin_mm": float(LAYOUT["north_arrow_margin_mm"]),
         "layout_profile": profile or "route_overview_v1",
-        "legend_budget_height_mm": needed if cns_profile else None,
+        "legend_budget_height_mm": (
+            float(LAYOUT["cns_legend_budget_height_mm"]) if cns_profile else None
+        ),
         "legend_actual_height_mm": actual_needed,
-        "extent_aspect": map_width / map_height if map_height else 1.0,        "fixed_layout": (
-            "a4_portrait_map_above_legend_below_with_audit_strip_cns_shared_map_frame"
+        "extent_aspect": map_width / map_height if map_height else 1.0,
+        "fixed_layout": (
+            "a4_portrait_fixed_map_frame_legend_below_cns_shared_map_frame"
             if cns_profile else
             "a4_portrait_map_above_legend_below_with_audit_strip"
         ),
@@ -3660,13 +3943,89 @@ def _bounded_preview_width(width_px, layout):
     return max(1, int(math.floor(math.sqrt(MAX_PREVIEW_PIXELS / aspect))))
 
 
-def _figure_title(display_name, route, template_id=None):
-    """图名：正式图面标题固定为模板中文名，**不**把 route_id / revision 塞进标题。
+#: 正式图标题：按模板语义区分（不把 route_id / revision 塞进标题）。
+#:
+#: ``surveillance_layout_v1`` 有两种 variant，标题必须区分 RID（合作监视）与
+#: Radar（非合作监视评估），否则用户无法从图名判断这是哪一种能力。
+CNS_FORMAL_TITLES = {
+    COMMUNICATION_LAYOUT_V1: "通信设施布设图",
+    SURVEILLANCE_LAYOUT_V1: "监视设施布设图",
+    NAVIGATION_LAYOUT_V1: "导航完整性监测点布设图",
+    CNS_COMBINED_V1: "CNS 综合设施布设图",
+}
+CNS_SURVEILLANCE_TITLES = {
+    SURVEILLANCE_SERVICE_RID: "RID 合作监视设施布设图",
+    SURVEILLANCE_SERVICE_RADAR: "Radar 非合作监视评估图",
+}
+
+
+def _figure_title(display_name, route, template_id=None, parameters=None):
+    """图名：正式图面标题按模板语义给出，**不**把 route_id / revision 塞进标题。
 
     航路标识只作为 FigureSpec 字段（``route_id``）与记录保存，供审计与检索使用。
     """
 
+    template = str(template_id or "").strip()
+    if template == SURVEILLANCE_LAYOUT_V1:
+        variant = str((parameters or {}).get(SURVEILLANCE_SERVICE_PARAMETER) or "")
+        formal = CNS_SURVEILLANCE_TITLES.get(variant)
+        if formal:
+            return formal
+    formal = CNS_FORMAL_TITLES.get(template)
+    if formal:
+        return formal
     return str(display_name or "").strip() or "航路周边状况图"
+
+
+def _altitude_fact(state, route_id):
+    """route 的**固定高度层 canonical 事实**：``(altitude_layer_id, altitude_m)``。
+
+    只读 ``radar_surveillance_layout`` 里属于本 route 的那一条；取不到时返回
+    ``(None, None)``——此时副标题**不会**硬编码任何高度语义。
+    """
+
+    collection = (state or {}).get(RADAR_LAYOUT_KEY)
+    if not isinstance(collection, dict):
+        return None, None
+    for item in collection.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("route_id") or "") != str(route_id or ""):
+            continue
+        layer_id = str(item.get("altitude_layer_id") or "").strip() or None
+        altitude = _finite(item.get("altitude_m"))
+        return layer_id, altitude
+    return None, None
+
+
+def _figure_subtitle(state, route_id):
+    """副标题：``<route_id> · <altitude_layer_id>[ · 固定巡航高度 N m]``。
+
+    全部取自 canonical facts：
+
+    * ``route_id`` 来自权威运行航路；
+    * ``altitude_layer_id`` / ``altitude_m`` 来自 ``radar_surveillance_layout`` 中
+      **本 route** 的固定高度层记录。
+
+    缺少高度层事实时只写 route_id（**绝不硬编码**"ALT-100 / 100 m"）。
+    """
+
+    code = str(route_id or "").strip()
+    if not code:
+        return ""
+    layer_id, altitude = _altitude_fact(state, code)
+    parts = [code]
+    if layer_id:
+        parts.append(layer_id)
+    if altitude is not None and altitude > 0:
+        parts.append(f"固定巡航高度 {altitude:g} m")
+    return " · ".join(parts)
+
+
+def _figure_subtitle_for(state, route_id):
+    """兼容入口：由 ``(state, route_id)`` 生成副标题。"""
+
+    return _figure_subtitle(state, route_id)
 
 
 def _require_template_parameters(template_id, parameters, overrides):

@@ -515,12 +515,22 @@ def test_radar_draws_no_manufactured_site_or_sector(tmp_path):
     assert not any("radar" in key and "coverage" in key for key in layers)
     assert layers["cns_radar_limitation"].geometry_type == "none"
     assert layers["cns_radar_limitation"].feature_count == 0
-    titles = [item.title for item in spec.annotations]
+    # Round30-B1：Radar 能力限制从"地图内部大说明框"改为 FigureSpec.metadata 披露 +
+    # 正式 legend item；内容**逐字保留**，地图主体里不再有大白框。
+    assert spec.annotations == []
+    titles = [item["title"] for item in spec.metadata["disclosures"]]
     assert "Radar-I 能力限制" in titles
-    body = json.dumps([item.to_dict() for item in spec.annotations], ensure_ascii=False)
+    body = json.dumps(spec.metadata["disclosures"], ensure_ascii=False)
     assert "未形成可行布设" in body
     assert "3 km" in body and "90°" in body and "Radar-II 未启用" in body
     assert "不表示任何 Radar 站址" in body
+    # 地图框**之外**仍保留一句短披露（能力限制不许因为删除说明框而消失）。
+    assert "无可行布设" in spec.metadata["map_disclosure"]
+    assert "无可行布设" in spec.layout["map_disclosure"]
+    # 正式 legend item 仍在。
+    assert any(
+        item.layer_key == "cns_radar_limitation" for item in spec.legend_items
+    )
 
 
 # ---- 6. Navigation Integrity ------------------------------------------------
@@ -543,9 +553,10 @@ def test_navigation_monitors_land_on_the_real_endpoint_sites(tmp_path):
     assert detail["confirmed_flags"] == [False]
     assert "cns_comm_proposal" not in _layers(spec)
     assert "cns_rid_proposal" not in _layers(spec)
-    # 不出现 RTK / GBAS / corridor coverage station 这类错误命名。
+    # 不出现 RTK / GBAS / corridor coverage station 这类错误命名（披露文本仍逐字保留，
+    # 只是从地图内部说明框移到了 FigureSpec.metadata）。
     body = json.dumps(
-        [item.to_dict() for item in spec.annotations] + [layer.source_detail],
+        list(spec.metadata["disclosures"]) + [layer.source_detail],
         ensure_ascii=False,
     )
     assert "RTK" in body and "不是 RTK station" in body
@@ -555,7 +566,9 @@ def test_navigation_monitors_land_on_the_real_endpoint_sites(tmp_path):
 def test_navigation_discloses_the_delivery_deficit_and_omits_the_10km_radius(tmp_path):
     service, _, _ = _service(tmp_path)
     spec = service.build_figure(template_id="navigation_layout_v1", route_id="R0005")
-    body = json.dumps([item.to_dict() for item in spec.annotations], ensure_ascii=False)
+    # 披露内容仍在，只是从地图内部说明框改为 FigureSpec.metadata（地图主体只留给地图）。
+    assert spec.annotations == []
+    body = json.dumps(spec.metadata["disclosures"], ensure_ascii=False)
     assert "confirmed_deficit" in body
     assert "integrity_monitor_delivery_deficit" in body
     assert "Communication delivery 仍 residual deficit" in body
@@ -650,12 +663,21 @@ def test_legend_symbols_are_the_same_style_keys_as_the_map(tmp_path):
 
 
 def test_audit_strip_and_scale_bar_stay_inside_the_page(tmp_path):
+    """比例尺 / 北箭头 / 图例都在页面内；**正式图默认不显示工程审计条**。
+
+    Round30-B1.1：审计条（地图 CRS / 经纬网 CRS / revision / 未显示图层）改为
+    ``audit_footer`` 开关控制，正式图默认 false；审计信息仍完整保存在
+    FigureSpec.metadata 与导出报告里。
+    """
+
     _, _, _, specs = _five_specs(tmp_path)
     for spec in specs:
         plan = spec.layout
-        # 审计条夹在地图框下沿与图例框上沿之间，不进入地图绘图区。
-        assert plan["footer_strip_top_mm"] >= plan["map_top_mm"] + plan["map_height_mm"]
-        assert plan["legend_top_mm"] > plan["footer_strip_top_mm"]
+        assert plan["audit_footer"] is False
+        assert plan["footer_strip_top_mm"] is None
+        # 审计信息仍在 metadata（正式图隐藏、审计不丢）。
+        assert spec.metadata["map_crs"] == plan["map_crs"]
+        assert spec.metadata["grid_crs"] == plan["grid_crs"]
         # 比例尺与北箭头都按地图框内距定位，因此永远在图框内。
         assert plan["scale_bar_margin_mm"] > 0
         assert plan["north_arrow_margin_mm"] > 0
@@ -663,19 +685,50 @@ def test_audit_strip_and_scale_bar_stay_inside_the_page(tmp_path):
         assert plan["north_arrow_size_mm"] < plan["map_height_mm"] / 4
         # 图例框贴合内容且完全落在页脚之上。
         assert plan["legend_top_mm"] + plan["legend_height_mm"] <= (
-            plan["document_height_mm"] - plan["margin_mm"] - plan["footer_band_mm"]
+            plan["document_height_mm"] - plan["footer_band_mm"]
         )
+        # review 模式（审计条打开）时，审计条仍严格位于地图框与图例框之间。
+        review_plan = _layout_plan_with_audit(spec)
+        assert review_plan["footer_strip_top_mm"] >= (
+            review_plan["map_top_mm"] + review_plan["map_height_mm"]
+        )
+        assert review_plan["legend_top_mm"] > review_plan["footer_strip_top_mm"]
 
 
-def test_grid_annotation_never_shares_the_audit_strip_band():
-    """经度标注必须放在地图框**内侧**，否则会与地图框下方的审计条逐字重叠。"""
+def _layout_plan_with_audit(spec):
+    """用同一套参数 + ``audit_footer=True`` 重新规划一次版面（review 模式）。"""
+
+    from cns_planner.application.map_figure_service import (
+        _layout_plan, _legend_layout_entries,
+    )
+
+    parameters = dict(spec.parameters or {})
+    parameters["audit_footer"] = True
+    parameters["map_disclosure"] = spec.layout.get("map_disclosure") or ""
+    return _layout_plan(parameters, _legend_layout_entries(spec.legend_items))
+
+
+def test_grid_annotation_is_outside_the_map_frame_and_off_the_audit_band():
+    """经度标注放在地图框**外侧**下沿（Round30-B1.2），纬度仍在外侧左沿。
+
+    框外经度标注不再占用任何地图内容空间；为避免它与地图框下方的披露 / 审计薄带逐字
+    重叠，``footer_map_gap_mm`` 同时被放宽（见 ``LAYOUT``），本用例一并断言这个间距
+    足够容纳一行 8.5 pt 的经度文字。
+    """
+
+    from cns_planner.gis.figure_style import LAYOUT
 
     source = (
         Path(__file__).resolve().parents[1]
         / "cns_planner" / "gis" / "qgis_figure_renderer.py"
     ).read_text(encoding="utf-8")
-    assert "InsideMapFrame, QgsLayoutItemMapGrid.Bottom" in source
-    assert "OutsideMapFrame, QgsLayoutItemMapGrid.Bottom" not in source
+    assert "OutsideMapFrame, QgsLayoutItemMapGrid.Bottom" in source
+    assert "OutsideMapFrame, QgsLayoutItemMapGrid.Left" in source
+    # 绝不回到"经度画在图框内侧"的旧版式。
+    assert "InsideMapFrame, QgsLayoutItemMapGrid.Bottom" not in source
+    # 框外经度带 + 文字高度必须完全落在"地图框 → 披露条"的间距之内。
+    label_band_mm = float(LAYOUT["grid_font_size"]) / 72.0 * 25.4 + 0.9
+    assert float(LAYOUT["footer_map_gap_mm"]) >= label_band_mm
 
 
 def test_five_figures_never_call_session_save_and_keep_the_revision(tmp_path):
@@ -762,10 +815,15 @@ def test_cns_figures_record_the_full_audit_trail(tmp_path):
 
 
 def test_navigation_and_communication_annotations_disclose_the_step6_gate(tmp_path):
+    """五图都必须披露 Step6 门禁；Round30-B1 起披露位置是 metadata（不是地图内部说明框）。"""
+
     _, _, _, specs = _five_specs(tmp_path)
     for spec in specs:
-        assert spec.annotations, spec.template_id
-        body = json.dumps([item.to_dict() for item in spec.annotations], ensure_ascii=False)
+        # 地图内部**不再**有任何大说明框，披露内容全部进入 metadata。
+        assert spec.annotations == [], spec.template_id
+        assert spec.metadata["disclosures"], spec.template_id
+        assert spec.metadata["map_internal_annotations"] is False
+        body = json.dumps(spec.metadata["disclosures"], ensure_ascii=False)
         assert "未通过 Step6 正式确认" in body
         assert "P16 proposal_ready" in body
 
