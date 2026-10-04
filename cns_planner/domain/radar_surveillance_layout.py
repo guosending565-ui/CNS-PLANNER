@@ -68,8 +68,12 @@ MODEL_SCOPE = "geometric_initial_radar_layout"
 ALGORITHM_ID = "radar_surveillance_layout"
 #: V1.1：修复了三个**真实的几何语义**缺陷（航路采样高度、俯仰符号、雷达原点），
 #: 因此算法版本必须升级，旧 V1.0 layout 一律 stale（见 ``application`` 侧失效链）。
-ALGORITHM_VERSION = "1.1"
-ALGORITHM_NAME = "Radar Surveillance Layout V1.1"
+#: V1.2（Round 29-H）：修复 validation 的 surface 长度统计（按完整有序序列归属区间，
+#: 不再跨越其它 surface 累计）并把 canonical ``gap_reason`` / ``gap_classification`` /
+#: ``managed_physical_gap`` 原样转印到 item / result_snapshot / HTTP。旧 V1.1 layout 的
+#: surface 长度指标与 gap 投影语义**不再等价**，必须整体 stale。
+ALGORITHM_VERSION = "1.2"
+ALGORITHM_NAME = "Radar Surveillance Layout V1.2"
 #: BUG-SHOT-008：名称不再写死 "80m" —— 高度层是数据驱动的，
 #: 旧名 ``ALGORITHM_SEMANTICS`` 保留为别名以兼容既有调用点。
 ALGORITHM_SEMANTICS = "固定高度航路方向性雷达几何初步划设方案"

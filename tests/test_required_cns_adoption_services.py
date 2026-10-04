@@ -1,6 +1,6 @@
-"""Required CNS Adopt → canonical ``required_cns.services`` 回归（Round 2.2 裁定）。
+"""Required CNS Adopt → canonical ``required_cns.services`` 回归。
 
-裁定原文：
+裁定（Round 2.2 起，Round 29-H 扩展）：
 
 【Adopt 后 authoritative required_cns 必须携带正式 service requirements】
 
@@ -8,9 +8,13 @@
 * adopt 原样/规范化写入 authoritative ``required_cns``；
 * workflow snapshot 恢复后仍然存在；
 * P14 / P15 / P16 消费这些 service requirements，**不允许**再静默回落 legacy 语义；
-* Communication（``C:communication``）与 RID（``S:rid_cooperative``）必须显式进入
-  canonical ``services``；Radar 仍是 Non-cooperative Surveillance optional branch，
-  **不**合并进 RID。
+* Round 29-H：已确认工程要求对应的**四个** canonical 服务都必须能从
+  recommendation 正式产出并通过 adopt 闭环 ——
+  ``C:communication`` / ``N:navigation_integrity_monitoring`` /
+  ``S:rid_cooperative`` / ``S:radar_noncooperative``；
+  Surveillance 因此是 ``service_requirement_mode = all_required``；
+* 合作监视（RID）与非合作监视（Radar）是**两条独立服务**：绝不合并、绝不互相顶替；
+* legacy 身份（``N:navigation`` / ``S:surveillance``）**绝不**被升级成 canonical 服务。
 
 本文件只断言"契约与数值"，不重复其它文件已覆盖的 P14/P15 几何。
 """
@@ -148,18 +152,31 @@ def _workflow(tmp_path, *, current=None, routes=("R-2",)):
 # 1. recommendation 必须给出 services
 # ---------------------------------------------------------------------------
 
-def test_recommendation_emits_canonical_communication_and_rid_services(tmp_path):
+def test_recommendation_emits_the_four_canonical_services(tmp_path):
+    """Round 29-H：recommendation 必须正式产出已确认工程要求对应的四个服务。"""
+
+    from cns_planner.domain.cns_service_contract import (
+        SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
+    )
+
     workflow = _workflow(tmp_path, current=current_required_cns())
     result = workflow.evaluate_required_cns_recommendation()
     recommendation = result["required_cns_recommendation"]
 
     assert recommendation["status"] == "recommendation_ready"
     recommended = recommendation["recommended_required_cns"]
+    defaults = recommended["project_default"]
 
-    communication = recommended["project_default"]["communication"]["services"]
-    surveillance = recommended["project_default"]["surveillance"]["services"]
-    assert list(communication) == [SERVICE_KEY_COMMUNICATION]
-    assert list(surveillance) == [SERVICE_KEY_RID_COOPERATIVE]
+    communication = defaults["communication"]["services"]
+    navigation = defaults["navigation"]["services"]
+    surveillance = defaults["surveillance"]["services"]
+    assert sorted(communication) == [SERVICE_KEY_COMMUNICATION]
+    assert sorted(navigation) == [SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING]
+    assert sorted(surveillance) == sorted([
+        SERVICE_KEY_RADAR_NONCOOPERATIVE, SERVICE_KEY_RID_COOPERATIVE,
+    ])
+    #: 两条监视服务并存 ⇒ 该 subsystem 必须显式声明 all_required。
+    assert defaults["surveillance"]["service_requirement_mode"] == "all_required"
 
     assert communication[SERVICE_KEY_COMMUNICATION]["radius_by_surface"] == \
         EXPECTED_COMMUNICATION["radius_by_surface"]
@@ -178,33 +195,137 @@ def test_recommendation_emits_canonical_communication_and_rid_services(tmp_path)
         assert geometry["horizontal_coverage_deg"] == 360.0
         assert "panel_azimuth" not in geometry and "sector" not in geometry
 
+    #: Navigation 必须携带 Round29-E 已确认的 endpoint contract。
+    planning = navigation[SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING]["planning"]
+    assert planning["placement_scope"] == "route_endpoints"
+    assert planning["required_endpoint_roles"] == ["origin", "destination"]
+    assert planning["required_monitor_per_endpoint"] == 1
+    assert planning["require_distinct_physical_site_per_endpoint"] is True
+    assert planning["corridor_monitoring_required"] is False
+    assert planning["local_monitoring_radius_m"] == 10000.0
+    assert "not_rtk_baseline" in planning["local_monitoring_radius_semantics"]
+
+    #: Radar 必须携带 Radar-I orientation-first contract（且绝不自动升级 Radar-II）。
+    radar_policy = surveillance[SERVICE_KEY_RADAR_NONCOOPERATIVE]["planning_policy"]
+    assert radar_policy["allowed_radar_types"] == ["radar_i"]
+    assert radar_policy["orientation_optimization"] is True
+    assert radar_policy["orientation_policy"] == "bearing_derived_critical_angles"
+    assert radar_policy["allow_automatic_radar_ii_escalation"] is False
+    assert radar_policy["allow_range_relaxation"] is False
+
+    #: Radar 绝不被合并进 RID：两条服务各自独立。
+    assert SERVICE_KEY_RADAR_NONCOOPERATIVE not in {
+        SERVICE_KEY_RID_COOPERATIVE,
+    }
+    assert surveillance[SERVICE_KEY_RADAR_NONCOOPERATIVE]["service_key"] == (
+        SERVICE_KEY_RADAR_NONCOOPERATIVE
+    )
+
     #: 每个 route override 也必须携带（P14 按 route 解析 requirements）。
     override = recommended["route_overrides"]["R-2"]
     assert SERVICE_KEY_COMMUNICATION in override["communication"]["services"]
+    assert SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING in override["navigation"]["services"]
     assert SERVICE_KEY_RID_COOPERATIVE in override["surveillance"]["services"]
-
-    #: Radar 绝不被合并进 RID。
-    assert SERVICE_KEY_RADAR_NONCOOPERATIVE not in surveillance
+    assert SERVICE_KEY_RADAR_NONCOOPERATIVE in override["surveillance"]["services"]
 
     #: 派生必须留下可审计 provenance。
     provenance = recommendation["field_provenance"]
     assert "project.communication.services" in provenance
     assert provenance["project.communication.services"][0]["derived"] is True
+    for name in ("navigation", "surveillance"):
+        record = provenance[f"project.{name}.services"][0]
+        assert record["derived"] is True
+        assert record["service_keys"]
 
 
-def test_recommendation_defaults_to_legacy_shape_without_explicit_service_key(tmp_path):
-    """没有显式 service identity 时绝不派生（旧项目形状逐字段不变）。"""
+def test_legacy_service_keys_never_derive_canonical_services(tmp_path):
+    """legacy 身份（``N:navigation`` / ``S:surveillance``）绝不被升级成 canonical 服务。"""
 
-    workflow = _workflow(
-        tmp_path, current=current_required_cns(communication_key=None, surveillance_key=None),
+    from cns_planner.domain.cns_service_contract import (
+        SERVICE_KEY_NAVIGATION, SERVICE_KEY_SURVEILLANCE,
     )
-    recommendation = workflow.evaluate_required_cns_recommendation()["required_cns_recommendation"]
 
-    assert recommendation["status"] == "recommendation_ready"
-    recommended = recommendation["recommended_required_cns"]["project_default"]
-    assert "services" not in recommended["communication"]
-    assert "services" not in recommended["surveillance"]
-    assert "services" not in recommended["navigation"]
+    current = current_required_cns()
+    current["project_default"]["navigation"]["service_key"] = SERVICE_KEY_NAVIGATION
+    current["project_default"]["surveillance"]["service_key"] = SERVICE_KEY_SURVEILLANCE
+
+    workflow = _workflow(tmp_path, current=current)
+    recommendation = workflow.evaluate_required_cns_recommendation()["required_cns_recommendation"]
+    defaults = recommendation["recommended_required_cns"]["project_default"]
+
+    assert "services" not in defaults["navigation"]
+    assert "services" not in defaults["surveillance"]
+    #: C 的 legacy 身份就是 canonical 身份本身，因此照常派生。
+    assert sorted(defaults["communication"]["services"]) == [SERVICE_KEY_COMMUNICATION]
+
+
+def _derivation_requirement(**extra):
+    requirement = {
+        "confirmed": True, "required": True, "source": "synthetic_fixture",
+        "coverage_requirement": 0.95, "accuracy_m": 10.0, "integrity": True,
+        "redundancy": 1,
+        "performance": {"max_horizontal_error_m": 10.0, "integrity_required": True,
+                        "min_redundancy": 1},
+    }
+    requirement.update(extra)
+    return requirement
+
+
+def test_derivation_is_fail_closed_on_unconfirmed_or_not_required():
+    """未确认 / 不要求 / 显式指向规则表外的服务时绝不派生。"""
+
+    from cns_planner.domain.cns_service_registry import (
+        derive_canonical_service_requirement,
+    )
+
+    for overrides in (
+        {"confirmed": False},
+        {"required": False},
+        {"required": None},
+        {"confirmed": None},
+    ):
+        assert derive_canonical_service_requirement(
+            "N", _derivation_requirement(**overrides)
+        ) is None
+
+    #: 显式声明本规则表之外的 canonical 服务（RTK augmentation）⇒ 绝不擅自扩大服务集。
+    from cns_planner.domain.cns_service_contract import (
+        SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
+    )
+
+    assert derive_canonical_service_requirement(
+        "N", _derivation_requirement(service_key=SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION)
+    ) is None
+
+
+def test_navigation_without_explicit_integrity_requirement_never_derives_monitor():
+    """只要求水平精度、未显式要求完整性 ⇒ 绝不派生 integrity monitoring。"""
+
+    from cns_planner.domain.cns_service_registry import (
+        derive_canonical_service_requirement,
+    )
+    from cns_planner.domain.cns_service_contract import (
+        SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
+    )
+
+    requirement = _derivation_requirement(
+        integrity=None, performance={"max_horizontal_error_m": 10.0, "min_redundancy": 1},
+    )
+    assert derive_canonical_service_requirement("N", requirement) is None
+
+    #: 任一显式完整性声明成立即可派生。
+    for granted in (
+        {"integrity": True},
+        {"integrity": None,
+         "performance": {"max_horizontal_error_m": 10.0, "integrity_required": True,
+                         "min_redundancy": 1}},
+    ):
+        requirement = _derivation_requirement(integrity=None)
+        requirement.update(granted)
+        derived = derive_canonical_service_requirement("N", requirement)
+        assert sorted(derived) == [SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING]
+        assert derived[SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING]["planning"][
+            "placement_scope"] == "route_endpoints"
 
 
 # ---------------------------------------------------------------------------
@@ -246,21 +367,53 @@ def test_adopted_services_are_consumed_as_explicit_not_legacy_view(tmp_path):
     workflow.evaluate_required_cns_recommendation()
     authoritative = workflow.adopt_required_cns_recommendation()["required_cns"]
 
-    for code, name, key in (("C", "communication", SERVICE_KEY_COMMUNICATION),
-                            ("S", "surveillance", SERVICE_KEY_RID_COOPERATIVE)):
+    expected = {
+        "communication": [SERVICE_KEY_COMMUNICATION],
+        "surveillance": [SERVICE_KEY_RADAR_NONCOOPERATIVE, SERVICE_KEY_RID_COOPERATIVE],
+    }
+    from cns_planner.domain.cns_service_contract import (
+        SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
+    )
+
+    expected["navigation"] = [SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING]
+    for name, keys in expected.items():
+        code = {"communication": "C", "navigation": "N", "surveillance": "S"}[name]
         requirement = authoritative["project_default"][name]
         #: P14 走 service-aware 分支的唯一条件：``services`` 存在且能被规范化。
         assert normalize_service_requirements(code, requirement) is not None
         views = required_services_for(code, requirement)
-        assert [item["service_key"] for item in views] == [key]
+        assert sorted(item["service_key"] for item in views) == sorted(keys)
         assert all(item.get("legacy_compatible_view") is not True for item in views)
-        #: 正式 service 要求必须自带 surface policy，否则下游只能拿到 unknown。
-        assert views[0]["radius_by_surface"] == (
-            EXPECTED_COMMUNICATION if code == "C" else EXPECTED_RID
+
+    #: 有 surface policy 的服务必须自带冻结几何，否则下游只能拿到 unknown。
+    for name, key in (("communication", SERVICE_KEY_COMMUNICATION),
+                      ("surveillance", SERVICE_KEY_RID_COOPERATIVE)):
+        views = required_services_for(
+            {"communication": "C", "surveillance": "S"}[name],
+            authoritative["project_default"][name],
+        )
+        entry = next(item for item in views if item["service_key"] == key)
+        assert entry["radius_by_surface"] == (
+            EXPECTED_COMMUNICATION if key == SERVICE_KEY_COMMUNICATION else EXPECTED_RID
         )["radius_by_surface"]
-        assert views[0]["redundancy_by_surface"] == (
-            EXPECTED_COMMUNICATION if code == "C" else EXPECTED_RID
+        assert entry["redundancy_by_surface"] == (
+            EXPECTED_COMMUNICATION if key == SERVICE_KEY_COMMUNICATION else EXPECTED_RID
         )["redundancy_by_surface"]
+
+    #: adapter 服务（Navigation integrity / Radar）必须自带 canonical 契约。
+    navigation = next(
+        item for item in required_services_for(
+            "N", authoritative["project_default"]["navigation"],
+        ) if item["service_key"] == SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING
+    )
+    assert navigation["planning"]["placement_scope"] == "route_endpoints"
+    radar = next(
+        item for item in required_services_for(
+            "S", authoritative["project_default"]["surveillance"],
+        ) if item["service_key"] == SERVICE_KEY_RADAR_NONCOOPERATIVE
+    )
+    assert radar["planning_policy"]["allowed_radar_types"] == ["radar_i"]
+    assert radar["planning_policy"]["allow_automatic_radar_ii_escalation"] is False
 
 
 def test_legacy_surveillance_requirement_never_derives_rid_services():

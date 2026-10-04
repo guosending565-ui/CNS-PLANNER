@@ -1310,6 +1310,12 @@ class RadarSurveillanceLayoutService:
                 ],
                 "infeasibility_reasons": (item.get("infeasibility_reasons") or [])[:20],
                 "unknown_evidence": (item.get("unknown_evidence") or [])[:20],
+                #: BUG-RADAR-GAP-PROJECTION：canonical gap 结论必须在本摘要（即
+                #: ``/api/state``）里同样可读 —— 原样转印，绝不二次推导。
+                "gap_reason": item.get("gap_reason"),
+                "gap_classification": item.get("gap_classification"),
+                "managed_physical_gap": item.get("managed_physical_gap"),
+                "radar_gap": deepcopy(item.get("radar_gap")),
                 "input_fingerprint": item.get("input_fingerprint"),
                 "stale_reason": item.get("stale_reason"),
                 "proposal_only": True,
@@ -1679,6 +1685,13 @@ class RadarSurveillanceLayoutService:
                 **semantics_fingerprint(altitude_layer_id),
             },
             "route_sample_height_semantics": route_sample_height_semantics(altitude_layer_id),
+            #: BUG-RADAR-GAP-PROJECTION：canonical gap 结论在**未求解**时无结论。
+            #: 求解成功后由算法输出（``solve_layout``）**原样**转印，Application
+            #: 绝不二次推导、绝不重命名、绝不降级 presolve 的独立站址不足原因。
+            "gap_reason": None,
+            "gap_classification": None,
+            "managed_physical_gap": None,
+            "radar_gap": _radar_gap_block(None),
         }
         if demo_preview_only:
             risk_profile = demo_context.get("risk_profile") or {}
@@ -2209,6 +2222,17 @@ class RadarSurveillanceLayoutService:
             },
             "sample_count": solved.get("sample_count"),
             "message": solved.get("message"),
+            #: BUG-RADAR-GAP-PROJECTION：算法（``solve_layout``）已经给出 canonical
+            #: ``gap_reason`` / ``gap_classification`` / ``managed_physical_gap``；
+            #: 这里**原样转印**到 layout item / result_snapshot / HTTP，不做任何二次
+            #: 推导或改名。presolve 证明独立站址不足时保持
+            #: ``independent_site_count_limited``，绝不降级成
+            #: ``orientation_configuration_infeasible``；``search_incomplete`` 也绝不
+            #: 被当成 managed physical gap。
+            "gap_reason": solved.get("gap_reason"),
+            "gap_classification": solved.get("gap_classification"),
+            "managed_physical_gap": solved.get("managed_physical_gap"),
+            "radar_gap": _radar_gap_block(solved),
             "unknown_evidence": unknown_evidence + (
                 deepcopy((solved_validation or {}).get("unknown_evidence") or [])
             ),
@@ -2261,6 +2285,42 @@ class RadarSurveillanceLayoutService:
                 "cns_corridor_site_plan", "report",
             ],
         }
+
+
+def _radar_gap_block(solved):
+    """canonical Radar gap 结论的**原样**转印块（供 item / snapshot / HTTP 消费）。
+
+    BUG-RADAR-GAP-PROJECTION 的契约：
+
+    * 三个 canonical 字段（``gap_reason`` / ``gap_classification`` /
+      ``managed_physical_gap``）由算法 ``solve_layout`` 给出，Application 层**只转印**；
+    * 算法未产出该结论（尚未求解）时 ``available = False``，三个字段保持 ``None``，
+      **绝不**用任何默认值或二次推导填补；
+    * ``target_confidence`` / ``orientation`` 等其它字段一律不在这里推导。
+    """
+
+    if not isinstance(solved, dict) or "gap_classification" not in solved:
+        return {
+            "available": False,
+            "gap_reason": None,
+            "gap_classification": None,
+            "managed_physical_gap": None,
+            "source": "radar_layout_algorithm_not_evaluated",
+            "semantics": (
+                "canonical_gap_fields_transcribed_verbatim_from_solve_layout_never_re_derived"
+            ),
+        }
+    return {
+        "available": True,
+        "gap_reason": solved.get("gap_reason"),
+        "gap_classification": solved.get("gap_classification"),
+        "managed_physical_gap": solved.get("managed_physical_gap"),
+        "source": "radar_layout_algorithm_solve_layout_canonical_fields",
+        "semantics": (
+            "canonical_gap_fields_transcribed_verbatim_from_solve_layout_never_re_derived_"
+            "presolve_independent_site_shortage_reason_is_never_renamed"
+        ),
+    }
 
 
 def _solver_availability():

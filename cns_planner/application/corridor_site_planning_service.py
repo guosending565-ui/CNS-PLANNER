@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
+import time
 
 from ..algorithms.corridor.v1 import nearest_route_position
 from ..domain.corridor_site_planning import (
-    TARGET_SCOPE_SERVICE, corridor_target_id, corridor_voxel_entry_index,
+    TARGET_SCOPE_ENDPOINT, TARGET_SCOPE_SERVICE, corridor_target_id,
+    corridor_voxel_entry_index, endpoint_state_entry_index, endpoint_target_id,
     normalize_corridor_site_planning_policy,
 )
 from ..domain.cns_performance import type_gate_items
@@ -23,7 +25,11 @@ from ..domain.cns_service_registry import planner_family_for, service_registry_e
 from ..domain.navigation_augmentation import (
     build_navigation_service_evidence,
 )
-from ..domain.navigation_integrity_monitoring import navigation_integrity_monitor_actions
+from ..domain.navigation_integrity_monitoring import (
+    PLANNER_FAMILY as ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY,
+    endpoint_gap_evidence, hypothetical_endpoint_monitor_evidence,
+    navigation_integrity_monitor_actions,
+)
 from ..domain.radar_service_evidence import (
     build_radar_service_evidence, radar_candidate_actions,
     radar_what_if_service_evidence,
@@ -43,6 +49,7 @@ from .planning_evidence_service import (
     device_catalog_with_evidence,
 )
 from .site_candidate_actions import candidate_actions
+from .corridor_service import apply_algorithm_semantics_stale
 from .production_write_authority import assert_write_authority
 
 
@@ -54,7 +61,12 @@ class CorridorSitePlanningService:
         self.invalidation, self.snapshot = invalidation, snapshot
 
     def result_snapshot(self):
-        return deepcopy(self.session.state.get("cns_corridor_site_plan") or self.planner.empty())
+        """只读投影：算法语义版本变化时如实标注 stale（绝不误判 current）。"""
+
+        result = self.session.state.get("cns_corridor_site_plan") or self.planner.empty()
+        return apply_algorithm_semantics_stale(
+            result, self.planner.algorithm_id, self.planner.algorithm_version,
+        )
 
     def evaluate(self, payload=None):
         assert_write_authority(self, "cns_corridor_site_plan")
@@ -126,29 +138,48 @@ class CorridorSitePlanningService:
         continuous_impacts = []
         facilities = deepcopy(state.get("existing_cns_facilities") or {})
         current_corridor, current_gap = deepcopy(baseline_corridor), deepcopy(baseline_gap)
+        #: Round 29-G：endpoint 服务的 caller-owned 假想证据链。它**不**进入
+        #: facilities，也不触发任何走廊重算；只重算 endpoint 证据本身。
+        baseline_endpoint_evidence = deepcopy(
+            (baseline_corridor or {}).get("endpoint_service_evidence")
+        )
+        current_endpoint_evidence = deepcopy(baseline_endpoint_evidence)
         selected_ids = set()
         selected_radar_actions = []
         selected_navigation_actions = []
+        selected_endpoint_actions = []
         stop_reason = None
+        performance = _new_performance_profile(actions)
 
         def apply_winner(action, impact, score, cost, cost_unit, score_semantics, tier):
             """把一条中选动作应用到工作副本，并登记 selected / trace（唯一实现）。"""
 
-            nonlocal facilities, current_corridor, current_gap
+            nonlocal facilities, current_corridor, current_gap, current_endpoint_evidence
             if action.get("planner_family") == "directional_radar":
                 selected_radar_actions.append(deepcopy(action))
             elif action.get("planner_family") == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
                 # 导航站是 caller-owned 假想 provider：**不**写入正式 ExistingCNS，
                 # 也不并入 facilities，只作为重算 P14/P15 的显式输入累积。
                 selected_navigation_actions.append(deepcopy(action))
+            elif action.get("planner_family") == ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
+                #: Round 29-G：endpoint 完整性监测动作**只**更新 endpoint 假想证据。
+                #: 它不影响 corridor C/RID/Radar 几何，因此**绝不**重跑 P14/P15。
+                selected_endpoint_actions.append(deepcopy(action))
+                current_endpoint_evidence = hypothetical_endpoint_monitor_evidence(
+                    current_endpoint_evidence, [action],
+                )
+                current_gap = _project_endpoint_gap(current_gap, current_endpoint_evidence)
+                performance["endpoint_fast_path_apply_count"] += 1
             else:
                 facilities = _apply_cumulative_action(facilities, action)
-            current_corridor, current_gap = self._rerun(
-                facilities, radar_actions=selected_radar_actions,
-                navigation_actions=selected_navigation_actions,
-                baseline_navigation_evidence=baseline_navigation_evidence,
-                prepared_cells=prepared_cells,
-            )
+            if action.get("planner_family") != ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
+                current_corridor, current_gap = self._rerun(
+                    facilities, radar_actions=selected_radar_actions,
+                    navigation_actions=selected_navigation_actions,
+                    baseline_navigation_evidence=baseline_navigation_evidence,
+                    prepared_cells=prepared_cells, performance=performance,
+                )
+                current_gap = _project_endpoint_gap(current_gap, current_endpoint_evidence)
             selected_ids.add(action["action_id"])
             chosen = {
                 **deepcopy(action), "impact": deepcopy(impact),
@@ -198,6 +229,9 @@ class CorridorSitePlanningService:
                         continuous_threshold_m=continuous_threshold_m,
                         route_speed_mps=continuous_route_speed_mps,
                         aircraft_id=continuous_aircraft_id,
+                        endpoint_evidence=current_endpoint_evidence,
+                        endpoint_actions=selected_endpoint_actions,
+                        performance=performance,
                     )
                     evaluated.append(impact)
                     all_impacts.append(deepcopy(impact))
@@ -246,23 +280,42 @@ class CorridorSitePlanningService:
         final_facilities = deepcopy(state.get("existing_cns_facilities") or {})
         final_radar_actions = []
         final_navigation_actions = []
+        final_endpoint_actions = []
         for action in selected:
             family = action.get("planner_family")
             if family == "directional_radar":
                 final_radar_actions.append(deepcopy(action))
             elif family == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
                 final_navigation_actions.append(deepcopy(action))
+            elif family == ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
+                #: endpoint 动作**不**进入 facilities，也**不**触发走廊重算。
+                final_endpoint_actions.append(deepcopy(action))
             else:
                 final_facilities = _apply_cumulative_action(final_facilities, action)
-        final_corridor, final_gap = (
-            self._rerun(
+        corridor_selected = bool(
+            final_radar_actions or final_navigation_actions
+            or any(
+                action.get("planner_family") not in (
+                    "directional_radar", NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY,
+                    ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY,
+                ) for action in selected
+            )
+        )
+        if corridor_selected:
+            final_corridor, final_gap = self._rerun(
                 final_facilities, radar_actions=final_radar_actions,
                 navigation_actions=final_navigation_actions,
                 baseline_navigation_evidence=baseline_navigation_evidence,
-                prepared_cells=prepared_cells,
-            ) if selected
-            else (deepcopy(baseline_corridor), deepcopy(baseline_gap))
+                prepared_cells=prepared_cells, performance=performance,
+            )
+        else:
+            final_corridor, final_gap = deepcopy(baseline_corridor), deepcopy(baseline_gap)
+        final_endpoint_evidence = (
+            hypothetical_endpoint_monitor_evidence(
+                baseline_endpoint_evidence, final_endpoint_actions)
+            if final_endpoint_actions else current_endpoint_evidence
         )
+        final_gap = _project_endpoint_gap(final_gap, final_endpoint_evidence)
         consistency = (
             final_corridor.get("input_fingerprint") == current_corridor.get("input_fingerprint")
             and final_gap.get("input_fingerprint") == current_gap.get("input_fingerprint")
@@ -324,6 +377,8 @@ class CorridorSitePlanningService:
             },
         })
         result["origin_tier_statistics"] = _origin_tier_statistics(actions, selected)
+        #: Round 29-G：P16 第一阶段的**性能画像**（只读计数与耗时，不参与任何判定）。
+        result["performance_profile"] = _finalize_performance_profile(performance, selected)
         estimated_ids = sorted({
             str(item.get("tower_id")) for item in selected
             if item.get("origin_status") == "estimated" and item.get("tower_id")
@@ -421,7 +476,8 @@ class CorridorSitePlanningService:
         self, action, facilities, before_gap, targets, iteration, radar_actions=None,
         navigation_actions=None, baseline_navigation_evidence=None,
         prepared_cells=None, prefilter=None, continuous_threshold_m=None,
-        route_speed_mps=None, aircraft_id=None,
+        route_speed_mps=None, aircraft_id=None, endpoint_evidence=None,
+        endpoint_actions=None, performance=None,
     ):
         eligibility = action.get("eligibility") or {}
         if eligibility.get("status") != "eligible":
@@ -437,23 +493,45 @@ class CorridorSitePlanningService:
                 "reasons": deepcopy(eligibility.get("reasons") or []),
                 "evidence": [], "regressions": [],
             }, None, None)
+        family = action.get("planner_family")
+        if family == ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
+            #: Round 29-G：endpoint 完整性监测的**专用 what-if**。
+            #: 只重算 caller-owned 假想 endpoint provider 证据 → endpoint_gap_evidence，
+            #: **绝不**重跑完整 P14/P15 走廊链：该动作不影响 corridor C/RID/Radar 几何。
+            if performance is not None:
+                performance["endpoint_fast_path_count"] += 1
+            started = time.perf_counter()
+            after_endpoint_evidence = hypothetical_endpoint_monitor_evidence(
+                endpoint_evidence, [*(endpoint_actions or []), action],
+            )
+            after_gap = _project_endpoint_gap(before_gap, after_endpoint_evidence)
+            if performance is not None:
+                performance["endpoint_fast_path_seconds"] += time.perf_counter() - started
+            impact = _impact(
+                action, before_gap, after_gap, targets,
+                continuous_threshold_m=continuous_threshold_m,
+                route_speed_mps=route_speed_mps, aircraft_id=aircraft_id,
+            )
+            impact.update(_endpoint_what_if_evidence(action, after_endpoint_evidence))
+            impact["iteration"] = iteration
+            impact["provider_reason_profile"] = provider_reason_profile(None)
+            return impact, None, after_gap
         prefiltered = _prefilter_impact(action, iteration, prefilter)
         if prefiltered is not None:
             return (prefiltered, None, None)
-        family = action.get("planner_family")
         if family == "directional_radar":
             after_corridor, after_gap = self._rerun(
                 facilities, radar_actions=[*(radar_actions or []), action],
                 navigation_actions=navigation_actions,
                 baseline_navigation_evidence=baseline_navigation_evidence,
-                prepared_cells=prepared_cells,
+                prepared_cells=prepared_cells, performance=performance,
             )
         elif family == NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY:
             after_corridor, after_gap = self._rerun(
                 facilities, radar_actions=radar_actions,
                 navigation_actions=[*(navigation_actions or []), action],
                 baseline_navigation_evidence=baseline_navigation_evidence,
-                prepared_cells=prepared_cells,
+                prepared_cells=prepared_cells, performance=performance,
             )
         else:
             after_corridor, after_gap = self._rerun(
@@ -461,8 +539,12 @@ class CorridorSitePlanningService:
                 radar_actions=radar_actions,
                 navigation_actions=navigation_actions,
                 baseline_navigation_evidence=baseline_navigation_evidence,
-                prepared_cells=prepared_cells,
+                prepared_cells=prepared_cells, performance=performance,
             )
+        #: 走廊链重跑不会携带 caller-owned 的 endpoint 假想证据（P14 只从 facilities
+        #: 构造 endpoint evidence），因此这里**必须**把当前 endpoint 投影态重新叠加回去，
+        #: 否则已被 endpoint 动作解决的缺口会在走廊候选的 what-if 里"复活"。
+        after_gap = _project_endpoint_gap(after_gap, endpoint_evidence)
         impact = _impact(
             action, before_gap, after_gap, targets,
             continuous_threshold_m=continuous_threshold_m,
@@ -560,7 +642,7 @@ class CorridorSitePlanningService:
 
     def _rerun(
         self, facilities, radar_actions=None, navigation_actions=None,
-        baseline_navigation_evidence=None, prepared_cells=None,
+        baseline_navigation_evidence=None, prepared_cells=None, performance=None,
     ):
         radar_evidence = None
         if radar_actions:
@@ -577,24 +659,29 @@ class CorridorSitePlanningService:
             navigation_evidence = self._navigation_evidence(
                 self.session.state, navigation_actions,
             )
+        if performance is not None:
+            performance["full_corridor_rerun_count"] += 1
         return rerun_corridor_chain(
             self.session.state, self.corridor_model,
             self.corridor_gap_analyzer, facilities,
             radar_service_evidence=radar_evidence,
             navigation_service_evidence=navigation_evidence,
-            prepared_cells=prepared_cells,
+            prepared_cells=prepared_cells, timings=performance,
         )
 
 
 def rerun_corridor_chain(
     state, corridor_model_prototype, corridor_gap_prototype, facilities,
     *, radar_service_evidence=None, navigation_service_evidence=None,
-    prepared_cells=None,
+    prepared_cells=None, timings=None,
 ):
     """Run the existing P14→P15 chain on caller-owned working data.
 
     ``prepared_cells`` 只用于跳过**同一份** grid / terrain / surface facts 下的重复准备
     （P16 cumulative what-if）。不传时 P14 自行准备，行为与结果逐字段不变。
+
+    ``timings`` 是可选的**只读性能画像累加器**（P16 第一阶段 profiling）：它只累加
+    P14 / P15 各自耗时，绝不参与任何判定。
     """
     profile = aircraft_profile_with_evidence(state)
     selections = state.get("algorithm_selection") or {}
@@ -607,6 +694,7 @@ def rerun_corridor_chain(
             state.get("required_cns") or {}, state.get("radar_surveillance_layout") or {},
             route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
         )
+    started = time.perf_counter()
     corridor = corridor_model.evaluate(
         state.get("operational_routes") or [], state.get("spatial_3d") or {},
         state.get("grid") or {}, state.get("grid_attributes") or {},
@@ -622,14 +710,19 @@ def rerun_corridor_chain(
         navigation_service_evidence=navigation_service_evidence,
         prepared_cells=prepared_cells,
     )
+    if timings is not None:
+        timings["p14_seconds"] += time.perf_counter() - started
     analyzer = corridor_gap_prototype.__class__(
         (state.get("cns_corridor_gap_assessment") or {}).get("parameters")
         or getattr(corridor_gap_prototype, "parameters", {})
     )
+    started = time.perf_counter()
     gap = analyzer.evaluate(
         corridor, state.get("required_cns") or {},
         state.get("cns_planning_objectives") or {},
     )
+    if timings is not None:
+        timings["p15_seconds"] += time.perf_counter() - started
     return corridor, gap
 
 
@@ -1038,6 +1131,9 @@ def _targets(assessment):
                     "causes": deepcopy(entry.get("causes") or []),
                     "source_status": entry.get("combined_status"),
                 })
+    #: Round 29-G：route-endpoint 服务的建站目标（按 service_scope dispatch），
+    #: 与走廊体素 target 并列进入同一 target 集，但绝不共用 target_id 形状。
+    targets.extend(_endpoint_targets(assessment))
     return sorted(targets, key=lambda item: item["target_id"]), sorted(unknown, key=lambda item: item["target_id"])
 
 
@@ -1107,6 +1203,57 @@ def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, u
             "causes": deepcopy(entry.get("causes") or []),
             "source_status": entry.get("combined_status"),
         })
+    return targets
+
+
+def _endpoint_targets(assessment):
+    """P16 **endpoint targets**：只来自 P15 ``endpoint_service_gaps`` 的已确认缺口。
+
+    Route-endpoint 服务（当前唯一成员是 ``N:navigation_integrity_monitoring``）的正式状态
+    **只**来自 endpoint 证据，不参与走廊体素聚合，因此它的建站目标也必须在 endpoint 口径
+    显式建立 —— 否则该缺口既没有 corridor target、也没有 endpoint target，永远无法被任何
+    候选动作看见（Round 29-F 已确认的真实后果）。
+
+    dispatch **按 ``service_scope`` 判定**，绝不硬编码子系统或服务键：任何注册为
+    ``service_scope == "route_endpoints"`` 且支持站址规划的服务都走这条路径。
+    """
+
+    targets = []
+    for route in (assessment or {}).get("endpoint_service_gaps", {}).get("routes") or []:
+        route_id = str(route.get("route_id") or "")
+        key = str(route.get("service_key") or "")
+        if not key:
+            continue
+        spec = service_registry_entry(key)
+        if spec.get("service_scope") != "route_endpoints":
+            continue
+        if spec.get("supports_site_planning") is not True:
+            continue
+        for gap in route.get("confirmed_endpoint_gaps") or []:
+            role = str(gap.get("endpoint_role") or "")
+            if not role:
+                continue
+            targets.append({
+                "target_id": endpoint_target_id(route_id, role, key),
+                "route_id": route_id, "voxel_id": None,
+                "subsystem": spec.get("subsystem"), "service_key": key,
+                "target_scope": TARGET_SCOPE_ENDPOINT,
+                "planner_family": spec.get("planner_family"),
+                "endpoint_role": role,
+                "takeoff_landing_site_id": gap.get("takeoff_landing_site_id"),
+                "surface_class": None,
+                "counting_basis": "distinct_site_id",
+                "required_units": 1, "current_units": 0, "remaining_units": 1,
+                "distinct_site_ids": [],
+                #: endpoint 没有走廊体素体积：收益按**已确认 endpoint requirement unit**
+                #: 计数（工程规划代理量），绝不借用任何体素体积冒充收益。
+                "discretized_volume_proxy_m3": None,
+                "unit_gain_weight": 1.0,
+                "benefit_basis": "confirmed_endpoint_requirement_unit_count",
+                "nearest_route_offset_m": None,
+                "causes": deepcopy(gap.get("reasons") or []),
+                "source_status": "confirmed_gap",
+            })
     return targets
 
 
@@ -1212,11 +1359,34 @@ def _service_confirmed_units(entry, required_units):
 def _units_for_target(target, entry):
     if not isinstance(entry, dict):
         return None
+    if target.get("target_scope") == TARGET_SCOPE_ENDPOINT:
+        return _endpoint_confirmed_units(entry)
     if target.get("service_key") == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
         return _navigation_confirmed_units(target, entry)
     if target.get("service_key"):
         return _service_confirmed_units(entry, target.get("required_units"))
     return _confirmed_units(entry, target["required_units"])
+
+
+def _endpoint_confirmed_units(entry):
+    """endpoint target 的 current units：**只**计"该起降点是否已装上 monitor"。
+
+    这条计数契约与 ``_service_confirmed_units`` 同构：``planning_status`` 是**站址/设备
+    侧**的满足度（``required_count`` 个 monitor 是否已安装），而 ``combined_status``
+    是综合结论（还叠加 Communication delivery 依赖）。
+
+    因此安装 monitor **只**解决 ``*_integrity_monitor_missing``；若 C delivery 仍是
+    ``confirmed_deficit``，该 target 的 ``combined_status`` 仍是 ``confirmed_gap``，
+    照常登记为 residual —— 既不会把已确认的站址进展误判成 0，也绝不把
+    delivery 缺口悄悄升级成 satisfied。
+
+    ``planning_status`` 为 ``unknown`` 时返回 ``None``（fail-closed，绝不猜测）。
+    """
+
+    planning = str(entry.get("planning_status") or "unknown")
+    if planning == "unknown":
+        return None
+    return 1 if planning == "satisfied" else 0
 
 
 def _navigation_confirmed_units(target, entry):
@@ -1327,7 +1497,7 @@ def _impact(action, before, after, targets, continuous_threshold_m=None,
         if right.get("combined_status") == "confirmed_gap":
             remaining_confirmed += 1
         unit_gain = max(0, after_units - before_units)
-        volume = float(target.get("discretized_volume_proxy_m3") or 0.0)
+        volume = _target_benefit_weight(target)
         gain += volume * unit_gain
         if left.get("service_status") == "confirmed_deficit" and right.get("service_status") == "satisfied":
             service_volume += volume
@@ -1719,13 +1889,188 @@ def _prefilter_impact(action, iteration, prefilter):
 
 
 def _entry_map(assessment):
-    """P15 assessment → ``{target_id: entry}``（subsystem + service 两类 target）。
+    """P15 assessment → ``{target_id: entry}``（subsystem + service + endpoint 三类 target）。
 
     与 planner 的 residual 判定共用 :func:`corridor_voxel_entry_index`，因此
-    service-aware target 的生命周期与 legacy target 完全同构。
+    service-aware target 的生命周期与 legacy target 完全同构；endpoint target 另由
+    :func:`endpoint_state_entry_index` 索引**完整 endpoint 状态**（含 satisfied，
+    否则"缺口被解决"会被误读成"条目缺失"）。
     """
 
-    return corridor_voxel_entry_index(assessment)
+    entries = corridor_voxel_entry_index(assessment)
+    entries.update(endpoint_state_entry_index(assessment))
+    return entries
+
+
+def _route_corridor_status(route):
+    """route 的**走廊本体**状态（不含 endpoint 覆盖），与 P15 ``_aggregate`` 同一规则。"""
+
+    statuses = [
+        str(item.get("status") or "missing_data")
+        for item in (route or {}).get("subsystems") or []
+    ]
+    return _aggregate_statuses(statuses)
+
+
+def _aggregate_statuses(statuses):
+    """P15 route 级状态聚合规则的**唯一**副本（failed > pending/missing > all n/a > passed）。"""
+
+    statuses = list(statuses or [])
+    if not statuses:
+        return "missing_data"
+    if any(status == "failed" for status in statuses):
+        return "failed"
+    if any(status in ("pending_confirmation", "missing_data") for status in statuses):
+        return "pending_confirmation"
+    if all(status == "not_applicable" for status in statuses):
+        return "not_applicable"
+    return "passed"
+
+
+def _endpoint_overlay_status(corridor_status, endpoint_route):
+    """endpoint 缺口覆盖 route 状态的**唯一**规则（与 P14/P15 的既有语义逐字一致）。"""
+
+    status = str((endpoint_route or {}).get("status") or "")
+    if status == "confirmed_deficit":
+        return "failed"
+    if status == "unknown" and corridor_status == "passed":
+        return "pending_confirmation"
+    return corridor_status
+
+
+def _project_endpoint_gap(gap, endpoint_evidence):
+    """把（可能已被 endpoint 动作更新的）endpoint 证据投影回 P15 gap。
+
+    **只**改 endpoint 相关字段：``endpoint_service_gaps`` 与每个 route 的
+    ``endpoint_services`` / ``status``。走廊子系统的任何字段（含逐 voxel 明细）逐项不变
+    —— 因此这条路径既不需要、也不允许重跑 P14/P15。
+
+    ``endpoint_evidence`` 为 ``None``（本项目未要求该服务）或没有任何匹配 route 时**原样
+    返回** ``gap``（连一层拷贝都不做）。
+
+    **性能契约（Round 29-G）**：本函数返回的 gap 与输入 gap **共享只读的**
+    ``routes[].voxels`` 子树 —— 真实项目有 2844 个体素，逐候选 deepcopy 一次约 0.1 s，
+    而 endpoint 专用 what-if 会对同一 gap 反复投影。调用方**不得**就地修改返回值里的
+    voxel；需要长期持有或被后续就地修改时必须自行 ``deepcopy``。
+    """
+
+    if endpoint_evidence is None or gap is None:
+        return gap
+    endpoint_gaps = endpoint_gap_evidence(endpoint_evidence)
+    by_route = {
+        str(item.get("route_id")): item for item in endpoint_gaps.get("routes") or []
+    }
+    routes = []
+    changed = False
+    for route in gap.get("routes") or []:
+        endpoint = by_route.get(str(route.get("route_id") or ""))
+        if endpoint is None:
+            routes.append(route)
+            continue
+        changed = True
+        corridor_status = _route_corridor_status(route)
+        routes.append({
+            **route,
+            "endpoint_services": [deepcopy(endpoint)],
+            "status": _endpoint_overlay_status(corridor_status, endpoint),
+        })
+    if not changed:
+        return gap
+    return {
+        **gap,
+        "routes": routes,
+        "endpoint_service_gaps": endpoint_gaps,
+        "status": _aggregate_statuses(
+            [route.get("status") for route in routes]
+        ),
+    }
+
+
+def _endpoint_what_if_evidence(action, after_endpoint_evidence):
+    """endpoint 专用 what-if 的**证据块**（显式声明未重跑走廊链）。"""
+
+    return {
+        "evidence": [{
+            "kind": "endpoint_integrity_monitor_incremental_what_if",
+            "action_id": action.get("action_id"),
+            "endpoint_role": action.get("endpoint_role"),
+            "takeoff_landing_site_id": action.get("takeoff_landing_site_id"),
+            "planning_family": ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY,
+            "input_fingerprint": (after_endpoint_evidence or {}).get("input_fingerprint"),
+            "persisted": False,
+            "corridor_rerun": False,
+            "semantics": (
+                "endpoint_only_incremental_what_if_never_reruns_p14_p15_"
+                "because_the_action_cannot_change_corridor_geometry"
+            ),
+        }],
+    }
+
+
+def _target_benefit_weight(target):
+    """P16 target 的收益权重。
+
+    * 走廊体素 target：离散体积代理 ``discretized_volume_proxy_m3``（既有口径，逐项不变）；
+    * endpoint target：没有体素体积，收益按**已确认 endpoint requirement unit 个数**计
+      （``unit_gain_weight``，明确是工程规划代理量，不是风险或概率）。
+    """
+
+    volume = (target or {}).get("discretized_volume_proxy_m3")
+    if isinstance(volume, (int, float)) and not isinstance(volume, bool):
+        return float(volume)
+    weight = (target or {}).get("unit_gain_weight")
+    if isinstance(weight, (int, float)) and not isinstance(weight, bool):
+        return float(weight)
+    return 0.0
+
+
+def _new_performance_profile(actions):
+    """P16 第一阶段的性能画像累加器（纯计数，不参与任何判定）。"""
+
+    by_family = Counter()
+    by_type = Counter()
+    for action in actions or []:
+        by_family[str(action.get("planner_family") or "unknown")] += 1
+        by_type[str(action.get("action") or action.get("action_type") or "unknown")] += 1
+    return {
+        "candidate_count_by_planner_family": dict(sorted(by_family.items())),
+        "candidate_count_by_action_type": dict(sorted(by_type.items())),
+        "full_corridor_rerun_count": 0,
+        "endpoint_fast_path_count": 0,
+        "endpoint_fast_path_apply_count": 0,
+        "endpoint_fast_path_seconds": 0.0,
+        "p14_seconds": 0.0,
+        "p15_seconds": 0.0,
+    }
+
+
+def _finalize_performance_profile(performance, selected):
+    """收口性能画像：补上派生量与语义声明（**只读**，绝不改变判定）。"""
+
+    profile = deepcopy(performance or {})
+    by_family = profile.get("candidate_count_by_planner_family") or {}
+    profile["corridor_full_rerun_required_planner_families"] = sorted(
+        key for key in by_family
+        if key not in (ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY,)
+    )
+    profile["endpoint_fast_path_planner_family"] = ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY
+    profile["p14_seconds"] = round(float(profile.get("p14_seconds") or 0.0), 3)
+    profile["p15_seconds"] = round(float(profile.get("p15_seconds") or 0.0), 3)
+    profile["endpoint_fast_path_seconds"] = round(
+        float(profile.get("endpoint_fast_path_seconds") or 0.0), 6
+    )
+    profile["corridor_full_reruns_avoided_by_endpoint_fast_path"] = (
+        profile.get("endpoint_fast_path_apply_count", 0)
+    )
+    profile["selected_action_count"] = len(selected or [])
+    profile["selected_count_by_planner_family"] = dict(sorted(Counter(
+        str(action.get("planner_family") or "unknown") for action in selected or []
+    ).items()))
+    profile["semantics"] = (
+        "read_only_p16_phase1_profile_candidate_counts_and_elapsed_seconds_"
+        "endpoint_actions_never_trigger_a_full_p14_p15_rerun"
+    )
+    return profile
 
 
 def _regressions(before, after):
@@ -2064,6 +2409,13 @@ def _apply_cumulative_action(existing, action):
         #: 它是 caller-owned 假想 provider，只经
         #: :func:`...navigation_reference_station_planning_service.hypothetical_navigation_sites`
         #: 作为重算 P14/P15 的显式输入累积。
+        return collection
+    if action.get("planner_family") == ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
+        #: Round 29-G：endpoint 完整性监测 action 同理 —— 它是 caller-owned 的**假想
+        #: endpoint provider**，只经
+        #: :func:`...navigation_integrity_monitoring.hypothetical_endpoint_monitor_evidence`
+        #: 更新 endpoint 证据。绝不能被当作普通走廊 radio device 写进 facilities
+        #: （那会错误地影响 corridor C/RID/Radar 几何判定）。
         return collection
     identity_metadata = {"hypothetical_action_id": action["action_id"], "p16_proposal_only": True}
     host = deepcopy(action.get("host")) if isinstance(action.get("host"), dict) else None

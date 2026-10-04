@@ -158,6 +158,52 @@ def service_scope_for(service_key):
     return service_registry_entry(service_key)["service_scope"]
 
 
+#: subsystem 的 RequiredCNS 服务**全部**落在该作用域时，该子系统在走廊体素口径上
+#: 不适用（``not_applicable``）：它的正式状态只来自 endpoint 证据。
+ENDPOINT_SERVICE_SCOPE = "route_endpoints"
+
+#: 走廊体素口径下"该子系统不参与聚合"的唯一原因文本（P14 / P15 共用，措辞一致）。
+ENDPOINT_SCOPE_NOT_APPLICABLE_REASON = (
+    "该子系统的 RequiredCNS 服务全部为 route_endpoints 作用域："
+    "正式状态只来自 endpoint_service_evidence / endpoint_service_gaps，"
+    "绝不参与走廊体素聚合"
+)
+
+
+def endpoint_scope_only_subsystems(requirements):
+    """哪些 subsystem 的 RequiredCNS 服务**全部**是 ``route_endpoints`` 作用域。
+
+    P14（corridor 体素）与 P15（corridor 缺口聚合）共用**同一份**判定，绝不各写一套：
+
+    * 该子系统存在显式 required 服务，**且**它们的 ``service_scope`` 集合完全落在
+      ``route_endpoints`` 内 ⇒ 该子系统在走廊口径上是 ``not_applicable``；
+    * dispatch **按 ``service_scope`` 判定**，绝不 hardcode 任何 subsystem 码；
+    * 没有显式服务要求（legacy 项目）或存在 corridor 作用域服务时返回空集/不含该项
+      —— 既有行为逐项不变；
+    * 若未来某子系统**同时**存在 corridor 与 endpoint 服务，它**不**在此集合内：
+      只有 corridor-scope 服务照常参与 voxel 判定，endpoint-scope 服务仍由 endpoint
+      证据承载（两者绝不互相顶替）。
+    """
+
+    codes = set()
+    for code, name in (("C", "communication"), ("N", "navigation"), ("S", "surveillance")):
+        service_map = normalize_service_requirements(
+            code, (requirements or {}).get(name) or {},
+        )
+        if not service_map:
+            continue
+        required = [item for item in service_map.values() if item.get("required") is True]
+        if not required:
+            continue
+        scopes = {
+            service_registry_entry(item.get("service_key")).get("service_scope")
+            for item in required
+        }
+        if scopes and scopes <= {ENDPOINT_SERVICE_SCOPE}:
+            codes.add(code)
+    return frozenset(codes)
+
+
 def normalize_service_requirements(subsystem, requirement, *, field="required_cns"):
     """Normalize the optional ``services`` map on one subsystem requirement.
 
@@ -223,72 +269,164 @@ def service_requirement_for(subsystem, requirement, service_key):
     )
 
 
-#: 只有拥有**冻结 surface 工程规划基线**的服务才允许从"已确认的 subsystem
-#: ``service_key``"确定性派生 canonical ``services`` 条目。
+#: 拥有**冻结工程规划基线**、允许从"已确认的 subsystem 要求"确定性派生的 canonical
+#: 服务集合（Round 29-H 扩展为完整四服务）。
 #:
-#: Radar（非合作监视）与 Navigation RTK augmentation 各有独立的 canonical adapter 与
-#: 证据来源，**不**在此列；legacy ``S:surveillance`` / ``N:navigation`` 更不允许被
-#: 升级成正式服务要求。
+#: Round 2 只允许 Communication / RID 两项，于是 Navigation 永远派生不出
+#: ``N:navigation_integrity_monitoring``、Surveillance 永远派生不出
+#: ``S:radar_noncooperative`` —— 真实项目只能靠 direct-save fallback 绕过 recommendation。
+#: 本轮按用户裁定把**已确认工程要求**对应的四服务全部纳入派生规则，规则仍然显式、
+#: 可审计、fail-closed。
 CANONICAL_SERVICE_DERIVATION_KEYS = (
     SERVICE_KEY_COMMUNICATION,
+    SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
     SERVICE_KEY_RID_COOPERATIVE,
+    SERVICE_KEY_RADAR_NONCOOPERATIVE,
 )
 
-#: 派生来源标注：这些数值来自 Round 2 冻结的**工程规划基线**，
-#: 既不是厂家实测规格，也不是从设备数据反推出来的结论。
+#: 派生来源标注：这些数值来自既有冻结的**工程规划基线 / canonical adapter**，
+#: 既不是厂家实测规格，也不是从设备数据或机载能力反推出来的结论。
 DERIVED_SERVICE_REQUIREMENT_SOURCE = "derived_from_confirmed_subsystem_service_key"
+
+#: **显式的**"已确认 subsystem 要求 → canonical 服务"派生规则表。
+#:
+#: * ``conditions``：该服务被派生时**额外**必须成立的显式确认条件（OR 语义，空 = 无额外
+#:   条件）。条件只读取 subsystem 要求里**显式声明**的字段，绝不读取设备数据、机载档案
+#:   或任何未确认推断。
+#: * 只有携带**冻结 surface 工程规划基线**（``SERVICE_SURFACE_POLICY``）或
+#:   **canonical adapter 契约**（``SERVICE_REGISTRY`` 的 ``type`` / ``planning`` /
+#:   ``planning_policy``）的服务才会被派生。
+#: * 显式 ``service_key`` 落在 ``service_scope == "legacy"`` 时**绝不**派生。
+CANONICAL_SERVICE_DERIVATION_RULES = {
+    "C": (
+        {"service_key": SERVICE_KEY_COMMUNICATION, "conditions": ()},
+    ),
+    "N": (
+        {
+            "service_key": SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
+            #: 只有该 subsystem 显式要求"导航完整性"时才派生完整性监测服务 ——
+            #: 只要求水平精度不构成完整性监测要求。
+            "conditions": ("integrity", "performance.integrity_required"),
+        },
+    ),
+    "S": (
+        {"service_key": SERVICE_KEY_RID_COOPERATIVE, "conditions": ()},
+        #: 合作监视（RID）与非合作监视（Radar）是同一个"监视"要求的两个互补侧面，
+        #: 二者**绝不互相合并**为一条服务，也绝不互相顶替。
+        {"service_key": SERVICE_KEY_RADAR_NONCOOPERATIVE, "conditions": ()},
+    ),
+}
 
 
 def derive_canonical_service_requirement(subsystem, requirement, *, field="required_cns"):
-    """从**已确认**的 subsystem 要求确定性派生一个 canonical service requirement。
+    """从**已确认**的 subsystem 要求确定性派生 canonical service requirements。
 
     fail-closed 规则：只有以下条件**全部**成立才派生，否则返回 ``None``，调用方必须
     保持 legacy 语义（绝不猜测、绝不把未确认要求升级成正式服务要求）：
 
-    * ``required is True``；
-    * ``confirmed is True``；
-    * 显式 ``service_key`` 属于 :data:`CANONICAL_SERVICE_DERIVATION_KEYS`；
-    * 该 ``service_key`` 在 ``SERVICE_SURFACE_POLICY`` 里有冻结的 surface policy。
+    * ``required is True`` 且 ``confirmed is True``；
+    * 显式 ``service_key``（若有）**不是** legacy 身份（``N:navigation`` /
+      ``S:surveillance``）；
+    * 显式 ``service_key``（若有）必须命中 :data:`CANONICAL_SERVICE_DERIVATION_RULES`
+      里该 subsystem 的服务集合 —— 否则（例如 ``N:rtk_augmentation``）保持 fail-closed，
+      由调用方显式声明 ``services``；
+    * 每条规则的 ``conditions`` 全部满足。
 
-    派生内容**全部**取自既有 canonical 常量（surface policy 的全向半球几何、
-    ``radius_by_surface``、``redundancy_by_surface``、RID 类型语义），不引入任何新
-    数值，也不读取设备数据。返回 ``{service_key: requirement}``。
+    返回 ``{service_key: requirement}``（可含多条，例如 Surveillance → RID + Radar），
+    内容**全部**取自既有 canonical 常量 / adapter 契约，不引入任何新数值，也不读取设备
+    数据或机载能力。
     """
 
     code = str(subsystem or "").strip().upper()
     item = requirement if isinstance(requirement, dict) else {}
     if item.get("required") is not True or item.get("confirmed") is not True:
         return None
-    key = validated_service_key(
+    rules = CANONICAL_SERVICE_DERIVATION_RULES.get(code) or ()
+    if not rules:
+        return None
+    explicit_key = validated_service_key(
         item.get("service_key"), subsystem=code, field=f"{field}.service_key",
     )
-    if key not in CANONICAL_SERVICE_DERIVATION_KEYS:
-        return None
-    policy = service_policy(key)
-    if policy is None:
-        return None
-    derived = {
+    if explicit_key is not None:
+        if SERVICE_REGISTRY[explicit_key]["service_scope"] == "legacy":
+            return None
+        if explicit_key not in {rule["service_key"] for rule in rules}:
+            #: 显式声明了本规则表之外的 canonical 服务（例如 N:rtk_augmentation）：
+            #: 绝不擅自扩大服务集，保持 fail-closed。
+            return None
+    derived = {}
+    for rule in rules:
+        key = rule["service_key"]
+        if not _derivation_conditions_met(item, rule.get("conditions") or ()):
+            continue
+        entry = _derived_service_entry(code, key, item, field=field)
+        if entry is None:
+            continue
+        derived[key] = entry
+    return derived or None
+
+
+def _derivation_conditions_met(requirement, conditions):
+    """该 subsystem 要求是否**显式**满足这些确认条件（OR 语义；空 = 无额外条件）。"""
+
+    if not conditions:
+        return True
+    for path in conditions:
+        current = requirement
+        for part in str(path).split("."):
+            current = current.get(part) if isinstance(current, dict) else None
+        if current is True:
+            return True
+    return False
+
+
+def _derived_service_entry(code, key, requirement, *, field):
+    """一条派生服务条目：surface policy 服务取冻结几何，adapter 服务取 canonical 契约。"""
+
+    source = str(requirement.get("source") or DERIVED_SERVICE_REQUIREMENT_SOURCE)
+    entry = {
         "service_key": key,
         "required": True,
         "confirmed": True,
         "status": "passed",
-        "source": str(item.get("source") or DERIVED_SERVICE_REQUIREMENT_SOURCE),
+        "source": source,
         "service_requirement_source": DERIVED_SERVICE_REQUIREMENT_SOURCE,
-        "geometry": deepcopy(policy.get("geometry") or {}),
-        "radius_by_surface": deepcopy(policy.get("radius_by_surface") or {}),
-        "redundancy_by_surface": deepcopy(policy.get("redundancy_by_surface") or {}),
-        "radius_basis": policy.get("radius_basis"),
-        "maturity": policy.get("maturity"),
-        "parameter_origin": policy.get("parameter_origin"),
-        "parameter_semantics": policy.get("parameter_semantics"),
-        "missing_device_evidence": list(policy.get("missing_device_evidence") or []),
-        "not_evaluated": list(policy.get("not_evaluated") or []),
     }
-    if item.get("coverage_requirement") is not None:
-        derived["coverage_requirement"] = item.get("coverage_requirement")
-    if policy.get("type"):
-        derived["type"] = deepcopy(policy["type"])
-    return {key: derived}
+    policy = service_policy(key)
+    if policy is not None:
+        entry.update({
+            "geometry": deepcopy(policy.get("geometry") or {}),
+            "radius_by_surface": deepcopy(policy.get("radius_by_surface") or {}),
+            "redundancy_by_surface": deepcopy(policy.get("redundancy_by_surface") or {}),
+            "radius_basis": policy.get("radius_basis"),
+            "maturity": policy.get("maturity"),
+            "parameter_origin": policy.get("parameter_origin"),
+            "parameter_semantics": policy.get("parameter_semantics"),
+            "missing_device_evidence": list(policy.get("missing_device_evidence") or []),
+            "not_evaluated": list(policy.get("not_evaluated") or []),
+        })
+        if requirement.get("coverage_requirement") is not None:
+            entry["coverage_requirement"] = requirement.get("coverage_requirement")
+        if policy.get("type"):
+            entry["type"] = deepcopy(policy["type"])
+        return entry
+
+    registry = SERVICE_REGISTRY.get(key)
+    if registry is None:
+        return None
+    if registry.get("type"):
+        entry["type"] = deepcopy(registry["type"])
+    if registry.get("planning_policy"):
+        #: Radar-I orientation-first contract（含"绝不自动升级 Radar-II"）。
+        entry["planning_policy"] = deepcopy(registry["planning_policy"])
+    if key == SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING:
+        #: Round29-E 已确认的 endpoint contract（placement_scope / 每端 1 套 /
+        #: 独立物理站址 / 10 km 局地监测关联范围工程假设）。
+        entry["planning"] = _normalize_navigation_integrity_planning(
+            None, field=f"{field}.services[{key}].planning",
+            fallback_confirmed=True, fallback_source=source,
+        )
+    return entry
 
 
 def canonicalize_requirement_services(subsystem, requirement, *, field="required_cns"):
@@ -299,7 +437,7 @@ def canonicalize_requirement_services(subsystem, requirement, *, field="required
     * 显式 ``services`` 存在 ⇒ 原样返回该映射，``provenance.derived = False``；
       形状/合法性的 canonical 校验仍由 ``normalize_required_cns`` 完成。
     * 否则尝试 :func:`derive_canonical_service_requirement`；成功则返回派生映射与
-      可审计的 ``provenance``。
+      可审计的 ``provenance``（含逐服务的派生依据）。
     * 两者都不成立 ⇒ ``(None, None)``：调用方必须保持 legacy 形状，**不得**自行
       构造任何 service 要求。
 
@@ -323,10 +461,15 @@ def canonicalize_requirement_services(subsystem, requirement, *, field="required
     return derived, {
         "source": DERIVED_SERVICE_REQUIREMENT_SOURCE,
         "derived": True,
-        "basis": "confirmed_subsystem_service_key_plus_frozen_surface_policy",
+        "basis": (
+            "confirmed_subsystem_requirement_plus_frozen_surface_policy_or_"
+            "canonical_service_adapter_contract"
+        ),
+        "service_keys": sorted(derived),
         "reason": (
-            "该 subsystem 已确认显式 service_key 且存在冻结 surface 工程规划基线，"
-            "按既有 canonical 常量确定性派生正式 service requirement"
+            "该 subsystem 的已确认要求命中显式派生规则表，且对应服务拥有冻结 surface "
+            "工程规划基线或 canonical adapter 契约：按既有 canonical 常量确定性派生正式 "
+            "service requirement（绝不由设备数据或机载能力推断）"
         ),
     }
 
@@ -382,6 +525,19 @@ def _normalize_service_requirement(subsystem, key, value, *, field):
             fallback_confirmed=normalized.get("confirmed", False),
             fallback_source=normalized.get("source"),
         )
+    #: Round 29-H：Radar 的 **Radar-I orientation-first** 规划契约必须随服务身份一起
+    #: 进入 canonical ``services``（显式声明与 recommendation 派生两条路径**同一结果**）。
+    #: 调用方显式给出的同名字段优先，但一律以 registry 的冻结值为基线 —— 这不放宽任何
+    #: evidence gate，只是补齐既有 canonical 契约。
+    registry_planning_policy = SERVICE_REGISTRY[key].get("planning_policy")
+    if registry_planning_policy:
+        supplied_policy = (
+            source.get("planning_policy") if isinstance(source.get("planning_policy"), dict)
+            else {}
+        )
+        normalized["planning_policy"] = {
+            **deepcopy(registry_planning_policy), **deepcopy(supplied_policy),
+        }
     normalized["status"] = (
         "passed" if required is False or (required is True and normalized.get("confirmed") is True)
         else "pending_confirmation"
@@ -488,10 +644,12 @@ def _optional_positive_integer(value, field):
 
 
 __all__ = [
-    "CANONICAL_SERVICE_DERIVATION_KEYS", "DERIVED_SERVICE_REQUIREMENT_SOURCE",
-    "NAVIGATION_INTEGRITY_POLICY_SOURCE",
+    "CANONICAL_SERVICE_DERIVATION_KEYS", "CANONICAL_SERVICE_DERIVATION_RULES",
+    "DERIVED_SERVICE_REQUIREMENT_SOURCE", "ENDPOINT_SCOPE_NOT_APPLICABLE_REASON",
+    "ENDPOINT_SERVICE_SCOPE", "NAVIGATION_INTEGRITY_POLICY_SOURCE",
     "SERVICE_REGISTRY", "canonicalize_requirement_services",
-    "derive_canonical_service_requirement", "normalize_service_requirements",
+    "derive_canonical_service_requirement", "endpoint_scope_only_subsystems",
+    "normalize_service_requirements",
     "planner_family_for", "required_services_for", "service_registry_entry",
     "service_requirement_for", "service_scope_for",
 ]

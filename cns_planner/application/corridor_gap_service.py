@@ -3,7 +3,7 @@
 from copy import deepcopy
 
 from ..domain.cns_planning_objectives import normalize_cns_planning_objectives
-from .corridor_service import conclusion_changed
+from .corridor_service import apply_algorithm_semantics_stale, conclusion_changed
 
 
 class CNSCorridorGapService:
@@ -15,7 +15,12 @@ class CNSCorridorGapService:
         return deepcopy(self.session.state.get("cns_planning_objectives") or {})
 
     def result_snapshot(self):
-        return deepcopy(self.session.state.get("cns_corridor_gap_assessment") or self.analyzer.empty())
+        """只读投影：算法语义版本变化时如实标注 stale（绝不误判 current）。"""
+
+        result = self.session.state.get("cns_corridor_gap_assessment") or self.analyzer.empty()
+        return apply_algorithm_semantics_stale(
+            result, self.analyzer.algorithm_id, self.analyzer.algorithm_version,
+        )
 
     def set_objectives(self, payload):
         raw = payload.get("cns_planning_objectives", payload) if isinstance(payload, dict) else payload

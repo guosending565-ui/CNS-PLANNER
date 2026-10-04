@@ -296,44 +296,56 @@ def _segments(per_sample, predicate, *, segment_id):
 def validation_report(*, per_sample, route_length_m, spacing_m=None):
     """对整条航路做独立覆盖复核（不参与优化，只报告事实）。
 
-    长度按**区间**累计：每个 sample 代表以自身里程为中心、宽度为采样间距的一个区间
-    （首尾为半区间），因此长度守恒且不随"样本个数"漂移；补点后的不等距采样同样正确。
+    **长度守恒（BUG-RADAR-SURFACE-LENGTH）**：每个 sample 代表以自身里程为中心、宽度为
+    相邻采样间距的一个区间（首尾各补半个采样间距，并裁剪到 ``[0, route_length_m]``）。
+    区间长度先按**完整有序**的 sample 序列算好，再归属于**该 sample 自己**的
+    surface_class / status —— 绝不先按 surface 筛掉其它区段、再用剩余的相邻差累计
+    （那会跨越其它 surface，使 land / sea / coastal 的长度各自接近整条航路）。
+
+    因此：
+
+    * 所有 surface 的 ``length_m`` 之和 ≈ ``route_length_m``；
+    * 每个 surface 的 ``satisfied + under_redundant + uncovered + unknown`` 长度 ≈
+      该 surface 的 ``length_m``；
+    * 分类交替时中间距离**绝不**被重复计入两个 surface；
+    * 本函数**不**改变任何 coverage verdict（``violations`` / ``validated`` 逐项不变）。
     """
 
     effective_spacing = float(
         spacing_m or SOFTWARE_BASELINE["validation_sample_spacing_m"]
     )
-
-    def lengths_of(items):
-        """返回 ``(total_m, satisfied_m, minimum_satisfied_step_m)``。"""
-
-        if not items:
-            return 0.0, 0.0, None
-        ordered = sorted(items, key=lambda item: float(item["distance_along_route_m"]))
-        total, satisfied = 0.0, 0.0
-        for index, item in enumerate(ordered):
-            if index + 1 < len(ordered):
-                span = float(
-                    ordered[index + 1]["distance_along_route_m"]
-                ) - float(item["distance_along_route_m"])
-            else:
-                span = effective_spacing / 2.0
-            if index == 0:
-                span += effective_spacing / 2.0
-            total += span
-            if item["status"] == "satisfied":
-                satisfied += span
-        return total, satisfied, None
+    ordered = sorted(per_sample or [], key=lambda item: float(item["distance_along_route_m"]))
+    interval_lengths = _sample_interval_lengths(ordered, effective_spacing, route_length_m)
+    status_names = ("satisfied", "under_redundant", "uncovered", "unknown")
 
     summary = {}
     for surface_class in SURFACE_CLASSES:
-        items = [item for item in per_sample if item["surface_class"] == surface_class]
-        total, satisfied, _ = lengths_of(items)
+        pairs = [
+            (item, interval_lengths[index])
+            for index, item in enumerate(ordered)
+            if item["surface_class"] == surface_class
+        ]
+        items = [item for item, _ in pairs]
+        total = sum(length for _, length in pairs)
+        status_lengths = {
+            name: sum(length for item, length in pairs if item["status"] == name)
+            for name in status_names
+        }
+        accounted = sum(status_lengths.values())
         summary[surface_class] = {
             "sample_count": len(items),
             "length_m": total,
-            "satisfied_length_m": satisfied,
-            "satisfied_fraction": (satisfied / total) if total > 0 else None,
+            "satisfied_length_m": status_lengths["satisfied"],
+            #: additive：其余三个状态的长度也必须各自可见，否则无法自证
+            #: "该 surface 的四种状态长度之和 == 该 surface 长度"。
+            "under_redundant_length_m": status_lengths["under_redundant"],
+            "uncovered_length_m": status_lengths["uncovered"],
+            "unknown_length_m": status_lengths["unknown"],
+            "accounted_length_m": accounted,
+            "length_conservation_difference_m": total - accounted,
+            "satisfied_fraction": (
+                status_lengths["satisfied"] / total if total > 0 else None
+            ),
             "minimum_distinct_site_count": (
                 min((item["actual_distinct_site_count"] for item in items), default=None)
             ),
@@ -350,6 +362,29 @@ def validation_report(*, per_sample, route_length_m, spacing_m=None):
                 1 for item in items if item["status"] == "unknown"
             ),
         }
+
+    surface_length_sum = sum(item["length_m"] for item in summary.values())
+    conservation = {
+        "semantics": (
+            "each_validation_sample_owns_the_route_interval_around_its_own_position_"
+            "surface_lengths_never_span_other_surfaces"
+        ),
+        "interval_basis": "full_ordered_sample_sequence_with_half_intervals_at_both_ends",
+        "surface_length_sum_m": surface_length_sum,
+        "route_length_m": route_length_m,
+        "difference_m": (
+            float(route_length_m) - surface_length_sum
+            if isinstance(route_length_m, (int, float)) else None
+        ),
+        "per_surface": {
+            name: {
+                "length_m": item["length_m"],
+                "accounted_length_m": item["accounted_length_m"],
+                "difference_m": item["length_conservation_difference_m"],
+            }
+            for name, item in summary.items()
+        },
+    }
 
     uncovered = _segments(
         per_sample, lambda item: item["status"] == "uncovered", segment_id="uncovered",
@@ -406,11 +441,51 @@ def validation_report(*, per_sample, route_length_m, spacing_m=None):
         "unknown_evidence_count": len(unknown_items),
         "validated": not violations and not unknown_items,
         "validation_sample_spacing_m": effective_spacing,
+        "surface_length_conservation": conservation,
         "semantics": "independent_continuous_coverage_review_over_the_whole_route",
         "classification_independence": (
             "each_validation_sample_classified_at_its_own_real_position_no_nearest_inheritance"
         ),
     }
+
+
+def _sample_interval_lengths(ordered_samples, spacing_m, route_length_m=None):
+    """完整有序 sample 序列 → 每个 sample 代表的里程区间长度（与输入顺序平行）。
+
+    区间 = ``[offset - 前向半间距, offset + 后向半间距]``：内部点的两半相加正好是相邻
+    间距，首尾各补半个采样间距；结果裁剪到 ``[0, route_length_m]``（``route_length_m``
+    不可用时只裁下界）。因此区间长度之和 == 完整覆盖长度，且**与 sample 的
+    surface / status 无关** —— 归属发生在调用方，绝不跨越其它区段。
+    """
+
+    total = len(ordered_samples)
+    limit = (
+        float(route_length_m)
+        if isinstance(route_length_m, (int, float))
+        and not isinstance(route_length_m, bool)
+        and float(route_length_m) > 0
+        else None
+    )
+    lengths = []
+    for index, item in enumerate(ordered_samples):
+        offset = float(item["distance_along_route_m"])
+        if index == 0:
+            start = offset - spacing_m / 2.0
+        else:
+            start = offset - (
+                offset - float(ordered_samples[index - 1]["distance_along_route_m"])
+            ) / 2.0
+        if index + 1 == total:
+            end = offset + spacing_m / 2.0
+        else:
+            end = offset + (
+                float(ordered_samples[index + 1]["distance_along_route_m"]) - offset
+            ) / 2.0
+        start = max(0.0, start)
+        if limit is not None:
+            end = min(limit, end)
+        lengths.append(max(0.0, end - start))
+    return lengths
 
 
 # ------------------------------------------------------------------------------ solving

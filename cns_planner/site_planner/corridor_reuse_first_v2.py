@@ -9,12 +9,15 @@ import json
 
 from ..domain.corridor_site_planning import (
     corridor_voxel_entry_index, empty_cns_corridor_site_plan,
+    endpoint_state_entry_index,
 )
 
 
 class CorridorReuseFirstSitePlannerV2:
     algorithm_id = "corridor_reuse_first_site_planner_v2"
-    algorithm_version = "2.0"
+    #: Round 29-H bump：新增 ``endpoint_integrity_monitor`` planner family 与
+    #: endpoint target / 专用 what-if（绝不重跑走廊链），并新增只读 performance profile。
+    algorithm_version = "2.1"
 
     def __init__(self, parameters=None):
         self.parameters = deepcopy(parameters or {})
@@ -140,6 +143,10 @@ class CorridorReuseFirstSitePlannerV2:
             "baseline_fingerprint": (baseline or {}).get("input_fingerprint"),
             "policy": policy or {}, "targets": targets or [], "actions": actions or [],
             "impacts": impacts or [], "parameters": self.parameters,
+            #: Round 29-H：算法语义版本进入输入指纹（见 P14 同一裁定）。
+            "algorithm_semantics": {
+                "algorithm_id": self.algorithm_id, "algorithm_version": self.algorithm_version,
+            },
         }
         result = self.empty("proposal_ready" if selected else "no_eligible_proposal")
         result.update({
@@ -356,9 +363,15 @@ def _candidate_unknown_reason_summary(impacts):
 
 
 def _voxel_entries(assessment):
-    """subsystem + service 两类 target_id → entry（与 P16 service 的索引同一契约）。"""
+    """subsystem + service + endpoint 三类 target_id → entry（与 P16 服务的索引同一契约）。
 
-    return corridor_voxel_entry_index(assessment)
+    endpoint target **必须**与走廊体素 target 一起索引：它的"最终状态"同样要参与
+    residual / unknown 判定，否则已被 endpoint 动作解决的缺口会被误报成 ``missing``。
+    """
+
+    entries = corridor_voxel_entry_index(assessment)
+    entries.update(endpoint_state_entry_index(assessment))
+    return entries
 
 
 def _fingerprint(value):

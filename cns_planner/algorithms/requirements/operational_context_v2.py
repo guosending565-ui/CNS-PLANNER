@@ -177,6 +177,10 @@ def _attach_canonical_services(requirements, scope):
             "source_type": record["source"], "source": record["source"],
             "reference": None, "clause": None,
             "derived": record["derived"], "reason": record["reason"],
+            #: Round 29-H additive：派生依据与派生出的服务集合必须可审计 ——
+            #: 否则"为什么 Surveillance 同时得到 RID 与 Radar"在结果里不可核查。
+            "basis": record.get("basis"),
+            "service_keys": deepcopy(record.get("service_keys") or []),
         }]
     return requirements, provenance
 

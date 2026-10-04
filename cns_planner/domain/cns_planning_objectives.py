@@ -95,7 +95,8 @@ def empty_cns_corridor_gap_assessment(status="not_calculated"):
     return {
         "status": status,
         "algorithm_id": "cns_corridor_gap_v1",
-        "algorithm_version": "1.0",
+        #: Round 29-H：与 ``CNSCorridorGapAnalyzerV1.algorithm_version`` 保持同步。
+        "algorithm_version": "1.1",
         "model_scope": "spatial_corridor_service_redundancy_and_objectives",
         "continuity_semantics": "conservative_longitudinal_projection_of_corridor_voxel_deficits",
         "formal_continuity_probability": "not_evaluated",

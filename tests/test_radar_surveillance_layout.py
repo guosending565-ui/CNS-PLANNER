@@ -1813,8 +1813,8 @@ def test_service_evaluation_persists_and_restores(tmp_path):
         "legacy_not_used_by_v1_1"
     ] is True
     assert reopened.state["radar_surveillance_policy"]["radar_mount_height_required"] is False
-    assert stored["algorithm_version"] == "1.1"
-    assert restored["algorithm_version"] == "1.1"
+    assert stored["algorithm_version"] == "1.2"
+    assert restored["algorithm_version"] == "1.2"
 
 
 def test_service_route_samples_are_always_fixed_altitude_080(tmp_path):
@@ -1982,11 +1982,12 @@ def test_plane_intersection_radii_math_and_no_intersection_semantics():
     assert below["plane_intersection_reason"].startswith("site_plane_below_radar_origin")
 
 
-def test_algorithm_version_is_1_1_and_fingerprint_carries_v1_1_semantics(tmp_path):
+def test_algorithm_version_is_1_2_and_fingerprint_carries_semantics(tmp_path):
     service, provider = _service(tmp_path)
     _evaluate(service, provider)
     stored = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
-    assert stored["algorithm_version"] == "1.1"
+    #: Round 29-H bump：surface 长度统计与 canonical gap 投影语义变化 ⇒ V1.2。
+    assert stored["algorithm_version"] == "1.2"
     # BUG-SHOT-008：默认高度层（ALT-080）下，四个既有语义分量逐字不变；
     # 额外带上的 ``fixed_altitude_layer_id`` 让"换成 ALT-100"必然产生新指纹
     # （旧 layout 因此 stale），这是本次"数据驱动高度层"改造的显式语义分量。
@@ -2001,7 +2002,7 @@ def test_algorithm_version_is_1_1_and_fingerprint_carries_v1_1_semantics(tmp_pat
         "fixed_altitude_layer_id": "ALT-080",
     }
     components = service.radar_surveillance_layout_service._fingerprint_components(ROUTE_ID)
-    assert components["algorithm_version"] == "1.1"
+    assert components["algorithm_version"] == "1.2"
     assert components["semantics"]["geometry_version"] == "radar_layout_geometry_v1_1"
     assert components["route_altitude_semantics"] == (
         "fixed_alt_080_egm2008_constant_for_every_sample"

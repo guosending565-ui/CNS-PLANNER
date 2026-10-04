@@ -55,6 +55,10 @@ class CorridorCandidateImpact(TypedDict, total=False):
 #: legacy target 与 service target **绝不共用 target_id**，因此两条路径互不覆盖。
 TARGET_SCOPE_SUBSYSTEM = "subsystem"
 TARGET_SCOPE_SERVICE = "service"
+#: ``endpoint`` —— route-endpoint 服务口径（例如 ``N:navigation_integrity_monitoring``）。
+#: 这类服务的正式状态**只**来自 P15 ``endpoint_service_gaps``，绝不参与走廊体素聚合，
+#: 因此它的 P16 建站目标也必须有自己的 target 作用域与 target_id 形状。
+TARGET_SCOPE_ENDPOINT = "endpoint"
 
 #: service 池状态 → legacy 组合状态（P16 what-if 的 regression / 判定复用同一套词汇）。
 SERVICE_STATUS_TO_COMBINED_STATUS = {
@@ -73,6 +77,57 @@ def corridor_target_id(route_id, voxel_id, key):
     """
 
     return f"{route_id}|{voxel_id}|{key}"
+
+
+def endpoint_target_id(route_id, endpoint_role, key):
+    """endpoint target 的稳定标识：``route_id|endpoint:<role>|<service_key>``。
+
+    与走廊体素 target 的三段式保持同构，但第二段显式写 ``endpoint:<role>`` ——
+    既不可能撞上任何 voxel_id，也不会被误读成走廊体素。
+    """
+
+    return f"{route_id}|endpoint:{endpoint_role}|{key}"
+
+
+def endpoint_state_entry_view(state):
+    """P15 ``endpoint_states[]`` → P16 可消费的稳定视图。
+
+    只做状态映射：``combined_status`` 复用与 service 口径**同一张**映射表，
+    使 endpoint target 的 regression / residual 判定与既有两条路径同构。
+    """
+
+    if not isinstance(state, dict):
+        return {}
+    status = str(state.get("status") or "unknown")
+    return {
+        **state,
+        "entry_scope": TARGET_SCOPE_ENDPOINT,
+        "service_status": status,
+        "redundancy_status": status,
+        "combined_status": SERVICE_STATUS_TO_COMBINED_STATUS.get(status, "unknown"),
+    }
+
+
+def endpoint_state_entry_index(assessment):
+    """P15 assessment → ``{endpoint_target_id: entry}``（含 satisfied 的 endpoint）。
+
+    **必须**索引完整状态而不是只索引缺口列表：what-if 之后某个 endpoint 会从
+    ``confirmed_endpoint_gaps`` 里消失（那正是"缺口已被解决"），若索引只在缺口出现时
+    才有条目，P16 就会把"解决"读成"条目缺失 = 证据不足"。
+    """
+
+    result = {}
+    for route in (assessment or {}).get("endpoint_service_gaps", {}).get("routes") or []:
+        route_id = str(route.get("route_id") or "")
+        key = str(route.get("service_key") or "")
+        if not key:
+            continue
+        for state in route.get("endpoint_states") or []:
+            role = str((state or {}).get("endpoint_role") or "")
+            if not role:
+                continue
+            result[endpoint_target_id(route_id, role, key)] = endpoint_state_entry_view(state)
+    return result
 
 
 def service_entry_view(service):
@@ -177,7 +232,8 @@ def empty_cns_corridor_site_plan(status="not_calculated"):
     return {
         "status": status,
         "algorithm_id": "corridor_reuse_first_site_planner_v2",
-        "algorithm_version": "2.0",
+        #: Round 29-H：与 ``CorridorReuseFirstSitePlannerV2.algorithm_version`` 保持同步。
+        "algorithm_version": "2.1",
         "parameters": {},
         "proposal_only": True,
         "requires_user_confirmation_and_apply": True,

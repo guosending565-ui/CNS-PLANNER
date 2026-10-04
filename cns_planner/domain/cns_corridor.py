@@ -70,7 +70,8 @@ def empty_cns_corridor_assessment(status="not_calculated"):
     return {
         "status": status,
         "algorithm_id": "cns_service_corridor_v1",
-        "algorithm_version": "1.0",
+        #: Round 29-H：与 ``CNSServiceCorridorV1.algorithm_version`` 保持同步。
+        "algorithm_version": "1.1",
         "model_scope": "engineering_cns_service_requirement_corridor",
         "input_fingerprint": None,
         "corridor_geometry_fingerprint": None,

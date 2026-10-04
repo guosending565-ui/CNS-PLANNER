@@ -30,7 +30,10 @@ from ...domain.cns_service_contract import (
     SERVICE_KEY_RADAR_NONCOOPERATIVE, index_max_range_m, normalize_surface_class,
     required_distinct_site_count, resolve_surface_class,
 )
-from ...domain.cns_service_registry import normalize_service_requirements, service_registry_entry
+from ...domain.cns_service_registry import (
+    ENDPOINT_SCOPE_NOT_APPLICABLE_REASON, endpoint_scope_only_subsystems,
+    normalize_service_requirements, service_registry_entry,
+)
 from ...domain.navigation_augmentation import (
     delivery_dependency_from_communication,
     evidence_for_probe as navigation_evidence_for_probe,
@@ -47,7 +50,10 @@ from ...domain.spatial_3d import (
 
 class CNSServiceCorridorV1:
     algorithm_id = "cns_service_corridor_v1"
-    algorithm_version = "1.0"
+    #: Round 29-H bump：新增 route-endpoint 作用域的 corridor 体素隔离
+    #: （``not_applicable``、不生成 corridor deficit/unknown、不进 provider 汇总）。
+    #: 旧持久化结果在 corridor voxel 语义上**不再等价**，必须整体重算。
+    algorithm_version = "1.1"
     model_scope = "engineering_cns_service_requirement_corridor"
 
     def __init__(self, parameters=None):
@@ -157,6 +163,11 @@ class CNSServiceCorridorV1:
             "capability_parameters": capability_parameters or {},
             #: Round 2：surface 事实进入 P14 输入指纹（不含逐格明细本身）。
             "surface_facts_fingerprint": surface_facts_fingerprint,
+            #: Round 29-H：**算法语义版本进入输入指纹** —— 只要新代码不能把旧持久化结果
+            #: 安全视为同一语义，输入没变也必须被判定为"基线已失效"，绝无误判 current。
+            "algorithm_semantics": {
+                "algorithm_id": self.algorithm_id, "algorithm_version": self.algorithm_version,
+            },
         }
         if radar_service_evidence is not None:
             fingerprint_input["radar_service_evidence"] = radar_service_evidence
@@ -300,9 +311,15 @@ class CNSServiceCorridorV1:
             }
         requirements = ((required_cns.get("route_overrides") or {}).get(route_id)
                         or required_cns.get("project_default") or {})
+        #: Round 29-H：route-endpoint 作用域的子系统的 required 服务**不参与走廊体素
+        #: 判定**（按 service_scope dispatch，不 hardcode subsystem 码）。其正式状态
+        #: 只来自 ``endpoint_service_evidence``，因此这里既不生成 corridor service
+        #: deficit，也不生成 corridor unknown，更不进入 corridor provider/redundancy 汇总。
+        endpoint_only_codes = endpoint_scope_only_subsystems(requirements)
         capability_contexts = {
             code: prepare_capability_context(code, requirements.get(name) or {}, aircraft)
             for code, name in SUBSYSTEM_NAMES.items()
+            if code not in endpoint_only_codes
         }
         voxels = []
         total_horizontal = len(horizontal)
@@ -318,6 +335,7 @@ class CNSServiceCorridorV1:
                 geometric_providers, provider_devices, capability_contexts,
                 radar_service_evidence, radar_metric_projector,
                 navigation_service_evidence, navigation_metric_projector,
+                endpoint_only_codes=endpoint_only_codes,
             ))
         summaries = [_summary(code, voxels) for code in ("C", "N", "S")]
         statuses = [item["status"] for item in summaries]
@@ -343,6 +361,7 @@ class CNSServiceCorridorV1:
         layers, requirements, aircraft, geometric_providers, provider_devices,
         capability_contexts, radar_service_evidence=None, radar_metric_projector=None,
         navigation_service_evidence=None, navigation_metric_projector=None,
+        endpoint_only_codes=frozenset(),
     ):
         cell, center = prepared["cell"], prepared["center"]
         surface = prepared["surface"]
@@ -386,6 +405,13 @@ class CNSServiceCorridorV1:
             }
             subsystems = []
             for code, name in SUBSYSTEM_NAMES.items():
+                if code in endpoint_only_codes:
+                    #: Round 29-H：route-endpoint 作用域子系统在走廊体素上显式
+                    #: ``not_applicable`` —— 不评估几何、不生成 provider 评估、不生成
+                    #: service_redundancy，因此既不会产生 corridor deficit，也不会产生
+                    #: corridor unknown，更不会进入 provider/redundancy 汇总。
+                    subsystems.append(_endpoint_scoped_corridor_entry(code, probe))
+                    continue
                 geometry = evaluate_geometry_point(probe, geometric_providers.get(code, []))
                 capability_input = {**probe, **geometry}
                 capability = evaluate_capability_point(
@@ -524,6 +550,43 @@ class CNSServiceCorridorV1:
                 "subsystems": subsystems,
             })
         return output
+
+
+def _endpoint_scoped_corridor_entry(code, probe):
+    """route-endpoint 作用域子系统的 P14 走廊体素条目（显式 ``not_applicable``）。
+
+    形状与正式 subsystem entry 同构（下游消费者不需要分支），但：
+
+    * ``planning_status = "not_applicable"`` ⇒ 不进入 ``deficit_voxel_ids`` /
+      ``unknown_voxel_ids``，也不进入 ``_summary`` 的 applicable 集；
+    * ``providers`` / ``provider_evaluations`` / ``service_redundancy`` 全部为空 ——
+      该子系统的走廊 provider/redundancy 汇总**绝不**包含它；
+    * ``evidence`` 显式声明 dispatch 依据，供审计。
+    """
+
+    return {
+        "subsystem": code,
+        "planning_status": "not_applicable",
+        "p8_status": "not_applicable",
+        "geometry": {
+            "covered": None, "providers": [],
+            "reason": ENDPOINT_SCOPE_NOT_APPLICABLE_REASON,
+            "semantics": "endpoint_scope_subystem_not_evaluated_in_corridor_voxels",
+        },
+        "providers": [],
+        "provider_evaluations": [],
+        "surface_class": probe.get("surface_class"),
+        "reasons": [ENDPOINT_SCOPE_NOT_APPLICABLE_REASON],
+        "evidence": [{
+            "kind": "endpoint_scope_dispatch",
+            "service_scope": "route_endpoints",
+            "semantics": (
+                "route_endpoint_service_state_comes_only_from_endpoint_service_evidence_"
+                "never_from_corridor_voxel_evaluation"
+            ),
+        }],
+        "service_redundancy": [],
+    }
 
 
 def _endpoint_communication_delivery(route_results):

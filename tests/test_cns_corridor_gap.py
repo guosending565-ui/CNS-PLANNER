@@ -219,7 +219,7 @@ class ApiContext:
 def test_registry_api_persistence_backfill_and_one_way_invalidation(tmp_path):
     path = tmp_path / "project.json"
     workflow = WorkflowService(path, DEFAULTS)
-    assert workflow.algorithm_registry.manifest("corridor_gap_analyzer", "cns_corridor_gap_v1", "1.0")
+    assert workflow.algorithm_registry.manifest("corridor_gap_analyzer", "cns_corridor_gap_v1", "1.1")
     workflow.state["cns_corridor_assessment"] = corridor([
         voxel("G1@L1", 50, 10, providers=[provider("D1")])
     ])

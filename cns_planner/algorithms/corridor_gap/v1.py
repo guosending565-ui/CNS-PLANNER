@@ -17,12 +17,23 @@ from ...domain.cns_planning_objectives import (
 from ...domain.cns_service_contract import (
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, normalize_surface_class,
 )
+from ...domain.cns_service_registry import (
+    ENDPOINT_SCOPE_NOT_APPLICABLE_REASON, ENDPOINT_SERVICE_SCOPE,
+    endpoint_scope_only_subsystems, normalize_service_requirements,
+    service_registry_entry,
+)
 from ...domain.navigation_integrity_monitoring import endpoint_gap_evidence
+
+#: route-endpoint 作用域子系统在走廊聚合里的显式原因（不是"没有缺口"，也不是 unknown）。
+#: 与 P14 共用 domain 层的同一份文案，避免两个算法各写一套措辞。
+SUBSYSTEM_NAMES = (("C", "communication"), ("N", "navigation"), ("S", "surveillance"))
 
 
 class CNSCorridorGapAnalyzerV1:
     algorithm_id = "cns_corridor_gap_v1"
-    algorithm_version = "1.0"
+    #: Round 29-H bump：route-endpoint 作用域子系统的 corridor 聚合改为
+    #: ``not_applicable`` / 0 体素（Round29-G 已引入，本轮连带 P14 一起冻结语义）。
+    algorithm_version = "1.1"
     model_scope = "spatial_corridor_service_redundancy_and_objectives"
     continuity_semantics = "conservative_longitudinal_projection_of_corridor_voxel_deficits"
 
@@ -55,7 +66,12 @@ class CNSCorridorGapAnalyzerV1:
             route_id = str(corridor_route.get("route_id") or "")
             requirements = ((required_cns or {}).get("route_overrides") or {}).get(route_id) or (required_cns or {}).get("project_default") or {}
             objective_config = ((objective_routes.get(route_id) or {}).get("subsystems") or {})
-            assessed = self._route(corridor_route, requirements, objective_config)
+            assessed = self._route(
+                corridor_route, requirements, objective_config,
+                #: Round 29-G：route-endpoint 作用域的子系统的 corridor 体素聚合必须是
+                #: not_applicable / 0 voxel —— 它的正式状态只来自 endpoint_service_gaps。
+                endpoint_only_codes=_endpoint_only_subsystems(requirements),
+            )
             endpoint = deepcopy(endpoint_by_route.get(route_id))
             if endpoint is not None:
                 assessed["endpoint_services"] = [endpoint]
@@ -69,6 +85,10 @@ class CNSCorridorGapAnalyzerV1:
             "required_cns": required_cns or {},
             "planning_objectives": planning_objectives or {},
             "parameters": self.parameters,
+            #: Round 29-H：算法语义版本进入输入指纹（见 P14 同一裁定）。
+            "algorithm_semantics": {
+                "algorithm_id": self.algorithm_id, "algorithm_version": self.algorithm_version,
+            },
         })
         target_ids = sorted({
             voxel_id for route in routes for subsystem in route.get("subsystems") or []
@@ -95,13 +115,19 @@ class CNSCorridorGapAnalyzerV1:
             "not_evaluated": planning_not_evaluated(),
         }
 
-    def _route(self, route, requirements, objective_config):
+    def _route(self, route, requirements, objective_config, *, endpoint_only_codes=frozenset()):
         route_id = str(route.get("route_id") or "")
         route_length = float(route.get("route_length_m") or 0.0)
         assessed_voxels = []
         for voxel in route.get("voxels") or []:
             entries = []
-            for code, name in (("C", "communication"), ("N", "navigation"), ("S", "surveillance")):
+            for code, name in SUBSYSTEM_NAMES:
+                if code in endpoint_only_codes:
+                    #: Round 29-G：该子系统的 RequiredCNS 服务全部是 route_endpoints 作用域。
+                    #: 它的走廊聚合必须是 not_applicable —— **不得**因为走廊体素没有该服务的
+                    #: provider 证据就生成 unknown（那会造出与要求无关的 corridor unknown）。
+                    entries.append(_endpoint_scoped_entry(code, voxel.get("surface_class")))
+                    continue
                 source = next((item for item in voxel.get("subsystems") or [] if item.get("subsystem") == code), {})
                 entries.append(_evaluate_voxel_subsystem(
                     code, source, requirements.get(name) or {},
@@ -125,7 +151,7 @@ class CNSCorridorGapAnalyzerV1:
                 route_id, code, route_length, assessed_voxels,
                 ((objective_config.get(code) or {}).get("objectives") or {}),
             )
-            for code in ("C", "N", "S")
+            for code, _ in SUBSYSTEM_NAMES
         ]
         return {
             "route_id": route_id, "route_length_m": route_length,
@@ -133,6 +159,50 @@ class CNSCorridorGapAnalyzerV1:
             "voxel_count": len(assessed_voxels), "voxels": assessed_voxels,
             "subsystems": subsystems,
         }
+
+
+def _endpoint_only_subsystems(requirements):
+    """哪些 subsystem 的 RequiredCNS 服务**全部**是 ``route_endpoints`` 作用域。
+
+    Round 29-H 收口：判定与 P14 走廊体素口径共用 domain 层**同一份**实现
+    （:func:`...cns_service_registry.endpoint_scope_only_subsystems`），因此两个算法
+    绝不可能对同一个 project 得出不同结论。
+    """
+
+    return endpoint_scope_only_subsystems(requirements)
+
+
+def _endpoint_scoped_entry(code, surface_class):
+    """route-endpoint 作用域子系统的 corridor 体素条目（显式 ``not_applicable``）。
+
+    这不是"该体元没有缺口"，也不是"证据不足"：该子系统在本体元上**不适用**于走廊判定。
+    显式给出 ``combined_status = not_applicable``，使 corridor 聚合的
+    ``required_voxel_count`` / ``confirmed_target_voxel_ids`` / ``unknown_voxel_ids``
+    全部为 0，绝不造出与要求无关的 corridor unknown。
+    """
+
+    return {
+        "subsystem": code,
+        "service_status": "not_applicable",
+        "redundancy_status": "not_applicable",
+        "ground_provider_redundancy_status": "not_applicable",
+        "qualified_provider_count": 0,
+        "confirmed_independent_provider_count": None,
+        "required_redundancy": None,
+        "surface_class": normalize_surface_class(surface_class),
+        "services": [],
+        "combined_status": "not_applicable",
+        "causes": [],
+        "reasons": [ENDPOINT_SCOPE_NOT_APPLICABLE_REASON],
+        "evidence": [{
+            "kind": "endpoint_scope_dispatch",
+            "service_scope": ENDPOINT_SERVICE_SCOPE,
+            "semantics": (
+                "route_endpoint_service_state_comes_only_from_endpoint_service_gaps_"
+                "never_from_corridor_voxel_aggregation"
+            ),
+        }],
+    }
 
 
 def _evaluate_voxel_subsystem(code, source, required, *, surface_class=None):

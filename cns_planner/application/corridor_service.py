@@ -97,7 +97,12 @@ class CNSCorridorService:
         self.invalidation, self.snapshot = invalidation, snapshot
 
     def result_snapshot(self):
-        return deepcopy(self.session.state.get("cns_corridor_assessment") or self.model.empty())
+        """只读投影：算法语义版本变化时如实标注 stale（绝不误判 current）。"""
+
+        result = self.session.state.get("cns_corridor_assessment") or self.model.empty()
+        return apply_algorithm_semantics_stale(
+            result, self.model.algorithm_id, self.model.algorithm_version,
+        )
 
     # ---- B6X：计算（纯） -----------------------------------------------------
 
@@ -305,6 +310,40 @@ def conclusion_changed(previous, current) -> bool:
     if not before:
         return True
     return before != str((current or {}).get("input_fingerprint") or "")
+
+
+def apply_algorithm_semantics_stale(result, algorithm_id, algorithm_version):
+    """在**只读投影**上标注"算法语义版本已变化 ⇒ stale"（Round 29-H）。
+
+    裁定：只要新代码**不能**把旧持久化结果安全视为同一语义，即使上游输入一个字节都没变，
+    也必须判 stale —— 绝不能因为 ``input_fingerprint`` 相同就误判 current。
+
+    本函数只改投影对象的 ``status`` / ``stale_reason`` / 诊断块，**不写 state**、不重算、
+    不改写任何业务结论字段；``algorithm_id`` / ``algorithm_version`` 缺失的历史结果
+    （例如手工构造的最小 fixture）保持不变。
+    """
+
+    if not isinstance(result, dict) or not result:
+        return result
+    stored_id = str(result.get("algorithm_id") or "")
+    stored_version = str(result.get("algorithm_version") or "")
+    if not stored_id and not stored_version:
+        return result
+    if stored_id == str(algorithm_id) and stored_version == str(algorithm_version):
+        return result
+    projected = deepcopy(result)
+    projected["status"] = "stale"
+    projected["stale_reason"] = "algorithm_semantics_changed"
+    projected["algorithm_semantics_stale"] = {
+        "stored_algorithm_id": stored_id, "stored_algorithm_version": stored_version,
+        "current_algorithm_id": str(algorithm_id),
+        "current_algorithm_version": str(algorithm_version),
+        "reason": (
+            "旧持久化结果由不同算法语义版本产生，不能被安全视为同一结论："
+            "必须重算，绝不因为上游输入未变而当作 current"
+        ),
+    }
+    return projected
 
 
 def _result_status(status):
