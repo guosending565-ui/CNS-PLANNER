@@ -12,6 +12,11 @@ from .figure_style import LAYOUT, LEGEND_GROUPS
 #: 最多允许的图例列数（横向展开，避免纵向长列表）。
 MAX_LEGEND_COLUMNS = 3
 
+#: CNS 专题图的语义分列**均衡回退阈值**（见 :func:`plan_columns`）。
+#: 语义分列的最大列高超过自动最优方案的该倍数时改用自动均衡，
+#: 保证条目更多的 CNS 图不会出现"一列到底、另一列大半空白"。
+CNS_LEGEND_BALANCE_TOLERANCE = 1.10
+
 
 def legend_segments(entries):
     """按语义分组切段：``[{"group": key, "items": [entry, ...]}, ...]``（顺序稳定）。"""
@@ -45,7 +50,8 @@ def segment_heights(segments, *, row_height=None, group_row=None, group_gap=None
 
 
 def plan_columns(segments, *, row_height=None, group_row=None, columns=None,
-                 group_gap=None, group_item_gap=None, group_columns=None):
+                 group_gap=None, group_item_gap=None, group_columns=None,
+                 balance_tolerance=None):
     """把分组段分到各列（保持顺序、整组不拆分）。
 
     返回 ``(columns_used, [(segment_index, column), ...], heights)``。
@@ -57,6 +63,12 @@ def plan_columns(segments, *, row_height=None, group_row=None, columns=None,
        右列 = 既有设施 + 规划航路；4 : 5 的条目分布本身就很均衡；
     2. 否则回退到**自动均衡**：对 1 / 2 / 3 列分别穷举保序分列方案（段数很少，
        枚举代价可忽略），取"最大列高最小"的方案；列数相同时取更矮的那一个。
+
+    ``balance_tolerance`` 给出一个**均衡回退阈值**：语义分列只有在它的最大列高不超过
+    自动最优方案 ``max * balance_tolerance`` 时才被采用。CNS 专题图的分组更多，
+    纯语义分列会让某一列明显偏长；此时改用自动均衡（仍然整组不拆、仍然保序，
+    因此分组语义不受影响），图例框才不会出现"一列到底、另一列大半空白"。
+    ``None`` 表示始终采用语义分列（``route_overview_v1`` 的历史行为不变）。
     """
 
     row = float(row_height if row_height is not None else LAYOUT["legend_row_mm"])
@@ -69,10 +81,6 @@ def plan_columns(segments, *, row_height=None, group_row=None, columns=None,
     preferred = limit
     if not heights:
         return 1, [], []
-    semantic = _semantic_placement(segments, group_columns, limit)
-    if semantic is not None:
-        used, placement = semantic
-        return used, list(enumerate(placement)), heights
     best = None
     for candidate in range(1, min(limit, len(heights)) + 1):
         for placement in _placements(len(heights), candidate):
@@ -84,6 +92,20 @@ def plan_columns(segments, *, row_height=None, group_row=None, columns=None,
                      round(max(column_heights), 3))
             if best is None or score < best[0]:
                 best = (score, candidate, placement)
+    semantic = _semantic_placement(segments, group_columns, limit)
+    if semantic is not None:
+        used, placement = semantic
+        if balance_tolerance is None or best is None:
+            return used, list(enumerate(placement)), heights
+        semantic_heights = [0.0] * used
+        for index, column in enumerate(placement):
+            semantic_heights[column] += heights[index]
+        automatic_peak = max(
+            sum(heights[index] for index, value in enumerate(best[2]) if value == column)
+            for column in range(best[1])
+        )
+        if max(semantic_heights) <= automatic_peak * float(balance_tolerance):
+            return used, list(enumerate(placement)), heights
     if best is None:  # pragma: no cover - heights 非空时前面的循环必然给出结果
         return 1, [(index, 0) for index in range(len(heights))], heights
     return best[1], list(enumerate(best[2])), heights
@@ -129,7 +151,7 @@ def _placements(count, columns):
 
 def legend_geometry(entries, *, row_height=None, group_row=None, columns=None,
                     header_height=None, group_gap=None, group_item_gap=None,
-                    group_columns=None, top_padding=None):
+                    group_columns=None, top_padding=None, balance_tolerance=None):
     """一次性给出图例的列数、每行位置与整框高度。
 
     ``entries`` 是**图例条目**列表（每项含 ``group``）。返回：
@@ -163,6 +185,7 @@ def legend_geometry(entries, *, row_height=None, group_row=None, columns=None,
     columns, placement, _heights = plan_columns(
         segments, row_height=row, group_row=group, columns=columns,
         group_gap=gap, group_item_gap=item_gap, group_columns=group_columns,
+        balance_tolerance=balance_tolerance,
     )
     titles = dict(LEGEND_GROUPS)
     offsets = [title_header + padding] * columns
@@ -212,6 +235,6 @@ def legend_height_for(entries, *, row_height=None, group_row=None, columns=None,
 
 
 __all__ = [
-    "MAX_LEGEND_COLUMNS", "legend_geometry", "legend_height_for", "legend_segments",
-    "plan_columns", "segment_heights",
+    "CNS_LEGEND_BALANCE_TOLERANCE", "MAX_LEGEND_COLUMNS", "legend_geometry",
+    "legend_height_for", "legend_segments", "plan_columns", "segment_heights",
 ]

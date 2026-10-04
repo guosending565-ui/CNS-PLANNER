@@ -25,15 +25,16 @@ from __future__ import annotations
 import math
 import os
 
-from ..reporting.map_templates import LAYER_DISPLAY_NAMES
-from .figure_legend import legend_geometry
+from ..reporting.map_templates import CNS_LAYOUT_PROFILE, LAYER_DISPLAY_NAMES
+from .figure_legend import CNS_LEGEND_BALANCE_TOLERANCE, legend_geometry
 from .figure_spec import (
     GEOMETRY_FOOTPRINT, GEOMETRY_GRID_CELLS, GEOMETRY_LINE, GEOMETRY_POINT,
     GEOMETRY_POLYGON,
 )
 from .figure_style import (
-    FONT_CANDIDATES, FONT_FILE_CANDIDATES, LAYOUT, LEGEND_GROUP_COLUMNS, fill_symbol,
-    label_style, line_symbol, marker_symbol, style, symbol_preview_image,
+    CNS_LEGEND_GROUP_COLUMNS, FONT_CANDIDATES, FONT_FILE_CANDIDATES, LAYOUT,
+    LEGEND_GROUP_COLUMNS, fill_symbol, label_style, line_symbol, marker_symbol, style,
+    symbol_preview_image,
 )
 
 
@@ -79,6 +80,7 @@ class QgisFigureRenderer:
             _build_title_band(layout, spec, page, font_family)
             _build_legend_block(layout, spec, page, font_family)
             _build_map_decorations(layout, spec, map_extent, font_family)
+            _build_annotations(layout, spec, map_extent, font_family)
             _build_labels(layout, spec, map_extent, font_family)
 
             buffer = QBuffer()
@@ -440,7 +442,12 @@ def _configure_grid(map_item, spec):
     except (ImportError, AttributeError):  # pragma: no cover - 老版本 PyQGIS
         pass
     grid.setAnnotationEnabled(True)
-    # 标注位置：纬度在左右，经度只在底部（避免上下两侧出现重复且过密的经度标注）。
+    # 标注位置：纬度在**地图框外侧**左右，经度在**地图框内侧**底边。
+    #
+    # 为什么经度必须放进内侧：地图框下沿之外紧接着就是那条薄审计条
+    # （坐标系 / revision / 未显示图层），外侧经度标注会与它逐字重叠 —— 这正是
+    # 用户反复反馈的"WGS84 小字与其它元素重叠"。放进内侧后两类信息各占一条
+    # 互不相交的水平带，且都留在图框范围内。
     for side in (QgsLayoutItemMapGrid.Left, QgsLayoutItemMapGrid.Right,
                  QgsLayoutItemMapGrid.Top, QgsLayoutItemMapGrid.Bottom):
         grid.setAnnotationDisplay(QgsLayoutItemMapGrid.ShowAll, side)
@@ -452,7 +459,7 @@ def _configure_grid(map_item, spec):
         QgsLayoutItemMapGrid.OutsideMapFrame, QgsLayoutItemMapGrid.Right,
     )
     grid.setAnnotationPosition(
-        QgsLayoutItemMapGrid.OutsideMapFrame, QgsLayoutItemMapGrid.Bottom,
+        QgsLayoutItemMapGrid.InsideMapFrame, QgsLayoutItemMapGrid.Bottom,
     )
     # 标注走向：纬度水平、经度垂直。
     grid.setAnnotationDirection(QgsLayoutItemMapGrid.Horizontal, QgsLayoutItemMapGrid.Left)
@@ -658,6 +665,191 @@ def _omitted_note(spec):
     return f"未显示图层：{len(spec.omitted_layers or [])} 项"
 
 
+# --------------------------------------------------------------------------- 图面说明框
+
+def estimate_wrapped_lines(lines, inner_width_mm, font_size_pt):
+    """估算 ``QgsLayoutItemLabel`` 在给定宽度下会把每一行折成几行（纯计算）。
+
+    为什么必须估算：版面项会**自动换行**并把自身高度撑到内容高度，而背景矩形的高度是
+    我们在画之前就定好的。若不估算，长句（例如页脚那段确认语义披露）会溢出白底框，
+    压到地图内容上 —— 这正是实测发现的问题。
+    """
+
+    if not lines:
+        return 0
+    # 中文字符宽 ≈ 字号（pt→mm）；ASCII 与数字按 0.55 个汉字宽计权。
+    char_mm = max(0.8, float(font_size_pt) / 72.0 * 25.4)
+    per_line = max(6.0, float(inner_width_mm) / char_mm)
+    total = 0
+    for line in lines:
+        weight = sum(1.0 if ord(char) > 0x2000 else 0.55 for char in str(line))
+        total += max(1, int(math.ceil(weight / per_line))) if weight else 1
+    return total
+
+
+def annotation_box_geometry(annotation, plan, spec=None, map_extent=None):
+    """说明框的版面几何（毫米，纯计算、可单测）。
+
+    说明框是 CNS 专题图表达**能力限制 / 服务半径语义**的唯一图面位置。它被放在地图框
+    左下、**比例尺与经度标注之上**，因此既不压比例尺、也不压北箭头、更不会跑出图框。
+    高度按**折行后的实际行数**估算，保证白底框始终包住全部文字。
+    """
+
+    width = max(30.0, float(annotation.width_mm))
+    line = float(LAYOUT["annotation_line_mm"])
+    title_line = float(LAYOUT["annotation_title_line_mm"])
+    padding = float(LAYOUT["annotation_padding_mm"])
+    lines = [str(item) for item in (annotation.lines or [])]
+    wrapped = estimate_wrapped_lines(
+        lines, width - 2.0 * padding, float(LAYOUT["annotation_font_size"]),
+    )
+    height = title_line + wrapped * line + 2.0 * padding
+    map_left = float(plan["map_left_mm"])
+    map_top = float(plan["map_top_mm"])
+    map_width = float(plan["map_width_mm"])
+    map_height = float(plan["map_height_mm"])
+    margin = float(annotation.offset_mm)
+    anchor = str(annotation.anchor or "map_bottom_left")
+    if anchor in ("map_bottom_left", "map_lower_left_above_scalebar"):
+        # 底部要同时避开三样东西：地图框内侧的经度标注带、左下比例尺的**条与标签**、
+        # 以及地图框下沿本身。三者取最靠上的那条线，说明框永远贴在它上方。
+        bottom_clearance = (
+            float(LAYOUT["grid_font_size"]) * 0.353 * 3.4
+            + float(LAYOUT["scalebar_label_height_mm"]) + 1.2
+        )
+        top_limit = map_top + map_height - bottom_clearance
+        if spec is not None and map_extent is not None:
+            try:
+                geometry = scale_bar_geometry(spec, map_extent, plan)
+                bar_top = float(geometry["top_mm"])
+                label_top = (
+                    bar_top - float(geometry["label_gap_mm"]) - float(geometry["label_height_mm"])
+                )
+                top_limit = min(top_limit, label_top - 1.2)
+            except (KeyError, TypeError, ValueError):  # pragma: no cover - 比例尺几何缺失
+                pass
+        x = map_left + margin
+        y = top_limit - height
+    elif anchor == "map_top_left":
+        x = map_left + margin
+        y = map_top + margin
+    elif anchor == "map_top_right":
+        x = map_left + map_width - margin - width
+        y = map_top + margin
+    else:  # map_bottom_right
+        x = map_left + map_width - margin - width
+        y = map_top + map_height - margin - height
+    # 边界避让：说明框永远留在图框内。
+    x = min(max(x, map_left + 0.8), map_left + map_width - width - 0.8)
+    y = min(max(y, map_top + 0.8), map_top + map_height - height - 0.8)
+    return {
+        "x_mm": x, "y_mm": y, "width_mm": width, "height_mm": height,
+        "bottom_mm": y + height,
+        "title_height_mm": title_line, "line_mm": line, "padding_mm": padding,
+        "line_count": len(lines), "wrapped_line_count": wrapped,
+        "inside_map_frame": True,
+        "anchor": anchor,
+    }
+
+
+def _item_height_mm(item, fallback):
+    """版面项**实际**占位高度（毫米）。取不到时回退到估算值，绝不返回 0。"""
+
+    if item is None:
+        return float(fallback)
+    for reader in ("rect", "sizeWithUnits"):
+        try:
+            value = getattr(item, reader)()
+        except (AttributeError, RuntimeError, TypeError):  # pragma: no cover - 老版本 PyQGIS
+            continue
+        height = getattr(value, "height", None)
+        if callable(height):
+            height = height()
+        if height is None:  # QgsLayoutMeasurement
+            height = getattr(value, "length", None)
+            if callable(height):
+                height = height()
+        try:
+            number = float(height)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    return float(fallback)
+
+
+def _build_annotations(layout, spec, map_extent, font_family):
+    """图面说明框：白底 + 细边框 + 标题 + 多行正文（纯版面项，不含任何几何）。
+
+    高度**以文本实际渲染尺寸为准**：``QgsLayoutItemLabel`` 会按内容自动换行并撑高自身，
+    估算出来的行高只能用来决定初始位置。因此这里先按估算放置，再读回标题与正文的
+    真实高度，把白底框精确贴合到内容上并把整块内容底部对齐到预留基线 ——
+    这样既不会出现"文字溢出白底框"，也不会出现"框很高、内容只占上半部分"。
+    """
+
+    from qgis.PyQt.QtCore import Qt
+    from qgis.core import QgsLayoutItemShape
+
+    plan = spec.layout or {}
+    items = []
+    for annotation in spec.annotations or []:
+        geometry = annotation_box_geometry(annotation, plan, spec, map_extent)
+        if geometry["height_mm"] <= 0:
+            continue
+        padding = float(geometry["padding_mm"])
+        inner_width = float(geometry["width_mm"]) - 2.0 * padding
+        background = QgsLayoutItemShape(layout)
+        background.setShapeType(QgsLayoutItemShape.Rectangle)
+        background.setSymbol(_rectangle_symbol(
+            LAYOUT["annotation_fill"], LAYOUT["annotation_border_color"],
+            LAYOUT["annotation_border_width_mm"],
+        ))
+        background.attemptMove(_position(geometry["x_mm"], geometry["y_mm"]))
+        background.attemptResize(_size(geometry["width_mm"], geometry["height_mm"]))
+        layout.addLayoutItem(background)
+
+        title_item = _add_label(
+            layout, annotation.title,
+            x_mm=geometry["x_mm"] + padding, y_mm=geometry["y_mm"] + padding * 0.6,
+            width_mm=inner_width, height_mm=float(geometry["title_height_mm"]),
+            font_family=font_family,
+            font_size=float(LAYOUT["annotation_title_font_size"]),
+            color=LAYOUT["annotation_title_color"], bold=True,
+            align=Qt.AlignLeft, valign=Qt.AlignVCenter,
+        )
+        body = "\n".join(str(line) for line in (annotation.lines or []))
+        body_item = None
+        if body:
+            body_item = _add_label(
+                layout, body,
+                x_mm=geometry["x_mm"] + padding,
+                y_mm=geometry["y_mm"] + padding * 0.6 + float(geometry["title_height_mm"]),
+                width_mm=inner_width,
+                height_mm=float(geometry["wrapped_line_count"]) * float(geometry["line_mm"]),
+                font_family=font_family,
+                font_size=float(LAYOUT["annotation_font_size"]),
+                color=LAYOUT["annotation_text_color"],
+                align=Qt.AlignLeft, valign=Qt.AlignTop,
+            )
+        title_height = _item_height_mm(title_item, geometry["title_height_mm"])
+        body_height = _item_height_mm(
+            body_item, float(geometry["wrapped_line_count"]) * float(geometry["line_mm"]),
+        )
+        actual_height = padding * 0.6 + title_height + body_height + padding
+        # 底部对齐到预留基线（比例尺/经度标注之上），整体上移，绝不改变底部位置。
+        top = float(geometry["bottom_mm"]) - actual_height
+        top = max(float(plan["map_top_mm"]) + 0.8, top)
+        background.attemptMove(_position(geometry["x_mm"], top))
+        background.attemptResize(_size(geometry["width_mm"], actual_height))
+        title_item.attemptMove(_position(geometry["x_mm"] + padding, top + padding * 0.6))
+        if body_item is not None:
+            body_item.attemptMove(_position(
+                geometry["x_mm"] + padding, top + padding * 0.6 + title_height,
+            ))
+        items.append(background)
+    return items
+
+
 # --------------------------------------------------------------------------- 标注
 
 def _build_labels(layout, spec, map_extent, font_family):
@@ -673,6 +865,12 @@ def _build_labels(layout, spec, map_extent, font_family):
     * 标注框宽度固定为 :data:`LAYOUT['label_box_width_mm']`，为长中文名称预留空间；
     * 外侧在锚点左边时改用右对齐，标签始终**向外**展开（既不压星标也不出图）；
     * 转弯点标签保持次级视觉优先级（更小字号、更小偏移）。
+
+    本轮新增的两条硬约束（用户明确要求）：
+
+    1. **简单 collision suppression**：按 ``priority`` 从高到低放置，与已放置标注矩形
+       相交的候选被**抑制**（不是移动位置、更不是改名字）。起终点永不抑制；
+    2. **边界避让**：任何标注都被夹进地图框内，绝不跑出图框。
     """
 
     if not spec.labels or map_extent is None or map_extent.isEmpty():
@@ -688,14 +886,31 @@ def _build_labels(layout, spec, map_extent, font_family):
         return []
     box_width = float(LAYOUT["label_box_width_mm"])
     box_height = float(LAYOUT["label_box_height_mm"])
+    collision_gap = float(LAYOUT.get("label_collision_gap_mm", 0.5))
     directions = {
         "start": _endpoint_direction(spec, "start"),
         "end": _endpoint_direction(spec, "end"),
     }
+    ordered = sorted(
+        (
+            label for label in spec.labels
+            if label.longitude is not None and label.latitude is not None
+        ),
+        key=lambda item: (-int(item.priority or 50), str(item.kind), str(item.text)),
+    )
     items = []
-    for label in spec.labels:
-        if label.longitude is None or label.latitude is None:
-            continue
+    # 说明框先占位：站名标签绝不压在图面说明框上（说明框是必须可读的披露内容）。
+    reserved = []
+    for annotation in spec.annotations or []:
+        geometry = annotation_box_geometry(annotation, plan, spec, map_extent)
+        reserved.append((
+            float(geometry["x_mm"]) - collision_gap,
+            float(geometry["y_mm"]) - collision_gap,
+            float(geometry["x_mm"]) + float(geometry["width_mm"]) + collision_gap,
+            float(geometry["y_mm"]) + float(geometry["height_mm"]) + collision_gap,
+        ))
+    placed = list(reserved)
+    for label in ordered:
         style_item = _label_style_safe(label.style_key)
         if style_item is None:
             continue
@@ -709,12 +924,87 @@ def _build_labels(layout, spec, map_extent, font_family):
             label, style_item, directions.get(label.kind), anchor_x, anchor_y,
             frame, box_width,
         )
+        placement = _clamp_placement(placement, frame, box_width, box_height)
+        if label.kind in ("start", "end"):
+            # 起终点标签**永不因别的标签被抑制**，但必须避开说明框。
+            placement = _avoid_reserved(
+                placement, reserved, frame, box_width, box_height, collision_gap,
+            )
+        box = _label_box(placement, box_width, box_height, collision_gap)
+        if label.kind not in ("start", "end") and _collides(box, placed):
+            continue
+        placed.append(box)
         items.append(_label_item(
             layout, label.text, x_mm=placement["x"], y_mm=placement["y"],
             font_family=font_family, style_item=style_item,
             box_width=box_width, box_height=box_height, align=placement["align"],
         ))
     return items
+
+
+def _label_box(placement, box_width, box_height, collision_gap):
+    return (
+        float(placement["x"]) - collision_gap,
+        float(placement["y"]) - collision_gap,
+        float(placement["x"]) + box_width + 2.0 + collision_gap,
+        float(placement["y"]) + box_height + collision_gap,
+    )
+
+
+def _avoid_reserved(placement, reserved, frame, box_width, box_height, collision_gap):
+    """把一个标签移到预留矩形之外（优先上方，其次右侧/下方），并留在图框内。"""
+
+    if not reserved:
+        return placement
+    current = _label_box(placement, box_width, box_height, collision_gap)
+    if not _collides(current, reserved):
+        return placement
+    step = collision_gap + 1.2
+    for left, top, right, bottom in reserved:
+        candidates = (
+            {"x": float(placement["x"]), "y": top - box_height - step,
+             "align": placement["align"]},
+            {"x": right + step, "y": float(placement["y"]), "align": placement["align"]},
+            {"x": float(placement["x"]), "y": bottom + step, "align": placement["align"]},
+        )
+        for candidate in candidates:
+            candidate = _clamp_placement(candidate, frame, box_width, box_height)
+            if not _collides(_label_box(candidate, box_width, box_height, collision_gap),
+                             reserved):
+                return candidate
+    return placement
+
+
+def _clamp_placement(placement, frame, box_width, box_height):
+    """把标签夹进地图框（边界避让）：宁可贴边，也不让标签跑出图框。"""
+
+    margin = 0.6
+    left = frame["x"] + margin
+    top = frame["y"] + margin
+    right = frame["x"] + frame["width"] - box_width - margin
+    bottom = frame["y"] + frame["height"] - box_height - margin
+    if right < left:
+        right = left
+    if bottom < top:
+        bottom = top
+    return {
+        **placement,
+        "x": min(max(float(placement["x"]), left), right),
+        "y": min(max(float(placement["y"]), top), bottom),
+    }
+
+
+def _collides(box, placed):
+    """矩形相交判定（轴对齐，毫米）。标注框之间保留 ``collision_gap`` 的净空。"""
+
+    left, top, right, bottom = box
+    for other_left, other_top, other_right, other_bottom in placed:
+        if right <= other_left or left >= other_right:
+            continue
+        if bottom <= other_top or top >= other_bottom:
+            continue
+        return True
+    return False
 
 
 def _label_style_safe(style_key):
@@ -881,13 +1171,21 @@ def _build_legend_block(layout, spec, page, font_family):
         plan.get("legend_column_gap_mm") or LAYOUT["legend_column_gap_mm"]
     )
     # 分列与版面规划**共用** gis/figure_legend 的同一套算法（含同样的行距与语义分列），
-    # 保证"框高"与"实际画出来的行"完全一致。
+    # 保证"框高"与"实际画出来的行"完全一致。CNS 五图使用自己的语义分列表，
+    # 保证同一套分组在五张图上落在同样的左右两列。
+    profile = str(plan.get("layout_profile") or "")
+    cns_profile = profile == CNS_LAYOUT_PROFILE
+    group_columns = (
+        CNS_LEGEND_GROUP_COLUMNS if cns_profile else LEGEND_GROUP_COLUMNS
+    )
     geometry = legend_geometry(
         entries, row_height=row_height, group_row=group_row,
         columns=max(1, int(plan.get("legend_columns") or LAYOUT["legend_default_columns"])),
         header_height=title_height, group_gap=group_gap,
-        group_item_gap=group_item_gap, group_columns=LEGEND_GROUP_COLUMNS,
+        group_item_gap=group_item_gap, group_columns=group_columns,
         top_padding=top_padding,
+        # 与版面规划（Application 层）使用**同一套**均衡规则，否则框高与实际行数会不一致。
+        balance_tolerance=(CNS_LEGEND_BALANCE_TOLERANCE if cns_profile else None),
     )
     columns = max(1, int(geometry["columns"]))
     column_width = (width - 2 * side_padding - (columns - 1) * column_gap) / columns
@@ -1082,6 +1380,7 @@ def _color(value):
 
 
 __all__ = [
-    "FigureRenderError", "QgisFigureRenderer", "build_layers", "choose_font_family",
-    "ensure_fonts_registered", "north_arrow_path", "scale_bar_geometry", "spec_subtitle",
+    "FigureRenderError", "QgisFigureRenderer", "annotation_box_geometry", "build_layers",
+    "choose_font_family", "ensure_fonts_registered", "estimate_wrapped_lines",
+    "north_arrow_path", "scale_bar_geometry", "spec_subtitle",
 ]

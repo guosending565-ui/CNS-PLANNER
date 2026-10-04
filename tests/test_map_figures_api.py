@@ -125,9 +125,17 @@ def test_catalog_reports_available_and_planned_templates(tmp_path):
     response = router.get("/api/map-figures/catalog", {}, {})
     assert response.status == 200
     payload = response.data
-    assert payload["available_template_ids"] == ["route_overview_v1"]
+    assert payload["available_template_ids"] == [
+        "route_overview_v1", "communication_layout_v1", "navigation_layout_v1",
+        "surveillance_layout_v1", "cns_combined_v1",
+    ]
     statuses = {item["template_id"]: item["status"] for item in payload["templates"]}
-    assert statuses["cns_combined_v1"] == "planned"
+    assert statuses["cns_combined_v1"] == "available"
+    assert statuses["communication_layout_v1"] == "available"
+    assert statuses["route_detail_v1"] == "planned"
+    assert payload["surveillance_service_values"] == [
+        "rid_cooperative", "radar_noncooperative",
+    ]
     assert payload["route_options"][0]["route_id"] == "R0001"
     assert payload["route_selection"]["auto_selectable"] is True
 
@@ -291,7 +299,10 @@ def test_state_endpoint_returns_the_external_index_projection(tmp_path):
     assert empty.data["records"]["items"] == []
     assert empty.data["records"]["active_figure_id"] is None
     assert empty.data["records"]["count"] == 0
-    assert empty.data["catalog"]["available_template_ids"] == ["route_overview_v1"]
+    assert empty.data["catalog"]["available_template_ids"] == [
+        "route_overview_v1", "communication_layout_v1", "navigation_layout_v1",
+        "surveillance_layout_v1", "cns_combined_v1",
+    ]
 
     exported = router.post("/api/map-figures/export", {
         "template_id": "route_overview_v1", "route_id": "R0001", "format": "png", "dpi": 300,

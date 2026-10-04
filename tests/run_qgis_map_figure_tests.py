@@ -67,6 +67,9 @@ TARGETS = (
     "test_map_figures_review_fixes:test_damaged_and_non_polygon_cartographic_land_are_unavailable",
     "test_map_figures_review_fixes:test_300dpi_smoke_in_real_qgis_lifecycle",
     "test_map_figures_qgis_render:test_existing_site_legend_triangle_is_readable_without_changing_map_marker_size",
+    # Round30-A：CNS 专题图在真实 QGIS 下的两条烟测。
+    "test_map_figures_qgis_render:test_cns_spec_renders_coverage_ring_proposal_annotation_and_legend",
+    "test_map_figures_qgis_render:test_cns_declared_legend_layer_creates_no_feature_and_no_blank_figure",
 )
 
 

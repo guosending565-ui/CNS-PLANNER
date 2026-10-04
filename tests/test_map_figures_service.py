@@ -91,16 +91,21 @@ def _service(tmp_path, routes=(), paths=None, renderer=None, state_overrides=Non
 
 # ---- 1. 模板目录 ------------------------------------------------------------
 
-def test_catalog_marks_only_route_overview_available():
+def test_catalog_marks_route_overview_and_four_cns_templates_available():
     payload = catalog()
-    assert payload["available_template_ids"] == ["route_overview_v1"]
+    assert payload["available_template_ids"] == [
+        "route_overview_v1", "communication_layout_v1", "navigation_layout_v1",
+        "surveillance_layout_v1", "cns_combined_v1",
+    ]
     statuses = {item["template_id"]: item["status"] for item in payload["templates"]}
     assert statuses["route_overview_v1"] == "available"
     for template_id in (
-        "route_detail_v1", "communication_layout_v1", "navigation_layout_v1",
+        "communication_layout_v1", "navigation_layout_v1",
         "surveillance_layout_v1", "cns_combined_v1",
     ):
-        assert statuses[template_id] == "planned", template_id
+        assert statuses[template_id] == "available", template_id
+    # ``route_detail_v1`` 仍然只是类型预留：本轮**不**假装实现了它。
+    assert statuses["route_detail_v1"] == "planned"
 
 
 def test_planned_templates_are_refused_instead_of_faked(tmp_path):

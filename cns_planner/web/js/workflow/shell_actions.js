@@ -150,17 +150,26 @@ export function createShellActions({getNode,panelError}){
    * **不自动生成**：只有用户显式点击才会请求；预览是只读 GET（不写项目状态、
    * 不占 revision 契约）。图片用 object URL 打开，浏览器阻止新窗口时如实提示。
    *
-   * @param {{template_id:string,route_id:string}} input
+   * ``parameters`` 里只接受**已登记**的模板参数（当前只有监视布设图的
+   * ``surveillance_service``）。它被放进查询串，因此同一模板能够预览两个不同的
+   * variant；非法值由后端明确拒绝，前端不做任何回退。
+   *
+   * @param {{template_id:string,route_id:string,parameters?:object}} input
    * @param {{api:Function,onError:Function}} deps
    */
   async function previewMapFigure(input,{api,onError}={}){
     const template=String(input?.template_id||'route_overview_v1');
     const routeId=String(input?.route_id||'');
+    const parameters=input?.parameters&&typeof input.parameters==='object'?input.parameters:{};
     try{
       if(!routeId){
         throw Error('请先选择一条权威运行航路；当前项目没有可制图的运行航路时无法预览。');
       }
       const query={template:template,route_id:routeId};
+      for(const key of Object.keys(parameters)){
+        if(parameters[key]===undefined||parameters[key]===null)continue;
+        query[key]=String(parameters[key]);
+      }
       const blob=await api('/api/map-figures/preview?'+new URLSearchParams(query));
       const objectUrl=URL.createObjectURL(blob);
       const opened=window.open(objectUrl,'_blank');

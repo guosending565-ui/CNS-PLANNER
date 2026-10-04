@@ -33,6 +33,10 @@ GEOMETRY_LINE = "line"
 GEOMETRY_POINT = "point"
 GEOMETRY_FOOTPRINT = "footprint"      # 真实建筑足迹（Polygon 集合，由聚合服务写入）
 GEOMETRY_GRID_CELLS = "grid_cells"    # 网格单元矩形（由 west/south/east/north 生成）
+#: **声明型图层**：本身没有几何要素，只用于登记一条必须在图例中出现的事实
+#: （例如"非合作监视能力限制"）。渲染器不会为它建图层，因此它既不会画出假要素，
+#: 也不会被静默丢掉。
+GEOMETRY_NONE = "none"
 
 DEFAULT_CRS = "OGC:CRS84"
 
@@ -159,6 +163,51 @@ class LegendItem:
 
 
 @dataclass
+class AnnotationSpec:
+    """图面说明框（多行文本 + 可选边框），相对**地图框**定位。
+
+    用途：CNS 专题图必须把"服务半径只是规划值""Radar 在当前约束下无可行布设""监测点
+    只是规划提案"这类**能力限制声明**写在图上，而不是只藏在元数据里。说明框是纯文本
+    版面项，不含任何几何，因此不会伪装成要素、也不参与任何业务计算。
+    """
+
+    annotation_id: str
+    title: str
+    lines: list = field(default_factory=list)
+    anchor: str = "map_bottom_left"
+    width_mm: float = 82.0
+    offset_mm: float = 3.4
+    border: bool = True
+    style_key: str = "annotation_limitation"
+
+    def to_dict(self):
+        return {
+            "annotation_id": str(self.annotation_id),
+            "title": str(self.title),
+            "lines": [str(line) for line in (self.lines or [])],
+            "anchor": str(self.anchor),
+            "width_mm": float(self.width_mm),
+            "offset_mm": float(self.offset_mm),
+            "border": bool(self.border),
+            "style_key": str(self.style_key),
+        }
+
+    @classmethod
+    def from_dict(cls, payload):
+        payload = payload if isinstance(payload, dict) else {}
+        return cls(
+            annotation_id=str(payload.get("annotation_id") or ""),
+            title=str(payload.get("title") or ""),
+            lines=[str(line) for line in (payload.get("lines") or [])],
+            anchor=str(payload.get("anchor") or "map_bottom_left"),
+            width_mm=float(payload.get("width_mm") or 82.0),
+            offset_mm=float(payload.get("offset_mm") or 3.4),
+            border=bool(payload.get("border", True)),
+            style_key=str(payload.get("style_key") or "annotation_limitation"),
+        )
+
+
+@dataclass
 class ExtentSpec:
     """图面范围：WGS84 经纬度（渲染器据此设置地图 CRS 与网格）。"""
 
@@ -203,6 +252,7 @@ class FigureSpec:
     extent_mode: str
     layers: list = field(default_factory=list)
     labels: list = field(default_factory=list)
+    annotations: list = field(default_factory=list)
     legend_items: list = field(default_factory=list)
     source_status: dict = field(default_factory=dict)
     omitted_layers: list = field(default_factory=list)
@@ -243,6 +293,7 @@ class FigureSpec:
             "extent_evidence": deepcopy(self.extent_evidence),
             "layers": [layer.to_dict() for layer in self.layers],
             "labels": [label.to_dict() for label in self.labels],
+            "annotations": [item.to_dict() for item in self.annotations],
             "legend_items": [item.to_dict() for item in self.legend_items],
             "source_status": deepcopy(self.source_status),
             "omitted_layers": deepcopy(self.omitted_layers),
@@ -275,6 +326,9 @@ class FigureSpec:
             extent_evidence=deepcopy(payload.get("extent_evidence") or {}),
             layers=[LayerSpec.from_dict(item) for item in payload.get("layers") or []],
             labels=[LabelSpec.from_dict(item) for item in payload.get("labels") or []],
+            annotations=[
+                AnnotationSpec.from_dict(item) for item in payload.get("annotations") or []
+            ],
             legend_items=[LegendItem.from_dict(item) for item in payload.get("legend_items") or []],
             source_status=deepcopy(payload.get("source_status") or {}),
             omitted_layers=deepcopy(payload.get("omitted_layers") or []),
@@ -326,14 +380,15 @@ class FigureSpec:
             "route_point_count": len(self.route_geometry),
             "turn_point_count": len(self.turn_points),
             "label_count": len(self.labels),
+            "annotation_count": len(self.annotations),
             "generated_from_revision": int(self.generated_from_revision),
             "spec_fingerprint": self.fingerprint(),
         }
 
 
 __all__ = [
-    "DEFAULT_CRS", "FIGURE_SPEC_SCHEMA_VERSION", "ExtentSpec", "FigureSpec",
-    "GEOMETRY_FOOTPRINT", "GEOMETRY_GRID_CELLS", "GEOMETRY_LINE", "GEOMETRY_POINT",
-    "GEOMETRY_POLYGON", "LabelSpec", "LayerSpec", "LegendItem", "SOURCE_AVAILABLE",
-    "SOURCE_UNAVAILABLE", "SOURCE_UNKNOWN",
+    "AnnotationSpec", "DEFAULT_CRS", "FIGURE_SPEC_SCHEMA_VERSION", "ExtentSpec", "FigureSpec",
+    "GEOMETRY_FOOTPRINT", "GEOMETRY_GRID_CELLS", "GEOMETRY_LINE", "GEOMETRY_NONE",
+    "GEOMETRY_POINT", "GEOMETRY_POLYGON", "LabelSpec", "LayerSpec", "LegendItem",
+    "SOURCE_AVAILABLE", "SOURCE_UNAVAILABLE", "SOURCE_UNKNOWN",
 ]

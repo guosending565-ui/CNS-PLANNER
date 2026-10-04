@@ -81,6 +81,62 @@ FIGURE_STYLES = {
         "shape": "star", "size": 6.4, "fill": "#d81b1b",
         "outline": "#7a0d0d", "outline_width": 0.4,
     },
+    # ---- CNS 专题图（服务主色：通信绿 / RID 橙 / Radar 蓝 / 导航完整性黄）--------
+    #
+    # 既有设施 = **实心 + 实线**；P16 selected_action = **空心 + 虚线描边**，
+    # 视觉上永远与"已建成"区分开。覆盖圈只画规划服务半径（planning service radius），
+    # 不是实测无线传播等值线。Radar 在 R0005 无选中站址，因此只有"候选上下文"与
+    # "能力限制"两种蓝色表达，绝不出现扇区或新建站。
+    "cns_coverage_comm": {
+        "kind": "fill", "geometry": "polygon", "z": 7,
+        "fill": "transparent", "outline": "#1a9c4a",
+        "outline_width": 0.45, "outline_style": "dash",
+        # 覆盖圈在地图上是**真实的米制圆**；图例符号也用圆环表达，
+        # 否则用户会以为地图上画的是矩形区域。
+        "shape": "circle",
+    },
+    "cns_coverage_rid_land": {
+        "kind": "fill", "geometry": "polygon", "z": 7,
+        "fill": "transparent", "outline": "#e8720c",
+        "outline_width": 0.55, "outline_style": "solid", "shape": "circle",
+    },
+    "cns_coverage_rid_sea": {
+        "kind": "fill", "geometry": "polygon", "z": 7,
+        "fill": "transparent", "outline": "#e8720c",
+        "outline_width": 0.55, "outline_style": "dash", "shape": "circle",
+    },
+    "cns_radar_context": {
+        "kind": "marker", "geometry": "point", "z": 11,
+        "shape": "triangle", "size": 2.6, "fill": "transparent",
+        "outline": "#1f6fd0", "outline_width": 0.45, "angle": 0.0,
+    },
+    "cns_existing": {
+        "kind": "marker", "geometry": "point", "z": 12,
+        "shape": "circle", "size": 4.0, "fill": "#1a9c4a",
+        "outline": "#0d5c2b", "outline_width": 0.45,
+    },
+    "cns_comm_proposal": {
+        "kind": "marker", "geometry": "point", "z": 13,
+        "shape": "circle", "size": 4.6, "fill": "transparent",
+        "outline": "#1a9c4a", "outline_width": 0.6, "outline_style": "dash",
+    },
+    "cns_rid_proposal": {
+        "kind": "marker", "geometry": "point", "z": 14,
+        "shape": "square", "size": 4.4, "fill": "transparent",
+        "outline": "#e8720c", "outline_width": 0.6, "outline_style": "dash", "angle": 45.0,
+    },
+    "cns_nav_proposal": {
+        # 导航完整性监测点与**起降点星标完全同址**（坐标逐字节一致，绝不偏移）。
+        # 因此它用**更大的空心圆环**表达"同心环"，既不会被星标盖住，也不遮住星标本身。
+        "kind": "marker", "geometry": "point", "z": 24,
+        "shape": "circle", "size": 11.6, "fill": "transparent",
+        "outline": "#d19a00", "outline_width": 0.75, "outline_style": "dash",
+    },
+    "cns_radar_limitation": {
+        "kind": "marker", "geometry": "point", "z": 16,
+        "shape": "cross", "size": 4.4, "fill": "transparent",
+        "outline": "#1f6fd0", "outline_width": 0.6, "outline_style": "dash",
+    },
 }
 
 #: 标注样式（中文 + 白色 halo）。优先级数值越大越优先显示。
@@ -96,6 +152,15 @@ LABEL_STYLES = {
     "label_place": {
         "font_size": 7.0, "color": "#55606b", "halo_color": "#ffffff",
         "halo_size": 1.0, "bold": False, "offset_mm": 1.4,
+    },
+    # CNS 服务站点标签：字号略小、颜色取服务主色的深色版本，仍带白色 halo。
+    "label_cns_facility": {
+        "font_size": 6.6, "color": "#1c2733", "halo_color": "#ffffff",
+        "halo_size": 1.2, "bold": True, "offset_mm": 1.8,
+    },
+    "label_cns_proposal": {
+        "font_size": 6.4, "color": "#1c2733", "halo_color": "#ffffff",
+        "halo_size": 1.2, "bold": False, "offset_mm": 1.8,
     },
 }
 
@@ -174,21 +239,52 @@ LAYOUT = {
     # 标注：起终点统一留出"星标半径 + 间距"，长中文名有足够横向空间。
     "label_box_width_mm": 44.0,
     "label_box_height_mm": 5.0,
-    "label_endpoint_offset_mm": 5.4,
+    "label_endpoint_offset_mm": 6.4,
     "label_turn_offset_mm": 3.0,
+    # 标注避让：已放置标注之间保留的最小间隙（毫米）。优先级高的标注先占位，
+    # 后来的重叠候选被抑制（起终点永不抑制）。
+    "label_collision_gap_mm": 0.8,
+    # ---- CNS 五图统一版式 ------------------------------------------------------
+    # 图例行预算：按**最大**模板的两列最高列估算（约 4 个组头 + 10 个条目）。
+    # 它只用于决定地图框高度，使五张图的地图框尺寸完全一致，从而 extent / 比例尺 /
+    # 经纬网逐图可比（产品明确要求"五图统一"）。图例框本身仍**贴合各自内容**，
+    # 因此不会出现"框很高、内容只占左上角"。
+    "cns_legend_budget_rows": 10,
+    "cns_legend_budget_groups": 4,
+    # 图面说明框（CNS 能力限制 / 服务半径声明）：多行文本 + 细边框。
+    # 行高按 QgsLayoutItemLabel 的**实际**渲染行距取值（实测约 4.4~4.6 mm @ 6.1 pt）；
+    # 偏小会让文字溢出背景框，偏大只是多留一点白，因此这里取偏保守的大值。
+    "annotation_font_size": 6.1,
+    "annotation_title_font_size": 6.9,
+    "annotation_line_mm": 4.6,
+    "annotation_title_line_mm": 5.2,
+    "annotation_padding_mm": 2.2,
+    "annotation_border_color": "#1f6fd0",
+    "annotation_border_width_mm": 0.35,
+    "annotation_fill": "#ffffff",
+    "annotation_text_color": "#1c2733",
+    "annotation_title_color": "#10233a",
 }
 
-#: 图例分组标题与顺序（与 template_catalog.ROUTE_OVERVIEW_LEGEND_ORDER 同序）。
-#: 当前项目没有机场数据，因此分组名就是"既有设施"；以后机场进入模板时由模板
-#: 动态决定对应分组名，不在这里硬编码"与机场"。
+#: 图例分组标题与顺序。
+#:
+#: ``route_overview_v1`` 只使用 environment / obstacle / facility / route 四组，
+#: 顺序与以前完全一致（历史版式不变）；CNS 专题图使用其中的 environment / obstacle
+#: 加上既有 CNS、规划提案、覆盖能力、能力限制四组。当前项目没有机场数据，因此
+#: facility 组名就是"既有设施"；以后机场进入模板时由模板动态决定对应分组名，
+#: 不在这里硬编码"与机场"。
 LEGEND_GROUPS = (
     ("environment", "地理环境"),
     ("obstacle", "障碍物"),
     ("facility", "既有设施"),
+    ("cns_existing", "既有 CNS 设施"),
+    ("proposal", "规划提案（未确认）"),
+    ("coverage", "覆盖 / 能力"),
+    ("limitation", "能力限制"),
     ("route", "规划航路"),
 )
 
-#: 图例**两列布局**的语义分列（组名 → 列号 0/1）。
+#: 图例**两列布局**的语义分列（组名 → 列号 0/1）——``route_overview_v1`` 专用。
 #:
 #: 分组本身已经决定了最自然的左右划分：左列放地理环境与障碍物，右列放既有设施与
 #: 规划航路。这既是产品建议的分组，也让两列条目数接近（4 : 5），因此图例框不会出现
@@ -199,6 +295,19 @@ LEGEND_GROUP_COLUMNS = {
     "environment": 0,
     "obstacle": 0,
     "facility": 1,
+    "route": 1,
+}
+
+#: CNS 专题图的语义分列：按"环境/障碍/站址背景/提案"与"覆盖/限制/航路"左右铺开，
+#: 使条目最多的 CNS 综合图两列高度接近。任何未登记的组都会让整体回退到自动均衡分列。
+CNS_LEGEND_GROUP_COLUMNS = {
+    "environment": 0,
+    "obstacle": 0,
+    "facility": 0,
+    "cns_existing": 0,
+    "proposal": 0,
+    "coverage": 1,
+    "limitation": 1,
     "route": 1,
 }
 
@@ -219,6 +328,16 @@ LEGEND_GROUP_OF = {
     "turn_point": "route",
     "start_point": "route",
     "end_point": "route",
+    # ---- CNS 专题图 ----
+    "cns_existing": "cns_existing",
+    "cns_comm_proposal": "proposal",
+    "cns_rid_proposal": "proposal",
+    "cns_nav_proposal": "proposal",
+    "cns_coverage_comm": "coverage",
+    "cns_coverage_rid_land": "coverage",
+    "cns_coverage_rid_sea": "coverage",
+    "cns_radar_context": "limitation",
+    "cns_radar_limitation": "limitation",
 }
 
 #: 中文字体候选：Windows 优先系统自带中文字体，缺失时回退到 QGIS 自带字体。
@@ -255,17 +374,21 @@ def label_style(label_key):
     return deepcopy(LABEL_STYLES[label_key])
 
 
-def legend_order_key(layer_key):
-    """图例稳定排序键：按 :data:`LEGEND_GROUPS` 分组，再按登记顺序。"""
+def legend_order_key(layer_key, order=None):
+    """图例稳定排序键：按 :data:`LEGEND_GROUPS` 分组，再按模板声明的图层顺序。
+
+    ``order`` 缺省沿用 ``route_overview_v1`` 的图层顺序（历史行为不变）；
+    CNS 专题图传入 :data:`cns_planner.reporting.map_templates.CNS_LEGEND_ORDER`。
+    """
 
     from ..reporting.map_templates import ROUTE_OVERVIEW_LEGEND_ORDER
 
+    sequence = tuple(order) if order else ROUTE_OVERVIEW_LEGEND_ORDER
     group = LEGEND_GROUP_OF.get(layer_key, "zzz")
     group_index = next(
         (index for index, (key, _) in enumerate(LEGEND_GROUPS) if key == group), len(LEGEND_GROUPS),
     )
-    order = ROUTE_OVERVIEW_LEGEND_ORDER
-    layer_index = order.index(layer_key) if layer_key in order else len(order)
+    layer_index = sequence.index(layer_key) if layer_key in sequence else len(sequence)
     return (group_index, layer_index)
 
 
@@ -319,6 +442,8 @@ def marker_symbol(style_key):
     layer.setColor(_color(item["fill"]))
     layer.setStrokeColor(_color(item["outline"]))
     layer.setStrokeWidth(0.0 if item.get("outline") == "transparent" else float(item["outline_width"]))
+    # P16 规划提案用虚线描边 + 空心填充，与"既建设施（实线 / 实心）"视觉可分。
+    layer.setStrokeStyle(_stroke_style(item.get("outline_style")))
     symbol = api["QgsMarkerSymbol"]()
     symbol.changeSymbolLayer(0, layer)
     return symbol
@@ -423,6 +548,10 @@ def _draw_fill(painter, item, width, height):
         if str(item.get("outline_style") or "solid") == "dash":
             pen.setStyle(Qt.DashLine)
         painter.setPen(pen)
+    if str(item.get("shape") or "") == "circle":
+        # 真实米制圆（CNS 覆盖圈）在图例里也用圆环表达。
+        painter.drawEllipse(QRectF(inset, inset, width - 2 * inset, height - 2 * inset))
+        return
     painter.drawRect(QRectF(inset, inset, width - 2 * inset, height - 2 * inset))
 
 
@@ -446,11 +575,22 @@ def _draw_marker(painter, item, width, height, math_module):
     radius = max(2.4, float(item["size"]) * reference * 0.06)
     pen = QPen(QColor(str(item["outline"])))
     pen.setWidthF(max(0.9, float(item.get("outline_width") or 0) * 1.6))
+    pen.setStyle(_stroke_style(item.get("outline_style")))
     painter.setPen(pen)
     painter.setBrush(QColor(str(item["fill"])))
     shape = str(item["shape"])
     if shape == "circle":
         painter.drawEllipse(centre, radius, radius)
+        return
+    if shape == "cross":
+        painter.drawLine(
+            QPointF(centre.x() - radius, centre.y()),
+            QPointF(centre.x() + radius, centre.y()),
+        )
+        painter.drawLine(
+            QPointF(centre.x(), centre.y() - radius),
+            QPointF(centre.x(), centre.y() + radius),
+        )
         return
     if shape == "square":
         painter.save()
@@ -538,8 +678,8 @@ def _join_style(value):
 
 
 __all__ = [
-    "FIGURE_STYLES", "FONT_CANDIDATES", "FONT_FILE_CANDIDATES", "LABEL_STYLES", "LAYOUT",
-    "LEGEND_GROUP_COLUMNS", "LEGEND_GROUP_OF", "LEGEND_GROUPS", "fill_symbol",
-    "label_style", "legend_order_key", "line_symbol", "marker_shape_enum", "marker_symbol",
-    "style", "symbol_for", "symbol_preview_image",
+    "CNS_LEGEND_GROUP_COLUMNS", "FIGURE_STYLES", "FONT_CANDIDATES", "FONT_FILE_CANDIDATES",
+    "LABEL_STYLES", "LAYOUT", "LEGEND_GROUP_COLUMNS", "LEGEND_GROUP_OF", "LEGEND_GROUPS",
+    "fill_symbol", "label_style", "legend_order_key", "line_symbol", "marker_shape_enum",
+    "marker_symbol", "style", "symbol_for", "symbol_preview_image",
 ]

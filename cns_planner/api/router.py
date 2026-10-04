@@ -164,6 +164,9 @@ class ApiRouter:
                     template_id=self._first(query, "template", "") or "route_overview_v1",
                     route_id=self._first(query, "route_id", "") or None,
                     width_px=self._first(query, "width", "") or None,
+                    # 只接受**已登记**的模板参数（当前是监视布设图的 variant）。
+                    # 非法值由模板层明确拒绝，这里不做任何回退或猜测。
+                    parameter_overrides=self._map_figure_preview_parameters(query),
                 )
             except MapFigureError as exc:
                 return Response(self._map_figure_error(exc), status=exc.status)
@@ -368,6 +371,20 @@ class ApiRouter:
         if service is None:
             raise MapFigureError("服务端未启用专题成果图模块", code="map_figure_disabled")
         return service
+
+    #: 预览查询串里允许携带的模板参数白名单（只有**已登记**的参数能进来）。
+    MAP_FIGURE_PREVIEW_PARAMETERS = ("surveillance_service",)
+
+    @classmethod
+    def _map_figure_preview_parameters(cls, query):
+        """从查询串取模板参数覆盖（白名单之外的一律忽略，绝不透传任意键）。"""
+
+        overrides = {}
+        for key in cls.MAP_FIGURE_PREVIEW_PARAMETERS:
+            value = cls._first(query, key, "")
+            if value:
+                overrides[key] = value
+        return overrides or None
 
     @staticmethod
     def _map_figure_error(exc):

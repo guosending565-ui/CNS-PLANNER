@@ -31,15 +31,25 @@ from pathlib import Path
 import re
 
 from ..gis.figure_spec import (
-    DEFAULT_CRS, GEOMETRY_LINE, GEOMETRY_POINT, GEOMETRY_POLYGON, SOURCE_AVAILABLE,
-    SOURCE_UNKNOWN, SOURCE_UNAVAILABLE, ExtentSpec, FigureSpec, LabelSpec, LayerSpec,
-    LegendItem,
+    DEFAULT_CRS, GEOMETRY_LINE, GEOMETRY_NONE, GEOMETRY_POINT, GEOMETRY_POLYGON,
+    SOURCE_AVAILABLE, SOURCE_UNKNOWN, SOURCE_UNAVAILABLE, AnnotationSpec, ExtentSpec,
+    FigureSpec, LabelSpec, LayerSpec, LegendItem,
 )
 from ..gis.figure_style import LEGEND_GROUP_OF, legend_order_key
 from ..gis.source_inspection import inspect_cartographic_land
 from ..reporting.map_templates import (
-    ROUTE_OVERVIEW_V1, catalog as template_catalog, is_available, parameters as template_parameters,
-    template as template_definition,
+    CNS_COMBINED_V1, CNS_COVERAGE_POLICY, CNS_EXTENT_POLICY_ID, CNS_LAYOUT_PROFILE,
+    CNS_LEGEND_ORDER, COMMUNICATION_LAYOUT_V1, NAVIGATION_LAYOUT_V1, ROUTE_OVERVIEW_V1,
+    SURVEILLANCE_LAYOUT_V1, SURVEILLANCE_SERVICE_PARAMETER, SURVEILLANCE_SERVICE_RADAR,
+    SURVEILLANCE_SERVICE_RID, SURVEILLANCE_SERVICE_VALUES, MapFigureParameterInvalid,
+    catalog as template_catalog, is_available, parameters as template_parameters,
+    required_parameters as template_required, template as template_definition,
+)
+from .cns_facility_assembler import (
+    IDENTITY_EXISTING, IDENTITY_PROPOSAL, SERVICE_COMMUNICATION,
+    SERVICE_LABEL_SUFFIX, SERVICE_NAVIGATION_INTEGRITY, SERVICE_RADAR, SERVICE_RID,
+    assemble as assemble_cns_facilities, coverage_circle_ring, coverage_radius_for,
+    rid_radius_pair,
 )
 
 #: 权威运行航路的 canonical state 容器。
@@ -146,6 +156,13 @@ class MapFigureFormatUnsupported(MapFigureError):
     code = "map_figure_format_unsupported"
 
 
+class MapFigureParameterError(MapFigureError):
+    """模板参数非法或必需参数缺失（客户端可修正，因此是 400 而不是 500）。"""
+
+    code = "map_figure_parameter_invalid"
+    status = 400
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -164,6 +181,9 @@ class MaterializationContext:
     project_revision: int = 0
     source_audits: dict = field(default_factory=dict)
     surface_classification_policy: dict = field(default_factory=dict)
+    #: 当前模板 id（route_overview_v1 / communication_layout_v1 / ...）。
+    #: 装配层据此选择模板专属的图层与图例；缺省即历史模板，行为不变。
+    template_id: str = ROUTE_OVERVIEW_V1
 
 
 @dataclass
@@ -174,6 +194,8 @@ class MaterializationResult:
     source_status: dict = field(default_factory=dict)
     omitted_layers: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    annotations: list = field(default_factory=list)
+    boundaries: dict = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- 工具箱
@@ -241,8 +263,12 @@ def _layer(ctx, layer_key, *, display_name, geometry_type, source_role, status, 
     )
 
 
-def _legends(layers):
-    """按稳定语义顺序生成图例条目（只含真实存在且可用的图层）。"""
+def _legends(layers, order=None):
+    """按模板声明的稳定语义顺序生成图例条目（只含真实存在且可用的图层）。
+
+    **声明型图层**（``geometry_type=GEOMETRY_NONE``，例如"非合作监视能力限制"）
+    没有几何要素，但必须出现在图例里说明图上没有画什么；它们不画任何假要素。
+    """
 
     items = [
         LegendItem(
@@ -251,10 +277,10 @@ def _legends(layers):
             legend_group=LEGEND_GROUP_OF.get(layer.layer_key, ""),
         )
         for layer in layers
-        if layer.legend_visible and layer.feature_count > 0
-        and layer.source_status == SOURCE_AVAILABLE
+        if layer.legend_visible and layer.source_status == SOURCE_AVAILABLE
+        and (layer.feature_count > 0 or layer.geometry_type == GEOMETRY_NONE)
     ]
-    items.sort(key=lambda item: legend_order_key(item.layer_key))
+    items.sort(key=lambda item: legend_order_key(item.layer_key, order))
     return items
 
 
@@ -1871,6 +1897,546 @@ def _labels(ctx, geometry, turns, layers):
     return labels
 
 
+# --------------------------------------------------------------------------- CNS 专题图装配
+
+#: CNS 专题图共用的模板分组（决定"哪张图取哪些服务"）。
+def _cns_services_for_template(template_id, parameters):
+    """模板 → 该图允许出现的服务集合。
+
+    **唯一分派点**：任何模板都不可能画出自己服务集合之外的设施。
+    ``surveillance_layout_v1`` 必须由 ``surveillance_service`` 决定是 RID 还是 Radar。
+    """
+
+    if template_id == COMMUNICATION_LAYOUT_V1:
+        return (SERVICE_COMMUNICATION,)
+    if template_id == NAVIGATION_LAYOUT_V1:
+        return (SERVICE_NAVIGATION_INTEGRITY,)
+    if template_id == SURVEILLANCE_LAYOUT_V1:
+        variant = str(parameters.get(SURVEILLANCE_SERVICE_PARAMETER) or "")
+        if variant == SURVEILLANCE_SERVICE_RID:
+            return (SERVICE_RID,)
+        if variant == SURVEILLANCE_SERVICE_RADAR:
+            return (SERVICE_RADAR,)
+        # 到这里说明参数校验被绕过；绝不静默回退到任一 variant。
+        raise MapFigureTemplateUnavailable(
+            "监视布设图必须显式给出 surveillance_service 且只能取 "
+            + " / ".join(SURVEILLANCE_SERVICE_VALUES),
+            code="map_figure_surveillance_variant_required",
+            detail={"surveillance_service": variant or None,
+                    "allowed": list(SURVEILLANCE_SERVICE_VALUES)},
+        )
+    if template_id == CNS_COMBINED_V1:
+        return (SERVICE_COMMUNICATION, SERVICE_RID, SERVICE_NAVIGATION_INTEGRITY,
+                SERVICE_RADAR)
+    return ()
+
+
+#: 服务键 → 该服务的提案图层键与图例名。
+_PROPOSAL_LAYER_OF_SERVICE = {
+    SERVICE_COMMUNICATION: ("cns_comm_proposal", "通信规划提案（未确认）"),
+    SERVICE_RID: ("cns_rid_proposal", "RID 规划提案（未确认）"),
+    SERVICE_NAVIGATION_INTEGRITY: ("cns_nav_proposal", "导航完整性监测点规划提案（未确认）"),
+}
+
+#: 图例标签里追加的服务后缀（只有真实拥有对应 action 的站才追加）。
+_SERVICE_TAG = {
+    SERVICE_COMMUNICATION: "通信",
+    SERVICE_RID: "RID",
+    SERVICE_NAVIGATION_INTEGRITY: "导航",
+}
+
+
+def _cns_frame_detail(assembly, *, service_key="", extra=None):
+    """所有 CNS 图层共用的审计字段（确认语义 / 指纹 / 只读边界）。"""
+
+    evidence = assembly.evidence or {}
+    confirmation = evidence.get("confirmation") or {}
+    detail = {
+        "confirmation": deepcopy(confirmation),
+        "step6_gate": deepcopy(evidence.get("step6_gate") or {}),
+        "proposal_not_confirmed": not bool(confirmation.get("confirmed_plan_status") == "confirmed"),
+        "p16_input_fingerprint": (evidence.get("p16") or {}).get("input_fingerprint"),
+        "p16_algorithm_version": (evidence.get("p16") or {}).get("algorithm_version"),
+        "p17_algorithm_version": (evidence.get("step6_gate") or {}).get("p17_algorithm_version"),
+        "p17_input_fingerprint": (evidence.get("step6_gate") or {}).get("p17_input_fingerprint"),
+        "radar_algorithm_version": (evidence.get("radar") or {}).get("algorithm_version"),
+        "radar_input_fingerprint": (evidence.get("radar") or {}).get("input_fingerprint"),
+        "read_only": True,
+        "writes_state": False,
+        "recomputes_business_results": False,
+        "semantics": "cns_figure_reads_canonical_results_verbatim",
+    }
+    if service_key:
+        detail["service_key"] = service_key
+    if extra:
+        detail.update(extra)
+    return detail
+
+
+def _cns_facility_layer(ctx, layer_key, display_name, records, assembly, *, service_key):
+    """提案 / 既有设施图层（点）。空记录时如实登记为不可用，绝不补点。"""
+
+    detail = _cns_frame_detail(assembly, service_key=service_key, extra={
+        "record_count": len(records),
+        "identities": sorted({record.identity for record in records}),
+        "action_ids": [record.action_id for record in records if record.action_id][:32],
+        "facility_ids": [record.facility_id for record in records if record.facility_id][:32],
+        "site_ids": [record.site_id for record in records if record.site_id][:32],
+        "tower_ids": [record.tower_id for record in records if record.tower_id][:32],
+        "distinct_site_ids": [
+            record.distinct_site_id for record in records if record.distinct_site_id
+        ][:32],
+        "coordinates": [
+            [record.longitude, record.latitude] for record in records
+        ][:32],
+        "source_result_fingerprints": sorted({
+            record.source_result_fingerprint for record in records
+            if record.source_result_fingerprint
+        }),
+        "confirmed_flags": sorted({bool(record.confirmed) for record in records}),
+        "source_confirmed_flags": sorted({bool(record.source_confirmed) for record in records}),
+        "source_confirmed_semantics": (
+            "上游记录的 confirmed 只表示规划宿主 / 设备档案层面，"
+            "方案确认状态以 confirmed_cns_plan 为准"
+        ),
+    })
+    if not records:
+        return _layer(
+            ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_POINT,
+            source_role="cns_corridor_site_plan", status=SOURCE_AVAILABLE, reason="",
+            detail={**detail, "note": "该服务在当前图面范围内没有选中动作（未选中 ≠ 不存在需求）"},
+            feature_count=0,
+        )
+    return _layer(
+        ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_POINT,
+        source_role="cns_corridor_site_plan", status=SOURCE_AVAILABLE, reason="",
+        detail=detail, feature_count=len(records),
+        data={"points": [
+            {
+                "longitude": record.longitude, "latitude": record.latitude,
+                "record_id": record.record_id, "identity": record.identity,
+                "service_key": record.service_key, "site_id": record.site_id,
+                "tower_id": record.tower_id or None, "display_name": record.display_name,
+            }
+            for record in records
+        ]},
+    )
+
+
+def _cns_record_set_layer(ctx, layer_key, display_name, records, assembly, *, service_key):
+    """既有 CNS 设施图层：集合非空才画，空集合如实登记为范围内 0 条。"""
+
+    detail = _cns_frame_detail(assembly, service_key=service_key, extra={
+        "record_count": len(records),
+        "facility_ids": [record.facility_id for record in records if record.facility_id][:32],
+        "identities": sorted({record.identity for record in records}),
+        "existing_cns_evidence": deepcopy(assembly.evidence.get("existing_cns") or {}),
+        "semantics": "real_world_existing_cns_baseline_facility_only",
+    })
+    if not records:
+        return _layer(
+            ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_POINT,
+            source_role="existing_cns_facilities", status=SOURCE_AVAILABLE, reason="",
+            detail={**detail, "note": (
+                "当前图面范围内没有可作为现实既有设施的记录；"
+                "项目内合成 / 工程验证设施不在此表达"
+            )},
+            feature_count=0,
+        )
+    return _layer(
+        ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_POINT,
+        source_role="existing_cns_facilities", status=SOURCE_AVAILABLE, reason="",
+        detail=detail, feature_count=len(records),
+        data={"points": [
+            {
+                "longitude": record.longitude, "latitude": record.latitude,
+                "record_id": record.record_id, "identity": record.identity,
+                "service_key": record.service_key, "site_id": record.site_id,
+                "tower_id": record.tower_id or None, "display_name": record.display_name,
+            }
+            for record in records
+        ]},
+    )
+
+
+def _cns_coverage_layer(ctx, layer_key, display_name, records, radius_m, assembly, *,
+                        service_key, metric_crs, semantics):
+    """规划服务半径圆（**只用于图面表达**，不参与任何业务重算）。"""
+
+    rings = []
+    for record in records:
+        ring = coverage_circle_ring(
+            record.longitude, record.latitude, radius_m, metric_crs=metric_crs,
+        )
+        if ring:
+            rings.append(ring)
+    detail = _cns_frame_detail(assembly, service_key=service_key, extra={
+        "radius_m": float(radius_m),
+        "circle_count": len(rings),
+        "metric_crs": str(metric_crs),
+        "geometry_method": "true_metric_circle_buffered_in_metric_crs_then_reprojected",
+        "radius_semantics": semantics,
+        "is_measured_propagation_contour": False,
+        "is_business_evidence": False,
+        "affects_planning": False,
+    })
+    if not rings:
+        return _layer(
+            ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_POLYGON,
+            source_role="cns_corridor_site_plan", status=SOURCE_AVAILABLE, reason="",
+            detail={**detail, "note": "没有可绘制覆盖圈的选中站址"},
+            feature_count=0,
+        )
+    return _layer(
+        ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_POLYGON,
+        source_role="cns_corridor_site_plan", status=SOURCE_AVAILABLE, reason="",
+        detail=detail, feature_count=len(rings),
+        data={"polygons": rings, "radius_m": float(radius_m)},
+    )
+
+
+def _cns_declared_layer(ctx, layer_key, display_name, assembly, *, service_key, detail_extra,
+                        source_role="radar_surveillance_layout"):
+    """**声明型图层**：只在图例中出现，不画任何几何，因此不可能伪装成要素。"""
+
+    return _layer(
+        ctx, layer_key, display_name=display_name, geometry_type=GEOMETRY_NONE,
+        source_role=source_role, status=SOURCE_AVAILABLE, reason="",
+        detail=_cns_frame_detail(assembly, service_key=service_key, extra=detail_extra),
+        feature_count=0,
+    )
+
+
+def _radar_context_points(ctx, assembly, radar):
+    """Radar-I **评估过的候选塔**上下文（蓝色），绝不是已建 / 已选站点。
+
+    坐标只从 state 的真实站址清单取；候选塔 id 来自 Radar 结果自身。
+    若某个候选 id 在站址清单里找不到，就**跳过并在 detail 里登记**，绝不猜坐标。
+    """
+
+    candidate_ids = set(radar.get("candidate_tower_ids") or [])
+    selected_ids = set(radar.get("selected_tower_ids") or [])
+    if not candidate_ids:
+        return [], {"candidate_tower_count": 0, "reason": "radar_item_has_no_candidate_towers"}
+    towers = (ctx.state.get("towers") or {}).get("items") or []
+    points, missing = [], []
+    for tower in towers:
+        if not isinstance(tower, dict):
+            continue
+        tower_id = str(tower.get("tower_id") or "")
+        if tower_id not in candidate_ids:
+            continue
+        longitude, latitude = _tower_coordinate(tower)
+        if longitude is None or latitude is None:
+            missing.append(tower_id)
+            continue
+        points.append({
+            "longitude": longitude, "latitude": latitude,
+            "tower_id": tower_id, "name": _short(tower.get("name")),
+            "radar_selected": tower_id in selected_ids,
+        })
+    not_found = sorted(candidate_ids - {item["tower_id"] for item in points} - set(missing))
+    return points, {
+        "candidate_tower_count": len(candidate_ids),
+        "drawn_candidate_tower_count": len(points),
+        "selected_tower_count": len(selected_ids),
+        "coordinate_missing": missing[:8],
+        "tower_id_not_in_tower_collection": not_found[:8],
+        "selected_tower_ids": sorted(selected_ids)[:8],
+        "semantics": "radar_evaluated_candidate_tower_context_never_a_built_or_selected_site",
+    }
+
+
+def _cns_labels(ctx, assembly, services, geometry, *, parameters):
+    """CNS 站点标签：同址多业务合并成一条标签并追加真实服务后缀。"""
+
+    labels = []
+    if geometry:
+        start_name = _endpoint_label_name(ctx, ctx.route or {}, "start", "start_node_id")
+        end_name = _endpoint_label_name(ctx, ctx.route or {}, "end", "end_node_id")
+        labels.append(LabelSpec(
+            kind="start", text=start_name or "起点",
+            longitude=geometry[0][0], latitude=geometry[0][1],
+            priority=100, style_key="label_endpoint",
+        ))
+        labels.append(LabelSpec(
+            kind="end", text=end_name or "终点",
+            longitude=geometry[-1][0], latitude=geometry[-1][1],
+            priority=100, style_key="label_endpoint",
+        ))
+    if not parameters.get("show_cns_site_labels", True):
+        return labels
+    grouped = {}
+    for record in assembly.proposals:
+        if services and record.service_key not in services:
+            continue
+        key = (round(record.longitude, 9), round(record.latitude, 9), record.display_name)
+        entry = grouped.setdefault(key, {
+            "longitude": record.longitude, "latitude": record.latitude,
+            "name": record.display_name, "services": set(), "identity": record.identity,
+        })
+        entry["services"].add(record.service_key)
+    for entry in grouped.values():
+        tags = [
+            _SERVICE_TAG.get(service_key, "")
+            for service_key in sorted(entry["services"])
+        ]
+        tags = [tag for tag in tags if tag]
+        text = entry["name"] or "CNS 规划提案"
+        if tags:
+            text = f"{text} /{'/'.join(tags)}"
+        labels.append(LabelSpec(
+            kind="cns_proposal", text=_short(text, 22),
+            longitude=entry["longitude"], latitude=entry["latitude"],
+            priority=80, style_key="label_cns_proposal",
+        ))
+    return labels
+
+
+def _cns_annotations(template_id, assembly, services, parameters, radar):
+    """图面说明框：把"这是规划值 / 这是能力限制"写在图上，而不是只藏在元数据里。"""
+
+    confirmation = assembly.evidence.get("confirmation") or {}
+    step6 = assembly.evidence.get("step6_gate") or {}
+    rows = []
+    if template_id == COMMUNICATION_LAYOUT_V1:
+        rows.append(AnnotationSpec(
+            annotation_id="communication_radius_disclosure",
+            title="通信规划服务半径",
+            lines=[
+                "绿色圆圈为 omnidirectional 规划服务半径 4 km（陆 / 海 / 沿海一致）。",
+                "它是 planning service radius，不是实测无线传播等值线。",
+                "设施为 P16 规划提案（未确认），未通过 Step6 正式确认。",
+            ],
+            anchor="map_bottom_left",
+            width_mm=96.0,
+        ))
+    elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
+            SURVEILLANCE_SERVICE_RID:
+        rows.append(AnnotationSpec(
+            annotation_id="rid_radius_disclosure",
+            title="RID 规划半径",
+            lines=[
+                "实线圆 = RID 陆上 / 沿海规划半径 2 km；虚线圆 = RID 海上最大规划半径 5 km。",
+                "RID 是合作监视（omnidirectional），不是 Radar，图上没有任何扇区 / panel。",
+                "设施为 P16 规划提案（未确认）。",
+            ],
+            anchor="map_bottom_left",
+            width_mm=96.0,
+        ))
+    elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
+            SURVEILLANCE_SERVICE_RADAR:
+        rows.append(AnnotationSpec(
+            annotation_id="radar_capability_limitation",
+            title="Radar-I 能力限制",
+            lines=[
+                "Radar-I 在当前既有站址与模型约束下未形成可行布设；",
+                "非合作监视能力为已证明的补充能力限制。",
+                f"selected_panels={radar.get('selected_panel_count')} · "
+                f"gap_reason={radar.get('gap_reason')} · "
+                f"gap_classification={radar.get('gap_classification')}",
+                "约束：3 km · 90° panel · Radar-II 未启用 · 未放宽 range。",
+                "图中不表示任何 Radar 站址、panel 或覆盖扇区。",
+            ],
+            anchor="map_bottom_left",
+            width_mm=104.0,
+        ))
+    elif template_id == NAVIGATION_LAYOUT_V1:
+        rows.append(AnnotationSpec(
+            annotation_id="navigation_delivery_deficit",
+            title="导航完整性监测点",
+            lines=[
+                "N005 / N006 为真实起降点上的导航完整性监测点规划提案（未确认）。",
+                "monitor placement 已满足规划位置要求；",
+                "但 Communication delivery 仍 residual deficit，",
+                "因此 endpoint overall 仍为 confirmed_deficit / integrity_monitor_delivery_deficit。",
+                "该监测点不是 RTK station、不是 RTK base station、不是 GBAS。",
+            ],
+            anchor="map_bottom_left",
+            width_mm=104.0,
+        ))
+    elif template_id == CNS_COMBINED_V1:
+        rows.append(AnnotationSpec(
+            annotation_id="cns_combined_disclosure",
+            title="CNS 综合布设",
+            lines=[
+                "绿 = 通信 · 橙 = RID · 黄 = 导航完整性 · 蓝 = Radar 能力限制。",
+                "所有设施均为 existing baseline 或 P16 规划提案（未确认）。",
+                "Radar 在 R0005 无选中站址：已证明的补充能力限制，未新增任何 Radar 设施。",
+            ],
+            anchor="map_bottom_left",
+            width_mm=104.0,
+        ))
+    footer = (
+        "规划设施来自 P16 proposal_ready；因 P17 连续服务仍为 "
+        f"{step6.get('continuous_service_status') or 'unacceptable'}，"
+        "方案未通过 Step6 正式确认。"
+    )
+    if rows:
+        rows[-1].lines = list(rows[-1].lines) + [footer]
+    return rows
+
+
+def _surveillance_variant(parameters):
+    return str((parameters or {}).get(SURVEILLANCE_SERVICE_PARAMETER) or "")
+
+
+def materialize_cns(ctx):
+    """CNS 专题图（communication / navigation / surveillance / combined）的装配。
+
+    与 ``route_overview_v1`` 共用**同一套**底图原语（海陆、100 m 障碍、既有站址、
+    航路与标注），只在设施层面按模板取不同的服务集合；设施全部来自
+    :mod:`cns_planner.application.cns_facility_assembler` 这一份 authority。
+    """
+
+    template_id = str(ctx.template_id or "")
+    parameters = ctx.parameters or {}
+    services = _cns_services_for_template(template_id, parameters)
+    terrain_threshold = _finite(parameters.get("terrain_threshold_m"), 100.0)
+    building_threshold = _finite(parameters.get("building_threshold_m"), 100.0)
+    metric_crs = str(parameters.get("extent_source_crs") or DEFAULT_METRIC_CRS)
+
+    assembly = assemble_cns_facilities(
+        ctx.state, ctx.route.get("route_id"), extent=ctx.extent, parameters=parameters,
+    )
+    radar = assembly.evidence.get("radar") or {}
+
+    layers = []
+    layers.extend(_polygon_layers(ctx, ctx.extent))
+    layers.append(_terrain_obstacle_layer(ctx, ctx.extent, terrain_threshold))
+    layers.append(_building_obstacle_layer(ctx, ctx.extent, building_threshold))
+    layers.extend(_tower_layers(ctx, ctx.extent, terrain_threshold))
+
+    existing_by_service = {}
+    for record in assembly.existing:
+        existing_by_service.setdefault(record.service_key, []).append(record)
+
+    # ---- 既有 CNS 设施（真实基线；当前项目范围内为 0 条） -----------------------
+    if SERVICE_COMMUNICATION in services:
+        existing_records = existing_by_service.get(SERVICE_COMMUNICATION, [])
+        if existing_records:
+            layers.append(_cns_record_set_layer(
+                ctx, "cns_existing", "既有 CNS 设施（已建）", existing_records, assembly,
+                service_key=SERVICE_COMMUNICATION,
+            ))
+
+    # ---- P16 规划提案 -----------------------------------------------------------
+    for service_key in services:
+        layer_key, display_name = _PROPOSAL_LAYER_OF_SERVICE.get(service_key, (None, None))
+        if layer_key is None:
+            continue
+        records = [item for item in assembly.proposals if item.service_key == service_key]
+        layers.append(_cns_facility_layer(
+            ctx, layer_key, display_name, records, assembly, service_key=service_key,
+        ))
+
+    # ---- 覆盖 / 能力圆 ----------------------------------------------------------
+    if SERVICE_COMMUNICATION in services:
+        comm_records = [
+            record for record in assembly.proposals if record.service_key == SERVICE_COMMUNICATION
+        ]
+        radius = coverage_radius_for(
+            comm_records[0], surface_class="land",
+        ) if comm_records else None
+        if comm_records and radius:
+            layers.append(_cns_coverage_layer(
+                ctx, "cns_coverage_comm", "通信规划服务半径 4 km", comm_records, radius,
+                assembly, service_key=SERVICE_COMMUNICATION, metric_crs=metric_crs,
+                semantics="communication_omnidirectional_planning_service_radius_4km",
+            ))
+    if SERVICE_RID in services:
+        rid_records = [
+            record for record in assembly.proposals if record.service_key == SERVICE_RID
+        ]
+        land_radius, sea_radius = rid_radius_pair()
+        if rid_records and land_radius:
+            layers.append(_cns_coverage_layer(
+                ctx, "cns_coverage_rid_land", "RID 陆上/沿海规划半径 2 km", rid_records,
+                land_radius, assembly, service_key=SERVICE_RID, metric_crs=metric_crs,
+                semantics="rid_cooperative_land_coastal_planning_radius_2km_solid",
+            ))
+        if rid_records and sea_radius:
+            layers.append(_cns_coverage_layer(
+                ctx, "cns_coverage_rid_sea", "RID 海上最大规划半径 5 km", rid_records,
+                sea_radius, assembly, service_key=SERVICE_RID, metric_crs=metric_crs,
+                semantics="rid_cooperative_sea_maximum_planning_radius_5km_dashed",
+            ))
+
+    # ---- Radar：只有上下文与限制，绝无站址 / panel / 扇区 -------------------------
+    annotations = []
+    if SERVICE_RADAR in services or template_id == CNS_COMBINED_V1:
+        context_points, context_detail = _radar_context_points(ctx, assembly, radar)
+        if template_id == SURVEILLANCE_LAYOUT_V1 and context_points:
+            layers.append(_layer(
+                ctx, "cns_radar_context", display_name="Radar-I 评估候选站址（未选中）",
+                geometry_type=GEOMETRY_POINT, source_role="radar_surveillance_layout",
+                status=SOURCE_AVAILABLE, reason="",
+                detail=_cns_frame_detail(assembly, service_key=SERVICE_RADAR,
+                                         extra=context_detail),
+                feature_count=len(context_points), data={"points": context_points},
+            ))
+        layers.append(_cns_declared_layer(
+            ctx, "cns_radar_limitation", "非合作监视能力限制（无可行布设）", assembly,
+            service_key=SERVICE_RADAR,
+            detail_extra={
+                "algorithm_version": radar.get("algorithm_version"),
+                "status": radar.get("status"),
+                "gap_reason": radar.get("gap_reason"),
+                "gap_classification": radar.get("gap_classification"),
+                "managed_physical_gap": radar.get("managed_physical_gap"),
+                "infeasibility_proven": radar.get("infeasibility_proven"),
+                "selected_panel_count": radar.get("selected_panel_count"),
+                "selected_tower_count": radar.get("selected_tower_count"),
+                "radar_ii_panel_count": radar.get("radar_ii_panel_count"),
+                "candidate_tower_count": radar.get("candidate_tower_count"),
+                "manufactured_radar_sites": 0,
+                "manufactured_radar_panels": 0,
+                "drawn_radar_sectors": 0,
+                "other_route_items_used": False,
+                "declared_only_no_geometry": True,
+                "limitations": deepcopy(radar.get("limitations") or []),
+            },
+        ))
+
+    route_layers, geometry, turns = _route_layers(ctx)
+    layers.extend(route_layers)
+
+    labels = _cns_labels(ctx, assembly, services, geometry, parameters=parameters)
+    annotations = _cns_annotations(template_id, assembly, services, parameters, radar)
+    legend_items = _legends(layers, CNS_LEGEND_ORDER)
+
+    source_status, omitted = {}, []
+    for layer in layers:
+        source_status[layer.layer_key] = {
+            "display_name": layer.display_name,
+            "source_role": layer.source_role,
+            "source_path": layer.source_path,
+            "status": layer.source_status,
+            "reason": layer.source_reason or None,
+            "feature_count": int(layer.feature_count),
+            "detail": deepcopy(layer.source_detail),
+        }
+        if layer.source_status != SOURCE_AVAILABLE:
+            omitted.append({
+                "layer_key": layer.layer_key, "display_name": layer.display_name,
+                "status": layer.source_status,
+                "reason": layer.source_reason or "数据不可用",
+            })
+        elif layer.feature_count <= 0 and layer.geometry_type != GEOMETRY_NONE:
+            omitted.append({
+                "layer_key": layer.layer_key, "display_name": layer.display_name,
+                "status": "empty_within_extent",
+                "reason": "数据源可读，但当前图面范围内没有要素",
+            })
+    warnings = [f"{item['display_name']}：{item['reason']}" for item in omitted]
+    warnings.extend(assembly.warnings)
+    return MaterializationResult(
+        layers=layers, labels=labels, legend_items=legend_items,
+        source_status=source_status, omitted_layers=omitted, warnings=warnings,
+        annotations=annotations, boundaries=deepcopy(assembly.boundaries),
+    )
+
+
 # --------------------------------------------------------------------------- 装配主入口
 
 def materialize(ctx: MaterializationContext):
@@ -1912,7 +2478,7 @@ def materialize(ctx: MaterializationContext):
                 "status": layer.source_status,
                 "reason": layer.source_reason or "数据不可用",
             })
-        elif layer.feature_count <= 0:
+        elif layer.feature_count <= 0 and layer.geometry_type != GEOMETRY_NONE:
             omitted.append({
                 "layer_key": layer.layer_key, "display_name": layer.display_name,
                 "status": "empty_within_extent",
@@ -1922,7 +2488,29 @@ def materialize(ctx: MaterializationContext):
     return MaterializationResult(
         layers=layers, labels=labels, legend_items=legend_items,
         source_status=source_status, omitted_layers=omitted, warnings=warnings,
+        boundaries={
+            "presentation_only": True,
+            "writes_operational_routes_or_cns": False,
+            "recomputes_business_results": False,
+            "unknown_is_not_zero": True,
+            "missing_is_not_empty": True,
+        },
     )
+
+
+#: 使用 CNS 装配路径的模板（其余一律走 :func:`materialize`）。
+CNS_TEMPLATE_DISPATCH = (
+    COMMUNICATION_LAYOUT_V1, NAVIGATION_LAYOUT_V1, SURVEILLANCE_LAYOUT_V1, CNS_COMBINED_V1,
+)
+
+
+def materialize_for_template(ctx: MaterializationContext):
+    """按 ``ctx.template_id`` 分派到对应装配路径（**唯一**分派点）。"""
+
+    template_id = str(ctx.template_id or ROUTE_OVERVIEW_V1)
+    if template_id in CNS_TEMPLATE_DISPATCH:
+        return materialize_cns(ctx)
+    return materialize(ctx)
 
 
 # =========================================================================== 产物存储
@@ -2497,7 +3085,13 @@ class MapFigureService:
                 f"暂不支持输出格式 {format_name}；本轮仅支持 "
                 + "、".join(SUPPORTED_FORMATS)
             )
-        parameters = template_parameters(template_id, parameter_overrides)
+        try:
+            parameters = template_parameters(template_id, parameter_overrides)
+        except MapFigureParameterInvalid as exc:
+            raise MapFigureParameterError(
+                str(exc), detail={"parameter": exc.parameter, "reason": exc.reason},
+            ) from exc
+        _require_template_parameters(template_id, parameters, parameter_overrides)
         route = self.select_route(route_id)
         revision = int(self.session.state.get("revision") or 0)
         paths = dict(self.paths_provider() or {})
@@ -2516,10 +3110,11 @@ class MapFigureService:
                 f"航路 {route.get('route_id')} 的几何不足以计算图面范围（需要至少 2 个顶点）",
                 detail=extent_evidence,
             )
-        probe = materialize(MaterializationContext(
+        probe = materialize_for_template(MaterializationContext(
             state=self.session.state, paths=paths, route=route, extent=extent,
             parameters=parameters, project_revision=revision,
             source_audits=self.session.state.get("source_audits") or {},
+            template_id=template["template_id"],
         ))
         layout = _layout_plan(parameters, legend_items=_legend_layout_entries(probe.legend_items))
         aspect = layout["map_width_mm"] / layout["map_height_mm"]
@@ -2534,14 +3129,28 @@ class MapFigureService:
                 f"航路 {route.get('route_id')} 的几何不足以计算图面范围（需要至少 2 个顶点）",
                 detail=extent_evidence,
             )
-        result = materialize(MaterializationContext(
+        extent_evidence = {
+            **extent_evidence,
+            "layout_profile": layout.get("layout_profile"),
+            "extent_policy_id": parameters.get("extent_policy_id"),
+            "extent_aspect_locked": bool(parameters.get("extent_aspect_locked")),
+            "layout_map_width_mm": layout.get("map_width_mm"),
+            "layout_map_height_mm": layout.get("map_height_mm"),
+            "aspect_used": aspect,
+            "cns_five_figure_shared_extent": bool(
+                parameters.get("layout_profile") == CNS_LAYOUT_PROFILE
+            ),
+        }
+        result = materialize_for_template(MaterializationContext(
             state=self.session.state, paths=paths, route=route, extent=extent,
             parameters=parameters, project_revision=revision,
             source_audits=self.session.state.get("source_audits") or {},
             surface_classification_policy=(
                 self.session.state.get("surface_classification_policy") or {}
             ),
+            template_id=template["template_id"],
         ))
+        extent_evidence = _annotate_extent_evidence(extent_evidence, result, extent, parameters)
         path_points = [
             list(point) for point in (route.get("path") or [])
             if isinstance(point, (list, tuple)) and len(point) >= 2
@@ -2549,7 +3158,7 @@ class MapFigureService:
         spec = FigureSpec(
             template_id=template["template_id"],
             template_version=int(template["template_version"]),
-            title=_figure_title(template["display_name"], route),
+            title=_figure_title(template["display_name"], route, template_id),
             route_id=str(route.get("route_id") or ""),
             route_source=OPERATIONAL_ROUTE_SOURCE,
             route_crs=str(route.get("path_crs") or DEFAULT_CRS),
@@ -2562,6 +3171,7 @@ class MapFigureService:
             extent_evidence=extent_evidence,
             layers=result.layers,
             labels=result.labels,
+            annotations=result.annotations,
             legend_items=result.legend_items,
             source_status=result.source_status,
             omitted_layers=result.omitted_layers,
@@ -2581,6 +3191,11 @@ class MapFigureService:
                 "start_end_always": True,
                 "turn_point_label_limit": 6,
                 "place_labels_from_data_only": True,
+                "priority_order": [
+                    "start_end", "selected_cns_proposal", "existing_cns_facility",
+                    "tower_context", "ordinary_context",
+                ],
+                "tower_labels_are_suppressed_not_relocated": True,
             },
             layout=layout,
             parameters=deepcopy(parameters),
@@ -2591,6 +3206,9 @@ class MapFigureService:
                 "recomputes_business_results": False,
                 "unknown_is_not_zero": True,
                 "missing_is_not_empty": True,
+                "writes_state": False,
+                "advances_project_revision": False,
+                **deepcopy(result.boundaries or {}),
             },
         )
         return spec
@@ -2863,13 +3481,23 @@ def _layout_plan(parameters, legend_items=()):
     真实高度（贴合内容），再把剩余高度全部给地图——因此图例条目少时地图自动变大，
     **不会出现"图例框很高、下方大片空白"**。
 
+    CNS 五图的差别（``layout_profile = cns_five_figure_v1``）：
+
+    * 地图高度按**固定图例预算**计算，而不是按各自的实际图例高度 —— 这样五张图的
+      地图框尺寸完全一致，extent / 比例尺 / 经纬网才真正可比；
+    * 图例框仍按各自内容**贴合**高度，只是它的顶边位置由固定地图高度决定，
+      因此条目少的图会在图例框**下方**留白，而框内绝不出现大片空白；
+    * 图例分列改用 :data:`~cns_planner.gis.figure_style.CNS_LEGEND_GROUP_COLUMNS`。
+
     地图框与图例框之间保留一条独立的**薄审计条**（坐标系 / 项目 revision / 未显示图层）：
     三段间距固定（``footer_map_gap`` + ``footer_strip`` + ``footer_legend_gap``），
     因此这行小字绝不会压到地图边框、比例尺或图例标题上。
     """
 
-    from ..gis.figure_legend import legend_geometry
-    from ..gis.figure_style import LAYOUT, LEGEND_GROUP_COLUMNS
+    from ..gis.figure_legend import CNS_LEGEND_BALANCE_TOLERANCE, legend_geometry
+    from ..gis.figure_style import (
+        CNS_LEGEND_GROUP_COLUMNS, LAYOUT, LEGEND_GROUP_COLUMNS,
+    )
 
     width = float(parameters.get("document_width_mm") or 210.0)
     height = float(parameters.get("document_height_mm") or 297.0)
@@ -2900,20 +3528,39 @@ def _layout_plan(parameters, legend_items=()):
     group_item_gap = float(LAYOUT["legend_group_item_gap_mm"])
     top_padding = float(LAYOUT["legend_top_padding_mm"])
     header = float(LAYOUT["legend_header_mm"])
+    profile = str(parameters.get("layout_profile") or "")
+    cns_profile = profile == CNS_LAYOUT_PROFILE
+    group_columns = CNS_LEGEND_GROUP_COLUMNS if cns_profile else LEGEND_GROUP_COLUMNS
 
     def geometry_for(row, group):
         return legend_geometry(
             list(legend_items or ()), row_height=row, group_row=group,
             columns=columns, header_height=header, group_gap=group_gap,
-            group_item_gap=group_item_gap, group_columns=LEGEND_GROUP_COLUMNS,
+            group_item_gap=group_item_gap, group_columns=group_columns,
             top_padding=top_padding,
+            # route_overview_v1 保持纯语义分列（历史版式不变）；
+            # CNS 五图允许在语义分列明显失衡时回退到自动均衡。
+            balance_tolerance=(
+                CNS_LEGEND_BALANCE_TOLERANCE if cns_profile else None
+            ),
         )
 
     geometry = geometry_for(row_height, group_row)
     # 下界：按**最小可用行距**重算一次，保证图例一定放得下（宁可地图小一点，也不截断图例）。
     compact = geometry_for(float(LAYOUT["legend_min_row_mm"]),
                            float(LAYOUT["legend_min_group_row_mm"]))
-    needed = max(float(geometry["box_height_mm"]), float(compact["box_height_mm"]))
+    actual_needed = max(float(geometry["box_height_mm"]), float(compact["box_height_mm"]))
+    needed = actual_needed
+    if cns_profile:
+        # 固定预算：只用于**决定地图框高度**，不改变图例框自身的贴合高度。
+        budget = (
+            header + top_padding
+            + int(LAYOUT["cns_legend_budget_groups"]) * (group_row + group_item_gap + group_gap)
+            + int(LAYOUT["cns_legend_budget_rows"]) * row_height
+        )
+        # 恒定等于预算：即使某张图的图例比预算更高，也只压缩该图的行距，
+        # **绝不**改变地图框高度 —— 否则五图的 extent 与比例尺就不再可比。
+        needed = budget
     effective_columns = int(geometry["columns"])
     # 地图是主体：先按 map_fraction（0.72）拿高度，再为图例让出必要空间；
     # 图例框最终**贴合内容**，因此不会出现"框很高、内容只占左上角 + 下方大片空白"。
@@ -2923,7 +3570,8 @@ def _layout_plan(parameters, legend_items=()):
     footer_strip_top = map_top + map_height + footer_map_gap
     legend_top = footer_strip_top + footer_strip + footer_legend_gap
     available_legend = max(18.0, height - margin - footer_band - legend_top)
-    legend_height = min(needed, available_legend)
+    # 图例框高度**始终贴合内容**；available_legend 只是"放不下时压缩行距"的上限。
+    legend_height = min(actual_needed, available_legend)
     # 只有在空间确实不足时才压缩行距（下限 3.9 mm 仍可读），绝不截断图例条目。
     if float(geometry["box_height_mm"]) > legend_height:
         ratio = max(0.60, legend_height / float(geometry["box_height_mm"]))
@@ -2967,7 +3615,14 @@ def _layout_plan(parameters, legend_items=()):
         "scale_bar_margin_mm": float(LAYOUT["scale_bar_margin_mm"]),
         "north_arrow_size_mm": float(LAYOUT["north_arrow_size_mm"]),
         "north_arrow_margin_mm": float(LAYOUT["north_arrow_margin_mm"]),
-        "fixed_layout": "a4_portrait_map_above_legend_below_with_audit_strip",
+        "layout_profile": profile or "route_overview_v1",
+        "legend_budget_height_mm": needed if cns_profile else None,
+        "legend_actual_height_mm": actual_needed,
+        "extent_aspect": map_width / map_height if map_height else 1.0,        "fixed_layout": (
+            "a4_portrait_map_above_legend_below_with_audit_strip_cns_shared_map_frame"
+            if cns_profile else
+            "a4_portrait_map_above_legend_below_with_audit_strip"
+        ),
     }
 
 
@@ -3005,13 +3660,92 @@ def _bounded_preview_width(width_px, layout):
     return max(1, int(math.floor(math.sqrt(MAX_PREVIEW_PIXELS / aspect))))
 
 
-def _figure_title(display_name, route):
-    """图名：正式图面标题固定为「航路周边状况图」，**不**把 route_id / revision 塞进标题。
+def _figure_title(display_name, route, template_id=None):
+    """图名：正式图面标题固定为模板中文名，**不**把 route_id / revision 塞进标题。
 
     航路标识只作为 FigureSpec 字段（``route_id``）与记录保存，供审计与检索使用。
     """
 
     return str(display_name or "").strip() or "航路周边状况图"
+
+
+def _require_template_parameters(template_id, parameters, overrides):
+    """模板声明的**必需参数**缺失时明确拒绝（绝不用默认值静默兜底）。
+
+    当前唯一的必需参数是 ``surveillance_layout_v1`` 的 ``surveillance_service``：
+    RID 与 Radar 是两种完全不同的监视能力，任何"默认取一个"的行为都会让用户看到
+    一张并非自己要求的能力图，因此这里必须硬失败。
+    """
+
+    required = template_required(template_id)
+    if not required:
+        return parameters
+    missing = [
+        name for name in required
+        if parameters.get(name) in (None, "", [], {})
+    ]
+    if missing:
+        raise MapFigureParameterError(
+            f"模板「{template_id}」必须显式提供参数：{'、'.join(missing)}",
+            detail={
+                "template_id": template_id,
+                "missing_parameters": missing,
+                "provided_overrides": sorted((overrides or {}).keys()),
+                "allowed": {
+                    SURVEILLANCE_SERVICE_PARAMETER: list(SURVEILLANCE_SERVICE_VALUES),
+                }.get(missing[0]),
+            },
+        )
+    return parameters
+
+
+def _annotate_extent_evidence(evidence, result, extent, parameters):
+    """把"覆盖圈是否完全落在统一 extent 内"写进 extent 证据（越界即如实登记）。
+
+    这一步**只读**：越界时不会偷偷扩大范围。第 16 节要求五图 extent 统一，因此
+    正确做法是把结论记下来供审计，而不是为某一类圆单独放大地图。
+    """
+
+    metres_per_degree_lat = 111_320.0
+    metres_per_degree_lon = metres_per_degree_lat * math.cos(
+        math.radians((float(extent.south) + float(extent.north)) / 2.0)
+    )
+    circles = []
+    for layer in result.layers:
+        if not str(layer.layer_key).startswith("cns_coverage_"):
+            continue
+        data = layer.data or {}
+        rings = data.get("polygons") or []
+        if not rings:
+            continue
+        longitudes = [point[0] for ring in rings for point in ring]
+        latitudes = [point[1] for ring in rings for point in ring]
+        if not longitudes or not latitudes:
+            continue
+        margins = {
+            "west": (min(longitudes) - float(extent.west)) * metres_per_degree_lon / 1000.0,
+            "east": (float(extent.east) - max(longitudes)) * metres_per_degree_lon / 1000.0,
+            "south": (min(latitudes) - float(extent.south)) * metres_per_degree_lat / 1000.0,
+            "north": (float(extent.north) - max(latitudes)) * metres_per_degree_lat / 1000.0,
+        }
+        circles.append({
+            "layer_key": layer.layer_key,
+            "radius_m": data.get("radius_m"),
+            "circle_count": len(rings),
+            "min_margin_km": round(min(margins.values()), 3),
+            "margins_km": {key: round(value, 3) for key, value in margins.items()},
+            "inside_extent": all(value >= 0.0 for value in margins.values()),
+        })
+    return {
+        **evidence,
+        "coverage_circles": circles,
+        "coverage_circles_inside_extent": all(item["inside_extent"] for item in circles)
+        if circles else None,
+        "coverage_display_margin_km": parameters.get("coverage_display_margin_km"),
+        "extent_uniform_across_cns_templates": bool(
+            parameters.get("layout_profile") == CNS_LAYOUT_PROFILE
+        ),
+    }
 
 
 def _figure_id(spec, dpi, format_name):

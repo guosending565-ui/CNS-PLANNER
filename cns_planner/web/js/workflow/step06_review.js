@@ -843,15 +843,74 @@ function deliveryPanel(flow){
 const MAP_FIGURE_TEMPLATES=[
   ['route_overview_v1','航路周边状况图',true],
   ['route_detail_v1','航路细节放大图',false],
-  ['communication_layout_v1','通信设施布设图',false],
-  ['navigation_layout_v1','导航设施布设图',false],
-  ['surveillance_layout_v1','监视设施布设图',false],
-  ['cns_combined_v1','CNS 综合布设图',false]
+  ['communication_layout_v1','通信设施布设图',true],
+  ['navigation_layout_v1','导航完整性监测点布设图',true],
+  ['surveillance_layout_v1','监视设施布设图',true],
+  ['cns_combined_v1','CNS 综合布设图',true]
 ];
 
+/** 监视布设图的两个 variant：RID 合作监视与 Radar 非合作监视**绝不混画**。 */
+const MAP_FIGURE_SURVEILLANCE_TEMPLATE='surveillance_layout_v1';
+const MAP_FIGURE_SURVEILLANCE_PARAMETER='surveillance_service';
+const MAP_FIGURE_SURVEILLANCE_VARIANTS=[
+  ['rid_cooperative','RID 合作监视（2 km 实线 / 5 km 虚线）'],
+  ['radar_noncooperative','Radar 非合作监视（能力限制表达）']
+];
+
+/**
+ * 模板清单：**以后端 catalog 为准**，catalog 尚未加载时退回内置表。
+ *
+ * 为什么不能只保留内置表：模板可用性是后端事实（本轮 communication / navigation /
+ * surveillance / combined 由 planned 变为 available）。前端硬编码一份就会与后端漂移，
+ * 于是用户看到的可选项与实际能生成的图不一致。
+ */
+function mapFigureTemplateList(model){
+  const declared=Array.isArray(model?.catalog?.templates)?model.catalog.templates:[];
+  const available=Array.isArray(model?.catalog?.available_template_ids)
+    ?model.catalog.available_template_ids:[];
+  if(!declared.length)return MAP_FIGURE_TEMPLATES;
+  return declared.map(item=>{
+    const id=String(item?.template_id||'');
+    return [id,String(item?.display_name||id),available.includes(id)];
+  }).filter(item=>item[0]);
+}
+
+/** variant 取值同样以后端 catalog 为准（非法值由后端明确拒绝，前端不猜）。 */
+function mapFigureSurveillanceVariants(model){
+  const declared=model?.catalog?.surveillance_service_values;
+  if(!Array.isArray(declared)||!declared.length)return MAP_FIGURE_SURVEILLANCE_VARIANTS;
+  const labels=new Map(MAP_FIGURE_SURVEILLANCE_VARIANTS.map(item=>[item[0],item[1]]));
+  return declared.map(value=>[String(value),labels.get(String(value))||String(value)]);
+}
+
+/** 监视布设图的 variant 选择器；其它模板不渲染（因此不会误传参数）。 */
+function mapFigureVariantOptions(model,selectedTemplateId,selectedValue){
+  if(selectedTemplateId!==MAP_FIGURE_SURVEILLANCE_TEMPLATE)return '';
+  const variants=mapFigureSurveillanceVariants(model);
+  const fallback=variants[0]?.[0]||'';
+  const selected=variants.some(item=>item[0]===selectedValue)?selectedValue:fallback;
+  return '<label>监视能力<select id="mapFigureSurveillanceService">'
+    +variants.map(([value,label])=>'<option value="'+escapeHtml(value)+'"'
+      +(value===selected?' selected':'')+'>'+escapeHtml(label)+'</option>').join('')
+    +'</select></label>';
+}
+
+/**
+ * 模板参数（只构造**登记过的**参数）。
+ *
+ * 监视布设图必须显式给出 `surveillance_service`：缺省或非法值在后端会被明确拒绝，
+ * 前端在这里就把它选出来，绝不静默回退到某一个 variant。
+ */
+function mapFigureParameters(templateId,variant){
+  if(String(templateId)!==MAP_FIGURE_SURVEILLANCE_TEMPLATE)return {};
+  const values=MAP_FIGURE_SURVEILLANCE_VARIANTS.map(item=>item[0]);
+  const value=values.includes(String(variant))?String(variant):values[0];
+  return {[MAP_FIGURE_SURVEILLANCE_PARAMETER]:value};
+}
+
 /** 模板下拉：只有 status=available 的模板可选，其余如实标注「尚未实现」。 */
-function mapFigureTemplateOptions(selectedTemplateId=''){
-  return MAP_FIGURE_TEMPLATES.map(([id,label,available])=>
+function mapFigureTemplateOptions(model,selectedTemplateId=''){
+  return mapFigureTemplateList(model).map(([id,label,available])=>
     '<option value="'+escapeHtml(id)+'"'
     +(available&&id===selectedTemplateId?' selected':'')+(available?'':' disabled')+'>'
     +escapeHtml(label)+(available?'':'（尚未实现）')+'</option>').join('');
@@ -923,10 +982,17 @@ function mapFigureRegionBody(flow,selection={}){
     ||String(plottable[0]?.route_id||'');
   const requestedTemplate=String(selection.selected_template_id||'');
   const activeTemplate=String(active?.template_id||'');
-  const availableTemplates=MAP_FIGURE_TEMPLATES.filter(item=>item[2]).map(item=>item[0]);
+  const templateList=mapFigureTemplateList(model);
+  const availableTemplates=templateList.filter(item=>item[2]).map(item=>item[0]);
   const selectedTemplate=(availableTemplates.includes(requestedTemplate)&&requestedTemplate)
     ||(availableTemplates.includes(activeTemplate)&&activeTemplate)
     ||availableTemplates[0]||'';
+  const requestedVariant=String(selection.selected_surveillance_service||'');
+  const activeVariant=String(active?.parameters?.[MAP_FIGURE_SURVEILLANCE_PARAMETER]||'');
+  const variantValues=mapFigureSurveillanceVariants(model).map(item=>item[0]);
+  const selectedVariant=(variantValues.includes(requestedVariant)&&requestedVariant)
+    ||(variantValues.includes(activeVariant)&&activeVariant)
+    ||variantValues[0]||'';
   const routeOptions=mapFigureRouteOptions(flow,selectedRoute);
   const generatedAt=active&&active.generated_at?escapeHtml(active.generated_at):'—';
   const bytes=active&&Number.isFinite(active.image_bytes)?(active.image_bytes/1024).toFixed(0)+' KB':'—';
@@ -936,7 +1002,8 @@ function mapFigureRegionBody(flow,selection={}){
     '<p class="parameter-note">专题图只读消费当前权威运行航路与已配置 GIS 数据源，用 QGIS 版面程序化生成（上方地图、下方图例），不会重算或回写任何业务结论。缺数据的图层会被省略并写明原因。</p>'
     +(stale?'<p class="inline-error">'+escapeHtml(applicabilityText('stale_revision'))+'</p>':'')
     +'<label>模板<select id="mapFigureTemplate">'
-      +mapFigureTemplateOptions(selectedTemplate)+'</select></label>'
+      +mapFigureTemplateOptions(model,selectedTemplate)+'</select></label>'
+    +mapFigureVariantOptions(model,selectedTemplate,selectedVariant)
     +'<label>航路<select id="mapFigureRoute">'+routeOptions
       +(routeOptions?'':'<option value="">（当前没有可制图的运行航路）</option>')+'</select></label>'
     +(!model.canGenerate?'<p class="empty">'+escapeHtml(model.reason)+'</p>':'')
@@ -956,10 +1023,11 @@ function mapFigureRegionBody(flow,selection={}){
     '图件记录保存在当前项目目录的 artifacts/map_figures/routes/<航路>/ 下；图件索引不进入项目状态，因此项目变更后旧图仍可打开，但会被标记为「'+applicabilityText('stale_revision')+'」。');
 }
 
-function mapFigurePanel(flow){
+function mapFigurePanel(flow,selection){
   // 稳定容器 id：导出成功后只替换这一块（局部刷新，不整页重渲染）。
+  // ``selection`` 只在测试与局部刷新时显式给出；生产首屏渲染走默认值。
   return '<div id="mapFigureRegion" data-map-figure-region="true">'
-    +mapFigureRegionBody(flow)+'</div>';
+    +mapFigureRegionBody(flow,selection||{})+'</div>';
 }
 
 /**
@@ -975,6 +1043,7 @@ export function refreshMapFigureRegion(c){
   const selection={
     selected_route_id:c.$?.('mapFigureRoute')?.value||'',
     selected_template_id:c.$?.('mapFigureTemplate')?.value||'',
+    selected_surveillance_service:c.$?.('mapFigureSurveillanceService')?.value||'',
   };
   host.innerHTML=mapFigureRegionBody(c.flow?c.flow():{},selection);
   bindMapFigureActions(c);
@@ -1003,10 +1072,12 @@ export function ensureMapFigureState(c){
 async function exportMapFigure(c){
   const template=c.$('mapFigureTemplate')?.value||'route_overview_v1';
   const routeId=c.$('mapFigureRoute')?.value||c.flow().operational_routes?.[0]?.route_id||null;
+  const variant=c.$('mapFigureSurveillanceService')?.value||'';
   // computeAction：原样返回 POST 响应，不把它当 workflow 快照安装（resourceAction 会），
   // 因此 export 的局部响应不可能污染 flow。
   const response=await c.computeAction('/api/map-figures/export',{
     template_id:template,route_id:routeId||null,format:'png',dpi:300,
+    parameters:mapFigureParameters(template,variant),
   });
   await refreshMapFigureState({
     api:c.api,projectIdentity:String(c?.projectOpenStep?.()?.identity||''),
@@ -1021,10 +1092,24 @@ async function exportMapFigure(c){
 /** 专题图区域内的按钮绑定（初次渲染与局部刷新共用同一份）。 */
 function bindMapFigureActions(c){
   // 专题成果图：三个入口都不自动触发——预览 / 生成 / 下载全部由用户显式点击。
+  // 模板切换要立刻重渲染区域：监视布设图的 variant 选择器只在该模板下存在，
+  // 不重渲染就会出现「选了 RID 却按 Radar 导出」这类错配。
+  const templateSelect=c.$('mapFigureTemplate');
+  if(templateSelect&&!templateSelect.dataset?.mapFigureBound){
+    if(templateSelect.dataset)templateSelect.dataset.mapFigureBound='1';
+    // 极简 DOM 替身（部分测试环境）没有 addEventListener；真实浏览器一定有。
+    if(typeof templateSelect.addEventListener==='function'){
+      templateSelect.addEventListener('change',()=>refreshMapFigureRegion(c));
+    }
+  }
   c.actionButton('previewMapFigure',async()=>{
     const template=c.$('mapFigureTemplate')?.value||'route_overview_v1';
     const routeId=c.$('mapFigureRoute')?.value||'';
-    await c.previewMapFigure({template_id:template,route_id:routeId});
+    const variant=c.$('mapFigureSurveillanceService')?.value||'';
+    await c.previewMapFigure({
+      template_id:template,route_id:routeId,
+      parameters:mapFigureParameters(template,variant),
+    });
   });
   c.actionButton('exportMapFigure',()=>exportMapFigure(c));
   c.actionButton('downloadMapFigure',()=>c.downloadMapFigure());
@@ -1053,7 +1138,7 @@ function proposalPanel(flow){
 }
 
 // ---- 渲染 -------------------------------------------------------------------
-export function render({state,flow}){
+export function render({state,flow,selection}){
   const review=flow.cns_plan_review||{},confirmed=flow.confirmed_cns_plan||{},summary=planReviewSummary(review,confirmed);
   const selected=(review.variants||[]).find(item=>item.variant_id===review.selected_variant_id)||null;
   const OPERATE=REVIEW_SEGMENTS.operate,RESULT=REVIEW_SEGMENTS.result,ADVANCED=REVIEW_SEGMENTS.advanced;
@@ -1066,7 +1151,7 @@ export function render({state,flow}){
     ]})
     +wbPanel('result','',{segments:[
       ['review-res-status','状态总览',wbBlock('状态总览',wbSegHint(RESULT,'review-res-status')+statusOverview(flow)+routeSafetyEvidencePanel(flow))],
-      ['review-res-report','报告与交付',wbBlock('报告与交付',wbSegHint(RESULT,'review-res-report')+reportPanel(flow)+deliveryPanel(flow)+mapFigurePanel(flow))]
+      ['review-res-report','报告与交付',wbBlock('报告与交付',wbSegHint(RESULT,'review-res-report')+reportPanel(flow)+deliveryPanel(flow)+mapFigurePanel(flow,selection))]
     ]})
     +wbPanel('advanced','',{segments:[
       ['review-adv-requirement','需求依据',wbBlock('需求依据',wbSegHint(ADVANCED,'review-adv-requirement')+requirementPanel(flow))],
