@@ -283,8 +283,25 @@ test('the constraint field is loaded on demand, never during bootstrap', () => {
   const bootstrap = main.slice(main.indexOf("api('/api/state')"));
   assert.doesNotMatch(bootstrap, /loadMap\(\)|loadConstraintField/,
     '约束场绝不能在启动时加载');
-  // 只有勾选图层或显式生成才读取
-  assert.match(main, /onConstraintLayer:\(\)=>\{constraintView\.loadMap\(\);paint\(\);\}/);
+  // 只有勾选图层或显式生成才读取。BUG-SHOT-009 起，勾选「高度层障碍」要先补齐网格
+  // 几何再读图；这里只锁定**语义与调用顺序**，不再绑定某一行实现字符串
+  // （空白 / 换行 / 参数写法可以演进）。
+  const start = main.indexOf('onConstraintLayer');
+  assert.ok(start >= 0, 'onConstraintLayer 回调必须仍然存在');
+  const end = main.indexOf('}});', start);
+  const callback = main.slice(start, end > start ? end : undefined);
+  const guard = callback.search(/altitudeConstraintLayer[^\n]*\.checked/);
+  const hydrate = callback.search(/ensureGridGeometry\s*\(/);
+  const load = callback.search(/constraintView\.loadMap\s*\(/);
+  const paint = callback.search(/paint\s*\(/);
+  assert.ok(guard >= 0, 'onConstraintLayer 必须显式判断 altitudeConstraintLayer 是否勾选');
+  assert.ok(hydrate >= 0, '勾选时必须先补齐网格几何（ensureGridGeometry）');
+  assert.ok(load >= 0, 'onConstraintLayer 必须仍然读取约束场（constraintView.loadMap）');
+  assert.ok(paint >= 0, 'onConstraintLayer 必须仍然触发重绘（paint）');
+  assert.ok(guard < hydrate && hydrate < load,
+    '按需加载顺序必须是 checked guard → ensureGridGeometry → constraintView.loadMap');
+  assert.match(callback, /constraintView\.loadMap\(\)\s*;\s*paint\(\)/,
+    '未勾选时必须保留原有的 loadMap(); paint() 行为');
   assert.match(constraintView, /if\(!altitudeLayerId\|\|!layerNeedsData\(\)\)return null;/);
 });
 
