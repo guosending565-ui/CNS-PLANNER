@@ -23,6 +23,7 @@ from cns_planner.domain.radar_service_evidence import (
     radar_candidate_actions,
     radar_what_if_service_evidence,
 )
+from cns_planner.domain.radar_surveillance_layout import route_sample_height_semantics
 from cns_planner.services.invalidation import DEPENDENTS
 
 
@@ -62,35 +63,57 @@ def panel(panel_id, tower_id, azimuth=90.0):
     }
 
 
-def sample(surface="land"):
+def sample(surface="land", *, altitude=80.0):
     return {
         "sample_index": 0, "sample_id": "V000000", "distance_along_route_m": 0.0,
         "metric": [1000.0, 0.0], "longitude": 122.01, "latitude": 30.0,
-        "egm2008_m": 80.0, "surface_class": surface,
+        "egm2008_m": float(altitude), "surface_class": surface,
         "required_distinct_site_count": {"land": 2, "coastal_uncertain": 2,
                                          "sea": 1, "unknown": None}[surface],
     }
 
 
-def layout(*, surface="land", selected=None, candidates=None, status="proposal_ready"):
+def layout(
+    *, surface="land", selected=None, candidates=None, status="proposal_ready",
+    altitude=80.0, altitude_layer_id="ALT-080",
+):
     selected = list(selected or [])
     candidates = list(candidates if candidates is not None else selected)
     towers = [tower("A", 0.0), tower("B", 0.0)]
     coverage = actual_site_coverage(
-        panels=selected, samples=[sample(surface)],
+        panels=selected, samples=[sample(surface, altitude=altitude)],
         selected_panel_ids=[item["panel_id"] for item in selected], tower_records=towers,
     )
     return {
         "status": "passed", "algorithm_id": "radar_surveillance_layout",
-        "algorithm_version": "1.1", "model_scope": "geometric_initial_radar_layout",
+        "algorithm_version": "1.3", "model_scope": "geometric_initial_radar_layout",
         "items": [{
             "route_id": "R1", "status": status, "input_fingerprint": "layout-fp",
-            "algorithm_id": "radar_surveillance_layout", "algorithm_version": "1.1",
+            "algorithm_id": "radar_surveillance_layout", "algorithm_version": "1.3",
+            "altitude_layer_id": altitude_layer_id,
+            "altitude_m": float(altitude),
+            "route_sample_height_semantics": route_sample_height_semantics(
+                altitude_layer_id
+            ),
+            "parameters": {
+                "fixed_altitude_layer_id": altitude_layer_id,
+                "fixed_altitude_m": float(altitude),
+                "route_sample_height_semantics": route_sample_height_semantics(
+                    altitude_layer_id
+                ),
+                "azimuth_preset": {"azimuth_beamwidth_deg": 90.0},
+            },
+            "route_sampling": {
+                "sample_egm2008_m": float(altitude),
+                "sample_egm2008_semantics": route_sample_height_semantics(
+                    altitude_layer_id
+                ),
+            },
             "validation": {"samples": coverage, "validated": all(
                 item["status"] == "satisfied" for item in coverage
             )},
             "service_evidence_inputs": {
-                "samples": [sample(surface)], "tower_records": towers,
+                "samples": [sample(surface, altitude=altitude)], "tower_records": towers,
                 "selected_panels": selected, "candidate_panels": candidates,
             },
         }],
@@ -260,16 +283,102 @@ def test_alt_080_probe_is_evaluated_but_other_altitude_fails_closed():
     assert unsupported["model_supported_altitude_egm2008_m"] == 80.0
 
 
-def test_p14_voxel_contains_radar_service_evidence_only_when_explicitly_required():
+def test_alt_100_layout_and_probe_use_dynamic_model_altitude():
+    evidence = build_radar_service_evidence(
+        required(), layout(
+            surface="sea", selected=[panel("A1", "A", 90.0)],
+            altitude=100.0, altitude_layer_id="ALT-100",
+        ),
+    )
+    route_evidence = evidence["routes"][0]
+    assert route_evidence["altitude_layer_id"] == "ALT-100"
+    assert route_evidence["model_supported_altitude_egm2008_m"] == 100.0
+    assert route_evidence["route_sample_height_semantics"] == (
+        "fixed_alt_100_egm2008_constant_for_every_sample"
+    )
+
+    supported = evidence_for_probe(
+        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=100.0),
+        metric_projector=identity_radar_projection,
+    )
+    unsupported = evidence_for_probe(
+        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=80.0),
+        metric_projector=identity_radar_projection,
+    )
+    assert supported["status"] == "satisfied"
+    assert supported["model_supported_altitude_egm2008_m"] == 100.0
+    assert unsupported["status"] == "unknown"
+    assert unsupported["reasons"] == ["radar_model_scope_altitude_not_supported"]
+    assert unsupported["model_supported_altitude_egm2008_m"] == 100.0
+
+
+def test_alt_100_probe_passes_100m_sample_to_canonical_coverage(monkeypatch):
+    import cns_planner.domain.radar_service_evidence as adapter
+
+    evidence = build_radar_service_evidence(
+        required(), layout(
+            surface="sea", selected=[panel("A1", "A", 90.0)],
+            altitude=100.0, altitude_layer_id="ALT-100",
+        ),
+    )
+    calls = []
+    canonical = adapter.actual_site_coverage
+
+    def recording(**kwargs):
+        calls.append(kwargs)
+        return canonical(**kwargs)
+
+    monkeypatch.setattr(adapter, "actual_site_coverage", recording)
+    result = evidence_for_probe(
+        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=100.0),
+        metric_projector=identity_radar_projection,
+    )
+    assert result["status"] == "satisfied"
+    assert calls[0]["samples"][0]["egm2008_m"] == 100.0
+
+
+def test_missing_layout_model_altitude_fails_closed_without_80m_fallback():
+    source = layout(altitude=100.0, altitude_layer_id="ALT-100")
+    del source["items"][0]["altitude_m"]
+    evidence = build_radar_service_evidence(required(), source)
+    route_evidence = evidence["routes"][0]
+    assert route_evidence["status"] == "evidence_required"
+    assert route_evidence["reason"] == "radar_layout_altitude_metadata_missing"
+    result = evidence_for_probe(evidence, "R1", voxel_probe(0.0, 0.0, altitude=100.0))
+    assert result["status"] == "unknown"
+    assert result["model_supported_altitude_egm2008_m"] is None
+
+
+def test_layout_and_parameters_altitude_conflict_fails_closed():
+    source = layout(altitude=100.0, altitude_layer_id="ALT-100")
+    source["items"][0]["parameters"]["fixed_altitude_m"] = 80.0
+    evidence = build_radar_service_evidence(required(), source)
+    assert evidence["routes"][0]["status"] == "evidence_required"
+    assert evidence["routes"][0]["reason"] == (
+        "radar_layout_altitude_metadata_inconsistent"
+    )
+
+
+def test_layout_and_validation_sample_altitude_conflict_fails_closed():
+    source = layout(altitude=100.0, altitude_layer_id="ALT-100")
+    source["items"][0]["validation"]["samples"][0]["egm2008_m"] = 80.0
+    evidence = build_radar_service_evidence(required(), source)
+    assert evidence["routes"][0]["status"] == "evidence_required"
+    assert evidence["routes"][0]["reason"] == (
+        "radar_layout_altitude_sample_inconsistent"
+    )
+
+
+def test_p14_alt_100_radar_probe_consumes_canonical_layout_altitude():
     spatial = {
         "altitude_layers": [{
-            "altitude_layer_id": "ALT-080", "lower_altitude_m": 70.0,
-            "upper_altitude_m": 90.0, "vertical_reference": "egm2008_orthometric",
+            "altitude_layer_id": "ALT-100", "lower_altitude_m": 90.0,
+            "upper_altitude_m": 110.0, "vertical_reference": "egm2008_orthometric",
             "confirmed": True, "status": "confirmed",
         }],
         "route_altitude_profiles": {"R1": {
             "route_id": "R1", "mode": "constant",
-            "vertical_reference": "egm2008_orthometric", "constant_altitude_m": 80.0,
+            "vertical_reference": "egm2008_orthometric", "constant_altitude_m": 100.0,
             "waypoints": [], "confirmed": True, "status": "confirmed",
             "geoid_undulation_m": None,
         }},
@@ -283,7 +392,10 @@ def test_p14_voxel_contains_radar_service_evidence_only_when_explicitly_required
         "confirmed": True, "source": "test",
     }}})
     radar_evidence = build_radar_service_evidence(
-        required(), layout(selected=[panel("A1", "A")]),
+        required(), layout(
+            selected=[panel("A1", "A")], altitude=100.0,
+            altitude_layer_id="ALT-100",
+        ),
     )
     result = CNSServiceCorridorV1().evaluate(
         [route], spatial, grid, {"terrain": {"status": "passed", "cells": {
@@ -298,6 +410,9 @@ def test_p14_voxel_contains_radar_service_evidence_only_when_explicitly_required
                    if item["subsystem"] == "S")
     assert [item["service_key"] for item in s_entry["service_redundancy"]] == [RADAR]
     assert s_entry["planning_status"] == "confirmed_deficit"
+    radar_result = s_entry["service_redundancy"][0]
+    assert radar_result["model_supported_altitude_egm2008_m"] == 100.0
+    assert "radar_model_scope_altitude_not_supported" not in radar_result["reasons"]
 
 
 def test_p15_keeps_radar_service_separate_and_p16_target_uses_service_key():

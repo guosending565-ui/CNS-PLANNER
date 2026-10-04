@@ -44,7 +44,7 @@ from test_route_safety_evidence_v2 import (  # noqa: E402
 CURRENT_ID = CNSServiceCorridorV1.algorithm_id
 CURRENT_VERSION = CNSServiceCorridorV1.algorithm_version
 
-#: 与当前实现**不同**的旧算法语义版本（P14 当前为 1.1）。
+#: 与当前实现**不同**的旧算法语义版本（P14 当前为 1.2）。
 OLD_VERSION = "1.0"
 
 

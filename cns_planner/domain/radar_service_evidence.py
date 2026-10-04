@@ -8,18 +8,22 @@ validation result, and hypothetical panels are evaluated only by the existing
 from __future__ import annotations
 
 from copy import deepcopy
+from math import isfinite
 
 from ..algorithms.radar_layout.v1 import actual_site_coverage, required_count_for
 from ..gis.radar_layout_adapter import radar_metric_coordinate
 from .cns_service_contract import SERVICE_KEY_RADAR_NONCOOPERATIVE
 from .cns_service_registry import planner_family_for, service_requirement_for
-from .radar_surveillance_layout import FIXED_ALTITUDE_M, METRIC_CRS, radar_geometry_parameters
+from .radar_surveillance_layout import (
+    METRIC_CRS, radar_geometry_parameters, route_sample_height_semantics,
+)
 from .route_safety_evidence_v2 import stable_fingerprint
 from .site_planning import TOWER_COLOCATION_REUSE_CLASS
 
 
 SERVICE_KEY = SERVICE_KEY_RADAR_NONCOOPERATIVE
 CURRENT_LAYOUT_STATUSES = {"proposal_ready", "infeasible", "refinement_incomplete"}
+ALTITUDE_COMPARISON_TOLERANCE_M = 1e-6
 
 
 def radar_required_for(required_cns, route_id=None):
@@ -95,17 +99,29 @@ def evidence_for_probe(evidence, route_id, probe, *, metric_projector=None):
         altitude_value = float(altitude)
     except (TypeError, ValueError):
         altitude_value = None
-    if altitude_value != float(FIXED_ALTITUDE_M):
+    model_altitude = _finite_float(route.get("model_supported_altitude_egm2008_m"))
+    if route.get("status") != "current" or model_altitude is None:
+        return _unknown_service_entry(
+            route_id, voxel_id, evidence,
+            route.get("reason") or "radar_layout_altitude_evidence_required",
+            probe=probe, route=route,
+        )
+    if (
+        altitude_value is None
+        or not isfinite(altitude_value)
+        or abs(altitude_value - model_altitude) > ALTITUDE_COMPARISON_TOLERANCE_M
+    ):
         return _unknown_service_entry(
             route_id, voxel_id, evidence, "radar_model_scope_altitude_not_supported",
-            probe=probe,
+            probe=probe, route=route,
         )
     inputs = route.get("service_evidence_inputs") or {}
     panels = inputs.get("selected_panels") or []
     towers = inputs.get("tower_records") or []
-    if route.get("status") != "current" or not towers:
+    if not towers:
         return _unknown_service_entry(
-            route_id, voxel_id, evidence, "radar_layout_evidence_required", probe=probe,
+            route_id, voxel_id, evidence, "radar_layout_evidence_required",
+            probe=probe, route=route,
         )
     projector = metric_projector or radar_metric_coordinate
     try:
@@ -143,7 +159,9 @@ def evidence_for_probe(evidence, route_id, probe, *, metric_projector=None):
     result = _sample_evidence(str(route_id), coverage, route)
     result["voxel_id"] = voxel_id
     result["probe_altitude_egm2008_m"] = altitude_value
-    result["model_supported_altitude_egm2008_m"] = float(FIXED_ALTITUDE_M)
+    result["altitude_layer_id"] = route.get("altitude_layer_id")
+    result["model_supported_altitude_egm2008_m"] = model_altitude
+    result["route_sample_height_semantics"] = route.get("route_sample_height_semantics")
     result["nearest_route_offset_m"] = probe.get("nearest_route_offset_m")
     return result
 
@@ -246,14 +264,18 @@ def radar_what_if_service_evidence(required_cns, layout, actions):
 
 def _route_evidence(item):
     route_id = str(item.get("route_id") or "")
+    altitude, altitude_error = _resolved_layout_altitude(item)
+    if altitude_error:
+        return _missing_route(route_id, item, reason=altitude_error)
     current = item.get("status") in CURRENT_LAYOUT_STATUSES
     validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
     samples = validation.get("samples") or []
     if not current or not samples:
-        return _missing_route(route_id, item)
+        return _missing_route(route_id, item, altitude=altitude)
     result = {
         "route_id": route_id,
         "status": "current",
+        **altitude,
         "samples": [_sample_evidence(route_id, sample, item) for sample in samples],
         "service_evidence_inputs": deepcopy(item.get("service_evidence_inputs") or {}),
         "source_layout_fingerprint": item.get("input_fingerprint"),
@@ -320,16 +342,23 @@ def _sample_evidence(route_id, sample, item):
     return result
 
 
-def _missing_route(route_id, source):
+def _missing_route(route_id, source, *, altitude=None, reason=None):
+    altitude = altitude if isinstance(altitude, dict) else {
+        "altitude_layer_id": None,
+        "model_supported_altitude_egm2008_m": None,
+        "route_sample_height_semantics": None,
+    }
     return {
         "route_id": str(route_id), "status": "evidence_required", "samples": [],
-        "reason": f"radar_layout_{(source or {}).get('status') or 'missing'}",
+        **altitude,
+        "reason": reason or f"radar_layout_{(source or {}).get('status') or 'missing'}",
         "source_layout_fingerprint": (source or {}).get("input_fingerprint"),
     }
 
 
-def _unknown_service_entry(route_id, voxel_id, evidence, reason, *, probe=None):
+def _unknown_service_entry(route_id, voxel_id, evidence, reason, *, probe=None, route=None):
     probe = probe if isinstance(probe, dict) else {}
+    route = route if isinstance(route, dict) else {}
     result = {
         "route_id": route_id, "voxel_id": voxel_id, "sample_id": None,
         "coordinate": [probe.get("longitude"), probe.get("latitude")],
@@ -343,11 +372,91 @@ def _unknown_service_entry(route_id, voxel_id, evidence, reason, *, probe=None):
         "status": "unknown", "providers": [], "reasons": [reason],
         "input_fingerprint": (evidence or {}).get("input_fingerprint"),
         "probe_altitude_egm2008_m": probe.get("altitude_egm2008_m"),
-        "model_supported_altitude_egm2008_m": float(FIXED_ALTITUDE_M),
+        "altitude_layer_id": route.get("altitude_layer_id"),
+        "model_supported_altitude_egm2008_m": route.get(
+            "model_supported_altitude_egm2008_m"
+        ),
+        "route_sample_height_semantics": route.get("route_sample_height_semantics"),
         "nearest_route_offset_m": probe.get("nearest_route_offset_m"),
         "algorithm_provenance": (evidence or {}).get("algorithm_provenance"),
     }
     return result
+
+
+def _resolved_layout_altitude(item):
+    """Return canonical layout altitude metadata, or fail closed on inconsistency.
+
+    The authority is the resolved layout item, never a software default or a
+    validation sample.  Parameters, route-sampling metadata, and samples are
+    independent consistency witnesses for that authority.
+    """
+
+    parameters = item.get("parameters") if isinstance(item.get("parameters"), dict) else {}
+    route_sampling = (
+        item.get("route_sampling") if isinstance(item.get("route_sampling"), dict) else {}
+    )
+    layer_id = _nonempty_string(item.get("altitude_layer_id"))
+    parameter_layer_id = _nonempty_string(parameters.get("fixed_altitude_layer_id"))
+    altitude_m = _finite_float(item.get("altitude_m"))
+    parameter_altitude_m = _finite_float(parameters.get("fixed_altitude_m"))
+    sampling_altitude_m = _finite_float(route_sampling.get("sample_egm2008_m"))
+    item_semantics = _nonempty_string(item.get("route_sample_height_semantics"))
+    parameter_semantics = _nonempty_string(parameters.get("route_sample_height_semantics"))
+    sampling_semantics = _nonempty_string(route_sampling.get("sample_egm2008_semantics"))
+
+    required_values = (
+        layer_id, parameter_layer_id, altitude_m, parameter_altitude_m,
+        sampling_altitude_m, item_semantics, parameter_semantics, sampling_semantics,
+    )
+    if any(value is None for value in required_values):
+        return None, "radar_layout_altitude_metadata_missing"
+
+    expected_semantics = route_sample_height_semantics(layer_id)
+    if (
+        parameter_layer_id != layer_id
+        or not _same_altitude(altitude_m, parameter_altitude_m)
+        or not _same_altitude(altitude_m, sampling_altitude_m)
+        or item_semantics != expected_semantics
+        or parameter_semantics != item_semantics
+        or sampling_semantics != item_semantics
+    ):
+        return None, "radar_layout_altitude_metadata_inconsistent"
+
+    validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
+    validation_samples = validation.get("samples") or []
+    optimization_samples = (
+        (item.get("service_evidence_inputs") or {}).get("samples") or []
+        if isinstance(item.get("service_evidence_inputs"), dict) else []
+    )
+    for sample in [*optimization_samples, *validation_samples]:
+        sample_altitude = _finite_float(
+            sample.get("egm2008_m") if isinstance(sample, dict) else None
+        )
+        if sample_altitude is None or not _same_altitude(altitude_m, sample_altitude):
+            return None, "radar_layout_altitude_sample_inconsistent"
+
+    return {
+        "altitude_layer_id": layer_id,
+        "model_supported_altitude_egm2008_m": altitude_m,
+        "route_sample_height_semantics": item_semantics,
+    }, None
+
+
+def _same_altitude(left, right):
+    return abs(float(left) - float(right)) <= ALTITUDE_COMPARISON_TOLERANCE_M
+
+
+def _finite_float(value):
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if isfinite(result) else None
+
+
+def _nonempty_string(value):
+    result = str(value).strip() if value is not None else ""
+    return result or None
 
 
 def _explicit_route_ids(required_cns):

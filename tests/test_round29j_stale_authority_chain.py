@@ -40,7 +40,7 @@ from cns_planner.domain.cns_planning_objectives import (  # noqa: E402
 
 DEFAULTS = Path("cns_planner/config/defaults.json")
 
-#: 旧语义版本 fixture：与当前实现不同即可（当前 P14=1.1 / P15=1.1 / P16=2.1 / Radar=1.2）。
+#: 旧语义版本 fixture：与当前实现不同即可（当前 P14=1.2 / P15=1.1 / P16=2.1 / Radar=1.3）。
 OLD_P14_VERSION = "1.0"
 OLD_P15_VERSION = "1.0"
 OLD_P16_VERSION = "2.0"

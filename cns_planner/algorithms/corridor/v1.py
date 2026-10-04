@@ -50,10 +50,9 @@ from ...domain.spatial_3d import (
 
 class CNSServiceCorridorV1:
     algorithm_id = "cns_service_corridor_v1"
-    #: Round 29-H bump：新增 route-endpoint 作用域的 corridor 体素隔离
-    #: （``not_applicable``、不生成 corridor deficit/unknown、不进 provider 汇总）。
-    #: 旧持久化结果在 corridor voxel 语义上**不再等价**，必须整体重算。
-    algorithm_version = "1.1"
+    #: Round 29-M1 bump：Radar probe 改为消费 canonical layout 的 resolved altitude，
+    #: ALT-100 不再被旧的 80 m runtime gate 误判 unknown。旧 P14 结果必须重算。
+    algorithm_version = "1.2"
     model_scope = "engineering_cns_service_requirement_corridor"
 
     def __init__(self, parameters=None):
