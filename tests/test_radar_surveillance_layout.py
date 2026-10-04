@@ -1692,6 +1692,25 @@ def _evaluate(service, provider, payload=None):
     return service.evaluate_radar_surveillance_layout(body, facts_provider=provider)
 
 
+def _set_authoritative_route_altitude(service, layer_id="ALT-100", altitude_m=100.0):
+    """Make the fixture's operational route resolve to a non-default altitude layer."""
+
+    state = service.state
+    state["spatial_3d"]["altitude_layers"].append({
+        "altitude_layer_id": layer_id, "name": f"{altitude_m:g} m",
+        "nominal_altitude_m": float(altitude_m),
+        "lower_altitude_m": float(altitude_m) - 10.0,
+        "upper_altitude_m": float(altitude_m) + 25.0,
+        "vertical_reference": "egm2008_orthometric", "status": "confirmed",
+        "confirmed": True,
+    })
+    state["spatial_3d"]["route_operating_layers"] = [{
+        "route_id": ROUTE_ID, "altitude_layer_id": layer_id,
+        "status": "confirmed", "confirmed": True,
+        "operating_mode": "fixed_cruise_layer",
+    }]
+
+
 def _configure_demo_preview(service, *, validation_status="unresolved"):
     """Inject read-only current projections without running the unrelated planner chain."""
 
@@ -1813,8 +1832,8 @@ def test_service_evaluation_persists_and_restores(tmp_path):
         "legacy_not_used_by_v1_1"
     ] is True
     assert reopened.state["radar_surveillance_policy"]["radar_mount_height_required"] is False
-    assert stored["algorithm_version"] == "1.2"
-    assert restored["algorithm_version"] == "1.2"
+    assert stored["algorithm_version"] == "1.3"
+    assert restored["algorithm_version"] == "1.3"
 
 
 def test_service_route_samples_are_always_fixed_altitude_080(tmp_path):
@@ -1844,6 +1863,120 @@ def test_service_route_samples_are_always_fixed_altitude_080(tmp_path):
     assert results["A"]["selected_panel_count"] == results["B"]["selected_panel_count"]
     assert results["A"]["land_validation"] == results["B"]["land_validation"]
     assert results["A"]["sea_validation"] == results["B"]["sea_validation"]
+
+
+def _assert_altitude_metadata_invariant(result, *, layer_id, altitude_m):
+    parameters = result["parameters"]
+    assert result["altitude_layer_id"] == layer_id
+    assert result["altitude_m"] == pytest.approx(altitude_m)
+    assert parameters["fixed_altitude_layer_id"] == layer_id
+    assert parameters["fixed_altitude_m"] == pytest.approx(altitude_m)
+    assert result["semantics_fingerprint"]["fixed_altitude_layer_id"] == layer_id
+    assert parameters["semantics_fingerprint"]["fixed_altitude_layer_id"] == layer_id
+    assert (
+        result["semantics_fingerprint"]["route_altitude_semantics"]
+        == parameters["route_altitude_semantics"]
+        == parameters["semantics_fingerprint"]["route_altitude_semantics"]
+    )
+    assert (
+        result["route_sample_height_semantics"]
+        == parameters["route_sample_height_semantics"]
+    )
+    if isinstance(result.get("route_sampling"), dict):
+        assert result["route_sample_height_semantics"] == result["route_sampling"][
+            "sample_egm2008_semantics"
+        ]
+
+
+def test_alt_100_success_result_metadata_and_solver_inputs_are_consistent(
+    tmp_path, monkeypatch,
+):
+    """Round29-M: metadata changes only; geometry still receives the resolved 100 m plane."""
+
+    from cns_planner.application import radar_surveillance_layout_service as app_module
+
+    service, provider = _service(tmp_path, surface="sea")
+    _set_authoritative_route_altitude(service)
+    original = app_module.solve_layout
+    captured = {}
+
+    def solve_spy(**kwargs):
+        captured["samples"] = deepcopy(kwargs["samples"])
+        captured["validation_samples"] = deepcopy(kwargs["validation_samples"])
+        captured["options"] = deepcopy(kwargs["options"])
+        result = original(**kwargs)
+        captured["canonical_gap"] = {
+            key: result.get(key) for key in (
+                "gap_reason", "gap_classification", "managed_physical_gap",
+            )
+        }
+        return result
+
+    monkeypatch.setattr(app_module, "solve_layout", solve_spy)
+    _evaluate(service, provider)
+    stored = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    _assert_altitude_metadata_invariant(stored, layer_id="ALT-100", altitude_m=100.0)
+    assert stored["parameters"]["route_altitude_semantics"] == "fixed_alt_100_egm2008"
+    assert stored["route_sample_height_semantics"] == (
+        "fixed_alt_100_egm2008_constant_for_every_sample"
+    )
+    assert captured["options"]["fixed_altitude_m"] == pytest.approx(100.0)
+    assert captured["options"]["altitude_layer_id"] == "ALT-100"
+    assert captured["samples"] and captured["validation_samples"]
+    assert {item["egm2008_m"] for item in captured["samples"]} == {100.0}
+    assert {item["egm2008_m"] for item in captured["validation_samples"]} == {100.0}
+    assert {
+        item["egm2008_m"] for item in stored["service_evidence_inputs"]["samples"]
+    } == {100.0}
+    assert {
+        key: stored.get(key) for key in (
+            "gap_reason", "gap_classification", "managed_physical_gap",
+        )
+    } == captured["canonical_gap"], "application must transcribe solver gap fields unchanged"
+    assert stored["land_mask_source_provenance"]["legacy_fallback_used"] is False
+
+    summary = service.radar_surveillance_layout_service.summary_snapshot()["items"][0]
+    assert summary["semantics_fingerprint"] == stored["semantics_fingerprint"]
+
+
+def test_alt_100_not_ready_result_metadata_is_consistent(tmp_path):
+    service, provider = _service(tmp_path, with_towers=False)
+    _set_authoritative_route_altitude(service)
+    _evaluate(service, provider)
+    stored = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert stored["status"] == "not_ready"
+    _assert_altitude_metadata_invariant(stored, layer_id="ALT-100", altitude_m=100.0)
+
+
+def test_alt_100_readiness_parameters_and_fingerprint_are_consistent(tmp_path):
+    service, provider = _service(tmp_path)
+    _set_authoritative_route_altitude(service)
+    readiness = service.radar_surveillance_layout_service.readiness_snapshot(
+        facts_provider=provider,
+    )
+    assert readiness["fixed_altitude"]["altitude_layer_id"] == "ALT-100"
+    assert readiness["fixed_altitude"]["altitude_m"] == pytest.approx(100.0)
+    parameters = readiness["parameters"]
+    assert parameters["fixed_altitude_layer_id"] == "ALT-100"
+    assert parameters["fixed_altitude_m"] == pytest.approx(100.0)
+    assert parameters["semantics_fingerprint"] == readiness["semantics_fingerprint"]
+    assert parameters["route_altitude_semantics"] == "fixed_alt_100_egm2008"
+    assert parameters["route_sample_height_semantics"] == (
+        "fixed_alt_100_egm2008_constant_for_every_sample"
+    )
+
+
+def test_v1_2_stored_result_is_effectively_stale_under_v1_3(tmp_path):
+    service, provider = _service(tmp_path)
+    _evaluate(service, provider)
+    raw = service.state[LAYOUT_KEY]["items"][0]
+    raw["algorithm_version"] = "1.2"
+    raw["status"] = "proposal_ready"
+    projected = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
+    assert projected["status"] == "stale"
+    assert projected["stale_reason"] == (
+        "radar_surveillance_algorithm_semantics_changed"
+    )
 
 
 def test_direct_sample_builder_uses_constant_altitude_and_ignores_terrain(tmp_path):
@@ -1982,12 +2115,15 @@ def test_plane_intersection_radii_math_and_no_intersection_semantics():
     assert below["plane_intersection_reason"].startswith("site_plane_below_radar_origin")
 
 
-def test_algorithm_version_is_1_2_and_fingerprint_carries_semantics(tmp_path):
+def test_algorithm_version_is_1_3_and_fingerprint_carries_semantics(tmp_path):
     service, provider = _service(tmp_path)
     _evaluate(service, provider)
     stored = service.radar_surveillance_layout(ROUTE_ID)["items"][0]
-    #: Round 29-H bump：surface 长度统计与 canonical gap 投影语义变化 ⇒ V1.2。
-    assert stored["algorithm_version"] == "1.2"
+    #: Round 29-M bump：动态高度 metadata/provenance 修正 ⇒ V1.3。
+    assert stored["algorithm_version"] == "1.3"
+    assert stored["algorithm_name"] == "Radar Surveillance Layout V1.3"
+    assert stored["parameters"]["schema_version"] == "radar-surveillance-layout-v1"
+    assert stored["parameters"]["geometry_version"] == "radar_layout_geometry_v1_1"
     # BUG-SHOT-008：默认高度层（ALT-080）下，四个既有语义分量逐字不变；
     # 额外带上的 ``fixed_altitude_layer_id`` 让"换成 ALT-100"必然产生新指纹
     # （旧 layout 因此 stale），这是本次"数据驱动高度层"改造的显式语义分量。
@@ -2002,7 +2138,7 @@ def test_algorithm_version_is_1_2_and_fingerprint_carries_semantics(tmp_path):
         "fixed_altitude_layer_id": "ALT-080",
     }
     components = service.radar_surveillance_layout_service._fingerprint_components(ROUTE_ID)
-    assert components["algorithm_version"] == "1.2"
+    assert components["algorithm_version"] == "1.3"
     assert components["semantics"]["geometry_version"] == "radar_layout_geometry_v1_1"
     assert components["route_altitude_semantics"] == (
         "fixed_alt_080_egm2008_constant_for_every_sample"

@@ -41,9 +41,10 @@ from ...domain.radar_surveillance_layout import (
     ALGORITHM_ID, ALGORITHM_NAME, ALGORITHM_SEMANTICS, ALGORITHM_VERSION,
     FIXED_ALTITUDE_LAYER_ID, FIXED_ALTITUDE_M, MAX_PANELS_PER_TOWER, METRIC_CRS,
     MODEL_SCOPE, NOT_EVALUATED, RADAR_TYPES, RADAR_TYPE_I, RADAR_TYPE_II,
-    REQUIRED_DISTINCT_SITE_COUNT, ROUTE_SAMPLE_HEIGHT_SEMANTICS, SCHEMA_VERSION,
+    REQUIRED_DISTINCT_SITE_COUNT, SCHEMA_VERSION,
     SEMANTICS_FINGERPRINT, SURFACE_CLASSES, VERTICAL_REFERENCE,
     altitude_layer_semantics, radar_geometry_parameters, route_sample_height_semantics,
+    semantics_fingerprint,
 )
 from . import milp as milp_module
 from .candidates import build_candidates
@@ -115,6 +116,7 @@ def required_count_for(surface_class):
 
 def build_route_samples(*, metric_path, spacing_m, route_id,
                         fixed_altitude_m=FIXED_ALTITUDE_M,
+                        altitude_layer_id=FIXED_ALTITUDE_LAYER_ID,
                         surface_by_offset=None, surface_resolver=None,
                         sample_id_prefix="O", coordinate_resolver=None):
     """沿米制航路里程采样并逐点取高度、地表分类与（可选）地理坐标。
@@ -187,7 +189,7 @@ def build_route_samples(*, metric_path, spacing_m, route_id,
         "spacing_m": float(spacing_m),
         "route_length_m": float(offsets[-1]) if offsets else 0.0,
         "fixed_altitude_m": float(fixed_altitude_m),
-        "altitude_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+        "altitude_semantics": route_sample_height_semantics(altitude_layer_id),
         "terrain_elevation_used_as_route_height": False,
     }
 
@@ -1231,9 +1233,11 @@ def parameters_block(
         "algorithm_semantics": ALGORITHM_SEMANTICS,
         "schema_version": SCHEMA_VERSION,
         "model_scope": MODEL_SCOPE,
-        "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
+        "semantics_fingerprint": semantics_fingerprint(layer_id),
         "software_baseline": deepcopy(SOFTWARE_BASELINE),
     }
+    if altitude_layer_source is not None:
+        block["fixed_altitude_layer_source"] = str(altitude_layer_source)
     if isinstance(extra, dict):
         block.update(extra)
     return block

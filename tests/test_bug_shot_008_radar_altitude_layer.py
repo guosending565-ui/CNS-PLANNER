@@ -206,14 +206,26 @@ def test_parameters_block_defaults_are_unchanged_and_follow_explicit_layer():
     assert default_block["fixed_altitude_layer_id"] == "ALT-080"
     assert default_block["fixed_altitude_m"] == pytest.approx(80.0)
     assert default_block["route_altitude_semantics"] == "fixed_alt_080_egm2008"
+    assert default_block["semantics_fingerprint"]["fixed_altitude_layer_id"] == "ALT-080"
+    assert default_block["semantics_fingerprint"]["route_altitude_semantics"] == (
+        "fixed_alt_080_egm2008"
+    )
 
-    lifted = parameters_block(fixed_altitude_m=100.0, altitude_layer_id="ALT-100")
+    lifted = parameters_block(
+        fixed_altitude_m=100.0, altitude_layer_id="ALT-100",
+        altitude_layer_source=ALTITUDE_LAYER_SOURCE_ROUTE,
+    )
     assert lifted["fixed_altitude_layer_id"] == "ALT-100"
     assert lifted["fixed_altitude_m"] == pytest.approx(100.0)
     assert lifted["route_altitude_semantics"] == "fixed_alt_100_egm2008"
     assert lifted["route_sample_height_semantics"] == (
         "fixed_alt_100_egm2008_constant_for_every_sample"
     )
+    assert lifted["semantics_fingerprint"]["fixed_altitude_layer_id"] == "ALT-100"
+    assert lifted["semantics_fingerprint"]["route_altitude_semantics"] == (
+        "fixed_alt_100_egm2008"
+    )
+    assert lifted["fixed_altitude_layer_source"] == ALTITUDE_LAYER_SOURCE_ROUTE
 
 
 # ---- B 求解时间预算 ---------------------------------------------------------------

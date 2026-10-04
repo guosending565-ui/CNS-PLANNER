@@ -99,7 +99,7 @@ def _layout(status, *, gap_classification, managed, gap_reason, proven=None, pan
     return {
         "status": status,
         "algorithm_id": "radar_surveillance_layout",
-        "algorithm_version": "1.2",
+        "algorithm_version": "1.3",
         "items": [{
             "route_id": "R1",
             "status": status,

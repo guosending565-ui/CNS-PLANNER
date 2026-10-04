@@ -35,12 +35,12 @@ from test_corridor_site_planner_v2 import DEFAULTS
 from test_radar_surveillance_layout import ROUTE_ID, _evaluate, _service
 
 
-#: Round 29-H 冻结的语义版本（bump 后）。
+#: 当前冻结的语义版本（Radar 在 Round 29-M 修正动态高度 metadata 后为 V1.3）。
 EXPECTED_VERSIONS = {
     "cns_service_corridor_v1": "1.1",
     "cns_corridor_gap_v1": "1.1",
     "corridor_reuse_first_site_planner_v2": "2.1",
-    "radar_surveillance_layout": "1.2",
+    "radar_surveillance_layout": "1.3",
 }
 
 
@@ -155,7 +155,9 @@ def test_round29f_radar_layout_is_stale_through_the_input_fingerprint(tmp_path):
 
     snapshot = service.radar_surveillance_layout(ROUTE_ID)
     assert snapshot["items"][0]["status"] == "stale"
-    assert snapshot["items"][0]["stale_reason"] == "radar_surveillance_inputs_changed"
+    assert snapshot["items"][0]["stale_reason"] == (
+        "radar_surveillance_algorithm_semantics_changed"
+    )
 
 
 def test_semantics_version_is_part_of_the_p14_and_p15_input_fingerprints():

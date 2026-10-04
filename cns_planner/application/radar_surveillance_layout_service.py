@@ -1062,18 +1062,22 @@ class RadarSurveillanceLayoutService:
             entry = deepcopy(item)
             fingerprint = entry.get("input_fingerprint")
             if entry.get("status") != "stale":
-                if entry.get("demo_preview_only") is True:
-                    candidate = self._current_demo_candidate()
-                    route = self._demo_route_view(candidate)
-                    current = self.input_fingerprint(
-                        entry.get("route_id"), route=route,
-                        demo_preview_only=True, candidate=candidate,
-                    )
-                else:
-                    current = self.input_fingerprint(entry.get("route_id"))
-                if fingerprint and current and fingerprint != current:
+                if str(entry.get("algorithm_version") or "") != ALGORITHM_VERSION:
                     entry["status"] = "stale"
-                    entry["stale_reason"] = "radar_surveillance_inputs_changed"
+                    entry["stale_reason"] = "radar_surveillance_algorithm_semantics_changed"
+                else:
+                    if entry.get("demo_preview_only") is True:
+                        candidate = self._current_demo_candidate()
+                        route = self._demo_route_view(candidate)
+                        current = self.input_fingerprint(
+                            entry.get("route_id"), route=route,
+                            demo_preview_only=True, candidate=candidate,
+                        )
+                    else:
+                        current = self.input_fingerprint(entry.get("route_id"))
+                    if fingerprint and current and fingerprint != current:
+                        entry["status"] = "stale"
+                        entry["stale_reason"] = "radar_surveillance_inputs_changed"
             items.append(entry)
         status = "not_calculated"
         if items:
@@ -1177,6 +1181,9 @@ class RadarSurveillanceLayoutService:
                     spacing_m=spacing,
                     route_id=str(item.get("route_id") or "route"),
                     fixed_altitude_m=float(item.get("altitude_m") or FIXED_ALTITUDE_M),
+                    altitude_layer_id=str(
+                        item.get("altitude_layer_id") or FIXED_ALTITUDE_LAYER_ID
+                    ),
                     sample_id_prefix="V",
                     coordinate_resolver=(
                         provider.get("to_geographic")
@@ -1298,7 +1305,10 @@ class RadarSurveillanceLayoutService:
                 ),
                 "coverage_summary": item.get("coverage_summary"),
                 "parameters": item.get("parameters"),
-                "semantics_fingerprint": deepcopy(SEMANTICS_FINGERPRINT),
+                "semantics_fingerprint": deepcopy(
+                    item.get("semantics_fingerprint")
+                    or semantics_fingerprint(item.get("altitude_layer_id"))
+                ),
                 "refinement_rounds": [
                     {
                         "round_index": entry.get("round_index"),
@@ -1649,9 +1659,11 @@ class RadarSurveillanceLayoutService:
             altitude_context["altitude_m"]
             if altitude_context["altitude_m"] is not None else FIXED_ALTITUDE_M
         )
-        parameter_values = parameters_block(fixed_altitude_m=route_altitude_m)
-        parameter_values["fixed_altitude_layer_id"] = altitude_layer_id
-        parameter_values["fixed_altitude_layer_source"] = altitude_context["source"]
+        parameter_values = parameters_block(
+            fixed_altitude_m=route_altitude_m,
+            altitude_layer_id=altitude_layer_id,
+            altitude_layer_source=altitude_context["source"],
+        )
 
         base = {
             "route_id": str(route_id),
@@ -1680,10 +1692,7 @@ class RadarSurveillanceLayoutService:
             "device_summary": device_summary(),
             "not_evaluated": deepcopy(NOT_EVALUATED),
             "boundaries": deepcopy(BOUNDARIES),
-            "semantics_fingerprint": {
-                **deepcopy(SEMANTICS_FINGERPRINT),
-                **semantics_fingerprint(altitude_layer_id),
-            },
+            "semantics_fingerprint": semantics_fingerprint(altitude_layer_id),
             "route_sample_height_semantics": route_sample_height_semantics(altitude_layer_id),
             #: BUG-RADAR-GAP-PROJECTION：canonical gap 结论在**未求解**时无结论。
             #: 求解成功后由算法输出（``solve_layout``）**原样**转印，Application
@@ -1991,6 +2000,7 @@ class RadarSurveillanceLayoutService:
             spacing_m=spacing,
             route_id=str(route_id),
             fixed_altitude_m=route_altitude_m,
+            altitude_layer_id=altitude_layer_id,
             surface_resolver=(
                 lambda index, offset, metric: _classification_at(
                     offset, index, metric, f"optimization@{spacing}",
@@ -2006,6 +2016,7 @@ class RadarSurveillanceLayoutService:
                 spacing_m=validation_spacing,
                 route_id=str(route_id),
                 fixed_altitude_m=route_altitude_m,
+                altitude_layer_id=altitude_layer_id,
                 surface_resolver=(
                     lambda index, offset, metric: _classification_at(
                         offset, index, metric, f"validation@{validation_spacing}",
@@ -2084,7 +2095,9 @@ class RadarSurveillanceLayoutService:
             "metric_crs": METRIC_CRS,
             "mht_grid_used_as_coverage_discretisation": False,
             "sample_egm2008_m": route_altitude_m,
-            "sample_egm2008_semantics": ROUTE_SAMPLE_HEIGHT_SEMANTICS,
+            "sample_egm2008_semantics": route_sample_height_semantics(
+                altitude_layer_id
+            ),
             "terrain_elevation_used_as_route_height": (
                 ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT
             ),
