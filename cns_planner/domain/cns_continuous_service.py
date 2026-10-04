@@ -37,7 +37,7 @@ from math import isfinite
 #: 契约版本与算法标识。
 CONTINUOUS_SERVICE_SCHEMA_VERSION = "round2.6-post-plan-continuous-service-acceptability"
 CONTINUOUS_SERVICE_ALGORITHM_ID = "continuous_service_acceptability_v1"
-CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.0"
+CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.1"
 
 #: 四种运行可接受性结论（**顺序即严重度**）。
 ACCEPTABILITY_STATUSES = (
@@ -1018,13 +1018,126 @@ def layer_conclusion_status(layer_entry) -> str:
     }.get(status, "unknown")
 
 
-def noncooperative_limitations(radar_layout) -> list[dict]:
+#: 只有**已证明的物理/优化不可行**才允许登记为非合作监视能力限制；
+#: 以下状态一律**保持** unknown / evidence-required，绝不升级为 limitation。
+NONCOOPERATIVE_LIMITATION_NEVER_UPGRADED_STATUSES = (
+    "search_incomplete",
+    "refinement_incomplete",
+    "unresolved",
+    "solver_error",
+    "solver_unavailable",
+    "not_ready",
+    "stale",
+    "missing",
+    "proposal_ready",
+    "passed",
+)
+
+
+def radar_layout_item_for_route(radar_layout, route_id):
+    """在 canonical Radar **collection** 中按 ``route_id`` 精确取出该航路的 item。
+
+    ``radar_surveillance_layout`` 的顶层 ``status`` 只描述整批评估
+    （例如 ``pending_confirmation``）；真正的逐航路 canonical 裁决在 ``items[]``。
+    查不到对应航路时返回 ``None`` —— 调用方必须 fail-closed，绝不拿别的航路的结论顶替。
+    """
+
+    target = str(route_id or "")
+    if not target:
+        return None
+    for item in (radar_layout or {}).get("items") or []:
+        if isinstance(item, dict) and str(item.get("route_id") or "") == target:
+            return item
+    return None
+
+
+def proven_managed_physical_radar_gap(item) -> bool:
+    """该 Radar item 是否是**已证明的 managed physical gap**（四条必须同时成立）。
+
+    1. ``status == "infeasible"``；
+    2. ``gap_classification == "confirmed_gap"``；
+    3. ``managed_physical_gap is True``；
+    4. ``solver.infeasibility_proven is True``。
+
+    缺少任何一条（含 search/refinement 未完成、无证明、managed 标志缺失）都不是
+    能力限制，而是未知或未闭合。
+    """
+
+    if not isinstance(item, dict):
+        return False
+    if str(item.get("status") or "") != "infeasible":
+        return False
+    if str(item.get("gap_classification") or "") != "confirmed_gap":
+        return False
+    if item.get("managed_physical_gap") is not True:
+        return False
+    solver = item.get("solver") if isinstance(item.get("solver"), dict) else {}
+    return solver.get("infeasibility_proven") is True
+
+
+def _noncooperative_limitation(*, route_id, item, source_status=None) -> dict:
+    """构造一条非合作监视能力限制（唯一实现，文案复用既有常量）。"""
+
+    item = item if isinstance(item, dict) else {}
+    solver = item.get("solver") if isinstance(item.get("solver"), dict) else {}
+    resolved_status = str(source_status or item.get("status") or "")
+    resolved_solver = str(solver.get("status") or item.get("solver_status") or "")
+    return {
+        "limitation_id": "noncooperative_surveillance_limitation",
+        "route_id": route_id,
+        "layer": SUPPLEMENTARY_THREAT_LAYER,
+        "capability": "Radar 非合作监视（补充威胁分层）",
+        "status": "limitation",
+        "blocking_primary_threat": False,
+        "semantics": LIMITATION_SEMANTICS,
+        "disclosure": NONCOOPERATIVE_LIMITATION_DISCLOSURE,
+        "must_disclose_in_report": True,
+        "no_relaxation_applied": (
+            "本轮**没有**为了得到方案而扩大覆盖半径、改动 90° 面板或使用假塔；"
+            "求解不可行是真实工程结论。"
+        ),
+        #: Round 29-Q：canonical 证明来源（逐项转印，绝不改写上游判定）。
+        "source": {
+            "algorithm_id": item.get("algorithm_id"),
+            "algorithm_version": item.get("algorithm_version"),
+            "source_status": resolved_status or None,
+            "solver_status": resolved_solver or None,
+            "infeasibility_proven": solver.get("infeasibility_proven") is True,
+            "gap_reason": item.get("gap_reason"),
+            "gap_classification": item.get("gap_classification"),
+            "managed_physical_gap": item.get("managed_physical_gap") is True,
+        },
+        #: 兼容字段（Round 2.6 起的既有消费者）：与 ``source`` 同源，不是第二个真值。
+        "source_status": resolved_status or None,
+        "solver_status": resolved_solver or None,
+    }
+
+
+def noncooperative_limitations(radar_layout, route_id=None) -> list[dict]:
     """从 Radar layout 结论推导**非合作监视能力限制**（不是系统错误）。
 
-    只识别**显式**的不可行/失败结论（``infeasible`` / ``failed`` 的求解状态）；
-    证据缺失（``not_calculated`` / ``missing_data``）不是"能力限制"，而是 ``unknown``
-    —— 前者是真实工程结论，后者是没有结论。
+    Round 29-Q（route-aware 收口）：``radar_surveillance_layout`` 是 **collection**，
+    顶层 ``status`` 只是整批评估状态（权威项目实测为 ``pending_confirmation``），
+    真正的 canonical 逐航路裁决位于 ``items[]``。因此：
+
+    * 给定 ``route_id`` ⇒ **只**读取该 route 自己的 canonical item。查不到、或不满足
+      「已证明的 managed physical gap」四条 ⇒ 返回 ``[]``（fail-closed）。绝不因为
+      collection 里别处存在某个历史 ``infeasible`` 就给当前 route 登记限制。
+    * 未给定 ``route_id`` ⇒ 保持 Round 2.6 的 collection 级语义（只看顶层
+      ``status`` / ``solver.status`` / ``solver_status``），用于既有调用点与回归测试。
+
+    证据缺失（``not_calculated`` / ``missing_data``）与"未闭合"
+    （``search_incomplete`` / ``refinement_incomplete`` / ``unresolved`` /
+    ``solver_error`` / ``solver_unavailable`` / ``not_ready`` / ``stale`` /
+    没有 infeasibility proof）都不是"能力限制"，而是 ``unknown``
+    —— 前者是没有结论，后者是没有证明。
     """
+
+    if route_id is not None:
+        item = radar_layout_item_for_route(radar_layout, route_id)
+        if not proven_managed_physical_radar_gap(item):
+            return []
+        return [_noncooperative_limitation(route_id=str(route_id), item=item)]
 
     layout = radar_layout or {}
     status = str(layout.get("status") or "")
@@ -1035,22 +1148,9 @@ def noncooperative_limitations(radar_layout) -> list[dict]:
     )
     if status not in ("infeasible", "failed") and solver_status not in ("infeasible", "failed"):
         return []
-    return [{
-        "limitation_id": "noncooperative_surveillance_limitation",
-        "layer": SUPPLEMENTARY_THREAT_LAYER,
-        "capability": "Radar 非合作监视（补充威胁分层）",
-        "status": "limitation",
-        "blocking_primary_threat": False,
-        "semantics": LIMITATION_SEMANTICS,
-        "source_status": status or solver_status,
-        "solver_status": solver_status or None,
-        "disclosure": NONCOOPERATIVE_LIMITATION_DISCLOSURE,
-        "must_disclose_in_report": True,
-        "no_relaxation_applied": (
-            "本轮**没有**为了得到方案而扩大覆盖半径、改动 90° 面板或使用假塔；"
-            "求解不可行是真实工程结论。"
-        ),
-    }]
+    return [_noncooperative_limitation(
+        route_id=None, item=layout, source_status=status or solver_status,
+    )]
 
 
 def limitation_disclosure_lines(limitations) -> list[str]:
@@ -1206,8 +1306,10 @@ __all__ = [
     "default_continuous_service_policy", "default_operation_scenario",
     "empty_continuous_service_acceptability", "layer_conclusion_status",
     "limitation_disclosure_lines", "managed_gap_disclosure",
+    "NONCOOPERATIVE_LIMITATION_NEVER_UPGRADED_STATUSES",
     "noncooperative_limitations", "normalize_continuous_service_policy",
     "normalize_operation_scenario", "parameter_baseline", "protection_distance",
+    "proven_managed_physical_radar_gap", "radar_layout_item_for_route",
     "subsystem_status_from_events", "surveillance_acceptance",
     "surveillance_threat_layers", "time_chain_total",
     "subsystem_acceptability_counts",

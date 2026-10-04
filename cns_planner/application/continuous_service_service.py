@@ -28,7 +28,7 @@ from ..domain.cns_continuous_service import (
 )
 from ..domain.fc30_profile import FC30_AIRCRAFT_ID, fc30_declared_facts
 from ..domain.planning_evidence import continuous_service_parameter_projection
-from .result_currentness import projected_result
+from .result_currentness import apply_algorithm_semantics_stale, projected_result
 
 ACCEPTABILITY_STATE_KEY = "continuous_service_acceptability"
 POLICY_STATE_KEY = "cns_continuous_service_policy"
@@ -50,9 +50,15 @@ class ContinuousServiceService:
 
     # ------------------------------------------------------------------ 读取
     def result_snapshot(self):
-        return deepcopy(
-            self.session.state.get(ACCEPTABILITY_STATE_KEY)
-            or self.model.empty()
+        """只读投影：算法语义版本变化时如实标注 stale（绝不误判 current）。
+
+        Round 29-Q：P17 的补充威胁语义已收口（2.0 → 2.1），因此旧持久化结果必须
+        以 ``stale`` 进入所有消费方（含 Step6 门禁与报告），stored payload 原样保留。
+        """
+
+        result = self.session.state.get(ACCEPTABILITY_STATE_KEY) or self.model.empty()
+        return apply_algorithm_semantics_stale(
+            deepcopy(result), self.model.algorithm_id, self.model.algorithm_version,
         )
 
     def policy_snapshot(self):

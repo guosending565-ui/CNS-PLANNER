@@ -377,7 +377,18 @@ def test_radar_infeasible_is_a_limitation_and_does_not_block_the_primary_threat(
         }]),
         #: 提供真实几何：机载协作监视（合作）与地面 Radar（非合作）。
         device_catalog=_surveillance_device_catalog(),
-        radar_surveillance_layout={"status": "infeasible", "solver": {"status": "infeasible"}},
+        #: Round 29-Q：能力限制是 **route-aware** 的 —— 只认该航路自己的 canonical
+        #: Radar item（collection 顶层状态不构成任何航路的证明）。
+        radar_surveillance_layout={
+            "status": "pending_confirmation",
+            "items": [{
+                "route_id": "R0005", "algorithm_id": "radar_surveillance_layout",
+                "algorithm_version": "1.3", "status": "infeasible",
+                "gap_reason": "independent_site_count_limited",
+                "gap_classification": "confirmed_gap", "managed_physical_gap": True,
+                "solver": {"status": "infeasible", "infeasibility_proven": True},
+            }],
+        },
     )
     route = result["routes"][0]
     assert route["supplementary_threat_status"] == "limitation"
@@ -627,7 +638,16 @@ def test_radar_infeasible_limitation_reaches_the_report(tmp_path):
             ],
         }]),
         device_catalog=_surveillance_device_catalog(),
-        radar_surveillance_layout={"status": "infeasible", "solver": {"status": "infeasible"}},
+        radar_surveillance_layout={
+            "status": "pending_confirmation",
+            "items": [{
+                "route_id": "R0005", "algorithm_id": "radar_surveillance_layout",
+                "algorithm_version": "1.3", "status": "infeasible",
+                "gap_reason": "independent_site_count_limited",
+                "gap_classification": "confirmed_gap", "managed_physical_gap": True,
+                "solver": {"status": "infeasible", "infeasibility_proven": True},
+            }],
+        },
     )
     from cns_planner.reporting.builder import _continuous_service_section
 

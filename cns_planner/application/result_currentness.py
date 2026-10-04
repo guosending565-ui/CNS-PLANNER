@@ -24,6 +24,10 @@ from ..algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
 from ..algorithms.service_capability.v1 import CNSServiceCapabilityV1
 from ..algorithms.timeline.v1 import RouteServiceTimelineV1
+from ..domain.cns_continuous_service import (
+    CONTINUOUS_SERVICE_ALGORITHM_ID,
+    CONTINUOUS_SERVICE_ALGORITHM_VERSION,
+)
 from ..domain.radar_surveillance_layout import (
     ALGORITHM_ID as RADAR_ALGORITHM_ID,
     ALGORITHM_VERSION as RADAR_ALGORITHM_VERSION,
@@ -57,6 +61,11 @@ RESULT_ALGORITHM_SEMANTICS: dict[str, tuple[str, str]] = {
         RouteServiceTimelineV1.algorithm_id, RouteServiceTimelineV1.algorithm_version,
     ),
     "radar_surveillance_layout": (RADAR_ALGORITHM_ID, RADAR_ALGORITHM_VERSION),
+    #: Round 29-Q：P17 的补充威胁语义发生变化（已证明的 Radar managed physical gap
+    #: 由 ``unknown`` 收口为 ``limitation``），因此 2.0 的旧结果必须 effective stale。
+    "continuous_service_acceptability": (
+        CONTINUOUS_SERVICE_ALGORITHM_ID, CONTINUOUS_SERVICE_ALGORITHM_VERSION,
+    ),
 }
 
 #: ``result_statuses`` 里被显式登记算法语义的产物键（供快照投影遍历）。

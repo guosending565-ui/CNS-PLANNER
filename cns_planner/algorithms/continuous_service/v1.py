@@ -374,7 +374,13 @@ class ContinuousServiceAcceptabilityV1:
         seen_limitations = set()
         unique_limitations = []
         for item in limitations:
-            key = str(item.get("limitation_id") or "")
+            #: Round 29-Q：能力限制现在是 **route-aware** 的，同一个 ``limitation_id``
+            #: 可能来自不同航路；去重键必须带上 ``route_id``，否则后续航路的限制会被
+            #: 第一条吞掉（那会隐藏真实的能力限制）。
+            key = (
+                str(item.get("limitation_id") or ""),
+                str(item.get("route_id") or ""),
+            )
             if key in seen_limitations:
                 continue
             seen_limitations.add(key)
@@ -627,7 +633,9 @@ class ContinuousServiceAcceptabilityV1:
         #: Round 2.6：监视威胁**分层**结论（合作 RID 主要 / 非合作 Radar 补充）。
         #: 两者分开评估、分开披露，绝不合并成一个 surveillance 结论。
         threat_layers = surveillance_threat_layers({"subsystems": subsystems})
-        limitations = noncooperative_limitations(radar_layout)
+        #: Round 29-Q：能力限制必须**按本 route 自己的** canonical Radar item 判定，
+        #: 绝不因为 collection 里别处存在历史 infeasible 就给当前 route 登记限制。
+        limitations = noncooperative_limitations(radar_layout, route_id=route_id)
         cooperative_status = layer_conclusion_status(threat_layers[PRIMARY_THREAT_LAYER])
         noncooperative_entry = threat_layers[SUPPLEMENTARY_THREAT_LAYER]
         noncooperative_status = layer_conclusion_status(noncooperative_entry)
