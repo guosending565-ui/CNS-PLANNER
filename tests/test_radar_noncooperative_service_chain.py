@@ -124,12 +124,22 @@ def radar_entry(evidence):
     return evidence["routes"][0]["samples"][0]
 
 
-def voxel_probe(x, y, *, surface="sea", altitude=80.0, voxel_id="V1", offset=0.0):
+def voxel_probe(
+    x, y, *, surface="sea", altitude=80.0, voxel_id="V1", offset=0.0,
+    altitude_layer_id="ALT-080", overlap=None,
+):
+    #: Round 29-N：Radar service entry 需要 voxel 的 canonical ``altitude_layer_id``
+    #: 与 ``overlap_height_egm2008_m`` 才能做 service-specific 垂向 dispatch。
+    #: ``altitude`` 仍是 generic 走廊体元代表高度（overlap midpoint）。
+    if overlap is None:
+        overlap = [float(altitude) - 5.0, float(altitude) + 5.0]
     return {
         "voxel_id": voxel_id,
         "longitude": float(x),
         "latitude": float(y),
         "altitude_egm2008_m": altitude,
+        "altitude_layer_id": altitude_layer_id,
+        "overlap_height_egm2008_m": overlap,
         "surface_class": surface,
         "nearest_route_offset_m": offset,
     }
@@ -198,6 +208,13 @@ def test_unknown_surface_remains_unknown_not_sea():
         (["confirmed_deficit", "satisfied"], "confirmed_deficit"),
         (["satisfied", "satisfied"], "satisfied"),
         (["satisfied", "unknown"], "unknown"),
+        #: Round 29-N：service-level not_applicable 不参与 applicable 的 all_required 判定。
+        (["satisfied", "not_applicable"], "satisfied"),
+        (["confirmed_deficit", "not_applicable"], "confirmed_deficit"),
+        (["unknown", "not_applicable"], "unknown"),
+        (["not_applicable", "not_applicable"], "not_applicable"),
+        (["not_applicable"], "not_applicable"),
+        ([], "unknown"),
     ],
 )
 def test_all_required_aggregation_never_allows_one_channel_to_replace_the_other(statuses, expected):
@@ -264,7 +281,7 @@ def test_voxel_surface_not_route_validation_surface_controls_required_site_count
     assert (sea["required_distinct_site_count"], sea["status"]) == (1, "satisfied")
 
 
-def test_alt_080_probe_is_evaluated_but_other_altitude_fails_closed():
+def test_alt_080_probe_is_evaluated_and_off_layer_probe_is_not_applicable():
     evidence = build_radar_service_evidence(
         required(), layout(surface="sea", selected=[panel("A1", "A", 90.0)]),
     )
@@ -272,15 +289,24 @@ def test_alt_080_probe_is_evaluated_but_other_altitude_fails_closed():
         evidence, "R1", voxel_probe(1000.0, 0.0, altitude=80.0),
         metric_projector=identity_radar_projection,
     )
-    unsupported = evidence_for_probe(
-        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=100.0),
+    off_layer = evidence_for_probe(
+        evidence, "R1", voxel_probe(
+            1000.0, 0.0, altitude=107.5, altitude_layer_id="ALT-100",
+        ),
         metric_projector=identity_radar_projection,
     )
     assert supported["status"] == "satisfied"
-    assert unsupported["status"] == "unknown"
-    assert unsupported["reasons"] == ["radar_model_scope_altitude_not_supported"]
-    assert unsupported["probe_altitude_egm2008_m"] == 100.0
-    assert unsupported["model_supported_altitude_egm2008_m"] == 80.0
+    assert supported["radar_evaluation_altitude_egm2008_m"] == 80.0
+    #: Round 29-N：off-layer **不是** unknown，也不是缺口 —— 它不适用于该 fixed-cruise
+    #: Radar 模型的垂向范围。
+    assert off_layer["status"] == "not_applicable"
+    assert off_layer["applicable"] is False
+    assert off_layer["radar_evaluation_altitude_egm2008_m"] is None
+    assert off_layer["reasons"] == [
+        "radar_not_applicable_outside_operational_altitude_layer"
+    ]
+    assert off_layer["corridor_voxel_representative_altitude_egm2008_m"] == 107.5
+    assert off_layer["model_supported_altitude_egm2008_m"] == 80.0
 
 
 def test_alt_100_layout_and_probe_use_dynamic_model_altitude():
@@ -298,18 +324,23 @@ def test_alt_100_layout_and_probe_use_dynamic_model_altitude():
     )
 
     supported = evidence_for_probe(
-        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=100.0),
+        evidence, "R1", voxel_probe(
+            1000.0, 0.0, altitude=100.0, altitude_layer_id="ALT-100",
+        ),
         metric_projector=identity_radar_projection,
     )
-    unsupported = evidence_for_probe(
-        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=80.0),
+    off_layer = evidence_for_probe(
+        evidence, "R1", voxel_probe(
+            1000.0, 0.0, altitude=80.0, altitude_layer_id="ALT-080",
+        ),
         metric_projector=identity_radar_projection,
     )
     assert supported["status"] == "satisfied"
     assert supported["model_supported_altitude_egm2008_m"] == 100.0
-    assert unsupported["status"] == "unknown"
-    assert unsupported["reasons"] == ["radar_model_scope_altitude_not_supported"]
-    assert unsupported["model_supported_altitude_egm2008_m"] == 100.0
+    assert supported["radar_evaluation_altitude_egm2008_m"] == 100.0
+    assert off_layer["status"] == "not_applicable"
+    assert off_layer["applicable"] is False
+    assert off_layer["model_supported_altitude_egm2008_m"] == 100.0
 
 
 def test_alt_100_probe_passes_100m_sample_to_canonical_coverage(monkeypatch):
@@ -330,7 +361,9 @@ def test_alt_100_probe_passes_100m_sample_to_canonical_coverage(monkeypatch):
 
     monkeypatch.setattr(adapter, "actual_site_coverage", recording)
     result = evidence_for_probe(
-        evidence, "R1", voxel_probe(1000.0, 0.0, altitude=100.0),
+        evidence, "R1", voxel_probe(
+            1000.0, 0.0, altitude=100.0, altitude_layer_id="ALT-100",
+        ),
         metric_projector=identity_radar_projection,
     )
     assert result["status"] == "satisfied"

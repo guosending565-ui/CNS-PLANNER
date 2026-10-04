@@ -50,9 +50,11 @@ from ...domain.spatial_3d import (
 
 class CNSServiceCorridorV1:
     algorithm_id = "cns_service_corridor_v1"
-    #: Round 29-M1 bump：Radar probe 改为消费 canonical layout 的 resolved altitude，
-    #: ALT-100 不再被旧的 80 m runtime gate 误判 unknown。旧 P14 结果必须重算。
-    algorithm_version = "1.2"
+    #: Round 29-N bump：Radar（固定巡航高度层服务）改为按 ``altitude_layer_id`` 做
+    #: **service-specific 垂向 dispatch**，不再用 generic voxel midpoint 冒充 Radar
+    #: 评估高度；S 子系统的 all_required 聚合显式支持 service-level
+    #: ``not_applicable``。旧 P14 1.2 结果必须自动 stale 并重算。
+    algorithm_version = "1.3"
     model_scope = "engineering_cns_service_requirement_corridor"
 
     def __init__(self, parameters=None):
@@ -477,10 +479,18 @@ class CNSServiceCorridorV1:
                                 by_key[service_key] = uncovered
                     service_redundancy = list(by_key.values())
                 if code == "S":
+                    #: Round 29-N：Radar 是**固定巡航高度层**服务，必须走独立
+                    #: service-specific 垂向 dispatch。这里显式传入 voxel 的
+                    #: ``altitude_layer_id`` 与 ``overlap_height_egm2008_m``，让
+                    #: canonical Radar adapter 自己按层判定 applicable / not_applicable
+                    #: 并选用 Radar 评估高度；generic probe 仍保留 overlap midpoint
+                    #: 供 C / RID / legacy 几何覆盖与体积代理使用，绝不被改写。
                     radar = evidence_for_probe(
                         radar_service_evidence, route_id, {
                             **probe,
                             "voxel_id": ref.get("voxel_id"),
+                            "altitude_layer_id": ref.get("altitude_layer_id"),
+                            "overlap_height_egm2008_m": overlap,
                             "nearest_route_offset_m": nearest.get("route_offset_m"),
                         },
                         metric_projector=radar_metric_projector,
@@ -661,14 +671,32 @@ def _uncovered_service_entry(code, service_key, service_requirement, probe):
 
 
 def aggregate_required_service_status(statuses):
-    """Aggregate an ``all_required`` service set without mixing provider pools."""
+    """Aggregate an ``all_required`` service set without mixing provider pools.
+
+    Round 29-N：service-level ``not_applicable`` **不参与** applicable service 的
+    ``all_required`` 判定。这是 Radar 这类"只在 operational altitude layer 适用"的
+    服务被正确纳入 S 子系统的前提：off-layer 体元上 Radar 不适用，S 的状态必须由其余
+    applicable service（例如 ``S:rid_cooperative``）如实决定，绝不能被 Radar 拖成 unknown。
+
+    * 全部 ``not_applicable`` → ``not_applicable``；
+    * ``confirmed_deficit`` 优先于 ``unknown``（已知缺口优先）；
+    * ``satisfied`` + ``not_applicable`` → ``satisfied``；
+    * ``unknown`` + ``not_applicable`` → ``unknown``。
+
+    未知状态（空集合 / 无法识别的取值）保持 fail-closed 的 ``unknown``。
+    """
 
     values = [str(value or "unknown") for value in statuses]
-    if "confirmed_deficit" in values:
+    applicable = [value for value in values if value != "not_applicable"]
+    if not applicable:
+        #: 没有任何 applicable service：只有显式 not_applicable 集合才是 not_applicable，
+        #: 空集合仍然 fail-closed 为 unknown。
+        return "not_applicable" if values else "unknown"
+    if "confirmed_deficit" in applicable:
         return "confirmed_deficit"
-    if "unknown" in values or not values:
+    if "unknown" in applicable:
         return "unknown"
-    return "satisfied" if all(value == "satisfied" for value in values) else "unknown"
+    return "satisfied" if all(value == "satisfied" for value in applicable) else "unknown"
 
 
 def _navigation_augmentation_required(explicit_services):

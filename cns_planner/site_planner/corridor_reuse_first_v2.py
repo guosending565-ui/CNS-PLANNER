@@ -15,9 +15,11 @@ from ..domain.corridor_site_planning import (
 
 class CorridorReuseFirstSitePlannerV2:
     algorithm_id = "corridor_reuse_first_site_planner_v2"
-    #: Round 29-H bump：新增 ``endpoint_integrity_monitor`` planner family 与
-    #: endpoint target / 专用 what-if（绝不重跑走廊链），并新增只读 performance profile。
-    algorithm_version = "2.1"
+    #: Round 29-N bump：target interpretation 发生真实语义变化 —— service-level
+    #: ``not_applicable`` 不再被当成 active（未满足）target，只有
+    #: ``confirmed_deficit`` / ``unknown`` 才产生 target / unknown evidence。
+    #: ranking / FULL what-if / reuse-first 算法本身逐项不变。
+    algorithm_version = "2.2"
 
     def __init__(self, parameters=None):
         self.parameters = deepcopy(parameters or {})

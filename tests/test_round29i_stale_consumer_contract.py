@@ -98,12 +98,12 @@ def test_algorithm_semantics_projection_marks_old_version_stale():
         "algorithm_version": "1.0",
     }
     projected = apply_algorithm_semantics_stale(
-        result, "corridor_reuse_first_site_planner_v2", "2.1",
+        result, "corridor_reuse_first_site_planner_v2", "2.2",
     )
     assert projected["status"] == "stale"
     assert projected["stale_reason"] == "algorithm_semantics_changed"
     assert projected["algorithm_semantics_stale"]["stored_algorithm_version"] == "1.0"
-    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "2.1"
+    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "2.2"
 
 
 def test_p16_snapshot_projects_algorithm_semantics(tmp_path):

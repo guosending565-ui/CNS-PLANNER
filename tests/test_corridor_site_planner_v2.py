@@ -415,7 +415,7 @@ class ApiContext:
 
 def test_registry_api_persistence_backfill_and_invalidation(tmp_path):
     workflow = configured(tmp_path)
-    assert workflow.algorithm_registry.manifest("site_planner", "corridor_reuse_first_site_planner_v2", "2.1")
+    assert workflow.algorithm_registry.manifest("site_planner", "corridor_reuse_first_site_planner_v2", "2.2")
     # B7X：新项目的 ``site_planner`` 默认只保存 production 的 corridor 实现；
     # 归档的 ReuseFirstSitePlannerV1 只由 CompatibilitySelectionAdapter 解析。
     assert workflow.state["algorithm_selection"]["site_planner"]["algorithm_id"] == (
@@ -449,7 +449,7 @@ def test_site_planner_default_and_selection_bind_only_corridor_v2_service(tmp_pa
     workflow.select_algorithm({
         "algorithm_type": "site_planner",
         "algorithm_id": "corridor_reuse_first_site_planner_v2",
-        "version": "2.1", "parameters": {"audit_tag": "test"},
+        "version": "2.2", "parameters": {"audit_tag": "test"},
     })
     assert workflow.corridor_site_planner.algorithm_id == "corridor_reuse_first_site_planner_v2"
     assert workflow.corridor_site_planner.parameters == {"audit_tag": "test"}

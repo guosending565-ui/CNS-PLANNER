@@ -31,9 +31,11 @@ SUBSYSTEM_NAMES = (("C", "communication"), ("N", "navigation"), ("S", "surveilla
 
 class CNSCorridorGapAnalyzerV1:
     algorithm_id = "cns_corridor_gap_v1"
-    #: Round 29-H bump：route-endpoint 作用域子系统的 corridor 聚合改为
-    #: ``not_applicable`` / 0 体素（Round29-G 已引入，本轮连带 P14 一起冻结语义）。
-    algorithm_version = "1.1"
+    #: Round 29-N bump：正式理解 service-level ``not_applicable``（Radar 只在
+    #: operational altitude layer 适用）—— off-layer 的 Radar 证据绝不进入
+    #: confirmed deficit / unknown / continuous deficit / objective deficit，并按
+    #: applicable / not_applicable 体元分别计数，绝不隐式计成 satisfied。
+    algorithm_version = "1.2"
     model_scope = "spatial_corridor_service_redundancy_and_objectives"
     continuity_semantics = "conservative_longitudinal_projection_of_corridor_voxel_deficits"
 
@@ -433,7 +435,16 @@ def _summarize_subsystem(route_id, code, route_length, voxels, objective_config)
 
 
 def _summarize_services(items):
-    """按 service_key 汇总独立的 site-planned service 结论。"""
+    """按 service_key 汇总独立的 site-planned service 结论。
+
+    Round 29-N：service-level ``not_applicable`` 是**一等状态**，不是 satisfied：
+
+    * ``not_applicable_voxel_count`` 单独披露，``status`` 只在全部 applicable
+      体元都满足时才可能是 ``satisfied``；
+    * 全部体元都 ``not_applicable`` 时该 service 的汇总状态就是 ``not_applicable``
+      （绝不隐式计成 satisfied）；
+    * ``not_applicable`` 永不计入 ``confirmed_deficit`` / ``unknown``。
+    """
 
     groups = {}
     for _, item in items:
@@ -446,14 +457,22 @@ def _summarize_services(items):
             key = str(entry.get("service_key") or "")
             bucket = groups.setdefault(key, {
                 "service_key": key, "subsystem": entry.get("subsystem"),
-                "voxel_count": 0,
-                "status_counts": {"satisfied": 0, "confirmed_deficit": 0, "unknown": 0},
+                "voxel_count": 0, "applicable_voxel_count": 0,
+                "not_applicable_voxel_count": 0,
+                "status_counts": {
+                    "satisfied": 0, "confirmed_deficit": 0, "unknown": 0,
+                    "not_applicable": 0,
+                },
                 "required_distinct_site_count_by_surface": {},
                 "distinct_site_count_by_surface": {},
                 "surface_class_counts": {},
             })
             bucket["voxel_count"] += 1
             status = entry.get("status")
+            if status == "not_applicable":
+                bucket["not_applicable_voxel_count"] += 1
+            else:
+                bucket["applicable_voxel_count"] += 1
             if status in bucket["status_counts"]:
                 bucket["status_counts"][status] += 1
             surface = normalize_surface_class(entry.get("surface_class"))
@@ -468,10 +487,15 @@ def _summarize_services(items):
     for key in sorted(groups):
         bucket = groups[key]
         counts = bucket["status_counts"]
-        bucket["status"] = (
-            "confirmed_deficit" if counts["confirmed_deficit"]
-            else "unknown" if counts["unknown"] else "satisfied"
-        )
+        if counts["confirmed_deficit"]:
+            bucket["status"] = "confirmed_deficit"
+        elif counts["unknown"]:
+            bucket["status"] = "unknown"
+        elif bucket["applicable_voxel_count"] == 0:
+            #: 全部体元都不适用于该 service 的走廊口径：如实报 not_applicable。
+            bucket["status"] = "not_applicable"
+        else:
+            bucket["status"] = "satisfied"
         if key == SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION:
             _finalize_navigation_bucket(bucket)
         result.append(bucket)

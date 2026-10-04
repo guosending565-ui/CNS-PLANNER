@@ -694,12 +694,18 @@ def test_p14_protected_baseline_matches_workspace():
     # Round 2.7 再把「缺几何输入 ⇒ missing_data」与「待确认 ⇒ pending_confirmation」
     # 在 corridor/v1.py 里显式分开（走廊内无可用网格单元时不再静默产出 0 体元），
     # 因此 corridor 的哈希随之上移。
+    # Round 29-N 再把 Radar 的垂向适用范围做 service-specific dispatch
+    # （按 voxel altitude_layer_id 判定 applicable / not_applicable，并用 canonical
+    # model altitude 调用 actual_site_coverage，不再用 generic overlap midpoint
+    # 冒充 Radar 评估高度），并让 S 子系统的 all_required 聚合显式支持
+    # service-level not_applicable；corridor/v1.py 与 tests/test_cns_corridor.py 的
+    # 哈希随之上移。
     # 该断言的作用是"任何改动都必须显式登记"，并不是允许静默漂移。
     assert baseline["cns_planner/algorithms/coverage/geometric_3d.py"] == (
         "68f39a884ce173d11ae943a85bdb9f7b66daea2f124cdd8e5bc716a745c5f01b"
     )
     assert baseline["cns_planner/algorithms/corridor/v1.py"] == (
-        "4e2bfe9dd94a668f7497e53893a651ff70721f93e9b944053ba8c31b627b52e3"
+        "a01a250aea542a3c99d2e217429f740d1e4885226abc85043637188b0e39191c"
     )
     assert baseline["cns_planner/algorithms/service_capability/v1.py"] == (
         "4632d2996e2fc59b8d21ec79e98676e1731d87106d53b2b600a9d176f2352a1c"

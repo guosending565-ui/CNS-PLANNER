@@ -232,8 +232,8 @@ def empty_cns_corridor_site_plan(status="not_calculated"):
     return {
         "status": status,
         "algorithm_id": "corridor_reuse_first_site_planner_v2",
-        #: Round 29-H：与 ``CorridorReuseFirstSitePlannerV2.algorithm_version`` 保持同步。
-        "algorithm_version": "2.1",
+        #: Round 29-N：与 ``CorridorReuseFirstSitePlannerV2.algorithm_version`` 保持同步。
+        "algorithm_version": "2.2",
         "parameters": {},
         "proposal_only": True,
         "requires_user_confirmation_and_apply": True,

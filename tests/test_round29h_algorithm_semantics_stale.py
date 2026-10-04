@@ -35,11 +35,12 @@ from test_corridor_site_planner_v2 import DEFAULTS
 from test_radar_surveillance_layout import ROUTE_ID, _evaluate, _service
 
 
-#: 当前冻结的语义版本（Radar 在 Round 29-M 修正动态高度 metadata 后为 V1.3）。
+#: 当前冻结的语义版本（Round 29-N 修正 Radar 垂向适用范围 dispatch 后为
+#: P14 1.3 / P15 1.2 / P16 2.2；Radar 自身仍为 V1.3，未被本轮修改）。
 EXPECTED_VERSIONS = {
-    "cns_service_corridor_v1": "1.2",
-    "cns_corridor_gap_v1": "1.1",
-    "corridor_reuse_first_site_planner_v2": "2.1",
+    "cns_service_corridor_v1": "1.3",
+    "cns_corridor_gap_v1": "1.2",
+    "corridor_reuse_first_site_planner_v2": "2.2",
     "radar_surveillance_layout": "1.3",
 }
 
@@ -78,7 +79,7 @@ def test_projection_helper_only_marks_a_genuine_semantics_change():
     assert projected["status"] == "stale"
     assert projected["stale_reason"] == "algorithm_semantics_changed"
     assert projected["algorithm_semantics_stale"]["stored_algorithm_version"] == "1.0"
-    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "1.2"
+    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "1.3"
     #: 旧结果本身（state 里的对象）绝不被就地改写。
     assert legacy["status"] == "passed"
     assert "algorithm_semantics_stale" not in legacy
@@ -113,7 +114,7 @@ def test_round29m_p14_v1_1_result_is_stale_under_dynamic_radar_altitude_semantic
     snapshot = workflow.cns_corridor_snapshot()
     assert snapshot["status"] == "stale"
     assert snapshot["stale_reason"] == "algorithm_semantics_changed"
-    assert snapshot["algorithm_semantics_stale"]["current_algorithm_version"] == "1.2"
+    assert snapshot["algorithm_semantics_stale"]["current_algorithm_version"] == "1.3"
 
 
 def test_round29f_p15_result_is_reported_stale_by_the_read_only_projection(tmp_path):
@@ -179,7 +180,7 @@ def test_semantics_version_is_part_of_the_p14_and_p15_input_fingerprints():
     from cns_planner.algorithms.corridor_gap.v1 import _fingerprint as gap_fingerprint
 
     corridor = CNSServiceCorridorV1()
-    assert corridor.algorithm_version == "1.2"
+    assert corridor.algorithm_version == "1.3"
     #: P14：同一份输入在不同语义版本下必须得到不同指纹。
     import inspect
 

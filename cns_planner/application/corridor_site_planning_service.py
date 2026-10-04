@@ -1313,8 +1313,10 @@ def _targets(assessment):
       ``independence_group`` / ``confirmed_independent_provider_count`` **绝不**被用来
       代替 distinct-site 计数；
     * service 状态语义：``confirmed_deficit`` → confirmed target；``unknown`` →
-      unknown evidence（绝不自动建站）；``satisfied`` → 不产生 target；缺少
-      ``distinct_site_count`` 证据同样进入 unknown；
+      unknown evidence（绝不自动建站）；``satisfied`` → 不产生 target；
+      ``not_applicable`` → **完全跳过**（既不建 target，也不登记 unknown evidence：
+      它根本不属于该 service 的适用范围，例如 fixed-cruise Radar 的 off-layer 体元）；
+      缺少 ``distinct_site_count`` 证据同样进入 unknown；
     * 只要该 voxel 存在**未满足**的 surface-dependent service evidence，就不再为其产生
       legacy subsystem target —— 否则同一缺口会被 subsystem 与 service 各计一次，并让
       RID 缺口被 S 类其它设备混池补盲；若该 voxel 的 surface service 全部 satisfied，
@@ -1349,16 +1351,27 @@ def _targets(assessment):
                     )
                     and str(item.get("service_key") or "")
                 ]
-                # 只有**确实存在未满足**的 surface-dependent service 时才切换到 service 口径；
-                # 全部 satisfied 时该 voxel 的（可能的）legacy 缺口仍按旧口径处理，绝不丢失。
-                active_services = [
+                #: Round 29-N：service-level ``not_applicable`` **完全跳过** ——
+                #: 它不是 satisfied，也**不是**未满足证据。只有 ``confirmed_deficit``
+                #: 产生 confirmed target，``unknown`` 产生 unknown evidence。
+                #: 把 not_applicable 当 active 会凭空造出"永远无法被任何候选动作满足"
+                #: 的目标（真实 bug：fixed-cruise Radar 的 off-layer 体元）。
+                applicable_services = [
                     item for item in surface_services
+                    if str(item.get("status") or "unknown") != "not_applicable"
+                ]
+                active_services = [
+                    item for item in applicable_services
                     if str(item.get("status") or "unknown") != "satisfied"
                 ]
                 if active_services:
                     targets.extend(_service_targets(
                         route_id, voxel_id, code, voxel, entry, active_services, unknown,
                     ))
+                    continue
+                if surface_services and not applicable_services:
+                    #: 本体元全部 service 证据对本走廊口径都不适用：既不产生 target，
+                    #: 也不产生 unknown evidence，更不回落到 legacy 子系统口径。
                     continue
                 target_id = corridor_target_id(route_id, voxel_id, code)
                 if (code, voxel_id) in unknown_ids:
@@ -1576,6 +1589,10 @@ def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, u
         target_id = corridor_target_id(route_id, voxel_id, key)
         status = str(service.get("status") or "unknown")
         if status == "satisfied":
+            continue
+        if status == "not_applicable":
+            #: Round 29-N：service-level ``not_applicable`` 既不是缺口也不是证据不足，
+            #: 绝不建 target、也绝不登记 unknown（防御性判定，调用方已先行过滤）。
             continue
         #: Round 2.4：不支持站址规划的 canonical 服务**绝不产生建站 target**
         #: （否则会造出永远无法被候选动作满足的规划目标，把 Step6 永久卡在 not_met）。

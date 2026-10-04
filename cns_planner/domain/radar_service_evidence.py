@@ -25,6 +25,20 @@ SERVICE_KEY = SERVICE_KEY_RADAR_NONCOOPERATIVE
 CURRENT_LAYOUT_STATUSES = {"proposal_ready", "infeasible", "refinement_incomplete"}
 ALTITUDE_COMPARISON_TOLERANCE_M = 1e-6
 
+#: ``S:radar_noncooperative`` 的**垂向适用范围**（Round 29-N 正式裁定）。
+#:
+#: 水平服务范围 = corridor；垂向适用范围 = ``operational_route_altitude_layer``，
+#: 即 canonical Radar layout 已解析出的那一层（``altitude_layer_id`` +
+#: ``model_supported_altitude_egm2008_m``）。Radar 是**固定巡航高度层**模型，
+#: 它只在该层内有意义；离开该层的走廊体元**既不是 satisfied、也不是
+#: confirmed_deficit，更不是 unknown** —— 它们根本不属于该模型的垂向适用范围。
+RADAR_VERTICAL_SCOPE_OPERATIONAL_ALTITUDE_LAYER = "operational_route_altitude_layer"
+
+#: off-layer 体元的 canonical 原因码（显式 ``not_applicable``，不是缺口也不是证据不足）。
+RADAR_NOT_APPLICABLE_REASON = (
+    "radar_not_applicable_outside_operational_altitude_layer"
+)
+
 
 def radar_required_for(required_cns, route_id=None):
     requirements = (
@@ -79,9 +93,32 @@ def build_radar_service_evidence(required_cns, layout, *, route_ids=None):
 def evidence_for_probe(evidence, route_id, probe, *, metric_projector=None):
     """Evaluate one P14 voxel probe with the selected canonical Radar layout.
 
-    Route offset is retained only as audit context.  Coverage is always rerun
-    for this probe's own coordinate, altitude, and surface class through
-    :func:`actual_site_coverage`.
+    Round 29-N 裁定 —— Radar 是**固定巡航高度层**服务：
+
+    * 水平适用范围 = ``corridor``；
+    * 垂向适用范围 = ``operational_route_altitude_layer``（canonical layout 的
+      ``altitude_layer_id`` / ``model_supported_altitude_egm2008_m``）。
+
+    因此本函数**绝不**用 P14 generic voxel probe 的 vertical-overlap midpoint 去判定
+    Radar 适用性。该 midpoint 服务的是 C / RID / legacy 几何覆盖与体积代理语义
+    （``corridor/v1.py`` 的 ``voxel["probe"]`` 保持原样），与 Radar 的 fixed-cruise
+    高度无关：例如真实项目 R0005 的 ALT-100 preview midpoint 是 107.5 m，而 canonical
+    Radar model altitude 是 100.0 m。把 generic midpoint 当作 Radar 评估高度，会连
+    合法的 ALT-100 voxel 都误判成 ``radar_model_scope_altitude_not_supported``。
+
+    dispatch 规则（严格按 ``altitude_layer_id``，绝不按高度数值近似）：
+
+    1. route evidence 非 current、或 canonical altitude metadata 缺失/冲突
+       → ``unknown`` / evidence_required（**不得**推导 not_applicable）；
+    2. ``probe.altitude_layer_id`` != canonical radar ``altitude_layer_id``
+       → ``not_applicable`` / ``applicable = false``（不调用 ``actual_site_coverage``）；
+    3. 同层时先验证 canonical model altitude 确实落在该 voxel 的
+       ``overlap_height_egm2008_m`` 内（极小浮点容差）；不在 → ``unknown``；
+       在 → 用 **Radar-specific** 采样高度 ``model_supported_altitude_egm2008_m``
+       调用 canonical ``actual_site_coverage``（绝不用 generic midpoint）。
+
+    路由偏移只作为审计上下文保留；覆盖结论始终由本 probe 自己的坐标、Radar 评估
+    高度与 surface class 经 :func:`actual_site_coverage` 重新得出。
     """
 
     route = next(
@@ -94,25 +131,40 @@ def evidence_for_probe(evidence, route_id, probe, *, metric_projector=None):
     probe = probe if isinstance(probe, dict) else {}
     voxel_id = probe.get("voxel_id")
     coordinate = [probe.get("longitude"), probe.get("latitude")]
-    altitude = probe.get("altitude_egm2008_m")
-    try:
-        altitude_value = float(altitude)
-    except (TypeError, ValueError):
-        altitude_value = None
+    generic_altitude = _finite_float(probe.get("altitude_egm2008_m"))
+    voxel_layer_id = _nonempty_string(probe.get("altitude_layer_id"))
     model_altitude = _finite_float(route.get("model_supported_altitude_egm2008_m"))
-    if route.get("status") != "current" or model_altitude is None:
+    canonical_layer_id = _nonempty_string(route.get("altitude_layer_id"))
+    if route.get("status") != "current" or model_altitude is None or canonical_layer_id is None:
         return _unknown_service_entry(
             route_id, voxel_id, evidence,
             route.get("reason") or "radar_layout_altitude_evidence_required",
             probe=probe, route=route,
         )
-    if (
-        altitude_value is None
-        or not isfinite(altitude_value)
-        or abs(altitude_value - model_altitude) > ALTITUDE_COMPARISON_TOLERANCE_M
+    if voxel_layer_id is None:
+        return _unknown_service_entry(
+            route_id, voxel_id, evidence, "radar_voxel_altitude_layer_evidence_required",
+            probe=probe, route=route,
+        )
+    if voxel_layer_id != canonical_layer_id:
+        return _not_applicable_service_entry(
+            route_id, voxel_id, evidence, probe=probe, route=route,
+            voxel_layer_id=voxel_layer_id,
+        )
+    overlap = _overlap_bounds(probe.get("overlap_height_egm2008_m"))
+    if overlap is None:
+        return _unknown_service_entry(
+            route_id, voxel_id, evidence, "radar_voxel_vertical_overlap_evidence_required",
+            probe=probe, route=route,
+        )
+    if not (
+        overlap[0] - ALTITUDE_COMPARISON_TOLERANCE_M
+        <= model_altitude
+        <= overlap[1] + ALTITUDE_COMPARISON_TOLERANCE_M
     ):
         return _unknown_service_entry(
-            route_id, voxel_id, evidence, "radar_model_scope_altitude_not_supported",
+            route_id, voxel_id, evidence,
+            "radar_model_altitude_outside_voxel_vertical_overlap",
             probe=probe, route=route,
         )
     inputs = route.get("service_evidence_inputs") or {}
@@ -145,7 +197,9 @@ def evidence_for_probe(evidence, route_id, probe, *, metric_projector=None):
         "metric": [float(metric[0]), float(metric[1])],
         "longitude": coordinate[0],
         "latitude": coordinate[1],
-        "egm2008_m": altitude_value,
+        #: Radar-specific 评估高度：canonical model supported altitude，
+        #: 绝不是 generic voxel midpoint。
+        "egm2008_m": model_altitude,
         "surface_class": surface_class,
         "required_distinct_site_count": required_count_for(surface_class),
         "refinement": False,
@@ -158,9 +212,14 @@ def evidence_for_probe(evidence, route_id, probe, *, metric_projector=None):
     )[0]
     result = _sample_evidence(str(route_id), coverage, route)
     result["voxel_id"] = voxel_id
-    result["probe_altitude_egm2008_m"] = altitude_value
+    result["voxel_altitude_layer_id"] = voxel_layer_id
     result["altitude_layer_id"] = route.get("altitude_layer_id")
+    result["vertical_scope"] = RADAR_VERTICAL_SCOPE_OPERATIONAL_ALTITUDE_LAYER
+    result["applicable"] = True
+    result["corridor_voxel_representative_altitude_egm2008_m"] = generic_altitude
+    result["radar_evaluation_altitude_egm2008_m"] = model_altitude
     result["model_supported_altitude_egm2008_m"] = model_altitude
+    result["vertical_overlap_height_egm2008_m"] = overlap
     result["route_sample_height_semantics"] = route.get("route_sample_height_semantics")
     result["nearest_route_offset_m"] = probe.get("nearest_route_offset_m")
     return result
@@ -270,6 +329,17 @@ def _route_evidence(item):
     current = item.get("status") in CURRENT_LAYOUT_STATUSES
     validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
     samples = validation.get("samples") or []
+    if not samples:
+        #: Round 29-N：项目持久化的 external-scope 裁剪会移除
+        #: ``items[].validation.samples``（见 ``project_compaction`` 的
+        #: ``radar.layout.detail``）。layout **自己**仍然保留同一次评估产生的 canonical
+        #: 路线样本副本（``service_evidence_inputs.samples``）。Radar service evidence 的
+        #: currentness 必须消费仍然存在的 canonical 样本，否则真实项目上 Radar 会永久停在
+        #: ``evidence_required``：连 ALT-100 都无法评估，off-layer 更永远得不到
+        #: ``not_applicable``。这里只做**等价回退**——绝不合成、绝不插值任何样本。
+        inputs = item.get("service_evidence_inputs")
+        if isinstance(inputs, dict):
+            samples = inputs.get("samples") or []
     if not current or not samples:
         return _missing_route(route_id, item, altitude=altitude)
     result = {
@@ -369,18 +439,82 @@ def _unknown_service_entry(route_id, voxel_id, evidence, reason, *, probe=None, 
         "supports_site_planning": True, "required_distinct_site_count": None,
         "covered_distinct_site_ids": [], "distinct_site_ids": [],
         "distinct_site_count": None, "counting_basis": "distinct_site_id",
-        "status": "unknown", "providers": [], "reasons": [reason],
+        "status": "unknown", "applicable": None,
+        "vertical_scope": RADAR_VERTICAL_SCOPE_OPERATIONAL_ALTITUDE_LAYER,
+        "providers": [], "reasons": [reason],
         "input_fingerprint": (evidence or {}).get("input_fingerprint"),
-        "probe_altitude_egm2008_m": probe.get("altitude_egm2008_m"),
+        "voxel_altitude_layer_id": _nonempty_string(probe.get("altitude_layer_id")),
         "altitude_layer_id": route.get("altitude_layer_id"),
         "model_supported_altitude_egm2008_m": route.get(
             "model_supported_altitude_egm2008_m"
         ),
+        #: 两种高度必须分开披露：generic 走廊体元代表高度 vs Radar 评估高度。
+        #: unknown 证据下 Radar 评估高度未被使用（绝不冒用 generic midpoint）。
+        "corridor_voxel_representative_altitude_egm2008_m": _finite_float(
+            probe.get("altitude_egm2008_m")
+        ),
+        "radar_evaluation_altitude_egm2008_m": None,
         "route_sample_height_semantics": route.get("route_sample_height_semantics"),
         "nearest_route_offset_m": probe.get("nearest_route_offset_m"),
         "algorithm_provenance": (evidence or {}).get("algorithm_provenance"),
     }
     return result
+
+
+def _not_applicable_service_entry(route_id, voxel_id, evidence, *, probe, route, voxel_layer_id):
+    """off-layer 体元的 Radar service entry：显式 ``not_applicable``。
+
+    形状与正式 Radar service entry 同构（下游消费者不需要分支），但：
+
+    * ``status = not_applicable`` / ``applicable = false``：它**不是** satisfied，
+      也**不是** confirmed_deficit，更**不是** unknown；
+    * ``radar_evaluation_altitude_egm2008_m = null``：从未调用 ``actual_site_coverage``，
+      因此绝不存在"借用同层 100 m 结果"的可能；
+    * ``distinct_site_count`` / ``required_distinct_site_count`` 均为 ``None``，
+      绝不隐式计成 satisfied。
+    """
+
+    probe = probe if isinstance(probe, dict) else {}
+    route = route if isinstance(route, dict) else {}
+    return {
+        "route_id": route_id, "voxel_id": voxel_id, "sample_id": None,
+        "coordinate": [probe.get("longitude"), probe.get("latitude")],
+        "surface_class": probe.get("surface_class") or "unknown", "service_key": SERVICE_KEY,
+        "subsystem": "S", "service_subtype": "noncooperative_surveillance",
+        "target_cooperation": "non_cooperative", "technology": "radar",
+        "planner_family": planner_family_for(SERVICE_KEY), "surface_dependent": False,
+        "supports_site_planning": True, "required_distinct_site_count": None,
+        "covered_distinct_site_ids": [], "distinct_site_ids": [],
+        "distinct_site_count": None, "counting_basis": "distinct_site_id",
+        "status": "not_applicable", "applicable": False,
+        "vertical_scope": RADAR_VERTICAL_SCOPE_OPERATIONAL_ALTITUDE_LAYER,
+        "providers": [], "reasons": [RADAR_NOT_APPLICABLE_REASON],
+        "input_fingerprint": (evidence or {}).get("input_fingerprint"),
+        "voxel_altitude_layer_id": voxel_layer_id,
+        "altitude_layer_id": route.get("altitude_layer_id"),
+        "model_supported_altitude_egm2008_m": route.get(
+            "model_supported_altitude_egm2008_m"
+        ),
+        "corridor_voxel_representative_altitude_egm2008_m": _finite_float(
+            probe.get("altitude_egm2008_m")
+        ),
+        "radar_evaluation_altitude_egm2008_m": None,
+        "route_sample_height_semantics": route.get("route_sample_height_semantics"),
+        "nearest_route_offset_m": probe.get("nearest_route_offset_m"),
+        "algorithm_provenance": (evidence or {}).get("algorithm_provenance"),
+    }
+
+
+def _overlap_bounds(value):
+    """voxel ``overlap_height_egm2008_m`` → 两个有限浮点，否则 ``None``。"""
+
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    lower, upper = _finite_float(value[0]), _finite_float(value[1])
+    if lower is None or upper is None or upper < lower:
+        return None
+    return [lower, upper]
+
 
 
 def _resolved_layout_altitude(item):
@@ -468,6 +602,7 @@ def _explicit_route_ids(required_cns):
 
 
 __all__ = [
+    "RADAR_NOT_APPLICABLE_REASON", "RADAR_VERTICAL_SCOPE_OPERATIONAL_ALTITUDE_LAYER",
     "build_radar_service_evidence", "evidence_for_probe",
     "radar_candidate_actions", "radar_required_for", "radar_what_if_service_evidence",
 ]
