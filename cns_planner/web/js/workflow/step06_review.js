@@ -1105,7 +1105,14 @@ function bindMapFigureActions(c){
   c.actionButton('previewMapFigure',async()=>{
     const template=c.$('mapFigureTemplate')?.value||'route_overview_v1';
     const routeId=c.$('mapFigureRoute')?.value||'';
-    const variant=c.$('mapFigureSurveillanceService')?.value||'';
+    // 监视布设图的 variant 选择器只在该模板下渲染：其它模板**完全不读**该控件；
+    // 该模板下也用显式存在性 guard（workbench_shell 的 optional-control 契约）。
+    let variant='';
+    if(template===MAP_FIGURE_SURVEILLANCE_TEMPLATE){
+      if(c.$('mapFigureSurveillanceService')){
+        variant=c.$('mapFigureSurveillanceService').value||'';
+      }
+    }
     await c.previewMapFigure({
       template_id:template,route_id:routeId,
       parameters:mapFigureParameters(template,variant),
