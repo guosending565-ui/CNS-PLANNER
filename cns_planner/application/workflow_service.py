@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 from ..algorithms.registry import (
-    ALGORITHM_TYPES, build_default_algorithm_registry, default_algorithm_selection,
-    normalize_algorithm_selection,
+    ALGORITHM_TYPES, AlgorithmNotFoundError, build_default_algorithm_registry,
+    default_algorithm_selection, normalize_algorithm_selection,
 )
 from ..compatibility.catalog import capability_catalog
 from ..compatibility.project_adapter import read_existing_legacy
@@ -54,6 +54,10 @@ from .closed_loop_service import ClosedLoopService
 from .corridor_service import CNSCorridorService
 from .corridor_gap_service import CNSCorridorGapService
 from .corridor_site_planning_service import CorridorSitePlanningService
+from .result_currentness import (
+    PROJECTED_RESULT_KEYS, effective_result_status, effective_result_statuses,
+    projected_result,
+)
 from .continuous_service_service import ContinuousServiceService
 from .plan_projection import PlanProjectionBuilder
 from ..algorithms.continuous_service.v1 import ContinuousServiceAcceptabilityV1
@@ -823,6 +827,16 @@ class WorkflowService:
             if key not in _SNAPSHOT_OMITTED_STATE_KEYS
         }
         result["grid_attributes"] = slim_grid_attributes(self.state.get("grid_attributes"))
+        #: Round 29-J：通用快照（``/api/state``、``/api/workflow``）下发的 currentness
+        #: 必须是**有效**状态 —— 算法语义已变化的产物在只读投影上标 ``stale``，绝不
+        #: 继续显示为 current/pass。stored payload 逐字段保留，``state`` 不被改写，
+        #: 也不触发任何 save（投影只在返回值里生效）。
+        result["result_statuses"] = effective_result_statuses(self.state)
+        for _projected_key in PROJECTED_RESULT_KEYS:
+            #: ``radar_surveillance_layout`` 由 ``summary_snapshot()`` 在下方做**它自己**的
+            #: 只读 currentness 投影（其输入指纹本就含 ``algorithm_version``），这里不覆盖。
+            if _projected_key in result and _projected_key != "radar_surveillance_layout":
+                result[_projected_key] = projected_result(self.state, _projected_key)
         result["steps"] = self._steps()
         result["defaults"] = deepcopy(self.defaults)
         result["device_source"] = self.state.get("device_catalog", {}).get("source") or self.defaults.get("device_library", {}).get("source", "demo/default")
@@ -831,6 +845,10 @@ class WorkflowService:
         # 只读兼容投影：新项目不再保存 legacy selection，但旧项目 / 运行期 compatibility
         # 覆盖的实际生效 selection 必须可被高级区如实展示（不写回 ProjectState）。
         result["compatibility_selection"] = self.compatibility_selection.selection_snapshot()
+        #: Round 29-K：算法选择的**只读**兼容投影（旧 selection 的 stored / effective
+        #: 版本、是否使用了单版本兼容回落、是否必须重评）。它绝不改写
+        #: ``algorithm_selection``、绝不 save，也不把旧结果视为 current。
+        result["algorithm_compatibility"] = self.algorithm_compatibility_projection()
         if hasattr(self, "requirement_recommendation_service"):
             result["required_cns_recommendation"] = self.requirement_recommendation_service.result_snapshot()
         #: Round 2.4：工程依据字段清单是**静态契约**（可接受的字段与枚举取值），
@@ -1280,12 +1298,106 @@ class WorkflowService:
     _empty_grid_attributes = staticmethod(empty_grid_attributes)
     _empty_extension_attribute = staticmethod(empty_extension_attribute)
 
+    def _algorithm_compatibility(self, algorithm_type):
+        """旧持久化 selection 的**只读**兼容判定（绝不改 ``algorithm_selection``、绝不 save）。
+
+        裁定（Round 29-J 引入，Round 29-K 收口为**单一实现 + 可审计投影**）：
+
+        * 只有 stored ``algorithm_id`` 仍**存在**于该类型的注册表、stored ``version``
+          **已不再**注册，且**同一 id 恰好只有一个**注册版本时，才允许回落到该
+          **当前**版本实例；
+        * 同 id 有多个可选版本 ⇒ **fail closed**，绝不猜；
+        * stored id 本身就未注册（"算法被移除"而不是"版本升级"）⇒ 不回退；
+        * 无论是否回落，都**不写** ``state["algorithm_selection"]``、**不 save**；
+          旧结果的 currentness 仍由唯一权威 ``result_currentness`` 只读投影为
+          ``stale``（重新 evaluate 才产生 current 新结果）。
+
+        返回 ``(projection, manifest_or_None)``；``manifest`` 非空表示可安全回落。
+        """
+
+        selection = (self.state.get("algorithm_selection") or {}).get(algorithm_type) or {}
+        stored_id = str(selection.get("algorithm_id") or "")
+        stored_version = str(
+            selection.get("version") or selection.get("algorithm_version") or ""
+        )
+        manifests = list(self.algorithm_registry.manifests(algorithm_type))
+        same_id = [item for item in manifests if str(item.algorithm_id) == stored_id]
+        projection = {
+            "algorithm_type": algorithm_type,
+            "stored_algorithm_id": stored_id,
+            "stored_algorithm_version": stored_version,
+            "effective_algorithm_id": None,
+            "effective_algorithm_version": None,
+            "compatibility_fallback_used": False,
+            "requires_reevaluation": False,
+            "writes_algorithm_selection": False,
+            "persists": False,
+        }
+        if not stored_id or not same_id:
+            projection.update({
+                "reason": "stored_algorithm_id_not_registered",
+                "requires_reevaluation": True,
+            })
+            return projection, None
+        if stored_version and stored_version in {str(item.version) for item in same_id}:
+            projection.update({
+                "effective_algorithm_id": stored_id,
+                "effective_algorithm_version": stored_version,
+                "reason": "stored_algorithm_version_registered",
+            })
+            return projection, None
+        if len(same_id) != 1:
+            projection.update({
+                "reason": (
+                    "stored_algorithm_version_not_registered_and_multiple_registered_"
+                    "versions_available_fail_closed"
+                ),
+                "requires_reevaluation": True,
+            })
+            return projection, None
+        manifest = same_id[0]
+        projection.update({
+            "effective_algorithm_id": str(manifest.algorithm_id),
+            "effective_algorithm_version": str(manifest.version),
+            "compatibility_fallback_used": True,
+            "requires_reevaluation": True,
+            "reason": (
+                "stored_algorithm_version_not_registered_single_registered_version_"
+                "read_only_compatibility_fallback"
+            ),
+        })
+        return projection, manifest
+
+    def algorithm_compatibility_projection(self):
+        """算法选择的**只读**兼容投影（供 ``/api/state`` 与审计消费，绝不写回）。"""
+
+        return {
+            algorithm_type: self._algorithm_compatibility(algorithm_type)[0]
+            for algorithm_type in (self.state.get("algorithm_selection") or {})
+        }
+
     def _selected_algorithm(self, algorithm_type):
         selection = self.state["algorithm_selection"][algorithm_type]
-        return self.algorithm_registry.create(
-            selection["algorithm_type"], selection["algorithm_id"],
-            selection["version"], selection["parameters"],
-        )
+        try:
+            return self.algorithm_registry.create(
+                selection["algorithm_type"], selection["algorithm_id"],
+                selection["version"], selection["parameters"],
+            )
+        except AlgorithmNotFoundError:
+            #: 旧项目必须仍然能打开（算法语义版本升级后旧 selection 已无 factory）。
+            #: 兼容回落的**唯一**判据见 :meth:`_algorithm_compatibility`；它只读、
+            #: 不改 selection、不 save，也不把旧结果视为 current。
+            projection, manifest = self._algorithm_compatibility(algorithm_type)
+            if manifest is None:
+                #: 无唯一可选版本（多个 / 一个都没有）⇒ **fail closed**，绝不猜。
+                raise
+            self.__dict__.setdefault("_algorithm_compatibility_audit", {})[
+                algorithm_type
+            ] = deepcopy(projection)
+            return self.algorithm_registry.create(
+                algorithm_type, manifest.algorithm_id, manifest.version,
+                selection["parameters"],
+            )
 
     def select_algorithm(self, payload):
         if not isinstance(payload, dict):
@@ -1382,15 +1494,22 @@ class WorkflowService:
         state = self.state
         workspace_ok = bool(state["workspace"] and state["workspace"].get("status") == "passed")
         scenario_ok = bool(state["scenario_routes"])
-        routes_ok = scenario_ok and state["result_statuses"].get("routes") == "passed" and bool(state["operational_routes"]) and all(item["status"] == "passed" for item in state["operational_routes"])
+        routes_ok = scenario_ok and effective_result_status(state, "routes") == "passed" and bool(state["operational_routes"]) and all(item["status"] == "passed" for item in state["operational_routes"])
         rules_ok = bool(state["rules"] and state["rules"].get("status") == "passed" and state["aircraft"])
         def current_result(name):
-            value = state.get(name) or {}
-            return bool(value) and value.get("status") not in (
+            #: Round 29-J：步骤可进入性必须消费唯一权威 currentness（含算法语义 stale
+            #: 只读投影），绝不直接读 raw 容器 status —— 旧算法语义版本的结果即使 raw
+            #: 仍是 passed，也绝不能放行。
+            value = projected_result(state, name) or {}
+            if not value or value.get("status") in (
                 None, "not_calculated", "missing_data", "stale",
+            ):
+                return False
+            return effective_result_status(state, name) not in (
+                "stale", "not_calculated", "missing_data",
             )
 
-        facility_plan = state.get("cns_corridor_site_plan") or {}
+        facility_plan = projected_result(state, "cns_corridor_site_plan") or {}
         facility_plan_ok = facility_plan.get("status") in (
             "proposal_ready", "no_action_required", "no_eligible_proposal",
             "evidence_required",

@@ -16,6 +16,7 @@ from .closed_loop_service import rerun_p7_p10_chain
 from .continuous_service_service import STEP6_ALLOWED_ACCEPTABILITY
 from .corridor_site_planning_service import rerun_corridor_chain
 from .production_write_authority import assert_write_authority
+from .result_currentness import projected_result
 
 
 class PlanReviewService:
@@ -129,7 +130,9 @@ class PlanReviewService:
         self._require_current_inputs(state)
         p17 = self._p17_gate()
         baseline_fp = review_baseline_fingerprint(state)
-        p16 = state.get("cns_corridor_site_plan") or {}
+        #: Round 29-J：初始化记录同样只读投影（此处门禁已通过，投影与 raw 结论一致；
+        #: 但消费方一律不直读 raw 容器，语义口径唯一）。
+        p16 = projected_result(state, "cns_corridor_site_plan") or {}
         p16_fp = p16.get("input_fingerprint")
         variants = [make_variant(baseline_fp, [], "baseline", "Baseline", p16_fp)]
         auto_ids = sorted(str(item.get("action_id")) for item in p16.get("selected_actions") or [])
@@ -141,8 +144,8 @@ class PlanReviewService:
             "input_fingerprints": review_input_fingerprints(state), "variants": variants,
             "continuous_service_gate": deepcopy(p17),
             "initialized_from": {
-                "p14_fingerprint": (state.get("cns_corridor_assessment") or {}).get("input_fingerprint"),
-                "p15_fingerprint": (state.get("cns_corridor_gap_assessment") or {}).get("input_fingerprint"),
+                "p14_fingerprint": (projected_result(state, "cns_corridor_assessment") or {}).get("input_fingerprint"),
+                "p15_fingerprint": (projected_result(state, "cns_corridor_gap_assessment") or {}).get("input_fingerprint"),
                 "p16_fingerprint": p16_fp, "p16_status": p16.get("status"),
                 "p17_status": p17.get("status"),
                 "p17_input_fingerprint": p17.get("input_fingerprint"),
@@ -170,7 +173,8 @@ class PlanReviewService:
         candidate = make_variant(
             review["baseline_fingerprint"], ids, "user_edited",
             payload.get("name") or "User Variant",
-            (self.session.state.get("cns_corridor_site_plan") or {}).get("input_fingerprint"),
+            (projected_result(self.session.state, "cns_corridor_site_plan") or {}).get(
+                "input_fingerprint"),
             payload.get("notes") or "",
         )
         existing = next((item for item in review["variants"] if item["variant_id"] == candidate["variant_id"]), None)
@@ -341,7 +345,7 @@ class PlanReviewService:
             f"PVAPP-{variant['variant_id']}", variant["variant_id"],
         )
         p14, p15 = rerun_corridor_chain(state, self.corridor_model, self.corridor_gap_analyzer, facilities)
-        baseline = state.get("cns_corridor_gap_assessment") or {}
+        baseline = projected_result(state, "cns_corridor_gap_assessment") or {}
         #: Round 2.6：本 variant **自己的** post-plan P17 投影结论。
         #: 绝不再复制权威 P17 结论，也绝不在 Confirm 之前改写现网事实。
         projection_result, projected, projection_meta = self._variant_p17(actions)
@@ -486,7 +490,7 @@ class PlanReviewService:
 
     def _actions(self, action_ids):
         wanted = set(str(item) for item in action_ids)
-        p16 = self.session.state.get("cns_corridor_site_plan") or {}
+        p16 = projected_result(self.session.state, "cns_corridor_site_plan") or {}
         catalog = {}
         for item in [*(p16.get("candidate_actions") or []), *(p16.get("selected_actions") or [])]:
             if item.get("action_id"):
@@ -511,8 +515,11 @@ class PlanReviewService:
 
     @staticmethod
     def _require_current_inputs(state):
+        #: Round 29-J：Step6（P18 initialize）的 currentness 门禁必须消费唯一权威
+        #: ``projected_result`` —— 含算法语义 stale 只读投影。旧算法语义版本的 P14/P15/P16
+        #: 即使 raw status 仍是 passed/failed，也必须在这里 fail-closed，绝不放行。
         for name in ("cns_corridor_assessment", "cns_corridor_gap_assessment"):
-            if (state.get(name) or {}).get("status") in (None, "not_calculated", "missing_data", "stale"):
+            if (projected_result(state, name) or {}).get("status") in (None, "not_calculated", "missing_data", "stale"):
                 raise ValueError(f"P18 需要 current {name}")
         # P16 必须 current：candidate_sites / site_planner /
         # corridor_site_planning_policy 的变化只让 P16 变 stale（P14/P15 仍 current），
@@ -521,8 +528,8 @@ class PlanReviewService:
         # 候选站或设备。上游 P14/P15 的重算是否让 P16 失效由 ``conclusion_changed``
         # 决定：同一 input_fingerprint 的无变化重算不会制造 stale，因此这里的
         # fail-closed 不会让审阅无法初始化。
-        proposal_status = (state.get("cns_corridor_site_plan") or {}).get("status")
-        if proposal_status not in ("proposal_ready", "no_action_required", "no_eligible_proposal", "evidence_required"):
+        proposal = projected_result(state, "cns_corridor_site_plan") or {}
+        if proposal.get("status") not in ("proposal_ready", "no_action_required", "no_eligible_proposal", "evidence_required"):
             raise ValueError("P18 需要 current P16 proposal/status")
 
     def _rejected(self, status, reason):

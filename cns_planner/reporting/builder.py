@@ -10,8 +10,8 @@ from ..domain.reporting import report_source_snapshot, stable_fingerprint
 class ReportBuilder:
     schema_version = "1.0"
 
-    def build(self, state, algorithm_catalog, generated_at, final=False):
-        source = report_source_snapshot(state, algorithm_catalog)
+    def build(self, state, algorithm_catalog, generated_at, final=False, projected_results=None):
+        source = report_source_snapshot(state, algorithm_catalog, projected_results)
         source_fingerprint = stable_fingerprint(source)
         plan = source.get("confirmed_cns_plan") or {}
         if final and plan.get("status") not in ("confirmed", "applied"):

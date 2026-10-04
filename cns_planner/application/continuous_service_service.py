@@ -28,6 +28,7 @@ from ..domain.cns_continuous_service import (
 )
 from ..domain.fc30_profile import FC30_AIRCRAFT_ID, fc30_declared_facts
 from ..domain.planning_evidence import continuous_service_parameter_projection
+from .result_currentness import projected_result
 
 ACCEPTABILITY_STATE_KEY = "continuous_service_acceptability"
 POLICY_STATE_KEY = "cns_continuous_service_policy"
@@ -305,10 +306,13 @@ class ContinuousServiceService:
 
         state = self.session.state
         profile = _selected_profile(state)
+        #: Round 29-J：P17 的输入组装必须消费唯一权威 ``projected_result``（含算法语义
+        #: stale 只读投影）。旧算法语义版本的 P14/P15/P16 在这里被如实标 stale，P17
+        #: 随即按既有 fail-closed 规则给出 unknown/stale，绝不用旧结论得出新判定。
         return {
-            "corridor_assessment": deepcopy(state.get("cns_corridor_assessment") or {}),
-            "corridor_gap_assessment": deepcopy(state.get("cns_corridor_gap_assessment") or {}),
-            "site_plan": deepcopy(state.get("cns_corridor_site_plan") or {}),
+            "corridor_assessment": deepcopy(projected_result(state, "cns_corridor_assessment") or {}),
+            "corridor_gap_assessment": deepcopy(projected_result(state, "cns_corridor_gap_assessment") or {}),
+            "site_plan": deepcopy(projected_result(state, "cns_corridor_site_plan") or {}),
             "aircraft_profile": deepcopy(profile),
             "planning_evidence": deepcopy(state.get("planning_evidence") or {}),
             "operation_scenario": self.operation_scenario_snapshot(),
@@ -321,7 +325,7 @@ class ContinuousServiceService:
     def selected_plan_actions(self):
         """当前权威 P16 的 ``selected_actions``（严格只读）。"""
 
-        plan = self.session.state.get("cns_corridor_site_plan") or {}
+        plan = projected_result(self.session.state, "cns_corridor_site_plan") or {}
         return list(plan.get("selected_actions") or [])
 
     def post_plan_projection_input(self):
@@ -356,7 +360,8 @@ class ContinuousServiceService:
                 "persisted_as_upstream": False,
                 "written_into_existing_cns": False,
             }
-        plan = self.session.state.get("cns_corridor_site_plan") or {}
+        #: Round 29-K：投影态输入同样只读消费唯一权威 currentness 投影，绝不直读 raw。
+        plan = projected_result(self.session.state, "cns_corridor_site_plan") or {}
         return self.plan_projection.p17_projection_input(
             actions,
             projection_id="p16_selected_actions",
@@ -392,7 +397,8 @@ class ContinuousServiceService:
         if gap is not None:
             evaluated["corridor_gap_assessment"] = gap
         evaluated.pop("post_plan_projection", None)
-        evaluated["site_plan"] = self.session.state.get("cns_corridor_site_plan") or {}
+        evaluated["site_plan"] = projected_result(
+            self.session.state, "cns_corridor_site_plan") or {}
         return self.model.evaluate(**evaluated)
 
     def continuous_service_threshold_m(self, inputs=None):

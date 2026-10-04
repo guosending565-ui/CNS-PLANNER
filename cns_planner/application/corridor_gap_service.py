@@ -3,7 +3,8 @@
 from copy import deepcopy
 
 from ..domain.cns_planning_objectives import normalize_cns_planning_objectives
-from .corridor_service import apply_algorithm_semantics_stale, conclusion_changed
+from .corridor_service import conclusion_changed
+from .result_currentness import apply_algorithm_semantics_stale, projected_result
 
 
 class CNSCorridorGapService:
@@ -39,8 +40,11 @@ class CNSCorridorGapService:
                 self.invalidation.cns_corridor_gap()
         state = self.session.state
         previous = state.get("cns_corridor_gap_assessment") or {}
+        #: Round 29-J：P15 只接受**有效 current** 的 P14。旧算法语义版本的 P14 在这里
+        #: 被只读投影为 stale（stored payload 原样保留），算法层随即按既有 fail-closed
+        #: 规则返回 missing_data —— 绝不用旧 P14 得出新 P15。
         result = self.analyzer.evaluate(
-            state.get("cns_corridor_assessment") or {},
+            projected_result(state, "cns_corridor_assessment"),
             state.get("required_cns") or {},
             state.get("cns_planning_objectives") or {},
         )

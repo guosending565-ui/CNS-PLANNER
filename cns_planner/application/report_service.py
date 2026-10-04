@@ -17,6 +17,7 @@ from ..domain.reporting import (
 )
 from ..persistence.project_compaction import artifact_references
 from ..reporting import HtmlReportRenderer, PlaywrightPdfRenderer, ReportBuilder
+from .result_currentness import PROJECTED_RESULT_KEYS, projected_result
 
 
 ARTIFACT_NAMES = {"html": "report.html", "pdf": "report.pdf", "json": "report.json", "package": "planning-package.zip"}
@@ -35,9 +36,22 @@ class PlanningReportService:
     def result_snapshot(self):
         return deepcopy(self.session.state.get("cns_planning_reports") or empty_report_collection())
 
+    def _projected_results(self):
+        """P19 报告消费的 P14/P15/P16 等容器：**唯一权威**只读 currentness 投影。
+
+        算法语义已变化的存储结果在这里以 ``stale`` 进入报告，绝不作为 current 结论
+        出现在正式报告中；stored payload 与 ProjectState 都不被改写。
+        """
+
+        state = self.session.state
+        return {key: projected_result(state, key) for key in PROJECTED_RESULT_KEYS}
+
     def preview(self, payload=None):
         now = _utc_now()
-        model = self.builder.build(self.session.state, self.algorithm_catalog(), now, final=False)
+        model = self.builder.build(
+            self.session.state, self.algorithm_catalog(), now, final=False,
+            projected_results=self._projected_results(),
+        )
         return {"status": "draft", "persisted": False, "report_data": model,
                 "source_artifacts": artifact_references(self.session.state),
                 "html": self.html_renderer.render(model)}
@@ -50,7 +64,8 @@ class PlanningReportService:
         if plan.get("current_applicability") == "stale":
             raise ValueError("无法生成正式报告：已确认方案对应旧项目状态，请重新初始化并确认方案")
         catalog = self.algorithm_catalog()
-        source_fp = report_source_fingerprint(state, catalog)
+        projected = self._projected_results()
+        source_fp = report_source_fingerprint(state, catalog, projected)
         report_id = deterministic_report_id(plan.get("plan_id"), source_fp, TEMPLATE_VERSION)
         collection = state.setdefault("cns_planning_reports", empty_report_collection())
         existing = next((item for item in collection.get("records") or [] if item.get("report_id") == report_id), None)
@@ -67,7 +82,7 @@ class PlanningReportService:
         if target.parent != reports_root or target.exists():
             raise ValueError("报告目标目录冲突，未覆盖任何历史报告")
         now = _utc_now()
-        model = self.builder.build(state, catalog, now, final=True)
+        model = self.builder.build(state, catalog, now, final=True, projected_results=projected)
         html = self.html_renderer.render(model)
         # Phase4-B5X：报告 manifest 登记本次报告引用的 canonical artifact（ID/指纹/
         # 相对路径）。生成报告因此**不需要**把任何大型明细重新塞回 ProjectState。

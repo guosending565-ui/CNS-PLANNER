@@ -779,6 +779,9 @@ function facilityActionServiceRows(action) {
       ].join('\n')) + '</pre></div></details>';
   }
   if (serviceKey === 'S:radar_noncooperative') {
+    //: Round29-K：Radar 的规划 authority 是上游 ``radar_surveillance_layout``，canonical P16
+    //: **不再**产出 ``directional_radar`` / ``add_radar_panel`` 动作，因此本分支只用于
+    //: **历史项目**里已持久化的旧动作（只读转印），绝不被当作 P16 期望的输出。
     const panel = action?.panel || {};
     const elevation = panel.elevation_center_deg === undefined || panel.elevation_center_deg === null
       ? '未给出俯仰预设' : '俯仰预设 ' + String(panel.elevation_center_deg) + '°';
@@ -1248,8 +1251,11 @@ export const RADAR_LAYOUT_STATE_TEXT = {
   not_calculated: '未计算',
   stale: '已过时',
   proposal_ready: '候选划设就绪',
-  infeasible: '不可行',
+  infeasible: '不可行（已证明）',
   refinement_incomplete: '精细化未完成',
+  search_incomplete: '搜索未完成（未证明不可行）',
+  unresolved: '证据未解析',
+  no_action_required: '无需新增动作',
 };
 
 /** Radar 型号短名（显示用；数值仍只来自 backend canonical 结果）。 */

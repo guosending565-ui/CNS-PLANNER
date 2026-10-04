@@ -1,5 +1,5 @@
 import {advancedAuditNote,blockerList,escapeHtml,nextStepBar,shell,sourceModeText,statusBadge,statusText,wbBlock,wbPanel,wbSegHint} from './common.js';
-import {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarSurveillanceDetail,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
+import {RADAR_GAP_REASON_TEXT,RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarSurveillanceDetail,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
 import {
   SURFACE_CLASSIFICATION_POLICY_ENDPOINT,SURFACE_CLASS_FACTS_EVALUATE_ENDPOINT,
   NAVIGATION_SITE_SUITABILITY_ENDPOINT,REQUIRED_CNS_ENDPOINT,
@@ -9,7 +9,7 @@ import {
   renderServiceProfiles,renderSurfaceFactsPanel,renderSurveillanceDualChannelPanel,
   residualTargetsSummary,rounddRequiredServicesModel,navigationPlanningModel,
   navigationSuitabilitySites,serviceCorridorEvidence,serviceGapStatements,serviceRequirementDomId,
-  surfaceFactsModel,
+  surfaceFactsModel,RADAR_LAYOUT_STATE_TEXT,
 } from './cns_service_evidence.js';
 import {
   CNS_ROUNDD_SERVICE_KEYS,CNS_SERVICE_REQUIREMENT_ROWS,SERVICE_KEY_LABELS,
@@ -669,6 +669,39 @@ export function corridorSitePlanSummary(result){
       +'受影响候选动作 '+escapeHtml(String(reasonSummary.candidates_with_unknown_targets??0))
       +' 个，按原因聚合如下：</div>'+reasonRows+'</div>'
     : '';
+  //: Round29-K：Radar 的规划 authority 是上游 radar_surveillance_layout。已**证明**的物理
+  //: 限制（terminal managed gap）必须如实展示为"P16 不产生动作"的事实缺口，而搜索未完成 /
+  //: 旧算法语义结果**绝不**显示成已确认的 managed 缺口。
+  const terminalManaged=result.terminal_managed_gaps||[];
+  const terminalManagedBlock=terminalManaged.length
+    ? '<h4>已证明的物理限制（P16 不产生动作）</h4><div class="gap-results">'
+      +terminalManaged.slice(0,12).map(item=>'<div class="coverage-card cns-terminal-managed-gap"'
+        +' data-service-key="'+escapeHtml(String(item.service_key||''))+'"'
+        +' data-p16-actionable="false" data-gap-kind="'
+        +escapeHtml(String(item.gap_kind||'non_actionable_terminal_managed_gap'))+'">'
+        +'<b>'+escapeHtml(serviceKeyLabel(item.service_key))+' · 已证明不可行</b>'
+        +'<span>缺口原因：'+escapeHtml(radarGapReasonText(item.gap_reason))+'</span>'
+        +'<span>p16_actionable=false：该缺口由上游 Radar 划设 authority 负责（'
+        +'radar_surveillance_layout），CNS 设施规划不再枚举其候选动作，也不把它计为满足。</span>'
+        +'<small>'+escapeHtml(String(item.reason||''))+'</small></div>').join('')
+      +'<div class="parameter-note">这些是<b>事实缺口</b>（managed physical gap），不是系统错误：'
+      +'事实缺口如实保留，系统不会为了"有方案"而绕过上游 authority 自行补充动作。</div></div>'
+    : '';
+  const radarUnknownEvidence=(result.unknown_evidence_required||[]).filter(
+    item=>String(item?.kind||'')==='radar_planning_authority_upstream');
+  const radarUnknownBlock=radarUnknownEvidence.length
+    ? '<h4>Radar 划设证据不足（不是已确认缺口）</h4><div class="gap-results">'
+      +radarUnknownEvidence.slice(0,12).map(item=>'<div class="list-row"'
+        +' data-radar-unknown-evidence="true" data-p16-actionable="false">'
+        +'<span>'+escapeHtml(serviceKeyLabel(item.service_key))+' · '
+        +escapeHtml(item.layout_algorithm_semantics_stale
+          ? '上游结果为旧算法语义版本（已过时）'
+          : '上游搜索未完成 / 证据不足')+'</span>'
+        +'<small>上游划设状态：'+escapeHtml(radarLayoutStateText(item.layout_status))
+        +' · p16_actionable=false · 需先重跑 Radar 划设；'
+        +'搜索未完成绝不当作已确认的 managed 缺口。</small></div>').join('')
+      +'</div>'
+    : '';
   return '<div class="coverage-card"><b>'+escapeHtml(statusText(result.status||'unknown'))+' · 仅提案（未应用）</b>'
     +'<span>候选动作 '+candidateActions+' · 已选动作 '+selectedCount
       +(prefiltered?(' · 几何上不可能触及走廊而预筛跳过 '+prefiltered):'')+'</span>'
@@ -683,6 +716,8 @@ export function corridorSitePlanSummary(result){
       +escapeHtml(result.cost_summary?.cost_semantics||'按动作数量代理，不含货币成本')+'）。'
       +'证据不足的目标始终单独统计，既不算作满足，也不会被静默丢弃。</small></div>'
     +emptyState
+    +terminalManagedBlock
+    +radarUnknownBlock
     +sitePlanServiceGroupRows(result)
     +unknownReasonBlock
     +'<h4>已选动作与迭代收益</h4>'+(selected||'<div class="empty-note">没有确认缺口边际改善为正的可行动作</div>')+trace
@@ -703,7 +738,23 @@ export function stopReasonLabel(value){
   if(key==='no_confirmed_targets_or_unknown_evidence')return '没有已确认缺口，也没有待补证据';
   if(key==='only_unknown_or_missing_evidence')return '只存在证据不足的缺口：不自动建站，需先补齐证据';
   if(key==='no_positive_confirmed_marginal_gain')return '没有任何候选动作产生已确认的正边际改善';
+  //: Round29-K：只剩 P16 无权处理的已证明物理限制缺口（Radar 划设 authority）。
+  if(key==='only_terminal_managed_gaps_outside_p16_authority')return '只剩由上游规划 authority 负责的已证明物理限制缺口（P16 不产生动作）';
   return key;
+}
+
+/** Radar 缺口原因 raw 值 → 中文（唯一来源：Radar 划设模块的词表；未登记取值原样显示）。 */
+export function radarGapReasonText(value){
+  const key=String(value??'').trim();
+  if(!key)return '未给出原因';
+  return RADAR_GAP_REASON_TEXT[key]||key;
+}
+
+/** Radar 划设状态 raw 值 → 中文（未登记取值原样显示，绝不编造）。 */
+export function radarLayoutStateText(value){
+  const key=String(value??'').trim();
+  if(!key)return '未给出状态';
+  return RADAR_LAYOUT_STATE_TEXT[key]||key;
 }
 
 function formatMetric(value,unit){return Number.isFinite(value)?value.toFixed(1)+' '+unit:'—';}

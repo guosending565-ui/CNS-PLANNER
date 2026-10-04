@@ -27,6 +27,8 @@ import re
 
 import pytest
 
+from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
+from cns_planner.algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from cns_planner.application.layered_operational_adoption_service import (
     LayeredOperationalAdoptionService,
 )
@@ -222,13 +224,15 @@ def seed_review(workflow):
     #: 空缺口结论（status=passed、无连续缺口段），使 P17 能得出 fully_satisfied。
     #: 这是测试前置状态的显式声明，不是放宽任何判定。
     state["cns_corridor_assessment"] = {
-        "status": "passed", "algorithm_id": "cns_service_corridor_v1",
-        "algorithm_version": "1.0", "input_fingerprint": "authority-p14",
+        "status": "passed", "algorithm_id": CNSServiceCorridorV1.algorithm_id,
+        "algorithm_version": CNSServiceCorridorV1.algorithm_version,
+        "input_fingerprint": "authority-p14",
         "route_count": 0, "routes": [],
     }
     state["cns_corridor_gap_assessment"] = {
-        "status": "passed", "algorithm_id": "cns_corridor_gap_v1",
-        "algorithm_version": "1.0", "input_fingerprint": "authority-p15",
+        "status": "passed", "algorithm_id": CNSCorridorGapAnalyzerV1.algorithm_id,
+        "algorithm_version": CNSCorridorGapAnalyzerV1.algorithm_version,
+        "input_fingerprint": "authority-p15",
         "route_count": 0, "routes": [],
     }
     selected = next(

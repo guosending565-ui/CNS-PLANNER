@@ -87,6 +87,18 @@ export const SOLVER_STATUS_LABELS={
   not_run:'未求解',
 };
 
+/**
+ * Radar 缺口的 canonical 原因 → 用户可读中文（未登记取值原样显示，绝不编造）。
+ *
+ * Round29-K：``independent_site_count_limited`` 是**已证明**的物理限制
+ * （``gap_classification=confirmed_gap`` 且 ``managed_physical_gap=true``）；
+ * ``search_incomplete`` 等只是搜索未完成，**不是** managed 缺口。
+ */
+export const RADAR_GAP_REASON_TEXT={
+  independent_site_count_limited:'独立站址数量受限：约束下无法达到要求的独立站址重数（已证明）',
+  search_incomplete:'搜索未完成（触达资源上限，未证明不可行）',
+};
+
 /** 结果状态 → 是否可视为"完整覆盖方案"。 */
 export function isCompleteCoverage(status){
   return status==='proposal_ready';
@@ -139,6 +151,17 @@ export function radarLayoutModel(flow){
     refinementRounds:item?.refinement_rounds||[],
     infeasibilityReasons:item?.infeasibility_reasons||[],
     unknownEvidence:item?.unknown_evidence||[],
+    //: Round29-K 的 canonical 缺口三字段：**只读转印**，前端绝不自行推断
+    //: "搜索未完成"是否等于 managed 缺口。
+    gapClassification:item?.gap_classification||null,
+    managedPhysicalGap:item?.managed_physical_gap===true,
+    gapReason:item?.gap_reason||null,
+    gapReasonLabel:item?.gap_reason
+      ?(RADAR_GAP_REASON_TEXT[item.gap_reason]||String(item.gap_reason)):null,
+    terminalManagedGap:item?.managed_physical_gap===true
+      &&item?.gap_classification==='confirmed_gap',
+    searchIncomplete:['search_incomplete','refinement_incomplete','unresolved','stale']
+      .includes(String(item?.status||'')),
     radarOrigin:item?.radar_origin||readiness.radar_origin||null,
     // legacy 挂高：只展示、只标注，绝不影响 V1.1 几何。
     legacyMountHeight:item?.sources?.radar_mount_height||readiness.radar_mount_height||null,
@@ -457,6 +480,26 @@ export function renderRadarSurveillanceLayoutPanel(flow){
   const unknownBlock=model.unknownEvidence.length
     ?'<div class="parameter-note"><b>证据不足项</b><br>'+model.unknownEvidence.slice(0,20).map(entry=>escapeHtml(entry.detail||entry.reason_code||entry.reason||'')).join('<br>')+'</div>'
     :'';
+  //: Round29-K：只有**已证明**的物理限制才是 managed 缺口（事实缺口，不满足、不可由 P16
+  //: 消除）；搜索未完成 / 细化未完成 / 未解析 / 过时**必须**与它显式区分。
+  const managedGapBlock=model.terminalManagedGap
+    ?'<div class="parameter-note cns-radar-managed-gap" data-radar-managed-gap="confirmed">'
+      +'<b>已证明的物理限制（managed physical gap）</b><br>'
+      +'Radar 划设 authority 已证明当前约束下不可行（'
+      +escapeHtml(model.solverLabel||'已证明不可行')+'）。'
+      +'缺口原因：'+escapeHtml(model.gapReasonLabel||'未给出原因')+'<br>'
+      +'该缺口是<b>事实缺口</b>：不计为满足，也不由 CNS 设施规划（P16）再次枚举雷达候选面板'
+      +'（p16_actionable=false）。它不是系统错误，也不改变主要威胁（合作无人机 / RID）的判定。'
+      +'</div>'
+    :(model.searchIncomplete
+      ?'<div class="parameter-note cns-radar-managed-gap" data-radar-managed-gap="not_confirmed">'
+        +'<b>搜索未完成 / 证据不足：不是已确认的 managed 缺口</b><br>'
+        +'当前结果状态为 '+escapeHtml(model.status||'未计算')
+        +'：它既不是"已证明不可行"，也不是"已满足"。请先重跑 Radar 划设，'
+        +'绝不把搜索未完成当作已确认的物理限制。'
+        +(model.gapReasonLabel?'<br>原因：'+escapeHtml(model.gapReasonLabel):'')
+        +'</div>'
+      :'');
 
   // V1.1：扇区不画必须说清原因（斜距/平面无交截），绝不静默少画。
   const noIntersectionNote=(()=>{
@@ -495,7 +538,7 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'<div class="scroll-list cns-input-list">'+panelList(
       model.selectedPanels,item.altitude_layer_id||'ALT-080'
     )+'</div>'
-    +noIntersectionNote+infeasibleBlock+unknownBlock;
+    +noIntersectionNote+managedGapBlock+infeasibleBlock+unknownBlock;
 }
 
 /**

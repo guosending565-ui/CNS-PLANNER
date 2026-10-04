@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
 from cns_planner.algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.workflow_service import WorkflowService
@@ -45,7 +46,10 @@ def voxel(identifier, offset, half, *, service="satisfied", providers=None, volu
 
 def corridor(voxels, status="passed", length=100.0):
     return {
-        "status": status, "algorithm_id": "cns_service_corridor_v1", "algorithm_version": "1.0",
+        #: Round 29-J：fixture 的算法语义身份必须**跟随当前实现**，否则它会被
+        #: currentness 权威如实判为 stale（那不是测试想要的"current P14"前置状态）。
+        "status": status, "algorithm_id": CNSServiceCorridorV1.algorithm_id,
+        "algorithm_version": CNSServiceCorridorV1.algorithm_version,
         "input_fingerprint": "p14-fixture", "routes": [{
             "route_id": "R1", "route_length_m": length, "status": "passed",
             "voxels": deepcopy(voxels),

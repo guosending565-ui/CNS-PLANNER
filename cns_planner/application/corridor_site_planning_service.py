@@ -31,7 +31,10 @@ from ..domain.navigation_integrity_monitoring import (
     navigation_integrity_monitor_actions,
 )
 from ..domain.radar_service_evidence import (
-    build_radar_service_evidence, radar_candidate_actions,
+    #: Round 29-K：canonical P16 **不**再使用 ``radar_candidate_actions``（Radar 候选
+    #: 面板的枚举与优化只属于上游 ``radar_surveillance_layout``）；这里只保留 Radar
+    #: **证据**适配（P14 的什么-if 与正式链共用同一份实现）。
+    build_radar_service_evidence,
     radar_what_if_service_evidence,
 )
 from .navigation_reference_station_planning_service import (
@@ -50,6 +53,7 @@ from .planning_evidence_service import (
 )
 from .site_candidate_actions import candidate_actions
 from .corridor_service import apply_algorithm_semantics_stale
+from .result_currentness import projected_result
 from .production_write_authority import assert_write_authority
 
 
@@ -82,42 +86,31 @@ class CorridorSitePlanningService:
             if policy != state.get("corridor_site_planning_policy"):
                 state["corridor_site_planning_policy"] = policy
                 self.invalidation.cns_corridor_site_plan()
-        baseline_corridor = state.get("cns_corridor_assessment") or {}
-        baseline_gap = state.get("cns_corridor_gap_assessment") or {}
+        #: Round 29-J：P16 的 P14/P15 前置门禁必须消费**有效** currentness（唯一权威
+        #: ``projected_result``），绝不直接读 raw 容器 status —— 否则旧算法语义版本的
+        #: P14/P15（raw status 仍可能是 passed/failed）会被误当作 current，P16 就会
+        #: 基于旧结论产出新提案。stored payload 原样保留，这里只做只读投影。
+        baseline_corridor = projected_result(state, "cns_corridor_assessment") or {}
+        baseline_gap = projected_result(state, "cns_corridor_gap_assessment") or {}
         if baseline_corridor.get("status") in (None, "stale", "not_calculated", "missing_data"):
             return self._save_missing("P14 cns_corridor_assessment 必须是 current")
         if baseline_gap.get("status") in (None, "stale", "not_calculated", "missing_data"):
             return self._save_missing("P15 cns_corridor_gap_assessment 必须是 current")
         targets, unknown = _targets(baseline_gap)
         unknown.extend(_objective_evidence_required(baseline_gap))
-        ordinary_targets = [
-            item for item in targets
-            if item.get("service_key") != SERVICE_KEY_RADAR_NONCOOPERATIVE
-        ]
-        actions = candidate_actions(
-            ordinary_targets, state.get("existing_cns_facilities") or {},
-            state.get("candidate_sites") or {}, device_catalog_with_evidence(state),
-            state.get("tower_colocation_candidates") or {},
+        #: Round 29-K：Radar 的规划 authority 是 ``radar_surveillance_layout``；
+        #: canonical P16 **不再**枚举 Radar candidate panels（见
+        #: :meth:`_canonical_candidate_actions`）。Radar 的缺口在这里按上游 layout 的
+        #: canonical verdict 只读分类：proven managed gap / 证据不足（evidence_required）。
+        (
+            terminal_managed_gaps, radar_authority_unknowns, actionable_targets,
+        ) = _radar_gap_authority(targets, state)
+        unknown.extend(radar_authority_unknowns)
+        actions, baseline_navigation_evidence = self._canonical_candidate_actions(
+            state, targets, baseline_gap,
         )
-        actions.extend(radar_candidate_actions(
-            targets, state.get("radar_surveillance_layout") or {},
-        ))
-        #: Round C：导航增强站址候选**不**走普通 site × device 笛卡尔积，也**不**用
-        #: radius circle planner；它只由显式的 navigation_site_suitability 站址产生。
-        baseline_navigation_evidence = self._navigation_evidence(state)
-        actions.extend(navigation_reference_station_candidate_actions(
-            targets,
-            existing_facilities=state.get("existing_cns_facilities") or {},
-            candidate_sites=state.get("candidate_sites") or {},
-            tower_colocation=state.get("tower_colocation_candidates") or {},
-            navigation_evidence=baseline_navigation_evidence,
-        ))
-        actions.extend(navigation_integrity_monitor_actions(
-            baseline_gap.get("endpoint_service_gaps") or {},
-        ))
         if baseline_navigation_evidence is not None:
             unknown.extend(navigation_evidence_required(baseline_navigation_evidence))
-        actions = sorted(actions, key=lambda item: item["action_id"])
         policy = state.get("corridor_site_planning_policy") or normalize_corridor_site_planning_policy()
         #: Round 2.2 性能：同一份 grid / terrain / surface facts 下的走廊单元只准备一次，
         #: 并在所有 what-if 之间复用（实测每轮重复准备 8008 个单元约 6.4 s）。
@@ -376,6 +369,25 @@ class CorridorSitePlanningService:
                 "persisted_as_upstream": False,
             },
         })
+        #: Round 29-K：Radar 的规划 authority 在上游 ``radar_surveillance_layout``。
+        #: P16 **只读**披露其结论：proven managed gap 是**事实缺口**，绝不被改写成
+        #: satisfied，也绝不进入 P16 的 action search（``p16_actionable=false``）。
+        result["terminal_managed_gaps"] = deepcopy(terminal_managed_gaps)
+        result["terminal_managed_gap_count"] = len(terminal_managed_gaps)
+        result["p16_actionable_target_count"] = len(actionable_targets)
+        result["p16_actionable_target_ids"] = sorted(
+            str(item.get("target_id") or "") for item in actionable_targets
+        )
+        result["radar_planning_authority"] = {
+            "service_key": SERVICE_KEY_RADAR_NONCOOPERATIVE,
+            "planning_owner": RADAR_PLANNING_OWNER,
+            "canonical_p16_candidate_family": False,
+            "p16_reads_upstream_selected_panels": True,
+            "semantics": (
+                "radar_candidate_panels_are_enumerated_and_optimized_only_by_"
+                "radar_surveillance_layout_p16_never_reruns_that_optimization"
+            ),
+        }
         result["origin_tier_statistics"] = _origin_tier_statistics(actions, selected)
         #: Round 29-G：P16 第一阶段的**性能画像**（只读计数与耗时，不参与任何判定）。
         result["performance_profile"] = _finalize_performance_profile(performance, selected)
@@ -397,10 +409,17 @@ class CorridorSitePlanningService:
         ):
             result["status"] = "no_action_required"
             result["stop_reason"] = "confirmed_objectives_already_met"
-        elif not selected and not targets and not unknown:
+        elif not selected and not actionable_targets and not unknown:
+            #: Round 29-K：除「上游规划权威已证明不可行的 managed Radar 缺口」之外
+            #: 没有任何可行动目标 ⇒ 这不是「P16 找不到方案」，而是「该缺口不属于
+            #: P16 的规划权限、也不再重评」。factual gap 仍原样保留给
+            #: P17 / Step6 / report。
             result["status"] = "no_action_required"
-            result["stop_reason"] = "no_confirmed_targets_or_unknown_evidence"
-        elif not selected and not targets and unknown:
+            result["stop_reason"] = (
+                "only_terminal_managed_gaps_outside_p16_authority"
+                if terminal_managed_gaps else "no_confirmed_targets_or_unknown_evidence"
+            )
+        elif not selected and not actionable_targets and unknown:
             result["status"] = "evidence_required"
             result["stop_reason"] = "only_unknown_or_missing_evidence"
         elif not selected:
@@ -417,6 +436,172 @@ class CorridorSitePlanningService:
         }.get(result.get("status"), "missing_data")
         self.session.save()
         return self.snapshot()
+
+    def preflight_first_reuse_iteration(self, *, candidate_limit=None, tier_index=0,
+                                        family_filter=None, measure_candidates=False):
+        """**只读 FULL 诊断入口**：canonical P16 候选 / 保守预筛 / 第一轮重算规模。
+
+        与正式 ``evaluate`` 的候选构造（``_canonical_candidate_actions``）和
+        ``_what_if`` **完全同源**，但：
+
+        * 不 ``select``、不 ``apply``、不写 ``cns_corridor_site_plan``、
+          不写 ``result_statuses``、**不 save**（ProjectState 逐字节不变）；
+        * 只统计 ``REUSE_TIERS[tier_index]`` 的**第一轮**候选规模：不进入该 tier
+          的第二轮，也不进入后续 tier；
+        * ``measure_candidates=True`` 时才真正执行候选的 ``_what_if``（完整
+          P14→P15 重算）并给出逐候选耗时；默认只做只读统计，因此默认调用是毫秒级。
+
+        Round 29-K 起 local impact 引擎已从 production 撤销，因此本入口**只有**
+        FULL 一条路径：它给出的候选数量与耗时就是正式 P16 的真实值。
+        """
+
+        started = time.perf_counter()
+        state = self.session.state
+        baseline_corridor = projected_result(state, "cns_corridor_assessment") or {}
+        baseline_gap = projected_result(state, "cns_corridor_gap_assessment") or {}
+        if baseline_corridor.get("status") in (None, "stale", "not_calculated", "missing_data"):
+            raise ValueError("P14 cns_corridor_assessment 必须是 current")
+        if baseline_gap.get("status") in (None, "stale", "not_calculated", "missing_data"):
+            raise ValueError("P15 cns_corridor_gap_assessment 必须是 current")
+
+        targets, unknown = _targets(baseline_gap)
+        unknown.extend(_objective_evidence_required(baseline_gap))
+        terminal_managed_gaps, radar_unknowns, actionable_targets = _radar_gap_authority(
+            targets, state,
+        )
+        unknown.extend(radar_unknowns)
+        actions, baseline_navigation_evidence = self._canonical_candidate_actions(
+            state, targets, baseline_gap,
+        )
+        prepared_cells = self._prepared_cells(state)
+        prefilter = _build_prefilter_context(state, prepared_cells)
+        continuous_inputs = self._continuous_inputs(state)
+        preparation_seconds = time.perf_counter() - started
+
+        def statistics(members):
+            eligible = [
+                item for item in members
+                if (item.get("eligibility") or {}).get("status") == "eligible"
+            ]
+            filtered = [
+                item for item in eligible if _prefilter_impact(item, 1, prefilter) is not None
+            ]
+            return {
+                "candidate_count": len(members),
+                "eligible_count": len(eligible),
+                "prefiltered_count": len(filtered),
+                "full_rerun_count": len(eligible) - len(filtered),
+                "planner_family_counts": dict(sorted(Counter(
+                    _action_planner_family(item) for item in members
+                ).items())),
+                "service_key_counts": dict(sorted(Counter(
+                    str(item.get("service_key") or "") for item in members
+                ).items())),
+            }
+
+        tier_statistics = []
+        for name in REUSE_TIERS:
+            entry = {"tier": name}
+            entry.update(statistics([item for item in actions if item.get("reuse_class") == name]))
+            tier_statistics.append(entry)
+
+        tier = REUSE_TIERS[int(tier_index)]
+        tier_actions = [item for item in actions if item.get("reuse_class") == tier]
+        tier_stat = statistics(tier_actions)
+        evaluated_actions = [
+            item for item in tier_actions
+            if (item.get("eligibility") or {}).get("status") == "eligible"
+            and _prefilter_impact(item, 1, prefilter) is None
+        ]
+        if family_filter:
+            evaluated_actions = [
+                item for item in evaluated_actions
+                if _action_planner_family(item) == str(family_filter)
+            ]
+        measured_pool = evaluated_actions
+        if candidate_limit:
+            measured_pool = evaluated_actions[: int(candidate_limit)]
+
+        per_candidate = []
+        measured = []
+        if measure_candidates and measured_pool:
+            performance = _new_performance_profile(actions)
+            for action in measured_pool:
+                candidate_started = time.perf_counter()
+                impact, _corridor, _gap = self._what_if(
+                    action, deepcopy(state.get("existing_cns_facilities") or {}),
+                    baseline_gap, targets, iteration=1,
+                    radar_actions=[], navigation_actions=[],
+                    baseline_navigation_evidence=baseline_navigation_evidence,
+                    prepared_cells=prepared_cells, prefilter=prefilter,
+                    continuous_threshold_m=continuous_inputs.get("threshold_m"),
+                    route_speed_mps=continuous_inputs.get("route_speed_mps"),
+                    aircraft_id=continuous_inputs.get("aircraft_id"),
+                    endpoint_evidence=deepcopy(
+                        baseline_corridor.get("endpoint_service_evidence")),
+                    endpoint_actions=[], performance=performance,
+                )
+                per_candidate.append(time.perf_counter() - candidate_started)
+                measured.append({
+                    "action_id": action.get("action_id"),
+                    "service_key": action.get("service_key"),
+                    "planner_family": _action_planner_family(action),
+                    "impact_status": (impact or {}).get("status"),
+                })
+        ordered = sorted(per_candidate)
+        all_tiers_shape = _candidate_shape_statistics(actions)
+        tier_shape = _candidate_shape_statistics(tier_actions)
+        return {
+            "reuse_tier": tier, "tier_index": int(tier_index),
+            "tier_statistics": tier_statistics,
+            "candidate_total": len(actions),
+            "tier_candidate_total": len(tier_actions),
+            "tier_eligible_total": tier_stat["eligible_count"],
+            "prefiltered_count": tier_stat["prefiltered_count"],
+            "full_rerun_candidate_count": len(evaluated_actions),
+            "measured_candidate_count": len(measured),
+            "measured_candidates": measured,
+            #: **all_tiers（跨全部 reuse tier）** 的 family 维度计数。
+            "candidate_family_counts": all_tiers_shape["all_tiers_planner_family_counts"],
+            #: **all_tiers** 的 reuse tier 维度计数（与上面的 family 计数口径不同）。
+            "candidate_reuse_class_counts": all_tiers_shape["all_tiers_reuse_class_counts"],
+            "candidate_family_by_reuse_class": (
+                all_tiers_shape["all_tiers_family_by_reuse_class"]
+            ),
+            #: 两个维度各自**完整**的只读统计块（含语义标注，供审计直接引用）。
+            "candidate_shape_all_tiers": all_tiers_shape,
+            "tier_candidate_shape": {**tier_shape, "tier": tier},
+            "candidate_counting_semantics": (
+                "all_tiers_planner_family_counts_counts_every_reuse_tier_"
+                "tier_candidate_shape_counts_only_the_selected_reuse_tier_"
+                "omnidirectional_site_is_not_tower_colocation_host"
+            ),
+            "candidate_service_key_counts": dict(sorted(Counter(
+                str(item.get("service_key") or "") for item in actions
+            ).items())),
+            "radar_canonical_p16_candidate_count": len([
+                item for item in actions
+                if item.get("service_key") == SERVICE_KEY_RADAR_NONCOOPERATIVE
+            ]),
+            "radar_terminal_managed_gap_count": len(terminal_managed_gaps),
+            "terminal_managed_gaps": deepcopy(terminal_managed_gaps),
+            "p16_actionable_target_count": len(actionable_targets),
+            "target_total": len(targets),
+            "unknown_evidence_total": len(unknown),
+            "local_impact_engine_present": False,
+            "preparation_seconds": preparation_seconds,
+            "per_candidate_seconds": [round(value, 3) for value in per_candidate],
+            "per_candidate_median_seconds": (
+                round(ordered[len(ordered) // 2], 3) if ordered else None),
+            "per_candidate_p95_seconds": (
+                round(ordered[min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))], 3)
+                if ordered else None),
+            "measured_wall_seconds": sum(per_candidate),
+            "semantics": (
+                "read_only_canonical_p16_candidate_preflight_full_rerun_only_"
+                "never_selects_never_writes_never_saves"
+            ),
+        }
 
     def _save_missing(self, reason):
         assert_write_authority(self, "cns_corridor_site_plan")
@@ -640,6 +825,49 @@ class CorridorSitePlanningService:
             cache[key] = deepcopy(evidence)
         return evidence
 
+    def _canonical_candidate_actions(self, state, targets, baseline_gap):
+        """P16 canonical candidate families 的**唯一**构造入口（Round 29-K 业务裁定）。
+
+        ``S:radar_noncooperative`` 的规划 authority 是 ``radar_surveillance_layout``：
+        真实铁塔 → Radar-I → bearing / bearing±45° → dominated pruning → MILP →
+        5m validation → canonical gap verdict。它已经完成 Radar 候选面板的枚举与优化，
+        因此 canonical P16 **绝不再**调用 ``radar_candidate_actions`` 做第二次优化。
+
+        P16 只负责它自己拥有的 planner family：
+
+        * ``C:communication`` / ``S:rid_cooperative`` → ``omnidirectional_site``；
+        * ``N:navigation_integrity_monitoring`` → ``endpoint_integrity_monitor``；
+        * ``N:rtk_augmentation`` → ``navigation_reference_station``。
+
+        Radar **证据**继续进入 P14/P15：``_rerun`` 依 ``radar_surveillance_layout``
+        现场构造 ``radar_service_evidence``（只读消费上游 ``selected_panels``），
+        这里绝不追加任何 Radar 面板动作。
+        """
+
+        ordinary_targets = [
+            item for item in targets
+            if item.get("service_key") != SERVICE_KEY_RADAR_NONCOOPERATIVE
+        ]
+        actions = candidate_actions(
+            ordinary_targets, state.get("existing_cns_facilities") or {},
+            state.get("candidate_sites") or {}, device_catalog_with_evidence(state),
+            state.get("tower_colocation_candidates") or {},
+        )
+        #: Round C：导航增强站址候选**不**走普通 site × device 笛卡尔积，也**不**用
+        #: radius circle planner；它只由显式的 navigation_site_suitability 站址产生。
+        baseline_navigation_evidence = self._navigation_evidence(state)
+        actions.extend(navigation_reference_station_candidate_actions(
+            targets,
+            existing_facilities=state.get("existing_cns_facilities") or {},
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+            navigation_evidence=baseline_navigation_evidence,
+        ))
+        actions.extend(navigation_integrity_monitor_actions(
+            (baseline_gap or {}).get("endpoint_service_gaps") or {},
+        ))
+        return sorted(actions, key=lambda item: item["action_id"]), baseline_navigation_evidence
+
     def _rerun(
         self, facilities, radar_actions=None, navigation_actions=None,
         baseline_navigation_evidence=None, prepared_cells=None, performance=None,
@@ -668,6 +896,7 @@ class CorridorSitePlanningService:
             navigation_service_evidence=navigation_evidence,
             prepared_cells=prepared_cells, timings=performance,
         )
+
 
 
 def rerun_corridor_chain(
@@ -724,6 +953,64 @@ def rerun_corridor_chain(
     if timings is not None:
         timings["p15_seconds"] += time.perf_counter() - started
     return corridor, gap
+
+
+def _action_planner_family(action):
+    """动作的 canonical planner family：显式字段优先，否则由 ``service_key`` 解析。
+
+    ``candidate_actions`` 产出的普通站点动作**不带** ``planner_family`` 字段，其族别
+    由 canonical registry 依 ``service_key`` 决定（``C:communication`` /
+    ``S:rid_cooperative`` → ``omnidirectional_site``）。这里复用**同一个**解析入口，
+    绝不自己维护第二份 service → family 映射。
+    """
+
+    family = str(action.get("planner_family") or "")
+    if family:
+        return family
+    key = str(action.get("service_key") or "")
+    if not key:
+        return ""
+    try:
+        return str(planner_family_for(key))
+    except Exception:  # noqa: BLE001 - 未知 service_key 如实返回空串，不猜测
+        return ""
+
+
+def _candidate_shape_statistics(actions):
+    """canonical 候选的**两个互不替代**的只读统计维度（Round29-K1 审计口径收口）。
+
+    * ``all_tiers_planner_family_counts`` —— **family 维度**：一个 family 的计数跨越
+      **全部** reuse tier（例如 ``omnidirectional_site`` 同时含 tower / 已有设施 /
+      候选站址三类动作）；
+    * ``all_tiers_reuse_class_counts`` —— **tier 维度**：一个 tier 的计数跨越全部
+      planner family（例如 ``tower_colocation_host`` 里的动作全是 omnidirectional）；
+    * ``all_tiers_family_by_reuse_class`` —— 两维交叉表。
+
+    这两个维度**绝不可互相顶替**：把某个 tier 内的 omnidirectional 数量当成全局
+    omnidirectional 数量会得出错误的 before/after 对比（本轮真实权威项目的审计里
+    ``tower_colocation_host`` 的 746 与全局 ``omnidirectional_site`` 的 750 就是两种
+    口径）。本函数只统计，不排序、不筛选、不写 state。
+    """
+
+    family_counts = Counter(_action_planner_family(item) for item in actions)
+    reuse_counts = Counter(str(item.get("reuse_class") or "") for item in actions)
+    by_reuse = {}
+    for item in actions:
+        reuse = str(item.get("reuse_class") or "")
+        by_reuse.setdefault(reuse, Counter())[_action_planner_family(item)] += 1
+    return {
+        "all_tiers_candidate_total": len(actions),
+        "all_tiers_planner_family_counts": dict(sorted(family_counts.items())),
+        "all_tiers_reuse_class_counts": dict(sorted(reuse_counts.items())),
+        "all_tiers_family_by_reuse_class": {
+            reuse: dict(sorted(counts.items())) for reuse, counts in sorted(by_reuse.items())
+        },
+        "semantics": (
+            "planner_family_is_an_all_tiers_dimension_reuse_class_is_a_tier_dimension_"
+            "never_substitute_one_for_the_other"
+        ),
+    }
+
 
 
 def _selected_action_audit(action, targets, state):
@@ -1135,6 +1422,149 @@ def _targets(assessment):
     #: 与走廊体素 target 并列进入同一 target 集，但绝不共用 target_id 形状。
     targets.extend(_endpoint_targets(assessment))
     return sorted(targets, key=lambda item: item["target_id"]), sorted(unknown, key=lambda item: item["target_id"])
+
+
+#: Round 29-K：Radar 缺口的规划 authority。P16 **只读**消费，绝不二次优化、
+#: 也绝不二次推导 canonical gap 结论（``gap_reason`` / ``gap_classification`` /
+#: ``managed_physical_gap`` 一律从上游 layout 原样转印）。
+RADAR_PLANNING_OWNER = "radar_surveillance_layout"
+
+#: 上游 layout 中**尚未给出已证明结论**的状态：证据不足 / 未评估 / 搜索未完成。
+#: 它们都**不是** managed physical gap，P16 保持 unknown/evidence_required。
+RADAR_NON_TERMINAL_LAYOUT_STATUSES = (
+    "search_incomplete", "refinement_incomplete", "unresolved", "solver_error",
+    "solver_unavailable", "not_ready", "stale", "not_calculated",
+)
+
+
+def _radar_layout_item_index(layout):
+    """``{route_id: item}`` 的只读索引（同一 route 多条时取第一条，绝不猜测合并）。"""
+
+    index = {}
+    for item in (layout or {}).get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        route_id = str(item.get("route_id") or "")
+        if route_id and route_id not in index:
+            index[route_id] = item
+    return index
+
+
+def _radar_authority_reason(status, classification, layout_stale=False):
+    """上游 layout 未给出 managed gap 时的**如实**原因（绝不升级为 confirmed）。"""
+
+    if layout_stale:
+        return (
+            "上游 radar_surveillance_layout 的结果由**旧算法语义版本**产生"
+            "（algorithm_semantics_changed）：必须先用当前算法重算 layout；在此之前"
+            "P16 绝不把它当作 current 的可行 / 不可行结论。"
+        )
+    if classification == "confirmed_gap":
+        return (
+            "上游 radar_surveillance_layout 给出 confirmed gap，但未登记为 managed "
+            "physical gap：P16 不据此声称可行或不可行，只登记证据要求。"
+        )
+    if status == "proposal_ready":
+        return (
+            "上游 radar_surveillance_layout 已给出方案（proposal_ready）：P16 只读消费"
+            "其 selected_panels，绝不追加第二份雷达面板。"
+        )
+    return (
+        f"上游 radar_surveillance_layout 未给出已证明结论（status={status or 'missing'}）："
+        "这不是 managed physical gap，P16 保持 unknown/evidence_required，"
+        "绝不自行补面阵绕过上游规划权威。"
+    )
+
+
+def _radar_gap_authority(targets, state):
+    """按上游 layout 的 canonical verdict 对 P15 的 Radar 缺口做**只读分类**。
+
+    业务裁定（Round 29-K）：
+
+    * 只有 ``status=infeasible`` **且** ``gap_classification=confirmed_gap`` **且**
+      ``managed_physical_gap is True`` 才是**已证明**的物理限制，登记为
+      ``terminal_managed_gaps``（``p16_actionable=false``）。它是**事实缺口**，
+      绝不被改写成 satisfied，也绝不让 P16 继续搜索面板或无限重评；
+    * ``search_incomplete`` / ``refinement_incomplete`` / ``unresolved`` / ``stale``
+      等**不是** managed physical gap：如实登记为 unknown/evidence_required，P16
+      绝不把它转成 confirmed infeasible，也绝不自补面阵绕过上游；
+    * 上游 layout 自身若由**旧算法语义版本**产生，则它整体不可作为 current 结论
+      （只读投影给出 ``algorithm_semantics_changed``）——此时一律走
+      unknown/evidence_required，**绝不**产生 terminal managed gap；
+    * ``proposal_ready`` 说明上游已给出方案：P16 只读消费其 ``selected_panels``。
+
+    返回 ``(terminal_managed_gaps, radar_unknown_evidence, actionable_targets)``。
+    """
+
+    projected_layout = projected_result(state, "radar_surveillance_layout")
+    layout_stale = bool(
+        isinstance(projected_layout, dict)
+        and projected_layout.get("status") == "stale"
+        and projected_layout.get("stale_reason") == "algorithm_semantics_changed"
+    )
+    index = _radar_layout_item_index(state.get("radar_surveillance_layout") or {})
+    terminal, unknowns, actionable = [], [], []
+    for target in targets or []:
+        if str(target.get("service_key") or "") != SERVICE_KEY_RADAR_NONCOOPERATIVE:
+            actionable.append(target)
+            continue
+        route_id = str(target.get("route_id") or "")
+        item = index.get(route_id) or {}
+        status = str(item.get("status") or "")
+        classification = item.get("gap_classification")
+        managed = item.get("managed_physical_gap")
+        solver = item.get("solver") or {}
+        stale = layout_stale or status == "stale"
+        if (
+            not stale
+            and status == "infeasible"
+            and classification == "confirmed_gap"
+            and managed is True
+        ):
+            terminal.append({
+                "target_id": target.get("target_id"),
+                "route_id": route_id,
+                "service_key": SERVICE_KEY_RADAR_NONCOOPERATIVE,
+                "source": RADAR_PLANNING_OWNER,
+                "planning_owner": RADAR_PLANNING_OWNER,
+                "layout_status": status,
+                "gap_reason": item.get("gap_reason"),
+                "gap_classification": classification,
+                "managed_physical_gap": True,
+                "solver_infeasibility_proven": solver.get("infeasibility_proven"),
+                "proof_basis": (
+                    "solver_infeasibility_proven"
+                    if solver.get("infeasibility_proven") is True
+                    else "layout_canonical_presolve_or_solver_verdict"
+                ),
+                "gap_kind": "non_actionable_terminal_managed_gap",
+                "p16_actionable": False,
+                "factual_gap": True,
+                "satisfied": False,
+                "reason": (
+                    "Radar 规划 authority 已在上游 radar_surveillance_layout 证明当前约束下"
+                    "不可行：P16 不再枚举雷达候选面板，也不把它当成可由 P16 消除的目标。"
+                ),
+            })
+            continue
+        unknowns.append({
+            "kind": "radar_planning_authority_upstream",
+            "target_id": target.get("target_id"),
+            "route_id": route_id,
+            "subsystem": target.get("subsystem"),
+            "service_key": SERVICE_KEY_RADAR_NONCOOPERATIVE,
+            "source": RADAR_PLANNING_OWNER,
+            "planning_owner": RADAR_PLANNING_OWNER,
+            "layout_status": status or None,
+            "layout_algorithm_semantics_stale": stale,
+            "gap_reason": item.get("gap_reason"),
+            "gap_classification": classification,
+            "managed_physical_gap": managed,
+            "p16_actionable": False,
+            "requires_upstream_layout_evidence": True,
+            "reasons": [_radar_authority_reason(status, classification, stale)],
+        })
+    return terminal, unknowns, actionable
 
 
 def _service_targets(route_id, voxel_id, code, voxel, entry, surface_services, unknown):
@@ -1761,6 +2191,23 @@ def _build_prefilter_context(state, prepared_cells):
     因此：若某候选的新设备站点到航路的最近水平距离
     ``> envelope + max_half_width + max_cell_half_diagonal``，则该候选重算前后逐字段
     相同 ⇒ 它不可能产生任何 confirmed 增益、regression 或 unknown_regression。
+
+    **边界方向（Round 29-I 收口；此方向极易被写反，务必不要反）**：
+
+    ``required_clearance`` 是三项之和，于是
+
+        ``max_cell_half_diagonal`` 越大 ⇒ ``required_clearance`` 越大
+        ⇒ 越**难**满足 ``nearest > required_clearance``
+        ⇒ 越**难** prefilter ⇒ 进入 full rerun 的候选**越多**。
+
+    即：half_diagonal 取**偏小**值会让预筛**过于激进**（可能排掉本应重算的候选），
+    属于乐观/不安全方向；只有取**偏大**值才是保守方向。
+
+    真实 L8 metric half diagonal 由每个 cell bbox 的西南角→东北角测地距离之半给出
+    （见 :func:`...algorithms.corridor.v1._prepare_cells`），且**随纬度单调递减**。
+    因此 ``max_cell_half_diagonal`` 必须取自**实际参与评估的 prepared_cells** 的最大值
+    （即最低纬度那一格）；**不得**用"航路最高纬度"或任何单点合成值替代 —— 那只会得到
+    真实上界的下界。缺少 prepared_cells 时本函数返回 ``None``（不做任何预筛）。
 
     ``None`` 表示"缺少足够的静态事实进行安全判定"，此时**不做任何预筛**。
     """

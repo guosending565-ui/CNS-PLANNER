@@ -42,8 +42,14 @@ def stable_fingerprint(value):
     ).encode("utf-8")).hexdigest()
 
 
-def report_source_snapshot(state, algorithm_catalog):
-    """Freeze only report inputs; no algorithm execution or mutable live handles."""
+def report_source_snapshot(state, algorithm_catalog, projected_results=None):
+    """Freeze only report inputs; no algorithm execution or mutable live handles.
+
+    ``projected_results`` 是 Application 层用**唯一权威**
+    ``result_currentness.projected_result`` 生成的只读投影（算法语义已变化的
+    P14/P15/P16/P17 容器在这里以 ``stale`` 进入报告，绝不作为 current 结论披露）。
+    Domain 层不 import Application，因此投影由调用方注入；缺省时行为与既有逐字一致。
+    """
     keys = (
         "project", "confirmed_cns_plan", "cns_plan_review",
         "required_cns", "required_cns_recommendation", "required_cns_adoption",
@@ -64,6 +70,10 @@ def report_source_snapshot(state, algorithm_catalog):
         "v3_operational_adoptions", "v3_cns_assessment_bundle",
     )
     source = {key: deepcopy(state.get(key)) for key in keys}
+    if projected_results:
+        #: 只读投影覆盖：调用方（Application）已用唯一权威投影计算，这里深拷贝以
+        #: 维持"报告快照与活的 ProjectState 完全隔离"的既有契约。
+        source.update({key: deepcopy(value) for key, value in projected_results.items()})
     # Repository save timestamps are not planning evidence and must not break
     # deterministic report identity/idempotence.
     if isinstance(source.get("project"), dict):
@@ -73,8 +83,10 @@ def report_source_snapshot(state, algorithm_catalog):
     return sanitize_report_value(source)
 
 
-def report_source_fingerprint(state, algorithm_catalog):
-    return stable_fingerprint(report_source_snapshot(state, algorithm_catalog))
+def report_source_fingerprint(state, algorithm_catalog, projected_results=None):
+    return stable_fingerprint(
+        report_source_snapshot(state, algorithm_catalog, projected_results)
+    )
 
 
 def deterministic_report_id(plan_id, source_fingerprint, template_version=TEMPLATE_VERSION):

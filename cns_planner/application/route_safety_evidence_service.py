@@ -40,6 +40,9 @@ from ..domain.route_safety_evidence_v2 import (
     empty_route_safety_evidence_v2, normalize_route_safety_evidence_v2_collection,
     overall_status_for,
 )
+#: currentness 的**唯一权威**。CNS 证据维度必须服从它，绝不直读 raw
+#: ``result_statuses`` / raw 容器 status 来判定"是否可消费"。
+from .result_currentness import effective_result_status, projected_result
 
 #: The existing validator verdict -> geometry evidence status.
 _GEOMETRY_STATUS = {
@@ -827,20 +830,23 @@ class RouteSafetyEvidenceService:
         coverage = state.get("coverage_3d") or {}
         capability = state.get("cns_service_capability") or {}
         gap = state.get("cns_gap_analysis_v2") or {}
-        corridor = state.get("cns_corridor_assessment") or {}
+        #: P14（``cns_corridor_assessment``）的可消费性只由 ``result_currentness`` 的
+        #: 有效投影决定：stored raw status 为 passed/failed 也可能因算法语义版本变化
+        #: 而**有效 stale**，此时绝不作为 current corridor 证据消费，也绝不改写 stored P14。
+        corridor = _corridor_consumption(state, route_id)
+        corridor_result = corridor["projected"]
         coverage_route = _route_of(coverage, route_id)
         capability_route = _route_of(capability, route_id)
         gap_route = _route_of(gap, route_id)
-        corridor_route = _route_of(corridor, route_id)
-        consumed_corridor = bool(
-            corridor_route
-            and str(corridor.get("status")) not in ("not_calculated", "stale")
-            and corridor_route.get("status") not in ("missing_data", None)
+        corridor_route = _route_of(corridor_result, route_id)
+        consumed_corridor = corridor["consumed"]
+        #: 上游证据的 stale 判定同样走有效投影（raw 容器 status 仍参与，只增不减）。
+        stale_upstream = sorted(
+            name for name in _UPSTREAM_RESULT_IDS
+            if str((state.get(name) or {}).get("status")) == "stale"
+            or effective_result_status(state, name) == "stale"
         )
-        if any(
-            str((state.get(name) or {}).get("status")) == "stale"
-            for name in _UPSTREAM_RESULT_IDS
-        ):
+        if stale_upstream:
             status = "stale"
         elif not any((coverage_route, capability_route, gap_route)):
             status = "not_run"
@@ -862,10 +868,12 @@ class RouteSafetyEvidenceService:
             else:
                 status = "supported"
         domain["status"] = status
-        domain["status_reason"] = (
-            None if status == "supported"
-            else "cns_gap_v2_status:" + str(gap.get("status"))
-        )
+        if status == "supported":
+            domain["status_reason"] = None
+        elif status == "stale":
+            domain["status_reason"] = "cns_upstream_evidence_stale:" + ",".join(stale_upstream)
+        else:
+            domain["status_reason"] = "cns_gap_v2_status:" + str(gap.get("status"))
         subsystems = []
         for code in CNS_SUBSYSTEMS:
             coverage_subsystem = _subsystem_of(coverage_route, code) or {}
@@ -953,12 +961,21 @@ class RouteSafetyEvidenceService:
             },
             "cns_corridor_assessment": {
                 "consumed": consumed_corridor,
-                "status": corridor.get("status"),
+                #: ``status`` / ``raw_result_status`` 是 stored P14 的原样转印（绝不被本服务
+                #: 改写）；``effective_status`` 才是唯一的 currentness 判据。
+                "status": corridor.get("raw_status"),
+                "raw_result_status": corridor.get("raw_result_status"),
+                "effective_status": corridor["effective_status"],
+                "projected_status": corridor.get("projected_status"),
+                "stale_reason": corridor.get("stale_reason"),
+                "algorithm_semantics_stale": corridor["algorithm_semantics_stale"],
+                "algorithm_semantics_stale_detail": corridor.get("semantics_stale_detail"),
                 "algorithm_id": corridor.get("algorithm_id"),
                 "algorithm_version": corridor.get("algorithm_version"),
                 "input_fingerprint": corridor.get("input_fingerprint"),
                 "corridor_geometry_fingerprint": corridor.get("corridor_geometry_fingerprint"),
                 "route_present": bool(corridor_route),
+                "route_status": corridor.get("route_status"),
             },
             "upstream_results": upstream,
         }
@@ -1007,7 +1024,19 @@ class RouteSafetyEvidenceService:
             "coverage 只是几何覆盖，capability 只是静态模型匹配：二者都不代表运行时可用度。",
             "上游结果未运行或证据不足时 status=not_run/unknown，绝不当作 met。",
         ]
+        if corridor["algorithm_semantics_stale"]:
+            domain["limitations"].append(
+                "stored P14（cns_corridor_assessment）由**不同算法语义版本**产生：它的 "
+                "raw 容器状态（" + str(corridor.get("raw_status")) + "）绝不是 current 证据。"
+                "有效状态为 stale，因此本域 corridor_consumed=false，既不以它作为当前走廊"
+                "证据，也不把它改写成 failed/满足；stored P14 与 result_statuses 均未被修改。"
+            )
         domain["semantics"] = dict(CNS_GAP_SEMANTICS)
+        domain["semantics"].update({
+            "corridor_currentness_follows_single_authority": True,
+            "stale_corridor_is_never_consumed_as_current_evidence": True,
+            "stored_upstream_results_are_never_rewritten": True,
+        })
         return domain
 
     # ------------------------------------------------------------------ helpers
@@ -1066,13 +1095,20 @@ class RouteSafetyEvidenceService:
 
     def _upstream_result_states(self):
         state = self.session.state
-        return {
-            name: {
-                "status": (state.get(name) or {}).get("status", "not_calculated"),
-                "input_fingerprint": (state.get(name) or {}).get("input_fingerprint"),
+        rows = {}
+        for name in _UPSTREAM_RESULT_IDS:
+            container = state.get(name) or {}
+            effective = effective_result_status(state, name)
+            rows[name] = {
+                "status": container.get("status", "not_calculated"),
+                #: raw 之外的唯一 currentness 判据（算法语义 stale 只在这里体现）。
+                "effective_status": effective,
+                "algorithm_semantics_stale": bool(
+                    effective == "stale" and str(container.get("status")) != "stale"
+                ),
+                "input_fingerprint": container.get("input_fingerprint"),
             }
-            for name in _UPSTREAM_RESULT_IDS
-        }
+        return rows
 
     def _resolve_lineage(self, payload=None):
         payload = payload if isinstance(payload, dict) else {}
@@ -1212,13 +1248,11 @@ class RouteSafetyEvidenceService:
         coverage = state.get("coverage_3d") or {}
         capability = state.get("cns_service_capability") or {}
         gap = state.get("cns_gap_analysis_v2") or {}
-        corridor = state.get("cns_corridor_assessment") or {}
         route_id = str((lineage.get("operational_route") or {}).get("route_id") or "")
         profile_3d = self._terminal_transition_evidence(lineage)
-        corridor_consumed = bool(
-            route_id and _route_of(corridor, route_id)
-            and str(corridor.get("status")) not in ("not_calculated", "stale")
-        )
+        #: 与 ``_cns_domain`` **同一个**判定入口：绝不在这里实现第二份 stale/版本判断。
+        corridor = _corridor_consumption(state, route_id)
+        corridor_consumed = corridor["consumed"]
         return {
             "operational_route_adoption_fingerprint": stable_fingerprint({
                 "adoption_id": adoption.get("adoption_id"),
@@ -1245,7 +1279,8 @@ class RouteSafetyEvidenceService:
             "cns_gap_v2_fingerprint": gap.get("input_fingerprint"),
             "cns_gap_v2_status": gap.get("status"),
             "cns_corridor_fingerprint": (
-                corridor.get("input_fingerprint") if corridor_consumed else None
+                (corridor.get("projected") or {}).get("input_fingerprint")
+                if corridor_consumed else None
             ),
             "cns_corridor_consumed": corridor_consumed,
             "route_3d_profile_fingerprint": profile_3d.get("profile_fingerprint"),
@@ -1360,6 +1395,66 @@ class RouteSafetyEvidenceService:
 
 def _block(code, reason):
     return {"reason_code": str(code), "reason": str(reason)}
+
+
+def _corridor_consumption(state, route_id):
+    """P14（``cns_corridor_assessment``）能否作为 **current** 走廊证据被消费。
+
+    本函数是 Route Safety Evidence V2 里 corridor 维度的**唯一**判定入口，且
+    **不实现**任何 stale / 算法版本判断：一律经 ``result_currentness`` 的有效投影。
+
+    裁定（Round29-K1）：
+
+    * stored P14 的 ``status=passed``/``failed`` 本身**不是**可消费理由 —— 若它由不同
+      算法语义版本产生，有效状态即为 ``stale``，此时 ``consumed=False``；
+    * stale 既不是 passed 也不是 failed，因此本服务既不消费它，也不改写它；
+    * 只读：本函数不写 ``state``、不改 ``result_statuses``、不 save。
+    """
+
+    projected = projected_result(state, "cns_corridor_assessment") or {}
+    stored = state.get("cns_corridor_assessment") or {}
+    effective = effective_result_status(state, "cns_corridor_assessment")
+    stale_detail = projected.get("algorithm_semantics_stale") if isinstance(
+        projected, dict
+    ) else None
+    route = _route_of(projected, route_id) if route_id else None
+    route_status = None if route is None else route.get("status")
+    projected_status = str(projected.get("status") or "") if isinstance(projected, dict) else ""
+    consumed = bool(
+        route is not None
+        #: 有效投影：算法语义 stale 时 projected status 已被 authority 覆写为 ``stale``。
+        and projected_status not in ("stale", "not_calculated", "missing_data", "")
+        #: raw ``result_statuses`` 标 stale 时同样绝不消费（fail-closed）。
+        and effective != "stale"
+        and route_status is not None
+        and str(route_status) not in ("stale", "missing_data")
+    )
+    return {
+        "projected": projected,
+        "effective_status": effective,
+        "projected_status": projected_status or None,
+        "stale_reason": (projected.get("stale_reason") if isinstance(projected, dict) else None),
+        "algorithm_semantics_stale": isinstance(stale_detail, dict),
+        "semantics_stale_detail": deepcopy(stale_detail) if isinstance(stale_detail, dict) else None,
+        "status": (projected.get("status") if isinstance(projected, dict) else None),
+        "raw_status": (stored.get("status") if isinstance(stored, dict) else None),
+        "raw_result_status": (
+            (state.get("result_statuses") or {}).get("cns_corridor_assessment")
+        ),
+        "algorithm_id": (projected.get("algorithm_id") if isinstance(projected, dict) else None),
+        "algorithm_version": (
+            projected.get("algorithm_version") if isinstance(projected, dict) else None
+        ),
+        "input_fingerprint": (
+            projected.get("input_fingerprint") if isinstance(projected, dict) else None
+        ),
+        "corridor_geometry_fingerprint": (
+            projected.get("corridor_geometry_fingerprint")
+            if isinstance(projected, dict) else None
+        ),
+        "route_status": route_status,
+        "consumed": consumed,
+    }
 
 
 def _route_of(result, route_id):

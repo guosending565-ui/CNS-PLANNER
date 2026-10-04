@@ -47,7 +47,11 @@ import {
   CNS_SERVICE_LAYER_IDS, cnsMapFeatureAt, cnsMapFeatureTooltip, cnsServiceLegendModel,
   cnsServiceOverlayModel, drawCnsNavigationEnvelope, navigationBaselineModel,
 } from '../cns_planner/web/js/map/cns_service_overlay.js';
-import {render as renderStep5} from '../cns_planner/web/js/workflow/step05_cns.js';
+import {corridorSitePlanSummary, radarGapReasonText, render as renderStep5}
+  from '../cns_planner/web/js/workflow/step05_cns.js';
+import {
+  RADAR_GAP_REASON_TEXT, radarLayoutModel, renderRadarSurveillanceLayoutPanel,
+} from '../cns_planner/web/js/workflow/radar_surveillance_layout.js';
 
 const html = readFileSync(new URL('../cns_planner/web/index.html', import.meta.url), 'utf8');
 const main = readFileSync(new URL('../cns_planner/web/js/main.js', import.meta.url), 'utf8');
@@ -327,7 +331,7 @@ const CORRIDOR_DETAIL = {
   },
 };
 
-/** P16 canonical 结果：四类 planner action（含 navigation / radar 专属字段）。 */
+/** P16 canonical 结果：三类 planner action（Round29-K 起 Radar 不再由 P16 枚举）。 */
 const SITE_PLAN = {
   status: 'proposal_ready',
   selected_actions: [
@@ -359,19 +363,54 @@ const SITE_PLAN = {
       status: 'confirmed_deficit',
       impact: {target_progress: [{before_units: 1, after_units: 2}]},
     },
-    {
-      action_id: 'radar:R1:panel-2', action_type: 'add_radar_panel',
-      planner_family: 'directional_radar', service_key: 'S:radar_noncooperative', subsystem: 'S',
-      radar_type: 'radar_i', tower_id: 'TT-9', distinct_site_id: 'tower:TT-9',
-      reuse_class: 'tower_colocation_host',
-      panel: {
-        panel_id: 'panel-2', azimuth_deg: 120, beamwidth_deg: 90, elevation_center_deg: 22.5,
-      },
-      provenance: {algorithm_id: 'radar_surveillance_layout', algorithm_version: '1.1'},
-      required_units: 2, current_units: 1, status: 'confirmed_deficit',
-      impact: {target_progress: [{before_units: 1, after_units: 2}]},
-    },
   ],
+};
+
+/**
+ * P16 canonical 结果：已**证明**不可行的 Radar 缺口。
+ *
+ * 它是 factual gap（managed physical gap），由上游 ``radar_surveillance_layout`` 负责：
+ * P16 ``p16_actionable=false``，既不改写成 satisfied，也不自行枚举面板。
+ */
+const TERMINAL_MANAGED_PLAN = {
+  status: 'no_action_required',
+  selected_actions: [],
+  stop_reason: 'only_terminal_managed_gaps_outside_p16_authority',
+  target_voxel_count: 1,
+  terminal_managed_gaps: [{
+    target_id: 'T1', route_id: 'R1', service_key: 'S:radar_noncooperative',
+    source: 'radar_surveillance_layout', planning_owner: 'radar_surveillance_layout',
+    layout_status: 'infeasible', gap_reason: 'independent_site_count_limited',
+    gap_classification: 'confirmed_gap', managed_physical_gap: true,
+    solver_infeasibility_proven: true, proof_basis: 'solver_infeasibility_proven',
+    gap_kind: 'non_actionable_terminal_managed_gap', p16_actionable: false,
+    factual_gap: true, satisfied: false,
+    reason: 'Radar 规划 authority 已在上游证明当前约束下不可行：P16 不再枚举雷达候选面板。',
+  }],
+  unknown_evidence_required: [],
+};
+
+/**
+ * P16 canonical 结果：Radar 上游搜索未完成 / 旧算法语义 ⇒ 只登记为待补证据。
+ *
+ * 它**不是**已确认的 managed 缺口。
+ */
+const RADAR_UNKNOWN_PLAN = {
+  status: 'evidence_required',
+  selected_actions: [],
+  stop_reason: 'only_unknown_or_missing_evidence',
+  target_voxel_count: 1,
+  terminal_managed_gaps: [],
+  unknown_evidence_required: [{
+    kind: 'radar_planning_authority_upstream', target_id: 'T1', route_id: 'R1',
+    subsystem: 'S', service_key: 'S:radar_noncooperative',
+    source: 'radar_surveillance_layout', planning_owner: 'radar_surveillance_layout',
+    layout_status: 'search_incomplete', layout_algorithm_semantics_stale: false,
+    gap_reason: 'search_incomplete', gap_classification: 'unknown',
+    managed_physical_gap: false, p16_actionable: false,
+    requires_upstream_layout_evidence: true,
+    reasons: ['Radar 划设搜索未完成：不视为 managed 缺口。'],
+  }],
 };
 
 const RADAR_LAYOUT = {
@@ -383,6 +422,32 @@ const RADAR_LAYOUT = {
     selected_tower_ids: ['TT-1', 'TT-2'],
     selected_panels: [{radar_type: 'radar_i', tower_id: 'TT-1', azimuth_deg: 120,
       panel_half_width_deg: 45}],
+  }],
+};
+
+/** 已证明不可行的 Radar layout（canonical 缺口三字段齐备）。 */
+const RADAR_INFEASIBLE_LAYOUT = {
+  status: 'infeasible',
+  items: [{
+    route_id: 'R1', status: 'infeasible', stage_label: 'Ⅰ型不可行',
+    solver: {status: 'infeasible', infeasibility_proven: true},
+    gap_reason: 'independent_site_count_limited', gap_classification: 'confirmed_gap',
+    managed_physical_gap: true, selected_panels: [], selected_tower_ids: [],
+    selected_panel_count: 0, selected_tower_count: 0,
+    candidate_tower_count: 12, candidate_panel_count: 48,
+  }],
+};
+
+/** 搜索未完成的 Radar layout：**不是** managed 缺口。 */
+const RADAR_SEARCH_INCOMPLETE_LAYOUT = {
+  status: 'search_incomplete',
+  items: [{
+    route_id: 'R1', status: 'search_incomplete', stage_label: '触达资源上限',
+    solver: {status: 'time_limit', infeasibility_proven: false},
+    gap_reason: 'search_incomplete', gap_classification: 'unknown',
+    managed_physical_gap: false, selected_panels: [], selected_tower_ids: [],
+    selected_panel_count: 0, selected_tower_count: 0,
+    candidate_tower_count: 12, candidate_panel_count: 48,
   }],
 };
 
@@ -714,27 +779,114 @@ test('O: P15 lists the four services separately', () => {
   assert.match(statements, new RegExp(RADAR_DIRECTIONAL_GEOMETRY_NOTE.slice(0, 12)));
 });
 
-// ---- P. P16 四类 action 分开展示 --------------------------------------------
+// ---- P. P16 只展示 P16 有权处理的动作（Radar 由上游 authority 负责） ---------
 
-test('P: P16 lists the four service actions separately', () => {
+test('P: P16 lists the service actions it owns and no longer emits Radar actions', () => {
   const cards = facilityPlanCards(SITE_PLAN);
-  for (const key of CNS_ROUNDD_SERVICE_KEYS) {
+  //: Round29-K：Radar 的规划 authority 是 radar_surveillance_layout，
+  //: P16 与前端卡片都**不再**要求 / 展示 Radar selected action。
+  for (const key of ['C:communication', 'N:rtk_augmentation', 'S:rid_cooperative']) {
     assert.match(cards, new RegExp('data-service-key="' + key + '"'), `P16 缺少 ${key}`);
   }
+  assert.doesNotMatch(cards, /data-service-key="S:radar_noncooperative"/);
+  assert.doesNotMatch(cards, /data-planner-family="directional_radar"/);
+  assert.doesNotMatch(cards, /add_radar_panel/);
+  assert.doesNotMatch(cards, /radar:R1:panel/);
   assert.match(cards, /data-planner-family="navigation_reference_station"/);
-  assert.match(cards, /data-planner-family="directional_radar"/);
-  // Radar action 明确是方向性面阵，且数值来自 canonical action
-  assert.match(cards, /方向性 Radar panel/);
-  assert.match(cards, /Radar-I（中近程雷达Ⅰ型）/);
-  assert.match(cards, /方位角 120°/);
-  assert.match(cards, /波束宽度 90°/);
-  assert.match(cards, /俯仰预设 22\.5°/);
-  assert.match(cards, /绝不按普通圆形覆盖站渲染/);
-  // 站址来源 / distinct_site_id / 动作 / 收益都在卡片上
+  //: Communication / RID / Navigation 的展示不受 Radar 语义变更影响。
+  assert.match(cards, /新增 C-1/);
+  assert.match(cards, /新增 S-RID-1/);
+  assert.match(cards, /新增 GNSS\/RTK 基准站规划单元/);
+  //: 站址来源 / distinct_site_id / 动作 / 收益都在卡片上
   assert.match(cards, /站址来源：/);
   assert.match(cards, /distinct_site_id：tower:TT-9/);
   assert.match(cards, /同一物理站址，不增加独立站址重数/);
   assert.doesNotMatch(cards, /3 重服务冗余|三重服务|重服务冗余/);
+});
+
+// ---- P2. Radar layout 自己继续拥有 selected panels / managed limitation ------
+
+test('P2: the Radar layout keeps its own selected panels when feasible', () => {
+  const flow = {radar_surveillance_layout: RADAR_LAYOUT};
+  const panel = renderRadarSurveillanceLayoutPanel(flow);
+  assert.match(panel, /选中的铁塔与单面阵/);
+  assert.match(panel, /方位角 120/);
+  assert.match(panel, /±45\.0°/);
+  //: 可行时绝不显示"已证明的物理限制"。
+  assert.doesNotMatch(panel, /已证明的物理限制/);
+  assert.doesNotMatch(panel, /data-radar-managed-gap/);
+  const model = radarLayoutModel({radar_surveillance_layout: RADAR_LAYOUT});
+  assert.equal(model.terminalManagedGap, false);
+  assert.equal(model.selectedPanels.length, 1);
+});
+
+test('P2: a proven infeasible Radar shows the managed limitation, not a plan', () => {
+  const flow = {radar_surveillance_layout: RADAR_INFEASIBLE_LAYOUT};
+  const panel = renderRadarSurveillanceLayoutPanel(flow);
+  const model = radarLayoutModel(flow);
+
+  assert.equal(model.terminalManagedGap, true);
+  assert.equal(model.gapClassification, 'confirmed_gap');
+  assert.equal(model.managedPhysicalGap, true);
+  assert.equal(model.gapReason, 'independent_site_count_limited');
+  assert.match(panel, /data-radar-managed-gap="confirmed"/);
+  assert.match(panel, /已证明的物理限制/);
+  assert.match(panel, /独立站址数量受限/);
+  //: 事实缺口不计为满足，也不由 P16 再枚举面板。
+  assert.match(panel, /事实缺口/);
+  assert.match(panel, /p16_actionable=false/);
+  assert.doesNotMatch(panel, /data-radar-managed-gap="not_confirmed"/);
+  assert.equal(radarGapReasonText('independent_site_count_limited'),
+    RADAR_GAP_REASON_TEXT.independent_site_count_limited);
+});
+
+test('P2: search_incomplete / stale Radar is never shown as a confirmed managed gap', () => {
+  for (const layout of [RADAR_SEARCH_INCOMPLETE_LAYOUT,
+    {status: 'stale', items: [{...RADAR_SEARCH_INCOMPLETE_LAYOUT.items[0], status: 'stale'}]}]) {
+    const flow = {radar_surveillance_layout: layout};
+    const panel = renderRadarSurveillanceLayoutPanel(flow);
+    const model = radarLayoutModel(flow);
+    assert.equal(model.terminalManagedGap, false);
+    assert.equal(model.managedPhysicalGap, false);
+    assert.match(panel, /data-radar-managed-gap="not_confirmed"/);
+    assert.match(panel, /不是已确认的 managed 缺口/);
+    assert.doesNotMatch(panel, /data-radar-managed-gap="confirmed"/);
+    assert.doesNotMatch(panel, /已证明的物理限制/);
+  }
+});
+
+// ---- P3. P16 面板如实展示 terminal managed gap / 待补证据 ----------------------
+
+test('P3: P16 shows the proven managed gap as a factual, non-actionable gap', () => {
+  const summary = corridorSitePlanSummary(TERMINAL_MANAGED_PLAN);
+  const text = visibleText(summary);
+
+  assert.match(summary, /已证明的物理限制（P16 不产生动作）/);
+  assert.match(summary, /独立站址数量受限/);
+  assert.match(summary, /data-p16-actionable="false"/);
+  assert.match(summary, /data-gap-kind="non_actionable_terminal_managed_gap"/);
+  assert.match(summary, /p16_actionable=false/);
+  assert.match(summary, /事实缺口/);
+  //: 停止原因必须是中文业务语言，不是 raw enum。
+  assert.match(text, /只剩由上游规划 authority 负责的已证明物理限制缺口/);
+  assert.doesNotMatch(text, /only_terminal_managed_gaps_outside_p16_authority/);
+  //: 没有已确认 managed 缺口时绝不显示该区块。
+  assert.doesNotMatch(corridorSitePlanSummary(RADAR_UNKNOWN_PLAN), /已证明的物理限制/);
+});
+
+test('P3: P16 shows incomplete Radar authority as evidence required, not a managed gap', () => {
+  const summary = corridorSitePlanSummary(RADAR_UNKNOWN_PLAN);
+  const text = visibleText(summary);
+
+  assert.match(summary, /Radar 划设证据不足（不是已确认缺口）/);
+  assert.match(summary, /data-radar-unknown-evidence="true"/);
+  assert.match(summary, /搜索未完成绝不当作已确认的 managed 缺口/);
+  assert.match(summary, /p16_actionable=false/);
+  //: 未完成的搜索绝不显示成 confirmed managed gap / managed limitation。
+  assert.doesNotMatch(summary, /已证明的物理限制/);
+  assert.doesNotMatch(summary, /data-radar-managed-gap/);
+  assert.doesNotMatch(text, /search_incomplete/);
+  assert.match(text, /搜索未完成（未证明不可行）/);
 });
 
 // ---- Q. unknown surface 不是 sea --------------------------------------------

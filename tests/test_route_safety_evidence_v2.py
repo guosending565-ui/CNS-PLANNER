@@ -19,6 +19,7 @@ Covered contracts:
 from copy import deepcopy
 from pathlib import Path
 
+from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
 from cns_planner.algorithms.grid.service import WorkspaceGridService
 from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import blank_project, normalize_project
@@ -589,9 +590,14 @@ def test_cns_unknown_or_missing_evidence_is_incomplete_or_unresolved(tmp_path):
 
 def test_current_corridor_assessment_is_consumed_when_available(tmp_path):
     upstream = passing_cns()
+    #: P14 的 currentness 由唯一权威（``result_currentness``）依**当前**算法语义判定，
+    #: 因此这条 fixture 必须声明当前版本；旧版本 fixture 见
+    #: ``test_route_safety_evidence_currentness.py``（stale ⇒ 绝不消费）。
     upstream["cns_corridor_assessment"] = {
-        "status": "passed", "algorithm_id": "cns_service_corridor_v1",
-        "algorithm_version": "1.0", "input_fingerprint": "corridor-fp",
+        "status": "passed",
+        "algorithm_id": CNSServiceCorridorV1.algorithm_id,
+        "algorithm_version": CNSServiceCorridorV1.algorithm_version,
+        "input_fingerprint": "corridor-fp",
         "corridor_geometry_fingerprint": "corridor-geom-fp",
         "routes": [{
             "route_id": "R-1", "status": "passed",
