@@ -154,6 +154,43 @@ export function serviceStatusText(value) {
   return vocabularyText(value, SERVICE_STATUS_TEXT);
 }
 
+/**
+ * P17 首次探测距离**证据覆盖状态** → 中文。
+ *
+ * 与 :data:`SERVICE_STATUS_TEXT` 的 ``satisfied`` 严格区分：Radar 规划代理的
+ * ``planning_proxy_validated`` **只**表示"该探测距离的几何代理已通过规划期验证"，
+ * 绝不表示"Radar 服务覆盖/冗余已满足"（后者只能来自 P15 逐 service 结论）。
+ * 本表在冻结词表之上**只增不改**：``satisfied`` / ``confirmed_deficit`` / ``unknown``
+ * 的中文与 :data:`SERVICE_STATUS_TEXT` 完全一致。
+ */
+export const DETECTION_COVERAGE_STATUS_TEXT = {
+  ...SERVICE_STATUS_TEXT,
+  planning_proxy_validated: '规划代理已验证',
+};
+
+/** 规划代理状态的**固定披露文案**（必须与中文状态同时展示）。 */
+export const DETECTION_PLANNING_PROXY_NOTE =
+  '仅表示 Radar 规划探测距离代理通过几何验证，不代表 Radar 服务覆盖/冗余已满足。';
+
+/** P17 首次探测距离证据覆盖状态 → 中文（``planning_proxy_validated`` 绝不裸显英文）。 */
+export function detectionCoverageStatusText(value) {
+  return vocabularyText(value, DETECTION_COVERAGE_STATUS_TEXT);
+}
+
+/**
+ * 该覆盖状态是否来自 Radar 规划代理。
+ *
+ * **只**用于决定是否展示上面的固定披露；前端绝不据此推导 Radar 服务是否满足。
+ */
+export function isDetectionPlanningProxyStatus(value) {
+  return String(value ?? '').trim() === 'planning_proxy_validated';
+}
+
+/** 覆盖状态附注：只有规划代理状态需要披露语义边界，其余返回空串。 */
+export function detectionCoverageStatusNote(value) {
+  return isDetectionPlanningProxyStatus(value) ? DETECTION_PLANNING_PROXY_NOTE : '';
+}
+
 /** 冗余状态 → 中文（confirmed_deficit = 冗余不足）。 */
 export function redundancyStatusText(value) {
   return vocabularyText(value, REDUNDANCY_STATUS_TEXT);
