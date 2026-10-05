@@ -31,6 +31,8 @@ from ..domain.radar_surveillance_layout import (
     DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M, EFFECTIVE_REQUIREMENT_CLASS,
     FIXED_ALTITUDE_LAYER_ID, FIXED_ALTITUDE_M, METRIC_CRS, MODEL_SCOPE, NOT_EVALUATED,
     RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1, RADAR_ORIGIN_BASIS, RADAR_ORIGIN_SEMANTICS,
+    RADAR_PLANNING_ORIGIN_BASIS, RADAR_PLANNING_ORIGIN_POLICY_ID,
+    RADAR_PLANNING_ORIGIN_SEMANTICS,
     ROUTE_SAMPLE_HEIGHT_SEMANTICS, ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT,
     SCHEMA_VERSION, SEMANTICS_FINGERPRINT, SURFACE_CLASSES, VERTICAL_REFERENCE,
     default_radar_mount_assumption, device_provenance, device_summary,
@@ -180,6 +182,9 @@ def default_radar_surveillance_policy():
         "radar_mount_height": default_radar_mount_assumption(),
         "radar_origin_basis": RADAR_ORIGIN_BASIS,
         "radar_origin_semantics": RADAR_ORIGIN_SEMANTICS,
+        # Explicit Radar-only opt-in.  Legacy projects retain the confirmed
+        # TowerObstacleProfile origin chain until this policy is selected.
+        "radar_planning_origin_policy_id": None,
         "radar_mount_height_required": RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1,
         "software_baseline": deepcopy(SOFTWARE_BASELINE),
         "fixed_altitude_layer_id": FIXED_ALTITUDE_LAYER_ID,
@@ -265,6 +270,16 @@ def normalize_radar_surveillance_policy(value):
             "parameter_origin": payload.get("mount_height_parameter_origin"),
         }
     result["radar_mount_height"] = normalize_radar_mount_assumption(mount_payload)
+    planning_origin_policy_id = payload.get("radar_planning_origin_policy_id")
+    if planning_origin_policy_id not in (None, RADAR_PLANNING_ORIGIN_POLICY_ID):
+        raise ValueError(
+            "Radar planning origin policy 只支持 "
+            f"{RADAR_PLANNING_ORIGIN_POLICY_ID}"
+        )
+    result["radar_planning_origin_policy_id"] = planning_origin_policy_id
+    if planning_origin_policy_id == RADAR_PLANNING_ORIGIN_POLICY_ID:
+        result["radar_origin_basis"] = RADAR_PLANNING_ORIGIN_BASIS
+        result["radar_origin_semantics"] = RADAR_PLANNING_ORIGIN_SEMANTICS
     # V1.1：挂高不再是 readiness 门控（雷达原点 = 塔顶正高），因此 policy.status
     # 只反映"是否存在显式确认过的工程参数"，不再由挂高决定。
     result["radar_mount_height_required"] = RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1
@@ -1415,6 +1430,8 @@ class RadarSurveillanceLayoutService:
             "semantics": semantics_fingerprint(target_layer_id),
             "route_altitude_semantics": route_sample_height_semantics(target_layer_id),
             "vertical_delta_semantics": SEMANTICS_FINGERPRINT["vertical_delta_semantics"],
+            # Legacy geometry-version fields stay stable; the explicit planning
+            # policy id below is the authoritative fingerprint discriminator.
             "radar_origin_semantics": RADAR_ORIGIN_SEMANTICS,
             "radar_origin_basis": RADAR_ORIGIN_BASIS,
             "geometry_version": SEMANTICS_FINGERPRINT["geometry_version"],
@@ -1507,6 +1524,9 @@ class RadarSurveillanceLayoutService:
                 "legacy_not_used_by_v1_1": True,
             },
             "policy": {
+                "radar_planning_origin_policy_id": policy.get(
+                    "radar_planning_origin_policy_id"
+                ),
                 "optimization_sample_spacing_m": policy.get("optimization_sample_spacing_m"),
                 "validation_sample_spacing_m": policy.get("validation_sample_spacing_m"),
                 "max_refinement_rounds": policy.get("max_refinement_rounds"),
@@ -1802,11 +1822,16 @@ class RadarSurveillanceLayoutService:
             obstacle_profiles=state.get("tower_obstacle_profiles") or {},
             # V1.1：legacy 挂高只被兼容读取并记录，**不影响**几何。
             mount_assumption=policy.get("radar_mount_height"),
+            planning_policy_id=policy.get("radar_planning_origin_policy_id"),
         )
         base["radar_origin"] = {
             "status": origins["status"],
-            "radar_origin_basis": RADAR_ORIGIN_BASIS,
+            "policy_id": origins.get("planning_policy_id"),
+            "radar_origin_basis": origins.get("origin_basis"),
             "semantics": origins["semantics"],
+            "origin_status": origins.get("origin_status"),
+            "origin_method": origins.get("origin_method"),
+            "assumption": origins.get("assumption"),
             "installation_assumption": origins["installation_assumption"],
             "engineering_confirmed": origins["engineering_confirmed"],
             "legacy_mount_assumption": origins["legacy_mount_assumption"],
@@ -1824,10 +1849,16 @@ class RadarSurveillanceLayoutService:
             item for item in origins["records"] if item["origin_egm2008_m"] is not None
         ]
         if not usable_towers:
-            blockers.append(
-                "没有任何铁塔具备已解析的 tower_top_orthometric_m"
-                "（缺 FABDEM 地形正高 / 建筑高度 / 塔身高度）；缺关键垂向证据不得填 0"
-            )
+            if policy.get("radar_planning_origin_policy_id") == RADAR_PLANNING_ORIGIN_POLICY_ID:
+                blockers.append(
+                    "没有任何铁塔具备可用 Radar planning origin"
+                    "（源表海拔或塔身高度缺失）；缺关键规划输入不得填 0"
+                )
+            else:
+                blockers.append(
+                    "没有任何铁塔具备已解析的 tower_top_orthometric_m"
+                    "（缺 FABDEM 地形正高 / 建筑高度 / 塔身高度）；缺关键垂向证据不得填 0"
+                )
         else:
             # 塔站址 -> 显式米制平面坐标：与航路采样共用同一投影，算法因此只处理米。
             for item in usable_towers:

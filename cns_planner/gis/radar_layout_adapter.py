@@ -44,6 +44,9 @@ from ..domain.radar_surveillance_layout import (
     COASTAL_UNCERTAINTY_BUFFER_SEMANTICS, DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M,
     EFFECTIVE_REQUIREMENT_CLASS, INSTALLATION_ASSUMPTION,
     INSTALLATION_ENGINEERING_CONFIRMED, RADAR_ORIGIN_BASIS, RADAR_ORIGIN_SEMANTICS,
+    RADAR_PLANNING_ORIGIN_ASSUMPTION, RADAR_PLANNING_ORIGIN_BASIS,
+    RADAR_PLANNING_ORIGIN_METHOD, RADAR_PLANNING_ORIGIN_POLICY_ID,
+    RADAR_PLANNING_ORIGIN_SEMANTICS, RADAR_PLANNING_ORIGIN_STATUS,
     REQUIRED_DISTINCT_SITE_COUNT,
 )
 
@@ -1052,7 +1055,8 @@ def sample_route_terrain(points, *, terrain_source):
 # ------------------------------------------------------------------ radar origin
 
 
-def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
+def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
+                          planning_policy_id=None):
     """逐塔解析**雷达原点** EGM2008 正高（V1.1 固定简化语义）。
 
         radar_origin_egm2008_m = tower_top_orthometric_m
@@ -1066,7 +1070,13 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
     （BUG-RADAR-ORIGIN-003）。传入的 ``mount_assumption`` 只被**兼容读取**并原样记录为
     ``legacy_not_used_by_v1_1``，**不影响**任何 V1.1 几何。
 
-    ``tower_top_orthometric_m`` 未解析的塔继续**不可作为候选**，**绝不填 0**。
+    ``planning_policy_id=radar_all_tower_rooftop_estimate_v1`` 时启用 Round30-C1
+    Radar 专用规划模式。该模式只读取铁塔源表 ``elevation_m`` / ``height_m``，把
+    所有塔视为 rooftop planning site，并将两者之和明确标记为 planning estimate。
+    它不读取、修改或提升 TowerObstacleProfile 的事实状态。
+
+    未启用该策略时，``tower_top_orthometric_m`` 未解析的塔继续**不可作为候选**，
+    **绝不填 0**。
     """
 
     mount = mount_assumption if isinstance(mount_assumption, dict) else {}
@@ -1074,6 +1084,7 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
     profiles = obstacle_profiles if isinstance(obstacle_profiles, dict) else {}
     items = profiles.get("items") if isinstance(profiles.get("items"), dict) else profiles
 
+    all_tower_planning = planning_policy_id == RADAR_PLANNING_ORIGIN_POLICY_ID
     records, unresolved = [], []
     for tower in towers or []:
         tower_id = str(tower.get("tower_id") or "")
@@ -1109,6 +1120,46 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
             "legacy_mount_height_affects_v1_1_geometry": False,
             "source": deepcopy(tower.get("source")),
         }
+        if all_tower_planning:
+            source_elevation = tower.get("elevation_m")
+            tower_height = tower.get("height_m")
+            record.update({
+                "planning_policy_id": RADAR_PLANNING_ORIGIN_POLICY_ID,
+                "planning_site_type": "rooftop",
+                "source_elevation_m": (
+                    float(source_elevation)
+                    if isinstance(source_elevation, (int, float))
+                    and not isinstance(source_elevation, bool) else None
+                ),
+                "tower_height_m": (
+                    float(tower_height)
+                    if isinstance(tower_height, (int, float))
+                    and not isinstance(tower_height, bool) else None
+                ),
+                "origin_status": RADAR_PLANNING_ORIGIN_STATUS,
+                "origin_method": RADAR_PLANNING_ORIGIN_METHOD,
+                "assumption": RADAR_PLANNING_ORIGIN_ASSUMPTION,
+                "engineering_confirmed": False,
+                "origin_basis": RADAR_PLANNING_ORIGIN_BASIS,
+                "origin_parameter_origin": "source_tower_table_planning_estimate",
+                "origin_confirmed": False,
+                "installation_engineering_confirmed": False,
+            })
+            if (
+                record["source_elevation_m"] is None
+                or record["tower_height_m"] is None
+            ):
+                record["origin_status"] = "unusable"
+                record["origin_reason"] = "source_elevation_or_tower_height_missing"
+                unresolved.append(record)
+                records.append(record)
+                continue
+            record["origin_egm2008_m"] = (
+                record["source_elevation_m"] + record["tower_height_m"]
+            )
+            record["origin_source"] = RADAR_PLANNING_ORIGIN_METHOD
+            records.append(record)
+            continue
         if not isinstance(top, (int, float)) or isinstance(top, bool):
             record["origin_reason"] = (
                 "tower_top_egm2008_unresolved:"
@@ -1129,10 +1180,32 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
         "legacy_mount_assumption": deepcopy(mount),
         "legacy_mount_assumption_status": "legacy_not_used_by_v1_1",
         "legacy_mount_height_used": False,
-        "semantics": RADAR_ORIGIN_SEMANTICS,
-        "origin_basis": RADAR_ORIGIN_BASIS,
-        "installation_assumption": INSTALLATION_ASSUMPTION,
-        "engineering_confirmed": INSTALLATION_ENGINEERING_CONFIRMED,
+        "planning_policy_id": (
+            RADAR_PLANNING_ORIGIN_POLICY_ID if all_tower_planning else None
+        ),
+        "semantics": (
+            RADAR_PLANNING_ORIGIN_SEMANTICS if all_tower_planning
+            else RADAR_ORIGIN_SEMANTICS
+        ),
+        "origin_basis": (
+            RADAR_PLANNING_ORIGIN_BASIS if all_tower_planning else RADAR_ORIGIN_BASIS
+        ),
+        "origin_status": (
+            RADAR_PLANNING_ORIGIN_STATUS if all_tower_planning else None
+        ),
+        "origin_method": (
+            RADAR_PLANNING_ORIGIN_METHOD if all_tower_planning else None
+        ),
+        "assumption": (
+            RADAR_PLANNING_ORIGIN_ASSUMPTION if all_tower_planning else None
+        ),
+        "installation_assumption": (
+            RADAR_PLANNING_ORIGIN_ASSUMPTION if all_tower_planning
+            else INSTALLATION_ASSUMPTION
+        ),
+        "engineering_confirmed": (
+            False if all_tower_planning else INSTALLATION_ENGINEERING_CONFIRMED
+        ),
         "records": records,
         "by_tower": {str(item["tower_id"]): item for item in records},
         "unresolved": unresolved,

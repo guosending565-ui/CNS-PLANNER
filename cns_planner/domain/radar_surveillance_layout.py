@@ -783,6 +783,19 @@ RADAR_ORIGIN_SEMANTICS = "radar_origin_egm2008_equals_tower_top_orthometric_m"
 RADAR_ORIGIN_BASIS = "tower_top_orthometric_m"
 INSTALLATION_ASSUMPTION = "radar_phase_center_at_tower_top"
 INSTALLATION_ENGINEERING_CONFIRMED = False
+
+# Round30-C1 Radar-only planning origin policy.  This is deliberately separate
+# from TowerObstacleProfile: the source elevation vertical datum is not confirmed,
+# so the result is a planning estimate and must never become a clearance fact.
+RADAR_PLANNING_ORIGIN_POLICY_ID = "radar_all_tower_rooftop_estimate_v1"
+RADAR_PLANNING_ORIGIN_STATUS = "planning_estimate"
+RADAR_PLANNING_ORIGIN_METHOD = "source_elevation_plus_tower_height"
+RADAR_PLANNING_ORIGIN_ASSUMPTION = "all_towers_treated_as_rooftop"
+RADAR_PLANNING_ORIGIN_BASIS = "source_elevation_m_plus_tower_height_m"
+RADAR_PLANNING_ORIGIN_SEMANTICS = (
+    "radar_planning_origin_egm2008_m_equals_unconfirmed_source_elevation_m_"
+    "plus_source_tower_height_m"
+)
 RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1 = False
 
 
@@ -853,6 +866,9 @@ __all__ = [
     "NOT_EVALUATED", "PD_REFERENCE", "PFA_REFERENCE",
     "RADAR_DEVICE_FACTS", "RADAR_GEOMETRY_PARAMETERS", "RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1",
     "RADAR_ORIGIN_BASIS", "RADAR_ORIGIN_SEMANTICS",
+    "RADAR_PLANNING_ORIGIN_ASSUMPTION", "RADAR_PLANNING_ORIGIN_BASIS",
+    "RADAR_PLANNING_ORIGIN_METHOD", "RADAR_PLANNING_ORIGIN_POLICY_ID",
+    "RADAR_PLANNING_ORIGIN_SEMANTICS", "RADAR_PLANNING_ORIGIN_STATUS",
     "RADAR_TYPES", "RADAR_TYPE_I", "RADAR_TYPE_II", "RADAR_TYPE_LABELS",
     "RADAR_ORIENTATION_FIRST_POLICY",
     "RCS_REFERENCE_M2", "REQUIRED_DISTINCT_SITE_COUNT",

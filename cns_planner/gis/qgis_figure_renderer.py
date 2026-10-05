@@ -2711,6 +2711,8 @@ LEGEND_COMPACT_LABELS = {
     "cns_coverage_rid_land": ("RID 陆地/沿海规划范围 2 km", "RID 陆地/沿海 2 km"),
     "cns_coverage_rid_sea": ("RID 海上延伸规划范围 2–5 km", "RID 海上延伸 2–5 km"),
     "cns_radar_context": ("Radar-I 评估候选站址（未选中）", "Radar 候选站址（未选中）"),
+    "cns_radar_sector": ("Radar-I 90° 规划扇区（未确认）", "Radar-I 90° 扇区"),
+    "cns_radar_proposal": ("Radar 规划站址（未确认）", "Radar 站址提案"),
     "cns_radar_limitation": (
         "非合作监视能力限制（无可行布设）", "非合作监视能力限制",
         "非合作监视限制",

@@ -113,6 +113,16 @@ FIGURE_STYLES = {
         "shape": "triangle", "size": 2.6, "fill": "transparent",
         "outline": "#1f6fd0", "outline_width": 0.45, "angle": 0.0,
     },
+    "cns_radar_sector": {
+        "kind": "fill", "geometry": "polygon", "z": 8,
+        "fill": "#7fb7ff", "opacity": 0.28, "outline": "#1f6fd0",
+        "outline_width": 0.55, "outline_style": "dash",
+    },
+    "cns_radar_proposal": {
+        "kind": "marker", "geometry": "point", "z": 16,
+        "shape": "triangle", "size": 5.2, "fill": "#ffffff",
+        "outline": "#1f6fd0", "outline_width": 0.75, "outline_style": "dash",
+    },
     "cns_existing": {
         "kind": "marker", "geometry": "point", "z": 12,
         "shape": "circle", "size": 4.0, "fill": "#1a9c4a",
@@ -463,6 +473,8 @@ LEGEND_GROUP_OF = {
     "cns_coverage_rid_land": "coverage",
     "cns_coverage_rid_sea": "coverage",
     "cns_radar_context": "limitation",
+    "cns_radar_sector": "coverage",
+    "cns_radar_proposal": "proposal",
     "cns_radar_limitation": "limitation",
 }
 
