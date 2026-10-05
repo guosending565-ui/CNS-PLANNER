@@ -26,6 +26,9 @@
 // =========================================================
 
 import {blockerList,escapeHtml,wbBlock,wbSegHint} from './common.js';
+import {
+  detectionCoverageStatusNote,detectionCoverageStatusText,
+} from '../map/service_semantics.js';
 
 export const CONTINUOUS_SERVICE_EVALUATE_ENDPOINT='/api/cns-continuous-service/evaluate';
 export const CONTINUOUS_SERVICE_POLICY_ENDPOINT='/api/cns-continuous-service/policy';
@@ -708,8 +711,15 @@ export function renderContinuousServicePanel(flow,segments){
       +' → 保护走廊外半宽 '+metricFixed(row.outerHalfWidthM,'m',1)+'</span>'
       +'<span>首次探测距离 '+(row.firstDetectionUsable
         ?metricFixed(row.firstDetectionDistanceM,'m',1)
-        :'不可用（'+escapeHtml(String(row.firstDetectionCoverageStatus||'unknown'))+'）')
-      +' · 服务 '+escapeHtml(String(row.firstDetectionServiceKey||'—'))+'</span>'
+        :'不可用（'+escapeHtml(detectionCoverageStatusText(row.firstDetectionCoverageStatus))+'）')
+      +' · 服务 '+escapeHtml(String(row.firstDetectionServiceKey||'—'))
+      +(row.firstDetectionCoverageStatus
+        ?' · 证据覆盖状态 <b>'
+          +escapeHtml(detectionCoverageStatusText(row.firstDetectionCoverageStatus))+'</b>':'')
+      +'</span>'
+      +(detectionCoverageStatusNote(row.firstDetectionCoverageStatus)
+        ?'<small>'+escapeHtml(detectionCoverageStatusNote(row.firstDetectionCoverageStatus))
+          +'</small>':'')
       +'<span>监视验收 '+escapeHtml(String(row.acceptanceStatus||'unknown'))
       +' · T_available '+metricFixed(row.tAvailableS,'s',1)
       +' · <b>T_margin '+metricFixed(row.tMarginS,'s',1)+'</b></span>'
