@@ -2301,6 +2301,103 @@ def _radar_context_points(ctx, assembly, radar):
     }
 
 
+def _radar_sector_ring(panel, metric_crs=DEFAULT_METRIC_CRS, *, arc_steps=24):
+    """Selected Radar panel -> WGS84 annular-sector ring for display only."""
+
+    longitude = _finite(panel.get("longitude"))
+    latitude = _finite(panel.get("latitude"))
+    azimuth = _finite(panel.get("azimuth_deg"))
+    half_width = _finite(panel.get("panel_half_width_deg"))
+    display = panel.get("display_geometry") if isinstance(
+        panel.get("display_geometry"), dict
+    ) else {}
+    outer = _finite(
+        display.get("display_outer_radius_m")
+        or panel.get("horizontal_outer_radius_m")
+    )
+    inner = _finite(
+        display.get("display_inner_radius_m")
+        or panel.get("horizontal_inner_radius_m")
+        or 0.0
+    )
+    if None in (longitude, latitude, azimuth, half_width, outer) or outer <= 0:
+        return []
+    inner = max(0.0, min(float(inner or 0.0), float(outer)))
+    def point(radius, bearing):
+        # WGS84 display geometry via the spherical forward-geodesic formula.
+        # Distance is in metres throughout; there is no degree-as-metre shortcut.
+        earth_radius_m = 6_378_137.0
+        angular = float(radius) / earth_radius_m
+        angle = math.radians(bearing)
+        lat1, lon1 = math.radians(latitude), math.radians(longitude)
+        lat = math.asin(
+            math.sin(lat1) * math.cos(angular)
+            + math.cos(lat1) * math.sin(angular) * math.cos(angle)
+        )
+        lon = lon1 + math.atan2(
+            math.sin(angle) * math.sin(angular) * math.cos(lat1),
+            math.cos(angular) - math.sin(lat1) * math.sin(lat),
+        )
+        lon, lat = math.degrees(lon), math.degrees(lat)
+        return [round(float(lon), 9), round(float(lat), 9)]
+
+    start, end = azimuth - half_width, azimuth + half_width
+    bearings = [start + (end - start) * index / arc_steps for index in range(arc_steps + 1)]
+    ring = [point(float(outer), bearing) for bearing in bearings]
+    if inner > 0:
+        ring.extend(point(inner, bearing) for bearing in reversed(bearings))
+    else:
+        ring.append([longitude, latitude])
+    ring.append(ring[0])
+    return ring
+
+
+def _radar_selected_layers(ctx, assembly, radar, *, metric_crs):
+    """Materialize upstream-selected Radar sites and 90-degree sectors as proposals."""
+
+    panels = [
+        item for item in (radar.get("selected_panels") or [])
+        if isinstance(item, dict) and str(item.get("radar_type")) == "radar_i"
+    ]
+    polygons, points_by_tower = [], {}
+    for panel in panels:
+        ring = _radar_sector_ring(panel, metric_crs)
+        if ring:
+            polygons.append(ring)
+        longitude, latitude = _finite(panel.get("longitude")), _finite(panel.get("latitude"))
+        tower_id = str(panel.get("tower_id") or "")
+        if longitude is not None and latitude is not None and tower_id:
+            points_by_tower.setdefault(tower_id, {
+                "longitude": longitude, "latitude": latitude, "tower_id": tower_id,
+                "name": _short(panel.get("tower_name") or tower_id),
+                "proposal_only": True, "engineering_confirmed": False,
+            })
+    detail = _cns_frame_detail(assembly, service_key=SERVICE_RADAR, extra={
+        "selected_panel_count": len(panels),
+        "selected_tower_count": len(points_by_tower),
+        "drawn_radar_sectors": len(polygons),
+        "proposal_only": True,
+        "engineering_confirmed": False,
+        "semantics": "selected_radar_i_planning_proposal_not_confirmed_facility",
+    })
+    layers = []
+    if polygons:
+        layers.append(_layer(
+            ctx, "cns_radar_sector", display_name="Radar-I 90° 规划扇区（未确认）",
+            geometry_type=GEOMETRY_POLYGON, source_role="radar_surveillance_layout",
+            status=SOURCE_AVAILABLE, reason="", detail=detail,
+            feature_count=len(polygons), data={"polygons": polygons},
+        ))
+    if points_by_tower:
+        layers.append(_layer(
+            ctx, "cns_radar_proposal", display_name="Radar 规划站址（未确认）",
+            geometry_type=GEOMETRY_POINT, source_role="radar_surveillance_layout",
+            status=SOURCE_AVAILABLE, reason="", detail=detail,
+            feature_count=len(points_by_tower), data={"points": list(points_by_tower.values())},
+        ))
+    return layers
+
+
 def _cns_labels(ctx, assembly, services, geometry, *, parameters):
     """CNS 站点标签：同址多业务合并成一条标签，并带上**服务家族列表**。
 
@@ -2502,6 +2599,20 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
             ],
         })
     elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
+            SURVEILLANCE_SERVICE_RADAR and radar.get("selected_panel_count"):
+        entries.append({
+            "disclosure_id": "radar_planning_proposal",
+            "title": "Radar 规划提案（未确认）",
+            "lines": [
+                f"Radar-I 已选 {radar.get('selected_tower_count')} 座规划站址 / "
+                f"{radar.get('selected_panel_count')} 个 90° panel；",
+                "固定约束：3 km · 90° panel · Radar-II 未启用 · 未放宽 range。",
+                "站址与扇区均为 planning proposal，engineering_confirmed=false。",
+                "需现场勘察与用户确认后方可形成最终方案。",
+            ],
+        })
+        map_disclosure = "Radar-I：规划提案（未确认），需现场勘察与用户确认"
+    elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
             SURVEILLANCE_SERVICE_RADAR:
         entries.append({
             "disclosure_id": "radar_capability_limitation",
@@ -2531,17 +2642,26 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
             ],
         })
     elif template_id == CNS_COMBINED_V1:
+        radar_selected = bool(radar.get("selected_panel_count"))
         entries.append({
             "disclosure_id": "cns_combined_disclosure",
             "title": "CNS 综合布设",
             "lines": [
-                "绿 = 通信 · 橙 = RID · 黄 = 导航完整性 · 蓝 = Radar 能力限制。",
-                "所有设施均为 existing baseline 或 P16 规划提案（未确认）。",
-                "Radar 在 R0005 无选中站址：已证明的补充能力限制，未新增任何 Radar 设施。",
+                "绿 = 通信 · 橙 = RID · 黄 = 导航完整性 · 蓝 = Radar。",
+                "所有设施均为 existing baseline 或规划提案（未确认）。",
+                (
+                    f"Radar-I 含 {radar.get('selected_tower_count')} 座规划站址 / "
+                    f"{radar.get('selected_panel_count')} 个 90° panel，均未确认。"
+                    if radar_selected else
+                    "Radar 在 R0005 无选中站址：已证明的补充能力限制，未新增任何 Radar 设施。"
+                ),
             ],
         })
         if SERVICE_RADAR in services:
-            map_disclosure = "Radar-I：当前既有站址与模型约束下无可行布设"
+            map_disclosure = (
+                "Radar-I：规划提案（未确认）" if radar_selected else
+                "Radar-I：当前既有站址与模型约束下无可行布设"
+            )
     for entry in entries:
         entry["lines"] = list(entry["lines"]) + [step6_line]
     return entries, map_disclosure
@@ -2625,7 +2745,7 @@ def materialize_cns(ctx):
             )
             layers.extend(rid_layers)
 
-    # ---- Radar：只有上下文与限制，绝无站址 / panel / 扇区 -------------------------
+    # ---- Radar：有 selected panels 时画未确认提案；0 panel 时保持 limitation。------
     if SERVICE_RADAR in services or template_id == CNS_COMBINED_V1:
         context_points, context_detail = _radar_context_points(ctx, assembly, radar)
         if template_id == SURVEILLANCE_LAYOUT_V1 and context_points:
@@ -2637,28 +2757,33 @@ def materialize_cns(ctx):
                                          extra=context_detail),
                 feature_count=len(context_points), data={"points": context_points},
             ))
-        layers.append(_cns_declared_layer(
-            ctx, "cns_radar_limitation", "非合作监视能力限制（无可行布设）", assembly,
-            service_key=SERVICE_RADAR,
-            detail_extra={
-                "algorithm_version": radar.get("algorithm_version"),
-                "status": radar.get("status"),
-                "gap_reason": radar.get("gap_reason"),
-                "gap_classification": radar.get("gap_classification"),
-                "managed_physical_gap": radar.get("managed_physical_gap"),
-                "infeasibility_proven": radar.get("infeasibility_proven"),
-                "selected_panel_count": radar.get("selected_panel_count"),
-                "selected_tower_count": radar.get("selected_tower_count"),
-                "radar_ii_panel_count": radar.get("radar_ii_panel_count"),
-                "candidate_tower_count": radar.get("candidate_tower_count"),
-                "manufactured_radar_sites": 0,
-                "manufactured_radar_panels": 0,
-                "drawn_radar_sectors": 0,
-                "other_route_items_used": False,
-                "declared_only_no_geometry": True,
-                "limitations": deepcopy(radar.get("limitations") or []),
-            },
-        ))
+        if radar.get("selected_panel_count"):
+            layers.extend(_radar_selected_layers(
+                ctx, assembly, radar, metric_crs=metric_crs,
+            ))
+        else:
+            layers.append(_cns_declared_layer(
+                ctx, "cns_radar_limitation", "非合作监视能力限制（无可行布设）", assembly,
+                service_key=SERVICE_RADAR,
+                detail_extra={
+                    "algorithm_version": radar.get("algorithm_version"),
+                    "status": radar.get("status"),
+                    "gap_reason": radar.get("gap_reason"),
+                    "gap_classification": radar.get("gap_classification"),
+                    "managed_physical_gap": radar.get("managed_physical_gap"),
+                    "infeasibility_proven": radar.get("infeasibility_proven"),
+                    "selected_panel_count": radar.get("selected_panel_count"),
+                    "selected_tower_count": radar.get("selected_tower_count"),
+                    "radar_ii_panel_count": radar.get("radar_ii_panel_count"),
+                    "candidate_tower_count": radar.get("candidate_tower_count"),
+                    "manufactured_radar_sites": 0,
+                    "manufactured_radar_panels": 0,
+                    "drawn_radar_sectors": 0,
+                    "other_route_items_used": False,
+                    "declared_only_no_geometry": True,
+                    "limitations": deepcopy(radar.get("limitations") or []),
+                },
+            ))
 
     route_layers, geometry, turns = _route_layers(ctx)
     layers.extend(route_layers)

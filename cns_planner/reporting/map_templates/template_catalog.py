@@ -150,6 +150,8 @@ CNS_LEGEND_ORDER = (
     "cns_coverage_rid_land",
     "cns_coverage_rid_sea",
     "cns_radar_context",
+    "cns_radar_sector",
+    "cns_radar_proposal",
     "cns_radar_limitation",
     "planned_route",
     "turn_point",
@@ -183,6 +185,8 @@ LAYER_DISPLAY_NAMES = {
     "cns_coverage_rid_land": "RID 陆地/沿海规划范围 2 km",
     "cns_coverage_rid_sea": "RID 海上延伸规划范围 2–5 km",
     "cns_radar_context": "Radar-I 评估候选站址（未选中）",
+    "cns_radar_sector": "Radar-I 90° 规划扇区（未确认）",
+    "cns_radar_proposal": "Radar 规划站址（未确认）",
     "cns_radar_limitation": "非合作监视能力限制（无可行布设）",
 }
 
@@ -208,6 +212,8 @@ LAYER_SOURCE_ROLES = {
     "cns_coverage_rid_land": "cns_corridor_site_plan",
     "cns_coverage_rid_sea": "cns_corridor_site_plan",
     "cns_radar_context": "radar_surveillance_layout",
+    "cns_radar_sector": "radar_surveillance_layout",
+    "cns_radar_proposal": "radar_surveillance_layout",
     "cns_radar_limitation": "radar_surveillance_layout",
 }
 

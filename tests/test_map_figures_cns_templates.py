@@ -540,6 +540,47 @@ def test_radar_draws_no_manufactured_site_or_sector(tmp_path):
     )
 
 
+def test_feasible_radar_draws_selected_proposal_sites_and_90_degree_sectors(tmp_path):
+    state = _state()
+    feasible = json.loads(json.dumps(RADAR_R0005_INFEASIBLE))
+    feasible.update({
+        "status": "proposal_ready", "gap_reason": None, "gap_classification": "none",
+        "managed_physical_gap": False, "selected_panel_count": 2,
+        "selected_tower_count": 2,
+        "selected_tower_ids": ["tower-comm-001", "tower-comm-002"],
+        "radar_i_panel_count": 2,
+        "selected_panels": [
+            {
+                "panel_id": "P1", "tower_id": "tower-comm-001", "radar_type": "radar_i",
+                "tower_name": "塔1", "longitude": 122.228521, "latitude": 29.831441,
+                "azimuth_deg": 45.0, "panel_half_width_deg": 45.0,
+                "horizontal_inner_radius_m": 100.0, "horizontal_outer_radius_m": 2990.0,
+            },
+            {
+                "panel_id": "P2", "tower_id": "tower-comm-002", "radar_type": "radar_i",
+                "tower_name": "塔2", "longitude": 122.258139, "latitude": 29.844355,
+                "azimuth_deg": 225.0, "panel_half_width_deg": 45.0,
+                "horizontal_inner_radius_m": 100.0, "horizontal_outer_radius_m": 2990.0,
+            },
+        ],
+        "solver": {"status": "optimal", "infeasibility_proven": False},
+    })
+    state["radar_surveillance_layout"]["items"][1] = feasible
+    service, _, _ = _service(tmp_path, state=state)
+    spec = service.build_figure(
+        template_id="surveillance_layout_v1", route_id="R0005",
+        parameter_overrides={"surveillance_service": "radar_noncooperative"},
+    )
+    layers = _layers(spec)
+
+    assert layers["cns_radar_proposal"].feature_count == 2
+    assert layers["cns_radar_sector"].feature_count == 2
+    assert all(len(ring) >= 4 for ring in layers["cns_radar_sector"].data["polygons"])
+    assert "cns_radar_limitation" not in layers
+    assert "规划提案（未确认）" in spec.metadata["map_disclosure"]
+    assert "90° panel" in json.dumps(spec.metadata["disclosures"], ensure_ascii=False)
+
+
 # ---- 6. Navigation Integrity ------------------------------------------------
 
 def test_navigation_monitors_land_on_the_real_endpoint_sites(tmp_path):
