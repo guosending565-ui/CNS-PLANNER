@@ -41,12 +41,15 @@ from ...domain.cns_continuous_service import (
     CONTINUOUS_SERVICE_SCHEMA_VERSION, DEFAULT_SERVICE_ACCEPTABILITY_LIMITS,
     DEFICIT_CAUSE_TO_EVENT_KIND,
     LIMITATION_SEMANTICS, OPERATION_SCENARIO_DEFAULTS, PRIMARY_THREAT_LAYER,
+    RADAR_NONCOOPERATIVE_SERVICE_KEY,
     ROUTE_PROTECTION_FORMULA, SUPPLEMENTARY_THREAT_LAYER, T_CHAIN_COMPONENTS,
     THREAT_LAYER_LABELS, THREAT_LAYERS, aggregate_acceptability,
     compare_plan_stages, continuous_gap_duration, default_continuous_service_policy,
     layer_conclusion_status, limitation_disclosure_lines, managed_gap_disclosure,
-    noncooperative_limitations, protection_distance, subsystem_acceptability_counts,
-    subsystem_status_from_events, surveillance_acceptance, surveillance_threat_layers,
+    noncooperative_limitations, protection_distance, radar_supplementary_threat_status,
+    subsystem_acceptability_counts,
+    subsystem_status_from_events, surveillance_acceptance,
+    surveillance_service_coverage_status, surveillance_threat_layers,
     time_chain_total,
 )
 from ...domain.fc30_profile import (
@@ -55,6 +58,7 @@ from ...domain.fc30_profile import (
 from ...domain.planning_evidence import (
     PLANNING_EVIDENCE_FIELDS, resolve_continuous_parameter,
 )
+from ...domain.radar_surveillance_layout import RADAR_GEOMETRY_PARAMETERS
 
 #: 逐 service 的连续事件参数来源（阈值只对 C / S 定义）。
 _SERVICE_SUBSYSTEMS = ("C", "S")
@@ -643,6 +647,28 @@ class ContinuousServiceAcceptabilityV1:
             #: Radar 求解不可行是**真实工程结论**，登记为能力限制；
             #: 它不改变主要威胁（合作无人机）的判定。
             noncooperative_status = "limitation"
+        elif (
+            detection.get("detection_distance_usable") is True
+            and detection.get("usable") is True
+        ):
+            #: Round 30-C2A.2：**探测距离可用 ≠ Radar service 满足**。
+            #: 本 route 的首次探测距离来自 Radar layout 的几何代理时，补充威胁结论
+            #: 必须**同时**读取该 service 在 P15 里**自己**的覆盖结论
+            #: （``service_redundancy`` 的 ``S:radar_noncooperative``，绝不用复合 S 结论）。
+            #: P15 仍为 ``confirmed_deficit`` ⇒ 如实 ``unacceptable``；
+            #: 结论缺失 / unknown ⇒ 如实 ``unknown``（不得 satisfied）。
+            #: detection 与 T_margin 照常计算，且不产生 no_detection_evidence。
+            radar_coverage = surveillance_service_coverage_status(
+                gap_route, RADAR_NONCOOPERATIVE_SERVICE_KEY,
+            )
+            noncooperative_status = radar_supplementary_threat_status(
+                layer_status=noncooperative_status,
+                detection_distance_usable=True,
+                service_coverage_status=radar_coverage["status"],
+            )
+            noncooperative_entry["detection_distance_usable"] = True
+            noncooperative_entry["service_coverage_status"] = radar_coverage["status"]
+            noncooperative_entry["service_coverage_basis"] = radar_coverage["basis"]
         elif noncooperative_status == "not_applicable":
             #: 没有非合作监视证据既不是"满足"也不是"限制"：如实保持 unknown。
             noncooperative_status = "unknown"
@@ -907,8 +933,12 @@ class ContinuousServiceAcceptabilityV1:
         probe, probe_reason = _surveillance_protection_probe(
             corridor_route, gap_route, service_key=detection.get("service_key"),
         )
-        if probe is None:
-            reasons.append(probe_reason or CONTINUOUS_SERVICE_REASONS["no_detection_evidence"])
+        #: Round 30-C2A.3：``probe is None`` 有两种**完全不同**的语义 ——
+        #: ``probe_reason`` 非空是**证据不足**（fail-closed，登记缺证据）；
+        #: ``probe_reason`` 为空是**保护走廊已全覆盖**（no_gap），
+        #: 绝不能把"没有缺口"说成"没有探测证据"。
+        if probe is None and probe_reason:
+            reasons.append(probe_reason)
             reason_codes.append("no_detection_evidence")
         events = []
         #: 只有**判定不通过**时才登记"保护走廊内的连续监视覆盖缺口"事件：
@@ -1102,6 +1132,228 @@ def _requirement_index(route_requirements):
 # ---------------------------------------------------------------------------
 
 
+#: Radar layout 中**允许**被当成当前有效结论的状态（白名单，绝不黑名单放行）。
+#:
+#: ``proposal_ready`` 是 Radar 求解器给出的"当前约束下已求得方案"状态
+#: （``solve_layout`` 的 ``optimal_coverage``）；其余状态（``infeasible`` /
+#: ``unresolved`` / ``search_incomplete`` / ``refinement_incomplete`` /
+#: ``solver_error`` / ``solver_unavailable`` / ``not_ready`` / ``stale`` /
+#: ``not_calculated``）一律不产出代理。
+_RADAR_LAYOUT_CURRENT_FEASIBLE_STATUSES = ("proposal_ready",)
+
+#: 代理明确声明的语义标记（下游必须尊重：这不是实测、也不是工程确认性能）。
+RADAR_DETECTION_PROXY_SEMANTICS = (
+    "planning_stage_first_detection_distance_proxy_from_radar_layout_"
+    "not_measured_detection_probability_not_engineering_confirmed_performance"
+)
+
+#: Round 30-C2A.2 —— 代理的**双语义**拆分（本轮核心）：
+#:
+#: * ``detection_distance_usable`` / ``detection_distance_status`` **只**回答一件事：
+#:   "这个几何距离能不能进入 detection / T_margin 计算"；
+#: * ``service_coverage_status`` 只由 P15 里该 service **自己**的覆盖结论给出，
+#:   本代理**绝不**代它声明（缺失 ≠ 满足）。
+#:
+#: 因此代理自己的 ``coverage_status`` 不再使用普通 ``satisfied``，改为明确的
+#: planning proxy 语义值 ``planning_proxy_validated``（"Radar layout 的**几何代理**
+#: 已通过规划期校验"），避免"几何验证通过"被读成"Radar service satisfied"。
+RADAR_DETECTION_PROXY_DISTANCE_STATUS = "planning_proxy_validated"
+RADAR_DETECTION_PROXY_SERVICE_COVERAGE_STATUS = "not_declared_by_layout_proxy"
+
+
+def _radar_layout_detection_proxy(radar_layout, route_id):
+    """规划阶段"首次探测距离"代理（纯函数；任何必要证据缺失 ⇒ 返回 ``None``）。
+
+    语义
+    ----
+    这是**规划阶段首次探测距离代理**：当地权威 ``radar_surveillance_layout`` 已经为该
+    航路求解出可行方案，并且**独立校验链**证明"覆盖校验通过、无未覆盖、无冗余不足、
+    无 managed physical gap"时，面板型号的固定探测几何
+    （:data:`RADAR_GEOMETRY_PARAMETERS` 的 ``max_slant_range_m``）可以作为该航路非合作
+    监视的首次探测距离证据进入 P17。
+
+    它**不是**：实测探测概率、工程确认的探测性能、站址冗余结论、或已确认的规划动作；
+    因此产出物恒带 ``source_type = planning_proxy_not_measured_geometry``、
+    ``authority = radar_layout_planning_proxy``、``engineering_confirmed = false``。
+
+    Round 30-C2A.2（**双语义**，本代理的核心契约）
+    ---------------------------------------------
+    产出物把两件互不替代的事**分开**声明：
+
+    * ``detection_distance_usable = true`` / ``detection_distance_status =
+      "planning_proxy_validated"`` —— **只**表示"该几何距离可以进入 detection /
+      T_margin 计算"；
+    * ``coverage_status = "planning_proxy_validated"`` —— 只是"几何代理已通过规划期
+      校验"，**绝不是**普通 ``satisfied``。
+
+    "Radar **service** 覆盖是否满足"只能由 P15 里 ``S:radar_noncooperative`` **自己**的
+    结论回答（见 ``_first_detection_evidence`` 披露的 ``service_coverage_status`` 与
+    ``radar_supplementary_threat_status``）：Radar layout 几何验证通过**不得**自动等价于
+    Radar service satisfied。
+
+    门控（全部必须同时成立，否则返回 ``None``）
+    ------------------------------------------
+    1. 该 route 在 ``items[]`` 中确有 canonical item，且 ``status`` 属于
+       :data:`_RADAR_LAYOUT_CURRENT_FEASIBLE_STATUSES`（当前有效、非 stale /
+       not_calculated / infeasible）；
+    2. item ``status`` 为可行的 ``proposal_ready``（Radar 求解器已给出方案）；
+    3. ``selected_panels`` 非空（若该大型明细已被持久化外置，则回退到同一求解的
+       ``service_evidence_inputs.selected_panels``；两者皆空即拒绝）；
+    4. ``coverage_summary.validated is True``；
+    5. ``coverage_summary.uncovered_sample_count == 0``；
+    6. ``coverage_summary.under_redundant_sample_count == 0``；
+    7. ``radar_gap.gap_classification == "none"``；
+    8. ``managed_physical_gap is not True``。
+
+    数值来源
+    --------
+    ``radius_m`` 只来自 ``RADAR_GEOMETRY_PARAMETERS[selected panel radar_type]
+    ["max_slant_range_m"]``（本模块不写任何雷达几何魔法常量）；面板型号无法解析时
+    **整体拒绝**（绝不部分取值凑一个距离出来）。
+    """
+
+    target_route_id = str(route_id or "")
+    if not target_route_id:
+        return None
+    item = next(
+        (
+            entry for entry in (radar_layout or {}).get("items") or []
+            if isinstance(entry, dict)
+            and str(entry.get("route_id") or "") == target_route_id
+        ),
+        None,
+    )
+    if not isinstance(item, dict):
+        return None
+
+    status = str(item.get("status") or "")
+    if status not in _RADAR_LAYOUT_CURRENT_FEASIBLE_STATUSES:
+        return None
+    if item.get("managed_physical_gap") is True:
+        return None
+
+    coverage = item.get("coverage_summary")
+    if not isinstance(coverage, dict) or coverage.get("validated") is not True:
+        return None
+    if coverage.get("uncovered_sample_count") != 0:
+        return None
+    if coverage.get("under_redundant_sample_count") != 0:
+        return None
+
+    gap = item.get("radar_gap")
+    if not isinstance(gap, dict) or gap.get("gap_classification") != "none":
+        return None
+
+    #: 面板事实来源。Large derived detail（``selected_panels``）会被持久化外置
+    #: （``project_compaction`` 的 ``radar.layout.detail`` scope），此时投影态 state 里
+    #: ``selected_panels`` 如实为空；而同一份 canonical 求解结果的几何输入快照
+    #: （``service_evidence_inputs``，其 ``semantics`` 明确声明它是
+    #: ``canonical_radar_geometry_inputs_for_hypothetical_re_evaluation``）仍随 state
+    #: 内联保留。
+    #:
+    #: 因此这里**按优先级**读取这两条**同一求解**的面板事实，绝不跨 route 借用、
+    #: 绝不合成面板：
+    #:   1. ``selected_panels``（canonical 已选方案，未外置时存在）；
+    #:   2. ``service_evidence_inputs.selected_panels``（同一求解的 canonical 几何输入）。
+    #: 两者皆空 ⇒ 整体拒绝。
+    selected_panels = item.get("selected_panels")
+    panels_source = "selected_panels"
+    if not isinstance(selected_panels, list) or not selected_panels:
+        evidence_inputs = item.get("service_evidence_inputs")
+        fallback = (
+            evidence_inputs.get("selected_panels")
+            if isinstance(evidence_inputs, dict) else None
+        )
+        if not isinstance(fallback, list) or not fallback:
+            return None
+        selected_panels = fallback
+        panels_source = "service_evidence_inputs.selected_panels"
+    panels = selected_panels
+
+    radar_types = set()
+    for panel in panels:
+        if not isinstance(panel, dict):
+            return None
+        radar_type = str(panel.get("radar_type") or "")
+        parameters = RADAR_GEOMETRY_PARAMETERS.get(radar_type)
+        if not isinstance(parameters, dict):
+            #: 面板型号不在固定几何参数表里 ⇒ 无法给出任何权威距离：整体拒绝。
+            return None
+        radius = parameters.get("max_slant_range_m")
+        if radius in (None, ""):
+            return None
+        radar_types.add(radar_type)
+    if not radar_types:
+        return None
+
+    radius_m = max(
+        float(RADAR_GEOMETRY_PARAMETERS[radar_type]["max_slant_range_m"])
+        for radar_type in radar_types
+    )
+    ordered_types = sorted(radar_types)
+    return {
+        "service_key": RADAR_NONCOOPERATIVE_SERVICE_KEY,
+        "radius_m": radius_m,
+        "geometry_source": "radar_surveillance_layout_selected_panel_geometry_preset",
+        "source_type": "planning_proxy_not_measured_geometry",
+        "authority": "radar_layout_planning_proxy",
+        "engineering_confirmed": False,
+        #: Round 30-C2A.2：代理只声明**几何代理已通过规划期校验**，
+        #: 绝不再用普通 ``satisfied``（那会被读成 "Radar service 已满足"）。
+        "coverage_status": RADAR_DETECTION_PROXY_DISTANCE_STATUS,
+        #: 距离可用性（双语义的一半）：这是几何代理**能**证明的唯一一件事。
+        "detection_distance_usable": True,
+        "detection_distance_status": RADAR_DETECTION_PROXY_DISTANCE_STATUS,
+        #: 服务覆盖状态（双语义的另一半）：本代理**不声明**，由 P15 逐 service 结论给出。
+        "service_coverage_status": RADAR_DETECTION_PROXY_SERVICE_COVERAGE_STATUS,
+        "usable": True,
+        "route_id": target_route_id,
+        "altitude_layer_id": item.get("altitude_layer_id"),
+        "selected_panel_count": len(panels),
+        "selected_panels_source": panels_source,
+        "radar_types": ordered_types,
+        #: 逐型号的几何出处（紧凑转印：绝不为每个面板复制整份参数块/几何块）。
+        "radar_type_geometry": {
+            radar_type: {
+                "max_slant_range_m": RADAR_GEOMETRY_PARAMETERS[radar_type][
+                    "max_slant_range_m"
+                ],
+                "min_slant_range_m": RADAR_GEOMETRY_PARAMETERS[radar_type][
+                    "min_slant_range_m"
+                ],
+                "confirmed": RADAR_GEOMETRY_PARAMETERS[radar_type].get("confirmed"),
+                "parameter_origin": RADAR_GEOMETRY_PARAMETERS[radar_type].get(
+                    "parameter_origin"
+                ),
+                "source": RADAR_GEOMETRY_PARAMETERS[radar_type].get("source"),
+            }
+            for radar_type in ordered_types
+        },
+        "radar_layout_status": status,
+        "semantics": RADAR_DETECTION_PROXY_SEMANTICS,
+        "required_distinct_site_count_by_surface": {},
+        "distinct_site_count_by_surface": {},
+        "serviced_surfaces": [],
+        #: 明确标记：本候选不参与任何站址冗余 / requirements_met 判定。
+        "participates_in_site_redundancy": False,
+    }
+
+
+def _detection_distance_usable(candidate) -> bool:
+    """候选的探测距离是否可以进入 detection / T_margin 计算。
+
+    Round 30-C2A.2：Radar 规划代理**显式**声明 ``detection_distance_usable`` ——
+    它证明的只是"这个几何距离可以进入计算"，**不是**"Radar service 覆盖已满足"。
+    其余候选（``device_catalog`` / RID 声明几何、机载协作监视）**完全沿用**既有判定
+    （``coverage_status == "satisfied"``），行为逐项不变。
+    """
+
+    declared = (candidate or {}).get("detection_distance_usable")
+    if declared is not None:
+        return declared is True
+    return (candidate or {}).get("coverage_status") == "satisfied"
+
+
 def _first_detection_evidence(
     *, corridor_route, gap_route, device_catalog, radar_layout, aircraft_profile=None,
 ):
@@ -1161,6 +1413,25 @@ def _first_detection_evidence(
     if airborne_detection is not None:
         candidates.append(airborne_detection)
 
+    #: Round 30-C2A：规划阶段首次探测距离**代理**。
+    #:
+    #: 它与上面两类候选（``device_catalog`` 声明几何、机载协作监视）是**并列**的
+    #: 独立证据源：只读消费当前权威 ``radar_surveillance_layout`` 的逐航路 canonical
+    #: item，在该 route 已被规划求解证明"覆盖校验通过且无缺口"时，把面板型号的
+    #: **固定几何参数**（``max_slant_range_m``）如实体现在 P17 的
+    #: ``first_detection_distance_m`` 证据里。
+    #:
+    #: 它不是实测探测概率、也不是工程确认性能；门控不满足时**不进入候选**，
+    #: P17 继续如实保持 ``no_detection_evidence``。
+    #: ``requirements_met`` / 站址冗余判定完全不受影响（proxy 不参与任何
+    #: ``requirements_met`` 计算；它只声明"距离可进入计算"，服务覆盖结论另由 P15
+    #: 逐 service 给出）。
+    radar_proxy = _radar_layout_detection_proxy(radar_layout, route_id=str(
+        gap_route.get("route_id") or corridor_route.get("route_id") or ""
+    ))
+    if radar_proxy is not None:
+        candidates.append(radar_proxy)
+
     usable = [item for item in candidates if item.get("radius_m") not in (None, "")]
     if not usable:
         return (
@@ -1179,31 +1450,62 @@ def _first_detection_evidence(
     best = max(
         usable,
         key=lambda item: (
-            #: 首要判据是"该探测几何是否真的可用"（站址冗余满足 / 机载自探测），
-            #: 其次才是距离大小：可用的最远探测能力才是权威的首次探测距离。
-            1 if item.get("coverage_status") == "satisfied" else 0,
+            #: 首要判据是"该探测距离是否真的可以进入计算"（站址冗余满足 / 机载自探测 /
+            #: Radar 规划代理显式声明的距离可用性），其次才是距离大小：
+            #: 可用的最远探测能力才是权威的首次探测距离。
+            1 if _detection_distance_usable(item) else 0,
             float(item["radius_m"]),
             str(item.get("service_key") or ""),
         ),
     )
-    covered = best.get("coverage_status") == "satisfied"
-    return (
-        {
-            "first_detection_distance_m": float(best["radius_m"]),
-            "service_key": best.get("service_key"),
-            "geometry_source": best.get("geometry_source"),
-            "coverage_status": best.get("coverage_status"),
-            "candidates": candidates,
-            "usable": bool(covered),
-            "source_type": best.get("source_type"),
-            "authority": "declared_geometry",
-            "semantics": "first_detection_distance_from_declared_geometry_only",
-            "not_usable_reason": (
-                None if covered else
-                "监视服务在航路上的独立站址数量未满足要求：探测距离只是设备标称几何，"
-                "不能据此宣称保护走廊已被覆盖（不制造结果）"
+    covered = _detection_distance_usable(best)
+    evidence = {
+        "first_detection_distance_m": float(best["radius_m"]),
+        "service_key": best.get("service_key"),
+        "geometry_source": best.get("geometry_source"),
+        "coverage_status": best.get("coverage_status"),
+        "candidates": candidates,
+        #: ``usable`` 的语义（Round 30-C2A.2）：**只**表示"该距离可以进入 detection /
+        #: T_margin 计算"。它绝不表示"该监视 service 的覆盖已满足"（后者见
+        #: ``service_coverage_status``，由 P15 逐 service 结论给出）。
+        "usable": bool(covered),
+        "source_type": best.get("source_type"),
+        #: 证据权威**如实取自被选中的候选**：声明几何候选没有该字段 ⇒ 保持既有
+        #: ``declared_geometry``；Radar 规划代理被选中时必须如实显示
+        #: ``radar_layout_planning_proxy``，绝不把它伪装成已声明 / 已确认几何。
+        "authority": best.get("authority") or "declared_geometry",
+        "semantics": (
+            "first_detection_distance_from_declared_geometry_only"
+            if best.get("authority") is None
+            else best.get("semantics")
+        ),
+        "not_usable_reason": (
+            None if covered else
+            "监视服务在航路上的独立站址数量未满足要求：探测距离只是设备标称几何，"
+            "不能据此宣称保护走廊已被覆盖（不制造结果）"
+        ),
+    }
+    if best.get("detection_distance_usable") is not None:
+        #: Round 30-C2A.2：Radar 规划代理被选中时，**如实并列披露两件互不替代的事**：
+        #: ① 这个距离可以进入 detection / T_margin 计算（代理能证明的）；
+        #: ② 该 service 在 P15 里**自己**的服务覆盖结论（只有它能说"满足"）。
+        radar_coverage = surveillance_service_coverage_status(
+            gap_route, RADAR_NONCOOPERATIVE_SERVICE_KEY,
+        )
+        evidence.update({
+            "detection_distance_usable": best.get("detection_distance_usable"),
+            "detection_distance_status": best.get("detection_distance_status"),
+            "usable_semantics": (
+                "detection_distance_usable_means_the_distance_may_enter_detection_and_"
+                "t_margin_computation_not_service_coverage_satisfaction"
             ),
-        },
+            "service_coverage_status": radar_coverage["status"],
+            "service_coverage_service_key": radar_coverage["service_key"],
+            "service_coverage_basis": radar_coverage["basis"],
+            "service_coverage_status_counts": radar_coverage["status_counts"],
+        })
+    return (
+        evidence,
         None if covered else CONTINUOUS_SERVICE_REASONS["no_detection_evidence"],
     )
 
@@ -1315,8 +1617,29 @@ def _primary_service_key(entry, code):
 # ---------------------------------------------------------------------------
 
 
+#: Round 30-C2A.3 —— 保护走廊逐体元覆盖**证据缺失**时的具体披露文本。
+#:
+#: 它只用于"没有可用采样事实"这一种 ``probe is None``；"采样事实存在且全部已覆盖"
+#: （no_gap / fully_covered）必须返回 ``probe_reason = None``，
+#: **绝不**被解释成"没有探测证据"。
+PROTECTION_PROBE_EVIDENCE_REQUIRED_REASON = (
+    "保护走廊逐体元覆盖证据缺失：P14 未提供带 route offset 的体元事实，"
+    "无法判定该 service 在保护走廊内的覆盖（证据不足 ≠ 已覆盖，也 ≠ 无缺口）"
+)
+
+
 def _surveillance_protection_probe(corridor_route, gap_route, *, service_key):
-    """保护走廊内的连续监视覆盖缺口（纵向投影，单位 m）。"""
+    """保护走廊内的连续监视覆盖缺口（纵向投影，单位 m）。
+
+    返回 ``(probe, probe_reason)``，其中 ``probe is None`` 有**两种互不相同的语义**
+    （Round 30-C2A.3 收口）：
+
+    * ``probe_reason`` 非空 ⇒ **证据不足**（没有可用采样事实）：fail-closed，
+      调用方如实登记缺证据；调用方在缺少位置事实时**不构造**缺口
+      （不能反过来宣称"整条保护走廊未被覆盖"，那是制造结果）；
+    * ``probe_reason`` 为空 ⇒ **采样事实存在且全部已覆盖**（no_gap / fully_covered）：
+      这不是缺证据，调用方**不得**登记 ``no_detection_evidence``。
+    """
 
     service = next(
         (item for item in _surveillance_services(gap_route)
@@ -1344,10 +1667,13 @@ def _surveillance_protection_probe(corridor_route, gap_route, *, service_key):
     if not samples:
         #: 没有任何可用采样点（例如 P14 的逐体元明细被压实或缺失）⇒ **不构造**缺口：
         #: 缺少位置事实时不能反过来宣称"整条保护走廊未被覆盖"，那是制造结果。
-        return None, None
+        #: Round 30-C2A.3：这一类是**证据不足**，必须带明确 reason 返回。
+        return None, PROTECTION_PROBE_EVIDENCE_REQUIRED_REASON
     samples.sort(key=lambda item: item["offset"])
     uncovered = [item for item in samples if not item["covered"]]
     if not uncovered:
+        #: Round 30-C2A.3：采样事实存在且全部已覆盖 ⇒ 语义是 **no_gap / fully_covered**。
+        #: ``probe_reason`` 必须为空，调用方据此**不得**登记 ``no_detection_evidence``。
         return None, None
     groups = []
     for item in uncovered:

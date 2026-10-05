@@ -206,11 +206,28 @@ class PlanProjectionBuilder:
 
     # ------------------------------------------------------- P17 评估输入封装
     def p17_projection_input(self, actions, **kwargs):
-        """P17 评估器直接消费的投影输入（只保留评估需要的键）。"""
+        """P17 评估器直接消费的投影输入（只保留评估需要的键）。
+
+        Round 30-C2A：post-plan 层必须与 baseline 消费**同一份**当前权威 Radar 规划
+        artifact。Radar 的规划 authority 是 ``radar_surveillance_layout``，它**不是**
+        由 P16 ``selected_actions`` 假想实施出来的设施（Radar 面板绝不写入
+        ExistingCNS），因此这里把权威 layout 的只读快照显式带入 P17 投影输入：
+        两层使用同一门控与同一数值来源，绝不出现"投影层另造一份 Radar 证据"。
+
+        该键只在**评估输入**里出现（P17 的 ``post_plan_projection`` 输出块会原样
+        披露它），它不写入任何 state 容器，也不改变 ``written_into_existing_cns``
+        与 ``persisted_as_upstream`` 的既有语义（两者恒为 False）。
+        """
 
         projection = self.project(actions, **kwargs)
         if projection.get("available") is not True:
             return projection
+        projection = {
+            **projection,
+            "radar_surveillance_layout": deepcopy(
+                self.session.state.get("radar_surveillance_layout") or {}
+            ),
+        }
         return {
             key: projection[key]
             for key in (
@@ -220,6 +237,9 @@ class PlanProjectionBuilder:
                 "projected_corridor_fingerprint", "projected_corridor_gap_fingerprint",
                 "projection_semantics", "persisted_as_upstream",
                 "radar_service_evidence", "navigation_service_evidence",
+                #: Round 30-C2A：P17 的 post-plan 层与 baseline 共享同一份权威
+                #: Radar 规划 artifact（只读消费，绝不写入 ExistingCNS）。
+                "radar_surveillance_layout",
             )
             if key in projection
         }
