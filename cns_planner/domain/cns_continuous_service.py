@@ -37,7 +37,11 @@ from math import isfinite
 #: 契约版本与算法标识。
 CONTINUOUS_SERVICE_SCHEMA_VERSION = "round2.6-post-plan-continuous-service-acceptability"
 CONTINUOUS_SERVICE_ALGORITHM_ID = "continuous_service_acceptability_v1"
-CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.1"
+#: Round 30-C2A.2/C2A.3：Radar 规划期首次探测距离代理 + "探测距离可用 /
+#: 服务覆盖满足"双语义拆分 + 补充威胁的**逐 service** P15 判定 + "已全覆盖"与
+#: "缺探测证据"分离 ⇒ 2.1 的旧持久化结果必须被识别为旧算法语义（effective stale），
+#: 由 ``cns_planner.application.result_currentness`` 既有的版本比对链判定。
+CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.2"
 
 #: 四种运行可接受性结论（**顺序即严重度**）。
 ACCEPTABILITY_STATUSES = (
@@ -330,6 +334,16 @@ THREAT_LAYERS = ("cooperative", "noncooperative")
 
 PRIMARY_THREAT_LAYER = "cooperative"
 SUPPLEMENTARY_THREAT_LAYER = "noncooperative"
+
+#: Radar（非合作）service key：读取它在 P15 ``service_redundancy`` 里**自己**的覆盖结论时的
+#: 唯一目标（Round 30-C2A.2：绝不用复合 ``S`` subsystem 结论顶替逐 service 判定）。
+RADAR_NONCOOPERATIVE_SERVICE_KEY = "S:radar_noncooperative"
+
+#: P15 逐 service 覆盖状态的语义分类：只有 ``satisfied`` 才是"已被证明满足"；
+#: ``confirmed_deficit`` 是**明确缺口**；其余（``unknown`` / ``not_applicable`` / 缺失）
+#: 一律按"未满足但未知"处理（缺失 ≠ 满足、unknown ≠ pass）。
+P15_SERVICE_SATISFIED_STATUS = "satisfied"
+P15_SERVICE_CONFIRMED_DEFICIT_STATUS = "confirmed_deficit"
 
 #: 威胁分层 → 中文标签（前端 / 报告共用，避免两套说法）。
 THREAT_LAYER_LABELS = {
@@ -1018,6 +1032,86 @@ def layer_conclusion_status(layer_entry) -> str:
     }.get(status, "unknown")
 
 
+def surveillance_service_coverage_status(route_result, service_key) -> dict:
+    """读取**某一个** service 在 P15 ``service_redundancy`` 里的自身覆盖结论（逐 service）。
+
+    Round 30-C2A.2 的硬约束：``S`` subsystem 是**复合**容器（同一条 subsystem 里可能同时
+    有 ``S:rid_cooperative`` 与 ``S:radar_noncooperative``），因此"RID 满足"绝不能推出
+    "Radar 满足"。这里只按 ``service_key`` 精确匹配，绝不使用复合结论。
+
+    同一 ``service_key`` 出现多条时按严重度取最差（``confirmed_deficit`` 优先于
+    ``satisfied``），fail-closed。查不到任何条目时返回 ``available = False`` 且
+    ``status = "unknown"`` —— 缺失不是满足。
+    """
+
+    target = str(service_key or "")
+    matched = []
+    if target:
+        for subsystem in (route_result or {}).get("subsystems") or []:
+            if str((subsystem or {}).get("subsystem") or "") != "S":
+                continue
+            for item in subsystem.get("service_redundancy") or []:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("service_key") or "") == target
+                ):
+                    matched.append(item)
+    if not matched:
+        return {
+            "service_key": target or None,
+            "available": False,
+            "status": "unknown",
+            "status_counts": {},
+            "evidence_count": 0,
+            "basis": "p15_service_redundancy_per_service_absent",
+        }
+    statuses = [str(item.get("status") or "") for item in matched]
+    counts: dict[str, int] = {}
+    for item in matched:
+        for name, value in (item.get("status_counts") or {}).items():
+            counts[str(name)] = counts.get(str(name), 0) + int(value or 0)
+    if P15_SERVICE_CONFIRMED_DEFICIT_STATUS in statuses:
+        status = P15_SERVICE_CONFIRMED_DEFICIT_STATUS
+    elif statuses and all(name == P15_SERVICE_SATISFIED_STATUS for name in statuses):
+        status = P15_SERVICE_SATISFIED_STATUS
+    else:
+        status = "unknown"
+    return {
+        "service_key": target,
+        "available": True,
+        "status": status,
+        "status_counts": counts,
+        "evidence_count": len(matched),
+        "basis": "p15_service_redundancy_per_service_status",
+    }
+
+
+def radar_supplementary_threat_status(
+    *, layer_status, detection_distance_usable, service_coverage_status,
+) -> str:
+    """把"Radar 探测距离可用"与"Radar 服务覆盖已满足"合成**补充威胁**结论。
+
+    规则（Round 30-C2A.2）：
+
+    * 探测距离**不可用**（没有 Radar 规划代理证据）⇒ 分层结论**原样**保留
+      （该分层可能是 ``not_applicable`` / ``unknown``，由调用方继续按既有语义处理）；
+    * 探测距离**可用**且该 service 的 P15 覆盖 ``satisfied`` ⇒ 才允许按子系统判定
+      （``nominal`` ⇒ ``satisfied``）；
+    * 探测距离**可用**但 P15 ``confirmed_deficit`` ⇒ 如实 ``unacceptable``：
+      "Radar layout 几何验证通过"绝不等于"Radar service satisfied"；
+    * 探测距离可用但 P15 结论 ``unknown`` / 缺失 ⇒ 如实 ``unknown``（不得 satisfied）。
+    """
+
+    if detection_distance_usable is not True:
+        return layer_status
+    status = str(service_coverage_status or "")
+    if status == P15_SERVICE_SATISFIED_STATUS:
+        return layer_status
+    if status == P15_SERVICE_CONFIRMED_DEFICIT_STATUS:
+        return "unacceptable"
+    return "unknown"
+
+
 #: 只有**已证明的物理/优化不可行**才允许登记为非合作监视能力限制；
 #: 以下状态一律**保持** unknown / evidence-required，绝不升级为 limitation。
 NONCOOPERATIVE_LIMITATION_NEVER_UPGRADED_STATUSES = (
@@ -1296,7 +1390,9 @@ __all__ = [
     "D_MANEUVER_BASELINE_M", "LIMITATION_SEMANTICS", "NAVIGATION_STATES",
     "NONCOOPERATIVE_LIMITATION_DISCLOSURE", "OPERATION_SCENARIO_DEFAULTS",
     "PARAMETER_ALIASES", "PLAN_STAGES", "PRIMARY_THREAT_LAYER",
-    "PROTECTION_COMPONENTS", "ROUTE_PROTECTION_FORMULA", "SUBSYSTEM_ACCEPTABILITY",
+    "P15_SERVICE_CONFIRMED_DEFICIT_STATUS", "P15_SERVICE_SATISFIED_STATUS",
+    "PROTECTION_COMPONENTS", "RADAR_NONCOOPERATIVE_SERVICE_KEY",
+    "ROUTE_PROTECTION_FORMULA", "SUBSYSTEM_ACCEPTABILITY",
     "SUBSYSTEM_TO_ACCEPTABILITY", "SUPPLEMENTARY_THREAT_LAYER", "T_CHAIN_COMPONENTS",
     "THREAT_LAYER_LABELS", "THREAT_LAYER_STATUSES", "THREAT_LAYERS",
     "aggregate_acceptability", "classify_surveillance_service_keys",
@@ -1310,7 +1406,9 @@ __all__ = [
     "noncooperative_limitations", "normalize_continuous_service_policy",
     "normalize_operation_scenario", "parameter_baseline", "protection_distance",
     "proven_managed_physical_radar_gap", "radar_layout_item_for_route",
+    "radar_supplementary_threat_status",
     "subsystem_status_from_events", "surveillance_acceptance",
+    "surveillance_service_coverage_status",
     "surveillance_threat_layers", "time_chain_total",
     "subsystem_acceptability_counts",
 ]
