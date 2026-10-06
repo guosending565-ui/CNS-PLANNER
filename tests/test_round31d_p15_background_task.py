@@ -401,36 +401,6 @@ def test_cancel_never_publishes_a_partial_result(tmp_path):
 
 # ---- 反向顺序：先后台、再同步，同样一致 ------------------------------------------
 
-def test_legacy_algorithm_selection_falls_back_like_the_sync_entry(tmp_path):
-    """旧项目保存的算法版本无 factory 时：后台任务与同步入口用**同一份**有效身份。
-
-    这是真实旧项目上的阻断点：``algorithm_selection.corridor_gap_analyzer.version``
-    仍是升级前的 ``1.0``，同步入口按 ``_algorithm_compatibility`` 只读回落到当前的
-    唯一注册版本，而后台任务快照若记录原始 ``1.0`` 就会在 worker 里必然失败。
-    """
-
-    workflow = configured(tmp_path)
-    workflow.state["algorithm_selection"]["corridor_gap_analyzer"]["version"] = "1.0"
-    workflow.save()
-    workflow.evaluate_cns_corridor_gap()
-    sync_result = deepcopy(workflow.state["cns_corridor_gap_assessment"])
-    assert sync_result.get("algorithm_version") not in (None, "1.0")
-
-    runtime = P15Runtime(tmp_path, workflow).start()
-    try:
-        response = runtime.api().post(ENDPOINT, {"async": True})
-        assert response.status == 202, response.data
-        task_id = response.data["task_id"]
-        final = runtime.service.wait_for_terminal(task_id, timeout=300)
-        assert final["advanced"]["status"] == "succeeded", final
-    finally:
-        runtime.stop()
-
-    assert _without_timing(deepcopy(workflow.state["cns_corridor_gap_assessment"])) == (
-        _without_timing(sync_result)
-    )
-
-
 def test_async_runs_first_and_sync_matches(tmp_path):
     workflow = configured(tmp_path)
     runtime = P15Runtime(tmp_path, workflow).start()

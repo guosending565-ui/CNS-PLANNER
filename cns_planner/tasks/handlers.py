@@ -77,9 +77,6 @@ def _snapshot_from_plan(spec, plan, state, registry):
         algorithm_types=spec.algorithm_types,
         inputs=plan.get("inputs") if isinstance(plan.get("inputs"), dict)
         else spec.inputs_for(state, {}),
-        #: 与 :meth:`TaskSpec.build_snapshot` 同源：task type 可以提供"本次计算真正
-        #: 使用的算法身份"（例如旧项目的只读兼容回落），两侧必须逐字段一致。
-        algorithms=spec.resolve_algorithms(state, registry),
     )
 
 

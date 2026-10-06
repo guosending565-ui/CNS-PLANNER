@@ -41,9 +41,7 @@ from ..domain.corridor_site_planning import normalize_corridor_site_planning_pol
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
 )
-from .task_input import (
-    CORRIDOR_ALGORITHM_TYPES, _effective_selection, normalized_selection,
-)
+from .task_input import CORRIDOR_ALGORITHM_TYPES
 from .task_spec import (
     TaskCancelled, TaskInputChanged, TaskPerformanceAdmissionUpgradeRequired,
     TaskRunResult, TaskSpec, WorkerResultRef,
@@ -817,34 +815,6 @@ def _p15_plan(state, payload):
     }
 
 
-def _p15_resolve_algorithms(state, registry):
-    """P15 提交时**真正使用**的算法身份（与同步入口的只读兼容回落同判据）。
-
-    旧项目保存了升级前的 ``algorithm_selection`` 时，同步入口
-    （``WorkflowService._selected_algorithm``）按 ``_algorithm_compatibility`` 的唯一
-    判据只读回落到当前唯一注册版本。后台任务的 immutable snapshot 必须冻结**同一份
-    有效身份**，否则同一个项目上会出现"同步能算、后台必然失败（算法版本不可用）"，
-    两条路径的业务结论不一致。
-
-    判据与同步路径逐条一致：stored id 未注册 / 版本未注册且同 id 有多个版本 ⇒ 保持
-    精确身份（由 worker 如实报"任务提交时使用的算法版本当前不可用"），绝不猜。
-    """
-
-    selection = normalized_selection(state)
-    resolved = {}
-    for algorithm_type in P15_ALGORITHM_TYPES:
-        entry = _effective_selection(registry, selection, algorithm_type)
-        registered = [
-            item for item in registry.manifests(algorithm_type)
-            if str(item.algorithm_id) == str(entry["algorithm_id"])
-        ]
-        versions = {str(item.version) for item in registered}
-        if str(entry["version"]) not in versions and len(registered) == 1:
-            entry = {**entry, "version": str(registered[0].version)}
-        resolved[str(algorithm_type)] = entry
-    return resolved
-
-
 class P15UpstreamNotCurrent(TaskInputChanged):
     """P15 的上游 canonical 结论已变化：任务作废，绝不据此发布新结论。
 
@@ -1079,7 +1049,6 @@ _P15_SPEC = TaskSpec(
     runner=_p15_runner,
     release="cns_corridor_gap_assessment",
     algorithm_types=P15_ALGORITHM_TYPES,
-    algorithm_resolver=_p15_resolve_algorithms,
 )
 
 _P16_SPEC = TaskSpec(
@@ -1103,7 +1072,7 @@ __all__ = [
     "CORRIDOR_TASK_TYPE", "P15_TASK_TYPE", "P15UpstreamNotCurrent", "P16_TASK_TYPE",
     "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
     "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "TASK_ENDPOINTS", "TaskCancelled",
-    "TaskInputChanged", "_p15_resolve_algorithms", "fingerprint_payload",
+    "TaskInputChanged", "fingerprint_payload",
     "has_task_type",
     "register_task_spec", "task_spec", "task_specs", "task_type_for_endpoint",
 ]
