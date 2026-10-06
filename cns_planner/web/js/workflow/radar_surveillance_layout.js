@@ -14,6 +14,7 @@
  * 本模块只产出 HTML 字符串与纯数据模型，不直接访问 DOM，便于 node 环境测试。
  */
 import {escapeHtml,statusBadge,statusText,verticalReferenceText} from './common.js';
+import {disclosure} from './workbench.js';
 
 export const RADAR_LAYOUT_ENDPOINT='/api/radar-surveillance-layout';
 export const RADAR_LAYOUT_EVALUATE_ENDPOINT='/api/radar-surveillance-layout/evaluate';
@@ -99,6 +100,69 @@ export const RADAR_GAP_REASON_TEXT={
   search_incomplete:'搜索未完成（触达资源上限，未证明不可行）',
 };
 
+/** 结果状态 → 普通用户可读中文（未登记取值原样显示，绝不编造）。 */
+export const RADAR_LAYOUT_STATE_TEXT={
+  not_calculated:'未计算',
+  stale:'已过时（上游输入已变化）',
+  proposal_ready:'规划提案已生成',
+  infeasible:'不可行（已证明）',
+  refinement_incomplete:'复核未完成（未证明）',
+  search_incomplete:'搜索未完成（未证明）',
+  solver_error:'求解器错误',
+  solver_unavailable:'求解器不可用',
+  not_ready:'尚不可评估',
+  unresolved:'未解析',
+};
+
+/**
+ * 分级规划叙述（**普通用户视角**，Round31-C）。
+ *
+ * 正式策略：**优先 Radar-I**；只有 Stage A 被 solver **严格证明**不可行
+ * （``status == "infeasible"`` 且 ``infeasibility_proven is True``）时才在**既有物理
+ * 站址**上评估 Radar-II 升级方案。这里的每一行都只由后端 canonical 字段推导：
+ * 前端不推算、不把"搜索未完成"说成"不可行"，也不把规划几何说成实测探测能力。
+ */
+export function radarEscalationNarrative(model){
+  const escalation=model?.escalation||null;
+  if(!escalation){
+    // 较早版本求得的结果没有分级披露字段：按已选阶段如实说明，绝不假装"尚未运行"。
+    const recordedStage=String(model?.stage||'');
+    if(recordedStage==='radar_i_only'){
+      return ['已优先评估 Radar-I（该结果未包含分级规划披露字段，可能由较早版本生成）。'];
+    }
+    if(recordedStage==='radar_i_plus_radar_ii'){
+      return ['已生成 Radar-I / Radar-II 混合方案'
+        +'（该结果未包含分级规划披露字段，可能由较早版本生成）。'];
+    }
+    return ['尚未运行：运行后将优先评估 Radar-I。'];
+  }
+  const stageA=String(escalation.stage_a_status||'not_run');
+  const proven=escalation.stage_a_infeasibility_proven===true;
+  const lines=[];
+  if(stageA==='optimal'&&escalation.escalated!==true){
+    lines.push('已优先评估 Radar-I：满足独立站址与冗余要求，未触发 Radar-II。');
+    lines.push('未做任何设备升级，也未新建站址。');
+    return lines;
+  }
+  lines.push('正在优先评估 Radar-I。');
+  if(proven){
+    lines.push('Radar-I 无法满足独立站址要求（已由求解器严格证明不可行，不是搜索超时）。');
+    if(escalation.escalated===true){
+      lines.push('正在评估既有站址的 Radar-II 升级方案。');
+      lines.push(Number.isFinite(model?.radarIICount)&&model.radarIICount>0
+        ?'已生成 Radar-I / Radar-II 混合方案。'
+        :'既有站址的 Radar-II 升级方案同样无法闭合，未生成混合方案。');
+    }else{
+      lines.push('当前项目策略未允许自动升级 Radar-II（历史项目保持仅 Radar-I 策略）。');
+    }
+    return lines;
+  }
+  const stageALabel=SOLVER_STATUS_LABELS[stageA]||text(stageA);
+  lines.push('Radar-I 求解未完成（'+stageALabel
+    +'）：可达性与最优性均未证明，按规则不升级 Radar-II。');
+  return lines;
+}
+
 /** 结果状态 → 是否可视为"完整覆盖方案"。 */
 export function isCompleteCoverage(status){
   return status==='proposal_ready';
@@ -133,6 +197,11 @@ export function radarLayoutModel(flow){
     infeasibilityProven:solver?.infeasibility_proven===true,
     stage:item?.stage||null,
     stageLabel:item?.stage_label||null,
+    //: Round31-C 分级规划披露：**只读转印**后端 canonical 字段，前端不推算。
+    escalation:item?.escalation||null,
+    automaticRadarIIEscalation:item?.automatic_radar_ii_escalation===true,
+    radarIISiteCount:(item?.radar_ii_site_count==null?null:item.radar_ii_site_count),
+    radarIISiteIds:Array.isArray(item?.radar_ii_site_ids)?item.radar_ii_site_ids:[],
     radarICount:item?.radar_i_panel_count,
     radarIICount:item?.radar_ii_panel_count,
     panelCount:item?.selected_panel_count,
@@ -431,7 +500,10 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'<div class="parameter-note">海岸不确定带是<b>工程保守假设（未确认）</b>，不是边界数据真实精度，'
     +'也不等同于 5 m 复核分辨率。历史挂高字段只作兼容读取，'
     +'本版雷达原点恒等于塔顶 EGM2008 正高，该字段不参与任何几何。</div>'
-    +'<label class="check-row"><input type="checkbox" id="radarAllowMixed" '+(item?.stage==='radar_i_plus_radar_ii'?'checked':'')+'> 允许仅Ⅰ型被证明不可行后回退 Ⅰ型+Ⅱ型</label>'
+    +'<div class="parameter-note"><b>规划顺序（自动，普通用户无需选择）</b>：先只评估 Radar-I；'
+    +'仅当 Radar-I 被<b>严格证明不可行</b>（不是搜索超时、也不是求解失败）时，'
+    +'才自动在<b>既有铁塔站址</b>上评估 Radar-II 升级方案。'
+    +'Radar-II 是较高成本的设备升级，不是免费的 Radar-I 增强，全程不新建站址。</div>'
     +'<label class="check-row"><input type="checkbox" id="radarDemoPreviewOnly" '
     +(model.demoPreviewOnly?'checked':'')+'> 使用当前 Theta* V2 候选航路进行演示预览</label>'
     +'<div class="parameter-note">基于真实候选航路执行雷达几何初步划设。'
@@ -442,19 +514,38 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'<button class="secondary" id="loadRadarSurveillanceDetail">载入逐点明细</button></div>';
 
   if(!item){
-    return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '+statusBadge(model.status)+'</h3>'
+    return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '
+      +statusBadge(model.status,RADAR_LAYOUT_STATE_TEXT[model.status]||'')+'</h3>'
       +demoWarning+readinessBlock+policyForm
       +'<div class="empty-note">尚未运行「监视雷达初步划设」。本任务不会在后台自动生成，也不会自动 Apply。</div>';
   }
 
-  const solverBlock='<div class="flow-summary">'
+  //: Round31-C：技术字段（阶段标识 / 求解器 / 最优性证明 / MIP gap）默认收进高级详情。
+  //: 普通用户第一眼只需要业务结论（见 escalationBlock 与 counts）。
+  const solverDetail='<div class="flow-summary">'
     +'阶段：'+escapeHtml(item.stage_label||item.stage||'—')
     +' · 求解器 '+escapeHtml(model.solver?.name||'—')+'（'+escapeHtml(model.solver?.library||'—')+'）'
-    +' · 状态 '+statusBadge(model.solverStatus||'not_run')+'（'+escapeHtml(model.solverLabel||'—')+'）<br>'
-    +'<small>工程标识：optimality_proven='+String(model.optimalityProven)
+    +' · 状态 '+statusBadge(model.solverStatus||'not_run',model.solverLabel||'')
+    +'<br><small>工程标识：optimality_proven='+String(model.optimalityProven)
     +' · infeasibility_proven='+String(model.infeasibilityProven)
     +' · mip_gap '+(model.solver?.mip_gap==null?'—':Number(model.solver.mip_gap).toExponential(2))+'</small>'
     +'<br>'+escapeHtml(model.solver?.message||'')+'</div>';
+  const solverBlock=disclosure('高级详情：阶段标识、求解器与最优性证明',solverDetail);
+
+  const escalationBlock='<div class="parameter-note cns-radar-escalation" data-radar-escalation="'
+    +(model.escalation?.escalated===true?'escalated':'not_escalated')+'">'
+    +'<b>规划过程与结论</b><br>'
+    +radarEscalationNarrative(model).map(escapeHtml).join('<br>')+'</div>';
+
+  const modelMixBlock='<div class="coverage-card"><b>雷达型号与升级站址</b>'
+    +'<span>Radar-I（中近程雷达Ⅰ型，地图蓝色）'+text(model.radarICount)+' 个面阵'
+    +' · Radar-II（中近程雷达Ⅱ型，地图紫色）'+text(model.radarIICount)+' 个面阵</span>'
+    +'<span>需要设备升级的既有铁塔 '
+    +(Number.isFinite(model.radarIISiteCount)?String(model.radarIISiteCount):'—')+' 座'
+    +(model.radarIISiteIds.length?'（'+escapeHtml(model.radarIISiteIds.join('、'))+'）':'')+'</span>'
+    +'<span>'+((Number.isFinite(model.radarIISiteCount)&&model.radarIISiteCount>0)
+      ?'升级方案只使用<b>既有站址</b>，未新建任何站址'
+      :'未触发 Radar-II：Radar-I 已在既有站址上满足规划要求')+'</span></div>';
 
   const counts='<div class="coverage-card"><b>面阵与站址</b>'
     +'<span>单面阵总数 '+text(model.panelCount)+' = Ⅰ型 '+text(model.radarICount)+' + Ⅱ型 '+text(model.radarIICount)+'</span>'
@@ -516,15 +607,19 @@ export function renderRadarSurveillanceLayoutPanel(flow){
       +'）：这些 panel 的方向扇区不会被绘制 —— 斜距绝不当作水平半径使用。</div>';
   })();
 
-  return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '+statusBadge(model.status)+'</h3>'
-    +demoWarning+readinessBlock
-    +solverBlock
+  return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '
+    +statusBadge(model.status,RADAR_LAYOUT_STATE_TEXT[model.status]||'')+'</h3>'
+    +demoWarning+escalationBlock+readinessBlock
+    +modelMixBlock
     +counts
+    +solverBlock
     +physicalDisplayNote
     +policyForm
     +'<h4>两型雷达真实资料摘要</h4>'
-    +'<div class="parameter-note">来源：'+escapeHtml(source.title||'—')+' · SHA-256 '+escapeHtml((source.sha256||'—').slice(0,16))
-    +'… · 只读（source_modified=false）</div>'
+    +'<div class="parameter-note">来源：'+escapeHtml(source.title||'—')
+    +'（只读，source_modified=false）</div>'
+    +disclosure('高级详情：来源指纹（SHA-256）',
+      '<div class="parameter-note">SHA-256 '+escapeHtml(source.sha256||'—')+'</div>')
     +'<div class="scroll-list cns-input-list">'+deviceSummary(model)+'</div>'
     +'<h4>覆盖复核（'+num(parameters.validation_sample_spacing_m||5)+' m 独立复核）</h4>'
     +'<div class="gap-results">'+coverageBlock+'</div>'

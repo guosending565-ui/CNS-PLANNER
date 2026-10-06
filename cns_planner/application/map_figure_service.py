@@ -2352,13 +2352,39 @@ def _radar_sector_ring(panel, metric_crs=DEFAULT_METRIC_CRS, *, arc_steps=24):
     return ring
 
 
-def _radar_selected_layers(ctx, assembly, radar, *, metric_crs):
-    """Materialize upstream-selected Radar sites and 90-degree sectors as proposals."""
+def radar_overlay_panels(radar):
+    """Radar 图上应当绘制的已选面板（**所有已知型号**，Round31-C）。
 
-    panels = [
-        item for item in (radar.get("selected_panels") or [])
-        if isinstance(item, dict) and str(item.get("radar_type")) == "radar_i"
+    Round31-C 正式分级规划下 Stage B 会给出 Radar-I + Radar-II 混合方案：只筛 I 型会让
+    已求得的 II 型升级面板在地图上静默缺件，并让计数偏小。这里只做"已选 + 已知型号"
+    的筛选，不做任何几何推算，也不改变 proposal-only 身份。
+
+    返回 ``(可绘制面板, 被跳过的未知型号数量)``；未知型号绝不静默计入（如实披露计数）。
+    """
+
+    selected = [
+        item for item in (radar or {}).get("selected_panels") or []
+        if isinstance(item, dict)
     ]
+    panels = [
+        item for item in selected
+        if str(item.get("radar_type")) in ("radar_i", "radar_ii")
+    ]
+    return panels, len(selected) - len(panels)
+
+
+def _radar_selected_layers(ctx, assembly, radar, *, metric_crs):
+    """Materialize upstream-selected Radar sites and 90-degree sectors as proposals.
+
+    Round31-C：正式分级规划下 Stage B 会给出 **Radar-I + Radar-II 混合**方案。
+    只画 I 型会让已求得的 II 型升级面板在地图上**静默缺件**（同时让计数偏小），
+    因此这里按实际选中的型号逐一上图；所有 panel 都是 planning proposal，
+    ``engineering_confirmed=false``，绝不成为已确认设施，也不代表实测探测能力。
+    """
+
+    panels, skipped_unknown_type = radar_overlay_panels(radar)
+    radar_i_panels = [item for item in panels if str(item.get("radar_type")) == "radar_i"]
+    radar_ii_panels = [item for item in panels if str(item.get("radar_type")) == "radar_ii"]
     polygons, points_by_tower = [], {}
     for panel in panels:
         ring = _radar_sector_ring(panel, metric_crs)
@@ -2372,18 +2398,37 @@ def _radar_selected_layers(ctx, assembly, radar, *, metric_crs):
                 "name": _short(panel.get("tower_name") or tower_id),
                 "proposal_only": True, "engineering_confirmed": False,
             })
+    escalation = radar.get("escalation") if isinstance(radar.get("escalation"), dict) else {}
+    mixed = bool(radar_ii_panels)
     detail = _cns_frame_detail(assembly, service_key=SERVICE_RADAR, extra={
         "selected_panel_count": len(panels),
         "selected_tower_count": len(points_by_tower),
         "drawn_radar_sectors": len(polygons),
+        "radar_i_panel_count": len(radar_i_panels),
+        "radar_ii_panel_count": len(radar_ii_panels),
+        "radar_ii_site_count": len({
+            str(panel.get("tower_id") or "") for panel in radar_ii_panels
+        }),
+        "skipped_unknown_type_panel_count": skipped_unknown_type,
+        "stage": radar.get("stage"),
+        "automatic_radar_ii_escalation": radar.get("automatic_radar_ii_escalation"),
+        "escalation_reason": escalation.get("stage_a_reason"),
         "proposal_only": True,
         "engineering_confirmed": False,
-        "semantics": "selected_radar_i_planning_proposal_not_confirmed_facility",
+        "semantics": (
+            "selected_radar_i_and_radar_ii_planning_proposal_not_confirmed_facility"
+            if mixed else
+            "selected_radar_i_planning_proposal_not_confirmed_facility"
+        ),
     })
     layers = []
     if polygons:
         layers.append(_layer(
-            ctx, "cns_radar_sector", display_name="Radar-I 90° 规划扇区（未确认）",
+            ctx, "cns_radar_sector",
+            display_name=(
+                "Radar-I + Radar-II 混合 90° 规划扇区（未确认）" if mixed
+                else "Radar-I 90° 规划扇区（未确认）"
+            ),
             geometry_type=GEOMETRY_POLYGON, source_role="radar_surveillance_layout",
             status=SOURCE_AVAILABLE, reason="", detail=detail,
             feature_count=len(polygons), data={"polygons": polygons},
@@ -2600,35 +2645,69 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
         })
     elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
             SURVEILLANCE_SERVICE_RADAR and radar.get("selected_panel_count"):
+        radar_ii_selected = int(_finite(radar.get("radar_ii_panel_count")) or 0)
+        escalation = radar.get("escalation") if isinstance(radar.get("escalation"), dict) else {}
+        radar_ii_site_count = int(_finite(escalation.get("radar_ii_site_count")) or 0)
+        lines = [
+            f"Radar-I 已选 {radar.get('selected_tower_count')} 座规划站址 / "
+            f"{radar.get('selected_panel_count')} 个 90° panel；",
+        ]
+        if radar_ii_selected:
+            lines.extend([
+                f"其中 {radar_ii_site_count} 座**既有站址**升级为 Radar-II、"
+                f"共 {radar_ii_selected} 个 90° panel；",
+                "升级原因："
+                f"{escalation.get('stage_a_reason') or 'Radar-I 已被严格证明不可行'}；",
+                "Radar-II 是既有站址的较高成本设备升级方案，不是免费的 Radar-I 增强，"
+                "全程未新建任何站址。",
+            ])
+        else:
+            lines.append(
+                "固定约束：3 km · 90° panel · Radar-II 未触发（Radar-I 已满足）· 未放宽 range。"
+            )
+        lines.extend([
+            "站址与扇区均为 planning proposal，engineering_confirmed=false；",
+            "几何覆盖仅为规划代理结果，不代表现场实测探测能力。",
+            "需现场勘察与用户确认后方可形成最终方案。",
+        ])
         entries.append({
             "disclosure_id": "radar_planning_proposal",
             "title": "Radar 规划提案（未确认）",
-            "lines": [
-                f"Radar-I 已选 {radar.get('selected_tower_count')} 座规划站址 / "
-                f"{radar.get('selected_panel_count')} 个 90° panel；",
-                "固定约束：3 km · 90° panel · Radar-II 未启用 · 未放宽 range。",
-                "站址与扇区均为 planning proposal，engineering_confirmed=false。",
-                "需现场勘察与用户确认后方可形成最终方案。",
-            ],
+            "lines": lines,
         })
-        map_disclosure = "Radar-I：规划提案（未确认），需现场勘察与用户确认"
+        map_disclosure = (
+            "Radar-I + Radar-II 混合：规划提案（未确认），需现场勘察与用户确认"
+            if radar_ii_selected else
+            "Radar-I：规划提案（未确认），需现场勘察与用户确认"
+        )
     elif template_id == SURVEILLANCE_LAYOUT_V1 and _surveillance_variant(parameters) == \
             SURVEILLANCE_SERVICE_RADAR:
+        escalation = radar.get("escalation") if isinstance(radar.get("escalation"), dict) else {}
+        escalated = bool(escalation.get("escalated"))
         entries.append({
             "disclosure_id": "radar_capability_limitation",
-            "title": "Radar-I 能力限制",
+            "title": "Radar-I + Radar-II 能力限制" if escalated else "Radar-I 能力限制",
             "lines": [
-                "Radar-I 在当前既有站址与模型约束下未形成可行布设；",
+                (
+                    "Radar-I 已被严格证明不可行；既有站址上的 Radar-II 升级方案"
+                    "亦未形成可行布设；"
+                    if escalated else
+                    "Radar-I 在当前既有站址与模型约束下未形成可行布设；"
+                ),
                 "非合作监视能力为已证明的补充能力限制。",
                 f"selected_panels={radar.get('selected_panel_count')} · "
                 f"gap_reason={radar.get('gap_reason')} · "
                 f"gap_classification={radar.get('gap_classification')}",
-                "约束：3 km · 90° panel · Radar-II 未启用 · 未放宽 range。",
+                "约束：3 km · 90° panel · 未放宽 range · 未新建站址。",
                 "图中不表示任何 Radar 站址、panel 或覆盖扇区。",
             ],
         })
         # 地图框**之外**的一句话披露（能力限制不允许因为删除说明框而消失）。
-        map_disclosure = "Radar-I：当前既有站址与模型约束下无可行布设"
+        map_disclosure = (
+            "Radar-I + Radar-II：既有站址仍无可行布设"
+            if escalated else
+            "Radar-I：当前既有站址与模型约束下无可行布设"
+        )
     elif template_id == NAVIGATION_LAYOUT_V1:
         entries.append({
             "disclosure_id": "navigation_delivery_deficit",

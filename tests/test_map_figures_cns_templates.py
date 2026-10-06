@@ -529,7 +529,11 @@ def test_radar_draws_no_manufactured_site_or_sector(tmp_path):
     assert "Radar-I 能力限制" in titles
     body = json.dumps(spec.metadata["disclosures"], ensure_ascii=False)
     assert "未形成可行布设" in body
-    assert "3 km" in body and "90°" in body and "Radar-II 未启用" in body
+    assert "3 km" in body and "90°" in body
+    #: Round31-C：能力限制回退时不再声称"Radar-II 未启用"（分级规划已正式启用），
+    #: 而是明确"未放宽 range + 未新建站址"；若既有站址的 Radar-II 升级同样不可行，
+    #: 标题与文案会切换为「Radar-I + Radar-II 能力限制」。
+    assert "未放宽 range" in body and "未新建站址" in body
     assert "不表示任何 Radar 站址" in body
     # 地图框**之外**仍保留一句短披露（能力限制不许因为删除说明框而消失）。
     assert "无可行布设" in spec.metadata["map_disclosure"]

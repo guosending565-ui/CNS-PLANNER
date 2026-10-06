@@ -1222,7 +1222,10 @@ export function bind(c){
     if(buffer!==''&&buffer!=null)policy.coastal_uncertainty_buffer_m=Number(buffer);
     const layer=c.$('radarLandMaskLayer')?.value.trim();
     if(layer)policy.land_mask_layer_name=layer;
-    policy.allow_mixed_radar_types=c.$('radarAllowMixed')?.checked!==false;
+    // Round31-C：分级规划（先 Radar-I；仅当被**严格证明**不可行时才在既有站址上升级
+    // Radar-II）是**项目默认策略**，普通用户不再手动选择型号组合，因此这里不再改写
+    // allow_mixed_radar_types / allow_automatic_radar_ii_escalation：提交的是当前
+    // policy 的完整副本，历史项目保持它自己已冻结的 I-only 结论。
     return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
   });
   // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 独立连续覆盖复核。

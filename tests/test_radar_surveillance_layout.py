@@ -2721,3 +2721,99 @@ def test_readiness_snapshot_reports_missing_mount_height_and_land_mask(tmp_path)
     assert readiness["not_evaluated"]["radar_equation"] == "not_evaluated"
     assert readiness["boundaries"]["modifies_operational_routes"] is False
     assert readiness["semantics"]["dem_nodata_is_never_used_to_infer_sea"] is True
+
+
+# --------------------------------------------------------------------------------------
+# Round31-C — 分级规划：service 按 policy 下发 allow_mixed，并转印分级披露
+# --------------------------------------------------------------------------------------
+
+
+def _shift_towers_beyond_radar_i(service, offset_m=4000.0):
+    """把铁塔整体推向航路侧方：与航路的水平距离超出 Radar-I 的 3 km、仍在 II 的 5 km 内。"""
+
+    for item in service.state["towers"]["items"]:
+        item["latitude"] = float(item["latitude"]) + offset_m / LAT_SCALE
+        item["coordinate"] = [item["longitude"], item["latitude"]]
+    return service
+
+
+def test_service_passes_policy_allow_mixed_to_the_algorithm(tmp_path, monkeypatch):
+    """新项目默认 policy（分级规划）⇒ service 必须把 allow_mixed=True 下发给算法。"""
+
+    service, provider = _service(tmp_path)
+    import cns_planner.application.radar_surveillance_layout_service as radar_service
+
+    seen = {}
+    real = radar_service.solve_layout
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(radar_service, "solve_layout", spy)
+    _evaluate(service, provider)
+
+    assert seen["allow_mixed"] is True
+    assert service.state["radar_surveillance_policy"][
+        "allow_automatic_radar_ii_escalation"
+    ] is True
+
+
+def test_service_escalates_and_discloses_existing_site_radar_ii(tmp_path):
+    service, provider = _service(tmp_path)
+    _shift_towers_beyond_radar_i(service)
+
+    result = _evaluate(service, provider)
+    item = result["radar_surveillance_layout"]["items"][0]
+
+    assert item["stage"] == "radar_i_plus_radar_ii"
+    assert item["radar_ii_panel_count"] >= 1
+    assert item["automatic_radar_ii_escalation"] is True
+    escalation = item["escalation"]
+    assert escalation["escalated"] is True
+    assert escalation["stage_a_infeasibility_proven"] is True
+    assert escalation["existing_sites_only"] is True
+    assert escalation["new_sites_created"] is False
+    assert escalation["radar_ii_site_count"] >= 1
+    assert item["radar_ii_site_count"] == escalation["radar_ii_site_count"]
+    assert item["radar_ii_site_ids"] == escalation["radar_ii_site_ids"]
+
+
+def test_service_keeps_legacy_i_only_policy_without_escalation(tmp_path):
+    """历史项目 payload（无显式分级字段）⇒ 仍按冻结的 I-only 求解，绝不自动升级。"""
+
+    service, provider = _service(tmp_path)
+    legacy = {
+        key: value
+        for key, value in (service.state.get("radar_surveillance_policy") or {}).items()
+        if key not in (
+            "allow_automatic_radar_ii_escalation", "escalation_policy_id",
+            "allowed_radar_types", "allow_mixed_radar_types",
+        )
+    }
+    #: Round29-E 之前的旧默认：允许混合，但那个字段**不是**本轮的分级开关。
+    legacy["allow_mixed_radar_types"] = True
+    service.state["radar_surveillance_policy"] = legacy
+    _shift_towers_beyond_radar_i(service)
+
+    result = _evaluate(service, provider)
+    item = result["radar_surveillance_layout"]["items"][0]
+
+    assert item["stage"] == "radar_i_only"
+    assert item["radar_ii_panel_count"] == 0
+    assert item["escalation"]["escalated"] is False
+    assert item["escalation"]["escalation_blocked_reason"] == (
+        "escalation_not_allowed_by_policy"
+    )
+    #: 运行时权威是**规范化后的** policy：历史 payload 的旧 `allow_mixed_radar_types=true`
+    #: 仍被迁移为冻结的 I-only（本轮不改变 legacy normalization 的结论）。
+    from cns_planner.application.radar_surveillance_layout_service import (
+        normalize_radar_surveillance_policy,
+    )
+
+    normalized = normalize_radar_surveillance_policy(
+        service.state["radar_surveillance_policy"]
+    )
+    assert normalized["allow_mixed_radar_types"] is False
+    assert normalized["allow_automatic_radar_ii_escalation"] is False
+    assert normalized["escalation_policy_id"] == "radar_i_only_frozen"

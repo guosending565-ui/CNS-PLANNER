@@ -665,6 +665,10 @@ def assemble(state, route_id, *, extent=None, parameters=None):
                     "infeasibility_proven", "selected_panel_count", "selected_tower_count",
                     "candidate_tower_count", "input_fingerprint", "collection_status",
                     "other_route_items_used",
+                    #: Round31-C：分级规划结论必须随证据链一起可见，否则下游
+                    #: （P15/P16/报告）看到的是"只有 I 型"的假象。
+                    "stage", "radar_i_panel_count", "radar_ii_panel_count",
+                    "radar_ii_site_count", "automatic_radar_ii_escalation", "escalation",
                 )
             },
         },

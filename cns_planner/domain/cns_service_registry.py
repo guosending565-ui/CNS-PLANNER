@@ -108,12 +108,14 @@ SERVICE_REGISTRY = {
         "type": deepcopy(RADAR_TYPE_SEMANTICS),
         "planning_policy": {
             "required": True,
-            "allowed_radar_types": ["radar_i"],
+            # Round31-C：正式分级规划 —— 优先 Radar-I，只有被严格证明不可行时才在
+            # 既有物理站址上升级 Radar-II（较高成本的设备升级，不是免费增强）。
+            "allowed_radar_types": ["radar_i", "radar_ii"],
             "orientation_optimization": True,
             "orientation_policy": "bearing_derived_critical_angles",
             "existing_tower_first": True,
             "max_panels_per_tower": 4,
-            "allow_automatic_radar_ii_escalation": False,
+            "allow_automatic_radar_ii_escalation": True,
             "allow_range_relaxation": False,
             "gap_after_proven_infeasibility": True,
             "validation_sample_spacing_m": 5.0,

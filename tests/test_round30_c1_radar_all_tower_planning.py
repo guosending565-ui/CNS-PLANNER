@@ -88,10 +88,19 @@ def test_formal_radar_i_constraints_remain_frozen():
     assert policy["radar_planning_origin_policy_id"] == RADAR_PLANNING_ORIGIN_POLICY_ID
     assert policy["radar_origin_basis"] == "source_elevation_m_plus_tower_height_m"
     assert "unconfirmed_source_elevation_m" in policy["radar_origin_semantics"]
+    #: Round31-C：**历史项目 payload**（不含显式分级字段）的既有结论原样保持
+    #: —— 冻结的 I-only，不做任何历史状态自动升级。
     assert policy["allowed_radar_types"] == ["radar_i"]
     assert policy["allow_automatic_radar_ii_escalation"] is False
     assert policy["allow_mixed_radar_types"] is False
     assert policy["allow_range_relaxation"] is False
     assert policy["max_panels_per_tower"] == 4
+    #: **新项目默认**改为分级规划（优先 Radar-I，仅在被严格证明不可行时升级既有站址
+    #: Radar-II）；Radar-I 设备几何与"绝不放宽 range"的约束完全不变。
+    fresh = normalize_radar_surveillance_policy(None)
+    assert fresh["allowed_radar_types"] == ["radar_i", "radar_ii"]
+    assert fresh["allow_automatic_radar_ii_escalation"] is True
+    assert fresh["allow_range_relaxation"] is False
+    assert fresh["max_panels_per_tower"] == 4
     assert radar_i["max_slant_range_m"] == 3000.0
     assert radar_i["azimuth_beamwidth_deg"] == 90.0

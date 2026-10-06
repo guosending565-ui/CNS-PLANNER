@@ -500,14 +500,14 @@ def test_proxy_is_never_engineering_confirmed():
 
 
 # ---------------------------------------------------------------------------
-# 8. Radar-II 未启用
+# 8. Round31-C：Radar-II 只能作为"证明不可行之后的既有站址升级方案"出现
 # ---------------------------------------------------------------------------
 
 
-def test_radar_ii_is_still_disabled_in_policy():
+def test_radar_ii_escalation_requires_proven_radar_i_infeasibility():
     policy = RADAR_ORIENTATION_FIRST_POLICY
-    assert policy["allowed_radar_types"] == [RADAR_TYPE_I]
-    assert policy["allow_automatic_radar_ii_escalation"] is False
+    assert policy["allowed_radar_types"] == ["radar_i", "radar_ii"]
+    assert policy["allow_automatic_radar_ii_escalation"] is True
     assert policy["allow_range_relaxation"] is False
     assert policy["gap_after_proven_infeasibility"] is True
 
@@ -819,7 +819,9 @@ def test_radar_geometry_orientation_and_redundancy_parameters_are_unchanged():
         "land": 2, "sea": 1, "coastal_uncertain": 2, "unknown": None,
     }
     assert RADAR_ORIENTATION_FIRST_POLICY["allow_range_relaxation"] is False
-    assert RADAR_ORIENTATION_FIRST_POLICY["allow_automatic_radar_ii_escalation"] is False
+    #: Round31-C：分级规划允许"证明不可行后升级既有站址 Radar-II"，
+    #: 但 range / 波束 / 独立站址要求一律未放宽。
+    assert RADAR_ORIENTATION_FIRST_POLICY["allow_automatic_radar_ii_escalation"] is True
 
 
 # ---------------------------------------------------------------------------

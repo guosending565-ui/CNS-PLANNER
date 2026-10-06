@@ -30,6 +30,8 @@ from ..domain.radar_surveillance_layout import (
     ALGORITHM_ID, ALGORITHM_NAME, ALGORITHM_SEMANTICS, ALGORITHM_VERSION,
     DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M, EFFECTIVE_REQUIREMENT_CLASS,
     FIXED_ALTITUDE_LAYER_ID, FIXED_ALTITUDE_M, METRIC_CRS, MODEL_SCOPE, NOT_EVALUATED,
+    RADAR_ESCALATION_POLICY_ID,
+    RADAR_I_ONLY_POLICY_ID,
     RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1, RADAR_ORIGIN_BASIS, RADAR_ORIGIN_SEMANTICS,
     RADAR_PLANNING_ORIGIN_BASIS, RADAR_PLANNING_ORIGIN_POLICY_ID,
     RADAR_PLANNING_ORIGIN_SEMANTICS,
@@ -152,22 +154,31 @@ READINESS_SEMANTICS = {
 
 
 def default_radar_surveillance_policy():
-    """策略默认值：25 m / 5 m / 3 轮 + 30 m 海岸不确定带 + legacy 挂高（未配置）。"""
+    """策略默认值（**新项目**）：Radar-I 优先 + 必要时既有站址 Radar-II 升级。
+
+    25 m / 5 m / 3 轮 + 30 m 海岸不确定带 + legacy 挂高（未配置）。
+    """
 
     return {
         "status": "pending_confirmation",
         "optimization_sample_spacing_m": SOFTWARE_BASELINE["optimization_sample_spacing_m"],
         "validation_sample_spacing_m": SOFTWARE_BASELINE["validation_sample_spacing_m"],
         "max_refinement_rounds": SOFTWARE_BASELINE["max_refinement_rounds"],
-        "allowed_radar_types": ["radar_i"],
+        #: Round31-C：新项目采用正式分级规划 —— Stage A 只用 Radar-I；只有 Stage A 被
+        #: solver **严格证明**不可行时才在**既有物理站址**上升级 Radar-II。
+        #: Radar-II 是较高成本的既有站址设备升级方案，不是免费的 Radar-I 增强。
+        #: 历史项目持久化的旧 payload 不含 ``allow_automatic_radar_ii_escalation``，
+        #: 仍按冻结的 I-only 语义运行（见 :func:`normalize_radar_surveillance_policy`）。
+        "allowed_radar_types": ["radar_i", "radar_ii"],
+        "escalation_policy_id": RADAR_ESCALATION_POLICY_ID,
         "orientation_optimization": True,
         "orientation_policy": "bearing_derived_critical_angles",
         "existing_tower_first": True,
         "max_panels_per_tower": 4,
-        "allow_automatic_radar_ii_escalation": False,
+        "allow_automatic_radar_ii_escalation": True,
         "allow_range_relaxation": False,
         "gap_after_proven_infeasibility": True,
-        "allow_mixed_radar_types": False,
+        "allow_mixed_radar_types": True,
         "solver_time_limit_s": None,
         # V1.1：海岸不确定带（显式工程参数，进入 provenance 与 fingerprint）。
         "coastal_uncertainty_buffer_m": DEFAULT_COASTAL_UNCERTAINTY_BUFFER_M,
@@ -242,15 +253,42 @@ def normalize_radar_surveillance_policy(value):
         if rounds < 0:
             raise ValueError("max_refinement_rounds 不能为负")
         result["max_refinement_rounds"] = rounds
-    # Legacy projects persisted the former default ``allow_mixed_radar_types=true``.
-    # Migrate that value to the frozen I-only policy; a new explicit automatic
-    # escalation flag is rejected instead of being silently honored.
-    if payload.get("allow_automatic_radar_ii_escalation") is True:
-        raise ValueError("Round29-E 正式方案禁止自动升级 Radar-II")
-    if payload.get("allowed_radar_types") not in (None, ["radar_i"], ("radar_i",)):
-        raise ValueError("Round29-E 正式方案 allowed_radar_types 只能是 ['radar_i']")
-    result["allow_mixed_radar_types"] = False
-    result["allowed_radar_types"] = ["radar_i"]
+    # Round31-C 分级规划策略：**新项目**默认"优先 Radar-I，仅在 I 型被严格证明
+    # 不可行时升级既有站址 Radar-II"。判据是**显式字段的存在性**：
+    #
+    # * 空 payload（``normalize_radar_surveillance_policy(None)``，新项目初始化链）
+    #   ⇒ 采用新默认（允许升级）；
+    # * 显式写入 ``allow_automatic_radar_ii_escalation`` 的 payload（新项目保存后的
+    #   回读、或显式配置）⇒ 按该布尔值生效；
+    # * 历史项目持久化的旧 payload **不含**该字段（其 ``allow_mixed_radar_types``
+    #   是 Round29-E 之前的旧默认）⇒ 原样迁移为冻结的 I-only 语义。
+    #
+    # 这条分支不改变历史 payload 的既有结论：本轮不做任何历史状态自动升级，
+    # 也不新增旧版本兼容映射。
+    if payload:
+        escalation = payload.get("allow_automatic_radar_ii_escalation") is True
+    else:
+        escalation = bool(result["allow_automatic_radar_ii_escalation"])
+    if escalation:
+        requested_types = payload.get("allowed_radar_types")
+        if requested_types not in (
+            None, ["radar_i", "radar_ii"], ("radar_i", "radar_ii"),
+            ["radar_ii", "radar_i"], ("radar_ii", "radar_i"),
+        ):
+            raise ValueError(
+                "启用分级规划时 allowed_radar_types 只能是 ['radar_i', 'radar_ii']"
+            )
+        result["allow_automatic_radar_ii_escalation"] = True
+        result["allow_mixed_radar_types"] = True
+        result["allowed_radar_types"] = ["radar_i", "radar_ii"]
+        result["escalation_policy_id"] = RADAR_ESCALATION_POLICY_ID
+    else:
+        if payload.get("allowed_radar_types") not in (None, ["radar_i"], ("radar_i",)):
+            raise ValueError("Round29-E 正式方案 allowed_radar_types 只能是 ['radar_i']")
+        result["allow_automatic_radar_ii_escalation"] = False
+        result["allow_mixed_radar_types"] = False
+        result["allowed_radar_types"] = ["radar_i"]
+        result["escalation_policy_id"] = RADAR_I_ONLY_POLICY_ID
     limit = payload.get("solver_time_limit_s")
     if limit in (None, ""):
         result["solver_time_limit_s"] = None
@@ -676,6 +714,13 @@ class RadarSurveillanceLayoutService:
         state = self.session.state
         payload = payload if isinstance(payload, dict) else {}
         raw = payload.get(POLICY_KEY) if isinstance(payload.get(POLICY_KEY), dict) else payload
+        # Round31-C：以**已有 policy** 为字段基线做一次浅合并，避免"只提交部分字段"时
+        # 把新项目已显式启用的分级规划开关误判成历史 payload（历史 payload 不含
+        # ``allow_automatic_radar_ii_escalation`` ⇒ 保持 I-only）。已有 policy 只提供
+        # 基线值，不做任何历史状态自动升级。
+        existing_policy = state.get(POLICY_KEY)
+        if isinstance(existing_policy, dict):
+            raw = {**existing_policy, **raw}
         candidate = normalize_radar_surveillance_policy(raw)
         previous = normalize_radar_surveillance_policy(state.get(POLICY_KEY))
         if candidate != previous:
@@ -1255,6 +1300,14 @@ class RadarSurveillanceLayoutService:
                 "selected_tower_count": item.get("selected_tower_count"),
                 "radar_i_panel_count": item.get("radar_i_panel_count"),
                 "radar_ii_panel_count": item.get("radar_ii_panel_count"),
+                #: Round31-C 分级规划披露：普通用户界面只读**有界摘要**，
+                #: 因此"是否触发 Radar-II / 为什么 / 用了哪些既有站址"必须在这里，
+                #: 而不是只存在于逐点明细 artifact。
+                "radar_ii_site_count": item.get("radar_ii_site_count"),
+                "radar_ii_site_ids": deepcopy(item.get("radar_ii_site_ids") or []),
+                "allowed_radar_types": deepcopy(item.get("allowed_radar_types") or []),
+                "automatic_radar_ii_escalation": item.get("automatic_radar_ii_escalation"),
+                "escalation": deepcopy(item.get("escalation")),
                 "candidate_tower_count": item.get("candidate_tower_count"),
                 "candidate_panel_count": item.get("candidate_panel_count"),
                 # 雷达原点（V1.1：= tower_top_orthometric_m，不再有挂高叠加）。
@@ -1562,10 +1615,19 @@ class RadarSurveillanceLayoutService:
             "optimization_sample_spacing_m", "validation_sample_spacing_m",
             "max_refinement_rounds", "radar_mount_height", "radar_mount_height_m",
             "allow_mixed_radar_types", "solver_time_limit_s",
+            # Round31-C：分级规划开关与允许型号也必须能显式进入 policy 更新。
+            "allow_automatic_radar_ii_escalation", "allowed_radar_types",
+            "escalation_policy_id",
         )):
             policy_payload = payload.get(POLICY_KEY) if isinstance(
                 payload.get(POLICY_KEY), dict
             ) else payload
+            # Round31-C：以**已有 policy** 为字段基线做一次浅合并，避免"只提交部分
+            # 字段"时把新项目已显式启用的分级规划开关误判成历史 payload。已有 policy
+            # 只提供基线值，不做任何历史状态自动升级（旧项目的 false 原样保留）。
+            existing_policy = state.get(POLICY_KEY)
+            if isinstance(existing_policy, dict):
+                policy_payload = {**existing_policy, **policy_payload}
             state[POLICY_KEY] = normalize_radar_surveillance_policy(policy_payload)
         else:
             state.setdefault(POLICY_KEY, normalize_radar_surveillance_policy(None))
@@ -2151,7 +2213,10 @@ class RadarSurveillanceLayoutService:
             towers=usable_towers, samples=sampled["samples"],
             validation_samples=validation_samples,
             options=options,
-            allow_mixed=False,
+            # Round31-C：正式分级规划 —— policy 允许时，Stage B 只在 Stage A 被
+            # **严格证明**不可行（status=infeasible 且 infeasibility_proven=true）后进入；
+            # 未完成求解绝不升级。算法层默认仍为 False（保守引擎语义）。
+            allow_mixed=bool(policy.get("allow_mixed_radar_types")),
         )
 
         solved_validation = deepcopy(solved.get("validation"))
@@ -2207,6 +2272,12 @@ class RadarSurveillanceLayoutService:
             },
             "radar_i_panel_count": solved.get("radar_i_panel_count"),
             "radar_ii_panel_count": solved.get("radar_ii_panel_count"),
+            #: Round31-C 分级规划披露：是否触发 Radar-II、为什么、使用了哪些既有站址
+            #: 升级，以及"II 型面阵数 ≠ II 型升级站址数"的词典序范围声明。
+            "automatic_radar_ii_escalation": solved.get("automatic_radar_ii_escalation"),
+            "escalation": deepcopy(solved.get("escalation")),
+            "radar_ii_site_count": solved.get("radar_ii_site_count"),
+            "radar_ii_site_ids": deepcopy(solved.get("radar_ii_site_ids") or []),
             "candidate_tower_count": solved.get("candidate_tower_count"),
             "candidate_panel_count": solved.get("candidate_panel_count"),
             "candidate_statistics": deepcopy(solved.get("candidate_statistics") or {}),

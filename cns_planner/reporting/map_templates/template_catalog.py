@@ -1,4 +1,4 @@
-﻿"""专题成果图模板目录（Presentation / Cartographic Export）。
+"""专题成果图模板目录（Presentation / Cartographic Export）。
 
 本模块只描述**制图模板**，不含任何业务算法：
 
@@ -184,8 +184,10 @@ LAYER_DISPLAY_NAMES = {
     "cns_coverage_comm": "通信规划服务半径 4 km",
     "cns_coverage_rid_land": "RID 陆地/沿海规划范围 2 km",
     "cns_coverage_rid_sea": "RID 海上延伸规划范围 2–5 km",
-    "cns_radar_context": "Radar-I 评估候选站址（未选中）",
-    "cns_radar_sector": "Radar-I 90° 规划扇区（未确认）",
+    "cns_radar_context": "Radar 评估候选站址（未选中）",
+    #: Round31-C：正式分级规划下 Stage B 会给出 I 型 + II 型混合方案，
+    #: 图例必须让两类型号都可辨识（Ⅰ型蓝 / Ⅱ型紫），不得只暗示 "Radar-I"。
+    "cns_radar_sector": "Radar 90° 规划扇区（未确认；Ⅰ型蓝 / Ⅱ型紫）",
     "cns_radar_proposal": "Radar 规划站址（未确认）",
     "cns_radar_limitation": "非合作监视能力限制（无可行布设）",
 }

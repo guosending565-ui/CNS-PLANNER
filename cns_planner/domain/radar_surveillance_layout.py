@@ -317,16 +317,30 @@ RADAR_TYPE_I = "radar_i"
 RADAR_TYPE_II = "radar_ii"
 RADAR_TYPES = (RADAR_TYPE_I, RADAR_TYPE_II)
 
-# Round29-E formal planning policy.  Radar-II remains in the device facts for
-# compatibility and audit, but is never an automatic formal-plan escalation.
+#: Round31-C 正式分级规划策略标识（显式版本化：策略变化必然改变 policy 分量，
+#: 从而改变 input fingerprint，绝不静默改变语义）。
+RADAR_ESCALATION_POLICY_ID = "radar_i_first_existing_site_radar_ii_escalation"
+
+#: 冻结的 I-only 策略标识（历史项目 payload 的既有结论，本轮不升级）。
+RADAR_I_ONLY_POLICY_ID = "radar_i_only_frozen"
+
+# Round31-C formal planning policy.  Radar-I 优先：Stage A 只用 Radar-I；只有 Stage A
+# 被 solver **严格证明**不可行（status=infeasible 且 infeasibility_proven=true）时，
+# 才在**既有物理站址**上升级为 Radar-I + Radar-II 混合方案。Radar-II 是较高成本的
+# 既有站址设备升级方案，不是免费的 Radar-I 增强；不创建新站址，同一物理塔的多个面阵
+# 只算一个独立站址。
+#
+# 历史项目持久化的旧 payload（不含显式 ``allow_automatic_radar_ii_escalation`` 字段）
+# 仍保持冻结的 I-only 语义：本轮不做任何历史状态自动升级或兼容映射。
 RADAR_ORIENTATION_FIRST_POLICY = {
     "required": True,
-    "allowed_radar_types": [RADAR_TYPE_I],
+    "policy_id": RADAR_ESCALATION_POLICY_ID,
+    "allowed_radar_types": [RADAR_TYPE_I, RADAR_TYPE_II],
     "orientation_optimization": True,
     "orientation_policy": "bearing_derived_critical_angles",
     "existing_tower_first": True,
     "max_panels_per_tower": MAX_PANELS_PER_TOWER,
-    "allow_automatic_radar_ii_escalation": False,
+    "allow_automatic_radar_ii_escalation": True,
     "allow_range_relaxation": False,
     "gap_after_proven_infeasibility": True,
 }
@@ -870,6 +884,7 @@ __all__ = [
     "RADAR_PLANNING_ORIGIN_METHOD", "RADAR_PLANNING_ORIGIN_POLICY_ID",
     "RADAR_PLANNING_ORIGIN_SEMANTICS", "RADAR_PLANNING_ORIGIN_STATUS",
     "RADAR_TYPES", "RADAR_TYPE_I", "RADAR_TYPE_II", "RADAR_TYPE_LABELS",
+    "RADAR_ESCALATION_POLICY_ID", "RADAR_I_ONLY_POLICY_ID",
     "RADAR_ORIENTATION_FIRST_POLICY",
     "RCS_REFERENCE_M2", "REQUIRED_DISTINCT_SITE_COUNT",
     "ROUTE_SAMPLE_HEIGHT_SEMANTICS", "ROUTE_SAMPLE_TERRAIN_ELEVATION_USED_AS_ROUTE_HEIGHT",

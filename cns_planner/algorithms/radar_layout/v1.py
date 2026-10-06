@@ -16,10 +16,14 @@
    去重 → dominated 剪枝，确定性）；
 4. **求解前不可行检查**：``candidate_distinct_site_count`` 不足的 sample 直接形成
    结构化 infeasibility evidence；
-5. **Stage A**：只用 Radar-I，``min total_panel_count``；
-6. **Stage B**：**只有** Stage A 被 solver 明确证明 ``infeasible`` 才进入；
-   B1 ``min total_panel_count``，B2 固定 ``N*`` 后 ``min Radar-II panel count``
-   （词典序：总面阵数恒为第一目标）；
+5. **Stage A（优先）**：只用 Radar-I，``min total_panel_count``；
+6. **Stage B**：**只有** Stage A 被 solver 明确证明 ``infeasible`` 才进入
+   （``status == "infeasible"`` **且** ``infeasibility_proven is True``；
+   未完成的搜索一律不得升级）；B1 ``min total_panel_count``，B2 固定 ``N*`` 后
+   ``min Radar-II panel count``（词典序：总面阵数恒为第一目标）。
+   Radar-II 只作为**既有物理站址**上的较高成本设备升级方案出现：不创建新站址，
+   同一物理塔的多个面阵只算一个独立站址，也绝不是"免费的 Radar-I 增强"。
+   Round31-C 起正式 service policy 默认允许该升级；历史项目 payload 保持 I-only；
 7. **连续覆盖复核**：``validation_sample_spacing_m = 5`` 对整条航路**重新生成真实 5 m
    位置**并**再次独立分类**后复核（禁止最近 25 m 点分类继承，BUG-RADAR-REFINE-003）；
    发现 ``actual_distinct_site_count < required`` 的点即并入优化输入重新求解；
@@ -731,10 +735,13 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
                     "structural_infeasibility": False,
                 }
             return stage_a
-        if stage_a["solve"]["solver"]["status"] == "infeasible":
+        if _is_proven_infeasible(stage_a["solve"]["solver"]):
             if not allow_mixed:
                 return stage_a
             stage_b = _stage_b_mixed(towers=towers, samples=active_samples, options=solve_options)
+            # Round31-C：Stage A 的诊断必须随 Stage B 结果一起保留，否则上层无法披露
+            # "为什么 Radar-I 不足"。它只承载证据，不参与任何求解。
+            stage_b["stage_a_diagnosis"] = _stage_a_diagnosis(stage_a)
             # 统一形状：``solve`` 恒存在（B1 或补点重解的结果），因此上层无分支可读。
             source = stage_b.get("b2") or stage_b["b1"]
             if stage_b["b1"]["solver"]["status"] == "optimal" and extra:
@@ -877,6 +884,7 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
         optimisation_samples=current_samples,
         altitude_plane_m=altitude_plane_m, altitude_layer_id=altitude_layer_id,
         time_budget=time_budget,
+        allow_mixed=allow_mixed,
     )
 
 
@@ -929,6 +937,130 @@ def _final_status(*, final, refinement_rounds):
     )
 
 
+def _is_proven_infeasible(solver_block):
+    """Stage A 是否被 solver **严格证明**不可行（Stage B 的唯一门禁）。
+
+    Round31-C：``status == "infeasible"`` **必须**同时带
+    ``infeasibility_proven is True``。未完成的搜索
+    （``time_limit`` / ``iteration_limit`` / ``node_limit`` / ``solver_error`` /
+    ``solver_unavailable``）一律**不得**升级为 Radar-II —— 未证明不等于不可行，
+    缺失不等于 0。
+    """
+
+    if not isinstance(solver_block, dict):
+        return False
+    return (
+        solver_block.get("status") == "infeasible"
+        and solver_block.get("infeasibility_proven") is True
+    )
+
+
+def _stage_a_diagnosis(stage_a):
+    """Stage A 的诊断摘要（带入 Stage B 结果，用于披露"为什么 Radar-I 不足"）。"""
+
+    solve = (stage_a or {}).get("solve") or {}
+    presolve = (stage_a or {}).get("presolve") or {}
+    return {
+        "stage": (stage_a or {}).get("stage"),
+        "solver": deepcopy(solve.get("solver")),
+        "presolve_evidence": deepcopy(presolve.get("insufficient_samples") or []),
+        "structural_infeasibility": bool((stage_a or {}).get("structural_infeasibility")),
+        "objective_name": solve.get("objective_name") or "total_panel_count",
+        "semantics": "stage_a_radar_i_only_probe_carried_into_stage_b_for_disclosure",
+    }
+
+
+def _escalation_disclosure(*, stage, final, allow_mixed, selected_panels):
+    """分级规划披露块：是否触发 Radar-II、为什么、以及成本语义。
+
+    Round31-C 正式策略：**优先 Radar-I**；只有当 Stage A 被严格证明不可行
+    （:func:`_is_proven_infeasible`）时才在**既有物理站址**上升级 Radar-II。
+    Radar-II 是较高成本的既有站址设备升级方案，**不是**免费的 Radar-I 增强。
+    """
+
+    diagnosis = (final or {}).get("stage_a_diagnosis")
+    if diagnosis is None:
+        solve = (final or {}).get("solve") or {}
+        presolve = (final or {}).get("presolve") or {}
+        diagnosis = {
+            "solver": deepcopy(solve.get("solver")),
+            "presolve_evidence": deepcopy(presolve.get("insufficient_samples") or []),
+            "structural_infeasibility": bool((final or {}).get("structural_infeasibility")),
+            "objective_name": solve.get("objective_name") or "total_panel_count",
+        }
+    stage_a_solver = diagnosis.get("solver") or {}
+    stage_a_status = str(stage_a_solver.get("status") or "not_run")
+    stage_a_proven = _is_proven_infeasible(stage_a_solver)
+    evidence = diagnosis.get("presolve_evidence") or []
+    escalated = stage == STAGE_MIXED
+
+    if stage_a_proven and evidence:
+        reason = (
+            "Radar-I 已证明不可行：求解前结构化检查显示 "
+            f"{len(evidence)} 个航段的可达独立站址数少于要求数量"
+        )
+    elif stage_a_proven:
+        reason = "Radar-I 已证明不可行：solver 明确给出 infeasible（infeasibility_proven=true）"
+    elif stage_a_status == "optimal":
+        reason = None
+    else:
+        reason = (
+            f"Stage A 搜索未完成（{stage_a_status}）：可达性与最优性均未被证明，"
+            "不得升级为 Radar-II"
+        )
+
+    if escalated:
+        blocked_reason = None
+    elif stage_a_status == "optimal":
+        blocked_reason = "radar_i_sufficient"
+    elif stage_a_proven and not allow_mixed:
+        blocked_reason = "escalation_not_allowed_by_policy"
+    elif stage_a_proven:
+        blocked_reason = "escalation_available_not_taken"
+    else:
+        blocked_reason = f"stage_a_{stage_a_status}_not_proven_infeasible"
+
+    radar_i_site_ids = sorted({
+        str(panel["tower_id"]) for panel in selected_panels
+        if panel.get("radar_type") == RADAR_TYPE_I
+    })
+    radar_ii_site_ids = sorted({
+        str(panel["tower_id"]) for panel in selected_panels
+        if panel.get("radar_type") == RADAR_TYPE_II
+    })
+    return {
+        "available": True,
+        "policy": "radar_i_first_then_existing_site_radar_ii_escalation",
+        "radar_i_first": True,
+        "escalation_allowed_by_caller": bool(allow_mixed),
+        "escalated": escalated,
+        "stage_a_status": stage_a_status,
+        "stage_a_infeasibility_proven": stage_a_proven,
+        "stage_a_structurally_proven": bool(diagnosis.get("structural_infeasibility")),
+        "stage_a_insufficient_sample_count": len(evidence),
+        "stage_a_objective_name": diagnosis.get("objective_name"),
+        "stage_a_reason": reason,
+        "escalation_blocked_reason": blocked_reason,
+        "radar_ii_selected": bool(radar_ii_site_ids),
+        "radar_i_site_count": len(radar_i_site_ids),
+        "radar_ii_site_count": len(radar_ii_site_ids),
+        "radar_i_site_ids": radar_i_site_ids,
+        "radar_ii_site_ids": radar_ii_site_ids,
+        "existing_sites_only": True,
+        "new_sites_created": False,
+        "lexicographic_objectives": ["total_panel_count", "radar_ii_panel_count"],
+        #: 披露差异（**不扩大 MILP 目标**）：词典序第二目标是"II 型面阵数量"，
+        #: 而不是"需要升级为 II 的独立站址数"。两者在存在多种同分方案时可能不同：
+        #: 同一个 II 型站址装 2 个面阵与两个站址各装 1 个面阵的 II 面阵数相同，
+        #: 但升级站址数不同。此处只如实披露当前的站址数，绝不擅自扩展目标函数。
+        "lexicographic_objective_scope": "radar_ii_panel_count_not_radar_ii_upgraded_site_count",
+        "radar_ii_cost_semantics": (
+            "existing_site_equipment_upgrade_not_a_free_radar_i_enhancement"
+        ),
+        "coverage_semantics": "planning_geometry_not_field_measured_detection_capability",
+    }
+
+
 def _blocked_result(*, status, reason, samples):
     return {
         "status": status,
@@ -945,12 +1077,22 @@ def _blocked_result(*, status, reason, samples):
         "orientation_policy": "bearing_derived_critical_angles",
         "allowed_radar_types": [RADAR_TYPE_I],
         "automatic_radar_ii_escalation": False,
+        "escalation": {
+            **_escalation_disclosure(
+                stage=STAGE_I_ONLY, final=None, allow_mixed=False, selected_panels=[],
+            ),
+            "available": False,
+            "stage_a_reason": None,
+            "escalation_blocked_reason": "radar_layout_not_evaluated",
+            "source": "radar_layout_not_evaluated",
+        },
     }
 
 
 def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
                      refinement_rounds, samples, towers, optimisation_samples=None,
-                     altitude_plane_m=None, altitude_layer_id=None, time_budget=None):
+                     altitude_plane_m=None, altitude_layer_id=None, time_budget=None,
+                     allow_mixed=False):
     plane_egm2008_m = (
         float(altitude_plane_m) if isinstance(altitude_plane_m, (int, float))
         and not isinstance(altitude_plane_m, bool)
@@ -1034,6 +1176,9 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
     radar_i_count = sum(1 for item in selected_panels if item["radar_type"] == RADAR_TYPE_I)
     radar_ii_count = sum(1 for item in selected_panels if item["radar_type"] == RADAR_TYPE_II)
     selected_tower_ids = sorted({item["tower_id"] for item in selected_panels})
+    escalation = _escalation_disclosure(
+        stage=stage, final=final, allow_mixed=allow_mixed, selected_panels=selected_panels,
+    )
     gap_reason, gap_classification = _radar_gap_classification(
         status, final, candidates, towers,
     )
@@ -1055,6 +1200,11 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
         "orientation_policy": "bearing_derived_critical_angles",
         "allowed_radar_types": [RADAR_TYPE_I] if stage != STAGE_MIXED else list(RADAR_TYPES),
         "automatic_radar_ii_escalation": stage == STAGE_MIXED,
+        #: Round31-C 分级规划披露（是否触发 Radar-II / 为什么 / 成本语义）。
+        "escalation": escalation,
+        "radar_i_site_count": escalation["radar_i_site_count"],
+        "radar_ii_site_count": escalation["radar_ii_site_count"],
+        "radar_ii_site_ids": deepcopy(escalation["radar_ii_site_ids"]),
         "gap_reason": gap_reason,
         "gap_classification": gap_classification,
         "managed_physical_gap": gap_classification == "confirmed_gap",

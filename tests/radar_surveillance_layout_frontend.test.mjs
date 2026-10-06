@@ -9,10 +9,10 @@ import test from 'node:test';
 import {
   COVERAGE_STATUS_LABELS, RADAR_LAYOUT_EVALUATE_ENDPOINT, RADAR_LAYOUT_ENDPOINT,
   RADAR_DEMO_PREVIEW_WARNING, RADAR_LAYOUT_MODEL_SCOPE,
-  RADAR_LAYOUT_PROPOSAL_ONLY_NOTE, RADAR_LAYOUT_TITLE,
+  RADAR_LAYOUT_PROPOSAL_ONLY_NOTE, RADAR_LAYOUT_STATE_TEXT, RADAR_LAYOUT_TITLE,
   RADAR_LAYOUT_V1_1_SEMANTICS, RADAR_LAYOUT_VERSION, RADAR_POLICY_ENDPOINT,
   RADAR_TYPE_LABELS, REQUIRED_SITE_COUNT_LABELS, SOLVER_STATUS_LABELS,
-  SURFACE_CLASS_LABELS, isCompleteCoverage, radarLayoutModel,
+  SURFACE_CLASS_LABELS, isCompleteCoverage, radarEscalationNarrative, radarLayoutModel,
   radarOverlayModel, routeCoverageColours,
 } from '../cns_planner/web/js/workflow/radar_surveillance_layout.js';
 import {renderRadarSurveillanceLayoutPanel} from '../cns_planner/web/js/workflow/radar_surveillance_layout.js';
@@ -510,4 +510,119 @@ test('radar overlay never draws unselected panel coverage polygons', () => {
   assert.equal(model.panels.length, summaryPanels);
   assert.equal(JSON.stringify(model).includes('covered_sample_indices'), false);
   assert.equal(JSON.stringify(model).includes('candidate_panel_id'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Round31-C — 分级规划：先 Radar-I，仅在严格证明不可行时升级既有站址 Radar-II
+// ---------------------------------------------------------------------------
+
+const ESCALATION_OPTIMAL = {
+  available: true, policy: 'radar_i_first_then_existing_site_radar_ii_escalation',
+  radar_i_first: true, escalation_allowed_by_caller: true, escalated: false,
+  stage_a_status: 'optimal', stage_a_infeasibility_proven: false,
+  stage_a_structurally_proven: false, stage_a_insufficient_sample_count: 0,
+  stage_a_reason: null, escalation_blocked_reason: 'radar_i_sufficient',
+  radar_ii_selected: false, radar_i_site_count: 4, radar_ii_site_count: 0,
+  radar_i_site_ids: ['T1'], radar_ii_site_ids: [],
+  existing_sites_only: true, new_sites_created: false,
+  lexicographic_objectives: ['total_panel_count', 'radar_ii_panel_count'],
+};
+
+function escalatedSurvey() {
+  const snapshot = flow();
+  const item = snapshot.radar_surveillance_layout.items[0];
+  snapshot.radar_surveillance_layout.items[0] = {
+    ...item,
+    stage: 'radar_i_plus_radar_ii',
+    stage_label: 'Stage B：Radar-I + Radar-II（I-only 已被证明不可行）',
+    radar_i_panel_count: 1, radar_ii_panel_count: 2,
+    selected_panel_count: 3, selected_tower_count: 2,
+    radar_ii_site_count: 1, radar_ii_site_ids: ['T2'],
+    automatic_radar_ii_escalation: true,
+    allowed_radar_types: ['radar_i', 'radar_ii'],
+    escalation: {
+      ...ESCALATION_OPTIMAL,
+      escalated: true, stage_a_status: 'infeasible',
+      stage_a_infeasibility_proven: true, stage_a_structurally_proven: true,
+      stage_a_insufficient_sample_count: 121,
+      stage_a_reason: 'Radar-I 已证明不可行：求解前结构化检查显示 121 个航段的可达独立站址数少于要求数量',
+      escalation_blocked_reason: null, radar_ii_selected: true,
+      radar_ii_site_count: 1, radar_ii_site_ids: ['T2'],
+      lexicographic_objective_scope:
+        'radar_ii_panel_count_not_radar_ii_upgraded_site_count',
+      radar_ii_cost_semantics:
+        'existing_site_equipment_upgrade_not_a_free_radar_i_enhancement',
+      coverage_semantics: 'planning_geometry_not_field_measured_detection_capability',
+    },
+  };
+  return snapshot;
+}
+
+test('escalation narrative walks Radar-I first, then existing-site Radar-II', () => {
+  const model = radarLayoutModel(escalatedSurvey());
+  assert.equal(model.radarIISiteCount, 1);
+  assert.deepEqual(model.radarIISiteIds, ['T2']);
+  const text = radarEscalationNarrative(model).join('\n');
+  assert.match(text, /正在优先评估 Radar-I/);
+  assert.match(text, /Radar-I 无法满足独立站址要求/);
+  assert.match(text, /正在评估既有站址的 Radar-II 升级方案/);
+  assert.match(text, /已生成 Radar-I \/ Radar-II 混合方案/);
+});
+
+test('escalation narrative never claims Radar-II when Radar-I suffices', () => {
+  const snapshot = flow();
+  snapshot.radar_surveillance_layout.items[0] = {
+    ...snapshot.radar_surveillance_layout.items[0], escalation: ESCALATION_OPTIMAL,
+  };
+  const text = radarEscalationNarrative(radarLayoutModel(snapshot)).join('\n');
+  assert.match(text, /已优先评估 Radar-I/);
+  assert.match(text, /未触发 Radar-II/);
+  assert.doesNotMatch(text, /Radar-II 升级方案/);
+});
+
+test('escalation narrative keeps unfinished searches out of Radar-II', () => {
+  const snapshot = flow();
+  snapshot.radar_surveillance_layout.items[0] = {
+    ...snapshot.radar_surveillance_layout.items[0],
+    status: 'search_incomplete',
+    escalation: {
+      ...ESCALATION_OPTIMAL, stage_a_status: 'time_limit',
+      escalation_blocked_reason: 'stage_a_time_limit_not_proven_infeasible',
+    },
+  };
+  const text = radarEscalationNarrative(radarLayoutModel(snapshot)).join('\n');
+  assert.match(text, /Radar-I 求解未完成/);
+  assert.match(text, /不升级 Radar-II/);
+  assert.doesNotMatch(text, /无法满足独立站址要求/);
+});
+
+test('escalated plan discloses models, upgraded sites and folds technical fields', () => {
+  const html = renderRadarSurveillanceLayoutPanel(escalatedSurvey());
+  assert.match(html, /data-radar-escalation="escalated"/);
+  assert.match(html, /规划过程与结论/);
+  assert.match(html, /中近程雷达Ⅱ型/);
+  assert.match(html, /需要设备升级的既有铁塔 1 座/);
+  assert.match(html, /T2/);
+  assert.match(html, /未新建任何站址/);
+  // 技术字段收进高级详情，但**不删除**（仍可展开审计）。
+  assert.match(html, /高级详情：阶段标识、求解器与最优性证明/);
+  assert.match(html, /optimality_proven=true/);
+  assert.match(html, /高级详情：来源指纹/);
+  // 普通用户不再被要求手动选择型号组合。
+  assert.doesNotMatch(html, /radarAllowMixed/);
+  assert.match(html, /规划顺序（自动，普通用户无需选择）/);
+});
+
+test('radar layout status badges are localized for ordinary users', () => {
+  assert.equal(RADAR_LAYOUT_STATE_TEXT.infeasible, '不可行（已证明）');
+  assert.equal(RADAR_LAYOUT_STATE_TEXT.proposal_ready, '规划提案已生成');
+  assert.equal(RADAR_LAYOUT_STATE_TEXT.search_incomplete, '搜索未完成（未证明）');
+  const snapshot = flow();
+  snapshot.radar_surveillance_layout.status = 'proposal_ready';
+  snapshot.radar_surveillance_layout.items[0] = {
+    ...snapshot.radar_surveillance_layout.items[0], status: 'proposal_ready',
+  };
+  const html = renderRadarSurveillanceLayoutPanel(snapshot);
+  assert.match(html, /规划提案已生成/);
+  assert.doesNotMatch(html, />proposal_ready</);
 });

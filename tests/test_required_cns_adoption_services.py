@@ -205,12 +205,13 @@ def test_recommendation_emits_the_four_canonical_services(tmp_path):
     assert planning["local_monitoring_radius_m"] == 10000.0
     assert "not_rtk_baseline" in planning["local_monitoring_radius_semantics"]
 
-    #: Radar 必须携带 Radar-I orientation-first contract（且绝不自动升级 Radar-II）。
+    #: Round31-C：Radar 携带分级规划 contract（优先 Radar-I；仅在严格证明不可行时
+    #: 在既有站址上升级 Radar-II），且绝不放宽 range、绝不新建站址。
     radar_policy = surveillance[SERVICE_KEY_RADAR_NONCOOPERATIVE]["planning_policy"]
-    assert radar_policy["allowed_radar_types"] == ["radar_i"]
+    assert radar_policy["allowed_radar_types"] == ["radar_i", "radar_ii"]
     assert radar_policy["orientation_optimization"] is True
     assert radar_policy["orientation_policy"] == "bearing_derived_critical_angles"
-    assert radar_policy["allow_automatic_radar_ii_escalation"] is False
+    assert radar_policy["allow_automatic_radar_ii_escalation"] is True
     assert radar_policy["allow_range_relaxation"] is False
 
     #: Radar 绝不被合并进 RID：两条服务各自独立。
@@ -412,8 +413,10 @@ def test_adopted_services_are_consumed_as_explicit_not_legacy_view(tmp_path):
             "S", authoritative["project_default"]["surveillance"],
         ) if item["service_key"] == SERVICE_KEY_RADAR_NONCOOPERATIVE
     )
-    assert radar["planning_policy"]["allowed_radar_types"] == ["radar_i"]
-    assert radar["planning_policy"]["allow_automatic_radar_ii_escalation"] is False
+    #: Round31-C 分级规划：Radar-II 是"证明不可行后的既有站址升级方案"，
+    #: 与 RID cooperative 仍是两条互不替代的服务。
+    assert radar["planning_policy"]["allowed_radar_types"] == ["radar_i", "radar_ii"]
+    assert radar["planning_policy"]["allow_automatic_radar_ii_escalation"] is True
 
 
 def test_legacy_surveillance_requirement_never_derives_rid_services():
