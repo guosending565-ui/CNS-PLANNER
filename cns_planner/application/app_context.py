@@ -586,101 +586,25 @@ class ApplicationContext:
 
     def _layered_route_validation_evidence(
         self, *, candidate, path, altitude_layer, nominal_altitude_m, policy, payload,
+        on_progress=None, cancel_check=None,
     ):
-        """Build source-native evidence for the unchanged candidate centreline."""
+        """Build evidence through the context-free factory shared with the worker."""
 
-        from ..gis.fine_environment_adapter import (
-            NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
+        from ..gis.layered_validation_adapter import (
+            build_layered_validation_evidence_adapter,
         )
-        from ..gis.planning_constraint_field_adapter import restricted_area_continuous_evidence
-        from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
 
-        terrain_path = self.data.paths.get("terrain_dtm")
-        building_path = self.data.paths.get("buildings")
-        if not terrain_path or not building_path:
-            raise ValueError("请先配置 verified FABDEM terrain_dtm 与 buildings GeoPackage")
-        horizontal_crs = str((payload or {}).get("horizontal_crs") or "").strip()
-        if not horizontal_crs:
-            raise ValueError("production validation 需要显式 horizontal_crs（米制 CRS）")
-        transform = QgisMetricTransform(horizontal_crs)
-        metric_path = []
-        for point in path or []:
-            converted = transform.to_metric([float(point[0]), float(point[1])])
-            if converted is None:
-                raise ValueError("candidate CRS84 path 无法投影到显式 metric CRS")
-            metric_path.append([float(converted[0]), float(converted[1])])
-        route = {
-            "horizontal_geometry": {"linearized": {
-                "linestring_metric": metric_path, "curve_chord_error_m": 0.0,
-            }},
-        }
-        terrain = NativeTerrainWindowSource(terrain_path)
-        buildings = RouteCorridorBuildingSource(
-            building_path, crs_authority=horizontal_crs,
+        adapter = build_layered_validation_evidence_adapter(
+            state=self.workflow.session.state,
+            terrain_dtm_path=self.data.paths.get("terrain_dtm"),
+            buildings_path=self.data.paths.get("buildings"),
+            horizontal_crs=(payload or {}).get("horizontal_crs"),
         )
-        terrain_evidence = terrain.native_window(
-            transform=transform, metric_line=metric_path,
-            envelope_radius_m=0.0, spacing_m=None,
+        return adapter(
+            candidate=candidate, path=path, altitude_layer=altitude_layer,
+            nominal_altitude_m=nominal_altitude_m, policy=policy, payload=payload,
+            on_progress=on_progress, cancel_check=cancel_check,
         )
-        terrain_evidence["pixels"] = resolve_native_pixel_intervals(
-            route, terrain_evidence.get("pixels") or [], curve_chord_error_m=0.0,
-        )
-        building_evidence = buildings.query_route(
-            route, transform=transform,
-            horizontal_clearance_m=policy["building_horizontal_clearance_m"],
-            curve_error_m=0.0, terrain_source=terrain,
-        )
-        tower_collection = self.workflow.session.state.get("tower_obstacle_profiles") or {}
-        tower_items = []
-        for profile in (tower_collection.get("items") or {}).values():
-            if not isinstance(profile, dict):
-                continue
-            point = transform.to_metric([profile.get("longitude"), profile.get("latitude")])
-            if point is None:
-                continue
-            tower_items.append({**deepcopy(profile), "point_metric": [float(point[0]), float(point[1])]})
-        tower_evidence = {
-            "status": "passed" if tower_collection.get("status") == "passed" else "unresolved",
-            "applicability": "applicable",
-            "towers": tower_items,
-            "source": deepcopy(tower_collection.get("source")),
-        }
-        raw_restricted = (payload or {}).get("restricted_areas")
-        if raw_restricted is None:
-            restricted_evidence = {
-                "status": "unresolved", "applicability": "applicable", "areas": [],
-                "source": None,
-            }
-        else:
-            restricted_evidence = restricted_area_continuous_evidence(
-                raw_restricted, transform=transform,
-            )
-        return {
-            "adapter_id": "layered_candidate_real_source_validation_adapter_v1",
-            "source_type": "configured_real_sources",
-            "metric_path": metric_path, "metric_crs": horizontal_crs,
-            "to_geographic": transform.to_geographic,
-            "terrain": terrain_evidence, "buildings": building_evidence,
-            "towers": tower_evidence, "restricted_areas": restricted_evidence,
-            "sample_count": len(terrain_evidence.get("pixels") or []) + len(
-                building_evidence.get("buildings") or []
-            ) + len(tower_items) + len(restricted_evidence.get("areas") or []),
-            "sources": {
-                "terrain_dtm": terrain.describe(), "buildings": buildings.describe(),
-                "towers": {
-                    "collection_id": tower_collection.get("collection_id"),
-                    "status": tower_collection.get("status"),
-                    "count": tower_collection.get("count"),
-                    "confirmed_count": tower_collection.get("confirmed_count"),
-                },
-                "restricted_areas": deepcopy(restricted_evidence.get("source")),
-                "metric_frame": transform.describe(),
-            },
-            "airspace": {
-                "status": "not_applicable", "applicability": "display_only",
-                "used_in_validation": False,
-            },
-        }
 
     # --------------------------------------------------- Vertical Transition Validation V1
 

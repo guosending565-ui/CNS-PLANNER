@@ -72,6 +72,7 @@ TASK_ENDPOINTS = {
     #: 返回 task_id，不带时**保持原同步语义**（既有调用方完全不受影响）。
     "/api/layered-route-candidates/evaluate-real": "layered_route_candidate_evaluate",
     "/api/route-risk-profiles/evaluate": "route_risk_profile_evaluate",
+    "/api/layered-route-validations/evaluate-real": "layered_route_validation_evaluate",
 }
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -1204,6 +1205,7 @@ def _probe_runner(context):
 
 LAYERED_CANDIDATE_TASK_TYPE = "layered_route_candidate_evaluate"
 ROUTE_RISK_PROFILE_TASK_TYPE = "route_risk_profile_evaluate"
+LAYERED_ROUTE_VALIDATION_TASK_TYPE = "layered_route_validation_evaluate"
 
 #: 唯一影响候选结果的算法选择：production 航路主链固定是 Theta* V2。
 LAYERED_CANDIDATE_ALGORITHM_TYPES = ("layered_route_planner",)
@@ -1564,6 +1566,249 @@ def _route_risk_profile_runner(context):
     )
 
 
+# ---- Step03 后台任务：航路连续安全验证（Round32-D） -----------------------------
+
+LAYERED_ROUTE_VALIDATION_WORKER_PAYLOAD_KEYS = (
+    "candidate_id", "horizontal_crs", "horizontal_crs_source",
+    "conditional_hard_exclusion_feature_ids", "restricted_areas",
+    "resource_limits", "max_evidence_items", "max_validation_samples",
+    "data_source_paths",
+)
+
+LAYERED_ROUTE_VALIDATION_CANDIDATE_KEYS = (
+    "candidate_id", "candidate_fingerprint", "path", "route_id", "altitude_layer_id",
+    "status", "current_applicability", "constraint_field_fingerprint",
+    "unknown_constraint_count", "traversed_unknown_cell_count",
+    "contains_unknown_constraints", "operational_applicability",
+)
+
+
+def _validation_current_candidate(state, payload):
+    collection = (state if isinstance(state, dict) else {}).get("layered_route_candidates") or {}
+    wanted = str((payload or {}).get("candidate_id") or collection.get("active_candidate_id") or "")
+    items = [item for item in (collection.get("items") or []) if isinstance(item, dict)]
+    candidate = next((item for item in reversed(items)
+                      if str(item.get("candidate_id") or "") == wanted), None)
+    if candidate is None:
+        candidate = next((item for item in reversed(items)
+                          if item.get("status") == "candidate"
+                          and item.get("current_applicability") != "stale"), None)
+    if candidate is None:
+        return None
+    projected = {key: deepcopy(candidate.get(key))
+                 for key in LAYERED_ROUTE_VALIDATION_CANDIDATE_KEYS}
+    if not projected.get("current_applicability"):
+        projected["current_applicability"] = (
+            "current" if str(candidate.get("candidate_id")) == str(
+                collection.get("active_candidate_id")
+            ) else "stale"
+        )
+    return projected
+
+
+def _validation_current_profile(state, candidate):
+    if not candidate:
+        return None
+    collection = (state if isinstance(state, dict) else {}).get("route_risk_profiles") or {}
+    for item in reversed(collection.get("items") or []):
+        if not isinstance(item, dict) or item.get("status") != "passed":
+            continue
+        reference = item.get("candidate") or {}
+        if (reference.get("candidate_id") != candidate.get("candidate_id")
+                or reference.get("candidate_fingerprint") != candidate.get("candidate_fingerprint")):
+            continue
+        if item.get("current_applicability") == "stale":
+            continue
+        return {
+            "profile_id": item.get("profile_id"),
+            "profile_fingerprint": (item.get("fingerprints") or {}).get(
+                "profile_fingerprint"
+            ),
+            "candidate_id": reference.get("candidate_id"),
+            "candidate_fingerprint": reference.get("candidate_fingerprint"),
+            "status": item.get("status"), "current_applicability": "current",
+        }
+    return None
+
+
+def _layered_route_validation_worker_payload(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    for key in LAYERED_ROUTE_VALIDATION_WORKER_PAYLOAD_KEYS:
+        if payload.get(key) is not None:
+            compact[key] = deepcopy(payload[key])
+    return compact
+
+
+def _layered_route_validation_inputs(state, payload):
+    """Freeze only facts consumed by validation; never transport candidate masks/cells."""
+
+    from ..domain.layered_route_validation import VALIDATOR_VERSIONS
+    from ..gis.layered_validation_adapter import runtime_source_identities
+
+    state = state if isinstance(state, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    candidate = _validation_current_candidate(state, payload)
+    profile = _validation_current_profile(state, candidate)
+    layer_id = (candidate or {}).get("altitude_layer_id")
+    altitude = next((deepcopy(item) for item in (
+        (state.get("spatial_3d") or {}).get("altitude_layers") or []
+    ) if str(item.get("altitude_layer_id")) == str(layer_id)), None)
+    audits = ((state.get("source_audits") or {}).get("items") or {})
+    selected_audits = {role: deepcopy(audits.get(role) or {})
+                       for role in ("terrain_dtm", "buildings")}
+    paths = deepcopy(payload.get("data_source_paths") or {})
+    tower_collection = state.get("tower_obstacle_profiles") or {}
+    return {
+        "candidate": candidate,
+        "route_risk_profile": profile,
+        "altitude_layer": altitude,
+        "policies": {
+            "layered_route_feasibility_policy": deepcopy(
+                state.get("layered_route_feasibility_policy") or {}
+            ),
+            "building_clearance_policy": deepcopy(
+                state.get("building_clearance_policy") or {}
+            ),
+            "tower_clearance_policy": deepcopy(state.get("tower_clearance_policy") or {}),
+        },
+        "source_audits": selected_audits,
+        "source_identities": runtime_source_identities(paths),
+        "data_source_paths": paths,
+        "tower_obstacle_profiles": deepcopy(tower_collection),
+        "tower_obstacle_profile_identity": {
+            key: deepcopy(tower_collection.get(key))
+            for key in ("collection_id", "status", "count", "confirmed_count", "source")
+        },
+        "restricted_areas": deepcopy(
+            payload["restricted_areas"]
+            if "restricted_areas" in payload else state.get("restricted_areas")
+        ),
+        "metric_crs": str(payload.get("horizontal_crs") or "").strip(),
+        "validator_versions": deepcopy(VALIDATOR_VERSIONS),
+    }
+
+
+def _layered_route_validation_scope(state, payload):
+    candidate = _validation_current_candidate(state, payload)
+    return "layered_route_validation:" + str(
+        (candidate or {}).get("candidate_id") or "no-candidate"
+    )
+
+
+def _layered_route_validation_plan(state, payload):
+    worker_payload = _layered_route_validation_worker_payload(state, payload)
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _layered_route_validation_inputs(state, worker_payload),
+    }
+
+
+def _layered_route_validation_summary(record):
+    record = record if isinstance(record, dict) else {}
+    return {
+        "validation_id": record.get("validation_id"),
+        "status": record.get("status"),
+        "candidate_id": (record.get("candidate") or {}).get("candidate_id"),
+        "validation_fingerprint": (record.get("fingerprints") or {}).get(
+            "validation_fingerprint"
+        ),
+        "current_applicability": record.get("current_applicability"),
+    }
+
+
+def _layered_route_validation_runner(context):
+    from ..application.layered_route_validation_service import LayeredRouteValidationService
+    from ..gis.layered_validation_adapter import build_layered_validation_evidence_adapter
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    inputs = (snapshot or {}).get("inputs") or {}
+    worker_payload = (snapshot or {}).get("worker_payload") or {}
+    context.check_cancel()
+    context.progress(0.02, "正在准备连续验证输入")
+    candidate = deepcopy(inputs.get("candidate"))
+    profile = deepcopy(inputs.get("route_risk_profile"))
+    policies = inputs.get("policies") or {}
+    state = {
+        "layered_route_validations": {"status": "not_calculated", "items": []},
+        "result_statuses": {},
+        "spatial_3d": {"altitude_layers": [deepcopy(inputs.get("altitude_layer"))]
+                       if inputs.get("altitude_layer") else []},
+        "layered_route_feasibility_policy": deepcopy(
+            policies.get("layered_route_feasibility_policy") or {}
+        ),
+        "building_clearance_policy": deepcopy(
+            policies.get("building_clearance_policy") or {}
+        ),
+        "tower_clearance_policy": deepcopy(policies.get("tower_clearance_policy") or {}),
+        "source_audits": {"status": "passed", "items": deepcopy(
+            inputs.get("source_audits") or {}
+        )},
+        "tower_obstacle_profiles": deepcopy(inputs.get("tower_obstacle_profiles") or {}),
+        "restricted_areas": deepcopy(inputs.get("restricted_areas")),
+    }
+
+    class _CollectionView:
+        def __init__(self, items, active_key, active_value):
+            self.items, self.active_key, self.active_value = items, active_key, active_value
+
+        def result_snapshot(self):
+            return {
+                "status": "passed", "count": len(self.items),
+                "items": deepcopy(self.items), self.active_key: self.active_value,
+            }
+
+    layered = _CollectionView(
+        [candidate] if candidate else [], "active_candidate_id",
+        (candidate or {}).get("candidate_id"),
+    )
+    profile_item = None
+    if profile:
+        profile_item = {
+            "profile_id": profile.get("profile_id"), "status": profile.get("status"),
+            "current_applicability": profile.get("current_applicability"),
+            "candidate": {
+                "candidate_id": profile.get("candidate_id"),
+                "candidate_fingerprint": profile.get("candidate_fingerprint"),
+            },
+            "fingerprints": {"profile_fingerprint": profile.get("profile_fingerprint")},
+        }
+    profiles = _CollectionView([profile_item] if profile_item else [], "active_profile_id",
+                               (profile or {}).get("profile_id"))
+    session = _WorkerReadOnlySession(state)
+    service = LayeredRouteValidationService(
+        session, _WorkerInvalidation(), _worker_snapshot_passthrough,
+        layered, profiles,
+    )
+    paths = inputs.get("data_source_paths") or {}
+    adapter = build_layered_validation_evidence_adapter(
+        state=state, terrain_dtm_path=paths.get("terrain_dtm"),
+        buildings_path=paths.get("buildings"), horizontal_crs=inputs.get("metric_crs"),
+    )
+    record = service.plan(
+        worker_payload, evidence_adapter=adapter,
+        on_progress=context.progress, cancel_check=context.check_cancel,
+    )
+    context.check_cancel()
+    context.progress(0.90, "正在写入临时验证结果")
+    metadata = context.stage(
+        {"logical_key": "layered_route_validations", "value": record},
+        artifact_type="layered_route_validation.detail",
+    )
+    summary = _layered_route_validation_summary(record)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="layered_route_validation.detail", summary=summary,
+        ),
+        message="航路连续安全验证完成，等待发布", progress=0.90,
+    )
+
+
 CORRIDOR_TASK_TYPE = "cns_service_corridor_evaluate"
 PCF_TASK_TYPE = "planning_constraint_field_generate"
 
@@ -1656,6 +1901,19 @@ _ROUTE_RISK_PROFILE_SPEC = TaskSpec(
     algorithm_types=(),
 )
 
+_LAYERED_ROUTE_VALIDATION_SPEC = TaskSpec(
+    task_type=LAYERED_ROUTE_VALIDATION_TASK_TYPE,
+    task_name="航路连续安全验证",
+    message="航路连续安全验证已提交，正在后台计算",
+    business_endpoint="/api/layered-route-validations/evaluate-real",
+    scope_key=_layered_route_validation_scope,
+    input_snapshot=_layered_route_validation_inputs,
+    submit_plan=_layered_route_validation_plan,
+    runner=_layered_route_validation_runner,
+    release="layered_route_validations",
+    algorithm_types=(),
+)
+
 _P15_SPEC = TaskSpec(
     task_type=P15_TASK_TYPE,
     task_name="CNS 能力缺口评估",
@@ -1683,18 +1941,21 @@ _P16_SPEC = TaskSpec(
 )
 
 for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _RADAR_SPEC, _PROBE_SPEC,
-              _LAYERED_CANDIDATE_SPEC, _ROUTE_RISK_PROFILE_SPEC):
+              _LAYERED_CANDIDATE_SPEC, _ROUTE_RISK_PROFILE_SPEC,
+              _LAYERED_ROUTE_VALIDATION_SPEC):
     register_task_spec(_spec)
 
 
 __all__ = [
-    "CORRIDOR_TASK_TYPE", "LAYERED_CANDIDATE_TASK_TYPE", "P15_TASK_TYPE",
+    "CORRIDOR_TASK_TYPE", "LAYERED_CANDIDATE_TASK_TYPE",
+    "LAYERED_ROUTE_VALIDATION_TASK_TYPE", "P15_TASK_TYPE",
     "P15UpstreamNotCurrent", "P16_TASK_TYPE",
     "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
     "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "RADAR_TASK_TYPE",
     "ROUTE_RISK_PROFILE_TASK_TYPE", "TASK_ENDPOINTS",
     "TaskCancelled",
     "TaskInputChanged", "fingerprint_payload",
+    "_layered_route_validation_inputs", "_layered_route_validation_scope",
     "has_task_type",
     "register_task_spec", "task_spec", "task_specs", "task_type_for_endpoint",
 ]

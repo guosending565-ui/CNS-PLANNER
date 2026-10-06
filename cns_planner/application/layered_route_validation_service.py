@@ -7,7 +7,7 @@ actual terrain/building verdicts to the production-neutral pure validators share
 
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from math import hypot
 
 from ..domain.layered_route import resolve_cruise_altitude
@@ -129,14 +129,62 @@ class LayeredRouteValidationService:
 
     # ------------------------------------------------------------------ validation
 
-    def validate(self, payload=None, *, evidence_adapter=None, save=True):
+    def validate(self, payload=None, *, evidence_adapter=None, save=True,
+                 on_progress=None, cancel_check=None):
+        """Synchronous compatibility entry using the same plan/publish split as workers."""
+
+        record = self.plan(
+            payload, evidence_adapter=evidence_adapter,
+            on_progress=on_progress, cancel_check=cancel_check,
+        )
+        return self.apply_computed(record, save=save)
+
+    def plan(self, payload=None, *, evidence_adapter=None, on_progress=None,
+             cancel_check=None):
+        """Compute one validation record on a detached state copy, without side effects."""
+
+        class _ReadOnlyPlanSession:
+            def __init__(self, state):
+                self.state = state
+
+            def save(self):  # pragma: no cover - a regression must fail loudly
+                raise RuntimeError("validation plan 绝不写 canonical state")
+
+        session = _ReadOnlyPlanSession(deepcopy(self.session.state))
+        detached = copy(self)
+        detached.session = session
+        detached.layered = copy(self.layered)
+        detached.risk_profiles = copy(self.risk_profiles)
+        if hasattr(detached.layered, "session"):
+            detached.layered.session = session
+        if hasattr(detached.risk_profiles, "session"):
+            detached.risk_profiles.session = session
+        if hasattr(detached.risk_profiles, "layered"):
+            detached.risk_profiles.layered = detached.layered
+        return detached._compute_record(
+            payload, evidence_adapter=evidence_adapter,
+            on_progress=on_progress, cancel_check=cancel_check,
+        )
+
+    def apply_computed(self, record, *, save=True):
+        """Publish a computed record; this is the sole canonical validation writer."""
+
+        if not isinstance(record, dict) or not record.get("validation_id"):
+            raise ValueError("validation computed record 无效")
+        return self._store(deepcopy(record), save=save)
+
+    def _compute_record(self, payload=None, *, evidence_adapter=None,
+                        on_progress=None, cancel_check=None):
         payload = payload if isinstance(payload, dict) else {}
+        progress = on_progress if callable(on_progress) else lambda *_args: None
+        cancel = cancel_check if callable(cancel_check) else lambda: None
+        progress(0.02, "正在准备连续验证输入")
         state = self.ensure_state()
         readiness = self.readiness_snapshot(payload)
         candidate = self._select_current_candidate(payload)
         if readiness["status"] != "ready":
             record = self._not_ready_record(candidate, readiness)
-            return self._store(record, save=save)
+            return record
         layer = self._layer_for(candidate)
         cruise = resolve_cruise_altitude(layer)
         terrain_clearance = float(
@@ -163,20 +211,22 @@ class LayeredRouteValidationService:
                 **readiness,
                 "blockers": [_block("evidence_adapter_unavailable", "未配置 production source adapter")],
             })
-            return self._store(record, save=save)
+            return record
         try:
             evidence = adapter(
                 candidate=deepcopy(candidate), path=deepcopy(candidate.get("path") or []),
                 altitude_layer=deepcopy(layer),
                 nominal_altitude_m=float(cruise["altitude_egm2008_m"]),
                 policy=deepcopy(policy), payload=deepcopy(payload),
+                on_progress=progress, cancel_check=cancel,
             )
         except (TypeError, ValueError, RuntimeError) as exc:
             record = self._not_ready_record(candidate, {
                 **readiness,
                 "blockers": [_block("real_source_evidence_unavailable", str(exc))],
             })
-            return self._store(record, save=save)
+            return record
+        cancel()
         evidence = evidence if isinstance(evidence, dict) else {}
         source_type = str(evidence.get("source_type") or "")
         if source_type != "configured_real_sources":
@@ -187,7 +237,7 @@ class LayeredRouteValidationService:
                     "production validation 只接受 verified configured real FABDEM/buildings source chain",
                 )],
             })
-            return self._store(record, save=save)
+            return record
         route = evidence.get("route")
         if not isinstance(route, dict):
             route = _constant_metric_route(
@@ -200,7 +250,7 @@ class LayeredRouteValidationService:
                 **readiness,
                 "blockers": [_block("projection_not_ready", str(exc))],
             })
-            return self._store(record, save=save)
+            return record
 
         sources = deepcopy(evidence.get("sources") or {})
         metric_crs = evidence.get("metric_crs") or (sources.get("metric_frame") or {}).get(
@@ -229,16 +279,20 @@ class LayeredRouteValidationService:
                 "max_evidence_items": limit, "observed_evidence_items": observed,
                 "limit_reached": True, "safety_parameter": False,
             }
-            return self._store(record, save=save)
+            return record
 
+        progress(0.30, "正在验证地形净空")
         terrain = validate_terrain(
             metric_route, evidence=evidence.get("terrain") or {}, policy=policy,
             to_geographic=evidence.get("to_geographic"),
         )
+        cancel()
+        progress(0.50, "正在验证建筑净空")
         building = validate_buildings(
             metric_route, evidence=evidence.get("buildings") or {}, policy=policy,
             to_geographic=evidence.get("to_geographic"),
         )
+        cancel()
         tower = validate_towers(
             metric_route, evidence=evidence.get("towers") or {}, policy=policy,
             to_geographic=evidence.get("to_geographic"),
@@ -248,6 +302,8 @@ class LayeredRouteValidationService:
             vertical_reference=str(layer.get("vertical_reference") or ""),
             to_geographic=evidence.get("to_geographic"),
         )
+        cancel()
+        progress(0.75, "正在检查证据不足区段")
         domains = (terrain, building, tower, restricted_area)
         statuses = {item.get("status") for item in domains}
         status = (
@@ -304,7 +360,8 @@ class LayeredRouteValidationService:
             "max_evidence_items": limit, "observed_evidence_items": observed,
             "limit_reached": False, "safety_parameter": False,
         }
-        return self._store(record, save=save)
+        progress(0.85, "正在整理连续验证结论")
+        return record
 
     # ------------------------------------------------------------------ invalidation
 

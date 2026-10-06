@@ -82,12 +82,20 @@ test('the helper refuses to be constructed without its three dependencies',()=>{
 // ---- 2. 端点契约：局部返回的调用必须走 helper，preview 必须只读 ---------------------
 
 const LOCAL_MUTATION_ENDPOINTS=[
-  ['workflow/layered_route_validation.js','/api/layered-route-validations/evaluate-real'],
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/apply'],
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/revoke'],
   ['workflow/route3d_profile.js','/api/route-3d-profiles/evaluate'],
   ['workflow/route3d_profile.js','/api/route-3d-profiles/delete'],
 ];
+
+test('continuous validation is submitted through the shared background task center',()=>{
+  const source=read('workflow/layered_route_validation.js');
+  const endpoint="'/api/layered-route-validations/evaluate-real'";
+  const index=source.indexOf(endpoint);
+  assert.notEqual(index,-1);
+  assert.match(source.slice(Math.max(0,index-160),index),/submitBackgroundTask\(/);
+  assert.doesNotMatch(source.slice(Math.max(0,index-160),index),/resourceMutationAndRefresh\(/);
+});
 
 const READ_ONLY_PREVIEW_ENDPOINTS=[
   ['workflow/layered_operational_adoption.js','/api/layered-operational-adoptions/preview'],

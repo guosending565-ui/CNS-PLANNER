@@ -153,8 +153,15 @@ class LayeredOperationalAdoptionService:
             "adoption_owned": True,
         })
         conflict = self._conflict(route_id)
+        validation_fingerprint = (validation.get("fingerprints") or {}).get(
+            "validation_fingerprint"
+        )
         return {
             "status": "ready", "validation_id": validation.get("validation_id"),
+            # Preview 时刻冻结的证据身份：Apply 只允许提交这里的值（前端 preview 缓存
+            # 读取同一字段）；缺失时 apply 的 expected_validation_fingerprint 退化成
+            # None，会跳过"Preview 后证据变化"的二次校验。
+            "validation_fingerprint": validation_fingerprint,
             "route_id": route_id, "projection_fingerprint": projection_fingerprint,
             "route": route, "route_operating_layer": assignment,
             "conflict": conflict,
@@ -174,6 +181,9 @@ class LayeredOperationalAdoptionService:
         projection = self.projection(payload)
         result = {
             "status": "ready" if projection.get("status") == "ready" else "not_ready",
+            # Preview 冻结的身份必须出现在响应顶层：前端缓存只读 value.validation_fingerprint
+            # （缺失时回落到 projection.validation_fingerprint），Apply 提交的就是它。
+            "validation_fingerprint": projection.get("validation_fingerprint"),
             "projection": projection,
             "publication_allowed": bool(
                 projection.get("status") == "ready"

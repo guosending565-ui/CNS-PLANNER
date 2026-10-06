@@ -1897,6 +1897,9 @@ class WorkflowService:
             payload, evidence_adapter=evidence_adapter,
         )
 
+    def layered_route_validation_apply_computed(self, record):
+        return self.layered_route_validation_service.apply_computed(record)
+
     def layered_operational_adoptions(self):
         return self.layered_operational_adoption_service.result_snapshot()
 

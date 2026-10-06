@@ -342,7 +342,7 @@ function readinessBlock(model,flow){
     +'<div class="parameter-note">本次将显式提交的米制 CRS 来源：'
     +escapeHtml(metricCrs.source)+'（解析自项目正式成果，可人工改写）。</div>'
     +'<div class="button-row"><button class="primary" id="evaluateLayeredRouteValidation"'+button
-    +'>运行 LayeredRouteCandidate 连续验证</button></div>'
+    +'>运行航路连续安全验证</button></div>'
     +'<div class="parameter-note">验证不 replan、不 refine、不改 candidate，也不写入 operational_routes；'
     +'证据与 fingerprint 只在后端计算。</div>',
     statusBadge(model.readinessStatus));
@@ -524,14 +524,21 @@ export function layeredValidationHorizontalCrsPayload(value,flow){
 export function bindLayeredRouteValidation(c){
   if(!c||typeof c.$!=='function')return;
   if(!c.$('evaluateLayeredRouteValidation'))return;
-  c.actionButton('evaluateLayeredRouteValidation',()=>{
+  c.actionButton('evaluateLayeredRouteValidation',async()=>{
     const field=c.$('layeredValidationHorizontalCrs');
     //: 面板每次 renderWorkflow 都会重画输入框，因此预填值在构造时按当前 flow 解析；
     //: 这里仍优先读用户当下输入，留空才回落到项目正式 CRS。
     const payload=layeredValidationHorizontalCrsPayload(
       field?field.value:'',
       typeof c.flow==='function'?c.flow():null);
-    return c.resourceMutationAndRefresh(
-      '/api/layered-route-validations/evaluate-real',payload);
+    const button=c.$('evaluateLayeredRouteValidation');
+    try{
+      const submitted=await c.submitBackgroundTask(
+        '/api/layered-route-validations/evaluate-real',payload);
+      if(button)button.textContent='后台验证中…';
+      return submitted;
+    }catch(error){
+      c.panelError('航路连续安全验证未提交：'+((error&&error.message)||String(error)),'error');
+    }
   });
 }

@@ -885,9 +885,12 @@ class ApiRouter:
     # ---- Phase4-B6X：task 路由辅助 -------------------------------------------------
 
     #: 需要把主进程已解析的运行期真实来源冻结进快照的后台任务类型（见 _freeze_runtime_sources）。
-    RUNTIME_SOURCE_TASK_TYPES = ("layered_route_candidate_evaluate",)
-    #: 需要冻结的运行期来源键（最小面：只冻结任务真正消费的那些路径）。
-    RUNTIME_SOURCE_KEYS = ("terrain_dtm",)
+    RUNTIME_SOURCE_KEYS_BY_TASK = {
+        "layered_route_candidate_evaluate": ("terrain_dtm",),
+        "layered_route_validation_evaluate": ("terrain_dtm", "buildings"),
+    }
+    #: 兼容 Round32-C 对“哪些 task 需要 runtime sources”的只读合同。
+    RUNTIME_SOURCE_TASK_TYPES = tuple(RUNTIME_SOURCE_KEYS_BY_TASK)
 
     def _task_service(self, *, drive=False):
         """任务运行时访问器。
@@ -956,12 +959,13 @@ class ApiRouter:
         这样 worker 用的就是与同步路径**同一个**装配函数，不存在第二套来源解析。
         """
 
-        if task_type not in self.RUNTIME_SOURCE_TASK_TYPES:
+        source_keys = self.RUNTIME_SOURCE_KEYS_BY_TASK.get(task_type)
+        if not source_keys:
             return payload
         paths = getattr(getattr(getattr(self, "context", None), "data", None), "paths", None) or {}
         #: 只冻结该任务**真正消费**的运行期来源（最小面）：coarse 可行性掩膜的 FABDEM DTM。
         #: 建筑/人口等事实来自 canonical state，不在这里冻结，避免无关路径变化让任务假 stale。
-        resolved = {key: paths.get(key) for key in self.RUNTIME_SOURCE_KEYS if paths.get(key)}
+        resolved = {key: paths.get(key) for key in source_keys if paths.get(key)}
         if not resolved:
             return payload
         merged = dict(payload)

@@ -744,7 +744,7 @@ test('domain status margins intervals source evidence and fingerprints are trans
 
 // ---- 6. evaluate-real 端点 -----------------------------------------------------
 
-test('the validation panel only calls the evaluate-real endpoint and writes nothing else',async()=>{
+test('the validation panel submits evaluate-real as a background task and writes nothing else',async()=>{
   withStubDom(document=>{
     const flow=baseFlow();
     mountStep3(document,flow);
@@ -753,9 +753,9 @@ test('the validation panel only calls the evaluate-real endpoint and writes noth
     const calls=[],registered=[];
     const c={
       flow:()=>flow,$:id=>document.getElementById(id),
+      paint:()=>{},
       panelError:message=>calls.push(['error',message]),
-      // BUG-STEP03-RESOURCEACTION-001：局部 mutation 必须走 resourceMutationAndRefresh，
-      // 不允许再用 resourceAction 把局部 response 当成完整 workflow。
+      submitBackgroundTask:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({task_id:'T-1'});},
       resourceMutationAndRefresh:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
       resourceAction:(path,payload)=>{calls.push(['unexpected-resourceAction',path,payload]);return Promise.resolve({});},
       actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
@@ -769,20 +769,22 @@ test('the validation panel only calls the evaluate-real endpoint and writes noth
     return document.getElementById('evaluateLayeredRouteValidation').onclick().then(()=>{
       assert.deepEqual(calls.pop(),['/api/layered-route-validations/evaluate-real',
         {horizontal_crs:'EPSG:32651'}],
-      'evaluate-real 必须走 mutation+refresh，并显式提交 horizontal_crs');
+      'evaluate-real 必须走后台任务入口，并显式提交 horizontal_crs');
+      assert.equal(document.getElementById('evaluateLayeredRouteValidation').textContent,
+        '后台验证中…');
     });
   });
   // 源码层契约：面板只使用既有的四个端点，不做 replan、不碰地图、不删路由。
   const source=readFileSync(new URL('../cns_planner/web/js/workflow/layered_route_validation.js',import.meta.url),'utf8');
   assert.match(source,/\/api\/layered-route-validations\/evaluate-real/);
-  assert.match(source,/resourceMutationAndRefresh/,'局部 response 不得直接覆盖全局 flow');
+  assert.match(source,/submitBackgroundTask/,'连续验证必须复用既有后台任务中心');
   assert.match(source,/horizontal_crs/,'payload 必须显式携带 horizontal_crs');
   assert.doesNotMatch(source,/c\.mutate\('|setLayer\(|setZoom|fitLonLatBbox|replan\(/);
   assert.doesNotMatch(source,/operational_routes\s*=/,'validation must never write operational_routes');
   assert.doesNotMatch(source,/import .*from '(?!\.\/common\.js)/,'no third-party dependency may be added');
 });
 
-test('the validation panel renders an explicit metric CRS input and refuses to run when it is empty',async()=>{
+test('the validation panel renders an explicit metric CRS input and freezes the resolved fallback',async()=>{
   const flow=baseFlow();
   const html=renderLayeredRouteValidation(flow);
   assert.match(html,/id="layeredValidationHorizontalCrs"/,'必须提供显式 horizontal_crs 输入框');
@@ -795,7 +797,9 @@ test('the validation panel renders an explicit metric CRS input and refuses to r
       const calls=[];
       const c={
         flow:()=>flow,$:id=>document.getElementById(id),
+        paint:()=>{},
         panelError:message=>calls.push(['error',message]),
+        submitBackgroundTask:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({task_id:'T-1'});},
         resourceMutationAndRefresh:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
         resourceAction:(path,payload)=>{calls.push(['unexpected-resourceAction',path,payload]);return Promise.resolve({});},
         // 与 main.js 的 actionButton 同构：handler 抛错时落到 panelError。
@@ -811,10 +815,11 @@ test('the validation panel renders an explicit metric CRS input and refuses to r
       assert.ok(field,'the CRS input must exist');
       field.value='   ';
       return document.getElementById('evaluateLayeredRouteValidation').onclick().then(()=>{
-        assert.equal(calls.some(item=>item[0]==='/api/layered-route-validations/evaluate-real'),false,
-          '空 horizontal_crs 时不得发起任何请求');
-        assert.match(calls.filter(item=>item[0]==='error').map(item=>item[1]).join(' '),
-          /horizontal_crs/,'必须给出清楚的空值提示');
+        const submitted=calls.find(item=>item[0]==='/api/layered-route-validations/evaluate-real');
+        assert.deepEqual(submitted,[
+          '/api/layered-route-validations/evaluate-real',
+          {horizontal_crs:'EPSG:32651',horizontal_crs_source:'engineering_suggested_default'},
+        ],'输入框留空时也必须把已解析的米制 CRS 与来源显式冻结进后台 payload');
         resolve();
       });
     });
@@ -1161,6 +1166,7 @@ test('the legacy operationalRoutes compute entries are withdrawn from Step03',()
     const calls=[],registered=[];
     const c={
       flow:()=>mounted,$:id=>document.getElementById(id),
+      paint:()=>{},submitBackgroundTask:()=>Promise.resolve({task_id:'T-1'}),
       panelError:()=>{},mutate:(action,payload)=>{calls.push([action,payload]);return Promise.resolve({});},
       resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
       resourceMutationAndRefresh:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
@@ -1205,6 +1211,7 @@ test('bind wires preview apply and revoke with the contracted payloads and order
       };
       const c={
         flow:()=>currentFlow,$:id=>document.getElementById(id),
+        paint:()=>{},submitBackgroundTask:()=>Promise.resolve({task_id:'T-1'}),
         panelError:message=>calls.push(['error',message]),
         // Preview 只读（side_effects=false）→ computeAction；apply/revoke 是局部 mutation
         // → resourceMutationAndRefresh。两者都不得把局部 response 当成完整 workflow。
