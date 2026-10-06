@@ -1254,26 +1254,51 @@ export function bind(c){
     return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
   });
   // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 独立连续覆盖复核。
-  if(c.$('evaluateRadarSurveillanceLayout'))c.actionButton('evaluateRadarSurveillanceLayout',async()=>{
-    const payload={route_id:'all'};
-    const demoCandidate=(c.flow().layered_route_candidates?.items||[]).find(
-      item=>item?.status==='candidate'&&item?.current_applicability==='current'
-    );
-    if(c.$('radarDemoPreviewOnly')?.checked===true){
-      payload.demo_preview_only=true;
-      payload.route_source='current_layered_candidate';
-    }
-    const buffer=c.$('radarCoastalBuffer')?.value.trim();
-    if(buffer!==''&&buffer!=null)payload.coastal_uncertainty_buffer_m=Number(buffer);
-    const layer=c.$('radarLandMaskLayer')?.value.trim();
-    if(layer)payload.land_mask_layer_name=layer;
-    const result=await c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
-    await loadRadarSurveillanceDetail({
-      api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,
-      routeId:payload.demo_preview_only?(demoCandidate?.route_id||null):null,
-    });
-    return result;
-  });
+  // Round 31-E：正式路径改为**后台任务提交**（立刻返回 task_id，进度 / 心跳 / 取消 /
+  // 完成后刷新结果与地图全部复用「后台计算任务」窗口）。演示预览仍走同步入口：它消费
+  // 当前会话的候选 / 风险画像 / 验证证据运行时绑定，后台 worker 进程无法复现同一份注入。
+  if(c.$('evaluateRadarSurveillanceLayout')){
+    const radarSubmitButton=c.$('evaluateRadarSurveillanceLayout');
+    radarSubmitButton.onclick=async()=>{
+      const original=radarSubmitButton.textContent;
+      const payload={route_id:'all'};
+      const demoCandidate=(c.flow().layered_route_candidates?.items||[]).find(
+        item=>item?.status==='candidate'&&item?.current_applicability==='current'
+      );
+      if(c.$('radarDemoPreviewOnly')?.checked===true){
+        payload.demo_preview_only=true;
+        payload.route_source='current_layered_candidate';
+      }
+      const buffer=c.$('radarCoastalBuffer')?.value.trim();
+      if(buffer!==''&&buffer!=null)payload.coastal_uncertainty_buffer_m=Number(buffer);
+      const layer=c.$('radarLandMaskLayer')?.value.trim();
+      if(layer)payload.land_mask_layer_name=layer;
+      if(payload.demo_preview_only){
+        const preview=await c.resourceAction(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
+        await loadRadarSurveillanceDetail({
+          api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,
+          routeId:demoCandidate?.route_id||null,
+        });
+        return preview;
+      }
+      try{
+        radarSubmitButton.disabled=true;
+        radarSubmitButton.dataset.busy='true';
+        radarSubmitButton.textContent='正在提交后台计算…';
+        const submitted=await c.submitBackgroundTask(RADAR_LAYOUT_EVALUATE_ENDPOINT,payload);
+        //: 提交成功后按钮保持"后台计算中"，直到任务完成后刷新快照重建本面板。
+        radarSubmitButton.textContent='后台计算中，请在「后台计算任务」窗口查看进度';
+        return submitted;
+      }catch(error){
+        c.panelError(error.message||String(error));
+        if(document.body.contains(radarSubmitButton)){
+          radarSubmitButton.disabled=false;
+          delete radarSubmitButton.dataset.busy;
+          radarSubmitButton.textContent=original;
+        }
+      }
+    };
+  }
   // B5X：逐点明细按需载入（只读 GET）。通用快照只带有界摘要；明细绝不随快照下发。
   if(c.$('loadRadarSurveillanceDetail'))c.actionButton('loadRadarSurveillanceDetail',()=>
     loadRadarSurveillanceDetail({

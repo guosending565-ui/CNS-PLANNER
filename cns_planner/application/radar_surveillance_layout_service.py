@@ -523,6 +523,57 @@ def _tower_items(state):
 # ------------------------------------------------------------------------------ service
 
 
+def _no_cancel_check():
+    """同步路径的缺省取消检查：不取消。"""
+
+
+def _stage_reporter(on_progress):
+    """只上报**真实执行节点**的只读进度钩子（无回调时是 no-op）。
+
+    数值单调不降、绝不越界；同一数值下的**不同阶段消息**仍然如实上报（阶段比分数更
+    重要：用户需要看到"正在评估 Radar-I 覆盖 / Radar-I 已证明不可行，正在评估
+    Radar-II 升级 / 正在验证…"），但也绝不为刷新消息而重复计算任何东西。
+    """
+
+    if not callable(on_progress):
+        return lambda value, message=None: None
+
+    state = {"last": -1.0, "message": None}
+
+    def report(value, message=None):
+        current = max(0.0, min(1.0, float(value)))
+        if current < state["last"]:
+            current = state["last"]
+        if current == state["last"] and message == state["message"]:
+            return
+        state["last"] = current
+        state["message"] = message
+        on_progress(current, message)
+
+    return report
+
+
+def _route_stage_reporter(report, index, route_count):
+    """把 solver 内部的真实阶段映射到该航路在整体进度中的区间。
+
+    它只做区间换算：阶段键与分数都来自 solver 的真实执行节点，这里绝不据此推断或
+    伪造任何业务结论（例如"Stage B 一定会被进入"）。
+    """
+
+    def _stage(key, message=None, fraction=None):
+        del key
+        try:
+            inner = float(fraction) if fraction is not None else 0.0
+        except (TypeError, ValueError):
+            inner = 0.0
+        value = 0.08 + 0.72 * (
+            (index + max(0.0, min(1.0, inner))) / float(max(1, route_count))
+        )
+        report(min(0.85, value), message)
+
+    return _stage
+
+
 class RadarSurveillanceLayoutService:
     """``radar_surveillance_policy`` / ``radar_surveillance_layout`` 的唯一写入者。"""
 
@@ -544,7 +595,7 @@ class RadarSurveillanceLayoutService:
     def _policy(self):
         return normalize_radar_surveillance_policy(self.session.state.get(POLICY_KEY))
 
-    def land_mask_authority(self):
+    def land_mask_authority(self, *, policy=None):
         """Resolve Radar's land-mask inputs from the project's canonical surface state.
 
         ``radar_surveillance_policy`` retains its two historical fields only for old
@@ -575,7 +626,9 @@ class RadarSurveillanceLayoutService:
             policy = normalize_surface_classification_policy(None)
             policy_source = "canonical_surface_default"
         else:
-            legacy = self._policy()
+            #: Round31-E：后台任务的纯计算段不会先把 policy 写进 state，因此
+            #: 本次请求有效的 policy 必须由调用方显式传入（缺省读 state，语义不变）。
+            legacy = policy if isinstance(policy, dict) else self._policy()
             policy = normalize_surface_classification_policy({
                 "land_mask_layer_name": legacy.get("land_mask_layer_name"),
                 "coastal_uncertainty_buffer_m": legacy.get(
@@ -732,8 +785,8 @@ class RadarSurveillanceLayoutService:
         self.session.save()
         return self.snapshot()
 
-    def source_status(self, *, facts_provider=None):
-        authority = self.land_mask_authority()
+    def source_status(self, *, facts_provider=None, policy=None):
+        authority = self.land_mask_authority(policy=policy)
         status = radar_layout_source_status(
             self.session.state, self._source_paths(facts_provider=facts_provider),
             layer_name=authority.get("layer_name"),
@@ -1433,24 +1486,27 @@ class RadarSurveillanceLayoutService:
 
     # ------------------------------------------------------------------ fingerprints
     def input_fingerprint(self, route_id, *, route=None, demo_preview_only=False,
-                          candidate=None):
+                          candidate=None, policy=None):
         """当前上游输入的确定性指纹（route / towers / 设备 / 陆域 / 挂高 / 策略）。"""
 
         return stable_fingerprint(
             self._fingerprint_components(
                 route_id, route=route, demo_preview_only=demo_preview_only,
                 candidate=candidate,
+                #: Round31-E：纯计算段尚未把 policy 写入 state，指纹必须用同一份
+                #: "本次请求生效的 policy"，否则发布后会被自己的只读投影判为 stale。
+                policy=policy,
             ), prefix="radarlayout-",
         )
 
     def _fingerprint_components(self, route_id, *, route=None, demo_preview_only=False,
-                                candidate=None):
+                                candidate=None, policy=None):
         """指纹输入分量（同时供诊断使用：逐分量 diff 定位变化来源）。"""
 
         state = self.session.state
-        policy = self._policy()
-        surface_authority = self.land_mask_authority()
-        land_mask_status = self.source_status()
+        policy = policy if isinstance(policy, dict) else self._policy()
+        surface_authority = self.land_mask_authority(policy=policy)
+        land_mask_status = self.source_status(policy=policy)
         route = route if isinstance(route, dict) else (
             _state_route(state, route_id) if route_id else None
         )
@@ -1607,18 +1663,48 @@ class RadarSurveillanceLayoutService:
         return components
 
     # ------------------------------------------------------------------ evaluation
-    def evaluate(self, payload=None, *, facts_provider=None):
+    def evaluate(self, payload=None, *, facts_provider=None, on_progress=None,
+                 cancel_check=None):
+        """同步入口：计算雷达初步划设并立即发布为 canonical 结果。
+
+        Round31-E 把方法体拆成 :meth:`plan`（纯计算）+ :meth:`apply_computed`
+        （唯一写入：policy / layout / ``result_statuses`` / 失效传播 / ``session.save()``）。
+        本方法的可观测行为与拆分前**逐字段一致**：同一份 outcome 经同一收尾段发布。
+        """
+
+        outcome = self.plan(
+            payload, facts_provider=facts_provider,
+            on_progress=on_progress, cancel_check=cancel_check,
+        )
+        return self.apply_computed(outcome)
+
+    def plan(self, payload=None, *, facts_provider=None, on_progress=None,
+             cancel_check=None):
+        """雷达划设的**纯计算段**：只读 state，绝不写 canonical 结果、绝不落盘。
+
+        后台任务的 worker 在内存 state 上调用它（``session.save()`` 由主进程的
+        :meth:`apply_computed` 独占），因此 worker 永远不会成为第二个 canonical 写入者。
+        ``on_progress`` / ``cancel_check`` 是**可选**只读钩子：前者只上报真实阶段
+        （含 solver 内部的 Stage A / Stage B / 复核轮次），后者只做协作式取消检查；
+        两者都不参与任何求解判定，也不改变任何结果字段。
+        """
+
+        report = _stage_reporter(on_progress)
+        check = cancel_check if callable(cancel_check) else _no_cancel_check
         payload = payload if isinstance(payload, dict) else {}
         state = self.session.state
 
-        if any(key in payload for key in (
+        report(0.02, "正在准备雷达与航路数据")
+        check()
+        policy_declared = any(key in payload for key in (
             "optimization_sample_spacing_m", "validation_sample_spacing_m",
             "max_refinement_rounds", "radar_mount_height", "radar_mount_height_m",
             "allow_mixed_radar_types", "solver_time_limit_s",
             # Round31-C：分级规划开关与允许型号也必须能显式进入 policy 更新。
             "allow_automatic_radar_ii_escalation", "allowed_radar_types",
             "escalation_policy_id",
-        )):
+        ))
+        if policy_declared:
             policy_payload = payload.get(POLICY_KEY) if isinstance(
                 payload.get(POLICY_KEY), dict
             ) else payload
@@ -1628,11 +1714,9 @@ class RadarSurveillanceLayoutService:
             existing_policy = state.get(POLICY_KEY)
             if isinstance(existing_policy, dict):
                 policy_payload = {**existing_policy, **policy_payload}
-            state[POLICY_KEY] = normalize_radar_surveillance_policy(policy_payload)
+            policy = normalize_radar_surveillance_policy(policy_payload)
         else:
-            state.setdefault(POLICY_KEY, normalize_radar_surveillance_policy(None))
-
-        policy = self._policy()
+            policy = normalize_radar_surveillance_policy(state.get(POLICY_KEY))
         provider = facts_provider if facts_provider is not None else self.facts_provider
         demo_preview_only = self._demo_preview_requested(payload)
         demo_context = None
@@ -1678,11 +1762,19 @@ class RadarSurveillanceLayoutService:
             if isinstance(item, dict)
         }
         evaluated = []
-        for route_id in route_ids:
+        route_count = max(1, len(route_ids))
+        for index, route_id in enumerate(route_ids):
+            check()
+            report(
+                0.08 + 0.72 * (index / float(route_count)),
+                "正在评估 Radar-I 覆盖",
+            )
             record = self._evaluate_route(
                 route_id=route_id, policy=policy, provider=provider,
                 route_view=route_views.get(route_id), demo_context=demo_context,
                 preflight_blockers=preflight_blockers,
+                on_progress=_route_stage_reporter(report, index, route_count),
+                cancel_check=check,
             )
             items_by_id[route_id] = record
             evaluated.append(deepcopy(record))
@@ -1696,12 +1788,44 @@ class RadarSurveillanceLayoutService:
         records["model_scope"] = MODEL_SCOPE
         records["proposal_only"] = PROPOSAL_ONLY
         records["evaluated_at"] = utc_now()
-        state[LAYOUT_KEY] = records
+        report(0.85, "正在验证雷达覆盖与独立站址")
+        check()
+        return {
+            "layout": records,
+            "evaluated": evaluated,
+            "previous_fingerprints": previous_fingerprints,
+            "policy": policy,
+            "policy_declared": policy_declared,
+        }
+
+
+
+    def apply_computed(self, outcome):
+        """把**已经算好**的雷达划设结果发布为 canonical（唯一 production writer 入口）。
+
+        后台任务在 worker 进程里算完、staged 成 artifact 后，由主进程在
+        ``mutation_lock`` 内调用本方法；收尾段与 :meth:`evaluate` 完全同源（同一份
+        policy 归一化、同一 ``result_statuses`` 映射、同一失效条件、同一次
+        ``session.save()``）。
+        """
+
+        outcome = outcome if isinstance(outcome, dict) else {}
+        layout = outcome.get("layout")
+        if not isinstance(layout, dict) or not isinstance(layout.get("items"), list):
+            raise ValueError("雷达划设结果结构无效")
+        evaluated = outcome.get("evaluated") or []
+        state = self.session.state
+        if outcome.get("policy_declared"):
+            state[POLICY_KEY] = normalize_radar_surveillance_policy(outcome.get("policy"))
+        else:
+            state.setdefault(POLICY_KEY, normalize_radar_surveillance_policy(None))
+        state[LAYOUT_KEY] = layout
         state.setdefault("result_statuses", {})[STATUS_KEY] = (
             "passed" if all(
                 str(item.get("status")) == "proposal_ready" for item in evaluated
             ) else "pending_confirmation"
         )
+        previous_fingerprints = outcome.get("previous_fingerprints") or {}
         if any(
             previous_fingerprints.get(str(item.get("route_id")))
             != item.get("input_fingerprint")
@@ -1715,7 +1839,8 @@ class RadarSurveillanceLayoutService:
         return self.snapshot()
 
     def _evaluate_route(self, *, route_id, policy, provider, route_view=None,
-                        demo_context=None, preflight_blockers=None):
+                        demo_context=None, preflight_blockers=None,
+                        on_progress=None, cancel_check=None):
         state = self.session.state
         provider = provider if isinstance(provider, dict) else {}
         projector = provider.get("to_metric")
@@ -1724,7 +1849,7 @@ class RadarSurveillanceLayoutService:
         route = route_view if demo_preview_only else _state_route(state, route_id)
         blockers = list(preflight_blockers or [])
         unknown_evidence = []
-        surface_authority = self.land_mask_authority()
+        surface_authority = self.land_mask_authority(policy=policy)
         if not surface_authority.get("layer_consistent"):
             blockers.append("canonical_surface_layer_mismatch")
         candidate = (demo_context or {}).get("candidate") or {}
@@ -1846,6 +1971,8 @@ class RadarSurveillanceLayoutService:
             route_id, route=route if demo_preview_only else None,
             demo_preview_only=demo_preview_only,
             candidate=(demo_context or {}).get("candidate"),
+            #: Round31-E：本次请求生效的 policy（plan 段尚未写入 state）。
+            policy=policy,
         )
 
         if route is None:
@@ -2217,6 +2344,8 @@ class RadarSurveillanceLayoutService:
             # **严格证明**不可行（status=infeasible 且 infeasibility_proven=true）后进入；
             # 未完成求解绝不升级。算法层默认仍为 False（保守引擎语义）。
             allow_mixed=bool(policy.get("allow_mixed_radar_types")),
+            #: Round31-E：只读阶段钩子（HTTP 线程不传时为 no-op，语义不变）。
+            on_stage=on_progress, cancel_check=cancel_check,
         )
 
         solved_validation = deepcopy(solved.get("validation"))

@@ -62,6 +62,10 @@ TASK_ENDPOINTS = {
     #: 逐体元判定整条走廊，且必须在发布前重新校验上游 P14 的 currentness；带
     #: ``async: true`` 提交时只登记任务并立刻返回 task_id，不带时保持原有同步语义。
     "/api/cns-corridor-gap/evaluate": "cns_corridor_gap_evaluate",
+    #: Round 31-E：Radar-I → Radar-II 分级规划登记为 heavy task。它是两阶段 MILP +
+    #: 5 m 独立连续覆盖复核与补点重解，真实项目上远超一次 HTTP 请求的合理等待时间；
+    #: 带 ``async: true`` 提交时只登记任务并立刻返回 task_id，不带时保持同步语义。
+    "/api/radar-surveillance-layout/evaluate": "radar_surveillance_layout_evaluate",
 }
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -913,6 +917,191 @@ def _p15_runner(context):
     )
 
 
+# ---- Radar 监视规划（Round 31-E） ------------------------------------------------
+#
+# Radar 的求解（两阶段 MILP + 5 m 独立连续覆盖复核与补点重解）消费的是**项目事实**：
+# 运行航路几何、铁塔与塔顶高程、高度层、陆域权威、数据源路径（FABDEM DTM / land mask）
+# 与本次请求生效的划设 policy。因此 snapshot 冻结这些事实本身（体积可控），worker
+# 只按 snapshot 计算；provider（米制投影 / 地形采样 / 陆域分类）由
+# ``gis.radar_layout_adapter.radar_layout_facts_provider`` 在两侧**同一实现**里装配。
+
+RADAR_TASK_TYPE = "radar_surveillance_layout_evaluate"
+
+#: Radar 结果真正依赖的输入事实（只读 state，逐项深拷贝进 immutable snapshot）。
+RADAR_INPUT_STATE_KEYS = (
+    "operational_routes", "towers", "tower_obstacle_profiles", "spatial_3d",
+    "required_cns", "surface_classification_policy", "surface_class_facts",
+    "data_source_paths",
+)
+
+RADAR_POLICY_KEY = "radar_surveillance_policy"
+
+#: 会触发"本次请求更新 policy"的字段（与服务层 :meth:`plan` 的判据逐字一致）。
+RADAR_POLICY_DECLARING_KEYS = (
+    "optimization_sample_spacing_m", "validation_sample_spacing_m",
+    "max_refinement_rounds", "radar_mount_height", "radar_mount_height_m",
+    "allow_mixed_radar_types", "solver_time_limit_s",
+    "allow_automatic_radar_ii_escalation", "allowed_radar_types",
+    "escalation_policy_id",
+)
+
+#: 进入 worker_payload 的请求字段（其余请求字段不影响结果）。
+RADAR_WORKER_PAYLOAD_KEYS = (
+    "route_id", "route_source", "demo_preview_only",
+    "land_mask_layer_name", "coastal_uncertainty_buffer_m",
+) + RADAR_POLICY_DECLARING_KEYS
+
+
+def _radar_policy_payload(state, payload):
+    """解析"本次请求生效的 policy"（只读 state；判据与服务层逐字一致）。"""
+
+    from ..application.radar_surveillance_layout_service import (
+        normalize_radar_surveillance_policy,
+    )
+
+    state = state if isinstance(state, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    declared = any(key in payload for key in RADAR_POLICY_DECLARING_KEYS)
+    if not declared:
+        return normalize_radar_surveillance_policy(state.get(RADAR_POLICY_KEY)), False
+    raw = payload.get(RADAR_POLICY_KEY) if isinstance(
+        payload.get(RADAR_POLICY_KEY), dict
+    ) else payload
+    existing = state.get(RADAR_POLICY_KEY)
+    if isinstance(existing, dict):
+        raw = {**existing, **raw}
+    return normalize_radar_surveillance_policy(raw), True
+
+
+def _radar_inputs(state, payload):
+    """雷达监视规划的权威输入（只读 state，确定性）。"""
+
+    state = state if isinstance(state, dict) else {}
+    inputs = {key: deepcopy(state.get(key)) for key in RADAR_INPUT_STATE_KEYS}
+    policy, declared = _radar_policy_payload(state, payload)
+    inputs[RADAR_POLICY_KEY] = policy
+    inputs["radar_policy_declared"] = declared
+    return inputs
+
+
+def _radar_worker_payload(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    for key in RADAR_WORKER_PAYLOAD_KEYS:
+        if payload.get(key) is not None:
+            compact[key] = deepcopy(payload[key])
+    nested = payload.get(RADAR_POLICY_KEY)
+    if isinstance(nested, dict):
+        compact[RADAR_POLICY_KEY] = deepcopy(nested)
+    return compact
+
+
+def _radar_scope(state, payload):
+    routes = (state if isinstance(state, dict) else {}).get("operational_routes") or []
+    route_ids = sorted(
+        str(item.get("route_id") or "") for item in routes if isinstance(item, dict)
+    )
+    return "radar_surveillance_layout:" + ("|".join(route_ids) if route_ids else "no-route")
+
+
+def _radar_plan(state, payload):
+    worker_payload = _radar_worker_payload(state, payload)
+    if worker_payload.get("demo_preview_only") is True:
+        #: 演示预览消费"当前候选 / 风险画像 / 验证证据"的**运行时注入**（由 QGIS 侧
+        #: 服务绑定），后台 worker 进程无法复现同一份注入，因此明确拒绝，而不是给出
+        #: 一份与同步路径不同的结果。
+        raise ValueError(
+            "演示预览依赖当前会话的候选与验证运行时绑定，不能作为后台任务提交；"
+            "请取消「仅演示预览」后重新运行"
+        )
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _radar_inputs(state, worker_payload),
+    }
+
+
+def _radar_summary(outcome):
+    """canonical 结果的**摘要**（明细进 artifact，状态只留可读计数与分级事实）。"""
+
+    outcome = outcome if isinstance(outcome, dict) else {}
+    layout = outcome.get("layout") if isinstance(outcome.get("layout"), dict) else {}
+    items = [item for item in layout.get("items") or [] if isinstance(item, dict)]
+    escalations = [
+        item.get("escalation") for item in items if isinstance(item.get("escalation"), dict)
+    ]
+    return {
+        "status": layout.get("status"),
+        "route_count": len(items),
+        "item_statuses": [item.get("status") for item in items],
+        "selected_panel_count": sum(
+            int(item.get("selected_panel_count") or 0) for item in items
+        ),
+        "escalated": any(bool(item.get("escalated")) for item in escalations),
+        "radar_ii_site_count": sum(
+            int(item.get("radar_ii_site_count") or 0) for item in escalations
+        ),
+    }
+
+
+def _radar_runner(context):
+    """worker 侧：在项目状态的**内存副本**上重算雷达划设，只 stage 结果、绝不发布。"""
+
+    from ..application.radar_surveillance_layout_service import (
+        RadarSurveillanceLayoutService,
+    )
+    from ..gis.radar_layout_adapter import radar_layout_facts_provider
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    inputs = snapshot.get("inputs") or {}
+    worker_payload = snapshot.get("worker_payload") or {}
+    context.check_cancel()
+    context.progress(0.02, "正在准备雷达与航路数据")
+    state = deepcopy(context.project_state)
+    if not isinstance(state, dict) or not state:
+        raise TaskInputChanged("项目状态不可读，雷达监视规划任务作废")
+    service = RadarSurveillanceLayoutService(
+        _WorkerReadOnlySession(state), _WorkerInvalidation(),
+        _worker_snapshot_passthrough,
+    )
+    #: provider 与 HTTP 线程用**同一份**装配实现；worker 没有 QGIS runtime，因此显式
+    #: 使用 pyproj 变换（同一 PROJ、同样的往返自校验），绝不静默使用另一套数据源。
+    provider = radar_layout_facts_provider(
+        paths=inputs.get("data_source_paths") or {},
+        state=state,
+        land_mask_authority=service.land_mask_authority(),
+        prefer_qgis_transform=False,
+    )
+    outcome = service.plan(
+        worker_payload, facts_provider=provider,
+        on_progress=lambda value, message=None: context.progress(value, message),
+        cancel_check=context.check_cancel,
+    )
+    layout = outcome.get("layout") if isinstance(outcome, dict) else None
+    if not isinstance(layout, dict) or not layout.get("items"):
+        raise RuntimeError("雷达监视规划计算没有产出结果")
+    context.check_cancel()
+    context.progress(0.9, "正在写入临时结果明细")
+    metadata = context.stage(
+        {"logical_key": "radar_surveillance_layout", "value": outcome},
+        artifact_type="radar.layout.detail",
+    )
+    summary = _radar_summary(outcome)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="radar.layout.detail",
+            summary=summary,
+        ),
+        message="雷达监视规划计算完成，等待发布",
+        progress=0.9,
+    )
+
+
 # ---- 测试专用 task type（不承载任何业务，只用于验证运行时契约） -----------------
 #
 # 它让 B6X 的取消 / 心跳 / 崩溃恢复 / 并发提交测试使用**真实**的运行时路径
@@ -1026,6 +1215,21 @@ _PCF_SPEC = TaskSpec(
     algorithm_types=(),
 )
 
+_RADAR_SPEC = TaskSpec(
+    task_type=RADAR_TASK_TYPE,
+    task_name="雷达设施优化规划",
+    message="雷达设施优化规划已提交，正在后台计算",
+    business_endpoint="/api/radar-surveillance-layout/evaluate",
+    scope_key=_radar_scope,
+    input_snapshot=_radar_inputs,
+    submit_plan=_radar_plan,
+    runner=_radar_runner,
+    release="radar_surveillance_layout",
+    #: Radar 分级规划的算法身份是服务层模块常量（不经 algorithm registry 选择），
+    #: 因此本任务没有需要冻结的算法选择项。
+    algorithm_types=(),
+)
+
 _PROBE_SPEC = TaskSpec(
     task_type=PROBE_TASK_TYPE,
     task_name="运行时探针",
@@ -1064,14 +1268,15 @@ _P16_SPEC = TaskSpec(
     algorithm_types=P16_ALGORITHM_TYPES,
 )
 
-for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _PROBE_SPEC):
+for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _RADAR_SPEC, _PROBE_SPEC):
     register_task_spec(_spec)
 
 
 __all__ = [
     "CORRIDOR_TASK_TYPE", "P15_TASK_TYPE", "P15UpstreamNotCurrent", "P16_TASK_TYPE",
     "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
-    "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "TASK_ENDPOINTS", "TaskCancelled",
+    "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "RADAR_TASK_TYPE", "TASK_ENDPOINTS",
+    "TaskCancelled",
     "TaskInputChanged", "fingerprint_payload",
     "has_task_type",
     "register_task_spec", "task_spec", "task_specs", "task_type_for_endpoint",

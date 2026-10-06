@@ -625,7 +625,7 @@ def _refine(*, towers, samples, options, selected_panel_ids, panels, radar_types
 
 
 def solve_layout(*, towers, samples, options=None, allow_mixed=False,
-                 validation_samples=None):
+                 validation_samples=None, on_stage=None, cancel_check=None):
     """完整求解：Stage A →（必要时）Stage B → 5 m 独立连续覆盖复核与补点重解。
 
     ``towers``：``[{tower_id, name, metric, origin_egm2008_m, ...}]``
@@ -642,7 +642,14 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
     ``required_distinct_site_count`` 必须由调用方在该真实位置上**独立执行**
     land/sea/coastal 分类得到。禁止使用"最近 25 m 点继承分类"，也禁止在
     ``solve_layout`` 内做任何最近邻 surface 传播 —— 本函数只消费传入的分类结果。
+
+    **后台任务钩子（只读观察者）**：``on_stage(key, message, fraction=None)`` 在真实
+    执行节点上报阶段（Stage A 完成 / 升级 Stage B / 复核轮次），``cancel_check()`` 在
+    阶段边界做协作式取消检查。两者都不参与任何求解判定，缺省时行为与不传完全一致。
     """
+
+    report = on_stage if callable(on_stage) else (lambda *args, **kwargs: None)
+    check = cancel_check if callable(cancel_check) else (lambda: None)
 
     base_samples = [deepcopy(sample) for sample in samples]
     if not towers:
@@ -717,8 +724,11 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
         因此上层可以无分支地读取 ``selected_panel_ids`` / ``solver``。
         """
 
+        check()
+        report("stage_a", "正在评估 Radar-I 覆盖")
         stage_a = _stage_a_i_only(towers=towers, samples=active_samples, options=solve_options)
         if stage_a["solve"]["solver"]["status"] == "optimal":
+            report("radar_i_feasible", "Radar-I 已满足覆盖要求，不进入 Radar-II 升级")
             if extra:
                 # 补点约束下用 I-only 重解（Stage A 的语义必须保持"只用 I 型"）。
                 refined = _refine(
@@ -737,7 +747,11 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
             return stage_a
         if _is_proven_infeasible(stage_a["solve"]["solver"]):
             if not allow_mixed:
+                report("radar_i_infeasible_no_escalation",
+                       "Radar-I 不可行，但当前策略不允许 Radar-II 升级")
                 return stage_a
+            check()
+            report("stage_b", "Radar-I 已证明不可行，正在评估 Radar-II 升级")
             stage_b = _stage_b_mixed(towers=towers, samples=active_samples, options=solve_options)
             # Round31-C：Stage A 的诊断必须随 Stage B 结果一起保留，否则上层无法披露
             # "为什么 Radar-I 不足"。它只承载证据，不参与任何求解。
@@ -769,12 +783,20 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
             stage_b["stage"] = STAGE_MIXED
             return stage_b
         # Stage A 既未证明最优也未证明不可行 ⇒ search_incomplete / solver_error。
+        report("stage_a_incomplete", "Radar-I 求解未完成，保持 I-only 且不升级")
         return stage_a
 
-    for round_index in range(int(SOFTWARE_BASELINE["max_refinement_rounds"]) + 1):
+    max_rounds = int(SOFTWARE_BASELINE["max_refinement_rounds"])
+    for round_index in range(max_rounds + 1):
         #: 预算耗尽即停止迭代：保留上一轮的最好可行解，绝不无限等待。
         if round_index and remaining_s() <= 0:
             break
+        check()
+        report(
+            "refinement",
+            f"正在验证雷达覆盖与独立站址（第 {round_index + 1}/{max_rounds + 1} 轮）",
+            0.15 + 0.7 * (round_index / float(max_rounds + 1)),
+        )
         outcome = run_pipeline(current_samples, extra_requirements)
         stage_used = outcome["stage"]
         final = outcome

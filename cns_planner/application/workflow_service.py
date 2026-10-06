@@ -1116,6 +1116,14 @@ class WorkflowService:
         return self.radar_surveillance_layout_service.result_snapshot(route_id)
     def radar_surveillance_layout_readiness(self, payload=None):
         return self.radar_surveillance_layout_service.readiness_snapshot(payload)
+    def radar_surveillance_layout_apply_computed(self, outcome):
+        """Round 31-E：Radar 的唯一 production writer 转发（后台任务发布阶段调用）。
+
+        它只是转发，不构成第二个 production owner：写入仍然发生在
+        :meth:`RadarSurveillanceLayoutService.apply_computed` 内（与同步入口
+        ``evaluate`` 共用同一份收尾段），因此 policy 更新与结果发布在同一事务里完成。
+        """
+        return self.radar_surveillance_layout_service.apply_computed(outcome)
     def evaluate_radar_surveillance_layout(self, payload=None, *, facts_provider=None):
         result = self.radar_surveillance_layout_service.evaluate(
             payload, facts_provider=facts_provider,

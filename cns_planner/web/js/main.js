@@ -1163,7 +1163,18 @@ function applyProjectActive(active){
 //  2. 任务成功后自动重读正式 workflow 快照并重渲染——用户不需要自己 F5 才能看到结果。
 setupTaskCenter({
   request:(path,options)=>api(path,options),
-  refreshWorkflow:async()=>{await applyProjectState(await api('/api/state'));return true;},
+  refreshWorkflow:async()=>{
+    await applyProjectState(await api('/api/state'));
+    // Round 31-E：Radar 的逐点明细按需读取（通用快照只带有界摘要，与 P14 服务走廊
+    // 同一约定）。后台任务发布后必须把它取回来，否则用户看到"结果已更新但地图/明细
+    // 仍是上一版"。它只读，失败绝不掩盖已经成功的正式结果。
+    try{
+      await snapshotApplier.hydrateRadarSurveillanceDetail();
+    }catch(error){
+      console.warn('[CNS Planner] 雷达划设明细同步失败',error);
+    }
+    return true;
+  },
 });
 
 // ---- 启动装配（只调用一次，避免重复 document / menu listener） -------------

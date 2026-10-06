@@ -23,7 +23,7 @@ from ..persistence.artifact_store import ArtifactStore
 from .task_input import InputSnapshotStore, snapshot_reference
 from .task_specs import (
     CORRIDOR_TASK_TYPE, P15_TASK_TYPE, P16_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY,
-    PROBE_TASK_TYPE, has_task_type, task_spec,
+    PROBE_TASK_TYPE, RADAR_TASK_TYPE, has_task_type, task_spec,
 )
 
 
@@ -41,6 +41,7 @@ RESULT_SCOPE_TEXT = {
     PCF_TASK_TYPE: "规划约束场",
     P15_TASK_TYPE: "CNS 能力缺口评估",
     P16_TASK_TYPE: "CNS 设施规划",
+    RADAR_TASK_TYPE: "雷达设施优化规划",
     PROBE_TASK_TYPE: "运行时探针",
 }
 
@@ -219,6 +220,21 @@ def publish_task_result(workflow, record, *, workdir):
             payload["result"], objectives=payload.get("objectives"),
             objectives_declared=bool(payload.get("objectives_declared")),
         )
+        artifact_ref = {
+            key: committed.get(key) for key in
+            ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
+        }
+        return {"task_type": task_type, "scope": result_scope_text(task_type),
+                "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == RADAR_TASK_TYPE:
+        outcome = _staged_value(_load_staged_payload(workdir, staged, committed))
+        if not isinstance(outcome, dict) or not isinstance(outcome.get("layout"), dict):
+            raise TaskPublishError("staged 雷达划设结果结构无效")
+        #: 唯一 production writer：``RadarSurveillanceLayoutService.apply_computed``
+        #: （policy / layout / result_statuses / 失效传播 / 原子保存全部由它独占，
+        #: 与同步入口同源）。
+        workflow.radar_surveillance_layout_apply_computed(outcome)
         artifact_ref = {
             key: committed.get(key) for key in
             ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")

@@ -876,11 +876,22 @@ class ApiRouter:
 
     # ---- Phase4-B6X：task 路由辅助 -------------------------------------------------
 
-    def _task_service(self):
+    def _task_service(self, *, drive=False):
+        """任务运行时访问器。
+
+        ``drive=True`` 只用于**写路径**（提交 / 取消）：它们需要立刻推进一次编排。
+        只读查询（``GET /api/tasks*``）**不**驱动 —— ``maybe_drive()`` 会在
+        ``HeavyTaskService._lock`` 内跑一次完整编排，而 publish 阶段持该锁执行 canonical
+        写入（真实项目 ``session.save()`` 是数百 MB 级原子替换，实测十秒级），于是
+        "看进度"的请求反而会整段排队甚至读超时。发布本身由 ``HeavyTaskService`` 自己的
+        编排线程按 ``poll_interval`` 完成，不需要只读请求去推动。
+        """
+
         service = getattr(self.context, "heavy_tasks", None)
         if service is None:
             raise RuntimeError("服务端未启用重任务运行时")
-        service.maybe_drive()
+        if drive:
+            service.maybe_drive()
         return service
 
     def _task_submit(self, task_type, payload, *, task_id=None):
@@ -895,7 +906,7 @@ class ApiRouter:
             CONFLICT_REJECT if str(payload.get("conflict_policy") or "") == "conflict"
             else CONFLICT_RETURN_EXISTING
         )
-        service = self._task_service()
+        service = self._task_service(drive=True)
         try:
             record, created = service.submit(task_type, payload, conflict_policy=policy)
         except TaskConflictError as exc:
@@ -927,7 +938,7 @@ class ApiRouter:
         identifier = str(task_id or "").strip()
         if not identifier:
             return Response({"error": "请求未指明任务"}, status=400)
-        service = self._task_service()
+        service = self._task_service(drive=True)
         try:
             view = service.cancel(identifier)
         except TaskNotFoundError:

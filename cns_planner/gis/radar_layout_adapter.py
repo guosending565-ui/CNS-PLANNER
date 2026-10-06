@@ -1368,13 +1368,123 @@ def land_mask_readiness(state, paths, *, layer_name=None,
     return record
 
 
+def radar_layout_facts_provider(*, paths, state=None, land_mask_authority=None,
+                                metric_crs=COASTAL_BUFFER_METRIC_CRS,
+                                prefer_qgis_transform=True):
+    """装配 Radar layout 的**只读事实 provider**（HTTP 线程与后台 worker 共用同一实现）。
+
+    它只暴露事实：显式米制投影、逐点 FABDEM DTM 高度、独立陆域掩膜分类与 readiness。
+    构造本身**不打开任何数据集**（真正读取只发生在显式求解时），也绝不写任何状态。
+
+    ``prefer_qgis_transform``：HTTP 线程沿用既有 QGIS 坐标变换
+    （``QgisMetricTransform``）；后台 worker 进程没有 QGIS runtime，显式使用
+    :func:`_resolve_transformers` 的 pyproj 变换（同一 PROJ 实现、同样的往返自校验）。
+    """
+
+    paths = paths if isinstance(paths, dict) else {}
+    state = state if isinstance(state, dict) else {}
+    authority = land_mask_authority if isinstance(land_mask_authority, dict) else {}
+    layer_name = authority.get("layer_name")
+    buffer_m = authority.get("coastal_uncertainty_buffer_m")
+    land_path = paths.get("land_mask")
+    terrain_path = paths.get("terrain_dtm")
+
+    to_metric = to_geographic = None
+    transform_method = None
+    if prefer_qgis_transform:
+        try:
+            from .fine_environment_adapter import QgisMetricTransform
+
+            transform = QgisMetricTransform(str(metric_crs))
+            to_metric, to_geographic = transform.to_metric, transform.to_geographic
+            transform_method = "qgis_projected_crs_coordinate_transform"
+        except Exception:  # noqa: BLE001 - 无 QGIS runtime 时按 pyproj 回落
+            to_metric = to_geographic = None
+    if to_metric is None:
+        forward, backward, _reason = _resolve_transformers("EPSG:4326", str(metric_crs))
+        if forward is not None:
+            to_metric = lambda point: list(  # noqa: E731 - 逐点只读投影
+                forward.transform(float(point[0]), float(point[1]))
+            )
+            to_geographic = lambda point: list(  # noqa: E731
+                backward.transform(float(point[0]), float(point[1]))
+            )
+            transform_method = "pyproj_projected_crs_coordinate_transform"
+
+    land_mask_cache = {}
+
+    def land_mask_source():
+        key = (str(land_path) if land_path else None, str(layer_name), str(buffer_m))
+        if key not in land_mask_cache:
+            land_mask_cache.clear()
+            land_mask_cache[key] = (
+                LandMaskSource(
+                    land_path, layer_name=layer_name,
+                    coastal_uncertainty_buffer_m=buffer_m,
+                )
+                if land_path else None
+            )
+        return land_mask_cache[key]
+
+    def sample_terrain(points):
+        source = route_terrain_source(terrain_path) if terrain_path else None
+        return sample_route_terrain(points, terrain_source=source)
+
+    def classify_surface(points):
+        source = land_mask_source()
+        if source is None:
+            return ["unknown"] * len(points or [])
+        return source.classify_many(points)
+
+    def classify_surface_detailed(longitude, latitude):
+        source = land_mask_source()
+        if source is None:
+            return {
+                "surface_class": "unknown",
+                "effective_requirement_class": None,
+                "required_distinct_site_count": None,
+                "classification_confidence": "unknown",
+                "evidence": {"reason": "land_mask_not_configured"},
+            }
+        return source.classify_detailed(longitude, latitude)
+
+    def land_mask_readiness_bundle():
+        return land_mask_readiness(
+            state, {"land_mask": land_path},
+            layer_name=layer_name, coastal_uncertainty_buffer_m=buffer_m,
+        )
+
+    hint = land_mask_hint(land_path, layer_name=layer_name)
+    return {
+        "adapter_id": "radar_surveillance_layout_real_source_facts_v1",
+        "source_type": "configured_real_sources",
+        "metric_crs": str(metric_crs),
+        "metric_transform_method": transform_method,
+        "to_metric": to_metric,
+        "to_geographic": to_geographic,
+        "sample_terrain": sample_terrain,
+        "classify_surface": classify_surface,
+        "classify_surface_detailed": classify_surface_detailed,
+        "land_mask": {"ok": hint["ok"], "readiness": hint},
+        "land_mask_readiness": land_mask_readiness_bundle,
+        "land_mask_layer_name": layer_name,
+        "coastal_uncertainty_buffer_m": buffer_m,
+        "land_mask_authority": dict(authority),
+        "paths": {"terrain_dtm": terrain_path, "land_mask": land_path},
+        "dem_nodata_used_to_infer_sea": False,
+        "backend_hardcoded_mount_height": False,
+        "terrain_used_for_route_sample_height": False,
+    }
+
+
 __all__ = [
     "COASTAL_BUFFER_METRIC_CRS", "LAND_LAYER_EXCLUSIONS", "LAND_LAYER_KEYWORDS",
     "LAND_MASK_CLASSIFICATION_BASIS", "LAND_MASK_SEMANTICS", "LAND_MASK_SUFFIXES",
     "ROUTE_TERRAIN_SAMPLE_HALF_DEG", "LandMaskSource",
     "coastal_uncertainty_buffer_provenance", "geometry_available", "gpkg_layer_crs",
     "land_mask_hint", "land_mask_readiness", "normalized_coastal_buffer_m",
-    "ogr_layer_crs", "radar_layout_source_status", "radar_mount_assumption_status",
-    "radar_origin_assumption_status", "resolve_radar_origins", "route_terrain_source",
-    "sample_route_terrain", "radar_metric_coordinate",
+    "ogr_layer_crs", "radar_layout_facts_provider", "radar_layout_source_status",
+    "radar_mount_assumption_status", "radar_origin_assumption_status",
+    "resolve_radar_origins", "route_terrain_source", "sample_route_terrain",
+    "radar_metric_coordinate",
 ]

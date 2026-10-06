@@ -722,148 +722,27 @@ class ApplicationContext:
     def configure_radar_surveillance_layout_sources(self):
         """Bind the read-only real-source facts provider of the radar layout model.
 
-        The provider only exposes *facts*: an explicit metric projector
-        (``EPSG:32651``, the same frame the project already uses for terrain/building
-        queries), per-point FABDEM DTM orthometric height, and an explicit **land mask**
-        point classifier.  It never opens a dataset while merely rendering a panel:
-        ``sample_terrain`` / ``classify_surface`` read the sources only when an explicit
-        evaluate runs on the QGIS thread.
+        provider 的装配实现只有一处（``cns_planner.gis.radar_layout_adapter.
+        radar_layout_facts_provider``）：HTTP 线程与后台 worker 因此使用**同一份**事实
+        实现，不会出现"同步算一套、后台另一套"。它只暴露事实（显式米制投影、逐点
+        FABDEM DTM 高度、独立陆域掩膜分类与 readiness），构造时不打开任何数据集，也
+        不写任何状态。
 
-        **陆域掩膜独立于 DEM**：本 provider 不含任何"用 NoData 推断海洋"的路径；未配置
-        陆域源时 ``classify_surface`` 返回 ``unknown``（fail-closed）。
-
-        Radar 不维护第二套 land-mask authority：运行时图层名与海岸不确定带统一读取
-        canonical ``surface_classification_policy`` / ``surface_class_facts``。只有旧项目
-        的两个 canonical 容器都完全不存在时，才由服务层读取 legacy Radar policy。
+        **陆域掩膜独立于 DEM**：provider 不含任何"用 NoData 推断海洋"的路径；未配置
+        陆域源时分类返回 ``unknown``（fail-closed）。Radar 不维护第二套 land-mask
+        authority：运行时图层名与海岸不确定带统一读取 canonical
+        ``surface_classification_policy`` / ``surface_class_facts``。
         """
 
-        from ..gis.radar_layout_adapter import (
-            LandMaskSource, land_mask_hint, land_mask_readiness, sample_route_terrain,
-        )
+        from ..gis.radar_layout_adapter import radar_layout_facts_provider
 
-        transform_cache = {}
-
-        def to_metric(point):
-            from ..gis.fine_environment_adapter import QgisMetricTransform
-
-            transform = transform_cache.get("EPSG:32651")
-            if transform is None:
-                transform = QgisMetricTransform("EPSG:32651")
-                transform_cache["EPSG:32651"] = transform
-            return transform.to_metric(point)
-
-        def to_geographic(point):
-            from ..gis.fine_environment_adapter import QgisMetricTransform
-
-            transform = transform_cache.get("EPSG:32651")
-            if transform is None:
-                transform = QgisMetricTransform("EPSG:32651")
-                transform_cache["EPSG:32651"] = transform
-            return transform.to_geographic(point)
-
-        land_mask_cache = {}
-
-        def _land_policy():
-            """Canonical surface authority（legacy Radar 字段仅作旧项目回退）。"""
-
-            try:
-                authority = (
-                    self.workflow.radar_surveillance_layout_service.land_mask_authority()
-                )
-            except Exception:
-                authority = {}
-            if not isinstance(authority, dict):
-                authority = {}
-            return authority.get("layer_name"), authority.get(
-                "coastal_uncertainty_buffer_m"
-            )
-
-        def land_mask_source():
-            path = self.data.paths.get("land_mask")
-            layer_name, buffer_m = _land_policy()
-            key = (str(path) if path else None, str(layer_name), str(buffer_m))
-            if key not in land_mask_cache:
-                land_mask_cache.clear()
-                land_mask_cache[key] = (
-                    LandMaskSource(
-                        path, layer_name=layer_name, coastal_uncertainty_buffer_m=buffer_m,
-                    )
-                    if path else None
-                )
-            return land_mask_cache[key]
-
-        def sample_terrain(points):
-            from ..gis.radar_layout_adapter import route_terrain_source
-
-            terrain_path = self.data.paths.get("terrain_dtm")
-            source = route_terrain_source(terrain_path) if terrain_path else None
-            return sample_route_terrain(points, terrain_source=source)
-
-        def classify_surface(points):
-            source = land_mask_source()
-            if source is None:
-                return ["unknown"] * len(points or [])
-            return source.classify_many(points)
-
-        def classify_surface_detailed(longitude, latitude):
-            """V1.1：单点**独立**分类 + 需求语义（含 coastal_uncertain）。
-
-            每个真实采样点都在自己的位置调用一次；绝不做最近邻继承。
-            """
-
-            source = land_mask_source()
-            if source is None:
-                return {
-                    "surface_class": "unknown",
-                    "effective_requirement_class": None,
-                    "required_distinct_site_count": None,
-                    "classification_confidence": "unknown",
-                    "evidence": {"reason": "land_mask_not_configured"},
-                }
-            return source.classify_detailed(longitude, latitude)
-
-        def land_mask_readiness_bundle():
-            layer_name, buffer_m = _land_policy()
-            return land_mask_readiness(
-                self.workflow.state if hasattr(self.workflow, "state") else {},
-                {"land_mask": self.data.paths.get("land_mask")},
-                layer_name=layer_name,
-                coastal_uncertainty_buffer_m=buffer_m,
-            )
-
-        policy_layer_name, policy_buffer_m = _land_policy()
-        provider = {
-            "adapter_id": "radar_surveillance_layout_real_source_facts_v1",
-            "source_type": "configured_real_sources",
-            "metric_crs": "EPSG:32651",
-            "to_metric": to_metric,
-            "to_geographic": to_geographic,
-            "sample_terrain": sample_terrain,
-            "classify_surface": classify_surface,
-            "classify_surface_detailed": classify_surface_detailed,
-            "land_mask": {
-                "ok": land_mask_hint(
-                    self.data.paths.get("land_mask"), layer_name=policy_layer_name,
-                )["ok"],
-                "readiness": land_mask_hint(
-                    self.data.paths.get("land_mask"), layer_name=policy_layer_name,
-                ),
-            },
-            "land_mask_readiness": land_mask_readiness_bundle,
-            "land_mask_layer_name": policy_layer_name,
-            "coastal_uncertainty_buffer_m": policy_buffer_m,
-            "land_mask_authority": (
+        provider = radar_layout_facts_provider(
+            paths=self.data.paths,
+            state=self.workflow.state,
+            land_mask_authority=(
                 self.workflow.radar_surveillance_layout_service.land_mask_authority()
             ),
-            "paths": {
-                "terrain_dtm": self.data.paths.get("terrain_dtm"),
-                "land_mask": self.data.paths.get("land_mask"),
-            },
-            "dem_nodata_used_to_infer_sea": False,
-            "backend_hardcoded_mount_height": False,
-            # V1.1：航路采样高度恒为 ALT-080 的 80 m，与地形采样无关。
-            "terrain_used_for_route_sample_height": False,
-        }
+        )
         self.workflow.radar_surveillance_layout_service.facts_provider = provider
         return provider
 
