@@ -2247,6 +2247,8 @@ function thetaV2BindHarness(flow,fields={}){
       :null,
     panelError:message=>calls.push(['__error',message]),
     resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+    // Round32-C：候选规划改为后台任务提交；这里只登记调用（path/payload 与旧断言一致）。
+    submitBackgroundTask:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({task_id:'t'});},
     actionButton:(id,handler)=>{registered.push(id);handlers[id]=handler;},
   };
   return {c,calls,registered,handlers};

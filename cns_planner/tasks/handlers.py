@@ -22,8 +22,9 @@ import os
 from ..persistence.artifact_store import ArtifactStore
 from .task_input import InputSnapshotStore, snapshot_reference
 from .task_specs import (
-    CORRIDOR_TASK_TYPE, P15_TASK_TYPE, P16_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY,
-    PROBE_TASK_TYPE, RADAR_TASK_TYPE, has_task_type, task_spec,
+    CORRIDOR_TASK_TYPE, LAYERED_CANDIDATE_TASK_TYPE, P15_TASK_TYPE, P16_TASK_TYPE,
+    PCF_TASK_TYPE, PROBE_STATE_KEY, PROBE_TASK_TYPE, RADAR_TASK_TYPE,
+    ROUTE_RISK_PROFILE_TASK_TYPE, has_task_type, task_spec,
 )
 
 
@@ -42,6 +43,8 @@ RESULT_SCOPE_TEXT = {
     P15_TASK_TYPE: "CNS 能力缺口评估",
     P16_TASK_TYPE: "CNS 设施规划",
     RADAR_TASK_TYPE: "雷达设施优化规划",
+    LAYERED_CANDIDATE_TASK_TYPE: "航路候选规划",
+    ROUTE_RISK_PROFILE_TASK_TYPE: "航路风险画像",
     PROBE_TASK_TYPE: "运行时探针",
 }
 
@@ -249,6 +252,36 @@ def publish_task_result(workflow, record, *, workdir):
         #: 唯一 production writer：``CorridorSitePlanningService.apply_computed``
         #: （失效传播 / result_statuses 映射 / 原子保存全部由它独占，与同步入口同源）。
         workflow.cns_corridor_site_plan_apply_computed(result)
+        artifact_ref = {
+            key: committed.get(key) for key in
+            ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
+        }
+        return {"task_type": task_type, "scope": result_scope_text(task_type),
+                "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == LAYERED_CANDIDATE_TASK_TYPE:
+        outcome = _staged_value(_load_staged_payload(workdir, staged, committed))
+        if not isinstance(outcome, dict) or not outcome.get("outcome"):
+            raise TaskPublishError("staged 航路候选结果结构无效")
+        #: 唯一 production writer：``LayeredRoutePlannerService.apply_computed``
+        #: （request 写回 / mask / ``_store_candidate`` / result_statuses / 既有失效入口 /
+        #: 原子保存全部由它独占，与同步入口 ``evaluate`` 共用同一段收尾）。
+        workflow.layered_route_candidate_apply_computed(outcome)
+        artifact_ref = {
+            key: committed.get(key) for key in
+            ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
+        }
+        return {"task_type": task_type, "scope": result_scope_text(task_type),
+                "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == ROUTE_RISK_PROFILE_TASK_TYPE:
+        outcome = _staged_value(_load_staged_payload(workdir, staged, committed))
+        if not isinstance(outcome, dict) or not outcome.get("outcome"):
+            raise TaskPublishError("staged 航路风险画像结果结构无效")
+        #: 唯一 production writer：``RouteRiskProfileService.apply_computed``
+        #: （policy 写回 / 集合去重追加 / last_evaluation / result_statuses / 原子保存
+        #: 全部由它独占，与同步入口 ``evaluate`` 共用同一段收尾）。
+        workflow.route_risk_profile_apply_computed(outcome)
         artifact_ref = {
             key: committed.get(key) for key in
             ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")

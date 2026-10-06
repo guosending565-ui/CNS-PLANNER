@@ -66,6 +66,12 @@ TASK_ENDPOINTS = {
     #: 5 m 独立连续覆盖复核与补点重解，真实项目上远超一次 HTTP 请求的合理等待时间；
     #: 带 ``async: true`` 提交时只登记任务并立刻返回 task_id，不带时保持同步语义。
     "/api/radar-surveillance-layout/evaluate": "radar_surveillance_layout_evaluate",
+    #: Round32-C：Step03 的两个正式动作。航路候选规划是一次数十秒级的同步耗时请求
+    #: （population × shelter risk 的 heading-aware Theta* 搜索），航路风险画像紧随其后
+    #: 对 current 候选做逐 segment 风险重算；带 ``async: true`` 提交时只登记任务并立刻
+    #: 返回 task_id，不带时**保持原同步语义**（既有调用方完全不受影响）。
+    "/api/layered-route-candidates/evaluate-real": "layered_route_candidate_evaluate",
+    "/api/route-risk-profiles/evaluate": "route_risk_profile_evaluate",
 }
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -1184,6 +1190,380 @@ def _probe_runner(context):
     )
 
 
+# ---- Step03 后台任务：航路候选规划 + 航路风险画像（Round32-C） --------------------
+#
+# 两个 task type 都只包装**既有业务 endpoint**：
+#
+# * ``/api/layered-route-candidates/evaluate-real``（航路候选规划）
+# * ``/api/route-risk-profiles/evaluate``（航路风险画像）
+#
+# 带 ``async: true`` 提交时只登记任务并立刻返回 task_id；**不带时保持原有同步语义**
+# （同一 endpoint、同一 production writer，逐字不变）。worker 只在项目状态的**内存副本**
+# 上调用服务的 ``plan()``（纯计算，绝不写盘），canonical 写入仍由 publish 阶段的
+# ``apply_computed`` 独占 —— 那个方法就是同步入口自己用的收尾段，不存在第二个写入者。
+
+LAYERED_CANDIDATE_TASK_TYPE = "layered_route_candidate_evaluate"
+ROUTE_RISK_PROFILE_TASK_TYPE = "route_risk_profile_evaluate"
+
+#: 唯一影响候选结果的算法选择：production 航路主链固定是 Theta* V2。
+LAYERED_CANDIDATE_ALGORITHM_TYPES = ("layered_route_planner",)
+
+#: 候选规划与风险画像真正读取的项目输入（只读 state，逐项深拷贝进 immutable snapshot）。
+#: 这是 ``LayeredRoutePlannerService`` 的完整读面（plan + current identity）：任一变化
+#: 都会改变候选/画像结果或当前适用性，因此必须**全部**进入输入指纹 —— 漏掉任何一项
+#: 都会让 compare-and-publish 发布一份过期结果。
+LAYERED_PLANNING_INPUT_STATE_KEYS = (
+    "operational_routes", "scenario_routes",
+    "grid", "grid_attributes", "grid_risk_v2", "route_constraints", "spatial_3d",
+    "layered_route_planning_request", "layered_route_feasibility_policy",
+    "layered_route_cost_policy", "layered_route_candidates",
+    "building_clearance_policy", "tower_clearance_policy", "source_audits",
+    "shelter_coefficient_policy", "regulatory_constraints",
+    "communication_planning_field", "theta_v2_objective_policy",
+    "max_route_risk_density", "planning_exposure_policy",
+    "planning_constraint_fields", "surface_classification_policy", "surface_class_facts",
+    "data_source_paths",
+)
+
+#: 进入 worker_payload 的请求字段（其余请求字段不影响结果）。
+#:
+#: ``data_source_paths`` 也在其中：候选规划的 coarse 可行性掩膜需要 FABDEM ``terrain_dtm``，
+#: 而该路径只存在于主进程已解析的 ``MapData.paths``（canonical state 里没有它的写入者）。
+#: 提交侧把它随 payload 冻结进来（``ApiRouter._freeze_runtime_sources``）；放进 worker_payload
+#: 而不是只放进 inputs，是为了让**发布侧**用同一份 worker_payload 重算指纹时得到同一个值
+#: （否则每个任务都会在 compare-and-publish 处被判成"输入已变化"）。
+LAYERED_CANDIDATE_WORKER_PAYLOAD_KEYS = ("request", "hard_constraints", "data_source_paths")
+ROUTE_RISK_PROFILE_WORKER_PAYLOAD_KEYS = ("policy", "candidate_id", "lane_key")
+
+#: ``grid_attributes`` 内的**派生**字段（不持久化、随读即变），必须排除出输入指纹。
+LAYERED_DERIVED_GRID_ATTRIBUTE_KEYS = ("population_shelter",)
+
+#: 候选规划的输入 = 上表 **减去** 既有候选集合。
+#:
+#: 候选是 ``(grid / request / policy / grid_risk_v2 / population / 环境事实)`` 的确定性函数：
+#: ``LayeredRoutePlannerService.plan()`` 根本不读既有候选集合。它只在 publish 阶段的
+#: ``_store_candidate`` 里参与"就地替换 / 把上一条标记 stale"的**记账**。把它放进输入指纹
+#: 会让任何记账变化（例如 ``items[*].stale_reason``）把正在跑的任务误判成"输入已变化"。
+LAYERED_CANDIDATE_INPUT_STATE_KEYS = tuple(
+    key for key in LAYERED_PLANNING_INPUT_STATE_KEYS if key != "layered_route_candidates"
+)
+
+#: 候选集合的输入投影字段（见 :func:`_layered_candidate_input_projection`）。
+LAYERED_CANDIDATE_COLLECTION_INPUT_KEYS = (
+    "schema_version", "status", "count", "active_candidate_id",
+)
+LAYERED_CANDIDATE_ITEM_INPUT_KEYS = (
+    "candidate_id", "status", "lane_key", "route_id", "altitude_layer_id",
+    "candidate_fingerprint", "input_fingerprint", "feasibility_fingerprint",
+    "feasibility_mask_fingerprint", "request_fingerprint", "policy_fingerprint",
+    "risk_fingerprint", "planning_constraint_field_fingerprint",
+)
+LAYERED_CANDIDATE_MASK_INPUT_KEYS = (
+    "status", "altitude_layer_id", "grid_level", "cell_count", "counts",
+    "mask_fingerprint", "feasibility_policy_fingerprint", "cruise_altitude",
+)
+
+
+def _frozen_layered_inputs(state, keys):
+    """按给定键集合冻结只读输入：剔除派生字段，并把候选集合换成**输入投影**。"""
+
+    state = state if isinstance(state, dict) else {}
+    inputs = {key: deepcopy(state.get(key)) for key in keys}
+    attributes = inputs.get("grid_attributes")
+    if isinstance(attributes, dict):
+        for key in LAYERED_DERIVED_GRID_ATTRIBUTE_KEYS:
+            attributes.pop(key, None)
+    if "layered_route_candidates" in inputs:
+        inputs["layered_route_candidates"] = _layered_candidate_input_projection(
+            state.get("layered_route_candidates")
+        )
+    return inputs
+
+
+def _layered_candidate_input_projection(collection):
+    """``layered_route_candidates`` 的**输入投影**（风险画像侧）。
+
+    画像由 current candidate 派生，因此候选集合必须进入它的输入指纹；但集合里混着三类
+    **非输入**内容：
+
+    * 读时投影 —— ``result_snapshot()`` 每次重算并就地写回的 ``current_applicability`` /
+      ``current_key`` / ``current_candidate_fingerprint`` / ``masks[*].current_applicability``；
+    * publish 阶段的记账 —— ``items[*].stale_reason``；
+    * 逐 cell 明细 ``masks[*].cells``（多 MB）：身份由 ``mask_fingerprint`` 承载，
+      ``LayeredRiskAwareThetaStarV2.fingerprints()`` 只消费 ``mask_fingerprint`` 与
+      ``cruise_altitude``。
+
+    因此这里按"身份面"冻结，而不是整份深拷贝。漏掉上面任何一类，都会让正在跑的画像任务
+    因为"读了一次快照"而假 ``stale``；反过来漏掉身份字段则会让候选变化后的画像被错误发布。
+    """
+
+    collection = collection if isinstance(collection, dict) else {}
+    projected = {
+        key: deepcopy(collection.get(key))
+        for key in LAYERED_CANDIDATE_COLLECTION_INPUT_KEYS
+    }
+    projected["items"] = [
+        {key: deepcopy(item.get(key)) for key in LAYERED_CANDIDATE_ITEM_INPUT_KEYS}
+        for item in (collection.get("items") or []) if isinstance(item, dict)
+    ]
+    projected["masks"] = {
+        str(lane): {key: deepcopy(mask.get(key)) for key in LAYERED_CANDIDATE_MASK_INPUT_KEYS}
+        for lane, mask in (collection.get("masks") or {}).items() if isinstance(mask, dict)
+    }
+    return projected
+
+
+def _layered_planning_inputs(state):
+    """风险画像的权威输入：**包含** current candidate 集合（画像由该候选派生）。
+
+    ``grid_attributes`` 里有一个**派生**字段 ``population_shelter``：它由 shelter policy +
+    人口因子按需派生，``ensure_state()`` 每次都会把它从 canonical state 里移除（刻意不持久化，
+    以免与输入漂移）。它因此**不能**进入输入指纹 —— 否则"读一次快照"（服务构造、任何
+    ``result_snapshot()``）就会改掉冻结输入，让正在跑的任务出现假 ``stale``。
+    """
+
+    return _frozen_layered_inputs(state, LAYERED_PLANNING_INPUT_STATE_KEYS)
+
+
+def _layered_candidate_inputs(state, payload):
+    """候选规划的权威输入（**不含**既有候选集合，见 ``LAYERED_CANDIDATE_INPUT_STATE_KEYS``）。
+
+    本次显式声明的 request / hard_constraints 已经进入 snapshot 的 ``worker_payload`` 段
+    （见 :func:`build_snapshot`），因此这里只需要冻结 state 读面。
+
+    ``data_source_paths`` 例外：canonical state 里**没有**这个容器的写入者（实测为 None），
+    真实空间来源只存在于主进程已解析的 ``MapData.paths``。提交侧因此随 payload 把它冻结
+    进来（见 ``ApiRouter._freeze_runtime_sources``），否则 worker 装配不出 FABDEM 适配器，
+    后台任务必然 ``task_execution_failed``（同步路径读的是 live paths，所以看不出这个差异）。
+    """
+
+    inputs = _frozen_layered_inputs(state, LAYERED_CANDIDATE_INPUT_STATE_KEYS)
+    runtime_paths = (payload or {}).get("data_source_paths")
+    if isinstance(runtime_paths, dict) and runtime_paths:
+        inputs["data_source_paths"] = dict(runtime_paths)
+    return inputs
+
+
+def _layered_candidate_worker_payload(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    for key in LAYERED_CANDIDATE_WORKER_PAYLOAD_KEYS:
+        if payload.get(key) is not None:
+            compact[key] = deepcopy(payload[key])
+    return compact
+
+
+def _layered_candidate_scope(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    request = payload.get("request")
+    if not isinstance(request, dict):
+        request = (state if isinstance(state, dict) else {}).get(
+            "layered_route_planning_request"
+        ) or {}
+    route_id = str(request.get("scenario_route_id") or request.get("route_id") or "")
+    layer = str(request.get("altitude_layer_id") or "")
+    return "layered_route_candidate:%s@%s" % (route_id or "no-route", layer or "no-layer")
+
+
+def _layered_candidate_plan(state, payload):
+    worker_payload = _layered_candidate_worker_payload(state, payload)
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _layered_candidate_inputs(state, worker_payload),
+    }
+
+
+def _layered_candidate_summary(outcome):
+    """canonical 结果的**摘要**（逐 cell mask 明细进 artifact，不进 summary）。"""
+
+    outcome = outcome if isinstance(outcome, dict) else {}
+    if str(outcome.get("outcome")) == "blocked":
+        return {
+            "status": outcome.get("status"),
+            "blocked": True,
+            "reason_code": outcome.get("reason_code"),
+            "lane_key": outcome.get("key"),
+        }
+    candidate = outcome.get("candidate") if isinstance(outcome.get("candidate"), dict) else {}
+    statistics = candidate.get("statistics") if isinstance(candidate.get("statistics"), dict) else {}
+    return {
+        "status": candidate.get("status"),
+        "blocked": False,
+        "lane_key": candidate.get("lane_key") or outcome.get("key"),
+        "candidate_id": candidate.get("candidate_id"),
+        "distance_m": candidate.get("distance_m"),
+        "state_count": statistics.get("expanded_labels"),
+        "candidate_fingerprint": candidate.get("candidate_fingerprint"),
+    }
+
+
+def _layered_candidate_runner(context):
+    """worker 侧：在项目状态的**内存副本**上重算候选，只 stage 结果、绝不发布。"""
+
+    from ..application.layered_route_planner_service import LayeredRoutePlannerService
+    from ..gis.layered_feasibility_adapter import build_layered_feasibility_adapter
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    inputs = snapshot.get("inputs") or {}
+    worker_payload = snapshot.get("worker_payload") or {}
+    algorithms = context.algorithms()
+    #: 先按声明清单预解析：算法版本在提交后不可用时立刻失败，绝不部分运行。
+    algorithms.resolve_all(LAYERED_CANDIDATE_ALGORITHM_TYPES)
+    context.check_cancel()
+    context.progress(0.02, "正在准备航路候选规划输入")
+    state = deepcopy(context.project_state)
+    if not isinstance(state, dict) or not state:
+        raise TaskInputChanged("项目状态不可读，航路候选规划任务作废")
+    #: 与同步路径**同一份**装配实现；它只依赖 ``osgeo.gdal`` / ``osgeo.osr``，
+    #: 不需要 QGIS runtime（worker 由同一个解释器启动，因此 GDAL 可用）。
+    adapter = build_layered_feasibility_adapter(inputs.get("data_source_paths") or {})
+    service = LayeredRoutePlannerService(
+        _WorkerReadOnlySession(state), _WorkerInvalidation(), _worker_snapshot_passthrough,
+        adapter=adapter,
+    )
+    service.planner = algorithms.create("layered_route_planner")
+    outcome = service.plan(
+        worker_payload,
+        on_progress=lambda expanded: context.progress(
+            LayeredRoutePlannerService.SEARCH_STAGE_PROGRESS,
+            "正在执行 Theta* 搜索 · 已展开 %d 个状态" % int(expanded),
+        ),
+        cancel_check=context.check_cancel,
+    )
+    if not isinstance(outcome, dict) or not outcome.get("outcome"):
+        raise RuntimeError("航路候选规划计算没有产出结果")
+    context.check_cancel()
+    context.progress(0.9, "正在写入临时结果明细")
+    metadata = context.stage(
+        {"logical_key": "layered_route_candidates", "value": outcome},
+        artifact_type="layered_route_candidate.detail",
+    )
+    summary = _layered_candidate_summary(outcome)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="layered_route_candidate.detail",
+            summary=summary,
+        ),
+        message="航路候选规划计算完成，等待发布",
+        progress=0.9,
+    )
+
+
+def _route_risk_profile_scope(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    candidate_id = str(payload.get("candidate_id") or "")
+    if not candidate_id:
+        collection = (state if isinstance(state, dict) else {}).get("layered_route_candidates") or {}
+        candidate_id = str(collection.get("active_candidate_id") or "")
+    return "route_risk_profile:" + (candidate_id or "no-candidate")
+
+
+def _route_risk_profile_inputs(state, payload):
+    """``TaskSpec.input_snapshot`` 形状（``(state, payload)``）。
+
+    必须与 :func:`_route_risk_profile_plan` 的 ``inputs`` **逐字一致**：前者用于两侧重算
+    指纹，后者是 snapshot 本体。这里显式转发到同一个实现，杜绝两份定义漂移。
+    """
+
+    return _layered_planning_inputs(state)
+
+
+def _route_risk_profile_worker_payload(state, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    for key in ROUTE_RISK_PROFILE_WORKER_PAYLOAD_KEYS:
+        if payload.get(key) is not None:
+            compact[key] = deepcopy(payload[key])
+    return compact
+
+
+def _route_risk_profile_plan(state, payload):
+    worker_payload = _route_risk_profile_worker_payload(state, payload)
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _layered_planning_inputs(state),
+    }
+
+
+def _route_risk_profile_summary(outcome):
+    """canonical 结果的**摘要**（逐 segment 明细进 artifact）。"""
+
+    outcome = outcome if isinstance(outcome, dict) else {}
+    if str(outcome.get("outcome")) != "passed":
+        rejection = outcome.get("rejection") if isinstance(outcome.get("rejection"), dict) else {}
+        return {
+            "status": rejection.get("status") or "not_ready",
+            "passed": False,
+            "reason_code": rejection.get("reason_code"),
+            "candidate_id": rejection.get("candidate_id"),
+        }
+    profile = outcome.get("profile") if isinstance(outcome.get("profile"), dict) else {}
+    return {
+        "status": profile.get("status"),
+        "passed": True,
+        "profile_id": profile.get("profile_id"),
+        "candidate_id": (profile.get("candidate") or {}).get("candidate_id"),
+        "profile_fingerprint": (profile.get("fingerprints") or {}).get("profile_fingerprint"),
+        "segment_count": len(profile.get("segments") or []),
+    }
+
+
+def _route_risk_profile_runner(context):
+    """worker 侧：在内存副本上重算风险画像，只 stage 结果、绝不发布。"""
+
+    from ..application.layered_route_planner_service import LayeredRoutePlannerService
+    from ..application.route_risk_profile_service import RouteRiskProfileService
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    worker_payload = snapshot.get("worker_payload") or {}
+    context.check_cancel()
+    context.progress(0.05, "正在准备航路风险画像输入")
+    state = deepcopy(context.project_state)
+    if not isinstance(state, dict) or not state:
+        raise TaskInputChanged("项目状态不可读，航路风险画像任务作废")
+    #: 画像以 LayeredRouteCandidate 为**唯一**候选权威，因此 worker 里也装配同一个
+    #: 只读 layered 服务（与主进程的装配顺序一致），而不是自己重算候选。
+    session = _WorkerReadOnlySession(state)
+    layered = LayeredRoutePlannerService(
+        session, _WorkerInvalidation(), _worker_snapshot_passthrough,
+    )
+    service = RouteRiskProfileService(
+        session, _WorkerInvalidation(), _worker_snapshot_passthrough, layered,
+    )
+    context.check_cancel()
+    context.progress(0.5, "正在计算航路风险画像")
+    outcome = service.plan(worker_payload)
+    if not isinstance(outcome, dict) or not outcome.get("outcome"):
+        raise RuntimeError("航路风险画像计算没有产出结果")
+    context.check_cancel()
+    context.progress(0.9, "正在写入临时结果明细")
+    metadata = context.stage(
+        {"logical_key": "route_risk_profiles", "value": outcome},
+        artifact_type="route_risk_profile.detail",
+    )
+    summary = _route_risk_profile_summary(outcome)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="route_risk_profile.detail",
+            summary=summary,
+        ),
+        message="航路风险画像计算完成，等待发布",
+        progress=0.9,
+    )
+
+
 CORRIDOR_TASK_TYPE = "cns_service_corridor_evaluate"
 PCF_TASK_TYPE = "planning_constraint_field_generate"
 
@@ -1242,6 +1622,40 @@ _PROBE_SPEC = TaskSpec(
     algorithm_types=(),
 )
 
+#: Round32-C：Step03 的两个正式业务动作登记为 heavy task。任务名刻意使用**纯业务名**
+#: （「航路候选规划」/「航路风险画像」）：普通视图里不出现算法名、指纹或原始状态值。
+_LAYERED_CANDIDATE_SPEC = TaskSpec(
+    task_type=LAYERED_CANDIDATE_TASK_TYPE,
+    task_name="航路候选规划",
+    message="航路候选规划已提交，正在后台计算",
+    business_endpoint="/api/layered-route-candidates/evaluate-real",
+    scope_key=_layered_candidate_scope,
+    input_snapshot=_layered_candidate_inputs,
+    submit_plan=_layered_candidate_plan,
+    runner=_layered_candidate_runner,
+    release="layered_route_candidates",
+    algorithm_types=LAYERED_CANDIDATE_ALGORITHM_TYPES,
+)
+
+_ROUTE_RISK_PROFILE_SPEC = TaskSpec(
+    task_type=ROUTE_RISK_PROFILE_TASK_TYPE,
+    task_name="航路风险画像",
+    message="航路风险画像已提交，正在后台计算",
+    business_endpoint="/api/route-risk-profiles/evaluate",
+    scope_key=_route_risk_profile_scope,
+    #: 必须与 ``submit_plan`` 冻结的输入**完全一致**：``TaskSpec.fingerprint_for`` 用
+    #: ``input_snapshot`` 重算指纹（提交与 publish 两侧、以及 worker 的自证检查），
+    #: 而 snapshot 本体用 ``submit_plan`` 的 ``inputs``。两者不一致会让每个任务一启动
+    #: 就被判 stale（"输入已变化"）。
+    input_snapshot=_route_risk_profile_inputs,
+    submit_plan=_route_risk_profile_plan,
+    runner=_route_risk_profile_runner,
+    release="route_risk_profiles",
+    #: RouteRiskProfile 的算法身份是服务层模块常量（``RouteRiskProfiler``），
+    #: 不经 algorithm registry 选择，因此没有需要冻结的算法选择项。
+    algorithm_types=(),
+)
+
 _P15_SPEC = TaskSpec(
     task_type=P15_TASK_TYPE,
     task_name="CNS 能力缺口评估",
@@ -1268,14 +1682,17 @@ _P16_SPEC = TaskSpec(
     algorithm_types=P16_ALGORITHM_TYPES,
 )
 
-for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _RADAR_SPEC, _PROBE_SPEC):
+for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _RADAR_SPEC, _PROBE_SPEC,
+              _LAYERED_CANDIDATE_SPEC, _ROUTE_RISK_PROFILE_SPEC):
     register_task_spec(_spec)
 
 
 __all__ = [
-    "CORRIDOR_TASK_TYPE", "P15_TASK_TYPE", "P15UpstreamNotCurrent", "P16_TASK_TYPE",
+    "CORRIDOR_TASK_TYPE", "LAYERED_CANDIDATE_TASK_TYPE", "P15_TASK_TYPE",
+    "P15UpstreamNotCurrent", "P16_TASK_TYPE",
     "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
-    "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "RADAR_TASK_TYPE", "TASK_ENDPOINTS",
+    "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "RADAR_TASK_TYPE",
+    "ROUTE_RISK_PROFILE_TASK_TYPE", "TASK_ENDPOINTS",
     "TaskCancelled",
     "TaskInputChanged", "fingerprint_payload",
     "has_task_type",

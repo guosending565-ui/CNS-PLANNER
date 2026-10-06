@@ -95,6 +95,31 @@ def _candidate_key(route_id, altitude_layer_id):
     return f"{route_id or 'od'}@{altitude_layer_id or 'layer'}"
 
 
+#: Round32-C：mask 里**唯一**的逐 cell 明细字段。实测 ``cells`` 约 37 MB（9,752 格），
+#: 占 ``GET /api/layered-route-candidates`` 的 95%；其余字段都是主界面需要的**有界**摘要。
+MASK_DETAIL_FIELD = "cells"
+#: 逐 cell mask 明细的专用只读读取入口（按需 hydrate，不进入通用刷新路径）。
+MASK_DETAIL_ENDPOINT = "/api/layered-route-candidates/masks"
+
+
+def _mask_summary(mask):
+    """把一个 coarse feasibility mask 压成有界摘要。
+
+    保留 status / counts / current_applicability / 指纹 / adapter 等**有界**字段
+    （图例与 overlay 的可用性判据都只读这些），把逐 cell ``cells`` 换成
+    ``cells_count`` + ``cells_detail`` 声明。缺失 ≠ 0：没有 cells 时只如实报告
+    "明细已外置"，绝不用 0 冒充"已评估且全部可行"。
+    """
+
+    if not isinstance(mask, dict):
+        return mask
+    summary = {name: value for name, value in mask.items() if name != MASK_DETAIL_FIELD}
+    cells = mask.get(MASK_DETAIL_FIELD)
+    summary["cells_count"] = len(cells) if isinstance(cells, (dict, list)) else 0
+    summary["cells_detail"] = MASK_DETAIL_ENDPOINT
+    return summary
+
+
 def _confirmed_zero_population_cells(population_attribute):
     """当前人口属性里被显式确认为"已知 0 人口暴露"的格子集合。
 
@@ -360,6 +385,41 @@ class LayeredRoutePlannerService:
         collection["current_key"] = current_key
         collection["current_candidate_fingerprint"] = current_fingerprint
         return collection
+
+    def result_summary(self):
+        """``GET /api/layered-route-candidates`` 的**有界**读投影（Round32-C）。
+
+        与 :meth:`result_snapshot` 的唯一区别：每个 mask 的逐 cell ``cells`` 明细被压成
+        ``cells_count`` + ``cells_detail`` 声明（见 :func:`_mask_summary`）。candidate
+        ``items``（有界权威记录：state / 成本 / 航路点 / 指纹）原样保留。
+
+        权威 state 与后端业务读路径**完全不变**：其他 service 一律直接消费
+        :meth:`result_snapshot` / :meth:`mask_snapshot`，不经过这个交通层投影。
+        """
+
+        collection = self.result_snapshot()
+        collection["masks"] = {
+            key: _mask_summary(mask)
+            for key, mask in (collection.get("masks") or {}).items()
+        }
+        collection["masks_semantics"] = (
+            "bounded_projection_cells_externalized; use " + MASK_DETAIL_ENDPOINT
+        )
+        return collection
+
+    def masks_snapshot(self, lane_key=None):
+        """逐 cell mask 明细的按需读取入口。
+
+        ``lane_key`` 给出时只返回该车道（地图只画 selected layer 的那一个 mask）；
+        不给时返回全部 mask（审计 / 完整 hydrate）。
+        """
+
+        masks = self.result_snapshot().get("masks") or {}
+        if lane_key is None:
+            return deepcopy(masks)
+        key = str(lane_key)
+        mask = masks.get(key)
+        return {key: deepcopy(mask)} if mask is not None else {}
 
     def current_candidate_snapshot(self, *, altitude_layer_id=None):
         """Return the authoritative current candidate without trusting stored applicability.
@@ -648,30 +708,65 @@ class LayeredRoutePlannerService:
 
     # ------------------------------------------------------------------ evaluate
 
+    #: Round32-C：搜索期进度阶段值。搜索阶段的"进度"不能伪造百分比，因此阶段值恒定，
+    #: 只有 message 里携带**真实**已展开 label 数。
+    SEARCH_STAGE_PROGRESS = 0.35
+
     def evaluate(self, payload=None, *, adapter=None):
+        """同步入口：**纯计算 + 唯一 production 写入**（与后台任务同源同形）。
+
+        Round32-C 把它拆成 :meth:`plan`（只读 state 的纯计算）与
+        :meth:`apply_computed`（唯一 canonical 写入者）。同步语义逐字不变：
+        请求更新与候选结果仍在**同一个** ``session.save()`` 里落盘。
+        """
+
+        return self.apply_computed(self.plan(payload, adapter=adapter))
+
+    def plan(self, payload=None, *, adapter=None, on_progress=None, cancel_check=None):
+        """**纯计算**：只读 state，绝不写盘、绝不 save、绝不触发失效传播。
+
+        ``on_progress`` / ``cancel_check`` 只在搜索期以固定低频间隔被调用，且只允许
+        上报真实已展开数或抛出取消异常 —— 它们不参与任何决策，因此不可能改变结果。
+
+        返回可发布的 outcome（不含任何不可序列化对象）：
+
+        * ``{"outcome": "candidate", request, request_declared, key, candidate, mask}``
+        * ``{"outcome": "blocked", request, request_declared, key, status,
+           reason, reason_code}``（blocked 的 canonical 写法仍由 :meth:`apply_computed`
+           通过既有的 ``_blocked`` 完成）。
+        """
+
         state = self.ensure_state()
         payload = payload if isinstance(payload, dict) else {}
-        if isinstance(payload.get("request"), dict):
-            state["layered_route_planning_request"] = normalize_layered_route_request(
-                payload["request"]
-            )
-        request = state["layered_route_planning_request"]
+        request_declared = isinstance(payload.get("request"), dict)
+        if request_declared:
+            # 纯计算只解析出"本次生效 request"，**不写 state**：写回是 apply_computed 的事。
+            request = normalize_layered_route_request(payload["request"])
+        else:
+            request = state["layered_route_planning_request"]
         feasibility = state["layered_route_feasibility_policy"]
         cost = state["layered_route_cost_policy"]
         grid = state.get("grid") or {}
         scenario_routes = _scenario_routes(state)
         route = self._resolve_scenario_route(request, scenario_routes)
         active_adapter = adapter or self.adapter
-        collection = normalize_layered_route_candidate_collection(state["layered_route_candidates"])
         key = _candidate_key((route or {}).get("route_id"), request.get("altitude_layer_id"))
-        prior = _existing_candidate(collection, key, request)
+
+        def outcome(kind, **extra):
+            return {
+                "outcome": kind,
+                "request": request,
+                "request_declared": request_declared,
+                "key": key,
+                **extra,
+            }
 
         runnable, reason = feasibility_policy_is_runnable(feasibility)
         if not runnable:
-            return self._blocked(
-                state, collection, request, route, "blocked", prior,
-                "LayeredRouteFeasibilityPolicy 未确认：terrain_vertical_clearance_m 无默认值",
-                reason or "feasibility_policy_not_confirmed", key,
+            return outcome(
+                "blocked", status="blocked",
+                reason="LayeredRouteFeasibilityPolicy 未确认：terrain_vertical_clearance_m 无默认值",
+                reason_code=reason or "feasibility_policy_not_confirmed",
             )
         if self._uses_theta_star():
             # Theta* V2 prices population × shelter risk, not the legacy Risk Framework V2
@@ -680,26 +775,28 @@ class LayeredRoutePlannerService:
         else:
             runnable, reason = cost_policy_is_runnable(cost)
             if not runnable:
-                return self._blocked(
-                    state, collection, request, route, "blocked", prior,
-                    "LayeredRouteCostPolicy 未确认：λ 无默认值（null != 0）",
-                    reason or "cost_policy_not_confirmed", key,
+                return outcome(
+                    "blocked", status="blocked",
+                    reason="LayeredRouteCostPolicy 未确认：λ 无默认值（null != 0）",
+                    reason_code=reason or "cost_policy_not_confirmed",
                 )
         if request.get("status") != "confirmed":
-            return self._blocked(
-                state, collection, request, route, "blocked", prior,
-                "显式 planning request 未确认",
-                str(request.get("status_reason") or "planning_request_not_confirmed"), key,
+            return outcome(
+                "blocked", status="blocked",
+                reason="显式 planning request 未确认",
+                reason_code=str(request.get("status_reason") or "planning_request_not_confirmed"),
             )
         if route is None:
-            return self._blocked(
-                state, collection, request, route, "missing_data", prior,
-                "planning request 指向的 scenario/OD 航路不存在", "scenario_route_not_found", key,
+            return outcome(
+                "blocked", status="missing_data",
+                reason="planning request 指向的 scenario/OD 航路不存在",
+                reason_code="scenario_route_not_found",
             )
         if not grid.get("cells"):
-            return self._blocked(
-                state, collection, request, route, "missing_data", prior,
-                "当前 MH/T 标准网格不可用", "grid_unavailable", key,
+            return outcome(
+                "blocked", status="missing_data",
+                reason="当前 MH/T 标准网格不可用",
+                reason_code="grid_unavailable",
             )
         layers = ((state.get("spatial_3d") or {}).get("altitude_layers") or [])
         selected_layer = next(
@@ -708,24 +805,27 @@ class LayeredRoutePlannerService:
         )
         cruise = resolve_cruise_altitude(selected_layer)
         if cruise.get("status") != "confirmed":
-            return self._blocked(
-                state, collection, request, route, "blocked", prior,
-                "selected AltitudeLayer 无法解析为 canonical EGM2008 巡航高度；不做 datum/geoid 猜测",
-                str(cruise.get("reason") or "altitude_layer_not_resolvable"), key,
+            return outcome(
+                "blocked", status="blocked",
+                reason="selected AltitudeLayer 无法解析为 canonical EGM2008 巡航高度；不做 datum/geoid 猜测",
+                reason_code=str(cruise.get("reason") or "altitude_layer_not_resolvable"),
             )
         if active_adapter is None:
-            return self._blocked(
-                state, collection, request, route, "missing_data", prior,
-                "未配置 GIS 可行性数据源（verified FABDEM + L8 building facts）：不构造假环境",
-                "feasibility_adapter_not_configured", key,
+            return outcome(
+                "blocked", status="missing_data",
+                reason="未配置 GIS 可行性数据源（verified FABDEM + L8 building facts）：不构造假环境",
+                reason_code="feasibility_adapter_not_configured",
             )
 
+        if callable(cancel_check):
+            cancel_check()
         try:
             cells = active_adapter.build_cells(list(grid["cells"]), state)
         except (TypeError, ValueError, RuntimeError) as exc:
-            return self._blocked(
-                state, collection, request, route, "missing_data", prior,
-                f"读取 coarse 地形/建筑事实失败：{exc}", "feasibility_source_read_failed", key,
+            return outcome(
+                "blocked", status="missing_data",
+                reason=f"读取 coarse 地形/建筑事实失败：{exc}",
+                reason_code="feasibility_source_read_failed",
             )
         building_policy = state.get("building_clearance_policy") or {}
         tower_policy = state.get("tower_clearance_policy") or {}
@@ -742,7 +842,7 @@ class LayeredRoutePlannerService:
             hard_constraints = (state.get("route_constraints") or []) if isinstance(
                 state.get("route_constraints"), list
             ) else []
-        candidate = self.planner.plan(
+        planner_inputs = dict(
             request=request, scenario_route=route, grid=grid, layer_mask=mask,
             grid_risk_v2=state.get("grid_risk_v2") or {},
             feasibility_policy=feasibility, cost_policy=cost,
@@ -751,7 +851,61 @@ class LayeredRoutePlannerService:
             source_audits=state.get("source_audits") or {},
             **self._planner_specific_inputs(state, grid),
         )
-        collection["masks"][key] = mask
+        # 只读观测钩子：只在本 planner 明确声明支持时传入，绝不猜测参数名。
+        if (callable(on_progress) or callable(cancel_check)) and getattr(
+            self.planner, "supports_search_hook", False
+        ):
+            planner_inputs["search_hook"] = self._search_hook(on_progress, cancel_check)
+        candidate = self.planner.plan(**planner_inputs)
+        return outcome("candidate", candidate=candidate, mask=mask)
+
+    @staticmethod
+    def _search_hook(on_progress, cancel_check):
+        """搜索期只读钩子：上报**真实**已展开 label 数 + cooperative cancel。
+
+        ``on_progress`` 只收到一个整数（真实 ``statistics["expanded_labels"]``），
+        由调用方决定文案与阶段进度值 —— 服务层绝不编造百分比。
+        """
+
+        def hook(expanded):
+            if callable(on_progress):
+                on_progress(int(expanded))
+            if callable(cancel_check):
+                cancel_check()
+
+        return hook
+
+    def apply_computed(self, outcome):
+        """**唯一** canonical 写入者（同步入口与后台任务 publish 阶段共用这一步）。
+
+        写入步骤与拆分前的 ``evaluate`` 尾部逐字相同：request 写回（若本次显式声明）、
+        mask、``_store_candidate``、``result_statuses``、既有失效入口、
+        **同一个** ``session.save()``。worker 永远不调用它。
+        """
+
+        state = self.ensure_state()
+        outcome = outcome if isinstance(outcome, dict) else {}
+        request = outcome.get("request") if isinstance(outcome.get("request"), dict) else {}
+        if outcome.get("request_declared"):
+            state["layered_route_planning_request"] = normalize_layered_route_request(request)
+        # 以 state 里的权威 request 为准（同步路径用的就是它）。
+        request = state["layered_route_planning_request"]
+        key = str(outcome.get("key") or "")
+        collection = normalize_layered_route_candidate_collection(state["layered_route_candidates"])
+        prior = _existing_candidate(collection, key, request)
+        if str(outcome.get("outcome")) == "blocked":
+            return self._blocked(
+                state, collection, request,
+                self._resolve_scenario_route(request, _scenario_routes(state)),
+                str(outcome.get("status") or "blocked"), prior,
+                outcome.get("reason"), outcome.get("reason_code"), key,
+            )
+        candidate = outcome.get("candidate")
+        if not isinstance(candidate, dict) or not candidate:
+            raise ValueError("航路候选规划没有产出结果")
+        mask = outcome.get("mask")
+        if isinstance(mask, dict):
+            collection.setdefault("masks", {})[key] = mask
         self._store_candidate(collection, key, request, candidate, prior)
         state["layered_route_candidates"] = collection
         state.setdefault("result_statuses", {})["layered_route_candidate"] = collection["status"]

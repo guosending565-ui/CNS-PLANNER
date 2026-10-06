@@ -19,11 +19,15 @@ export const LAYERED_FEASIBILITY_LABELS={
   unknown:'证据不足（missing/NoData/未确认）',
 };
 
+/** selected-layer 车道的唯一 key。图例 / overlay / 按需 mask hydrate 共用同一条规则。 */
+export function layeredFeasibilityLaneKey(flow){
+  const request=flow?.layered_route_planning_request||{};
+  return (request.scenario_route_id||'od')+'@'+(request.altitude_layer_id||'layer');
+}
+
 export function layeredFeasibilityCells(flow){
   const mask=flow?.layered_route_candidates?.masks||{};
-  const request=flow?.layered_route_planning_request||{};
-  const key=(request.scenario_route_id||'od')+'@'+(request.altitude_layer_id||'layer');
-  const item=mask[key];
+  const item=mask[layeredFeasibilityLaneKey(flow)];
   if(!item||!item.cells)return [];
   return Object.values(item.cells).map(cell=>({
     gridId:cell.grid_id,status:cell.status,color:LAYERED_FEASIBILITY_COLORS[cell.status]||LAYERED_FEASIBILITY_COLORS.unknown,
@@ -37,7 +41,7 @@ export function currentLayeredCandidate(flow){
   // A stale/not-current candidate is never drawn as the selected-layer path.
   if(active.current_applicability&&active.current_applicability!=='current')return null;
   const request=flow?.layered_route_planning_request||{};
-  const key=(request.scenario_route_id||'od')+'@'+(request.altitude_layer_id||'layer');
+  const key=layeredFeasibilityLaneKey(flow);
   const sameLane=active.lane_key?active.lane_key===key:(
     (active.route_id||'od')+'@'+(active.altitude_layer_id||'layer')===key
   );

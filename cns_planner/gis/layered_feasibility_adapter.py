@@ -372,6 +372,30 @@ class LayeredFeasibilityAdapter:
         return result
 
 
+def build_layered_feasibility_adapter(source_paths):
+    """按项目数据源装配 coarse 可行性 adapter（HTTP 线程与后台 worker **同一实现**）。
+
+    Round32-C：``/api/layered-route-candidates/evaluate-real`` 的同步路径与后台
+    heavy task 的 worker 必须用同一份装配，否则"后台结果"与"同步结果"会在
+    adapter 身份（terrain 采样器 / 来源指纹）上悄悄分叉。因此这里只保留一处装配。
+
+    ``FabdemWindowTerrainSource`` 在函数体内导入：它只依赖 ``osgeo.gdal`` /
+    ``osgeo.osr``（不需要 QGIS runtime），放在函数体内可以避免
+    ``fine_environment_adapter`` ↔ 本模块的模块级导入环。
+
+    ``terrain_dtm`` 缺失时抛 ``ValueError``（与既有同步路径逐字相同的文案），
+    绝不构造假环境。
+    """
+
+    paths = source_paths if isinstance(source_paths, dict) else {}
+    terrain_dtm = paths.get("terrain_dtm")
+    if not terrain_dtm:
+        raise ValueError("请先配置 verified FABDEM terrain_dtm")
+    from .fine_environment_adapter import FabdemWindowTerrainSource
+
+    return LayeredFeasibilityAdapter(FabdemWindowTerrainSource(terrain_dtm))
+
+
 def layered_feasibility_source_status(state, terrain_path=None):
     """Read-only readiness summary (never opens a dataset).
 

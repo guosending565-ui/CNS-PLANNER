@@ -381,14 +381,12 @@ class ApplicationContext:
         """
 
         payload = payload if isinstance(payload, dict) else {}
-        terrain_dtm = self.data.paths.get("terrain_dtm")
-        if not terrain_dtm:
-            raise ValueError("请先配置 verified FABDEM terrain_dtm")
+        # Round32-C：装配只有一处实现（``build_layered_feasibility_adapter``），
+        # 后台 heavy task 的 worker 用的是同一个函数，因此"同步结果"与"后台结果"
+        # 不可能因为 adapter 身份不同而分叉。terrain_dtm 缺失时它抛同一句 ValueError。
+        from ..gis.layered_feasibility_adapter import build_layered_feasibility_adapter
 
-        from ..gis.fine_environment_adapter import FabdemWindowTerrainSource
-        from ..gis.layered_feasibility_adapter import LayeredFeasibilityAdapter
-
-        adapter = LayeredFeasibilityAdapter(FabdemWindowTerrainSource(terrain_dtm))
+        adapter = build_layered_feasibility_adapter(self.data.paths)
         return self.workflow.evaluate_layered_route_candidate(payload, adapter=adapter)
 
     # ------------------------------------------------------------------ Route Planner V3

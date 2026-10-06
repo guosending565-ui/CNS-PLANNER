@@ -6,6 +6,7 @@ import {bindMapInteraction} from './map/interaction.js';
 import {drawGridTheme,drawStandardGrid,drawWorkspace,drawLine} from './map/renderer.js';
 import {hitReferenceObject as hitReferenceOverlay,drawReferenceOverlay,referenceLayerDiagnostics} from './map/reference_overlay.js';
 import {buildDisplayPlan,drawWorkflowLayers,hitDisplayEntry,hitCnsTowerCandidate,entryExtent} from './map/display_layers.js';
+import {layeredFeasibilityLaneKey} from './map/layered_feasibility_overlay.js';
 import {attachBuildingFootprintLayer} from './map/building_footprint_layer.js';import {attachTowerReferenceLayer,towerDetailContext} from './map/tower_reference_layer.js';
 import {updateLayeredLegends} from './workflow/layered_legend.js';import {updateMapLegend,updateCnsServiceLegend,updateCompactMapLegend} from './workflow/map_legend.js';
 import {cnsMapFeatureAt,cnsMapFeatureTooltip} from './map/cns_service_overlay.js';
@@ -106,7 +107,10 @@ const snapshotApplier=createWorkflowSnapshotApplier({
   fetchGrid:()=>api('/api/workspace/grid'),fetchAttributes:()=>api('/api/workspace/grid/attributes'),fetchRisk:()=>api('/api/grid-risk'),fetchRiskV2:()=>api('/api/grid-risk-v2'),fetchLayeredCandidates:()=>api('/api/layered-route-candidates'),fetchRadarSurveillance:()=>api('/api/radar-surveillance-layout'),
   // Round 3：P14 服务走廊逐体元 service 证据（只读专用 GET，按需读取）。
   fetchCorridorDetail:()=>api('/api/cns-service-corridor'),
-  onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
+  // Round32-C：逐 cell coarse feasibility mask 明细（只读专用 GET，按需读取）。
+  // 通用刷新路径只带 mask 摘要；只有真的画该图层时才拉所选车道的 cells。
+  fetchLayeredMasks:laneKey=>api('/api/layered-route-candidates/masks'+(laneKey?'?lane_key='+encodeURIComponent(laneKey):'')),
+  onError:message=>showError(message),afterApply:()=>{rebuildGridRenderCache();renderWorkflow();paint();ensureLayeredFeasibilityMaskDetail();},
   // A4：明细落地前的项目身份复核（迟到的旧项目明细必须被丢弃）。
   currentProjectIdentity:()=>projectIdentityOf()});
 // Rescue Stable 主链默认只安装后端 workflow snapshot。逐格 grid/risk/mask 明细均为
@@ -114,6 +118,48 @@ const snapshotApplier=createWorkflowSnapshotApplier({
 // 否则“保存 OD / 开启候选试算”等普通动作会长期停在“正在计算”。当前候选 path 与
 // radar proposal 摘要已经包含在同一 snapshot 中，足够立即恢复主链地图与结果面板。
 const applyWorkflowSnapshot=data=>snapshotApplier.applyWorkflowSnapshot(data,{hydrate:false}),applyWorkflow=data=>applyWorkflowSnapshot(data);
+
+/**
+ * Round32-C：coarse feasibility mask 的**按需**逐 cell hydrate。
+ *
+ * 通用刷新路径只带 mask 摘要（``cells`` 已外置到 `/api/layered-route-candidates/masks`）。
+ * 因此这里只在两种情况下拉取：用户显式打开该图层，或该图层已开着而当前 flow 的 mask
+ * 只有摘要。绝不为地图把整份 candidate collection（实测约 39 MB）重新拉回来。
+ *
+ * 幂等：拿到 cells 后 `mask.cells` 存在即不再请求；同一车道在途只发一次。
+ */
+let layeredMaskKeyInFlight='';
+async function ensureLayeredFeasibilityMaskDetail(node){
+  node=node||$('layeredFeasibilityLayer');
+  if(!node||!node.checked)return;
+  const key=layeredFeasibilityLaneKey(flow);
+  if(!key)return;
+  const collection=(flow&&flow.layered_route_candidates)||{};
+  const mask=(collection.masks||{})[key];
+  // 明细确实已外置才去取：通用快照把 masks 压成 masks_count/masks_detail，
+  // 而按需 hydrate 装回来的是 masks（含 cells_count）。两种形状都要能触发，
+  // 否则图例/overlay 会在"明细被 superseded"时永久拿不到 cells。
+  const externalized=Boolean(mask&&mask.cells_count)||Boolean(collection.masks_count);
+  if(!externalized)return;
+  if(mask&&mask.cells)return;                     // 明细已经在手上
+  if(layeredMaskKeyInFlight===key)return;         // 同一车道只发一次（含在途）
+  layeredMaskKeyInFlight=key;
+  try{
+    await snapshotApplier.hydrateLayeredMaskDetail(key);
+  }catch(exc){
+    showError('可行性掩码明细加载失败：'+(exc?.message||exc));
+  }finally{
+    layeredMaskKeyInFlight='';
+  }
+}
+// 用事件委托而不是在模块加载时直接取元素：图层抽屉的元素可能在 main.js 求值时还不存在，
+// 顶层 `$('...')?.addEventListener` 会被可选链静默跳过（那会让按需 hydrate 永不触发）。
+// 触发点把 `event.target` **本体**传进去：即使该节点随后被重渲染替换，判据读到的仍是
+// 用户真正勾选的那个节点，而不是重新查询的结果。
+document.addEventListener('change',event=>{
+  const node=event.target;
+  if(node&&node.id==='layeredFeasibilityLayer')ensureLayeredFeasibilityMaskDetail(node);
+});
 async function mutate(action,payload={}){return applyWorkflow(await api('/api/workflow/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));}
 // GRID-L8-UNIFICATION：超限时后端返回 blocked（不是降级）并已把该状态落库；重新读取快照让界面显示阻断原因。
 async function refreshWorkflow(){return applyWorkflow(await api('/api/workflow'));}
@@ -621,6 +667,8 @@ function stepBindings(){return {
   // 绝不新建第二套任务框架。轻任务继续走 resourceAction（同步语义不变）。
   submitBackgroundTask:(path,payload)=>submitHeavyTask((requestPath,options)=>api(requestPath,options),path,payload),
   refreshLayeredCandidates:()=>snapshotApplier.hydrateLayeredCandidateDetail(),
+  // Round32-C：逐 cell mask 明细的显式按需刷新（地图/审计用；普通刷新不再传输它）。
+  refreshLayeredMask:laneKey=>snapshotApplier.hydrateLayeredMaskDetail(laneKey||layeredFeasibilityLaneKey(flow)),
   refreshRadarSurveillance:()=>snapshotApplier.hydrateRadarSurveillanceDetail(),
   // Round 3：P14 逐体元 service 证据（Step05「CNS 服务走廊」按需载入，只读）。
   refreshCorridorDetail:()=>snapshotApplier.hydrateCorridorServiceDetail(),
@@ -1235,6 +1283,14 @@ setupTaskCenter({
       await snapshotApplier.hydrateRadarSurveillanceDetail();
     }catch(error){
       console.warn('[CNS Planner] 雷达划设明细同步失败',error);
+    }
+    // Round32-C：航路候选的逐 cell mask 明细同样按需读取（通用快照只带有界摘要：
+    // ``/api/layered-route-candidates`` 为 slim 投影，明细走 masks 端点）。后台任务
+    // 发布后必须把它取回来，否则用户看到"候选已更新但地图可行域还是上一版"。
+    try{
+      await snapshotApplier.hydrateLayeredCandidateDetail();
+    }catch(error){
+      console.warn('[CNS Planner] 航路候选明细同步失败',error);
     }
     return true;
   },

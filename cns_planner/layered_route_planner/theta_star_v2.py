@@ -964,6 +964,9 @@ class LayeredRiskAwareThetaStarV2:
     #: True Theta*: the search itself is any-angle.
     uses_theta_star = True
     uses_population_shelter_risk = True
+    #: Round32-C：``plan(..., search_hook=...)`` 受支持（只读观测 + cooperative cancel）。
+    #: 调用方据此判断能否传入钩子；不支持时绝不猜测、绝不传额外关键字参数。
+    supports_search_hook = True
 
     def __init__(self, parameters=None):
         supplied = dict(parameters or {})
@@ -1020,6 +1023,7 @@ class LayeredRiskAwareThetaStarV2:
         constraint_field=None, unknown_constraint_policy=None,
         planning_exposure=None, surface_class_provider=None,
         endpoint_transition_admissibility_deg=None,
+        search_hook=None,
     ):
         """Plan one fixed-altitude any-angle Theta* candidate.
 
@@ -1217,6 +1221,7 @@ class LayeredRiskAwareThetaStarV2:
             theta_min_deg=self.parameters["theta_min_deg"],
             max_expanded_labels=self.parameters["max_expanded_labels"],
             endpoint_transition_admissibility_deg=endpoint_threshold,
+            search_hook=search_hook,
         )
         statistics.update(search["statistics"])
         statistics["endpoint_anchors"] = search.get("endpoint_anchors")
@@ -2006,10 +2011,19 @@ def _constraint_bbox(item):
 # --------------------------------------------------------------------------- Theta*
 
 
+#: Round32-C：搜索期只读观测钩子的调用间隔（以"已展开 label 数"计）。
+#:
+#: 这是一个**固定**的低频间隔：钩子既不重排任何队列、也不参与任何代价/可行性判断，
+#: 它只被允许上报真实的 ``expanded`` 计数或抛出取消异常（cooperative cancel）。
+#: 2048 次展开调用一次，相对 Θ(平均邻接度) 的扩展开销可以忽略。
+SEARCH_HOOK_EXPANSION_INTERVAL = 2048
+
+
 def _theta_star(
     *, graph, index_map, endpoints, gate, altitude, regulatory,
     risk_indices, weights, d_ref, heading_bin_count, theta_min_deg, max_expanded_labels,
     endpoint_transition_admissibility_deg=ENDPOINT_TRANSITION_ADMISSIBILITY_DEG,
+    search_hook=None,
 ):
     """Heading-aware multi-label Theta* with parent LOS rewiring and virtual OD endpoints.
 
@@ -2249,6 +2263,11 @@ def _theta_star(
             break
         expanded += 1
         statistics["expanded_labels"] = expanded
+        # Round32-C：只读观测钩子。调用点是固定的低频间隔（每 2048 次展开一次），
+        # 且只发生在计数之后 —— 它不读队列、不改代价、不参与任何决策，唯一被允许的
+        # 副作用是抛出取消异常（cooperative cancel），因此不可能改变搜索结果。
+        if search_hook is not None and expanded % SEARCH_HOOK_EXPANSION_INTERVAL == 0:
+            search_hook(expanded)
         closed.add(current_key)
         current_point = graph.centers[current_grid]
         current_ledger = accumulated[current_key]

@@ -217,25 +217,39 @@ class RouteRiskProfileService:
     # ------------------------------------------------------------------ evaluate
 
     def evaluate(self, payload=None, *, save=True):
+        """同步入口：**纯计算 + 唯一 production 写入**（与后台任务同源同形）。"""
+
+        return self.apply_computed(self.plan(payload), save=save)
+
+    def plan(self, payload=None):
+        """**纯计算**：只读 state，绝不写盘、绝不 save、绝不触发失效传播。
+
+        Round32-C：把同步 ``evaluate`` 的方法体拆成"纯计算 + 唯一写入者"两段，
+        后台 heavy task 的 worker 只允许调用这一段。它是 ``(state, payload)`` 的
+        确定性函数：同一 state + 同一 payload 必然得到同一 outcome。
+        """
+
         state = self.ensure_state()
         payload = payload if isinstance(payload, dict) else {}
-        if isinstance(payload.get("policy"), dict):
-            state["route_risk_profile_policy"] = normalize_route_risk_profile_policy(
-                payload["policy"]
-            )
-        policy = state["route_risk_profile_policy"]
-        collection = normalize_route_risk_profile_collection(state["route_risk_profiles"])
+        policy_declared = isinstance(payload.get("policy"), dict)
+        policy = (
+            normalize_route_risk_profile_policy(payload["policy"])
+            if policy_declared else state["route_risk_profile_policy"]
+        )
         candidates = self.layered.result_snapshot()
         candidate = self._select_candidate(candidates, payload)
         identity = self._identity()
+        base = {"policy": policy, "policy_declared": policy_declared, "identity": identity}
         if candidate is None:
-            return self._finish(
-                state, collection, payload, identity, {
+            return {
+                **base, "outcome": "rejected",
+                "rejection": {
                     "status": "not_ready",
                     "reason_code": "candidate_not_available",
                     "reason": "当前没有 LayeredRouteCandidate：请先完成候选规划",
-                }, save=save,
-            )
+                    "candidate_id": payload.get("candidate_id"),
+                },
+            }
         expected = {
             "candidate_fingerprint": identity.get("candidate_fingerprint"),
             "risk_fingerprint": identity.get("risk_fingerprint"),
@@ -274,16 +288,50 @@ class RouteRiskProfileService:
                 "reason_code": profile.get("status_reason") or "profile_not_available",
                 "reason": "profile 未生成",
             }]
-            return self._finish(
-                state, collection, payload, identity, {
+            return {
+                **base, "outcome": "rejected", "rejected_profile": profile,
+                "rejection": {
                     "status": profile["status"],
                     "reason_code": profile.get("status_reason"),
                     "reason": reasons[0].get("reason"),
                     "blocking_reasons": reasons,
-                    "candidate_id": candidate.get("candidate_id"),
-                }, save=save, rejected_profile=profile,
+                    "candidate_id": candidate.get("candidate_id") or payload.get("candidate_id"),
+                },
+            }
+        return {
+            **base, "outcome": "passed", "profile": profile,
+            "fingerprint": profile["fingerprints"]["profile_fingerprint"],
+            "candidate_id": candidate.get("candidate_id"),
+        }
+
+    def apply_computed(self, outcome, *, save=True):
+        """**唯一** canonical 写入者（同步入口与后台任务 publish 阶段共用这一步）。
+
+        写入步骤与拆分前的 ``evaluate`` 尾部逐字相同：policy 写回（若本次显式声明）、
+        集合去重追加、``last_evaluation``、``result_statuses``、**同一个**
+        ``session.save()``。worker 永远不调用它。
+        """
+
+        state = self.ensure_state()
+        outcome = outcome if isinstance(outcome, dict) else {}
+        if outcome.get("policy_declared") and isinstance(outcome.get("policy"), dict):
+            state["route_risk_profile_policy"] = normalize_route_risk_profile_policy(
+                outcome["policy"]
             )
-        fingerprint = profile["fingerprints"]["profile_fingerprint"]
+        collection = normalize_route_risk_profile_collection(state["route_risk_profiles"])
+        if str(outcome.get("outcome")) == "rejected":
+            return self._finish(
+                state, collection, {}, outcome.get("identity") or self._identity(),
+                outcome.get("rejection") or {}, save=save,
+                rejected_profile=outcome.get("rejected_profile"),
+            )
+        profile = outcome.get("profile")
+        if not isinstance(profile, dict) or not profile:
+            raise ValueError("航路风险画像没有产出结果")
+        fingerprint = str(
+            outcome.get("fingerprint")
+            or (profile.get("fingerprints") or {}).get("profile_fingerprint")
+        )
         items = [
             item for item in collection["items"]
             if item.get("profile_id") != profile["profile_id"]
@@ -295,7 +343,7 @@ class RouteRiskProfileService:
         collection["status"] = "passed"
         collection["last_evaluation"] = {
             "status": "passed",
-            "candidate_id": candidate.get("candidate_id"),
+            "candidate_id": outcome.get("candidate_id"),
             "profile_id": profile["profile_id"],
             "profile_fingerprint": fingerprint,
             "reason_code": None,

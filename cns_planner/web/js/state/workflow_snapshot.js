@@ -192,7 +192,7 @@ export function createWorkflowSnapshotApplier(deps) {
     getFlow, setFlow, nextSerial, currentSerial, fetchGrid, fetchAttributes,
     // Phase4-B5X：其余外置型结果的按需读取入口（可选依赖，未提供时跳过）。
     fetchRisk = null, fetchRiskV2 = null, fetchLayeredCandidates = null,
-    fetchRadarSurveillance = null,
+    fetchRadarSurveillance = null, fetchLayeredMasks = null,
     // Round 3：P14 服务走廊逐体元 service 证据（可选依赖，未提供时跳过）。
     fetchCorridorDetail = null,
     // A4：当前项目身份（只读）。提供时，明细响应落地前必须复核身份，
@@ -318,6 +318,37 @@ export function createWorkflowSnapshotApplier(deps) {
     return {applied: true, hydrated: ['layered_route_candidates']};
   }
 
+  /**
+   * Round32-C：按需 hydrate **逐 cell** coarse feasibility mask 明细。
+   *
+   * 通用刷新路径（``/api/layered-route-candidates``）只带 mask 摘要（``cells`` 已外置，
+   * ``cells_detail`` 声明读取入口）。这里只在用户真的要画该图层时拉取**所选车道**的
+   * cells，绝不为了地图把整份 candidate collection（实测约 39 MB）重新拉回来。
+   *
+   * 与其它 hydrate 同一套竞态/身份裁决：旧响应与切走的项目一律丢弃。
+   */
+  async function hydrateLayeredMaskDetail(laneKey) {
+    if (typeof fetchLayeredMasks !== 'function' || !laneKey) {
+      return {applied: false, reason: 'no_layered_mask_detail'};
+    }
+    const serial = nextSerial();
+    const identity = projectIdentity();
+    const masks = await fetchLayeredMasks(laneKey);
+    if (serial !== currentSerial()) return {applied: false, reason: 'superseded'};
+    if (!detailBelongsToProject(identity)) return {applied: false, reason: 'project_changed'};
+    const current = getFlow() || {};
+    const collection = current.layered_route_candidates || {};
+    if (!masks || typeof masks !== 'object' || !Object.keys(masks).length) {
+      return {applied: false, reason: 'no_layered_mask'};
+    }
+    setFlow({...current, layered_route_candidates: {
+      ...collection,
+      masks: {...(collection.masks || {}), ...masks},
+    }});
+    afterApply(getFlow());
+    return {applied: true, hydrated: ['layered_route_candidates.masks']};
+  }
+
   /** Rescue Stable map path: hydrate the current proposal-only radar geometry. */
   async function hydrateRadarSurveillanceDetail() {
     const snapshot = getFlow() || {};
@@ -406,6 +437,7 @@ export function createWorkflowSnapshotApplier(deps) {
     hydrateGridDetail,
     hydrateExternalDetail,
     hydrateLayeredCandidateDetail,
+    hydrateLayeredMaskDetail,
     hydrateRadarSurveillanceDetail,
     hydrateCorridorServiceDetail,
     looksLikeWorkflowSnapshot,

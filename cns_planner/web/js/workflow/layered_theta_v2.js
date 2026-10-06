@@ -78,6 +78,13 @@ export const THETA_V2_EMPTY_ALTITUDE_CATALOG_NOTE='高度层目录为空（共 0
   +'系统不会自动选择或推断任何高度。';
 export const THETA_V2_EVALUATE_BLOCKED_NOTE='Theta* V2 仍有 blocking 项：请先补齐 shelter policy、'
   +'population_shelter 场与 confirmed 巡航高度。legacy LayeredRouteCostPolicy 的 λ 不是 Theta* V2 的 blocker。';
+//: Round32-C：正式候选规划的业务提交契约与**普通视图**文案。
+//: 普通视图只出现业务任务名「航路候选规划」——没有算法名、指纹或原始状态值；
+//: 算法身份 / 指纹 / 原始 status 仍完整保留在「高级 / 审计」区。
+export const LAYERED_EVALUATE_ENDPOINT='/api/layered-route-candidates/evaluate-real';
+export const LAYERED_TASK_NAME='航路候选规划';
+const LAYERED_SUBMIT_HINT='已提交：航路候选规划正在后台计算…';
+const LAYERED_BACKGROUND_BUSY_TEXT='后台计算中，请在「后台计算任务」窗口查看进度';
 //: 搜索参数（heading / theta）的语义边界。8 与 5.0 是软件算法 baseline，不是工程确认参数。
 export const THETA_V2_SEARCH_PARAMETER_BASELINE_SOURCE='cns_planner_software_algorithm_baseline';
 export const THETA_V2_SEARCH_PARAMETER_PURPOSE='search_discretization_and_planning_turn_smoothness_proxy';
@@ -1535,43 +1542,18 @@ export function bindLayeredThetaV2(c){
         c.panelError(THETA_V2_EVALUATE_BLOCKED_NOTE);
         return;
       }
-      // BUG-TASK-FEEDBACK-001 §6/§7：「运行 Theta* V2 candidate」是同步耗时请求，
-      // 用户必须明确知道：已提交 / 正在执行 / 已完成 / no_path。
-      // 按钮自述状态 + 已运行时长；结论（含 no_path 的中文业务结论）走 c.panelError。
+      // Round32-C：正式候选规划改为**后台任务提交**（立刻返回 task_id；排队 / 进度 /
+      // 心跳 / 取消 / 完成后刷新结果与地图全部复用既有「后台计算任务」窗口，
+      // 不新建任何任务框架，也不再用同步按钮自述计时）。
       const button=c.$('evaluateLayeredCandidate');
-      c.panelError('已提交：正在计算 Theta* V2 候选航路…','hint');
-      const outcome=await runWithBusyButton({
-        button,
-        label:'航路规划 · Theta* V2',
-        run:async()=>{
-          const result=await c.resourceAction('/api/layered-route-candidates/evaluate-real',{});
-          if(typeof c.refreshLayeredCandidates==='function')await c.refreshLayeredCandidates();
-          return result;
-        },
-        // 提交后按钮文案改为"正在计算"，并让面板提示行同步给出业务任务名。
-        onError:message=>c.panelError('航路规划（Theta* V2）未完成：'+message,'error'),
-        onDone:async()=>{
-          const latest=model();
-          const blockers=latest.blockers.thetaV2||[];
-          const shown=latest.candidates&&latest.candidates.shown;
-          if(blockers.length){
-            // no_path / no_traversable_path 必须明确说成"搜索已完成但没有可通行路径"，
-            // 绝不能让用户以为算法卡死（blockerRows 已把 reason_code 转成中文业务结论）。
-            c.panelError('航路规划 · Theta* V2：'+blockerOutcomeText(blockers),'error');
-            return;
-          }
-          c.panelError(shown
-            ?'航路规划 · Theta* V2 已完成：候选结果已更新（审核后才会进入风险画像与安全验证）。'
-            :'航路规划 · Theta* V2 已完成：未产生可展示候选，请检查规划请求与可行域输入。','success');
-        },
-      });
-      if(outcome.ok&&outcome.elapsed_ms){
-        // 已运行时长属于业务事实，追加到提示行末尾（不覆盖结论）。
-        const currentText=c.$('panelError')?c.$('panelError').textContent:'';
-        if(currentText&&!currentText.includes('已运行')){
-          c.panelError(currentText+'（本次计算已运行 '+elapsedText(outcome.elapsed_ms/1000)+'）',
-            c.$('panelError')?.dataset?.tone||'hint');
-        }
+      c.panelError(LAYERED_SUBMIT_HINT,'hint');
+      try{
+        const submitted=await c.submitBackgroundTask(LAYERED_EVALUATE_ENDPOINT,{});
+        //: 提交成功后按钮保持"后台计算中"，直到任务完成后刷新快照重建本面板。
+        if(button)button.textContent=LAYERED_BACKGROUND_BUSY_TEXT;
+        return submitted;
+      }catch(error){
+        c.panelError(LAYERED_TASK_NAME+'未提交：'+((error&&error.message)||String(error)),'error');
       }
     });
   }

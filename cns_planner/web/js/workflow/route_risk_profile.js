@@ -919,7 +919,19 @@ export function routeRiskProfilePolicyPayload(c){
  */
 export function bindRouteRiskProfile(c){
   if(c.$('evaluateRouteRiskProfile')){
-    c.actionButton('evaluateRouteRiskProfile',()=>c.resourceAction('/api/route-risk-profiles/evaluate',{}));
+    // Round32-C：航路风险画像改为**后台任务提交**（复用既有「后台计算任务」窗口的
+    // 排队 / 进度 / 心跳 / 取消 / 完成后刷新，不新建任务框架）。任务名是业务名
+    // 「航路风险画像」，普通视图里不出现算法名、指纹或原始状态值。
+    c.actionButton('evaluateRouteRiskProfile',async()=>{
+      const button=c.$('evaluateRouteRiskProfile');
+      try{
+        const submitted=await c.submitBackgroundTask('/api/route-risk-profiles/evaluate',{});
+        if(button)button.textContent='后台计算中，请在「后台计算任务」窗口查看进度';
+        return submitted;
+      }catch(error){
+        c.panelError('航路风险画像未提交：'+((error&&error.message)||String(error)),'error');
+      }
+    });
   }
   if(c.$('saveRouteRiskProfilePolicy')){
     c.actionButton('saveRouteRiskProfilePolicy',()=>c.resourceAction(

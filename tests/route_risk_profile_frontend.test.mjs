@@ -970,6 +970,8 @@ test('policy evaluate delete endpoints are wired exactly as contracted',()=>{
       $:id=>document.getElementById(id),
       panelError:message=>calls.push(['error',message]),
       resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
+      // Round32-C：风险画像改为后台任务提交；这里同样只登记 path/payload。
+      submitBackgroundTask:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({task_id:'t'});},
       actionButton:(id,handler)=>{registered.push(id);const node=document.getElementById(id);if(node)node.onclick=handler;},
     };
     bindStep3(c);

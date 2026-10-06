@@ -1124,6 +1124,28 @@ class WorkflowService:
         ``evaluate`` 共用同一份收尾段），因此 policy 更新与结果发布在同一事务里完成。
         """
         return self.radar_surveillance_layout_service.apply_computed(outcome)
+    def layered_route_candidate_apply_computed(self, outcome):
+        """Round32-C：航路候选规划的 publish 转发（后台任务发布阶段调用）。
+
+        只转发，不构成第二个 production owner：候选写入仍发生在
+        :meth:`LayeredRoutePlannerService.apply_computed` 内（与同步入口 ``evaluate``
+        共用同一段收尾），因此 request 写回、mask、``_store_candidate``、
+        ``result_statuses``、既有失效入口与 ``session.save()`` 仍在同一个事务里完成。
+        收尾与同步入口**逐字相同**：同样再跑一次 RouteRiskProfile reconcile。
+        """
+
+        self.layered_route_planner_service.apply_computed(outcome)
+        if hasattr(self, "route_risk_profile_service"):
+            return self.route_risk_profile_service.reconcile()
+        return self.snapshot()
+    def route_risk_profile_apply_computed(self, outcome):
+        """Round32-C：航路风险画像的 publish 转发（后台任务发布阶段调用）。
+
+        只转发：写入仍发生在 :meth:`RouteRiskProfileService.apply_computed` 内
+        （与同步入口 ``evaluate`` 共用同一段收尾）。
+        """
+
+        return self.route_risk_profile_service.apply_computed(outcome)
     def evaluate_radar_surveillance_layout(self, payload=None, *, facts_provider=None):
         result = self.radar_surveillance_layout_service.evaluate(
             payload, facts_provider=facts_provider,
@@ -1781,7 +1803,18 @@ class WorkflowService:
     def layered_route_cost_policy(self):
         return self.layered_route_planner_service.cost_policy_snapshot()
     def layered_route_candidates(self):
-        return self.layered_route_planner_service.result_snapshot()
+        """``GET /api/layered-route-candidates``：**有界**读投影（Round32-C）。
+
+        逐 cell mask 明细（实测约 37 MB / 95% 载荷）不再随通用刷新传输，只保留
+        图例与 overlay 可用性判据需要的摘要 + candidate items；完整 masks 走
+        :meth:`layered_route_masks`。后端业务读路径不经此投影（见 service 文档）。
+        """
+
+        return self.layered_route_planner_service.result_summary()
+    def layered_route_masks(self, lane_key=None):
+        """``GET /api/layered-route-candidates/masks``：按需读取逐 cell mask 明细。"""
+
+        return self.layered_route_planner_service.masks_snapshot(lane_key)
     def planning_constraint_fields(self, altitude_layer_id=None):
         return self.planning_constraint_field_service.result_snapshot(altitude_layer_id)
     def planning_constraint_field_map(self, altitude_layer_id=None, bbox=None):

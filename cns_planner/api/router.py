@@ -235,6 +235,11 @@ class ApiRouter:
         if path == "/api/layered-route-feasibility-policy": return Response(workflow.layered_route_feasibility_policy())
         if path == "/api/layered-route-cost-policy": return Response(workflow.layered_route_cost_policy())
         if path == "/api/layered-route-candidates": return Response(workflow.layered_route_candidates())
+        # Round32-C：逐 cell coarse feasibility mask 明细的**按需**读取入口。
+        # 通用刷新路径只带 mask 摘要（cells 已外置）；只有地图真的要画该图层、
+        # 或审计显式要求时才传输 cells。可选 lane_key 只取所选车道。
+        if path == "/api/layered-route-candidates/masks":
+            return Response(workflow.layered_route_masks(self._first(query, "lane_key", "") or None))
         if path == "/api/planning-constraint-fields":
             return Response(workflow.planning_constraint_fields(
                 self._first(query, "altitude_layer_id", "") or None
@@ -879,6 +884,11 @@ class ApiRouter:
 
     # ---- Phase4-B6X：task 路由辅助 -------------------------------------------------
 
+    #: 需要把主进程已解析的运行期真实来源冻结进快照的后台任务类型（见 _freeze_runtime_sources）。
+    RUNTIME_SOURCE_TASK_TYPES = ("layered_route_candidate_evaluate",)
+    #: 需要冻结的运行期来源键（最小面：只冻结任务真正消费的那些路径）。
+    RUNTIME_SOURCE_KEYS = ("terrain_dtm",)
+
     def _task_service(self, *, drive=False):
         """任务运行时访问器。
 
@@ -903,6 +913,7 @@ class ApiRouter:
         from ..tasks.task_store import TaskConflictError
 
         payload = payload if isinstance(payload, dict) else {}
+        payload = self._freeze_runtime_sources(task_type, payload)
         if not task_type:
             return Response({"error": "请求未指明任务类型"}, status=400)
         policy = (
@@ -934,6 +945,28 @@ class ApiRouter:
             "created": created,
             "message": message,
         }, status=202 if created else 200)
+
+    def _freeze_runtime_sources(self, task_type, payload):
+        """把**主进程已解析**的运行期真实来源冻结进后台任务输入（Round32-C）。
+
+        为什么必须在提交侧做：候选规划在 worker 里复算 coarse 可行性掩膜，需要 FABDEM
+        ``terrain_dtm``；但该路径只存在于主进程的 ``MapData.paths`` —— canonical state 里
+        没有 ``data_source_paths`` 容器的写入者（实测为 None）。worker 不能自行解析项目文件，
+        因此由这里把它并入 payload，再由任务的 ``input_snapshot`` 冻结进不可变快照。
+        这样 worker 用的就是与同步路径**同一个**装配函数，不存在第二套来源解析。
+        """
+
+        if task_type not in self.RUNTIME_SOURCE_TASK_TYPES:
+            return payload
+        paths = getattr(getattr(getattr(self, "context", None), "data", None), "paths", None) or {}
+        #: 只冻结该任务**真正消费**的运行期来源（最小面）：coarse 可行性掩膜的 FABDEM DTM。
+        #: 建筑/人口等事实来自 canonical state，不在这里冻结，避免无关路径变化让任务假 stale。
+        resolved = {key: paths.get(key) for key in self.RUNTIME_SOURCE_KEYS if paths.get(key)}
+        if not resolved:
+            return payload
+        merged = dict(payload)
+        merged["data_source_paths"] = {**resolved, **dict(payload.get("data_source_paths") or {})}
+        return merged
 
     def _task_cancel(self, task_id):
         from ..tasks.task_store import TaskNotFoundError
