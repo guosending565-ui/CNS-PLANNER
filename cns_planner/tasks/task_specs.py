@@ -36,6 +36,7 @@ import time
 from ..domain.cns_corridor import (
     corridor_complexity_preflight, normalize_cns_corridor_policy,
 )
+from ..domain.corridor_site_planning import normalize_corridor_site_planning_policy
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
 )
@@ -52,6 +53,10 @@ from .task_store import TERMINAL_STATUSES
 TASK_ENDPOINTS = {
     "/api/cns-service-corridor/evaluate": "cns_service_corridor_evaluate",
     "/api/planning-constraint-fields/evaluate": "planning_constraint_field_generate",
+    #: Round 31-A：CNS 设施规划（P16）在真实项目上是数十分钟级的累计试算，
+    #: 因此与 P14 一样登记为 heavy task：带 ``async: true`` 提交时只登记任务并
+    #: 立刻返回 task_id，不带时保持原有同步语义（既有调用方不受影响）。
+    "/api/cns-corridor-site-plan/evaluate": "cns_corridor_site_plan_evaluate",
 }
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -485,6 +490,244 @@ def _pcf_summary(field):
     }
 
 
+# ---- corridor site plan（P16） -------------------------------------------------
+#
+# P16 与 P14 / 约束场的**输入形态不同**：它的 baseline 是**上游 canonical 结论**
+# （P14 服务走廊评估 + P15 能力缺口），而这些结论的明细是十几 MB 量级、并以
+# content-addressed artifact 外置在项目目录里（见 ``project_compaction``）。把明细
+# 整份复制进 immutable snapshot 既昂贵又冗余，因此本 task type 的契约是：
+#
+# * snapshot 冻结**全部基础事实**（航路 / 网格 / 设施 / 设备目录 / 策略 / 工程证据 /
+#   算法选择）与上游 canonical 的**身份**（status + 输入指纹 + 几何指纹）；
+# * worker 只读**当前项目文件**（含 artifact 明细恢复）作为运行载体 —— 它绝不写盘
+#   （``session.save()`` 只由主进程的 publish 阶段调用），因此 worker 永远不是第二个
+#   canonical 写入者；
+# * 提交之后 state 一旦变化即作废：worker 侧 ``_load_immutable_inputs`` 与主进程
+#   publish 的 compare-and-publish 是两道独立闸门，两边用同一份 snapshot 指纹。
+
+P16_TASK_TYPE = "cns_corridor_site_plan_evaluate"
+
+#: P16 结果真正依赖的基础事实（只读 state，逐项深拷贝进 immutable snapshot）。
+#: 与 ``_corridor_inputs`` 同源：P16 的每一次 what-if 都用它们重建 P14/P15。
+P16_INPUT_STATE_KEYS = (
+    "operational_routes", "spatial_3d", "grid", "grid_attributes",
+    "required_cns", "existing_cns_facilities", "device_catalog",
+    "candidate_sites", "tower_colocation_candidates",
+    "cns_corridor_policy", "cns_planning_objectives",
+    "cns_continuous_service_policy", "algorithm_selection",
+    "aircraft_profiles", "selected_aircraft_profile_id",
+    "planning_evidence", "surface_class_facts",
+)
+
+#: 进入 P16 结果的上游 canonical 结论（只冻结身份，不冻结明细）。
+P16_UPSTREAM_RESULTS = (
+    "cns_corridor_assessment", "cns_corridor_gap_assessment",
+    "radar_surveillance_layout",
+)
+
+#: 影响 P16 结果的算法类型：站点规划器本身，以及它 what-if 里重建 P14/P15 所用的模型。
+P16_ALGORITHM_TYPES = (
+    "site_planner", "corridor_model", "corridor_gap_analyzer",
+    "coverage_model", "service_model",
+)
+
+#: 上游结论的"身份"字段：内容寻址指纹 + 产生它的算法身份（供 worker 自证一致）。
+P16_UPSTREAM_IDENTITY_KEYS = (
+    "status", "input_fingerprint", "corridor_geometry_fingerprint",
+    "algorithm_id", "algorithm_version",
+)
+
+
+def _upstream_identity(state, key):
+    container = state.get(key) if isinstance(state, dict) else None
+    if not isinstance(container, dict):
+        return {}
+    return {
+        name: deepcopy(container.get(name)) for name in P16_UPSTREAM_IDENTITY_KEYS
+    }
+
+
+def _p16_inputs(state, payload):
+    """CNS 设施规划的权威输入（只读 state，确定性）。"""
+
+    state = state if isinstance(state, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    raw_policy = payload.get("corridor_site_planning_policy")
+    if raw_policy is None:
+        raw_policy = state.get("corridor_site_planning_policy")
+    inputs = {key: deepcopy(state.get(key)) for key in P16_INPUT_STATE_KEYS}
+    #: 规划策略始终以**归一化后的显式输入**进入指纹：请求给出时用请求值，
+    #: 否则用 state 里已确认的值（与 :meth:`CorridorSitePlanningService.plan` 同口径）。
+    inputs["corridor_site_planning_policy"] = normalize_corridor_site_planning_policy(
+        raw_policy
+    )
+    inputs["upstream_canonical"] = {
+        key: _upstream_identity(state, key) for key in P16_UPSTREAM_RESULTS
+    }
+    return inputs
+
+
+def _p16_scope(state, payload):
+    routes = (state if isinstance(state, dict) else {}).get("operational_routes") or []
+    route_ids = sorted(
+        str(item.get("route_id") or "") for item in routes if isinstance(item, dict)
+    )
+    return "cns_corridor_site_plan:" + ("|".join(route_ids) if route_ids else "no-route")
+
+
+def _p16_worker_payload(state, payload):
+    """worker 侧重建输入所需的最小覆盖项（只保留请求显式给出的规划策略）。
+
+    请求未给出策略时**不**写入：这样"本次请求的策略"与"state 里已确认的策略"
+    不会分裂成两个不同指纹（与 ``_corridor_worker_payload`` 同一口径）。
+    """
+
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    raw_policy = payload.get("corridor_site_planning_policy")
+    if raw_policy is not None:
+        compact["corridor_site_planning_policy"] = normalize_corridor_site_planning_policy(
+            raw_policy
+        )
+    return compact
+
+
+def _p16_plan(state, payload):
+    worker_payload = _p16_worker_payload(state, payload)
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _p16_inputs(state, worker_payload),
+    }
+
+
+class _WorkerReadOnlySession:
+    """worker 侧的只读 state 载体：**绝不落盘**。
+
+    P16 的 canonical 写入只由主进程的 publish 阶段
+    （``CorridorSitePlanningService.apply_computed``）完成，因此这里一旦被要求
+    保存就必须立刻失败，绝不给后台进程留下第二个写 canonical state 的机会。
+    """
+
+    def __init__(self, state):
+        self.state = state
+
+    def save(self):  # pragma: no cover - 只有 canonical 写入路径才会调用
+        raise RuntimeError("后台任务绝不写 canonical state")
+
+
+class _WorkerInvalidation:
+    """worker 侧不提供任何失效入口（``getattr(..., None)`` 因此回落为"不调用"）。"""
+
+    def __getattr__(self, name):
+        raise AttributeError(name)
+
+
+def _worker_snapshot_passthrough():
+    """worker 侧不需要 slim 快照投影：结果由主进程发布后再投影。"""
+
+    return None
+
+
+class P16UpstreamNotCurrent(TaskInputChanged):
+    """P16 的上游 canonical 结论已变化：任务作废，绝不据此发布新提案。
+
+    ``code`` 独立登记，让服务端能给出**具体**的中文业务原因（而不是笼统的
+    "输入已变化"）：P16 的 baseline 是上游规划结论，用户需要知道"先重算上游"。
+    """
+
+    code = "task_p16_upstream_not_current"
+
+    def __init__(self, message="上游规划结论已变化，请先重算上游结果，再重新运行设施规划"):
+        super().__init__(message)
+
+
+def _p16_summary(result):
+    """canonical 结果的**摘要**（明细进 artifact，状态只留这些可读计数）。"""
+
+    result = result if isinstance(result, dict) else {}
+    return {
+        "status": result.get("status"),
+        "stop_reason": result.get("stop_reason"),
+        "selected_action_count": len(result.get("selected_actions") or []),
+        "candidate_action_count": len(result.get("candidate_actions") or []),
+        "target_count": len(result.get("targets") or []),
+        "continuous_service_acceptable": result.get("continuous_service_acceptable"),
+        "input_fingerprint": result.get("input_fingerprint"),
+    }
+
+
+def _p16_runner(context):
+    """worker 侧：在项目状态的**内存副本**上重算 P16，只 stage 结果、绝不发布。"""
+
+    from ..application.corridor_site_planning_service import (
+        CorridorSitePlanningService,
+    )
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    inputs = snapshot.get("inputs") or {}
+    worker_payload = snapshot.get("worker_payload") or {}
+    algorithms = context.algorithms()
+    #: 先按声明清单预解析：任一算法版本在提交后不可用时立刻失败，绝不部分运行。
+    algorithms.resolve_all(P16_ALGORITHM_TYPES)
+    context.check_cancel()
+    context.progress(0.01, "正在准备 CNS 设施规划输入")
+    state = deepcopy(context.project_state)
+    if not isinstance(state, dict) or not state:
+        raise TaskInputChanged("项目状态不可读，设施规划任务作废")
+    #: 自证 baseline 身份：提交时冻结的上游指纹必须与当前 canonical 结论一致。
+    #: 这是 worker 侧闸门；主进程 publish 阶段还会用同一份 snapshot 再做一次
+    #: compare-and-publish，两边都不允许"用漂移过的上游结论"发布结果。
+    expected = inputs.get("upstream_canonical") or {}
+    for key in P16_UPSTREAM_RESULTS:
+        current = state.get(key)
+        current_fingerprint = (
+            current.get("input_fingerprint") if isinstance(current, dict) else None
+        )
+        expected_fingerprint = (expected.get(key) or {}).get("input_fingerprint")
+        if str(current_fingerprint or "") != str(expected_fingerprint or ""):
+            raise P16UpstreamNotCurrent()
+    service = CorridorSitePlanningService(
+        _WorkerReadOnlySession(state),
+        algorithms.create("site_planner"),
+        algorithms.create("corridor_model"),
+        algorithms.create("corridor_gap_analyzer"),
+        _WorkerInvalidation(),
+        _worker_snapshot_passthrough,
+    )
+    outcome = service.plan(
+        worker_payload,
+        on_progress=lambda value, message=None: context.progress(value, message),
+        cancel_check=context.check_cancel,
+    )
+    reason = outcome.get("missing_reason")
+    if reason is not None:
+        raise P16UpstreamNotCurrent()
+    result = outcome.get("result")
+    if not isinstance(result, dict) or not result:
+        raise RuntimeError("设施规划计算没有产出结果")
+    context.check_cancel()
+    context.progress(0.99, "正在写入临时结果明细")
+    metadata = context.stage(
+        {"logical_key": "cns_corridor_site_plan", "value": result},
+        artifact_type="corridor.site_plan.detail",
+    )
+    summary = _p16_summary(result)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="corridor.site_plan.detail",
+            summary=summary,
+        ),
+        message="CNS 设施规划计算完成，等待发布",
+        progress=0.99,
+    )
+
+
 # ---- 测试专用 task type（不承载任何业务，只用于验证运行时契约） -----------------
 #
 # 它让 B6X 的取消 / 心跳 / 崩溃恢复 / 并发提交测试使用**真实**的运行时路径
@@ -610,13 +853,26 @@ _PROBE_SPEC = TaskSpec(
     algorithm_types=(),
 )
 
-for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _PROBE_SPEC):
+_P16_SPEC = TaskSpec(
+    task_type=P16_TASK_TYPE,
+    task_name="CNS 设施规划",
+    message="CNS 设施规划已提交，正在后台计算",
+    business_endpoint="/api/cns-corridor-site-plan/evaluate",
+    scope_key=_p16_scope,
+    input_snapshot=_p16_inputs,
+    submit_plan=_p16_plan,
+    runner=_p16_runner,
+    release="cns_corridor_site_plan",
+    algorithm_types=P16_ALGORITHM_TYPES,
+)
+
+for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P16_SPEC, _PROBE_SPEC):
     register_task_spec(_spec)
 
 
 __all__ = [
-    "CORRIDOR_TASK_TYPE", "PCF_TASK_TYPE", "PROBE_STATE_KEY", "PROBE_TASK_TYPE",
-    "TASK_ENDPOINTS", "TaskCancelled", "TaskInputChanged", "fingerprint_payload",
-    "has_task_type", "register_task_spec", "task_spec", "task_specs",
-    "task_type_for_endpoint",
+    "CORRIDOR_TASK_TYPE", "P16_TASK_TYPE", "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
+    "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "TASK_ENDPOINTS", "TaskCancelled",
+    "TaskInputChanged", "fingerprint_payload", "has_task_type",
+    "register_task_spec", "task_spec", "task_specs", "task_type_for_endpoint",
 ]

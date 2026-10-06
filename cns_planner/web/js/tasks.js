@@ -533,6 +533,9 @@ export function createTaskCenter(options = {}) {
   const samplesById = new Map();
   // 上一次看到的任务状态：用于识别"刚刚完成"，从而只刷新一次正式结果。
   let lastStatuses = new Map();
+  //: Round 31-A：上一次看到的**活跃任务数**。只有它"从 0 变正"或"继续增加"才是
+  //: 自动展开面板的信号（新提交 / 刷新页面后恢复），用户手动收起后不会被轮询覆盖。
+  let lastActiveCount = null;
 
   const known = () => readStoredTaskIds(storage);
 
@@ -578,8 +581,20 @@ export function createTaskCenter(options = {}) {
     //: ``manualOverride``，此后自动收起不再覆盖用户意图；一旦有活跃任务就自动展开并
     //: 清除该标记，因此任务结束后仍会回到"0 任务自动收起"的默认状态。
     const activeCount = activeTaskSummary(tasks).count;
+    //: Round 31-A：**新任务出现**时必须自动展开面板 —— 用户刚点了「生成 CNS 设施规划
+    //: 方案」，不能让他自己去右下角找进度。展开信号只有两个：
+    //:   1. 本次会话第一次拿到任务快照时已有活跃任务（刷新页面后同样恢复显示）；
+    //:   2. 活跃任务数比上一次轮询**增加**（刚提交的新任务）。
+    //: 用户手动收起之后，只要活跃数不再增加，轮询就不会把它重新撑开（尊重用户意图）。
+    const grew = lastActiveCount === null
+      ? activeCount > 0
+      : activeCount > lastActiveCount;
+    if (grew) {
+      collapsed = false;
+      manualOverride = false;
+    }
+    lastActiveCount = activeCount;
     if (activeCount === 0 && !manualOverride) collapsed = true;
-    if (activeCount > 0) manualOverride = false;
     if (content) {
       content.hidden = collapsed;
       content.dataset.autoCollapsed = String(activeCount === 0 && !manualOverride);

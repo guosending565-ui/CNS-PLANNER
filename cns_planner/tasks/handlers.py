@@ -22,8 +22,8 @@ import os
 from ..persistence.artifact_store import ArtifactStore
 from .task_input import InputSnapshotStore, snapshot_reference
 from .task_specs import (
-    CORRIDOR_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY, PROBE_TASK_TYPE,
-    has_task_type, task_spec,
+    CORRIDOR_TASK_TYPE, P16_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY,
+    PROBE_TASK_TYPE, has_task_type, task_spec,
 )
 
 
@@ -39,6 +39,7 @@ class TaskPublishError(ValueError):
 RESULT_SCOPE_TEXT = {
     CORRIDOR_TASK_TYPE: "服务走廊评估",
     PCF_TASK_TYPE: "规划约束场",
+    P16_TASK_TYPE: "CNS 设施规划",
     PROBE_TASK_TYPE: "运行时探针",
 }
 
@@ -200,6 +201,20 @@ def publish_task_result(workflow, record, *, workdir):
             raise TaskPublishError("staged 结果结构无效")
         workflow.cns_corridor_apply_computed(result)
         artifact_ref = workflow.cns_corridor_result_artifact_ref() or {
+            key: committed.get(key) for key in
+            ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
+        }
+        return {"task_type": task_type, "scope": result_scope_text(task_type),
+                "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == P16_TASK_TYPE:
+        result = _staged_value(_load_staged_payload(workdir, staged, committed))
+        if not isinstance(result, dict) or not result:
+            raise TaskPublishError("staged 设施规划结果结构无效")
+        #: 唯一 production writer：``CorridorSitePlanningService.apply_computed``
+        #: （失效传播 / result_statuses 映射 / 原子保存全部由它独占，与同步入口同源）。
+        workflow.cns_corridor_site_plan_apply_computed(result)
+        artifact_ref = {
             key: committed.get(key) for key in
             ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
         }

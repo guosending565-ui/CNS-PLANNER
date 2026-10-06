@@ -1199,6 +1199,14 @@ class WorkflowService:
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
+    def cns_corridor_site_plan_apply_computed(self, result):
+        """Round 31-A：P16 的唯一 production writer 转发（后台任务发布阶段调用）。
+
+        它只是转发，不构成第二个 production owner：写入仍然发生在
+        :meth:`CorridorSitePlanningService.apply_computed` 内（与同步入口
+        ``evaluate`` 共用同一份收尾段）。
+        """
+        return self.corridor_site_planning_service.apply_computed(result)
     #: Round 2.5 P17 连续服务可接受性（严格下游：只读上游结果与显式工程证据）。
     def cns_continuous_service_snapshot(self): return self.continuous_service_service.result_snapshot()
     def cns_continuous_service_parameters(self): return self.continuous_service_service.parameters_snapshot()
