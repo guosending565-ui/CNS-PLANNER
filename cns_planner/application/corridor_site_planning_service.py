@@ -127,6 +127,12 @@ class CorridorSitePlanningService:
         continuous_route_speed_mps = continuous_inputs.get("route_speed_mps")
         continuous_aircraft_id = continuous_inputs.get("aircraft_id")
         selection_limit = _intervention_selection_limit(policy)
+        #: Round 30-C3B（收口）：**只读**停止诊断。它把"为什么停"拆成三类互斥结论
+        #: （达上限且确实还有正向候选 / 候选池自然耗尽 / 全部服务已可接受），并如实说明
+        #: "达上限时究竟探测评估了多少候选"，避免把 ``intervention_selection_limit_reached``
+        #: 误读成"已经没有可用候选"，也避免把 ``no_positive_*`` 误读成"只是撞到了 cap"。
+        #: 它不参与任何判定，也不改变候选排序 / 选中序列 / cap 默认值 / P15 / P17 语义。
+        stop_diagnostics = _new_stop_diagnostics(selection_limit)
         selected, trace, all_impacts = [], [], []
         continuous_impacts = []
         facilities = deepcopy(state.get("existing_cns_facilities") or {})
@@ -143,6 +149,11 @@ class CorridorSitePlanningService:
         selected_endpoint_actions = []
         stop_reason = None
         performance = _new_performance_profile(actions)
+        #: Round 30-C3B（收口）：达选择上限时只读 existence probe 的**逐 tier 复用缓存**。
+        #: 探测到正向候选时直接早停（不生成完整 candidate_impacts）；探测不到时把这份
+        #: 已算出的 impacts 交给旧完整评估路径复用，绝不重复计算，也绝不改变旧语义。
+        limit_probe_impacts = None
+        limit_probe_exhausted = False
 
         def apply_winner(action, impact, score, cost, cost_unit, score_semantics, tier):
             """把一条中选动作应用到工作副本，并登记 selected / trace（唯一实现）。"""
@@ -206,26 +217,75 @@ class CorridorSitePlanningService:
                 ):
                     stop_reason = "all_required_services_acceptable"
                     break
+                #: Round 30-C3B（性能 + 披露，收口后）：达到干预上限时**先**做一次**只读**
+                #: existence probe，而不是为"已经注定不会被采用"的候选做整轮 what-if
+                #: （真实项目 742 个候选 ≈ 4.5 分钟），也不是无条件宣布"达上限"。
+                #:
+                #: 语义边界（本轮裁决）：``intervention_selection_limit_reached`` 只在 probe
+                #: **真的找到**一个正向候选时成立；若剩余候选全部探测完仍无正向候选，则
+                #: **不**给出"达上限"结论，而是回到旧路径（完整评估 → 自然耗尽 →
+                #: ``_no_positive_candidate_stop_reason(...)``），旧 ``stop_reason`` 词表语义
+                #: 逐字保持。候选池已空（无 pending）时同样保持原路径。
+                if len(selected) >= selection_limit and not limit_probe_exhausted:
+                    pending = _pending_candidate_profile(actions, selected_ids)
+                    if pending["total"] > 0:
+                        probe = self._probe_positive_remaining_candidates(
+                            actions, selected_ids, tier, facilities, current_gap, targets,
+                            len(selected) + 1, selected_radar_actions,
+                            selected_navigation_actions, baseline_navigation_evidence,
+                            prepared_cells, prefilter, continuous_threshold_m,
+                            continuous_route_speed_mps, continuous_aircraft_id,
+                            current_endpoint_evidence, selected_endpoint_actions,
+                        )
+                        if probe["found"]:
+                            stop_reason = "intervention_selection_limit_reached"
+                            stop_diagnostics.update({
+                                "selection_limit_reached": True,
+                                "full_candidate_evaluation_skipped_at_limit": True,
+                                "limit_positive_probe_performed": True,
+                                "limit_positive_probe_evaluated_count": probe["evaluated"],
+                                "limit_positive_probe_found": True,
+                                "limit_positive_probe_seconds": probe["seconds"],
+                                "pending_candidate_count": pending["total"],
+                                "pending_candidates_by_tier": pending["by_tier"],
+                                "pending_candidates_by_service": pending["by_service"],
+                            })
+                            break
+                        #: 探测不到任何正向候选 ⇒ **不**下"达上限"结论：如实登记 probe 事实，
+                        #: 并把已算出的 impacts 交给下面的完整评估复用（同一 facilities /
+                        #: 投影态 / iteration，因此不会重复计算），随后由旧路径给出
+                        #: ``no_positive_*``。后续 tier 不再重复探测（已全量探测过）。
+                        stop_diagnostics.update({
+                            "limit_positive_probe_performed": True,
+                            "limit_positive_probe_evaluated_count": probe["evaluated"],
+                            "limit_positive_probe_found": False,
+                            "limit_positive_probe_seconds": probe["seconds"],
+                        })
+                        limit_probe_impacts = probe["impacts"]
+                        limit_probe_exhausted = True
                 tier_actions = [
                     action for action in actions
                     if action.get("reuse_class") == tier and action.get("action_id") not in selected_ids
                 ]
+                probed = (limit_probe_impacts or {}).get(tier) or {}
                 evaluated = []
                 for action in tier_actions:
-                    impact, _, _ = self._what_if(
-                        action, facilities, current_gap, targets,
-                        iteration=len(selected) + 1,
-                        radar_actions=selected_radar_actions,
-                        navigation_actions=selected_navigation_actions,
-                        baseline_navigation_evidence=baseline_navigation_evidence,
-                        prepared_cells=prepared_cells, prefilter=prefilter,
-                        continuous_threshold_m=continuous_threshold_m,
-                        route_speed_mps=continuous_route_speed_mps,
-                        aircraft_id=continuous_aircraft_id,
-                        endpoint_evidence=current_endpoint_evidence,
-                        endpoint_actions=selected_endpoint_actions,
-                        performance=performance,
-                    )
+                    impact = probed.get(str(action.get("action_id")))
+                    if impact is None:
+                        impact, _, _ = self._what_if(
+                            action, facilities, current_gap, targets,
+                            iteration=len(selected) + 1,
+                            radar_actions=selected_radar_actions,
+                            navigation_actions=selected_navigation_actions,
+                            baseline_navigation_evidence=baseline_navigation_evidence,
+                            prepared_cells=prepared_cells, prefilter=prefilter,
+                            continuous_threshold_m=continuous_threshold_m,
+                            route_speed_mps=continuous_route_speed_mps,
+                            aircraft_id=continuous_aircraft_id,
+                            endpoint_evidence=current_endpoint_evidence,
+                            endpoint_actions=selected_endpoint_actions,
+                            performance=performance,
+                        )
                     evaluated.append(impact)
                     all_impacts.append(deepcopy(impact))
                 ranked = self.planner.rank(tier_actions, evaluated)
@@ -255,9 +315,23 @@ class CorridorSitePlanningService:
                         deepcopy(item) for item in evaluated
                         if (item or {}).get("status") == "eligible"
                     )
+                    #: 本层（reuse tier）已无可推进的候选：如实登记本轮的正向候选计数，
+                    #: 供"所有层都耗尽"这一自然停止结论留下证据。
+                    _record_iteration_positive(stop_diagnostics, evaluated, tier_actions)
                     break
+                _record_iteration_positive(stop_diagnostics, evaluated, tier_actions)
                 if len(selected) >= selection_limit:
+                    #: 兜底（与 C3B 之前逐字一致）：正常路径上 probe 已在上方短路；
+                    #: 只有"probe 判据与正式排名判据不一致"时才会走到这里。它同时是
+                    #: "绝不越过 cap 再选下一个动作"的硬保证：先停，再披露。
+                    pending = _pending_candidate_profile(actions, selected_ids)
                     stop_reason = "intervention_selection_limit_reached"
+                    stop_diagnostics.update({
+                        "selection_limit_reached": True,
+                        "pending_candidate_count": pending["total"],
+                        "pending_candidates_by_tier": pending["by_tier"],
+                        "pending_candidates_by_service": pending["by_service"],
+                    })
                     break
                 if not ranked:
                     winner = continuous_ranked[0]
@@ -270,6 +344,10 @@ class CorridorSitePlanningService:
                 )
             if stop_reason:
                 break
+        if stop_reason is None:
+            #: 所有 reuse tier 都已没有正向候选 ⇒ 这才是"候选池耗尽"的自然停止；
+            #: 它与"达上限早停"互斥；两者都不成立时即为"全部服务已可接受"。
+            stop_diagnostics["candidate_pool_exhausted"] = True
         final_facilities = deepcopy(state.get("existing_cns_facilities") or {})
         final_radar_actions = []
         final_navigation_actions = []
@@ -342,6 +420,12 @@ class CorridorSitePlanningService:
         result.update({
             "baseline_corridor_fingerprint": baseline_corridor.get("input_fingerprint"),
             "baseline_corridor_gap_fingerprint": baseline_gap.get("input_fingerprint"),
+            #: Round 30-C3B（收口）：停止诊断（只读披露）。三态互斥：
+            #: ``selection_limit_reached`` + ``full_candidate_evaluation_skipped_at_limit``
+            #: （达工程上限，且只读 probe 真的找到了正向候选 ⇒ 未排名不等于"没有可用候选"）、
+            #: ``candidate_pool_exhausted``（所有 reuse tier 都没有正向候选，旧
+            #: ``no_positive_*`` 词表语义保持）、两者皆否 ⇒ ``all_required_services_acceptable``。
+            "stop_diagnostics": _finalize_stop_diagnostics(stop_diagnostics, stop_reason),
             "final_hypothetical_corridor_fingerprint": final_corridor.get("input_fingerprint"),
             "final_hypothetical_corridor_gap_fingerprint": final_gap.get("input_fingerprint"),
             "stop_reason": stop_reason,
@@ -867,6 +951,97 @@ class CorridorSitePlanningService:
             (baseline_gap or {}).get("endpoint_service_gaps") or {},
         ))
         return sorted(actions, key=lambda item: item["action_id"]), baseline_navigation_evidence
+
+    def _positive_gain_candidate(self, action, impact, continuous_channel):
+        """该候选是否**真正正向** —— 与正式路径同一判据（只读；Round 30-C3B 收口）。
+
+        "正向"在这里的唯一含义是"正式选择循环在这一点上会把它当作赢家候选"，因此判据
+        只能是**正式排名器本身**（绝不另立一套近似的 gain > 0 规则）：
+
+        * 离散通道：``rank([action], [impact])`` 非空 —— 即 action 资格 eligible、
+          impact ``status == eligible``、已确认增益 > 0、无 regression，成本可比性只影响
+          评分不影响候选资格，与正式路径逐字段同一实现；
+        * 连续服务通道：当前投影态**明确**不合格（``continuous_channel``）、该候选
+          ``_continuous_rankable``（跨越可接受阈值 —— 正式通道的入口门禁，只缩短仍
+          不合格的候选**不**构成停止理由）且 ``rank_continuous_service([action],
+          [impact])`` 非空，与正式路径同一实现。
+        """
+
+        if self.planner.rank([action], [impact]):
+            return True
+        return bool(
+            continuous_channel
+            and _continuous_rankable(impact)
+            and self.planner.rank_continuous_service([action], [impact])
+        )
+
+    def _probe_positive_remaining_candidates(
+        self, actions, selected_ids, current_tier, facilities, current_gap, targets,
+        iteration, radar_actions, navigation_actions, baseline_navigation_evidence,
+        prepared_cells, prefilter, continuous_threshold_m, route_speed_mps,
+        aircraft_id, endpoint_evidence, endpoint_actions,
+    ):
+        """达选择上限时的**只读** existence probe（Round 30-C3B 收口）。
+
+        它只回答一个问题：从**当前** reuse tier 起，按原 REUSE_TIERS / candidate 顺序，
+        是否还存在真正正向的候选？"正向"由 :meth:`_positive_gain_candidate` 用正式排名器
+        判定，因此"probe 找到正向候选"与"正式循环在这一刻会选出赢家"是同一件事。
+
+        边界（全部只读）：
+
+        * 不修改候选顺序、tier 顺序、选中序列、facilities、投影态、P15/P17、cap 默认值；
+        * 找到**第一个**正向候选即短路返回（真实项目通常只需极少数几次 what-if）；
+        * 探测不到任何正向候选时返回 ``found=False`` 与已算出的 ``impacts``，调用方据此
+          回到**旧**路径（完整评估 → 自然耗尽 → ``_no_positive_candidate_stop_reason``），
+          旧 ``stop_reason`` 词表语义逐字保持；
+        * 排在 ``current_tier`` **之前**的 tier 不回看：旧实现同样不回看（tier 只向前推进），
+          回看会凭空多出"达上限"结论；
+        * 每个候选只做**一次** what-if，且与正式评估使用同一 facilities / 投影态 /
+          ``iteration`` / prefilter，因此结果可直接复用，不存在第二套口径；
+        * probe 自身的耗时**单独**核算（``limit_positive_probe_seconds``），**不**并入
+          ``performance_profile``：后者是"选择循环的候选 what-if 画像"，语义保持不变。
+
+        返回 ``{"found", "evaluated", "tier", "action_id", "seconds", "impacts"}``，其中
+        ``impacts`` 是 tier → action_id → impact 的缓存。
+        """
+
+        performance = _new_performance_profile([])
+        started = time.perf_counter()
+        continuous_channel = _continuous_service_unacceptable(
+            current_gap, continuous_threshold_m, route_speed_mps, aircraft_id,
+        )
+        impacts, evaluated = {}, 0
+        for tier in REUSE_TIERS[REUSE_TIERS.index(current_tier):]:
+            tier_actions = [
+                action for action in actions
+                if action.get("reuse_class") == tier
+                and action.get("action_id") not in selected_ids
+            ]
+            impacts[tier] = {}
+            for action in tier_actions:
+                impact, _, _ = self._what_if(
+                    action, facilities, current_gap, targets, iteration=iteration,
+                    radar_actions=radar_actions, navigation_actions=navigation_actions,
+                    baseline_navigation_evidence=baseline_navigation_evidence,
+                    prepared_cells=prepared_cells, prefilter=prefilter,
+                    continuous_threshold_m=continuous_threshold_m,
+                    route_speed_mps=route_speed_mps, aircraft_id=aircraft_id,
+                    endpoint_evidence=endpoint_evidence,
+                    endpoint_actions=endpoint_actions, performance=performance,
+                )
+                evaluated += 1
+                impacts[tier][str(action.get("action_id"))] = impact
+                if self._positive_gain_candidate(action, impact, continuous_channel):
+                    return {
+                        "found": True, "evaluated": evaluated, "tier": tier,
+                        "action_id": action.get("action_id"),
+                        "seconds": round(time.perf_counter() - started, 3),
+                        "impacts": impacts,
+                    }
+        return {
+            "found": False, "evaluated": evaluated, "tier": None, "action_id": None,
+            "seconds": round(time.perf_counter() - started, 3), "impacts": impacts,
+        }
 
     def _rerun(
         self, facilities, radar_actions=None, navigation_actions=None,
@@ -2625,6 +2800,92 @@ def _intervention_selection_limit(policy):
     except (TypeError, ValueError):
         return DEFAULT_INTERVENTION_SELECTION_LIMIT
     return value if value > 0 else DEFAULT_INTERVENTION_SELECTION_LIMIT
+
+
+#: Round 30-C3B（收口后）：停止诊断的语义声明（**只读披露**，不参与选择或目标判定）。
+STOP_DIAGNOSTICS_SEMANTICS = (
+    "read_only_stop_diagnostics_never_participates_in_selection_or_objective_"
+    "evaluation__at_the_selection_limit_a_read_only_existence_probe_reuses_the_"
+    "formal_what_if_and_the_formal_rankers_so_intervention_selection_limit_reached_"
+    "means_a_truly_positive_candidate_was_actually_found_and_if_no_positive_candidate_"
+    "remains_the_legacy_no_positive_candidate_stop_reason_vocabulary_is_kept__"
+    "full_candidate_evaluation_skipped_at_limit_means_only_that_the_remaining_"
+    "candidates_were_not_fully_ranked_it_is_not_a_no_gain_conclusion__"
+    "limit_positive_probe_evaluated_count_is_how_many_candidates_the_probe_actually_"
+    "evaluated_before_short_circuiting__"
+    "pending_candidate_count_is_how_many_candidates_were_pending_at_the_stop_point_"
+    "it_is_not_an_evaluated_count_and_not_a_no_gain_conclusion__"
+    "candidate_pool_exhausted_is_the_only_natural_no_positive_candidate_stop"
+)
+
+
+def _new_stop_diagnostics(selection_limit):
+    """本轮 P16 停止诊断的初值（每次 evaluate 各一份，绝不跨轮复用）。"""
+
+    return {
+        "version": 2,
+        "selection_limit": selection_limit,
+        "selection_limit_reached": False,
+        "full_candidate_evaluation_skipped_at_limit": False,
+        "limit_positive_probe_performed": False,
+        "limit_positive_probe_evaluated_count": 0,
+        "limit_positive_probe_found": False,
+        "limit_positive_probe_seconds": None,
+        "candidate_pool_exhausted": False,
+        "evaluated_iteration_count": 0,
+        "last_evaluated_iteration_positive_count": None,
+        "last_evaluated_iteration_positive_by_service": None,
+        "pending_candidate_count": None,
+        "pending_candidates_by_tier": None,
+        "pending_candidates_by_service": None,
+        "converged_without_positive_candidate": False,
+        "stop_reason": None,
+        "semantics": STOP_DIAGNOSTICS_SEMANTICS,
+    }
+
+
+def _record_iteration_positive(stop_diagnostics, evaluated, tier_actions):
+    """登记某一轮 what-if 的正向（离散增益 > 0）候选计数（只读统计）。"""
+
+    by_id = {str(item.get("action_id")): item for item in (tier_actions or [])}
+    counts = Counter()
+    positive = 0
+    for impact in evaluated or []:
+        if float((impact or {}).get("confirmed_requirement_unit_volume_gain") or 0.0) <= 0.0:
+            continue
+        positive += 1
+        action = by_id.get(str((impact or {}).get("action_id"))) or {}
+        counts[str(action.get("service_key") or "<unknown>")] += 1
+    stop_diagnostics["evaluated_iteration_count"] += 1
+    stop_diagnostics["last_evaluated_iteration_positive_count"] = positive
+    stop_diagnostics["last_evaluated_iteration_positive_by_service"] = dict(sorted(counts.items()))
+
+
+def _pending_candidate_profile(actions, selected_ids):
+    """达干预上限时**尚未选中**的候选规模（按 reuse tier / service_key）。"""
+
+    by_tier, by_service = Counter(), Counter()
+    for action in actions or []:
+        if str(action.get("action_id")) in selected_ids:
+            continue
+        by_tier[str(action.get("reuse_class") or "<none>")] += 1
+        by_service[str(action.get("service_key") or "<none>")] += 1
+    return {
+        "total": sum(by_tier.values()),
+        "by_tier": dict(sorted(by_tier.items())),
+        "by_service": dict(sorted(by_service.items())),
+    }
+
+
+def _finalize_stop_diagnostics(stop_diagnostics, stop_reason):
+    """补齐最终 ``stop_reason`` 并给出互斥的收敛结论（只读）。"""
+
+    final = deepcopy(stop_diagnostics)
+    final["stop_reason"] = stop_reason
+    final["converged_without_positive_candidate"] = bool(
+        final.get("candidate_pool_exhausted")
+    )
+    return final
 
 
 def _no_positive_candidate_stop_reason(acceptance, plan_status, threshold_available):
