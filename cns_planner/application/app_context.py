@@ -224,6 +224,21 @@ class ApplicationContext:
         self._activate_workflow(workflow, target)
         return self.data.metadata()
 
+    def create_project(self, project_dir, project_name=None):
+        """F-03：创建**全新空白项目**并把 active project 切到它。
+
+        与 :meth:`save_project_as` 的关键区别是"不继承"：新项目 state 只来自
+        ``blank_project`` 默认链（含 registry 默认 algorithm_selection），数据源只来自
+        公共默认配置（``ProjectDirectoryService.default_sources``），绝不复制当前项目的
+        任何结果容器或已解析来源。目录冲突一律 fail-closed（见 ``create_blank``）。
+        """
+
+        workflow, target = self.project_directories.create_blank(
+            project_dir, project_name, self.data
+        )
+        self._activate_workflow(workflow, target)
+        return self.data.metadata()
+
     def open_project(self, project_dir):
         """切换 active project；**同一项目**（requested == active）是幂等快速路径。
 

@@ -26,7 +26,13 @@ export const PROJECT_OPEN_STATE_TEXT={
   empty:'尚未选择项目目录。',
   selected:'已选择项目目录，尚未打开项目。',
   opening:'正在打开项目…',
+  //: 新建项目在途时的文案：不能把"新建"说成"打开"（事实口径必须如实）。
+  creating:'正在新建项目…',
   opened:'项目已打开',
+  //: 服务器 active project 身份优先于 draft 的"已选择"状态时使用（F-03 §状态一致性）。
+  active:'当前项目已激活',
+  //: 新建空白项目成功后的唯一结论文案。
+  created:'新建项目完成，当前项目已激活',
   failed:'打开项目失败',
 };
 
@@ -102,12 +108,12 @@ export function projectOpenPanel({getStep,draft=''}={}){
   const savedDirectory=String(step.directory||'');
   const currentInput=String(draft||'');
   const isCurrent=sameProjectPath(currentInput,savedDirectory);
-  const statusKey=openStatusKey();
+  const statusKey=openStatusKey(step);
   const statusText=PROJECT_OPEN_STATE_TEXT[statusKey]||'';
   const buttonLabel=busy?'正在打开…':(isCurrent&&savedIdentity?'确认当前项目':'打开项目');
   const stageText=(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT:PROJECT_OPEN_STAGE_TEXT)[projectOpen.stage]
     ||(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT.opening:PROJECT_OPEN_STAGE_TEXT.opening);
-  const facts=(statusKey==='opened'?(projectOpen.facts||step.facts||null):null);
+  const facts=statusFacts(statusKey,step);
   const rows=[
     '<div class="project-open-status" id="projectOpenStatus" data-state="'+statusKey+'" aria-live="polite">'
       +'<b>'+escapeHtml(statusText)+'</b>'
@@ -133,7 +139,26 @@ export function projectOpenPanel({getStep,draft=''}={}){
     +'<div class="panel-file-input"><input class="panel-input" id="projectPath" value="'+escapeHtml(currentInput)+'" placeholder="请选择项目文件夹"><button class="secondary" id="browseProject">选择…</button>'
     +(busy?'':'<button class="secondary" id="openProject" '+(currentInput?'':'disabled')+'>'+escapeHtml(buttonLabel)+'</button>')
     +'</div>'
-    +rows.join('');
+    +rows.join('')
+    +newProjectBlock(busy);
+}
+
+/**
+ * F-03：**新建空白项目**动作区。
+ *
+ * 目录沿用上面的「项目数据存储位置」（「选择…」已经能把它选出来），只额外要一个项目名称，
+ * 因此普通用户不需要先手工建目录、也不需要先「另存为」才能从零开始。
+ *
+ * 文案必须如实说明"不继承"：新建出来的是**完全空白**的项目，不是当前项目的副本。
+ */
+function newProjectBlock(busy){
+  return '<label>新建项目</label>'
+    +'<div class="parameter-note">用上面的「项目数据存储位置」作为新项目目录（必须是空目录，已存在的项目不会被覆盖）。'
+      +'点击「新建项目」会创建一个<b>完全空白</b>的新项目并立即激活：不复制当前项目的 workspace / 航路 / 候选 / 风险画像 / 报告，'
+      +'数据源按公共默认配置初始化。</div>'
+    +'<div class="panel-file-input"><input class="panel-input" id="newProjectName" placeholder="项目名称（1–120 字符）" value="'+escapeHtml(_newProjectName)+'">'
+    +(busy?'':'<button class="secondary" id="createProject">新建项目</button>')
+    +'</div>';
 }
 
 export function algorithmSelectionKey(item){return [item?.algorithm_type,item?.algorithm_id,item?.version].join('|');}
@@ -382,7 +407,9 @@ let _draftProjectDirectory='';
 let _serverProjectDirectory='';
 /** 打开项目是否正在进行。必须是模块级：面板重渲染不能让"正在打开…"凭空消失。 */
 let _projectOpenInFlight=false;
-let projectOpen={busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null};
+let projectOpen={busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null,created:false,creating:false};
+/** 新建项目表单里的项目名称（模块级：面板重渲染不得清空用户已输入的名称）。 */
+let _newProjectName='';
 
 /** 目录选择器的选择结果（壳层调用）：只写 draft，绝不打开项目。 */
 export function setProjectDirectoryDraft(directory){
@@ -409,15 +436,42 @@ function currentProjectDirectory(){
 function draftDirectory(){return currentProjectDirectory();}
 
 /**
+ * 服务器已确认的 active project 目录。
+ *
+ * 两个来源都**只**来自服务器事实：本次会话内最近一次成功结论（``displayDirectory``），
+ * 或启动/渲染时 main.js 提供的 active project 身份（``step.directory``）。绝不猜路径。
+ */
+function serverActiveDirectory(step){
+  // ``_serverProjectDirectory`` 是每次 render 从 ``state.project_storage.directory`` 取到的
+  // 权威值（automatic 项目为空串），因此它最强；其次是本次会话的结论与渲染时传入的 step。
+  return String(_serverProjectDirectory||projectOpen.displayDirectory||(step&&step.directory)||'');
+}
+
+/**
  * 当前项目打开状态的**唯一**判读（面板与增量刷新共用，避免两处各写一套 if/else）。
  *
  * 事实优先级：
- *   busy（模块级在途标志） > 服务器返回的结论（message/ok） > draft 是否存在。
+ *   busy（模块级在途标志） > 服务器返回的结论（message/ok） > **服务器 active project
+ *   身份** > draft 是否存在。
+ *
+ * F-03 §状态一致性：项目已经激活时，不允许再显示"已选择项目目录，尚未打开项目"——
+ * 服务器 active project 身份优先于 draft 的"仅选中"状态（Round32-A M-01 的成因）。
  */
-function openStatusKey(){
-  if(_projectOpenInFlight)return 'opening';
+function openStatusKey(step){
+  if(_projectOpenInFlight)return projectOpen.creating?'creating':'opening';
   if(projectOpen.message)return projectOpen.ok?'opened':'failed';
+  if(projectOpen.created)return 'created';
+  if(serverActiveDirectory(step))return 'active';
   return draftDirectory()?'selected':'empty';
+}
+
+/** 会展示"项目事实"（名称/目录/工作区/网格）的状态：已打开、已激活、新建完成。 */
+const FACTS_STATUS_KEYS=['opened','active','created'];
+
+/** 当前状态可用的项目事实：本次结论优先，其次服务器 active project 身份携带的事实。 */
+function statusFacts(statusKey,step){
+  if(!FACTS_STATUS_KEYS.includes(statusKey))return null;
+  return projectOpen.facts||(step&&step.facts)||null;
 }
 
 /** 只刷新状态提示区，不重建整个面板（避免输入焦点与滚动位置丢失）。 */
@@ -425,17 +479,18 @@ function renderOpenStatus(node){
   if(!node)return;
   const saved=node.__projectOpenStep||{};
   const busy=_projectOpenInFlight||saved.busy===true;
-  const statusKey=openStatusKey();
+  const statusKey=openStatusKey(saved);
   node.dataset.state=statusKey;
   const lines=[];
   lines.push('<b>'+escapeHtml(PROJECT_OPEN_STATE_TEXT[statusKey]||'')+'</b>');
   if(busy)lines.push('<small>'+escapeHtml(PROJECT_OPEN_STAGE_TEXT[projectOpen.stage]||PROJECT_OPEN_STAGE_TEXT.opening)+'</small>');
   if(statusKey==='failed'&&projectOpen.message)lines.push('<small class="project-open-error">'+escapeHtml(projectOpen.message)+'</small>');
-  if(statusKey==='opened'&&projectOpen.facts){
-    lines.push('<small>项目名称：'+escapeHtml(projectOpen.facts.name||'未命名项目')+'</small>');
+  const facts=statusFacts(statusKey,saved);
+  if(facts){
+    lines.push('<small>项目名称：'+escapeHtml(facts.name||'未命名项目')+'</small>');
     lines.push('<small>项目目录：'+escapeHtml(projectOpen.displayDirectory||saved.directory||'（服务器自动恢复项目）')+'</small>');
-    lines.push('<small>工作区：'+escapeHtml(workspaceFactText(projectOpen.facts))+'</small>');
-    lines.push('<small>标准规划网格：'+escapeHtml(gridFactText(projectOpen.facts))+'</small>');
+    lines.push('<small>工作区：'+escapeHtml(workspaceFactText(facts))+'</small>');
+    lines.push('<small>标准规划网格：'+escapeHtml(gridFactText(facts))+'</small>');
   }
   node.innerHTML=lines.join('');
 }
@@ -489,6 +544,8 @@ export function bind(c){
       _draftProjectDirectory=directory;
       _projectOpenInFlight=true;
       projectOpen.ok=false;projectOpen.message='';projectOpen.stage='opening';
+      // 重新走「打开项目」必然清掉上一次"新建项目完成"的结论，避免陈旧结论文案。
+      projectOpen.created=false;
       // A2：先按服务器当前 active 项目判据给阶段文案定性。真正裁决仍在 main.js /
       // 后端幂等保护（这里只决定"正在确认当前项目"还是"正在切换服务器 active project"）。
       const openedStep=(statusNode&&statusNode.__projectOpenStep)||{};
@@ -523,6 +580,54 @@ export function bind(c){
     };
   }
   c.$('saveProject').onclick=()=>c.saveProject(pathInput?pathInput.value.trim():'',c.$('projectName').value.trim());
+  // F-03：新建空白项目。目录沿用输入框（与「选择…」共用同一个 draft 来源），
+  // 这里只负责表单校验与结论落地，真正的创建 + 安装链在 main.js 的 createProject()。
+  const newProjectNameInput=c.$('newProjectName');
+  const createProjectButton=c.$('createProject');
+  if(newProjectNameInput){
+    const onName=()=>{_newProjectName=newProjectNameInput.value;};
+    newProjectNameInput.oninput=onName;newProjectNameInput.onchange=onName;
+  }
+  if(createProjectButton){
+    createProjectButton.onclick=async()=>{
+      const directory=String(pathInput?pathInput.value:'').trim();
+      const name=String(newProjectNameInput?newProjectNameInput.value:'').trim();
+      if(!directory){c.panelError('请先选择新项目的项目目录','error');return;}
+      if(!name){c.panelError('请填写项目名称（1–120 字符）','error');return;}
+      createProjectButton.disabled=true;
+      projectOpen.ok=false;projectOpen.message='';projectOpen.created=false;
+      projectOpen.creating=true;projectOpen.stage='opening';
+      _projectOpenInFlight=true;
+      renderOpenStatus(statusNode);
+      let result=null;
+      try{
+        result=await c.createProject(directory,name,{onStage:stage=>{
+          projectOpen.stage=stage;
+          renderOpenStatus(statusNode);
+        }});
+      }catch(error){
+        result={ok:false,error:error instanceof Error?error:new Error(String(error)),facts:null};
+      }finally{
+        _projectOpenInFlight=false;
+        projectOpen.creating=false;
+        projectOpen.busy=false;
+      }
+      projectOpen.ok=Boolean(result?.ok);
+      projectOpen.created=Boolean(result?.ok);
+      projectOpen.message=result?.ok?'':String(result?.error?.message||'新建项目失败');
+      projectOpen.identity=String(result?.identity||'');
+      projectOpen.displayDirectory=result?.ok?directory:'';
+      projectOpen.facts=result?.facts||null;
+      if(result?.ok)_newProjectName='';
+      if(statusNode&&document.body.contains(statusNode)){
+        statusNode.__projectOpenStep={busy:false,identity:projectOpen.identity,
+          directory:projectOpen.displayDirectory,facts:projectOpen.facts};
+        renderOpenStatus(statusNode);
+      }
+      const liveButton=document.getElementById('createProject');
+      if(liveButton)liveButton.disabled=false;
+    };
+  }
   // 数据源对话框挂在应用外壳上（不在工作台面板内），因此这里直接按 id 查找，
   // 不走 `c.$()`（它是"工作台内必须命中"的查询契约）。
   const settings=typeof document!=='undefined'&&document.getElementById?document.getElementById('settings'):null;

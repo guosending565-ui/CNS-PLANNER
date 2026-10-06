@@ -612,6 +612,9 @@ class ApiRouter:
             ))
         if path == "/api/project/save-as": return Response(context.qgis.call(lambda: context.save_project_as(payload.get("project_dir"))))
         if path == "/api/project/open": return Response(context.qgis.call(lambda: context.open_project(payload.get("project_dir"))))
+        # F-03：新建**空白**项目（不是 Save As）。目录冲突 / 非空目录一律 fail-closed，
+        # 由 ``ProjectDirectoryService.create_blank`` 单一裁决，不在这里做任何文件判断。
+        if path == "/api/project/create": return Response(context.qgis.call(lambda: context.create_project(payload.get("project_dir"), payload.get("project_name"))))
         resource_actions = {
             "/api/aircraft-profiles/select": lambda: workflow.select_aircraft_profile(payload.get("aircraft_id")),
             "/api/aircraft-profiles/import": lambda: workflow.import_aircraft_catalog(payload.get("path")),

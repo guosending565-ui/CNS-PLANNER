@@ -60,6 +60,67 @@ class ProjectDirectoryService:
             raise
         return candidate, target
 
+    def create_blank(self, project_dir, project_name, current_data=None):
+        """创建一个**完全空白**的新项目容器，返回 ``(workflow, target)``。
+
+        F-03：普通用户在没有任何历史项目时，也必须能只通过网页创建一个全新项目。
+        它与 :meth:`save_as` 的语义**完全相反**：
+
+        * ``save_as`` 复制**当前**项目的 state，并沿用已加载的数据源；
+        * ``create_blank`` 只走既有的 ``blank_project(defaults)`` 初始化默认链
+          （含 registry 默认 ``algorithm_selection``），数据源只写
+          ``default_sources``（公共默认配置）——**绝不**继承上一项目的
+          workspace / routes / candidates / route_risk_profiles / P14–P17 /
+          radar / report / algorithm 结果，也不沿用 ``current_data.paths``
+          里已解析出的项目数据源。
+
+        fail-closed（绝不覆盖用户文件）：
+
+        * 目录已是有效 CNS 项目（``project_state.json`` 或 legacy
+          ``current_project.json``）→ 报错并要求改用「打开项目」；
+        * 目录已存在但非空、且不是 CNS 项目 → 报错，**不做任何写入**；
+        * 目录不存在 → 才创建（含父目录）；
+        * 创建过程中任何一步失败 → 回滚本次刚写下的文件，不留半成品。
+        """
+
+        name = str(project_name or "").strip()
+        if not name or len(name) > 120:
+            raise ValueError("项目名称须为 1–120 个字符")
+        value = str(project_dir or "").strip()
+        if not value:
+            raise ValueError("请选择新项目的项目目录")
+        folder = Path(value).expanduser()
+        if not folder.is_absolute():
+            raise ValueError("项目目录必须使用完整路径")
+        target, sources_target = folder / "project_state.json", folder / "data_sources.json"
+        if folder.exists():
+            if not folder.is_dir():
+                raise ValueError("项目目录不是一个文件夹")
+            if target.is_file() or (folder / "current_project.json").is_file():
+                raise ValueError("该目录已是一个 CNS 项目，请使用「打开项目」")
+            if any(folder.iterdir()):
+                raise ValueError(
+                    "项目目录不是空目录，且不是 CNS 项目；为避免覆盖你的文件，未做任何写入"
+                )
+        else:
+            folder.mkdir(parents=True, exist_ok=True)
+        clean_sources = self._clean_sources(self.default_sources)
+        try:
+            # 目标文件不存在 → ``WorkflowSession._load()`` 直接返回
+            # ``blank_project(defaults)``：这就是当前项目初始化默认链，不另写一套空白 state。
+            candidate = self.workflow_factory(target, self.defaults_path)
+            candidate.set_project({"name": name})       # 唯一项目元数据写入者 / 校验
+            DataSourceRepository(sources_target).save(clean_sources)
+        except Exception:
+            self._restore(target, None)
+            self._restore(sources_target, None)
+            raise
+        if current_data is not None:
+            # 与 :meth:`open` 同一条语义：项目数据源只来自**该项目自己的**配置。
+            # 这里是刚写下的公共默认配置，因此新项目不会沿用上一项目已解析的来源。
+            current_data.load(dict(clean_sources), persist=False)
+        return candidate, target
+
     def open(self, project_dir, current_data):
         folder = self._project_folder(project_dir)
         target = folder / "project_state.json"

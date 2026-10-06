@@ -624,7 +624,7 @@ function stepBindings(){return {
   refreshRadarSurveillance:()=>snapshotApplier.hydrateRadarSurveillanceDetail(),
   // Round 3：P14 逐体元 service 证据（Step05「CNS 服务走廊」按需载入，只读）。
   refreshCorridorDetail:()=>snapshotApplier.hydrateCorridorServiceDetail(),
-  saveProject,openProject,projectOpenStep,
+  saveProject,openProject,createProject,projectOpenStep,
   previewPlanningReport,downloadPlanningReport,
   // 专题成果图：预览为只读 GET；下载只读已生成产物；绝不自动触发制图。
   previewMapFigure:input=>shellActions.previewMapFigure(input,{api,onError:panelError}),
@@ -956,6 +956,69 @@ async function openProject(projectDir,{onStage=null}={}){
   }finally{
     projectSwitchBusy=false;
     if(button&&document.body.contains(button))button.disabled=false;
+  }
+}
+/**
+ * F-03：创建**全新空白项目**（不是 Save As）。
+ *
+ * 服务器侧 ``POST /api/project/create`` 单一裁决「目录冲突 / 非空目录」并原子创建，
+ * 前端**不做任何目录判断**。安装阶段刻意复用 :func:`openProject` 的同一条链
+ * （唯一的状态落地入口 ``applyProjectState`` + 项目串行闸门），因此不存在第二套安装逻辑。
+ *
+ * 与 ``openProject`` 的唯一差别：新建项目**必须**作废旧地图视图 —— 新项目没有
+ * workspace，保留上一项目的位图会造成"右栏是新项目、地图还是旧项目"的 split-brain。
+ */
+async function createProject(projectDir,projectName,{onStage=null}={}){
+  const directory=String(projectDir||'').trim();
+  const name=String(projectName||'').trim();
+  const notify=stage=>{
+    if(typeof onStage==='function')onStage(stage,PROJECT_OPEN_STAGES.indexOf(stage),PROJECT_OPEN_STAGES.length);
+    if(currentStep===1)renderWorkflow();
+  };
+  if(!directory)return {ok:false,identity:'',stage:'failed',error:new Error('请先选择新项目的项目目录'),facts:null};
+  if(!name)return {ok:false,identity:'',stage:'failed',error:new Error('请填写项目名称'),facts:null};
+  const button=$('createProject');
+  if(button)button.disabled=true;
+  projectSwitchBusy=true;
+  openTiming.run={directory,generation:null,started:performance.now(),last:performance.now(),stages:[]};
+  let identity=directory,facts=null,stage='failed';
+  try{
+    notify('opening');
+    await serializeProjectOperation(async()=>{
+      timeStart('project/create serialize-queue-wait');
+      const response=await api('/api/project/create',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({project_dir:directory,project_name:name})});
+      timeMark('project/create POST');
+      recordExplicitProject(response);
+      identity=projectIdentityOf(response)||identity;
+      notify('applying');
+      await applyProjectState(response);
+      timeMark('apply project/create response');
+      notify('refreshing');
+      await applyProjectState(await api('/api/state'));
+      timeMark('GET state + apply');
+      notify('map');
+      // 项目身份已变化：旧位图 / 旧视图必须整体作废，再按新项目身份建立视图。
+      resetProjectMapState();
+      ensureMapView();
+    });
+    queue();
+    facts=projectFacts(flow);
+    resetAnalysisLayerSelection();
+    renderWorkflow();
+    stage=PROJECT_OPEN_STAGES[PROJECT_OPEN_STAGES.length-1];
+    startProjectDetailRecovery(identity);
+    panelError('新建项目已激活 · '+(facts?.name||name)+' · 项目目录：'+(state?.project_storage?.directory||directory),'success');
+    return {ok:true,identity,stage,error:null,facts,created:true};
+  }catch(exc){
+    const reason=(exc&&exc.message)||String(exc);
+    identity=identity||directory;
+    panelError('新建项目失败：'+reason,'error');
+    return {ok:false,identity,stage:'failed',error:exc instanceof Error?exc:new Error(reason),facts:null};
+  }finally{
+    projectSwitchBusy=false;
+    const current=document.getElementById('createProject');
+    if(current)current.disabled=false;
   }
 }
 function getTiandituKey(){
