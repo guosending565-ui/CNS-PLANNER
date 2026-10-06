@@ -1178,7 +1178,32 @@ export function bind(c){
   c.actionButton('evaluateServiceCapability',()=>c.resourceAction('/api/cns-service-capability/evaluate',{}));
   c.actionButton('evaluateCorridor',()=>c.resourceAction('/api/cns-service-corridor/evaluate',{}));
   c.actionButton('savePlanningObjectives',()=>{const policy=structuredClone(c.flow().cns_planning_objectives||{routes:{}}),routeId=c.$('planningObjectiveRoute').value,code=c.$('planningObjectiveSubsystem').value,confirmed=c.$('planningObjectiveConfirmed').checked,source=c.$('planningObjectiveSource').value.trim()||'user_configuration',specs={min_satisfied_volume_fraction:['objectiveMinSatisfied','>='],max_confirmed_deficit_volume_fraction:['objectiveMaxDeficit','<='],max_unknown_volume_fraction:['objectiveMaxUnknown','<='],min_redundancy_satisfied_volume_fraction:['objectiveMinRedundancy','>='],max_continuous_deficit_projection_m:['objectiveMaxContinuous','<=']};policy.routes=policy.routes||{};policy.routes[routeId]=policy.routes[routeId]||{route_id:routeId,subsystems:{}};policy.routes[routeId].subsystems=policy.routes[routeId].subsystems||{};policy.routes[routeId].subsystems[code]={objectives:Object.fromEntries(Object.entries(specs).filter(([,value])=>c.$(value[0]).value!=='').map(([name,[id,operator]])=>[name,{value:Number(c.$(id).value),operator,source,confirmed}]))};return c.resourceAction('/api/cns-planning-objectives',{cns_planning_objectives:policy});});
-  c.actionButton('evaluateCorridorGap',()=>c.resourceAction('/api/cns-corridor-gap/evaluate',{}));
+  //: Round 31-D：CNS 能力缺口评估（P15）同样改为后台提交：提交只登记任务并立刻
+  //: 返回 task_id，HTTP 请求不再等到整条走廊的逐体元判定结束。按钮进入
+  //: 「后台计算中…」而不是假死；进度 / 心跳 / 取消 / 完成后刷新结果全部由 tasks.js
+  //: 的既有「后台计算任务」窗口负责（不复制第二套任务框架）。
+  if(c.$('evaluateCorridorGap')){
+    const gapSubmitButton=c.$('evaluateCorridorGap');
+    gapSubmitButton.onclick=async()=>{
+      const original=gapSubmitButton.textContent;
+      try{
+        gapSubmitButton.disabled=true;
+        gapSubmitButton.dataset.busy='true';
+        gapSubmitButton.textContent='正在提交后台计算…';
+        await c.submitBackgroundTask('/api/cns-corridor-gap/evaluate',{});
+        //: 提交成功后按钮保持"后台计算中"，直到任务完成后刷新快照重建本面板
+        //: （用户因此不会重复提交，也不会以为页面卡住）。
+        gapSubmitButton.textContent='后台计算中，请在「后台计算任务」窗口查看进度';
+      }catch(error){
+        c.panelError(error.message||String(error));
+        if(document.body.contains(gapSubmitButton)){
+          gapSubmitButton.disabled=false;
+          delete gapSubmitButton.dataset.busy;
+          gapSubmitButton.textContent=original;
+        }
+      }
+    };
+  }
   //: Round 31-A：CNS 设施规划（P16）在真实项目上是数十分钟级的累计试算，**必须**
   //: 后台化：提交只登记任务并立刻返回 task_id，HTTP 请求不再等到计算结束。
   //: 按钮进入「后台计算中…」而不是假死；进度 / 心跳 / 取消 / 完成后刷新结果全部由

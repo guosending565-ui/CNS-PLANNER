@@ -36,11 +36,14 @@ import time
 from ..domain.cns_corridor import (
     corridor_complexity_preflight, normalize_cns_corridor_policy,
 )
+from ..domain.cns_planning_objectives import normalize_cns_planning_objectives
 from ..domain.corridor_site_planning import normalize_corridor_site_planning_policy
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
 )
-from .task_input import CORRIDOR_ALGORITHM_TYPES
+from .task_input import (
+    CORRIDOR_ALGORITHM_TYPES, _effective_selection, normalized_selection,
+)
 from .task_spec import (
     TaskCancelled, TaskInputChanged, TaskPerformanceAdmissionUpgradeRequired,
     TaskRunResult, TaskSpec, WorkerResultRef,
@@ -57,6 +60,10 @@ TASK_ENDPOINTS = {
     #: 因此与 P14 一样登记为 heavy task：带 ``async: true`` 提交时只登记任务并
     #: 立刻返回 task_id，不带时保持原有同步语义（既有调用方不受影响）。
     "/api/cns-corridor-site-plan/evaluate": "cns_corridor_site_plan_evaluate",
+    #: Round 31-D：CNS 能力缺口评估（P15）同样登记为 heavy task。它在真实项目上
+    #: 逐体元判定整条走廊，且必须在发布前重新校验上游 P14 的 currentness；带
+    #: ``async: true`` 提交时只登记任务并立刻返回 task_id，不带时保持原有同步语义。
+    "/api/cns-corridor-gap/evaluate": "cns_corridor_gap_evaluate",
 }
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -728,6 +735,214 @@ def _p16_runner(context):
     )
 
 
+# ---- P15 能力缺口评估（Round 31-D） ---------------------------------------------
+#
+# P15 的输入形态与 P14 / P16 不同：它消费**上游 canonical 结论**（P14 服务走廊评估）
+# + 需求事实（required_cns / cns_planning_objectives）+ 算法选择。P14 的逐体元明细是
+# 十几 MB 量级、以 content-addressed artifact 外置在项目目录里（见
+# ``project_compaction`` 的 ``corridor.assessment.detail``），整份复制进 immutable
+# snapshot 既昂贵又冗余。因此本 task type 沿用 P16 的契约：
+#
+# * snapshot 冻结**需求事实**（required_cns / cns_planning_objectives）与上游
+#   canonical 的**身份**（status + 输入指纹 + 几何指纹 + 算法身份）；
+# * worker 只读**当前项目文件**（含 artifact 明细恢复）作为运行载体 —— 它绝不写盘
+#   （``session.save()`` 只由主进程的 publish 阶段调用），因此 worker 永远不是第二个
+#   canonical 写入者；
+# * 提交之后 state 一旦变化即作废：worker 侧的身份校验与主进程 publish 的
+#   compare-and-publish 是两道独立闸门，两边用同一份 snapshot 指纹。
+
+P15_TASK_TYPE = "cns_corridor_gap_evaluate"
+
+#: P15 结果真正依赖的输入事实（只读 state，逐项深拷贝进 immutable snapshot）。
+P15_INPUT_STATE_KEYS = ("required_cns",)
+
+#: 进入 P15 结果的上游 canonical 结论（只冻结身份，不冻结明细）。
+P15_UPSTREAM_RESULTS = ("cns_corridor_assessment",)
+
+#: 影响 P15 结果的算法类型：能力缺口分析器本身。
+P15_ALGORITHM_TYPES = ("corridor_gap_analyzer",)
+
+
+def _p15_inputs(state, payload):
+    """CNS 能力缺口评估的权威输入（只读 state，确定性）。"""
+
+    state = state if isinstance(state, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    inputs = {key: deepcopy(state.get(key)) for key in P15_INPUT_STATE_KEYS}
+    #: 规划目标始终以**归一化后的显式输入**进入指纹：请求给出时用请求值（它将在发布
+    #: 阶段与结论同事务写入），否则用 state 里已确认的值（与
+    #: :meth:`CNSCorridorGapService.plan` 同口径）。
+    raw_objectives = payload.get("cns_planning_objectives")
+    inputs["cns_planning_objectives"] = (
+        normalize_cns_planning_objectives(raw_objectives)
+        if raw_objectives is not None
+        else deepcopy(state.get("cns_planning_objectives") or {})
+    )
+    inputs["upstream_canonical"] = {
+        key: _upstream_identity(state, key) for key in P15_UPSTREAM_RESULTS
+    }
+    return inputs
+
+
+def _p15_scope(state, payload):
+    routes = (state if isinstance(state, dict) else {}).get("operational_routes") or []
+    route_ids = sorted(
+        str(item.get("route_id") or "") for item in routes if isinstance(item, dict)
+    )
+    return "cns_corridor_gap:" + ("|".join(route_ids) if route_ids else "no-route")
+
+
+def _p15_worker_payload(state, payload):
+    """worker 侧重建输入所需的最小覆盖项（只保留请求显式给出的规划目标）。
+
+    请求未给出目标时**不**写入：这样"本次请求的目标"与"state 里已确认的目标"不会
+    分裂成两个不同指纹（与 ``_p16_worker_payload`` 同一口径）。
+    """
+
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    raw_objectives = payload.get("cns_planning_objectives")
+    if raw_objectives is not None:
+        compact["cns_planning_objectives"] = normalize_cns_planning_objectives(
+            raw_objectives
+        )
+    return compact
+
+
+def _p15_plan(state, payload):
+    worker_payload = _p15_worker_payload(state, payload)
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _p15_inputs(state, worker_payload),
+    }
+
+
+def _p15_resolve_algorithms(state, registry):
+    """P15 提交时**真正使用**的算法身份（与同步入口的只读兼容回落同判据）。
+
+    旧项目保存了升级前的 ``algorithm_selection`` 时，同步入口
+    （``WorkflowService._selected_algorithm``）按 ``_algorithm_compatibility`` 的唯一
+    判据只读回落到当前唯一注册版本。后台任务的 immutable snapshot 必须冻结**同一份
+    有效身份**，否则同一个项目上会出现"同步能算、后台必然失败（算法版本不可用）"，
+    两条路径的业务结论不一致。
+
+    判据与同步路径逐条一致：stored id 未注册 / 版本未注册且同 id 有多个版本 ⇒ 保持
+    精确身份（由 worker 如实报"任务提交时使用的算法版本当前不可用"），绝不猜。
+    """
+
+    selection = normalized_selection(state)
+    resolved = {}
+    for algorithm_type in P15_ALGORITHM_TYPES:
+        entry = _effective_selection(registry, selection, algorithm_type)
+        registered = [
+            item for item in registry.manifests(algorithm_type)
+            if str(item.algorithm_id) == str(entry["algorithm_id"])
+        ]
+        versions = {str(item.version) for item in registered}
+        if str(entry["version"]) not in versions and len(registered) == 1:
+            entry = {**entry, "version": str(registered[0].version)}
+        resolved[str(algorithm_type)] = entry
+    return resolved
+
+
+class P15UpstreamNotCurrent(TaskInputChanged):
+    """P15 的上游 canonical 结论已变化：任务作废，绝不据此发布新结论。
+
+    ``code`` 独立登记，让服务端能给出**具体**的中文业务原因（而不是笼统的
+    "输入已变化"）：P15 的输入是上游走廊结论，用户需要知道"先重算上游"。
+    """
+
+    code = "task_p15_upstream_not_current"
+
+    def __init__(self, message="上游 CNS 服务走廊结论已变化，请先重算服务走廊，再重新运行能力缺口评估"):
+        super().__init__(message)
+
+
+def _p15_summary(result):
+    """canonical 结果的**摘要**（明细进 artifact，状态只留这些可读计数）。"""
+
+    result = result if isinstance(result, dict) else {}
+    routes = result.get("routes") if isinstance(result.get("routes"), list) else []
+    return {
+        "status": result.get("status"),
+        "route_count": len(routes),
+        "subsystem_count": sum(
+            len(item.get("subsystems") or []) for item in routes if isinstance(item, dict)
+        ),
+        "input_fingerprint": result.get("input_fingerprint"),
+    }
+
+
+def _p15_runner(context):
+    """worker 侧：在项目状态的**内存副本**上重算 P15，只 stage 结果、绝不发布。"""
+
+    from ..application.corridor_gap_service import CNSCorridorGapService
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    inputs = snapshot.get("inputs") or {}
+    worker_payload = snapshot.get("worker_payload") or {}
+    algorithms = context.algorithms()
+    #: 先按声明清单预解析：算法版本在提交后不可用时立刻失败，绝不部分运行。
+    algorithms.resolve_all(P15_ALGORITHM_TYPES)
+    context.check_cancel()
+    context.progress(0.02, "正在准备 CNS 能力缺口输入")
+    state = deepcopy(context.project_state)
+    if not isinstance(state, dict) or not state:
+        raise TaskInputChanged("项目状态不可读，能力缺口评估任务作废")
+    #: 自证上游身份：提交时冻结的 P14 指纹必须与当前 canonical 结论一致。
+    expected = inputs.get("upstream_canonical") or {}
+    for key in P15_UPSTREAM_RESULTS:
+        current = state.get(key)
+        current_fingerprint = (
+            current.get("input_fingerprint") if isinstance(current, dict) else None
+        )
+        expected_fingerprint = (expected.get(key) or {}).get("input_fingerprint")
+        if str(current_fingerprint or "") != str(expected_fingerprint or ""):
+            raise P15UpstreamNotCurrent()
+    service = CNSCorridorGapService(
+        _WorkerReadOnlySession(state),
+        algorithms.create("corridor_gap_analyzer"),
+        _WorkerInvalidation(),
+        _worker_snapshot_passthrough,
+    )
+    outcome = service.plan(
+        worker_payload,
+        on_progress=lambda value, message=None: context.progress(value, message),
+        cancel_check=context.check_cancel,
+    )
+    result = outcome.get("result")
+    if not isinstance(result, dict) or not result:
+        raise RuntimeError("CNS 能力缺口计算没有产出结果")
+    context.check_cancel()
+    context.progress(0.98, "正在写入临时结果明细")
+    metadata = context.stage(
+        {
+            "logical_key": "cns_corridor_gap_assessment",
+            "value": {
+                "result": result,
+                "objectives": outcome.get("objectives"),
+                "objectives_declared": bool(outcome.get("objectives_declared")),
+            },
+        },
+        artifact_type="corridor.gap.detail",
+    )
+    summary = _p15_summary(result)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="corridor.gap.detail",
+            summary=summary,
+        ),
+        message="CNS 能力缺口计算完成，等待发布",
+        progress=0.98,
+    )
+
+
 # ---- 测试专用 task type（不承载任何业务，只用于验证运行时契约） -----------------
 #
 # 它让 B6X 的取消 / 心跳 / 崩溃恢复 / 并发提交测试使用**真实**的运行时路径
@@ -853,6 +1068,20 @@ _PROBE_SPEC = TaskSpec(
     algorithm_types=(),
 )
 
+_P15_SPEC = TaskSpec(
+    task_type=P15_TASK_TYPE,
+    task_name="CNS 能力缺口评估",
+    message="CNS 能力缺口评估已提交，正在后台计算",
+    business_endpoint="/api/cns-corridor-gap/evaluate",
+    scope_key=_p15_scope,
+    input_snapshot=_p15_inputs,
+    submit_plan=_p15_plan,
+    runner=_p15_runner,
+    release="cns_corridor_gap_assessment",
+    algorithm_types=P15_ALGORITHM_TYPES,
+    algorithm_resolver=_p15_resolve_algorithms,
+)
+
 _P16_SPEC = TaskSpec(
     task_type=P16_TASK_TYPE,
     task_name="CNS 设施规划",
@@ -866,13 +1095,15 @@ _P16_SPEC = TaskSpec(
     algorithm_types=P16_ALGORITHM_TYPES,
 )
 
-for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P16_SPEC, _PROBE_SPEC):
+for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _PROBE_SPEC):
     register_task_spec(_spec)
 
 
 __all__ = [
-    "CORRIDOR_TASK_TYPE", "P16_TASK_TYPE", "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
+    "CORRIDOR_TASK_TYPE", "P15_TASK_TYPE", "P15UpstreamNotCurrent", "P16_TASK_TYPE",
+    "P16UpstreamNotCurrent", "PCF_TASK_TYPE",
     "PROBE_STATE_KEY", "PROBE_TASK_TYPE", "TASK_ENDPOINTS", "TaskCancelled",
-    "TaskInputChanged", "fingerprint_payload", "has_task_type",
+    "TaskInputChanged", "_p15_resolve_algorithms", "fingerprint_payload",
+    "has_task_type",
     "register_task_spec", "task_spec", "task_specs", "task_type_for_endpoint",
 ]

@@ -361,10 +361,19 @@ class AlgorithmResolver:
 
 
 def build_snapshot(*, task_type, payload, state, registry, algorithm_types=(),
-                   inputs):
-    """提交 / publish 两侧共用的 snapshot 组装（只读 state，确定性）。"""
+                   inputs, algorithms=None):
+    """提交 / publish 两侧共用的 snapshot 组装（只读 state，确定性）。
+
+    ``algorithms`` 允许 task type 提供**已经解析好的**算法清单（默认按 state 的算法
+    选择与工程默认解析）：旧项目保存了升级前的版本时，同步入口会走只读兼容回落，
+    task type 因此可以把"本次计算真正使用的算法身份"冻结进快照，使 worker 与同步
+    入口使用同一份身份（见 :meth:`TaskSpec.resolve_algorithms`）。
+    """
 
     selection = normalized_selection(state)
+    resolved = algorithms if isinstance(algorithms, dict) else algorithm_manifests(
+        registry, selection, algorithm_types,
+    )
     # 故意不写任何时间戳：snapshot 必须**逐字节可复现**。提交时刻属于 task record
     # （``created_at``），不属于输入；否则 publish 阶段重新生成的"当前"snapshot
     # 永远不可能与提交快照相等，compare-and-publish 会退化成"必然 stale"。
@@ -373,7 +382,7 @@ def build_snapshot(*, task_type, payload, state, registry, algorithm_types=(),
         "filename": INPUT_SNAPSHOT_FILENAME,
         "task_type": str(task_type),
         "worker_payload": deepcopy(payload if isinstance(payload, dict) else {}),
-        "algorithms": algorithm_manifests(registry, selection, algorithm_types),
+        "algorithms": deepcopy(resolved),
         "inputs": inputs if isinstance(inputs, dict) else {},
     }
 

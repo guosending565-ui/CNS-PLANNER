@@ -22,7 +22,7 @@ import os
 from ..persistence.artifact_store import ArtifactStore
 from .task_input import InputSnapshotStore, snapshot_reference
 from .task_specs import (
-    CORRIDOR_TASK_TYPE, P16_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY,
+    CORRIDOR_TASK_TYPE, P15_TASK_TYPE, P16_TASK_TYPE, PCF_TASK_TYPE, PROBE_STATE_KEY,
     PROBE_TASK_TYPE, has_task_type, task_spec,
 )
 
@@ -39,6 +39,7 @@ class TaskPublishError(ValueError):
 RESULT_SCOPE_TEXT = {
     CORRIDOR_TASK_TYPE: "服务走廊评估",
     PCF_TASK_TYPE: "规划约束场",
+    P15_TASK_TYPE: "CNS 能力缺口评估",
     P16_TASK_TYPE: "CNS 设施规划",
     PROBE_TASK_TYPE: "运行时探针",
 }
@@ -76,6 +77,9 @@ def _snapshot_from_plan(spec, plan, state, registry):
         algorithm_types=spec.algorithm_types,
         inputs=plan.get("inputs") if isinstance(plan.get("inputs"), dict)
         else spec.inputs_for(state, {}),
+        #: 与 :meth:`TaskSpec.build_snapshot` 同源：task type 可以提供"本次计算真正
+        #: 使用的算法身份"（例如旧项目的只读兼容回落），两侧必须逐字段一致。
+        algorithms=spec.resolve_algorithms(state, registry),
     )
 
 
@@ -201,6 +205,24 @@ def publish_task_result(workflow, record, *, workdir):
             raise TaskPublishError("staged 结果结构无效")
         workflow.cns_corridor_apply_computed(result)
         artifact_ref = workflow.cns_corridor_result_artifact_ref() or {
+            key: committed.get(key) for key in
+            ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
+        }
+        return {"task_type": task_type, "scope": result_scope_text(task_type),
+                "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == P15_TASK_TYPE:
+        payload = _staged_value(_load_staged_payload(workdir, staged, committed))
+        if not isinstance(payload, dict) or not payload.get("result"):
+            raise TaskPublishError("staged 能力缺口结果结构无效")
+        #: 唯一 production writer：``CNSCorridorGapService.apply_computed``
+        #: （规划目标更新 / 失效传播 / result_statuses 映射 / 原子保存全部由它独占，
+        #: 与同步入口同源）；若请求携带规划目标更新，它与结论在同一事务里写入。
+        workflow.cns_corridor_gap_apply_computed(
+            payload["result"], objectives=payload.get("objectives"),
+            objectives_declared=bool(payload.get("objectives_declared")),
+        )
+        artifact_ref = {
             key: committed.get(key) for key in
             ("artifact_id", "sha256", "relative_path", "content_encoding", "schema_version")
         }

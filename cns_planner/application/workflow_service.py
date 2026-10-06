@@ -1198,6 +1198,16 @@ class WorkflowService:
         return self.planning_constraint_field_service.set_configuration(payload)
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
+    def cns_corridor_gap_apply_computed(self, result, *, objectives=None, objectives_declared=False):
+        """Round 31-D：P15 的唯一 production writer 转发（后台任务发布阶段调用）。
+
+        它只是转发，不构成第二个 production owner：写入仍然发生在
+        :meth:`CNSCorridorGapService.apply_computed` 内（与同步入口 ``evaluate``
+        共用同一份收尾段），因此目标更新与结论发布仍在同一事务里完成。
+        """
+        return self.corridor_gap_service.apply_computed(
+            result, objectives=objectives, objectives_declared=objectives_declared,
+        )
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
     def cns_corridor_site_plan_apply_computed(self, result):
         """Round 31-A：P16 的唯一 production writer 转发（后台任务发布阶段调用）。

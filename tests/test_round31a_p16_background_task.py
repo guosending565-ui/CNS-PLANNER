@@ -274,9 +274,11 @@ def test_sync_endpoint_stays_synchronous_and_registers_no_task(tmp_path):
 def test_async_request_without_task_not_supported_by_sync_path(tmp_path):
     """未登记为 heavy 的端点带 async 仍走原同步语义（不被误当成任务）。"""
 
-    from cns_planner.tasks.task_specs import task_type_for_endpoint
+    from cns_planner.tasks.task_specs import P15_TASK_TYPE, task_type_for_endpoint
 
-    assert task_type_for_endpoint("/api/cns-corridor-gap/evaluate") is None
+    #: Round 31-D 起 P15 也已登记；这里换一个仍然只走同步语义的端点。
+    assert task_type_for_endpoint("/api/coverage-3d/evaluate") is None
+    assert task_type_for_endpoint("/api/cns-corridor-gap/evaluate") == P15_TASK_TYPE
     assert task_type_for_endpoint(ENDPOINT) == P16_TASK_TYPE
 
 

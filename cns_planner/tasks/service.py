@@ -385,6 +385,10 @@ class HeavyTaskService:
             "task_p16_upstream_not_current": (
                 "上游规划结论已变化，请先重算上游结果，再重新运行设施规划"
             ),
+            #: Round 31-D：P15 消费上游走廊结论，同样需要"先重算上游"的具体原因。
+            "task_p15_upstream_not_current": (
+                "上游 CNS 服务走廊结论已变化，请先重算服务走廊，再重新运行能力缺口评估"
+            ),
             "task_algorithm_version_unavailable": (
                 "任务提交时使用的算法版本当前不可用，请重新运行。"
             ),

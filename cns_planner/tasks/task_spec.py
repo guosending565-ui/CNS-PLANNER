@@ -165,6 +165,10 @@ class TaskSpec:
     release: object = None
     #: 影响结果的算法类型（进入 snapshot 的 ``algorithms`` 段）。
     algorithm_types: tuple = ()
+    #: 可选的算法清单解析器 ``(state, registry) -> {algorithm_type: entry}``。
+    #: 默认（``None``）严格按 state 的算法选择 + 工程默认解析；只有需要与同步入口
+    #: 共用"只读兼容回落"判据的 task type 才覆写它（见 :meth:`resolve_algorithms`）。
+    algorithm_resolver: object = None
     #: 把一次提交折叠成 ``{scope_id, fingerprint, worker_payload}``。默认实现直接
     #: 用请求 payload；需要缩小持久化体积的 task type 可以覆写成"只保留影响输入
     #: 指纹的字段"。worker 只用 ``worker_payload`` 重建输入，因此变小**不会**让
@@ -176,6 +180,26 @@ class TaskSpec:
 
         snapshot = self.input_snapshot(state if isinstance(state, dict) else {}, payload or {})
         return snapshot if isinstance(snapshot, dict) else {"value": snapshot}
+
+    def resolve_algorithms(self, state, registry):
+        """本次计算**真正使用**的算法清单（提交与 publish 两侧共用）。
+
+        默认实现严格按 state 的 ``algorithm_selection``（缺失时回落工程默认）解析，
+        绝不做跨版本迁移 —— worker 精确创建 fast-fail。需要与同步入口的"旧项目只读
+        兼容回落"保持同一判据的 task type 可以用 ``algorithm_resolver`` 覆写它，从而
+        让快照冻结的算法身份与同步路径逐字段一致。
+
+        ``registry`` 由调用方提供：它是 runtime 配置（工程默认算法目录），不是业务
+        输入；两侧必须用同一个 registry 才可比。
+        """
+
+        if self.algorithm_resolver is not None:
+            return self.algorithm_resolver(state, registry)
+        from .task_input import algorithm_manifests, normalized_selection
+
+        return algorithm_manifests(
+            registry, normalized_selection(state), self.algorithm_types,
+        )
 
     def build_snapshot(self, state, payload, registry):
         """组装 immutable input snapshot（提交与 publish 两侧共用同一实现）。"""
@@ -189,6 +213,7 @@ class TaskSpec:
             registry=registry,
             algorithm_types=self.algorithm_types,
             inputs=self.inputs_for(state, payload),
+            algorithms=self.resolve_algorithms(state, registry),
         )
 
     def fingerprint_for(self, state, payload, registry=None):
