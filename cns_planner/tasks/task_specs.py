@@ -953,9 +953,15 @@ RADAR_POLICY_DECLARING_KEYS = (
 )
 
 #: 进入 worker_payload 的请求字段（其余请求字段不影响结果）。
+#: Round32-G：``data_source_paths``（提交侧冻结的运行期 land_mask / DTM 路径）也必须在
+#: worker_payload 里 —— publish / worker 的 compare-and-publish 用
+#: ``fingerprint_for(state, worker_payload)`` 重算输入指纹，而它只经
+#: ``input_snapshot(state, worker_payload)``；少了这个键，两侧冻结的 inputs 不同，
+#: 任务会被判成 ``task_input_changed``（输入已变化）而永远无法发布。
 RADAR_WORKER_PAYLOAD_KEYS = (
     "route_id", "route_source", "demo_preview_only",
     "land_mask_layer_name", "coastal_uncertainty_buffer_m",
+    "data_source_paths",
 ) + RADAR_POLICY_DECLARING_KEYS
 
 
@@ -1032,9 +1038,9 @@ def _radar_plan(state, payload):
         )
     return {
         "worker_payload": worker_payload,
-        #: Round32-G：输入段用**原始 payload** —— ``data_source_paths`` 不进
-        #: worker_payload（它不是请求业务字段），但仍必须冻结进 snapshot 的 inputs 段。
-        "inputs": _radar_inputs(state, payload),
+        #: Round32-G：提交 / publish / worker 三侧都只用 ``worker_payload`` 组装 inputs，
+        #: 保证 ``fingerprint_for`` 在两侧得到同一份输入（含 data_source_paths）。
+        "inputs": _radar_inputs(state, worker_payload),
     }
 
 
