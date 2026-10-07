@@ -433,35 +433,40 @@ def _radar_baseline_block(radar):
 
     Radar 是否**必需**只来自后端 ``radar_required_for()`` 的权威投影字段
     （``required_for_current_routes`` / ``required_route_ids``），报告不自行推断。
+    结论行只反映**正式需求要求的航路**；与需求无关的航路条目只作只读陈列，
+    绝不把它们的 stale 说成"Radar 基线已失效"。
     """
 
     if not radar:return ''
     required=radar.get("required_for_current_routes")
     lines=[
-        ("Radar 基线结论",zh(radar.get("status"))),
-        ("当前适用性",zh(radar.get("current_applicability"))),
+        ("Radar 基线结论",zh(radar.get("status")) if radar.get("status") else
+         ("正式需求未要求 Radar 非合作监视" if required is False else "—")),
+        ("当前适用性",zh(radar.get("current_applicability")) if radar.get("current_applicability") else "—"),
         ("失效原因",radar.get("stale_reason")),
         ("正式需求是否要求 Radar 非合作监视",("要求" if required is True else "未要求") if isinstance(required,bool) else "—"),
         ("被要求 Radar 的航路","、".join(radar.get("required_route_ids") or []) or "—"),
+        ("未形成结果的必需航路","、".join(radar.get("missing_route_ids") or []) or "无"),
+        ("已过时的必需航路","、".join(radar.get("stale_route_ids") or []) or "无"),
         ("必需性判据来源",radar.get("required_basis")),
         ("就绪状态",zh(radar.get("readiness_status"))),
         ("就绪阻塞项","；".join(radar.get("readiness_blockers") or []) or "无"),
     ]
     rows=''.join(
-        f'<tr><td>{e(item.get("route_id"))}</td><td>{e(zh(item.get("status")))}</td>'
+        f'<tr><td>{e(item.get("route_id"))}</td>'
+        f'<td>{"是" if item.get("required") is True else "否（不在正式需求内）"}</td>'
+        f'<td>{e(zh(item.get("status")))}</td>'
         f'<td>{e(item.get("stage_label") or item.get("stage"))}</td>'
         f'<td>{number(item.get("selected_panel_count"),0)}</td>'
         f'<td>{number(item.get("selected_tower_count"),0)}</td>'
         f'<td>{number(item.get("radar_ii_site_count"),0)}</td>'
-        f'<td>{e(zh((item.get("solver") or {}).get("status")))}'
-        f'{"（已证明最优）" if (item.get("solver") or {}).get("optimality_proven") is True else ""}'
-        f'{"（已证明不可行）" if (item.get("solver") or {}).get("infeasibility_proven") is True else ""}</td>'
+        f'<td>{e(zh((item.get("solver") or {}).get("status")))}</td>'
         f'<td>{e(zh(item.get("gap_reason")))}</td></tr>'
         for item in radar.get("routes") or []
     )
     table=(
-        '<table><thead><tr><th>航路</th><th>结论</th><th>阶段</th><th>面阵</th><th>铁塔</th>'
-        '<th>Radar-II 站址</th><th>求解器</th><th>缺口原因</th></tr></thead>'
+        '<table><thead><tr><th>航路</th><th>正式需求要求 Radar</th><th>结论</th><th>阶段</th>'
+        '<th>面阵</th><th>铁塔</th><th>Radar-II 站址</th><th>求解器</th><th>缺口原因</th></tr></thead>'
         f'<tbody>{rows}</tbody></table>' if rows else '<p class="empty">尚无 Radar 基线结果。</p>')
     return ('<h4>Radar 基线（P14 的上游服务证据）</h4>'
             f'<dl>{"".join(f"<dt>{e(k)}</dt><dd>{e(v)}</dd>" for k,v in lines)}</dl>'

@@ -1813,7 +1813,13 @@ class WorkflowService:
         }
 
     def _radar_baseline_diagnostics(self):
-        """Radar 基线的有界只读投影（不重算、不写状态、不下发逐 sample 明细）。"""
+        """Radar 基线的有界只读投影（不重算、不写状态、不下发逐 sample 明细）。
+
+        Round32-H：结论只按**正式需求要求的航路**逐条判定。``radar_surveillance_layout``
+        的全项目汇总状态会被与正式需求无关的航路（真实项目里 R0003 已废弃、其划设条目
+        仍是 stale）拉成 ``pending_confirmation``；把那个汇总值写成"Radar 基线已失效"会
+        误报，因此这里只汇报必需航路的结论，其余条目仅作只读陈列。
+        """
 
         service = getattr(self, "radar_surveillance_layout_service", None)
         if service is None:
@@ -1823,32 +1829,46 @@ class WorkflowService:
             summary = service.summary_snapshot()
         except Exception:  # pragma: no cover - 只读诊断绝不中断预览
             return None
-        layout = projected_result(self.session.state, "radar_surveillance_layout") or {}
-        stale_reasons = sorted({
-            str(item.get("stale_reason")) for item in (summary.get("items") or [])
-            if item.get("stale_reason")
-        })
-        layout_status = layout.get("status")
-        if layout_status == "stale" or stale_reasons:
-            current_applicability = "stale"
-        elif layout_status in (None, "not_calculated"):
-            current_applicability = None
+        required = readiness.get("required_for_current_routes") is True
+        required_ids = [str(item) for item in (readiness.get("required_route_ids") or [])]
+        items = {str(item.get("route_id")): item for item in (summary.get("items") or [])}
+        missing, stale, current = [], [], []
+        for route_id in required_ids:
+            item = items.get(route_id)
+            if item is None:
+                missing.append(route_id)
+            elif str(item.get("status")) == "stale":
+                stale.append(route_id)
+            else:
+                current.append(route_id)
+        if not required:
+            status, applicability = None, None
+        elif missing:
+            status, applicability = "not_calculated", None
+        elif stale:
+            status, applicability = "stale", "stale"
         else:
-            current_applicability = "current"
+            status, applicability = "passed", "current"
+        stale_reasons = sorted({
+            str(items[route_id].get("stale_reason")) for route_id in stale
+            if items[route_id].get("stale_reason")
+        })
         return {
-            "status": layout_status or summary.get("status"),
-            "current_applicability": current_applicability,
-            "stale_reason": "、".join(stale_reasons) or layout.get("stale_reason"),
-            "algorithm_id": layout.get("algorithm_id"),
-            "algorithm_version": layout.get("algorithm_version"),
-            "required_for_current_routes": readiness.get("required_for_current_routes"),
-            "required_route_ids": deepcopy(readiness.get("required_route_ids") or []),
+            "status": status,
+            "current_applicability": applicability,
+            "stale_reason": "、".join(stale_reasons) or None,
+            "required_for_current_routes": required,
+            "required_route_ids": required_ids,
             "required_basis": readiness.get("required_basis"),
+            "missing_route_ids": missing,
+            "stale_route_ids": stale,
+            "current_route_ids": current,
             "readiness_status": readiness.get("status"),
             "readiness_blockers": deepcopy(readiness.get("blockers") or []),
             "routes": [
                 {
                     "route_id": item.get("route_id"),
+                    "required": str(item.get("route_id")) in required_ids,
                     "status": item.get("status"),
                     "stage": item.get("stage"),
                     "stage_label": item.get("stage_label"),

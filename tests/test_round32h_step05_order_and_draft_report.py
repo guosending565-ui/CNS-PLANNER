@@ -21,6 +21,7 @@ import pytest
 from cns_planner.application.radar_surveillance_layout_service import (
     RadarSurveillanceLayoutService,
 )
+from cns_planner.application import radar_surveillance_layout_service as radar_service_module
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.cns_service_contract import (
     SERVICE_KEY_RADAR_NONCOOPERATIVE,
@@ -313,6 +314,41 @@ def test_draft_report_diagnostics_use_canonical_confirm_gate_and_radar_requireme
     assert radar["required_for_current_routes"] is True
     assert radar["required_route_ids"] == [ROUTE_ID]
     assert radar["required_basis"] == "domain.radar_service_evidence.radar_required_for"
+
+
+def test_radar_diagnostics_ignore_stale_items_outside_the_formal_requirement(workflow):
+    """真实项目形态：已废弃的 R0003 条目是 stale，但它**不在**正式需求内；草案里的
+    "Radar 基线" 结论必须只看必需航路，绝不把 R0003 的 stale 说成基线已失效。"""
+
+    state = workflow.state
+    requirement = radar_requirement(radar=True, rid=True)
+    requirement["route_overrides"] = {"R0003": {"surveillance": {"required": True}}}
+    state["required_cns"] = requirement
+    state["operational_routes"] = [{"route_id": ROUTE_ID, "status": "passed"}]
+    state["radar_surveillance_layout"] = {
+        "status": "pending_confirmation",
+        "items": [
+            {"route_id": "R0003", "status": "stale",
+             "stale_reason": "layered_validation_evidence_outdated",
+             "algorithm_version": radar_service_module.ALGORITHM_VERSION},
+            {"route_id": ROUTE_ID, "status": "proposal_ready",
+             "algorithm_version": radar_service_module.ALGORITHM_VERSION,
+             "selected_panel_count": 7, "selected_tower_count": 7,
+             "solver": {"status": "optimal", "optimality_proven": True}},
+        ],
+    }
+
+    radar = workflow.report_draft_diagnostics()["radar_baseline"]
+
+    assert radar["required_for_current_routes"] is True
+    assert radar["required_route_ids"] == [ROUTE_ID]
+    assert radar["status"] == "passed"
+    assert radar["current_applicability"] == "current"
+    assert radar["stale_reason"] is None
+    assert radar["stale_route_ids"] == [] and radar["missing_route_ids"] == []
+    rows = {str(row["route_id"]): row for row in radar["routes"]}
+    assert rows["R0003"]["required"] is False and rows["R0003"]["status"] == "stale"
+    assert rows[ROUTE_ID]["required"] is True and rows[ROUTE_ID]["status"] == "proposal_ready"
 
 
 def test_report_renderer_bounds_oversized_audit_json():
