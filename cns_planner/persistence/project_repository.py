@@ -16,22 +16,29 @@ _LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS = {}
 
 
-#: 保存被其它进程的读句柄挡住时的用户可见消息（Round32-I）。
+#: 正式替换被其它进程的句柄挡住时的用户可见消息（Round32-I）。
 #: 要求：普通用户看得懂"被占用、原文件没坏、怎么办"，同时把 Windows
 #: ``winerror`` 留在消息里供支持/日志使用；原始异常仍由 ``__cause__`` 保留。
+#: 备份语义必须准确：既有顺序是 temp → 备份轮换 → 替换正式文件，因此替换最终失败时
+#: 备份**可能已经**按轮换顺序更新为"本次保存前的正式状态"，不能说成"备份保持不变"。
 _SAVE_BUSY_MESSAGE = (
-    "项目保存失败：项目文件正被其它程序占用，无法安全替换（{reason}）。"
-    "原有 project_state.json 与备份保持不变，没有写入不完整的数据。"
-    "请稍后重试；若持续失败，请先关闭正在读取该项目文件的程序"
+    "项目保存失败：项目状态文件或其备份正被其它程序占用，无法安全完成原子替换"
+    "（{reason}）。原有 project_state.json 未被破坏，也没有写入不完整数据。"
+    "备份文件保持完整可解析；按既有备份轮换顺序，它可能已更新为本次保存前的"
+    "正式项目状态。请稍后重试；若持续失败，请先关闭正在读取该项目文件的程序"
     "（杀毒扫描 / 文件索引 / 云同步 / 另一个 CNS 或 QGIS 进程）再保存。"
 )
 
 
 class ProjectSaveError(OSError):
-    """正式项目状态落盘失败（面向用户的中文消息 + 保留 Windows errno/winerror）。
+    """``os.replace`` 落盘失败（面向用户的中文消息 + 保留 Windows errno/winerror）。
 
     继承 ``OSError``：既有的 ``except OSError`` 调用方语义不变；``detail`` 携带
     原始 ``errno`` / ``winerror`` / 异常类型，``__cause__`` 保留原始异常对象。
+
+    **只用于原子替换本身**的瞬时占用：temp 写入、``shutil.copy2`` 读取、
+    ``NamedTemporaryFile`` 创建等其它阶段的 ``OSError`` 必须原样抛出，不得被
+    伪装成"replace 被占用"。
     """
 
     code = "project_state_save_failed"
@@ -83,20 +90,12 @@ class ProjectRepository:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self._unique_temporary(self.path)
             try:
+                # 只有下面两次**原子替换**才可能把"被别的程序占用"翻译成用户可见消息；
+                # temp 写入 / 备份复制 / 临时文件创建等阶段的 OSError 原样抛出。
                 self._write_durable(temporary, serialized)
                 if self.path.is_file():
                     self._replace_backup()
-                self._atomic_replace(temporary, self.path)
-            except OSError as exc:
-                # 有界重试已耗尽：正式文件与备份都保持原样（最后一次尝试是原子的），
-                # 临时文件由 finally 清理。这里只把瞬时占用翻译成用户能看懂的中文，
-                # 其余 OSError（磁盘满 / 路径缺失……）原样抛出，绝不伪装成成功。
-                if is_transient_replace_error(exc):
-                    raise ProjectSaveError(
-                        _SAVE_BUSY_MESSAGE.format(reason=transient_reason(exc)),
-                        cause=exc,
-                    ) from exc
-                raise
+                self._replace_for_project_save(temporary, self.path)
             finally:
                 temporary.unlink(missing_ok=True)
 
@@ -141,11 +140,30 @@ class ProjectRepository:
             finally:
                 temporary.unlink(missing_ok=True)
 
+    def _replace_for_project_save(self, source, target):
+        """正式状态落盘链上的原子替换入口（唯一翻译"被占用"的地方）。
+
+        只有真正发生在 ``os.replace`` 上的瞬时共享/权限失败才等于"项目状态文件或其
+        备份被别的程序占用"。``_write_durable``、``shutil.copy2``、
+        ``NamedTemporaryFile`` 等阶段的 ``OSError`` 不经过这里，因此不会被伪装成
+        replace contention。
+        """
+
+        try:
+            self._atomic_replace(source, target)
+        except OSError as exc:
+            if is_transient_replace_error(exc):
+                raise ProjectSaveError(
+                    _SAVE_BUSY_MESSAGE.format(reason=transient_reason(exc)),
+                    cause=exc,
+                ) from exc
+            raise
+
     def _replace_backup(self):
         temporary = self._unique_temporary(self.backup_path)
         try:
             shutil.copy2(self.path, temporary)
-            self._atomic_replace(temporary, self.backup_path)
+            self._replace_for_project_save(temporary, self.backup_path)
         finally:
             temporary.unlink(missing_ok=True)
 

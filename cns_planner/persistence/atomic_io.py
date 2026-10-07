@@ -10,8 +10,9 @@ Round32-I 在真实 288 MB 项目副本上复现到的根因（Windows，本机�
   **不**引入 ctypes / CreateFileW：它既无效，又会增加无谓的复杂度。
 * 真实 288 MB ``project_state.json`` 的读取窗口实测约 **1.09 s**（读一次 = 持句柄
   1.09 s）。CNS 自己的 worker 子进程会读同一份正式状态，杀软 / 索引器 / 云同步也会。
-  而发布重试原先只有 5 次 × 10~40 ms ≈ **100 ms**，远小于该窗口，所以"偶发保存失败"
-  是必然事件而不是玄学。
+  而发布重试原先只有 5 次 × 10~40 ms ≈ **100 ms**：一旦保存与该占用窗口发生重叠，
+  该碰撞场景下的失败是可预测的；但并不是每一次保存都会发生该碰撞，也不声称已复现
+  用户现场的生产 traceback。
 
 因此本轮的修复边界就是：**把有界重试的预算做到能覆盖真实读取窗口**，同时保持
 "只对明确瞬时失败重试、次数很少、绝不无限重试、绝不吞掉其它 IO 错误"。
@@ -46,16 +47,23 @@ REPLACE_BACKOFF_SECONDS = (0.1, 0.2, 0.4, 0.8)
 def is_transient_replace_error(exc: BaseException) -> bool:
     """该异常是否属于"稍后重试同一原子操作可能成功"的瞬时失败。
 
-    Windows 上无法从 ``errno`` 区分"文件正被占用"与"ACL 真的不给权限"（都是 13），
-    ``winerror`` 也都是 5：两者都会走完有界重试后失败。这只影响失败前的等待时间
-    （最多 1.5 s），不影响正确性，也绝不会把失败伪报成成功。
+    Windows 上 ``winerror`` 是**排他**判据：只有 ``ERROR_ACCESS_DENIED(5)`` /
+    ``ERROR_SHARING_VIOLATION(32)`` / ``ERROR_LOCK_VIOLATION(33)`` 才可重试。
+    带其它 ``winerror`` 的异常（路径不存在、磁盘满……）即使 ``errno`` 恰好也是
+    ``EACCES`` 也**不**重试——不能因为 Windows 把多种失败都归一成 errno 13 就把
+    非共享冲突误判成瞬时。只有在完全没有 ``winerror`` 时才回落到 ``errno`` 白名单
+    （POSIX 语义）。
+
+    注意 Windows 上"文件正被占用"与"ACL 真的不给权限"同为 ``winerror 5``，无法区分：
+    两者都会走完有界重试后失败。这只影响失败前的等待时间（最多 1.5 s），不影响
+    正确性，也绝不会把失败伪报成成功。
     """
 
     if not isinstance(exc, OSError):
         return False
     winerror = getattr(exc, "winerror", None)
-    if winerror is not None and int(winerror) in _TRANSIENT_WINERRORS:
-        return True
+    if winerror is not None:
+        return int(winerror) in _TRANSIENT_WINERRORS
     return getattr(exc, "errno", None) in _TRANSIENT_ERRNOS
 
 

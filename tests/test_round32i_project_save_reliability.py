@@ -6,6 +6,8 @@
 * 瞬时 ``WinError 5``（目标文件正被读句柄占用）的有界重试：首败次成 / 耗尽后安全失败；
 * 真实句柄语义：读者持句柄期间替换失败，读者一释放重试即成功；
 * serialization 失败、非瞬时 ``OSError`` 都不破坏原文件，且非瞬时错误不重试；
+* Windows ``winerror`` 是排他判据：非白名单 ``winerror`` + ``errno=EACCES`` 不判为瞬时；
+* 非 replace 阶段（temp 写入）的 ``OSError`` 不会被伪装成 replace 占用；
 * 重试预算有界且很小（不无限重试）；
 * 并发保存不产生截断 JSON；
 * ``WorkflowSession`` 保存失败时 revision 回滚、且不伪报保存成功。
@@ -305,3 +307,78 @@ def test_retry_budget_is_bounded_and_small():
     assert list(delays) == sorted(delays)          # 递增退避
     assert 0 < min(delays)
     assert sum(delays) <= 2.0                      # 有界：总退避不超过 2 秒，非无限重试
+
+
+# ---- 11. Windows winerror 是排他判据 ------------------------------------------
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows winerror 语义")
+def test_non_whitelisted_winerror_is_not_transient(tmp_path, monkeypatch):
+    """winerror 存在时它是唯一判据：非 5/32/33 不得因 errno=EACCES 被误判为瞬时。"""
+
+    non_whitelisted = PermissionError(errno.EACCES, "Access is denied", None, 2)
+    assert non_whitelisted.winerror == 2
+    assert atomic_io.is_transient_replace_error(non_whitelisted) is False
+
+    # 只有在完全没有 winerror 时才回落到 errno 白名单（POSIX 语义）。
+    fallback = PermissionError(errno.EACCES, "Access is denied")
+    assert getattr(fallback, "winerror", None) is None
+    assert atomic_io.is_transient_replace_error(fallback) is True
+
+    path, repository = _store(tmp_path)
+    repository.save({"revision": 1})
+    before = path.read_bytes()
+    attempts = {"count": 0}
+    real_replace = os.replace
+
+    def odd_replace(source, target):
+        if Path(target) == path:
+            attempts["count"] += 1
+            raise PermissionError(errno.EACCES, "Access is denied", str(target), 2)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(atomic_io.os, "replace", odd_replace)
+
+    with pytest.raises(OSError) as info:
+        repository.save({"revision": 2})
+
+    assert not isinstance(info.value, ProjectSaveError)   # 不伪装成 replace 占用
+    assert attempts["count"] == 1                          # 不重试
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob("*.tmp"))
+
+
+# ---- 12. 非 replace 阶段的失败不得伪装成 replace 占用 --------------------------
+
+
+def test_temp_write_failure_is_not_reported_as_replace_contention(tmp_path, monkeypatch):
+    """temp 写入本身被拒时必须原样抛出：不是 replace 冲突，也不得进入替换重试。"""
+
+    path, repository = _store(tmp_path)
+    repository.save({"revision": 1})
+    repository.save({"revision": 2})
+    before = path.read_bytes()
+    backup_before = repository.backup_path.read_bytes()
+    replace_calls = {"count": 0}
+    real_replace = os.replace
+
+    def deny_write(self, temporary, content):
+        # 即使是 Windows 的瞬时码（winerror 5），只要发生在 temp 写入阶段，
+        # 就不等于"replace 被占用"，不得翻译成 ProjectSaveError。
+        raise PermissionError(errno.EACCES, "Access is denied", str(temporary), 5)
+
+    def counting_replace(source, target):
+        replace_calls["count"] += 1
+        return real_replace(source, target)
+
+    monkeypatch.setattr(ProjectRepository, "_write_durable", deny_write)
+    monkeypatch.setattr(atomic_io.os, "replace", counting_replace)
+
+    with pytest.raises(PermissionError) as info:
+        repository.save({"revision": 3})
+
+    assert not isinstance(info.value, ProjectSaveError)          # 不伪装成 replace 占用
+    assert replace_calls["count"] == 0                           # 未进入 atomic replace
+    assert path.read_bytes() == before                           # 正式文件未被破坏
+    assert repository.backup_path.read_bytes() == backup_before  # 备份轮换尚未发生
+    assert not list(path.parent.glob("*.tmp"))
