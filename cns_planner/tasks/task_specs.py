@@ -1096,6 +1096,11 @@ def _radar_runner(context):
         land_mask_authority=service.land_mask_authority(),
         prefer_qgis_transform=False,
     )
+    #: Round32-G：``input_fingerprint`` 只经 ``self.facts_provider`` 解析来源路径
+    #: （``plan`` 的显式 ``facts_provider`` 参数不参与指纹）。worker 不设置这一属性时，
+    #: 算出的输入指纹会退化成"land_mask 未配置"，与主进程只读投影（live paths）不一致，
+    #: 结果一发布就被判 ``radar_surveillance_inputs_changed``。
+    service.facts_provider = provider
     outcome = service.plan(
         worker_payload, facts_provider=provider,
         on_progress=lambda value, message=None: context.progress(value, message),
