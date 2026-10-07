@@ -361,14 +361,21 @@ export async function submitTaskType(taskType, payload = {}, fetchImpl = globalT
 }
 
 /**
- * 双模式响应适配（BUG-TASK-FEEDBACK-001 装配契约）。
+ * 双模式响应适配（BUG-TASK-FEEDBACK-001 装配契约 / BUG-TASK-REQUEST-DOUBLE-001）。
  *
  * 本模块历史上用 `fetch` 风格（`response.ok` + `response.json()`）读取任务端点。
  * 但壳层注入的是既有 API 客户端 `api(path, options)` —— 它**成功时直接返回解析后的
  * JSON 对象，失败时抛异常**（见 `api/client.js`）。两者混用会让 `response.ok` 恒为
  * undefined，于是任务面板永远显示"任务列表不可用"。
  *
- * 这里把 API 客户端统一包成 fetch 契约，让下游解析逻辑只有一条路径。
+ * 这里把两类实现统一成 fetch 契约，并且**底层 `request` 每条路径恰好调用一次**
+ * （BUG-TASK-REQUEST-DOUBLE-001）：判定"返回值是不是 fetch 响应"必须在**同一次**
+ * 调用之后完成，绝不"先调一次看返回类型、再调一次适配"——后者会让一次用户点击
+ * 提交两次后台任务（Radar / P15 / P16 等长任务会被真实重复提交）。
+ *
+ * * 返回 fetch-style 响应（object + `ok` + `json()`）→ **原样**透传，不重新包装；
+ * * 返回 API 客户端的 parsed JSON → 在**内存**里包成 `{ok, status, headers, json()}`；
+ * * 抛异常 → 包成既有非 2xx fetch-style 响应，保留 message / status / code。
  *
  * @param {(url:string, options?:object)=>Promise<any>} request
  * @returns {(path:string, options?:object)=>Promise<object>}
@@ -380,13 +387,18 @@ export function createTaskRequestAdapter(request){
     const headers={...((options&&options.headers)||{})};
     const body=options&&options.body!==undefined&&options.body!==null?options.body:undefined;
     try{
-      const data=await request(path,{method,headers,...(body!==undefined?{body}:{})});
+      //: 唯一一次底层调用：结果类型在同一次调用内判定。
+      const value=await request(path,{method,headers,...(body!==undefined?{body}:{})});
+      if(value&&typeof value==='object'&&'ok' in value&&typeof value.json==='function'){
+        // fetch-style 响应（原生 fetch / fetch 契约替身）：原样返回。
+        return value;
+      }
       // API 客户端成功即 200：包成 fetch 风格。
       return {
         ok:true,
         status:200,
         headers:{get:()=>'application/json'},
-        json:async()=>(data===undefined?{}:data),
+        json:async()=>(value===undefined?{}:value),
       };
     }catch(error){
       // 失败时把中文业务错误包成非 2xx 响应：下游仍然只读 `data.error`。
@@ -407,26 +419,11 @@ function ensureFetchContract(fetchImpl){
   if(typeof fetchImpl!=='function')return globalThis.fetch;
   // 已是本模块的适配器（自身即返回 fetch 契约）：直接复用，绝不二次包装。
   if(fetchImpl.__taskRequestAdapter__)return fetchImpl;
-  // Round32-K：这里注入的既可能是**壳层 API 客户端**（成功直接返回解析后的 JSON、
-  // 失败抛异常），也可能是**原生 `fetch` / fetch 契约替身**（返回带布尔 ``ok`` 与
-  // ``json()`` 的响应对象）。旧实现无条件套上 `createTaskRequestAdapter`，于是后者的
-  // 响应对象被当成"API 客户端返回的数据"再包一层：``ok`` 恒为 true、``json()`` 返回
-  // 那个响应对象本身，任务列表因此永远解析成空数组 —— 现场表现为「刷新页面后已记录
-  // 的后台任务不再恢复，面板显示 0 个任务」。
-  //
-  // 这里只在**返回值确实是 fetch 契约响应**时原样透传，否则（API 客户端）才包装。
-  // 不做任何业务判断，也不伪造成功 / 失败结论。
-  const adapter=createTaskRequestAdapter(fetchImpl);
-  const wrapped=async (path,options)=>{
-    const response=await fetchImpl(path,options);
-    if(response&&typeof response==='object'&&'ok' in response&&typeof response.json==='function'){
-      return response;
-    }
-    return adapter(path,options);
-  };
-  // 保留适配器标记，避免被重复注入时（例如 `setFetch`）二次包装。
-  wrapped.__taskRequestAdapter__=true;
-  return wrapped;
+  // BUG-TASK-REQUEST-DOUBLE-001：这里**不得**预调用 `fetchImpl` 来判断返回类型——
+  // 那句话本身就已经发出了一次真实请求（POST 会真的提交一次任务），随后 adapter 内
+  // 的 `request` 又会发第二次。返回类型判定已下沉到 `createTaskRequestAdapter()` 内部，
+  // 与那唯一一次调用同处一个作用域。
+  return createTaskRequestAdapter(fetchImpl);
 }
 
 /**
