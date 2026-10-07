@@ -17,8 +17,8 @@ import {readFileSync} from 'node:fs';
 import {
   TASK_ADVANCED_STATUSES, TASK_STATUS_TEXT, advancedHtml, cancelHeavyTask,
   createTaskCenter, heartbeatText, isActiveStatus, loadTasks, panelHtml,
-  progressText, readStoredTaskIds, rememberTaskId, setSessionToken, submitHeavyTask,
-  submitTaskType, taskRowHtml, taskStatusText, writeStoredTaskIds,
+  primaryProgressText, progressText, readStoredTaskIds, rememberTaskId, setSessionToken,
+  submitHeavyTask, submitTaskType, taskRowHtml, taskStatusText, writeStoredTaskIds,
 } from '../cns_planner/web/js/tasks.js';
 
 const HTML = readFileSync(new URL('../cns_planner/web/index.html', import.meta.url), 'utf8');
@@ -98,6 +98,8 @@ test('进度与心跳使用业务化展示', () => {
 });
 
 test('任务行主界面不出现 raw 枚举与 task_id，取消按钮仅在可取消时出现', () => {
+  // Round32-K：先用 visibleText 剥掉全部标签（含属性值），只保留用户真正看得见的文本——
+  // 否则 `data-status="stale"` 这类机器属性会被误判成"主界面裸露 raw 枚举"。
   const visibleText = (html) => html.replace(/<[^>]*>/g, ' ');
   const running = taskRowHtml(taskFixture());
   assert.match(running, /正在计算/);
@@ -113,7 +115,9 @@ test('任务行主界面不出现 raw 枚举与 task_id，取消按钮仅在可�
     status_text: '已完成', can_cancel: false, advanced: {...taskFixture().advanced, status: 'succeeded'},
   }));
   assert.doesNotMatch(finished, /取消任务/);
-  assert.match(finished, /服务走廊评估已更新/);
+  // 成功中文案 = 「<业务范围>结果已更新；工作台自动刷新，无需手动 F5。」
+  assert.match(finished, /服务走廊评估结果已更新/);
+  assert.match(finished, /工作台自动刷新，无需手动 F5/);
 
   const stale = taskRowHtml(taskFixture({
     status_text: '输入已变化，请重新运行', can_cancel: false, progress: 0.9,
@@ -121,6 +125,27 @@ test('任务行主界面不出现 raw 枚举与 task_id，取消按钮仅在可�
   }));
   assert.match(stale, /输入已变化，请重新运行/);
   assert.match(stale, /当前正式结果未被覆盖/);
+});
+
+test('Round32-K：succeeded 的主界面进度与状态一致，高级区仍显示真实 raw progress', () => {
+  const succeeded = taskFixture({
+    status_text: '已完成', can_cancel: false, progress: 0.9,
+    advanced: {...taskFixture().advanced, status: 'succeeded'},
+  });
+  const html = taskRowHtml(succeeded);
+  const primary = html.split('<details')[0];
+  // 主界面不得出现「已完成 … 进度 90%」这种自相矛盾的组合。
+  assert.match(primary, /已完成/);
+  assert.match(primary, /进度 100%/);
+  assert.doesNotMatch(primary, /进度 90%/);
+  // 后端真实审计值不被伪造：高级区仍然显示 raw 进度与 raw status。
+  assert.match(advancedHtml(succeeded), /succeeded/);
+  assert.match(advancedHtml(succeeded), /原始进度/);
+  assert.match(advancedHtml(succeeded), /90%/);
+  // 未成功状态一律沿用真实进度。
+  assert.equal(primaryProgressText(taskFixture()), '42%');
+  assert.equal(primaryProgressText(taskFixture({progress: 0.9})), '90%');
+  assert.equal(primaryProgressText(taskFixture({progress: null})), '—');
 });
 
 test('高级 / 审计信息里才出现 task_id、raw 状态与输入指纹', () => {
@@ -163,7 +188,9 @@ test('localStorage 只保存 task_id，用于刷新后恢复', () => {
 test('刷新后按 task_id 恢复：终态历史任务仍显示，无关任务被过滤', async () => {
   setSessionToken('session-token');
   const storage = memoryStorage();
-  rememberTaskId('task-keep', storage);
+  // 直接写入恢复用的存储：本测试验证的是"已记录的 task_id 能在刷新后恢复"，
+  // 因此必须让创建任务中心时传入的**同一个** storage 持有该标识。
+  writeStoredTaskIds(['task-keep'], storage);
   const fetchImpl = async () => ({
     ok: true,
     json: async () => ([
@@ -176,8 +203,8 @@ test('刷新后按 task_id 恢复：终态历史任务仍显示，无关任务�
     ]),
   });
   const center = createTaskCenter({fetch: fetchImpl, storage, document: null, interval: 60000});
-  const tasks = await center.refresh();
-  const ids = tasks.map((item) => item.task_id);
+  await center.refresh();
+  const ids = center.tasks.map((item) => item.task_id);
   assert.ok(ids.includes('task-keep'), '刷新后必须能恢复已记录任务的最终状态');
   assert.ok(ids.includes('task-active'), '活跃任务无论是否记录都要显示');
   assert.ok(!ids.includes('task-other'), '无关的已结束任务不进恢复列表');

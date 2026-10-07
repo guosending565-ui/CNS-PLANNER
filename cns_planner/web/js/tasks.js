@@ -76,7 +76,7 @@ export function setSessionToken(token) {
 export async function ensureSessionToken(fetchImpl = globalThis.fetch) {
   if (sessionToken) return sessionToken;
   const response = await fetchImpl(STATE_ENDPOINT, {headers: {Accept: 'application/json'}});
-  const data = await response.json().catch(() => ({}));
+  const {data} = await readTaskResponse(response);
   if (data && typeof data.token === 'string' && data.token) sessionToken = data.token;
   return sessionToken;
 }
@@ -316,8 +316,8 @@ export async function cancelHeavyTask(taskId, fetchImpl = globalThis.fetch) {
     headers: withToken({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ task_id: taskId }),
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || '取消请求失败');
+  const {ok, data} = await readTaskResponse(response);
+  if (!ok) throw new Error(data?.error || '取消请求失败');
   return data;
 }
 
@@ -326,8 +326,8 @@ export async function loadTasks(fetchImpl = globalThis.fetch) {
   const response = await fetchImpl(TASKS_ENDPOINT, {
     headers: withToken({ Accept: 'application/json' }),
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || '任务列表不可用');
+  const {ok, data} = await readTaskResponse(response);
+  if (!ok) throw new Error(data?.error || '任务列表不可用');
   return Array.isArray(data) ? data : (data.items || []);
 }
 
@@ -336,8 +336,8 @@ export async function loadTaskCatalog(fetchImpl = globalThis.fetch) {
   const response = await fetchImpl(`${TASKS_ENDPOINT}/catalog`, {
     headers: withToken({ Accept: 'application/json' }),
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) return [];
+  const {ok, data} = await readTaskResponse(response);
+  if (!ok) return [];
   return Array.isArray(data?.items) ? data.items : [];
 }
 
@@ -349,8 +349,8 @@ export async function submitTaskType(taskType, payload = {}, fetchImpl = globalT
     headers: withToken({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ ...payload, task_type: taskType }),
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
+  const {ok, data} = await readTaskResponse(response);
+  if (!ok) {
     const error = new Error(data?.error || '任务提交失败');
     error.code = data?.detail?.code || data?.code || null;
     throw error;
@@ -402,17 +402,77 @@ export function createTaskRequestAdapter(request){
   return adapt;
 }
 
-/** 由 `tasks.js` 直接使用：把当前 fetch 实现统一到 fetch 契约。 */
+/** 由 `tasks.js` 直接使用：把当前请求实现统一到 fetch 契约。 */
 function ensureFetchContract(fetchImpl){
   if(typeof fetchImpl!=='function')return globalThis.fetch;
+  // 已是本模块的适配器（自身即返回 fetch 契约）：直接复用，绝不二次包装。
   if(fetchImpl.__taskRequestAdapter__)return fetchImpl;
-  return createTaskRequestAdapter(fetchImpl);
+  // Round32-K：这里注入的既可能是**壳层 API 客户端**（成功直接返回解析后的 JSON、
+  // 失败抛异常），也可能是**原生 `fetch` / fetch 契约替身**（返回带布尔 ``ok`` 与
+  // ``json()`` 的响应对象）。旧实现无条件套上 `createTaskRequestAdapter`，于是后者的
+  // 响应对象被当成"API 客户端返回的数据"再包一层：``ok`` 恒为 true、``json()`` 返回
+  // 那个响应对象本身，任务列表因此永远解析成空数组 —— 现场表现为「刷新页面后已记录
+  // 的后台任务不再恢复，面板显示 0 个任务」。
+  //
+  // 这里只在**返回值确实是 fetch 契约响应**时原样透传，否则（API 客户端）才包装。
+  // 不做任何业务判断，也不伪造成功 / 失败结论。
+  const adapter=createTaskRequestAdapter(fetchImpl);
+  const wrapped=async (path,options)=>{
+    const response=await fetchImpl(path,options);
+    if(response&&typeof response==='object'&&'ok' in response&&typeof response.json==='function'){
+      return response;
+    }
+    return adapter(path,options);
+  };
+  // 保留适配器标记，避免被重复注入时（例如 `setFetch`）二次包装。
+  wrapped.__taskRequestAdapter__=true;
+  return wrapped;
+}
+
+/**
+ * Round32-K：任务端点的**统一读取器**。
+ *
+ * `ensureFetchContract` 已把注入的请求实现统一成 fetch 契约（结果本身就是 fetch
+ * 契约响应时原样透传，否则包装成 `{ok, json()}`）。这里只按形状读取一次，让
+ * `loadTasks` / `loadTaskCatalog` / `submitTaskType` / `cancelHeavyTask` 与
+ * `ensureSessionToken` 共用同一条读取路径，不再各自假定 `response.ok` 一定存在。
+ *
+ * 只归一化"怎么读"，不改任何业务语义，也不伪造成功 / 失败结论。
+ *
+ * @returns {Promise<{ok:boolean, data:object, status:number}>}
+ */
+async function readTaskResponse(response){
+  if(response&&typeof response==='object'&&'ok' in response&&typeof response.json==='function'){
+    const data=await response.json().catch(()=>({}));
+    return {ok:response.ok!==false, data:(data&&typeof data==='object')?data:{}, status:Number(response.status)||200};
+  }
+  // 兜底：万一注入的实现直接返回了数据本体（成功即数据、失败已抛异常）。
+  return {ok:true, data:(response&&typeof response==='object')?response:{}, status:200};
 }
 
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * 主界面进度（Round32-K 最小语义修复）。
+ *
+ * 现场：Radar / P16 / P15 等重任务把中间结果写入 artifact 后，worker 会先把记录置为
+ * ``succeeded`` 并保留最后上报的真实进度（``task_specs.py`` 的 ``progress=0.9`` 等），
+ * 随后由 ``HeavyTaskService._publish_task`` 发布正式结果时把它改成 1.0。轮询恰好落在
+ * 这段发布窗口内时，状态行已经写「已完成」，主界面却同时显示「进度 90%」——
+ * 普通用户会认为任务停在 90%。
+ *
+ * 这里只做主界面的**展示**约定：状态为 `succeeded` 时显示 100%/已完成，二者不再自相
+ * 矛盾；**不改**后端审计值，也不改算法阶段比例 —— 技术高级区仍然逐字显示
+ * ``advanced.status`` 与真实 raw ``progress``（见 :func:`advancedHtml`）。
+ */
+export function primaryProgressText(task) {
+  const status = String(task?.advanced?.status || '');
+  if (status === 'succeeded') return '100%';
+  return progressText(task?.progress);
 }
 
 /** 单条任务的业务行：主界面只出现中文文案 + 进度 + 已运行 + 心跳 + ETA + 取消/继续操作。 */
@@ -426,7 +486,7 @@ export function taskRowHtml(task, options = {}) {
     `<div class="cns-task-row" data-task-id="${escapeHtml(task.task_id)}" data-status="${escapeHtml(status)}">`,
     `<div class="cns-task-head"><strong>${escapeHtml(task.task_name || '后台计算')}</strong>`,
     `<span class="cns-task-status">${escapeHtml(task.status_text || taskStatusText(status))}</span></div>`,
-    `<div class="cns-task-progress"><span>进度 ${escapeHtml(progressText(task.progress))}</span>`,
+    `<div class="cns-task-progress"><span>进度 ${escapeHtml(primaryProgressText(task))}</span>`,
     `<span>已运行 ${escapeHtml(durationText(elapsed))}</span>`,
     `<span>最近心跳 ${escapeHtml(heartbeatText(task.heartbeat_age_seconds))}</span></div>`,
     `<div class="cns-task-eta" data-eta-known="${eta.known ? 'true' : 'false'}">${escapeHtml(eta.text)}</div>`,
@@ -450,13 +510,20 @@ export function taskRowHtml(task, options = {}) {
   return lines.join('');
 }
 
-/** 高级 / 审计信息：raw 状态值、task_id、输入指纹与 artifact 引用只出现在这里。 */
+/**
+ * 高级 / 审计信息：raw 状态值、task_id、输入指纹与 artifact 引用只出现在这里。
+ *
+ * Round32-K：这里显式保留**后端真实 raw 进度**。主界面在 ``succeeded`` 时按
+ * :func:`primaryProgressText` 显示 100%（发布窗口内的 0.9 是真实存在的中间态），
+ * 因此审计视图必须仍然能看到这个未经修改的原始值 —— 主界面与高级区语义因此都不失真。
+ */
 export function advancedHtml(task) {
   const advanced = task?.advanced || {};
   const rows = [
     ['任务标识', advanced.task_id],
     ['技术状态', advanced.status],
     ['任务类型', advanced.task_type],
+    ['原始进度', progressText(task?.progress)],
     ['输入 revision', advanced.input_revision],
     ['输入指纹', advanced.input_fingerprint],
     ['输入快照引用', advanced.input_snapshot_ref],
