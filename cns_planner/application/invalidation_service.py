@@ -63,6 +63,12 @@ class InvalidationService:
         #: 只把 ``radar_surveillance_layout`` 标 stale —— 绝不动 routes / CNS / coverage_3d /
         #: 走廊与站址提案，也绝不反向触发任何上游。
         self.radar_surveillance_layout_invalidator = None
+        #: Injected by the composition root once the layered adoption service exists.  It is
+        #: read **only** as the ownership authority for an already published Layered
+        #: Operational Route: a Step04 ``rules`` change is not a geometry input, so a route
+        #: whose adoption identity is still current keeps its geometry result while every
+        #: dependent CNS product still invalidates through ``DEPENDENTS``.
+        self.layered_operational_adoption_service = None
 
     def workflow(self, changed):
         state = self.session.state
@@ -72,18 +78,28 @@ class InvalidationService:
                 ledger.statuses[name] = ResultStatus(status)
             except ValueError:
                 ledger.statuses[name] = ResultStatus.NOT_CALCULATED
+        previous_routes_status = state["result_statuses"].get("routes")
         affected = ledger.invalidate(changed)
         for name in affected:
             if name in state["result_statuses"]:
                 state["result_statuses"][name] = ledger.statuses[name].value
         if "routes" in affected:
+            staled_routes = live_routes = 0
             for route in state.get("operational_routes") or []:
-                if (
-                    route.get("status") != "not_calculated"
-                    and self._should_stale_operational_route(route, changed)
-                ):
+                if route.get("status") == "not_calculated":
+                    continue
+                if self._should_stale_operational_route(route, changed):
                     route["status"] = "stale"
                     route["stale_reason"] = f"{changed}_changed"
+                    staled_routes += 1
+                else:
+                    live_routes += 1
+            # 全局 ``result_statuses["routes"]`` 必须与逐条状态保持一致：只有该容器原本
+            # 就是有效状态、且**每一条**被考虑的航路都仍然有效时才保留它。绝不允许一条
+            # 受保护的正式航路把其他已失效/手工航路掩盖成通过，也绝不把原本 stale 的
+            # 容器提升回 passed。
+            if staled_routes == 0 and live_routes > 0 and previous_routes_status == "passed":
+                state["result_statuses"]["routes"] = "passed"
         if "coverage_3d" in affected:
             self.coverage_3d()
         if "cns_service_capability" in affected:
@@ -128,16 +144,21 @@ class InvalidationService:
             # 配置变化只把该 additive 产物标 stale（proposal-only，unidirectional）。
             self.radar_surveillance_layout(f"{changed}_changed")
 
-    @staticmethod
-    def _should_stale_operational_route(route, changed):
-        """Keep aircraft invalidation selective without changing other route semantics.
+    def _should_stale_operational_route(self, route, changed):
+        """Keep invalidation selective without changing other route semantics.
 
-        A production layered adoption owns its route independently of the selected aircraft
-        profile.  Its downstream CNS products still invalidate through ``DEPENDENTS``; only
-        the owned operational route is preserved.  Existing stale routes are left untouched
-        rather than being promoted back to ``passed``.
+        ``aircraft_profile``（既有行为）：生产 layered adoption 独立于所选机载档案拥有它的
+        航路，因此只保留该受拥有航路的几何结论。
+
+        ``rules``（Round 32-F）：Step04 运行规则同样**不是**航路的几何输入。已正式发布、
+        且身份与验证证据和**当前有效**正式采纳记录完全一致的 Layered Operational Route
+        保留其 ``passed`` 及全部指纹；其下游 CNS 结果仍按 ``DEPENDENTS`` 失效。手工或
+        legacy 航路、缺失或伪造的 adoption 身份、已撤销/已失效的采纳、以及原本就不是有效
+        状态的航路一律按原规则处理 —— 绝不把 stale 航路重新提升为 ``passed``。
         """
 
+        if changed == "rules":
+            return not self._is_current_published_layered_route(route)
         if changed != "aircraft_profile":
             return True
         provenance = route.get("provenance") or {}
@@ -147,6 +168,20 @@ class InvalidationService:
             and str(provenance.get("adoption_fingerprint") or "").strip()
         )
         return not is_layered_adoption_owned
+
+    def _is_current_published_layered_route(self, route):
+        """该航路是否为由**当前有效**正式采纳记录拥有的已发布航路。
+
+        语义判据复用 ``LayeredOperationalAdoptionService`` 的 ownership 权威实现，绝不仅凭
+        ``source_type`` 字符串认定拥有权。判据服务缺失时一律返回 ``False``（保守 fail-closed）。
+        """
+
+        if str((route or {}).get("status") or "") != "passed":
+            return False
+        service = self.layered_operational_adoption_service
+        if service is None:
+            return False
+        return bool(service.published_route_is_current(route))
 
     def grid_sources(self, changed_sources):
         state = self.session.state

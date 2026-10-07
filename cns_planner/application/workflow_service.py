@@ -706,6 +706,11 @@ class WorkflowService:
         self.layered_route_validation_service.adoption_invalidator = (
             self.layered_operational_adoption_service.stale_for_validations
         )
+        # Step04 ``rules``（运行规则）不是已发布航路的几何输入：失效传播只能依据正式采纳
+        # 记录的 ownership 判据决定是否保留已发布航路的几何结论（只读引用，绝无回写）。
+        self.invalidation_service.layered_operational_adoption_service = (
+            self.layered_operational_adoption_service
+        )
         # Route Safety Evidence V2: additive post-planning evidence aggregation over the
         # published layered operational adoption lineage.  It never replans, never adopts and
         # never writes any upstream container; it is only ever staled *by* its dependencies.

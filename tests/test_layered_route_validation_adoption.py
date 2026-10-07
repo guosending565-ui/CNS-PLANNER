@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 from cns_planner.application.project_state import normalize_project
+from cns_planner.application.result_currentness import effective_result_status
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
 from cns_planner.algorithms.grid.service import WorkspaceGridService
 from cns_planner.domain.layered_route_validation import (
     ALGORITHM_VERSION, VALIDATOR_VERSIONS, validation_fingerprint,
@@ -386,6 +388,254 @@ def test_aircraft_profile_change_keeps_layered_route_but_stales_downstream(tmp_p
     assert service.state["cns_site_plan"] == {"status": "passed"}
     assert service.state["coverage"] == {"status": "passed"}
     assert service.state["cns_gap_analysis"] == {"status": "passed"}
+
+
+# ----------------------------------------------------------------- rules invalidation
+#
+# Round 32-F：Step04 运行规则（``rules``）**不是**航路的几何输入。已正式发布、身份与
+# 验证证据和当前有效采纳记录完全一致的 Layered Operational Route 必须保留其几何结论
+# （passed 与全部指纹逐项不变），而依赖运行规则的下游 CNS 结果仍按既有 DAG 失效。
+
+
+def published_layered_route(tmp_path):
+    """走唯一正式路径发布一条 Layered Operational Route：``(service, route, adoption)``。"""
+
+    service, _, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    validation = latest(service)
+    applied = service.apply_layered_operational_adoption({
+        "validation_id": validation["validation_id"], "confirmed": True,
+    })
+    route = next(
+        item for item in service.state["operational_routes"] if item["route_id"] == "R-1"
+    )
+    service.state["result_statuses"]["routes"] = "passed"
+    return service, route, applied
+
+
+def lineage_snapshot(service, route):
+    """冻结一条已发布航路的完整证据身份（path / 指纹 / 高度层归属）。"""
+
+    validation = service.state["layered_route_validations"]["items"][-1]
+    adoption = service.state["layered_operational_adoptions"]["items"][-1]
+    return {
+        "path": deepcopy(route["path"]),
+        "provenance": deepcopy(route["provenance"]),
+        "route_operating_layer": deepcopy(
+            service.state["spatial_3d"]["route_operating_layers"][0]
+        ),
+        "validation_id": validation["validation_id"],
+        "validation_fingerprint": validation["fingerprints"]["validation_fingerprint"],
+        "candidate_fingerprint": validation["candidate"]["candidate_fingerprint"],
+        "adoption_id": adoption["adoption_id"],
+        "adoption_fingerprint": route["provenance"]["adoption_fingerprint"],
+    }
+
+
+def manual_route(route_id="R-MANUAL", **provenance):
+    return {
+        "route_id": route_id, "status": "passed",
+        "path": [[122.0, 30.0], [122.002, 30.0]],
+        "provenance": provenance or {"source_type": "manual"},
+    }
+
+
+def test_rules_change_preserves_published_layered_route(tmp_path):
+    """rules 变化后，正式 adoption-owned route 保持 passed 且 lineage 不变。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    before = lineage_snapshot(service, route)
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["status"] == "passed"
+    assert "stale_reason" not in route
+    assert lineage_snapshot(service, route) == before
+
+
+def test_rules_change_freezes_candidate_validation_adoption_fingerprints(tmp_path):
+    """candidate / validation / adoption / projection 指纹一律不得被改写。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    before = lineage_snapshot(service, route)
+    validation = service.state["layered_route_validations"]["items"][-1]
+    adoption = service.state["layered_operational_adoptions"]["items"][-1]
+    projection_fingerprint = route["provenance"]["projection_fingerprint"]
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["provenance"] == before["provenance"]
+    assert route["path"] == before["path"]
+    assert validation["validation_id"] == before["validation_id"]
+    assert validation["fingerprints"]["validation_fingerprint"] == before["validation_fingerprint"]
+    assert validation["candidate"]["candidate_fingerprint"] == before["candidate_fingerprint"]
+    assert adoption["adoption_id"] == before["adoption_id"]
+    assert route["provenance"]["adoption_fingerprint"] == before["adoption_fingerprint"]
+    assert adoption["status"] == "published"
+    assert service.layered_operational_adoption_service.ownership(adoption) == {
+        "route_owned": True, "route_operating_layer_owned": True,
+    }
+    assert route["provenance"]["projection_fingerprint"] == projection_fingerprint
+
+
+def test_rules_change_still_stales_dependent_cns_results(tmp_path):
+    """修复不得取消 rules 的依赖传播：下游仍必须 stale。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    for name in ("coverage_3d", "cns_service_capability", "service_timeline",
+                 "cns_corridor_assessment"):
+        service.state[name] = {**(service.state.get(name) or {}), "status": "passed"}
+    service.state["result_statuses"].update({
+        "coverage_3d": "passed", "cns_service_capability": "passed",
+        "service_timeline": "passed", "cns_corridor_assessment": "passed",
+        "technical_risk": "passed", "report": "passed",
+    })
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["status"] == "passed"
+    for name in (
+        "coverage_3d", "cns_service_capability", "service_timeline",
+        "cns_corridor_assessment", "technical_risk", "report",
+    ):
+        assert service.state["result_statuses"][name] == "stale", name
+
+
+def test_rules_change_stales_manual_and_legacy_routes(tmp_path):
+    """手工 / legacy 航路仍按原规则失效，且全局 routes 状态随之 stale。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    manual = manual_route()
+    service.state["operational_routes"].append(manual)
+    service.state["result_statuses"]["routes"] = "passed"
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["status"] == "passed"
+    assert manual["status"] == "stale"
+    assert manual["stale_reason"] == "rules_changed"
+    assert service.state["result_statuses"]["routes"] == "stale"
+
+
+@pytest.mark.parametrize("tamper", [
+    "unknown_adoption_id", "forged_adoption_fingerprint",
+    "revoked_adoption_record", "manual_source_type",
+])
+def test_rules_change_does_not_protect_invalid_adoption_identity(tmp_path, tamper):
+    """缺失 / 伪造 / 已撤销 / 非正式身份一律得不到保护。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    adoption = service.state["layered_operational_adoptions"]["items"][-1]
+    if tamper == "unknown_adoption_id":
+        route["provenance"]["adoption_id"] = "LRA-NOT-A-RECORD"
+    elif tamper == "forged_adoption_fingerprint":
+        route["provenance"]["adoption_fingerprint"] = "layeredadoptionv1-forged"
+    elif tamper == "revoked_adoption_record":
+        adoption["status"] = "revoked"
+        adoption["current_applicability"] = "revoked"
+    else:
+        route["provenance"]["source_type"] = "manual"
+    service.state["result_statuses"]["routes"] = "passed"
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["status"] == "stale"
+    assert route["stale_reason"] == "rules_changed"
+    assert service.state["result_statuses"]["routes"] == "stale"
+
+
+def test_rules_change_never_revives_an_already_stale_route(tmp_path):
+    """原本 stale 的航路绝不被重新提升为 passed。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    route["status"] = "stale"
+    route["stale_reason"] = "terrain_source_changed"
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["status"] == "stale"
+
+
+def test_rules_change_does_not_revive_route_after_evidence_invalidation(tmp_path):
+    """采纳证据链确实失效（validation stale）后，航路不得被 rules 变化复活。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    validation = service.state["layered_route_validations"]["items"][-1]
+    service.layered_operational_adoption_service.stale_for_validations(
+        [validation["validation_id"]], "evidence_changed",
+    )
+    assert route["status"] == "stale"
+
+    service.invalidation_service.workflow("rules")
+
+    assert route["status"] == "stale"
+
+
+def test_aircraft_profile_protection_is_unchanged_by_rules_support(tmp_path):
+    """既有 aircraft_profile 保护语义逐项不变（含仅凭 provenance 身份的既有判据）。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    forged = manual_route("R-FORGED", **{
+        "source_type": "layered_candidate_operational_adoption_v1",
+        "adoption_id": "LRA-TEST", "adoption_fingerprint": "layeredadoptionv1-test",
+    })
+    service.state["operational_routes"].append(forged)
+
+    service.invalidation_service.workflow("aircraft_profile")
+
+    assert route["status"] == "passed"
+    assert forged["status"] == "passed"
+
+
+def test_rules_change_keeps_global_routes_status_consistent(tmp_path):
+    """全局 ``result_statuses.routes`` 必须与逐条状态一致，绝不掩盖失效航路。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+
+    service.invalidation_service.workflow("rules")
+    assert route["status"] == "passed"
+    assert service.state["result_statuses"]["routes"] == "passed"
+
+    service.state["operational_routes"].append(manual_route())
+    service.state["result_statuses"]["routes"] = "passed"
+
+    service.invalidation_service.workflow("rules")
+
+    assert service.state["result_statuses"]["routes"] == "stale"
+    assert effective_result_status(service.state, "routes") == "stale"
+
+
+def test_protected_published_route_keeps_p14_route_gate_open(tmp_path):
+    """P14 的 route 门禁不得因 rules 变化报 ``航路 path 不可用``。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    service.state["result_statuses"]["routes"] = "passed"
+
+    service.invalidation_service.workflow("rules")
+
+    gate = CNSServiceCorridorV1()._route(route, None, None, [], [], {}, None, [], [])
+    assert gate["reasons"] != ["航路 path 不可用"]
+    assert gate["route_length_m"] > 0
+    assert effective_result_status(service.state, "routes") == "passed"
+    assert service._steps()["3"] is True
+
+
+def test_failed_rules_validation_is_never_reported_as_passed(tmp_path):
+    """运行规则校验失败时绝不伪造通过，也不因此取消下游失效。"""
+
+    service, route, _ = published_layered_route(tmp_path)
+    service.state["result_statuses"]["technical_risk"] = "passed"
+
+    service.set_rules({
+        "manufacturer": "ACME", "model": "X1", "cruise_speed": 20.0, "max_speed": 25.0,
+        "mtbf": 100.0, "height_ab": 100.0, "height_ba": 100.0,
+        "delay_sensor": 10.0, "delay_command": 10.0, "height_mode": "different",
+    })
+
+    assert service.state["rules"]["status"] == "failed"
+    assert service.state["rules"]["message"] != "规则校验通过"
+    assert service.state["result_statuses"]["technical_risk"] == "stale"
+    assert service._steps()["4"] is False
 
 
 def test_current_fingerprint_change_supersedes_prior_validation(tmp_path):

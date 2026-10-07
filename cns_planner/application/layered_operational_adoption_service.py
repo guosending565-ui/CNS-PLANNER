@@ -577,6 +577,33 @@ class LayeredOperationalAdoptionService:
             ) or []) if str(item.get("route_id")) == str(route_id)
         ), None)
 
+    def published_route_is_current(self, route):
+        """该 route 是否由**当前有效**的正式 Layered 采纳记录拥有（只读判据）。
+
+        Step04 运行规则（``rules``）不是航路的几何输入，因此只有身份、验证证据与
+        ownership 与正式采纳记录**完全一致**且仍 current 的已发布航路才允许保留其几何
+        结论。手工 / legacy 航路、缺失或伪造的 adoption 身份、已撤销或已失效的采纳、
+        以及不属于该采纳的 route_id 一律返回 ``False``，由调用方按原规则失效。
+        """
+
+        route = route if isinstance(route, dict) else {}
+        route_id = str(route.get("route_id") or "")
+        provenance = route.get("provenance") or {}
+        if not route_id or provenance.get("source_type") != SOURCE_TYPE:
+            return False
+        adoption_id = str(provenance.get("adoption_id") or "").strip()
+        if not adoption_id:
+            return False
+        adoption = next((
+            item for item in self.ensure_state()["layered_operational_adoptions"]["items"]
+            if str(item.get("adoption_id")) == adoption_id
+        ), None)
+        if adoption is None or adoption.get("status") != "published":
+            return False
+        if str(adoption.get("route_id") or "") != route_id:
+            return False
+        return self._applicability(adoption) == "current"
+
     def _applicability(self, adoption):
         validation = self._select_validation({"validation_id": adoption.get("validation_id")})
         if validation is None or validation.get("current_applicability") != "current":
