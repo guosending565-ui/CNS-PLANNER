@@ -888,6 +888,11 @@ class ApiRouter:
     RUNTIME_SOURCE_KEYS_BY_TASK = {
         "layered_route_candidate_evaluate": ("terrain_dtm",),
         "layered_route_validation_evaluate": ("terrain_dtm", "buildings"),
+        #: Round32-G：Radar 后台 worker 的输入指纹包含来源分量
+        #: （``configured_path`` / ``available``）。缺了这两个运行期路径，worker 会把
+        #: land_mask 判成 ``not_configured``，而主进程只读投影用 live paths 重算，
+        #: 于是结果一发布就被自己判成 ``radar_surveillance_inputs_changed`` stale。
+        "radar_surveillance_layout_evaluate": ("land_mask", "terrain_dtm"),
     }
     #: 兼容 Round32-C 对“哪些 task 需要 runtime sources”的只读合同。
     RUNTIME_SOURCE_TASK_TYPES = tuple(RUNTIME_SOURCE_KEYS_BY_TASK)

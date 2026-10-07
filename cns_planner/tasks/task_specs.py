@@ -985,6 +985,15 @@ def _radar_inputs(state, payload):
 
     state = state if isinstance(state, dict) else {}
     inputs = {key: deepcopy(state.get(key)) for key in RADAR_INPUT_STATE_KEYS}
+    #: Round32-G：canonical state 里没有 ``data_source_paths`` 的写入者（实测 None），
+    #: 真实 land_mask / terrain 路径只存在于主进程已解析的 ``MapData.paths``；提交侧
+    #: 随 payload 冻结进来（``ApiRouter._freeze_runtime_sources``）。它必须进 immutable
+    #: snapshot：否则 worker 侧 ``land_mask`` readiness 退化为 ``not_configured``
+    #: （configured_path=None），输入指纹的来源分量与主进程只读投影不一致，结果一发布
+    #: 就被判 ``radar_surveillance_inputs_changed``（同步入口读 live paths，看不出差异）。
+    runtime_paths = (payload or {}).get("data_source_paths")
+    if isinstance(runtime_paths, dict) and runtime_paths:
+        inputs["data_source_paths"] = dict(runtime_paths)
     policy, declared = _radar_policy_payload(state, payload)
     inputs[RADAR_POLICY_KEY] = policy
     inputs["radar_policy_declared"] = declared
@@ -1023,7 +1032,9 @@ def _radar_plan(state, payload):
         )
     return {
         "worker_payload": worker_payload,
-        "inputs": _radar_inputs(state, worker_payload),
+        #: Round32-G：输入段用**原始 payload** —— ``data_source_paths`` 不进
+        #: worker_payload（它不是请求业务字段），但仍必须冻结进 snapshot 的 inputs 段。
+        "inputs": _radar_inputs(state, payload),
     }
 
 
