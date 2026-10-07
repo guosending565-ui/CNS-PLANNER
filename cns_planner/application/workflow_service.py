@@ -58,6 +58,10 @@ from .result_currentness import (
     PROJECTED_RESULT_KEYS, effective_result_status, effective_result_statuses,
     projected_result,
 )
+from .workflow_projection import (
+    slim_continuous_service_for_workflow, slim_plan_review_for_workflow,
+)
+from .snapshot_read_pass import snapshot_read_pass
 from .continuous_service_service import ContinuousServiceService
 from .plan_projection import PlanProjectionBuilder
 from ..algorithms.continuous_service.v1 import ContinuousServiceAcceptabilityV1
@@ -129,6 +133,19 @@ def _snapshot_state_value(key, value):
     """快照取值：小对象深拷贝（保持既有隔离语义），大结果只共享只读引用。"""
 
     return value if key in _SNAPSHOT_SHARED_STATE_KEYS else deepcopy(value)
+
+
+#: 顶层容器的**有界只读投影**（Round32-J）。这些容器在 canonical state 里体量巨大
+#: （真实项目：``cns_plan_review`` 104.98 MB、``continuous_service_acceptability``
+#: 9.88 MB），而通用 workflow 快照只承载六步 UI 需要的字段。
+#:
+#: 投影函数**直接从 canonical 对象构造**小的返回值，因此这里绝不能先走到
+#: :func:`_snapshot_state_value`（那会先做整树 deepcopy，HTTP 变小了、冷构建仍然慢）。
+#: canonical 内容逐字保留在 ``state`` 中，后端业务服务与专用只读接口继续消费完整数据。
+_SNAPSHOT_CONTAINER_PROJECTIONS = {
+    "cns_plan_review": slim_plan_review_for_workflow,
+    "continuous_service_acceptability": slim_continuous_service_for_workflow,
+}
 
 
 #: 结构指纹里"直接保留序列化文本"的最大长度（字符）。超过就退化为结构摘要，
@@ -814,7 +831,12 @@ class WorkflowService:
         cached = getattr(self, "_snapshot_cache", None)
         if cached is not None and cached[0] == cache_key:
             return dict(cached[1])
-        projected = self._project_snapshot()
+        #: Round32-J：冷构建在**纯读复用窗**内进行 —— 同一份 state 上被数十次重复读取的
+        #: "当前候选 / 当前风险画像 / 当前验证集合"只读取一次（真实项目约 31 s 纯重复）。
+        #: 窗口不写 state、不参与缓存键、退出即丢弃，因此不改变任何返回值，也不掩盖
+        #: "冷构建本身是否够快"（窗口外的每次读取仍是完整全量读取）。
+        with snapshot_read_pass(self.session):
+            projected = self._project_snapshot()
         self._snapshot_cache = (cache_key, projected)
         return dict(projected)
 
@@ -823,6 +845,29 @@ class WorkflowService:
 
         self._snapshot_cache = None
 
+    def _p17_workflow_result(self, projected=None):
+        """P17 结果的**有界只读投影**（Round32-J），供通用快照与 Step6 门禁共用。
+
+        ``projected`` 是状态循环已经构造好的顶层 ``continuous_service_acceptability``
+        投影（含 Round 29-J/Q 的算法语义 stale 标注）；直接复用它可以保证：
+
+        * 语义与 :meth:`ContinuousServiceService.result_snapshot` **逐字段一致**；
+        * 同一个大结果在通用快照里只出现**一次**（顶层容器与
+          ``cns_continuous_service.result`` 是同一份对象）；
+        * 不再对 canonical 容器做整树 ``deepcopy``（真实项目 9.88 MB/次）。
+
+        仅在容器缺失（未评估 / 旧项目）时回退到服务自己的只读投影 —— 那时
+        ``result_snapshot()`` 返回的是 ``model.empty()``，体量可忽略。
+
+        既不写 ``state``、不 save，也不改变任何门禁判定；canonical 容器逐字保留。
+        """
+
+        if isinstance(projected, dict) and projected:
+            return projected
+        return slim_continuous_service_for_workflow(
+            self.continuous_service_service.result_snapshot()
+        )
+
     def _project_snapshot(self):
         # 轻量 workflow 状态：逐 cell 大结果与派生缓存不随通用状态返回，
         # 由既有专用接口按需提供（见模块顶部说明）。业务语义完全不变。
@@ -830,11 +875,21 @@ class WorkflowService:
         # 读取性能：顶层逐项浅拷贝。只有小对象做 deepcopy；逐 cell 的大结果
         # （grid_risk.cells / grid_risk_v2 / layered_route_candidates.masks）以只读
         # 投影共享引用，既省掉整树深拷贝，也不改变任何字段或状态机。
-        result = {
-            key: _snapshot_state_value(key, value)
-            for key, value in self.state.items()
-            if key not in _SNAPSHOT_OMITTED_STATE_KEYS
-        }
+        result = {}
+        for key, value in self.state.items():
+            if key in _SNAPSHOT_OMITTED_STATE_KEYS:
+                continue
+            projection = _SNAPSHOT_CONTAINER_PROJECTIONS.get(key)
+            if projection is not None:
+                #: Round32-J：P18/P17 的大容器在这里**直接从 canonical 构造**有界
+                #: 投影，绝不先 deepcopy 上百 MB 再删字段（否则冷构建仍然慢）。
+                #: 登记在 ``PROJECTED_RESULT_KEYS`` 的容器同时完成 Round 29-J 的
+                #: currentness 只读投影，因此下面的 currentness 循环不再覆盖它们。
+                result[key] = projection(
+                    projected_result(self.state, key) if key in PROJECTED_RESULT_KEYS else value
+                )
+                continue
+            result[key] = _snapshot_state_value(key, value)
         result["grid_attributes"] = slim_grid_attributes(self.state.get("grid_attributes"))
         #: Round 29-J：通用快照（``/api/state``、``/api/workflow``）下发的 currentness
         #: 必须是**有效**状态 —— 算法语义已变化的产物在只读投影上标 ``stale``，绝不
@@ -844,7 +899,13 @@ class WorkflowService:
         for _projected_key in PROJECTED_RESULT_KEYS:
             #: ``radar_surveillance_layout`` 由 ``summary_snapshot()`` 在下方做**它自己**的
             #: 只读 currentness 投影（其输入指纹本就含 ``algorithm_version``），这里不覆盖。
-            if _projected_key in result and _projected_key != "radar_surveillance_layout":
+            if _projected_key == "radar_surveillance_layout":
+                continue
+            #: Round32-J：已登记容器投影的键在状态循环里就完成了"currentness 只读投影 +
+            #: 有界投影"。这里必须跳过，否则会把 9.88 MB 的 canonical P17 容器重新灌回快照。
+            if _projected_key in _SNAPSHOT_CONTAINER_PROJECTIONS:
+                continue
+            if _projected_key in result:
                 result[_projected_key] = projected_result(self.state, _projected_key)
         result["steps"] = self._steps()
         result["defaults"] = deepcopy(self.defaults)
@@ -936,9 +997,11 @@ class WorkflowService:
             # 轻量投影：逐 cell 的 V2 因子指数保留（地图专题消费），
             # normalization reference / provenance / source 诊断块由 /api/grid-risk-v2 提供。
             # 投影以只读引用复用服务快照，不再二次深拷贝上万 cell 的派生结果。
-            result["grid_risk_v2"] = slim_grid_risk_v2(
-                self.risk_v2_service.result_snapshot()
-            )
+            #: Round32-J：``result_snapshot()`` 会先对**整个** V2 容器做一次整树
+            #: ``deepcopy``；状态循环已经带出同一容器的只读引用（``ensure_state()``
+            #: 仍照常执行），投影本身逐 cell 重建，因此返回值逐字段不变。
+            self.risk_v2_service.ensure_state()
+            result["grid_risk_v2"] = slim_grid_risk_v2(self.state.get("grid_risk_v2"))
             result["risk_policy_v2"] = self.risk_v2_service.policy_snapshot()
             result["risk_framework_v2_readiness"] = self.risk_v2_service.readiness_snapshot()
         if hasattr(self, "layered_route_planner_service"):
@@ -1060,13 +1123,18 @@ class WorkflowService:
         #: 容器本身；这里额外下发**有界的只读投影**（参数逐项 authority、策略、操作场景、
         #: FC30 事实与 Step6 门禁结论），使前端不需要猜字段、也不需要额外草稿请求。
         if hasattr(self, "continuous_service_service"):
+            #: Round32-J：P17 结果只下发**有界只读投影**（嵌套 Radar 的逐项证据体不进入
+            #: 通用快照）；这里复用状态循环已经构造好的顶层容器投影，因此同一个大结果在
+            #: 一次快照里只存在一份对象。同一份投影同时供 Step6 门禁使用，因此门禁与前端
+            #: 消费的是同一批字段，不会出现"响应瘦身了、门禁仍读另一份内存副本"的语义分叉。
+            p17_result = self._p17_workflow_result(result.get("continuous_service_acceptability"))
             result["cns_continuous_service"] = {
-                "result": self.continuous_service_service.result_snapshot(),
+                "result": p17_result,
                 "parameters": self.continuous_service_service.parameters_snapshot(),
                 "policy": self.continuous_service_service.policy_snapshot(),
                 "operation_scenario": self.continuous_service_service.operation_scenario_snapshot(),
                 "fc30": self.continuous_service_service.fc30_facts_snapshot(),
-                "step6_gate": self.continuous_service_service.step6_gate(),
+                "step6_gate": self.continuous_service_service.step6_gate(p17_result),
             }
         # B5X：外置型大型明细绝不随通用快照下发（只保留 summary + artifact_ref +
         # 专用读取入口声明）。这是最后一步覆盖，避免任何分支把水合后的明细带出去。

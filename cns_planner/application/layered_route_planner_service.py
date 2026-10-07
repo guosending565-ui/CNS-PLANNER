@@ -62,6 +62,7 @@ from ..domain.layered_theta_v2 import (
     ALGORITHM_ID, ALGORITHM_VERSION,
 )
 from ..risk.accessors_v2 import cell_factor_index
+from .snapshot_read_pass import reused
 
 POLICY_SEMANTICS = {
     "no_default_clearance_or_lambda": True,
@@ -358,8 +359,19 @@ class LayeredRoutePlannerService:
         return deepcopy(self.session.state["layered_route_cost_policy"])
 
     def result_snapshot(self):
-        """Read-only projection: the persisted state never carries a derived applicability."""
+        """Read-only projection: the persisted state never carries a derived applicability.
 
+        Round32-J：一次快照构建内（:func:`snapshot_read_pass`）复用同一次读取结果，
+        避免在同一份未被写入的 state 上重复做 14 次全量重算（真实项目约 18 s）。
+        返回浅拷贝顶层，调用方改写自身返回对象不会影响复用缓存。
+        """
+
+        return dict(reused(
+            self.session, "layered_route_planner.result_snapshot",
+            self._build_result_snapshot,
+        ))
+
+    def _build_result_snapshot(self):
         state = self.ensure_state()
         collection = normalize_layered_route_candidate_collection(
             state.get("layered_route_candidates")
@@ -1202,6 +1214,12 @@ class LayeredRoutePlannerService:
         与 NoData 语义都不受影响。
         """
 
+        return dict(reused(
+            self.session, "layered_route_planner.population_shelter_snapshot",
+            self._build_population_shelter_snapshot,
+        ))
+
+    def _build_population_shelter_snapshot(self):
         state = self.ensure_state()
         grid = state.get("grid") or {}
         policy = state["shelter_coefficient_policy"]

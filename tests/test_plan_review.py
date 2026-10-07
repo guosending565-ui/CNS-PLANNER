@@ -43,7 +43,11 @@ def test_initialize_baseline_and_auto_is_deterministic_and_zero_pollution(tmp_pa
     assert [item["source"] for item in result["variants"]] == ["baseline", "p16_auto"]
     auto = result["variants"][1]
     assert auto["variant_id"] == variant_id(result["baseline_fingerprint"], auto["selected_action_ids"])
-    assert auto["evaluation"]["authoritative_hypothetical"]["persisted_as_upstream"] is False
+    #: Round32-J：通用 workflow 快照只下发六步 UI 需要的字段，``authoritative_hypothetical``
+    #: 这类大型 canonical 审计证据不再随快照返回（改由 ``GET /api/cns-plan-review`` 提供）。
+    #: 该事实仍然逐字保留在 canonical state 中，因此这里直接对 state 断言。
+    canonical_auto = workflow.state["cns_plan_review"]["variants"][1]
+    assert canonical_auto["evaluation"]["authoritative_hypothetical"]["persisted_as_upstream"] is False
     assert result["automatic_overall_score"] is result["automatic_rank"] is None
     assert {key: workflow.state[key] for key in before} == before
 

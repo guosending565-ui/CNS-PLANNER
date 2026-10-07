@@ -49,18 +49,21 @@ class LayeredOperationalAdoptionService:
         return collection
 
     def readiness_snapshot(self):
-        validations = self.validations.result_snapshot()
-        options = []
-        for item in validations.get("items") or []:
-            gate = self._gate(item)
-            options.append({
-                "validation_id": item.get("validation_id"),
-                "route_id": (item.get("candidate") or {}).get("route_id"),
-                "status": item.get("status"),
-                "current_applicability": item.get("current_applicability"),
-                "eligible": gate["eligible"], "reasons": gate["reasons"],
-                "blocking_reasons": gate["blocking_reasons"],
-            })
+        #: Round32-J：整段读取在同一份 state 上只做一次"当前候选 / 当前风险画像"读取
+        #: （``read_pass`` 只读复用窗）。门禁判定逻辑、字段与逐 option 顺序都不变。
+        with self.validations.read_pass():
+            validations = self.validations.result_snapshot()
+            options = []
+            for item in validations.get("items") or []:
+                gate = self._gate(item)
+                options.append({
+                    "validation_id": item.get("validation_id"),
+                    "route_id": (item.get("candidate") or {}).get("route_id"),
+                    "status": item.get("status"),
+                    "current_applicability": item.get("current_applicability"),
+                    "eligible": gate["eligible"], "reasons": gate["reasons"],
+                    "blocking_reasons": gate["blocking_reasons"],
+                })
         return {
             "status": "ready" if any(item["eligible"] for item in options) else "not_ready",
             "algorithm": {"algorithm_id": ALGORITHM_ID, "algorithm_version": ALGORITHM_VERSION},

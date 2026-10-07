@@ -7,6 +7,7 @@ actual terrain/building verdicts to the production-neutral pure validators share
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import copy, deepcopy
 from math import hypot
 
@@ -23,6 +24,7 @@ from ..validation.continuous_validators import (
     MetricRoute, validate_buildings, validate_restricted_areas, validate_terrain,
     validate_towers,
 )
+from .snapshot_read_pass import reused, snapshot_read_pass
 
 
 class LayeredRouteValidationService:
@@ -54,6 +56,17 @@ class LayeredRouteValidationService:
         return state
 
     def result_snapshot(self):
+        """Round32-J：一次快照构建内复用（见 :mod:`snapshot_read_pass`）。
+
+        返回浅拷贝顶层，调用方改写自身返回对象不影响复用缓存。
+        """
+
+        return dict(reused(
+            self.session, "layered_route_validation.result_snapshot",
+            self._build_result_snapshot,
+        ))
+
+    def _build_result_snapshot(self):
         state = self.ensure_state()
         collection = normalize_layered_route_validation_collection(
             state.get("layered_route_validations")
@@ -532,6 +545,24 @@ class LayeredRouteValidationService:
                 if item.get("status") == "candidate" and item.get("current_applicability") == "current"
             ), None)
         return candidate
+
+    # ------------------------------------------------------- Round32-J：只读复用窗
+
+    @contextmanager
+    def read_pass(self):
+        """一次只读读取的**复用窗**（Round32-J 性能修复）。
+
+        Round32-J0 归因确认：同一次读取（例如为每个已发布 option 求发布门禁）会在
+        **同一份** state 上反复重算"当前候选集合"与"当前风险画像集合"——真实项目里
+        ``layered_operational_adoption.readiness_snapshot`` 因此单独耗掉约 34 s。
+
+        窗口由 :func:`cns_planner.application.snapshot_read_pass.snapshot_read_pass`
+        实现：只把**纯读**结果在窗口内复用一次，退出即丢弃。它不写 ``state``、不 save、
+        不重算任何业务结论，也不改变任何返回值；未开窗时行为与既有实现逐字一致。
+        """
+
+        with snapshot_read_pass(self.session):
+            yield
 
     def _layer_for(self, candidate):
         layer_id = (candidate or {}).get("altitude_layer_id")

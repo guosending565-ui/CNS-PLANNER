@@ -130,14 +130,19 @@ class ContinuousServiceService:
             or default_operation_scenario()
         )
 
-    def step6_gate(self):
+    def step6_gate(self, result=None):
         """Step6（P18 计划评审）的**权威** P17 门禁（fail-closed）。
 
         Round 2.6：``status`` 已经是 **post-plan 投影态**结论（存在投影时）；这里额外
         把两层结论、威胁分层与能力限制一并披露，供 Step6 与报告强制显示。
+
+        Round32-J：``result`` 可选。通用 workflow 快照已经持有该产物的一份**只读
+        有界投影**，直接把它传进来即可复用，避免对 canonical 容器重复 ``deepcopy``
+        （真实项目 9.88 MB/次）。默认 ``None`` ⇒ 走 :meth:`result_snapshot`，既有调用
+        点行为逐字不变；这不构成第二套门禁实现。
         """
 
-        result = self.result_snapshot()
+        result = self.result_snapshot() if result is None else result
         status = str(result.get("status") or "not_calculated")
         allowed = status in STEP6_ALLOWED_ACCEPTABILITY
         disclosure = list(result.get("disclosure_lines") or [])

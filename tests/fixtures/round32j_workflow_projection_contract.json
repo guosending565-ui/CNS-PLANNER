@@ -1,0 +1,76 @@
+{
+  "_comment": "Round32-J：通用 workflow 快照的有界投影契约（机器可读单一真源）。后端 tests/test_round32j_workflow_snapshot_slimming.py 与前端 tests/round32j_step06_projection_contract.test.mjs 共用本清单：后端断言真实快照满足它，前端用它构造同形 fixture 并锁定 Step06 消费点。",
+  "plan_review": {
+    "workflow_projection": "plan_review_workflow_projection_v1",
+    "detail_endpoint": "/api/cns-plan-review",
+    "review_required_fields": [
+      "status",
+      "selected_variant_id",
+      "variants",
+      "variant_count",
+      "variants_detail_available",
+      "variants_detail_endpoint",
+      "workflow_projection"
+    ],
+    "variant_required_fields": [
+      "variant_id",
+      "name",
+      "source",
+      "status",
+      "selected_action_ids",
+      "evaluation"
+    ],
+    "variant_evaluation_fields": [
+      "status",
+      "comparison_matrix",
+      "confirmation_gate",
+      "action_summary",
+      "continuous_service_projection",
+      "planned_p14_fingerprint",
+      "planned_p15_fingerprint"
+    ],
+    "variant_evaluation_omitted_fields": [
+      "before_p15",
+      "after_p15",
+      "authoritative_hypothetical",
+      "actions",
+      "applied_refs"
+    ]
+  },
+  "continuous_service": {
+    "workflow_projection": "continuous_service_workflow_projection_v1",
+    "detail_endpoint": "/api/cns-continuous-service",
+    "radar_detail_endpoint": "/api/radar-surveillance-layout",
+    "result_required_fields": [
+      "status",
+      "baseline_status",
+      "post_plan_status",
+      "disclosure_lines",
+      "limitations",
+      "routes",
+      "parameters"
+    ],
+    "result_projection_field": "post_plan_projection",
+    "post_plan_required_fields": [
+      "available",
+      "status",
+      "route_count",
+      "applied_action_ids",
+      "projection_semantics",
+      "persisted_as_upstream",
+      "comparison",
+      "radar_surveillance_layout"
+    ],
+    "radar_summary_fields": [
+      "status",
+      "count",
+      "algorithm_id",
+      "algorithm_version",
+      "proposal_only",
+      "boundaries"
+    ],
+    "radar_omitted_fields": [
+      "items"
+    ]
+  }
+}

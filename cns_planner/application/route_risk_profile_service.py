@@ -23,6 +23,7 @@ from ..domain.route_risk_profile import (
     normalize_route_risk_profile_policy, route_risk_profile_policy_fingerprint,
 )
 from ..risk.route_profile import RouteRiskProfiler
+from .snapshot_read_pass import reused
 
 
 class RouteRiskProfileService:
@@ -62,8 +63,19 @@ class RouteRiskProfileService:
         return deepcopy(self.session.state["route_risk_profile_policy"])
 
     def result_snapshot(self):
-        """Read-only projection: every item carries a derived ``current_applicability``."""
+        """Read-only projection: every item carries a derived ``current_applicability``.
 
+        Round32-J：一次快照构建内复用同一次读取结果（见
+        :mod:`cns_planner.application.snapshot_read_pass`），避免在同一份未写入的
+        state 上重复全量重算。返回浅拷贝顶层，调用方改写自身返回对象不影响复用缓存。
+        """
+
+        return dict(reused(
+            self.session, "route_risk_profile.result_snapshot",
+            self._build_result_snapshot,
+        ))
+
+    def _build_result_snapshot(self):
         state = self.ensure_state()
         collection = normalize_route_risk_profile_collection(state.get("route_risk_profiles"))
         candidates = self._candidate_index()
