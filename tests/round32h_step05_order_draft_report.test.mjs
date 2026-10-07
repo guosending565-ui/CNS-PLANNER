@@ -43,7 +43,8 @@ const RID_ONLY_REQUIREMENT = {
 function step05Flow({
   readinessRequired = false,
   readinessStatus = 'passed',
-  radarStatus = 'not_calculated',
+  radarItems = [],
+  radarStatus = null,
   corridorStatus = 'passed',
   requiredCns = null,
 } = {}) {
@@ -52,7 +53,10 @@ function step05Flow({
     operational_routes: [{route_id: 'R0005', status: 'passed', path: [[122, 30], [122.1, 30.1]]}],
     spatial_3d: {altitude_layers: []},
     required_cns: requiredCns || {project_default: {}, route_overrides: {}},
-    radar_surveillance_layout: {status: radarStatus, items: [{route_id: 'R0005', status: radarStatus}]},
+    radar_surveillance_layout: {
+      status: radarStatus || (radarItems.length ? 'pending_confirmation' : 'not_calculated'),
+      items: radarItems,
+    },
     radar_surveillance_layout_readiness: {
       status: readinessStatus,
       required_for_current_routes: readinessRequired,
@@ -118,9 +122,9 @@ test('a RID-only surveillance requirement never blocks the CNS service corridor'
 });
 
 test('a required but not-ready radar baseline blocks the corridor with explicit business wording', () => {
-  const html = renderStep05({flow: step05Flow({readinessRequired: true, radarStatus: 'not_calculated', readinessStatus: 'not_ready'})});
+  const html = renderStep05({flow: step05Flow({readinessRequired: true, radarItems: []})});
   assert.ok(html.includes(RADAR_PREREQUISITE), 'the corridor segment must state the radar prerequisite');
-  assert.match(html, /当前状态：尚未在「雷达监视基线」运行规划/);
+  assert.match(html, /当前状态：尚未在「雷达监视基线」形成正式需求所要求航路的规划结果（R0005）/);
   // 绝不把 raw enum / 任务指纹当作普通用户可见文字
   assert.doesNotMatch(html, /当前状态：not_calculated/);
   assert.doesNotMatch(html, /当前状态：missing_data/);
@@ -129,9 +133,42 @@ test('a required but not-ready radar baseline blocks the corridor with explicit 
   assert.match(html, /P16 proposal 不等于直接改写 canonical Radar layout/);
 });
 
+test('a required route whose radar result went stale blocks the corridor', () => {
+  const html = renderStep05({flow: step05Flow({
+    readinessRequired: true, radarItems: [{route_id: 'R0005', status: 'stale'}],
+  })});
+  assert.ok(html.includes(RADAR_PREREQUISITE));
+  assert.match(html, /当前状态：雷达基线证据已过时（上游输入已变化）：R0005/);
+});
+
+test('a required radar baseline that cannot be evaluated yet blocks the corridor', () => {
+  const html = renderStep05({flow: step05Flow({
+    readinessRequired: true, readinessStatus: 'not_ready',
+    radarItems: [{route_id: 'R0005', status: 'proposal_ready'}],
+  })});
+  assert.ok(html.includes(RADAR_PREREQUISITE));
+  assert.match(html, /雷达监视基线尚不可评估：缺少前置数据/);
+});
+
+test('an unrelated stale radar item never blocks the corridor for the required route', () => {
+  // 真实项目形态：R0003 已废弃且其 Radar 条目 stale，唯一必需航路 R0005 是 current；
+  // 全项目汇总状态因此是 pending_confirmation —— 逐条判定不得据此阻塞 P14。
+  const html = renderStep05({flow: step05Flow({
+    readinessRequired: true, radarStatus: 'pending_confirmation',
+    radarItems: [
+      {route_id: 'R0003', status: 'stale'},
+      {route_id: 'R0005', status: 'proposal_ready'},
+    ],
+  })});
+  assert.doesNotMatch(html, /请先在「雷达监视基线」完成规划/);
+  assert.doesNotMatch(html, /雷达基线证据已变化/);
+  assert.match(html, /基线已就绪，可以评估 CNS 服务走廊/);
+});
+
 test('a changed radar baseline tells the user to re-evaluate from the corridor', () => {
   const html = renderStep05({flow: step05Flow({
-    readinessRequired: true, radarStatus: 'passed', readinessStatus: 'passed', corridorStatus: 'stale',
+    readinessRequired: true, readinessStatus: 'passed', corridorStatus: 'stale',
+    radarItems: [{route_id: 'R0005', status: 'proposal_ready'}],
   })});
   assert.ok(html.includes(RADAR_REGRESSION), 'the radar segment must point at the corridor after a change');
   assert.ok(html.split(RADAR_REGRESSION).length - 1 >= 2,
@@ -141,7 +178,8 @@ test('a changed radar baseline tells the user to re-evaluate from the corridor',
 
 test('an optional radar baseline never blocks the corridor even when it is stale', () => {
   const html = renderStep05({flow: step05Flow({
-    readinessRequired: false, radarStatus: 'stale', readinessStatus: 'not_ready', corridorStatus: 'passed',
+    readinessRequired: false, readinessStatus: 'not_ready', corridorStatus: 'passed',
+    radarItems: [{route_id: 'R0005', status: 'stale'}], radarStatus: 'stale',
   })});
   assert.doesNotMatch(html, /请先在「雷达监视基线」完成规划/);
   assert.doesNotMatch(html, /雷达基线证据已变化/);
@@ -150,7 +188,8 @@ test('an optional radar baseline never blocks the corridor even when it is stale
 
 test('a current radar baseline never manufactures a blockage', () => {
   const html = renderStep05({flow: step05Flow({
-    readinessRequired: true, radarStatus: 'passed', readinessStatus: 'passed', corridorStatus: 'passed',
+    readinessRequired: true, readinessStatus: 'passed', corridorStatus: 'passed',
+    radarItems: [{route_id: 'R0005', status: 'proposal_ready'}],
   })});
   assert.doesNotMatch(html, /请先在「雷达监视基线」完成规划/);
   assert.doesNotMatch(html, /雷达基线证据已变化/);

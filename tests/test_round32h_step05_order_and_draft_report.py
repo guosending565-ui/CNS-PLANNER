@@ -135,6 +135,24 @@ def test_rid_only_requirement_never_marks_radar_as_required():
     assert readiness["required_route_ids"] == []
 
 
+def test_legacy_subsystem_surveillance_requirement_alone_is_not_radar_required():
+    """真实项目形态：R0003/R0004 的 ``surveillance.required`` 为真但没有任何 canonical
+    service 声明（``services`` 为空），它们**不**构成 Radar 非合作监视需求。"""
+
+    requirement = radar_requirement(radar=False, rid=True)
+    requirement["route_overrides"] = {
+        "R0003": {"surveillance": {"required": True}},
+        "R0004": {"surveillance": {"required": True}},
+    }
+    state = state_with_requirement(requirement)
+    readiness = radar_service(state).readiness_snapshot()
+
+    assert radar_required_for(requirement, "R0003") is False
+    assert radar_required_for(requirement, "R0004") is False
+    assert readiness["required_for_current_routes"] is False
+    assert readiness["required_route_ids"] == []
+
+
 def test_required_route_overrides_alone_still_mark_radar_required():
     requirement = radar_requirement(radar=False, rid=True)
     requirement["route_overrides"] = {

@@ -851,29 +851,57 @@ export function radarBlocksNextStep(flow){
 /** Radar 基线状态（只读转印；raw enum 不出现在界面文字上）。 */
 function radarBaselineState(flow){
   const source=flow||{},layout=source.radar_surveillance_layout||{},readiness=source.radar_surveillance_layout_readiness||{};
+  const required=radarRequiredForCurrentRoutes(source);
+  const routeIds=(Array.isArray(readiness.required_route_ids)?readiness.required_route_ids:[])
+    .map(String).filter(Boolean);
+  const byRoute={};
+  for(const item of (Array.isArray(layout.items)?layout.items:[])){
+    if(item&&item.route_id!==null&&item.route_id!==undefined)byRoute[String(item.route_id)]=item;
+  }
+  const missing=[],stale=[],current=[];
+  for(const routeId of routeIds){
+    const item=byRoute[routeId];
+    if(!item)missing.push(routeId);
+    else if(String(item.status)==='stale')stale.push(routeId);
+    else current.push(routeId);
+  }
+  //: 必需航路**逐条**判定：只有被正式要求 Radar 的航路全部拿到 current 结果，
+  //: 基线才算就绪。`radar_surveillance_layout.status` 是**全项目汇总**，会被与正式
+  //: 需求无关的航路（例如已经废弃的 R0003）的 stale 条目拉成 pending_confirmation，
+  //: 绝不能据此阻塞 CNS 服务走廊。
+  const readinessStatus=String(readiness.status||'unknown');
+  const readinessReady=readinessStatus==='passed';
   return {
-    required:radarRequiredForCurrentRoutes(source),
+    required:required,
+    routeIds:routeIds,
+    missing:missing,
+    stale:stale,
+    current:current,
+    readinessReady:readinessReady,
+    ready:required&&routeIds.length>0&&missing.length===0&&stale.length===0&&readinessReady,
     status:String(layout.status||'not_calculated'),
-    readiness:String(readiness.status||'unknown'),
-    routeIds:Array.isArray(readiness.required_route_ids)?readiness.required_route_ids:[]
+    readiness:readinessStatus
   };
 }
 
-/** Radar 基线是否已形成 current 证据（passed + readiness passed）。 */
+/** Radar 基线是否已形成 current 证据（按必需航路逐条判定）。 */
 function radarBaselineReady(flow){
-  const model=radarBaselineState(flow);
-  return model.status==='passed'&&model.readiness==='passed';
+  return radarBaselineState(flow).ready;
 }
 
 /** Radar 基线状态 → 业务可读文字（绝不显示 raw enum）。 */
 function radarBaselineStateText(flow){
   const model=radarBaselineState(flow);
-  if(model.status==='not_calculated')return '尚未在「雷达监视基线」运行规划';
-  if(model.status==='stale')return '雷达基线证据已过时（上游输入已变化）';
-  if(model.status==='pending_confirmation')return '雷达基线结果待人工复核';
-  if(model.status==='passed')return model.readiness==='passed'
-    ?'雷达基线已就绪'
-    :'雷达基线结果已生成，但前置数据就绪性尚未通过';
+  if(model.missing.length){
+    return '尚未在「雷达监视基线」形成正式需求所要求航路的规划结果（'+model.missing.join('、')+'）';
+  }
+  if(model.stale.length){
+    return '雷达基线证据已过时（上游输入已变化）：'+model.stale.join('、');
+  }
+  if(model.ready)return '雷达基线已就绪（'+model.current.join('、')+'）';
+  if(!model.readinessReady){
+    return '雷达监视基线尚不可评估：缺少前置数据（例如真实铁塔障碍物事实、陆域掩膜或求解器）';
+  }
   return statusText(model.status);
 }
 
