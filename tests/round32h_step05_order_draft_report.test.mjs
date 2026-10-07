@@ -194,6 +194,8 @@ test('a current radar baseline never manufactures a blockage', () => {
   assert.doesNotMatch(html, /请先在「雷达监视基线」完成规划/);
   assert.doesNotMatch(html, /雷达基线证据已变化/);
   assert.match(html, /基线已就绪，可以评估 CNS 服务走廊/);
+  // 必需航路的当前状态必须在雷达分段里如实可见（不依赖全项目汇总徽标）
+  assert.match(html, /要求航路：R0005；当前状态：雷达基线已就绪（R0005）/);
 });
 
 // ---------------------------------------------------------------------------

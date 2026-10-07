@@ -977,8 +977,10 @@ function continuousServiceBlockerItems(flow){
 /** 监视雷达基线：必需性只来自后端 canonical 判据，因此阻塞项也只说这一件事。 */
 function radarBlockerItemsFor(flow){
   if(radarBlocksNextStep(flow)){
+    const model=radarBaselineState(flow);
     return [{text:'正式 CNS 需求包含 Radar 非合作监视服务',
-      detail:'因此必须先形成 current Radar 基线证据，再评估 CNS 服务走廊。'
+      detail:'要求航路：'+(model.routeIds.join('、')||'—')+'；当前状态：'+radarBaselineStateText(flow)
+        +'。必须先形成 current Radar 基线证据，再评估 CNS 服务走廊。'
         +'后续 CNS 设施规划（P16）可以在该基线之上提出 Radar panel action，'
         +'但 P16 proposal 不等于直接改写 canonical Radar layout。'}];
   }
