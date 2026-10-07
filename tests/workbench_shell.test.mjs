@@ -1031,7 +1031,9 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
 const STEP05_SEGMENTS={
   operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
   //: Round 2.5：新增「连续服务可接受性」分段（P17）；它是 canonical 链的最后一环。
-  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划']],
+  //: Round32-H：雷达监视基线（cns-res-radar）移到 CNS 服务走廊**之前** ——
+  //: Radar 基线是 P14 的上游服务证据，顺序错了会让 P14/P15/P16 立刻 stale。
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性']],
   advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']]
 };
 

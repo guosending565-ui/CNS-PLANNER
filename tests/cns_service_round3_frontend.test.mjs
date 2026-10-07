@@ -1065,7 +1065,8 @@ test('step05 still mounts the canonical chain and the radar task card', () => {
     cns_corridor_gap_assessment: CORRIDOR_GAP,
     cns_corridor_site_plan: SITE_PLAN,
   })});
-  assert.match(panel, /链条：三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划/);
+  //: Round32-H：Radar 基线位于服务走廊之前（真实依赖 Radar → P14 服务证据）。
+  assert.match(panel, /链条：三维覆盖 → 服务能力 → 雷达监视基线 → 服务走廊 → 能力缺口 → 设施规划/);
   assert.match(panel, /陆海分类事实（Surface Facts）/);
   assert.match(panel, /Communication \/ RID 工程规划 Profile/);
   assert.match(panel, /service 级冗余结论（Communication \/ RID）/);

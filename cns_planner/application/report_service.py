@@ -26,12 +26,15 @@ ARTIFACT_MIME = {"html": "text/html; charset=utf-8", "pdf": "application/pdf", "
 
 class PlanningReportService:
     def __init__(self, session, export_service, algorithm_catalog, snapshot,
-                 builder=None, html_renderer=None, pdf_renderer=None):
+                 builder=None, html_renderer=None, pdf_renderer=None, diagnostics=None):
         self.session, self.export_service = session, export_service
         self.algorithm_catalog, self.snapshot = algorithm_catalog, snapshot
         self.builder = builder or ReportBuilder()
         self.html_renderer = html_renderer or HtmlReportRenderer()
         self.pdf_renderer = pdf_renderer or PlaywrightPdfRenderer()
+        #: Round32-H：诊断草稿的**只读**事实来源（P17 门禁 / P18 前置 / Radar 基线）。
+        #: 由 Application 注入的 provider 提供，报告服务本身不复制任何业务判据。
+        self.diagnostics = diagnostics
 
     def result_snapshot(self):
         return deepcopy(self.session.state.get("cns_planning_reports") or empty_report_collection())
@@ -46,15 +49,36 @@ class PlanningReportService:
         state = self.session.state
         return {key: projected_result(state, key) for key in PROJECTED_RESULT_KEYS}
 
-    def preview(self, payload=None):
-        now = _utc_now()
-        model = self.builder.build(
-            self.session.state, self.algorithm_catalog(), now, final=False,
+    def draft_model(self, payload=None):
+        """构建草稿（``final=False``）ReportDataModel。**不经过 HTTP、不写项目**。
+
+        Round32-H：它与 :meth:`preview` 分开，是因为模型本身包含被深拷贝的
+        canonical 容器（真实项目实测 264 MB）。模型只在本进程内用于渲染 HTML；
+        HTTP 预览响应**只**下发渲染结果与有界诊断，绝不再把模型整体序列化回浏览器
+        （Round32-G 实测预览响应 821 MB，前端 `JSON.parse` 直接失败）。
+        """
+
+        return self.builder.build(
+            self.session.state, self.algorithm_catalog(), _utc_now(), final=False,
             projected_results=self._projected_results(),
         )
-        return {"status": "draft", "persisted": False, "report_data": model,
-                "source_artifacts": artifact_references(self.session.state),
-                "html": self.html_renderer.render(model)}
+
+    def preview(self, payload=None):
+        """只读诊断草稿：**不要求**已确认方案，也不写 ProjectState。
+
+        响应只含渲染后的 HTML 与有界诊断事实；不返回 ``report_data`` /
+        ``source_artifacts`` 这类大对象（它们对预览界面无用，却是 821 MB 响应的来源）。
+        """
+
+        model = self.draft_model(payload)
+        diagnostics = self.diagnostics() if callable(self.diagnostics) else None
+        return {
+            "status": "draft", "persisted": False,
+            "report_mode": model.get("report_mode"),
+            "report_data_fingerprint": model.get("report_data_fingerprint"),
+            "diagnostics": diagnostics or {},
+            "html": self.html_renderer.render(model, diagnostics=diagnostics),
+        }
 
     def generate(self, payload=None):
         state = self.session.state

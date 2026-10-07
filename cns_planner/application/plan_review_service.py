@@ -514,13 +514,21 @@ class PlanReviewService:
         return value
 
     @staticmethod
-    def _require_current_inputs(state):
+    def readiness_blockers(state):
+        """P18 初始化所需的 current 输入**只读**清单（与 fail-closed 门禁同一条规则）。
+
+        Round32-H：诊断草稿必须能说清"为什么现在不能确认"，而这条规则**只能有
+        一份实现**。``_require_current_inputs`` 因此改为消费本函数并抛出**第一条**
+        原因（消息逐字不变），报告草稿则把全部原因原样列出。
+        """
+
         #: Round 29-J：Step6（P18 initialize）的 currentness 门禁必须消费唯一权威
         #: ``projected_result`` —— 含算法语义 stale 只读投影。旧算法语义版本的 P14/P15/P16
         #: 即使 raw status 仍是 passed/failed，也必须在这里 fail-closed，绝不放行。
+        blockers = []
         for name in ("cns_corridor_assessment", "cns_corridor_gap_assessment"):
             if (projected_result(state, name) or {}).get("status") in (None, "not_calculated", "missing_data", "stale"):
-                raise ValueError(f"P18 需要 current {name}")
+                blockers.append(f"P18 需要 current {name}")
         # P16 必须 current：candidate_sites / site_planner /
         # corridor_site_planning_policy 的变化只让 P16 变 stale（P14/P15 仍 current），
         # device catalog 的变化会连带 P14；两种情况下若放行，P18 都可能依据**旧**的
@@ -530,7 +538,14 @@ class PlanReviewService:
         # fail-closed 不会让审阅无法初始化。
         proposal = projected_result(state, "cns_corridor_site_plan") or {}
         if proposal.get("status") not in ("proposal_ready", "no_action_required", "no_eligible_proposal", "evidence_required"):
-            raise ValueError("P18 需要 current P16 proposal/status")
+            blockers.append("P18 需要 current P16 proposal/status")
+        return blockers
+
+    @staticmethod
+    def _require_current_inputs(state):
+        blockers = PlanReviewService.readiness_blockers(state)
+        if blockers:
+            raise ValueError(blockers[0])
 
     def _rejected(self, status, reason):
         response = self.snapshot()

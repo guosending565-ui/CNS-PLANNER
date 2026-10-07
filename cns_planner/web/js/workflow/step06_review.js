@@ -809,7 +809,7 @@ function reportPanel(flow){
       +'<div class="button-row"><button class="secondary" id="previewPlanningReport">预览报告</button><button class="primary" id="generatePlanningReport" data-report-gate="'+(hasPlan?'ready':'blocked')+'" '+(!hasPlan?'disabled':'')+'>生成正式报告</button></div>'
       +'<div class="button-row"><button class="secondary" id="downloadReportHtml" '+(!hasReport?'disabled':'')+'>下载HTML</button><button class="secondary" id="downloadReportPdf" '+(!hasReport?'disabled':'')+'>下载PDF</button></div>'
       +'<button class="secondary full" id="downloadReportPackage" '+(!hasReport?'disabled':'')+'>下载规划数据包</button>',
-      '预览报告只生成草稿：草稿不写入项目、不产生报告记录，也不进入导出。PDF 使用与 HTML 完全相同的冻结报告数据与页面；如提示 PDF 能力缺失，请执行 python -m playwright install chromium 后重试。')
+      '预览报告只生成**诊断草稿**：草稿不要求已确认方案，会列出当前结论、未满足的规划目标、Radar 基线与「为什么现在不能确认」，但不构成正式报告、不写入项目、不产生报告记录，也不进入导出。正式报告（HTML / PDF / 规划数据包）仍要求已确认或已应用的方案。PDF 使用与 HTML 完全相同的冻结报告数据与页面；如提示 PDF 能力缺失，请执行 python -m playwright install chromium 后重试。')
     +reviewBlock(SIX_SECTIONS.next,
       nextStepNote('报告对应旧项目状态时系统不会自动覆盖或删除旧报告：请重新确认并应用方案，再生成新报告。'));
 }

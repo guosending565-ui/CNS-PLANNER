@@ -955,6 +955,25 @@ class RadarSurveillanceLayoutService:
             if isinstance(item, dict)
         ]
         passed_routes = [item for item in routes if str(item.get("status")) == "passed"]
+        #: Round32-H：Radar **是否被正式需求要求**必须由唯一的 domain 权威判据给出
+        #: （``radar_required_for`` = ``SERVICE_KEY_RADAR_NONCOOPERATIVE`` +
+        #: ``service_requirement_for``）。这里只把结论转印成只读字段，绝不新增第二套
+        #: 判据：RID cooperative 的 ``surveillance.required`` / ``coverage_requirement``
+        #: 是**另一条服务**（``S:rid_cooperative``）的需求，不能据此推断 Radar 必需。
+        #:
+        #: 候选航路集合与 P14 装配 ``build_radar_service_evidence(route_ids=...)``
+        #: **逐字相同**：当前 ``operational_routes`` 的 route_id，外加
+        #: ``required_cns.route_overrides`` 里显式声明了 Radar 的 route_id
+        #: （此类航路即便不在 operational_routes 中也仍会生成 Radar 服务证据）。
+        required_cns = state.get("required_cns") or {}
+        required_route_ids = sorted({
+            route_id
+            for route_id in (
+                [str(item.get("route_id") or "") for item in routes]
+                + [str(key or "") for key in (required_cns.get("route_overrides") or {})]
+            )
+            if route_id and radar_required_for(required_cns, route_id)
+        })
         towers = _tower_items(state)
         profiles = (state.get("tower_obstacle_profiles") or {})
         profiles_status = profiles.get("status") if isinstance(profiles, dict) else None
@@ -1067,6 +1086,12 @@ class RadarSurveillanceLayoutService:
             "route_source": DEMO_ROUTE_SOURCE if demo_preview_only else "operational_routes",
             "operationally_adopted": False if demo_preview_only else None,
             "blockers": blockers,
+            #: Round32-H：Radar 必需性的**唯一权威只读投影**。前端（Step05 顺序门禁）
+            #: 与报告诊断草稿只消费这两个字段，不得从 surveillance.required /
+            #: coverage_requirement / performance 之类的通用字段另行推断。
+            "required_for_current_routes": bool(required_route_ids),
+            "required_route_ids": required_route_ids,
+            "required_basis": "domain.radar_service_evidence.radar_required_for",
             "passed_operational_route_count": len(passed_routes),
             "operational_route_count": len(routes),
             "current_layered_candidate": (

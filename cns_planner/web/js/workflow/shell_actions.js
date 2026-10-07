@@ -31,20 +31,29 @@ export function createShellActions({getNode,panelError}){
 
   /**
    * 预览报告草稿（新窗口）。预览**不写入项目**。
+   *
+   * Round32-H：草稿是**诊断草稿**——它不要求已确认方案，也不要求 P18 review 已初始化
+   * （fail-closed 的正式门禁只约束「生成正式报告」）。服务端只回传渲染后的 HTML 与
+   * 有界诊断事实，因此这里必须校验 `html` 是否真的存在，并把缺失转成可读原因，
+   * 而不是让浏览器抛 `Unexpected end of JSON input` 这类与业务无关的语法错误。
+   *
    * @param {(path:string,payload:object)=>Promise<object>} computeAction
    */
   async function previewReport(computeAction){
     const target=window.open('about:blank','_blank');
     try{
       const result=await computeAction('/api/cns-planning-report/preview',{});
-      const blob=new Blob([result.html],{type:'text/html;charset=utf-8'}),url=URL.createObjectURL(blob);
+      const html=result&&typeof result.html==='string'?result.html:'';
+      if(!html)throw Error('服务端没有返回可显示的诊断草稿内容');
+      const blob=new Blob([html],{type:'text/html;charset=utf-8'}),url=URL.createObjectURL(blob);
       if(target)target.location.href=url;
       else throw Error('浏览器阻止了预览窗口，请允许本地工作台打开新窗口');
       setTimeout(()=>URL.revokeObjectURL(url),60000);
-      panelError('报告草稿已在新窗口打开；预览不会写入项目。');
+      panelError('诊断草稿已在新窗口打开；草稿不是已确认规划方案，也不是正式报告，且不会写入项目。','hint');
     }catch(exc){
       if(target)target.close();
-      throw Error('报告预览失败：'+exc.message+'。请检查项目状态后重试。');
+      throw Error('报告预览失败：'+((exc&&exc.message)||exc)
+        +'。预览只是只读诊断草稿，不需要已确认方案；请检查项目状态后重试。');
     }
   }
 

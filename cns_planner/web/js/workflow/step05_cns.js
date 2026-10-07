@@ -27,7 +27,12 @@ export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,
 // 二级分段：同一一级标签下同屏只呈现一个任务，id 在整步内唯一。
 // 名称是业务语言；工程编号（P7…P18）只允许出现在高级标签的 advancedAuditNote 里。
 const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']];
-const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划']];
+// Round32-H：**Radar 基线必须排在 CNS 服务走廊之前**。
+// 真实业务依赖是 RadarSurveillanceLayout → build_radar_service_evidence() → P14：
+// Radar 输入指纹变化会让 cns_corridor()（及 P15/P16）失效。旧顺序把「雷达监视规划」
+// 放在 P16 之后，普通用户按 UI 顺序走完 Step05 必然让 P14/P15/P16 全部 stale，
+// Step06 直接失败——那是流程陷阱，不是业务判据问题。
+const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性']];
 const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']];
 
 // ---- 六区结构（B4X §20） ----------------------------------------------------
@@ -36,10 +41,14 @@ const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2'
 // 硬约束：**同一分段内最多一个 primary 按钮**；其余动作一律 secondary 或移入高级标签。
 // 每个分段的"下一步"只说明它在 canonical 链里的推进方向，不新增任何按钮。
 
-/** canonical 生产链（result 标签的固定顺序，不含兼容与雷达分支）。 */
+/** canonical 生产链（result 标签的固定顺序，不含兼容分支）。 */
 export const CNS_CANONICAL_CHAIN=[
   ['cns-res-coverage','三维覆盖'],
   ['cns-res-capability','服务能力'],
+  //: Round32-H：Radar 基线**不是**"设施规划之后的附加任务"，而是服务走廊的前置证据：
+  //: 当正式 CNS 需求包含 Radar 非合作监视服务时，必须先形成 current Radar 基线证据，
+  //: 才能评估 CNS 服务走廊（真实依赖 Radar → P14 service evidence）。
+  ['cns-res-radar','雷达监视基线'],
   ['cns-res-corridor','服务走廊'],
   ['cns-res-gap','能力缺口'],
   ['cns-res-site','设施规划'],
@@ -815,26 +824,95 @@ function existingBlockerItems(existing){
   return [];
 }
 
-/** 监视能力是否被显式要求成为阻塞项（默认 OPTIONAL）。 */
-function radarRequirementDeclared(flow){
-  const requirement=(flow.required_cns||{}).project_default||{},surveillance=requirement.surveillance||{};
-  if(surveillance.required===true)return true;
-  const coverage=surveillance.coverage_requirement;
-  if(coverage!==null&&coverage!==undefined&&coverage!=='')return true;
-  const performance=surveillance.performance||{};
-  for(const key of ['min_detection_range_m','min_detection_probability','max_update_interval_s','max_track_loss_s']){
-    const value=performance[key];
-    if(value!==null&&value!==undefined&&value!=='')return true;
-  }
-  return false;
+/**
+ * Radar 非合作监视是否被**正式需求**要求（Round32-H）。
+ *
+ * 唯一权威判据是后端 canonical 的 `radar_required_for()`
+ * （`SERVICE_KEY_RADAR_NONCOOPERATIVE` + `service_requirement_for`），由 Radar
+ * readiness 以只读字段下发：
+ * `radar_surveillance_layout_readiness.required_for_current_routes` /
+ * `required_route_ids`。
+ *
+ * 前端**不再**从 `surveillance.required` / `coverage_requirement` / `performance`
+ * 推断 Radar 必需性：RID cooperative 同样属于 `surveillance`，那只是
+ * `S:rid_cooperative` 的需求，不能据此认定 Radar noncooperative 必需。
+ * 字段缺失（旧快照 / 未注入 readiness）时不阻塞，绝不猜成 required。
+ */
+export function radarRequiredForCurrentRoutes(flow){
+  const readiness=(flow||{}).radar_surveillance_layout_readiness||{};
+  return readiness.required_for_current_routes===true;
 }
 
-/** 监视雷达分段是否是阻塞项（默认不阻塞）。 */
+/** 监视雷达基线分段是否是阻塞项（只消费后端权威必需性字段）。 */
 export function radarBlocksNextStep(flow){
-  const source=flow||{};
-  if(radarRequirementDeclared(source))return true;
-  const policy=source.radar_surveillance_policy||{};
-  return policy.surveillance_required===true||policy.required===true;
+  return radarRequiredForCurrentRoutes(flow);
+}
+
+/** Radar 基线状态（只读转印；raw enum 不出现在界面文字上）。 */
+function radarBaselineState(flow){
+  const source=flow||{},layout=source.radar_surveillance_layout||{},readiness=source.radar_surveillance_layout_readiness||{};
+  return {
+    required:radarRequiredForCurrentRoutes(source),
+    status:String(layout.status||'not_calculated'),
+    readiness:String(readiness.status||'unknown'),
+    routeIds:Array.isArray(readiness.required_route_ids)?readiness.required_route_ids:[]
+  };
+}
+
+/** Radar 基线是否已形成 current 证据（passed + readiness passed）。 */
+function radarBaselineReady(flow){
+  const model=radarBaselineState(flow);
+  return model.status==='passed'&&model.readiness==='passed';
+}
+
+/** Radar 基线状态 → 业务可读文字（绝不显示 raw enum）。 */
+function radarBaselineStateText(flow){
+  const model=radarBaselineState(flow);
+  if(model.status==='not_calculated')return '尚未在「雷达监视基线」运行规划';
+  if(model.status==='stale')return '雷达基线证据已过时（上游输入已变化）';
+  if(model.status==='pending_confirmation')return '雷达基线结果待人工复核';
+  if(model.status==='passed')return model.readiness==='passed'
+    ?'雷达基线已就绪'
+    :'雷达基线结果已生成，但前置数据就绪性尚未通过';
+  return statusText(model.status);
+}
+
+/**
+ * CNS 服务走廊（P14）的 Radar 前置判定（只读，不改任何 gate）。
+ *
+ * 只有后端权威字段说明 Radar 非合作监视**被正式要求**时才需要 current Radar
+ * 证据；Radar optional 时绝不阻止 P14。返回 null 表示没有 Radar 前置问题。
+ */
+function radarPrerequisiteForCorridor(flow){
+  const model=radarBaselineState(flow);
+  if(!model.required)return null;
+  const corridorStatus=String(((flow||{}).cns_corridor_assessment||{}).status||'not_calculated');
+  if(!radarBaselineReady(flow)){
+    return {kind:'blocker',
+      text:'正式需求包含 Radar 非合作监视服务。请先在「雷达监视基线」完成规划，再评估 CNS 服务走廊。',
+      detail:'当前状态：'+radarBaselineStateText(flow)
+        +'。Radar 基线是服务走廊的 Radar 服务证据来源（RadarSurveillanceLayout → Radar 服务证据 → 服务走廊）；'
+        +'未形成 current 基线时评估出来的走廊与后续缺口/设施规划会被上游变化立刻作废。'};
+  }
+  if(corridorStatus==='stale'||corridorStatus==='not_calculated'||corridorStatus==='missing_data'){
+    return {kind:'blocker',
+      text:'雷达基线证据已变化。服务走廊及后续结果需要重新评估，请从「CNS 服务走廊」继续。',
+      detail:'Radar 基线已是 current，但服务走廊尚未基于该基线重新评估（当前状态：'+statusText(corridorStatus)
+        +'）。系统不会自动重算服务走廊、能力缺口或设施规划，也不会自动触发设施规划的长任务。'};
+  }
+  return null;
+}
+
+/**
+ * Radar 分段是否给出"上游已变、需要重算服务走廊"的引导（只读）。
+ * Radar 重算得到完全相同的指纹时 corridor 不会 stale，因此这里不会制造无意义提示。
+ */
+function radarDownstreamRegressionNote(flow){
+  const model=radarBaselineState(flow);
+  if(!model.required||!radarBaselineReady(flow))return '';
+  const corridorStatus=String(((flow||{}).cns_corridor_assessment||{}).status||'not_calculated');
+  if(!['stale','not_calculated','missing_data'].includes(corridorStatus))return '';
+  return '雷达基线证据已变化。服务走廊及后续结果需要重新评估，请从「CNS 服务走廊」继续。';
 }
 
 /** Round 2.5：P17 连续服务可接受性的阻塞项与工程假设（只读判定，不改变任何门禁）。 */
@@ -868,15 +946,27 @@ function continuousServiceBlockerItems(flow){
   return items;
 }
 
-/** 监视雷达规划：默认可选，因此没有阻塞项时给出明确说明（不写"通过"）。 */
+/** 监视雷达基线：必需性只来自后端 canonical 判据，因此阻塞项也只说这一件事。 */
 function radarBlockerItemsFor(flow){
   if(radarBlocksNextStep(flow)){
-    return [{text:'监视能力已被需求或监视政策显式要求',
-      detail:'因此雷达监视规划的划设结果需要人工复核；未完成前不要把它当作已确认结果。'}];
+    return [{text:'正式 CNS 需求包含 Radar 非合作监视服务',
+      detail:'因此必须先形成 current Radar 基线证据，再评估 CNS 服务走廊。'
+        +'后续 CNS 设施规划（P16）可以在该基线之上提出 Radar panel action，'
+        +'但 P16 proposal 不等于直接改写 canonical Radar layout。'}];
   }
   return [{kind:'assumption',
-    text:'监视雷达规划默认是可选的：没有显式监视需求时不阻塞下一步',
-    detail:'只有需求或监视政策明确要求监视能力时，它才成为阻塞项；本分支不写入正式规划结果。'}];
+    text:'正式需求未要求 Radar 非合作监视：雷达监视基线不阻塞 CNS 服务走廊',
+    detail:'必需性只由后端 radar_required_for() 判定（S:radar_noncooperative）；'
+      +'RID 合作监视（S:rid_cooperative）是**另一条服务**的需求，不能据此把 Radar 判成必需。'
+      +'本分支不写入正式规划结果。'}];
+}
+
+/** 服务走廊段内的 Radar 前置提示（只读；没有前置问题时返回空串）。 */
+function radarCorridorPrerequisiteNote(flow){
+  const item=radarPrerequisiteForCorridor(flow);
+  if(!item)return '';
+  return '<div class="inline-error">'+escapeHtml(item.text)
+    +(item.detail?'<br><small>'+escapeHtml(item.detail)+'</small>':'')+'</div>';
 }
 
 /** 下一步栏：说明推进方向，并在不能推进时给出真实原因。 */
@@ -935,11 +1025,17 @@ export function render({flow}){
     detail:'三维覆盖按正式运行航路采样；没有航路时无法评估。'});
   if(!((flow.spatial_3d||{}).altitude_layers||[]).length)coverageBlockerItems.push({text:'高度层目录尚不可用',
     detail:'三维覆盖需要已确认的高度层定义。'});
-  const corridorBlockerItems=[(coverage3d.status&&coverage3d.status!=='not_calculated')
+  // Round32-H：服务走廊的**Radar 前置**必须排在第一位——它是真实的顺序依赖
+  // （Radar 基线证据进入 P14），不是"附加任务"。Radar optional 时本函数返回 null，
+  // 因此不会阻止 P14。
+  const radarPrereq=radarPrerequisiteForCorridor(flow);
+  const corridorBlockerItems=[];
+  if(radarPrereq)corridorBlockerItems.push(radarPrereq);
+  corridorBlockerItems.push((coverage3d.status&&coverage3d.status!=='not_calculated')
     ?{kind:'assumption',text:'服务走廊按三维几何覆盖口径构建，不包含传播与干扰评估',
       detail:'体积为离散体积代理，不是法规批准空间。'}
     :{text:'尚未生成三维几何覆盖结果',
-      detail:'服务走廊依赖三维几何覆盖口径；请先运行三维覆盖评估。'}];
+      detail:'服务走廊依赖三维几何覆盖口径；请先运行三维覆盖评估。'});
   const gapBlockerItems=[(corridor.status&&corridor.status!=='not_calculated')
     ?{kind:'assumption',text:'能力缺口按"规划目标与服务走廊对比"判定，不代表运行中断或安全事件',
       detail:'证据不足的体元单独统计，绝不算作满足。'}
@@ -1007,10 +1103,15 @@ export function render({flow}){
     +'<h4>service-aware 规划方案</h4><div class="gap-results">'+facilityPlanCards(corridorSitePlan)+'</div>'
     +'<h4>残余确认目标</h4><div class="gap-results">'+residualTargetsSummary(corridorSitePlan)+'</div>';
 
-  // ---- 雷达监视规划：独立 production 分支，默认 OPTIONAL -----------------------
-  const radarPanel='<h3>雷达监视规划 '+wbBadge(flow.radar_surveillance_layout?.status||'not_calculated','未计算')+'</h3>'
-    +'<div class="parameter-note">本分支<b>默认是可选的</b>：没有显式监视需求时，雷达监视规划不阻塞下一步，其结果也只是候选划设方案，不构成"正式结果已采纳"。</div>'
-    +advancedAuditNote('雷达监视规划来自独立的雷达划设任务卡（算法标识 radar_surveillance_layout_v1）；卡片内部的算法版本号、就绪状态与挂高历史字段等术语均为工程内部标识。卡片同时原样回显后端字段取值（例如 unverified / eligible / confirmed），用户可读解释见括号内中文或下方阻塞项说明。')
+  // ---- 雷达监视基线：P14 的前置服务证据（正式依赖），默认 OPTIONAL ----------------
+  const radarPanel='<h3>雷达监视基线 '+wbBadge(flow.radar_surveillance_layout?.status||'not_calculated','未计算')+'</h3>'
+    +'<div class="parameter-note">当正式 CNS 需求包含 Radar 非合作监视服务时，'
+    +'应先形成 current Radar 基线证据，再评估 CNS 服务走廊；'
+    +'后续 CNS 设施规划（P16）可以在该基线之上提出 Radar panel action，'
+    +'但 P16 proposal 不等于直接改写 canonical Radar layout。<br>'
+    +'本分支<b>默认是可选的</b>：必需性只由后端 canonical 的 Radar 服务需求判定，'
+    +'未要求时它不阻塞 CNS 服务走廊，其结果也只是候选划设方案，不构成"正式结果已采纳"。</div>'
+    +advancedAuditNote('雷达监视基线来自独立的雷达划设任务卡（算法标识 radar_surveillance_layout_v1）；卡片内部的算法版本号、就绪状态与挂高历史字段等术语均为工程内部标识。卡片同时原样回显后端字段取值（例如 unverified / eligible / confirmed），用户可读解释见括号内中文或下方阻塞项说明。')
     +renderRadarSurveillanceLayoutPanel(flow)
     +radarServicePanel;
 
@@ -1065,9 +1166,22 @@ export function render({flow}){
           +capabilityPanel)
         +wbBlock('阻塞项与工程假设',blockerList(deviceBlockers,'当前没有阻塞项'))
         +nextHint(chainNext('cns-res-capability'))],
+      ['cns-res-radar','雷达监视基线',
+        wbBlock('雷达监视基线',wbSegHint(RESULT_SEGMENTS,'cns-res-radar')+chainNote('雷达监视基线')
+          +segIntro('当正式 CNS 需求包含 Radar 非合作监视服务时，先形成 current Radar 基线证据；它随后进入 CNS 服务走廊的 Radar 服务证据。',
+            '真实铁塔障碍物事实、陆域图层、可用的雷达设备资料；是否必需由后端 canonical 的 Radar 服务需求判定。')
+          +radarPanel)
+        +wbBlock('阻塞项与工程假设',blockerList(radarBlockerItems,'当前没有阻塞项；正式需求未要求 Radar 非合作监视'))
+        +nextHint(radarBlocksNextStep(flow)
+          ?(radarDownstreamRegressionNote(flow)
+            ||(radarBaselineReady(flow)
+              ?chainNext('cns-res-radar')+'；基线已就绪，可以评估 CNS 服务走廊。'
+              :'请先在「雷达监视基线」完成规划，形成 current 基线证据后再评估 CNS 服务走廊。'))
+          :chainNext('cns-res-radar')+'；本分支可选：无论是否运行雷达监视基线，都不影响进入下一步。')],
       ['cns-res-corridor','CNS 服务走廊',
         wbBlock('CNS 服务走廊',wbSegHint(RESULT_SEGMENTS,'cns-res-corridor')+chainNote('服务走廊')
-          +segIntro('把服务能力转成沿航路的工程服务走廊与缺口体元。','三维几何覆盖结果、已确认的高度层定义与陆海分类事实。')
+          +segIntro('把服务能力转成沿航路的工程服务走廊与缺口体元。','三维几何覆盖结果、已确认的高度层定义与陆海分类事实；当正式需求要求 Radar 非合作监视时，还需要 current 的「雷达监视基线」证据。')
+          +radarCorridorPrerequisiteNote(flow)
           +corridorPanel)
         +wbBlock('四服务走廊证据（service-aware）',corridorServicePanel)
         +wbBlock('阻塞项与工程假设',blockerList(corridorBlockerItems,'当前没有阻塞项'))
@@ -1093,15 +1207,7 @@ export function render({flow}){
         +wbBlock('阻塞项与工程假设',blockerList(continuousServiceBlockerItems(flow),'当前没有与连续服务可接受性相关的阻塞项'))
         +nextHint(step6GateModel(flow).confirmationAllowed
           ? '连续服务结论允许进入方案评审；若存在 managed gap，方案评审与报告中必须逐段披露，不得表述为"全覆盖"。'
-          : '连续服务结论为不可接受或不可判定（unknown）：请先补齐工程依据或调整方案后重新评估，再进入方案评审。')],
-      ['cns-res-radar','雷达监视规划',
-        wbBlock('雷达监视规划',wbSegHint(RESULT_SEGMENTS,'cns-res-radar')
-          +segIntro('在监视能力被显式要求或需要工程对照时，给出雷达布站的候选划设方案。','真实铁塔障碍物事实、陆域图层与可用的雷达设备资料。')
-          +radarPanel)
-        +wbBlock('阻塞项与工程假设',blockerList(radarBlockerItems,'当前没有阻塞项；雷达监视规划默认可选'))
-        +nextHint(radarBlocksNextStep(flow)
-          ?'监视能力已被显式要求：请人工复核雷达监视规划结果后，再进入下一步。'
-          :'本分支可选：无论是否运行雷达监视规划，都不影响进入下一步。')]
+          : '连续服务结论为不可接受或不可判定（unknown）：请先补齐工程依据或调整方案后重新评估，再进入方案评审。')]
     ]})
     +wbPanel('advanced','',{segments:[
       ['cns-adv-timeline','运行时间线',wbBlock('运行时间线',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-timeline')+timelinePanel)],
@@ -1110,7 +1216,7 @@ export function render({flow}){
       ['cns-adv-closedloop','高级方案影响试算',wbBlock('高级方案影响试算',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-closedloop')+closedLoopPanel)
         +'<div class="flow-summary">生命风险：'+riskState('life')+' · 财产风险：'+riskState('property')+'<br>高级与旧版兼容结果均不用于正式规划门禁。</div>']
     ]});
-  return shell('05','CNS规划','生产链：三维覆盖 → 服务能力 → 服务走廊 → 能力缺口 → 设施规划；雷达监视规划为可选分支。',body+stepNext(flow,stepBlockers));
+  return shell('05','CNS规划','生产链：三维覆盖 → 服务能力 → 雷达监视基线 → 服务走廊 → 能力缺口 → 设施规划 → 连续服务可接受性；当正式 CNS 需求包含 Radar 非合作监视服务时，雷达监视基线是 CNS 服务走廊的前置证据。',body+stepNext(flow,stepBlockers));
 }
 
 export function bind(c){

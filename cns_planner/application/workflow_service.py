@@ -675,6 +675,10 @@ class WorkflowService:
         self.export_service = ExportService(self.session, snapshot)
         self.report_service = PlanningReportService(
             self.session, self.export_service, self.algorithm_registry.catalog, snapshot,
+            #: Round32-H：诊断草稿只消费既有权威的只读投影（P17 Step6 门禁 / P18
+            #: current 前置 / Radar 基线必需性与结论）。provider 是绑定方法，因此
+            #: 与各 service 的构造顺序无关。
+            diagnostics=self.report_draft_diagnostics,
         )
         self.building_clearance_service = BuildingClearanceService(
             self.session, BuildingClearanceV1(), self.invalidation_service, snapshot,
@@ -1769,6 +1773,96 @@ class WorkflowService:
     def confirm_cns_plan(self, payload): return self.plan_review_service.confirm(payload)
     def apply_confirmed_cns_plan(self, payload): return self.plan_review_service.apply(payload)
     def preview_cns_planning_report(self, payload=None): return self.report_service.preview(payload)
+
+    def report_draft_diagnostics(self):
+        """诊断草稿所需的**只读**权威事实（Round32-H）。
+
+        只做三件事，且每一件都直接消费既有权威，不新增第二套判定：
+
+        * ``confirm_gate`` —— P17 的 canonical Step6 门禁（``continuous_service_service
+          .step6_gate()``，含"允许的结论 / baseline / post-plan / 原因"）；
+        * ``plan_review_blockers`` —— P18 初始化所需的 current 输入
+          （``PlanReviewService.readiness_blockers``，与 fail-closed 门禁同一份规则）；
+        * ``radar_baseline`` —— Radar canonical 基线的有界投影，其中"是否被正式需求
+          要求"只转印 ``radar_required_for()``（Radar readiness 的
+          ``required_for_current_routes`` / ``required_route_ids``）。
+
+        它绝不写 ProjectState，也不放宽任何门禁。
+        """
+
+        state = self.session.state
+        gate = None
+        service = getattr(self, "continuous_service_service", None)
+        if service is not None:
+            try:
+                gate = service.step6_gate()
+            except Exception:  # pragma: no cover - 只读诊断绝不因缺输入而中断预览
+                gate = None
+        blockers = []
+        review = getattr(self, "plan_review_service", None)
+        if review is not None:
+            try:
+                blockers = list(review.readiness_blockers(state))
+            except Exception:  # pragma: no cover
+                blockers = []
+        return {
+            "confirm_gate": deepcopy(gate) if isinstance(gate, dict) else {},
+            "plan_review_blockers": blockers,
+            "plan_review_status": (projected_result(state, "cns_plan_review") or {}).get("status"),
+            "radar_baseline": self._radar_baseline_diagnostics(),
+        }
+
+    def _radar_baseline_diagnostics(self):
+        """Radar 基线的有界只读投影（不重算、不写状态、不下发逐 sample 明细）。"""
+
+        service = getattr(self, "radar_surveillance_layout_service", None)
+        if service is None:
+            return None
+        try:
+            readiness = service.readiness_snapshot()
+            summary = service.summary_snapshot()
+        except Exception:  # pragma: no cover - 只读诊断绝不中断预览
+            return None
+        layout = projected_result(self.session.state, "radar_surveillance_layout") or {}
+        stale_reasons = sorted({
+            str(item.get("stale_reason")) for item in (summary.get("items") or [])
+            if item.get("stale_reason")
+        })
+        layout_status = layout.get("status")
+        if layout_status == "stale" or stale_reasons:
+            current_applicability = "stale"
+        elif layout_status in (None, "not_calculated"):
+            current_applicability = None
+        else:
+            current_applicability = "current"
+        return {
+            "status": layout_status or summary.get("status"),
+            "current_applicability": current_applicability,
+            "stale_reason": "、".join(stale_reasons) or layout.get("stale_reason"),
+            "algorithm_id": layout.get("algorithm_id"),
+            "algorithm_version": layout.get("algorithm_version"),
+            "required_for_current_routes": readiness.get("required_for_current_routes"),
+            "required_route_ids": deepcopy(readiness.get("required_route_ids") or []),
+            "required_basis": readiness.get("required_basis"),
+            "readiness_status": readiness.get("status"),
+            "readiness_blockers": deepcopy(readiness.get("blockers") or []),
+            "routes": [
+                {
+                    "route_id": item.get("route_id"),
+                    "status": item.get("status"),
+                    "stage": item.get("stage"),
+                    "stage_label": item.get("stage_label"),
+                    "selected_panel_count": item.get("selected_panel_count"),
+                    "selected_tower_count": item.get("selected_tower_count"),
+                    "radar_ii_site_count": item.get("radar_ii_site_count"),
+                    "solver": deepcopy(item.get("solver")) if isinstance(item.get("solver"), dict) else None,
+                    "gap_reason": item.get("gap_reason"),
+                    "stale_reason": item.get("stale_reason"),
+                }
+                for item in (summary.get("items") or [])
+            ],
+        }
+
     def generate_cns_planning_report(self, payload=None): return self.report_service.generate(payload)
     def cns_planning_report_artifact(self, report_id, kind): return self.report_service.artifact(report_id, kind)
     def set_safety_policy(self, payload): return self.safety_policy_service.set_policy(payload)

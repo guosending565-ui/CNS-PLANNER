@@ -14,13 +14,37 @@ STATUS_ZH = {
     "applied": "已应用", "real": "真实数据", "synthetic": "模拟数据", "manual": "人工录入",
     "objectives_met": "规划目标满足", "objectives_not_met": "规划目标未满足",
     "objectives_unknown": "规划目标证据不足", "objectives_not_configured": "未配置规划目标",
+    #: Round32-H：诊断草稿与 P16/Radar 可读区块需要的报告词表。未登记取值仍原样显示，
+    #: 但这些 canonical 取值**不得**以 raw enum 形式出现在报告正文里。
+    "not_calculated": "未计算", "not_ready": "尚不可评估",
+    "unacceptable": "不可接受（业务失败）",
+    "acceptable_with_managed_gap": "可接受（含受管理的缺口）",
+    "fully_satisfied": "完全满足",
+    "met": "满足", "not_met": "未满足", "not_configured": "未配置",
+    "proposal_ready": "规划提案已生成", "no_action_required": "无需新增动作",
+    "no_eligible_proposal": "无合格提案", "evidence_required": "需要补充证据",
+    "infeasible": "不可行（已证明）", "refinement_incomplete": "复核未完成（未证明）",
+    "search_incomplete": "搜索未完成（未证明）", "not_run": "未求解",
+    "solver_error": "求解器错误", "solver_unavailable": "求解器不可用",
+    "optimal": "已证明最优",
+    "independent_site_count_limited": "独立站址数量受限（已证明的物理限制）",
 }
+
+
+#: Round32-H：审计 JSON 内嵌上限（字符）。
+#:
+#: 真实项目的 P16 容器（候选动作 + 逐目标证据）与 P14 体元证据可达数百 MB；把它们
+#: 全量 ``json.dumps`` 进 HTML 会让报告达到数百 MB —— 浏览器打不开、PDF 渲染不了，
+#: 报告预览接口的响应也大到前端无法解析（Round32-G 实测 821 MB 响应）。
+#: 超限时只内嵌**有界结构索引**并显式披露省略量；完整数据仍在报告 JSON 产物
+#: （report.json）与项目状态里，证据不丢失，也不改写任何业务结论。
+MAX_EMBEDDED_JSON_CHARS = 262144
 
 
 class HtmlReportRenderer:
     template_version = "cns-planning-report-zh-v1"
 
-    def render(self, model):
+    def render(self, model, *, diagnostics=None):
         sections = model.get("sections") or {}
         project = sections.get("project_overview") or {}
         rows = (model.get("statistics") or {}).get("rows") or []
@@ -30,7 +54,9 @@ class HtmlReportRenderer:
 <header><p class="eyebrow">CNS-PLANNER · {e(model.get('report_mode'))}</p><h1>CNS规划方案报告</h1>
 <p class="lead">{e(project.get('name') or '未命名项目')} · {e(model.get('plan_status_label'))}</p>
 <p class="muted">生成时间：{e(model.get('generated_at'))} · ReportDataModel：{e(model.get('report_data_fingerprint'))}</p></header>
+{_draft_banner(diagnostics)}
 {_warnings(model.get('disclaimers') or [])}
+{_diagnostics(diagnostics)}
 <section><h2>1. 项目概述</h2>{_kv(project)}</section>
 <section><h2>2. 运行场景与需求依据</h2>{_requirement_basis(sections.get('operation_and_requirement_basis') or {})}</section>
 <section><h2>3. 数据基础</h2>{_sources(sections.get('data_foundation') or {})}</section>
@@ -39,7 +65,7 @@ class HtmlReportRenderer:
 <section><h2>6. 所需CNS性能（RequiredCNS）</h2>{_json_details(sections.get('required_cns'))}</section>
 <section><h2>7. P10中心线CNS缺口</h2>{_result_summary(sections.get('centerline_gap_p10'))}</section>
 <section><h2>8. P14三维服务空间</h2><p class="note">离散体积代理 / 代表点评价，不是整个体素的性能保证。</p>{_result_summary(sections.get('spatial_service_p14'))}</section>
-<section><h2>9. P15服务、冗余、空间连续缺口与规划目标</h2>{_statistics(rows)}<p class="note">空间连续缺口投影，不是运行时连续性概率。</p></section>
+<section><h2>9. P15服务、冗余、空间连续缺口与规划目标</h2>{_statistics(rows)}{_objectives(sections.get('corridor_gap_objectives_p15') or {})}<p class="note">空间连续缺口投影，不是运行时连续性概率。</p></section>
 <section><h2>10. P17 连续服务可接受性（含 post-plan 投影态）</h2>{_continuous_service(sections.get('continuous_service_acceptability_p17') or {})}</section>
 <section><h2>11. P18方案比较与人工决策</h2>{_decision(sections.get('plan_review_p18') or {})}</section>
 <section><h2>12. 最终设施方案</h2>{_facility_svg(sections)}{_json_details(sections.get('final_facility_plan'))}</section>
@@ -89,7 +115,8 @@ def _statistics(rows):
 
 def _decision(value):
     plan=value.get("confirmed_plan") or {}; variant=plan.get("variant") or {}; gate=(variant.get("evaluation") or {}).get("confirmation_gate") or {}
-    return f'<p>方案：<b>{e(plan.get("plan_id"))}</b> · {e(zh(plan.get("status")))}</p><p>Plan Variant：{e(variant.get("name"))} / {e(variant.get("variant_id"))} · 门禁：{e(zh(gate.get("status")))}</p><p>该方案由人工选择和确认；系统未生成自动综合评分或排名。显式费用按 cost_unit 分组，禁止跨单位合计。</p>'+_json_details(value)
+    p16=value.get("p16_decision_evidence") or {}
+    return f'<p>方案：<b>{e(plan.get("plan_id"))}</b> · {e(zh(plan.get("status")))}</p><p>Plan Variant：{e(variant.get("name"))} / {e(variant.get("variant_id"))} · 门禁：{e(zh(gate.get("status")))}</p><p>该方案由人工选择和确认；系统未生成自动综合评分或排名。显式费用按 cost_unit 分组，禁止跨单位合计。</p>'+_p16_proposal(p16)+_json_details(value)
 
 
 def _result_summary(value):
@@ -203,7 +230,245 @@ def _continuous_service(value):
 
 def _json_details(value):
     text=json.dumps(value or {},ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)
-    return f'<details><summary>展开审计数据（保留英文schema字段）</summary><pre>{e(text)}</pre></details>'
+    if len(text)<=MAX_EMBEDDED_JSON_CHARS:
+        return f'<details><summary>展开审计数据（保留英文schema字段）</summary><pre>{e(text)}</pre></details>'
+    return (
+        '<details><summary>展开审计数据（保留英文schema字段）</summary>'
+        f'<p class="note">本区块原始 JSON 共 {len(text)} 字符，超过报告内嵌上限 '
+        f'{MAX_EMBEDDED_JSON_CHARS} 字符，因此只保留结构索引；完整数据见报告 JSON 产物'
+        '（report.json）与项目状态，报告不复制原始证据。</p>'
+        f'<pre>{e(_structure_index(value))}</pre></details>'
+    )
+
+
+def _structure_index(value):
+    """大对象的**有界**结构索引：顶层键、类型、条目数与少量标量，不展开嵌套。"""
+
+    entries=[]
+    if isinstance(value,dict):
+        for key,item in sorted(value.items(),key=lambda pair:str(pair[0])):
+            row={"key":str(key),"type":type(item).__name__}
+            if isinstance(item,(dict,list,str)):row["length"]=len(item)
+            if isinstance(item,str):row["value"]=_clip(item)
+            elif item is None or isinstance(item,(int,float,bool)):row["value"]=item
+            entries.append(row)
+    elif isinstance(value,list):
+        for index,item in enumerate(value[:50]):
+            row={"index":index,"type":type(item).__name__}
+            if isinstance(item,(dict,list,str)):row["length"]=len(item)
+            entries.append(row)
+    return json.dumps({"truncated":True,"entries":entries},ensure_ascii=False,indent=2)
+
+
+def _clip(text,limit=200):
+    text=str(text)
+    return text if len(text)<=limit else text[:limit]+'…（已截断）'
+
+
+def number(value,digits=3):
+    if value is None:return "—"
+    try:return f"{float(value):.{digits}f}"
+    except (TypeError,ValueError):return e(value)
+
+
+#: 规划目标字段 → 中文（与 Step05 的 OBJECTIVE_FIELD_LABEL 同源；未登记取值原样显示）。
+OBJECTIVE_FIELD_LABEL={
+    "min_satisfied_volume_fraction":"最小满足体积占比",
+    "max_confirmed_deficit_volume_fraction":"最大确认缺口体积占比",
+    "max_unknown_volume_fraction":"最大证据不足体积占比",
+    "min_redundancy_satisfied_volume_fraction":"最小冗余满足体积占比",
+    "max_continuous_deficit_projection_m":"最大空间连续缺口投影",
+}
+
+
+def _objective_label(value):
+    key=str(value or "").strip()
+    return OBJECTIVE_FIELD_LABEL.get(key,key or "未命名规划目标")
+
+
+def _objectives(p15):
+    """P15 规划目标逐项结论（可读表）：**只转印** canonical ``objective_results``。
+
+    大容器不再全量内嵌后，"哪些规划目标未满足"必须仍然可读，因此逐项列出
+    目标、实际值、算子、目标值与结论；不新增任何判定。
+    """
+
+    rows=[
+        (route.get("route_id"),item.get("subsystem"),value)
+        for route in (p15.get("routes") or [])
+        for item in (route.get("subsystems") or [])
+        for value in (item.get("objective_results") or [])
+    ]
+    if not rows:
+        return ('<h3>规划目标逐项结论</h3>'
+                '<p class="empty">当前没有 P15 规划目标结论（未配置目标或尚未评估）。</p>')
+    unmet=sum(1 for _,_,value in rows if str(value.get("status"))=="not_met")
+    body=''.join(
+        f'<tr><td>{e(route_id)}</td><td>{e(_subsystem(subsystem))}</td>'
+        f'<td>{e(_objective_label(value.get("objective")))}</td>'
+        f'<td>{number(value.get("actual"))}</td><td>{e(value.get("operator"))}</td>'
+        f'<td>{e(value.get("target"))}</td><td>{e(zh(value.get("status")))}</td>'
+        f'<td>{"已确认" if value.get("confirmed") is True else "未确认"}</td></tr>'
+        for route_id,subsystem,value in rows
+    )
+    return ('<h3>规划目标逐项结论（未满足 '+str(unmet)+' 项）</h3>'
+            '<table><thead><tr><th>航路</th><th>分系统</th><th>规划目标</th><th>实际值</th>'
+            '<th>算子</th><th>目标值</th><th>结论</th><th>目标确认</th></tr></thead>'
+            f'<tbody>{body}</tbody></table>')
+
+
+def _p16_proposal(p16):
+    """P16 proposal 的可读摘要（候选/已选动作、停止原因、残余确认目标）。
+
+    P16 是**提案**：本区块只转印 canonical 字段，绝不表述为"已采纳 / 已应用"。
+    """
+
+    p16=p16 or {}
+    selected=p16.get("selected_actions") or []
+    candidates=p16.get("candidate_actions") or []
+    residuals=p16.get("residual_confirmed_targets") or []
+    header=[
+        ("P16 状态",zh(p16.get("status"))),
+        ("停止原因",p16.get("stop_reason")),
+        ("候选动作 / 已选动作",f"{len(candidates)} / {len(selected)}"),
+        ("干预选择上限",p16.get("intervention_selection_limit")),
+        ("可行动目标数",p16.get("p16_actionable_target_count")),
+        ("残余确认目标数",len(residuals)),
+        ("输入指纹",p16.get("input_fingerprint")),
+    ]
+    key_values=''.join(f'<dt>{e(label)}</dt><dd>{e(value)}</dd>' for label,value in header)
+    action_rows=''.join(
+        f'<tr><td>{e(action.get("action_id"))}</td>'
+        f'<td>{e(_service_label(action.get("service_key")))}</td>'
+        f'<td>{e(action.get("reuse_class"))}</td>'
+        f'<td>{e(action.get("distinct_site_id"))}</td>'
+        f'<td>{e((action.get("host") or {}).get("host_tower_name"))}'
+        f'{"（"+e((action.get("host") or {}).get("host_tower_id"))+"）" if (action.get("host") or {}).get("host_tower_id") else ""}</td>'
+        f'<td>{e(action.get("device_id"))}</td>'
+        f'<td>{number(action.get("current_units"),0)} / {number(action.get("required_units"),0)}</td>'
+        f'<td>{e(zh(action.get("status")))}</td></tr>'
+        for action in selected[:50]
+    )
+    actions_block=(
+        '<h4>已选动作（提案，尚未采纳）</h4>'
+        +('<table><thead><tr><th>动作</th><th>服务</th><th>复用类别</th><th>distinct_site_id</th>'
+          '<th>宿主</th><th>设备</th><th>现站址/要求</th><th>动作状态</th></tr></thead>'
+          f'<tbody>{action_rows}</tbody></table>' if action_rows
+          else '<p class="empty">没有产生确认缺口边际改善为正的可行动作。</p>')
+    )
+    residual_rows=''.join(
+        f'<tr><td>{e(_service_label(target.get("service_key")))}</td>'
+        f'<td>{e(target.get("surface_class"))}</td>'
+        f'<td>{number(target.get("current_units"),0)} / {number(target.get("required_units"),0)}</td>'
+        f'<td>{e(zh(target.get("final_status")))}</td></tr>'
+        for target in residuals[:50]
+    )
+    residual_block=(
+        '<h4>残余确认目标</h4>'
+        +('<table><thead><tr><th>服务</th><th>surface_class</th><th>现站址/要求</th><th>残余状态</th>'
+          f'</tr></thead><tbody>{residual_rows}</tbody></table>' if residual_rows
+          else '<p class="empty">没有残余确认目标。</p>')
+    )
+    return ('<h3>P16 设施规划 proposal</h3>'
+            f'<dl>{key_values}</dl>'
+            '<p class="note">P16 结果只是候选规划动作；未确认、未应用，也不改写既有 CNS 设施、'
+            'P14/P15 与 Radar 基线。</p>'
+            +actions_block+residual_block)
+
+
+def _service_label(service_key):
+    return {
+        "C:communication":"通信（Communication, C）",
+        "S:rid_cooperative":"合作监视 RID（S:rid_cooperative）",
+        "S:radar_noncooperative":"非合作监视 Radar（S:radar_noncooperative）",
+        "N:rtn_integrity_monitoring":"导航完好性监视（N:rtn_integrity_monitoring）",
+        "N:navigation_integrity_monitoring":"导航完好性监视（N:navigation_integrity_monitoring）",
+        "N:rtk_augmentation":"导航增强（N:rtk_augmentation）",
+    }.get(str(service_key or "").strip(),service_key or "—")
+
+
+def _draft_banner(diagnostics):
+    if not diagnostics:return ''
+    return ('<aside class="warning"><b>诊断草稿</b><ul>'
+            '<li>这是诊断草稿，不是已确认规划方案，也不是正式报告。</li>'
+            '<li>草稿只读取当前项目状态，不写入项目、不产生报告记录，也不进入导出。</li>'
+            '<li>正式报告仍要求已确认（或已应用）的规划方案，本草稿不放宽该门禁。</li>'
+            '</ul></aside>')
+
+
+def _diagnostics(diagnostics):
+    """草稿专用诊断块：为什么现在不能 Confirm（只转印权威字段，不新增判定）。"""
+
+    if not diagnostics:return ''
+    gate=diagnostics.get("confirm_gate") or {}
+    blockers=diagnostics.get("plan_review_blockers") or []
+    allowed=gate.get("allowed_statuses") or []
+    lines=[
+        ("P17 连续服务结论",zh(gate.get("status"))),
+        ("P17 基线 / 投影结论",
+         f'{zh(gate.get("baseline_status"))} / {zh(gate.get("post_plan_status"))}'),
+        ("P17 门禁允许的结论"," / ".join(zh(item) for item in allowed) or "—"),
+        ("正式 Confirm 是否允许","允许" if gate.get("confirmation_allowed") is True else "不允许"),
+        ("不可接受 / 证据不足 计数",
+         f'{gate.get("unacceptable_count")} / {gate.get("unknown_count")}'),
+        ("有管理的缺口段",gate.get("managed_gap_count")),
+    ]
+    gate_rows=''.join(f'<dt>{e(label)}</dt><dd>{e(value)}</dd>' for label,value in lines)
+    reasons=gate.get("reasons") or []
+    reasons_block=(
+        '<h4>P17 给出的原因（canonical）</h4><ul>'
+        +''.join(f'<li>{e(item)}</li>' for item in reasons)+'</ul>' if reasons else '')
+    blockers_block=(
+        '<h4>方案评审初始化未满足的正式前置条件</h4><ul>'
+        +''.join(f'<li>{e(item)}</li>' for item in blockers)+'</ul>'
+        if blockers else '<h4>方案评审初始化前置条件</h4><p>当前没有未满足的前置条件。</p>')
+    return ('<section><h2>0. 为什么现在不能确认（诊断）</h2>'
+            f'<dl>{gate_rows}</dl>'
+            +reasons_block+blockers_block
+            +_radar_baseline_block(diagnostics.get("radar_baseline"))+'</section>')
+
+
+def _radar_baseline_block(radar):
+    """Radar 基线（canonical layout + readiness）只读披露。
+
+    Radar 是否**必需**只来自后端 ``radar_required_for()`` 的权威投影字段
+    （``required_for_current_routes`` / ``required_route_ids``），报告不自行推断。
+    """
+
+    if not radar:return ''
+    required=radar.get("required_for_current_routes")
+    lines=[
+        ("Radar 基线结论",zh(radar.get("status"))),
+        ("当前适用性",zh(radar.get("current_applicability"))),
+        ("失效原因",radar.get("stale_reason")),
+        ("正式需求是否要求 Radar 非合作监视",("要求" if required is True else "未要求") if isinstance(required,bool) else "—"),
+        ("被要求 Radar 的航路","、".join(radar.get("required_route_ids") or []) or "—"),
+        ("必需性判据来源",radar.get("required_basis")),
+        ("就绪状态",zh(radar.get("readiness_status"))),
+        ("就绪阻塞项","；".join(radar.get("readiness_blockers") or []) or "无"),
+    ]
+    rows=''.join(
+        f'<tr><td>{e(item.get("route_id"))}</td><td>{e(zh(item.get("status")))}</td>'
+        f'<td>{e(item.get("stage_label") or item.get("stage"))}</td>'
+        f'<td>{number(item.get("selected_panel_count"),0)}</td>'
+        f'<td>{number(item.get("selected_tower_count"),0)}</td>'
+        f'<td>{number(item.get("radar_ii_site_count"),0)}</td>'
+        f'<td>{e(zh((item.get("solver") or {}).get("status")))}'
+        f'{"（已证明最优）" if (item.get("solver") or {}).get("optimality_proven") is True else ""}'
+        f'{"（已证明不可行）" if (item.get("solver") or {}).get("infeasibility_proven") is True else ""}</td>'
+        f'<td>{e(zh(item.get("gap_reason")))}</td></tr>'
+        for item in radar.get("routes") or []
+    )
+    table=(
+        '<table><thead><tr><th>航路</th><th>结论</th><th>阶段</th><th>面阵</th><th>铁塔</th>'
+        '<th>Radar-II 站址</th><th>求解器</th><th>缺口原因</th></tr></thead>'
+        f'<tbody>{rows}</tbody></table>' if rows else '<p class="empty">尚无 Radar 基线结果。</p>')
+    return ('<h4>Radar 基线（P14 的上游服务证据）</h4>'
+            f'<dl>{"".join(f"<dt>{e(k)}</dt><dd>{e(v)}</dd>" for k,v in lines)}</dl>'
+            +table
+            +'<p class="note">Radar 基线是 proposal 级证据：它进入 P14 的 Radar 服务证据，'
+            'P16 可以在该基线之上提出 Radar panel action，但 P16 proposal 不等于直接改写'
+            ' canonical Radar layout。</p>')
 
 
 def _route_svg(sections):

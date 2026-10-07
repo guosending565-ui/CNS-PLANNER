@@ -51,7 +51,13 @@ def test_no_confirmed_plan_only_allows_zero_pollution_draft(tmp_path):
     before = deepcopy(workflow.state)
     preview = workflow.preview_cns_planning_report()
     assert preview["status"] == "draft" and preview["persisted"] is False
-    assert preview["report_data"]["plan_status_label"] == "草稿预览（尚无已确认方案）"
+    # Round32-H：HTTP 预览响应**只**带渲染结果与有界诊断，绝不回传整个 ReportDataModel
+    # （真实项目实测 821 MB，前端 JSON.parse 直接失败）。模型本身仍可由服务层构建。
+    assert "report_data" not in preview and "source_artifacts" not in preview
+    assert preview["report_mode"] == "draft_preview"
+    assert preview["report_data_fingerprint"]
+    assert preview["html"].startswith("<!doctype html>")
+    assert workflow.report_service.draft_model()["plan_status_label"] == "草稿预览（尚无已确认方案）"
     assert workflow.state == before
     with pytest.raises(ValueError, match="确认一个规划方案"):
         workflow.generate_cns_planning_report()
@@ -60,7 +66,7 @@ def test_no_confirmed_plan_only_allows_zero_pollution_draft(tmp_path):
 @pytest.mark.parametrize("applied,label", [(False, "已确认方案（尚未应用）"), (True, "已确认并应用")])
 def test_report_model_has_complete_source_sections_and_plan_label(tmp_path, applied, label):
     workflow = confirmed_workflow(tmp_path, applied=applied)
-    model = workflow.preview_cns_planning_report()["report_data"]
+    model = workflow.report_service.draft_model()
     assert model["plan_status_label"] == label
     assert model["source"]["plan_id"] == workflow.state["confirmed_cns_plan"]["plan_id"]
     assert model["source"]["fingerprint"]
@@ -79,7 +85,7 @@ def test_sanitizer_and_html_escape_paths_secrets_and_external_assets(tmp_path):
         "path": r"C:\private\population.tif", "api_key": "SECRET", "source_mode": "synthetic",
     })
     preview = workflow.preview_cns_planning_report()
-    model, html = preview["report_data"], preview["html"]
+    model, html = workflow.report_service.draft_model(), preview["html"]
     population = model["sections"]["data_foundation"]["population"]
     assert population["path"] == "population.tif" and population["api_key"] == "REDACTED"
     assert "<script>alert" not in html and "&lt;script&gt;" in html

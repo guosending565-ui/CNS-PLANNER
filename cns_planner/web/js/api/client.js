@@ -21,7 +21,21 @@ export function createApiClient(token=()=>"",revision=()=>null){
     }
     const response=await fetch(url,{...options,headers});
     const type=response.headers.get('content-type')||'';
-    const data=type.includes('json')?await response.json():await response.blob();
+    let data;
+    try{
+      data=type.includes('json')?await response.json():await response.blob();
+    }catch(parseError){
+      // Round32-H：响应体过大（例如曾经 821 MB 的报告预览）或连接被中断时，
+      // `response.json()` 只会抛出 "Unexpected end of JSON input" 这类纯语法错误，
+      // 普通用户完全无法判断是数据坏了、还是流程没走完。这里把它换成可读的中文结论，
+      // 并把 HTTP 状态与原始错误留在 error 上供高级审计使用。
+      const error=Error(type.includes('json')
+        ?'服务端响应无法解析（响应体过大或连接中断）；请重试，若持续失败请先减少结果明细再重试'
+        :'服务端响应无法读取（连接中断）；请重试');
+      error.status=response.status;
+      error.cause=parseError;
+      throw error;
+    }
     const responseRevision=Number(response.headers.get('x-cns-revision'));
     if(Number.isInteger(responseRevision))knownRevision=responseRevision;
     else if(Number.isInteger(data?.workflow?.revision))knownRevision=data.workflow.revision;
