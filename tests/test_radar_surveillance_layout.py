@@ -1078,11 +1078,17 @@ def _write_land_gpkg(path, *, layer_name, srs_id, polygons_wkt):
     return path
 
 
-def _axis_aligned_land_geojson(tmp_path, name="land.geojson", *, with_hole=False):
+def _axis_aligned_land_geojson(tmp_path, name="land.geojson", *, with_hole=False,
+                               coverage_rectangles=()):
     """写一个轴对齐的陆域 GeoJSON，并返回 ``(path, ring)``。
 
     使用经度 122.00–122.10、纬度 30.00–30.10（约 9.6 km × 11.1 km），确保内部/边界/
     外侧三类测试点都有足够裕度，不依赖任何浮点边界巧合。
+
+    ``coverage_rectangles``（Round35-A）：额外的**不与陆域相交**矩形，用来表达
+    "来源数据的有效覆盖范围"。本模块的 ``LandMaskSource`` 现在把**数据有效覆盖
+    范围之外**的点判为 ``unknown``（而不是 ``sea``），因此需要"范围内的大片水域"
+    才能测试 ``sea`` 语义。默认空 ⇒ 只写陆域本体（既有测试数据不变）。
     """
 
     import json
@@ -1093,11 +1099,20 @@ def _axis_aligned_land_geojson(tmp_path, name="land.geojson", *, with_hole=False
         rings.append([
             [122.04, 30.04], [122.06, 30.04], [122.06, 30.06], [122.04, 30.06], [122.04, 30.04],
         ])
+    features = [{"type": "Feature", "properties": {},
+                 "geometry": {"type": "Polygon", "coordinates": rings}}]
+    for west, south, east, north in coverage_rectangles:
+        features.append({
+            "type": "Feature",
+            "properties": {"role": "data_coverage_not_land"},
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [west, south], [east, south], [east, north], [west, north], [west, south],
+            ]]},
+        })
     path = tmp_path / name
     path.write_text(json.dumps({
         "type": "FeatureCollection",
-        "features": [{"type": "Feature", "properties": {},
-                      "geometry": {"type": "Polygon", "coordinates": rings}}],
+        "features": features,
     }), encoding="utf-8")
     return path, ring
 
@@ -1144,8 +1159,11 @@ def _points_at_metric_distance(path, offsets_m):
 
 
 def test_land_mask_polygon_containment_and_boundary_counts_as_land(tmp_path):
+    # Round35-A：``sea`` 只在**数据有效覆盖范围之内**成立，范围之外是 ``unknown``。
+    # 该 fixture 是一个孤立小方块；这里显式声明"数据边界外仍有 6 km 可判水域"，
+    # 让"远海点 ⇒ sea"仍然可验证（生产真实掩膜使用默认 0 m，最保守）。
     path, _ring = _axis_aligned_land_geojson(tmp_path)
-    source = LandMaskSource(path)
+    source = LandMaskSource(path, data_footprint_margin_m=6000.0)
     # 内部（远离边界）⇒ land。
     assert source.classify(122.05, 30.05)[0] == "land"
     assert source.classify_detailed(122.05, 30.05)["evidence"][
@@ -1175,7 +1193,10 @@ def test_coastal_uncertainty_buffer_classification_and_required_site_count(tmp_p
 
     path, _ring = _axis_aligned_land_geojson(tmp_path, name="coast.geojson")
     buffer_m = 30.0
-    source = LandMaskSource(path, coastal_uncertainty_buffer_m=buffer_m)
+    # Round35-A：显式声明"数据边界外仍有 6 km 可判水域"，使 far 点（500 m）落在
+    # 数据有效覆盖范围之内 —— 否则它会正确地为 ``unknown`` 而不是 ``sea``。
+    source = LandMaskSource(path, coastal_uncertainty_buffer_m=buffer_m,
+                            data_footprint_margin_m=6000.0)
 
     inside = source.classify_detailed(122.05, 30.05)
     assert inside["surface_class"] == "land"
@@ -1204,11 +1225,13 @@ def test_coastal_uncertainty_buffer_classification_and_required_site_count(tmp_p
     )
 
     # 显式 0 buffer ⇒ 外侧点立即是 sea（不引入任何不确定带）。
-    no_buffer = LandMaskSource(path, coastal_uncertainty_buffer_m=0)
+    no_buffer = LandMaskSource(path, coastal_uncertainty_buffer_m=0,
+                               data_footprint_margin_m=6000.0)
     assert no_buffer.classify(near_lon, near_lat)[0] == "sea"
 
     # 更大的 buffer ⇒ 同一个点变成 coastal_uncertain。
-    wide = LandMaskSource(path, coastal_uncertainty_buffer_m=1000)
+    wide = LandMaskSource(path, coastal_uncertainty_buffer_m=1000,
+                          data_footprint_margin_m=6000.0)
     assert wide.classify(far_lon, far_lat)[0] == "coastal_uncertain"
 
     # D：源不可用 ⇒ unknown 且要求数量为 None（fail-closed，绝不按 sea 处理）。
@@ -1262,9 +1285,11 @@ def test_land_mask_reads_real_crs_and_classifies_identically_in_projected_crs(tm
 
     geographic_source = LandMaskSource(
         geographic, layer_name="zhejiang_boundary", coastal_uncertainty_buffer_m=30,
+        data_footprint_margin_m=6000.0,
     )
     projected_source = LandMaskSource(
         projected, layer_name="zhejiang_boundary", coastal_uncertainty_buffer_m=30,
+        data_footprint_margin_m=6000.0,
     )
     assert geographic_source.prepare() is not None
     assert projected_source.prepare() is not None, "投影 GPKG 掩膜必须能被正确读取"

@@ -14,7 +14,8 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 
 import {
-  POPULATION_NODATA_MODE,mappingStatusCards,populationCoverage,populationCoverageNote,
+  POPULATION_NODATA_MODE,POPULATION_NODATA_MODES,POPULATION_NODATA_OPEN_SEA_MODE,
+  mappingStatusCards,populationCoverage,populationCoverageNote,
   populationNodataModel,populationNodataPanel,populationNodataPayload,render as renderStep2,
 } from '../cns_planner/web/js/workflow/step02_workspace.js';
 
@@ -210,6 +211,46 @@ test('payload validation requires the single allowed mode plus source and confir
   })){
     assert.throws(()=>populationNodataPayload(broken),Error,label);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Round35-D：开阔海域工程模式必须能从既有 UI 路径确认（不新增第二写入者）
+// ---------------------------------------------------------------------------
+
+test('round35d open sea mode is confirmable through the same payload and panel path',()=>{
+  // mode 白名单由 domain 契约决定：两个模式并存、互斥确认。
+  assert.deepEqual(POPULATION_NODATA_MODES,[POPULATION_NODATA_MODE,POPULATION_NODATA_OPEN_SEA_MODE]);
+
+  // 新模式 payload：mode **原样**返回，绝不被静默替换成旧模式。
+  const openSea={mode:POPULATION_NODATA_OPEN_SEA_MODE,source:'canonical OSM land v2',
+    sourceId:'land_mask:zhoushan_land_osm_v2.gpkg',
+    evidence:'{"land_mask_sha256":"fe7918c9","coastal_uncertainty_buffer_m":100}',
+    confirmed:true};
+  assert.deepEqual(populationNodataPayload(openSea).population_nodata_policy,{
+    mode:POPULATION_NODATA_OPEN_SEA_MODE,role:'population',
+    source:'canonical OSM land v2',source_id:'land_mask:zhoushan_land_osm_v2.gpkg',
+    evidence:{land_mask_sha256:'fe7918c9',coastal_uncertainty_buffer_m:100},confirmed:true,
+  });
+  // 新模式同样强制 source / evidence / confirmed。
+  assert.throws(()=>populationNodataPayload({...openSea,confirmed:false}),Error);
+  assert.throws(()=>populationNodataPayload({...openSea,evidence:'{}'}),Error);
+  assert.throws(()=>populationNodataPayload({...openSea,source:''}),Error);
+
+  // 面板必须同时暴露两个模式，且说明新模式是工程假设、与陆域相交时绝不判 0。
+  const html=populationNodataPanel({
+    population_nodata_policy:{status:'not_configured',mode:null},
+    grid:{status:'passed'},grid_attributes:{population:{}},
+  });
+  assert.ok(html.includes(POPULATION_NODATA_MODE));
+  assert.ok(html.includes(POPULATION_NODATA_OPEN_SEA_MODE));
+  const openSeaHtml=populationNodataPanel({
+    population_nodata_policy:{status:'confirmed',mode:POPULATION_NODATA_OPEN_SEA_MODE,
+      source:'s',evidence:{a:1},confirmed:true},
+    grid:{status:'passed'},grid_attributes:{population:{}},
+  });
+  assert.match(openSeaHtml,/开阔海域工程模式/);
+  assert.match(openSeaHtml,/工程假设/);
+  assert.match(openSeaHtml,/保持 missing_data|保持 <b>missing_data<\/b>/);
 });
 
 test('step 2 binds the policy save, the revoke and the population-only remap',async()=>{

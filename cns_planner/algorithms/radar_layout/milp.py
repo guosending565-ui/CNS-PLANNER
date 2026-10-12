@@ -228,16 +228,67 @@ def presolve_infeasibility(*, panels, samples, required_counts, radar_types=None
     }
 
 
+def coverage_semantics_complete(*, terrain_los_mode, terrain_los_lookup):
+    """Whether the candidate coverage sets describe the complete physical scenario.
+
+    ``True`` only when no LOS domain is left unknown, unevaluated, truncated or cut short
+    by a computation budget.  A conservative *subset* of coverage makes an ``infeasible``
+    or ``optimal`` MILP verdict a statement about that subset, never a proof about the
+    complete physical scenario, and this flag is what keeps the two apart.
+    """
+
+    from .terrain_los_lookup import TERRAIN_LOS_MODE_DISABLED, validate_terrain_los_lookup
+
+    mode = validate_terrain_los_lookup(terrain_los_mode, terrain_los_lookup)
+    if mode == TERRAIN_LOS_MODE_DISABLED:
+        # No LOS filtering happened, so the coverage set is the complete scenario.
+        return True
+    snapshot = terrain_los_lookup.snapshot() if terrain_los_lookup is not None else {}
+    return snapshot.get("complete") is True
+
+
 def solve(*, panels, samples, required_counts, radar_types=None,
           max_panels_per_tower=MAX_PANELS_PER_TOWER, objectives=("total_panel_count",),
-          stage=None, options=None):
+          stage=None, options=None, coverage_is_complete=True):
     """求解一个 MILP。
 
     ``objectives`` 是词典序目标序列（仅用于把多个目标**依次**编码；本函数每次只
     优化 ``objectives`` 的第一个目标，调用方负责加入等式约束后再次调用）。
     ``required_counts[j]`` 为 ``None`` 表示该 sample 的要求数量未知（fail-closed：
     不生成约束，由 presolve 证据承载，且最终状态不可能为 passed）。
+
+    ``coverage_is_complete``：``panels`` 的 ``covered_sample_indices`` 是否来自**完整**
+    的物理评价。为 ``False``（存在 LOS unknown / 未评价 / 预算耗尽 / 查询截断）时，
+    solver 给出的 ``infeasible`` 只说明"保守覆盖子集内不可行"，因此
+    ``infeasibility_proven`` 保持 ``False``；raw status 仍作为内部诊断保留。
     """
+
+    coverage_is_complete = bool(coverage_is_complete)
+
+    def with_proof_semantics(block, raw_status):
+        """Attach the coverage-semantics diagnostics to every exit path.
+
+        A raw ``infeasible``/``optimal`` on a conservative coverage subset is a statement
+        about that subset.  Whether the proof may be claimed depends only on
+        ``coverage_is_complete``, and the raw status is always kept readable.
+        """
+
+        return {
+            **block,
+            "optimality_proven": bool(
+                str(block.get("status")) == "optimal" and coverage_is_complete
+            ),
+            "infeasibility_proven": bool(
+                str(block.get("status")) == "infeasible" and coverage_is_complete
+            ),
+            "coverage_semantics_complete": coverage_is_complete,
+            "milp_raw_status": raw_status,
+            "proven_against_complete_physical_scenario": coverage_is_complete,
+            "proof_withheld_reason": (
+                None if coverage_is_complete
+                else "coverage_semantics_incomplete_los_evidence_not_a_physical_proof"
+            ),
+        }
 
     objective_name = str(objectives[0]) if objectives else "total_panel_count"
     if objective_name not in OBJECTIVES:
@@ -245,13 +296,16 @@ def solve(*, panels, samples, required_counts, radar_types=None,
 
     if not solver_available():
         return {
-            "solver": empty_solver_block(
-                stage=stage, status="solver_unavailable",
-                message=(
-                    "当前 Python 环境没有可用的 scipy.optimize.milp；"
-                    "本模型绝不退化为 greedy。请安装 optional extra："
-                    "pip install -e .[optimization]（或 pip install \"scipy>=1.11,<2\"）"
+            "solver": with_proof_semantics(
+                empty_solver_block(
+                    stage=stage, status="solver_unavailable",
+                    message=(
+                        "当前 Python 环境没有可用的 scipy.optimize.milp；"
+                        "本模型绝不退化为 greedy。请安装 optional extra："
+                        "pip install -e .[optimization]（或 pip install \"scipy>=1.11,<2\"）"
+                    ),
                 ),
+                "solver_unavailable",
             ),
             "selected_panel_indices": [],
             "selected_panel_ids": [],
@@ -359,7 +413,7 @@ def solve(*, panels, samples, required_counts, radar_types=None,
         )
     except Exception as exc:  # solver 自身抛错 ⇒ solver_error，绝不冒充 infeasible
         return {
-            "solver": {
+            "solver": with_proof_semantics({
                 **empty_solver_block(
                     stage=stage, status="solver_error",
                     message=f"solver_exception:{type(exc).__name__}:{exc}",
@@ -367,7 +421,7 @@ def solve(*, panels, samples, required_counts, radar_types=None,
                 "variable_count": total_variables,
                 "constraint_count": len(lower),
                 "objective_name": objective_name,
-            },
+            }, "solver_error"),
             "selected_panel_indices": [],
             "selected_panel_ids": [],
             "selected_y": {},
@@ -395,13 +449,11 @@ def solve(*, panels, samples, required_counts, radar_types=None,
     else:  # pragma: no cover - defensive
         mapped = "solver_error"
 
-    solver_block = {
+    solver_block = with_proof_semantics({
         "name": SOLVER_NAME,
         "library": SOLVER_LIBRARY,
         "stage": stage,
         "status": mapped,
-        "optimality_proven": mapped == "optimal",
-        "infeasibility_proven": mapped == "infeasible",
         "mip_gap": _mip_gap(result) if mapped == "optimal" else None,
         "objective": (
             float(getattr(result, "fun")) if getattr(result, "fun", None) is not None else None
@@ -413,7 +465,7 @@ def solve(*, panels, samples, required_counts, radar_types=None,
         "panel_variable_count": len(active_panels),
         "site_coverage_variable_count": len(y_variables),
         "objective_name": objective_name,
-    }
+    }, mapped)
 
     selected_local, selected_y = [], {}
     solution = getattr(result, "x", None)
@@ -449,18 +501,20 @@ def solve(*, panels, samples, required_counts, radar_types=None,
 
 def solve_with_total_panel_count(*, panels, samples, required_counts, total_panel_count,
                                  radar_types=None, max_panels_per_tower=MAX_PANELS_PER_TOWER,
-                                 options=None, stage=None):
+                                 options=None, stage=None, coverage_is_complete=True):
     """在 ``total_panel_count == N*`` 的等式约束下最小化 II 型面阵数量（Stage B2）。
 
     实现方式：把"总面阵数"作为额外的等式约束加入同一 MILP。
     """
 
+    coverage_is_complete = bool(coverage_is_complete)
     objective_name = "radar_ii_panel_count"
     if not solver_available():
         return solve(
             panels=panels, samples=samples, required_counts=required_counts,
             radar_types=radar_types, max_panels_per_tower=max_panels_per_tower,
             objectives=(objective_name,), stage=stage, options=options,
+            coverage_is_complete=coverage_is_complete,
         )
 
     from scipy.optimize import Bounds, LinearConstraint, milp
@@ -602,8 +656,15 @@ def solve_with_total_panel_count(*, panels, samples, required_counts, total_pane
         "solver": {
             "name": SOLVER_NAME, "library": SOLVER_LIBRARY, "stage": stage,
             "status": mapped,
-            "optimality_proven": mapped == "optimal",
-            "infeasibility_proven": mapped == "infeasible",
+            "optimality_proven": bool(mapped == "optimal" and coverage_is_complete),
+            "infeasibility_proven": bool(mapped == "infeasible" and coverage_is_complete),
+            "coverage_semantics_complete": coverage_is_complete,
+            "milp_raw_status": mapped,
+            "proven_against_complete_physical_scenario": coverage_is_complete,
+            "proof_withheld_reason": (
+                None if coverage_is_complete
+                else "coverage_semantics_incomplete_los_evidence_not_a_physical_proof"
+            ),
             "mip_gap": _mip_gap(result) if mapped == "optimal" else None,
             "objective": (
                 float(getattr(result, "fun")) if getattr(result, "fun") is not None else None
@@ -637,7 +698,7 @@ def solve_with_total_panel_count(*, panels, samples, required_counts, total_pane
 def solve_with_refinement_constraints(*, panels, samples, required_counts, extra_requirements,
                                       radar_types=None,
                                       max_panels_per_tower=MAX_PANELS_PER_TOWER,
-                                      options=None, stage=None):
+                                      options=None, stage=None, coverage_is_complete=True):
     """带"复核补点"附加约束的求解。
 
     ``extra_requirements`` 是 ``{sample_index: required_distinct_site_count}``；这些
@@ -664,6 +725,7 @@ def solve_with_refinement_constraints(*, panels, samples, required_counts, extra
         panels=panels, samples=samples, required_counts=merged, radar_types=radar_types,
         max_panels_per_tower=max_panels_per_tower,
         objectives=("total_panel_count",), stage=stage, options=options,
+        coverage_is_complete=coverage_is_complete,
     )
     result["merged_required_counts"] = merged
     return result
@@ -671,7 +733,8 @@ def solve_with_refinement_constraints(*, panels, samples, required_counts, extra
 
 __all__ = [
     "INCOMPLETE_STATUSES", "OBJECTIVES", "SOLVER_LIBRARY", "SOLVER_NAME", "SOLVER_STATUSES",
-    "build_index", "candidate_distinct_site_count", "empty_solver_block",
+    "build_index", "candidate_distinct_site_count", "coverage_semantics_complete",
+    "empty_solver_block",
     "presolve_infeasibility", "solve", "solve_with_refinement_constraints",
     "solve_with_total_panel_count", "solver_available", "solver_backend", "tower_coverage",
 ]

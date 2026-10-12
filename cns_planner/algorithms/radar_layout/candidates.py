@@ -30,6 +30,11 @@ from .geometry import (
     circular_angle_delta_deg, dedupe_azimuths, geometry_evaluation,
     normalize_azimuth_deg, physically_reachable,
 )
+from .terrain_los_lookup import (
+    TERRAIN_LOS_MODE_DISABLED, TERRAIN_LOS_MODE_ENFORCED,
+    validate_terrain_los_lookup,
+)
+from ...domain.radar_terrain_los import LOS_STATUS_CLEAR
 
 #: 候选方位角生成使用的固定偏移（度）：bearing、bearing − 45°、bearing + 45°。
 CANDIDATE_AZIMUTH_OFFSETS_DEG = (0.0, -45.0, 45.0)
@@ -38,7 +43,7 @@ CANDIDATE_AZIMUTH_OFFSETS_DEG = (0.0, -45.0, 45.0)
 AZIMUTH_DEDUPE_TOLERANCE_DEG = 1e-9
 
 
-def build_tower_records(towers):
+def build_tower_records(towers, *, include_los_identity=False):
     """规范化塔输入。
 
     ``towers`` 每项只需 ``tower_id`` / ``metric`` / ``origin_egm2008_m``；
@@ -65,7 +70,7 @@ def build_tower_records(towers):
                 "reason": tower.get("origin_reason") or "radar_origin_egm2008_unresolved",
             })
             continue
-        records.append({
+        record = {
             "tower_id": tower_id,
             "name": tower.get("name") or tower_id,
             "metric": [float(metric[0]), float(metric[1])],
@@ -77,11 +82,20 @@ def build_tower_records(towers):
             "origin_parameter_origin": tower.get("origin_parameter_origin"),
             "site_type": tower.get("site_type"),
             "source": deepcopy(tower.get("source")),
-        })
+        }
+        if include_los_identity:
+            record.update({
+                "origin_state": tower.get("origin_state"),
+                "origin_evidence_level": tower.get("origin_evidence_level"),
+                "origin_availability": tower.get("origin_availability"),
+                "device_instance_id": tower.get("device_instance_id"),
+                "origin_input_fingerprint": tower.get("origin_input_fingerprint"),
+            })
+        records.append(record)
     return records, unusable
 
 
-def build_sample_records(samples):
+def build_sample_records(samples, *, include_los_identity=False):
     """规范化 sample 输入：``metric`` + ``egm2008_m`` + ``surface_class``。"""
 
     records = []
@@ -92,7 +106,7 @@ def build_sample_records(samples):
         z = sample.get("egm2008_m")
         if not isinstance(z, (int, float)) or isinstance(z, bool):
             raise ValueError(f"sample {index} 缺少 EGM2008 正高")
-        records.append({
+        record = {
             "sample_index": index,
             "sample_id": str(sample.get("sample_id") or f"S{index:06d}"),
             "distance_along_route_m": float(sample.get("distance_along_route_m") or 0.0),
@@ -102,7 +116,13 @@ def build_sample_records(samples):
             "egm2008_m": float(z),
             "surface_class": str(sample.get("surface_class") or "unknown"),
             "required_distinct_site_count": sample.get("required_distinct_site_count"),
-        })
+        }
+        if include_los_identity:
+            record.update({
+                "route_id": sample.get("route_id"),
+                "altitude_layer_id": sample.get("altitude_layer_id"),
+            })
+        records.append(record)
     return records
 
 
@@ -114,10 +134,14 @@ def _candidate_id(tower_id, radar_type, azimuth_deg):
     return f"P-{tower_id}-{radar_type}-{normalize_azimuth_deg(azimuth_deg):.6f}"
 
 
-def candidates_for_tower_and_type(*, tower, radar_type, samples, parameters):
+def candidates_for_tower_and_type(*, tower, radar_type, samples, parameters,
+                                  terrain_los_mode=TERRAIN_LOS_MODE_DISABLED,
+                                  terrain_los_lookup=None):
     """一个 ``tower × radar_type`` 的候选 panel 列表（已去重、已剪枝）。"""
 
+    mode = validate_terrain_los_lookup(terrain_los_mode, terrain_los_lookup)
     geometry = []
+    los_allowed = []
     reachable = []
     for sample in samples:
         values = geometry_evaluation(
@@ -127,7 +151,21 @@ def candidates_for_tower_and_type(*, tower, radar_type, samples, parameters):
             tower_metric=tower["metric"],
         )
         geometry.append(values)
-        if physically_reachable(geometry=values, parameters=parameters):
+        physically_allowed = physically_reachable(geometry=values, parameters=parameters)
+        los_result = None
+        if mode != TERRAIN_LOS_MODE_DISABLED:
+            los_result = terrain_los_lookup.evaluate(
+                tower, sample, radar_type, geometry=values,
+            )
+        allowed = bool(
+            physically_allowed
+            and (
+                mode != TERRAIN_LOS_MODE_ENFORCED
+                or (los_result or {}).get("status") == LOS_STATUS_CLEAR
+            )
+        )
+        los_allowed.append(allowed)
+        if allowed:
             reachable.append(values)
 
     statistics = {
@@ -158,7 +196,7 @@ def candidates_for_tower_and_type(*, tower, radar_type, samples, parameters):
         covered = []
         for index, sample in enumerate(samples):
             values = geometry[index]
-            if not physically_reachable(geometry=values, parameters=parameters):
+            if not los_allowed[index]:
                 continue
             if circular_angle_delta_deg(values["bearing_deg"], azimuth) <= float(
                 parameters["azimuth_half_width_deg"]
@@ -217,15 +255,22 @@ def candidates_for_tower_and_type(*, tower, radar_type, samples, parameters):
     return panels, statistics
 
 
-def build_candidates(*, towers, samples):
+def build_candidates(*, towers, samples, terrain_los_mode=TERRAIN_LOS_MODE_DISABLED,
+                     terrain_los_lookup=None):
     """构造全部 ``tower × radar_type`` 候选 panel。
 
     返回 ``{"towers", "samples", "panels", "statistics", "unusable_towers"}``，
     结果**确定性**：同一输入必然产生同一 panel 顺序与同一 panel_id 集合。
     """
 
-    tower_records, unusable = build_tower_records(towers)
-    sample_records = build_sample_records(samples)
+    mode = validate_terrain_los_lookup(terrain_los_mode, terrain_los_lookup)
+    include_los_identity = mode != TERRAIN_LOS_MODE_DISABLED
+    tower_records, unusable = build_tower_records(
+        towers, include_los_identity=include_los_identity,
+    )
+    sample_records = build_sample_records(
+        samples, include_los_identity=include_los_identity,
+    )
 
     panels, per_tower = [], []
     for tower in tower_records:
@@ -235,16 +280,30 @@ def build_candidates(*, towers, samples):
             produced, statistics = candidates_for_tower_and_type(
                 tower=tower, radar_type=radar_type, samples=sample_records,
                 parameters=parameters,
+                terrain_los_mode=mode,
+                terrain_los_lookup=terrain_los_lookup,
             )
             panels.extend(produced)
             tower_entry["radar_types"][radar_type] = statistics
         per_tower.append(tower_entry)
 
     panels.sort(key=lambda item: (item["tower_id"], item["radar_type"], item["azimuth_deg"]))
+    # Whether these candidate coverage sets describe the complete physical scenario.  A
+    # conservative subset (unknown / unevaluated / budget-exhausted / truncated LOS) makes
+    # any later MILP proof a statement about the subset only, so the flag travels with the
+    # candidates instead of being re-derived by every consumer.
+    coverage_semantics_complete = bool(
+        mode == TERRAIN_LOS_MODE_DISABLED
+        or (
+            terrain_los_lookup is not None
+            and terrain_los_lookup.snapshot().get("complete") is not False
+        )
+    )
     return {
         "towers": tower_records,
         "samples": sample_records,
         "panels": panels,
+        "coverage_semantics_complete": coverage_semantics_complete,
         "statistics": {
             "tower_count": len(tower_records),
             "unusable_tower_count": len(unusable),
@@ -255,6 +314,16 @@ def build_candidates(*, towers, samples):
             "azimuth_offsets_deg": list(CANDIDATE_AZIMUTH_OFFSETS_DEG),
             "azimuth_dedupe_tolerance_deg": AZIMUTH_DEDUPE_TOLERANCE_DEG,
             "generation_semantics": "range_elevation_filter_then_bearing_derived_directions",
+            "coverage_semantics_complete": coverage_semantics_complete,
+            "incomplete_reason": (
+                None if coverage_semantics_complete
+                else (
+                    terrain_los_lookup.snapshot().get("incomplete_reason")
+                    if terrain_los_lookup is not None else "los_evidence_incomplete"
+                )
+                or "los_evidence_incomplete"
+            ),
+            "proven_infeasibility_requires_complete_coverage": True,
             "deterministic": True,
         },
         "unusable_towers": unusable,

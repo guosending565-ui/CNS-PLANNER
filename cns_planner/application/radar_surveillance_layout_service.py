@@ -40,6 +40,9 @@ from ..domain.radar_surveillance_layout import (
     semantics_fingerprint,
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
+from ..algorithms.radar_layout.terrain_los_lookup import (
+    TERRAIN_LOS_MODE_DISABLED, normalize_terrain_los_mode,
+)
 from ..domain.radar_service_evidence import radar_required_for
 from ..domain.surface_classification import (
     normalize_surface_classification_policy, surface_facts_input_fingerprint,
@@ -1536,6 +1539,15 @@ class RadarSurveillanceLayoutService:
     # ------------------------------------------------------------------ evaluation
     def evaluate(self, payload=None, *, facts_provider=None):
         payload = payload if isinstance(payload, dict) else {}
+        # Round34-T07-D1 门禁：生产 Radar 划设入口只允许 ``terrain_los_mode=disabled``。
+        # 地形 LOS 的 ``enforced`` 模式仅用于隔离 fixture；只读披露走
+        # ``/api/radar-terrain-los/diagnose`` 诊断入口，绝不进入生产求解路径。
+        terrain_los_mode = normalize_terrain_los_mode(payload.get("terrain_los_mode"))
+        if terrain_los_mode != TERRAIN_LOS_MODE_DISABLED:
+            raise ValueError(
+                "生产 Radar 划设入口仅允许 terrain_los_mode=disabled；"
+                "disclosure_only 请使用只读 Terrain LOS 诊断入口，enforced 仅限隔离 fixture"
+            )
         state = self.session.state
 
         if any(key in payload for key in (

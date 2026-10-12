@@ -1,5 +1,7 @@
 import {advancedAuditNote,blockerList,escapeHtml,nextStepBar,shell,sourceModeText,statusBadge,statusText,wbBlock,wbPanel,wbSegHint} from './common.js';
-import {RADAR_GAP_REASON_TEXT,RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarSurveillanceDetail,radarLayoutModel,renderRadarSurveillanceLayoutPanel} from './radar_surveillance_layout.js';
+import {RADAR_GAP_REASON_TEXT,RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,loadRadarCombinedLosDetails,loadRadarCombinedLosDiagnosis,loadRadarCombinedLosStatus,loadRadarSurveillanceDetail,loadRadarTerrainLosDetails,loadRadarTerrainLosDiagnosis,radarLayoutModel,radarTerrainLosModel,renderRadarSurveillanceLayoutPanel,renderRadarTerrainLosBlock} from './radar_surveillance_layout.js';
+//: Round34-T07-I2：地形 + 建筑联合 LOS 只读诊断的纯模型（渲染复用同一 renderer）。
+import {radarCombinedLosModel} from './radar_visibility_evidence.js';
 import {
   SURFACE_CLASSIFICATION_POLICY_ENDPOINT,SURFACE_CLASS_FACTS_EVALUATE_ENDPOINT,
   NAVIGATION_SITE_SUITABILITY_ENDPOINT,REQUIRED_CNS_ENDPOINT,
@@ -20,9 +22,16 @@ import {
   bindContinuousServicePanel,continuousServiceModel,renderContinuousServicePanel,step6GateModel,
 } from './continuous_service.js';
 
+//: 联合 LOS 面板的**轻量状态**是否已在本会话装载过（防重复请求 / 防渲染死循环）。
+//: 只影响"何时请求一次 ``/combined/status``"，与任何 LOS 计算无关。
+let radarCombinedLosStatusLoaded=false;
+
+//: 供前端测试复位的每次会话守卫（生产代码不调用）。
+export function resetRadarCombinedLosStatusGuard(){radarCombinedLosStatusLoaded=false;}
+
 // Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
 // 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
-export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,renderRadarSurveillanceLayoutPanel};
+export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,radarTerrainLosModel,renderRadarSurveillanceLayoutPanel,renderRadarTerrainLosBlock};
 
 // 二级分段：同一一级标签下同屏只呈现一个任务，id 在整步内唯一。
 // 名称是业务语言；工程编号（P7…P18）只允许出现在高级标签的 advancedAuditNote 里。
@@ -1179,7 +1188,36 @@ export function bind(c){
   c.actionButton('evaluateCorridor',()=>c.resourceAction('/api/cns-service-corridor/evaluate',{}));
   c.actionButton('savePlanningObjectives',()=>{const policy=structuredClone(c.flow().cns_planning_objectives||{routes:{}}),routeId=c.$('planningObjectiveRoute').value,code=c.$('planningObjectiveSubsystem').value,confirmed=c.$('planningObjectiveConfirmed').checked,source=c.$('planningObjectiveSource').value.trim()||'user_configuration',specs={min_satisfied_volume_fraction:['objectiveMinSatisfied','>='],max_confirmed_deficit_volume_fraction:['objectiveMaxDeficit','<='],max_unknown_volume_fraction:['objectiveMaxUnknown','<='],min_redundancy_satisfied_volume_fraction:['objectiveMinRedundancy','>='],max_continuous_deficit_projection_m:['objectiveMaxContinuous','<=']};policy.routes=policy.routes||{};policy.routes[routeId]=policy.routes[routeId]||{route_id:routeId,subsystems:{}};policy.routes[routeId].subsystems=policy.routes[routeId].subsystems||{};policy.routes[routeId].subsystems[code]={objectives:Object.fromEntries(Object.entries(specs).filter(([,value])=>c.$(value[0]).value!=='').map(([name,[id,operator]])=>[name,{value:Number(c.$(id).value),operator,source,confirmed}]))};return c.resourceAction('/api/cns-planning-objectives',{cns_planning_objectives:policy});});
   c.actionButton('evaluateCorridorGap',()=>c.resourceAction('/api/cns-corridor-gap/evaluate',{}));
-  c.actionButton('evaluateCorridorSitePlan',()=>{const policy=structuredClone(c.flow().corridor_site_planning_policy||{});policy.confirmed=c.$('corridorSitePolicyConfirmed').checked;policy.source='user_configuration';return c.resourceAction('/api/cns-corridor-site-plan/evaluate',{corridor_site_planning_policy:policy});});
+  //: Round 31-A：CNS 设施规划（P16）在真实项目上是数十分钟级的累计试算，**必须**
+  //: 后台化：提交只登记任务并立刻返回 task_id，HTTP 请求不再等到计算结束。
+  //: 按钮进入「后台计算中…」而不是假死；进度 / 心跳 / 取消 / 完成后刷新结果全部由
+  //: tasks.js 的既有「后台计算任务」窗口负责（不复制第二套任务框架）。
+  //: 提交失败（例如上游 P14/P15 不是当前结果）时用中文业务原因提示，绝不静默。
+  if(c.$('evaluateCorridorSitePlan')){
+    const submitButton=c.$('evaluateCorridorSitePlan');
+    submitButton.onclick=async()=>{
+      const original=submitButton.textContent;
+      const policy=structuredClone(c.flow().corridor_site_planning_policy||{});
+      policy.confirmed=c.$('corridorSitePolicyConfirmed').checked;
+      policy.source='user_configuration';
+      try{
+        submitButton.disabled=true;
+        submitButton.dataset.busy='true';
+        submitButton.textContent='正在提交后台计算…';
+        await c.submitBackgroundTask('/api/cns-corridor-site-plan/evaluate',{corridor_site_planning_policy:policy});
+        //: 提交成功后按钮保持"后台计算中"，直到任务完成后刷新快照重建本面板
+        //: （用户因此不会重复提交，也不会以为页面卡住）。
+        submitButton.textContent='后台计算中，请在「后台计算任务」窗口查看进度';
+      }catch(error){
+        c.panelError(error.message||String(error));
+        if(document.body.contains(submitButton)){
+          submitButton.disabled=false;
+          delete submitButton.dataset.busy;
+          submitButton.textContent=original;
+        }
+      }
+    };
+  }
   c.actionButton('evaluateServiceTimeline',()=>c.resourceAction('/api/service-timeline/evaluate',{}));
   c.actionButton('evaluateProtectionEnvelope',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
@@ -1222,6 +1260,104 @@ export function bind(c){
     loadRadarSurveillanceDetail({
       api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange
     }));
+  // ---- Round34-T07-B：地形 LOS 只读检查（**唯一**会读 DEM 的前端入口，需显式点击） ----
+  // 打开面板、读取 /api/state 或刷新普通快照**都**不会触发它；失败只呈现中文错误，
+  // 绝不把"读不到"渲染成"无遮挡"。
+  if(c.$('runRadarTerrainLos'))c.actionButton('runRadarTerrainLos',async()=>{
+    try{
+      const evidence=await loadRadarTerrainLosDiagnosis({
+        api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange
+      });
+      if(evidence&&evidence.evidence_status==='failed'
+        &&evidence.ui_superseded!==true&&evidence.superseded_by_newer_request!==true){
+        c.panelError('地形 LOS 检查未完成：'
+          +(evidence.failure_reason||'未知原因')
+          +(evidence.failure_detail?'（'+evidence.failure_detail+'）':''));
+      }
+      return evidence;
+    }catch(error){
+      c.panelError(error.message||String(error));
+      return null;
+    }
+  });
+  if(c.$('loadRadarTerrainLosDetails'))c.actionButton('loadRadarTerrainLosDetails',async()=>{
+    const model=radarTerrainLosModel(c.flow());
+    const firstTower=model.records[0]?.tower_id||null;
+    try{
+      return await loadRadarTerrainLosDetails({
+        api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,
+        filters:{tower_id:firstTower,limit:model.detailMaxLimit||50},
+      });
+    }catch(error){
+      c.panelError(error.message||String(error));
+      return null;
+    }
+  });
+  // ---- Round34-T07-I2：地形 + 建筑联合 LOS 只读诊断（**唯一**同时读 DEM 与 GPKG 的
+  // 前端入口，需显式点击）。打开面板、读取 /api/state 或刷新普通快照都不会触发它；
+  // 失败只呈现中文错误，绝不把"读不到"渲染成"无遮挡"。
+  // ---- Round34-T07-I2 / H2：联合 LOS 面板的**轻量状态**首次装载 ------------------
+  // 面板的选择器与"当前是否可计算"必须来自服务端事实：只请求 ``/combined/status``
+  // （不打开 DEM、不打开 GPKG、不计算任何 LOS）。缺这一步时 ``flow.radar_combined_los``
+  // 永远是 undefined，面板只能显示"当前不可计算"并且按钮永久禁用 —— 用户既看不到真实
+  // 阻塞原因，也无法发起任何联合诊断。
+  // 只在本次会话首次渲染该面板时请求一次（``radarCombinedLosStatusLoaded`` 守卫），
+  // 因此状态落地触发的重新渲染不会再次请求，更不会升级成一次昂贵的联合计算。
+  if(c.$('radarCombinedLosTower')&&!radarCombinedLosStatusLoaded){
+    radarCombinedLosStatusLoaded=true;
+    const engineeringDemoMode=Boolean(((c.flow().layered_operational_adoptions||{}).items||[])
+      .some(item=>item?.status==='published_engineering_demo'
+        &&item?.current_applicability==='current'
+        &&item?.use_scope==='engineering_demo_only'
+        &&item?.engineering_conditional_acceptance===true
+        &&item?.strict_safety_validation_passed===false
+        &&item?.operational_authorization===false
+        &&item?.['published_to_operational_routes']===false));
+    loadRadarCombinedLosStatus({
+      api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,
+      engineeringDemoMode,
+    }).catch(error=>c.panelError(error.message||String(error)));
+  }
+  if(c.$('runRadarCombinedLos'))c.actionButton('runRadarCombinedLos',async()=>{
+    const tower=c.$('radarCombinedLosTower')?.value||null;
+    const layer=c.$('radarCombinedLosLayer')?.value||null;
+    const rawBudget=c.$('radarCombinedLosProbeBudget')?.value||null;
+    const payload={max_tower_count:1};
+    if(c.$('radarCombinedLosEngineeringDemoMode')?.checked===true)
+      payload.engineering_demo_mode=true;
+    if(tower)payload.tower_ids=[tower];
+    if(layer)payload.altitude_layer_id=layer;
+    const budget=Number(rawBudget);
+    if(Number.isFinite(budget)&&budget>0)payload.probe_budget=Math.min(48,Math.floor(budget));
+    try{
+      const evidence=await loadRadarCombinedLosDiagnosis({
+        api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,payload
+      });
+      if(evidence&&evidence.evidence_status==='failed'
+        &&evidence.ui_superseded!==true&&evidence.superseded_by_newer_request!==true){
+        c.panelError('联合视线诊断未完成：'
+          +(evidence.failure_reason||'未知原因')
+          +(evidence.failure_detail?'（'+evidence.failure_detail+'）':''));
+      }
+      return evidence;
+    }catch(error){
+      c.panelError(error.message||String(error));
+      return null;
+    }
+  });
+  if(c.$('loadRadarCombinedLosDetails'))c.actionButton('loadRadarCombinedLosDetails',async()=>{
+    const model=radarCombinedLosModel(c.flow());
+    const firstTower=model.rays[0]?.tower_id||model.towerOptions[0]?.tower_id||null;
+    try{
+      return await loadRadarCombinedLosDetails({
+        api:c.api,getFlow:c.flow,setFlow:c.setFlow,afterChange:c.afterFlowChange,
+        filters:{tower_id:firstTower,limit:model.detailMaxLimit||20},
+      });
+    }catch(error){
+      c.panelError(error.message||String(error));
+      return null;
+    }
+  });
   // B5X：服务能力的逐点证据（链路预算 / provider 明细）按需载入。
   if(c.$('loadCapabilityDetail'))c.actionButton('loadCapabilityDetail',async()=>{
     const detail=await c.api('/api/cns-service-capability');

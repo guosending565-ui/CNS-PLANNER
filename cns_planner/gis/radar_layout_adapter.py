@@ -17,12 +17,19 @@
 
 真实来源的路径、图层与 CRS 由项目 canonical surface authority 动态注入。
 
+* 查询点**落在数据有效覆盖范围之外** ⇒ ``unknown``
+  （数据被裁剪过；范围外的"多边形之外"没有证据，既可能是海也可能是被裁掉的陆地，
+  **绝不判 sea**。这是 Round35-A 对 D-01 的修复）；
 * 点在陆域 polygon 内部 **或落在边界上** ⇒ ``land``；
 * 点在 polygon 外、但到陆域边界距离 ``<= coastal_uncertainty_buffer_m`` ⇒
   ``coastal_uncertain``（``effective_requirement_class = land``，要求 2 个站址）；
-* 点在 polygon 外且距离 ``> buffer`` ⇒ ``sea``；
+* 点在**覆盖范围内**的 polygon 外且距离 ``> buffer`` ⇒ ``sea``；
 * 陆域源未配置 / 不可读 / 几何库缺失 / **CRS 不可解析或转换失败** ⇒ ``unknown``
   （**fail-closed**）。
+
+**有效覆盖范围**：由实际几何的米制 bbox 并集决定，并由同目录来源元数据
+（``land_mask_osm_v*.json`` 的 ``clip.bbox`` / ``coverage_limit``）登记声明范围。
+元数据缺失不影响判定，只影响可追溯性。
 
 **绝不用 DEM NoData 推断海洋**：本模块没有任何 DEM-derived 海洋/陆地结论。
 
@@ -563,12 +570,17 @@ class LandMaskSource:
     """
 
     def __init__(self, path, *, layer_name=None, coastal_uncertainty_buffer_m=None,
-                 metric_crs=COASTAL_BUFFER_METRIC_CRS):
+                 metric_crs=COASTAL_BUFFER_METRIC_CRS, data_footprint_margin_m=0.0):
         self.path = Path(str(path)) if path else None
         self.layer_name = layer_name
         self.coastal_uncertainty_buffer_m = normalized_coastal_buffer_m(
             coastal_uncertainty_buffer_m
         )
+        #: 数据有效覆盖边界之外的**额外判定余量**（米）。默认 ``0.0``：最保守，
+        #: 边界之外一律 ``unknown``。它表达的是"来源数据在自身边界附近仍有水域
+        #: 判定能力"的工程声明，**不是**海岸线精度声明；非 0 值必须在
+        #: provenance 里可追溯（见 :meth:`describe`）。
+        self.data_footprint_margin_m = normalized_coastal_buffer_m(data_footprint_margin_m)
         self.metric_crs = str(metric_crs or COASTAL_BUFFER_METRIC_CRS)
         self._polygons = None
         self._prepared = False
@@ -584,6 +596,10 @@ class LandMaskSource:
         #: 坐标系，"查询点"的语义依然是地理经纬度（扫描/选点都来自经纬度输入）。
         self._query_forward = None
         self._query_backward = None
+        #: 数据有效覆盖范围（米制）。多边形外 ≠ 海：只有落在数据覆盖范围内的
+        #: "多边形之外"才是可判定的 sea；范围外一律 unknown（Round35-A D-01 修复）。
+        self._footprint_bounds = None
+        self._footprint_coverage = None
 
     def metric_polygons(self):
         """只读访问：源几何经**显式 CRS 变换**后的米制 polygon 列表 ``[(polygon, bounds)]``。
@@ -762,7 +778,191 @@ class LandMaskSource:
             self._crs_reason = self._reason
             return None
         self._polygons = prepared
+        # 有效覆盖范围 = 实际几何的米制 bbox 并集。数据被裁剪到某个 bbox 之后，
+        # 边界之外的"多边形之外"没有证据：那里既可能是海，也可能是被裁掉的陆地。
+        minx = min(bounds[0] for _polygon, bounds in prepared)
+        miny = min(bounds[1] for _polygon, bounds in prepared)
+        maxx = max(bounds[2] for _polygon, bounds in prepared)
+        maxy = max(bounds[3] for _polygon, bounds in prepared)
+        self._footprint_bounds = (minx, miny, maxx, maxy)
+        self._footprint_coverage = self._read_declared_coverage()
         return self._polygons
+
+    def _read_declared_coverage(self):
+        """读取同目录的来源元数据，登记"数据声明的覆盖范围"（只做记录，不改判定）。
+
+        元数据缺失不是错误（``None``）：有效范围仍由实际几何 bbox 决定。
+        """
+
+        if self.path is None:
+            return None
+        candidates = [
+            self.path.with_name(self.path.stem + ".json"),
+            self.path.parent / "land_mask_osm_v2.json",
+            self.path.parent / "land_mask_osm_v1.json",
+        ]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - 元数据不可读不影响分类
+                continue
+            clip = payload.get("clip") if isinstance(payload.get("clip"), dict) else {}
+            if not clip:
+                continue
+            return {
+                "metadata_path": str(candidate),
+                "declared_clip_bbox": clip.get("bbox"),
+                "declared_clip_bbox_crs": clip.get("bbox_crs"),
+                "coverage_limit": clip.get("coverage_limit"),
+                "version": payload.get("version"),
+                "canonical_sha256": (payload.get("canonical_file") or {}).get("sha256"),
+            }
+        return None
+
+    def footprint_bounds(self):
+        """数据有效覆盖范围（米制 ``(minx, miny, maxx, maxy)``）；未就绪返回 ``None``。"""
+
+        if not self._prepared:
+            self.prepare()
+        return self._footprint_bounds
+
+    def footprint_geographic_bounds(self):
+        """有效覆盖范围的地理 bbox ``(min_lon, min_lat, max_lon, max_lat)``。"""
+
+        bounds = self.footprint_bounds()
+        if bounds is None or self._query_backward is None:
+            return None
+        minx, miny, maxx, maxy = bounds
+        corners = [
+            self._query_backward.transform(x, y)
+            for x in (minx, maxx) for y in (miny, maxy)
+        ]
+        longitudes = [value[0] for value in corners]
+        latitudes = [value[1] for value in corners]
+        if not all(math.isfinite(v) for v in longitudes + latitudes):
+            return None
+        return (min(longitudes), min(latitudes), max(longitudes), max(latitudes))
+
+    def cell_land_relation(self, bbox):
+        """格级陆域关系探测（Round35-D，供"开阔海域零人口工程假设"使用）。
+
+        与 :meth:`classify`（**格心代表点**判定）的关键区别：本方法回答的是
+        "**整个格子**与陆域的关系"，因此能识别"格心判为 sea、但格的边缘实际包含陆地"
+        这一类格 —— 它们**不得**被当作开阔海域。
+
+        返回值（全部只读，不做任何缓存写入）::
+
+            {"relation": "open_sea" | "land_intersects" | "within_coastal_buffer"
+                        | "outside_data_footprint" | "unknown",
+             "land_mask_available": bool,
+             "does_not_intersect_land": bool,
+             "outside_coastal_uncertainty_buffer": bool,
+             "distance_to_land_boundary_m": float | None,
+             "coastal_uncertainty_buffer_m": float,
+             "land_intersection_count": int,
+             "method": "cell_envelope_metric_intersection_with_land_polygons",
+             "cell_envelope_m": [...]}
+
+        格的经纬度 bbox 先经**查询侧**变换到米制，再取其外接矩形作为**保守包络**
+        （包络 ≥ 真实格，因此只会更早判"与陆地相交"，方向保守）。任一证据不可得时返回
+        ``unknown``，调用方必须据此 fail-closed。
+        """
+
+        polygons = self.prepare()
+        empty = {
+            "relation": "unknown",
+            "land_mask_available": False,
+            "does_not_intersect_land": False,
+            "outside_coastal_uncertainty_buffer": False,
+            "distance_to_land_boundary_m": None,
+            "coastal_uncertainty_buffer_m": float(self.coastal_uncertainty_buffer_m),
+            "land_intersection_count": 0,
+            "method": "cell_envelope_metric_intersection_with_land_polygons",
+            "cell_envelope_m": None,
+            "reason": self._reason or "land_mask_unavailable",
+        }
+        if polygons is None or self._query_forward is None:
+            return empty
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            empty["reason"] = "cell_bbox_missing"
+            return empty
+        west, south, east, north = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        try:
+            corners = [
+                self._query_forward.transform(longitude, latitude)
+                for longitude in (west, east) for latitude in (south, north)
+            ]
+        except Exception:  # noqa: BLE001 - 变换失败即无证据
+            empty["reason"] = "cell_corner_transform_failed"
+            return empty
+        xs = [point[0] for point in corners]
+        ys = [point[1] for point in corners]
+        if not all(math.isfinite(value) for value in xs + ys):
+            empty["reason"] = "cell_corner_not_finite"
+            return empty
+        minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
+        empty["cell_envelope_m"] = [minx, miny, maxx, maxy]
+
+        buffer_m = float(self.coastal_uncertainty_buffer_m)
+        margin = float(self.data_footprint_margin_m or 0.0)
+        bounds_all = self._footprint_bounds
+        if bounds_all is None:
+            empty["reason"] = "land_mask_data_footprint_unknown"
+            return empty
+        minx_all, miny_all, maxx_all, maxy_all = bounds_all
+        if not (minx_all - margin <= minx and maxx <= maxx_all + margin
+                and miny_all - margin <= miny and maxy <= maxy_all + margin):
+            empty["land_mask_available"] = True
+            empty["relation"] = "outside_data_footprint"
+            empty["reason"] = "cell_not_wholly_inside_land_mask_footprint"
+            return empty
+
+        from shapely.geometry import box as shapely_box
+
+        envelope = shapely_box(minx, miny, maxx, maxy)
+        intersections = 0
+        nearest = None
+        try:
+            for polygon, bounds in polygons:
+                poly_minx, poly_miny, poly_maxx, poly_maxy = bounds
+                # 预筛：与格包络 + 海岸缓冲带的交集范围。
+                if (poly_maxx < minx - buffer_m or poly_minx > maxx + buffer_m
+                        or poly_maxy < miny - buffer_m or poly_miny > maxy + buffer_m):
+                    continue
+                if polygon.intersects(envelope):
+                    intersections += 1
+                    nearest = 0.0
+                    break
+                distance = float(polygon.distance(envelope))
+                if nearest is None or distance < nearest:
+                    nearest = distance
+        except Exception:  # noqa: BLE001 - 几何判定失败即无证据
+            empty["land_mask_available"] = True
+            empty["reason"] = "cell_land_intersection_failed"
+            return empty
+
+        result = dict(empty)
+        result["land_mask_available"] = True
+        result["reason"] = None
+        result["land_intersection_count"] = intersections
+        result["distance_to_land_boundary_m"] = nearest
+        if intersections:
+            result["relation"] = "land_intersects"
+            result["does_not_intersect_land"] = False
+            result["outside_coastal_uncertainty_buffer"] = False
+            return result
+        if nearest is not None and nearest <= buffer_m:
+            # 近岸保护范围：格心可能是 sea，但格本身落在海岸不确定带内 ⇒ 绝不判开阔海域。
+            result["relation"] = "within_coastal_buffer"
+            result["does_not_intersect_land"] = True
+            result["outside_coastal_uncertainty_buffer"] = False
+            return result
+        result["relation"] = "open_sea"
+        result["does_not_intersect_land"] = True
+        result["outside_coastal_uncertainty_buffer"] = True
+        return result
 
     def describe(self):
         return {
@@ -785,6 +985,19 @@ class LandMaskSource:
             ),
             "dem_nodata_used_to_infer_sea": False,
             "degree_as_meter_used": False,
+            "footprint": {
+                "bounds_m": (
+                    list(self._footprint_bounds)
+                    if self._footprint_bounds is not None else None
+                ),
+                "bounds_geographic": self.footprint_geographic_bounds(),
+                "declared_coverage": self._footprint_coverage,
+                "data_footprint_margin_m": float(self.data_footprint_margin_m or 0.0),
+                "semantics": (
+                    "footprint_outside_is_unknown_not_sea"
+                ),
+                "source": "union_of_actual_land_polygon_metric_bounds",
+            },
         }
 
     # ---- queries -------------------------------------------------------------------
@@ -795,15 +1008,32 @@ class LandMaskSource:
     def _classify_metric_point(self, x, y, polygons):
         """米制点分类：``(surface_class, evidence)``。
 
-        语义（V1.1）：
+        语义（V1.1 + Round35-A footprint 守卫）：
 
+        * 点在**数据有效覆盖范围之外** ⇒ ``unknown``（无证据，绝不判 sea）；
         * 点在 polygon 内**或落在边界上** ⇒ ``land``；
         * 点在 polygon 外、但 ``0 < distance <= buffer`` ⇒ ``coastal_uncertain``
           （按 land 处理，要求 2 个站址）；
-        * 点在 polygon 外且 ``distance > buffer`` ⇒ ``sea``。
+        * 点在覆盖范围内的 polygon 外且 ``distance > buffer`` ⇒ ``sea``。
         """
 
         from shapely.geometry import Point
+
+        bounds_all = self._footprint_bounds
+        if bounds_all is not None:
+            margin = float(self.data_footprint_margin_m or 0.0)
+            minx_all, miny_all, maxx_all, maxy_all = bounds_all
+            if not (minx_all - margin <= x <= maxx_all + margin
+                    and miny_all - margin <= y <= maxy_all + margin):
+                return "unknown", {
+                    "reason": "point_outside_land_mask_data_footprint",
+                    "distance_to_land_boundary_m": None,
+                    "footprint_bounds_m": list(bounds_all),
+                    "data_footprint_margin_m": margin,
+                    "footprint_semantics": (
+                        "数据已按 bbox 裁剪；范围之外无证据，既可能是海也可能是被裁掉的陆地"
+                    ),
+                }
 
         point = Point(x, y)
         buffer_m = float(self.coastal_uncertainty_buffer_m)
@@ -1284,14 +1514,27 @@ def land_mask_readiness(state, paths, *, layer_name=None,
     checks["polygon_geometry_present"] = bool(polygons)
     checks["source_crs_resolved"] = bool(described.get("source_crs"))
     checks["classification_transform_available"] = described.get("crs_status") == "passed"
+    footprint = described.get("footprint") or {}
+    record["footprint"] = footprint
+    checks["data_footprint_resolved"] = footprint.get("bounds_m") is not None
+    checks["coverage_metadata_registered"] = bool(
+        footprint.get("declared_coverage")
+    )
     if polygons is None:
         record["reason"] = source._reason or "land_mask_no_usable_polygon_layer"
         return record
     if described.get("crs_status") != "passed":
         record["reason"] = described.get("crs_reason") or "land_mask_crs_unavailable"
         return record
+    if footprint.get("bounds_m") is None:
+        record["reason"] = "land_mask_data_footprint_unresolved"
+        return record
     record["status"] = "passed"
     record["reason"] = None
+    if not checks["coverage_metadata_registered"]:
+        # 覆盖范围元数据缺失不阻塞分类（有效范围由实际几何 bbox 决定），
+        # 但必须显式记录为 warning，避免"来源身份无据可查"被静默放过。
+        record["warnings"] = ["land_mask_coverage_metadata_missing"]
     return record
 
 

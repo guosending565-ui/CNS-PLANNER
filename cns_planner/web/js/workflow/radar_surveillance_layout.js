@@ -14,11 +14,32 @@
  * 本模块只产出 HTML 字符串与纯数据模型，不直接访问 DOM，便于 node 环境测试。
  */
 import {escapeHtml,statusBadge,statusText,verticalReferenceText} from './common.js';
+//: Round34-T07-R 集成适配：T07-B 的地形 LOS 证据块复用工作台既有的 disclosure
+//: 折叠块（``workbench.js`` 的同一实现），不新增第二套折叠 UI、不改既有布局契约。
+import {disclosure} from './workbench.js';
+//: Round34-T07-I2：地形 + 建筑**联合**视线诊断（复用同一只读证据 renderer，
+//: 不新增第二套可视化逻辑；轻量状态不打开任何数据集）。
+import {RADAR_COMBINED_LOS_DETAILS_ENDPOINT,RADAR_COMBINED_LOS_DIAGNOSE_ENDPOINT,RADAR_COMBINED_LOS_STATUS_ENDPOINT,renderRadarCombinedLosBlock} from './radar_visibility_evidence.js';
 
 export const RADAR_LAYOUT_ENDPOINT='/api/radar-surveillance-layout';
 export const RADAR_LAYOUT_EVALUATE_ENDPOINT='/api/radar-surveillance-layout/evaluate';
 export const RADAR_LAYOUT_READINESS_ENDPOINT='/api/radar-surveillance-layout/readiness';
 export const RADAR_POLICY_ENDPOINT='/api/radar-surveillance-policy';
+//: Round34-T07-B：**只读**地形 LOS 诊断入口。
+//: ``/status`` 与通用快照同口径（不打开 DEM）；``/diagnose`` 才是唯一会读 DEM 的入口，
+//: 且只在用户显式点击时调用；``/details`` 只读服务端内存证据块（受限分页）。
+export const RADAR_TERRAIN_LOS_STATUS_ENDPOINT='/api/radar-terrain-los/status';
+export const RADAR_TERRAIN_LOS_DIAGNOSE_ENDPOINT='/api/radar-terrain-los/diagnose';
+export const RADAR_TERRAIN_LOS_DETAILS_ENDPOINT='/api/radar-terrain-los/details';
+//: 用户可见声明（必须原样展示）。
+export const RADAR_TERRAIN_LOS_DISCLAIMER='地形视距分析仅为几何可视性证据，不代表实际雷达探测概率或设备可安装确认。';
+export const RADAR_TERRAIN_LOS_TITLE='地形视距（LOS）只读检查';
+export const RADAR_TERRAIN_LOS_STATE_TEXT={
+  not_requested:'尚未请求地形 LOS 计算',
+  computed:'已计算',
+  failed:'计算失败',
+  stale:'旧证据已 stale',
+};
 
 export const RADAR_LAYOUT_TITLE='监视雷达初步划设';
 export const RADAR_LAYOUT_PROPOSAL_TITLE='80m固定高度航路方向性雷达几何初步划设方案';
@@ -356,11 +377,380 @@ function deviceSummary(model){
     +'（已记录，<b>不进入几何布设公式</b>）</small></span></div>').join('');
 }
 
+/* ============================================================================
+ * Round34-T07-B：地形视距（LOS）**只读证据**展示
+ *
+ * 硬约定：
+ *  * 默认只消费通用快照里的**轻量状态**（不打开 DEM、不做 LOS 计算）；
+ *  * 唯一会读 DEM 的入口是用户显式点击「执行地形 LOS 检查」；
+ *  * 该证据**不进入**任何规划判定，也**不**改变任何冻结几何参数；
+ *  * 前端**不重算**任何结论：三态计数、净空、明细一律原样转印后端字段；
+ *  * 本轮**不**新增地图叠加图层，启动仍只显示 QGIS 在线底图。
+ * ========================================================================== */
+
+/** 地形 LOS 只读证据模型（纯函数，便于 node 环境测试）。 */
+export function radarTerrainLosModel(flow){
+  const status=(flow||{}).radar_terrain_los||{};
+  //: 客户端最近一次显式检查的结果与按需载入的明细页；它们**只**来自显式请求。
+  const evidence=(flow||{}).radar_terrain_los_diagnosis||null;
+  const detailPage=(flow||{}).radar_terrain_los_details||null;
+  const view=evidence||status||{};
+  const counts=view.los_status_counts||{};
+  const availability=view.origin_availability_counts||{};
+  const currentness=view.currentness||status.currentness||{};
+  return {
+    status,
+    evidence,
+    detailPage,
+    hasEvidence:Boolean(evidence),
+    availableToCompute:status.available_to_compute===true,
+    evidenceStatus:view.evidence_status||'not_requested',
+    evidenceStatusLabel:RADAR_TERRAIN_LOS_STATE_TEXT[view.evidence_status]
+      ||view.evidence_status_label||RADAR_TERRAIN_LOS_STATE_TEXT.not_requested,
+    algorithmVersion:view.algorithm_version||status.algorithm_version||null,
+    readMode:view.read_mode||status.read_mode||null,
+    evaluationScope:view.evaluation_scope||null,
+    evaluatedTowerCount:view.evaluated_tower_count||0,
+    evaluatedProbeCount:view.evaluated_probe_count||0,
+    candidateTowerCount:view.candidate_tower_count||0,
+    candidateProbeCount:view.candidate_probe_count||0,
+    clearCount:counts.clear||0,
+    blockedCount:counts.blocked||0,
+    unknownCount:counts.unknown||0,
+    usableOriginCount:availability.usable||0,
+    notEvaluableOriginCount:availability.not_evaluable||0,
+    unknownOriginCount:availability.unknown||0,
+    dem:view.dem||null,
+    //: 已计算时用证据块里的真实高度层；未请求时用只读可用性里的高度层解析结果。
+    altitudeLayer:view.altitude_layer||status.adapter_availability?.altitude_layer||null,
+    sampling:view.sampling||null,
+    bounds:view.bounds||null,
+    inputFingerprint:view.input_fingerprint||null,
+    currentness,
+    stale:currentness.stale===true,
+    currentnessReasons:Array.isArray(currentness.reasons_zh)?currentness.reasons_zh:[],
+    failureReason:view.failure_reason||null,
+    failureDetail:view.failure_detail||null,
+    records:Array.isArray(view.records)?view.records:[],
+    recordSampleCount:view.record_sample_count||0,
+    recordSampleTruncated:view.record_sample_truncated===true,
+    lowClearanceSamples:Array.isArray(view.low_clearance_samples)?view.low_clearance_samples:[],
+    lowClearanceThresholdM:view.low_clearance_threshold_m,
+    notEvaluated:Array.isArray(view.not_evaluated)?view.not_evaluated:[],
+    disclaimer:view.user_disclaimer_zh||RADAR_TERRAIN_LOS_DISCLAIMER,
+    dimensionSeparation:view.dimension_separation_zh||null,
+    losSemantics:view.los_three_state_semantics_zh||null,
+    sourceProvenance:view.source_provenance||null,
+    detailRecordCount:detailPage&&Array.isArray(detailPage.records)
+      ?detailPage.records.length:0,
+    detailMatchedCount:detailPage?detailPage.matched_record_count:null,
+    detailLimit:detailPage?detailPage.limit:null,
+    detailMaxLimit:detailPage?detailPage.max_limit:null,
+  };
+}
+
+function _losProbeRow(item){
+  const clearance=Number.isFinite(item?.minimum_clearance_m)
+    ?num(item.minimum_clearance_m):'—';
+  return '<div class="gap-result"><b>'+escapeHtml(String(item?.tower_id||'—'))+'</b>'
+    +' · probe '+escapeHtml(String(item?.probe_id||'—'))
+    +' · '+statusBadge(String(item?.los_status||'unknown'),String(item?.los_status||'unknown'))
+    +' · 最小净空 '+escapeHtml(String(clearance))+' m'
+    +' · 水平距离 '+(Number.isFinite(item?.horizontal_distance_m)
+      ?num(item.horizontal_distance_m):'—')+' m'
+    +(item?.reason?' · 原因 '+escapeHtml(String(item.reason)):'')
+    +'</div>';
+}
+
+/**
+ * 地形 LOS 只读证据块 HTML。
+ *
+ * 中文文案必须包含固定声明：「地形视距分析仅为几何可视性证据，不代表实际雷达探测概率
+ * 或设备可安装确认。」并且必须显式展示「规划候选资格」与「物理 LOS 可评价性」是两个
+ * **不同维度**。
+ */
+export function renderRadarTerrainLosBlock(flow){
+  const model=radarTerrainLosModel(flow);
+  const dem=model.dem||{};
+  const identity=dem.source_identity||{};
+  const layer=model.altitudeLayer||{};
+  const bounds=model.bounds||{};
+  const openCount=Number.isFinite(dem.read_receipt?.open_count)
+    ?dem.read_receipt.open_count:'—';
+  const statusLine='<b>'+escapeHtml(RADAR_TERRAIN_LOS_TITLE)+'</b> '
+    +statusBadge(model.evidenceStatus,
+      RADAR_TERRAIN_LOS_STATE_TEXT[model.evidenceStatus]||'')
+    +' · 只读证据（不参与规划判定）';
+  const actionRow='<div class="button-row">'
+    +'<button class="secondary" id="runRadarTerrainLos"'
+    +(model.availableToCompute?'':' disabled')+'>执行地形 LOS 检查</button>'
+    +'<button class="secondary" id="loadRadarTerrainLosDetails"'
+    +(model.hasEvidence?'':' disabled')+'>载入逐 probe 明细（受限分页）</button></div>';
+  const availabilityNote=model.availableToCompute?''
+    :'<div class="parameter-note">当前不可计算：需要已配置的地形数据源（terrain_dtm）、'
+      +'显式米制投影与真实铁塔站址。缺失一律 fail-closed，绝不猜默认数据源。</div>';
+  if(!model.hasEvidence){
+    const planned='<div class="parameter-note">尚未执行地形 LOS 检查。'
+      +'打开本面板或读取项目状态<b>不会</b>自动读取 DEM，也不会触发任何 LOS 全量计算。</div>';
+    const layerLine=layer.altitude_layer_id
+      ?'<div class="parameter-note">当前权威高度层：<b>'+escapeHtml(String(layer.altitude_layer_id))
+        +'</b>（'+(Number.isFinite(layer.nominal_altitude_m)?num(layer.nominal_altitude_m):'—')
+        +' m · '+escapeHtml(String(layer.vertical_reference||'基准未知'))
+        +' · 解析来源 '+escapeHtml(String(layer.resolution_source||'—'))+'）<br>'
+        +'probe 高度将只取自该权威高度层的 nominal_altitude_m，'
+        +'绝不使用走廊体素的代表高度。</div>':'';
+    return '<h4>'+escapeHtml(RADAR_TERRAIN_LOS_TITLE)+'</h4>'
+      +'<div class="parameter-note">'+statusLine+'</div>'
+      +planned+layerLine+availabilityNote+actionRow
+      +'<div class="parameter-note"><b>'+escapeHtml(model.disclaimer)+'</b></div>';
+  }
+  const countsLine='<div class="coverage-card">'
+    +'<b>已评估结论</b>'
+    +'<span>clear <b>'+model.clearCount+'</b> · blocked <b>'+model.blockedCount
+    +'</b> · unknown <b>'+model.unknownCount+'</b>（共 '+model.evaluatedProbeCount+' 次评价）</span>'
+    +'<span>已评估铁塔 '+model.evaluatedTowerCount+' / 候选站址 '+model.candidateTowerCount
+    +' 座 · 已评估 probe '+model.evaluatedProbeCount+' / 候选采样点 '+model.candidateProbeCount+' 个</span>'
+    +'<span>原点物理输入：可用（usable）<b>'+model.usableOriginCount
+    +'</b> · 不可评价（not_evaluable）<b>'+model.notEvaluableOriginCount
+    +'</b> · 证据不足（unknown）<b>'+model.unknownOriginCount+'</b></span></div>';
+  const sourceLine='<div class="parameter-note">'
+    +'数据来源：'+escapeHtml(String(identity.file_name||'—'))
+    +' · 垂向基准 '+escapeHtml(String(dem.vertical_reference||'—'))
+    +' · 读取模式 '+escapeHtml(String(model.readMode||'—'))+' · DEM 打开次数 '+openCount
+    +'<br>算法版本 '+escapeHtml(String(model.algorithmVersion||'—'))
+    +' · 评价范围 '+escapeHtml(String(model.evaluationScope||'—'))
+    +'<br>高度基准：'+escapeHtml(String(layer.altitude_layer_id||'—'))
+    +'（'+(Number.isFinite(layer.nominal_altitude_m)?num(layer.nominal_altitude_m):'—')
+    +' m · '+escapeHtml(String(layer.vertical_reference||'基准未知'))+'）'
+    +' · probe 高度来源 '+escapeHtml(String(layer.probe_height_source||'—'))
+    +' · 代表高度使用='+(layer.representative_height_used===true?'是':'否')
+    +'<br>采样 '+ (Number.isFinite(model.sampling?.sampling_interval_m)
+      ?num(model.sampling.sampling_interval_m):'—')+' m'
+    +' · 包络半径 '+(Number.isFinite(model.sampling?.envelope_radius_m)
+      ?num(model.sampling.envelope_radius_m):'—')+' m'
+    +' · 曲率修正='+(model.sampling?.curvature_correction_enabled===true?'启用':'关闭')
+    +' · 折射='+(model.sampling?.refraction_enabled===true?'启用':'关闭（纯几何）')
+    +'<br>输入指纹 <code>'+escapeHtml(String(model.inputFingerprint||'—'))+'</code></div>';
+  const currentnessLine='<div class="parameter-note">'
+    +'<b>证据时效（独立判断）</b>：'+escapeHtml(String(model.currentness.state||'—'))
+    +' · 旧证据指纹 '+(model.currentness.prior_input_fingerprint
+      ?'<code>'+escapeHtml(String(model.currentness.prior_input_fingerprint))+'</code>':'（无）')
+    +'<br>'+(model.currentnessReasons.length
+      ?model.currentnessReasons.map(escapeHtml).join('<br>')
+      :'未提供可比较的旧证据，因此不宣称任何旧结果 stale。')
+    +'<br>LOS 证据的 stale <b>不</b>传播到上游规划结果、P14/P15/P16 或任何既有容器；'
+    +'本轮没有 ProjectState writer，也没有结果持久化。</div>';
+  const staleWarning=model.stale
+    ?'<div class="parameter-note"><b>旧证据已 stale：</b>下列结论来自旧输入，仅作参考，'
+      +'不可作为当前地形可见性依据。</div>':'';
+  const failureLine=model.failureReason
+    ?'<div class="parameter-note"><b>计算失败：</b>'+escapeHtml(String(model.failureReason))
+      +(model.failureDetail?'（'+escapeHtml(String(model.failureDetail))+'）':'')
+      +'<br>失败<b>不</b>等于"无遮挡"：不会返回任何 clear 结论。</div>':'';
+  const lowClearance=model.lowClearanceSamples.length
+    ?'<div class="parameter-note"><b>低净空提示</b>（阈值 '
+      +(Number.isFinite(model.lowClearanceThresholdM)?num(model.lowClearanceThresholdM):'—')
+      +' m，仅提示、<b>不改变</b> LOS 三态阈值或算法）：<br>'
+      +model.lowClearanceSamples.map(item=>'<b>'+escapeHtml(String(item.tower_id||'—'))+'</b>'
+        +' · probe '+escapeHtml(String(item.probe_id||'—'))
+        +' · 净空 '+(Number.isFinite(item.minimum_clearance_m)?num(item.minimum_clearance_m):'—')
+        +' m').join('<br>')+'</div>':'';
+  const sampleList=model.records.length
+    ?'<div class="gap-results">'+model.records.map(_losProbeRow).join('')+'</div>'
+    :'<div class="empty-note">本次评价没有可展示的样本记录。</div>';
+  const sampleNote=model.recordSampleTruncated
+    ?'<div class="parameter-note">仅展示前 '+model.recordSampleCount
+      +' 条样本；这不是全部评价明细（默认摘要不隐含全部明细）。</div>':'';
+  const detailBlock=model.detailPage
+    ?'<div class="parameter-note">逐 probe 明细：匹配 '+String(model.detailMatchedCount)
+      +' 条 · 本页 '+model.detailRecordCount+' 条 · 每页上限 '+String(model.detailMaxLimit)
+      +'（分页读取，不重算、不重新打开 DEM，也不含完整地形剖面）</div>'
+    :'';
+  const boundaryLine='<div class="parameter-note">'
+    +'本轮<b>未评估</b>：'+model.notEvaluated.slice(0,8).map(escapeHtml).join(' · ')
+    +'（等）<br>'
+    +escapeHtml(String(model.dimensionSeparation||''))+'<br>'
+    +'默认摘要只含聚合统计与有限样本；逐 probe 明细需要显式请求，且受分页与总数上限约束。'
+    +'完整地形剖面不进入 API 响应。</div>';
+  const semanticsLine=model.losSemantics
+    ?'<div class="parameter-note">clear：'+escapeHtml(String(model.losSemantics.clear||''))
+      +'<br>blocked：'+escapeHtml(String(model.losSemantics.blocked||''))
+      +'<br>unknown：'+escapeHtml(String(model.losSemantics.unknown||''))+'</div>':'';
+  return '<h4>'+escapeHtml(RADAR_TERRAIN_LOS_TITLE)+'</h4>'
+    +'<div class="parameter-note">'+statusLine+'</div>'
+    +staleWarning+failureLine+countsLine+sourceLine+currentnessLine
+    +availabilityNote+actionRow
+    +disclosure('样本记录与低净空提示',sampleNote+lowClearance+sampleList)
+    +detailBlock+semanticsLine+boundaryLine
+    +'<div class="parameter-note"><b>'+escapeHtml(model.disclaimer)+'</b></div>';
+}
+
+/** 显式请求一次地形 LOS 只读诊断（唯一会读 DEM 的前端入口）。 */
+export async function loadRadarTerrainLosDiagnosis({api,getFlow,setFlow,afterChange=()=>{},
+                                                   payload=null}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarTerrainLosDiagnosis 需要 api / getFlow / setFlow 三个依赖');
+  const body=payload&&typeof payload==='object'?payload:{};
+  //: 若客户端已保存过旧证据，一并提交其输入指纹：服务端据此**独立**判断 stale。
+  const previous=(getFlow()||{}).radar_terrain_los_diagnosis;
+  if(previous&&previous.input_fingerprint&&body.prior_evidence==null){
+    body.prior_evidence={
+      input_fingerprint:previous.input_fingerprint,
+      algorithm_version:previous.algorithm_version,
+      evaluation_scope:previous.evaluation_scope,
+    };
+  }
+  const evidence=await api(RADAR_TERRAIN_LOS_DIAGNOSE_ENDPOINT,{
+    method:'POST',body:JSON.stringify(body),
+  });
+  const current=getFlow()||{};
+  setFlow({...current,radar_terrain_los_diagnosis:evidence,
+    radar_terrain_los_details:null});
+  afterChange();
+  return evidence;
+}
+
+/** 受限分页读取逐 probe 明细（只读服务端内存证据块，绝不重算）。 */
+export async function loadRadarTerrainLosDetails({api,getFlow,setFlow,afterChange=()=>{},
+                                                 filters=null}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarTerrainLosDetails 需要 api / getFlow / setFlow 三个依赖');
+  const query={};
+  const source=filters&&typeof filters==='object'?filters:{};
+  for(const key of ['tower_id','route_id','altitude_layer_id','los_status','offset','limit']){
+    const value=source[key];
+    if(value!==undefined&&value!==null&&String(value)!=='')query[key]=String(value);
+  }
+  const suffix=Object.keys(query).length?'?'+new URLSearchParams(query).toString():'';
+  const page=await api(RADAR_TERRAIN_LOS_DETAILS_ENDPOINT+suffix);
+  const current=getFlow()||{};
+  setFlow({...current,radar_terrain_los_details:page?.detail_page||null});
+  afterChange();
+  return page;
+}
+
+/** 只读状态：与通用快照同口径，**不打开 DEM**（用户显式刷新时使用）。 */
+export async function loadRadarTerrainLosStatus({api,getFlow,setFlow,afterChange=()=>{}}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarTerrainLosStatus 需要 api / getFlow / setFlow 三个依赖');
+  const status=await api(RADAR_TERRAIN_LOS_STATUS_ENDPOINT);
+  const current=getFlow()||{};
+  setFlow({...current,radar_terrain_los:status});
+  afterChange();
+  return status;
+}
+
+/* ---------------------------------------------------------------------------
+ * Round34-T07-I2：地形 + 建筑联合 LOS 只读诊断
+ *
+ *  * ``/combined/status`` 与通用快照同口径：**不打开 DEM，也不打开 GPKG**；
+ *  * ``/combined/diagnose`` 是**唯一**同时读两个真实来源的入口，且只在用户显式点击
+ *    「开始联合诊断」时调用；失败只呈现中文错误，绝不渲染成"无遮挡"；
+ *  * ``/combined/details`` 只读服务端内存证据块（受限分页，绝不重算）。
+ * ------------------------------------------------------------------------- */
+
+/** 联合 LOS 轻量状态（不打开任何数据集）。 */
+export async function loadRadarCombinedLosStatus({api,getFlow,setFlow,afterChange=()=>{},
+                                                  engineeringDemoMode=false}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarCombinedLosStatus 需要 api / getFlow / setFlow 三个依赖');
+  const suffix=engineeringDemoMode?'?engineering_demo_mode=true':'';
+  const status=await api(RADAR_COMBINED_LOS_STATUS_ENDPOINT+suffix);
+  const current=getFlow()||{};
+  setFlow({...current,radar_combined_los:status});
+  afterChange();
+  return status;
+}
+
+/** 显式请求一次联合 LOS 只读诊断（唯一会同时读 FABDEM 与 buildings v3 的前端入口）。 */
+let radarCombinedLosRequestSequence=0;
+
+export async function loadRadarCombinedLosDiagnosis({api,getFlow,setFlow,afterChange=()=>{},
+                                                     payload=null}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarCombinedLosDiagnosis 需要 api / getFlow / setFlow 三个依赖');
+  const body=payload&&typeof payload==='object'?{...payload}:{};
+  const requestSequence=++radarCombinedLosRequestSequence;
+  body.request_id=String(body.request_id||('radar-combined-ui-'+requestSequence));
+  //: 若客户端已保存过旧证据，一并提交其输入指纹：服务端据此**独立**判断 stale。
+  const previous=(getFlow()||{}).radar_combined_los_diagnosis;
+  if(previous&&previous.input_fingerprint&&body.prior_evidence==null){
+    body.prior_evidence={
+      input_fingerprint:previous.input_fingerprint,
+      schema_version:previous.schema_version,
+      algorithm_version:previous.algorithm_version,
+      fingerprint_schema_version:previous.fingerprint_schema_version,
+      evaluation_scope:previous.evaluation_scope,
+    };
+  }
+  const starting=getFlow()||{};
+  setFlow({...starting,radar_combined_los_diagnosis:null,radar_combined_los_details:null,
+    radar_combined_los_request:{request_id:body.request_id,state:'running',
+      sequence:requestSequence}});
+  afterChange();
+  try{
+    const evidence=await api(RADAR_COMBINED_LOS_DIAGNOSE_ENDPOINT,{
+      method:'POST',body:JSON.stringify(body),
+    });
+    if(requestSequence!==radarCombinedLosRequestSequence)
+      return {...evidence,ui_superseded:true};
+    const current=getFlow()||{};
+    setFlow({...current,radar_combined_los_diagnosis:evidence,
+      radar_combined_los_details:null,radar_combined_los_request:null});
+    afterChange();
+    return evidence;
+  }catch(error){
+    if(requestSequence!==radarCombinedLosRequestSequence)
+      return {evidence_status:'superseded',ui_superseded:true};
+    const current=getFlow()||{};
+    setFlow({...current,radar_combined_los_diagnosis:null,
+      radar_combined_los_details:null,radar_combined_los_request:null});
+    afterChange();
+    throw error;
+  }
+}
+
+/** 受限分页读取逐射线联合明细（只读服务端内存证据块，绝不重算）。 */
+export async function loadRadarCombinedLosDetails({api,getFlow,setFlow,afterChange=()=>{},
+                                                  filters=null}={}){
+  if(typeof api!=='function'||typeof getFlow!=='function'||typeof setFlow!=='function')
+    throw new Error('loadRadarCombinedLosDetails 需要 api / getFlow / setFlow 三个依赖');
+  const query={};
+  const expectedEvidence=(getFlow()||{}).radar_combined_los_diagnosis||null;
+  const source=filters&&typeof filters==='object'?filters:{};
+  for(const key of ['tower_id','route_id','combined_los_status','building_domain_state',
+    'offset','limit']){
+    const value=source[key];
+    if(value!==undefined&&value!==null&&String(value)!=='')query[key]=String(value);
+  }
+  if(expectedEvidence?.request_id)query.request_id=String(expectedEvidence.request_id);
+  if(expectedEvidence?.input_fingerprint)
+    query.input_fingerprint=String(expectedEvidence.input_fingerprint);
+  if(expectedEvidence?.generation!=null)query.generation=String(expectedEvidence.generation);
+  const suffix=Object.keys(query).length?'?'+new URLSearchParams(query).toString():'';
+  const page=await api(RADAR_COMBINED_LOS_DETAILS_ENDPOINT+suffix);
+  const current=getFlow()||{};
+  const currentEvidence=current.radar_combined_los_diagnosis||null;
+  const responseMatches=Boolean(expectedEvidence&&currentEvidence
+    &&expectedEvidence.request_id===currentEvidence.request_id
+    &&expectedEvidence.input_fingerprint===currentEvidence.input_fingerprint
+    &&expectedEvidence.generation===currentEvidence.generation
+    &&page?.request_id===currentEvidence.request_id
+    &&page?.input_fingerprint===currentEvidence.input_fingerprint
+    &&page?.generation===currentEvidence.generation);
+  if(!responseMatches)return page;
+  setFlow({...current,radar_combined_los_details:{
+    ...(page?.detail_page||{}),request_id:page.request_id,
+    input_fingerprint:page.input_fingerprint,generation:page.generation,
+  }});
+  afterChange();
+  return page;
+}
+
 /**
  * 任务卡 HTML（Step05 独立任务卡；不重构其它页面）。
  */
-export function renderRadarSurveillanceLayoutPanel(flow){
-  const model=radarLayoutModel(flow);
+export function renderRadarSurveillanceLayoutPanel(flow){  const model=radarLayoutModel(flow);
   const item=model.item;
   const readiness=model.readiness||{};
   const origin=model.radarOrigin||{};
@@ -443,7 +833,10 @@ export function renderRadarSurveillanceLayoutPanel(flow){
 
   if(!item){
     return '<h3>'+escapeHtml(RADAR_LAYOUT_TITLE)+' '+statusBadge(model.status)+'</h3>'
-      +demoWarning+readinessBlock+policyForm
+      +demoWarning+readinessBlock
+      +renderRadarTerrainLosBlock(flow)
+      +renderRadarCombinedLosBlock(flow)
+      +policyForm
       +'<div class="empty-note">尚未运行「监视雷达初步划设」。本任务不会在后台自动生成，也不会自动 Apply。</div>';
   }
 
@@ -538,7 +931,11 @@ export function renderRadarSurveillanceLayoutPanel(flow){
     +'<div class="scroll-list cns-input-list">'+panelList(
       model.selectedPanels,item.altitude_layer_id||'ALT-080'
     )+'</div>'
-    +noIntersectionNote+managedGapBlock+infeasibleBlock+unknownBlock;
+    +noIntersectionNote+managedGapBlock+infeasibleBlock+unknownBlock
+    //: Round34-T07-B：地形 LOS 只读证据块（**不进入**上面任何规划结论）。
+    +renderRadarTerrainLosBlock(flow)
+    //: Round34-T07-I2：地形 + 建筑联合 LOS 只读证据块（同样**不进入**规划结论）。
+    +renderRadarCombinedLosBlock(flow);
 }
 
 /**
