@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import math
 
 from ..gis.online_health import check_online_services
 from ..safety.event_evaluator import evaluate_safety_events
@@ -39,6 +40,8 @@ class Response:
     content_type: str = "application/json; charset=utf-8"
     status: int = 200
     cache: bool = False
+    #: 额外响应头（例如只读三维端点的 ``ETag``）。默认 ``None`` 时行为与既有完全一致。
+    headers: dict = None
 
 
 #: artifact 读取失败的**用户可见**中文提示（技术 code 另走 ``code`` 字段）。
@@ -127,7 +130,13 @@ class ApiRouter:
         if path == "/api/state": return Response(context.qgis.call(data.metadata))
         if path == "/api/data-sources": return Response(context.qgis.call(lambda: data.metadata()["data_sources"]))
         if path == "/api/data-health": return Response(context.qgis.call(lambda: data.metadata()["data_health"]))
-        if path == "/api/workflow": return Response(workflow.snapshot())
+        if path == "/api/workflow":
+            # 实测计数（只读）：manifest 的 load_budget 读它，而不是硬编码 False。
+            from ..application.visualization_3d_service import (
+                record_workflow_snapshot_request,
+            )
+            record_workflow_snapshot_request()
+            return Response(workflow.snapshot())
         # ---- Phase4-B5X：canonical artifact 只读读取（summary / bounded / GC） ----
         # 全部经 Application 层的 ArtifactReadService；router 不打开 gzip、不读文件、
         # 不解析 artifact、不改 state。失败一律翻译成中文业务提示 + 技术 code。
@@ -390,9 +399,254 @@ class ApiRouter:
         # ---- 建筑轮廓图层（只读）：qgz/gpkg/shp/geojson → GeoJSON，按视图 bbox 按需拉取 ----
         if path == "/api/building-footprints":
             return Response(context.qgis.call(lambda: self._building_footprints(query)))
+        # ---- 三维只读可视化投影（零写入）：manifest / routes / terrain-window ----
+        if path.startswith("/api/visualization-3d/"):
+            return self._visualization_3d(context, path, query, headers)
         static = self._static(path)
         if static: return static
         return Response({"error": "未找到"}, status=404)
+
+    #: 三维只读端点的**白名单**。任何其他 ``/api/visualization-3d/*`` 一律 404，
+    #: 绝不落到静态文件解析（避免把未知路径当资源读出）。
+    VISUALIZATION_3D_ACTIONS = {
+        "/api/visualization-3d/manifest": "manifest",
+        "/api/visualization-3d/routes": "routes",
+        "/api/visualization-3d/terrain-window": "terrain-window",
+        # Round37-T3D-2A：三维 CNS 覆盖（只读几何，零写入）。
+        "/api/visualization-3d/communication-volumes": "communication-volumes",
+        "/api/visualization-3d/rid-footprints": "rid-footprints",
+    }
+
+    def _visualization_3d(self, context, path, query, headers):
+        """三维只读投影端点。
+
+        契约：**全是 GET、零写入**。不读 ``/api/workflow``（147 MB），不调用任何规划
+        算法，不新增状态写入者；每个响应带 ``ETag``（= 来源身份指纹）并支持
+        ``If-None-Match`` → ``304``。
+        """
+
+        if path == "/api/visualization-3d/imagery/config":
+            from ..application.visualization_3d_imagery_service import service_for as imagery_service_for
+            payload = imagery_service_for(context).configuration()
+            return Response(payload, headers={"Cache-Control": "no-store"})
+
+        if path == "/api/visualization-3d/imagery/metadata":
+            # 官方 MapServer 元数据（坐标契约）：只回传 tileInfo/spatialReference/origin/LOD。
+            from ..application.visualization_3d_imagery_service import (
+                ImageryUnavailable, service_for as imagery_service_for,
+            )
+            source_id = (query.get("source") or ["arcgis_world_imagery"])[0]
+            try:
+                payload = imagery_service_for(context).upstream_metadata(source_id)
+            except ImageryUnavailable as exc:
+                return Response(exc.as_dict(), status=503, headers={"Cache-Control": "no-store"})
+            return Response(payload, headers={"Cache-Control": "no-store"})
+
+        if path == "/api/visualization-3d/imagery/diagnose":
+            # 受控凭证诊断：对 1 个舟山范围内的瓦片做**真实**上游调用，回传脱敏结果
+            # （上游状态码 / MIME / 错误码 / 错误消息文本）。仅回传这些，绝不回传令牌、
+            # 查询串或响应体。用于把「未授权」与「上游不是图像」分开，而不是凭 200 判定。
+            from ..application.visualization_3d_imagery_service import service_for as imagery_service_for
+            source_id = (query.get("source") or ["arcgis_world_imagery"])[0]
+            if source_id not in {"arcgis_world_imagery", "tianditu_img_w"}:
+                return Response({"error": "未找到", "code": "imagery_source_unknown"}, status=404)
+            try:
+                zoom = int((query.get("z") or ["12"])[0])
+                col = (query.get("x") or [None])[0]
+                row = (query.get("y") or [None])[0]
+                if col is None or row is None:
+                    # 默认取舟山展示范围中心（122.25E / 29.97N）所在瓦片。
+                    count = 2.0 ** zoom
+                    col = str(int((122.25 + 180.0) / 360.0 * count))
+                    lat_rad = math.radians(29.97)
+                    row = str(int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * count))
+                payload = imagery_service_for(context).diagnose_tile(
+                    source_id, zoom, int(col), int(row))
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "影像瓦片坐标无效", "code": "imagery_tile_coordinate_invalid"},
+                    status=400,
+                )
+            return Response(payload, headers={"Cache-Control": "no-store"})
+
+        parts = path.split("/")
+        if len(parts) == 8 and parts[1:4] == ["api", "visualization-3d", "imagery"]:
+            source_id = parts[4]
+            if source_id not in {"arcgis_world_imagery", "tianditu_img_w"}:
+                return Response(
+                    {"error": "未找到", "code": "visualization_3d_endpoint_unknown"},
+                    status=404,
+                )
+            from ..application.visualization_3d_imagery_service import (
+                ImageryUnavailable, service_for as imagery_service_for,
+            )
+            try:
+                tile = imagery_service_for(context).tile(
+                    source_id, int(parts[5]), int(parts[6]), int(parts[7]))
+                return Response(tile.body, tile.content_type, headers=tile.headers)
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "影像瓦片坐标无效", "code": "imagery_tile_coordinate_invalid"},
+                    status=400,
+                )
+            except ImageryUnavailable as exc:
+                return Response(exc.as_dict(), status=503, headers={"Cache-Control": "no-store"})
+
+        from ..application.visualization_3d_service import (
+            Visualization3DUnavailable, service_for,
+        )
+        from ..domain.layered_route import stable_fingerprint
+
+        terrain_coordinates = None
+        action = self.VISUALIZATION_3D_ACTIONS.get(path)
+        if path == "/api/visualization-3d/terrain/layer.json":
+            action = "terrain-layer"
+        else:
+            terrain_parts = path.split("/")
+            if (len(terrain_parts) == 7
+                    and terrain_parts[1:4] == ["api", "visualization-3d", "terrain"]
+                    and terrain_parts[6].endswith(".terrain")):
+                action = "terrain-tile"
+                terrain_coordinates = (
+                    terrain_parts[4], terrain_parts[5], terrain_parts[6][:-8])
+            elif (len(terrain_parts) == 7
+                    and terrain_parts[1:4] == ["api", "visualization-3d", "relief"]
+                    and terrain_parts[6].endswith(".png")):
+                # FABDEM 派生晕渲（**不是**卫星影像）；与地形瓦片共用 TMS 网格。
+                action = "relief-tile"
+                terrain_coordinates = (
+                    terrain_parts[4], terrain_parts[5], terrain_parts[6][:-4])
+        if action is None:
+            return Response(
+                {"error": "未找到", "code": "visualization_3d_endpoint_unknown"},
+                status=404,
+            )
+        try:
+            service = service_for(context)
+        except Visualization3DUnavailable as exc:
+            return Response(exc.as_dict(), status=503)
+        except Exception as exc:
+            return Response(
+                {"error": str(exc), "code": "visualization_3d_unavailable"}, status=503
+            )
+
+        try:
+            if action == "terrain-layer":
+                payload = service.terrain_layer_json()
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": "terrain-layer"},
+                    prefix="vis3dterrainlayer-v1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                return Response(payload, headers={
+                    "ETag": f'"{etag}"', "Cache-Control": "private, max-age=86400",
+                })
+
+            if action == "terrain-tile":
+                tile = service.terrain_tile(*terrain_coordinates)
+                if self._etag_matches(headers, tile.etag):
+                    return Response(b"", status=304, headers={"ETag": f'"{tile.etag}"'})
+                tile_headers = dict(tile.headers)
+                tile_headers["ETag"] = f'"{tile.etag}"'
+                # 地形瓦片是 heightmap-1.0（小端 uint16 高程栅格），不是 quantized-mesh；
+                # 不能用后者的媒体类型冒充。显式声明真实格式，便于客户端与许可审计识别。
+                tile_headers.setdefault("X-CNS-Terrain-Format", "heightmap-1.0")
+                return Response(tile.body, "application/vnd.terrain.heightmap-1.0",
+                                cache=True, headers=tile_headers)
+
+            if action == "relief-tile":
+                body, stats = service.relief_tile(*terrain_coordinates)
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": "relief",
+                     "zxy": list(terrain_coordinates)},
+                    prefix="vis3dreliefv1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                return Response(body, "image/png", cache=True, headers={
+                    "ETag": f'"{etag}"',
+                    "Cache-Control": "private, max-age=86400",
+                    # 显式声明这是**地形晕渲**而非卫星影像，避免被误读为影像证据。
+                    "X-CNS-Relief-Kind": "fabdem_hillshade_not_satellite_imagery",
+                    "X-CNS-Relief-Vertical-Exaggeration": str(
+                        stats.get("vertical_exaggeration")),
+                })
+
+            if action == "manifest":
+                payload = service.manifest(query)
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": "manifest"},
+                    prefix="vis3dmanifestv1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                payload["etag"] = etag
+                import json as _json
+                payload["load_budget"]["manifest_bytes"] = len(
+                    _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                )
+                return Response(payload, headers={"ETag": f'"{etag}"'})
+
+            if action == "routes":
+                payload = service.routes(query)
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": "routes",
+                     "query": sorted((str(k), str(v)) for k, v in query.items())},
+                    prefix="vis3droutesv1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                payload["etag"] = etag
+                return Response(payload, headers={"ETag": f'"{etag}"'})
+
+            if action in ("communication-volumes", "rid-footprints"):
+                # Round37-T3D-2A：三维 CNS 覆盖只读几何。ETag = 来源身份 + 查询
+                # （几何由状态 + 权威陆域掩膜决定，与 generated_at 无关）。
+                payload = (service.communication_volumes(query)
+                           if action == "communication-volumes"
+                           else service.rid_footprints(query))
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": action,
+                     "query": sorted((str(k), str(v)) for k, v in query.items())},
+                    prefix=f"vis3d{action.replace('-', '')}v1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                payload["etag"] = etag
+                return Response(payload, headers={
+                    "ETag": f'"{etag}"', "Cache-Control": "no-store",
+                })
+
+            body, content_type, etag = service.terrain_window(query)
+            if self._etag_matches(headers, etag):
+                return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+            return Response(body, content_type, headers={"ETag": f'"{etag}"'})
+        except Visualization3DUnavailable as exc:
+            return Response(exc.as_dict(), status=400)
+        except Exception as exc:
+            from ..gis.relief_tile_adapter import ReliefTileUnavailable
+            from ..gis.terrain_tile_adapter import TerrainTileUnavailable
+            # 「瓦片不在可用范围」是**客户端请求了覆盖范围之外**的正常情形（Cesium 会
+            # 在低层级请求全球瓦片），必须以 4xx 明确回答，而不是 500。500 会让浏览器
+            # 控制台刷满错误，也会把"正常越界"误报成服务端故障。
+            if isinstance(exc, (TerrainTileUnavailable, ReliefTileUnavailable)):
+                return Response(exc.as_dict(), status=400)
+            return Response(
+                {"error": str(exc), "code": "visualization_3d_projection_failed"}, status=500
+            )
+
+    @staticmethod
+    def _etag_matches(headers, etag):
+        """``If-None-Match`` 命中判定（容忍 ``W/`` 前缀与引号）。"""
+
+        raw = ""
+        try:
+            raw = str(headers.get("If-None-Match") or "")
+        except AttributeError:
+            return False
+        raw = raw.strip().lstrip("W/").strip().strip('"')
+        return bool(raw) and raw == str(etag)
 
     @staticmethod
     def _first(query, key, default=""):

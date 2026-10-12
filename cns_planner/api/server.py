@@ -90,9 +90,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             response = ApiRouter(self.context).get(url.path, parse_qs(url.query), self.headers)
             revision = int(self.context.workflow.state.get("revision") or 0)
+            headers = {"X-CNS-Revision": revision}
+            # 只读端点可自带响应头（例如三维投影的 ETag）；既有端点 headers=None，行为不变。
+            headers.update(getattr(response, "headers", None) or {})
             self.respond(
                 response.data, response.content_type, response.status, response.cache,
-                headers={"X-CNS-Revision": revision},
+                headers=headers,
             )
         except Exception as exc: self.respond({"error": str(exc)}, status=400)
 
