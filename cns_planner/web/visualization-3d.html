@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CNS-PLANNER 舟山三维基础地理环境</title>
+<link rel="stylesheet" href="./vendor/cesium/Widgets/widgets.css">
+<style>
+  :root{--panel:rgba(7,18,29,.82);--line:rgba(143,184,214,.22);--text:#eef7ff;
+    --dim:#9bb0c1;--accent:#58d6ff;--warn:#ffc36a;--danger:#ff7f86;--ok:#76e6a3}
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071421;
+    color:var(--text);font:13px/1.45 "Segoe UI","Microsoft YaHei",sans-serif}
+  #cesiumContainer{position:absolute;inset:0}.panel{position:absolute;z-index:8;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.34);
+    backdrop-filter:blur(10px)}
+  #layers{left:12px;top:12px;width:224px;max-height:calc(100% - 116px);padding:10px;overflow:auto}
+  #cameraBar{top:12px;left:50%;transform:translateX(-50%);display:flex;gap:5px;align-items:center;
+    max-width:calc(100% - 500px);padding:7px;white-space:nowrap;overflow:auto}
+  #status{right:12px;top:12px;width:286px;max-height:calc(100% - 116px);overflow:auto}
+  #status summary{cursor:pointer;padding:9px 11px;font-weight:600}#statusBody{padding:0 11px 10px}
+  #disclosure{left:12px;right:12px;bottom:34px;padding:6px 10px;font-size:11px;
+    border-color:rgba(255,195,106,.34);background:rgba(31,23,12,.78)}
+  #credits{position:absolute;z-index:9;left:0;right:0;bottom:0;min-height:26px;padding:5px 12px;
+    background:rgba(3,10,16,.88);color:#d5e4ef;font-size:11px;text-align:right}
+  h1{font-size:14px;margin:0 0 7px}h2{font-size:11px;color:var(--dim);margin:10px 0 4px;
+    padding-top:7px;border-top:1px solid var(--line);letter-spacing:.06em}
+  label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}.layer-reserved{color:#8496a5}
+  input[type=checkbox]{accent-color:var(--accent)}button,select{color:var(--text);background:#112536;
+    border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer}
+  button:hover,select:hover{border-color:var(--accent)}table{width:100%;border-collapse:collapse;font-size:11px}
+  td{padding:2px 0;vertical-align:top;word-break:break-word}td:first-child{width:42%;color:var(--dim)}
+  code{font:10px Consolas,monospace;word-break:break-all}.dim{color:var(--dim)}.warn{color:var(--warn)}
+  .err{color:var(--danger)}.ok-text{color:var(--ok)}#imageryStatus{margin:6px 0;font-size:11px}
+  #log{max-height:92px;overflow:auto;color:var(--dim);font:10px/1.35 Consolas,monospace}
+  #popup{position:absolute;display:none;z-index:20;max-width:340px;padding:10px}.close{float:right;cursor:pointer}
+  #boot{position:absolute;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:8px;background:#071421}#boot small{color:var(--dim)}
+  .badge{display:inline-block;padding:0 5px;border-radius:8px;background:#24394a}.badge.ok{background:#1d6641}
+  .badge.demo{background:#7c541b}.badge.no{background:#772d34}.badge.stale{background:#79502b}
+  @media(max-width:1000px){#status{display:none}#cameraBar{left:248px;right:12px;transform:none;max-width:none}}
+</style>
+</head>
+<body>
+<div id="cesiumContainer"></div>
+
+<section id="layers" class="panel" aria-label="三维图层控制">
+  <h1>舟山三维底图</h1>
+  <div id="imageryStatus" class="dim"></div>
+  <div id="reliefStatus" class="dim"></div>
+  <h2>基础地理</h2>
+  <div id="layerList"></div>
+  <h2>画质</h2>
+  <label>细化档位
+    <select id="quality"><option value="normal" selected>正常</option><option value="high">高清</option></select>
+  </label>
+  <div id="terrainLoad" class="dim"></div>
+</section>
+
+<nav id="cameraBar" class="panel" aria-label="固定相机视角">
+  <button data-preset="archipelago_overview">群岛全景</button>
+  <button data-preset="r0005_overhead">R0005 俯瞰</button>
+  <button data-preset="taohua_oblique">桃花岛 45°</button>
+  <button data-preset="coast_transition">海岸过渡</button>
+  <button data-preset="port_near">港口近景</button>
+  <button data-preset="low_altitude">低空观察</button>
+  <button id="resetView">恢复初始</button>
+</nav>
+
+<details id="status" class="panel">
+  <summary>数据身份、垂直基准与运行状态</summary>
+  <div id="statusBody">
+    <table id="metaTable"></table>
+    <h2>垂直基准</h2><table id="verticalTable"></table>
+    <h2>运行日志</h2><div id="log"></div>
+  </div>
+</details>
+
+<div id="disclosure" class="panel">
+  <div id="disclosureVertical"><b>垂直基准：</b><span id="verticalNotice"></span></div>
+  <div id="disclosureDemo"><b id="disclosureTitle">工程演示模式</b><span id="disclosureText"></span></div>
+</div>
+<!-- 版权/来源标注：内容由 app.js 依据**实际渲染的底图**动态写入。
+     绝不能在影像 BLOCKED、画面其实是 FABDEM 晕渲时仍宣称"ArcGIS World Imagery"——
+     那是来源误述。初始只放中性占位，脚本就绪后立即替换。 -->
+<div id="credits">底图来源载入中…</div>
+<div id="popup" class="panel"></div>
+<div id="boot"><div>正在加载舟山三维基础地理环境…</div><small id="bootStep"></small></div>
+
+<script>window.CESIUM_BASE_URL = './vendor/cesium/';</script>
+<script src="./vendor/cesium/Cesium.js"></script>
+<script type="module" src="./js/visualization3d/app.js"></script>
+</body>
+</html>
