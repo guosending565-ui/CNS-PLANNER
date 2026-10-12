@@ -1,20 +1,32 @@
 """BUG-MAP-ROUTE-END-001 取证与回归：Theta* V2 candidate.path 的精确端点语义。
 
-用户现象：地图上在节点/航路端点附近出现一小截越过端点的深色航路线，端点 marker
-（例如 N004）看起来落在一条连续线中间。
+用户现象（修复前）：地图上在节点/航路端点附近出现一小截越过端点的深色航路线，
+端点 marker（例如 N004）看起来落在一条连续线中间。
 
-本模块**先把事实固定下来**（不改任何规划语义），再给出结论所需的最小证据：
+本模块固定端点几何的事实与不变量：
 
 1. ``candidate.path[0]`` / ``candidate.path[-1]`` **精确等于** scenario start / end
    （端点距离误差 0 m）—— 所以"线越过 marker"不可能是端点不精确造成的；
-2. ``candidate.path[1]`` / ``candidate.path[-2]`` 是 **source / target cell centre**
-   —— 这是 Theta* V2 明确的设计（搜索跑在格心，端点 connector 属于同一条 OD 账本）；
-3. 当精确端点**不在**格心上时，几何上会出现"先回到格心、再出发"的可见跳；
-   本测试用一个可复现的算例把这种"折回"量化出来（首段与次段方向相反）。
+2. ``candidate.path[1]`` / ``candidate.path[-2]`` 是 **被选中的 source / target anchor
+   格心**（见下）；
+3. 端点 connector 是**权威 geometry**：它进入 candidate 的 OD 账本（distance / risk /
+   turn），因此前端**不得**做显示期裁剪。
 
-结论（见交付报告）：多余的一截来自 **candidate（Theta* V2 authoritative path）的
-cell-centre connector**，不是 operational / scenario 图层叠加，也不是端点不精确。
-因此按冻结规则**不改** Theta* V2 语义；本文件是端点不变量的回归证据。
+**语义修订记录（必须有，否则本文件会被误读成"能力回退"）**
+
+原取证结论（2026-09-23，BUG-MAP-ROUTE-END-001）是：connector 固定折回 *所在格格心*，
+当精确端点不在格心上时几何上会出现"先回到格心、再出发"的可见跳，并注明"若后续要消除该
+可见跳，必须按归档第 13 节做成显式版本化变更"。
+
+该修订由 commit ``2e9e0f7``（2026-09-28）以 **BUG-ROUTE-006 端点虚拟锚定** 落地：
+``candidate.path[1]`` / ``path[-2]`` 不再固定是"所在格格心"，而是
+``{精确端点所在格} ∪ 其 1-ring`` 中由**既有 objective 选优**、且位于
+``ENDPOINT_ANCHOR_APERTURE_DEG``（90°，相对真实飞行方向）内的**锚点格心**；
+``candidate["grid_path"]`` 的首/尾就是这两个锚点。折回因此被显式消除。
+
+本文件据此重新基线：仍然锁定"端点精确 + connector 属于 OD 账本 + 前端不得裁剪 + 不得
+折回"，但把"connector 顶点 == 所在格格心"这一已被取代的断言，改为
+"connector 顶点 == 被选中锚点的格心，且不构成反向折回"。
 
 复用既有 Theta* V2 单测的 fixture 装配（``tests/test_layered_theta_star_v2.py``），
 保证本文件只验证**几何端点语义**，不重复维护第二套 planner 装配。
@@ -43,6 +55,41 @@ def _plan(cells, start, end, route_id="R0001"):
     return T.plan_v2(cells, route={
         "route_id": route_id, "start": list(start), "end": list(end),
     })
+
+
+def _by_id(cells, grid_id):
+    return next(cell for cell in cells if cell["grid_id"] == grid_id)
+
+
+def _anchor_center(cells, grid_id):
+    return list(_by_id(cells, grid_id)["center"])
+
+
+def _one_ring(cells, grid_id):
+    """``grid_id`` 自身加它的 8 邻域（= planner ``GridGraph.neighbors`` 的候选锚点定义）。"""
+
+    anchor = _by_id(cells, grid_id)
+    allowed = {grid_id}
+    for cell in cells:
+        if max(
+            abs(cell["column"] - anchor["column"]), abs(cell["row"] - anchor["row"])
+        ) == 1:
+            allowed.add(cell["grid_id"])
+    return allowed
+
+
+def _bearing_deg(start_point, end_point):
+    """0 = 正北、顺时针（与 planner 的 ``grid_bearing_deg`` 同口径，仅用于取证）。"""
+
+    delta_lon = end_point[0] - start_point[0]
+    delta_lat = end_point[1] - start_point[1]
+    if delta_lon == 0.0 and delta_lat == 0.0:
+        return None
+    return math.degrees(math.atan2(delta_lon, delta_lat)) % 360.0
+
+
+def _heading_delta_deg(from_deg, to_deg):
+    return abs((float(to_deg) - float(from_deg) + 180.0) % 360.0 - 180.0)
 
 
 # --------------------------------------------------------------------------------------
@@ -76,37 +123,57 @@ def test_candidate_path_endpoints_are_exactly_the_scenario_endpoints(start, end,
     assert metres(path[-1], real_end) == 0.0
 
 
-def test_start_connector_vertex_is_the_source_cell_centre():
-    """起点 connector 的顶点就是 source cell centre。
+def test_start_connector_vertex_is_the_selected_source_anchor_centre():
+    """起点 connector 的顶点是 objective 选出的 **source anchor 格心**（BUG-ROUTE-006）。
 
-    当起点**已经**落在格心上时，去重后看不到重复点；这里用"起点偏离格心"的算例，
-    才能真正看到 connector 顶点（这正是地图上"多出一截"的几何来源）。终点侧的同一条
-    connector 由 ``grid_path`` 的最后一格（真正包含终点的 target cell）体现。
+    BUG-ROUTE-006 之前该顶点被固定为"精确起点所在格的格心"；当前语义下候选锚点是
+    ``{所在格} ∪ 1-ring``，由既有 objective 在全部组合里选优（``grid_path[0]`` 就是被选中的
+    那一格）。因此本测试锁定：
+
+    * ``path[1]`` / ``path[-2]`` 精确等于 ``grid_path[0]`` / ``grid_path[-1]`` 的格心；
+    * 被选中的 target anchor 属于"包含精确终点的那一格"的 1-ring（含自身）；
+    * 起点偏离格心时 connector 长度 > 0（这正是"多出一截"的几何来源）。
     """
 
     cells = T.grid_cells()
     exact_start = [122.0099, 30.005]
     exact_end = [122.0599, 30.035]
     candidate = _plan(cells, exact_start, exact_end)
+    assert candidate["status"] == "candidate"
     path = candidate["path"]
-    assert path[1] == cells[0]["center"], "第二点必须是 source cell centre"
-    assert candidate["grid_path"][0] == cells[0]["grid_id"]
-    # target cell 必须真正包含精确终点，且它就是 grid_path 的最后一格。
+    grid_path = candidate["grid_path"]
+
+    assert path[1] == _anchor_center(cells, grid_path[0]), (
+        "path[1] 必须是 grid_path[0]（被选中的 source anchor）的格心"
+    )
+    assert path[-2] == _anchor_center(cells, grid_path[-1]), (
+        "path[-2] 必须是 grid_path[-1]（被选中的 target anchor）的格心"
+    )
+
+    # target anchor 必须是"真正包含精确终点的格"自身或其 1-ring 邻居。
     target_cell = next(
         cell for cell in cells
         if cell["bbox"][0] <= exact_end[0] < cell["bbox"][2]
         and cell["bbox"][1] <= exact_end[1] < cell["bbox"][3]
     )
-    assert candidate["grid_path"][-1] == target_cell["grid_id"]
+    assert grid_path[-1] in _one_ring(cells, target_cell["grid_id"])
     assert path[-1] == exact_end
 
-    # 起点 connector 长度 = 精确起点到 source cell centre 的距离（> 0 时才会出现可见跳）。
+    # 起点 connector 长度 = 精确起点到被选中锚点格心的距离（> 0 时才会出现可见跳）。
     assert metres(path[0], path[1]) > 100.0
 
-    # 端点恰好落在格心时：path 退化为"格心 → … → 格心"，connector 长度为 0。
+    # 端点恰好落在格心时：path 首尾仍然精确等于格心，且"所在格"必须是**已准入**的候选锚点
+    # （最优锚点可以因同长平局而落在 1-ring 上，但所在格绝不能被 aperture 误排除）。
     centred = _plan(cells, cells[0]["center"], cells[-1]["center"])
     assert centred["path"][0] == cells[0]["center"]
     assert centred["path"][-1] == cells[-1]["center"]
+    anchors = centred["search_statistics"]["endpoint_anchors"]
+    assert cells[0]["grid_id"] in anchors["source_anchor_grid_ids"], (
+        "精确起点正好落在所在格格心时，该格必须是已准入的 source anchor"
+    )
+    assert cells[-1]["grid_id"] in anchors["target_anchor_grid_ids"], (
+        "精确终点正好落在所在格格心时，该格必须是已准入的 target anchor"
+    )
 
 
 def test_reported_distance_agrees_with_the_exact_od_polyline_including_connectors():
@@ -123,30 +190,55 @@ def test_reported_distance_agrees_with_the_exact_od_polyline_including_connector
     assert candidate["distance_m"] > metres(exact_start, exact_end)
 
 
-def test_off_centre_start_produces_a_visible_fold_back_that_is_authoritative_geometry():
-    """取证核心：起点在 source cell 前进侧边缘时，path 出现"先折回格心再出发"的跳。
+def test_off_centre_start_never_folds_back_through_the_containing_cell_centre():
+    """取证核心（BUG-ROUTE-006 之后的当前语义）：起点在 source cell 前进侧边缘时，
+    candidate **不再**"先折回所在格格心再出发"。
 
-    这是"线越过 marker 继续"的几何来源；它是**权威 geometry**（与账本一致），
-    因此不允许在前端做显示期裁剪来"看起来正常"。
+    BUG-MAP-ROUTE-END-001 记录的是修复前的几何：connector 固定折回 source cell centre，
+    在地图上表现为"端点 marker 落在一条连续线中间"。BUG-ROUTE-006 把端点锚定改成
+    "所在格 + 1-ring 的 objective 选优 + aperture 排除反向锚点"，该折回因此不再出现。
+
+    本测试锁定的正是"折回被消除"这件事本身：如果 aperture 又把反向锚点放回候选集
+    （例如把 target 的比较基准取成 ``exact end -> exact start``），这里就会重新出现
+    反向折回、甚至直接 ``no_path``。
     """
 
     cells = T.grid_cells()
     exact_start = [122.0 + 0.0099, 30.0 + 0.005]   # source cell 东边缘
     exact_end = [122.05 + 0.005, 30.03 + 0.005]
     candidate = _plan(cells, exact_start, exact_end)
+    assert candidate["status"] == "candidate"
     path = candidate["path"]
 
     assert path[0] == exact_start
-    assert path[1] == cells[0]["center"], "第二点必须是 source cell centre"
-    # 第一段（exact start → centre）与第二段（centre → 下一个顶点）方向相反 ⇒ 折回。
+    # connector 顶点仍然必须是某个锚点格心（权威几何，不得被前端裁剪/吸附）。
+    assert path[1] == _anchor_center(cells, candidate["grid_path"][0])
+
+    # 1) 方向不变量：起点 connector 与紧随其后的搜索段**不得**反向（这就是"折回"）。
     first = (path[1][0] - path[0][0], path[1][1] - path[0][1])
     second = (path[2][0] - path[1][0], path[2][1] - path[1][1])
     dot = first[0] * second[0] + first[1] * second[1]
-    assert dot < 0, "起点 connector 与首段搜索段方向相反 ⇒ 可见折回"
-    # 折回长度 = 精确起点到格心的距离（本例约 470 m，与 L8 格尺度一致）。
-    fold_back_m = metres(path[0], path[1])
-    assert fold_back_m > 100.0
-    assert fold_back_m == pytest.approx(metres(exact_start, cells[0]["center"]), abs=1e-6)
+    assert dot >= 0, "起点 connector 与首段搜索段方向相反 ⇒ 折回缺陷回归"
+
+    # 2) aperture 不变量：被选中的 source anchor 相对真实飞行方向的夹角必须在 90° 内。
+    departure = _bearing_deg(exact_start, path[1])
+    forward = _bearing_deg(exact_start, exact_end)
+    assert _heading_delta_deg(forward, departure) <= 90.0 + 1e-9
+
+    # 3) 本例中"所在格格心"正好位于飞行方向的反侧，因此必须被 aperture 排除
+    #    （这正是修复前那个约 470 m 折回的来源）。
+    source_cell = _by_id(cells, candidate["grid_path"][0])
+    containing = next(
+        cell for cell in cells
+        if cell["bbox"][0] <= exact_start[0] < cell["bbox"][2]
+        and cell["bbox"][1] <= exact_start[1] < cell["bbox"][3]
+    )
+    assert containing["grid_id"] != source_cell["grid_id"], (
+        "该算例的 source anchor 必须落在所在格的 1-ring 内，否则本测试不再覆盖折回场景"
+    )
+    assert _heading_delta_deg(
+        forward, _bearing_deg(exact_start, containing["center"])
+    ) > 90.0, "所在格锚点在该算例里必须处于飞行方向反侧（修复前正是它造成折回）"
 
 
 def test_candidate_path_is_unchanged_by_display_layer_slicing_contract():
@@ -163,12 +255,16 @@ def test_candidate_path_is_unchanged_by_display_layer_slicing_contract():
 
 
 def test_endpoint_semantics_are_documented_in_the_planner():
-    """锁定文档化语义：exact start → source centre → chain → target centre → exact end。"""
+    """锁定文档化语义：exact start → selected source anchor → chain → selected target
+    anchor → exact end，两端 connector 都进入 OD 账本（BUG-ROUTE-006）。"""
 
     source = Path("cns_planner/layered_route_planner/theta_star_v2.py").read_text(
         encoding="utf-8"
     )
     assert "start_connector_is_a_ledger_segment" in source
     assert "end_connector_is_a_ledger_segment" in source
-    assert "exact start -> source centre" in source
-    assert "target centre -> exact end" in source
+    assert "exact start -> selected source anchor" in source
+    assert "selected target anchor -> exact end" in source
+    # 锚点候选集与 aperture 也必须被显式文档化（否则本文件的语义无从复核）。
+    assert "containing_cell_plus_one_ring" in source
+    assert "fixed_cell_centre_connector_removed" in source

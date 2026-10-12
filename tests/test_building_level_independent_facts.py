@@ -191,11 +191,16 @@ def test_building_mapping_is_level_independent_when_footprints_are_configured(tm
     ]
     assert len(with_buildings) == 1
     cell = with_buildings[0]
-    assert set(cell) == {
+    assert {
         "status", "building_count", "building_area_m2", "building_coverage_ratio",
         "height_mean_m", "height_p95_m", "height_max_m", "valid_height_fraction",
         "building_exposure",
-    }
+    } <= set(cell)
+    # F1-A：非 L8 动态聚合必须与 L8 事实表可区分地表达**占用语义**（质心数量 ≠ 是否有建筑）。
+    assert cell["building_occupancy"] == "present"
+    assert cell["partial_coverage"] is False
+    assert cell["count_allocation"] == "building_centroid"
+    assert cell["area_allocation"] == "exact_footprint_intersection"
     assert cell["building_count"] == 1
     assert cell["height_max_m"] == pytest.approx(33.0)
 

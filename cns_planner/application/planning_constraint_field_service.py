@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from ..domain.building_clearance import building_height_status_is_resolved
+from ..domain.building_clearance import (
+    LEGACY_ZERO_COUNT_SHORTCUT_KEY, building_height_status_is_resolved,
+    building_occupancy_state,
+)
 from ..domain.planning_constraint_field import (
     EGM2008_ORTHOMETRIC, normalize_constraint_cell,
     normalize_constraint_unknown_policy_configuration, normalize_unknown_policy,
@@ -493,7 +496,30 @@ def _terrain(layer, fact, policy, blocked, unknown, refs):
 def _building(layer, fact, policy, blocked, unknown, refs):
     item = fact or {}
     count = item.get("building_count")
+    # F1-A：``building_count`` 只是**质心分配数量**。footprint 跨越格边界、质心落在邻格时，
+    # 本格 count=0 但确有建筑覆盖。只有"质心数为 0 **且** 覆盖面积明确为 0"才允许
+    # 直接 return（= 该域既不 blocked 也不 unknown，最终 outcome 可为 pass）。
+    occupancy = building_occupancy_state(
+        building_count=count, building_area_m2=item.get("building_area_m2"),
+        building_coverage_ratio=item.get("building_coverage_ratio"),
+    )
+    # 仅用于审计/回归对照的显式历史语义开关（F1-A）；生产路径从不设置它。
+    if item.get(LEGACY_ZERO_COUNT_SHORTCUT_KEY) is True:
+        occupancy = "absent" if _number(count) == 0 else "present"
+    if occupancy == "present" and _number(count) == 0:
+        # 有真实 footprint 覆盖但没有质心高度统计：约束未知（不是通过，也不是硬阻塞）。
+        unknown.append({
+            "domain": "building",
+            "reason": "building_footprint_present_height_unresolved",
+            "building_area_m2": _number(item.get("building_area_m2")),
+            "building_coverage_ratio": _number(item.get("building_coverage_ratio")),
+        })
+        return
     if _number(count) == 0:
+        # ``absent``：覆盖已确认为零 ⇒ 该域既不 blocked 也不 unknown（历史语义）。
+        # ``unknown``：覆盖证据未提供（合成的 / 旧格式 fact）⇒ 沿用既有约定按无建筑处理；
+        # 真实 L8 事实表始终带 building_area_m2 / building_coverage_ratio，
+        # 因此生产路径不会落到这里（``data/mapping/buildings.py::_cell`` 会把 NULL 归一成 0.0）。
         return
     clearance = _number(policy.get("building_vertical_clearance_m"))
     ground = _number(item.get("ground_elevation_max_egm2008_m"))

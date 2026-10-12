@@ -6,7 +6,15 @@ import math
 from pathlib import Path
 
 from ..domain.quantities import geographic_bbox_area_m2
-from ..domain.population_nodata import confirmed_zero_allocation, policy_is_confirmed
+from ..domain.population_nodata import (
+    MODE_NODATA_IS_ZERO_POPULATION, confirmed_zero_allocation, policy_mode,
+)
+from ..domain.population_density import (
+    DENSITY_SEMANTICS_OBSERVED_AREA, DENSITY_SEMANTICS_VERSION,
+    DENSITY_SEMANTICS_WHOLE_CELL, OBSERVED_DENSITY_DIAGNOSTIC_FIELD,
+    density_semantics_record, observed_area_density, observed_density_confidence,
+    whole_cell_density,
+)
 
 
 class GdalRasterAdapter:
@@ -86,7 +94,11 @@ class GdalRasterAdapter:
             "status": "missing_data", "value_status": "missing_data",
             "coverage_status": "outside_extent", "population_count_people": None,
             "population_density_people_km2": None,
-            "density_support_area_m2": None, "density_semantics": None,
+            "population_density_observed_area_people_km2": None,
+            "density_support_area_m2": None,
+            "observed_density_support_area_m2": None,
+            "density_semantics": None, "density_semantics_version": None,
+            "observed_density_semantics": None, "observed_density_confidence": None,
             "target_area_m2": target_area, "valid_covered_area_m2": 0.0,
             "source_coverage_fraction": 0.0, "source_pixel_count": 0,
             "quality_flags": ["outside_source_extent"],
@@ -123,6 +135,9 @@ class GdalRasterAdapter:
                 adjusted = value * scale + offset
                 if adjusted < 0:
                     continue
+                # 面积加权分配：``min(1.0, …)`` 只是"份额不超过 1"的比例上限，
+                # 不是整像元重复计入。Round35-C 在 8008 格 × 全部有效像元上实测该上限
+                # 从未触发（最大重叠比 0.9985），因此**不得删除**这一项。
                 count += adjusted * min(1.0, overlap_area / pixel_area)
                 covered_area += overlap_area
                 valid_pixels += 1
@@ -138,7 +153,20 @@ class GdalRasterAdapter:
             }
         coverage = min(1.0, covered_area / target_area)
         coverage_status = "full" if coverage >= 0.999999 else "partial"
-        density_support_area = min(target_area, covered_area) if coverage_status == "partial" else target_area
+        # Round35-D：两个密度分开，分母各自锁定。
+        #   * 主字段 ``population_density_people_km2``：分母**恒为完整格面积** ——
+        #     它不会随覆盖率产生 ``1/覆盖率`` 放大，也不再需要靠"丢弃低覆盖率格"来
+        #     消掉病态值（Round35-C 根因 A 的机制在新口径下不存在）；
+        #   * ``population_density_observed_area_people_km2``：分母是真实有效覆盖面积，
+        #     保留为报告/诊断量；覆盖率低于可信下限时返回 ``None`` 并只留诊断值，
+        #     但**绝不**因此丢弃人口数量或把该格降级为 missing。
+        observed_area = min(target_area, covered_area)
+        observed_density = observed_area_density(
+            count, observed_area, target_area, coverage_fraction=coverage,
+        )
+        diagnostic = None
+        if observed_density is None and observed_area > 0:
+            diagnostic = count / (observed_area / 1_000_000.0)
         return {
             # ``status`` is retained for old project/schema consumers and now
             # follows value validity. Coverage completeness is independent.
@@ -146,11 +174,25 @@ class GdalRasterAdapter:
             "value_status": "passed",
             "coverage_status": coverage_status,
             "population_count_people": count,
-            "population_density_people_km2": count / (density_support_area / 1_000_000.0),
-            "density_support_area_m2": density_support_area,
-            "density_semantics": "observed_covered_area_density",
+            "population_density_people_km2": whole_cell_density(count, target_area),
+            "population_density_observed_area_people_km2": observed_density,
+            OBSERVED_DENSITY_DIAGNOSTIC_FIELD: diagnostic,
+            "density_support_area_m2": target_area,
+            "observed_density_support_area_m2": observed_area,
+            "density_semantics": DENSITY_SEMANTICS_WHOLE_CELL,
+            "density_semantics_version": DENSITY_SEMANTICS_VERSION,
+            "observed_density_semantics": (
+                DENSITY_SEMANTICS_OBSERVED_AREA if observed_density is not None else None
+            ),
+            "observed_density_confidence": observed_density_confidence(
+                coverage, grid_area_m2=target_area, covered_area_m2=observed_area,
+            ),
+            "density_semantics_record": density_semantics_record(
+                grid_area_m2=target_area, coverage_status=coverage_status,
+                coverage_fraction=coverage, observed_area_m2=observed_area,
+            ),
             "target_area_m2": target_area,
-            "valid_covered_area_m2": min(target_area, covered_area),
+            "valid_covered_area_m2": observed_area,
             "source_coverage_fraction": coverage,
             "source_pixel_count": valid_pixels,
             "quality_flags": [] if coverage_status == "full" else ["partial_source_coverage", "not_extrapolated"],
@@ -236,9 +278,15 @@ class GdalRasterAdapter:
         The conversion is deliberately narrow: it requires an *explicitly confirmed* policy
         and a target cell that lies **wholly inside** the source footprint.  A cell that
         merely overlaps the raster edge keeps its ``missing_data`` semantics.
+
+        Round35-D：只有**模式一**（``nodata_is_zero_population``）能在这里被裁定，因为它的
+        判据完全落在栅格自身（整格在 extent 内 + 全部像元 NoData）。**模式二**（开阔海域）
+        还要求"与陆域多边形无交集、不在海岸不确定带内"这一**格级陆域几何证据**，而本
+        adapter 不持有陆域几何，因此一律返回 ``None``，交由人口映射层用显式证据裁定 ——
+        adapter 绝不猜陆域。
         """
 
-        if not policy_is_confirmed(nodata_semantics):
+        if policy_mode(nodata_semantics) != MODE_NODATA_IS_ZERO_POPULATION:
             return None
         if not self._inside_extent(target):
             return None
@@ -246,6 +294,18 @@ class GdalRasterAdapter:
             geographic_bbox_area_m2(target), nodata_semantics,
             trigger="in_footprint_all_pixels_nodata",
         )
+
+    def inside_extent(self, bbox):
+        """公开只读判定：整个 WGS84 ``bbox`` 是否落在栅格**有效覆盖范围**内。
+
+        Round35-D：供"开阔海域零人口工程假设"的逐格证据使用。不在有效覆盖范围内的格子
+        证据不足，**不得**被当作海面；探测失败返回 ``None``（fail-closed，调用方据此拒绝）。
+        """
+
+        try:
+            return bool(self._inside_extent(bbox))
+        except Exception:  # noqa: BLE001 - 探测失败即"无证据"
+            return None
 
     def _inside_extent(self, bbox):
         """True when the whole WGS84 bbox falls inside the raster footprint."""

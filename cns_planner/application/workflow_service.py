@@ -67,6 +67,7 @@ from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
 from .tower_obstacle_service import TowerObstacleService
 from .radar_surveillance_layout_service import RadarSurveillanceLayoutService
+from .radar_terrain_los_diagnostics_service import RadarTerrainLosDiagnosticsService
 from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
 from .route_vertical_profile_service import RouteVerticalProfileService
@@ -570,6 +571,13 @@ class WorkflowService:
         self.invalidation_service.radar_surveillance_layout_invalidator = (
             self.radar_surveillance_layout_service.stale_for_reason
         )
+        # Radar 地形 LOS 只读诊断（Round34-T07-B，additive）：**没有** ProjectState writer，
+        # 因此**不注册**任何失效入口，也不写任何容器。它只复用既有 Radar 只读接口
+        # 与 T07-A 的 LOS 计算，把结论作为独立几何可见性证据按需返回。
+        self.radar_terrain_los_diagnostics_service = RadarTerrainLosDiagnosticsService(
+            self.session, self.radar_surveillance_layout_service,
+            self.layered_route_planner_service,
+        )
         # A Risk Framework V2 / layer / terrain-building / policy change stales only the
         # layered candidates and masks, never legacy routes, V3 or CNS results.
         self.invalidation_service.layered_route_invalidator = (
@@ -1046,6 +1054,13 @@ class WorkflowService:
             result["radar_surveillance_layout_readiness"] = (
                 self.radar_surveillance_layout_service.readiness_snapshot()
             )
+        # Radar 地形 LOS 只读证据（Round34-T07-B）：通用快照只带**轻量状态**
+        # （身份 / 算法版本 / 能力边界 / 可用性前提）。它**不打开 DEM**、不做任何 LOS
+        # 计算、不写任何容器；真正的计算只在显式诊断请求里发生。
+        if hasattr(self, "radar_terrain_los_diagnostics_service"):
+            result["radar_terrain_los"] = (
+                self.radar_terrain_los_diagnostics_service.status()
+            )
         result["review"] = self.review()
         #: Round 2.5：P17 投影。通用状态循环已经带出 ``continuous_service_acceptability``
         #: 容器本身；这里额外下发**有界的只读投影**（参数逐项 authority、策略、操作场景、
@@ -1116,6 +1131,36 @@ class WorkflowService:
         return self.radar_surveillance_layout_service.result_snapshot(route_id)
     def radar_surveillance_layout_readiness(self, payload=None):
         return self.radar_surveillance_layout_service.readiness_snapshot(payload)
+    # ---- Radar 地形 LOS 只读诊断（Round34-T07-B，additive，只读） -------------------
+    def radar_terrain_los_status(self):
+        """轻量状态：**不打开 DEM、不做 LOS 计算、不写状态**。"""
+
+        return self.radar_terrain_los_diagnostics_service.status()
+    def diagnose_radar_terrain_los(self, payload=None):
+        """显式请求的地形 LOS 只读诊断（唯一会打开 DEM 的入口）。"""
+
+        return self.radar_terrain_los_diagnostics_service.diagnose(payload)
+    def radar_terrain_los_details(self, payload=None):
+        """受限分页的逐 probe 明细（读内存证据块，不重算）。"""
+
+        return self.radar_terrain_los_diagnostics_service.details(payload)
+    # ---- Radar 联合 Terrain + Building LOS 只读诊断（Round34-T07-I2，additive） ----
+    # 与 T07-B 同一服务、同一只读边界：**没有** ProjectState writer、**不注册**失效入口。
+    # 它是唯一会同时打开 FABDEM 与 buildings v3 的入口，且只在用户显式 POST 时执行。
+    def radar_combined_los_status(self, *, engineering_demo_mode=False):
+        """联合 LOS 轻量状态：**不打开 DEM，也不打开 GPKG**。"""
+
+        return self.radar_terrain_los_diagnostics_service.combined_status(
+            engineering_demo_mode=engineering_demo_mode,
+        )
+    def diagnose_radar_combined_los(self, payload=None):
+        """显式请求的联合 LOS 只读诊断（同时打开两个真实来源）。"""
+
+        return self.radar_terrain_los_diagnostics_service.diagnose_combined(payload)
+    def radar_combined_los_details(self, payload=None):
+        """受限分页的逐射线联合明细（读内存证据块，不重算、不重开数据源）。"""
+
+        return self.radar_terrain_los_diagnostics_service.combined_details(payload)
     def evaluate_radar_surveillance_layout(self, payload=None, *, facts_provider=None):
         result = self.radar_surveillance_layout_service.evaluate(
             payload, facts_provider=facts_provider,
@@ -1199,6 +1244,14 @@ class WorkflowService:
     def cns_planning_objectives_snapshot(self): return self.corridor_gap_service.objectives_snapshot()
     def cns_corridor_gap_snapshot(self): return self.corridor_gap_service.result_snapshot()
     def cns_corridor_site_plan_snapshot(self): return self.corridor_site_planning_service.result_snapshot()
+    def cns_corridor_site_plan_apply_computed(self, result):
+        """Round 31-A：P16 的唯一 production writer 转发（后台任务发布阶段调用）。
+
+        它只是转发，不构成第二个 production owner：写入仍然发生在
+        :meth:`CorridorSitePlanningService.apply_computed` 内（与同步入口
+        ``evaluate`` 共用同一份收尾段）。
+        """
+        return self.corridor_site_planning_service.apply_computed(result)
     #: Round 2.5 P17 连续服务可接受性（严格下游：只读上游结果与显式工程证据）。
     def cns_continuous_service_snapshot(self): return self.continuous_service_service.result_snapshot()
     def cns_continuous_service_parameters(self): return self.continuous_service_service.parameters_snapshot()
@@ -1833,6 +1886,12 @@ class WorkflowService:
     def layered_route_validations(self):
         return self.layered_route_validation_service.result_snapshot()
 
+    def engineering_demo_building_acceptance_policy(self):
+        return self.layered_route_validation_service.engineering_demo_policy_snapshot()
+
+    def set_engineering_demo_building_acceptance_policy(self, payload=None):
+        return self.layered_route_validation_service.set_engineering_demo_policy(payload)
+
     def evaluate_layered_route_validation(self, payload=None, evidence_adapter=None):
         return self.layered_route_validation_service.validate(
             payload, evidence_adapter=evidence_adapter,
@@ -1988,7 +2047,8 @@ class WorkflowService:
         )
         from ..gis.land_mask_source import (
             audit_manifest_for, build_land_mask_source, land_mask_content_sha256,
-            land_mask_source_identity, land_mask_source_path,
+            land_mask_source_audit_facts, land_mask_source_identity,
+            land_mask_source_path,
         )
 
         state = self.session.state
@@ -2002,11 +2062,27 @@ class WorkflowService:
         explicit_path = resolver() if callable(resolver) else None
         path = land_mask_source_path(state, explicit_path)
         land_mask_source = build_land_mask_source(path, policy)
+        # Round35-D：**先 prepare 再 describe**。``describe()`` 在 ``prepare()`` 之前
+        # 拿不到 ``layer_resolution`` / ``source_crs`` / ``polygon_count``，曾让同一份
+        # 来源因调用时序不同产生不同身份载荷。身份本身已收敛为稳定字段（见
+        # ``land_mask_source.STABLE_IDENTITY_FIELDS``），这里再消除审计字段的时序维。
+        # prepare 失败不影响 fail-closed 语义：分类会保持 ``unknown``。
+        if land_mask_source is not None:
+            try:
+                land_mask_source.prepare()
+            except Exception:  # noqa: BLE001 - 探测失败必须走既有 unknown 路径
+                pass
         describe = land_mask_source.describe() if land_mask_source is not None else None
         audit_manifest = audit_manifest_for(state)
         source_identity = land_mask_source_identity(
             describe, audit_manifest=audit_manifest,
             content_sha256=land_mask_content_sha256(path, audit_manifest),
+        )
+        source_audit_facts = (
+            land_mask_source_audit_facts(
+                describe, audit_manifest=audit_manifest, source_path=path,
+            )
+            if land_mask_source is not None else None
         )
         facts = build_surface_class_facts(
             state.get("grid") or {}, policy=policy,
@@ -2015,6 +2091,7 @@ class WorkflowService:
                 land_mask_source.describe if land_mask_source is not None else None
             ),
             source_identity=source_identity,
+            source_audit_facts=source_audit_facts,
         )
         state["surface_class_facts"] = facts
         state.setdefault("result_statuses", {})["surface_class_facts"] = (

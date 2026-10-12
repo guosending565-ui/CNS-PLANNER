@@ -171,7 +171,20 @@ class InvalidationService:
             self.cns_corridor()
         if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
             self.building_clearance("building_source_changed")
-        if set(changed_sources) & {"terrain_dtm", "buildings"}:
+        if set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"}:
+            # F1-B：``building_grid`` 必须与 terrain_dtm / buildings 同等对待，因为这三条结果
+            # 都**直接**消费 L8 建筑网格事实，而不是只消费建筑单体表：
+            #
+            # * ``PlanningConstraintFieldService._building`` 读
+            #   ``grid_attributes["buildings"].cells``（该容器由 building_grid 单一驱动）；
+            # * ``LayeredRouteValidation`` / ``VerticalTransitionValidation`` 把
+            #   terrain/building **源审计**（其中 buildings 角色映射自 building_grid，
+            #   见 ``SOURCE_ATTRIBUTES``）绑定进各自的 input/validation fingerprint。
+            #
+            # 旧条件不含 building_grid，于是"只改 L8 网格"会留下用过期建筑事实算出的
+            # 生产可行性权威与连续验证结论仍被当作当前结果（Round35-E `07` §4.1）。
+            # 依赖边仍然单向且最小：不动 risk / 塔 / CNS，也不删除任何历史证据
+            # （``stale`` 只保留证据，见 ``mark_*_stale`` 的既有语义）。
             self.planning_constraint_field(
                 "source_changed:" + ",".join(sorted(changed_sources))
             )
@@ -179,11 +192,14 @@ class InvalidationService:
             # The transition validation binds the terrain/building source audits, so its
             # stored records are stale as soon as those sources change.
             self.vertical_transition_validation(
-                "source_changed:" + ",".join(sorted(set(changed_sources) & {"terrain_dtm", "buildings"}))
+                "source_changed:" + ",".join(
+                    sorted(set(changed_sources) & {"terrain_dtm", "buildings", "building_grid"})
+                )
             )
         if "buildings" in changed_sources or "building_grid" in changed_sources:
-            # The layered feasibility mask consumes the L8 building grid facts, so only the
-            # layered candidates are additionally staled here.
+            # The layered feasibility mask consumes the L8 building grid facts.  F1-B: the
+            # PCF / validation edges are now covered by the source-change branch above, so
+            # only the layered candidate/mask products need this dedicated staling.
             self.layered_route("building_grid_facts_changed")
         if set(changed_sources) & {"towers", "obstacles"}:
             # 真实铁塔源变化：派生事实（障碍物高度 / 共塔候选）先过时，再定向失效其下游。

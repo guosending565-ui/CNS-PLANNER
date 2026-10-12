@@ -129,7 +129,9 @@ from ..domain.route_risk_profile import (
     normalize_route_risk_profile_policy,
 )
 from ..domain.layered_route_validation import (
+    default_engineering_demo_building_acceptance_policy,
     empty_layered_route_validation_collection,
+    normalize_engineering_demo_building_acceptance_policy,
     normalize_layered_route_validation_collection,
 )
 from ..domain.planning_constraint_field import (
@@ -362,6 +364,9 @@ def blank_project(defaults):
         # Production source-native validation and explicit operational adoption remain
         # independent from both the candidate and the V3 experiment containers.
         "layered_route_validations": empty_layered_route_validation_collection(),
+        "engineering_demo_building_acceptance_policy": (
+            default_engineering_demo_building_acceptance_policy()
+        ),
         "layered_operational_adoptions": empty_layered_operational_adoptions(),
         # Route Safety Evidence V2 (additive post-planning evidence aggregation over the
         # published layered adoption lineage).  It ships empty: nothing is ever evaluated in
@@ -760,6 +765,11 @@ def normalize_project(value, grid_service):
     )
     value["layered_route_validations"] = normalize_layered_route_validation_collection(
         value.get("layered_route_validations")
+    )
+    value["engineering_demo_building_acceptance_policy"] = (
+        normalize_engineering_demo_building_acceptance_policy(
+            value.get("engineering_demo_building_acceptance_policy")
+        )
     )
     value["layered_operational_adoptions"] = normalize_layered_operational_adoptions(
         value.get("layered_operational_adoptions")

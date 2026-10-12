@@ -223,6 +223,11 @@ def empty_population_shelter_attribute():
         "provenance": {},
         "semantics": {
             "per_grid_data_not_algorithm_constant": True,
+            #: Round35-D：``population_density_people_km2`` 是**整格平均**密度
+            #: （分母恒为完整格面积）；有效覆盖区密度是另一个字段，不在此消费。
+            "population_density_semantics": "whole_cell_mean_density",
+            "population_density_denominator": "full_grid_cell_area",
+            "population_density_is_not_the_observed_covered_area_density": True,
             "raw_exposure_definition": "population_density_people_km2 * shelter_coefficient",
             "risk_index_definition": "normalized_population_factor * shelter_coefficient",
             "risk_index_range": [0.0, 1.0],
@@ -237,11 +242,17 @@ def empty_population_shelter_attribute():
 def shelter_cell(
     grid_id, *, population_density_people_km2, shelter_coefficient, raw_exposure,
     risk_index, normalized_population_factor, status, source, provenance=None,
-    population_factor_status=None, reason=None,
+    population_factor_status=None, reason=None, population_count_people=None,
+    density_semantics=None, density_semantics_version=None,
 ):
     return {
         "grid_id": str(grid_id),
+        #: **整格平均**人口密度（person/km²，分母恒为完整格面积）。
         "population_density_people_km2": _round(population_density_people_km2),
+        "density_semantics": density_semantics,
+        "density_semantics_version": density_semantics_version,
+        #: 格内人口数（人）：保留以便报告区分"人"与"密度"。
+        "population_count_people": _round(population_count_people),
         "shelter_coefficient": (
             None if not _finite(shelter_coefficient) else round(float(shelter_coefficient), 9)
         ),
@@ -257,7 +268,8 @@ def shelter_cell(
         "source": source,
         "provenance": deepcopy(provenance or {}),
         "unit": {
-            "population_density_people_km2": "person/km2",
+            "population_density_people_km2": "person/km2_whole_grid_cell_mean",
+            "population_count_people": "person",
             "shelter_coefficient": "dimensionless_0_1",
             "raw_exposure": "person/km2",
             "risk_index": "dimensionless_0_1",
@@ -306,6 +318,9 @@ def population_shelter_fingerprint(attribute):
                 "population_density_people_km2": (cell or {}).get(
                     "population_density_people_km2"
                 ),
+                "density_semantics": (cell or {}).get("density_semantics"),
+                "density_semantics_version": (cell or {}).get("density_semantics_version"),
+                "population_count_people": (cell or {}).get("population_count_people"),
                 "shelter_coefficient": (cell or {}).get("shelter_coefficient"),
                 "raw_exposure": (cell or {}).get("raw_exposure"),
                 "risk_index": (cell or {}).get("risk_index"),
@@ -364,6 +379,10 @@ def resolve_population_shelter(
         ) else None
         density = (density_cell or {}).get(POPULATION_DENSITY_FIELD)
         density = float(density) if _finite(density) else None
+        cell_count = (density_cell or {}).get("population_count_people")
+        cell_count = float(cell_count) if _finite(cell_count) else None
+        density_semantics = (density_cell or {}).get("density_semantics")
+        density_version = (density_cell or {}).get("density_semantics_version")
         coefficient = shelter_coefficient_for_grid(policy, grid_id)
         factor = factors.get(grid_id)
         factor = float(factor) if _finite(factor) else None
@@ -406,6 +425,9 @@ def resolve_population_shelter(
             },
             population_factor_status="resolved" if factor is not None else "unresolved",
             reason=reason,
+            population_count_people=cell_count,
+            density_semantics=density_semantics,
+            density_semantics_version=density_version,
         )
     attribute.update({
         "status": (

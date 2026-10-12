@@ -62,6 +62,8 @@ _CONSTRAINT_TYPE_MAP = {
 
 _VERTICAL_REFERENCE_EGM2008 = "egm2008_orthometric"
 
+_MINIMUM_ENGINEERING_SOURCE = "screenshot_run_minimum_engineering_configuration"
+
 
 def domain_dataset_state(value):
     """把一个 domain 状态收敛到三者之一；``not_provided`` / ``unresolved`` → not_configured。"""
@@ -255,8 +257,10 @@ def restricted_area_dataset_inputs(state, *, payload=None, declarations=None):
     )
 
     explicit = normalize_restricted_area_collection(explicit_raw)
+    persisted_explicit = normalize_restricted_area_collection(state.get("restricted_areas"))
     bridged = regulatory_constraints_as_restricted_areas(regulatory_raw)
     declared = declared_domain_states(declared_raw)
+    persisted_declared = declared_domain_states(state.get("restricted_area_declarations"))
 
     items = [deepcopy(item) for item in explicit.get("items") or []]
     known = {str(item.get("feature_id")) for item in items}
@@ -266,9 +270,47 @@ def restricted_area_dataset_inputs(state, *, payload=None, declarations=None):
         items.append(item)
 
     domain_states = {}
+    conflicts = []
     for domain in ("airspace", "critical_site"):
         explicit_state = (explicit.get("domain_states") or {}).get(domain) or {}
         declaration = declared.get(domain) or {}
+        domain_items = [item for item in items if str(item.get("domain") or "") == domain]
+        domain_conflicts = []
+        explicit_status = domain_dataset_state(explicit_state.get("status"))
+        if declaration.get("status") == "confirmed_none" and (
+            explicit_status == "confirmed_present" or domain_items
+        ):
+            domain_conflicts.append("confirmed_none_conflicts_with_present_area_data")
+        if (
+            declaration.get("status") == "confirmed_none"
+            and explicit_status == "confirmed_none"
+            and explicit_state.get("source")
+            and declaration.get("source")
+            and (
+                explicit_state.get("source") != declaration.get("source")
+                or list(explicit_state.get("evidence") or [])
+                != list(declaration.get("evidence") or [])
+            )
+        ):
+            domain_conflicts.append("confirmed_none_authority_identity_conflict")
+        if "restricted_areas" in payload:
+            persisted_state = (persisted_explicit.get("domain_states") or {}).get(domain) or {}
+            persisted_status = domain_dataset_state(persisted_state.get("status"))
+            if (
+                explicit_status in ("confirmed_none", "confirmed_present")
+                and persisted_status in ("confirmed_none", "confirmed_present")
+                and explicit_status != persisted_status
+            ):
+                domain_conflicts.append("payload_persisted_dataset_status_conflict")
+        if "restricted_area_declarations" in payload:
+            persisted_declaration = persisted_declared.get(domain) or {}
+            if (
+                declaration.get("status") != persisted_declaration.get("status")
+                and "confirmed_none" in {
+                    declaration.get("status"), persisted_declaration.get("status"),
+                }
+            ):
+                domain_conflicts.append("payload_persisted_declaration_conflict")
         if declaration.get("status") == "confirmed_none":
             # 用户显式确认：语义是"按当前依据当前范围内无该类约束"。
             state_entry = {
@@ -279,7 +321,7 @@ def restricted_area_dataset_inputs(state, *, payload=None, declarations=None):
             }
         else:
             state_entry = {
-                "status": domain_dataset_state(explicit_state.get("status")),
+                "status": explicit_status,
                 "source": deepcopy(explicit_state.get("source")),
                 "evidence": deepcopy(explicit_state.get("evidence") or []),
             }
@@ -298,6 +340,10 @@ def restricted_area_dataset_inputs(state, *, payload=None, declarations=None):
                     or _evidence_list((normalize_regulatory_constraints(regulatory_raw)).get("evidence"))
                 )
             state_entry["source_of_status"] = "regulatory_constraints_dataset_configured"
+        if domain_conflicts:
+            state_entry["status"] = "unresolved"
+            state_entry["conflicts"] = list(domain_conflicts)
+            conflicts.extend({"domain": domain, "reason": reason} for reason in domain_conflicts)
         domain_states[domain] = state_entry
 
     merged = normalize_restricted_area_collection({
@@ -316,6 +362,20 @@ def restricted_area_dataset_inputs(state, *, payload=None, declarations=None):
         for domain in ("airspace", "critical_site")
     }
     merged["regulatory_bridge"] = deepcopy(bridged["provenance"])
+    merged["conflicts"] = conflicts
+    merged["limitations"] = sorted({
+        "engineering_declaration_not_regulatory_confirmation"
+        for entry in domain_states.values()
+        if entry.get("source") == _MINIMUM_ENGINEERING_SOURCE
+    })
+    merged["scope"] = {
+        "domains": ["airspace", "critical_site"],
+        "domain_states": {
+            domain: (merged.get("domain_states") or {}).get(domain, {}).get("status")
+            for domain in ("airspace", "critical_site")
+        },
+        "semantics": "current_project_declared_domain_scope",
+    }
     merged["domain_dataset_states"] = tuple(DOMAIN_DATASET_STATES)
     merged["not_configured_never_becomes_confirmed_none"] = True
     return merged

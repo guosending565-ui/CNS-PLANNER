@@ -53,6 +53,7 @@ class ReportBuilder:
                     "corridor_policy": source.get("cns_corridor_policy") or {},
                     "encounter_3d_summary": _encounter_summary(source.get("encounter_3d_assessment") or {}),
                 },
+                "engineering_demo_route_acceptance": _engineering_demo_route_acceptance(source),
                 "v3_validated_route_provenance": _v3_provenance(source),
                 "required_cns": source.get("required_cns") or {},
                 "centerline_gap_p10": source.get("cns_gap_analysis_v2") or {},
@@ -102,6 +103,33 @@ class ReportBuilder:
         model["statistics"] = _statistics(p15)
         model["report_data_fingerprint"] = stable_fingerprint(model)
         return model
+
+
+def _engineering_demo_route_acceptance(source):
+    """Disclose demo-only acceptance without projecting it as an operational route."""
+
+    policy = source.get("engineering_demo_building_acceptance_policy") or {}
+    validations = source.get("layered_route_validations") or {}
+    adoptions = source.get("layered_operational_adoptions") or {}
+    demo_items = [
+        item for item in adoptions.get("items") or []
+        if isinstance(item, dict) and item.get("status") == "published_engineering_demo"
+    ]
+    limitations = ["工程条件接受，严格验证未通过，仅供演示"] if demo_items else []
+    for item in demo_items:
+        for limitation in item.get("limitations") or []:
+            if limitation not in limitations:
+                limitations.append(limitation)
+    return {
+        "policy": policy,
+        "validations": validations,
+        "adoptions": adoptions,
+        "active_demo_adoptions": demo_items,
+        "canonical_operational_routes_unchanged": all(
+            item.get("published_to_operational_routes") is False for item in demo_items
+        ),
+        "limitations": limitations,
+    }
 
 
 def _v3_provenance(source):

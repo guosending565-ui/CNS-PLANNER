@@ -41,7 +41,11 @@ FACTOR_DEFINITIONS = {
         "raw_unit": "people/km²",
         "source_role": "population",
         "source_field": "population_density_people_km2",
-        "label": "人口暴露",
+        #: Round35-D：该 raw 值是**整格平均**人口密度（分母恒为完整格面积）。
+        #: 有效覆盖区密度是另一个字段，绝不在这里被消费。
+        "density_semantics": "whole_cell_mean_density",
+        "density_denominator": "full_grid_cell_area",
+        "label": "人口暴露（整格平均人口密度）",
     },
     "property_exposure": {
         "domain": "ground",

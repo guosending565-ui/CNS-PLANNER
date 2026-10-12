@@ -200,10 +200,21 @@ test('main.js routes resourceAction through the same unified snapshot path', () 
   assert.doesNotMatch(main, /async function syncGridApis\(/,
     'flow 写入必须只有 applyWorkflowSnapshot 一条路径');
   assert.match(main, /remapPopulation:async\(\)=>[\s\S]{0,200}await applyWorkflowSnapshot\(data\)/);
-  // 打开项目：先 hydrate 完整快照，再刷新 /api/state。
-  assert.match(main, /openProject[\s\S]{0,600}await applyWorkflowSnapshot\(data\.workflow\)/);
-  assert.match(main, /applyWorkflowSnapshot\(data\.workflow\)\.then/);
-  // 入口文件必须保持精简（tests/test_architecture.py）。
+  // 打开项目：先按 `/api/project/open` 响应完整落地，再按 fresh `/api/state` 重新落地。
+  // 唯一落地路径是 `applyProjectState`（`applyState` + `applyWorkflowSnapshot(data.workflow)`
+  // + `paint()`），因此这里锁定的是**行为契约**而不是某一次调用点的书写形状：
+  // `openProject -> update()/applyProjectState` 的实现形态在 BUG-WORKSPACE-RESTORE-002 /
+  // 打开性能收敛中已经变过多次，继续按 token 序列断言只会把重构误判成回归。
+  assert.match(
+    main,
+    /function applyProjectState\(data,options\)\{[\s\S]{0,600}applyState\(data,options\);return applyWorkflowSnapshot\(data\.workflow\)/,
+  );
+  assert.match(main, /function update\(data\)\{\s*return serializeProjectOperation\(\(\)=>applyProjectState\(data\)\)/);
+  assert.match(
+    main,
+    /async function openProject[\s\S]{0,4000}await applyProjectState\(await api\('\/api\/state'\)\)/,
+  );
+  // 入口文件必须保持精简（450 行架构门限；当前 1310 行，见交付报告 04/07 的独立技术债条目）。
   assert.ok(main.split('\n').length <= 450,
     `main.js 必须保持 450 行以内的轻入口（当前 ${main.split('\n').length} 行）`);
 });

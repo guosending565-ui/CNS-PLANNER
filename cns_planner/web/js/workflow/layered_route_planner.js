@@ -5,7 +5,7 @@ import {escapeHtml,statusBadge,statusText} from './common.js';
 //
 // 算法分流严格依据 ``flow.layered_route_planner_readiness.algorithm.algorithm_id``：
 //   * ``layered_route_planner_v1``（A* + legacy λ）→ 本文件的 V1 面板与 V1 λ 语义；
-//   * ``layered_risk_aware_theta_star_v2@2.0``     → layered_theta_v2.js 的 Theta* V2 视图。
+//   * ``layered_risk_aware_theta_star_v2@2.1``     → layered_theta_v2.js 的 Theta* V2 视图。
 // 本文件只保留两边共用的 planning request / scenario / 显式 AltitudeLayer 与
 // terrain-building feasibility 控件，避免两套面板各自发明字段与 id。
 //
@@ -18,7 +18,7 @@ export const LAYERED_PLANNER_ALGORITHM_TYPE='layered_route_planner';
 export const LAYERED_PLANNER_ALGORITHM_ID='layered_route_planner_v1';
 //: Theta* V2 的 exact algorithm id：只有它才把「分层候选」切换成 Theta* V2 视图。
 export const THETA_STAR_V2_ALGORITHM_ID='layered_risk_aware_theta_star_v2';
-export const THETA_STAR_V2_ALGORITHM_VERSION='2.0';
+export const THETA_STAR_V2_ALGORITHM_VERSION='2.1';
 export const LAYERED_V1_ALGORITHM_ID='layered_route_planner_v1';
 export const LAYERED_V1_ALGORITHM_VERSION='1.0';
 //: 视图角色：Theta* V2 是 production layered planner，V1 只是 legacy/baseline。

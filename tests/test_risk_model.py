@@ -344,7 +344,17 @@ def test_workflow_calls_replaceable_model_and_persists_then_stales_risk(tmp_path
     assert applied["grid_risk"]["algorithm_id"] == "replacement-fixture"
     assert applied["grid_risk"]["status"] == "missing_data"
     assert applied["risks"]["environment"]["status"] == "missing_data"
-    assert WorkflowService(store, service.defaults_path).grid_risk_snapshot() == applied["grid_risk"]
+    restored_risk = WorkflowService(store, service.defaults_path).grid_risk_snapshot()
+    # 通用 workflow snapshot 按 schema-v2 只返回外置结果摘要；重载后的专用读取入口会
+    # 从 artifact 恢复逐格明细。两者不应按容器字节相等比较，但结果身份与明细必须保真。
+    for key in (
+        "status", "algorithm_id", "algorithm_version", "parameters",
+        "input_status", "source_versions", "grid_level", "count",
+    ):
+        assert restored_risk[key] == applied["grid_risk"][key]
+    assert set(restored_risk["cells"]) == {
+        cell["grid_id"] for cell in service.state["grid"]["cells"]
+    }
 
     reevaluated = service.evaluate_grid_risk({"scenario": "fixture"})
     assert len(model.calls) == 2

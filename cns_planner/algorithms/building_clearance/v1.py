@@ -105,7 +105,15 @@ class BuildingClearanceV1:
         minimum_horizontal = None
         minimum_vertical = None
         for candidate in candidates:
-            height = _finite_or_none(candidate.get("height_m"))
+            # F3-D：屋顶用统一选择器输出高度（height_estimate_m），原始 GBA 值保留审计。
+            # source_tagged 建筑的 estimate 是 OSM 标签值，predicted 建筑 estimate=原始值。
+            height = _finite_or_none(
+                candidate.get("height_estimate_m", candidate.get("height_m"))
+            )
+            height_original_m = _finite_or_none(candidate.get("height_m"))
+            evidence_level = candidate.get("height_evidence_level") or (
+                "predicted" if height is not None else "unknown"
+            )
             terrain = candidate.get("terrain") or {}
             ground = _finite_or_none(terrain.get("ground_elevation_median_m"))
             vertical_status = "resolved"
@@ -173,6 +181,8 @@ class BuildingClearanceV1:
                     "building_id": candidate.get("building_id"),
                     "building_source": candidate.get("source"),
                     "building_height_m": height,
+                    "height_original_m": height_original_m,
+                    "height_evidence_level": evidence_level,
                     "height_var": candidate.get("height_var"),
                     "ground_elevation_m": ground,
                     "roof_elevation_m": roof,
@@ -198,6 +208,8 @@ class BuildingClearanceV1:
                 "building_id": candidate.get("building_id"),
                 "source": candidate.get("source"),
                 "height_m": height, "height_var": candidate.get("height_var"),
+                "height_original_m": height_original_m,
+                "height_evidence_level": evidence_level,
                 "ground_elevation_m": ground, "roof_elevation_m": roof,
                 "horizontal_minimum_m": candidate.get("horizontal_minimum_m"),
                 "vertical_status": vertical_status, "unresolved_reason": reason,

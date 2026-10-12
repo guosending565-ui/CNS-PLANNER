@@ -10,10 +10,17 @@ from ..domain.layered_route import (
     mask_cell, mask_fingerprint, request_fingerprint, stable_fingerprint,
 )
 from ..domain.building_clearance import (
+    BUILDING_OCCUPANCY_UNKNOWN, LEGACY_ZERO_COUNT_SHORTCUT_KEY, building_occupancy_state,
     building_roof_elevation, evaluate_vertical_clearance,
 )
 #: Set on every mask produced here.
 MASK_SCOPE = "coarse_strategic_vertical_envelope"
+
+
+def _legacy_zero_count_shortcut(building_fact):
+    """审计开关：只对显式标记的 fact 复现 F1-A 修复前的短路语义。"""
+
+    return bool(building_fact.get(LEGACY_ZERO_COUNT_SHORTCUT_KEY) is True)
 
 def _finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
@@ -80,7 +87,13 @@ def build_layer_feasibility_mask(
 
     * no confirmed ``terrain_vertical_clearance_m`` ⇒ every cell is ``unknown``;
     * terrain elevation missing / NoData ⇒ ``unknown``;
-    * ``building_count == 0`` ⇒ no vertical building constraint at all;
+    * ``building_count == 0`` **and** a confirmed-zero footprint coverage
+      (``building_area_m2`` / ``building_coverage_ratio`` explicitly 0) ⇒ no vertical
+      building constraint at all.  ``building_count`` is a *centroid allocation count*,
+      so zero centroids never proves zero buildings: with coverage > 0 the cell is
+      explicitly ``unknown`` with reason ``building_footprint_present_height_unresolved``
+      (never ``feasible`` — that would clear a real obstacle — and never ``blocked``,
+      because the unresolved building may well be low enough for this layer);
     * a building cell with ``valid_height_fraction < 1`` or a missing height / missing
       terrain elevation ⇒ ``unknown``, never 0;
     * otherwise ``building_floor = terrain_cell_max + height_max + existing confirmed
@@ -154,6 +167,21 @@ def build_layer_feasibility_mask(
         building_height = float(building_height) if _finite(building_height) else None
         fraction = building_fact.get("valid_height_fraction")
         fraction = float(fraction) if _finite(fraction) else None
+        building_area = building_fact.get("building_area_m2")
+        building_area = float(building_area) if _finite(building_area) else None
+        coverage_ratio = building_fact.get("building_coverage_ratio")
+        coverage_ratio = float(coverage_ratio) if _finite(coverage_ratio) else None
+        # F1-A：``building_count`` 是**建筑质心分配数量**，不是"该格有没有建筑"。
+        # 一栋 footprint 跨越格边界、质心落在邻格时，本格 building_count=0 却仍有真实
+        # 建筑覆盖。因此"无建筑垂向约束"必须同时要求覆盖面积明确为零（见
+        # domain/building_clearance.py::building_occupancy_state 的单一判据）。
+        occupancy = building_occupancy_state(
+            building_count=building_count, building_area_m2=building_area,
+            building_coverage_ratio=coverage_ratio,
+        )
+        legacy_shortcut = _legacy_zero_count_shortcut(building_fact)
+        if legacy_shortcut:
+            occupancy = "absent" if building_count == 0 else "present"
         building_floor = None
         reason_code, reason = None, None
 
@@ -182,10 +210,34 @@ def build_layer_feasibility_mask(
             status, reason_code, reason = "unknown", "building_grid_missing_or_outside_coverage", (
                 "L8 building grid fact 缺失或超出覆盖范围：建筑垂向约束未知，绝不当 0"
             )
-        elif building_count == 0:
+        elif occupancy == "present" and building_count == 0:
+            # F1-A：质心数量为 0 但 footprint 覆盖面积大于 0 ⇒ 该格**有建筑**，
+            # 只是高度统计按质心分配、落到了邻格。既不判 feasible（那会放行真实障碍），
+            # 也不判 blocked（该建筑可能很矮、未必阻碍本高度层）：显式 unresolved。
+            status, reason_code, reason = (
+                "unknown", "building_footprint_present_height_unresolved",
+                "该 L8 格 building_count=0（按质心分配的建筑数为零）但 building_area_m2/"
+                "building_coverage_ratio > 0：格内有真实 footprint 覆盖而高度统计缺失，"
+                "建筑垂向约束未知；绝不当作\"没有建筑垂向约束\"，也不在缺少高度时判 blocked",
+            )
+        elif occupancy == "absent":
             status = "feasible"
             reason_code = None
-            reason = "该 L8 格 building_count=0：没有建筑垂向约束"
+            reason = (
+                "该 L8 格 building_count=0 且 footprint 覆盖已确认为零"
+                "（building_area_m2=0 / building_coverage_ratio=0）：没有建筑垂向约束"
+            )
+        elif occupancy == BUILDING_OCCUPANCY_UNKNOWN:
+            # 既没有质心分配的建筑，也没有可用的覆盖证据（合成的 / 旧格式 fact）：
+            # 保持历史的"快速通过"语义，但把默认值来源显式记入 provenance，
+            # 绝不把它当作"已确认无建筑"的证据。
+            status = "feasible"
+            reason_code = None
+            reason = (
+                "该 L8 格 building_count=0 且建筑覆盖证据未提供（building_area_m2 / "
+                "building_coverage_ratio 均缺失）：沿用既有约定视为无建筑垂向约束，"
+                "provenance 记为 building_occupancy_evidence=not_provided"
+            )
         elif fraction is None or fraction < 1.0 or building_height is None:
             status, reason_code, reason = (
                 "unknown", "building_height_or_ground_elevation_unresolved",
@@ -320,6 +372,15 @@ def build_layer_feasibility_mask(
                 "terrain_data_status": (item.get("terrain") or {}).get("data_status"),
                 "building_data_status": building_fact.get("data_status"),
                 "valid_height_fraction": fraction,
+                # F1-A：建筑占用判据的可审计来源（质心数量 ≠ 网格内是否有建筑）。
+                "building_occupancy": occupancy,
+                "building_occupancy_evidence": (
+                    "not_provided" if occupancy == BUILDING_OCCUPANCY_UNKNOWN
+                    else "footprint_coverage_measured"
+                ),
+                "legacy_zero_count_shortcut_for_audit": legacy_shortcut,
+                "building_area_m2": _round(building_area),
+                "building_coverage_ratio": _round(coverage_ratio),
                 "building_clearance_policy_status": building_policy.get("status"),
                 "tower_data_status": tower_fact.get("data_status"),
                 "tower_clearance_policy_status": tower_policy.get("status"),

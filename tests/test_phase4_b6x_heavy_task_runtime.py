@@ -68,10 +68,17 @@ P14_BASELINE = Path(__file__).with_name("p14_protected_sha256.json")
 
 
 def file_sha256(path):
+    """仓库内容 SHA256（``\\r\\n`` → ``\\n`` 归一化）。
+
+    P14 基线登记的是**被跟踪内容**的指纹，而不是某个 checkout 的行尾策略：Windows 上
+    ``core.autocrlf`` 会把 LF blob 检出为 CRLF，直接哈希磁盘原始字节会把"行尾属性"
+    误判成"受保护文件被修改"（Round35-S5A2 取证）。归一化后仍逐字节检测真实内容变更。
+    """
+
     digest = sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
+            digest.update(chunk.replace(b"\r\n", b"\n"))
     return digest.hexdigest()
 
 

@@ -339,12 +339,15 @@ class LayeredRoutePlannerService:
         collection = normalize_layered_route_candidate_collection(
             state.get("layered_route_candidates")
         )
-        current_key, current_fingerprint = self._current_identity()
+        current_identity = self.current_identity()
+        current_key = current_identity["lane_key"]
+        current_fingerprint = current_identity["candidate_fingerprint"]
+        current_components = current_identity.get("fingerprint_components") or {}
         projected = []
         for item in collection["items"]:
             entry = deepcopy(item)
             entry["current_applicability"] = self._applicability(
-                item, current_key, current_fingerprint,
+                item, current_key, current_fingerprint, current_components,
             )
             projected.append(entry)
         collection["items"] = projected
@@ -1248,18 +1251,36 @@ class LayeredRoutePlannerService:
             source_audits=state.get("source_audits") or {},
             **self._planner_specific_inputs(state, state.get("grid") or {}),
         )
+        compatible = next((
+            item for item in collection.get("items") or []
+            if item.get("status") != "stale"
+            and _candidate_key(item.get("route_id"), item.get("altitude_layer_id")) == key
+            and self._same_identity_except_audit_status(
+                ((item.get("provenance") or {}).get("fingerprint_components") or {}),
+                fingerprints["components"],
+            )
+        ), None)
+        candidate_fingerprint_value = (
+            compatible.get("candidate_fingerprint") if compatible
+            else fingerprints["candidate_fingerprint"]
+        )
+        input_fingerprint_value = (
+            compatible.get("input_fingerprint") if compatible
+            else fingerprints["input_fingerprint"]
+        )
         return {
             "lane_key": key,
-            "candidate_fingerprint": fingerprints["candidate_fingerprint"],
+            "candidate_fingerprint": candidate_fingerprint_value,
             "risk_fingerprint": fingerprints["risk_fingerprint"],
             "policy_fingerprint": fingerprints["policy_fingerprint"],
-            "input_fingerprint": fingerprints["input_fingerprint"],
+            "input_fingerprint": input_fingerprint_value,
             "request_fingerprint": fingerprints["request_fingerprint"],
             "feasibility_mask_fingerprint": mask.get("mask_fingerprint"),
+            "fingerprint_components": fingerprints["components"],
         }
 
     @staticmethod
-    def _applicability(candidate, current_key, current_fingerprint):
+    def _applicability(candidate, current_key, current_fingerprint, current_components=None):
         if candidate.get("status") == "stale":
             return "stale"
         if not candidate.get("lane_key"):
@@ -1267,9 +1288,30 @@ class LayeredRoutePlannerService:
         key = _candidate_key(candidate.get("route_id"), candidate.get("altitude_layer_id"))
         if key != current_key:
             return "stale_request_or_scenario_changed"
-        if candidate.get("candidate_fingerprint") != current_fingerprint:
+        if candidate.get("candidate_fingerprint") != current_fingerprint and not (
+            LayeredRoutePlannerService._same_identity_except_audit_status(
+                ((candidate.get("provenance") or {}).get("fingerprint_components") or {}),
+                current_components or {},
+            )
+        ):
             return "stale_inputs_changed"
         return "current"
+
+    @staticmethod
+    def _same_identity_except_audit_status(stored, current):
+        """Ignore only transient audit lifecycle labels, never content identity fields."""
+
+        if not isinstance(stored, dict) or not isinstance(current, dict) or not stored:
+            return False
+        left, right = deepcopy(stored), deepcopy(current)
+        for key in (
+            "terrain_source_audit", "building_source_audit", "building_grid_source_audit",
+        ):
+            left_audit, right_audit = left.get(key), right.get(key)
+            if isinstance(left_audit, dict) and isinstance(right_audit, dict):
+                left_audit.pop("status", None)
+                right_audit.pop("status", None)
+        return left == right
 
     def _source_status(self):
         provider = self.source_status

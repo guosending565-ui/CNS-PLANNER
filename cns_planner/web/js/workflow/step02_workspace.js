@@ -263,6 +263,24 @@ export function buildingEnvironmentSummary(flow){
 export const POPULATION_NODATA_MODE='nodata_is_zero_population';
 
 /**
+ * Round35-D：**开阔海域**零人口工程模式（与既有模式并存、互斥确认）。
+ *
+ * 它比既有模式严格：只有"整格位于人口栅格有效覆盖范围内 + 与 canonical 陆域多边形无交集 +
+ * 不在海岸不确定带内 + 确实缺少有效观测"的格子才被解释为零，且结果标记为**工程假设**。
+ * 与陆域相交、或落在保护带内的缺失人口格保持 ``missing_data``。
+ */
+export const POPULATION_NODATA_OPEN_SEA_MODE='open_sea_no_settlement_zero_population';
+
+/** 后端 ``normalize_population_nodata_policy`` 接受的确认模式集合（唯一权威在 domain 层）。 */
+export const POPULATION_NODATA_MODES=[POPULATION_NODATA_MODE,POPULATION_NODATA_OPEN_SEA_MODE];
+
+/** 模式选择器的可读标签（值本身仍显示在选项里，便于审计照抄）。 */
+export const POPULATION_NODATA_MODE_LABELS={
+  [POPULATION_NODATA_MODE]:'来源 extent 内全 NoData ⇒ 已知 0（既有语义）',
+  [POPULATION_NODATA_OPEN_SEA_MODE]:'开阔海域且无陆域证据 ⇒ 工程假设 0（需逐格证据）'
+};
+
+/**
  * Population NoData 语义的只读投影：status / mode / source / evidence / confirmed
  * 全部来自 ``flow.population_nodata_policy``（后端 state），**不推断、不伪造确认**。
  */
@@ -291,15 +309,15 @@ export function populationNodataModel(flow){
 
 /**
  * 保存前的显式校验（与后端 ``normalize_population_nodata_policy`` 的接受条件一致）：
- * mode 只能是 ``nodata_is_zero_population``，且必须同时具备 source + 非空 evidence + confirmed。
- * 任一缺失就抛出可读错误，绝不静默降级成"已确认"。
+ * mode 只能是 ``POPULATION_NODATA_MODES`` 里的取值，且必须同时具备 source + 非空 evidence +
+ * confirmed。任一缺失就抛出可读错误，绝不静默降级成"已确认"，也绝不替换成别的 mode。
  */
 export function populationNodataPayload({mode,source,sourceId,evidence,confirmed}={}){
   const wanted=String(mode||'').trim();
   const owner=String(source||'').trim();
   const ownerId=String(sourceId||'').trim();
   const raw=evidence===null||evidence===undefined?'':String(evidence).trim();
-  if(wanted!==POPULATION_NODATA_MODE)throw new Error('mode 只允许 '+POPULATION_NODATA_MODE);
+  if(!POPULATION_NODATA_MODES.includes(wanted))throw new Error('mode 只允许 '+POPULATION_NODATA_MODES.join(' / '));
   if(!owner)throw new Error('必须显式填写 source（确认人或工程依据来源）');
   if(confirmed!==true)throw new Error('必须显式勾选工程确认才能保存');
   let parsed=null;
@@ -310,7 +328,7 @@ export function populationNodataPayload({mode,source,sourceId,evidence,confirmed
     throw new Error('evidence 必须是至少含一个字段的 JSON 对象');
   }
   return {population_nodata_policy:{
-    mode:POPULATION_NODATA_MODE,role:'population',source:owner,
+    mode:wanted,role:'population',source:owner,
     source_id:ownerId||null,evidence:parsed,confirmed:true
   }};
 }
@@ -339,15 +357,24 @@ export function populationNodataPanel(flow){
       +'点击“仅重算人口映射”才会用当前来源与当前语义重新映射（不会自动重算，也不会重算其它映射）。</div>'
     :'';
   const hasGrid=flow?.grid?.status==='passed';
+  const modeOptions=POPULATION_NODATA_MODES.map(value=>
+    '<option value="'+value+'" '+(model.mode===value?'selected':'')+'>'
+    +escapeHtml(value+' · '+(POPULATION_NODATA_MODE_LABELS[value]||''))+'</option>').join('');
+  const openSeaNotice=model.mode===POPULATION_NODATA_OPEN_SEA_MODE
+    ?'<div class="parameter-note">当前为<b>开阔海域工程模式</b>：只有<b>整格位于人口栅格有效覆盖'
+      +'范围内、与 canonical 陆域多边形无交集、且不在海岸不确定带内</b>的缺观测格才被解释为零；'
+      +'与陆域相交或落在保护带内的缺失人口格<b>保持 missing_data</b>。'
+      +'该零人口是<b>工程假设</b>，不是原始观测（结果的 quality_flags 与 nodata_semantics 会显式标注）。</div>'
+    :'';
   return '<div class="parameter-note">Population NoData Semantics 是<b>显式工程确认</b>：只有确认后，'
     +'<b>来源 extent 之内</b>、全部像元均为 NoData 的格子才被记录为<b>已知的 0 人口暴露</b>；'
     +'未确认时这些格子保持 missing_data（missing_data ≠ zero）。</div>'
+    +openSeaNotice
     +'<div class="env-metric-cards">'+cards.join('')+'</div>'
     +staleNotice
     +'<div class="form-grid">'
     +'<label>mode<select id="populationNodataMode"><option value="">请选择（不猜）</option>'
-    +'<option value="'+POPULATION_NODATA_MODE+'" '+(model.mode===POPULATION_NODATA_MODE?'selected':'')+'>'
-    +POPULATION_NODATA_MODE+'</option></select></label>'
+    +modeOptions+'</select></label>'
     +'<label>source（确认人 / 工程依据来源，必填）<input class="panel-input" id="populationNodataSource" value="'
     +escapeHtml(model.source||'')+'" placeholder="必填"></label>'
     +'<label>source id（可空）<input class="panel-input" id="populationNodataSourceId" value="'

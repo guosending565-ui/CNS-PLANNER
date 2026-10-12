@@ -12,6 +12,9 @@ from cns_planner.api.router import ApiRouter
 from cns_planner.application.project_state import normalize_project
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.domain.algorithm_manifest import AlgorithmManifest
+from cns_planner.domain.layered_theta_v2 import (
+    ALGORITHM_VERSION as LAYERED_THETA_V2_ALGORITHM_VERSION,
+)
 from cns_planner.persistence.project_repository import ProjectRepository
 
 
@@ -61,7 +64,7 @@ def test_default_registry_contains_only_executable_current_manifests_and_no_pyth
     actual = {(item.algorithm_type, item.algorithm_id, item.version) for item in registry.manifests()}
     assert actual == {
         ("risk_model", "risk-model-v1-relative-index", "1.1"),
-        ("layered_route_planner", "layered_risk_aware_theta_star_v2", "2.0"),
+        ("layered_route_planner", "layered_risk_aware_theta_star_v2", LAYERED_THETA_V2_ALGORITHM_VERSION),
         ("cns_gap_analyzer", "cns_gap_analysis_v2", "2.0"),
         ("coverage_model", "geometric_coverage_3d_v1", "1.0"),
         ("service_model", "cns_service_capability_v1", "1.0"),

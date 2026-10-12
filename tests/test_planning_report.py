@@ -72,6 +72,46 @@ def test_report_model_has_complete_source_sections_and_plan_label(tmp_path, appl
     assert model["statistics"]["classification_semantics"] == "unknown_is_neither_pass_nor_fail"
 
 
+def test_report_discloses_engineering_demo_adoption_without_operational_route(tmp_path):
+    workflow = confirmed_workflow(tmp_path)
+    workflow.state["engineering_demo_building_acceptance_policy"] = {
+        "schema_version": "engineering-demo-building-acceptance-v1",
+        "status": "confirmed", "enabled": True, "confirmed": True,
+        "effective": True, "policy_fingerprint": "policy-fp",
+    }
+    workflow.state["layered_route_validations"] = {
+        "status": "engineering_conditionally_accepted_candidate", "count": 1,
+        "active_validation_id": "LRV-DEMO", "items": [{
+            "validation_id": "LRV-DEMO",
+            "status": "engineering_conditionally_accepted_candidate",
+            "strict_safety_validation_passed": False,
+            "engineering_conditional_acceptance": True,
+            "use_scope": "engineering_demo_only",
+            "operational_authorization": False,
+            "limitations": ["工程条件接受，严格验证未通过，仅供演示"],
+        }],
+    }
+    workflow.state["layered_operational_adoptions"] = {
+        "status": "engineering_demo_published", "count": 1, "items": [{
+            "adoption_id": "LRA-DEMO", "route_id": "R0005",
+            "status": "published_engineering_demo",
+            "published_to_operational_routes": False,
+            "strict_safety_validation_passed": False,
+            "engineering_conditional_acceptance": True,
+            "use_scope": "engineering_demo_only",
+            "operational_authorization": False,
+            "limitations": ["工程条件接受，严格验证未通过，仅供演示"],
+        }],
+    }
+    before_routes = deepcopy(workflow.state["operational_routes"])
+    model = workflow.preview_cns_planning_report()["report_data"]
+    section = model["sections"]["engineering_demo_route_acceptance"]
+    assert section["policy"]["policy_fingerprint"] == "policy-fp"
+    assert section["adoptions"]["items"][0]["published_to_operational_routes"] is False
+    assert "工程条件接受，严格验证未通过，仅供演示" in section["limitations"]
+    assert workflow.state["operational_routes"] == before_routes
+
+
 def test_sanitizer_and_html_escape_paths_secrets_and_external_assets(tmp_path):
     workflow = confirmed_workflow(tmp_path)
     workflow.state["project"]["name"] = '<script>alert("x")</script>'

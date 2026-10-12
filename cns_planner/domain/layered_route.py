@@ -93,6 +93,9 @@ FEASIBILITY_REASON_CODES = (
     "terrain_clearance_not_confirmed",
     "altitude_below_terrain_floor",
     "building_grid_missing_or_outside_coverage",
+    # F1-A：building_count 是**质心分配数量**；覆盖面积大于 0 而高度统计缺失时，
+    # 该格有真实建筑却没有可用高度 —— 显式 unresolved，绝不是"无建筑垂向约束"。
+    "building_footprint_present_height_unresolved",
     "building_height_or_ground_elevation_unresolved",
     "altitude_below_building_clearance_floor",
     "building_vertical_clearance_not_confirmed",
@@ -119,6 +122,10 @@ COARSE_ENVELOPE_SEMANTICS = {
     ),
     "building_clearance_definition": "domain/building_clearance.py (single canonical roof rule)",
     "zero_buildings_means_no_vertical_building_constraint": True,
+    # F1-A：``building_count`` 是质心分配数量，不是"该格有没有建筑"。
+    "building_count_is_centroid_allocation_not_occupancy": True,
+    "no_building_constraint_requires_confirmed_zero_footprint_coverage": True,
+    "footprint_present_without_height_is_unresolved": True,
     "partial_height_coverage_is_unknown_never_zero": True,
     "unknown_is_never_feasible": True,
     "airspace": "display_only_not_used_for_feasibility",
@@ -603,8 +610,11 @@ def default_layer_feasibility_mask(altitude_layer_id=None, status="not_calculate
         "notes": [
             "这是 coarse_strategic_vertical_envelope：按 selected layer + L8 cell 的保守垂向包络，"
             "不是 exact footprint，也不是水平/精确建筑净空结论。",
-            "building_count=0 表示该格没有建筑垂向约束；valid_height_fraction<1 或缺失高度/地面"
-            "高程一律 unknown，绝不当 0。",
+            "building_count=0 **且 footprint 覆盖已确认为零**（building_area_m2 / "
+            "building_coverage_ratio 明确为 0）才表示该格没有建筑垂向约束；"
+            "building_count 只是质心分配数量，覆盖面积大于 0 而高度统计缺失时该格是 "
+            "unknown（building_footprint_present_height_unresolved），既不 feasible 也不 blocked；"
+            "valid_height_fraction<1 或缺失高度/地面高程一律 unknown，绝不当 0。",
             "unknown 绝不参与 A* 搜索，且绝不等于 feasible。",
             "适飞空域仍是 display_only，不进入 mask、搜索或 fingerprint。",
         ],

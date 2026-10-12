@@ -32,7 +32,7 @@ import {recordExplicitProject,restoreLastExplicitProject} from './state/explicit
 import {applyActiveProject} from './state/active_project.js';
 import {bootstrapProjectState} from './state/bootstrap.js';
 import {workspaceGridReadiness} from './state/readiness.js';
-import {setupTaskCenter} from './tasks.js';
+import {setupTaskCenter, submitHeavyTask} from './tasks.js';
 import {elapsedText} from './workflow/busy_action.js';
 
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d'),map=$('map');
@@ -615,6 +615,11 @@ function renderWorkflow(){  if(!flow)return;
 function stepBindings(){return {
   $,api,flow:()=>flow,setFlow:value=>{flow=value;store.set({workflow:flow});},afterFlowChange:()=>{rebuildGridRenderCache();renderWorkflow();paint();},
   mutate,resourceAction,resourceMutationAndRefresh,computeAction,panelError,setStep,openBrowser:sourceCenter.openBrowser,searchPlace,actionButton,paint,
+  // Round 31-A：业务页面把**长计算**交给后台任务体系的唯一入口。
+  // 提交只登记任务并立刻返回 task_id（HTTP 不再等待数十分钟的 P16），
+  // 之后的状态 / 进度 / 心跳 / 取消 / 完成后刷新全部复用 tasks.js 的既有面板，
+  // 绝不新建第二套任务框架。轻任务继续走 resourceAction（同步语义不变）。
+  submitBackgroundTask:(path,payload)=>submitHeavyTask((requestPath,options)=>api(requestPath,options),path,payload),
   refreshLayeredCandidates:()=>snapshotApplier.hydrateLayeredCandidateDetail(),
   refreshRadarSurveillance:()=>snapshotApplier.hydrateRadarSurveillanceDetail(),
   // Round 3：P14 逐体元 service 证据（Step05「CNS 服务走廊」按需载入，只读）。

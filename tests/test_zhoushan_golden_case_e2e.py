@@ -29,6 +29,9 @@ import pytest
 
 from cns_planner.algorithms.grid.service import WorkspaceGridService
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.domain.layered_theta_v2 import (
+    ALGORITHM_VERSION as LAYERED_THETA_V2_ALGORITHM_VERSION,
+)
 from cns_planner.domain.spatial_3d import normalize_spatial_3d
 
 DEFAULTS = Path(__file__).parents[1] / "cns_planner" / "config" / "defaults.json"
@@ -275,7 +278,11 @@ def real_shaped_footprint(candidate, *, height_m=REAL_BUILDING_HEIGHT_MAX_M, gro
         "source": "GBA",
         "ring_metric": ring,
         "height_m": height_m,
-        "height_status": "predicted",
+        # 本 golden fixture 的常量在文件头明确声明为实测高度；证据门禁必须显式携带
+        # verified，而不能再借历史的 predicted 状态获得正式净空通过。
+        "height_status": "verified",
+        "height_evidence_level": "verified",
+        "height_evidence_method": "fixture_measured_gba_height",
         "ground_elevation_max_egm2008_m": ground_m,
         # 与生产 GIS 边界返回的 footprint 同形状：真实形状的 ring + 质量标注。
         "geometry_status": "passed",
@@ -511,7 +518,8 @@ def test_golden_case_search_budget_exhaustion_is_not_infeasibility(tmp_path):
     service, cells = golden_workflow(tmp_path)
     service.select_algorithm({
         "algorithm_type": "layered_route_planner",
-        "algorithm_id": "layered_risk_aware_theta_star_v2", "version": "2.0",
+        "algorithm_id": "layered_risk_aware_theta_star_v2",
+        "version": LAYERED_THETA_V2_ALGORITHM_VERSION,
         "parameters": {"max_expanded_labels": 5, "heading_bin_count": 8, "theta_min_deg": 5.0},
     })
     adapter = GoldenFeasibilityAdapter(coarse_facts(cells))

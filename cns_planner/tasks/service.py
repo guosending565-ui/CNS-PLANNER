@@ -380,6 +380,11 @@ class HeavyTaskService:
             "task_cancelled": "任务已取消，未产生正式结果",
             "task_project_switched": "项目已切换，任务已终止，未产生正式结果",
             "task_input_changed": "输入已变化，请重新运行",
+            #: Round 31-A：P16 的 baseline 是上游规划结论，用户需要知道"先重算上游"，
+            #: 而不是笼统的"输入已变化"。
+            "task_p16_upstream_not_current": (
+                "上游规划结论已变化，请先重算上游结果，再重新运行设施规划"
+            ),
             "task_algorithm_version_unavailable": (
                 "任务提交时使用的算法版本当前不可用，请重新运行。"
             ),

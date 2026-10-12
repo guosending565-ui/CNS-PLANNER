@@ -25,6 +25,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from ..domain.population_density import (
+    DENSITY_SEMANTICS_WHOLE_CELL, DENSITY_SEMANTICS_VERSION,
+    density_semantics_disposition,
+)
 from ..domain.risk_v2 import (
     FACTOR_DEFINITIONS, FACTOR_IDS, FACTOR_INPUT_ATTRIBUTES, FACTOR_SOURCE_ROLE,
     NO_SOURCE_FACTOR_IDS, stable_fingerprint,
@@ -51,7 +55,20 @@ READINESS_BLOCKED = "blocked"
 #: Population density is only accepted in its canonical target-grid form.  The
 #: legacy ``value_mean`` fallback of RiskModelV1 is intentionally not reused
 #: here: it is a source-pixel statistic with different semantics.
+#:
+#: Round35-D：该字段现在是**整格平均人口密度**（分母恒为完整 L8 格面积，口径
+#: ``whole_cell_mean_density`` / version ``1.2``）。风险消费端只接受这一口径：
+#:
+#: * ``current`` —— 显式声明为整格平均密度：使用；
+#: * ``confirmed_zero`` —— 已确认的零人口暴露（分母同样是整格）：使用（值为 0）；
+#: * ``legacy_not_usable`` —— 显式声明为 **1.1 旧口径**（``partial`` 时分母是有效覆盖
+#:   面积）：**拒绝**，旧值保持旧语义，不得悄悄参与新风险；
+#: * ``undeclared`` —— 上游未声明语义：放行但带 ``population_density_semantics_undeclared``
+#:   质量标记（不阻断既有未标注来源）。
 POPULATION_FIELD = "population_density_people_km2"
+POPULATION_SEMANTICS_FIELD = "density_semantics"
+POPULATION_SEMANTICS_VERSION_FIELD = "density_semantics_version"
+POPULATION_LEGACY_REASON = "population_density_semantics_legacy_not_usable"
 TRAFFIC_RAW_FIELD = "traffic_density_raw"
 TRAFFIC_NORM_FIELD = "traffic_density_norm"
 CONFLICT_RAW_FIELD = "conflict_rate"
@@ -168,20 +185,35 @@ class FactorExtraction:
         self._population_reference = dataset_reference(
             values, source_field=POPULATION_FIELD,
         )
-        normalization = normalization_record(LOG1P_QUANTILE_METHOD, self._population_reference)
+        normalization = {
+            **normalization_record(LOG1P_QUANTILE_METHOD, self._population_reference),
+            # Round35-D：把"raw 值是什么口径"写进归一化记录，使风险场可审计。
+            "density_semantics": DENSITY_SEMANTICS_WHOLE_CELL,
+            "density_semantics_version": DENSITY_SEMANTICS_VERSION,
+            "density_denominator": "full_grid_cell_area",
+            "legacy_observed_area_density_is_rejected": True,
+        }
         records = {}
         for grid_id in self.cell_ids:
             cell = self._cell("population", grid_id)
             status, reason = self._unavailable("population", cell)
             coverage = self._finite_or_none(cell.get("source_coverage_fraction"))
             quality = []
+            disposition = density_semantics_disposition(cell)
+            if disposition == "undeclared":
+                quality.append("population_density_semantics_undeclared")
+            elif disposition == "legacy_not_usable":
+                quality.append("population_density_semantics_legacy_not_usable")
             value = cell.get(POPULATION_FIELD)
             if unit_status != "verified_from_raster_metadata":
                 quality.append("unverified_population_unit")
             if status is None:
                 if not self._population_coverage_usable(cell):
                     status = STATUS_MISSING
-                    reason = cell.get("coverage_status") or "population_coverage_unusable"
+                    reason = (
+                        POPULATION_LEGACY_REASON if disposition == "legacy_not_usable"
+                        else cell.get("coverage_status") or "population_coverage_unusable"
+                    )
                     coverage = 0.0
                 elif not finite(value):
                     status = STATUS_MISSING
@@ -213,7 +245,11 @@ class FactorExtraction:
         if cell.get("coverage_status") in _INVALID_COVERAGE_STATUSES:
             return False
         coverage = self._finite_or_none(cell.get("source_coverage_fraction"))
-        return coverage is None or coverage > 0
+        if coverage is not None and coverage <= 0:
+            return False
+        # Round35-D：口径守卫。旧版本（1.1）写下的密度在 partial 时把分母取成有效覆盖
+        # 面积，与"整格平均密度"不是一个量；未重算的旧值**不得**被自动当作新口径消费。
+        return density_semantics_disposition(cell) != "legacy_not_usable"
 
     # ------------------------------------------------------------- air traffic
 

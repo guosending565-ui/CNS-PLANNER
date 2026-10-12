@@ -278,9 +278,9 @@ def test_profile_ground_exposure_matches_a_direct_canonical_integral(tmp_path):
     candidate = candidate_of(run_planner(service, cells))
     centers = {cell["grid_id"]: list(cell["center"]) for cell in cells}
     indices, _unresolved = resolve_cell_domain_indices(risk, candidate["grid_path"], ("ground",))
-    for cell in cells:
-        record = risk["cells"][cell["grid_id"]]
-        assert indices[cell["grid_id"]]["ground"] == pytest.approx(
+    for grid_id in candidate["grid_path"]:
+        record = risk["cells"][grid_id]
+        assert indices[grid_id]["ground"] == pytest.approx(
             record["domains"]["ground"]["index"]
         )
     integral = integrate_path_exposure(

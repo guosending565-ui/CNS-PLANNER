@@ -69,10 +69,17 @@ TERMINAL = (SUCCEEDED, FAILED, CANCELLED, STALE)
 
 
 def file_sha256(path):
+    """仓库内容 SHA256（``\\r\\n`` → ``\\n`` 归一化）。
+
+    P14 基线登记的是**被跟踪内容**的指纹，而不是某个 checkout 的行尾策略：Windows 上
+    ``core.autocrlf`` 会把 LF blob 检出为 CRLF，直接哈希磁盘原始字节会把"行尾属性"
+    误判成"受保护文件被修改"（Round35-S5A2 取证）。归一化后仍逐字节检测真实内容变更。
+    """
+
     digest = sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
+            digest.update(chunk.replace(b"\r\n", b"\n"))
     return digest.hexdigest()
 
 
@@ -201,7 +208,18 @@ def pcf_project(workflow, cells=2, layer_id="ALT-080"):
         "buildings": {"cells": {}},
     }
     workflow.state["tower_obstacle_profiles"] = {"items": {"T1": {"obstacle_height_m": 80.0}}}
-    workflow.state["restricted_areas"] = {"items": [{"area_id": "A1", "status": "confirmed"}]}
+    workflow.state["restricted_areas"] = {
+        "items": [{
+            "feature_id": "A1", "constraint_type": "hard_exclusion",
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [0.2, 0.2], [0.4, 0.2], [0.4, 0.4], [0.2, 0.4], [0.2, 0.2],
+            ]]},
+            "geometry_crs": "OGC:CRS84", "vertical_unbounded": True,
+            "vertical_reference": "egm2008_orthometric",
+            "source": {"source_id": "fixture"}, "evidence": [{"kind": "fixture"}],
+            "confirmed": True,
+        }]
+    }
     workflow.state["workspace"] = {"workspace_id": "WS-1", "revision": 3,
                                    "bbox": [0.0, 0.0, 2.0, 1.0], "status": "passed"}
     workflow.save()
@@ -828,7 +846,7 @@ def test_exact_snapshot_algorithm_versions_resolve_before_runner(tmp_path, monke
 
 def test_old_queued_task_does_not_migrate_to_new_algorithm_version(
         tmp_path, monkeypatch):
-    """X@1.0 提交后 runtime 只剩 X@1.1：failed，runner/publish 均不执行。"""
+    """提交后 runtime 只剩更新版本：failed，runner/publish 均不执行。"""
 
     runtime = Runtime(tmp_path, max_workers=1, autostart_workers=False)
     corridor_project(runtime.workflow)
@@ -836,11 +854,13 @@ def test_old_queued_task_does_not_migrate_to_new_algorithm_version(
     runtime.workflow.save()
     record = create_queued_record(runtime, CORRIDOR_TASK_TYPE, {})
     submitted = runtime.snapshot_of(record)["algorithms"]["corridor_model"]
-    assert submitted["version"] == "1.0"
 
     base_registry = runtime.workflow.algorithm_registry
+    submitted_version = base_registry.manifests("corridor_model")[0].version
+    newer_version = submitted_version + ".next"
+    assert submitted["version"] == submitted_version
     newer_manifest = replace(
-        base_registry.manifests("corridor_model")[0], version="1.1",
+        base_registry.manifests("corridor_model")[0], version=newer_version,
     )
     create_calls = []
 
@@ -852,9 +872,9 @@ def test_old_queued_task_does_not_migrate_to_new_algorithm_version(
 
         def create(self, algorithm_type, algorithm_id, version, parameters=None):
             create_calls.append((algorithm_type, algorithm_id, version, deepcopy(parameters)))
-            if algorithm_type == "corridor_model" and version == "1.0":
-                raise AlgorithmNotFoundError("X@1.0 unavailable")
-            if algorithm_type == "corridor_model" and version == "1.1":
+            if algorithm_type == "corridor_model" and version == submitted_version:
+                raise AlgorithmNotFoundError(f"X@{submitted_version} unavailable")
+            if algorithm_type == "corridor_model" and version == newer_version:
                 class NewerAlgorithm:
                     pass
 
@@ -889,14 +909,16 @@ def test_old_queued_task_does_not_migrate_to_new_algorithm_version(
         "detail": {
             "algorithm_type": "corridor_model",
             "algorithm_id": submitted["algorithm_id"],
-            "version": "1.0",
+            "version": submitted_version,
         },
     }
     assert runtime.service.get(record["task_id"])["business_error"] == {
         "text": "任务提交时使用的算法版本当前不可用，请重新运行。",
         "code": "task_algorithm_version_unavailable",
     }
-    assert [call[2] for call in create_calls] == ["1.0"], "不得 fallback 到 1.1"
+    assert [call[2] for call in create_calls] == [submitted_version], (
+        "不得 fallback 到更新版本"
+    )
     assert runner_calls == []
     assert final["result_artifact_ref"] is None
     assert runtime.workflow.state["cns_corridor_assessment"] == {"sentinel": "unchanged"}

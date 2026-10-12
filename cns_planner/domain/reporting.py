@@ -55,6 +55,8 @@ def report_source_snapshot(state, algorithm_catalog, projected_results=None):
         "required_cns", "required_cns_recommendation", "required_cns_adoption",
         "cns_operation_context", "cns_requirement_policies",
         "operational_routes", "spatial_3d", "cns_corridor_policy",
+        "engineering_demo_building_acceptance_policy",
+        "layered_route_validations", "layered_operational_adoptions",
         "cns_gap_analysis_v2", "cns_corridor_assessment",
         "cns_corridor_gap_assessment", "cns_corridor_site_plan",
         #: Round 2.6：P17 连续服务可接受性（含 post-plan 投影态）、其参数策略与

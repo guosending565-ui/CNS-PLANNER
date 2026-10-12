@@ -2262,7 +2262,10 @@ test('the layered candidate bind switch always uses the Theta* V2 production pan
   assert.equal(v1.registered.includes('saveLayeredCostPolicy'),false,
     'legacy cost policy 入口不得再注册');
   await v1.handlers.evaluateLayeredCandidate();
-  assert.deepEqual(v1.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
+  assert.deepEqual(v1.calls.filter(call=>call[0].startsWith('/api/')),
+    [['/api/layered-route-candidates/evaluate-real',{}]]);
+  assert.match(v1.calls[0][1],/已提交/);
+  assert.match(v1.calls[v1.calls.length-1][1],/已完成/);
 
   // V2：同样只走 Theta* V2，且绝不把 λ 当 blocker
   const v2=thetaV2BindHarness(thetaV2Flow());
@@ -2273,7 +2276,10 @@ test('the layered candidate bind switch always uses the Theta* V2 production pan
   assert.equal(v2.registered.includes('saveLayeredCostPolicy'),false,
     'Theta* V2 不得再注册 legacy cost policy 保存控件');
   await v2.handlers.evaluateLayeredCandidate();
-  assert.deepEqual(v2.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
+  assert.deepEqual(v2.calls.filter(call=>call[0].startsWith('/api/')),
+    [['/api/layered-route-candidates/evaluate-real',{}]]);
+  assert.match(v2.calls[0][1],/已提交/);
+  assert.match(v2.calls[v2.calls.length-1][1],/已完成/);
 });
 
 test('the layered candidate view is the Theta* V2 panel regardless of the saved legacy selection',()=>{
@@ -2323,8 +2329,10 @@ test('theta v2 never treats the legacy lambda cost policy as a blocker',async()=
   const {c,calls,handlers}=thetaV2BindHarness(flow);
   bindLayeredThetaV2(c);
   await handlers.evaluateLayeredCandidate();
-  assert.equal(calls.some(call=>call[0]==='__error'),false,'λ 不确认时不得报 blocking 错误');
-  assert.deepEqual(calls.pop(),['/api/layered-route-candidates/evaluate-real',{}]);
+  assert.equal(calls.some(call=>call[0]==='__error' && call[1]===THETA_V2_EVALUATE_BLOCKED_NOTE),false,
+    'λ 不确认时不得报 blocking 错误');
+  assert.deepEqual(calls.find(call=>call[0].startsWith('/api/')),
+    ['/api/layered-route-candidates/evaluate-real',{}]);
 
   // 真正的 Theta* V2 blocker（population_shelter 场缺失）仍然阻止运行
   const blocked=thetaV2Flow();
@@ -2441,7 +2449,7 @@ test('theta v2 candidate metrics are transcribed verbatim and the boundaries sta
     'risk_weight','turn_weight','distance_weight','weighted_risk','weighted_turn','weighted_distance','total_cost']){
     assert.ok(html.includes('data-theta-v2-candidate-field="'+field+'"'),`${field} 必须以转印行展示`);
   }
-  assert.match(html,/rewired_parent_shortcuts/);
+  assert.match(html,/父节点重连捷径/);
   assert.match(html,/LOS-1/);
   assert.match(html,/LOS-2/);
   assert.match(html,/Theta\* V2 candidate ≠ operational route/);

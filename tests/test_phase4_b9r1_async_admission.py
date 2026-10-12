@@ -672,7 +672,14 @@ def test_canonical_assessment_schema_has_no_complexity_estimate(project):
 
 
 def test_p14_protected_baseline_matches_workspace():
-    """13. P14 语义 SHA 基线测试保持：保护清单与工作区逐字节一致。"""
+    """13. P14 语义 SHA 基线测试保持：保护清单与工作区**仓库内容**逐字节一致。
+
+    SHA 口径 = 仓库内容（``\\r\\n`` → ``\\n`` 归一化后）的 SHA256。P14 基线登记的是
+    **被跟踪内容**的指纹，不是某个 checkout 的行尾策略：Windows 上 ``core.autocrlf``
+    会把同一份 LF blob 检出成 CRLF，若直接哈希磁盘原始字节，同一份未修改的受保护内容
+    在 LF/CRLF 两种 checkout 上会得到不同 SHA（Round35-S5A2 实测 4 个文件中 3 个如此）。
+    归一化后仍然逐字节检测任何真实内容变更，只是不再把"行尾属性"误判成"文件被修改"。
+    """
 
     baseline = json.loads(PROTECTED_BASELINE.read_text(encoding="utf-8"))
     assert set(baseline) == {
@@ -682,7 +689,9 @@ def test_p14_protected_baseline_matches_workspace():
         "tests/test_cns_corridor.py",
     }
     actual = {
-        name: hashlib.sha256((REPO_ROOT / name).read_bytes()).hexdigest()
+        name: hashlib.sha256(
+            (REPO_ROOT / name).read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest()
         for name in baseline
     }
     assert actual == baseline

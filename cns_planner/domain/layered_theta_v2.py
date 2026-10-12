@@ -37,7 +37,32 @@ from .layered_route import stable_fingerprint
 SCHEMA_VERSION = "layered-theta-star-v2"
 
 ALGORITHM_ID = "layered_risk_aware_theta_star_v2"
-ALGORITHM_VERSION = "2.0"
+
+#: 语义版本（Round35-S6 显式版本化收口）。
+#:
+#: ``2.0 -> 2.1`` 只登记**已经落在生产 HEAD 上的几何／统计契约变更**，把归档
+#: ``BUG-ROUTE-006`` / ``BUG-TURN-STAT-001`` 要求的"显式版本化变更"补完（此前这两处语义
+#: 变更只存在于源码注释里，版本号仍是 2.0，属于静默变更）：
+#:
+#: 1. ``BUG-ROUTE-006`` 端点虚拟锚定：精确 OD 端点不再吸附到所在格格心，而是由
+#:    "所在格 ∪ 1-ring"的候选锚点经同一 supercover + 硬门 LOS 连接，并由既有 objective
+#:    在全部锚点组合里选优；``grid_path[0] / [-1]`` 因而是**被选中的锚点格**。
+#: 2. ``BUG-TURN-STAT-001`` 转向计量拆分：``turn_delta / turn_count / turn_cost`` 一律使用
+#:    真实 LOS segment bearing（heading bin 只作搜索状态键），``cruise_turn_*`` 与
+#:    ``connector_turn_*`` 分开报告。
+#: 3. S5A2 的 **target 锚点 aperture 基准方向修正**（真缺陷修复）：target 侧连接器是
+#:    ``anchor -> exact end``，比较基准必须是**进入方向** `bearing(exact start, exact end)`；
+#:    修复前误用 `bearing(exact end, exact start)`（相差 180°），会把所在格锚点系统性排除，
+#:    使偏心终点直接 ``no_path``。
+#:
+#: 版本参与 ``input_fingerprint``（候选依赖分量 ``planner_version``），因此
+#: ``candidate_fingerprint`` → ``validation_fingerprint`` → ``adoption_fingerprint`` 整条下游
+#: 身份链自动变化：**由 2.0 产生的 candidate / validation / adoption 在 2.1 下不会被错误视为
+#: current**（旧记录原样保留为 stale 证据，不删除）。
+#:
+#: **未改**：规划权重（0.8 / 0.1 / 0.1）、目标函数形式、``d_ref`` / ``theta_min_deg`` /
+#: ``heading_bin_count`` 的取值与语义、blocked / unknown 判据、``RouteRiskProfile`` 计算口径。
+ALGORITHM_VERSION = "2.1"
 
 OBJECTIVE_TERM_IDS = ("risk", "turn", "distance")
 

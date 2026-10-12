@@ -171,28 +171,44 @@ def facility(identifier, coordinate, devices, *, site_id=None):
 
 
 def land_mask_geojson(tmp_path, *, name="land.geojson", offset=(0.0, 0.0), size=0.002,
-                      properties=None, directory=None):
-    """只读陆域矩形：相对 ``offset`` 的 ``size`` x ``size`` 方块（度）。"""
+                      properties=None, directory=None, coverage_rectangles=()):
+    """只读陆域矩形：相对 ``offset`` 的 ``size`` x ``size`` 方块（度）。
+
+    ``coverage_rectangles``（Round35-A）：额外的、**不与陆域相交**的矩形，用来表达
+    "来源数据的有效覆盖范围"。``LandMaskSource`` 现在把数据有效覆盖范围之外的查询点
+    判为 ``unknown``（而不是 ``sea``），因此需要"范围内的大片水域"才能测试 ``sea``。
+    """
 
     west, south = offset
     east, north = west + size, south + size
-    payload = {
-        "type": "FeatureCollection",
-        "features": [{
+    features = [{
+        "type": "Feature",
+        "properties": dict(properties or {"name": "land"}),
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [west, south], [east, south], [east, north], [west, north], [west, south],
+            ]],
+        },
+    }]
+    for rect_west, rect_south, rect_east, rect_north in coverage_rectangles:
+        features.append({
             "type": "Feature",
+            "properties": {"role": "data_coverage_not_land"},
             "geometry": {
                 "type": "Polygon",
                 "coordinates": [[
-                    [west, south], [east, south], [east, north], [west, north], [west, south],
+                    [rect_west, rect_south], [rect_east, rect_south],
+                    [rect_east, rect_north], [rect_west, rect_north],
+                    [rect_west, rect_south],
                 ]],
             },
-            "properties": dict(properties or {"name": "land"}),
-        }],
-    }
+        })
     folder = Path(directory) if directory else tmp_path
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / name
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": features}),
+                    encoding="utf-8")
     return path
 
 
@@ -225,14 +241,23 @@ def route_grid(*, latitude=0.0003, height=0.0004, step=0.0007, count=31):
     return {"status": "passed", "crs": "OGC:CRS84", "level": 8, "cells": cells}
 
 
-def provider_for(grid, land_mask_path, *, buffer_m=30.0):
+def provider_for(grid, land_mask_path, *, buffer_m=30.0, footprint_margin_m=30000.0):
+    """构造 surface facts provider。
+
+    Round35-A：``footprint_margin_m`` 声明"这个测试数据源在自身几何边界之外仍有
+    多少米的水域判定能力"。测试 fixture 是孤立小方块，若不声明，落在外面的查询点会
+    正确地为 ``unknown``（数据覆盖范围之外无证据）；声明后它们才是"范围内的水域 ⇒
+    sea"。生产真实掩膜使用默认 ``0``（最保守）。
+    """
+
     if land_mask_path is None:
         facts = build_surface_class_facts(
             grid, policy={"coastal_uncertainty_buffer_m": buffer_m, "confirmed": True},
             land_mask_source=None,
         )
         return facts, SurfaceFactsProvider(facts, grid=grid)
-    source = LandMaskSource(land_mask_path, coastal_uncertainty_buffer_m=buffer_m)
+    source = LandMaskSource(land_mask_path, coastal_uncertainty_buffer_m=buffer_m,
+                            data_footprint_margin_m=footprint_margin_m)
     facts = build_surface_class_facts(
         grid, policy={"coastal_uncertainty_buffer_m": buffer_m, "confirmed": True},
         land_mask_source=source, land_mask_describe=source.describe,
@@ -942,7 +967,12 @@ def _configure(tmp_path, *, devices, facilities, radius_surface, services=None):
 
 
 def _land_and_sea_facts(tmp_path, workflow):
-    """真实 land mask => 西段 land、东段 sea（由小格格心代表点自然得出）。"""
+    """真实 land mask => 西段 land、东段 sea（由小格格心代表点自然得出）。
+
+    Round35-A：``sea`` 只在**数据有效覆盖范围之内**成立，范围之外是 ``unknown``。
+    测试数据源通过 ``provider_for`` 的 ``footprint_margin_m`` 显式声明覆盖余量，
+    因此东段仍然是可验证的权威 ``sea``，而不是"数据没覆盖到"的副产品。
+    """
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     land = land_mask_geojson(tmp_path)
@@ -1113,9 +1143,12 @@ def test_sea_single_site_is_satisfied_for_both_services(tmp_path):
             radius_surface=radii,
         )
         # 把陆域矩形挪到远处 => 覆盖点所在的格全部是 sea（真实分类结果，非硬编码）。
+        # Round35-A：远距离 offset 需要显式声明足够的数据覆盖余量，否则查询点会正确
+        # 地落在"数据有效覆盖范围之外"而为 unknown（无证据，绝不猜 sea）。
         facts, provider = provider_for(
             workflow.state["grid"],
             land_mask_geojson(workdir, name=f"{label}_far_land.geojson", offset=(10.0, 10.0)),
+            footprint_margin_m=10_000_000.0,
         )
         assert set(facts["by_grid_id"].values()) == {"sea"}, facts["by_grid_id"]
         gap = _run_corridor_chain(workflow, facts, provider)

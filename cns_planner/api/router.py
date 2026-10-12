@@ -272,6 +272,7 @@ class ApiRouter:
         if path == "/api/route-risk-profiles": return Response(workflow.route_risk_profiles())
         if path == "/api/layered-route-validation/readiness": return Response(workflow.layered_route_validation_readiness())
         if path == "/api/layered-route-validations": return Response(workflow.layered_route_validations())
+        if path == "/api/engineering-demo-building-acceptance-policy": return Response(workflow.engineering_demo_building_acceptance_policy())
         if path == "/api/layered-operational-adoption/readiness": return Response(workflow.layered_operational_adoption_readiness())
         if path == "/api/layered-operational-adoptions": return Response(workflow.layered_operational_adoptions())
         if path == "/api/route-safety-evidence-v2/readiness": return Response(workflow.route_safety_evidence_v2_readiness())
@@ -301,6 +302,44 @@ class ApiRouter:
         if path == "/api/radar-surveillance-layout":
             route_id = self._first(query, "route_id", "") or None
             return Response(workflow.radar_surveillance_layout(route_id))
+        # ---- Radar 地形 LOS 只读诊断（Round34-T07-B，additive，只读） -----------------
+        # ``/status`` 与通用快照同口径：**不打开 DEM**、不做 LOS 计算。
+        # 逐 probe 明细走 ``/details``（只读内存证据块，受限分页，绝不重算）。
+        if path == "/api/radar-terrain-los/status":
+            return Response(workflow.radar_terrain_los_status())
+        if path == "/api/radar-terrain-los/details":
+            return Response(workflow.radar_terrain_los_details({
+                "tower_id": self._first(query, "tower_id", None),
+                "route_id": self._first(query, "route_id", None),
+                "altitude_layer_id": self._first(query, "altitude_layer_id", None),
+                "los_status": self._first(query, "los_status", None),
+                "offset": self._first(query, "offset", None),
+                "limit": self._first(query, "limit", None),
+            }))
+        # ---- Radar 联合 Terrain + Building LOS 只读诊断（Round34-T07-I2，additive） ----
+        # ``/combined/status`` 与通用快照同口径（**不打开 DEM，也不打开 GPKG**）；
+        # 逐射线明细走 ``/combined/details``（只读内存证据块，受限分页，绝不重算）。
+        if path == "/api/radar-terrain-los/combined/status":
+            engineering_demo_mode = str(
+                self._first(query, "engineering_demo_mode", "false")
+            ).lower() == "true"
+            if engineering_demo_mode:
+                return Response(workflow.radar_combined_los_status(
+                    engineering_demo_mode=True,
+                ))
+            return Response(workflow.radar_combined_los_status())
+        if path == "/api/radar-terrain-los/combined/details":
+            return Response(workflow.radar_combined_los_details({
+                "tower_id": self._first(query, "tower_id", None),
+                "route_id": self._first(query, "route_id", None),
+                "combined_los_status": self._first(query, "combined_los_status", None),
+                "building_domain_state": self._first(query, "building_domain_state", None),
+                "offset": self._first(query, "offset", None),
+                "limit": self._first(query, "limit", None),
+                "request_id": self._first(query, "request_id", None),
+                "input_fingerprint": self._first(query, "input_fingerprint", None),
+                "generation": self._first(query, "generation", None),
+            }))
         # ---- Step5 共用 surface classification（Round 2，中立 / 独立于 Radar） ----------
         # Communication / RID 的 surface 事实不要求先生成 Radar layout，因此由这三个
         # 中立端点正式服务；逐格明细走 facts 容器本体（``by_grid_id``）。
@@ -722,6 +761,7 @@ class ApiRouter:
             ),
             # ---- Production layered candidate continuous validation/adoption --------
             "/api/layered-route-validations/evaluate": lambda: workflow.evaluate_layered_route_validation(payload),
+            "/api/engineering-demo-building-acceptance-policy": lambda: workflow.set_engineering_demo_building_acceptance_policy(payload),
             "/api/layered-route-validations/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_layered_route_validation(payload)
             ),
@@ -743,6 +783,28 @@ class ApiRouter:
                 context.evaluate_radar_surveillance_layout(payload)
                 if hasattr(context, "evaluate_radar_surveillance_layout")
                 else workflow.evaluate_radar_surveillance_layout(payload)
+            ),
+            # ---- Radar 地形 LOS 只读诊断（Round34-T07-B） -----------------------------
+            # 它读 FABDEM（只读窗口），因此与其它真实数据源入口一样走 QGIS 线程；
+            # 结果**不写任何容器**，只作为本次响应的只读证据返回。
+            "/api/radar-terrain-los/diagnose": lambda: (
+                context.diagnose_radar_terrain_los(payload)
+                if hasattr(context, "diagnose_radar_terrain_los")
+                else workflow.diagnose_radar_terrain_los(payload)
+            ),
+            "/api/radar-terrain-los/details": lambda: workflow.radar_terrain_los_details(
+                payload
+            ),
+            # ---- Radar 联合 Terrain + Building LOS 只读诊断（Round34-T07-I2） --------
+            # 它同时读 FABDEM 与 buildings v3（均只读），因此与其它真实数据源入口一样
+            # 走 QGIS 线程；结果**不写任何容器**，只作为本次响应的只读证据返回。
+            "/api/radar-terrain-los/combined/diagnose": lambda: (
+                context.diagnose_radar_combined_los(payload)
+                if hasattr(context, "diagnose_radar_combined_los")
+                else workflow.diagnose_radar_combined_los(payload)
+            ),
+            "/api/radar-terrain-los/combined/details": lambda: (
+                workflow.radar_combined_los_details(payload)
             ),
             # ---- Vertical Transition Continuous Validation V1 -----------------------
             # No automatic evaluation: one explicit POST evaluates the two transitions of one

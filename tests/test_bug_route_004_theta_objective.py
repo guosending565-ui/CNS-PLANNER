@@ -64,6 +64,35 @@ def centre(grid, column, row):
     raise AssertionError(f"网格中没有 {wanted}")
 
 
+def center_of(grid, grid_id):
+    for cell in grid:
+        if cell["grid_id"] == grid_id:
+            return list(cell["center"])
+    raise AssertionError(f"网格中没有 {grid_id}")
+
+
+def one_ring(grid, grid_id):
+    """``grid_id`` 自身加它们的 8 邻域（= 规划器 ``GridGraph.neighbors`` 的锚点候选集）。"""
+
+    anchor = next(cell for cell in grid if cell["grid_id"] == grid_id)
+    allowed = {grid_id}
+    for cell in grid:
+        if max(
+            abs(cell["column"] - anchor["column"]), abs(cell["row"] - anchor["row"])
+        ) == 1:
+            allowed.add(cell["grid_id"])
+    return allowed
+
+
+def charged_turns(candidate):
+    """计价转向 = ``turns`` 中 ``connector`` 为假者（BUG-TURN-STAT-001）。"""
+
+    return [
+        turn for turn in candidate["turn_statistics"]["turns"]
+        if not turn.get("connector")
+    ]
+
+
 def blocked_checkerboard(grid, blocked):
     """把给定 ``(column, row)`` 建成超高建筑，得到确定性 blocked mask。"""
 
@@ -155,10 +184,25 @@ def test_off_center_od_stubs_enter_the_search_distance_ledger():
         grid, mask=mask, route=route, objective=DISTANCE_ONLY, parameters=SEARCH_PARAMETERS,
     )
     assert candidate["status"] == "candidate"
+    path = candidate["path"]
+    grid_path = candidate["grid_path"]
+    # BUG-ROUTE-006：两端 stub 是 ``exact endpoint <-> 被选中的锚点格心``，锚点由既有
+    # objective 在 ``{所在格} ∪ 1-ring``（aperture 内）里选优，不再固定为所在格格心。
+    source_anchor = center_of(grid, grid_path[0])
+    target_anchor = center_of(grid, grid_path[-1])
+    assert path[1] == source_anchor
+    assert path[-2] == target_anchor
     first, last = candidate["los_segments"][0], candidate["los_segments"][-1]
-    assert first["length_m"] == pytest.approx(distance_m(start, source_center), abs=1e-9)
-    assert last["length_m"] == pytest.approx(distance_m(target_center, end), abs=1e-9)
+    assert first["length_m"] == pytest.approx(distance_m(start, source_anchor), abs=1e-9)
+    assert last["length_m"] == pytest.approx(distance_m(target_anchor, end), abs=1e-9)
     assert first["length_m"] > 0.0 and last["length_m"] > 0.0
+    # 被选中的锚点必须仍属于"所在格 + 1-ring"，不能凭空跑到网格别处。
+    containing = next(
+        cell for cell in grid
+        if cell["bbox"][0] <= start[0] < cell["bbox"][2]
+        and cell["bbox"][1] <= start[1] < cell["bbox"][3]
+    )
+    assert grid_path[0] in one_ring(grid, containing["grid_id"])
 
     objective = candidate["planning_objective"]
     assert objective["distance_m"] == pytest.approx(
@@ -195,29 +239,59 @@ def test_turn_weight_prices_both_end_headings_on_the_search_bins():
     assert candidate["status"] == "candidate"
     turns = candidate["turn_statistics"]["turns"]
     assert turns, "两端 stub 的 heading 必须能产生可审计的转向定价"
-    assert candidate["planning_objective"]["turn_count"] == len(turns)
+    # BUG-TURN-STAT-001：``turns`` 现在同时报告 ``connector=true, charged=false`` 的
+    # 起飞/进场过渡转向；``turn_count`` 仍然只数**被计价**的转向，因此必须用 connector
+    # 标记筛选后比较（而不是与 turns 的条数直接相等）。
+    priced = charged_turns(candidate)
+    assert priced, "两端 stub 必须贡献可计价的转向"
+    assert candidate["planning_objective"]["turn_count"] == len(priced)
+    assert candidate["turn_statistics"]["turn_count"] == len(priced)
+    assert candidate["turn_statistics"]["cruise_turn_count"] == len(priced)
+    assert candidate["turn_statistics"]["connector_turn_count"] == len(turns) - len(priced)
+    assert all(turn.get("charged", True) for turn in priced)
+    assert not any(turn.get("charged", True) for turn in turns if turn.get("connector"))
 
-    # 审计 heading 必须就是搜索定价用的分箱中心：8 分箱 => 22.5 / 67.5 / ...
+    # BUG-TURN-STAT-001：转向角一律使用**实际 LOS segment bearing**，heading bin 只用于
+    # 状态离散（``heading_bin_never_used_as_the_turn_angle``）。因此"审计 heading 必须落在
+    # 分箱中心"这条旧契约已被显式取代；这里改为锁定真实方位语义。
     step = 360.0 / HEADING_BIN_COUNT
+    deviations = []
     for turn in turns:
         for key in ("from_heading_deg", "to_heading_deg"):
             value = turn[key]
+            assert 0.0 <= value < 360.0, f"{key}={value} 不在 [0, 360)"
             offset = (value - step / 2.0) % step
-            assert min(offset, step - offset) < 1e-6, (
-                f"{key}={value} 不是 heading_bin_count={HEADING_BIN_COUNT} 的分箱中心："
-                "审计 heading 与搜索定价基准不一致"
-            )
+            deviations.append(min(offset, step - offset))
+    assert max(deviations) > 1e-6, (
+        "该算例必须至少有一个真实 LOS 方位不落在分箱中心上，否则无法证明 heading bin "
+        "没有被当作转向角使用"
+    )
 
-    # 审计 heading 链必须与 los_segments 报告的 outgoing heading 完全一致（并按
+    # 审计 heading 链必须与 los_segments 报告的**真实 outgoing bearing** 完全一致（并按
     # theta_min_deg 门限筛选：低于门限的转向不进入 turns）。
-    headings = [item["outgoing_heading_deg"] for item in candidate["los_segments"]]
+    # BUG-TURN-STAT-001：转向角用真实 bearing；``outgoing_heading_deg`` 只是搜索离散化的
+    # 兼容视图（分箱中心），绝不能再用它来核对转向审计。
+    segments = candidate["los_segments"]
+    bearings = [item["outgoing_bearing_deg"] for item in segments]
     expected = [
         (previous, following)
-        for previous, following in zip(headings, headings[1:])
+        for previous, following in zip(bearings, bearings[1:])
         if previous is not None and following is not None
         and heading_delta_deg(previous, following) > THETA_MIN_DEG
     ]
-    assert [(item["from_heading_deg"], item["to_heading_deg"]) for item in turns] == expected
+    actual = [(item["from_heading_deg"], item["to_heading_deg"]) for item in turns]
+    assert len(actual) == len(expected)
+    for (actual_from, actual_to), (want_from, want_to) in zip(actual, expected):
+        assert actual_from == pytest.approx(want_from, abs=1e-6)
+        assert actual_to == pytest.approx(want_to, abs=1e-6)
+    # 兼容视图必须仍然是分箱中心（与真实 bearing 分离报告）。
+    step = 360.0 / HEADING_BIN_COUNT
+    for item in segments:
+        value = item["outgoing_heading_deg"]
+        if value is None:
+            continue
+        offset = (value - step / 2.0) % step
+        assert min(offset, step - offset) < 1e-6
 
     record = ledger_consistency(candidate)
     assert record["consistent"] is True, record
@@ -258,7 +332,13 @@ def test_competing_target_headings_pick_the_smaller_complete_od_objective():
     best = min(item["total_cost"] for item in goal_candidates)
     assert candidate["planning_objective"]["total_cost"] == pytest.approx(best, abs=1e-6)
     assert candidate["optimization_cost"] == pytest.approx(best, abs=1e-6)
-    assert statistics.get("search_termination") == "queue_lower_bound_exceeds_best_goal"
+    # BUG-ROUTE-006 把端点锚点候选集扩成"所在格 + 1-ring"，该算例的队列可能在
+    # **下界尚未超过 best_goal 之前就已被完全展开**。两种终止都表示"已证明最优"：
+    # 只要 search_completeness 是 optimal_path_found，就不能要求某一个具体的终止标签。
+    assert statistics.get("search_termination") in {
+        "queue_lower_bound_exceeds_best_goal", "queue_exhausted",
+    }, statistics.get("search_termination")
+    assert statistics.get("search_completeness") == "optimal_path_found"
 
 
 # ---------------------------------------------------------------------------------------
@@ -319,11 +399,12 @@ def test_successful_candidate_locks_search_and_final_objective_together():
     assert candidate["distance_m"] == pytest.approx(
         sum(item["length_m"] for item in candidate["los_segments"]), abs=1e-6
     )
-    # 3) path 首尾就是 exact OD，内部顶点是 cell center
+    # 3) path 首尾就是 exact OD；首/尾 connector 顶点是**被选中的锚点格心**
+    #    （BUG-ROUTE-006：不再是固定经过所在格格心）。
     assert candidate["path"][0] == start
     assert candidate["path"][-1] == end
-    assert candidate["path"][1] == source_center
-    assert candidate["path"][-2] == target_center
+    assert candidate["path"][1] == center_of(grid, candidate["grid_path"][0])
+    assert candidate["path"][-2] == center_of(grid, candidate["grid_path"][-1])
     # 4) 搜索 winning goal 的 total cost == candidate 最终 total cost
     record = ledger_consistency(candidate)
     assert record["consistent"] is True, record

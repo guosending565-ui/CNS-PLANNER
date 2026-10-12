@@ -195,6 +195,62 @@ def _polygonal_parts(geometry):
     return []
 
 
+def prepare_polygonal_geometry(building_id, geometry_value):
+    """Validate/repair a Polygon or MultiPolygon while preserving holes.
+
+    ``prepare_footprint_polygons`` remains the legacy ring entry point.  Radar
+    building LOS needs the complete polygon topology, so this additive entry
+    point accepts a Shapely geometry or GeoJSON-style mapping and returns all
+    polygonal parts without rewriting the source.
+    """
+
+    record = {
+        "building_id": building_id,
+        "status": "invalid",
+        "repair_method": "not_needed",
+        "repair_applied": False,
+        "make_valid_applied": False,
+        "source_modified": False,
+        "source_geometry_modified": False,
+        "part_count": 0,
+        "multi_part_result": False,
+        "validity_reason": None,
+    }
+    try:
+        from shapely.geometry import shape
+        from shapely.validation import explain_validity, make_valid
+        geometry = shape(geometry_value) if isinstance(geometry_value, dict) else geometry_value
+    except Exception as exc:  # noqa: BLE001 - malformed geometry is fail-closed evidence
+        record["validity_reason"] = f"geometry_parse_failed:{type(exc).__name__}"
+        return {"status": "invalid", "parts": [], "record": record}
+    parts = _polygonal_parts(geometry)
+    if geometry is None or geometry.is_empty or not parts:
+        record["validity_reason"] = "empty_or_non_polygonal_geometry"
+        return {"status": "invalid", "parts": [], "record": record}
+    if geometry.is_valid and all(item.area > 0 for item in parts):
+        record.update({
+            "status": "passed", "part_count": len(parts),
+            "multi_part_result": len(parts) > 1,
+        })
+        return {"status": "passed", "parts": parts, "record": record}
+    record["validity_reason"] = explain_validity(geometry)
+    record["repair_method"] = "shapely_make_valid"
+    try:
+        repaired = make_valid(geometry)
+    except Exception as exc:  # noqa: BLE001
+        record["validity_reason"] = f"make_valid_raised:{type(exc).__name__}"
+        return {"status": "invalid", "parts": [], "record": record}
+    parts = [part for part in _polygonal_parts(repaired) if part.is_valid and part.area > 0]
+    if not parts:
+        record["repair_method"] = "unrepairable"
+        return {"status": "invalid", "parts": [], "record": record}
+    record.update({
+        "status": "repaired", "repair_applied": True, "make_valid_applied": True,
+        "part_count": len(parts), "multi_part_result": len(parts) > 1,
+    })
+    return {"status": "repaired", "parts": parts, "record": record}
+
+
 def merge_geometry_quality(report, record):
     """把一条 footprint 质量记录并入报告（就地累加）。"""
 
@@ -397,5 +453,5 @@ __all__ = [
     "BUILDING_GEOMETRY_SEMANTICS", "GEOMETRY_QUALITY_NOTES", "GEOMETRY_QUALITY_STATUSES",
     "REPAIR_METHODS", "RING_SEMANTICS", "annotate_footprint_geometry",
     "assess_footprint_geometry", "empty_geometry_quality_report", "merge_geometry_quality",
-    "prepare_footprint_polygons", "summarize_geometry_quality",
+    "prepare_footprint_polygons", "prepare_polygonal_geometry", "summarize_geometry_quality",
 ]

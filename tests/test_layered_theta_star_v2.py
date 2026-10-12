@@ -21,6 +21,7 @@ from cns_planner.algorithms.registry import (
     build_default_algorithm_registry, default_algorithm_selection,
 )
 from cns_planner.application.workflow_service import WorkflowService
+from cns_planner.application.layered_route_planner_service import LayeredRoutePlannerService
 from cns_planner.domain.communication_planning_field import (
     communication_cell, communication_readiness, normalize_communication_planning_field,
 )
@@ -48,10 +49,22 @@ from cns_planner.layered_route_planner.supercover import (
     supercover_traversal, traversal_cells_with_lengths,
 )
 from cns_planner.layered_route_planner.theta_star_v2 import (
-    GridIndexMap, LayeredRiskAwareThetaStarV2, derive_d_ref_m, grid_bearing_deg,
-    heading_bin_for_bearing,
+    ENDPOINT_ANCHOR_APERTURE_DEG, GridIndexMap, LayeredRiskAwareThetaStarV2,
+    derive_d_ref_m, grid_bearing_deg, heading_bin_for_bearing,
 )
 from cns_planner.planning.grid_graph import GridGraph
+
+
+def test_candidate_currentness_ignores_only_transient_source_audit_status():
+    stored = {"building_grid_source_audit": {
+        "status": "source_changed", "sha256": "same", "size_bytes": 10,
+        "mtime_ns": 20, "version_fingerprint": "vf",
+    }, "planner_version": "v"}
+    current = deepcopy(stored)
+    current["building_grid_source_audit"]["status"] = "verified"
+    assert LayeredRoutePlannerService._same_identity_except_audit_status(stored, current)
+    current["building_grid_source_audit"]["sha256"] = "changed"
+    assert not LayeredRoutePlannerService._same_identity_except_audit_status(stored, current)
 
 DEFAULTS = Path(__file__).parents[1] / "cns_planner" / "config" / "defaults.json"
 REPO = Path(__file__).parents[1]
@@ -1230,3 +1243,103 @@ def test_planning_status_vocabulary_is_exposed_on_every_terminal_result():
     assert set(PLANNING_TERMINAL_SEMANTICS) >= {
         "success", "candidate", "no_path", "search_incomplete", "invalid_input",
     }
+
+# --------------------------------------------------------------------------------------
+# BUG-ROUTE-006 端点虚拟锚定：aperture 方向性回归（Round35-S5A2）
+# --------------------------------------------------------------------------------------
+
+
+def _centres(cells):
+    return {cell["grid_id"]: list(cell["center"]) for cell in cells}
+
+
+def _one_ring_ids(cells, grid_id):
+    anchor = next(cell for cell in cells if cell["grid_id"] == grid_id)
+    allowed = {grid_id}
+    for cell in cells:
+        if max(
+            abs(cell["column"] - anchor["column"]), abs(cell["row"] - anchor["row"])
+        ) == 1:
+            allowed.add(cell["grid_id"])
+    return allowed
+
+
+def _containing_cell(cells, point):
+    return next(
+        cell for cell in cells
+        if cell["bbox"][0] <= point[0] < cell["bbox"][2]
+        and cell["bbox"][1] <= point[1] < cell["bbox"][3]
+    )
+
+
+def _delta_deg(left, right):
+    if left is None or right is None:
+        return 0.0
+    return abs((float(right) - float(left) + 180.0) % 360.0 - 180.0)
+
+
+def test_off_centre_target_anchor_is_admitted_along_the_entry_direction():
+    """target 锚点的 aperture 必须按**进入方向**比较（锚点连接器是 ``anchor -> end``）。
+
+    回归的实现错误：``_endpoint_anchor_candidates`` 对 source/target 都用
+    ``bearing(point, other_point)``，于是 target 的比较基准取成了
+    ``exact end -> exact start``（与进入方向正好相反），所在格锚点被系统性排除、只留下
+    终点反侧的 1-ring 锚点，普通偏心终点因此直接 ``no_path``。
+    """
+
+    cells = grid_cells()
+    exact_start = list(cells[0]["center"])
+    exact_end = [122.0599, 30.035]          # 深入 target cell 东侧
+    candidate = plan_v2(
+        cells, route={"route_id": "R0001", "start": exact_start, "end": exact_end},
+    )
+    assert candidate["status"] == "candidate", candidate.get("reason_code")
+
+    centres = _centres(cells)
+    grid_path = candidate["grid_path"]
+    containing = _containing_cell(cells, exact_end)
+    assert grid_path[-1] in _one_ring_ids(cells, containing["grid_id"])
+
+    entry = grid_bearing_deg(exact_start, exact_end)
+    target_anchor = centres[grid_path[-1]]
+    source_anchor = centres[grid_path[0]]
+    assert candidate["path"][-2] == target_anchor
+    assert candidate["path"][1] == source_anchor
+    assert _delta_deg(entry, grid_bearing_deg(target_anchor, exact_end)) <= (
+        ENDPOINT_ANCHOR_APERTURE_DEG + 1e-9
+    )
+    assert _delta_deg(entry, grid_bearing_deg(exact_start, source_anchor)) <= (
+        ENDPOINT_ANCHOR_APERTURE_DEG + 1e-9
+    )
+    # 端点仍然精确，且两端 connector 确实是账本里的真实段。
+    assert candidate["path"][0] == exact_start
+    assert candidate["path"][-1] == exact_end
+    assert candidate["los_segments"][0]["length_m"] > 0.0
+    assert candidate["los_segments"][-1]["length_m"] > 0.0
+
+
+def test_target_anchors_behind_the_entry_direction_are_never_admitted():
+    """位于进入方向反侧的锚点必须被 aperture 排除（防止"保留全部锚点"的假修复）。"""
+
+    cells = grid_cells()
+    exact_start = [122.0099, 30.005]
+    exact_end = [122.0599, 30.035]
+    candidate = plan_v2(
+        cells, route={"route_id": "R0001", "start": exact_start, "end": exact_end},
+    )
+    assert candidate["status"] == "candidate", candidate.get("reason_code")
+    admitted = set(
+        candidate["search_statistics"]["endpoint_anchors"]["target_anchor_grid_ids"]
+    )
+    containing = _containing_cell(cells, exact_end)
+    centres = _centres(cells)
+    entry = grid_bearing_deg(exact_start, exact_end)
+    behind = set()
+    for grid_id in _one_ring_ids(cells, containing["grid_id"]):
+        if _delta_deg(entry, grid_bearing_deg(centres[grid_id], exact_end)) > (
+            ENDPOINT_ANCHOR_APERTURE_DEG + 1e-9
+        ):
+            behind.add(grid_id)
+    assert behind, "该算例必须存在位于进入方向反侧的 1-ring 锚点"
+    assert not (behind & admitted), (behind & admitted)
+    assert containing["grid_id"] in admitted

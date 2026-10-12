@@ -36,6 +36,7 @@ class HtmlReportRenderer:
 <section><h2>3. 数据基础</h2>{_sources(sections.get('data_foundation') or {})}</section>
 <section><h2>4. 建筑环境与建筑净空安全</h2><p class="note">FABDEM 非测绘级 DTM；GBA 高度非实测真值；结果仅供工程评估。</p>{_json_details(sections.get('building_environment_and_clearance'))}</section>
 <section><h2>5. 航路、高度与三维服务需求走廊</h2>{_route_svg(sections)}<p class="note">走廊为工程CNS服务需求走廊，不等同法规Operational Volume或批准空间。</p>{_json_details(sections.get('routes_altitude_corridor'))}</section>
+<section><h2>5A. 工程演示航路条件接受</h2><p class="note">工程条件接受，严格验证未通过，仅供演示；不构成运行许可。</p>{_json_details(sections.get('engineering_demo_route_acceptance'))}</section>
 <section><h2>6. 所需CNS性能（RequiredCNS）</h2>{_json_details(sections.get('required_cns'))}</section>
 <section><h2>7. P10中心线CNS缺口</h2>{_result_summary(sections.get('centerline_gap_p10'))}</section>
 <section><h2>8. P14三维服务空间</h2><p class="note">离散体积代理 / 代表点评价，不是整个体素的性能保证。</p>{_result_summary(sections.get('spatial_service_p14'))}</section>

@@ -40,10 +40,20 @@ class _GeographicIdentityTransform:
         return [float(point[0]), float(point[1])]
 
 
+#: F1-C：本适配器读取的「附近建筑高度」与建筑净空链是**同一份** GBA 字段。
+#: 上游清理脚本只处理了 ``-999``，因此这里必须自己防御两个官方哨兵：
+#:   * ``-999`` —— 官方 NoData（height 与 var 成对出现）；
+#:   * ``-1.0`` —— "不可用"哨兵（GBA 用它表示方差不可用；高度上出现即不可信）。
+#: 把哨兵当代数会得到 ``terrain + (-999) + tower`` 这种荒谬塔高。
+GBA_SENTINEL_VALUES = frozenset({-999.0, -1.0})
+
+
 def _number(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         number = float(value)
         if number == number and number not in (float("inf"), float("-inf")):
+            if number in GBA_SENTINEL_VALUES:
+                return None
             return number
     return None
 

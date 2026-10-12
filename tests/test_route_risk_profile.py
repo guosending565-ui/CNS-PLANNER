@@ -267,6 +267,31 @@ def evaluate_profile(service, payload=None):
     return snapshot["route_risk_profiles"]
 
 
+def candidate_of(service):
+    return service.layered_route_candidates()["items"][-1]
+
+
+def route_cells(service):
+    """被规划器选中的航路格链（``grid_path``），就是 RouteRiskProfile 的格归属输入。
+
+    BUG-ROUTE-006 之后 ``grid_path`` 的首/尾是 **objective 选出的端点锚点格**（所在格或
+    其 1-ring），因此它不再必然覆盖全网格。本文件的算例一律按 `grid_path` 而不是
+    "整个 grid" 表达期望值。
+    """
+
+    return list(candidate_of(service)["grid_path"])
+
+
+def center_of(grid, grid_id):
+    return list(next(cell for cell in grid if cell["grid_id"] == grid_id)["center"])
+
+
+def index_chain(grid_path):
+    """与 ``risk/route_exposure.py::index_source_grid_ids`` 同口径的逐点格链。"""
+
+    return [grid_path[0], *grid_path, grid_path[-1]]
+
+
 # --------------------------------------------------------------------------------------
 # 1. shared integral helper: characterization + planner/profile identity
 # --------------------------------------------------------------------------------------
@@ -323,29 +348,36 @@ def test_profile_integral_equals_the_candidate_cost_breakdown(tmp_path):
 
 
 def test_segment_lengths_and_cumulative_distances_are_consistent(tmp_path):
-    service, grid = prepare(tmp_path, endpoint_inset=0.002)
+    # 5×1 网格：BUG-ROUTE-006 之后，偏心端点的锚点优化会把航路格收敛到中间几格，
+    # 因此分段数必须按 candidate 的 ``grid_path`` 而不是"整个 grid"来核对。
+    grid = grid_cells(columns=5, rows=1)
+    service, grid = prepare(tmp_path, cells=grid, endpoint_inset=0.002)
+    grid_path = route_cells(service)
     profile = evaluate_profile(service)["items"][-1]
     segments = profile["segments"]
-    assert len(segments) == len(grid) + 1
+    assert len(grid_path) >= 2, "本算例必须产生一条真正的多格航路"
+    assert len(segments) == len(index_chain(grid_path)) - 1
     assert segments[0]["start_cumulative_distance_m"] == 0.0
     total = 0.0
     for index, segment in enumerate(segments):
         assert segment["index"] == index
         assert segment["start_cumulative_distance_m"] == pytest.approx(total, abs=1e-9)
         total += segment["length_m"]
-        assert segment["end_cumulative_distance_m"] == pytest.approx(total, abs=1e-9)
+        # 累计距离由 profile 逐段四舍五入到 9 位小数；段数变多后逐段累加的浮点残差
+        # 量级为 1e-9，因此这里用 1e-6 作为"累计与逐段长度一致"的判据。
+        assert segment["end_cumulative_distance_m"] == pytest.approx(total, abs=1e-6)
         assert segment["length_m"] >= 0
     # With an inset endpoint every connector segment has a real length.
     assert all(segment["length_m"] > 0 for segment in segments)
     assert total == pytest.approx(profile["route_length_m"], abs=1e-6)
     assert profile["route_length_m"] > 0
-    # Endpoint connectors reuse the first/last cell index and are labelled as such.
+    # Endpoint connectors reuse the first/last route cell index and are labelled as such.
     assert segments[0]["from_grid_id"] is None
-    assert segments[0]["to_grid_id"] == grid[0]["grid_id"]
+    assert segments[0]["to_grid_id"] == grid_path[0]
     assert segments[0]["from_grid_role"] == "route_endpoint"
     assert segments[0]["connector"] == "route_start_endpoint_to_first_grid_cell_center"
     assert segments[-1]["to_grid_id"] is None
-    assert segments[-1]["from_grid_id"] == grid[-1]["grid_id"]
+    assert segments[-1]["from_grid_id"] == grid_path[-1]
     assert segments[-1]["connector"] == "last_grid_cell_center_to_route_end_endpoint"
     assert segments[0]["domains"]["ground"]["start_index"] == (
         segments[0]["domains"]["ground"]["end_index"]
@@ -358,9 +390,13 @@ def test_segment_lengths_and_cumulative_distances_are_consistent(tmp_path):
 
 
 def test_domain_exposure_mean_and_max_follow_the_planner_formula(tmp_path):
-    grid = grid_cells(columns=3, rows=1)
-    values = {cell["grid_id"]: value for cell, value in zip(grid, (0.2, 0.5, 0.9))}
+    grid = grid_cells(columns=5, rows=1)
+    values = {
+        cell["grid_id"]: value
+        for cell, value in zip(grid, (0.2, 0.2, 0.5, 0.9, 0.9))
+    }
     service, grid = prepare(tmp_path, cells=grid, risk=risk_v2(grid, indices=values))
+    grid_path = route_cells(service)
     profile = evaluate_profile(service)["items"][-1]
     segments = profile["segments"]
     expected = 0.0
@@ -370,10 +406,14 @@ def test_domain_exposure_mean_and_max_follow_the_planner_formula(tmp_path):
     ground = profile["domains"]["ground"]
     assert ground["exposure_index_m"] == pytest.approx(expected, rel=1e-9)
     assert ground["mean_index"] == pytest.approx(expected / profile["route_length_m"], rel=1e-9)
-    assert ground["max_index"] == 0.9
-    assert ground["max_location"]["grid_id"] == grid[-1]["grid_id"]
+    # max 取**航路格**（candidate.grid_path）上的最大值；BUG-ROUTE-006 之后 grid_path 不再
+    # 必然覆盖全网格，所以不能拿整个 grid 的最大值来断言。
+    route_indices = [values[grid_id] for grid_id in grid_path]
+    hottest = grid_path[route_indices.index(max(route_indices))]
+    assert ground["max_index"] == max(route_indices)
+    assert ground["max_location"]["grid_id"] == hottest
     assert ground["max_location"]["role"] == "grid_cell"
-    assert ground["max_location"]["coordinate"] == list(grid[-1]["center"])
+    assert ground["max_location"]["coordinate"] == center_of(grid, hottest)
     assert ground["coverage"] == 1.0
     assert ground["unresolved_length_m"] == 0.0
     assert ground["status"] == "resolved"
@@ -382,17 +422,39 @@ def test_domain_exposure_mean_and_max_follow_the_planner_formula(tmp_path):
 
 
 def test_segment_domain_indices_use_the_mean_of_both_endpoint_cells(tmp_path):
-    grid = grid_cells(columns=3, rows=1)
-    values = {cell["grid_id"]: value for cell, value in zip(grid, (0.2, 0.6, 1.0))}
+    grid = grid_cells(columns=5, rows=1)
+    values = {
+        cell["grid_id"]: value
+        for cell, value in zip(grid, (0.2, 0.2, 0.6, 1.0, 1.0))
+    }
     service, grid = prepare(tmp_path, cells=grid, risk=risk_v2(grid, indices=values))
+    grid_path = route_cells(service)
     profile = evaluate_profile(service)["items"][-1]
-    middle = profile["segments"][1]
-    assert middle["domains"]["ground"]["start_index"] == 0.2
-    assert middle["domains"]["ground"]["end_index"] == 0.6
-    assert middle["domains"]["ground"]["mean_index"] == pytest.approx(0.4, abs=1e-9)
-    assert middle["domains"]["ground"]["exposure_index_m"] == pytest.approx(
-        middle["length_m"] * 0.4, rel=1e-9
-    )
+    segments = profile["segments"]
+    chain = index_chain(grid_path)
+    assert len(chain) >= 3, "本算例必须至少有一段真正跨越两个不同格"
+    assert len(segments) == len(chain) - 1
+    # 逐段核对：端点 connector 复用首/尾格，段内 index 取两端格的平均（planner 公式）。
+    for segment, left, right in zip(segments, chain, chain[1:]):
+        record = segment["domains"]["ground"]
+        assert record["start_index"] == pytest.approx(values[left], abs=1e-9)
+        assert record["end_index"] == pytest.approx(values[right], abs=1e-9)
+        assert record["mean_index"] == pytest.approx(
+            (values[left] + values[right]) / 2.0, abs=1e-9
+        )
+        assert record["exposure_index_m"] == pytest.approx(
+            segment["length_m"] * record["mean_index"], rel=1e-9
+        )
+    # 且确实存在跨越两格的中段（mean 是两端平均而不是单格 index）。
+    internal = [
+        segment for segment, left, right in zip(segments, chain, chain[1:]) if left != right
+    ]
+    assert internal, "本算例必须包含跨越两格的段"
+    for segment, left, right in zip(segments, chain, chain[1:]):
+        if left != right:
+            assert segment["domains"]["ground"]["mean_index"] == pytest.approx(
+                (values[left] + values[right]) / 2.0, abs=1e-9
+            )
 
 
 # --------------------------------------------------------------------------------------
@@ -401,24 +463,49 @@ def test_segment_domain_indices_use_the_mean_of_both_endpoint_cells(tmp_path):
 
 
 def test_missing_domain_index_produces_unresolved_length_instead_of_zero(tmp_path):
-    grid = grid_cells(columns=3, rows=1)
-    values = {cell["grid_id"]: value for cell, value in zip(grid, (0.2, 0.5, 0.9))}
+    grid = grid_cells(columns=5, rows=1)
+    values = {
+        cell["grid_id"]: value
+        for cell, value in zip(grid, (0.2, 0.2, 0.5, 0.9, 0.9))
+    }
+    missing_id = grid[2]["grid_id"]
     service, grid = prepare(
         tmp_path, cells=grid, endpoint_inset=0.002,
         risk=risk_v2(
-            grid, indices=values, missing_domains={grid[1]["grid_id"]: {"air_traffic"}},
+            grid, indices=values, missing_domains={missing_id: {"air_traffic"}},
         ),
     )
+    grid_path = route_cells(service)
+    assert missing_id in grid_path, "缺失证据必须落在航路格上，否则本算例不覆盖目标场景"
     profile = evaluate_profile(service)["items"][-1]
+    segments = profile["segments"]
     air = profile["domains"]["air_traffic"]
     assert air["unresolved_length_m"] > 0
-    assert air["exposure_index_m"] is not None  # only resolved segments contribute
     assert air["coverage"] < 1.0
     assert air["resolved_length_m"] + air["unresolved_length_m"] == pytest.approx(
         profile["route_length_m"], abs=1e-6
     )
+    # 未解析长度必须正好是没有 index 证据的那些段（绝不补 0）。
+    assert air["unresolved_length_m"] == pytest.approx(
+        sum(
+            segment["length_m"] for segment in segments
+            if segment["domains"]["air_traffic"]["mean_index"] is None
+        ),
+        abs=1e-6,
+    )
+    # fail-closed：只有 resolved 段贡献 exposure；本算例仍有 resolved 段。
+    assert air["resolved_length_m"] > 0
+    assert air["exposure_index_m"] is not None
+    assert air["exposure_index_m"] == pytest.approx(
+        sum(
+            segment["length_m"] * segment["domains"]["air_traffic"]["mean_index"]
+            for segment in segments
+            if segment["domains"]["air_traffic"]["mean_index"] is not None
+        ),
+        rel=1e-9,
+    )
     assert air["status"] == "partial"
-    assert grid[1]["grid_id"] in air["unresolved_cells"]
+    assert missing_id in air["unresolved_cells"]
     # The unresolved segment itself has no exposure value (it is not zero-filled).
     unresolved = [
         segment for segment in profile["segments"]
@@ -466,12 +553,16 @@ def test_domain_without_any_grid_risk_cell_is_unresolved_never_zero(tmp_path):
 
 
 def test_factor_provenance_and_contributor_ranking(tmp_path):
-    grid = grid_cells(columns=3, rows=1)
-    values = {cell["grid_id"]: value for cell, value in zip(grid, (0.2, 0.5, 0.9))}
+    grid = grid_cells(columns=5, rows=1)
+    values = {
+        cell["grid_id"]: value
+        for cell, value in zip(grid, (0.2, 0.2, 0.5, 0.9, 0.9))
+    }
     risk = risk_v2(
         grid, indices=values, factor_indices=values, policy=confirmed_risk_policy(),
     )
-    service, grid = prepare(tmp_path, risk=risk)
+    service, grid = prepare(tmp_path, cells=grid, risk=risk)
+    grid_path = route_cells(service)
     profile = evaluate_profile(service)["items"][-1]
     population = profile["factors"]["population_exposure"]
     expected = 0.0
@@ -497,9 +588,10 @@ def test_factor_provenance_and_contributor_ranking(tmp_path):
         "relative_engineering_contribution_not_accident_cause_probability"
     )
     # Segment-level factor evidence keeps both endpoints and their provenance.
+    assert len(grid_path) >= 2, "本算例必须包含跨越两格的段"
     segment_factor = profile["segments"][1]["factors"]["population_exposure"]
-    assert segment_factor["from"]["grid_id"] == grid[0]["grid_id"]
-    assert segment_factor["to"]["grid_id"] == grid[1]["grid_id"]
+    assert segment_factor["from"]["grid_id"] == grid_path[0]
+    assert segment_factor["to"]["grid_id"] == grid_path[1]
     assert segment_factor["from"]["source_fingerprint"] == "fp-population_exposure"
     assert segment_factor["provenance"]["unresolved_never_zero"] is True
     assert profile["domains"]["ground"]["contributors"]["population_exposure"][
@@ -548,18 +640,27 @@ def test_profile_is_generated_without_thresholds_but_high_risk_is_not_configured
 
 
 def test_confirmed_thresholds_classify_and_merge_continuous_high_segments(tmp_path):
-    grid = grid_cells(columns=3, rows=1)
-    values = {cell["grid_id"]: value for cell, value in zip(grid, (0.9, 0.9, 0.1))}
+    # 5×1 网格 + 端点在首尾格格心：BUG-ROUTE-006 之后航路格落在中间三格（见下方断言），
+    # 于是"端点 connector 复用首/尾格"的逐段分类仍然是 4 段。
+    grid = grid_cells(columns=5, rows=1)
+    values = {
+        cell["grid_id"]: value
+        for cell, value in zip(grid, (0.9, 0.9, 0.9, 0.1, 0.1))
+    }
     service, grid = prepare(
-        tmp_path, risk=risk_v2(grid, indices=values),
+        tmp_path, cells=grid, risk=risk_v2(grid, indices=values),
         policy={"domains": {"ground": {
             "medium_min": 0.3, "high_min": 0.8, "source": "工程确认-测试", "confirmed": True,
         }}},
     )
+    grid_path = route_cells(service)
+    assert grid_path == [grid[1]["grid_id"], grid[2]["grid_id"], grid[3]["grid_id"]], (
+        "本算例假设航路格是 5×1 网格的中间三格：若端点锚定语义再次变化，请重新基线本算例"
+    )
     profile = evaluate_profile(service)["items"][-1]
     segments = profile["segments"]
     levels = [segment["domains"]["ground"]["classification"]["level"] for segment in segments]
-    # idx 0.9,0.9,0.1 with endpoint connectors reusing first/last cell indices.
+    # 航路格 index 0.9,0.9,0.1，端点 connector 复用首/尾格 index。
     assert levels == ["high", "high", "medium", "low"]
     ground = profile["domains"]["ground"]
     high = ground["high_risk"]
@@ -574,7 +675,7 @@ def test_confirmed_thresholds_classify_and_merge_continuous_high_segments(tmp_pa
     assert interval["max_index"] == 0.9
     assert interval["mean_index"] == pytest.approx(0.9, abs=1e-9)
     assert interval["segment_ids"] == [segments[0]["segment_id"], segments[1]["segment_id"]]
-    assert interval["cell_ids"] == sorted({grid[0]["grid_id"], grid[1]["grid_id"]})
+    assert interval["cell_ids"] == sorted({grid_path[0], grid_path[1]})
     assert ground["length_by_level_m"]["high"] == pytest.approx(interval["length_m"], abs=1e-9)
     assert ground["classification"]["status"] == "passed"
     assert ground["classification"]["level"] == "medium"  # path-length weighted mean index
@@ -591,13 +692,20 @@ def test_confirmed_thresholds_classify_and_merge_continuous_high_segments(tmp_pa
 
 
 def test_non_adjacent_high_segments_stay_separate_intervals(tmp_path):
-    grid = grid_cells(columns=3, rows=1)
-    values = {cell["grid_id"]: value for cell, value in zip(grid, (0.9, 0.1, 0.9))}
+    grid = grid_cells(columns=5, rows=1)
+    values = {
+        cell["grid_id"]: value
+        for cell, value in zip(grid, (0.9, 0.9, 0.1, 0.9, 0.9))
+    }
     service, grid = prepare(
-        tmp_path, risk=risk_v2(grid, indices=values),
+        tmp_path, cells=grid, risk=risk_v2(grid, indices=values),
         policy={"domains": {"ground": {
             "medium_min": 0.3, "high_min": 0.8, "source": "工程确认-测试", "confirmed": True,
         }}},
+    )
+    grid_path = route_cells(service)
+    assert grid_path == [grid[1]["grid_id"], grid[2]["grid_id"], grid[3]["grid_id"]], (
+        "本算例假设航路格是 5×1 网格的中间三格：若端点锚定语义再次变化，请重新基线本算例"
     )
     profile = evaluate_profile(service)["items"][-1]
     segments = profile["segments"]

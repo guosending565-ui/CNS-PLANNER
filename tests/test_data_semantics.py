@@ -154,11 +154,24 @@ def test_population_service_keeps_partial_value_and_reports_coverage_counts():
     assert result["full_count"] == result["missing_count"] == result["outside_count"] == 0
     assert cell["value_status"] == "passed"
     assert cell["population_count_people"] == pytest.approx(10.0)
+    # Round35-D：主字段是**整格平均**密度，分母恒为完整格面积。
     assert cell["population_density_people_km2"] == pytest.approx(
+        10.0 / (cell["grid_area_m2"] / 1_000_000.0)
+    )
+    assert cell["density_support_area_m2"] == cell["grid_area_m2"]
+    assert cell["density_semantics"] == "whole_cell_mean_density"
+    assert cell["density_semantics_version"] == "1.2"
+    # 有效覆盖密度是**另一个**字段，保留旧口径数值与独立分母（不冒充整格密度）。
+    assert cell["population_density_observed_area_people_km2"] == pytest.approx(
         10.0 / (cell["valid_covered_area_m2"] / 1_000_000.0)
     )
-    assert cell["density_support_area_m2"] == cell["valid_covered_area_m2"]
-    assert cell["density_semantics"] == "observed_covered_area_density"
+    assert cell["observed_density_support_area_m2"] == cell["valid_covered_area_m2"]
+    assert cell["observed_density_semantics"] == "observed_covered_area_density"
+    assert cell["density_support_area_m2"] != cell["observed_density_support_area_m2"]
+    assert (
+        cell["quantities"]["population_density"]["conversion"]["denominator"]
+        == "full_grid_cell_area"
+    )
     assert cell["quantities"]["population_density"]["conversion"]["not_extrapolated"] is True
 
 
@@ -213,7 +226,12 @@ def test_old_population_result_backfills_partial_value_without_extrapolation():
     assert cell["value_status"] == "passed"
     assert cell["coverage_status"] == "partial"
     assert cell["valid_covered_area_m2"] == 500_000.0
-    assert cell["population_density_people_km2"] == 20.0
+    # Round35-D：回填**不重算**历史密度。旧值由 1.1 口径写下（partial 时分母是有效覆盖
+    # 面积），按新分母重算等于发明一个从未被观测过的数。这里断言值原样保留，并显式标注旧语义。
+    assert cell["population_density_people_km2"] == 10.0
+    assert cell["density_semantics"] == "observed_covered_area_density"
+    assert cell["density_semantics_version"] == "1.1"
+    assert cell["density_semantics_is_current"] is False
 
 
 def test_registry_exposes_source_type_and_semantic_metadata():

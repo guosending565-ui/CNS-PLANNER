@@ -241,6 +241,7 @@ def test_persisted_legacy_repo_path_is_deterministically_remapped():
             "source": "C:\\Users\\yiding\\Documents\\ChatGPT\\CNS规划系统\\no\\such\\file.json"
         },
         "external": {"source": "D:\\aaa2026project\\UOM\\data.xlsx"},
+        "current_repo": {"source": str((REPO_ROOT / marker).resolve())},
         "notes": "历史说明里可以提到 C:\\Users\\yiding\\Documents\\ChatGPT\\CNS规划系统",
     }
     migrate_persisted_paths(document, REPO_ROOT)
@@ -254,6 +255,7 @@ def test_persisted_legacy_repo_path_is_deterministically_remapped():
 
     assert document["missing_in_this_repo"]["source"].startswith("C:\\Users\\yiding")
     assert document["external"]["source"] == "D:\\aaa2026project\\UOM\\data.xlsx"
+    assert document["current_repo"] == {"source": str((REPO_ROOT / marker).resolve())}
     assert "C:\\Users\\yiding" in document["notes"]
 
 

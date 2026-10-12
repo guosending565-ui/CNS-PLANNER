@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import re
+import os
 from copy import deepcopy
 from pathlib import Path
 
@@ -63,6 +64,12 @@ def split_legacy_repo_path(value, repo_root):
     """
 
     if not isinstance(value, str) or not value:
+        return None
+    # 当前仓库内的路径已经是迁移目标，不得再次贴上“从旧仓库迁移”的 provenance。
+    # 仓库名本身也叫 CNS-PLANNER，仅凭目录名正则会把当前路径误判为 legacy。
+    normalized_value = os.path.normcase(os.path.normpath(value))
+    normalized_root = os.path.normcase(os.path.normpath(str(Path(repo_root).resolve())))
+    if normalized_value.startswith(normalized_root + os.sep):
         return None
     match = _LEGACY_PREFIX_RE.match(value)
     if match is None:

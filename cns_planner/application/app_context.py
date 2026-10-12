@@ -297,6 +297,10 @@ class ApplicationContext:
         adapter = QgisBuildingClearanceAdapter(
             buildings, terrain_dtm,
             geographic_bounds=((self.workflow.session.state.get("workspace") or {}).get("bbox")),
+            # F4-D：证据列透传——正式 GPKG 无这些列时自动回退 predicted/unknown，
+            # 隔离版 buildings_v3 有这些列时自动消费 height_evidence_level / height_estimate_m。
+            height_evidence_field="height_evidence_level",
+            height_estimate_field="height_estimate_m",
         )
         return self.workflow.evaluate_building_clearance(adapter)
 
@@ -492,7 +496,11 @@ class ApplicationContext:
             raise ValueError("configured_real_sources 需要显式 horizontal_crs（局部米制 CRS）")
         transform = QgisMetricTransform(crs)
         terrain = NativeTerrainWindowSource(terrain_dtm)
-        corridor = RouteCorridorBuildingSource(buildings, crs_authority=crs)
+        corridor = RouteCorridorBuildingSource(
+            buildings, crs_authority=crs,
+            height_evidence_field="height_evidence_level",
+            height_estimate_field="height_estimate_m",
+        )
         adapter_id = "v3c_real_source_evidence_adapter"
 
         def build_evidence(*, refinement, policy, planning_policy, realization, payload=None):
@@ -580,6 +588,7 @@ class ApplicationContext:
             NativeTerrainWindowSource, QgisMetricTransform, RouteCorridorBuildingSource,
         )
         from ..gis.planning_constraint_field_adapter import restricted_area_continuous_evidence
+        from ..gis.restricted_area_input_adapter import restricted_area_dataset_inputs
         from ..route_planner_v3.continuous_raster_window import resolve_native_pixel_intervals
 
         terrain_path = self.data.paths.get("terrain_dtm")
@@ -604,6 +613,8 @@ class ApplicationContext:
         terrain = NativeTerrainWindowSource(terrain_path)
         buildings = RouteCorridorBuildingSource(
             building_path, crs_authority=horizontal_crs,
+            height_evidence_field="height_evidence_level",
+            height_estimate_field="height_estimate_m",
         )
         terrain_evidence = terrain.native_window(
             transform=transform, metric_line=metric_path,
@@ -632,18 +643,14 @@ class ApplicationContext:
             "towers": tower_items,
             "source": deepcopy(tower_collection.get("source")),
         }
-        raw_restricted = (payload or {}).get("restricted_areas")
-        if raw_restricted is None:
-            restricted_evidence = {
-                "status": "unresolved", "applicability": "applicable", "areas": [],
-                "source": None,
-            }
-        else:
-            restricted_evidence = restricted_area_continuous_evidence(
-                raw_restricted, transform=transform,
-            )
+        restricted_inputs = restricted_area_dataset_inputs(
+            self.workflow.session.state, payload=payload,
+        )
+        restricted_evidence = restricted_area_continuous_evidence(
+            restricted_inputs, transform=transform,
+        )
         return {
-            "adapter_id": "layered_candidate_real_source_validation_adapter_v1",
+            "adapter_id": "layered_candidate_real_source_validation_adapter_v2",
             "source_type": "configured_real_sources",
             "metric_path": metric_path, "metric_crs": horizontal_crs,
             "to_geographic": transform.to_geographic,
@@ -778,10 +785,26 @@ class ApplicationContext:
                 "coastal_uncertainty_buffer_m"
             )
 
+        def _land_mask_signature(path):
+            """land-mask 文件的**廉价**签名（``size_bytes`` + ``mtime_ns``）。
+
+            Round35-D：缓存键过去只含 ``(path, layer_name, buffer_m)``，因此**同一路径
+            替换文件内容**后，同一进程内会继续复用旧对象。签名只读一次 ``stat()`` 元数据，
+            **不**重新扫描大型 GIS 文件，所以普通请求依然廉价。唯一实现见
+            :func:`cns_planner.gis.land_mask_source.land_mask_file_signature`。
+            """
+
+            from ..gis.land_mask_source import land_mask_file_signature
+
+            return land_mask_file_signature(path)
+
         def land_mask_source():
             path = self.data.paths.get("land_mask")
             layer_name, buffer_m = _land_policy()
-            key = (str(path) if path else None, str(layer_name), str(buffer_m))
+            key = (
+                str(path) if path else None, str(layer_name), str(buffer_m),
+                _land_mask_signature(path),
+            )
             if key not in land_mask_cache:
                 land_mask_cache.clear()
                 land_mask_cache[key] = (
@@ -858,6 +881,14 @@ class ApplicationContext:
             "paths": {
                 "terrain_dtm": self.data.paths.get("terrain_dtm"),
                 "land_mask": self.data.paths.get("land_mask"),
+                # Round34-T07-I2-H2：建筑来源也来自同一份权威路径表。
+                # 联合 Terrain + Building LOS 只读诊断要求"两个真实来源都在场"，
+                # 而 provider["paths"] 过去只有 terrain_dtm / land_mask，于是即使项目
+                # 已配置 buildings v3，联合诊断也会把它如实报成 buildings_not_configured
+                # —— 那是"未接线"，不是真实缺失。这里只补路径事实，不改任何判定：
+                # 真正打开 GPKG 仍然只发生在用户显式点击诊断时。
+                "buildings": self.data.paths.get("buildings"),
+                "building_grid": self.data.paths.get("building_grid"),
             },
             "dem_nodata_used_to_infer_sea": False,
             "backend_hardcoded_mount_height": False,
@@ -865,6 +896,11 @@ class ApplicationContext:
             "terrain_used_for_route_sample_height": False,
         }
         self.workflow.radar_surveillance_layout_service.facts_provider = provider
+        #: Round34-T07-B：地形 LOS 只读诊断复用**同一份**只读事实 provider（含显式米制
+        #: 投影），因此它不会发展出第二套投影或第二套数据源解析口径。
+        diagnostics = getattr(self.workflow, "radar_terrain_los_diagnostics_service", None)
+        if diagnostics is not None:
+            diagnostics.facts_provider = provider
         return provider
 
     def evaluate_radar_surveillance_layout(self, payload=None):
@@ -877,6 +913,38 @@ class ApplicationContext:
 
         return self.qgis.call(
             lambda: self.workflow.evaluate_radar_surveillance_layout(payload)
+        )
+
+    def diagnose_radar_terrain_los(self, payload=None):
+        """Round34-T07-B：一次**显式**的地形 LOS 只读诊断（读 FABDEM）。
+
+        它只读真实 FABDEM 窗口并把结论作为独立几何可见性证据返回：**不写**任何
+        ProjectState 容器、**不写** artifact、**不**注册失效入口。因为它打开栅格
+        数据集，所以与其它真实数据源入口一样跑在 QGIS 线程上。
+        """
+
+        provider = self.configure_radar_surveillance_layout_sources()
+        if provider is not None and not self.workflow.radar_terrain_los_diagnostics_service.facts_provider:
+            self.workflow.radar_terrain_los_diagnostics_service.facts_provider = provider
+        return self.qgis.call(
+            lambda: self.workflow.diagnose_radar_terrain_los(payload)
+        )
+
+    def diagnose_radar_combined_los(self, payload=None):
+        """Round34-T07-I2：一次**显式**的 Terrain + Building 联合 LOS 只读诊断。
+
+        它同时读真实 FABDEM（只读窗口）与 buildings v3（只读 provider/RTree），并把两个
+        域的结论组合成一条射线的联合可见性证据：**不写**任何 ProjectState 容器、
+        **不写** artifact、**不**注册失效入口、**不**参与 MILP / P16 / Required CNS。
+        数据源路径**只**来自当前项目配置，调用方不能指定任意本地文件路径。
+        因为它同时打开栅格与矢量数据集，所以与其它真实数据源入口一样跑在 QGIS 线程上。
+        """
+
+        provider = self.configure_radar_surveillance_layout_sources()
+        if provider is not None and not self.workflow.radar_terrain_los_diagnostics_service.facts_provider:
+            self.workflow.radar_terrain_los_diagnostics_service.facts_provider = provider
+        return self.qgis.call(
+            lambda: self.workflow.diagnose_radar_combined_los(payload)
         )
 
     # ------------------------------------------------- Step5 共用 surface 事实（Round 2）
@@ -947,7 +1015,11 @@ class ApplicationContext:
         if len(line) < 2:
             raise ValueError("transition phase 的 metric 顶点不足（需要 >= 2）")
         terrain = NativeTerrainWindowSource(terrain_path)
-        corridor = RouteCorridorBuildingSource(building_path, crs_authority=crs)
+        corridor = RouteCorridorBuildingSource(
+            building_path, crs_authority=crs,
+            height_evidence_field="height_evidence_level",
+            height_estimate_field="height_estimate_m",
+        )
         # The truncated polyline *is* the validation geometry: no curve error envelope.
         terrain_evidence = terrain.native_window(
             transform=transform, metric_line=line, envelope_radius_m=0.0, spacing_m=None,

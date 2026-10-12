@@ -522,5 +522,9 @@ def test_protected_files_are_unchanged(tool):
     assert report["protected_files_unchanged"] is True
     assert set(report["protected_files"]) == set(tool.PROTECTED_FILES)
     for name in tool.PROTECTED_FILES:
-        digest = sha256((ROOT / name).read_bytes()).hexdigest().upper()
+        # 与 tools/b7x_delete_gates.py::_protected_hashes 同口径：仓库内容
+        # （``\r\n`` → ``\n`` 归一化）的 SHA256，而不是 checkout 的原始字节。
+        digest = sha256(
+            (ROOT / name).read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest().upper()
         assert report["protected_files"][name] == digest, name

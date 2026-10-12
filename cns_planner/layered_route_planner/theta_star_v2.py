@@ -95,9 +95,17 @@ POPULATION_FACTOR_ID = "population_exposure"
 #: 另一端的方位夹角不超过该值）的锚点才进入候选集，避免候选里包含需要主动反向的几何。
 ENDPOINT_ANCHOR_APERTURE_DEG = 90.0
 
+#: 端点虚拟锚定语义的显式版本（Round35-S6；见 ``domain/layered_theta_v2.ALGORITHM_VERSION``）。
+ENDPOINT_ANCHOR_SEMANTICS_VERSION = ALGORITHM_VERSION
+
+#: 转向计量拆分语义的显式版本（Round35-S6）。
+TURN_ACCOUNTING_SEMANTICS_VERSION = ALGORITHM_VERSION
+
 #: Endpoint virtual-anchoring semantics recorded on every candidate (BUG-ROUTE-006).
 ENDPOINT_ANCHOR_SEMANTICS = {
     "definition": "exact_od_virtual_endpoint_anchoring",
+    "semantics_version": ENDPOINT_ANCHOR_SEMANTICS_VERSION,
+    "introduced_in_algorithm_version": "2.1",
     "anchor_candidates": "containing_cell_plus_one_ring",
     "candidate_link": "straight_los_connector_checked_by_the_same_supercover_and_hard_gate",
     "selection": "best_complete_exact_od_objective_over_all_anchor_combinations",
@@ -109,11 +117,22 @@ ENDPOINT_ANCHOR_SEMANTICS = {
     "last_path_point_is_the_exact_end": True,
     "no_fabricated_straight_segment": True,
     "aperture_deg": ENDPOINT_ANCHOR_APERTURE_DEG,
+    # S5A2 真缺陷修复（version 2.1 的一部分）：aperture 的比较基准必须**两侧都用飞行方向**。
+    # source 侧连接器是 ``exact start -> anchor``；target 侧连接器是 ``anchor -> exact end``，
+    # 因此 target 的基准是**进入方向** ``bearing(exact start, exact end)``，而**不是**
+    # 反向的 ``bearing(exact end, exact start)``（后者相差 180°，会把所在格锚点系统性排除）。
+    "aperture_reference_bearing": (
+        "flight_direction_bearing_exact_start_to_exact_end_for_both_endpoints"
+    ),
+    "target_aperture_uses_entry_direction": True,
+    "target_aperture_reversed_bearing_defect_fixed_in_version": "2.1",
 }
 
 #: Turn-accounting semantics (BUG-TURN-STAT-001).
 TURN_ACCOUNTING_SEMANTICS = {
     "definition": "turn_angles_use_actual_los_segment_bearings",
+    "semantics_version": TURN_ACCOUNTING_SEMANTICS_VERSION,
+    "introduced_in_algorithm_version": "2.1",
     "heading_bin_used_as_the_turn_angle": False,
     "heading_bin_role": "state_partition_and_search_size_control_only",
     "turn_delta_source": "actual_los_segment_bearing_previous_and_current",
@@ -326,6 +345,9 @@ SEARCH_SEMANTICS = {
     "endpoint_anchoring": "exact_od_virtual_endpoint_anchoring",
     "endpoint_anchor_candidates": "containing_cell_plus_one_ring_los_candidates",
     "endpoint_anchor_selection": "existing_objective_over_all_anchor_combinations",
+    # Round35-S6：两处语义变更的显式版本（此前只写在注释里，属静默变更）。
+    "endpoint_anchoring_semantics_version": ENDPOINT_ANCHOR_SEMANTICS_VERSION,
+    "turn_accounting_semantics_version": TURN_ACCOUNTING_SEMANTICS_VERSION,
     "exact_od_terminal_segments_are_priced": True,
     "start_connector_is_a_ledger_segment": "exact_start_to_selected_source_anchor",
     "end_connector_is_a_ledger_segment": "selected_target_anchor_to_exact_end",
@@ -461,7 +483,22 @@ def _endpoint_anchor_candidates(
     anchor_grid = graph.containing_cell(point)
     if anchor_grid is None or anchor_grid not in graph.cells:
         return []
-    forward = grid_bearing_deg(point, other_point)
+    # BUG-ROUTE-006 aperture：被排除的是"会让航路主动反向"的锚点，因此比较对象必须是
+    # **该端点连接器真实被飞行的方向**所属的那条参考航向：
+    #   * source 连接器是 ``exact start -> anchor``，它的飞行方向就是出发方向
+    #     ``exact start -> exact end``；
+    #   * target 连接器是 ``anchor -> exact end``，它的飞行方向是进入方向
+    #     ``exact start -> exact end``。
+    # 原实现两端都用 ``bearing(point, other_point)``，对 target 即 ``exact end -> exact
+    # start``（与进入方向正好相反），于是**所在格锚点被系统性排除**、只留下位于终点
+    # 反侧的 1-ring 锚点，普通偏心终点因此直接 ``no_path``（见 04_frontend_closure.md
+    # 与 02_theta_riskprofile_fixes.md 的复现）。这里只把 target 的比较基准改回其文档化
+    # 语义，不改变任何锚点造价、objective 或 connector 账本。
+    forward = (
+        grid_bearing_deg(point, other_point)
+        if which == "source"
+        else grid_bearing_deg(other_point, point)
+    )
     ordered = [anchor_grid] + [
         neighbour for neighbour in graph.neighbors(anchor_grid)
         if neighbour != anchor_grid
@@ -1900,11 +1937,16 @@ def _build_gate(
 
     A building cell is therefore **not** blocked merely because a building exists: it is
     blocked only when ``H`` is below the building floor, and it is traversable over the
-    obstacle when ``H`` is at or above it.  ``building_count == 0`` carries no vertical
-    building constraint at all, and an unresolved height/terrain/fact is ``unknown`` —
-    which the legacy LOS traversal treats as non-crossable when no explicit Planning
-    Constraint Field is supplied.  With a field, that field is the feasibility authority
-    and its explicit unknown policy controls provisional traversal.
+    obstacle when ``H`` is at or above it.  ``building_count == 0`` **together with a
+    confirmed-zero footprint coverage** carries no vertical building constraint at all;
+    ``building_count == 0`` while ``building_area_m2`` / ``building_coverage_ratio`` is
+    greater than zero means the cell *does* contain a building whose height statistics were
+    allocated to a neighbour cell, so the mask status is ``unknown``
+    (``building_footprint_present_height_unresolved``) — never traversable and never a hard
+    block.  An unresolved height/terrain/fact is ``unknown`` — which the legacy LOS
+    traversal treats as non-crossable when no explicit Planning Constraint Field is
+    supplied.  With a field, that field is the feasibility authority and its explicit
+    unknown policy controls provisional traversal.
     """
 
     mask_cells = mask.get("cells") or {}
@@ -3352,6 +3394,7 @@ def _objective_metrics(search, weights, d_ref, theta_min_deg):
 
 __all__ = [
     "ALGORITHM_ID", "ALGORITHM_VERSION", "ENDPOINT_ANCHOR_SEMANTICS",
+    "ENDPOINT_ANCHOR_SEMANTICS_VERSION",
     "ENDPOINT_TRANSITION_ADMISSIBILITY_DEG",
     "ENDPOINT_TRANSITION_ADMISSIBILITY_DEG_RANGE",
     "ENDPOINT_TRANSITION_ADMISSIBILITY_SEMANTICS",
@@ -3359,6 +3402,7 @@ __all__ = [
     "ENDPOINT_TRANSITION_SEMANTICS",
     "GridIndexMap", "LOS_REJECTION_REASONS",
     "PLANNING_OBJECTIVE_PROVENANCE", "POPULATION_FACTOR_ID", "SEARCH_SEMANTICS",
+    "TURN_ACCOUNTING_SEMANTICS_VERSION", "TURN_ACCOUNTING_SEMANTICS",
     "LayeredRiskAwareThetaStarV2", "derive_d_ref_m",
     "endpoint_transition_admissibility_provenance", "grid_bearing_deg",
     "heading_bin_center_deg", "heading_bin_for_bearing", "line_of_sight",

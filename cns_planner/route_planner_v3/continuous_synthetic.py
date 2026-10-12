@@ -189,7 +189,11 @@ def build_synthetic_continuous_evidence(spec=None, *, continuous_route=None):
                         ],
                     } if item.get("ring_parts_metric") else {}),
                     "height_m": item.get("height_m"),
+                    "height_estimate_m": item.get("height_estimate_m"),
                     "height_status": item.get("height_status", "predicted"),
+                    "height_evidence_level": item.get("height_evidence_level"),
+                    "height_evidence_method": item.get("height_evidence_method"),
+                    "derived_assumption": item.get("derived_assumption"),
                     "ground_elevation_max_egm2008_m": item.get("ground_elevation_max_egm2008_m"),
                 }
                 for index, item in enumerate(buildings)

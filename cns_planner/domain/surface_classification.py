@@ -207,6 +207,12 @@ def empty_surface_class_facts(status="not_calculated") -> dict:
             "metric_crs": None,
             "crs_status": None,
             "reason": None,
+            #: 已探测到的多边形部件数（Round35-D：纳入键集合，使 ``prepare()`` 之后的
+            #: 几何事实能够落到 facts；它**不**参与 input fingerprint）。
+            "polygon_count": None,
+            #: Round35-D：**不参与指纹**的审计事实（读法与几何规模）。
+            #: 它们随 ``describe()`` 早于 / 晚于 ``prepare()`` 而不同，因此绝不能进入身份。
+            "source_audit_facts": None,
             #: Round 2.1：**稳定**来源身份（内容 hash 优先，其次声明事实）。
             #: 它进入 input fingerprint，因此"换了一份来源但分类结果恰好相同"也会改变指纹。
             "source_identity": None,
@@ -309,7 +315,7 @@ def _cell_center(cell):
 
 def build_surface_class_facts(grid, *, policy=None, land_mask_source=None,
                               land_mask_describe=None, coordinate_provider=None,
-                              source_identity=None) -> dict:
+                              source_identity=None, source_audit_facts=None) -> dict:
     """对每个 grid cell 的**代表点**做一次 surface classification。
 
     参数：
@@ -323,6 +329,9 @@ def build_surface_class_facts(grid, *, policy=None, land_mask_source=None,
     * ``source_identity`` —— 可选：**稳定**来源身份（见
       :func:`cns_planner.gis.land_mask_source.land_mask_source_identity`）。它进入
       input fingerprint，使"来源换了一份、分类结果恰好相同"也能被识别。
+    * ``source_audit_facts`` —— 可选：**不参与指纹**的审计事实（多边形部件数、
+      文件大小、读法、CRS），来自
+      :func:`cns_planner.gis.land_mask_source.land_mask_source_audit_facts`。
 
     结果显式记录它是 **cell representative classification**，不声称连续精确海岸线。
     """
@@ -369,8 +378,12 @@ def build_surface_class_facts(grid, *, policy=None, land_mask_source=None,
             "metric_crs": describe.get("metric_crs"),
             "crs_status": describe.get("crs_status"),
             "reason": describe.get("reason"),
+            "polygon_count": describe.get("polygon_count"),
             "source_identity": None,
         }
+    facts["land_mask"]["source_audit_facts"] = (
+        deepcopy(source_audit_facts) if isinstance(source_audit_facts, dict) else None
+    )
     facts["land_mask"]["source_identity"] = (
         deepcopy(source_identity) if isinstance(source_identity, dict) else None
     )

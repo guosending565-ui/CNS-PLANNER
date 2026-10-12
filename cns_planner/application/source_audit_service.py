@@ -29,7 +29,10 @@ class SourceAuditService:
         collection["status"] = "passed" if collection["count"] else "not_calculated"
         return collection
 
-    def verify(self, role, path, details=None):
+    #: 刷新验证时可补齐的几何事实（登记层展示用；**不**进入任何 input fingerprint）。
+    GEOMETRY_FACT_KEYS = ("feature_count", "extent", "declared_crs")
+
+    def verify(self, role, path, details=None, *, probe_geometry=True):
         role = str(role or "").strip()
         if not role:
             raise ValueError("source role 缺失")
@@ -37,6 +40,7 @@ class SourceAuditService:
         previous = (collection.get("items") or {}).get(role) or {}
         before_sha = (previous.get("verification") or {}).get("sha256")
         digest = sha256_file(path)
+        details = self._with_geometry_facts(details, path, probe_geometry=probe_geometry)
         manifest = source_manifest(
             role, path, previous=previous, details=details, verified_sha256=digest,
         )
@@ -49,6 +53,44 @@ class SourceAuditService:
             manifest["reasons"] = ["source_changed", "dependent_results_stale"]
         self.session.save()
         return self.snapshot()
+
+    def _with_geometry_facts(self, details, path, *, probe_geometry=True):
+        """只读补齐 ``feature_count`` / ``extent`` / ``declared_crs``。
+
+        Round35-D：``verify()`` 过去只算 SHA-256；而 ``source_manifest`` 在源文件签名
+        （size / mtime）变化时刻意丢弃上一次的派生事实，于是刷新后几何事实只能是
+        ``null``。这里在**调用方未显式提供**时探测一次真实文件，使刷新后的登记既
+        **不继承**旧来源的失效事实，也不再是空白。
+
+        探测失败（缺后端 / 文件不可读）不阻断验证：只记录 ``geometry_probe`` 原因。
+        """
+
+        merged = dict(details) if isinstance(details, dict) else {}
+        missing = [
+            key for key in self.GEOMETRY_FACT_KEYS if merged.get(key) is None
+        ]
+        if not probe_geometry or not missing:
+            return merged
+        try:
+            from ..gis.source_inspection import probe_vector_source_facts
+        except Exception:  # noqa: BLE001 - gis 适配层不可用时保持既有行为
+            return merged
+        explicit_layer = merged.get("layer_name") or merged.get("layer")
+        probed = probe_vector_source_facts(path, layer_name=explicit_layer)
+        for key in missing:
+            value = probed.get(key)
+            if value is not None:
+                merged[key] = value
+        merged["geometry_probe"] = {
+            "status": probed.get("status"),
+            "backend": probed.get("backend"),
+            "reason": probed.get("reason"),
+            "read_only": True,
+            "semantics": "probed_from_current_file_never_inherited_from_previous_source",
+        }
+        if merged.get("layer_name") is None and probed.get("layer"):
+            merged["layer_name"] = probed["layer"]
+        return merged
 
     def register_quick(self, role, path, details=None, save=False):
         collection = self.session.state.setdefault("source_audits", empty_source_audits())

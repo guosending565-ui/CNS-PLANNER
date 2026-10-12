@@ -32,11 +32,15 @@ Semantics that must not be weakened:
 
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 from math import hypot
 
 from ..domain.building_clearance import (
-    building_height_status_is_resolved, building_roof_elevation,
-    evaluate_vertical_clearance,
+    building_height_evidence_supports_clearance_pass,
+    building_height_status_is_resolved, building_height_value_is_usable,
+    building_roof_elevation, evaluate_vertical_clearance,
+    normalize_height_evidence_level,
 )
 from ..domain.restricted_area import altitude_applicability, normalize_restricted_area
 from .continuous_contracts import (
@@ -57,6 +61,42 @@ BUFFER_APPROXIMATION = {
 
 #: Terrain evidence semantics (fixed string; never a claim of real-world exactness).
 TERRAIN_SEMANTICS = "source_native_raster_validation"
+
+
+def building_evidence_fingerprint(footprint):
+    """Stable identity of the building facts used by the conditional demo gate."""
+
+    source = footprint if isinstance(footprint, dict) else {}
+    evidence = source.get("evidence") if isinstance(source.get("evidence"), dict) else {}
+    components = {
+        "building_id": source.get("building_id"),
+        "building_fid": evidence.get("feature_id"),
+        "source": source.get("source"),
+        "height_m": source.get("height_m"),
+        "height_estimate_m": source.get("height_estimate_m"),
+        "height_var": source.get("height_var"),
+        "height_status": source.get("height_status"),
+        "height_evidence_level": source.get("height_evidence_level"),
+        "height_evidence_method": source.get("height_evidence_method"),
+        "height_source": source.get("height_source"),
+        "height_source_license": source.get("height_source_license"),
+        "height_observation_period": source.get("height_observation_period"),
+        "height_uncertainty": source.get("height_uncertainty"),
+        "height_var_semantics": source.get("height_var_semantics"),
+        "height_var_unit": source.get("height_var_unit"),
+        "ground_elevation_max_egm2008_m": source.get(
+            "ground_elevation_max_egm2008_m"
+        ),
+        "ground_elevation_by_part_egm2008_m": source.get(
+            "ground_elevation_by_part_egm2008_m"
+        ),
+        "ring_metric": source.get("ring_metric"),
+        "ring_parts_metric": source.get("ring_parts_metric"),
+    }
+    return "buildingevidencev1-" + sha256(json.dumps(
+        components, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        allow_nan=False,
+    ).encode()).hexdigest()
 
 
 def metric_distance(left, right):
@@ -894,7 +934,20 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
     minimum_horizontal = None
     minimum_vertical = None
     unresolved = []
+    conditional_acceptances = []
     geometry_quality = empty_geometry_quality_report()
+    # F3-D：影响航路建筑的高度证据等级汇总（数值维度 + 证据维度分离）。
+    height_evidence_mix = {}
+    worst_evidence_level = None
+    _EVIDENCE_SEVERITY = ("verified", "source_tagged", "derived", "predicted", "unknown")
+
+    def _record_evidence(level):
+        nonlocal worst_evidence_level
+        height_evidence_mix[level] = height_evidence_mix.get(level, 0) + 1
+        if worst_evidence_level is None:
+            worst_evidence_level = level
+        elif _EVIDENCE_SEVERITY.index(level) > _EVIDENCE_SEVERITY.index(worst_evidence_level):
+            worst_evidence_level = level
     # BUG-VALIDATION-BUILDING-003：``query_route`` 返回的是 route bbox（+ clearance）内的建筑，
     # 因此 bbox 里**完全不影响航路**的建筑过去也会先被要求 ground/height，缺失即 unresolved ——
     # 真实验证里 terrain passed 而 building unresolved 全部落在这个原因上。判定顺序固定为：
@@ -949,13 +1002,24 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
             # Inside the query bbox but provably not affecting the route/buffer corridor: no
             # ground/height evidence is required and nothing becomes unresolved.
             continue
+        raw_height = footprint.get("height_m")
+        estimate = footprint.get("height_estimate_m")
+        if estimate is None:
+            estimate = raw_height
+        evidence_level = normalize_height_evidence_level(
+            footprint.get("height_evidence_level"),
+            height_present=building_height_value_is_usable(estimate),
+        )
+        supports_pass = building_height_evidence_supports_clearance_pass(evidence_level)
+        _record_evidence(evidence_level)
         height_status = footprint.get("height_status")
         if not building_height_status_is_resolved(height_status):
             unresolved.append({
                 "building_id": identifier,
                 "reason": "building_height_status_unresolved",
                 "height_status": height_status,
-                "height_m": footprint.get("height_m"),
+                "height_m": raw_height,
+                "height_evidence_level": evidence_level,
             })
             continue
         # Every affected part is evaluated separately: taking only the largest part could hide a
@@ -965,13 +1029,15 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
             ground = footprint.get("ground_elevation_max_egm2008_m")
             if isinstance(part_grounds, (list, tuple)):
                 ground = part_grounds[piece_index] if piece_index < len(part_grounds) else None
-            roof = building_roof_elevation(ground, footprint.get("height_m"))
+            roof = building_roof_elevation(ground, estimate)
             if roof.get("status") != "resolved":
                 unresolved.append({
                     "building_id": identifier, "reason": roof.get("reason"),
                     "footprint_part_index": piece_index,
                     "ground_elevation_max_egm2008_m": ground,
-                    "height_m": footprint.get("height_m"),
+                    "height_m": raw_height,
+                    "height_estimate_m": estimate,
+                    "height_evidence_level": evidence_level,
                 })
                 continue
             roof_m = float(roof["roof_elevation_egm2008_m"])
@@ -982,6 +1048,7 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
                     "building_id": identifier,
                     "reason": "realized_altitude_profile_unresolved_for_building_interval",
                     "footprint_part_index": piece_index,
+                    "height_evidence_level": evidence_level,
                 })
                 continue
             evaluation = evaluate_vertical_clearance(
@@ -996,31 +1063,131 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
                 unresolved.append({
                     "building_id": identifier, "reason": evaluation.get("reason"),
                     "footprint_part_index": piece_index,
+                    "height_evidence_level": evidence_level,
                 })
                 continue
-            if margin < -TOLERANCE:
-                result["violations"].append(violation_interval(
-                    domain="building", reason_id="building_vertical_clearance_violated",
-                    start_distance_m=start, end_distance_m=end,
-                    start_point=metric_route.to_geographic(metric_route.sample_at(start), to_geographic=to_geographic),
-                    end_point=metric_route.to_geographic(metric_route.sample_at(end), to_geographic=to_geographic),
-                    required=required_clearance, observed=observed, margin=margin,
-                    evidence={
-                        "building_id": identifier,
-                        "building_source": footprint.get("source"),
-                        "height_m": footprint.get("height_m"),
-                        "ground_elevation_max_egm2008_m": ground,
-                        "roof_elevation_egm2008_m": roof_m,
-                        "horizontal_clearance_m": horizontal,
-                        "vertical_clearance_m": vertical,
-                        "curve_error_m": curve_error,
-                        "horizontal_distance_m": distance,
-                        "interval_length_m": float(end) - float(start),
-                        "footprint_part_index": piece_index,
-                        "footprint_part_count": len(prepared["polygons"]),
-                    },
-                ))
+            if supports_pass:
+                # 证据充分（verified / source_tagged / derived）：数值冲突才是"已核实碰撞"。
+                # derived 需附 derived_assumption（来源方法由 adapter 写入 footprint）。
+                if margin < -TOLERANCE:
+                    result["violations"].append(violation_interval(
+                        domain="building", reason_id="building_vertical_clearance_violated",
+                        start_distance_m=start, end_distance_m=end,
+                        start_point=metric_route.to_geographic(metric_route.sample_at(start), to_geographic=to_geographic),
+                        end_point=metric_route.to_geographic(metric_route.sample_at(end), to_geographic=to_geographic),
+                        required=required_clearance, observed=observed, margin=margin,
+                        evidence={
+                            "building_id": identifier,
+                            "building_source": footprint.get("source"),
+                            "height_m": raw_height,
+                            "height_estimate_m": estimate,
+                            "height_evidence_level": evidence_level,
+                            "height_evidence_method": footprint.get("height_evidence_method"),
+                            "derived_assumption": footprint.get("derived_assumption"),
+                            "verified": evidence_level in ("verified",),
+                            "ground_elevation_max_egm2008_m": ground,
+                            "roof_elevation_egm2008_m": roof_m,
+                            "horizontal_clearance_m": horizontal,
+                            "vertical_clearance_m": vertical,
+                            "curve_error_m": curve_error,
+                            "horizontal_distance_m": distance,
+                            "interval_length_m": float(end) - float(start),
+                            "footprint_part_index": piece_index,
+                            "footprint_part_count": len(prepared["polygons"]),
+                        },
+                    ))
+            else:
+                # 证据不足（predicted / unknown）：数值只是"工程估计"，不是已核实结论。
+                # 默认严格模式仍然 unresolved；只有显式、完整且逐项匹配的单建筑工程演示
+                # policy 可以产生 conditionally_accepted，且绝不升级 evidence level。
+                demo = policy.get("engineering_demo_building_acceptance_policy") or {}
+                footprint_evidence = (
+                    footprint.get("evidence")
+                    if isinstance(footprint.get("evidence"), dict) else {}
+                )
+                evidence_fingerprint = building_evidence_fingerprint(footprint)
+                required_facts = {
+                    "height_source": footprint.get("height_source"),
+                    "height_evidence_method": footprint.get("height_evidence_method"),
+                    "height_observation_period": footprint.get("height_observation_period"),
+                    "height_source_license": footprint.get("height_source_license"),
+                    "height_var_semantics": footprint.get("height_var_semantics"),
+                }
+                missing_facts = sorted(
+                    key for key, value in required_facts.items()
+                    if value in (None, "", {}, [])
+                )
+                # GBA LoD1 exposes the raw model variance field but does not claim a
+                # calibrated confidence bound.  Preserve a null derived uncertainty;
+                # require at least one explicit uncertainty descriptor and never
+                # reinterpret raw variance as a safety confidence interval.
+                if (
+                    footprint.get("height_var") in (None, "", {}, [])
+                    and footprint.get("height_uncertainty") in (None, "", {}, [])
+                ):
+                    missing_facts.append("height_uncertainty_descriptor")
+                identity_match = bool(
+                    demo.get("effective") is True
+                    and demo.get("context_identity_match") is True
+                    and evidence_level == "predicted"
+                    and str(identifier) == str(demo.get("building_id"))
+                    and int(footprint_evidence.get("feature_id", -1))
+                    == int(demo.get("building_fid", -2))
+                    and evidence_fingerprint == demo.get("building_evidence_fingerprint")
+                )
+                minimum_demo_margin = demo.get("minimum_estimated_vertical_margin_m")
+                margin_accepted = bool(
+                    margin is not None and minimum_demo_margin is not None
+                    and margin >= float(minimum_demo_margin) - TOLERANCE
+                )
+                conditional = {
+                    "building_id": identifier,
+                    "building_fid": footprint_evidence.get("feature_id"),
+                    "height_evidence_level": evidence_level,
+                    "height_source": footprint.get("height_source"),
+                    "height_evidence_method": footprint.get("height_evidence_method"),
+                    "height_observation_period": footprint.get("height_observation_period"),
+                    "height_source_license": footprint.get("height_source_license"),
+                    "height_var": footprint.get("height_var"),
+                    "height_uncertainty": footprint.get("height_uncertainty"),
+                    "height_var_semantics": footprint.get("height_var_semantics"),
+                    "height_variance_is_calibrated_safety_bound": False,
+                    "building_evidence_fingerprint": evidence_fingerprint,
+                    "policy_fingerprint": demo.get("policy_fingerprint"),
+                    "authorization": demo.get("authorization") or {},
+                    "requires_survey": True,
+                    "estimated_conflict": bool(margin < -TOLERANCE),
+                    "estimated_clear": bool(margin >= -TOLERANCE),
+                    "estimated_vertical_margin_m": margin,
+                    "height_m": raw_height,
+                    "height_estimate_m": estimate,
+                    "height_evidence_method": footprint.get("height_evidence_method"),
+                    "ground_elevation_max_egm2008_m": ground,
+                    "roof_elevation_egm2008_m": roof_m,
+                    "footprint_part_index": piece_index,
+                    "missing_required_facts": missing_facts,
+                }
+                if identity_match and not missing_facts and margin_accepted:
+                    conditional["status"] = "conditionally_accepted"
+                    conditional["use_scope"] = "engineering_demo_only"
+                    conditional["operational_authorization"] = False
+                    conditional_acceptances.append(conditional)
+                else:
+                    conditional["reason"] = "building_height_evidence_insufficient"
+                    conditional["engineering_demo_identity_match"] = identity_match
+                    conditional["engineering_demo_margin_accepted"] = margin_accepted
+                    unresolved.append(conditional)
     result["evidence"]["minimum_horizontal_distance_m"] = minimum_horizontal
+    result["evidence"]["height_evidence_mix"] = height_evidence_mix
+    result["evidence"]["worst_evidence_level"] = worst_evidence_level
+    result["evidence"]["height_evidence_requires_survey"] = bool(
+        worst_evidence_level in ("predicted", "unknown")
+    )
+    result["evidence"]["conditional_acceptance_count"] = len(conditional_acceptances)
+    result["conditional_acceptances"] = conditional_acceptances
+    result["semantics"]["height_evidence_gated"] = True
+    result["semantics"]["predicted_height_never_supports_pass"] = True
+    result["semantics"]["conditional_acceptance_is_not_strict_pass"] = True
     result["evidence"]["building_quality_report"] = geometry_quality
     result["evidence"]["geometry_quality"] = geometry_quality
     result["evidence"]["source_modified"] = False
@@ -1049,6 +1216,10 @@ def validate_buildings(metric_route, *, evidence, policy, to_geographic=None):
                 evidence=item,
             ))
         result["unresolved_interval_count"] = len(result["unresolved"])
+        return result
+    if conditional_acceptances:
+        result["status"] = "conditionally_accepted"
+        result["reason"] = "single_predicted_building_engineering_demo_authorized"
         return result
     result["status"] = "passed"
     return result
@@ -1196,6 +1367,9 @@ def validate_restricted_areas(metric_route, *, evidence, policy, vertical_refere
     result["evidence"] = {
         "area_count": len(areas), "source": source.get("source"),
         "applicability": source.get("applicability") or "applicable",
+        "scope": source.get("scope"),
+        "limitations": list(source.get("limitations") or []),
+        "conflicts": list(source.get("conflicts") or []),
     }
     result["semantics"] = {
         "protection_geometry_required": True,
@@ -1513,7 +1687,7 @@ def _self_intersection_diagnostic(route):
 
 __all__ = [
     "BUFFER_APPROXIMATION", "DEFAULT_QUAD_SEGS", "ENVELOPE_METHOD", "MetricRoute",
-    "TERRAIN_SEMANTICS", "metric_distance", "validate_airspace",
+    "TERRAIN_SEMANTICS", "building_evidence_fingerprint", "metric_distance", "validate_airspace",
     "validate_altitude_bounds", "validate_buildings", "validate_geometry",
     "validate_kinematics", "validate_restricted_areas", "validate_terrain", "validate_towers",
 ]

@@ -202,6 +202,7 @@ def _number(value):
 def restricted_area_continuous_evidence(value, *, transform):
     """Project audited protection geometry for an independent route-level validation."""
 
+    raw = value if isinstance(value, dict) else {}
     collection = normalize_restricted_area_collection(value)
     states = collection.get("domain_states") or {}
     resolved = all(
@@ -218,11 +219,30 @@ def restricted_area_continuous_evidence(value, *, transform):
             point = (area.get("geometry") or {}).get("coordinates")
             projected["point_metric"] = transform.to_metric(point) if point else None
         items.append(projected)
+    authority_source = {
+        "collection_source": deepcopy(collection.get("source")),
+        "collection_evidence": deepcopy(collection.get("evidence") or []),
+        "domain_states": deepcopy(states),
+        "declarations": deepcopy(raw.get("declarations") or {}),
+        "regulatory_bridge": deepcopy(raw.get("regulatory_bridge") or {}),
+        "conflicts": deepcopy(raw.get("conflicts") or []),
+        "limitations": deepcopy(raw.get("limitations") or []),
+    }
     return {
         "status": "passed" if resolved else "unresolved",
         "applicability": "applicable", "areas": items,
-        "source": deepcopy(collection.get("source")),
+        "source": authority_source,
+        "evidence": deepcopy(authority_source),
         "domain_states": deepcopy(states),
+        "scope": deepcopy(raw.get("scope") or {
+            "domains": ["airspace", "critical_site"],
+            "domain_states": {
+                domain: (states.get(domain) or {}).get("status")
+                for domain in ("airspace", "critical_site")
+            },
+        }),
+        "conflicts": deepcopy(raw.get("conflicts") or []),
+        "limitations": deepcopy(raw.get("limitations") or []),
     }
 
 

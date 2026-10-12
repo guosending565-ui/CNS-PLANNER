@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 
 from ..benchmark.geodesy import geodesic_distance_m
+from ..domain.building_clearance import building_occupancy_state
 
 
 class _GeographicIdentityTransform:
@@ -119,12 +120,39 @@ def _building_fact(raw, terrain_elevation, horizontal, vertical):
     count = item.get("building_count")
     if item.get("status") != "passed" or count is None:
         return _unknown_building("building_grid_missing_or_outside_coverage", horizontal)
+    # F1-A：``building_count`` 是**建筑质心分配数量**，不是"该格有没有建筑"。
+    # 只有质心数为 0 **且** footprint 覆盖明确为零，才能声明
+    # ``confirmed_absence_of_building_constraint``。覆盖面积大于 0 时该格有真实建筑，
+    # 但高度统计落在邻格 ⇒ 未知（fail-closed），绝不声明"已确认不存在建筑约束"。
+    occupancy = building_occupancy_state(
+        building_count=count, building_area_m2=item.get("building_area_m2"),
+        building_coverage_ratio=item.get("building_coverage_ratio"),
+    )
     if int(count) == 0:
+        if occupancy == "present":
+            # F1-A：有真实 footprint 覆盖但没有质心高度统计 ⇒ 未知（fail-closed），
+            # 绝不声明"已确认不存在建筑约束"。
+            fact = _unknown_building("building_footprint_present_height_unresolved", horizontal)
+            return {
+                **fact,
+                "building_occupancy": "present",
+                "building_occupancy_evidence": "footprint_coverage_measured",
+                "building_area_m2": item.get("building_area_m2"),
+                "building_coverage_ratio": item.get("building_coverage_ratio"),
+            }
+        # ``absent``（覆盖已确认为零）与 ``unknown``（覆盖证据未提供）都保持历史语义：
+        # 该格没有建筑垂向约束。真实 L8 事实表始终带 building_area_m2 /
+        # building_coverage_ratio（``data/mapping/buildings.py::_cell`` 把 NULL 归一成 0.0）。
         return {
             "data_status": "passed", "roof_elevation_max_egm2008_m": None,
             "required_clearance_egm2008_m": None,
             "horizontal_clearance_m": horizontal,
             "semantics": "confirmed_absence_of_building_constraint",
+            "building_occupancy": "absent" if occupancy == "absent" else "unknown",
+            "building_occupancy_evidence": (
+                "footprint_coverage_measured" if occupancy == "absent"
+                else "not_provided"
+            ),
         }
     fraction = item.get("valid_height_fraction")
     height = item.get("height_max_m")
@@ -136,6 +164,8 @@ def _building_fact(raw, terrain_elevation, horizontal, vertical):
         "required_clearance_egm2008_m": roof + float(vertical),
         "horizontal_clearance_m": horizontal,
         "semantics": "dtm_cell_max_plus_verified_building_height_max_plus_vertical_clearance",
+        "building_occupancy": "present",
+        "building_occupancy_evidence": "footprint_coverage_measured",
     }
 
 

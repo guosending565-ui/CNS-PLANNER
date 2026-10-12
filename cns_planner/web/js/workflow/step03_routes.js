@@ -93,7 +93,6 @@ function bindReferenceSiteSearch(c){
         +' 条 · 当前筛选 '+visible+' 条；疑似重复只标记、不合并。'
         +(visible?'':'（没有匹配项：请检查关键词，或点击「清空」恢复完整列表）');
     }
-    c.paint();
     return visible;
   };
   // Enter == 点击「搜索」；单独抽出便于两处共用同一条语义。

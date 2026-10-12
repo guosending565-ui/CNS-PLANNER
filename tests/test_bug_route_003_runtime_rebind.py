@@ -56,13 +56,15 @@ RUNTIME_BINDINGS = (
     ("vertical_transition_validation_service", "evidence_adapter"),
 )
 
-#: ``_bind_runtime_services`` 必须统一调用的 5 个配置方法。
+#: ``_bind_runtime_services`` 必须统一调用的 runtime 配置方法。
 CONFIGURE_METHODS = (
     "configure_route_planner_v3_sources",
     "configure_route_planner_v3_adoption",
     "configure_layered_route_planner_sources",
     "configure_layered_route_validation_sources",
     "configure_vertical_transition_validation_sources",
+    "configure_radar_surveillance_layout_sources",
+    "configure_surface_classification_sources",
 )
 
 #: 只用于字符串路径的假数据源：任何真实数据打开都会失败，因此测试不可能"偷偷"读盘。
@@ -260,17 +262,17 @@ def test_activate_workflow_switches_instance_before_binding(app_context_module, 
             observed.append((name, context.workflow, context.active_project_file))
         return recorder
 
-    # configure_reference_sources 由 _activate_workflow 直接作用在目标 workflow 上，
+    # 无快照投影的 reference-source loader 由 _activate_workflow 直接作用在目标 workflow 上，
     # 因此 spy 必须装在 replacement 实例上。
-    replacement.configure_reference_sources = record("configure_reference_sources")
+    replacement._load_reference_sources = record("_load_reference_sources")
     for name in CONFIGURE_METHODS:
         setattr(context, name, record(name))
 
     context._activate_workflow(replacement, target)
 
     assert [item[0] for item in observed] == [
-        "configure_reference_sources", *CONFIGURE_METHODS,
-    ], "先 configure_reference_sources，再由 _bind_runtime_services 统一绑定"
+        "_load_reference_sources", *CONFIGURE_METHODS,
+    ], "先加载 reference sources，再由 _bind_runtime_services 统一绑定"
     assert all(item[1] is replacement for item in observed), (
         "每个配置步骤都必须已经看到 self.workflow 指向新实例"
     )
