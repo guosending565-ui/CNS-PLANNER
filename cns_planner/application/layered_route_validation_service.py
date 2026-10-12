@@ -13,15 +13,16 @@ from math import hypot
 from ..domain.layered_route import resolve_cruise_altitude
 from ..domain.layered_route_validation import (
     ALGORITHM_ID, ALGORITHM_VERSION, ROUTE_SEMANTICS, VALIDATOR_VERSIONS,
-    empty_layered_route_validation, normalize_layered_route_validation_collection,
+    empty_layered_route_validation, normalize_engineering_demo_building_acceptance_policy,
+    normalize_layered_route_validation_collection,
     path_fingerprint, stable_fingerprint, utc_now, validation_fingerprint,
 )
 from ..domain.planning_constraint_field import (
     CONTAINS_UNKNOWN_CONSTRAINTS_REASON, PROVISIONAL_ROUTE_BLOCK_STATEMENT,
 )
 from ..validation.continuous_validators import (
-    MetricRoute, validate_buildings, validate_restricted_areas, validate_terrain,
-    validate_towers,
+    MetricRoute, building_evidence_fingerprint, validate_buildings,
+    validate_restricted_areas, validate_terrain, validate_towers,
 )
 
 
@@ -61,6 +62,27 @@ class LayeredRouteValidationService:
         collection["items"] = [self._project_current(item) for item in collection["items"]]
         collection["count"] = len(collection["items"])
         return collection
+
+    def engineering_demo_policy_snapshot(self):
+        return deepcopy(normalize_engineering_demo_building_acceptance_policy(
+            self.ensure_state().get("engineering_demo_building_acceptance_policy")
+        ))
+
+    def set_engineering_demo_policy(self, payload=None):
+        raw = payload if isinstance(payload, dict) else {}
+        raw = raw.get("engineering_demo_building_acceptance_policy", raw)
+        candidate = normalize_engineering_demo_building_acceptance_policy(raw)
+        state = self.ensure_state()
+        current = normalize_engineering_demo_building_acceptance_policy(
+            state.get("engineering_demo_building_acceptance_policy")
+        )
+        if candidate != current:
+            state["engineering_demo_building_acceptance_policy"] = candidate
+            self.invalidation.layered_route_validation(
+                "engineering_demo_building_acceptance_policy_changed"
+            )
+            self.session.save()
+        return self.snapshot()
 
     def readiness_snapshot(self, payload=None):
         payload = payload if isinstance(payload, dict) else {}
@@ -157,6 +179,25 @@ class LayeredRouteValidationService:
             # is the validation geometry, not an approximation of another curve.
             "use_curve_error_envelope": False,
         }
+        engineering_demo = self.engineering_demo_policy_snapshot()
+        building_audit = ((state.get("source_audits") or {}).get("items") or {}).get(
+            "buildings"
+        ) or {}
+        live_building_sha = str(
+            ((building_audit.get("verification") or {}).get("sha256"))
+            or building_audit.get("sha256") or ""
+        )
+        engineering_demo["live_building_source_sha256"] = live_building_sha or None
+        engineering_demo["context_identity_match"] = bool(
+            engineering_demo.get("effective") is True
+            and str(candidate.get("route_id")) == engineering_demo.get("scenario_route_id")
+            and str(candidate.get("altitude_layer_id")) == engineering_demo.get("altitude_layer_id")
+            and str(candidate.get("candidate_id")) == engineering_demo.get("candidate_id")
+            and str(candidate.get("candidate_fingerprint"))
+            == engineering_demo.get("candidate_fingerprint")
+            and live_building_sha == engineering_demo.get("building_source_sha256")
+        )
+        policy["engineering_demo_building_acceptance_policy"] = engineering_demo
         adapter = evidence_adapter or self.evidence_adapter
         if adapter is None:
             record = self._not_ready_record(candidate, {
@@ -203,6 +244,11 @@ class LayeredRouteValidationService:
             return self._store(record, save=save)
 
         sources = deepcopy(evidence.get("sources") or {})
+        policy["observed_building_evidence_fingerprints"] = sorted(
+            building_evidence_fingerprint(item)
+            for item in (evidence.get("buildings") or {}).get("buildings") or []
+            if isinstance(item, dict)
+        )
         metric_crs = evidence.get("metric_crs") or (sources.get("metric_frame") or {}).get(
             "horizontal_crs"
         ) or (sources.get("metric_frame") or {}).get("crs")
@@ -253,6 +299,8 @@ class LayeredRouteValidationService:
         status = (
             "failed" if "failed" in statuses
             else "unresolved" if "unresolved" in statuses
+            else "engineering_conditionally_accepted_candidate"
+            if "conditionally_accepted" in statuses
             else "validated_candidate"
         )
         # ---- 正式发布门禁**不放松** ---------------------------------------------------
@@ -286,6 +334,30 @@ class LayeredRouteValidationService:
         record["domains"]["building"] = deepcopy(building)
         record["domains"]["tower"] = deepcopy(tower)
         record["domains"]["restricted_area"] = deepcopy(restricted_area)
+        building_evidence = building.get("evidence") if isinstance(building, dict) else {}
+        record["building_height_evidence"] = {
+            "height_evidence_mix": dict(building_evidence.get("height_evidence_mix") or {}),
+            "worst_evidence_level": building_evidence.get("worst_evidence_level"),
+            "requires_survey": bool(building_evidence.get("height_evidence_requires_survey")),
+        }
+        record["strict_safety_validation_passed"] = status == "validated_candidate"
+        record["engineering_conditional_acceptance"] = (
+            status == "engineering_conditionally_accepted_candidate"
+        )
+        if record["engineering_conditional_acceptance"]:
+            record["use_scope"] = "engineering_demo_only"
+            record["operational_authorization"] = False
+            record["engineering_acceptance"] = {
+                "policy_fingerprint": engineering_demo.get("policy_fingerprint"),
+                "authorization": deepcopy(engineering_demo.get("authorization") or {}),
+                "building_evidence_fingerprint": engineering_demo.get(
+                    "building_evidence_fingerprint"
+                ),
+                "conditional_acceptances": deepcopy(
+                    building.get("conditional_acceptances") or []
+                ),
+            }
+            record["limitations"] = deepcopy(engineering_demo.get("limitations") or [])
         record["minimum_margins"] = {
             "terrain_vertical_m": terrain.get("minimum_margin"),
             "building_vertical_m": building.get("minimum_margin"),
@@ -428,8 +500,11 @@ class LayeredRouteValidationService:
             )
             old_fingerprint = (existing.get("fingerprints") or {}).get("validation_fingerprint")
             if same_id:
-                if (existing.get("status") == "validated_candidate"
-                        and record.get("status") != "validated_candidate"):
+                if (existing.get("status") in (
+                        "validated_candidate", "engineering_conditionally_accepted_candidate",
+                    ) and record.get("status") not in (
+                        "validated_candidate", "engineering_conditionally_accepted_candidate",
+                    )):
                     stale_ids.append(str(existing.get("validation_id")))
                 continue
             if same_candidate and existing.get("status") != "stale":
@@ -451,7 +526,9 @@ class LayeredRouteValidationService:
         collection["items"] = items
         collection["count"] = len(items)
         collection["status"] = record["status"]
-        if record["status"] == "validated_candidate":
+        if record["status"] in (
+            "validated_candidate", "engineering_conditionally_accepted_candidate",
+        ):
             collection["active_validation_id"] = record["validation_id"]
         state["layered_route_validations"] = collection
         state.setdefault("result_statuses", {})["layered_route_validation"] = record["status"]
@@ -540,7 +617,15 @@ class LayeredRouteValidationService:
             "conditional_hard_exclusion_feature_ids": sorted(
                 policy.get("conditional_hard_exclusion_feature_ids") or []
             ),
-            "source_audits": source_status["audits"],
+            "engineering_demo_building_acceptance_policy": (
+                self.engineering_demo_policy_snapshot()
+            ),
+            "observed_building_evidence_fingerprints": sorted(
+                policy.get("observed_building_evidence_fingerprints") or []
+            ),
+            # F4-F/S5：source 指纹只以**内容身份**（sha256 / size_bytes）为依据，
+            # 不含 mtime_ns（文件时间戳不稳定，会导致无意义重算）。
+            "source_audits": _source_content_identity(source_status["audits"]),
             "source_evidence_fingerprints": {
                 "terrain": stable_fingerprint(sources.get("terrain_dtm") or {}, prefix="terrain-source-"),
                 "buildings": stable_fingerprint(sources.get("buildings") or {}, prefix="building-source-"),
@@ -599,6 +684,9 @@ class LayeredRouteValidationService:
         # recomputing every live dependency (candidate/layer/clearance/audits/versions).
         expected["source_evidence_fingerprints"] = deepcopy(
             stored.get("source_evidence_fingerprints") or {}
+        )
+        expected["observed_building_evidence_fingerprints"] = deepcopy(
+            stored.get("observed_building_evidence_fingerprints") or []
         )
         current = validation_fingerprint(expected)
         projected["current_applicability"] = (
@@ -670,6 +758,27 @@ def _audit_fingerprint_view(item):
         "file_name": value.get("file_name"), "size_bytes": value.get("size_bytes"),
         "mtime_ns": value.get("mtime_ns"), "sha256": verification.get("sha256"),
     }
+
+
+def _source_content_identity(audits):
+    """F4-F：指纹只取**内容身份**，剔除文件时间戳（mtime_ns）。
+
+    数据源审计里的 ``mtime_ns`` 是文件系统时间戳，不稳定：复制/重新保存会让它变化，
+    即使内容字节完全一致。把它放进 validation fingerprint 会导致无意义重算。这里只保留
+    能代表**内容身份**的字段（sha256 / size_bytes / role / status）。文件名只是本地
+    locator；同一字节内容复制或重命名后不得产生无意义 stale。
+    """
+
+    result = {}
+    for role, item in (audits or {}).items():
+        value = item if isinstance(item, dict) else {}
+        verification = value.get("verification") or {}
+        result[role] = {
+            "role": value.get("role"), "status": value.get("status"),
+            "size_bytes": value.get("size_bytes"),
+            "sha256": verification.get("sha256"),
+        }
+    return result
 
 
 def _block(code, reason):

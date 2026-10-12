@@ -782,7 +782,7 @@ test('the validation panel only calls the evaluate-real endpoint and writes noth
   assert.doesNotMatch(source,/import .*from '(?!\.\/common\.js)/,'no third-party dependency may be added');
 });
 
-test('the validation panel renders an explicit metric CRS input and refuses to run when it is empty',async()=>{
+test('the validation panel renders an explicit metric CRS input and restores the declared fallback when cleared',async()=>{
   const flow=baseFlow();
   const html=renderLayeredRouteValidation(flow);
   assert.match(html,/id="layeredValidationHorizontalCrs"/,'必须提供显式 horizontal_crs 输入框');
@@ -811,10 +811,11 @@ test('the validation panel renders an explicit metric CRS input and refuses to r
       assert.ok(field,'the CRS input must exist');
       field.value='   ';
       return document.getElementById('evaluateLayeredRouteValidation').onclick().then(()=>{
-        assert.equal(calls.some(item=>item[0]==='/api/layered-route-validations/evaluate-real'),false,
-          '空 horizontal_crs 时不得发起任何请求');
-        assert.match(calls.filter(item=>item[0]==='error').map(item=>item[1]).join(' '),
-          /horizontal_crs/,'必须给出清楚的空值提示');
+        assert.deepEqual(calls.find(item=>item[0]==='/api/layered-route-validations/evaluate-real'),[
+          '/api/layered-route-validations/evaluate-real',
+          {horizontal_crs:'EPSG:32651',horizontal_crs_source:'engineering_suggested_default'},
+        ],'清空人工值后仍必须显式提交已标注来源的工程建议 CRS');
+        assert.equal(calls.some(item=>item[0]==='error'),false);
         resolve();
       });
     });
@@ -1840,6 +1841,33 @@ test('multiple published stale and superseded adoptions never auto-select a revo
     assert.doesNotMatch(source,/find\(item=>item\.status!=='revoked'\)/);
   });
   clearLayeredAdoptionCache();
+});
+
+test('engineering demo adoption is visibly distinct and never presented as operational authorization',()=>{
+  const demo=adoptionFixture({status:'published_engineering_demo'});
+  Object.assign(demo,{
+    strict_safety_validation_passed:false,
+    engineering_conditional_acceptance:true,
+    use_scope:'engineering_demo_only',
+    operational_authorization:false,
+    published_to_operational_routes:false,
+    limitations:['工程条件接受，严格验证未通过，仅供演示'],
+    engineering_acceptance:{authorization:{authorization_id:'ROUND36-D4'}},
+  });
+  demo.ownership={route_owned:false,route_operating_layer_owned:false};
+  const flow=baseFlow({adoptions:adoptionCollection([demo])});
+  const model=layeredOperationalAdoptionModel(flow);
+  assert.equal(model.adoptions[0].engineeringConditionalAcceptance,true);
+  assert.equal(model.adoptions[0].strictSafetyValidationPassed,false);
+  assert.equal(model.adoptions[0].operationalAuthorization,false);
+  assert.equal(model.adoptions[0].publishedToOperationalRoutes,false);
+  const chain=layeredAdoptionChainModel(flow);
+  assert.equal(chain.operationalState,'published_engineering_demo');
+  assert.equal(chain.engineeringDemoPublishedCount,1);
+  const html=renderLayeredOperationalAdoption(flow,'LRV-AAAAAAAAAAAA');
+  assert.match(html,/工程条件接受，严格验证未通过，仅供演示/);
+  assert.match(html,/operational_authorization false/);
+  assert.match(html,/published_to_operational_routes false/);
 });
 
 test('revoked adoptions are never selectable as revoke targets',()=>{

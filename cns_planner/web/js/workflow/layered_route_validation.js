@@ -177,6 +177,8 @@ export function layeredRouteValidationModel(flow){
     failedIntervals:item?.failed_intervals||[],
     unresolvedIntervals:item?.unresolved_intervals||[],
     criticalEvidence:item?.critical_evidence||[],
+    // F3-D：建筑高度证据汇总（后端 building_height_evidence 原样转印，前端不重算）。
+    buildingHeightEvidence:item?.building_height_evidence||{},
     resourceLimits:item?.resource_limits||{},
     policies:item?.policies||{},
     sourceAudits:item?.source_audits||{},
@@ -402,6 +404,7 @@ function validationBlock(validation){
   const status=layeredValidationStatusModel(validation);
   const margins=validation.minimumMargins||{};
   const limits=validation.resourceLimits||{};
+  const buildingEvidence=validation.buildingHeightEvidence||{};
   const failed=validation.failedIntervals||[],unresolved=validation.unresolvedIntervals||[];
   const failedRows=failed.length
     ?rows(failed.map(item=>[short(item.domain)+' · '+short(item.interval_id||item.reason_id),intervalText(item)]))
@@ -429,6 +432,9 @@ function validationBlock(validation){
       ['minimum_margins','terrain_vertical_m '+fmt(margins.terrain_vertical_m,3)
         +' m · building_vertical_m '+fmt(margins.building_vertical_m,3)+' m'],
       ['failed / unresolved interval 数',escapeHtml(String(failed.length))+' / '+escapeHtml(String(unresolved.length))],
+      ['building height evidence','worst_evidence_level '+escapeHtml(short(buildingEvidence.worst_evidence_level))
+        +' · requires_survey '+escapeHtml(String(buildingEvidence.requires_survey===true))
+        +' · mix '+escapeHtml(jsonInline(buildingEvidence.height_evidence_mix||{}))],
       ['resource_limits','max_evidence_items '+raw(limits.max_evidence_items)
         +' · observed_evidence_items '+raw(limits.observed_evidence_items)
         +' · limit_reached '+escapeHtml(String(limits.limit_reached===true))
