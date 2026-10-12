@@ -1,0 +1,36 @@
+{
+  "schema": "cns-planner-external-data-manifest-v1",
+  "checkpoint_branch": "checkpoint/phase36-pre3d",
+  "included_in_git": false,
+  "clone_ready_without_external_data": false,
+  "datasets": [
+    {
+      "role": "authoritative_project_state_reference",
+      "file_name": "project_state.json",
+      "bytes": 286829234,
+      "sha256": "92a0000f56d5ad1dcb5d97c8344d427d68b4658b4b563cc4bf27f6e35d449d07",
+      "distribution": "not_in_git; obtain from the project owner"
+    },
+    {
+      "role": "buildings",
+      "file_name": "zhoushan_buildings_v3.gpkg",
+      "bytes": 466837504,
+      "sha256": "4f1657495d8422ac0d23973949d4bcbca59dcf07d59ed380ff9877afc7391b97",
+      "distribution": "not_in_git; source licence includes CC_BY_NC_4.0; verify redistribution rights"
+    },
+    {
+      "role": "terrain_dtm",
+      "file_name": "Zhoushan_FABDEM_DTM_30m.tif",
+      "bytes": 65656187,
+      "sha256": "21406bd901fbebae211528a158ca95eef899e2074322625717b215b13d8799b8",
+      "distribution": "not_in_git; obtain under the source dataset licence"
+    },
+    {
+      "role": "building_grid",
+      "file_name": "zhoushan_building_grid_L8_v3_heightstats_v1.gpkg",
+      "bytes": 58105856,
+      "sha256": "13fca1ee7183035a280ad066f84a6d116303e0b3797c206bdfd98f7e50bbce37",
+      "distribution": "not_in_git; provide separately or rebuild from verified inputs"
+    }
+  ]
+}

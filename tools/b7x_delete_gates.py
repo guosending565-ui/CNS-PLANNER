@@ -1019,7 +1019,20 @@ def _compatibility_test_coverage():
 
 
 def _protected_hashes():
-    return {name: sha256((ROOT / name).read_bytes()).hexdigest().upper() for name in PROTECTED_FILES}
+    """受保护文件的**仓库内容** SHA256（``\\r\\n`` → ``\\n`` 归一化后，大写十六进制）。
+
+    报告里登记的是被跟踪内容的指纹，不是某个 checkout 的行尾策略：Windows 上
+    ``core.autocrlf`` 会把 LF blob 检出为 CRLF，直接哈希磁盘原始字节会让同一份未修改的
+    受保护内容在 LF/CRLF 两种 checkout 上得到不同 SHA（Round35-S5A2 取证）。归一化后
+    仍逐字节检测真实内容变更，只是不再把"行尾属性"误判成"文件被修改"。
+    """
+
+    return {
+        name: sha256(
+            (ROOT / name).read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest().upper()
+        for name in PROTECTED_FILES
+    }
 
 
 def _head_revision():

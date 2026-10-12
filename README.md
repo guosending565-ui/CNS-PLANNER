@@ -158,17 +158,32 @@ Required CNS（adopted，authoritative）
 ## 14. 当前算法注册（production 默认选型）
 
 ```text
+# 新建项目持久化的默认选择（default_algorithm_selection()）
 risk_model             / risk-model-v1-relative-index              @ 1.1
 layered_route_planner  / layered_risk_aware_theta_star_v2          @ 2.0
 coverage_model         / geometric_coverage_3d_v1                  @ 1.0
 service_model          / cns_service_capability_v1                 @ 1.0
 timeline_model         / route_service_timeline_v1                 @ 1.0
 protection_model       / tactical_protection_envelope_v1           @ 1.0
-site_planner           / corridor_reuse_first_site_planner_v2      @ 2.0
-corridor_model         / cns_service_corridor_v1                   @ 1.0
-corridor_gap_analyzer  / cns_corridor_gap_v1                       @ 1.0
-requirement_model      / operational_context_required_cns_v2       @ 2.0
+site_planner           / corridor_reuse_first_site_planner_v2      @ 2.2
+corridor_model         / cns_service_corridor_v1                   @ 1.3
+corridor_gap_analyzer  / cns_corridor_gap_v1                       @ 1.2
+requirement_model      / manual_required_cns_v1                    @ 1.0
 ```
+
+另有 3 个**已注册但没有默认选择**的类型，只能由项目显式选择：
+
+```text
+route_planner          / route_planner_v1                          @ 1.0   （传统二维 A*）
+cns_gap_analyzer       / cns_gap_analysis_v2                       @ 2.0   （区间式 Gap V2）
+requirement_model      / operational_context_required_cns_v2       @ 2.0   （P17 运行上下文推荐）
+```
+
+> 上表数值来自 `cns_planner/algorithms/registry.py` 的 `default_algorithm_selection()` 与
+> `build_default_algorithm_registry()` 实际运行结果，不是手工维护的清单。
+> 校验命令（在工作区根目录运行，仅导入 registry、不加载 QGIS）：
+> `python tools\registry_snapshot.py`。
+> 改动算法版本号后请重跑它并同步本表，避免文档与实现漂移。
 
 注册表按 `(algorithm_type, algorithm_id, version)` 精确解析；找不到版本时**不静默 fallback**。业务 Service 依赖算法对象而不是 Registry，Registry 只在 Application/Composition 层负责解析与实例化。
 
@@ -205,17 +220,36 @@ cns_planner/
 后端（固定解释器 `D:\tools\anaconda\python.exe`）：
 
 ```powershell
-D:\tools\anaconda\python.exe -m pytest -q -p no:cacheprovider
+# 定向（开发循环默认用法）：只跑相关文件，输出收敛
+D:\tools\anaconda\python.exe -m pytest -q -x --tb=short -p no:cacheprovider tests/test_<相关>.py
+
+# 全量回归：只在交付前跑一次，并截断输出
+D:\tools\anaconda\python.exe -m pytest -q -p no:cacheprovider 2>&1 | Select-Object -Last 40
 ```
 
-前端（在仓库根目录，Node 直接运行测试文件）：
+前端（在仓库根目录，Node **直接运行测试文件**；`tests/` 下有 43 个 `.test.mjs` 与 `grid_theme.test.js`）：
 
 ```powershell
-node tests/frontend_modules.test.mjs
-node --test tests/*.test.mjs
+node tests/frontend_modules.test.mjs      # 前端纯函数 / 模块契约（最大的一份）
+node tests/grid_theme.test.js             # 网格主题
+
+# 改过前端 JS 后的最低要求
 node --check cns_planner/web/app.js
 node --check cns_planner/web/js/main.js
 ```
+
+> **不要用 `node --test tests/*.test.mjs`**：受限沙箱下会因 piped stdio `EPERM` 失败，而且一次灌入 43 个文件的输出。
+> `node <file>` 等价可用（`node:test` 在进程内运行）。需要批量时逐个指定并截尾。
+
+**受限沙箱注意**：pytest 的 basetemp 与每个 per-test 目录用 mode `0o700`，沙箱会拒绝写入，产出大量伪 setup error；`%TEMP%` 在 workspace 之外也不可写。受限沙箱内的完整可用形式：
+
+```powershell
+$env:PYTHONPATH='outputs'
+$env:TMP=$env:TEMP=$env:TMPDIR='<workspace>\outputs\sys_tmp'
+D:\tools\anaconda\python.exe -m pytest -q -rs -p no:cacheprovider -p dsh_tmp_plugin --basetemp=outputs/pytest_tmp
+```
+
+其中 `outputs/dsh_tmp_plugin.py` 是 gitignored 的兼容 shim（只把 `0o700` 改成宽松 mode，不改测试语义）。若会话已是完全权限（full access），按上面的简单形式跑即可。
 
 真实 QGIS HTTP 集成（需要 8765 上的服务）：`tests/test_map_http.py` 默认跳过，设置 `CNS_MAP_TESTS=1` 后运行。
 

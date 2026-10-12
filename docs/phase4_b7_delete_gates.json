@@ -1,7 +1,7 @@
 {
   "generator_schema_version": "phase4-b7r-delete-gates-v4",
   "schema_version": "phase4-b7r-delete-gates-v4",
-  "generated_from_head": "80003303f06fdf98a10560aaf324954d7486c182",
+  "generated_from_head": "68e26742feafd8cfe67e3e429de8e078ca688bba",
   "mode": "report_only_no_deletion",
   "note": "B7R 只报告：即使 ready_for_delete=true 也不删除任何模块，物理删除留给 B8。每项 checks 都是对当前工作区的真实扫描结果；project_state_writer 只由目标 capability 自己拥有的 persistent ProjectState writer 阻塞，canonical/shared/runtime-only 写点保留为非阻塞证据；default_selection 用 default_algorithm_selection() 精确比较，old_fixture_read 由真实 open/read/export/roundtrip 实测得出。",
   "check_semantics": {
@@ -62,10 +62,10 @@
     ]
   },
   "protected_files": {
-    "cns_planner/algorithms/corridor/v1.py": "A8F1DD23F3AE0570E3A86D3ED8CEF7DA2DDD0CA1D0A302433DAE3A82AF2F0402",
-    "cns_planner/algorithms/coverage/geometric_3d.py": "F2FC421253861D2A11FF7FB4F33EFE0D89E0BCC31F9B9536108B203EC40ACAE9",
-    "cns_planner/algorithms/service_capability/v1.py": "79F9C56A97955847B74A5B6EDE244BEFCB8DC77CAF4739DAAD2C2B769BA57C28",
-    "tests/test_cns_corridor.py": "E020D163EF61285BC9F72D946F0C25E82A9F5296EF13B40EA38CA65475706B3F"
+    "cns_planner/algorithms/corridor/v1.py": "A01A250AEA542A3C99D2E217429F740D1E4885226ABC85043637188B0E39191C",
+    "cns_planner/algorithms/coverage/geometric_3d.py": "68F39A884CE173D11AE943A85BDB9F7B66DAEA2F124CDD8E5BC716A745C5F01B",
+    "cns_planner/algorithms/service_capability/v1.py": "4632D2996E2FC59B8D21EC79E98676E1731D87106D53B2B600A9D176F2352A1C",
+    "tests/test_cns_corridor.py": "6C95EA7FCB5CA0F152E215D7B90A7A8948260F32AB9E01A18DB214F5DD0C6451"
   },
   "protected_files_unchanged": true,
   "default_algorithm_selection_snapshot": [
@@ -169,7 +169,7 @@
           "non_blocking_writer_evidence": [
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
-              "line": 251,
+              "line": 262,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "LayeredOperationalAdoptionService",
@@ -178,7 +178,7 @@
             },
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
-              "line": 254,
+              "line": 265,
               "kind": "state_key_method_mutation",
               "result_key": "operational_routes",
               "owner": "LayeredOperationalAdoptionService",
@@ -187,7 +187,7 @@
             },
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
-              "line": 347,
+              "line": 358,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "LayeredOperationalAdoptionService",
@@ -196,7 +196,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 102,
+              "line": 119,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -205,7 +205,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 103,
+              "line": 120,
               "kind": "runtime_compatibility_cache_mutation",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -214,7 +214,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 105,
+              "line": 122,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -341,7 +341,7 @@
           "non_blocking_writer_evidence": [
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
-              "line": 251,
+              "line": 262,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "LayeredOperationalAdoptionService",
@@ -350,7 +350,7 @@
             },
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
-              "line": 254,
+              "line": 265,
               "kind": "state_key_method_mutation",
               "result_key": "operational_routes",
               "owner": "LayeredOperationalAdoptionService",
@@ -359,7 +359,7 @@
             },
             {
               "file": "cns_planner/application/layered_operational_adoption_service.py",
-              "line": 347,
+              "line": 358,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "LayeredOperationalAdoptionService",
@@ -368,7 +368,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 102,
+              "line": 119,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -377,7 +377,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 103,
+              "line": 120,
               "kind": "runtime_compatibility_cache_mutation",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -386,7 +386,7 @@
             },
             {
               "file": "cns_planner/application/route_service.py",
-              "line": 105,
+              "line": 122,
               "kind": "state_key_assignment",
               "result_key": "operational_routes",
               "owner": "RouteService",
@@ -513,7 +513,7 @@
           "non_blocking_writer_evidence": [
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 190,
+              "line": 277,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -522,7 +522,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 558,
+              "line": 643,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -531,7 +531,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 671,
+              "line": 756,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -540,7 +540,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 961,
+              "line": 1194,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -549,7 +549,7 @@
             },
             {
               "file": "cns_planner/application/layered_route_planner_service.py",
-              "line": 1222,
+              "line": 1455,
               "kind": "state_key_assignment",
               "result_key": "layered_route_candidates",
               "owner": "LayeredRoutePlannerService",
@@ -629,56 +629,56 @@
           "items": [
             {
               "file": "cns_planner/application/app_context.py",
-              "line": 386,
+              "line": 485,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.continuous_raster_window",
               "name": "resolve_native_pixel_intervals"
             },
             {
               "file": "cns_planner/application/app_context.py",
-              "line": 488,
+              "line": 591,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.continuous_raster_window",
               "name": "resolve_native_pixel_intervals"
             },
             {
               "file": "cns_planner/application/app_context.py",
-              "line": 786,
+              "line": 958,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.continuous_raster_window",
               "name": "resolve_native_pixel_intervals"
             },
             {
               "file": "cns_planner/application/project_state.py",
-              "line": 62,
+              "line": 71,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.contracts",
               "name": "empty_v3_experimental_session"
             },
             {
               "file": "cns_planner/application/project_state.py",
-              "line": 62,
+              "line": 71,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.contracts",
               "name": "normalize_v3_experiments"
             },
             {
               "file": "cns_planner/application/project_state.py",
-              "line": 62,
+              "line": 71,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.contracts",
               "name": "normalize_v3_planning_policy"
             },
             {
               "file": "cns_planner/application/project_state.py",
-              "line": 65,
+              "line": 74,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_contracts",
               "name": "default_v3_fine_refinement_policy"
             },
             {
               "file": "cns_planner/application/project_state.py",
-              "line": 65,
+              "line": 74,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_contracts",
               "name": "normalize_v3_fine_refinement_policy"
@@ -986,77 +986,77 @@
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 46,
+              "line": 49,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_contracts",
               "name": "AIRSPACE_MAPPING_METHOD"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 46,
+              "line": 49,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_contracts",
               "name": "contract_fingerprint"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "assemble_fine_environment"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "bind_fine_cells_to_parents"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "build_fine_grid_spec"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "build_local_frame"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "building_facts_for_cells"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "fine_cells_from_spec"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "parent_soft_fields_from_risk_contributors"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "terrain_fact_from_pixels"
             },
             {
               "file": "cns_planner/gis/fine_environment_adapter.py",
-              "line": 47,
+              "line": 50,
               "kind": "from_import",
               "module": "cns_planner.route_planner_v3.fine_grid",
               "name": "upsample_soft_fields"
@@ -1077,49 +1077,49 @@
           "items": [
             {
               "file": "cns_planner/api/router.py",
-              "line": 71,
+              "line": 72,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-experiments"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 72,
+              "line": 73,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 73,
+              "line": 74,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/refinement-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 74,
+              "line": 75,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-refinements"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 75,
+              "line": 76,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/continuous-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 76,
+              "line": 77,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-validations"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 77,
+              "line": 78,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-adoptions"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 78,
+              "line": 79,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-publish"
             }
@@ -1762,61 +1762,61 @@
           "items": [
             {
               "file": "cns_planner/api/router.py",
-              "line": 68,
+              "line": 69,
               "kind": "runtime_api_route",
               "endpoint": "/api/compatibility/catalog"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 71,
+              "line": 72,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-experiments"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 72,
+              "line": 73,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 73,
+              "line": 74,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/refinement-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 74,
+              "line": 75,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-refinements"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 75,
+              "line": 76,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3/continuous-readiness"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 76,
+              "line": 77,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-validations"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 77,
+              "line": 78,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-adoptions"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 78,
+              "line": 79,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/route-planner-v3-operational-publish"
             },
             {
               "file": "cns_planner/api/router.py",
-              "line": 79,
+              "line": 80,
               "kind": "runtime_api_route",
               "endpoint": "/api/research/v3-cns-assessment"
             }
@@ -1845,7 +1845,7 @@
           "non_blocking_writer_evidence": [
             {
               "file": "cns_planner/application/closed_loop_service.py",
-              "line": 224,
+              "line": 231,
               "kind": "state_key_assignment",
               "result_key": "cns_gap_analysis_v2",
               "owner": "rerun_p7_p10_chain",
