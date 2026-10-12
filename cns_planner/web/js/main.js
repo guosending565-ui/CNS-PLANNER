@@ -238,14 +238,30 @@ function rebuildGridRenderCache(){
 //: 明细外置，首屏时该索引为空，因此这些入口都必须先确保几何就绪。
 let gridGeometryRestore=null;
 let gridGeometryLastOutcome=null;
+//: BUG-R37A-002：竞态裁决（superseded）不是失败。首次勾选恰好被并发明细请求作废时，
+//: 允许有限次自动重试，否则图层会永久停在"勾了但画不出来"。
+let gridGeometryRetries=0;
 function ensureGridGeometry(){
   if(gridRenderCache.cells.length)return Promise.resolve(gridRenderCache);
   if(gridGeometryRestore)return gridGeometryRestore;
   gridGeometryRestore=Promise.resolve(snapshotApplier.hydrateGridDetail())
-    .then(outcome=>{gridGeometryLastOutcome=outcome??null;return outcome;})
+    .then(outcome=>{
+      gridGeometryLastOutcome=outcome??null;
+      const applied=outcome===undefined||outcome===null?true:Boolean(outcome.applied);
+      const superseded=Boolean(outcome&&outcome.reason==='superseded');
+      if(applied&&!superseded)gridGeometryRetries=0;
+      else if(superseded&&gridGeometryRetries<2){
+        gridGeometryRetries+=1;
+        // 等 finally 清掉重入标记后再发起，避免被 gridGeometryRestore 直接短路。
+        setTimeout(()=>{if(!gridRenderCache.cells.length)ensureGridGeometry();},0);
+      }
+      updateGridNotice();
+      return outcome;
+    })
     .catch(exc=>{
       gridGeometryLastOutcome={error:String(exc?.message||exc)};
       showError('网格几何明细恢复失败：'+(exc?.message||exc));
+      updateGridNotice();
       return null;
     })
     .finally(()=>{gridGeometryRestore=null;});
@@ -442,8 +458,22 @@ const fitRouteButton=$('fitRoute');
 if(fitRouteButton)fitRouteButton.onclick=()=>fitOperationalRoute();
 function updateGridNotice(){
   const notice=$('gridNotice');if(!notice)return;
-  const hasGrid=flow?.grid?.status==='passed'&&gridRenderCache.cells.length>0;
-  notice.hidden=!gridDisplay.outline||hasGrid;notice.textContent='请先在第02步保存工作区以生成标准网格';
+  if(!gridDisplay.outline){notice.hidden=true;return;}
+  // BUG-R37A-002：这里必须区分"网格还没生成"与"网格已生成、逐格几何尚未按需 hydrate"。
+  // 旧实现的判据只有 `gridRenderCache.cells.length>0`，于是把后者渲染成
+  // 「请先在第02步保存工作区以生成标准网格」—— 把"几何未加载"误报成"工作区未保存"，
+  // 用户去第02步重存也修不好。三态口径：就绪 → 隐藏；已生成待 hydrate → 明确说明；
+  // 其余（未保存 / 未生成）→ 保留原提示。
+  if(gridRenderCache.cells.length>0){notice.hidden=true;return;}
+  const declared=flow?.grid?.detail_available===true||Number(flow?.grid?.cell_count)>0;
+  if(flow?.grid?.status==='passed'&&declared){
+    notice.textContent=gridGeometryLastOutcome&&gridGeometryLastOutcome.error
+      ?'标准网格已生成，但逐格几何加载失败：'+gridGeometryLastOutcome.error
+      :'标准网格已生成，正在按需加载逐格几何…';
+    notice.hidden=false;
+    return;
+  }
+  notice.textContent='请先在第02步保存工作区以生成标准网格';notice.hidden=false;
 }
 function updateGridThemeLegend(){
   if(constraintView.updateLegend())return;
@@ -478,6 +508,10 @@ function syncLayerControls(){
   bindLayerControls({
     $,layerIds:LAYER_IDS,queue,paint,
     setGridOutline(value){gridDisplay.outline=value;},
+    // BUG-R37A-002：勾选「标准规划网格」是"首次需要网格几何"的产品入口，必须按需
+    // hydrate 逐格几何；否则专题 / 边界画不出来，点击也没有格详情 popup。
+    // 这里只做触发，成败由 ensureGridGeometry 内部的诊断与提示承担。
+    onGridLayer:()=>{if($('gridLayer')?.checked)ensureGridGeometry();},
     updateGridNotice,updateGridThemeLegend,updateMapLegend:()=>refreshLegends(),
     onOnlineTiles:()=>onlineTiles.update(view,...size(),$('online').checked),
     // 勾选「高度层障碍」才按需读取逐格明细；取消勾选只停止绘制，不丢已读数据。
@@ -641,7 +675,9 @@ function stepBindings(){return {
   // 约束场（高度层障碍）展示层入口：选择高度层只切展示、不重算；生成必须显式点击。
   // 绑定细节全部在 workflow/constraint_view.js，main.js 只做一次转发。
   constraintField:constraintView.stepBindings(resourceAction,refreshWorkflow),
-  setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;updateGridNotice();paint();},
+  // BUG-R37A-002：第02步的「标准网格」勾选框是同一能力的第二个入口，同样必须先
+  // 按需补齐逐格几何，否则会出现"从这里开图层能画、从图层抽屉开就画不出来"的分叉。
+  setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;if(value)ensureGridGeometry();updateGridNotice();paint();},
   setGridTheme(value){gridDisplay.theme=value;updateGridThemeLegend();paint();},remapPopulation:async()=>{const data=await resourceAction('/api/workspace/grid/population/remap',{});await applyWorkflowSnapshot(data);renderWorkflow();paint();return data;},
   startWorkspace(){interactionMode='workspace';measure.sync();draftWorkspace=null;panelError('请在地图上按住并拖出矩形工作区');},
   clearWorkspace:async()=>{if(!Step02.confirmWorkspaceClear(flow))return;draftWorkspace=null;interactionMode='pan';measure.sync();await mutate('workspace-clear');},// BUG-WORKSPACE-CLEAR-002：破坏性操作执行前二次确认

@@ -197,6 +197,19 @@ class ApplicationContext:
         self.configure_vertical_transition_validation_sources()
         self.configure_radar_surveillance_layout_sources()
         self.configure_surface_classification_sources()
+        # BUG-R37A-001：这些 runtime 绑定是 currentness 只读投影的**真实输入**
+        # （layered route validation 的 evidence adapter、surface classification 的
+        # land-mask 路径等），但它们**不进入 ProjectState**：既不递增 `revision`，
+        # 也不改变 `_snapshot_structure_key`。而冷启动时 `ApplicationContext` 已经
+        # 在绑定之前构建过一份快照（MapData 的 workflow_provider 与数据源登记都会
+        # 触发 `WorkflowService.snapshot()`），那份投影把同一条验证/采纳判成
+        # `stale_candidate` / `stale_validation`。若不在绑定完成后重建，缓存会一直
+        # 下发它，而专用只读接口（每次新鲜投影）给出 `current` —— 用户侧表现为
+        # Step05「工程演示只读模式」判定为 false、联合诊断按钮禁用（能力静默消失）。
+        #
+        # 这里**只**丢弃缓存，不改写任何字段、不递增 revision、不做手动保存：
+        # 下一次读取自行按现在的输入重新投影。
+        self.workflow.invalidate_snapshot_cache()
         return self.workflow
 
     def configure_map_figures(self):
