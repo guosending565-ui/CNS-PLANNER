@@ -140,6 +140,7 @@ class Visualization3DService:
         terrain = self.terrain_source.describe() if self.terrain_source else None
         geoid = self.geoid.describe() if self.geoid else None
         demo = self._current_demo_adoption() or {}
+        p17 = self.state.get("continuous_service_acceptability") or {}
         imagery = self.imagery_service.configuration() if self.imagery_service else None
         terrain_tiles = self.terrain_tile_source.layer_json(
             "/api/visualization-3d/terrain") if self.terrain_tile_source else None
@@ -150,6 +151,11 @@ class Visualization3DService:
             "geoid_sha256": (geoid or {}).get("sha256"),
             "demo_projection_fingerprint": demo.get("projection_fingerprint"),
             "demo_adoption_id": demo.get("adoption_id"),
+            "continuous_service_acceptability": {
+                "status": p17.get("status"),
+                "algorithm_version": p17.get("algorithm_version"),
+                "input_fingerprint": p17.get("input_fingerprint"),
+            },
             "canonical_route_fingerprints": [
                 entry["identity"]["fingerprint"] for entry in self._canonical_route_entries()
             ],
@@ -874,13 +880,29 @@ class Visualization3DService:
                  "单面阵绝不渲染成全向；LOS 一律 unknown（terrain_los_not_persisted）"],
                 OBJECT_ID_PREFIXES["radar_panel"],
             ),
-            self._reserved_layer(
-                "protection_volumes", "航路三维保护体与监视缺口", "corridor_halfwidth_volume",
-                ["本轮未实现；合同已预留 ID 与 scope",
-                 "权威边界只来自 operational_routes → P14 → P17，本服务不设置任何新半径",
-                 "P17 corridor 与当前几何指纹不匹配时**不得**强行套用保护区"],
-                OBJECT_ID_PREFIXES["protection_corridor"],
-            ),
+            {
+                "id": "protection_volumes",
+                "label": "P17 航路保护走廊",
+                "status": "available",
+                "reserved": False,
+                "default_on": False,
+                "count": len(_items(
+                    (self.state.get("continuous_service_acceptability") or {}).get("routes"))),
+                "object_id_prefix": OBJECT_ID_PREFIXES["protection_corridor"],
+                "geometry_semantics": "p17_horizontal_corridor_with_evidenced_vertical_policy",
+                "source_identity": {
+                    "state_key": "continuous_service_acceptability.routes[].corridor",
+                    "provenance_level": "production_container_readonly_historical_allowed",
+                    "radius_authority": "corridor.outer_half_width_m",
+                },
+                "detail_endpoint": "/api/visualization-3d/protection-volumes",
+                "notes": [
+                    "历史 P17 只有与路线几何身份精确匹配时才显示",
+                    "缺少确认上下界时只显示水平边界和名义高度切片",
+                    "工程示意必须由用户显式选择路线并输入宽度和上下高度",
+                ],
+                "items": [],
+            },
             self._reserved_layer(
                 "simulated_intrusion", "入侵目标预警演示（模拟）", "simulated_track_three_column",
                 ["本轮未实现；合同已预留 ID 与 scope",
@@ -1601,6 +1623,112 @@ class Visualization3DService:
             for item in (coverage.get("routes") or [])
         ]
         return block
+
+    # ------------------------------------------------------- protection volumes
+
+    def protection_volumes(self, query=None):
+        """P17 历史结果与隔离工程示意的只读投影。"""
+
+        from ..domain.cns_continuous_service import CONTINUOUS_SERVICE_ALGORITHM_VERSION
+        from .visualization_3d_intrusion_contract import formal_intrusion_contract
+        from .visualization_3d_protection_volume import (
+            ProtectionVolumeInputError,
+            build_engineering_preview,
+            project_p17_protection_volumes,
+        )
+
+        query = query or {}
+        demo = self._demo_route_entry()
+        entries = ([demo] if demo else []) + self._canonical_route_entries()
+        mode = str(_first(query, "mode") or "project_result").strip()
+        if mode == "project_result":
+            payload = project_p17_protection_volumes(
+                self.state, entries,
+                current_algorithm_version=CONTINUOUS_SERVICE_ALGORITHM_VERSION,
+            )
+            payload.update({
+                "generated_at": _now(),
+                "revision": self._revision(),
+                **self._scope_block(),
+                "vertical_reference": self._vertical_reference_block(),
+                "intrusion_contract": formal_intrusion_contract(
+                    self.state, payload.get("volumes") or []),
+            })
+            return payload
+        if mode != "engineering_scenario_preview":
+            raise Visualization3DUnavailable(
+                "protection_volume_mode_invalid",
+                "保护走廊模式无效",
+                allowed_modes=["project_result", "engineering_scenario_preview"],
+            )
+
+        required_fields = (
+            "route_geometry_fingerprint", "half_width_m",
+            "lower_altitude_m", "upper_altitude_m",
+        )
+        route_options = [{
+            "route_id": row.get("route_id"),
+            "authority": row.get("authority"),
+            "status": row.get("status"),
+            "route_geometry_identity": row.get("identity"),
+            "point_count": (row.get("identity") or {}).get("point_count"),
+        } for row in entries]
+        missing = [field for field in required_fields
+                   if _first(query, field) in (None, "")]
+        if missing:
+            return {
+                "schema_version": "visualization-3d-protection-volumes/v1",
+                "mode": mode,
+                "status": "not_calculated",
+                "selection_required": True,
+                "required_inputs": list(required_fields),
+                "missing_inputs": missing,
+                "default_values": {},
+                "route_options": route_options,
+                "volumes": [],
+                "volume_count": 0,
+                "disclaimer": "自定义保护区示意，非已确认 P17 结果",
+                "revision": self._revision(),
+                "read_only": True,
+                "writes_performed": 0,
+                "algorithms_invoked": [],
+            }
+        fingerprint = str(_first(query, "route_geometry_fingerprint") or "")
+        route = next((row for row in entries
+                      if str((row.get("identity") or {}).get("fingerprint")) == fingerprint), None)
+        if route is None:
+            raise Visualization3DUnavailable(
+                "protection_volume_route_not_found",
+                "未找到用户选择的航路几何身份",
+                route_geometry_fingerprint=fingerprint,
+            )
+        try:
+            preview = build_engineering_preview(
+                route,
+                half_width_m=_first(query, "half_width_m"),
+                lower_altitude_m=_first(query, "lower_altitude_m"),
+                upper_altitude_m=_first(query, "upper_altitude_m"),
+            )
+        except ProtectionVolumeInputError as exc:
+            raise Visualization3DUnavailable(
+                "protection_volume_preview_invalid", str(exc)) from exc
+        return {
+            "schema_version": "visualization-3d-protection-volumes/v1",
+            "mode": mode,
+            "status": "engineering_preview",
+            "selection_required": False,
+            "required_inputs": list(required_fields),
+            "default_values": {},
+            "route_options": route_options,
+            "volumes": [preview],
+            "volume_count": 1,
+            "disclaimer": preview["disclaimer"],
+            "revision": self._revision(),
+            "vertical_reference": self._vertical_reference_block(),
+            "read_only": True,
+            "writes_performed": 0,
+            "algorithms_invoked": [],
+        }
 
     # ------------------------------------------------------------------ routes
 

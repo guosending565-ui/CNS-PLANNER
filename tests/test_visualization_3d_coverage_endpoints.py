@@ -383,10 +383,15 @@ def test_manifest_lists_coverage_layers_as_available_not_reserved():
     assert layers["rid_footprints"]["status"] == "available"
     assert layers["rid_footprints"]["detail_endpoint"] == (
         "/api/visualization-3d/rid-footprints")
-    # 尚未实现的三类仍然保持 reserved，绝不假装已实现。
-    for layer_id in ("radar_volumes", "protection_volumes"):
+    # 尚未在本测试对应轮次实现的 Radar 仍保持 reserved，绝不假装已实现。
+    for layer_id in ("radar_volumes",):
         assert layers[layer_id]["status"] == "not_implemented"
         assert layers[layer_id]["reserved"] is True
+    assert layers["protection_volumes"]["status"] == "available"
+    assert layers["protection_volumes"]["reserved"] is False
+    assert layers["protection_volumes"]["default_on"] is False
+    assert layers["protection_volumes"]["detail_endpoint"] == (
+        "/api/visualization-3d/protection-volumes")
     assert layers["simulated_intrusion"]["status"] == "reserved_simulated"
     assert layers["simulated_intrusion"]["reserved"] is True
     assert manifest["object_id_prefixes"]["communication_volume"] == "comm-volume:"

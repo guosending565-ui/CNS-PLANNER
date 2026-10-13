@@ -417,6 +417,8 @@ class ApiRouter:
         "/api/visualization-3d/rid-footprints": "rid-footprints",
         # Round37-T3D-2B：Radar 方向性三维覆盖（只读几何，零写入）。
         "/api/visualization-3d/radar-volumes": "radar-volumes",
+        # Round37-T3D-3A：P17 历史保护走廊 / 隔离工程示意（只读、零写入）。
+        "/api/visualization-3d/protection-volumes": "protection-volumes",
     }
 
     #: 地形 / 晕渲派生资源的缓存策略：它们是**确定性派生**产物（同 z/x/y 与同一
@@ -617,6 +619,20 @@ class ApiRouter:
                     {"seed": service.identity_seed(), "action": action,
                      "query": sorted((str(k), str(v)) for k, v in query.items())},
                     prefix="vis3dradarvolumesv1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return self._not_modified(etag, self.CACHE_NONE)
+                payload["etag"] = etag
+                return Response(payload, headers={
+                    "ETag": f'"{etag}"', "Cache-Control": self.CACHE_NONE,
+                })
+
+            if action == "protection-volumes":
+                payload = service.protection_volumes(query)
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": action,
+                     "query": sorted((str(k), str(v)) for k, v in query.items())},
+                    prefix="vis3dprotectionvolumesv1-",
                 )
                 if self._etag_matches(headers, etag):
                     return self._not_modified(etag, self.CACHE_NONE)

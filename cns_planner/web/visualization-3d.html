@@ -32,11 +32,12 @@
   code{font:10px Consolas,monospace;word-break:break-all}.dim{color:var(--dim)}.warn{color:var(--warn)}
   .err{color:var(--danger)}.ok-text{color:var(--ok)}#imageryStatus{margin:6px 0;font-size:11px}
   .row{display:flex;gap:6px;margin:4px 0}
-  #radarPreviewControls select,#radarPreviewControls input[type=number]{max-width:112px;
+  #radarPreviewControls select,#radarPreviewControls input[type=number],
+  #protectionPreviewControls select,#protectionPreviewControls input[type=number]{max-width:112px;
     color:var(--text);background:#112536;border:1px solid var(--line);border-radius:6px;
     padding:2px 4px;font-size:11px}
   #radarPanelList label{align-items:flex-start;font-size:11px}
-  #radarPreviewDisclaimer{margin-top:5px;font-size:11px;border-top:1px solid var(--line);
+  #radarPreviewDisclaimer,#protectionPreviewDisclaimer{margin-top:5px;font-size:11px;border-top:1px solid var(--line);
     padding-top:5px}
   #log{max-height:92px;overflow:auto;color:var(--dim);font:10px/1.35 Consolas,monospace}
   #popup{position:absolute;display:none;z-index:20;max-width:340px;padding:10px}.close{float:right;cursor:pointer}
@@ -73,6 +74,24 @@
       <button id="radarPreviewClear">清除示意</button></div>
     <div id="radarPreviewNote" class="dim"></div>
     <div id="radarPreviewDisclaimer" class="warn">设备参数示意，非已采纳布设，非已确认探测覆盖</div>
+  </div>
+  <h2>P17 航路保护区</h2>
+  <div id="protectionResultNote" class="dim">未开启。勾选上方「P17 航路保护区」后按需请求。</div>
+  <div id="protectionPanelList" class="dim"></div>
+  <h2>自定义保护区示意（与 P17 隔离）</h2>
+  <div id="protectionPreviewControls">
+    <div class="row"><button id="protectionPreviewLoad">加载航路身份</button></div>
+    <label>航路<select id="protectionPreviewRoute"><option value="">请选择航路…</option></select></label>
+    <label>水平半宽 m<input id="protectionPreviewWidth" type="number" min="0.001"
+      max="100000" step="1" placeholder="必须输入"></label>
+    <label>下界正高 m<input id="protectionPreviewLower" type="number" min="-1000"
+      max="19999.999" step="1" placeholder="必须输入"></label>
+    <label>上界正高 m<input id="protectionPreviewUpper" type="number" min="-999.999"
+      max="20000" step="1" placeholder="必须输入"></label>
+    <div class="row"><button id="protectionPreviewBuild">生成示意</button>
+      <button id="protectionPreviewClear">清除示意</button></div>
+    <div id="protectionPreviewNote" class="dim"></div>
+    <div id="protectionPreviewDisclaimer" class="warn">自定义保护区示意，非已确认 P17 结果</div>
   </div>
   <h2>画质</h2>
   <label>细化档位

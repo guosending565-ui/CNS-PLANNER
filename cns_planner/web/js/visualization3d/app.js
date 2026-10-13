@@ -30,6 +30,13 @@ import {
   addRadarPreviewEntities,
   addRadarVolumeEntities,
 } from './radar_volume.js';
+import {
+  PROTECTION_PREVIEW_DISCLAIMER,
+  addProtectionPreviewEntities,
+  addProtectionVolumeEntities,
+  protectionBoundaryPoints,
+  removeProtectionEntities,
+} from './protection_volume.js';
 
 const API = '/api/visualization-3d';
 
@@ -785,7 +792,8 @@ function renderLayers() {
     ['rid', 'RID 陆海非正圆覆盖', BUSINESS_LAYER_DEFAULTS.rid, 'business'],
     ['radar', 'Radar 方向性覆盖（工程几何楔体）', BUSINESS_LAYER_DEFAULTS.radar,
       'business'],
-    ['protection', '航路保护体', BUSINESS_LAYER_DEFAULTS.protection, 'reserved'],
+    ['protection', 'P17 航路保护区（历史/缺证分明）', BUSINESS_LAYER_DEFAULTS.protection,
+      'business'],
     ['intrusion', '模拟入侵目标', BUSINESS_LAYER_DEFAULTS.intrusion, 'reserved'],
   ];
   $('layerList').innerHTML = controls.map(([id, label, checked, kind]) =>
@@ -1099,7 +1107,7 @@ async function boot() {
     const groups = {
       routeDemo: [], routeCanonical: [], towersKnown: [], towersUnknown: [],
       facilities: [], buildings: [], terrain: [], communication: [], rid: [],
-      radar: [], radarPreview: [],
+      radar: [], radarPreview: [], protection: [], protectionPreview: [],
     };
     S.groups = groups;
     let routeContextPromise = null;
@@ -1246,6 +1254,32 @@ async function boot() {
               (row) => `${row.part}=${row.reason}`).join('、'), 'warn');
         }
         // 交给 LazyLayerRegistry：整体开关必须尊重每个面阵各自的开关状态。
+        return { entities: result.entities, setVisible: result.setVisible };
+      },
+      // P17：真实持久化结果与用户工程示意分属两条数据面。这里只加载 project_result；
+      // 当前 demo 若与历史路线身份不符，只生成红色冲突锚点，绝不迁移 990 m 走廊。
+      protection: async () => {
+        const payload = await getJSON(`${API}/protection-volumes`);
+        S.protection = payload;
+        const points = protectionBoundaryPoints(payload.volumes || []);
+        const geoid = await ensureGeoidWindow(points, 0);
+        const result = addProtectionVolumeEntities(
+          viewer, payload.volumes || [], { Cesium, undulationAt });
+        groups.protection = result.entities;
+        S.protectionGroups = result.groups;
+        S.protectionDiagnostics = { geoid_window: geoid, ...result.diagnostics };
+        renderProtectionPanelList();
+        const note = $('protectionResultNote');
+        if (note) {
+          const available = payload.available_horizontal_count || 0;
+          const conflicts = (payload.volumes || []).filter(
+            (row) => row.status === 'geometry_version_conflict').length;
+          note.textContent = `历史 P17 水平切片 ${available}；当前 demo 几何冲突 ${conflicts}；`
+            + '未确认垂直范围不生成正式三维体。';
+          note.className = conflicts ? 'warn' : 'dim';
+        }
+        log(`P17 保护区：${payload.status}，历史水平切片 ${payload.available_horizontal_count || 0}，`
+          + `blocked ${payload.blocked_count || 0}（geoid 窗口 ${geoid.status}）`);
         return { entities: result.entities, setVisible: result.setVisible };
       },
     });
@@ -1395,6 +1429,128 @@ async function boot() {
     const disclaimer = $('radarPreviewDisclaimer');
     if (disclaimer) disclaimer.textContent = RADAR_PREVIEW_DISCLAIMER;
     renderRadarPanelList();
+
+    // ---- P17 工程示意：必须显式选路线并输入宽度/上下高度 ----------------------
+    function setProtectionPreviewNote(text, cls) {
+      const node = $('protectionPreviewNote');
+      if (!node) return;
+      node.textContent = text || '';
+      node.className = cls || 'dim';
+    }
+
+    function clearProtectionPreviewEntities() {
+      removeProtectionEntities(viewer, groups.protectionPreview || []);
+      groups.protectionPreview = [];
+      S.protectionPreviewGroups = [];
+    }
+
+    function fillProtectionRoutes(options) {
+      const select = $('protectionPreviewRoute');
+      if (!select) return;
+      select.innerHTML = '<option value="">请选择航路…</option>' + (options || []).map((row) => {
+        const identity = row.route_geometry_identity || {};
+        return `<option value="${identity.fingerprint || ''}">${row.route_id || '—'} · `
+          + `${row.authority || '—'} · ${identity.point_count || row.point_count || '—'} 点 · `
+          + `${row.status || 'unknown'}</option>`;
+      }).join('');
+    }
+
+    async function loadProtectionPreviewRoutes() {
+      setProtectionPreviewNote('正在读取可选航路身份…');
+      const payload = await getJSON(
+        `${API}/protection-volumes?mode=engineering_scenario_preview`);
+      S.protectionPreviewOptions = payload;
+      fillProtectionRoutes(payload.route_options || []);
+      setProtectionPreviewNote('请选择航路并手工输入半宽及上下正高；系统不预填权威数值。');
+    }
+
+    async function buildProtectionPreview() {
+      const route = $('protectionPreviewRoute');
+      const width = $('protectionPreviewWidth');
+      const lower = $('protectionPreviewLower');
+      const upper = $('protectionPreviewUpper');
+      if (!route || !route.value || !width || width.value === ''
+          || !lower || lower.value === '' || !upper || upper.value === '') {
+        setProtectionPreviewNote('必须主动选择航路，并填写水平半宽、下界和上界。', 'warn');
+        return;
+      }
+      const query = new URLSearchParams({
+        mode: 'engineering_scenario_preview',
+        route_geometry_fingerprint: route.value,
+        half_width_m: width.value,
+        lower_altitude_m: lower.value,
+        upper_altitude_m: upper.value,
+      });
+      const payload = await getJSON(`${API}/protection-volumes?${query.toString()}`);
+      clearProtectionPreviewEntities();
+      const points = protectionBoundaryPoints(payload.volumes || []);
+      await ensureGeoidWindow(points, 0);
+      const result = addProtectionPreviewEntities(
+        viewer, payload.volumes || [], { Cesium, undulationAt });
+      groups.protectionPreview = result.entities;
+      S.protectionPreviewGroups = result.groups;
+      S.protectionPreview = payload;
+      setProtectionPreviewNote(
+        `已生成隔离示意：半宽 ${payload.volumes[0].horizontal_half_width_m} m，`
+        + `高度 ${payload.volumes[0].lower_altitude_m}–${payload.volumes[0].upper_altitude_m} m。`,
+        'ok-text');
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+    }
+
+    function clearProtectionPreview() {
+      clearProtectionPreviewEntities();
+      S.protectionPreview = null;
+      setProtectionPreviewNote('已清除工程示意；历史 P17 图层不受影响。');
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+    }
+
+    const protectionLoad = $('protectionPreviewLoad');
+    if (protectionLoad) protectionLoad.onclick = () => loadProtectionPreviewRoutes()
+      .catch((error) => setProtectionPreviewNote(`读取航路失败：${error.message}`, 'err'));
+    const protectionBuild = $('protectionPreviewBuild');
+    if (protectionBuild) protectionBuild.onclick = () => buildProtectionPreview()
+      .catch((error) => setProtectionPreviewNote(`生成示意失败：${error.message}`, 'err'));
+    const protectionClear = $('protectionPreviewClear');
+    if (protectionClear) protectionClear.onclick = clearProtectionPreview;
+    const protectionDisclaimer = $('protectionPreviewDisclaimer');
+    if (protectionDisclaimer) protectionDisclaimer.textContent = PROTECTION_PREVIEW_DISCLAIMER;
+
+    function protectionLayerEnabled() {
+      const input = $('ly_protection');
+      return Boolean(input && input.checked);
+    }
+
+    function renderProtectionPanelList() {
+      const node = $('protectionPanelList');
+      if (!node) return;
+      const rows = S.protectionGroups || [];
+      if (!rows.length) {
+        node.innerHTML = '<div class="dim">未开启。开启后逐项列出 historical/stale 与冲突。</div>';
+        return;
+      }
+      node.innerHTML = rows.map((group, index) => {
+        const label = group.status === 'historical_stale'
+          ? '历史 P17 水平切片（stale）'
+          : `缺证：${group.status}`;
+        return `<label><input type="checkbox" id="protection_group_${index}" `
+          + `${group.visible ? 'checked' : ''}> <span>${group.route_id || '—'} · ${label}</span></label>`;
+      }).join('');
+      rows.forEach((group, index) => {
+        const input = $(`protection_group_${index}`);
+        if (!input) return;
+        input.onchange = () => {
+          group.visible = input.checked;
+          for (const entity of group.entities) {
+            entity.show = protectionLayerEnabled() && group.visible;
+          }
+          S.stats.entities = viewer.entities.values.length;
+          renderStatus();
+        };
+      });
+    }
+    renderProtectionPanelList();
 
     const bindBase = (id, setter) => {
       const input = $(`ly_${id}`);
@@ -1681,19 +1837,56 @@ window.__CNS_3D__ = {
     const result = { communication: { total: 0, shown: 0 },
                      rid: { total: 0, shown: 0 },
                      radar: { total: 0, shown: 0 },
-                     radar_preview: { total: 0, shown: 0 } };
+                     radar_preview: { total: 0, shown: 0 },
+                     protection: { total: 0, shown: 0 },
+                     protection_preview: { total: 0, shown: 0 } };
     for (const entity of S.viewer.entities.values) {
       const info = entity.__cns;
       if (!info) continue;
       const bucket = info.kind === 'communication-volume' ? result.communication
         : (info.kind === 'rid-footprint' ? result.rid
           : (info.kind === 'radar-panel'
-            ? (info.preview ? result.radar_preview : result.radar) : null));
+            ? (info.preview ? result.radar_preview : result.radar)
+            : (info.kind === 'p17-protection' ? result.protection
+              : (info.kind === 'protection-preview' ? result.protection_preview : null))));
       if (!bucket) continue;
       bucket.total += 1;
       if (entity.show) bucket.shown += 1;
     }
     return result;
+  },
+  /** 验收辅助：P17 历史/冲突与工程示意的隔离证据。 */
+  protectionStats() {
+    const groupsOf = (groups) => (groups || []).map((group) => ({
+      object_id: group.object_id,
+      route_id: group.route_id,
+      status: group.status,
+      historical: group.historical,
+      preview: group.preview,
+      entity_count: group.entities.length,
+      visible: group.visible,
+      shown: group.entities.filter((entity) => entity.show).length,
+    }));
+    return {
+      project: S.protection || null,
+      preview: S.protectionPreview || null,
+      project_groups: groupsOf(S.protectionGroups),
+      preview_groups: groupsOf(S.protectionPreviewGroups),
+      diagnostics: S.protectionDiagnostics || null,
+      viewer_identity_stable: Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer,
+    };
+  },
+  setProtectionGroupVisible(index, value) {
+    const group = (S.protectionGroups || [])[Number(index) || 0];
+    if (!group) return false;
+    group.visible = Boolean(value);
+    const layerInput = $('ly_protection');
+    for (const entity of group.entities) {
+      entity.show = Boolean(layerInput && layerInput.checked && group.visible);
+    }
+    const input = $(`protection_group_${Number(index) || 0}`);
+    if (input) input.checked = group.visible;
+    return true;
   },
   /** 验收辅助：Radar 图层的**只读**证据（真实面阵 + 隔离的设备参数示意）。 */
   radarStats() {

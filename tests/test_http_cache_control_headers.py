@@ -139,6 +139,7 @@ def header_values(header_list, name):
     "/api/visualization-3d/communication-volumes",
     "/api/visualization-3d/rid-footprints",
     "/api/visualization-3d/radar-volumes",
+    "/api/visualization-3d/protection-volumes",
     "/api/visualization-3d/manifest",
     "/api/visualization-3d/routes",
     "/api/visualization-3d/terrain-window",
@@ -159,6 +160,7 @@ def test_state_and_diagnostic_endpoints_are_not_cached(http_server):
     for path in ("/api/visualization-3d/communication-volumes",
                  "/api/visualization-3d/rid-footprints",
                  "/api/visualization-3d/radar-volumes",
+                 "/api/visualization-3d/protection-volumes",
                  "/api/visualization-3d/imagery/config"):
         _status, header_list, _body = raw_get(http_server, path)
         assert header_values(header_list, "Cache-Control") == ["no-store"], path
