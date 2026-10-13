@@ -31,6 +31,13 @@
   td{padding:2px 0;vertical-align:top;word-break:break-word}td:first-child{width:42%;color:var(--dim)}
   code{font:10px Consolas,monospace;word-break:break-all}.dim{color:var(--dim)}.warn{color:var(--warn)}
   .err{color:var(--danger)}.ok-text{color:var(--ok)}#imageryStatus{margin:6px 0;font-size:11px}
+  .row{display:flex;gap:6px;margin:4px 0}
+  #radarPreviewControls select,#radarPreviewControls input[type=number]{max-width:112px;
+    color:var(--text);background:#112536;border:1px solid var(--line);border-radius:6px;
+    padding:2px 4px;font-size:11px}
+  #radarPanelList label{align-items:flex-start;font-size:11px}
+  #radarPreviewDisclaimer{margin-top:5px;font-size:11px;border-top:1px solid var(--line);
+    padding-top:5px}
   #log{max-height:92px;overflow:auto;color:var(--dim);font:10px/1.35 Consolas,monospace}
   #popup{position:absolute;display:none;z-index:20;max-width:340px;padding:10px}.close{float:right;cursor:pointer}
   #boot{position:absolute;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;
@@ -49,6 +56,24 @@
   <div id="reliefStatus" class="dim"></div>
   <h2>基础地理</h2>
   <div id="layerList"></div>
+  <h2>Radar 真实规划面阵</h2>
+  <div id="radarPanelList" class="dim">未开启。勾选上方「Radar 方向性覆盖」后按需请求。</div>
+  <h2>设备参数示意（与规划结果隔离）</h2>
+  <div id="radarPreviewControls">
+    <div class="row"><button id="radarPreviewLoad">加载候选站位</button></div>
+    <label>站位<select id="radarPreviewTower"></select></label>
+    <label>型号<select id="radarPreviewType">
+      <option value="radar_i" selected>中近程雷达Ⅰ型</option>
+      <option value="radar_ii">中近程雷达Ⅱ型</option>
+    </select></label>
+    <label>预览方位角<input id="radarPreviewAzimuth" type="number" min="0" max="360"
+      step="1" value="45"></label>
+    <label><input type="checkbox" id="radarPreviewAck"> 使用塔顶派生正高（未确认，仅示意）</label>
+    <div class="row"><button id="radarPreviewBuild">生成示意</button>
+      <button id="radarPreviewClear">清除示意</button></div>
+    <div id="radarPreviewNote" class="dim"></div>
+    <div id="radarPreviewDisclaimer" class="warn">设备参数示意，非已采纳布设，非已确认探测覆盖</div>
+  </div>
   <h2>画质</h2>
   <label>细化档位
     <select id="quality"><option value="normal" selected>正常</option><option value="high">高清</option></select>

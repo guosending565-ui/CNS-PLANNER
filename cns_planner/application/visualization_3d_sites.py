@@ -246,6 +246,153 @@ def effective_radius_for(unit, surface_class):
     return effective_radius_m(unit.get("geometry") or {}, surface_class)
 
 
+# ------------------------------------------------------------------ Radar 面阵
+
+
+def tower_profile_index(state):
+    """``tower_obstacle_profiles.items`` 的 tower_id → 档案索引。
+
+    该容器**不是**外置 scope，因此磁盘上的 ProjectState 就带着全部塔顶派生事实。
+    ``items`` 既可能是列表也可能是以 tower_id 为键的字典（历史两种形态都存在），
+    两种都按 tower_id 归一化，避免任何一方被判成"没有塔顶证据"。
+    """
+
+    block = (state or {}).get("tower_obstacle_profiles")
+    raw = block.get("items") if isinstance(block, dict) else None
+    index = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if isinstance(value, dict):
+                index[str(value.get("tower_id") or key)] = value
+    for value in items_of(block):
+        if isinstance(value, dict) and value.get("tower_id") is not None:
+            index.setdefault(str(value.get("tower_id")), value)
+    return index
+
+
+def radar_panel_origin(tower_profile):
+    """Radar 相位中心原点的**只读**解析（EGM2008 正高）与确认语义。
+
+    返回 ``(origin_m, status, reason, source, evidence_level)``：
+
+    * ``tower_top_orthometric_m`` 有值且 ``confirmed is True`` ⇒ ``confirmed``；
+    * 有值但未确认 ⇒ ``unconfirmed``（可展示，但**必须**标注，且绝不允许被当作
+      已确认安装高度）；
+    * 没有值 ⇒ ``missing``：``unknown`` 绝不当作 0 m，也不退回源数据
+      ``elevation_m``（其垂直基准未经确认，明确不得作为 EGM2008 正高使用）。
+    """
+
+    profile = tower_profile if isinstance(tower_profile, dict) else {}
+    value = profile.get("tower_top_orthometric_m")
+    reason = None
+    if value in (None, ""):
+        status = ORIGIN_MISSING
+        reason = str(profile.get("reason") or "").strip() or str(
+            profile.get("tower_top_status") or ""
+        ).strip() or "tower_top_orthometric_m_not_resolved"
+        return None, status, reason, profile.get("source"), profile.get("tower_top_status")
+    try:
+        origin = float(value)
+    except (TypeError, ValueError):
+        return (None, ORIGIN_MISSING,
+                str(profile.get("tower_top_status") or "tower_top_orthometric_m_invalid"),
+                profile.get("source"), profile.get("tower_top_status"))
+    confirmed = profile.get("confirmed") is True
+    status = ORIGIN_CONFIRMED if confirmed else ORIGIN_UNCONFIRMED
+    reason = None if confirmed else "tower_top_orthometric_m_not_confirmed"
+    return origin, status, reason, {
+        "container": "tower_obstacle_profiles.items",
+        "field": "tower_top_orthometric_m",
+        "vertical_reference": profile.get("terrain_vertical_reference"),
+        "tower_top_status": profile.get("tower_top_status"),
+        "terrain_elevation_m": profile.get("terrain_elevation_m"),
+        "building_height_m": profile.get("building_height_m"),
+        "tower_structure_height_m": profile.get("tower_structure_height_m"),
+        "base_type": profile.get("base_type"),
+    }, profile.get("tower_top_status")
+
+
+def radar_units(state):
+    """列出**真实** ``radar_surveillance_layout.items[].selected_panels`` 的只读解析。
+
+    这是 Radar 三维覆盖的**唯一**面板来源：绝不自行枚举候选方向、绝不补默认方位、
+    绝不用全向圆替代。每个单元都带上面板自身的参数、所属 layout item 的当前性与
+    该塔的塔顶正高证据（含确认语义）。
+
+    ``selected_panels`` 属于已登记的外置 scope，运行中的 ``state`` 由
+    ``restore_compacted_results`` 水合，因此这里读到的就是持久化的真实面板；
+    若某个项目确实没有面板，返回空列表并**不**伪造任何几何。
+    """
+
+    state = state or {}
+    layout = state.get("radar_surveillance_layout") or {}
+    tower_index = tower_profile_index(state)
+    units = []
+    for item_index, item in enumerate(items_of(layout)):
+        if not isinstance(item, dict):
+            continue
+        selected_tower_ids = {str(value) for value in (item.get("selected_tower_ids") or [])}
+        selected = item.get("selected_panels")
+        if not isinstance(selected, list):
+            # 未水合（磁盘原始文档）时如实留空，绝不退回候选面板集合。
+            selected = []
+        for panel_index, panel in enumerate(selected):
+            if not isinstance(panel, dict):
+                continue
+            tower_id = str(panel.get("tower_id") or "")
+            profile = tower_index.get(tower_id) or {}
+            origin, origin_status, origin_reason, origin_source, evidence = (
+                radar_panel_origin(profile)
+            )
+            units.append({
+                "unit_index": len(units),
+                "panel_id": panel.get("panel_id"),
+                "tower_id": panel.get("tower_id"),
+                "radar_type": panel.get("radar_type"),
+                "azimuth_deg": panel.get("azimuth_deg"),
+                "panel_half_width_deg": panel.get("panel_half_width_deg"),
+                "declared_azimuth_deg": panel.get("azimuth_deg"),
+                "longitude": profile.get("longitude"),
+                "latitude": profile.get("latitude"),
+                "coordinate_available": (
+                    profile.get("longitude") is not None
+                    and profile.get("latitude") is not None
+                ),
+                "tower_name": profile.get("name"),
+                "tower_profile_found": bool(profile),
+                "tower_id_in_selected_tower_ids": tower_id in selected_tower_ids,
+                "tower_profile_status": profile.get("status"),
+                "tower_confirmed": profile.get("confirmed") is True,
+                "tower_top_status": profile.get("tower_top_status"),
+                "tower_top_orthometric_m": profile.get("tower_top_orthometric_m"),
+                "origin_egm2008_m": origin,
+                "origin_status": origin_status,
+                "origin_reason": origin_reason,
+                "origin_source": origin_source,
+                "origin_evidence_level": evidence,
+                "layout_item_index": item_index,
+                "layout_route_id": item.get("route_id"),
+                "layout_item_status": item.get("status"),
+                "layout_stale_reason": item.get("stale_reason"),
+                "layout_algorithm_version": item.get("algorithm_version"),
+                "layout_demo_preview_only": item.get("demo_preview_only") is True,
+                "layout_proposal_only": item.get("proposal_only") is True,
+                "layout_operationally_adopted": bool(item.get("operationally_adopted")),
+                "layout_altitude_layer_id": item.get("altitude_layer_id"),
+                "layout_altitude_m": item.get("altitude_m"),
+                "layout_radar_origin_semantics": (
+                    (item.get("radar_origin") or {}).get("semantics")
+                    if isinstance(item.get("radar_origin"), dict) else None
+                ),
+                "panel_index": panel_index,
+                "parameter_source": (
+                    "radar_surveillance_layout.items[%d].selected_panels[%d]"
+                    % (item_index, panel_index)
+                ),
+            })
+    return units
+
+
 def normalized_surface(value):
     return normalize_surface_class(value)
 
@@ -253,5 +400,6 @@ def normalized_surface(value):
 __all__ = [
     "ORIGIN_CONFIRMED", "ORIGIN_MISSING", "ORIGIN_UNCONFIRMED",
     "communication_units", "effective_radius_for", "installed_service_units",
-    "items_of", "normalized_surface", "resolve_origin", "rid_units",
+    "items_of", "normalized_surface", "radar_panel_origin", "radar_units",
+    "resolve_origin", "rid_units", "tower_profile_index",
 ]

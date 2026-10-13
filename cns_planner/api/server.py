@@ -59,12 +59,20 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def respond(self, data, content_type="application/json; charset=utf-8", status=200, cache=False, headers=None):
         if not isinstance(data, bytes): data = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        # 同一个响应**只允许一个** Cache-Control，且**显式响应头优先于默认值**。
+        # 旧实现先无条件发送默认值、再追加调用方 headers，于是所有自带 Cache-Control 的
+        # 只读端点都会发出两个头：三维状态端点得到 ['no-store','no-store']，
+        # 而 terrain/layer.json 得到 ['no-store','private, max-age=86400'] —— 意图与实现
+        # 矛盾，最终取值取决于客户端（首个 / 末个 / 合并），不可依赖。
+        extra = {str(name): str(value) for name, value in (headers or {}).items()}
+        declared = {name.lower() for name in extra}
         self.send_response(status); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "private, max-age=86400" if cache else "no-store")
+        if "cache-control" not in declared:
+            self.send_header("Cache-Control", "private, max-age=86400" if cache else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "frame-ancestors 'self' http://127.0.0.1:8501 http://localhost:8501")
-        for name, value in (headers or {}).items():
-            self.send_header(name, str(value))
+        for name, value in extra.items():
+            self.send_header(name, value)
         self.end_headers()
         try: self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError): pass

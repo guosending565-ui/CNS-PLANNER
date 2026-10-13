@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from ..domain.geodesy import distance_m
 from ..domain.cns_service_contract import RID_FORBIDDEN_GEOMETRY, RID_RADIUS_BY_SURFACE
 from ..domain.layered_route import stable_fingerprint
+from ..domain.radar_surveillance_layout import NOT_EVALUATED as RADAR_NOT_EVALUATED
+from ..domain.radar_surveillance_layout import RADAR_TYPES
 
 SCHEMA_VERSION = "visualization-3d/v1"
 
@@ -1187,6 +1189,373 @@ class Visualization3DService:
             "writes_performed": 0,
             "algorithms_invoked": [],
         }
+
+    # ------------------------------------------------- Radar 方向性三维覆盖
+
+    #: 设备参数示意预览的**常驻**免责声明（界面与响应都必须带同一句）。
+    RADAR_PREVIEW_DISCLAIMER = "设备参数示意，非已采纳布设，非已确认探测覆盖"
+
+    #: 预览允许使用未确认塔顶派生正高的**显式**声明值（由用户主动选择）。
+    RADAR_PREVIEW_ORIGIN_TOWER_TOP = "tower_top_orthometric_preview"
+
+    def radar_volumes(self, query=None):
+        """``GET /api/visualization-3d/radar-volumes`` 的只读投影。
+
+        两种**严格隔离**的模式：
+
+        * ``mode=project_layout``（默认）：只用真实
+          ``radar_surveillance_layout.items[].selected_panels`` 生成已选面阵；
+        * ``mode=device_spec_preview``：与真实规划结果**完全隔离**的手动示意预览，
+          由用户主动选择站位/型号/方位角后触发，不写 ProjectState、不进入规划结果、
+          不进入服务覆盖统计、不进入 LOS 验收。
+        """
+
+        query = query or {}
+        mode = str(_first(query, "mode") or "project_layout").strip().lower()
+        if mode == self.RADAR_PREVIEW_MODE:
+            return self._radar_device_spec_preview(query)
+        return self._radar_project_layout(query)
+
+    #: 预览模式标识（响应里必须原样回显，且真实模式绝不会带上它）。
+    RADAR_PREVIEW_MODE = "device_spec_preview"
+
+    def _radar_common_block(self, *, mode, geometry_scope):
+        from .visualization_3d_radar_volume import (
+            COVERAGE_SEMANTICS, FORBIDDEN_GEOMETRY, GEOMETRY_MODEL,
+            LOS_STATUS_UNKNOWN, LOS_UNKNOWN_REASON,
+        )
+
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": _now(),
+            "revision": self._revision(),
+            **self._scope_block(),
+            "vertical_reference": self._vertical_reference_block(),
+            "mode": mode,
+            "geometry_scope": geometry_scope,
+            "layer_id": "radar_volumes",
+            "label": "Radar 方向性三维覆盖（非合作监视工程几何）",
+            "coverage_semantics": COVERAGE_SEMANTICS,
+            "coverage_semantics_text": (
+                "方向性**工程几何**楔体：只表达方位、仰角与斜距几何，"
+                "不保证实测探测能力；地形 LOS、绕射、建筑遮挡、杂波、多径、"
+                "干扰、雷达方程与 Pd-Pfa 曲线一律未评估"
+            ),
+            "model_scope": "geometric_only",
+            "geometry_model": GEOMETRY_MODEL,
+            "omnidirectional": False,
+            "not_a_rid_footprint": True,
+            "forbidden_geometry": list(FORBIDDEN_GEOMETRY),
+            "not_evaluated": dict(RADAR_NOT_EVALUATED),
+            "not_evaluated_source": (
+                "domain.radar_surveillance_layout.NOT_EVALUATED（冻结契约）"
+            ),
+            "not_evaluated_semantics": (
+                "not_evaluated ≠ 通过；几何覆盖不等于已确认探测覆盖"
+            ),
+            "los": {
+                "status": LOS_STATUS_UNKNOWN,
+                "reason": LOS_UNKNOWN_REASON,
+                "terrain_los_evaluated": False,
+                "visible_region_available": False,
+                "note": (
+                    "没有权威持久化的 Radar 地形 LOS 结果 ⇒ 遮挡状态恒为 unknown；"
+                    "本服务不把未持久化的 LOS 推断写成 clear"
+                ),
+            },
+            "geometry_semantics_separation": {
+                "physical_maximum_coverage_wedge": True,
+                "route_local_display_clipping_applied": False,
+                "route_local_display_geometry_used": False,
+                "los_confirmed_visible_region_used": False,
+                "note": (
+                    "物理最大覆盖楔体 ≠ 既有 display_geometry 的航路局部显示裁剪 "
+                    "≠ 已由 LOS 确认的可见区域"
+                ),
+            },
+            "read_only": True,
+            "writes_performed": 0,
+            "algorithms_invoked": [],
+        }
+
+    def _radar_project_layout(self, query):
+        """真实规划面阵：只消费权威 ``selected_panels``，缺证时 fail-closed。"""
+
+        from .visualization_3d_radar_volume import MAX_PANELS, build_radar_volumes
+        from .visualization_3d_sites import radar_units
+
+        metric_crs = str(_first(query, "metric_crs") or "EPSG:32651")
+        azimuth_segments = _parse_int(query, "azimuth_segments", None)
+        elevation_segments = _parse_int(query, "elevation_segments", None)
+
+        layout = self.state.get("radar_surveillance_layout") or {}
+        units = radar_units(self.state)
+        result = build_radar_volumes(
+            units, metric_crs=metric_crs, azimuth_segments=azimuth_segments,
+            elevation_segments=elevation_segments, geometry_scope="project_layout",
+        )
+        route_intersection = self._route_intersection_block()
+
+        required_evidence = sorted({
+            requirement
+            for volume in result["volumes"]
+            for requirement in (volume["geometry"].get("required_evidence") or [])
+        })
+        if not units:
+            required_evidence = sorted(set(required_evidence) | {(
+                "radar_surveillance_layout.items[].selected_panels"
+                "（真实已选面阵；当前为空或未计算）"
+            )})
+        if not units or result["geometry_count"] == 0:
+            status = "blocked" if (units or layout) else "not_calculated"
+        else:
+            status = "passed"
+
+        statuses = sorted({str(unit.get("layout_item_status")) for unit in units})
+        versions = sorted({str(unit.get("layout_algorithm_version")) for unit in units})
+        stale_reasons = sorted({
+            str(unit.get("layout_stale_reason")) for unit in units
+            if unit.get("layout_stale_reason")
+        })
+        route_ids = sorted({str(unit.get("layout_route_id")) for unit in units})
+
+        return {
+            **self._radar_common_block(
+                mode="project_layout", geometry_scope="project_layout"),
+            "device_spec_preview": False,
+            "status": status,
+            "required_evidence": required_evidence,
+            "project_layout": {
+                "container_status": layout.get("status"),
+                "container_count": layout.get("count") if isinstance(layout, dict) else None,
+                "model_scope": layout.get("model_scope") if isinstance(layout, dict) else None,
+                "proposal_only": layout.get("proposal_only") if isinstance(layout, dict) else None,
+                "evaluated_at": layout.get("evaluated_at") if isinstance(layout, dict) else None,
+                "selected_panel_count": len(units),
+                "route_ids": route_ids,
+                "item_statuses": statuses,
+                "item_algorithm_versions": versions,
+                "item_stale_reasons": stale_reasons,
+                "item_stale": bool(stale_reasons) or statuses == ["stale"],
+                "demo_preview_only": any(
+                    unit.get("layout_demo_preview_only") for unit in units),
+                "operationally_adopted": any(
+                    unit.get("layout_operationally_adopted") for unit in units),
+                #: 权威状态里 ``operationally_adopted=true`` 与 ``proposal_only=true``
+                #: 同时存在。本服务**只原样回显**，绝不据此把结果读成"当前有效采纳"：
+                #: 当前性一律以 item ``status`` / ``stale_reason`` 为准。
+                "operationally_adopted_field_conflicts_with_proposal_only": bool(
+                    any(unit.get("layout_operationally_adopted") for unit in units)
+                    and (layout.get("proposal_only") is True
+                         or any(unit.get("layout_proposal_only") for unit in units))
+                ),
+                "operationally_adopted_note": (
+                    "该字段为权威状态原样回显；它**不**表示 selected_panels 已被采纳为"
+                    "当前有效布设。当前性以 item status / stale_reason 为准。"
+                ),
+                "authority": (
+                    "radar_surveillance_layout.items[].selected_panels"
+                    "（已登记外置 scope，运行态由 restore_compacted_results 水合）"
+                ),
+                "origin_authority": (
+                    "tower_obstacle_profiles.items[].tower_top_orthometric_m"
+                    "（EGM2008 正高；confirmed 语义逐塔披露）"
+                ),
+                "stale_is_recomputed_from_current_inputs": True,
+                "must_not_be_read_as": [
+                    "已采纳布设（selected_panels 是 proposal_only 结果）",
+                    "已确认探测覆盖（几何 ≠ 实测）",
+                    "已通过地形 LOS 验收（status = unknown）",
+                ],
+            },
+            "panel_source": "radar_surveillance_layout.items[].selected_panels",
+            "panels_total": len(units),
+            "panels_truncated": len(units) > MAX_PANELS,
+            **result,
+            "route_intersection": route_intersection,
+        }
+
+    def _radar_device_spec_preview(self, query):
+        """设备参数示意预览：与真实规划结果**完全隔离**的手动预览。"""
+
+        from .visualization_3d_radar_volume import (
+            MAX_PANELS, ORIGIN_UNCONFIRMED, build_radar_volumes,
+        )
+        from .visualization_3d_sites import radar_panel_origin, tower_profile_index
+
+        metric_crs = str(_first(query, "metric_crs") or "EPSG:32651")
+        tower_id = str(_first(query, "tower_id") or "").strip()
+        radar_type = str(_first(query, "radar_type") or "").strip()
+        origin_mode = str(_first(query, "preview_origin_mode") or "").strip()
+        azimuth_raw = _first(query, "azimuth_deg")
+        try:
+            azimuth = float(azimuth_raw) if azimuth_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            azimuth = None
+
+        index = tower_profile_index(self.state)
+        options = []
+        for key, profile in sorted(index.items()):
+            if profile.get("tower_top_orthometric_m") in (None, ""):
+                continue
+            options.append({
+                "tower_id": key,
+                "name": profile.get("name"),
+                "longitude": profile.get("longitude"),
+                "latitude": profile.get("latitude"),
+                "tower_top_orthometric_m": profile.get("tower_top_orthometric_m"),
+                "tower_top_status": profile.get("tower_top_status"),
+                "tower_confirmed": profile.get("confirmed") is True,
+                "origin_status": ("confirmed" if profile.get("confirmed") is True
+                                  else ORIGIN_UNCONFIRMED),
+            })
+        options = options[:MAX_PANELS]
+
+        base = {
+            **self._radar_common_block(
+                mode=self.RADAR_PREVIEW_MODE, geometry_scope="device_spec_preview"),
+            "device_spec_preview": True,
+            "disclaimer": self.RADAR_PREVIEW_DISCLAIMER,
+            "disclaimer_always_visible": True,
+            "isolation": {
+                "isolated_from_project_results": True,
+                "written_to_project_state": False,
+                "enters_planning_results": False,
+                "enters_service_coverage_statistics": False,
+                "enters_los_acceptance": False,
+                "selected_panels_derived": False,
+                "appears_in_project_layout_response": False,
+                "note": (
+                    "预览数据**不写入** ProjectState，也绝不进入真实规划面阵的 "
+                    "API 响应或 selected_panels"
+                ),
+            },
+            "preview_tower_options": options,
+            "preview_tower_options_truncated": len(options) >= MAX_PANELS,
+            "panels_total": 0,
+            "panel_count": 0,
+            "geometry_count": 0,
+            "available_count": 0,
+            "blocked_count": 0,
+            "volumes": [],
+        }
+
+        missing_selection = []
+        if not tower_id:
+            missing_selection.append("tower_id（可靠站位）")
+        if radar_type not in RADAR_TYPES:
+            missing_selection.append("radar_type ∈ {radar_i, radar_ii}（真实型号）")
+        if azimuth is None:
+            missing_selection.append("azimuth_deg（预览方位角，0–360）")
+        if missing_selection:
+            base.update({
+                "status": "not_calculated",
+                "selection_required": True,
+                "required_evidence": missing_selection,
+                "selection_note": (
+                    "设备参数示意必须由用户**主动**选择站位、雷达型号与预览方位角后触发"
+                ),
+            })
+            return base
+
+        profile = index.get(tower_id)
+        if not isinstance(profile, dict):
+            base.update({
+                "status": "blocked", "selection_required": False,
+                "reason": "preview_tower_not_found",
+                "required_evidence": ["tower_obstacle_profiles.items[<tower_id>]（现有塔位）"],
+            })
+            return base
+
+        origin, origin_status, origin_reason, origin_source, evidence = radar_panel_origin(
+            profile)
+        origin_values = {
+            "service_origin_egm2008_m": origin,
+            "origin_status": origin_status,
+            "origin_reason": origin_reason,
+            "origin_source": origin_source,
+            "origin_evidence_level": evidence,
+        }
+        if origin is None:
+            base.update({
+                "status": "blocked", "selection_required": False,
+                "reason": origin_reason or "tower_top_orthometric_m_not_resolved",
+                "required_evidence": [
+                    "tower_obstacle_profiles.items[%s].tower_top_orthometric_m（EGM2008 正高）"
+                    % tower_id,
+                    "高度未知时不得以 0 m 代替",
+                ],
+                **origin_values,
+            })
+            return base
+
+        acknowledged = origin_mode == self.RADAR_PREVIEW_ORIGIN_TOWER_TOP
+        if origin_status != "confirmed" and not acknowledged:
+            base.update({
+                "status": "blocked", "selection_required": True,
+                "reason": "preview_origin_not_confirmed_needs_explicit_acknowledgement",
+                "required_evidence": [
+                    "已确认的设备安装高度（当前项目没有）",
+                    "或显式声明 preview_origin_mode=%s（仅示意，非已确认安装高度）"
+                    % self.RADAR_PREVIEW_ORIGIN_TOWER_TOP,
+                ],
+                "preview_origin_mode_required": self.RADAR_PREVIEW_ORIGIN_TOWER_TOP,
+                **origin_values,
+            })
+            return base
+
+        panel = {
+            "panel_id": "PREVIEW-%s-%s-%.3f" % (tower_id, radar_type, azimuth),
+            "tower_id": tower_id,
+            "tower_name": profile.get("name"),
+            "radar_type": radar_type,
+            "azimuth_deg": azimuth,
+            "declared_azimuth_deg": azimuth,
+            "panel_half_width_deg": None,
+            "longitude": profile.get("longitude"),
+            "latitude": profile.get("latitude"),
+            "coordinate_available": (
+                profile.get("longitude") is not None
+                and profile.get("latitude") is not None
+            ),
+            "tower_profile_found": True,
+            "tower_confirmed": profile.get("confirmed") is True,
+            "tower_top_status": profile.get("tower_top_status"),
+            "tower_top_orthometric_m": profile.get("tower_top_orthometric_m"),
+            "parameter_source": "device_spec_preview.user_selected",
+            **origin_values,
+        }
+        result = build_radar_volumes(
+            [panel], metric_crs=metric_crs,
+            azimuth_segments=_parse_int(query, "azimuth_segments", None),
+            elevation_segments=_parse_int(query, "elevation_segments", None),
+            geometry_scope="device_spec_preview",
+            allow_unconfirmed_origin=(origin_status == ORIGIN_UNCONFIRMED),
+            preview=True,
+        )
+        base.update({
+            "status": "passed" if result["geometry_count"] else "blocked",
+            "selection_required": False,
+            "preview_selection": {
+                "tower_id": tower_id,
+                "radar_type": radar_type,
+                "azimuth_deg": azimuth,
+                "preview_origin_mode": origin_mode or None,
+                "user_selected": True,
+            },
+            "preview_origin_status": origin_status,
+            "preview_origin_confirmed": origin_status == "confirmed",
+            "preview_origin_acknowledged_by_user": bool(acknowledged),
+            **origin_values,
+            **result,
+        })
+        if not result["geometry_count"]:
+            base["required_evidence"] = sorted({
+                requirement
+                for volume in result["volumes"]
+                for requirement in (volume["geometry"].get("required_evidence") or [])
+            })
+        return base
 
     def _route_intersection_block(self):
         """与当前 R0005 航路的相交关系（**只有指纹匹配才允许绑定历史覆盖结果**）。

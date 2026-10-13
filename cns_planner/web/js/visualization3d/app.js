@@ -25,6 +25,11 @@ import {
   imageryStats,
 } from './basemap.js';
 import { CAMERA_PRESETS, flyToPreset } from './camera_presets.js';
+import {
+  RADAR_PREVIEW_DISCLAIMER,
+  addRadarPreviewEntities,
+  addRadarVolumeEntities,
+} from './radar_volume.js';
 
 const API = '/api/visualization-3d';
 
@@ -778,7 +783,8 @@ function renderLayers() {
     ['communication', '通信包络（三维工程几何）', BUSINESS_LAYER_DEFAULTS.communication,
       'business'],
     ['rid', 'RID 陆海非正圆覆盖', BUSINESS_LAYER_DEFAULTS.rid, 'business'],
-    ['radar', 'Radar 覆盖', BUSINESS_LAYER_DEFAULTS.radar, 'reserved'],
+    ['radar', 'Radar 方向性覆盖（工程几何楔体）', BUSINESS_LAYER_DEFAULTS.radar,
+      'business'],
     ['protection', '航路保护体', BUSINESS_LAYER_DEFAULTS.protection, 'reserved'],
     ['intrusion', '模拟入侵目标', BUSINESS_LAYER_DEFAULTS.intrusion, 'reserved'],
   ];
@@ -1093,6 +1099,7 @@ async function boot() {
     const groups = {
       routeDemo: [], routeCanonical: [], towersKnown: [], towersUnknown: [],
       facilities: [], buildings: [], terrain: [], communication: [], rid: [],
+      radar: [], radarPreview: [],
     };
     S.groups = groups;
     let routeContextPromise = null;
@@ -1211,7 +1218,183 @@ async function boot() {
         }
         return groups.rid;
       },
+      // Radar：**默认关闭**，只有用户勾选才请求。真实规划面阵与"设备参数示意预览"
+      // 是两条互不相通的数据面：这里只加载**真实** selected_panels 派生的面阵，
+      // 预览另有独立控制区、独立实体组与独立配色。
+      radar: async () => {
+        const payload = await getJSON(`${API}/radar-volumes`);
+        S.coverage = { ...(S.coverage || {}), radar: payload };
+        // 楔体外沿的斜距最大可达 5000 m ⇒ geoid 窗口必须按真实半径扩边。
+        const radius = Math.max(0, ...(payload.volumes || []).map(
+          (row) => (row.geometry || {}).max_slant_range_m || 0));
+        const geoid = await ensureGeoidWindow(
+          (payload.volumes || []).map((row) => [row.longitude, row.latitude]), radius);
+        const result = addRadarVolumeEntities(
+          viewer, payload.volumes || [], { Cesium, undulationAt });
+        groups.radar = result.entities;
+        S.radarGroups = result.groups;
+        S.radarDiagnostics = { geoid_window: geoid, ...result.diagnostics };
+        renderRadarPanelList();
+        log(`Radar 面阵：${payload.geometry_count}/${payload.panels_total} 有确定几何，`
+          + `状态 ${payload.status}（geoid 窗口 ${geoid.status}）`);
+        if (payload.required_evidence && payload.required_evidence.length) {
+          log(`Radar 缺证：${payload.required_evidence.slice(0, 2).join('；')}`, 'warn');
+        }
+        if (result.diagnostics.skipped.length) {
+          log(`Radar 有 ${result.diagnostics.skipped.length} 项几何被跳过：`
+            + result.diagnostics.skipped.map(
+              (row) => `${row.part}=${row.reason}`).join('、'), 'warn');
+        }
+        // 交给 LazyLayerRegistry：整体开关必须尊重每个面阵各自的开关状态。
+        return { entities: result.entities, setVisible: result.setVisible };
+      },
     });
+
+    // ---- Radar 面阵清单（每个真实面阵单独成组，可单独关闭） --------------------
+    function radarLayerEnabled() {
+      const input = $('ly_radar');
+      return Boolean(input && input.checked);
+    }
+
+    function renderRadarPanelList() {
+      const node = $('radarPanelList');
+      if (!node) return;
+      const rows = S.radarGroups || [];
+      if (!rows.length) {
+        node.innerHTML = '<div class="dim">未开启。勾选上方「Radar 方向性覆盖」后按需请求；'
+          + '无真实 selected_panels 时只显示缺证提示，不会补默认方向。</div>';
+        return;
+      }
+      node.innerHTML = rows.map((group, index) => {
+        const azimuth = group.azimuth_deg === null || group.azimuth_deg === undefined
+          ? '—' : `${Number(group.azimuth_deg).toFixed(2)}°`;
+        const status = group.status === 'available'
+          ? '<span class="ok-text">已渲染楔体</span>'
+          : `<span class="warn">缺证（${group.reason || 'blocked'}）</span>`;
+        return `<label><input type="checkbox" id="radar_panel_${index}" `
+          + `${group.visible ? 'checked' : ''}> <span>${group.panel_id || '—'} · `
+          + `${group.radar_type || '—'} · 方位 ${azimuth} · ${status}</span></label>`;
+      }).join('');
+      rows.forEach((group, index) => {
+        const input = $(`radar_panel_${index}`);
+        if (!input) return;
+        input.onchange = () => {
+          group.visible = input.checked;
+          for (const entity of group.entities) {
+            entity.show = radarLayerEnabled() && group.visible;
+          }
+          S.stats.entities = viewer.entities.values.length;
+          renderStatus();
+        };
+      });
+    }
+
+    // ---- 设备参数示意预览（与真实规划结果完全隔离） ----------------------------
+    function fillRadarPreviewTowers(options) {
+      const select = $('radarPreviewTower');
+      if (!select) return;
+      select.innerHTML = (options || []).map((row) => {
+        const status = row.tower_confirmed ? '已确认' : '未确认';
+        const height = row.tower_top_orthometric_m === null
+          || row.tower_top_orthometric_m === undefined
+          ? '—' : `${Number(row.tower_top_orthometric_m).toFixed(2)} m`;
+        return `<option value="${row.tower_id}">${row.tower_id}`
+          + `${row.name ? ` ${row.name}` : ''} · 塔顶正高 ${height} · ${status}</option>`;
+      }).join('');
+    }
+
+    function setRadarPreviewNote(text, cls) {
+      const node = $('radarPreviewNote');
+      if (!node) return;
+      node.textContent = text || '';
+      node.className = cls || 'dim';
+    }
+
+    function clearRadarPreviewEntities() {
+      for (const entity of groups.radarPreview || []) viewer.entities.remove(entity);
+      groups.radarPreview = [];
+      S.radarPreviewGroups = [];
+    }
+
+    async function loadRadarPreviewTowers() {
+      setRadarPreviewNote('正在读取候选站位…');
+      const payload = await getJSON(
+        `${API}/radar-volumes?mode=device_spec_preview`);
+      S.radarPreviewOptions = payload;
+      fillRadarPreviewTowers(payload.preview_tower_options || []);
+      setRadarPreviewNote(
+        `候选站位 ${(payload.preview_tower_options || []).length} 个：`
+        + '只列出塔顶正高**有来源记录**的塔位（含未确认状态，逐条标注）。');
+    }
+
+    async function buildRadarPreview() {
+      const towerSelect = $('radarPreviewTower');
+      const typeSelect = $('radarPreviewType');
+      const azimuthInput = $('radarPreviewAzimuth');
+      const ackInput = $('radarPreviewAck');
+      const query = new URLSearchParams({ mode: 'device_spec_preview' });
+      if (towerSelect && towerSelect.value) query.set('tower_id', towerSelect.value);
+      if (typeSelect && typeSelect.value) query.set('radar_type', typeSelect.value);
+      if (azimuthInput && azimuthInput.value !== '') {
+        query.set('azimuth_deg', azimuthInput.value);
+      }
+      // 未确认塔顶派生正高**必须**由用户显式承认，否则服务端会 fail-closed。
+      if (ackInput && ackInput.checked) {
+        query.set('preview_origin_mode', 'tower_top_orthometric_preview');
+      }
+      const payload = await getJSON(`${API}/radar-volumes?${query.toString()}`);
+      S.radarPreview = payload;
+      if (!S.radarPreviewOptions && (payload.preview_tower_options || []).length) {
+        fillRadarPreviewTowers(payload.preview_tower_options);
+      }
+      clearRadarPreviewEntities();
+      if (payload.geometry_count) {
+        const radius = Math.max(0, ...(payload.volumes || []).map(
+          (row) => (row.geometry || {}).max_slant_range_m || 0));
+        await ensureGeoidWindow(
+          (payload.volumes || []).map((row) => [row.longitude, row.latitude]), radius);
+        const result = addRadarPreviewEntities(
+          viewer, payload.volumes || [], { Cesium, undulationAt });
+        groups.radarPreview = result.entities;
+        S.radarPreviewGroups = result.groups;
+        setRadarPreviewNote(
+          `已生成示意楔体 1 个（${payload.volumes[0].radar_type}，`
+          + `中心方位 ${Number(payload.volumes[0].azimuth_deg).toFixed(2)}°，`
+          + `原点状态 ${payload.preview_origin_status}）。不写入项目状态。`, 'ok-text');
+      } else {
+        const reason = payload.reason || (payload.required_evidence || []).join('；')
+          || 'preview_not_rendered';
+        setRadarPreviewNote(`未生成几何：${reason}（缺证时不渲染确定几何）`, 'warn');
+      }
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+    }
+
+    function clearRadarPreview() {
+      clearRadarPreviewEntities();
+      S.radarPreview = null;
+      setRadarPreviewNote('已清除示意几何（真实规划面阵不受影响）。');
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+    }
+
+    const previewLoadButton = $('radarPreviewLoad');
+    if (previewLoadButton) {
+      previewLoadButton.onclick = () => loadRadarPreviewTowers().catch((error) => {
+        setRadarPreviewNote(`读取候选站位失败：${error.message}`, 'err');
+      });
+    }
+    const previewBuildButton = $('radarPreviewBuild');
+    if (previewBuildButton) {
+      previewBuildButton.onclick = () => buildRadarPreview().catch((error) => {
+        setRadarPreviewNote(`生成示意失败：${error.message}`, 'err');
+      });
+    }
+    const previewClearButton = $('radarPreviewClear');
+    if (previewClearButton) previewClearButton.onclick = clearRadarPreview;
+    const disclaimer = $('radarPreviewDisclaimer');
+    if (disclaimer) disclaimer.textContent = RADAR_PREVIEW_DISCLAIMER;
+    renderRadarPanelList();
 
     const bindBase = (id, setter) => {
       const input = $(`ly_${id}`);
@@ -1349,6 +1532,90 @@ window.__CNS_3D__ = {
     return Object.fromEntries(Object.entries(CAMERA_PRESETS).map(
       ([id, row]) => [id, { ...row }]));
   },
+  /** 验收辅助：把某个 Radar 面阵锚点投影为**屏幕像素**（只读，用于真实点击）。
+   *
+   * ``preview=true`` 时取设备参数示意预览的分组；否则取真实规划面阵分组。
+   */
+  radarAnchorScreenPosition(index = 0, preview = false) {
+    if (!S.viewer || !S.viewer.scene) return { error: 'viewer_not_ready' };
+    const groups = (preview ? S.radarPreviewGroups : S.radarGroups) || [];
+    const group = groups[Number(index) || 0];
+    if (!group) return { error: 'group_missing', group_count: groups.length };
+    const anchor = group.entities && group.entities[0];
+    if (!anchor || !anchor.position) return { error: 'anchor_position_missing' };
+    const position = anchor.position.getValue(Cesium.JulianDate.now());
+    if (!position) return { error: 'cartesian_unresolved' };
+    const scene = S.viewer.scene;
+    let pixel = null;
+    let method = null;
+    // ``Scene.prototype.cartesianToCanvasCoordinates`` 是 1.126 的稳定入口；
+    // ``SceneTransforms`` 的函数名在版本间变过，故仅作回退。
+    if (typeof scene.cartesianToCanvasCoordinates === 'function') {
+      pixel = scene.cartesianToCanvasCoordinates(position);
+      method = 'scene.cartesianToCanvasCoordinates';
+    }
+    if (!pixel && Cesium.SceneTransforms) {
+      const transforms = Cesium.SceneTransforms;
+      const toWindow = transforms.worldToWindowCoordinates
+        || transforms.wgs84ToWindowCoordinates;
+      if (typeof toWindow === 'function') {
+        pixel = toWindow.call(transforms, scene, position);
+        method = 'SceneTransforms';
+      }
+    }
+    if (!pixel) return { error: 'projection_unavailable' };
+    return {
+      x: Math.round(pixel.x), y: Math.round(pixel.y), method,
+      viewport: { width: scene.canvas.clientWidth, height: scene.canvas.clientHeight },
+      panel_id: group.panel_id, preview: Boolean(group.preview),
+    };
+  },
+  /** 验收辅助：飞到某个 Radar 面阵锚点的**固定俯视位姿**（只读）。 */
+  flyToRadarPanel(index = 0, preview = false, heightM = 3000, pitchDeg = -30) {
+    if (!S.viewer) return false;
+    const groups = (preview ? S.radarPreviewGroups : S.radarGroups) || [];
+    const group = groups[Number(index) || 0];
+    const anchor = group && group.entities && group.entities[0];
+    if (!anchor || !anchor.position) return false;
+    const position = anchor.position.getValue(Cesium.JulianDate.now());
+    if (!position) return false;
+    const cartographic = Cesium.Cartographic.fromCartesian(position);
+    if (!cartographic) return false;
+    const longitude = Cesium.Math.toDegrees(cartographic.longitude);
+    const latitude = Cesium.Math.toDegrees(cartographic.latitude);
+    const height = Number(heightM) || 3000;
+    const pitch = Number(pitchDeg) || -30;
+    // 站位放在锚点**南侧**，距离按"视线中心落点"估算，保证锚点落在视口内：
+    // 落点水平距离 ≈ height / tan(|pitch|)；取约 0.8 倍，避免锚点掉出屏幕下沿。
+    const offsetDeg = (height / Math.tan(Math.abs(pitch) * Math.PI / 180)) * 0.8 / 111320;
+    S.viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(
+        longitude, latitude - offsetDeg, height),
+      orientation: {
+        heading: 0,
+        pitch: Cesium.Math.toRadians(pitch),
+        roll: 0,
+      },
+    });
+    return true;
+  },
+  /** 验收辅助：在**屏幕像素**处做只读拾取探测（用于验证"可点击查看几何信息"）。
+   *
+   * 只回传"是否命中带 ``__cns`` 的实体 + 其标题/类型/行数"，绝不回传 viewer 本身。
+   */
+  pickProbe(x, y) {
+    if (!S.viewer || !S.viewer.scene) return null;
+    const picked = S.viewer.scene.pick(
+      new Cesium.Cartesian2(Number(x) || 0, Number(y) || 0));
+    const info = picked && picked.id ? picked.id.__cns : null;
+    return {
+      hit: Boolean(info),
+      kind: info ? info.kind : null,
+      title: info ? info.title : null,
+      preview: info ? Boolean(info.preview) : false,
+      row_count: info && info.rows ? info.rows.length : 0,
+    };
+  },
   basemapStatus() { return S.basemap ? S.basemap.status() : null; },
   /** 验收辅助：切换 FABDEM 晕渲（**非卫星影像**）用于同相机对照。 */
   setReliefVisible(value) {
@@ -1412,17 +1679,105 @@ window.__CNS_3D__ = {
   coverageVisibility() {
     if (!S.viewer) return null;
     const result = { communication: { total: 0, shown: 0 },
-                     rid: { total: 0, shown: 0 } };
+                     rid: { total: 0, shown: 0 },
+                     radar: { total: 0, shown: 0 },
+                     radar_preview: { total: 0, shown: 0 } };
     for (const entity of S.viewer.entities.values) {
       const info = entity.__cns;
       if (!info) continue;
       const bucket = info.kind === 'communication-volume' ? result.communication
-        : (info.kind === 'rid-footprint' ? result.rid : null);
+        : (info.kind === 'rid-footprint' ? result.rid
+          : (info.kind === 'radar-panel'
+            ? (info.preview ? result.radar_preview : result.radar) : null));
       if (!bucket) continue;
       bucket.total += 1;
       if (entity.show) bucket.shown += 1;
     }
     return result;
+  },
+  /** 验收辅助：Radar 图层的**只读**证据（真实面阵 + 隔离的设备参数示意）。 */
+  radarStats() {
+    const radar = S.coverage ? S.coverage.radar : null;
+    const preview = S.radarPreview || null;
+    const groupsOf = (groups) => (groups || []).map((group) => ({
+      panel_id: group.panel_id,
+      radar_type: group.radar_type,
+      azimuth_deg: group.azimuth_deg,
+      status: group.status,
+      reason: group.reason,
+      origin_confirmed: group.origin_confirmed,
+      preview: group.preview,
+      entity_count: group.entities.length,
+      visible: group.visible,
+      shown: group.entities.filter((entity) => entity.show).length,
+    }));
+    return {
+      project: radar ? {
+        mode: radar.mode,
+        status: radar.status,
+        coverage_semantics: radar.coverage_semantics,
+        geometry_model: radar.geometry_model,
+        panels_total: radar.panels_total,
+        geometry_count: radar.geometry_count,
+        blocked_count: radar.blocked_count,
+        required_evidence: radar.required_evidence,
+        forbidden_geometry: radar.forbidden_geometry,
+        not_a_rid_footprint: radar.not_a_rid_footprint,
+        omnidirectional: radar.omnidirectional,
+        los: radar.los,
+        geometry_semantics_separation: radar.geometry_semantics_separation,
+        project_layout: radar.project_layout,
+        panels: (radar.volumes || []).map((row) => ({
+          panel_id: row.panel_id,
+          tower_id: row.tower_id,
+          radar_type: row.radar_type,
+          azimuth_deg: row.azimuth_deg,
+          longitude: row.longitude,
+          latitude: row.latitude,
+          origin_status: row.origin_status,
+          origin_egm2008_m: row.service_origin_egm2008_m,
+          status: (row.geometry || {}).status,
+          reason: (row.geometry || {}).reason,
+          min_slant_range_m: (row.geometry || {}).min_slant_range_m || null,
+          max_slant_range_m: (row.geometry || {}).max_slant_range_m || null,
+        })),
+        groups: groupsOf(S.radarGroups),
+      } : null,
+      //: 预览：**独立**证据块（不与真实规划面阵合并、不计入覆盖统计）。
+      preview: preview ? {
+        mode: preview.mode,
+        status: preview.status,
+        geometry_count: preview.geometry_count,
+        disclaimer: preview.disclaimer,
+        isolation: preview.isolation,
+        preview_origin_status: preview.preview_origin_status,
+        preview_origin_confirmed: preview.preview_origin_confirmed,
+        preview_origin_acknowledged_by_user: preview.preview_origin_acknowledged_by_user,
+        preview_selection: preview.preview_selection,
+        volumes: (preview.volumes || []).map((row) => ({
+          panel_id: row.panel_id,
+          radar_type: row.radar_type,
+          azimuth_deg: row.azimuth_deg,
+          longitude: row.longitude,
+          latitude: row.latitude,
+          azimuth_window: row.azimuth_window,
+          status: (row.geometry || {}).status,
+          elevation_min_deg: (row.geometry || {}).elevation_min_deg,
+          elevation_max_deg: (row.geometry || {}).elevation_max_deg,
+          min_slant_range_m: (row.geometry || {}).min_slant_range_m,
+          max_slant_range_m: (row.geometry || {}).max_slant_range_m,
+          cross_section: (row.geometry || {}).cross_section,
+          origin_confirmed: (row.geometry || {}).origin_confirmed,
+        })),
+        groups: groupsOf(S.radarPreviewGroups),
+      } : null,
+      diagnostics: S.radarDiagnostics || null,
+      entity_counts: {
+        radar: S.groups && S.groups.radar ? S.groups.radar.length : 0,
+        radar_preview: S.groups && S.groups.radarPreview
+          ? S.groups.radarPreview.length : 0,
+      },
+    };
   },
   /** 验收辅助：俯视某个覆盖站点（固定高度，用于近景判读 2–5 km 几何）。 */
   flyToCoverageSite(layerId, ordinal = 0, heightM = 9000) {
@@ -1533,6 +1888,10 @@ window.__CNS_3D__ = {
         devices: S.datasets.length,
         communication_entities: S.groups ? S.groups.communication.length : 0,
         rid_entities: S.groups ? S.groups.rid.length : 0,
+        radar_entities: S.groups && S.groups.radar ? S.groups.radar.length : 0,
+        radar_groups: (S.radarGroups || []).length,
+        radar_preview_entities: S.groups && S.groups.radarPreview
+          ? S.groups.radarPreview.length : 0,
       },
       stats: S.stats,
       // 底图**实测**状态（含 imagery_failures / imagery_last_error / discards）：验收
@@ -1553,6 +1912,28 @@ window.__CNS_3D__ = {
           blocked_count: S.coverage.rid.blocked_count,
           not_a_radar_sector: S.coverage.rid.not_a_radar_sector,
         } : null,
+        radar: S.coverage.radar ? {
+          mode: S.coverage.radar.mode,
+          status: S.coverage.radar.status,
+          coverage_semantics: S.coverage.radar.coverage_semantics,
+          panels_total: S.coverage.radar.panels_total,
+          geometry_count: S.coverage.radar.geometry_count,
+          blocked_count: S.coverage.radar.blocked_count,
+          required_evidence: S.coverage.radar.required_evidence,
+          los: S.coverage.radar.los,
+          forbidden_geometry: S.coverage.radar.forbidden_geometry,
+          project_layout: S.coverage.radar.project_layout,
+        } : null,
+      } : null,
+      // 设备参数示意预览：**独立**证据块，绝不与真实规划面阵合并。
+      radar_preview: S.radarPreview ? {
+        mode: S.radarPreview.mode,
+        status: S.radarPreview.status,
+        geometry_count: S.radarPreview.geometry_count,
+        disclaimer: S.radarPreview.disclaimer,
+        isolation: S.radarPreview.isolation,
+        preview_origin_confirmed: S.radarPreview.preview_origin_confirmed,
+        preview_origin_status: S.radarPreview.preview_origin_status,
       } : null,
       checks: S.checks,
       errors: S.errors,

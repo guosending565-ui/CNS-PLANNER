@@ -188,11 +188,26 @@ export class LazyLayerRegistry {
     if (!entry && visible) {
       const loader = this.loaders[id];
       if (typeof loader !== 'function') return false;
-      const entities = await loader();
-      entry = { entities: Array.isArray(entities) ? entities : [], loaded: true };
+      const loaded = await loader();
+      // loader 可以返回**实体数组**（既有全部图层），也可以返回
+      // ``{ entities, setVisible }``：后者用于需要"整体开关 + 逐组开关"两个层级的图层
+      // （Radar 每个真实面阵单独成组，可单独关闭）。数组路径行为与修复前逐字一致。
+      if (loaded && !Array.isArray(loaded) && Array.isArray(loaded.entities)) {
+        entry = {
+          entities: loaded.entities,
+          applyVisibility: typeof loaded.setVisible === 'function' ? loaded.setVisible : null,
+          loaded: true,
+        };
+      } else {
+        entry = { entities: Array.isArray(loaded) ? loaded : [], loaded: true };
+      }
       this.entries.set(id, entry);
     }
     if (!entry) return true;
+    if (typeof entry.applyVisibility === 'function') {
+      entry.applyVisibility(Boolean(visible));
+      return true;
+    }
     for (const entity of entry.entities) entity.show = Boolean(visible);
     return true;
   }

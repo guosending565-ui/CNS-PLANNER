@@ -415,7 +415,15 @@ class ApiRouter:
         # Round37-T3D-2A：三维 CNS 覆盖（只读几何，零写入）。
         "/api/visualization-3d/communication-volumes": "communication-volumes",
         "/api/visualization-3d/rid-footprints": "rid-footprints",
+        # Round37-T3D-2B：Radar 方向性三维覆盖（只读几何，零写入）。
+        "/api/visualization-3d/radar-volumes": "radar-volumes",
     }
+
+    #: 地形 / 晕渲派生资源的缓存策略：它们是**确定性派生**产物（同 z/x/y 与同一
+    #: FABDEM+EGM2008 输入必然同字节），可私有缓存。
+    CACHE_TERRAIN = "private, max-age=86400"
+    #: 状态、诊断与业务几何端点：**不缓存**（含 revision、scope、状态与几何决策）。
+    CACHE_NONE = "no-store"
 
     def _visualization_3d(self, context, path, query, headers):
         """三维只读投影端点。
@@ -538,20 +546,21 @@ class ApiRouter:
                     prefix="vis3dterrainlayer-v1-",
                 )
                 if self._etag_matches(headers, etag):
-                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                    return self._not_modified(etag, self.CACHE_TERRAIN)
                 return Response(payload, headers={
-                    "ETag": f'"{etag}"', "Cache-Control": "private, max-age=86400",
+                    "ETag": f'"{etag}"', "Cache-Control": self.CACHE_TERRAIN,
                 })
 
             if action == "terrain-tile":
                 tile = service.terrain_tile(*terrain_coordinates)
-                if self._etag_matches(headers, tile.etag):
-                    return Response(b"", status=304, headers={"ETag": f'"{tile.etag}"'})
                 tile_headers = dict(tile.headers)
                 tile_headers["ETag"] = f'"{tile.etag}"'
+                tile_headers.setdefault("Cache-Control", self.CACHE_TERRAIN)
                 # 地形瓦片是 heightmap-1.0（小端 uint16 高程栅格），不是 quantized-mesh；
                 # 不能用后者的媒体类型冒充。显式声明真实格式，便于客户端与许可审计识别。
                 tile_headers.setdefault("X-CNS-Terrain-Format", "heightmap-1.0")
+                if self._etag_matches(headers, tile.etag):
+                    return self._not_modified(tile.etag, tile_headers["Cache-Control"])
                 return Response(tile.body, "application/vnd.terrain.heightmap-1.0",
                                 cache=True, headers=tile_headers)
 
@@ -563,10 +572,10 @@ class ApiRouter:
                     prefix="vis3dreliefv1-",
                 )
                 if self._etag_matches(headers, etag):
-                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                    return self._not_modified(etag, self.CACHE_TERRAIN)
                 return Response(body, "image/png", cache=True, headers={
                     "ETag": f'"{etag}"',
-                    "Cache-Control": "private, max-age=86400",
+                    "Cache-Control": self.CACHE_TERRAIN,
                     # 显式声明这是**地形晕渲**而非卫星影像，避免被误读为影像证据。
                     "X-CNS-Relief-Kind": "fabdem_hillshade_not_satellite_imagery",
                     "X-CNS-Relief-Vertical-Exaggeration": str(
@@ -580,7 +589,7 @@ class ApiRouter:
                     prefix="vis3dmanifestv1-",
                 )
                 if self._etag_matches(headers, etag):
-                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                    return self._not_modified(etag, self.CACHE_NONE)
                 payload["etag"] = etag
                 import json as _json
                 payload["load_budget"]["manifest_bytes"] = len(
@@ -596,9 +605,25 @@ class ApiRouter:
                     prefix="vis3droutesv1-",
                 )
                 if self._etag_matches(headers, etag):
-                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                    return self._not_modified(etag, self.CACHE_NONE)
                 payload["etag"] = etag
                 return Response(payload, headers={"ETag": f'"{etag}"'})
+
+            if action == "radar-volumes":
+                # Round37-T3D-2B：Radar **方向性**三维覆盖（真实面阵 / 隔离的设备参数示意）。
+                # 状态与几何都随权威状态变化 ⇒ 一律 no-store；ETag 只由来源身份 + 查询决定。
+                payload = service.radar_volumes(query)
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": action,
+                     "query": sorted((str(k), str(v)) for k, v in query.items())},
+                    prefix="vis3dradarvolumesv1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return self._not_modified(etag, self.CACHE_NONE)
+                payload["etag"] = etag
+                return Response(payload, headers={
+                    "ETag": f'"{etag}"', "Cache-Control": self.CACHE_NONE,
+                })
 
             if action in ("communication-volumes", "rid-footprints"):
                 # Round37-T3D-2A：三维 CNS 覆盖只读几何。ETag = 来源身份 + 查询
@@ -612,15 +637,15 @@ class ApiRouter:
                     prefix=f"vis3d{action.replace('-', '')}v1-",
                 )
                 if self._etag_matches(headers, etag):
-                    return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                    return self._not_modified(etag, self.CACHE_NONE)
                 payload["etag"] = etag
                 return Response(payload, headers={
-                    "ETag": f'"{etag}"', "Cache-Control": "no-store",
+                    "ETag": f'"{etag}"', "Cache-Control": self.CACHE_NONE,
                 })
 
             body, content_type, etag = service.terrain_window(query)
             if self._etag_matches(headers, etag):
-                return Response(b"", status=304, headers={"ETag": f'"{etag}"'})
+                return self._not_modified(etag, self.CACHE_NONE)
             return Response(body, content_type, headers={"ETag": f'"{etag}"'})
         except Visualization3DUnavailable as exc:
             return Response(exc.as_dict(), status=400)
@@ -635,6 +660,19 @@ class ApiRouter:
             return Response(
                 {"error": str(exc), "code": "visualization_3d_projection_failed"}, status=500
             )
+
+    @staticmethod
+    def _not_modified(etag, cache_control):
+        """``304 Not Modified`` 响应。
+
+        ``304`` 必须携带与对应 ``200`` **完全一致**的缓存策略：若 ``304`` 回落成默认的
+        ``no-store``，浏览器会把已经缓存的副本标记为不可存储，ETag 校验随之形同虚设
+        （每个瓦片都被重新完整传输）。因此这里由调用方显式传入策略，不依赖默认值。
+        """
+
+        return Response(b"", status=304, headers={
+            "ETag": f'"{etag}"', "Cache-Control": str(cache_control),
+        })
 
     @staticmethod
     def _etag_matches(headers, etag):
