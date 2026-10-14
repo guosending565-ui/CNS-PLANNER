@@ -64,6 +64,7 @@ function popup(volume, preview = false) {
   const rows = [
     ['route_id', volume.route_id || '—'],
     ['对象 ID', volume.object_id || '—'],
+    ['渲染实例键', volume.render_instance_id || '—'],
     ['模式', preview ? '用户工程示意' : 'P17 持久化结果'],
     ['半宽', halfWidth === undefined || halfWidth === null ? '缺失' : `${halfWidth} m`],
     ['路线里程', volume.route_length_m === undefined ? '—' : `${volume.route_length_m} m`],
@@ -235,8 +236,13 @@ function addVolumes(viewer, volumes, deps, preview) {
     }
     entities.push(...groupEntities);
     groups.push({
+      // 实例键是选择 / 动画 / 事件 / 单独开关 / 清除动作的唯一凭据；
+      // object_id 可能被同一航路的多份几何共用，因此不能单独用来分组。
+      render_instance_id: volume.render_instance_id || null,
       object_id: volume.object_id,
       route_id: volume.route_id,
+      route_authority: volume.route_authority,
+      protection_geometry_identity: volume.protection_geometry_identity || null,
       status: volume.status,
       historical: Boolean(volume.historical),
       preview,

@@ -17,6 +17,10 @@ export const BUSINESS_LAYER_DEFAULTS = Object.freeze({
   radar: false,
   protection: false,
   intrusion: false,
+  // Round38-T3D4：站址 / 设备四类身份与固定 1000 m 保障目标带。
+  // 项目打开时**默认只展示底图**，专题图层一律默认关闭（既有约定）。
+  cnsSites: false,
+  fixedCorridor: false,
 });
 
 //: 海面法线贴图（8×8，切线空间，多方向轻微扰动）。

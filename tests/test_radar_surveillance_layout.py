@@ -2305,6 +2305,158 @@ def test_readiness_does_not_require_mount_height_but_requires_land_mask(tmp_path
     assert ready["status"] == "passed", ready["blockers"]
 
 
+def test_ground_site_installation_policy_is_controlled_and_fingerprinted(tmp_path):
+    """FLOW：站点级规划安装高度走既有 policy writer，并改变 Radar 输入身份。"""
+
+    service, provider = _service(tmp_path, with_towers=False, surface="land")
+    radar = service.radar_surveillance_layout_service
+    radar.facts_provider = provider
+    first = {
+        "ground_site_installation_heights": {
+            "RLS-1": {
+                "site_id": "RLS-1", "installation_height_m": 12.0,
+                "source": "user_confirmed", "confirmed": True,
+                "installation_status": "planned",
+            },
+        },
+    }
+    service.set_radar_surveillance_policy(first)
+    stored = service.state[POLICY_KEY]["ground_site_installation_heights"]["RLS-1"]
+    assert stored == {
+        "site_id": "RLS-1", "installation_height_m": 12.0,
+        "source": "user_confirmed", "confirmed": True,
+        "installation_status": "planned",
+        "height_semantics": "user_confirmed_planned_installation_height_agl",
+        "device_installed": False,
+    }
+    before = radar.input_fingerprint(ROUTE_ID)
+    service.state[LAYOUT_KEY] = {
+        "status": "proposal_ready", "count": 1,
+        "items": [{"route_id": ROUTE_ID, "status": "proposal_ready"}],
+    }
+    changed = deepcopy(first)
+    changed["ground_site_installation_heights"]["RLS-1"]["installation_height_m"] = 18.0
+    service.set_radar_surveillance_policy(changed)
+    assert radar.input_fingerprint(ROUTE_ID) != before
+    stale = service.state[LAYOUT_KEY]["items"][0]
+    assert stale["status"] == "stale"
+    assert stale["stale_reason"] == "radar_surveillance_policy_changed"
+
+    service.set_radar_surveillance_policy({
+        "ground_site_installation_heights": {
+            "RLS-2": {
+                "site_id": "RLS-2", "installation_height_m": 16.0,
+                "source": "source_device_installation_height", "confirmed": True,
+                "installation_status": "installed", "source_ref": "INSTALL-REC-002",
+            },
+        },
+    })
+    installed = service.state[POLICY_KEY]["ground_site_installation_heights"]["RLS-2"]
+    assert installed["device_installed"] is True
+    assert installed["height_semantics"] == "installed_device_record_height_agl"
+    assert installed["source_ref"] == "INSTALL-REC-002"
+
+    with pytest.raises(ValueError, match="真实安装记录必须提供 source_ref"):
+        service.set_radar_surveillance_policy({
+            "ground_site_installation_heights": {
+                "RLS-2": {
+                    "site_id": "RLS-2", "installation_height_m": 16.0,
+                    "source": "source_device_installation_height", "confirmed": True,
+                    "installation_status": "installed",
+                },
+            },
+        })
+
+
+def test_readiness_accepts_evidenced_ground_site_without_towers(tmp_path):
+    """FLOW：有 CRS、EGM2008 地表高程及显式高度的地面站可独立满足站址 readiness。"""
+
+    service, provider = _service(tmp_path, with_towers=False, surface="land")
+    radar = service.radar_surveillance_layout_service
+
+    class SharedGroundSites:
+        @staticmethod
+        def snapshot():
+            return {
+                "status": "passed",
+                "candidates": [{
+                    "candidate_id": "reference-landing-site:RLS-1",
+                    "candidate_kind": "reference_landing_site",
+                    "source_id": "RLS-1", "name": "一号起降点",
+                    "site_type": "起降点", "coordinate": [LON0, LAT0],
+                    "spatial_use_status": "eligible", "spatial_block_reason": None,
+                    "source_crs": {"value": "EPSG:4490", "confirmed": True},
+                    "provenance": {"source_type": "real_reference"},
+                }],
+            }
+
+    radar.shared_sites = SharedGroundSites()
+    radar.facts_provider = provider
+    radar.land_mask_readiness = lambda **_kwargs: {
+        "status": "passed", "reason": None, "source_crs": "EPSG:4326",
+        "crs_status": "passed", "layer_name": "land",
+    }
+    service.set_radar_surveillance_policy({
+        "ground_site_installation_heights": {
+            "RLS-1": {
+                "site_id": "RLS-1", "installation_height_m": 12.0,
+                "source": "user_confirmed", "confirmed": True,
+                "installation_status": "planned",
+            },
+        },
+    })
+    readiness = radar.readiness_snapshot()
+    assert readiness["status"] == "passed", readiness["blockers"]
+    assert readiness["usable_ground_site_count"] == 1
+    assert readiness["usable_radar_site_count"] == 1
+    assert readiness["radar_origin"]["radar_origin_basis"] == (
+        "ground_elevation_plus_evidenced_antenna_installation_height"
+    )
+    assert readiness["radar_origin"]["device_installed"] is False
+    assert readiness["radar_origin"]["planning_height_is_not_installed_height"] is True
+    assert "real_tower_sites_missing" not in readiness["blockers"]
+    assert "tower_obstacle_profiles_missing" not in readiness["blockers"]
+    assert "resolved_tower_top_orthometric_missing" not in readiness["blockers"]
+
+
+def test_unconfirmed_ground_site_height_does_not_bypass_readiness(tmp_path):
+    service, provider = _service(tmp_path, with_towers=False, surface="land")
+    radar = service.radar_surveillance_layout_service
+
+    class SharedGroundSites:
+        @staticmethod
+        def snapshot():
+            return {
+                "status": "passed",
+                "candidates": [{
+                    "candidate_id": "node:N001", "candidate_kind": "project_node",
+                    "source_id": "N001", "name": "起降点", "site_type": "起降点",
+                    "coordinate": [LON0, LAT0], "spatial_use_status": "eligible",
+                    "source_crs": {"value": "EPSG:4490", "confirmed": True},
+                }],
+            }
+
+    radar.shared_sites = SharedGroundSites()
+    radar.facts_provider = provider
+    radar.land_mask_readiness = lambda **_kwargs: {
+        "status": "passed", "reason": None, "source_crs": "EPSG:4326",
+        "crs_status": "passed", "layer_name": "land",
+    }
+    service.set_radar_surveillance_policy({
+        "ground_site_installation_heights": {
+            "N001": {
+                "site_id": "N001", "installation_height_m": 9.0,
+                "source": "user_confirmed", "confirmed": False,
+                "installation_status": "planned",
+            },
+        },
+    })
+    readiness = radar.readiness_snapshot()
+    assert readiness["status"] == "not_ready"
+    assert readiness["usable_ground_site_count"] == 0
+    assert "real_tower_sites_missing" in readiness["blockers"]
+
+
 def test_service_does_not_write_forbidden_state_keys(tmp_path):
     service, provider = _service(tmp_path)
     before = {

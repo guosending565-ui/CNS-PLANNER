@@ -16,6 +16,16 @@ import {escapeHtml as escapeValue,statusBadge as badgeFor,statusText as labelFor
 import {riskV2LegendModel} from './workflow/risk_framework_v2.js';
 import {gridCellDetailsHtml,populationDisplayLabel} from './workflow/grid_details.js';
 import {attachMeasureTool} from './map/measure_tool.js';
+//: Round38-N2：导航监测规划（只读展示 + 地图图层）。两个模块都不写任何业务状态。
+import {
+  NAVIGATION_MONITORING_SIMULATION_ENDPOINT, SHARED_SITE_CANDIDATES_ENDPOINT,
+  FIXED_CORRIDOR_GEOMETRY_ENDPOINT, navigationParameterPayload,
+} from './workflow/navigation_monitoring.js';
+import {
+  drawNavigationMonitoringLayer, hitNavigationMonitoringFeature,
+  navigationMonitoringFeatureTooltip, navigationMonitoringLayerModel,
+  withScreenCoordinates,
+} from './map/navigation_monitoring_overlay.js';
 import {bindShell,bindLayerControls,updateLodBadge,renderRailSteps,layerSwitches} from './shell.js';
 import {createConstraintFieldView} from './workflow/constraint_view.js';
 import {createShellActions} from './workflow/shell_actions.js';
@@ -41,13 +51,27 @@ const STEPS=[Step01,Step02,Step03,Step04,Step05,Step06];
 // coarse feasibility mask，layeredCandidateLayer 只画 current candidate，两者相互独立。
 // B4X 新增「高度层障碍」（Planning Constraint Field）三个开关：主开关 + 证据不足 + 可通行；
 // 与其它图层一样默认关闭，数据按需从只读 HTTP 路径读取，不在启动时加载。
-const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','routeProtectionCorridorLayer','surveillanceProtectionLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'];
+const LAYER_IDS=['buildingClearanceLayer','v3CandidateLayer','layeredFeasibilityLayer','layeredCandidateLayer','radarSurveillanceLayer','cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer','routeProtectionCorridorLayer','surveillanceProtectionLayer','referenceRouteLayer','referenceRoutePointLayer','referenceLandingLayer','towerLayer','existingCnsLayer','candidateSiteLayer','cLayer','nLayer','sLayer','buildingFootprintLayer','altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer','navigationMonitoringLayer'];
 let state=null,flow=null,view=null,bitmap=null,imageView=null,timer,serial=0,draftWorkspace=null;
 let currentStep=1,interactionMode='pan',renderController=null,currentPlan=null;
+//: Round38-N2：带屏幕坐标的导航监测图层模型（命中测试用）；未开启时为 null。
+let currentNavigationOverlay=null;
 let selectedReference=null,profileHoverCoordinate=null;
 // 临时 evidence highlight（RouteRiskProfile → 地图联动）：纯 UI 状态，不写 ProjectState、
 // 不调用 API、不改 zoom / layer / LOD，也不新增任何永久状态。
 let routeEvidenceHighlight=null,gridDataSerial=0;
+//: Round38-N2：导航监测规划的**只读展示状态**。三者都只来自 N1 只读接口，
+//: 不写 ProjectState、不参与任何规划判定；图层默认关闭，由用户主动开启。
+let navigationMonitoringState={candidates:null,result:null,fixedCorridorGeometry:null,draft:null};
+//: 导航监测只读仿真的**航路身份级**缓存：同一 (route_source, route_id, parameters)
+//: 只跑一次，界面重绘绝不重复运行导航规划；项目 / 航路切换时随 state 一起失效。
+//: 它只是内存缓存，**不**是第二套结果容器、**不**写 ProjectState。
+let navigationMonitoringSimulationCache=new Map();
+//: 最近一次只读调用的失败原因（只读诊断与界面提示共用；成功时清空）。
+let navigationMonitoringLastError=null;
+//: 候选快照的**在途守卫**：面板每次重渲染都可能触发按需读取，这里保证同一时刻
+//: 只发一次只读 GET（绝不因为重渲染而重复请求）。
+let navigationMonitoringCandidatesPromise=null;
 let gridDisplay={outline:false,theme:'none'};// 首次打开：网格边界默认关闭（图层抽屉里只有在线底图默认勾选）
 let gridRenderCache={cells:[],byId:new Map(),spatial:null,populationBreaks:[],terrainBreaks:[],buildingCoverageBreaks:[],buildingP95Breaks:[],buildingMaxBreaks:[],v2Breaks:{factors:new Map(),domains:new Map()}};
 const populationPalette=POPULATION_PALETTE,terrainPalette=TERRAIN_PALETTE;
@@ -91,6 +115,15 @@ window.__CNS_DIAG__=()=>({
   constraintDraw:constraintDrawResult,
   constraintGeometryReady:constraintView.gridGeometryReady(),
   constraintGeometryAttempted:constraintView.gridGeometryAttempted(),
+  //: Round38-N2：导航监测规划的**只读**展示状态（不写任何业务状态）。
+  navigationMonitoring:{
+    candidatesLoaded:!!navigationMonitoringState.candidates,
+    candidateCount:(navigationMonitoringState.candidates?.candidates||[]).length,
+    simulationStatus:navigationMonitoringState.result?.status??null,
+    simulationRun:!!navigationMonitoringState.result,
+    geometryCurrentness:navigationMonitoringState.fixedCorridorGeometry?.currentness??null,
+    lastError:navigationMonitoringLastError
+  },
   layers:layers(),
   view:view?{x:view.x,y:view.y,res:view.res}:null,
   canvas:(()=>{const node=document.getElementById('canvas');return node?[node.width,node.height,node.clientHeight]:null;})(),
@@ -195,6 +228,13 @@ function resetProjectMapState(){
   try{bitmap?.close();}catch(_){/* 已被释放的 ImageBitmap 不影响后续重建 */}
   bitmap=null;imageView=null;
   viewProjectIdentity='';
+  //: Round38-N2：导航监测规划的只读展示状态**属于上一个项目**，切换项目必须整体作废
+  //: （否则会拿着旧项目的候选快照 / 仿真结论继续显示，属于跨项目身份混用）。
+  navigationMonitoringState={candidates:null,result:null,fixedCorridorGeometry:null,draft:null};
+  //: 项目身份已变 ⇒ 航路身份级仿真缓存必须一起作废（不得跨项目复用结论）。
+  navigationMonitoringSimulationCache=new Map();
+  navigationMonitoringLastError=null;
+  navigationMonitoringCandidatesPromise=null;
 }
 /**
  * 按固定优先级确定视图，并保证**一定有收尾重绘**。
@@ -331,6 +371,39 @@ function drawWorkflowOverlay(){
     labelMode:plan.level==='detail'?'detail':'hidden'
   });
   if(selectedReference&&plan.selectedScreen){const [x,y]=plan.selectedScreen;ctx.save();ctx.fillStyle='#8f2f6b';ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,8,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();}
+  //: Round38-N2：导航监测规划图层。**只在用户主动勾选时**才构造模型并绘制；
+  //: 图层关闭时本函数一次 canvas 调用都不发（默认地图状态完全不变）。
+  if(switches.navigationMonitoringLayer===true)drawNavigationMonitoringOverlay();
+}
+/**
+ * Round38-N2：导航监测规划地图图层的**唯一**绘制入口。
+ *
+ * 只读：模型全部来自 N1 只读响应 + 固定宽带只读几何；图层模型里不携带 2000 m
+ * 关联半径，因此地图上永远不会出现被误解成认证覆盖区的 2000 m 圆。
+ */
+function drawNavigationMonitoringOverlay(){
+  const model=navigationMonitoringOverlayModel();
+  const outcome=drawNavigationMonitoringLayer({ctx,screenPoint,model});
+  currentNavigationOverlay=withScreenCoordinates(model,screenPoint);
+  return outcome;
+}
+/** 当前图层模型（带屏幕坐标，供命中测试使用）；未开启时为 null。 */
+function navigationMonitoringOverlayModel(){
+  const result=navigationMonitoringState.result;
+  if(!result)return {drawable:false,reason:'no_simulation_result',devices:[],segments:[],routePath:[],fixedBand:null};
+  const route=canonicalNavigationRoute();
+  return navigationMonitoringLayerModel({
+    result,candidates:navigationMonitoringState.candidates?.candidates||[],
+    routePath:route?.path||null,routeLengthM:route?.route_length_m??result.route_length_m??null,
+    fixedGeometry:navigationMonitoringState.fixedCorridorGeometry,
+    layerOn:$('navigationMonitoringLayer')?.checked===true
+  });
+}
+/** 当前权威运行航路（只读；缺失即 null，绝不猜）。 */
+function canonicalNavigationRoute(){
+  const routes=flow?.operational_routes||[];
+  if(routes.length!==1)return null;
+  return routes[0];
 }
 function proposedPlanActions(value){
   const p16=value?.cns_corridor_site_plan||{},review=value?.cns_plan_review||{};
@@ -385,6 +458,19 @@ canvas.addEventListener('click',event=>{
     }
   }
   if(towerReference.candidateClick(event))return;
+  //: Round38-N2：导航监测规划图层的只读 tooltip（设备来源 / 缺口详情）。
+  //: 只在图层开启且模型可绘制时才参与命中，因此不会影响既有点击顺序。
+  if(cnsLayers.navigationMonitoringLayer===true&&currentNavigationOverlay?.drawable){
+    const click=[event.clientX-rect.left,event.clientY-rect.top];
+    const feature=hitNavigationMonitoringFeature(currentNavigationOverlay,click);
+    if(feature){
+      info.innerHTML=navigationMonitoringFeatureTooltip(feature,navigationMonitoringState.result);
+      info.style.left=Math.max(8,Math.min(event.clientX-rect.left+12,rect.width-440))+'px';
+      info.style.top=Math.max(8,event.clientY-rect.top-38)+'px';
+      info.hidden=false;
+      return;
+    }
+  }
   if(towerReference.detail(clusterTarget,event))return;// 铁塔详情：字段与"不派生通信能力"声明都在 tower_reference_layer.js
   // 参考对象交互只在 detail 档保留：overview/medium 下参考层被弱化或隐藏，不参与命中
   if(currentStep===3){
@@ -620,7 +706,7 @@ function renderWorkflow(){  if(!flow)return;
   // 并且**不再**让"约束场门禁"这类业务判断受连带影响（门禁读的是 flow，不读渲染结果）。
   let rendered;
   try{
-    rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight,constraint:constraintView.presentation()}});
+    rendered=renderWorkflowSteps({step,context:{state,flow,draftWorkspace,gridDisplay,interactionMode,selectedReference,populationDisplayLabel,formatNumber:GridTheme.formatNumber,routeEvidenceHighlight,constraint:constraintView.presentation(),navigationMonitoring:navigationMonitoringState}});
   }catch(exc){
     console.error('[CNS Planner] 第 '+currentStep+' 步面板渲染失败',exc);
     panelError('第 '+currentStep+' 步面板渲染失败：'+(exc?.message||exc)+'（技术细节见浏览器控制台）');
@@ -675,6 +761,75 @@ function stepBindings(){return {
   // 约束场（高度层障碍）展示层入口：选择高度层只切展示、不重算；生成必须显式点击。
   // 绑定细节全部在 workflow/constraint_view.js，main.js 只做一次转发。
   constraintField:constraintView.stepBindings(resourceAction,refreshWorkflow),
+  //: Round38-N2：导航监测规划（只读）。三个动作**全部**是只读 GET / POST-只读：
+  //: 候选站址快照、导航监测仿真、固定宽带几何。没有任何写路径，也不刷新工作流快照
+  //: （结果只进内存展示状态，不写 ProjectState）。
+  navigationMonitoring:{
+    async loadCandidates(){
+      //: 同一次项目会话内候选快照只读一次即可（切换项目时由 reset 清空缓存）。
+      if(navigationMonitoringState.candidates)return navigationMonitoringState.candidates;
+      if(navigationMonitoringCandidatesPromise)return navigationMonitoringCandidatesPromise;
+      navigationMonitoringCandidatesPromise=(async()=>{
+        try{
+          const data=await api(SHARED_SITE_CANDIDATES_ENDPOINT);
+          navigationMonitoringState.candidates=data;
+          navigationMonitoringLastError=null;
+          return data;
+        }catch(error){
+          navigationMonitoringLastError='candidates:'+(error?.message||error);
+          throw error;
+        }finally{
+          navigationMonitoringCandidatesPromise=null;
+        }
+      })();
+      return navigationMonitoringCandidatesPromise;
+    },
+    async loadFixedCorridorGeometry(routeId){
+      const query=routeId?('?route_id='+encodeURIComponent(routeId)):'';
+      try{
+        const data=await api(FIXED_CORRIDOR_GEOMETRY_ENDPOINT+query);
+        navigationMonitoringState.fixedCorridorGeometry=data;
+        navigationMonitoringLastError=null;
+        return data;
+      }catch(error){
+        //: 固定宽带几何读取失败**不**让整条仿真失败：面板如实显示缺证即可。
+        navigationMonitoringLastError='fixed_corridor_geometry:'+(error?.message||error);
+        return null;
+      }
+    },
+    async simulate({routeSource,routeId,draft}={}){
+      const payload={};
+      if(routeSource==='operational_route'||routeSource==='engineering_demo')payload.route_source=routeSource;
+      if(routeId)payload.route_id=routeId;
+      const parameters=navigationParameterPayload(draft||{});
+      if(Object.keys(parameters).length)payload.parameters=parameters;
+      //: 按**航路身份 + 来源 + 参数**缓存仿真结果：界面每次重绘都不得重跑导航规划。
+      //: 键里含 route_id，因此切换航路必然得到新键；项目/航路变化时由 reset() 整体失效。
+      const cacheKey=JSON.stringify([routeSource||null,routeId||null,
+        Object.keys(parameters).sort().map(key=>[key,parameters[key]])]);
+      if(navigationMonitoringSimulationCache.has(cacheKey)){
+        const cached=navigationMonitoringSimulationCache.get(cacheKey);
+        navigationMonitoringState.result=cached;
+        navigationMonitoringState.draft=draft||null;
+        navigationMonitoringLastError=null;
+        return cached;
+      }
+      //: 只读 POST：响应只进内存展示状态；**不**安装 workflow 快照、不写 ProjectState。
+      const result=await computeAction(NAVIGATION_MONITORING_SIMULATION_ENDPOINT,payload);
+      navigationMonitoringState.result=result;
+      navigationMonitoringState.draft=draft||null;
+      navigationMonitoringLastError=null;
+      if(result?.route_identity?.route_id){
+        navigationMonitoringSimulationCache.set(cacheKey,result);
+        await this.loadFixedCorridorGeometry(result.route_identity.route_id);
+      }
+      renderWorkflow();paint();
+      return result;
+    },
+    state:()=>navigationMonitoringState,
+    lastError:()=>navigationMonitoringLastError,
+    reset(){navigationMonitoringState={candidates:null,result:null,fixedCorridorGeometry:null,draft:null};navigationMonitoringSimulationCache=new Map();navigationMonitoringLastError=null;}
+  },
   // BUG-R37A-002：第02步的「标准网格」勾选框是同一能力的第二个入口，同样必须先
   // 按需补齐逐格几何，否则会出现"从这里开图层能画、从图层抽屉开就画不出来"的分叉。
   setGridOutline(value){gridDisplay.outline=value;$('gridLayer').checked=value;if(value)ensureGridGeometry();updateGridNotice();paint();},
@@ -867,7 +1022,9 @@ function afterDetailRecovery(label){
  */
 const PROJECT_REOPEN_RESET_LAYER_IDS=[
   'cnsCommunicationLayer','cnsNavigationLayer','cnsRidLayer','cnsServiceGapLayer','cnsFacilityPlanLayer','surfaceFactsLayer',
-  'routeProtectionCorridorLayer','surveillanceProtectionLayer'
+  'routeProtectionCorridorLayer','surveillanceProtectionLayer',
+  //: Round38-N2：导航监测规划图层也是分析层，重开项目后必须回到关闭。
+  'navigationMonitoringLayer'
 ];
 function resetAnalysisLayerSelection(){
   for(const id of PROJECT_REOPEN_RESET_LAYER_IDS)$(id)?.removeAttribute('checked');

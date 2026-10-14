@@ -684,6 +684,35 @@ class InvalidationService:
         self.cns_corridor_gap()
         self.route_safety_evidence("cns_corridor_changed")
 
+    def corridor_width_policy_changed(self, reason="fixed_corridor_width_policy_changed"):
+        """Round38-W1A：宽度策略变化的**唯一**失效入口。
+
+        固定宽带契约（``fixed-1000m-v1``）变化后，**只沿 P14 → P15 → P16 → P17 →
+        评审/报告**这条下游链单向传播：
+
+        * stale：``cns_corridor_assessment``、``cns_corridor_gap_assessment``、
+          ``cns_corridor_site_plan``、``continuous_service_acceptability``、
+          评审与报告（由各自既有入口负责）；
+        * **保持 current**：operational route、adoption、``route_risk_profiles``、
+          Theta* 候选、独立 route validation、原 coverage/service capability、
+          Radar 布设。
+
+        因此本方法**绝不**反向 stale 航路、风险或搜索产物 —— 宽度是 CNS 保障需求的
+        下游属性，不是航路几何或风险的输入。
+        """
+
+        state = self.session.state
+        for key in ("cns_corridor_assessment", "cns_corridor_gap_assessment",
+                    "cns_corridor_site_plan", "continuous_service_acceptability"):
+            result = state.get(key) or {}
+            if result and result.get("status") != "not_calculated":
+                result["status"] = "stale"
+                result["stale_reason"] = reason
+                state[key] = result
+                state.setdefault("result_statuses", {})[key] = "stale"
+        #: 沿既有单向链继续传播到评审/报告；绝不触碰航路、风险或搜索产物。
+        self.cns_plan_review(reason)
+
     def cns_corridor_gap(self):
         """Stale only P15 and preserve every P1-P14 result."""
         state = self.session.state

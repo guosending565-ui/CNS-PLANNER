@@ -201,6 +201,15 @@ class ApiRouter:
         if path == "/api/device-catalog": return Response(workflow.device_catalog_snapshot())
         if path == "/api/reference-landing-sites": return Response(workflow.reference_landing_sites_snapshot())
         if path == "/api/reference-routes": return Response(workflow.reference_routes_snapshot())
+        if path == "/api/cns-shared-site-candidates":
+            return Response(workflow.cns_shared_site_candidates())
+        # Round38-N2：固定 1000 m CNS 保障宽带的**只读几何投影**。几何只由 W1A 的
+        # 唯一构造器产生，并按 P14 的固定几何身份做 currentness 门禁；无几何时
+        # fail-closed（blocked / unavailable），绝不返回近似边界。
+        if path == "/api/fixed-corridor-geometry":
+            return Response(workflow.fixed_corridor_geometry(
+                self._first(query, "route_id", "") or None,
+            ))
         if path == "/api/airspace-policies": return Response(workflow.airspace_policies_snapshot())
         if path == "/api/equipment-reference-catalog": return Response(workflow.equipment_reference_catalog_snapshot())
         if path == "/api/required-cns": return Response(workflow.required_cns_snapshot())
@@ -419,6 +428,13 @@ class ApiRouter:
         "/api/visualization-3d/radar-volumes": "radar-volumes",
         # Round37-T3D-3A：P17 历史保护走廊 / 隔离工程示意（只读、零写入）。
         "/api/visualization-3d/protection-volumes": "protection-volumes",
+        # Round38-T3D4：三维 CNS 站址 / 设备四类身份分层（只读、零写入、不推断安装）。
+        "/api/visualization-3d/cns-sites": "cns-sites",
+        # Round38-T3D4：固定 1000 m CNS 保障目标带的只读三维投影。几何与 currentness
+        # 全部委托 W1A/FIG 的唯一实现，三维层绝不重算 buffer、绝不使用 P17 旧宽度。
+        "/api/visualization-3d/fixed-corridor-bands": "fixed-corridor-bands",
+        # Round37-T3D-3B：用户配置模拟轨迹的事件判定（只读、零写入、输入有界）。
+        "/api/visualization-3d/intrusion-assessment": "intrusion-assessment",
     }
 
     #: 地形 / 晕渲派生资源的缓存策略：它们是**确定性派生**产物（同 z/x/y 与同一
@@ -640,6 +656,30 @@ class ApiRouter:
                 return Response(payload, headers={
                     "ETag": f'"{etag}"', "Cache-Control": self.CACHE_NONE,
                 })
+
+            if action in ("cns-sites", "fixed-corridor-bands"):
+                # Round38-T3D4：站址身份与固定目标带都随权威状态变化，一律 no-store；
+                # ETag 只由**来源身份 + 查询**决定（来源种子里已含站址身份指纹与
+                # 固定宽带宽度契约身份，因此状态一变 ETag 必变）。
+                payload = (service.cns_sites(query) if action == "cns-sites"
+                           else service.fixed_corridor_bands(query))
+                etag = stable_fingerprint(
+                    {"seed": service.identity_seed(), "action": action,
+                     "query": sorted((str(k), str(v)) for k, v in query.items())},
+                    prefix=f"vis3d{action.replace('-', '')}v1-",
+                )
+                if self._etag_matches(headers, etag):
+                    return self._not_modified(etag, self.CACHE_NONE)
+                payload["etag"] = etag
+                return Response(payload, headers={
+                    "ETag": f'"{etag}"', "Cache-Control": self.CACHE_NONE,
+                })
+
+            if action == "intrusion-assessment":
+                # 模拟轨迹判定是**纯用户输入**驱动的只读计算：既不是状态派生结果，
+                # 也不写 ProjectState，因此必须 no-store（绝不能被缓存复用）。
+                payload = service.intrusion_assessment(query)
+                return Response(payload, headers={"Cache-Control": self.CACHE_NONE})
 
             if action in ("communication-volumes", "rid-footprints"):
                 # Round37-T3D-2A：三维 CNS 覆盖只读几何。ETag = 来源身份 + 查询
@@ -891,6 +931,15 @@ class ApiRouter:
         context, workflow, data = self.context, self.context.workflow, self.context.data
         original_path = path
         research_request = original_path != path
+        if path == "/api/navigation-monitoring-simulation":
+            try:
+                return Response(workflow.simulate_navigation_monitoring(payload))
+            except ValueError as exc:
+                return Response({
+                    "status": "invalid_parameters",
+                    "error": str(exc),
+                    "writes_performed": 0,
+                }, status=400)
         # ---- Phase4-B6X：heavy task 提交（HTTP 202 + task_id） ------------------
         # 真正重的动作不再在 HTTP 线程与 mutation_lock 内跑完：
         #   * 业务 endpoint 带 ``async: true`` 时只登记任务；

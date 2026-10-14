@@ -203,10 +203,25 @@ function corridorPolicyPanel(flow){
   const routes=flow.operational_routes||[],policy=flow.cns_corridor_policy||{routes:{}},first=routes[0]?.route_id||'',spec=(policy.routes||{})[first]||{};
   const routeOptions=routes.map(item=>'<option value="'+escapeHtml(item.route_id)+'">'+escapeHtml(item.route_id)+'</option>').join('');
   const corridorBlockers=routes.length?[]:[{kind:'blocker',text:'当前没有运行航路：'+sourceStateText('not_configured')+'，无法定义服务走廊。'}];
+  // Round38-W1A：水平宽度是**唯一固定契约**（左右各 500 m、总宽 1000 m），
+  // 前端只读展示，不再提交、也不再允许用户编辑。历史非 500 m 值只读标记 stale。
+  const halfWidth=Number(policy.corridor_half_width_m??500),totalWidth=Number(policy.corridor_total_width_m??1000);
+  const policyVersion=String(policy.width_policy_version||'fixed-1000m-v1');
+  const legacy=spec.horizontal_half_width_m;
+  const legacyStale=legacy!==undefined&&legacy!==null&&Number(legacy)!==halfWidth;
+  const legacyNote=legacy===undefined||legacy===null
+    ?'该航路未记录历史半宽；固定契约直接生效。'
+    :legacyStale
+      ?'历史记录半宽 '+escapeHtml(String(legacy))+' m 与固定契约不一致，已标记 stale 只读保留，不参与计算。'
+      :'历史记录半宽与固定契约一致。';
   return '<h3>CNS 服务需求走廊</h3>'
-    +zone('本段目标','<div class="demo-note">工程 CNS 服务需求走廊：不等同 JARUS Operational Volume、U-space Surveillance Volume 或法规批准空间。水平半宽与垂向余量必须显式确认，系统不会给出默认宽度。</div>')
+    +zone('本段目标','<div class="demo-note">工程 CNS 服务需求走廊：不等同 JARUS Operational Volume、U-space Surveillance Volume 或法规批准空间。横向宽度为固定契约（左右各 '+escapeHtml(String(halfWidth))+' m、总宽 '+escapeHtml(String(totalWidth))+' m），不可编辑；垂向余量仍需显式确认。</div>')
     +zone('输入准备',selectInput('corridorRoute','运行航路',routes.map(item=>item.route_id),first)+
-      '<div class="form-grid">'+input('corridorHalfWidth','水平半宽 m',spec.horizontal_half_width_m)+input('corridorLower','下垂向余量 m',spec.vertical_lower_margin_m)+input('corridorUpper','上垂向余量 m',spec.vertical_upper_margin_m)+input('corridorSource','来源',spec.source,'text')+'<label class="check-row"><input type="checkbox" id="corridorConfirmed" '+(spec.confirmed?'checked':'')+'>走廊参数已确认</label></div>')
+      '<div class="form-grid"><label>水平半宽 m（固定）<input type="text" id="corridorHalfWidthReadOnly" value="'+escapeHtml(String(halfWidth))+'" readonly></label>'
+      +'<label>总横向宽度 m（固定）<input type="text" id="corridorTotalWidthReadOnly" value="'+escapeHtml(String(totalWidth))+'" readonly></label>'
+      +'<label>宽度策略<input type="text" id="corridorWidthPolicy" value="'+escapeHtml(policyVersion)+'" readonly></label>'
+      +input('corridorLower','下垂向余量 m',spec.vertical_lower_margin_m)+input('corridorUpper','上垂向余量 m',spec.vertical_upper_margin_m)+input('corridorSource','来源',spec.source,'text')+'<label class="check-row"><input type="checkbox" id="corridorConfirmed" '+(spec.confirmed?'checked':'')+'>走廊参数已确认</label></div>'
+      +'<div class="parameter-note">'+legacyNote+'</div>')
     +zone('阻塞项与工程假设',blockerList(corridorBlockers,'当前没有阻塞项。走廊参数未确认前只作为草稿保存，不参与能力缺口评估。'))
     +zone('主操作',primaryAction('<button class="primary full" id="saveCorridorPolicy" '+(!routeOptions?'disabled':'')+'>保存并评估服务走廊</button>',{note:'保存后立即评估该航路的 CNS 服务需求走廊。'}));
 }
@@ -438,7 +453,10 @@ export function bind(c){
   c.actionButton('saveResponseBudget',()=>{const timing=timingClone(),confirmed=c.$('rtConfirmed').checked,source=textValue('rtSource')||'user_configuration',ids={detect:'rtDetect',track:'rtTrack',processing:'rtProcessing',decision:'rtDecision',communication:'rtCommunication',aircraft_reaction:'rtReaction'};timing.response_time_budgets=timing.response_time_budgets||{};timing.response_time_budgets['default-response']={budget_id:'default-response',source,confirmed,components:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{value_s:optional(id),source,confirmed}]))};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('saveEncounterScenario',()=>{const timing=timingClone(),confirmed=c.$('encounterConfirmed').checked;timing.encounter_scenarios=timing.encounter_scenarios||{};timing.encounter_scenarios['default-encounter']={encounter_id:'default-encounter',relative_closing_speed_mps:optional('encounterRelativeSpeed'),maneuver_distance_m:optional('encounterManeuver'),uncertainty_distance_m:optional('encounterUncertainty'),source:textValue('encounterSource')||'user_configuration',confirmed};return c.resourceAction('/api/operational-timing',{operational_timing:timing});});
   c.actionButton('evaluateProtectionBudget',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
-  c.actionButton('saveCorridorPolicy',()=>{const policy=structuredClone(c.flow().cns_corridor_policy||{routes:{}}),routeId=c.$('corridorRoute').value;policy.routes=policy.routes||{};policy.routes[routeId]={route_id:routeId,horizontal_half_width_m:optional('corridorHalfWidth'),vertical_lower_margin_m:optional('corridorLower'),vertical_upper_margin_m:optional('corridorUpper'),source:textValue('corridorSource')||'user_configuration',confirmed:c.$('corridorConfirmed').checked};return c.resourceAction('/api/cns-service-corridor/evaluate',{cns_corridor_policy:policy});});
+  // Round38-W1A：提交端**不再**决定宽度。horizontal_half_width_m 原值只读保留
+  // （历史审计），服务端一律消费固定 fixed-1000m-v1 契约；这里也不读取只读输入框，
+  // 因此用户无法通过 DOM 篡改宽度。
+  c.actionButton('saveCorridorPolicy',()=>{const policy=structuredClone(c.flow().cns_corridor_policy||{routes:{}}),routeId=c.$('corridorRoute').value;policy.routes=policy.routes||{};const previous=policy.routes[routeId]||{};policy.routes[routeId]={route_id:routeId,horizontal_half_width_m:previous.horizontal_half_width_m??null,vertical_lower_margin_m:optional('corridorLower'),vertical_upper_margin_m:optional('corridorUpper'),source:textValue('corridorSource')||'user_configuration',confirmed:c.$('corridorConfirmed').checked};return c.resourceAction('/api/cns-service-corridor/evaluate',{cns_corridor_policy:policy});});
   c.actionButton('saveRequiredCns',()=>{
     const selectedScope=c.$('requiredScope').value;
     const requirements=withLegacyRequiredAliases({

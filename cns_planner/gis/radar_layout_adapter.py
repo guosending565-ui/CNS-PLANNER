@@ -59,6 +59,12 @@ LAND_MASK_SEMANTICS = (
     "explicit_land_polygon_containment_plus_coastal_uncertainty_buffer"
 )
 
+#: 工程估算雷达原点的**唯一**来源标识（Round38-INT-A 恢复既有能力时新增的显式标注）。
+#: 它与 ``application/radar_shared_site_adapter`` 共用同一字面量：估算值只作为明确
+#: 声明假设的工程规划与原点的工程示意，**不是**已确认 EGM2008 塔顶正高。
+PLANNING_ESTIMATE_ORIGIN_SOURCE = "planning_estimate_terrain_plus_source_tower_height"
+_PLANNING_ESTIMATE_ORIGIN_SOURCE = PLANNING_ESTIMATE_ORIGIN_SOURCE
+
 #: 分类判定基（provenance 用）。
 LAND_MASK_CLASSIFICATION_BASIS = "explicit_polygon"
 
@@ -1282,8 +1288,13 @@ def sample_route_terrain(points, *, terrain_source):
 # ------------------------------------------------------------------ radar origin
 
 
-def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
-    """逐塔解析**雷达原点** EGM2008 正高（V1.1 固定简化语义）。
+def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
+                          ground_site_installation_heights=None,
+                          ground_site_elevations=None,
+                          planning_origin_estimates=None):
+    """逐站址解析**雷达原点** EGM2008 正高。
+
+    铁塔站址（V1.1 固定简化语义，**逐字保留**）::
 
         radar_origin_egm2008_m = tower_top_orthometric_m
 
@@ -1292,32 +1303,96 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
     * ground tower：FABDEM 地形 + 塔身结构高度；
     * rooftop tower：FABDEM 地形 + 楼面建筑高度 + 塔身结构高度。
 
+    地面 / 场站站址（SITE-2 新增，**绝不继承塔顶高度**）::
+
+        radar_origin_egm2008_m =
+            ground_site_elevation_egm2008_m + installation_height_m（显式证据）
+
+    地面站的两项证据都必须是**显式可用**的：地表正高来自既有的
+    ``egm2008_orthometric`` 地形事实，安装高度来自显式安装证据。任一缺失即
+    ``unresolved`` 且该站址**不产生任何候选** —— 绝不填 0、绝不用塔顶高度兜底、
+    绝不套用 ``mount_assumption``。
+
     V1.1 明确**删除**"塔顶以上再叠一层统一工程示例挂高"这一步
     （BUG-RADAR-ORIGIN-003）。传入的 ``mount_assumption`` 只被**兼容读取**并原样记录为
-    ``legacy_not_used_by_v1_1``，**不影响**任何 V1.1 几何。
+    ``legacy_not_used_by_v1_1``，**不影响**任何几何、也**不**成为地面站的安装高度。
 
     ``tower_top_orthometric_m`` 未解析的塔继续**不可作为候选**，**绝不填 0**。
+
+    唯一例外是**显式声明**的 Radar 工程估算原点（``planning_origin_estimates``）：
+    它由既有的共塔工程估算路径（``Terrain + 源表塔身高度``，见
+    :mod:`cns_planner.domain.tower_colocation` 的 ``planning_service_origin_policy``）
+    产生，只在调用方**已经显式打开**该工程假设时传入。此时该塔的原点记
+    ``origin_source="planning_estimate_terrain_plus_source_tower_height"``、
+    ``origin_confirmed=False``，仅用于明确标注的工程规划与非权威展示，
+    **绝不**升级为已确认 EGM2008 塔顶正高、**绝不**据此认定 Radar LOS 已验证。
+    未提供估算时行为与 V1.1 完全一致（保持 fail-closed）。
     """
 
     mount = mount_assumption if isinstance(mount_assumption, dict) else {}
     legacy_mount_height = mount.get("radar_mount_height_m")
+    estimates = (
+        planning_origin_estimates if isinstance(planning_origin_estimates, dict) else {}
+    )
     profiles = obstacle_profiles if isinstance(obstacle_profiles, dict) else {}
     items = profiles.get("items") if isinstance(profiles.get("items"), dict) else profiles
+    heights = (
+        ground_site_installation_heights
+        if isinstance(ground_site_installation_heights, dict) else {}
+    )
+    elevations = (
+        ground_site_elevations if isinstance(ground_site_elevations, dict) else {}
+    )
 
     records, unresolved = [], []
-    for tower in towers or []:
-        tower_id = str(tower.get("tower_id") or "")
+    for site in towers or []:
+        if not isinstance(site, dict):
+            continue
+        site_type = str(site.get("site_type") or "").strip().lower()
+        tower_id = str(site.get("tower_id") or site.get("site_id") or "")
         if not tower_id:
+            continue
+        if site_type in ("ground_site", "landing_site", "helipad"):
+            record = _ground_site_origin_record(
+                site, site_id=tower_id, installation_heights=heights,
+                elevations=elevations,
+            )
+            records.append(record)
+            if record["origin_egm2008_m"] is None:
+                unresolved.append(record)
+            continue
+        if site.get("installation_position") == "ground_site":
+            record = _ground_site_origin_record(
+                site, site_id=tower_id, installation_heights=heights,
+                elevations=elevations,
+            )
+            records.append(record)
+            if record["origin_egm2008_m"] is None:
+                unresolved.append(record)
             continue
         profile = items.get(tower_id) if isinstance(items, dict) else None
         profile = profile if isinstance(profile, dict) else {}
         top = profile.get("tower_top_orthometric_m")
+        if not isinstance(top, (int, float)) or isinstance(top, bool):
+            #: 已带**显式工程估算身份**的输入记录绝不能被当作严格塔顶：估算只在下面
+            #: 通过 ``planning_origin_estimates`` 生效，并单独标注来源与限制。
+            if site.get("origin_estimate") is True or (
+                    site.get("origin_source") == _PLANNING_ESTIMATE_ORIGIN_SOURCE):
+                top = None
+            else:
+                # 其余情况保留既有的兼容回退（调用方显式提供的严格塔顶）。
+                top = site.get("tower_top_orthometric_m")
+                if not isinstance(top, (int, float)) or isinstance(top, bool):
+                    top = site.get("origin_egm2008_m")
         record = {
             "tower_id": tower_id,
-            "name": tower.get("name") or tower_id,
-            "longitude": tower.get("longitude"),
-            "latitude": tower.get("latitude"),
-            "site_type": tower.get("site_type"),
+            "site_id": tower_id,
+            "name": site.get("name") or tower_id,
+            "longitude": site.get("longitude"),
+            "latitude": site.get("latitude"),
+            "site_type": site.get("site_type"),
+            "candidate_kind": site.get("candidate_kind"),
+            "installation_position": "tower_top",
             "tower_top_orthometric_m": top if isinstance(top, (int, float)) else None,
             "tower_obstacle_status": profile.get("status"),
             "origin_egm2008_m": None,
@@ -1325,6 +1400,8 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
             "origin_basis": RADAR_ORIGIN_BASIS,
             "origin_confirmed": False,
             "origin_parameter_origin": "source_tower_top_orthometric",
+            "origin_estimate": False,
+            "origin_estimate_limitations": [],
             "origin_reason": None,
             "installation_assumption": INSTALLATION_ASSUMPTION,
             "installation_engineering_confirmed": INSTALLATION_ENGINEERING_CONFIRMED,
@@ -1337,12 +1414,33 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
             ),
             "legacy_mount_height_status": "legacy_not_used_by_v1_1",
             "legacy_mount_height_affects_v1_1_geometry": False,
-            "source": deepcopy(tower.get("source")),
+            "source": deepcopy(site.get("source")),
         }
         if not isinstance(top, (int, float)) or isinstance(top, bool):
+            # 既有共塔工程估算路径（显式 opt-in 时由调用方传入）：未解析塔顶的塔仍可
+            # 作为**明确标注的工程规划候选**，但绝不标成已确认塔顶正高。
+            estimate = estimates.get(tower_id)
+            if isinstance(estimate, (int, float)) and not isinstance(estimate, bool):
+                record["origin_egm2008_m"] = float(estimate)
+                record["origin_source"] = "planning_estimate_terrain_plus_source_tower_height"
+                record["origin_parameter_origin"] = "engineering_estimate"
+                record["origin_estimate"] = True
+                record["origin_estimate_limitations"] = [
+                    "工程估算 = FABDEM 地形正高 + 源表塔身高度；不是已确认 EGM2008 塔顶正高",
+                    "未计入潜在建筑屋面高度（楼面塔可能低估真实安装高程）",
+                    "仅用于明确声明假设的工程规划与非权威展示；"
+                    "不得据此认定 Radar LOS 已验证通过",
+                ]
+                record["origin_reason"] = (
+                    "tower_top_egm2008_unresolved_planning_estimate_used:"
+                    f"{profile.get('vertical_status') or 'tower_obstacle_profile_missing'}"
+                )
+                records.append(record)
+                continue
             record["origin_reason"] = (
                 "tower_top_egm2008_unresolved:"
-                f"{profile.get('vertical_status') or 'tower_obstacle_profile_missing'}"
+                f"{profile.get('vertical_status') or site.get('origin_reason')
+                   or 'tower_obstacle_profile_missing'}"
             )
             unresolved.append(record)
             records.append(record)
@@ -1369,6 +1467,115 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None):
         "unresolved_count": len(unresolved),
         "backend_hardcoded_mount_height": False,
     }
+
+
+def _finite(value):
+    """有限数值判定（``bool`` 不算数值，缺失返回 ``None``，绝不填 0）。"""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if value != value or abs(value) == float("inf"):
+        return None
+    return value
+
+
+def _ground_site_origin_record(site, *, site_id, installation_heights, elevations):
+    """地面 / 场站站址的雷达原点记录（**不读塔顶高度**，两项证据缺一不可）。"""
+
+    height_entry = installation_heights.get(site_id)
+    height_entry = height_entry if isinstance(height_entry, dict) else {}
+    elevation_entry = elevations.get(site_id)
+    elevation_entry = elevation_entry if isinstance(elevation_entry, dict) else {}
+    if not elevation_entry:
+        elevation_entry = site.get("ground_elevation") or {}
+    if not height_entry:
+        height_entry = site.get("antenna_installation_height") or {}
+
+    ground, ground_reason = _evidenced_ground_elevation(
+        site=site, entry=elevation_entry
+    )
+    height, height_reason = _evidenced_installation_height(entry=height_entry)
+    record = {
+        "tower_id": site_id,
+        "site_id": site_id,
+        "name": site.get("name") or site_id,
+        "longitude": site.get("longitude"),
+        "latitude": site.get("latitude"),
+        "site_type": site.get("site_type"),
+        "candidate_kind": site.get("candidate_kind"),
+        "installation_position": "ground_site",
+        "tower_top_orthometric_m": None,
+        "tower_obstacle_status": None,
+        "ground_site_elevation_egm2008_m": ground,
+        "installation_height_m": height,
+        "origin_egm2008_m": None,
+        "origin_source": None,
+        "origin_basis": None,
+        "origin_confirmed": False,
+        "origin_parameter_origin": None,
+        "origin_reason": None,
+        "installation_assumption": "radar_phase_center_at_ground_site_antenna",
+        "installation_engineering_confirmed": False,
+        "legacy_radar_mount_height_m": None,
+        "legacy_mount_height_status": "legacy_not_used_by_v1_1",
+        "legacy_mount_height_affects_v1_1_geometry": False,
+        #: 显式声明：地面站原点**不是**塔顶，永不继承塔顶正高。
+        "inherits_tower_top_orthometric_m": False,
+        "source": deepcopy(site.get("source")),
+    }
+    if ground is None:
+        record["origin_reason"] = (
+            f"ground_site_elevation_unresolved:{ground_reason or 'unknown'}"
+        )
+        return record
+    if height is None:
+        record["origin_reason"] = (
+            f"ground_site_installation_height_unresolved:{height_reason or 'unknown'}"
+        )
+        return record
+    record["origin_egm2008_m"] = float(ground) + float(height)
+    record["origin_source"] = "ground_site_elevation_plus_installation_height"
+    record["origin_basis"] = "ground_site_antenna_installation"
+    record["origin_confirmed"] = True
+    record["origin_parameter_origin"] = str(height_entry.get("source"))
+    record["installation_engineering_confirmed"] = height_entry.get("confirmed") is True
+    return record
+
+
+def _evidenced_ground_elevation(*, site, entry):
+    """地表正高证据：只接受 ``egm2008_orthometric`` 基准的已解析数值。"""
+
+    ground = _finite(entry.get("elevation_m"))
+    if ground is None:
+        ground = _finite(site.get("ground_elevation_egm2008_m"))
+    if ground is None:
+        return None, str(entry.get("reason") or "ground_elevation_missing")
+    vertical = str(entry.get("vertical_reference") or "egm2008_orthometric")
+    if vertical != "egm2008_orthometric":
+        return None, f"ground_elevation_vertical_reference_not_orthometric:{vertical}"
+    return ground, None
+
+
+def _evidenced_installation_height(*, entry):
+    """天线安装高度证据：必须显式声明来源且 ``confirmed is True``。
+
+    ``engineering_assumption`` / ``not_configured`` **不是**证据（与
+    :mod:`cns_planner.application.radar_shared_site_adapter` 同一口径）。
+    """
+
+    height = _finite(entry.get("installation_height_m"))
+    if height is None:
+        height = _finite(entry.get("height_m"))
+    if height is None or height < 0:
+        return None, "installation_height_missing"
+    if str(entry.get("source") or "") not in (
+        "source_device_installation_height", "user_confirmed",
+    ):
+        return None, "installation_height_source_not_evidenced"
+    if entry.get("confirmed") is not True:
+        return None, "installation_height_unconfirmed"
+    return height, None
 
 
 # ------------------------------------------------------------------ readiness bundle
@@ -1541,6 +1748,7 @@ def land_mask_readiness(state, paths, *, layer_name=None,
 __all__ = [
     "COASTAL_BUFFER_METRIC_CRS", "LAND_LAYER_EXCLUSIONS", "LAND_LAYER_KEYWORDS",
     "LAND_MASK_CLASSIFICATION_BASIS", "LAND_MASK_SEMANTICS", "LAND_MASK_SUFFIXES",
+    "PLANNING_ESTIMATE_ORIGIN_SOURCE",
     "ROUTE_TERRAIN_SAMPLE_HALF_DEG", "LandMaskSource",
     "coastal_uncertainty_buffer_provenance", "geometry_available", "gpkg_layer_crs",
     "land_mask_hint", "land_mask_readiness", "normalized_coastal_buffer_m",

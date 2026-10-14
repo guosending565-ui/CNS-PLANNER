@@ -218,6 +218,17 @@ class ApplicationContext:
         * 只读消费 ``self.data.paths``（真实数据源）与当前 workflow 的 canonical state；
         * 真正的 QGIS 制图通过 ``self.qgis.call(...)`` 在 QGIS owner 线程上执行；
         * 产物写入 active project 目录下的受控目录 ``artifacts/map_figures/``。
+
+        Round38-FIG 追加三个**只读**注入（都必须与既有接口消费同一份判定）：
+
+        * ``fixed_corridor_service``：固定 1000 m 保障宽带的身份 / currentness 判定
+          与 ``GET /api/fixed-corridor-geometry`` **同一实现**；
+        * ``navigation_monitoring_provider``：导航监测（N1/N2）只读仿真，复用既有
+          ``NavigationMonitoringSimulationService`` —— 制图侧不重新选址；
+        * ``shared_site_candidates_provider``：共享站址候选快照（只读），供导航监测
+          图层把 ``site_id`` 映射到真实坐标。
+
+        三者都只读：不写 ``ProjectState``、不推进 revision、不触发失效传播。
         """
 
         from .map_figure_service import MapFigureService
@@ -227,6 +238,16 @@ class ApplicationContext:
             lambda: self.data.paths,
             self.qgis.call,
             project_directory=self.active_project_file.parent,
+            fixed_corridor_service=self.workflow.fixed_corridor_geometry_service,
+            navigation_monitoring_provider=(
+                lambda route: self.workflow.simulate_navigation_monitoring({
+                    "route_source": "operational_route",
+                    "route_id": (route or {}).get("route_id"),
+                })
+            ),
+            shared_site_candidates_provider=(
+                lambda: self.workflow.cns_shared_site_candidate_service.snapshot()
+            ),
         )
         return self.map_figures
 

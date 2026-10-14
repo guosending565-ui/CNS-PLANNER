@@ -286,6 +286,7 @@ def _continuous_service_section(source):
     """
 
     result = source.get("continuous_service_acceptability") or {}
+    site_plan = source.get("cns_corridor_site_plan") or {}
     projection = result.get("post_plan_projection") or {}
     comparison = (projection.get("comparison") or {}) if isinstance(projection, dict) else {}
     policy = source.get("cns_continuous_service_policy") or {}
@@ -333,6 +334,27 @@ def _continuous_service_section(source):
                     ),
                     "D_uncertainty_m": (route.get("corridor") or {}).get("D_uncertainty_m"),
                     "D_protection_m": (route.get("corridor") or {}).get("D_protection_m"),
+                    "response_protection_distance_m": (route.get("corridor") or {}).get(
+                        "response_protection_distance_m"
+                    ),
+                    "service_target_half_width_m": (route.get("corridor") or {}).get(
+                        "service_target_half_width_m"
+                    ),
+                    "corridor_width_policy_version": (route.get("corridor") or {}).get(
+                        "corridor_width_policy_version"
+                    ),
+                    "fixed_band_service_status": (route.get("corridor") or {}).get(
+                        "fixed_band_service_status"
+                    ),
+                    "response_timeliness_status": (route.get("corridor") or {}).get(
+                        "response_timeliness_status"
+                    ),
+                    "outer_half_width_m": (route.get("corridor") or {}).get(
+                        "outer_half_width_m"
+                    ),
+                    "outer_half_width_m_semantics": (route.get("corridor") or {}).get(
+                        "outer_half_width_m_semantics"
+                    ),
                     "status": (route.get("corridor") or {}).get("status"),
                 }
                 for route in result.get("routes") or []
@@ -373,6 +395,14 @@ def _continuous_service_section(source):
         ],
         "improved_services": deepcopy(comparison.get("improved_services") or []),
         "remaining_gaps": deepcopy(comparison.get("remaining_gaps") or []),
+        "planned_gap_status": {
+            "status": site_plan.get("status"),
+            "selected_action_count": len(site_plan.get("selected_actions") or []),
+            "residual_confirmed_target_count": len(
+                site_plan.get("residual_confirmed_targets") or []
+            ),
+            "unknown_residual_count": len(site_plan.get("residual_unknown_evidence") or []),
+        },
         "limitations": deepcopy(result.get("limitations") or []),
         #: **强制披露原文**：报告必须逐字包含这些行。
         "disclosure_lines": deepcopy(result.get("disclosure_lines") or []),
@@ -388,6 +418,7 @@ def _continuous_service_section(source):
         "engineering_assumptions": engineered,
         "no_full_coverage_claim": True,
         "no_surveillance_fully_satisfied_claim": True,
+        "no_response_success_claim": True,
         "not_evaluated": deepcopy(result.get("not_evaluated") or {}),
     }
 

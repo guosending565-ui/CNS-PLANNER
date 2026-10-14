@@ -1031,7 +1031,7 @@ test('step 05 device parameters use a two-layer card layout and keep the collect
 const STEP05_SEGMENTS={
   operate:[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']],
   //: Round 2.5：新增「连续服务可接受性」分段（P17）；它是 canonical 链的最后一环。
-  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划']],
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划'],['cns-res-navigation-monitoring','导航监测规划']],
   advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
@@ -1051,6 +1051,11 @@ const STEP05_CONTROLS=[
   'continuousPolicySource','continuousPolicyConfirmed','saveContinuousPolicy',
   'scenarioIntruderSpeed','scenarioNominalClosing','scenarioConservativeClosing',
   'saveOperationScenario',
+  //: Round38-N2：导航监测规划（只读仿真）的航路选择、参数与主操作控件。
+  'navigationRouteSource','navigationRouteId','navigationForceEndpointMonitors',
+  'navigation_monitor_association_radius_m','navigation_gap_tolerance_s',
+  'navigation_route_speed_mps','navigation_risk_priority_weight',
+  'navigation_max_optional_monitor_sites','runNavigationMonitoringSimulation',
   'nextStep'
 ];
 
@@ -1175,13 +1180,13 @@ test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
     assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['false','true','false']);
-    //: Round 2.5：结果标签新增「连续服务可接受性」分段（第三个之外的第六个之后又加一个）。
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false','false']);
+    //: Round 2.5：结果标签新增「连续服务可接受性」分段；Round38-N2 再增「导航监测规划」。
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false','false','false']);
     assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),'tabpanel');
     assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),undefined);
 
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false','false','false','false']);
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false','false','false','false','false']);
   });
 });
 
@@ -1220,8 +1225,10 @@ const STEP04_CONTROLS=[
   'operationContext_manned_traffic_density','operationContextSource','operationContextConfirmed',
   'saveOperationContext','requirementPoliciesJson','saveRequirementPolicies',
   'evaluateRequiredRecommendation','adoptRequiredRecommendation',
-  // 结果 · 服务走廊
-  'corridorRoute','corridorHalfWidth','corridorLower','corridorUpper','corridorSource',
+  // 结果 · 服务走廊（Round38-W1A：水平宽度改为**只读**固定契约展示，
+  // 可编辑的 corridorHalfWidth 已被三个只读控件取代）
+  'corridorRoute','corridorHalfWidthReadOnly','corridorTotalWidthReadOnly','corridorWidthPolicy',
+  'corridorLower','corridorUpper','corridorSource',
   'corridorConfirmed','saveCorridorPolicy',
   // 高级 · 时间与场景
   'serviceScenarioRoute','serviceScenarioEvents','serviceScenarioConfirmed','saveServiceScenario',
@@ -1310,6 +1317,8 @@ test('step 04 keeps every task owning its own controls',()=>{
       requirementPoliciesJson:'run-res-recommend',saveRequirementPolicies:'run-res-recommend',
       evaluateRequiredRecommendation:'run-res-recommend',adoptRequiredRecommendation:'run-res-recommend',
       corridorRoute:'run-res-corridor',corridorConfirmed:'run-res-corridor',saveCorridorPolicy:'run-res-corridor',
+      corridorHalfWidthReadOnly:'run-res-corridor',corridorTotalWidthReadOnly:'run-res-corridor',
+      corridorWidthPolicy:'run-res-corridor',
       serviceScenarioRoute:'run-adv-timing',
       saveResponseBudget:'run-adv-timing',saveEncounterScenario:'run-adv-timing',
       evaluateProtectionBudget:'run-adv-timing',evaluateDaaEncounter:'run-adv-timing',

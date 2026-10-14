@@ -19,11 +19,16 @@ from __future__ import annotations
 import math
 import struct
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from ..domain.geodesy import distance_m
 from ..domain.cns_service_contract import RID_FORBIDDEN_GEOMETRY, RID_RADIUS_BY_SURFACE
 from ..domain.layered_route import stable_fingerprint
+from ..domain.layered_route_validation import path_fingerprint
+from ..domain.spatial_3d import (
+    TERMINAL_TRANSITION_IDENTITY_VERSION, terminal_transition_identity_reasons,
+)
 from ..domain.radar_surveillance_layout import NOT_EVALUATED as RADAR_NOT_EVALUATED
 from ..domain.radar_surveillance_layout import RADAR_TYPES
 
@@ -114,7 +119,8 @@ class Visualization3DService:
 
     def __init__(self, state, *, terrain_source=None, terrain_tile_source=None,
                  geoid=None, geoid_error=None, imagery_service=None, state_identity=None,
-                 relief_tile_source=None, source_lock=None, data=None):
+                 relief_tile_source=None, source_lock=None, data=None,
+                 shared_sites=None, fixed_corridor_service=None):
         self.state = state if isinstance(state, dict) else {}
         self.terrain_source = terrain_source
         self.terrain_tile_source = terrain_tile_source
@@ -125,6 +131,14 @@ class Visualization3DService:
         #: ``MapData``（**只读**引用）：仅用于读取已配置的真实数据源路径
         #: （陆域掩膜）。本服务绝不通过它写配置或加载数据集。
         self._data = data
+        #: Round38-T3D4：共享候选站址只读快照
+        #: （``CNSSharedSiteCandidateService.snapshot()``）。它是站址身份的**唯一**
+        #: 来源；为 ``None`` 时一律如实披露"未接线"，绝不自行枚举站址。
+        self.shared_sites = shared_sites if isinstance(shared_sites, dict) else {}
+        #: Round38-T3D4：固定 1000 m 保障宽带的**二维权威投影服务**。三维层直接
+        #: 委托它解析航路与 P14 口径的 ``route_authority``，绝不另写一套口径
+        #: （两套口径会造成"重建指纹 ≠ P14 条目指纹"的假阳性 stale）。
+        self.fixed_corridor_service = fixed_corridor_service
         #: FABDEM 派生晕渲源；仅在合法影像不可用时作为**明确标注**的地形表达。
         self.relief_tile_source = relief_tile_source
         #: 保护共享 GDAL/PROJ 句柄的**唯一**锁。地形瓦片、晕渲瓦片与
@@ -163,6 +177,11 @@ class Visualization3DService:
             "tower_profile_count": len(_items(self.state.get("tower_obstacle_profiles"))),
             "device_count": len(_items(self.state.get("device_catalog"))),
             "facility_count": len(_items(self.state.get("existing_cns_facilities"))),
+            # Round38-T3D4：站址身份与固定宽带身份都必须进来源种子，否则站址 / 当前性
+            # 一变而 ETag 不变，浏览器会拿 304 复用旧图层。两者都只取**廉价**身份
+            # 摘要：绝不在 ETag 路径上做几何构造或地形采样。
+            "shared_site_identity": self.shared_site_identity(),
+            "fixed_corridor_identity": self.fixed_corridor_identity(),
             "imagery": {
                 "default_source": (imagery or {}).get("default_source"),
                 "status": (imagery or {}).get("status"),
@@ -181,6 +200,54 @@ class Visualization3DService:
             return int(self.state.get("revision") or 0)
         except (TypeError, ValueError):
             return 0
+
+    # ------------------------------------------------- Round38-T3D4 身份摘要
+
+    def shared_site_identity(self):
+        """共享候选站址的**廉价**身份摘要（不做几何构造、不做地形采样）。
+
+        它是 ETag 来源种子的一部分：站址集合或空间资格一变，三维站址图层的 ETag
+        必须跟着变，否则浏览器会拿 304 复用旧图层（"数据变了图没变"）。
+        未接线时如实给出 ``available=False`` 与原因，绝不静默当成"没有站址"。
+        """
+
+        snapshot = self.shared_sites or {}
+        candidates = snapshot.get("candidates")
+        if not isinstance(candidates, list):
+            return {
+                "available": False,
+                "status": snapshot.get("status"),
+                "reason": "shared_site_candidates_unavailable",
+                "count": 0,
+                "fingerprint": None,
+            }
+        from .radar_shared_site_adapter import candidate_site_fingerprint_component
+
+        component = candidate_site_fingerprint_component(snapshot)
+        counts = snapshot.get("counts") or {}
+        return {
+            "available": True,
+            "status": snapshot.get("status"),
+            "reason": None,
+            "count": component.get("count"),
+            "fingerprint": component.get("fingerprint"),
+            "counts": {
+                "total": counts.get("total"),
+                "towers": counts.get("towers"),
+                "nodes": counts.get("nodes"),
+                "reference_landing_sites": counts.get("reference_landing_sites"),
+                "existing_cns_facilities": counts.get("existing_cns_facilities"),
+                "spatial_candidates": counts.get("spatial_candidates"),
+                "spatial_blocked": counts.get("spatial_blocked"),
+            },
+        }
+
+    def fixed_corridor_identity(self):
+        """固定 1000 m 保障宽带的**宽度契约身份**（唯一权威：Domain 层常量）。"""
+
+        from ..gis.figure_currentness import fixed_corridor_width_identity
+
+        return fixed_corridor_width_identity()
 
     def _current_demo_adoption(self):
         """当前**生效**的工程演示采纳记录（``current_applicability == current``）。"""
@@ -352,6 +419,11 @@ class Visualization3DService:
             "path_crs": "OGC:CRS84",
             "third_coordinate_is_altitude": False,
             "fingerprint": fingerprint,
+            #: Round38-FC30：canonical **完整几何身份**。与 N1 导航监测仿真、
+            #: 固定 1000 m 保障宽带、Route3DProfile 使用同一实现（``path_fingerprint``）
+            #: 与同一取值；``fingerprint`` 是本模块含 candidate/validation 身份的
+            #: ``routegeometryv1-`` 家族，两者语义不同、都保留，绝不互相替代。
+            "route_geometry_fingerprint": path_fingerprint(path),
             "mileage": {
                 "metric": LENGTH_METRIC,
                 "implementation": LENGTH_IMPLEMENTATION,
@@ -379,8 +451,85 @@ class Visualization3DService:
             },
         }
 
-    # ------------------------------------------------------------ demo 航路
+    def _terminal_transition(self, route_id):
+        """该航路的进离场/巡航衔接状态（只读投影，与 Route3DProfile 共用同一判据）。
 
+        Round38-FC30：FIG 与 T3D4 不得各自按 ``route_id`` 重新拼接一套进离场关联。
+        这里给出唯一来源：该航路当前的巡航高度层、canonical 完整几何指纹，以及离场/
+        进场航段各自的衔接判定与理由。
+        """
+
+        spatial = self.state.get("spatial_3d") or {}
+        assignment = None
+        for item in _items(spatial.get("route_operating_layers")):
+            if (isinstance(item, dict) and str(item.get("route_id")) == str(route_id)
+                    and item.get("active") is not False):
+                assignment = item
+                break
+        route = next((
+            item for item in _items(self.state.get("operational_routes"))
+            if isinstance(item, dict) and str(item.get("route_id")) == str(route_id)
+        ), None)
+        path = [
+            point for point in (route or {}).get("path") or []
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+        expected = path_fingerprint(path) if len(path) >= 2 else None
+        route_layer_id = (assignment or {}).get("altitude_layer_id")
+        transitions = {}
+        for procedure_type in ("departure", "arrival"):
+            procedure = next((
+                item for item in _items(spatial.get("departure_arrival_procedures"))
+                if isinstance(item, dict)
+                and str(item.get("route_id")) == str(route_id)
+                and str(item.get("procedure_type")) == procedure_type
+            ), None)
+            if procedure is None:
+                transitions[procedure_type] = {
+                    "procedure_id": None,
+                    "status": "not_configured",
+                    "confirmed": False,
+                    "altitude_layer_id": None,
+                    "route_geometry_fingerprint": None,
+                    "identity_reasons": [f"尚未配置 {procedure_type} 进离场航段"],
+                    "is_current_part_of_route": False,
+                }
+                continue
+            reasons = terminal_transition_identity_reasons(
+                procedure,
+                expected_route_geometry_fingerprint=expected,
+                route_altitude_layer_id=route_layer_id,
+            )
+            confirmed = bool(procedure.get("confirmed")) and str(
+                procedure.get("status")
+            ) == "confirmed"
+            transitions[procedure_type] = {
+                "procedure_id": procedure.get("procedure_id"),
+                "status": procedure.get("status"),
+                "confirmed": bool(procedure.get("confirmed")),
+                "altitude_layer_id": procedure.get("altitude_layer_id"),
+                "route_geometry_fingerprint": procedure.get("route_geometry_fingerprint"),
+                "identity_reasons": reasons,
+                "is_current_part_of_route": bool(confirmed and not reasons),
+            }
+        return {
+            "identity_version": TERMINAL_TRANSITION_IDENTITY_VERSION,
+            "route_altitude_layer_id": route_layer_id,
+            "route_geometry_fingerprint": expected,
+            "departure": transitions["departure"],
+            "arrival": transitions["arrival"],
+            "current_part_of_route": bool(
+                transitions["departure"]["is_current_part_of_route"]
+                and transitions["arrival"]["is_current_part_of_route"]
+            ),
+            "semantics": (
+                "进离场航段只有在绑定当前巡航航路的完整几何指纹、且其高度层与航路当前巡航层"
+                "一致时，才属于 current 航路；仅 route_id 相同不构成同一版本。"
+            ),
+            "read_only": True,
+        }
+
+    # ------------------------------------------------------------ demo 航路
     def _demo_route_entry(self):
         """合法的工程演示航路（来自 ``engineering_demo_projection``，不伪造 canonical）。"""
 
@@ -421,6 +570,7 @@ class Visualization3DService:
             "path": clean,
             "path_crs": "OGC:CRS84",
             "altitude": self._altitude_layer(route_id),
+            "terminal_transition": self._terminal_transition(route_id),
             "operational_authorization": False,
             "strict_safety_validation_passed": bool(
                 ((adoption.get("after") or {}).get("route") or {}).get("provenance", {})
@@ -471,6 +621,7 @@ class Visualization3DService:
                 "path": clean,
                 "path_crs": route.get("path_crs") or "OGC:CRS84",
                 "altitude": self._altitude_layer(route_id),
+                "terminal_transition": self._terminal_transition(route_id),
                 "is_canonical_operational_route": True,
                 "notes": (
                     [] if route.get("status") == "passed"
@@ -900,17 +1051,100 @@ class Visualization3DService:
                     "历史 P17 只有与路线几何身份精确匹配时才显示",
                     "缺少确认上下界时只显示水平边界和名义高度切片",
                     "工程示意必须由用户显式选择路线并输入宽度和上下高度",
+                    "本条是**航路保护区**（业务/法规与响应距离语义），"
+                    "与固定 1000 m CNS 保障目标带是两件事，互不替代",
+                    "固定宽带不是禁飞区、也不是入侵预警边界；三者必须分别表达",
                 ],
                 "items": [],
             },
-            self._reserved_layer(
-                "simulated_intrusion", "入侵目标预警演示（模拟）", "simulated_track_three_column",
-                ["本轮未实现；合同已预留 ID 与 scope",
-                 "必须常驻 simulated=true；不写 ProjectState、不进 fingerprint/staleness/readiness",
-                 "是否实际确认探测恒为 not_confirmed"],
-                OBJECT_ID_PREFIXES["simulated_intruder"],
-                status="reserved_simulated",
-            ),
+            # Round38-T3D4：站址 / 设备四类身份分层（既有铁塔、起降点、既有设施）。
+            {
+                "id": "cns_site_identity",
+                "label": "CNS 站址与设备身份（既有 / 规划选中 / 候选 / blocked 分层）",
+                "status": (
+                    "available" if self.shared_sites.get("candidates")
+                    else "not_calculated"
+                ),
+                "reserved": False,
+                "default_on": False,
+                "count": (self.shared_sites.get("counts") or {}).get("total") or 0,
+                "object_id_prefix": "site:",
+                "geometry_semantics": "station_point_with_optional_evidenced_structure_height",
+                "source_identity": {
+                    "state_key": (
+                        "shared_site_candidates + tower_obstacle_profiles + towers "
+                        "+ existing_cns_facilities + radar_surveillance_layout "
+                        "+ cns_corridor_site_plan"
+                    ),
+                    "provenance_level": "production_container_readonly",
+                    "shared_site_fingerprint": self.shared_site_identity().get("fingerprint"),
+                },
+                "detail_endpoint": "/api/visualization-3d/cns-sites",
+                "notes": [
+                    "站址存在**绝不**推断设备已安装；候选站址不画成已布设设备",
+                    "塔顶安装与地面站安装语义分别表达，地面站绝不继承塔顶高度",
+                    "规划安装高度 ≠ 真实已安装高度",
+                    "缺失高度一律 unknown，绝不填 0",
+                ],
+                "items": [],
+            },
+            # Round38-T3D4：固定 1000 m CNS 保障目标带（服务目标范围，不是覆盖结论）。
+            {
+                "id": "fixed_corridor_band",
+                "label": "固定 1000 m CNS 保障目标带",
+                "status": (
+                    "available" if self.state.get("operational_routes")
+                    else "not_calculated"
+                ),
+                "reserved": False,
+                "default_on": False,
+                "count": len([row for row in (self.state.get("operational_routes") or [])
+                              if isinstance(row, dict)]),
+                "object_id_prefix": OBJECT_ID_PREFIXES["protection_corridor"],
+                "geometry_semantics": (
+                    "fixed_1000m_service_target_band_horizontal_with_evidenced_vertical_slice"
+                ),
+                "source_identity": {
+                    "state_key": "operational_routes + cns_corridor_assessment(P14)",
+                    "provenance_level": "production_container_readonly",
+                    "radius_authority": "fixed-1000m-v1（左右各 500 m）",
+                    "geometry_authority": (
+                        "cns_planner/gis/corridor_geometry.build_fixed_corridor_geometry"),
+                    "currentness_authority": (
+                        "cns_planner/gis/figure_currentness.fixed_corridor_currentness"),
+                },
+                "detail_endpoint": "/api/visualization-3d/fixed-corridor-bands",
+                "notes": [
+                    "只是 CNS 服务目标范围，**不代表**设备已满足覆盖",
+                    "与 FIG 使用同一航路几何指纹、宽度版本与来源身份",
+                    "非 current 时不得显示为正式当前保障结果（只能作明确标注的历史预览）",
+                    "不得使用 P17 旧 outer_half_width_m 作为现行保障宽度",
+                    "无可靠垂直上下界时只展示水平目标带，不伪造认证三维保障体积",
+                ],
+                "items": [],
+            },
+            {
+                "id": "simulated_intrusion",
+                "label": "模拟入侵目标（工程示意，非真实探测）",
+                "status": "available",
+                "reserved": False,
+                "default_on": False,
+                "count": 0,
+                "object_id_prefix": OBJECT_ID_PREFIXES["simulated_intruder"],
+                "geometry_semantics": "simulated_track_three_column",
+                "source_identity": {
+                    "state_key": None,
+                    "provenance_level": "user_configured_engineering_scenario_preview",
+                },
+                "detail_endpoint": "/api/visualization-3d/intrusion-assessment",
+                "notes": [
+                    "轨迹与保护体由用户主动配置；恒定 simulated=true",
+                    "不写 ProjectState、不进 fingerprint/staleness/readiness",
+                    "监视探测恒为 not_evaluated：空间相交绝不被推导为已探测",
+                    "水平投影相交、三维体进入、真实探测三者语义严格分离",
+                ],
+                "items": [],
+            },
         ]
 
         raw_layers = _first(query, "layers")
@@ -979,6 +1213,12 @@ class Visualization3DService:
                 "attribution": "地形晕渲由 FABDEM 30 m + EGM2008 生成；非卫星影像",
             },
             "routes_endpoint": "/api/visualization-3d/routes",
+            # Round38-T3D4：站址身份与固定目标带的稳定入口（二维 / 三维 / 图件同源）。
+            "sites_endpoint": "/api/visualization-3d/cns-sites",
+            "fixed_corridor_bands_endpoint": (
+                "/api/visualization-3d/fixed-corridor-bands"),
+            "fixed_corridor_identity": self.fixed_corridor_identity(),
+            "shared_site_source": self.shared_site_identity(),
             "object_id_prefixes": OBJECT_ID_PREFIXES,
             "layers": layers,
             "layer_ids": [layer["id"] for layer in layers],
@@ -1730,6 +1970,122 @@ class Visualization3DService:
             "algorithms_invoked": [],
         }
 
+    # --------------------------------------------------- simulated intrusion
+
+    def intrusion_assessment(self, query=None):
+        """用户配置模拟轨迹 × 已解析保护体实例的只读事件判定。
+
+        几何判定**只有** ``assess_simulated_track`` 一套实现；前端不得复制第二套
+        Shapely 判定。输入恒为有界：节点数 / 时长 / 地理跨度 / 载荷字节数都有硬上限。
+
+        ``detection_evidence`` 永远由服务端置空：客户端**不能**提交探测证据，
+        因此监视探测恒为 ``not_evaluated``，空间相交绝不被推导成"已发现目标"。
+        """
+
+        from ..domain.cns_continuous_service import CONTINUOUS_SERVICE_ALGORITHM_VERSION
+        from .visualization_3d_intrusion_contract import (
+            TRACK_INPUT_LIMITS,
+            IntrusionContractInputError,
+            assess_simulated_track,
+            decode_track_payload,
+        )
+        from .visualization_3d_protection_volume import (
+            ProtectionVolumeInputError,
+            build_engineering_preview,
+            project_p17_protection_volumes,
+        )
+
+        query = query or {}
+        mode = str(_first(query, "mode") or "engineering_scenario_preview").strip()
+        if mode not in ("project_result", "engineering_scenario_preview"):
+            raise Visualization3DUnavailable(
+                "intrusion_mode_invalid", "模拟入侵模式无效",
+                allowed_modes=["project_result", "engineering_scenario_preview"])
+        query_bytes = sum(len(str(key)) + len(str(value)) for key, value in query.items())
+        if query_bytes > TRACK_INPUT_LIMITS["max_payload_bytes"]:
+            raise Visualization3DUnavailable(
+                "intrusion_request_too_large",
+                "模拟入侵请求超过 "
+                f"{TRACK_INPUT_LIMITS['max_payload_bytes']} 字节上限")
+        instance_id = str(_first(query, "render_instance_id") or "").strip()
+        if not instance_id:
+            raise Visualization3DUnavailable(
+                "intrusion_binding_required",
+                "必须显式绑定保护体实例键（render_instance_id）后才允许判定模拟轨迹")
+        try:
+            nodes = decode_track_payload(_first(query, "track"))
+        except IntrusionContractInputError as exc:
+            raise Visualization3DUnavailable(
+                "intrusion_track_payload_invalid", str(exc)) from exc
+
+        demo = self._demo_route_entry()
+        entries = ([demo] if demo else []) + self._canonical_route_entries()
+        if mode == "project_result":
+            projected = project_p17_protection_volumes(
+                self.state, entries,
+                current_algorithm_version=CONTINUOUS_SERVICE_ALGORITHM_VERSION,
+            )
+            volume = next(
+                (row for row in projected.get("volumes") or []
+                 if str(row.get("render_instance_id")) == instance_id), None)
+        else:
+            required = ("route_geometry_fingerprint", "half_width_m",
+                        "lower_altitude_m", "upper_altitude_m")
+            missing = [field for field in required
+                       if _first(query, field) in (None, "")]
+            if missing:
+                raise Visualization3DUnavailable(
+                    "intrusion_preview_inputs_required",
+                    "工程示意模式必须先显式选择航路并给出半宽与上下界",
+                    missing_inputs=missing)
+            fingerprint = str(_first(query, "route_geometry_fingerprint") or "")
+            route = next((row for row in entries
+                          if str((row.get("identity") or {}).get("fingerprint")) == fingerprint),
+                         None)
+            if route is None:
+                raise Visualization3DUnavailable(
+                    "intrusion_route_not_found", "未找到用户选择的航路几何身份",
+                    route_geometry_fingerprint=fingerprint)
+            try:
+                volume = build_engineering_preview(
+                    route,
+                    half_width_m=_first(query, "half_width_m"),
+                    lower_altitude_m=_first(query, "lower_altitude_m"),
+                    upper_altitude_m=_first(query, "upper_altitude_m"),
+                )
+            except ProtectionVolumeInputError as exc:
+                raise Visualization3DUnavailable(
+                    "intrusion_preview_invalid", str(exc)) from exc
+        if volume is None:
+            raise Visualization3DUnavailable(
+                "intrusion_protection_instance_not_found",
+                "未找到与该实例键匹配的保护体；请重新选择对象后再播放",
+                render_instance_id=instance_id)
+
+        try:
+            # detection_evidence 恒为 None：本服务不接受客户端提交的探测证据。
+            assessment = assess_simulated_track(
+                track_id=str(_first(query, "track_id") or "SIM-1"),
+                track_nodes=nodes,
+                protection_volume=volume,
+                detection_evidence=None,
+                binding={"render_instance_id": instance_id},
+            )
+        except IntrusionContractInputError as exc:
+            raise Visualization3DUnavailable(
+                "intrusion_assessment_rejected", str(exc)) from exc
+        assessment.update({
+            "revision": self._revision(),
+            "generated_at": _now(),
+            "track_input_limits": dict(TRACK_INPUT_LIMITS),
+            "request_bytes": query_bytes,
+            "detection_evidence_accepted_from_client": False,
+            "read_only": True,
+            "writes_performed": 0,
+            "algorithms_invoked": [],
+        })
+        return assessment
+
     # ------------------------------------------------------------------ routes
 
     def routes(self, query=None):
@@ -1785,6 +2141,385 @@ class Visualization3DService:
             "high_severity_conflict_count": len(demo_conflict),
             "read_only": True,
             "writes_performed": 0,
+        }
+
+    # --------------------------------- Round38-T3D4 站址 / 设备身份 / 固定目标带
+
+    def _radar_site_inputs(self):
+        """Radar 站址输入适配层的**只读**结果（含 blocked 站址与原因）。
+
+        这是"起降点也可以作为 Radar 布设站址"以及"塔顶安装 / 地面站安装语义分别表达"
+        的唯一来源：地面站高度必须来自既有显式安装高度证据，缺证即 blocked，
+        **绝不**用塔顶兜底、绝不填 0。
+        """
+
+        from .radar_shared_site_adapter import radar_site_inputs
+
+        if not self.shared_sites:
+            return {
+                "status": "unavailable",
+                "reason": "shared_site_candidates_unavailable",
+                "sites": [], "usable": [], "blocked": [],
+                "statistics": {
+                    "status": "unavailable",
+                    "reason": "shared_site_candidates_unavailable",
+                    "site_count": 0, "usable_count": 0, "blocked_count": 0,
+                },
+            }
+        return radar_site_inputs(
+            shared_snapshot=self.shared_sites,
+            obstacle_profiles=self.state.get("tower_obstacle_profiles"),
+            terrain_sampler=None,
+        )
+
+    def cns_sites(self, query=None):
+        """三维 CNS 站址与设备身份的**只读分层投影**（C/N/RID/Radar 四类）。
+
+        严格区分四类身份，绝不把所有候选都画成已布设设备：
+
+        * ``existing_facility``  —— 既有真实且已显式确认的设施；
+        * ``planned_selected``   —— 规划算法选中的待确认站址（**不是**已安装）；
+        * ``candidate_unselected`` —— 位置可用的候选站址（**不含**设备）；
+        * ``blocked``            —— 空间证据或安装高度证据缺失，fail-closed。
+
+        设备几何（通信包络 / RID footprint / Radar 楔体）由既有 T3D-2A/2B 端点负责，
+        本端点**只**给身份与高度证据，因此它既不重算覆盖，也不会伪造覆盖。
+        """
+
+        query = query or {}
+        scope_block = self._scope_block()
+        from .cns_3d_site_projection import (
+            SERVICE_CATEGORY_COLORS, SERVICE_CATEGORY_LABELS,
+            SITE_STATE_DISCLOSURE, SITE_STATE_LABELS, site_records,
+        )
+
+        shared_identity = self.shared_site_identity()
+        radar_inputs = self._radar_site_inputs()
+        projection = site_records(
+            state=self.state,
+            shared_snapshot=self.shared_sites,
+            radar_inputs=radar_inputs,
+        )
+
+        sites = projection["sites"]
+        want_state = str(_first(query, "site_state") or "").strip()
+        if want_state:
+            wanted = {token.strip() for token in want_state.split(",") if token.strip()}
+            sites = [row for row in sites if row["site_state"] in wanted]
+        want_category = str(_first(query, "service_category") or "").strip()
+        if want_category:
+            sites = [
+                row for row in sites
+                if want_category in (row.get("device_categories") or [])
+                or row["site_state"] == want_category
+            ]
+        route_id = str(_first(query, "route_id") or "").strip()
+        if route_id:
+            # 航路过滤只保留与该航路有明确关系的站址；没有可核验关系时**返回空**
+            # 而不是"看起来相关的都给你"。
+            route_site_ids = self._route_related_site_ids(route_id)
+            sites = [row for row in sites if row["site_id"] in route_site_ids]
+
+        truncated = len(sites) > MAX_TOWERS
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": _now(),
+            "revision": self._revision(),
+            **scope_block,
+            "vertical_reference": self._vertical_reference_block(),
+            "status": (
+                "available" if sites else (
+                    "unavailable" if not shared_identity["available"]
+                    else "not_calculated"
+                )
+            ),
+            "shared_site_source": shared_identity,
+            "radar_site_input_status": (radar_inputs.get("statistics") or {}).get("status"),
+            "sites": sites[:MAX_TOWERS],
+            "truncated": truncated,
+            "count": len(sites),
+            "planned_devices": projection["planned_devices"],
+            "blocked_sites": projection["blocked_sites"],
+            "counts": projection["counts"],
+            "service_categories": [
+                {
+                    "key": key,
+                    "label": SERVICE_CATEGORY_LABELS[key],
+                    "color": SERVICE_CATEGORY_COLORS[key],
+                }
+                for key in ("C", "N", "RID", "Radar", "other")
+            ],
+            "site_state_labels": deepcopy(SITE_STATE_LABELS),
+            "site_state_disclosure": deepcopy(SITE_STATE_DISCLOSURE),
+            "identity_rules": {
+                "site_presence_never_implies_device": True,
+                "candidate_never_drawn_as_installed": True,
+                "tower_top_never_used_for_ground_site": True,
+                "planned_installation_height_is_not_installed_height": True,
+                "unknown_is_not_zero": True,
+                "ground_site_requires_confirmed_installation_height": True,
+            },
+            "semantics": "read_only_site_identity_projection_not_device_coverage",
+            "read_only": True,
+            "writes_performed": 0,
+            "algorithms_invoked": [],
+        }
+
+    def _route_related_site_ids(self, route_id):
+        """与某条航路**有可核验关系**的站址身份集合（没有关系就是空集）。
+
+        可核验关系只有两类显式证据：``radar_surveillance_layout`` 条目上的
+        ``route_id``，以及 ``cns_corridor_site_plan.selected_actions`` 上的航路标识。
+        绝不用"离航路近"这类推断来补齐。
+        """
+
+        related = set()
+        layout = self.state.get("radar_surveillance_layout")
+        rows = layout.get("items") if isinstance(layout, dict) else layout
+        for item in rows or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("route_id") or "") != str(route_id):
+                continue
+            for panel in item.get("selected_panels") or []:
+                if isinstance(panel, dict) and panel.get("tower_id"):
+                    related.add(f"tower-colocation:{panel['tower_id']}")
+        container = self.state.get("cns_corridor_site_plan")
+        actions = container.get("selected_actions") if isinstance(container, dict) else None
+        from .cns_3d_site_projection import canonical_site_key
+
+        for action in actions or []:
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("action_id") or "")
+            if route_id not in action_id:
+                continue
+            host = action.get("host") if isinstance(action.get("host"), dict) else {}
+            tower_id = _text(host.get("host_tower_id")) if host else None
+            key = canonical_site_key(
+                action.get("distinct_site_id"), tower_host=tower_id)
+            if key:
+                related.add(key)
+        return related
+
+    def fixed_corridor_bands(self, query=None):
+        """固定 1000 m CNS 保障目标带的**只读三维投影**。
+
+        几何与 currentness **一律**委托既有唯一实现
+        （``cns_planner.gis.corridor_band.build_fixed_corridor_band``），三维层
+        **不重算 buffer、不新增宽度口径**。航路的 P14 口径 ``route_authority``
+        由二维权威服务 :class:`FixedCorridorGeometryService` 提供，与
+        ``GET /api/fixed-corridor-geometry`` 逐字段同源。
+
+        垂直语义（本轮重点，必须 fail-closed）：
+
+        * 有**已确认**固定巡航高度层时，给出 ``vertical_extent_status="confirmed"``
+          与巡航正高，前端据此把目标带放在该高度层上；
+        * 没有已确认高度层时只给**水平投影**，
+          ``vertical_extent_status="unconfirmed"``，并声明"不得标称三维保障体积"；
+        * ``currentness != current`` 时 ``drawable_as_current_band=False``，
+          调用方只能按**明确标注的非权威历史预览**使用。
+        """
+
+        query = query or {}
+        scope_block = self._scope_block()
+        from ..gis.corridor_band import build_fixed_corridor_band
+        from ..gis.figure_currentness import route_geometry_fingerprint
+        from .result_currentness import effective_result_status
+
+        requested = _text(_first(query, "route_id"))
+        routes = [row for row in (self.state.get("operational_routes") or [])
+                  if isinstance(row, dict)]
+        if requested:
+            routes = [row for row in routes
+                      if str(row.get("route_id") or "") == requested]
+
+        projected = None
+        entries = {}
+        if self.fixed_corridor_service is not None:
+            try:
+                projected = self.fixed_corridor_service.corridor_service.result_snapshot()
+            except Exception:  # noqa: BLE001 - 只读投影缺失时如实降级
+                projected = None
+            for row in routes:
+                route_id = str(row.get("route_id") or "")
+                try:
+                    _snapshot, entry = self.fixed_corridor_service._corridor_route_entry(
+                        route_id)
+                except Exception:  # noqa: BLE001
+                    entry = None
+                entries[route_id] = entry
+        corridor_effective = effective_result_status(
+            self.state, "cns_corridor_assessment")
+
+        bands = []
+        for route in routes:
+            route_id = str(route.get("route_id") or "")
+            path = [[float(point[0]), float(point[1])]
+                    for point in (route.get("path") or [])
+                    if isinstance(point, (list, tuple)) and len(point) >= 2]
+            authority = None
+            if self.fixed_corridor_service is not None:
+                try:
+                    authority = self.fixed_corridor_service._route_authority(route)
+                except Exception:  # noqa: BLE001
+                    authority = None
+            layer = build_fixed_corridor_band(
+                route,
+                projected=projected,
+                entry=entries.get(route_id),
+                corridor_effective_status=corridor_effective,
+                route_authority=authority,
+            )
+            detail = layer.get("detail") or {}
+            data = layer.get("data") or {}
+            vertical = self._band_vertical_extent(route_id)
+            geometry_available = (
+                detail.get("geometry_status") == "available"
+                and bool(detail.get("geometry_fingerprint"))
+            )
+            current_band = bool(
+                layer.get("status") == "available"
+                and layer.get("currentness") == "current")
+            # 非 current 的历史预览带：**只有**几何本身构造成功（有指纹、
+            # construction CRS 已解析）时才允许给几何，并且必须常驻
+            # ``preview_authority``。几何构造被阻断时仍然 fail-closed ——
+            # 绝不拿近似几何或空几何冒充"历史预览"。
+            preview_allowed = geometry_available and not current_band
+            preview_polygons = []
+            if preview_allowed:
+                from ..gis.corridor_geometry import build_fixed_corridor_geometry
+                from ..gis.figure_currentness import geojson_outer_rings
+
+                rebuilt = build_fixed_corridor_geometry(
+                    path,
+                    route_id=route_id,
+                    route_authority=authority,
+                    source_crs=str(route.get("path_crs") or "OGC:CRS84"),
+                    construction_crs=(route.get("construction_crs")
+                                      or route.get("metric_crs")),
+                )
+                if rebuilt.get("status") == "available":
+                    preview_polygons, _holes = geojson_outer_rings(
+                        rebuilt.get("geometry"))
+            bands.append({
+                "route_id": route_id,
+                "object_id": f"{OBJECT_ID_PREFIXES['protection_corridor']}{route_id}",
+                # 航路几何指纹**只**由 GIS 层的唯一实现给出
+                # （``figure_currentness.route_geometry_fingerprint`` = ``path_fingerprint``），
+                # 三维层绝不另造第二套航路几何身份。
+                "route_geometry_fingerprint": route_geometry_fingerprint(path),
+                "route_authority": deepcopy(detail.get("route_authority")),
+                "route_operational_status": route.get("status"),
+                "layer_key": layer.get("layer_key"),
+                "status": layer.get("status"),
+                "reason": layer.get("reason"),
+                "currentness": layer.get("currentness"),
+                "currentness_entry": deepcopy(layer.get("currentness_entry")),
+                "drawable_as_current_band": current_band,
+                # 非 current 时的历史预览带：只有调用方显式要求才给几何，且必须如实标注。
+                "preview_only": not current_band,
+                "preview_allowed": preview_allowed,
+                "preview_authority": (
+                    "non_authoritative_historical_preview_not_a_current_assurance_result"
+                    if preview_allowed else None
+                ),
+                "preview_polygons": deepcopy(preview_polygons),
+                "must_be_labelled_non_authoritative": True,
+                "polygons": deepcopy(data.get("polygons") or []),
+                "polygon_holes": deepcopy(data.get("polygon_holes") or {}),
+                "width_policy_version": detail.get("width_policy_version"),
+                "corridor_half_width_m": detail.get("corridor_half_width_m"),
+                "corridor_total_width_m": detail.get("corridor_total_width_m"),
+                "width_semantics": detail.get("width_semantics"),
+                "geometry_algorithm_id": detail.get("geometry_algorithm_id"),
+                "geometry_algorithm_version": detail.get("geometry_algorithm_version"),
+                "geometry_fingerprint": detail.get("geometry_fingerprint"),
+                "geometry_status": detail.get("geometry_status"),
+                "geometry_reason": detail.get("geometry_reason"),
+                "construction_crs": detail.get("construction_crs"),
+                "projected_area_m2": detail.get("projected_area_m2"),
+                "projected_to_geodesic_length_ratio": detail.get(
+                    "projected_to_geodesic_length_ratio"),
+                "boundary_ring_count": detail.get("boundary_ring_count"),
+                "boundary_ring_drawn": detail.get("boundary_ring_drawn"),
+                "semantics": detail.get("semantics"),
+                "not_device_coverage_area": True,
+                "not_certified_airspace": True,
+                "navigation_association_radius_m": detail.get(
+                    "navigation_association_radius_m"),
+                "disclaimer": detail.get("disclaimer"),
+                **vertical,
+            })
+
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": _now(),
+            "revision": self._revision(),
+            **scope_block,
+            "vertical_reference": self._vertical_reference_block(),
+            "status": "available" if bands else "unavailable",
+            "reason": None if bands else (
+                "no_operational_route" if not requested
+                else "requested_route_not_found"
+            ),
+            "requires_route_id": False,
+            "route_id_requested": requested,
+            "bands": bands,
+            "band_count": len(bands),
+            "width_contract": self.fixed_corridor_identity(),
+            "geometry_source": {
+                "builder": "cns_planner/gis/corridor_geometry.build_fixed_corridor_geometry",
+                "layer_builder": "cns_planner/gis/corridor_band.build_fixed_corridor_band",
+                "currentness_authority": (
+                    "cns_planner/gis/figure_currentness.fixed_corridor_currentness"),
+                "route_authority_authority": (
+                    "FixedCorridorGeometryService._route_authority（P14 口径，唯一）"),
+                "consumes_existing_endpoint": "/api/fixed-corridor-geometry",
+                "recomputes_buffer_in_3d": False,
+                "uses_p17_outer_half_width_m": False,
+            },
+            "round38_corridor_effective_status": corridor_effective,
+            "identity_rules": {
+                "same_fingerprint_as_figure_and_2d": True,
+                "stale_never_shown_as_current": True,
+                "no_approximate_band_when_geometry_blocked": True,
+                "p17_outer_half_width_m_forbidden": True,
+                "horizontal_projection_is_not_a_3d_certified_volume": True,
+            },
+            "read_only": True,
+            "writes_performed": 0,
+            "algorithms_invoked": [],
+        }
+
+    def _band_vertical_extent(self, route_id):
+        """该航路固定目标带的**垂直证据**（只读回显，绝不推断）。"""
+
+        layer = self._altitude_layer(route_id)
+        confirmed = bool(
+            layer.get("nominal_altitude_m") is not None
+            and layer.get("layer_confirmed") is True
+            and layer.get("operating_layer_confirmed") is not False
+        )
+        return {
+            "vertical_extent_status": "confirmed" if confirmed else "unconfirmed",
+            "vertical_extent_reason": None if confirmed else (
+                "no_confirmed_fixed_cruise_layer_for_this_route"
+            ),
+            "altitude_layer_id": layer.get("altitude_layer_id"),
+            "nominal_altitude_m": layer.get("nominal_altitude_m"),
+            "vertical_reference": layer.get("vertical_reference"),
+            "altitude_layer_status": layer.get("layer_status"),
+            "altitude_layer_confirmed": layer.get("layer_confirmed"),
+            "operating_layer_confirmed": layer.get("operating_layer_confirmed"),
+            "climb_cruise_descent_available": bool(
+                layer.get("climb_cruise_descent_available")),
+            "vertical_volume_semantics": (
+                "nominal_cruise_layer_slice_not_a_certified_protection_volume"
+                if confirmed else
+                "horizontal_projection_only_no_vertical_guarantee"
+            ),
+            "may_claim_3d_certified_volume": False,
         }
 
     # --------------------------------------------------------- terrain-window
@@ -1934,6 +2669,15 @@ def _first(query, key, default=None):
     if isinstance(value, (list, tuple)):
         return value[0] if value else default
     return default if value is None else value
+
+
+def _text(value):
+    """规范化可选文本身份：空串与纯空白一律当作"缺失"（``None``）。"""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _parse_int(query, key, default):
@@ -2132,6 +2876,17 @@ def service_for(context):
             setattr(context, "_visualization_3d_relief_tile_source", relief_tile_source)
         except Exception:  # 晕渲只是显示增强，失败必须降级而不是让三维不可用
             relief_tile_source = None
+    # Round38-T3D4：站址身份的唯一来源是既有共享候选站址只读投影服务。
+    # 未装配时如实留空（服务会披露"未接线"），绝不自行枚举站址。
+    shared_sites = None
+    shared_service = getattr(workflow, "cns_shared_site_candidate_service", None)
+    if shared_service is not None and callable(getattr(shared_service, "snapshot", None)):
+        try:
+            shared_sites = shared_service.snapshot()
+        except Exception:  # noqa: BLE001 - 只读投影失败不得让三维视图整体不可用
+            shared_sites = None
+    fixed_corridor_service = getattr(
+        workflow, "fixed_corridor_geometry_service", None)
     return Visualization3DService(
         state, terrain_source=terrain, terrain_tile_source=terrain_tile_source,
         geoid=geoid, geoid_error=geoid_error,
@@ -2139,6 +2894,8 @@ def service_for(context):
         relief_tile_source=relief_tile_source,
         source_lock=source_lock,
         data=data,
+        shared_sites=shared_sites,
+        fixed_corridor_service=fixed_corridor_service,
         state_identity={
             "state_key": "workflow.state",
             "terrain_path": terrain_path,

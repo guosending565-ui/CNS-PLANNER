@@ -13,7 +13,7 @@
   #cesiumContainer{position:absolute;inset:0}.panel{position:absolute;z-index:8;background:var(--panel);
     border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.34);
     backdrop-filter:blur(10px)}
-  #layers{left:12px;top:12px;width:224px;max-height:calc(100% - 116px);padding:10px;overflow:auto}
+  #layers{left:12px;top:12px;width:266px;max-height:calc(100% - 116px);padding:10px;overflow:auto}
   #cameraBar{top:12px;left:50%;transform:translateX(-50%);display:flex;gap:5px;align-items:center;
     max-width:calc(100% - 500px);padding:7px;white-space:nowrap;overflow:auto}
   #status{right:12px;top:12px;width:286px;max-height:calc(100% - 116px);overflow:auto}
@@ -39,13 +39,31 @@
   #radarPanelList label{align-items:flex-start;font-size:11px}
   #radarPreviewDisclaimer,#protectionPreviewDisclaimer{margin-top:5px;font-size:11px;border-top:1px solid var(--line);
     padding-top:5px}
+  .svc-legend{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:11px;margin:2px 0 4px}
+  .svc-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;
+    vertical-align:-1px;border:1px solid rgba(0,0,0,.45)}
+  #intrusionBanner{font-size:11px;font-weight:600;border:1px solid rgba(255,195,106,.45);
+    border-radius:6px;padding:3px 6px;background:rgba(60,42,12,.55);text-align:center}
+  #intrusionTrack{width:100%;color:var(--text);background:#112536;border:1px solid var(--line);
+    border-radius:6px;padding:4px;font:10px/1.4 Consolas,monospace;resize:vertical}
+  #intrusionTimeline{width:100%;accent-color:var(--accent)}
+  #intrusionSpeed{max-width:88px}
+  #intrusionHud,#intrusionEvents{font-size:11px;margin-top:5px}
+  #intrusionEvents button{width:100%;text-align:left;margin:2px 0;font-size:10px;padding:3px 5px}
+  #intrusionTimelineRow{display:block;font-size:11px}
+  #intrusionControls label{display:block}
+  #intrusionControls select{width:100%;max-width:none}
+  #intrusionControls .row{display:flex;gap:6px}
+  #intrusionControls .row label{display:inline-flex;width:auto;align-items:center}
+  #intrusionControls .row select{width:auto}
+  #disclosureSimulated{font-size:11px;margin-top:3px;color:var(--warn)}
   #log{max-height:92px;overflow:auto;color:var(--dim);font:10px/1.35 Consolas,monospace}
   #popup{position:absolute;display:none;z-index:20;max-width:340px;padding:10px}.close{float:right;cursor:pointer}
   #boot{position:absolute;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;
     justify-content:center;gap:8px;background:#071421}#boot small{color:var(--dim)}
   .badge{display:inline-block;padding:0 5px;border-radius:8px;background:#24394a}.badge.ok{background:#1d6641}
   .badge.demo{background:#7c541b}.badge.no{background:#772d34}.badge.stale{background:#79502b}
-  @media(max-width:1000px){#status{display:none}#cameraBar{left:248px;right:12px;transform:none;max-width:none}}
+  @media(max-width:1000px){#status{display:none}#cameraBar{left:290px;right:12px;transform:none;max-width:none}}
 </style>
 </head>
 <body>
@@ -57,6 +75,21 @@
   <div id="reliefStatus" class="dim"></div>
   <h2>基础地理</h2>
   <div id="layerList"></div>
+  <h2>CNS 站址与设备身份</h2>
+  <div id="cnsSiteLegend" class="dim">未开启。勾选上方「CNS 站址与设备身份」后按需请求。</div>
+  <h2>固定 1000 m 保障目标带</h2>
+  <div id="fixedCorridorNote" class="dim">未开启。勾选上方「固定 1000 m CNS 保障目标带」后按需请求。</div>
+  <div id="fixedCorridorList" class="dim"></div>
+  <div id="layerSemantics" class="warn" style="font-size:11px;border-top:1px solid var(--line);
+    margin-top:6px;padding-top:5px">
+    三类几何语义必须分开表达，互不替代：<br>
+    ① <b>CNS 固定 1000 m 保障目标带</b>＝服务保障目标范围（左右各 500 m），
+    不代表设备已满足覆盖，也<b>不是</b>禁飞区或入侵预警边界；<br>
+    ② <b>P17 航路保护区</b>＝按业务/法规与响应距离确定的保护区，其法规来源、
+    固定宽带与雷达探测覆盖三者分别表达；<br>
+    ③ <b>设备覆盖（C/N/RID/Radar）</b>＝按各自真实模型计算的能力结果，
+    非 current / blocked / not_evaluated 一律如实保留。
+  </div>
   <h2>Radar 真实规划面阵</h2>
   <div id="radarPanelList" class="dim">未开启。勾选上方「Radar 方向性覆盖」后按需请求。</div>
   <h2>设备参数示意（与规划结果隔离）</h2>
@@ -93,6 +126,35 @@
     <div id="protectionPreviewNote" class="dim"></div>
     <div id="protectionPreviewDisclaimer" class="warn">自定义保护区示意，非已确认 P17 结果</div>
   </div>
+  <h2>模拟轨迹回放（工程示意）</h2>
+  <div id="intrusionBanner" class="warn">SIMULATED · 工程示意 · 非真实探测与运行许可</div>
+  <div id="intrusionControls">
+    <label>保护体实例<select id="intrusionTarget"><option value="">请选择保护体实例…</option></select></label>
+    <div class="row"><button id="intrusionLoadTargets">加载保护体实例</button>
+      <button id="intrusionPreset">载入演示预设</button></div>
+    <label for="intrusionTrack">轨迹节点 JSON（经纬度 / EGM2008 正高 m / 相对秒，严格递增）</label>
+    <textarea id="intrusionTrack" rows="7" spellcheck="false"
+      placeholder='[{"longitude":122.26,"latitude":29.90,"altitude_egm2008_m":100,"relative_time_s":0}, …]'></textarea>
+    <div class="row"><button id="intrusionAssess">开始判定并回放</button>
+      <button id="intrusionClear">清除目标</button></div>
+    <div id="intrusionNote" class="dim">未配置。轨迹节点与保护体都由你主动创建；系统不会自动生成权威航迹。</div>
+    <div class="row">
+      <button id="intrusionPlay">▶ 播放</button>
+      <button id="intrusionReset">↺ 重置</button>
+      <label>倍速<select id="intrusionSpeed">
+        <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option><option value="2">2×</option>
+        <option value="4">4×</option></select></label>
+    </div>
+    <label id="intrusionTimelineRow">时间轴
+      <input type="range" id="intrusionTimeline" min="0" max="0" step="0.05" value="0" disabled>
+    </label>
+    <label><input type="checkbox" id="intrusionFollow"> 相机跟随（关闭即自由观察）</label>
+    <div id="intrusionHud" class="dim">尚未配置模拟轨迹。</div>
+    <div id="intrusionEvents" class="dim"></div>
+    <div id="intrusionDisclaimer" class="warn">模拟轨迹 + 用户工程示意保护体；非真实探测证据，
+      不构成预警结论或运行许可。</div>
+  </div>
   <h2>画质</h2>
   <label>细化档位
     <select id="quality"><option value="normal" selected>正常</option><option value="high">高清</option></select>
@@ -122,6 +184,9 @@
 <div id="disclosure" class="panel">
   <div id="disclosureVertical"><b>垂直基准：</b><span id="verticalNotice"></span></div>
   <div id="disclosureDemo"><b id="disclosureTitle">工程演示模式</b><span id="disclosureText"></span></div>
+  <!-- 常驻标识：只要页面存在，模拟/工程示意/非真实探测与运行许可就必须一直可见。 -->
+  <div id="disclosureSimulated"><b>模拟：</b><span id="simulatedNotice">SIMULATED ·
+    工程示意 · 非真实探测与运行许可</span></div>
 </div>
 <!-- 版权/来源标注：内容由 app.js 依据**实际渲染的底图**动态写入。
      绝不能在影像 BLOCKED、画面其实是 FABDEM 晕渲时仍宣称"ArcGIS World Imagery"——

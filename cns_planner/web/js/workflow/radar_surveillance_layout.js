@@ -61,7 +61,7 @@ export const RADAR_LAYOUT_V1_1_SEMANTICS={
   // 高度层不写死：实际值来自 readiness.fixed_altitude（B4X §17）。
   route_altitude:'固定巡航高度层（EGM2008 正高，不是地形高程）',
   vertical_delta:'高度差 = 目标 − 雷达原点；目标低于雷达原点 ⇒ 负仰角 ⇒ 不覆盖',
-  radar_origin:'雷达原点 = tower_top_orthometric_m（塔顶即相位中心，不再叠加挂高）',
+  radar_origin:'雷达原点按站址类型确定：铁塔使用 tower_top_orthometric_m；地面站使用 FABDEM EGM2008 地表正高 + 显式安装高度',
   coastal_buffer:'海岸不确定带：工程假设 / 未确认，不是数据真实精度',
   plane_radii:'斜距 ≠ 平面水平半径；半径由后端交截计算提供',
 };
@@ -70,12 +70,18 @@ export const RADAR_LAYOUT_V1_1_SEMANTICS={
 //: 雷达原点基准 raw 值 → 中文。
 export const RADAR_ORIGIN_BASIS_TEXT={
   tower_top_orthometric_m:'塔顶 EGM2008 正高',
+  ground_elevation_plus_evidenced_antenna_installation_height:
+    'FABDEM EGM2008 地表正高 + 显式天线安装高度',
+  site_specific_tower_top_or_ground_elevation_plus_installation_height:
+    '按站址类型使用塔顶正高或地表正高 + 显式安装高度',
   tower_top:'塔顶',ground:'地面',unknown:'基准未确认'
 };
 //: 安装假设 raw 值 → 中文。
 export const RADAR_INSTALLATION_TEXT={
   radar_phase_center_at_tower_top:'相位中心位于塔顶',
   radar_phase_center_at_mount_height:'相位中心位于挂高',
+  ground_site_antenna_height_agl:'地面站天线相对地面安装高度',
+  site_specific_installation_position:'按铁塔/地面站安装位置分别解析',
   unknown:'安装假设未确认'
 };
 //: 陆域判定依据 raw 值 → 中文。
@@ -809,6 +815,42 @@ export function renderRadarSurveillanceLayoutPanel(flow){  const model=radarLayo
       ?'<b>准备情况阻断</b>：'+model.readinessBlockers.map(escapeHtml).join(' · ')+'<br>':'')
     +escapeHtml(RADAR_LAYOUT_PROPOSAL_ONLY_NOTE)+'</div>';
 
+  const groundPolicy=flow?.radar_surveillance_policy?.ground_site_installation_heights||{};
+  const groundCandidates=Array.isArray(readiness.ground_site_candidates)
+    ?readiness.ground_site_candidates:[];
+  const groundSiteRows=groundCandidates.map((site,index)=>{
+    const siteId=String(site?.site_id||'');
+    const evidence=groundPolicy[siteId]||{};
+    const source=evidence.source||'user_confirmed';
+    const confirmed=evidence.confirmed===true;
+    return '<div class="list-row" data-radar-ground-site-id="'+escapeHtml(siteId)+'">'
+      +'<span><b>'+escapeHtml(site?.name||siteId)+'</b> · '+escapeHtml(siteId)
+      +' · '+statusBadge(site?.spatial_status==='eligible'?'passed':'blocked')+'<br>'
+      +'<label>相对地面安装高度 (m)<input class="panel-input" type="number" min="0" step="0.1" '
+      +'data-radar-ground-height data-radar-ground-index="'+index+'" data-radar-ground-site-id="'
+      +escapeHtml(siteId)+'" value="'+(Number.isFinite(evidence.installation_height_m)
+        ?evidence.installation_height_m:'')+'" placeholder="不预填；留空=缺少证据"></label>'
+      +'<label>证据来源<select class="panel-input" data-radar-ground-source-index="'+index+'">'
+      +'<option value="user_confirmed" '+(source==='user_confirmed'?'selected':'')
+      +'>用户确认的规划安装高度</option>'
+      +'<option value="source_device_installation_height" '
+      +(source==='source_device_installation_height'?'selected':'')
+      +'>真实设备安装记录</option></select></label>'
+      +'<label>证据记录引用<input class="panel-input" '
+      +'data-radar-ground-source-ref-index="'+index+'" value="'
+      +escapeHtml(evidence.source_ref||'')
+      +'" placeholder="真实安装记录必填；规划确认可留空"></label>'
+      +'<label class="check-row"><input type="checkbox" data-radar-ground-confirmed-index="'
+      +index+'" '+(confirmed?'checked':'')+'> 已核对并确认该证据</label>'
+      +'<small>规划安装高度不代表设备已安装；只有“真实设备安装记录”才表达已安装设备事实。'
+      +'雷达原点 = FABDEM EGM2008 地表正高 + 本高度。</small></span></div>';
+  }).join('');
+  const groundSiteForm='<h4>起降点雷达天线安装高度证据</h4>'
+    +'<div class="parameter-note">仅保存按 site_id 绑定的显式证据；不填 0、不继承塔顶高度。'
+    +'未确认、CRS 未确认或 FABDEM 地表正高不可用时，该站址保持 blocked。</div>'
+    +'<div class="scroll-list cns-input-list">'
+    +(groundSiteRows||'<div class="empty-note">当前没有可配置的已登记地面站址</div>')+'</div>';
+
   const policyForm='<div class="form-grid">'
     +'<label>海岸不确定带 (m)<input class="panel-input" type="number" min="0" id="radarCoastalBuffer" value="'
     +(Number.isFinite(buffer.coastal_uncertainty_buffer_m)?buffer.coastal_uncertainty_buffer_m:'')+'"></label>'
@@ -826,6 +868,7 @@ export function renderRadarSurveillanceLayoutPanel(flow){  const model=radarLayo
     +(model.demoPreviewOnly?'checked':'')+'> 使用当前 Theta* V2 候选航路进行演示预览</label>'
     +'<div class="parameter-note">基于真实候选航路执行雷达几何初步划设。'
     +'结果为 proposal-only，不代表运行航路已经发布。</div>'
+    +groundSiteForm
     +'<div class="button-row">'
     +'<button class="secondary" id="saveRadarSurveillancePolicy">保存划设参数</button>'
     +'<button class="primary" id="evaluateRadarSurveillanceLayout">运行初步划设</button>'

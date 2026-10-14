@@ -2704,6 +2704,23 @@ def _legend_entries(spec):
 #: ``legend_items`` 与导出报告里。这里只影响**图例那一格**的可读性（宁可短一点，
 #: 也不允许文字越过列边界）。
 LEGEND_COMPACT_LABELS = {
+    # Round38-FIG：固定 1000 m 保障目标带与导航监测条目的收口写法。
+    # 完整名称不会丢失：图例只显示这一格，语义仍完整保存在 FigureSpec 与报告里。
+    "cns_fixed_corridor": (
+        "固定 1000 m CNS 保障目标带", "固定 1000 m 保障目标带",
+        "1000 m 保障目标带", "保障目标带",
+    ),
+    "cns_nav_monitor_sites": (
+        "导航监测强制端点设备（N1 仿真）", "导航监测强制端点设备", "强制端点监测设备",
+    ),
+    "cns_nav_monitor_optional": (
+        "导航监测选中站址（未确认）", "导航监测选中站址",
+    ),
+    "cns_nav_monitor_unselected": (
+        "导航监测候选站址（未选中）", "导航监测候选站址",
+    ),
+    "cns_nav_association": ("中心线已关联航段 2 km", "已关联航段 2 km", "已关联航段"),
+    "cns_nav_gap": ("最长监测缺口（未关联）", "最长监测缺口", "监测缺口"),
     "cns_comm_proposal": ("通信规划提案（未确认）", "通信提案（未确认）"),
     "cns_rid_proposal": ("RID 规划提案（未确认）", "RID 提案（未确认）"),
     "cns_nav_proposal": ("导航完整性监测点提案（未确认）", "导航监测点提案"),

@@ -1168,9 +1168,36 @@ def run_p16(state):
         corridor, state["required_cns"], {},
     )
     state["cns_corridor_gap_assessment"] = gap
+    shared_records = [
+        {
+            "candidate_id": f"node:{item.get('site_id')}",
+            "source_id": str(item.get("site_id") or ""),
+            "candidate_kind": "project_node", "spatial_use_status": "eligible",
+        }
+        for item in (state.get("candidate_sites") or {}).get("items") or []
+        if item.get("site_id")
+    ]
+    for item in (state.get("tower_colocation_candidates") or {}).get("items") or []:
+        tower_id = str((((item.get("metadata") or {}).get("host") or {}).get(
+            "host_tower_id") or item.get("tower_id") or ""))
+        if tower_id:
+            shared_records.append({
+                "candidate_id": f"tower-colocation:{tower_id}", "source_id": tower_id,
+                "candidate_kind": "tower_colocation", "spatial_use_status": "eligible",
+            })
+
+    class SharedSites:
+        @staticmethod
+        def snapshot():
+            return {"status": "passed", "candidates": shared_records,
+                    "source_counts": {"tower_records": sum(
+                        item["candidate_kind"] == "tower_colocation" for item in shared_records
+                    )}}
+
     service = CorridorSitePlanningService(
         session, CorridorReuseFirstSitePlannerV2(), CNSServiceCorridorV1(),
         CNSCorridorGapAnalyzerV1(), invalidation, lambda: state,
+        shared_site_candidates=SharedSites(),
     )
     service.evaluate({})
     return state, state["cns_corridor_site_plan"]

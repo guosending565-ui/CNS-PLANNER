@@ -377,6 +377,14 @@ def _endpoint_workflow(tmp_path, *, c_facility=True, candidates=None,
     workflow.state["candidate_sites"] = {
         "status": "passed", "items": selected_candidates, "count": len(selected_candidates),
     }
+    workflow.state["nodes"] = [
+        {
+            "node_id": str(item["site_id"]), "name": item.get("name"),
+            "coordinate": deepcopy(item.get("coordinate")),
+            "coordinate_source": "manual_entry",
+        }
+        for item in selected_candidates if item.get("site_id")
+    ]
     workflow.state["cns_corridor_policy"] = normalize_cns_corridor_policy({"routes": {"R1": {
         "route_id": "R1", "horizontal_half_width_m": 0,
         "vertical_lower_margin_m": 10, "vertical_upper_margin_m": 10,

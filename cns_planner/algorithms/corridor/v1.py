@@ -24,7 +24,13 @@ from ..service_capability.v1 import (
     not_evaluated_for,
     prepare_capability_context,
 )
-from ...domain.cns_corridor import corridor_disclaimers, empty_cns_corridor_assessment
+from ...domain.cns_corridor import (
+    CORRIDOR_HALF_WIDTH_M, CORRIDOR_TOTAL_WIDTH_M, GEOMETRY_ALGORITHM_ID,
+    GEOMETRY_ALGORITHM_VERSION, WIDTH_POLICY_VERSION, WIDTH_SEMANTICS,
+    corridor_disclaimers, corridor_geometry_identity_summary,
+    corridor_half_width_m, empty_cns_corridor_assessment,
+    fixed_corridor_width_contract,
+)
 from ...domain.cns_service_contract import (
     SERVICE_KEY_COMMUNICATION, SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION,
     SERVICE_KEY_RADAR_NONCOOPERATIVE, index_max_range_m, normalize_surface_class,
@@ -54,7 +60,12 @@ class CNSServiceCorridorV1:
     #: **service-specific 垂向 dispatch**，不再用 generic voxel midpoint 冒充 Radar
     #: 评估高度；S 子系统的 all_required 聚合显式支持 service-level
     #: ``not_applicable``。旧 P14 1.2 结果必须自动 stale 并重算。
-    algorithm_version = "1.3"
+    #:
+    #: Round38-W1A bump（``1.3`` → ``1.4``）：水平宽度改为唯一固定契约
+    #: ``fixed-1000m-v1``（左右各 500 m），并显式携带共享米制 buffer 的几何身份。
+    #: 任何按航路编辑过的历史半宽都不再进入 current 计算；旧 ``1.3`` 及更早结果
+    #: 一律只读 stale，绝不被当作 current 复用。
+    algorithm_version = "1.4"
     model_scope = "engineering_cns_service_requirement_corridor"
 
     def __init__(self, parameters=None):
@@ -73,7 +84,7 @@ class CNSServiceCorridorV1:
         surface_facts_fingerprint=None, radar_service_evidence=None,
         radar_metric_projector=None, navigation_service_evidence=None,
         navigation_metric_projector=None, navigation_endpoint_evidence=None,
-        prepared_cells=None,
+        prepared_cells=None, corridor_geometry=None,
     ):
         """评估服务走廊。
 
@@ -139,6 +150,7 @@ class CNSServiceCorridorV1:
         route_results = []
         total_routes = len(routes or [])
         tick = _ProgressThrottle(cancel_check, progress_callback)
+        fixed_width = fixed_corridor_width_contract()
         for index, route in enumerate(routes or []):
             route_id = str(route.get("route_id") or "")
             tick.progress(
@@ -152,6 +164,10 @@ class CNSServiceCorridorV1:
                 geometric_provider_indexes, provider_devices, tick,
                 radar_service_evidence, radar_metric_projector,
                 navigation_service_evidence, navigation_metric_projector,
+                corridor_geometry=(
+                    corridor_geometry.get(route_id) if isinstance(corridor_geometry, dict)
+                    else None
+                ),
             ))
         tick.progress(96.0, "服务走廊评估完成")
         fingerprint_input = {
@@ -169,6 +185,8 @@ class CNSServiceCorridorV1:
             "algorithm_semantics": {
                 "algorithm_id": self.algorithm_id, "algorithm_version": self.algorithm_version,
             },
+            #: Round38-W1A：固定宽度契约进入输入指纹 —— 宽度策略版本变化即基线失效。
+            "fixed_corridor_width_contract": fixed_width,
         }
         if radar_service_evidence is not None:
             fingerprint_input["radar_service_evidence"] = radar_service_evidence
@@ -177,11 +195,24 @@ class CNSServiceCorridorV1:
         if navigation_endpoint_evidence is not None:
             fingerprint_input["navigation_endpoint_evidence"] = navigation_endpoint_evidence
         input_fingerprint = _fingerprint(fingerprint_input)
-        geometry_fingerprint = _fingerprint([
-            {"route_id": item.get("route_id"), "path": item.get("path")} for item in routes or []
-        ] + [corridor_policy or {}, [
-            {"grid_id": cell.get("grid_id"), "bbox": cell.get("bbox")} for cell in cells
-        ], layers])
+        #: Round38-W1A：``corridor_geometry_fingerprint`` 现在**就是**共享米制 buffer 的
+        #: 几何身份指纹（含完整中心线、点数、CRS、宽度策略、cap/join、构造算法版本）。
+        #: 调用方未注入几何时，退回**旧口径的确定性几何摘要**，绝不伪装成已验证 buffer。
+        geometry_fingerprints = [
+            str((item.get("fixed_corridor_geometry") or {}).get("geometry_fingerprint") or "")
+            for item in route_results
+        ]
+        if any(geometry_fingerprints):
+            geometry_fingerprint = _fingerprint([
+                {"route_id": item.get("route_id"), "geometry_fingerprint": fingerprint}
+                for item, fingerprint in zip(route_results, geometry_fingerprints)
+            ])
+        else:
+            geometry_fingerprint = _fingerprint([
+                {"route_id": item.get("route_id"), "path": item.get("path")} for item in routes or []
+            ] + [corridor_policy or {}, [
+                {"grid_id": cell.get("grid_id"), "bbox": cell.get("bbox")} for cell in cells
+            ], layers])
         deficit_ids = sorted({
             voxel["voxel_id"] for route in route_results for voxel in route.get("voxels") or []
             if any(item.get("planning_status") == "confirmed_deficit" for item in voxel.get("subsystems") or [])
@@ -221,6 +252,9 @@ class CNSServiceCorridorV1:
             "corridor_geometry_fingerprint": geometry_fingerprint,
             "route_count": len(route_results), "routes": route_results,
             "deficit_voxel_ids": deficit_ids, "unknown_voxel_ids": unknown_ids,
+            #: Round38-W1A：固定宽度契约与全宽统计（canonical，可核查）。
+            "fixed_corridor_width_contract": fixed_width,
+            "full_width_statistics": _full_width_statistics(route_results),
             "provenance": {
                 "coverage_algorithm_id": GeometricCoverage3DV1.algorithm_id,
                 "coverage_algorithm_version": GeometricCoverage3DV1.algorithm_version,
@@ -228,6 +262,9 @@ class CNSServiceCorridorV1:
                 "capability_algorithm_id": CNSServiceCapabilityV1.algorithm_id,
                 "capability_algorithm_version": CNSServiceCapabilityV1.algorithm_version,
                 "capability_parameters": deepcopy(capability_parameters or {}),
+                "corridor_geometry_algorithm_id": GEOMETRY_ALGORITHM_ID,
+                "corridor_geometry_algorithm_version": GEOMETRY_ALGORITHM_VERSION,
+                "width_policy_version": WIDTH_POLICY_VERSION,
             },
             "disclaimers": corridor_disclaimers(),
         }
@@ -261,11 +298,35 @@ class CNSServiceCorridorV1:
         aircraft, geometric_providers, provider_devices, tick=None,
         radar_service_evidence=None, radar_metric_projector=None,
         navigation_service_evidence=None, navigation_metric_projector=None,
+        corridor_geometry=None,
     ):
         route_id, path = str(route.get("route_id") or ""), route.get("path") or []
         metric_route = _MetricRoute(path) if len(path) >= 2 else None
         total = metric_route.total if metric_route else 0.0
-        base = {"route_id": route_id, "route_length_m": total, "voxels": [], "subsystems": []}
+        #: Round38-W1A：水平半宽**只**来自固定契约；``spec`` 里的历史半宽仅作审计，
+        #: 绝不参与包含判定。
+        half_width = corridor_half_width_m(spec)
+        width_context = _width_context(spec, half_width)
+        #: Round38-W1A：共享米制 buffer 的**几何身份**是**新增**字段
+        #: （``fixed_corridor_geometry`` 家族）。既有的 ``corridor_geometry`` /
+        #: ``corridor_geometry_fingerprint`` 保持原语义（离散评估身份），因此
+        #: P17 2.3 等既有消费者逐字段不变，绝不被静默改写含义。
+        width_context["fixed_corridor_geometry_status"] = (
+            "not_supplied" if corridor_geometry is None
+            else str((corridor_geometry or {}).get("status") or "unknown")
+        )
+        width_context["fixed_corridor_geometry_reason"] = (
+            None if corridor_geometry is None else (corridor_geometry or {}).get("reason")
+        )
+        if corridor_geometry is not None:
+            width_context["fixed_corridor_geometry"] = deepcopy(
+                corridor_geometry_identity_summary(corridor_geometry)
+            )
+        base = {
+            "route_id": route_id, "route_length_m": total, "voxels": [], "subsystems": [],
+            "voxel_count": 0,
+            **width_context,
+        }
         if route.get("status") != "passed" or len(path) < 2:
             return {**base, "status": "missing_data", "reasons": ["航路 path 不可用"]}
         if not spec or spec.get("status") != "confirmed" or spec.get("confirmed") is not True:
@@ -280,20 +341,23 @@ class CNSServiceCorridorV1:
             return {**base, "status": "pending_confirmation", "reasons": ["没有 confirmed altitude layer"]}
         candidate_layers = _candidate_layers(profile, spec, confirmed_layers)
         horizontal = []
-        half_width = float(spec["horizontal_half_width_m"])
         for prepared in cells:
             if not _route_bbox_candidate(metric_route, prepared["center"], half_width + prepared["half_diagonal"]):
                 continue
             nearest = metric_route.nearest(prepared["center"])
             if nearest["distance_m"] <= half_width + prepared["half_diagonal"]:
-                horizontal.append((prepared, nearest))
+                #: Round38-W1A：附带**只读**的带符号横向偏移（左/右侧与偏出距离）。
+                horizontal.append((
+                    prepared,
+                    {**nearest, **metric_route.lateral_offset(prepared["center"], nearest)},
+                ))
         if not horizontal:
             #: Round 2.7：「缺**几何输入**」与「等用户确认」是两件事，必须严格区分：
             #: 后者确认后就有体元，前者无论确认多少次都不会有体元。网格单元缺失
             #: （grid 明细不可用）或没有任何单元与航路相交时，如实报 ``missing_data``
             #: 并给出可核查原因；绝不静默产出 0 体元的 ``pending_confirmation``
             #: —— 那会把"输入不可用"伪装成"只差一次确认"，下游 P15/P16 随之空转。
-            corridor_geometry = {
+            discrete_geometry = {
                 "route_path": deepcopy(path), "included_grid_ids": [],
                 "horizontal_half_width_m": half_width,
                 "horizontal_discretization": "conservative_grid_cell_inclusion_not_exact_buffer",
@@ -302,8 +366,8 @@ class CNSServiceCorridorV1:
                 **base, "status": "missing_data", "spec": deepcopy(spec),
                 "voxels": [], "voxel_count": 0, "subsystems": [],
                 "horizontal_cell_count": 0,
-                "corridor_geometry": corridor_geometry,
-                "corridor_geometry_fingerprint": _fingerprint(corridor_geometry),
+                "corridor_geometry": discrete_geometry,
+                "corridor_geometry_fingerprint": _fingerprint(discrete_geometry),
                 "horizontal_discretization": "conservative_grid_cell_inclusion_not_exact_buffer",
                 "evaluation_semantics": "representative_voxel_probe_not_entire_voxel_guarantee",
                 "reasons": [
@@ -341,7 +405,7 @@ class CNSServiceCorridorV1:
         summaries = [_summary(code, voxels) for code in ("C", "N", "S")]
         statuses = [item["status"] for item in summaries]
         status = _aggregate_status(statuses)
-        corridor_geometry = {
+        discrete_geometry = {
             "route_path": deepcopy(path),
             "included_grid_ids": [str(item[0]["cell"].get("grid_id")) for item in horizontal],
             "horizontal_half_width_m": half_width,
@@ -351,8 +415,10 @@ class CNSServiceCorridorV1:
             **base, "status": status, "spec": deepcopy(spec), "voxels": voxels,
             "voxel_count": len(voxels), "subsystems": summaries,
             "horizontal_cell_count": len(horizontal),
-            "corridor_geometry": corridor_geometry,
-            "corridor_geometry_fingerprint": _fingerprint(corridor_geometry),
+            #: 既有字段保持原语义（离散网格包含身份）；固定宽带的**精确几何身份**由
+            #: ``fixed_corridor_geometry`` 家族单独携带，两者必须分别披露。
+            "corridor_geometry": discrete_geometry,
+            "corridor_geometry_fingerprint": _fingerprint(discrete_geometry),
             "horizontal_discretization": "conservative_grid_cell_inclusion_not_exact_buffer",
             "evaluation_semantics": "representative_voxel_probe_not_entire_voxel_guarantee",
         }
@@ -545,6 +611,9 @@ class CNSServiceCorridorV1:
                 **ref, "route_id": route_id, "nearest_route_offset_m": nearest["route_offset_m"],
                 "nearest_route_distance_m": nearest["distance_m"],
                 "nearest_route_coordinate": nearest["coordinate"],
+                #: Round38-W1A：带符号横向偏移与所在侧（只读披露，不参与宽度判定）。
+                "nearest_route_lateral_offset_m": nearest.get("lateral_signed_m"),
+                "nearest_route_lateral_side": nearest.get("lateral_side"),
                 #: Round 1 additive：voxel 顶层携带 surface_class，供 P15 按 surface 解析冗余要求。
                 "surface_class": prepared.get("surface_class", "unknown"),
                 "cell_half_diagonal_m": prepared["half_diagonal"],
@@ -559,6 +628,120 @@ class CNSServiceCorridorV1:
                 "subsystems": subsystems,
             })
         return output
+
+
+def _width_context(spec, half_width):
+    """P14 每条航路的**宽度契约证据**（只读派生，绝不改写 spec）。"""
+
+    spec = spec if isinstance(spec, dict) else {}
+    legacy = spec.get("horizontal_half_width_m")
+    if legacy in (None, ""):
+        legacy_status = "not_recorded"
+    elif float(legacy) == float(half_width):
+        legacy_status = "matches_fixed_width_policy"
+    else:
+        legacy_status = "stale_legacy_value"
+    return {
+        "width_policy_version": WIDTH_POLICY_VERSION,
+        "width_semantics": WIDTH_SEMANTICS,
+        "horizontal_half_width_m": float(half_width),
+        "horizontal_total_width_m": float(half_width) * 2.0,
+        "width_source": "fixed_width_contract",
+        "legacy_horizontal_half_width_m": (
+            None if legacy in (None, "") else float(legacy)
+        ),
+        "legacy_horizontal_half_width_status": legacy_status,
+        "legacy_width_used_as_current": False,
+        "horizontal_width_editable": False,
+    }
+
+
+def _full_width_statistics(route_results):
+    """P14 全宽（固定 1000 m）离散评估统计的只读汇总。
+
+    明确披露：网格数是**保守离散代理**，不是连续整面覆盖保证。
+    """
+
+    routes = []
+    for route in route_results or []:
+        route_id = str(route.get("route_id") or "")
+        cells = int(route.get("horizontal_cell_count") or 0)
+        voxels = list(route.get("voxels") or [])
+        subsystems = {}
+        for code in ("C", "N", "S"):
+            summary = next(
+                (item for item in route.get("subsystems") or []
+                 if item.get("subsystem") == code), {},
+            )
+            subsystems[code] = {
+                "status": summary.get("status"),
+                "required_voxel_count": summary.get("required_voxel_count"),
+                "satisfied_voxel_count": summary.get("satisfied_voxel_count"),
+                "confirmed_deficit_voxel_count": summary.get("confirmed_deficit_voxel_count"),
+                "unknown_voxel_count": summary.get("unknown_voxel_count"),
+            }
+        lateral = _lateral_extent(route, voxels)
+        routes.append({
+            "route_id": route_id,
+            "route_status": route.get("status"),
+            "width_policy_version": route.get("width_policy_version"),
+            "horizontal_half_width_m": route.get("horizontal_half_width_m"),
+            "horizontal_total_width_m": route.get("horizontal_total_width_m"),
+            "full_width_grid_cell_count": cells,
+            "full_width_voxel_count": int(route.get("voxel_count") or len(voxels)),
+            "full_width_required_volume_proxy_m3": sum(
+                float(item.get("required_volume_proxy_m3") or 0.0)
+                for item in route.get("subsystems") or []
+            ),
+            "max_lateral_offset_m": lateral["max"],
+            "left_max_lateral_offset_m": lateral["left"],
+            "right_max_lateral_offset_m": lateral["right"],
+            "fixed_corridor_geometry_status": route.get("fixed_corridor_geometry_status"),
+            "corridor_geometry_fingerprint": (
+                (route.get("fixed_corridor_geometry") or {}).get("geometry_fingerprint")
+            ),
+            "discrete_corridor_geometry_fingerprint": route.get(
+                "corridor_geometry_fingerprint"
+            ),
+            "subsystems": subsystems,
+        })
+    return {
+        "width_policy_version": WIDTH_POLICY_VERSION,
+        "horizontal_half_width_m": CORRIDOR_HALF_WIDTH_M,
+        "horizontal_total_width_m": CORRIDOR_TOTAL_WIDTH_M,
+        "route_count": len(routes),
+        "full_width_grid_cell_count": sum(item["full_width_grid_cell_count"] for item in routes),
+        "full_width_voxel_count": sum(item["full_width_voxel_count"] for item in routes),
+        "routes": routes,
+        "semantics": (
+            "conservative_grid_cell_inclusion_and_representative_voxel_probe_"
+            "not_continuous_area_guarantee"
+        ),
+        "centerline_meets_does_not_imply_full_width_meets": True,
+    }
+
+
+def _lateral_extent(route, voxels):
+    """左右两侧相对中心线的最大横向偏移（米），用于全宽缺口披露。
+
+    偏移取自已计算的局部米制带符号横向距离（正 = 航向左侧）。它只用于披露
+    "离散评估实际覆盖到中心线两侧各多宽"，**绝不**用于宽度判定 —— 宽度只由固定
+    契约的 500 m 决定。
+    """
+
+    left = right = 0.0
+    for voxel in voxels:
+        lateral = voxel.get("nearest_route_lateral_offset_m")
+        if lateral is None:
+            continue
+        lateral = float(lateral)
+        if not math.isfinite(lateral):
+            continue
+        if lateral > 0:
+            left = max(left, lateral)
+        elif lateral < 0:
+            right = max(right, -lateral)
+    return {"left": left, "right": right, "max": max(left, right)}
 
 
 def _endpoint_scoped_corridor_entry(code, probe):
@@ -885,6 +1068,41 @@ class _MetricRoute:
             "coordinate": list(point), "segment_index": 0,
         }
 
+    def lateral_offset(self, point, nearest):
+        """给定最近点结果，返回**带符号横向偏移**（局部米制，正 = 航向左侧）。
+
+        Round38-W1A 只读披露：用于 P15 区分左右侧缺口、计算最大横向缺口距离。
+        它**绝不**参与宽度判定（宽度只由固定契约的 500 m 决定），也不改变
+        :meth:`nearest` 的公共返回契约。
+        """
+
+        if not isinstance(nearest, dict) or nearest.get("segment_index") is None:
+            return {"lateral_signed_m": None, "lateral_side": "unknown"}
+        index = int(nearest["segment_index"])
+        if not (0 <= index < len(self.segments)):
+            return {"lateral_signed_m": None, "lateral_side": "unknown"}
+        (_, left_lon, left_lat, right_lon, right_lat, _, _, _, _) = self.segments[index]
+        latitude = math.radians((float(left_lat) + float(point[1])) / 2.0)
+        sx = 111_320.0 * max(math.cos(latitude), 1e-12)
+        sy = 110_574.0
+        # 用**整段方向向量**（右端点 − 左端点）取带符号叉积：它对"最近点恰好落在段起点"
+        # 的退化情形依然稳定（用 nearest 坐标作方向会在 t=0 时退化为零向量）。
+        # 正 = 目标点在航向左侧（x 向东、y 向北的右手坐标系）。
+        direction_x = (float(right_lon) - float(left_lon)) * sx
+        direction_y = (float(right_lat) - float(left_lat)) * sy
+        target_x = (float(point[0]) - float(left_lon)) * sx
+        target_y = (float(point[1]) - float(left_lat)) * sy
+        magnitude = math.hypot(direction_x, direction_y)
+        if magnitude <= 0.0:
+            return {"lateral_signed_m": None, "lateral_side": "unknown"}
+        cross = (direction_x * target_y - direction_y * target_x) / magnitude
+        if not math.isfinite(cross):
+            return {"lateral_signed_m": None, "lateral_side": "unknown"}
+        return {
+            "lateral_signed_m": float(cross),
+            "lateral_side": "left" if cross > 0 else "right" if cross < 0 else "centerline",
+        }
+
 
 def _prepare_cells(cells, terrain, surface_class_provider=None):
     prepared = []
@@ -1195,7 +1413,9 @@ def estimate_corridor_complexity(
             reasons.append(f"{route_id}: RouteAltitudeProfile 缺失或未确认，未计入估算")
             continue
         metric_route = _MetricRoute(path)
-        half_width = float(spec["horizontal_half_width_m"])
+        #: Round38-W1A：规模估算与正式评估必须消费**同一个**固定半宽，否则会出现
+        #: "同一规模、两种准入"。历史半宽只作审计，绝不进入估算。
+        half_width = corridor_half_width_m(spec)
         candidate_layers = _candidate_layers(profile, spec, confirmed_layers)
         for layer in candidate_layers:
             layers_in_play[id(layer)] = layer
@@ -1275,6 +1495,9 @@ def estimate_corridor_complexity(
             "cell centre is evaluated at every layer in play"
         ),
         "is_precise_measurement": False,
+        "width_policy_version": WIDTH_POLICY_VERSION,
+        "corridor_half_width_m": CORRIDOR_HALF_WIDTH_M,
+        "corridor_total_width_m": CORRIDOR_TOTAL_WIDTH_M,
         "grid_cell_count": grid_cell_count,
         "confirmed_altitude_layer_count": len(confirmed_layers),
         "candidate_altitude_layer_count": len(layers_in_play),

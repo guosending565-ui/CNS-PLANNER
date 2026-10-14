@@ -65,6 +65,9 @@ from .requirement_recommendation_service import RequirementRecommendationService
 from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
+from .cns_shared_site_candidate_service import CNSSharedSiteCandidateService
+from .navigation_monitoring_simulation_service import NavigationMonitoringSimulationService
+from .fixed_corridor_geometry_service import FixedCorridorGeometryService
 from .tower_obstacle_service import TowerObstacleService
 from .radar_surveillance_layout_service import RadarSurveillanceLayoutService
 from .radar_terrain_los_diagnostics_service import RadarTerrainLosDiagnosticsService
@@ -523,6 +526,17 @@ class WorkflowService:
             self.session, self.route_service, snapshot,
         )
         self.reference_data_service.ensure_equipment_catalog()
+        self.cns_shared_site_candidate_service = CNSSharedSiteCandidateService(
+            self.session,
+            self.reference_data_service.landing_sites_snapshot,
+            self.reference_data_service.towers_snapshot,
+            # Round38-SITE-2：真实、**已显式确认**的既有 CNS 设施也纳入同一张候选站址
+            # 资源视图（合成 / 未确认设施在服务内部按真实性门禁排除）。
+            self.existing_cns_snapshot,
+        )
+        self.navigation_monitoring_simulation_service = NavigationMonitoringSimulationService(
+            self.session, self.cns_shared_site_candidate_service, self.artifact_read_service,
+        )
         self.reference_link_service = ReferenceLinkService(
             self.session, self.invalidation_service, snapshot,
         )
@@ -567,6 +581,10 @@ class WorkflowService:
         self.radar_surveillance_layout_service = RadarSurveillanceLayoutService(
             self.session, self.invalidation_service, snapshot,
             self.layered_route_planner_service,
+            # Round38-SITE-2：Radar 的候选站址改用**统一站址资源**（既有铁塔 +
+            # 已登记/参考起降点 + 真实已确认既有 CNS 设施）。规划算法与
+            # ``radar_surveillance_layout`` 的 authority 完全不变。
+            self.cns_shared_site_candidate_service,
         )
         self.invalidation_service.radar_surveillance_layout_invalidator = (
             self.radar_surveillance_layout_service.stale_for_reason
@@ -598,6 +616,12 @@ class WorkflowService:
         self.route_risk_profile_service = RouteRiskProfileService(
             self.session, self.invalidation_service, snapshot,
             self.layered_route_planner_service,
+        )
+        self.navigation_monitoring_simulation_service.candidate_applicability = (
+            self.layered_route_planner_service.candidate_applicability
+        )
+        self.navigation_monitoring_simulation_service.risk_profile_snapshot = (
+            self.route_risk_profile_service.result_snapshot
         )
         # A candidate / grid_risk_v2 / profile-policy change stales only the additive
         # route_risk_profiles; legacy routes, V3 and CNS results stay untouched.
@@ -652,12 +676,19 @@ class WorkflowService:
         self.corridor_service = CNSCorridorService(
             self.session, self.corridor_model, self.invalidation_service, snapshot,
         )
+        #: Round38-N2：固定 1000 m 保障宽带的**只读几何投影**。它只复用 W1A 的
+        #: 唯一构造器，并按 P14 的固定几何身份做 currentness 门禁；没有 writer，
+        #: 不注册失效入口，也不写任何容器。
+        self.fixed_corridor_geometry_service = FixedCorridorGeometryService(
+            self.session, self.corridor_service,
+        )
         self.corridor_gap_service = CNSCorridorGapService(
             self.session, self.corridor_gap_analyzer, self.invalidation_service, snapshot,
         )
         self.corridor_site_planning_service = CorridorSitePlanningService(
             self.session, self.corridor_site_planner, self.corridor_model,
             self.corridor_gap_analyzer, self.invalidation_service, snapshot,
+            shared_site_candidates=self.cns_shared_site_candidate_service,
         )
         #: Round 2.6：P16 方案实施后的**投影态**构建器。P17 与 Step6 都消费它，
         #: 保证"P16 的内部 what-if"与"P17 评估的投影态"是**同一套**设施应用语义。
@@ -1119,6 +1150,11 @@ class WorkflowService:
     def reference_landing_sites_snapshot(self): return self.reference_data_service.landing_sites_snapshot()
     def reference_routes_snapshot(self): return self.reference_data_service.routes_snapshot()
     def towers_snapshot(self): return self.reference_data_service.towers_snapshot()
+    def cns_shared_site_candidates(self): return self.cns_shared_site_candidate_service.snapshot()
+    def fixed_corridor_geometry(self, route_id=None):
+        return self.fixed_corridor_geometry_service.geometry(route_id)
+    def simulate_navigation_monitoring(self, payload=None):
+        return self.navigation_monitoring_simulation_service.simulate(payload)
     def tower_obstacle_profiles_snapshot(self): return self.tower_obstacle_service.result_snapshot()
     def tower_colocation_candidates_snapshot(self): return self.tower_obstacle_service.colocation_snapshot()
     def tower_integration_policies_snapshot(self): return self.tower_obstacle_service.policy_snapshot()

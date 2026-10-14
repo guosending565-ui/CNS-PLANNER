@@ -30,7 +30,11 @@ from ..domain.route_3d_profile import (
     route_3d_profile_id, transition_diagnostic, validation_boundary,
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
-from ..domain.spatial_3d import UNRECORDED_SOURCE
+from ..domain.layered_route_validation import path_fingerprint
+from ..domain.spatial_3d import (
+    TERMINAL_TRANSITION_IDENTITY_VERSION, UNRECORDED_SOURCE,
+    terminal_transition_identity_reasons,
+)
 from ..algorithms.coverage.geometric_3d import path_length_m
 
 #: Where an explicit terminal altitude may be declared on a procedure's ``vertical_profile``.
@@ -63,6 +67,11 @@ READINESS_SEMANTICS = {
     "no_default_parameter_is_inferred": True,
     "missing_item_is_not_ready_and_not_zero": True,
     "explicit_user_evaluation_required": True,
+    # Round38-FC30：进离场航段只有在**衔接身份**成立时才参与 current 航路派生。
+    "terminal_transition_identity_version": TERMINAL_TRANSITION_IDENTITY_VERSION,
+    "terminal_procedure_binds_the_cruise_route_geometry_fingerprint": True,
+    "terminal_procedure_layer_must_match_the_active_cruise_layer": True,
+    "route_id_match_alone_is_not_geometry_identity": True,
 }
 
 BOUNDARIES = {
@@ -501,6 +510,18 @@ def resolve_inputs(state, route_id):
             reasons.append(f"{procedure_type} procedure 未确认")
         if str(procedure.get("source") or "") in ("", UNRECORDED_SOURCE):
             reasons.append(f"{procedure_type} procedure 缺少 source/evidence")
+        # Round38-FC30：进离场航段必须与**当前**巡航航路几何身份与巡航高度层一致。
+        # 只比较 route_id 不足以证明同一版本，也不足以排除不同高度层的错误拼接。
+        reasons.extend(
+            f"{procedure_type} 衔接身份：{reason}"
+            for reason in terminal_transition_identity_reasons(
+                procedure,
+                expected_route_geometry_fingerprint=(
+                    path_fingerprint(path) if len(path) >= 2 else None
+                ),
+                route_altitude_layer_id=(assignment or {}).get("altitude_layer_id"),
+            )
+        )
         terminal = resolve_terminal_altitude(procedure)
         if not terminal["present"]:
             reasons.extend(terminal["reasons"])
@@ -527,6 +548,9 @@ def resolve_inputs(state, route_id):
             "rate_key": rate_key,
             "rate_mps": rate,
             "transition_mode": procedure.get("transition_mode"),
+            # Round38-FC30 衔接身份：进入 profile 指纹，任何一项变化都会让已存 profile stale。
+            "altitude_layer_id": procedure.get("altitude_layer_id"),
+            "route_geometry_fingerprint": procedure.get("route_geometry_fingerprint"),
         }
         blockers.extend(f"{procedure_type}：{reason}" for reason in reasons)
     return {
@@ -626,6 +650,10 @@ def fingerprint_components(state, route_id, resolved):
             "procedure_type": entry.get("procedure_type"),
             "status": entry.get("status"),
             "transition_mode": entry.get("transition_mode"),
+            # Round38-FC30：衔接身份（巡航高度层 + 巡航航路完整几何指纹）必须进入指纹，
+            # 否则"换了一层"或"换了巡航几何版本"都不会让已存 profile 失效。
+            "altitude_layer_id": entry.get("altitude_layer_id"),
+            "route_geometry_fingerprint": entry.get("route_geometry_fingerprint"),
             "rate_key": entry.get("rate_key"),
             "rate_mps": entry.get("rate_mps"),
             "terminal_altitude_m": terminal.get("altitude_m"),
@@ -639,6 +667,7 @@ def fingerprint_components(state, route_id, resolved):
     return {
         "profile_version": PROFILE_VERSION,
         "schema_version": SCHEMA_VERSION,
+        "terminal_transition_identity_version": TERMINAL_TRANSITION_IDENTITY_VERSION,
         "operational_route": {
             "route_id": route_id,
             "status": route.get("status"),
@@ -648,6 +677,11 @@ def fingerprint_components(state, route_id, resolved):
             "length_basis": resolved.get("route_length_basis"),
             "vertex_count": len(path),
             "path_fingerprint": stable_fingerprint(path, prefix="routepath-"),
+            #: Round38-FC30 canonical 完整几何身份：与 N1 导航监测、固定 1000 m 保障宽带
+            #: 使用同一实现（``path_fingerprint``）与同一取值，便于 FIG / T3D4 对齐。
+            "route_geometry_fingerprint": (
+                path_fingerprint(path) if len(path) >= 2 else None
+            ),
         },
         "operational_adoption": {
             "adoption_id": adoption.get("adoption_id"),
@@ -707,6 +741,14 @@ def _provenance(state, route_id, resolved, components):
         },
         "reads": {
             "operational_route": route_id,
+            "operational_route_geometry_fingerprint": (
+                (components.get("operational_route") or {}).get(
+                    "route_geometry_fingerprint"
+                )
+            ),
+            "terminal_transition_identity_version": components.get(
+                "terminal_transition_identity_version"
+            ),
             "layered_operational_adoption": adoption.get("adoption_id"),
             "route_operating_layer": assignment.get("altitude_layer_id"),
             "altitude_layer": layer.get("altitude_layer_id"),

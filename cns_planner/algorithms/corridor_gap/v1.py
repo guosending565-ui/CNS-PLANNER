@@ -14,6 +14,10 @@ from ..service_capability.v1 import (
 from ...domain.cns_planning_objectives import (
     OBJECTIVE_NAMES, empty_cns_corridor_gap_assessment, planning_not_evaluated,
 )
+from ...domain.cns_corridor import (
+    CORRIDOR_HALF_WIDTH_M, CORRIDOR_TOTAL_WIDTH_M, WIDTH_POLICY_VERSION,
+    fixed_corridor_width_contract,
+)
 from ...domain.cns_service_contract import (
     SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION, normalize_surface_class,
 )
@@ -35,9 +39,18 @@ class CNSCorridorGapAnalyzerV1:
     #: operational altitude layer 适用）—— off-layer 的 Radar 证据绝不进入
     #: confirmed deficit / unknown / continuous deficit / objective deficit，并按
     #: applicable / not_applicable 体元分别计数，绝不隐式计成 satisfied。
-    algorithm_version = "1.2"
+    #:
+    #: Round38-W1A bump（``1.2`` → ``1.3``）：把**中心线服务状态**与**固定宽带全宽
+    #: 服务状态**拆成两个字段，并按服务输出 required/satisfied/deficit/unknown 网格
+    #: 数量、面积代理、左右侧缺口与最大横向缺口距离。中心线达标**不**代表全宽达标；
+    #: 未运行全宽评估时固定为 ``not_evaluated``，绝不由 N1 的 2000 m 关联推导。
+    algorithm_version = "1.3"
     model_scope = "spatial_corridor_service_redundancy_and_objectives"
     continuity_semantics = "conservative_longitudinal_projection_of_corridor_voxel_deficits"
+    #: 全宽统计的面积/网格代理口径（**不得**描述为精确连续空间覆盖率）。
+    full_width_semantics = (
+        "conservative_discrete_grid_and_area_proxy_not_continuous_area_coverage"
+    )
 
     def __init__(self, parameters=None):
         self.parameters = dict(parameters or {})
@@ -64,6 +77,16 @@ class CNSCorridorGapAnalyzerV1:
             str(item.get("route_id")): item for item in endpoint_gap.get("routes") or []
         }
         objective_routes = (planning_objectives or {}).get("routes") or {}
+        #: Round38-W1A：P14 的**宽度策略版本**必须与当前契约一致，否则该 P14 的几何
+        #: 身份与当前固定宽带不同 —— 全宽结论必须 fail-closed 为 ``not_evaluated``，
+        #: 绝不复用不同宽度策略下的几何当作 current 全宽证据。
+        upstream_policy = (
+            ((corridor_assessment or {}).get("fixed_corridor_width_contract") or {})
+            .get("width_policy_version")
+        )
+        width_conflict = (
+            upstream_policy is not None and str(upstream_policy) != WIDTH_POLICY_VERSION
+        )
         for corridor_route in (corridor_assessment or {}).get("routes") or []:
             route_id = str(corridor_route.get("route_id") or "")
             requirements = ((required_cns or {}).get("route_overrides") or {}).get(route_id) or (required_cns or {}).get("project_default") or {}
@@ -73,6 +96,8 @@ class CNSCorridorGapAnalyzerV1:
                 #: Round 29-G：route-endpoint 作用域的子系统的 corridor 体素聚合必须是
                 #: not_applicable / 0 voxel —— 它的正式状态只来自 endpoint_service_gaps。
                 endpoint_only_codes=_endpoint_only_subsystems(requirements),
+                width_policy_conflict=width_conflict,
+                upstream_width_policy_version=upstream_policy,
             )
             endpoint = deepcopy(endpoint_by_route.get(route_id))
             if endpoint is not None:
@@ -91,6 +116,8 @@ class CNSCorridorGapAnalyzerV1:
             "algorithm_semantics": {
                 "algorithm_id": self.algorithm_id, "algorithm_version": self.algorithm_version,
             },
+            #: Round38-W1A：固定宽度契约进入 P15 输入指纹。
+            "fixed_corridor_width_contract": fixed_corridor_width_contract(),
         })
         target_ids = sorted({
             voxel_id for route in routes for subsystem in route.get("subsystems") or []
@@ -109,15 +136,27 @@ class CNSCorridorGapAnalyzerV1:
             "input_fingerprint": fingerprint, "route_count": len(routes), "routes": routes,
             "endpoint_service_gaps": endpoint_gap,
             "confirmed_target_voxel_ids": target_ids, "unknown_voxel_ids": unknown_ids,
+            #: Round38-W1A：中心线 vs 全宽的两条独立证据链（顶层汇总）。
+            "centerline_service_status": _aggregate_centerline_status(routes),
+            "full_width_service_status": _aggregate_full_width_status(routes),
+            "full_width_width_contract": fixed_corridor_width_contract(),
+            "full_width_semantics": self.full_width_semantics,
             "input_provenance": {
                 "corridor_algorithm_id": (corridor_assessment or {}).get("algorithm_id"),
                 "corridor_algorithm_version": (corridor_assessment or {}).get("algorithm_version"),
                 "corridor_input_fingerprint": (corridor_assessment or {}).get("input_fingerprint"),
+                "corridor_geometry_fingerprint": (
+                    corridor_assessment or {}
+                ).get("corridor_geometry_fingerprint"),
+                "width_policy_version": (
+                    (corridor_assessment or {}).get("fixed_corridor_width_contract") or {}
+                ).get("width_policy_version") or WIDTH_POLICY_VERSION,
             },
             "not_evaluated": planning_not_evaluated(),
         }
 
-    def _route(self, route, requirements, objective_config, *, endpoint_only_codes=frozenset()):
+    def _route(self, route, requirements, objective_config, *, endpoint_only_codes=frozenset(),
+               width_policy_conflict=False, upstream_width_policy_version=None):
         route_id = str(route.get("route_id") or "")
         route_length = float(route.get("route_length_m") or 0.0)
         assessed_voxels = []
@@ -143,6 +182,14 @@ class CNSCorridorGapAnalyzerV1:
                 "nearest_route_offset_m": voxel.get("nearest_route_offset_m"),
                 "cell_half_diagonal_m": voxel.get("cell_half_diagonal_m"),
                 "discretized_volume_proxy_m3": voxel.get("discretized_volume_proxy_m3"),
+                #: Round38-W1A：网格面积代理（来自 P14 的同一份 cell 事实），
+                #: 用于全宽"面积代理"统计 —— 它是离散代理，**不是**连续空间覆盖率。
+                "cell_area_proxy_m2": voxel.get("cell_area_proxy_m2"),
+                #: Round38-W1A：逐 voxel 保留只读横向偏移与所在侧，使"缺口落在中心线
+                #: 哪一侧、偏出多远"可从 canonical 结果本身核查。
+                "nearest_route_lateral_offset_m": voxel.get(
+                    "nearest_route_lateral_offset_m"),
+                "nearest_route_lateral_side": voxel.get("nearest_route_lateral_side"),
                 #: Round 1 additive：P15 逐 voxel 保留 surface_class，使"哪个 sample 按哪套
                 #: surface 要求判定"可从 canonical 结果本身核查（缺省 unknown，不猜测）。
                 "surface_class": normalize_surface_class(voxel.get("surface_class")),
@@ -155,11 +202,21 @@ class CNSCorridorGapAnalyzerV1:
             )
             for code, _ in SUBSYSTEM_NAMES
         ]
+        full_width = _full_width_route(
+            route, assessed_voxels, subsystems,
+            width_policy_conflict=width_policy_conflict,
+            upstream_width_policy_version=upstream_width_policy_version,
+        )
         return {
             "route_id": route_id, "route_length_m": route_length,
             "status": _aggregate([item["status"] for item in subsystems]),
             "voxel_count": len(assessed_voxels), "voxels": assessed_voxels,
             "subsystems": subsystems,
+            #: Round38-W1A：两条**独立**证据链 —— 中心线关联口径与固定宽带全宽口径。
+            #: 中心线达标不得推出全宽达标；全宽未评估即 ``not_evaluated``。
+            "centerline_service_status": full_width["centerline_service_status"],
+            "full_width_service_status": full_width["full_width_service_status"],
+            "full_width_statistics": full_width["full_width_statistics"],
         }
 
 
@@ -172,6 +229,261 @@ def _endpoint_only_subsystems(requirements):
     """
 
     return endpoint_scope_only_subsystems(requirements)
+
+
+#: 全宽统计里每个服务的四态（严格区分已确认缺口、证据不足与不适用）。
+_FULL_WIDTH_CLASSES = ("satisfied", "deficit", "unknown", "not_applicable")
+
+
+def _service_status_of(entry):
+    """把一个 voxel 子系统的**已实际计算**的 CNS 服务证据归一到全宽四态。
+
+    口径（严格、fail-closed）：
+
+    1. ``not_applicable`` 永远不适用（不进入 required）；
+    2. service 级证据（P14 ``service_redundancy``）里出现 ``confirmed_deficit`` ⇒
+       ``deficit``；出现 ``unknown`` ⇒ ``unknown``；
+    3. 没有 service 级证据时，回退到 P14 的子系统级服务结论
+       （``service_status``，来自 P14 ``planning_status``）—— 它同样是**已计算**的
+       服务证据，绝不猜测；
+    4. 任何证据都缺失 ⇒ ``unknown``（绝不当作 satisfied）。
+
+    这里**只**消费 CNS 服务证据；导航 N1 的 2000 m 中心线关联结果不在其中，因此
+    "中心线关联"永远无法自动转成全宽达标。
+    """
+
+    subsystem_status = str(entry.get("service_status") or "")
+    if subsystem_status == "not_applicable":
+        return "not_applicable"
+    statuses = [
+        str(item.get("status") or "unknown")
+        for item in entry.get("services") or []
+    ]
+    applicable = [value for value in statuses if value != "not_applicable"]
+    if "confirmed_deficit" in applicable:
+        return "deficit"
+    if "unknown" in applicable:
+        return "unknown"
+    if applicable:
+        return "satisfied"
+    #: 无 service 级证据：回退到子系统级已计算结果（绝不猜测）。
+    return {
+        "confirmed_deficit": "deficit",
+        "satisfied": "satisfied",
+        "unknown": "unknown",
+    }.get(subsystem_status, "unknown")
+
+
+def _full_width_route(route, assessed_voxels, subsystems, *,
+                      width_policy_conflict=False, upstream_width_policy_version=None):
+    """逐航路的中心线/全宽分离统计与左右侧缺口。
+
+    严格口径：
+
+    * ``centerline_service_status``：**只**表示中心线关联/样本口径，不能代表全宽；
+    * ``full_width_service_status``：固定宽带（左右各 500 m）的离散评估结论；
+    * 每个服务给出 required/satisfied/deficit/unknown 网格数量与**面积代理**；
+    * 左、右侧 deficit/unknown 网格数量与面积代理，以及最大横向缺口距离；
+    * 未运行全宽评估（没有任何已计算的全宽证据）时固定 ``not_evaluated``；
+    * 上游 P14 的宽度策略版本与当前契约不一致时，全宽结论同样 fail-closed 为
+      ``not_evaluated`` —— 不同宽度策略下的几何**不得**被复用为 current 全宽证据。
+    """
+
+    width = route.get("horizontal_half_width_m")
+    voxels = list(assessed_voxels or [])
+    subsystems = list(subsystems or [])
+    #: 「全宽是否真的被评估过」= 该航路是否有**已计算的** P14 全宽体元证据，
+    #: 且其宽度策略版本与当前契约一致。
+    evaluated = (
+        bool(voxels) and bool(route.get("voxels")) and not width_policy_conflict
+    )
+    services = {}
+    for code, name in SUBSYSTEM_NAMES:
+        summary = next((item for item in subsystems if item.get("subsystem") == code), {})
+        bucket = {
+            "subsystem": code, "service": name,
+            "required_grid_count": 0, "satisfied_grid_count": 0,
+            "deficit_grid_count": 0, "unknown_grid_count": 0,
+            "not_applicable_grid_count": 0,
+            "required_area_proxy_m2": 0.0, "satisfied_area_proxy_m2": 0.0,
+            "deficit_area_proxy_m2": 0.0, "unknown_area_proxy_m2": 0.0,
+            "not_applicable_area_proxy_m2": 0.0,
+            "deficit_area_fraction": None, "unknown_area_fraction": None,
+            "left": _side_bucket(), "right": _side_bucket(),
+            "max_lateral_deficit_distance_m": 0.0,
+            "status": "not_evaluated",
+        }
+        for voxel in voxels:
+            entry = next(
+                (item for item in voxel.get("subsystems") or []
+                 if item.get("subsystem") == code), None,
+            )
+            if entry is None or entry.get("combined_status") == "not_applicable":
+                continue
+            state = _service_status_of(entry)
+            area = float(voxel.get("cell_area_proxy_m2") or 0.0)
+            bucket["required_grid_count"] += 1
+            bucket["required_area_proxy_m2"] += area
+            bucket[f"{state}_grid_count"] += 1
+            bucket[f"{state}_area_proxy_m2"] += area
+            side = str(voxel.get("nearest_route_lateral_side") or "unknown")
+            if state in ("deficit", "unknown"):
+                lateral = voxel.get("nearest_route_lateral_offset_m")
+                bucket["max_lateral_deficit_distance_m"] = max(
+                    bucket["max_lateral_deficit_distance_m"],
+                    abs(float(lateral)) if lateral is not None else 0.0,
+                )
+                target = bucket["left"] if side == "left" else (
+                    bucket["right"] if side == "right" else None
+                )
+                if target is not None:
+                    target[f"{state}_grid_count"] += 1
+                    target[f"{state}_area_proxy_m2"] += area
+        required_area = bucket["required_area_proxy_m2"]
+        if required_area > 0.0:
+            bucket["deficit_area_fraction"] = bucket["deficit_area_proxy_m2"] / required_area
+            bucket["unknown_area_fraction"] = bucket["unknown_area_proxy_m2"] / required_area
+        if not evaluated:
+            bucket["status"] = "not_evaluated"
+        elif bucket["required_grid_count"] == 0:
+            bucket["status"] = "not_evaluated"
+        elif bucket["deficit_grid_count"]:
+            bucket["status"] = "deficit"
+        elif bucket["unknown_grid_count"]:
+            bucket["status"] = "unknown"
+        else:
+            bucket["status"] = "satisfied"
+        services[code] = bucket
+    #: 中心线口径：只取"保守包含中心线"的样本 —— 即横向偏移不超过该网格单元
+    #: 半对角线的单元（与 P14 的保守网格包含语义同源）。它**不是**全宽结论，
+    #: 也不能由 N1 的 2000 m 关联结果推导。
+    centerline_voxels = []
+    for voxel in voxels:
+        lateral = voxel.get("nearest_route_lateral_offset_m")
+        half_diagonal = voxel.get("cell_half_diagonal_m")
+        if lateral is None or half_diagonal is None:
+            #: 缺横向证据时**不猜测**：按中心线口径保守计入（P14 的包含判定已经
+            #: 保证该单元在 500 m 带内），并在语义字段里显式披露。
+            centerline_voxels.append(voxel)
+            continue
+        if abs(float(lateral)) <= float(half_diagonal):
+            centerline_voxels.append(voxel)
+    centerline_status = _statuses_from_voxels(centerline_voxels) if evaluated else {}
+    full_width_status = {
+        code: bucket["status"] for code, bucket in services.items()
+    }
+    return {
+        "centerline_service_status": {
+            "semantics": "centerline_association_and_sample_scope_only_not_full_width",
+            "evaluated": evaluated,
+            "voxel_count": len(centerline_voxels),
+            "subsystems": centerline_status,
+            "status": (
+                "not_evaluated" if not evaluated
+                else _aggregate_statuses(list(centerline_status.values()))
+            ),
+        },
+        "full_width_service_status": {
+            "semantics": CNSCorridorGapAnalyzerV1.full_width_semantics,
+            "evaluated": evaluated,
+            "width_policy_version": WIDTH_POLICY_VERSION,
+            "upstream_width_policy_version": upstream_width_policy_version,
+            "width_policy_conflict": bool(width_policy_conflict),
+            "corridor_half_width_m": (
+                CORRIDOR_HALF_WIDTH_M if width is None else float(width)
+            ),
+            "corridor_total_width_m": (
+                CORRIDOR_TOTAL_WIDTH_M if width is None else float(width) * 2.0
+            ),
+            "subsystems": full_width_status,
+            "status": (
+                "not_evaluated" if not evaluated
+                else _aggregate_statuses(list(full_width_status.values()))
+            ),
+        },
+        "full_width_statistics": {
+            "semantics": CNSCorridorGapAnalyzerV1.full_width_semantics,
+            "area_proxy_semantics": (
+                "sum_of_conservative_grid_cell_area_proxies_not_continuous_coverage"
+            ),
+            "evaluated": evaluated,
+            "width_policy_version": WIDTH_POLICY_VERSION,
+            "upstream_width_policy_version": upstream_width_policy_version,
+            "width_policy_conflict": bool(width_policy_conflict),
+            "corridor_half_width_m": (
+                CORRIDOR_HALF_WIDTH_M if width is None else float(width)
+            ),
+            "corridor_total_width_m": (
+                CORRIDOR_TOTAL_WIDTH_M if width is None else float(width) * 2.0
+            ),
+            "full_width_grid_count": len(voxels),
+            "services": services,
+            "max_lateral_deficit_distance_m": max(
+                (bucket["max_lateral_deficit_distance_m"] for bucket in services.values()),
+                default=0.0,
+            ),
+            "centerline_meets_does_not_imply_full_width_meets": True,
+        },
+    }
+
+
+def _side_bucket():
+    return {
+        "deficit_grid_count": 0, "unknown_grid_count": 0,
+        "deficit_area_proxy_m2": 0.0, "unknown_area_proxy_m2": 0.0,
+    }
+
+
+def _statuses_from_voxels(voxels):
+    """中心线口径的逐子系统状态（只用已计算的证据，缺失即 unknown）。"""
+
+    result = {}
+    for code, _name in SUBSYSTEM_NAMES:
+        states = []
+        for voxel in voxels:
+            entry = next(
+                (item for item in voxel.get("subsystems") or []
+                 if item.get("subsystem") == code), None,
+            )
+            if entry is None or entry.get("combined_status") == "not_applicable":
+                continue
+            states.append(_service_status_of(entry))
+        result[code] = (
+            "not_evaluated" if not states else _aggregate_statuses(states)
+        )
+    return result
+
+
+def _aggregate_statuses(statuses):
+    """全宽/中心线状态的聚合：``not_evaluated`` 绝不被折叠成 ``satisfied``。"""
+
+    values = [str(value) for value in statuses or []]
+    applicable = [
+        value for value in values
+        if value not in ("not_applicable", "not_evaluated", "None")
+    ]
+    if not applicable:
+        #: 全部未评估 → ``not_evaluated``；全部不适用 → ``not_applicable``。
+        if any(value == "not_applicable" for value in values):
+            return "not_applicable"
+        return "not_evaluated"
+    if "deficit" in applicable or "failed" in applicable or "confirmed_gap" in applicable:
+        return "deficit"
+    if "unknown" in applicable or "pending_confirmation" in applicable:
+        return "unknown"
+    return "satisfied"
+
+
+def _aggregate_centerline_status(routes):
+    return _aggregate_statuses([
+        (route.get("centerline_service_status") or {}).get("status") for route in routes or []
+    ])
+
+
+def _aggregate_full_width_status(routes):
+    return _aggregate_statuses([
+        (route.get("full_width_service_status") or {}).get("status") for route in routes or []
+    ])
 
 
 def _endpoint_scoped_entry(code, surface_class):

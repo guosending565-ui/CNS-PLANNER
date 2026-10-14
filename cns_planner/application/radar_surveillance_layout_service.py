@@ -40,6 +40,9 @@ from ..domain.radar_surveillance_layout import (
     semantics_fingerprint,
 )
 from ..domain.route_safety_evidence_v2 import stable_fingerprint, utc_now
+from ..domain.tower_colocation import (
+    tower_planning_service_origin_estimates as _tower_planning_service_origin_estimates,
+)
 from ..algorithms.radar_layout.terrain_los_lookup import (
     TERRAIN_LOS_MODE_DISABLED, normalize_terrain_los_mode,
 )
@@ -125,9 +128,11 @@ READINESS_SEMANTICS = {
     #: 兼容别名：旧调用方按名字读 ``alt_080_present_and_current_required`` 时语义不变
     #: （默认高度层就是 ALT-080），但它**不再是**架构硬编码。
     "alt_080_present_and_current_required": True,
-    "real_tower_sites_required": True,
-    "tower_obstacle_profiles_current_required": True,
-    "at_least_one_resolved_tower_top_orthometric_required": True,
+    "real_tower_sites_required": False,
+    "tower_obstacle_profiles_current_required": False,
+    "at_least_one_resolved_tower_top_orthometric_required": False,
+    "at_least_one_resolved_radar_origin_required": True,
+    "ground_site_origin_requires_confirmed_crs_egm2008_and_installation_height": True,
     "land_mask_configured_required": True,
     "land_mask_file_and_layer_required": True,
     "land_mask_polygon_geometry_required": True,
@@ -181,6 +186,9 @@ def default_radar_surveillance_policy():
         "land_mask_policy_semantics": "legacy_compatibility_mirror_not_runtime_authority",
         # V1.1：legacy 字段，兼容读取但**不参与**几何，也**不是** readiness 门控。
         "radar_mount_height": default_radar_mount_assumption(),
+        # FLOW：地面站（含已登记起降点）的站点级雷达天线安装高度证据。
+        # 仍由本 policy 的唯一 writer 保存；空映射不代表 0 m。
+        "ground_site_installation_heights": {},
         "radar_origin_basis": RADAR_ORIGIN_BASIS,
         "radar_origin_semantics": RADAR_ORIGIN_SEMANTICS,
         "radar_mount_height_required": RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1,
@@ -214,6 +222,56 @@ def _positive_number(value, field, *, default):
     if number <= 0:
         raise ValueError(f"{field} 必须为正")
     return number
+
+
+def _ground_site_installation_heights(value):
+    """规范化受控的站点级安装高度；规划值与真实安装记录必须显式区分。"""
+
+    payload = value if isinstance(value, dict) else {}
+    result = {}
+    for key, raw in sorted(payload.items(), key=lambda item: str(item[0])):
+        site_id = str(key or "").strip()
+        entry = raw if isinstance(raw, dict) else {}
+        declared_site_id = str(entry.get("site_id") or site_id).strip()
+        if not site_id or declared_site_id != site_id:
+            raise ValueError("ground_site_installation_heights 必须绑定一致的 site_id")
+        height = entry.get("installation_height_m")
+        try:
+            height = float(height)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{site_id} 的雷达天线安装高度必须是数值") from exc
+        if height != height or abs(height) == float("inf") or height < 0:
+            raise ValueError(f"{site_id} 的雷达天线安装高度必须是有限非负数")
+        source = str(entry.get("source") or "")
+        status = str(entry.get("installation_status") or (
+            "installed" if source == "source_device_installation_height" else "planned"
+        ))
+        if status == "planned" and source == "user_confirmed":
+            semantics, installed = (
+                "user_confirmed_planned_installation_height_agl", False,
+            )
+        elif status == "installed" and source == "source_device_installation_height":
+            semantics, installed = "installed_device_record_height_agl", True
+        else:
+            raise ValueError(
+                f"{site_id} 的安装高度来源与状态不一致：规划值仅允许 user_confirmed，"
+                "真实安装仅允许 source_device_installation_height"
+            )
+        source_ref = str(entry.get("source_ref") or "").strip()
+        if installed and not source_ref:
+            raise ValueError(f"{site_id} 的真实安装记录必须提供 source_ref")
+        result[site_id] = {
+            "site_id": site_id,
+            "installation_height_m": height,
+            "source": source,
+            "confirmed": entry.get("confirmed") is True,
+            "installation_status": status,
+            "height_semantics": semantics,
+            "device_installed": installed,
+        }
+        if source_ref:
+            result[site_id]["source_ref"] = source_ref
+    return result
 
 
 def normalize_radar_surveillance_policy(value):
@@ -268,6 +326,9 @@ def normalize_radar_surveillance_policy(value):
             "parameter_origin": payload.get("mount_height_parameter_origin"),
         }
     result["radar_mount_height"] = normalize_radar_mount_assumption(mount_payload)
+    result["ground_site_installation_heights"] = _ground_site_installation_heights(
+        payload.get("ground_site_installation_heights")
+    )
     # V1.1：挂高不再是 readiness 门控（雷达原点 = 塔顶正高），因此 policy.status
     # 只反映"是否存在显式确认过的工程参数"，不再由挂高决定。
     result["radar_mount_height_required"] = RADAR_MOUNT_HEIGHT_REQUIRED_FOR_V1_1
@@ -476,7 +537,8 @@ def _tower_items(state):
 class RadarSurveillanceLayoutService:
     """``radar_surveillance_policy`` / ``radar_surveillance_layout`` 的唯一写入者。"""
 
-    def __init__(self, session, invalidation, snapshot, layered_route_planner_service=None):
+    def __init__(self, session, invalidation, snapshot, layered_route_planner_service=None,
+                 shared_sites=None):
         self.session = session
         self.invalidation = invalidation
         self.snapshot = snapshot
@@ -489,6 +551,114 @@ class RadarSurveillanceLayoutService:
         self.layered_route_planner_service = layered_route_planner_service
         self.route_risk_profile_service = None
         self.layered_route_validation_service = None
+        #: Round38-SITE-2：统一候选站址资源（只读投影）。注入时 Radar 的塔站址与
+        #: 起降点 / 场站 / 已确认真实既有 CNS 设施走**同一套**输入适配；未注入时
+        #: 退回既有 state 塔站址行为。
+        self.shared_sites = shared_sites
+        #: 由 composition root 注入的**显式**雷达天线安装高度证据：``{site_id: {...}}``。
+        #: 缺失即 unknown ⇒ 地面站不产生候选，绝不填默认挂高。
+        self.radar_installation_evidence_provider = None
+
+    # ------------------------------------------------------- 候选站址资源（SITE-2）
+    def _planning_origin_estimates(self):
+        """既有共塔工程估算原点 ``{tower_id: EGM2008 正高}``（**显式 opt-in 才生效**）。
+
+        恢复 Round34-T05 已实现的 ``373/373`` Radar 工程规划候选能力，但**不新写**
+        估算公式：数值与门禁都委托唯一实现
+        :func:`cns_planner.domain.tower_colocation.tower_planning_service_origin_estimates`
+        （与三维只读投影共用，杜绝"规划用了估算、展示说没有高度"的接口分叉）。
+        未打开该工程假设时恒为 ``{}``，行为与 V1.1 完全一致。
+        """
+
+        return _tower_planning_service_origin_estimates(self.session.state)
+
+    def _radar_site_inputs(self, policy=None):
+        """把统一候选站址投影成 Radar 专用站址输入记录（只读，不写 state）。"""
+
+        from .radar_shared_site_adapter import radar_site_inputs
+
+        provider = self.facts_provider if isinstance(self.facts_provider, dict) else {}
+        return radar_site_inputs(
+            shared_sites=self.shared_sites,
+            session=self.session,
+            installation_evidence=self._radar_installation_evidence(),
+            terrain_sampler=provider.get("sample_terrain"),
+            mount_assumption=(
+                (policy or {}).get("radar_mount_height")
+                if isinstance(policy, dict) else None
+            ),
+            #: 塔顶高度仍由既有 ``tower_obstacle_profiles`` 建模，绝不套用到地面站。
+            obstacle_profiles=self.session.state.get("tower_obstacle_profiles") or {},
+            #: Round38-INT-A：严格塔顶未解析时，显式 opt-in 地复用既有共塔工程估算
+            #: 原点（373/373 工程规划候选能力）；未打开该假设时恒为 ``{}``。
+            planning_origin_estimates=self._planning_origin_estimates(),
+        )
+
+    def _radar_installation_evidence(self):
+        """显式安装高度证据：注入 provider 优先，其次项目节点/设施自带的证据块。
+
+        只在**站址自身**的显式登记里读取，绝不推导、绝不默认。
+        """
+
+        producer = self.radar_installation_evidence_provider
+        injected = producer() if callable(producer) else None
+        evidence = dict(injected) if isinstance(injected, dict) else {}
+        for site_id, entry in (
+            self._policy().get("ground_site_installation_heights") or {}
+        ).items():
+            evidence.setdefault(str(site_id), entry)
+        state = self.session.state
+        for node in state.get("nodes") or []:
+            if isinstance(node, dict) and isinstance(node.get("radar_installation"), dict):
+                evidence.setdefault(str(node.get("node_id") or ""), node["radar_installation"])
+        facilities = state.get("existing_cns_facilities") or {}
+        for facility in facilities.get("items") or []:
+            if not isinstance(facility, dict):
+                continue
+            block = facility.get("radar_installation")
+            if isinstance(block, dict):
+                evidence.setdefault(
+                    str(facility.get("facility_id") or facility.get("site_id") or ""), block,
+                )
+        evidence.pop("", None)
+        return evidence
+
+    def _candidate_site_fingerprint_component(self):
+        """统一候选站址的**廉价确定性**指纹分量（站点身份 + 空间资格 + CRS 证据）。"""
+
+        from .radar_shared_site_adapter import candidate_site_fingerprint_component
+
+        snapshot = (
+            self.shared_sites.snapshot()
+            if self.shared_sites is not None else {"status": "unavailable"}
+        )
+        return candidate_site_fingerprint_component(snapshot)
+
+    @staticmethod
+    def _radar_site_source_disclosure(shared_sites_available):
+        """候选站址来源与安装位置语义的只读披露（算法与 authority 不变）。"""
+
+        from .radar_shared_site_adapter import (
+            INSTALLATION_POSITION_GROUND_SITE, INSTALLATION_POSITION_TOWER_TOP,
+        )
+
+        return {
+            "candidate_site_source": (
+                "shared_site_candidates" if shared_sites_available
+                else "project_state_towers_legacy_fallback"
+            ),
+            "candidate_species": [
+                "tower_colocation", "project_node", "reference_landing_site",
+                "existing_cns_facility",
+            ],
+            "installation_positions": {
+                INSTALLATION_POSITION_TOWER_TOP: "tower_top_orthometric_m",
+                INSTALLATION_POSITION_GROUND_SITE:
+                    "ground_elevation_plus_evidenced_antenna_installation_height",
+            },
+            "ground_site_inherits_tower_top_height": False,
+            "candidate_does_not_imply_installation": True,
+        }
 
     # ------------------------------------------------------------------ containers
     def _policy(self):
@@ -899,6 +1069,89 @@ class RadarSurveillanceLayoutService:
         land = self.land_mask_readiness(facts_provider=facts_provider)
         metric = self._metric_transform_readiness(facts_provider=facts_provider)
         solver = _solver_availability()
+        policy = self._policy()
+        shared_inputs = self._radar_site_inputs(policy)
+        shared_available = (
+            shared_inputs.get("status") == "passed"
+            and bool(shared_inputs.get("sites"))
+        )
+        resolved_records = (
+            (shared_inputs.get("resolved") or {}).get("records") or []
+            if shared_available else []
+        )
+        usable_records = [
+            item for item in resolved_records
+            if isinstance(item, dict) and item.get("origin_egm2008_m") is not None
+        ]
+        usable_ground_sites = [
+            item for item in usable_records
+            if item.get("installation_position") == "ground_site"
+        ]
+        usable_tower_sites = [
+            item for item in usable_records
+            if item.get("installation_position") == "tower_top"
+        ]
+        radar_origin_readiness = radar_origin_assumption_status(state)
+        #: Round38-INT-A：塔站址原点来源分层必须**显式披露**：严格塔顶正高与复用既有
+        #: 共塔工程估算（源表海拔 + 塔身高度）是两种权威性完全不同的来源，不能混为
+        #: 一谈。未打开该工程假设时估算计数恒为 0，披露形状与 V1.1 保持一致。
+        shared_statistics = shared_inputs.get("statistics") or {}
+        strict_tower_origin_count = shared_statistics.get("tower_strict_origin_count")
+        estimate_tower_origin_count = shared_statistics.get(
+            "tower_planning_estimate_origin_count")
+        planning_estimate_in_use = bool(estimate_tower_origin_count)
+        if usable_ground_sites or usable_tower_sites:
+            readiness_patch = {
+                "radar_origin_source_composition": {
+                    "strict_tower_top_origin_count": strict_tower_origin_count,
+                    "planning_estimate_origin_count": estimate_tower_origin_count,
+                    "planning_estimate_origin_source": shared_statistics.get(
+                        "planning_estimate_origin_source"),
+                    "planning_estimate_is_not_confirmed_tower_top": True,
+                    "planning_estimate_in_use": planning_estimate_in_use,
+                    "disclosure": (
+                        "部分塔站址的雷达原点来自**既有共塔工程估算**"
+                        "（terrain + 源表塔身高度），不是已确认 EGM2008 塔顶正高；"
+                        "该结果仅用于明确声明假设的工程规划与非权威展示，"
+                        "不得据此认定 Radar LOS 已验证通过。"
+                        if planning_estimate_in_use else
+                        "全部塔站址的雷达原点均来自已解析的 tower_top_orthometric_m。"
+                    ),
+                },
+            }
+            if usable_ground_sites:
+                usable_ground_ids = {
+                    str(item.get("site_id") or "") for item in usable_ground_sites
+                }
+                ground_evidence = [
+                    item.get("antenna_installation_height") or {}
+                    for item in (shared_inputs.get("usable") or [])
+                    if str(item.get("site_id") or "") in usable_ground_ids
+                ]
+                installed = all(
+                    item.get("device_installed") is True for item in ground_evidence
+                )
+                planned = any(
+                    item.get("installation_status") == "planned"
+                    for item in ground_evidence
+                )
+                readiness_patch.update({
+                    "radar_origin_basis": (
+                        "site_specific_tower_top_or_ground_elevation_plus_installation_height"
+                        if usable_tower_sites else
+                        "ground_elevation_plus_evidenced_antenna_installation_height"
+                    ),
+                    "installation_assumption": (
+                        "site_specific_installation_position"
+                        if usable_tower_sites else "ground_site_antenna_height_agl"
+                    ),
+                    "engineering_confirmed": all(
+                        item.get("confirmed") is True for item in ground_evidence
+                    ),
+                    "device_installed": installed,
+                    "planning_height_is_not_installed_height": planned,
+                })
+            radar_origin_readiness = {**radar_origin_readiness, **readiness_patch}
 
         blockers = []
         if demo_preview_only and payload.get("route_source") != DEMO_ROUTE_SOURCE:
@@ -916,14 +1169,15 @@ class RadarSurveillanceLayoutService:
                 blockers.append("current_candidate_path_unavailable")
         if not demo_preview_only and not passed_routes:
             blockers.append("passed_operational_route_missing")
-        if not towers:
-            blockers.append("real_tower_sites_missing")
-        if not profiles:
-            blockers.append("tower_obstacle_profiles_missing")
-        elif demo_preview_only and profiles_status != "passed":
-            blockers.append(f"tower_obstacle_profiles_not_ready:{profiles_status}")
-        if not resolved:
-            blockers.append("resolved_tower_top_orthometric_missing")
+        if not usable_ground_sites:
+            if not towers:
+                blockers.append("real_tower_sites_missing")
+            if not profiles:
+                blockers.append("tower_obstacle_profiles_missing")
+            elif demo_preview_only and profiles_status != "passed":
+                blockers.append(f"tower_obstacle_profiles_not_ready:{profiles_status}")
+            if not resolved:
+                blockers.append("resolved_tower_top_orthometric_missing")
         if demo_preview_only and not altitude["present"]:
             blockers.append("current_candidate_altitude_layer_missing")
         elif demo_preview_only and not altitude["confirmed"]:
@@ -981,11 +1235,36 @@ class RadarSurveillanceLayoutService:
             "tower_count": len(towers),
             "tower_with_resolved_radar_base_count": resolved,
             "tower_obstacle_profile_count": len(profiles),
+            "usable_radar_site_count": (
+                len(usable_records) if shared_available else resolved
+            ),
+            "usable_ground_site_count": len(usable_ground_sites),
+            "usable_tower_site_count": (
+                len(usable_tower_sites) if shared_available else resolved
+            ),
+            "ground_site_candidates": [
+                {
+                    "site_id": item.get("site_id"), "name": item.get("name"),
+                    "candidate_kind": item.get("candidate_kind"),
+                    "spatial_status": (
+                        "eligible" if not str(item.get("block_reason") or "").startswith(
+                            "reference_source_crs"
+                        ) else "blocked"
+                    ),
+                    "block_reason": item.get("block_reason"),
+                    "installation_height_m": item.get("installation_height_m"),
+                    "ground_elevation_egm2008_m": item.get(
+                        "ground_elevation_egm2008_m"
+                    ),
+                }
+                for item in (shared_inputs.get("sites") or [])
+                if item.get("installation_position") == "ground_site"
+            ],
             "fixed_altitude": altitude,
             "land_mask": land,
             "metric_transform": metric,
             "solver": solver,
-            "radar_origin": radar_origin_assumption_status(state),
+            "radar_origin": radar_origin_readiness,
             # legacy 字段：只报告，不门控。
             "radar_mount_height": radar_mount_assumption_status(state),
             # BUG-SHOT-008：参数块必须带**本次解析出的**高度层，不再固定 ALT-080。
@@ -1509,6 +1788,14 @@ class RadarSurveillanceLayoutService:
                 **policy.get("radar_mount_height"),
                 "legacy_not_used_by_v1_1": True,
             },
+            "ground_site_installation_heights": deepcopy(
+                policy.get("ground_site_installation_heights") or {}
+            ),
+            #: Round38-SITE-2：候选站址来源进指纹 —— 起降点 / 场站 / 真实已确认既有
+            #: CNS 设施的集合或资格一变，旧方案必然 stale。这里只绑定**站址身份与
+            #: 证据状态**（不含坐标本身以外的事实、不做任何几何计算），并且**不**做
+            #: 地形采样，使指纹保持廉价的确定性。
+            "candidate_site_sources": self._candidate_site_fingerprint_component(),
             "policy": {
                 "optimization_sample_spacing_m": policy.get("optimization_sample_spacing_m"),
                 "validation_sample_spacing_m": policy.get("validation_sample_spacing_m"),
@@ -1806,15 +2093,30 @@ class RadarSurveillanceLayoutService:
             )
 
         towers = _tower_items(state)
-        if not towers:
+        shared_sites = self._radar_site_inputs(policy)
+        shared_sites_available = shared_sites.get("status") == "passed"
+        if shared_sites_available and not shared_sites.get("sites"):
+            #: 共享站址资源这次没有给出任何站址：保持既有 state 塔站址行为（向后兼容），
+            #: 而不是把"未接线"误报成"项目里没有真实站址"。
+            shared_sites_available = False
+        if not shared_sites_available and not towers:
             blockers.append("项目中没有真实铁塔站址（唯一候选站址来源）")
 
-        origins = resolve_radar_origins(
-            towers=list(towers.values()),
-            obstacle_profiles=state.get("tower_obstacle_profiles") or {},
-            # V1.1：legacy 挂高只被兼容读取并记录，**不影响**几何。
-            mount_assumption=policy.get("radar_mount_height"),
-        )
+        if shared_sites_available:
+            #: SITE-2：塔站址与其余真实站址（起降点 / 场站 / 已确认真实既有 CNS 设施）
+            #: 进入**同一个** Radar 专用候选筛选流程；覆盖收益与可行性仍由既有
+            #: ``radar_layout`` 算法评估。
+            resolved = shared_sites["resolved"]
+        else:
+            resolved = resolve_radar_origins(
+                towers=list(towers.values()),
+                obstacle_profiles=state.get("tower_obstacle_profiles") or {},
+                # V1.1：legacy 挂高只被兼容读取并记录，**不影响**几何。
+                mount_assumption=policy.get("radar_mount_height"),
+                # Round38-INT-A：同一显式 opt-in 的既有共塔工程估算原点。
+                planning_origin_estimates=self._planning_origin_estimates(),
+            )
+        origins = resolved
         base["radar_origin"] = {
             "status": origins["status"],
             "radar_origin_basis": RADAR_ORIGIN_BASIS,
@@ -1831,14 +2133,19 @@ class RadarSurveillanceLayoutService:
             "unresolved_count": origins["unresolved_count"],
             "unresolved": deepcopy(origins["unresolved"][:200]),
             "backend_hardcoded_mount_height": False,
+            #: SITE-2：候选站址来源与安装位置语义的只读披露（不改变任何几何）。
+            "candidate_site_sources": deepcopy(
+                self._radar_site_source_disclosure(shared_sites_available)
+            ),
         }
         usable_towers = [
             item for item in origins["records"] if item["origin_egm2008_m"] is not None
         ]
         if not usable_towers:
             blockers.append(
-                "没有任何铁塔具备已解析的 tower_top_orthometric_m"
-                "（缺 FABDEM 地形正高 / 建筑高度 / 塔身高度）；缺关键垂向证据不得填 0"
+                "没有任何候选站址具备已解析的雷达原点正高"
+                "（塔：tower_top_orthometric_m；地面站：地表正高 + 显式安装高度证据）；"
+                "缺关键垂向证据不得填 0"
             )
         else:
             # 塔站址 -> 显式米制平面坐标：与航路采样共用同一投影，算法因此只处理米。

@@ -19,7 +19,7 @@ class CorridorReuseFirstSitePlannerV2:
     #: ``not_applicable`` 不再被当成 active（未满足）target，只有
     #: ``confirmed_deficit`` / ``unknown`` 才产生 target / unknown evidence。
     #: ranking / FULL what-if / reuse-first 算法本身逐项不变。
-    algorithm_version = "2.2"
+    algorithm_version = "2.3"
 
     def __init__(self, parameters=None):
         self.parameters = deepcopy(parameters or {})

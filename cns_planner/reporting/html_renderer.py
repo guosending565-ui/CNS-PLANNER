@@ -133,18 +133,25 @@ def _continuous_service(value):
     ]
     protection = value.get("route_protection") or {}
     protection_rows = "".join(
-        f'<tr><td>{e(row.get("route_id"))}</td><td>{e(row.get("D_separation_m"))}</td>'
+        f'<tr><td>{e(row.get("route_id"))}</td>'
+        f'<td>{e(row.get("service_target_half_width_m"))}</td>'
+        f'<td>{e(zh(row.get("fixed_band_service_status")))}</td>'
+        f'<td>{e(row.get("D_separation_m"))}</td>'
         f'<td>{e(row.get("V_relative_mps"))}</td><td>{e(row.get("T_chain_s"))}</td>'
         f'<td>{e(row.get("D_maneuver_m"))}</td><td>{e(row.get("D_uncertainty_m"))}</td>'
-        f'<td>{e(row.get("D_protection_m"))}</td><td>{e(zh(row.get("status")))}</td></tr>'
+        f'<td>{e(row.get("response_protection_distance_m"))}</td>'
+        f'<td>{e(zh(row.get("response_timeliness_status")))}</td></tr>'
         for row in protection.get("routes") or []
     )
     protection_table = (
-        f'<p>保护走廊公式：<code>{e(protection.get("formula"))}</code>'
+        f'<p>固定 CNS 服务宽带为中心线两侧各 500 m；响应保护距离按独立公式：'
+        f'<code>{e(protection.get("formula"))}</code>'
         f'（D_maneuver 为 engineering_baseline 接口，不代表法规值或某机型普遍制动距离）</p>'
-        '<table><thead><tr><th>航路</th><th>D_separation(m)</th><th>V_relative(m/s)</th>'
+        '<p><b>固定宽带达标不代表预警及时或避碰成功；响应证据缺失时保持 unknown。</b></p>'
+        '<table><thead><tr><th>航路</th><th>固定半宽(m)</th><th>宽带服务状态</th>'
+        '<th>D_separation(m)</th><th>V_relative(m/s)</th>'
         '<th>T_chain(s)</th><th>D_maneuver(m)</th><th>D_uncertainty(m)</th>'
-        '<th>D_protection(m)</th><th>状态</th></tr></thead><tbody>'
+        '<th>响应保护距离(m)</th><th>响应及时性</th></tr></thead><tbody>'
         + protection_rows + '</tbody></table>'
     )
     thresholds = value.get("communication_thresholds") or {}

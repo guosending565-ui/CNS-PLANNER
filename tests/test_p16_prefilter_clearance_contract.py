@@ -16,6 +16,7 @@ Round 29-I 的 local impact 引擎已从 production 撤销，其差分等价性�
 from __future__ import annotations
 
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -117,7 +118,7 @@ def _candidate(identifier, *, reuse="candidate_site", coordinate=None):
     return normalize_candidate_site({
         "site_id": identifier, "name": identifier,
         "coordinate": list(coordinate or [0.0, 0.0005]),
-        "vertical_profile": _vertical(), "site_type": "tower", "available_subsystems": ["C"],
+        "vertical_profile": _vertical(), "site_type": "landing_site", "available_subsystems": ["C"],
         "usable": True, "locked": False, "source": "test",
         "planning_profile": _planning_profile(reuse),
     })
@@ -157,6 +158,14 @@ def _build_state(tmp_path, *, devices=None, candidates=None):
     state["candidate_sites"] = {
         "status": "passed", "items": selected, "count": len(selected),
     }
+    state["nodes"] = [
+        {
+            "node_id": str(item["site_id"]), "name": item.get("name"),
+            "coordinate": deepcopy(item.get("coordinate")),
+            "coordinate_source": "manual_entry",
+        }
+        for item in selected if item.get("site_id")
+    ]
     state["cns_corridor_policy"] = normalize_cns_corridor_policy({"routes": {"R1": {
         "route_id": "R1", "horizontal_half_width_m": 0,
         "vertical_lower_margin_m": 10, "vertical_upper_margin_m": 10,
@@ -185,7 +194,11 @@ def test_prefilter_half_diagonal_direction(tmp_path):
     """half_diagonal 越大 ⇒ required_clearance 越大 ⇒ 越**难** prefilter。"""
 
     small_radii = {"land": 40.0, "coastal_uncertain": 40.0, "sea": 40.0}
-    workflow = _build_state(tmp_path, devices=[_comm_device(radii=small_radii, radius=40.0)])
+    workflow = _build_state(
+        tmp_path,
+        candidates=[_candidate("S1", coordinate=[0.0, 0.01])],
+        devices=[_comm_device(radii=small_radii, radius=40.0)],
+    )
     state = workflow.state
     actions = _p16_ordinary_actions(workflow)
     assert actions, "候选必须产生至少一个普通站点动作"

@@ -14,10 +14,11 @@ waypoint profile) keeps its existing semantics and is never converted into a cru
 from copy import deepcopy
 
 from ..domain.spatial_3d import (
-    UNRECORDED_SOURCE, normalize_altitude_layer,
+    TERMINAL_TRANSITION_IDENTITY_VERSION, UNRECORDED_SOURCE, normalize_altitude_layer,
     normalize_departure_arrival_procedure, normalize_route_operating_layer,
-    procedure_missing_evidence,
+    procedure_missing_evidence, terminal_transition_identity_reasons,
 )
+from ..domain.layered_route_validation import path_fingerprint
 from ..domain.altitude_layer_defaults import mark_altitude_layer_catalog_managed
 
 
@@ -31,6 +32,11 @@ READINESS_SEMANTICS = {
     "one_active_cruise_layer_per_route": True,
     "route_layer_is_never_matched_from_a_route_altitude_profile": True,
     "advanced_variable_profile_is_not_the_production_cruise_layer": True,
+    # Round38-FC30：进离场航段必须绑定巡航航路的完整几何身份，且与航路当前巡航层一致。
+    "terminal_transition_identity_version": TERMINAL_TRANSITION_IDENTITY_VERSION,
+    "terminal_procedure_binds_the_cruise_route_geometry_fingerprint": True,
+    "terminal_procedure_layer_must_match_the_active_cruise_layer": True,
+    "route_id_match_alone_is_not_geometry_identity": True,
 }
 
 PLAN_SEMANTICS = {
@@ -45,6 +51,43 @@ PLAN_SEMANTICS = {
 
 def _route_ids(state):
     return [str(item.get("route_id")) for item in state.get("operational_routes") or []]
+
+
+def _route_records(state):
+    return {
+        str(item.get("route_id")): item
+        for item in state.get("operational_routes") or []
+        if isinstance(item, dict)
+    }
+
+
+def route_geometry_fingerprint(state, route_id):
+    """巡航航路的**完整几何指纹**（与 N1 / 固定 1000 m 保障宽带同一实现与同一取值）。
+
+    只读；航路不存在或顶点不足时返回 ``None``（缺失就是缺失，绝不补一个近似值）。
+    """
+
+    route = _route_records(state).get(str(route_id or ""))
+    if not isinstance(route, dict):
+        return None
+    path = route.get("path") or []
+    if len(path) < 2:
+        return None
+    return path_fingerprint(path)
+
+
+def _procedure_identity_reasons(state, procedure):
+    """进离场航段 ↔ 当前巡航航路的统一衔接身份判据（判据本体在 domain）。"""
+
+    spatial = state.get("spatial_3d") or {}
+    assignment = _active_assignments(spatial).get(str(procedure.get("route_id") or ""))
+    return terminal_transition_identity_reasons(
+        procedure,
+        expected_route_geometry_fingerprint=route_geometry_fingerprint(
+            state, procedure.get("route_id"),
+        ),
+        route_altitude_layer_id=(assignment or {}).get("altitude_layer_id"),
+    )
 
 
 def _node_ids(state):
@@ -211,6 +254,11 @@ def route_operating_readiness(state):
             reasons.extend(f"缺少显式证据：{name}（不补默认值）" for name in missing)
             if item.get("node_id") and item["node_id"] not in nodes:
                 reasons.append(f"绑定的 node 不存在：{item['node_id']}")
+            # Round38-FC30：进离场航段与当前巡航航路的衔接身份（几何指纹 + 高度层）。
+            reasons.extend(
+                f"进离场/巡航衔接身份：{reason}"
+                for reason in _procedure_identity_reasons(state, item)
+            )
             if str(item.get("source") or "") in ("", UNRECORDED_SOURCE):
                 reasons.append("缺少 source/evidence 来源")
             if not item.get("confirmed"):
@@ -219,6 +267,7 @@ def route_operating_readiness(state):
                 "procedure_id": item["procedure_id"],
                 "route_id": item.get("route_id"),
                 "altitude_layer_id": item.get("altitude_layer_id"),
+                "route_geometry_fingerprint": item.get("route_geometry_fingerprint"),
                 "transition_mode": item.get("transition_mode"),
                 "node_id": item.get("node_id"),
                 "site_reference": item.get("site_reference"),
@@ -395,6 +444,8 @@ def resync_operating_layer_statuses(state):
             and str(item.get("source") or "") not in ("", UNRECORDED_SOURCE)
             and not missing
             and (not item.get("node_id") or item.get("node_id") in nodes)
+            # Round38-FC30：衔接身份不成立（几何版本不同 / 高度层不同）就不是 confirmed。
+            and not _procedure_identity_reasons(state, item)
         )
         item["status"] = (
             "confirmed" if item.get("confirmed") and resolvable else "pending_confirmation"
@@ -517,6 +568,33 @@ class RouteOperatingLayerService:
             self._layer(procedure["altitude_layer_id"])
         if procedure["node_id"] and procedure["node_id"] not in _node_ids(state):
             raise ValueError(f"procedure 绑定的 node 不存在：{procedure['node_id']}")
+        # Round38-FC30：同一航路只允许一个巡航高度层，进离场航段声明的层必须与它一致。
+        # 只比较 route_id 会把不同高度层的结果拼在一起，因此这里显式拒绝。
+        assignment = _active_assignments(state["spatial_3d"]).get(procedure["route_id"])
+        route_layer_id = (assignment or {}).get("altitude_layer_id")
+        if (
+            procedure["altitude_layer_id"]
+            and route_layer_id
+            and str(procedure["altitude_layer_id"]) != str(route_layer_id)
+        ):
+            raise ValueError(
+                "procedure 声明的巡航高度层与航路当前 active 巡航层不一致"
+                f"（procedure={procedure['altitude_layer_id']}，route={route_layer_id}）："
+                "禁止不同高度层的结果被拼接"
+            )
+        # Round38-FC30：写入时把该进离场航段显式绑定到**当前**巡航航路的完整几何身份。
+        # 指纹由权威航路几何计算得到（不是猜测值），记录的是本次绑定时刻的几何版本；
+        # 调用方显式传入的指纹必须与当前几何一致，否则拒绝而不是静默改写。
+        declared = ""
+        if isinstance(payload, dict):
+            declared = str(payload.get("route_geometry_fingerprint") or "").strip()
+        current = route_geometry_fingerprint(state, procedure["route_id"])
+        if declared and declared != (current or ""):
+            raise ValueError(
+                "procedure 显式传入的 route_geometry_fingerprint 与航路当前几何不一致："
+                "不接受把进离场航段绑定到非当前几何"
+            )
+        procedure["route_geometry_fingerprint"] = current
         spatial = state["spatial_3d"]
         procedures = [
             item for item in spatial.get("departure_arrival_procedures") or []

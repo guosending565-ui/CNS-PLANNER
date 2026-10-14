@@ -571,12 +571,14 @@ def test_navigation_rtk_lost_with_adequate_gnss_is_acceptable_degraded():
         rtk="not_available", gnss="available", accuracy=8.0, containment=10.0,
     )
     subsystem = _subsystem_entry(result, "N")
-    assert subsystem["status"] == "acceptable_degraded"
+    assert subsystem["status"] == "unknown"
     assert subsystem["navigation_state"] == "acceptable_degraded"
     event = subsystem["events"][0]
     assert event["kind"] == "navigation_degradation"
-    assert event["exceeds_limit"] is False
+    assert event["duration_s"] is None
     assert event["limit_s"] is None
+    assert event["exceeds_limit"] is None
+    assert subsystem["managed_gaps"] == []
     assert "not_fixed_duration_threshold" in event["semantics"]
     #: 外部研究参考只登记、不作硬门。
     reference = subsystem["rtk_recovery_external_reference"]
@@ -590,7 +592,7 @@ def test_navigation_rtk_lost_with_insufficient_gnss_accuracy_is_unacceptable():
     )
     subsystem = _subsystem_entry(result, "N")
     assert subsystem["status"] == "unacceptable"
-    assert subsystem["events"][0]["exceeds_limit"] is True
+    assert subsystem["events"][0]["exceeds_limit"] is None
     assert "navigation_gnss_unavailable" in result["reason_codes"]
 
 
@@ -638,7 +640,9 @@ def test_navigation_rtk_loss_from_route_service_evidence_is_structural():
     subsystem = _subsystem_entry(result, "N")
     assert subsystem["rtk"]["authority"] == "derived_from_route_service_evidence"
     assert subsystem["rtk"]["value"] == "not_available"
-    assert subsystem["status"] == "acceptable_degraded"
+    assert subsystem["status"] == "unknown"
+    assert subsystem["navigation_state"] == "acceptable_degraded"
+    assert subsystem["events"][0]["exceeds_limit"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -670,12 +674,17 @@ def test_protection_corridor_uses_explicit_parameters():
     assert corridor["D_maneuver_m"] == pytest.approx(50.0)
     assert corridor["D_uncertainty_m"] == pytest.approx(30.0)
     assert corridor["D_protection_m"] == pytest.approx(50.0 + 40.0 * 7.0 + 50.0 + 30.0)
-    assert corridor["outer_half_width_m"] == pytest.approx(500.0 + 410.0)
+    assert corridor["response_protection_distance_m"] == pytest.approx(410.0)
+    assert corridor["service_target_half_width_m"] == pytest.approx(500.0)
+    assert corridor["corridor_width_policy_version"] == "fixed-1000m-v1"
+    assert corridor["current_service_width_derived_from_response_distance"] is False
+    assert corridor["outer_half_width_m"] is None
+    assert corridor["outer_half_width_m_semantics"] == "historical_audit_only"
     assert corridor["formula"] == (
         "D_protection = D_separation + V_relative * T_chain + D_maneuver + D_uncertainty"
     )
     assert corridor["semantics"] == (
-        "horizontal_route_protection_corridor_not_route_centerline_only"
+        "fixed_cns_service_target_band_with_independent_response_evidence"
     )
     #: 保护走廊必须带真实航路几何（前端据此绘制图层）。
     assert corridor["route_path"] == [[122.0, 30.0], [122.1, 30.1]]

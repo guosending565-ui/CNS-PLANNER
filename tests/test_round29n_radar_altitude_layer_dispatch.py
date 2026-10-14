@@ -601,12 +601,12 @@ def test_navigation_endpoint_scope_still_makes_corridor_n_not_applicable():
 def test_round29n_algorithm_versions_are_bumped():
     from cns_planner.algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1 as P15
 
-    assert CNSServiceCorridorV1.algorithm_version == "1.3"
-    assert P15.algorithm_version == "1.2"
-    assert CorridorReuseFirstSitePlannerV2.algorithm_version == "2.2"
-    assert empty_cns_corridor_assessment()["algorithm_version"] == "1.3"
-    assert empty_cns_corridor_gap_assessment()["algorithm_version"] == "1.2"
-    assert empty_cns_corridor_site_plan()["algorithm_version"] == "2.2"
+    assert CNSServiceCorridorV1.algorithm_version == "1.4"
+    assert P15.algorithm_version == "1.3"
+    assert CorridorReuseFirstSitePlannerV2.algorithm_version == "2.3"
+    assert empty_cns_corridor_assessment()["algorithm_version"] == "1.4"
+    assert empty_cns_corridor_gap_assessment()["algorithm_version"] == "1.3"
+    assert empty_cns_corridor_site_plan()["algorithm_version"] == "2.3"
 
 
 def test_wrong_voxel_altitude_layer_is_never_satisfied_by_the_same_100m_result():

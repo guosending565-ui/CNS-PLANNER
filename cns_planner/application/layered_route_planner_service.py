@@ -399,6 +399,17 @@ class LayeredRoutePlannerService:
             return deepcopy(eligible[0])
         return None
 
+    def candidate_applicability(self, candidate):
+        """Project one persisted or artifact candidate against current authority."""
+
+        identity = self.current_identity()
+        return self._applicability(
+            candidate,
+            identity["lane_key"],
+            identity["candidate_fingerprint"],
+            identity.get("fingerprint_components") or {},
+        )
+
     def mask_snapshot(self, route_id=None, altitude_layer_id=None):
         collection = self.result_snapshot()
         return deepcopy((collection.get("masks") or {}).get(

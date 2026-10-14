@@ -184,6 +184,13 @@ def _corridor_inputs(state, payload):
     #: 因此异步 worker 冻结的必须是**叠加后**的设备目录，否则同一条 P14 在同步与
     #: 异步两条路径上会得到两份不同的判定（同一输入必须得到同一结论）。
     inputs["device_catalog"] = device_catalog_with_evidence(inputs) or {}
+    #: Round38-W1A：固定 1000 m 保障宽带的共享米制几何必须随**输入事实**一起冻结，
+    #: 否则异步 worker 会拿"没有几何身份"的输入重算，与同步入口产生两份不同身份。
+    from ..gis.corridor_geometry import build_fixed_corridor_geometries
+
+    inputs["corridor_geometry"] = build_fixed_corridor_geometries(
+        inputs["routes"], inputs["corridor_policy"],
+    )
     return inputs
 
 
@@ -359,6 +366,8 @@ def _corridor_runner(context):
             #: 事实指纹随快照一起进入 P14 输入指纹。
             surface_class_provider=surface_class_provider_for(inputs),
             surface_facts_fingerprint=inputs.get("surface_facts_fingerprint"),
+            #: Round38-W1A：与同步入口消费同一份共享几何身份。
+            corridor_geometry=inputs.get("corridor_geometry"),
         )
     except TaskCancelled:
         stop_probe()
@@ -511,6 +520,7 @@ P16_TASK_TYPE = "cns_corridor_site_plan_evaluate"
 #: 与 ``_corridor_inputs`` 同源：P16 的每一次 what-if 都用它们重建 P14/P15。
 P16_INPUT_STATE_KEYS = (
     "operational_routes", "spatial_3d", "grid", "grid_attributes",
+    "nodes", "reference_landing_sites", "towers",
     "required_cns", "existing_cns_facilities", "device_catalog",
     "candidate_sites", "tower_colocation_candidates",
     "cns_corridor_policy", "cns_planning_objectives",
@@ -662,6 +672,9 @@ def _p16_runner(context):
     from ..application.corridor_site_planning_service import (
         CorridorSitePlanningService,
     )
+    from ..application.cns_shared_site_candidate_service import (
+        CNSSharedSiteCandidateService,
+    )
 
     snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
     snapshot = snapshot if isinstance(snapshot, dict) else {}
@@ -687,13 +700,20 @@ def _p16_runner(context):
         expected_fingerprint = (expected.get(key) or {}).get("input_fingerprint")
         if str(current_fingerprint or "") != str(expected_fingerprint or ""):
             raise P16UpstreamNotCurrent()
+    worker_session = _WorkerReadOnlySession(state)
+    shared_sites = CNSSharedSiteCandidateService(
+        worker_session,
+        lambda: deepcopy(state.get("reference_landing_sites") or {}),
+        lambda: deepcopy(state.get("towers") or {}),
+    )
     service = CorridorSitePlanningService(
-        _WorkerReadOnlySession(state),
+        worker_session,
         algorithms.create("site_planner"),
         algorithms.create("corridor_model"),
         algorithms.create("corridor_gap_analyzer"),
         _WorkerInvalidation(),
         _worker_snapshot_passthrough,
+        shared_site_candidates=shared_sites,
     )
     outcome = service.plan(
         worker_payload,

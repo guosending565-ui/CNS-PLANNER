@@ -20,6 +20,8 @@ export const BUSINESS_LEGEND_LABEL='真实业务数据';
 export const TOWER_LEGEND_LABEL='通信铁塔';
 //: Round 2.6：连续服务可接受性的**默认关闭**图层图例分区（名称不再带（P17）代号）。
 export const CONTINUOUS_SERVICE_LEGEND_LABEL='CNS 连续服务可接受性';
+//: Round38-N2：导航监测规划（N1 只读仿真）的**默认关闭**图层图例分区。
+export const NAVIGATION_MONITORING_LEGEND_LABEL='导航监测规划';
 
 // =========================================================
 // Round 2.8：地图图例改为 **小型 / 可折叠 / 激活图层驱动**。
@@ -42,6 +44,8 @@ export const LEGEND_GROUP_TITLES={
   siteEvidence:'站址证据',
   radar:'Radar（非合作监视）',
   navigation:'导航增强',
+  //: Round38-N2：导航监测规划独立成组（不与"导航增强"混同）。
+  navigationMonitoring:'导航监测规划',
   surface:'地表分类',
   limitation:'限制 / 提示'
 };
@@ -75,6 +79,13 @@ export const LEGEND_LAYER_SYMBOLS={
   surfaceFacts:['cns-surface-facts'],
   existingCns:['existing-cns-facility'],
   candidateSites:['candidate-site'],
+  //: Round38-N2：导航监测规划图层（默认关闭）。六个符号与
+  //: map/navigation_monitoring_overlay.js 的 NAVIGATION_MONITORING_LEGEND_SYMBOLS 同源。
+  navigationMonitoring:[
+    'navigation-route','navigation-mandatory-device','navigation-tower-device',
+    'navigation-associated-segment','navigation-unassociated-segment',
+    'navigation-fixed-corridor'
+  ],
   towers:['tower-reference'],
   legacyGaps:['cns-legacy-c-gap','cns-legacy-n-gap','cns-legacy-s-gap'],
   basemap:['online-basemap']
@@ -97,6 +108,7 @@ export const LEGEND_LAYER_CHECKBOXES={
   surfaceFacts:['surfaceFactsLayer'],
   existingCns:['existingCnsLayer'],
   candidateSites:['candidateSiteLayer'],
+  navigationMonitoring:['navigationMonitoringLayer'],
   legacyGaps:['cLayer','nLayer','sLayer']
 };
 
@@ -117,11 +129,17 @@ export function activeLegendLayers($){
 const LEGEND_COLORS={
   basemap:'#8fa8bf',
   landing:'#1a8677',
-  referenceRoute:'#c83f8c',
-  referencePoint:'#783b69',
+  referenceRoute:'#c83f8c',  referencePoint:'#783b69',
   tower:'#1f7a8c',
   routeProtection:'#1f6f8b',
-  surveillanceProtection:'#8b1f6f'
+  surveillanceProtection:'#8b1f6f',
+  //: Round38-N2：与 map/navigation_monitoring_overlay.js 的配色同源。
+  navigationRoute:'#2b4a63',
+  navigationMandatory:'#123a5c',
+  navigationTower:'#b8840f',
+  navigationAssociated:'#1f7a4d',
+  navigationUnassociated:'#c2410c',
+  navigationBand:'#7f9bb3'
 };
 
 function count(value){
@@ -148,7 +166,8 @@ function collectionNote(collection,unit){
  * @returns {{groups:Array<{title:string,lines:Array<object>}>}}
  */
 export function mapLegendModel({
-  flow,towerLayerOn=false,routeProtectionLayerOn=false,surveillanceProtectionLayerOn=false
+  flow,towerLayerOn=false,routeProtectionLayerOn=false,surveillanceProtectionLayerOn=false,
+  navigationMonitoringLayerOn=false
 }={}){
   const towers=flow?.towers||{},routes=flow?.reference_routes||{},landing=flow?.reference_landing_sites||{};
   const pointCount=routes?.point_count??(routes?.points||[]).length;
@@ -169,6 +188,38 @@ export function mapLegendModel({
           // MAP-TOWER-SYMBOL-V2：图例铁塔与地图符号共用同一份 TOWER_SYMBOL 几何，
           // 尺寸同样按**可见高度 px** 给出（20 px，与地图 detail 档同量级），线条清晰。
           {id:'tower-reference',label:TOWER_LEGEND_LABEL,symbol:towerSymbolSvg({size:20,color:LEGEND_COLORS.tower,strokePx:1.8}),note:collectionNote(towers,'个'),state:towerLayerOn?'图层已打开':'图层默认关闭'}
+        ]
+      },
+      //: Round38-N2：导航监测规划。三类设备与两类航段必须**分别**成行，绝不合并：
+      //: 已规划（仿真）≠ 既有铁塔复用 ≠ 不可用候选；已关联 ≠ 未关联。
+      //: 措辞只表达"监测关联"，绝不表达"已认证安全"。
+      {
+        title:NAVIGATION_MONITORING_LEGEND_LABEL,
+        lines:[
+          {id:'navigation-route',label:'导航监测航路（中心线）',
+            symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.navigationRoute+'"></span>',
+            note:'来自 N1 只读仿真响应；只表达中心线监测关联，不代表全宽 CNS 保障能力。',
+            state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
+          {id:'navigation-mandatory-device',label:'起终点强制监测设备（仿真规划）',
+            symbol:markerSymbolSvg('triangle',{size:14,fill:LEGEND_COLORS.navigationMandatory,stroke:'#ffffff',strokeWidth:1.4}),
+            note:'起终点设备为固定约束，不可关闭；仿真规划的设备尚未建成。',
+            state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
+          {id:'navigation-tower-device',label:'推荐铁塔监测设备（复用既有铁塔）',
+            symbol:markerSymbolSvg('square',{size:14,fill:LEGEND_COLORS.navigationTower,stroke:'#ffffff',strokeWidth:1.4}),
+            note:'复用既有设备只表示"已有设备可用"，不代表已通过性能验证。',
+            state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
+          {id:'navigation-associated-segment',label:'已关联航段（在 2000 m 关联范围内）',
+            symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.navigationAssociated+'"></span>',
+            note:'"已关联"只表示航段落在监测关联范围内，不代表该航段已获得认证服务。',
+            state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
+          {id:'navigation-unassociated-segment',label:'未关联航段（缺口）',
+            symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.navigationUnassociated+';border-top-style:dashed"></span>',
+            note:'"未关联"只表示该航段不在关联范围内，不表示该航段不安全或已失去服务。',
+            state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
+          {id:'navigation-fixed-corridor',label:'固定 1000 m 保障宽带（淡色边界）',
+            symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.navigationBand+';border-top-style:dotted"></span>',
+            note:'只有后端判定为 current 时才绘制；它不是认证导航覆盖区，也不替代 N1 关联率。',
+            state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
         ]
       },
       // Round 2.6：连续服务可接受性的**默认关闭**图层。
@@ -226,6 +277,11 @@ const LEGEND_ITEM_GROUP={
   'cns-surface-facts':'surface',
   'cns-navigation-baseline':'navigation','cns-service-n-rtk-augmentation':'navigation',
   'cns-service-s-radar-noncooperative':'radar',
+  'navigation-route':'navigationMonitoring','navigation-mandatory-device':'navigationMonitoring',
+  'navigation-tower-device':'navigationMonitoring',
+  'navigation-associated-segment':'navigationMonitoring',
+  'navigation-unassociated-segment':'navigationMonitoring',
+  'navigation-fixed-corridor':'navigationMonitoring',
   'cns-legend-disclaimer':'limitation'
 };
 
@@ -247,7 +303,7 @@ function legendItemGroup(id){
 /** 分组展示顺序：航路 → C → RID → 共址 → 站址证据 → 其它 → 限制/提示。 */
 const LEGEND_GROUP_ORDER=[
   'referenceRoute','communication','rid','shared','siteEvidence',
-  'radar','navigation','surface','basemap','limitation'
+  'radar','navigation','navigationMonitoring','surface','basemap','limitation'
 ];
 
 /** 从图例图层键反查它携带的符号 id 集合。 */
@@ -396,7 +452,9 @@ export function updateCompactMapLegend({$,flow,storage}={}){
     flow,
     towerLayerOn:$('towerLayer')?.checked===true,
     routeProtectionLayerOn:$('routeProtectionCorridorLayer')?.checked===true,
-    surveillanceProtectionLayerOn:$('surveillanceProtectionLayer')?.checked===true
+    surveillanceProtectionLayerOn:$('surveillanceProtectionLayer')?.checked===true,
+    //: Round38-N2：导航监测规划图层的图例状态如实跟随该图层开关。
+    navigationMonitoringLayerOn:$('navigationMonitoringLayer')?.checked===true
   });
   const lines=[
     ...business.groups.flatMap(group=>group.lines),

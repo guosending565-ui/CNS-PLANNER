@@ -341,20 +341,20 @@ def test_capability_limitation_never_forges_a_managed_gap():
 
 
 def test_p17_algorithm_version_is_registered_and_bumped():
-    assert CONTINUOUS_SERVICE_ALGORITHM_VERSION == "2.1"
+    assert CONTINUOUS_SERVICE_ALGORITHM_VERSION == "2.4"
     assert RESULT_ALGORITHM_SEMANTICS["continuous_service_acceptability"] == (
         CONTINUOUS_SERVICE_ALGORITHM_ID, CONTINUOUS_SERVICE_ALGORITHM_VERSION,
     )
-    assert empty_continuous_service_acceptability()["algorithm_version"] == "2.1"
+    assert empty_continuous_service_acceptability()["algorithm_version"] == "2.4"
 
 
-def test_old_p17_2_0_result_is_effective_stale():
-    """⑮ 旧 P17 2.0 结果必须 effective stale，绝不继续充当 current。"""
+def test_old_p17_2_3_result_is_effective_stale():
+    """旧 P17 2.3 结果必须 effective stale，绝不继续充当 current。"""
 
     stored = {
         "status": "unacceptable",
         "algorithm_id": CONTINUOUS_SERVICE_ALGORITHM_ID,
-        "algorithm_version": "2.0",
+        "algorithm_version": "2.3",
         "supplementary_threat_status": "unknown",
         "limitations": [],
     }
@@ -362,18 +362,18 @@ def test_old_p17_2_0_result_is_effective_stale():
         stored, CONTINUOUS_SERVICE_ALGORITHM_ID, CONTINUOUS_SERVICE_ALGORITHM_VERSION)
     assert projected["status"] == "stale"
     assert projected["stale_reason"] == "algorithm_semantics_changed"
-    assert projected["algorithm_semantics_stale"]["stored_algorithm_version"] == "2.0"
-    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "2.1"
+    assert projected["algorithm_semantics_stale"]["stored_algorithm_version"] == "2.3"
+    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "2.4"
     #: stored payload 原样保留（只有只读投影改变结论）。
     assert stored["status"] == "unacceptable"
-    assert stored["algorithm_version"] == "2.0"
+    assert stored["algorithm_version"] == "2.3"
 
     state = {"continuous_service_acceptability": stored, "result_statuses": {}}
     assert effective_result_status(state, "continuous_service_acceptability") == "stale"
 
-    #: 已经是 2.1 的结果不受影响。
+    #: 已经是 2.4 的结果不受影响。
     current = deepcopy(stored)
-    current["algorithm_version"] = "2.1"
+    current["algorithm_version"] = "2.4"
     assert apply_algorithm_semantics_stale(
         current, CONTINUOUS_SERVICE_ALGORITHM_ID, CONTINUOUS_SERVICE_ALGORITHM_VERSION,
     ) is current

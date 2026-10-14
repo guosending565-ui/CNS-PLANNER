@@ -40,9 +40,23 @@ from ..gis.figure_style import (
 )
 from ..gis.land_mask_source import build_land_mask_source, land_mask_source_path
 from ..gis.source_inspection import inspect_cartographic_land
+from ..gis.corridor_band import (
+    FIXED_CORRIDOR_LAYER_KEY, FIXED_CORRIDOR_SOURCE_ROLE, build_fixed_corridor_band,
+)
+from ..gis.figure_currentness import (
+    layer_currentness_entry, production_gate, route_geometry_identity,
+    signature as currentness_signature,
+)
+from .navigation_monitoring_figure import (
+    NAVIGATION_ASSOCIATION_LAYER_KEY, NAVIGATION_GAP_LAYER_KEY,
+    NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY, NAVIGATION_MONITOR_SITES_LAYER_KEY,
+    NAVIGATION_MONITOR_SOURCE_ROLE, NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY,
+    build_navigation_monitoring_layers,
+)
 from ..reporting.map_templates import (
     CNS_COMBINED_V1, CNS_COVERAGE_POLICY, CNS_EXTENT_POLICY_ID, CNS_LAYOUT_PROFILE,
-    CNS_LEGEND_ORDER, COMMUNICATION_LAYOUT_V1, NAVIGATION_LAYOUT_V1, ROUTE_OVERVIEW_V1,
+    CNS_LEGEND_ORDER, COMMUNICATION_LAYOUT_V1, FIXED_CORRIDOR_LAYER_DISPLAY_NAME,
+    NAVIGATION_LAYOUT_V1, ROUTE_OVERVIEW_V1,
     SURVEILLANCE_LAYOUT_V1, SURVEILLANCE_SERVICE_PARAMETER, SURVEILLANCE_SERVICE_RADAR,
     SURVEILLANCE_SERVICE_RID, SURVEILLANCE_SERVICE_VALUES, MapFigureParameterInvalid,
     catalog as template_catalog, is_available, parameters as template_parameters,
@@ -54,6 +68,7 @@ from .cns_facility_assembler import (
     assemble as assemble_cns_facilities, coverage_circle_ring, coverage_radius_for,
     rid_radius_pair,
 )
+from .result_currentness import effective_result_status
 from .rid_surface_footprint import build_surface_aware_rid_footprint
 
 #: 权威运行航路的 canonical state 容器。
@@ -107,6 +122,11 @@ MAX_FIGURE_PIXELS = 40_000_000
 #: 导出 DPI 的硬范围（低于 72 不可读，高于 600 无意义且会撞像素上限）。
 MIN_EXPORT_DPI = 72.0
 MAX_EXPORT_DPI = 600.0
+#: 视为**正式成果图**的导出 DPI 下限（Round38-FIG 身份门禁的适用门槛）。
+#:
+#: 预览（render_preview）与 300 DPI 的常规导出仍然可用：它们不被当作"正式成果图"。
+#: 600 DPI 是既定的正式交付档位，因此必须在**身份门禁**通过后才能产出。
+FORMAL_DELIVERABLE_MIN_DPI = 600.0
 _FIGURE_ID_PATTERN = re.compile(r"^MF-[0-9a-f]{32}$")
 #: 模板 id 白名单：route-first 目录的第二层目录名只能来自这个字符集。
 _TEMPLATE_ID_PATTERN = re.compile(r"^[0-9a-z_]{1,64}$")
@@ -171,6 +191,18 @@ class MapFigureParameterError(MapFigureError):
     status = 400
 
 
+class MapFigureCurrentnessGate(MapFigureError):
+    """正式成果图未通过航路几何身份 / currentness 门禁（Round38-FIG）。
+
+    这不是渲染失败、也不等于参数错误：它是**身份门禁**的明确拒绝。
+    ``detail`` 里带着逐图层状态与原因，调用方因此能给出可理解的原因，
+    而不是静默产出一张非权威的"正式图"。
+    """
+
+    code = "map_figure_currentness_gate"
+    status = 409
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -192,6 +224,20 @@ class MaterializationContext:
     #: 当前模板 id（route_overview_v1 / communication_layout_v1 / ...）。
     #: 装配层据此选择模板专属的图层与图例；缺省即历史模板，行为不变。
     template_id: str = ROUTE_OVERVIEW_V1
+    #: 固定 1000 m 保障宽带的**只读判定输入**（Round38-FIG）。
+    #:
+    #: ``fixed_corridor`` = ``{"projected": P14 只读投影, "entry": 该航路的 P14 条目,
+    #: "corridor_effective_status": 走廊结果有效状态}``。缺省为空 → 图件如实判为
+    #: "无 P14 证据"，绝不据此伪造 current 保障带。
+    fixed_corridor: dict = field(default_factory=dict)
+    #: 导航监测（N1/N2）**只读仿真**结果；``None`` 表示本组合根未注入 provider，
+    #: 图件必须如实披露"未提供"而不是画一堆假站址。
+    navigation_monitoring: dict | None = None
+    #: 导航监测只读仿真的失败原因（provider 抛错时记录，绝不吞掉）。
+    navigation_monitoring_error: str | None = None
+    #: 共享站址候选快照（``CNSSharedSiteCandidateService.snapshot()`` 的只读结果）：
+    #: 导航监测图层据此把 ``site_id`` 映射到真实坐标。缺失即不画站址点。
+    navigation_candidates: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -205,6 +251,10 @@ class MaterializationResult:
     annotations: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     boundaries: dict = field(default_factory=dict)
+    #: Round38-FIG：图层级 currentness（``{layer_key: currentness_entry}``）。
+    #: 装配层登记、``build_figure`` 汇总成 FigureSpec 的
+    #: ``metadata["currentness"]`` 与 ``metadata["production_gate"]``。
+    layer_currentness: dict = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- 工具箱
@@ -1773,9 +1823,160 @@ def _airport_layers(ctx, extent):
 
 # --------------------------------------------------------------------------- 航路与标注
 
+def _fixed_corridor_layer(ctx):
+    """六图共享的固定 1000 m CNS 保障目标带图层（Round38-FIG）。
+
+    几何**只**由 :func:`cns_planner.gis.corridor_band.build_fixed_corridor_band`
+    （其内部只调用 ``build_fixed_corridor_geometry``）构造；currentness 只由
+    :func:`cns_planner.gis.figure_currentness.fixed_corridor_currentness` 判定，
+    与 ``GET /api/fixed-corridor-geometry`` 消费同一份判据。
+
+    三层语义严格区分（图层 detail 逐项写清楚，绝不混为一谈）：
+
+    * 航路中心线（``planned_route`` 图层）—— 独立图层；
+    * **本层**：固定 1000 m 服务保障**目标带**（左右各 500 m）；
+    * 设备覆盖区域（通信 / RID / Radar 覆盖图层）与导航中心线关联范围（2000 m）。
+
+    未配置 P14 证据、几何构造被阻断、或 currentness 不是 ``current`` 时，本函数返回一个
+    ``unavailable`` 图层（**不画任何东西**），并在 detail / 披露里给出原因 ——
+    绝不画近似带，也绝不用空图冒充成功。
+    """
+
+    evidence = ctx.fixed_corridor or {}
+    band = build_fixed_corridor_band(
+        ctx.route,
+        projected=evidence.get("projected"),
+        entry=evidence.get("entry"),
+        corridor_effective_status=evidence.get("corridor_effective_status"),
+        route_authority=evidence.get("route_authority"),
+    )
+    if band is None:
+        return None
+    status = SOURCE_AVAILABLE if band.get("status") == "available" else SOURCE_UNAVAILABLE
+    detail = {
+        **deepcopy(band.get("detail") or {}),
+        "currentness": band.get("currentness_entry") or {},
+        "source_status_semantics": (
+            "该图层的可用性由固定宽带 currentness 门禁决定，不由本机数据源文件是否存在决定"
+        ),
+        "shared_by_templates": [
+            ROUTE_OVERVIEW_V1, COMMUNICATION_LAYOUT_V1, NAVIGATION_LAYOUT_V1,
+            SURVEILLANCE_LAYOUT_V1, CNS_COMBINED_V1,
+        ],
+        "legend_definition": "cns_fixed_corridor（六图共用同一份样式定义）",
+    }
+    return _layer(
+        ctx, FIXED_CORRIDOR_LAYER_KEY,
+        display_name=FIXED_CORRIDOR_LAYER_DISPLAY_NAME,
+        geometry_type=GEOMETRY_POLYGON,
+        source_role=FIXED_CORRIDOR_SOURCE_ROLE,
+        status=status, reason=band.get("reason") or "",
+        detail=detail,
+        feature_count=int(band.get("feature_count") or 0),
+        data=deepcopy(band.get("data") or {}),
+    )
+
+
+def _navigation_monitoring_layers(ctx):
+    """导航布设图的 N1/N2 只读仿真图层（Round38-FIG）。
+
+    只消费组合根注入的仿真 provider 结果；**不**重新选址、**不**写状态。
+    provider 缺失或仿真失败时返回空图层 + 可理解原因（绝不伪造站址）。
+
+    返回 ``(layers, metadata)``。
+    """
+
+    simulation = ctx.navigation_monitoring
+    error = ctx.navigation_monitoring_error
+    if simulation is None:
+        reason = error or "navigation_monitoring_simulation_unavailable"
+        return [], {
+            "navigation_monitoring": {
+                "available": False,
+                "reason": reason,
+                "currentness": "unknown",
+                "drawn_layers": [],
+                "recomputes_site_selection": False,
+                "writes_state": False,
+                "semantics": "navigation_monitoring_readonly_simulation_absent",
+            },
+        }
+    plans, notes = build_navigation_monitoring_layers(
+        simulation=simulation,
+        route=ctx.route,
+        candidates=ctx.navigation_candidates or {},
+        parameters=ctx.parameters,
+    )
+    layers = []
+    for layer_key in (
+            NAVIGATION_MONITOR_SITES_LAYER_KEY, NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY,
+            NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY, NAVIGATION_ASSOCIATION_LAYER_KEY,
+            NAVIGATION_GAP_LAYER_KEY):
+        plan = plans.get(layer_key)
+        if plan is None:
+            continue
+        layer = _layer(
+            ctx, plan["layer_key"], display_name=plan["display_name"],
+            geometry_type=GEOMETRY_LINE if layer_key in (
+                NAVIGATION_ASSOCIATION_LAYER_KEY, NAVIGATION_GAP_LAYER_KEY,
+            ) else GEOMETRY_POINT,
+            source_role=NAVIGATION_MONITOR_SOURCE_ROLE,
+            status=SOURCE_AVAILABLE, reason="",
+            detail={
+                **deepcopy(notes),
+                "currentness": layer_currentness_entry(
+                    currentness=plan.get("currentness"),
+                    reason=notes.get("reason"),
+                    identity=notes.get("identity") or {},
+                    evidence={
+                        "simulation_status": notes.get("simulation_status"),
+                        "result_fingerprint": (notes.get("identity") or {}).get(
+                            "result_fingerprint",
+                        ),
+                    },
+                ),
+                "read_only_simulation": True,
+                "writes_state": False,
+                "recomputes_site_selection": False,
+                "never_upgrades_centerline_pass_to_full_width_assurance": True,
+            },
+            feature_count=int(plan.get("feature_count") or 0),
+            data=deepcopy(plan.get("data") or {}),
+        )
+        layers.append(layer)
+    metadata = {
+        "navigation_monitoring": {
+            "available": True,
+            "reason": notes.get("reason"),
+            "currentness": notes.get("currentness", "unknown"),
+            "drawn_layers": [layer.layer_key for layer in layers],
+            "simulation_status": notes.get("simulation_status"),
+            "simulation_reason": notes.get("simulation_reason"),
+            "identity": deepcopy(notes.get("identity") or {}),
+            "mandatory_site_ids": list(notes.get("mandatory_site_ids") or []),
+            "selected_optional_site_ids": list(notes.get("selected_optional_site_ids") or []),
+            "unselected_candidate_ids": list(notes.get("unselected_candidate_ids") or []),
+            "missing_coordinate_site_ids": list(notes.get("missing_coordinate_site_ids") or []),
+            "association_radius_m": notes.get("association_radius_m"),
+            "full_width_service_assurance_status": notes.get(
+                "full_width_service_assurance_status",
+            ),
+            "semantic_disclaimer": notes.get("semantic_disclaimer"),
+            "longest_gap_m": notes.get("longest_gap_m"),
+            "longest_gap_duration_s": notes.get("longest_gap_duration_s"),
+            "longest_gap_tolerance_status": notes.get("longest_gap_tolerance_status"),
+            "all_gaps_within_tolerance": notes.get("all_gaps_within_tolerance"),
+            "associated_ratio": notes.get("associated_ratio"),
+            "recomputes_site_selection": False,
+            "writes_state": False,
+            "semantics": "navigation_monitoring_readonly_simulation_figure_projection",
+        },
+    }
+    return layers, metadata
+
+
 def _route_layers(ctx):
     """规划航路 / 转弯点 / 起点 / 终点：全部来自权威运行航路几何。"""
-
     geometry = [
         [float(point[0]), float(point[1])]
         for point in (ctx.route.get("path") or [])
@@ -2266,6 +2467,15 @@ def _radar_context_points(ctx, assembly, radar):
 
     坐标只从 state 的真实站址清单取；候选塔 id 来自 Radar 结果自身。
     若某个候选 id 在站址清单里找不到，就**跳过并在 detail 里登记**，绝不猜坐标。
+
+    Round38-FIG 身份分层（每个点都带，图面因此可区分）：
+
+    * ``site_identity``：该点是**既有铁塔安装位置**还是**起降点地面安装位置**；
+    * ``planned_installation_height_m`` + ``planned_installation_height_source``：
+      **用户确认的规划安装高度**；未确认即显式 ``None`` + ``not_confirmed``；
+    * ``installed_evidence_status``：是否有"来源证明该 Radar 设备**真实已安装**"的证据。
+      **从站址存在绝不推断 Radar 已安装**：没有证据一律是
+      ``no_installed_evidence``，因此 ``confirmed_installed`` 恒为 ``False``。
     """
 
     candidate_ids = set(radar.get("candidate_tower_ids") or [])
@@ -2284,10 +2494,19 @@ def _radar_context_points(ctx, assembly, radar):
         if longitude is None or latitude is None:
             missing.append(tower_id)
             continue
+        height, height_source = _radar_planned_installation_height(tower)
         points.append({
             "longitude": longitude, "latitude": latitude,
             "tower_id": tower_id, "name": _short(tower.get("name")),
             "radar_selected": tower_id in selected_ids,
+            "site_identity": "existing_tower_installation",
+            "site_type": tower.get("site_type"),
+            "installation_surface": "tower",
+            "planned_installation_height_m": height,
+            "planned_installation_height_source": height_source,
+            "installed_evidence_status": "no_installed_evidence",
+            "confirmed_installed": False,
+            "participation": "candidate_context_only",
         })
     not_found = sorted(candidate_ids - {item["tower_id"] for item in points} - set(missing))
     return points, {
@@ -2297,8 +2516,33 @@ def _radar_context_points(ctx, assembly, radar):
         "coordinate_missing": missing[:8],
         "tower_id_not_in_tower_collection": not_found[:8],
         "selected_tower_ids": sorted(selected_ids)[:8],
+        "site_identity_values": sorted({item["site_identity"] for item in points}),
+        "planned_installation_height_status": sorted({
+            item["planned_installation_height_source"] for item in points
+        }),
+        "installed_evidence_status_values": sorted({
+            item["installed_evidence_status"] for item in points
+        }),
+        "manifested_radar_sites": 0,
+        "never_infers_installation_from_site_presence": True,
+        "directional_panel_and_los_model_unchanged": True,
+        "no_circular_coverage_substitution": True,
+        "limitation_note": (
+            "站址存在不等于 Radar 已安装；本图不画任何 Radar 站址、panel 或扇区，"
+            "覆盖形状仍由既有方向性面阵、地形 LOS 与建筑遮挡模型决定"
+        ),
         "semantics": "radar_evaluated_candidate_tower_context_never_a_built_or_selected_site",
     }
+
+
+def _radar_planned_installation_height(tower):
+    """用户**确认**的规划安装高度；未确认即 ``None`` + 明确来源（绝不猜高度）。"""
+
+    for key in ("planned_installation_height_m", "confirmed_installation_height_m"):
+        value = _finite(tower.get(key), None)
+        if value is not None:
+            return value, "user_confirmed_planned_installation_height"
+    return None, "not_confirmed"
 
 
 def _cns_labels(ctx, assembly, services, geometry, *, parameters):
@@ -2455,7 +2699,39 @@ def _cns_label_service_order(families):
     return ordered
 
 
-def _cns_disclosures(template_id, assembly, services, parameters, radar):
+def _corridor_route_authority(service, route):
+    """从固定宽带身份服务取航路权威身份（口径由该服务唯一决定）。
+
+    为什么不让图件自己算一份：``route_authority`` 是几何身份的输入，图件与接口必须
+    **逐字段同源**，否则重建指纹会与 P14 条目指纹不等，把 current 的带误判成 stale。
+    服务未提供该口径时退回 ``None``（与"没有权威身份"等价，绝不猜）。
+    """
+
+    resolver = getattr(service, "_route_authority", None)
+    if not callable(resolver):
+        return None
+    try:
+        return resolver(route)
+    except Exception:  # noqa: BLE001 - 身份解析失败即视为无身份，绝不猜
+        return None
+
+
+def _band_disclosure_input(band_layer):
+    """把固定宽带图层收敛成披露需要的两件事：是否绘制 + currentness。"""
+
+    if band_layer is None:
+        return {"drawn": False, "currentness": {"currentness": "unknown",
+                                               "reason": "band_layer_absent"}}
+    detail = band_layer.source_detail if isinstance(band_layer.source_detail, dict) else {}
+    return {
+        "drawn": (band_layer.source_status == SOURCE_AVAILABLE
+                  and int(band_layer.feature_count) > 0),
+        "currentness": deepcopy(detail.get("currentness") or {}),
+    }
+
+
+def _cns_disclosures(template_id, assembly, services, parameters, radar,
+                     navigation_metadata=None, fixed_corridor=None):
     """CNS 图面披露文本（**FigureSpec.metadata**，不再画进地图主体）。
 
     Round30-B1：CNS 五图原先在地图左下角画一块大说明框，它会遮住地图内容。本轮改为
@@ -2468,6 +2744,8 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
       使 Round30-A 与 Round30-B 的图件在 metadata 中可区分。
 
     披露内容与以前**逐字一致**：它们只是从图面移到了 metadata，没有删掉任何限制说明。
+    Round38-FIG 追加两条（同样只进 metadata，图面上**不**新增任何诊断文字块）：
+    固定 1000 m 保障目标带的语义与 currentness、导航监测中心线关联的语义限制。
     """
 
     confirmation = assembly.evidence.get("confirmation") or {}
@@ -2542,6 +2820,45 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
         })
         if SERVICE_RADAR in services:
             map_disclosure = "Radar-I：当前既有站址与模型约束下无可行布设"
+    # ---- Round38-FIG 追加披露（只进 metadata，不占地图主体） --------------------
+    band_entry = ((fixed_corridor or {}).get("currentness") or {})
+    band_drawn = bool((fixed_corridor or {}).get("drawn"))
+    entries.append({
+        "disclosure_id": "fixed_corridor_service_band_disclosure",
+        "title": "固定 1000 m CNS 保障目标带",
+        "lines": [
+            "本带 = 航路中心线左右各 500 m（总宽 1000 m）的 CNS 服务保障目标带。",
+            "它是服务目标带，不是任何设备已实现的覆盖区域，也不是实测无线传播等值线；",
+            "它不是认证导航覆盖区，也不构成法规批准的运行空间。",
+            "它与导航中心线监测关联范围（2000 m）是两件事：关联范围不等于保障半宽 500 m。",
+            "P14/P15 全宽服务评估结果、P17 响应保护距离与本带是各自独立的表达。",
+            (
+                f"currentness={band_entry.get('currentness') or 'unknown'}"
+                f"（{band_entry.get('reason') or 'identity_gate_passed'}）；"
+                + ("本图已按 current 绘制该带。" if band_drawn
+                   else "本图**未**绘制该带（原因见 currentness / production_gate）。")
+            ),
+        ],
+    })
+    if template_id == NAVIGATION_LAYOUT_V1:
+        navigation_metadata = navigation_metadata or {}
+        identity = navigation_metadata.get("identity") or {}
+        entries.append({
+            "disclosure_id": "navigation_monitoring_association_disclosure",
+            "title": "导航监测中心线关联（N1/N2 只读仿真）",
+            "lines": [
+                "图中关联段 / 缺口来自只读仿真的**中心线**关联（2000 m 关联范围），",
+                "它不是左右各 500 m 全宽 CNS 保障能力的结论：",
+                "full_width_service_assurance_status="
+                f"{navigation_metadata.get('full_width_service_assurance_status') or 'not_evaluated'}。",
+                "强制端点监测设备画在真实起降点上；沿途站址是仿真选中的**未确认**提案，",
+                "仿真未选中的候选只作背景，绝不显示为已安装设备。",
+                "route_geometry_fingerprint="
+                f"{identity.get('simulation_route_geometry_fingerprint')}，"
+                f"simulation_status={navigation_metadata.get('simulation_status')}，"
+                f"longest_gap_m={navigation_metadata.get('longest_gap_m')}。",
+            ],
+        })
     for entry in entries:
         entry["lines"] = list(entry["lines"]) + [step6_line]
     return entries, map_disclosure
@@ -2575,6 +2892,10 @@ def materialize_cns(ctx):
     layers.extend(_polygon_layers(ctx, ctx.extent))
     layers.append(_terrain_obstacle_layer(ctx, ctx.extent, terrain_threshold))
     layers.append(_building_obstacle_layer(ctx, ctx.extent, building_threshold))
+    # Round38-FIG：六图共享的固定 1000 m 保障目标带（z=3：在障碍物与航路线 / 站址之下）。
+    band = _fixed_corridor_layer(ctx)
+    if band is not None:
+        layers.append(band)
     layers.extend(_tower_layers(ctx, ctx.extent, terrain_threshold))
 
     existing_by_service = {}
@@ -2599,6 +2920,16 @@ def materialize_cns(ctx):
         layers.append(_cns_facility_layer(
             ctx, layer_key, display_name, records, assembly, service_key=service_key,
         ))
+
+    # ---- 导航监测（N1/N2 只读仿真；只有导航布设图消费） --------------------------
+    #
+    # 它与上面的 ``cns_nav_proposal``（P16 规划提案）是**不同来源**：P16 回答
+    # "规划了哪些监测点"，N1 仿真回答"中心线监测关联到了哪里、缺口有多长"。
+    # 两者符号不同、披露不同，绝不互相顶替。
+    navigation_metadata = {}
+    if template_id == NAVIGATION_LAYOUT_V1:
+        navigation_layers, navigation_metadata = _navigation_monitoring_layers(ctx)
+        layers.extend(navigation_layers)
 
     # ---- 覆盖 / 能力圆 ----------------------------------------------------------
     if SERVICE_COMMUNICATION in services:
@@ -2668,37 +2999,17 @@ def materialize_cns(ctx):
     # 完整披露（服务半径语义 / 确认状态 / 能力限制）逐字保留在 metadata 里。
     disclosures, map_disclosure = _cns_disclosures(
         template_id, assembly, services, parameters, radar,
+        navigation_metadata=navigation_metadata,
+        fixed_corridor=_band_disclosure_input(band),
     )
     legend_items = _legends(layers, CNS_LEGEND_ORDER)
 
-    source_status, omitted = {}, []
-    for layer in layers:
-        source_status[layer.layer_key] = {
-            "display_name": layer.display_name,
-            "source_role": layer.source_role,
-            "source_path": layer.source_path,
-            "status": layer.source_status,
-            "reason": layer.source_reason or None,
-            "feature_count": int(layer.feature_count),
-            "detail": deepcopy(layer.source_detail),
-        }
-        if layer.source_status != SOURCE_AVAILABLE:
-            omitted.append({
-                "layer_key": layer.layer_key, "display_name": layer.display_name,
-                "status": layer.source_status,
-                "reason": layer.source_reason or "数据不可用",
-            })
-        elif layer.feature_count <= 0 and layer.geometry_type != GEOMETRY_NONE:
-            omitted.append({
-                "layer_key": layer.layer_key, "display_name": layer.display_name,
-                "status": "empty_within_extent",
-                "reason": "数据源可读，但当前图面范围内没有要素",
-            })
-    warnings = [f"{item['display_name']}：{item['reason']}" for item in omitted]
+    source_status, omitted, warnings, layer_currentness = _summarize_layers(layers)
     warnings.extend(assembly.warnings)
     return MaterializationResult(
         layers=layers, labels=labels, legend_items=legend_items,
         source_status=source_status, omitted_layers=omitted, warnings=warnings,
+        layer_currentness=layer_currentness,
         # CNS 五图**不再**产生地图内部的说明框（annotations 恒为空）；
         # 完整披露进入 metadata，短披露进入地图框之外的一条薄带。
         annotations=[],
@@ -2707,6 +3018,7 @@ def materialize_cns(ctx):
             "disclosures": disclosures,
             "map_disclosure": map_disclosure,
             **rid_footprint_metadata,
+            **navigation_metadata,
         },
         boundaries=deepcopy(assembly.boundaries),
     )
@@ -2728,6 +3040,10 @@ def materialize(ctx: MaterializationContext):
     layers.extend(_polygon_layers(ctx, ctx.extent))
     layers.append(_terrain_obstacle_layer(ctx, ctx.extent, terrain_threshold))
     layers.append(_building_obstacle_layer(ctx, ctx.extent, building_threshold))
+    # Round38-FIG：六图共享的固定 1000 m 保障目标带（z=3：在障碍物与航路线 / 站址之下）。
+    band = _fixed_corridor_layer(ctx)
+    if band is not None:
+        layers.append(band)
     layers.extend(_tower_layers(ctx, ctx.extent, terrain_threshold))
     layers.extend(_airport_layers(ctx, ctx.extent))
     route_layers, geometry, turns = _route_layers(ctx)
@@ -2735,34 +3051,11 @@ def materialize(ctx: MaterializationContext):
 
     labels = _labels(ctx, geometry, turns, layers)
     legend_items = _legends(layers)
-
-    source_status, omitted = {}, []
-    for layer in layers:
-        source_status[layer.layer_key] = {
-            "display_name": layer.display_name,
-            "source_role": layer.source_role,
-            "source_path": layer.source_path,
-            "status": layer.source_status,
-            "reason": layer.source_reason or None,
-            "feature_count": int(layer.feature_count),
-            "detail": deepcopy(layer.source_detail),
-        }
-        if layer.source_status != SOURCE_AVAILABLE:
-            omitted.append({
-                "layer_key": layer.layer_key, "display_name": layer.display_name,
-                "status": layer.source_status,
-                "reason": layer.source_reason or "数据不可用",
-            })
-        elif layer.feature_count <= 0 and layer.geometry_type != GEOMETRY_NONE:
-            omitted.append({
-                "layer_key": layer.layer_key, "display_name": layer.display_name,
-                "status": "empty_within_extent",
-                "reason": "数据源可读，但当前图面范围内没有要素",
-            })
-    warnings = [f"{item['display_name']}：{item['reason']}" for item in omitted]
+    source_status, omitted, warnings, layer_currentness = _summarize_layers(layers)
     return MaterializationResult(
         layers=layers, labels=labels, legend_items=legend_items,
         source_status=source_status, omitted_layers=omitted, warnings=warnings,
+        layer_currentness=layer_currentness,
         boundaries={
             "presentation_only": True,
             "writes_operational_routes_or_cns": False,
@@ -2777,6 +3070,118 @@ def materialize(ctx: MaterializationContext):
 CNS_TEMPLATE_DISPATCH = (
     COMMUNICATION_LAYOUT_V1, NAVIGATION_LAYOUT_V1, SURVEILLANCE_LAYOUT_V1, CNS_COMBINED_V1,
 )
+
+
+def _summarize_layers(layers):
+    """图层收尾：来源状态 / 省略清单 / 警告 / **图层级 currentness**（唯一实现）。
+
+    Round38-FIG 起把 currentness 汇总也放在这里：装配层与 FigureSpec 因此永远消费
+    同一份逐图层时效性，不会出现"某个模板漏登记 currentness"的分叉。
+
+    注册表规则（与 Round29-J 的 fail-closed 口径一致）：
+
+    * 显式登记（``source_detail["currentness"]``）→ 以此为准（可能是 current）；
+    * 未登记 + 来源不可用 → ``stale``（数据源读不到就不可能是当前有效结果）；
+    * 未登记 + 来源是声明型（``unknown``，例如"能力限制"这类只披露不画几何的图层）
+      → ``unknown``：**缺失不等于通过**，绝不落到 current；
+    * 未登记 + 可读但范围内 0 要素 → ``unknown``（未评估）；
+    * 其余未登记情况 → ``unknown``。
+    """
+
+    source_status, omitted, layer_currentness = {}, [], {}
+    for layer in layers:
+        detail = layer.source_detail if isinstance(layer.source_detail, dict) else {}
+        source_status[layer.layer_key] = {
+            "display_name": layer.display_name,
+            "source_role": layer.source_role,
+            "source_path": layer.source_path,
+            "status": layer.source_status,
+            "reason": layer.source_reason or None,
+            "feature_count": int(layer.feature_count),
+            "detail": deepcopy(detail),
+        }
+        entry = detail.get("currentness")
+        if isinstance(entry, dict) and entry:
+            currentness = str(entry.get("currentness") or "unknown")
+            reason = entry.get("reason")
+        elif layer.source_status == SOURCE_AVAILABLE:
+            if layer.geometry_type == GEOMETRY_NONE:
+                currentness, reason = "unknown", "declared_layer_without_geometry"
+            elif layer.feature_count <= 0:
+                currentness, reason = "unknown", "no_feature_within_extent_not_evaluated"
+            else:
+                currentness, reason = "unknown", "currentness_not_declared_by_assembly"
+        elif layer.source_status == SOURCE_UNKNOWN:
+            currentness, reason = SOURCE_UNKNOWN, "source_role_not_configured_on_this_host"
+        else:
+            currentness, reason = "stale", (layer.source_reason or "source_not_available")
+        layer_currentness[layer.layer_key] = layer_currentness_entry(
+            currentness=currentness, reason=reason,
+            identity={"layer_key": layer.layer_key, "source_role": layer.source_role},
+            evidence={
+                "source_status": layer.source_status,
+                "source_reason": layer.source_reason or None,
+                "feature_count": int(layer.feature_count),
+            },
+        )
+        if layer.source_status != SOURCE_AVAILABLE:
+            omitted.append({
+                "layer_key": layer.layer_key, "display_name": layer.display_name,
+                "status": layer.source_status,
+                "reason": layer.source_reason or "数据不可用",
+            })
+        elif layer.feature_count <= 0 and layer.geometry_type != GEOMETRY_NONE:
+            omitted.append({
+                "layer_key": layer.layer_key, "display_name": layer.display_name,
+                "status": "empty_within_extent",
+                "reason": "数据源可读，但当前图面范围内没有要素",
+            })
+    warnings = [f"{item['display_name']}：{item['reason']}" for item in omitted]
+    return source_status, omitted, warnings, layer_currentness
+
+
+def _require_current_identity_for_formal_export(spec, *, export_dpi, allow_non_current):
+    """正式成果图（600 DPI）的 currentness 身份门禁（Round38-FIG）。
+
+    不满足时抛 :class:`MapFigureRenderFailed` 的**专用 code**，并把逐图层状态与原因
+    放进 ``detail``：调用方因此得到可理解的原因，而不是一张静默的空图或误标成功。
+    """
+
+    if float(export_dpi) < FORMAL_DELIVERABLE_MIN_DPI or allow_non_current:
+        return
+    metadata = spec.metadata if isinstance(spec.metadata, dict) else {}
+    gate = metadata.get("production_gate") or {}
+    if gate.get("is_current_figure"):
+        return
+    raise MapFigureCurrentnessGate(
+        "正式成果图（%.0f DPI）未通过航路几何身份 / currentness 门禁：%s；"
+        "请先重算使结果 current，或在明确接受非权威语义时显式允许非 current 导出"
+        % (float(export_dpi), _gate_reason_text(gate)),
+        code="map_figure_currentness_gate",
+        detail={
+            "template_id": spec.template_id,
+            "route_id": spec.route_id,
+            "export_dpi": float(export_dpi),
+            "production_gate": deepcopy(gate),
+            "currentness": deepcopy(metadata.get("currentness") or {}),
+        },
+    )
+
+
+def _gate_reason_text(gate):
+    """把门禁结果压成一句可读原因（逐个点名不合格图层，绝不含糊）。"""
+
+    gate = gate if isinstance(gate, dict) else {}
+    reasons = gate.get("layer_reasons") or {}
+    states = gate.get("layer_states") or {}
+    parts = [
+        f"{key}={states.get(key)}（{reasons.get(key) or '未给出原因'}）"
+        for key in sorted(states)
+        if states.get(key) != "current"
+    ]
+    if not parts:
+        return "没有任何图层达到 current"
+    return "；".join(parts)
 
 
 def materialize_for_template(ctx: MaterializationContext):
@@ -3167,7 +3572,8 @@ class MapFigureService:
     """
 
     def __init__(self, session, paths_provider, qgis_call, *, renderer_factory=None,
-                 project_directory=None, clock=utc_now):
+                 project_directory=None, clock=utc_now, fixed_corridor_service=None,
+                 navigation_monitoring_provider=None, shared_site_candidates_provider=None):
         self.session = session
         self.paths_provider = paths_provider
         self.qgis_call = qgis_call
@@ -3179,6 +3585,73 @@ class MapFigureService:
         self.clock = clock
         self._preview_cache = {}
         self._preview_cache_order = []
+        #: 固定 1000 m 保障宽带的**身份/currentness**只读投影服务
+        #: （:class:`~cns_planner.application.fixed_corridor_geometry_service.
+        #: FixedCorridorGeometryService`）。图件与 ``GET /api/fixed-corridor-geometry``
+        #: 因此消费同一份判定；未注入时图件如实判为"无 P14 证据"。
+        self.fixed_corridor_service = fixed_corridor_service
+        #: 导航监测（N1/N2）**只读仿真** provider：``provider(route, parameters) -> dict``。
+        #: 它是组合根注入的既有服务调用，制图侧不自行选址、不缓存、不写状态。
+        self.navigation_monitoring_provider = navigation_monitoring_provider
+        #: 共享站址候选快照 provider：``provider() -> dict``（只读）。
+        #: 导航监测图层据此把 ``site_id`` 映射到真实坐标；未注入即不画候选背景点。
+        self.shared_site_candidates_provider = shared_site_candidates_provider
+
+    # ---- 只读：固定宽带与导航监测的证据（Round38-FIG） --------------------------
+
+    def _fixed_corridor_evidence(self, route):
+        """固定 1000 m 保障宽带的只读证据（P14 只读投影 + 该航路条目 + 有效状态）。
+
+        全部只读：调用 :meth:`FixedCorridorGeometryService.result_snapshot` 与
+        ``effective_result_status``，**不**触发重算、**不**写 ``ProjectState``。
+        未注入服务时返回空证据（图件如实披露"无 P14 证据"）。
+        """
+
+        service = self.fixed_corridor_service
+        route_id = str((route or {}).get("route_id") or "")
+        if service is None:
+            return {"projected": None, "entry": None, "corridor_effective_status": None,
+                    "route_authority": None}
+        projected, entry = service._corridor_route_entry(route_id)  # noqa: SLF001 - 只读
+        return {
+            "projected": projected,
+            "entry": entry,
+            "corridor_effective_status": effective_result_status(
+                self.session.state, "cns_corridor_assessment",
+            ),
+            # 身份口径必须与接口实现**完全同源**：否则重建指纹会与 P14 条目指纹不等，
+            # 把一条本来 current 的带误判成 stale（这属于"门禁假阳性"，必须避免）。
+            "route_authority": _corridor_route_authority(service, route),
+        }
+
+    def _navigation_monitoring_evidence(self, route):
+        """导航监测（N1/N2）只读仿真证据；未注入 provider 时返回 ``(None, 原因)``。
+
+        绝不吞异常、绝不"仿真失败就当没有需求"：失败原因会原样进入 FigureSpec 披露。
+        """
+
+        provider = self.navigation_monitoring_provider
+        if provider is None:
+            return None, "navigation_monitoring_provider_not_configured"
+        try:
+            result = provider(route)
+        except Exception as exc:  # noqa: BLE001 - 上游失败类型不统一，一律如实披露
+            return None, f"navigation_monitoring_simulation_failed:{type(exc).__name__}"
+        if not isinstance(result, dict):
+            return None, "navigation_monitoring_simulation_returned_no_result"
+        return result, None
+
+    def _navigation_candidates_snapshot(self):
+        """共享站址候选快照（只读）；未注入 provider 时返回空（即不画候选点）。"""
+
+        provider = self.shared_site_candidates_provider
+        if provider is None:
+            return {}
+        try:
+            snapshot = provider()
+        except Exception:  # noqa: BLE001 - 快照失败只影响候选背景点，不伪造任何点
+            return {}
+        return snapshot if isinstance(snapshot, dict) else {}
 
     # ---- 只读：模板目录与可用航路 ---------------------------------------------
 
@@ -3385,12 +3858,27 @@ class MapFigureService:
                 f"航路 {route.get('route_id')} 的几何不足以计算图面范围（需要至少 2 个顶点）",
                 detail=extent_evidence,
             )
-        probe = materialize_for_template(MaterializationContext(
-            state=self.session.state, paths=paths, route=route, extent=extent,
-            parameters=parameters, project_revision=revision,
-            source_audits=self.session.state.get("source_audits") or {},
-            template_id=template["template_id"],
-        ))
+        # ---- Round38-FIG：只读身份 / 时效性证据（只算一次，两条装配路径共用） ----
+        fixed_corridor = self._fixed_corridor_evidence(route)
+        navigation_monitoring, navigation_monitoring_error = (
+            self._navigation_monitoring_evidence(route)
+            if template["template_id"] == NAVIGATION_LAYOUT_V1 else (None, None)
+        )
+        navigation_candidates = (
+            self._navigation_candidates_snapshot()
+            if template["template_id"] == NAVIGATION_LAYOUT_V1 else {}
+        )
+        shared_context = {
+            "state": self.session.state, "paths": paths, "route": route,
+            "parameters": parameters, "project_revision": revision,
+            "source_audits": self.session.state.get("source_audits") or {},
+            "template_id": template["template_id"],
+            "fixed_corridor": fixed_corridor,
+            "navigation_monitoring": navigation_monitoring,
+            "navigation_monitoring_error": navigation_monitoring_error,
+            "navigation_candidates": navigation_candidates,
+        }
+        probe = materialize_for_template(MaterializationContext(extent=extent, **shared_context))
         layout = _layout_plan(
             parameters, legend_items=_legend_layout_entries(probe.legend_items),
             layout_disclosure=str((probe.metadata or {}).get("map_disclosure") or ""),
@@ -3420,13 +3908,11 @@ class MapFigureService:
             ),
         }
         result = materialize_for_template(MaterializationContext(
-            state=self.session.state, paths=paths, route=route, extent=extent,
-            parameters=parameters, project_revision=revision,
-            source_audits=self.session.state.get("source_audits") or {},
+            extent=extent,
             surface_classification_policy=(
                 self.session.state.get("surface_classification_policy") or {}
             ),
-            template_id=template["template_id"],
+            **shared_context,
         ))
         # 第二次装配可能带来不同的 map_disclosure（图层/图例已定稿），这里同步一次。
         # 版面依赖"是否真的有披露句"与审计条开关，因此带披露句**二次规划**一次版面，
@@ -3462,6 +3948,53 @@ class MapFigureService:
             if isinstance(point, (list, tuple)) and len(point) >= 2
         ]
         subtitle = _figure_subtitle(self.session.state, route.get("route_id"))
+        # ---- Round38-FIG：统一身份与时效性（写进 FigureSpec.metadata） -------------
+        layer_currentness = deepcopy(result.layer_currentness or {})
+        gate = production_gate(layer_currentness)
+        # 图面**不再**新增诊断文字（annotations 恒为空、披露仍留在 metadata）；
+        # 只有"图例里看不到该层"这一件事需要在图外说明一句，避免静默出空图。
+        band_key = FIXED_CORRIDOR_LAYER_KEY
+        band_entry = layer_currentness.get(band_key) or {}
+        band_drawn = any(
+            layer.layer_key == band_key and layer.source_status == SOURCE_AVAILABLE
+            and int(layer.feature_count) > 0
+            for layer in result.layers
+        )
+        gate["fixed_corridor_band"] = {
+            "layer_key": band_key,
+            "drawn": bool(band_drawn),
+            "currentness": band_entry.get("currentness") or "unknown",
+            "reason": band_entry.get("reason"),
+        }
+        gate["map_disclosure"] = (
+            "" if band_drawn else (
+                "固定 1000 m 保障目标带未按 current 绘制："
+                + str(band_entry.get("reason") or "证据不足")
+            )
+        )
+        currentness_block = {
+            "route_geometry_identity": route_geometry_identity(route),
+            "fixed_corridor_width_identity": currentness_signature()[
+                "fixed_corridor_width_identity"
+            ],
+            "fixed_corridor_currentness": deepcopy(band_entry),
+            "layers": deepcopy(layer_currentness),
+            "signature": currentness_signature(),
+            "overall": gate["status"],
+            "is_current_figure": gate["is_current_figure"],
+            "drawable_as_current": gate["drawable_as_current"],
+            "facts_not_changed_by_this_round": {
+                "r0005_operational_route": (route.get("status") or None),
+                "cns_corridor_assessment": (
+                    (fixed_corridor or {}).get("corridor_effective_status")
+                ),
+                "note": (
+                    "本轮只做制图适配：stale 状态不因制图代码修改而改变，"
+                    "更不会为了让图看起来完整而被改写为 current"
+                ),
+            },
+            "semantics": "figure_currentness_projection_read_only",
+        }
         spec = FigureSpec(
             template_id=template["template_id"],
             template_version=int(template["template_version"]),
@@ -3542,6 +4075,14 @@ class MapFigureService:
                         (result.metadata or {}).get("rid_extension_fail_closed")
                     ),
                 } if (result.metadata or {}).get("surface_aware_visualization") else {}),
+                **({
+                    "navigation_monitoring": (
+                        (result.metadata or {}).get("navigation_monitoring")
+                    ),
+                } if (result.metadata or {}).get("navigation_monitoring") else {}),
+                # Round38-FIG：统一身份与时效性（六图共用同一口径）。
+                "currentness": currentness_block,
+                "production_gate": gate,
             },
             boundaries={
                 "presentation_only": True,
@@ -3621,8 +4162,17 @@ class MapFigureService:
         return {"image": image, "spec": spec, "record": None, "reused": False}
 
     def export(self, *, template_id, route_id=None, format_name="png", dpi=None,
-               parameter_overrides=None):
-        """生成正式产物（300 DPI 默认）并登记记录；幂等：相同内容复用同一图号。"""
+               parameter_overrides=None, allow_non_current=False):
+        """生成正式产物（300 DPI 默认）并登记记录；幂等：相同内容复用同一图号。
+
+        Round38-FIG **身份门禁**：600 DPI 的正式成果图必须通过 currentness 身份门禁
+        （``metadata["production_gate"].is_current_figure``）。当前项目里 R0005 运行航路、
+        P14~P17、固定宽带几何都是 ``stale``，因此正式成果图会被**明确拒绝**并给出原因，
+        而不是静默产出一张"看起来完整"的非权威图。
+
+        需要历史 / 非权威预览时，调用方显式传 ``allow_non_current=True``：图件照常生成，
+        但记录里会保留 ``production_gate``，不会被误认为最新成果。
+        """
 
         spec = self.build_figure(
             template_id=template_id, route_id=route_id,
@@ -3635,6 +4185,9 @@ class MapFigureService:
                 f"导出 DPI {export_dpi} 超出允许范围 "
                 f"（{MIN_EXPORT_DPI:g} ~ {MAX_EXPORT_DPI:g}）"
             )
+        _require_current_identity_for_formal_export(
+            spec, export_dpi=export_dpi, allow_non_current=allow_non_current,
+        )
         # 真正的总像素上限：宽 × 高（A4 竖版 600 dpi ≈ 34.8 MP）。
         width_px = float(spec.layout["document_width_mm"]) / 25.4 * export_dpi
         height_px = float(spec.layout["document_height_mm"]) / 25.4 * export_dpi

@@ -35,9 +35,9 @@ from copy import deepcopy
 from math import isfinite
 
 #: 契约版本与算法标识。
-CONTINUOUS_SERVICE_SCHEMA_VERSION = "round2.6-post-plan-continuous-service-acceptability"
+CONTINUOUS_SERVICE_SCHEMA_VERSION = "round38-w1b-fixed-band-response-decoupled"
 CONTINUOUS_SERVICE_ALGORITHM_ID = "continuous_service_acceptability_v1"
-CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.1"
+CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.4"
 
 #: 四种运行可接受性结论（**顺序即严重度**）。
 ACCEPTABILITY_STATUSES = (

@@ -428,12 +428,13 @@ def _corridor_manifest():
     return AlgorithmManifest(
         "corridor_model", CNSServiceCorridorV1.algorithm_id, CNSServiceCorridorV1.algorithm_version,
         "CNS Service Requirement Corridor V1", "CNS-PLANNER", "engineering_baseline",
-        "以现有 MH/T 网格和高度层构造保守离散的 CNS 服务需求走廊，并复用 P7/P8 逐点规则评估代表性 voxel probe。",
-        ("operational_routes", "effective_route_vertical_context", "grid", "terrain", "altitude_layers", "required_cns", "aircraft_profile", "existing_cns", "device_catalog", "corridor_policy"),
+        "以现有 MH/T 网格和高度层构造保守离散的 CNS 服务需求走廊，并复用 P7/P8 逐点规则评估代表性 voxel probe。水平宽度由唯一固定契约 fixed-1000m-v1 决定（中心线左右各 500 m、总宽 1000 m），不按航路编辑。",
+        ("operational_routes", "effective_route_vertical_context", "grid", "terrain", "altitude_layers", "required_cns", "aircraft_profile", "existing_cns", "device_catalog", "corridor_policy", "fixed_corridor_width_contract", "corridor_geometry"),
         ("cns_corridor_assessment", "voxel_probe_results", "volume_proxy_summary"),
         {"type": "object", "additionalProperties": True},
         (
             "水平采用 conservative grid-cell inclusion，而非精确 buffer",
+            "水平半宽固定 500 m（fixed-1000m-v1），历史非 500 m 值只读 stale",
             "voxel 采用代表点评估，volume 为离散代理量",
             "canonical vertical reference 为 EGM2008 orthometric",
         ),
@@ -441,6 +442,7 @@ def _corridor_manifest():
             "不是 JARUS Operational Volume、U-space Surveillance Volume 或法规批准空间",
             "不评估运行时失效、概率可用度、真实传播或精确 3D mesh",
             "representative probe 不保证整个 voxel 满足",
+            "中心线达标不推出全宽达标",
         ),
         (),
     )
@@ -451,7 +453,7 @@ def _corridor_gap_manifest():
         "corridor_gap_analyzer", CNSCorridorGapAnalyzerV1.algorithm_id,
         CNSCorridorGapAnalyzerV1.algorithm_version,
         "CNS Corridor Gap Analyzer V1", "CNS-PLANNER", "engineering_baseline",
-        "只消费 current P14 corridor、RequiredCNS 与显式规划目标，评估静态服务、独立冗余和空间连续缺口。",
+        "只消费 current P14 corridor、RequiredCNS 与显式规划目标，评估静态服务、独立冗余和空间连续缺口；并把中心线服务状态与固定宽带全宽服务状态拆成两个独立字段。",
         ("cns_corridor_assessment", "required_cns", "cns_planning_objectives"),
         ("cns_corridor_gap_assessment", "redundancy_summary", "continuous_deficit_segments", "objective_results"),
         {"type": "object", "additionalProperties": False},
@@ -459,6 +461,8 @@ def _corridor_gap_manifest():
             "独立冗余严格使用 P8 confirmed independence group",
             "连续缺口是 corridor voxel 的保守纵向投影",
             "规划目标只来自项目显式确认配置",
+            "全宽统计使用网格数与面积代理，不是连续空间覆盖率",
+            "全宽未评估时为 not_evaluated，不由中心线关联结果推导",
         ),
         (
             "不重算 P7/P8，不消费 runtime 或 CandidateSite/P11 proposal",

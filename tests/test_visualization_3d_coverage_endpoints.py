@@ -392,7 +392,11 @@ def test_manifest_lists_coverage_layers_as_available_not_reserved():
     assert layers["protection_volumes"]["default_on"] is False
     assert layers["protection_volumes"]["detail_endpoint"] == (
         "/api/visualization-3d/protection-volumes")
-    assert layers["simulated_intrusion"]["status"] == "reserved_simulated"
-    assert layers["simulated_intrusion"]["reserved"] is True
+    # Round37-T3D-3B：模拟轨迹层已实现，但仍然默认关闭且只出工程示意结论。
+    assert layers["simulated_intrusion"]["status"] == "available"
+    assert layers["simulated_intrusion"]["reserved"] is False
+    assert layers["simulated_intrusion"]["default_on"] is False
+    assert layers["simulated_intrusion"]["detail_endpoint"] == (
+        "/api/visualization-3d/intrusion-assessment")
     assert manifest["object_id_prefixes"]["communication_volume"] == "comm-volume:"
     assert manifest["object_id_prefixes"]["rid_footprint"] == "rid-footprint:"

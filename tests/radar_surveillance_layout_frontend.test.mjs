@@ -16,7 +16,8 @@ import {
   radarOverlayModel, routeCoverageColours,
 } from '../cns_planner/web/js/workflow/radar_surveillance_layout.js';
 import {renderRadarSurveillanceLayoutPanel} from '../cns_planner/web/js/workflow/radar_surveillance_layout.js';
-import {render as renderStep5, radarLayoutModel as step5Model} from '../cns_planner/web/js/workflow/step05_cns.js';
+import {groundSiteInstallationPolicy,render as renderStep5,
+  radarLayoutModel as step5Model} from '../cns_planner/web/js/workflow/step05_cns.js';
 import {
   RADAR_COVERAGE_COLORS, RADAR_PANEL_COLORS, drawRadarLayoutOverlay,
   groundMetresPerPixel, radarCoverageLegend, radarSectorPixelRadius,
@@ -435,6 +436,45 @@ test('radar layout panel renders the required V1.1 summary fields', () => {
   assert.doesNotMatch(html, /not_for_safety_claim=true/);
   assert.doesNotMatch(html, /not_for_final_confirmed_plan=true/);
   assert.doesNotMatch(html, /<script/);
+});
+
+test('radar panel renders explicit per-site planned installation height controls', () => {
+  const snapshot=flow();
+  snapshot.radar_surveillance_policy={ground_site_installation_heights:{
+    'RLS-1':{site_id:'RLS-1',installation_height_m:12,source:'user_confirmed',
+      confirmed:true,installation_status:'planned',device_installed:false},
+  }};
+  snapshot.radar_surveillance_layout_readiness={
+    ...snapshot.radar_surveillance_layout_readiness,
+    ground_site_candidates:[{site_id:'RLS-1',name:'一号起降点',
+      candidate_kind:'reference_landing_site',spatial_status:'eligible'}],
+  };
+  const html=renderRadarSurveillanceLayoutPanel(snapshot);
+  assert.match(html,/一号起降点/);
+  assert.match(html,/data-radar-ground-site-id="RLS-1"/);
+  assert.match(html,/相对地面安装高度/);
+  assert.match(html,/用户确认的规划安装高度/);
+  assert.match(html,/不代表设备已安装/);
+  assert.match(html,/data-radar-ground-source-ref-index="0"/);
+  assert.match(html,/value="12"/);
+});
+
+test('radar ground-site policy collection distinguishes planned and installed evidence', () => {
+  const existing={'OLD':{site_id:'OLD',installation_height_m:4,source:'user_confirmed',
+    confirmed:true,installation_status:'planned'}};
+  const result=groundSiteInstallationPolicy([
+    {siteId:'RLS-1',height:'12.5',source:'user_confirmed',confirmed:true},
+    {siteId:'RLS-2',height:'18',source:'source_device_installation_height',confirmed:true,
+      sourceRef:'INSTALL-REC-2'},
+    {siteId:'OLD',height:'',source:'user_confirmed',confirmed:false},
+  ],existing);
+  assert.deepEqual(result,{
+    'RLS-1':{site_id:'RLS-1',installation_height_m:12.5,source:'user_confirmed',
+      confirmed:true,installation_status:'planned'},
+    'RLS-2':{site_id:'RLS-2',installation_height_m:18,
+      source:'source_device_installation_height',confirmed:true,installation_status:'installed',
+      source_ref:'INSTALL-REC-2'},
+  });
 });
 
 test('demo preview renders an unmistakable non-operational warning', () => {

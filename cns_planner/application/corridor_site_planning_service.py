@@ -7,6 +7,7 @@ from copy import deepcopy
 import time
 
 from ..algorithms.corridor.v1 import nearest_route_position
+from ..domain.cns_corridor import corridor_half_width_m
 from ..domain.corridor_site_planning import (
     TARGET_SCOPE_ENDPOINT, TARGET_SCOPE_SERVICE, corridor_target_id,
     corridor_voxel_entry_index, endpoint_state_entry_index, endpoint_target_id,
@@ -37,6 +38,7 @@ from ..domain.radar_service_evidence import (
     build_radar_service_evidence,
     radar_what_if_service_evidence,
 )
+from .cns_facility_assembler import SYNTHETIC_DATASET_CLASSES
 from .navigation_reference_station_planning_service import (
     PLANNER_FAMILY as NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY,
     hypothetical_navigation_sites,
@@ -57,12 +59,129 @@ from .result_currentness import projected_result
 from .production_write_authority import assert_write_authority
 
 
+def registered_p16_site_sources(
+    shared_snapshot, *, existing_facilities, candidate_sites, tower_colocation,
+):
+    """Filter P16 inputs to recorded landing sites, real towers, and ExistingCNS.
+
+    Existing CNS facilities are additionally gated on **real-world / confirmed**
+    identity: synthetic or engineering-validation baseline records are excluded
+    instead of being promoted into candidate hosts.
+
+    This is a source-identity/CRS gate only.  Device suitability, service model,
+    service elevation, mount permission, and planner-family authority remain in
+    their existing canonical gates downstream.
+    """
+
+    shared = shared_snapshot if isinstance(shared_snapshot, dict) else {}
+    by_kind = {}
+    for item in shared.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        key = (str(item.get("candidate_kind") or ""), str(item.get("source_id") or ""))
+        if key[1]:
+            by_kind[key] = item
+
+    excluded = Counter()
+    landing_items = []
+    for site in (candidate_sites or {}).get("items") or []:
+        site_id = str(site.get("site_id") or "")
+        reference_id = str(
+            site.get("reference_site_id")
+            or (site.get("provenance") or {}).get("reference_site_id")
+            or ""
+        )
+        #: 先按站点**自身**的登记身份匹配：已登记节点在共享快照里注册为
+        #: ``project_node``；带 ``reference_site_id`` 只表示额外关联了一条参考记录，
+        #: 不代表该节点未被登记。反过来先查参考记录会去找一个按契约不重复出现的
+        #: ``reference_landing_site`` 条目，把已登记站址误判成"未登记候选"。
+        evidence = by_kind.get(("project_node", site_id)) if site_id else None
+        if evidence is None and reference_id:
+            evidence = by_kind.get(("reference_landing_site", reference_id))
+        if evidence is None:
+            excluded["unregistered_candidate_site"] += 1
+            continue
+        if evidence.get("spatial_use_status") != "eligible":
+            excluded[str(evidence.get("spatial_block_reason") or "spatial_evidence_blocked")] += 1
+            continue
+        landing_items.append(deepcopy(site))
+
+    tower_items = []
+    for site in (tower_colocation or {}).get("items") or []:
+        host = ((site.get("metadata") or {}).get("host") or {})
+        tower_id = str(site.get("tower_id") or host.get("host_tower_id") or "")
+        evidence = by_kind.get(("tower_colocation", tower_id))
+        if evidence is None:
+            excluded["unregistered_tower_site"] += 1
+            continue
+        if evidence.get("spatial_use_status") != "eligible":
+            excluded[str(evidence.get("spatial_block_reason") or "spatial_evidence_blocked")] += 1
+            continue
+        tower_items.append(deepcopy(site))
+
+    existing_items = []
+    for facility in (existing_facilities or {}).get("items") or []:
+        if not isinstance(facility, dict):
+            excluded["invalid_existing_cns_facility"] += 1
+            continue
+        metadata = facility.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        profile = facility.get("planning_profile")
+        profile = profile if isinstance(profile, dict) else {}
+        #: 真实性判据与图面层 ``cns_facility_assembler`` **同一套**登记标记：
+        #: 合成 / 工程验证设施（``dataset_class`` 或显式 ``real_world_facility=False``）
+        #: 不是现实中的既有设施，不得被 P16 当成候选宿主。
+        if (
+            str(metadata.get("dataset_class") or "") in SYNTHETIC_DATASET_CLASSES
+            or metadata.get("real_world_facility") is False
+        ):
+            excluded["synthetic_existing_cns_facility"] += 1
+            continue
+        #: ``confirmed`` 只有**显式 true** 才算已确认：缺失、``null`` 与 ``false``
+        #: 三种情形必须同样阻断，否则"没有确认记录"会被静默当成"已确认"，未经确认的
+        #: 设施就变成有效规划宿主。判据与下游 :mod:`site_candidate_actions` 的
+        #: ``planning_profile.confirmed is not True`` 保持同一口径。
+        if profile.get("confirmed") is not True:
+            excluded["unconfirmed_existing_cns_facility"] += 1
+            continue
+        existing_items.append(deepcopy(facility))
+
+    existing = deepcopy(existing_facilities or {})
+    existing["items"] = existing_items
+    existing["count"] = len(existing_items)
+    candidates = deepcopy(candidate_sites or {})
+    candidates["items"], candidates["count"] = landing_items, len(landing_items)
+    towers = deepcopy(tower_colocation or {})
+    towers["items"], towers["count"] = tower_items, len(tower_items)
+    return {
+        "existing_facilities": existing,
+        "candidate_sites": candidates,
+        "tower_colocation": towers,
+        "statistics": {
+            "source_policy": "registered_landing_sites_real_towers_confirmed_existing_cns_only",
+            "existing_cns_source_gate": "real_world_confirmed_only",
+            "shared_snapshot_status": shared.get("status"),
+            "allowed_source_counts": {
+                "existing_cns_facilities": len(existing["items"]),
+                "registered_landing_sites": len(landing_items),
+                "real_tower_sites": len(tower_items),
+            },
+            "excluded_reason_counts": dict(sorted(excluded.items())),
+            "source_tower_record_count": int(
+                (shared.get("source_counts") or {}).get("tower_records") or 0
+            ),
+            "synthetic_tower_count": 0,
+        },
+    }
+
+
 class CorridorSitePlanningService:
     def __init__(self, session, planner, corridor_model, corridor_gap_analyzer,
-                 invalidation, snapshot):
+                 invalidation, snapshot, shared_site_candidates=None):
         self.session, self.planner = session, planner
         self.corridor_model, self.corridor_gap_analyzer = corridor_model, corridor_gap_analyzer
         self.invalidation, self.snapshot = invalidation, snapshot
+        self.shared_site_candidates = shared_site_candidates
 
     def result_snapshot(self):
         """只读投影：算法语义版本变化时如实标注 stale（绝不误判 current）。"""
@@ -115,6 +234,7 @@ class CorridorSitePlanningService:
         self.__dict__.pop("_navigation_evidence_cache", None)
         #: 走廊单元缓存的失效点：一次 P16 evaluate 内网格事实不变，跨 evaluate 必须重算。
         self.__dict__.pop("_prepared_cells_cache", None)
+        self.__dict__.pop("_candidate_source_statistics", None)
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("corridor site planning 请求必须是对象")
@@ -551,6 +671,9 @@ class CorridorSitePlanningService:
             ),
         }
         result["origin_tier_statistics"] = _origin_tier_statistics(actions, selected)
+        result["candidate_source_statistics"] = deepcopy(
+            self.__dict__.get("_candidate_source_statistics") or {}
+        )
         #: Round 29-G：P16 第一阶段的**性能画像**（只读计数与耗时，不参与任何判定）。
         result["performance_profile"] = _finalize_performance_profile(performance, selected)
         estimated_ids = sorted({
@@ -975,7 +1098,7 @@ class CorridorSitePlanningService:
         self.__dict__["_prepared_cells_cache"] = cells
         return cells
 
-    def _navigation_evidence(self, state, navigation_actions=None):
+    def _navigation_evidence(self, state, navigation_actions=None, site_sources=None):
         """构造 navigation augmentation 证据；未显式要求该服务时返回 ``None``。
 
         P16 的 what-if 会对同一批候选反复重跑，因此同一组导航动作的证据在**一次
@@ -986,12 +1109,17 @@ class CorridorSitePlanningService:
         cache = self.__dict__.setdefault("_navigation_evidence_cache", {})
         if key and key in cache:
             return deepcopy(cache[key])
+        sources = site_sources or {
+            "existing_facilities": state.get("existing_cns_facilities") or {},
+            "candidate_sites": state.get("candidate_sites") or {},
+            "tower_colocation": state.get("tower_colocation_candidates") or {},
+        }
         evidence = build_navigation_service_evidence(
             state.get("required_cns") or {},
             route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
-            existing_facilities=state.get("existing_cns_facilities") or {},
-            candidate_sites=state.get("candidate_sites") or {},
-            tower_colocation=state.get("tower_colocation_candidates") or {},
+            existing_facilities=sources["existing_facilities"],
+            candidate_sites=sources["candidate_sites"],
+            tower_colocation=sources["tower_colocation"],
         )
         if evidence is not None and navigation_actions:
             _, evidence = hypothetical_navigation_sites(evidence, navigation_actions)
@@ -1022,19 +1150,32 @@ class CorridorSitePlanningService:
             item for item in targets
             if item.get("service_key") != SERVICE_KEY_RADAR_NONCOOPERATIVE
         ]
-        actions = candidate_actions(
-            ordinary_targets, state.get("existing_cns_facilities") or {},
-            state.get("candidate_sites") or {}, device_catalog_with_evidence(state),
-            state.get("tower_colocation_candidates") or {},
+        shared = (
+            self.shared_site_candidates.snapshot()
+            if self.shared_site_candidates is not None else {"status": "unavailable"}
         )
-        #: Round C：导航增强站址候选**不**走普通 site × device 笛卡尔积，也**不**用
-        #: radius circle planner；它只由显式的 navigation_site_suitability 站址产生。
-        baseline_navigation_evidence = self._navigation_evidence(state)
-        actions.extend(navigation_reference_station_candidate_actions(
-            targets,
+        sources = registered_p16_site_sources(
+            shared,
             existing_facilities=state.get("existing_cns_facilities") or {},
             candidate_sites=state.get("candidate_sites") or {},
             tower_colocation=state.get("tower_colocation_candidates") or {},
+        )
+        self._candidate_source_statistics = deepcopy(sources["statistics"])
+        actions = candidate_actions(
+            ordinary_targets, sources["existing_facilities"],
+            sources["candidate_sites"], device_catalog_with_evidence(state),
+            sources["tower_colocation"],
+        )
+        #: Round C：导航增强站址候选**不**走普通 site × device 笛卡尔积，也**不**用
+        #: radius circle planner；它只由显式的 navigation_site_suitability 站址产生。
+        baseline_navigation_evidence = self._navigation_evidence(
+            state, site_sources=sources,
+        )
+        actions.extend(navigation_reference_station_candidate_actions(
+            targets,
+            existing_facilities=sources["existing_facilities"],
+            candidate_sites=sources["candidate_sites"],
+            tower_colocation=sources["tower_colocation"],
             navigation_evidence=baseline_navigation_evidence,
         ))
         actions.extend(navigation_integrity_monitor_actions(
@@ -2597,10 +2738,10 @@ def _build_prefilter_context(state, prepared_cells):
     specs = ((state.get("cns_corridor_policy") or {}).get("routes") or {})
     half_widths = []
     for route_id, _ in paths:
-        value = (specs.get(route_id) or {}).get("horizontal_half_width_m")
-        if value is None:
-            return None
-        half_widths.append(float(value))
+        #: Round38-W1A：预筛必须与 P14 正式评估消费**同一个**固定半宽。历史
+        #: ``horizontal_half_width_m`` 只作审计，绝不进入预筛（否则会出现"预筛用
+        #: 150 m、正式评估用 500 m"的不安全方向：预筛会排掉本应重算的候选）。
+        half_widths.append(corridor_half_width_m(specs.get(route_id)))
     diagonals = [
         float(item.get("half_diagonal") or 0.0) for item in prepared_cells or []
     ]

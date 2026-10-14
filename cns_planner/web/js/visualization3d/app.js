@@ -37,6 +37,30 @@ import {
   protectionBoundaryPoints,
   removeProtectionEntities,
 } from './protection_volume.js';
+import {
+  CNS_SERVICE_STYLE,
+  CNS_SITE_STATE_STYLE,
+  addCnsSiteEntities,
+} from './cns_sites.js';
+import {
+  FIXED_CORRIDOR_DISCLAIMER,
+  FIXED_CORRIDOR_PREVIEW_DISCLAIMER,
+  addFixedCorridorBandEntities,
+  corridorRingsFor,
+} from './fixed_corridor_band.js';
+import {
+  INTRUSION_MODE_BANNER,
+  PLAYBACK_SPEEDS,
+  PlaybackController,
+  SCOPE_LABELS,
+  addIntrusionEntities,
+  applyIntrusionState,
+  buildPlaybackModel,
+  createCameraFollow,
+  describeState,
+  removeIntrusionEntities,
+  setIntrusionVisible,
+} from './intrusion_playback.js';
 
 const API = '/api/visualization-3d';
 
@@ -58,6 +82,24 @@ const S = {
   lazyLayers: null,
   ready: false,
   checks: {},
+  // 模拟轨迹回放：实例键、控制器、实体句柄、相机跟随与图层意图。
+  // 这里**只有**一个实体句柄与一个控制器，清除时整体置空 ⇒ 不可能留下残留实体。
+  intrusion: {
+    handle: null,
+    controller: null,
+    follow: null,
+    model: null,
+    volumeBounds: null,
+    deps: null,
+    targets: [],
+    selectedKey: '',
+    revision: 0,
+    // 只在**成功**完成一次后端判定后自增；验收脚本据此等待"新结果已就位"，
+    // 而不是被上一次仍然 configured 的模型骗过。
+    evaluationRevision: 0,
+    layerWanted: false,
+    tickInstalled: false,
+  },
 };
 
 // 零写入自检必须**实测**：包装 fetch 以观测真实请求方法。
@@ -794,7 +836,14 @@ function renderLayers() {
       'business'],
     ['protection', 'P17 航路保护区（历史/缺证分明）', BUSINESS_LAYER_DEFAULTS.protection,
       'business'],
-    ['intrusion', '模拟入侵目标', BUSINESS_LAYER_DEFAULTS.intrusion, 'reserved'],
+    // Round37-T3D-3B：模拟轨迹回放已实现并接入（不再是 reserved 合同占位）。
+    ['intrusion', '模拟轨迹目标（SIMULATED 工程示意）', BUSINESS_LAYER_DEFAULTS.intrusion,
+      'business'],
+    // Round38-T3D4：已有二维能力的展示接入（默认关闭，按需请求）。
+    ['cnsSites', 'CNS 站址与设备（既有/规划选中/候选/blocked）',
+      BUSINESS_LAYER_DEFAULTS.cnsSites, 'business'],
+    ['fixedCorridor', '固定 1000 m CNS 保障目标带',
+      BUSINESS_LAYER_DEFAULTS.fixedCorridor, 'business'],
   ];
   $('layerList').innerHTML = controls.map(([id, label, checked, kind]) =>
     `<label class="layer-${kind}"><input type="checkbox" id="ly_${id}" `
@@ -1108,14 +1157,18 @@ async function boot() {
       routeDemo: [], routeCanonical: [], towersKnown: [], towersUnknown: [],
       facilities: [], buildings: [], terrain: [], communication: [], rid: [],
       radar: [], radarPreview: [], protection: [], protectionPreview: [],
+      cnsSites: [], fixedCorridor: [],
     };
     S.groups = groups;
-    let routeContextPromise = null;
-    let pointsPromise = null;
-    let towerGroupsPromise = null;
+    // 三个懒加载 Promise 缓存挂在 `S` 上（而不是闭包局部变量）：这样
+    // `S.clearBusinessLayers()` 才能真的把它们清掉——"切换航路或项目后清理旧图层
+    // 和缓存"如果只清实体不清缓存，下一次勾选会直接复用旧几何。
+    S.routeContextPromise = null;
+    S.pointsPromise = null;
+    S.towerGroupsPromise = null;
 
     const ensureRouteContext = async () => {
-      if (!routeContextPromise) routeContextPromise = (async () => {
+      if (!S.routeContextPromise) S.routeContextPromise = (async () => {
         S.routes = await getJSON(`${API}/routes`);
         const demo = (S.routes.routes || []).find(
           (row) => row.authority === 'engineering_demo_projection');
@@ -1131,31 +1184,112 @@ async function boot() {
         }
         return { demo, routes: S.routes.routes || [] };
       })();
-      return routeContextPromise;
+      return S.routeContextPromise;
     };
     const ensurePoints = async () => {
       await ensureRouteContext();
-      if (!pointsPromise) pointsPromise = getJSON(
+      if (!S.pointsPromise) S.pointsPromise = getJSON(
         `${API}/manifest?layers=towers,cns_devices,cns_facilities`).then((payload) => {
         S.points = payload;
         const byId = {};
         for (const layer of payload.layers || []) byId[layer.id] = layer;
         return byId;
       });
-      return pointsPromise;
+      return S.pointsPromise;
     };
     const ensureTowerGroups = async () => {
-      if (!towerGroupsPromise) towerGroupsPromise = ensurePoints().then((byId) => {
+      if (!S.towerGroupsPromise) S.towerGroupsPromise = ensurePoints().then((byId) => {
         const result = addTowerEntities(viewer, (byId.towers && byId.towers.items) || []);
         for (const entity of result.all) entity.show = false;
         groups.towersKnown = result.known;
         groups.towersUnknown = result.unknown;
         return result;
       });
-      return towerGroupsPromise;
+      return S.towerGroupsPromise;
     };
 
-    S.lazyLayers = new LazyLayerRegistry({
+    // ---- Round38-T3D4：站址图例（颜色与图层身份必须与二维系统一致） ----------
+    function renderCnsSiteLegend() {
+      const node = $('cnsSiteLegend');
+      if (!node) return;
+      const payload = S.cnsSites;
+      if (!payload) {
+        node.innerHTML = '<div class="dim">未开启。勾选上方「CNS 站址与设备身份」后按需请求。</div>';
+        return;
+      }
+      const deviceLegend = Object.entries(CNS_SERVICE_STYLE)
+        .filter(([key]) => key !== 'other')
+        .map(([, style]) => `<span><i style="background:${style.color}"></i>${style.label}`
+          + ` ${style.color}</span>`).join('');
+      const stateLegend = Object.entries(CNS_SITE_STATE_STYLE)
+        .map(([, style]) => `<span><i style="background:${style.color}"></i>${style.label}`
+          + `（${style.pixelSize}px）</span>`).join('');
+      const counts = payload.counts || {};
+      node.innerHTML =
+        `<div class="svc-legend">${deviceLegend}</div>`
+        + `<div class="svc-legend">${stateLegend}</div>`
+        + `<div class="dim">共 ${payload.count} 个站址：既有设施 ${counts.existing_facilities || 0}、`
+        + `规划选中 ${counts.planned_selected || 0}、候选 ${counts.candidate_unselected || 0}、`
+        + `blocked ${counts.spatial_blocked || 0}。</div>`
+        + `<div class="dim">铁塔 ${counts.tower_sites || 0}（有塔顶结构几何 `
+        + `${counts.towers_with_structure_geometry || 0}，缺塔顶 ${counts.towers_missing_tower_top || 0}）、`
+        + `地面站 ${counts.ground_sites || 0}。</div>`
+        + '<div class="warn">站址存在 ≠ 设备已安装；候选站址不画成已布设设备。</div>';
+    }
+    S.renderCnsSiteLegend = renderCnsSiteLegend;
+
+    // ---- Round38-T3D4：固定目标带面板（currentness 与垂直证据如实展示） -------
+    function renderFixedCorridorPanel(bands, result) {
+      const note = $('fixedCorridorNote');
+      const list = $('fixedCorridorList');
+      if (note) {
+        if (!bands || !bands.length) {
+          note.textContent = '没有正式运行航路，无法给出固定保障目标带。';
+          note.className = 'dim';
+        } else {
+          const current = bands.filter((row) => row.drawable_as_current_band).length;
+          const preview = bands.filter((row) => row.preview_allowed).length;
+          note.innerHTML = `共 ${bands.length} 条航路的目标带：current ${current}，`
+            + `非权威历史预览 ${preview}。`
+            + `<div class="warn">${FIXED_CORRIDOR_DISCLAIMER}</div>`;
+          note.className = 'dim';
+        }
+      }
+      if (!list) return;
+      if (!bands || !bands.length) { list.innerHTML = ''; return; }
+      list.innerHTML = bands.map((band, index) => {
+        const drawable = corridorRingsFor(band).authority;
+        const label = drawable === 'current'
+          ? '<span class="ok-text">current</span>'
+          : (drawable === 'non_authoritative_preview'
+            ? `<span class="warn">非权威历史预览（${band.currentness}）</span>`
+            : `<span class="err">不可绘制（${band.geometry_reason || band.reason || '—'}）</span>`);
+        const vertical = band.vertical_extent_status === 'confirmed'
+          ? `标称层切片 ${band.altitude_layer_id} = ${band.nominal_altitude_m} m`
+          : '<span class="warn">无垂直上下界（仅水平目标带）</span>';
+        return `<label><input type="checkbox" id="fixed_band_${index}" checked> `
+          + `<span>${band.route_id} · ${label} · ${vertical}</span></label>`;
+      }).join('')
+        + `<div class="dim">${FIXED_CORRIDOR_PREVIEW_DISCLAIMER}</div>`;
+      (bands || []).forEach((band, index) => {
+        const input = $(`fixed_band_${index}`);
+        if (!input) return;
+        input.onchange = () => {
+          const group = (result.groups || []).find((row) => row.route_id === band.route_id);
+          if (!group) return;
+          group.visible = input.checked;
+          const layerOn = Boolean(($('ly_fixedCorridor') || {}).checked);
+          for (const entity of group.entities) {
+            entity.show = layerOn && group.visible;
+          }
+          S.stats.entities = viewer.entities.values.length;
+          renderStatus();
+        };
+      });
+    }
+    S.renderFixedCorridorPanel = renderFixedCorridorPanel;
+
+    S.lazyLayerLoaders = {
       routeDemo: async () => {
         const context = await ensureRouteContext();
         groups.routeDemo = context.demo ? addRouteEntities(viewer, context.demo) : [];
@@ -1282,7 +1416,90 @@ async function boot() {
           + `blocked ${payload.blocked_count || 0}（geoid 窗口 ${geoid.status}）`);
         return { entities: result.entities, setVisible: result.setVisible };
       },
-    });
+      // Round38-T3D4：CNS 站址与设备身份（四类分层）。**默认关闭**，勾选才请求；
+      // 只读身份投影，绝不推断安装、绝不重算覆盖。
+      cnsSites: async () => {
+        const payload = await getJSON(`${API}/cns-sites`);
+        S.cnsSites = payload;
+        const points = (payload.sites || []).map((row) => [row.longitude, row.latitude]);
+        const geoid = await ensureGeoidWindow(points, 0);
+        const result = addCnsSiteEntities(viewer, payload.sites || [], {
+          Cesium,
+          undulationAt,
+          terrainHeightAt,
+          plannedDevices: payload.planned_devices || [],
+        });
+        groups.cnsSites = result.entities;
+        S.cnsSiteGroups = result;
+        S.cnsSiteDiagnostics = { geoid_window: geoid, ...result.diagnostics };
+        renderCnsSiteLegend();
+        if (result.diagnostics.skipped.length) {
+          log(`站址图层有 ${result.diagnostics.skipped.length} 项结构几何未绘制：`
+            + result.diagnostics.skipped.slice(0, 3).map(
+              (row) => `${row.part}=${row.reason}`).join('、'), 'warn');
+        }
+        log(`CNS 站址：${payload.status}，共 ${payload.count} 个（`
+          + `塔 ${payload.counts.tower_sites} / 地面 ${payload.counts.ground_sites}；`
+          + `有塔顶结构几何 ${payload.counts.towers_with_structure_geometry}，`
+          + `缺塔顶 ${payload.counts.towers_missing_tower_top}；`
+          + `既有设施 ${payload.counts.existing_facilities}，`
+          + `规划选中 ${payload.counts.planned_selected}，`
+          + `候选 ${payload.counts.candidate_unselected}）`);
+        if ((payload.blocked_sites || []).length) {
+          log(`Radar 站址输入 blocked ${payload.blocked_sites.length} 个`
+            + `（保留身份与原因，不画设备）`, 'warn');
+        }
+        return groups.cnsSites;
+      },
+      // Round38-T3D4：固定 1000 m CNS 保障目标带。几何与 currentness 全部来自服务端
+      // 唯一实现；非 current 时只按**明确标注的非权威历史预览**绘制。
+      fixedCorridor: async () => {
+        const payload = await getJSON(`${API}/fixed-corridor-bands`);
+        S.fixedCorridor = payload;
+        const bands = payload.bands || [];
+        // 目标带外环的正高来自服务端几何，椭球高需逐点 geoid N；按 bbox 取一次窗口。
+        const lons = []; const lats = [];
+        for (const band of bands) {
+          for (const ring of (band.preview_polygons || []).concat(band.polygons || [])) {
+            for (const point of ring) { lons.push(point[0]); lats.push(point[1]); }
+          }
+        }
+        let geoid = { status: 'not_required' };
+        if (lons.length) {
+          const margin = 0.02;
+          const bbox = [
+            Math.min(...lons) - margin, Math.min(...lats) - margin,
+            Math.max(...lons) + margin, Math.max(...lats) + margin,
+          ];
+          // 只在当前窗口**不覆盖**该 bbox 时才重新取地形窗口：避免为了画目标带
+          // 把已经用于航路/站址判读的地形窗口反复换掉。
+          const current = S.win && S.win.bbox;
+          const covered = current && current[0] <= bbox[0] && current[1] <= bbox[1]
+            && current[2] >= bbox[2] && current[3] >= bbox[3];
+          if (!covered) await loadTerrainWindow(bbox, 256, 256);
+          const center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+          geoid = await ensureGeoidWindow([center], 0);
+        }
+        const result = addFixedCorridorBandEntities(viewer, bands, {
+          Cesium, undulationAt, terrainHeightAt,
+        });
+        groups.fixedCorridor = result.entities;
+        S.fixedCorridorGroups = result.groups;
+        S.fixedCorridorDiagnostics = { geoid_window: geoid, ...result.diagnostics };
+        renderFixedCorridorPanel(bands, result);
+        log(`固定 1000 m 保障目标带：${payload.status}，可绘制 ${result.groups.length}/`
+          + `${payload.band_count} 条（${payload.width_contract.width_policy_version}）`);
+        if (result.diagnostics.skipped.length) {
+          log(`目标带跳过 ${result.diagnostics.skipped.length} 个环：`
+            + result.diagnostics.skipped.map(
+              (row) => `${row.part}=${row.reason}`).join('、'), 'warn');
+        }
+        return { entities: result.entities, setVisible: result.setVisible };
+      },
+    };
+    S.lazyLayers = new LazyLayerRegistry(S.lazyLayerLoaders);
+    renderCnsSiteLegend();
+    renderFixedCorridorPanel([], { groups: [] });
 
     // ---- Radar 面阵清单（每个真实面阵单独成组，可单独关闭） --------------------
     function radarLayerEnabled() {
@@ -1522,6 +1739,37 @@ async function boot() {
       return Boolean(input && input.checked);
     }
 
+    /** 复选框 id 用实例键派生（下标不是身份，只在验收辅助里作为兼容参数）。 */
+    function protectionGroupDomId(instanceKey) {
+      return `protection_group_${String(instanceKey).replace(/[^A-Za-z0-9_-]/g, '')}`;
+    }
+
+    function protectionGroupByKey(value) {
+      const rows = S.protectionGroups || [];
+      if (typeof value === 'string' && value) {
+        return rows.find((group) => group.render_instance_id === value) || null;
+      }
+      // 兼容 Round37-T3D-3A 验收脚本旧的数组下标调用；仅限验收辅助，不作为长期标识。
+      return rows[Number(value) || 0] || null;
+    }
+
+    function applyProtectionGroupVisibility(group) {
+      const enabled = protectionLayerEnabled();
+      for (const entity of group.entities) entity.show = Boolean(enabled && group.visible);
+    }
+
+    function setProtectionGroupVisible(target, value) {
+      const group = protectionGroupByKey(target);
+      if (!group) return false;
+      group.visible = Boolean(value);
+      applyProtectionGroupVisibility(group);
+      const input = $(protectionGroupDomId(group.render_instance_id));
+      if (input) input.checked = group.visible;
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+      return true;
+    }
+
     function renderProtectionPanelList() {
       const node = $('protectionPanelList');
       if (!node) return;
@@ -1530,27 +1778,555 @@ async function boot() {
         node.innerHTML = '<div class="dim">未开启。开启后逐项列出 historical/stale 与冲突。</div>';
         return;
       }
-      node.innerHTML = rows.map((group, index) => {
+      node.innerHTML = rows.map((group) => {
         const label = group.status === 'historical_stale'
           ? '历史 P17 水平切片（stale）'
           : `缺证：${group.status}`;
-        return `<label><input type="checkbox" id="protection_group_${index}" `
-          + `${group.visible ? 'checked' : ''}> <span>${group.route_id || '—'} · ${label}</span></label>`;
+        const authority = group.route_authority || '—';
+        const key = group.render_instance_id || '';
+        return `<label title="${key}"><input type="checkbox" `
+          + `id="${protectionGroupDomId(key)}" data-instance="${key}" `
+          + `${group.visible ? 'checked' : ''}> <span>${group.route_id || '—'} · `
+          + `${authority} · ${label}</span></label>`;
       }).join('');
-      rows.forEach((group, index) => {
-        const input = $(`protection_group_${index}`);
+      rows.forEach((group) => {
+        const input = $(protectionGroupDomId(group.render_instance_id));
         if (!input) return;
-        input.onchange = () => {
-          group.visible = input.checked;
-          for (const entity of group.entities) {
-            entity.show = protectionLayerEnabled() && group.visible;
-          }
-          S.stats.entities = viewer.entities.values.length;
-          renderStatus();
-        };
+        input.onchange = () => setProtectionGroupVisible(
+          group.render_instance_id, input.checked);
       });
     }
     renderProtectionPanelList();
+    // 实例键驱动的保护体开关（验收脚本经 window.__CNS_3D__ 复用同一实现）。
+    S.protectionApi = {
+      setGroupVisible: setProtectionGroupVisible,
+      groupByKey: protectionGroupByKey,
+    };
+
+    // ---- 模拟轨迹回放：用户配置 + 单一时间基准 + 三类语义严格分离 --------------
+    // 这里**没有**任何几何判定：进入/离开事件全部来自后端 assess_simulated_track。
+    // 前端只负责插值、时间轴、事件标记与实体绑定，因此不可能出现"第二套判定算法"。
+    S.intrusion.deps = { Cesium, undulationAt };
+    const intrusionDeps = () => ({
+      Cesium, undulationAt, volumeBounds: S.intrusion.volumeBounds,
+    });
+    const finiteOrNull = (value) => {
+      if (value === null || value === undefined || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+
+    function setIntrusionNote(text, cls) {
+      const node = $('intrusionNote');
+      if (!node) return;
+      node.textContent = text || '';
+      node.className = cls || 'dim';
+    }
+
+    function renderIntrusionHud(state) {
+      const node = $('intrusionHud');
+      if (!node) return;
+      if (!state) {
+        node.className = 'dim';
+        node.innerHTML = '尚未配置模拟轨迹。';
+        return;
+      }
+      const text = describeState(state);
+      node.className = '';
+      node.innerHTML = `<div>当前模拟时间：<b>${text.timeText}</b>（${text.elapsedText}）</div>`
+        + `<div>目标位置：${text.positionText}（EGM2008 正高）</div>`
+        + `<div>水平：${text.horizontalText}</div>`
+        + `<div>三维示意：${text.volumeText}</div>`
+        + `<div>${text.surveillanceText}</div>`
+        + `<div class="warn">${text.banner}</div>`;
+    }
+
+    function renderIntrusionEvents(model) {
+      const node = $('intrusionEvents');
+      if (!node) return;
+      if (!model || !model.events.length) {
+        node.className = 'dim';
+        node.innerHTML = '未配置或无 entry/exit 事件。';
+        return;
+      }
+      node.className = '';
+      node.innerHTML = model.events.map((row, index) => {
+        const scope = SCOPE_LABELS[row.scope] || row.scope;
+        const kind = row.kind === 'entry' ? '进入' : '离开';
+        const crossing = row.crossing ? '' : '（非物理穿越）';
+        const height = row.altitudeEgm2008M === null
+          ? '高度缺失' : `${row.altitudeEgm2008M.toFixed(1)} m`;
+        return `<button data-event-index="${index}">${row.timeS.toFixed(2)} s · `
+          + `${scope} · ${kind}${crossing} · ${height}</button>`;
+      }).join('');
+      node.querySelectorAll('button[data-event-index]').forEach((button) => {
+        button.onclick = () => {
+          if (!focusIntrusionEvent(Number(button.dataset.eventIndex))) {
+            setIntrusionNote('该事件点缺少 EGM2008 geoid 偏移，无法定位（不猜高度）。', 'warn');
+          }
+        };
+      });
+    }
+
+    function eventCartesian(row) {
+      const undulation = undulationAt(row.longitude, row.latitude);
+      if (!Number.isFinite(undulation) || !Number.isFinite(row.altitudeEgm2008M)) return null;
+      return Cesium.Cartesian3.fromDegrees(
+        row.longitude, row.latitude, row.altitudeEgm2008M + undulation);
+    }
+
+    function focusIntrusionEvent(index) {
+      const model = S.intrusion.model;
+      const row = model && model.events[index];
+      if (!row) return false;
+      const position = eventCartesian(row);
+      if (!position) return false;
+      // 定位到事件点上方 900 m：保留当前朝向（通常已切到俯视），不贴地也不跳变。
+      const undulation = undulationAt(row.longitude, row.latitude);
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(
+          row.longitude, row.latitude, row.altitudeEgm2008M + undulation + 1500),
+        duration: 0.8,
+      });
+      const handle = S.intrusion.handle;
+      const marker = ((handle && handle.eventEntities) || []).find(
+        (entity) => entity.__cns && entity.__cns.eventIndex === index);
+      if (marker) showPopup(marker, { x: 330, y: 92 });
+      return true;
+    }
+
+    function applyIntrusionFrame(state) {
+      const handle = S.intrusion.handle;
+      if (!handle) return;
+      const applied = applyIntrusionState(handle, state, S.intrusion.deps);
+      if (S.intrusion.follow && S.intrusion.follow.following
+          && applied && applied.position) {
+        S.intrusion.follow.update(applied.position);
+      }
+      renderIntrusionHud(state);
+      const timeline = $('intrusionTimeline');
+      if (timeline && !S.intrusion.dragging) timeline.value = String(state.timeS);
+    }
+
+    function syncIntrusionTimeline(model) {
+      const timeline = $('intrusionTimeline');
+      if (!timeline || !model) return;
+      timeline.min = String(model.startTimeS);
+      timeline.max = String(model.endTimeS);
+      timeline.step = String(Math.max(0.01, model.durationS / 500));
+      timeline.value = String(model.startTimeS);
+      timeline.disabled = false;
+    }
+
+    function clearIntrusionEntities() {
+      if (S.intrusion.controller) S.intrusion.controller.pause();
+      if (S.intrusion.follow) S.intrusion.follow.disable();
+      if (S.intrusion.handle) removeIntrusionEntities(viewer, S.intrusion.handle);
+      S.intrusion.handle = null;
+      S.intrusion.controller = null;
+      S.intrusion.model = null;
+      S.intrusion.volumeBounds = null;
+      groups.intrusion = [];
+      S.intrusion.revision += 1;
+    }
+
+    function intrusionTargetOptions(projectPayload, previewVolume) {
+      const options = [];
+      for (const volume of (projectPayload || {}).volumes || []) {
+        options.push({
+          key: `project:${volume.render_instance_id}`,
+          mode: 'project_result',
+          renderInstanceId: volume.render_instance_id,
+          label: `${volume.route_id || '—'} · ${volume.route_authority || '—'} · `
+            + `${volume.status} · ${volume.vertical_extent_status}`,
+          volume,
+        });
+      }
+      if (previewVolume) {
+        options.push({
+          key: `preview:${previewVolume.render_instance_id}`,
+          mode: 'engineering_scenario_preview',
+          renderInstanceId: previewVolume.render_instance_id,
+          label: `${previewVolume.route_id || '—'} · 用户工程示意 · `
+            + `${previewVolume.horizontal_half_width_m} m · `
+            + `${previewVolume.lower_altitude_m}–${previewVolume.upper_altitude_m} m`,
+          volume: previewVolume,
+        });
+      }
+      return options;
+    }
+
+    async function loadIntrusionTargets() {
+      setIntrusionNote('正在读取保护体实例…');
+      const project = await getJSON(`${API}/protection-volumes`);
+      S.protection = S.protection || project;
+      // 预设需要航路几何身份来构造垂线方向；只取身份端点，不额外拉地形窗口。
+      if (!S.routes) S.routes = await getJSON(`${API}/routes`);
+      const previewVolume = (((S.protectionPreview || {}).volumes) || [])[0] || null;
+      const options = intrusionTargetOptions(project, previewVolume);
+      S.intrusion.targets = options;
+      const select = $('intrusionTarget');
+      if (select) {
+        select.innerHTML = '<option value="">请选择保护体实例…</option>'
+          + options.map((row) => `<option value="${row.key}">${row.label}</option>`).join('');
+        select.value = options.some((row) => row.key === S.intrusion.selectedKey)
+          ? S.intrusion.selectedKey : '';
+      }
+      setIntrusionNote(options.length
+        ? `已读取 ${options.length} 个保护体实例（历史 / 缺证冲突 / 用户示意各自独立实例键）。`
+          + '历史实例只能给水平相交结论，不能得到三维入侵。'
+        : '当前没有可用保护体实例：请先开启 P17 图层，或在「自定义保护区示意」生成一个示意。');
+      return options;
+    }
+
+    function selectedIntrusionTarget() {
+      const select = $('intrusionTarget');
+      const key = select ? select.value : '';
+      return (S.intrusion.targets || []).find((row) => row.key === key) || null;
+    }
+
+    /** 演示预设：全部数值都是**工程假设**，由用户主动点击才写入输入框。 */
+    function buildIntrusionPreset(kind, target) {
+      const volume = (target || {}).volume || {};
+      const routeFingerprint = ((volume.route_geometry_identity || {}).fingerprint) || '';
+      const routes = (S.routes && S.routes.routes) || [];
+      const route = routes.find(
+        (row) => ((row.identity || {}).fingerprint) === routeFingerprint) || null;
+      if (!route || !Array.isArray(route.path) || route.path.length < 2) {
+        return { error: 'no_matching_route_geometry',
+          message: '当前没有与该保护体实例匹配的航路几何，无法生成垂线方向；请先开启航路图层。' };
+      }
+      const lower = finiteOrNull(volume.lower_altitude_m);
+      const upper = finiteOrNull(volume.upper_altitude_m);
+      const slice = finiteOrNull(volume.nominal_altitude_slice_egm2008_m);
+      const halfWidth = finiteOrNull(volume.horizontal_half_width_m)
+        ?? finiteOrNull(volume.outer_half_width_m);
+      const path = route.path;
+      const anchor = path[Math.floor(path.length / 2)];
+      const before = path[Math.max(0, Math.floor(path.length / 2) - 1)];
+      const after = path[Math.min(path.length - 1, Math.floor(path.length / 2) + 1)];
+      let dx = after[0] - before[0];
+      let dy = after[1] - before[1];
+      const norm = Math.hypot(dx, dy);
+      if (!Number.isFinite(norm) || norm <= 0) {
+        return { error: 'degenerate_route_direction',
+          message: '航路在锚点处方向退化，无法生成垂线；请手工输入轨迹节点。' };
+      }
+      dx /= norm; dy /= norm;
+      const px = -dy; const py = dx;
+      const cosLat = Math.max(0.2, Math.cos((anchor[1] * Math.PI) / 180));
+      const halfSpanM = (halfWidth === null ? 250 : halfWidth) * 1.6;
+      const lonStep = (halfSpanM * px) / (111320 * cosLat);
+      const latStep = (halfSpanM * py) / 111320;
+      const nodes = [];
+      const midAltitude = (lower !== null && upper !== null) ? (lower + upper) / 2 : slice;
+      if (midAltitude === null) {
+        return { error: 'altitude_missing',
+          message: '该实例既无确认上下界也无名义高度切片：拒绝生成高度为 0 的假轨迹。' };
+      }
+      if (kind === 'vertical') {
+        const lowerAltitude = lower !== null ? lower - 40 : midAltitude - 60;
+        const upperAltitude = upper !== null ? upper + 40 : midAltitude + 60;
+        for (const [time, altitude] of [
+          [0, lowerAltitude], [45, midAltitude], [90, upperAltitude]]) {
+          nodes.push({
+            longitude: Number(anchor[0].toFixed(7)), latitude: Number(anchor[1].toFixed(7)),
+            altitude_egm2008_m: Number(altitude.toFixed(3)), relative_time_s: time,
+          });
+        }
+      } else {
+        for (const [time, sign] of [[0, -1], [45, 0], [90, 1]]) {
+          nodes.push({
+            longitude: Number((anchor[0] + sign * lonStep).toFixed(7)),
+            latitude: Number((anchor[1] + sign * latStep).toFixed(7)),
+            altitude_egm2008_m: Number(midAltitude.toFixed(3)), relative_time_s: time,
+          });
+        }
+      }
+      return {
+        kind, nodes, routeId: route.route_id || null,
+        halfSpanM,
+        assumptions: {
+          route_geometry: 'from_existing_route_identity',
+          half_width_m: halfWidth,
+          lower_altitude_m: lower,
+          upper_altitude_m: upper,
+          nominal_altitude_slice_egm2008_m: slice,
+          altitude_mid_m: midAltitude,
+          vertical_reference: 'EGM2008',
+          note: '工程假设：数值全部来自已有航路身份或用户输入，不是权威探测或运行事实',
+        },
+      };
+    }
+
+    function loadIntrusionPreset(kind = 'crossing') {
+      const target = selectedIntrusionTarget();
+      if (!target) {
+        setIntrusionNote('必须先在「保护体实例」里选择对象，再载入演示预设。', 'warn');
+        return { status: 'selection_required' };
+      }
+      const preset = buildIntrusionPreset(kind, target);
+      if (preset.error) {
+        setIntrusionNote(preset.message, 'warn');
+        return { status: preset.error, message: preset.message };
+      }
+      const textarea = $('intrusionTrack');
+      if (textarea) textarea.value = JSON.stringify(preset.nodes, null, 0);
+      setIntrusionNote(`已载入${kind === 'vertical' ? '垂直穿越' : '水平穿越'}演示预设`
+        + `（工程假设，非权威事实）：${preset.nodes.length} 个节点，时长 `
+        + `${preset.nodes[preset.nodes.length - 1].relative_time_s} s。可手工修改后再判定。`,
+      'warn');
+      return { status: 'loaded', kind, nodes: preset.nodes, assumptions: preset.assumptions };
+    }
+
+    async function assessIntrusion() {
+      const target = selectedIntrusionTarget();
+      if (!target) {
+        setIntrusionNote('必须显式选择保护体实例；系统不会替你挑一个。', 'warn');
+        return { status: 'selection_required' };
+      }
+      const textarea = $('intrusionTrack');
+      const raw = textarea ? textarea.value.trim() : '';
+      if (!raw) {
+        setIntrusionNote('必须由用户配置至少两个轨迹节点。', 'warn');
+        return { status: 'track_required' };
+      }
+      let nodes;
+      try {
+        nodes = JSON.parse(raw);
+      } catch (error) {
+        setIntrusionNote(`轨迹 JSON 解析失败：${error.message}`, 'err');
+        return { status: 'track_invalid', message: error.message };
+      }
+      if (!Array.isArray(nodes) || nodes.length < 2) {
+        setIntrusionNote('轨迹必须是至少两个节点的 JSON 数组。', 'warn');
+        return { status: 'track_invalid', message: 'at least two nodes' };
+      }
+      const query = new URLSearchParams({
+        mode: target.mode,
+        render_instance_id: target.renderInstanceId,
+        track_id: 'SIM-R0005-USER',
+        track: JSON.stringify(nodes),
+      });
+      if (target.mode === 'engineering_scenario_preview') {
+        const volume = target.volume;
+        query.set('route_geometry_fingerprint',
+          ((volume.route_geometry_identity || {}).fingerprint) || '');
+        query.set('half_width_m', String(volume.horizontal_half_width_m));
+        query.set('lower_altitude_m', String(volume.lower_altitude_m));
+        query.set('upper_altitude_m', String(volume.upper_altitude_m));
+      }
+      setIntrusionNote('正在按后端合同判定轨迹 × 保护体…');
+      const payload = await getJSON(`${API}/intrusion-assessment?${query.toString()}`);
+      const model = buildPlaybackModel(payload);
+
+      clearIntrusionEntities();   // 先清再建：绝不把新轨迹叠加到旧实体上。
+      const geoid = await ensureGeoidWindow(
+        model.nodes.map((row) => [row.longitude, row.latitude]), 0);
+      const lower = finiteOrNull(target.volume.lower_altitude_m);
+      const upper = finiteOrNull(target.volume.upper_altitude_m);
+      S.intrusion.volumeBounds = (lower !== null && upper !== null)
+        ? { lower, upper } : null;
+      S.intrusion.handle = addIntrusionEntities(viewer, model, intrusionDeps());
+      groups.intrusion = S.intrusion.handle.entities;
+      S.intrusion.model = model;
+      S.intrusion.payload = payload;
+      S.intrusion.geoidWindow = geoid;
+      S.intrusion.revision += 1;
+      S.intrusion.evaluationRevision += 1;
+      S.intrusion.follow = createCameraFollow(viewer, { Cesium });
+      S.intrusion.controller = new PlaybackController({
+        model,
+        onUpdate: (state) => applyIntrusionFrame(state),
+      });
+      const layerInput = $('ly_intrusion');
+      if (layerInput) {
+        layerInput.checked = true;
+        S.intrusion.layerWanted = true;
+      }
+      setIntrusionVisible(S.intrusion.handle, true);
+      syncIntrusionTimeline(model);
+      renderIntrusionEvents(model);
+      applyIntrusionFrame(S.intrusion.controller.state);
+      const horizontal = payload.horizontal_projection_intersection || {};
+      const intrusion = payload.three_dimensional_volume_intrusion || {};
+      setIntrusionNote(`判定完成：水平 ${horizontal.status}；三维示意 `
+        + `${intrusion.status}${intrusion.reason ? `（${intrusion.reason}）` : ''}；`
+        + `监视探测 ${(payload.surveillance_detection || {}).status}。`
+        + `轨迹实体 ${S.intrusion.handle.entities.length} 个（geoid 窗口 ${geoid.status}）。`,
+      intrusion.status === 'intrudes' ? 'warn' : 'dim');
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+      return {
+        status: 'evaluated', model, payload,
+        handle_entity_count: S.intrusion.handle.entities.length,
+      };
+    }
+
+    function clearIntrusion() {
+      clearIntrusionEntities();
+      for (const id of ['intrusionPlay', 'intrusionReset']) {
+        const node = $(id);
+        if (node) node.textContent = id === 'intrusionPlay' ? '▶ 播放' : '↺ 重置';
+      }
+      const timeline = $('intrusionTimeline');
+      if (timeline) { timeline.disabled = true; timeline.value = '0'; }
+      const follow = $('intrusionFollow');
+      if (follow) follow.checked = false;
+      renderIntrusionEvents(null);
+      renderIntrusionHud(null);
+      setIntrusionNote('已清除模拟目标、轨迹与事件标记；无残留实体。');
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus();
+      return { status: 'cleared', entities: viewer.entities.values.length };
+    }
+
+    const intrusionPlayButton = $('intrusionPlay');
+    if (intrusionPlayButton) {
+      intrusionPlayButton.onclick = () => {
+        const controller = S.intrusion.controller;
+        if (!controller) {
+          setIntrusionNote('先选择保护体实例并「开始判定并回放」，才有可播放的轨迹。', 'warn');
+          return;
+        }
+        controller.toggle();
+        intrusionPlayButton.textContent = controller.playing ? '⏸ 暂停' : '▶ 播放';
+      };
+    }
+    const intrusionResetButton = $('intrusionReset');
+    if (intrusionResetButton) {
+      intrusionResetButton.onclick = () => {
+        const controller = S.intrusion.controller;
+        if (!controller) return;
+        controller.reset();
+        if (intrusionPlayButton) intrusionPlayButton.textContent = '▶ 播放';
+      };
+    }
+    const intrusionTimeline = $('intrusionTimeline');
+    if (intrusionTimeline) {
+      intrusionTimeline.onpointerdown = () => { S.intrusion.dragging = true; };
+      const endDrag = () => { S.intrusion.dragging = false; };
+      intrusionTimeline.onpointerup = endDrag;
+      intrusionTimeline.onchange = endDrag;
+      intrusionTimeline.oninput = () => {
+        const controller = S.intrusion.controller;
+        if (!controller) return;
+        // 拖动与播放使用同一个时间基准：先暂停，再按拖动值 seek，显示必然一致。
+        controller.pause();
+        if (intrusionPlayButton) intrusionPlayButton.textContent = '▶ 播放';
+        controller.scrub(Number(intrusionTimeline.value));
+      };
+    }
+    const intrusionSpeed = $('intrusionSpeed');
+    if (intrusionSpeed) {
+      intrusionSpeed.innerHTML = PLAYBACK_SPEEDS.map(
+        (value) => `<option value="${value}"${value === 1 ? ' selected' : ''}>${value}×`
+          + '</option>').join('');
+      intrusionSpeed.onchange = () => {
+        if (S.intrusion.controller) S.intrusion.controller.setSpeed(intrusionSpeed.value);
+      };
+    }
+    const intrusionFollowInput = $('intrusionFollow');
+    if (intrusionFollowInput) {
+      intrusionFollowInput.onchange = () => {
+        const handle = S.intrusion.handle;
+        if (!handle || !S.intrusion.follow) {
+          intrusionFollowInput.checked = false;
+          setIntrusionNote('先判定并生成模拟轨迹，再开启相机跟随。', 'warn');
+          return;
+        }
+        if (intrusionFollowInput.checked) {
+          const state = S.intrusion.controller.state;
+          const applied = applyIntrusionState(handle, state, S.intrusion.deps);
+          S.intrusion.follow.enable((applied && applied.position)
+            || handle.target.position, {});
+        } else {
+          S.intrusion.follow.disable();
+        }
+      };
+    }
+    const intrusionLoadButton = $('intrusionLoadTargets');
+    if (intrusionLoadButton) {
+      intrusionLoadButton.onclick = () => loadIntrusionTargets().catch(
+        (error) => setIntrusionNote(`读取保护体实例失败：${error.message}`, 'err'));
+    }
+    const intrusionPresetButton = $('intrusionPreset');
+    if (intrusionPresetButton) {
+      intrusionPresetButton.onclick = () => loadIntrusionPreset('crossing');
+    }
+    const intrusionAssessButton = $('intrusionAssess');
+    if (intrusionAssessButton) {
+      intrusionAssessButton.onclick = () => assessIntrusion().catch(
+        (error) => setIntrusionNote(`判定失败：${error.message}`, 'err'));
+    }
+    const intrusionClearButton = $('intrusionClear');
+    if (intrusionClearButton) intrusionClearButton.onclick = clearIntrusion;
+    const intrusionTargetSelect = $('intrusionTarget');
+    if (intrusionTargetSelect) {
+      intrusionTargetSelect.onchange = () => {
+        S.intrusion.selectedKey = intrusionTargetSelect.value;
+        setIntrusionNote(intrusionTargetSelect.value
+          ? '实例已选择；载入预设或手工输入轨迹节点后判定。'
+          : '尚未选择保护体实例。');
+      };
+    }
+    const simulatedNotice = $('simulatedNotice');
+    if (simulatedNotice) simulatedNotice.textContent = INTRUSION_MODE_BANNER;
+    renderIntrusionHud(null);
+    renderIntrusionEvents(null);
+
+    // 逐帧推进只调用控制器（时间驱动），**绝不**用回调累加判定事件是否发生。
+    if (!S.intrusion.tickInstalled) {
+      S.intrusion.tickInstalled = true;
+      viewer.clock.onTick.addEventListener(() => {
+        const controller = S.intrusion.controller;
+        if (controller && controller.playing) controller.tick();
+      });
+    }
+
+    // 供验收脚本使用的闭包出口（window.__CNS_3D__ 只做转发，不复制逻辑）。
+    S.intrusion.api = {
+      loadTargets: loadIntrusionTargets,
+      preset: loadIntrusionPreset,
+      assess: assessIntrusion,
+      clear: clearIntrusion,
+      focusEvent: focusIntrusionEvent,
+      state: () => (S.intrusion.controller ? S.intrusion.controller.state : null),
+      seek: (timeS) => (S.intrusion.controller
+        ? S.intrusion.controller.scrub(Number(timeS)) : null),
+      play: () => (S.intrusion.controller ? S.intrusion.controller.play() : null),
+      pause: () => (S.intrusion.controller ? S.intrusion.controller.pause() : null),
+      reset: () => (S.intrusion.controller ? S.intrusion.controller.reset() : null),
+      setSpeed: (value) => (S.intrusion.controller
+        ? S.intrusion.controller.setSpeed(value) : null),
+      setFollow: (enabled, options) => {
+        const follow = S.intrusion.follow;
+        const handle = S.intrusion.handle;
+        if (!follow || !handle) return false;
+        const yes = Boolean(enabled && (typeof enabled === 'object' ? enabled.enabled : true));
+        const row = (enabled && typeof enabled === 'object') ? enabled : (options || {});
+        const input = $('intrusionFollow');
+        if (input) input.checked = yes;
+        if (yes) {
+          const applied = applyIntrusionState(handle, S.intrusion.controller.state,
+            S.intrusion.deps);
+          follow.enable((applied && applied.position) || handle.target.position, {
+            heading: Number.isFinite(row.headingDeg)
+              ? Cesium.Math.toRadians(row.headingDeg) : undefined,
+            pitch: Number.isFinite(row.pitchDeg)
+              ? Cesium.Math.toRadians(row.pitchDeg) : undefined,
+            range: Number.isFinite(row.rangeM) ? row.rangeM : undefined,
+          });
+        } else {
+          follow.disable();
+        }
+        return true;
+      },
+      targets: () => (S.intrusion.targets || []).map((row) => ({
+        key: row.key, mode: row.mode, render_instance_id: row.renderInstanceId,
+        label: row.label,
+      })),
+    };
 
     const bindBase = (id, setter) => {
       const input = $(`ly_${id}`);
@@ -1576,7 +2352,50 @@ async function boot() {
     // 下面的循环只调用 LazyLayerRegistry.setVisible（首次才请求几何）。
     S.viewerIdentity = viewer;
 
+    /**
+     * Round38-T3D4：切换航路 / 项目后清理旧图层与缓存。
+     *
+     * 需求明确要求"切换航路或项目后清理旧图层和缓存"。这里给出**唯一**入口：
+     * 它删除专题图层实体、清空懒加载注册表与已缓存的业务数据，并把图层复选框
+     * 复位为默认（项目打开默认只展示底图）。**不**重建 Viewer，也不重载底图。
+     */
+    S.clearBusinessLayers = (options = {}) => {
+      const keepBase = options.keepBaseLayers !== false;
+      for (const id of Object.keys(BUSINESS_LAYER_DEFAULTS)) {
+        for (const entity of S.lazyLayers.entities(id)) {
+          try { viewer.entities.remove(entity); } catch (_error) { /* 已移除 */ }
+        }
+      }
+      S.lazyLayers = new LazyLayerRegistry(S.lazyLayerLoaders || {});
+      for (const key of Object.keys(groups)) groups[key] = [];
+      S.routes = null;
+      S.points = null;
+      S.coverage = null;
+      S.radarGroups = null;
+      S.protectionGroups = null;
+      S.cnsSiteGroups = null;
+      S.cnsSites = null;
+      S.fixedCorridor = null;
+      S.fixedCorridorGroups = null;
+      S.routeContextPromise = null;
+      S.pointsPromise = null;
+      S.towerGroupsPromise = null;
+      for (const id of Object.keys(BUSINESS_LAYER_DEFAULTS)) {
+        const input = $(`ly_${id}`);
+        if (input) input.checked = Boolean(BUSINESS_LAYER_DEFAULTS[id]);
+      }
+      renderCnsSiteLegend();
+      renderFixedCorridorPanel([], { groups: [] });
+      S.stats.entities = viewer.entities.values.length;
+      renderStatus({ quiet: true });
+      if (!keepBase) return false;
+      return true;
+    };
+
     for (const id of Object.keys(BUSINESS_LAYER_DEFAULTS)) {
+      // 模拟轨迹不是"服务端几何懒加载"图层：它的实体只由用户配置的轨迹产生，
+      // 因此单独接线（见下方 ly_intrusion），不经过 LazyLayerRegistry。
+      if (id === 'intrusion') continue;
       const input = $(`ly_${id}`);
       if (!input) continue;
       input.onchange = async () => {
@@ -1596,6 +2415,25 @@ async function boot() {
         } finally {
           input.disabled = false;
         }
+      };
+    }
+
+    // 模拟轨迹图层的整体开关：只切换已有实体的 show，绝不请求几何、绝不重建 Viewer。
+    const intrusionLayerInput = $('ly_intrusion');
+    if (intrusionLayerInput) {
+      intrusionLayerInput.checked = S.intrusion.layerWanted;
+      intrusionLayerInput.onchange = () => {
+        S.intrusion.layerWanted = intrusionLayerInput.checked;
+        if (S.intrusion.handle) {
+          setIntrusionVisible(S.intrusion.handle, intrusionLayerInput.checked);
+          // 整体开关会重置所有实体的 show；随后按当前时间基准恢复剖面条的显隐。
+          if (S.intrusion.controller) applyIntrusionFrame(S.intrusion.controller.state);
+        } else if (intrusionLayerInput.checked) {
+          setIntrusionNote('图层已开启，但还没有模拟轨迹：请选择保护体实例并'
+            + '「开始判定并回放」。系统不会自动生成目标。');
+        }
+        S.stats.entities = viewer.entities.values.length;
+        renderStatus();
       };
     }
 
@@ -1839,7 +2677,11 @@ window.__CNS_3D__ = {
                      radar: { total: 0, shown: 0 },
                      radar_preview: { total: 0, shown: 0 },
                      protection: { total: 0, shown: 0 },
-                     protection_preview: { total: 0, shown: 0 } };
+                     protection_preview: { total: 0, shown: 0 },
+                     cns_sites: { total: 0, shown: 0 },
+                     fixed_corridor: { total: 0, shown: 0 },
+                     intrusion: { total: 0, shown: 0 },
+                     intrusion_event: { total: 0, shown: 0 } };
     for (const entity of S.viewer.entities.values) {
       const info = entity.__cns;
       if (!info) continue;
@@ -1848,18 +2690,123 @@ window.__CNS_3D__ = {
           : (info.kind === 'radar-panel'
             ? (info.preview ? result.radar_preview : result.radar)
             : (info.kind === 'p17-protection' ? result.protection
-              : (info.kind === 'protection-preview' ? result.protection_preview : null))));
+              : (info.kind === 'protection-preview' ? result.protection_preview
+                : ((info.kind === 'cns-site' || info.kind === 'tower-structure'
+                    || info.kind === 'cns-device' || info.kind === 'cns-planned-device')
+                  ? result.cns_sites
+                  : ((info.kind === 'fixed-corridor-band'
+                      || info.kind === 'fixed-corridor-layer-slice')
+                    ? result.fixed_corridor
+                    : (info.kind === 'simulated-intrusion-event' ? result.intrusion_event
+                      : (info.kind && info.kind.startsWith('simulated-intrusion')
+                        ? result.intrusion : null))))))));
       if (!bucket) continue;
       bucket.total += 1;
       if (entity.show) bucket.shown += 1;
     }
     return result;
   },
+  /** 验收辅助：CNS 站址 / 设备身份的只读证据（四类分层 + 高度证据完整性）。 */
+  cnsSiteStats() {
+    const payload = S.cnsSites;
+    const groups = S.cnsSiteGroups;
+    return {
+      payload: payload ? {
+        status: payload.status,
+        revision: payload.revision,
+        read_only: payload.read_only,
+        writes_performed: payload.writes_performed,
+        algorithms_invoked: payload.algorithms_invoked,
+        count: payload.count,
+        counts: payload.counts,
+        identity_rules: payload.identity_rules,
+        shared_site_source: payload.shared_site_source,
+        radar_site_input_status: payload.radar_site_input_status,
+        service_categories: payload.service_categories,
+        blocked_site_reasons: (payload.blocked_sites || []).map(
+          (row) => ({ site_id: row.site_id, reason: row.block_reason,
+                      required_evidence: row.required_evidence })),
+      } : null,
+      entity_counts: {
+        site_anchors: groups ? groups.entities.length : 0,
+        towers_with_structure: groups ? groups.towers.length : 0,
+        device_markers: groups ? groups.devices.length : 0,
+        planned_devices: groups ? groups.plans.length : 0,
+      },
+      diagnostics: S.cnsSiteDiagnostics || null,
+      viewer_identity_stable: Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer,
+    };
+  },
+  /** 验收辅助：固定 1000 m 保障目标带的只读证据（currentness + 身份 + 绘制性质）。 */
+  fixedCorridorStats() {
+    const payload = S.fixedCorridor;
+    return {
+      payload: payload ? {
+        status: payload.status,
+        read_only: payload.read_only,
+        writes_performed: payload.writes_performed,
+        band_count: payload.band_count,
+        width_contract: payload.width_contract,
+        geometry_source: payload.geometry_source,
+        corridor_effective_status: payload.round38_corridor_effective_status,
+        identity_rules: payload.identity_rules,
+        bands: (payload.bands || []).map((band) => ({
+          route_id: band.route_id,
+          currentness: band.currentness,
+          currentness_reason: (band.currentness_entry || {}).reason || null,
+          drawable_as_current_band: band.drawable_as_current_band,
+          preview_allowed: band.preview_allowed,
+          preview_authority: band.preview_authority,
+          geometry_status: band.geometry_status,
+          geometry_fingerprint: band.geometry_fingerprint,
+          route_geometry_fingerprint: band.route_geometry_fingerprint,
+          route_authority: band.route_authority,
+          width_policy_version: band.width_policy_version,
+          corridor_half_width_m: band.corridor_half_width_m,
+          corridor_total_width_m: band.corridor_total_width_m,
+          vertical_extent_status: band.vertical_extent_status,
+          altitude_layer_id: band.altitude_layer_id,
+          nominal_altitude_m: band.nominal_altitude_m,
+          may_claim_3d_certified_volume: band.may_claim_3d_certified_volume,
+        })),
+      } : null,
+      groups: (S.fixedCorridorGroups || []).map((group) => ({
+        route_id: group.route_id,
+        authority: group.authority,
+        currentness: group.currentness,
+        vertical_extent_status: group.vertical_extent_status,
+        entity_count: group.entities.length,
+        visible: group.visible,
+        shown: group.entities.filter((entity) => entity.show).length,
+      })),
+      diagnostics: S.fixedCorridorDiagnostics || null,
+      viewer_identity_stable: Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer,
+    };
+  },
+  setFixedCorridorGroupVisible(index, value) {
+    const group = (S.fixedCorridorGroups || [])[Number(index) || 0];
+    if (!group) return false;
+    group.visible = Boolean(value);
+    const layerInput = $('ly_fixedCorridor');
+    for (const entity of group.entities) {
+      entity.show = Boolean(layerInput && layerInput.checked && group.visible);
+    }
+    const input = $(`fixed_band_${Number(index) || 0}`);
+    if (input) input.checked = group.visible;
+    return true;
+  },
+  /** 验收辅助：按**唯一入口**清理业务图层与缓存（切换航路/项目后必须调用）。 */
+  clearBusinessLayers() {
+    return typeof S.clearBusinessLayers === 'function'
+      ? S.clearBusinessLayers() : false;
+  },
   /** 验收辅助：P17 历史/冲突与工程示意的隔离证据。 */
   protectionStats() {
     const groupsOf = (groups) => (groups || []).map((group) => ({
+      render_instance_id: group.render_instance_id || null,
       object_id: group.object_id,
       route_id: group.route_id,
+      route_authority: group.route_authority || null,
       status: group.status,
       historical: group.historical,
       preview: group.preview,
@@ -1876,17 +2823,124 @@ window.__CNS_3D__ = {
       viewer_identity_stable: Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer,
     };
   },
-  setProtectionGroupVisible(index, value) {
-    const group = (S.protectionGroups || [])[Number(index) || 0];
-    if (!group) return false;
-    group.visible = Boolean(value);
-    const layerInput = $('ly_protection');
-    for (const entity of group.entities) {
-      entity.show = Boolean(layerInput && layerInput.checked && group.visible);
-    }
-    const input = $(`protection_group_${Number(index) || 0}`);
-    if (input) input.checked = group.visible;
-    return true;
+  /** 验收辅助：只读的实例身份列表（不含几何，避免把大坐标串带进证据）。 */
+  protectionInstances() {
+    const payload = S.protection || null;
+    return {
+      schema_version: payload ? payload.schema_version : null,
+      mode: payload ? payload.mode : null,
+      status: payload ? payload.status : null,
+      revision: payload ? payload.revision : null,
+      render_instance_ids: payload ? payload.render_instance_ids || [] : [],
+      render_instance_id_unique: payload ? payload.render_instance_id_unique : null,
+      duplicate_render_instance_ids: payload ? payload.duplicate_render_instance_ids || [] : [],
+      instance_identity_rule: payload ? payload.instance_identity_rule || null : null,
+      volumes: ((payload || {}).volumes || []).map((row) => ({
+        render_instance_id: row.render_instance_id,
+        object_id: row.object_id,
+        route_id: row.route_id,
+        route_authority: row.route_authority,
+        status: row.status,
+        geometry_status: (row.geometry || {}).status,
+        geometry_dimension: row.geometry_dimension,
+        vertical_extent_status: row.vertical_extent_status,
+        protection_geometry_identity: row.protection_geometry_identity || null,
+        route_geometry_fingerprint: ((row.route_geometry_identity || {}).fingerprint) || null,
+        p17_route_geometry_fingerprint:
+          ((row.p17_route_geometry_identity || {}).fingerprint) || null,
+        eligible_for_current_warning: row.eligible_for_current_warning === undefined
+          ? null : row.eligible_for_current_warning,
+      })),
+      intrusion_contract: payload && payload.intrusion_contract
+        ? {
+          mode: payload.intrusion_contract.mode,
+          status: payload.intrusion_contract.status,
+          reason: payload.intrusion_contract.reason,
+          simulated: payload.intrusion_contract.simulated,
+          surveillance_status:
+            (payload.intrusion_contract.surveillance_detection || {}).status,
+          protection_geometry_statuses:
+            payload.intrusion_contract.protection_geometry_statuses || [],
+        } : null,
+      viewer_identity_stable: Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer,
+    };
+  },
+  /** 开关某个保护体实例；优先按**实例键**，数字下标仅为 3A 验收脚本兼容。 */
+  setProtectionGroupVisible(target, value) {
+    if (!S.protectionApi) return false;
+    return S.protectionApi.setGroupVisible(target, value);
+  },
+  /** 验收辅助：模拟轨迹回放的只读证据（不含几何）。 */
+  intrusionStats() {
+    const model = S.intrusion.model;
+    const controller = S.intrusion.controller;
+    const state = S.intrusion.api && S.intrusion.api.state
+      ? S.intrusion.api.state() : null;
+    const describeRows = state ? describeState(state) : null;
+    return {
+      configured: Boolean(model),
+      evaluation_revision: S.intrusion.evaluationRevision,
+      render_instance_id: model ? model.renderInstanceId : null,
+      track_id: model ? model.trackId : null,
+      simulated: model ? model.simulated : null,
+      eligible_for_current_warning: model ? model.eligibleForCurrentWarning : null,
+      duration_s: model ? model.durationS : null,
+      node_count: model ? model.nodes.length : 0,
+      event_count: model ? model.events.length : 0,
+      events: model ? model.events.map((row) => ({
+        scope: row.scope, kind: row.kind, time_s: row.timeS,
+        longitude: row.longitude, latitude: row.latitude,
+        altitude_egm2008_m: row.altitudeEgm2008M,
+        crossing: row.crossing, crossing_basis: row.crossingBasis,
+      })) : [],
+      horizontal_status: model ? model.horizontal.status : null,
+      volume_status: model ? model.intrusion.status : null,
+      volume_reason: model ? model.intrusion.reason : null,
+      surveillance_status: model ? model.detection.status : null,
+      playing: controller ? controller.playing : false,
+      speed: controller ? controller.speed : null,
+      time_s: state ? state.timeS : null,
+      position: state ? state.position : null,
+      horizontal_inside: state ? state.horizontal.inside : null,
+      volume_inside: state ? state.volume.inside : null,
+      labels: describeRows,
+      banner: INTRUSION_MODE_BANNER,
+      entity_count: S.intrusion.handle ? S.intrusion.handle.entities.length : 0,
+      event_entity_count: S.intrusion.handle ? S.intrusion.handle.eventEntities.length : 0,
+      trail_status: S.intrusion.handle ? S.intrusion.handle.diagnostics.trail_status : null,
+      volume_bar_shown: Boolean(S.intrusion.handle && S.intrusion.handle.bar
+        && S.intrusion.handle.bar.show),
+      camera_following: Boolean(S.intrusion.follow && S.intrusion.follow.following),
+      geoid_window: S.intrusion.geoidWindow || null,
+      targets: S.intrusion.api ? S.intrusion.api.targets() : [],
+      isolation: model ? model.isolation : null,
+      viewer_identity_stable: Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer,
+    };
+  },
+  /** 验收辅助：与界面按钮等价的模拟轨迹操作（不复制任何判定逻辑）。 */
+  intrusion(action, argument, extra) {
+    const api = S.intrusion.api;
+    if (!api) return null;
+    if (action === 'loadTargets') return api.loadTargets();
+    if (action === 'preset') return api.preset(argument || 'crossing');
+    if (action === 'assess') return api.assess();
+    if (action === 'clear') return api.clear();
+    if (action === 'play') return api.play();
+    if (action === 'pause') return api.pause();
+    if (action === 'reset') return api.reset();
+    if (action === 'seek') return api.seek(argument);
+    if (action === 'speed') return api.setSpeed(argument);
+    if (action === 'follow') return api.setFollow(argument, extra);
+    if (action === 'focusEvent') return api.focusEvent(Number(argument));
+    if (action === 'state') return api.state();
+    return null;
+  },
+  /** 验收辅助：直接设置输入框里的轨迹节点（用户配置路径的等价入口）。 */
+  setIntrusionTrack(nodes) {
+    const textarea = $('intrusionTrack');
+    if (!textarea) return { status: 'not_ready' };
+    textarea.value = JSON.stringify(nodes || []);
+    return { status: 'set', node_count: (nodes || []).length };
   },
   /** 验收辅助：Radar 图层的**只读**证据（真实面阵 + 隔离的设备参数示意）。 */
   radarStats() {

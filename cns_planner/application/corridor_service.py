@@ -29,6 +29,7 @@ from ..algorithms.corridor.v1 import COMPLEXITY_TIER_BEYOND, COMPLEXITY_TIER_CEI
 from ..domain.cns_corridor import (
     corridor_complexity_preflight, normalize_cns_corridor_policy,
 )
+from ..gis.corridor_geometry import build_fixed_corridor_geometries
 from ..domain.surface_classification import (
     surface_class_provider_for, surface_facts_fingerprint_for,
 )
@@ -169,6 +170,11 @@ class CNSCorridorService:
         # B9R.1：把规模估算固化进输入（它是输入相关的确定性事实，因此属于输入指纹
         # 的一部分，调用方——无论同步还是 worker——都只消费这份冻结值）。
         inputs["complexity_estimate"] = _complexity_preflight(inputs)
+        #: Round38-W1A：固定 1000 m 保障宽带的共享米制几何在此**一次性**构造并冻结进
+        #: 输入，使同步入口、重算路径与异步 worker 消费同一份几何身份（绝不各造一套）。
+        inputs["corridor_geometry"] = build_fixed_corridor_geometries(
+            inputs["routes"], inputs["corridor_policy"],
+        )
         return inputs
 
     def compute_input(self, payload=None):
@@ -216,6 +222,8 @@ class CNSCorridorService:
                 ),
                 radar_service_evidence=inputs.get("radar_service_evidence"),
                 navigation_service_evidence=inputs.get("navigation_service_evidence"),
+                #: Round38-W1A：共享米制几何身份（同步 / 重算 / worker 同一份）。
+                corridor_geometry=inputs.get("corridor_geometry"),
             )
         except CorridorComplexityBlocked as exc:
             raise CorridorScaleNotAccepted(exc.estimate, str(exc)) from exc
@@ -223,15 +231,30 @@ class CNSCorridorService:
     # ---- B6X：唯一写入路径 ---------------------------------------------------
 
     def apply_policy_input(self, payload=None):
-        """把请求里的 corridor policy 落到 state（这是用户输入，不是派生结果）。"""
+        """把请求里的 corridor policy 落到 state（这是用户输入，不是派生结果）。
+
+        Round38-W1A：水平宽度不再是用户输入 —— 归一化只保留历史 ``horizontal_half_width_m``
+        作为审计值，并强制写入固定契约。**宽度策略版本变化**（含从无版本的历史 policy
+        升级）走专门的单向失效入口，只沿 P14→P15→P16→P17→评审传播，绝不反向
+        stale 航路、风险或搜索产物。
+        """
 
         state = self.session.state
         raw_policy = payload.get("cns_corridor_policy", payload.get("policy")) if isinstance(payload, dict) else None
         if raw_policy is None:
             return None
         policy = normalize_cns_corridor_policy(raw_policy)
-        if policy != state.get("cns_corridor_policy"):
-            state["cns_corridor_policy"] = policy
+        previous = state.get("cns_corridor_policy") or {}
+        if policy == previous:
+            return policy
+        state["cns_corridor_policy"] = policy
+        width_policy_changed = (
+            str(previous.get("width_policy_version") or "") != str(policy["width_policy_version"])
+            or previous.get("corridor_half_width_m") != policy["corridor_half_width_m"]
+        )
+        if width_policy_changed:
+            self.invalidation.corridor_width_policy_changed()
+        else:
             self.invalidation.cns_corridor()
         return policy
 

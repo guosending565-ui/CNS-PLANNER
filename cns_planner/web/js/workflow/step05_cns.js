@@ -21,6 +21,14 @@ import {
 import {
   bindContinuousServicePanel,continuousServiceModel,renderContinuousServicePanel,step6GateModel,
 } from './continuous_service.js';
+// Round38-N2：导航监测规划（只读消费 N1 的两个接口；前端不重实现选址算法）。
+import {
+  FORCE_ENDPOINT_NOTE,NAVIGATION_MONITORING_SIMULATION_ENDPOINT,
+  NAVIGATION_PARAMETER_DEFAULTS,
+  SHARED_SITE_CANDIDATES_ENDPOINT,FIXED_CORRIDOR_GEOMETRY_ENDPOINT,
+  bindNavigationMonitoringPanel,navigationSimulationModel,
+  renderNavigationMonitoringPanel,sharedSiteCandidateModel,
+} from './navigation_monitoring.js';
 
 //: 联合 LOS 面板的**轻量状态**是否已在本会话装载过（防重复请求 / 防渲染死循环）。
 //: 只影响"何时请求一次 ``/combined/status``"，与任何 LOS 计算无关。
@@ -33,10 +41,34 @@ export function resetRadarCombinedLosStatusGuard(){radarCombinedLosStatusLoaded=
 // 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
 export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,radarTerrainLosModel,renderRadarSurveillanceLayoutPanel,renderRadarTerrainLosBlock};
 
+/** 将站点级表单值规范成受控 policy 字段；空高度表示删除，不会被转换成 0。 */
+export function groundSiteInstallationPolicy(entries,existing={}){
+  const result=structuredClone(existing&&typeof existing==='object'?existing:{});
+  for(const entry of entries||[]){
+    const siteId=String(entry?.siteId||'').trim();
+    if(!siteId)continue;
+    const raw=String(entry?.height??'').trim();
+    if(raw===''){
+      delete result[siteId];
+      continue;
+    }
+    const source=entry?.source==='source_device_installation_height'
+      ?'source_device_installation_height':'user_confirmed';
+    result[siteId]={
+      site_id:siteId,installation_height_m:Number(raw),source,
+      confirmed:entry?.confirmed===true,
+      installation_status:source==='source_device_installation_height'?'installed':'planned',
+    };
+    const sourceRef=String(entry?.sourceRef||'').trim();
+    if(sourceRef)result[siteId].source_ref=sourceRef;
+  }
+  return result;
+}
+
 // 二级分段：同一一级标签下同屏只呈现一个任务，id 在整步内唯一。
 // 名称是业务语言；工程编号（P7…P18）只允许出现在高级标签的 advancedAuditNote 里。
 const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing','已有设施'],['cns-op-candidates','候选站址']];
-const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划']];
+const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-radar','雷达监视规划'],['cns-res-navigation-monitoring','导航监测规划']];
 const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']];
 
 // ---- 六区结构（B4X §20） ----------------------------------------------------
@@ -57,8 +89,21 @@ export const CNS_CANONICAL_CHAIN=[
 ];
 
 /** 分段抬头：说明本段在 canonical 链中的位置。 */
-function chainNote(current){
-  const names=CNS_CANONICAL_CHAIN.map(item=>item[1]).join(' → ');
+/**
+ * Round38-N2：权威参考起降点的 source CRS 是否**未确认**。
+ *
+ * 只读 ``flow.reference_landing_sites.crs.source_crs``：``value`` 为空或
+ * ``status`` 不是 ``confirmed`` 即视为未确认。**绝不**因为坐标落在舟山范围内就
+ * 推断 EPSG:4326/4490，也绝不补默认值。
+ */
+function referenceLandingCrsUnconfirmed(flow){
+  const crs=(flow?.reference_landing_sites?.crs||{}).source_crs||{};
+  if(crs.confirmed===true&&crs.status==='confirmed'&&crs.value)return false;
+  return true;
+}
+
+/** 分段抬头：说明本段在 canonical 链中的位置。 */
+function chainNote(current){  const names=CNS_CANONICAL_CHAIN.map(item=>item[1]).join(' → ');
   return '<div class="parameter-note">链条：'+escapeHtml(names)+'；当前环节：'+escapeHtml(current)+'。</div>';
 }
 
@@ -899,7 +944,8 @@ function stepNext(flow,segments){
   });
 }
 
-export function render({flow}){
+export function render({flow,navigationMonitoring=null}){
+  const navigationState=navigationMonitoring||{};
   // 两层卡片式布局：名称 + 弱化 role（第一行）、R/MTBF 两个输入各占半宽（第二行）。
   // data-device-radius / data-device-mtbf 的索引契约保持不变，collect() 无需改动。
   // Round 3：surface-aware service（Communication / RID）的**权威几何**是
@@ -1023,6 +1069,48 @@ export function render({flow}){
     +renderRadarSurveillanceLayoutPanel(flow)
     +radarServicePanel;
 
+  // ---- Round38-N2：导航监测规划（只读消费 N1 两个接口） ------------------------
+  // 结果只进前端展示状态，不写 ProjectState；CRS 未正式确认前权威仿真继续 blocked。
+  const navigationMonitoringPanel=renderNavigationMonitoringPanel(flow,{
+    candidates:navigationState.candidates,
+    result:navigationState.result,
+    fixedCorridorGeometry:navigationState.fixedCorridorGeometry,
+    draft:navigationState.draft,
+    routeId:navigationState.result?.route_identity?.route_id||null,
+    //: 权威参考起降点的 CRS 是否已确认：只读 flow 里的真实字段，绝不猜默认值。
+    //: 未确认（value 为 null / status 非 confirmed）时，界面必须如实给出阻断句。
+    referenceCrsBlocked:referenceLandingCrsUnconfirmed(flow),
+    //: 全宽 CNS 服务状态：只有 P14 结果 current 且身份匹配时才允许有效结论。
+    fullWidth:(()=>{
+      const corridor=flow?.cns_corridor_assessment||{};
+      const projected=flow?.result_statuses?.cns_corridor_assessment||corridor.status||null;
+      const routeId=navigationState.result?.route_identity?.route_id||null;
+      const entry=(corridor.routes||[]).find(item=>item?.route_id===routeId)||null;
+      const identityMatched=Boolean(
+        entry&&navigationState.result?.result_fingerprint
+        &&entry.route_id===navigationState.result?.route_identity?.route_id
+      );
+      return {
+        corridorStatus:projected,
+        corridorCurrent:projected==='passed'||projected==='failed',
+        identityMatched,
+      };
+    })(),
+  });
+  const navigationMonitoringBlockerItems=[];
+  if((flow?.operational_routes||[]).length!==1){
+    navigationMonitoringBlockerItems.push({
+      text:'正式运行航路不是唯一一条，无法确定权威航路',
+      detail:'导航监测仿真需要唯一权威航路；请先完成航路发布或明确指定航路标识。',
+    });
+  }
+  if(!(flow?.operational_routes||[]).length){
+    navigationMonitoringBlockerItems.push({
+      text:'尚未确认正式运行航路',
+      detail:'导航监测仿真按正式运行航路的完整几何计算；没有航路时无法评估。',
+    });
+  }
+
   // ---- 高级：兼容分支与闭环（全部不参与正式规划门禁） -------------------------
   // 兼容声明逐字展示（含引号），因此这里不做 HTML 转义：
   // 常量本身是固定的中文短语，不含任何用户输入。
@@ -1110,7 +1198,21 @@ export function render({flow}){
         +wbBlock('阻塞项与工程假设',blockerList(radarBlockerItems,'当前没有阻塞项；雷达监视规划默认可选'))
         +nextHint(radarBlocksNextStep(flow)
           ?'监视能力已被显式要求：请人工复核雷达监视规划结果后，再进入下一步。'
-          :'本分支可选：无论是否运行雷达监视规划，都不影响进入下一步。')]
+          :'本分支可选：无论是否运行雷达监视规划，都不影响进入下一步。')],
+      ['cns-res-navigation-monitoring','导航监测规划',
+        wbBlock('导航监测规划',wbSegHint(RESULT_SEGMENTS,'cns-res-navigation-monitoring')
+          +segIntro('沿航路中心线评估导航监测设备的关联覆盖与未关联缺口，并显示起终点强制设备、推荐铁塔设备与固定保障宽带的真实状态。',
+            '唯一权威航路的完整几何；候选站址快照（全部已录入起降点、既有铁塔与不可用候选）；'
+            +'关联半径 '+NAVIGATION_PARAMETER_DEFAULTS.monitor_association_radius_m
+            +' m 等可调参数；风险画像与三维保障证据。')
+          +navigationMonitoringPanel)
+        +wbBlock('阻塞项与工程假设',blockerList(
+          navigationMonitoringBlockerItems.concat([{kind:'assumption',
+            text:'监测关联半径只是沿航路中心线的关联参数',
+            detail:'它绝不等于左右各 500 m 的全宽 CNS 保障能力；关联率不得替代全宽覆盖率。'}]),
+          '当前没有与导航监测规划相关的阻塞项'))
+        +nextHint('导航监测规划是**只读仿真**：它不写 ProjectState，也不解锁方案评审；'
+          +'起降点坐标系正式确认之前，权威仿真保持 blocked。')]
     ]})
     +wbPanel('advanced','',{segments:[
       ['cns-adv-timeline','运行时间线',wbBlock('运行时间线',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-timeline')+timelinePanel)],
@@ -1219,6 +1321,10 @@ export function bind(c){
     };
   }
   c.actionButton('evaluateServiceTimeline',()=>c.resourceAction('/api/service-timeline/evaluate',{}));
+  // ---- Round38-N2：导航监测规划（**只读**；绝不写 ProjectState） -----------------
+  // 主操作按钮用 document 级事件委托绑定（见 navigation_monitoring.js 的说明）：
+  // 面板每次重绘都会替换整棵 DOM，赋在旧节点上的 onclick 会随节点一起丢失。
+  bindNavigationMonitoringPanel(c);
   c.actionButton('evaluateProtectionEnvelope',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
   c.actionButton('applyClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/apply',{application_id:c.flow().closed_loop_assessment?.application?.application_id}));
@@ -1232,6 +1338,23 @@ export function bind(c){
     const layer=c.$('radarLandMaskLayer')?.value.trim();
     if(layer)policy.land_mask_layer_name=layer;
     policy.allow_mixed_radar_types=c.$('radarAllowMixed')?.checked!==false;
+    const heightEntries=[];
+    document.querySelectorAll('[data-radar-ground-height]').forEach(input=>{
+      const siteId=input.dataset.radarGroundSiteId;
+      const index=input.dataset.radarGroundIndex;
+      const source=document.querySelector('[data-radar-ground-source-index="'+index+'"]')?.value
+        ||'user_confirmed';
+      const confirmed=document.querySelector(
+        '[data-radar-ground-confirmed-index="'+index+'"]'
+      )?.checked===true;
+      const sourceRef=document.querySelector(
+        '[data-radar-ground-source-ref-index="'+index+'"]'
+      )?.value||'';
+      heightEntries.push({siteId,height:input.value,source,confirmed,sourceRef});
+    });
+    policy.ground_site_installation_heights=groundSiteInstallationPolicy(
+      heightEntries,policy.ground_site_installation_heights
+    );
     return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
   });
   // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 独立连续覆盖复核。

@@ -103,7 +103,7 @@ def aircraft(*, navigation=False):
 def candidate(identifier, reuse="candidate_site", cost=None, unit=None):
     return normalize_candidate_site({
         "site_id": identifier, "name": identifier, "coordinate": [0.0, 0.0005],
-        "vertical_profile": vertical(), "site_type": "tower", "available_subsystems": ["C"],
+        "vertical_profile": vertical(), "site_type": "landing_site", "available_subsystems": ["C"],
         "usable": True, "locked": False, "source": "test",
         "planning_profile": planning_profile(reuse, cost, unit),
     })
@@ -148,6 +148,14 @@ def configured(tmp_path, *, redundancy=1, devices=None, candidates=None, facilit
     workflow.state["existing_cns_facilities"] = {"status": "passed", "items": facilities or [], "count": len(facilities or [])}
     selected_candidates = [candidate("S1")] if candidates is None else candidates
     workflow.state["candidate_sites"] = {"status": "passed", "items": selected_candidates, "count": len(selected_candidates)}
+    workflow.state["nodes"] = [
+        {
+            "node_id": str(item["site_id"]), "name": item.get("name"),
+            "coordinate": deepcopy(item.get("coordinate")),
+            "coordinate_source": "manual_entry",
+        }
+        for item in selected_candidates if item.get("site_id")
+    ]
     workflow.state["cns_corridor_policy"] = normalize_cns_corridor_policy({"routes": {"R1": {
         "route_id": "R1", "horizontal_half_width_m": 0,
         "vertical_lower_margin_m": 10, "vertical_upper_margin_m": 10,
@@ -415,7 +423,7 @@ class ApiContext:
 
 def test_registry_api_persistence_backfill_and_invalidation(tmp_path):
     workflow = configured(tmp_path)
-    assert workflow.algorithm_registry.manifest("site_planner", "corridor_reuse_first_site_planner_v2", "2.2")
+    assert workflow.algorithm_registry.manifest("site_planner", "corridor_reuse_first_site_planner_v2", "2.3")
     # B7X：新项目的 ``site_planner`` 默认只保存 production 的 corridor 实现；
     # 归档的 ReuseFirstSitePlannerV1 只由 CompatibilitySelectionAdapter 解析。
     assert workflow.state["algorithm_selection"]["site_planner"]["algorithm_id"] == (
@@ -449,7 +457,7 @@ def test_site_planner_default_and_selection_bind_only_corridor_v2_service(tmp_pa
     workflow.select_algorithm({
         "algorithm_type": "site_planner",
         "algorithm_id": "corridor_reuse_first_site_planner_v2",
-        "version": "2.2", "parameters": {"audit_tag": "test"},
+        "version": "2.3", "parameters": {"audit_tag": "test"},
     })
     assert workflow.corridor_site_planner.algorithm_id == "corridor_reuse_first_site_planner_v2"
     assert workflow.corridor_site_planner.parameters == {"audit_tag": "test"}

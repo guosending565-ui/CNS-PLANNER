@@ -34,8 +34,37 @@ PROJECTION_DISTORTION_LIMIT = 2.0
 _GEOD = Geod(ellps="WGS84")
 
 
+#: 渲染实例类型：同一业务 ``object_id`` 下历史投影与用户示意**永不**共用实例键。
+INSTANCE_KIND_PROJECT = "historical_project_result"
+INSTANCE_KIND_PREVIEW = "engineering_scenario_preview"
+
+
 class ProtectionVolumeInputError(ValueError):
     """工程示意输入不满足数值或几何安全约束。"""
+
+
+def protection_render_instance_id(*, object_id, instance_kind, route_authority,
+                                  route_geometry_identity,
+                                  protection_geometry_identity):
+    """稳定唯一的**渲染实例键**（frontend 选择/动画/事件/开关/清除的唯一凭据）。
+
+    业务 ``object_id`` 是冻结的（``protection-corridor:R0005:ALT-100`` 会同时对应
+    若干份并存几何），所以实例身份必须另外携带：实例类型、航路权威、航路几何身份
+    与保护几何身份。数组下标只是响应内的排列顺序，**绝不**充当长期标识。
+    """
+
+    identity = route_geometry_identity if isinstance(route_geometry_identity, dict) else {}
+    return stable_fingerprint(
+        {
+            "object_id": object_id,
+            "instance_kind": instance_kind,
+            "route_authority": route_authority,
+            "route_geometry_fingerprint": identity.get("fingerprint"),
+            "route_geometry_point_count": identity.get("point_count"),
+            "protection_geometry_identity": protection_geometry_identity,
+        },
+        prefix="protectioninstancev1-",
+    )
 
 
 def _items(container):
@@ -314,6 +343,15 @@ def project_p17_protection_volumes(state, route_entries, *, current_algorithm_ve
                         prefix="protectiongeometryv1-",
                     ),
                 })
+        # 实例键在状态判定之后统一计算：无论该实例当前是 available 还是缺证，
+        # 同一个（航路权威 + 航路几何 + 保护几何）组合只有一个键。
+        common["render_instance_id"] = protection_render_instance_id(
+            object_id=common["object_id"],
+            instance_kind=INSTANCE_KIND_PROJECT,
+            route_authority=common.get("route_authority"),
+            route_geometry_identity=common.get("route_geometry_identity"),
+            protection_geometry_identity=common.get("protection_geometry_identity"),
+        )
         volumes.append(common)
 
     available = [row for row in volumes if row.get("status") == "historical_stale"]
@@ -324,6 +362,10 @@ def project_p17_protection_volumes(state, route_entries, *, current_algorithm_ve
         status = "blocked"
     else:
         status = "not_calculated"
+    instance_ids = [row["render_instance_id"] for row in volumes]
+    duplicate_ids = sorted({
+        value for value in instance_ids if instance_ids.count(value) > 1
+    })
     return {
         "schema_version": "visualization-3d-protection-volumes/v1",
         "mode": "project_result",
@@ -337,6 +379,14 @@ def project_p17_protection_volumes(state, route_entries, *, current_algorithm_ve
         "volume_count": len(volumes),
         "available_horizontal_count": len(available),
         "blocked_count": len(blocked),
+        "render_instance_ids": instance_ids,
+        "render_instance_id_unique": not duplicate_ids,
+        "duplicate_render_instance_ids": duplicate_ids,
+        "instance_identity_rule": (
+            "实例键 = 业务 object_id + 实例类型 + route_authority + 航路几何身份 + "
+            "保护几何身份；同一冻结 object_id 下的多份几何必须得到不同键，"
+            "前端选择/动画/事件/开关/清除一律以该键为准，数组下标不得充当长期标识"
+        ),
         "volumes": volumes,
         "read_only": True,
         "writes_performed": 0,
@@ -388,8 +438,16 @@ def build_engineering_preview(route_entry, *, half_width_m, lower_altitude_m,
         },
         prefix="protectionpreviewv1-",
     )
+    object_id = f"protection-preview:{protection_fp}"
     return {
-        "object_id": f"protection-preview:{protection_fp}",
+        "object_id": object_id,
+        "render_instance_id": protection_render_instance_id(
+            object_id=object_id,
+            instance_kind=INSTANCE_KIND_PREVIEW,
+            route_authority=route.get("authority"),
+            route_geometry_identity=identity,
+            protection_geometry_identity=protection_fp,
+        ),
         "mode": "engineering_scenario_preview",
         "status": "engineering_preview",
         "route_id": route.get("route_id"),
