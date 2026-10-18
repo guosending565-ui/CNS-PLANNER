@@ -242,3 +242,27 @@ def test_empty_or_forged_route_scope_never_calls_model_or_passes():
         r=evaluate_c(inputs,[],{},budget=EvaluationBudget(),chain=lambda *a,**kw:pytest.fail("invalid route scope called model"))
         assert r["status"]=="blocked" and r["scoped_c_corridor_status"]=="unknown"
         assert "route_scope_mismatch" in r["blockers"]
+
+
+@pytest.mark.parametrize("claims", [
+    {"verified": True}, {"token": "trusted-launcher"},
+    {"fixture": "synthetic_fixture", "verified": True},
+    {"hard_isolation_verified": True, "job_memory_bytes": 1073741824,
+     "output_acl_verified": True, "g4f_sha256": G4F_SHA},
+])
+def test_caller_claims_and_environment_cannot_replace_restricted_launch(monkeypatch, claims):
+    monkeypatch.setenv("CNS_RESEARCH_VERIFIED", "1")
+    monkeypatch.setenv("CNS_RESEARCH_TOKEN", "trusted-launcher")
+    source = dict(kind="real_rev503", **claims)
+    inputs = prepare_inputs(fixture_inputs()["state"], route_id="R1", source_identity=source)
+    assert "verified_hard_isolation_launcher_unavailable" in inputs["blockers"]
+    inputs["blockers"] = []  # Removing the preflight list still cannot invoke a model.
+    calls = []
+    def chain(*args):
+        calls.append(args)
+        raise AssertionError("untrusted real call reached model")
+    budget = EvaluationBudget()
+    result = evaluate_c(inputs, [], {}, budget=budget, chain=chain)
+    assert result["status"] == "blocked" and calls == [] and budget.calls == 0
+    assert result["model_feasible"] is None
+    assert result["final_eligible"] is False and result["optimal_proven"] is False

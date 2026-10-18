@@ -41,6 +41,9 @@ CREATE_SUSPENDED = 0x00000004
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
 JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION = 7
+JOB_OBJECT_MSG_JOB_MEMORY_LIMIT = 10
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
@@ -131,6 +134,10 @@ class _STARTUPINFOW(ctypes.Structure):
     ]
 
 
+class _JOBOBJECT_ASSOCIATE_COMPLETION_PORT(ctypes.Structure):
+    _fields_ = [("CompletionKey", ctypes.c_void_p), ("CompletionPort", wt.HANDLE)]
+
+
 class _PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("hProcess", wt.HANDLE),
@@ -142,6 +149,11 @@ class _PROCESS_INFORMATION(ctypes.Structure):
 
 def _kernel32():
     api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.CreateIoCompletionPort.argtypes = [wt.HANDLE, wt.HANDLE, ctypes.c_size_t, wt.DWORD]
+    api.CreateIoCompletionPort.restype = wt.HANDLE
+    api.GetQueuedCompletionStatus.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD),
+        ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_void_p), wt.DWORD]
+    api.GetQueuedCompletionStatus.restype = wt.BOOL
     api.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
     api.CreateJobObjectW.restype = wt.HANDLE
     api.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
@@ -188,13 +200,55 @@ def _create_job_object(memory_bytes):
         return None
     info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     info.BasicLimitInformation.LimitFlags = (
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS)
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
+        JOB_OBJECT_LIMIT_JOB_MEMORY)
     info.BasicLimitInformation.ActiveProcessLimit = MAX_ACTIVE_PROCESSES
+    info.JobMemoryLimit = memory_bytes
     if not api.SetInformationJobObject(handle, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                                        ctypes.byref(info), ctypes.sizeof(info)):
         api.CloseHandle(handle)
         return None
+    # Read back the kernel limit before any child can be resumed. This is
+    # job-wide committed memory, not RSS or a per-process working-set target.
+    actual = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    if (not api.QueryInformationJobObject(handle, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(actual), ctypes.sizeof(actual), None)
+            or not actual.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_JOB_MEMORY
+            or actual.JobMemoryLimit != memory_bytes):
+        api.CloseHandle(handle)
+        return None
     return handle
+
+
+def _memory_completion_port(job):
+    api = _kernel32()
+    port = api.CreateIoCompletionPort(wt.HANDLE(-1), None, 0, 1)
+    if not port:
+        raise WorkerBlocked("job_completion_port_failed")
+    info = _JOBOBJECT_ASSOCIATE_COMPLETION_PORT(1, port)
+    if not api.SetInformationJobObject(job, JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION,
+                                       ctypes.byref(info), ctypes.sizeof(info)):
+        _close(port)
+        raise WorkerBlocked("job_completion_port_failed")
+    return port
+
+
+def _memory_limit_message(port):
+    # Peak accounting alone does not distinguish a rejected allocation.
+    # Consume the kernel event instead of mistaking the resulting crash for a
+    # successful run. Windows does not guarantee delivery of every job message;
+    # a missing message remains a crash/deadline, never a memory success claim.
+    api = _kernel32()
+    for _ in range(256):
+        message, key, overlapped = wt.DWORD(), ctypes.c_size_t(), ctypes.c_void_p()
+        if not api.GetQueuedCompletionStatus(port, ctypes.byref(message), ctypes.byref(key),
+                                             ctypes.byref(overlapped), 0):
+            if ctypes.get_last_error() == WAIT_TIMEOUT:
+                return False
+            raise WorkerBlocked("job_completion_read_failed")
+        if message.value == JOB_OBJECT_MSG_JOB_MEMORY_LIMIT:
+            return True
+    return False
 
 
 def _assign_process_to_job(job_handle, process_handle):
@@ -352,11 +406,13 @@ def run_worker(*, argv, cwd=None, deadline_ms, memory_bytes, output_bytes_limit=
     if not cwd.is_dir():
         return _blocked("working_directory_invalid")
     job = None
+    port = None
     process = None
     try:
         job = _create_job_object(memory_bytes)
         if not job:
             return _blocked("job_creation_failed")
+        port = _memory_completion_port(job)
         process = _spawn_suspended(argv, cwd, env)
         if not _assign_process_to_job(job, process["handle"]):
             _terminate_process(process["handle"])
@@ -381,7 +437,7 @@ def run_worker(*, argv, cwd=None, deadline_ms, memory_bytes, output_bytes_limit=
                 if _tree_bytes(output_root) > output_bytes_limit:
                     reason = "output_budget_exceeded"
                     break
-            if peak > memory_bytes:
+            if _memory_limit_message(port) or peak > memory_bytes:
                 reason = "memory_exceeded"
                 break
             if cancel_event is not None and cancel_event.is_set():
@@ -420,6 +476,10 @@ def run_worker(*, argv, cwd=None, deadline_ms, memory_bytes, output_bytes_limit=
                 "job_processes": sorted(observed), "termination_reason": reason,
                 "blockers": blockers}
     except WorkerBlocked as exc:
+        if process is not None:
+            _terminate_job_object(job)
+            reclaimed = _wait_tree_reclaimed(job, process["handle"])
+            return _blocked(str(exc), pid=process["pid"], process_tree_reclaimed=reclaimed)
         return _blocked(str(exc))
     finally:
         if process is not None:
@@ -427,6 +487,8 @@ def run_worker(*, argv, cwd=None, deadline_ms, memory_bytes, output_bytes_limit=
             _close(process.get("handle"))
         if job:
             _close(job)
+        if port:
+            _close(port)
 
 
 def _identity_digest(payload):

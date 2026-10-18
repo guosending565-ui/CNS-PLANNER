@@ -277,3 +277,54 @@ def test_worker_entry_rejects_malformed_or_executable_payload(tmp_path):
         "--request", str(big), "--result", str(tmp_path / "result.json")],
                           cwd=str(source_root()), capture_output=True, text=True)
     assert proc.returncode == 2 and not (tmp_path / "result.json").exists()
+
+
+def test_job_one_gib_limit_is_visible_before_child_computation(tmp_path):
+    # The child queries its actual current Job, then asks Windows for a commit
+    # larger than its remaining allowance. No >1 GiB allocation is touched.
+    record = tmp_path / "job.json"
+    code = (
+        "import ctypes, json, time\n"
+        "from ctypes import wintypes as wt\n"
+        "import runpy\n"
+        "_JOBOBJECT_EXTENDED_LIMIT_INFORMATION = runpy.run_path(%r)['_JOBOBJECT_EXTENDED_LIMIT_INFORMATION']\n" % str(source_root() / "cns_planner/application/research_worker.py") +
+        "k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "k.QueryInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD, ctypes.c_void_p]\n"
+        "k.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wt.DWORD, wt.DWORD]\n"
+        "k.VirtualAlloc.restype = ctypes.c_void_p\n"
+        "k.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wt.DWORD]\n"
+        "i = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()\n"
+        "assert k.QueryInformationJobObject(None, 9, ctypes.byref(i), ctypes.sizeof(i), None)\n"
+        "p = k.VirtualAlloc(None, 1073741824, 0x3000, 4)\n"
+        "denied = not bool(p)\n"
+        "if p: k.VirtualFree(p, 0, 0x8000)\n"
+        "json.dump({'flags': int(i.BasicLimitInformation.LimitFlags), 'limit': int(i.JobMemoryLimit), 'denied': denied}, open(%r, 'w'))\n"
+        "time.sleep(0.1)\n" % str(record))
+    result = run_script(tmp_path, "job_limit", code, memory_bytes=1073741824,
+                        env=api().minimal_environment())
+    observed = json.loads(record.read_text('utf-8'))
+    assert observed['flags'] & 0x200
+    assert observed['limit'] == 1073741824
+    assert observed['denied'] is True
+    assert result['status'] == 'memory_exceeded'
+    assert result['termination_reason'] == 'memory_exceeded'
+    assert result['process_tree_reclaimed'] is True
+    # Keep raw peak accounting without claiming it is RSS or that it proves
+    # allocation success. VirtualAlloc failure above is observed separately.
+    assert result['peak_memory_bytes'] > 0
+    print(json.dumps({'job_readback': observed, 'worker': result}, sort_keys=True))
+
+
+def test_memory_limit_is_aggregate_and_reclaims_allocating_children(tmp_path):
+    code = (
+        "import subprocess, sys, time\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; x=bytearray(64*1024*1024); time.sleep(30)'])\n"
+        "time.sleep(0.3)\n"
+        "x=bytearray(64*1024*1024)\n"
+        "time.sleep(30)\n")
+    result = run_script(tmp_path, "aggregate_mem", code, deadline_ms=5000,
+                        memory_bytes=96 * 1024 * 1024)
+    assert result["status"] == "memory_exceeded"
+    assert len(result["job_processes"]) >= 2
+    assert result["process_tree_reclaimed"] is True
+    assert all(not pid_alive(pid) for pid in result["job_processes"])
