@@ -128,9 +128,22 @@ function towerSite(overrides = {}) {
     device_categories: ['C', 'Radar'],
     devices: [
       { device_id: 'COMM-BASELINE-4KM', service_key: 'C:communication',
-        category: 'C', installation_status: 'installed_confirmed',
-        confirmed: true, position_semantics: 'tower_top',
-        physical_mount_confirmed: false,
+        category: 'C', installation_status: 'planned_selected_unconfirmed',
+        // A7-SEM-01：规划动作自带 confirmed=true（宿主/设备档案层面），但
+        // confirmed_cns_plan.status=not_confirmed 且物理挂载未确认 ⇒ 绝不是安装记录。
+        action_confirmed: true, confirmed: false, is_real_installation_record: false,
+        position_semantics: 'tower_top',
+        physical_mount_confirmed: false, planning_host_use_confirmed: true,
+        requires_site_survey: true,
+        installation_basis: 'cns_corridor_site_plan.selected_actions',
+        installation_evidence: {
+          confirmed_plan_status: 'not_confirmed', plan_confirmed: false,
+          planning_host_use_confirmed: true, physical_mount_confirmed: false,
+          requires_site_survey: true, equipment_selection_status: null,
+          confirmation_source: 'confirmed_cns_plan',
+          semantics: 'p16_selected_actions_are_planning_proposals_until_confirmed_cns_plan_confirms_them',
+          disclosure: '设备安装身份只来自 confirmed_cns_plan；该方案未确认实施，本条是规划登记（规划选中、未确认），不是真实安装记录。',
+        },
         source: 'cns_corridor_site_plan.selected_actions' },
       { device_id: 'RP-1', service_key: 'S:radar_noncooperative', category: 'Radar',
         installation_status: 'planned_selected_unconfirmed', confirmed: false,
@@ -281,6 +294,67 @@ test('device markers use the per-category colour and carry the host identity', (
     && String(value).includes('未确认')));
 });
 
+/**
+ * A7-SEM-01：设备安装身份冲突的最小契约测试。
+ *
+ * 现场是 ``COMM-BASELINE-4KM``：宿主站址 ``planned_selected``、
+ * ``physical_mount_confirmed=false``、``existing_facility=0``，但设备详情却显示
+ * ``installed_confirmed``。修复后设备详情必须**分层披露**，并且规划选中绝不显示"已确认安装"。
+ */
+test('COMM-BASELINE-4KM never claims a confirmed installation without an installation record', () => {
+  const viewer = new FakeViewer();
+  const result = addCnsSiteEntities(viewer, [towerSite()],
+    { Cesium, undulationAt, terrainHeightAt });
+  const entity = result.devices.find(
+    (row) => row.__cns.device.device_id === 'COMM-BASELINE-4KM');
+  assert.ok(entity, 'COMM-BASELINE-4KM 必须生成设备标识实体');
+  const rows = Object.fromEntries(entity.__cns.rows);
+  assert.equal(rows['安装状态'], '规划选中（未确认安装；仅规划身份）');
+  assert.equal(rows['安装状态原始值'], 'planned_selected_unconfirmed');
+  assert.equal(
+    Object.values(rows).some((value) => String(value).includes('已确认安装')), false,
+    '没有真实安装记录时不得出现"已确认安装"');
+  // 五个身份维度必须分别披露（设备选型 / 规划主机 / 物理挂载 / 规划原点 / 实际部署）。
+  assert.equal(rows['设备选型状态'], '—');
+  assert.equal(rows['规划主机可用性'], '已确认');
+  assert.equal(rows['物理挂载确认'], '未确认（不得当作已安装高度）');
+  assert.equal(rows['宿主布设状态'], '规划选中（待确认）');
+  assert.ok(String(rows['安装身份限制']).includes('不是真实安装记录'));
+  assert.ok(String(rows['安装证据：规划原点权威性']).length > 0
+    || rows['安装证据：规划原点权威性'] === undefined
+    || rows['安装证据：规划原点权威性'] === '—（—）');
+});
+
+/** A7-SEM-01：N006 已规划导航设备同样只表达规划身份（不得升级成已安装）。 */
+test('planned navigation device keeps the planning identity and never becomes installed', () => {
+  const viewer = new FakeViewer();
+  const result = addCnsSiteEntities(viewer, [towerSite({ devices: [] })],
+    { Cesium, undulationAt, terrainHeightAt });
+  assert.equal(result.devices.length, 0);
+  const n006Device = {
+    device_id: 'NAVINT-R0006-destination-N006', service_key: 'N:navigation_integrity_monitoring',
+    category: 'N', installation_status: 'planned_selected_unconfirmed',
+    action_confirmed: true, confirmed: false, is_real_installation_record: false,
+    position_semantics: 'ground_site', physical_mount_confirmed: false,
+    planning_host_use_confirmed: false, requires_site_survey: true,
+    installation_basis: 'cns_corridor_site_plan.selected_actions',
+    installation_evidence: {
+      confirmed_plan_status: 'not_confirmed', plan_confirmed: false,
+      planning_host_use_confirmed: false, physical_mount_confirmed: false,
+      requires_site_survey: true, equipment_selection_status: 'not_selected',
+      confirmation_source: 'confirmed_cns_plan',
+      disclosure: '设备安装身份只来自 confirmed_cns_plan；该方案未确认实施，本条是规划登记（规划选中、未确认），不是真实安装记录。',
+    },
+    source: 'cns_corridor_site_plan.selected_actions',
+  };
+  const rows = Object.fromEntries(sitePopupRows(towerSite({ devices: [n006Device] })));
+  assert.ok(String(rows['设备（按身份登记）']).includes('规划选中（未确认安装；仅规划身份）'));
+  assert.ok(String(rows['设备身份 · 导航·NAVINT-R0006-destination-N006'])
+    .includes('规划选中（未确认安装；仅规划身份）'));
+  assert.equal(rows['安装证据：方案已确认实施（NAVINT-R0006-destination-N006）'], '否');
+  assert.equal(rows['安装证据：物理挂载（NAVINT-R0006-destination-N006）'], '未确认');
+});
+
 test('planned ground devices are drawn as a separate unconfirmed group', () => {
   const viewer = new FakeViewer();
   const result = addCnsSiteEntities(viewer, [], {
@@ -303,7 +377,9 @@ test('planned ground devices are drawn as a separate unconfirmed group', () => {
   assert.equal(result.plans[0].point.color.css, '#ffd166');
   const rows = result.plans[0].__cns.rows;
   assert.ok(rows.some(([key, value]) => key === '安装状态'
-    && String(value) === 'planned_selected_unconfirmed'));
+    && String(value) === '规划选中（未确认安装；仅规划身份）'));
+  // A7-SEM-01：规划选中绝不能被读成"已确认安装"。
+  assert.equal(rows.some(([, value]) => String(value).includes('已确认安装')), false);
   assert.ok(rows.some(([key, value]) => key === '宿主站址'
     && String(value).includes('node:N001')));
 });

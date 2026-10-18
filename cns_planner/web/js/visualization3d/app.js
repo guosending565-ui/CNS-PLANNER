@@ -272,12 +272,56 @@ async function ensureGeoidWindow(points, radiusM = 0) {
   };
 }
 
-/** 地形高度（椭球高）：NoData 仅在渲染时取 0，并在面板披露。 */
+/** 地形高度（椭球高）：NoData 仅在渲染时取 0，并在面板披露。
+ *
+ * A7-BUG-01 真实根因：本函数原先直接解引用 ``S.terrainFrame`` / ``S.win``，而
+ * ``terrain-window`` 是**按需**加载的（首屏默认不取）。塔图层 / 演示航路 / 正式航路
+ * 之前在未加载地形窗口时就调用本函数，于是抛出
+ * ``Cannot read properties of null (reading 'terrain')``，整层实体创建中断，
+ * 用户看到的是"图层打开了但铁塔/航线都没出来 + 一条错误日志"。
+ *
+ * 这里只做**最小空值保护**：没有地形帧时如实返回 ``null``（几何调用方据此标注
+ * "高度不完整"），绝不当 0 静默渲染。真正的修复是调用方先按几何范围补齐地形窗口
+ * （见 :func:`ensureTerrainForPoints`），因此正常路径仍然拿到真实 FABDEM 高程。
+ */
 function terrainHeightAt(lon, lat) {
+  if (!S.terrainFrame || !S.terrainFrame.terrain || !S.win) return null;
   const H = bilinear(S.terrainFrame.terrain, S.win.width, S.win.height, S.win.bbox, lon, lat);
   if (H === null) return 0;
   const h = orthometricToEllipsoidal(H, lon, lat);
   return h === null ? 0 : h;
+}
+
+/**
+ * A7-BUG-01 / A7-OBS-03：为一批几何点**按需**补齐地形窗口。
+ *
+ * 复用既有唯一实现 ``loadTerrainWindow``（与 ``ensureGeoidWindow`` 同一条通道），
+ * 不新建第二套地形采样。窗口已覆盖所需范围时不重复请求。
+ *
+ * 返回 ``true`` 表示调用之后 ``S.terrainFrame`` 可用。
+ */
+async function ensureTerrainForPoints(points, label) {
+  const usable = (points || []).filter(
+    (row) => Array.isArray(row) && Number.isFinite(row[0]) && Number.isFinite(row[1]));
+  if (!usable.length) return Boolean(S.terrainFrame);
+  const lons = usable.map((row) => row[0]);
+  const lats = usable.map((row) => row[1]);
+  const margin = 0.02;
+  const bbox = [
+    Math.min(...lons) - margin, Math.min(...lats) - margin,
+    Math.max(...lons) + margin, Math.max(...lats) + margin,
+  ];
+  const current = S.win && S.win.bbox;
+  const covered = current && current[0] <= bbox[0] && current[1] <= bbox[1]
+    && current[2] >= bbox[2] && current[3] >= bbox[3];
+  if (covered && S.terrainFrame) return true;
+  await loadTerrainWindow(bbox, 512, 512);
+  renderStatus();
+  if (!S.terrainFrame || !S.terrainFrame.terrain) {
+    log(`${label}：地形窗口不可用，相关几何高度标注为"不完整"（不当作 0）`, 'warn');
+    return false;
+  }
+  return true;
 }
 
 /** 用真实 FABDEM 高度生成离线山体阴影影像（不依赖任何在线底图）。 */
@@ -358,14 +402,34 @@ function addRouteEntities(viewer, entry) {
   return entities;
 }
 
-function addTowerEntities(viewer, items) {
+/**
+ * 铁塔点位实体（A7-BUG-01）。
+ *
+ * 身份分层**只**用服务端既有字段，绝不新造第二套塔高算法：
+ *
+ *  * ``tower_top_orthometric_m`` 为有限数值 ⇒ ``tower_top_status =
+ *    resolved_unconfirmed``（已严格解析、**未**经实测确认），进 ``known`` 组；
+ *  * 否则 ⇒ ``unknown`` 组。这些塔的塔顶正高**未解析**（权威容器
+ *    ``tower_obstacle_profiles`` 的 ``unresolved_count``），既有工程估算塔高
+ *    （``tower_structure_height_m`` / 共址工程估算原点）只能作明确标注的示意，
+ *    本层因此只画地面符号并如实披露缺证原因，绝不把估算当成已确认塔顶。
+ *
+ * ``options.terrainReady === false`` 表示地形窗口不可用：此时不做任何"高度=0"的
+ * 静默渲染，而是在弹窗中明确标注高度不完整（unknown ≠ 0）。
+ */
+function addTowerEntities(viewer, items, options = {}) {
+  const terrainReady = options.terrainReady !== false;
   const known = []; const unknown = [];
   for (const tower of items) {
     const top = tower.tower_top_orthometric_m;
     const hasTop = typeof top === 'number';
+    const hasEstimate = !hasTop
+      && (typeof tower.tower_structure_height_m === 'number'
+        || typeof tower.planning_estimate_origin_egm2008_m === 'number');
     const n = undulationAt(tower.longitude, tower.latitude);
     const ground = terrainHeightAt(tower.longitude, tower.latitude);
     const topZ = hasTop ? orthometricToEllipsoidal(top, tower.longitude, tower.latitude) : null;
+    const heightIncomplete = !terrainReady || ground === null;
     const entity = viewer.entities.add({
       position: Cesium.Cartesian3.fromDegrees(tower.longitude, tower.latitude,
         ground === null ? 0 : ground),
@@ -380,18 +444,26 @@ function addTowerEntities(viewer, items) {
     });
     entity.__cns = {
       kind: 'tower', hasTop,
-      title: `铁塔 ${tower.name || ''} (${tower.tower_id})`,
+      title: `铁塔 ${tower.name || ''} (${tower.tower_id})`
+        + (hasTop ? '' : '（塔顶未解析）'),
       rows: [
         ['站点类型', tower.site_type || '—'],
         ['经度 / 纬度', `${tower.longitude.toFixed(6)} / ${tower.latitude.toFixed(6)}`],
         ['地形正高', tower.terrain_elevation_m === null || tower.terrain_elevation_m === undefined
           ? '未解析' : `${tower.terrain_elevation_m} m`],
         ['塔身高度', tower.tower_structure_height_m === null || tower.tower_structure_height_m === undefined
-          ? '未解析' : `${tower.tower_structure_height_m} m`],
+          ? '未解析' : `${tower.tower_structure_height_m} m（源文件字段，工程估算；非已确认塔顶）`],
         ['塔顶正高', hasTop ? `${top} m` : 'unknown（未解析，绝不当 0）'],
         ['塔顶状态', tower.tower_top_status || 'unknown'],
+        ['塔顶权威性', hasTop
+          ? 'resolved_unconfirmed：已严格解析塔顶正高，但**未经实测确认**'
+          : (hasEstimate
+            ? 'unresolved：仅有工程估算塔高证据，不得据以认定塔顶正高或 LOS 通过'
+            : 'unresolved：无塔顶证据')],
         ['geoid N', n === null ? '未解析' : `${n.toFixed(4)} m`],
         ['塔顶椭球高', topZ === null ? 'unknown' : `${topZ.toFixed(3)} m`],
+        ['绘制高度完整', heightIncomplete
+          ? '不完整：地形窗口/geoid N 未解析（未当 0 渲染）' : '完整'],
         ['垂直状态', tower.vertical_status || 'unknown'],
         ['已确认', tower.confirmed ? '是' : '否'],
       ],
@@ -783,7 +855,10 @@ function renderStatus(options = {}) {
     $('disclosureText').textContent =
       ' 严格安全验证未通过、无运行许可（operational_authorization=false）。'
       + ' 航路几何来自合法 demo projection，未写入 canonical operational_routes。'
-      + ' 本视图不得作为运行依据。';
+      + ' 本视图不得作为运行依据。'
+      + ' L1：建筑 4tCa7 高度证据为 ML 预测，采用工程条件接受，不构成严格安全验证通过。'
+      + ' L2：当前航路使用 EGM2008 正高 100 m 恒定巡航高度假设；真实离场爬升和进场下降'
+      + '程序尚未配置及验证，当前建筑净空结果不代表起降过渡阶段安全。';
   } else {
     demoBlock.style.display = 'none';
     disclosure.style.display = '';
@@ -818,14 +893,17 @@ function renderLayers() {
   const imageryConfig = (S.manifest && S.manifest.imagery) || {};
   const onlineAllowed = imageryConfig.online_allowed !== false;
   const controls = [
+    // 背景影像由上方「底图模式」开关统一驱动（默认离线 ⇒ 初始不勾选）。
+    // 这里**不**用 BASE_LAYER_DEFAULTS.imagery 当初始值：那会让勾选框在默认离线
+    // 模式下显示成"已开启"，与真实渲染的底图（FABDEM 晕渲）自相矛盾。
     ['imagery', onlineAllowed ? '高清卫星影像' : '高清卫星影像（离线模式禁用）',
-      onlineAllowed && BASE_LAYER_DEFAULTS.imagery, 'base'],
+      false, 'base'],
     ['terrain', 'FABDEM 多级三维地形', BASE_LAYER_DEFAULTS.terrain, 'base'],
     ['labels', '地理注记', BASE_LAYER_DEFAULTS.labels, 'base'],
     ['routeDemo', 'R0005 工程演示航路', BUSINESS_LAYER_DEFAULTS.routeDemo, 'business'],
     ['routeCanonical', '正式容器航路（stale）', BUSINESS_LAYER_DEFAULTS.routeCanonical, 'business'],
-    ['towersKnown', '铁塔（已知塔顶）', BUSINESS_LAYER_DEFAULTS.towersKnown, 'business'],
-    ['towersUnknown', '铁塔（塔顶 unknown）', BUSINESS_LAYER_DEFAULTS.towersUnknown, 'business'],
+    ['towersKnown', '铁塔（严格塔顶 77 座级 / resolved_unconfirmed，逐项标注）', BUSINESS_LAYER_DEFAULTS.towersKnown, 'business'],
+    ['towersUnknown', '铁塔（塔顶未解析，仅工程估算塔高，不得据以认定塔顶/ LOS）', BUSINESS_LAYER_DEFAULTS.towersUnknown, 'business'],
     ['facilities', 'CNS 站址', BUSINESS_LAYER_DEFAULTS.facilities, 'business'],
     ['buildings', '近景建筑', BUSINESS_LAYER_DEFAULTS.buildings, 'business'],
     ['grid', '规划网格', BUSINESS_LAYER_DEFAULTS.grid, 'reserved'],
@@ -1016,6 +1094,22 @@ async function boot() {
       log(`渲染错误：${error && error.message}`, 'err');
     });
 
+    // Browser image errors may hide the proxy JSON body. Read only local budget metadata;
+    // this endpoint never fetches a tile or consumes upstream request allowance.
+    const refineImageryFailure = async (reason) => {
+      const needsReason = ['imagery_tile_request_failed', 'imagery_tile_timeout'].includes(reason);
+      if (reason && !needsReason) return reason;
+      try {
+        const config = await getJSON(`${API}/imagery/config`);
+        if (config.budget && S.manifest && S.manifest.imagery) {
+          S.manifest.imagery.budget = config.budget;
+          renderStatus({ quiet: true });
+        }
+        if (needsReason && config.online_allowed && config.budget && !config.budget.degraded_reason
+            && config.budget.budget_remaining === 0) return 'imagery_budget_exhausted';
+      } catch { /* Keep the original failure if local diagnostics are unavailable. */ }
+      return reason;
+    };
     step('连接 FABDEM 多级地形与受控卫星影像…');
     S.basemap = await createBasemap(viewer, S.manifest.imagery || {}, {
       terrainUrl: '/api/visualization-3d/terrain',
@@ -1029,6 +1123,23 @@ async function boot() {
       },
       // 影像瓦片失败必须落到面板：Cesium 的 provider 不抛异常，只广播 errorEvent，
       // 不订阅就会出现"面板显示已配置 + 底图全蓝"的静默失败。
+      onModeFallback: async (reason) => {
+        const serial = S.basemap.status().mode_serial;
+        reason = await refineImageryFailure(reason);
+        if (S.basemap.status().mode_serial !== serial) return;
+        const offline = $('bmOffline');
+        const online = $('bmOnline');
+        if (offline) offline.checked = true;
+        if (online) online.checked = false;
+        const node = $('basemapModeStatus');
+        if (node) {
+          node.textContent = reason === 'imagery_budget_exhausted'
+            ? '影像瓦片预算已耗尽，已回退离线；请停止在线演示并核对会话及每日剩余额度'
+            : '在线影像加载失败，已回退离线开发模式';
+          node.className = 'err';
+        }
+        if (typeof S.updateBasemapLabels === 'function') S.updateBasemapLabels();
+      },
       onImageryFailure: (count, message) => {
         const node = $('imageryStatus');
         if (node) {
@@ -1056,38 +1167,81 @@ async function boot() {
         }
         if (count === 1 || count % 25 === 0) renderStatus({ quiet: true });
       },
+      // 本地离线影像"没有这一块"是**数据边界**的正常状态（后端 404）：只记录一次，
+      // 既不刷红字也不回退。它与在线越界（503）是不同的事，必须分开表达。
+      onOfflineTileMissing: (count, message) => {
+        if (count === 1) {
+          log(`本地离线影像数据范围外瓦片（正常，非加载失败）：${message}`);
+        }
+        if (count === 1 || count % 25 === 0) renderStatus({ quiet: true });
+      },
     });
     const imageryStatus = S.manifest.imagery || {};
+    const imagerySource = (imageryStatus.sources || []).find(
+      source => source.id === imageryStatus.default_source);
+    const providerName = imagerySource && (imagerySource.label || imagerySource.id)
+      || '在线卫星影像';
+    const missingSettings = (imageryStatus.missing_configuration || []).join('、');
     // "当前底图"必须反映**实际渲染**的图层与**真实到达的瓦片**，而不是"可用性"。
     const updateBasemapLabels = () => {
       const stats = S.basemap && S.basemap.layerStats ? S.basemap.layerStats() : null;
       const imageryShown = Boolean(stats && stats.imagery && stats.imagery.show);
       const reliefShown = Boolean(stats && stats.relief && stats.relief.show);
+      const offlineShown = Boolean(stats && stats.offline_imagery
+        && stats.offline_imagery.show);
       const imageryResolved = stats && stats.imagery ? (stats.imagery.resolved || 0) : 0;
-      const active = imageryShown && imageryResolved > 0 ? 'satellite'
-        : (reliefShown ? 'relief' : 'none');
+      const offlineResolved = stats && stats.offline_imagery
+        ? (stats.offline_imagery.resolved || 0) : 0;
+      // 三种底图的判据必须**分开**：离线影像有真实瓦片才叫已渲染，否则会把
+      // "图层 show=true 但一张瓦片都没到"误报成"当前底图：卫星影像"。
+      const active = imageryShown && imageryResolved > 0 ? 'online_satellite'
+        : (offlineShown && offlineResolved > 0 ? 'offline_satellite'
+          : (offlineShown ? 'offline_satellite_pending'
+            : (reliefShown ? 'relief' : 'none')));
       const reliefNode = $('reliefStatus');
       if (reliefNode) {
-        reliefNode.textContent = active === 'satellite'
-          ? '当前底图：ArcGIS World Imagery 高清卫星影像'
-          : (active === 'relief' ? '当前底图：FABDEM 地形晕渲（非卫星影像）' : '');
-        reliefNode.className = active === 'satellite' ? 'ok-text' : 'dim';
+        const offlineSourceRow = (imageryStatus.sources || []).find(
+          source => source.id === 'offline_zhoushan_imagery');
+        const offlineLabel = (offlineSourceRow && offlineSourceRow.label)
+          || '舟山离线卫星影像（Sentinel-2 L2A）';
+        const offlineAttribution = (offlineSourceRow && offlineSourceRow.attribution)
+          || 'Contains modified Copernicus Sentinel data';
+        reliefNode.textContent = active === 'online_satellite'
+          ? `当前底图：ArcGIS 在线卫星影像（${providerName}）`
+          : active === 'offline_satellite'
+            ? `当前底图：${offlineLabel} · ${offlineAttribution}`
+            : active === 'offline_satellite_pending'
+              ? `当前底图：${offlineLabel}（本地瓦片加载中）`
+              : (active === 'relief' ? '当前底图：FABDEM 地形晕渲（非卫星影像）' : '');
+        reliefNode.className = (active === 'online_satellite' || active === 'offline_satellite')
+          ? 'ok-text' : 'dim';
       }
       const creditsNode = $('credits');
       if (creditsNode) {
         const terrainCredit = '地形：FABDEM 30 m + EGM2008（EGM2008 正高→WGS84 椭球高）';
+        const offlineSourceRow = (imageryStatus.sources || []).find(
+          source => source.id === 'offline_zhoushan_imagery');
+        // 署名必须逐条对应**真实**来源，绝不能把 Sentinel-2 标成 ArcGIS World Imagery。
+        const offlineCredit = offlineSourceRow && offlineSourceRow.status === 'available'
+          ? `离线影像：${offlineSourceRow.attribution || 'Contains modified Copernicus Sentinel data'}`
+            + `（Sentinel-2 L2A，${offlineSourceRow.native_gsd_m || 10} m，本地瓦片，零上游请求）`
+          : `离线影像：不可用（${(offlineSourceRow && offlineSourceRow.reason_code) || 'offline_imagery_unavailable'}）`;
         // 三种状态必须区分：离线模式禁用（不是凭证问题）/ 未授权 / 已配置。
         const offline = imageryStatus.online_allowed === false;
         const imageryCredit = offline
-          ? `卫星影像：离线开发模式未启用（${imageryStatus.reason_code || 'imagery_online_mode_disabled'}）`
+          ? `在线影像：未启用（${imageryStatus.reason_code || 'imagery_online_mode_disabled'}）`
           : imageryStatus.status === 'blocked'
-            ? `卫星影像：未授权，未渲染（${imageryStatus.reason_code || 'credential_unavailable'}）`
-            : '卫星影像：ArcGIS World Imagery — Tiles © Esri — Esri, Maxar, '
+            ? `在线影像：未授权，未渲染（${imageryStatus.reason_code || 'credential_unavailable'}）`
+            : '在线影像：ArcGIS World Imagery — Tiles © Esri — Esri, Maxar, '
               + 'Earthstar Geographics, and the GIS User Community';
         // 只有**真的在渲染**该底图时才追加来源标注（与上面同一判据）。
-        const reliefCredit = active === 'relief'
-          ? ' · 底图：FABDEM 地形晕渲（非卫星影像，仅用于判读起伏）' : '';
-        creditsNode.textContent = `${imageryCredit} · ${terrainCredit}${reliefCredit}`;
+        const activeCredit = active === 'relief'
+          ? ' · 底图：FABDEM 地形晕渲（非卫星影像，仅用于判读起伏）'
+          : active === 'offline_satellite'
+            ? ` · 底图：${offlineCredit}`
+            : active === 'online_satellite'
+              ? ' · 底图：ArcGIS World Imagery（在线）' : '';
+        creditsNode.textContent = `${offlineCredit} · ${imageryCredit} · ${terrainCredit}${activeCredit}`;
       }
       // 影像状态行同样必须随**真实瓦片到达**刷新：四个状态必须区分
       // （离线模式 / 凭证被拒 / 瓦片加载实测失败 / 已渲染真实瓦片）。只按
@@ -1099,21 +1253,42 @@ async function boot() {
         const failures = status.imagery_failures || 0;
         const discards = status.imagery_discards || 0;
         const outOfScope = status.imagery_out_of_scope || 0;
+        const offlineMissing = status.offline_tile_missing || 0;
         const lastError = status.imagery_last_error;
         const offline = imageryStatus.online_allowed === false;
-        if (offline) {
-          // 离线开发模式：这是**授权决策**，不是失败；底图由 FABDEM 晕渲承担。
-          imageryNode.textContent =
-            '卫星影像：离线开发模式（未启用在线瓦片，默认使用 FABDEM 晕渲）';
+        const offlineSourceRow = (imageryStatus.sources || []).find(
+          source => source.id === 'offline_zhoushan_imagery');
+        const offlineOk = Boolean(offlineSourceRow && offlineSourceRow.status === 'available');
+        const offlineResolvedNow = stats && stats.offline_imagery
+          ? (stats.offline_imagery.resolved || 0) : 0;
+        // 离线影像状态行**独立**于在线状态：两者是并行的两条底图链路，
+        // 把离线结果塞进"在线是否配置"的分支会让面板自相矛盾。
+        const offlineNote = offlineOk
+          ? `本地离线影像：${offlineSourceRow.attribution || 'Copernicus Sentinel-2'}`
+            + `（已完成 ${offlineResolvedNow} 张本地瓦片`
+            + (offlineMissing > 0 ? `，数据范围外 ${offlineMissing} 张，正常` : '')
+            + '，未消耗在线预算）'
+          : `本地离线影像不可用：${(offlineSourceRow && offlineSourceRow.reason_code)
+            || 'offline_imagery_unavailable'}`;
+        if (missingSettings && !offlineOk) {
+          imageryNode.textContent = `在线卫星影像未配置：缺少 ${missingSettings}（服务端设置后重启并刷新页面）· ${offlineNote}`;
           imageryNode.className = 'dim';
-        } else if (imageryStatus.status === 'blocked') {
+        } else if (offline && !offlineOk) {
+          // 在线未授权 + 本地离线影像也不可用：两种原因都要说清。
+          imageryNode.textContent = `在线卫星影像：未启用在线访问（默认离线）· ${offlineNote}`;
+          imageryNode.className = 'dim';
+        } else if (imageryStatus.status === 'blocked' && !offlineOk) {
           imageryNode.textContent =
-            `卫星影像不可用：${imageryStatus.reason_code || 'credential_unavailable'}`;
+            `卫星影像不可用：${imageryStatus.reason_code || 'credential_unavailable'} · ${offlineNote}`;
           imageryNode.className = 'err';
-        } else if (failures > 0) {
+        } else if (failures > 0 && imageryShown) {
           imageryNode.textContent =
-            `卫星影像瓦片加载失败 ${failures} 次：${lastError || '未知原因'}`;
+            `在线卫星影像瓦片加载失败 ${failures} 次：${lastError || '未知原因'} · ${offlineNote}`;
           imageryNode.className = 'err';
+        } else if (offlineResolvedNow > 0) {
+          imageryNode.textContent = `${offlineNote} · 在线源：${offline
+            ? '未启用（默认离线）' : '备用，未加载'}`;
+          imageryNode.className = 'ok-text';
         } else if (imageryResolved > 0) {
           // 有真实瓦片完成才敢说"已渲染"；0 张时必须保持"等待验证"，不能空口宣称。
           const notes = [];
@@ -1121,16 +1296,18 @@ async function boot() {
           if (outOfScope > 0) notes.push(`范围外拒绝 ${outOfScope} 次`);
           const suffix = notes.length ? `（另有${notes.join('、')}，均属正常调度）` : '';
           imageryNode.textContent =
-            `ArcGIS World Imagery 已渲染真实瓦片（已完成 ${imageryResolved} 张）${suffix}`;
+            `${providerName} 已渲染真实瓦片（已完成 ${imageryResolved} 张）${suffix}`;
           imageryNode.className = 'ok-text';
         } else if (discards > 0 || outOfScope > 0) {
           // 只有丢弃/范围外拒绝、没有任何真实失败：**不得**报成加载失败。
           imageryNode.textContent =
-            `ArcGIS World Imagery 等待真实瓦片（丢弃 ${discards} 次、范围外 ${outOfScope} 次，非失败）`;
+            `等待真实瓦片（丢弃 ${discards} 次、范围外 ${outOfScope} 次，非失败）· ${offlineNote}`;
           imageryNode.className = 'dim';
         } else {
-          imageryNode.textContent = 'ArcGIS World Imagery 已配置，等待真实瓦片验证';
-          imageryNode.className = 'ok-text';
+          imageryNode.textContent = offlineOk
+            ? `${offlineNote}（本地瓦片加载中）`
+            : '在线卫星影像已配置，等待真实瓦片验证';
+          imageryNode.className = 'dim';
         }
       }
       return active;
@@ -1143,11 +1320,173 @@ async function boot() {
       log(`卫星影像 BLOCKED：${imageryStatus.reason_code || 'credential_unavailable'}`, 'err');
     }
     S.updateBasemapLabels = updateBasemapLabels;
+
+    /**
+     * 底图模式开关（离线开发 / 在线演示）—— Round38-E2E-PRECHECK 任务 B。
+     *
+     * 语义边界（必须与业务证据严格分开）：
+     *  * 只切换**背景影像**加载模式，**不**表示任何 CNS 业务证据的 currentness，
+     *    也**不**表示正式规划有效性；
+     *  * **不**重建 Viewer、**不**动 camera、**不**增删业务实体、**不**改图层勾选、
+     *    **不**写 ProjectState、**不**重算 FABDEM/geoid 或任何规划高度；
+     *  * 影像图层在 ``createBasemap`` 中一次性建好，这里只切 ``show``
+     *    ⇒ 连续切换不可能叠加图层或增长内存；
+     *  * 在线不可用（``online_allowed=false`` 或凭证缺失）时，按钮**置灰**并如实
+     *    披露真实原因码，**不**假装可用、**不**硬编码或提交任何 token。
+     */
+    const basemapModeStatus = $('basemapModeStatus');
+    const modeReasonText = (reason) => {
+      if (reason === 'imagery_online_mode_disabled') {
+        return '未启用在线访问（服务端 CNS_IMAGERY_ONLINE_MODE 仍为默认 disabled）';
+      }
+      if (reason === 'arcgis_token_missing') {
+        return '未配置影像凭证（CNS_ARCGIS_TOKEN 缺失）';
+      }
+      if (reason === 'tianditu_tk_missing') {
+        return '未配置影像凭证（CNS_TIANDITU_TK 缺失）';
+      }
+      if (reason === 'imagery_budget_exhausted') return '影像瓦片预算已耗尽，请核对会话及每日剩余额度';
+      if (reason === 'imagery_credential_rejected') return '影像凭证无效、过期或权限不足';
+      if (reason === 'imagery_tile_timeout') return '在线影像瓦片超时';
+      if (reason === 'imagery_tile_request_failed') return '在线影像瓦片请求失败';
+      if (reason === 'superseded_by_newer_switch') return '已被更新的切换取代';
+      // 离线影像相关原因：必须与在线失败**分开**表述，否则用户会去查凭证/网络，
+      // 而真实问题是"本地离线瓦片数据缺失或未生成"。
+      if (reason === 'offline_imagery_unavailable') return '本地离线影像数据不可用，已回退地形晕渲';
+      if (reason === 'offline_imagery_not_configured') return '未配置本地离线影像数据源';
+      if (reason === 'offline_imagery_metadata_missing') return '本地离线影像元信息缺失，请先生成离线瓦片数据';
+      if (reason === 'offline_imagery_tiles_missing') return '本地离线影像瓦片目录缺失，请先生成离线瓦片数据';
+      if (reason === 'offline_imagery_tile_missing') return '本地离线影像缺少该瓦片（数据范围边缘，正常）';
+      return reason ? `原因码 ${reason}` : '未知原因';
+    };
+    const setModeStatus = (text, cls) => {
+      if (!basemapModeStatus) return;
+      basemapModeStatus.textContent = text;
+      basemapModeStatus.className = cls || 'dim';
+    };
+    const offlineRadio = $('bmOffline');
+    const offlineImageryRadio = $('bmOfflineImagery');
+    const onlineRadio = $('bmOnline');
+    const onlineUsable = typeof S.basemap.onlineAvailable === 'function'
+      ? S.basemap.onlineAvailable() : false;
+    const onlineReason = typeof S.basemap.onlineBlockReason === 'function'
+      ? S.basemap.onlineBlockReason() : null;
+    // 离线影像能力必须**独立**查询：它不依赖在线授权，因此在线被禁用时它照样可用。
+    const offlineImageryUsable = typeof S.basemap.offlineImageryAvailable === 'function'
+      ? S.basemap.offlineImageryAvailable() : false;
+    const offlineImageryReason = typeof S.basemap.offlineImageryBlockReason === 'function'
+      ? S.basemap.offlineImageryBlockReason() : null;
+    const offlineImagerySource = (imageryStatus.sources || []).find(
+      source => source.id === 'offline_zhoushan_imagery');
+    const offlineImageryLabel = (offlineImagerySource && offlineImagerySource.label)
+      || '舟山离线卫星影像';
+    const offlineImageryCredit = (offlineImagerySource && offlineImagerySource.attribution)
+      || 'Contains modified Copernicus Sentinel data';
+
+    // 如实反映能力：离线影像不可用时置灰并给出**真实**原因。
+    if (offlineImageryRadio) {
+      if (!offlineImageryUsable) {
+        offlineImageryRadio.disabled = true;
+        offlineImageryRadio.title = `本地离线影像不可用：${modeReasonText(offlineImageryReason)}`;
+        const label = offlineImageryRadio.closest('label');
+        if (label) label.classList.add('bm-disabled');
+      } else {
+        offlineImageryRadio.title = '使用本地离线 Sentinel-2 影像（不触网、不消耗在线瓦片预算）';
+      }
+    }
+
+    // 如实反映能力：在线不可用时置灰，并在标题里给出**真实**原因。
+    if (onlineRadio) {
+      if (!onlineUsable) {
+        onlineRadio.disabled = true;
+        onlineRadio.title = `在线卫星影像未配置：${missingSettings || modeReasonText(onlineReason)}`;
+        const label = onlineRadio.closest('label');
+        if (label) label.classList.add('bm-disabled');
+      } else {
+        onlineRadio.title = '加载已配置的在线卫星影像（保留 FABDEM 三维地形）';
+      }
+    }
+    // 默认勾选与真实默认底图**一致**：本地影像可用即默认离线卫星影像。
+    const syncModeRadios = () => {
+      const current = typeof S.basemap.basemapMode === 'function'
+        ? S.basemap.basemapMode() : 'offline_relief';
+      if (offlineRadio) offlineRadio.checked = current === 'offline_relief';
+      if (offlineImageryRadio) offlineImageryRadio.checked = current === 'offline_imagery';
+      if (onlineRadio) onlineRadio.checked = current === 'online';
+    };
+    if (offlineImageryRadio) offlineImageryRadio.checked = false;
+    if (offlineRadio) offlineRadio.checked = true;
+    syncModeRadios();
+
+    // 连续切换的竞态由 basemap 的 mode_serial 独占裁决（旧结果一律作废）。
+    let modeSwitchSerial = 0;
+    const applyMode = async (mode) => {
+      const serial = ++modeSwitchSerial;
+      if (mode === 'online') setModeStatus(`正在加载 ${providerName} 在线影像…`, 'dim');
+      if (mode === 'offline_imagery') setModeStatus(`正在加载${offlineImageryLabel}…`, 'dim');
+      const result = await S.basemap.setMode(mode);
+      result.reason = await refineImageryFailure(result.reason);
+      // 已有更新的切换 ⇒ 本次结果作废（既不写 UI，也不回传为成功）。
+      if (serial !== modeSwitchSerial) {
+        return { ok: false, mode: S.basemap.mode(), reason: 'superseded_by_newer_switch' };
+      }
+      // 走**最终**的 updateBasemapLabels（它在图层绑定处被包了一层，负责把
+      // 「高清卫星影像」勾选框同步为实际生效的模式）。
+      if (typeof S.updateBasemapLabels === 'function') S.updateBasemapLabels();
+      syncModeRadios();
+      if (result.ok && result.mode === 'online') {
+        setModeStatus(`底图模式：ArcGIS 在线卫星影像（${providerName} 真实瓦片已加载；授权身份未核验）`, 'ok-text');
+        log('底图模式切换为 ArcGIS 在线卫星影像：在线影像瓦片已真实到达');
+      } else if (result.ok && result.basemap_mode === 'offline_imagery') {
+        setModeStatus(`底图模式：离线卫星影像（${offlineImageryLabel}，本地瓦片，未消耗在线预算）`, 'ok-text');
+        log('底图模式切换为离线卫星影像：本地瓦片已加载（无上游请求）');
+      } else if (result.mode === 'offline' && mode === 'online') {
+        // 回退必须**明确披露原因**，且离线场景保持可用（绝不留下空白无提示）。
+        setModeStatus(`底图模式：${result.basemap_mode === 'offline_imagery' ? '离线卫星影像' : '离线地形晕渲'}`
+          + `（在线影像不可用，已回退；${modeReasonText(result.reason)}）`, 'err');
+        log(`在线影像不可用，已回退离线：${result.reason || 'unknown'}`, 'err');
+      } else if (result.mode === 'offline' && mode === 'offline_imagery') {
+        // 离线影像不可用 ⇒ 回退晕渲，绝不出现蓝屏或空白。
+        setModeStatus(`底图模式：离线地形晕渲（本地离线影像不可用，已回退；${modeReasonText(result.reason)}）`, 'err');
+        log(`本地离线影像不可用，已回退地形晕渲：${result.reason || 'unknown'}`, 'err');
+      } else if (result.mode === 'offline') {
+        setModeStatus('底图模式：离线地形晕渲（FABDEM）', 'dim');
+      }
+      return result;
+    };
+    if (offlineRadio) offlineRadio.onchange = () => { if (offlineRadio.checked) applyMode('offline'); };
+    if (offlineImageryRadio) {
+      offlineImageryRadio.onchange = () => { if (offlineImageryRadio.checked) applyMode('offline_imagery'); };
+    }
+    if (onlineRadio) onlineRadio.onchange = () => { if (onlineRadio.checked) applyMode('online'); };
+    // 首屏如实显示默认模式；在线不可用时把真实原因一并说明。
+    if (offlineImageryUsable) {
+      setModeStatus(`底图模式：离线卫星影像（${offlineImageryLabel}，本地瓦片，未消耗在线预算）`, 'dim');
+    } else if (onlineUsable) {
+      setModeStatus(`底图模式：离线地形晕渲（FABDEM）· 本地离线影像不可用：${modeReasonText(offlineImageryReason)}`, 'dim');
+    } else {
+      setModeStatus(`底图模式：离线地形晕渲（FABDEM）· 在线卫星影像未配置：${missingSettings || modeReasonText(onlineReason)}`
+        + ` · 本地离线影像不可用：${modeReasonText(offlineImageryReason)}`, 'dim');
+    }
+    S.applyBasemapMode = applyMode;
+    S.basemapModeState = () => ({
+      mode: typeof S.basemap.mode === 'function' ? S.basemap.mode() : null,
+      basemap_mode: typeof S.basemap.basemapMode === 'function' ? S.basemap.basemapMode() : null,
+      online_available: onlineUsable,
+      online_block_reason: onlineReason,
+      offline_imagery_available: offlineImageryUsable,
+      offline_imagery_block_reason: offlineImageryReason,
+      offline_imagery_attribution: offlineImageryCredit,
+      status_text: basemapModeStatus ? basemapModeStatus.textContent : null,
+    });
     // 低频兜底轮询：影像瓦片在首屏之后仍会陆续到达（尤其低空视角），
     // 仅靠 onImageryProgress 回调可能被节流/竞态漏掉，这里每 1.5 s 校正一次文案。
     if (!S.basemapLabelTimer) {
       S.basemapLabelTimer = setInterval(() => {
-        try { updateBasemapLabels(); } catch (_error) { /* 文案刷新失败不影响渲染 */ }
+        // 走 S.updateBasemapLabels（最终版），保证轮询路径也会同步模式镜像勾选框。
+        try {
+          if (typeof S.updateBasemapLabels === 'function') S.updateBasemapLabels();
+        } catch (_error) { /* 文案刷新失败不影响渲染 */ }
       }, 1500);
     }
     const terrainLoad = $('terrainLoad');
@@ -1170,19 +1509,18 @@ async function boot() {
     const ensureRouteContext = async () => {
       if (!S.routeContextPromise) S.routeContextPromise = (async () => {
         S.routes = await getJSON(`${API}/routes`);
-        const demo = (S.routes.routes || []).find(
+        const rows = S.routes.routes || [];
+        const demo = rows.find(
           (row) => row.authority === 'engineering_demo_projection');
-        if (demo && !S.terrainFrame) {
-          const lons = demo.path.map((point) => point[0]);
-          const lats = demo.path.map((point) => point[1]);
-          const margin = 0.02;
-          await loadTerrainWindow([
-            Math.min(...lons) - margin, Math.min(...lats) - margin,
-            Math.max(...lons) + margin, Math.max(...lats) + margin,
-          ], 512, 512);
-          renderStatus();
+        // A7-OBS-03：航路顶点的高度需要逐点 geoid N，因此**先**按航路几何范围补齐地形
+        // 窗口，再构造实体。缺这一步时（演示航路以前只在 `!S.terrainFrame` 时才补一次，
+        // 判据不完整）terrainHeightAt 会因 terrainFrame 为 null 抛错，整条航线不显示。
+        const points = [];
+        for (const row of rows) {
+          for (const point of row.path || []) points.push(point);
         }
-        return { demo, routes: S.routes.routes || [] };
+        if (points.length) await ensureTerrainForPoints(points, '航路图层');
+        return { demo, routes: rows };
       })();
       return S.routeContextPromise;
     };
@@ -1198,13 +1536,20 @@ async function boot() {
       return S.pointsPromise;
     };
     const ensureTowerGroups = async () => {
-      if (!S.towerGroupsPromise) S.towerGroupsPromise = ensurePoints().then((byId) => {
-        const result = addTowerEntities(viewer, (byId.towers && byId.towers.items) || []);
+      if (!S.towerGroupsPromise) S.towerGroupsPromise = (async () => {
+        const byId = await ensurePoints();
+        const items = (byId.towers && byId.towers.items) || [];
+        // A7-BUG-01：塔实体需要"地形正高 → 椭球高"的逐点 N，因此**先**按塔点位范围
+        // 补齐地形窗口，再构造实体。否则 terrainHeightAt 会在 terrainFrame 为 null 时
+        // 抛错，整层塔一个都不出来（这正是人工验收复现的现场）。
+        const terrainReady = await ensureTerrainForPoints(
+          items.map((tower) => [tower.longitude, tower.latitude]), '铁塔图层');
+        const result = addTowerEntities(viewer, items, { terrainReady });
         for (const entity of result.all) entity.show = false;
         groups.towersKnown = result.known;
         groups.towersUnknown = result.unknown;
         return result;
-      });
+      })();
       return S.towerGroupsPromise;
     };
 
@@ -1231,8 +1576,10 @@ async function boot() {
         + `<div class="dim">共 ${payload.count} 个站址：既有设施 ${counts.existing_facilities || 0}、`
         + `规划选中 ${counts.planned_selected || 0}、候选 ${counts.candidate_unselected || 0}、`
         + `blocked ${counts.spatial_blocked || 0}。</div>`
-        + `<div class="dim">铁塔 ${counts.tower_sites || 0}（有塔顶结构几何 `
-        + `${counts.towers_with_structure_geometry || 0}，缺塔顶 ${counts.towers_missing_tower_top || 0}）、`
+        + `<div class="dim">铁塔 ${counts.tower_sites || 0}（严格解析塔顶 `
+        + `${counts.towers_with_resolved_tower_top_geometry || 0}，工程估算 `
+        + `${counts.towers_with_planning_estimate_geometry || 0}，缺塔顶 `
+        + `${counts.towers_missing_tower_top || 0}；工程估算不等于已确认塔顶）、`
         + `地面站 ${counts.ground_sites || 0}。</div>`
         + '<div class="warn">站址存在 ≠ 设备已安装；候选站址不画成已布设设备。</div>';
     }
@@ -1242,15 +1589,30 @@ async function boot() {
     function renderFixedCorridorPanel(bands, result) {
       const note = $('fixedCorridorNote');
       const list = $('fixedCorridorList');
+      // A7-BAND-02：**几何可用（geometry available）** 与 **正式成果有效（business
+      // currentness）** 是两个不同口径。此前的空态文案把"还没请求/已请求但没有航路带"
+      // 一律写成"没有正式运行航路，无法给出固定保障目标带"，与用户已经亲眼看到的
+      // "已画出 1/1 条固定 1000 m 目标带"直接冲突。这里按真实来源分类，且不再删除
+      // 任何已经成功绘制的历史预览带。
       if (note) {
         if (!bands || !bands.length) {
-          note.textContent = '没有正式运行航路，无法给出固定保障目标带。';
+          const loaded = Boolean(S.fixedCorridor);
+          note.textContent = loaded
+            ? '本图层已请求完成：当前项目没有携带固定保障目标带几何的航路'
+              + `（服务端 band_count=${(S.fixedCorridor || {}).band_count || 0}）。`
+              + '这不代表服务离线，也不代表本项目永久没有目标带。'
+            : '尚未加载固定保障目标带图层。勾选上方「固定 1000 m CNS 保障目标带」后按需请求；'
+              + '未加载前不判断是否有目标带。';
           note.className = 'dim';
         } else {
           const current = bands.filter((row) => row.drawable_as_current_band).length;
           const preview = bands.filter((row) => row.preview_allowed).length;
-          note.innerHTML = `共 ${bands.length} 条航路的目标带：current ${current}，`
-            + `非权威历史预览 ${preview}。`
+          const geometry = bands.filter((row) => row.route_geometry_fingerprint).length;
+          note.innerHTML = `共 ${bands.length} 条航路：几何可用 ${geometry} 条`
+            + `（几何可用 ≠ 正式成果有效）；正式 current 目标带 ${current} 条，`
+            + `非权威历史预览 ${preview} 条。`
+            + (current ? '' : '<div class="warn">当前没有 current 的保障证据，'
+              + '因此这些带**不是**正式已实现覆盖，只能作明确标注的历史预览。</div>')
             + `<div class="warn">${FIXED_CORRIDOR_DISCLAIMER}</div>`;
           note.className = 'dim';
         }
@@ -1499,7 +1861,8 @@ async function boot() {
     };
     S.lazyLayers = new LazyLayerRegistry(S.lazyLayerLoaders);
     renderCnsSiteLegend();
-    renderFixedCorridorPanel([], { groups: [] });
+    // A7-BAND-02：`null` = 图层尚未请求（不能断言"没有目标带"），`[]` = 已请求且为空。
+    renderFixedCorridorPanel(null, { groups: [] });
 
     // ---- Radar 面阵清单（每个真实面阵单独成组，可单独关闭） --------------------
     function radarLayerEnabled() {
@@ -2337,16 +2700,58 @@ async function boot() {
         if (typeof S.updateBasemapLabels === 'function') S.updateBasemapLabels();
       };
     };
-    bindBase('imagery', (value) => S.basemap.setImageryVisible(value));
+    // 「高清卫星影像」勾选框**不是**第二个模式开关：它只是底图模式的可视化镜像，
+    // 只读展示实际模式，用户只从上方双选开关切换。
+    // （地形与注记仍是各自独立的图层开关，语义不变。）
+    const imageryCheckbox = $('ly_imagery');
+    if (imageryCheckbox) {
+      imageryCheckbox.disabled = true;
+      imageryCheckbox.title = '当前底图模式的只读镜像；请使用上方「底图模式」切换';
+    }
+    /** 把勾选框同步为**实际生效**的模式（在线失败回退时也要复位）。
+     *
+     * 判据取 ``basemapMode()``（三值）而不是 ``mode()``（二值）：后者对"离线晕渲"
+     * 与"离线卫星影像"都返回 ``offline``，用它会让离线卫星影像时勾选框显示未勾选，
+     * 与画面真实显示的底图不符。
+     */
+    const syncImageryCheckbox = () => {
+      if (!imageryCheckbox) return;
+      const mode = typeof S.basemap.basemapMode === 'function'
+        ? S.basemap.basemapMode() : 'offline_relief';
+      imageryCheckbox.checked = mode === 'online' || mode === 'offline_imagery';
+    };
+    const previousUpdateLabels = S.updateBasemapLabels;
+    S.updateBasemapLabels = () => {
+      if (typeof previousUpdateLabels === 'function') previousUpdateLabels();
+      syncImageryCheckbox();
+    };
     bindBase('terrain', (value) => S.basemap.setTerrainVisible(value));
     bindBase('labels', (value) => S.basemap.setLabelsVisible(value));
-    // 离线模式下影像图层不存在：勾选框必须反映真实能力，不能显示成"已开启"。
-    const imageryInput = $('ly_imagery');
-    if (imageryInput && typeof S.basemap.imageryAvailable === 'function'
-        && !S.basemap.imageryAvailable()) {
+    // 影像图层完全不存在（在线未授权 **且** 本地离线影像不可用）：勾选框必须反映
+    // 真实能力，不能显示成"已开启"。
+    const imageryInput = imageryCheckbox;
+    const anyImagery = (typeof S.basemap.imageryAvailable === 'function'
+      && S.basemap.imageryAvailable())
+      || (typeof S.basemap.offlineImageryAvailable === 'function'
+        && S.basemap.offlineImageryAvailable());
+    if (imageryInput && !anyImagery) {
       imageryInput.checked = false;
       imageryInput.disabled = true;
-      imageryInput.title = '离线开发模式：未启用在线瓦片（默认使用 FABDEM 晕渲）';
+      imageryInput.title = '无可用卫星影像图层（在线未授权，且本地离线影像不可用）；'
+        + '当前使用 FABDEM 地形晕渲，见上方「底图模式」';
+    } else if (imageryInput) {
+      imageryInput.checked = false;   // 默认离线：由 syncImageryCheckbox 按真实模式刷新
+      imageryInput.title = '底图模式的只读镜像；请使用上方「底图模式」切换';
+    }
+    // A7-OBS-02：本构建没有创建地理注记 provider，勾选框必须**事先**显示为不可用并给出
+    // 原因，而不是让用户勾选后什么也看不到（随后再被复位）。能力判定走 basemap 的唯一实现。
+    const labelsInput = $('ly_labels');
+    if (labelsInput && typeof S.basemap.labelsAvailable === 'function'
+        && !S.basemap.labelsAvailable()) {
+      labelsInput.checked = false;
+      labelsInput.disabled = true;
+      labelsInput.title = '本构建未启用在线地理注记图源（离线开发模式）；'
+        + '此项不影响业务图层与地形判读';
     }
     // 切换业务图层**不得**重建 Cesium Viewer，也不得重新初始化卫星底图：
     // 下面的循环只调用 LazyLayerRegistry.setVisible（首次才请求几何）。
@@ -2385,7 +2790,8 @@ async function boot() {
         if (input) input.checked = Boolean(BUSINESS_LAYER_DEFAULTS[id]);
       }
       renderCnsSiteLegend();
-      renderFixedCorridorPanel([], { groups: [] });
+      // A7-BAND-02：清理后回到"尚未请求"状态（`null`），不得断言"没有目标带"。
+      renderFixedCorridorPanel(null, { groups: [] });
       S.stats.entities = viewer.entities.values.length;
       renderStatus({ quiet: true });
       if (!keepBase) return false;
@@ -2502,15 +2908,34 @@ window.__CNS_3D__ = {
     const globe = scene.globe;
     const surface = globe && globe._surface;
     const layers = S.viewer.imageryLayers;
+    // 图层必须**按 provider URL 身份**识别，绝不能按固定索引取。
+    // 实测缺陷：加入本地离线影像后共有三层（在线 / 离线 / 晕渲），而本探针原先按
+    // index 0/1 取值，于是 relief_stats 实际读到的是**离线影像**图层——证据与现实
+    // 不符，会让人误判"晕渲在渲染"或"影像计数不对"。
+    const layerByUrl = (needle) => {
+      if (!layers) return null;
+      for (let i = 0; i < layers.length; i += 1) {
+        const layer = layers.get(i);
+        const url = layer && layer.imageryProvider && layer.imageryProvider.url;
+        if (typeof url === 'string' && url.includes(needle)) return layer;
+      }
+      return null;
+    };
+    const onlineLayer = layerByUrl('arcgis_world_imagery');
+    const offlineLayer = layerByUrl('offline_zhoushan_imagery');
+    const reliefLayerRef = layerByUrl('/relief/');
     return {
       tiles_to_render: surface && surface._tilesToRender ? surface._tilesToRender.length : null,
       tiles_loading: surface && surface._tilesToRender
         ? surface._tilesToRender.filter((t) => t && t.state === 1).length : null,
       imagery_layers: layers ? layers.length : null,
-      //: 影像瓦片**真实**请求/完成/失败计数与本视角所用的图层身份。
-      imagery_stats: layers && layers.length > 0 ? imageryStats(layers.get(0)) : null,
-      imagery_visible: layers && layers.length > 0 ? Boolean(layers.get(0).show) : null,
-      relief_stats: layers && layers.length > 1 ? imageryStats(layers.get(1)) : null,
+      //: 各底图图层**各自**的真实瓦片计数（在线 / 离线 / 晕渲，三者不可混用）。
+      imagery_stats: imageryStats(onlineLayer),
+      imagery_visible: onlineLayer ? Boolean(onlineLayer.show) : null,
+      offline_imagery_stats: imageryStats(offlineLayer),
+      offline_imagery_visible: offlineLayer ? Boolean(offlineLayer.show) : null,
+      relief_stats: imageryStats(reliefLayerRef),
+      relief_visible: reliefLayerRef ? Boolean(reliefLayerRef.show) : null,
       terrain_provider: S.viewer.terrainProvider && S.viewer.terrainProvider.constructor
         ? S.viewer.terrainProvider.constructor.name : null,
       vertical_exaggeration: scene.verticalExaggeration,
@@ -2520,6 +2945,7 @@ window.__CNS_3D__ = {
       fog: scene.fog ? scene.fog.enabled : null,
       sky_atmosphere: scene.skyAtmosphere ? scene.skyAtmosphere.show : null,
       globe_show: globe ? globe.show : null,
+      entity_count: S.viewer.entities ? S.viewer.entities.values.length : null,
     };
   },
   cameraPresets() {
@@ -2625,9 +3051,68 @@ window.__CNS_3D__ = {
   },
   /** 验收辅助：只读图层证据（真实瓦片计数 / tiling scheme / 来源版权）。 */
   layerStats() { return S.basemap ? S.basemap.layerStats() : null; },
+  /** 验收辅助：底图模式开关的只读状态（模式 / 在线是否可用 / 真实原因 / 文案）。 */
+  basemapModeState() {
+    return typeof S.basemapModeState === 'function' ? S.basemapModeState() : null;
+  },
+  /** 验收辅助：三个底图图层各自的真实瓦片计数与来源（离线影像单列一项）。 */
+  basemapLayerStats() {
+    return S.basemap && typeof S.basemap.layerStats === 'function'
+      ? S.basemap.layerStats() : null;
+  },
+  /** 验收辅助：切换底图模式（离线地形晕渲 / 离线卫星影像 / ArcGIS 在线卫星影像）。
+   *
+   * 这是**唯一**用于自动化验收的模式入口；它走与 UI 开关完全相同的
+   * ``S.applyBasemapMode``，因此不可能绕过置灰与回退逻辑。
+   */
+  setBasemapMode(mode) {
+    if (typeof S.applyBasemapMode !== 'function') return null;
+    const target = ['online', 'offline_imagery'].includes(mode) ? mode : 'offline';
+    return S.applyBasemapMode(target);
+  },
   /** 验收辅助：Cesium Viewer 是否被**重建**过（切图层绝不允许重建 viewer）。 */
   viewerIdentityStable() {
     return Boolean(S.viewerIdentity) && S.viewerIdentity === S.viewer;
+  },
+  /** 验收辅助：读取**真实生效**的场景渲染效果开关（只读，不修改任何设置）。
+   *
+   * 用于诊断"卫星影像偏蓝发白"这类色彩异常：只有拿到真实开关值，才能把
+   * 嫌疑项逐个消融验证，而不是靠猜。
+   */
+  sceneEffects() {
+    const viewer = S.viewer;
+    if (!viewer) return null;
+    const globe = viewer.scene.globe;
+    return {
+      show_water_effect: globe.showWaterEffect,
+      enable_lighting: globe.enableLighting,
+      show_ground_atmosphere: globe.showGroundAtmosphere,
+      fog_enabled: viewer.scene.fog ? viewer.scene.fog.enabled : null,
+      base_color: globe.baseColor ? globe.baseColor.toCssColorString() : null,
+      maximum_screen_space_error: globe.maximumScreenSpaceError,
+      vertical_exaggeration: viewer.scene.verticalExaggeration,
+      terrain_provider: viewer.terrainProvider ? viewer.terrainProvider.constructor.name : null,
+      imagery_layer_count: viewer.imageryLayers.length,
+    };
+  },
+  /** 验收辅助：**临时**切换场景效果用于色彩消融实验（只影响当前会话显示）。
+   *
+   * 它**不**改任何默认值、**不**写 ProjectState、**不**持久化；页面刷新即恢复。
+   * 存在的唯一理由是让"是否 showWaterEffect 造成海面偏蓝发白"可被实验证伪。
+   */
+  setSceneEffect(name, value) {
+    const viewer = S.viewer;
+    if (!viewer) return false;
+    const globe = viewer.scene.globe;
+    const allowed = {
+      show_water_effect: (v) => { globe.showWaterEffect = Boolean(v); },
+      enable_lighting: (v) => { globe.enableLighting = Boolean(v); },
+      show_ground_atmosphere: (v) => { globe.showGroundAtmosphere = Boolean(v); },
+      fog_enabled: (v) => { if (viewer.scene.fog) viewer.scene.fog.enabled = Boolean(v); },
+    };
+    if (!allowed[name]) return false;
+    allowed[name](value);
+    return true;
   },
   /** 验收辅助：覆盖图层的只读证据（服务端原样 payload + 实体数）。 */
   coverageStats() {
@@ -3144,6 +3629,9 @@ window.__CNS_3D__ = {
       // 底图**实测**状态（含 imagery_failures / imagery_last_error / discards）：验收
       // 脚本据此断言"影像真的出图了"，而不是只看 manifest 的 configured_unverified。
       imagery: S.basemap ? S.basemap.status() : null,
+      // 底图**模式**开关的只读证据（离线开发 / 在线演示）。只反映背景影像加载模式，
+      // 与任何 CNS 业务证据的 currentness 或正式规划有效性无关。
+      basemap_mode: typeof S.basemapModeState === 'function' ? S.basemapModeState() : null,
       // 覆盖图层证据（服务端语义 + 实体数）；未开启时为 null，绝不假装已加载。
       coverage: (S.coverage || null) ? {
         communication: S.coverage.communication ? {

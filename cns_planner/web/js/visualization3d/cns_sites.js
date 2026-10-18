@@ -94,6 +94,55 @@ function stateStyle(siteState) {
   return CNS_SITE_STATE_STYLE[siteState] || CNS_SITE_STATE_STYLE.candidate_unselected;
 }
 
+/**
+ * A7-SEM-01：设备安装身份的中文口径**只**由服务端 ``installation_status`` 映射。
+ *
+ * 修复前的现场：``COMM-BASELINE-4KM`` 的设备详情直接打印服务端原始值
+ * ``installed_confirmed``，而宿主站址是 ``planned_selected``、``physical_mount_confirmed``
+ * 为 false、``existing_facility=0`` —— 用户合理地把它读成"已确认安装"。
+ * 每个状态都必须把"设备选型 / 规划主机可用性 / 物理挂载 / 规划安装高度 / 实际部署"
+ * 分层说清，绝不用一句话笼统宣称已安装。
+ */
+export const CNS_INSTALLATION_STATUS_TEXT = Object.freeze({
+  //: 只有真有安装记录（方案已确认 **且** 物理挂载已确认）才是"已确认安装"。
+  installed_confirmed: '已确认安装（有真实安装记录）',
+  //: 方案已由 confirmed_cns_plan 确认，但物理挂载仍无现场证据。
+  plan_confirmed_not_installed: '方案已确认、尚未安装（物理挂载未确认）',
+  //: 规划算法选中的动作：只有规划身份，**不是**安装记录。
+  planned_selected_unconfirmed: '规划选中（未确认安装；仅规划身份）',
+  planned: '规划中（未确认安装）',
+});
+
+/** 安装状态 → 中文（未知值原样回显，绝不伪装成"已确认安装"）。 */
+export function installationStatusText(status) {
+  const key = String(status || '').trim();
+  if (!key) return '未登记';
+  return CNS_INSTALLATION_STATUS_TEXT[key] || key;
+}
+
+/** 安装身份的分层证据（服务端 installation_evidence），逐项如实披露。 */
+function installationEvidenceRows(device) {
+  const evidence = device && typeof device.installation_evidence === 'object'
+    ? device.installation_evidence : null;
+  if (!evidence) return [];
+  const rows = [
+    ['安装证据：确认方案状态', evidence.confirmed_plan_status || 'not_confirmed'],
+    ['安装证据：方案已确认实施', evidence.plan_confirmed === true ? '是' : '否'],
+    ['安装证据：规划主机可用性', evidence.planning_host_use_confirmed === true ? '已确认' : '未确认'],
+    ['安装证据：物理挂载', evidence.physical_mount_confirmed === true ? '已确认' : '未确认'],
+    ['安装证据：需现场调查', evidence.requires_site_survey === true ? '是' : '否'],
+  ];
+  if (evidence.planning_origin_authority || evidence.planning_origin_status) {
+    rows.push(['安装证据：规划原点权威性',
+      `${evidence.planning_origin_authority || '—'}（${evidence.planning_origin_status || '—'}）`]);
+  }
+  rows.push(['安装证据：登记来源', device.installation_basis
+    || evidence.confirmation_source || '—']);
+  rows.push(['安装身份限制', evidence.disclosure
+    || '规划选中 ≠ 已安装设备；规划安装高度 ≠ 真实已安装高度']);
+  return rows;
+}
+
 function categoryStyle(category) {
   return CNS_SERVICE_STYLE[category] || CNS_SERVICE_STYLE.other;
 }
@@ -139,8 +188,18 @@ export function sitePopupRows(site) {
   if (devices.length) {
     rows.push(['设备（按身份登记）', devices.map((row) => {
       const style = categoryStyle(row.category);
-      return `${style.label}·${row.device_id || '—'}（${row.installation_status || '—'}）`;
+      return `${style.label}·${row.device_id || '—'}（${installationStatusText(row.installation_status)}）`;
     }).join('；')]);
+    // A7-SEM-01：设备选型 / 规划主机可用性 / 物理挂载 / 规划安装高度必须分别披露，
+    // 不能只用一句"已安装"概括。
+    for (const row of devices) {
+      const style = categoryStyle(row.category);
+      rows.push([`设备身份 · ${style.label}·${row.device_id || '—'}`,
+        installationStatusText(row.installation_status)]);
+      for (const extra of installationEvidenceRows(row)) {
+        rows.push([`${extra[0]}（${row.device_id || '—'}）`, extra[1]]);
+      }
+    }
   } else {
     rows.push(['设备', '无已登记设备（候选站址不推断设备已安装）']);
   }
@@ -372,7 +431,8 @@ export function addCnsSiteEntities(viewer, sites, options = {}) {
       rows: [
         ['类别', deviceStyle.label],
         ['服务键', plan.service_key || '—'],
-        ['安装状态', plan.installation_status || 'planned_selected_unconfirmed'],
+        ['安装状态', installationStatusText(
+          plan.installation_status || 'planned_selected_unconfirmed')],
         ['设备选型状态', plan.equipment_selection_status || '—'],
         ['安装位置语义', '地面站安装（规划）'],
         ['宿主站址', plan.linked_site_available
@@ -449,10 +509,13 @@ function addDeviceMarker(viewer, { Cesium, undulationAt, site, device, deviceSty
     rows: [
       ['设备类别', deviceStyle.label],
       ['服务键', device.service_key || '—'],
-      ['安装状态', device.installation_status || '—'],
+      ['安装状态', installationStatusText(device.installation_status)],
+      ['安装状态原始值', device.installation_status || '—'],
+      ['设备选型状态', (device.installation_evidence || {}).equipment_selection_status || '—'],
       ['安装位置语义', device.position_semantics === 'ground_site' ? '地面站安装' : '塔顶安装'],
       ['物理挂载确认', device.physical_mount_confirmed === true
         ? '已确认' : '未确认（不得当作已安装高度）'],
+      ['规划主机可用性', device.planning_host_use_confirmed === true ? '已确认' : '未确认'],
       ['宿主站址', site.name || site.site_id],
       ['宿主布设状态', site.site_state_label || site.site_state],
       ['塔顶正高', site.tower_top_orthometric_m === null
@@ -464,6 +527,7 @@ function addDeviceMarker(viewer, { Cesium, undulationAt, site, device, deviceSty
       ['绘制高度', heightIncomplete
         ? 'geoid N 未解析：高度不完整（未当 0 渲染）' : `${z.toFixed(3)} m（椭球高）`],
       ['来源', device.source || '—'],
+      ...installationEvidenceRows(device),
     ],
   };
   return [entity];

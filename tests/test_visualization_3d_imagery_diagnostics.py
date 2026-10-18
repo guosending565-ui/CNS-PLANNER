@@ -241,3 +241,25 @@ def test_router_serves_config_metadata_and_diagnose_as_read_only_get():
     assert TOKEN not in json.dumps(diagnose.data, ensure_ascii=False)
     assert TOKEN not in json.dumps(metadata.data, ensure_ascii=False)
     assert TOKEN not in json.dumps(config.data, ensure_ascii=False)
+
+
+def test_image_success_does_not_claim_credential_authorization():
+    service = Imagery3DService(
+        environ={"CNS_ARCGIS_TOKEN": TOKEN}, budget=isolated_budget(),
+        fetcher=SequenceFetcher([(200, {"Content-Type": "image/png"}, png_tile(),
+                                  "https://" + ARCGIS_HOST + "/t.png")]))
+    report = service.diagnose_tile("arcgis_world_imagery", 12, 3438, 1689)
+    assert report["outcome"] == "ok"
+    assert report["image_fetch_succeeded"] is True
+    assert report["authorization_verified"] is False
+    assert report["authorization_status"] == "not_verified"
+
+
+def test_configuration_lists_missing_settings_without_upstream_calls():
+    fetcher = SequenceFetcher([])
+    service = Imagery3DService(environ={}, fetcher=fetcher,
+                               budget=isolated_budget("disabled"))
+    config = service.configuration()
+    assert config["missing_configuration"] == ["CNS_IMAGERY_ONLINE_MODE", "CNS_ARCGIS_TOKEN"]
+    assert config["authorization_status"] == "not_verified"
+    assert fetcher.calls == []

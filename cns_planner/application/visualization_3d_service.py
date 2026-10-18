@@ -292,6 +292,11 @@ class Visualization3DService:
                 "严格安全验证未通过（strict_safety_validation_passed=false）",
                 "无运行许可（operational_authorization=false）",
                 "本视图为工程演示，不得作为运行依据",
+                # L1：建筑高度证据等级不升级
+                "建筑 4tCa7 高度证据为 ML 预测，采用工程条件接受，不构成严格安全验证通过。",
+                # L2：固定巡航高度假设 + 起降过渡未验证
+                "当前航路使用 EGM2008 正高 100 m 恒定巡航高度假设。真实离场爬升和进场下降"
+                "程序尚未配置及验证；当前建筑净空结果不代表起降过渡阶段安全。",
             ]
         return {
             "scope": scope,

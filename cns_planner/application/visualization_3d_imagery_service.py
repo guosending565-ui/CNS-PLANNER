@@ -185,15 +185,25 @@ def _upstream_error_message(body: bytes, limit: int = 300):
 class Imagery3DService:
     """Serve only approved Zhoushan basemap tiles; credentials remain server-side."""
 
-    def __init__(self, *, environ=None, fetcher=None, max_concurrency=6, budget=None):
+    def __init__(self, *, environ=None, fetcher=None, max_concurrency=6, budget=None,
+                 offline_source=None):
         self._environ = os.environ if environ is None else environ
         self._fetcher = fetcher or _default_fetcher
+        #: Round38-OFFLINE-IMAGERY：本地离线瓦片源。为 ``None`` 时按需解析
+        #: （进程级单例），因此**不**要求调用方一定注入。它只读磁盘，
+        #: 与凭证、预算、在线授权状态完全无关。
+        self._offline_source = offline_source
         self._max_concurrency = max(1, int(max_concurrency))
         self._slots = threading.BoundedSemaphore(self._max_concurrency)
         self._metrics_lock = threading.Lock()
         self._requests = Counter()
         self._bytes = Counter()
         self._busy_rejections = 0
+        #: Round38-OFFLINE-IMAGERY：本地瓦片计数**独立**于在线请求计数。
+        #: 二者绝不可相加：离线瓦片不触网、不计费，混入在线计数会让"上游请求数
+        #: 为 0"这条验收判据失效。
+        self._offline_tiles = 0
+        self._offline_bytes = 0
         #: **唯一**的上游放行闸门。默认离线（``disabled``）：发现凭证存在也**不**触网。
         #: 计数落在固定的共享目录里，进程重启、换端口、重建服务都绕不过日上限。
         self._budget = budget if budget is not None else ImageryBudgetGuard(
@@ -283,6 +293,11 @@ class Imagery3DService:
                 "slot_wait_seconds": self.SLOT_WAIT_SECONDS,
                 "process_lifetime_upstream_attempts": int(sum(self._requests.values())),
                 "billing_basis": "server_side_reserved_upstream_attempts",
+                #: 本地离线瓦片：只读磁盘，**零**上游、**零**预算消耗。
+                #: 单独成项，便于验收直接证明"离线模式上游请求数 = 0"。
+                "offline_tile_requests": int(self._offline_tiles),
+                "offline_tile_bytes": int(self._offline_bytes),
+                "offline_upstream_attempts": 0,
             }
 
     def budget_summary(self):
@@ -290,11 +305,35 @@ class Imagery3DService:
 
         return self._budget.summary()
 
-    def configuration(self):
+    def configuration(self, offline_source=None):
         arcgis = bool(self._token("arcgis_world_imagery"))
         tianditu = bool(self._token("tianditu_img_w"))
         budget = self._budget.summary()
         online_allowed = bool(budget.get("online_allowed"))
+        # Round38-OFFLINE-IMAGERY：本地离线卫星影像与在线源**并列**披露。
+        # 它不读凭证、不占预算、不触网，因此其状态与 ``online_allowed`` 完全无关：
+        # 即使在线被禁用（默认），离线影像依然可用。
+        offline = None
+        source = offline_source if offline_source is not None else self._offline_source
+        if source is None:
+            from ..gis.offline_imagery_adapter import source_for as offline_source_for
+            source = offline_source_for()
+        try:
+            offline = source.descriptor()
+        except Exception as exc:  # noqa: BLE001 - 离线源故障不得让整个 config 不可用
+            offline = {
+                "id": "offline_zhoushan_imagery",
+                "label": "舟山离线卫星影像（Sentinel-2 L2A）",
+                "status": "blocked",
+                "reason_code": "offline_imagery_unavailable",
+                "detail": {"reason": str(exc)[:200]},
+                "local_url": "/api/visualization-3d/imagery/offline_zhoushan_imagery/{z}/{x}/{y}",
+                "tile_size": 256,
+                "is_satellite_imagery": True,
+                "requires_credential": False,
+                "consumes_online_budget": False,
+                "attribution": "Copernicus Sentinel-2 L2A（本地离线瓦片）",
+            }
         # 凭证存在**不等于**可用：默认离线模式下即使凭证齐全也不允许触网，
         # 因此状态必须显式区分"已配置但离线"与"已配置待验证"。
         if not online_allowed:
@@ -313,10 +352,21 @@ class Imagery3DService:
             "reason_code": reason_code,
             "credential_exposed": False,
             "credential_present": arcgis,
+            "authorization_verified": False,
+            "authorization_status": "not_verified",
+            "missing_configuration": (
+                ([] if online_allowed else ["CNS_IMAGERY_ONLINE_MODE"])
+                + ([] if arcgis else ["CNS_ARCGIS_TOKEN"])),
             "online_mode": budget.get("request_mode"),
             "online_allowed": online_allowed,
             "budget": budget,
             "scope_bbox_crs84": list(ZHOU_SHAN_BBOX),
+            #: 默认底图：Round38-OFFLINE-IMAGERY 起改为**离线卫星影像**
+            #: （本地瓦片、零上游、零预算）。在线 ArcGIS 保留为显式备用。
+            "default_basemap_mode": (
+                "offline_imagery" if offline and offline.get("status") == "available"
+                else "offline_relief"),
+            "offline_imagery": offline,
             "proxy": {
                 "localhost_only": True,
                 "persistent_cache": False,
@@ -327,6 +377,7 @@ class Imagery3DService:
                 "default_offline": True,
             },
             "sources": [
+                offline,
                 {
                     "id": "arcgis_world_imagery",
                     "label": "ArcGIS World Imagery",
@@ -365,6 +416,11 @@ class Imagery3DService:
         }
 
     def tile(self, source_id: str, z: int, x: int, y: int) -> ImageryTileResponse:
+        # Round38-OFFLINE-IMAGERY：本地离线影像走**完全独立**的一条路径——
+        # 不读凭证、不查预算、不触网。把它混进下面的在线分支会让"离线"依赖
+        # 在线授权状态（那正是本轮要消除的耦合）。
+        if source_id == "offline_zhoushan_imagery":
+            return self._offline_tile(z, x, y)
         if source_id not in {"arcgis_world_imagery", "tianditu_img_w"}:
             raise ImageryUnavailable("imagery_source_unknown", "未知影像源")
         try:
@@ -398,6 +454,42 @@ class Imagery3DService:
     #: 一律拿到 503 ``imagery_proxy_busy``——首轮探测因此把"并发占满"误判成"上游不可用"。
     #: 改为最多等待这么久，既不放大上游并发，也不再对外表现成随机失败。
     SLOT_WAIT_SECONDS = 5.0
+
+    def _offline_tile(self, z, x, y):
+        """读取本地离线瓦片；**不**读凭证、**不**查预算、**不**触网。
+
+        瓦片不存在时抛 ``ImageryUnavailable('offline_imagery_tile_missing')``。
+        该码与在线源的 ``imagery_tile_outside_scope`` 语义不同：前者是"本地数据
+        本来就没有这一块"（数据范围边缘，属正常），后者是"请求超出受控展示范围"。
+        前端按码分别处理，**绝不**把前者当成持续重试的理由。
+        """
+
+        try:
+            z, x, y = int(z), int(x), int(y)
+        except (TypeError, ValueError) as exc:
+            raise ImageryUnavailable(
+                "imagery_tile_coordinate_invalid", "影像瓦片坐标无效") from exc
+        from ..gis.offline_imagery_adapter import source_for as offline_source_for
+        source = offline_source_for()
+        body = source.tile(z, x, y)
+        if body is None:
+            raise ImageryUnavailable(
+                "offline_imagery_tile_missing", "本地离线影像无此瓦片",
+                z=z, x=x, y=y)
+        with self._metrics_lock:
+            self._offline_tiles += 1
+            self._offline_bytes += len(body)
+        return ImageryTileResponse(
+            body=body,
+            content_type="image/png",
+            headers={
+                # 本地派生瓦片是确定性产物：同 z/x/y 必然同字节，可私有缓存。
+                "Cache-Control": "private, max-age=86400",
+                # 显式声明真实来源，避免被误读为 ArcGIS World Imagery。
+                "X-CNS-Imagery-Source": "offline_zhoushan_imagery",
+                "X-CNS-Imagery-Origin": "copernicus_sentinel2_l2a_tci",
+                "X-CNS-Imagery-Online-Budget": "not_consumed",
+            })
 
     def _acquire_slot(self) -> bool:
         if self._slots.acquire(blocking=False):
@@ -629,6 +721,9 @@ class Imagery3DService:
         report = {
             "source_id": source_id,
             "z": int(z), "x": int(x), "y": int(y),
+            "authorization_verified": False,
+            "authorization_status": "not_verified",
+            "image_fetch_succeeded": False,
             "credential_present": bool(self._token(source_id)),
             "credential_key": ("CNS_ARCGIS_TOKEN" if source_id == "arcgis_world_imagery"
                                else "CNS_TIANDITU_TK"),
@@ -778,7 +873,8 @@ class Imagery3DService:
             self._requests[source_id] += 1
             self._bytes[source_id] += len(body)
         self._budget.record_success(source_id)
-        report.update({"outcome": "ok", "authorization_verified": True})
+        # A valid image proves delivery, not account identity, privilege scope or licensing.
+        report.update({"outcome": "ok", "image_fetch_succeeded": True})
 
 
 def service_for(context):

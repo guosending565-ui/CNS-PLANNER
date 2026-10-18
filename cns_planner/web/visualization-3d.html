@@ -31,6 +31,13 @@
   td{padding:2px 0;vertical-align:top;word-break:break-word}td:first-child{width:42%;color:var(--dim)}
   code{font:10px Consolas,monospace;word-break:break-all}.dim{color:var(--dim)}.warn{color:var(--warn)}
   .err{color:var(--danger)}.ok-text{color:var(--ok)}#imageryStatus{margin:6px 0;font-size:11px}
+  /* 底图模式开关：紧凑，不遮挡地图主体。 */
+  #basemapMode{display:flex;gap:10px;align-items:center;margin:2px 0 4px;padding:3px 6px;
+    border:1px solid var(--line);border-radius:6px;background:rgba(17,37,54,.55);font-size:11px}
+  #basemapMode label.bm-mode{display:inline-flex;gap:4px;align-items:center;padding:0;cursor:pointer}
+  #basemapMode input[type=radio]{accent-color:var(--accent);margin:0}
+  #basemapMode label.bm-mode.bm-disabled{color:#8496a5;cursor:not-allowed}
+  #basemapModeStatus{margin:0 0 4px;font-size:11px}
   .row{display:flex;gap:6px;margin:4px 0}
   #radarPreviewControls select,#radarPreviewControls input[type=number],
   #protectionPreviewControls select,#protectionPreviewControls input[type=number]{max-width:112px;
@@ -71,6 +78,18 @@
 
 <section id="layers" class="panel" aria-label="三维图层控制">
   <h1>舟山三维底图</h1>
+  <!-- 底图模式开关（离线地形晕渲 / 离线卫星影像 / ArcGIS 在线卫星影像）——三选一互斥。
+       只切换**背景影像**加载模式：不改业务图层、不改相机、不写 ProjectState，
+       也不代表任何 CNS 业务证据的 currentness 或正式规划有效性。 -->
+  <div id="basemapMode" class="row" role="group" aria-label="底图模式">
+    <label class="bm-mode"><input type="radio" name="basemapMode" id="bmOfflineImagery"
+      value="offline_imagery"> 离线卫星影像</label>
+    <label class="bm-mode"><input type="radio" name="basemapMode" id="bmOffline" value="offline"
+      checked> 离线地形晕渲</label>
+    <label class="bm-mode"><input type="radio" name="basemapMode" id="bmOnline" value="online"
+      > ArcGIS 在线卫星影像</label>
+  </div>
+  <div id="basemapModeStatus" class="dim" role="status" aria-live="polite">底图模式：离线地形晕渲（FABDEM）</div>
   <div id="imageryStatus" class="dim"></div>
   <div id="reliefStatus" class="dim"></div>
   <h2>基础地理</h2>

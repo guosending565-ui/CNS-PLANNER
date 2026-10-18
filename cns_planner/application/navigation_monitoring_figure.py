@@ -368,9 +368,16 @@ def _site_point_records(by_id, site_ids):
 
 def _candidate_record(by_id, site_id):
     item = by_id.get(str(site_id)) or {}
-    coordinate = item.get("coordinate") or {}
-    longitude = _finite(coordinate.get("longitude"))
-    latitude = _finite(coordinate.get("latitude"))
+    coordinate = item.get("coordinate")
+    if isinstance(coordinate, dict):
+        longitude = _finite(coordinate.get("longitude"))
+        latitude = _finite(coordinate.get("latitude"))
+    elif isinstance(coordinate, (list, tuple)) and len(coordinate) >= 2:
+        # CnsSharedSiteCandidateService 的 canonical 坐标契约是 [lon, lat]。
+        # 旧制图夹具曾使用 {longitude, latitude}；两种只读表示都接受，但绝不换序猜测。
+        longitude, latitude = _finite(coordinate[0]), _finite(coordinate[1])
+    else:
+        longitude = latitude = None
     if longitude is None or latitude is None:
         pair = item.get("coordinate_wgs84") or item.get("coordinate_crs84")
         if isinstance(pair, (list, tuple)) and len(pair) >= 2:

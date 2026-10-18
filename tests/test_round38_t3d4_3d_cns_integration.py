@@ -467,6 +467,128 @@ def test_planned_ground_action_is_marked_unconfirmed_and_never_installed():
     assert row["linked_site_available"] is True
 
 
+# ------------------------------------------------------------ 设备安装身份（A7-SEM-01）
+
+
+def _state_with_installation_conflict():
+    """生产形状的安装身份冲突现场（人工验收 A7-SEM-01）。
+
+    真实权威项目里 ``COMM-BASELINE-4KM`` 的动作是
+    ``{"confirmed": True, "physical_mount_confirmed": false,
+      "host": {"planning_host_use_confirmed": true, "physical_mount_confirmed": false,
+               "requires_site_survey": true}}``，而 ``confirmed_cns_plan.status`` 是
+    ``not_confirmed``。这正是"设备显示已确认安装、宿主站址却是规划选中"的现场。
+    """
+
+    state = _state()
+    state["confirmed_cns_plan"] = {"status": "not_confirmed", "plan_id": None,
+                                   "decision": None, "history": []}
+    state["tower_obstacle_profiles"]["items"]["T-INSTALL"] = {
+        "tower_id": "T-INSTALL", "terrain_elevation_m": 12.0,
+        "terrain_vertical_reference": "egm2008_orthometric",
+        "tower_structure_height_m": 30.0, "tower_top_orthometric_m": 42.0,
+        "tower_top_status": "resolved_unconfirmed", "confirmed": False,
+        "vertical_status": "egm2008_orthometric_resolved",
+    }
+    state["cns_corridor_site_plan"] = {
+        "status": "stale",
+        "selected_actions": [
+            {"action_id": "tower_colocation_host:tower-colocation:T-INSTALL:COMM-BASELINE-4KM",
+             "action_type": "add_device_to_explicit_site",
+             # 注意：action 自带 confirmed=True 属宿主/设备档案层面，**不是**安装证据。
+             "confirmed": True, "device_id": "COMM-BASELINE-4KM",
+             "device_service_key": "C:communication",
+             "distinct_site_id": "tower:T-INSTALL",
+             "physical_mount_confirmed": False,
+             "planning_origin": {"host_tower_id": "T-INSTALL",
+                                 "authority": "engineering_estimate",
+                                 "estimated": True, "status": "estimated",
+                                 "service_origin_egm2008_m": 42.0},
+             "host": {"host_tower_id": "T-INSTALL", "planning_host_use_confirmed": True,
+                      "physical_mount_confirmed": False, "requires_site_survey": True}},
+            {"action_id": "add_navigation_integrity_monitor:R0006:destination:N006",
+             "action_type": "add_navigation_integrity_monitor", "confirmed": True,
+             "coordinate": [122.31, 29.995],
+             "device_id": "NAVINT-R0006-destination-N006",
+             "device_service_key": "N:navigation_integrity_monitoring",
+             "distinct_site_id": "takeoff_landing_site:N006",
+             "equipment_selection_status": "not_selected"},
+        ],
+    }
+    from copy import deepcopy
+
+    snapshot = deepcopy(_shared_snapshot())
+    snapshot["candidates"].append({
+        "candidate_id": "tower-colocation:T-INSTALL", "candidate_kind": "tower_colocation",
+        "source_id": "T-INSTALL", "name": "共址候选塔 T-INSTALL",
+        "coordinate": [122.26, 29.986], "spatial_use_status": "eligible",
+    })
+    return state, snapshot
+
+
+def test_comm_baseline_device_is_not_installed_without_a_confirmation_record():
+    state, snapshot = _state_with_installation_conflict()
+    projection = site_records(state=state, shared_snapshot=snapshot)
+    by_id = {row["site_id"]: row for row in projection["sites"]}
+    site = by_id["tower-colocation:T-INSTALL"]
+    devices = {row["device_id"]: row for row in site["devices"]}
+    device = devices["COMM-BASELINE-4KM"]
+
+    # 规划选中的站址身份保持不变（不得因为"设备"而升级成既有设施）。
+    assert site["site_state"] == "planned_selected"
+    assert all(row["site_state"] != "existing_facility" for row in projection["sites"])
+    assert projection["counts"]["existing_facilities"] == 0
+
+    # 没有真实安装记录时**绝不**显示已确认安装。
+    assert device["installation_status"] == "planned_selected_unconfirmed"
+    assert device["is_real_installation_record"] is False
+    assert device["confirmed"] is False
+    # action 自身的 confirmed 只作为审计字段原样保留。
+    assert device["action_confirmed"] is True
+    # 身份冲突的每个维度必须分别披露。
+    evidence = device["installation_evidence"]
+    assert evidence["confirmed_plan_status"] == "not_confirmed"
+    assert evidence["plan_confirmed"] is False
+    assert evidence["planning_host_use_confirmed"] is True
+    assert evidence["physical_mount_confirmed"] is False
+    assert evidence["requires_site_survey"] is True
+    assert "不是真实安装记录" in evidence["disclosure"]
+    # 设备名称不得被当作"已实现 4 km 覆盖"的证据：本投影不产生任何覆盖声明。
+    assert "coverage" not in device
+    assert device["service_key"] == "C:communication"
+
+
+def test_planned_navigation_device_stays_a_planning_proposal():
+    state, snapshot = _state_with_installation_conflict()
+    projection = site_records(state=state, shared_snapshot=snapshot)
+    planned = {row["device_id"]: row for row in projection["planned_devices"]}
+    row = planned["NAVINT-R0006-destination-N006"]
+    assert row["installation_status"] == "planned_selected_unconfirmed"
+    assert row["confirmed"] is True          # 计划动作自身已确认（规划层面）
+    # N006 未出现在本 fixture 的候选站址快照里 ⇒ 如实标注"宿主站址不可用"，
+    # 绝不伪造宿主关系（身份映射本身仍必须是 node:N006）。
+    assert row["canonical_site_id"] == "node:N006"
+    assert row["linked_site_available"] is False
+    assert row["linked_site_id"] is None
+
+
+def test_installation_status_upgrades_only_with_a_confirmed_plan_and_physical_mount():
+    """反向断言：只有在方案已确认**且**物理挂载已确认时才允许出现 installed_confirmed。"""
+
+    state, snapshot = _state_with_installation_conflict()
+    state["confirmed_cns_plan"] = {"status": "confirmed", "plan_id": "CP-1",
+                                   "decision": "approved", "history": []}
+    action = state["cns_corridor_site_plan"]["selected_actions"][0]
+    action["physical_mount_confirmed"] = True
+    action["host"]["physical_mount_confirmed"] = True
+    projection = site_records(state=state, shared_snapshot=snapshot)
+    by_id = {row["site_id"]: row for row in projection["sites"]}
+    device = by_id["tower-colocation:T-INSTALL"]["devices"][0]
+    assert device["installation_status"] == "installed_confirmed"
+    assert device["is_real_installation_record"] is True
+    assert device["confirmed"] is True
+
+
 # ------------------------------------------------------------ cns-sites 端点
 
 

@@ -95,10 +95,19 @@ def test_source_selection_keeps_arcgis_default_and_tianditu_optional():
     ).configuration()
     assert config["status"] == "configured_unverified"
     assert config["online_allowed"] is True
-    assert [row["id"] for row in config["sources"]] == [
-        "arcgis_world_imagery", "tianditu_img_w",
-    ]
-    assert config["sources"][1]["status"] == "configured_unverified"
+    # Round38-OFFLINE-IMAGERY：本地离线源与两个在线源**并列**披露，且排在最前。
+    # ``default_source`` 仍指**在线**默认源（前端据此解析在线图层），
+    # 真正的默认底图由新增的 ``default_basemap_mode`` 表达。
+    ids = [row["id"] for row in config["sources"]]
+    assert ids == ["offline_zhoushan_imagery", "arcgis_world_imagery", "tianditu_img_w"]
+    assert config["default_source"] == "arcgis_world_imagery"
+    by_id = {row["id"]: row for row in config["sources"]}
+    assert by_id["tianditu_img_w"]["status"] == "configured_unverified"
+    # 离线源**不**依赖凭证，也不消耗在线预算：这两条必须显式可验证。
+    assert by_id["offline_zhoushan_imagery"]["requires_credential"] is False
+    assert by_id["offline_zhoushan_imagery"]["consumes_online_budget"] is False
+    assert by_id["offline_zhoushan_imagery"]["is_satellite_imagery"] is True
+    assert config["default_basemap_mode"] in {"offline_imagery", "offline_relief"}
     assert "secret" not in repr(config)
 
 

@@ -24,6 +24,11 @@ from copy import deepcopy
 from ..domain.tower_colocation import (
     tower_planning_service_origin_estimates as _tower_planning_service_origin_estimates,
 )
+#: A7-SEM-01：安装身份的确认语义**只**由生产侧的单一裁定者给出（``confirmed_cns_plan``），
+#: 三维只读投影绝不自己解释 action 的 ``confirmed`` 字段。函数内导入避免循环依赖。
+from .cns_facility_assembler import (
+    resolve_confirmation_semantics as _resolve_confirmation_semantics,
+)
 
 #: 设备类别（与前端 ``CNS_SERVICE_STYLE`` 键一一对应）。
 SERVICE_CATEGORY_COMMUNICATION = "C"
@@ -171,13 +176,27 @@ def _tower_identity_index(state):
 
 
 def _installed_devices_by_host(state):
-    """已安装设备 → 宿主站址（**只**取显式确认的安装动作）。
+    """规划动作登记的设备 → 宿主站址（**不**因此认定"已安装"）。
 
-    数据来源是既有的 ``cns_corridor_site_plan.selected_actions``：它由生产站点规划
-    写入，每条都可能带 ``planning_origin.host_tower_id`` 或 ``distinct_site_id``。
-    **只有** ``confirmed is True`` 且 ``action_type == "add_device_to_explicit_site"``
-    的动作才被当作"已安装设备"；其余一律不产生设备实体。
+    A7-SEM-01 真实根因（人工验收现场）：``COMM-BASELINE-4KM`` 在三维设备详情里显示
+    ``installation_status="installed_confirmed"``（中文"已确认安装"），而同一站址的
+    ``site_state`` 是 ``planned_selected``（规划选中、待确认）、``physical_mount_confirmed``
+    为 false、``existing_facility=0``。冲突来源是这里把 action 自带的 ``confirmed=true``
+    直接读成了"设备已安装"。
+
+    该字段的真实语义由本模块族的唯一裁定者
+    :func:`cns_planner.application.cns_facility_assembler.resolve_confirmation_semantics`
+    给出：**只有** ``confirmed_cns_plan.status == "confirmed"`` 才代表方案已确认实施；
+    action 的 ``confirmed`` 属于宿主 / 设备档案层面，与"是否已安装"无关。当前权威项目是
+    ``status="not_confirmed"``，因此这里必须在**没有真实安装记录**时如实输出
+    ``planned_selected_unconfirmed``，并把"规划主机可用性已确认 / 物理挂载未确认"等
+    分层证据分别披露，而不是笼统宣称已安装。
+
+    数据仍来自既有的 ``cns_corridor_site_plan.selected_actions``：只保留
+    ``action_type == "add_device_to_explicit_site"`` 的动作，站址身份与几何归属不变。
     """
+
+    plan_confirmed, confirmation_detail = _resolve_confirmation_semantics(state)
 
     by_host = {}
     container = (state or {}).get("cns_corridor_site_plan")
@@ -201,21 +220,74 @@ def _installed_devices_by_host(state):
             host_tower_id
             or (distinct_site_id.split(":", 1)[1] if distinct_site_id.startswith("tower:") else None)
         )
+        host_mount_confirmed = (
+            (host or {}).get("physical_mount_confirmed") is True
+            if isinstance(host, dict) else False
+        )
+        action_mount_confirmed = action.get("physical_mount_confirmed") is True
+        physical_mount_confirmed = bool(host_mount_confirmed or action_mount_confirmed)
+        planning_host_use_confirmed = (
+            (host or {}).get("planning_host_use_confirmed") is True
+            if isinstance(host, dict) else False
+        )
+        requires_site_survey = (
+            (host or {}).get("requires_site_survey") is True
+            if isinstance(host, dict) else True
+        )
+        planning_origin_block = deepcopy(planning_origin) if isinstance(planning_origin, dict) else None
+        #: 安装身份的**分层证据**：规划方案确认 / 规划主机可用性确认 / 物理挂载确认 /
+        #: 是否需要现场调查。四者必须分别披露，任何一个为真都不足以宣称"已安装"。
+        evidence = {
+            "confirmed_plan_status": confirmation_detail.get("confirmed_plan_status"),
+            "confirmed_plan_id": confirmation_detail.get("confirmed_plan_id"),
+            "confirmation_source": confirmation_detail.get("confirmation_source"),
+            "plan_confirmed": bool(plan_confirmed),
+            "planning_host_use_confirmed": planning_host_use_confirmed,
+            "physical_mount_confirmed": physical_mount_confirmed,
+            "device_mount_confirmed": False,
+            "requires_site_survey": requires_site_survey,
+            "equipment_selection_status": _text(action.get("equipment_selection_status")),
+            "planning_origin_authority": (
+                _text(planning_origin_block.get("authority"))
+                if isinstance(planning_origin_block, dict) else None
+            ),
+            "planning_origin_status": (
+                _text(planning_origin_block.get("status"))
+                if isinstance(planning_origin_block, dict) else None
+            ),
+            "semantics": confirmation_detail.get("semantics"),
+            "disclosure": (
+                "设备安装身份只来自 confirmed_cns_plan；该方案未确认实施，"
+                "本条是规划登记（规划选中、未确认），不是真实安装记录。"
+                if not plan_confirmed else
+                "方案已确认；物理挂载仍需现场证据，规划安装高度不等于真实已安装高度。"
+            ),
+        }
         device = {
             "device_id": _text(action.get("device_id")),
             "service_key": _text(action.get("device_service_key")),
             "name": _text(action.get("device_name")) or _text(action.get("device_id")),
-            "installation_status": "installed_confirmed",
-            "confirmed": True,
+            #: 安装状态：**没有真实安装记录时绝不显示"已确认安装"**。规划选中只能显示规划身份。
+            "installation_status": (
+                "installed_confirmed" if (plan_confirmed and physical_mount_confirmed)
+                else "plan_confirmed_not_installed" if plan_confirmed
+                else "planned_selected_unconfirmed"
+            ),
+            "installation_evidence": evidence,
+            "installation_basis": "cns_corridor_site_plan.selected_actions",
+            "is_real_installation_record": bool(plan_confirmed and physical_mount_confirmed),
+            #: 规划动作自身携带的 ``confirmed``（宿主 / 设备档案层面）原样保留供审计，
+            #: 但**不**参与上面的安装结论。
+            "action_confirmed": True,
+            "confirmed": bool(plan_confirmed and physical_mount_confirmed),
             "position_semantics": (
                 INSTALLATION_POSITION_TOWER_TOP if tower_host
                 else INSTALLATION_POSITION_GROUND_SITE
             ),
-            "physical_mount_confirmed": action.get("physical_mount_confirmed") is True,
-            "planning_host_use_confirmed": (
-                (host or {}).get("planning_host_use_confirmed") is True
-                if isinstance(host, dict) else False
-            ),
+            "physical_mount_confirmed": physical_mount_confirmed,
+            "planning_host_use_confirmed": planning_host_use_confirmed,
+            "requires_site_survey": requires_site_survey,
+            "planning_origin": planning_origin_block,
             "source": "cns_corridor_site_plan.selected_actions",
             "action_id": _text(action.get("action_id")),
         }

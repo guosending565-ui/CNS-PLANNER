@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   applyCameraState,
@@ -415,7 +418,7 @@ test('offline imagery mode never creates a satellite provider and falls back to 
     assert.equal(providers.length, 1, '只允许创建晕渲 provider，不得创建影像 provider');
     assert.match(providers[0], /\/relief\//);
     assert.equal(added.length, 1);
-    assert.equal(added[0].show, true, '离线模式默认底图必须是 FABDEM 晕渲');
+    assert.equal(added[0].show, true, 'offline relief stays visible');
     assert.equal(controller.status().imagery, 'blocked');
     assert.equal(controller.status().relief, 'available');
   } finally {
@@ -555,4 +558,355 @@ test('coverage layer defaults are off and the registry loads them lazily', async
   assert.equal(ridLoads, 0, '只开启通信不得顺带请求 RID');
   await registry.setVisible('rid', true);
   assert.equal(ridLoads, 1);
+});
+
+/* ------------------------- Round38-E2E-PRECHECK 任务 B：底图模式开关（离线/在线） */
+
+/** 造一个**在线可用**的 basemap 场景（影像 provider 真实存在 + 晕渲图层同时存在）。 */
+function onlineCapableCesium() {
+  return {
+    CesiumTerrainProvider: { fromUrl: async () => ({ kind: 'terrain' }) },
+    UrlTemplateImageryProvider: class {
+      constructor(options) {
+        this.options = options;
+        this.errorEvent = { addEventListener: () => {} };
+      }
+      requestImage() { return Promise.resolve({ width: 256 }); }
+    },
+    ImageryLayer: class {
+      constructor(provider) { this.imageryProvider = provider; this.show = true; }
+    },
+    Rectangle: { fromDegrees: (...degrees) => degrees },
+    Credit: class { constructor(text) { this.text = text; } },
+    Color: { fromCssColorString: (css) => ({ css }) },
+    GeographicTilingScheme: class {},
+    ShadowMode: { RECEIVE_ONLY: 2 },
+  };
+}
+
+const ONLINE_CONFIG = {
+  status: 'configured_unverified', online_allowed: true,
+  default_source: 'arcgis_world_imagery',
+  scope_bbox_crs84: [121.45, 29.3, 123.05, 30.65],
+  sources: [{
+    id: 'arcgis_world_imagery', status: 'configured_unverified',
+    local_url: '/api/visualization-3d/imagery/arcgis_world_imagery/{z}/{x}/{y}',
+    tile_size: 256,
+  }],
+};
+const RELIEF_OPTION = {
+  relief: {
+    status: 'available', url_template: '/api/visualization-3d/relief/{z}/{x}/{y}.png',
+    extent: [121, 29, 123, 32], minzoom: 6, maxzoom: 13, tile_size: 256,
+  },
+};
+
+test('basemap mode defaults to offline and never creates a second imagery layer', async () => {
+  // 默认必须是**离线开发**：晕渲可见、在线影像不可见（页面重新打开也回到离线）。
+  const previous = globalThis.Cesium;
+  const added = [];
+  globalThis.Cesium = onlineCapableCesium();
+  try {
+    const viewer = {
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: (layer) => { added.push(layer); return undefined; } },
+      shadows: false, terrainProvider: null, resolutionScale: 1,
+    };
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, RELIEF_OPTION);
+    assert.equal(controller.mode(), 'offline', '默认底图模式必须是离线开发');
+    assert.equal(controller.onlineAvailable(), true);
+    assert.equal(controller.onlineBlockReason(), null);
+    const addedAfterInit = added.length;
+    assert.equal(addedAfterInit, 2, '影像 + 晕渲各一层，初始化时一次性建好');
+
+    // 连续 离线→在线→离线 切换：绝不允许重复创建 imagery layer。
+    const online = await controller.setMode('online', {
+      waitForImageryTiles: async () => ({ ok: true, resolved: 1 }),
+    });
+    assert.equal(online.ok, true);
+    assert.equal(online.mode, 'online');
+    await controller.setMode('offline');
+    await controller.setMode('online', {
+      waitForImageryTiles: async () => ({ ok: true, resolved: 2 }),
+    });
+    await controller.setMode('offline');
+    assert.equal(added.length, addedAfterInit,
+      '模式切换只切 show，不得新增 imagery layer（否则会叠加/闪烁/涨内存）');
+  } finally {
+    globalThis.Cesium = previous;
+  }
+});
+
+test('online mode is refused with the real reason when online access is disabled', async () => {
+  // 任务 B2 的"需要尚未配置的访问凭证"分支：**绝不**假装在线可用。
+  // 拒绝必须带上服务端给出的**真实**原因码，且场景保持离线可用。
+  const previous = globalThis.Cesium;
+  const added = [];
+  globalThis.Cesium = offlineCesium(added);
+  try {
+    const viewer = {
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: (layer) => { added.push(layer); return undefined; } },
+      shadows: false, terrainProvider: null, resolutionScale: 1,
+    };
+    const controller = await createBasemap(viewer, {
+      status: 'offline_mode', reason_code: 'imagery_online_mode_disabled',
+      online_allowed: false, default_source: 'arcgis_world_imagery',
+      scope_bbox_crs84: [121.45, 29.3, 123.05, 30.65],
+      sources: [{
+        id: 'arcgis_world_imagery', status: 'offline_mode',
+        local_url: '/api/visualization-3d/imagery/arcgis_world_imagery/{z}/{x}/{y}',
+        tile_size: 256,
+      }],
+    }, RELIEF_OPTION);
+
+    assert.equal(controller.onlineAvailable(), false);
+    assert.equal(controller.onlineBlockReason(), 'imagery_online_mode_disabled');
+    const result = await controller.setMode('online');
+    assert.equal(result.ok, false, '在线不可用时必须拒绝，而不是假装成功');
+    assert.equal(result.mode, 'offline');
+    assert.equal(result.reason, 'imagery_online_mode_disabled');
+    assert.equal(controller.mode(), 'offline');
+    // 离线场景必须仍然可用（晕渲可见），不能出现空白且无提示的画面。
+    assert.equal(added[0].show, true);
+  } finally {
+    globalThis.Cesium = previous;
+  }
+});
+
+test('online mode falls back to offline on real tile failure or timeout', async () => {
+  // 影像请求失败/超时 ⇒ 回退离线底图并给出原因（绝不留下空白且无提示的场景）。
+  const previous = globalThis.Cesium;
+  const added = [];
+  globalThis.Cesium = onlineCapableCesium();
+  try {
+    const viewer = {
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: (layer) => { added.push(layer); return undefined; } },
+      shadows: false, terrainProvider: null, resolutionScale: 1,
+    };
+    for (const reason of ['imagery_tile_request_failed', 'imagery_tile_timeout']) {
+      const controller = await createBasemap(viewer, ONLINE_CONFIG, RELIEF_OPTION);
+      const result = await controller.setMode('online', {
+        waitForImageryTiles: async () => ({ ok: false, reason }),
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.mode, 'offline');
+      assert.equal(result.reason, reason);
+      assert.equal(controller.mode(), 'offline');
+      assert.equal(controller.status().mode_reason, reason);
+      const relief = added[added.length - 1];
+      assert.equal(relief.show, true, '回退后晕渲必须可见');
+      added.length = 0;
+    }
+  } finally {
+    globalThis.Cesium = previous;
+  }
+});
+
+test('a superseded online switch cannot overwrite the newer mode', async () => {
+  // 连续切换的竞态：旧的异步等待完成后**不得**覆盖用户更新的选择。
+  const previous = globalThis.Cesium;
+  const added = [];
+  globalThis.Cesium = onlineCapableCesium();
+  try {
+    const viewer = {
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: (layer) => { added.push(layer); return undefined; } },
+      shadows: false, terrainProvider: null, resolutionScale: 1,
+    };
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, RELIEF_OPTION);
+    let release = null;
+    const pending = controller.setMode('online', {
+      waitForImageryTiles: () => new Promise((resolve) => { release = resolve; }),
+    });
+    // 在线仍在等待时，用户切回离线。
+    await controller.setMode('offline');
+    assert.equal(controller.mode(), 'offline');
+    // 现在旧的在线等待才完成 —— 其结果必须被作废。
+    release({ ok: true, resolved: 5 });
+    const stale = await pending;
+    assert.equal(stale.ok, false);
+    assert.equal(stale.reason, 'superseded_by_newer_switch');
+    assert.equal(controller.mode(), 'offline', '旧请求不得覆盖新模式');
+  } finally {
+    globalThis.Cesium = previous;
+  }
+});
+
+test('online refusal reports the credential reason, not a hard-coded offline message', async () => {
+  // 原因码必须来自**服务端真实配置**，不能是写死的"离线模式"文案：
+  // 已授权联网但凭证缺失时，正确的拒绝码是 ``arcgis_token_missing``。
+  const previous = globalThis.Cesium;
+  const added = [];
+  globalThis.Cesium = offlineCesium(added);
+  try {
+    const viewer = {
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: (layer) => { added.push(layer); return undefined; } },
+      shadows: false, terrainProvider: null, resolutionScale: 1,
+    };
+    const controller = await createBasemap(viewer, {
+      status: 'blocked', reason_code: 'arcgis_token_missing', online_allowed: true,
+      default_source: 'arcgis_world_imagery',
+      scope_bbox_crs84: [121.45, 29.3, 123.05, 30.65],
+      sources: [],
+    }, RELIEF_OPTION);
+    assert.equal(controller.onlineAvailable(), false);
+    assert.equal(controller.onlineBlockReason(), 'arcgis_token_missing');
+    const result = await controller.setMode('online');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'arcgis_token_missing');
+  } finally {
+    globalThis.Cesium = previous;
+  }
+});
+
+test('the 3D toolbar ships the mode switch and app.js routes it through one entry point', () => {
+  // 静态接线契约：HTML 必须提供紧凑的双选开关（默认离线），app.js 必须把它接到
+  // **唯一**的模式入口，而不是自己再造一套底图管理。
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const root = path.resolve(here, '..');
+  const html = fs.readFileSync(
+    path.join(root, 'cns_planner/web/visualization-3d.html'), 'utf8');
+  const app = fs.readFileSync(
+    path.join(root, 'cns_planner/web/js/visualization3d/app.js'), 'utf8');
+
+  // HTML：两个模式选项，默认勾选离线。
+  assert.match(html, /id="bmOffline"[^>]*value="offline"[^>]*checked/);
+  assert.match(html, /id="bmOnline"[^>]*value="online"/);
+  assert.match(html, /id="basemapModeStatus"/);
+  // 语义边界必须在页面里写明：只是背景影像模式，不代表业务证据 currentness。
+  assert.match(html, /不代表任何 CNS 业务证据的 currentness/);
+
+  // app.js：唯一入口 + 只读证据探针，且**不**新建第二套底图管理器。
+  assert.match(app, /S\.applyBasemapMode = applyMode/);
+  assert.match(app, /S\.basemapModeState = \(\) => \(/);
+  assert.match(app, /S\.basemap\.setMode\(mode\)/);
+  assert.match(app, /basemap_mode: typeof S\.basemapModeState === 'function'/);
+  // 开关只允许走 applyMode，不允许直接调 setImageryVisible 当第二开关。
+  assert.match(app, /imageryCheckbox\.disabled = true/);
+  assert.doesNotMatch(app, /imageryCheckbox\.onchange/);
+});
+
+test('offline mode discloses missing relief without enabling online access', async () => {
+  // 任务 B3-10：切换失败后不能出现完全空白且没有提示的场景。
+  // 晕渲缺失时仍禁止在线请求，并如实返回缺失原因。
+  const previous = globalThis.Cesium;
+  const added = [];
+  globalThis.Cesium = onlineCapableCesium();
+  try {
+    const viewer = {
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: (layer) => { added.push(layer); return undefined; } },
+      shadows: false, terrainProvider: null, resolutionScale: 1,
+    };
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, {});   // 无 relief
+    const result = await controller.setMode('offline');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'relief_unavailable');
+    assert.equal(controller.status().mode_reason, 'relief_unavailable');
+    assert.equal(added[0].show, false, '晕渲缺失也必须遵守离线许可，并显式披露缺失');
+  } finally {
+    globalThis.Cesium = previous;
+  }
+});
+
+
+test('online waiting exceptions roll back to offline and preloading is disabled', async () => {
+  const previous = globalThis.Cesium;
+  globalThis.Cesium = onlineCapableCesium();
+  try {
+    const layers = [];
+    const viewer = { scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: layer => layers.push(layer) } };
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, RELIEF_OPTION);
+    const result = await controller.setMode('online', {
+      waitForImageryTiles: async () => { throw new Error('transport failed'); },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(controller.mode(), 'offline');
+    assert.equal(layers[0].show, false);
+    assert.equal(layers[1].show, true);
+    assert.equal(viewer.scene.globe.preloadAncestors, false);
+    assert.equal(viewer.scene.globe.preloadSiblings, false);
+  } finally { globalThis.Cesium = previous; }
+});
+
+test('default offline never briefly adds a visible online layer even without relief', async () => {
+  const previous = globalThis.Cesium;
+  globalThis.Cesium = onlineCapableCesium();
+  try {
+    const shownOnAdd = [];
+    const viewer = { scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: layer => shownOnAdd.push(layer.show) } };
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, {});
+    assert.deepEqual(shownOnAdd, [false]);
+    assert.equal(controller.layerStats().imagery.show, false);
+    assert.equal(controller.status().mode_reason, 'relief_unavailable');
+  } finally { globalThis.Cesium = previous; }
+});
+
+
+test('a late imagery failure rolls back an already online scene without touching entities', async () => {
+  const previous = globalThis.Cesium;
+  const cesium = onlineCapableCesium();
+  let fail;
+  cesium.UrlTemplateImageryProvider = class {
+    constructor(options) { Object.assign(this, options);
+      this.errorEvent = { addEventListener: fn => { fail = fn; } }; }
+    requestImage() { return Promise.resolve({ width: 256 }); }
+  };
+  globalThis.Cesium = cesium;
+  try {
+    const entities = [{ id: 'tower' }, { id: 'route' }, { id: 'facility' }, { id: 'protection' }];
+    const viewer = { entities, camera: { position: 1 },
+      scene: { globe: {}, fog: {}, skyAtmosphere: {} }, imageryLayers: { add: () => {} } };
+    let fallback;
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, {
+      ...RELIEF_OPTION, onModeFallback: reason => { fallback = reason; },
+    });
+    await controller.setMode('online', { waitForImageryTiles: async () => ({ ok: true }) });
+    fail({ message: 'Failed to obtain image tile X: 3438 Y: 1689 Level: 12.',
+      error: { response: '{"code":"imagery_budget_exhausted"}' } });
+    assert.equal(controller.mode(), 'offline');
+    assert.equal(fallback, 'imagery_budget_exhausted');
+    assert.equal(viewer.entities, entities);
+    assert.deepEqual(viewer.camera, { position: 1 });
+  } finally { globalThis.Cesium = previous; }
+});
+
+
+test('default waiter requires a fresh image and permits retry after an earlier failure', async () => {
+  const previous = globalThis.Cesium;
+  const cesium = onlineCapableCesium();
+  let reject = true;
+  cesium.UrlTemplateImageryProvider = class {
+    constructor(options) { Object.assign(this, options); }
+    requestImage() { return reject ? Promise.reject(new Error('failed'))
+      : Promise.resolve({ width: 256 }); }
+  };
+  cesium.ImageryLayer = class {
+    constructor(provider) { this._imageryProvider = provider; this.show = true; }
+    get imageryProvider() { return this._imageryProvider; }
+  };
+  globalThis.Cesium = cesium;
+  try {
+    const layers = [];
+    const viewer = { scene: { globe: {}, fog: {}, skyAtmosphere: {} },
+      imageryLayers: { add: layer => layers.push(layer) } };
+    const controller = await createBasemap(viewer, ONLINE_CONFIG, RELIEF_OPTION);
+    const provider = layers[0].imageryProvider;
+    await assert.rejects(provider.requestImage());
+    reject = false;
+    const pending = controller.setMode('online', { intervalMs: 1, timeoutMs: 100 });
+    await provider.requestImage();
+    assert.equal((await pending).ok, true, 'old failures must not poison a new switch');
+    await controller.setMode('offline');
+    const noFreshImage = await controller.setMode('online', { intervalMs: 1, timeoutMs: 5 });
+    assert.equal(noFreshImage.ok, false, 'historical downloads alone cannot prove this view');
+    assert.equal(noFreshImage.reason, 'imagery_tile_timeout');
+    assert.equal(layers[0].show, false);
+    assert.equal(layers[1].show, true);
+  } finally { globalThis.Cesium = previous; }
 });
