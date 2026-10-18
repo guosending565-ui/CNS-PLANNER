@@ -69,3 +69,8 @@ _round26_*.py
 _round26_*.json
 _round26_*.log
 _diag_round26_*.py
+
+# Round38 验收工作目录与根级运行报告（运行证据，不是源码交付）
+.acceptance_setup/
+round38_*.md
+ROUND38_*.md
