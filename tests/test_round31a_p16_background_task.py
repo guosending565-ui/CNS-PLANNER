@@ -32,7 +32,7 @@ from cns_planner.application.corridor_site_planning_service import (
     _p16_loop_progress, _p16_tier_message, _progress_reporter,
 )
 from cns_planner.domain.site_planning import REUSE_TIERS
-from cns_planner.tasks.handlers import RESULT_SCOPE_TEXT
+from cns_planner.tasks.handlers import RESULT_SCOPE_TEXT, build_submission_snapshot
 from cns_planner.tasks.service import HeavyTaskService
 from cns_planner.tasks.task_specs import (
     P16_TASK_TYPE, TASK_ENDPOINTS, _p16_scope,
@@ -233,6 +233,31 @@ def test_p16_async_submit_returns_task_id_and_publishes_the_same_result(tmp_path
 
         # 3. 进度必须走到收口段。
         assert float(final["progress"]) >= 0.9
+    finally:
+        runtime.stop()
+
+
+def test_p16_legacy_version_uses_current_runtime(tmp_path):
+    workflow = configured(tmp_path)
+    historical = workflow.state["algorithm_selection"]["site_planner"]
+    historical["version"] = "2.2"
+    workflow.state["cns_corridor_site_plan"]["status"] = "proposal_ready"
+    workflow.state["cns_corridor_site_plan"]["algorithm_version"] = "2.2"
+    assert workflow.cns_corridor_site_plan_snapshot()["status"] == "stale"
+
+    _, _, snapshot = build_submission_snapshot(workflow, P16_TASK_TYPE, {})
+    assert snapshot["algorithms"]["site_planner"]["version"] == "2.3"
+    assert snapshot["inputs"]["algorithm_selection"]["site_planner"]["version"] == "2.3"
+    assert workflow.state["algorithm_selection"]["site_planner"]["version"] == "2.2"
+
+    runtime = P16Runtime(tmp_path, workflow).start()
+    try:
+        response = runtime.api().post(ENDPOINT, {"async": True})
+        assert response.status == 202
+        final = runtime.service.wait_for_terminal(response.data["task_id"], timeout=600)
+        assert final["advanced"]["status"] == "succeeded", final
+        assert workflow.state["cns_corridor_site_plan"]["algorithm_version"] == "2.3"
+        assert workflow.state["algorithm_selection"]["site_planner"]["version"] == "2.2"
     finally:
         runtime.stop()
 

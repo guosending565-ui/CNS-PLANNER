@@ -291,11 +291,16 @@ def _height_statistics_violations(connection, quoted):
     return int(connection.execute(sql).fetchone()[0])
 
 
-def inspect_geopackage(path, kind, *, deep_geometry=False):
+def inspect_geopackage(path, kind, *, deep_geometry=False, cancel_check=None, on_progress=None):
     source = Path(path)
     if not source.is_file() or source.suffix.lower() != ".gpkg":
         raise ValueError(f"{kind} 必须是存在的 GeoPackage 文件")
     connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    if cancel_check:
+        def check_sql_cancel():
+            cancel_check()
+            return 0
+        connection.set_progress_handler(check_sql_cancel, 10000)
     try:
         rows = connection.execute(
             "SELECT c.table_name, c.srs_id, c.min_x, c.min_y, c.max_x, c.max_y, "
@@ -334,6 +339,7 @@ def inspect_geopackage(path, kind, *, deep_geometry=False):
         geometry_health = _geopackage_geometry_health(
             connection, table, geometry_column, geometry_type,
             [min_x, min_y, max_x, max_y], int(count), deep=deep_geometry,
+            cancel_check=cancel_check, on_progress=on_progress,
         )
         return {
             "status": "passed", "path": str(source.resolve()), "driver": "GPKG",
@@ -348,6 +354,8 @@ def inspect_geopackage(path, kind, *, deep_geometry=False):
             "geometry_health": geometry_health,
         }
     except sqlite3.DatabaseError as exc:
+        if cancel_check:
+            cancel_check()
         raise ValueError(f"无法读取 {kind} GeoPackage：{exc}") from exc
     finally:
         connection.close()
@@ -484,7 +492,7 @@ def _quote(identifier):
 
 
 def _geopackage_geometry_health(connection, table, geometry_column, geometry_type,
-                                extent, feature_count, *, deep=False):
+                                extent, feature_count, *, deep=False, cancel_check=None, on_progress=None):
     """Read-only geometry audit; never repairs or rewrites a GeoPackage."""
 
     null_count = int(connection.execute(
@@ -510,10 +518,16 @@ def _geopackage_geometry_health(connection, table, geometry_column, geometry_typ
         f"SELECT {_quote(geometry_column)} FROM {_quote(table)} "
         f"WHERE {_quote(geometry_column)} IS NOT NULL"
     )
+    processed = null_count
     while True:
+        if cancel_check:
+            cancel_check()
         rows = cursor.fetchmany(1024)
         if not rows:
             break
+        processed += len(rows)
+        if on_progress:
+            on_progress(processed, feature_count)
         wkbs, parse_failures = [], 0
         for (blob,) in rows:
             try:

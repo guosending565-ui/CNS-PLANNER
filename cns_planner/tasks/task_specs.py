@@ -461,7 +461,10 @@ def _pcf_runner(context):
         grid=inputs["grid"],
         terrain_by_cell=inputs["terrain_by_cell"],
         buildings_by_cell=inputs["buildings_by_cell"],
+        terrain_dataset=inputs["terrain_dataset"],
         tower_obstacle_profiles=inputs["tower_obstacle_profiles"],
+        towers=inputs["towers"],
+        tower_clearance_policy=inputs["tower_clearance_policy"],
         restricted_areas=inputs["restricted_areas"],
         policies=inputs["policies"],
         source_fingerprints=inputs["source_fingerprints"],
@@ -546,6 +549,27 @@ P16_UPSTREAM_IDENTITY_KEYS = (
     "status", "input_fingerprint", "corridor_geometry_fingerprint",
     "algorithm_id", "algorithm_version",
 )
+
+
+def _p16_algorithm_selection(state, registry):
+    """新 P16 任务绑定当前正式 site planner，不改写历史 ProjectState。"""
+
+    from ..algorithms.registry import (
+        default_algorithm_selection, normalize_algorithm_selection,
+    )
+
+    selection = normalize_algorithm_selection(
+        (state if isinstance(state, dict) else {}).get("algorithm_selection")
+    )
+    current = deepcopy(default_algorithm_selection()["site_planner"])
+    historical = selection.get("site_planner") or {}
+    if isinstance(historical.get("parameters"), dict):
+        current["parameters"] = deepcopy(historical["parameters"])
+    registry.manifest(
+        current["algorithm_type"], current["algorithm_id"], current["version"],
+    )
+    selection["site_planner"] = current
+    return selection
 
 
 def _upstream_identity(state, key):
@@ -884,9 +908,12 @@ _P16_SPEC = TaskSpec(
     runner=_p16_runner,
     release="cns_corridor_site_plan",
     algorithm_types=P16_ALGORITHM_TYPES,
+    algorithm_selection=_p16_algorithm_selection,
 )
 
-for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P16_SPEC, _PROBE_SPEC):
+from .source_audit_task import SOURCE_AUDIT_SPEC
+
+for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P16_SPEC, _PROBE_SPEC, SOURCE_AUDIT_SPEC):
     register_task_spec(_spec)
 
 

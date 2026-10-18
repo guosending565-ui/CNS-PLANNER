@@ -14,7 +14,7 @@
  */
 
 const TASKS_ENDPOINT = '/api/tasks';
-const STATE_ENDPOINT = '/api/state';
+const IDENTITY_ENDPOINT = '/api/project/active';
 const STORAGE_KEY = 'cns.heavyTasks.v1';
 export const TASK_PANEL_UI_STORAGE_KEY = 'cns.taskPanel.ui.v1';
 const POLL_INTERVAL_MS = 1500;
@@ -64,9 +64,10 @@ export function clampTaskPanelPosition(position, viewport, panelSize) {
 
 /**
  * 会话令牌：任务端点与其它受保护端点一样要求有效会话。令牌只能由后端在
- * ``/api/state`` 里下发（前端不生成、不持久化），因此这里在首次需要时取一次。
+ * ``/api/project/active`` 里下发（前端不生成、不持久化），因此这里在首次需要时取一次。
  */
 let sessionToken = null;
+let sessionTokenPromise = null;
 
 export function setSessionToken(token) {
   sessionToken = token || null;
@@ -75,10 +76,15 @@ export function setSessionToken(token) {
 
 export async function ensureSessionToken(fetchImpl = globalThis.fetch) {
   if (sessionToken) return sessionToken;
-  const response = await fetchImpl(STATE_ENDPOINT, {headers: {Accept: 'application/json'}});
-  const data = await response.json().catch(() => ({}));
-  if (data && typeof data.token === 'string' && data.token) sessionToken = data.token;
-  return sessionToken;
+  if (!sessionTokenPromise) {
+    sessionTokenPromise = (async()=>{
+      const response = await fetchImpl(IDENTITY_ENDPOINT, {headers: {Accept: 'application/json'}});
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && typeof data?.token === 'string' && data.token) sessionToken = data.token;
+      return sessionToken;
+    })().finally(()=>{sessionTokenPromise=null;});
+  }
+  return sessionTokenPromise;
 }
 
 function withToken(headers = {}) {
@@ -105,6 +111,21 @@ export function taskStatusText(status) {
   const key = String(status || '');
   return Object.prototype.hasOwnProperty.call(TASK_STATUS_TEXT, key)
     ? TASK_STATUS_TEXT[key] : '状态未知';
+}
+
+/**
+ * 任务查询响应的权威技术状态。
+ *
+ * 工作台消费的是后端 task view；其 raw 状态位于 ``advanced.status``。兼容少量
+ * 直接返回 task-store record 的调用者时才回落到顶层 ``status``，绝不从中文
+ * ``status_text`` 反推终态。
+ */
+export function taskTechnicalStatus(task) {
+  const advanced = task?.advanced;
+  const value = advanced && advanced.status !== undefined
+    ? advanced.status
+    : task?.status;
+  return String(value || '');
 }
 
 export function progressText(progress) {
@@ -249,10 +270,10 @@ export function taskBusinessName(task) {
 
 /** 活跃任务的头部摘要文案：`1 个任务正在计算 · 航路规划`。 */
 export function activeTaskSummary(tasks) {
-  const active = (Array.isArray(tasks) ? tasks : []).filter(task => isActiveStatus(task?.advanced?.status));
+  const active = (Array.isArray(tasks) ? tasks : []).filter(task => isActiveStatus(taskTechnicalStatus(task)));
   if (!active.length) return {count: 0, text: '', running: 0, queued: 0};
-  const running = active.filter(task => String(task?.advanced?.status) === 'running').length;
-  const queued = active.filter(task => String(task?.advanced?.status) === 'queued').length;
+  const running = active.filter(task => taskTechnicalStatus(task) === 'running').length;
+  const queued = active.filter(task => taskTechnicalStatus(task) === 'queued').length;
   const names = Array.from(new Set(active.map(taskBusinessName))).slice(0, 3).join('、');
   const verb = running ? '正在计算' : '正在排队';
   return {count: active.length, running, queued, text: `${active.length} 个任务${verb} · ${names}`};
@@ -381,6 +402,7 @@ export function createTaskRequestAdapter(request){
     const body=options&&options.body!==undefined&&options.body!==null?options.body:undefined;
     try{
       const data=await request(path,{method,headers,...(body!==undefined?{body}:{})});
+      if(typeof data?.json==='function'&&typeof data?.ok==='boolean')return data;
       // API 客户端成功即 200：包成 fetch 风格。
       return {
         ok:true,
@@ -417,7 +439,7 @@ function escapeHtml(value) {
 
 /** 单条任务的业务行：主界面只出现中文文案 + 进度 + 已运行 + 心跳 + ETA + 取消/继续操作。 */
 export function taskRowHtml(task, options = {}) {
-  const status = String(task?.advanced?.status || '');
+  const status = taskTechnicalStatus(task);
   const samples = Array.isArray(options.samples) ? options.samples : [];
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
   const elapsed = elapsedSeconds(task, nowMs);
@@ -482,7 +504,7 @@ export function panelHtml(tasks, catalog = [], options = {}) {
     ? items.map(task => taskRowHtml(task, {samples: samplesById[task.task_id], nowMs})).join('')
     : '<div class="wb-empty cns-task-empty">当前没有后台计算任务</div>';
   const starters = (Array.isArray(catalog) ? catalog : [])
-    .filter((item) => item && item.task_type && item.task_type !== 'runtime_probe')
+    .filter((item) => item && item.task_type && !['runtime_probe','source_audit_verify'].includes(item.task_type))
     .map((item) => [
       `<button class="secondary compact cns-task-start" data-task-type="${escapeHtml(item.task_type)}">`,
       `运行${escapeHtml(item.task_name || '后台计算')}</button>`,
@@ -752,7 +774,13 @@ export function createTaskCenter(options = {}) {
     panel.textContent = message;
   }
 
-  async function refresh() {
+  let refreshInFlight=null;
+  function refresh(){
+    if(refreshInFlight)return refreshInFlight;
+    refreshInFlight=refreshOnce().finally(()=>{refreshInFlight=null;});
+    return refreshInFlight;
+  }
+  async function refreshOnce() {
     const ids = known();
     const [all, available] = await Promise.all([
       loadTasks(fetchImpl),
@@ -760,6 +788,7 @@ export function createTaskCenter(options = {}) {
     ]);
     catalog = available;
     const allTasks = Array.isArray(all) ? all : [];
+    if(typeof globalThis.CustomEvent==='function')documentRef?.dispatchEvent?.(new CustomEvent('cns:tasks',{detail:allTasks}));
     // 恢复语义：刷新页面后按 task_id 找回状态；同时展示当前活跃任务。
     // BUG-TASK-FEEDBACK-001 根因：修复前这里先按 previous 状态过滤，于是**刚刚成功**的任务
     // 在变成 succeeded 的那一次轮询就被从 tasks 里剔除，
@@ -768,26 +797,31 @@ export function createTaskCenter(options = {}) {
     // 现在先在后端**全量**任务上做跨越判定，再决定展示列表。
     const nowMs = Date.now();
     const statuses = new Map();
+    let completedForRefresh=null;
     for (const task of allTasks) {
       const key = String(task?.task_id || '');
       if (!key) continue;
-      const status = String(task?.advanced?.status || '');
+      const status = taskTechnicalStatus(task);
       statuses.set(key, status);
       // 只在"从活跃 → 成功"这一跨越时刷新正式结果：失败 / 取消不刷新业务状态。
       // 判定基于上一次轮询看到的状态，因此重复轮询不会重复刷新。
       const previous = lastStatuses.get(key);
-      if (status === 'succeeded' && previous !== undefined && isActiveStatus(previous)) {
-        notifyBusinessResult(task, previous);
+      const firstKnownTerminal = previous === undefined && ids.includes(key);
+      if (status === 'succeeded'
+          && previous !== 'succeeded'
+          && (isActiveStatus(previous) || firstKnownTerminal)) {
+        completedForRefresh ??= {task,previous};
       }
     }
     lastStatuses = statuses;
+    if(completedForRefresh)notifyBusinessResult(completedForRefresh.task,completedForRefresh.previous);
     // 展示列表：活跃任务 ∪ 本浏览器记录过的 task_id（succeeded 也会保留一条"已完成"结论）。
-    tasks = allTasks.filter((task) => isActiveStatus(task.advanced?.status) || ids.includes(task.task_id));
+    tasks = allTasks.filter((task) => isActiveStatus(taskTechnicalStatus(task)) || ids.includes(task.task_id));
     tasks.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
     // 进度采样：只有进度实际增长时才记录，ETA 才会可靠（否则显示"暂无法估算"）。
     for (const task of tasks) {
       const key = String(task.task_id || '');
-      if (!key || String(task.advanced?.status) !== 'running') continue;
+      if (!key || taskTechnicalStatus(task) !== 'running') continue;
       if (!samplesById.has(key)) samplesById.set(key, []);
       recordProgressSample(samplesById.get(key), task, nowMs);
     }

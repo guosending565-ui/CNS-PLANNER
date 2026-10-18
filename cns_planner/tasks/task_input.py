@@ -337,12 +337,20 @@ class AlgorithmResolver:
             # algorithm_type / id / version / parameters 共同构成任务提交时的
             # immutable 算法身份。精确版本不可用时必须失败，绝不
             # 以同 ID 的其它版本静默迁移。
+            available = []
+            manifests = getattr(self.registry, "manifests", None)
+            if callable(manifests):
+                available = sorted({
+                    str(item.version) for item in manifests(key)
+                    if str(getattr(item, "algorithm_id", "")) == algorithm_id
+                })
             raise TaskAlgorithmVersionUnavailable(
                 "任务提交时使用的算法版本当前不可用，请重新运行。",
                 detail={
                     "algorithm_type": key,
                     "algorithm_id": algorithm_id,
                     "version": version,
+                    "available_versions": available,
                 },
             ) from exc
         self._instances[key] = instance
@@ -361,10 +369,13 @@ class AlgorithmResolver:
 
 
 def build_snapshot(*, task_type, payload, state, registry, algorithm_types=(),
-                   inputs):
+                   inputs, selection=None):
     """提交 / publish 两侧共用的 snapshot 组装（只读 state，确定性）。"""
 
-    selection = normalized_selection(state)
+    selection = (
+        deepcopy(selection) if isinstance(selection, dict)
+        else normalized_selection(state)
+    )
     # 故意不写任何时间戳：snapshot 必须**逐字节可复现**。提交时刻属于 task record
     # （``created_at``），不属于输入；否则 publish 阶段重新生成的"当前"snapshot
     # 永远不可能与提交快照相等，compare-and-publish 会退化成"必然 stale"。

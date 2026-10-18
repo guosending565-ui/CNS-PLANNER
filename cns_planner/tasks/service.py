@@ -42,7 +42,7 @@ from .handlers import (
     TaskInputChangedError, TaskPublishError, result_scope_text,
 )
 from .task_input import InputSnapshotStore
-from .task_spec import ADVANCED_STATUSES, TASK_STATUS_TEXT, status_message
+from .task_spec import ADVANCED_STATUSES, TASK_STATUS_TEXT, TaskInputChanged, status_message
 from .task_specs import has_task_type, task_spec, task_specs
 from .task_store import (
     ACTIVE_STATUSES, CANCELLED, CANCELLING, FAILED, QUEUED, RUNNING, STALE,
@@ -310,6 +310,9 @@ class HeavyTaskService:
             return None
         status = str(record.get("status"))
         task_type = str(record.get("task_type"))
+        awaiting_publish = status == SUCCEEDED and not self.is_terminal(record)
+        if awaiting_publish:
+            status = RUNNING
         run_result = record.get("result_summary") if isinstance(record.get("result_summary"), dict) else {}
         result_payload = self._published.get(str(record.get("task_id"))) or {}
         view = {
@@ -317,7 +320,7 @@ class HeavyTaskService:
             "task_type": task_type,
             "task_name": self._task_name(task_type),
             "status_text": status_message(status),
-            "message": record.get("message") or status_message(status),
+            "message": "计算完成，正在发布结果" if awaiting_publish else record.get("message") or status_message(status),
             "progress": float(record.get("progress") or 0.0),
             "created_at": record.get("created_at"),
             "started_at": record.get("started_at"),
@@ -325,7 +328,7 @@ class HeavyTaskService:
             "heartbeat_at": record.get("heartbeat_at"),
             "heartbeat_age_seconds": _seconds_since(record.get("heartbeat_at")),
             "cancel_requested": bool(record.get("cancel_requested")),
-            "can_cancel": status in ACTIVE_STATUSES,
+            "can_cancel": status in ACTIVE_STATUSES and not awaiting_publish,
             "scope_id": record.get("scope_id"),
             "result_scope": result_scope_text(task_type),
             "result_summary": deepcopy(run_result.get("summary") or {}),
@@ -527,7 +530,7 @@ class HeavyTaskService:
                 result_artifact_ref=reference, progress=1.0,
             )
             self._published[task_id] = {"release": outcome}
-        except TaskInputChangedError as exc:
+        except (TaskInputChangedError, TaskInputChanged) as exc:
             self.store.finish(
                 task_id, status=STALE, message="输入已变化，请重新运行",
                 error={"code": "task_input_changed", "message": str(exc)},

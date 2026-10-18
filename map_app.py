@@ -40,6 +40,9 @@ LOG = ROOT / "outputs" / "map-server.log"
 SERVICE = "cns-map"
 # 自动替换旧版本后端时，等待 8765 真正释放的上限（秒）。
 RESTART_PORT_WAIT = 10.0
+# 真实大项目的 ProjectState 冷启动可超过 150 秒；这里只等待轻量 /api/health，
+# 给 QGIS/GDAL 初始化留出诊断窗口，不等待完整项目快照。
+STARTUP_TIMEOUT = 300.0
 
 
 class HealthProbe:
@@ -249,7 +252,7 @@ def wait_for_port_release(timeout=RESTART_PORT_WAIT, interval=0.2):
         time.sleep(interval)
 
 
-def start_managed_server(timeout=90):
+def start_managed_server(timeout=STARTUP_TIMEOUT):
     """启动当前 HEAD 的受托管后端，并等到 ``/api/health`` 确认身份一致。
 
     调用方必须先保证 8765 空闲。返回的 ``ProcessTree`` 归本启动器所有，
@@ -270,6 +273,11 @@ def start_managed_server(timeout=90):
             launcher_process.wrapper_command(runner, ["-m", "cns_planner.map_server"]),
             cwd=ROOT, env=env, stdout=logfile, suspend=True,
         )
+    print(
+        f"地图服务进程已启动（project_root={ROOT}，port={PORT}，"
+        f"pid={getattr(tree, 'pid', '未上报')}），正在等待 /api/health ready…",
+        flush=True,
+    )
     try:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -280,13 +288,23 @@ def start_managed_server(timeout=90):
             if tree.poll() is not None:
                 raise RuntimeError(f"地图服务启动失败（退出码 {tree.poll()}）。请查看日志：{LOG}")
             time.sleep(0.4)
-        raise RuntimeError(f"地图服务启动超时，请查看日志后重试：{LOG}")
+        # 截止边界再读取一次权威 health，避免服务恰好 ready 却被超时分支误杀。
+        if is_ready():
+            return tree
+        probe = probe_health()
+        raise RuntimeError(
+            "地图服务启动等待超时"
+            f"（timeout={timeout}s，project_root={ROOT}，port={PORT}，"
+            f"launcher_pid={getattr(tree, 'pid', '未上报')}，"
+            f"health_pid={probe.pid!r}，ready={probe.ready!r}，"
+            f"data_error={probe.data_error!r}）。请查看日志后重试：{LOG}"
+        )
     except BaseException:
         tree.close()
         raise
 
 
-def replace_stale_backend(probe, timeout=90):
+def replace_stale_backend(probe, timeout=STARTUP_TIMEOUT):
     """CASE C：同仓库目录、旧版本身份 → 受控自动替换（BUG-STARTUP-003）。
 
     严格串行，顺序不可交换，也不存在"先开浏览器、再异步启动后端"的窗口：
@@ -344,7 +362,7 @@ def replace_stale_backend(probe, timeout=90):
     return tree
 
 
-def ensure_server(timeout=90):
+def ensure_server(timeout=STARTUP_TIMEOUT):
     """复用本项目的健康服务，受控替换本项目的旧版本后端，或启动一个新的受托管服务。
 
     生命周期规则（BUG-STARTUP-003）：

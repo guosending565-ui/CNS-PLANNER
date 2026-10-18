@@ -41,6 +41,7 @@ RESULT_SCOPE_TEXT = {
     PCF_TASK_TYPE: "规划约束场",
     P16_TASK_TYPE: "CNS 设施规划",
     PROBE_TASK_TYPE: "运行时探针",
+    "source_audit_verify": "数据源验证",
 }
 
 
@@ -68,14 +69,21 @@ def _snapshot_from_plan(spec, plan, state, registry):
 
     from .task_input import build_snapshot
 
+    selection = spec.algorithm_selection_for(state, registry)
+    inputs = (
+        deepcopy(plan.get("inputs")) if isinstance(plan.get("inputs"), dict)
+        else spec.inputs_for(state, {})
+    )
+    if "algorithm_selection" in inputs:
+        inputs["algorithm_selection"] = deepcopy(selection)
     return build_snapshot(
         task_type=spec.task_type,
         payload=deepcopy(plan.get("worker_payload") or {}),
         state=state,
         registry=registry,
         algorithm_types=spec.algorithm_types,
-        inputs=plan.get("inputs") if isinstance(plan.get("inputs"), dict)
-        else spec.inputs_for(state, {}),
+        inputs=inputs,
+        selection=selection,
     )
 
 
@@ -232,6 +240,12 @@ def publish_task_result(workflow, record, *, workdir):
         }
         return {"task_type": task_type, "scope": result_scope_text(task_type),
                 "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == "source_audit_verify":
+        result = _staged_value(_load_staged_payload(workdir, staged, committed))
+        published = workflow.source_audit_service.apply_verified(result)
+        return {"task_type": task_type, "scope": "数据源验证", "status": "published",
+                "summary": published, "artifact_ref": committed}
 
     raise TaskPublishError(f"task type 没有发布路径：{task_type}")
 

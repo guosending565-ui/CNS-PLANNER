@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ..domain.source_audit import (
-    empty_source_audits, sha256_file, source_manifest,
+    empty_source_audits, sha256_file, source_manifest, utc_now,
 )
 
 
@@ -51,6 +51,95 @@ class SourceAuditService:
             self._source_changed(role)
             manifest["status"] = "source_changed"
             manifest["reasons"] = ["source_changed", "dependent_results_stale"]
+        if self._same_verification(previous, manifest):
+            collection["items"][role] = previous
+            return self.snapshot()
+        self.session.save()
+        return self.snapshot()
+
+    @staticmethod
+    def _same_verification(previous, manifest):
+        def stable(value):
+            value = deepcopy(value)
+            value.pop("verified_at", None)
+            (value.get("verification") or {}).pop("verified_at", None)
+            return value
+        return stable(previous) == stable(manifest)
+
+    def apply_verified(self, result):
+        """Publish worker evidence through the existing audit owner, without re-scanning."""
+        from ..tasks.source_audit_task import signature
+        from ..tasks.task_spec import TaskInputChanged
+        role, path = result["role"], result["path"]
+        provider = getattr(self, "source_path_provider", None)
+        if provider:
+            from pathlib import Path
+            configured = provider(role)
+            if not configured or Path(configured).resolve() != Path(path).resolve():
+                raise TaskInputChanged("数据源配置已切换，未发布旧源结果")
+        if signature(path) != result["signature"]:
+            raise TaskInputChanged("源签名已变化，未发布校验结果")
+        collection = self.session.state.setdefault("source_audits", empty_source_audits())
+        previous = (collection.get("items") or {}).get(role) or {}
+        before_sha = previous.get("sha256")
+        manifest = source_manifest(role, path, previous=previous, details=result["details"],
+                                   verified_sha256=result["sha256"])
+        changed = bool(before_sha and before_sha != result["sha256"])
+        unchanged = self._same_verification(previous, manifest)
+        if not unchanged:
+            collection.setdefault("items", {})[role] = manifest
+            collection["count"] = len(collection["items"])
+            collection["status"] = "passed"
+            if changed:
+                self._source_changed(role)
+            self.session.save()
+        return {"revision": self.session.state.get("revision"), "changed": changed,
+                "state_unchanged": unchanged, "reused": result["reused"],
+                "previous_sha256": before_sha, "sha256": result["sha256"],
+                "elapsed_seconds": result["elapsed_seconds"],
+                "audit": deepcopy(previous if unchanged else manifest)}
+
+    def confirm_crs(self, role, path, payload):
+        """Confirm only building-source CRS against the exact verified asset."""
+        if role not in ("buildings", "building_grid"):
+            raise ValueError("只允许 buildings/building_grid CRS 确认")
+        if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+            raise ValueError("必须明确授权 CRS 确认")
+        state = self.session.state
+        if payload.get("expected_revision") != state.get("revision"):
+            raise ValueError("项目 revision 已变化，请重新核对")
+        previous = ((state.get("source_audits") or {}).get("items") or {}).get(role) or {}
+        current = source_manifest(role, path, previous=previous)
+        fingerprint = payload.get("source_fingerprint")
+        if (not fingerprint or fingerprint != current.get("version_fingerprint")
+                or current.get("status") != "verified" or not current.get("sha256")):
+            raise ValueError("数据源未验证或指纹变化，请先验证数据源并重新核对")
+        if sha256_file(path) != current["sha256"]:
+            raise ValueError("数据源内容变化，请重新验证")
+        from pyproj import CRS
+        try:
+            parsed = CRS.from_user_input(payload.get("value"))
+            declared = CRS.from_user_input(current.get("declared_crs"))
+        except Exception as exc:
+            raise ValueError("CRS 无效或缺少源声明") from exc
+        if not parsed.equals(declared):
+            raise ValueError("本入口只确认源声明 CRS；坐标纠正必须另行审计")
+        evidence = payload.get("evidence")
+        if (not isinstance(evidence, list) or not evidence
+                or any(not isinstance(item, dict) or item.get("type") != "user_supplied"
+                       or not str(item.get("note") or "").strip() for item in evidence)):
+            raise ValueError("必须提供人工证据与限制说明")
+        authority = parsed.to_authority()
+        current["confirmed_crs"] = {
+            "value": ":".join(authority) if authority else parsed.to_string(),
+            "status": "confirmed", "confirmed": True,
+            "source": {"type": "user_confirmation", "origin": "human_adjudication"},
+            "evidence": deepcopy(evidence), "source_fingerprint": fingerprint,
+            "sha256": current["sha256"], "revision": state["revision"] + 1,
+            "confirmed_at": utc_now(),
+        }
+        state["source_audits"]["items"][role] = current
+        self._source_changed(role)
         self.session.save()
         return self.snapshot()
 
@@ -95,6 +184,15 @@ class SourceAuditService:
     def register_quick(self, role, path, details=None, save=False):
         collection = self.session.state.setdefault("source_audits", empty_source_audits())
         previous = (collection.get("items") or {}).get(role) or {}
+        from ..tasks.source_audit_task import reusable_evidence, signature
+        if (role in ("buildings", "building_grid") and path
+                and reusable_evidence(role, previous.get("sha256"), previous)):
+            from pathlib import Path
+            if Path(path).is_file() and signature(path) == {
+                    "size_bytes": previous.get("size_bytes"), "mtime_ns": previous.get("mtime_ns")}:
+                details = dict(details or {})
+                # Startup metadata is shallow and cannot erase matching deep evidence.
+                details["geometry_health"] = deepcopy(previous["geometry_health"])
         manifest = source_manifest(role, path, previous=previous, details=details)
         collection.setdefault("items", {})[role] = manifest
         collection["count"] = len(collection["items"])

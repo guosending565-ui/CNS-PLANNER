@@ -1,5 +1,6 @@
 """launcher/health 的独立测试（BUG-STARTUP-001 / -002 / -003），不需要真实 QGIS。"""
 import json
+import inspect
 import os
 import subprocess
 import sys
@@ -333,6 +334,38 @@ def test_failed_start_closes_its_own_tree(monkeypatch, tmp_path):
     else:
         raise AssertionError("启动超时必须报错")
     assert calls["closed"] == 1
+
+
+def test_startup_timeout_defaults_cover_large_project_cold_start():
+    assert inspect.signature(map_app.start_managed_server).parameters["timeout"].default >= 240
+    assert inspect.signature(map_app.ensure_server).parameters["timeout"].default >= 240
+
+
+def test_deadline_performs_final_readiness_probe_before_closing(monkeypatch, tmp_path):
+    """截止瞬间已经 ready 的自有服务必须返回，不能因循环边界被误杀。"""
+
+    monkeypatch.setattr(map_app, "LOG", tmp_path / "map-server.log")
+    monkeypatch.setattr(map_app, "find_runner", lambda: tmp_path / "python-qgis.bat")
+    ready = iter((True,))
+    monkeypatch.setattr(map_app, "is_ready", lambda: next(ready))
+    calls = {"closed": 0}
+
+    class FakeTree:
+        pid = 7788
+
+        def launch(self, command, cwd, env, stdout, suspend=False):
+            return self
+
+        def poll(self):
+            return None
+
+        def close(self):
+            calls["closed"] += 1
+
+    monkeypatch.setattr(launcher_process, "ProcessTree", FakeTree)
+    tree = map_app.start_managed_server(timeout=0)
+    assert isinstance(tree, FakeTree)
+    assert calls["closed"] == 0
 
 
 def test_launcher_uses_package_entrypoint():

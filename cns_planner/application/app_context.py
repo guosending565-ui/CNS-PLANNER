@@ -72,7 +72,18 @@ class ApplicationContext:
         self.static = self.root / "cns_planner" / "web"
         self.default_config = self.root / "cns_planner" / "config" / "defaults.json"
         self.automatic_project_file = self.root / "projects" / "current_project.json"
+        startup_dir = os.environ.get("CNS_PROJECT_DIR", "").strip()
         self.active_project_file = self.automatic_project_file
+        if startup_dir:
+            folder = Path(startup_dir).expanduser()
+            if not folder.is_absolute():
+                raise ValueError("CNS_PROJECT_DIR 必须是绝对项目目录")
+            target = folder / "project_state.json"
+            if not target.is_file():
+                target = folder / "current_project.json"
+            if not target.is_file() or not (folder / "data_sources.json").is_file():
+                raise ValueError("CNS_PROJECT_DIR 必须包含项目状态及 data_sources.json")
+            self.active_project_file = target
         self.token = secrets.token_urlsafe(24)
         self.qgis = QgisRuntime()
         self.tiles = TileCache()
@@ -89,7 +100,8 @@ class ApplicationContext:
             self.automatic_project_file, self.default_config, DEFAULT_PATHS, WorkflowService
         )
         self.data = MapData(
-            settings_path=self.root / "projects" / "map_sources.json",
+            settings_path=(Path(startup_dir) / "data_sources.json" if startup_dir
+                           else self.root / "projects" / "map_sources.json"),
             defaults=DEFAULT_PATHS, default_config=self.default_config, token=self.token,
             workflow_provider=lambda: self.workflow.snapshot(),
             project_metadata_provider=lambda: self.project_directories.storage_metadata(self.active_project_file),

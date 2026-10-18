@@ -32,6 +32,7 @@ class QgisRuntime:
     def __init__(self, timeout_seconds=None):
         self.timeout_seconds = _resolve_timeout(timeout_seconds)
         self.tasks = Queue()
+        self.busy = False
 
     def call(self, action):
         future = Future()
@@ -55,8 +56,11 @@ class QgisRuntime:
         except Empty:
             return False
         if future.set_running_or_notify_cancel():
+            self.busy = True
             try:
                 future.set_result(action())
             except Exception as exc:
                 future.set_exception(exc)
+            finally:
+                self.busy = False
         return True

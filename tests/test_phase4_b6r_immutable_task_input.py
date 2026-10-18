@@ -497,7 +497,8 @@ def test_pcf_snapshot_captures_all_result_relevant_inputs(tmp_path):
     inputs = runtime.snapshot_of(record)["inputs"]
     for key in (
         "altitude_layer", "grid", "terrain_by_cell", "buildings_by_cell",
-        "tower_obstacle_profiles", "restricted_areas", "policies",
+        "terrain_dataset", "tower_obstacle_profiles", "towers",
+        "tower_clearance_policy", "restricted_areas", "policies",
         "source_fingerprints", "workspace_identity",
     ):
         assert key in inputs, f"PCF snapshot 缺少结果相关输入：{key}"
@@ -507,6 +508,74 @@ def test_pcf_snapshot_captures_all_result_relevant_inputs(tmp_path):
     assert inputs["tower_obstacle_profiles"]["items"]["T1"]["obstacle_height_m"] == 80.0
     # PCF 是纯判定：没有算法选择参与结果。
     assert runtime.snapshot_of(record)["algorithms"] == {}
+
+
+def test_pcf_worker_forwards_all_snapshotted_evidence_to_generator(monkeypatch):
+    """Worker 不得丢掉已进入不可变快照的地形/塔证据。"""
+
+    captured = {}
+
+    def generate(**kwargs):
+        captured.update(kwargs)
+        return {
+            "altitude_layer_id": "ALT-080",
+            "field_id": "PCF-FIXTURE",
+            "status": "completed",
+            "constraint_field_fingerprint": "pcf-fixture",
+            "policy_fingerprint": "policy-fixture",
+            "counts": {
+                "total": 1, "pass": 1, "blocked": 0, "unknown": 0,
+                "blocked_by": {domain: 0 for domain in (
+                    "terrain", "building", "tower", "airspace", "critical_site",
+                )},
+            },
+            "cells": [],
+        }
+
+    monkeypatch.setattr(
+        "cns_planner.application.planning_constraint_field_service."
+        "generate_planning_constraint_field",
+        generate,
+    )
+
+    sentinels = {
+        "altitude_layer": {"altitude_layer_id": "ALT-080"},
+        "grid": {"cells": [{"grid_id": "G0"}]},
+        "terrain_by_cell": {"G0": {"status": "passed"}},
+        "buildings_by_cell": {"G0": {"building_count": 0}},
+        "terrain_dataset": {"vertical_reference": "egm2008_orthometric"},
+        "tower_obstacle_profiles": {"status": "passed", "items": {}},
+        "towers": {"items": [{"tower_id": "T1"}]},
+        "tower_clearance_policy": {"tower_vertical_clearance_m": 10.0},
+        "restricted_areas": {"status": "resolved", "items": []},
+        "policies": {},
+        "source_fingerprints": {},
+        "workspace_identity": {"workspace_id": "W"},
+    }
+
+    class Context:
+        inputs = {"snapshot": {"inputs": sentinels}}
+
+        @staticmethod
+        def check_cancel():
+            return None
+
+        @staticmethod
+        def progress(*_args):
+            return None
+
+        @staticmethod
+        def stage(_payload, *, artifact_type):
+            assert artifact_type == "planning_constraint_field.cells"
+            return {
+                "artifact_id": "artifact", "relative_path": "fixture.json.gz",
+                "sha256": "0" * 64, "size_bytes": 1,
+            }
+
+    task_spec(PCF_TASK_TYPE).runner(Context())
+
+    for key in ("terrain_dataset", "towers", "tower_clearance_policy"):
+        assert captured[key] is sentinels[key]
 
 
 def test_pcf_worker_uses_snapshot_and_ignores_later_state_changes(tmp_path):
@@ -910,6 +979,7 @@ def test_old_queued_task_does_not_migrate_to_new_algorithm_version(
             "algorithm_type": "corridor_model",
             "algorithm_id": submitted["algorithm_id"],
             "version": submitted_version,
+            "available_versions": [newer_version],
         },
     }
     assert runtime.service.get(record["task_id"])["business_error"] == {
@@ -999,6 +1069,12 @@ def test_resolver_reports_structured_exact_version_error_without_fallback():
         def create(self, algorithm_type, algorithm_id, version, parameters):
             raise AlgorithmNotFoundError(f"missing {algorithm_id}@{version}")
 
+        def manifests(self, algorithm_type):
+            class Manifest:
+                def __init__(self, algorithm_id, version):
+                    self.algorithm_id, self.version = algorithm_id, version
+            return (Manifest("X", "2.0"), Manifest("Y", "9.0"))
+
     resolver = AlgorithmResolver({
         "example": {
             "algorithm_type": "example", "algorithm_id": "X",
@@ -1010,6 +1086,7 @@ def test_resolver_reports_structured_exact_version_error_without_fallback():
     assert caught.value.code == "task_algorithm_version_unavailable"
     assert caught.value.detail == {
         "algorithm_type": "example", "algorithm_id": "X", "version": "1.0",
+        "available_versions": ["2.0"],
     }
 
 

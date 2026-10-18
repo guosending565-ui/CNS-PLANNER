@@ -85,7 +85,7 @@ def source_manifest(role, path, *, previous=None, details=None, verified_sha256=
         # 只保留"上一次验证记录"（用于判定 needs_revalidation），丢弃全部派生事实。
         previous = {"verification": deepcopy(previous.get("verification") or {})}
     reasons = []
-    if signature_changed:
+    if signature_changed and not verified_sha256:
         reasons.append("source_signature_changed_previous_details_dropped")
     if source is None:
         status = "not_configured"
@@ -122,6 +122,11 @@ def source_manifest(role, path, *, previous=None, details=None, verified_sha256=
             "sha256": str(verified_sha256), "size_bytes": size, "mtime_ns": mtime,
             "verified_at": verified_at or utc_now(), "method": "sha256_full_file_stream",
         }
+        if details.get("verification_depth") == "identity":
+            verification["depth"] = "identity"
+    if status == "verified" and verification.get("depth") == "identity":
+        status = "identity_verified"
+        reasons.append("deep_geometry_verification_required")
     geometry_health = deepcopy(details.get("geometry_health") or previous.get("geometry_health")) or {
         "status": "not_calculated", "feature_count": details.get("feature_count"),
         "null": None, "empty": None, "invalid": None, "unsupported": None,
@@ -154,6 +159,7 @@ def source_manifest(role, path, *, previous=None, details=None, verified_sha256=
         "declared_crs": deepcopy(details.get("declared_crs", previous.get("declared_crs"))),
         "confirmed_crs": deepcopy(details.get("confirmed_crs", previous.get("confirmed_crs"))),
         "geometry_health": geometry_health,
+        "geometry_verification": deepcopy(details.get("geometry_verification", previous.get("geometry_verification"))),
         "provenance": provenance,
         "evidence": deepcopy(details.get("evidence", previous.get("evidence") or [])),
         "verification": verification,

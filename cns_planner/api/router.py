@@ -108,7 +108,26 @@ class ApiRouter:
             identity = getattr(context, "health_identity", None)
             if identity:
                 payload.update(identity)
+            service = getattr(context, "heavy_tasks", None)
+            active = service.store.list(status=("queued", "running", "cancelling")) if service else []
+            queue = getattr(getattr(context, "qgis", None), "tasks", None)
+            payload.update({"busy": bool(active) or bool(getattr(context.qgis, "busy", False)),
+                            "active_long_tasks": [{key: item.get(key) for key in
+                                ("task_id", "task_type", "status", "progress", "message", "started_at")}
+                                for item in active],
+                            "queued_tasks": sum(item.get("status") == "queued" for item in active),
+                            "gis_queue_size": queue.qsize() if queue is not None else 0})
+            payload["busy"] = payload["busy"] or payload["gis_queue_size"] > 0
+            payload["status"] = "busy" if payload["busy"] else "ready"
             return Response(payload)
+        if path == "/api/source-audits/identity":
+            from ..domain.source_audit import source_manifest
+            role = str((query.get("role") or [""])[0])
+            previous = ((workflow.state.get("source_audits") or {}).get("items") or {}).get(role) or {}
+            active = self._project_active()
+            active["audit"] = source_manifest(role, data.paths.get(role), previous=previous)
+            active["identity_check"] = "stat_only_sha256_is_last_verified_digest"
+            return Response(active)
         if path == "/api/project/active":
             # A3：同项目再次打开 / 启动恢复的**轻量**只读投影。
             #
@@ -498,7 +517,8 @@ class ApiRouter:
         parts = path.split("/")
         if len(parts) == 8 and parts[1:4] == ["api", "visualization-3d", "imagery"]:
             source_id = parts[4]
-            if source_id not in {"arcgis_world_imagery", "tianditu_img_w"}:
+            if source_id not in {"arcgis_world_imagery", "tianditu_img_w",
+                                 "offline_zhoushan_imagery"}:
                 return Response(
                     {"error": "未找到", "code": "visualization_3d_endpoint_unknown"},
                     status=404,
@@ -516,6 +536,15 @@ class ApiRouter:
                     status=400,
                 )
             except ImageryUnavailable as exc:
+                # 本地离线影像"本来就没有这一块"是**正常**状态（数据范围边缘）：
+                # 用 404 让 Cesium 静默跳过，而不是像在线越界那样 503 并计入失败。
+                # 这直接决定"离线模式不产生持续缺失瓦片请求"这条验收是否成立。
+                if exc.code == "offline_imagery_tile_missing":
+                    return Response(
+                        exc.as_dict(), status=404,
+                        headers={"Cache-Control": "no-store",
+                                 "X-CNS-Imagery-Source": "offline_zhoushan_imagery"},
+                    )
                 return Response(exc.as_dict(), status=503, headers={"Cache-Control": "no-store"})
 
         from ..application.visualization_3d_service import (
@@ -940,6 +969,29 @@ class ApiRouter:
                     "error": str(exc),
                     "writes_performed": 0,
                 }, status=400)
+        if path == "/api/cns-planning-report/generate":
+            # 正式报告门禁是可恢复的业务冲突，不应退化成只有一段文本的 400。
+            # 明确给出机器可读 code 与操作前置条件；仍不替用户选择或确认方案。
+            plan = workflow.state.get("confirmed_cns_plan") or {}
+            status = str(plan.get("status") or "not_confirmed")
+            if status not in ("confirmed", "applied"):
+                return Response({
+                    "error": "无法生成正式报告：请先在方案审查中确认一个规划方案",
+                    "code": "confirmed_plan_required",
+                    "current_plan_status": status,
+                    "required_prerequisites": [
+                        "initialize_plan_review", "select_plan_variant", "confirm_plan",
+                    ],
+                }, status=409)
+            if plan.get("current_applicability") == "stale":
+                return Response({
+                    "error": "无法生成正式报告：已确认方案对应旧项目状态，请重新初始化并确认方案",
+                    "code": "confirmed_plan_stale",
+                    "current_plan_status": status,
+                    "required_prerequisites": [
+                        "initialize_plan_review", "select_plan_variant", "confirm_plan",
+                    ],
+                }, status=409)
         # ---- Phase4-B6X：heavy task 提交（HTTP 202 + task_id） ------------------
         # 真正重的动作不再在 HTTP 线程与 mutation_lock 内跑完：
         #   * 业务 endpoint 带 ``async: true`` 时只登记任务；
@@ -1016,6 +1068,7 @@ class ApiRouter:
             "/api/reference-routes/import": lambda: workflow.confirm_reference_routes_import(payload.get("path") or data.paths.get("reference_routes"), payload.get("preview_id")),
             "/api/reference-routes/preview": lambda: workflow.preview_reference_routes(payload.get("path") or data.paths.get("reference_routes"), {"conversion_method": payload.get("conversion_method"), "evidence": payload.get("evidence")} if payload.get("conversion_method") or payload.get("evidence") else None),
             "/api/reference-routes/import-confirm": lambda: workflow.confirm_reference_routes_import(payload.get("path") or data.paths.get("reference_routes"), payload.get("preview_id")),
+            "/api/data-sources/crs/confirm": lambda: workflow.source_audit_service.confirm_crs(payload.get("role"), data.paths.get(payload.get("role")), payload),
             "/api/reference-crs/confirm": lambda: workflow.confirm_reference_crs(payload.get("role"), payload),
             "/api/towers/import": lambda: workflow.import_towers(payload.get("path") or data.paths.get("towers")),
             "/api/airspace-policies": lambda: workflow.set_airspace_policies(payload),
@@ -1215,17 +1268,7 @@ class ApiRouter:
             source_path = data.paths.get(path_role)
             if not source_path:
                 raise ValueError("数据源尚未在本机配置")
-            details = None
-            if path_role in ("buildings", "building_grid"):
-                from ..gis.source_inspection import inspect_geopackage
-                info = inspect_geopackage(source_path, path_role, deep_geometry=True)
-                details = {
-                    "schema": {"fields": sorted((info.get("fields") or {}).keys())},
-                    "feature_count": info.get("feature_count"),
-                    "extent": info.get("extent"), "declared_crs": info.get("crs"),
-                    "geometry_health": info.get("geometry_health"),
-                }
-            return Response(workflow.verify_source(path_role, source_path, details))
+            return self._task_submit("source_audit_verify", {"role": path_role, "mode": payload.get("mode", "deep")})
         if path.startswith("/api/workflow/"):
             action = path.rsplit("/", 1)[-1]
             if action == "project": return Response(workflow.set_project(payload))
@@ -1308,6 +1351,17 @@ class ApiRouter:
         from ..tasks.task_store import TaskConflictError
 
         payload = payload if isinstance(payload, dict) else {}
+        if task_type == "source_audit_verify":
+            role = str(payload.get("role") or "")
+            role = "basemap" if role == "airspace" else role
+            source_path = self.context.data.paths.get(role)
+            if not source_path:
+                raise ValueError("数据源尚未在本机配置")
+            if payload.get("mode", "deep") not in ("identity", "deep"):
+                raise ValueError("校验模式无效")
+            # Ignore all client paths/evidence, including generic /api/tasks submissions.
+            payload = {"role": role, "_source_path": str(source_path), "mode": payload.get("mode", "deep")}
+            self.context.workflow.source_audit_service.source_path_provider = lambda key: self.context.data.paths.get(key)
         if not task_type:
             return Response({"error": "请求未指明任务类型"}, status=400)
         policy = (

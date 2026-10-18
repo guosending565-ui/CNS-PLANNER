@@ -152,7 +152,14 @@ class TaskStore:
             entries = list(self.tasks_directory.glob("*.json"))
         except OSError:  # pragma: no cover - 目录刚被清理
             return None
-        return (len(entries), max((item.stat().st_mtime_ns for item in entries), default=0))
+        try:
+            return (len(entries), max((item.stat().st_mtime_ns for item in entries), default=0))
+        except OSError:
+            return None
+
+    def _cancel_path(self, task_id) -> Path:
+        # Separate monotonic intent: a worker heartbeat may replace its task JSON.
+        return self.tasks_directory / f"{task_id}.cancel"
 
     def _task_path(self, task_id) -> Path:
         return self.tasks_directory / f"{task_id}.json"
@@ -184,21 +191,45 @@ class TaskStore:
 
     def _refresh(self):
         stamp = self._directory_stamp()
-        if stamp == self._stamp and self._records:
+        if stamp is not None and stamp == self._stamp and self._records:
             return
         records = {}
+        transient_read_failure = False
         for path in sorted(self.tasks_directory.glob("*.json")):
             if path.name.endswith(".publish.json"):
                 continue
             try:
-                document = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                for attempt in range(5):
+                    try:
+                        document = json.loads(path.read_text(encoding="utf-8"))
+                        break
+                    except OSError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.01 * (attempt + 1))
+            except OSError:
+                # Windows can briefly deny a read during atomic worker replace.
+                # Keep the last readable record and retry on the next query; never
+                # cache a transient omission as "task does not exist".
+                previous = self._records.get(path.stem)
+                if previous is None:
+                    raise
+                document = previous
+                transient_read_failure = True
+            except json.JSONDecodeError:
                 # 损坏的任务文件绝不当作成功：跳过它，但保留其它任务可读。
                 continue
             if isinstance(document, dict) and document.get("task_id"):
+                intent = self._cancel_path(document["task_id"])
+                if intent.is_file():
+                    cancellation = json.loads(intent.read_text(encoding="utf-8"))
+                    document["cancel_requested"] = True
+                    document["cancel_requested_at"] = cancellation["requested_at"]
+                    if document.get("status") == RUNNING:
+                        document["status"] = CANCELLING
                 records[str(document["task_id"])] = document
         self._records = records
-        self._stamp = stamp
+        self._stamp = None if transient_read_failure else stamp
 
     def get(self, task_id):
         with self._lock:
@@ -369,6 +400,9 @@ class TaskStore:
             status = str(record.get("status"))
             if status in TERMINAL_STATUSES:
                 return deepcopy(record), "already_finished"
+            intent = self._cancel_path(task_id)
+            if not intent.is_file():
+                self._write_json(intent, {"requested_at": utc_now()})
             if status == QUEUED:
                 return self.update(
                     task_id, status=CANCELLED, cancel_requested=True,

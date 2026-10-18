@@ -113,7 +113,7 @@ test('任务行主界面不出现 raw 枚举与 task_id，取消按钮仅在可�
     status_text: '已完成', can_cancel: false, advanced: {...taskFixture().advanced, status: 'succeeded'},
   }));
   assert.doesNotMatch(finished, /取消任务/);
-  assert.match(finished, /服务走廊评估已更新/);
+  assert.match(finished, /服务走廊评估结果已更新/);
 
   const stale = taskRowHtml(taskFixture({
     status_text: '输入已变化，请重新运行', can_cancel: false, progress: 0.9,
@@ -183,6 +183,29 @@ test('刷新后按 task_id 恢复：终态历史任务仍显示，无关任务�
   assert.ok(!ids.includes('task-other'), '无关的已结束任务不进恢复列表');
 });
 
+test('首轮轮询已成功的已记录任务只刷新一次正式快照 revision', async () => {
+  setSessionToken('session-token');
+  const storage = memoryStorage();
+  rememberTaskId('task-fast', storage);
+  const completed = taskFixture({
+    task_id: 'task-fast', status: '', status_text: '已完成', can_cancel: false,
+    advanced: {...taskFixture().advanced, task_id: 'task-fast', status: 'succeeded'},
+  });
+  const settled = [];
+  const center = createTaskCenter({
+    storage, document: null, interval: 60000,
+    fetch: async () => [completed],
+    onTaskSettled: (event) => { settled.push(event); },
+  });
+
+  await center.refresh();
+  await center.refresh();
+
+  assert.equal(settled.length, 1, '任务快于首轮轮询时也必须刷新，但重复轮询不得重复刷新');
+  assert.equal(settled[0].task.task_id, 'task-fast');
+  assert.equal(settled[0].previous_status, null);
+});
+
 test('业务端点异步提交：带 async 标记并记住 task_id', async () => {
   setSessionToken('session-token');
   const calls = [];
@@ -236,7 +259,7 @@ test('取消走显式请求，列表读取使用 /api/tasks', async () => {
   const calls = [];
   const fetchImpl = async (path, options) => {
     calls.push({path, options});
-    if (path === '/api/state') return {ok: true, json: async () => ({token: 'session-token'})};
+    if (path === '/api/project/active') return {ok: true, json: async () => ({token: 'session-token'})};
     if (path.endsWith('/cancel')) return {ok: true, json: async () => ({message: '已请求取消，正在停止计算'})};
     return {ok: true, json: async () => ([taskFixture()])};
   };
@@ -245,7 +268,7 @@ test('取消走显式请求，列表读取使用 /api/tasks', async () => {
   const cancelCall = calls.find((call) => call.path === '/api/tasks/cancel');
   assert.ok(cancelCall, '取消必须走 POST /api/tasks/cancel');
   assert.equal(JSON.parse(cancelCall.options.body).task_id, 'task-1');
-  // 会话令牌由后端在 /api/state 下发，任务端点必须带上它。
+  // 会话令牌由后端在 /api/project/active 下发，任务端点必须带上它。
   assert.equal(cancelCall.options.headers['X-CNS-Token'], 'session-token');
   const tasks = await loadTasks(fetchImpl);
   assert.equal(tasks.length, 1);

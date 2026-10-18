@@ -17,6 +17,8 @@ def wants_async_submission(path, payload):
       否则保持原有同步语义（不改变任何既有调用方的行为）。
     """
 
+    if str(path) == "/api/source-audits/verify":
+        return True
     if str(path) == "/api/tasks" or str(path).startswith("/api/tasks/"):
         return True
     if not _wants_async(payload):
