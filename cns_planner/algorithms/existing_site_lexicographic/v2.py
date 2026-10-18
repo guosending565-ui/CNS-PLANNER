@@ -33,6 +33,8 @@ RESULT_SCHEMA = "conditional_lexicographic_result.v2"
 LAYER_SCHEMA = "conditional_layer_proof.v2"
 BINDING_SCHEMA = "conditional_proof_binding.v2"
 MEASUREMENT_SCHEMA = "conditional_objective_measurement.v1"
+REAL_ENVELOPE_SCHEMA = "real_conditional_solver_envelope.v1"
+PREFLIGHT_SCHEMA = "real_domain_preflight.v1"
 FIXTURE_TRACK = "synthetic_conditional_fixture"
 OBJECTIVES = ("activation", "devices", "cost")
 NAV_FIELDS = (
@@ -606,6 +608,158 @@ def identity(frozen_conditional_domain, optimization_context):
 # ---------------------------------------------------------------------------
 # Conditional measurement and leaf classification.
 # ---------------------------------------------------------------------------
+
+
+def preflight_real_domain(*, real_domain_envelope):
+    """Validate a real (fixture-free) domain envelope without searching.
+
+    This is intentionally separate from :func:`identity` and
+    :func:`iter_conditional_lexicographic`: the synthetic fixture gate stays
+    closed, and the real branch can only prove that the frozen inputs are
+    structurally ready.  It never receives a runtime, never enumerates leaves,
+    never calls a model and always keeps execution unauthorized.
+
+    Identity/fingerprint tampering raises ``ValueError``.  Evidence and
+    authorization gaps are returned as blockers, not silently cleared.
+    """
+    env = json_value(real_domain_envelope)
+    verify(env, "envelope_fingerprint")
+    if env.get("schema_version") != REAL_ENVELOPE_SCHEMA:
+        raise ValueError("real domain envelope schema")
+    if env.get("evidence_track") != TRACK:
+        raise ValueError("real domain envelope evidence track")
+    if env.get("execution_enabled") is not False:
+        raise ValueError("real domain envelope must stay offline/read-only")
+    if env.get("execution_authorization") != "not_authorized":
+        raise ValueError("real domain preflight cannot accept execution authorization")
+    if env.get("fixture") is not None:
+        raise ValueError("real domain envelope cannot carry a synthetic fixture")
+    scenario = checked_scenario(env["scenario"])
+    conditional = json_value(env["conditional_domain"])
+    verify(conditional, "domain_fingerprint")
+    parent = env.get("real_parent_domain")
+    identity = env.get("source_identity") or {}
+    if type(parent) is not dict or type(identity) is not dict:
+        raise ValueError("real parent/source identity required")
+    if conditional.get("scenario_fingerprint") != scenario["scenario_fingerprint"]:
+        raise ValueError("real envelope scenario/domain identity mismatch")
+    if conditional.get("parent_real_domain_fingerprint") != digest(parent):
+        raise ValueError("real envelope parent fingerprint mismatch")
+    if identity.get("scenario_fingerprint") != scenario["scenario_fingerprint"]:
+        raise ValueError("real envelope source identity mismatch:scenario")
+    if identity.get("conditional_domain_fingerprint") != conditional["domain_fingerprint"]:
+        raise ValueError("real envelope source identity mismatch:domain")
+    if identity.get("parent_real_domain_fingerprint") != digest(parent):
+        raise ValueError("real envelope source identity mismatch:parent")
+    if identity.get("action_set_fingerprint") != conditional.get("action_set_fingerprint"):
+        raise ValueError("real envelope source identity mismatch:actions")
+    actions = env.get("actions")
+    if actions != conditional.get("finite_actions"):
+        raise ValueError("real envelope actions are not the frozen conditional actions")
+    if digest(actions) != identity.get("action_set_fingerprint"):
+        raise ValueError("real envelope action-set fingerprint mismatch")
+    route = scenario["route_scenario"]
+    if identity.get("source_state_sha256") != route.get("baseline_ref", {}).get("sha256"):
+        raise ValueError("real envelope source SHA mismatch")
+    contract_errors = []
+    try:
+        qualification = conditional.get("conditional_qualification")
+        _validate_actions(actions, qualification, scenario, parent)
+        sites = _validate_conditional_sites(env, qualification, scenario, parent)
+        _validate_installed(env, parent)
+        _validate_consumer_binding(env, {}, scenario)
+        enumeration = _validate_enumeration(env)
+        _validate_pruning(env, actions)
+        validate_proof_scope(env.get("proof_scope"))
+    except ValueError as exc:
+        contract_errors.append("real_domain_contract_invalid:" + str(exc)[:160])
+        sites = {}
+        enumeration = {}
+    parent_ids = {row.get("physical_site_id") for row in parent.get("site_ledger", [])
+                  if type(row) is dict}
+    action_sites = {row.get("physical_site_id") for row in actions if type(row) is dict}
+    if not action_sites <= parent_ids:
+        contract_errors.append("real_domain_action_site_outside_parent")
+    if len(actions) != route.get("candidate_action_count"):
+        contract_errors.append("real_domain_action_count_mismatch")
+    if len(sites) != len(qualification or []):
+        contract_errors.append("real_domain_conditional_site_coverage")
+    if len(action_sites) >= len(parent_ids):
+        contract_errors.append("real_domain_parent_scope_not_distinct")
+    route = scenario["route_scenario"]
+    scope = route.get("required_scope") or {}
+    inventory = scope.get("required_constraint_inventory") or []
+    included = scope.get("included_constraint_ids") or []
+    excluded = scope.get("excluded_constraints") or []
+    required_scope_status = ("partition_complete"
+        if inventory and len(inventory) == len(included) + len(excluded)
+        else "blocked")
+    activation = env.get("activation_policy") or {}
+    if activation.get("status") != "unknown":
+        contract_errors.append("real_activation_policy_must_stay_unknown")
+    for key in ("l1_newly_activated_site_count", "l2_new_device_instance_count"):
+        row = activation.get(key) or {}
+        if row.get("status") != "unknown" or row.get("value") is not None:
+            contract_errors.append("real_" + key + "_must_stay_unknown")
+    if env.get("installed_inventory_status") != "unknown":
+        contract_errors.append("real_installed_inventory_must_stay_unknown")
+    if env.get("installed_device_instances") != []:
+        contract_errors.append("real_installed_inventory_must_not_be_enumerated")
+    if env.get("installed_device_instances_status") != "unknown_not_enumerated":
+        contract_errors.append("real_installed_inventory_status_semantics")
+    if env.get("dependency_closure_proven") is not False:
+        contract_errors.append("real_dependency_closure_cannot_be_proven")
+    if env.get("objective_policy") is not None:
+        contract_errors.append("real_objective_policy_cannot_be_invented")
+    if env.get("search_budget_status") != "not_approved":
+        contract_errors.append("real_search_budget_must_stay_not_approved")
+    if env.get("m3_independent_verification_status") != "not_verified":
+        contract_errors.append("real_m3_independent_verification_cannot_be_claimed")
+    if env.get("m6_status") != "closed":
+        contract_errors.append("real_m6_must_stay_closed")
+    blockers = set(str(item) for item in env.get("execution_blockers", []))
+    blockers.update(("execution_not_authorized", "search_budget_not_approved",
+                     "objective_policy_unavailable",
+                     "real_activation_baseline_unknown",
+                     "real_installed_inventory_unknown"))
+    status = "blocked" if contract_errors else "real_domain_contract_ready"
+    return seal(dict(
+        schema_version=PREFLIGHT_SCHEMA,
+        status=status,
+        contract_status=status,
+        evaluation_status="evaluation_blocked",
+        execution_status="execution_not_authorized",
+        execution_enabled=False,
+        execution_authorization="not_authorized",
+        search_started=False,
+        final_eligible=False,
+        model_feasible=None,
+        optimal_proven=False,
+        source_identity_verified=not contract_errors,
+        scenario_fingerprint=scenario["scenario_fingerprint"],
+        domain_fingerprint=conditional["domain_fingerprint"],
+        action_set_fingerprint=identity.get("action_set_fingerprint"),
+        source_state_sha256=identity.get("source_state_sha256"),
+        action_count=len(actions),
+        conditional_site_count=len(sites),
+        parent_site_count=len(parent_ids),
+        action_site_count=len(action_sites),
+        required_scope_status=required_scope_status,
+        proof_scope_status="conditional_lexicographic_only_not_complete_required",
+        complete_required_cns_status="unknown",
+        complete_required_proof_status="not_proven",
+        independent_verification_status="not_verified",
+        real_domain_proof_status="not_verified",
+        m3_independent_verification_status="not_verified",
+        m6_status="closed",
+        activation_policy=deepcopy(activation),
+        search_budget_status=env.get("search_budget_status"),
+        blockers=sorted(set(blockers) | set(contract_errors)),
+        execution_blockers=sorted(blockers),
+        contract_blockers=sorted(set(contract_errors)),
+        fixture_required_for_search=True,
+        real_branch_search_gate="non_fixture_conditional_execution_not_authorized",
+    ), "preflight_fingerprint")
 
 
 def selected_actions(domain, prefix):

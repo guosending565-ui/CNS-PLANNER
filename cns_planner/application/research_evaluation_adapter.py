@@ -11,6 +11,7 @@ from copy import deepcopy
 from ..algorithms.continuous_service.v1 import ContinuousServiceAcceptabilityV1
 from ..algorithms.corridor.v1 import CNSServiceCorridorV1
 from ..algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1
+from ..algorithms.existing_site_lexicographic.v2 import preflight_real_domain
 from ..domain.joint_feasibility import digest, json_value, seal, verify
 from ..domain.research_scenario import TRACK, bounded_json, checked_scenario
 from .candidate_ue_acceptability import candidate_action_set_fingerprint
@@ -18,10 +19,12 @@ from .joint_candidate_assessment import bind_joint_candidate_assessment
 from .joint_evaluation_adapter import JointModelEvaluator
 from .research_scenario_admission import inspect_research_admission
 from .research_scenario_builder import build_conditional_domain
+from .research_solver_envelope import build_real_solver_envelope, verify_real_solver_envelope
 from .rtk_joint_acceptance import VERSION as RTK_VERSION
 
 INPUTS_SCHEMA = "research_evaluation_inputs.v1"
 OUTPUT_SCHEMA = "research_evaluation.v1"
+REAL_OUTPUT_SCHEMA = "research_real_evaluation.v1"
 REGISTRY_SCHEMA = "research_consumer_registry.v1"
 FIXTURE_TRACK = "synthetic_fixture"
 M4_CONSUMER = "m4_joint"
@@ -716,6 +719,454 @@ def evaluate_conditional_actions(*, frozen_inputs, actions, consumer_registry) -
     return seal(result, "evaluation_fingerprint")
 
 
-__all__ = ["evaluate_conditional_actions", "M4_METHOD_VERSION", "M4_METHOD_REF",
-    "M3_METHOD_REF", "M3_METHOD_VERSION", "RTK_METHOD_REF", "INPUTS_SCHEMA",
-    "OUTPUT_SCHEMA", "REGISTRY_SCHEMA"]
+def _real_admission(scenario, domain, evidence, native_m2):
+    """Run the P2-A1 static admission with its own declared consumer snapshot.
+
+    The evaluation registry is a *capability claim* for the evaluator branch;
+    the admission partition is frozen against the scenario's declared consumer
+    registry, so required constraints cannot disappear merely because the real
+    evaluator binding is unavailable.
+    """
+    declared = scenario["route_scenario"].get("consumer_registry") or []
+    if declared:
+        capabilities = dict(
+            consumers={row.get("consumer_id"): row.get("method_version")
+                for row in declared if type(row) is dict},
+            supported_action_families=sorted({family for row in declared
+                if type(row) is dict for family in row.get("supported_action_families", [])}),
+            note="frozen scenario consumer registry; static mapping only")
+    else:
+        capabilities = dict(consumers={M4_CONSUMER: M4_METHOD_VERSION},
+            supported_action_families=["C:communication"],
+            note="evaluation registry fallback; no scenario consumer registry")
+    intent = dict(mode="inspect", native_m2_result=deepcopy(native_m2),
+        output_root=None)
+    return inspect_research_admission(scenario=scenario, conditional_domain=domain,
+        route_evidence=evidence, consumer_capabilities=capabilities, run_intent=intent)
+
+
+def _real_action_results(rows, domain):
+    """Classify real actions without requiring a synthetic slot or fixture."""
+    parent_ids = {row.get("physical_site_id") for row in
+        domain["real_qualification_snapshot"].get("site_ledger", [])
+        if type(row) is dict}
+    frozen = {row.get("action_id"): row for row in domain.get("finite_actions", [])
+        if type(row) is dict}
+    results, errors, seen = [], [], set()
+    frozen_ids = set(frozen)
+    missing = sorted(str(item) for item in frozen_ids - {row.get("action_id") for row in rows})
+    if missing:
+        errors.append("frozen_action_set_incomplete:" + ",".join(missing))
+    for row in rows:
+        action_id = row.get("action_id")
+        family = row.get("service_key")
+        planner = row.get("planner_family")
+        reasons = []
+        if type(action_id) is not str or not action_id:
+            reasons.append("action_id_required")
+        if type(family) is not str or not family:
+            reasons.append("action_family_required")
+        for field in ("planner_family", "physical_site_id", "device_id",
+                      "device_instance_id", "source_class"):
+            if type(row.get(field)) is not str or not row.get(field):
+                reasons.append("action_field_missing:" + field)
+        if "slot_id" not in row:
+            reasons.append("slot_identity_not_recorded")
+        for field in ("dependency_action_ids", "applicable_models", "assumption_refs"):
+            value = row.get(field)
+            if type(value) is not list or any(type(item) is not str for item in value):
+                reasons.append("action_field_missing:" + field)
+        if row.get("source_class") not in ("A", "B", "C", "D"):
+            reasons.append("action_source_class_invalid")
+        if action_id in seen:
+            reasons.append("duplicate_action_id")
+        seen.add(action_id)
+        if action_id not in frozen or frozen.get(action_id) != row:
+            reasons.append("action_outside_frozen_x:" + str(action_id))
+        if row.get("physical_site_id") not in parent_ids:
+            reasons.append("action_site_not_in_real_parent_ledger")
+        if type(row.get("dependency_action_ids")) is list:
+            for dependency in row["dependency_action_ids"]:
+                if dependency not in frozen_ids:
+                    reasons.append("action_dependency_missing:" + str(dependency))
+        code = UNSUPPORTED_FAMILY_CODES.get(family)
+        if code is None and planner == "directional_radar":
+            code = "unsupported_action_family:S:radar_noncooperative"
+        if code is None and planner == "endpoint_integrity_monitor":
+            code = "endpoint_new_action_unsupported"
+        if code is not None:
+            status = "unsupported"
+            reasons.append(code)
+        elif family == "C:communication":
+            status = "blocked"
+            reasons.append("real_evaluator_binding_unavailable")
+        elif family in SUPPORTED_FAMILIES:
+            status = "blocked"
+            reasons.append("real_evaluator_binding_unavailable")
+        else:
+            status = "unsupported"
+            reasons.append("consumer_unavailable:" + str(family))
+        if row.get("dependency_evidence_status") not in (None, "declared"):
+            reasons.append("action_dependency_evidence_unknown")
+        if reasons:
+            errors.extend(reason for reason in reasons
+                if reason.startswith(("action_outside", "action_site_not",
+                                      "duplicate_action_id", "frozen_action")))
+        results.append(dict(
+            action_id=action_id,
+            family=family,
+            planner_family=planner,
+            status=status,
+            physical_site_id=row.get("physical_site_id"),
+            device_model_id=row.get("device_id"),
+            device_instance_id=row.get("device_instance_id"),
+            slot_id=row.get("slot_id"),
+            route_ids=deepcopy(row.get("route_ids", [])),
+            dependency_action_ids=deepcopy(row.get("dependency_action_ids", [])),
+            dependency_evidence_status=row.get("dependency_evidence_status"),
+            applicable_models=deepcopy(row.get("applicable_models", [])),
+            source_class=row.get("source_class"),
+            assumption_refs=deepcopy(row.get("assumption_refs", [])),
+            reason_codes=sorted(set(reasons)),
+            applied=False,
+        ))
+    return results, errors
+
+
+def _real_consumer_matrix(scenario):
+    route = scenario["route_scenario"]
+    declarations = route.get("snapshot_declarations") or {}
+    declared = route.get("consumer_registry") or []
+    historical = {
+        "p14_corridor": declarations.get("p14", {}),
+        "p15_corridor_gap": declarations.get("p15", {}),
+        "p16_site_plan": declarations.get("p16", {}),
+        "p17_continuous": declarations.get("p17", {}),
+    }
+    model_consumers = []
+    for row in declared:
+        if type(row) is not dict:
+            continue
+        cid = row.get("consumer_id")
+        if cid == M4_CONSUMER:
+            status = "partial_real_binding_unavailable"
+            reason = "real_evaluator_binding_unavailable"
+        elif cid in historical:
+            snapshot = historical[cid]
+            status = {"failed": "historical_failed_not_reusable",
+                      "proposal_ready": "proposal_ready_planning_only",
+                      "stale": "stale_not_current"}.get(
+                          snapshot.get("status"), "unknown_not_current")
+            reason = snapshot.get("reason")
+        elif cid == "figure_only_rid":
+            status = "unsupported_figure_only"
+            reason = "rid_figure_only_not_a_service_consumer"
+        elif cid == "m2_rtk":
+            status = "not_invoked"
+            reason = "m2_used_only_via_m4_fixed_chain"
+        else:
+            status = "declared_not_evaluated"
+            reason = row.get("input_applicability")
+        model_consumers.append(dict(
+            consumer_id=cid,
+            method_ref=row.get("method_ref"),
+            method_version=row.get("method_version"),
+            supported_action_families=deepcopy(row.get("supported_action_families", [])),
+            status=status,
+            reason=reason,
+            historical_snapshot_status=(historical.get(cid, {}) or {}).get("status"),
+            historical_status_is_not_current_evaluation=True if cid in historical else False,
+        ))
+    service_consumers = {
+        "C:communication": dict(status="partial_supported_real_binding_unavailable",
+            consumers=["m4_joint", "p14_corridor", "p15_corridor_gap",
+                       "p16_site_plan", "p17_continuous"],
+            reason="real_evaluator_binding_unavailable"),
+        "S:rid_cooperative": dict(status="unsupported_figure_only",
+            consumers=["figure_only_rid"],
+            reason="rid_figure_only_not_a_service_consumer"),
+        "N:navigation_integrity_monitoring": dict(
+            status="unsupported_endpoint_new_action",
+            consumers=["p16_site_plan"],
+            reason="endpoint_new_action_unsupported"),
+        "S:radar_noncooperative": dict(status="disabled_unsupported",
+            consumers=[], reason="radar_disabled_unsupported"),
+    }
+    return dict(model_consumers=model_consumers, service_consumers=service_consumers)
+
+
+def _real_required_partition(scenario, admission):
+    route = scenario["route_scenario"]
+    inventory = deepcopy(admission.get("required_inventory", []))
+    included = deepcopy(admission.get("included_constraint_ids", []))
+    excluded = deepcopy(admission.get("excluded_constraints", []))
+    unconsumed = deepcopy(admission.get("unconsumed_requirements", []))
+    unconsumed_ids = [row.get("constraint_id") for row in unconsumed
+                      if type(row) is dict]
+    c1000 = [row.get("constraint_id") for row in inventory
+             if type(row) is dict and row.get("service_key") == "C:communication"
+             and row.get("max_gap_m") == 1000]
+    c45 = [row.get("constraint_id") for row in inventory
+           if type(row) is dict and row.get("service_key") == "C:communication"
+           and row.get("max_gap_m") == 45]
+    return dict(
+        inventory_count=len(inventory),
+        included_count=len(included),
+        excluded_count=len(excluded),
+        unconsumed_count=len(unconsumed),
+        partition_complete=(len(inventory) == len(included) + len(excluded)
+                            and not (set(included) & {row.get("constraint_id")
+                                 for row in excluded if type(row) is dict})),
+        inventory=inventory,
+        included_constraint_ids=included,
+        excluded_constraints=excluded,
+        unconsumed_requirements=unconsumed,
+        unconsumed_constraint_ids=unconsumed_ids,
+        c1000m=dict(constraint_ids=c1000,
+            status="excluded_and_unconsumed",
+            independent_of_45m=True),
+        c45m=dict(constraint_ids=c45,
+            status=("included_but_consumer_partial"
+                    if c45 else "not_present")),
+        required_consumer_missing_ids=unconsumed_ids,
+    )
+
+
+def _real_branch_identification(*, scenario, domain, preflight, partition,
+                                envelope, envelope_fingerprint=None):
+    route = scenario["route_scenario"]
+    declarations = route.get("snapshot_declarations") or {}
+    qualification = domain.get("conditional_qualification") or []
+    qualified = [row for row in qualification
+                 if row.get("status") == "conditional_qualified_under_policy"]
+    activation_policy = envelope.get("activation_policy") or {}
+    installed_status = envelope.get("installed_inventory_status")
+    installed_instances = envelope.get("installed_device_instances")
+    model_versions = route.get("model_versions") or {}
+    conflicts = []
+    declared_versions = {
+        row.get("consumer_id"): row.get("method_version")
+        for row in route.get("consumer_registry", []) if type(row) is dict
+    }
+    key_alias = {"p14_corridor": "p14", "p15_corridor_gap": "p15",
+                 "p16_site_plan": "p16", "p17_continuous": "p17",
+                 "m2_rtk": "m2_rtk", "m4_joint": "m4_joint"}
+    for cid, version in declared_versions.items():
+        expected = model_versions.get(key_alias.get(cid, cid))
+        if expected is not None and version != expected:
+            conflicts.append(dict(consumer_id=cid, declared=version,
+                                  frozen=expected))
+    return dict(
+        legal_source_not_executed=dict(
+            status="true",
+            detail="frozen source identity verified; execution_authorization=not_authorized",
+            preflight_status=preflight.get("status"),
+            scenario_fingerprint=scenario["scenario_fingerprint"]),
+        supported_consumer_present=dict(
+            status="partial",
+            consumers=["m4_joint", "p14_corridor", "p15_corridor_gap",
+                       "p16_site_plan", "p17_continuous"],
+            reason="real_evaluator_binding_unavailable"),
+        unsupported_service_present=dict(
+            status="true",
+            services=["S:rid_cooperative", "N:navigation_integrity_monitoring",
+                      "S:radar_noncooperative"],
+            reasons=["rid_figure_only_not_a_service_consumer",
+                     "endpoint_new_action_unsupported",
+                     "radar_disabled_unsupported"]),
+        required_consumer_missing=dict(
+            status="true" if partition["unconsumed_constraint_ids"] else "false",
+            constraint_ids=deepcopy(partition["unconsumed_constraint_ids"])),
+        activation_qualification_baseline_missing=dict(
+            status="true",
+            qualified_sites=len(qualified),
+            unknown_sites=len(qualification) - len(qualified),
+            activation_baseline=activation_policy.get("status"),
+            installed_inventory_status=installed_status,
+            installed_device_instances=installed_instances,
+            reason="no_real_activation_or_installation_evidence"),
+        model_input_version_or_fingerprint_conflict=dict(
+            status="detected" if conflicts else "not_detected",
+            conflicts=conflicts,
+            scenario_fingerprint=scenario["scenario_fingerprint"],
+            domain_fingerprint=domain["domain_fingerprint"],
+            envelope_fingerprint=envelope_fingerprint),
+        evaluated_real=dict(
+            status="false",
+            reason="real_evaluator_binding_unavailable",
+            model_call_status="not_invoked"),
+    )
+
+
+def evaluate_real_conditional_actions(*, frozen_inputs, actions,
+                                      consumer_registry) -> dict:
+    """Evaluate the real R0005 conditional domain without inventing results.
+
+    This is the explicit fixture-free branch.  It validates the solver envelope
+    and the real evaluation preconditions, then returns an evidence-scoped
+    refusal.  It never calls M4/M3/M2 for real inputs and never returns
+    ``evaluated_real``; the existing fixture branch below is untouched.
+    """
+    checked = _checked_frozen(frozen_inputs)
+    if checked["fixture"] is not None:
+        raise ValueError("real evaluation branch requires fixture-free inputs")
+    scenario, domain, route = checked["scenario"], checked["domain"], checked["route"]
+    native_m2 = checked["native_m2"]
+    consumers = _consumers(consumer_registry)
+    rows = bounded_json(actions)
+    if type(rows) is not list or not rows or any(type(row) is not dict for row in rows):
+        raise ValueError("non-empty action object list required")
+    errors = list(scenario.get("blockers", [])) + list(domain.get("blockers", []))
+    errors.extend(_consumer_errors(consumers, scenario, domain, route))
+    envelope = build_real_solver_envelope(scenario=scenario,
+        conditional_domain=domain)
+    verify_real_solver_envelope(envelope, scenario=scenario,
+        conditional_domain=domain)
+    preflight = preflight_real_domain(real_domain_envelope=envelope)
+    errors.extend(preflight.get("contract_blockers", []))
+    admission = _real_admission(scenario, domain, checked["evidence"], native_m2)
+    errors.extend(admission.get("blockers", []))
+    results, action_errors = _real_action_results(rows, domain)
+    errors.extend(action_errors)
+    sources, source_gaps, assumptions, assumption_gaps, evidence_errors = \
+        _evidence_classification(scenario, consumers, None)
+    errors.extend(evidence_errors)
+    partition = _real_required_partition(scenario, admission)
+    if not partition["partition_complete"]:
+        errors.append("real_required_partition_incomplete")
+    if partition["c1000m"]["constraint_ids"] and (
+            "REQ-C-GAP-1000" not in partition["unconsumed_constraint_ids"]):
+        errors.append("real_c1000m_cannot_be_cleared_by_45m")
+    blockers = set(str(item) for item in preflight.get("execution_blockers", []))
+    blockers.update(str(item) for item in admission.get("execution_blockers", []))
+    blockers.add("real_evaluator_binding_unavailable")
+    blockers.update(str(item) for item in errors)
+    contract_blockers = sorted(set(str(item) for item in errors))
+    status = "blocked" if contract_blockers else "evaluation_blocked"
+    navigation_gaps = ["m2_result_missing"]
+    unsupported = ["real_evaluator_binding_unavailable",
+                   "rid_figure_only_service_consumer",
+                   "endpoint_new_action_not_supported",
+                   "radar_disabled_unsupported"]
+    branch = _real_branch_identification(scenario=scenario, domain=domain,
+        preflight=preflight, partition=partition, envelope=envelope,
+        envelope_fingerprint=envelope.get("envelope_fingerprint"))
+    effects = [
+        dict(effect="real_domain_evaluation_blocked",
+             reasons=sorted(set(blockers))),
+        dict(effect="navigation_unknown", reasons=navigation_gaps),
+        dict(effect="complete_required_cns_not_claimed", status="unknown"),
+        dict(effect="real_evaluator_binding_unavailable"),
+    ]
+    consumer_matrix = _real_consumer_matrix(scenario)
+    return seal(dict(
+        schema_version=REAL_OUTPUT_SCHEMA,
+        evidence_track=TRACK,
+        evaluation_branch="real_domain",
+        status=status,
+        evaluation_status="not_evaluated",
+        execution_enabled=False,
+        execution_authorization="not_authorized",
+        persisted_to_project_state=False,
+        new_site_stage_unlocked=False,
+        final_eligible=False,
+        model_feasible=None,
+        optimal_proven=False,
+        fixture_only=False,
+        fixture=None,
+        model_call_status="not_invoked_real_domain_binding_unavailable",
+        scenario=dict(
+            scenario_id=route.get("scenario_id"),
+            version=route.get("version"),
+            scenario_fingerprint=scenario.get("scenario_fingerprint"),
+            source_bundle_fingerprint=scenario.get("source_bundle_fingerprint"),
+            computational_dependency_fingerprint=scenario.get(
+                "computational_dependency_fingerprint"),
+            evidence_track=TRACK),
+        scenario_fingerprint=scenario.get("scenario_fingerprint"),
+        domain_fingerprint=domain.get("domain_fingerprint"),
+        source_bundle_fingerprint=scenario.get("source_bundle_fingerprint"),
+        computational_dependency_fingerprint=domain.get(
+            "computational_dependency_fingerprint"),
+        source_state_sha256=(route.get("baseline_ref") or {}).get("sha256"),
+        action_set_fingerprint=domain.get("action_set_fingerprint"),
+        envelope_fingerprint=envelope.get("envelope_fingerprint"),
+        real_solver_preflight=dict(
+            status=preflight.get("status"),
+            contract_blockers=deepcopy(preflight.get("contract_blockers", [])),
+            execution_blockers=deepcopy(preflight.get("execution_blockers", [])),
+            execution_status=preflight.get("execution_status"),
+            search_started=preflight.get("search_started"),
+            action_count=preflight.get("action_count"),
+            conditional_site_count=preflight.get("conditional_site_count"),
+            parent_site_count=preflight.get("parent_site_count"),
+            action_site_count=preflight.get("action_site_count"),
+            final_eligible=preflight.get("final_eligible"),
+            preflight_fingerprint=preflight.get("preflight_fingerprint"),
+        ),
+        real_domain_status=preflight.get("status"),
+        branch_identification=branch,
+        consumer_capability_matrix=consumer_matrix,
+        consumer_identities=[
+            dict(consumer_id=M4_CONSUMER, method_ref=M4_METHOD_REF,
+                 method_version=M4_METHOD_VERSION, source="trusted_registry",
+                 model_call_status="not_invoked_real_domain_binding_unavailable"),
+            dict(consumer_id="m2_rtk", method_ref=RTK_METHOD_REF,
+                 method_version=RTK_VERSION, source="m4_fixed_chain",
+                 model_call_status="not_invoked"),
+            dict(consumer_id="m3_binding", method_ref=M3_METHOD_REF,
+                 method_version=M3_METHOD_VERSION, source="m4_dependent_chain",
+                 model_call_status="not_invoked"),
+        ],
+        required_partition=partition,
+        required_inventory=deepcopy(partition["inventory"]),
+        included_constraint_ids=deepcopy(partition["included_constraint_ids"]),
+        excluded_constraints=deepcopy(partition["excluded_constraints"]),
+        unconsumed_requirements=deepcopy(partition["unconsumed_requirements"]),
+        consumer_mapping={row.get("constraint_id"): deepcopy(row.get("consumer"))
+            for row in partition["inventory"] if type(row) is dict},
+        action_results=deepcopy(results),
+        applied_action_ids=[],
+        missing_action_ids=[row["action_id"] for row in results if not row["applied"]],
+        native_model_results={},
+        native_parent_chain={},
+        native_input_fingerprints={},
+        native_m2_result=deepcopy(native_m2),
+        native_m2_result_fingerprint=digest(native_m2) if native_m2 is not None else None,
+        m2_status=dict(status="not_invoked", navigation_status="unknown",
+            rtk_status=None, unknowns=["m2_result_missing"],
+            input_fingerprint=None),
+        m3_status=dict(status="not_invoked"),
+        conditional_effects=effects,
+        scoped_model_status="not_evaluated",
+        complete_required_cns_status="unknown",
+        complete_required_proof_status="not_proven",
+        navigation_status="unknown",
+        navigation_evidence_gaps=navigation_gaps,
+        unsupported_dimensions=sorted(set(unsupported)),
+        evidence_status="evidence_incomplete",
+        independent_verification_status="not_verified",
+        real_domain_proof_status="not_verified",
+        source_classification=sources,
+        assumption_classification=assumptions,
+        source_authentication_status="not_authenticated",
+        source_gaps=source_gaps,
+        assumption_gaps=assumption_gaps,
+        evidence_gaps=sorted(set(str(gap) for gap in
+            list(admission.get("evidence_gaps", [])) + source_gaps + assumption_gaps)),
+        real_qualification_snapshot=deepcopy(domain["real_qualification_snapshot"]),
+        activation_policy=deepcopy(envelope.get("activation_policy")),
+        installed_inventory_status=envelope.get("installed_inventory_status"),
+        installed_device_instances=deepcopy(envelope.get("installed_device_instances")),
+        installed_device_instances_status=envelope.get(
+            "installed_device_instances_status"),
+        radar_diagnostic_status="disabled_unsupported_not_present",
+        contract_blockers=contract_blockers,
+        blockers=sorted(blockers),
+    ), "evaluation_fingerprint")
+
+
+__all__ = ["evaluate_conditional_actions", "evaluate_real_conditional_actions",
+    "M4_METHOD_VERSION", "M4_METHOD_REF", "M3_METHOD_REF", "M3_METHOD_VERSION",
+    "RTK_METHOD_REF", "INPUTS_SCHEMA", "OUTPUT_SCHEMA", "REAL_OUTPUT_SCHEMA",
+    "REGISTRY_SCHEMA"]
