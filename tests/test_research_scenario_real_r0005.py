@@ -4,11 +4,18 @@
 本文件只读真实 ``projects/round38_cns_experiment_b/current_project.json``
 的顶层键切片，不整文件 json.load、不写回 State、不运行 solver/P14/P15/P16/P17。
 若工作树没有该真实状态文件，测试显式 skip，而不是用合成数据冒充真实输入。
+
+P2-A3-A：端点站址由规范化动作的 canonical ``node:`` 站址重建（不再读取规范化
+动作不存在的 ``takeoff_landing_site_id``），父域因此是 373 塔 + 2 端点 = 375。
+设置 ``CNS_RESEARCH_STRICT_ACCEPTANCE=1`` 时，缺真实输入或缺冻结产物即失败而不是
+skip；默认行为保持既有兼容语义。
 """
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -29,6 +36,16 @@ STATE_SHA = "25724dae269056e438181f96035ade5918e1b8bb7125eecb3e11bf6cef81ad9c"
 TOWER_SHA = "d722c111596acb4766bcc9d4cb5ce326f3a4b1f8364a5db871cb60220e2a411b"
 REQUIRED_SHA = "504bf87e5966da3753a2d44545dc08a29d21c04e42d07226885e86ef2a370aa4"
 SCENARIO_ID = "r0005-conditional-rev503-v1"
+# R0005 的两个端点在冻结 Scenario 中就是 N005/N006；父域端点身份必须由
+# 规范化动作的 canonical ``node:`` 站址重建，而不是假定源动作里有额外字段。
+ENDPOINT_REFS = ("N005", "N006")
+# P2-A1 冻结产物身份（scenario_identity.json / artifact_manifest.json）。
+P2A1 = Path(os.environ.get(
+    "CNS_P2A1_ARTIFACT_DIR",
+    r"D:\Projects\_cns_round38_global_recovery\p2a1_r0005_conditional_scenario_20261018"))
+STRICT_ACCEPTANCE = os.environ.get("CNS_RESEARCH_STRICT_ACCEPTANCE") == "1"
+FROZEN_SCENARIO_SHA = "a8b6c6c2db3d626b039187dde533096b1dd179158428e834d78c7b31721b46f5"
+FROZEN_PARENT_SHA = "58a2e209235678541f2626cb7682e85e7e3412c552f4eb7d2bb7242d01c0ef55"
 MODELS = dict(p14="1.4", p15="1.3", p16="2.3", p17="2.2")
 M4_VERSION = "p14:1.4;p15:1.3;p17:2.2;m2:rtk_joint_acceptance.v1"
 
@@ -67,8 +84,9 @@ def _real_state():
     if _REAL is not None:
         return _REAL
     if not STATE.exists():
+        if STRICT_ACCEPTANCE:
+            pytest.fail("strict acceptance requires the real rev503 ProjectState: " + str(STATE))
         pytest.skip("real rev503 ProjectState unavailable in this worktree")
-    import hashlib
     raw = STATE.read_bytes()
     actual = hashlib.sha256(raw).hexdigest()
     if actual != STATE_SHA:
@@ -299,6 +317,55 @@ def _route_evidence(state, route, path_sha):
     }
 
 
+def _endpoint_site_ids(normalized):
+    """从规范化动作的 canonical physical site 重建端点站址。
+
+    规范化动作没有 ``takeoff_landing_site_id`` 字段；端点身份只来自
+    ``physical_site_id`` 的 ``node:`` 前缀（源 ``distinct_site_id`` 的
+    ``takeoff_landing_site:`` 前缀经 ``canonical_physical_site_id`` 映射）。
+    端点动作无法映射到 ``node:`` 时显式失败，不得静默丢弃这 2 个站址。
+    """
+    endpoints = set()
+    for row in normalized["actions"]:
+        site = row.get("physical_site_id")
+        source = row.get("source_distinct_site_id")
+        if type(source) is str and source.startswith("takeoff_landing_site:"):
+            expected = "node:" + source[len("takeoff_landing_site:"):]
+            if site != expected:
+                raise ValueError("endpoint site is not canonical: " +
+                                 str(row.get("action_id")))
+        if type(site) is str and site.startswith("node:"):
+            endpoint = site[len("node:"):]
+            if not endpoint:
+                raise ValueError("endpoint identity is empty: " + str(row.get("action_id")))
+            endpoints.add(endpoint)
+    return sorted(endpoints)
+
+
+def _frozen_scenario():
+    """读取 P2-A1 冻结 Scenario，并按其 manifest 复核字节身份。
+
+    ``CNS_RESEARCH_STRICT_ACCEPTANCE=1`` 时缺产物视为失败；默认沿用本模块既有
+    语义（缺外部产物即 skip），避免把兼容性运行误报为验收通过。
+    """
+    path = P2A1 / "scenario.json"
+    manifest = P2A1 / "artifact_manifest.json"
+    if not path.exists() or not manifest.exists():
+        if STRICT_ACCEPTANCE:
+            pytest.fail("strict acceptance requires frozen P2-A1 artifacts at " + str(P2A1))
+        pytest.skip("frozen P2-A1 scenario artifact unavailable")
+    declared = json.loads(manifest.read_text(encoding="utf-8"))
+    expected = declared["artifacts"]["scenario.json"]["sha256"]
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        pytest.fail("frozen scenario.json does not match its manifest SHA: " + actual)
+    frozen = json.loads(path.read_text(encoding="utf-8"))
+    if frozen.get("scenario_fingerprint") != FROZEN_SCENARIO_SHA:
+        pytest.fail("frozen scenario_fingerprint changed: " +
+                    str(frozen.get("scenario_fingerprint")))
+    return frozen
+
+
 def build():
     state = _real_state()
     plan = state["plan"]
@@ -314,8 +381,10 @@ def build():
         plan_scope=plan_scope, scenario_id=SCENARIO_ID, state_sha256=STATE_SHA,
         state_locator=str(STATE), selected_action_ids=[
             row["action_id"] for row in plan.get("selected_actions") or []])
-    endpoints = sorted({row["takeoff_landing_site_id"] for row in normalized["actions"]
-                        if row.get("takeoff_landing_site_id")})
+    endpoints = _endpoint_site_ids(normalized)
+    if endpoints != sorted(ENDPOINT_REFS):
+        raise ValueError("endpoint identity drift: %r != %r"
+                         % (endpoints, list(ENDPOINT_REFS)))
     parent = build_real_parent_domain(towers=state["towers"]["items"], endpoints=endpoints,
                                       state_sha256=STATE_SHA, state_locator=str(STATE),
                                       source_ref="rev503:cns_corridor_site_plan")
@@ -337,7 +406,7 @@ def build():
         scenario_id=SCENARIO_ID, version="v1", evidence_track="engineering_research_conditional",
         region_bundle_ref=dict(bundle_id="zhoushan-rev503-r0005", version="v1"),
         baseline_ref=dict(revision=503, sha256=STATE_SHA, source_ref=str(STATE)),
-        route_id="R0005", route_ids=["R0005"], endpoint_refs=["N005", "N006"],
+        route_id="R0005", route_ids=["R0005"], endpoint_refs=list(ENDPOINT_REFS),
         path=route["path"], path_crs="OGC:CRS84",
         path_locator="rev503.operational_routes[R0005].path", path_kind="operational",
         path_sha256=path_sha, operating_layer_id="ALT-100", altitude_value=100,
@@ -570,3 +639,72 @@ def test_contract_is_non_executable_and_state_is_not_written(built):
 
 # 14. 旧 synthetic fixture 相关测试不回归：由既有 test_research_scenario*.py 覆盖。
 # 15. P1-B 消费端显式航线关系回归：由 tests/test_round38_f2_route_relation.py 覆盖。
+
+
+# 16. P2-A3-A：父域必须重建为 373 座塔 + N005/N006 两个端点 = 375 个不同站址
+def test_parent_domain_rebuilds_373_towers_plus_two_endpoints(built):
+    parent = built["parent"]
+    ledger = parent["site_ledger"]
+    assert parent["tower_count"] == 373
+    assert parent["endpoint_count"] == 2
+    assert len(ledger) == 375
+    site_ids = [row["physical_site_id"] for row in ledger]
+    assert len(set(site_ids)) == 375
+    endpoint_ids = [row["physical_site_id"] for row in ledger if row["site_type"] == "endpoint"]
+    assert endpoint_ids == ["node:N005", "node:N006"]
+    conditional_sites = {row["physical_site_id"] for row in built["normalized"]["actions"]}
+    assert len(conditional_sites) == 22
+    assert conditional_sites <= set(site_ids)
+    assert built["normalized"]["stats"]["physical_site_count"] == 22
+    assert built["normalized"]["stats"]["device_instance_count"] == 42
+    # 旧缺陷路径会在此处留下 conditional_site_missing；修复后必须为空。
+    assert built["domain"]["blockers"] == []
+    assert built["admission"]["static_contract_passed"] is True
+    assert built["admission"]["static_contract_blockers"] == []
+    assert built["admission"]["final_eligible"] is False
+
+
+# 17. P2-A3-A：端点身份只来自 canonical node: 站址，不再依赖不存在的字段
+def test_endpoint_identity_comes_from_canonical_node_sites(built):
+    actions = built["normalized"]["actions"]
+    endpoint_actions = [row for row in actions if row["physical_site_id"].startswith("node:")]
+    assert sorted(row["physical_site_id"] for row in endpoint_actions) == \
+        ["node:N005", "node:N006"]
+    assert all(row["physical_site_source"] == "distinct_site_id"
+               for row in endpoint_actions)
+    assert sorted(row["source_distinct_site_id"] for row in endpoint_actions) == \
+        ["takeoff_landing_site:N005", "takeoff_landing_site:N006"]
+    assert sorted(row["source_site_id"] for row in endpoint_actions) == ["N005", "N006"]
+    # 规范化动作没有 takeoff_landing_site_id 字段；不得再以它作为端点来源。
+    assert all("takeoff_landing_site_id" not in row for row in actions)
+    assert built["scenario"]["route_scenario"]["endpoint_refs"] == list(ENDPOINT_REFS)
+
+
+# 18. P2-A3-A：重建的父域与 42 动作身份必须与 P2-A1 冻结产物一致
+def test_rebuild_identity_matches_frozen_p2a1_artifact(built):
+    frozen_route = _frozen_scenario()["route_scenario"]
+    assert frozen_route["parent_real_domain_fingerprint"] == FROZEN_PARENT_SHA
+    assert built["parent"] == frozen_route["parent_real_domain"]
+    rebuilt_route = built["scenario"]["route_scenario"]
+    assert rebuilt_route["parent_real_domain_fingerprint"] == FROZEN_PARENT_SHA
+    assert rebuilt_route["action_contract_stats"] == frozen_route["action_contract_stats"]
+    rebuilt_actions = built["normalized"]["actions"]
+    frozen_actions = frozen_route["conditional_actions"]
+    assert len(rebuilt_actions) == len(frozen_actions) == 42
+    for rebuilt_row, frozen_row in zip(rebuilt_actions, frozen_actions):
+        differing = {key for key in set(rebuilt_row) | set(frozen_row)
+                     if rebuilt_row.get(key) != frozen_row.get(key)}
+        # 唯一允许的差异：evidence_ref 内嵌绝对 state 路径，冻结产物用仓库相对定位。
+        assert differing <= {"route_relation_evidence_ref"}, differing
+
+
+# 19. P2-A3-A：严格验收入口——真实冻结输入、SHA 与端点重建必须真实执行
+def test_strict_acceptance_real_inputs_are_present_and_hashed(built):
+    assert STATE.exists(), "strict acceptance requires " + str(STATE)
+    assert hashlib.sha256(STATE.read_bytes()).hexdigest() == STATE_SHA
+    assert built["state"]["revision"] == 503
+    frozen_route = _frozen_scenario()["route_scenario"]
+    assert frozen_route["parent_real_domain_fingerprint"] == FROZEN_PARENT_SHA
+    assert len(built["parent"]["site_ledger"]) == 375
+    assert built["domain"]["blockers"] == []
+    assert built["admission"]["final_eligible"] is False
