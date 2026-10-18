@@ -16,6 +16,7 @@ CNS result, and it never switches the project's default route planner.
 from __future__ import annotations
 
 from copy import deepcopy
+from .read_projection import scoped_identity
 
 from ..domain.layered_route import (
     COST_DOMAIN_IDS, active_cost_domains, cost_lambdas, cost_policy_fingerprint,
@@ -353,7 +354,9 @@ class LayeredRoutePlannerService:
         collection["items"] = projected
         collection["masks"] = {
             key: {
-                **deepcopy(mask),
+                # The normalizer already shares read-only cell detail. Readiness
+                # only adds a top-level applicability and must not copy all cells.
+                **mask,
                 "current_applicability": (
                     "current" if key == current_key and mask.get("status") != "stale" else "stale"
                 ),
@@ -1149,9 +1152,49 @@ class LayeredRoutePlannerService:
             except (TypeError, ValueError, RuntimeError):
                 return normalize_communication_planning_field(None)
         state = self.ensure_state()
-        return deepcopy(state.get("communication_planning_field"))
+        from ..domain.communication_planning_field import ALLOWED_PROVIDER_SOURCES
+        from ..domain.layered_route import stable_fingerprint
+        result = deepcopy(state.get("communication_planning_field"))
+        result["provider_options"] = [
+            {"id": name, "status": (state.get(name) or {}).get("status", "unknown"),
+             "source_fingerprint": stable_fingerprint(state.get(name) or {})}
+            for name in ALLOWED_PROVIDER_SOURCES
+        ]
+        return result
 
     def set_communication_field(self, payload):
+        if isinstance(payload, dict) and "provider_selection" in payload:
+            from ..domain.communication_planning_field import ALLOWED_PROVIDER_SOURCES
+            from ..domain.layered_route import stable_fingerprint
+            state = self.ensure_state()
+            provider = payload.get("provider_selection")
+            if provider not in ALLOWED_PROVIDER_SOURCES or payload.get("confirmed") is not True:
+                raise ValueError("必须显式确认允许的通信 provider")
+            if payload.get("expected_revision") != state.get("revision"):
+                raise ValueError("项目 revision 已变化，请重新核对")
+            source = state.get(provider) or {}
+            fingerprint = stable_fingerprint(source)
+            if payload.get("source_fingerprint") != fingerprint:
+                raise ValueError("provider 来源已变化，请重新核对")
+            from ..domain.source_audit import utc_now
+            evidence = payload.get("evidence")
+            if (not isinstance(evidence, list) or not evidence
+                    or any(not isinstance(item, dict) or item.get("type") != "user_supplied"
+                           or not str(item.get("note") or "").strip() for item in evidence)):
+                raise ValueError("必须提供人工选择依据与限制")
+            # A selection is intent only. No mapping or coverage facts are invented.
+            field = normalize_communication_planning_field(None)
+            field["provider"] = provider
+            field["provider_selection"] = {
+                "confirmed": True, "source_status": source.get("status", "unknown"),
+                "evidence": deepcopy(evidence), "confirmed_at": utc_now(),
+                "source_fingerprint": fingerprint, "revision": state["revision"] + 1,
+                "source": {"type": "user_confirmation", "origin": "human_adjudication"},
+            }
+            field["status_reason"] = "provider_selected_no_confirmed_per_grid_mapping"
+            state["communication_planning_field"] = field
+            self.session.save()
+            return self.snapshot()
         raw = payload.get("communication_planning_field", payload) if isinstance(payload, dict) else payload
         candidate = normalize_communication_planning_field(raw)
         state = self.ensure_state()
@@ -1232,6 +1275,7 @@ class LayeredRoutePlannerService:
         identity = self.current_identity()
         return identity["lane_key"], identity["candidate_fingerprint"]
 
+    @scoped_identity
     def current_identity(self):
         """Re-computed identity of the current ``(route, layer)`` lane.
 

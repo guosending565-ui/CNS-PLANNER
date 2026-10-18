@@ -1,6 +1,8 @@
 """Thin six-step workflow orchestrator with backward-compatible public methods."""
 
 from copy import deepcopy
+from contextlib import nullcontext
+from .read_projection import identity_projection_scope
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -126,13 +128,14 @@ _SNAPSHOT_SHARED_STATE_KEYS = (
     "planning_constraint_fields",
     # Towers Operational Integration V2：373 条派生事实，整体替换、只读消费。
     "tower_obstacle_profiles", "tower_colocation_candidates",
+    "cns_plan_review", "confirmed_cns_plan",
 )
 
 
 def _snapshot_state_value(key, value):
     """快照取值：小对象深拷贝（保持既有隔离语义），大结果只共享只读引用。"""
 
-    return value if key in _SNAPSHOT_SHARED_STATE_KEYS else deepcopy(value)
+    return value if key in _SNAPSHOT_SHARED_STATE_KEYS or key in PROJECTED_RESULT_KEYS else deepcopy(value)
 
 
 #: 结构指纹里"直接保留序列化文本"的最大长度（字符）。超过就退化为结构摘要，
@@ -318,7 +321,7 @@ def slim_layered_route_candidates(collection):
 
     if not isinstance(collection, dict):
         return collection
-    slim = deepcopy(collection)
+    slim = {key: deepcopy(value) for key, value in collection.items() if key != "masks"}
     masks = {}
     for key, mask in (collection.get("masks") or {}).items():
         if not isinstance(mask, dict):
@@ -405,6 +408,10 @@ _SNAPSHOT_DETAIL_ENDPOINTS = {
     "cns_gap_analysis_v2": "/api/cns-gap-analysis-v2",
     "radar_surveillance_layout": "/api/radar-surveillance-layout",
     "route_planning_experiments": "/api/route-experiments",
+    "cns_plan_review": "/api/cns-plan-review",
+    "confirmed_cns_plan": "/api/cns-plan-review",
+    "continuous_service_acceptability": "/api/cns-continuous-service",
+    "cns_continuous_service": "/api/cns-continuous-service",
 }
 
 #: 顶层容器**额外**的明细字段（只对这些结果生效，不做全局字段名匹配）。
@@ -426,17 +433,28 @@ def _strip_snapshot_detail(value, *, root_key=None, depth=0):
         extra = _SNAPSHOT_ROOT_DETAIL_FIELDS.get(root_key, ()) if depth == 0 else ()
         slim = {}
         for name, item in value.items():
-            if (name in _SNAPSHOT_DETAIL_FIELD_NAMES or name in extra) and isinstance(
+            if (name == "radar_surveillance_layout" and isinstance(item, dict)
+                    and root_key in ("cns_plan_review", "confirmed_cns_plan",
+                                     "continuous_service_acceptability", "cns_continuous_service")):
+                # A hypothetical P17/review embeds a complete historical Radar
+                # solve. Its scalar identity belongs in summaries; its panels
+                # and solver diagnostics are read from this parent's detail API.
+                slim[name] = {key: current for key, current in item.items()
+                              if not isinstance(current, (dict, list))}
+                slim[name]["detail_endpoint"] = _SNAPSHOT_DETAIL_ENDPOINTS[root_key]
+                continue
+            keep_p17_result = root_key == "cns_continuous_service" and depth == 0 and name == "result"
+            if not keep_p17_result and (name in _SNAPSHOT_DETAIL_FIELD_NAMES or name in extra) and isinstance(
                 item, (dict, list)
             ):
                 slim[f"{name}_count"] = len(item)
                 slim[f"{name}_detail"] = "artifact"
                 continue
-            slim[name] = _strip_snapshot_detail(item, depth=depth + 1)
+            slim[name] = _strip_snapshot_detail(item, root_key=root_key, depth=depth + 1)
         return slim
     if isinstance(value, list):
         # 列表本身保留（候选列表 / 记录列表是主界面需要的有界结构），逐项去明细。
-        return [_strip_snapshot_detail(item, depth=depth + 1) for item in value]
+        return [_strip_snapshot_detail(item, root_key=root_key, depth=depth + 1) for item in value]
     return value
 
 
@@ -844,7 +862,11 @@ class WorkflowService:
         cached = getattr(self, "_snapshot_cache", None)
         if cached is not None and cached[0] == cache_key:
             return dict(cached[1])
-        projected = self._project_snapshot()
+        # Reuse declared-dependency identities only within this read. Runtime
+        # bindings and later mutations must always be checked again.
+        with getattr(self, "mutation_lock", None) or nullcontext():
+            with identity_projection_scope():
+                projected = self._project_snapshot()
         self._snapshot_cache = (cache_key, projected)
         return dict(projected)
 
@@ -967,7 +989,7 @@ class WorkflowService:
             # normalization reference / provenance / source 诊断块由 /api/grid-risk-v2 提供。
             # 投影以只读引用复用服务快照，不再二次深拷贝上万 cell 的派生结果。
             result["grid_risk_v2"] = slim_grid_risk_v2(
-                self.risk_v2_service.result_snapshot()
+                self.risk_v2_service.result_snapshot(read_only=True)
             )
             result["risk_policy_v2"] = self.risk_v2_service.policy_snapshot()
             result["risk_framework_v2_readiness"] = self.risk_v2_service.readiness_snapshot()

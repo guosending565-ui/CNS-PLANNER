@@ -1,3 +1,5 @@
+import {createE2eConfirmation} from './e2e_confirmation.js';
+import {submitHeavyTask,taskTechnicalStatus} from '../tasks.js';
 import {escapeHtml,sourceModeText,statusText} from '../workflow/common.js';
 
 /**
@@ -42,8 +44,8 @@ export const CRS_DOSSIERS={
       {label:'恢复前权威 ProjectState',
        path:'D:\\Projects\\_cns_workspaces\\acceptance\\round37_b0\\CNS-PLANNER\\projects\\current_project.json',
        bytes:287890185,sha256:'51432a8b7a401fa314b723314188da08e9582684d8115247dd2b1017321910fa',
-       note:'revision 468；reference_landing_sites 98 条全部 pending_confirmation，'
-         +'crs_confirmation_provenance 不存在（证明从未对该 role 执行过确认）。'}
+       note:'历史恢复前基线 revision 468（不是当前状态）：reference_landing_sites 98 条当时全部 pending_confirmation，'
+         +'crs_confirmation_provenance 当时不存在。当前事实必须以上方实时状态表为准。'}
     ],
     pending_limits:[
       '16 条「估：」低置信度坐标；22 条无显式方向、23 条含异常字符 g。',
@@ -106,7 +108,33 @@ export function towerSourceCompatibilityNotice(data){
 }
 
 export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton,onProjectDirectorySelected}){
+  const e2eConfirmation=createE2eConfirmation({api,onApplied});
   let browseKind='basemap',browseParent='',selectedFile='';
+  const verifying=new Map(),finishedVerifications=new Set();
+  function verificationButtonState(){
+    document.querySelectorAll?.('[data-verify-source]').forEach(button=>{
+      const active=verifying.has(button.dataset.verifySource);
+      button.disabled=active||button.dataset.sourceConfigured==='false';
+      button.textContent=active?'验证进行中…':'验证数据源';
+    });
+  }
+  function receiveTasks(tasks){
+    for(const task of tasks||[]){
+      if(task.task_type!=='source_audit_verify')continue;
+      const role=String(task.scope_id||'').replace(/^source_audit:/,''),status=taskTechnicalStatus(task);
+      if(['queued','running','cancelling'].includes(status)){verifying.set(role,task.task_id);continue;}
+      if(verifying.get(role)!==task.task_id)continue;
+      verifying.delete(role);
+      if(finishedVerifications.has(task.task_id))continue;
+      finishedVerifications.add(task.task_id);
+      const result=task.release?.summary||task.result_summary||{};
+      $('settingsMessage').textContent=role+'：'+task.status_text+' · '+(result.elapsed_seconds??'—')+' 秒 · '
+        +(status==='succeeded'?(result.reused?'复用同 SHA、同算法版本与证据身份的拓扑结果':'本次完成校验'):(task.business_error?.text||task.message||'可重新提交'))
+        +'；SHA256 '+(result.previous_sha256||'无')+' → '+(result.sha256||'未产出')
+        +(result.state_unchanged?'；结果一致，revision 未变、未触发失效':'');
+    }
+    verificationButtonState();
+  }
   // Round38-SITE-1：CRS 人工确认门禁的会话草稿（只存在于内存，不写 state）。
   let crsRole='',crsSnapshot=null,crsFingerprintNote='';
   const healthLabel=status=>({ready:'正常',warning:'警告',error:'错误',checking:'检查中'}[status]||statusText(status));
@@ -151,8 +179,11 @@ export function createSourceCenter({$,api,onlineTiles,onApplied,actionButton,onP
       const sourceMode=item.source_mode||item.source_type;
       const metadata=[sourceModeText(sourceMode),item.version,item.quantity,item.unit,resolution,crs,verification].filter(Boolean).join(' · ');
       const trust=item.trust||{},audit=item.source_audit||{},reasons=(trust.reasons||[]).join(', ')||'无';
-      const actions='<div class="button-row"><button class="secondary compact" data-verify-source="'+escapeHtml(item.id)+'" '+(item.path?'':'disabled')+'>验证数据源</button>'
+      const verificationKey=audit.role||item.id;
+      const actions='<div class="button-row"><button class="secondary compact" data-source-configured="'+Boolean(item.path)+'" data-verify-source="'+escapeHtml(verificationKey)+'" '+(item.path&&!verifying.has(verificationKey)?'':'disabled')+'>'+(verifying.has(verificationKey)?'验证进行中…':'验证数据源')+'</button>'
         +(item.id==='reference_landing_sites'||item.id==='reference_routes'?'<button class="secondary compact" data-confirm-crs="'+escapeHtml(item.id)+'" title="打开人工确认门禁：阅读裁定依据、核对当前状态、显式确认后执行一次写入">确认 CRS…</button>':'')
+        +(['buildings','building_grid'].includes(item.id)?'<button class="secondary compact" data-e2e-confirm="'+escapeHtml(item.id)+'">确认建筑 CRS…</button>':'')
+        +(item.id==='devices'?'<button class="secondary compact" data-e2e-confirm="communication_provider">选择通信 provider…</button>':'')
         +(item.id==='reference_routes'?'<button class="secondary compact" data-preview-routes>预览并导入航线</button>':'')
         +(item.id==='towers'?'<button class="secondary compact" data-import-towers '+(item.path?'':'disabled')+'>导入铁塔站址</button>':'')
         +'</div>';
@@ -186,9 +217,17 @@ const payload=()=>({
     actionButton('applySources',async()=>{const data=await api('/api/data-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())});onApplied(data);$('settingsMessage').textContent='已保存并重新验证数据源';});
     $('checkOnline').onclick=checkOnline;
     document.querySelectorAll('[data-browse]').forEach(button=>button.onclick=()=>openBrowser(button.dataset.browse,$(button.dataset.browse+'Path').value));
+    document.addEventListener('cns:tasks',event=>receiveTasks(event.detail));
     document.addEventListener('click',async event=>{
+      const e2e=event.target.closest?.('[data-e2e-confirm]');
+      if(e2e){try{await e2eConfirmation.open(e2e.dataset.e2eConfirm);}catch(error){$('settingsError').textContent=error.message;}return;}
       const verify=event.target.closest?.('[data-verify-source]');
-      if(verify){const role=verify.dataset.verifySource;try{const freshState=await api('/api/state');onApplied(freshState);await api('/api/source-audits/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role})});const refreshedState=await api('/api/state');onApplied(refreshedState);$('settingsMessage').textContent='数据源 SHA-256 验证完成';}catch(error){$('settingsError').textContent=error.message;}return;}
+      if(verify){const role=verify.dataset.verifySource;if(verify.disabled||verifying.has(role))return;
+        verifying.set(role,'submitting');verificationButtonState();$('settingsError').textContent='';
+        $('settingsMessage').textContent='正在提交身份与深度校验。SHA256 将读取全部文件；结构/null/高度统计也可能扫描全表。拓扑校验在独立进程执行，可在后台任务面板查看阶段与取消。';
+        try{const submitted=await submitHeavyTask(api,'/api/source-audits/verify',{role});verifying.set(role,submitted.task_id);await globalThis.__CNS_TASK_CENTER__?.refresh();}
+        catch(error){verifying.delete(role);$('settingsError').textContent=error.message;}
+        finally{verificationButtonState();}return;}
       if(event.target.closest?.('[data-import-towers]')){try{const freshState=await api('/api/state');onApplied(freshState);const data=await api('/api/towers/import',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});onApplied(data);const towers=data?.workflow?.towers||{};$('settingsMessage').textContent='已导入真实通信铁塔站址 '+(towers.count||0)+' 个（只读参考数据；不进入规划、风险与覆盖计算）';}catch(error){$('settingsError').textContent=error.message;}return;}
       const crs=event.target.closest?.('[data-confirm-crs]');
       if(crs){await openCrsDialog(crs.dataset.confirmCrs);return;}
@@ -233,6 +272,7 @@ const payload=()=>({
     const registry=(audit.file_name||audit.local_path_ref||'—')+' · '+(audit.status||'—');
     const items=(collection.items||[]).length;
     const pending=(collection.items||[]).filter(item=>item.crs_status!=='confirmed').length;
+    const confirmedAll=source.confirmed===true&&pending===0&&items>0;
     const valueText=value=>(value===null||value===undefined||value==='')?'未设置（null）':String(value);
     const projectFile=String(((state||{}).project_storage||{}).file||'—');
     const onAuthoritative=projectFile.toLowerCase()===AUTH_PROJECT_FILE.toLowerCase();
@@ -242,6 +282,10 @@ const payload=()=>({
       +'<tr><th>role</th><td>'+escapeHtml(role)+'</td></tr>'
       +'<tr><th>记录数</th><td>'+escapeHtml(String(collection.count??items??'—'))+' 条 · 容器 items '+escapeHtml(String(items))+' 条 · 状态 '+escapeHtml(collection.status||'—')+'</td></tr>'
       +'<tr><th>当前来源坐标系</th><td>'+escapeHtml(valueText(source.value))+' · '+escapeHtml(source.status||'—')+' · confirmed '+escapeHtml(String(source.confirmed===true))+'</td></tr>'
+      +'<tr><th>当前事实</th><td class="'+(confirmedAll?'crs-ok':'crs-warn')+'">'
+        +(confirmedAll
+          ? escapeHtml(String(items)+' 条已确认 '+valueText(source.value))
+          : escapeHtml(String(pending)+' / '+String(items)+' 条仍待确认'))+'</td></tr>'
       +'<tr><th>表示坐标系</th><td>'+escapeHtml(valueText(representation.value))+' · '+escapeHtml(representation.status||'—')+'</td></tr>'
       +'<tr><th>待确认记录</th><td><b>'+escapeHtml(String(pending))+'</b> / '+escapeHtml(String(items))+'</td></tr>'
       +'<tr><th>登记数据源</th><td>'+escapeHtml(registry)+'</td></tr>'

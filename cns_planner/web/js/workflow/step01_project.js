@@ -26,6 +26,8 @@ export const PROJECT_OPEN_STATE_TEXT={
   empty:'尚未选择项目目录。',
   selected:'已选择项目目录，尚未打开项目。',
   opening:'正在打开项目…',
+  //: A0-OBS-02：服务器已回执成功、浏览器侧快照仍在读取。与"正在打开项目…"严格区分。
+  activated:'当前项目已在服务器激活（正在读取项目快照数据）',
   opened:'项目已打开',
   failed:'打开项目失败',
 };
@@ -33,6 +35,9 @@ export const PROJECT_OPEN_STATE_TEXT={
 /** 打开过程的可见阶段文案（与 main.js 的 PROJECT_OPEN_STAGES 一一对应）。 */
 export const PROJECT_OPEN_STAGE_TEXT={
   opening:'正在切换服务器 active project…',
+  //: A0-OBS-02：`POST /api/project/open` **已经回执**、服务器 active project 已切换成功，
+  //: 此后只剩前端落地快照。再宣称"正在切换服务器 active project"是不真实的。
+  activating:'服务器 active project 已切换，正在安装项目状态与工作流快照…',
   applying:'正在安装项目状态与工作流快照…',
   refreshing:'正在校准会话令牌与项目存储位置…',
   map:'正在初始化地图视图与工作区图层…',
@@ -48,6 +53,20 @@ export const PROJECT_OPEN_STAGE_TEXT={
 export const PROJECT_OPEN_SAME_STAGE_TEXT={
   opening:'正在确认当前项目…',
   refreshing:'正在刷新当前项目状态…',
+  opened:'当前项目已激活',
+};
+
+/**
+ * A0-OBS-02：服务器**已经回执**、但浏览器侧的完整快照仍在读取时的文案。
+ *
+ * 为什么必须与"正在打开项目…/正在切换服务器 active project…"分开：项目在服务器上
+ * 激活成功与前端完整加载落地是**两个独立状态**。激活成功后继续显示"正在切换服务器
+ * active project"是不真实的（服务器上一次都没再切换），而把加载标志直接删掉又会把
+ * 真实失败伪装成成功。因此这里如实说"服务已激活 + 正在读取项目快照"，并在超时后
+ * 落到明确失败结论。
+ */
+export const PROJECT_OPEN_LOADING_TEXT={
+  activated:'当前项目已在服务器激活；正在读取项目快照数据（服务正在处理）…',
   opened:'当前项目已激活',
 };
 
@@ -105,8 +124,13 @@ export function projectOpenPanel({getStep,draft=''}={}){
   const statusKey=openStatusKey();
   const statusText=PROJECT_OPEN_STATE_TEXT[statusKey]||'';
   const buttonLabel=busy?'正在打开…':(isCurrent&&savedIdentity?'确认当前项目':'打开项目');
-  const stageText=(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT:PROJECT_OPEN_STAGE_TEXT)[projectOpen.stage]
-    ||(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT.opening:PROJECT_OPEN_STAGE_TEXT.opening);
+  // A0-OBS-02：整面板重渲染走的是同一套事实。服务器已回执（成功）后，阶段行必须与
+  // 「正在打开项目…… / 正在切换服务器 active project……」区分开，否则每次 main.js 的
+  // 重渲染都会把真实进度又写回"正在切换服务器"，用户就永远看不到收口结论。
+  const stageText=projectOpen.serverResponded
+    ?PROJECT_OPEN_LOADING_TEXT.activated
+    :((projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT:PROJECT_OPEN_STAGE_TEXT)[projectOpen.stage]
+      ||(projectOpen.sameProject?PROJECT_OPEN_SAME_STAGE_TEXT.opening:PROJECT_OPEN_STAGE_TEXT.opening));
   const facts=(statusKey==='opened'?(projectOpen.facts||step.facts||null):null);
   const rows=[
     '<div class="project-open-status" id="projectOpenStatus" data-state="'+statusKey+'" aria-live="polite">'
@@ -116,6 +140,7 @@ export function projectOpenPanel({getStep,draft=''}={}){
       +((statusKey==='opened'&&facts)
         ?'<small>项目名称：'+escapeHtml(facts.name||'未命名项目')+'</small>'
           +'<small>项目目录：'+escapeHtml(projectOpen.displayDirectory||savedDirectory||'（服务器自动恢复项目）')+'</small>'
+          +(facts.revision!=null?'<small>项目 revision：'+escapeHtml(facts.revision)+'</small>':'')
           +'<small>工作区：'+escapeHtml(workspaceFactText(facts))+'</small>'
           +'<small>标准规划网格：'+escapeHtml(gridFactText(facts))+'</small>'
         :'')
@@ -382,12 +407,16 @@ let _draftProjectDirectory='';
 let _serverProjectDirectory='';
 /** 打开项目是否正在进行。必须是模块级：面板重渲染不能让"正在打开…"凭空消失。 */
 let _projectOpenInFlight=false;
-let projectOpen={busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null};
+let projectOpen={busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null,serverResponded:false};
 
 /** 目录选择器的选择结果（壳层调用）：只写 draft，绝不打开项目。 */
 export function setProjectDirectoryDraft(directory){
   const value=String(directory||'').trim();
-  if(value)_draftProjectDirectory=value;
+  if(!sameProjectPath(value,currentProjectDirectory())&&!_projectOpenInFlight){
+    projectOpen.ok=false;projectOpen.message='';projectOpen.facts=null;
+    projectOpen.identity='';projectOpen.displayDirectory='';projectOpen.serverResponded=false;
+  }
+  _draftProjectDirectory=value;
   return _draftProjectDirectory;
 }
 
@@ -412,16 +441,48 @@ function draftDirectory(){return currentProjectDirectory();}
  * 当前项目打开状态的**唯一**判读（面板与增量刷新共用，避免两处各写一套 if/else）。
  *
  * 事实优先级：
- *   busy（模块级在途标志） > 服务器返回的结论（message/ok） > draft 是否存在。
+ *   busy（模块级在途标志） > 服务器返回的明确成功 / 失败结论 > draft 是否存在。
  */
 function openStatusKey(){
-  if(_projectOpenInFlight)return 'opening';
-  if(projectOpen.message)return projectOpen.ok?'opened':'failed';
+  if(_projectOpenInFlight)return projectOpen.serverResponded===true?'activated':'opening';
+  if(projectOpen.ok===true&&sameProjectPath(draftDirectory(),projectOpen.displayDirectory))return 'opened';
+  if(projectOpen.message)return 'failed';
   return draftDirectory()?'selected':'empty';
 }
 
+/**
+ * A0-OBS-02：状态提示区的**唯一**渲染入口。
+ *
+ * 修复前的真实缺陷：调用方（`bind()` 与「打开项目」的 onclick）在绑定那一刻就把
+ * `#projectOpenStatus` 抓成闭包变量 `statusNode`。而 main.js 在打开过程的**每个阶段**
+ * 都会 `renderWorkflow()` —— 面板 HTML 被整体替换，那个旧节点随即脱离文档。
+ * 于是打开结束时写进旧节点的「项目已打开」永远不会出现在页面上，用户看到的是
+ * **新一轮渲染重新生成的默认文案**："正在打开项目…… / 正在切换服务器 active project……"。
+ * 即使流程已经成功收口（绿色成功提示已出现），状态区仍长期停在"打开中"。
+ *
+ * 因此这里**每次调用都按 id 重新取当前文档中的节点**：跨重渲染存活的是模块级
+ * `projectOpen` 状态，而不是某一次渲染的 DOM 引用。传入 node 只是"优先用它"的提示。
+ */
+function liveOpenStatusNode(node){
+  const byId=typeof document!=='undefined'&&document.getElementById
+    ?document.getElementById('projectOpenStatus'):null;
+  return byId||(node&&node.isConnected!==false?node:null)||null;
+}
+
+/**
+ * A0-OBS-02：上一次成功收口的记录，只从**当前文档中的状态节点**读取。
+ *
+ * 它承载 `__projectOpenStep`（identity / 项目目录 / 业务事实），供"确认当前项目"是否需要
+ * 走轻量路径的判据使用。绑定时的闭包节点早已被重渲染替换，因此这里也必须按 id 现取。
+ */
+function openStepRecord(){
+  const node=liveOpenStatusNode();
+  return (node&&node.__projectOpenStep)||{};
+}
+
 /** 只刷新状态提示区，不重建整个面板（避免输入焦点与滚动位置丢失）。 */
-function renderOpenStatus(node){
+function renderOpenStatus(target){
+  const node=liveOpenStatusNode(target);
   if(!node)return;
   const saved=node.__projectOpenStep||{};
   const busy=_projectOpenInFlight||saved.busy===true;
@@ -429,11 +490,18 @@ function renderOpenStatus(node){
   node.dataset.state=statusKey;
   const lines=[];
   lines.push('<b>'+escapeHtml(PROJECT_OPEN_STATE_TEXT[statusKey]||'')+'</b>');
-  if(busy)lines.push('<small>'+escapeHtml(PROJECT_OPEN_STAGE_TEXT[projectOpen.stage]||PROJECT_OPEN_STAGE_TEXT.opening)+'</small>');
+  if(busy){
+    // A0-OBS-02：服务器已回执（成功）之后，阶段文案立刻从"切换服务器 active project"
+    // 切换成"服务器已激活 + 正在读取快照"，让用户看到的进度与真实状态一致。
+    lines.push('<small>'+escapeHtml(projectOpen.serverResponded
+      ?PROJECT_OPEN_LOADING_TEXT.activated
+      :(PROJECT_OPEN_STAGE_TEXT[projectOpen.stage]||PROJECT_OPEN_STAGE_TEXT.opening))+'</small>');
+  }
   if(statusKey==='failed'&&projectOpen.message)lines.push('<small class="project-open-error">'+escapeHtml(projectOpen.message)+'</small>');
-  if(statusKey==='opened'&&projectOpen.facts){
+  if((statusKey==='opened'||statusKey==='activated'||busy)&&projectOpen.facts){
     lines.push('<small>项目名称：'+escapeHtml(projectOpen.facts.name||'未命名项目')+'</small>');
     lines.push('<small>项目目录：'+escapeHtml(projectOpen.displayDirectory||saved.directory||'（服务器自动恢复项目）')+'</small>');
+    if(projectOpen.facts.revision!=null)lines.push('<small>项目 revision：'+escapeHtml(projectOpen.facts.revision)+'</small>');
     lines.push('<small>工作区：'+escapeHtml(workspaceFactText(projectOpen.facts))+'</small>');
     lines.push('<small>标准规划网格：'+escapeHtml(gridFactText(projectOpen.facts))+'</small>');
   }
@@ -452,7 +520,7 @@ export function bind(c){
   const pathInput=c.$('projectPath');
   const openButton=c.$('openProject');
   const statusNode=c.$('projectOpenStatus');
-  projectOpen=Object.assign({busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null,sameProject:false},projectOpen||{});
+  projectOpen=Object.assign({busy:false,ok:false,message:'',stage:'',identity:'',displayDirectory:'',facts:null,sameProject:false,serverResponded:false},projectOpen||{});
   // 「正在打开…」必须跨重渲染存活：main.js 会在每个阶段重绘面板（用户要求看得见进度）。
   projectOpen.busy=_projectOpenInFlight;
   // 输入框显示 draft（用户刚选的 / 刚输入的）优先；否则显示服务器当前项目目录。
@@ -474,7 +542,7 @@ export function bind(c){
   // 「选择…」的回写由目录对话框负责；这里只跟踪用户对输入框的显式编辑，
   // 保证 draft 始终等于输入框里的真实值（粘贴路径也算数）。
   if(pathInput){
-    const onDraft=()=>{_draftProjectDirectory=pathInput.value;syncButtonLabel();};
+    const onDraft=()=>{setProjectDirectoryDraft(pathInput.value);renderOpenStatus();syncButtonLabel();};
     pathInput.oninput=onDraft;pathInput.onchange=onDraft;
     pathInput.onkeydown=event=>{
       if(event.key!=='Enter')return;
@@ -489,20 +557,29 @@ export function bind(c){
       _draftProjectDirectory=directory;
       _projectOpenInFlight=true;
       projectOpen.ok=false;projectOpen.message='';projectOpen.stage='opening';
+      // A0-OBS-02：**不**缓存绑定时的 `statusNode`。打开过程每个阶段都会 renderWorkflow()
+      // 重绘面板，旧节点必然脱离文档；状态因此只能落在模块级 projectOpen + 当前 DOM 节点上。
+      projectOpen.serverResponded=false;
+      projectOpen.identity='';projectOpen.displayDirectory=directory;projectOpen.facts=null;
       // A2：先按服务器当前 active 项目判据给阶段文案定性。真正裁决仍在 main.js /
       // 后端幂等保护（这里只决定"正在确认当前项目"还是"正在切换服务器 active project"）。
-      const openedStep=(statusNode&&statusNode.__projectOpenStep)||{};
+      const openedStep=openStepRecord();
       projectOpen.sameProject=Boolean(openedStep.identity)
         &&sameProjectPath(directory,openedStep.directory);
       syncButtonLabel();
-      renderOpenStatus(statusNode);
+      renderOpenStatus();
       let result=null;
       try{
         // 唯一的项目安装调用链（实现在 main.js）：只转发阶段，不复制任何安装逻辑。
         // 每个阶段 main.js 都会 renderWorkflow() 重绘面板，因此这里不再直接改 DOM。
         result=await c.openProject(directory,{onStage:stage=>{
           projectOpen.stage=stage;
-          renderOpenStatus(statusNode);
+          // A0-OBS-02：`activating` 及之后都表示项目切换请求**已经回执**（main.js 在这一步
+          // 之后只剩"落地快照"）。从此刻起阶段文案必须如实说"服务已激活 + 正在读快照"，
+          // 而不再宣称仍在切换服务器 active project。
+          if(stage==='activating'||stage==='applying'
+            ||stage==='refreshing'||stage==='map')projectOpen.serverResponded=true;
+          renderOpenStatus();
         }});
       }catch(error){
         // 唯一调用链内部已把失败转成中文结论；这里只兜底"连调用都没成功"的极端情况。
@@ -514,11 +591,14 @@ export function bind(c){
       projectOpen.message=result?.ok?'':String(result?.error?.message||'打开项目失败');
       projectOpen.identity=String(result?.identity||'');
       projectOpen.displayDirectory=result?.ok?directory:'';
-      projectOpen.facts=result?.facts||null;
-      if(statusNode)statusNode.__projectOpenStep={busy:false,identity:projectOpen.identity,
+      projectOpen.facts=result?.ok&&result?.facts
+        ?{...result.facts,revision:result.facts.revision??c.flow?.()?.revision}:null;
+      // 收口记录必须写到**当前**文档中的节点（旧节点已随重渲染失效）。
+      const finalNode=liveOpenStatusNode();
+      if(finalNode)finalNode.__projectOpenStep={busy:false,identity:projectOpen.identity,
         directory:projectOpen.displayDirectory,facts:projectOpen.facts};
       // 成功 / 失败都必须落到可见结论（服务器事实，不猜）。
-      renderOpenStatus(statusNode);
+      renderOpenStatus(finalNode);
       syncButtonLabel();
     };
   }

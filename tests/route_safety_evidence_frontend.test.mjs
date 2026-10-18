@@ -147,7 +147,7 @@ test('the search parameter payload posts the exact algorithm selection shape',()
     thetaFlow()).searchParameters);
   assert.equal(payload.algorithm_type,'layered_route_planner');
   assert.equal(payload.algorithm_id,THETA_STAR_V2_ALGORITHM_ID);
-  assert.equal(payload.version,'2.0');
+  assert.equal(payload.version,'2.1');
   assert.equal(payload.parameters.heading_bin_count,12);
   assert.equal(payload.parameters.theta_min_deg,2.5);
   assert.equal(payload.parameters.max_expanded_labels,null);

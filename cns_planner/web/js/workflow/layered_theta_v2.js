@@ -1,4 +1,4 @@
-import {escapeHtml,statusBadge,wbBlock,wbDisclosure,advancedAuditNote} from './common.js';
+import {escapeHtml,statusBadge,statusText,wbBlock,wbDisclosure,advancedAuditNote} from './common.js';
 import {
   LAYERED_CANDIDATE_LABEL,THETA_STAR_V2_ALGORITHM_ID,THETA_STAR_V2_ALGORITHM_VERSION,
   THETA_STAR_V2_BLOCKED_NOTE,layeredAlgorithmId,
@@ -95,7 +95,7 @@ const LEGACY_V1_BLOCKER_CODES=new Set([
 //: 因此 Theta* V2 的 blockers=0 时它仍可能显示 raw=blocked。这里只澄清**文案**：
 //: 那一行是 legacy V1 的原始状态，不是 Theta* V2 的 gate；后端 readiness 语义不变。
 export const THETA_STAR_V2_LEGACY_READINESS_NOTE='「准备状态」一行是后端的原始值：'
-  +'它同时承载旧版分层规划器的门禁（例如旧版代价策略的 λ），**不是**正式航路规划本身的门禁。'
+  +'它同时承载旧版分层规划器的门禁（例如旧版代价策略的 λ），不是正式航路规划本身的门禁。'
   +'即使它显示"已阻断"，只要下方「正式航路规划阻塞项」为空，正式链条本身就没有阻塞项。';
 
 const finite=value=>Number.isFinite(value);
@@ -545,8 +545,8 @@ export function candidateModel(candidate,isCurrent){
       ?Number(candidate.traversed_unknown_cell_count)
       :(finite(candidate?.unknown_constraint_count)?Number(candidate.unknown_constraint_count):0),
     containsUnknownConstraints:candidate?.contains_unknown_constraints===true,
-    operationalApplicability:text(candidate?.operational_applicability||'current'),
-    operationalAdoptionAllowed:candidate?.operational_adoption_allowed!==false,
+    operationalApplicability:!isCurrent||candidate?.status==='stale'?'stale':text(candidate?.operational_applicability||'unknown'),
+    operationalAdoptionAllowed:isCurrent&&candidate?.status!=='stale'&&candidate?.operational_adoption_allowed===true,
     unknownConstraintPolicy:candidate?.unknown_constraint_policy||null,
     // Terminal status projection (Phase 3.5): ``no_path`` (搜索完整但无解) and
     // ``search_incomplete`` (搜索预算耗尽，可达性未证明) must never be shown as the same thing.
@@ -861,11 +861,17 @@ function readinessSection(model){
       +blockerRows(model.blockers.legacyV1,'没有旧版 λ 阻塞项。')
     :'';
   return wbBlock(THETA_STAR_V2_PANEL_TITLE,
+    // A3-UI-01：``advancedAuditNote`` 只接受**纯文本**（内部走 escapeHtml）。
+    // 之前把 <code> 与 statusBadge 的 HTML 拼进它的入参，页面上就会显示
+    // 字面量标签；现在说明文本保持纯文本，标点与状态徽章作为同级 HTML 放在外面。
     '<div class="parameter-note">'+advancedAuditNote(
-      '算法标识 '+'<code>'+escapeHtml(short(model.algorithmId))+'</code>'
-      +'@'+escapeHtml(short(model.algorithmVersion||model.expectedAlgorithmVersion))
-      +' · 准备状态 '+statusBadge(model.thetaStatus)+'。'
-      +'本面板只在文档化算法标识匹配时显示（可见性完全由后端的算法选择决定）。')+'</div>'
+      '算法标识 '+short(model.algorithmId)
+      +'@'+short(model.algorithmVersion||model.expectedAlgorithmVersion)
+      +' · 准备状态 '+statusText(model.thetaStatus)+'。'
+      +'本面板只在文档化算法标识匹配时显示（可见性完全由后端的算法选择决定）。')
+    +'<div><code>'+escapeHtml(short(model.algorithmId))+'</code>'
+    +'@'+escapeHtml(short(model.algorithmVersion||model.expectedAlgorithmVersion))
+    +' '+statusBadge(model.thetaStatus)+'</div></div>'
     +'<div class="parameter-note">'+escapeHtml(THETA_STAR_V2_BLOCKED_NOTE)+'</div>'
     +'<div class="parameter-note" data-theta-v2-legacy-readiness-note="true">'
     +escapeHtml(THETA_STAR_V2_LEGACY_READINESS_NOTE)+'</div>'
@@ -1246,7 +1252,7 @@ function candidateSection(model){
       +(shown.containsUnknownConstraints?'（provisional_only）':''))
     +fieldRow('operational_adoption_allowed','可否发布为运行航路',
       (shown.operationalAdoptionAllowed===true&&!shown.containsUnknownConstraints)
-        ?'未发现证据不足阻断' : '不可（含证据不足单元）')
+        ?'未发现证据不足阻断' : (shown.containsUnknownConstraints?'不可（含证据不足单元）':'不可（尚未取得当前发布授权）'))
     +'</div>'
     +(shown.containsUnknownConstraints
       ?'<div class="parameter-note constraint-provisional-notice" data-provisional="enabled">'

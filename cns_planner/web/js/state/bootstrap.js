@@ -157,7 +157,10 @@ export async function bootstrapProjectState({
     serverState = await withTimeout(Promise.resolve(api('/api/state')), {...budget, label: '读取服务器状态'});
   } catch (error) {
     const timeout = error?.name === TIMEOUT_ERROR_NAME;
-    onError('无法连接本机地图服务：' + (error?.message || error));
+    onError(timeout
+      ? '本机地图服务正在启动或项目快照读取超时：' + (error?.message || error)
+        + '；服务可能仍在加载，请稍候后刷新。'
+      : '无法连接本机地图服务：' + (error?.message || error));
     return {ok: false, state: null, restored: false, attempted: false, reason: 'state_failed', error, timeout};
   }
   if (!serverState || typeof serverState !== 'object') {

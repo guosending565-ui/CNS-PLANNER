@@ -215,6 +215,14 @@ class LayeredOperationalAdoptionService:
         payload = payload if isinstance(payload, dict) else {}
         if payload.get("confirmed") is not True:
             raise ValueError("Layered operational Apply 必须显式 confirmed=true")
+        supplied_preview = payload.get("preview_fingerprint")
+        if supplied_preview not in (None, ""):
+            fresh_preview = self.preview({
+                "validation_id": payload.get("validation_id"),
+                "replace_existing": payload.get("replace_existing") is True,
+            })
+            if str(supplied_preview) != str(fresh_preview.get("preview_fingerprint")):
+                raise ValueError("preview fingerprint 在 Preview 后发生变化，拒绝 Apply")
         projection = self.projection(payload)
         if projection.get("status") != "ready":
             raise ValueError(

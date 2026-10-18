@@ -139,6 +139,21 @@ export function bindShell(options){
     }catch(exc){panelError(exc.message);}
   });
   $('saveProjectTop').onclick=()=>saveProject();
+  // A7-UI-01：二维主界面的三维入口。**只**在新标签打开既有 `/visualization-3d.html`：
+  // 不在本页新建 Viewer 实例、不传任何参数、不发任何写请求、不触发规划计算。
+  // 三维页自己通过只读接口读取"当前项目"，因此与二维页共用同一个当前项目。
+  const viewer3dButton=$('openViewer3d');
+  if(viewer3dButton)viewer3dButton.onclick=()=>{
+    const opened=window.open('/visualization-3d.html','_blank');
+    // 弹窗被拦截时给出可读结论，绝不静默什么都不发生；二维地图状态保持不变。
+    if(!opened){
+      panelError('三维 Viewer 未能打开（浏览器拦截了新标签）；请允许本站弹出窗口后重试。');
+      return;
+    }
+    // 反向断言式安全：新页面不得通过 window.opener 反向操作二维页。
+    try{opened.opener=null;}catch(_){/* 跨源/已关闭时无需处理 */}
+    try{opened.focus();}catch(_){/* 聚焦失败不影响新标签已经打开这一事实 */}
+  };
   $('settingsBtn').onclick=()=>$('settings').showModal();
   $('connection').onclick=()=>$('settings').showModal();
 }

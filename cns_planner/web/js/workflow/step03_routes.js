@@ -1804,12 +1804,16 @@ function comparisonPanel(flow,selected){
 
 function referenceLandingPanel(flow){
   const catalog=flow.reference_landing_sites||{},items=filterReferenceSites(catalog.items||[],{workspace:flow.workspace});
+  const sourceCrs=(catalog.crs||{}).source_crs||{};
+  const crsFact=sourceCrs.confirmed===true&&sourceCrs.status==='confirmed'&&sourceCrs.value
+    ?'当前事实：'+String(catalog.count||items.length)+' 条已确认 '+String(sourceCrs.value)+'；坐标质量标记仍按记录保留。'
+    :'当前事实：来源 CRS 尚未确认，仅按源数值 [lon,lat] 临时展示。';
   const regions=[...new Set(items.map(item=>item.region).filter(Boolean))].sort(),types=[...new Set(items.map(item=>item.site_type).filter(Boolean))].sort();
   const added=new Set((flow.nodes||[]).map(item=>item.reference_site_id).filter(Boolean));
   const rows=items.map(item=>'<div class="list-row reference-site-row" data-reference-site data-search="'+escapeHtml([item.name,item.location,item.reference_site_id].join(' ').toLocaleLowerCase())+'" data-region="'+escapeHtml(item.region||'')+'" data-site-type="'+escapeHtml(item.site_type||'')+'"><span><b>'+escapeHtml(item.name)+'</b><small>'+escapeHtml(item.region||'未标地区')+' · '+escapeHtml(item.site_type||'类型未标')+' · '+escapeHtml(item.quality)+' · '+item.coordinate.map(value=>Number(value).toFixed(5)).join(', ')+'</small><small>'+escapeHtml(item.reference_site_id)+(item.possible_duplicate?' · 疑似重复':'')+'</small></span><button class="secondary" data-add-reference-site="'+escapeHtml(item.reference_site_id)+'" '+(added.has(item.reference_site_id)?'disabled':'')+'>'+(added.has(item.reference_site_id)?'已加入':'加入项目')+'</button></div>').join('');
   return '<h3>参考起降点 '+statusBadge(catalog.status||'not_calculated')+'</h3>'
-    +'<div class="parameter-note">reference_landing_sites 与 flow.nodes 严格分离。源文件未声明 CRS，全部保持 pending_confirmation；'
-    +'地图位置仅按源数值 [lon,lat] 临时展示，点击“加入项目”后才创建 node。</div>'
+    +'<div class="parameter-note">reference_landing_sites 与 flow.nodes 严格分离。'+escapeHtml(crsFact)
+    +' 点击“加入项目”后才创建 node。</div>'
     // BUG-UI-SITE-SEARCH-001：显式「搜索」按钮 + Enter 等价；筛选只作用于可见列表，
     // 绝不修改源数据、也绝不自动加入项目。
     +'<div class="reference-site-search"><label for="referenceSiteSearch">搜索</label>'

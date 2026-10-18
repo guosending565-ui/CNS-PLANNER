@@ -513,8 +513,15 @@ def test_preview_apply_assignment_conflict_rollback_and_revoke_ownership(tmp_pat
     ] is False
     assert service.state == before
 
+    with pytest.raises(ValueError, match="preview fingerprint"):
+        service.apply_layered_operational_adoption({
+            "validation_id": validation_id, "confirmed": True,
+            "preview_fingerprint": "layeredpreviewv1-stale",
+        })
+
     applied = service.apply_layered_operational_adoption({
         "validation_id": validation_id, "confirmed": True,
+        "preview_fingerprint": preview["preview_fingerprint"],
         "expected_validation_fingerprint": validation["fingerprints"]["validation_fingerprint"],
     })
     route = next(item for item in service.state["operational_routes"] if item["route_id"] == "R-1")

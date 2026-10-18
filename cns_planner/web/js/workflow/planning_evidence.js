@@ -18,6 +18,18 @@
 
 import { blockerList, escapeHtml, wbBlock } from './common.js';
 
+/**
+ * A4-UI-02：面板里的说明文本原本带 Markdown 行内标记（双星号着重与反引号 code），
+ * 直接输出会让用户看到字面量星号与反引号。
+ *
+ * 这里复用项目**既有的安全格式化口径**（`source_center.js` 的 CRS 证据栏同样是
+ * "安全转义的纯文本"）：去掉行内标记后 escapeHtml，绝不把未转义字符串拼进 HTML。
+ */
+// 输出为已转义 HTML；仅插入固定换行标签，不渲染用户 HTML / Markdown。
+function noteHtml(value) {
+  return escapeHtml(String(value ?? '').replace(/\*\*/g, '').replace(/`/g, '')).replace(/\r\n|\r|\n/g, '<br>');
+}
+
 /** 来源类型 → 中文与语义（与后端 `EVIDENCE_SOURCE_TYPES` 一一对应）。 */
 export const EVIDENCE_SOURCE_TYPE_TEXT = {
   confirmed_source_fact: {
@@ -89,7 +101,7 @@ export function planningEvidenceItemLine(item) {
     + `<b>${escapeHtml(item.label || item.field)}</b>`
     + ' <span class="badge">' + escapeHtml(valueText(item.value)) + '</span>'
     + ` <span class="status-badge st-${badge}">${escapeHtml(sourceType.label)}</span>`
-    + `<div class="demo-note">${escapeHtml(detail)}</div>`
+    + `<div class="demo-note">${noteHtml(detail)}</div>`
     + `<button class="link danger" id="withdraw_${escapeHtml(item.evidence_id)}">撤回该工程依据</button>`
     + '</div>';
 }
@@ -180,14 +192,14 @@ function scopedEvidenceRow(model) {
   return '<fieldset class="cns-requirement" data-evidence-field="' + escapeHtml(field)
     + '" data-evidence-scope="' + escapeHtml(scope) + '">'
     + `<legend>${escapeHtml(label)} · ${escapeHtml(scopeText)}</legend>`
-    + `<div class="demo-note">${escapeHtml(spec.semantics || '')}</div>`
+    + `<div class="demo-note">${noteHtml(spec.semantics || '')}</div>`
     + '<div class="form-grid">'
     + `<label>${escapeHtml(targetHint)}${optionList(name + '_target', targets, {})}</label>`
     + `<label>取值（${escapeHtml(VALUE_TYPE_HINT[spec.value_type] || spec.value_type)}）`
     + (spec.value_type === 'number' ? numberInput(name) : optionList(name, spec.allowed || [], { multiple }))
     + '</label>'
     + '</div>'
-    + '<div class="parameter-note">本记录是**本项目的规划输入**（工程假设），'
+    + '<div class="parameter-note">本记录是<b>本项目的规划输入</b>（工程假设），'
     + '不是厂家设备事实，也不会写入设备目录 / 机载档案：它只在规划消费点叠加，'
     + '并在结果与报告中带来源标注披露。</div>'
     + `<label>来源类型<select id="${name}_source_type">`
@@ -219,7 +231,7 @@ export function renderPlanningEvidence(flow) {
   const { status } = summary;
 
   if (!status.length) {
-    return '<div class="demo-note">工程依据字段清单尚未载入（`/api/planning-evidence/fields`）。'
+    return '<div class="demo-note">工程依据字段清单尚未载入（/api/planning-evidence/fields）。'
       + '在字段清单可用前，系统不会猜测任何取值。</div>';
   }
 
@@ -236,7 +248,7 @@ export function renderPlanningEvidence(flow) {
     return '<fieldset class="cns-requirement" data-evidence-field="' + escapeHtml(item.field) + '">'
       + `<legend>${escapeHtml(item.label)} <span class="status-badge st-${statusInfo.badge}">`
       + `${escapeHtml(statusInfo.text)}</span></legend>`
-      + `<div class="demo-note">${escapeHtml(item.semantics)}</div>`
+      + `<div class="demo-note">${noteHtml(item.semantics)}</div>`
       + `<div class="flow-summary">${demandLine}<br>`
       + `机载档案声明：<b>${escapeHtml(valueText(item.declared_by_aircraft_profile))}</b> · `
       + `当前生效值：<b>${escapeHtml(valueText(item.effective_value))}</b><br>`
@@ -281,7 +293,7 @@ export function renderPlanningEvidence(flow) {
     text: `${item.label}：已确认不满足需求 —— ${item.status_reason || ''}`,
     detail: `需求要求 ${item.demand_field} = ${valueText(item.required_value)}；`
       + `当前生效值 = ${valueText(item.effective_value)}。`
-      + '这属于真实不兼容，只能用**与需求一致的取值**或修改需求来解决，'
+      + '这属于真实不兼容，只能用<b>与需求一致的取值</b>或修改需求来解决，'
       + '系统不会把它降级成"缺证据"。',
   }));
 
@@ -297,20 +309,27 @@ export function renderPlanningEvidence(flow) {
 
   const disclosureBlock = summary.disclosureLines.length
     ? '<div class="parameter-note">报告披露：<br>' + summary.disclosureLines
-      .map((line) => escapeHtml(line)).join('<br>') + '</div>'
+      .map((line) => noteHtml(line)).join('<br>') + '</div>'
     : '<div class="parameter-note">报告披露：当前没有生效的工程假设；'
       + '报告中不会出现"把假设写成事实"的表述。</div>';
+
+  const evidenceBlockers=[...incompatibleRows,...blockers];
+  let blockerHtml=blockerList(evidenceBlockers,'当前没有因缺工程依据而无法确认的字段。');
+  // blockerList 的 detail 契约为纯文本；仅替换其已转义的文本槽，不重复转义 noteHtml。
+  for(const item of evidenceBlockers){
+    if(item.detail)blockerHtml=blockerHtml.replace('<small>'+escapeHtml(item.detail)+'</small>',
+      ()=>'<small>'+noteHtml(item.detail)+'</small>');
+  }
 
   return wbBlock('本段目标', '<div class="demo-note">当主链因缺少工程证据而无法确认时，'
     + '由用户在此正式补录：明确区分「有正式资料支持的事实」「工程规划假设」与「尚无依据」。'
     + '工程假设进入独立的规划输入容器（<code>project_state.planning_evidence</code>），'
     + '不写入设备目录，也不改写机载档案源文件；它参与 P8/P14/P15/P16 时一律带来源标注，'
     + '并在报告中自动披露。</div>')
-    + wbBlock('缺失工程证据', blockerList([...incompatibleRows, ...blockers],
-      '当前没有因缺工程依据而无法确认的字段。'))
+    + wbBlock('缺失工程证据', blockerHtml)
     + wbBlock('录入 / 确认工程依据', '<div class="cns-requirements">' + rows + '</div>')
     + wbBlock('设备侧 / 运行场景工程假设（Round 2.7）',
-      '<div class="demo-note">这里登记的是**显式作用对象**的规划假设：'
+      '<div class="demo-note">这里登记的是<b>显式作用对象</b>的规划假设：'
       + '<b>设备侧</b>（地面提供者的类型事实，例如网络归属范围）与 '
       + '<b>本次运行场景</b>（例如本次运行的机载接口 / RID 参与能力）。'
       + '它们只作用于所选的设备 / 运行航路，绝不写入设备目录，也绝不改写机载档案；'
@@ -321,7 +340,7 @@ export function renderPlanningEvidence(flow) {
     + wbBlock('已录入的工程依据', activeBlock + disclosureBlock
       + '<div class="demo-note">来源类型徽标说明：'
       + Object.entries(EVIDENCE_SOURCE_TYPE_TEXT).map(([key, item]) => (
-        `<b>${escapeHtml(item.label)}</b>（${escapeHtml(key)}）—— ${escapeHtml(item.note)}`
+        `<b>${escapeHtml(item.label)}</b>（${escapeHtml(key)}）—— ${noteHtml(item.note)}`
       )).join('<br>') + '</div>');
 }
 

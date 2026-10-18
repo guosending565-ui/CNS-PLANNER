@@ -22,7 +22,8 @@ export function createApiClient(token=()=>"",revision=()=>null){
     const response=await fetch(url,{...options,headers});
     const type=response.headers.get('content-type')||'';
     const data=type.includes('json')?await response.json():await response.blob();
-    const responseRevision=Number(response.headers.get('x-cns-revision'));
+    const revisionHeader=response.headers.get('x-cns-revision');
+    const responseRevision=revisionHeader===null||revisionHeader.trim()===''?null:Number(revisionHeader);
     if(Number.isInteger(responseRevision))knownRevision=responseRevision;
     else if(Number.isInteger(data?.workflow?.revision))knownRevision=data.workflow.revision;
     else if(url==='/api/workflow'&&Number.isInteger(data?.revision))knownRevision=data.revision;

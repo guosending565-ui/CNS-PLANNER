@@ -924,6 +924,7 @@ test('conflict forbids apply by default and both checkboxes default to false',()
   // 必须重新 Preview —— 绝不允许用现场 checkbox 覆盖冻结意图。
   cacheLayeredAdoptionPreview({
     status:'ready',side_effects:false,publication_allowed:true,validation_id:'LRV-AAAAAAAAAAAA',
+    preview_fingerprint:'layeredpreviewv1-preview',
     projection:{status:'ready',route_id:'R-1',conflict:{route_id:'R-1',existing_status:'passed'},
       route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
       route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}},
@@ -981,6 +982,7 @@ test('apply requires a current preview and submits the preview fingerprint verba
   // 2) 有 Preview 但没勾选确认：拒绝
   cacheLayeredAdoptionPreview({
     status:'ready',side_effects:false,publication_allowed:true,validation_id:'LRV-AAAAAAAAAAAA',
+    preview_fingerprint:'layeredpreviewv1-preview',
     validation_fingerprint:'layeredvalidationv1-fp-1',
     projection:{status:'ready',route_id:'R-1',conflict:null,
       route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
@@ -996,6 +998,7 @@ test('apply requires a current preview and submits the preview fingerprint verba
   assert.equal(allowed.allowed,true);
   assert.deepEqual(allowed.payload,{
     validation_id:'LRV-AAAAAAAAAAAA',confirmed:true,replace_existing:false,
+    preview_fingerprint:'layeredpreviewv1-preview',
     expected_validation_fingerprint:'layeredvalidationv1-fp-1',
   });
   // Preview 冻结的指纹与当前 flow 一致，因此不能被"偷偷换成新 flow 值"
@@ -1557,6 +1560,7 @@ test('apply submits the replace_existing frozen by the second preview',async()=>
         assert.deepEqual(applyCall[1],{
           validation_id:'LRV-AAAAAAAAAAAA',confirmed:true,replace_existing:true,
           expected_validation_fingerprint:'layeredvalidationv1-fp-1',
+          preview_fingerprint:'layeredpreviewv1-replacement',
         },'apply must submit the frozen replace_existing and fingerprint');
         // Apply 消费掉这份 Preview：不能二次 Apply
         return document.getElementById('applyLayeredAdoption').onclick().then(()=>{

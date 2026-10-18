@@ -451,7 +451,7 @@ test('DAA lab renders tracks CPA timeline and playback frame without hazard geom
 });
 
 test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop contracts',()=>{
-  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},cns_gap_analysis_v2:{},coverage_3d:{},cns_service_capability:{},site_planning_policy:{},cns_site_plan:{},closed_loop_assessment:{},cns_corridor_assessment:{},cns_planning_objectives:{routes:{}},cns_corridor_gap_assessment:{},corridor_site_planning_policy:{},cns_corridor_site_plan:{}};
+  const base={steps:{'2':false,'3':false,'5':false},spatial_3d:{altitude_layers:[],route_altitude_profiles:{}},operational_timing:{route_motion_profiles:{},service_scenarios:{},response_time_budgets:{},encounter_scenarios:{}},service_timeline:{},protection_envelope:{},grid_attributes:{},grid_risk:{},retired_route_ids:[],risks:{environment:{status:'not_calculated'},life:{status:'not_calculated'},property:{status:'not_calculated'}},scenario_routes:[],operational_routes:[],nodes:[],devices:[],reference_landing_sites:{status:'passed',count:98,items:[],crs:{source_crs:{value:'EPSG:4490',status:'confirmed',confirmed:true}}},defaults:{engineering_parameters:{primary_spacing_factor:{value:.9,source:'test'},co_location_search_radius_m:{value:1}}},existing_cns_facilities:{},candidate_sites:{},device_catalog:{},cns_gap_analysis:{},cns_gap_analysis_v2:{},coverage_3d:{},cns_service_capability:{},site_planning_policy:{},cns_site_plan:{},closed_loop_assessment:{},cns_corridor_assessment:{},cns_planning_objectives:{routes:{}},cns_corridor_gap_assessment:{},corridor_site_planning_policy:{},cns_corridor_site_plan:{}};
   const step2=renderStep2({flow:base,draftWorkspace:null,gridDisplay:{outline:true,theme:'none'},populationDisplayLabel:()=>'',formatNumber:String});
   const step3=renderStep3({flow:base,interactionMode:'pan'});
   const step5=renderStep5({flow:base});
@@ -471,6 +471,7 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step3,/三维建筑净空/);
   assert.match(step3,/unknown\/unresolved 永远不视为 safe/);
   assert.match(step3,/reference_landing_sites 与 flow.nodes 严格分离/);
+  assert.match(step3,/当前事实：98 条已确认 EPSG:4490/);
   assert.match(step5,/三维几何覆盖评估/);
   assert.match(step5,/几何覆盖 ≠ 真实 CNS 性能/);
   assert.match(step5,/CNS 服务能力评估/);
@@ -2319,7 +2320,11 @@ test('theta v2 never treats the legacy lambda cost policy as a blocker',async()=
   // BUG-THETA-V2-LEGACY-STATUS-LABEL：raw 准备状态必须被明确标注为
   // "旧版原始值，不是正式航路规划的门禁"，避免正式链条阻塞项为 0 时被误读。
   assert.match(html,/准备状态（旧版原始值，不是 Theta\* V2 的门禁）/);
-  assert.match(html,/\*\*不是\*\*正式航路规划本身的门禁/);
+  assert.match(html,/不是正式航路规划本身的门禁/);
+  // A3-UI-01：审计说明只能以**纯文本**进入 advancedAuditNote（它内部转义），
+  // 页面上不得再出现字面量 Markdown 着重标记或字面量 HTML 标签。
+  assert.doesNotMatch(html,/\*\*不是\*\*/);
+  assert.doesNotMatch(html,/&lt;span class=&quot;flow-badge/, '审计说明不得显示字面量 <span> 标签');
   assert.match(html,/data-theta-v2-legacy-readiness-note="true"/);
   assert.doesNotMatch(html,/必须补齐 λ|请先补齐 confirmed 的高度层、clearance 与 λ|λ 未全部确认[\s\S]{0,40}blocker/,
     'Theta* V2 视图不得提示"必须补齐 λ"');

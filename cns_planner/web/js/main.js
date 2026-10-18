@@ -41,6 +41,7 @@ import {createWorkflowSnapshotApplier} from './state/workflow_snapshot.js';
 import {recordExplicitProject,restoreLastExplicitProject} from './state/explicit_project.js';
 import {applyActiveProject} from './state/active_project.js';
 import {bootstrapProjectState} from './state/bootstrap.js';
+import {withTimeout,TIMEOUT_ERROR_NAME} from './state/bootstrap.js';
 import {workspaceGridReadiness} from './state/readiness.js';
 import {setupTaskCenter, submitHeavyTask} from './tasks.js';
 import {elapsedText} from './workflow/busy_action.js';
@@ -856,8 +857,27 @@ const saveProject=(projectDir,name)=>shellActions.saveProject({projectDir,name},
 // BUG-PROJECT-OPEN-UX-001：Step01「选择…」只写 draft；真正切换项目**只**走这里。
 // BUG-WORKSPACE-RESTORE-002 / BUG-MAP-RESTORE-001：安装步骤与地图视图初始化必须同属
 // 一个闸门操作，并且只有九步全部落地后才允许对外宣布"项目已打开"。
-/** 打开项目的可见阶段（Step01 转印服务器事实，用于「正在打开…」的分段反馈）。 */
-const PROJECT_OPEN_STAGES=['opening','applying','refreshing','map','opened'];
+/**
+ * 打开项目的可见阶段（Step01 转印服务器事实，用于「正在打开…」的分段反馈）。
+ *
+ * A0-OBS-02：`activating` 是 `POST /api/project/open` **回执之后**的第一个阶段。
+ * 服务器切换成功与浏览器落地完整快照是两个独立状态，此后阶段文案不得再宣称
+ * "正在切换服务器 active project"（服务器上一次都没有再切换）。
+ */
+const PROJECT_OPEN_STAGES=['opening','activating','applying','refreshing','map','opened'];
+/**
+ * A0-OBS-02：打开项目各阶段的**显式上限**。
+ *
+ * 真实缺陷：大型 ProjectState（本机权威项目 288 MB）的 `/api/state` 完整投影需要
+ * 十几秒；一旦请求悬挂（QGIS 单线程被占用 / 慢盘），整条打开链就永久停在
+ * "正在打开项目… / 正在切换服务器 active project…"，既没有结论也无法重试。
+ * 因此给每个阶段一个可读的上限，超时落到明确的中文失败结论并立刻释放按钮与在途标志。
+ * 这不改变任何后端语义，只保证前端生命周期一定能收口。
+ */
+const PROJECT_OPEN_PHASE_TIMEOUT_MS={
+  request:120000,      // POST /api/project/open（服务器切换 + 首次落盘）
+  snapshot:240000,     // /api/state 完整投影（288 MB 权威项目实测十几秒，留足余量）
+};
 /**
  * 从服务器事实读出"这个项目到底有什么"（只读，不推断）。
  *
@@ -1029,6 +1049,26 @@ const PROJECT_REOPEN_RESET_LAYER_IDS=[
 function resetAnalysisLayerSelection(){
   for(const id of PROJECT_REOPEN_RESET_LAYER_IDS)$(id)?.removeAttribute('checked');
 }
+/**
+ * A0-OBS-02：打开项目任一阶段的**显式上限**包装。
+ *
+ * 只做两件事：给阶段一个可读的中文超时结论；让调用方的 try/catch/finally 一定能跑到
+ * （从而必定释放"打开中"标志与按钮）。**不取消**后台工作、不改后端语义、不重试。
+ */
+async function openPhase(promise,label,timeoutMs){
+  try{
+    return await withTimeout(Promise.resolve(promise),{timeout_ms:timeoutMs,label});
+  }catch(error){
+    if(error?.name===TIMEOUT_ERROR_NAME){
+      const timeout=new Error(label+'超过 '+Math.round(timeoutMs/1000)
+        +' 秒未返回；服务可能仍在处理，请稍候重试（这不代表服务离线）');
+      timeout.name=TIMEOUT_ERROR_NAME;
+      timeout.timeout_ms=timeoutMs;
+      throw timeout;
+    }
+    throw error;
+  }
+}
 async function openProject(projectDir,{onStage=null}={}){
   const directory=String(projectDir||'').trim();
   const notify=stage=>{
@@ -1059,7 +1099,9 @@ async function openProject(projectDir,{onStage=null}={}){
         timeStart('same-project confirm');
         // A3：同一项目不再 GET /api/state（那会重算完整 workflow 投影，实测 11.5-15 s）。
         // 只读轻量 active 投影，校验 identity / revision，然后**保留当前 flow 与整张地图**。
-        const active=await api('/api/project/active');
+        const active=await openPhase(
+          api('/api/project/active'),'确认服务器 active project',
+          PROJECT_OPEN_PHASE_TIMEOUT_MS.request);
         timeMark('GET project/active (same-project)');
         const applied=applyProjectActive(active);
         timeMark('applyProjectActive (preserve flow + map)');
@@ -1068,7 +1110,9 @@ async function openProject(projectDir,{onStage=null}={}){
         if(applied.revisionChanged){
           // workflow revision 变了：当前 flow 已不是权威快照，这时才按需触发正式 refresh
           // （唯一会把完整 state 重新落地并 hydrate 的分支）。
-          await applyProjectState(await api('/api/state'));
+          notify('refreshing');
+          await applyProjectState(await openPhase(
+            api('/api/state'),'读取项目完整状态快照',PROJECT_OPEN_PHASE_TIMEOUT_MS.snapshot));
           timeMark('GET state + apply (revision changed)');
         }
         // revision 没变：不做任何 hydrate —— 当前 flow / grid cache / bitmap / view 全部保留。
@@ -1085,8 +1129,13 @@ async function openProject(projectDir,{onStage=null}={}){
     let openedAlreadyActive=false;
     await serializeProjectOperation(async()=>{
       timeStart('serialize-queue-wait');
-      const response=await api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})});
+      const response=await openPhase(
+        api('/api/project/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_dir:directory})}),
+        '切换服务器 active project',PROJECT_OPEN_PHASE_TIMEOUT_MS.request);
       timeMark('project/open POST');
+      // A0-OBS-02：请求已回执（服务器 active project 已切换成功）。此后只剩前端落地，
+      // 阶段文案必须如实切换，不能再宣称"正在切换服务器 active project"。
+      notify('activating');
       recordExplicitProject(response);
       identity=projectIdentityOf(response)||identity;
       // 后端幂等保护的第二道防线：即使前端判据失效（例如服务器刚被别的会话切过），
@@ -1103,7 +1152,8 @@ async function openProject(projectDir,{onStage=null}={}){
       await applyProjectState(response);
       timeMark('apply project/open response');
       notify('refreshing');
-      await applyProjectState(await api('/api/state'));
+      await applyProjectState(await openPhase(
+        api('/api/state'),'读取项目完整状态快照',PROJECT_OPEN_PHASE_TIMEOUT_MS.snapshot));
       timeMark('GET state + apply');
       // BUG-WORKSPACE-RESTORE-002 兜底：`/api/project/open` 与 `/api/state` 都应携带
       // 新项目的 workflow 快照。万一装进来的 flow 为空、或连 `workspace` 键都没有
@@ -1111,7 +1161,8 @@ async function openProject(projectDir,{onStage=null}={}){
       // 再取一次服务器权威快照（GET /api/workflow），而不是让用户去按 F5 才发现数据存在。
       // 只在确实缺字段时才发这一次请求，正常路径不增加任何调用。
       if(!flow||typeof flow!=='object'||Object.keys(flow).length===0||flow.workspace===undefined){
-        await applyProjectState({...state,workflow:await api('/api/workflow')});
+        await applyProjectState({...state,workflow:await openPhase(
+          api('/api/workflow'),'补取项目工作流快照',PROJECT_OPEN_PHASE_TIMEOUT_MS.request)});
         timeMark('fallback GET workflow + apply');
       }
       // 项目已切换：旧位图/旧视图必须整体作废，再按**新项目身份**建立视图。

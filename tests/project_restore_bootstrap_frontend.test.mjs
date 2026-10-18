@@ -297,6 +297,21 @@ test('/api/state 失败：bootstrap 明确失败并给出可读原因', async ()
   }
 });
 
+test('/api/state 超时：提示服务忙或快照超时，不误报为无法连接', async () => {
+  const errors = [];
+  const result = await bootstrapProjectState({
+    api: () => new Promise(() => {}),
+    restore: async state => ({state, restored: false, attempted: false, error: null}),
+    update: () => { throw new Error('不应被调用'); },
+    timeout_ms: 20,
+    onError: message => errors.push(message),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.timeout, true);
+  assert.match(errors[0], /服务正在启动或项目快照读取超时/);
+  assert.doesNotMatch(errors[0], /无法连接本机地图服务/);
+});
+
 test('withTimeout：正常返回直通，超时抛出可识别的中文错误', async () => {
   await assert.doesNotReject(withTimeout(Promise.resolve(1), {timeout_ms: 50}));
   await assert.rejects(

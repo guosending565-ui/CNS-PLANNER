@@ -49,7 +49,8 @@ export const LAYERED_ADOPTION_PATH_LABEL='2D route path 只保存二维 [lon, la
 export const LAYERED_ADOPTION_BOUNDARY_NOTE='本流程不创建 RouteAltitudeProfile，'
   +'也不创建 Departure/Arrival procedure。';
 export const LAYERED_ADOPTION_CONFIRM_NOTE='Apply 必须先有当前 Preview 且 publication_allowed=true，'
-  +'并显式勾选确认；expected_validation_fingerprint 只来自刚 Preview 的那条 validation。';
+  +'并显式勾选确认；合法请求参数包含 validation_id、confirmed=true、preview_fingerprint，'
+  +'其中 preview_fingerprint 与 expected_validation_fingerprint 都只能来自刚完成的 Preview。';
 export const LAYERED_ADOPTION_CONFLICT_NOTE='route_id 冲突时默认禁止 Apply：'
   +'replace_existing 默认 false，绝不自动覆盖既有航路。';
 export const LAYERED_ADOPTION_REVOKE_LABEL='撤销本次发布（revoke）不是"删除航路"';
@@ -297,6 +298,8 @@ export function cacheLayeredAdoptionPreview(preview,validationId=null,{replaceEx
     // 这是 Preview 时刻由后端冻结的指纹：Apply 只允许提交它。
     validationFingerprint:text(value.validation_fingerprint||
       projection.validation_fingerprint||'')||null,
+    // Preview 响应整体指纹：Apply 原样提交，服务端可检测投影/冲突意图变化。
+    previewFingerprint:text(value.preview_fingerprint)||null,
     // 这是 Preview 时刻冻结的发布意图：Apply 只允许提交它。
     replaceExisting:intent,
     publicationAllowed:value.publication_allowed===true,
@@ -325,6 +328,7 @@ export function layeredAdoptionPreviewState(flow,validationId=null,{replaceExist
   if(!cache){
     return {present:false,expired:false,selectionChanged:false,evidenceChanged:false,intentChanged:false,
       validationId:'',validationFingerprint:null,currentFingerprint:null,
+      previewFingerprint:null,
       replaceExisting:compareIntent?uiIntent:false,currentReplaceExisting:uiIntent,
       publicationAllowed:false,conflict:null,preview:null};
   }
@@ -341,6 +345,7 @@ export function layeredAdoptionPreviewState(flow,validationId=null,{replaceExist
     intentChanged,
     validationId:cache.validationId,
     validationFingerprint:cache.validationFingerprint,
+    previewFingerprint:cache.previewFingerprint,
     currentFingerprint,
     // Preview 冻结的 replace_existing：Apply 唯一被允许提交的值。
     replaceExisting:cache.replaceExisting===true,
@@ -410,6 +415,7 @@ export function layeredAdoptionApplyGuard(flow,validationId,{confirmed=false,rep
     payload:{
       validation_id:text(validationId),
       confirmed:true,
+      ...(state.previewFingerprint?{preview_fingerprint:state.previewFingerprint}:{}),
       // 只提交 Preview 冻结的 replace_existing：不读当前 checkbox、不做临时改写。
       replace_existing:state.replaceExisting===true,
       // 只提交 Preview 时刻冻结的指纹，绝不在这里读取新的 flow 值。

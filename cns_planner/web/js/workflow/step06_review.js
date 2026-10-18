@@ -224,8 +224,11 @@ function overviewPanel(flow,state){
 }
 
 // ---- 方案比较：紧凑比较卡 + 完整矩阵 ----------------------------------------
+export function comparisonUnknownVoxelCount(row){
+  return row.unknown_voxel_ids_count??(row.unknown_voxel_ids||[]).length;
+}
 function comparisonRowCard(row){
-  const objective=row.objective_status||'not_evaluated',unknown=(row.unknown_voxel_ids||[]).length;
+  const objective=row.objective_status||'not_evaluated',unknown=comparisonUnknownVoxelCount(row);
   return '<div class="review-block comparison-card">'
     +'<div class="comparison-head"><b>'+escapeHtml(row.route_id||'—')+' · '+escapeHtml(row.subsystem||'—')+'</b>'+statusBadge(objective)+'</div>'
     +'<div class="comparison-body">'
@@ -242,7 +245,7 @@ function comparisonCards(selected){
 /** 完整 Objective Comparison Matrix：原 8 列表格，收进 wbDisclosure。 */
 function comparisonMatrixTable(selected){
   const matrix=selected?.evaluation?.comparison_matrix||[];
-  const rows=matrix.map(row=>'<tr><td>'+escapeHtml(row.route_id)+'</td><td>'+escapeHtml(row.subsystem)+'</td><td>'+statusText(row.objective_status||'not_evaluated')+'</td><td>'+formatDist(row.service)+'</td><td>'+formatDist(row.redundancy)+'</td><td>'+number(row.total_confirmed_deficit_projection_m)+'</td><td>'+number(row.max_continuous_deficit_projection_m)+'</td><td>'+(row.unknown_voxel_ids||[]).length+'</td></tr>').join('');
+  const rows=matrix.map(row=>'<tr><td>'+escapeHtml(row.route_id)+'</td><td>'+escapeHtml(row.subsystem)+'</td><td>'+statusText(row.objective_status||'not_evaluated')+'</td><td>'+formatDist(row.service)+'</td><td>'+formatDist(row.redundancy)+'</td><td>'+number(row.total_confirmed_deficit_projection_m)+'</td><td>'+number(row.max_continuous_deficit_projection_m)+'</td><td>'+comparisonUnknownVoxelCount(row)+'</td></tr>').join('');
   const table='<div class="table-wrap"><table><thead><tr><th>航路</th><th>C/N/S</th><th>规划目标</th><th>服务 满足/缺口/未知</th><th>冗余 满足/缺口/未知</th><th>缺口总长 m</th><th>最大连续缺口 m</th><th>证据不足体素</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
   return wbDisclosure('完整客观指标矩阵',matrix.length?table:'<div class="wb-empty">尚未评价所选方案。</div>');
 }
@@ -681,7 +684,12 @@ function safetyDomainMetrics(model){
     +' · 能力 '+statusText(item.capability&&item.capability.status)
     +' · 缺口长度 '+metricText(item.confirmed_gap&&item.confirmed_gap.gap_length_m)+' m']);
   return rows.concat([
-    ['运行支持缺口',metrics.operational_support_deficit?'是（CNS 已确认缺口）':'否'],
+    // A6-STATE-01：``operational_support_deficit`` 是**后端显式布尔**，只有真实求值过
+    // 才会出现。域处于 not_ready / not_run（无当前证据）时它缺失，此时**绝不能**渲染成
+    // 「否」——那等于宣称"已确认没有缺口"。缺失 ≠ 0，未评价 ≠ 通过。
+    ['运行支持缺口',metrics.operational_support_deficit===true
+      ?'是（CNS 已确认缺口）'
+      :(metrics.operational_support_deficit===false?'否':'未评价 / 暂无当前证据')],
     ['确认缺口子系统',(metrics.confirmed_gap_subsystems||[]).join('/')||'—'],
     ['证据不足子系统',(metrics.unknown_subsystems||[]).join('/')||'—'],
   ]);
@@ -946,7 +954,11 @@ export function mapFiguresModel(flow,figureState){
 
 /** 缺数据图层的简短中文说明（每项一行，不伪造也不隐藏）。 */
 function omittedLayerLines(active){
-  const items=(active&&active.omitted_layers)||[];
+  // A6-MAP-01：``omitted_layers`` 是**已生成图件**的省略清单。还没有任何图件时它必然为空，
+  // 此时若沿用「数据都可用」就等于在未评价的情况下宣称图层齐备（缺失 ≠ 0，未评价 ≠ 通过）。
+  if(!active)return '<small>尚未生成图件，因此图层可用性为「未评价 / 尚未生成」：'
+    +'请先生成一张图，本区才会逐条列出缺数据的图层与原因。</small>';
+  const items=active.omitted_layers||[];
   if(!items.length)return '<small>本图所需图层的数据都可用。</small>';
   return items.slice(0,12).map(item=>'<small>本图未显示 '+escapeHtml(item.display_name||item.layer_key)
     +'：'+escapeHtml(item.reason||'数据不可用')+'</small>').join('');
