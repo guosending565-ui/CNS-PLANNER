@@ -10,6 +10,17 @@ from .research_scenario_builder import build_conditional_domain
 
 PROTECTED_PARTS = {".git", "projects", ".acceptance_setup", "local_recovery_20261018_100555", ".cns-results"}
 UNSUPPORTED_ACTIONS = {"S:radar_noncooperative", "N:navigation_integrity_monitoring"}
+ALLOWED_ACTION_FAMILIES = {"C:communication", "S:rid_cooperative",
+                           "N:navigation_integrity_monitoring", "N:rtk_augmentation"}
+EXECUTION_UNSUPPORTED_FAMILIES = {"S:radar_noncooperative", "S:rid_cooperative",
+                                  "N:navigation_integrity_monitoring"}
+REQUIRED_EXECUTION_BLOCKERS = (
+    "device_qualification_unknown",
+    "installed_inventory_unknown",
+    "device_capacity_unknown",
+    "cost_unknown",
+    "research_execution_not_authorized",
+)
 
 
 def _plain_path(value):
@@ -81,7 +92,13 @@ def validate_output_root(path, *, allowed_roots, forbidden_roots=()):
 
 
 def _route_errors(route, evidence):
-    errors = []
+    """Return static contract errors, execution blockers and evidence gaps.
+
+    ``snapshot_mode=stale_declared`` is an explicitly limited research input:
+    the historical chain may be stale, but its identity must still be
+    internally consistent and every degraded layer must be declared.
+    """
+    errors, execution, gaps = [], [], []
     refs = route.get("route_evidence_refs", {})
     expected = dict(route_id=route.get("route_id"), path_sha256=route.get("path_sha256"),
         operating_layer_id=route.get("operating_layer_id"), altitude_value=route.get("altitude_value"),
@@ -89,16 +106,34 @@ def _route_errors(route, evidence):
         validation_id=refs.get("validation_id"), adoption_id=refs.get("adoption_id"),
         projection_fingerprint=refs.get("projection_fingerprint"))
     if not all(v is not None and v != "" for v in expected.values()): errors.append("route_chain_references_missing")
+    stale_declared = route.get("snapshot_mode") == "stale_declared"
+    if stale_declared:
+        declarations = route.get("snapshot_declarations")
+        if type(declarations) is not dict:
+            errors.append("stale_declaration_required")
+        else:
+            for name in ("operational", "validation", "adoption", "operating_layer"):
+                row = declarations.get(name)
+                if type(row) is not dict or row.get("status") != "stale" or not row.get("reason"):
+                    errors.append("stale_declaration_incomplete:" + name)
     statuses = dict(operational={"passed"}, validation={"engineering_conditionally_accepted_candidate", "passed"},
         adoption={"published_engineering_demo", "adopted"}, operating_layer={"confirmed"})
     for name, allowed in statuses.items():
         row = evidence.get(name, {})
-        if type(row) is not dict: errors.append("route_evidence_missing:" + name); continue
-        if (row.get("current_applicability") != "current" or row.get("status") not in allowed or
-                row.get("stale_reason") or not row.get("source_ref")):
-            errors.append("route_evidence_not_current:" + name)
-        for k,v in expected.items():
-            if row.get(k) != v: errors.append("route_chain_mismatch:" + name + ":" + k)
+        if type(row) is not dict:
+            errors.append("route_evidence_missing:" + name); continue
+        for key, value in expected.items():
+            if row.get(key) != value: errors.append("route_chain_mismatch:" + name + ":" + key)
+        if not row.get("source_ref"): errors.append("route_evidence_source_missing:" + name)
+        if stale_declared:
+            if (row.get("status") != "stale" or row.get("current_applicability") != "stale" or
+                    not row.get("stale_reason")):
+                errors.append("stale_declaration_incomplete:" + name)
+            execution.append("route_evidence_stale_declared:" + name)
+        else:
+            if (row.get("current_applicability") != "current" or row.get("status") not in allowed or
+                    row.get("stale_reason")):
+                errors.append("route_evidence_not_current:" + name)
     operational = evidence.get("operational", {})
     if (route.get("path_kind") != "operational" or type(operational) is not dict or
             operational.get("kind") != "layered_risk_aware_operational_route"):
@@ -106,7 +141,12 @@ def _route_errors(route, evidence):
     validation = evidence.get("validation", {})
     if type(validation) is dict and validation.get("use_scope") == "engineering_demo_only" and route.get("scope") != "engineering_demo_only":
         errors.append("engineering_demo_scope_cannot_be_promoted")
-    return errors
+    if stale_declared:
+        for name in ("operational", "validation", "adoption", "operating_layer"):
+            observed = evidence.get(name, {}) if type(evidence.get(name)) is dict else {}
+            if not observed.get("observed_source_status"):
+                gaps.append("stale_layer_observed_status_missing:" + name)
+    return errors, execution, gaps
 
 
 def _scope_inventory(route, capabilities):
@@ -141,10 +181,17 @@ def _scope_inventory(route, capabilities):
         consumer = row.get("consumer")
         cid = row.get("constraint_id")
         # A supplied capability claim records a mapping; it cannot enable execution.
-        consumed = (type(consumer) is dict and consumer.get("consumer_id") in capabilities.get("consumers", {}) and
-            consumer.get("version") == capabilities["consumers"].get(consumer.get("consumer_id")))
+        consumers = capabilities.get("consumers", {})
+        consumed = (type(consumer) is dict and consumer.get("consumer_id") in consumers and
+            consumer.get("version") == consumers.get(consumer.get("consumer_id")))
+        if type(consumer) is dict:
+            consumer_id = consumer.get("consumer_id")
+            if consumer_id not in consumers:
+                gaps.append("required_consumer_unknown:" + str(cid))
+            elif consumer.get("version") != consumers.get(consumer_id):
+                gaps.append("required_consumer_version_mismatch:" + str(cid))
         is_1000 = row.get("service_key") == "C:communication" and row.get("max_gap_m") == 1000
-        if not consumed or is_1000:
+        if (cid in included and not consumed) or is_1000:
             if cid not in unconsumed_ids: unconsumed.append(row); unconsumed_ids.append(cid)
         if is_1000: gaps.append("communication_1000m_unconsumed")
     return inv, included, excluded, unconsumed, errors, gaps
@@ -164,26 +211,57 @@ def inspect_research_admission(*, scenario: dict, conditional_domain: dict, rout
         assumption_registry=domain["assumption_registry"])
     if rebuilt != domain: errors.append("conditional_domain_canonical_mismatch")
     route = sc["route_scenario"]
-    route_errors = _route_errors(route, evidence); errors.extend(route_errors)
+    route_errors, route_execution, route_gaps = _route_errors(route, evidence)
+    errors.extend(route_errors)
+    execution_blockers = list(route_execution)
     inv, included, excluded, unconsumed, scope_errors, gaps = _scope_inventory(route, caps)
-    errors.extend(scope_errors); gaps.extend(sc["evidence_gaps"])
+    errors.extend(scope_errors); gaps.extend(sc["evidence_gaps"]); gaps.extend(route_gaps)
+    stale_declared = route.get("snapshot_mode") == "stale_declared"
+    strict_action_contract = stale_declared or route.get("conditional_actions") is not None
     for a in domain.get("finite_actions", []):
         family = a.get("service_key")
-        if family in UNSUPPORTED_ACTIONS: errors.append("unsupported_action_family:" + family)
-        elif family not in ("C:communication", "S:rid_cooperative", "N:rtk_augmentation"):
+        action_id = a.get("action_id")
+        if strict_action_contract and not a.get("route_ids"):
+            errors.append("action_route_relation_missing:" + str(action_id))
+        if strict_action_contract and a.get("route_relation_status") == "blocked":
+            errors.append("action_route_relation_blocked:" + str(action_id))
+        if family not in ALLOWED_ACTION_FAMILIES:
             errors.append("unsupported_action_family:" + str(family))
+        elif family in EXECUTION_UNSUPPORTED_FAMILIES:
+            if stale_declared:
+                execution_blockers.append("consumer_unsupported:" + str(family))
+            elif family in UNSUPPORTED_ACTIONS:
+                errors.append("unsupported_action_family:" + str(family))
+    for row in unconsumed:
+        if type(row) is dict and row.get("constraint_id"):
+            execution_blockers.append("required_unconsumed:" + str(row["constraint_id"]))
+    if stale_declared:
+        execution_blockers.extend(REQUIRED_EXECUTION_BLOCKERS)
+        if any(a.get("dependency_evidence_status") not in (None, "declared")
+               for a in domain.get("finite_actions", [])):
+            execution_blockers.append("action_dependency_evidence_unknown")
+        execution_blockers.append("p16_native_action_route_ids_absent")
     if intent.get("mode") != "inspect": errors.append("r1_inspection_only")
     if intent.get("output_root") is not None: errors.append("output_authorization_unavailable_in_json")
+    static_passed = not errors
     return seal(dict(schema_version="research_admission.v1", status="blocked" if errors else "static_contract_passed",
-        execution_enabled=False, blockers=sorted(set(errors)), evidence_gaps=sorted(set(gaps)),
-        route_evidence_status="blocked" if route_errors else "static_chain_consistent",
+        static_contract_passed=static_passed, static_contract_blockers=sorted(set(errors)),
+        execution_enabled=False, execution_authorization="not_authorized",
+        execution_blockers=sorted(set(execution_blockers)), blockers=sorted(set(errors)),
+        evidence_incomplete=True, evidence_gaps=sorted(set(gaps)),
+        snapshot_mode=route.get("snapshot_mode"),
+        route_evidence_status=("stale_declared_snapshot" if stale_declared and not route_errors
+                               else "blocked" if route_errors else "static_chain_consistent"),
         scenario_fingerprint=sc["scenario_fingerprint"], domain_fingerprint=domain["domain_fingerprint"],
         source_bundle_fingerprint=sc["source_bundle_fingerprint"],
         computational_dependency_fingerprint=domain["computational_dependency_fingerprint"],
+        action_contract=route.get("action_contract_stats"),
         required_inventory=inv, included_constraint_ids=included, excluded_constraints=excluded,
         unconsumed_requirements=unconsumed, original_required_scope=route.get("required_scope"),
+        required_scope_status=("partition_complete" if not scope_errors else "blocked"),
         consumer_capabilities=caps, native_m2_result=intent.get("native_m2_result"),
         navigation_status="unknown", scoped_model_status="not_evaluated", complete_required_cns_status="unknown",
+        complete_required_proof_status="not_proven",
         evidence_status="evidence_incomplete", independent_verification_status="not_verified",
         real_domain_proof_status="not_verified", final_eligible=False,
         legacy_model_binding_status="unsupported_conditional_binding", persisted_to_project_state=False), "admission_fingerprint")

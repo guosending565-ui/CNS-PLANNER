@@ -11,6 +11,18 @@ MAX_NODES = 50000
 MAX_DEPTH = 32
 MAX_STRING = 16384
 FORBIDDEN = {"runtime", "module_path", "callback", "script", "pickle", "factory", "execute", "function", "callable"}
+SNAPSHOT_MODES = ("current", "stale_declared")
+STALE_LAYERS = ("operational", "validation", "adoption", "operating_layer")
+STALE_HISTORY = ("p14", "p15", "p16", "p17")
+ROUTE_RELATION_SOURCES = {
+    "explicit_action_route_ids",
+    "explicit_action_route_id",
+    "derived_from_verified_plan_scope",
+    "unresolved",
+}
+ACTION_FIELDS = ("action_id", "physical_site_id", "service_key", "device_id",
+                 "device_instance_id", "source_class", "route_relation_source",
+                 "route_relation_evidence_ref")
 
 
 def bounded_json(value):
@@ -79,6 +91,102 @@ def required(row, fields, errors, label):
     return True
 
 
+def _check_snapshot_contract(route, errors):
+    """Real R0005 snapshots must declare what history no longer supports."""
+    mode = route.get("snapshot_mode")
+    if mode is None: return
+    if mode not in SNAPSHOT_MODES:
+        errors.append("invalid_snapshot_mode"); return
+    if mode != "stale_declared": return
+    declarations = route.get("snapshot_declarations")
+    if type(declarations) is not dict:
+        errors.append("stale_declaration_required"); return
+    for name in STALE_LAYERS:
+        row = declarations.get(name)
+        if type(row) is not dict or row.get("status") != "stale" or not row.get("reason"):
+            errors.append("stale_declaration_incomplete:" + name)
+    for name in STALE_HISTORY:
+        row = declarations.get(name)
+        if type(row) is not dict or not row.get("status") or not row.get("reason"):
+            errors.append("stale_declaration_incomplete:" + name)
+    # Historical failure/proposal semantics may be disclosed, never upgraded.
+    if (declarations.get("p14") or {}).get("status") != "failed":
+        errors.append("historical_failure_not_declared:p14")
+    if (declarations.get("p15") or {}).get("status") != "failed":
+        errors.append("historical_failure_not_declared:p15")
+    if (declarations.get("p16") or {}).get("status") != "proposal_ready":
+        errors.append("historical_p16_status_changed")
+    if (declarations.get("p17") or {}).get("status") != "stale":
+        errors.append("historical_p17_status_changed")
+
+
+def _check_action_contract(route, errors):
+    """Validate the research-side normalized action set when present.
+
+    This is additive: the legacy fixture contract has no ``conditional_actions``
+    field and keeps its original validation path.
+    """
+    actions = route.get("conditional_actions")
+    if actions is None: return
+    if type(actions) is not list or not actions:
+        errors.append("conditional_actions_list_required"); return
+    route_scope = route.get("route_scope")
+    plan_ids = route_scope.get("route_ids") if type(route_scope) is dict else None
+    if type(plan_ids) is not list: plan_ids = None
+    seen_actions, seen_instances = set(), set()
+    for row in actions:
+        if type(row) is not dict:
+            errors.append("conditional_action_object_required"); continue
+        action_id = row.get("action_id")
+        if type(action_id) is not str or not action_id:
+            errors.append("action_id_required"); continue
+        if action_id in seen_actions: errors.append("duplicate_action_id:" + action_id)
+        seen_actions.add(action_id)
+        route_ids = row.get("route_ids")
+        if (type(route_ids) is not list or not route_ids or
+                any(type(x) is not str or not x for x in route_ids) or
+                len(set(route_ids)) != len(route_ids)):
+            errors.append("action_route_ids_required:" + action_id)
+        elif plan_ids is not None and any(x not in plan_ids for x in route_ids):
+            errors.append("action_route_outside_plan_scope:" + action_id)
+        if row.get("route_relation_status") == "blocked" or not row.get("route_relation_source"):
+            errors.append("action_route_relation_blocked:" + action_id)
+        elif row.get("route_relation_source") not in ROUTE_RELATION_SOURCES:
+            errors.append("invalid_route_relation_source:" + action_id)
+        for field in ACTION_FIELDS:
+            if field == "route_relation_source": continue
+            if type(row.get(field)) is not str or not row.get(field):
+                errors.append(field + ":missing:" + action_id)
+        for field in ("dependency_action_ids", "assumption_refs", "applicable_models"):
+            if type(row.get(field)) is not list:
+                errors.append(field + ":list_required:" + action_id)
+        instance = (row.get("physical_site_id"), row.get("device_instance_id"))
+        if all(type(x) is str and x for x in instance):
+            if instance in seen_instances:
+                errors.append("duplicate_device_instance_id:" + action_id)
+            seen_instances.add(instance)
+
+
+def _check_required_scope(route, errors):
+    """The frozen Required snapshot digest must cover its own inventory."""
+    scope = route.get("required_scope")
+    if scope is None: return
+    if type(scope) is not dict:
+        errors.append("required_scope_object_required"); return
+    inventory = scope.get("required_constraint_inventory")
+    if type(inventory) is not list or not inventory:
+        errors.append("required_constraint_inventory_required"); return
+    ids = [row.get("constraint_id") for row in inventory if type(row) is dict]
+    if len(ids) != len(inventory) or any(type(x) is not str or not x for x in ids):
+        errors.append("required_constraint_id_required"); return
+    if len(set(ids)) != len(ids): errors.append("duplicate_required_constraint_id")
+    snapshot = route.get("full_required_snapshot_ref") or {}
+    try: actual = digest(inventory)
+    except ValueError: actual = None
+    if snapshot.get("sha256") != actual:
+        errors.append("full_required_snapshot_digest_mismatch")
+
+
 def checked_scenario(scenario):
     sc = bounded_json(scenario)
     verify(sc, "scenario_fingerprint")
@@ -102,6 +210,9 @@ def validate_research_scenario(*, regional_bundle: dict, route_scenario: dict, p
     for field in ("region_bundle_ref", "baseline_ref", "route_evidence_refs", "full_required_snapshot_ref"):
         if type(route.get(field)) is not dict: raise ValueError(field + ":object_required")
     if type(route.get("policy_refs")) is not list: errors.append("policy_references_list_required")
+    _check_snapshot_contract(route, errors)
+    _check_action_contract(route, errors)
+    _check_required_scope(route, errors)
     if route.get("evidence_track") != TRACK or has_synthetic([bundle, route, policies]):
         errors.append("conditional_track_required_no_synthetic_relabeling")
     if route.get("region_bundle_ref") != {"bundle_id":bundle.get("bundle_id"), "version":bundle.get("version")}:
