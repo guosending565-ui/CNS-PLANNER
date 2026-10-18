@@ -45,8 +45,12 @@ class RiskFrameworkV2Service:
         self.ensure_state()
         return deepcopy(self.session.state["risk_policy_v2"])
 
-    def result_snapshot(self):
+    def result_snapshot(self, *, read_only=False):
         self.ensure_state()
+        if read_only:
+            # The workflow immediately projects summaries; do not copy detail
+            # that will be discarded. Explicit detail readers retain isolation.
+            return dict(self.session.state["grid_risk_v2"])
         return deepcopy(self.session.state["grid_risk_v2"])
 
     def readiness_snapshot(self):

@@ -438,6 +438,23 @@ def test_navigation_figure_draws_mandatory_endpoints_association_and_longest_gap
     assert spec.annotations == []
 
 
+def test_navigation_figure_accepts_canonical_candidate_coordinate_arrays(tmp_path):
+    """共享站址快照的 canonical ``coordinate`` 是 ``[lon, lat]``，不得按 dict 读取。"""
+
+    candidates = json.loads(json.dumps(NAV_CANDIDATES))
+    for item in candidates["candidates"]:
+        coordinate = item["coordinate"]
+        item["coordinate"] = [coordinate["longitude"], coordinate["latitude"]]
+
+    service, _, _ = _nav_service(tmp_path, candidates=candidates)
+    spec = service.build_figure(template_id="navigation_layout_v1", route_id=ROUTE_ID)
+    layers = _layers(spec)
+
+    assert layers["cns_nav_monitor_sites"].feature_count == 2
+    assert layers["cns_nav_association"].feature_count == 2
+    assert layers["cns_nav_gap"].feature_count == 1
+
+
 def test_navigation_figure_never_upgrades_centerline_pass_to_full_width(tmp_path):
     service, _, _ = _nav_service(tmp_path)
     spec = service.build_figure(template_id="navigation_layout_v1", route_id=ROUTE_ID)

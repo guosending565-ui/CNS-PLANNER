@@ -57,6 +57,17 @@ def test_no_confirmed_plan_only_allows_zero_pollution_draft(tmp_path):
         workflow.generate_cns_planning_report()
 
 
+def test_report_endpoint_returns_structured_prerequisites_without_confirmed_plan(tmp_path):
+    workflow = WorkflowService(tmp_path / "project.json", Path("cns_planner/config/defaults.json"))
+    response = ApiRouter(Context(workflow)).post("/api/cns-planning-report/generate", {})
+    assert response.status == 409
+    assert response.data["code"] == "confirmed_plan_required"
+    assert response.data["required_prerequisites"] == [
+        "initialize_plan_review", "select_plan_variant", "confirm_plan",
+    ]
+    assert response.data["current_plan_status"] == "not_confirmed"
+
+
 @pytest.mark.parametrize("applied,label", [(False, "已确认方案（尚未应用）"), (True, "已确认并应用")])
 def test_report_model_has_complete_source_sections_and_plan_label(tmp_path, applied, label):
     workflow = confirmed_workflow(tmp_path, applied=applied)

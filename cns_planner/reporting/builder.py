@@ -105,6 +105,15 @@ class ReportBuilder:
         return model
 
 
+DEMO_L1_DISCLOSURE = (
+    "建筑 4tCa7 高度证据为 ML 预测，采用工程条件接受，不构成严格安全验证通过。"
+)
+DEMO_L2_DISCLOSURE = (
+    "当前航路使用 EGM2008 正高 100 m 恒定巡航高度假设。真实离场爬升和进场下降程序"
+    "尚未配置及验证；当前建筑净空结果不代表起降过渡阶段安全。"
+)
+
+
 def _engineering_demo_route_acceptance(source):
     """Disclose demo-only acceptance without projecting it as an operational route."""
 
@@ -116,6 +125,11 @@ def _engineering_demo_route_acceptance(source):
         if isinstance(item, dict) and item.get("status") == "published_engineering_demo"
     ]
     limitations = ["工程条件接受，严格验证未通过，仅供演示"] if demo_items else []
+    if demo_items:
+        # L1 / L2 必须分别披露：补齐建筑证据不会消除起降段缺口，反之亦然。
+        for line in (DEMO_L1_DISCLOSURE, DEMO_L2_DISCLOSURE):
+            if line not in limitations:
+                limitations.append(line)
     for item in demo_items:
         for limitation in item.get("limitations") or []:
             if limitation not in limitations:

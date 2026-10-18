@@ -30,6 +30,66 @@ from ..gis.restricted_area_input_adapter import (
 )
 
 
+#: PCF **直接消费**的 ``grid_attributes`` 命名空间。这些容器的 ``cells`` 会被逐格读取，
+#: 因此它们的 ``status`` 就是 PCF 的输入新鲜度。
+#:
+#: * ``terrain``   → ``generation_arguments`` 的 ``terrain_by_cell``；
+#: * ``buildings`` → ``generation_arguments`` 的 ``buildings_by_cell``；
+#: * ``population`` → 经 ``source_fingerprints`` 进入 constraint fingerprint（PCF 的
+#:   输入身份之一）。
+#:
+#: 这是**已存在**的依赖，不是本轮新增的语义；这里只是把它显式化为可校验的门禁。
+PCF_INPUT_ATTRIBUTE_KINDS = ("terrain", "buildings", "population")
+
+#: 视为"输入不再对应当前事实"的 ``grid_attributes`` 状态。
+PCF_BLOCKING_ATTRIBUTE_STATUSES = ("stale", "needs_revalidation")
+
+
+def stale_pcf_input_attributes(state):
+    """列出阻挡 PCF 生成的 ``grid_attributes`` 命名空间（只读）。
+
+    fail-closed 语义：容器的 ``status`` 落在 :data:`PCF_BLOCKING_ATTRIBUTE_STATUSES`
+    时，该容器里的 ``cells`` 已不再对应当前数据源事实。此时若继续生成，PCF 会**静默
+    消费**过期输入，却被 ``apply_field`` 写成 ``passed`` / current —— 那正好违反
+    "失效不得被当作有效"与"未评估不等于通过"。因此这里只回答"哪些输入不新鲜"，
+    绝不自动重算、绝不静默沿用、也绝不把它降级成 0 或 pass。
+    """
+
+    attributes = (state or {}).get("grid_attributes") or {}
+    blocked = []
+    for kind in PCF_INPUT_ATTRIBUTE_KINDS:
+        item = attributes.get(kind)
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "") in PCF_BLOCKING_ATTRIBUTE_STATUSES:
+            blocked.append({
+                "kind": kind,
+                "status": item.get("status"),
+                "reason": item.get("stale_reason") or item.get("status_reason"),
+            })
+    return blocked
+
+
+def pcf_input_attributes_guard(state):
+    """PCF 输入新鲜度门禁；不新鲜即拒绝生成/发布（抛出可读业务错误）。"""
+
+    blocked = stale_pcf_input_attributes(state)
+    if not blocked:
+        return
+    detail = "、".join(
+        f"{item['kind']}（{item['status']}"
+        + (f"，原因 {item['reason']}" if item.get("reason") else "")
+        + "）"
+        for item in blocked
+    )
+    raise ValueError(
+        "规划约束场的网格属性输入已失效，已拒绝生成："
+        + detail
+        + "。这些容器的逐格属性不再对应当前数据源，继续生成会把过期输入写成当前结果。"
+        "请先重新计算工作区网格属性（重新确认工作区范围），再生成约束场。"
+    )
+
+
 def generate_planning_constraint_field(
     *, altitude_layer, grid, terrain_by_cell, buildings_by_cell,
     tower_obstacle_profiles=None, restricted_areas=None, policies=None,
@@ -292,6 +352,8 @@ class PlanningConstraintFieldService:
 
     def generate(self, payload=None):
         payload = payload if isinstance(payload, dict) else {}
+        # fail-closed：输入网格属性失效时**绝不**生成，避免把过期输入写成 current 结果。
+        pcf_input_attributes_guard(self.session.state)
         field = generate_planning_constraint_field(
             **generation_arguments(self.session.state, payload)
         )
@@ -401,6 +463,9 @@ class PlanningConstraintFieldService:
     def apply_field(self, field):
         """把一层的约束场写入 state：同步 use case 与 heavy task 发布共用。"""
 
+        # 唯一发布点必须自己把关：heavy task 的 publish 阶段同样经过这里，
+        # 因此"输入失效却写出 passed"在同步与任务两条路径上都被堵住。
+        pcf_input_attributes_guard(self.session.state)
         state = self.session.state
         collection = state.setdefault("planning_constraint_fields", {
             "schema_version": 1, "status": "not_calculated",

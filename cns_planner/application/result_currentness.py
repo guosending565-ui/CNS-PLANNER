@@ -17,8 +17,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-
 from ..algorithms.corridor.v1 import CNSServiceCorridorV1
 from ..algorithms.corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from ..algorithms.coverage.geometric_3d import GeometricCoverage3DV1
@@ -97,7 +95,9 @@ def apply_algorithm_semantics_stale(result, algorithm_id, algorithm_version):
         return result
     if stored_id == str(algorithm_id) and stored_version == str(algorithm_version):
         return result
-    projected = deepcopy(result)
+    # Only top-level status fields change. Detail trees are read-only, as on the
+    # unchanged-identity path which already returns the original result.
+    projected = dict(result)
     projected["status"] = "stale"
     projected["stale_reason"] = "algorithm_semantics_changed"
     projected["algorithm_semantics_stale"] = {

@@ -353,14 +353,16 @@ def test_E_reevaluating_p16_restores_p18_initialization(tmp_path):
 
     result = workflow.evaluate_cns_corridor_site_plan()["cns_corridor_site_plan"]
 
-    assert result["status"] == "proposal_ready"
-    assert workflow.state["cns_corridor_site_plan"]["status"] == "proposal_ready"
+    # S2 is an unregistered tower host, so the frozen eligibility gate correctly
+    # produces no eligible proposal. That is a current terminal result, not stale.
+    assert result["status"] == "no_eligible_proposal"
+    assert workflow.state["cns_corridor_site_plan"]["status"] == "no_eligible_proposal"
     #: Round 2.5：P16 一旦重算/失效，P17 结论也随之失效（它是严格下游），
     #: 必须重新评估才能让 P18 恢复初始化。
     _p17_ready(workflow)
     review = workflow.initialize_cns_plan_review()["cns_plan_review"]
     assert review["status"] == "current"
-    assert review["initialized_from"]["p16_status"] == "proposal_ready"
+    assert review["initialized_from"]["p16_status"] == "no_eligible_proposal"
 
 
 def test_stale_or_missing_p16_status_is_refused(tmp_path):
