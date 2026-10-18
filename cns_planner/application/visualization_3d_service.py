@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import math
+import re
 import struct
 import threading
 from copy import deepcopy
@@ -2273,39 +2274,109 @@ class Visualization3DService:
     def _route_related_site_ids(self, route_id):
         """与某条航路**有可核验关系**的站址身份集合（没有关系就是空集）。
 
-        可核验关系只有两类显式证据：``radar_surveillance_layout`` 条目上的
-        ``route_id``，以及 ``cns_corridor_site_plan.selected_actions`` 上的航路标识。
-        绝不用"离航路近"这类推断来补齐。
+        可核验关系按以下优先级判定，绝不用"离航路近"这类推断来补齐：
+
+        A. 动作自身显式 ``route_ids[]``；
+        B. 动作自身显式 ``route_id``；
+        C. 唯一且可追溯的 P16 计划级航路身份（``targets[].route_id`` 与
+           ``before/after.routes[].route_id`` 的唯一集合）；
+        D. 旧 ``action_id`` 命名契约兼容（deprecated，按 token 边界匹配）。
+
+        显式字段与计划级身份冲突时 fail-closed；显式空关联（``route_ids=[]``）
+        与字段缺失严格区分。``radar_surveillance_layout`` 条目上的显式
+        ``route_id`` 仍是独立的既有证据路径。
         """
 
+        requested = _text(route_id)
         related = set()
+        if not requested:
+            return related
         layout = self.state.get("radar_surveillance_layout")
         rows = layout.get("items") if isinstance(layout, dict) else layout
         for item in rows or []:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("route_id") or "") != str(route_id):
+            if _text(item.get("route_id")) != requested:
                 continue
             for panel in item.get("selected_panels") or []:
                 if isinstance(panel, dict) and panel.get("tower_id"):
                     related.add(f"tower-colocation:{panel['tower_id']}")
         container = self.state.get("cns_corridor_site_plan")
         actions = container.get("selected_actions") if isinstance(container, dict) else None
+        plan_route_ids = self._plan_level_route_ids(container)
         from .cns_3d_site_projection import canonical_site_key
 
         for action in actions or []:
             if not isinstance(action, dict):
                 continue
-            action_id = str(action.get("action_id") or "")
-            if route_id not in action_id:
+            if not self._action_relates_to_route(action, requested, plan_route_ids):
                 continue
             host = action.get("host") if isinstance(action.get("host"), dict) else {}
-            tower_id = _text(host.get("host_tower_id")) if host else None
+            planning_origin = (
+                action.get("planning_origin")
+                if isinstance(action.get("planning_origin"), dict) else {}
+            )
+            tower_id = (
+                _text(planning_origin.get("host_tower_id"))
+                if planning_origin else None
+            )
+            if tower_id is None and host:
+                tower_id = _text(host.get("host_tower_id"))
             key = canonical_site_key(
                 action.get("distinct_site_id"), tower_host=tower_id)
             if key:
                 related.add(key)
         return related
+
+    @staticmethod
+    def _plan_level_route_ids(container):
+        """P16 计划级航路身份的唯一集合（只读证据，不推断）。
+
+        只接受计划对象自身的 ``targets[].route_id`` 与
+        ``before/after.routes[].route_id``。一旦出现第二个不同航路就提前返回，
+        调用方据此判为"计划级不唯一"，绝不把全部动作默认归给当前航线。
+        """
+
+        found = set()
+        if not isinstance(container, dict):
+            return found
+        sources = [container.get("targets")]
+        for key in ("before", "after"):
+            block = container.get(key)
+            sources.append(block.get("routes") if isinstance(block, dict) else None)
+        for rows in sources:
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                text = _text(row.get("route_id"))
+                if text:
+                    found.add(text)
+                    if len(found) > 1:
+                        return found
+        return found
+
+    @classmethod
+    def _action_relates_to_route(cls, action, requested, plan_route_ids):
+        """动作与请求航路的关系判定；只在证据一致时返回 ``True``。"""
+
+        present, explicit_ids, conflict = _explicit_action_route_ids(action)
+        if conflict:
+            return False
+        if present:
+            if not explicit_ids:
+                # 显式空关联：不属于任何航线，绝不回退到计划级或 action_id。
+                return False
+            if plan_route_ids and not (explicit_ids & plan_route_ids):
+                # 显式声明与计划级身份不一致 → fail-closed。
+                return False
+            return requested in explicit_ids
+        if plan_route_ids:
+            if len(plan_route_ids) != 1:
+                # 计划级身份不唯一 → 无法证明动作属于哪条航线。
+                return False
+            return requested == next(iter(plan_route_ids))
+        # 最后才回退到历史 action_id 命名契约（deprecated）。
+        return _legacy_action_id_matches_route(action.get("action_id"), requested)
 
     def fixed_corridor_bands(self, query=None):
         """固定 1000 m CNS 保障目标带的**只读三维投影**。
@@ -2683,6 +2754,60 @@ def _text(value):
         return None
     text = str(value).strip()
     return text or None
+
+
+def _explicit_action_route_ids(action):
+    """读取动作自身的显式航路标识，区分"字段缺失"与"显式空关联"。
+
+    返回 ``(present, ids, conflict)``：``present=False`` 表示 ``route_id`` 与
+    ``route_ids`` 两个字段都不存在（允许继续使用计划级身份）；``present=True``
+    且 ``ids`` 为空表示显式声明"不属于任何航线"；``conflict=True`` 表示两个
+    显式字段互相矛盾，调用方必须 fail-closed。
+    """
+
+    has_ids = "route_ids" in action
+    has_id = "route_id" in action
+    if not has_ids and not has_id:
+        return False, set(), False
+    ids = set()
+    if has_ids:
+        raw = action.get("route_ids")
+        if isinstance(raw, (list, tuple, set)):
+            ids = {text for item in raw if (text := _text(item))}
+        elif isinstance(raw, str):
+            text = _text(raw)
+            ids = {text} if text else set()
+        # 其他类型无法解释 → 显式空（fail-closed）。
+    if not has_id:
+        return True, ids, False
+    single = _text(action.get("route_id"))
+    single_ids = {single} if single else set()
+    if not has_ids:
+        return True, single_ids, False
+    if single_ids:
+        # 两个字段同时存在时必须相互包含；不一致即冲突。
+        if not single_ids <= ids:
+            return True, set(), True
+        return True, ids, False
+    if ids:
+        # ``route_id`` 显式为空，``route_ids`` 却列出航线 → 冲突。
+        return True, set(), True
+    return True, set(), False
+
+
+def _legacy_action_id_matches_route(action_id, route_id):
+    """历史 ``action_id`` 命名契约兼容（**deprecated**），按 token 边界匹配。
+
+    旧实现用 ``route_id in action_id``，会把 ``R0005`` 命中 ``R00050``、
+    把 ``R000`` 命中 ``R0005``。这里要求航路标识是完整的分隔 token。
+    """
+
+    text = _text(action_id)
+    target = _text(route_id)
+    if not text or not target:
+        return False
+    pattern = r"(?:^|[:|])" + re.escape(target) + r"(?=$|[:|])"
+    return re.search(pattern, text) is not None
 
 
 def _parse_int(query, key, default):
