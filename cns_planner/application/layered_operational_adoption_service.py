@@ -8,7 +8,7 @@ from ..domain.layered_operational_adoption import (
     ALGORITHM_ID, ALGORITHM_VERSION, SCHEMA_VERSION, SOURCE_TYPE, adoption_fingerprint,
     normalize_layered_operational_adoptions,
 )
-from ..domain.layered_route_validation import stable_fingerprint, utc_now
+from ..domain.layered_route_validation import path_fingerprint, stable_fingerprint, utc_now
 from ..domain.planning_constraint_field import PROVISIONAL_ROUTE_BLOCK_STATEMENT
 from ..domain.spatial_3d import normalize_route_operating_layer
 from .production_write_authority import assert_write_authority
@@ -52,7 +52,7 @@ class LayeredOperationalAdoptionService:
         validations = self.validations.result_snapshot()
         options = []
         for item in validations.get("items") or []:
-            gate = self._gate(item)
+            gate = self._gate(item, self._resolve_candidate(item))
             options.append({
                 "validation_id": item.get("validation_id"),
                 "route_id": (item.get("candidate") or {}).get("route_id"),
@@ -81,7 +81,23 @@ class LayeredOperationalAdoptionService:
         validation = self._select_validation(payload)
         if validation is None:
             return {"status": "not_ready", "reason": "validation_not_found"}
-        gate = self._gate(validation)
+        candidate = self._resolve_candidate(validation)
+        gate = self._gate(validation, candidate)
+        # Preview 与 Apply 共用 projection；资格门禁在既有证据门禁之后执行。
+        identity_code = self._candidate_identity(validation, candidate)
+        allowed = (candidate or {}).get("operational_adoption_allowed")
+        if identity_code or allowed is not True:
+            code, reason = (
+                (identity_code, "验证记录与当前候选身份或几何不一致，请重新验证候选航路")
+                if identity_code else
+                ("candidate_missing_adoption_eligibility", "候选航路缺少采纳资格，请重新生成候选航路")
+                if allowed is None else
+                ("candidate_not_adoption_eligible", "候选航路不具备正式采纳资格")
+            )
+            gate["eligible"] = False
+            gate["reasons"].append(code)
+            gate["blocking_reasons"].append({"reason_code": code, "reason": reason})
+            gate["reason_text"] = "；".join(item["reason"] for item in gate["blocking_reasons"])
         if not gate["eligible"]:
             return {
                 "status": "not_ready", "reason": "publish_gate_blocked",
@@ -513,7 +529,53 @@ class LayeredOperationalAdoptionService:
 
     # ------------------------------------------------------------------ helpers
 
-    def _gate(self, validation):
+    def _resolve_candidate(self, validation):
+        """Resolve exactly one live identity; empty IDs never use active/fallback."""
+        wanted = (validation.get("candidate") or {}).get("candidate_id")
+        if not isinstance(wanted, str) or not wanted.strip():
+            return None
+        matches = [
+            item for item in self.validations.layered.result_snapshot().get("items") or []
+            if item.get("candidate_id") == wanted
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _candidate_identity(validation, candidate):
+        reference = validation.get("candidate") or {}
+        wanted = reference.get("candidate_id")
+        if not isinstance(wanted, str) or not wanted.strip():
+            return "candidate_identity_missing"
+        if candidate is None:
+            return "candidate_identity_mismatch"
+        for field in ("candidate_id", "route_id", "altitude_layer_id"):
+            if not reference.get(field) or reference.get(field) != candidate.get(field):
+                return "candidate_identity_mismatch"
+        if (not reference.get("candidate_fingerprint") or
+                reference["candidate_fingerprint"] != candidate.get("candidate_fingerprint")):
+            return "candidate_identity_stale"
+        try:
+            live_path = candidate.get("path") or []
+            validated_path = (validation.get("route") or {}).get("path") or []
+            if (len(live_path) < 2 or len(validated_path) < 2 or
+                    any(not isinstance(p, (list, tuple)) or len(p) != 2
+                        for p in live_path + validated_path) or
+                    not reference.get("path_fingerprint") or
+                    reference["path_fingerprint"] != path_fingerprint(live_path) or
+                    reference["path_fingerprint"] != path_fingerprint(validated_path)):
+                return "candidate_identity_stale"
+        except (TypeError, ValueError, OverflowError):
+            return "candidate_identity_stale"
+        # Existing validation snapshots retain these safety semantics, unlike eligibility.
+        # Comparing them also catches same-fingerprint metadata updates.
+        for field in ("operational_applicability", "unknown_constraint_count",
+                      "traversed_unknown_cell_count", "contains_unknown_constraints",
+                      "constraint_field_fingerprint"):
+            if reference.get(field) != candidate.get(field):
+                return "candidate_identity_stale"
+        return None
+
+    def _gate(self, validation, candidate):
         """正式发布门禁（**不放松**）。
 
         只要候选/航路含证据不足（unknown / unresolved）约束，Apply 一律不得成功，并给出
@@ -555,9 +617,6 @@ class LayeredOperationalAdoptionService:
                 "configured_real_sources_required",
                 "production 发布只接受 verified configured real FABDEM/buildings source chain",
             )
-        candidate = self.validations._select_current_candidate({
-            "candidate_id": (validation.get("candidate") or {}).get("candidate_id")
-        })
         if candidate is None or candidate.get("current_applicability") != "current":
             block("referenced_candidate_not_current", "被引用的候选航路已不是当前候选")
         else:

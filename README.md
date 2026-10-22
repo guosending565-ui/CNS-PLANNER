@@ -1,5 +1,7 @@
 # CNS-PLANNER：低空航路规划与 CNS 设施规划工作台
 
+> **2026-10-22 远程审查快照**：本分支基于 `9404d16`，仅追加航路发布资格门禁修复及直接测试；不是正式 RC 验收。架构、S3/S4 证据、数据质量、未合入成果和开发路线见 [R0 审查索引](docs/project_audit/00_BASELINE.md)。下文原有阶段/main描述保留历史语境，本分支适用范围以审查索引为准。
+
 CNS-PLANNER 是一个面向低空航路与 CNS（Communication / Navigation / Surveillance）工程分析的**本地工作台**，技术栈为 **Python + QGIS/GDAL + 原生 JavaScript ES Modules**，以可保存、可恢复、可审计的 schema-v2 项目为唯一权威状态。
 
 它的产品目标不是"一次算出一个答案"，而是让每一步的输入等级、假设、证据与成熟度都可解释、可追溯：

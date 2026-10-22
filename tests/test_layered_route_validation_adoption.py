@@ -26,6 +26,7 @@ def prepared(tmp_path):
     candidate = {
         "candidate_id": "LC-1", "route_id": "R-1", "altitude_layer_id": "L-100",
         "status": "candidate", "current_applicability": "current",
+        "operational_adoption_allowed": True,
         "candidate_fingerprint": "candidate-fp", "path": [[122.0, 30.0], [122.001, 30.0]],
     }
     candidates = {
@@ -1137,3 +1138,58 @@ def test_apply_requires_current_candidate_and_real_sources(tmp_path):
     with pytest.raises(ValueError):
         service.apply_layered_operational_adoption({"validation_id": validation_id, "confirmed": True})
     assert service.state["operational_routes"] == []
+
+
+@pytest.mark.parametrize("allowed,code", [
+    (False, "candidate_not_adoption_eligible"),
+    (None, "candidate_missing_adoption_eligibility"),
+])
+def test_r13_ineligible_candidate_blocks_preview_and_apply(tmp_path, allowed, code):
+    service, candidate, _ = prepared(tmp_path)
+    if allowed is None:
+        candidate.pop("operational_adoption_allowed")
+    else:
+        candidate["operational_adoption_allowed"] = allowed
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    assert latest(service)["status"] == "validated_candidate"
+    before = deepcopy(service.state)
+    preview = service.preview_layered_operational_adoption({})
+    assert preview["status"] == "not_ready"
+    assert preview["publication_allowed"] is False
+    assert code in preview["projection"]["reasons"]
+    assert code in {b["reason_code"] for b in preview["projection"]["blocking_reasons"]}
+    with pytest.raises(ValueError, match="Apply gate"):
+        service.apply_layered_operational_adoption({"confirmed": True})
+    assert service.state == before
+    assert not service.state["operational_routes"]
+
+
+def test_r13_explicit_eligibility_keeps_publication(tmp_path):
+    service, candidate, _ = prepared(tmp_path)
+    assert candidate["operational_adoption_allowed"] is True
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    assert latest(service)["status"] == "validated_candidate"
+    assert not latest(service).get("warnings")
+    preview = service.preview_layered_operational_adoption({})
+    assert preview["publication_allowed"] is True
+    result = service.apply_layered_operational_adoption({"confirmed": True})
+    assert result["status"] == "passed"
+    assert [r["route_id"] for r in service.state["operational_routes"]] == ["R-1"]
+
+
+@pytest.mark.parametrize("allowed", [False, None])
+def test_r13_validation_warning_preserves_evidence_verdict(tmp_path, allowed):
+    service, candidate, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    baseline = latest(service)
+    if allowed is None:
+        candidate.pop("operational_adoption_allowed")
+    else:
+        candidate["operational_adoption_allowed"] = allowed
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    result = latest(service)
+    assert result["status"] == baseline["status"] == "validated_candidate"
+    assert result["domains"] == baseline["domains"]
+    assert result["fingerprints"] == baseline["fingerprints"]
+    assert "candidate_not_adoption_eligible" in {w["reason_code"] for w in result["warnings"]}
+    assert not result["blocking_reasons"]

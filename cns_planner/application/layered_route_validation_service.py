@@ -480,6 +480,14 @@ class LayeredRouteValidationService:
         return record
 
     def _store(self, record, *, save):
+        candidate = self._select_current_candidate({
+            "candidate_id": (record.get("candidate") or {}).get("candidate_id")
+        })
+        if candidate is not None and candidate.get("operational_adoption_allowed") is not True:
+            record.setdefault("warnings", []).append(_block(
+                "candidate_not_adoption_eligible",
+                "候选航路尚不具备正式采纳资格；本次验证仅评估证据，不授予采纳资格",
+            ))
         state = self.ensure_state()
         collection = normalize_layered_route_validation_collection(
             state.get("layered_route_validations")
