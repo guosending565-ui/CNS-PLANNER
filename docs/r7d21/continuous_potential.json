@@ -1,0 +1,31 @@
+{
+  "C": {
+    "baseline_longest_m": 9404.937615150231,
+    "all_geometry_potential_longest_m": 2943.4184323338104,
+    "all_model_qualified_longest_m": 9404.937615150231,
+    "ALT100_geometry_longest_m": 2943.4184323338104,
+    "ALT100_model_qualified_longest_m": 9404.937615150231
+  },
+  "S": {
+    "baseline_longest_m": 9404.937615150231,
+    "all_geometry_potential_longest_m": 590.6034530275047,
+    "all_model_qualified_longest_m": 590.6034530275047,
+    "ALT100_geometry_longest_m": 590.6034530275047,
+    "ALT100_model_qualified_longest_m": 590.6034530275047
+  },
+  "minimum_probe": {
+    "S_action_ids": [
+      "tower_colocation_host:EA-TWR-33090301000160:RID-BASELINE-2-5KM",
+      "tower_colocation_host:EA-TWR-330903908000000081:RID-BASELINE-2-5KM"
+    ],
+    "candidate_count": 2,
+    "height_layers": 3,
+    "voxels": 2727,
+    "ALT100_voxels": 909,
+    "P14_P15_batches": 3,
+    "description": "two single-candidate what-ifs plus one combined pair; no greedy iterations",
+    "pair_model_potential_longest_m": 885.7657215814121,
+    "C_probe_count": 0,
+    "C_reason": "resolve provider capability evidence before an effective-gain trial"
+  }
+}

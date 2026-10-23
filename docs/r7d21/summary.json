@@ -1,0 +1,48 @@
+{
+  "C": {
+    "candidate_count": 373,
+    "physical_sites": 371,
+    "geometry_positive_candidates": 22,
+    "capability_positive_candidates": 0,
+    "unknown_candidate_count": 22,
+    "geometry_all": {
+      "any_provider": 2523,
+      "redundancy_satisfied": 2310
+    },
+    "capability_all": {
+      "any_provider": 0,
+      "redundancy_satisfied": 0
+    },
+    "geometry_ALT100": {
+      "any_provider": 841,
+      "redundancy_satisfied": 770
+    },
+    "capability_ALT100": {
+      "any_provider": 0,
+      "redundancy_satisfied": 0
+    }
+  },
+  "S": {
+    "candidate_count": 373,
+    "physical_sites": 371,
+    "geometry_positive_candidates": 42,
+    "capability_positive_candidates": 42,
+    "unknown_candidate_count": 0,
+    "geometry_all": {
+      "any_provider": 2721,
+      "redundancy_satisfied": 2508
+    },
+    "capability_all": {
+      "any_provider": 2721,
+      "redundancy_satisfied": 2508
+    },
+    "geometry_ALT100": {
+      "any_provider": 907,
+      "redundancy_satisfied": 836
+    },
+    "capability_ALT100": {
+      "any_provider": 907,
+      "redundancy_satisfied": 836
+    }
+  }
+}
