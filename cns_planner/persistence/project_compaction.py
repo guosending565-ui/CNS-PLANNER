@@ -331,6 +331,10 @@ def restore_compacted_results(document, project_path):
     if not isinstance(document, dict):
         return document
     restored = deepcopy(document)
+    # 上一次加载/恢复留下的诊断只描述那一次 IO 结果，不能跨加载复用；否则把
+    # artifact 补回项目目录后，界面仍会永久显示"明细不可用"。本次加载会重新
+    # 判定并在失败时重建该字段。
+    restored.pop("artifact_diagnostics", None)
     manifest = artifact_manifest_for(restored)
     if manifest is None:
         legacy_index = restored.get("result_index")
@@ -348,6 +352,10 @@ def restore_compacted_results(document, project_path):
         reference = _container_ref(container) or _entry_ref(manifest, scope["logical_key"])
         if reference is None:
             continue
+        # detail_status/detail_error 是上一次读取的 IO 结论，不是领域状态；本次
+        # 读取成功后必须清掉，读取失败时由 _mark_unavailable 重新写入。
+        container.pop("detail_status", None)
+        container.pop("detail_error", None)
         try:
             payload = store.read(reference)
         except ArtifactError as exc:

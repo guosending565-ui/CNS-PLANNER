@@ -11,6 +11,7 @@ from copy import deepcopy
 import gzip
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -504,6 +505,41 @@ def test_missing_artifact_is_never_reported_as_empty_or_pass(tmp_path):
     assert diagnostics and all(item["code"] == "artifact_missing" for item in diagnostics)
     assert restored["coverage_3d"]["detail_status"] == "artifact_unavailable"
     assert restored["coverage_3d"]["status"] == "passed", "IO 失败绝不被误写成领域 assessment failed"
+
+
+def test_restored_artifacts_clear_stale_persisted_detail_status(tmp_path):
+    """R7-D17：artifact 补回项目目录后，旧加载写下的"明细不可用"必须失效。
+
+    恢复/迁移项目时 artifact_diagnostics、detail_status、detail_error 都属于
+    "上一次 IO 结论"，不是持久领域状态；本次能读到明细就不能继续显示不可用。
+    """
+
+    source = tmp_path / "source" / "project_state.json"
+    document = compact_and_store(large_state(4), source)
+    project = tmp_path / "copy" / "project_state.json"
+    project.parent.mkdir(parents=True)
+    target_dir = project.parent / ARTIFACT_DIRECTORY
+    target_dir.mkdir()
+    for item in (source.parent / ARTIFACT_DIRECTORY).iterdir():
+        if item.is_file():
+            shutil.copy2(item, target_dir / item.name)
+
+    stale = {
+        "scope": "planning_constraint_fields", "code": "artifact_missing",
+        "message": "结果明细文件缺失", "detail": {"relative_path": ".cns-results/missing.json.gz"},
+    }
+    document["artifact_diagnostics"] = [stale]
+    document["planning_constraint_fields"]["detail_status"] = "artifact_unavailable"
+    document["planning_constraint_fields"]["detail_error"] = stale
+    ProjectRepository(project).save(document)
+
+    restored = restore_compacted_results(ProjectRepository(project).load(), project)
+
+    assert "artifact_diagnostics" not in restored
+    container = restored["planning_constraint_fields"]
+    assert container.get("detail_status") is None
+    assert container.get("detail_error") is None
+    assert container["items"][0]["cells"][0]["grid_id"] == "G0"
 
 
 # ---- 17. report manifest 保留 artifact refs ---------------------------------
