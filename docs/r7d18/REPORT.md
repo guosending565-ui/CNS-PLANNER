@@ -251,9 +251,20 @@ node tests/cns_service_round3_frontend.test.mjs   # 48/48
 
 ## 十、提交、发布与边界
 
-- 本地 commit 仅包含本轮 D18 源码/测试/工具/文档；未合并 `main`、未
-  reset/clean、未应用 13 项历史 P16 设施、未改正式 `ProjectState`。
-- 工作树中另有 6 个与本轮无关的影像预算改动（`imagery_budget.py` 等）在
-  本轮期间出现；按“保留工作区现有改动”原则未回滚，也**未纳入本轮提交**。
-- GitHub 同步：按 R7-D17 已通过的公开发布规则（白名单、禁用路径/数据、密钥扫描、
-  BOM/大文件检查）执行后推送既有开发分支；不合并 `main`。
+- 本地 commit：
+  - `500ccc2 fix(r7d18): close corridor fingerprint and historical test debt`
+  - `f1ffb0c docs(r7d18): record public release audit`
+- 发布审核（`docs/r7d18/release_audit.json`）：**verdict=pass**；905 个跟踪文件、
+  27,050,519 B；白名单/禁用路径/密钥/可达历史/归档与大文件/BOM/tree mode 全部 pass；
+  3 项 warn 均为既有项（Cesium.js 5.14 MB、公开 main 已存在的 14 个 `.test_runtime`
+  测试产物、根 LICENSE 未声明），无新增披露。
+- GitHub 同步：`97be3cf..f1ffb0c` 已推送到既有开发分支
+  `dev/r7d17-integration`
+  （<https://github.com/guosending565-ui/CNS-PLANNER/tree/dev/r7d17-integration>），
+  快进推送，**未合并 `main`**、未强推。
+- 未 reset/clean、未删除历史工作树、未应用 13 项历史 P16 设施、未改正式
+  `ProjectState`、未启动/停止 8765/8776。
+- 工作树中另有 5 个与本轮无关的影像预算改动（`imagery_budget.py`、
+  `visualization_3d_imagery_service.py`、`app.js` 及两个测试）在本轮期间出现；
+  按“保留工作区现有改动”原则未回滚，也**未纳入本轮提交**。
+
