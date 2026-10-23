@@ -35,13 +35,17 @@ from copy import deepcopy
 from math import isfinite
 
 #: 契约版本与算法标识。
-CONTINUOUS_SERVICE_SCHEMA_VERSION = "round2.6-post-plan-continuous-service-acceptability"
+CONTINUOUS_SERVICE_SCHEMA_VERSION = "round38-w1b-fixed-band-response-decoupled"
 CONTINUOUS_SERVICE_ALGORITHM_ID = "continuous_service_acceptability_v1"
 #: Round 30-C2A.2/C2A.3：Radar 规划期首次探测距离代理 + "探测距离可用 /
 #: 服务覆盖满足"双语义拆分 + 补充威胁的**逐 service** P15 判定 + "已全覆盖"与
 #: "缺探测证据"分离 ⇒ 2.1 的旧持久化结果必须被识别为旧算法语义（effective stale），
 #: 由 ``cns_planner.application.result_currentness`` 既有的版本比对链判定。
-CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.2"
+#:
+#: Round38-W1A/W1B：固定 1000 m CNS 服务保障带宽（中心线左右各 500 m）取代
+#: 按航路可编辑的历史半宽；响应保护距离与固定宽带服务状态解耦。2.4 的旧持久化结果
+#: 同样必须 effective stale。D15 合并两套语义 ⇒ 2.5。
+CONTINUOUS_SERVICE_ALGORITHM_VERSION = "2.5"
 
 #: 四种运行可接受性结论（**顺序即严重度**）。
 ACCEPTABILITY_STATUSES = (

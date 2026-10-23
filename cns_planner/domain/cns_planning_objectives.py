@@ -96,13 +96,18 @@ def empty_cns_corridor_gap_assessment(status="not_calculated"):
         "status": status,
         "algorithm_id": "cns_corridor_gap_v1",
         #: Round 29-N：与 ``CNSCorridorGapAnalyzerV1.algorithm_version`` 保持同步。
-        "algorithm_version": "1.2",
+        #: Round38-W1A：``1.2`` → ``1.3``（中心线/全宽分离 + 全宽缺口统计）。
+        "algorithm_version": "1.3",
         "model_scope": "spatial_corridor_service_redundancy_and_objectives",
         "continuity_semantics": "conservative_longitudinal_projection_of_corridor_voxel_deficits",
         "formal_continuity_probability": "not_evaluated",
         "input_fingerprint": None,
         "route_count": 0,
         "routes": [],
+        #: Round38-W1A：中心线口径与全宽口径必须是**两个**独立字段；未运行全宽评估
+        #: 时固定为 ``not_evaluated``，绝不由 N1 的 2000 m 关联结果推导。
+        "centerline_service_status": "not_evaluated",
+        "full_width_service_status": "not_evaluated",
         "confirmed_target_voxel_ids": [],
         "unknown_voxel_ids": [],
         "not_evaluated": _not_evaluated(),

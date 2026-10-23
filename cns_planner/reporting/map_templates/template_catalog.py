@@ -29,6 +29,17 @@ import math
 
 TEMPLATE_SCHEMA_VERSION = 1
 
+#: Round38-FIG：**含固定 1000 m CNS 保障宽带的模板**的版本号。
+#:
+#: 为什么必须升版而不是沿用 1：这些模板的图面语义真的变了（新增了一条共享的
+#: "固定 1000 m 服务目标带"图层，并要求 currentness / route_geometry_fingerprint
+#: 身份门禁）。旧图件的 ``template_version=1`` 因此在 FigureSpec 中**可区分**，
+#: 不会被误认为已含固定宽带语义的最新成果。
+CNS_FIGURE_TEMPLATE_VERSION = 2
+
+#: 历史模板版本（只用于识别 Round38-FIG 之前导出的图件，不参与新图生成）。
+LEGACY_FIGURE_TEMPLATE_VERSION = 1
+
 ROUTE_OVERVIEW_V1 = "route_overview_v1"
 ROUTE_DETAIL_V1 = "route_detail_v1"
 COMMUNICATION_LAYOUT_V1 = "communication_layout_v1"
@@ -57,6 +68,44 @@ CNS_EXTENT_POLICY_ID = "cns_route_context_v1"
 CNS_LAYOUT_PROFILE = "cns_five_figure_v2"
 #: 历史档位标识，只用于识别 Round30-A 已导出的旧图件（不参与新图生成）。
 CNS_LAYOUT_PROFILE_V1 = "cns_five_figure_v1"
+
+#: 固定 1000 m CNS 保障宽带的**共享图层定义**（Round38-FIG：六类专题图共用同一份）。
+#:
+#: 语义严格限定为"服务保障**目标带**"：它回答"服务需要保障哪条带"，
+#: **不**回答"是否已具备能力"。因此它在任何图件里都不得被描述为设备已实现的覆盖区域，
+#: 也不构成认证安全飞行空域或法规批准空间。
+FIXED_CORRIDOR_LAYER_KEY = "cns_fixed_corridor"
+#: 图例显示名**求简**：图例不承载技术说明（"非设备覆盖"这类语义完整写在
+#: :data:`FIXED_CORRIDOR_LAYER_SEMANTICS`、FigureSpec.metadata 与 source_detail 里）。
+FIXED_CORRIDOR_LAYER_DISPLAY_NAME = "固定 1000 m CNS 保障目标带"
+FIXED_CORRIDOR_LAYER_SEMANTICS = (
+    "cns_service_target_band_engineering_reference_not_measured_coverage_"
+    "not_certified_airspace"
+)
+#: 固定宽带几何与导航中心线监测关联（2000 m）的**分离声明**：两者永不等价。
+FIXED_CORRIDOR_VS_NAVIGATION_ASSOCIATION_NOTICE = (
+    "固定 1000 m 保障宽带（中心线左右各 500 m）与导航监测中心线关联范围（2000 m）"
+    "是两件不同的事：前者是服务保障目标带，后者是监测关联距离，二者互不替代，"
+    "且都不构成认证导航覆盖区。"
+)
+
+#: 导航监测（N1/N2 只读仿真）相关图层键与显示名（只有导航布设图消费）。
+#: 显示名同样求简：身份来源与证据写在 ``source_detail`` 与 FigureSpec.metadata 里。
+NAVIGATION_MONITOR_SITES_LAYER_KEY = "cns_nav_monitor_sites"
+NAVIGATION_MONITOR_SITES_DISPLAY_NAME = "导航监测强制端点设备（N1 仿真）"
+NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY = "cns_nav_monitor_optional"
+NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME = "导航监测选中站址（未确认）"
+NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY = "cns_nav_monitor_unselected"
+NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME = "导航监测候选站址（未选中）"
+NAVIGATION_ASSOCIATION_LAYER_KEY = "cns_nav_association"
+NAVIGATION_ASSOCIATION_DISPLAY_NAME = "中心线已关联航段 2 km"
+NAVIGATION_GAP_LAYER_KEY = "cns_nav_gap"
+NAVIGATION_GAP_DISPLAY_NAME = "最长监测缺口（未关联）"
+
+#: 导航监测图层的**只读仿真**来源角色：它不是 ProjectState 的 canonical 容器，
+#: 也不是本机数据源文件，因此绝不参与 `_source_state` 的文件存在性判据。
+NAVIGATION_MONITOR_SOURCE_ROLE = "navigation_monitoring_simulation_readonly"
+
 #: 监视布设图的 variant 参数名与两个合法取值。
 SURVEILLANCE_SERVICE_PARAMETER = "surveillance_service"
 SURVEILLANCE_SERVICE_RID = "rid_cooperative"
@@ -123,6 +172,7 @@ ROUTE_OVERVIEW_LEGEND_ORDER = (
     "land",
     "terrain_obstacle",
     "building_obstacle",
+    FIXED_CORRIDOR_LAYER_KEY,
     "tower_existing",
     "tower_obstacle",
     "airport",
@@ -141,14 +191,20 @@ CNS_LEGEND_ORDER = (
     "land",
     "terrain_obstacle",
     "building_obstacle",
+    FIXED_CORRIDOR_LAYER_KEY,
     "tower_existing",
     "cns_existing",
     "cns_comm_proposal",
     "cns_rid_proposal",
     "cns_nav_proposal",
+    NAVIGATION_MONITOR_SITES_LAYER_KEY,
+    NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY,
+    NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY,
     "cns_coverage_comm",
     "cns_coverage_rid_land",
     "cns_coverage_rid_sea",
+    NAVIGATION_ASSOCIATION_LAYER_KEY,
+    NAVIGATION_GAP_LAYER_KEY,
     "cns_radar_context",
     "cns_radar_sector",
     "cns_radar_proposal",
@@ -177,10 +233,16 @@ LAYER_DISPLAY_NAMES = {
     "start_point": "起点",
     "end_point": "终点",
     # ---- CNS 专题图 ----
+    FIXED_CORRIDOR_LAYER_KEY: FIXED_CORRIDOR_LAYER_DISPLAY_NAME,
     "cns_existing": "既有 CNS 设施（已建）",
     "cns_comm_proposal": "通信规划提案（未确认）",
     "cns_rid_proposal": "RID 规划提案（未确认）",
     "cns_nav_proposal": "导航完整性监测点提案（未确认）",
+    NAVIGATION_MONITOR_SITES_LAYER_KEY: NAVIGATION_MONITOR_SITES_DISPLAY_NAME,
+    NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY: NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME,
+    NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY: NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME,
+    NAVIGATION_ASSOCIATION_LAYER_KEY: NAVIGATION_ASSOCIATION_DISPLAY_NAME,
+    NAVIGATION_GAP_LAYER_KEY: NAVIGATION_GAP_DISPLAY_NAME,
     "cns_coverage_comm": "通信规划服务半径 4 km",
     "cns_coverage_rid_land": "RID 陆地/沿海规划范围 2 km",
     "cns_coverage_rid_sea": "RID 海上延伸规划范围 2–5 km",
@@ -202,6 +264,9 @@ LAYER_SOURCE_ROLES = {
     "airspace": "basemap",
     "terrain_obstacle": "terrain_dtm",
     "building_obstacle": "building_grid",
+    # 固定 1000 m 保障宽带：几何**只**由 gis/corridor_geometry.build_fixed_corridor_geometry
+    # 构造，身份与 currentness 只由 P14/fixed corridor geometry 服务口径给出。
+    FIXED_CORRIDOR_LAYER_KEY: "fixed_corridor_geometry",
     "tower_existing": "towers",
     "tower_obstacle": "tower_obstacle_profiles",
     "airport": "airports",
@@ -210,6 +275,12 @@ LAYER_SOURCE_ROLES = {
     "cns_comm_proposal": "cns_corridor_site_plan",
     "cns_rid_proposal": "cns_corridor_site_plan",
     "cns_nav_proposal": "cns_corridor_site_plan",
+    # N1/N2 导航监测：**只读仿真**，不是 ProjectState 容器，也不是数据源文件。
+    NAVIGATION_MONITOR_SITES_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
+    NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
+    NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
+    NAVIGATION_ASSOCIATION_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
+    NAVIGATION_GAP_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
     "cns_coverage_comm": "cns_corridor_site_plan",
     "cns_coverage_rid_land": "cns_corridor_site_plan",
     "cns_coverage_rid_sea": "cns_corridor_site_plan",
@@ -402,10 +473,10 @@ def _validate_parameter_pixels(parameters):
 
 def _template(template_id, *, display_name, purpose, availability, parameters=None,
               legend_order=(), layers=(), notes="", variant_parameter=None,
-              required_parameters=()):
+              required_parameters=(), template_version=TEMPLATE_SCHEMA_VERSION):
     return {
         "template_id": template_id,
-        "template_version": TEMPLATE_SCHEMA_VERSION,
+        "template_version": template_version,
         "display_name": display_name,
         "purpose": purpose,
         "status": availability,
@@ -432,8 +503,10 @@ ROUTE_OVERVIEW_V1_TEMPLATE = _template(
     notes=(
         "只读消费 canonical operational route 与已配置 GIS 数据源；不含适飞空域表达；"
         "缺数据的图层会被省略，并在 FigureSpec.source_status / omitted_layers 中记录原因，"
-        "绝不补 0 或伪造。"
+        "绝不补 0 或伪造。Round38-FIG 起与 CNS 五图共用同一条固定 1000 m 保障目标带图层"
+        "（左右各 500 m），该带是服务目标带，不是设备已实现的覆盖区域。"
     ),
+    template_version=CNS_FIGURE_TEMPLATE_VERSION,
 )
 
 _COMMON_CNS_NOTES = (
@@ -455,6 +528,7 @@ COMMUNICATION_LAYOUT_V1_TEMPLATE = _template(
     legend_order=CNS_LEGEND_ORDER,
     layers=tuple(CNS_LEGEND_ORDER),
     notes=_COMMON_CNS_NOTES + " 只消费 service_key=C:communication 的动作，绝不混入 RID/Radar。",
+    template_version=CNS_FIGURE_TEMPLATE_VERSION,
 )
 
 NAVIGATION_LAYOUT_V1_TEMPLATE = _template(
@@ -473,6 +547,7 @@ NAVIGATION_LAYOUT_V1_TEMPLATE = _template(
         "监测点画在真实 endpoint site 上，绝不移动到铁塔、绝不称 RTK / GBAS，"
         "local_monitoring_radius 不是认证覆盖范围（默认不绘制）。"
     ),
+    template_version=CNS_FIGURE_TEMPLATE_VERSION,
 )
 
 SURVEILLANCE_LAYOUT_V1_TEMPLATE = _template(
@@ -492,6 +567,7 @@ SURVEILLANCE_LAYOUT_V1_TEMPLATE = _template(
     ),
     variant_parameter=SURVEILLANCE_SERVICE_PARAMETER,
     required_parameters=(SURVEILLANCE_SERVICE_PARAMETER,),
+    template_version=CNS_FIGURE_TEMPLATE_VERSION,
 )
 
 CNS_COMBINED_V1_TEMPLATE = _template(
@@ -509,6 +585,7 @@ CNS_COMBINED_V1_TEMPLATE = _template(
         _COMMON_CNS_NOTES + " 同址多业务用多符号叠加表达，坐标逐字节一致，绝不靠偏移错位；"
         "R0005 的 Radar 新建设施数量恒为 0。"
     ),
+    template_version=CNS_FIGURE_TEMPLATE_VERSION,
 )
 
 #: ``route_detail_v1`` 等后续模板仍可以使用空域图层（能力未删除）。
@@ -556,10 +633,33 @@ def catalog():
         "cns_extent_policy_id": CNS_EXTENT_POLICY_ID,
         "cns_layout_profile": CNS_LAYOUT_PROFILE,
         "surveillance_service_values": list(SURVEILLANCE_SERVICE_VALUES),
+        # Round38-FIG：固定 1000 m 保障宽带的共享图层定义与六图版本口径。
+        "fixed_corridor_layer": {
+            "layer_key": FIXED_CORRIDOR_LAYER_KEY,
+            "display_name": FIXED_CORRIDOR_LAYER_DISPLAY_NAME,
+            "semantics": FIXED_CORRIDOR_LAYER_SEMANTICS,
+            "width_policy_version": "fixed-1000m-v1",
+            "corridor_half_width_m": 500.0,
+            "corridor_total_width_m": 1000.0,
+            "geometry_builder": (
+                "cns_planner.gis.corridor_geometry.build_fixed_corridor_geometry"
+            ),
+            "applies_to_template_ids": [
+                template_id for template_id, item in COMMERCIAL_TEMPLATES.items()
+                if item["status"] == AVAILABLE
+            ],
+            "not_a_device_coverage_area": True,
+            "not_certified_airspace": True,
+            "navigation_association_notice": FIXED_CORRIDOR_VS_NAVIGATION_ASSOCIATION_NOTICE,
+        },
+        "cns_figure_template_version": CNS_FIGURE_TEMPLATE_VERSION,
+        "legacy_figure_template_version": LEGACY_FIGURE_TEMPLATE_VERSION,
         "notes": (
             "本目录只登记模板。status=planned 的模板尚未实现，调用生成接口会被明确拒绝，"
             "系统不会为它们生成任何占位结果。CNS 专题图中的 P16 设施一律是"
             "「规划提案（未确认）」，既有设施与规划提案必须视觉可分。"
+            "六类专题图共用同一条固定 1000 m 保障目标带图层定义与图例样式；"
+            "该带是服务目标带，绝不等同于设备已实现的覆盖区域，也不是认证安全飞行空域。"
         ),
     }
 
@@ -604,12 +704,22 @@ def required_parameters(template_id):
 
 __all__ = [
     "AVAILABLE", "CNS_COMBINED_V1", "CNS_COMBINED_V1_TEMPLATE", "CNS_COVERAGE_POLICY",
-    "CNS_EXTENT_POLICY_ID", "CNS_LAYOUT_PROFILE", "CNS_LAYOUT_PROFILE_V1", "CNS_LEGEND_ORDER",
+    "CNS_EXTENT_POLICY_ID", "CNS_FIGURE_TEMPLATE_VERSION", "CNS_LAYOUT_PROFILE",
+    "CNS_LAYOUT_PROFILE_V1", "CNS_LEGEND_ORDER",
     "CNS_SERVICE_COLORS",
     "CNS_SHARED_PARAMETERS", "COMMERCIAL_TEMPLATES", "COMMUNICATION_LAYOUT_V1",
-    "COMMUNICATION_LAYOUT_V1_TEMPLATE", "LAYER_DISPLAY_NAMES", "LAYER_SOURCE_ROLES",
-    "MAX_PARAMETER_PIXELS", "MapFigureParameterInvalid", "NAVIGATION_LAYOUT_V1",
-    "NAVIGATION_LAYOUT_V1_TEMPLATE", "PARAMETER_CONSTRAINTS", "PLANNED",
+    "COMMUNICATION_LAYOUT_V1_TEMPLATE",
+    "FIXED_CORRIDOR_LAYER_DISPLAY_NAME", "FIXED_CORRIDOR_LAYER_KEY",
+    "FIXED_CORRIDOR_LAYER_SEMANTICS", "FIXED_CORRIDOR_VS_NAVIGATION_ASSOCIATION_NOTICE",
+    "LAYER_DISPLAY_NAMES", "LAYER_SOURCE_ROLES", "LEGACY_FIGURE_TEMPLATE_VERSION",
+    "MAX_PARAMETER_PIXELS", "MapFigureParameterInvalid",
+    "NAVIGATION_ASSOCIATION_DISPLAY_NAME", "NAVIGATION_ASSOCIATION_LAYER_KEY",
+    "NAVIGATION_GAP_DISPLAY_NAME", "NAVIGATION_GAP_LAYER_KEY", "NAVIGATION_LAYOUT_V1",
+    "NAVIGATION_LAYOUT_V1_TEMPLATE", "NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME",
+    "NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY", "NAVIGATION_MONITOR_SITES_DISPLAY_NAME",
+    "NAVIGATION_MONITOR_SITES_LAYER_KEY", "NAVIGATION_MONITOR_SOURCE_ROLE",
+    "NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME", "NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY",
+    "PARAMETER_CONSTRAINTS", "PLANNED",
     "PLANNED_LAYER_KEYS", "ROUTE_DETAIL_V1", "ROUTE_OVERVIEW_LEGEND_ORDER",
     "ROUTE_OVERVIEW_PARAMETERS", "ROUTE_OVERVIEW_V1", "ROUTE_OVERVIEW_V1_TEMPLATE",
     "SURVEILLANCE_LAYOUT_V1", "SURVEILLANCE_LAYOUT_V1_TEMPLATE",

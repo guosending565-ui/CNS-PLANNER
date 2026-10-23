@@ -1,0 +1,55 @@
+{
+  "baseline": "240b7dcea119eca6f4fff9e07a9eec07f1586606",
+  "source": "2b953bfcbf9ccc74e5c07ad582d67324c0a164ca",
+  "branch": "codex/r7d13-ab-integration",
+  "python": [
+    {
+      "group": "d15_core_corridor_figure_report",
+      "passed": 395,
+      "failed": 0
+    },
+    {
+      "group": "ab_c_d14_integration_spatial_radar_population_pcf",
+      "passed": 283,
+      "failed": 0,
+      "deselected": 1,
+      "deselected_reason": "known out-of-scope synthetic Theta* failure recorded in pending_items.json"
+    },
+    {
+      "group": "review_frozen_input_project_switch_adoption",
+      "passed": 141,
+      "failed": 0
+    }
+  ],
+  "python_total": 819,
+  "python_failed": 0,
+  "python_deselected": 1,
+  "node": [
+    {"script": "round32k2_task_request_once", "passed": 3},
+    {"script": "round32k_task_refresh_once", "passed": 3},
+    {"script": "b6x_heavy_task_frontend", "passed": 14},
+    {"script": "round31a_p16_background_task", "passed": 6},
+    {"script": "layered_validation_adoption_frontend", "passed": 33},
+    {"script": "radar_surveillance_layout_frontend", "passed": 18},
+    {"script": "round31e_radar_background_task", "passed": 2},
+    {"script": "population_nodata_frontend", "passed": 11},
+    {"script": "map_figures_frontend", "passed": 16},
+    {"script": "map_figures_state_frontend", "passed": 4},
+    {"script": "map_figures_cns_frontend", "passed": 6}
+  ],
+  "node_total": 116,
+  "node_failed": 0,
+  "historical_verification": "docs/r7d15/historical_verification.json",
+  "historical_passed": true,
+  "checks": {
+    "py_compile": true,
+    "module_imports": true,
+    "git_diff_check": true,
+    "json_config_bom_check": true
+  },
+  "real_planning_executed": false,
+  "theta_star_modified": false,
+  "project_state_modified": false,
+  "main_worktree_touched": false,
+  "push_merge_reset_clean": false
+}

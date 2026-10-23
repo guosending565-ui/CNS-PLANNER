@@ -87,6 +87,21 @@ FIGURE_STYLES = {
     },
     # ---- CNS 专题图（服务主色：通信绿 / RID 橙 / Radar 蓝 / 导航完整性黄）--------
     #
+    # Round38-FIG：六类专题图**共用**同一条固定 1000 m CNS 保障目标带。
+    #
+    # 视觉契约（与模板声明的语义严格对应）：
+    #
+    # * 它是**服务目标带**，不是设备覆盖、不是认证空域：因此用**浅色半透明填充 +
+    #   明确虚线边界**，而不是覆盖圈那种"描边强调"；
+    # * ``z=3``（陆地之上、障碍物之下、航路线与站址之下）：保证它绝不遮挡航路线、
+    #   站址图标、覆盖圈与 Radar 结果；
+    # * 颜色取中性青灰（既不属于任何 CNS 服务主色），避免被误读为某一类服务的覆盖。
+    "cns_fixed_corridor": {
+        "kind": "fill", "geometry": "polygon", "z": 3,
+        "fill": "#9fd4e8", "outline": "#2b7f9c",
+        "outline_width": 0.45, "outline_style": "dash", "opacity": 0.30,
+    },
+    #
     # 既有设施 = **实心 + 实线**；P16 selected_action = **空心 + 虚线描边**，
     # 视觉上永远与"已建成"区分开。覆盖圈只画规划服务半径（planning service radius），
     # 不是实测无线传播等值线。Radar 在 R0005 无选中站址，因此只有"候选上下文"与
@@ -150,6 +165,44 @@ FIGURE_STYLES = {
         "kind": "marker", "geometry": "point", "z": 16,
         "shape": "cross", "size": 4.4, "fill": "transparent",
         "outline": "#1f6fd0", "outline_width": 0.6, "outline_style": "dash",
+    },
+    # ---- 导航监测（N1/N2 只读仿真）----------------------------------------------
+    #
+    # 身份分层（图面必须可分，绝不互相冒充）：
+    #
+    # * ``cns_nav_monitor_sites``：**强制端点**监测设备 —— 实心菱形（最大、最显眼），
+    #   它来自 N1 的 mandatory_requirements，不是 P16 提案；
+    # * ``cns_nav_monitor_optional``：仿真**选中的其他**站址 —— 空心菱形 + 虚线（未确认）；
+    # * ``cns_nav_monitor_unselected``：候选但**未选中** —— 小空心圆 + 点线（只作背景）。
+    #
+    # 全部为导航黄；它们与 ``cns_nav_proposal``（P16 规划提案）是**不同来源**，
+    # 因此符号形状不同，不会在图面上被混为一谈。
+    "cns_nav_monitor_sites": {
+        "kind": "marker", "geometry": "point", "z": 25,
+        "shape": "diamond", "size": 5.8, "fill": "#d19a00",
+        "outline": "#7a5a00", "outline_width": 0.5,
+    },
+    "cns_nav_monitor_optional": {
+        "kind": "marker", "geometry": "point", "z": 17,
+        "shape": "diamond", "size": 4.4, "fill": "transparent",
+        "outline": "#d19a00", "outline_width": 0.6, "outline_style": "dash",
+    },
+    "cns_nav_monitor_unselected": {
+        "kind": "marker", "geometry": "point", "z": 15,
+        "shape": "circle", "size": 3.0, "fill": "transparent",
+        "outline": "#a98a12", "outline_width": 0.4, "outline_style": "dot", "opacity": 0.75,
+    },
+    # 中心线关联航段：**沿中心线**的关联段（2 km 关联范围），黄实线加粗画在中心线之上。
+    "cns_nav_association": {
+        "kind": "line", "geometry": "line", "z": 26,
+        "color": "#d19a00", "width": 1.9, "line_style": "solid",
+        "capstyle": "round", "joinstyle": "round",
+    },
+    # 最长监测缺口：中心线未关联段，黄虚线；缺口本身不是"设备覆盖"。
+    "cns_nav_gap": {
+        "kind": "line", "geometry": "line", "z": 27,
+        "color": "#b3261e", "width": 1.7, "line_style": "dash",
+        "capstyle": "round", "joinstyle": "round",
     },
 }
 
@@ -412,10 +465,15 @@ LAYOUT = {
 LEGEND_GROUPS = (
     ("environment", "地理环境"),
     ("obstacle", "障碍物"),
+    # Round38-FIG：固定 1000 m CNS 保障目标带**独立成组**。
+    # 它既不是障碍物、也不是覆盖：混进 coverage 组会被读成"设备已实现的覆盖区域"。
+    ("service_band", "CNS 保障目标带（非设备覆盖）"),
     ("facility", "既有设施"),
     ("cns_existing", "既有 CNS 设施"),
     ("proposal", "规划提案（未确认）"),
     ("coverage", "覆盖 / 能力"),
+    # 导航监测关联范围独立成组：中心线关联（2000 m）不是覆盖，也不是保障半宽 500 m。
+    ("navigation_monitor", "导航监测关联（非覆盖）"),
     ("limitation", "能力限制"),
     ("route", "规划航路"),
 )
@@ -430,19 +488,23 @@ LEGEND_GROUPS = (
 LEGEND_GROUP_COLUMNS = {
     "environment": 0,
     "obstacle": 0,
+    "service_band": 0,
     "facility": 1,
     "route": 1,
 }
 
-#: CNS 专题图的语义分列：按"环境/障碍/站址背景/提案"与"覆盖/限制/航路"左右铺开，
-#: 使条目最多的 CNS 综合图两列高度接近。任何未登记的组都会让整体回退到自动均衡分列。
+#: CNS 专题图的语义分列：按"环境/障碍/保障目标带/站址背景/提案"与"覆盖/关联/限制/航路"
+#: 左右铺开，使条目最多的 CNS 综合图两列高度接近。任何未登记的组都会让整体回退到
+#: 自动均衡分列。
 CNS_LEGEND_GROUP_COLUMNS = {
     "environment": 0,
     "obstacle": 0,
+    "service_band": 0,
     "facility": 0,
     "cns_existing": 0,
     "proposal": 0,
     "coverage": 1,
+    "navigation_monitor": 1,
     "limitation": 1,
     "route": 1,
 }
@@ -465,13 +527,19 @@ LEGEND_GROUP_OF = {
     "start_point": "route",
     "end_point": "route",
     # ---- CNS 专题图 ----
+    "cns_fixed_corridor": "service_band",
     "cns_existing": "cns_existing",
     "cns_comm_proposal": "proposal",
     "cns_rid_proposal": "proposal",
     "cns_nav_proposal": "proposal",
+    "cns_nav_monitor_sites": "proposal",
+    "cns_nav_monitor_optional": "proposal",
+    "cns_nav_monitor_unselected": "proposal",
     "cns_coverage_comm": "coverage",
     "cns_coverage_rid_land": "coverage",
     "cns_coverage_rid_sea": "coverage",
+    "cns_nav_association": "navigation_monitor",
+    "cns_nav_gap": "navigation_monitor",
     "cns_radar_context": "limitation",
     "cns_radar_sector": "coverage",
     "cns_radar_proposal": "proposal",

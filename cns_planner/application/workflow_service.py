@@ -73,6 +73,7 @@ from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
 from .tower_obstacle_service import TowerObstacleService
 from .cns_shared_site_candidate_service import CNSSharedSiteCandidateService
+from .fixed_corridor_geometry_service import FixedCorridorGeometryService
 from .radar_terrain_los_diagnostics_service import RadarTerrainLosDiagnosticsService
 from .radar_surveillance_layout_service import RadarSurveillanceLayoutService
 from .building_clearance_service import BuildingClearanceService
@@ -674,6 +675,12 @@ class WorkflowService:
         )
         self.corridor_service = CNSCorridorService(
             self.session, self.corridor_model, self.invalidation_service, snapshot,
+        )
+        #: Round38-N2：固定 1000 m 保障宽带的**只读几何投影**。它只复用 W1A 的
+        #: 唯一构造器，并按 P14 的固定几何身份做 currentness 门禁；没有 writer，
+        #: 不注册失效入口，也不写任何容器。
+        self.fixed_corridor_geometry_service = FixedCorridorGeometryService(
+            self.session, self.corridor_service,
         )
         self.corridor_gap_service = CNSCorridorGapService(
             self.session, self.corridor_gap_analyzer, self.invalidation_service, snapshot,
@@ -2350,6 +2357,11 @@ class WorkflowService:
         return self.radar_terrain_los_diagnostics_service.diagnose_combined(payload)
 
     def cns_shared_site_candidates(self): return self.cns_shared_site_candidate_service.snapshot()
+
+    def fixed_corridor_geometry(self, route_id=None):
+        """固定 1000 m 保障宽带的只读几何投影（不写状态、不重算）。"""
+
+        return self.fixed_corridor_geometry_service.geometry(route_id)
 
     def radar_terrain_los_status(self):
         """轻量状态：**不打开 DEM、不做 LOS 计算、不写状态**。"""

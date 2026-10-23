@@ -1,0 +1,15 @@
+{
+  "items": [
+    {
+      "id": "theta-star-synthetic-detour",
+      "status": "pending_review",
+      "scope": "outside_r7d15_d_batch",
+      "test": "tests/test_phase4_b3x_planning_constraints.py::test_theta_star_and_supercover_never_cross_blocked_constraint_cells",
+      "observation": "synthetic detour returns status=no_path, test expects candidate",
+      "first_recorded": "R7-D14",
+      "d15_action": "not_modified_no_algorithm_change",
+      "decision": "re-evaluate before full acceptance; do not treat as D15 regression without evidence"
+    }
+  ],
+  "policy": "范围外合成 Theta* 失败独立保留，不擅自修改算法；完整验收前再判断是否存在实际回归。"
+}

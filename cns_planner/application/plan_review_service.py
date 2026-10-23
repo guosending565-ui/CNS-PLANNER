@@ -11,6 +11,7 @@ from ..domain.plan_review import (
     review_input_fingerprints,
 )
 from ..domain.closed_loop import _interval_transitions, _subsystem_index
+from ..domain.engineering_assumption import assert_no_assumption_marker
 from ..domain.reporting import mark_active_report_stale
 from .closed_loop_service import rerun_p7_p10_chain
 from .continuous_service_service import STEP6_ALLOWED_ACCEPTABILITY
@@ -38,10 +39,23 @@ class PlanReviewService:
         #: ``evaluated_for_this_variant=false``（fail-closed，绝不冒充）。
         self.plan_projection = plan_projection
 
-    def snapshot_result(self):
+    def snapshot_result(self, *, full=False):
+        from ..reporting.review_evidence import review_summary
+        from ..persistence.artifact_store import ArtifactStore
+        evidence = {key: self.session.state.get(key) or {} for key in ("cns_plan_review", "confirmed_cns_plan")}
+        if full:
+            return deepcopy(evidence)
+        reference = ArtifactStore(self.session.store_path).publish(
+            evidence, artifact_type="review.p18.evidence",
+            input_fingerprint=(evidence["cns_plan_review"].get("input_fingerprints") or {}).get("baseline"),
+            producer={"service": "PlanReviewService"},
+        )
+        summary = review_summary(evidence)
         return {
-            "cns_plan_review": deepcopy(self.session.state.get("cns_plan_review") or empty_plan_review()),
-            "confirmed_cns_plan": deepcopy(self.session.state.get("confirmed_cns_plan") or empty_confirmed_plan()),
+            "evidence_artifact": reference,
+            "evidence_endpoint": "/api/cns-plan-review/evidence",
+            "cns_plan_review": summary["cns_plan_review"] or empty_plan_review(),
+            "confirmed_cns_plan": summary["confirmed_cns_plan"] or empty_confirmed_plan(),
             #: Round 2.5：P17 的 Step6 门禁投影（只读；前端据此显示"是否放行 + 强制披露"）。
             "continuous_service_gate": self._p17_gate(raise_on_block=False),
             #: Round 2.6：每个 variant **自己的** P17 投影门禁（Step6 实际依据）。
@@ -215,6 +229,18 @@ class PlanReviewService:
         #: Round 2.6：确认还必须通过**该 variant 自己**的 P17 投影门禁
         #: （Step6 依据【该 variant 实施后的 P17】，而不是权威 P17）。
         variant_p17_gate = self._variant_p17_gate(variant)
+        #: R5-F fallback: Confirm 是正式写入点，任何假设标记都必须在写
+        #: ``confirmed_cns_plan`` 之前 fail-closed。这里同时检查当前正式候选/设施
+        #: 与 P16 动作，防止旧项目或旁路写入把假设带进确认。
+        self._assert_formal_inputs(
+            context="cns_plan_review.confirm",
+            values={
+                "variant": variant,
+                "candidate_sites": self.session.state.get("candidate_sites"),
+                "existing_cns_facilities": self.session.state.get("existing_cns_facilities"),
+                "cns_corridor_site_plan": projected_result(self.session.state, "cns_corridor_site_plan"),
+            },
+        )
         evaluation = variant.get("evaluation") or {}
         gate = evaluation.get("confirmation_gate") or {}
         acknowledgement = None
@@ -277,6 +303,20 @@ class PlanReviewService:
         requested = str((payload or {}).get("plan_id") or "")
         if not requested or requested != confirmed.get("plan_id"):
             return self._rejected("stale_plan", "Apply 必须指定当前 confirmed plan_id")
+        #: R5-F fallback: Apply 是第二条正式写入路径（会写 ExistingCNS）。
+        #: 即使 confirmed plan 是旧项目里被污染的，也必须在这里 fail-closed，
+        #: 绝不能把假设动作安装成正式设施。该检查放在幂等 early-return
+        #: 之前：已 applied 的污染方案也不能再返回“成功”而掩盖假设。
+        self._assert_formal_inputs(
+            context="cns_plan_review.apply",
+            values={
+                "confirmed_actions": confirmed.get("confirmed_actions"),
+                "confirmed_variant": confirmed.get("variant"),
+                "candidate_sites": state.get("candidate_sites"),
+                "existing_cns_facilities": state.get("existing_cns_facilities"),
+                "cns_corridor_site_plan": projected_result(state, "cns_corridor_site_plan"),
+            },
+        )
         if confirmed.get("status") == "applied" and (confirmed.get("application") or {}).get("status") == "applied":
             return self.snapshot()
         if confirmed.get("status") != "confirmed" or confirmed.get("current_applicability") != "current":
@@ -546,6 +586,15 @@ class PlanReviewService:
         blockers = PlanReviewService.readiness_blockers(state)
         if blockers:
             raise ValueError(blockers[0])
+
+    @staticmethod
+    def _assert_formal_inputs(*, context, values):
+        """R5-F: fail closed if any formal P18 input still carries a marker."""
+
+        for name, value in values.items():
+            if value in (None, {}, [], ""):
+                continue
+            assert_no_assumption_marker(value, context=f"{context}.{name}")
 
     def _rejected(self, status, reason):
         response = self.snapshot()

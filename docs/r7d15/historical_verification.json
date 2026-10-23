@@ -1,0 +1,76 @@
+{
+  "mode": "read_only_historical_evidence_no_recompute",
+  "evidence_dir": "D:\\Projects\\CNS-PLANNER\\research\\r7d10",
+  "checks": {
+    "p16_sha256_matches_manifest": true,
+    "p16_bytes_match_manifest": true,
+    "identity_result_sha256_matches": true,
+    "identity_is_proposal_only": true,
+    "target_voxel_count_5454": true,
+    "before_matches_historical_2727_baseline": true,
+    "after_matches_historical_cs_improvement": true,
+    "n_unknown_2727_never_passed": true,
+    "selected_actions_13": true,
+    "no_action_promoted_to_installed": true,
+    "stop_diagnostics_present": true,
+    "stop_selection_limit_13": true,
+    "stop_reason_present": true,
+    "terminal_managed_gap_count_zero": true,
+    "residual_confirmed_targets_219": true,
+    "unknown_evidence_required_2727": true
+  },
+  "passed": true,
+  "before": {
+    "C": {
+      "confirmed_gap": 2727,
+      "satisfied": 0,
+      "unknown": 0,
+      "max_continuous_m": 9404.937615150231,
+      "total_confirmed_projection_m": 9404.937615150231
+    },
+    "N": {
+      "confirmed_gap": 0,
+      "satisfied": 0,
+      "unknown": 2727,
+      "max_continuous_m": 0.0,
+      "total_confirmed_projection_m": 0.0
+    },
+    "S": {
+      "confirmed_gap": 2727,
+      "satisfied": 0,
+      "unknown": 0,
+      "max_continuous_m": 9404.937615150231,
+      "total_confirmed_projection_m": 9404.937615150231
+    }
+  },
+  "after": {
+    "C": {
+      "confirmed_gap": 0,
+      "satisfied": 2727,
+      "unknown": 0,
+      "max_continuous_m": 0.0,
+      "total_confirmed_projection_m": 0.0
+    },
+    "N": {
+      "confirmed_gap": 0,
+      "satisfied": 0,
+      "unknown": 2727,
+      "max_continuous_m": 0.0,
+      "total_confirmed_projection_m": 0.0
+    },
+    "S": {
+      "confirmed_gap": 219,
+      "satisfied": 2508,
+      "unknown": 0,
+      "max_continuous_m": 590.6034530275047,
+      "total_confirmed_projection_m": 1158.0150103338983
+    }
+  },
+  "selected_action_count": 13,
+  "stop_reason": "coverage_objectives_met_but_continuous_service_unacceptable",
+  "terminal_managed_gap_count": 0,
+  "residual_confirmed_target_count": 219,
+  "unknown_evidence_required_count": 2727,
+  "p16_result_sha256": "4cf078440230c722d0f18c7e54e7eec0812d386aff41ed8269cd60b074401dac",
+  "p16_result_bytes": 263909253
+}

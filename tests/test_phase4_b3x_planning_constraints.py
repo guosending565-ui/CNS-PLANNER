@@ -383,7 +383,7 @@ def test_unknown_provisional_policy_warns_and_operational_adoption_rejects():
         "status": "validated_candidate", "current_applicability": "current",
         "source_type": "configured_real_sources", "candidate": {"candidate_id": "x"},
         "route": {"path_crs": "OGC:CRS84", "path": [[0, 0], [1, 1]]},
-    })
+    }, candidate)
     assert gate["eligible"] is False
     assert "candidate_traverses_unknown_constraints" in gate["reasons"]
 

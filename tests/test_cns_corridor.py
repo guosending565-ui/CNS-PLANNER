@@ -297,7 +297,8 @@ class ApiContext:
 def test_registry_api_persistence_backfill_and_directed_invalidation(tmp_path):
     path = tmp_path / "project.json"
     workflow = WorkflowService(path, DEFAULTS)
-    assert workflow.algorithm_registry.manifest("corridor_model", "cns_service_corridor_v1", "1.3")
+    assert workflow.algorithm_registry.manifest(
+        "corridor_model", "cns_service_corridor_v1", CNSServiceCorridorV1.algorithm_version)
     workflow.state.update({
         "operational_routes": [deepcopy(ROUTE)], "grid": deepcopy(GRID), "spatial_3d": deepcopy(SPATIAL),
         "required_cns": requirement_set(), "aircraft_profiles": {"status": "passed", "items": [aircraft()]},

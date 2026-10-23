@@ -68,9 +68,26 @@ class PlanningReportService:
 
         响应只含渲染后的 HTML 与有界诊断事实；不返回 ``report_data`` /
         ``source_artifacts`` 这类大对象（它们对预览界面无用，却是 821 MB 响应的来源）。
+
+        Round38-R7C2：P18 评审证据外置为只读 artifact，响应只保留摘要；外置写入
+        的是报告证据文件，不写 ProjectState。
         """
 
         model = self.draft_model(payload)
+        from ..persistence.artifact_store import ArtifactStore
+        from ..reporting.review_evidence import review_summary
+        section = model["sections"]["plan_review_p18"]
+        reference = ArtifactStore(self.session.store_path).publish(
+            section, artifact_type="report.preview.p18.evidence",
+            input_fingerprint=model["source"]["fingerprint"],
+            producer={"service": "PlanningReportService"},
+        )
+        model["sections"]["plan_review_p18"] = {
+            **review_summary(section), "evidence_artifact": reference,
+        }
+        from ..domain.reporting import stable_fingerprint
+        model.pop("report_data_fingerprint", None)
+        model["report_data_fingerprint"] = stable_fingerprint(model)
         diagnostics = self.diagnostics() if callable(self.diagnostics) else None
         return {
             "status": "draft", "persisted": False,

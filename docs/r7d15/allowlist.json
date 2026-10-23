@@ -1,0 +1,203 @@
+{
+  "baseline": "240b7dcea119eca6f4fff9e07a9eec07f1586606",
+  "source": "2b953bfcbf9ccc74e5c07ad582d67324c0a164ca",
+  "scope": "D batch six conflict files and necessary dependencies; local-only; no public release approval",
+  "files": [
+    {
+      "path": "cns_planner/algorithms/continuous_service/v1.py",
+      "sha256": "1a77e7b006eecf76571938a0d8364ae9257629ff84a74da582777cfb9e8f8da9"
+    },
+    {
+      "path": "cns_planner/algorithms/corridor/v1.py",
+      "sha256": "4c952e64f73fb4491451229d4712d7515571f406eb0766ca9a5d929a2d55b127"
+    },
+    {
+      "path": "cns_planner/algorithms/corridor_gap/v1.py",
+      "sha256": "dd9311a6281cdc3fb08e1cb5b30355f6fc50eda0c9b7162fcd73fc032553b62c"
+    },
+    {
+      "path": "cns_planner/application/app_context.py",
+      "sha256": "2a806688e32fe1f6aceded2b6daeb981a5f0ac62e3c839ec1616ebdf4fa3292d"
+    },
+    {
+      "path": "cns_planner/application/corridor_service.py",
+      "sha256": "15fea181745fc0e539237af0aa64303d7764467d56a18c6dc79c63ec16066a0c"
+    },
+    {
+      "path": "cns_planner/application/corridor_site_planning_service.py",
+      "sha256": "4f5d451cdfe4f6eec4fc177b59183ba4d11d5722f0660b5f869dd2aa4e7ed94c"
+    },
+    {
+      "path": "cns_planner/application/fixed_corridor_geometry_service.py",
+      "sha256": "682201ebd7e42973f4772b1a9f18adebb7c70f32b4b8ed74311cfe0dcdf5ca7e"
+    },
+    {
+      "path": "cns_planner/application/map_figure_service.py",
+      "sha256": "b3ae72c2f5449a6546503ed5c4931fd28062cd3497af43c7a28e24eb35177c38"
+    },
+    {
+      "path": "cns_planner/application/navigation_monitoring_figure.py",
+      "sha256": "01e9a31cefd5b77842fc9f65ed98a8595f58da16b627dea910dfcb43a6892f35"
+    },
+    {
+      "path": "cns_planner/application/plan_review_service.py",
+      "sha256": "0ad1123c21a4b9b8d98cab4c8e9053ddd888fc5036ee9a1a2f99673c891a10f2"
+    },
+    {
+      "path": "cns_planner/application/report_service.py",
+      "sha256": "77be8f187b976153369993333c43ad2b74a926814bd727da8e7ba7b6eabf6483"
+    },
+    {
+      "path": "cns_planner/application/workflow_service.py",
+      "sha256": "01754f661388284a2bac92b9ec651800ffb31fcdf75dd2358853eda13fcd5dc2"
+    },
+    {
+      "path": "cns_planner/domain/cns_continuous_service.py",
+      "sha256": "2206818797c67f51ca4d531cc3cb645055c375e53eede756f33eecc4ead5baf9"
+    },
+    {
+      "path": "cns_planner/domain/cns_corridor.py",
+      "sha256": "b76a56ac013842dcdf7058ab36c916fc04ef5fc06159a285724747a80ae85bec"
+    },
+    {
+      "path": "cns_planner/domain/cns_planning_objectives.py",
+      "sha256": "84817fb872df5b1c4b0d40a7ce776f898fb2bfc9b37fa47825bb905038321995"
+    },
+    {
+      "path": "cns_planner/domain/corridor_site_planning.py",
+      "sha256": "e72358a759ebf46e9a86260fe973f5c129808ef9aaf168ce04c42a15d127e66b"
+    },
+    {
+      "path": "cns_planner/gis/corridor_band.py",
+      "sha256": "58a305a3ae9aa5d6931ec131d2fa35b8aa7e596e2dc98138886a77360fbfa408"
+    },
+    {
+      "path": "cns_planner/gis/corridor_geometry.py",
+      "sha256": "3901efc808a44fc11bf4c6a79eda6ce61d829faf74365b8adc02778529109f10"
+    },
+    {
+      "path": "cns_planner/gis/figure_currentness.py",
+      "sha256": "0f8ff4b47f901dfe10fc45aa828e85e1872b3f48b2e7997a0190058f8e01db51"
+    },
+    {
+      "path": "cns_planner/gis/figure_style.py",
+      "sha256": "67263cd19269c88b4635903c4174b3f310fce26c98cefb15b3a2e966a470c9ae"
+    },
+    {
+      "path": "cns_planner/reporting/builder.py",
+      "sha256": "126fd8093e273310f997e67508ea397b9377d3406d887ee792d5a8d661148890"
+    },
+    {
+      "path": "cns_planner/reporting/html_renderer.py",
+      "sha256": "9e9d2dc70c16a445ce0c540eeb9b72e9c64f85c4f00d26950f4d6c69414ee765"
+    },
+    {
+      "path": "cns_planner/reporting/map_templates/__init__.py",
+      "sha256": "a20717c61a3b4bbd9e28ae4d9da6cc5fa92f0c88fb2a1c93d17b7d95e343c5a3"
+    },
+    {
+      "path": "cns_planner/reporting/map_templates/template_catalog.py",
+      "sha256": "685d694e0210e50cf6ded1855efa4e4b5bb2a8b0e9654d3a3fd46e242cfa0615"
+    },
+    {
+      "path": "cns_planner/reporting/review_evidence.py",
+      "sha256": "3e958d4ef70a6ddc667b3b6aab6cccd670e629d745caa024f89eee30f65862e3"
+    },
+    {
+      "path": "cns_planner/site_planner/corridor_reuse_first_v2.py",
+      "sha256": "40eff421d52006ffd6bf5762a84feb2bbc9c19ba657d8d9764147507e12ee59a"
+    },
+    {
+      "path": "cns_planner/tasks/task_specs.py",
+      "sha256": "78d242c50f04a78a3b9be1ea44e682a0e1d5346850e52e79348efaada1d078fa"
+    },
+    {
+      "path": "docs/r7d15/REPORT.md",
+      "sha256": "38dc86ca5aa7d9e22477d214d2f2195c049b428ff264478107bd94b20e4af13c"
+    },
+    {
+      "path": "docs/r7d15/historical_verification.json",
+      "sha256": "b1771a68e4f3a922bc42db292082d019839a2a13672bd74b0670b91ddb6dc678"
+    },
+    {
+      "path": "docs/r7d15/pending_items.json",
+      "sha256": "178ab3e03091c8729fe0ae739fe0237bdde488d49453453c076d0d80fd4986bf"
+    },
+    {
+      "path": "docs/r7d15/verification.json",
+      "sha256": "8b1e72235ca04a45cde2bb2f38afbf9fa31a905b75d5b37ce59eb081a2c5834c"
+    },
+    {
+      "path": "docs/r7d15/verify_historical.py",
+      "sha256": "111bd0c12af2bf5d66c6bb6b72b02ba7b2c01fcc7fe3043cf0cd65bf5acc3419"
+    },
+    {
+      "path": "tests/p14_protected_sha256.json",
+      "sha256": "923b449415b3e3c42ed5a6fc6c0f134f981789c3edc5d40fb467b8426e776340"
+    },
+    {
+      "path": "tests/test_cns_corridor.py",
+      "sha256": "ce9bde7f3dc4f0c3028c95a45eafb3ab63e1960a5dde4912ade8ceb9cbe1fc60"
+    },
+    {
+      "path": "tests/test_cns_corridor_gap.py",
+      "sha256": "514c9f0370f7ed52797a7462619a87fcccbf0594b4a1488864ee8627ec0e02f2"
+    },
+    {
+      "path": "tests/test_corridor_site_planner_v2.py",
+      "sha256": "cea505eac6bd75a81fe8380fcda2b4413ae5401551a963ebc9b769ae6843ab11"
+    },
+    {
+      "path": "tests/test_navigation_rtk_augmentation_chain.py",
+      "sha256": "1127f71637ca2f4ca38a7741bbbb517fa6496093f3b82ff21dbe5364b46bd550"
+    },
+    {
+      "path": "tests/test_phase4_b3x_planning_constraints.py",
+      "sha256": "b6dfa47155904a9cb67a49c6f519c77f2f77a56b06f4431d5fe860fc95a9524c"
+    },
+    {
+      "path": "tests/test_phase4_b5x_artifact_migration.py",
+      "sha256": "524b4ade6cfaf801511d59b408775d0d14136fbb7361474e526ad6ea73740e58"
+    },
+    {
+      "path": "tests/test_plan_review.py",
+      "sha256": "0b8199593fa1d077c0325c7552b04feae4f24cdc25f2634e1002123ae32f782e"
+    },
+    {
+      "path": "tests/test_r7c2_review_evidence.py",
+      "sha256": "298765fd96a487d9d720d261b36a2e5d4825d56c7abb5ad340820c0bc0d5891d"
+    },
+    {
+      "path": "tests/test_round29g_navigation_endpoint_planning.py",
+      "sha256": "57283b109d422a8e1cc09aa85b9e5903e8278864daf0da931893bd03c68bd468"
+    },
+    {
+      "path": "tests/test_round29q_p17_radar_limitation.py",
+      "sha256": "e2957a6dc799335c4fca2a0e20d005fa7dac454f5877c72ab8e9c32d3da2b131"
+    },
+    {
+      "path": "tests/test_round30_c2_radar_detection_proxy.py",
+      "sha256": "c316fdd79e32df15d2193ec25619f9825c51d0e87553b0131cfe72397a6801c7"
+    },
+    {
+      "path": "tests/test_round38_fig_band_and_currentness.py",
+      "sha256": "b1dd10869dd53a7ac18edc03c9d03afe362232303e4f590b17a656275144734f"
+    },
+    {
+      "path": "tests/test_round38_n2_fixed_corridor_geometry.py",
+      "sha256": "a7f68db29bab763229d365bc3bd40de943ff3a1cc6a29b01bac43e98c443f3ca"
+    },
+    {
+      "path": "tests/test_round38_p17_navigation_unknown_time.py",
+      "sha256": "3ee895ebeb9bc1abf19ac071f09d5e8b6dea7bf8466ba503a0c7ba008986246c"
+    },
+    {
+      "path": "tests/test_round38_w1a_fixed_corridor.py",
+      "sha256": "59cbc9b7174a47bc069d5668083ae200af248dc8aa76add4b77a9e039d4b18e9"
+    },
+    {
+      "path": "tests/test_round38_w1b_fixed_corridor.py",
+      "sha256": "da4ea066c69ac5eee93b23b8de575f65a1272a7b0e5c6d4b829a88e020a0255a"
+    }
+  ]
+}

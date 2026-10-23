@@ -55,6 +55,7 @@ from ...domain.cns_continuous_service import (
 from ...domain.fc30_profile import (
     FC30_AIRCRAFT_ID, fc30_aircraft_profile, fc30_planning_speeds,
 )
+from ...domain.cns_corridor import CORRIDOR_HALF_WIDTH_M, WIDTH_POLICY_VERSION
 from ...domain.planning_evidence import (
     PLANNING_EVIDENCE_FIELDS, resolve_continuous_parameter,
 )
@@ -285,6 +286,7 @@ class ContinuousServiceAcceptabilityV1:
                     "cruise_speed_mps": speed_facts["route_speed_mps"],
                     "max_horizontal_speed_mps": speed_facts["max_horizontal_speed_mps"],
                 },
+                "detection_inputs": _detection_input_snapshot(device_catalog, aircraft_profile),
                 "parameters": {
                     name: [item.get("value"), item.get("authority")]
                     for name, item in sorted(parameters.items())
@@ -486,9 +488,21 @@ class ContinuousServiceAcceptabilityV1:
         reasons: list[str] = []
         reason_codes: list[str] = []
         route_length = corridor_route.get("route_length_m")
-        route_path = ((corridor_route.get("corridor_geometry") or {}).get("route_path")) or []
-        half_width = (corridor_route.get("corridor_geometry") or {}).get(
-            "horizontal_half_width_m"
+        fixed_geometry = corridor_route.get("fixed_corridor_geometry") or {}
+        fixed_geometry_status = str(
+            corridor_route.get("fixed_corridor_geometry_status")
+            or fixed_geometry.get("status") or "missing"
+        )
+        route_path = (
+            fixed_geometry.get("route_path")
+            or (corridor_route.get("corridor_geometry") or {}).get("route_path")
+            or []
+        )
+        half_width = float(CORRIDOR_HALF_WIDTH_M)
+        fixed_band_service_status = (
+            "passed" if corridor_route.get("status") == "passed"
+            else "failed" if corridor_route.get("status") == "failed"
+            else "unknown"
         )
 
         # ---- 保护走廊（Round 2.6 四分量公式） -------------------------------
@@ -526,10 +540,16 @@ class ContinuousServiceAcceptabilityV1:
             reason_codes.append("no_p13_geometry")
             reasons.append(CONTINUOUS_SERVICE_REASONS["no_p13_geometry"])
         corridor = {
-            "semantics": "horizontal_route_protection_corridor_not_route_centerline_only",
+            "semantics": "fixed_cns_service_target_band_with_independent_response_evidence",
             "route_path": deepcopy(route_path),
             "route_length_m": route_length,
             "cns_requirement_corridor_half_width_m": half_width,
+            "service_target_half_width_m": half_width,
+            "corridor_width_policy_version": WIDTH_POLICY_VERSION,
+            "fixed_band_service_status": fixed_band_service_status,
+            "fixed_corridor_geometry_status": fixed_geometry_status,
+            "fixed_corridor_geometry_fingerprint": fixed_geometry.get("geometry_fingerprint"),
+            "current_service_width_derived_from_response_distance": False,
             #: Round 2.6 四个分量逐项给出（含各自的 authority），前端逐项显示。
             "D_separation_m": d_separation,
             "D_separation_authority": _parameter_authority(parameters, "D_separation_m"),
@@ -548,10 +568,12 @@ class ContinuousServiceAcceptabilityV1:
                 for name in T_CHAIN_COMPONENTS
             },
             "D_protection_m": d_protection,
-            "outer_half_width_m": (
-                None if d_protection is None or half_width in (None, "")
-                else float(half_width) + float(d_protection)
-            ),
+            "response_protection_distance_m": d_protection,
+            #: 2.4 不再生成 ``500 + D_protection`` 形式的 current CNS 宽度。
+            #: 字段仅作为旧结果读取兼容槽位保留；新结果明确为空。
+            "outer_half_width_m": None,
+            "outer_half_width_m_semantics": "historical_audit_only",
+            "response_timeliness_status": "unknown",
             "formula": ROUTE_PROTECTION_FORMULA,
             "status": (
                 "evaluated" if d_protection is not None and route_path
@@ -589,6 +611,11 @@ class ContinuousServiceAcceptabilityV1:
             detection.get("first_detection_distance_m") if detection.get("usable") else None,
             d_separation, relative_speed, t_chain,
         )
+        corridor["response_timeliness_status"] = {
+            "acceptable": "passed",
+            "unacceptable": "failed",
+            "unknown": "unknown",
+        }.get(str(acceptance.get("status") or "unknown"), "unknown")
         if acceptance["status"] == "unacceptable":
             reason_codes.append("tmargin_negative")
             reasons.append(CONTINUOUS_SERVICE_REASONS["tmargin_negative"])
@@ -886,7 +913,7 @@ class ContinuousServiceAcceptabilityV1:
                 "length_m": segment.get("length_m"),
                 "duration_s": None,
                 "limit_s": None,
-                "exceeds_limit": True if status == "unacceptable" else False,
+                "exceeds_limit": None,
                 "mitigation": (
                     "立即恢复可靠导航（RTK 或满足精度的 GNSS）或执行受控降落；"
                     "该状态**不**提供航路保持"
@@ -904,10 +931,21 @@ class ContinuousServiceAcceptabilityV1:
 
         reason_codes.extend(codes_local)
         reasons.extend(reasons_local)
+        acceptance_status = status
+        if status == "acceptable_degraded" and any(
+            event.get("duration_s") is None or event.get("limit_s") is None
+            for event in events
+        ):
+            acceptance_status = "unknown"
+            reason_codes.append("navigation_degradation_time_unknown")
+            reasons.append(
+                "GNSS 回退精度可满足航路保持，但缺少连续降级时长或容忍阈值证据；"
+                "不得进入 managed gap 或 Step6 时间容忍接受链"
+            )
         return {
             "subsystem": "N",
             "service": "N:route_containment",
-            "status": status,
+            "status": acceptance_status,
             "navigation_state": status,
             "rtk": rtk,
             "gnss": gnss,
@@ -917,7 +955,12 @@ class ContinuousServiceAcceptabilityV1:
             "event_count": len(events),
             "longest_event": _longest_event(events),
             "rtk_recovery_external_reference": _external_reference_note(),
-            "managed_gaps": [event for event in events if event.get("exceeds_limit") is False],
+            "managed_gaps": [
+                event for event in events
+                if event.get("duration_s") is not None
+                and event.get("limit_s") is not None
+                and event.get("exceeds_limit") is False
+            ],
             "reasons": reasons_local,
             "requirement_hint": requirement_set.get("N") if requirement_set else None,
         }
@@ -927,9 +970,7 @@ class ContinuousServiceAcceptabilityV1:
         self, *, corridor_route, gap_route, acceptance, detection, detection_reason,
         reason_codes, reasons, events_by_kind,
     ):
-        half_width = (corridor_route.get("corridor_geometry") or {}).get(
-            "horizontal_half_width_m"
-        )
+        half_width = float(CORRIDOR_HALF_WIDTH_M)
         probe, probe_reason = _surveillance_protection_probe(
             corridor_route, gap_route, service_key=detection.get("service_key"),
         )
@@ -1354,6 +1395,40 @@ def _detection_distance_usable(candidate) -> bool:
     return (candidate or {}).get("coverage_status") == "satisfied"
 
 
+def _detection_input_snapshot(device_catalog, aircraft_profile):
+    """会改变"首次探测距离"的权威输入摘要（只取证据字段，不改判定）。
+
+    ``response_timeliness_status`` 由**权威探测证据**（设备声明覆盖几何 /
+    机载协作监视探测距离）与响应预算共同判定。这些输入必须对
+    ``input_fingerprint`` 可见：否则探测距离改变而指纹不变，旧结论会被当成
+    当前响应及时性（宽度固定也不代表响应判定与输入无关）。
+    """
+
+    radii = []
+    for device in (device_catalog or {}).get("items") or []:
+        if not isinstance(device, dict):
+            continue
+        geometry = device.get("coverage_geometry")
+        geometry = geometry if isinstance(geometry, dict) else {}
+        by_surface = geometry.get("radius_by_surface")
+        by_surface = by_surface if isinstance(by_surface, dict) else {}
+        radii.append([
+            str(device.get("device_id") or ""),
+            str(device.get("service_key") or ""),
+            {str(surface): by_surface[surface] for surface in sorted(by_surface, key=str)},
+            geometry.get("slant_range_m"),
+            device.get("radius_m"),
+            geometry.get("source") or device.get("source"),
+        ])
+    radii.sort(key=lambda item: (item[0], item[1]))
+    surveillance = (aircraft_profile or {}).get("surveillance")
+    surveillance = surveillance if isinstance(surveillance, dict) else {}
+    performance = surveillance.get("performance")
+    performance = performance if isinstance(performance, dict) else {}
+    return {
+        "device_coverage_radii": radii,
+        "aircraft_min_detection_range_m": performance.get("min_detection_range_m"),
+    }
 def _first_detection_evidence(
     *, corridor_route, gap_route, device_catalog, radar_layout, aircraft_profile=None,
 ):

@@ -1131,21 +1131,21 @@ def test_communication_subsystem_conclusion_is_unchanged():
     assert "service_outage_exceeds_limit" in with_layout["reason_codes"]
 
 
-def test_algorithm_version_is_2_2_and_enters_the_currentness_chain():
-    """版本升级到 2.2；``algorithm_id`` / ``schema_version`` 不变。"""
+def test_algorithm_version_is_2_5_and_enters_the_currentness_chain():
+    """D15 合并 Radar 代理（2.2）与固定带宽/N 缺证（2.4）⇒ 2.5。"""
 
-    assert CONTINUOUS_SERVICE_ALGORITHM_VERSION == "2.2"
+    assert CONTINUOUS_SERVICE_ALGORITHM_VERSION == "2.5"
     assert CONTINUOUS_SERVICE_ALGORITHM_ID == "continuous_service_acceptability_v1"
     assert CONTINUOUS_SERVICE_SCHEMA_VERSION == (
-        "round2.6-post-plan-continuous-service-acceptability"
+        "round38-w1b-fixed-band-response-decoupled"
     )
     result = _evaluate(radar_surveillance_layout=_r0005_layout())
-    assert result["algorithm_version"] == "2.2"
+    assert result["algorithm_version"] == "2.5"
     assert result["algorithm_id"] == CONTINUOUS_SERVICE_ALGORITHM_ID
     assert result["schema_version"] == CONTINUOUS_SERVICE_SCHEMA_VERSION
-    #: 既有 currentness 链登记的当前语义身份 == 2.2（不另造 invalidation 机制）。
+    #: 既有 currentness 链登记的当前语义身份 == 2.5（不另造 invalidation 机制）。
     assert RESULT_ALGORITHM_SEMANTICS["continuous_service_acceptability"] == (
-        CONTINUOUS_SERVICE_ALGORITHM_ID, "2.2",
+        CONTINUOUS_SERVICE_ALGORITHM_ID, "2.5",
     )
 
 
@@ -1155,7 +1155,7 @@ def test_old_2_1_p17_result_is_recognized_as_stale():
     algorithm_id, algorithm_version = RESULT_ALGORITHM_SEMANTICS[
         "continuous_service_acceptability"
     ]
-    assert algorithm_version == "2.2"
+    assert algorithm_version == "2.5"
 
     stored_2_1 = {
         "algorithm_id": algorithm_id,
@@ -1169,12 +1169,12 @@ def test_old_2_1_p17_result_is_recognized_as_stale():
     assert projected["status"] == "stale"
     assert projected["stale_reason"] == "algorithm_semantics_changed"
     assert projected["algorithm_semantics_stale"]["stored_algorithm_version"] == "2.1"
-    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "2.2"
+    assert projected["algorithm_semantics_stale"]["current_algorithm_version"] == "2.5"
     #: 只读投影：绝不改写原对象，也不把 stale 说成 failed / passed。
     assert stored_2_1["status"] == "unacceptable"
 
-    #: 当前 2.2 结果不被判 stale（不制造 staleness）。
-    current = dict(stored_2_1, algorithm_version="2.2")
+    #: 当前 2.5 结果不被判 stale（不制造 staleness）。
+    current = dict(stored_2_1, algorithm_version="2.5")
     assert apply_algorithm_semantics_stale(
         current, algorithm_id, algorithm_version,
     )["status"] == "unacceptable"

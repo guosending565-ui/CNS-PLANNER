@@ -239,6 +239,9 @@ class ApplicationContext:
             lambda: self.data.paths,
             self.qgis.call,
             project_directory=self.active_project_file.parent,
+            #: Round38-FIG：固定 1000 m 保障宽带的身份 / currentness 只读投影，
+            #: 与 ``workflow.fixed_corridor_geometry`` 同一实现；不写 ProjectState。
+            fixed_corridor_service=self.workflow.fixed_corridor_geometry_service,
         )
         return self.map_figures
 

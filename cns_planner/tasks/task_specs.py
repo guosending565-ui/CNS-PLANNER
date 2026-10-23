@@ -204,6 +204,13 @@ def _corridor_inputs(state, payload):
     #: 因此异步 worker 冻结的必须是**叠加后**的设备目录，否则同一条 P14 在同步与
     #: 异步两条路径上会得到两份不同的判定（同一输入必须得到同一结论）。
     inputs["device_catalog"] = device_catalog_with_evidence(inputs) or {}
+    #: Round38-W1A：固定 1000 m 保障宽带的共享米制几何必须随**输入事实**一起冻结，
+    #: 否则异步 worker 会拿"没有几何身份"的输入重算，与同步入口产生两份不同身份。
+    from ..gis.corridor_geometry import build_fixed_corridor_geometries
+
+    inputs["corridor_geometry"] = build_fixed_corridor_geometries(
+        inputs["routes"], inputs["corridor_policy"],
+    )
     return inputs
 
 
@@ -379,6 +386,8 @@ def _corridor_runner(context):
             #: 事实指纹随快照一起进入 P14 输入指纹。
             surface_class_provider=surface_class_provider_for(inputs),
             surface_facts_fingerprint=inputs.get("surface_facts_fingerprint"),
+            #: Round38-W1A：同步入口与 worker 必须冻结同一份固定走廊几何身份。
+            corridor_geometry=inputs.get("corridor_geometry"),
         )
     except TaskCancelled:
         stop_probe()

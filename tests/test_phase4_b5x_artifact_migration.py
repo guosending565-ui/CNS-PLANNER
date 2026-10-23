@@ -521,11 +521,12 @@ def test_report_manifest_records_artifact_references(tmp_path):
         assert reference["producer"] is not None
         assert not Path(reference["relative_path"]).is_absolute()
 
+    #: Round32-H 起草稿预览只返回有界诊断与 HTML，不再把 source_artifacts /
+    #: report_data 整体序列化回浏览器；artifact 引用仍由上面的 canonical 枚举核验。
     preview = service.report_service.preview()
-    assert preview["source_artifacts"], "报告预览必须登记引用的 artifact"
-    assert {item["logical_key"] for item in preview["source_artifacts"]} == {
-        item["logical_key"] for item in references
-    }
+    assert "report_data" not in preview and "source_artifacts" not in preview
+    assert preview["report_mode"] == "draft_preview"
+    assert preview["html"]
 
 
 # ---- 18. runtime-only compatibility 结果不进入 artifact store ---------------

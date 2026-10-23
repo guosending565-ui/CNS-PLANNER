@@ -7,6 +7,7 @@ from copy import deepcopy
 import time
 
 from ..algorithms.corridor.v1 import nearest_route_position
+from ..domain.cns_corridor import corridor_half_width_m
 from ..domain.corridor_site_planning import (
     TARGET_SCOPE_ENDPOINT, TARGET_SCOPE_SERVICE, corridor_target_id,
     corridor_voxel_entry_index, endpoint_state_entry_index, endpoint_target_id,
@@ -37,6 +38,7 @@ from ..domain.radar_service_evidence import (
     build_radar_service_evidence,
     radar_what_if_service_evidence,
 )
+from .cns_facility_assembler import SYNTHETIC_DATASET_CLASSES
 from .navigation_reference_station_planning_service import (
     PLANNER_FAMILY as NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY,
     hypothetical_navigation_sites,
@@ -53,7 +55,6 @@ from .planning_evidence_service import (
 )
 from .site_candidate_actions import candidate_actions
 from .corridor_service import apply_algorithm_semantics_stale
-from .cns_facility_assembler import SYNTHETIC_DATASET_CLASSES
 from .result_currentness import projected_result
 from .production_write_authority import assert_write_authority
 
@@ -174,14 +175,13 @@ def registered_p16_site_sources(
     }
 
 
-
 class CorridorSitePlanningService:
     def __init__(self, session, planner, corridor_model, corridor_gap_analyzer,
                  invalidation, snapshot, shared_site_candidates=None):
-        self.shared_site_candidates = shared_site_candidates
         self.session, self.planner = session, planner
         self.corridor_model, self.corridor_gap_analyzer = corridor_model, corridor_gap_analyzer
         self.invalidation, self.snapshot = invalidation, snapshot
+        self.shared_site_candidates = shared_site_candidates
 
     def result_snapshot(self):
         """只读投影：算法语义版本变化时如实标注 stale（绝不误判 current）。"""
@@ -234,6 +234,7 @@ class CorridorSitePlanningService:
         self.__dict__.pop("_navigation_evidence_cache", None)
         #: 走廊单元缓存的失效点：一次 P16 evaluate 内网格事实不变，跨 evaluate 必须重算。
         self.__dict__.pop("_prepared_cells_cache", None)
+        self.__dict__.pop("_candidate_source_statistics", None)
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("corridor site planning 请求必须是对象")
@@ -670,6 +671,9 @@ class CorridorSitePlanningService:
             ),
         }
         result["origin_tier_statistics"] = _origin_tier_statistics(actions, selected)
+        result["candidate_source_statistics"] = deepcopy(
+            self.__dict__.get("_candidate_source_statistics") or {}
+        )
         #: Round 29-G：P16 第一阶段的**性能画像**（只读计数与耗时，不参与任何判定）。
         result["performance_profile"] = _finalize_performance_profile(performance, selected)
         estimated_ids = sorted({
@@ -2734,10 +2738,10 @@ def _build_prefilter_context(state, prepared_cells):
     specs = ((state.get("cns_corridor_policy") or {}).get("routes") or {})
     half_widths = []
     for route_id, _ in paths:
-        value = (specs.get(route_id) or {}).get("horizontal_half_width_m")
-        if value is None:
-            return None
-        half_widths.append(float(value))
+        #: Round38-W1A：预筛必须与 P14 正式评估消费**同一个**固定半宽。历史
+        #: ``horizontal_half_width_m`` 只作审计，绝不进入预筛（否则会出现"预筛用
+        #: 150 m、正式评估用 500 m"的不安全方向：预筛会排掉本应重算的候选）。
+        half_widths.append(corridor_half_width_m(specs.get(route_id)))
     diagonals = [
         float(item.get("half_diagonal") or 0.0) for item in prepared_cells or []
     ]

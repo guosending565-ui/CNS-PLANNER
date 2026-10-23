@@ -53,6 +53,7 @@ class ReportBuilder:
                     "corridor_policy": source.get("cns_corridor_policy") or {},
                     "encounter_3d_summary": _encounter_summary(source.get("encounter_3d_assessment") or {}),
                 },
+                "engineering_demo_route_acceptance": _engineering_demo_route_acceptance(source),
                 "v3_validated_route_provenance": _v3_provenance(source),
                 "required_cns": source.get("required_cns") or {},
                 "centerline_gap_p10": source.get("cns_gap_analysis_v2") or {},
@@ -102,6 +103,47 @@ class ReportBuilder:
         model["statistics"] = _statistics(p15)
         model["report_data_fingerprint"] = stable_fingerprint(model)
         return model
+
+
+DEMO_L1_DISCLOSURE = (
+    "建筑 4tCa7 高度证据为 ML 预测，采用工程条件接受，不构成严格安全验证通过。"
+)
+DEMO_L2_DISCLOSURE = (
+    "当前航路使用 EGM2008 正高 100 m 恒定巡航高度假设。真实离场爬升和进场下降程序"
+    "尚未配置及验证；当前建筑净空结果不代表起降过渡阶段安全。"
+)
+
+
+def _engineering_demo_route_acceptance(source):
+    """Disclose demo-only acceptance without projecting it as an operational route."""
+
+    policy = source.get("engineering_demo_building_acceptance_policy") or {}
+    validations = source.get("layered_route_validations") or {}
+    adoptions = source.get("layered_operational_adoptions") or {}
+    demo_items = [
+        item for item in adoptions.get("items") or []
+        if isinstance(item, dict) and item.get("status") == "published_engineering_demo"
+    ]
+    limitations = ["工程条件接受，严格验证未通过，仅供演示"] if demo_items else []
+    if demo_items:
+        # L1 / L2 必须分别披露：补齐建筑证据不会消除起降段缺口，反之亦然。
+        for line in (DEMO_L1_DISCLOSURE, DEMO_L2_DISCLOSURE):
+            if line not in limitations:
+                limitations.append(line)
+    for item in demo_items:
+        for limitation in item.get("limitations") or []:
+            if limitation not in limitations:
+                limitations.append(limitation)
+    return {
+        "policy": policy,
+        "validations": validations,
+        "adoptions": adoptions,
+        "active_demo_adoptions": demo_items,
+        "canonical_operational_routes_unchanged": all(
+            item.get("published_to_operational_routes") is False for item in demo_items
+        ),
+        "limitations": limitations,
+    }
 
 
 def _v3_provenance(source):
@@ -258,6 +300,7 @@ def _continuous_service_section(source):
     """
 
     result = source.get("continuous_service_acceptability") or {}
+    site_plan = source.get("cns_corridor_site_plan") or {}
     projection = result.get("post_plan_projection") or {}
     comparison = (projection.get("comparison") or {}) if isinstance(projection, dict) else {}
     policy = source.get("cns_continuous_service_policy") or {}
@@ -305,6 +348,27 @@ def _continuous_service_section(source):
                     ),
                     "D_uncertainty_m": (route.get("corridor") or {}).get("D_uncertainty_m"),
                     "D_protection_m": (route.get("corridor") or {}).get("D_protection_m"),
+                    "response_protection_distance_m": (route.get("corridor") or {}).get(
+                        "response_protection_distance_m"
+                    ),
+                    "service_target_half_width_m": (route.get("corridor") or {}).get(
+                        "service_target_half_width_m"
+                    ),
+                    "corridor_width_policy_version": (route.get("corridor") or {}).get(
+                        "corridor_width_policy_version"
+                    ),
+                    "fixed_band_service_status": (route.get("corridor") or {}).get(
+                        "fixed_band_service_status"
+                    ),
+                    "response_timeliness_status": (route.get("corridor") or {}).get(
+                        "response_timeliness_status"
+                    ),
+                    "outer_half_width_m": (route.get("corridor") or {}).get(
+                        "outer_half_width_m"
+                    ),
+                    "outer_half_width_m_semantics": (route.get("corridor") or {}).get(
+                        "outer_half_width_m_semantics"
+                    ),
                     "status": (route.get("corridor") or {}).get("status"),
                 }
                 for route in result.get("routes") or []
@@ -345,6 +409,14 @@ def _continuous_service_section(source):
         ],
         "improved_services": deepcopy(comparison.get("improved_services") or []),
         "remaining_gaps": deepcopy(comparison.get("remaining_gaps") or []),
+        "planned_gap_status": {
+            "status": site_plan.get("status"),
+            "selected_action_count": len(site_plan.get("selected_actions") or []),
+            "residual_confirmed_target_count": len(
+                site_plan.get("residual_confirmed_targets") or []
+            ),
+            "unknown_residual_count": len(site_plan.get("residual_unknown_evidence") or []),
+        },
         "limitations": deepcopy(result.get("limitations") or []),
         #: **强制披露原文**：报告必须逐字包含这些行。
         "disclosure_lines": deepcopy(result.get("disclosure_lines") or []),
@@ -360,6 +432,7 @@ def _continuous_service_section(source):
         "engineering_assumptions": engineered,
         "no_full_coverage_claim": True,
         "no_surveillance_fully_satisfied_claim": True,
+        "no_response_success_claim": True,
         "not_evaluated": deepcopy(result.get("not_evaluated") or {}),
     }
 

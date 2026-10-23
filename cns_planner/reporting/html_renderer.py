@@ -62,6 +62,7 @@ class HtmlReportRenderer:
 <section><h2>3. 数据基础</h2>{_sources(sections.get('data_foundation') or {})}</section>
 <section><h2>4. 建筑环境与建筑净空安全</h2><p class="note">FABDEM 非测绘级 DTM；GBA 高度非实测真值；结果仅供工程评估。</p>{_json_details(sections.get('building_environment_and_clearance'))}</section>
 <section><h2>5. 航路、高度与三维服务需求走廊</h2>{_route_svg(sections)}<p class="note">走廊为工程CNS服务需求走廊，不等同法规Operational Volume或批准空间。</p>{_json_details(sections.get('routes_altitude_corridor'))}</section>
+<section><h2>5A. 工程演示航路条件接受</h2><p class="note">工程条件接受，严格验证未通过，仅供演示；不构成运行许可。</p>{_json_details(sections.get('engineering_demo_route_acceptance'))}</section>
 <section><h2>6. 所需CNS性能（RequiredCNS）</h2>{_json_details(sections.get('required_cns'))}</section>
 <section><h2>7. P10中心线CNS缺口</h2>{_result_summary(sections.get('centerline_gap_p10'))}</section>
 <section><h2>8. P14三维服务空间</h2><p class="note">离散体积代理 / 代表点评价，不是整个体素的性能保证。</p>{_result_summary(sections.get('spatial_service_p14'))}</section>
@@ -114,9 +115,26 @@ def _statistics(rows):
 
 
 def _decision(value):
+    raw_p16 = value.get("p16_decision_evidence") or {}
+    from .review_evidence import review_summary
+    value = review_summary(value)
+    review = value.get("review") or {}
+    display = {"status": review.get("status"), "stale_reason": review.get("stale_reason"),
+               "input_fingerprints": review.get("input_fingerprints"),
+               "selected_variant_id": review.get("selected_variant_id"),
+               "evidence_artifact": value.get("evidence_artifact"),
+               "evidence_reference": "完整 P18 证据见独立 artifact；正式报告见 report.json。",
+               "variants": []}
+    for item in review.get("variants") or []:
+        evaluation = item.get("evaluation") or {}
+        display["variants"].append({
+            **{key: item.get(key) for key in ("variant_id", "name", "status", "selected_action_ids")},
+            "evaluation": {key: evaluation.get(key) for key in (
+                "status", "confirmation_gate", "comparison_matrix", "action_summary",
+                "cost_summary", "limitations", "continuous_service_projection")},
+        })
     plan=value.get("confirmed_plan") or {}; variant=plan.get("variant") or {}; gate=(variant.get("evaluation") or {}).get("confirmation_gate") or {}
-    p16=value.get("p16_decision_evidence") or {}
-    return f'<p>方案：<b>{e(plan.get("plan_id"))}</b> · {e(zh(plan.get("status")))}</p><p>Plan Variant：{e(variant.get("name"))} / {e(variant.get("variant_id"))} · 门禁：{e(zh(gate.get("status")))}</p><p>该方案由人工选择和确认；系统未生成自动综合评分或排名。显式费用按 cost_unit 分组，禁止跨单位合计。</p>'+_p16_proposal(p16)+_json_details(value)
+    return f'<p>方案：<b>{e(plan.get("plan_id"))}</b> · {e(zh(plan.get("status")))}</p><p>Plan Variant：{e(variant.get("name"))} / {e(variant.get("variant_id"))} · 门禁：{e(zh(gate.get("status")))}</p><p>该方案由人工选择和确认；系统未生成自动综合评分或排名。显式费用按 cost_unit 分组，禁止跨单位合计。</p>'+_p16_proposal(raw_p16)+_json_details(display)
 
 
 def _result_summary(value):
@@ -159,18 +177,25 @@ def _continuous_service(value):
     ]
     protection = value.get("route_protection") or {}
     protection_rows = "".join(
-        f'<tr><td>{e(row.get("route_id"))}</td><td>{e(row.get("D_separation_m"))}</td>'
+        f'<tr><td>{e(row.get("route_id"))}</td>'
+        f'<td>{e(row.get("service_target_half_width_m"))}</td>'
+        f'<td>{e(zh(row.get("fixed_band_service_status")))}</td>'
+        f'<td>{e(row.get("D_separation_m"))}</td>'
         f'<td>{e(row.get("V_relative_mps"))}</td><td>{e(row.get("T_chain_s"))}</td>'
         f'<td>{e(row.get("D_maneuver_m"))}</td><td>{e(row.get("D_uncertainty_m"))}</td>'
-        f'<td>{e(row.get("D_protection_m"))}</td><td>{e(zh(row.get("status")))}</td></tr>'
+        f'<td>{e(row.get("response_protection_distance_m"))}</td>'
+        f'<td>{e(zh(row.get("response_timeliness_status")))}</td></tr>'
         for row in protection.get("routes") or []
     )
     protection_table = (
-        f'<p>保护走廊公式：<code>{e(protection.get("formula"))}</code>'
+        f'<p>固定 CNS 服务宽带为中心线两侧各 500 m；响应保护距离按独立公式：'
+        f'<code>{e(protection.get("formula"))}</code>'
         f'（D_maneuver 为 engineering_baseline 接口，不代表法规值或某机型普遍制动距离）</p>'
-        '<table><thead><tr><th>航路</th><th>D_separation(m)</th><th>V_relative(m/s)</th>'
+        '<p><b>固定宽带达标不代表预警及时或避碰成功；响应证据缺失时保持 unknown。</b></p>'
+        '<table><thead><tr><th>航路</th><th>固定半宽(m)</th><th>宽带服务状态</th>'
+        '<th>D_separation(m)</th><th>V_relative(m/s)</th>'
         '<th>T_chain(s)</th><th>D_maneuver(m)</th><th>D_uncertainty(m)</th>'
-        '<th>D_protection(m)</th><th>状态</th></tr></thead><tbody>'
+        '<th>响应保护距离(m)</th><th>响应及时性</th></tr></thead><tbody>'
         + protection_rows + '</tbody></table>'
     )
     thresholds = value.get("communication_thresholds") or {}
