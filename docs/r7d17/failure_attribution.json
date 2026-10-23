@@ -1,0 +1,213 @@
+{
+  "schema_version": "cns-r7d17-failure-attribution/v1",
+  "generated_at": "2026-10-23T20:35:00+08:00",
+  "environment": {
+    "python": "D:/tools/anaconda/python.exe (3.13.9) pytest 8.4.2",
+    "node": "v24.15.0",
+    "worktree": "C:/Users/yiding/.codex/worktrees/r7d13-ab-integration/CNS-PLANNER",
+    "head": "b76e054f9607434040704782fe860ab7953cc0a7"
+  },
+  "python_suite": {
+    "command": "pytest -q --tb=line tests/test_phase4_b6x_heavy_task_runtime.py tests/test_project_persistence_characterization.py tests/test_building_level_independent_facts.py tests/test_risk_model.py tests/test_risk_v2_canonical_integration.py tests/test_continuous_service_acceptability.py tests/test_route_planner_v3_continuous.py",
+    "result": "17 failed, 189 passed",
+    "entries": [
+      {
+        "test": "tests/test_phase4_b6x_heavy_task_runtime.py::test_corridor_async_result_matches_sync_semantics",
+        "category": "product_defect",
+        "severity": "medium",
+        "observation": "sync 与 async 的 corridor 结果除 input_fingerprint 外完全一致；candidate 几何与业务状态相同。",
+        "evidence": "输入指纹 sync=2fdd2175... / async=4a48fd57...；差异定位脚本只输出 /input_fingerprint 一行。",
+        "action": "由任务/组合根 owner 统一 async 任务输入冻结与 sync 路径（疑似 navigation_endpoint_evidence 等可选输入在 worker 侧取值不同）；修复前该用例保持失败。"
+      },
+      {
+        "test": "tests/test_phase4_b6x_heavy_task_runtime.py::test_p14_protected_files_are_byte_identical",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "4 个受保护文件中 2 个哈希与 B6X 基线不一致：coverage/geometric_3d.py、service_capability/v1.py。",
+        "evidence": "两者在 8f1c927..HEAD 与 origin/main..HEAD 均无 diff；变更来自更早的 Round38 surface-aware 规划（8c32897/ddd2f9a），不是本轮回归。",
+        "action": "由算法 owner 以显式版本说明重建 P14 保护清单；不要静默改哈希。"
+      },
+      {
+        "test": "tests/test_project_persistence_characterization.py::test_open_existing_project_switches_state_and_restores_sources",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "打开项目后 cns_corridor_policy 结构不同：当前含 corridor_half_width_m/corridor_total_width_m/horizontal_width_editable/legacy_stale_route_ids，旧期望是 regulatory_operational_volume/routes。",
+        "evidence": "R7-D15 固定 1000 m 契约 fixed-1000m-v1 的持久化迁移。",
+        "action": "更新 characterization 的期望结构；迁移语义本身已由 D15 报告和定向测试覆盖。"
+      },
+      {
+        "test": "tests/test_building_level_independent_facts.py::test_building_mapping_is_level_independent_when_footprints_are_configured",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "建筑事实 cell 的键集合比旧断言多（新增 allocation/height evidence 字段）。",
+        "evidence": "断言要求 set(cell) 恰好等于旧 9 键；当前产品输出扩展字段，building_count/height_max 等语义未变。",
+        "action": "把精确集合断言改为 required-subset，并显式列出新增字段。"
+      },
+      {
+        "test": "tests/test_risk_model.py::test_workflow_calls_replaceable_model_and_persists_then_stales_risk",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "apply_grid_attributes 返回的 grid_risk 是压缩摘要（artifact_ref），重新打开项目后的 snapshot 会水合 cells。",
+        "evidence": "B5X artifact compaction 契约：ProjectState 只保留摘要/指纹/locator，明细外置。",
+        "action": "测试应比较 reopen 后的 snapshot 或比较摘要；若要求 apply 返回水合结果，则属 API 契约变更，需单独决策。"
+      },
+      {
+        "test": "tests/test_risk_v2_canonical_integration.py::test_profile_ground_exposure_matches_a_direct_canonical_integral",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "夹具 grid_id 使用 MHT4063-L8-C0-RP0，当前 canonical grid_id 为 MHT4063-L08-C00270000-RP00027000；risk cells 按 canonical id 索引，KeyError。",
+        "evidence": "测试夹具仍用旧 1 位/3 位编号规则；生产算法未改。",
+        "action": "用当前 WorkspaceGridService 生成夹具 id，或从 cells 反查 canonical id。"
+      },
+      {
+        "test": "tests/test_continuous_service_acceptability.py::test_navigation_rtk_lost_with_adequate_gnss_is_acceptable_degraded",
+        "category": "algorithm_semantics_change",
+        "severity": "medium",
+        "observation": "期望 acceptable_degraded，当前返回 unknown。",
+        "evidence": "D15 2.5 语义：N 降级时长/阈值缺证时必须 unknown，不得写成 acceptable_degraded。",
+        "action": "测试改为显式登记降级时长证据后才期望 acceptable_degraded；保持 unknown 的 fail-closed 语义。"
+      },
+      {
+        "test": "tests/test_continuous_service_acceptability.py::test_navigation_rtk_lost_with_insufficient_gnss_accuracy_is_unacceptable",
+        "category": "algorithm_semantics_change",
+        "severity": "medium",
+        "observation": "期望 unacceptable + exceeds_limit=True，当前 unknown/None。",
+        "evidence": "同一 2.5 语义：缺降级时长证据时不可判定，不能升级为 unacceptable 或 acceptable。",
+        "action": "补显式时长/精度证据后再断言 unacceptable；不要把 unknown 改成通过。"
+      },
+      {
+        "test": "tests/test_continuous_service_acceptability.py::test_navigation_rtk_loss_from_route_service_evidence_is_structural",
+        "category": "algorithm_semantics_change",
+        "severity": "medium",
+        "observation": "从 route service evidence 推导 RTK 丢失时期望 acceptable_degraded，当前 unknown。",
+        "evidence": "同上，N 证据链缺时长/阈值。",
+        "action": "更新测试以保留 unknown，或补全 route service evidence 字段。"
+      },
+      {
+        "test": "tests/test_continuous_service_acceptability.py::test_protection_corridor_uses_explicit_parameters",
+        "category": "algorithm_semantics_change",
+        "severity": "medium",
+        "observation": "期望 outer_half_width_m = 500 + 410 = 910；当前该字段为 None。",
+        "evidence": "D15 将固定 1000 m 保障带宽与响应/保护走廊解耦；旧公式 outer=500+D_protection 不再作为唯一口径。",
+        "action": "更新测试到 2.5 契约（固定带宽与 D_protection 分开断言）；不得恢复旧的 910 混合口径。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_building_overflight_with_vertical_clearance_passes",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望 building=passed，当前 unresolved（building:building_evidence_unresolved）。",
+        "evidence": "建筑验证新增 height-evidence 门禁：predicted/unknown 高度证据不得支撑 pass。夹具只给 height_m，没有 confirmed 高度证据。",
+        "action": "给夹具补 confirmed height evidence / source；不要放宽 verified-height gate。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_building_side_clearance_failure_is_a_vertical_violation",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望 failed，当前 unresolved。",
+        "evidence": "同上；高度证据缺失使失败也不得判定（fail-closed）。",
+        "action": "补 confirmed 高度证据后再断言 failed。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_self_intersecting_building_geometry_is_repaired_and_then_evaluated",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望 evaluated（passed/failed），当前 unresolved。",
+        "evidence": "几何修复后仍需要 confirmed 高度证据；当前夹具只验证几何。",
+        "action": "补高度证据，保留 make_valid 几何断言。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_every_part_of_a_multi_part_footprint_is_evaluated",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望逐部分 passed/failed，当前 unresolved。",
+        "evidence": "同一 height-evidence 门禁。",
+        "action": "补 confirmed 高度证据。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_c_a_building_over_the_route_with_resolved_evidence_and_enough_clearance_passes",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望 passed，当前 unresolved。",
+        "evidence": "用例名声称 resolved evidence，但夹具未提供当前 schema 所需的高度证据级别。",
+        "action": "按当前 evidence schema 补字段。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_d_a_building_with_insufficient_clearance_is_failed",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望 failed，当前 unresolved。",
+        "evidence": "同上。",
+        "action": "补 confirmed 高度证据后断言 failed。"
+      },
+      {
+        "test": "tests/test_route_planner_v3_continuous.py::test_f_a_multi_part_footprint_is_checked_part_by_part",
+        "category": "test_expired",
+        "severity": "low",
+        "observation": "期望逐部分 passed/failed，当前 unresolved。",
+        "evidence": "同上。",
+        "action": "补 confirmed 高度证据。"
+      }
+    ]
+  },
+  "node_suite": {
+    "command": "node tests/frontend_modules.test.mjs; node tests/route_risk_profile_frontend.test.mjs; node tests/cns_service_round3_frontend.test.mjs",
+    "result": "3 files / 6 failing tests (frontend_modules 4, route_risk_profile 1, cns_service_round3 1)",
+    "entries": [
+      {
+        "test": "tests/frontend_modules.test.mjs::P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop contracts",
+        "category": "test_expired",
+        "observation": "断言旧文案 /监视雷达规划默认是可选的：没有显式监视需求时不阻塞下一步/，当前文案已改为生产链描述。",
+        "action": "更新文案断言到当前可读语义。"
+      },
+      {
+        "test": "tests/frontend_modules.test.mjs::the layered candidate bind switch always uses the Theta* V2 production panel",
+        "category": "test_expired",
+        "observation": "calls 比期望多一条 panelError(hint)；产品在提交后台任务前发的是提示，不是重复 POST。",
+        "evidence": "layered_theta_v2.js:1549 c.panelError(LAYERED_SUBMIT_HINT,'hint')。",
+        "action": "测试桩按 level 区分 hint/error；同时保留 evaluate-real 单次 POST 断言。"
+      },
+      {
+        "test": "tests/frontend_modules.test.mjs::theta v2 never treats the legacy lambda cost policy as a blocker",
+        "category": "test_expired",
+        "observation": "calls 中出现 __error 被判定为阻塞，实际是 LAYERED_SUBMIT_HINT 提示；Theta* V2 blocker 集合仍为 0。",
+        "evidence": "同一面板绑定；产品按 current.blockers.thetaV2 判阻塞，未使用 legacy λ。",
+        "action": "修测试桩 panelError 签名；不要改产品把提示当错误。"
+      },
+      {
+        "test": "tests/frontend_modules.test.mjs::theta v2 candidate metrics are transcribed verbatim and the boundaries stay explicit",
+        "category": "test_expired",
+        "observation": "HTML 不再包含字面量 rewired_parent_shortcuts，但 model.candidate.searchStatistics 值仍为 7，其它指标转印正常。",
+        "action": "断言模型值与当前展示字段，不再依赖已移除的文案。"
+      },
+      {
+        "test": "tests/route_risk_profile_frontend.test.mjs::policy evaluate delete endpoints are wired exactly as contracted",
+        "category": "test_expired",
+        "observation": "TypeError: c.paint is not a function；bindStep3 当前需要 paint 上下文方法，测试桩未提供。",
+        "action": "在测试桩补 paint:()=>{}，再验证 evaluate/delete 端点契约。"
+      },
+      {
+        "test": "tests/cns_service_round3_frontend.test.mjs::同项目路径与常规路径都必须在 renderWorkflow 前复位图层",
+        "category": "test_expired",
+        "observation": "期望复位 2 层，当前复位 3 层（新增图层）。",
+        "action": "把 count 断言改为当前图层集合的显式 id 断言，避免无意义数字耦合。"
+      }
+    ]
+  },
+  "summary": {
+    "total": 23,
+    "product_defect": 1,
+    "algorithm_semantics_change": 4,
+    "test_expired": 18,
+    "environment_missing_evidence": 0,
+    "baseline_comparison": "与 R7-D16 在 8f1c927 上复现的同一失败集合一致；本轮未新增失败。",
+    "acceptance_blockers": [
+      "Step02 环境风险 stale、grid_risk stale、grid_risk_v2 pending_confirmation",
+      "Step03 未选择固定巡航高度层，规划约束场不可用，候选/风险画像 stale",
+      "Step04 需求建议 stale、采用 superseded",
+      "Step05 三维覆盖/服务能力 stale，走廊与缺口 failed（C/S 2727 确认缺口，N 2727 unknown），连续服务 2.2 vs 2.5 stale，P16 仅提案",
+      "Step06 方案审查 stale、方案未确认、报告未计算、P17 未计算",
+      "P17 3D 投影 blocked（stored 2.2 / current 2.5 version conflict）",
+      "设备参考目录配置为目录而非具体文件，source audit invalid_source_path（数据源不完整提示）"
+    ]
+  }
+}

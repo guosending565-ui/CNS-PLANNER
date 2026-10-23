@@ -1,0 +1,363 @@
+{
+  "schema_version": "cns-r7d17-step-status/v1",
+  "snapshot": "D:\\Projects\\_cns_acceptance\\r7d17\\workflow2.json",
+  "revision": 524,
+  "project": {
+    "project_id": "9e349d0f-abe1-4ede-af5e-b01dea4dfe43",
+    "name": "zhoushan_screenshot_01_20261001_1647",
+    "created_at": "2026-09-22T11:23:44.296912+00:00",
+    "updated_at": "2026-10-22T16:20:57.170418+00:00",
+    "revision": 524
+  },
+  "steps": {
+    "1": {
+      "title": "数据准备",
+      "classification": "current",
+      "containers": {
+        "workspace": {
+          "status": "passed",
+          "classification": "current"
+        },
+        "source_audits": {
+          "status": "passed",
+          "classification": "current",
+          "count": 12
+        },
+        "data_readiness": {
+          "status": "ready",
+          "classification": "current"
+        }
+      }
+    },
+    "2": {
+      "title": "环境与风险",
+      "classification": "stale",
+      "containers": {
+        "grid": {
+          "status": "passed",
+          "classification": "current",
+          "count": 8008
+        },
+        "environment_risk": {
+          "present": false,
+          "status": "stale",
+          "classification": "stale"
+        },
+        "grid_risk": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "risk-model-v1-relative-index",
+          "algorithm_version": "1.1",
+          "current_algorithm_version": "1.1",
+          "detail_status": "artifact_unavailable",
+          "count": 8008
+        },
+        "grid_risk_v2": {
+          "status": "pending_confirmation",
+          "classification": "unknown",
+          "algorithm_id": "risk-framework-v2-domains",
+          "algorithm_version": "2.0",
+          "count": 8008,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "riskframeworkv2-7a74c81955de507470a0a827f83069dfc0b2c50fb5424ae3ee84de55e6a7646c"
+          }
+        },
+        "planning_constraint_fields": {
+          "status": "passed",
+          "classification": "current",
+          "count": 1
+        },
+        "surface_class_facts": {
+          "status": "passed",
+          "classification": "current",
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "0b1558ea87f4cc2bc7cf9e18e3292798c1e41e0b3a14000322ecb6c524d44c05"
+          }
+        },
+        "building_clearance_assessment": {
+          "status": "not_calculated",
+          "classification": "unknown",
+          "algorithm_id": "building_clearance_v1",
+          "algorithm_version": "1.0",
+          "route_count": 0
+        }
+      }
+    },
+    "3": {
+      "title": "航路规划与发布",
+      "classification": "stale",
+      "containers": {
+        "layered_route_candidates": {
+          "status": "stale",
+          "classification": "stale",
+          "stale_reason": "planning_constraint_field_changed",
+          "detail_status": "artifact_unavailable",
+          "count": 0
+        },
+        "route_risk_profiles": {
+          "status": "stale",
+          "classification": "stale",
+          "stale_reason": "planning_constraint_field_changed",
+          "count": 9
+        },
+        "layered_route_validations": {
+          "status": "stale",
+          "classification": "stale",
+          "count": 20
+        },
+        "layered_operational_adoptions": {
+          "status": "stale",
+          "classification": "stale",
+          "count": 9
+        }
+      }
+    },
+    "4": {
+      "title": "CNS 需求",
+      "classification": "stale",
+      "containers": {
+        "required_cns": {
+          "status": "passed",
+          "classification": "current"
+        },
+        "required_cns_recommendation": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "operational_context_required_cns_v2",
+          "algorithm_version": "2.0",
+          "current_algorithm_version": "2.0",
+          "stale_reason": "layered_validation_evidence_outdated",
+          "proposal_only": true,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "6e50c319c8ab3b7d7dd2891d423961ce2803435870fe3481b14af1da177cbb38"
+          }
+        },
+        "required_cns_adoption": {
+          "status": "superseded",
+          "classification": "historical_only",
+          "algorithm_id": "operational_context_required_cns_v2",
+          "algorithm_version": "2.0",
+          "current_algorithm_version": "2.0",
+          "input_fingerprint": {
+            "field": "policy_fingerprint",
+            "value": "693e2a971a301e57f6885a1e488468ec1fed9fdb7c1808777a8c98e8050fd6f0"
+          }
+        }
+      }
+    },
+    "5": {
+      "title": "CNS 能力与设施规划",
+      "classification": "failed",
+      "containers": {
+        "coverage_3d": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "geometric_coverage_3d_v1",
+          "algorithm_version": "1.0",
+          "current_algorithm_version": "1.0",
+          "detail_status": "artifact_unavailable",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "a104e770a248f102acdee5f4d417259398455a14bd4945fc9744eb05bda6e6bc"
+          }
+        },
+        "cns_service_capability": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "cns_service_capability_v1",
+          "algorithm_version": "1.0",
+          "current_algorithm_version": "1.0",
+          "detail_status": "artifact_unavailable",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "729db97eb3bf8b4e24a4c925e0f03c5e466d037fd07cf08aa488c579d280d5d1"
+          }
+        },
+        "cns_corridor_assessment": {
+          "status": "failed",
+          "classification": "failed",
+          "algorithm_id": "cns_service_corridor_v1",
+          "algorithm_version": "1.4",
+          "current_algorithm_version": "1.4",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "b070276bfb6a628564b59b2b112d6e9dedd5be9626e31a21f1f3a76e3134ae4a"
+          }
+        },
+        "cns_corridor_gap_assessment": {
+          "status": "failed",
+          "classification": "failed",
+          "algorithm_id": "cns_corridor_gap_v1",
+          "algorithm_version": "1.3",
+          "current_algorithm_version": "1.3",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "952103e3e98bb2d3056606d4aa139d94ae3679fc03f92399e66852c64cd977e2"
+          }
+        },
+        "cns_corridor_site_plan": {
+          "status": "proposal_ready",
+          "classification": "historical_only",
+          "algorithm_id": "corridor_reuse_first_site_planner_v2",
+          "algorithm_version": "2.3",
+          "current_algorithm_version": "2.3",
+          "proposal_only": true,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "fc878dad635f60f020bee0ec45f54724df15d788a12c4f0a987aa5637c001acc"
+          }
+        },
+        "continuous_service_acceptability": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "continuous_service_acceptability_v1",
+          "algorithm_version": "2.2",
+          "stale_reason": "algorithm_semantics_changed",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "2e03f20ede9d6f21d5162e3823a2c37a43731bd304e0fd3830a2f858163d43dc"
+          }
+        },
+        "radar_surveillance_layout": {
+          "status": "stale",
+          "classification": "stale",
+          "proposal_only": true,
+          "count": 2
+        }
+      }
+    },
+    "6": {
+      "title": "方案评审与报告",
+      "classification": "stale",
+      "containers": {
+        "cns_plan_review": {
+          "status": "stale",
+          "classification": "stale",
+          "stale_reason": "continuous_service_parameters_changed",
+          "input_fingerprint": {
+            "field": "baseline_fingerprint",
+            "value": "b817893e58ec31fbdec15df72f171f1b0972f1e1a440c7922ff29a6425835e7f"
+          }
+        },
+        "confirmed_cns_plan": {
+          "status": "not_confirmed",
+          "classification": "unknown"
+        },
+        "cns_planning_reports": {
+          "status": "not_calculated",
+          "classification": "unknown"
+        },
+        "protection_envelope": {
+          "status": "not_calculated",
+          "classification": "unknown",
+          "algorithm_id": "tactical_protection_envelope_v1",
+          "algorithm_version": "1.0",
+          "current_algorithm_version": "1.0"
+        },
+        "route_3d_profiles": {
+          "status": "not_calculated",
+          "classification": "unknown",
+          "count": 0
+        }
+      }
+    }
+  },
+  "routes": {
+    "operational": [
+      {
+        "route_id": "R0005",
+        "status": "passed",
+        "vertex_count": 14,
+        "start": [
+          122.2672222222,
+          29.8666666667
+        ],
+        "end": [
+          122.1883333333,
+          29.8194444444
+        ]
+      }
+    ],
+    "result_status": "stale"
+  },
+  "assets": {
+    "towers": {
+      "status": "passed",
+      "count": 373,
+      "resolved": 77,
+      "resolved_unconfirmed": 77,
+      "unresolved": 296
+    },
+    "reference_landing_sites": 98,
+    "operational_timing_routes": 0
+  },
+  "p16_historical_actions": {
+    "count": 13,
+    "physical_mount_confirmed": 0,
+    "requires_site_survey": 13,
+    "subsystem_mount_status": [
+      "unverified"
+    ],
+    "selected_actions_inline_in_plan": 0,
+    "iteration_trace_count": 0,
+    "stop_reason": "coverage_objectives_met_but_continuous_service_unacceptable",
+    "target_voxel_count": 5454,
+    "residual_confirmed_targets": 219,
+    "unknown_evidence_required": 2727
+  },
+  "p17": {
+    "container": "protection_envelope",
+    "status": "not_calculated",
+    "input_fingerprint": null,
+    "route_3d_profiles_status": "not_calculated",
+    "note": "本轮未计算 P17；历史 P17 结果不得升级为 current"
+  },
+  "artifact_diagnostics": [],
+  "result_statuses": {
+    "workspace": "passed",
+    "grid": "passed",
+    "environment_risk": "stale",
+    "routes": "stale",
+    "coverage": "not_calculated",
+    "cns_gap": "not_calculated",
+    "cns_gap_v2": "not_calculated",
+    "cns_site_plan": "not_calculated",
+    "grid_risk_v2": "pending_confirmation",
+    "closed_loop_assessment": "not_calculated",
+    "safety_assessment": "not_calculated",
+    "building_clearance": "not_calculated",
+    "cns_corridor_assessment": "failed",
+    "cns_corridor_gap_assessment": "failed",
+    "cns_corridor_site_plan": "passed",
+    "cns_plan_review": "stale",
+    "required_cns_recommendation": "stale",
+    "coverage_3d": "stale",
+    "cns_service_capability": "stale",
+    "service_timeline": "not_calculated",
+    "protection_envelope": "not_calculated",
+    "route_vertical_profiles": "not_calculated",
+    "encounter_3d_assessment": "not_calculated",
+    "technical_risk": "not_calculated",
+    "report": "not_calculated",
+    "layered_route_candidate": "stale",
+    "route_risk_profile": "stale",
+    "layered_route_validation": "stale",
+    "route_safety_evidence_v2": "not_calculated",
+    "route_3d_profiles": "not_calculated",
+    "vertical_transition_validation": "not_calculated",
+    "tower_obstacle_profiles": "passed",
+    "tower_colocation_candidates": "passed",
+    "radar_surveillance_layout": "stale",
+    "planning_constraint_fields": "passed",
+    "surface_class_facts": "passed",
+    "continuous_service_acceptability": "stale"
+  }
+}

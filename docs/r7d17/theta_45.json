@@ -1,0 +1,27 @@
+{
+  "schema_version": "cns-r7d17-theta-endpoint/v1",
+  "generated_at": "2026-10-23T20:36:00+08:00",
+  "constraint": {
+    "name": "endpoint_transition_admissibility_deg",
+    "default_value_deg": 45.0,
+    "range": [0.0, 180.0],
+    "source": "explicit_planning_policy",
+    "file": "cns_planner/layered_route_planner/theta_star_v2.py",
+    "lines": "134-179",
+    "semantics": "只约束最后一个目标标签进入 target anchor 时的端点转向可采纳性；不是航空器最小转弯角，也不是全局航向变化上限。"
+  },
+  "change_audit": {
+    "diff_8f1c927_to_head": "none",
+    "diff_origin_main_to_head": "none",
+    "conclusion": "R7-D17 未修改 Theta*、未放宽 45° 默认值、未改 endpoint transition 语义。"
+  },
+  "test": {
+    "id": "tests/test_phase4_b3x_planning_constraints.py::test_theta_star_and_supercover_never_cross_blocked_constraint_cells",
+    "observation": "3×3 合成网格阻挡中间格后 expected candidate，actual no_path。",
+    "root_cause": "唯一绕行几何以 90° 转向进入精确终点；45°/60° 下 arrival_admissible=false，goal 标签到达 anchor 后不再扩展。",
+    "classification": "test_fixture_predates_endpoint_policy",
+    "product_decision": "不修改 Theta*、不为通过测试放宽真实规划约束。",
+    "fixture_decision": "需要更新旧夹具：要么把合成几何改为 ≤45° 到达终点，要么在该测试内显式声明 90° planning policy 并单独标注这是测试前提（不得写入生产默认 / ProjectState）。",
+    "owner": "algorithm/test owner"
+  }
+}

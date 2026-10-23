@@ -1,0 +1,124 @@
+{
+  "schema_version": "cns-r7d17-visual-evidence/v1",
+  "generated_at": "2026-10-23T20:40:00+08:00",
+  "service": {
+    "base_url": "http://127.0.0.1:8794",
+    "port": 8794,
+    "independent_from": [8765, 8776],
+    "project": "zhoushan_screenshot_01_20261001_1647",
+    "revision": 524,
+    "project_state_sha256": "cbb09d87dcf8287fa37f4be8a5bbd7e2ae65dca7a08b4bad12243d7d8c48c536",
+    "browser": "Playwright Chromium (Microsoft Edge channel), headless, 1600x1000"
+  },
+  "screenshots_root": "D:/Projects/_cns_acceptance/r7d17/shots",
+  "two_d": {
+    "screenshots": [
+      {"file": "step1.png", "purpose": "Step01 数据准备：项目、工作区、L8 8,008 格"},
+      {"file": "step2.png", "purpose": "Step02 环境与风险"},
+      {"file": "step3.png", "purpose": "Step03 航路规划与发布"},
+      {"file": "s3-res-route.png", "purpose": "Step03 结果-当前航路 R0005 通过"},
+      {"file": "s3-res-feasibility.png", "purpose": "Step03 可行性与净空：约束场未选择高度层"},
+      {"file": "s5-cns-res-coverage.png", "purpose": "Step05 三维覆盖：stale，C/N/S 0% 覆盖"},
+      {"file": "s5-cns-res-capability.png", "purpose": "Step05 服务能力：stale，C/N/S does_not_meet_under_model"},
+      {"file": "s5-cns-res-corridor.png", "purpose": "Step05 服务走廊：failed，C/S 2727 缺口，N unknown"},
+      {"file": "s5-cns-res-gap.png", "purpose": "Step05 能力缺口：failed，9404.9 m 空间连续缺口"},
+      {"file": "s5-cns-res-site.png", "purpose": "Step05 设施规划：proposal_ready"},
+      {"file": "s5-p16-actions.png", "purpose": "P16 规范结果：已选动作 0（历史 13 项在恢复证据容器，不在 canonical）"},
+      {"file": "s5-cns-res-continuous.png", "purpose": "连续服务：stale（2.2 vs 2.5），不可接受 1 条航路"},
+      {"file": "s6-review-res-status.png", "purpose": "Step06 状态总览：总体已失效、未通过"},
+      {"file": "s6-review-res-report.png", "purpose": "Step06 报告：方案未确认、报告未计算"},
+      {"file": "2d-r0005-layers.png", "purpose": "二维 R0005 + 373 铁塔 + 98 起降点 + 历史走廊预览"},
+      {"file": "2d-r0005-layers.png", "purpose": "二维图层：C/N/S/站址/保护/设施图层开关无错误"}
+    ],
+    "route": {
+      "route_id": "R0005",
+      "status": "passed",
+      "vertex_count": 14,
+      "start": [122.2672222222, 29.8666666667],
+      "end": [122.1883333333, 29.8194444444],
+      "source": "operational_routes"
+    },
+    "map_facts": {
+      "towers": 373,
+      "reference_landing_sites": 98,
+      "project_nodes": 2,
+      "grid_cells": 8008,
+      "work_area_km2": 104.835
+    },
+    "layer_checks": {
+      "towerLayer": true,
+      "referenceLandingLayer": true,
+      "existingCnsLayer": true,
+      "cLayer": true,
+      "nLayer": true,
+      "sLayer": true,
+      "routeProtectionCorridorLayer": true,
+      "cnsCommunicationLayer": true,
+      "cnsNavigationLayer": true,
+      "cnsRidLayer": true,
+      "cnsServiceGapLayer": true,
+      "cnsFacilityPlanLayer": true
+    },
+    "observations": [
+      "R0005 运行航路通过（14 顶点），起点/终点使用统一 PNG 图标。",
+      "373 座铁塔与 98 个参考起降点可见；铁塔图层不改变业务身份。",
+      "C/N/S 图层开关可用，但 coverage/capability 为 stale 且明细引用缺失，因此不产生 current 覆盖面。",
+      "二维宽带为连续服务/P17 历史走廊预览（stale），不是 current 保障结论；固定 1000 m 带宽只在 current 时按 current 绘制。"
+    ],
+    "console_errors": 0,
+    "http_4xx": 0
+  },
+  "three_d": {
+    "screenshots": [
+      {"file": "3d-default.png", "purpose": "三维默认：离线影像 + FABDEM 地形，业务图层默认关闭"},
+      {"file": "3d-layers-on.png", "purpose": "三维图层开启：铁塔、起降点、CNS 站址"},
+      {"file": "3d-r0005-overhead.png", "purpose": "R0005 俯视：航路 + 固定 1000 m 带（stale 预览）+ 铁塔"},
+      {"file": "3d-r0005-oblique.png", "purpose": "桃花岛 45° 斜视：带体、起降点、铁塔"},
+      {"file": "3d-p17-blocked.png", "purpose": "P17 保护层：blocked（2.2/2.5 version conflict）"}
+    ],
+    "layer_count": 20,
+    "default_business_layers": "all off; only imagery/terrain on",
+    "stats": {
+      "entity_count": 1334,
+      "towers": {"total": 373, "known": 77, "unknown": 296, "billboards": 373,
+                  "icons": ["/assets/symbols/tower_qinglv_128.png", "/assets/symbols/tower_qinglv_unknown_128.png"]},
+      "landing_pads": {"count": 98, "project_node": 2, "reference_landing_site": 96,
+                        "icon": "/assets/symbols/landing_pad.png"},
+      "fixed_corridor": {
+        "status": "available",
+        "band_count": 1,
+        "width_policy_version": "fixed-1000m-v1",
+        "corridor_half_width_m": 500.0,
+        "corridor_total_width_m": 1000.0,
+        "route_id": "R0005",
+        "currentness": "stale",
+        "currentness_reason": "corridor_result_not_current",
+        "drawable_as_current_band": false,
+        "preview_allowed": true,
+        "preview_authority": "non_authoritative_historical_preview_not_a_current_assurance_result",
+        "geometry_status": "available",
+        "shown_entities": 2
+      },
+      "p17_protection": {
+        "status": "blocked",
+        "stored_algorithm_version": "2.2",
+        "current_code_algorithm_version": "2.5",
+        "algorithm_version_conflict": true,
+        "volume_count": 1,
+        "available_horizontal_count": 0,
+        "blocked_count": 1,
+        "read_only": true,
+        "writes_performed": 0
+      }
+    },
+    "console_errors": 0,
+    "http_4xx": 0
+  },
+  "isolation": {
+    "formal_project_state_opened": false,
+    "formal_project_state_written": false,
+    "ports_8765_8776_started_or_stopped": false,
+    "git_reset_or_clean": false,
+    "historical_worktrees_deleted": false
+  }
+}

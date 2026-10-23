@@ -1,0 +1,513 @@
+{
+  "schema_version": "cns-r7d17-acceptance-freeze/v1",
+  "generated_at": "2026-10-23T20:30:00+08:00",
+  "formal_project_untouched": {
+    "path": "D:\\Projects\\CNS-PLANNER\\projects\\current_project.json",
+    "note": "formal ProjectState is revision 21 (no R0005) and was never opened or written this round"
+  },
+  "source": {
+    "recovered_state_zip": "D:\\Projects\\CNS-PLANNER\\research\\r7d10\\isolated_recovered_state.zip",
+    "zip_sha256": "643fd8817e72ddc95c6ba3ab59715093b931a331cb7c7600b315a9768c95f745",
+    "zip_entry": "project_state.json",
+    "state_sha256": "cbb09d87dcf8287fa37f4be8a5bbd7e2ae65dca7a08b4bad12243d7d8c48c536",
+    "bytes": 512574827,
+    "revision": 524,
+    "project": {
+      "project_id": "9e349d0f-abe1-4ede-af5e-b01dea4dfe43",
+      "name": "zhoushan_screenshot_01_20261001_1647",
+      "created_at": "2026-09-22T11:23:44.296912+00:00",
+      "updated_at": "2026-10-22T16:20:57.170418+00:00",
+      "revision": 524
+    },
+    "recovery_classification": "identity_matched_historical_proposal_only (R7-D10); not a newly recomputed current result"
+  },
+  "copy": {
+    "root": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524",
+    "state_sha256": "cbb09d87dcf8287fa37f4be8a5bbd7e2ae65dca7a08b4bad12243d7d8c48c536",
+    "byte_identical_to_source": true,
+    "data_sources_sha256": "df7c0708766adccf5c6603b7a691fd69759fcedad8c125fbe8e635e11a0c03af",
+    "artifact_count": 63,
+    "original_data_sources": {
+      "basemap": "D:\\aaa2026project\\UOM\\全国适飞空域图_单省可更新.qgz",
+      "population": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\chn_pop_2025_CN_100m_R2025A_v1.tif",
+      "terrain": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\output\\Zhejiang_GLO30_mosaic_30m.tif",
+      "reference_landing_sites": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\空域航线起降点\\空域航线起降点\\舟山市低空起降点汇总260305.xlsx",
+      "reference_routes": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\空域航线起降点\\空域航线起降点\\舟山真实航线_CNS最终导入.xlsx",
+      "equipment_reference_catalog": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\设备性能",
+      "towers": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\各单位报送的补充材料\\各单位报送的补充材料\\航路航线规划-铁塔数据.xlsx",
+      "terrain_dtm": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\FABDEM\\processed\\Zhoushan_FABDEM_DTM_30m.tif",
+      "buildings": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\building\\processed\\zhoushan_buildings_v3.gpkg",
+      "building_grid": "D:\\Projects\\_cns_workspaces\\derived\\round36_d3\\zhoushan_building_grid_L8_v3_heightstats_v1.gpkg",
+      "land_mask": "D:\\Projects\\CNS-PLANNER\\projects\\derived\\land_mask_osm\\zhoushan_land_osm_v2.gpkg",
+      "cartographic_land": "D:\\Projects\\CNS-PLANNER\\projects\\derived\\cartographic_land\\cartographic_land_v1.gpkg"
+    },
+    "effective_data_sources": {
+      "basemap": "D:\\aaa2026project\\UOM\\全国适飞空域图_单省可更新.qgz",
+      "population": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\chn_pop_2025_CN_100m_R2025A_v1.tif",
+      "terrain": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\output\\Zhejiang_GLO30_mosaic_30m.tif",
+      "reference_landing_sites": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\空域航线起降点\\空域航线起降点\\舟山市低空起降点汇总260305.xlsx",
+      "reference_routes": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\空域航线起降点\\空域航线起降点\\舟山真实航线_CNS最终导入.xlsx",
+      "equipment_reference_catalog": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\设备性能",
+      "towers": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\各单位报送的补充材料\\各单位报送的补充材料\\航路航线规划-铁塔数据.xlsx",
+      "terrain_dtm": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\FABDEM\\processed\\Zhoushan_FABDEM_DTM_30m.tif",
+      "buildings": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\building\\processed\\zhoushan_buildings_v3.gpkg",
+      "building_grid": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524\\derived\\zhoushan_building_grid_L8_v3_heightstats_v1.gpkg",
+      "land_mask": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524\\derived\\land_mask_osm\\zhoushan_land_osm_v2.gpkg",
+      "cartographic_land": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524\\derived\\cartographic_land\\cartographic_land_v1.gpkg"
+    }
+  },
+  "data_source_files": {
+    "small_hashed": [
+      {
+        "path": "D:\\aaa2026project\\UOM\\全国适飞空域图_单省可更新.qgz",
+        "exists": true,
+        "bytes": 28607,
+        "mtime_ns": 1789550767370951100,
+        "sha256": "e55f71ab7748905b4f25a471c1771307bb7c573b71eb9b372615a61ba0b134d3"
+      },
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\各单位报送的补充材料\\各单位报送的补充材料\\航路航线规划-铁塔数据.xlsx",
+        "exists": true,
+        "bytes": 37154,
+        "mtime_ns": 1790054634000000000,
+        "sha256": "d722c111596acb4766bcc9d4cb5ce326f3a4b1f8364a5db871cb60220e2a411b"
+      },
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\空域航线起降点\\空域航线起降点\\舟山市低空起降点汇总260305.xlsx",
+        "exists": true,
+        "bytes": 22101,
+        "mtime_ns": 1789112048414236900,
+        "sha256": "55b60344d5cc9eef0acef285e33ee15e3e77a3ee8e39bedc62d095cc1c3cc0e5"
+      },
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\空域航线起降点\\空域航线起降点\\舟山真实航线_CNS最终导入.xlsx",
+        "exists": true,
+        "bytes": 21831,
+        "mtime_ns": 1789699145788502900,
+        "sha256": "446f9630ccd9d71f2f0a03a98966007213abe57c45f2fbf1b7feb3b63537c1bd"
+      },
+      {
+        "path": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524\\derived\\land_mask_osm\\zhoushan_land_osm_v2.gpkg",
+        "exists": true,
+        "bytes": 2605056,
+        "mtime_ns": 1791606536726686500,
+        "sha256": "fe7918c96636178b7931b3f6887e2755db191dc6fce51ad0c5b5bfcbb6180aef"
+      },
+      {
+        "path": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524\\derived\\cartographic_land\\cartographic_land_v1.gpkg",
+        "exists": true,
+        "bytes": 798720,
+        "mtime_ns": 1790694206748949200,
+        "sha256": "647e1d7bff1c5ccb45a820f0f0f3923e689358b310b8d607e17c87c704783726"
+      },
+      {
+        "path": "D:\\Projects\\_cns_acceptance\\r7d17\\R0005-rev524\\derived\\zhoushan_building_grid_L8_v3_heightstats_v1.gpkg",
+        "exists": true,
+        "bytes": 58105856,
+        "mtime_ns": 1791729117617438100,
+        "sha256": "13fca1ee7183035a280ad066f84a6d116303e0b3797c206bdfd98f7e50bbce37"
+      }
+    ],
+    "large_size_mtime_only": [
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\chn_pop_2025_CN_100m_R2025A_v1.tif",
+        "exists": true,
+        "bytes": 922251437,
+        "mtime_ns": 1788922740217206200
+      },
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\GLO30\\output\\Zhejiang_GLO30_mosaic_30m.tif",
+        "exists": true,
+        "bytes": 777708366,
+        "mtime_ns": 1788960754652228400
+      },
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\FABDEM\\processed\\Zhoushan_FABDEM_DTM_30m.tif",
+        "exists": true,
+        "bytes": 65656187,
+        "mtime_ns": 1789567349045264300
+      },
+      {
+        "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\building\\processed\\zhoushan_buildings_v3.gpkg",
+        "exists": true,
+        "bytes": 466837504,
+        "mtime_ns": 1791628178324173400
+      }
+    ]
+  },
+  "code_identity": {
+    "worktree": "C:\\Users\\yiding\\.codex\\worktrees\\r7d13-ab-integration\\CNS-PLANNER",
+    "branch": "codex/r7d13-ab-integration",
+    "head": "b76e054f9607434040704782fe860ab7953cc0a7",
+    "python": "3.13.9"
+  },
+  "algorithms": {
+    "cns_corridor_assessment": {
+      "algorithm_id": "cns_service_corridor_v1",
+      "stored_version": "1.4",
+      "current_catalog_version": "1.4",
+      "status": "failed",
+      "input_fingerprint": "b070276bfb6a628564b59b2b112d6e9dedd5be9626e31a21f1f3a76e3134ae4a"
+    },
+    "cns_corridor_gap_assessment": {
+      "algorithm_id": "cns_corridor_gap_v1",
+      "stored_version": "1.3",
+      "current_catalog_version": "1.3",
+      "status": "failed",
+      "input_fingerprint": "952103e3e98bb2d3056606d4aa139d94ae3679fc03f92399e66852c64cd977e2"
+    },
+    "cns_corridor_site_plan": {
+      "algorithm_id": "corridor_reuse_first_site_planner_v2",
+      "stored_version": "2.3",
+      "current_catalog_version": "2.3",
+      "status": "proposal_ready",
+      "input_fingerprint": "fc878dad635f60f020bee0ec45f54724df15d788a12c4f0a987aa5637c001acc"
+    },
+    "continuous_service_acceptability": {
+      "algorithm_id": "continuous_service_acceptability_v1",
+      "stored_version": "2.2",
+      "current_catalog_version": null,
+      "status": "stale",
+      "input_fingerprint": "2e03f20ede9d6f21d5162e3823a2c37a43731bd304e0fd3830a2f858163d43dc"
+    },
+    "coverage_3d": {
+      "algorithm_id": "geometric_coverage_3d_v1",
+      "stored_version": "1.0",
+      "current_catalog_version": "1.0",
+      "status": "stale",
+      "input_fingerprint": "a104e770a248f102acdee5f4d417259398455a14bd4945fc9744eb05bda6e6bc"
+    },
+    "cns_service_capability": {
+      "algorithm_id": "cns_service_capability_v1",
+      "stored_version": "1.0",
+      "current_catalog_version": "1.0",
+      "status": "stale",
+      "input_fingerprint": "729db97eb3bf8b4e24a4c925e0f03c5e466d037fd07cf08aa488c579d280d5d1"
+    },
+    "protection_envelope": {
+      "algorithm_id": "tactical_protection_envelope_v1",
+      "stored_version": "1.0",
+      "current_catalog_version": "1.0",
+      "status": "not_calculated",
+      "input_fingerprint": null
+    },
+    "layered_route_candidates": {
+      "algorithm_id": null,
+      "stored_version": null,
+      "current_catalog_version": null,
+      "status": "stale",
+      "input_fingerprint": null
+    },
+    "route_3d_profiles": {
+      "algorithm_id": null,
+      "stored_version": "route_3d_profile_v1@1.0",
+      "current_catalog_version": null,
+      "status": "not_calculated",
+      "input_fingerprint": null
+    }
+  },
+  "identity": {
+    "towers": {
+      "status": "passed",
+      "count": 373
+    },
+    "operational_routes": [
+      {
+        "route_id": "R0005",
+        "status": "passed",
+        "vertex_count": 14,
+        "start": [
+          122.2672222222,
+          29.8666666667
+        ],
+        "end": [
+          122.1883333333,
+          29.8194444444
+        ]
+      }
+    ],
+    "p16": {
+      "canonical_selected_actions": 0,
+      "recovery_evidence_selected_actions": 13,
+      "candidate_actions": 746,
+      "iteration_trace": 13,
+      "physical_mount_confirmed": 0,
+      "requires_site_survey": 13
+    },
+    "p17": {
+      "state_status": "not_calculated",
+      "three_d_api_status": "blocked",
+      "stored_algorithm_version": "2.2",
+      "current_code_algorithm_version": "2.5"
+    }
+  },
+  "step_status": {
+    "1": {
+      "title": "数据准备",
+      "classification": "current",
+      "containers": {
+        "workspace": {
+          "status": "passed",
+          "classification": "current"
+        },
+        "source_audits": {
+          "status": "passed",
+          "classification": "current",
+          "count": 12
+        },
+        "data_readiness": {
+          "status": "ready",
+          "classification": "current"
+        }
+      }
+    },
+    "2": {
+      "title": "环境与风险",
+      "classification": "stale",
+      "containers": {
+        "grid": {
+          "status": "passed",
+          "classification": "current",
+          "count": 8008
+        },
+        "environment_risk": {
+          "present": false,
+          "status": "stale",
+          "classification": "stale"
+        },
+        "grid_risk": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "risk-model-v1-relative-index",
+          "algorithm_version": "1.1",
+          "current_algorithm_version": "1.1",
+          "detail_status": "artifact_unavailable",
+          "count": 8008
+        },
+        "grid_risk_v2": {
+          "status": "pending_confirmation",
+          "classification": "unknown",
+          "algorithm_id": "risk-framework-v2-domains",
+          "algorithm_version": "2.0",
+          "count": 8008,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "riskframeworkv2-7a74c81955de507470a0a827f83069dfc0b2c50fb5424ae3ee84de55e6a7646c"
+          }
+        },
+        "planning_constraint_fields": {
+          "status": "passed",
+          "classification": "current",
+          "count": 1
+        },
+        "surface_class_facts": {
+          "status": "passed",
+          "classification": "current",
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "0b1558ea87f4cc2bc7cf9e18e3292798c1e41e0b3a14000322ecb6c524d44c05"
+          }
+        },
+        "building_clearance_assessment": {
+          "status": "not_calculated",
+          "classification": "unknown",
+          "algorithm_id": "building_clearance_v1",
+          "algorithm_version": "1.0",
+          "route_count": 0
+        }
+      }
+    },
+    "3": {
+      "title": "航路规划与发布",
+      "classification": "stale",
+      "containers": {
+        "layered_route_candidates": {
+          "status": "stale",
+          "classification": "stale",
+          "stale_reason": "planning_constraint_field_changed",
+          "detail_status": "artifact_unavailable",
+          "count": 0
+        },
+        "route_risk_profiles": {
+          "status": "stale",
+          "classification": "stale",
+          "stale_reason": "planning_constraint_field_changed",
+          "count": 9
+        },
+        "layered_route_validations": {
+          "status": "stale",
+          "classification": "stale",
+          "count": 20
+        },
+        "layered_operational_adoptions": {
+          "status": "stale",
+          "classification": "stale",
+          "count": 9
+        }
+      }
+    },
+    "4": {
+      "title": "CNS 需求",
+      "classification": "stale",
+      "containers": {
+        "required_cns": {
+          "status": "passed",
+          "classification": "current"
+        },
+        "required_cns_recommendation": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "operational_context_required_cns_v2",
+          "algorithm_version": "2.0",
+          "current_algorithm_version": "2.0",
+          "stale_reason": "layered_validation_evidence_outdated",
+          "proposal_only": true,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "6e50c319c8ab3b7d7dd2891d423961ce2803435870fe3481b14af1da177cbb38"
+          }
+        },
+        "required_cns_adoption": {
+          "status": "superseded",
+          "classification": "historical_only",
+          "algorithm_id": "operational_context_required_cns_v2",
+          "algorithm_version": "2.0",
+          "current_algorithm_version": "2.0",
+          "input_fingerprint": {
+            "field": "policy_fingerprint",
+            "value": "693e2a971a301e57f6885a1e488468ec1fed9fdb7c1808777a8c98e8050fd6f0"
+          }
+        }
+      }
+    },
+    "5": {
+      "title": "CNS 能力与设施规划",
+      "classification": "failed",
+      "containers": {
+        "coverage_3d": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "geometric_coverage_3d_v1",
+          "algorithm_version": "1.0",
+          "current_algorithm_version": "1.0",
+          "detail_status": "artifact_unavailable",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "a104e770a248f102acdee5f4d417259398455a14bd4945fc9744eb05bda6e6bc"
+          }
+        },
+        "cns_service_capability": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "cns_service_capability_v1",
+          "algorithm_version": "1.0",
+          "current_algorithm_version": "1.0",
+          "detail_status": "artifact_unavailable",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "729db97eb3bf8b4e24a4c925e0f03c5e466d037fd07cf08aa488c579d280d5d1"
+          }
+        },
+        "cns_corridor_assessment": {
+          "status": "failed",
+          "classification": "failed",
+          "algorithm_id": "cns_service_corridor_v1",
+          "algorithm_version": "1.4",
+          "current_algorithm_version": "1.4",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "b070276bfb6a628564b59b2b112d6e9dedd5be9626e31a21f1f3a76e3134ae4a"
+          }
+        },
+        "cns_corridor_gap_assessment": {
+          "status": "failed",
+          "classification": "failed",
+          "algorithm_id": "cns_corridor_gap_v1",
+          "algorithm_version": "1.3",
+          "current_algorithm_version": "1.3",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "952103e3e98bb2d3056606d4aa139d94ae3679fc03f92399e66852c64cd977e2"
+          }
+        },
+        "cns_corridor_site_plan": {
+          "status": "proposal_ready",
+          "classification": "historical_only",
+          "algorithm_id": "corridor_reuse_first_site_planner_v2",
+          "algorithm_version": "2.3",
+          "current_algorithm_version": "2.3",
+          "proposal_only": true,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "fc878dad635f60f020bee0ec45f54724df15d788a12c4f0a987aa5637c001acc"
+          }
+        },
+        "continuous_service_acceptability": {
+          "status": "stale",
+          "classification": "stale",
+          "algorithm_id": "continuous_service_acceptability_v1",
+          "algorithm_version": "2.2",
+          "stale_reason": "algorithm_semantics_changed",
+          "route_count": 1,
+          "input_fingerprint": {
+            "field": "input_fingerprint",
+            "value": "2e03f20ede9d6f21d5162e3823a2c37a43731bd304e0fd3830a2f858163d43dc"
+          }
+        },
+        "radar_surveillance_layout": {
+          "status": "stale",
+          "classification": "stale",
+          "proposal_only": true,
+          "count": 2
+        }
+      }
+    },
+    "6": {
+      "title": "方案评审与报告",
+      "classification": "stale",
+      "containers": {
+        "cns_plan_review": {
+          "status": "stale",
+          "classification": "stale",
+          "stale_reason": "continuous_service_parameters_changed",
+          "input_fingerprint": {
+            "field": "baseline_fingerprint",
+            "value": "b817893e58ec31fbdec15df72f171f1b0972f1e1a440c7922ff29a6425835e7f"
+          }
+        },
+        "confirmed_cns_plan": {
+          "status": "not_confirmed",
+          "classification": "unknown"
+        },
+        "cns_planning_reports": {
+          "status": "not_calculated",
+          "classification": "unknown"
+        },
+        "protection_envelope": {
+          "status": "not_calculated",
+          "classification": "unknown",
+          "algorithm_id": "tactical_protection_envelope_v1",
+          "algorithm_version": "1.0",
+          "current_algorithm_version": "1.0"
+        },
+        "route_3d_profiles": {
+          "status": "not_calculated",
+          "classification": "unknown",
+          "count": 0
+        }
+      }
+    }
+  },
+  "service": {
+    "base_url": "http://127.0.0.1:8794",
+    "port": 8794,
+    "independent_from": [
+      8765,
+      8776
+    ]
+  }
+}
