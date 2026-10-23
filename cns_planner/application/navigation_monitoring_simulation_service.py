@@ -38,7 +38,7 @@ class NavigationMonitoringSimulationService:
     def simulate(self, payload=None):
         payload = {} if payload is None else payload
         if not isinstance(payload, dict):
-            raise ValueError("导航监测仿真请求必须是对象")
+            raise ValueError("导航服务监测仿真请求必须是对象")
         route = self._resolve_route(payload)
         expected = payload.get("route_geometry_fingerprint")
         if expected not in (None, "") and str(expected) != route["route_geometry_fingerprint"]:

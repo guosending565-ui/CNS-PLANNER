@@ -389,7 +389,7 @@ def test_communication_draws_the_4km_planning_radius(tmp_path):
     assert layer.feature_count == 3
     detail = layer.source_detail
     assert detail["is_measured_propagation_contour"] is False
-    assert detail["radius_semantics"] == "communication_omnidirectional_planning_service_radius_4km"
+    assert detail["radius_semantics"] == "communication_omnidirectional_planning_service_radius"
 
 
 def test_communication_reports_proposal_not_confirmed(tmp_path):

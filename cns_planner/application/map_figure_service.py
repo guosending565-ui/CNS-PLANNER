@@ -230,13 +230,13 @@ class MaterializationContext:
     #: "corridor_effective_status": 走廊结果有效状态}``。缺省为空 → 图件如实判为
     #: "无 P14 证据"，绝不据此伪造 current 保障带。
     fixed_corridor: dict = field(default_factory=dict)
-    #: 导航监测（N1/N2）**只读仿真**结果；``None`` 表示本组合根未注入 provider，
+    #: 导航服务监测（N1/N2）**只读仿真**结果；``None`` 表示本组合根未注入 provider，
     #: 图件必须如实披露"未提供"而不是画一堆假站址。
     navigation_monitoring: dict | None = None
-    #: 导航监测只读仿真的失败原因（provider 抛错时记录，绝不吞掉）。
+    #: 导航服务监测只读仿真的失败原因（provider 抛错时记录，绝不吞掉）。
     navigation_monitoring_error: str | None = None
     #: 共享站址候选快照（``CNSSharedSiteCandidateService.snapshot()`` 的只读结果）：
-    #: 导航监测图层据此把 ``site_id`` 映射到真实坐标。缺失即不画站址点。
+    #: 导航服务监测图层据此把 ``site_id`` 映射到真实坐标。缺失即不画站址点。
     navigation_candidates: dict = field(default_factory=dict)
 
 
@@ -2157,7 +2157,7 @@ def _cns_services_for_template(template_id, parameters):
 _PROPOSAL_LAYER_OF_SERVICE = {
     SERVICE_COMMUNICATION: ("cns_comm_proposal", "通信规划提案（未确认）"),
     SERVICE_RID: ("cns_rid_proposal", "RID 规划提案（未确认）"),
-    SERVICE_NAVIGATION_INTEGRITY: ("cns_nav_proposal", "导航完整性监测点提案（未确认）"),
+    SERVICE_NAVIGATION_INTEGRITY: ("cns_nav_proposal", "导航服务监测点提案（未确认）"),
 }
 
 #: 图例标签里追加的服务后缀（只有真实拥有对应 action 的站才追加）。
@@ -2185,7 +2185,7 @@ _FAMILY_TAG = {
 
 #: Round30-B1.2：允许被**并入起终点主卡**的服务家族。
 #:
-#: 当前唯一成员是 ``navigation``：N005 / N006 的导航完整性监测点与起降点完全同址，
+#: 当前唯一成员是 ``navigation``：N005 / N006 的导航服务监测点与起降点完全同址，
 #: 单独出卡只会产生"两个文字卡 + 两条引线"的重复表达。通信 / RID 同址仍按既有
 #: 分色分块方案处理（它们的服务语义与"起降点"不是同一个对象）。
 ENDPOINT_MERGE_SERVICES = ("navigation",)
@@ -2195,7 +2195,7 @@ ENDPOINT_MERGE_TOLERANCE_DEG = 1e-9
 
 #: 合并进起降点主卡第二行时的显示文本（只影响**文字**，不改任何业务语义）。
 _ENDPOINT_MERGE_LINE = {
-    "navigation": "导航监测提案（未确认）",
+    "navigation": "导航服务监测提案（未确认）",
 }
 
 
@@ -2695,7 +2695,7 @@ def _cns_labels(ctx, assembly, services, geometry, *, parameters):
     服务家族列表由 :func:`cns_planner.application.cns_facility_assembler.assemble`
     的真实记录导出，**不猜测**任何服务：图上没有的服务永远不会出现在标签里。
 
-    Round30-B1.2：与**起降点完全同址**的导航完整性监测点**不再单独出卡**，而是并入
+    Round30-B1.2：与**起降点完全同址**的导航服务监测点**不再单独出卡**，而是并入
     起降点主卡的第二行（``LabelSpec.secondary_text``）。图层 / 符号 / 图例 / metadata
     全部不变，只是文字表达从"两张卡 + 两条引线"收成"一张卡 + 一条引线"。
     """
@@ -2885,7 +2885,7 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar,
 
     披露内容与以前**逐字一致**：它们只是从图面移到了 metadata，没有删掉任何限制说明。
     Round38-FIG 追加两条（同样只进 metadata，图面上**不**新增任何诊断文字块）：
-    固定 1000 m 保障目标带的语义与 currentness、导航监测中心线关联的语义限制。
+    固定 1000 m 保障目标带的语义与 currentness、导航服务监测中心线关联的语义限制。
     """
 
     confirmation = assembly.evidence.get("confirmation") or {}
@@ -2902,7 +2902,7 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar,
             "disclosure_id": "communication_radius_disclosure",
             "title": "通信规划服务半径",
             "lines": [
-                "绿色圆圈为 omnidirectional 规划服务半径 4 km（陆 / 海 / 沿海一致）。",
+                "绿色圆圈消费设备声明的全向几何规划半径；当前2km为研究假设，历史结果保持原半径。",
                 "它是 planning service radius，不是实测无线传播等值线。",
                 "设施为 P16 规划提案（未确认），未通过 Step6 正式确认。",
             ],
@@ -2987,9 +2987,9 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar,
     elif template_id == NAVIGATION_LAYOUT_V1:
         entries.append({
             "disclosure_id": "navigation_delivery_deficit",
-            "title": "导航完整性监测点",
+            "title": "导航服务监测点",
             "lines": [
-                "N005 / N006 为真实起降点上的导航完整性监测点规划提案（未确认）。",
+                "N005 / N006 为真实起降点上的导航服务监测点规划提案（未确认）。",
                 "monitor placement 已满足规划位置要求；",
                 "但 Communication delivery 仍 residual deficit，",
                 "因此 endpoint overall 仍为 confirmed_deficit / integrity_monitor_delivery_deficit。",
@@ -3002,7 +3002,7 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar,
             "disclosure_id": "cns_combined_disclosure",
             "title": "CNS 综合布设",
             "lines": [
-                "绿 = 通信 · 橙 = RID · 黄 = 导航完整性 · 蓝 = Radar。",
+                "绿 = 通信 · 橙 = RID · 黄 = 导航服务监测 · 蓝 = Radar。",
                 "所有设施均为 existing baseline 或规划提案（未确认）。",
                 (
                     f"Radar-I 含 {radar.get('selected_tower_count')} 座规划站址 / "
@@ -3042,7 +3042,7 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar,
         identity = navigation_metadata.get("identity") or {}
         entries.append({
             "disclosure_id": "navigation_monitoring_association_disclosure",
-            "title": "导航监测中心线关联（N1/N2 只读仿真）",
+            "title": "导航服务监测中心线关联（N1/N2 只读仿真）",
             "lines": [
                 "图中关联段 / 缺口来自只读仿真的**中心线**关联（2000 m 关联范围），",
                 "它不是左右各 500 m 全宽 CNS 保障能力的结论：",
@@ -3118,7 +3118,7 @@ def materialize_cns(ctx):
             ctx, layer_key, display_name, records, assembly, service_key=service_key,
         ))
 
-    # ---- 导航监测（N1/N2 只读仿真；只有导航布设图消费） --------------------------
+    # ---- 导航服务监测（N1/N2 只读仿真；只有导航布设图消费） --------------------------
     #
     # 它与上面的 ``cns_nav_proposal``（P16 规划提案）是**不同来源**：P16 回答
     # "规划了哪些监测点"，N1 仿真回答"中心线监测关联到了哪里、缺口有多长"。
@@ -3138,9 +3138,9 @@ def materialize_cns(ctx):
         ) if comm_records else None
         if comm_records and radius:
             layers.append(_cns_coverage_layer(
-                ctx, "cns_coverage_comm", "通信规划服务半径 4 km", comm_records, radius,
+                ctx, "cns_coverage_comm", f"通信规划服务半径 {radius / 1000:g} km", comm_records, radius,
                 assembly, service_key=SERVICE_COMMUNICATION, metric_crs=metric_crs,
-                semantics="communication_omnidirectional_planning_service_radius_4km",
+                semantics="communication_omnidirectional_planning_service_radius",
             ))
     rid_footprint_metadata = {}
     if SERVICE_RID in services:
@@ -3792,14 +3792,14 @@ class MapFigureService:
         #: FixedCorridorGeometryService`）。图件与 ``GET /api/fixed-corridor-geometry``
         #: 因此消费同一份判定；未注入时图件如实判为"无 P14 证据"。
         self.fixed_corridor_service = fixed_corridor_service
-        #: 导航监测（N1/N2）**只读仿真** provider：``provider(route, parameters) -> dict``。
+        #: 导航服务监测（N1/N2）**只读仿真** provider：``provider(route, parameters) -> dict``。
         #: 它是组合根注入的既有服务调用，制图侧不自行选址、不缓存、不写状态。
         self.navigation_monitoring_provider = navigation_monitoring_provider
         #: 共享站址候选快照 provider：``provider() -> dict``（只读）。
-        #: 导航监测图层据此把 ``site_id`` 映射到真实坐标；未注入即不画候选背景点。
+        #: 导航服务监测图层据此把 ``site_id`` 映射到真实坐标；未注入即不画候选背景点。
         self.shared_site_candidates_provider = shared_site_candidates_provider
 
-    # ---- 只读：固定宽带与导航监测的证据（Round38-FIG） --------------------------
+    # ---- 只读：固定宽带与导航服务监测的证据（Round38-FIG） --------------------------
 
     def _fixed_corridor_evidence(self, route):
         """固定 1000 m 保障宽带的只读证据（P14 只读投影 + 该航路条目 + 有效状态）。
@@ -3827,7 +3827,7 @@ class MapFigureService:
         }
 
     def _navigation_monitoring_evidence(self, route):
-        """导航监测（N1/N2）只读仿真证据；未注入 provider 时返回 ``(None, 原因)``。
+        """导航服务监测（N1/N2）只读仿真证据；未注入 provider 时返回 ``(None, 原因)``。
 
         绝不吞异常、绝不"仿真失败就当没有需求"：失败原因会原样进入 FigureSpec 披露。
         """
@@ -4820,7 +4820,7 @@ def _bounded_preview_width(width_px, layout):
 CNS_FORMAL_TITLES = {
     COMMUNICATION_LAYOUT_V1: "通信设施布设图",
     SURVEILLANCE_LAYOUT_V1: "监视设施布设图",
-    NAVIGATION_LAYOUT_V1: "导航完整性监测点布设图",
+    NAVIGATION_LAYOUT_V1: "导航服务监测点布设图",
     CNS_COMBINED_V1: "CNS 综合设施布设图",
 }
 CNS_SURVEILLANCE_TITLES = {

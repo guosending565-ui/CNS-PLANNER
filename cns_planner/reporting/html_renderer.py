@@ -406,8 +406,8 @@ def _service_label(service_key):
         "C:communication":"通信（Communication, C）",
         "S:rid_cooperative":"合作监视 RID（S:rid_cooperative）",
         "S:radar_noncooperative":"非合作监视 Radar（S:radar_noncooperative）",
-        "N:rtn_integrity_monitoring":"导航完好性监视（N:rtn_integrity_monitoring）",
-        "N:navigation_integrity_monitoring":"导航完好性监视（N:navigation_integrity_monitoring）",
+        "N:rtn_integrity_monitoring":"导航服务监测（N:rtn_integrity_monitoring）",
+        "N:navigation_integrity_monitoring":"导航服务监测（N:navigation_integrity_monitoring）",
         "N:rtk_augmentation":"导航增强（N:rtk_augmentation）",
     }.get(str(service_key or "").strip(),service_key or "—")
 

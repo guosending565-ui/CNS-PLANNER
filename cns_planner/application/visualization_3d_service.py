@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from ..domain.cns_service_contract import COMMUNICATION_RADIUS_BY_SURFACE
+
 import math
 import re
 import struct
@@ -425,7 +427,7 @@ class Visualization3DService:
             "path_crs": "OGC:CRS84",
             "third_coordinate_is_altitude": False,
             "fingerprint": fingerprint,
-            #: Round38-FC30：canonical **完整几何身份**。与 N1 导航监测仿真、
+            #: Round38-FC30：canonical **完整几何身份**。与 N1 导航服务监测仿真、
             #: 固定 1000 m 保障宽带、Route3DProfile 使用同一实现（``path_fingerprint``）
             #: 与同一取值；``fingerprint`` 是本模块含 candidate/validation 身份的
             #: ``routegeometryv1-`` 家族，两者语义不同、都保留，绝不互相替代。
@@ -1004,7 +1006,7 @@ class Visualization3DService:
                 "detail_endpoint": "/api/visualization-3d/communication-volumes",
                 "notes": [
                     "engineering_geometric_coverage_not_measured：工程几何包络，非实测覆盖",
-                    "按**三维斜距**约束（半球壳）；二维 4 km 圆盘只是 delta=0 处的切片",
+                    "按**三维斜距**约束（半球壳）；二维相应半径的圆盘只是 delta=0 处的切片",
                     "未确认安装高度的设备**不生成**确定三维包络（如实列出所需证据）",
                     "遮挡 / 地形 LOS / 绕射 / 干扰 / 链路预算一律 not_evaluated",
                 ],
@@ -1306,7 +1308,7 @@ class Visualization3DService:
 
         通信三维工程几何包络：使用**已有设备的真实坐标与安装高程**，复用现有全向
         几何规划模型（``coverage_geometry.radius_by_surface``，默认服务合同半径
-        4000 m，但以设备与生效服务合同为准），并按**三维斜距**约束包络面。
+        当前基线 2000 m，但以设备与生效服务合同为准），并按**三维斜距**约束包络面。
         """
 
         query = query or {}
@@ -1346,7 +1348,7 @@ class Visualization3DService:
             "slant_range_is_criterion": True,
             "two_dimensional_disk_is_not_the_volume": True,
             "metric_crs": metric_crs,
-            "default_contract_radius_m": 4000.0,
+            "default_contract_radius_m": COMMUNICATION_RADIUS_BY_SURFACE["land"],
             "radius_authority": (
                 "device_catalog[].coverage_geometry.radius_by_surface "
                 "（经 domain.cns_service_contract.effective_radius_m 解析）"

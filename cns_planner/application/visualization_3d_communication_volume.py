@@ -5,7 +5,7 @@
 1. **不是实测覆盖**：输出的是 ``engineering_geometric_coverage_not_measured`` ——
    工程规划几何包络，**不保证**实测接收能力、场强或链路可用性。
 2. **三维斜距**：包络由 ``slant = hypot(horizontal, delta)`` 约束，因此它是
-   **球/半球壳**而不是"二维 4 km 圆柱"。二维圆盘只是它在某一高度层上的切片。
+   **球/半球壳**而不是"二维相应半径 圆柱"。二维圆盘只是它在某一高度层上的切片。
 3. **半球有据可依**：几何模型取自设备 ``coverage_geometry.model``（冻结契约为
    ``hemisphere``），并由 :data:`...OMNIDIRECTIONAL_HEMISPHERE` 显式声明
    ``omnidirectional=True`` / ``horizontal_coverage_deg=360``。本模块**绝不**引入
@@ -374,7 +374,7 @@ def build_communication_volume(
         "apex_egm2008_m": round(origin_z + radius, 3),
         "zenith_note": (
             "顶点为天顶方向 radius 处；水平面处水平半径 = radius。"
-            "**二维 4 km 圆盘只是 delta=0 处的切片**，不是完整三维包络"
+            "**二维相应半径 圆盘只是 delta=0 处的切片**，不是完整三维包络"
         ),
         "envelope_note": (
             "未指定可判定地表类别 ⇒ 显示的是**地表包络**（各档规划半径的最大值，"

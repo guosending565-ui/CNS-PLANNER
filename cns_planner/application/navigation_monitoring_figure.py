@@ -1,6 +1,6 @@
-"""导航布设图的 N1/N2 导航监测图层构造（Round38-FIG）。
+"""导航布设图的 N1/N2 导航服务监测图层构造（Round38-FIG）。
 
-本模块只做一件事：把 **N1/N2 的只读导航监测仿真结果**翻译成 FigureSpec 图层，
+本模块只做一件事：把 **N1/N2 的只读导航服务监测仿真结果**翻译成 FigureSpec 图层，
 并如实标注它的身份与时效性。
 
 严格边界：
@@ -28,17 +28,17 @@ from copy import deepcopy
 # ==== 图层键（与模板目录 reporting/map_templates 中的常量同值；此处独立持有，
 # ==== 避免 GIS / Application 层反向 import reporting 层）=======================
 NAVIGATION_MONITOR_SITES_LAYER_KEY = "cns_nav_monitor_sites"
-NAVIGATION_MONITOR_SITES_DISPLAY_NAME = "导航监测强制端点设备（N1 仿真）"
+NAVIGATION_MONITOR_SITES_DISPLAY_NAME = "导航服务监测强制端点设备（N1 仿真）"
 NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY = "cns_nav_monitor_optional"
-NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME = "导航监测选中站址（未确认）"
+NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME = "导航服务监测选中站址（未确认）"
 NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY = "cns_nav_monitor_unselected"
-NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME = "导航监测候选站址（未选中）"
+NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME = "导航服务监测候选站址（未选中）"
 NAVIGATION_ASSOCIATION_LAYER_KEY = "cns_nav_association"
 NAVIGATION_ASSOCIATION_DISPLAY_NAME = "中心线已关联航段 2 km"
 NAVIGATION_GAP_LAYER_KEY = "cns_nav_gap"
 NAVIGATION_GAP_DISPLAY_NAME = "最长监测缺口（未关联）"
 
-#: 导航监测图层的来源角色：**只读仿真**，不是 ProjectState 容器、不是数据源文件。
+#: 导航服务监测图层的来源角色：**只读仿真**，不是 ProjectState 容器、不是数据源文件。
 NAVIGATION_MONITOR_SOURCE_ROLE = "navigation_monitoring_simulation_readonly"
 
 #: 单条构造结果：``layer_key -> {"display_name", "data", "detail", "feature_count",
@@ -47,7 +47,7 @@ LayerPlan = dict
 
 
 def build_navigation_monitoring_layers(*, simulation, route, candidates, parameters=None):
-    """把一次只读仿真结果翻译成导航监测图层计划。
+    """把一次只读仿真结果翻译成导航服务监测图层计划。
 
     ``simulation`` 为 ``None`` 时返回空计划 + 明确原因（未提供/仿真失败），
     调用方据此如实登记"未绘制"，**绝不**补造任何站址。
@@ -211,7 +211,7 @@ def _base_identity(simulation, route, candidates, metrics):
 
 
 def _currentness(simulation, metrics):
-    """导航监测结果的 currentness（``current`` / ``stale`` / ``unknown`` / ``blocked``）。
+    """导航服务监测结果的 currentness（``current`` / ``stale`` / ``unknown`` / ``blocked``）。
 
     判据（全部来自既有身份字段，不新增第二套几何）：
 

@@ -131,7 +131,7 @@ def test_legend_full_names_are_preserved_in_metadata(tmp_path):
     combined = specs[4]
     names = {item.display_name for item in combined.legend_items}
     assert "非合作监视能力限制（无可行布设）" in names
-    assert any("导航完整性监测点" in name for name in names)
+    assert any("导航服务监测点" in name for name in names)
     # 收口表自身必须覆盖这些会被收口的条目。
     from cns_planner.gis.qgis_figure_renderer import LEGEND_COMPACT_LABELS
 
@@ -156,7 +156,7 @@ def test_map_frame_is_not_shrunk_and_is_identical_across_five_figures(tmp_path):
             ("obstacle", ["地形障碍（≥ 显示阈值）", "建筑障碍（≥ 显示阈值）"]),
             ("facility", ["既有通信站址"]),
             ("proposal", ["通信规划提案（未确认）", "RID 规划提案（未确认）",
-                          "导航完整性监测点提案（未确认）"]),
+                          "导航服务监测点提案（未确认）"]),
             ("coverage", ["通信规划服务半径 4 km", "RID 陆地/沿海规划范围 2 km",
                           "RID 海上延伸规划范围 2–5 km"]),
             ("limitation", ["非合作监视能力限制（无可行布设）"]),
@@ -522,7 +522,7 @@ def test_formal_titles_distinguish_all_five_figures():
         {**base, "surveillance_service": SURVEILLANCE_SERVICE_RADAR},
     ) == "Radar 非合作监视评估图"
     assert _figure_title("x", {}, "navigation_layout_v1", base) == (
-        "导航完整性监测点布设图"
+        "导航服务监测点布设图"
     )
     assert _figure_title("x", {}, "cns_combined_v1", base) == "CNS 综合设施布设图"
 

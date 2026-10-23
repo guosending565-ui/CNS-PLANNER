@@ -1,5 +1,5 @@
 // =========================================================
-// Round38-N2：导航监测规划二维界面与地图图层定向测试
+// Round38-N2：导航服务监测规划二维界面与地图图层定向测试
 //
 // 锁定：
 //   1. API 请求及参数修改正确（端点、payload、只发已知键）；
@@ -922,12 +922,12 @@ test('a failing read-only call is surfaced and never silently swallowed', async 
   const calls = {candidates: 0, simulate: [], errors: []};
   const button = {disabled: false, dataset: {}, onclick: null};
   const controller = navigationControllerStub({
-    button, container: {innerHTML: ''}, calls, failure: '导航监测仿真请求失败',
+    button, container: {innerHTML: ''}, calls, failure: '导航服务监测仿真请求失败',
   });
   await withDocStub(new Map(), async () => {
     bindNavigationMonitoringPanel(controller);
     await button.onclick();
-    assert.deepEqual(calls.errors, ['导航监测仿真请求失败']);
+    assert.deepEqual(calls.errors, ['导航服务监测仿真请求失败']);
     assert.equal(button.disabled, false, 'the button must be re-enabled after a failure');
   });
   resetNavigationMonitoringBinding();

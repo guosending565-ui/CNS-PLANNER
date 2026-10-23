@@ -16,13 +16,14 @@
     阈值与依据会原样写进 FigureSpec，成为可审计事实。
 
 CNS 服务视觉语言（本轮冻结）：
-    通信 = 绿 · RID = 橙 · Radar = 蓝 · 导航完整性 = 黄；
+    通信 = 绿 · RID = 橙 · Radar = 蓝 · 导航服务监测 = 黄；
     既有设施用**实线 / 实心**符号，P16 ``selected_actions`` 一律是
     **规划提案（未确认）**，用虚线外圈 / 空心符号，绝不上色成已建成设施。
     覆盖圈只是 ``planning service radius``，不是实测无线传播等值线。
 """
 
 from __future__ import annotations
+from cns_planner.domain.cns_service_contract import COMMUNICATION_RADIUS_BY_SURFACE
 
 from copy import deepcopy
 import math
@@ -84,25 +85,25 @@ FIXED_CORRIDOR_LAYER_SEMANTICS = (
 )
 #: 固定宽带几何与导航中心线监测关联（2000 m）的**分离声明**：两者永不等价。
 FIXED_CORRIDOR_VS_NAVIGATION_ASSOCIATION_NOTICE = (
-    "固定 1000 m 保障宽带（中心线左右各 500 m）与导航监测中心线关联范围（2000 m）"
+    "固定 1000 m 保障宽带（中心线左右各 500 m）与导航服务监测中心线关联范围（2000 m）"
     "是两件不同的事：前者是服务保障目标带，后者是监测关联距离，二者互不替代，"
     "且都不构成认证导航覆盖区。"
 )
 
-#: 导航监测（N1/N2 只读仿真）相关图层键与显示名（只有导航布设图消费）。
+#: 导航服务监测（N1/N2 只读仿真）相关图层键与显示名（只有导航布设图消费）。
 #: 显示名同样求简：身份来源与证据写在 ``source_detail`` 与 FigureSpec.metadata 里。
 NAVIGATION_MONITOR_SITES_LAYER_KEY = "cns_nav_monitor_sites"
-NAVIGATION_MONITOR_SITES_DISPLAY_NAME = "导航监测强制端点设备（N1 仿真）"
+NAVIGATION_MONITOR_SITES_DISPLAY_NAME = "导航服务监测强制端点设备（N1 仿真）"
 NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY = "cns_nav_monitor_optional"
-NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME = "导航监测选中站址（未确认）"
+NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME = "导航服务监测选中站址（未确认）"
 NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY = "cns_nav_monitor_unselected"
-NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME = "导航监测候选站址（未选中）"
+NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME = "导航服务监测候选站址（未选中）"
 NAVIGATION_ASSOCIATION_LAYER_KEY = "cns_nav_association"
 NAVIGATION_ASSOCIATION_DISPLAY_NAME = "中心线已关联航段 2 km"
 NAVIGATION_GAP_LAYER_KEY = "cns_nav_gap"
 NAVIGATION_GAP_DISPLAY_NAME = "最长监测缺口（未关联）"
 
-#: 导航监测图层的**只读仿真**来源角色：它不是 ProjectState 的 canonical 容器，
+#: 导航服务监测图层的**只读仿真**来源角色：它不是 ProjectState 的 canonical 容器，
 #: 也不是本机数据源文件，因此绝不参与 `_source_state` 的文件存在性判据。
 NAVIGATION_MONITOR_SOURCE_ROLE = "navigation_monitoring_simulation_readonly"
 
@@ -118,7 +119,7 @@ CNS_SERVICE_COLORS = {
     "S:rid_cooperative": {"family": "rid", "color": "#e8720c", "label": "RID"},
     "S:radar_noncooperative": {"family": "radar", "color": "#1f6fd0", "label": "Radar"},
     "N:navigation_integrity_monitoring": {
-        "family": "navigation", "color": "#d19a00", "label": "导航完整性",
+        "family": "navigation", "color": "#d19a00", "label": "导航服务监测",
     },
 }
 
@@ -126,7 +127,7 @@ CNS_SERVICE_COLORS = {
 CNS_COVERAGE_POLICY = {
     "C:communication": {
         "omnidirectional": True,
-        "radius_by_surface_m": {"land": 4000.0, "coastal_uncertain": 4000.0, "sea": 4000.0},
+        "radius_by_surface_m": dict(COMMUNICATION_RADIUS_BY_SURFACE),
         "radius_basis": "geometric_planning_radius",
         "radius_semantics": "planning_service_radius_not_measured_radio_propagation",
         "redundancy_by_surface": {"land": 2, "coastal_uncertain": 2, "sea": 1},
@@ -237,13 +238,13 @@ LAYER_DISPLAY_NAMES = {
     "cns_existing": "既有 CNS 设施（已建）",
     "cns_comm_proposal": "通信规划提案（未确认）",
     "cns_rid_proposal": "RID 规划提案（未确认）",
-    "cns_nav_proposal": "导航完整性监测点提案（未确认）",
+    "cns_nav_proposal": "导航服务监测点提案（未确认）",
     NAVIGATION_MONITOR_SITES_LAYER_KEY: NAVIGATION_MONITOR_SITES_DISPLAY_NAME,
     NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY: NAVIGATION_MONITOR_OPTIONAL_DISPLAY_NAME,
     NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY: NAVIGATION_MONITOR_UNSELECTED_DISPLAY_NAME,
     NAVIGATION_ASSOCIATION_LAYER_KEY: NAVIGATION_ASSOCIATION_DISPLAY_NAME,
     NAVIGATION_GAP_LAYER_KEY: NAVIGATION_GAP_DISPLAY_NAME,
-    "cns_coverage_comm": "通信规划服务半径 4 km",
+    "cns_coverage_comm": "通信几何规划覆盖（半径见设备证据）",
     "cns_coverage_rid_land": "RID 陆地/沿海规划范围 2 km",
     "cns_coverage_rid_sea": "RID 海上延伸规划范围 2–5 km",
     "cns_radar_context": "Radar 评估候选站址（未选中）",
@@ -275,7 +276,7 @@ LAYER_SOURCE_ROLES = {
     "cns_comm_proposal": "cns_corridor_site_plan",
     "cns_rid_proposal": "cns_corridor_site_plan",
     "cns_nav_proposal": "cns_corridor_site_plan",
-    # N1/N2 导航监测：**只读仿真**，不是 ProjectState 容器，也不是数据源文件。
+    # N1/N2 导航服务监测：**只读仿真**，不是 ProjectState 容器，也不是数据源文件。
     NAVIGATION_MONITOR_SITES_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
     NAVIGATION_MONITOR_OPTIONAL_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
     NAVIGATION_MONITOR_UNSELECTED_LAYER_KEY: NAVIGATION_MONITOR_SOURCE_ROLE,
@@ -533,9 +534,9 @@ COMMUNICATION_LAYOUT_V1_TEMPLATE = _template(
 
 NAVIGATION_LAYOUT_V1_TEMPLATE = _template(
     NAVIGATION_LAYOUT_V1,
-    display_name="导航完整性监测点布设图",
+    display_name="导航服务监测点布设图",
     purpose=(
-        "展示 R0005 起降点（N005 / N006）上的导航完整性监测点（GNSS Navigation "
+        "展示 R0005 起降点（N005 / N006）上的导航服务监测点（GNSS Navigation "
         "Integrity Monitor）规划提案与交付赤字披露。"
     ),
     availability=AVAILABLE,
@@ -574,7 +575,7 @@ CNS_COMBINED_V1_TEMPLATE = _template(
     CNS_COMBINED_V1,
     display_name="CNS 综合布设图",
     purpose=(
-        "在同一版面上叠加既有 CNS 基线、P16 选中的通信 / RID / 导航完整性提案与统一 extent；"
+        "在同一版面上叠加既有 CNS 基线、P16 选中的通信 / RID / 导航服务监测提案与统一 extent；"
         "Radar 以能力限制说明表达（R0005 无可选站址）。"
     ),
     availability=AVAILABLE,

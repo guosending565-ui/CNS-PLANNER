@@ -10,6 +10,7 @@
     {"device_id":"N-PRIMARY-DEMO","subsystem":"N","name":"导航主站示例","role":"primary","radius_m":4000,"latency_ms":null,"mtbf_h":22000,"enabled":true,"source":"demo/default 工程测试数据","parameter_metadata":{"status":"pending_confirmation"}},
     {"device_id":"N-GAP-DEMO","subsystem":"N","name":"导航补盲示例","role":"gap","radius_m":2000,"latency_ms":null,"mtbf_h":16000,"enabled":true,"source":"demo/default 工程测试数据","parameter_metadata":{"status":"pending_confirmation"}},
     {"device_id":"S-PRIMARY-DEMO","subsystem":"S","name":"监视主站示例","role":"primary","radius_m":4500,"latency_ms":null,"mtbf_h":18000,"enabled":true,"source":"demo/default 工程测试数据","parameter_metadata":{"status":"pending_confirmation"}},
-    {"device_id":"S-GAP-DEMO","subsystem":"S","name":"监视补盲示例","role":"gap","radius_m":2200,"latency_ms":null,"mtbf_h":14000,"enabled":true,"source":"demo/default 工程测试数据","parameter_metadata":{"status":"pending_confirmation"}}
+    {"device_id":"S-GAP-DEMO","subsystem":"S","name":"监视补盲示例","role":"gap","radius_m":2200,"latency_ms":null,"mtbf_h":14000,"enabled":true,"source":"demo/default 工程测试数据","parameter_metadata":{"status":"pending_confirmation"}},
+    {"device_id": "COMM-BASELINE-2KM", "subsystem": "C", "service_key": "C:communication", "name": "4.9GHz通信研究基线（2km）", "role": "primary", "radius_m": 2000, "enabled": true, "source": "R7-D19：参考站间距约4km，2km半径为研究假设，非实测覆盖保证", "coverage_geometry": {"model": "hemisphere", "slant_range_m": 2000, "model_scope": "geometric_only", "radius_by_surface": {"land": 2000, "coastal_uncertain": 2000, "sea": 2000}}, "parameter_metadata": {"status": "pending_confirmation", "policy_version": "r7d19-comm-2km-v1"}}
   ]
 }

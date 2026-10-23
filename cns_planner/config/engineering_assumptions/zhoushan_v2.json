@@ -1,0 +1,52 @@
+{
+  "schema_version": "cns-engineering-assumption-scenario.v1",
+  "scenario_id": "ZH-CNS-EA-V2",
+  "version": "r7d19-v2",
+  "mode": "engineering_assumption",
+  "description": "舟山 CNS 工程假设候选池：EPSG:4490 水平假设、FABDEM EGM2008 地面、统一 +15 m 安装假设。只用于隔离仿真，不写正式 ProjectState。",
+  "assumptions": {
+    "horizontal_crs": {
+      "value": "EPSG:4490",
+      "status": "engineering_assumed",
+      "confirmed": false,
+      "declared_crs": null,
+      "source_crs_status": "source_undeclared"
+    },
+    "ground_elevation": {
+      "source": "FABDEM_DTM_30m",
+      "vertical_reference": "egm2008_orthometric",
+      "method": "nearest_pixel"
+    },
+    "mount_height_agl_m": 15.0,
+    "allowed_subsystems": ["C", "N", "S"],
+    "equipment": {
+      "C": "COMM-BASELINE-2KM",
+      "N": null,
+      "S": "RID-BASELINE-2-5KM"
+    },
+    "evidence_semantics": {
+      "assumption_only": true,
+      "real_world_confirmed": false
+    }
+  },
+  "source_policy": {
+    "include": [
+      "real_towers_with_existing_origin",
+      "reference_landing_sites",
+      "standardized_facilities_with_valid_coordinate",
+      "ovobj_ground_and_roof_supplements",
+      "registered_project_nodes",
+      "explicit_scenario_sites"
+    ],
+    "exclude": [
+      "virtual_or_indoor_or_micro_ovobj_sites",
+      "missing_or_invalid_coordinate",
+      "dem_unavailable",
+      "co_located_duplicate",
+      "unusable_existing_origin"
+    ],
+    "merge_only_exact_co_located_same_family": true,
+    "same_reference_id_different_location_never_merged": true,
+    "same_name_different_location_never_merged": true
+  }
+}

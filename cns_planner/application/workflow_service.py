@@ -627,7 +627,7 @@ class WorkflowService:
             self.session, self.invalidation_service, snapshot,
             self.layered_route_planner_service,
         )
-        # Round38-N2：导航监测（N1/N2）只读仿真复用既有候选适用性与风险画像，
+        # Round38-N2：导航服务监测（N1/N2）只读仿真复用既有候选适用性与风险画像，
         # 不新建结果容器、不写 ProjectState。
         self.navigation_monitoring_simulation_service.candidate_applicability = (
             self.layered_route_planner_service.candidate_applicability

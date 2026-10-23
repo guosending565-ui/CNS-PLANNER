@@ -32,10 +32,10 @@ from cns_planner.gis.qgis_figure_renderer import (
 )
 from test_map_figures_cartographic_polish import _five_specs  # noqa: F401 - 复用同一套形态
 
-#: 主卡名（起降点）与第二行（导航监测提案）的测试文案。
+#: 主卡名（起降点）与第二行（导航服务监测提案）的测试文案。
 START_NAME = "直升机场起降点"
 END_NAME = "东白莲华泰油库生活区野外起降点"
-NAV_LINE = "导航监测提案（未确认）"
+NAV_LINE = "导航服务监测提案（未确认）"
 
 
 def _endpoint_and_nav(spec):
@@ -156,7 +156,7 @@ def test_segment_box_intersection_detects_a_full_crossing():
 # ============================================================ 2. endpoint + navigation 合并
 
 def test_navigation_proposal_is_merged_into_the_endpoint_card(tmp_path):
-    """导航图 / 综合图：导航监测提案不再单独成卡，两端都并入起降点主卡。"""
+    """导航图 / 综合图：导航服务监测提案不再单独成卡，两端都并入起降点主卡。"""
 
     _, _, _, specs = _five_specs(tmp_path)
     navigation_spec, combined = specs[3], specs[4]
@@ -180,7 +180,7 @@ def test_merged_endpoint_card_text_matches_the_requested_two_lines(tmp_path):
     endpoints, _ = _endpoint_and_nav(specs[3])
     for item in endpoints:
         assert "/导航" not in item.text
-        assert item.secondary_text == "导航监测提案（未确认）"
+        assert item.secondary_text == "导航服务监测提案（未确认）"
     # 主名仍是起降点名本身（不因为合并而被改写成别的对象）。
     assert all(item.text for item in endpoints)
 

@@ -9,7 +9,7 @@
    绝不改写成 current，也绝不画近似带；
 3. **正式成果图门禁**：600 DPI 导出在非 current 时被明确拒绝（带逐图层原因），
    预览与常规导出仍可用；
-4. **导航监测身份**：N1/N2 只读仿真结果按 ``route_geometry_fingerprint`` 绑定，
+4. **导航服务监测身份**：N1/N2 只读仿真结果按 ``route_geometry_fingerprint`` 绑定，
    指纹不一致即 stale；强制端点设备与 P16 规划提案是不同图层、不同来源。
 """
 
@@ -359,7 +359,7 @@ def test_normal_dpi_export_and_preview_still_work(tmp_path):
     assert session.saved == 0
 
 
-# --------------------------------------------------------------------------- 导航监测身份
+# --------------------------------------------------------------------------- 导航服务监测身份
 
 NAV_SIMULATION = {
     "status": "passed", "reason": None,

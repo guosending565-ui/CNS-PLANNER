@@ -1356,7 +1356,7 @@ def label_card_geometry_with_secondary(text, style_item, secondary_text):
     """带**第二行**的标签卡几何（毫米，纯计算、可单测）。
 
     第一行仍是被标注对象的主名（起降点名，沿用 ``style_item`` 的字号 / 折行规则）；
-    第二行是合并进来的服务标签行（例如"导航监测提案（未确认）"）。
+    第二行是合并进来的服务标签行（例如"导航服务监测提案（未确认）"）。
 
     卡片高度账目（三段，互不重叠）：
 
@@ -2706,7 +2706,7 @@ def _legend_entries(spec):
 LEGEND_COMPACT_LABELS = {
     "cns_comm_proposal": ("通信规划提案（未确认）", "通信提案（未确认）"),
     "cns_rid_proposal": ("RID 规划提案（未确认）", "RID 提案（未确认）"),
-    "cns_nav_proposal": ("导航完整性监测点提案（未确认）", "导航监测点提案"),
+    "cns_nav_proposal": ("导航服务监测点提案（未确认）", "导航服务监测点提案"),
     "cns_coverage_comm": ("通信规划服务半径 4 km", "通信半径 4 km"),
     "cns_coverage_rid_land": ("RID 陆地/沿海规划范围 2 km", "RID 陆地/沿海 2 km"),
     "cns_coverage_rid_sea": ("RID 海上延伸规划范围 2–5 km", "RID 海上延伸 2–5 km"),

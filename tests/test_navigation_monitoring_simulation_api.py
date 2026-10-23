@@ -40,7 +40,7 @@ class ReadOnlyWorkflow:
     def simulate_navigation_monitoring(self, payload):
         self.calls.append(("simulation", deepcopy(payload)))
         if payload.get("force_endpoint_monitors") is False:
-            raise ValueError("强制端点导航监测设备不可关闭")
+            raise ValueError("强制端点导航服务监测设备不可关闭")
         if payload.get("blocked"):
             return {"status": "blocked", "reason": "mandatory_endpoint_spatial_evidence_unavailable", "message": "起终点坐标系证据不足，仿真已阻断", "writes_performed": 0}
         return {
@@ -137,7 +137,7 @@ def test_post_maps_chinese_validation_error_and_preserves_explicit_blocked_resul
     router, workflow = _router()
     invalid = router.post("/api/navigation-monitoring-simulation", {"force_endpoint_monitors": False})
     assert invalid.status == 400
-    assert invalid.data == {"status": "invalid_parameters", "error": "强制端点导航监测设备不可关闭", "writes_performed": 0}
+    assert invalid.data == {"status": "invalid_parameters", "error": "强制端点导航服务监测设备不可关闭", "writes_performed": 0}
 
     blocked = router.post("/api/navigation-monitoring-simulation", {"blocked": True})
     assert blocked.status == 200

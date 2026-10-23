@@ -341,5 +341,6 @@
       "evidence": [{"locator": "表6", "statement": "型号、频段、角度、速率、物理规格、功耗、防护与MTBF来自原表。"}],
       "planning_mapping": {"status": "not_mapped", "reason": "satellite_terminal_reference_only"}
     }
-  ]
+  ],
+  "r7d19_reference_claims": [{"claim": "设备MTBF≥150000h、MTTR≤1h", "status": "pending_source_verification", "source": "用户提供的参考指标，原始文件页码/设备型号尚待核实", "scope": "device_reference_only", "system_availability_guarantee": false, "computational_use": false}]
 }

@@ -19,7 +19,7 @@ import {
 import {
   bindContinuousServicePanel,continuousServiceModel,renderContinuousServicePanel,step6GateModel,
 } from './continuous_service.js';
-// Round38-N2：导航监测规划（只读消费 N1 的两个接口；前端不重实现选址算法）。
+// Round38-N2：导航服务监测规划（只读消费 N1 的两个接口；前端不重实现选址算法）。
 import {
   FORCE_ENDPOINT_NOTE,NAVIGATION_MONITORING_SIMULATION_ENDPOINT,
   NAVIGATION_PARAMETER_DEFAULTS,
@@ -65,7 +65,7 @@ const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing',
 // Radar 输入指纹变化会让 cns_corridor()（及 P15/P16）失效。旧顺序把「雷达监视规划」
 // 放在 P16 之后，普通用户按 UI 顺序走完 Step05 必然让 P14/P15/P16 全部 stale，
 // Step06 直接失败——那是流程陷阱，不是业务判据问题。
-const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-navigation-monitoring','导航监测规划']];
+const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-navigation-monitoring','导航服务监测规划']];
 const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']];
 
 // ---- 六区结构（B4X §20） ----------------------------------------------------
@@ -1409,7 +1409,7 @@ export function render({flow,navigationMonitoring=null,p16V2=null}){
     +renderRadarSurveillanceLayoutPanel(flow)
     +radarServicePanel;
 
-  // ---- Round38-N2：导航监测规划（只读消费 N1 两个接口） ------------------------
+  // ---- Round38-N2：导航服务监测规划（只读消费 N1 两个接口） ------------------------
   // 结果只进前端展示状态，不写 ProjectState；CRS 未正式确认前权威仿真继续 blocked。
   const navigationMonitoringPanel=renderNavigationMonitoringPanel(flow,{
     candidates:navigationState.candidates,
@@ -1441,13 +1441,13 @@ export function render({flow,navigationMonitoring=null,p16V2=null}){
   if((flow?.operational_routes||[]).length!==1){
     navigationMonitoringBlockerItems.push({
       text:'正式运行航路不是唯一一条，无法确定权威航路',
-      detail:'导航监测仿真需要唯一权威航路；请先完成航路发布或明确指定航路标识。',
+      detail:'导航服务监测仿真需要唯一权威航路；请先完成航路发布或明确指定航路标识。',
     });
   }
   if(!(flow?.operational_routes||[]).length){
     navigationMonitoringBlockerItems.push({
       text:'尚未确认正式运行航路',
-      detail:'导航监测仿真按正式运行航路的完整几何计算；没有航路时无法评估。',
+      detail:'导航服务监测仿真按正式运行航路的完整几何计算；没有航路时无法评估。',
     });
   }
 
@@ -1544,9 +1544,9 @@ export function render({flow,navigationMonitoring=null,p16V2=null}){
         +nextHint(step6GateModel(flow).confirmationAllowed
           ? '连续服务结论允许进入方案评审；若存在 managed gap，方案评审与报告中必须逐段披露，不得表述为"全覆盖"。'
           : '连续服务结论为不可接受或不可判定（unknown）：请先补齐工程依据或调整方案后重新评估，再进入方案评审。')],
-      ['cns-res-navigation-monitoring','导航监测规划',
-        wbBlock('导航监测规划',wbSegHint(RESULT_SEGMENTS,'cns-res-navigation-monitoring')
-          +segIntro('沿航路中心线评估导航监测设备的关联覆盖与未关联缺口，并显示起终点强制设备、推荐铁塔设备与固定保障宽带的真实状态。',
+      ['cns-res-navigation-monitoring','导航服务监测规划',
+        wbBlock('导航服务监测规划',wbSegHint(RESULT_SEGMENTS,'cns-res-navigation-monitoring')
+          +segIntro('沿航路中心线评估导航服务监测设备的关联覆盖与未关联缺口，并显示起终点强制设备、推荐铁塔设备与固定保障宽带的真实状态。',
             '唯一权威航路的完整几何；候选站址快照（全部已录入起降点、既有铁塔与不可用候选）；'
             +'关联半径 '+NAVIGATION_PARAMETER_DEFAULTS.monitor_association_radius_m
             +' m 等可调参数；风险画像与三维保障证据。')
@@ -1555,8 +1555,8 @@ export function render({flow,navigationMonitoring=null,p16V2=null}){
           navigationMonitoringBlockerItems.concat([{kind:'assumption',
             text:'监测关联半径只是沿航路中心线的关联参数',
             detail:'它绝不等于左右各 500 m 的全宽 CNS 保障能力；关联率不得替代全宽覆盖率。'}]),
-          '当前没有与导航监测规划相关的阻塞项'))
-        +nextHint('导航监测规划是**只读仿真**：它不写 ProjectState，也不解锁方案评审；'
+          '当前没有与导航服务监测规划相关的阻塞项'))
+        +nextHint('导航服务监测规划是**只读仿真**：它不写 ProjectState，也不解锁方案评审；'
           +'起降点坐标系正式确认之前，权威仿真保持 blocked。')]
     ]})
     +wbPanel('advanced','',{segments:[
@@ -1786,7 +1786,7 @@ export function bind(c){
   }
   bindP16V2Panel(c);
   c.actionButton('evaluateServiceTimeline',()=>c.resourceAction('/api/service-timeline/evaluate',{}));
-  // ---- Round38-N2：导航监测规划（**只读**；绝不写 ProjectState） -----------------
+  // ---- Round38-N2：导航服务监测规划（**只读**；绝不写 ProjectState） -----------------
   // 主操作按钮用 document 级事件委托绑定（见 navigation_monitoring.js 的说明）：
   // 面板每次重绘都会替换整棵 DOM，赋在旧节点上的 onclick 会随节点一起丢失。
   bindNavigationMonitoringPanel(c);

@@ -31,7 +31,7 @@ const CATALOG={
     {template_id:'route_overview_v1',display_name:'航路周边状况图',status:'available'},
     {template_id:'route_detail_v1',display_name:'航路细节放大图',status:'planned'},
     {template_id:'communication_layout_v1',display_name:'通信设施布设图',status:'available'},
-    {template_id:'navigation_layout_v1',display_name:'导航完整性监测点布设图',status:'available'},
+    {template_id:'navigation_layout_v1',display_name:'导航服务监测点布设图',status:'available'},
     {template_id:'surveillance_layout_v1',display_name:'监视设施布设图',status:'available'},
     {template_id:'cns_combined_v1',display_name:'CNS 综合布设图',status:'available'},
   ],
@@ -76,7 +76,7 @@ test('catalog 里的四个 CNS 模板在前端可选，route_detail 仍禁用',(
   }
   assert.match(html,/航路细节放大图（尚未实现）/);
   assert.match(html,/value="route_detail_v1" disabled/);
-  assert.match(html,/导航完整性监测点布设图/);
+  assert.match(html,/导航服务监测点布设图/);
 });
 
 test('catalog 未加载时退回内置清单（不把已实现模板显示成尚未实现）',()=>{

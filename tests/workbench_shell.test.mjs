@@ -1043,7 +1043,7 @@ const STEP05_SEGMENTS={
   //: Round 2.5：新增「连续服务可接受性」分段（P17）；它是 canonical 链的最后一环。
   //: Round32-H：雷达监视基线（cns-res-radar）移到 CNS 服务走廊**之前** ——
   //: Radar 基线是 P14 的上游服务证据，顺序错了会让 P14/P15/P16 立刻 stale。
-  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-navigation-monitoring','导航监测规划']],
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-navigation-monitoring','导航服务监测规划']],
   advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
@@ -1063,7 +1063,7 @@ const STEP05_CONTROLS=[
   'continuousPolicySource','continuousPolicyConfirmed','saveContinuousPolicy',
   'scenarioIntruderSpeed','scenarioNominalClosing','scenarioConservativeClosing',
   'saveOperationScenario',
-  //: Round38-N2：导航监测规划（只读仿真）的航路选择、参数与主操作控件。
+  //: Round38-N2：导航服务监测规划（只读仿真）的航路选择、参数与主操作控件。
   'navigationRouteSource','navigationRouteId','navigationForceEndpointMonitors',
   'navigation_monitor_association_radius_m','navigation_gap_tolerance_s',
   'navigation_route_speed_mps','navigation_risk_priority_weight',
@@ -1192,13 +1192,13 @@ test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
     assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['false','true','false']);
-    //: Round 2.5：结果标签新增「连续服务可接受性」分段；Round38-N2 再增「导航监测规划」。
+    //: Round 2.5：结果标签新增「连续服务可接受性」分段；Round38-N2 再增「导航服务监测规划」。
     assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false','false','false']);
     assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),'tabpanel');
     assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),undefined);
 
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
-    //: 结果分段顺序为 覆盖 → 能力 → 雷达基线 → 服务走廊 → 缺口 → 设施 → 连续服务 → 导航监测；
+    //: 结果分段顺序为 覆盖 → 能力 → 雷达基线 → 服务走廊 → 缺口 → 设施 → 连续服务 → 导航服务监测；
     //: Radar 基线必须保持在服务走廊之前（Round32-H），因此服务走廊是第 4 个。
     assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','false','true','false','false','false','false']);
   });

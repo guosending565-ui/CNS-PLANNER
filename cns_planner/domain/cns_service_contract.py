@@ -229,9 +229,9 @@ REDUNDANCY_BY_SURFACE_SURFACES = ("land", "coastal_uncertain", "sea")
 #: 冻结的业务规则：surface → 几何规划半径（米）。
 #: 这些数字**只是几何规划半径**，不是实测覆盖，也不是保证通信/探测距离。
 COMMUNICATION_RADIUS_BY_SURFACE = {
-    "land": 4000.0,
-    "coastal_uncertain": 4000.0,
-    "sea": 4000.0,
+    "land": 2000.0,
+    "coastal_uncertain": 2000.0,
+    "sea": 2000.0,
 }
 RID_RADIUS_BY_SURFACE = {
     "land": 2000.0,
@@ -294,6 +294,8 @@ MISSING_DEVICE_EVIDENCE = (
 
 SERVICE_SURFACE_POLICY = {
     SERVICE_KEY_COMMUNICATION: {
+        "policy_version": "r7d19-comm-2km-v1",
+        "research_assumption": "原始参考为站间距约4km；2km半径为研究假设，非实测覆盖保证",
         "service_key": SERVICE_KEY_COMMUNICATION,
         "subsystem": "C",
         "label": "通信（Communication）",

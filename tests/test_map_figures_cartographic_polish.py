@@ -267,7 +267,7 @@ def test_worst_case_legend_fits_the_shared_budget():
             ("obstacle", ["地形障碍（≥ 显示阈值）", "建筑障碍（≥ 显示阈值）"]),
             ("facility", ["既有通信站址"]),
             ("proposal", ["通信规划提案（未确认）", "RID 规划提案（未确认）",
-                          "导航完整性监测点提案（未确认）"]),
+                          "导航服务监测点提案（未确认）"]),
             ("coverage", ["通信规划服务半径 4 km", "RID 陆地/沿海规划范围 2 km",
                           "RID 海上延伸规划范围 2–5 km"]),
             ("limitation", ["非合作监视能力限制（无可行布设）"]),
@@ -416,7 +416,7 @@ def test_colocated_services_get_one_label_with_stable_service_families(tmp_path)
     assert label.style_key == "label_cns_proposal"
     assert label.services == ["communication", "rid"]
     assert "通信" in label.text and "RID" in label.text
-    # 起终点标签：Round30-B1.2 起，与**导航监测提案同址**的起降点会把 Navigation
+    # 起终点标签：Round30-B1.2 起，与**导航服务监测提案同址**的起降点会把 Navigation
     # 并进主卡第二行（此时 services 带 navigation、secondary_text 非空且**没有**独立
     # 的导航卡）；没有同址导航提案的图仍保持 services 为空。
     endpoints = [item for item in combined.labels if item.kind in ("start", "end")]
@@ -461,7 +461,7 @@ def test_single_service_figures_get_single_block_backgrounds(tmp_path):
     for label in navigation_spec.labels:
         if label.kind in ("start", "end"):
             assert label.services == ["navigation"]
-            assert label.secondary_text == "导航监测提案（未确认）"
+            assert label.secondary_text == "导航服务监测提案（未确认）"
 
 
 def test_existing_cns_facility_labels_use_the_facility_style(tmp_path):

@@ -1,5 +1,5 @@
 // =========================================================
-// 导航监测规划（Round38-N2）
+// 导航服务监测规划（Round38-N2）
 //
 // 职责：把 N1 的**两个只读接口**转印成中文业务面板 + 地图图层模型。
 //
@@ -113,10 +113,10 @@ export function routeIdentityConsistency(authoritative, requested) {
 // ---- 2. 导航参数（与后端默认值一致） ---------------------------------------
 
 /**
- * 导航监测参数默认值与**可否关闭**语义。
+ * 导航服务监测参数默认值与**可否关闭**语义。
  *
  * ``force_endpoint_monitors`` 是 ``fixed_constraint``：后端对 false/null/非布尔
- * 一律返回 400「强制端点导航监测设备不可关闭」。因此前端把它做成**只读**，
+ * 一律返回 400「强制端点导航服务监测设备不可关闭」。因此前端把它做成**只读**，
  * 不提供关闭入口 —— 而不是让用户改完再被后端拒绝。
  */
 export const NAVIGATION_PARAMETER_DEFAULTS = Object.freeze({
@@ -619,7 +619,7 @@ export const WIDTH_VS_ASSOCIATION_NOTE =
   + '导航关联率**不得**替代全宽覆盖率。2000 m 关联范围不是真实认证导航覆盖区。';
 
 /** 起降点 CRS 未确认时的阻断文案（逐字）。 */
-export const REFERENCE_CRS_BLOCKED_TEXT = '起降点坐标系尚未确认，无法完成权威导航监测仿真。';
+export const REFERENCE_CRS_BLOCKED_TEXT = '起降点坐标系尚未确认，无法完成权威导航服务监测仿真。';
 
 /** 测试夹具必须显式标注，且结果不得冒充权威结果。 */
 export const TEST_FIXTURE_LABEL = '测试夹具（非权威结果，不得写回或冒充正式结果）';
@@ -633,7 +633,7 @@ function badge(status, fallback = '未计算') {
 /** 摘要卡：关联里程 / 关联比例 / 最长缺口 / 最长缺口时间 / 可选设备数量。 */
 export function navigationSimulationSummaryHtml(model) {
   if (!model || !model.ran) {
-    return '<div class="wb-empty">尚未运行导航监测仿真。</div>';
+    return '<div class="wb-empty">尚未运行导航服务监测仿真。</div>';
   }
   const cards = [
     ['关联里程', metricText(model.associatedLengthM, 2, 'm')],
@@ -774,7 +774,7 @@ export function fixedWidthSectionHtml({geometryModel, fullWidthModel}) {
     + '<div class="parameter-note">' + escapeHtml(WIDTH_VS_ASSOCIATION_NOTE) + '</div>';
 }
 
-/** 主面板：导航监测规划（操作 + 结果合一，供 Step05 分段使用）。 */
+/** 主面板：导航服务监测规划（操作 + 结果合一，供 Step05 分段使用）。 */
 export function renderNavigationMonitoringPanel(flow, options = {}) {
   const candidates = sharedSiteCandidateModel(options.candidates ?? flow?.navigation_monitoring?.candidates);
   const result = navigationSimulationModel(options.result ?? flow?.navigation_monitoring?.result);
@@ -834,7 +834,7 @@ export function renderNavigationMonitoringPanel(flow, options = {}) {
     : '';
 
   const identity = result.routeIdentity;
-  return '<div class="parameter-note">本区只消费两个只读接口：候选站址快照与导航监测仿真。'
+  return '<div class="parameter-note">本区只消费两个只读接口：候选站址快照与导航服务监测仿真。'
     + '前端不重新实现选址算法，仿真结果不写入 ProjectState。</div>'
     + blockerHtml
     + '<h4>1. 航路选择与身份</h4>'
@@ -860,7 +860,7 @@ export function renderNavigationMonitoringPanel(flow, options = {}) {
     + '<h4>3. 导航参数</h4>'
     + parameterRows
     + '<div class="button-row"><button class="primary" id="runNavigationMonitoringSimulation">'
-    + '运行导航监测仿真</button></div>'
+    + '运行导航服务监测仿真</button></div>'
     + '<h4>4. 结果摘要</h4>'
     + navigationSimulationSummaryHtml(result)
     + navigationSimulationStatusHtml(result)
@@ -878,7 +878,7 @@ export function renderNavigationMonitoringPanel(flow, options = {}) {
 
 /** 图例行（地图图例与测试共用同一份定义）。 */
 export const NAVIGATION_MONITORING_LEGEND = Object.freeze([
-  {id: 'navigation-route', label: '导航监测航路（中心线）', symbol: 'route'},
+  {id: 'navigation-route', label: '导航服务监测航路（中心线）', symbol: 'route'},
   {id: 'navigation-mandatory-device', label: '起终点强制监测设备（仿真规划）', symbol: 'mandatory'},
   {id: 'navigation-tower-device', label: '推荐铁塔监测设备（复用既有铁塔）', symbol: 'tower'},
   {id: 'navigation-associated-segment', label: '已关联航段（2000 m 关联范围内）', symbol: 'associated'},
@@ -912,7 +912,7 @@ export function readNavigationDraft($) {
  *
  * **为什么是局部刷新而不是整面板重绘**：候选快照是进入分段后按需读取的只读 GET，
  * 若读取完成后触发 ``renderWorkflow()``，整棵面板（含主操作按钮）会被替换；用户正好
- * 在这一瞬间点击「运行导航监测仿真」时，点击会落在已被换掉的节点上而静默失效。
+ * 在这一瞬间点击「运行导航服务监测仿真」时，点击会落在已被换掉的节点上而静默失效。
  * 只更新候选容器既能让统计如实显示，又完全不动按钮节点。
  *
  * @returns {boolean} 容器存在并已更新时为 true
@@ -926,7 +926,7 @@ export function refreshNavigationCandidateSummary(doc = globalThis.document) {
 }
 
 /**
- * 绑定导航监测规划面板。
+ * 绑定导航服务监测规划面板。
  *
  * 主操作按钮用 ``onclick`` 直接绑定：``bind`` 在每次 ``renderWorkflow()`` 之后都会被
  * 调用，因此重建后的新节点一定拿到新处理器。为避免"读取候选快照即重绘"打断点击，

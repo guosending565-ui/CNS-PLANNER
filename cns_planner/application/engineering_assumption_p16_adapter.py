@@ -429,6 +429,9 @@ def validate_scenario_p16_inputs(pool, deduped, state):
         if isinstance(item, dict)
     }
 
+    expected_devices = dict(EXPECTED_DEVICE_BY_SUBSYSTEM)
+    if scenario.get("version") == "r7d19-v2":
+        expected_devices["C"] = "COMM-BASELINE-2KM"
     distinct_by_key = {}
     for action in actions:
         action_id = str(action.get("action_id") or "")
@@ -439,11 +442,11 @@ def validate_scenario_p16_inputs(pool, deduped, state):
         if subsystem not in EXPECTED_DEVICE_BY_SUBSYSTEM:
             error("action_subsystem", f"{action_id} 的 subsystem={subsystem!r} 不在 C/S 假设内")
             continue
-        if device_id != EXPECTED_DEVICE_BY_SUBSYSTEM[subsystem]:
+        if device_id != expected_devices[subsystem]:
             error(
                 "action_device",
                 f"{action_id} 的设备 {device_id!r} 不是场景登记的 C/S 工程型号 "
-                f"{EXPECTED_DEVICE_BY_SUBSYSTEM[subsystem]!r}",
+                f"{expected_devices[subsystem]!r}",
             )
         if service_key != EXPECTED_SERVICE_KEY[subsystem]:
             error(

@@ -200,7 +200,8 @@ def normalize_device(item: dict) -> CNSDevice:
         "subsystem": subsystem, "role": role,
         "radius_m": _positive(item.get("radius_m", item.get("coverage_radius_m")), "radius_m"),
         "latency_ms": _optional_nonnegative(item.get("latency_ms"), "latency_ms"),
-        "mtbf_h": _positive(reliability.get("mtbf_h"), "mtbf_h"),
+        "mtbf_h": (_positive(reliability["mtbf_h"], "mtbf_h")
+                   if reliability.get("mtbf_h") is not None else None),
         "enabled": bool(item.get("enabled", True)),
         "source": str(item.get("source") or "未记录"),
         "parameter_metadata": deepcopy(item.get("parameter_metadata") or {}),

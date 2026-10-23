@@ -64,7 +64,7 @@ SERVICE_REGISTRY = {
     SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING: {
         "service_key": SERVICE_KEY_NAVIGATION_INTEGRITY_MONITORING,
         "subsystem": "N",
-        "label": "导航完整性监测",
+        "label": "导航服务监测",
         "planner_family": "endpoint_integrity_monitor",
         "provider_model": "ground_navigation_integrity_monitor",
         "requirement_semantics": "route_endpoint_navigation_integrity_monitoring",
@@ -587,7 +587,7 @@ def _normalize_rtk_planning(value, *, field, fallback_confirmed=False, fallback_
 
 
 NAVIGATION_INTEGRITY_POLICY_SOURCE = (
-    "Round29-E 用户确认：导航完整性监测设备优先布设在航路起点和终点起降场，"
+    "Round29-E 用户确认：导航服务监测设备优先布设在航路起点和终点起降场，"
     "两端各至少1套独立设备；当前不沿航路中段强制布站；"
     "10 km 为 CNS-PLANNER 舟山案例局地监测关联范围工程假设，"
     "不代表 RTK baseline 或认证 GBAS service volume。"

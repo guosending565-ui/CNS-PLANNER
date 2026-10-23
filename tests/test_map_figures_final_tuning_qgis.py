@@ -135,25 +135,25 @@ def _base_spec(template_id, title):
 
 
 def _merged_endpoint_spec() -> FigureSpec:
-    """起降点 + 同址导航监测提案：主卡第二行必须是浅黄 service tag。"""
+    """起降点 + 同址导航服务监测提案：主卡第二行必须是浅黄 service tag。"""
 
-    spec = _base_spec("navigation_layout_v1", "导航完整性监测点布设图（B1.2 合并卡验收）")
+    spec = _base_spec("navigation_layout_v1", "导航服务监测点布设图（B1.2 合并卡验收）")
     spec.labels = [
         LabelSpec(kind="start", text="直升机场起降点", longitude=START[0],
                   latitude=START[1], priority=100, style_key="label_endpoint",
-                  services=["navigation"], secondary_text="导航监测提案（未确认）",
+                  services=["navigation"], secondary_text="导航服务监测提案（未确认）",
                   secondary_service="navigation"),
         LabelSpec(kind="end", text="东白莲华泰油库生活区野外起降点", longitude=END[0],
                   latitude=END[1], priority=100, style_key="label_endpoint_end",
-                  services=["navigation"], secondary_text="导航监测提案（未确认）",
+                  services=["navigation"], secondary_text="导航服务监测提案（未确认）",
                   secondary_service="navigation"),
     ]
     spec.legend_items = [
         LegendItem("cns_nav_proposal", "cns_nav_proposal",
-                   "导航完整性监测点提案（未确认）", "proposal"),
+                   "导航服务监测点提案（未确认）", "proposal"),
     ]
     spec.layers = [
-        LayerSpec("cns_nav_proposal", "导航完整性监测点提案（未确认）", "cns_nav_proposal",
+        LayerSpec("cns_nav_proposal", "导航服务监测点提案（未确认）", "cns_nav_proposal",
                   GEOMETRY_POINT, "cns_corridor_site_plan", source_status="available",
                   feature_count=2,
                   data={"points": [

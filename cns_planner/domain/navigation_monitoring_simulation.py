@@ -22,25 +22,25 @@ _POSITIVE_PARAMETERS = (
 def validate_navigation_monitoring_parameters(payload):
     payload = {} if payload is None else payload
     if not isinstance(payload, dict):
-        raise ValueError("导航监测参数必须是对象")
+        raise ValueError("导航服务监测参数必须是对象")
     unknown = set(payload) - set(_DEFAULTS)
     if unknown:
-        raise ValueError(f"导航监测参数未知：{'', ''.join(sorted(unknown))}")
+        raise ValueError(f"导航服务监测参数未知：{'', ''.join(sorted(unknown))}")
     result = {}
     sources = {}
     for key in _POSITIVE_PARAMETERS:
         value = payload[key] if key in payload else _DEFAULTS[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
-            raise ValueError(f"导航监测参数 {key} 必须是有限正数")
+            raise ValueError(f"导航服务监测参数 {key} 必须是有限正数")
         result[key] = float(value)
         sources[key] = "request" if key in payload else "default"
     limit = payload.get("max_optional_monitor_sites", _DEFAULTS["max_optional_monitor_sites"])
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-        raise ValueError("导航监测参数 max_optional_monitor_sites 必须是非负整数")
+        raise ValueError("导航服务监测参数 max_optional_monitor_sites 必须是非负整数")
     result["max_optional_monitor_sites"] = limit
     sources["max_optional_monitor_sites"] = "request" if "max_optional_monitor_sites" in payload else "default"
     if "force_endpoint_monitors" in payload and payload["force_endpoint_monitors"] is not True:
-        raise ValueError("强制端点导航监测设备不可关闭")
+        raise ValueError("强制端点导航服务监测设备不可关闭")
     result["force_endpoint_monitors"] = True
     sources["force_endpoint_monitors"] = "fixed_constraint"
     result["parameter_sources"] = sources

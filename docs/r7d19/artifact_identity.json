@@ -1,0 +1,29 @@
+{
+  "mode": "read_only_artifact_identity_no_population_sampling",
+  "artifacts": [
+    {
+      "path": "D:\\Projects\\CNS-PLANNER\\research\\r7d8\\grid_risk_v2.json",
+      "sha256": "d0f1a7df44560986c91170543184f88980e1cc6c9127f6a36069a6f05d703420",
+      "input_fingerprint": "riskframeworkv2-f1d6079408c874c8c0e6777b04273bb20aad06c461826e795d1971141aff9a20",
+      "policy_fingerprint": "riskpolicyv2-f6449bbf0d3b46576fd431f69ec3056d85c20e79f8c71cc14b1f447b1aab31f4",
+      "count": 8008
+    },
+    {
+      "path": "D:\\Projects\\_cns_acceptance\\r7d18\\api_risk2.json",
+      "sha256": "79b2425b8d6956ac654d3dded6fb5a752cfa6ff6d8385adeba3e708258ab52b1",
+      "input_fingerprint": "riskframeworkv2-7a74c81955de507470a0a827f83069dfc0b2c50fb5424ae3ee84de55e6a7646c",
+      "policy_fingerprint": "riskpolicyv2-f6449bbf0d3b46576fd431f69ec3056d85c20e79f8c71cc14b1f447b1aab31f4",
+      "count": 8008
+    }
+  ],
+  "same_input_fingerprint": false,
+  "same_policy_fingerprint": true,
+  "d18_summary": {
+    "status": "partial",
+    "coverage": 0.949183265,
+    "unresolved_length_m": 477.901352097,
+    "exposure_index_m": 105.208100982
+  },
+  "d8_profile_sha256": "e5ce7298ee6d3c2115bac74ceb65a221da55361909f3b3b82912b5d038a280ed",
+  "conclusion": "D18 consumed a distinct pre-D8 grid-risk snapshot; unchanged policy but old input identity, coverage/unknown length/integral match D8 pre-fix evidence. Historical results must remain distinct."
+}

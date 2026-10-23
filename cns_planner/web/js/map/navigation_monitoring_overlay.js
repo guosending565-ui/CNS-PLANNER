@@ -1,5 +1,5 @@
 // =========================================================
-// 导航监测规划地图图层（Round38-N2）
+// 导航服务监测规划地图图层（Round38-N2）
 //
 // 职责边界（只做"地图表达"，不碰任何业务状态）：
 //  * 只读取**已经拿到**的仿真结果（N1 只读响应）与固定宽带只读几何；
@@ -195,7 +195,7 @@ function drawDeviceShape(ctx, shape, x, y, radius) {
 }
 
 /**
- * 绘制导航监测规划图层。
+ * 绘制导航服务监测规划图层。
  *
  * @param {{ctx,screenPoint,model,style?}} input
  * @returns {{drawn:boolean,reason:string|null,devices:number,segments:number,band:boolean}}
@@ -353,7 +353,7 @@ export function navigationMonitoringFeatureTooltip(feature, model, {escapeHtml =
     + '<small>「未关联」只表示该航段不在监测关联范围内，不表示该航段不安全或已失去服务。</small></div>';
 }
 
-/** 图例分区：导航监测规划（只在图层开启时进入地图图例）。 */
+/** 图例分区：导航服务监测规划（只在图层开启时进入地图图例）。 */
 export const NAVIGATION_MONITORING_LEGEND_LAYER = 'navigationMonitoring';
 export const NAVIGATION_MONITORING_LEGEND_CHECKBOX = 'navigationMonitoringLayer';
 export const NAVIGATION_MONITORING_LEGEND_SYMBOLS = Object.freeze([

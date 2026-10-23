@@ -182,10 +182,10 @@ def test_rid_effective_radius_resolution_and_urban_fact_only():
 
 
 @pytest.mark.parametrize("surface_class", ("land", "coastal_uncertain", "sea"))
-def test_communication_four_kilometre_radius_on_every_decidable_surface(surface_class):
+def test_communication_two_kilometre_radius_on_every_decidable_surface(surface_class):
     providers = [communication_provider()]
-    inside = sample(longitude=longitude_offset(3990.0), surface_class=surface_class)
-    outside = sample(longitude=longitude_offset(4010.0), surface_class=surface_class)
+    inside = sample(longitude=longitude_offset(1990.0), surface_class=surface_class)
+    outside = sample(longitude=longitude_offset(2010.0), surface_class=surface_class)
     assert evaluate_geometry_point(inside, providers)["covered"] is True
     assert evaluate_geometry_point(outside, providers)["covered"] is False
 
@@ -702,3 +702,10 @@ def test_required_distinct_site_count_prefers_explicit_requirement_over_policy()
     legacy_required = {"performance": {"min_redundancy": 4}}
     assert required_distinct_site_count(legacy_required, "S:surveillance", "unknown") == 4
     assert required_distinct_site_count(legacy_required, "S:surveillance", "land") == 4
+
+
+def test_r7d19_historical_four_km_geometry_is_not_upgraded():
+    legacy = provider(service_key="C:communication", legacy_radius=4000.0, surface_dependent=False)
+    probe = sample(longitude=longitude_offset(3000.0), surface_class="land")
+    assert evaluate_geometry_point(probe, [legacy])["covered"] is True
+    assert evaluate_geometry_point(probe, [communication_provider()])["covered"] is False

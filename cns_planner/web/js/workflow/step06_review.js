@@ -844,7 +844,7 @@ const MAP_FIGURE_TEMPLATES=[
   ['route_overview_v1','航路周边状况图',true],
   ['route_detail_v1','航路细节放大图',false],
   ['communication_layout_v1','通信设施布设图',true],
-  ['navigation_layout_v1','导航完整性监测点布设图',true],
+  ['navigation_layout_v1','导航服务监测点布设图',true],
   ['surveillance_layout_v1','监视设施布设图',true],
   ['cns_combined_v1','CNS 综合布设图',true]
 ];

@@ -20,8 +20,8 @@ export const BUSINESS_LEGEND_LABEL='真实业务数据';
 export const TOWER_LEGEND_LABEL='通信铁塔';
 //: Round 2.6：连续服务可接受性的**默认关闭**图层图例分区（名称不再带（P17）代号）。
 export const CONTINUOUS_SERVICE_LEGEND_LABEL='CNS 连续服务可接受性';
-//: Round38-N2：导航监测规划（N1 只读仿真）的**默认关闭**图层图例分区。
-export const NAVIGATION_MONITORING_LEGEND_LABEL='导航监测规划';
+//: Round38-N2：导航服务监测规划（N1 只读仿真）的**默认关闭**图层图例分区。
+export const NAVIGATION_MONITORING_LEGEND_LABEL='导航服务监测规划';
 
 // =========================================================
 // Round 2.8：地图图例改为 **小型 / 可折叠 / 激活图层驱动**。
@@ -44,8 +44,8 @@ export const LEGEND_GROUP_TITLES={
   siteEvidence:'站址证据',
   radar:'Radar（非合作监视）',
   navigation:'导航增强',
-  //: Round38-N2：导航监测规划独立成组（不与"导航增强"混同）。
-  navigationMonitoring:'导航监测规划',
+  //: Round38-N2：导航服务监测规划独立成组（不与"导航增强"混同）。
+  navigationMonitoring:'导航服务监测规划',
   surface:'地表分类',
   limitation:'限制 / 提示'
 };
@@ -79,7 +79,7 @@ export const LEGEND_LAYER_SYMBOLS={
   surfaceFacts:['cns-surface-facts'],
   existingCns:['existing-cns-facility'],
   candidateSites:['candidate-site'],
-  //: Round38-N2：导航监测规划图层（默认关闭）。六个符号与
+  //: Round38-N2：导航服务监测规划图层（默认关闭）。六个符号与
   //: map/navigation_monitoring_overlay.js 的 NAVIGATION_MONITORING_LEGEND_SYMBOLS 同源。
   navigationMonitoring:[
     'navigation-route','navigation-mandatory-device','navigation-tower-device',
@@ -198,13 +198,13 @@ export function mapLegendModel({
           {id:'tower-reference',label:TOWER_LEGEND_LABEL,symbol:towerSymbolSvg({size:20,raster:true,color:LEGEND_COLORS.tower,strokePx:1.8}),note:collectionNote(towers,'个')+' · '+towerTopNote,detail:towerTopNote,state:towerLayerOn?'图层已打开':'图层默认关闭'}
         ]
       },
-      //: Round38-N2：导航监测规划。三类设备与两类航段必须**分别**成行，绝不合并：
+      //: Round38-N2：导航服务监测规划。三类设备与两类航段必须**分别**成行，绝不合并：
       //: 已规划（仿真）≠ 既有铁塔复用 ≠ 不可用候选；已关联 ≠ 未关联。
       //: 措辞只表达"监测关联"，绝不表达"已认证安全"。
       {
         title:NAVIGATION_MONITORING_LEGEND_LABEL,
         lines:[
-          {id:'navigation-route',label:'导航监测航路（中心线）',
+          {id:'navigation-route',label:'导航服务监测航路（中心线）',
             symbol:'<span class="legend-stroke" style="border-top-color:'+LEGEND_COLORS.navigationRoute+'"></span>',
             note:'来自 N1 只读仿真响应；只表达中心线监测关联，不代表全宽 CNS 保障能力。',
             state:navigationMonitoringLayerOn?'图层已打开':'图层默认关闭'},
@@ -462,7 +462,7 @@ export function updateCompactMapLegend({$,flow,storage}={}){
     towerLayerOn:$('towerLayer')?.checked===true,
     routeProtectionLayerOn:$('routeProtectionCorridorLayer')?.checked===true,
     surveillanceProtectionLayerOn:$('surveillanceProtectionLayer')?.checked===true,
-    //: Round38-N2：导航监测规划图层的图例状态如实跟随该图层开关。
+    //: Round38-N2：导航服务监测规划图层的图例状态如实跟随该图层开关。
     navigationMonitoringLayerOn:$('navigationMonitoringLayer')?.checked===true
   });
   const lines=[
