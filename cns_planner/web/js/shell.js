@@ -26,12 +26,25 @@ export function updateRasterLegends($){
 }
 
 /**
+ * 高度层障碍的三态开关。
+ *
+ * BUG-R37A-002：这三个 id **同时**出现在 ``LAYER_IDS`` 里，因此曾经被两处
+ * ``onchange`` 赋值：先是下面的专用 handler（``onConstraintLayer``，会先按需补齐
+ * 网格几何再读约束场），随后又被通用开关循环覆盖成"只重绘"。
+ * 结果是勾选「高度层障碍」既不发 ``GET /api/workspace/grid``，也不读约束场，
+ * 图层静默画不出来。二者必须互斥：专用 handler 只能有一份。
+ */
+const CONSTRAINT_LAYER_IDS=[
+  'altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer'
+];
+
+/**
  * 绑定图层抽屉的全部控件（基础栅格、透明度、统一 layer switches）。
  * 全部使用 onchange/oninput 赋值，重复调用也不会叠加监听器。
- * @param {{$,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend}} options
+ * @param {{$,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend,onConstraintLayer,onGridLayer}} options
  */
 export function bindLayerControls({
-  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend,onConstraintLayer
+  $,layerIds,queue,paint,setGridOutline,updateGridNotice,updateGridThemeLegend,onOnlineTiles,updateMapLegend,onConstraintLayer,onGridLayer
 }){
   // 基础开关：air 只重绘；pop/terrain 同时刷新栅格图例
   if($('air'))$('air').onchange=queue;
@@ -42,16 +55,21 @@ export function bindLayerControls({
   if($('opacity'))$('opacity').oninput=()=>{$('opacityValue').textContent=$('opacity').value+'%';queue();};
   if($('terrainOpacity'))$('terrainOpacity').oninput=()=>{$('terrainOpacityValue').textContent=$('terrainOpacity').value+'%';queue();};
   // 高度层障碍：勾选后按需读取逐格明细（**默认关闭**，不参与启动加载）。
-  for(const id of ['altitudeConstraintLayer','altitudeConstraintUnknownLayer','altitudeConstraintPassLayer']){
+  // BUG-R37A-002：这一份是**唯一**的约束层 handler；下面的通用循环必须跳过这三个 id。
+  for(const id of CONSTRAINT_LAYER_IDS){
     if($(id))$(id).onchange=()=>{onConstraintLayer?.();updateGridThemeLegend();updateMapLegend?.();paint();};
   }
   // layerIds 是统一开关集合（含 referenceRoutePointLayer），这里再补 gridLayer
   for(const id of [...layerIds,'gridLayer']){
+    if(CONSTRAINT_LAYER_IDS.includes(id))continue;
     const input=$(id);if(!input)continue;
     input.onchange=()=>{
       if(id==='gridLayer'){
         setGridOutline($('gridLayer').checked);
         if($('gridOutlineToggle'))$('gridOutlineToggle').checked=$('gridLayer').checked;
+        // BUG-R37A-002：勾选「标准规划网格」是"首次真正需要网格几何"的产品入口，
+        // 必须在这里按需 hydrate 逐格几何（专题 / 边界 / 点击 popup 都依赖它）。
+        onGridLayer?.();
       }
       updateGridNotice();updateGridThemeLegend();updateMapLegend?.();paint();
     };
@@ -121,6 +139,21 @@ export function bindShell(options){
     }catch(exc){panelError(exc.message);}
   });
   $('saveProjectTop').onclick=()=>saveProject();
+  // A7-UI-01：二维主界面的三维入口。**只**在新标签打开既有 `/visualization-3d.html`：
+  // 不在本页新建 Viewer 实例、不传任何参数、不发任何写请求、不触发规划计算。
+  // 三维页自己通过只读接口读取"当前项目"，因此与二维页共用同一个当前项目。
+  const viewer3dButton=$('openViewer3d');
+  if(viewer3dButton)viewer3dButton.onclick=()=>{
+    const opened=window.open('/visualization-3d.html','_blank');
+    // 弹窗被拦截时给出可读结论，绝不静默什么都不发生；二维地图状态保持不变。
+    if(!opened){
+      panelError('三维 Viewer 未能打开（浏览器拦截了新标签）；请允许本站弹出窗口后重试。');
+      return;
+    }
+    // 反向断言式安全：新页面不得通过 window.opener 反向操作二维页。
+    try{opened.opener=null;}catch(_){/* 跨源/已关闭时无需处理 */}
+    try{opened.focus();}catch(_){/* 聚焦失败不影响新标签已经打开这一事实 */}
+  };
   $('settingsBtn').onclick=()=>$('settings').showModal();
   $('connection').onclick=()=>$('settings').showModal();
 }

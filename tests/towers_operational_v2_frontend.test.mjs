@@ -388,7 +388,8 @@ test('FRONTEND: both policy forms actually render the acceptance fields',async()
   assert.match(colocation,/eligible/);
   assert.match(colocation,/分系统安装证据 未核实/);
   assert.match(colocation,/策略 已启用/);
-  assert.match(colocation,/共塔候选 3 个 · 塔顶已解析 200 · 未解析 173/);
+  // R7-D3B：塔顶"已解析"必须同时声明"尚未权威确认"，不得写成已确认。
+  assert.match(colocation,/共塔候选 3 个 · 塔顶高度已解析（尚未权威确认）200 · 未解析 173/);
 
   const clearance=step03Module.towerClearancePanel({
     tower_clearance_policy:{status:'not_configured',confirmed:false},

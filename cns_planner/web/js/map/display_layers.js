@@ -20,7 +20,8 @@ import {cnsServiceOverlayModel,drawCnsServiceOverlay,drawSurfaceFactsLayer,
 import {radarOverlayModel} from '../workflow/radar_surveillance_layout.js';
 import {clusterPoints,toGeographic,extentOf,hitCluster} from './point_clustering.js';
 import {
-  displayStyle,TOWER_HIGHLIGHT_SIZE_PX,TOWER_SYMBOL_HALO_EXTRA_PX,TOWER_SYMBOL_STROKE_PX
+  displayStyle,TOWER_HIGHLIGHT_SIZE_PX,TOWER_SYMBOL_HALO_EXTRA_PX,TOWER_SYMBOL_STROKE_PX,
+  TOWER_SYMBOL_SIZE_PX
 } from './lod.js';
 
 // ---- 样式（颜色只表达来源与状态，不表达通过与否） ----------------------------
@@ -477,21 +478,174 @@ function traceTowerPath(ctx,x,y,halfSizePx){
 export function drawTowerSymbol(ctx,x,y,{
   sizePx=TOWER_HIGHLIGHT_SIZE_PX,color=TOWER_COLOR.normal,
   strokePx=TOWER_SYMBOL_STROKE_PX.detail,
-  halo=true,haloExtraPx=TOWER_SYMBOL_HALO_EXTRA_PX
+  halo=true,haloExtraPx=TOWER_SYMBOL_HALO_EXTRA_PX,anchor='center'
 }={}){
   const size=Number(sizePx);
   if(!Number.isFinite(size)||size<=0)return false;
   const halfSizePx=size/2;
+  const centerY=anchor==='bottom'?y-halfSizePx:y;
   ctx.save();
   ctx.lineCap='round';
   if(halo){
-    traceTowerPath(ctx,x,y,halfSizePx);
+    traceTowerPath(ctx,x,centerY,halfSizePx);
     ctx.strokeStyle='#ffffff';ctx.lineWidth=strokePx+haloExtraPx;ctx.stroke();
   }
-  traceTowerPath(ctx,x,y,halfSizePx);
+  traceTowerPath(ctx,x,centerY,halfSizePx);
   ctx.strokeStyle=color;ctx.lineWidth=strokePx;ctx.stroke();
   ctx.restore();
   return true;
+}
+
+// ---- R7-D3B：统一 PNG 铁塔图标（二维 canvas 与 Cesium billboard 共用同一资源） ----
+//
+// 矢量 ``drawTowerSymbol`` 保留为**图片未加载完成时的兜底**，因此：
+//  * 首屏不会因为 PNG 还在解码而丢失铁塔；
+//  * 既有 MAP-TOWER-SYMBOL-V2 的 LOD 尺寸 / 命中半径 / 图例契约不被破坏。
+// 图片本身由 main.js 预加载后注入，绘制层不发起网络请求。
+const TOWER_ICON_URLS={
+  normal:'/assets/symbols/tower_qinglv_128.png?v=r7d3b',
+  unknown:'/assets/symbols/tower_qinglv_unknown_128.png?v=r7d3b'
+};
+const TOWER_ICON_IMAGES={normal:null,unknown:null};
+
+/** 注入已预加载的 PNG（``HTMLImageElement`` 或任何有 naturalWidth/Height 的对象）。 */
+export function setTowerIconImages(images={}){
+  if(images.normal)TOWER_ICON_IMAGES.normal=images.normal;
+  if(images.unknown)TOWER_ICON_IMAGES.unknown=images.unknown;
+  return towerIconReady();
+}
+export function towerIconReady(){
+  return Boolean(TOWER_ICON_IMAGES.normal
+    && TOWER_ICON_IMAGES.normal.naturalWidth>0
+    && TOWER_ICON_IMAGES.normal.naturalHeight>0);
+}
+export function towerIconUrls(){return {...TOWER_ICON_URLS};}
+
+/**
+ * 画统一 PNG 铁塔图标：**底部锚定**在塔址屏幕点。
+ *
+ * @param {boolean} unknown 塔顶未解析 → 使用低饱和灰蓝变体（语义仍标 unknown）。
+ * @returns {boolean} 是否真的用 PNG 画了；``false`` 表示调用方应回退矢量符号。
+ */
+export function drawTowerIcon(ctx,x,y,{sizePx=TOWER_SYMBOL_SIZE_PX.detail,unknown=false}={}){
+  const size=Number(sizePx);
+  if(!Number.isFinite(size)||size<=0)return false;
+  const image=unknown?TOWER_ICON_IMAGES.unknown:TOWER_ICON_IMAGES.normal;
+  if(!image||!image.naturalWidth||!image.naturalHeight)return false;
+  const height=size;
+  const width=height*image.naturalWidth/image.naturalHeight;
+  ctx.save();
+  ctx.imageSmoothingEnabled=true;
+  ctx.drawImage(image,x-width/2,y-height,width,height);
+  ctx.restore();
+  return true;
+}
+
+/** 统一图标在指定尺寸下的屏幕宽度（供命中测试 / 图例对齐）。 */
+export function towerIconWidth(sizePx,unknown=false){
+  const image=unknown?TOWER_ICON_IMAGES.unknown:TOWER_ICON_IMAGES.normal;
+  const height=Number(sizePx);
+  if(!image||!image.naturalWidth||!image.naturalHeight||!Number.isFinite(height))return 0;
+  return height*image.naturalWidth/image.naturalHeight;
+}
+
+// ---- R7-D16：统一起降点 PNG（二维 canvas 与 Cesium billboard 共用同一资源） ----
+//
+// 硬约定：
+//  * 资源是**原始** ``无人機停機坪圖標.png``（SHA256 37f83a99…），二维与三维同源；
+//  * 透明边缘在**绘制期**按 alpha>8 的内容包围盒裁剪，不修改原文件；
+//  * 底部锚定在起降点坐标；图标只会向上生长，经纬度/业务身份不变；
+//  * 图片未解码时回退既有 diamond/circle 矢量符号，首屏不缺点。
+const LANDING_PAD_ICON_URL='/assets/symbols/landing_pad.png?v=r7d16';
+let landingPadImage=null;
+let landingPadCrop=null;
+
+/** 注入已预加载的 PNG（main.js 只预加载一次；绘制层不发起网络请求）。 */
+export function setLandingPadIconImage(image){
+  landingPadImage=image||null;
+  landingPadCrop=null;
+  return landingPadIconReady();
+}
+export function landingPadIconReady(){
+  return Boolean(landingPadImage
+    && landingPadImage.naturalWidth>0
+    && landingPadImage.naturalHeight>0);
+}
+export function landingPadIconUrl(){return LANDING_PAD_ICON_URL;}
+
+/** 内容包围盒（透明边缘裁掉）；只能在浏览器 canvas 可用时计算，失败则退回整图。 */
+function landingPadContentCrop(){
+  if(!landingPadIconReady())return null;
+  if(landingPadCrop)return landingPadCrop;
+  try{
+    const width=landingPadImage.naturalWidth,height=landingPadImage.naturalHeight;
+    const canvas=document.createElement('canvas');
+    canvas.width=width;canvas.height=height;
+    const context=canvas.getContext('2d',{willReadFrequently:true});
+    if(!context)return null;
+    context.drawImage(landingPadImage,0,0);
+    const data=context.getImageData(0,0,width,height).data;
+    let minX=width,minY=height,maxX=-1,maxY=-1;
+    for(let y=0;y<height;y+=1){
+      for(let x=0;x<width;x+=1){
+        if(data[(y*width+x)*4+3]>8){
+          if(x<minX)minX=x;
+          if(x>maxX)maxX=x;
+          if(y<minY)minY=y;
+          if(y>maxY)maxY=y;
+        }
+      }
+    }
+    if(maxX<0||maxY<0)return null;
+    landingPadCrop={sx:minX,sy:minY,sw:maxX-minX+1,sh:maxY-minY+1};
+    return landingPadCrop;
+  }catch(_){
+    return null;
+  }
+}
+
+/** 起降点 PNG 的屏幕高度（detail 30 / medium 24 / overview 18）。 */
+export function landingPadSymbolSize(level){
+  return level==='detail'?30:(level==='medium'?24:18);
+}
+
+/**
+ * 画统一 PNG 起降点图标：**底部锚定**在坐标屏幕点。
+ * @returns {boolean} 是否真的用 PNG 画了；false 表示调用方应回退矢量符号。
+ */
+export function drawLandingPadIcon(ctx,x,y,{sizePx=30,alpha=1}={}){
+  const size=Number(sizePx);
+  if(!Number.isFinite(size)||size<=0||!landingPadIconReady())return false;
+  const crop=landingPadContentCrop();
+  const source=crop||{sx:0,sy:0,sw:landingPadImage.naturalWidth,sh:landingPadImage.naturalHeight};
+  const height=size;
+  const width=height*source.sw/source.sh;
+  ctx.save();
+  ctx.globalAlpha=Math.max(0,Math.min(1,Number(alpha)));
+  ctx.imageSmoothingEnabled=true;
+  ctx.drawImage(landingPadImage,source.sx,source.sy,source.sw,source.sh,
+    x-width/2,y-height,width,height);
+  ctx.restore();
+  return true;
+}
+
+/** 统一图标在指定尺寸下的屏幕宽度（供命中测试 / 图例对齐）。 */
+export function landingPadIconWidth(sizePx){
+  const size=Number(sizePx);
+  if(!landingPadIconReady()||!Number.isFinite(size))return 0;
+  const crop=landingPadContentCrop();
+  const source=crop||{sw:landingPadImage.naturalWidth,sh:landingPadImage.naturalHeight};
+  return size*source.sw/source.sh;
+}
+
+/** 起降点身份环：画在坐标锚点处，只有颜色/线型不同，绝不改坐标。 */
+function drawLandingBaseRing(ctx,x,y,{color='#1a8677',radius=5,width=2,dashed=false}={}){
+  ctx.save();
+  ctx.strokeStyle=color;ctx.lineWidth=width;
+  if(dashed)ctx.setLineDash([3,2]);
+  ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);ctx.stroke();
+  ctx.fillStyle='#ffffff';ctx.beginPath();ctx.arc(x,y,Math.max(1,radius-2.4),0,Math.PI*2);ctx.fill();
+  ctx.restore();
 }
 
 /**
@@ -502,8 +656,23 @@ export function drawTowerSymbol(ctx,x,y,{
  */
 export function towerSymbolSvg({
   size=20,color=TOWER_COLOR.normal,
-  strokePx=TOWER_SYMBOL_STROKE_PX.detail,halo=true,haloExtraPx=TOWER_SYMBOL_HALO_EXTRA_PX
+  strokePx=TOWER_SYMBOL_STROKE_PX.detail,halo=true,haloExtraPx=TOWER_SYMBOL_HALO_EXTRA_PX,
+  raster=false,unknown=false
 }={}){
+  // R7-D3B：图例也使用统一 PNG（与地图 canvas、Cesium billboard 同一资源）。
+  // 仍然返回 inline SVG（不是 <img>）：既有图例契约要求 SVG 容器；PNG 作为
+  // <image> 嵌入，并保留一条不可见矢量 path 作为无图片时的几何兜底。
+  if(raster){
+    const url=unknown?TOWER_ICON_URLS.unknown:TOWER_ICON_URLS.normal;
+    const width=Number(size);
+    const path=TOWER_SYMBOL.segments
+      .map(([start,end])=>'M'+start[0]+' '+start[1]+'L'+end[0]+' '+end[1])
+      .join('');
+    return '<svg width="'+width+'" height="'+size+'" viewBox="0 0 114 128" aria-hidden="true">'
+      +'<image href="'+url+'" xlink:href="'+url+'" width="114" height="128" preserveAspectRatio="xMidYMid meet"/>'
+      +'<path d="'+path+'" fill="none" stroke="none"/>'
+      +'</svg>';
+  }
   const path=TOWER_SYMBOL.segments
     .map(([start,end])=>'M'+start[0]+' '+start[1]+'L'+end[0]+' '+end[1])
     .join('');
@@ -587,7 +756,33 @@ export function buildDisplayPlan({
   // 真实通信铁塔站址：**默认关闭** —— 只有显式勾选 towerLayer 才进入计划，
   // 因此默认既不绘制也不可命中。373 个点一律复用同一套聚合（point_clustering），
   // 绝不铺开单点标记或名称标签。
-  const towerItems=((flow?.towers?.items)||[]).map(tower=>({id:tower.tower_id,coordinate:tower.coordinate,tower}));
+  //
+  // R7-D3B：塔顶“已解析/未解析”来自权威容器 ``tower_obstacle_profiles``。
+  // 这里只把**既有**字段拼成显示对象，绝不新造塔高算法；known 用青绿色 PNG，
+  // unknown 用灰蓝变体。找不到剖面时按 unknown 处理，绝不猜成已确认。
+  const rawTowerItems=(flow?.towers?.items)||[];
+  const profileContainer=flow?.tower_obstacle_profiles?.items;
+  const profileOf=(towerId)=>{
+    if(!profileContainer)return null;
+    if(Array.isArray(profileContainer)){
+      return profileContainer.find(row=>String(row?.tower_id)===String(towerId))||null;
+    }
+    return profileContainer[String(towerId)]||profileContainer[towerId]||null;
+  };
+  const towerItems=rawTowerItems.map(tower=>{
+    const profile=profileOf(tower.tower_id)||{};
+    return {
+      id:tower.tower_id,
+      coordinate:tower.coordinate,
+      // 显示专用副本：不写回 flow / ProjectState。
+      tower:{
+        ...tower,
+        tower_top_orthometric_m:profile.tower_top_orthometric_m??null,
+        tower_top_status:profile.tower_top_status||'unknown',
+        tower_structure_height_m:profile.tower_structure_height_m??tower.height_m??null,
+      },
+    };
+  });
   const towers=layers.towerLayer===true?cluster(towerItems):[];
   // overview 档只显示聚合点：聚合不住的孤立单塔在这里就被移出计划，
   // 因此它既不会被绘制，也不会被命中（不会出现"点到看不见的点"）。
@@ -600,6 +795,21 @@ export function buildDisplayPlan({
       &&String(entry.anchor.tower.tower_id)===String(towerHighlight)
     ))
     :towers;
+  // R7-D3B：PNG 图标**底部锚定**在塔址屏幕点。命中测试保留原有的
+  // “塔址圆半径 13 px”（点击塔脚/周边仍然有效），另外增加图标本体的矩形命中区，
+  // 避免出现“看得见塔身、点不中”的回归。
+  for(const entry of visibleTowers){
+    if(!entry.single||!entry.screen)continue;
+    const tower=entry.anchor&&entry.anchor.tower;
+    const highlighted=!!towerHighlight&&!!tower
+      &&String(tower.tower_id)===String(towerHighlight);
+    const size=Number(highlighted?styles.towerHighlightSizePx:styles.towerSymbolSizePx);
+    if(Number.isFinite(size)&&size>0){
+      const [x,y]=entry.screen;
+      const width=size*114/128;
+      entry.hitRects=[[x-width/2,y-size,x+width/2,y]];
+    }
+  }
 
   // CNS 共塔候选：真实铁塔派生出的**宿主候选**（不是已有设备）。只跟随候选站图层开关，
   // 并且只在地图上与宿主铁塔建立"点击即可高亮"的关联，绝不画大量永久连接线。
@@ -621,11 +831,22 @@ export function buildDisplayPlan({
   // 业务优先对象：当前选择的参考对象、当前航路端点
   const priorityIds=new Set();
   const priorityCoordinates=new Set();
+  //: R7-D16：起点/终点区分只读取权威航路/场景航路的首末点，绝不按名称猜。
+  const startCoordinates=new Set();
+  const endCoordinates=new Set();
   if(selectedReference&&selectedReference.id)priorityIds.add(String(selectedReference.id));
-  for(const route of flow?.scenario_routes||[]){
+  for(const route of [...(flow?.operational_routes||[]),...(flow?.scenario_routes||[])]){
     const path=route.path||[];
-    if(path.length)priorityCoordinates.add(path[0].join(','));
-    if(path.length>1)priorityCoordinates.add(path[path.length-1].join(','));
+    if(path.length){
+      const start=path[0].join(',');
+      priorityCoordinates.add(start);
+      startCoordinates.add(start);
+    }
+    if(path.length>1){
+      const end=path[path.length-1].join(',');
+      priorityCoordinates.add(end);
+      endCoordinates.add(end);
+    }
   }
 
   const selectedScreen=(()=>{
@@ -663,6 +884,9 @@ export function buildDisplayPlan({
     referencePointsVisible,
     priorityIds,
     priorityCoordinates,
+    startCoordinates,
+    endCoordinates,
+    landingPadSizePx:landingPadSymbolSize(style.level),
     selectedReferenceId:selectedReference&&selectedReference.kind==='route'?selectedReference.id:null,
     selectedScreen,
     gridTheme:null,
@@ -894,22 +1118,27 @@ export function drawWorkflowLayers({
   }
 
   // 7) 参考起降点：聚合显示，绝不铺开大图标
+  //    R7-D16：单点改用统一起降点 PNG（底部锚定 + 透明边缘裁剪）；
+  //    参考点身份仍用青绿色环表达，possible_duplicate 用棕色虚线环，绝不合并身份。
   for(const entry of plan.landingSites){
     const [x,y]=entry.screen||entry.center;
     if(entry.count>1){drawAggregate(ctx,x,y,entry.count,LANDING_COLOR.cluster);continue;}
     const site=entry.anchor.site||{};
     const color=site.possible_duplicate?LANDING_COLOR.duplicate:LANDING_COLOR.normal;
-    drawMarker(ctx,'diamond',x,y,styles.pointRadius+1.4,color,'#ffffff',1.2);
+    const drawn=drawLandingPadIcon(ctx,x,y,{sizePx:plan.landingPadSizePx});
+    if(!drawn)drawMarker(ctx,'diamond',x,y,styles.pointRadius+1.4,color,'#ffffff',1.2);
+    drawLandingBaseRing(ctx,x,y,{color,radius:4.4,width:1.6,dashed:Boolean(site.possible_duplicate)});
   }
 
   // 7.5) 真实通信铁塔站址（默认关闭，勾选后才进入 plan）：
   //      与起降点复用同一聚合与同一 LOD（map/lod.js 的 towerMarkerMode）：
   //        overview 只显示聚合点（孤立单塔不进入计划，也就不绘制、不可命中）；
-  //        medium   仍以聚合为主，聚合不住的孤立塔画铁塔符号（约 16 px 高）；
+  //        medium   仍以聚合为主，聚合不住的孤立塔画铁塔图标（约 16 px 高）；
   //        detail   每个真实铁塔画独立铁塔图标（约 22 px 高）。
   //      尺寸语义是**屏幕像素高度**（MAP-TOWER-SYMBOL-V2）；被 CNS 共塔候选联动的宿主塔
   //      在任何档位都至少按 detail 尺寸绘制并加高亮环，绝不因太小而丢失。
-  //      单塔一律画**铁塔矢量符号**，且**绝不铺开 373 个名称标签**（hover/click 才显示）。
+  //      R7-D3B：真实铁塔统一用青绿色 PNG（顶部锚定塔址）；塔顶未解析用灰蓝变体。
+  //      图片尚未解码时回退既有矢量符号，首屏不会缺塔。
   for(const entry of plan.towers||[]){
     const [x,y]=entry.screen||entry.center;
     if(entry.count>1){drawAggregate(ctx,x,y,entry.count,CLUSTER_COLORS.towers);continue;}
@@ -917,16 +1146,22 @@ export function drawWorkflowLayers({
     const highlighted=!!towerHighlight&&!!tower
       &&String(tower.tower_id)===String(towerHighlight);
     const sizePx=highlighted?plan.towerHighlightSizePx:plan.towerSymbolSizePx;
-    drawTowerSymbol(ctx,x,y,{
-      sizePx,
-      color:highlighted?TOWER_HIGHLIGHT_COLOR:TOWER_COLOR.normal,
-      strokePx:plan.towerSymbolStrokePx
-    });
+    const top=tower&&tower.tower_top_orthometric_m;
+    const unknown=!(top!==null&&top!==undefined&&Number.isFinite(Number(top)));
+    const drawn=drawTowerIcon(ctx,x,y,{sizePx,unknown});
+    if(!drawn){
+      drawTowerSymbol(ctx,x,y,{
+        sizePx,
+        color:highlighted?TOWER_HIGHLIGHT_COLOR:(unknown?'#7f8c99':TOWER_COLOR.normal),
+        strokePx:plan.towerSymbolStrokePx,
+        anchor:'bottom'
+      });
+    }
   }
 
-  // 7.6) CNS 共塔候选（真实铁塔派生的宿主候选）：画成"候选色的铁塔符号"，
-  //      与宿主铁塔建立视觉关联，但不画永久连接线；点击候选时由 towerHighlight 高亮宿主塔。
-  //      图标几何与真实铁塔**完全相同**（同一 TOWER_SYMBOL），只有语义颜色与高亮环不同。
+  // 7.6) CNS 共塔候选（真实铁塔派生的宿主候选）：保留既有候选色矢量符号。
+  //      它是“候选”而不是“已存在铁塔”，不属于 R7-D3B 的统一真实铁塔图标范围，
+  //      因此不替换，避免把候选误读成已建成站址。
   for(const entry of plan.cnsTowerCandidates||[]){
     const [x,y]=entry.screen;
     if(!entry.hostTowerId)continue;
@@ -944,6 +1179,7 @@ export function drawWorkflowLayers({
 
   // 7.7) 共塔候选关联的宿主铁塔高亮：只在"当前被关联的那一个塔"周围画一圈。
   //      高亮不是只改颜色：环半径约 15 px，明显大于符号本身，overview/medium/detail 都看得见。
+  //      R7-D3B 起宿主塔是底部锚定 PNG，因此环心必须上移到图标视觉中心。
   if(towerHighlight){
     for(const entry of plan.towers||[]){
       const tower=(entry.anchor&&entry.anchor.tower)||null;
@@ -957,6 +1193,8 @@ export function drawWorkflowLayers({
   }
 
   // 8) 项目起降点：聚合 + 名称策略（默认不铺开名称，且始终避让）
+  //    R7-D16：单点改用统一起降点 PNG；起点/终点只通过锚点环颜色与标签前缀区分，
+  //    经纬度、node_id 与点击详情全部保持原样。
   for(const entry of plan.nodes){
     const [x,y]=entry.screen||entry.center;
     if(entry.count>1){drawAggregate(ctx,x,y,entry.count,CLUSTER_COLORS.nodes);continue;}
@@ -964,14 +1202,21 @@ export function drawWorkflowLayers({
     const id=String(node.node_id||'');
     const coordinate=Array.isArray(node.coordinate)?node.coordinate.join(','):'';
     const priority=plan.priorityIds.has(id)||plan.priorityCoordinates.has(coordinate);
-    drawMarker(ctx,'circle',x,y,priority?NODE_COLOR.radius+1:NODE_COLOR.radius,NODE_COLOR.fill,NODE_COLOR.stroke,priority?2.6:2);
+    const isStart=plan.startCoordinates.has(coordinate);
+    const isEnd=plan.endCoordinates.has(coordinate);
+    const ringColor=isStart?'#1f7a4d':(isEnd?'#c2410c':NODE_COLOR.stroke);
+    const size=plan.landingPadSizePx*(priority?1.12:1);
+    const drawn=drawLandingPadIcon(ctx,x,y,{sizePx:size});
+    if(!drawn)drawMarker(ctx,'circle',x,y,priority?NODE_COLOR.radius+1:NODE_COLOR.radius,NODE_COLOR.fill,NODE_COLOR.stroke,priority?2.6:2);
+    drawLandingBaseRing(ctx,x,y,{color:ringColor,radius:priority?5.6:4.6,width:priority?2.6:2});
+    const rolePrefix=isStart?'起点 · ':(isEnd?'终点 · ':'');
     // 名称策略：overview 默认不显示；medium/detail 做碰撞避让
     if(priority){
-      placer.place(ctx,node.node_id,x+9,y-7,{color:NODE_COLOR.label});
+      placer.place(ctx,rolePrefix+(node.name||node.node_id),x+9,y-7,{color:ringColor});
       continue;
     }
     if(styles.nameMode==='hidden')continue;
-    placer.place(ctx,node.node_id,x+9,y-7,{color:NODE_COLOR.label,font:'500 9px "Segoe UI",sans-serif'});
+    placer.place(ctx,rolePrefix+(node.name||node.node_id),x+9,y-7,{color:NODE_COLOR.label,font:'500 9px "Segoe UI",sans-serif'});
   }
 
   // 9) 当前选择的参考对象：名称单独占位

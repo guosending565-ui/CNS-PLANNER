@@ -1,0 +1,61 @@
+{
+  "schema_version": "cns-r7d16-theta-attribution/v1",
+  "round": "R7-D16",
+  "scope": "read_only_attribution_no_algorithm_change",
+  "test": "tests/test_phase4_b3x_planning_constraints.py::test_theta_star_and_supercover_never_cross_blocked_constraint_cells",
+  "first_recorded": "R7-D14",
+  "observed": {
+    "blocked_middle_column_status": "no_path",
+    "single_blocked_middle_cell_status": "no_path",
+    "expected_by_test": "candidate",
+    "search_statistics": {
+      "expanded_labels": 7,
+      "generated_labels": 2,
+      "los_checks": 16,
+      "rejected_terrain": 6,
+      "rejected_endpoint_transition": 0,
+      "search_completeness": "search_exhausted_no_traversable_path"
+    }
+  },
+  "fixture": {
+    "grid": "3x3 synthetic MHT-L8 cells, 1 degree per cell",
+    "start": [0.5, 1.5],
+    "end": [2.5, 1.5],
+    "blocked": ["MHT-L8-C1-RP1"],
+    "geometry": "the only detour around the blocked centre enters the end cell from above/below (C2-RP0 or C2-RP2), then turns 90 degrees to the exact end [2.5, 1.5]"
+  },
+  "root_cause": {
+    "mechanism": "endpoint transition admissibility gate",
+    "default_threshold_deg": 45.0,
+    "detail": "Theta* V2 的 goal 标签在到达 target anchor 后只做 endpoint feasibility 判定、不再继续展开。绕行必须在 C2-RP0 / C2-RP2 进入终点格后再转 90 度；45 度门限把这两条 goal 判为 arrival_admissible=false，因此搜索没有可采纳的 goal。",
+    "not_a_gate_or_geometry_bug": "所有非 blocked 格在 constraint field 中均为 pass；LOS / supercover 能正确绕开 C1-RP1；问题只在端点过渡门限。"
+  },
+  "counterfactual": {
+    "method": "same fixture, explicit endpoint_transition_admissibility_deg override (read-only)",
+    "results": [
+      {"threshold_deg": 45.0, "status": "no_path", "arrival_admissible": false},
+      {"threshold_deg": 60.0, "status": "no_path", "arrival_admissible": false},
+      {"threshold_deg": 90.0, "status": "candidate", "arrival_admissible": true,
+       "path": [[0.5, 1.5], [1.5, 2.5], [2.5, 2.5], [2.5, 1.5]]},
+      {"threshold_deg": 120.0, "status": "candidate", "arrival_admissible": true,
+       "path": [[0.5, 1.5], [1.5, 2.5], [2.5, 2.5], [2.5, 1.5]]}
+    ]
+  },
+  "conclusion": {
+    "is_e_batch_regression": false,
+    "is_theta_star_geometry_or_gate_regression": false,
+    "classification": "test_fixture_predates_endpoint_transition_policy",
+    "reason": "默认 45 度端点过渡门限是后续版本显式引入的规划策略；该 3x3 合成夹具只保留 90 度到达几何，测试期望未随策略更新。基线 8f1c927 与当前工作树均返回同一 no_path。",
+    "actions_taken": "未修改 Theta* 算法、未放宽约束、未重跑耗时正式规划；仅在完整 Step01-06 验收前登记为待决测试夹具问题。"
+  },
+  "recommended_follow_up": [
+    "由算法/测试 owner 决定：给夹具增加一个可从西侧直入的可行目标格，或在测试中显式声明 endpoint_transition_admissibility_deg=90 并记录该策略前提。",
+    "在更新测试前，不把该用例的通过/失败计入 E 批或产品回归结论。"
+  ],
+  "evidence": {
+    "command": "D:\\tools\\anaconda\\python.exe -m pytest -q tests/test_phase4_b3x_planning_constraints.py::test_theta_star_and_supercover_never_cross_blocked_constraint_cells",
+    "baseline": "8f1c927c7df7d3f18286526e9a888ca07c9d9d7f",
+    "baseline_result": "same no_path (read-only re-run from git archive snapshot)",
+    "generated_at": "2026-10-23"
+  }
+}

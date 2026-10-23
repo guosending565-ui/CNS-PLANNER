@@ -132,6 +132,14 @@ export function hitCluster(entries,point,{singleRadius=9}={}){
     if(!screen)continue;
     const distance=Math.hypot(screen[0]-x,screen[1]-y);
     const limit=entry.single?singleRadius:Math.max(entry.radiusPx||0,10)+3;
+    // R7-D3B：底部锚定的 PNG 图标本体（矩形）也算命中；塔址圆半径保持不变，
+    // 因此既不会“点不中塔身”，也不会改变既有塔脚周边 13 px 的点击手感。
+    const inIcon=(entry.hitRects||[]).some(rect=>
+      x>=rect[0]&&x<=rect[2]&&y>=rect[1]&&y<=rect[3]);
+    if(inIcon){
+      if(best===null||distance<bestDistance){best=entry;bestDistance=distance;}
+      continue;
+    }
     if(distance<=limit&&distance<bestDistance){best=entry;bestDistance=distance;}
   }
   return best;

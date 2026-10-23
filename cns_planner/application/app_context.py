@@ -242,6 +242,18 @@ class ApplicationContext:
             #: Round38-FIG：固定 1000 m 保障宽带的身份 / currentness 只读投影，
             #: 与 ``workflow.fixed_corridor_geometry`` 同一实现；不写 ProjectState。
             fixed_corridor_service=self.workflow.fixed_corridor_geometry_service,
+            #: Round38-N2：导航监测（N1/N2）只读仿真，复用既有唯一服务；制图侧
+            #: 不重新选址，也不把仿真结果写进 ProjectState。
+            navigation_monitoring_provider=(
+                lambda route: self.workflow.simulate_navigation_monitoring({
+                    "route_source": "operational_route",
+                    "route_id": (route or {}).get("route_id"),
+                })
+            ),
+            #: 共享站址候选快照（只读），供导航监测图层把 site_id 映射到真实坐标。
+            shared_site_candidates_provider=(
+                lambda: self.workflow.cns_shared_site_candidate_service.snapshot()
+            ),
         )
         return self.map_figures
 

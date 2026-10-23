@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<link rel="icon" href="data:,">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CNS-PLANNER 舟山三维基础地理环境</title>
+<link rel="stylesheet" href="./vendor/cesium/Widgets/widgets.css">
+<style>
+  :root{--panel:rgba(7,18,29,.82);--line:rgba(143,184,214,.22);--text:#eef7ff;
+    --dim:#9bb0c1;--accent:#58d6ff;--warn:#ffc36a;--danger:#ff7f86;--ok:#76e6a3}
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071421;
+    color:var(--text);font:13px/1.45 "Segoe UI","Microsoft YaHei",sans-serif}
+  #cesiumContainer{position:absolute;inset:0}.panel{position:absolute;z-index:8;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.34);
+    backdrop-filter:blur(10px)}
+  #layers{left:12px;top:12px;width:266px;max-height:calc(100% - 116px);padding:10px;overflow:auto}
+  #cameraBar{top:12px;left:50%;transform:translateX(-50%);display:flex;gap:5px;align-items:center;
+    max-width:calc(100% - 500px);padding:7px;white-space:nowrap;overflow:auto}
+  #status{right:12px;top:12px;width:286px;max-height:calc(100% - 116px);overflow:auto}
+  #status summary{cursor:pointer;padding:9px 11px;font-weight:600}#statusBody{padding:0 11px 10px}
+  #disclosure{left:12px;right:12px;bottom:34px;padding:6px 10px;font-size:11px;
+    border-color:rgba(255,195,106,.34);background:rgba(31,23,12,.78)}
+  #credits{position:absolute;z-index:9;left:0;right:0;bottom:0;min-height:26px;padding:5px 12px;
+    background:rgba(3,10,16,.88);color:#d5e4ef;font-size:11px;text-align:right}
+  h1{font-size:14px;margin:0 0 7px}h2{font-size:11px;color:var(--dim);margin:10px 0 4px;
+    padding-top:7px;border-top:1px solid var(--line);letter-spacing:.06em}
+  label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}.layer-reserved{color:#8496a5}
+  input[type=checkbox]{accent-color:var(--accent)}button,select{color:var(--text);background:#112536;
+    border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer}
+  button:hover,select:hover{border-color:var(--accent)}table{width:100%;border-collapse:collapse;font-size:11px}
+  td{padding:2px 0;vertical-align:top;word-break:break-word}td:first-child{width:42%;color:var(--dim)}
+  code{font:10px Consolas,monospace;word-break:break-all}.dim{color:var(--dim)}.warn{color:var(--warn)}
+  .err{color:var(--danger)}.ok-text{color:var(--ok)}#imageryStatus{margin:6px 0;font-size:11px}
+  /* 底图模式开关：紧凑，不遮挡地图主体。 */
+  #basemapMode{display:flex;gap:10px;align-items:center;margin:2px 0 4px;padding:3px 6px;
+    border:1px solid var(--line);border-radius:6px;background:rgba(17,37,54,.55);font-size:11px}
+  #basemapMode label.bm-mode{display:inline-flex;gap:4px;align-items:center;padding:0;cursor:pointer}
+  #basemapMode input[type=radio]{accent-color:var(--accent);margin:0}
+  #basemapMode label.bm-mode.bm-disabled{color:#8496a5;cursor:not-allowed}
+  #basemapModeStatus{margin:0 0 4px;font-size:11px}
+  .row{display:flex;gap:6px;margin:4px 0}
+  #radarPreviewControls select,#radarPreviewControls input[type=number],
+  #protectionPreviewControls select,#protectionPreviewControls input[type=number]{max-width:112px;
+    color:var(--text);background:#112536;border:1px solid var(--line);border-radius:6px;
+    padding:2px 4px;font-size:11px}
+  #radarPanelList label{align-items:flex-start;font-size:11px}
+  #radarPreviewDisclaimer,#protectionPreviewDisclaimer{margin-top:5px;font-size:11px;border-top:1px solid var(--line);
+    padding-top:5px}
+  .svc-legend{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:11px;margin:2px 0 4px}
+  .svc-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;
+    vertical-align:-1px;border:1px solid rgba(0,0,0,.45)}
+  #intrusionBanner{font-size:11px;font-weight:600;border:1px solid rgba(255,195,106,.45);
+    border-radius:6px;padding:3px 6px;background:rgba(60,42,12,.55);text-align:center}
+  #intrusionTrack{width:100%;color:var(--text);background:#112536;border:1px solid var(--line);
+    border-radius:6px;padding:4px;font:10px/1.4 Consolas,monospace;resize:vertical}
+  #intrusionTimeline{width:100%;accent-color:var(--accent)}
+  #intrusionSpeed{max-width:88px}
+  #intrusionHud,#intrusionEvents{font-size:11px;margin-top:5px}
+  #intrusionEvents button{width:100%;text-align:left;margin:2px 0;font-size:10px;padding:3px 5px}
+  #intrusionTimelineRow{display:block;font-size:11px}
+  #intrusionControls label{display:block}
+  #intrusionControls select{width:100%;max-width:none}
+  #intrusionControls .row{display:flex;gap:6px}
+  #intrusionControls .row label{display:inline-flex;width:auto;align-items:center}
+  #intrusionControls .row select{width:auto}
+  #disclosureSimulated{font-size:11px;margin-top:3px;color:var(--warn)}
+  #log{max-height:92px;overflow:auto;color:var(--dim);font:10px/1.35 Consolas,monospace}
+  #popup{position:absolute;display:none;z-index:20;max-width:340px;padding:10px}.close{float:right;cursor:pointer}
+  #boot{position:absolute;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:8px;background:#071421}#boot small{color:var(--dim)}
+  .badge{display:inline-block;padding:0 5px;border-radius:8px;background:#24394a}.badge.ok{background:#1d6641}
+  .badge.demo{background:#7c541b}.badge.no{background:#772d34}.badge.stale{background:#79502b}
+  @media(max-width:1000px){#status{display:none}#cameraBar{left:290px;right:12px;transform:none;max-width:none}}
+#flightProtectionResearchBadge { display:none; position:absolute; right:14px; top:76px;
+  z-index:12; max-width:380px; padding:10px; background:rgba(10,29,40,.94); color:#baf7ff;
+  border:1px solid #32d9ff; border-radius:8px; font-size:12px; line-height:1.6; }
+body:has(#ly_flightProtectionResearch:checked) #flightProtectionResearchBadge { display:block; }
+</style>
+</head>
+<body>
+<div id="flightProtectionResearchBadge">飞行保护区（工程假设） · R0005<br>
+engineering_research_assumption<br>formal_admission_evaluated=false · overall_status=unknown<br>
+青色：80m下界；浅青：120m上界；黄色：100m中心线<br>EGM2008正高 · 水平±20m · 与CNS保障目标带独立</div>
+<div id="cesiumContainer"></div>
+
+<section id="layers" class="panel" aria-label="三维图层控制">
+  <h1>舟山三维底图</h1>
+  <!-- 底图模式开关（离线地形晕渲 / 离线卫星影像 / 天地图高清影像）——三选一互斥。
+       只切换**背景影像**加载模式：不改业务图层、不改相机、不写 ProjectState，
+       也不代表任何 CNS 业务证据的 currentness 或正式规划有效性。 -->
+  <div id="basemapMode" class="row" role="group" aria-label="底图模式">
+    <label class="bm-mode"><input type="radio" name="basemapMode" id="bmOfflineImagery"
+      value="offline_imagery"> 离线卫星影像</label>
+    <label class="bm-mode"><input type="radio" name="basemapMode" id="bmOffline" value="offline"
+      checked> 离线地形晕渲</label>
+    <label class="bm-mode"><input type="radio" name="basemapMode" id="bmOnline" value="online"
+      > <span id="bmOnlineLabel">天地图高清影像（待配置）</span></label>
+  </div>
+  <div id="basemapModeStatus" class="dim" role="status" aria-live="polite">底图模式：离线地形晕渲（FABDEM）</div>
+  <div id="imageryStatus" class="dim"></div>
+  <div id="reliefStatus" class="dim"></div>
+  <div id="towerIconNote" class="dim">铁塔图标：青绿色＝塔顶高度已解析、尚未权威确认（77 座）；灰蓝＝塔顶未解析（296 座）。图标统一，但 known 不等于塔顶已确认。</div>
+  <h2>基础地理</h2>
+  <div id="layerList"></div>
+  <h2>CNS 站址与设备身份</h2>
+  <div id="cnsSiteLegend" class="dim">未开启。勾选上方「CNS 站址与设备身份」后按需请求。</div>
+  <h2>固定 1000 m 保障目标带</h2>
+  <div id="fixedCorridorNote" class="dim">未开启。勾选上方「固定 1000 m CNS 保障目标带」后按需请求。</div>
+  <div id="fixedCorridorList" class="dim"></div>
+  <div id="layerSemantics" class="warn" style="font-size:11px;border-top:1px solid var(--line);
+    margin-top:6px;padding-top:5px">
+    三类几何语义必须分开表达，互不替代：<br>
+    ① <b>CNS 固定 1000 m 保障目标带</b>＝服务保障目标范围（左右各 500 m），
+    不代表设备已满足覆盖，也<b>不是</b>禁飞区或入侵预警边界；<br>
+    ② <b>P17 航路保护区</b>＝按业务/法规与响应距离确定的保护区，其法规来源、
+    固定宽带与雷达探测覆盖三者分别表达；<br>
+    ③ <b>设备覆盖（C/N/RID/Radar）</b>＝按各自真实模型计算的能力结果，
+    非 current / blocked / not_evaluated 一律如实保留。
+  </div>
+  <h2>Radar 真实规划面阵</h2>
+  <div id="radarPanelList" class="dim">未开启。勾选上方「Radar 方向性覆盖」后按需请求。</div>
+  <h2>设备参数示意（与规划结果隔离）</h2>
+  <div id="radarPreviewControls">
+    <div class="row"><button id="radarPreviewLoad">加载候选站位</button></div>
+    <label>站位<select id="radarPreviewTower"></select></label>
+    <label>型号<select id="radarPreviewType">
+      <option value="radar_i" selected>中近程雷达Ⅰ型</option>
+      <option value="radar_ii">中近程雷达Ⅱ型</option>
+    </select></label>
+    <label>预览方位角<input id="radarPreviewAzimuth" type="number" min="0" max="360"
+      step="1" value="45"></label>
+    <label><input type="checkbox" id="radarPreviewAck"> 使用塔顶派生正高（未确认，仅示意）</label>
+    <div class="row"><button id="radarPreviewBuild">生成示意</button>
+      <button id="radarPreviewClear">清除示意</button></div>
+    <div id="radarPreviewNote" class="dim"></div>
+    <div id="radarPreviewDisclaimer" class="warn">设备参数示意，非已采纳布设，非已确认探测覆盖</div>
+  </div>
+  <h2>飞行保护区（工程假设）</h2>
+  <div id="flightProtectionResearchNote" class="warn">默认关闭。engineering_research_assumption；formal_admission_evaluated=false；overall_status=unknown。与左右各500m CNS保障目标带独立。</div>
+  <h2>P17 航路保护区</h2>
+  <div id="protectionResultNote" class="dim">未开启。勾选上方「P17 航路保护区」后按需请求。</div>
+  <div id="protectionPanelList" class="dim"></div>
+  <h2>自定义保护区示意（与 P17 隔离）</h2>
+  <div id="protectionPreviewControls">
+    <div class="row"><button id="protectionPreviewLoad">加载航路身份</button></div>
+    <label>航路<select id="protectionPreviewRoute"><option value="">请选择航路…</option></select></label>
+    <label>水平半宽 m<input id="protectionPreviewWidth" type="number" min="0.001"
+      max="100000" step="1" placeholder="必须输入"></label>
+    <label>下界正高 m<input id="protectionPreviewLower" type="number" min="-1000"
+      max="19999.999" step="1" placeholder="必须输入"></label>
+    <label>上界正高 m<input id="protectionPreviewUpper" type="number" min="-999.999"
+      max="20000" step="1" placeholder="必须输入"></label>
+    <div class="row"><button id="protectionPreviewBuild">生成示意</button>
+      <button id="protectionPreviewClear">清除示意</button></div>
+    <div id="protectionPreviewNote" class="dim"></div>
+    <div id="protectionPreviewDisclaimer" class="warn">自定义保护区示意，非已确认 P17 结果</div>
+  </div>
+  <h2>模拟轨迹回放（工程示意）</h2>
+  <div id="intrusionBanner" class="warn">SIMULATED · 工程示意 · 非真实探测与运行许可</div>
+  <div id="intrusionControls">
+    <label>保护体实例<select id="intrusionTarget"><option value="">请选择保护体实例…</option></select></label>
+    <div class="row"><button id="intrusionLoadTargets">加载保护体实例</button>
+      <button id="intrusionPreset">载入演示预设</button></div>
+    <label for="intrusionTrack">轨迹节点 JSON（经纬度 / EGM2008 正高 m / 相对秒，严格递增）</label>
+    <textarea id="intrusionTrack" rows="7" spellcheck="false"
+      placeholder='[{"longitude":122.26,"latitude":29.90,"altitude_egm2008_m":100,"relative_time_s":0}, …]'></textarea>
+    <div class="row"><button id="intrusionAssess">开始判定并回放</button>
+      <button id="intrusionClear">清除目标</button></div>
+    <div id="intrusionNote" class="dim">未配置。轨迹节点与保护体都由你主动创建；系统不会自动生成权威航迹。</div>
+    <div class="row">
+      <button id="intrusionPlay">▶ 播放</button>
+      <button id="intrusionReset">↺ 重置</button>
+      <label>倍速<select id="intrusionSpeed">
+        <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option><option value="2">2×</option>
+        <option value="4">4×</option></select></label>
+    </div>
+    <label id="intrusionTimelineRow">时间轴
+      <input type="range" id="intrusionTimeline" min="0" max="0" step="0.05" value="0" disabled>
+    </label>
+    <label><input type="checkbox" id="intrusionFollow"> 相机跟随（关闭即自由观察）</label>
+    <div id="intrusionHud" class="dim">尚未配置模拟轨迹。</div>
+    <div id="intrusionEvents" class="dim"></div>
+    <div id="intrusionDisclaimer" class="warn">模拟轨迹 + 用户工程示意保护体；非真实探测证据，
+      不构成预警结论或运行许可。</div>
+  </div>
+  <h2>画质</h2>
+  <label>细化档位
+    <select id="quality"><option value="normal" selected>正常</option><option value="high">高清</option></select>
+  </label>
+  <div id="terrainLoad" class="dim"></div>
+</section>
+
+<nav id="cameraBar" class="panel" aria-label="固定相机视角">
+  <button data-preset="archipelago_overview">群岛全景</button>
+  <button data-preset="r0005_overhead">R0005 俯瞰</button>
+  <button data-preset="taohua_oblique">桃花岛 45°</button>
+  <button data-preset="coast_transition">海岸过渡</button>
+  <button data-preset="port_near">港口近景</button>
+  <button data-preset="low_altitude">低空观察</button>
+  <button id="resetView">恢复初始</button>
+</nav>
+
+<details id="status" class="panel">
+  <summary>数据身份、垂直基准与运行状态</summary>
+  <div id="statusBody">
+    <table id="metaTable"></table>
+    <h2>垂直基准</h2><table id="verticalTable"></table>
+    <h2>运行日志</h2><div id="log"></div>
+  </div>
+</details>
+
+<div id="disclosure" class="panel">
+  <div id="disclosureVertical"><b>垂直基准：</b><span id="verticalNotice"></span></div>
+  <div id="disclosureDemo"><b id="disclosureTitle">工程演示模式</b><span id="disclosureText"></span></div>
+  <!-- 常驻标识：只要页面存在，模拟/工程示意/非真实探测与运行许可就必须一直可见。 -->
+  <div id="disclosureSimulated"><b>模拟：</b><span id="simulatedNotice">SIMULATED ·
+    工程示意 · 非真实探测与运行许可</span></div>
+</div>
+<!-- 版权/来源标注：内容由 app.js 依据**实际渲染的底图**动态写入。
+     绝不能在影像 BLOCKED、画面其实是 FABDEM 晕渲时仍宣称"ArcGIS World Imagery"——
+     那是来源误述。初始只放中性占位，脚本就绪后立即替换。 -->
+<div id="credits">底图来源载入中…</div>
+<div id="popup" class="panel"></div>
+<div id="boot"><div>正在加载舟山三维基础地理环境…</div><small id="bootStep"></small></div>
+
+<script>window.CESIUM_BASE_URL = './vendor/cesium/';</script>
+<script src="./vendor/cesium/Cesium.js"></script>
+<script type="module" src="./js/visualization3d/app.js"></script>
+</body>
+</html>

@@ -41,6 +41,32 @@ _MUTATION_LOCK = threading.RLock()
 LATEST, LATEST_LOCK = _RENDER_REQUESTS.latest, _RENDER_REQUESTS.lock
 WORKFLOW = DATA = APP_CONTEXT = None
 
+#: 监听地址的**唯一**默认值：正式工作台始终是 127.0.0.1:8765。
+DEFAULT_HOST, DEFAULT_PORT = "127.0.0.1", 8765
+
+
+def listen_address():
+    """本进程的监听地址。
+
+    默认严格保持 ``127.0.0.1:8765``（正式工作台行为逐字节不变）。仅当显式设置
+    ``CNS_MAP_PORT``（可选 ``CNS_MAP_HOST``）时才改用其它端口 —— 这样"另起一个
+    **独立**验收实例"不必去抢 8765，也就不可能误连或误关正在运行的正式后端。
+    端口取值非法时 fail-closed 报错，绝不静默退回 8765（那会把验收实例悄悄变成
+    第二个正式实例）。
+    """
+
+    host = str(os.environ.get("CNS_MAP_HOST") or DEFAULT_HOST).strip() or DEFAULT_HOST
+    raw = str(os.environ.get("CNS_MAP_PORT") or "").strip()
+    if not raw:
+        return host, DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"CNS_MAP_PORT 不是整数：{raw!r}") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"CNS_MAP_PORT 超出合法范围：{port}")
+    return host, port
+
 
 def process_identity():
     """本次后端进程的最小运行身份（BUG-STARTUP-001）：pid/started_at/project_root
@@ -168,13 +194,15 @@ class Handler(ApiHandler):
 def main():
     global APP_CONTEXT, WORKFLOW, DATA, ACTIVE_PROJECT_FILE
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    address = listen_address()
     application = QgsApplication([], False)
     application.initQgis()
     APP_CONTEXT = ApplicationContext(ROOT)
     WORKFLOW, DATA = APP_CONTEXT.workflow, APP_CONTEXT.data
     ACTIVE_PROJECT_FILE = APP_CONTEXT.active_project_file
     print("地图数据加载完成" if not DATA.error else DATA.error, flush=True)
-    server = create_server(APP_CONTEXT)
+    server = create_server(APP_CONTEXT, address=address)
+    print(f"CNS 地图服务监听 http://{address[0]}:{address[1]}（pid={os.getpid()}）", flush=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         while True:

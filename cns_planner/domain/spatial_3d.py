@@ -40,6 +40,15 @@ JOIN_LEAVE_KINDS = {"join", "leave"}
 #: The placeholder this code base already uses for "no recorded source/evidence".
 UNRECORDED_SOURCE = "未记录"
 
+#: 进离场航段与巡航航路**衔接身份**契约版本（Round38-FC30，additive）。
+#:
+#: V1 的 procedure 只按 ``route_id`` 关联巡航航路；同一个 ``route_id`` 在状态里可能先后
+#: 存在多份不同几何（例如 7/11/14 点三份 R0005），只比较 ``route_id`` 会把旧进离场航段
+#: 接到新的巡航几何上。该版本要求 procedure 显式记录它所衔接的巡航航路**完整几何指纹**
+#: （``route_geometry_fingerprint``，即 :func:`cns_planner.domain.layered_route_validation.path_fingerprint`），
+#: 并在衔接判定时与当前几何逐字比对。
+TERMINAL_TRANSITION_IDENTITY_VERSION = "terminal-transition-identity-v1"
+
 
 class AltitudeLayer(TypedDict, total=False):
     altitude_layer_id: str
@@ -94,6 +103,9 @@ class DepartureArrivalProcedure(TypedDict, total=False):
     confirmed: bool
     status: str
     missing_evidence: list[str]
+    #: Round38-FC30 additive：该进离场航段所衔接的**巡航航路完整几何指纹**。缺省 ``None``
+    #: 表示"尚未绑定"（绝不自动补一个当前值来冒充已绑定）。
+    route_geometry_fingerprint: str | None
 
 
 class VoxelRef(TypedDict):
@@ -318,6 +330,8 @@ def normalize_departure_arrival_procedure(value):
         "confirmed": confirmed,
         "missing_evidence": [],
         "status": "pending_confirmation",
+        # Round38-FC30 additive：衔接几何身份原样保留；缺失保持 ``None``，绝不补当前值。
+        "route_geometry_fingerprint": _optional_text(value.get("route_geometry_fingerprint")),
     }
     result["missing_evidence"] = procedure_missing_evidence(result)
     result["status"] = (
@@ -357,6 +371,55 @@ def procedure_missing_evidence(procedure):
     if observed != expected:
         missing.append("join_point" if expected == "join" else "leave_point")
     return missing
+
+
+def terminal_transition_identity_reasons(
+    procedure, *, expected_route_geometry_fingerprint, route_altitude_layer_id,
+):
+    """进离场航段与**当前**巡航航路衔接时的统一身份门禁判据（纯函数）。
+
+    Round38-FC30 只做**判据**，不做修复：返回非空 ``reasons`` 时，该进离场航段不得作为
+    current 航路的一部分被消费（也不得与当前巡航几何拼接）。
+
+    两条判据：
+
+    * 几何身份：procedure 必须显式绑定它所衔接的巡航航路**完整几何指纹**，且与当前航路
+      几何逐字一致 —— 只比较 ``route_id`` 不足以证明"同一版本"；
+    * 高度层：procedure 声明的 ``altitude_layer_id`` 必须与航路当前 active 巡航层一致 ——
+      禁止不同高度层的结果被拼接。
+
+    缺失侧一律 fail-closed：不推断、不补当前值。调用方（readiness / Route3DProfile /
+    只读投影）消费同一份判据，避免各模块各写一套。
+    """
+
+    if not isinstance(procedure, dict):
+        return ["缺少 procedure：无法判定进离场/巡航衔接身份"]
+    reasons = []
+    declared = str(procedure.get("route_geometry_fingerprint") or "").strip()
+    expected = str(expected_route_geometry_fingerprint or "").strip()
+    if not declared:
+        reasons.append(
+            "procedure 未绑定巡航航路几何身份（route_geometry_fingerprint）："
+            "只按 route_id 关联不足以证明该进离场航段与当前巡航几何属于同一版本"
+        )
+    elif not expected:
+        reasons.append(
+            "巡航航路当前几何身份不可解析：无法证明该进离场航段衔接的是当前几何"
+        )
+    elif declared != expected:
+        reasons.append(
+            "procedure 绑定的巡航航路几何身份与当前航路几何不一致"
+            f"（procedure={declared}，current={expected}）："
+            "禁止把旧进离场航段接到新的巡航几何上"
+        )
+    declared_layer = str(procedure.get("altitude_layer_id") or "").strip()
+    route_layer = str(route_altitude_layer_id or "").strip()
+    if declared_layer and route_layer and declared_layer != route_layer:
+        reasons.append(
+            f"procedure 声明的巡航高度层（{declared_layer}）与航路当前巡航层"
+            f"（{route_layer}）不一致：禁止不同高度层的结果被拼接"
+        )
+    return reasons
 
 
 def voxel_ref(grid_id, altitude_layer_id):

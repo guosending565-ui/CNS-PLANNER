@@ -1,0 +1,607 @@
+{
+  "schema_version": "cns-r7d16-browser-acceptance/v1",
+  "round": "R7-D16",
+  "service": {
+    "base_url": "http://127.0.0.1:8793",
+    "port": 8793,
+    "independent_from": [
+      8765,
+      8776
+    ]
+  },
+  "project_scope": "test copy under worktree projects/ (not the formal ProjectState)",
+  "two_d": {
+    "default_layer_state": {
+      "navigationMonitoringLayer": false,
+      "referenceLandingLayer": false,
+      "towerLayer": false
+    },
+    "navigation_monitoring_diag": {
+      "candidatesLoaded": false,
+      "candidateCount": 0,
+      "simulationStatus": null,
+      "simulationRun": false,
+      "geometryCurrentness": null,
+      "lastError": null
+    },
+    "screenshots": [
+      "2d-landing-towers.png",
+      "2d-navigation-monitoring.png"
+    ],
+    "console_errors": [],
+    "page_errors": [],
+    "failed_requests": [],
+    "http_errors": [],
+    "api_counts": {
+      "/api/layered-route-candidates": 1,
+      "/api/project/active": 2,
+      "/api/radar-surveillance-layout": 1,
+      "/api/render": 1,
+      "/api/state": 1,
+      "/api/tasks": 10,
+      "/api/tasks/catalog": 1
+    }
+  },
+  "three_d": {
+    "layer_switch_count": 20,
+    "layers": [
+      {
+        "id": "ly_imagery",
+        "checked": true,
+        "label": "高清卫星影像（离线模式禁用）"
+      },
+      {
+        "id": "ly_terrain",
+        "checked": true,
+        "label": "FABDEM 多级三维地形"
+      },
+      {
+        "id": "ly_labels",
+        "checked": false,
+        "label": "地理注记"
+      },
+      {
+        "id": "ly_routeDemo",
+        "checked": false,
+        "label": "R0005 工程演示航路"
+      },
+      {
+        "id": "ly_routeCanonical",
+        "checked": false,
+        "label": "正式容器航路（stale）"
+      },
+      {
+        "id": "ly_towersKnown",
+        "checked": false,
+        "label": "铁塔（塔顶高度已解析、尚未权威确认，77 座级 / resolved_unconfirmed）"
+      },
+      {
+        "id": "ly_towersUnknown",
+        "checked": false,
+        "label": "铁塔（塔顶未解析，296 座，仅工程估算塔高，不得据以认定塔顶/ LOS）"
+      },
+      {
+        "id": "ly_facilities",
+        "checked": false,
+        "label": "CNS 站址"
+      },
+      {
+        "id": "ly_buildings",
+        "checked": false,
+        "label": "近景建筑"
+      },
+      {
+        "id": "ly_grid",
+        "checked": false,
+        "label": "规划网格"
+      },
+      {
+        "id": "ly_communication",
+        "checked": false,
+        "label": "通信包络（三维工程几何）"
+      },
+      {
+        "id": "ly_rid",
+        "checked": false,
+        "label": "RID 陆海非正圆覆盖"
+      },
+      {
+        "id": "ly_radar",
+        "checked": false,
+        "label": "Radar 方向性覆盖（工程几何楔体）"
+      },
+      {
+        "id": "ly_protection",
+        "checked": false,
+        "label": "P17 航路保护区（历史/缺证分明）"
+      },
+      {
+        "id": "ly_intrusion",
+        "checked": false,
+        "label": "模拟轨迹目标（SIMULATED 工程示意）"
+      },
+      {
+        "id": "ly_cnsSites",
+        "checked": false,
+        "label": "CNS 站址与设备（既有/规划选中/候选/blocked）"
+      },
+      {
+        "id": "ly_landingPads",
+        "checked": false,
+        "label": "起降点（项目 + 参考；PNG billboard，只读）"
+      },
+      {
+        "id": "ly_assumptionSites",
+        "checked": false,
+        "label": "P16-V2 假设站址（只读，非正式设备）"
+      },
+      {
+        "id": "ly_flightProtectionResearch",
+        "checked": false,
+        "label": "飞行保护区（工程假设）"
+      },
+      {
+        "id": "ly_fixedCorridor",
+        "checked": false,
+        "label": "固定 1000 m CNS 保障目标带"
+      }
+    ],
+    "toggle_report": [
+      {
+        "id": "ly_labels",
+        "label": "地理注记",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_routeDemo",
+        "label": "R0005 工程演示航路",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_routeCanonical",
+        "label": "正式容器航路（stale）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_towersKnown",
+        "label": "铁塔（塔顶高度已解析、尚未权威确认，77 座级 / resolved_unconfirmed）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_towersUnknown",
+        "label": "铁塔（塔顶未解析，296 座，仅工程估算塔高，不得据以认定塔顶/ LOS）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_facilities",
+        "label": "CNS 站址",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_buildings",
+        "label": "近景建筑",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_grid",
+        "label": "规划网格",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_communication",
+        "label": "通信包络（三维工程几何）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_rid",
+        "label": "RID 陆海非正圆覆盖",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_radar",
+        "label": "Radar 方向性覆盖（工程几何楔体）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_protection",
+        "label": "P17 航路保护区（历史/缺证分明）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_intrusion",
+        "label": "模拟轨迹目标（SIMULATED 工程示意）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_cnsSites",
+        "label": "CNS 站址与设备（既有/规划选中/候选/blocked）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_landingPads",
+        "label": "起降点（项目 + 参考；PNG billboard，只读）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_assumptionSites",
+        "label": "P16-V2 假设站址（只读，非正式设备）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_flightProtectionResearch",
+        "label": "飞行保护区（工程假设）",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      },
+      {
+        "id": "ly_fixedCorridor",
+        "label": "固定 1000 m CNS 保障目标带",
+        "default_checked": false,
+        "console_errors_on_toggle": []
+      }
+    ],
+    "scene_default": {
+      "tiles_to_render": 15,
+      "tiles_loading": 0,
+      "imagery_layers": 2,
+      "imagery_stats": null,
+      "imagery_source_id": null,
+      "imagery_visible": null,
+      "offline_imagery_stats": {
+        "request_image_calls": 112,
+        "accepted": 27,
+        "resolved": 27,
+        "rejected": 0,
+        "discarded": 0,
+        "last_error": null,
+        "last_discard": null,
+        "ready": true,
+        "show": true,
+        "url_template": "/api/visualization-3d/imagery/offline_zhoushan_imagery/{z}/{x}/{y}",
+        "tiling_scheme": "Cy",
+        "tiling_scheme_is_webmercator": true,
+        "tiling_scheme_is_geographic": false,
+        "maximum_level": 14,
+        "minimum_level": 7,
+        "provider_credit": "Contains modified Copernicus Sentinel data 2024"
+      },
+      "offline_imagery_visible": true,
+      "relief_stats": {
+        "request_image_calls": null,
+        "accepted": null,
+        "resolved": null,
+        "rejected": null,
+        "discarded": null,
+        "last_error": null,
+        "last_discard": null,
+        "ready": true,
+        "show": false,
+        "url_template": "/api/visualization-3d/relief/{z}/{x}/{y}.png",
+        "tiling_scheme": "H0",
+        "tiling_scheme_is_webmercator": false,
+        "tiling_scheme_is_geographic": true,
+        "maximum_level": 13,
+        "minimum_level": 6,
+        "provider_credit": "地形晕渲由 FABDEM 30 m + EGM2008 生成；非卫星影像"
+      },
+      "relief_visible": false,
+      "terrain_provider": "Dh",
+      "vertical_exaggeration": 1,
+      "maximum_screen_space_error": 3,
+      "water_effect": false,
+      "lighting": true,
+      "fog": true,
+      "sky_atmosphere": true,
+      "globe_show": true,
+      "entity_count": 0
+    },
+    "scene_layers_on": {
+      "tiles_to_render": 5,
+      "tiles_loading": 3,
+      "imagery_layers": 2,
+      "imagery_stats": null,
+      "imagery_source_id": null,
+      "imagery_visible": null,
+      "offline_imagery_stats": {
+        "request_image_calls": 3909,
+        "accepted": 37,
+        "resolved": 37,
+        "rejected": 0,
+        "discarded": 0,
+        "last_error": null,
+        "last_discard": null,
+        "ready": true,
+        "show": true,
+        "url_template": "/api/visualization-3d/imagery/offline_zhoushan_imagery/{z}/{x}/{y}",
+        "tiling_scheme": "Cy",
+        "tiling_scheme_is_webmercator": true,
+        "tiling_scheme_is_geographic": false,
+        "maximum_level": 14,
+        "minimum_level": 7,
+        "provider_credit": "Contains modified Copernicus Sentinel data 2024"
+      },
+      "offline_imagery_visible": true,
+      "relief_stats": {
+        "request_image_calls": null,
+        "accepted": null,
+        "resolved": null,
+        "rejected": null,
+        "discarded": null,
+        "last_error": null,
+        "last_discard": null,
+        "ready": true,
+        "show": false,
+        "url_template": "/api/visualization-3d/relief/{z}/{x}/{y}.png",
+        "tiling_scheme": "H0",
+        "tiling_scheme_is_webmercator": false,
+        "tiling_scheme_is_geographic": true,
+        "maximum_level": 13,
+        "minimum_level": 6,
+        "provider_credit": "地形晕渲由 FABDEM 30 m + EGM2008 生成；非卫星影像"
+      },
+      "relief_visible": false,
+      "terrain_provider": "Dh",
+      "vertical_exaggeration": 1,
+      "maximum_screen_space_error": 3,
+      "water_effect": false,
+      "lighting": true,
+      "fog": true,
+      "sky_atmosphere": true,
+      "globe_show": true,
+      "entity_count": 946
+    },
+    "landing_pad_stats": {
+      "icon": "/assets/symbols/landing_pad.png?v=r7d16",
+      "payload_status": "passed",
+      "candidate_count": 473,
+      "count": 100,
+      "entities": 100,
+      "kinds": {
+        "project_node": 2,
+        "reference_landing_site": 98
+      },
+      "roles": {
+        "normal": 2,
+        "reference": 98
+      },
+      "diagnostics": {
+        "geoid_window": {
+          "status": "already_loaded",
+          "bbox": [
+            121.30549166670001,
+            29.69,
+            122.8313638333,
+            31.2255638889
+          ]
+        },
+        "skipped": [],
+        "total": 100,
+        "drawn": 100,
+        "icon": "/assets/symbols/landing_pad.png?v=r7d16",
+        "endpoints": null
+      },
+      "sample": {
+        "id": "landing-pad:node:N101",
+        "image": "/assets/symbols/landing_pad.png?v=r7d16",
+        "image_complete": false,
+        "image_natural_width": null,
+        "billboard_width": 64,
+        "billboard_height": 64,
+        "position_show": true
+      }
+    },
+    "tower_icon_stats": {
+      "total": 373,
+      "known": 0,
+      "unknown": 373,
+      "billboards": 373,
+      "images": [
+        "/assets/symbols/tower_qinglv_unknown_128.png?v=r7d3b"
+      ],
+      "unified_icon": true,
+      "known_semantics": "tower_top_height_resolved_unconfirmed",
+      "unknown_semantics": "tower_top_unresolved"
+    },
+    "fixed_corridor_stats": {
+      "payload": {
+        "status": "unavailable",
+        "read_only": true,
+        "writes_performed": 0,
+        "band_count": 0,
+        "width_contract": {
+          "width_policy_version": "fixed-1000m-v1",
+          "corridor_half_width_m": 500,
+          "corridor_total_width_m": 1000,
+          "width_semantics": "cns_service_target_band",
+          "geometry_algorithm_id": "cns_fixed_corridor_buffer_v1",
+          "geometry_algorithm_version": "1.0"
+        },
+        "geometry_source": {
+          "builder": "cns_planner/gis/corridor_geometry.build_fixed_corridor_geometry",
+          "layer_builder": "cns_planner/gis/corridor_band.build_fixed_corridor_band",
+          "currentness_authority": "cns_planner/gis/figure_currentness.fixed_corridor_currentness",
+          "route_authority_authority": "FixedCorridorGeometryService._route_authority（P14 口径，唯一）",
+          "consumes_existing_endpoint": "/api/fixed-corridor-geometry",
+          "recomputes_buffer_in_3d": false,
+          "uses_p17_outer_half_width_m": false
+        },
+        "corridor_effective_status": "stale",
+        "identity_rules": {
+          "same_fingerprint_as_figure_and_2d": true,
+          "stale_never_shown_as_current": true,
+          "no_approximate_band_when_geometry_blocked": true,
+          "p17_outer_half_width_m_forbidden": true,
+          "horizontal_projection_is_not_a_3d_certified_volume": true
+        },
+        "bands": []
+      },
+      "groups": [],
+      "diagnostics": {
+        "geoid_window": {
+          "status": "not_required"
+        },
+        "skipped": []
+      },
+      "viewer_identity_stable": true
+    },
+    "screenshots": [
+      "3d-default.png",
+      "3d-layers-on.png"
+    ],
+    "console_errors": [],
+    "page_errors": [],
+    "failed_requests": [],
+    "http_errors": [],
+    "api_counts": {
+      "/api/cns-shared-site-candidates": 1,
+      "/api/visualization-3d/assumption-sites": 1,
+      "/api/visualization-3d/cns-sites": 1,
+      "/api/visualization-3d/communication-volumes": 1,
+      "/api/visualization-3d/fixed-corridor-bands": 1,
+      "/api/visualization-3d/flight-protection-research": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/857/420": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/857/421": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/857/422": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/857/423": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/857/424": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/858/419": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/858/420": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/858/421": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/858/422": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/858/423": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/858/424": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/859/419": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/859/420": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/859/421": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/859/422": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/859/423": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/859/424": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/860/419": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/860/420": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/860/421": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/860/422": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/860/423": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/860/424": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/861/420": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/861/421": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/861/422": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/861/423": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/10/861/424": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/11/1719/843": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/11/1719/844": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/11/1719/845": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/11/1720/843": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/11/1720/844": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/12/3440/1689": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/12/3440/1690": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/13/6878/3380": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/13/6878/3381": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/13/6879/3380": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/13/6879/3381": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13755/6763": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13755/6764": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13755/6765": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13756/6763": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13756/6764": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13757/6763": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/14/13757/6764": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/7/107/52": 1,
+      "/api/visualization-3d/imagery/offline_zhoushan_imagery/7/107/53": 1,
+      "/api/visualization-3d/manifest": 2,
+      "/api/visualization-3d/protection-volumes": 1,
+      "/api/visualization-3d/radar-volumes": 1,
+      "/api/visualization-3d/rid-footprints": 1,
+      "/api/visualization-3d/routes": 1,
+      "/api/visualization-3d/terrain-window": 2,
+      "/api/visualization-3d/terrain/0/0/0.terrain": 1,
+      "/api/visualization-3d/terrain/0/1/0.terrain": 1,
+      "/api/visualization-3d/terrain/10/1717/683.terrain": 1,
+      "/api/visualization-3d/terrain/10/1718/682.terrain": 1,
+      "/api/visualization-3d/terrain/10/1718/683.terrain": 1,
+      "/api/visualization-3d/terrain/10/1718/684.terrain": 1,
+      "/api/visualization-3d/terrain/10/1718/685.terrain": 1,
+      "/api/visualization-3d/terrain/10/1719/682.terrain": 1,
+      "/api/visualization-3d/terrain/10/1719/683.terrain": 1,
+      "/api/visualization-3d/terrain/10/1719/684.terrain": 1,
+      "/api/visualization-3d/terrain/10/1719/685.terrain": 1,
+      "/api/visualization-3d/terrain/10/1720/682.terrain": 1,
+      "/api/visualization-3d/terrain/10/1720/683.terrain": 1,
+      "/api/visualization-3d/terrain/10/1720/684.terrain": 1,
+      "/api/visualization-3d/terrain/10/1720/685.terrain": 1,
+      "/api/visualization-3d/terrain/10/1721/681.terrain": 1,
+      "/api/visualization-3d/terrain/10/1721/682.terrain": 1,
+      "/api/visualization-3d/terrain/10/1721/683.terrain": 1,
+      "/api/visualization-3d/terrain/10/1721/684.terrain": 1,
+      "/api/visualization-3d/terrain/10/1721/685.terrain": 1,
+      "/api/visualization-3d/terrain/10/1722/683.terrain": 1,
+      "/api/visualization-3d/terrain/11/3439/1365.terrain": 1,
+      "/api/visualization-3d/terrain/11/3440/1365.terrain": 1,
+      "/api/visualization-3d/terrain/11/3440/1366.terrain": 1,
+      "/api/visualization-3d/terrain/11/3441/1365.terrain": 1,
+      "/api/visualization-3d/terrain/11/3441/1366.terrain": 1,
+      "/api/visualization-3d/terrain/12/6878/2729.terrain": 1,
+      "/api/visualization-3d/terrain/12/6878/2730.terrain": 1,
+      "/api/visualization-3d/terrain/12/6879/2728.terrain": 1,
+      "/api/visualization-3d/terrain/12/6879/2729.terrain": 1,
+      "/api/visualization-3d/terrain/12/6879/2730.terrain": 1,
+      "/api/visualization-3d/terrain/12/6880/2729.terrain": 1,
+      "/api/visualization-3d/terrain/13/13754/5456.terrain": 1,
+      "/api/visualization-3d/terrain/13/13754/5457.terrain": 1,
+      "/api/visualization-3d/terrain/13/13754/5458.terrain": 1,
+      "/api/visualization-3d/terrain/13/13755/5455.terrain": 1,
+      "/api/visualization-3d/terrain/13/13755/5456.terrain": 1,
+      "/api/visualization-3d/terrain/13/13755/5457.terrain": 1,
+      "/api/visualization-3d/terrain/13/13755/5458.terrain": 1,
+      "/api/visualization-3d/terrain/13/13755/5459.terrain": 1,
+      "/api/visualization-3d/terrain/13/13756/5456.terrain": 1,
+      "/api/visualization-3d/terrain/13/13756/5457.terrain": 1,
+      "/api/visualization-3d/terrain/13/13757/5456.terrain": 1,
+      "/api/visualization-3d/terrain/13/13757/5457.terrain": 1,
+      "/api/visualization-3d/terrain/7/215/85.terrain": 1,
+      "/api/visualization-3d/terrain/9/857/340.terrain": 1,
+      "/api/visualization-3d/terrain/9/857/341.terrain": 1,
+      "/api/visualization-3d/terrain/9/857/342.terrain": 1,
+      "/api/visualization-3d/terrain/9/857/343.terrain": 1,
+      "/api/visualization-3d/terrain/9/858/340.terrain": 1,
+      "/api/visualization-3d/terrain/9/858/341.terrain": 1,
+      "/api/visualization-3d/terrain/9/858/342.terrain": 1,
+      "/api/visualization-3d/terrain/9/858/343.terrain": 1,
+      "/api/visualization-3d/terrain/9/859/340.terrain": 1,
+      "/api/visualization-3d/terrain/9/859/341.terrain": 1,
+      "/api/visualization-3d/terrain/9/859/342.terrain": 1,
+      "/api/visualization-3d/terrain/9/859/343.terrain": 1,
+      "/api/visualization-3d/terrain/9/860/340.terrain": 1,
+      "/api/visualization-3d/terrain/9/860/341.terrain": 1,
+      "/api/visualization-3d/terrain/9/860/342.terrain": 1,
+      "/api/visualization-3d/terrain/9/860/343.terrain": 1,
+      "/api/visualization-3d/terrain/9/861/340.terrain": 1,
+      "/api/visualization-3d/terrain/9/861/341.terrain": 1,
+      "/api/visualization-3d/terrain/9/861/342.terrain": 1,
+      "/api/visualization-3d/terrain/layer.json": 1
+    }
+  },
+  "verdict": {
+    "two_d_console_errors": 0,
+    "two_d_http_errors": 0,
+    "three_d_console_errors": 0,
+    "three_d_http_errors": 0,
+    "all_toggles_without_console_error": true,
+    "layer_switch_count": 20
+  }
+}

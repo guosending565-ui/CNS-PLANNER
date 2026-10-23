@@ -1,0 +1,387 @@
+{
+  "schema_version": "cns-r7d16-3d-assets-verification/v1",
+  "round": "R7-D16",
+  "baseline": "8f1c927c7df7d3f18286526e9a888ca07c9d9d7f",
+  "manifest": "docs/3d-protected-assets-r7d3c.json",
+  "file_count": 19,
+  "byte_identical_count": 16,
+  "intentionally_changed_count": 3,
+  "all_changes_additive": true,
+  "files": [
+    {
+      "path": "cns_planner/application/visualization_3d_service.py",
+      "expected": {
+        "bytes": 149792,
+        "sha256": "79c5a150e19208fb360477544bb0ff00d72f2181d243eb25fa9c34621c6f7a39"
+      },
+      "actual": {
+        "bytes": 149792,
+        "sha256": "79c5a150e19208fb360477544bb0ff00d72f2181d243eb25fa9c34621c6f7a39"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/application/visualization_3d_imagery_service.py",
+      "expected": {
+        "bytes": 62311,
+        "sha256": "1b1d1bf8ef576d3f0702dd5710bd6f4689a6ac4816405fdd415ce176de3b9479"
+      },
+      "actual": {
+        "bytes": 62311,
+        "sha256": "1b1d1bf8ef576d3f0702dd5710bd6f4689a6ac4816405fdd415ce176de3b9479"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/gis/terrain_tile_adapter.py",
+      "expected": {
+        "bytes": 18266,
+        "sha256": "db4e6707713067eac37a4b5ef9dd661b332dcad1df239870d93586ab179f7374"
+      },
+      "actual": {
+        "bytes": 18266,
+        "sha256": "db4e6707713067eac37a4b5ef9dd661b332dcad1df239870d93586ab179f7374"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/api/router.py",
+      "expected": {
+        "bytes": 97436,
+        "sha256": "1ab76728e5f2927ae18f34a893cd4f1eaafb692e1c796616030016ed08c723bf"
+      },
+      "actual": {
+        "bytes": 97578,
+        "sha256": "b78d944199ac0dca104ae210f34aa2eb2af21bcbccc570dcf2a983789363cbb9"
+      },
+      "byte_identical_to_r7d3c": false,
+      "intentional": true,
+      "reason": "E 批端点装配：保留 A/B/C/D 契约并接回三维/固定走廊/导航监测"
+    },
+    {
+      "path": "cns_planner/web/visualization-3d.html",
+      "expected": {
+        "bytes": 16032,
+        "sha256": "d5819faae05b99a9f78cef9670d176896ec890fa10ff03b7b0350f1758ae9657"
+      },
+      "actual": {
+        "bytes": 16032,
+        "sha256": "d5819faae05b99a9f78cef9670d176896ec890fa10ff03b7b0350f1758ae9657"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/tiles.js",
+      "expected": {
+        "bytes": 7012,
+        "sha256": "80240f95ecf7d7759f573dd0bab3d11cc3642136ae2c80cf15a9745ffafff0ec"
+      },
+      "actual": {
+        "bytes": 7012,
+        "sha256": "80240f95ecf7d7759f573dd0bab3d11cc3642136ae2c80cf15a9745ffafff0ec"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/app.js",
+      "expected": {
+        "bytes": 195978,
+        "sha256": "dbf4f7cc9ad53054827a8d4f83573a9d5f90a138ab839c0e592df13f88dab682"
+      },
+      "actual": {
+        "bytes": 199816,
+        "sha256": "08b6fdc92c38b0705b867a915119ad7aec7a8e3991ee5da7d890f29788b85105"
+      },
+      "byte_identical_to_r7d3c": false,
+      "intentional": true,
+      "reason": "R7-D16：新增起降点 PNG billboard 图层（additive）"
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/basemap.js",
+      "expected": {
+        "bytes": 45591,
+        "sha256": "98899edca32457dba21b28d629b29a258f925376c3969aa8a4e677c8503a9808"
+      },
+      "actual": {
+        "bytes": 45706,
+        "sha256": "d969859d477843b1f24abd56593c8a138368bf8c9d6b5add001041e2ca4e52e7"
+      },
+      "byte_identical_to_r7d3c": false,
+      "intentional": true,
+      "reason": "R7-D16：新增 landingPads 默认关闭（additive）"
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/camera_presets.js",
+      "expected": {
+        "bytes": 1185,
+        "sha256": "b5e668ffaf93c46a585c4cd40d6f8f19abb6242ad85cab3cffea127421f63d4b"
+      },
+      "actual": {
+        "bytes": 1185,
+        "sha256": "b5e668ffaf93c46a585c4cd40d6f8f19abb6242ad85cab3cffea127421f63d4b"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/camera_state.js",
+      "expected": {
+        "bytes": 1077,
+        "sha256": "dc1c7b10a770a84a241ca3595d0eb13e0160303c3d516d36573d82969524da7f"
+      },
+      "actual": {
+        "bytes": 1077,
+        "sha256": "dc1c7b10a770a84a241ca3595d0eb13e0160303c3d516d36573d82969524da7f"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/cns_sites.js",
+      "expected": {
+        "bytes": 26256,
+        "sha256": "3b2cd825803c75b6334d6d85f92d88a0df558a337efc1ba7fbb993286a42deff"
+      },
+      "actual": {
+        "bytes": 26256,
+        "sha256": "3b2cd825803c75b6334d6d85f92d88a0df558a337efc1ba7fbb993286a42deff"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/fixed_corridor_band.js",
+      "expected": {
+        "bytes": 11578,
+        "sha256": "9ac65af2beba69373dd8a0a186732a8c8a636c2e117e28e04fe6829ff3dd582a"
+      },
+      "actual": {
+        "bytes": 11578,
+        "sha256": "9ac65af2beba69373dd8a0a186732a8c8a636c2e117e28e04fe6829ff3dd582a"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/intrusion_playback.js",
+      "expected": {
+        "bytes": 22508,
+        "sha256": "3d4bcdfe700a60ed95c9430c8dc3b968afb5852a4382c0d79c174a94e0bfdb2e"
+      },
+      "actual": {
+        "bytes": 22508,
+        "sha256": "3d4bcdfe700a60ed95c9430c8dc3b968afb5852a4382c0d79c174a94e0bfdb2e"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/protection_volume.js",
+      "expected": {
+        "bytes": 11332,
+        "sha256": "794197c988706758c3a2d3fd319b7baeb7440f7cf03c630fb7d048cad6591dfd"
+      },
+      "actual": {
+        "bytes": 11332,
+        "sha256": "794197c988706758c3a2d3fd319b7baeb7440f7cf03c630fb7d048cad6591dfd"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/radar_volume.js",
+      "expected": {
+        "bytes": 15129,
+        "sha256": "96437ab1373eeefef62a91aaaaa99733d78eea13fbdf941f46a3e8de607afb26"
+      },
+      "actual": {
+        "bytes": 15129,
+        "sha256": "96437ab1373eeefef62a91aaaaa99733d78eea13fbdf941f46a3e8de607afb26"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/assumption_sites.js",
+      "expected": {
+        "bytes": 4277,
+        "sha256": "e55d34e8f00bed7d11aaf3c1c4bda5d7cbb934bb28c14fdbaf5767a44587b1ba"
+      },
+      "actual": {
+        "bytes": 4277,
+        "sha256": "e55d34e8f00bed7d11aaf3c1c4bda5d7cbb934bb28c14fdbaf5767a44587b1ba"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/application/assumption_sites_3d.py",
+      "expected": {
+        "bytes": 5644,
+        "sha256": "082701416eaca379dd632b83c194c5bdc4810a75d294b28d85880a2396524856"
+      },
+      "actual": {
+        "bytes": 5644,
+        "sha256": "082701416eaca379dd632b83c194c5bdc4810a75d294b28d85880a2396524856"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/application/flight_protection_research.py",
+      "expected": {
+        "bytes": 3553,
+        "sha256": "001da8d38b74b37ff234a4c9d430958f93e118eb3f701011c4030169f14dab33"
+      },
+      "actual": {
+        "bytes": 3553,
+        "sha256": "001da8d38b74b37ff234a4c9d430958f93e118eb3f701011c4030169f14dab33"
+      },
+      "byte_identical_to_r7d3c": true
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/flight_protection_research.js",
+      "expected": {
+        "bytes": 3834,
+        "sha256": "e8a4e592497c82fb02cce518be2dab094654c23c8237a22c3d4d18eac6092d87"
+      },
+      "actual": {
+        "bytes": 3834,
+        "sha256": "e8a4e592497c82fb02cce518be2dab094654c23c8237a22c3d4d18eac6092d87"
+      },
+      "byte_identical_to_r7d3c": true
+    }
+  ],
+  "router_section": {
+    "actual": {
+      "bytes_crlf": 19540,
+      "bytes_lf": 19202,
+      "lines_lf": 339,
+      "sha256_lf": "2e8aa16235d40ded008ab485eea52a059519c5367ab2eb9e2042471a68af14fa"
+    },
+    "expected_r7d3c": {
+      "bytes": 19202,
+      "lines": 339,
+      "sha256": "2e8aa16235d40ded008ab485eea52a059519c5367ab2eb9e2042471a68af14fa"
+    },
+    "matches_r7d3c": true
+  },
+  "landing_pad": {
+    "path": "cns_planner/web/assets/symbols/landing_pad.png",
+    "actual": {
+      "bytes": 641213,
+      "sha256": "37f83a99215bc49670b22ec5e6c700a583dc99c6d963536f133d25e40365e76b"
+    },
+    "expected_sha256": "37f83a99215bc49670b22ec5e6c700a583dc99c6d963536f133d25e40365e76b",
+    "matches_supplied_file": true
+  },
+  "vendor": [
+    {
+      "path": "cns_planner/web/vendor/cesium/Cesium.js",
+      "actual": {
+        "bytes": 5143845,
+        "sha256": "b796f8a6f695d610cef6b86a2a51adb759b20c71ba643403a9b4489144a697e0"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 5159916,
+        "sha256": "e4dc17055dbad7d4aab44abdd33e4c6006f93b8fbe57c63bbbc3c31eeefbe0b0"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Widgets/widgets.css",
+      "actual": {
+        "bytes": 30710,
+        "sha256": "702c5adf3d16ec7f1c03cc5fb7ecb823af6c59fa192789fb2c859ac7a11f4a0c"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 32052,
+        "sha256": "dd409f4c9dbc0d6c04e369723a87f3cc3c430f4d305ff26e608a5918390d48a3"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/approximateTerrainHeights.json",
+      "actual": {
+        "bytes": 299471,
+        "sha256": "36466e2dc84f6c173b609ffc704bc021cd9fdb33c287570bf57e4f566b58e6a6"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 299472,
+        "sha256": "6dbd104a916bb05d0f5103f46fb1c36d9966947a74984b5614607edda9325e57"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/Images/ion-credit.png",
+      "actual": {
+        "bytes": 6028,
+        "sha256": "721870c1417e20d25e2d1b834e80c66908418e459dcf76c95bf2997dc0733289"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 6028,
+        "sha256": "721870c1417e20d25e2d1b834e80c66908418e459dcf76c95bf2997dc0733289"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/IAU2006_XYS/IAU2006_XYS_0.json",
+      "actual": {
+        "bytes": 67428,
+        "sha256": "eacde1b661c07ae81779214f2ee1c840dd24ea56cdba38735d9f63bb51d3f534"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 67428,
+        "sha256": "eacde1b661c07ae81779214f2ee1c840dd24ea56cdba38735d9f63bb51d3f534"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/IAU2006_XYS/IAU2006_XYS_18.json",
+      "actual": {
+        "bytes": 65310,
+        "sha256": "19ec8e50b7a8604bcd93bf20850f033e153242663107f372e3af09194f903497"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 65310,
+        "sha256": "19ec8e50b7a8604bcd93bf20850f033e153242663107f372e3af09194f903497"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/LICENSE.md",
+      "actual": {
+        "bytes": 63630,
+        "sha256": "3111d10e1630bfa975251018149c973a0a3f42d11e793733a8ce417d52baa59a"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 64747,
+        "sha256": "6a30fde7063cc565656630a66f60cbf599d4609297fb715d87c7f96bc5ecd6e6"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/LICENSE-PROVENANCE.md",
+      "actual": {
+        "bytes": 3098,
+        "sha256": "3f223b4d75198c9fc0e8e55e8ee1c7d41c83e473117bc6044da0405a7de4d013"
+      },
+      "r7d3c_windows_crlf_identity": {
+        "bytes": 3171,
+        "sha256": "56aa555a01328982a36f548e1a41247c7728ca9fb07385d50bdbd3ec0b713870"
+      },
+      "note": "R7-D16 按 tests/test_cesium_vendor_license.py 的**上游 LF 原始字节**重新物化；Git 以 .gitattributes -text 固定，避免 Windows checkout 改变证据身份。"
+    }
+  ],
+  "manifest_layers": [
+    "terrain_fabdem",
+    "route_geometry_demo",
+    "route_geometry_canonical",
+    "towers",
+    "cns_devices",
+    "cns_facilities",
+    "communication_volumes",
+    "rid_footprints",
+    "radar_volumes",
+    "protection_volumes",
+    "cns_site_identity",
+    "fixed_corridor_band",
+    "simulated_intrusion"
+  ],
+  "layer_switches": {
+    "protected_count": 19,
+    "total_with_landing_pads": 20,
+    "landing_pads_is_new": true
+  }
+}

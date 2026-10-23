@@ -19,10 +19,43 @@ import {
 import {
   bindContinuousServicePanel,continuousServiceModel,renderContinuousServicePanel,step6GateModel,
 } from './continuous_service.js';
+// Round38-N2：导航监测规划（只读消费 N1 的两个接口；前端不重实现选址算法）。
+import {
+  FORCE_ENDPOINT_NOTE,NAVIGATION_MONITORING_SIMULATION_ENDPOINT,
+  NAVIGATION_PARAMETER_DEFAULTS,
+  SHARED_SITE_CANDIDATES_ENDPOINT,FIXED_CORRIDOR_GEOMETRY_ENDPOINT,
+  bindNavigationMonitoringPanel,navigationSimulationModel,
+  renderNavigationMonitoringPanel,sharedSiteCandidateModel,
+} from './navigation_monitoring.js';
+
 
 // Radar Surveillance Layout V1（proposal-only）在 Step05 是**独立任务卡**：
 // 重导出供前端测试与地图 overlay 使用，不改变本文件其余部分的既有结构。
 export {RADAR_LAYOUT_EVALUATE_ENDPOINT,RADAR_LAYOUT_TITLE,RADAR_POLICY_ENDPOINT,radarLayoutModel,renderRadarSurveillanceLayoutPanel};
+
+/** 将站点级表单值规范成受控 policy 字段；空高度表示删除，不会被转换成 0。 */
+export function groundSiteInstallationPolicy(entries,existing={}){
+  const result=structuredClone(existing&&typeof existing==='object'?existing:{});
+  for(const entry of entries||[]){
+    const siteId=String(entry?.siteId||'').trim();
+    if(!siteId)continue;
+    const raw=String(entry?.height??'').trim();
+    if(raw===''){
+      delete result[siteId];
+      continue;
+    }
+    const source=entry?.source==='source_device_installation_height'
+      ?'source_device_installation_height':'user_confirmed';
+    result[siteId]={
+      site_id:siteId,installation_height_m:Number(raw),source,
+      confirmed:entry?.confirmed===true,
+      installation_status:source==='source_device_installation_height'?'installed':'planned',
+    };
+    const sourceRef=String(entry?.sourceRef||'').trim();
+    if(sourceRef)result[siteId].source_ref=sourceRef;
+  }
+  return result;
+}
 
 // 二级分段：同一一级标签下同屏只呈现一个任务，id 在整步内唯一。
 // 名称是业务语言；工程编号（P7…P18）只允许出现在高级标签的 advancedAuditNote 里。
@@ -32,7 +65,7 @@ const OPERATE_SEGMENTS=[['cns-op-devices','设备与参数'],['cns-op-existing',
 // Radar 输入指纹变化会让 cns_corridor()（及 P15/P16）失效。旧顺序把「雷达监视规划」
 // 放在 P16 之后，普通用户按 UI 顺序走完 Step05 必然让 P14/P15/P16 全部 stale，
 // Step06 直接失败——那是流程陷阱，不是业务判据问题。
-const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性']];
+const RESULT_SEGMENTS=[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-navigation-monitoring','导航监测规划']];
 const ADVANCED_SEGMENTS=[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']];
 
 // ---- 六区结构（B4X §20） ----------------------------------------------------
@@ -57,8 +90,21 @@ export const CNS_CANONICAL_CHAIN=[
 ];
 
 /** 分段抬头：说明本段在 canonical 链中的位置。 */
-function chainNote(current){
-  const names=CNS_CANONICAL_CHAIN.map(item=>item[1]).join(' → ');
+/**
+ * Round38-N2：权威参考起降点的 source CRS 是否**未确认**。
+ *
+ * 只读 ``flow.reference_landing_sites.crs.source_crs``：``value`` 为空或
+ * ``status`` 不是 ``confirmed`` 即视为未确认。**绝不**因为坐标落在舟山范围内就
+ * 推断 EPSG:4326/4490，也绝不补默认值。
+ */
+function referenceLandingCrsUnconfirmed(flow){
+  const crs=(flow?.reference_landing_sites?.crs||{}).source_crs||{};
+  if(crs.confirmed===true&&crs.status==='confirmed'&&crs.value)return false;
+  return true;
+}
+
+/** 分段抬头：说明本段在 canonical 链中的位置。 */
+function chainNote(current){  const names=CNS_CANONICAL_CHAIN.map(item=>item[1]).join(' → ');
   return '<div class="parameter-note">链条：'+escapeHtml(names)+'；当前环节：'+escapeHtml(current)+'。</div>';
 }
 
@@ -295,7 +341,7 @@ export function towerColocationPolicyForm(flow){
     +' · confirmed origin '+(colocation.confirmed_origin_count||0)
     +' · estimated planning origin '+(colocation.estimated_planning_origin_count||0)
     +' · unusable '+(colocation.unusable_count||0)
-    +'<br>共塔候选 '+(colocation.count||0)+' 个 · 塔顶已解析 '+(profiles.resolved_count||0)
+    +'<br>共塔候选 '+(colocation.count||0)+' 个 · 塔顶高度已解析（尚未权威确认）'+(profiles.resolved_count||0)
     +' · 未解析 '+(profiles.unresolved_count||0)
     +'<br>两个条件（规划宿主允许 + 服务原点假设）满足才会进入规划；'
     +'设备型号与性能参数仍只能来自设备资料库 / 用户确认，绝不从铁塔数据推断；'
@@ -733,6 +779,212 @@ export function corridorSitePlanSummary(result){
     +'<h4>规划目标前后对比</h4>'+(objectiveRows.join('')||'<div class="empty-note">未配置已确认的规划目标</div>');
 }
 
+// ---- R6-C：P16-V2（工程假设，只读）--------------------------------------------
+//
+// 边界（与后端一致）：
+//  * V2 **默认关闭**：只有用户显式切到 V2 才会提交 V2 任务；
+//  * V2 结果不写 ProjectState、不进入正式候选、没有 Apply；
+//  * 阶段 / 已完成 / 总量 / 已用 / ETA 全部来自后端任务记录（progress_detail），
+//    前端只做显示换算，绝不自造进度或倒计时。
+
+/** 与后端 ``p16_v2_service.STAGES`` 对齐（另加候选池准备阶段）。 */
+export const P16_V2_STAGES=[
+  {key:'pool',label:'工程假设候选池准备'},
+  {key:'preflight',label:'预检'},
+  {key:'baseline',label:'基线 P14/P15 与门槛解析'},
+  {key:'coverage_matrix',label:'覆盖矩阵准备'},
+  {key:'search',label:'候选组合搜索'},
+  {key:'exact_eval',label:'精确 P14/P15 评价'},
+  {key:'result',label:'结果生成'},
+];
+
+//: 规划版本开关的**显示**状态（'v1' / 'v2'）。工作台每 ~5 s 会因 workflow 刷新重绘
+//: 本步骤；若把它存在 DOM 里，重绘会把开关重置成 V1、把 V2 卡片与取消入口一起隐藏。
+//: 它只决定本面板显隐，不进入 workflow、不写 localStorage、不影响任何业务判定。
+let p16PlanVersion='v1';
+
+const p16v2Percent=value=>{
+  const number=Number(value);
+  if(!Number.isFinite(number))return '—';
+  return Math.round(Math.max(0,Math.min(1,number))*100)+'%';
+};
+const p16v2AgeText=seconds=>{
+  const value=Number(seconds);
+  if(!Number.isFinite(value)||value<0)return '—';
+  if(value<5)return '刚刚';
+  if(value<60)return Math.round(value)+' 秒前';
+  if(value<3600)return Math.round(value/60)+' 分钟前';
+  return Math.round(value/3600)+' 小时前';
+};
+const p16v2Metric=value=>{
+  const number=Number(value);
+  return Number.isFinite(number)?String(Math.round(number*100)/100):'—';
+};
+
+/** 阶段列表：已完成 / 进行中 / 等待，全部由后端 ``progress_detail.stage`` 决定。 */
+export function p16V2StageRows(view){
+  const task=view?.task||null;
+  const detail=task?.progress_detail||{};
+  const activeStage=String(detail.stage||'');
+  const activeIndex=P16_V2_STAGES.findIndex(item=>item.key===activeStage);
+  return P16_V2_STAGES.map((item,index)=>{
+    const stageState=activeIndex<0?'pending':(index<activeIndex?'done':(index===activeIndex?'active':'pending'));
+    const mark=stageState==='done'?'✓':(stageState==='active'?'▶':'·');
+    let counter='';
+    if(stageState==='active'&&detail.completed!=null&&detail.total!=null){
+      counter=String(detail.completed)+' / '+String(detail.total)+(detail.unit?(' '+String(detail.unit)):'');
+    }else if(stageState==='done'){
+      counter='已完成';
+    }else if(stageState==='active'){
+      counter='进行中';
+    }else{
+      counter='等待';
+    }
+    return '<div class="list-row" data-p16v2-stage="'+escapeHtml(item.key)+'" data-stage-state="'+stageState+'">'
+      +'<span>'+mark+' '+escapeHtml(item.label)+'</span><small>'+escapeHtml(counter)+'</small></div>';
+  }).join('');
+}
+
+/** V2 任务卡片（主界面只出现业务文案；技术状态在高级区）。 */
+export function p16V2TaskCardHtml(view){
+  const task=view?.task||null;
+  if(!task){
+    return '<div class="empty-note">尚未提交 V2 预算。V2 只读，不写入正式方案。</div>';
+  }
+  const status=String(task.advanced?.status||'');
+  const lines=[
+    '<div class="cns-task-row" data-p16v2-card="1" data-task-id="'+escapeHtml(task.task_id||'')+'">',
+    '<div class="cns-task-head"><strong>P16-V2 · 工程假设（只读）</strong>'
+      +'<span class="cns-task-status">'+escapeHtml(task.status_text||'')+'</span></div>',
+    '<div class="cns-task-progress"><span>进度 '+escapeHtml(p16v2Percent(task.progress))+'</span>'
+      +'<span>'+escapeHtml(view?.elapsedText||'已运行 —')+'</span>'
+      +'<span>最近心跳 '+escapeHtml(p16v2AgeText(task.heartbeat_age_seconds))+'</span></div>',
+    '<div class="cns-task-eta" data-p16v2-eta>'+escapeHtml(view?.etaText||'预计剩余：估算中')+'</div>',
+    '<div class="cns-task-message">'+escapeHtml(task.message||'')+'</div>',
+    p16V2StageRows(view),
+  ];
+  if(task.business_error?.text){
+    lines.push('<div class="cns-task-error" role="alert">'+escapeHtml(task.business_error.text)+'</div>');
+  }
+  if(task.can_cancel){
+    lines.push('<button class="secondary compact" data-p16v2-cancel="'+escapeHtml(task.task_id||'')+'">取消 V2 任务</button>');
+  }
+  if(status==='succeeded'){
+    lines.push('<div class="cns-task-done">V2 结果已生成；正式 CNS 设施规划（V1）未被修改。</div>');
+  }
+  lines.push('<details class="algorithm-detail"><summary>高级 / 审计信息（任务标识与阶段明细）</summary>'
+    +'<div class="flow-summary">'
+    +'<div><span>任务标识</span>'+escapeHtml(String(task.task_id||''))+'</div>'
+    +'<div><span>技术状态</span>'+escapeHtml(status||'')+'</div>'
+    +'<div><span>任务类型</span>'+escapeHtml(String(task.advanced?.task_type||''))+'</div>'
+    +'<div><span>输入指纹</span>'+escapeHtml(String(task.advanced?.input_fingerprint||''))+'</div>'
+    +'<div><span>阶段</span>'+escapeHtml(String(task.progress_detail?.stage_label||task.progress_detail?.stage||''))+'</div>'
+    +'</div></details>');
+  lines.push('</div>');
+  return lines.join('');
+}
+
+/** 来源与指纹（R7-A）：与后端 task record 的 ``result_summary.provenance`` 一一对应。
+ *
+ * 只读展示：近邻站址（只影响"独立站址"计数，不改坐标/身份）、DEM / 陆海掩膜的内容
+ * SHA 前缀、输入指纹与算法身份。字段缺失时如实显示"未绑定/未发现"，绝不猜。
+ */
+export function p16V2ProvenanceRows(result){
+  const provenance=(result&&result.provenance)||{};
+  const sources=(result&&result.sources)||provenance.external_sources||{};
+  const terrain=(sources&&sources.terrain_dtm)||{};
+  const landMask=(sources&&sources.land_mask)||{};
+  const shortSha=value=>{const text=String(value||'');return text?text.slice(0,12)+'…':'未绑定';};
+  const near=Array.isArray(result&&result.near_identities)?result.near_identities:[];
+  const nearPairs=near
+    .map(item=>String(item&&item.left||'')+' ↔ '+String(item&&item.right||''))
+    .filter(text=>text!==' ↔ ');
+  const distance=(result&&result.near_identity_distance_m!=null)?result.near_identity_distance_m:provenance.near_identity_distance_m;
+  const nearText=near.length
+    ?String(near.length)+' 组（阈值 '+escapeHtml(String(distance??'—'))+' m）'
+      +(nearPairs.length?('：'+escapeHtml(nearPairs.slice(0,2).join('；'))+(nearPairs.length>2?' …':'')):'')
+    :'未发现近邻站址（按当前阈值）';
+  const fingerprint=String(provenance.input_fingerprint||'');
+  const algorithm=String(provenance.algorithm_id||result?.algorithm_id||'—')
+    +' / '+String(provenance.algorithm_version||result?.algorithm_version||'—');
+  return '<div class="list-row" data-p16v2-near="1"><span>近邻站址（未证明独立）</span><small>'+nearText+'</small></div>'
+    +'<div class="list-row" data-p16v2-provenance="1"><span>来源与指纹</span><small>'
+    +'DEM '+escapeHtml(shortSha(terrain.sha256))
+    +' · 陆海 '+escapeHtml(shortSha(landMask.sha256||landMask.status))
+    +' · 输入 '+escapeHtml(shortSha(fingerprint))
+    +' · 算法 '+escapeHtml(algorithm)+'</small></div>';
+}
+
+/** V2 结果面板：真实覆盖结论 + 真实耗时 / 缓存 / 精确次数。 */
+export function p16V2ResultHtml(result){
+  if(!result||!result.status)return '<div class="empty-note">尚未生成 V2 结果</div>';
+  const coverage=result.coverage||{};
+  const continuous=coverage.continuous||{};
+  const discrete=coverage.discrete||{};
+  const timings=result.timings||{};
+  const matrix=result.matrix||{};
+  const exact=result.exact||{};
+  const feasible=result.feasible===true;
+  const badge=feasible?'<span class="flow-badge flow-passed">工程假设：C/S 全部满足</span>'
+    :'<span class="flow-badge flow-failed">工程假设：未全部满足</span>';
+  const subsytemRow=code=>{
+    const item=discrete[code]||{};
+    return '<div class="list-row"><span>'+escapeHtml(code)+' 离散覆盖</span><small>满足 '
+      +escapeHtml(String(item.satisfied??'—'))+' · 已确认缺口 '+escapeHtml(String(item.confirmed_gap??'—'))
+      +' · 仍缺证据 '+escapeHtml(String(item.unknown??'—'))+'</small></div>';
+  };
+  const actionRows=(result.selected_actions||[]).slice(0,20).map(action=>{
+    const coordinate=Array.isArray(action.coordinate)?action.coordinate:[];
+    return '<div class="list-row"><span>'+escapeHtml(String(action.action_id||''))+'</span><small>'
+      +escapeHtml(String(action.subsystem||''))+' · '+escapeHtml(reuseClassLabel(action.reuse_class))
+      +' · '+escapeHtml(String(action.name||action.site_id||''))
+      +(coordinate.length>=2?(' · '+Number(coordinate[0]).toFixed(5)+', '+Number(coordinate[1]).toFixed(5)):'')
+      +'</small></div>';
+  }).join('');
+  const more=(result.selected_actions||[]).length>20
+    ?'<div class="parameter-note">仅显示前 20 个动作（共 '+String((result.selected_actions||[]).length)+' 个）。</div>':'';
+  return '<div class="gap-results" data-p16v2-result="1">'
+    +'<div class="list-row"><span>'+badge+'</span><small>cap '+escapeHtml(String(result.inputs?.cap??'—'))
+    +' · 选中动作 '+escapeHtml(String((result.selected_actions||[]).length))
+    +' · 物理站址 '+escapeHtml(String((result.selected_sites||[]).length))+'</small></div>'
+    +subsytemRow('C')+subsytemRow('S')
+    +'<div class="list-row"><span>连续失保（门槛 '+escapeHtml(p16v2Metric(continuous.threshold_m))+' m）</span><small>C '
+    +escapeHtml(p16v2Metric(continuous.C_max_continuous_deficit_m))+' m · S '
+    +escapeHtml(p16v2Metric(continuous.S_max_continuous_deficit_m))+' m · 可接受：'
+    +escapeHtml(continuous.acceptable===true?'是':(continuous.acceptable===false?'否':'未判定'))+'</small></div>'
+    +'<div class="list-row"><span>真实耗时</span><small>总计 '+escapeHtml(p16v2Metric(timings.total_s))+' s'
+    +' · 基线 '+escapeHtml(p16v2Metric(timings.baseline_s))+' s'
+    +' · 矩阵 '+escapeHtml(p16v2Metric(timings.matrix_s))+' s'
+    +' · 搜索 '+escapeHtml(p16v2Metric(timings.search_s))+' s'
+    +' · 精确 '+escapeHtml(p16v2Metric(timings.exact_s))+' s</small></div>'
+    +'<div class="list-row"><span>覆盖矩阵缓存</span><small>'
+    +escapeHtml(matrix.hit===true?'热缓存命中':'冷缓存构建')
+    +' · '+escapeHtml(String(matrix.shape?matrix.shape.join('×'):'—'))
+    +' · '+escapeHtml(String(matrix.bytes??'—'))+' 字节</small></div>'
+    +'<div class="list-row"><span>精确 P14/P15 评价</span><small>'+escapeHtml(String(exact.reruns??'—'))
+    +' 次 · 保守矩阵满足体元子系统 '+escapeHtml(String(exact.conservative_satisfied_voxel_subsystems??'—'))+'</small></div>'
+    +p16V2ProvenanceRows(result)
+    +(result.unmet_truncated?'<div class="parameter-note">未满足体元过多，地图只显示前 500 个。</div>':'')
+    +(actionRows?'<h4>选中动作（工程假设）</h4>'+actionRows+more:'')
+    +'<div class="parameter-note">V2 是<b>工程假设、只读</b>结论：不写入 ProjectState、不进入正式候选、'
+    +'不产生 Apply 目标。地图上的虚线环是该假设方案的设施位置，不是正式布设。</div>'
+    +'</div>';
+}
+
+/** V2 区块：说明 + 提交按钮 + 任务卡片 + 结果面板。 */
+export function p16V2BlockHtml(view){
+  const task=view?.task||null;
+  return '<div class="parameter-note"><b>V2（工程假设，只读预算）</b>：在 R5 工程假设候选池上做快速组合搜索，'
+    +'再用正式 P14/P15 复核选中方案。它<b>不写 ProjectState</b>、不进入正式候选，也不提供 Apply；'
+    +'默认版本仍是 V1。</div>'
+    +'<button class="secondary full" id="evaluateCorridorSitePlanV2"'
+    +(task&&['queued','running','cancelling'].includes(String(task.advanced?.status))?' disabled':'')
+    +'>'+(task&&String(task.advanced?.status)==='running'?'V2 后台计算中…':'运行 P16-V2（工程假设）')+'</button>'
+    +'<div id="p16v2TaskCard">'+p16V2TaskCardHtml(view)+'</div>'
+    +'<div id="p16v2ResultPanel">'+p16V2ResultHtml(view?.result||null)+'</div>';
+}
+
+
 /** 停止原因 raw 值 → 中文（未登记取值原样显示，绝不编造）。 */
 export function stopReasonLabel(value){
   const key=String(value??'').trim();
@@ -1010,7 +1262,8 @@ function stepNext(flow,segments){
   });
 }
 
-export function render({flow}){
+export function render({flow,navigationMonitoring=null,p16V2=null}){
+  const navigationState=navigationMonitoring||{};
   // 两层卡片式布局：名称 + 弱化 role（第一行）、R/MTBF 两个输入各占半宽（第二行）。
   // data-device-radius / data-device-mtbf 的索引契约保持不变，collect() 无需改动。
   // Round 3：surface-aware service（Communication / RID）的**权威几何**是
@@ -1129,9 +1382,20 @@ export function render({flow}){
     +surveillancePanel
     +'<div class="gap-results">'+serviceGapStatements(flow)+'</div>'
     +planningObjectivesPanel(flow)+'<div class="parameter-note">空间连续缺口是服务走廊体元的保守纵向投影，不是运行中断、正式 ICAO 连续性或可用度概率。</div><div class="gap-results">'+corridorGapSummary(corridorGap)+'</div>';
-  const corridorSitePlanPanel='<h3>CNS 设施规划 '+wbBadge(corridorSitePlan.status||'not_calculated','未计算')+'</h3><div class="parameter-note">仅针对已确认的走廊缺口目标，通过累计试算验证服务与独立冗余收益；证据不足不会触发建站。</div><label class="check-row"><input type="checkbox" id="corridorSitePolicyConfirmed" '+(corridorSitePolicy.confirmed?'checked':'')+'> 确认走廊复用优先规划策略</label><button class="secondary full" id="evaluateCorridorSitePlan">生成 CNS 设施规划方案</button><div class="gap-results">'+corridorSitePlanSummary(corridorSitePlan)+'</div>'
+  const corridorSitePlanPanel='<h3>CNS 设施规划 '+wbBadge(corridorSitePlan.status||'not_calculated','未计算')+'</h3>'
+    +'<div class="parameter-note">仅针对已确认的走廊缺口目标，通过累计试算验证服务与独立冗余收益；证据不足不会触发建站。</div>'
+    +'<label class="check-row"><input type="checkbox" id="corridorSitePolicyConfirmed" '+(corridorSitePolicy.confirmed?'checked':'')+'> 确认走廊复用优先规划策略</label>'
+    +'<label class="check-row"><span>规划版本</span><select id="corridorSitePlanVersion">'
+    +'<option value="v1"'+(p16PlanVersion==='v2'?'':' selected')+'>V1（正式，写入 ProjectState）</option>'
+    +'<option value="v2"'+(p16PlanVersion==='v2'?' selected':'')+'>V2（工程假设，只读预算）</option>'
+    +'</select></label>'
+    +'<div id="p16v1Block"'+(p16PlanVersion==='v2'?' hidden':'')+'>'
+    +'<button class="secondary full" id="evaluateCorridorSitePlan">生成 CNS 设施规划方案</button>'
+    +'<div class="gap-results">'+corridorSitePlanSummary(corridorSitePlan)+'</div>'
     +'<h4>service-aware 规划方案</h4><div class="gap-results">'+facilityPlanCards(corridorSitePlan)+'</div>'
-    +'<h4>残余确认目标</h4><div class="gap-results">'+residualTargetsSummary(corridorSitePlan)+'</div>';
+    +'<h4>残余确认目标</h4><div class="gap-results">'+residualTargetsSummary(corridorSitePlan)+'</div>'
+    +'</div>'
+    +'<div id="p16v2Block"'+(p16PlanVersion==='v2'?'':' hidden')+'>'+p16V2BlockHtml(p16V2)+'</div>';
 
   // ---- 雷达监视基线：P14 的前置服务证据（正式依赖），默认 OPTIONAL ----------------
   const radarPanel='<h3>雷达监视基线 '+wbBadge(flow.radar_surveillance_layout?.status||'not_calculated','未计算')+'</h3>'
@@ -1144,6 +1408,48 @@ export function render({flow}){
     +advancedAuditNote('雷达监视基线来自独立的雷达划设任务卡（算法标识 radar_surveillance_layout_v1）；卡片内部的算法版本号、就绪状态与挂高历史字段等术语均为工程内部标识。卡片同时原样回显后端字段取值（例如 unverified / eligible / confirmed），用户可读解释见括号内中文或下方阻塞项说明。')
     +renderRadarSurveillanceLayoutPanel(flow)
     +radarServicePanel;
+
+  // ---- Round38-N2：导航监测规划（只读消费 N1 两个接口） ------------------------
+  // 结果只进前端展示状态，不写 ProjectState；CRS 未正式确认前权威仿真继续 blocked。
+  const navigationMonitoringPanel=renderNavigationMonitoringPanel(flow,{
+    candidates:navigationState.candidates,
+    result:navigationState.result,
+    fixedCorridorGeometry:navigationState.fixedCorridorGeometry,
+    draft:navigationState.draft,
+    routeId:navigationState.result?.route_identity?.route_id||null,
+    //: 权威参考起降点的 CRS 是否已确认：只读 flow 里的真实字段，绝不猜默认值。
+    //: 未确认（value 为 null / status 非 confirmed）时，界面必须如实给出阻断句。
+    referenceCrsBlocked:referenceLandingCrsUnconfirmed(flow),
+    //: 全宽 CNS 服务状态：只有 P14 结果 current 且身份匹配时才允许有效结论。
+    fullWidth:(()=>{
+      const corridor=flow?.cns_corridor_assessment||{};
+      const projected=flow?.result_statuses?.cns_corridor_assessment||corridor.status||null;
+      const routeId=navigationState.result?.route_identity?.route_id||null;
+      const entry=(corridor.routes||[]).find(item=>item?.route_id===routeId)||null;
+      const identityMatched=Boolean(
+        entry&&navigationState.result?.result_fingerprint
+        &&entry.route_id===navigationState.result?.route_identity?.route_id
+      );
+      return {
+        corridorStatus:projected,
+        corridorCurrent:projected==='passed'||projected==='failed',
+        identityMatched,
+      };
+    })(),
+  });
+  const navigationMonitoringBlockerItems=[];
+  if((flow?.operational_routes||[]).length!==1){
+    navigationMonitoringBlockerItems.push({
+      text:'正式运行航路不是唯一一条，无法确定权威航路',
+      detail:'导航监测仿真需要唯一权威航路；请先完成航路发布或明确指定航路标识。',
+    });
+  }
+  if(!(flow?.operational_routes||[]).length){
+    navigationMonitoringBlockerItems.push({
+      text:'尚未确认正式运行航路',
+      detail:'导航监测仿真按正式运行航路的完整几何计算；没有航路时无法评估。',
+    });
+  }
 
   // ---- 高级：兼容分支与闭环（全部不参与正式规划门禁） -------------------------
   // 兼容声明逐字展示（含引号），因此这里不做 HTML 转义：
@@ -1237,7 +1543,21 @@ export function render({flow}){
         +wbBlock('阻塞项与工程假设',blockerList(continuousServiceBlockerItems(flow),'当前没有与连续服务可接受性相关的阻塞项'))
         +nextHint(step6GateModel(flow).confirmationAllowed
           ? '连续服务结论允许进入方案评审；若存在 managed gap，方案评审与报告中必须逐段披露，不得表述为"全覆盖"。'
-          : '连续服务结论为不可接受或不可判定（unknown）：请先补齐工程依据或调整方案后重新评估，再进入方案评审。')]
+          : '连续服务结论为不可接受或不可判定（unknown）：请先补齐工程依据或调整方案后重新评估，再进入方案评审。')],
+      ['cns-res-navigation-monitoring','导航监测规划',
+        wbBlock('导航监测规划',wbSegHint(RESULT_SEGMENTS,'cns-res-navigation-monitoring')
+          +segIntro('沿航路中心线评估导航监测设备的关联覆盖与未关联缺口，并显示起终点强制设备、推荐铁塔设备与固定保障宽带的真实状态。',
+            '唯一权威航路的完整几何；候选站址快照（全部已录入起降点、既有铁塔与不可用候选）；'
+            +'关联半径 '+NAVIGATION_PARAMETER_DEFAULTS.monitor_association_radius_m
+            +' m 等可调参数；风险画像与三维保障证据。')
+          +navigationMonitoringPanel)
+        +wbBlock('阻塞项与工程假设',blockerList(
+          navigationMonitoringBlockerItems.concat([{kind:'assumption',
+            text:'监测关联半径只是沿航路中心线的关联参数',
+            detail:'它绝不等于左右各 500 m 的全宽 CNS 保障能力；关联率不得替代全宽覆盖率。'}]),
+          '当前没有与导航监测规划相关的阻塞项'))
+        +nextHint('导航监测规划是**只读仿真**：它不写 ProjectState，也不解锁方案评审；'
+          +'起降点坐标系正式确认之前，权威仿真保持 blocked。')]
     ]})
     +wbPanel('advanced','',{segments:[
       ['cns-adv-timeline','运行时间线',wbBlock('运行时间线',wbSegHint(ADVANCED_SEGMENTS,'cns-adv-timeline')+timelinePanel)],
@@ -1247,6 +1567,61 @@ export function render({flow}){
         +'<div class="flow-summary">生命风险：'+riskState('life')+' · 财产风险：'+riskState('property')+'<br>高级与旧版兼容结果均不用于正式规划门禁。</div>']
     ]});
   return shell('05','CNS规划','生产链：三维覆盖 → 服务能力 → 雷达监视基线 → 服务走廊 → 能力缺口 → 设施规划 → 连续服务可接受性；当正式 CNS 需求包含 Radar 非合作监视服务时，雷达监视基线是 CNS 服务走廊的前置证据。',body+stepNext(flow,stepBlockers));
+}
+
+//: P16-V2 卡片的订阅句柄（面板每次重绘都会重新 bind，旧订阅必须先释放）。
+let p16V2Unsubscribe=null;
+//: document 级取消委托只需绑定一次（按钮随后续局部更新被替换）。
+let p16V2CancelBound=false;
+
+/**
+ * P16-V2 卡片的局部更新器。
+ *
+ * 为什么不用整页重绘：任务进度每 1.5 s 变化一次，整页 ``renderWorkflow`` 会重建
+ * 地图与全部面板。这里只替换 ``#p16v2TaskCard`` / ``#p16v2ResultPanel`` 两个容器，
+ * 其余 DOM（含用户正在输入的控件）保持不变。
+ */
+function bindP16V2Panel(c){
+  const update=view=>{
+    const card=document.getElementById('p16v2TaskCard');
+    if(card)card.innerHTML=p16V2TaskCardHtml(view);
+    const resultPanel=document.getElementById('p16v2ResultPanel');
+    if(resultPanel)resultPanel.innerHTML=p16V2ResultHtml(view?.result||null);
+    const button=document.getElementById('evaluateCorridorSitePlanV2');
+    if(button){
+      const status=String(view?.task?.advanced?.status||'');
+      const running=['queued','running','cancelling'].includes(status);
+      button.disabled=running;
+      button.textContent=running?'V2 后台计算中…'
+        :(status==='succeeded'?'重新运行 P16-V2（工程假设）':'运行 P16-V2（工程假设）');
+    }
+  };
+  if(p16V2Unsubscribe){try{p16V2Unsubscribe();}catch(_){/* 旧订阅失效可忽略 */}p16V2Unsubscribe=null;}
+  if(c.p16V2&&typeof c.p16V2.subscribe==='function'){
+    p16V2Unsubscribe=c.p16V2.subscribe(update);
+    if(typeof c.p16V2.snapshot==='function')update(c.p16V2.snapshot());
+  }
+  if(!p16V2CancelBound&&typeof document!=='undefined'
+    &&typeof document.addEventListener==='function'){
+    p16V2CancelBound=true;
+    document.addEventListener('click',async event=>{
+      const button=event.target&&event.target.closest?event.target.closest('[data-p16v2-cancel]'):null;
+      if(!button)return;
+      const taskId=button.dataset.p16v2Cancel;
+      if(!taskId)return;
+      button.disabled=true;
+      button.textContent='正在请求取消…';
+      try{
+        await c.cancelBackgroundTask(taskId);
+      }catch(error){
+        c.panelError(error.message||String(error));
+        if(document.body.contains(button)){
+          button.disabled=false;
+          button.textContent='取消 V2 任务';
+        }
+      }
+    });
+  }
 }
 
 export function bind(c){
@@ -1370,7 +1745,51 @@ export function bind(c){
       }
     };
   }
+  // ---- R6-C：版本开关（默认 V1）与 P16-V2 只读预算 --------------------------------
+  // V2 与 V1 复用**同一个**后台任务框架（提交 / 进度 / 取消 / 恢复），但它是独立
+  // task type，且没有 canonical 发布：这里不做任何"完成后刷新正式结果"的假设。
+  const versionSelect=c.$('corridorSitePlanVersion');
+  if(versionSelect){
+    const applyVersion=()=>{
+      const v2=versionSelect.value==='v2';
+      //: 记住显示选择：工作台重绘后仍停在 V2，不会把进行中的 V2 卡片/取消入口藏起来。
+      p16PlanVersion=v2?'v2':'v1';
+      const v1Block=c.$('p16v1Block'),v2Block=c.$('p16v2Block');
+      if(v1Block)v1Block.hidden=v2;
+      if(v2Block)v2Block.hidden=!v2;
+    };
+    versionSelect.onchange=applyVersion;
+    applyVersion();
+  }
+  if(c.$('evaluateCorridorSitePlanV2')){
+    const submitV2=c.$('evaluateCorridorSitePlanV2');
+    submitV2.onclick=async()=>{
+      const original=submitV2.textContent;
+      try{
+        submitV2.disabled=true;
+        submitV2.textContent='正在提交 V2 后台计算…';
+        //: 版本开关是**显式**的：请求里带 ``version: 'v2'``，服务端据此只走只读 task。
+        await c.submitBackgroundTask('/api/cns-corridor-site-plan/v2/evaluate',{
+          version:'v2',
+          scenario_id:'ZH-CNS-EA-R0005-BC-V1',
+          exact_evaluation_budget:50,
+        });
+        submitV2.textContent='V2 后台计算中…';
+      }catch(error){
+        c.panelError(error.message||String(error));
+        if(document.body.contains(submitV2)){
+          submitV2.disabled=false;
+          submitV2.textContent=original;
+        }
+      }
+    };
+  }
+  bindP16V2Panel(c);
   c.actionButton('evaluateServiceTimeline',()=>c.resourceAction('/api/service-timeline/evaluate',{}));
+  // ---- Round38-N2：导航监测规划（**只读**；绝不写 ProjectState） -----------------
+  // 主操作按钮用 document 级事件委托绑定（见 navigation_monitoring.js 的说明）：
+  // 面板每次重绘都会替换整棵 DOM，赋在旧节点上的 onclick 会随节点一起丢失。
+  bindNavigationMonitoringPanel(c);
   c.actionButton('evaluateProtectionEnvelope',()=>c.resourceAction('/api/protection-envelope/evaluate',{}));
   c.actionButton('evaluateClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/evaluate',{}));
   c.actionButton('applyClosedLoop',()=>c.resourceAction('/api/cns-closed-loop/apply',{application_id:c.flow().closed_loop_assessment?.application?.application_id}));
@@ -1387,6 +1806,23 @@ export function bind(c){
     // Radar-II）是**项目默认策略**，普通用户不再手动选择型号组合，因此这里不再改写
     // allow_mixed_radar_types / allow_automatic_radar_ii_escalation：提交的是当前
     // policy 的完整副本，历史项目保持它自己已冻结的 I-only 结论。
+    const heightEntries=[];
+    document.querySelectorAll('[data-radar-ground-height]').forEach(input=>{
+      const siteId=input.dataset.radarGroundSiteId;
+      const index=input.dataset.radarGroundIndex;
+      const source=document.querySelector('[data-radar-ground-source-index="'+index+'"]')?.value
+        ||'user_confirmed';
+      const confirmed=document.querySelector(
+        '[data-radar-ground-confirmed-index="'+index+'"]'
+      )?.checked===true;
+      const sourceRef=document.querySelector(
+        '[data-radar-ground-source-ref-index="'+index+'"]'
+      )?.value||'';
+      heightEntries.push({siteId,height:input.value,source,confirmed,sourceRef});
+    });
+    policy.ground_site_installation_heights=groundSiteInstallationPolicy(
+      heightEntries,policy.ground_site_installation_heights
+    );
     return c.resourceAction(RADAR_POLICY_ENDPOINT,policy);
   });
   // 运行初步划设：一次显式动作 = 一次两阶段 MILP + 5 m 独立连续覆盖复核。

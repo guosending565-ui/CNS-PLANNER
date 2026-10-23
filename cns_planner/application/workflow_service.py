@@ -74,6 +74,7 @@ from .reference_data_service import ReferenceDataService
 from .tower_obstacle_service import TowerObstacleService
 from .cns_shared_site_candidate_service import CNSSharedSiteCandidateService
 from .fixed_corridor_geometry_service import FixedCorridorGeometryService
+from .navigation_monitoring_simulation_service import NavigationMonitoringSimulationService
 from .radar_terrain_los_diagnostics_service import RadarTerrainLosDiagnosticsService
 from .radar_surveillance_layout_service import RadarSurveillanceLayoutService
 from .building_clearance_service import BuildingClearanceService
@@ -549,6 +550,9 @@ class WorkflowService:
             self.session, self.reference_data_service.landing_sites_snapshot,
             self.reference_data_service.towers_snapshot, self.existing_cns_snapshot,
         )
+        self.navigation_monitoring_simulation_service = NavigationMonitoringSimulationService(
+            self.session, self.cns_shared_site_candidate_service, self.artifact_read_service,
+        )
         self.reference_link_service = ReferenceLinkService(
             self.session, self.invalidation_service, snapshot,
         )
@@ -622,6 +626,14 @@ class WorkflowService:
         self.route_risk_profile_service = RouteRiskProfileService(
             self.session, self.invalidation_service, snapshot,
             self.layered_route_planner_service,
+        )
+        # Round38-N2：导航监测（N1/N2）只读仿真复用既有候选适用性与风险画像，
+        # 不新建结果容器、不写 ProjectState。
+        self.navigation_monitoring_simulation_service.candidate_applicability = (
+            self.layered_route_planner_service.candidate_applicability
+        )
+        self.navigation_monitoring_simulation_service.risk_profile_snapshot = (
+            self.route_risk_profile_service.result_snapshot
         )
         # A candidate / grid_risk_v2 / profile-policy change stales only the additive
         # route_risk_profiles; legacy routes, V3 and CNS results stay untouched.
@@ -2357,6 +2369,9 @@ class WorkflowService:
         return self.radar_terrain_los_diagnostics_service.diagnose_combined(payload)
 
     def cns_shared_site_candidates(self): return self.cns_shared_site_candidate_service.snapshot()
+
+    def simulate_navigation_monitoring(self, payload=None):
+        return self.navigation_monitoring_simulation_service.simulate(payload)
 
     def fixed_corridor_geometry(self, route_id=None):
         """固定 1000 m 保障宽带的只读几何投影（不写状态、不重算）。"""

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>低空航路CNS规划系统</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/css/b4x.css"><link rel="stylesheet" href="/css/tasks.css"></head>
+<html lang="zh-CN"><head><meta charset="UTF-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1"><title>低空航路CNS规划系统</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/css/b4x.css"><link rel="stylesheet" href="/css/tasks.css"></head>
 <body>
 <div class="workbench-app" id="appShell">
 
@@ -12,6 +12,7 @@
   <button id="taskStatusBadge" class="task-status-badge" hidden aria-live="polite"></button>
   <div class="topbar-actions">
    <button id="workbenchOpen" class="secondary compact" title="展开当前步骤工作台">工作台</button>
+   <button id="openViewer3d" class="secondary compact" title="在浏览器新标签打开三维 Viewer（沿用同一当前项目；只读展示，不触发任何业务写入或规划计算）">三维 Viewer</button>
    <button id="settingsBtn" class="secondary compact">数据源</button>
    <button id="saveProjectTop" class="secondary compact">保存项目</button>
    <div class="topbar-menu">
@@ -105,6 +106,7 @@
       <div class="layer-row"><span><i class="swatch" style="background:#1f6f8b"></i> Route Protection Corridor（水平保护走廊）</span><input type="checkbox" id="routeProtectionCorridorLayer" aria-label="水平航路保护走廊"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#8b1f6f"></i> Surveillance Protection Coverage（监视保护覆盖：合作 RID / 非合作 Radar 分层着色）</span><input type="checkbox" id="surveillanceProtectionLayer" aria-label="监视保护覆盖"></div>
       <div class="layer-row"><span><i class="swatch" style="background:#7256a1"></i> 陆海分类（Surface Facts，格心代表点）</span><input type="checkbox" id="surfaceFactsLayer" aria-label="陆海分类图层"></div>
+      <div class="layer-row"><span><i class="swatch" style="background:#2b4a63"></i> 导航监测规划（航路、强制/推荐设备、关联与未关联航段；默认关闭）</span><input type="checkbox" id="navigationMonitoringLayer" aria-label="导航监测规划"></div>
       <div class="layer-row"><span><i class="swatch existing-cns"></i>已有 CNS 设施</span><input type="checkbox" id="existingCnsLayer"></div>
       <div class="layer-row"><span><i class="swatch candidate-site"></i>候选站址</span><input type="checkbox" id="candidateSiteLayer"></div>
       <div class="layer-row"><span><i class="swatch cns-c"></i>通信 C 缺口</span><input type="checkbox" id="cLayer"></div>

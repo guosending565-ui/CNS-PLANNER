@@ -721,7 +721,17 @@ test('no stylesheet keeps a fixed 400px sidebar or a 72vh panel',()=>{
     const css=readFileSync(new URL(name,directory),'utf8');
     assert.doesNotMatch(css,/width:\s*400px\s*!important/,`${name} still forces a 400px sidebar`);
     assert.doesNotMatch(css,/72vh/,`${name} still reserves a 72vh panel`);
-    assert.doesNotMatch(css,/!important/,`${name} uses !important patches`);
+    // 只约束真实的 CSS 声明（``!important;``），不把注释/文档里提到的
+    // "不使用 !important" 误判成一条 !important 补丁声明。
+    // 唯一登记在案的例外：map.css 的图例收起态 ``height:auto !important`` ——
+    // Chromium 会把该 flex column 压成 2px 高，普通声明无法覆盖，故保留并在此锁定
+    // 它必须是**唯一**的 !important，且只用于这个高度下限。
+    const importantDeclarations=[...css.matchAll(/[^;{}]*!important\s*;/g)].map(m=>({
+      name, declaration:m[0].replace(/\s+/g,' ').trim(),
+    }));
+    const unexpected=importantDeclarations.filter(item=>
+      !(item.name==='map.css'&&/^height:\s*auto\s*!important\s*;$/.test(item.declaration)));
+    assert.deepEqual(unexpected,[],`${name} uses !important patches`);
   }
 });
 
@@ -1033,7 +1043,7 @@ const STEP05_SEGMENTS={
   //: Round 2.5：新增「连续服务可接受性」分段（P17）；它是 canonical 链的最后一环。
   //: Round32-H：雷达监视基线（cns-res-radar）移到 CNS 服务走廊**之前** ——
   //: Radar 基线是 P14 的上游服务证据，顺序错了会让 P14/P15/P16 立刻 stale。
-  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性']],
+  result:[['cns-res-coverage','三维覆盖评估'],['cns-res-capability','服务能力评估'],['cns-res-radar','雷达监视基线'],['cns-res-corridor','CNS 服务走廊'],['cns-res-gap','CNS 能力缺口'],['cns-res-site','CNS 设施规划'],['cns-res-continuous','连续服务可接受性'],['cns-res-navigation-monitoring','导航监测规划']],
   advanced:[['cns-adv-timeline','运行时间线'],['cns-adv-gapv2','保护与缺口记录'],['cns-adv-compat','旧版历史（只读）'],['cns-adv-closedloop','高级方案影响试算']]
 };
 
@@ -1053,6 +1063,11 @@ const STEP05_CONTROLS=[
   'continuousPolicySource','continuousPolicyConfirmed','saveContinuousPolicy',
   'scenarioIntruderSpeed','scenarioNominalClosing','scenarioConservativeClosing',
   'saveOperationScenario',
+  //: Round38-N2：导航监测规划（只读仿真）的航路选择、参数与主操作控件。
+  'navigationRouteSource','navigationRouteId','navigationForceEndpointMonitors',
+  'navigation_monitor_association_radius_m','navigation_gap_tolerance_s',
+  'navigation_route_speed_mps','navigation_risk_priority_weight',
+  'navigation_max_optional_monitor_sites','runNavigationMonitoringSimulation',
   'nextStep'
 ];
 
@@ -1177,13 +1192,15 @@ test('workbench navigation exposes tablist, tab and tabpanel ARIA state',()=>{
 
     clickNode(document,tabButtons(document).find(node=>node.dataset.wbTab==='result'));
     assert.deepEqual(tabButtons(document).map(node=>node.getAttribute('aria-selected')),['false','true','false']);
-    //: Round 2.5：结果标签新增「连续服务可接受性」分段（第三个之外的第六个之后又加一个）。
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false','false']);
+    //: Round 2.5：结果标签新增「连续服务可接受性」分段；Round38-N2 再增「导航监测规划」。
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['true','false','false','false','false','false','false','false']);
     assert.equal(findByDataset(root,'panelGroup','result').getAttribute('role'),'tabpanel');
     assert.equal(findByDataset(root,'panelGroup','operate').getAttribute('role'),undefined);
 
     clickNode(document,segButtons(document).find(node=>node.dataset.wbSeg==='cns-res-corridor'));
-    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','true','false','false','false','false']);
+    //: 结果分段顺序为 覆盖 → 能力 → 雷达基线 → 服务走廊 → 缺口 → 设施 → 连续服务 → 导航监测；
+    //: Radar 基线必须保持在服务走廊之前（Round32-H），因此服务走廊是第 4 个。
+    assert.deepEqual(segButtons(document).map(node=>node.getAttribute('aria-selected')),['false','false','false','true','false','false','false','false']);
   });
 });
 
@@ -1222,8 +1239,10 @@ const STEP04_CONTROLS=[
   'operationContext_manned_traffic_density','operationContextSource','operationContextConfirmed',
   'saveOperationContext','requirementPoliciesJson','saveRequirementPolicies',
   'evaluateRequiredRecommendation','adoptRequiredRecommendation',
-  // 结果 · 服务走廊
-  'corridorRoute','corridorHalfWidth','corridorLower','corridorUpper','corridorSource',
+  // 结果 · 服务走廊（Round38-W1A：水平宽度改为**只读**固定契约展示，
+  // 可编辑的 corridorHalfWidth 已被三个只读控件取代）
+  'corridorRoute','corridorHalfWidthReadOnly','corridorTotalWidthReadOnly','corridorWidthPolicy',
+  'corridorLower','corridorUpper','corridorSource',
   'corridorConfirmed','saveCorridorPolicy',
   // 高级 · 时间与场景
   'serviceScenarioRoute','serviceScenarioEvents','serviceScenarioConfirmed','saveServiceScenario',
@@ -1312,6 +1331,8 @@ test('step 04 keeps every task owning its own controls',()=>{
       requirementPoliciesJson:'run-res-recommend',saveRequirementPolicies:'run-res-recommend',
       evaluateRequiredRecommendation:'run-res-recommend',adoptRequiredRecommendation:'run-res-recommend',
       corridorRoute:'run-res-corridor',corridorConfirmed:'run-res-corridor',saveCorridorPolicy:'run-res-corridor',
+      corridorHalfWidthReadOnly:'run-res-corridor',corridorTotalWidthReadOnly:'run-res-corridor',
+      corridorWidthPolicy:'run-res-corridor',
       serviceScenarioRoute:'run-adv-timing',
       saveResponseBudget:'run-adv-timing',saveEncounterScenario:'run-adv-timing',
       evaluateProtectionBudget:'run-adv-timing',evaluateDaaEncounter:'run-adv-timing',
@@ -1622,9 +1643,10 @@ test('step 02 mapping cards transcribe the existing flow state without recomputi
     const segment=findByDataset(root,'segName','env-res-mapping');
     assert.ok(findAll(segment,'.empty-note').some(node=>node.textContent.includes('尚未保存工作区')),'an unsaved workspace explains why there is no mapping');
     const values=findAll(segment,'.metric-value').map(node=>node.textContent);
-    // BUG-POP-001 追加 Population NoData 语义两张卡：未确认时如实显示 not_configured / 未提供，
+    // BUG-POP-001 追加 Population NoData 语义两张卡：未确认时如实显示「未配置」/「未提供」，
     // 绝不把"没有确认"渲染成已确认，也不影响其余六张映射卡的状态词。
-    assert.deepEqual(values,['未计算','未计算','未计算','未计算','未计算','未计算','not_configured','未提供'],'every unmapped layer stays not_calculated and the unconfirmed NoData semantics is reported as-is');
+    // 面向用户的状态词统一为简体中文；原始 not_configured 只在高级/技术字段出现。
+    assert.deepEqual(values,['未计算','未计算','未计算','未计算','未计算','未计算','未配置','未提供'],'every unmapped layer stays not_calculated and the unconfirmed NoData semantics is reported as-is');
     const labels=findAll(segment,'.metric-label').map(node=>node.textContent);
     assert.ok(labels.includes('Population NoData 语义'),'the NoData semantics card lives beside the population mapping card');
     assert.ok(labels.includes('来源与证据'),'source / evidence are visibly reported even when unset');
@@ -1764,7 +1786,7 @@ test('step 02 keeps the workspace, grid, risk V2 and altitude contracts',()=>{
     bindStep2(c);
     // 本轮新增四项：保存 / 撤回 Population NoData 语义、population-only remap，
     // 以及 B4X 的「生成该高度层的规划约束场」主操作。
-    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','generateConstraintField','savePopulationNodata','revokePopulationNodata','remapPopulation','saveAltitudeLayer'],'bind() registers exactly the existing actions');
+    assert.deepEqual(registered,['clearWorkspace','saveWorkspace','evaluateRiskV2','generateConstraintField','saveConstraintConfiguration','savePopulationNodata','revokePopulationNodata','remapPopulation','saveAltitudeLayer'],'bind() registers exactly the existing actions');
     for(const id of registered)assert.ok(document.getElementById(id).onclick,`#${id} keeps its handler`);
   });
 });

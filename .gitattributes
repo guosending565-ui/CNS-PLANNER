@@ -1,0 +1,11 @@
+# R7-D16: Cesium runtime / PNG symbols are captured binary assets. Their bytes are
+# part of the acceptance identity (see docs/3d-protected-assets-r7d3c.json and
+# tests/test_cesium_vendor_license.py), so Git must never apply EOL conversion.
+# The vendored bundle is minified upstream text with pre-existing trailing spaces;
+# whitespace checks must not flag or rewrite it.
+cns_planner/web/vendor/cesium/** -text whitespace=-trailing-space
+cns_planner/web/assets/symbols/*.png binary
+# These two protected 3D assets are stored LF in the R7-D3C identity manifest; keep
+# their bytes stable instead of letting core.autocrlf rewrite them on checkout.
+cns_planner/application/flight_protection_research.py -text
+cns_planner/web/js/visualization3d/flight_protection_research.js -text

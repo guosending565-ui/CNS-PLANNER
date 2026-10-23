@@ -1,0 +1,150 @@
+{
+  "schema_version": "cns-r7d16-verification/v1",
+  "round": "R7-D16",
+  "baseline": "8f1c927c7df7d3f18286526e9a888ca07c9d9d7f",
+  "branch": "codex/r7d13-ab-integration",
+  "worktree": "C:/Users/yiding/.codex/worktrees/r7d13-ab-integration/CNS-PLANNER",
+  "authorization": "user-authorized reuse of the existing R7-D13 isolated worktree; main worktree D:/Projects/CNS-PLANNER untouched",
+  "test_environment": {
+    "python": "D:/tools/anaconda/python.exe",
+    "python_invocations": "pytest -q -p no:cacheprovider with workspace TEMP / --basetemp",
+    "browser": "Playwright Chromium (Microsoft Edge channel), headless, 1500x1000",
+    "service": "http://127.0.0.1:8793 (independent test copy; 8765/8776 not started or touched)",
+    "project_state": "worktree projects/ test copy only; formal ProjectState not opened or written"
+  },
+  "groups": [
+    {
+      "name": "E-batch Node frontend",
+      "files": 11,
+      "passed": 199,
+      "failed": 0,
+      "includes": [
+        "workbench_shell", "round38_n2_navigation_ui", "r7d3b_tower_icon",
+        "round41_p16_v2_ui", "r7d16_landing_pad_icon", "visualization3d_basemap",
+        "visualization3d_protection", "visualization3d_radar", "intrusion_playback",
+        "round38_offline_imagery", "round38_t3d4_3d_cns_frontend"
+      ]
+    },
+    {
+      "name": "E-batch Python",
+      "files": 24,
+      "passed": 329,
+      "failed": 0,
+      "includes": [
+        "navigation monitoring simulation (kernel/api/service)",
+        "visualization-3d coverage/imagery/intrusion/protection/radar/terrain/water",
+        "round38 t3d4 integration", "offline imagery", "Cesium vendor license",
+        "basemap evidence", "assumption sites 3D", "n2 fixed corridor geometry",
+        "HTTP cache-control/ETag"
+      ]
+    },
+    {
+      "name": "A/B targeted Python",
+      "files": 14,
+      "passed": 265,
+      "skipped": 1,
+      "failed": 3,
+      "baseline_comparison": "all 3 failures reproduce on 8f1c927 (read-only git archive)",
+      "known_failures": [
+        "test_phase4_b6x_heavy_task_runtime.py::test_corridor_async_result_matches_sync_semantics",
+        "test_phase4_b6x_heavy_task_runtime.py::test_p14_protected_files_are_byte_identical",
+        "test_project_persistence_characterization.py::test_open_existing_project_switches_state_and_restores_sources"
+      ]
+    },
+    {
+      "name": "C/D targeted Python (D2/D4/D7/D8 + P14-P18)",
+      "files": 15,
+      "passed": 299,
+      "failed": 14,
+      "baseline_comparison": "identical 14 failures on 8f1c927; no new failure",
+      "known_failure_families": [
+        "building level-independent facts (1)",
+        "legacy risk model / risk v2 canonical integral (2)",
+        "continuous service acceptability (4)",
+        "route planner v3 continuous building clearance (7)"
+      ]
+    },
+    {
+      "name": "Node broad regression (A/B/C/D front ends)",
+      "files": 29,
+      "passed_files": 26,
+      "failed_files": 3,
+      "baseline_comparison": "the same 3 files fail on 8f1c927",
+      "known_failure_families": [
+        "frontend_modules (4 tests, stale Theta* text assertions)",
+        "route_risk_profile_frontend (1 test)",
+        "cns_service_round3_frontend (1 test)"
+      ]
+    }
+  ],
+  "e_batch_contract_checks": {
+    "single_post_and_task_recovery": "A/B Node tests passed (task request once / refresh once / heavy task frontend)",
+    "project_switch_lock": "tests/test_r7b1_project_switch_lock.py passed",
+    "explicit_adoption_and_state_isolation": "layered_validation_adoption_frontend (33) + backend adoption tests passed",
+    "c_batch_gis_radar": "radar surveillance layout frontend (18), shared sites / PCF / LOS tests passed",
+    "d_batch_cns_p17_2_5": "continuous service and P17 tests passed; algorithm version 2.5 semantics retained",
+    "p17_stale_and_history": "test_round29q_p17_radar_limitation + round29/38 P17 tests passed; no historical action promoted to installed",
+    "n_unknown_semantics": "population/navigation unknown tests passed; unknown never converted to pass or 0"
+  },
+  "browser_acceptance": {
+    "evidence": "docs/r7d16/browser_evidence.json",
+    "two_d": {
+      "console_errors": 0,
+      "http_errors": 0,
+      "default_navigation_monitoring_layer": false,
+      "default_reference_landing_layer": false,
+      "default_tower_layer": false,
+      "screenshots": ["shots/2d-landing-towers.png", "shots/2d-navigation-monitoring.png"]
+    },
+    "three_d": {
+      "console_errors": 0,
+      "http_errors": 0,
+      "layer_switch_count": 20,
+      "protected_layer_switches": 19,
+      "new_landing_pad_switch": "ly_landingPads (default off)",
+      "all_business_toggles_without_console_error": true,
+      "terrain_provider": "Dh",
+      "imagery_layers": 2,
+      "offline_imagery_visible": true,
+      "entity_count_with_layers_on": 946,
+      "tower_billboards": 373,
+      "tower_icon_unified": true,
+      "landing_pad_billboards": 100,
+      "landing_pad_kinds": {"project_node": 2, "reference_landing_site": 98},
+      "screenshots": ["shots/3d-default.png", "shots/3d-layers-on.png"]
+    },
+    "request_discipline": {
+      "two_d": "one GET per state/business endpoint; /api/tasks polling only",
+      "three_d": "one GET per layer endpoint; manifest twice is by design (summary + towers detail), terrain-window twice (initial + fixed band)",
+      "duplicate_posts": 0
+    }
+  },
+  "three_d_assets": {
+    "evidence": "docs/r7d16/3d-assets-verification.json",
+    "byte_identical_to_r7d3c": 16,
+    "intentionally_changed": 3,
+    "changed_paths": [
+      "cns_planner/api/router.py",
+      "cns_planner/web/js/visualization3d/app.js",
+      "cns_planner/web/js/visualization3d/basemap.js"
+    ],
+    "router_3d_section_matches_r7d3c": true,
+    "landing_pad_sha256_matches_supplied": true,
+    "vendor_rebaselined_to_upstream_lf": true
+  },
+  "theta_attribution": {
+    "evidence": "docs/r7d16/theta_attribution.json",
+    "is_e_batch_regression": false,
+    "classification": "test_fixture_predates_endpoint_transition_policy",
+    "algorithm_changed": false
+  },
+  "hygiene": {
+    "git_diff_check": "clean",
+    "json_markdown_bom": "none",
+    "python_py_compile": "all changed/new Python files compiled",
+    "node_check": "all changed/new JS modules passed node --check",
+    "protected_ports": "8765 / 8776 not started, stopped or touched",
+    "formal_project_state": "not opened or written",
+    "no_push_no_main_merge_no_reset_no_clean": true
+  }
+}

@@ -1,0 +1,665 @@
+{
+  "schema_version": "cns-3d-protected-assets/v1",
+  "round": "R7-D3C",
+  "generated_at": "2026-10-23",
+  "source_commit": "89e2f647004ce59e53fba904887b64c7c2702c58",
+  "source_note": "R7-D3C consolidation: R7-D3A flight protection + D2 exact native-pixel v2 + R7-D3B 2D/3D tower icons and HD imagery interface, on top of R7-B1/R7-C1/R7-C2 fixes",
+  "file_count": 19,
+  "file_count_note": "R7-B1 17项全部保留并更新变更身份，新增研究保护区前后端2项，共19项",
+  "files": [
+    {
+      "path": "cns_planner/application/visualization_3d_service.py",
+      "role": "backend",
+      "purpose": "manifest / routes / terrain-window / 通信 / RID / Radar / 保护区 / 站址 / 保障带 / 入侵 全部三维只读端点实现",
+      "bytes": 149792,
+      "sha256": "79c5a150e19208fb360477544bb0ff00d72f2181d243eb25fa9c34621c6f7a39",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 149792,
+        "sha256": "79c5a150e19208fb360477544bb0ff00d72f2181d243eb25fa9c34621c6f7a39"
+      },
+      "r7d3b_identity": {
+        "bytes": 149792,
+        "sha256": "79c5a150e19208fb360477544bb0ff00d72f2181d243eb25fa9c34621c6f7a39"
+      }
+    },
+    {
+      "path": "cns_planner/application/visualization_3d_imagery_service.py",
+      "role": "backend",
+      "purpose": "影像来源、离线模式与瓦片代理服务",
+      "bytes": 62311,
+      "sha256": "1b1d1bf8ef576d3f0702dd5710bd6f4689a6ac4816405fdd415ce176de3b9479",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 46596,
+        "sha256": "e391be8d33e13c4caabec95f85ce0c45589a93fb1426d70e95a8d88ba2a82432"
+      },
+      "r7d3b_identity": {
+        "bytes": 55962,
+        "sha256": "86cbbc22b4d29c0e41e7ec54046a933ba6ca17250dab35ce0f841694cdb59cce"
+      }
+    },
+    {
+      "path": "cns_planner/gis/terrain_tile_adapter.py",
+      "role": "backend",
+      "purpose": "FABDEM + EGM2008 地形瓦片适配",
+      "bytes": 18266,
+      "sha256": "db4e6707713067eac37a4b5ef9dd661b332dcad1df239870d93586ab179f7374",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 18266,
+        "sha256": "db4e6707713067eac37a4b5ef9dd661b332dcad1df239870d93586ab179f7374"
+      },
+      "r7d3b_identity": {
+        "bytes": 18266,
+        "sha256": "db4e6707713067eac37a4b5ef9dd661b332dcad1df239870d93586ab179f7374"
+      }
+    },
+    {
+      "path": "cns_planner/api/router.py",
+      "role": "backend-routing",
+      "purpose": "三维只读白名单与代理分发；本文件全量身份见 router.full_file_identities，三维段身份见 router.section",
+      "bytes": 97436,
+      "sha256": "1ab76728e5f2927ae18f34a893cd4f1eaafb692e1c796616030016ed08c723bf",
+      "git_tracked_at_89e2f64": true,
+      "checkpoint_identity": {
+        "bytes": 91536,
+        "sha256": "432453cf54ff16d20c2b343c5190f1f3fe256ae9bd76809f07cf04fa1ea07b40"
+      },
+      "r7b_identity": {
+        "bytes": 96482,
+        "sha256": "fb6fbf8dcb74b2e24f3adb8ed93ee65c774dfe1ef7f429d6e1bdaf0a9ae78935"
+      },
+      "r7d3a_identity": {
+        "bytes": 97007,
+        "sha256": "ab08092731032282427dc12366d240be35b21e773f5c9e6b7eec25b6acb7d34d"
+      },
+      "r7d3b_identity": {
+        "bytes": 97436,
+        "sha256": "1ab76728e5f2927ae18f34a893cd4f1eaafb692e1c796616030016ed08c723bf"
+      }
+    },
+    {
+      "path": "cns_planner/web/visualization-3d.html",
+      "role": "frontend",
+      "purpose": "三维页面入口（Cesium，无构建步骤）",
+      "bytes": 16032,
+      "sha256": "d5819faae05b99a9f78cef9670d176896ec890fa10ff03b7b0350f1758ae9657",
+      "git_tracked_at_89e2f64": true,
+      "r7b_identity": {
+        "bytes": 14792,
+        "sha256": "1a0431d6c91a36a79e1abd0f4e6efb7f01ec8373f8c20ccbd403cbc5074ebef8"
+      },
+      "r7d3a_identity": {
+        "bytes": 15771,
+        "sha256": "25596f0021a30da854e96fe1263f3d22b38d9d710cf82f89dcbaa507b18532ce"
+      },
+      "r7d3b_identity": {
+        "bytes": 15925,
+        "sha256": "bf66903756e7c2859aac764c0b366f65f0e6e6c136c8708741aa0804ec02dc77"
+      }
+    },
+    {
+      "path": "cns_planner/web/tiles.js",
+      "role": "frontend",
+      "purpose": "页面公用瓦片 / 地图辅助模块",
+      "bytes": 7012,
+      "sha256": "80240f95ecf7d7759f573dd0bab3d11cc3642136ae2c80cf15a9745ffafff0ec",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 7012,
+        "sha256": "80240f95ecf7d7759f573dd0bab3d11cc3642136ae2c80cf15a9745ffafff0ec"
+      },
+      "r7d3b_identity": {
+        "bytes": 7012,
+        "sha256": "80240f95ecf7d7759f573dd0bab3d11cc3642136ae2c80cf15a9745ffafff0ec"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/app.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 195978,
+      "sha256": "dbf4f7cc9ad53054827a8d4f83573a9d5f90a138ab839c0e592df13f88dab682",
+      "git_tracked_at_89e2f64": true,
+      "checkpoint_identity": {
+        "bytes": 187326,
+        "sha256": "8b4529728ca1ec82dda323901d5a176e5967afa51325fe0582590839471243e6"
+      },
+      "r7b_identity": {
+        "bytes": 189569,
+        "sha256": "d1835ce520df2fab6e7e7989c39de80401e5821b819d4503fd42f2981ad15c44"
+      },
+      "r7d3a_identity": {
+        "bytes": 190975,
+        "sha256": "164d61dbde96438b9eacf28e49d981bd5a04cd33aff57f21ee8e85d172b3936c"
+      },
+      "r7d3b_identity": {
+        "bytes": 193951,
+        "sha256": "1b226181efa5622abd62ee6e467c00cde88390d2b953ab7a2b63562da0ae1312"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/basemap.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 45591,
+      "sha256": "98899edca32457dba21b28d629b29a258f925376c3969aa8a4e677c8503a9808",
+      "git_tracked_at_89e2f64": true,
+      "checkpoint_identity": {
+        "bytes": 44022,
+        "sha256": "76d988a1b644dc4f581f96d941d735886d3be6687929338f562ab8fcd983377e"
+      },
+      "r7b_identity": {
+        "bytes": 44142,
+        "sha256": "cc220608346b54c3aa3b3e5dba48e56854f20920437b6079e80d2fa0d75d1806"
+      },
+      "r7d3a_identity": {
+        "bytes": 44178,
+        "sha256": "f641eaeb3860c4d6fb0ffc9be1779c50c4f7ef73647e9d4de815e8625a1a9743"
+      },
+      "r7d3b_identity": {
+        "bytes": 45035,
+        "sha256": "839d053c97016882ffa867e31f6ba1329e7f0e46600f4a91893fa815fc0c7a0d"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/camera_presets.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 1185,
+      "sha256": "b5e668ffaf93c46a585c4cd40d6f8f19abb6242ad85cab3cffea127421f63d4b",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 1185,
+        "sha256": "b5e668ffaf93c46a585c4cd40d6f8f19abb6242ad85cab3cffea127421f63d4b"
+      },
+      "r7d3b_identity": {
+        "bytes": 1185,
+        "sha256": "b5e668ffaf93c46a585c4cd40d6f8f19abb6242ad85cab3cffea127421f63d4b"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/camera_state.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 1077,
+      "sha256": "dc1c7b10a770a84a241ca3595d0eb13e0160303c3d516d36573d82969524da7f",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 1077,
+        "sha256": "dc1c7b10a770a84a241ca3595d0eb13e0160303c3d516d36573d82969524da7f"
+      },
+      "r7d3b_identity": {
+        "bytes": 1077,
+        "sha256": "dc1c7b10a770a84a241ca3595d0eb13e0160303c3d516d36573d82969524da7f"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/cns_sites.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 26256,
+      "sha256": "3b2cd825803c75b6334d6d85f92d88a0df558a337efc1ba7fbb993286a42deff",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 26256,
+        "sha256": "3b2cd825803c75b6334d6d85f92d88a0df558a337efc1ba7fbb993286a42deff"
+      },
+      "r7d3b_identity": {
+        "bytes": 26256,
+        "sha256": "3b2cd825803c75b6334d6d85f92d88a0df558a337efc1ba7fbb993286a42deff"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/fixed_corridor_band.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 11578,
+      "sha256": "9ac65af2beba69373dd8a0a186732a8c8a636c2e117e28e04fe6829ff3dd582a",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 11578,
+        "sha256": "9ac65af2beba69373dd8a0a186732a8c8a636c2e117e28e04fe6829ff3dd582a"
+      },
+      "r7d3b_identity": {
+        "bytes": 11578,
+        "sha256": "9ac65af2beba69373dd8a0a186732a8c8a636c2e117e28e04fe6829ff3dd582a"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/intrusion_playback.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 22508,
+      "sha256": "3d4bcdfe700a60ed95c9430c8dc3b968afb5852a4382c0d79c174a94e0bfdb2e",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 22508,
+        "sha256": "3d4bcdfe700a60ed95c9430c8dc3b968afb5852a4382c0d79c174a94e0bfdb2e"
+      },
+      "r7d3b_identity": {
+        "bytes": 22508,
+        "sha256": "3d4bcdfe700a60ed95c9430c8dc3b968afb5852a4382c0d79c174a94e0bfdb2e"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/protection_volume.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 11332,
+      "sha256": "794197c988706758c3a2d3fd319b7baeb7440f7cf03c630fb7d048cad6591dfd",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 11332,
+        "sha256": "794197c988706758c3a2d3fd319b7baeb7440f7cf03c630fb7d048cad6591dfd"
+      },
+      "r7d3b_identity": {
+        "bytes": 11332,
+        "sha256": "794197c988706758c3a2d3fd319b7baeb7440f7cf03c630fb7d048cad6591dfd"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/radar_volume.js",
+      "role": "frontend",
+      "purpose": "三维 ES Module",
+      "bytes": 15129,
+      "sha256": "96437ab1373eeefef62a91aaaaa99733d78eea13fbdf941f46a3e8de607afb26",
+      "git_tracked_at_89e2f64": true,
+      "r7d3a_identity": {
+        "bytes": 15129,
+        "sha256": "96437ab1373eeefef62a91aaaaa99733d78eea13fbdf941f46a3e8de607afb26"
+      },
+      "r7d3b_identity": {
+        "bytes": 15129,
+        "sha256": "96437ab1373eeefef62a91aaaaa99733d78eea13fbdf941f46a3e8de607afb26"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/assumption_sites.js",
+      "role": "frontend",
+      "purpose": "R7-B 只读工程假设站址叠加；非正式设备",
+      "bytes": 4277,
+      "sha256": "e55d34e8f00bed7d11aaf3c1c4bda5d7cbb934bb28c14fdbaf5767a44587b1ba",
+      "r7b_identity": {
+        "bytes": 4184,
+        "sha256": "18f09478909eca328cc2815a8eafd7cfd6c08a886940bae2f8da1b64c89b8814"
+      },
+      "r7d3a_identity": {
+        "bytes": 4277,
+        "sha256": "e55d34e8f00bed7d11aaf3c1c4bda5d7cbb934bb28c14fdbaf5767a44587b1ba"
+      },
+      "r7d3b_identity": {
+        "bytes": 4277,
+        "sha256": "e55d34e8f00bed7d11aaf3c1c4bda5d7cbb934bb28c14fdbaf5767a44587b1ba"
+      }
+    },
+    {
+      "path": "cns_planner/application/assumption_sites_3d.py",
+      "role": "backend",
+      "purpose": "R7-B 只读工程假设站址叠加；非正式设备",
+      "bytes": 5644,
+      "sha256": "082701416eaca379dd632b83c194c5bdc4810a75d294b28d85880a2396524856",
+      "r7b_identity": {
+        "bytes": 5501,
+        "sha256": "d7d2689eb3701586cb65d5cc222c38072c7e5d8ef7d72f8f907c07ad2083eade"
+      },
+      "r7d3a_identity": {
+        "bytes": 5644,
+        "sha256": "082701416eaca379dd632b83c194c5bdc4810a75d294b28d85880a2396524856"
+      },
+      "r7d3b_identity": {
+        "bytes": 5644,
+        "sha256": "082701416eaca379dd632b83c194c5bdc4810a75d294b28d85880a2396524856"
+      }
+    },
+    {
+      "path": "cns_planner/application/flight_protection_research.py",
+      "role": "backend",
+      "purpose": "R7-D2 signed research volume read-only projection",
+      "bytes": 3553,
+      "sha256": "001da8d38b74b37ff234a4c9d430958f93e118eb3f701011c4030169f14dab33",
+      "r7d3a_identity": {
+        "bytes": 3553,
+        "sha256": "001da8d38b74b37ff234a4c9d430958f93e118eb3f701011c4030169f14dab33"
+      },
+      "r7d3b_identity": {
+        "bytes": 3553,
+        "sha256": "001da8d38b74b37ff234a4c9d430958f93e118eb3f701011c4030169f14dab33"
+      }
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/flight_protection_research.js",
+      "role": "frontend",
+      "purpose": "R7-D2 signed research volume read-only projection",
+      "bytes": 3834,
+      "sha256": "e8a4e592497c82fb02cce518be2dab094654c23c8237a22c3d4d18eac6092d87",
+      "r7d3a_identity": {
+        "bytes": 3834,
+        "sha256": "e8a4e592497c82fb02cce518be2dab094654c23c8237a22c3d4d18eac6092d87"
+      },
+      "r7d3b_identity": {
+        "bytes": 3834,
+        "sha256": "e8a4e592497c82fb02cce518be2dab094654c23c8237a22c3d4d18eac6092d87"
+      }
+    }
+  ],
+  "router": {
+    "path": "cns_planner/api/router.py",
+    "note": "全文件 SHA 随所属树而变（V2 集成树多出 V2 提交分支，round38 树另有其它改动），但三维路由段逐字节一致；恢复校验以段身份为准",
+    "section": {
+      "start_marker": "VISUALIZATION_3D_ACTIONS = {",
+      "end_rule": "def _visualization_3d( 之后的下一个 '\\n    def ' 之前",
+      "bytes": 19202,
+      "lines": 339,
+      "sha256": "2e8aa16235d40ded008ab485eea52a059519c5367ab2eb9e2042471a68af14fa"
+    },
+    "full_file_identities": [
+      {
+        "tree": "89e2f64-clean",
+        "bytes": 91536,
+        "sha256": "432453cf54ff16d20c2b343c5190f1f3fe256ae9bd76809f07cf04fa1ea07b40",
+        "section_sha256": "8e9eb40b43b5ab372ed6fe618146ae6b0149cee8761b39e13dba55c2cde2bfc9"
+      },
+      {
+        "tree": "89e2f64-r6c-v2-integration",
+        "bytes": 92274,
+        "sha256": "c69666cab0f936709d70fe633e0c7eb8b75ec836c21fe989d1f495dfb996a5b5",
+        "section_sha256": "8e9eb40b43b5ab372ed6fe618146ae6b0149cee8761b39e13dba55c2cde2bfc9"
+      },
+      {
+        "tree": "9404d16-round38-acceptance-8776",
+        "bytes": 91370,
+        "sha256": "812103486a31174e720f64b0e450383f89624a8c22a6920597bff6286b7113e7",
+        "section_sha256": "8e9eb40b43b5ab372ed6fe618146ae6b0149cee8761b39e13dba55c2cde2bfc9"
+      },
+      {
+        "tree": "r7b1-reviewed",
+        "bytes": 96482,
+        "sha256": "fb6fbf8dcb74b2e24f3adb8ed93ee65c774dfe1ef7f429d6e1bdaf0a9ae78935"
+      },
+      {
+        "tree": "r7d3a-isolated",
+        "bytes": 97007,
+        "sha256": "ab08092731032282427dc12366d240be35b21e773f5c9e6b7eec25b6acb7d34d"
+      },
+      {
+        "tree": "r7d3b-isolated",
+        "bytes": 97436,
+        "sha256": "1ab76728e5f2927ae18f34a893cd4f1eaafb692e1c796616030016ed08c723bf"
+      }
+    ],
+    "checkpoint_section": {
+      "start_marker": "VISUALIZATION_3D_ACTIONS = {",
+      "end_rule": "def _visualization_3d( 之后的下一个 '\\n    def ' 之前",
+      "bytes": 17638,
+      "lines": 311,
+      "sha256": "8e9eb40b43b5ab372ed6fe618146ae6b0149cee8761b39e13dba55c2cde2bfc9"
+    },
+    "r7b_section": {
+      "start_marker": "VISUALIZATION_3D_ACTIONS = {",
+      "end_rule": "def _visualization_3d( 之后的下一个 '\\n    def ' 之前",
+      "bytes": 18809,
+      "lines": 333,
+      "sha256": "d4fdcbd8cdd8f658d384f3ed9cd2906535f2feb39ca4f02e741817a89d2833f6"
+    }
+  },
+  "line_ending_variants": [
+    {
+      "path": "cns_planner/web/js/visualization3d/cns_sites.js",
+      "crlf_sha256": "3b2cd825803c75b6334d6d85f92d88a0df558a337efc1ba7fbb993286a42deff",
+      "lf_sha256": "550794d3f237396d11e30696ad1c94a36b7031fcdb28c76d85ac2b7ea1733eab",
+      "note": "行内容相同，仅行尾不同（6 棵树 CRLF / round38 树 LF）"
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/fixed_corridor_band.js",
+      "crlf_sha256": "9ac65af2beba69373dd8a0a186732a8c8a636c2e117e28e04fe6829ff3dd582a",
+      "lf_sha256": "842548a391cc0c47c55cdd8f81dd8db91c2731297c8a41a11b868a0b5d95bccd",
+      "note": "行内容相同，仅行尾不同（6 棵树 CRLF / round38 树 LF）"
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/intrusion_playback.js",
+      "crlf_sha256": "3d4bcdfe700a60ed95c9430c8dc3b968afb5852a4382c0d79c174a94e0bfdb2e",
+      "lf_sha256": "1f627f6fe745ca0dff4f245e8c3ff96a5e1a3fb44f42716174b4d668a0753379",
+      "note": "行内容相同，仅行尾不同（6 棵树 CRLF / round38 树 LF）"
+    },
+    {
+      "path": "cns_planner/application/flight_protection_research.py",
+      "crlf_sha256": "ed9f3c91fcf784353693be5b71dafe8713b85005736fa0346b2af5133bbdfc55",
+      "lf_sha256": "001da8d38b74b37ff234a4c9d430958f93e118eb3f701011c4030169f14dab33",
+      "note": "R7-D3C 新增文件：提交 LF / Windows 检出 CRLF，行内容一致"
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/flight_protection_research.js",
+      "crlf_sha256": "33effda9bc062148723f292036b1692bec51de9e68320110fc70ddf9fd5f12e3",
+      "lf_sha256": "e8a4e592497c82fb02cce518be2dab094654c23c8237a22c3d4d18eac6092d87",
+      "note": "R7-D3C 新增文件：提交 LF / Windows 检出 CRLF，行内容一致"
+    }
+  ],
+  "alternate_full_sha256": [
+    {
+      "path": "cns_planner/api/router.py",
+      "tree": "89e2f64-r6c-v2-integration",
+      "sha256": "c69666cab0f936709d70fe633e0c7eb8b75ec836c21fe989d1f495dfb996a5b5",
+      "reason": "R6-C P16-V2 在 router.py 增加了 v2 提交分支（13 行），三维段未变"
+    }
+  ],
+  "vendor_files": [
+    {
+      "path": "cns_planner/web/vendor/cesium/Cesium.js",
+      "bytes": 5159916,
+      "sha256": "e4dc17055dbad7d4aab44abdd33e4c6006f93b8fbe57c63bbbc3c31eeefbe0b0",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Widgets/widgets.css",
+      "bytes": 32052,
+      "sha256": "dd409f4c9dbc0d6c04e369723a87f3cc3c430f4d305ff26e608a5918390d48a3",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/approximateTerrainHeights.json",
+      "bytes": 299472,
+      "sha256": "6dbd104a916bb05d0f5103f46fb1c36d9966947a74984b5614607edda9325e57",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/Images/ion-credit.png",
+      "bytes": 6028,
+      "sha256": "721870c1417e20d25e2d1b834e80c66908418e459dcf76c95bf2997dc0733289",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/IAU2006_XYS/IAU2006_XYS_0.json",
+      "bytes": 67428,
+      "sha256": "eacde1b661c07ae81779214f2ee1c840dd24ea56cdba38735d9f63bb51d3f534",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/IAU2006_XYS/IAU2006_XYS_18.json",
+      "bytes": 65310,
+      "sha256": "19ec8e50b7a8604bcd93bf20850f033e153242663107f372e3af09194f903497",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/LICENSE.md",
+      "bytes": 64747,
+      "sha256": "6a30fde7063cc565656630a66f60cbf599d4609297fb715d87c7f96bc5ecd6e6",
+      "git_tracked_at_89e2f64": true
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/LICENSE-PROVENANCE.md",
+      "bytes": 3171,
+      "sha256": "56aa555a01328982a36f548e1a41247c7728ca9fb07385d50bdbd3ec0b713870",
+      "git_tracked_at_89e2f64": true
+    }
+  ],
+  "runtime_files": [
+    "cns_planner/map_server.py",
+    "cns_planner/api/server.py",
+    "cns_planner/application/project_directory_service.py",
+    "cns_planner/persistence/project_repository.py",
+    "cns_planner/gis/map_data.py",
+    "cns_planner/gis/qgis_runtime.py"
+  ],
+  "data_requirements": [
+    {
+      "key": "terrain_dtm",
+      "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\FABDEM\\processed\\Zhoushan_FABDEM_DTM_30m.tif",
+      "sha256": "21406bd901fbebae211528a158ca95eef899e2074322625717b215b13d8799b8",
+      "bytes": 65656187,
+      "source": "projects/data_sources.json"
+    },
+    {
+      "key": "land_mask",
+      "path": "D:\\Projects\\_cns_workspaces\\acceptance\\round37_b0\\CNS-PLANNER\\projects\\derived\\land_mask_osm\\zhoushan_land_osm_v2.gpkg",
+      "source": "projects/data_sources.json（按树登记；恢复时以目标树登记为准）"
+    },
+    {
+      "key": "egm2008_grid",
+      "source": "cns_planner/config；缺失时 manifest 报 egm2008_grid_missing"
+    },
+    {
+      "key": "project_state",
+      "source": "projects/current_project.json，或经 /api/project/open 打开的项目目录"
+    }
+  ],
+  "manifest_layers": [
+    "terrain_fabdem",
+    "route_geometry_demo",
+    "route_geometry_canonical",
+    "towers",
+    "cns_devices",
+    "cns_facilities",
+    "communication_volumes",
+    "rid_footprints",
+    "radar_volumes",
+    "protection_volumes",
+    "cns_site_identity",
+    "fixed_corridor_band",
+    "simulated_intrusion"
+  ],
+  "probes": [
+    {
+      "path": "/api/health",
+      "expect": {
+        "ready": true
+      }
+    },
+    {
+      "path": "/api/visualization-3d/manifest",
+      "expect": {
+        "schema_version": "visualization-3d/v1"
+      }
+    },
+    {
+      "path": "/api/visualization-3d/terrain/layer.json",
+      "expect": {
+        "format": "heightmap-1.0"
+      }
+    },
+    {
+      "path": "/api/visualization-3d/imagery/config",
+      "expect_status": 200,
+      "expect": {
+        "status": "offline_mode",
+        "credential_exposed": false,
+        "hd_status": "pending_configuration",
+        "hd_available": false
+      }
+    },
+    {
+      "path": "/api/visualization-3d/routes",
+      "expect_status": 200
+    },
+    {
+      "path": "/visualization-3d.html",
+      "expect_status": 200
+    },
+    {
+      "path": "/js/visualization3d/app.js",
+      "expect_status": 200
+    },
+    {
+      "path": "/vendor/cesium/Cesium.js",
+      "expect_status": 200
+    },
+    {
+      "path": "/vendor/cesium/Widgets/widgets.css",
+      "expect_status": 200
+    }
+  ],
+  "start_command": "cd <恢复后的工作树>; $env:CNS_MAP_PORT=\"8778\"; & \"C:\\Program Files\\QGIS 3.44.14\\bin\\python-qgis-ltr.bat\" -m cns_planner.map_server",
+  "checkpoint_commit": null,
+  "changed_from_r7d3a": [
+    "cns_planner/application/visualization_3d_imagery_service.py",
+    "cns_planner/api/router.py",
+    "cns_planner/web/visualization-3d.html",
+    "cns_planner/web/js/visualization3d/app.js",
+    "cns_planner/web/js/visualization3d/basemap.js"
+  ],
+  "r7d3b_additions": [
+    {
+      "path": "cns_planner/web/js/map/display_layers.js",
+      "role": "2D-map",
+      "purpose": "统一 PNG 铁塔图标渲染、unknown 变体、底部锚定与图标本体命中区"
+    },
+    {
+      "path": "cns_planner/web/js/map/point_clustering.js",
+      "role": "2D-map",
+      "purpose": "命中测试同时识别 hitRects（图标本体）"
+    },
+    {
+      "path": "cns_planner/web/js/workflow/map_legend.js",
+      "role": "2D-map",
+      "purpose": "图例嵌入同一 PNG 资源"
+    },
+    {
+      "path": "cns_planner/web/js/main.js",
+      "role": "2D-map",
+      "purpose": "预加载统一 PNG 图标并注入绘制层"
+    },
+    {
+      "path": "cns_planner/web/assets/symbols/tower_qinglv_128.png",
+      "role": "asset",
+      "purpose": "统一青绿色通信塔图标（128 px 高，RGBA）"
+    },
+    {
+      "path": "cns_planner/web/assets/symbols/tower_qinglv_unknown_128.png",
+      "role": "asset",
+      "purpose": "塔顶未解析（unknown）灰蓝变体"
+    },
+    {
+      "path": "cns_planner/application/imagery_budget.py",
+      "role": "backend",
+      "purpose": "免费公开源（天地图）独立预算文件与上限"
+    }
+  ],
+  "r7d3b_research": {
+    "primary_source": "Tianditu img_w WMTS (t0.tianditu.gov.cn)",
+    "effective_max_zoom": 18,
+    "delivered_m_per_px": 0.52,
+    "z19_z20": "200 + 4769 B placeholder '此级别下，该区域无影像' PNG; not real imagery",
+    "zhejiang_node": "ditu.zjzwfw.gov.cn WMTS EPSG:4490 max z18, similar visual quality, flaky TLS",
+    "zhejiang_02m": "sdi.zjzwfw.gov.cn gqservices / img_20cm style exists but ERR_CONNECTION_CLOSED from this host",
+    "multi_view_white_screen": "image.tianditu.gov.cn -> oauth.tianditu.gov.cn redirect loop (ERR_TOO_MANY_REDIRECTS)"
+  },
+  "base_commit": "0621b4d5ee9e622bad4e5719d9b31950c6441bab",
+  "checkpoint_branch": "checkpoint/r7d3c-3d-consolidation",
+  "checkpoint_note": "提交后由 research/r7d3c/R7D3C_REPORT.md 记录实际 checkpoint SHA；本清单用逐文件 SHA-256 校验，不依赖 commit id",
+  "changed_from_r7d3b": [
+    "cns_planner/application/visualization_3d_imagery_service.py",
+    "cns_planner/web/visualization-3d.html",
+    "cns_planner/web/js/visualization3d/app.js",
+    "cns_planner/web/js/visualization3d/basemap.js"
+  ],
+  "r7d3c_verification": {
+    "official_access_method": "server_side_key",
+    "browser_tk_used_for_proxy": false,
+    "proxy_header_spoofing": false,
+    "internal_request_budget_is_not_official_quota": true,
+    "known_tower_semantics": "tower_top_height_resolved_unconfirmed (77)",
+    "unknown_tower_semantics": "tower_top_unresolved (296)",
+    "offline_basemap": "Sentinel-2 L2A 10 m local tiles"
+  }
+}
