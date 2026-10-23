@@ -30,7 +30,10 @@
 
 - 本地 `codex/r7d13-ab-integration` 与 `origin/main` 的 merge-base 为 `89b008d…`；
   **领先 5 个提交、落后 0 个提交**（可从 main fast-forward）。
-- 发布分支：`dev/r7d17-integration`，推送 HEAD `b76e054f9607434040704782fe860ab7953cc0a7`。
+- 发布分支：`dev/r7d17-integration`。发布审核针对源码提交
+  `b76e054f9607434040704782fe860ab7953cc0a7`；本报告与证据随后追加到同一分支，
+  不改变源码。最终分支 HEAD 见
+  <https://github.com/guosending565-ui/CNS-PLANNER/tree/dev/r7d17-integration>。
 - 链接：<https://github.com/guosending565-ui/CNS-PLANNER/tree/dev/r7d17-integration>
 - 提交：<https://github.com/guosending565-ui/CNS-PLANNER/commit/b76e054f9607434040704782fe860ab7953cc0a7>
 
@@ -38,16 +41,16 @@
 
 | 检查 | 结果 | 说明 |
 |---|---|---|
-| 公开白名单 | pass | 891 个跟踪文件，全部落在 `cns_planner/ tests/ tools/ docs/` 或根级文档/配置 |
+| 公开白名单 | pass | 899 个跟踪文件，全部落在 `cns_planner/ tests/ tools/ docs/` 或根级文档/配置 |
 | 禁用路径/数据 | pass | 无 `projects/ research/ outputs/`、无 `*.tif/*.gpkg/*.qgz`、无 bundle/压缩包 |
 | 密钥 | pass | 对全部文本 blob 做高信号正则扫描（AK/SK、GitHub/Slack/OpenAI、私钥、URL 凭据、`tk=`），0 命中 |
 | Git 可达历史 | pass | 唯一根 `5b21166`；D9 提交 `2b953bf` **不可达**；相对公开 main 无新增禁用路径 |
 | 许可证 | warn | CesiumJS 1.126 Apache-2.0 原文 SHA-256 `3111d10e…` 逐字节一致；仓库自身未声明根 LICENSE（治理项，不阻塞源码分支） |
 | 归档 | pass | 无 `.bundle/.zip/.7z/.rar` |
-| 大文件 | pass | 最大 `Cesium.js` 5.14 MB；总载荷 26.47 MB；无 ≥20 MB 文件 |
+| 大文件 | pass | 最大 `Cesium.js` 5.14 MB；总载荷 26.56 MB；无 ≥20 MB 文件 |
 | BOM / tree mode | pass | JSON/YAML 无 BOM；无 symlink/submodule |
 
-范围要点：相对 `origin/main` 新增/修改 **282** 个源码/测试/文档文件；不含 D9 研究历史、
+范围要点：相对 `origin/main` 新增/修改 **290** 个源码/测试/文档文件；不含 D9 研究历史、
 R0005 数据、P16 原件、历史 bundle。发布审核只暂停 push 的条件未被触发，因此已完成推送；
 验收本身不因 push 完成而被视为通过。
 

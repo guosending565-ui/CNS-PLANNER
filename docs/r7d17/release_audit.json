@@ -2,11 +2,11 @@
   "schema_version": "cns-r7d17-release-audit/v1",
   "generated_at": "2026-10-23T20:10:00+08:00",
   "repository": "C:\\Users\\yiding\\.codex\\worktrees\\r7d13-ab-integration\\CNS-PLANNER",
-  "head": "b76e054f9607434040704782fe860ab7953cc0a7",
+  "head": "c37d00113836f1874a4516910292c1f227cf388c",
   "origin_main": "89b008da13bce36b1b2933b571dc4323016debfd",
   "merge_base": "89b008da13bce36b1b2933b571dc4323016debfd",
   "relation": {
-    "ahead": 6,
+    "ahead": 7,
     "behind": 0,
     "fast_forward_from_main": true
   },
@@ -14,29 +14,29 @@
     "root_commits": [
       "5b21166747d6b00b8def4e193e9f7c6bb4a3d629"
     ],
-    "commit_count_reachable": 194,
-    "commits_ahead_of_main": 6,
+    "commit_count_reachable": 195,
+    "commits_ahead_of_main": 7,
     "d9_commit_2b953bf_reachable": false,
     "forbidden_paths_in_reachable_history": 14,
     "new_forbidden_paths_vs_public_main": 0,
     "preexisting_public_artifacts": 14
   },
   "tree": {
-    "tracked_files": 891,
-    "payload_bytes": 26474561,
+    "tracked_files": 899,
+    "payload_bytes": 26563871,
     "by_root": {
       "cns_planner": 507,
       "tests": 290,
-      "docs": 53,
+      "docs": 61,
       "tools": 21,
       "<root>": 19,
       ".streamlit": 1
     },
-    "changed_files_vs_main": 282,
+    "changed_files_vs_main": 290,
     "changed_by_root": {
       "cns_planner": 168,
       "tests": 77,
-      "docs": 32,
+      "docs": 40,
       "tools": 3,
       "<root>": 2
     },
@@ -108,7 +108,7 @@
       {
         "check": "secrets",
         "result": "no high-signal matches",
-        "scanned": 876
+        "scanned": 884
       }
     ]
   },
