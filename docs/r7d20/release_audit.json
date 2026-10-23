@@ -1,0 +1,116 @@
+{
+  "schema_version": "cns-r7d18-release-audit/v1",
+  "generated_at": "2026-10-23T22:05:00+08:00",
+  "repository": "C:\\Users\\yiding\\.codex\\worktrees\\r7d13-ab-integration\\CNS-PLANNER",
+  "head": "4d8142a337af10f8fe325d56c5dc23a2c2c97872",
+  "origin_main": "89b008da13bce36b1b2933b571dc4323016debfd",
+  "merge_base": "89b008da13bce36b1b2933b571dc4323016debfd",
+  "relation": {
+    "ahead": 16,
+    "behind": 0,
+    "fast_forward_from_main": true
+  },
+  "history": {
+    "root_commits": [
+      "5b21166747d6b00b8def4e193e9f7c6bb4a3d629"
+    ],
+    "commit_count_reachable": 204,
+    "commits_ahead_of_main": 16,
+    "d9_commit_2b953bf_reachable": false,
+    "forbidden_paths_in_reachable_history": 14,
+    "new_forbidden_paths_vs_public_main": 0,
+    "preexisting_public_artifacts": 14
+  },
+  "tree": {
+    "tracked_files": 920,
+    "payload_bytes": 27129350,
+    "by_root": {
+      "cns_planner": 508,
+      "tests": 293,
+      "docs": 76,
+      "tools": 23,
+      "<root>": 19,
+      ".streamlit": 1
+    },
+    "changed_files_vs_main": 339,
+    "changed_by_root": {
+      "cns_planner": 180,
+      "tests": 97,
+      "docs": 55,
+      "tools": 5,
+      "<root>": 2
+    },
+    "largest": [
+      {
+        "path": "cns_planner/web/vendor/cesium/Cesium.js",
+        "bytes": 5143845
+      }
+    ]
+  },
+  "checks": {
+    "whitelist": "pass",
+    "forbidden_paths": "pass",
+    "secrets": "pass",
+    "reachable_history": "pass",
+    "license": "warn",
+    "archives_and_data": "pass",
+    "large_files": "pass",
+    "encoding_bom": "pass",
+    "tree_modes": "pass"
+  },
+  "licenses": {
+    "files": [
+      "cns_planner/web/vendor/cesium/LICENSE-PROVENANCE.md",
+      "cns_planner/web/vendor/cesium/LICENSE.md"
+    ],
+    "cesium_sha_ok": true,
+    "project_license_declared": false
+  },
+  "findings": {
+    "fail": [],
+    "warn": [
+      {
+        "check": "large_files_over_5mb",
+        "files": [
+          {
+            "path": "cns_planner/web/vendor/cesium/Cesium.js",
+            "bytes": 5143845
+          }
+        ]
+      },
+      {
+        "check": "reachable_history_preexisting_public",
+        "count": 14,
+        "paths": [
+          ".test_runtime/pytest/test_building_geopackage_schem0/buildings.gpkg",
+          ".test_runtime/pytest/test_building_grid_non_l8_is_u0/grid.gpkg",
+          ".test_runtime/pytest/test_building_grid_outside_ext0/grid.gpkg",
+          ".test_runtime/pytest/test_building_grid_schema_and_0/grid.gpkg",
+          ".test_runtime/pytest/test_final_facility_export_ign0/reports/RPT-68d08dfe2b3ccc1b1cd3235f/planning-package.zip",
+          ".test_runtime/pytest/test_generate_is_deterministic0/reports/RPT-6fbfd1bd1ef7a6f63f34a292/planning-package.zip",
+          ".test_runtime/pytest/test_read_only_fabdem_adapter_0/fabdem.tif",
+          ".test_runtime/pytest/test_real_source_readiness_use0/buildings.gpkg",
+          ".test_runtime/pytest/test_real_source_readiness_use0/fabdem.tif",
+          ".test_runtime/pytest/test_report_api_preview_genera0/reports/RPT-7287f6c2cd0299f3f07d6da5/planning-package.zip",
+          ".test_runtime/pytest/test_report_history_becomes_st0/reports/RPT-4dbdd51830f7412f2511c4ee/planning-package.zip",
+          ".test_runtime/pytest/test_source_verification_propa0/fabdem.tif",
+          ".test_runtime/pytest/test_v3b_fine_source_roles_and0/buildings.gpkg",
+          ".test_runtime/pytest/test_v3b_fine_source_roles_and0/fabdem.tif"
+        ],
+        "detail": "test-runtime binaries already reachable from public origin/main; no new disclosure."
+      },
+      {
+        "check": "project_license_missing",
+        "detail": "no root LICENSE/COPYING; repository code license is not declared. Vendored CesiumJS Apache-2.0 notice is present and verified."
+      }
+    ],
+    "info": [
+      {
+        "check": "secrets",
+        "result": "no high-signal matches",
+        "scanned": 905
+      }
+    ]
+  },
+  "verdict": "pass"
+}
