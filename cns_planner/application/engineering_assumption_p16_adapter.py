@@ -340,6 +340,19 @@ def _check(checks, code, ok, detail):
     return bool(ok)
 
 
+def _scenario_devices(contract, catalog_by_id):
+    """Resolve declared research equipment against the current catalog; fail closed."""
+    declared = contract.get("equipment") or {}
+    result = {}
+    for code in EXPECTED_SERVICE_KEY:
+        identifier = declared.get(code)
+        device = catalog_by_id.get(identifier) or {}
+        if not identifier or device.get("subsystem") != code or device.get("enabled") is not True:
+            raise ValueError(f"{code} scenario equipment is missing, disabled or incompatible: {identifier!r}")
+        result[code] = identifier
+    return result
+
+
 def validate_scenario_p16_inputs(pool, deduped, state):
     """Validate the scenario->P16 contract without relaxing any formal gate.
 
@@ -429,9 +442,11 @@ def validate_scenario_p16_inputs(pool, deduped, state):
         if isinstance(item, dict)
     }
 
-    expected_devices = dict(EXPECTED_DEVICE_BY_SUBSYSTEM)
-    if scenario.get("version") == "r7d19-v2":
-        expected_devices["C"] = "COMM-BASELINE-2KM"
+    try:
+        expected_devices = _scenario_devices(contract, catalog_by_id)
+    except ValueError as exc:
+        error("scenario_equipment", str(exc))
+        expected_devices = {}
     distinct_by_key = {}
     for action in actions:
         action_id = str(action.get("action_id") or "")
@@ -442,11 +457,11 @@ def validate_scenario_p16_inputs(pool, deduped, state):
         if subsystem not in EXPECTED_DEVICE_BY_SUBSYSTEM:
             error("action_subsystem", f"{action_id} 的 subsystem={subsystem!r} 不在 C/S 假设内")
             continue
-        if device_id != expected_devices[subsystem]:
+        if device_id != expected_devices.get(subsystem):
             error(
                 "action_device",
                 f"{action_id} 的设备 {device_id!r} 不是场景登记的 C/S 工程型号 "
-                f"{expected_devices[subsystem]!r}",
+                f"{expected_devices.get(subsystem)!r}",
             )
         if service_key != EXPECTED_SERVICE_KEY[subsystem]:
             error(
