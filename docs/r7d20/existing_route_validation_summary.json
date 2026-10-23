@@ -1,0 +1,56 @@
+{
+  "contract": "operational-route-clearance-v2",
+  "status": "unknown",
+  "route_id": "R0005",
+  "altitude_layer_id": "ALT-100",
+  "vertex_count": 14,
+  "domains": {
+    "terrain": {
+      "status": "passed",
+      "violations": 0,
+      "unresolved": 0,
+      "minimum_margin": 22.76000213623047
+    },
+    "buildings": {
+      "status": "unresolved",
+      "violations": 0,
+      "unresolved": 1,
+      "minimum_margin": 96.50735592795776
+    },
+    "towers": {
+      "status": "passed",
+      "violations": 0,
+      "unresolved": 0,
+      "minimum_margin": null
+    }
+  },
+  "risk": {
+    "status": "unknown",
+    "status_reason": "risk_index_partial",
+    "domains": {
+      "ground": {
+        "status": "resolved",
+        "coverage": 1.0,
+        "unresolved_length_m": 0.0,
+        "exposure_index_m": 208.81160228
+      },
+      "air_traffic": {
+        "status": "unresolved",
+        "coverage": 0.0,
+        "unresolved_length_m": 9404.408922465,
+        "exposure_index_m": null
+      },
+      "environment_obstacle": {
+        "status": "resolved",
+        "coverage": 1.0,
+        "unresolved_length_m": 0.0,
+        "exposure_index_m": 201.029042892
+      }
+    }
+  },
+  "research_only": true,
+  "operational_authorization": false,
+  "formal_admission_evaluated": false,
+  "state_unchanged": true,
+  "theta_star_executed": false
+}

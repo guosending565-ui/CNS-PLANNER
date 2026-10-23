@@ -617,6 +617,12 @@ def _normalize_navigation_integrity_planning(value, *, field, fallback_confirmed
     }
     for name, expected in fixed.items():
         supplied = raw.get(name)
+        # Accept only the exact historical policy wording; numeric gates stay fixed.
+        if name == "source" and supplied in (
+            NAVIGATION_INTEGRITY_POLICY_SOURCE.replace("导航服务监测", old_name)
+            for old_name in ("导航完好性监视", "导航完整性监测")
+        ):
+            supplied = expected
         if supplied not in (None, "") and supplied != expected:
             raise ValueError(f"{field}.{name} 与 Round29-E canonical policy 不一致")
     return fixed
