@@ -191,11 +191,19 @@ def test_building_mapping_is_level_independent_when_footprints_are_configured(tm
     ]
     assert len(with_buildings) == 1
     cell = with_buildings[0]
-    assert set(cell) == {
+    assert {
         "status", "building_count", "building_area_m2", "building_coverage_ratio",
         "height_mean_m", "height_p95_m", "height_max_m", "valid_height_fraction",
         "building_exposure",
-    }
+    } <= set(cell)
+    #: R7-D18：当前事实记录在旧 9 键之外显式增加了"质心/面积分配 + 占用/部分覆盖"
+    #: 语义字段；下游按需读取，因此这里断言 required-subset，并显式登记新增键，
+    #: 避免"恰好相等"再次把合法扩展误判为回归。
+    assert {
+        "count_allocation", "area_allocation", "building_occupancy",
+        "partial_coverage", "partial_coverage_semantics",
+    } <= set(cell)
+
     assert cell["building_count"] == 1
     assert cell["height_max_m"] == pytest.approx(33.0)
 

@@ -282,7 +282,13 @@ def test_open_existing_project_switches_state_and_restores_sources(
     project_dir = tmp_path / "existing-project"
     target = project_dir / "project_state.json"
     existing = _populate(module.WorkflowService(target, defaults_path))
-    expected_state = deepcopy(existing.state)
+    existing.save()
+    #: R7-D18：打开项目会按当前 defaults 执行**显式迁移/回填**（例如
+    #: ``cns_corridor_policy`` 的固定 1000 m 契约字段、建筑样例验收策略）。
+    #: 期望状态必须走同一加载路径，否则断言的是"旧 shape 原样保留"，与项目
+    #: 迁移语义冲突。本用例只 characterization open_project 不丢失/篡改已持久化事实。
+    expected_state = deepcopy(module.WorkflowService(target, defaults_path).state)
+
     expected_sources = {
         "basemap": "portable/map.qgz",
         "population": "portable/population.tif",
@@ -296,7 +302,12 @@ def test_open_existing_project_switches_state_and_restores_sources(
 
     assert module.ACTIVE_PROJECT_FILE == target
     assert module.ACTIVE_PROJECT_FILE != auto_file
-    assert module.WORKFLOW.state == expected_state
+    #: ``_`` 前缀字段是打开/首次读取时挂载的只读派生缓存（不写盘），不属于 canonical
+    #: ProjectState；比较时排除，避免把内存缓存误判成状态漂移。
+    canonical = lambda state: {
+        key: value for key, value in state.items() if not str(key).startswith("_")
+    }
+    assert canonical(module.WORKFLOW.state) == canonical(expected_state)
     assert module.WORKFLOW.state["project"]["project_id"] != current_id
     assert module.DATA.paths == expected_sources
     assert module.DATA.load_calls == [(expected_sources, False)]

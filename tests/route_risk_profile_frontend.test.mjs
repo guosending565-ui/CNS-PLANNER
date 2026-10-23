@@ -968,6 +968,8 @@ test('policy evaluate delete endpoints are wired exactly as contracted',()=>{
     const c={
       flow:()=>flow,
       $:id=>document.getElementById(id),
+      //: bindStep3 会为参考起降点搜索挂载 paint 回调；桩需提供空实现。
+      paint:()=>{},
       panelError:message=>calls.push(['error',message]),
       resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
       // Round32-C：风险画像改为后台任务提交；这里同样只登记 path/payload。

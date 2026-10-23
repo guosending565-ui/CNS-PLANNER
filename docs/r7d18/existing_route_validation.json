@@ -1,0 +1,285 @@
+{
+  "schema_version": "cns-r7d18-existing-route-validation/v1",
+  "contract": "operational-route-clearance-v2",
+  "status": "unknown",
+  "subject": {
+    "kind": "operational_route",
+    "route_id": "R0005",
+    "geometry_sha256": "048b93a1534851a14b9324f6f1b38e7abc1ad021ac165ec2b6d4d3b9bd799649",
+    "provenance": {
+      "source_type": "round38_e2e_cns_experiment_b_simulation",
+      "validation_id": "LRV-24519150DE6E",
+      "validation_fingerprint": "layeredvalidationv1-eb31beee97be8fe79f55ec01858fc0ef4fdedc170128690268de24519150de6e",
+      "candidate_id": "LRC2-R0005-ALT-100-layeredcandv1-c5",
+      "candidate_fingerprint": "layeredcandv1-c51a704d7c2d5601be47de651a9bad998203c7c92102ef96394cb83b8f068934",
+      "projection_fingerprint": "layeredprojectionv1-7f3159bb439c837740319e4419162dcea993453333ff6f8fa64206ef4245c48c",
+      "two_dimensional_crs84_path": true,
+      "egm2008_altitude_in_third_coordinate": false,
+      "strict_safety_validation_passed": false,
+      "engineering_conditional_acceptance": true,
+      "use_scope": "engineering_demo_only",
+      "operational_authorization": false,
+      "engineering_acceptance": {
+        "policy_fingerprint": "engineeringdemobuildingpolicyv1-2b9e247c8c4f1c995c7f2c8b502eb29bfabcc9d724488fd4e9261bc135b79332",
+        "authorization": {
+          "authorization_id": "ROUND36-D4-R2",
+          "authorized_by": "业务",
+          "authorized_at": "2026-10-17T14:32:13+08:00",
+          "scope": "engineering_demo_only"
+        },
+        "building_evidence_fingerprint": "buildingevidencev1-52e6a09e1fae0eedcb9cf2c2a18bc8c217033e00f04d0d87040470645eb33d21",
+        "conditional_acceptances": [
+          {
+            "building_id": "4tCa7",
+            "building_fid": 360599,
+            "height_evidence_level": "predicted",
+            "height_source": "gba_lod1",
+            "height_evidence_method": "ml_prediction_max_in_footprint",
+            "height_observation_period": "2018-2019 (GBA LoD1)",
+            "height_source_license": "CC_BY_NC_4.0",
+            "height_var": 0.5497021079063416,
+            "height_uncertainty": null,
+            "height_var_semantics": "raw_source_field_only",
+            "height_variance_is_calibrated_safety_bound": false,
+            "building_evidence_fingerprint": "buildingevidencev1-52e6a09e1fae0eedcb9cf2c2a18bc8c217033e00f04d0d87040470645eb33d21",
+            "policy_fingerprint": "engineeringdemobuildingpolicyv1-2b9e247c8c4f1c995c7f2c8b502eb29bfabcc9d724488fd4e9261bc135b79332",
+            "authorization": {
+              "authorization_id": "ROUND36-D4-R2",
+              "authorized_by": "业务",
+              "authorized_at": "2026-10-17T14:32:13+08:00",
+              "scope": "engineering_demo_only"
+            },
+            "requires_survey": true,
+            "estimated_conflict": false,
+            "estimated_clear": true,
+            "estimated_vertical_margin_m": 96.50699999,
+            "height_m": 2.2526440620422363,
+            "height_estimate_m": 2.253,
+            "ground_elevation_max_egm2008_m": 1.24000001,
+            "roof_elevation_egm2008_m": 3.4930000100000003,
+            "footprint_part_index": 0,
+            "missing_required_facts": [],
+            "status": "conditionally_accepted",
+            "use_scope": "engineering_demo_only",
+            "operational_authorization": false
+          }
+        ]
+      },
+      "limitations": [
+        "工程条件接受，严格验证未通过，仅供演示",
+        "predicted 证据等级保持不变，不等于 verified/source_tagged/derived",
+        "机器学习方差是原始来源字段，不是经校准的安全置信界",
+        "operational_authorization=false"
+      ],
+      "adoption_id": "LRA-B28DAAB9310E",
+      "adoption_fingerprint": "layeredadoptionv1-97b04b762aab9c4ae3cb9976b03930228d0e9d93de0f8fd77168b28daab9310e",
+      "origin_container": "layered_operational_adoptions.items[LRA-B28DAAB9310E].after.route",
+      "experiment_scope": "experimental_only",
+      "experimental_operational_authorization": false,
+      "experimental_strict_safety_validation_passed": false,
+      "experiment_adaptation": {
+        "original_business_status": "engineering_demo_only",
+        "original_route_status": "engineering_demo_only",
+        "simulated_status": "passed",
+        "simulated_route_status": "passed",
+        "reason": "CNSServiceCorridorV1._route() 要求 route.status=='passed'；本值仅存在于隔离实验副本，不是真实运行航路状态",
+        "adaptation_scope": "projects/round38_cns_experiment_b",
+        "source_project_revision": 494,
+        "terminal_transition_verified": false,
+        "departure_arrival_procedure_count": 0
+      }
+    }
+  },
+  "altitude_layer": {
+    "altitude_layer_id": "ALT-100",
+    "nominal_altitude_m": 100.0,
+    "vertical_reference": "egm2008_orthometric",
+    "confirmed": true,
+    "status": "confirmed"
+  },
+  "policy": {
+    "terrain_clearance_m": 0.0,
+    "building_horizontal_clearance_m": 0.0,
+    "building_vertical_clearance_m": 0.0,
+    "tower_horizontal_clearance_m": 0.0,
+    "tower_vertical_clearance_m": 0.0,
+    "use_curve_error_envelope": false,
+    "engineering_demo_building_acceptance_policy": {
+      "schema_version": "engineering-demo-building-acceptance-v1",
+      "status": "confirmed",
+      "enabled": true,
+      "confirmed": true,
+      "effective": true,
+      "scenario_route_id": "R0005",
+      "altitude_layer_id": "ALT-100",
+      "candidate_id": "LRC2-R0005-ALT-100-layeredcandv1-c5",
+      "candidate_fingerprint": "layeredcandv1-c51a704d7c2d5601be47de651a9bad998203c7c92102ef96394cb83b8f068934",
+      "building_id": "4tCa7",
+      "building_fid": 360599,
+      "building_source_sha256": "4f1657495d8422ac0d23973949d4bcbca59dcf07d59ed380ff9877afc7391b97",
+      "building_evidence_fingerprint": "buildingevidencev1-52e6a09e1fae0eedcb9cf2c2a18bc8c217033e00f04d0d87040470645eb33d21",
+      "minimum_estimated_vertical_margin_m": 90.0,
+      "authorization": {
+        "authorization_id": "ROUND36-D4-R2",
+        "authorized_by": "业务",
+        "authorized_at": "2026-10-17T14:32:13+08:00",
+        "scope": "engineering_demo_only"
+      },
+      "policy_fingerprint": "engineeringdemobuildingpolicyv1-2b9e247c8c4f1c995c7f2c8b502eb29bfabcc9d724488fd4e9261bc135b79332",
+      "limitations": [
+        "工程条件接受，严格验证未通过，仅供演示",
+        "predicted 证据等级保持不变，不等于 verified/source_tagged/derived",
+        "机器学习方差是原始来源字段，不是经校准的安全置信界",
+        "operational_authorization=false"
+      ]
+    }
+  },
+  "domains": {
+    "terrain": {
+      "status": "passed",
+      "minimum_margin": 22.76000213623047,
+      "item_count": 545,
+      "failed_interval_count": 0,
+      "unresolved_interval_count": 0,
+      "reason": null,
+      "violation_count": 0,
+      "unresolved_count": 0
+    },
+    "buildings": {
+      "status": "unresolved",
+      "minimum_margin": 96.50735592795776,
+      "item_count": 581,
+      "failed_interval_count": 0,
+      "unresolved_interval_count": 1,
+      "reason": "building_evidence_unresolved",
+      "violation_count": 0,
+      "unresolved_count": 1
+    },
+    "towers": {
+      "status": "passed",
+      "minimum_margin": null,
+      "item_count": 373,
+      "failed_interval_count": 0,
+      "unresolved_interval_count": 0,
+      "reason": null,
+      "violation_count": 0,
+      "unresolved_count": 0
+    }
+  },
+  "risk": {
+    "status": "unknown",
+    "status_reason": "risk_index_partial",
+    "identity": {
+      "grid_level": 8,
+      "grid_cell_count": 8008,
+      "grid_risk_v2_input_fingerprint": "riskframeworkv2-7a74c81955de507470a0a827f83069dfc0b2c50fb5424ae3ee84de55e6a7646c",
+      "grid_risk_v2_policy_fingerprint": "riskpolicyv2-f6449bbf0d3b46576fd431f69ec3056d85c20e79f8c71cc14b1f447b1aab31f4",
+      "grid_risk_v2_cells_fingerprint": "routeprofilegridriskv1-8a380507b6b56c859dbdcb828cce914312222379c55073477e19a8203c5263c2",
+      "profile_policy_fingerprint": "routeprofilepolicyv1-d712230b5577263d14b2f4e8e5b4c83c4f836a0ad2bd9ebf27b5f77c93d48e04",
+      "profile_fingerprint": "routeprofilev1-df395035782115b628042d155cdf430f392f692bbea7ccbde8849a5d48be36f8",
+      "geometry_sha256": "routeprofilepathv1-d6785ef9fd2fe1e74bc38aefa5a9b08f9356ccf26bfe6d4c74fd47ba0f0489b2"
+    },
+    "profile": {
+      "status": "unknown",
+      "route_length_m": 9404.408922465,
+      "domains": {
+        "ground": {
+          "status": "partial",
+          "coverage": 0.949183265,
+          "unresolved_length_m": 477.901352097,
+          "exposure_index_m": 105.208100982
+        },
+        "air_traffic": {
+          "status": "unresolved",
+          "coverage": 0.0,
+          "unresolved_length_m": 9404.408922465,
+          "exposure_index_m": null
+        },
+        "environment_obstacle": {
+          "status": "resolved",
+          "coverage": 1.0,
+          "unresolved_length_m": 0.0,
+          "exposure_index_m": 201.029042892
+        }
+      },
+      "consistency": {
+        "status": "passed",
+        "tolerance": 1e-06,
+        "checks": [
+          {
+            "check_id": "integral_length_matches_original_polyline",
+            "status": "passed",
+            "reason_code": null,
+            "reason": null,
+            "profile_value": 9404.408922465,
+            "source_value": 9404.408922465
+          },
+          {
+            "check_id": "all_original_vertices_inside_grid",
+            "status": "passed",
+            "reason_code": null,
+            "reason": null,
+            "profile_value": 14,
+            "source_value": 14
+          },
+          {
+            "check_id": "sampled_segments_cover_original_polyline",
+            "status": "passed",
+            "reason_code": null,
+            "reason": null,
+            "profile_value": 481,
+            "source_value": 13
+          }
+        ],
+        "semantics": "operational_profile_length_must_equal_original_polyline_length_and_all_vertices_must_map_to_current_grid"
+      }
+    }
+  },
+  "fingerprint": "9b5e7d171b0b24168f73a355896da557a158354bbe3219ea31c46f32a5035e24",
+  "source_identity": {
+    "state_sha256": "cbb09d87dcf8287fa37f4be8a5bbd7e2ae65dca7a08b4bad12243d7d8c48c536",
+    "route_id": "R0005",
+    "altitude_layer_id": "ALT-100",
+    "terrain_dtm": {
+      "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\FABDEM\\processed\\Zhoushan_FABDEM_DTM_30m.tif",
+      "sha256": "21406bd901fbebae211528a158ca95eef899e2074322625717b215b13d8799b8"
+    },
+    "buildings": {
+      "path": "D:\\aaa2026project\\UOM\\舟山\\规划系统\\building\\processed\\zhoushan_buildings_v3.gpkg",
+      "sha256": "4f1657495d8422ac0d23973949d4bcbca59dcf07d59ed380ff9877afc7391b97"
+    },
+    "towers": {
+      "path": "D:\\aaa2026project\\UOM\\舟山\\基础数据\\各单位报送的补充材料\\各单位报送的补充材料\\航路航线规划-铁塔数据.xlsx",
+      "sha256": "d722c111596acb4766bcc9d4cb5ce326f3a4b1f8364a5db871cb60220e2a411b"
+    },
+    "grid": {
+      "count": 8008,
+      "artifact_sha256": "ff051389993a7ecdb6837ab568139a03eedcb21f19179a367e71612311f1761d",
+      "endpoint": "/api/workspace/grid"
+    },
+    "grid_risk_v2": {
+      "count": 8008,
+      "input_fingerprint": "riskframeworkv2-7a74c81955de507470a0a827f83069dfc0b2c50fb5424ae3ee84de55e6a7646c",
+      "policy_fingerprint": "riskpolicyv2-f6449bbf0d3b46576fd431f69ec3056d85c20e79f8c71cc14b1f447b1aab31f4",
+      "status": "pending_confirmation"
+    },
+    "metric_crs": "EPSG:32651",
+    "adapter": "layered_candidate_real_source_validation_adapter_v1",
+    "source_type": "configured_real_sources"
+  },
+  "research_only": true,
+  "operational_authorization": false,
+  "formal_admission_evaluated": false,
+  "state_unchanged": true,
+  "acceptance_copy": {
+    "path": "D:\\Projects\\_cns_acceptance\\r7d18\\R0005-rev524",
+    "state_sha256": "cbb09d87dcf8287fa37f4be8a5bbd7e2ae65dca7a08b4bad12243d7d8c48c536",
+    "revision": 524
+  },
+  "theta_star_executed": false,
+  "candidate_generated": false,
+  "full_evidence": {
+    "location": "D:\\Projects\\_cns_acceptance\\r7d18\\d4_existing_route_validation.json",
+    "note": "完整证据含真实空间坐标，只保留在验收副本，不进入公开 Git。"
+  }
+}

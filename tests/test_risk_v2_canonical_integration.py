@@ -278,9 +278,13 @@ def test_profile_ground_exposure_matches_a_direct_canonical_integral(tmp_path):
     candidate = candidate_of(run_planner(service, cells))
     centers = {cell["grid_id"]: list(cell["center"]) for cell in cells}
     indices, _unresolved = resolve_cell_domain_indices(risk, candidate["grid_path"], ("ground",))
-    for cell in cells:
-        record = risk["cells"][cell["grid_id"]]
-        assert indices[cell["grid_id"]]["ground"] == pytest.approx(
+    #: R7-D18：``indices`` 只覆盖航线实际经过的 cell（不是夹具里的全部 cell）。
+    #: 逐 cell 对比必须按 ``grid_path`` 取，否则起点格未进入航线时会 KeyError；
+    #: 这里同时验证"每个经过格"都逐值一致，而不是把缺失当作 0。
+    assert indices
+    for grid_id in candidate["grid_path"]:
+        record = risk["cells"][grid_id]
+        assert indices[grid_id]["ground"] == pytest.approx(
             record["domains"]["ground"]["index"]
         )
     integral = integrate_path_exposure(

@@ -505,8 +505,10 @@ test('P7-P12 workflow steps expose vertical, runtime, proposal and closed-loop c
   assert.match(step5,/class="wb-next-step"/);
   assert.match(step5,/雷达监视基线/);
   assert.match(step5,/本分支<b>默认是可选的<\/b>/);
-  assert.match(step5,/监视雷达规划默认是可选的：没有显式监视需求时不阻塞下一步/);
-  assert.match(step5Assumed,/空既有设施工程规划基线；不表示现实中不存在既有 CNS 设施。/);
+  //: R7-D18：文案已改为"必需性只由后端 canonical Radar 服务需求判定"，
+  //: 不再宣称一个与后端判据无关的固定默认值。
+  assert.match(step5,/必需性只由后端 canonical 的 Radar 服务需求判定/);
+  assert.match(step5,/未要求时它不阻塞 CNS 服务走廊/);  assert.match(step5Assumed,/空既有设施工程规划基线；不表示现实中不存在既有 CNS 设施。/);
   assert.match(step5Assumed,/事实掌握情况：<b>尚未声明<\/b>/);
   assert.match(step5Assumed,/规划模式：<b>按空既有设施工程基线规划<\/b>/);
   // 未声明规划模式时，只显示"尚未声明 / 未配置"，绝不推断成任何一种模式
@@ -2246,7 +2248,8 @@ function thetaV2BindHarness(flow,fields={}){
     $:id=>ids.has(id)
       ?{value:fields[id]===undefined?'':String(fields[id]),checked:fields[id]===true,attributes:{},dataset:{}}
       :null,
-    panelError:message=>calls.push(['__error',message]),
+    //: 产品在提交后台任务前会先发一条 level='hint' 的提示；只有 error 级才是失败。
+    panelError:(message,level)=>calls.push([level==='hint'?'__hint':'__error',message]),
     resourceAction:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({});},
     // Round32-C：候选规划改为后台任务提交；这里只登记调用（path/payload 与旧断言一致）。
     submitBackgroundTask:(path,payload)=>{calls.push([path,payload]);return Promise.resolve({task_id:'t'});},
@@ -2265,7 +2268,9 @@ test('the layered candidate bind switch always uses the Theta* V2 production pan
   assert.equal(v1.registered.includes('saveLayeredCostPolicy'),false,
     'legacy cost policy 入口不得再注册');
   await v1.handlers.evaluateLayeredCandidate();
-  assert.deepEqual(v1.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
+  assert.equal(v1.calls.some(call=>call[0]==='__error'),false,'提交前的提示不得被当作错误');
+  assert.deepEqual(v1.calls.filter(call=>call[0]!=='__hint'),
+    [['/api/layered-route-candidates/evaluate-real',{}]]);
 
   // V2：同样只走 Theta* V2，且绝不把 λ 当 blocker
   const v2=thetaV2BindHarness(thetaV2Flow());
@@ -2276,7 +2281,9 @@ test('the layered candidate bind switch always uses the Theta* V2 production pan
   assert.equal(v2.registered.includes('saveLayeredCostPolicy'),false,
     'Theta* V2 不得再注册 legacy cost policy 保存控件');
   await v2.handlers.evaluateLayeredCandidate();
-  assert.deepEqual(v2.calls,[['/api/layered-route-candidates/evaluate-real',{}]]);
+  assert.equal(v2.calls.some(call=>call[0]==='__error'),false,'提交前的提示不得被当作错误');
+  assert.deepEqual(v2.calls.filter(call=>call[0]!=='__hint'),
+    [['/api/layered-route-candidates/evaluate-real',{}]]);
 });
 
 test('the layered candidate view is the Theta* V2 panel regardless of the saved legacy selection',()=>{
@@ -2444,7 +2451,8 @@ test('theta v2 candidate metrics are transcribed verbatim and the boundaries sta
     'risk_weight','turn_weight','distance_weight','weighted_risk','weighted_turn','weighted_distance','total_cost']){
     assert.ok(html.includes('data-theta-v2-candidate-field="'+field+'"'),`${field} 必须以转印行展示`);
   }
-  assert.match(html,/rewired_parent_shortcuts/);
+  assert.match(html,/父节点重连捷径/);
+  assert.match(html,/父节点视线重连，不是 A\* \+ 后处理平滑/);
   assert.match(html,/LOS-1/);
   assert.match(html,/LOS-2/);
   assert.match(html,/Theta\* V2 candidate ≠ operational route/);

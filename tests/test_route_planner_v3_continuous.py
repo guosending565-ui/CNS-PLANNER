@@ -573,6 +573,8 @@ def test_building_overflight_with_vertical_clearance_passes():
     buildings = [{
         "building_id": "B1", "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
         "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+        # 当前正式验证要求明确的高度状态 + 可信证据等级；只给数值不得支撑 pass。
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }]
     outcome = run_case(OPEN_POINTS, [200.0, 200.0, 200.0], buildings=buildings)
     result = outcome["result"]
@@ -590,6 +592,7 @@ def test_building_side_clearance_failure_is_a_vertical_violation():
     buildings = [{
         "building_id": "B2", "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
         "height_m": 180.0, "ground_elevation_max_egm2008_m": 10.0,
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }]
     outcome = run_case(OPEN_POINTS, [200.0, 200.0, 200.0], buildings=buildings)
     result = outcome["result"]
@@ -667,6 +670,7 @@ def test_self_intersecting_building_geometry_is_repaired_and_then_evaluated():
         "ring_metric": [[400.0, -60.0], [460.0, 60.0], [460.0, -60.0], [400.0, 60.0],
                         [400.0, -60.0]],
         "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }]
     outcome = run_case(OPEN_POINTS, [200.0, 200.0, 200.0], buildings=buildings)
     result = outcome["result"]
@@ -695,6 +699,7 @@ def test_every_part_of_a_multi_part_footprint_is_evaluated():
             [[420.0, -10.0], [440.0, -10.0], [440.0, 10.0], [420.0, 10.0], [420.0, -10.0]],
         ],
         "height_m": 400.0, "ground_elevation_max_egm2008_m": 0.0,
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }]
     outcome = run_case(OPEN_POINTS, [300.0, 300.0, 300.0], buildings=buildings)
     result = outcome["result"]
@@ -796,6 +801,7 @@ def test_c_a_building_over_the_route_with_resolved_evidence_and_enough_clearance
         "building_id": "NEAR-RESOLVED",
         "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
         "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }]
     result = building_result(buildings)
     assert result["status"] == "passed"
@@ -808,6 +814,7 @@ def test_d_a_building_with_insufficient_clearance_is_failed():
         "building_id": "NEAR-TOO-TALL",
         "ring_metric": [[400.0, -60.0], [460.0, -60.0], [460.0, 60.0], [400.0, 60.0]],
         "height_m": 180.0, "ground_elevation_max_egm2008_m": 10.0,
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }]
     result = building_result(buildings)
     assert result["status"] == "failed"
@@ -858,6 +865,7 @@ def test_f_a_multi_part_footprint_is_checked_part_by_part():
     resolved = building_result([{
         "building_id": "MULTI-NEAR-FAR", "ring_parts_metric": [list(part) for part in parts],
         "height_m": 40.0, "ground_elevation_max_egm2008_m": 10.0,
+        "height_status": "confirmed", "height_evidence_level": "verified",
     }])
     assert resolved["status"] == "passed"
     # 近 part 被真正评估：roof 50 m，observed 200 m，required 25 m → margin 125 m。

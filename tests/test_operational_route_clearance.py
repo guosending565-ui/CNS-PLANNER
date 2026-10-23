@@ -1,6 +1,7 @@
 from copy import deepcopy
 import pytest
 from cns_planner.application.operational_route_clearance import revalidate_existing_route, fingerprint
+from cns_planner.risk.operational_route_profile import CONNECTOR_SEMANTICS
 
 
 def inputs():
@@ -43,3 +44,37 @@ def test_middle_vertex_obstacle_is_checked():
     kwargs['evidence']['towers']['towers'][0]['confirmed'] = False
     result = revalidate_existing_route(state, **kwargs)
     assert len(result['domains']['towers']['unresolved']) == 1
+
+
+def test_existing_route_risk_segments_use_operational_connector_semantics():
+    """R7-D18 回归：D4 风险画像必须能把 segment connector 语义传给生产 profile。
+
+    修复前 ``_route_risk_segment`` 不接受 ``connector_semantics``，只要传入
+    ``grid`` + ``grid_risk_v2`` 就会 TypeError，既有航路复验根本跑不完。
+    """
+
+    state, kwargs = inputs()
+    path = [[0.5, 0.5], [1.5, 0.5], [2.5, 0.5]]
+    state['operational_routes'][0]['path'] = path
+    kwargs['expected_geometry_fingerprint'] = fingerprint(path)
+    kwargs['evidence']['metric_path'] = path
+    kwargs['to_geographic'] = lambda point: list(point)
+    kwargs['grid'] = {'cells': [
+        {'grid_id': 'G0', 'bbox': [0.0, 0.0, 1.0, 1.0], 'center': [0.5, 0.5]},
+        {'grid_id': 'G1', 'bbox': [1.0, 0.0, 2.0, 1.0], 'center': [1.5, 0.5]},
+        {'grid_id': 'G2', 'bbox': [2.0, 0.0, 3.0, 1.0], 'center': [2.5, 0.5]},
+    ]}
+    domains = {
+        domain_id: {'domain_id': domain_id, 'status': 'passed', 'index': 0.5}
+        for domain_id in ('ground', 'air_traffic', 'environment_obstacle')
+    }
+    kwargs['grid_risk_v2'] = {
+        'cells': {grid_id: {'domains': deepcopy(domains)} for grid_id in ('G0', 'G1', 'G2')},
+        'policy': {'domains': {}},
+    }
+    result = revalidate_existing_route(state, **kwargs)
+    risk = result['risk']
+    assert risk['profile']['segments'], '既有航路风险画像必须产生 segments'
+    for segment in risk['profile']['segments']:
+        assert segment['provenance']['connector_semantics'] == CONNECTOR_SEMANTICS
+    assert result['status'] == 'unknown', '障碍证据缺失时仍必须 fail-closed'

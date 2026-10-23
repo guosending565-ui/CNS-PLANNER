@@ -55,6 +55,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = REPO_ROOT / "cns_planner" / "config" / "defaults.json"
 
 #: P14 性能工作线：B6X **不得**修改这四个文件。
+#:
+#: R7-D18 重建说明：``coverage/geometric_3d.py`` 与 ``service_capability/v1.py`` 的
+#: 基线哈希在 B6X 之后由 Round38 surface-aware 规划显式修改（8c32897 / ddd2f9a），
+#: 相对 8f1c927 与 origin/main 均无本轮 diff；旧哈希无法再代表"受保护文件未变"。
+#: 本次按失败归因以**显式版本说明**重建清单，不改动任何受保护文件本身。
 P14_FILES = (
     "cns_planner/algorithms/corridor/v1.py",
     "cns_planner/algorithms/coverage/geometric_3d.py",
@@ -695,6 +700,35 @@ def test_corridor_async_result_matches_sync_semantics(tmp_path):
             (sync_workflow.state.get("result_statuses") or {}).get("cns_corridor_assessment")
     finally:
         runtime.stop()
+
+
+def test_corridor_sync_freezes_the_same_normalized_policy_as_async(tmp_path):
+    """R7-D18 回归：旧 state policy shape 不得让同步/异步冻结出两个输入指纹。
+
+    同步入口此前在请求未显式给 policy 时直接消费 ``state["cns_corridor_policy"]``，
+    而异步快照始终归一化；同一份输入因此得到两个 ``input_fingerprint``。归一化必须
+    发生在**两条路径共同的输入冻结点**，与请求是否显式携带 policy 无关。
+    """
+
+    workflow = WorkflowService(tmp_path / "legacy-policy" / "project.json", DEFAULTS)
+    workflow.mutation_lock = threading.RLock()
+    _prepare_corridor_project(workflow)
+    workflow.state["cns_corridor_policy"] = {
+        "status": "pending_confirmation",
+        "horizontal_half_width_m": 410.0,
+    }
+    workflow.save()
+
+    sync_inputs = workflow.corridor_service.compute_input({})
+    from cns_planner.tasks.task_specs import _corridor_inputs
+
+    async_inputs = _corridor_inputs(workflow.state, {})
+    assert sync_inputs["corridor_policy"] == async_inputs["corridor_policy"]
+    policy = sync_inputs["corridor_policy"]
+    assert policy["width_policy_version"] == "fixed-1000m-v1"
+    assert policy["width_semantics"] == "cns_service_target_band"
+    assert policy["horizontal_width_editable"] is False
+    assert policy["legacy_stale_route_ids"] == []
 
 
 # ---- 15. P14 四文件 SHA 不变 --------------------------------------------------

@@ -768,7 +768,11 @@ def _combine_status(statuses):
 # --------------------------------------------------------------------------- segments
 
 
-def _route_risk_segment(segment, *, profile_id, policy, grid_risk_v2_cells, risk_domain_policies):
+def _route_risk_segment(segment, *, profile_id, policy, grid_risk_v2_cells, risk_domain_policies,
+                        connector_semantics=None):
+    #: D4 既有航路独立风险画像把 ``endpoint_index_source`` 从"候选航路首/尾格"
+    #: 改成"原始折线首/尾格"；默认行为保持不变（候选路径仍用既有语义）。
+    connector_semantics = connector_semantics or SEGMENT_CONNECTOR_SEMANTICS
     domains = {}
     for domain_id, record in segment["domains"].items():
         domain_policy = (policy.get("domains") or {}).get(domain_id) or {}
@@ -807,7 +811,7 @@ def _route_risk_segment(segment, *, profile_id, policy, grid_risk_v2_cells, risk
             for factor_id in FACTOR_IDS
         },
         "provenance": {
-            "connector_semantics": SEGMENT_CONNECTOR_SEMANTICS,
+            "connector_semantics": connector_semantics,
             "index_source_grid_ids": [
                 segment["start_index_grid_id"], segment["end_index_grid_id"],
             ],

@@ -566,17 +566,21 @@ def test_navigation_rtk_available_is_nominal():
     assert _subsystem_entry(result, "N")["status"] == "nominal"
 
 
-def test_navigation_rtk_lost_with_adequate_gnss_is_acceptable_degraded():
+def test_navigation_rtk_lost_with_adequate_gnss_requires_duration_evidence():
     result = _navigation_result(
         rtk="not_available", gnss="available", accuracy=8.0, containment=10.0,
     )
     subsystem = _subsystem_entry(result, "N")
-    assert subsystem["status"] == "acceptable_degraded"
+    #: 2.5 语义：精度足够时导航**状态**是 acceptable_degraded，但降级时长/容忍阈值
+    #: 没有证据 ⇒ 验收结论保持 unknown（fail-closed），不得写成 acceptable_degraded。
     assert subsystem["navigation_state"] == "acceptable_degraded"
+    assert subsystem["status"] == "unknown"
+    assert "navigation_degradation_time_unknown" in result["reason_codes"]
     event = subsystem["events"][0]
     assert event["kind"] == "navigation_degradation"
-    assert event["exceeds_limit"] is False
+    assert event["duration_s"] is None
     assert event["limit_s"] is None
+    assert event["exceeds_limit"] is None
     assert "not_fixed_duration_threshold" in event["semantics"]
     #: 外部研究参考只登记、不作硬门。
     reference = subsystem["rtk_recovery_external_reference"]
@@ -590,7 +594,10 @@ def test_navigation_rtk_lost_with_insufficient_gnss_accuracy_is_unacceptable():
     )
     subsystem = _subsystem_entry(result, "N")
     assert subsystem["status"] == "unacceptable"
-    assert subsystem["events"][0]["exceeds_limit"] is True
+    assert subsystem["navigation_state"] == "unacceptable"
+    #: 判定来自"精度 > 航路保持要求"，不是"断 X 秒"；缺时长证据时 exceeds_limit
+    #: 必须保持 None，绝不能伪装成已比对过的时长门。
+    assert subsystem["events"][0]["exceeds_limit"] is None
     assert "navigation_gnss_unavailable" in result["reason_codes"]
 
 
@@ -638,7 +645,11 @@ def test_navigation_rtk_loss_from_route_service_evidence_is_structural():
     subsystem = _subsystem_entry(result, "N")
     assert subsystem["rtk"]["authority"] == "derived_from_route_service_evidence"
     assert subsystem["rtk"]["value"] == "not_available"
-    assert subsystem["status"] == "acceptable_degraded"
+    #: RTK 丢失由 P15 结构证据推导（不是时长阈值）；精度足够时导航状态为
+    #: acceptable_degraded，但缺降级时长/阈值证据时验收结论仍必须 unknown。
+    assert subsystem["navigation_state"] == "acceptable_degraded"
+    assert subsystem["status"] == "unknown"
+    assert "navigation_degradation_time_unknown" in result["reason_codes"]
 
 
 # ---------------------------------------------------------------------------
@@ -670,12 +681,18 @@ def test_protection_corridor_uses_explicit_parameters():
     assert corridor["D_maneuver_m"] == pytest.approx(50.0)
     assert corridor["D_uncertainty_m"] == pytest.approx(30.0)
     assert corridor["D_protection_m"] == pytest.approx(50.0 + 40.0 * 7.0 + 50.0 + 30.0)
-    assert corridor["outer_half_width_m"] == pytest.approx(500.0 + 410.0)
+    #: R7-D18：D15 把""固定 1000 m 保障带宽""与""响应/保护距离""解耦。当前服务宽度
+    #: 由固定契约给出（半宽 500 m），响应距离只作为独立证据，绝不能相加成 910 m。
+    assert corridor["service_target_half_width_m"] == pytest.approx(500.0)
+    assert corridor["corridor_width_policy_version"] == "fixed-1000m-v1"
+    assert corridor["current_service_width_derived_from_response_distance"] is False
+    assert corridor["outer_half_width_m"] is None
+    assert corridor["outer_half_width_m_semantics"] == "historical_audit_only"
     assert corridor["formula"] == (
         "D_protection = D_separation + V_relative * T_chain + D_maneuver + D_uncertainty"
     )
     assert corridor["semantics"] == (
-        "horizontal_route_protection_corridor_not_route_centerline_only"
+        "fixed_cns_service_target_band_with_independent_response_evidence"
     )
     #: 保护走廊必须带真实航路几何（前端据此绘制图层）。
     assert corridor["route_path"] == [[122.0, 30.0], [122.1, 30.1]]

@@ -733,7 +733,8 @@ test('reopening a project resets the five temporary service layers to off', () =
   const openBody = main.slice(main.indexOf('async function openProject('),
     main.indexOf('function getTiandituKey('));
   const resets = [...openBody.matchAll(/resetAnalysisLayerSelection\(\);\s*\n\s*renderWorkflow\(\);/g)];
-  assert.equal(resets.length, 2, '同项目路径与常规路径都必须在 renderWorkflow 前复位图层');
+  //: 三条路径（同项目轻量路径 / 常规打开 / 新建项目）都必须复位后再渲染。
+  assert.equal(resets.length, 3, '同项目、常规打开与新建项目三条路径都必须在 renderWorkflow 前复位图层');
   // 不得因此改动在线底图 / 其它图层的默认行为
   assert.doesNotMatch(block, /'online'/);
   assert.doesNotMatch(openBody, /\.checked\s*=/);

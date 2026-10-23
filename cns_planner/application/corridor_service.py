@@ -122,10 +122,14 @@ class CNSCorridorService:
         state = self.session.state
         payload = payload if isinstance(payload, dict) else {}
         raw_policy = payload.get("cns_corridor_policy", payload.get("policy"))
-        policy = (
-            normalize_cns_corridor_policy(raw_policy)
-            if raw_policy is not None
-            else state.get("cns_corridor_policy") or normalize_cns_corridor_policy()
+        #: R7-D18（缺陷修复）：**两条路径都必须冻结同一份归一化 policy**。请求未显式
+        #: 给出 policy 时，历史项目里的 ``state["cns_corridor_policy"]`` 可能仍是
+        #: 旧 shape（缺少固定 1000 m 契约字段 / routes 未归一化）。此前同步入口直接
+        #: 消费这份旧 shape，而异步快照（``tasks.task_specs._corridor_inputs``）始终
+        #: 归一化，导致同一输入得到两个 ``input_fingerprint``。归一化是幂等的，显式
+        #: 请求与 state 回落因此共用同一语义。
+        policy = normalize_cns_corridor_policy(
+            raw_policy if raw_policy is not None else state.get("cns_corridor_policy") or {}
         )
         profile = aircraft_profile_with_evidence(state)
         selections = state.get("algorithm_selection") or {}

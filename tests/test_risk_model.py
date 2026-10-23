@@ -344,7 +344,16 @@ def test_workflow_calls_replaceable_model_and_persists_then_stales_risk(tmp_path
     assert applied["grid_risk"]["algorithm_id"] == "replacement-fixture"
     assert applied["grid_risk"]["status"] == "missing_data"
     assert applied["risks"]["environment"]["status"] == "missing_data"
-    assert WorkflowService(store, service.defaults_path).grid_risk_snapshot() == applied["grid_risk"]
+    #: B5X artifact 压缩契约：apply 只返回摘要（明细外置），重新打开项目时水合 cells。
+    #: 因此逐字段比较摘要，并单独断言重开后的明细确实恢复，而不是要求 apply 返回全量。
+    assert "cells" not in applied["grid_risk"]
+    reopened = WorkflowService(store, service.defaults_path).grid_risk_snapshot()
+    for key in (
+        "algorithm_id", "algorithm_version", "status", "count", "grid_level",
+        "input_status", "parameters", "source_versions",
+    ):
+        assert reopened[key] == applied["grid_risk"][key]
+    assert len(reopened["cells"]) == applied["grid_risk"]["cells_count"]
 
     reevaluated = service.evaluate_grid_risk({"scenario": "fixture"})
     assert len(model.calls) == 2
