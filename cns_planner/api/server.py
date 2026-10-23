@@ -17,6 +17,8 @@ def wants_async_submission(path, payload):
       否则保持原有同步语义（不改变任何既有调用方的行为）。
     """
 
+    if str(path) == "/api/source-audits/verify":
+        return True
     if str(path) == "/api/tasks" or str(path).startswith("/api/tasks/"):
         return True
     if not _wants_async(payload):
@@ -59,12 +61,20 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def respond(self, data, content_type="application/json; charset=utf-8", status=200, cache=False, headers=None):
         if not isinstance(data, bytes): data = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        # 同一个响应**只允许一个** Cache-Control，且**显式响应头优先于默认值**。
+        # 旧实现先无条件发送默认值、再追加调用方 headers，于是所有自带 Cache-Control 的
+        # 只读端点都会发出两个头：三维状态端点得到 ['no-store','no-store']，
+        # 而 terrain/layer.json 得到 ['no-store','private, max-age=86400'] —— 意图与实现
+        # 矛盾，最终取值取决于客户端（首个 / 末个 / 合并），不可依赖。
+        extra = {str(name): str(value) for name, value in (headers or {}).items()}
+        declared = {name.lower() for name in extra}
         self.send_response(status); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "private, max-age=86400" if cache else "no-store")
+        if "cache-control" not in declared:
+            self.send_header("Cache-Control", "private, max-age=86400" if cache else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "frame-ancestors 'self' http://127.0.0.1:8501 http://localhost:8501")
-        for name, value in (headers or {}).items():
-            self.send_header(name, str(value))
+        for name, value in extra.items():
+            self.send_header(name, value)
         self.end_headers()
         try: self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError): pass
@@ -90,9 +100,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             response = ApiRouter(self.context).get(url.path, parse_qs(url.query), self.headers)
             revision = int(self.context.workflow.state.get("revision") or 0)
+            headers = {"X-CNS-Revision": revision}
+            # 只读端点可自带响应头（例如三维投影的 ETag）；既有端点 headers=None，行为不变。
+            headers.update(getattr(response, "headers", None) or {})
             self.respond(
                 response.data, response.content_type, response.status, response.cache,
-                headers={"X-CNS-Revision": revision},
+                headers=headers,
             )
         except Exception as exc: self.respond({"error": str(exc)}, status=400)
 
@@ -124,14 +137,27 @@ class ApiHandler(BaseHTTPRequestHandler):
             lock = getattr(self.context, "mutation_lock", None)
             if lock is None:
                 raise RuntimeError("服务端缺少状态写入锁")
-            with lock:
-                current = int(self.context.workflow.state.get("revision") or 0)
-                if expected != current:
-                    raise StaleRevisionError(
-                        f"项目状态已更新（请求 {expected}，当前 {current}），请刷新后重试"
-                    )
-                response = ApiRouter(self.context).post(self.path, payload)
-                current = int(self.context.workflow.state.get("revision") or 0)
+            def checked_action():
+                # 项目切换在 GIS 线程持锁：snapshot 可重入，校验与切换不可分割。
+                with lock:
+                    current = int(self.context.workflow.state.get("revision") or 0)
+                    if expected != current:
+                        raise StaleRevisionError(
+                            f"项目状态已更新（请求 {expected}，当前 {current}），请刷新后重试"
+                        )
+                    if self.path in ("/api/project/open", "/api/project/save-as"):
+                        from .router import Response
+                        action = (self.context.open_project if self.path == "/api/project/open"
+                                  else self.context.save_project_as)
+                        response = Response(action(payload.get("project_dir")))
+                    else:
+                        response = ApiRouter(self.context).post(self.path, payload)
+                    return response, int(self.context.workflow.state.get("revision") or 0)
+
+            if self.path in ("/api/project/open", "/api/project/save-as"):
+                response, current = self.context.qgis.call(checked_action)
+            else:
+                response, current = checked_action()
             self.respond(
                 response.data, response.content_type, response.status, response.cache,
                 headers={"X-CNS-Revision": current},

@@ -928,6 +928,7 @@ test('conflict forbids apply by default and both checkboxes default to false',()
   // 必须重新 Preview —— 绝不允许用现场 checkbox 覆盖冻结意图。
   cacheLayeredAdoptionPreview({
     status:'ready',side_effects:false,publication_allowed:true,validation_id:'LRV-AAAAAAAAAAAA',
+    preview_fingerprint:'layeredpreviewv1-preview',
     projection:{status:'ready',route_id:'R-1',conflict:{route_id:'R-1',existing_status:'passed'},
       route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
       route_operating_layer:{route_id:'R-1',altitude_layer_id:'L8-LOW'}},
@@ -985,6 +986,7 @@ test('apply requires a current preview and submits the preview fingerprint verba
   // 2) 有 Preview 但没勾选确认：拒绝
   cacheLayeredAdoptionPreview({
     status:'ready',side_effects:false,publication_allowed:true,validation_id:'LRV-AAAAAAAAAAAA',
+    preview_fingerprint:'layeredpreviewv1-preview',
     validation_fingerprint:'layeredvalidationv1-fp-1',
     projection:{status:'ready',route_id:'R-1',conflict:null,
       route:{route_id:'R-1',path:[[122,30],[122.001,30]],path_crs:'OGC:CRS84'},
@@ -1000,6 +1002,7 @@ test('apply requires a current preview and submits the preview fingerprint verba
   assert.equal(allowed.allowed,true);
   assert.deepEqual(allowed.payload,{
     validation_id:'LRV-AAAAAAAAAAAA',confirmed:true,replace_existing:false,
+    preview_fingerprint:'layeredpreviewv1-preview',
     expected_validation_fingerprint:'layeredvalidationv1-fp-1',
   });
   // Preview 冻结的指纹与当前 flow 一致，因此不能被"偷偷换成新 flow 值"
@@ -1563,6 +1566,7 @@ test('apply submits the replace_existing frozen by the second preview',async()=>
         assert.deepEqual(applyCall[1],{
           validation_id:'LRV-AAAAAAAAAAAA',confirmed:true,replace_existing:true,
           expected_validation_fingerprint:'layeredvalidationv1-fp-1',
+          preview_fingerprint:'layeredpreviewv1-replacement',
         },'apply must submit the frozen replace_existing and fingerprint');
         // Apply 消费掉这份 Preview：不能二次 Apply
         return document.getElementById('applyLayeredAdoption').onclick().then(()=>{
@@ -1847,6 +1851,33 @@ test('multiple published stale and superseded adoptions never auto-select a revo
     assert.doesNotMatch(source,/find\(item=>item\.status!=='revoked'\)/);
   });
   clearLayeredAdoptionCache();
+});
+
+test('engineering demo adoption is visibly distinct and never presented as operational authorization',()=>{
+  const demo=adoptionFixture({status:'published_engineering_demo'});
+  Object.assign(demo,{
+    strict_safety_validation_passed:false,
+    engineering_conditional_acceptance:true,
+    use_scope:'engineering_demo_only',
+    operational_authorization:false,
+    published_to_operational_routes:false,
+    limitations:['工程条件接受，严格验证未通过，仅供演示'],
+    engineering_acceptance:{authorization:{authorization_id:'ROUND36-D4'}},
+  });
+  demo.ownership={route_owned:false,route_operating_layer_owned:false};
+  const flow=baseFlow({adoptions:adoptionCollection([demo])});
+  const model=layeredOperationalAdoptionModel(flow);
+  assert.equal(model.adoptions[0].engineeringConditionalAcceptance,true);
+  assert.equal(model.adoptions[0].strictSafetyValidationPassed,false);
+  assert.equal(model.adoptions[0].operationalAuthorization,false);
+  assert.equal(model.adoptions[0].publishedToOperationalRoutes,false);
+  const chain=layeredAdoptionChainModel(flow);
+  assert.equal(chain.operationalState,'published_engineering_demo');
+  assert.equal(chain.engineeringDemoPublishedCount,1);
+  const html=renderLayeredOperationalAdoption(flow,'LRV-AAAAAAAAAAAA');
+  assert.match(html,/工程条件接受，严格验证未通过，仅供演示/);
+  assert.match(html,/operational_authorization false/);
+  assert.match(html,/published_to_operational_routes false/);
 });
 
 test('revoked adoptions are never selectable as revoke targets',()=>{

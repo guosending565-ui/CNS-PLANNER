@@ -27,7 +27,7 @@
 import {escapeHtml,statusBadge,wbBlock,wbDisclosure} from './common.js';
 
 //: 后端 domain.layered_operational_adoption.ADOPTION_STATUSES 的前端镜像。
-export const LAYERED_ADOPTION_STATUSES=['published','stale','revoked'];
+export const LAYERED_ADOPTION_STATUSES=['published','published_engineering_demo','stale','revoked'];
 //: 后端 result_snapshot 里的 current_applicability 取值（含被新 adoption 取代的 superseded）。
 export const LAYERED_ADOPTION_APPLICABILITIES=['current','stale','revoked','superseded','ownership_changed','stale_validation'];
 //: 状态链四节点：Candidate → RRP → Validation → Operational。
@@ -42,13 +42,15 @@ export const LAYERED_ADOPTION_LEGACY_NOTE='「生成场景航路（all-pairs，�
   +'本节的 Layered Candidate 发布流程才是正式入口，两者不替代、不合并、不改写彼此的结果。';
 export const LAYERED_ADOPTION_PUBLISH_LABEL='B. Layered Candidate 发布（validation → operational adoption）';
 export const LAYERED_ADOPTION_SCOPE_NOTE='Select / Validate / Preview / Apply 互不等价：'
-  +'只有 Apply 才写 operational_routes，Preview 不写 state。';
+  +'只有严格 validated_candidate 的 Apply 才写 operational_routes，Preview 不写 state；'
+  +'工程条件接受 Apply 只写隔离演示 adoption，不写 operational_routes。';
 export const LAYERED_ADOPTION_PATH_LABEL='2D route path 只保存二维 [lon, lat]，'
   +'不携带高度第三坐标；高度由 RouteOperatingLayer → AltitudeLayer 承载。';
 export const LAYERED_ADOPTION_BOUNDARY_NOTE='本流程不创建 RouteAltitudeProfile，'
   +'也不创建 Departure/Arrival procedure。';
 export const LAYERED_ADOPTION_CONFIRM_NOTE='Apply 必须先有当前 Preview 且 publication_allowed=true，'
-  +'并显式勾选确认；expected_validation_fingerprint 只来自刚 Preview 的那条 validation。';
+  +'并显式勾选确认；合法请求参数包含 validation_id、confirmed=true、preview_fingerprint，'
+  +'其中 preview_fingerprint 与 expected_validation_fingerprint 都只能来自刚完成的 Preview。';
 export const LAYERED_ADOPTION_CONFLICT_NOTE='route_id 冲突时默认禁止 Apply：'
   +'replace_existing 默认 false，绝不自动覆盖既有航路。';
 export const LAYERED_ADOPTION_REVOKE_LABEL='撤销本次发布（revoke）不是"删除航路"';
@@ -152,6 +154,13 @@ export function layeredOperationalAdoptionModel(flow){
       before:item?.before||{},
       after:item?.after||{},
       provenance:item?.provenance||{},
+      strictSafetyValidationPassed:item?.strict_safety_validation_passed===true,
+      engineeringConditionalAcceptance:item?.engineering_conditional_acceptance===true,
+      useScope:text(item?.use_scope),
+      operationalAuthorization:item?.operational_authorization===true,
+      publishedToOperationalRoutes:item?.['published_to_operational_routes']===true,
+      engineeringAcceptance:item?.engineering_acceptance||{},
+      limitations:Array.isArray(item?.limitations)?item.limitations:[],
     })),
     scopeNote:LAYERED_ADOPTION_SCOPE_NOTE,
     pathNote:LAYERED_ADOPTION_PATH_LABEL,
@@ -176,12 +185,16 @@ export function layeredAdoptionChainModel(flow){
     :'no current profile';
   const validationState=text(model.validation.currentStatus||'not_evaluated');
   const published=model.adoptions.filter(item=>item.status==='published').length;
-  const operationalState=published?'published':'not_published';
+  const engineeringDemoPublished=model.adoptions.filter(
+    item=>item.status==='published_engineering_demo').length;
+  const operationalState=published?'published':(
+    engineeringDemoPublished?'published_engineering_demo':'not_published');
   const toneFor=(state,tone)=>{
     if(tone)return tone;
     if(state==='stale'||state==='revoked')return 'stale';
     if(state==='failed'||state==='unresolved'||state==='validation_incomplete')return state;
-    if(state==='not_ready'||state==='not_evaluated'||state==='not_available'||state==='not_published')return 'pending_confirmation';
+    if(state==='not_ready'||state==='not_evaluated'||state==='not_available'
+      ||state==='not_published'||state==='published_engineering_demo')return 'pending_confirmation';
     return 'passed';
   };
   const stages=[
@@ -201,6 +214,7 @@ export function layeredAdoptionChainModel(flow){
     validationStatus:model.validation.status,
     staleValidationCount:model.validation.staleCount,
     publishedCount:published,
+    engineeringDemoPublishedCount:engineeringDemoPublished,
     staleCount:model.adoptions.filter(item=>item.status==='stale').length,
     revokedCount:model.adoptions.filter(item=>item.status==='revoked').length,
     neverInfersSafe:true,
@@ -284,6 +298,8 @@ export function cacheLayeredAdoptionPreview(preview,validationId=null,{replaceEx
     // 这是 Preview 时刻由后端冻结的指纹：Apply 只允许提交它。
     validationFingerprint:text(value.validation_fingerprint||
       projection.validation_fingerprint||'')||null,
+    // Preview 响应整体指纹：Apply 原样提交，服务端可检测投影/冲突意图变化。
+    previewFingerprint:text(value.preview_fingerprint)||null,
     // 这是 Preview 时刻冻结的发布意图：Apply 只允许提交它。
     replaceExisting:intent,
     publicationAllowed:value.publication_allowed===true,
@@ -312,6 +328,7 @@ export function layeredAdoptionPreviewState(flow,validationId=null,{replaceExist
   if(!cache){
     return {present:false,expired:false,selectionChanged:false,evidenceChanged:false,intentChanged:false,
       validationId:'',validationFingerprint:null,currentFingerprint:null,
+      previewFingerprint:null,
       replaceExisting:compareIntent?uiIntent:false,currentReplaceExisting:uiIntent,
       publicationAllowed:false,conflict:null,preview:null};
   }
@@ -328,6 +345,7 @@ export function layeredAdoptionPreviewState(flow,validationId=null,{replaceExist
     intentChanged,
     validationId:cache.validationId,
     validationFingerprint:cache.validationFingerprint,
+    previewFingerprint:cache.previewFingerprint,
     currentFingerprint,
     // Preview 冻结的 replace_existing：Apply 唯一被允许提交的值。
     replaceExisting:cache.replaceExisting===true,
@@ -397,6 +415,7 @@ export function layeredAdoptionApplyGuard(flow,validationId,{confirmed=false,rep
     payload:{
       validation_id:text(validationId),
       confirmed:true,
+      ...(state.previewFingerprint?{preview_fingerprint:state.previewFingerprint}:{}),
       // 只提交 Preview 冻结的 replace_existing：不读当前 checkbox、不做临时改写。
       replace_existing:state.replaceExisting===true,
       // 只提交 Preview 时刻冻结的指纹，绝不在这里读取新的 flow 值。
@@ -655,6 +674,13 @@ function historyBlock(model){
     +'<small>ownership route_owned '+escapeHtml(String((item.ownership||{}).route_owned===true))
     +' · route_operating_layer_owned '+escapeHtml(String((item.ownership||{}).route_operating_layer_owned===true))
     +' · replace_existing '+escapeHtml(String(item.replaceExisting))+'</small>'
+    +(item.engineeringConditionalAcceptance?'<small><b>工程条件接受，严格验证未通过，仅供演示</b>'
+      +' · strict_safety_validation_passed '+escapeHtml(String(item.strictSafetyValidationPassed))
+      +' · engineering_conditional_acceptance '+escapeHtml(String(item.engineeringConditionalAcceptance))
+      +' · use_scope '+escapeHtml(short(item.useScope))
+      +' · operational_authorization '+escapeHtml(String(item.operationalAuthorization))
+      +' · published_to_operational_routes '+escapeHtml(String(item.publishedToOperationalRoutes))
+      +'</small><small>limitations '+escapeHtml(jsonInline(item.limitations))+'</small>':'')
     +'<small>applied_at '+escapeHtml(short(item.appliedAt))
     +(item.revokedAt?' · revoked_at '+escapeHtml(short(item.revokedAt)):'')+'</small>'
     +'</span></div>').join('');

@@ -165,11 +165,27 @@ class TaskSpec:
     release: object = None
     #: 影响结果的算法类型（进入 snapshot 的 ``algorithms`` 段）。
     algorithm_types: tuple = ()
+    #: 可选的任务级算法选择投影。历史 ProjectState 可保留旧版本身份，而新任务可在
+    #: 不写回 state 的前提下绑定当前正式注册版本；提交与 publish 共用此函数。
+    algorithm_selection: object = None
     #: 把一次提交折叠成 ``{scope_id, fingerprint, worker_payload}``。默认实现直接
     #: 用请求 payload；需要缩小持久化体积的 task type 可以覆写成"只保留影响输入
     #: 指纹的字段"。worker 只用 ``worker_payload`` 重建输入，因此变小**不会**让
     #: 指纹失去含义。
     submit_plan: object = None
+    #: **只读预算**任务：完全从 immutable snapshot 计算，且永不发布 canonical 结果。
+    #: 这类任务跳过 worker 的"磁盘项目是否漂移"闸门（该闸门的存在意义是保护
+    #: canonical 结果，而只读任务没有 canonical 结果可保护）。
+    read_only_snapshot: bool = False
+
+    def algorithm_selection_for(self, state, registry):
+        from .task_input import normalized_selection
+
+        if self.algorithm_selection is None:
+            return normalized_selection(state)
+        return self.algorithm_selection(
+            state if isinstance(state, dict) else {}, registry,
+        )
 
     def inputs_for(self, state, payload):
         """本任务的计算输入（纯函数，只读 state）。"""
@@ -182,13 +198,18 @@ class TaskSpec:
 
         from .task_input import build_snapshot
 
+        selection = self.algorithm_selection_for(state, registry)
+        inputs = self.inputs_for(state, payload)
+        if "algorithm_selection" in inputs:
+            inputs["algorithm_selection"] = deepcopy(selection)
         return build_snapshot(
             task_type=self.task_type,
             payload=payload or {},
             state=state if isinstance(state, dict) else {},
             registry=registry,
             algorithm_types=self.algorithm_types,
-            inputs=self.inputs_for(state, payload),
+            inputs=inputs,
+            selection=selection,
         )
 
     def fingerprint_for(self, state, payload, registry=None):

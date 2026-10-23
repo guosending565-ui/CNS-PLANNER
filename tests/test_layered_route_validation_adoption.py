@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,15 @@ from cns_planner.application.result_currentness import effective_result_status
 from cns_planner.application.workflow_service import WorkflowService
 from cns_planner.algorithms.corridor.v1 import CNSServiceCorridorV1
 from cns_planner.algorithms.grid.service import WorkspaceGridService
+from cns_planner.domain.layered_operational_adoption import (
+    empty_layered_operational_adoption,
+)
 from cns_planner.domain.layered_route_validation import (
-    ALGORITHM_VERSION, VALIDATOR_VERSIONS, validation_fingerprint,
+    ALGORITHM_VERSION, ENGINEERING_DEMO_POLICY_VERSION, VALIDATOR_VERSIONS,
+    normalize_engineering_demo_building_acceptance_policy, validation_fingerprint,
 )
 from cns_planner.domain.spatial_3d import effective_route_vertical_context
+from cns_planner.validation.continuous_validators import building_evidence_fingerprint
 
 
 DEFAULTS = Path(__file__).parents[1] / "cns_planner" / "config" / "defaults.json"
@@ -22,6 +28,7 @@ def prepared(tmp_path):
     candidate = {
         "candidate_id": "LC-1", "route_id": "R-1", "altitude_layer_id": "L-100",
         "status": "candidate", "current_applicability": "current",
+        "operational_adoption_allowed": True,
         "candidate_fingerprint": "candidate-fp", "path": [[122.0, 30.0], [122.001, 30.0]],
     }
     candidates = {
@@ -102,6 +109,314 @@ def latest(service):
     return service.layered_route_validation_service.result_snapshot()["items"][-1]
 
 
+def engineering_demo_policy(**overrides):
+    value = {
+        "enabled": True,
+        "confirmed": True,
+        "scenario_route_id": "R-1",
+        "altitude_layer_id": "L-100",
+        "candidate_id": "LC-1",
+        "candidate_fingerprint": "candidate-fp",
+        "building_id": "4tCa7",
+        "building_fid": 360599,
+        "building_source_sha256": "building-sha",
+        "building_evidence_fingerprint": "evidence-fp",
+        "minimum_estimated_vertical_margin_m": 0.0,
+        "authorization": {
+            "authorization_id": "ROUND36-D4",
+            "authorized_by": "业务方",
+            "authorized_at": "2026-10-11T00:00:00+08:00",
+            "scope": "engineering_demo_only",
+        },
+    }
+    value.update(overrides)
+    return value
+
+
+def predicted_demo_building(**overrides):
+    value = {
+        "building_id": "4tCa7",
+        "ring_metric": [[40, -2], [60, -2], [60, 2], [40, 2], [40, -2]],
+        "ground_elevation_max_egm2008_m": 1.24,
+        "height_m": 2.252644062,
+        "height_estimate_m": 2.253,
+        "height_var": 0.5497021079,
+        "height_status": "valid",
+        "height_evidence_level": "predicted",
+        "height_evidence_method": "ml_prediction_max_in_footprint",
+        "height_source": "gba_lod1",
+        "height_source_license": "CC_BY_NC_4.0",
+        "height_observation_period": "2018-2019 (GBA LoD1)",
+        "height_uncertainty": {
+            "basis": "gba_tta_variance_not_stddev",
+            "note": "not_a_reliability_signal",
+        },
+        "height_var_semantics": "raw_source_field_only",
+        "height_var_unit": "m2_variance_not_stddev",
+        "evidence": {"feature_id": 360599, "layer": "buildings"},
+        "source": "gba_lod1",
+    }
+    value.update(overrides)
+    return value
+
+
+def test_engineering_demo_policy_defaults_disabled_and_backfills_idempotently(tmp_path):
+    service = WorkflowService(tmp_path / "project.json", DEFAULTS)
+    policy = service.engineering_demo_building_acceptance_policy()
+    assert policy["schema_version"] == ENGINEERING_DEMO_POLICY_VERSION
+    assert policy["status"] == "disabled"
+    assert policy["enabled"] is False
+    assert policy["confirmed"] is False
+
+    legacy = deepcopy(service.state)
+    legacy.pop("engineering_demo_building_acceptance_policy", None)
+    first = normalize_project(legacy, WorkspaceGridService())
+    second = normalize_project(deepcopy(first), WorkspaceGridService())
+    assert first["engineering_demo_building_acceptance_policy"] == second[
+        "engineering_demo_building_acceptance_policy"
+    ]
+
+
+def test_engineering_demo_policy_requires_complete_authorization_and_pinned_identity():
+    complete = normalize_engineering_demo_building_acceptance_policy(
+        engineering_demo_policy()
+    )
+    assert complete["status"] == "confirmed"
+    assert complete["policy_fingerprint"].startswith("engineeringdemobuildingpolicyv1-")
+
+    for missing in (
+        "scenario_route_id", "altitude_layer_id", "candidate_id",
+        "candidate_fingerprint", "building_id", "building_fid",
+        "building_source_sha256", "building_evidence_fingerprint",
+        "minimum_estimated_vertical_margin_m", "authorization",
+    ):
+        incomplete = engineering_demo_policy()
+        incomplete.pop(missing)
+        normalized = normalize_engineering_demo_building_acceptance_policy(incomplete)
+        assert normalized["status"] == "pending_confirmation", missing
+        assert normalized["effective"] is False
+
+
+def test_setting_engineering_demo_policy_stales_validation_and_is_exposed_by_api(tmp_path):
+    service, _, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    assert latest(service)["current_applicability"] == "current"
+
+    snapshot = service.set_engineering_demo_building_acceptance_policy(
+        {"engineering_demo_building_acceptance_policy": engineering_demo_policy()}
+    )
+    policy = snapshot["engineering_demo_building_acceptance_policy"]
+    assert policy["status"] == "confirmed"
+    assert latest(service)["status"] == "stale"
+    assert latest(service)["stale_reason"] == (
+        "engineering_demo_building_acceptance_policy_changed"
+    )
+
+    from cns_planner.api.router import ApiRouter
+
+    class _Context:
+        workflow = service
+        data = type("D", (), {"error": None})()
+
+    router = ApiRouter(_Context())
+    assert router.get(
+        "/api/engineering-demo-building-acceptance-policy", {}, {}
+    ).data["status"] == "confirmed"
+    disabled = router.post(
+        "/api/engineering-demo-building-acceptance-policy",
+        {"enabled": False},
+    ).data["engineering_demo_building_acceptance_policy"]
+    assert disabled["status"] == "disabled"
+
+
+def test_predicted_building_is_conditional_only_with_matching_explicit_policy(tmp_path):
+    service, _, _ = prepared(tmp_path)
+    building = predicted_demo_building()
+
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=[building])
+    )
+    strict = latest(service)
+    assert strict["status"] == "unresolved"
+    assert strict["domains"]["building"]["status"] == "unresolved"
+    assert strict["building_height_evidence"]["worst_evidence_level"] == "predicted"
+
+    service.set_engineering_demo_building_acceptance_policy({
+        "engineering_demo_building_acceptance_policy": engineering_demo_policy(
+            building_evidence_fingerprint=building_evidence_fingerprint(building),
+        )
+    })
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=[building])
+    )
+    conditional = latest(service)
+    assert conditional["status"] == "engineering_conditionally_accepted_candidate"
+    assert conditional["domains"]["building"]["status"] == "conditionally_accepted"
+    assert conditional["strict_safety_validation_passed"] is False
+    assert conditional["engineering_conditional_acceptance"] is True
+    assert conditional["use_scope"] == "engineering_demo_only"
+    assert conditional["operational_authorization"] is False
+    accepted = conditional["domains"]["building"]["conditional_acceptances"][0]
+    assert accepted["height_evidence_level"] == "predicted"
+    assert accepted["height_source"] == "gba_lod1"
+    assert accepted["height_evidence_method"] == "ml_prediction_max_in_footprint"
+    assert accepted["height_observation_period"] == "2018-2019 (GBA LoD1)"
+    assert accepted["height_source_license"] == "CC_BY_NC_4.0"
+    assert accepted["height_var"] == pytest.approx(0.5497021079)
+    assert accepted["height_variance_is_calibrated_safety_bound"] is False
+
+
+def test_raw_height_variance_is_complete_but_not_a_calibrated_safety_bound(tmp_path):
+    service, _, _ = prepared(tmp_path)
+    building = predicted_demo_building(height_uncertainty=None)
+    service.set_engineering_demo_building_acceptance_policy({
+        "engineering_demo_building_acceptance_policy": engineering_demo_policy(
+            building_evidence_fingerprint=building_evidence_fingerprint(building),
+        )
+    })
+
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=[building])
+    )
+
+    accepted = latest(service)["domains"]["building"]["conditional_acceptances"][0]
+    assert accepted["status"] == "conditionally_accepted"
+    assert accepted["height_uncertainty"] is None
+    assert accepted["height_var"] == pytest.approx(0.5497021079)
+    assert accepted["height_variance_is_calibrated_safety_bound"] is False
+
+
+def test_missing_all_uncertainty_descriptors_fails_closed(tmp_path):
+    service, _, _ = prepared(tmp_path)
+    building = predicted_demo_building(height_var=None, height_uncertainty=None)
+    service.set_engineering_demo_building_acceptance_policy({
+        "engineering_demo_building_acceptance_policy": engineering_demo_policy(
+            building_evidence_fingerprint=building_evidence_fingerprint(building),
+        )
+    })
+
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=[building])
+    )
+
+    record = latest(service)
+    assert record["status"] == "unresolved"
+    unresolved = record["domains"]["building"]["unresolved"][0]["evidence"]
+    assert "height_uncertainty_descriptor" in unresolved["missing_required_facts"]
+
+
+@pytest.mark.parametrize("mutation", ["second_building", "missing_method", "estimated_conflict"])
+def test_engineering_demo_building_acceptance_fails_closed(tmp_path, mutation):
+    service, _, _ = prepared(tmp_path)
+    authorized = predicted_demo_building()
+    service.set_engineering_demo_building_acceptance_policy({
+        "engineering_demo_building_acceptance_policy": engineering_demo_policy(
+            building_evidence_fingerprint=building_evidence_fingerprint(authorized),
+        )
+    })
+    buildings = [deepcopy(authorized)]
+    if mutation == "second_building":
+        buildings.append(predicted_demo_building(
+            building_id="SECOND", evidence={"feature_id": 360600, "layer": "buildings"},
+        ))
+    elif mutation == "missing_method":
+        buildings[0]["height_evidence_method"] = None
+    else:
+        buildings[0]["ground_elevation_max_egm2008_m"] = 95.0
+
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=buildings)
+    )
+    record = latest(service)
+    assert record["status"] == "unresolved"
+    assert record["domains"]["building"]["status"] == "unresolved"
+    assert record["engineering_conditional_acceptance"] is False
+
+
+def test_trusted_building_remains_strictly_validated_with_demo_policy_present(tmp_path):
+    assert empty_layered_operational_adoption()["operational_authorization"] is False
+    service, _, _ = prepared(tmp_path)
+    service.set_engineering_demo_building_acceptance_policy({
+        "engineering_demo_building_acceptance_policy": engineering_demo_policy()
+    })
+    trusted = predicted_demo_building(height_evidence_level="source_tagged")
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=[trusted])
+    )
+    record = latest(service)
+    assert record["status"] == "validated_candidate"
+    assert record["domains"]["building"]["status"] == "passed"
+    assert record["strict_safety_validation_passed"] is True
+    assert record["engineering_conditional_acceptance"] is False
+    assert record["operational_authorization"] is False
+
+
+def test_conditional_apply_publishes_only_adoption_projection_not_canonical_route(tmp_path):
+    service, _, _ = prepared(tmp_path)
+    building = predicted_demo_building()
+    service.set_engineering_demo_building_acceptance_policy({
+        "engineering_demo_building_acceptance_policy": engineering_demo_policy(
+            building_evidence_fingerprint=building_evidence_fingerprint(building),
+        )
+    })
+    service.evaluate_layered_route_validation(
+        {}, evidence_adapter=evidence(buildings=[building])
+    )
+    validation = latest(service)
+    assert validation["status"] == "engineering_conditionally_accepted_candidate"
+    before_routes = deepcopy(service.state["operational_routes"])
+    before_layers = deepcopy(service.state["spatial_3d"]["route_operating_layers"])
+    before_route_status = service.state["result_statuses"].get("routes")
+
+    preview = service.preview_layered_operational_adoption({
+        "validation_id": validation["validation_id"],
+    })
+    assert preview["status"] == "ready"
+    assert preview["publication_allowed"] is True
+    assert preview["projection"]["publication_target"] == (
+        "layered_operational_adoptions.engineering_demo_projection"
+    )
+    projected_route = preview["projection"]["route"]
+    assert projected_route["status"] == "engineering_demo_only"
+    assert projected_route["provenance"]["strict_safety_validation_passed"] is False
+    assert projected_route["provenance"]["engineering_conditional_acceptance"] is True
+    assert projected_route["provenance"]["operational_authorization"] is False
+
+    result = service.apply_layered_operational_adoption({
+        "validation_id": validation["validation_id"],
+        "expected_validation_fingerprint": validation["fingerprints"][
+            "validation_fingerprint"
+        ],
+        "confirmed": True,
+    })
+    assert result["status"] == "engineering_demo_published"
+    assert result["published_to_operational_routes"] is False
+    assert result["route_operating_layer_created"] is False
+    assert service.state["operational_routes"] == before_routes
+    assert service.state["spatial_3d"]["route_operating_layers"] == before_layers
+    assert service.state["result_statuses"].get("routes") == before_route_status
+    adoption = service.state["layered_operational_adoptions"]["items"][-1]
+    assert adoption["status"] == "published_engineering_demo"
+    assert adoption["strict_safety_validation_passed"] is False
+    assert adoption["engineering_conditional_acceptance"] is True
+    assert adoption["use_scope"] == "engineering_demo_only"
+    assert adoption["operational_authorization"] is False
+    assert adoption["published_to_operational_routes"] is False
+    assert adoption["engineering_acceptance"]["authorization"]["authorization_id"] == (
+        "ROUND36-D4"
+    )
+    assert "工程条件接受，严格验证未通过，仅供演示" in adoption["limitations"]
+    project_export = json.loads(service.export_service.project())
+    assert project_export["layered_operational_adoptions"]["items"][-1][
+        "published_to_operational_routes"
+    ] is False
+    routes_export = json.loads(service.export_service.routes())
+    assert all(
+        feature["properties"].get("route_id") != "R-1"
+        for feature in routes_export["features"]
+    )
+
+
 def test_constant_egm2008_candidate_native_terrain_pass_fail_and_nodata(tmp_path):
     service, _, _ = prepared(tmp_path)
     service.evaluate_layered_route_validation({}, evidence_adapter=evidence(terrain=80.0))
@@ -128,6 +443,7 @@ def test_real_building_footprint_pass_fail_missing_height_and_no_l8_verdict(tmp_
     service.evaluate_layered_route_validation({}, evidence_adapter=evidence(buildings=[{
         "building_id": "B1", "ring_metric": ring, "ground_elevation_max_egm2008_m": 50.0,
         "height_m": 20.0, "height_status": "confirmed", "source": "real-footprint",
+        "height_evidence_level": "source_tagged",
     }]))
     assert latest(service)["status"] == "validated_candidate"
     assert latest(service)["semantics"]["coarse_l8_building_height_not_a_final_verdict"] is True
@@ -135,6 +451,7 @@ def test_real_building_footprint_pass_fail_missing_height_and_no_l8_verdict(tmp_
     service.evaluate_layered_route_validation({}, evidence_adapter=evidence(buildings=[{
         "building_id": "B2", "ring_metric": ring, "ground_elevation_max_egm2008_m": 80.0,
         "height_m": 15.0, "height_status": "confirmed", "source": "real-footprint",
+        "height_evidence_level": "source_tagged",
     }]))
     assert latest(service)["status"] == "failed"
 
@@ -143,6 +460,14 @@ def test_real_building_footprint_pass_fail_missing_height_and_no_l8_verdict(tmp_
         "height_m": None, "height_status": "confirmed", "source": "real-footprint",
     }]))
     assert latest(service)["status"] == "unresolved"
+
+    # F3-D：预测高度（无 evidence level 时回填 predicted）不得支撑 validated_candidate。
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence(buildings=[{
+        "building_id": "B4", "ring_metric": ring, "ground_elevation_max_egm2008_m": 50.0,
+        "height_m": 20.0, "height_status": "confirmed", "source": "real-footprint",
+    }]))
+    assert latest(service)["status"] == "unresolved"
+    assert latest(service)["building_height_evidence"]["requires_survey"] is True
 
 
 def test_airspace_and_profile_thresholds_are_outside_validation_fingerprint(tmp_path):
@@ -186,10 +511,20 @@ def test_preview_apply_assignment_conflict_rollback_and_revoke_ownership(tmp_pat
     before = deepcopy(service.state)
     preview = service.preview_layered_operational_adoption({"validation_id": validation_id})
     assert preview["status"] == "ready" and preview["side_effects"] is False
+    assert preview["projection"]["route"]["provenance"][
+        "operational_authorization"
+    ] is False
     assert service.state == before
+
+    with pytest.raises(ValueError, match="preview fingerprint"):
+        service.apply_layered_operational_adoption({
+            "validation_id": validation_id, "confirmed": True,
+            "preview_fingerprint": "layeredpreviewv1-stale",
+        })
 
     applied = service.apply_layered_operational_adoption({
         "validation_id": validation_id, "confirmed": True,
+        "preview_fingerprint": preview["preview_fingerprint"],
         "expected_validation_fingerprint": validation["fingerprints"]["validation_fingerprint"],
     })
     route = next(item for item in service.state["operational_routes"] if item["route_id"] == "R-1")
@@ -200,6 +535,8 @@ def test_preview_apply_assignment_conflict_rollback_and_revoke_ownership(tmp_pat
     assert service.state["spatial_3d"]["route_altitude_profiles"] == {}
     assert service.state["spatial_3d"]["departure_arrival_procedures"] == []
     assert validation["status"] == "validated_candidate"
+    adoption = service.state["layered_operational_adoptions"]["items"][-1]
+    assert adoption["operational_authorization"] is False
 
     # A later manual edit breaks ownership; revoke must preserve it.
     route["provenance"] = {"source_type": "manual"}
@@ -739,23 +1076,23 @@ def test_clearance_policy_change_makes_validation_stale(tmp_path):
     assert service.state["layered_route_validations"]["items"][0]["status"] == "stale"
 
 
-def test_new_validation_fingerprint_carries_building_validator_v4(tmp_path):
-    """BUG-VALIDATION-BUILDING-003 审计修复：新执行的 validation fingerprint 必须含 building v2."""
+def test_new_validation_fingerprint_carries_building_validator_v6(tmp_path):
+    """F3-D 语义升级：新执行的 validation fingerprint 必须含 building v5 与算法 1.4."""
 
     service, _, _ = prepared(tmp_path)
     service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
     record = latest(service)
     versions = record["fingerprints"]["components"]["validator_versions"]
-    assert versions["building"] == "real_footprint_building_validator_v4"
+    assert versions["building"] == "real_footprint_building_validator_v6"
     assert versions == VALIDATOR_VERSIONS
     # 本轮只升级 building 语义：schema 与其余 domain 版本保持不变。
     assert record["schema_version"] == "layered-route-validation-v1"
     assert versions["terrain"] == "source_native_terrain_validator_v1"
-    assert versions["native_pixel_intervals"] == "native_pixel_interval_v1"
+    assert versions["native_pixel_intervals"] == "native_pixel_exact_segment_intervals_v2"
     assert versions["constant_vertical_context"] == "production_fixed_cruise_egm2008_v1"
-    assert ALGORITHM_VERSION == "1.3"
-    assert service.layered_route_validation_readiness()["algorithm"]["algorithm_version"] == "1.3"
-    # 版本是 fingerprint 的组成部分：building 回退到 v1 必然得到不同的 fingerprint。
+    assert ALGORITHM_VERSION == "1.5"
+    assert service.layered_route_validation_readiness()["algorithm"]["algorithm_version"] == "1.5"
+    # 版本是 fingerprint 的组成部分：building 回退到 v2 必然得到不同的 fingerprint。
     legacy_versions = deepcopy(versions)
     legacy_versions["building"] = "real_footprint_building_validator_v2"
     legacy_components = deepcopy(record["fingerprints"]["components"])
@@ -764,6 +1101,23 @@ def test_new_validation_fingerprint_carries_building_validator_v4(tmp_path):
         validation_fingerprint(legacy_components)
         != record["fingerprints"]["validation_fingerprint"]
     )
+
+
+def test_validation_fingerprint_ignores_source_file_name_when_sha_unchanged(tmp_path):
+    """同一内容复制或重命名后仍是同一 source identity，不得产生无意义 stale。"""
+
+    service, _, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    record = latest(service)
+    assert record["current_applicability"] == "current"
+
+    service.state["source_audits"]["items"]["buildings"]["file_name"] = "renamed.gpkg"
+    projected = next(
+        item for item in service.layered_route_validation_service.result_snapshot()["items"]
+        if item["validation_id"] == record["validation_id"]
+    )
+
+    assert projected["current_applicability"] == "current"
 
 
 def test_legacy_building_validator_v2_validation_is_stale_inputs_changed(tmp_path):
@@ -780,6 +1134,32 @@ def test_legacy_building_validator_v2_validation_is_stale_inputs_changed(tmp_pat
     legacy_versions["building"] = "real_footprint_building_validator_v2"
     legacy_components = deepcopy(stored["fingerprints"]["components"])
     legacy_components["validator_versions"] = legacy_versions
+    legacy_fingerprint = validation_fingerprint(legacy_components)
+    assert legacy_fingerprint != stored["fingerprints"]["validation_fingerprint"]
+    stored["fingerprints"]["components"] = legacy_components
+    stored["fingerprints"]["validation_fingerprint"] = legacy_fingerprint
+
+    projected = next(
+        item for item in service.layered_route_validation_service.result_snapshot()["items"]
+        if item["validation_id"] == stored["validation_id"]
+    )
+    assert projected["current_applicability"] == "stale_inputs_changed"
+    assert projected["current_applicability"] != "current"
+
+
+def test_legacy_restricted_area_validator_v1_validation_is_stale_inputs_changed(tmp_path):
+    """D1 接线语义升级后，旧受限区 v1 证据不得继续显示 current。"""
+
+    service, _, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    stored = service.state["layered_route_validations"]["items"][-1]
+    versions = stored["fingerprints"]["components"]["validator_versions"]
+    assert versions["restricted_area"] == "confirmed_restricted_area_validator_v2"
+
+    legacy_components = deepcopy(stored["fingerprints"]["components"])
+    legacy_components["validator_versions"]["restricted_area"] = (
+        "confirmed_restricted_area_validator_v1"
+    )
     legacy_fingerprint = validation_fingerprint(legacy_components)
     assert legacy_fingerprint != stored["fingerprints"]["validation_fingerprint"]
     stored["fingerprints"]["components"] = legacy_components
@@ -812,6 +1192,45 @@ def test_source_change_stales_evidence_chain_without_touching_v3(tmp_path):
     )["status"] == "stale"
     assert service.state["_v3_probe"] == {"records": [{"experiment_id": "V3-PROBE", "status": "passed"}]}
     assert service.state["layered_route_validations"]["items"][-1]["status"] == "stale"
+
+
+def test_building_grid_change_propagates_through_adopted_route_consumers(tmp_path):
+    """L8 建筑事实变化必须穿过 validation/adoption，失效真实航路下游。"""
+
+    service, _, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    service.apply_layered_operational_adoption(
+        {"validation_id": latest(service)["validation_id"], "confirmed": True}
+    )
+    state = service.state
+    state["route_risk_profiles"] = {
+        "status": "passed", "count": 1,
+        "items": [{"profile_id": "RRP-BUILDING", "status": "passed"}],
+    }
+    state["coverage_3d"] = {"status": "passed"}
+    state["cns_corridor_assessment"] = {"status": "passed"}
+    state["required_cns_recommendation"] = {"status": "passed"}
+    state["radar_surveillance_layout"] = {
+        "status": "passed", "items": [{"route_id": "R-1", "status": "passed"}],
+    }
+    state.setdefault("result_statuses", {}).update({
+        "route_risk_profile": "passed", "coverage_3d": "passed",
+        "cns_corridor_assessment": "passed", "required_cns_recommendation": "passed",
+        "radar_surveillance_layout": "passed",
+    })
+
+    service.invalidation_service.grid_sources({"building_grid"})
+
+    assert latest(service)["status"] == "stale"
+    assert state["layered_operational_adoptions"]["items"][-1]["status"] == "stale"
+    assert next(
+        item for item in state["operational_routes"] if item["route_id"] == "R-1"
+    )["status"] == "stale"
+    assert state["route_risk_profiles"]["status"] == "stale"
+    assert state["result_statuses"]["coverage_3d"] == "stale"
+    assert state["result_statuses"]["cns_corridor_assessment"] == "stale"
+    assert state["result_statuses"]["required_cns_recommendation"] == "stale"
+    assert state["result_statuses"]["radar_surveillance_layout"] == "stale"
 
 
 def test_publication_stales_only_downstream_and_keeps_published_state(tmp_path):
@@ -969,3 +1388,58 @@ def test_apply_requires_current_candidate_and_real_sources(tmp_path):
     with pytest.raises(ValueError):
         service.apply_layered_operational_adoption({"validation_id": validation_id, "confirmed": True})
     assert service.state["operational_routes"] == []
+
+
+@pytest.mark.parametrize("allowed,code", [
+    (False, "candidate_not_adoption_eligible"),
+    (None, "candidate_missing_adoption_eligibility"),
+])
+def test_r13_ineligible_candidate_blocks_preview_and_apply(tmp_path, allowed, code):
+    service, candidate, _ = prepared(tmp_path)
+    if allowed is None:
+        candidate.pop("operational_adoption_allowed")
+    else:
+        candidate["operational_adoption_allowed"] = allowed
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    assert latest(service)["status"] == "validated_candidate"
+    before = deepcopy(service.state)
+    preview = service.preview_layered_operational_adoption({})
+    assert preview["status"] == "not_ready"
+    assert preview["publication_allowed"] is False
+    assert code in preview["projection"]["reasons"]
+    assert code in {b["reason_code"] for b in preview["projection"]["blocking_reasons"]}
+    with pytest.raises(ValueError, match="Apply gate"):
+        service.apply_layered_operational_adoption({"confirmed": True})
+    assert service.state == before
+    assert not service.state["operational_routes"]
+
+
+def test_r13_explicit_eligibility_keeps_publication(tmp_path):
+    service, candidate, _ = prepared(tmp_path)
+    assert candidate["operational_adoption_allowed"] is True
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    assert latest(service)["status"] == "validated_candidate"
+    assert not latest(service).get("warnings")
+    preview = service.preview_layered_operational_adoption({})
+    assert preview["publication_allowed"] is True
+    result = service.apply_layered_operational_adoption({"confirmed": True})
+    assert result["status"] == "passed"
+    assert [r["route_id"] for r in service.state["operational_routes"]] == ["R-1"]
+
+
+@pytest.mark.parametrize("allowed", [False, None])
+def test_r13_validation_warning_preserves_evidence_verdict(tmp_path, allowed):
+    service, candidate, _ = prepared(tmp_path)
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    baseline = latest(service)
+    if allowed is None:
+        candidate.pop("operational_adoption_allowed")
+    else:
+        candidate["operational_adoption_allowed"] = allowed
+    service.evaluate_layered_route_validation({}, evidence_adapter=evidence())
+    result = latest(service)
+    assert result["status"] == baseline["status"] == "validated_candidate"
+    assert result["domains"] == baseline["domains"]
+    assert result["fingerprints"] == baseline["fingerprints"]
+    assert "candidate_not_adoption_eligible" in {w["reason_code"] for w in result["warnings"]}
+    assert not result["blocking_reasons"]

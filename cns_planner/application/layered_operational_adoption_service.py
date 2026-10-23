@@ -8,7 +8,7 @@ from ..domain.layered_operational_adoption import (
     ALGORITHM_ID, ALGORITHM_VERSION, SCHEMA_VERSION, SOURCE_TYPE, adoption_fingerprint,
     normalize_layered_operational_adoptions,
 )
-from ..domain.layered_route_validation import stable_fingerprint, utc_now
+from ..domain.layered_route_validation import path_fingerprint, stable_fingerprint, utc_now
 from ..domain.planning_constraint_field import PROVISIONAL_ROUTE_BLOCK_STATEMENT
 from ..domain.spatial_3d import normalize_route_operating_layer
 from .production_write_authority import assert_write_authority
@@ -42,7 +42,7 @@ class LayeredOperationalAdoptionService:
         for item in collection["items"]:
             entry = deepcopy(item)
             entry["ownership"] = self.ownership(item)
-            if item.get("status") == "published":
+            if item.get("status") in ("published", "published_engineering_demo"):
                 entry["current_applicability"] = self._applicability(item)
             projected.append(entry)
         collection["items"] = projected
@@ -55,7 +55,7 @@ class LayeredOperationalAdoptionService:
             validations = self.validations.result_snapshot()
             options = []
             for item in validations.get("items") or []:
-                gate = self._gate(item)
+                gate = self._gate(item, self._resolve_candidate(item))
                 options.append({
                     "validation_id": item.get("validation_id"),
                     "route_id": (item.get("candidate") or {}).get("route_id"),
@@ -84,7 +84,23 @@ class LayeredOperationalAdoptionService:
         validation = self._select_validation(payload)
         if validation is None:
             return {"status": "not_ready", "reason": "validation_not_found"}
-        gate = self._gate(validation)
+        candidate = self._resolve_candidate(validation)
+        gate = self._gate(validation, candidate)
+        # Preview 与 Apply 共用 projection；资格门禁在既有证据门禁之后执行。
+        identity_code = self._candidate_identity(validation, candidate)
+        allowed = (candidate or {}).get("operational_adoption_allowed")
+        if identity_code or allowed is not True:
+            code, reason = (
+                (identity_code, "验证记录与当前候选身份或几何不一致，请重新验证候选航路")
+                if identity_code else
+                ("candidate_missing_adoption_eligibility", "候选航路缺少采纳资格，请重新生成候选航路")
+                if allowed is None else
+                ("candidate_not_adoption_eligible", "候选航路不具备正式采纳资格")
+            )
+            gate["eligible"] = False
+            gate["reasons"].append(code)
+            gate["blocking_reasons"].append({"reason_code": code, "reason": reason})
+            gate["reason_text"] = "；".join(item["reason"] for item in gate["blocking_reasons"])
         if not gate["eligible"]:
             return {
                 "status": "not_ready", "reason": "publish_gate_blocked",
@@ -95,6 +111,9 @@ class LayeredOperationalAdoptionService:
                 "reason_text": gate["reason_text"],
             }
         candidate = validation.get("candidate") or {}
+        engineering_demo = (
+            validation.get("status") == "engineering_conditionally_accepted_candidate"
+        )
         route_id = str(candidate.get("route_id") or "")
         path = [
             [float(point[0]), float(point[1])]
@@ -117,13 +136,18 @@ class LayeredOperationalAdoptionService:
             "altitude_layer_id": layer_id,
         }, prefix="layeredprojectionv1-")
         route = {
-            "route_id": route_id, "status": "passed", "path": path,
+            "route_id": route_id,
+            "status": "engineering_demo_only" if engineering_demo else "passed",
+            "path": path,
             "start": deepcopy(scenario.get("start") or path[0]),
             "end": deepcopy(scenario.get("end") or path[-1]),
             "start_node_id": scenario.get("start_node_id"),
             "end_node_id": scenario.get("end_node_id"),
             "path_crs": "OGC:CRS84",
-            "kind": "layered_risk_aware_operational_route",
+            "kind": (
+                "layered_engineering_demo_route"
+                if engineering_demo else "layered_risk_aware_operational_route"
+            ),
             "provenance": {
                 "source_type": SOURCE_TYPE,
                 "validation_id": validation.get("validation_id"),
@@ -135,6 +159,16 @@ class LayeredOperationalAdoptionService:
                 "projection_fingerprint": projection_fingerprint,
                 "two_dimensional_crs84_path": True,
                 "egm2008_altitude_in_third_coordinate": False,
+                "strict_safety_validation_passed": not engineering_demo,
+                "engineering_conditional_acceptance": engineering_demo,
+                "use_scope": (
+                    "engineering_demo_only" if engineering_demo else "strict_operational_route"
+                ),
+                "operational_authorization": False,
+                "engineering_acceptance": deepcopy(
+                    validation.get("engineering_acceptance") or {}
+                ),
+                "limitations": deepcopy(validation.get("limitations") or []),
             },
         }
         assignment = normalize_route_operating_layer({
@@ -155,7 +189,7 @@ class LayeredOperationalAdoptionService:
             "confirmed": True, "active": True,
             "adoption_owned": True,
         })
-        conflict = self._conflict(route_id)
+        conflict = None if engineering_demo else self._conflict(route_id)
         validation_fingerprint = (validation.get("fingerprints") or {}).get(
             "validation_fingerprint"
         )
@@ -168,6 +202,11 @@ class LayeredOperationalAdoptionService:
             "route_id": route_id, "projection_fingerprint": projection_fingerprint,
             "route": route, "route_operating_layer": assignment,
             "conflict": conflict,
+            "publication_target": (
+                "layered_operational_adoptions.engineering_demo_projection"
+                if engineering_demo else "operational_routes"
+            ),
+            "published_to_operational_routes": not engineering_demo,
             "replacement_requested": payload.get("replace_existing") is True,
             "apply_blocked_by_conflict": bool(conflict and payload.get("replace_existing") is not True),
             "two_dimensional_path_only": True,
@@ -205,6 +244,14 @@ class LayeredOperationalAdoptionService:
         payload = payload if isinstance(payload, dict) else {}
         if payload.get("confirmed") is not True:
             raise ValueError("Layered operational Apply 必须显式 confirmed=true")
+        supplied_preview = payload.get("preview_fingerprint")
+        if supplied_preview not in (None, ""):
+            fresh_preview = self.preview({
+                "validation_id": payload.get("validation_id"),
+                "replace_existing": payload.get("replace_existing") is True,
+            })
+            if str(supplied_preview) != str(fresh_preview.get("preview_fingerprint")):
+                raise ValueError("preview fingerprint 在 Preview 后发生变化，拒绝 Apply")
         projection = self.projection(payload)
         if projection.get("status") != "ready":
             raise ValueError(
@@ -231,10 +278,13 @@ class LayeredOperationalAdoptionService:
         _install_in_place(original, normalized)
         self.session.state = original
         self.session.save()
+        engineering_demo = adoption.get("engineering_conditional_acceptance") is True
         return {
-            "status": "passed", "adoption_id": adoption["adoption_id"],
+            "status": "engineering_demo_published" if engineering_demo else "passed",
+            "adoption_id": adoption["adoption_id"],
             "route_id": adoption["route_id"],
-            "route_operating_layer_created": True,
+            "published_to_operational_routes": not engineering_demo,
+            "route_operating_layer_created": not engineering_demo,
             "route_altitude_profile_created": False,
             "departure_arrival_procedure_created": False,
             "snapshot": self.snapshot(),
@@ -269,19 +319,24 @@ class LayeredOperationalAdoptionService:
         assignment.setdefault("evidence", {}).update({
             "adoption_id": adoption_id, "adoption_fingerprint": identity,
         })
-        # Phase4-B2B-1：本服务是 canonical ``operational_routes`` 的唯一 production
-        # content owner；写入前必须通过 authority guard。
-        assert_write_authority(self, "operational_routes")
-        state["operational_routes"] = [
-            item for item in routes if str(item.get("route_id")) != route_id
-        ] + [route]
-        state["operational_routes"].sort(key=lambda item: str(item.get("route_id")))
-        state["spatial_3d"]["route_operating_layers"] = [
-            item for item in assignments if str(item.get("route_id")) != route_id
-        ] + [assignment]
+        engineering_demo = (
+            validation.get("status") == "engineering_conditionally_accepted_candidate"
+        )
+        if not engineering_demo:
+            # Phase4-B2B-1：严格验证分支保持 canonical production writer 语义。
+            assert_write_authority(self, "operational_routes")
+            state["operational_routes"] = [
+                item for item in routes if str(item.get("route_id")) != route_id
+            ] + [route]
+            state["operational_routes"].sort(key=lambda item: str(item.get("route_id")))
+            state["spatial_3d"]["route_operating_layers"] = [
+                item for item in assignments if str(item.get("route_id")) != route_id
+            ] + [assignment]
         adoption = {
             "schema_version": SCHEMA_VERSION, "adoption_id": adoption_id,
-            "route_id": route_id, "status": "published", "current_applicability": "current",
+            "route_id": route_id,
+            "status": "published_engineering_demo" if engineering_demo else "published",
+            "current_applicability": "current",
             "applied_at": utc_now(), "revoked_at": None,
             "validation_id": validation.get("validation_id"),
             "validation_fingerprint": (validation.get("fingerprints") or {}).get(
@@ -295,6 +350,17 @@ class LayeredOperationalAdoptionService:
             "altitude_layer_id": (validation.get("candidate") or {}).get("altitude_layer_id"),
             "source_type": SOURCE_TYPE,
             "replace_existing": payload.get("replace_existing") is True,
+            "strict_safety_validation_passed": not engineering_demo,
+            "engineering_conditional_acceptance": engineering_demo,
+            "use_scope": (
+                "engineering_demo_only" if engineering_demo else "strict_operational_route"
+            ),
+            "operational_authorization": False,
+            "published_to_operational_routes": not engineering_demo,
+            "engineering_acceptance": deepcopy(
+                validation.get("engineering_acceptance") or {}
+            ),
+            "limitations": deepcopy(validation.get("limitations") or []),
             "before": {
                 "route": deepcopy(previous_route),
                 "route_operating_layer": deepcopy(previous_assignment),
@@ -302,31 +368,40 @@ class LayeredOperationalAdoptionService:
                 "assignment_provenance": deepcopy((previous_assignment or {}).get("evidence") or {}),
             },
             "after": {"route": deepcopy(route), "route_operating_layer": deepcopy(assignment)},
-            "ownership": {"route_owned": True, "route_operating_layer_owned": True},
+            "ownership": {
+                "route_owned": not engineering_demo,
+                "route_operating_layer_owned": not engineering_demo,
+            },
             "stale_reason": None,
             "provenance": {
                 "explicit_confirmation": True,
                 "configured_real_sources": True,
                 "route_altitude_profile_created": False,
                 "departure_arrival_procedure_created": False,
+                "engineering_demo_projection_only": engineering_demo,
             },
         }
         collection = normalize_layered_operational_adoptions(
             state.get("layered_operational_adoptions")
         )
         for old in collection["items"]:
-            if str(old.get("route_id")) == route_id and old.get("status") == "published":
+            if str(old.get("route_id")) == route_id and old.get("status") in (
+                "published", "published_engineering_demo",
+            ):
                 old["status"] = "stale"
                 old["current_applicability"] = "superseded"
                 old["stale_reason"] = "superseded_by_new_layered_adoption"
         collection["items"].append(adoption)
         collection["count"] = len(collection["items"])
-        collection["status"] = "passed"
-        state["layered_operational_adoptions"] = collection
-        state.setdefault("result_statuses", {})["routes"] = "passed"
-        self.invalidation.operational_route_published(
-            {route_id}, reason="layered_operational_route_published",
+        collection["status"] = (
+            "engineering_demo_published" if engineering_demo else "passed"
         )
+        state["layered_operational_adoptions"] = collection
+        if not engineering_demo:
+            state.setdefault("result_statuses", {})["routes"] = "passed"
+            self.invalidation.operational_route_published(
+                {route_id}, reason="layered_operational_route_published",
+            )
         return adoption
 
     # ------------------------------------------------------------------ revoke / stale / ownership
@@ -438,6 +513,8 @@ class LayeredOperationalAdoptionService:
         return {"stale_adoption_ids": stale_adoptions, "stale_route_ids": sorted(stale_routes)}
 
     def ownership(self, adoption):
+        if adoption.get("engineering_conditional_acceptance") is True:
+            return {"route_owned": False, "route_operating_layer_owned": False}
         route = self._route(adoption.get("route_id"))
         assignment = self._assignment(adoption.get("route_id"))
         expected_id = str(adoption.get("adoption_id") or "")
@@ -465,7 +542,53 @@ class LayeredOperationalAdoptionService:
 
     # ------------------------------------------------------------------ helpers
 
-    def _gate(self, validation):
+    def _resolve_candidate(self, validation):
+        """Resolve exactly one live identity; empty IDs never use active/fallback."""
+        wanted = (validation.get("candidate") or {}).get("candidate_id")
+        if not isinstance(wanted, str) or not wanted.strip():
+            return None
+        matches = [
+            item for item in self.validations.layered.result_snapshot().get("items") or []
+            if item.get("candidate_id") == wanted
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _candidate_identity(validation, candidate):
+        reference = validation.get("candidate") or {}
+        wanted = reference.get("candidate_id")
+        if not isinstance(wanted, str) or not wanted.strip():
+            return "candidate_identity_missing"
+        if candidate is None:
+            return "candidate_identity_mismatch"
+        for field in ("candidate_id", "route_id", "altitude_layer_id"):
+            if not reference.get(field) or reference.get(field) != candidate.get(field):
+                return "candidate_identity_mismatch"
+        if (not reference.get("candidate_fingerprint") or
+                reference["candidate_fingerprint"] != candidate.get("candidate_fingerprint")):
+            return "candidate_identity_stale"
+        try:
+            live_path = candidate.get("path") or []
+            validated_path = (validation.get("route") or {}).get("path") or []
+            if (len(live_path) < 2 or len(validated_path) < 2 or
+                    any(not isinstance(p, (list, tuple)) or len(p) != 2
+                        for p in live_path + validated_path) or
+                    not reference.get("path_fingerprint") or
+                    reference["path_fingerprint"] != path_fingerprint(live_path) or
+                    reference["path_fingerprint"] != path_fingerprint(validated_path)):
+                return "candidate_identity_stale"
+        except (TypeError, ValueError, OverflowError):
+            return "candidate_identity_stale"
+        # Existing validation snapshots retain these safety semantics, unlike eligibility.
+        # Comparing them also catches same-fingerprint metadata updates.
+        for field in ("operational_applicability", "unknown_constraint_count",
+                      "traversed_unknown_cell_count", "contains_unknown_constraints",
+                      "constraint_field_fingerprint"):
+            if reference.get(field) != candidate.get(field):
+                return "candidate_identity_stale"
+        return None
+
+    def _gate(self, validation, candidate):
         """正式发布门禁（**不放松**）。
 
         只要候选/航路含证据不足（unknown / unresolved）约束，Apply 一律不得成功，并给出
@@ -478,11 +601,28 @@ class LayeredOperationalAdoptionService:
             reasons.append(code)
             blocking_reasons.append({"reason_code": code, "reason": str(reason)})
 
-        if validation.get("status") != "validated_candidate":
+        validation_status = validation.get("status")
+        eligible_status = validation_status in (
+            "validated_candidate", "engineering_conditionally_accepted_candidate",
+        )
+        if not eligible_status:
             block(
                 f"validation_status:{validation.get('status')}",
                 "validation 尚未判定为 validated_candidate：正式发布门禁未通过",
             )
+        if validation_status == "engineering_conditionally_accepted_candidate":
+            if validation.get("engineering_conditional_acceptance") is not True:
+                block(
+                    "engineering_conditional_acceptance_missing",
+                    "工程条件接受 validation 缺少显式 conditional 标识",
+                )
+            if validation.get("operational_authorization") is not False:
+                block(
+                    "engineering_demo_operational_authorization_must_be_false",
+                    "工程演示 validation 不得具有实际运行授权",
+                )
+            if validation.get("use_scope") != "engineering_demo_only":
+                block("engineering_demo_scope_mismatch", "工程演示 use_scope 不匹配")
         if validation.get("current_applicability") != "current":
             block("validation_not_current", "validation 已不是当前有效的证据链")
         if validation.get("source_type") != "configured_real_sources":
@@ -490,9 +630,6 @@ class LayeredOperationalAdoptionService:
                 "configured_real_sources_required",
                 "production 发布只接受 verified configured real FABDEM/buildings source chain",
             )
-        candidate = self.validations._select_current_candidate({
-            "candidate_id": (validation.get("candidate") or {}).get("candidate_id")
-        })
         if candidate is None or candidate.get("current_applicability") != "current":
             block("referenced_candidate_not_current", "被引用的候选航路已不是当前候选")
         else:
@@ -611,6 +748,8 @@ class LayeredOperationalAdoptionService:
         validation = self._select_validation({"validation_id": adoption.get("validation_id")})
         if validation is None or validation.get("current_applicability") != "current":
             return "stale_validation"
+        if adoption.get("engineering_conditional_acceptance") is True:
+            return "current"
         ownership = self.ownership(adoption)
         return "current" if all(ownership.values()) else "ownership_changed"
 

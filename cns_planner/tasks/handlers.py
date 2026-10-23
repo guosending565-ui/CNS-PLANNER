@@ -23,7 +23,7 @@ from ..persistence.artifact_store import ArtifactStore
 from .task_input import InputSnapshotStore, snapshot_reference
 from .task_specs import (
     CORRIDOR_TASK_TYPE, LAYERED_CANDIDATE_TASK_TYPE, LAYERED_ROUTE_VALIDATION_TASK_TYPE,
-    P15_TASK_TYPE, P16_TASK_TYPE,
+    P15_TASK_TYPE, P16_TASK_TYPE, P16_V2_TASK_TYPE,
     PCF_TASK_TYPE, PROBE_STATE_KEY, PROBE_TASK_TYPE, RADAR_TASK_TYPE,
     ROUTE_RISK_PROFILE_TASK_TYPE, has_task_type, task_spec,
 )
@@ -47,7 +47,10 @@ RESULT_SCOPE_TEXT = {
     LAYERED_CANDIDATE_TASK_TYPE: "航路候选规划",
     ROUTE_RISK_PROFILE_TASK_TYPE: "航路风险画像",
     LAYERED_ROUTE_VALIDATION_TASK_TYPE: "航路连续安全验证",
+    #: V2 **不**更新任何正式结果；这里的名称只用于任务面板的"结果范围"文案。
+    P16_V2_TASK_TYPE: "CNS 设施规划 V2（工程假设，只读）",
     PROBE_TASK_TYPE: "运行时探针",
+    "source_audit_verify": "数据源验证",
 }
 
 
@@ -75,14 +78,21 @@ def _snapshot_from_plan(spec, plan, state, registry):
 
     from .task_input import build_snapshot
 
+    selection = spec.algorithm_selection_for(state, registry)
+    inputs = (
+        deepcopy(plan.get("inputs")) if isinstance(plan.get("inputs"), dict)
+        else spec.inputs_for(state, {})
+    )
+    if "algorithm_selection" in inputs:
+        inputs["algorithm_selection"] = deepcopy(selection)
     return build_snapshot(
         task_type=spec.task_type,
         payload=deepcopy(plan.get("worker_payload") or {}),
         state=state,
         registry=registry,
         algorithm_types=spec.algorithm_types,
-        inputs=plan.get("inputs") if isinstance(plan.get("inputs"), dict)
-        else spec.inputs_for(state, {}),
+        inputs=inputs,
+        selection=selection,
     )
 
 
@@ -179,9 +189,12 @@ def publish_task_result(workflow, record, *, workdir):
     if not has_task_type(task_type):
         raise TaskPublishError(f"未登记的 heavy task 类型：{task_type}")
     spec = task_spec(task_type)
-    current_fingerprint = current_input_fingerprint(workflow, record)
-    if current_fingerprint != str(record.get("input_fingerprint") or ""):
-        raise TaskInputChangedError("输入已变化，未覆盖当前正式结果")
+    #: 只读任务（当前仅 P16-V2）不写任何 canonical 容器，因此"提交后项目是否漂移"
+    #: 不影响它的正确性：结果完全来自 immutable snapshot，照常保留为只读研究记录。
+    if not bool(getattr(spec, "read_only_snapshot", False)):
+        current_fingerprint = current_input_fingerprint(workflow, record)
+        if current_fingerprint != str(record.get("input_fingerprint") or ""):
+            raise TaskInputChangedError("输入已变化，未覆盖当前正式结果")
 
     run_result = record.get("result_summary") if isinstance(record.get("result_summary"), dict) else {}
     staged = run_result.get("staged") if isinstance(run_result.get("staged"), dict) else None
@@ -303,6 +316,17 @@ def publish_task_result(workflow, record, *, workdir):
         }
         return {"task_type": task_type, "scope": result_scope_text(task_type),
                 "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+    if task_type == P16_V2_TASK_TYPE:
+        #: **只读预算**：V2 不产生任何 canonical 产物，因此这里不写 ProjectState。
+        #: 但结果明细 artifact 要**保留引用**（R7-A）：它是可追溯的独立研究记录
+        #: （完整 selected_actions、覆盖/连续指标、near_identities、输入指纹、算法
+        #: 版本、来源 SHA）。旧实现提交了 artifact 却丢掉 locator，导致记录与实际
+        #: 文件脱节；现在 ``result_artifact_ref`` 与任务记录一一对应。
+        return {
+            "task_type": task_type, "scope": result_scope_text(task_type),
+            "status": "readonly", "canonical_write": False,
+            "summary": summary, "artifact_ref": committed,
+        }
 
     if task_type == PCF_TASK_TYPE:
         field = _staged_value(_load_staged_payload(workdir, staged, committed))
@@ -315,6 +339,12 @@ def publish_task_result(workflow, record, *, workdir):
         }
         return {"task_type": task_type, "scope": result_scope_text(task_type),
                 "status": "published", "summary": summary, "artifact_ref": artifact_ref}
+
+    if task_type == "source_audit_verify":
+        result = _staged_value(_load_staged_payload(workdir, staged, committed))
+        published = workflow.source_audit_service.apply_verified(result)
+        return {"task_type": task_type, "scope": "数据源验证", "status": "published",
+                "summary": published, "artifact_ref": committed}
 
     raise TaskPublishError(f"task type 没有发布路径：{task_type}")
 

@@ -178,7 +178,12 @@ test('P16 业务按钮改走后台任务入口，不再同步阻塞页面', () =
 
 test('壳层把既有任务框架接到业务页面（不新建第二套任务框架）', () => {
   const source = readFileSync(MAIN_SOURCE, 'utf8');
-  assert.match(source, /import \{setupTaskCenter, submitHeavyTask\} from '\.\/tasks\.js'/);
+  //: 断言只要求"任务框架的入口从 tasks.js 导入"，不锁定导入清单：R6-C 的 P16-V2
+  //: 追加了 ETA / 时长换算的只读工具，仍然复用同一个 tasks.js（不新建第二套框架）。
+  assert.match(
+    source,
+    /import \{[^}]*\bsetupTaskCenter\b[^}]*\bsubmitHeavyTask\b[^}]*\} from '\.\/tasks\.js'/,
+  );
   assert.match(
     source,
     /submitBackgroundTask:\(path,payload\)=>submitHeavyTask\(/,

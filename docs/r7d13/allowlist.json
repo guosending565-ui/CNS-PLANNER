@@ -1,0 +1,231 @@
+{
+  "baseline": "89b008da",
+  "source_checkpoint": "2b953bfc",
+  "scope": "A8+B5 and necessary dependencies; local-only; no public release approval",
+  "files": [
+    {
+      "path": "cns_planner/api/router.py",
+      "sha256": "ea76cc8851369ef1520d2dbf6e652923394dcdb38b64e6c023081c108b523c46"
+    },
+    {
+      "path": "cns_planner/api/server.py",
+      "sha256": "94e973fe1916c44eb65c0e5f502026dfa456f4f110d7dab65420c7e55434e4b2"
+    },
+    {
+      "path": "cns_planner/application/app_context.py",
+      "sha256": "51962ad746aa01c28f4ef9fceda026b7347e7850c23f55b6caa9a2b2d1360dbc"
+    },
+    {
+      "path": "cns_planner/application/engineering_assumption_p16_adapter.py",
+      "sha256": "401d8a0821407ca4eb533fa7e2d4d87c50f3c55b6ed7c32c686022c1bce1d701"
+    },
+    {
+      "path": "cns_planner/application/engineering_assumption_scenario_service.py",
+      "sha256": "9663412d1b4fdf8c8b76ed6d337c7aa9ac4661e840653a2d3c078fd0f29332d9"
+    },
+    {
+      "path": "cns_planner/application/layered_operational_adoption_service.py",
+      "sha256": "ac46e938d213128a1289945db96a04207d4bb1a20c6c509e8392431de93bddd1"
+    },
+    {
+      "path": "cns_planner/application/layered_route_planner_service.py",
+      "sha256": "a525d1feabb947ad7e53ac7dde015c26d4c2e2ed95e2cc1d6741c0e206af966e"
+    },
+    {
+      "path": "cns_planner/application/layered_route_validation_service.py",
+      "sha256": "4a71007fab8ac5608b60c3e2737765573c92d5f588ce44659eb77138985c76dd"
+    },
+    {
+      "path": "cns_planner/application/operational_route_clearance.py",
+      "sha256": "342773e05f03a74a9f0d241b98431b8f6259e69e9647a8bd37c9b468dddc0352"
+    },
+    {
+      "path": "cns_planner/application/p16_v2_pool.py",
+      "sha256": "83758705f14839d5fb17046d5343026332e7aaa39b0b8a7ee3f9598bc4452c8c"
+    },
+    {
+      "path": "cns_planner/application/p16_v2_service.py",
+      "sha256": "52348b589284625b1a5d46db4a99f79aa023e925cfac85e4838dd96ae7371815"
+    },
+    {
+      "path": "cns_planner/application/project_directory_service.py",
+      "sha256": "c1347515feb30b2028789a99388e920dd97b7d14210a884ade81fe6726f8be17"
+    },
+    {
+      "path": "cns_planner/application/project_state.py",
+      "sha256": "8ce69acda40a83d050fa0901eb131f58f1489c7383171b26c5f6737c83313c36"
+    },
+    {
+      "path": "cns_planner/application/read_projection.py",
+      "sha256": "b8f4f05eed153f4978cb03e8b0bf590b04455c4a1c3628764bb7b77bbaca34ac"
+    },
+    {
+      "path": "cns_planner/application/source_audit_service.py",
+      "sha256": "4ba96eb63098109b39e390dab9f9663b46f05f0263845ad20980ca02e77855eb"
+    },
+    {
+      "path": "cns_planner/application/workflow_service.py",
+      "sha256": "9877b975136ce2a3ed07fa26bc30dea5aa264f0341544124c6f994241c8228b4"
+    },
+    {
+      "path": "cns_planner/config/engineering_assumptions/r0005_bc_v1.json",
+      "sha256": "bbd386a8bd96333e4bd0e0080b266d05bb2912dc2b58db0550ec203cb435f19d"
+    },
+    {
+      "path": "cns_planner/config/engineering_assumptions/zhoushan_v1.json",
+      "sha256": "45444be27ee8f06ed4e9e4720ccb570b519211b82b18ae9afb89969a25e64a72"
+    },
+    {
+      "path": "cns_planner/domain/building_clearance.py",
+      "sha256": "c4d2ed184ee784b7e4f36255e5fae9e47e78f705a2e5804ddc7a5c11410b9e4c"
+    },
+    {
+      "path": "cns_planner/domain/engineering_assumption.py",
+      "sha256": "2dabb3c1c327990d5e1e276bf00fa022e8ae296b76ae88141548a59da1f54e40"
+    },
+    {
+      "path": "cns_planner/domain/layered_operational_adoption.py",
+      "sha256": "b85aceaed3d340595a009fb0de645e86dace41fb3ebd8ba506d076fdfd651b04"
+    },
+    {
+      "path": "cns_planner/domain/layered_route.py",
+      "sha256": "21ecbdb28c97ea6bc631811c17329df78d8229764eab3f5594af2c3618879eb8"
+    },
+    {
+      "path": "cns_planner/domain/layered_route_validation.py",
+      "sha256": "442d6d1c3eb2e882e6077f9b3fd022f81805b9ef3e1777d5d741efc9fe83d274"
+    },
+    {
+      "path": "cns_planner/gis/land_mask_source.py",
+      "sha256": "942da5820cebdae34d618f6b60fa02ecf721d34955af825ae2355fc7732cf209"
+    },
+    {
+      "path": "cns_planner/gis/source_inspection.py",
+      "sha256": "fd3140c4d01f3b1b72a28c1fe6e8dff787f4f06fe3346ffe271073ed6062840d"
+    },
+    {
+      "path": "cns_planner/reference_data/__init__.py",
+      "sha256": "9db5a673bb087af2f9fde636700efcff96f414c7f9173e2006b488f168e59b83"
+    },
+    {
+      "path": "cns_planner/reference_data/ovobj_sites.py",
+      "sha256": "eb1e425b332e9400b64cba6becb96e2badec61678bd09f1ab8fcee1b48dad955"
+    },
+    {
+      "path": "cns_planner/reference_data/zhoushan_facilities.py",
+      "sha256": "c84dc2c9a118bab9d4f68fba6513f71706d7ef09bd8038669d542f2d43d05aeb"
+    },
+    {
+      "path": "cns_planner/risk/operational_route_profile.py",
+      "sha256": "4fe1418b48514725e4fbce95df85958a4217233ef4e6483381202854c5c12757"
+    },
+    {
+      "path": "cns_planner/site_planner/fast_coverage_v2.py",
+      "sha256": "6f25483ba2f98f5aafe99ebbfaa2154224385e14ddf900c7dd762ea5838f74a9"
+    },
+    {
+      "path": "cns_planner/site_planner/fast_search_v2.py",
+      "sha256": "b896feba612e0b20892cf199a7023db5058a08c5383836022fa51ae9797746d4"
+    },
+    {
+      "path": "cns_planner/tasks/handlers.py",
+      "sha256": "9f6af08ecf309f5756acfad38d1282e1c7b9e38022d2e322d8c276a7bf961582"
+    },
+    {
+      "path": "cns_planner/tasks/service.py",
+      "sha256": "03dbc47c9f0d3db210dc4119c1bd0ece39a99ef2c7b970745296c29d77247019"
+    },
+    {
+      "path": "cns_planner/tasks/source_audit_task.py",
+      "sha256": "809cbde027b8459a34c7b243fd916b28a4435f6669f9976b56ee74b58afeb5c5"
+    },
+    {
+      "path": "cns_planner/tasks/task_input.py",
+      "sha256": "646090f7d4ab1bf2c89c32eead7c9683a4f16b1607e3bbe46c3fb2040c8010fd"
+    },
+    {
+      "path": "cns_planner/tasks/task_spec.py",
+      "sha256": "21e91dde69864e061b673083e76d485c2667e559d448c20b84d33205e99bc90e"
+    },
+    {
+      "path": "cns_planner/tasks/task_specs.py",
+      "sha256": "b2fb173f5cd4720e5d263c3aaac9ac0d2a47ba6497afe16bdebcac25ed71a705"
+    },
+    {
+      "path": "cns_planner/tasks/task_store.py",
+      "sha256": "4829138cb648a81f9b7eee39e879d87c02012b99faad975eb3ab2cee1661a179"
+    },
+    {
+      "path": "cns_planner/tasks/worker.py",
+      "sha256": "75e70f911f8326baeea734391c04873851f8a6d8b2bcb816e69eaf2f24143f7d"
+    },
+    {
+      "path": "cns_planner/validation/continuous_contracts.py",
+      "sha256": "aac181624f6226482eb282480b61dd4f50b410c4cb0b0b97aa50bdb37d464cc9"
+    },
+    {
+      "path": "cns_planner/validation/continuous_validators.py",
+      "sha256": "6935c16ee5f6a663103accda1e2e82f6f67f4fee3ca6f20514fdd84af54566ee"
+    },
+    {
+      "path": "cns_planner/web/js/api/client.js",
+      "sha256": "10090af07e877620debce35b82ee6e3fef919c40d22678325fd428bd212c81ff"
+    },
+    {
+      "path": "cns_planner/web/js/tasks.js",
+      "sha256": "97027820874acc90c70cb1ba38946cfdb21506619b934efd12200e38ba1474ed"
+    },
+    {
+      "path": "cns_planner/web/js/workflow/layered_operational_adoption.js",
+      "sha256": "5797a48e069e6acede8decc73b2fa75b40526b08f2fce7954c5baf0b4f8f11a9"
+    },
+    {
+      "path": "cns_planner/web/js/workflow/step01_project.js",
+      "sha256": "1d0e50a2ddba47c5aacbd960c99ac728ac4c873b5659480cd43cb63450123063"
+    },
+    {
+      "path": "docs/r7d13/REPORT.md",
+      "sha256": "121969287265bf62c061ea73c458674722b4810f01ae62dd5cdd16f1ef90f479"
+    },
+    {
+      "path": "tests/b6x_heavy_task_frontend.test.mjs",
+      "sha256": "e0129949d978a42a14213cc1ae73c3116531d67d472ce00587cda6b5e8ea6a07"
+    },
+    {
+      "path": "tests/layered_validation_adoption_frontend.test.mjs",
+      "sha256": "1b2f441ea662eb2ea036201908c10261af4eb21dad9d730d150d7d95f7109225"
+    },
+    {
+      "path": "tests/round31a_p16_background_task.test.mjs",
+      "sha256": "0cff29afeec8c6ce69b59586869894e18e8e9294591c5133b0f8fd829a0e69f0"
+    },
+    {
+      "path": "tests/test_layered_route_validation_adoption.py",
+      "sha256": "3cf73bf2344c668c1b510ecc6269fb309c49b33d20cb350c1c6b82be658af040"
+    },
+    {
+      "path": "tests/test_operational_route_clearance.py",
+      "sha256": "c92b2ba682d897054ab89b494aa8597da4fe8013c505673a45d20d9a2b236d8a"
+    },
+    {
+      "path": "tests/test_phase4_b6r_immutable_task_input.py",
+      "sha256": "d608fc50f3dba2063513ce6fdbc7656490928c07d258f62a545a3effbde15089"
+    },
+    {
+      "path": "tests/test_r7a1_p16_v2_sources_cache.py",
+      "sha256": "900aa50cc3793dfe7ee48a207c01c76f4dfa5cb39e2c02a1ce17d5e49802f77a"
+    },
+    {
+      "path": "tests/test_r7b1_project_switch_lock.py",
+      "sha256": "eac5d4f450fb04b5dfaf9b66928924c688fd5ca19cb0d48a9b166b3a0716bdad"
+    },
+    {
+      "path": "tests/test_r7d13_source_audit_adapter.py",
+      "sha256": "d3bca943125d613a62565b5a5a5b2140aaf51dbd53ce29f107842774ddc9624e"
+    },
+    {
+      "path": "tests/test_round31a_p16_background_task.py",
+      "sha256": "8ecf79309a711c922f4dff2e663295755536b0834646ca6e90011627871888e8"
+    }
+  ]
+}

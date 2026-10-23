@@ -1,0 +1,49 @@
+{
+  "schema_version": "cns-engineering-assumption-scenario.v1",
+  "scenario_id": "ZH-CNS-EA-R0005-BC-V1",
+  "version": "r5-bc-v1",
+  "mode": "engineering_assumption",
+  "route_id": "R0005",
+  "extends": "zhoushan_v1.json",
+  "description": "R0005 东白莲罐区 B/C 两个显式工程假设新建站址（1628 + B + C 联合验证）。B/C 只允许 RID，采用现有 2 km 模型；不代表真实产权、安装许可或独立 provider。",
+  "explicit_sites": [
+    {
+      "site_id": "EA-R0005-B",
+      "name": "R0005 工程假设站 B（东白莲罐区）",
+      "coordinate": [122.191, 29.822],
+      "dem_egm2008_m": 28.04,
+      "mount_height_agl_m": 15.0,
+      "service_origin_egm2008_m": 43.04,
+      "allowed_subsystems": ["S"],
+      "device_ids": ["RID-BASELINE-2-5KM"],
+      "reuse_class": "new_build_candidate",
+      "route_scope": ["R0005"],
+      "source": {
+        "record_id": "R2-B",
+        "evidence": "research/r2/r2-geometry.json",
+        "evidence_note": "R2 网格点 B：122.191, 29.822；FABDEM 28.04 m；工程假设挂高 15 m；EGM2008 原点 43.04 m。",
+        "registration": "user_explicit_engineering_assumption_site",
+        "real_world_confirmed": false
+      }
+    },
+    {
+      "site_id": "EA-R0005-C",
+      "name": "R0005 工程假设站 C（东白莲罐区）",
+      "coordinate": [122.192, 29.822],
+      "dem_egm2008_m": 6.01,
+      "mount_height_agl_m": 15.0,
+      "service_origin_egm2008_m": 21.01,
+      "allowed_subsystems": ["S"],
+      "device_ids": ["RID-BASELINE-2-5KM"],
+      "reuse_class": "new_build_candidate",
+      "route_scope": ["R0005"],
+      "source": {
+        "record_id": "R2-C",
+        "evidence": "research/r2/r2-geometry.json",
+        "evidence_note": "R2 网格点 C：122.192, 29.822；FABDEM 6.01 m；工程假设挂高 15 m；EGM2008 原点 21.01 m。",
+        "registration": "user_explicit_engineering_assumption_site",
+        "real_world_confirmed": false
+      }
+    }
+  ]
+}

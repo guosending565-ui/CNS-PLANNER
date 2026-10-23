@@ -32,7 +32,7 @@ from cns_planner.application.corridor_site_planning_service import (
     _p16_loop_progress, _p16_tier_message, _progress_reporter,
 )
 from cns_planner.domain.site_planning import REUSE_TIERS
-from cns_planner.tasks.handlers import RESULT_SCOPE_TEXT
+from cns_planner.tasks.handlers import RESULT_SCOPE_TEXT, build_submission_snapshot
 from cns_planner.tasks.service import HeavyTaskService
 from cns_planner.tasks.task_specs import (
     P16_TASK_TYPE, TASK_ENDPOINTS, _p16_scope,
@@ -235,6 +235,22 @@ def test_p16_async_submit_returns_task_id_and_publishes_the_same_result(tmp_path
         assert float(final["progress"]) >= 0.9
     finally:
         runtime.stop()
+
+
+def test_p16_legacy_version_submission_freezes_current_runtime_without_state_write(tmp_path):
+    from cns_planner.algorithms.registry import default_algorithm_selection
+    workflow = configured(tmp_path)
+    current = default_algorithm_selection()["site_planner"]["version"]
+    historical = workflow.state["algorithm_selection"]["site_planner"]
+    historical["version"] = "historical-unavailable"
+    before = deepcopy(workflow.state)
+    _, _, snapshot = build_submission_snapshot(workflow, P16_TASK_TYPE, {})
+    assert snapshot["algorithms"]["site_planner"]["version"] == current
+    assert snapshot["inputs"]["algorithm_selection"]["site_planner"]["version"] == current
+    from cns_planner.tasks.task_specs import task_spec
+    expected = task_spec(P16_TASK_TYPE).build_snapshot(workflow.state, {}, workflow.algorithm_registry)
+    assert expected["inputs"] == snapshot["inputs"]
+    assert workflow.state == before
 
 
 def test_p16_async_result_matches_sync_when_async_runs_first(tmp_path):

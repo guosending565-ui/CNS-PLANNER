@@ -10,9 +10,9 @@ from .layered_route_validation import stable_fingerprint
 SCHEMA_VERSION = "layered-operational-adoption-v1"
 COLLECTION_SCHEMA_VERSION = "layered-operational-adoption-collection-v1"
 ALGORITHM_ID = "layered_operational_adoption_v1"
-ALGORITHM_VERSION = "1.0"
+ALGORITHM_VERSION = "1.1"
 SOURCE_TYPE = "layered_candidate_operational_adoption_v1"
-ADOPTION_STATUSES = {"published", "stale", "revoked"}
+ADOPTION_STATUSES = {"published", "published_engineering_demo", "stale", "revoked"}
 
 
 def adoption_fingerprint(value):
@@ -28,6 +28,13 @@ def empty_layered_operational_adoption():
         "candidate_id": None, "candidate_fingerprint": None,
         "projection_fingerprint": None, "altitude_layer_id": None,
         "source_type": SOURCE_TYPE, "replace_existing": False,
+        "strict_safety_validation_passed": True,
+        "engineering_conditional_acceptance": False,
+        "use_scope": "strict_operational_route",
+        "operational_authorization": False,
+        "published_to_operational_routes": True,
+        "engineering_acceptance": {},
+        "limitations": [],
         "before": {"route": None, "route_operating_layer": None},
         "after": {"route": None, "route_operating_layer": None},
         "ownership": {"route_owned": True, "route_operating_layer_owned": True},

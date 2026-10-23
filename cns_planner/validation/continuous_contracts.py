@@ -106,7 +106,7 @@ VALIDATION_FINGERPRINT_COMPONENTS = (
 VALIDATOR_VERSIONS = {
     "continuous_geometry_realizer": "3.2",
     "vertical_profile_realizer": "3.2",
-    "native_terrain_validator": "3.2",
+    "native_terrain_validator": "3.3-exact-native-pixel-intervals",
     "building_polygon_validator": "3.3-height-status-multipart",
     "kinematic_validator": "3.2",
     "altitude_bounds_validator": "3.2",

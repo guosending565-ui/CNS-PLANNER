@@ -16,6 +16,7 @@ CNS result, and it never switches the project's default route planner.
 from __future__ import annotations
 
 from copy import deepcopy
+from .read_projection import scoped_identity
 
 from ..domain.layered_route import (
     COST_DOMAIN_IDS, active_cost_domains, cost_lambdas, cost_policy_fingerprint,
@@ -376,18 +377,23 @@ class LayeredRoutePlannerService:
         collection = normalize_layered_route_candidate_collection(
             state.get("layered_route_candidates")
         )
-        current_key, current_fingerprint = self._current_identity()
+        current_identity = self.current_identity()
+        current_key = current_identity["lane_key"]
+        current_fingerprint = current_identity["candidate_fingerprint"]
+        current_components = current_identity.get("fingerprint_components") or {}
         projected = []
         for item in collection["items"]:
             entry = deepcopy(item)
             entry["current_applicability"] = self._applicability(
-                item, current_key, current_fingerprint,
+                item, current_key, current_fingerprint, current_components,
             )
             projected.append(entry)
         collection["items"] = projected
         collection["masks"] = {
             key: {
-                **deepcopy(mask),
+                # The normalizer already shares read-only cell detail. Readiness
+                # only adds a top-level applicability and must not copy all cells.
+                **mask,
                 "current_applicability": (
                     "current" if key == current_key and mask.get("status") != "stale" else "stale"
                 ),
@@ -467,6 +473,17 @@ class LayeredRoutePlannerService:
         if len(eligible) == 1:
             return deepcopy(eligible[0])
         return None
+
+    def candidate_applicability(self, candidate):
+        """Project one persisted or artifact candidate against current authority."""
+
+        identity = self.current_identity()
+        return self._applicability(
+            candidate,
+            identity["lane_key"],
+            identity["candidate_fingerprint"],
+            identity.get("fingerprint_components") or {},
+        )
 
     def mask_snapshot(self, route_id=None, altitude_layer_id=None):
         collection = self.result_snapshot()
@@ -1307,9 +1324,49 @@ class LayeredRoutePlannerService:
             except (TypeError, ValueError, RuntimeError):
                 return normalize_communication_planning_field(None)
         state = self.ensure_state()
-        return deepcopy(state.get("communication_planning_field"))
+        from ..domain.communication_planning_field import ALLOWED_PROVIDER_SOURCES
+        from ..domain.layered_route import stable_fingerprint
+        result = deepcopy(state.get("communication_planning_field"))
+        result["provider_options"] = [
+            {"id": name, "status": (state.get(name) or {}).get("status", "unknown"),
+             "source_fingerprint": stable_fingerprint(state.get(name) or {})}
+            for name in ALLOWED_PROVIDER_SOURCES
+        ]
+        return result
 
     def set_communication_field(self, payload):
+        if isinstance(payload, dict) and "provider_selection" in payload:
+            from ..domain.communication_planning_field import ALLOWED_PROVIDER_SOURCES
+            from ..domain.layered_route import stable_fingerprint
+            state = self.ensure_state()
+            provider = payload.get("provider_selection")
+            if provider not in ALLOWED_PROVIDER_SOURCES or payload.get("confirmed") is not True:
+                raise ValueError("必须显式确认允许的通信 provider")
+            if payload.get("expected_revision") != state.get("revision"):
+                raise ValueError("项目 revision 已变化，请重新核对")
+            source = state.get(provider) or {}
+            fingerprint = stable_fingerprint(source)
+            if payload.get("source_fingerprint") != fingerprint:
+                raise ValueError("provider 来源已变化，请重新核对")
+            from ..domain.source_audit import utc_now
+            evidence = payload.get("evidence")
+            if (not isinstance(evidence, list) or not evidence
+                    or any(not isinstance(item, dict) or item.get("type") != "user_supplied"
+                           or not str(item.get("note") or "").strip() for item in evidence)):
+                raise ValueError("必须提供人工选择依据与限制")
+            # A selection is intent only. No mapping or coverage facts are invented.
+            field = normalize_communication_planning_field(None)
+            field["provider"] = provider
+            field["provider_selection"] = {
+                "confirmed": True, "source_status": source.get("status", "unknown"),
+                "evidence": deepcopy(evidence), "confirmed_at": utc_now(),
+                "source_fingerprint": fingerprint, "revision": state["revision"] + 1,
+                "source": {"type": "user_confirmation", "origin": "human_adjudication"},
+            }
+            field["status_reason"] = "provider_selected_no_confirmed_per_grid_mapping"
+            state["communication_planning_field"] = field
+            self.session.save()
+            return self.snapshot()
         raw = payload.get("communication_planning_field", payload) if isinstance(payload, dict) else payload
         candidate = normalize_communication_planning_field(raw)
         state = self.ensure_state()
@@ -1390,6 +1447,7 @@ class LayeredRoutePlannerService:
         identity = self.current_identity()
         return identity["lane_key"], identity["candidate_fingerprint"]
 
+    @scoped_identity
     def current_identity(self):
         """Re-computed identity of the current ``(route, layer)`` lane.
 
@@ -1420,18 +1478,36 @@ class LayeredRoutePlannerService:
             source_audits=state.get("source_audits") or {},
             **self._planner_specific_inputs(state, state.get("grid") or {}),
         )
+        compatible = next((
+            item for item in collection.get("items") or []
+            if item.get("status") != "stale"
+            and _candidate_key(item.get("route_id"), item.get("altitude_layer_id")) == key
+            and self._same_identity_except_audit_status(
+                ((item.get("provenance") or {}).get("fingerprint_components") or {}),
+                fingerprints["components"],
+            )
+        ), None)
+        candidate_fingerprint_value = (
+            compatible.get("candidate_fingerprint") if compatible
+            else fingerprints["candidate_fingerprint"]
+        )
+        input_fingerprint_value = (
+            compatible.get("input_fingerprint") if compatible
+            else fingerprints["input_fingerprint"]
+        )
         return {
             "lane_key": key,
-            "candidate_fingerprint": fingerprints["candidate_fingerprint"],
+            "candidate_fingerprint": candidate_fingerprint_value,
             "risk_fingerprint": fingerprints["risk_fingerprint"],
             "policy_fingerprint": fingerprints["policy_fingerprint"],
-            "input_fingerprint": fingerprints["input_fingerprint"],
+            "input_fingerprint": input_fingerprint_value,
             "request_fingerprint": fingerprints["request_fingerprint"],
             "feasibility_mask_fingerprint": mask.get("mask_fingerprint"),
+            "fingerprint_components": fingerprints["components"],
         }
 
     @staticmethod
-    def _applicability(candidate, current_key, current_fingerprint):
+    def _applicability(candidate, current_key, current_fingerprint, current_components=None):
         if candidate.get("status") == "stale":
             return "stale"
         if not candidate.get("lane_key"):
@@ -1439,9 +1515,30 @@ class LayeredRoutePlannerService:
         key = _candidate_key(candidate.get("route_id"), candidate.get("altitude_layer_id"))
         if key != current_key:
             return "stale_request_or_scenario_changed"
-        if candidate.get("candidate_fingerprint") != current_fingerprint:
+        if candidate.get("candidate_fingerprint") != current_fingerprint and not (
+            LayeredRoutePlannerService._same_identity_except_audit_status(
+                ((candidate.get("provenance") or {}).get("fingerprint_components") or {}),
+                current_components or {},
+            )
+        ):
             return "stale_inputs_changed"
         return "current"
+
+    @staticmethod
+    def _same_identity_except_audit_status(stored, current):
+        """Ignore only transient audit lifecycle labels, never content identity fields."""
+
+        if not isinstance(stored, dict) or not isinstance(current, dict) or not stored:
+            return False
+        left, right = deepcopy(stored), deepcopy(current)
+        for key in (
+            "terrain_source_audit", "building_source_audit", "building_grid_source_audit",
+        ):
+            left_audit, right_audit = left.get(key), right.get(key)
+            if isinstance(left_audit, dict) and isinstance(right_audit, dict):
+                left_audit.pop("status", None)
+                right_audit.pop("status", None)
+        return left == right
 
     def _source_status(self):
         provider = self.source_status

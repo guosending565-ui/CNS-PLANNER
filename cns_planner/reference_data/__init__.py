@@ -23,6 +23,11 @@ from .towers import (
     duplicate_report as tower_duplicate_report,
     load_towers,
 )
+from .zhoushan_facilities import (
+    COLLECTION_KEYS as STANDARDIZED_FACILITY_COLLECTION_KEYS,
+    empty_standardized_facilities,
+    load_standardized_facilities,
+)
 
 __all__ = [
     "backfill_reference_landing_sites",
@@ -40,4 +45,7 @@ __all__ = [
     "TOWERS_COLLECTION_ID",
     "load_towers",
     "tower_duplicate_report",
+    "STANDARDIZED_FACILITY_COLLECTION_KEYS",
+    "empty_standardized_facilities",
+    "load_standardized_facilities",
 ]

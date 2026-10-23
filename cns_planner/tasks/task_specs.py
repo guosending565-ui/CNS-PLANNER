@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 import threading
 import time
 
@@ -73,6 +74,9 @@ TASK_ENDPOINTS = {
     "/api/layered-route-candidates/evaluate-real": "layered_route_candidate_evaluate",
     "/api/route-risk-profiles/evaluate": "route_risk_profile_evaluate",
     "/api/layered-route-validations/evaluate-real": "layered_route_validation_evaluate",
+    #: R6-C：P16-V2（工程假设场景的快速只读预算）是**独立** task type，绝不与
+    #: V1 的 canonical 写入路径共用发布逻辑：它没有 release，也不写 ProjectState。
+    "/api/cns-corridor-site-plan/v2/evaluate": "cns_corridor_site_plan_evaluate_v2",
 }
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -527,6 +531,7 @@ P16_TASK_TYPE = "cns_corridor_site_plan_evaluate"
 #: 与 ``_corridor_inputs`` 同源：P16 的每一次 what-if 都用它们重建 P14/P15。
 P16_INPUT_STATE_KEYS = (
     "operational_routes", "spatial_3d", "grid", "grid_attributes",
+    "nodes", "reference_landing_sites", "towers",
     "required_cns", "existing_cns_facilities", "device_catalog",
     "candidate_sites", "tower_colocation_candidates",
     "cns_corridor_policy", "cns_planning_objectives",
@@ -552,6 +557,27 @@ P16_UPSTREAM_IDENTITY_KEYS = (
     "status", "input_fingerprint", "corridor_geometry_fingerprint",
     "algorithm_id", "algorithm_version",
 )
+
+
+def _p16_algorithm_selection(state, registry):
+    """新 P16 任务绑定当前正式 site planner，不改写历史 ProjectState。"""
+
+    from ..algorithms.registry import (
+        default_algorithm_selection, normalize_algorithm_selection,
+    )
+
+    selection = normalize_algorithm_selection(
+        (state if isinstance(state, dict) else {}).get("algorithm_selection")
+    )
+    current = deepcopy(default_algorithm_selection()["site_planner"])
+    historical = selection.get("site_planner") or {}
+    if isinstance(historical.get("parameters"), dict):
+        current["parameters"] = deepcopy(historical["parameters"])
+    registry.manifest(
+        current["algorithm_type"], current["algorithm_id"], current["version"],
+    )
+    selection["site_planner"] = current
+    return selection
 
 
 def _upstream_identity(state, key):
@@ -1949,6 +1975,447 @@ _P15_SPEC = TaskSpec(
     algorithm_types=P15_ALGORITHM_TYPES,
 )
 
+# ---- P16-V2：工程假设只读预算（R6-C） -----------------------------------------
+#
+# V2 与 V1 的**边界**（必须逐条保持）：
+#
+# * 输入是 R5 工程假设候选池，不是正式 ``candidate_sites``；
+# * 输出是 ``assumption_only`` 的只读提案，**没有 release**，绝不写
+#   ``ProjectState`` / ``cns_corridor_site_plan`` / ``candidate_sites``；
+# * 与 V1 共用同一个 heavy task 运行时（提交 / 进度 / 取消 / 恢复），但发布阶段
+#   只提交结果明细 artifact，不做任何 canonical 应用；
+# * 前端必须由显式版本开关触发；默认仍是 V1。
+
+P16_V2_TASK_TYPE = "cns_corridor_site_plan_evaluate_v2"
+P16_V2_ENDPOINT = "/api/cns-corridor-site-plan/v2/evaluate"
+DEFAULT_V2_SCENARIO_ID = "ZH-CNS-EA-R0005-BC-V1"
+
+#: V2 的输入除了 V1 的全部基础事实外，还需要工程假设场景的参考事实。
+P16_V2_INPUT_STATE_KEYS = P16_INPUT_STATE_KEYS + (
+    "reference_landing_sites", "surface_classification_policy",
+    #: V2 的 cap 来自走廊复用优先规划策略；worker 只从 snapshot 重建 state，
+    #: 因此这份策略必须显式冻结（V1 在 `plan()` 里从 state 读，V2 不走那条路径）。
+    "corridor_site_planning_policy",
+    #: 场景适配层的输入契约校验要求 P14/P15 容器存在（status 不能为空）；
+    #: 它们只以**摘要**形式进入快照，明细仍由 worker 重算。
+    "cns_corridor_assessment", "cns_corridor_gap_assessment",
+    "radar_surveillance_layout",
+)
+
+#: 影响 V2 结果的算法：P14/P15 与覆盖/服务能力模型。
+#: **不包含** ``site_planner`` —— V2 不使用 V1 的贪心规划器。
+P16_V2_ALGORITHM_TYPES = (
+    "corridor_model", "corridor_gap_analyzer", "coverage_model", "service_model",
+)
+
+
+def _p16_v2_scenario(payload):
+    """加载版本化工程假设场景（只读配置，不含任何项目数据）。"""
+
+    from ..application.engineering_assumption_scenario_service import (
+        EngineeringAssumptionScenarioService,
+    )
+
+    payload = payload if isinstance(payload, dict) else {}
+    inline = payload.get("scenario")
+    if isinstance(inline, dict) and inline:
+        from ..domain.engineering_assumption import (
+            normalize_engineering_assumption_scenario,
+        )
+
+        return normalize_engineering_assumption_scenario(inline)
+    scenario_id = str(payload.get("scenario_id") or DEFAULT_V2_SCENARIO_ID)
+    service = EngineeringAssumptionScenarioService(
+        state_provider=lambda: {},
+        standardized_facilities_provider=lambda: {},
+        landing_sites_provider=lambda: {},
+        tower_colocation_provider=lambda: {},
+    )
+    #: 允许两种写法：版本化 ``scenario_id``（正式），或配置目录里的文件名基名
+    #: （例如 ``r0005_bc_v1``）。两者都只在版本化配置里解析，绝不猜场景内容。
+    try:
+        return service.load_scenario(scenario_id)
+    except ValueError:
+        candidate = (
+            Path(__file__).resolve().parents[1] / "config" / "engineering_assumptions"
+            / f"{scenario_id}.json"
+        )
+        if candidate.is_file():
+            return service.load_scenario(str(candidate))
+        raise ValueError(f"未找到工程假设场景：{scenario_id}")
+
+
+def _p16_v2_inputs(state, payload):
+    """P16-V2 的权威输入（只读 state，确定性）。"""
+
+    state = state if isinstance(state, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    inputs = {key: deepcopy(state.get(key)) for key in P16_V2_INPUT_STATE_KEYS}
+    inputs["scenario"] = _p16_v2_scenario(payload)
+    inputs["scenario_id"] = str(
+        payload.get("scenario_id")
+        or (inputs["scenario"] or {}).get("scenario_id")
+        or DEFAULT_V2_SCENARIO_ID
+    )
+    inputs["data_paths"] = deepcopy(payload.get("data_paths") or {})
+    try:
+        inputs["exact_evaluation_budget"] = max(
+            1, int(payload.get("exact_evaluation_budget") or 50),
+        )
+    except (TypeError, ValueError):
+        inputs["exact_evaluation_budget"] = 50
+    try:
+        inputs["near_identity_distance_m"] = float(
+            payload.get("near_identity_distance_m") or 2.0,
+        )
+    except (TypeError, ValueError):
+        inputs["near_identity_distance_m"] = 2.0
+    #: 与 V1 同口径：规划策略以**归一化后的显式输入**进入指纹（请求优先，否则 state）。
+    inputs["corridor_site_planning_policy"] = normalize_corridor_site_planning_policy(
+        payload.get("corridor_site_planning_policy")
+        or state.get("corridor_site_planning_policy")
+        or {}
+    )
+    inputs["matrix_cache_relative"] = ".cns-cache/p16_v2"
+    #: 只用于结果审计（任务记录里回显"提交时项目 revision"），不参与任何判定。
+    inputs["project_revision"] = int(state.get("revision") or 0)
+    inputs["upstream_canonical"] = {
+        key: _upstream_identity(state, key) for key in P16_UPSTREAM_RESULTS
+    }
+    terrain = str((inputs["data_paths"] or {}).get("terrain_dtm") or "").strip()
+    if not terrain:
+        raise ValueError("缺少 FABDEM terrain_dtm 配置，无法构建工程假设候选池")
+    #: R7-A：把外部空间来源与参考设施的**内容身份**一并冻结进 snapshot。
+    #: 这样任务记录能证明"用的是哪一份 DEM / 陆海掩膜 / 参考设施"，worker 也能在
+    #: 计算前发现"提交后源文件被替换"并显式失败，而不是静默用新数据。
+    from ..application.p16_v2_pool import (
+        external_source_identity, reference_facilities_identity,
+        require_reference_facilities,
+    )
+
+    #: R7-A1：land_mask 是 V2 的**必需**来源；缺失即拒绝提交，绝不静默关闭
+    #: surface screening。参考设施读取失败（blocked/unavailable）同样不是通过。
+    inputs["external_sources"] = external_source_identity(inputs["data_paths"])
+    facilities = reference_facilities_identity()
+    require_reference_facilities(facilities)
+    inputs["reference_facilities"] = facilities
+    return inputs
+
+
+def _p16_v2_source_entry(identity, key):
+    entry = (identity or {}).get(key)
+    return deepcopy(entry) if isinstance(entry, dict) else {}
+
+
+def _p16_v2_source_label(identity, key):
+    entry = _p16_v2_source_entry(identity, key)
+    return str(entry.get("sha256") or "")[:16] or "未绑定"
+
+
+def _p16_v2_verify_sources(inputs):
+    """worker：比对提交时绑定的外部来源身份；任何变化都让任务显式失败。
+
+    外部 DEM / 陆海掩膜 / 参考设施不在 ProjectState 里，因此"项目漂移"闸门看不到
+    它们的变化。这里以**完整内容身份**（路径 / 字节 / SHA-256）为判据：变化、
+    不可读、注册表校验未通过 → ``TaskInputChanged``（任务 ``stale``，不发布任何
+    结果），绝不把两份来源混算成一份结果，也绝不把"读取失败"当成"没有变化"。
+    """
+
+    from ..application.p16_v2_pool import (
+        P16V2PoolUnavailable, external_source_identity, reference_facilities_identity,
+        require_reference_facilities,
+    )
+
+    frozen = inputs.get("external_sources") or {}
+    try:
+        current = external_source_identity(inputs.get("data_paths") or {})
+    except P16V2PoolUnavailable as exc:
+        raise TaskInputChanged(
+            f"任务提交后外部空间来源已不可用（{exc.code}）：{exc.message}；"
+            "为避免新旧来源混算，任务作废，请重新提交"
+        ) from exc
+    for key, label in (
+        ("terrain_dtm", "FABDEM terrain_dtm"), ("land_mask", "canonical land_mask"),
+        ("tower_ovobj", ".ovobj 补充站址来源"),
+    ):
+        before = _p16_v2_source_entry(frozen, key)
+        after = _p16_v2_source_entry(current, key)
+        if before != after:
+            raise TaskInputChanged(
+                f"{label} 在任务提交后已变化（提交时 {_p16_v2_source_label(frozen, key)}，"
+                f"当前 {_p16_v2_source_label(current, key)}）：为避免新旧来源混算，"
+                "任务作废，请重新提交"
+            )
+    frozen_facilities = inputs.get("reference_facilities") or {}
+    current_facilities = reference_facilities_identity()
+    try:
+        require_reference_facilities(frozen_facilities)
+        require_reference_facilities(current_facilities)
+    except P16V2PoolUnavailable as exc:
+        raise TaskInputChanged(
+            f"标准化参考设施来源不可信（{exc.code}）：{exc.message}；"
+            "任务作废，请重新提交"
+        ) from exc
+    if frozen_facilities != current_facilities:
+        raise TaskInputChanged(
+            "标准化参考设施在任务提交后已变化：为避免新旧来源混算，任务作废，请重新提交"
+        )
+    return current
+
+
+def _p16_v2_scope(state, payload):
+    routes = (state if isinstance(state, dict) else {}).get("operational_routes") or []
+    route_ids = sorted(
+        str(item.get("route_id") or "") for item in routes if isinstance(item, dict)
+    )
+    return "cns_corridor_site_plan_v2:" + (
+        "|".join(route_ids) if route_ids else "no-route"
+    )
+
+
+def _p16_v2_worker_payload(state, payload):
+    """worker 侧重建输入所需的最小覆盖项（场景选择与数据路径）。"""
+
+    payload = payload if isinstance(payload, dict) else {}
+    compact = {}
+    for key in ("scenario_id", "data_paths", "exact_evaluation_budget",
+                "near_identity_distance_m"):
+        if payload.get(key) is not None:
+            compact[key] = deepcopy(payload[key])
+    return compact
+
+
+def _p16_v2_plan(state, payload):
+    worker_payload = _p16_v2_worker_payload(state, payload)
+    return {
+        "worker_payload": worker_payload,
+        "inputs": _p16_v2_inputs(state, worker_payload),
+    }
+
+
+def _p16_v2_summary(result):
+    """进入任务记录的结果摘要：够前端刷新后直接重建结果面板与二维叠加。"""
+
+    result = result if isinstance(result, dict) else {}
+    return {
+        "status": result.get("status"),
+        "version": "p16-v2",
+        "input_switch": result.get("input_switch"),
+        "assumption_only": True,
+        "formal_write": False,
+        "not_formal_p16_plan": True,
+        "feasible": result.get("feasible"),
+        "selected_action_count": len(result.get("selected_actions") or []),
+        "selected_actions": deepcopy(result.get("selected_actions") or []),
+        "selected_sites": deepcopy(result.get("selected_sites") or []),
+        "selected_action_ids": deepcopy(result.get("selected_action_ids") or []),
+        "coverage": deepcopy(result.get("coverage") or {}),
+        #: R7-A：工程假设研究的可追溯身份。``near_identities`` 是"未证明独立的近邻
+        #: 站址"（只影响计数，不改坐标/身份）；``sources`` 是 DEM / 陆海掩膜 / 参考
+        #: 设施的内容 SHA；``provenance`` 把输入指纹、算法版本、来源 SHA 与
+        #: "非正式写入"标记收在一处，刷新后从任务记录即可复核，不需要再读缓存。
+        "near_identities": deepcopy(result.get("near_identities") or []),
+        "near_identity_distance_m": result.get("near_identity_distance_m"),
+        "sources": deepcopy((result.get("provenance") or {}).get("external_sources") or {}),
+        "source_sha": deepcopy((result.get("provenance") or {}).get("source_sha") or {}),
+        #: R7-A1：参考设施注册表身份（registry / version / 每个 collection 的 SHA）
+        #: 与外部空间来源并列，刷新后仅凭任务记录即可复核"用了哪一份来源"。
+        "reference_facilities": deepcopy(
+            (result.get("provenance") or {}).get("reference_facilities") or {}
+        ),
+        "provenance": deepcopy(result.get("provenance") or {}),
+        #: 覆盖结果在地图上的唯一来源：只有**未满足**体元才有坐标，避免把
+        #: 2727×2 个体元塞进任务记录；数量超限时如实标注截断。
+        "unmet_voxels": deepcopy(result.get("unmet_voxels") or []),
+        "unmet_truncated": bool(result.get("unmet_truncated")),
+        "matrix": deepcopy(result.get("matrix") or {}),
+        "timings": deepcopy(result.get("timings") or {}),
+        "stages": deepcopy(result.get("stages") or []),
+        "search": deepcopy(result.get("search") or {}),
+        "exact": deepcopy(result.get("exact") or {}),
+        "inputs": {
+            key: deepcopy((result.get("inputs") or {}).get(key))
+            for key in (
+                "cap", "action_count", "physical_site_count", "voxel_count",
+                "gap_voxel_count", "continuous_threshold_m", "route_speed_mps",
+                "aircraft_id", "p14_fingerprint", "p15_fingerprint", "scenario_id",
+                "candidate_pool_sha256", "route_length_m", "state_revision",
+            )
+        },
+        "algorithm_id": result.get("algorithm_id"),
+        "algorithm_version": result.get("algorithm_version"),
+        "coverage_version": result.get("coverage_version"),
+    }
+
+
+def _p16_v2_algorithm_selection(state, registry):
+    """把 V2 依赖的算法绑定到**当前**正式注册版本（不写回 ProjectState）。
+
+    历史项目可能保留旧版本身份（``algorithm_selection`` 里是当时的选择），而当前
+    registry 可能已不再提供那些版本。V1 的 P16 已经用同样的"任务级投影"解决这个
+    问题；V2 也必须显式绑定，否则 worker 会在 ``resolve_all`` 处因版本不可用失败。
+    ``parameters`` 保留历史显式参数（那是用户的输入事实），版本本身用当前默认。
+    """
+
+    from ..algorithms.registry import (
+        default_algorithm_selection, normalize_algorithm_selection,
+    )
+
+    selection = normalize_algorithm_selection(
+        (state if isinstance(state, dict) else {}).get("algorithm_selection")
+    )
+    defaults = default_algorithm_selection()
+    for key in P16_V2_ALGORITHM_TYPES:
+        current = deepcopy(defaults.get(key) or {})
+        if not current:
+            continue
+        historical = selection.get(key) or {}
+        if isinstance(historical.get("parameters"), dict):
+            current["parameters"] = deepcopy(historical["parameters"])
+        registry.manifest(
+            current["algorithm_type"], current["algorithm_id"], current["version"],
+        )
+        selection[key] = current
+    return selection
+
+
+def _p16_v2_runner(context):
+    """worker：构建假设池 → V2 只读预算 → stage 结果；绝不发布 canonical 结果。"""
+
+    from ..application.p16_v2_pool import (
+        P16V2PoolUnavailable, build_scenario_pool,
+    )
+    from ..application.p16_v2_service import P16V2Service, P16V2Unavailable
+
+    snapshot = context.inputs.get("snapshot") if isinstance(context.inputs, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    inputs = snapshot.get("inputs") or {}
+    algorithms = context.algorithms()
+    algorithms.resolve_all(P16_V2_ALGORITHM_TYPES)
+    context.check_cancel()
+    context.progress(0.005, "正在准备 CNS 设施规划 V2 输入")
+    #: R7-A：外部来源（DEM / 陆海掩膜 / 参考设施）身份校验必须发生在任何计算之前。
+    current_sources = _p16_v2_verify_sources(inputs)
+    #: **只从 immutable snapshot 重建计算载体**：V2 不读当前项目文件作为计算输入。
+    #: 这样"提交后文件被别处改写"不会让 V2 用两份不同的状态算矩阵与精确评价；
+    #: 也让 worker 与主进程的输入指纹天然一致（同一份 snapshot）。
+    state = {
+        key: deepcopy(inputs.get(key))
+        for key in P16_V2_INPUT_STATE_KEYS
+        if key in inputs
+    }
+    state["revision"] = int(inputs.get("project_revision") or 0)
+    if not state.get("grid") or not state.get("operational_routes"):
+        raise TaskInputChanged(
+            "冻结的输入快照缺少网格或航路事实，设施规划 V2 任务作废"
+        )
+
+    #: ``context.workdir`` 是**项目状态文件**的路径（不是目录），缓存放在它的同级。
+    workdir = Path(context.workdir)
+    cache_dir = workdir.parent / ".cns-cache" / "p16_v2"
+    state_for_detail = {}
+    pool_detail = {}
+
+    def on_detail(value):
+        if isinstance(value, dict):
+            state_for_detail.clear()
+            state_for_detail.update(value)
+
+    def on_progress(value, message):
+        detail = deepcopy(state_for_detail) if state_for_detail else None
+        if isinstance(pool_detail, dict) and pool_detail:
+            detail = dict(detail or {})
+            detail.setdefault("pool", deepcopy(pool_detail))
+        context.progress(value, message, detail=detail)
+
+    context.progress(0.01, "正在构建工程假设候选池（塔 / 着陆点 / 标准设施 / 显式假设点）")
+    try:
+        pool, pool_meta = build_scenario_pool(
+            state=state,
+            scenario=inputs.get("scenario") or {},
+            data_paths=inputs.get("data_paths") or {},
+            cache_dir=cache_dir,
+            on_progress_detail=on_detail,
+            cancel_check=context.check_cancel,
+        )
+    except P16V2PoolUnavailable as exc:
+        raise TaskInputChanged(f"{exc.message}（{exc.code}）") from exc
+    pool_detail.update({
+        "cache": pool_meta.get("cache"),
+        "seconds": pool_meta.get("seconds"),
+        "counts": deepcopy(pool_meta.get("counts")),
+    })
+    context.progress(
+        0.06, "工程假设候选池已就绪，开始预检",
+        detail={
+            "stage": "pool", "stage_label": "工程假设候选池准备",
+            "completed": 1, "total": 1, "unit": "候选池",
+            "pool": deepcopy(pool_detail),
+        },
+    )
+    context.check_cancel()
+    service = P16V2Service(
+        state, pool,
+        cache_dir=cache_dir,
+        exact_evaluation_budget=int(inputs.get("exact_evaluation_budget") or 50),
+        near_identity_distance_m=float(inputs.get("near_identity_distance_m") or 2.0),
+    )
+    try:
+        result = service.run(
+            on_progress=on_progress,
+            on_progress_detail=on_detail,
+            cancel_check=context.check_cancel,
+        )
+    except P16V2Unavailable as exc:
+        raise TaskInputChanged(f"{exc.message}（{exc.code}）") from exc
+    result["pool"] = deepcopy(pool_detail)
+    result["scenario"] = deepcopy(inputs.get("scenario") or {})
+    #: R7-A：独立研究结果的可追溯身份。它只进**任务记录 / staged artifact**，
+    #: 不进 ProjectState；``formal_write`` / ``canonical_write`` 明确为 False，
+    #: 因此不存在"冒充正式 Adopt/Apply"的可能。
+    from ..application.p16_v2_service import source_fingerprints
+
+    result["provenance"] = {
+        "input_fingerprint": str(context.record.get("input_fingerprint") or ""),
+        "input_snapshot_ref": context.record.get("input_snapshot_ref"),
+        "input_revision": int(context.record.get("input_revision") or 0),
+        "project_revision": int(inputs.get("project_revision") or 0),
+        "scenario_id": str(inputs.get("scenario_id") or ""),
+        "candidate_pool_sha256": (result.get("inputs") or {}).get("candidate_pool_sha256"),
+        "v2_pool_identity": (pool or {}).get("v2_pool_identity"),
+        "matrix_identity": result.get("matrix_identity"),
+        "source_sha": source_fingerprints(),
+        "external_sources": deepcopy(current_sources),
+        "reference_facilities": deepcopy(inputs.get("reference_facilities") or {}),
+        "algorithm_id": result.get("algorithm_id"),
+        "algorithm_version": result.get("algorithm_version"),
+        "service_version": result.get("service_version"),
+        "coverage_version": result.get("coverage_version"),
+        "formal_write": False,
+        "canonical_write": False,
+    }
+    context.check_cancel()
+    context.progress(0.99, "正在写入 V2 临时结果明细")
+    metadata = context.stage(
+        {"logical_key": "cns_corridor_site_plan_v2", "value": result},
+        artifact_type="p16.v2.assumption.proposal",
+    )
+    summary = _p16_v2_summary(result)
+    return TaskRunResult(
+        summary=summary,
+        staged=WorkerResultRef(
+            artifact_id=str(metadata.get("artifact_id")),
+            relative_path=str(metadata.get("relative_path")),
+            sha256=str(metadata.get("sha256")),
+            size_bytes=int(metadata.get("size_bytes") or 0),
+            artifact_type="p16.v2.assumption.proposal",
+            summary=summary,
+        ),
+        message="CNS 设施规划 V2 计算完成（工程假设，只读，不写入正式结果）",
+        progress=0.99,
+    )
+
+
 _P16_SPEC = TaskSpec(
     task_type=P16_TASK_TYPE,
     task_name="CNS 设施规划",
@@ -1960,11 +2427,33 @@ _P16_SPEC = TaskSpec(
     runner=_p16_runner,
     release="cns_corridor_site_plan",
     algorithm_types=P16_ALGORITHM_TYPES,
+    algorithm_selection=_p16_algorithm_selection,
 )
 
-for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _RADAR_SPEC, _PROBE_SPEC,
-              _LAYERED_CANDIDATE_SPEC, _ROUTE_RISK_PROFILE_SPEC,
-              _LAYERED_ROUTE_VALIDATION_SPEC):
+_P16_V2_SPEC = TaskSpec(
+    task_type=P16_V2_TASK_TYPE,
+    task_name="CNS 设施规划 · V2",
+    message="CNS 设施规划 V2（工程假设，只读）已提交，正在后台计算",
+    business_endpoint=P16_V2_ENDPOINT,
+    scope_key=_p16_v2_scope,
+    input_snapshot=_p16_v2_inputs,
+    submit_plan=_p16_v2_plan,
+    runner=_p16_v2_runner,
+    #: **没有 release**：V2 的产物是只读提案，绝不写 canonical ProjectState。
+    release=None,
+    algorithm_types=P16_V2_ALGORITHM_TYPES,
+    #: 与 V1 同一模式：任务级绑定当前正式算法版本，不写回历史 ProjectState。
+    algorithm_selection=_p16_v2_algorithm_selection,
+    #: 只读预算：从 snapshot 计算、不写 canonical 结果，因此不检查磁盘项目漂移。
+    read_only_snapshot=True,
+)
+
+from .source_audit_task import SOURCE_AUDIT_SPEC
+
+for _spec in (
+    _CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _P16_V2_SPEC, _RADAR_SPEC, _PROBE_SPEC, SOURCE_AUDIT_SPEC,
+    _LAYERED_CANDIDATE_SPEC, _ROUTE_RISK_PROFILE_SPEC, _LAYERED_ROUTE_VALIDATION_SPEC,
+):
     register_task_spec(_spec)
 
 
@@ -1979,5 +2468,6 @@ __all__ = [
     "TaskInputChanged", "fingerprint_payload",
     "_layered_route_validation_inputs", "_layered_route_validation_scope",
     "has_task_type",
+    "DEFAULT_V2_SCENARIO_ID", "P16_V2_ENDPOINT", "P16_V2_TASK_TYPE",
     "register_task_spec", "task_spec", "task_specs", "task_type_for_endpoint",
 ]

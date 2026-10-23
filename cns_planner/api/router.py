@@ -60,6 +60,16 @@ _ARTIFACT_ERROR_TEXT = {
 }
 
 
+class _TaskSourceRejected(ValueError):
+    """提交阶段拒绝不可信来源；``code`` 会进入 HTTP 400 的 detail。"""
+
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = str(code)
+
+
+@dataclass
+
 class ApiRouter:
     def __init__(self, context):
         self.context = context
@@ -276,6 +286,7 @@ class ApiRouter:
         if path == "/api/route-risk-profile-policy": return Response(workflow.route_risk_profile_policy())
         if path == "/api/route-risk-profiles": return Response(workflow.route_risk_profiles())
         if path == "/api/layered-route-validation/readiness": return Response(workflow.layered_route_validation_readiness())
+        if path == "/api/engineering-demo-building-acceptance-policy": return Response(workflow.engineering_demo_building_acceptance_policy())
         if path == "/api/layered-route-validations": return Response(workflow.layered_route_validations())
         if path == "/api/layered-operational-adoption/readiness": return Response(workflow.layered_operational_adoption_readiness())
         if path == "/api/layered-operational-adoptions": return Response(workflow.layered_operational_adoptions())
@@ -585,6 +596,8 @@ class ApiRouter:
                  "code": "map_figure_unknown_operation"},
                 status=404,
             )
+        if path == "/api/cns-corridor-site-plan/v2/evaluate":
+            return self._task_submit("cns_corridor_site_plan_evaluate_v2", payload)
         task_type = task_type_for_endpoint(path)
         if task_type and _wants_async(payload):
             return self._task_submit(task_type, payload)
@@ -729,6 +742,7 @@ class ApiRouter:
                 payload.get("profile_id")
             ),
             # ---- Production layered candidate continuous validation/adoption --------
+            "/api/engineering-demo-building-acceptance-policy": lambda: workflow.set_engineering_demo_building_acceptance_policy(payload),
             "/api/layered-route-validations/evaluate": lambda: workflow.evaluate_layered_route_validation(payload),
             "/api/layered-route-validations/evaluate-real": lambda: context.qgis.call(
                 lambda: context.evaluate_layered_route_validation(payload)
@@ -799,22 +813,7 @@ class ApiRouter:
                 )
                 return Response(workflow.apply_population_grid_attribute(result))
         if path == "/api/source-audits/verify":
-            role = str(payload.get("role") or "")
-            path_role = "basemap" if role == "airspace" else role
-            source_path = data.paths.get(path_role)
-            if not source_path:
-                raise ValueError("数据源尚未在本机配置")
-            details = None
-            if path_role in ("buildings", "building_grid"):
-                from ..gis.source_inspection import inspect_geopackage
-                info = inspect_geopackage(source_path, path_role, deep_geometry=True)
-                details = {
-                    "schema": {"fields": sorted((info.get("fields") or {}).keys())},
-                    "feature_count": info.get("feature_count"),
-                    "extent": info.get("extent"), "declared_crs": info.get("crs"),
-                    "geometry_health": info.get("geometry_health"),
-                }
-            return Response(workflow.verify_source(path_role, source_path, details))
+            return self._task_submit("source_audit_verify", payload)
         if path.startswith("/api/workflow/"):
             action = path.rsplit("/", 1)[-1]
             if action == "project": return Response(workflow.set_project(payload))
@@ -915,6 +914,62 @@ class ApiRouter:
             service.maybe_drive()
         return service
 
+    def _p16_v2_canonical_payload(self, payload):
+        """把 V2 提交绑定到服务端登记的外部来源；客户端不能指定路径。
+
+        规则（fail-closed）：
+        * 服务端必须已登记可读的 ``terrain_dtm``、``land_mask`` 与 ``tower_ovobj``；
+        * 客户端若显式携带 ``data_paths``，每一项都必须等于登记路径，否则拒绝；
+        * 未携带时由服务端注入登记路径。
+
+        ``tower_ovobj`` 是 R5 648 站口径中 42 个陆地补充站址的来源。缺它时
+        V2 池会静默退化为 606 站，因此与 DEM / 陆海掩膜同等对待：未登记即拒绝提交。
+
+        参考设施注册表没有路径参数（由 ``load_standardized_facilities`` 固定读取），
+        其"是否可信"由提交时的 ``require_reference_facilities`` 与 worker 的
+        ``_p16_v2_verify_sources`` 共同校验。
+        """
+
+        data = getattr(self.context, "data", None)
+        registered = getattr(data, "paths", {}) if data is not None else {}
+        registered = registered if isinstance(registered, dict) else {}
+        required = (
+            ("terrain_dtm", "FABDEM terrain_dtm"),
+            ("land_mask", "canonical land_mask"),
+            ("tower_ovobj", ".ovobj 补充站址来源"),
+        )
+        resolved = {}
+        for key, label in required:
+            value = str(registered.get(key) or "").strip()
+            if not value:
+                raise _TaskSourceRejected(
+                    f"服务端尚未登记 {label}，无法提交 P16-V2（不猜测来源）",
+                    "p16_v2_source_not_registered",
+                )
+            path = Path(value)
+            if not path.is_file():
+                raise _TaskSourceRejected(
+                    f"服务端登记的 {label} 不可读：{value}",
+                    "p16_v2_source_unavailable",
+                )
+            resolved[key] = str(path.resolve())
+
+        requested = payload.get("data_paths")
+        if requested is not None and not isinstance(requested, dict):
+            raise _TaskSourceRejected(
+                "P16-V2 的 data_paths 必须是对象", "p16_v2_source_invalid",
+            )
+        for key, label in required:
+            value = str((requested or {}).get(key) or "").strip()
+            if value and Path(value).resolve() != Path(resolved[key]):
+                raise _TaskSourceRejected(
+                    f"{label} 必须使用服务端登记的 canonical 来源，拒绝客户端路径：{value}",
+                    "p16_v2_source_not_canonical",
+                )
+        enriched = dict(payload)
+        enriched["data_paths"] = resolved
+        return enriched
+
     def _task_submit(self, task_type, payload, *, task_id=None):
         from ..tasks.handlers import plan_submission  # noqa: F401  (契约可读性)
         from ..tasks.service import CONFLICT_REJECT, CONFLICT_RETURN_EXISTING
@@ -922,6 +977,17 @@ class ApiRouter:
 
         payload = payload if isinstance(payload, dict) else {}
         payload = self._freeze_runtime_sources(task_type, payload)
+        if task_type == "source_audit_verify":
+            role = str(payload.get("role") or "")
+            role = "basemap" if role == "airspace" else role
+            source_path = self.context.data.paths.get(role)
+            if not source_path:
+                raise ValueError("数据源尚未在本机配置")
+            if payload.get("mode", "deep") not in ("identity", "deep"):
+                raise ValueError("校验模式无效")
+            # Ignore all client paths/evidence, including generic /api/tasks submissions.
+            payload = {"role": role, "_source_path": str(source_path), "mode": payload.get("mode", "deep")}
+            self.context.workflow.source_audit_service.source_path_provider = lambda key: self.context.data.paths.get(key)
         if not task_type:
             return Response({"error": "请求未指明任务类型"}, status=400)
         policy = (
@@ -930,6 +996,8 @@ class ApiRouter:
         )
         service = self._task_service(drive=True)
         try:
+            if task_type == "cns_corridor_site_plan_evaluate_v2":
+                payload = self._p16_v2_canonical_payload(payload)
             record, created = service.submit(task_type, payload, conflict_policy=policy)
         except TaskConflictError as exc:
             return Response({

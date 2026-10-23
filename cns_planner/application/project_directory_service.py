@@ -9,6 +9,9 @@ from ..persistence.project_repository import ProjectRepository
 class ProjectDirectoryService:
     REFERENCE_SOURCE_KEYS = (
         "reference_landing_sites", "reference_routes", "equipment_reference_catalog", "towers",
+        # R7-B：.ovobj 补充站址来源必须随 Save As / Open Project 原样带回，
+        # 否则重开项目后 V2 池会因来源缺失而失败（fail-closed 但不该丢）。
+        "tower_ovobj",
     )
     #: 三维空间来源。``land_mask`` 在这里出现是**持久化完整性**要求：Radar Surveillance
     #: Layout V1.1 从 ``data_sources["land_mask"]`` 消费真实陆域掩膜，而它属于

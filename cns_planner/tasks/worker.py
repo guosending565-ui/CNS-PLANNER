@@ -232,12 +232,15 @@ class WorkerContext:
             self.stop_heartbeat(finished=True)
             raise TaskCancelled()
 
-    def progress(self, value, message=None):
+    def progress(self, value, message=None, detail=None):
+        """上报进度；``detail`` 为可选的结构化阶段明细（阶段 / 已完成 / 总量）。"""
+
         self.progress_value = max(self.progress_value, float(value))
         try:
             self.store.heartbeat(
                 self.task_id, progress=self.progress_value, message=message,
                 interval_seconds=self.interval_seconds,
+                detail=detail if isinstance(detail, dict) else None,
             )
         except Exception:  # noqa: BLE001
             pass
@@ -344,7 +347,13 @@ def run_task(*, task_id, task_type, workdir, store_directory,
         context.inputs = {"snapshot": snapshot, "fingerprint": fingerprint,
                           "expected_fingerprint": record.get("input_fingerprint")}
         # ---- 变化检测（只检测，不参与组装）：已变化则不做无用计算 -------------
-        if context.current_input_fingerprint() != str(record.get("input_fingerprint") or ""):
+        #: ``read_only_snapshot`` 的 task type 完全从 immutable snapshot 计算、且
+        #: **不发布任何 canonical 结果**（P16-V2 只读预算），因此"磁盘上的项目是否
+        #: 漂移"不影响它的正确性；此时跳过该闸门，避免把只读任务误判为 stale。
+        if (
+            not bool(getattr(spec, "read_only_snapshot", False))
+            and context.current_input_fingerprint() != str(record.get("input_fingerprint") or "")
+        ):
             context.stop_heartbeat(finished=True)
             _mark_stale(
                 context,

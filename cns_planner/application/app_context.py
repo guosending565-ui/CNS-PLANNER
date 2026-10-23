@@ -72,7 +72,18 @@ class ApplicationContext:
         self.static = self.root / "cns_planner" / "web"
         self.default_config = self.root / "cns_planner" / "config" / "defaults.json"
         self.automatic_project_file = self.root / "projects" / "current_project.json"
+        startup_dir = os.environ.get("CNS_PROJECT_DIR", "").strip()
         self.active_project_file = self.automatic_project_file
+        if startup_dir:
+            folder = Path(startup_dir).expanduser()
+            if not folder.is_absolute():
+                raise ValueError("CNS_PROJECT_DIR 必须是绝对项目目录")
+            target = folder / "project_state.json"
+            if not target.is_file():
+                target = folder / "current_project.json"
+            if not target.is_file() or not (folder / "data_sources.json").is_file():
+                raise ValueError("CNS_PROJECT_DIR 必须包含项目状态及 data_sources.json")
+            self.active_project_file = target
         self.token = secrets.token_urlsafe(24)
         self.qgis = QgisRuntime()
         self.tiles = TileCache()
@@ -89,7 +100,8 @@ class ApplicationContext:
             self.automatic_project_file, self.default_config, DEFAULT_PATHS, WorkflowService
         )
         self.data = MapData(
-            settings_path=self.root / "projects" / "map_sources.json",
+            settings_path=(Path(startup_dir) / "data_sources.json" if startup_dir
+                           else self.root / "projects" / "map_sources.json"),
             defaults=DEFAULT_PATHS, default_config=self.default_config, token=self.token,
             workflow_provider=lambda: self.workflow.snapshot(),
             project_metadata_provider=lambda: self.project_directories.storage_metadata(self.active_project_file),
@@ -197,6 +209,19 @@ class ApplicationContext:
         self.configure_vertical_transition_validation_sources()
         self.configure_radar_surveillance_layout_sources()
         self.configure_surface_classification_sources()
+        # BUG-R37A-001：这些 runtime 绑定是 currentness 只读投影的**真实输入**
+        # （layered route validation 的 evidence adapter、surface classification 的
+        # land-mask 路径等），但它们**不进入 ProjectState**：既不递增 `revision`，
+        # 也不改变 `_snapshot_structure_key`。而冷启动时 `ApplicationContext` 已经
+        # 在绑定之前构建过一份快照（MapData 的 workflow_provider 与数据源登记都会
+        # 触发 `WorkflowService.snapshot()`），那份投影把同一条验证/采纳判成
+        # `stale_candidate` / `stale_validation`。若不在绑定完成后重建，缓存会一直
+        # 下发它，而专用只读接口（每次新鲜投影）给出 `current` —— 用户侧表现为
+        # Step05「工程演示只读模式」判定为 false、联合诊断按钮禁用（能力静默消失）。
+        #
+        # 这里**只**丢弃缓存，不改写任何字段、不递增 revision、不做手动保存：
+        # 下一次读取自行按现在的输入重新投影。
+        self.workflow.invalidate_snapshot_cache()
         return self.workflow
 
     def configure_map_figures(self):
@@ -695,7 +720,7 @@ class ApplicationContext:
             lambda: self.workflow.evaluate_radar_surveillance_layout(payload)
         )
 
-    # ------------------------------------------------- Step5 共用 surface 事实（Round 2）
+
 
     def configure_surface_classification_sources(self):
         """绑定 **Step5 中立** surface classification 的只读陆域数据源路径。

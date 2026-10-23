@@ -1,6 +1,8 @@
 """Thin six-step workflow orchestrator with backward-compatible public methods."""
 
 from copy import deepcopy
+from contextlib import nullcontext
+from .read_projection import identity_projection_scope
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -126,13 +128,14 @@ _SNAPSHOT_SHARED_STATE_KEYS = (
     "planning_constraint_fields",
     # Towers Operational Integration V2：373 条派生事实，整体替换、只读消费。
     "tower_obstacle_profiles", "tower_colocation_candidates",
+    "cns_plan_review", "confirmed_cns_plan",
 )
 
 
 def _snapshot_state_value(key, value):
     """快照取值：小对象深拷贝（保持既有隔离语义），大结果只共享只读引用。"""
 
-    return value if key in _SNAPSHOT_SHARED_STATE_KEYS else deepcopy(value)
+    return value if key in _SNAPSHOT_SHARED_STATE_KEYS or key in PROJECTED_RESULT_KEYS else deepcopy(value)
 
 
 #: 顶层容器的**有界只读投影**（Round32-J）。这些容器在 canonical state 里体量巨大
@@ -331,7 +334,7 @@ def slim_layered_route_candidates(collection):
 
     if not isinstance(collection, dict):
         return collection
-    slim = deepcopy(collection)
+    slim = {key: deepcopy(value) for key, value in collection.items() if key != "masks"}
     masks = {}
     for key, mask in (collection.get("masks") or {}).items():
         if not isinstance(mask, dict):
@@ -831,12 +834,9 @@ class WorkflowService:
         cached = getattr(self, "_snapshot_cache", None)
         if cached is not None and cached[0] == cache_key:
             return dict(cached[1])
-        #: Round32-J：冷构建在**纯读复用窗**内进行 —— 同一份 state 上被数十次重复读取的
-        #: "当前候选 / 当前风险画像 / 当前验证集合"只读取一次（真实项目约 31 s 纯重复）。
-        #: 窗口不写 state、不参与缓存键、退出即丢弃，因此不改变任何返回值，也不掩盖
-        #: "冷构建本身是否够快"（窗口外的每次读取仍是完整全量读取）。
-        with snapshot_read_pass(self.session):
-            projected = self._project_snapshot()
+        with getattr(self, "mutation_lock", None) or nullcontext():
+            with snapshot_read_pass(self.session), identity_projection_scope():
+                projected = self._project_snapshot()
         self._snapshot_cache = (cache_key, projected)
         return dict(projected)
 
@@ -997,11 +997,9 @@ class WorkflowService:
             # 轻量投影：逐 cell 的 V2 因子指数保留（地图专题消费），
             # normalization reference / provenance / source 诊断块由 /api/grid-risk-v2 提供。
             # 投影以只读引用复用服务快照，不再二次深拷贝上万 cell 的派生结果。
-            #: Round32-J：``result_snapshot()`` 会先对**整个** V2 容器做一次整树
-            #: ``deepcopy``；状态循环已经带出同一容器的只读引用（``ensure_state()``
-            #: 仍照常执行），投影本身逐 cell 重建，因此返回值逐字段不变。
-            self.risk_v2_service.ensure_state()
-            result["grid_risk_v2"] = slim_grid_risk_v2(self.state.get("grid_risk_v2"))
+            result["grid_risk_v2"] = slim_grid_risk_v2(
+                self.state.get("grid_risk_v2")
+            )
             result["risk_policy_v2"] = self.risk_v2_service.policy_snapshot()
             result["risk_framework_v2_readiness"] = self.risk_v2_service.readiness_snapshot()
         if hasattr(self, "layered_route_planner_service"):
@@ -1118,6 +1116,13 @@ class WorkflowService:
             result["radar_surveillance_layout_readiness"] = (
                 self.radar_surveillance_layout_service.readiness_snapshot()
             )
+        # Radar 地形 LOS 只读证据（Round34-T07-B）：通用快照只带**轻量状态**
+        # （身份 / 算法版本 / 能力边界 / 可用性前提）。它**不打开 DEM**、不做任何 LOS
+        # 计算、不写任何容器；真正的计算只在显式诊断请求里发生。
+        if hasattr(self, "radar_terrain_los_diagnostics_service"):
+            result["radar_terrain_los"] = (
+                self.radar_terrain_los_diagnostics_service.status()
+            )
         result["review"] = self.review()
         #: Round 2.5：P17 投影。通用状态循环已经带出 ``continuous_service_acceptability``
         #: 容器本身；这里额外下发**有界的只读投影**（参数逐项 authority、策略、操作场景、
@@ -1181,6 +1186,10 @@ class WorkflowService:
     def reference_landing_sites_snapshot(self): return self.reference_data_service.landing_sites_snapshot()
     def reference_routes_snapshot(self): return self.reference_data_service.routes_snapshot()
     def towers_snapshot(self): return self.reference_data_service.towers_snapshot()
+
+
+
+
     def tower_obstacle_profiles_snapshot(self): return self.tower_obstacle_service.result_snapshot()
     def tower_colocation_candidates_snapshot(self): return self.tower_obstacle_service.colocation_snapshot()
     def tower_integration_policies_snapshot(self): return self.tower_obstacle_service.policy_snapshot()
@@ -1223,6 +1232,12 @@ class WorkflowService:
         """
 
         return self.route_risk_profile_service.apply_computed(outcome)
+    # ---- Radar 地形 LOS 只读诊断（Round34-T07-B，additive，只读） -------------------
+
+
+
+
+
     def evaluate_radar_surveillance_layout(self, payload=None, *, facts_provider=None):
         result = self.radar_surveillance_layout_service.evaluate(
             payload, facts_provider=facts_provider,
@@ -2078,6 +2093,12 @@ class WorkflowService:
 
     def layered_route_validations(self):
         return self.layered_route_validation_service.result_snapshot()
+
+    def engineering_demo_building_acceptance_policy(self):
+        return self.layered_route_validation_service.engineering_demo_policy_snapshot()
+
+    def set_engineering_demo_building_acceptance_policy(self, payload=None):
+        return self.layered_route_validation_service.set_engineering_demo_policy(payload)
 
     def evaluate_layered_route_validation(self, payload=None, evidence_adapter=None):
         return self.layered_route_validation_service.validate(
