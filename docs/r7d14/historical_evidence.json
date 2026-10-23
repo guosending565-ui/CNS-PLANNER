@@ -1,0 +1,79 @@
+{
+  "mode": "read_only_existing_evidence_no_recompute",
+  "files": [
+    {
+      "path": "D:\\Projects\\CNS-PLANNER\\research\\r7d8\\REPORT.md",
+      "sha256": "d3f55d365437b58f50a3c5c97a78974701789aa78c621371923401890be4295b"
+    },
+    {
+      "path": "D:\\Projects\\CNS-PLANNER\\research\\r7d8\\audit.json",
+      "sha256": "fae3b0b003374babf72c52285556e7bc2626de1818e016e117d8f861db99ad08"
+    },
+    {
+      "path": "D:\\Projects\\CNS-PLANNER\\research\\r7d8\\risk_profile.json",
+      "sha256": "e5ce7298ee6d3c2115bac74ceb65a221da55361909f3b3b82912b5d038a280ed"
+    },
+    {
+      "path": "D:\\Projects\\CNS-PLANNER\\research\\r7d8\\segments.csv",
+      "sha256": "6b2ecb30454ba62fb0b1efd62387d313225ef29f0b0cf664fc4cf33e5186d5f3"
+    }
+  ],
+  "checked_profile_values": [
+    {
+      "key": "/profile/domains/ground/exposure_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/domains/ground/resolved_segment_count",
+      "value": 481
+    },
+    {
+      "key": "/profile/domains/ground/contributors/population_exposure/normalized_exposure_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/domains/ground/contributors/population_exposure/weighted_contribution_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/domains/air_traffic/unresolved_segment_count",
+      "value": 481
+    },
+    {
+      "key": "/profile/domains/environment_obstacle/exposure_index_m",
+      "value": 201.029042892
+    },
+    {
+      "key": "/profile/domains/environment_obstacle/resolved_segment_count",
+      "value": 481
+    },
+    {
+      "key": "/profile/factors/population_exposure/normalized_exposure_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/factors/population_exposure/weighted_contribution_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/contributors/ranking/0/weighted_contribution_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/contributors/ranking/0/normalized_exposure_index_m",
+      "value": 208.81160228
+    },
+    {
+      "key": "/profile/segments/249/index",
+      "value": 249
+    },
+    {
+      "key": "/profile/consistency/checks/2/profile_value",
+      "value": 481
+    },
+    {
+      "key": "/identity/grid_cell_count",
+      "value": 8008
+    }
+  ]
+}

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from ..domain.building_clearance import building_height_status_is_resolved
+from ..domain.building_clearance import (
+    LEGACY_ZERO_COUNT_SHORTCUT_KEY, building_height_status_is_resolved,
+    building_occupancy_state,
+)
 from ..domain.planning_constraint_field import (
     EGM2008_ORTHOMETRIC, normalize_constraint_cell,
     normalize_constraint_unknown_policy_configuration, normalize_unknown_policy,
@@ -25,6 +28,66 @@ from ..gis.restricted_area_input_adapter import (
     declared_domain_states, regulatory_constraints_as_restricted_areas,
     restricted_area_dataset_inputs,
 )
+
+
+#: PCF **直接消费**的 ``grid_attributes`` 命名空间。这些容器的 ``cells`` 会被逐格读取，
+#: 因此它们的 ``status`` 就是 PCF 的输入新鲜度。
+#:
+#: * ``terrain``   → ``generation_arguments`` 的 ``terrain_by_cell``；
+#: * ``buildings`` → ``generation_arguments`` 的 ``buildings_by_cell``；
+#: * ``population`` → 经 ``source_fingerprints`` 进入 constraint fingerprint（PCF 的
+#:   输入身份之一）。
+#:
+#: 这是**已存在**的依赖，不是本轮新增的语义；这里只是把它显式化为可校验的门禁。
+PCF_INPUT_ATTRIBUTE_KINDS = ("terrain", "buildings", "population")
+
+#: 视为"输入不再对应当前事实"的 ``grid_attributes`` 状态。
+PCF_BLOCKING_ATTRIBUTE_STATUSES = ("stale", "needs_revalidation")
+
+
+def stale_pcf_input_attributes(state):
+    """列出阻挡 PCF 生成的 ``grid_attributes`` 命名空间（只读）。
+
+    fail-closed 语义：容器的 ``status`` 落在 :data:`PCF_BLOCKING_ATTRIBUTE_STATUSES`
+    时，该容器里的 ``cells`` 已不再对应当前数据源事实。此时若继续生成，PCF 会**静默
+    消费**过期输入，却被 ``apply_field`` 写成 ``passed`` / current —— 那正好违反
+    "失效不得被当作有效"与"未评估不等于通过"。因此这里只回答"哪些输入不新鲜"，
+    绝不自动重算、绝不静默沿用、也绝不把它降级成 0 或 pass。
+    """
+
+    attributes = (state or {}).get("grid_attributes") or {}
+    blocked = []
+    for kind in PCF_INPUT_ATTRIBUTE_KINDS:
+        item = attributes.get(kind)
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "") in PCF_BLOCKING_ATTRIBUTE_STATUSES:
+            blocked.append({
+                "kind": kind,
+                "status": item.get("status"),
+                "reason": item.get("stale_reason") or item.get("status_reason"),
+            })
+    return blocked
+
+
+def pcf_input_attributes_guard(state):
+    """PCF 输入新鲜度门禁；不新鲜即拒绝生成/发布（抛出可读业务错误）。"""
+
+    blocked = stale_pcf_input_attributes(state)
+    if not blocked:
+        return
+    detail = "、".join(
+        f"{item['kind']}（{item['status']}"
+        + (f"，原因 {item['reason']}" if item.get("reason") else "")
+        + "）"
+        for item in blocked
+    )
+    raise ValueError(
+        "规划约束场的网格属性输入已失效，已拒绝生成："
+        + detail
+        + "。这些容器的逐格属性不再对应当前数据源，继续生成会把过期输入写成当前结果。"
+        "请先重新计算工作区网格属性（重新确认工作区范围），再生成约束场。"
+    )
 
 
 def generate_planning_constraint_field(
@@ -289,6 +352,8 @@ class PlanningConstraintFieldService:
 
     def generate(self, payload=None):
         payload = payload if isinstance(payload, dict) else {}
+        # fail-closed：输入网格属性失效时**绝不**生成，避免把过期输入写成 current 结果。
+        pcf_input_attributes_guard(self.session.state)
         field = generate_planning_constraint_field(
             **generation_arguments(self.session.state, payload)
         )
@@ -398,6 +463,9 @@ class PlanningConstraintFieldService:
     def apply_field(self, field):
         """把一层的约束场写入 state：同步 use case 与 heavy task 发布共用。"""
 
+        # 唯一发布点必须自己把关：heavy task 的 publish 阶段同样经过这里，
+        # 因此"输入失效却写出 passed"在同步与任务两条路径上都被堵住。
+        pcf_input_attributes_guard(self.session.state)
         state = self.session.state
         collection = state.setdefault("planning_constraint_fields", {
             "schema_version": 1, "status": "not_calculated",
@@ -493,7 +561,30 @@ def _terrain(layer, fact, policy, blocked, unknown, refs):
 def _building(layer, fact, policy, blocked, unknown, refs):
     item = fact or {}
     count = item.get("building_count")
+    # F1-A：``building_count`` 只是**质心分配数量**。footprint 跨越格边界、质心落在邻格时，
+    # 本格 count=0 但确有建筑覆盖。只有"质心数为 0 **且** 覆盖面积明确为 0"才允许
+    # 直接 return（= 该域既不 blocked 也不 unknown，最终 outcome 可为 pass）。
+    occupancy = building_occupancy_state(
+        building_count=count, building_area_m2=item.get("building_area_m2"),
+        building_coverage_ratio=item.get("building_coverage_ratio"),
+    )
+    # 仅用于审计/回归对照的显式历史语义开关（F1-A）；生产路径从不设置它。
+    if item.get(LEGACY_ZERO_COUNT_SHORTCUT_KEY) is True:
+        occupancy = "absent" if _number(count) == 0 else "present"
+    if occupancy == "present" and _number(count) == 0:
+        # 有真实 footprint 覆盖但没有质心高度统计：约束未知（不是通过，也不是硬阻塞）。
+        unknown.append({
+            "domain": "building",
+            "reason": "building_footprint_present_height_unresolved",
+            "building_area_m2": _number(item.get("building_area_m2")),
+            "building_coverage_ratio": _number(item.get("building_coverage_ratio")),
+        })
+        return
     if _number(count) == 0:
+        # ``absent``：覆盖已确认为零 ⇒ 该域既不 blocked 也不 unknown（历史语义）。
+        # ``unknown``：覆盖证据未提供（合成的 / 旧格式 fact）⇒ 沿用既有约定按无建筑处理；
+        # 真实 L8 事实表始终带 building_area_m2 / building_coverage_ratio，
+        # 因此生产路径不会落到这里（``data/mapping/buildings.py::_cell`` 会把 NULL 归一成 0.0）。
         return
     clearance = _number(policy.get("building_vertical_clearance_m"))
     ground = _number(item.get("ground_elevation_max_egm2008_m"))

@@ -446,13 +446,16 @@ def _pcf_worker_payload(payload):
 
     payload = payload if isinstance(payload, dict) else {}
     compact = {}
-    for key in ("altitude_layer_id", "policies", "source_fingerprints", "workspace_identity"):
+    for key in ("altitude_layer_id", "policies", "source_fingerprints", "workspace_identity",
+                "terrain_dataset", "towers", "tower_clearance_policy"):
         if payload.get(key) is not None:
             compact[key] = deepcopy(payload[key])
     return compact
 
 
 def _pcf_plan(state, payload):
+    from ..application.planning_constraint_field_service import pcf_input_attributes_guard
+    pcf_input_attributes_guard(state)
     return {
         "worker_payload": _pcf_worker_payload(payload),
         "inputs": _pcf_components(state, payload),
@@ -477,6 +480,9 @@ def _pcf_runner(context):
         policies=inputs["policies"],
         source_fingerprints=inputs["source_fingerprints"],
         workspace_identity=inputs["workspace_identity"],
+        terrain_dataset=inputs.get("terrain_dataset"),
+        towers=inputs.get("towers"),
+        tower_clearance_policy=inputs.get("tower_clearance_policy"),
     )
     context.check_cancel()
     context.progress(0.9, "正在写入临时结果明细")
@@ -729,13 +735,20 @@ def _p16_runner(context):
         expected_fingerprint = (expected.get(key) or {}).get("input_fingerprint")
         if str(current_fingerprint or "") != str(expected_fingerprint or ""):
             raise P16UpstreamNotCurrent()
+    from ..application.cns_shared_site_candidate_service import CNSSharedSiteCandidateService
+    session = _WorkerReadOnlySession(state)
+    shared = CNSSharedSiteCandidateService(
+        session, lambda: deepcopy(state.get("reference_landing_sites") or {}),
+        lambda: deepcopy(state.get("towers") or {}),
+        lambda: deepcopy(state.get("existing_cns_facilities") or {}),
+    )
     service = CorridorSitePlanningService(
-        _WorkerReadOnlySession(state),
+        session,
         algorithms.create("site_planner"),
         algorithms.create("corridor_model"),
         algorithms.create("corridor_gap_analyzer"),
         _WorkerInvalidation(),
-        _worker_snapshot_passthrough,
+        _worker_snapshot_passthrough, shared_site_candidates=shared,
     )
     outcome = service.plan(
         worker_payload,
@@ -962,6 +975,8 @@ RADAR_TASK_TYPE = "radar_surveillance_layout_evaluate"
 
 #: Radar 结果真正依赖的输入事实（只读 state，逐项深拷贝进 immutable snapshot）。
 RADAR_INPUT_STATE_KEYS = (
+    "nodes", "reference_landing_sites", "existing_cns_facilities",
+    "tower_colocation_candidates", "tower_colocation_policy",
     "operational_routes", "towers", "tower_obstacle_profiles", "spatial_3d",
     "required_cns", "surface_classification_policy", "surface_class_facts",
     "data_source_paths",
@@ -975,7 +990,8 @@ RADAR_POLICY_DECLARING_KEYS = (
     "max_refinement_rounds", "radar_mount_height", "radar_mount_height_m",
     "allow_mixed_radar_types", "solver_time_limit_s",
     "allow_automatic_radar_ii_escalation", "allowed_radar_types",
-    "escalation_policy_id",
+    "escalation_policy_id", "ground_site_installation_heights",
+    "radar_planning_origin_policy_id",
 )
 
 #: 进入 worker_payload 的请求字段（其余请求字段不影响结果）。
@@ -1110,9 +1126,16 @@ def _radar_runner(context):
     state = deepcopy(context.project_state)
     if not isinstance(state, dict) or not state:
         raise TaskInputChanged("项目状态不可读，雷达监视规划任务作废")
+    from ..application.cns_shared_site_candidate_service import CNSSharedSiteCandidateService
+    session = _WorkerReadOnlySession(state)
+    shared = CNSSharedSiteCandidateService(
+        session, lambda: deepcopy(state.get("reference_landing_sites") or {}),
+        lambda: deepcopy(state.get("towers") or {}),
+        lambda: deepcopy(state.get("existing_cns_facilities") or {}),
+    )
     service = RadarSurveillanceLayoutService(
-        _WorkerReadOnlySession(state), _WorkerInvalidation(),
-        _worker_snapshot_passthrough,
+        session, _WorkerInvalidation(),
+        _worker_snapshot_passthrough, shared_sites=shared,
     )
     #: provider 与 HTTP 线程用**同一份**装配实现；worker 没有 QGIS runtime，因此显式
     #: 使用 pyproj 变换（同一 PROJ、同样的往返自校验），绝不静默使用另一套数据源。

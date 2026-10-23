@@ -1,0 +1,73 @@
+{
+  "python": [
+    {
+      "group": "core",
+      "log": "D:\\Projects\\_cns_backups\\r7d14\\final-core.log",
+      "passed": 194,
+      "sha256": "428835904570bca0dcaea3f4cab293429a97aafa7d99c4f92798a529ca42b027"
+    },
+    {
+      "group": "main",
+      "log": "D:\\Projects\\_cns_backups\\r7d14\\final-main.log",
+      "passed": 189,
+      "sha256": "6c49cda0bf2672e7f36534156e129df77f57d0c6d41a84977af4d306a751bdc2"
+    },
+    {
+      "group": "population",
+      "log": "D:\\Projects\\_cns_backups\\r7d14\\final-population.log",
+      "passed": 63,
+      "sha256": "dddb9a4faf047572882514d2974ec877d46da5c05ca824577df828b5dafe5223"
+    },
+    {
+      "group": "ab",
+      "log": "D:\\Projects\\_cns_backups\\r7d14\\final-ab.log",
+      "passed": 17,
+      "sha256": "1d07ae0befc499b3e14dec846dd82d90bf0f0571a5d3dbc1b1965ed44c116c05"
+    },
+    {
+      "group": "pcf",
+      "log": "D:\\Projects\\_cns_backups\\r7d14\\final-pcf.log",
+      "passed": 18,
+      "sha256": "d6d0c0edbb649193e581ee4f4f7e9a9c9cf544ba2d4d3caf96c296fe8086ff8c"
+    }
+  ],
+  "python_total": 481,
+  "node": [
+    {
+      "script": "radar_surveillance_layout_frontend",
+      "passed": 18
+    },
+    {
+      "script": "b6x_heavy_task_frontend",
+      "passed": 14
+    },
+    {
+      "script": "round31a_p16_background_task",
+      "passed": 6
+    },
+    {
+      "script": "layered_validation_adoption_frontend",
+      "passed": 33
+    },
+    {
+      "script": "round32k2_task_request_once",
+      "passed": 3
+    },
+    {
+      "script": "round32k_task_refresh_once",
+      "passed": 3
+    },
+    {
+      "script": "round31e_radar_background_task",
+      "passed": 2
+    },
+    {
+      "script": "population_nodata_frontend",
+      "passed": 11
+    }
+  ],
+  "node_total": 90,
+  "review_fix": "installation evidence input fingerprint with six mutation regressions",
+  "excluded": "4 PCF search-related tests; no formal GIS planning",
+  "main_ref": "4c7a0a07814f9e0f22344f574b7a3a47cd1c68e5"
+}

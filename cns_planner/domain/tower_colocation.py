@@ -156,6 +156,59 @@ def normalize_tower_colocation_policy(value):
     return result
 
 
+def tower_planning_service_origin_estimates(state):
+    """既有共塔**工程估算原点**的只读访问器：``{tower_id: EGM2008 正高}``。
+
+    恢复 Round34-T05 已实现的"全部真实铁塔均参与工程规划候选"能力时，Radar 规划链
+    与三维只读投影**必须**共用同一份估算数值与同一道门禁，否则会出现"规划输入用了
+    估算、展示却说没有高度"的接口缺口。因此这里只做一件事：把已经由
+    :func:`tower_colocation_candidate` 产出的估算值读出来。
+
+    只有下列条件**同时**成立才返回非空字典：
+
+    * ``tower_colocation_policy.planning_host_use_confirmed is True``（用户已确认把
+      真实铁塔作为 Preferred Host Site 的工程规划假设）；
+    * ``tower_colocation_policy.planning_service_origin_policy`` 显式选择了
+      ``terrain_plus_source_tower_height``（**没有默认值**，必须显式 opt-in）；
+    * 候选项自身声明 ``planning_origin_estimated`` 且
+      ``planning_service_origin_egm2008_m`` 是有限数值。
+
+    任一条件不成立即返回 ``{}``：调用方必须保持既有 fail-closed 行为。返回值的语义
+    是**工程估算**（源表海拔 + 塔身高度），**不是**已确认 EGM2008 塔顶正高，
+    **不得**据此认定 LOS 或安全净空验证通过。
+    """
+
+    if not isinstance(state, dict):
+        return {}
+    policy = state.get("tower_colocation_policy")
+    policy = policy if isinstance(policy, dict) else normalize_tower_colocation_policy(None)
+    if policy.get("planning_host_use_confirmed") is not True:
+        return {}
+    if policy.get("planning_service_origin_policy") not in (
+            "terrain_plus_source_tower_height",):
+        return {}
+    candidates = state.get("tower_colocation_candidates") or {}
+    items = candidates.get("items") if isinstance(candidates, dict) else None
+    estimates = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        host = metadata.get("host") if isinstance(metadata.get("host"), dict) else {}
+        tower_id = str(host.get("host_tower_id") or "").strip()
+        if not tower_id:
+            continue
+        profile = item.get("vertical_profile")
+        profile = profile if isinstance(profile, dict) else {}
+        if not profile.get("planning_origin_estimated"):
+            continue
+        origin = profile.get("planning_service_origin_egm2008_m")
+        if isinstance(origin, bool) or not isinstance(origin, (int, float)):
+            continue
+        estimates[tower_id] = float(origin)
+    return estimates
+
+
 def empty_tower_colocation_candidates(status="not_calculated"):
     return {
         "status": status,
@@ -488,5 +541,5 @@ __all__ = [
     "build_tower_colocation_candidates", "declared_navigation_site_suitability",
     "default_tower_colocation_policy", "empty_tower_colocation_candidates",
     "normalize_tower_colocation_candidates", "normalize_tower_colocation_policy",
-    "tower_colocation_candidate",
+    "tower_colocation_candidate", "tower_planning_service_origin_estimates",
 ]

@@ -129,6 +129,7 @@ def test_multipolygon_later_part_ground_can_fail_clearance():
         metric_route(),
         evidence={"available": True, "buildings": [{
             "building_id": "MP", "height_m": 5.0, "height_status": "confirmed",
+            "height_evidence_level": "source_tagged",
             "ring_parts_metric": [
                 [[10, -2], [20, -2], [20, 2], [10, 2], [10, -2]],
                 [[50, -2], [60, -2], [60, 2], [50, 2], [50, -2]],

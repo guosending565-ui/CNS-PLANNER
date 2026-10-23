@@ -72,6 +72,8 @@ from .plan_review_service import PlanReviewService
 from .report_service import PlanningReportService
 from .reference_data_service import ReferenceDataService
 from .tower_obstacle_service import TowerObstacleService
+from .cns_shared_site_candidate_service import CNSSharedSiteCandidateService
+from .radar_terrain_los_diagnostics_service import RadarTerrainLosDiagnosticsService
 from .radar_surveillance_layout_service import RadarSurveillanceLayoutService
 from .building_clearance_service import BuildingClearanceService
 from ..algorithms.building_clearance import BuildingClearanceV1
@@ -542,6 +544,10 @@ class WorkflowService:
             self.session, self.route_service, snapshot,
         )
         self.reference_data_service.ensure_equipment_catalog()
+        self.cns_shared_site_candidate_service = CNSSharedSiteCandidateService(
+            self.session, self.reference_data_service.landing_sites_snapshot,
+            self.reference_data_service.towers_snapshot, self.existing_cns_snapshot,
+        )
         self.reference_link_service = ReferenceLinkService(
             self.session, self.invalidation_service, snapshot,
         )
@@ -585,6 +591,11 @@ class WorkflowService:
         # ``radar_surveillance_layout``，绝不写 existing CNS / coverage_3d / 走廊与站址提案。
         self.radar_surveillance_layout_service = RadarSurveillanceLayoutService(
             self.session, self.invalidation_service, snapshot,
+            self.layered_route_planner_service,
+            self.cns_shared_site_candidate_service,
+        )
+        self.radar_terrain_los_diagnostics_service = RadarTerrainLosDiagnosticsService(
+            self.session, self.radar_surveillance_layout_service,
             self.layered_route_planner_service,
         )
         self.invalidation_service.radar_surveillance_layout_invalidator = (
@@ -670,6 +681,7 @@ class WorkflowService:
         self.corridor_site_planning_service = CorridorSitePlanningService(
             self.session, self.corridor_site_planner, self.corridor_model,
             self.corridor_gap_analyzer, self.invalidation_service, snapshot,
+            shared_site_candidates=self.cns_shared_site_candidate_service,
         )
         #: Round 2.6：P16 方案实施后的**投影态**构建器。P17 与 Step6 都消费它，
         #: 保证"P16 的内部 what-if"与"P17 评估的投影态"是**同一套**设施应用语义。
@@ -1188,8 +1200,6 @@ class WorkflowService:
     def towers_snapshot(self): return self.reference_data_service.towers_snapshot()
 
 
-
-
     def tower_obstacle_profiles_snapshot(self): return self.tower_obstacle_service.result_snapshot()
     def tower_colocation_candidates_snapshot(self): return self.tower_obstacle_service.colocation_snapshot()
     def tower_integration_policies_snapshot(self): return self.tower_obstacle_service.policy_snapshot()
@@ -1233,8 +1243,6 @@ class WorkflowService:
 
         return self.route_risk_profile_service.apply_computed(outcome)
     # ---- Radar 地形 LOS 只读诊断（Round34-T07-B，additive，只读） -------------------
-
-
 
 
 
@@ -2329,3 +2337,38 @@ class WorkflowService:
     def export_routes(self): return self.export_service.routes()
     def export_sites(self): return self.export_service.sites()
     def export_confirmed_facilities(self): return self.export_service.confirmed_facilities()
+
+
+    def diagnose_radar_terrain_los(self, payload=None):
+        """显式请求的地形 LOS 只读诊断（唯一会打开 DEM 的入口）。"""
+
+        return self.radar_terrain_los_diagnostics_service.diagnose(payload)
+
+    def diagnose_radar_combined_los(self, payload=None):
+        """显式请求的联合 LOS 只读诊断（同时打开两个真实来源）。"""
+
+        return self.radar_terrain_los_diagnostics_service.diagnose_combined(payload)
+
+    def cns_shared_site_candidates(self): return self.cns_shared_site_candidate_service.snapshot()
+
+    def radar_terrain_los_status(self):
+        """轻量状态：**不打开 DEM、不做 LOS 计算、不写状态**。"""
+
+        return self.radar_terrain_los_diagnostics_service.status()
+
+    def radar_terrain_los_details(self, payload=None):
+        """受限分页的逐 probe 明细（读内存证据块，不重算）。"""
+
+        return self.radar_terrain_los_diagnostics_service.details(payload)
+
+    def radar_combined_los_status(self, *, engineering_demo_mode=False):
+        """联合 LOS 轻量状态：**不打开 DEM，也不打开 GPKG**。"""
+
+        return self.radar_terrain_los_diagnostics_service.combined_status(
+            engineering_demo_mode=engineering_demo_mode,
+        )
+
+    def radar_combined_los_details(self, payload=None):
+        """受限分页的逐射线联合明细（读内存证据块，不重算、不重开数据源）。"""
+
+        return self.radar_terrain_los_diagnostics_service.combined_details(payload)

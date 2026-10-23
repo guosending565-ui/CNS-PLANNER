@@ -194,7 +194,7 @@ def test_confirmed_policy_records_in_footprint_nodata_as_known_zero():
     assert "nodata_semantics" not in neighbour
 
 
-def test_confirmed_policy_treats_cell_without_observation_coverage_as_known_zero():
+def test_confirmed_policy_preserves_valid_area_without_centre_sample():
     grid = _grid()
     cells = grid["cells"]
     inside, outside, edge = cells[0]["bbox"], cells[1]["bbox"], cells[2]["bbox"]
@@ -204,20 +204,32 @@ def test_confirmed_policy_treats_cell_without_observation_coverage_as_known_zero
     attribute = _map(grid, adapter, policy)
     edge_cell = attribute["cells"][cells[2]["grid_id"]]
 
-    # The pathological extrapolation (2e-7 people -> 79 person/km²) is replaced by a known 0,
-    # and the original quality flags are retained as audit evidence.
-    assert edge_cell["status"] == "passed"
-    assert edge_cell["coverage_status"] == CONFIRMED_ZERO_COVERAGE_STATUS
-    assert edge_cell["population_density_people_km2"] == 0.0
-    assert edge_cell["nodata_semantics"]["trigger"] == "no_source_pixel_centre_inside_cell"
+    # Empty centre statistics cannot override valid area allocation.
+    assert edge_cell["status"] == "missing_data"  # legacy centre statistics
+    assert edge_cell["value_status"] == "passed"
+    assert edge_cell["coverage_status"] == "partial"
+    assert edge_cell["population_count_people"] > 0
+    assert edge_cell["population_density_people_km2"] > 0
+    assert "nodata_semantics" not in edge_cell
     assert "partial_source_coverage" in edge_cell["quality_flags"]
 
-    # Without the confirmation the historical (pathological) behaviour is unchanged.
+    # Without the confirmation the cell is still *not* zero, but Round35-D removes the
+    # pathological extrapolation at its root: the main field is now the whole-cell mean
+    # density (denominator is always the full grid cell area), so a microscopic overlap can
+    # only produce a microscopic density.  The old pathological value survives **only** as an
+    # explicitly suppressed diagnostic of the observed-covered-area density.
     unconfirmed = _map(grid, adapter, None)
     raw_edge = unconfirmed["cells"][cells[2]["grid_id"]]
     assert raw_edge["coverage_status"] == "partial"
     assert raw_edge["status"] == "missing_data"
-    assert abs(raw_edge["population_density_people_km2"] - 79.13) < 0.1
+    assert raw_edge["value_status"] == "passed"
+    assert raw_edge["density_semantics"] == "whole_cell_mean_density"
+    assert raw_edge["density_semantics_version"] == "1.2"
+    assert raw_edge["density_support_area_m2"] == raw_edge["grid_area_m2"]
+    assert raw_edge["population_density_people_km2"] < 1.0
+    assert raw_edge["population_density_observed_area_people_km2"] is None
+    assert raw_edge["observed_density_confidence"] == "insufficient_source_coverage"
+    assert abs(raw_edge["observed_density_diagnostic_people_km2"] - 79.13) < 0.1
 
 
 # ------------------------------------------------------------- downstream factors

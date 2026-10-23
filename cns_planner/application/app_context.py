@@ -336,6 +336,7 @@ class ApplicationContext:
             raise ValueError("请先配置 GBA buildings 与 FABDEM terrain_dtm")
         adapter = QgisBuildingClearanceAdapter(
             buildings, terrain_dtm,
+            height_evidence_field="height_evidence_level", height_estimate_field="height_estimate_m",
             geographic_bounds=((self.workflow.session.state.get("workspace") or {}).get("bbox")),
         )
         return self.workflow.evaluate_building_clearance(adapter)
@@ -530,7 +531,8 @@ class ApplicationContext:
             raise ValueError("configured_real_sources 需要显式 horizontal_crs（局部米制 CRS）")
         transform = QgisMetricTransform(crs)
         terrain = NativeTerrainWindowSource(terrain_dtm)
-        corridor = RouteCorridorBuildingSource(buildings, crs_authority=crs)
+        corridor = RouteCorridorBuildingSource(buildings, crs_authority=crs,
+            height_evidence_field="height_evidence_level", height_estimate_field="height_estimate_m")
         adapter_id = "v3c_real_source_evidence_adapter"
 
         def build_evidence(*, refinement, policy, planning_policy, realization, payload=None):
@@ -705,6 +707,7 @@ class ApplicationContext:
                 self.workflow.radar_surveillance_layout_service.land_mask_authority()
             ),
         )
+        self.workflow.radar_terrain_los_diagnostics_service.facts_provider = provider
         self.workflow.radar_surveillance_layout_service.facts_provider = provider
         return provider
 
@@ -719,8 +722,6 @@ class ApplicationContext:
         return self.qgis.call(
             lambda: self.workflow.evaluate_radar_surveillance_layout(payload)
         )
-
-
 
     def configure_surface_classification_sources(self):
         """绑定 **Step5 中立** surface classification 的只读陆域数据源路径。
@@ -788,7 +789,8 @@ class ApplicationContext:
         if len(line) < 2:
             raise ValueError("transition phase 的 metric 顶点不足（需要 >= 2）")
         terrain = NativeTerrainWindowSource(terrain_path)
-        corridor = RouteCorridorBuildingSource(building_path, crs_authority=crs)
+        corridor = RouteCorridorBuildingSource(building_path, crs_authority=crs,
+            height_evidence_field="height_evidence_level", height_estimate_field="height_estimate_m")
         # The truncated polyline *is* the validation geometry: no curve error envelope.
         terrain_evidence = terrain.native_window(
             transform=transform, metric_line=line, envelope_radius_m=0.0, spacing_m=None,
@@ -877,4 +879,37 @@ class ApplicationContext:
                 "configured_via": "ApplicationContext.evaluate_route_planner_v3_refinement",
                 "project_grid_level": (state.get("grid") or {}).get("level"),
             },
+        )
+
+
+    def diagnose_radar_terrain_los(self, payload=None):
+        """Round34-T07-B：一次**显式**的地形 LOS 只读诊断（读 FABDEM）。
+
+        它只读真实 FABDEM 窗口并把结论作为独立几何可见性证据返回：**不写**任何
+        ProjectState 容器、**不写** artifact、**不**注册失效入口。因为它打开栅格
+        数据集，所以与其它真实数据源入口一样跑在 QGIS 线程上。
+        """
+
+        provider = self.configure_radar_surveillance_layout_sources()
+        if provider is not None and not self.workflow.radar_terrain_los_diagnostics_service.facts_provider:
+            self.workflow.radar_terrain_los_diagnostics_service.facts_provider = provider
+        return self.qgis.call(
+            lambda: self.workflow.diagnose_radar_terrain_los(payload)
+        )
+
+    def diagnose_radar_combined_los(self, payload=None):
+        """Round34-T07-I2：一次**显式**的 Terrain + Building 联合 LOS 只读诊断。
+
+        它同时读真实 FABDEM（只读窗口）与 buildings v3（只读 provider/RTree），并把两个
+        域的结论组合成一条射线的联合可见性证据：**不写**任何 ProjectState 容器、
+        **不写** artifact、**不**注册失效入口、**不**参与 MILP / P16 / Required CNS。
+        数据源路径**只**来自当前项目配置，调用方不能指定任意本地文件路径。
+        因为它同时打开栅格与矢量数据集，所以与其它真实数据源入口一样跑在 QGIS 线程上。
+        """
+
+        provider = self.configure_radar_surveillance_layout_sources()
+        if provider is not None and not self.workflow.radar_terrain_los_diagnostics_service.facts_provider:
+            self.workflow.radar_terrain_los_diagnostics_service.facts_provider = provider
+        return self.qgis.call(
+            lambda: self.workflow.diagnose_radar_combined_los(payload)
         )

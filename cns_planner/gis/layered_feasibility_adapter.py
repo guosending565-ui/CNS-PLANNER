@@ -17,6 +17,7 @@ footprint / horizontal clearance is the later continuous-validation stage's job.
 
 from __future__ import annotations
 
+from .source_inspection import BUILDING_GRID_HEIGHT_STATISTICS_CONTRACT
 from .terrain_fact_adapter import canonical_terrain_fact
 
 #: The L8 bounding boxes are already OGC:CRS84 (same assumption as the existing V3-A
@@ -37,7 +38,7 @@ TERRAIN_FACT_KEYS = (
 )
 BUILDING_FACT_KEYS = (
     "data_status", "building_count", "height_max_m", "height_p95_m",
-    "valid_height_fraction", "building_coverage_ratio", "reason",
+    "valid_height_fraction", "building_area_m2", "building_coverage_ratio", "reason",
 )
 TOWER_FACT_KEYS = (
     "data_status", "tower_count", "resolved_count", "unresolved_count",
@@ -86,7 +87,13 @@ def _terrain_fact(raw):
 
 
 def _building_fact(raw):
-    """Pass the existing L8 building facts through; never rebuild the aggregation."""
+    """Pass the existing L8 building facts through; never rebuild the aggregation.
+
+    F1-A：``building_area_m2`` 与 ``building_coverage_ratio`` 必须一起透传。判定阈值
+    （例：``building_count=0`` 且覆盖面积 > 0 ⇒ 未知）在算法层由
+    :func:`cns_planner.domain.building_clearance.building_occupancy_state` 唯一定义，
+    这里只负责如实搬运事实，绝不复制判据。
+    """
 
     fact = raw if isinstance(raw, dict) else {}
     if str(fact.get("status") or "") != "passed":
@@ -96,6 +103,7 @@ def _building_fact(raw):
             "height_max_m": None,
             "height_p95_m": None,
             "valid_height_fraction": None,
+            "building_area_m2": None,
             "building_coverage_ratio": None,
             "reason": str(fact.get("reason") or "building_grid_missing_or_outside_coverage"),
         }
@@ -107,6 +115,7 @@ def _building_fact(raw):
             "height_max_m": None,
             "height_p95_m": None,
             "valid_height_fraction": None,
+            "building_area_m2": fact.get("building_area_m2"),
             "building_coverage_ratio": fact.get("building_coverage_ratio"),
             "reason": "building_count_missing",
         }
@@ -116,6 +125,7 @@ def _building_fact(raw):
         "height_max_m": fact.get("height_max_m"),
         "height_p95_m": fact.get("height_p95_m"),
         "valid_height_fraction": fact.get("valid_height_fraction"),
+        "building_area_m2": fact.get("building_area_m2"),
         "building_coverage_ratio": fact.get("building_coverage_ratio"),
         "reason": None,
         "height_field": "height_max_m",
@@ -396,13 +406,22 @@ def build_layered_feasibility_adapter(source_paths):
     return LayeredFeasibilityAdapter(FabdemWindowTerrainSource(terrain_dtm))
 
 
-def layered_feasibility_source_status(state, terrain_path=None):
+def layered_feasibility_source_status(state, terrain_path=None, *, height_statistics=None):
     """Read-only readiness summary (never opens a dataset).
 
     The keys must match what the readiness projection and the frontend actually read:
     ``terrain`` (not only ``terrain_dtm``) plus ``population``.  Reporting the terrain
     status under a key nobody reads made every project look as if the verified FABDEM
     source were missing.
+
+    Round36-D3 阶段B：``building_grid.height_statistics`` 是**只报告**的高度统计完整性
+    投影。它刻意**不**在这里打开数据集（保持本函数"永不打开数据集"的既有契约），因此
+    默认值是 ``not_checked``；调用方若已用
+    :func:`cns_planner.gis.source_inspection.inspect_building_grid_height_statistics`
+    取得报告，可显式传入以显示真实结论。无论报告内容如何，本函数返回的
+    ``terrain`` / ``population`` / ``buildings`` / ``building_grid`` 的既有
+    ``available`` / ``audit_status`` / ``reason`` **一律不变**——历史 source-readiness
+    语义不被静默改变。
     """
 
     state = state or {}
@@ -453,7 +472,26 @@ def layered_feasibility_source_status(state, terrain_path=None):
         "terrain_dtm": dict(terrain),
         "population": population,
         "buildings": {"role": "buildings", "audit_status": buildings.get("status")},
-        "building_grid": {"role": "building_grid", "audit_status": building_grid.get("status")},
+        "building_grid": {
+            "role": "building_grid",
+            "audit_status": building_grid.get("status"),
+            # Round36-D3 阶段B：只报告的高度统计完整性。默认 ``not_checked``（本函数不打开
+            # 数据集）；显式传入报告时如实显示，且**不**影响任何既有 readiness 字段。
+            "height_statistics": (
+                dict(height_statistics) if isinstance(height_statistics, dict) else {
+                    "contract_id": BUILDING_GRID_HEIGHT_STATISTICS_CONTRACT,
+                    "role": "building_grid_height_statistics",
+                    "status": "not_checked",
+                    "affects_readiness": False,
+                    "read_only": True,
+                    "reason_ids": ["height_statistics_not_checked"],
+                    "reason": (
+                        "readiness 投影刻意不打开数据集；如需真实结论，请显式传入 "
+                        "inspect_building_grid_height_statistics() 的报告"
+                    ),
+                }
+            ),
+        },
         "airspace": {
             "role": "airspace",
             "applicability": "display_only",

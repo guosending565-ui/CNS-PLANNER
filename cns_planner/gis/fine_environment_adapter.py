@@ -41,6 +41,9 @@ from pathlib import Path
 from ..data.mapping.airspace_eligibility import (
     polygons_of, rect_covered_by_any, rect_intersects_any,
 )
+from ..domain.building_clearance import (
+    building_height_value_is_usable, normalize_height_evidence_level,
+)
 from ..domain.building_geometry_quality import annotate_footprint_geometry
 from .metric_crs import require_metric_crs
 from ..route_planner_v3.fine_contracts import AIRSPACE_MAPPING_METHOD, contract_fingerprint
@@ -786,7 +789,8 @@ class QgisGpkgBuildingSource:
                 continue
             metric = QgsGeometry(geometry)
             metric.transform(self._transform)
-            height = _number_or_none(feature[self.height_field])
+            height_raw = _number_or_none(feature[self.height_field])
+            height = _building_height_or_none(height_raw)
             status = (
                 str(feature[self.height_status_field] or "")
                 if self.height_status_field else ("predicted" if height is not None else "unknown")
@@ -824,6 +828,19 @@ def _number_or_none(value):
     except (TypeError, ValueError):
         return None
     return number if number == number else None
+
+
+def _building_height_or_none(value):
+    """F1-C：建筑高度消费端必须自己防御官方哨兵。
+
+    这里读到的 ``height_m`` 与粗搜消费的是**同一个**字段。``clean_gba_nodata.py``
+    只把 ``-999`` 置为 NULL，``-1.0`` 与任何非正值都可能以"有值"的形态出现；
+    若把它们代入 roof 公式，会得到一个凭空低 999 m 的楼顶并让连续净空验证反向通过。
+    不可用时返回 ``None``（等价于"高度缺失" ⇒ fail-closed），原值仍留在原始数据中。
+    """
+
+    number = _number_or_none(value)
+    return number if building_height_value_is_usable(number) else None
 
 
 # --------------------------------------------------------------------------- airspace
@@ -1749,7 +1766,9 @@ class RouteCorridorBuildingSource:
     role = "buildings"
 
     def __init__(self, path, *, layer_name="buildings", height_field="height_m",
-                 height_status_field="height_status", crs_authority=None, gdal=None):
+                 height_status_field="height_status", crs_authority=None, gdal=None,
+                 height_evidence_field=None, height_estimate_field=None,
+                 height_evidence_lookup=None):
         from qgis.core import QgsCoordinateReferenceSystem, QgsVectorLayer
 
         self.path = Path(path).expanduser().resolve()
@@ -1766,6 +1785,30 @@ class RouteCorridorBuildingSource:
             raise ValueError(f"buildings 图层缺少高度字段 {height_field}")
         self.height_field = height_field
         self.height_status_field = height_status_field if height_status_field in fields else None
+        # F3-B：可选的高度证据等级 / 选择器输出高度字段（加法式 sidecar 列，不要求正式
+        # 数据升级）。``height_evidence_lookup`` 是隔离 sidecar（dict 或 callable），
+        # 用于给已匹配 OSM 标签的建筑赋予 source_tagged / 标签高度。
+        self.height_evidence_field = height_evidence_field if height_evidence_field in fields else None
+        self.height_estimate_field = height_estimate_field if height_estimate_field in fields else None
+        self.height_var_field = "height_var" if "height_var" in fields else None
+        self.height_method_field = "height_method" if "height_method" in fields else None
+        self.height_source_field = "height_source" if "height_source" in fields else None
+        self.height_source_license_field = (
+            "height_source_license" if "height_source_license" in fields else None
+        )
+        self.height_observation_period_field = (
+            "height_observation_period" if "height_observation_period" in fields else None
+        )
+        self.height_uncertainty_field = (
+            "height_uncertainty" if "height_uncertainty" in fields else None
+        )
+        self.height_var_status_field = (
+            "height_var_status" if "height_var_status" in fields else None
+        )
+        self.height_confidence_reason_field = (
+            "height_confidence_reason" if "height_confidence_reason" in fields else None
+        )
+        self.height_evidence_lookup = height_evidence_lookup
         self.metric_crs = require_metric_crs(explicit_crs=crs_authority)
         self.metric = QgsCoordinateReferenceSystem(self.metric_crs)
         self._to_metric = None
@@ -1841,11 +1884,75 @@ class RouteCorridorBuildingSource:
             identifier = _feature_identifier(feature, self.layer)
             annotated = annotate_footprint_geometry(identifier, part_rings)
             ring = annotated["parts_metric"][0] if annotated["parts_metric"] else []
-            height = _number_or_none(feature[self.height_field])
+            height_raw = _number_or_none(feature[self.height_field])
+            height = _building_height_or_none(height_raw)
             status = (
                 str(feature[self.height_status_field] or "")
                 if self.height_status_field else ("predicted" if height is not None else "unknown")
             )
+            # F3-B：高度证据等级 + 选择器输出高度（sidecar 优先，其次源字段，默认 predicted/unknown）。
+            # ``height_m`` 永远是原始 GBA 值；``height_estimate_m`` 是统一选择器输出
+            # （source_tagged 建筑 = OSM 标签值，其余 = 原始值）。二者并存，绝不覆盖原值。
+            estimate = height
+            evidence_level = None
+            evidence_method = None
+            derived_assumption = None
+            confidence_reason = None
+            if self.height_evidence_lookup is not None:
+                record = None
+                if callable(self.height_evidence_lookup):
+                    record = self.height_evidence_lookup(identifier)
+                elif isinstance(self.height_evidence_lookup, dict):
+                    record = self.height_evidence_lookup.get(identifier)
+                if isinstance(record, dict):
+                    evidence_level = record.get("height_evidence_level")
+                    if record.get("height_estimate_m") is not None:
+                        estimate = record.get("height_estimate_m")
+                    evidence_method = record.get("height_evidence_method")
+                    derived_assumption = record.get("derived_assumption")
+                    confidence_reason = record.get("height_confidence_reason")
+            if evidence_level in (None, ""):
+                evidence_level = (
+                    str(feature[self.height_evidence_field] or "")
+                    if self.height_evidence_field else ""
+                )
+            if self.height_estimate_field is not None and estimate is height:
+                estimate_field = _number_or_none(feature[self.height_estimate_field])
+                if estimate_field is not None:
+                    estimate = estimate_field
+            evidence_level = normalize_height_evidence_level(
+                evidence_level, height_present=(estimate is not None)
+            )
+            if evidence_method in (None, "") and self.height_method_field:
+                evidence_method = str(feature[self.height_method_field] or "") or None
+            height_source = (
+                str(feature[self.height_source_field] or "") or None
+                if self.height_source_field else None
+            )
+            height_source_license = (
+                str(feature[self.height_source_license_field] or "") or None
+                if self.height_source_license_field else None
+            )
+            height_observation_period = (
+                str(feature[self.height_observation_period_field] or "") or None
+                if self.height_observation_period_field else None
+            )
+            height_uncertainty = (
+                str(feature[self.height_uncertainty_field] or "") or None
+                if self.height_uncertainty_field else None
+            )
+            height_var = (
+                _number_or_none(feature[self.height_var_field])
+                if self.height_var_field else None
+            )
+            height_var_status = (
+                str(feature[self.height_var_status_field] or "") or None
+                if self.height_var_status_field else None
+            )
+            if confidence_reason in (None, "") and self.height_confidence_reason_field:
+                confidence_reason = (
+                    str(feature[self.height_confidence_reason_field] or "") or None
+                )
             ground = None
             ground_by_part = []
             if (annotated["parts_metric"] and terrain_source is not None
@@ -1869,11 +1976,26 @@ class RouteCorridorBuildingSource:
                 "ring_parts_metric": annotated["parts_metric"],
                 "part_count": len(annotated["parts_metric"]),
                 "height_m": height,
+                "height_m_raw_source_value": height_raw,
                 "height_status": status or ("predicted" if height is not None else "unknown"),
+                "height_estimate_m": estimate,
+                "height_var": height_var,
+                "height_evidence_level": evidence_level,
+                "height_evidence_method": evidence_method,
+                "height_source": height_source,
+                "height_source_license": height_source_license,
+                "height_observation_period": height_observation_period,
+                "height_uncertainty": height_uncertainty,
+                "height_var_semantics": "raw_source_field_only",
+                "height_var_unit": "m2_variance_not_stddev",
+                "height_var_status": height_var_status,
+                "derived_assumption": derived_assumption,
+                "height_confidence_reason": confidence_reason,
                 "ground_elevation_max_egm2008_m": ground,
                 "ground_elevation_by_part_egm2008_m": ground_by_part,
                 "geometry_status": annotated["status"],
                 "geometry_quality": annotated["annotation"],
+                "evidence": {"feature_id": int(feature.id()), "layer": self.layer_name},
             })
         return {
             "available": True,

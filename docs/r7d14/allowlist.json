@@ -1,0 +1,251 @@
+{
+  "baseline": "e4e65f27",
+  "source": "2b953bfc",
+  "scope": "C batch and necessary dependencies; local-only",
+  "files": [
+    {
+      "path": "cns_planner/algorithms/radar_layout/candidates.py",
+      "sha256": "3dd67911afed679ae5d7a742fca24981f3400b75422950bcfdbd8dc6147d4aa9"
+    },
+    {
+      "path": "cns_planner/algorithms/radar_layout/milp.py",
+      "sha256": "ccecd3b2fae959eb64f8027f26fd5d95e46de538bb72f5750647abdae46a6df4"
+    },
+    {
+      "path": "cns_planner/algorithms/radar_layout/terrain_los_lookup.py",
+      "sha256": "7c1d9a4b203599e0efa1c600c555062f73dd07b8ea678c8802a6cef32e29aa52"
+    },
+    {
+      "path": "cns_planner/algorithms/radar_layout/v1.py",
+      "sha256": "2e4ede9df25755ea71ca591465cc7ee98036fbd4d5e7410910d23ec4dc6fa445"
+    },
+    {
+      "path": "cns_planner/api/router.py",
+      "sha256": "2394372e3a36cc2cd251c5c9b8633999c8de358384eb632af7d88197f4e5bec8"
+    },
+    {
+      "path": "cns_planner/application/app_context.py",
+      "sha256": "767c53520f3a69fbcb0b88aa7db15f484f4c2e9cb6321e4290701259470f7595"
+    },
+    {
+      "path": "cns_planner/application/cns_shared_site_candidate_service.py",
+      "sha256": "5843cd43a184804549070e029d9e210d3048acad2ee58a86222a7105db8b8bee"
+    },
+    {
+      "path": "cns_planner/application/corridor_site_planning_service.py",
+      "sha256": "db90bb2d07c62948806dc521005f86cccbd334bd9f542af9228725b52273bdd1"
+    },
+    {
+      "path": "cns_planner/application/planning_constraint_field_service.py",
+      "sha256": "d2fe73afa4cd4f43ec6ed5bcb81963fe849d58e845bffb2affc7a3df7fd985e9"
+    },
+    {
+      "path": "cns_planner/application/radar_shared_site_adapter.py",
+      "sha256": "e22360b198c37ecf5c3cb32571a6a61dc90f4272078233da08fb69b0e9fffedc"
+    },
+    {
+      "path": "cns_planner/application/radar_surveillance_layout_service.py",
+      "sha256": "2f60babfe2e42297f3bc2e422ed411a3a318dad6182d89c56c6453a9416b4ca5"
+    },
+    {
+      "path": "cns_planner/application/radar_terrain_los_diagnostics_service.py",
+      "sha256": "f9b27a4d6ced87e29d7da9e716158913678b854f6ef40153d9c7cf6bc0a6eefc"
+    },
+    {
+      "path": "cns_planner/application/workflow_service.py",
+      "sha256": "7f731741d93f390fbbfca8ca6c50e142b3c1f0f71f797d97c589597951352985"
+    },
+    {
+      "path": "cns_planner/data/mapping/population.py",
+      "sha256": "110f80e583133e57097d080caa3e7399a380e59483a8a92326673252862b0472"
+    },
+    {
+      "path": "cns_planner/domain/building_geometry_quality.py",
+      "sha256": "b62103ff6faebe4801c1abff4c02228d74c2f5755f44f11946bea08888547eab"
+    },
+    {
+      "path": "cns_planner/domain/planning_exposure.py",
+      "sha256": "b2db0d35b31ca1b41c3c10b0d0f82346d86876a114f06b77c8d6c1141a9bfc78"
+    },
+    {
+      "path": "cns_planner/domain/population_density.py",
+      "sha256": "7e1b067915f275abd00228b45259c03c7980d4d426c8e7500b983607a1cb7125"
+    },
+    {
+      "path": "cns_planner/domain/population_nodata.py",
+      "sha256": "456a3ff7aa679d0b68e65a137c14e038089393de4ca1b877373c46c596e418c5"
+    },
+    {
+      "path": "cns_planner/domain/population_shelter.py",
+      "sha256": "382e6521fc3a5162aa232e35fc5ec91ce801db9cb2b9f3617673b807cceb29ae"
+    },
+    {
+      "path": "cns_planner/domain/radar_building_los.py",
+      "sha256": "28b42249c31117a5f169df6603939e7e81eba7ea4738ef0e5ae31e801c37cd48"
+    },
+    {
+      "path": "cns_planner/domain/radar_combined_los_evidence.py",
+      "sha256": "21f22ad6d008a1870d30024e8f2acf5ecb7bf79a37fca01077e6d04534c626da"
+    },
+    {
+      "path": "cns_planner/domain/radar_terrain_los.py",
+      "sha256": "eef93741aeb6224a3364f6ad01420e205dc88e9003356bac8bc4bd952ee4bdfa"
+    },
+    {
+      "path": "cns_planner/domain/radar_terrain_los_evidence.py",
+      "sha256": "ce6f53392bd703f0a60c40bf7e432f7c7941d54dbdb0e6b71ac06830bad0ac18"
+    },
+    {
+      "path": "cns_planner/domain/radar_visibility_evidence.py",
+      "sha256": "007e6b76f276a16a1e479d838504dbf3236c5ee4f56dc707ef09f554f3cef272"
+    },
+    {
+      "path": "cns_planner/domain/risk_v2.py",
+      "sha256": "8619d489d531026e9259ea2386b110cb6540608208751cd201e6b3ed987b7f90"
+    },
+    {
+      "path": "cns_planner/domain/tower_colocation.py",
+      "sha256": "ce786d7a81727d7542cd0ccfe9f258e3c0e8ac80c16a0ab983a9e15e5deaa357"
+    },
+    {
+      "path": "cns_planner/gis/building_clearance_adapter.py",
+      "sha256": "f5546c9945cfcb2623a44d7f3e5759166337899edb6883026ef6417d1e197a44"
+    },
+    {
+      "path": "cns_planner/gis/building_footprint_aggregation.py",
+      "sha256": "c3381d0b0d056feca3ff4114346126acb94bb5dbbb82347db6678525ea1f4276"
+    },
+    {
+      "path": "cns_planner/gis/fine_environment_adapter.py",
+      "sha256": "b9027e1d0eafbce02e45366058db6b4c3533661436bfaf9a3eaa9bb957ee9973"
+    },
+    {
+      "path": "cns_planner/gis/layered_feasibility_adapter.py",
+      "sha256": "5e4cb07c5310b7aa2e43b1878879ff6fc61c1cf89270b4cd23e7c2588ed52ebf"
+    },
+    {
+      "path": "cns_planner/gis/planning_constraint_field_adapter.py",
+      "sha256": "2fd9b562061c6d3e5ce107270f66c1c4cff89362ab35d3ed5ea45aa9f160c4d6"
+    },
+    {
+      "path": "cns_planner/gis/population_nodata_evidence.py",
+      "sha256": "8e2d07dcce420f11f3d3604245feaaffdefe7e00178f6c71cab0fea1c4ea6b30"
+    },
+    {
+      "path": "cns_planner/gis/radar_building_los_adapter.py",
+      "sha256": "43f2e9427d8302ad82d576d78ab19d70c8bd59b22b247d184aaaf39fa660d887"
+    },
+    {
+      "path": "cns_planner/gis/radar_layout_adapter.py",
+      "sha256": "ee4c35ccafab07a7d6baa160d4cd5db7f9fb4ec636983978369d7060cbe54822"
+    },
+    {
+      "path": "cns_planner/gis/radar_terrain_los_adapter.py",
+      "sha256": "207a6ea23932a0a057c59e1798638efc7ce4fd8dc38321251f0073a7fa198841"
+    },
+    {
+      "path": "cns_planner/gis/raster_adapter.py",
+      "sha256": "aba5afa547302f92cfc25d04f604f10cd767f864015a1bb2663ec7a532070d5a"
+    },
+    {
+      "path": "cns_planner/risk/factors_v2.py",
+      "sha256": "ae85f2e617a5d93197a943ca14e5f33d0085dc63ddc40e32bdacdad2446024e2"
+    },
+    {
+      "path": "cns_planner/route_planner_v3/continuous_raster_window.py",
+      "sha256": "574fea456f4df151bd7220468ae1979e99440f384c3a98854d1634bf1da7a964"
+    },
+    {
+      "path": "cns_planner/tasks/task_specs.py",
+      "sha256": "98335fbdb536e395589d8bdf0ff0da090695bb1ddd408c26e31372e7517ad3f8"
+    },
+    {
+      "path": "cns_planner/web/js/workflow/radar_surveillance_layout.js",
+      "sha256": "9fa12e3c64db726aa98a7d0c7259d63e8db051dc6595f44698f565fd8960611e"
+    },
+    {
+      "path": "cns_planner/web/js/workflow/radar_visibility_evidence.js",
+      "sha256": "f7b78c43292b8a98dcaac21422fe042a58655e3694dd98584008e7566139bef5"
+    },
+    {
+      "path": "docs/r7d14/REPORT.md",
+      "sha256": "78341f925192e9555257e133fd862d1aeb277995a7f2ed3b4c91af1e12311e25"
+    },
+    {
+      "path": "docs/r7d14/historical_evidence.json",
+      "sha256": "eb6ff2651f2ca8db975291ec87229207c51f49c42117e4e20c5a6f47c368ec6e"
+    },
+    {
+      "path": "docs/r7d14/verification.json",
+      "sha256": "065e9a96b0b7f03dcbeaae0b8906b50d36925293f84dce3c34dfaa2c089843bb"
+    },
+    {
+      "path": "tests/population_nodata_frontend.test.mjs",
+      "sha256": "f050452238f5f5d7f388a79d8f2787b3950b76b662f12e3a9ef0defc053f9e55"
+    },
+    {
+      "path": "tests/test_cns_shared_site_candidates.py",
+      "sha256": "be794caac3559cd7f66ddceed8b44164ea0578a65b363adc868b1384fe76f47c"
+    },
+    {
+      "path": "tests/test_native_pixel_interval_gaps.py",
+      "sha256": "daf570c386a466eab4d68b6c327125d843df59522feb48d4758f070a4e0e69a2"
+    },
+    {
+      "path": "tests/test_phase4_b3x_planning_constraints.py",
+      "sha256": "c1536fcda79925181eb7fce7751f22b5bc9a5f1d30dfe3a1dfca2289346af0fb"
+    },
+    {
+      "path": "tests/test_population_nodata_semantics.py",
+      "sha256": "9c0713df7b3aa15f16bdefc2efd5977e40a93d6f7bce2333f026bb090566bbfe"
+    },
+    {
+      "path": "tests/test_r7d14_integration.py",
+      "sha256": "f70c65215c48f1f9e1df41a9eea2b5fa16585318f0ea37cea70d99184ca782cd"
+    },
+    {
+      "path": "tests/test_r7d7_population_overlap.py",
+      "sha256": "4bd6dfa912191028c5c74304c722ace61e3e9edc965c554f574c08df372300a3"
+    },
+    {
+      "path": "tests/test_r7d8_population_consumption.py",
+      "sha256": "c6b99deeddaabbfafffeab4fd22e2f87cfa704fb3c619f667b139cff5214dee8"
+    },
+    {
+      "path": "tests/test_round34_t07a_radar_terrain_los.py",
+      "sha256": "2dc752480f429332edf2b67838c8791498a763df2ec20b5d30021c5160ac5b1c"
+    },
+    {
+      "path": "tests/test_round34_t07b_radar_terrain_los_evidence.py",
+      "sha256": "707bb6552e288375bceed459dd80b5787172aa45c608722764a0ebef1ab5ff81"
+    },
+    {
+      "path": "tests/test_round34_t07d1_radar_los_preintegration.py",
+      "sha256": "e877bf725cb883e63d04dfe0f1731038fb8d8fb1178ce5d14834a5892e1327b3"
+    },
+    {
+      "path": "tests/test_round35d_open_sea_nodata.py",
+      "sha256": "048bdf5e38cfb1a3ebba348f021f79eccbf2762fe308ee5f601472afebb7d2e5"
+    },
+    {
+      "path": "tests/test_round35d_population_density.py",
+      "sha256": "f447267c0a80eed4b7c51b59e4fbd703a189f7cb715fd6ebeee0220ac440f6b6"
+    },
+    {
+      "path": "tests/test_round35f3_height_evidence.py",
+      "sha256": "d286645994a489b738622c2be08dd2fdf3f2df0f44b8a8a8da3f5dfa9ab484ff"
+    },
+    {
+      "path": "tests/test_round38_pcf_input_freshness_gate.py",
+      "sha256": "bfd6d9d15e0897829043b18cecdd3a5bc8a4271fe60a861cf183c5cf1b9af2a1"
+    },
+    {
+      "path": "tests/test_round38_site2_radar_shared_sites.py",
+      "sha256": "1f31dcabfe92c861fd4b485a8a9ecd846ca2e0c30673bf3f8287630eb35016a1"
+    },
+    {
+      "path": "tools/round34_t07a_tower_top_formula_audit.py",
+      "sha256": "fbf5fa7c648ce3eddcaa7793569094c2fae9d35b87bf7ca12fa2aaa5f468646f"
+    }
+  ]
+}

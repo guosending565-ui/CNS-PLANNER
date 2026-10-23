@@ -314,6 +314,42 @@ class ApiRouter:
             return Response(workflow.radar_surveillance_layout_readiness(payload))
         if path == "/api/radar-surveillance-policy":
             return Response(workflow.radar_surveillance_policy())
+        if path == "/api/radar-terrain-los/status":
+            return Response(workflow.radar_terrain_los_status())
+
+        if path == "/api/radar-terrain-los/details":
+            return Response(workflow.radar_terrain_los_details({
+                "tower_id": self._first(query, "tower_id", None),
+                "route_id": self._first(query, "route_id", None),
+                "altitude_layer_id": self._first(query, "altitude_layer_id", None),
+                "los_status": self._first(query, "los_status", None),
+                "offset": self._first(query, "offset", None),
+                "limit": self._first(query, "limit", None),
+            }))
+
+        if path == "/api/radar-terrain-los/combined/status":
+            engineering_demo_mode = str(
+                self._first(query, "engineering_demo_mode", "false")
+            ).lower() == "true"
+            if engineering_demo_mode:
+                return Response(workflow.radar_combined_los_status(
+                    engineering_demo_mode=True,
+                ))
+            return Response(workflow.radar_combined_los_status())
+
+        if path == "/api/radar-terrain-los/combined/details":
+            return Response(workflow.radar_combined_los_details({
+                "tower_id": self._first(query, "tower_id", None),
+                "route_id": self._first(query, "route_id", None),
+                "combined_los_status": self._first(query, "combined_los_status", None),
+                "building_domain_state": self._first(query, "building_domain_state", None),
+                "offset": self._first(query, "offset", None),
+                "limit": self._first(query, "limit", None),
+                "request_id": self._first(query, "request_id", None),
+                "input_fingerprint": self._first(query, "input_fingerprint", None),
+                "generation": self._first(query, "generation", None),
+            }))
+
         if path == "/api/radar-surveillance-layout":
             route_id = self._first(query, "route_id", "") or None
             return Response(workflow.radar_surveillance_layout(route_id))
@@ -761,6 +797,36 @@ class ApiRouter:
             # ---- Radar Surveillance Layout V1（proposal-only，additive） --------------
             # 一次显式用户动作 = 一次求解；绝不自动生成，也绝不自动 apply proposal。
             "/api/radar-surveillance-policy": lambda: workflow.set_radar_surveillance_policy(payload),
+            "/api/radar-terrain-los/diagnose": lambda: (
+                context.diagnose_radar_terrain_los(payload)
+                if hasattr(context, "diagnose_radar_terrain_los")
+                else workflow.diagnose_radar_terrain_los(payload)
+            ),
+            "/api/radar-terrain-los/details": lambda: workflow.radar_terrain_los_details(
+                payload
+            ),
+            # ---- Radar 联合 Terrain + Building LOS 只读诊断（Round34-T07-I2） --------
+            # 它同时读 FABDEM 与 buildings v3（均只读），因此与其它真实数据源入口一样
+            # 走 QGIS 线程；结果**不写任何容器**，只作为本次响应的只读证据返回。
+            "/api/radar-terrain-los/combined/diagnose": lambda: (
+                context.diagnose_radar_combined_los(payload)
+                if hasattr(context, "diagnose_radar_combined_los")
+                else workflow.diagnose_radar_combined_los(payload)
+            ),
+            "/api/radar-terrain-los/combined/details": lambda: (
+                workflow.radar_combined_los_details(payload)
+            ),
+            # ---- Vertical Transition Continuous Validation V1 -----------------------
+            # No automatic evaluation: one explicit POST evaluates the two transitions of one
+            # route against the configured real FABDEM/buildings sources.
+            "/api/vertical-transition-validations/evaluate-real": lambda: (
+                context.evaluate_vertical_transition_validation(payload)
+                if hasattr(context, "evaluate_vertical_transition_validation")
+                else context.qgis.call(
+                    lambda: workflow.evaluate_vertical_transition_validation(payload)
+                )
+            ),
+            "/api/coverage-3d/evaluate": lambda: workflow.evaluate_coverage_3d(payload),
             "/api/radar-surveillance-layout/evaluate": lambda: (
                 context.evaluate_radar_surveillance_layout(payload)
                 if hasattr(context, "evaluate_radar_surveillance_layout")

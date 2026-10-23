@@ -20,9 +20,13 @@
 * 点在陆域 polygon 内部 **或落在边界上** ⇒ ``land``；
 * 点在 polygon 外、但到陆域边界距离 ``<= coastal_uncertainty_buffer_m`` ⇒
   ``coastal_uncertain``（``effective_requirement_class = land``，要求 2 个站址）；
-* 点在 polygon 外且距离 ``> buffer`` ⇒ ``sea``；
+* 点在 polygon 外且距离 ``> buffer`` ⇒ ``sea``（main 冻结点分类契约）；
 * 陆域源未配置 / 不可读 / 几何库缺失 / **CRS 不可解析或转换失败** ⇒ ``unknown``
   （**fail-closed**）。
+
+**有效覆盖范围**：由实际几何的米制 bbox 并集决定，并由同目录来源元数据
+（``land_mask_osm_v*.json`` 的 ``clip.bbox`` / ``coverage_limit``）登记声明范围。
+元数据缺失不影响判定，只影响可追溯性。
 
 **绝不用 DEM NoData 推断海洋**：本模块没有任何 DEM-derived 海洋/陆地结论。
 
@@ -54,6 +58,12 @@ from ..domain.radar_surveillance_layout import (
 LAND_MASK_SEMANTICS = (
     "explicit_land_polygon_containment_plus_coastal_uncertainty_buffer"
 )
+
+#: 工程估算雷达原点的**唯一**来源标识（Round38-INT-A 恢复既有能力时新增的显式标注）。
+#: 它与 ``application/radar_shared_site_adapter`` 共用同一字面量：估算值只作为明确
+#: 声明假设的工程规划与原点的工程示意，**不是**已确认 EGM2008 塔顶正高。
+PLANNING_ESTIMATE_ORIGIN_SOURCE = "planning_estimate_terrain_plus_source_tower_height"
+_PLANNING_ESTIMATE_ORIGIN_SOURCE = PLANNING_ESTIMATE_ORIGIN_SOURCE
 
 #: 分类判定基（provenance 用）。
 LAND_MASK_CLASSIFICATION_BASIS = "explicit_polygon"
@@ -566,12 +576,17 @@ class LandMaskSource:
     """
 
     def __init__(self, path, *, layer_name=None, coastal_uncertainty_buffer_m=None,
-                 metric_crs=COASTAL_BUFFER_METRIC_CRS):
+                 metric_crs=COASTAL_BUFFER_METRIC_CRS, data_footprint_margin_m=0.0):
         self.path = Path(str(path)) if path else None
         self.layer_name = layer_name
         self.coastal_uncertainty_buffer_m = normalized_coastal_buffer_m(
             coastal_uncertainty_buffer_m
         )
+        #: 数据有效覆盖边界之外的**额外判定余量**（米）。默认 ``0.0``：最保守，
+        #: 边界之外一律 ``unknown``。它表达的是"来源数据在自身边界附近仍有水域
+        #: 判定能力"的工程声明，**不是**海岸线精度声明；非 0 值必须在
+        #: provenance 里可追溯（见 :meth:`describe`）。
+        self.data_footprint_margin_m = normalized_coastal_buffer_m(data_footprint_margin_m)
         self.metric_crs = str(metric_crs or COASTAL_BUFFER_METRIC_CRS)
         self._polygons = None
         self._prepared = False
@@ -587,6 +602,10 @@ class LandMaskSource:
         #: 坐标系，"查询点"的语义依然是地理经纬度（扫描/选点都来自经纬度输入）。
         self._query_forward = None
         self._query_backward = None
+        #: 数据有效覆盖范围（米制）。多边形外 ≠ 海：只有落在数据覆盖范围内的
+        #: "多边形之外"才是可判定的 sea；范围外一律 unknown（Round35-A D-01 修复）。
+        self._footprint_bounds = None
+        self._footprint_coverage = None
 
     def metric_polygons(self):
         """只读访问：源几何经**显式 CRS 变换**后的米制 polygon 列表 ``[(polygon, bounds)]``。
@@ -765,7 +784,191 @@ class LandMaskSource:
             self._crs_reason = self._reason
             return None
         self._polygons = prepared
+        # 有效覆盖范围 = 实际几何的米制 bbox 并集。数据被裁剪到某个 bbox 之后，
+        # 边界之外的"多边形之外"没有证据：那里既可能是海，也可能是被裁掉的陆地。
+        minx = min(bounds[0] for _polygon, bounds in prepared)
+        miny = min(bounds[1] for _polygon, bounds in prepared)
+        maxx = max(bounds[2] for _polygon, bounds in prepared)
+        maxy = max(bounds[3] for _polygon, bounds in prepared)
+        self._footprint_bounds = (minx, miny, maxx, maxy)
+        self._footprint_coverage = self._read_declared_coverage()
         return self._polygons
+
+    def _read_declared_coverage(self):
+        """读取同目录的来源元数据，登记"数据声明的覆盖范围"（只做记录，不改判定）。
+
+        元数据缺失不是错误（``None``）：有效范围仍由实际几何 bbox 决定。
+        """
+
+        if self.path is None:
+            return None
+        candidates = [
+            self.path.with_name(self.path.stem + ".json"),
+            self.path.parent / "land_mask_osm_v2.json",
+            self.path.parent / "land_mask_osm_v1.json",
+        ]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - 元数据不可读不影响分类
+                continue
+            clip = payload.get("clip") if isinstance(payload.get("clip"), dict) else {}
+            if not clip:
+                continue
+            return {
+                "metadata_path": str(candidate),
+                "declared_clip_bbox": clip.get("bbox"),
+                "declared_clip_bbox_crs": clip.get("bbox_crs"),
+                "coverage_limit": clip.get("coverage_limit"),
+                "version": payload.get("version"),
+                "canonical_sha256": (payload.get("canonical_file") or {}).get("sha256"),
+            }
+        return None
+
+    def footprint_bounds(self):
+        """数据有效覆盖范围（米制 ``(minx, miny, maxx, maxy)``）；未就绪返回 ``None``。"""
+
+        if not self._prepared:
+            self.prepare()
+        return self._footprint_bounds
+
+    def footprint_geographic_bounds(self):
+        """有效覆盖范围的地理 bbox ``(min_lon, min_lat, max_lon, max_lat)``。"""
+
+        bounds = self.footprint_bounds()
+        if bounds is None or self._query_backward is None:
+            return None
+        minx, miny, maxx, maxy = bounds
+        corners = [
+            self._query_backward.transform(x, y)
+            for x in (minx, maxx) for y in (miny, maxy)
+        ]
+        longitudes = [value[0] for value in corners]
+        latitudes = [value[1] for value in corners]
+        if not all(math.isfinite(v) for v in longitudes + latitudes):
+            return None
+        return (min(longitudes), min(latitudes), max(longitudes), max(latitudes))
+
+    def cell_land_relation(self, bbox):
+        """格级陆域关系探测（Round35-D，供"开阔海域零人口工程假设"使用）。
+
+        与 :meth:`classify`（**格心代表点**判定）的关键区别：本方法回答的是
+        "**整个格子**与陆域的关系"，因此能识别"格心判为 sea、但格的边缘实际包含陆地"
+        这一类格 —— 它们**不得**被当作开阔海域。
+
+        返回值（全部只读，不做任何缓存写入）::
+
+            {"relation": "open_sea" | "land_intersects" | "within_coastal_buffer"
+                        | "outside_data_footprint" | "unknown",
+             "land_mask_available": bool,
+             "does_not_intersect_land": bool,
+             "outside_coastal_uncertainty_buffer": bool,
+             "distance_to_land_boundary_m": float | None,
+             "coastal_uncertainty_buffer_m": float,
+             "land_intersection_count": int,
+             "method": "cell_envelope_metric_intersection_with_land_polygons",
+             "cell_envelope_m": [...]}
+
+        格的经纬度 bbox 先经**查询侧**变换到米制，再取其外接矩形作为**保守包络**
+        （包络 ≥ 真实格，因此只会更早判"与陆地相交"，方向保守）。任一证据不可得时返回
+        ``unknown``，调用方必须据此 fail-closed。
+        """
+
+        polygons = self.prepare()
+        empty = {
+            "relation": "unknown",
+            "land_mask_available": False,
+            "does_not_intersect_land": False,
+            "outside_coastal_uncertainty_buffer": False,
+            "distance_to_land_boundary_m": None,
+            "coastal_uncertainty_buffer_m": float(self.coastal_uncertainty_buffer_m),
+            "land_intersection_count": 0,
+            "method": "cell_envelope_metric_intersection_with_land_polygons",
+            "cell_envelope_m": None,
+            "reason": self._reason or "land_mask_unavailable",
+        }
+        if polygons is None or self._query_forward is None:
+            return empty
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            empty["reason"] = "cell_bbox_missing"
+            return empty
+        west, south, east, north = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        try:
+            corners = [
+                self._query_forward.transform(longitude, latitude)
+                for longitude in (west, east) for latitude in (south, north)
+            ]
+        except Exception:  # noqa: BLE001 - 变换失败即无证据
+            empty["reason"] = "cell_corner_transform_failed"
+            return empty
+        xs = [point[0] for point in corners]
+        ys = [point[1] for point in corners]
+        if not all(math.isfinite(value) for value in xs + ys):
+            empty["reason"] = "cell_corner_not_finite"
+            return empty
+        minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
+        empty["cell_envelope_m"] = [minx, miny, maxx, maxy]
+
+        buffer_m = float(self.coastal_uncertainty_buffer_m)
+        margin = float(self.data_footprint_margin_m or 0.0)
+        bounds_all = self._footprint_bounds
+        if bounds_all is None:
+            empty["reason"] = "land_mask_data_footprint_unknown"
+            return empty
+        minx_all, miny_all, maxx_all, maxy_all = bounds_all
+        if not (minx_all - margin <= minx and maxx <= maxx_all + margin
+                and miny_all - margin <= miny and maxy <= maxy_all + margin):
+            empty["land_mask_available"] = True
+            empty["relation"] = "outside_data_footprint"
+            empty["reason"] = "cell_not_wholly_inside_land_mask_footprint"
+            return empty
+
+        from shapely.geometry import box as shapely_box
+
+        envelope = shapely_box(minx, miny, maxx, maxy)
+        intersections = 0
+        nearest = None
+        try:
+            for polygon, bounds in polygons:
+                poly_minx, poly_miny, poly_maxx, poly_maxy = bounds
+                # 预筛：与格包络 + 海岸缓冲带的交集范围。
+                if (poly_maxx < minx - buffer_m or poly_minx > maxx + buffer_m
+                        or poly_maxy < miny - buffer_m or poly_miny > maxy + buffer_m):
+                    continue
+                if polygon.intersects(envelope):
+                    intersections += 1
+                    nearest = 0.0
+                    break
+                distance = float(polygon.distance(envelope))
+                if nearest is None or distance < nearest:
+                    nearest = distance
+        except Exception:  # noqa: BLE001 - 几何判定失败即无证据
+            empty["land_mask_available"] = True
+            empty["reason"] = "cell_land_intersection_failed"
+            return empty
+
+        result = dict(empty)
+        result["land_mask_available"] = True
+        result["reason"] = None
+        result["land_intersection_count"] = intersections
+        result["distance_to_land_boundary_m"] = nearest
+        if intersections:
+            result["relation"] = "land_intersects"
+            result["does_not_intersect_land"] = False
+            result["outside_coastal_uncertainty_buffer"] = False
+            return result
+        if nearest is not None and nearest <= buffer_m:
+            # 近岸保护范围：格心可能是 sea，但格本身落在海岸不确定带内 ⇒ 绝不判开阔海域。
+            result["relation"] = "within_coastal_buffer"
+            result["does_not_intersect_land"] = True
+            result["outside_coastal_uncertainty_buffer"] = False
+            return result
+        result["relation"] = "open_sea"
+        result["does_not_intersect_land"] = True
+        result["outside_coastal_uncertainty_buffer"] = True
+        return result
 
     def describe(self):
         return {
@@ -788,6 +991,19 @@ class LandMaskSource:
             ),
             "dem_nodata_used_to_infer_sea": False,
             "degree_as_meter_used": False,
+            "footprint": {
+                "bounds_m": (
+                    list(self._footprint_bounds)
+                    if self._footprint_bounds is not None else None
+                ),
+                "bounds_geographic": self.footprint_geographic_bounds(),
+                "declared_coverage": self._footprint_coverage,
+                "data_footprint_margin_m": float(self.data_footprint_margin_m or 0.0),
+                "semantics": (
+                    "cell_evidence_outside_is_unknown_main_point_classification_unchanged"
+                ),
+                "source": "union_of_actual_land_polygon_metric_bounds",
+            },
         }
 
     # ---- queries -------------------------------------------------------------------
@@ -1056,8 +1272,13 @@ def sample_route_terrain(points, *, terrain_source):
 
 
 def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
-                          planning_policy_id=None):
-    """逐塔解析**雷达原点** EGM2008 正高（V1.1 固定简化语义）。
+                          planning_policy_id=None,
+                          ground_site_installation_heights=None,
+                          ground_site_elevations=None,
+                          planning_origin_estimates=None):
+    """逐站址解析**雷达原点** EGM2008 正高。
+
+    铁塔站址（V1.1 固定简化语义，**逐字保留**）::
 
         radar_origin_egm2008_m = tower_top_orthometric_m
 
@@ -1066,9 +1287,19 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
     * ground tower：FABDEM 地形 + 塔身结构高度；
     * rooftop tower：FABDEM 地形 + 楼面建筑高度 + 塔身结构高度。
 
+    地面 / 场站站址（SITE-2 新增，**绝不继承塔顶高度**）::
+
+        radar_origin_egm2008_m =
+            ground_site_elevation_egm2008_m + installation_height_m（显式证据）
+
+    地面站的两项证据都必须是**显式可用**的：地表正高来自既有的
+    ``egm2008_orthometric`` 地形事实，安装高度来自显式安装证据。任一缺失即
+    ``unresolved`` 且该站址**不产生任何候选** —— 绝不填 0、绝不用塔顶高度兜底、
+    绝不套用 ``mount_assumption``。
+
     V1.1 明确**删除**"塔顶以上再叠一层统一工程示例挂高"这一步
     （BUG-RADAR-ORIGIN-003）。传入的 ``mount_assumption`` 只被**兼容读取**并原样记录为
-    ``legacy_not_used_by_v1_1``，**不影响**任何 V1.1 几何。
+    ``legacy_not_used_by_v1_1``，**不影响**任何几何、也**不**成为地面站的安装高度。
 
     ``planning_policy_id=radar_all_tower_rooftop_estimate_v1`` 时启用 Round30-C1
     Radar 专用规划模式。该模式只读取铁塔源表 ``elevation_m`` / ``height_m``，把
@@ -1077,28 +1308,83 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
 
     未启用该策略时，``tower_top_orthometric_m`` 未解析的塔继续**不可作为候选**，
     **绝不填 0**。
+    ``tower_top_orthometric_m`` 未解析的塔继续**不可作为候选**，**绝不填 0**。
+
+    唯一例外是**显式声明**的 Radar 工程估算原点（``planning_origin_estimates``）：
+    它由既有的共塔工程估算路径（``Terrain + 源表塔身高度``，见
+    :mod:`cns_planner.domain.tower_colocation` 的 ``planning_service_origin_policy``）
+    产生，只在调用方**已经显式打开**该工程假设时传入。此时该塔的原点记
+    ``origin_source="planning_estimate_terrain_plus_source_tower_height"``、
+    ``origin_confirmed=False``，仅用于明确标注的工程规划与非权威展示，
+    **绝不**升级为已确认 EGM2008 塔顶正高、**绝不**据此认定 Radar LOS 已验证。
+    未提供估算时行为与 V1.1 完全一致（保持 fail-closed）。
     """
 
     mount = mount_assumption if isinstance(mount_assumption, dict) else {}
     legacy_mount_height = mount.get("radar_mount_height_m")
+    estimates = (
+        planning_origin_estimates if isinstance(planning_origin_estimates, dict) else {}
+    )
     profiles = obstacle_profiles if isinstance(obstacle_profiles, dict) else {}
     items = profiles.get("items") if isinstance(profiles.get("items"), dict) else profiles
+    heights = (
+        ground_site_installation_heights
+        if isinstance(ground_site_installation_heights, dict) else {}
+    )
+    elevations = (
+        ground_site_elevations if isinstance(ground_site_elevations, dict) else {}
+    )
 
     all_tower_planning = planning_policy_id == RADAR_PLANNING_ORIGIN_POLICY_ID
     records, unresolved = [], []
-    for tower in towers or []:
-        tower_id = str(tower.get("tower_id") or "")
+    for site in towers or []:
+        if not isinstance(site, dict):
+            continue
+        site_type = str(site.get("site_type") or "").strip().lower()
+        tower_id = str(site.get("tower_id") or site.get("site_id") or "")
         if not tower_id:
+            continue
+        if site_type in ("ground_site", "landing_site", "helipad"):
+            record = _ground_site_origin_record(
+                site, site_id=tower_id, installation_heights=heights,
+                elevations=elevations,
+            )
+            records.append(record)
+            if record["origin_egm2008_m"] is None:
+                unresolved.append(record)
+            continue
+        if site.get("installation_position") == "ground_site":
+            record = _ground_site_origin_record(
+                site, site_id=tower_id, installation_heights=heights,
+                elevations=elevations,
+            )
+            records.append(record)
+            if record["origin_egm2008_m"] is None:
+                unresolved.append(record)
             continue
         profile = items.get(tower_id) if isinstance(items, dict) else None
         profile = profile if isinstance(profile, dict) else {}
         top = profile.get("tower_top_orthometric_m")
+        if not isinstance(top, (int, float)) or isinstance(top, bool):
+            #: 已带**显式工程估算身份**的输入记录绝不能被当作严格塔顶：估算只在下面
+            #: 通过 ``planning_origin_estimates`` 生效，并单独标注来源与限制。
+            if site.get("origin_estimate") is True or (
+                    site.get("origin_source") == _PLANNING_ESTIMATE_ORIGIN_SOURCE):
+                top = None
+            else:
+                # 其余情况保留既有的兼容回退（调用方显式提供的严格塔顶）。
+                top = site.get("tower_top_orthometric_m")
+                if not isinstance(top, (int, float)) or isinstance(top, bool):
+                    top = site.get("origin_egm2008_m")
         record = {
             "tower_id": tower_id,
-            "name": tower.get("name") or tower_id,
-            "longitude": tower.get("longitude"),
-            "latitude": tower.get("latitude"),
-            "site_type": tower.get("site_type"),
+            "site_id": tower_id,
+            "name": site.get("name") or tower_id,
+            "longitude": site.get("longitude"),
+            "latitude": site.get("latitude"),
+            "site_type": site.get("site_type"),
+            "candidate_kind": site.get("candidate_kind"),
+            "installation_position": "tower_top",
             "tower_top_orthometric_m": top if isinstance(top, (int, float)) else None,
             "tower_obstacle_status": profile.get("status"),
             "origin_egm2008_m": None,
@@ -1106,6 +1392,8 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
             "origin_basis": RADAR_ORIGIN_BASIS,
             "origin_confirmed": False,
             "origin_parameter_origin": "source_tower_top_orthometric",
+            "origin_estimate": False,
+            "origin_estimate_limitations": [],
             "origin_reason": None,
             "installation_assumption": INSTALLATION_ASSUMPTION,
             "installation_engineering_confirmed": INSTALLATION_ENGINEERING_CONFIRMED,
@@ -1118,11 +1406,11 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
             ),
             "legacy_mount_height_status": "legacy_not_used_by_v1_1",
             "legacy_mount_height_affects_v1_1_geometry": False,
-            "source": deepcopy(tower.get("source")),
+            "source": deepcopy(site.get("source")),
         }
         if all_tower_planning:
-            source_elevation = tower.get("elevation_m")
-            tower_height = tower.get("height_m")
+            source_elevation = site.get("elevation_m")
+            tower_height = site.get("height_m")
             record.update({
                 "planning_policy_id": RADAR_PLANNING_ORIGIN_POLICY_ID,
                 "planning_site_type": "rooftop",
@@ -1161,9 +1449,30 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
             records.append(record)
             continue
         if not isinstance(top, (int, float)) or isinstance(top, bool):
+            # 既有共塔工程估算路径（显式 opt-in 时由调用方传入）：未解析塔顶的塔仍可
+            # 作为**明确标注的工程规划候选**，但绝不标成已确认塔顶正高。
+            estimate = estimates.get(tower_id)
+            if isinstance(estimate, (int, float)) and not isinstance(estimate, bool):
+                record["origin_egm2008_m"] = float(estimate)
+                record["origin_source"] = "planning_estimate_terrain_plus_source_tower_height"
+                record["origin_parameter_origin"] = "engineering_estimate"
+                record["origin_estimate"] = True
+                record["origin_estimate_limitations"] = [
+                    "工程估算 = FABDEM 地形正高 + 源表塔身高度；不是已确认 EGM2008 塔顶正高",
+                    "未计入潜在建筑屋面高度（楼面塔可能低估真实安装高程）",
+                    "仅用于明确声明假设的工程规划与非权威展示；"
+                    "不得据此认定 Radar LOS 已验证通过",
+                ]
+                record["origin_reason"] = (
+                    "tower_top_egm2008_unresolved_planning_estimate_used:"
+                    f"{profile.get('vertical_status') or 'tower_obstacle_profile_missing'}"
+                )
+                records.append(record)
+                continue
             record["origin_reason"] = (
                 "tower_top_egm2008_unresolved:"
-                f"{profile.get('vertical_status') or 'tower_obstacle_profile_missing'}"
+                f"{profile.get('vertical_status') or site.get('origin_reason')
+                   or 'tower_obstacle_profile_missing'}"
             )
             unresolved.append(record)
             records.append(record)
@@ -1212,6 +1521,115 @@ def resolve_radar_origins(*, towers, obstacle_profiles, mount_assumption=None,
         "unresolved_count": len(unresolved),
         "backend_hardcoded_mount_height": False,
     }
+
+
+def _finite(value):
+    """有限数值判定（``bool`` 不算数值，缺失返回 ``None``，绝不填 0）。"""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if value != value or abs(value) == float("inf"):
+        return None
+    return value
+
+
+def _ground_site_origin_record(site, *, site_id, installation_heights, elevations):
+    """地面 / 场站站址的雷达原点记录（**不读塔顶高度**，两项证据缺一不可）。"""
+
+    height_entry = installation_heights.get(site_id)
+    height_entry = height_entry if isinstance(height_entry, dict) else {}
+    elevation_entry = elevations.get(site_id)
+    elevation_entry = elevation_entry if isinstance(elevation_entry, dict) else {}
+    if not elevation_entry:
+        elevation_entry = site.get("ground_elevation") or {}
+    if not height_entry:
+        height_entry = site.get("antenna_installation_height") or {}
+
+    ground, ground_reason = _evidenced_ground_elevation(
+        site=site, entry=elevation_entry
+    )
+    height, height_reason = _evidenced_installation_height(entry=height_entry)
+    record = {
+        "tower_id": site_id,
+        "site_id": site_id,
+        "name": site.get("name") or site_id,
+        "longitude": site.get("longitude"),
+        "latitude": site.get("latitude"),
+        "site_type": site.get("site_type"),
+        "candidate_kind": site.get("candidate_kind"),
+        "installation_position": "ground_site",
+        "tower_top_orthometric_m": None,
+        "tower_obstacle_status": None,
+        "ground_site_elevation_egm2008_m": ground,
+        "installation_height_m": height,
+        "origin_egm2008_m": None,
+        "origin_source": None,
+        "origin_basis": None,
+        "origin_confirmed": False,
+        "origin_parameter_origin": None,
+        "origin_reason": None,
+        "installation_assumption": "radar_phase_center_at_ground_site_antenna",
+        "installation_engineering_confirmed": False,
+        "legacy_radar_mount_height_m": None,
+        "legacy_mount_height_status": "legacy_not_used_by_v1_1",
+        "legacy_mount_height_affects_v1_1_geometry": False,
+        #: 显式声明：地面站原点**不是**塔顶，永不继承塔顶正高。
+        "inherits_tower_top_orthometric_m": False,
+        "source": deepcopy(site.get("source")),
+    }
+    if ground is None:
+        record["origin_reason"] = (
+            f"ground_site_elevation_unresolved:{ground_reason or 'unknown'}"
+        )
+        return record
+    if height is None:
+        record["origin_reason"] = (
+            f"ground_site_installation_height_unresolved:{height_reason or 'unknown'}"
+        )
+        return record
+    record["origin_egm2008_m"] = float(ground) + float(height)
+    record["origin_source"] = "ground_site_elevation_plus_installation_height"
+    record["origin_basis"] = "ground_site_antenna_installation"
+    record["origin_confirmed"] = True
+    record["origin_parameter_origin"] = str(height_entry.get("source"))
+    record["installation_engineering_confirmed"] = height_entry.get("confirmed") is True
+    return record
+
+
+def _evidenced_ground_elevation(*, site, entry):
+    """地表正高证据：只接受 ``egm2008_orthometric`` 基准的已解析数值。"""
+
+    ground = _finite(entry.get("elevation_m"))
+    if ground is None:
+        ground = _finite(site.get("ground_elevation_egm2008_m"))
+    if ground is None:
+        return None, str(entry.get("reason") or "ground_elevation_missing")
+    vertical = str(entry.get("vertical_reference") or "egm2008_orthometric")
+    if vertical != "egm2008_orthometric":
+        return None, f"ground_elevation_vertical_reference_not_orthometric:{vertical}"
+    return ground, None
+
+
+def _evidenced_installation_height(*, entry):
+    """天线安装高度证据：必须显式声明来源且 ``confirmed is True``。
+
+    ``engineering_assumption`` / ``not_configured`` **不是**证据（与
+    :mod:`cns_planner.application.radar_shared_site_adapter` 同一口径）。
+    """
+
+    height = _finite(entry.get("installation_height_m"))
+    if height is None:
+        height = _finite(entry.get("height_m"))
+    if height is None or height < 0:
+        return None, "installation_height_missing"
+    if str(entry.get("source") or "") not in (
+        "source_device_installation_height", "user_confirmed",
+    ):
+        return None, "installation_height_source_not_evidenced"
+    if entry.get("confirmed") is not True:
+        return None, "installation_height_unconfirmed"
+    return height, None
 
 
 # ------------------------------------------------------------------ readiness bundle
@@ -1470,7 +1888,8 @@ def radar_layout_facts_provider(*, paths, state=None, land_mask_authority=None,
         "land_mask_layer_name": layer_name,
         "coastal_uncertainty_buffer_m": buffer_m,
         "land_mask_authority": dict(authority),
-        "paths": {"terrain_dtm": terrain_path, "land_mask": land_path},
+        "paths": {"terrain_dtm": terrain_path, "land_mask": land_path,
+                  "buildings": paths.get("buildings"), "building_grid": paths.get("building_grid")},
         "dem_nodata_used_to_infer_sea": False,
         "backend_hardcoded_mount_height": False,
         "terrain_used_for_route_sample_height": False,
@@ -1480,6 +1899,7 @@ def radar_layout_facts_provider(*, paths, state=None, land_mask_authority=None,
 __all__ = [
     "COASTAL_BUFFER_METRIC_CRS", "LAND_LAYER_EXCLUSIONS", "LAND_LAYER_KEYWORDS",
     "LAND_MASK_CLASSIFICATION_BASIS", "LAND_MASK_SEMANTICS", "LAND_MASK_SUFFIXES",
+    "PLANNING_ESTIMATE_ORIGIN_SOURCE",
     "ROUTE_TERRAIN_SAMPLE_HALF_DEG", "LandMaskSource",
     "coastal_uncertainty_buffer_provenance", "geometry_available", "gpkg_layer_crs",
     "land_mask_hint", "land_mask_readiness", "normalized_coastal_buffer_m",

@@ -628,7 +628,17 @@ def aggregate_footprint_facts(cells, source_path, *, grid_level, metric_crs=None
             "unparseable_geometry_count": unparseable,
             "invalid_geometry_count": int(info.get("invalid_geometry_count") or 0),
             "invalid_intersection_count": invalid_intersections,
+            # F1-A：零覆盖的权威表述是**逐 cell 的 building_occupancy="absent"**。
+            # 这里保留历史键名以兼容既有读者，但把它的含义收紧为"没有相交 footprint"，
+            # 并显式声明此时**不是**"有 footprint 但没有质心"那种部分覆盖。
             "zero_semantics": "inside_declared_source_extent_without_intersecting_footprint",
+            "zero_cell_occupancy_semantics": (
+                "building_occupancy=absent_means_confirmed_no_intersecting_footprint"
+            ),
+            "partial_coverage_semantics": (
+                "footprint_intersects_cell_without_any_building_centroid_"
+                "height_not_aggregated_building_occupancy=present"
+            ),
             "outside_semantics": OUTSIDE_SEMANTICS,
             "elapsed_s": round(elapsed, 3),
             "fields": sorted(info.get("fields") or []),
@@ -763,6 +773,11 @@ def _aggregated_cell(entry, area_m2, cell_area_m2):
     ratio = (area_m2 / cell_area_m2) if cell_area_m2 > 0 else 0.0
     ratio = max(0.0, min(1.0, ratio))
     finite = _numpy.array(heights, dtype=float) if heights else None
+    # F1-A：高度统计按**建筑质心**分配，面积/覆盖率按**精确 footprint 相交**计算。
+    # 因此 "count == 0 且 area > 0" 是合法且常见的一类事实：footprint 跨越格边界、
+    # 质心落在邻格 ⇒ 本格有真实建筑覆盖但没有可用高度。必须显式标记，
+    # 否则下游只看到 building_count=0 就会误判"该格没有建筑垂向约束"。
+    partial_coverage = bool(count == 0 and area_m2 > 0.0)
     # 键集合与 L8 事实表直接映射（BuildingGridService._cell）完全一致：下游消费者
     # （Layered feasibility adapter、Risk Framework V2）不需要区分事实是怎么聚合出来的。
     return {
@@ -775,6 +790,15 @@ def _aggregated_cell(entry, area_m2, cell_area_m2):
         "height_max_m": float(finite.max()) if finite is not None else None,
         "valid_height_fraction": (entry["valid_height_count"] / count) if count else None,
         "building_exposure": ratio,
+        # ---- F1-A 占用语义（加法字段，不改变既有数值） -------------------------
+        "building_occupancy": "present" if (count > 0 or area_m2 > 0.0) else "absent",
+        "count_allocation": "building_centroid",
+        "area_allocation": "exact_footprint_intersection",
+        "partial_coverage": partial_coverage,
+        "partial_coverage_semantics": (
+            "footprint_intersects_cell_without_any_building_centroid_height_not_aggregated"
+            if partial_coverage else "not_applicable"
+        ),
     }
 
 
@@ -783,6 +807,12 @@ def _zero_cell():
         "status": "passed", "building_count": 0, "building_area_m2": 0.0,
         "building_coverage_ratio": 0.0, "height_mean_m": None, "height_p95_m": None,
         "height_max_m": None, "valid_height_fraction": None, "building_exposure": 0.0,
+        # 与 :func:`_aggregated_cell` 同一套占用语义：这里才是真正的"已确认无覆盖"。
+        "building_occupancy": "absent",
+        "count_allocation": "building_centroid",
+        "area_allocation": "exact_footprint_intersection",
+        "partial_coverage": False,
+        "partial_coverage_semantics": "not_applicable",
     }
 
 
@@ -793,6 +823,10 @@ def _missing_cell(reason):
         "building_coverage_ratio": None, "height_mean_m": None,
         "height_p95_m": None, "height_max_m": None,
         "valid_height_fraction": None, "building_exposure": None,
+        # 缺失不等于 0：占用状态本身未知。
+        "building_occupancy": "unknown",
+        "partial_coverage": None,
+        "partial_coverage_semantics": "unknown_evidence_missing",
     }
 
 
@@ -820,6 +854,9 @@ def _empty_result(cells, grid_level, info, metric_crs, cell_list, started):
             "area_crs_basis": AREA_CRS_BASIS, "source_crs": _epsg_code(info.get("srs_id")),
             "footprint_count_scanned": 0, "footprint_count_projected": 0,
             "zero_semantics": "inside_declared_source_extent_without_intersecting_footprint",
+            "zero_cell_occupancy_semantics": (
+                "building_occupancy=absent_means_confirmed_no_intersecting_footprint"
+            ),
             "outside_semantics": OUTSIDE_SEMANTICS,
             "empty_footprint_set": True,
             "elapsed_s": round(time.perf_counter() - started, 3),

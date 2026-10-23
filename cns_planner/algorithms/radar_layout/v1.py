@@ -56,6 +56,11 @@ from .geometry import (
     geometry_evaluation, interpolate_metric_path, panel_coverage, plane_intersection_radii_m,
     sample_offsets_m,
 )
+from .terrain_los_lookup import (
+    TERRAIN_LOS_MODE_DISABLED, TERRAIN_LOS_MODE_ENFORCED,
+    validate_terrain_los_lookup,
+)
+from ...domain.radar_terrain_los import LOS_STATUS_CLEAR
 
 #: 软件 baseline 参数（显式，进入 provenance）。
 SOFTWARE_BASELINE = {
@@ -122,7 +127,8 @@ def build_route_samples(*, metric_path, spacing_m, route_id,
                         fixed_altitude_m=FIXED_ALTITUDE_M,
                         altitude_layer_id=FIXED_ALTITUDE_LAYER_ID,
                         surface_by_offset=None, surface_resolver=None,
-                        sample_id_prefix="O", coordinate_resolver=None):
+                        sample_id_prefix="O", coordinate_resolver=None,
+                        include_los_identity=False):
     """沿米制航路里程采样并逐点取高度、地表分类与（可选）地理坐标。
 
     高度语义（V1.1，BUG-RADAR-ALT-001）
@@ -142,6 +148,9 @@ def build_route_samples(*, metric_path, spacing_m, route_id,
     ``coordinate_resolver`` 是**可选**回调：``[x_m, y_m] -> [lon, lat]``。算法本身不
     做投影；这里只是把调用方提供的投影结果原样记录到 sample 上（供地图使用），
     绝不参与任何距离/角度计算。
+
+    ``include_los_identity`` 仅供隔离 Terrain LOS 执行显式启用；默认 ``False`` 保持
+    冻结生产 sample 结构与既有 disabled 序列化结果不变。
     """
 
     points = interpolate_metric_path(metric_path, spacing_m)
@@ -173,7 +182,7 @@ def build_route_samples(*, metric_path, spacing_m, route_id,
                 longitude, latitude = float(geographic[0]), float(geographic[1])
             except Exception:
                 longitude = latitude = None
-        samples.append({
+        sample = {
             "sample_index": len(samples),
             "sample_id": f"{sample_id_prefix}{index:06d}",
             "geometry_index": index,
@@ -185,7 +194,13 @@ def build_route_samples(*, metric_path, spacing_m, route_id,
             "surface_class": surface_class,
             "required_distinct_site_count": required,
             "refinement": False,
-        })
+        }
+        if include_los_identity:
+            sample.update({
+                "route_id": str(route_id),
+                "altitude_layer_id": str(altitude_layer_id),
+            })
+        samples.append(sample)
     return {
         "samples": samples,
         # V1.1：高度恒为固定层，因此"缺少 EGM2008 正高"这一失败模式已不存在。
@@ -201,12 +216,15 @@ def build_route_samples(*, metric_path, spacing_m, route_id,
 # ------------------------------------------------------------------------------ coverage
 
 
-def actual_site_coverage(*, panels, samples, selected_panel_ids, tower_records):
+def actual_site_coverage(*, panels, samples, selected_panel_ids, tower_records,
+                         terrain_los_mode=TERRAIN_LOS_MODE_DISABLED,
+                         terrain_los_lookup=None):
     """根据 **selected panels** 重算每个 sample 的实际独立站址覆盖。
 
     这是最终业务事实；MILP 的 ``y`` 变量只作线性化辅助，绝不作为结论。
     """
 
+    mode = validate_terrain_los_lookup(terrain_los_mode, terrain_los_lookup)
     selected = [
         panel for panel in panels if panel["panel_id"] in set(selected_panel_ids)
     ]
@@ -228,6 +246,15 @@ def actual_site_coverage(*, panels, samples, selected_panel_ids, tower_records):
             )
             if not geometry["covered"]:
                 continue
+            if mode != TERRAIN_LOS_MODE_DISABLED:
+                los_result = terrain_los_lookup.evaluate(
+                    tower, sample, panel["radar_type"], geometry=geometry,
+                )
+                if (
+                    mode == TERRAIN_LOS_MODE_ENFORCED
+                    and los_result.get("status") != LOS_STATUS_CLEAR
+                ):
+                    continue
             sites.add(str(panel["tower_id"]))
             matching.append({
                 "panel_id": panel["panel_id"],
@@ -506,6 +533,8 @@ def _sample_inputs(samples):
             "distance_along_route_m": sample["distance_along_route_m"],
             "surface_class": sample["surface_class"],
             "required_distinct_site_count": sample["required_distinct_site_count"],
+            "route_id": sample.get("route_id"),
+            "altitude_layer_id": sample.get("altitude_layer_id"),
         }
         for sample in samples
     ]
@@ -515,27 +544,44 @@ def _required_counts(samples):
     return [sample.get("required_distinct_site_count") for sample in samples]
 
 
-def _stage_a_i_only(*, towers, samples, options):
+def _stage_a_i_only(*, towers, samples, options,
+                    terrain_los_mode=TERRAIN_LOS_MODE_DISABLED,
+                    terrain_los_lookup=None):
     """Stage A：只用 Radar-I。"""
 
-    candidates = build_candidates(towers=towers, samples=_sample_inputs(samples))
+    candidates = build_candidates(
+        towers=towers, samples=_sample_inputs(samples),
+        terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
+    )
+    coverage_is_complete = bool(candidates.get("coverage_semantics_complete", True))
     presolve = milp_module.presolve_infeasibility(
         panels=candidates["panels"], samples=candidates["samples"],
         required_counts=_required_counts(samples), radar_types=[RADAR_TYPE_I],
     )
-    if presolve["insufficient_sample_count"]:
+    if presolve["insufficient_sample_count"] and coverage_is_complete:
         return {
             "stage": STAGE_I_ONLY,
             "candidates": candidates,
             "presolve": presolve,
             "solve": {
-                "solver": milp_module.empty_solver_block(
-                    stage=STAGE_I_ONLY, status="infeasible", proven=True,
-                    message=(
-                        "求解前结构化检查已证明 I-only 不可行："
-                        "存在 sample 的 Radar-I 候选独立站址数少于要求数量"
+                "solver": {
+                    **milp_module.empty_solver_block(
+                        stage=STAGE_I_ONLY, status="infeasible", proven=True,
+                        message=(
+                            "求解前结构化检查已证明 I-only 不可行："
+                            "存在 sample 的 Radar-I 候选独立站址数少于要求数量"
+                        ),
                     ),
-                ),
+                    # The same proof-semantics diagnostics every other exit path carries, so
+                    # an upper layer can read them without branching.
+                    "coverage_semantics_complete": coverage_is_complete,
+                    "milp_raw_status": "infeasible",
+                    "proven_against_complete_physical_scenario": coverage_is_complete,
+                    "proof_withheld_reason": (
+                        None if coverage_is_complete
+                        else "coverage_semantics_incomplete_los_evidence_not_a_physical_proof"
+                    ),
+                },
                 "selected_panel_ids": [],
                 "panel_count": None,
                 "radar_ii_panel_count": 0,
@@ -548,6 +594,7 @@ def _stage_a_i_only(*, towers, samples, options):
         panels=candidates["panels"], samples=candidates["samples"],
         required_counts=_required_counts(samples), radar_types=[RADAR_TYPE_I],
         objectives=("total_panel_count",), stage=STAGE_I_ONLY, options=options,
+        coverage_is_complete=coverage_is_complete,
     )
     return {
         "stage": STAGE_I_ONLY,
@@ -558,27 +605,43 @@ def _stage_a_i_only(*, towers, samples, options):
     }
 
 
-def _stage_b_mixed(*, towers, samples, options):
+def _stage_b_mixed(*, towers, samples, options,
+                   terrain_los_mode=TERRAIN_LOS_MODE_DISABLED,
+                   terrain_los_lookup=None):
     """Stage B：Radar-I + Radar-II，词典序两阶段求解。"""
 
-    candidates = build_candidates(towers=towers, samples=_sample_inputs(samples))
+    candidates = build_candidates(
+        towers=towers, samples=_sample_inputs(samples),
+        terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
+    )
+    coverage_is_complete = bool(candidates.get("coverage_semantics_complete", True))
     presolve = milp_module.presolve_infeasibility(
         panels=candidates["panels"], samples=candidates["samples"],
         required_counts=_required_counts(samples), radar_types=list(RADAR_TYPES),
     )
-    if presolve["insufficient_sample_count"]:
+    if presolve["insufficient_sample_count"] and coverage_is_complete:
         return {
             "stage": STAGE_MIXED,
             "candidates": candidates,
             "presolve": presolve,
             "b1": {
-                "solver": milp_module.empty_solver_block(
-                    stage=f"{STAGE_MIXED}:b1", status="infeasible", proven=True,
-                    message=(
-                        "求解前结构化检查已证明 mixed 也不可行："
-                        "存在 sample 的 I+II 候选独立站址数少于要求数量"
+                "solver": {
+                    **milp_module.empty_solver_block(
+                        stage=f"{STAGE_MIXED}:b1", status="infeasible", proven=True,
+                        message=(
+                            "求解前结构化检查已证明 mixed 也不可行："
+                            "存在 sample 的 I+II 候选独立站址数少于要求数量"
+                        ),
                     ),
-                ),
+                    # Same proof-semantics diagnostics as every other exit path.
+                    "coverage_semantics_complete": coverage_is_complete,
+                    "milp_raw_status": "infeasible",
+                    "proven_against_complete_physical_scenario": coverage_is_complete,
+                    "proof_withheld_reason": (
+                        None if coverage_is_complete
+                        else "coverage_semantics_incomplete_los_evidence_not_a_physical_proof"
+                    ),
+                },
                 "selected_panel_ids": [],
                 "panel_count": None,
                 "radar_ii_panel_count": None,
@@ -592,6 +655,7 @@ def _stage_b_mixed(*, towers, samples, options):
         panels=candidates["panels"], samples=candidates["samples"],
         required_counts=_required_counts(samples), radar_types=list(RADAR_TYPES),
         objectives=("total_panel_count",), stage=f"{STAGE_MIXED}:b1", options=options,
+        coverage_is_complete=coverage_is_complete,
     )
     b2 = None
     if b1["solver"]["status"] == "optimal":
@@ -600,6 +664,7 @@ def _stage_b_mixed(*, towers, samples, options):
             required_counts=_required_counts(samples),
             total_panel_count=b1["panel_count"],
             radar_types=list(RADAR_TYPES), options=options, stage=f"{STAGE_MIXED}:b2",
+            coverage_is_complete=coverage_is_complete,
         )
     return {
         "stage": STAGE_MIXED,
@@ -612,20 +677,22 @@ def _stage_b_mixed(*, towers, samples, options):
 
 
 def _refine(*, towers, samples, options, selected_panel_ids, panels, radar_types,
-            extra_requirements, stage):
+            extra_requirements, stage, coverage_is_complete=True):
     """带补点约束的重解（同一 MILP + 更严格的 sample 要求）。"""
 
     result = milp_module.solve_with_refinement_constraints(
         panels=panels, samples=samples,
         required_counts=_required_counts(samples),
         extra_requirements=extra_requirements, radar_types=radar_types,
-        options=options, stage=stage,
+        options=options, stage=stage, coverage_is_complete=coverage_is_complete,
     )
     return result
 
 
 def solve_layout(*, towers, samples, options=None, allow_mixed=False,
-                 validation_samples=None, on_stage=None, cancel_check=None):
+                 validation_samples=None, on_stage=None, cancel_check=None,
+                 terrain_los_mode=TERRAIN_LOS_MODE_DISABLED,
+                 terrain_los_lookup=None):
     """完整求解：Stage A →（必要时）Stage B → 5 m 独立连续覆盖复核与补点重解。
 
     ``towers``：``[{tower_id, name, metric, origin_egm2008_m, ...}]``
@@ -651,6 +718,9 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
     report = on_stage if callable(on_stage) else (lambda *args, **kwargs: None)
     check = cancel_check if callable(cancel_check) else (lambda: None)
 
+    terrain_los_mode = validate_terrain_los_lookup(
+        terrain_los_mode, terrain_los_lookup,
+    )
     base_samples = [deepcopy(sample) for sample in samples]
     if not towers:
         return _blocked_result(
@@ -717,6 +787,49 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
     def remaining_s():
         return budget_s - elapsed_s()
 
+    def guard_incomplete_los(outcome):
+        """Downgrade every enforced exit path when LOS evidence is incomplete.
+
+        The raw MILP status is kept as internal diagnostics: an ``infeasible`` verdict on
+        a conservatively filtered coverage set says nothing about the complete physical
+        scenario, so the outward status becomes non-probative while the raw status stays
+        readable.
+        """
+
+        if (
+            outcome is None
+            or terrain_los_mode != TERRAIN_LOS_MODE_ENFORCED
+            or terrain_los_lookup.snapshot().get("complete") is not False
+        ):
+            return
+        solver = (outcome.get("solve") or {}).get("solver")
+        if isinstance(solver, dict):
+            # The guard runs several times over one pipeline; record the original verdict
+            # only once so a later call cannot overwrite it with the already-downgraded one.
+            already_downgraded = "downgraded_from" in solver
+            raw_status = solver.get("downgraded_from") if already_downgraded else (
+                solver.get("status")
+            )
+            solver.update({
+                "raw_status": raw_status,
+                "raw_optimality_proven": solver.get(
+                    "raw_optimality_proven", solver.get("optimality_proven"),
+                ),
+                "raw_infeasibility_proven": solver.get(
+                    "raw_infeasibility_proven", solver.get("infeasibility_proven"),
+                ),
+                "status": "search_incomplete",
+                "optimality_proven": False,
+                "infeasibility_proven": False,
+                "coverage_semantics_complete": False,
+                "proven_against_complete_physical_scenario": False,
+                "downgraded_from": raw_status,
+                "downgrade_reason": "los_evidence_incomplete",
+                "message": (
+                    "Terrain/Building LOS 计算未完成；不得声明最优或已证明不可行"
+                ),
+            })
+
     def run_pipeline(active_samples, extra):
         """跑一次完整两阶段管线，返回统一形状的 ``outcome``。
 
@@ -726,7 +839,11 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
 
         check()
         report("stage_a", "正在评估 Radar-I 覆盖")
-        stage_a = _stage_a_i_only(towers=towers, samples=active_samples, options=solve_options)
+        stage_a = _stage_a_i_only(
+            towers=towers, samples=active_samples, options=solve_options,
+            terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
+        )
+        guard_incomplete_los(stage_a)
         if stage_a["solve"]["solver"]["status"] == "optimal":
             report("radar_i_feasible", "Radar-I 已满足覆盖要求，不进入 Radar-II 升级")
             if extra:
@@ -736,6 +853,9 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
                     selected_panel_ids=stage_a["solve"]["selected_panel_ids"],
                     panels=stage_a["candidates"]["panels"], radar_types=[RADAR_TYPE_I],
                     extra_requirements=extra, stage=f"{STAGE_I_ONLY}:refinement",
+                    coverage_is_complete=bool(
+                        stage_a["candidates"].get("coverage_semantics_complete", True)
+                    ),
                 )
                 return {
                     "stage": STAGE_I_ONLY,
@@ -752,7 +872,10 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
                 return stage_a
             check()
             report("stage_b", "Radar-I 已证明不可行，正在评估 Radar-II 升级")
-            stage_b = _stage_b_mixed(towers=towers, samples=active_samples, options=solve_options)
+            stage_b = _stage_b_mixed(
+                towers=towers, samples=active_samples, options=solve_options,
+                terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
+            )
             # Round31-C：Stage A 的诊断必须随 Stage B 结果一起保留，否则上层无法披露
             # "为什么 Radar-I 不足"。它只承载证据，不参与任何求解。
             stage_b["stage_a_diagnosis"] = _stage_a_diagnosis(stage_a)
@@ -776,11 +899,15 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
                     total_panel_count=source["panel_count"],
                     radar_types=list(RADAR_TYPES), options=solve_options,
                     stage=f"{STAGE_MIXED}:refinement",
+                    coverage_is_complete=bool(
+                        stage_b["candidates"].get("coverage_semantics_complete", True)
+                    ),
                 )
                 stage_b = {**stage_b, "solve": refined, "refinement": refined}
             else:
                 stage_b = {**stage_b, "solve": source}
             stage_b["stage"] = STAGE_MIXED
+            guard_incomplete_los(stage_b)
             return stage_b
         # Stage A 既未证明最优也未证明不可行 ⇒ search_incomplete / solver_error。
         report("stage_a_incomplete", "Radar-I 求解未完成，保持 I-only 且不升级")
@@ -808,28 +935,117 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
         coverage = actual_site_coverage(
             panels=outcome["candidates"]["panels"], samples=outcome["candidates"]["samples"],
             selected_panel_ids=panel_ids, tower_records=outcome["candidates"]["towers"],
+            terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
         )
         reported = (
             actual_site_coverage(
                 panels=outcome["candidates"]["panels"], samples=validation_samples,
                 selected_panel_ids=panel_ids, tower_records=outcome["candidates"]["towers"],
+                terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
             )
             if validation_samples else coverage
         )
         violations = _violations(reported)
+        selected_id_set = set(panel_ids)
+        tower_by_id = {
+            str(tower["tower_id"]): tower
+            for tower in outcome["candidates"]["towers"]
+        }
+        selected_panel_evidence = []
+        for panel in outcome["candidates"]["panels"]:
+            if panel["panel_id"] not in selected_id_set:
+                continue
+            tower = tower_by_id.get(str(panel["tower_id"])) or {}
+            selected_panel_evidence.append({
+                "panel_id": panel["panel_id"],
+                "tower_id": panel["tower_id"],
+                "radar_type": panel["radar_type"],
+                "azimuth_deg": panel["azimuth_deg"],
+                "origin_egm2008_m": tower.get("origin_egm2008_m"),
+                "origin_state": tower.get("origin_state"),
+                "origin_evidence_level": tower.get("origin_evidence_level"),
+                "origin_availability": tower.get("origin_availability"),
+                "device_instance_id": tower.get("device_instance_id"),
+                "origin_input_fingerprint": tower.get("origin_input_fingerprint"),
+            })
+        selected_panel_evidence.sort(key=lambda item: item["panel_id"])
+        site_coverage_status_counts = {}
+        required_site_count_counts = {}
+        for item in reported:
+            status = str(item.get("status") or "unknown")
+            site_coverage_status_counts[status] = (
+                site_coverage_status_counts.get(status, 0) + 1
+            )
+            required = item.get("required_distinct_site_count")
+            required_key = "unknown" if required is None else str(int(required))
+            required_site_count_counts[required_key] = (
+                required_site_count_counts.get(required_key, 0) + 1
+            )
+        unknown_items = [
+            item for item in reported if str(item.get("status") or "unknown") == "unknown"
+        ]
+        failed_items = violations + unknown_items
+        los_evidence = (
+            terrain_los_lookup.snapshot()
+            if terrain_los_mode != TERRAIN_LOS_MODE_DISABLED
+            else {
+                "mode": TERRAIN_LOS_MODE_DISABLED,
+                "complete": True,
+                "scope": "frozen_geometry_only_no_physical_los",
+                "proves_real_site_detection_performance": False,
+            }
+        )
         refinement_rounds.append({
             "round_index": round_index,
             "stage": stage_used,
-            "spacing_m": SOFTWARE_BASELINE["validation_sample_spacing_m"],
+            "spacing_m": (
+                SOFTWARE_BASELINE["validation_sample_spacing_m"]
+                if validation_samples else None
+            ),
             "panel_count": outcome["solve"].get("panel_count"),
+            "validation_kind": (
+                "optimization_sample_recheck"
+                if not validation_samples else (
+                    "direct_selected_panel_recheck"
+                    if round_index == 0 else "refined_solution_recheck"
+                )
+            ),
+            "selected_panel_ids": sorted(selected_id_set),
+            "selected_panels": selected_panel_evidence,
+            "validation_passed": not failed_items if validation_samples else None,
+            "site_coverage_status_counts": site_coverage_status_counts,
+            "required_distinct_site_count_counts": required_site_count_counts,
+            "failed_samples": [
+                {
+                    "sample_id": item.get("sample_id"),
+                    "status": item.get("status"),
+                    "distance_along_route_m": item.get("distance_along_route_m"),
+                    "required_distinct_site_count": item.get(
+                        "required_distinct_site_count"
+                    ),
+                    "actual_distinct_site_count": item.get(
+                        "actual_distinct_site_count"
+                    ),
+                }
+                for item in failed_items
+            ],
+            "los_evidence": deepcopy(los_evidence),
             "violation_count": len(violations),
             "violation_sample_ids": [item["sample_id"] for item in violations],
             "reviewed_sample_count": len(reported),
             "semantics": (
-                "initial_optimization_then_independent_validation_spacing_review"
-                if round_index == 0 else "re_solve_with_validation_violations_added"
+                "optimization_samples_rechecked_no_independent_validation_grid"
+                if not validation_samples else (
+                    "initial_optimization_then_independent_validation_spacing_review"
+                    if round_index == 0 else "re_solve_with_validation_violations_added"
+                )
             ),
         })
+        # Preserve the completed fixed-panel review as audit evidence before the
+        # fail-closed guard removes any outward optimality claim.
+        guard_incomplete_los(outcome)
+        if outcome["solve"]["solver"]["status"] != "optimal":
+            break
         if not violations:
             break
         if round_index >= int(SOFTWARE_BASELINE["max_refinement_rounds"]):
@@ -867,18 +1083,9 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
                 continue
             extra_requirements[index] = int(required)
 
-    solve_block = final["solve"]["solver"] if final else milp_module.empty_solver_block()
-    status, message = _final_status(
-        final=final, refinement_rounds=refinement_rounds,
-    )
+    guard_incomplete_los(final)
     elapsed = elapsed_s()
     budget_exhausted = elapsed >= budget_s
-    if budget_exhausted:
-        message = (
-            f"{message}；整体求解预算 {budget_s:g} s 已用尽（已用 {elapsed:.1f} s，"
-            f"来源 {budget_source}），返回的是当前已求得的最好可行解，"
-            "未完成部分不得视为已覆盖"
-        )
     time_budget = {
         "budget_s": budget_s,
         "budget_source": budget_source,
@@ -897,9 +1104,21 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
             samples=final["candidates"]["samples"],
             selected_panel_ids=final["solve"].get("selected_panel_ids") or [],
             tower_records=final["candidates"]["towers"],
+            terrain_los_mode=terrain_los_mode, terrain_los_lookup=terrain_los_lookup,
+        )
+    guard_incomplete_los(final)
+    solve_block = final["solve"]["solver"] if final else milp_module.empty_solver_block()
+    status, message = _final_status(
+        final=final, refinement_rounds=refinement_rounds,
+    )
+    if budget_exhausted:
+        message = (
+            f"{message}；整体求解预算 {budget_s:g} s 已用尽（已用 {elapsed:.1f} s，"
+            f"来源 {budget_source}），返回的是当前已求得的最好可行解，"
+            "未完成部分不得视为已覆盖"
         )
 
-    return _assemble_result(
+    result = _assemble_result(
         status=status, message=message, stage=stage_used, solve_block=solve_block,
         final=final, per_sample=per_sample, refinement_rounds=refinement_rounds,
         samples=samples, towers=towers,
@@ -908,6 +1127,9 @@ def solve_layout(*, towers, samples, options=None, allow_mixed=False,
         time_budget=time_budget,
         allow_mixed=allow_mixed,
     )
+    if terrain_los_mode != TERRAIN_LOS_MODE_DISABLED:
+        result["terrain_los_evidence"] = terrain_los_lookup.snapshot()
+    return result
 
 
 def _sample_metric(samples, index):
@@ -933,12 +1155,20 @@ def _final_status(*, final, refinement_rounds):
         return "solver_unavailable", solver.get("message")
     if solver_status == "solver_error":
         return "solver_error", solver.get("message")
-    if solver_status in milp_module.INCOMPLETE_STATUSES:
+    if solver_status == "search_incomplete" or solver_status in milp_module.INCOMPLETE_STATUSES:
         return "search_incomplete", (
             f"{stage} 搜索未完成（{solver_status}）：可达性与最优性均未证明，"
             "绝不等同于该型号不可行，也不自动进入下一阶段"
         )
     if solver_status == "infeasible":
+        proven = solver.get("infeasibility_proven") is True
+        if not proven:
+            return "search_incomplete", (
+                f"solver 在**保守覆盖子集**上返回 infeasible，但 LOS 证据不完整"
+                f"（raw status={solver.get('raw_status') or solver_status}）："
+                "已知覆盖集不可行不等于完整物理场景不可行，"
+                "缺少乐观覆盖上界证明，因此不声明已证明不可行"
+            )
         return "infeasible", (
             f"{stage} 由 solver 明确证明不可行（infeasible）"
             if stage == STAGE_MIXED
@@ -1258,6 +1488,15 @@ def _assemble_result(*, status, message, stage, solve_block, final, per_sample,
         "sample_count": len(per_sample),
         "not_evaluated": deepcopy(NOT_EVALUATED),
         "model_scope": MODEL_SCOPE,
+        # Whether the solved coverage set describes the complete physical scenario.  When
+        # it does not, no outward verdict may claim a proven optimum or a proven physical
+        # infeasibility; the raw MILP status stays readable inside ``solver``.
+        "coverage_semantics_complete": (
+            solve_block.get("coverage_semantics_complete")
+            if isinstance(solve_block, dict)
+            and solve_block.get("coverage_semantics_complete") is not None
+            else candidates.get("coverage_semantics_complete")
+        ),
     }
 
 

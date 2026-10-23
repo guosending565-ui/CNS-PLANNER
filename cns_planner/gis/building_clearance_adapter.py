@@ -8,13 +8,18 @@ from pathlib import Path
 
 from .metric_crs import require_metric_crs
 from .source_inspection import inspect_geopackage
+from ..domain.building_clearance import (
+    building_height_value_is_usable, building_height_var_is_usable,
+    height_var_semantics, normalize_height_evidence_level,
+)
 
 
 class QgisBuildingClearanceAdapter:
     """Query only route-corridor buildings and produce exact polygon evidence."""
 
     def __init__(self, buildings_path, terrain_dtm_path, *, horizontal_crs=None,
-                 geographic_bounds=None):
+                 geographic_bounds=None, height_evidence_field=None,
+                 height_estimate_field=None, height_evidence_lookup=None):
         from qgis.core import (
             QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsFeatureRequest,
             QgsGeometry, QgsPointXY, QgsProject, QgsRectangle, QgsVectorLayer,
@@ -32,6 +37,10 @@ class QgisBuildingClearanceAdapter:
         required = {"id", "source", "height_m", "height_var", "height_status"}
         if not required <= fields:
             raise ValueError("buildings 图层缺少关键字段：" + ", ".join(sorted(required - fields)))
+        # F3-B：可选高度证据等级 / 选择器输出高度字段与隔离 sidecar（dict/callable）。
+        self.height_evidence_field = height_evidence_field if height_evidence_field in fields else None
+        self.height_estimate_field = height_estimate_field if height_estimate_field in fields else None
+        self.height_evidence_lookup = height_evidence_lookup
         self.wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
         source_crs = self.layer.crs()
         if geographic_bounds is None and source_crs.isGeographic():
@@ -92,8 +101,47 @@ class QgisBuildingClearanceAdapter:
             horizontal = route_metric.distance(footprint_metric)
             if not math.isfinite(horizontal) or horizontal > float(horizontal_clearance_m):
                 continue
-            height = _number_or_none(feature["height_m"])
-            if min_height is not None and height is not None and height < float(min_height):
+            height = _usable_height_or_none(feature["height_m"])
+            identifier = str(feature["id"] or feature.id())
+            # F3-B：高度证据等级 + 选择器输出高度（sidecar 优先，其次源字段，默认 predicted/unknown）。
+            estimate = height
+            evidence_level = None
+            evidence_method = None
+            derived_assumption = None
+            confidence_reason = None
+            if self.height_evidence_lookup is not None:
+                record = None
+                if callable(self.height_evidence_lookup):
+                    record = self.height_evidence_lookup(identifier)
+                elif isinstance(self.height_evidence_lookup, dict):
+                    record = self.height_evidence_lookup.get(identifier)
+                if isinstance(record, dict):
+                    evidence_level = record.get("height_evidence_level")
+                    if record.get("height_estimate_m") is not None:
+                        estimate = record.get("height_estimate_m")
+                    evidence_method = record.get("height_evidence_method")
+                    derived_assumption = record.get("derived_assumption")
+                    confidence_reason = record.get("height_confidence_reason")
+            if evidence_level in (None, ""):
+                evidence_level = (
+                    str(feature[self.height_evidence_field] or "")
+                    if self.height_evidence_field else ""
+                )
+            if self.height_estimate_field is not None and estimate is height:
+                estimate_field = _number_or_none(feature[self.height_estimate_field])
+                if estimate_field is not None:
+                    estimate = estimate_field
+            evidence_level = normalize_height_evidence_level(
+                evidence_level, height_present=(estimate is not None)
+            )
+            # F3-D：min_building_height_m 不得在证据检查前静默过滤严重低估建筑。
+            # 只有"可靠证据（verified/source_tagged/derived）且估计高度确实低于阈值"才可
+            # 排除；predicted/unknown 的低于阈值建筑可能是严重低估，保留并显式标记。
+            below_minimum = (
+                min_height is not None and estimate is not None
+                and estimate < float(min_height)
+            )
+            if below_minimum and evidence_level in ("verified", "source_tagged", "derived"):
                 continue
             buffered = footprint_metric.buffer(float(horizontal_clearance_m), 12)
             intersection = route_metric.intersection(buffered)
@@ -117,10 +165,16 @@ class QgisBuildingClearanceAdapter:
                 terrain.setdefault("warnings", []).append("terrain_relief_exceeds_confirmed_review_threshold")
                 terrain["terrain_support_quality"] = "review_required"
             candidates.append({
-                "building_id": str(feature["id"] or feature.id()),
+                "building_id": identifier,
                 "source": str(feature["source"] or "GBA"),
-                "height_m": height, "height_var": _number_or_none(feature["height_var"]),
+                "height_m": height, "height_var": _usable_variance_or_none(feature["height_var"]),
                 "height_status": str(feature["height_status"] or "unknown"),
+                "height_estimate_m": estimate,
+                "height_evidence_level": evidence_level,
+                "height_evidence_method": evidence_method,
+                "derived_assumption": derived_assumption,
+                "height_confidence_reason": confidence_reason,
+                "height_below_minimum_review_threshold": below_minimum,
                 "horizontal_minimum_m": float(horizontal),
                 "affected_intervals": intervals,
                 "terrain": terrain,
@@ -129,7 +183,27 @@ class QgisBuildingClearanceAdapter:
                     "feature_id": int(feature.id()), "layer": "buildings",
                     "geometry_method": "polygon_buffer_route_intersection",
                     "horizontal_crs": self.horizontal_crs,
+                    # F1-C：height_var 原样保留用于审计，但语义显式标注为**方差**，
+                    # 且哨兵（-1.0 / -999）已经在上游被替换为 None。
                     "height_var_semantics": "raw_source_field_only",
+                    "height_var_unit": "m2_variance_not_stddev",
+                    "height_var_status": height_var_semantics(feature["height_var"]),
+                    "height_value_semantics": (
+                        "verified_height" if evidence_level in ("verified",)
+                        else "source_tagged_height_unverified" if evidence_level == "source_tagged"
+                        else "derived_height_assumption" if evidence_level == "derived"
+                        else "usable_predicted_height_not_verified" if evidence_level == "predicted"
+                        else "unknown_height"
+                    ),
+                    "height_evidence_level": evidence_level,
+                    "height_evidence_method": evidence_method,
+                    # 高度原值：即使被判为不可用也保留原始数值，便于审计追溯。
+                    "height_m_raw_source_value": _number_or_none(feature["height_m"]),
+                    "height_value_status": (
+                        "usable_or_absent" if building_height_value_is_usable(
+                            _number_or_none(feature["height_m"])
+                        ) else "sentinel_or_nonpositive_treated_as_unusable"
+                    ),
                 },
             })
         return {
@@ -180,7 +254,18 @@ class QgisBuildingClearanceAdapter:
             start, end = min(distances), max(distances)
             if end < start:
                 start, end = end, start
-            path_metric = route_metric.curveSubstring(start, end)
+            # BUG-CLEARANCE-QGIS-001（Round35-S6 核验发现）：``QgsGeometry.curveSubstring``
+            # 在 QGIS 3.44 已不存在（该方法属于 ``QgsCurve``）。修复**不改变任何业务语义**：
+            # 仍取航路上 ``[start, end]`` 的同一段几何，只是改由底层的 ``QgsCurve`` 提供。
+            # 保留对旧版 ``QgsGeometry.curveSubstring`` 的兼容分支，避免在仍有该 API 的
+            # QGIS 版本上行为变化。
+            substring = getattr(route_metric, "curveSubstring", None)
+            if callable(substring):
+                path_metric = substring(start, end)
+            else:
+                path_metric = self.QgsGeometry(
+                    route_metric.constGet().curveSubstring(start, end)
+                )
             path_source = self.QgsGeometry(path_metric)
             path_source.transform(self.metric_to_source)
             path = [[point.x(), point.y()] for point in path_source.vertices()]
@@ -368,8 +453,30 @@ def _merge_intervals(items):
 def _number_or_none(value):
     if value in (None, ""):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
     return number if math.isfinite(number) else None
+
+
+def _usable_height_or_none(value):
+    """建筑高度：官方哨兵 / 非正值一律返回 ``None``（原值由调用方保留用于审计）。
+
+    F1-C：``clean_gba_nodata.py`` 只清理了 ``-999``，``-1.0`` 与任何非正值都会以
+    "有值"的形态到达这里。高度是决定楼顶正高的**唯一**输入，绝不能把哨兵当代数
+    参与计算。
+    """
+
+    number = _number_or_none(value)
+    return number if building_height_value_is_usable(number) else None
+
+
+def _usable_variance_or_none(value):
+    """``height_var``：负值（含 ``-1.0`` 哨兵）不可用 ⇒ ``None``，绝不当 0。"""
+
+    number = _number_or_none(value)
+    return number if building_height_var_is_usable(number) else None
 
 
 def _bbox_contains(outer, inner):

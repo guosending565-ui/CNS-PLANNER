@@ -128,6 +128,12 @@ TERRAIN_ELEVATION_FIELDS = ("surface_elevation_max_m", "surface_elevation_max_eg
 
 POPULATION_DENSITY_FIELD = "population_density_people_km2"
 
+#: Round35-D：该字段是**整格平均**人口密度（分母恒为完整格面积，口径
+#: ``whole_cell_mean_density``）。规划暴露层只把它当作**信息性原文**记录
+#: （``real_population_density_people_km2``）；真正的规划因子来自 canonical
+#: ``grid_risk_v2`` 的 population factor，绝不在这里重新定义密度口径。
+POPULATION_DENSITY_SEMANTICS = "whole_cell_mean_density"
+
 #: ``population_shelter`` 上标记"本层已替换规划用人口因子"的来源标识。
 PLANNING_EXPOSURE_POPULATION_FACTOR_SOURCE = "planning_exposure_land_relative_risk_baseline"
 
@@ -863,7 +869,8 @@ __all__ = [
     "ENGINEERING_SUGGESTED_LAND_RELATIVE_RISK_BASELINE", "LAND_DETECTION_METHOD",
     "LAND_INDICATOR_LAND", "LAND_INDICATOR_WATER", "LAND_RELATIVE_RISK_BASELINE_RANGE",
     "LAND_STATUSES", "PENDING_SOURCE", "PLANNING_EXPOSURE_POPULATION_FACTOR_SOURCE",
-    "PLANNING_FACTOR_FORMULA", "POPULATION_DENSITY_FIELD", "SCHEMA_VERSION",
+    "PLANNING_FACTOR_FORMULA", "POPULATION_DENSITY_FIELD",
+    "POPULATION_DENSITY_SEMANTICS", "SCHEMA_VERSION",
     "SURFACE_CLASS_SOURCE_CANONICAL", "SURFACE_CLASS_SOURCE_LEGACY_TERRAIN",
     "SURFACE_CLASS_SOURCE_SEMANTICS",
     "TERRAIN_ELEVATION_FIELDS", "USED_POPULATION_NODATA_AS_SEA_PROXY",
