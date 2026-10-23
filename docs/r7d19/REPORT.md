@@ -36,3 +36,7 @@ Python第一组190 passed：test_r7d19_baseline、test_cns_communication_rid_ser
 Node：round38_n2_navigation_ui 41 passed、round38_t3d4_3d_cns_frontend 20 passed、map_figures_cns_frontend 6 passed。更改JS入口 node --check 通过。配置JSON逐项解析及UTF-8无BOM检查通过（仓库不存在约定的tools/remove_config_bom.py，执行了等价只读检查）。未执行QGIS真实HTTP/渲染验收。
 
 提交与发布：仅白名单文件本地提交，随后运行同D18规则的audit_release.py审核；审核通过才快进推送既有开发分支，不合并main，不reset/clean。
+
+## 提交和发布审核记录
+
+产品提交 f19e655。发布审核 verdict=pass、fail=0；913个跟踪文件，新增禁用路径0，密钥/BOM/白名单/历史/tree mode均通过。3项既有提示：Cesium大文件、公开main已有14个测试产物、根LICENSE未声明。保留5个既有影像修改。最终追加复核64项Python通过。已核验远端 dev/r7d17-integration 的1e3973b为本地HEAD祖先；按授权普通快进推送此既有分支。
