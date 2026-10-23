@@ -231,7 +231,7 @@ export function isSurfaceAwareDevice(item) {
 /** 设备目录里该 service 的 canonical 条目（不存在即 ``null``，绝不编造参数）。 */
 export function catalogItemForService(flow, serviceKey) {
   return (flow?.device_catalog?.items || []).find(
-    item => isSurfaceAwareDevice(item) && String(item?.service_key || '') === String(serviceKey),
+    item => item?.enabled !== false && isSurfaceAwareDevice(item) && String(item?.service_key || '') === String(serviceKey),
   ) || null;
 }
 

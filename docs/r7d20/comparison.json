@@ -1,0 +1,228 @@
+{
+  "selection": {
+    "device_id": "COMM-BASELINE-2KM",
+    "scenario_sha256": "b98671522bd41430e71ad6d486a7ab62eab7997c0004f145de650f9129afc985",
+    "catalog_sha256": "8b1647f923f528abc4f9d22ae62d7d8fc403a2a4aa0663ba21c37ed6c32919c2",
+    "installed_facility_count": 0
+  },
+  "scenario_id": "ZH-CNS-EA-V2",
+  "historical_p15": {
+    "status": "failed",
+    "algorithm_version": "1.3",
+    "input_fingerprint": "952103e3e98bb2d3056606d4aa139d94ae3679fc03f92399e66852c64cd977e2",
+    "route_length_m": 9404.937615150231,
+    "subsystems": [
+      {
+        "subsystem": "C",
+        "status": "failed",
+        "counts": {
+          "satisfied": 0,
+          "confirmed_deficit": 2727,
+          "unknown": 0
+        },
+        "max_continuous_deficit_projection_m": 9404.937615150231,
+        "segments": [
+          {
+            "start_route_offset_m": 0.0,
+            "end_route_offset_m": 9404.937615150231,
+            "length_m": 9404.937615150231,
+            "causes": [
+              "redundancy_deficit",
+              "service_deficit"
+            ]
+          }
+        ]
+      },
+      {
+        "subsystem": "N",
+        "status": "pending_confirmation",
+        "counts": {
+          "satisfied": 0,
+          "confirmed_deficit": 0,
+          "unknown": 2727
+        },
+        "max_continuous_deficit_projection_m": 0.0,
+        "segments": []
+      },
+      {
+        "subsystem": "S",
+        "status": "failed",
+        "counts": {
+          "satisfied": 0,
+          "confirmed_deficit": 2727,
+          "unknown": 0
+        },
+        "max_continuous_deficit_projection_m": 9404.937615150231,
+        "segments": [
+          {
+            "start_route_offset_m": 0.0,
+            "end_route_offset_m": 9404.937615150231,
+            "length_m": 9404.937615150231,
+            "causes": [
+              "redundancy_deficit",
+              "service_deficit"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "new_p15": {
+    "status": "failed",
+    "algorithm_version": "1.3",
+    "input_fingerprint": "f995d0456f8d528cdb672dd2bdd0229fc6a22b55df154494152cc6762b2a2960",
+    "route_length_m": 9404.937615150231,
+    "subsystems": [
+      {
+        "subsystem": "C",
+        "status": "failed",
+        "counts": {
+          "satisfied": 0,
+          "confirmed_deficit": 2727,
+          "unknown": 0
+        },
+        "max_continuous_deficit_projection_m": 9404.937615150231,
+        "segments": [
+          {
+            "start_route_offset_m": 0.0,
+            "end_route_offset_m": 9404.937615150231,
+            "length_m": 9404.937615150231,
+            "causes": [
+              "redundancy_deficit",
+              "service_deficit"
+            ]
+          }
+        ]
+      },
+      {
+        "subsystem": "N",
+        "status": "pending_confirmation",
+        "counts": {
+          "satisfied": 0,
+          "confirmed_deficit": 0,
+          "unknown": 2727
+        },
+        "max_continuous_deficit_projection_m": 0.0,
+        "segments": []
+      },
+      {
+        "subsystem": "S",
+        "status": "failed",
+        "counts": {
+          "satisfied": 0,
+          "confirmed_deficit": 2727,
+          "unknown": 0
+        },
+        "max_continuous_deficit_projection_m": 9404.937615150231,
+        "segments": [
+          {
+            "start_route_offset_m": 0.0,
+            "end_route_offset_m": 9404.937615150231,
+            "length_m": 9404.937615150231,
+            "causes": [
+              "redundancy_deficit",
+              "service_deficit"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "p14_fingerprints": {
+    "historical": "b070276bfb6a628564b59b2b112d6e9dedd5be9626e31a21f1f3a76e3134ae4a",
+    "new": "7b47a6d0977930f08e0cea6be9f43b48fb5f5b6d77b62818c21c0710127752f7"
+  },
+  "coverage_status": "missing_data",
+  "static_capability_status": "unknown",
+  "alt100_voxel_count": 909,
+  "alt100_surface_counts": {
+    "land": 174,
+    "coastal_uncertain": 26,
+    "sea": 709
+  },
+  "continuous": {
+    "status": "unacceptable",
+    "version": "2.5",
+    "input_fingerprint": "c8e7d496c2efe83db448c6605ca9c77d108995970ab1e24caa8d2917b4ef876e",
+    "baseline_status": "unacceptable",
+    "post_plan_status": null,
+    "events": [
+      {
+        "kind": "service_outage",
+        "subsystem": "C",
+        "start_offset_m": 0.0,
+        "end_offset_m": 9404.937615150231,
+        "length_m": 9404.937615150231,
+        "duration_s": 626.9958410100154,
+        "limit_s": 3.0,
+        "exceeds_limit": true
+      },
+      {
+        "kind": "service_outage",
+        "subsystem": "S",
+        "start_offset_m": 0.0,
+        "end_offset_m": 9404.937615150231,
+        "length_m": 9404.937615150231,
+        "duration_s": 626.9958410100154,
+        "limit_s": 3.0,
+        "exceeds_limit": true
+      },
+      {
+        "kind": "redundancy_degradation",
+        "subsystem": "C",
+        "start_offset_m": 0.0,
+        "end_offset_m": 9404.937615150231,
+        "length_m": 9404.937615150231,
+        "duration_s": 626.9958410100154,
+        "limit_s": 10.0,
+        "exceeds_limit": true
+      },
+      {
+        "kind": "redundancy_degradation",
+        "subsystem": "S",
+        "start_offset_m": 0.0,
+        "end_offset_m": 9404.937615150231,
+        "length_m": 9404.937615150231,
+        "duration_s": 626.9958410100154,
+        "limit_s": 10.0,
+        "exceeds_limit": true
+      },
+      {
+        "kind": "surveillance_detection_gap",
+        "subsystem": "S",
+        "start_offset_m": 0.0,
+        "end_offset_m": 9486.723459174074,
+        "length_m": 9486.723459174074,
+        "duration_s": null,
+        "limit_s": null,
+        "exceeds_limit": true
+      }
+    ]
+  },
+  "batch": {
+    "finished": 1792769244.9572248,
+    "protected_unchanged": true,
+    "currentness": {
+      "cns_corridor_assessment": "failed",
+      "cns_corridor_gap_assessment": "failed",
+      "cns_corridor_site_plan": "stale"
+    },
+    "P16_executed": false,
+    "theta_star_executed": false,
+    "step04_adopted": false
+  },
+  "currentness": {
+    "cns_corridor_assessment": "failed",
+    "cns_corridor_gap_assessment": "failed",
+    "cns_corridor_site_plan": "stale"
+  },
+  "historical_is_not_controlled_radius_comparison": true,
+  "screenshots_local_only": [
+    "screenshot_2d.png",
+    "screenshot_3d.png"
+  ],
+  "p17_protection_blockers": [
+    "response_time_budgets_empty",
+    "encounter_scenarios_empty"
+  ]
+}
