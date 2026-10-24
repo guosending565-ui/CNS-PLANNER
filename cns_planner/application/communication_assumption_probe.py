@@ -9,12 +9,23 @@ from ..algorithms.service_capability.v1 import build_provider_devices, evaluate_
 
 def probe_communication_assumptions(catalog, aircraft, facilities, required, probes, *, radius_m, interface, max_latency_s):
     """Reuse declared_performance on private copies, retaining the real P8 result."""
+    original = [catalog, aircraft, facilities, required, probes]
+    c, a = communication_assumption_inputs(catalog, aircraft, radius_m=radius_m, interface=interface, max_latency_s=max_latency_s)
+    def evaluate(cat, air):
+        providers = build_geometric_providers(facilities, cat)["C"]
+        dev = build_provider_devices(cat, facilities)
+        return [evaluate_capability_point("C", {**p, **evaluate_geometry_point(p, providers)}, required, air, dev) for p in probes]
+    fingerprint = sha256(json.dumps([original, radius_m, interface, max_latency_s, "r7d23-assumption-v1"], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return {"status": "simulated", "assumption_only": True, "real_world_confirmed": False, "writes_project_state": False, "input_fingerprint": fingerprint, "assumptions": {"radius_m": radius_m, "interface": interface, "max_latency_s": max_latency_s}, "real_p8": evaluate(catalog, aircraft), "simulated_p8": evaluate(c, a)}
+
+
+def communication_assumption_inputs(catalog, aircraft, *, radius_m, interface, max_latency_s):
+    """Private research projection shared by the probe and bounded P16 runner."""
     if not isinstance(interface, str) or not interface.strip():
         raise ValueError("必须显式声明通信接口假设")
     for value in (radius_m, max_latency_s):
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
             raise ValueError("半径和延迟必须是有限正数")
-    original = [catalog, aircraft, facilities, required, probes]
     c, a = deepcopy(catalog), deepcopy(aircraft)
     devices = [d for d in c.get("items", []) if d.get("device_id") == "COMM-BASELINE-2KM"]
     if len(devices) != 1 or devices[0].get("enabled") is not True:
@@ -26,9 +37,4 @@ def probe_communication_assumptions(catalog, aircraft, facilities, required, pro
     d["service_model"] = {"model_family": "declared_performance", "version": "r7d23-assumption-v1", "technology": "dedicated_radio", "confirmed": True, "status": "confirmed", "source": "engineering_assumption", "parameters": {"performance": {"max_latency_s": max_latency_s}}, "assumptions": ["hypothetical compatible airborne and ground interfaces"], "limitations": ["not manufacturer evidence", "no LOS/interference/runtime reliability evaluation"]}
     a["communication"]["type"] = deepcopy(d["type"])
     a["communication"]["performance"]["max_latency_s"] = max_latency_s
-    def evaluate(cat, air):
-        providers = build_geometric_providers(facilities, cat)["C"]
-        dev = build_provider_devices(cat, facilities)
-        return [evaluate_capability_point("C", {**p, **evaluate_geometry_point(p, providers)}, required, air, dev) for p in probes]
-    fingerprint = sha256(json.dumps([original, radius_m, interface, max_latency_s, "r7d23-assumption-v1"], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    return {"status": "simulated", "assumption_only": True, "real_world_confirmed": False, "writes_project_state": False, "input_fingerprint": fingerprint, "assumptions": {"radius_m": radius_m, "interface": interface, "max_latency_s": max_latency_s}, "real_p8": evaluate(catalog, aircraft), "simulated_p8": evaluate(c, a)}
+    return c, a
