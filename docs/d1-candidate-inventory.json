@@ -1,0 +1,914 @@
+{
+  "candidate_root": "D:\\Projects\\CNS-PLANNER-c3-research-software",
+  "baseline": "89b008d",
+  "head": "89b008da13bce36b1b2933b571dc4323016debfd",
+  "counts": {
+    "tracked_modified": 33,
+    "untracked": 67,
+    "vendor": 8,
+    "total": 100,
+    "self_hash_omitted": "docs/d1-candidate-inventory.json"
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 1697,
+      "lines": 78,
+      "sha256": "a8d7b41b2248cb6be8f9ce280da58ea8218e22a31707d191937521ceeb3f5520",
+      "git_ignored": false
+    },
+    {
+      "path": "AGENTS.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 5771,
+      "lines": 63,
+      "sha256": "ff633193d1680394ab56e4d8bef6495678bc8782960fbbb2f530732014e90715",
+      "git_ignored": false
+    },
+    {
+      "path": "CLEANUP_PLAN.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 43711,
+      "lines": 429,
+      "sha256": "c85df06ab905f281dad681479e5ef71017b74eb62e69f5c4c452d963e03bf5d5",
+      "git_ignored": false
+    },
+    {
+      "path": "PROTECTED_ASSETS.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 16963,
+      "lines": 248,
+      "sha256": "3de032ac655de7e417f82a8d08ba96afe14d1fc2178d7eb18e2dfe8eabe9212a",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/algorithms/corridor/v1.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 73454,
+      "lines": 1394,
+      "sha256": "bfd822b37ad7123379c015a9080e2d5604eb7cd996ddd7d813570e6ba1999f5a",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/algorithms/registry.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 29038,
+      "lines": 514,
+      "sha256": "0aa1fca61843baa0478a15ce16d9bdf76a635e17d2ec1535b3a78bba761ff6e4",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/api/router.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 77340,
+      "lines": 1164,
+      "sha256": "8647b7a9ee7a9185766b5eecac8fd60f8321e034a902788ac8fc5963ff0dc2be",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/api/server.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 8414,
+      "lines": 158,
+      "sha256": "f46d806d7a34b13712ce3f49a828a8ef0fe59e9cdd98f554f02da4d1e04d4a5f",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/cns_input_service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 22217,
+      "lines": 430,
+      "sha256": "91a19dac03d3d15097817a9b52e11b5baa835d201a2de77c30c9f5371c009c38",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/corridor_service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 18683,
+      "lines": 354,
+      "sha256": "d11cda8f137156ac5b2d7fde3e111be992f74b24fb3451b90c3aaec807ef5f0d",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/corridor_site_planning_service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 209437,
+      "lines": 3948,
+      "sha256": "8ae157abb516865929a981271c29c7c0484a900f48573b44e7269f3530848658",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/invalidation_service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 42284,
+      "lines": 778,
+      "sha256": "e7c7cb8948e9114381b93b5d3305e4c1651a26be0a89dc71dfd4c18ba7cd48f6",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/map_figure_service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 209239,
+      "lines": 4455,
+      "sha256": "c3a7bea3bee0da5647b613403b71b13e67c7194f089d57da48e2c606da5a4eda",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/navigation_integrity_research_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 1260,
+      "lines": 18,
+      "sha256": "6a8362af4d353a146cd10d5f6002d6bc84647a860fc3aed01c7682578cccaac3",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/navigation_planning_integration.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 28573,
+      "lines": 568,
+      "sha256": "50dc0eae56c75ff1f7ec17482d2f0dc67a3d252ef39b3d0b14decf8f38a771c2",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/plan_projection.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 17627,
+      "lines": 382,
+      "sha256": "0cf1333d202b080e674821c3f22c2a5257771afd45aaadb99cd0cb18cccb261f",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/plan_review_service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 39470,
+      "lines": 686,
+      "sha256": "af0e7a3602d779723851d5495b8b0de89e35c38b7d76ab24b32d736ef8127475",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/project_state.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 50834,
+      "lines": 916,
+      "sha256": "b72a4cf5e5640ac930ad8d2d18561b531813c3f4f7c180bb3a25b5cdc8c05b01",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_compute_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 45669,
+      "lines": 946,
+      "sha256": "b0881af26ff4304b56feb6af227ecd3c56b7826c5aecc65157fdc93a861cd764",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_input_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 14445,
+      "lines": 330,
+      "sha256": "0401cae0743d48fd789830ea62059e372f0c7c677f8d62dbabd48d38e48f3cac",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_map_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 9438,
+      "lines": 232,
+      "sha256": "273f84dca3a64d64870498cabe2b8bfa49b7b12aa3270846575acf56d80e23a0",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_parameters.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 8179,
+      "lines": 196,
+      "sha256": "47cb8728df2ec9829434c810429e120c16e1a008561776518b0eb51ed9b66e31",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_report_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 24722,
+      "lines": 544,
+      "sha256": "2b3d4af8407b75638a89cde670d1191980c7cd74370c32be927083aa947c9430",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_run_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 17506,
+      "lines": 362,
+      "sha256": "c0f908f175725a450e9e5922f9fad53c454971cad68575118f035a8384fb6195",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/application/research_visualization_service.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 23143,
+      "lines": 501,
+      "sha256": "f2b873d8426d23eb0c335d216752d836e794fef6f4bb7e25cabde94750f735be",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/domain/cns_inputs.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 29687,
+      "lines": 635,
+      "sha256": "a61f62440de8f1bb19fa50d51012031607735f17b346ef8055b041a7887891e4",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/domain/cns_service_contract.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 42801,
+      "lines": 952,
+      "sha256": "4b560a40a15e1b0eb08b7f3833c8f2373741e8e2b484796a2f2e1e522b8b08b4",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/domain/cns_service_registry.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 33312,
+      "lines": 690,
+      "sha256": "111358718738070f6fdf230c27d06df3b4faf0c0db4af3c0312296abe0b8f281",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/domain/navigation_integrity_contract_v2.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 16248,
+      "lines": 407,
+      "sha256": "fe5b5f60ff655e81e65d91b73eb82b2d2242d257cc2886acd84f8dcffe5c0b43",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/domain/navigation_integrity_monitoring.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 24740,
+      "lines": 521,
+      "sha256": "361bdb8acd863bc59ef3106b5e839996890c02d424c16f0ee39edf5b3960f87d",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/domain/navigation_middle_reuse.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 10680,
+      "lines": 163,
+      "sha256": "fa3ebadcac485a86634794e19138269e38805b5cf64a6db40abb293cd4c15ab2",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/gis/egm2008_geoid.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 17047,
+      "lines": 411,
+      "sha256": "233292f900b2bfa432d59ef82e83442cd7db4d1b804179c36c8d40dcbbbf7e8b",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/gis/qgis_figure_renderer.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 131648,
+      "lines": 2927,
+      "sha256": "bab637359db5e389abf95379bfa6cdfee87b5d5b0d07becde5a3d4ef2faf6dd1",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/reporting/map_templates/template_catalog.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 29260,
+      "lines": 620,
+      "sha256": "42cbfa86005efcf03f33a8b543ff4080be9438fd382f1b680f6d47d271167067",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/site_planner/navigation_middle_reuse_v1.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 1086,
+      "lines": 20,
+      "sha256": "18d140235e10769607975918792e287b25d3cabb2bdff81cc13da84e432f6cb2",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/tasks/handlers.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 18612,
+      "lines": 360,
+      "sha256": "2f23c6f07dade6daf41a4cad564ecea6b4d5ce2124162cc8bc781090ea6aa6be",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/tasks/service.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 31911,
+      "lines": 710,
+      "sha256": "141c48c6e461673a45462d9c4f773dd66a7ec188647b2616444eaaed42612bf0",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/tasks/task_specs.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 94376,
+      "lines": 2008,
+      "sha256": "e61c80c01951162c5c1461f1e35d292896f7879b9277c3335044149ec420c4f3",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/js/research_3d.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 39751,
+      "lines": 924,
+      "sha256": "67115e4f103521925619c2a2fbfe0d6f5a745b4feae643fab3e791837838e79f",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/js/research_app.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 22721,
+      "lines": 546,
+      "sha256": "6b108336825f29a4374e4fc453643a2aaae4a28cd82e4ad53640b03fa91f4c77",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/js/research_map.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 4319,
+      "lines": 113,
+      "sha256": "46d306af8fe04c6aaaf8462149d2c0f84ff23ae469922fec08a89fe62010402e",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/js/research_map_renderer.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 13671,
+      "lines": 373,
+      "sha256": "85683845955359397ba5c693e25e25e7d8770d25779a68678d1f0fb8a04e912c",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/js/research_runs.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 5409,
+      "lines": 122,
+      "sha256": "dadcebef8de4fb1bbb1f4516f387db65e97bb7a18f22263844d5232f9e8e7d75",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/basemap.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 44178,
+      "lines": 855,
+      "sha256": "f641eaeb3860c4d6fb0ffc9be1779c50c4f7ef73647e9d4de815e8625a1a9743",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/research.css",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 11977,
+      "lines": 121,
+      "sha256": "f23385d44feb62b69859690e99ff65f640e70e9a68eff446d6fc245c75858e99",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/research.html",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 9054,
+      "lines": 158,
+      "sha256": "9ce6ac6905079079b5874fd1d6c700d9f2abcb35bcec4e5631d61779925262b7",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/research3d.css",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 5380,
+      "lines": 60,
+      "sha256": "1d86d6749340f1f9b80a3825bd86663c90823da03c573cf536c6e176932a2c4b",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/research_3d.html",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 8031,
+      "lines": 134,
+      "sha256": "33f8f9f200ee1ada06e172f524a78858d8b464a8d12081b375f1b0aa59d5400c",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/IAU2006_XYS/IAU2006_XYS_0.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 67428,
+      "lines": 1,
+      "sha256": "eacde1b661c07ae81779214f2ee1c840dd24ea56cdba38735d9f63bb51d3f534",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/IAU2006_XYS/IAU2006_XYS_18.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 65310,
+      "lines": 1,
+      "sha256": "19ec8e50b7a8604bcd93bf20850f033e153242663107f372e3af09194f903497",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/Images/ion-credit.png",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 6028,
+      "lines": 18,
+      "sha256": "721870c1417e20d25e2d1b834e80c66908418e459dcf76c95bf2997dc0733289",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Assets/approximateTerrainHeights.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 299472,
+      "lines": 1,
+      "sha256": "6dbd104a916bb05d0f5103f46fb1c36d9966947a74984b5614607edda9325e57",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Cesium.js",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 5159916,
+      "lines": 16071,
+      "sha256": "e4dc17055dbad7d4aab44abdd33e4c6006f93b8fbe57c63bbbc3c31eeefbe0b0",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/LICENSE-PROVENANCE.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 4064,
+      "lines": 82,
+      "sha256": "2aaa9459e27b3fcc0efa6e8fd5711e220750d52e4a515a01622715454864ad8b",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/LICENSE.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 64747,
+      "lines": 1117,
+      "sha256": "6a30fde7063cc565656630a66f60cbf599d4609297fb715d87c7f96bc5ecd6e6",
+      "git_ignored": false
+    },
+    {
+      "path": "cns_planner/web/vendor/cesium/Widgets/widgets.css",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 32052,
+      "lines": 1342,
+      "sha256": "dd409f4c9dbc0d6c04e369723a87f3cc3c430f4d305ff26e608a5918390d48a3",
+      "git_ignored": false
+    },
+    {
+      "path": "config/navigation_integrity/endpoint_middle_reuse_v1.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 146,
+      "lines": 6,
+      "sha256": "c30fcc38e0bf39df6955c2379278effcc5561a478b5ca5917b9a936936c19249",
+      "git_ignored": false
+    },
+    {
+      "path": "config/navigation_integrity/planning.example.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 257,
+      "lines": 11,
+      "sha256": "9ff99db30ef593fa5f7fdf49ac77c506face4295d7a019f6dc1b506a01d303c3",
+      "git_ignored": false
+    },
+    {
+      "path": "config/navigation_integrity/selection.schema.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 709,
+      "lines": 18,
+      "sha256": "6db062d2c2bc854f00828faf8ee8c5f0ee2645d50df51d30e788be18e87c7dd3",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/20-历史裁定与未集成成果梳理-2026-10-27.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 14758,
+      "lines": 179,
+      "sha256": "4c46288343b0c2ba97e2f12975aef945cc3ae8a3faa27df7d2cb2d504c2c9413",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/21-首版研究软件发布基线与治理收口-2026-10-27.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 30723,
+      "lines": 427,
+      "sha256": "c881c2da06071b2d399e1d5fb62db5321e98ee1a07a7bf1b81e28b630eb233a8",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/22-发布依赖环境与许可证MANIFEST-2026-10-27.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 16447,
+      "lines": 242,
+      "sha256": "e8c5c5518a7bc470e7dfdf989206bf6bc845b7d223bf9b80e57546e9a91b854b",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/d1-candidate-inventory.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 28646,
+      "lines": 914,
+      "sha256": null,
+      "git_ignored": false
+    },
+    {
+      "path": "docs/d1-d2-batches.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 19663,
+      "lines": 330,
+      "sha256": "122569e2ea6ad721786704f1ba7208350cbe3f343c4e9e4e81ddce4a9c073a8c",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/d1-git-inventory.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 25786,
+      "lines": 761,
+      "sha256": "111129c292abf5f39c0506070c17c8f09b24c69d6e09ccb487cd1b3874900914",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/d1-git-inventory.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 15724,
+      "lines": 141,
+      "sha256": "318c009d4752eaee3e4f621fd64e7a3a8b6ebf748ac21ea6453806b148afc70b",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/d1-v1-v4-acceptance.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 10001,
+      "lines": 194,
+      "sha256": "28e7963a4f94673a76e6b4b15cb1902935146c872158270792471756b775cfa0",
+      "git_ignored": false
+    },
+    {
+      "path": "docs/decisions/2026-09-ai-dev-context-full-archive.md",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 269378,
+      "lines": 1310,
+      "sha256": "3715b7328a4d1997fbd8fbefa83e3fe5b3ab3408b4744dbf75f61af51177c6e9",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/c3a_research_run.test.mjs",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 1521,
+      "lines": 27,
+      "sha256": "3335da83bdcfd4914d7797a867c6189d96a93156f260fdd2967cd2ce27c7f4e0",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/c3b_research_ui.test.mjs",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 3967,
+      "lines": 81,
+      "sha256": "feca7104455886860115aa03f243c5e74b1be6d62b12619dcdf585b04fac1301",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/c3c_research_map_labels.test.mjs",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 1150,
+      "lines": 26,
+      "sha256": "f2e5880b1d4e36a06a7fbf58ee7e6d768ce278dae915a1997c5e041298f04a18",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/endpoint_context.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 25655,
+      "lines": 692,
+      "sha256": "03551395a1035db7e4a41b6d0c797577686dbbfbb3ad8c099bf2e71701a02288",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/endpoint_input.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 2192,
+      "lines": 96,
+      "sha256": "8d0d4d2a4f4f20d0b2917b9d642ad0e8b377405c351ec9ccf819897cd72d93af",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/middle_bindings.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 111,
+      "lines": 4,
+      "sha256": "1518ba7a09d78d24ded9f5dcac89625d719e4f4125dde532b798584b9760a69a",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/sites.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 810620,
+      "lines": 30386,
+      "sha256": "f83736798c260eb4b35f08e742029ede2da007eed89da8c564fe9fab6d043da8",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/stations.json",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 4473,
+      "lines": 200,
+      "sha256": "979d84ecb0359da6bdafb0d4b0359d97f0fda7a6badcf207546dd76cf8ec08e1",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/p14_protected_sha256.json",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 456,
+      "lines": 6,
+      "sha256": "9c009106d9be4c84ffa7c9cab72aa00ebf978de80f77e856ff51d3c7e886a649",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_algorithm_registry.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 11884,
+      "lines": 243,
+      "sha256": "d02c9fa63d73bfc963f547e205fb1c2231f97eddd6ddd967f8f73c48519cb96e",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_c2b_middle_projection.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 3754,
+      "lines": 98,
+      "sha256": "ace310587cb23ad53b8ff1c9cea160ab06c56f00a2c255c66e5f9feaa64aeed5",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_c3a_research_run.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 3655,
+      "lines": 73,
+      "sha256": "0d0ae819630ccbcf5768ac98c357d7bcea856fcfd2dbe264a02790020e3de22c",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_c3b_research_ui.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 9827,
+      "lines": 209,
+      "sha256": "ac0fb3ff95262a3697e5c7c69d83f9e2e38c964090ab406d7d90d4b788bce517",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_c3c_research_figures.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 4772,
+      "lines": 97,
+      "sha256": "46e88d547a0551d04fe2f33eac54d3ad40674c69568dc0d5ed960c3a8ff72abe",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_c3c_research_report.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 9335,
+      "lines": 196,
+      "sha256": "f1edfcc20d0d4a04392fe53939f5e8798694b48484a300b1575c63a057376760",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_c3c_research_visualization.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 13381,
+      "lines": 273,
+      "sha256": "804b17ddc2408908d15dfbda570175330d2f2f61fe45b0712cc8f977e2cc0f20",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_cns_communication_rid_services.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 35706,
+      "lines": 705,
+      "sha256": "76760d030ea3c301dd39f2a2914c18f286ab88ef4b34712423c990ce175b769c",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_map_figures_cartographic_polish.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 28818,
+      "lines": 595,
+      "sha256": "1b10556923995664786059303632b8577ee03878e9ee2da361631d5e86744b4f",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_map_figures_cns_templates.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 46632,
+      "lines": 916,
+      "sha256": "6471b0085d4d42d498da098ebda8887275411a955c5e9c591e4ba26b21fd88c0",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_navigation_middle_reuse_v1.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 7835,
+      "lines": 143,
+      "sha256": "be1727e02c0f9b52f070614f4104be8e21a1209c2fe41304361dd070a06a1a24",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_navigation_planning_integration.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 9122,
+      "lines": 150,
+      "sha256": "a53dd2c6368680272bbe33e403405ca04a2060a69dc8bb213a451be790c1c95f",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_p16_prefilter_and_prepared_cells.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 9143,
+      "lines": 199,
+      "sha256": "896052ebb86247eb4a2c81c8ec6ff87d46f7055e5ad2f22944de2aaf38a33615",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_phase4_b6r_immutable_task_input.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 45408,
+      "lines": 1033,
+      "sha256": "d156862caa7991a7280e977ddc72315069bb837625919e0d40ab55d97f30b874",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_phase4_b6x_heavy_task_runtime.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 33458,
+      "lines": 773,
+      "sha256": "d7902aac26ab0f0bdad927ae3bbb3ca803fa4b7883aea1c0d61137fb97e6bacc",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_phase4_b9r1_async_admission.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 43179,
+      "lines": 961,
+      "sha256": "7fc563b5cc013c293890eb4094dd7bee1962df60b1ea1e84ef92aeccaecde216",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_required_cns_adoption_services.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 23360,
+      "lines": 481,
+      "sha256": "7cfb2b2e8e09328468d196fd43a6f9a7a60f9d1a9daef278caad1808d954a31a",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_round2_surface_wiring.py",
+      "xy": " M",
+      "tracked_modified": true,
+      "size": 93925,
+      "lines": 1930,
+      "sha256": "eaf2d0ef3ad4ee406877a75c5e5f62f42e5ece1f3a55f9d29b99fdd0bbc9ff58",
+      "git_ignored": false
+    },
+    {
+      "path": "tests/test_round40a_navigation_integrity_v2.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 21940,
+      "lines": 478,
+      "sha256": "473d242629bb333041b4d2392071b55eaff2ce8e19a6f119875c5c7aa03e4db5",
+      "git_ignored": false
+    },
+    {
+      "path": "tools/build_r0005_research_dispatch.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 6560,
+      "lines": 150,
+      "sha256": "27910a19ffffdea02f9f6024c63fc7d77d0b299eda90054bf2bf771e567327d2",
+      "git_ignored": false
+    },
+    {
+      "path": "tools/build_r0005_terrain_grid.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 13097,
+      "lines": 329,
+      "sha256": "6becefc222773ba9ff64e2a073470df67b349eb1f150bb488571ad485d1bb68d",
+      "git_ignored": false
+    },
+    {
+      "path": "tools/render_r0005_research_figures.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 31046,
+      "lines": 660,
+      "sha256": "84f31d20f613ceb90a6342ffec60278193daffa897836c451859220ba4d621c9",
+      "git_ignored": false
+    },
+    {
+      "path": "tools/serve_r0005_research.py",
+      "xy": "??",
+      "tracked_modified": false,
+      "size": 4206,
+      "lines": 84,
+      "sha256": "2a1c47d4a9d0c2c7686c93d3b82aa9db5137c0396b8dc2d934bc178a0a6f026e",
+      "git_ignored": false
+    }
+  ]
+}

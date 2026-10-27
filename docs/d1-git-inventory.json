@@ -1,0 +1,761 @@
+{
+  "candidate_root": "D:\\Projects\\CNS-PLANNER\\_work\\d1\\rc",
+  "baseline": "89b008d",
+  "baseline_commit": "89b008da13bce36b1b2933b571dc4323016debfd",
+  "tracked_count": 28,
+  "untracked_count": 47,
+  "tracked": [
+    {
+      "path": ".gitignore",
+      "category": "other",
+      "xy": " M",
+      "head_blob": "472b16be822de20f527cbf476047f85db1433892",
+      "index_blob": "472b16be822de20f527cbf476047f85db1433892",
+      "worktree_sha256": "8f217ed65b1e452bf69dc830bb35f3d97d256ec2b1f2fd5ef2e31eccf06f069d",
+      "size": 1395,
+      "lines": 74
+    },
+    {
+      "path": "cns_planner/algorithms/corridor/v1.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "96f185d6db37741de7c8341af5eb16d39d64afc9",
+      "index_blob": "b332854692a698755dbcb6aa092bfd0072e7df3f",
+      "worktree_sha256": "bfd822b37ad7123379c015a9080e2d5604eb7cd996ddd7d813570e6ba1999f5a",
+      "size": 73454,
+      "lines": 1394
+    },
+    {
+      "path": "cns_planner/algorithms/registry.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "7081c99a6b4c45b313694ede18c0e44e07e4fe77",
+      "index_blob": "5e0fd85c049bba81f0349e41de516ffb1b6b3e44",
+      "worktree_sha256": "0aa1fca61843baa0478a15ce16d9bdf76a635e17d2ec1535b3a78bba761ff6e4",
+      "size": 29038,
+      "lines": 514
+    },
+    {
+      "path": "cns_planner/api/router.py",
+      "category": "business",
+      "xy": "MM",
+      "head_blob": "7692d70feccd49b124487a36f41474989644a380",
+      "index_blob": "8169968ecd374f685f08b528b077b80f4a6fe588",
+      "worktree_sha256": "8647b7a9ee7a9185766b5eecac8fd60f8321e034a902788ac8fc5963ff0dc2be",
+      "size": 77340,
+      "lines": 1164
+    },
+    {
+      "path": "cns_planner/api/server.py",
+      "category": "business",
+      "xy": "MM",
+      "head_blob": "4c8b88d84d7299840839eeb679bc2ad5c5ac8831",
+      "index_blob": "9d0c9dcf2cbab786f42e78aa3bd03f0173c5a6c1",
+      "worktree_sha256": "f46d806d7a34b13712ce3f49a828a8ef0fe59e9cdd98f554f02da4d1e04d4a5f",
+      "size": 8414,
+      "lines": 158
+    },
+    {
+      "path": "cns_planner/application/cns_input_service.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "acea8a062f508e8eb415f938da13232f603f4b6b",
+      "index_blob": "2db927982f609b0a329662b01707492991a3858e",
+      "worktree_sha256": "91a19dac03d3d15097817a9b52e11b5baa835d201a2de77c30c9f5371c009c38",
+      "size": 22217,
+      "lines": 430
+    },
+    {
+      "path": "cns_planner/application/corridor_service.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "bf42130cc1c86ea0fb4fc8655aec24a7c8bae90a",
+      "index_blob": "1d1361f183777160abf4e5889dc6142adcf40e73",
+      "worktree_sha256": "d11cda8f137156ac5b2d7fde3e111be992f74b24fb3451b90c3aaec807ef5f0d",
+      "size": 18683,
+      "lines": 354
+    },
+    {
+      "path": "cns_planner/application/corridor_site_planning_service.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "e3558dc7e15191fbd06e58cacb408ef1afff0543",
+      "index_blob": "f6df2a25ed74c7bf70a7015ccaf996c2339843f9",
+      "worktree_sha256": "8ae157abb516865929a981271c29c7c0484a900f48573b44e7269f3530848658",
+      "size": 209437,
+      "lines": 3948
+    },
+    {
+      "path": "cns_planner/application/invalidation_service.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "926b81b4192eddf9c62148b29109fce163a45497",
+      "index_blob": "1ba8e59ada605419159cd9488a61ddf089e83528",
+      "worktree_sha256": "e7c7cb8948e9114381b93b5d3305e4c1651a26be0a89dc71dfd4c18ba7cd48f6",
+      "size": 42284,
+      "lines": 778
+    },
+    {
+      "path": "cns_planner/application/plan_projection.py",
+      "category": "business",
+      "xy": " M",
+      "head_blob": "6ba558400ae8f274625eb6d5089897cc18acd2c2",
+      "index_blob": "6ba558400ae8f274625eb6d5089897cc18acd2c2",
+      "worktree_sha256": "0cf1333d202b080e674821c3f22c2a5257771afd45aaadb99cd0cb18cccb261f",
+      "size": 17627,
+      "lines": 382
+    },
+    {
+      "path": "cns_planner/application/plan_review_service.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "d8947dfe8af94fdb28a054f529c483f42bc5c566",
+      "index_blob": "9f807c6cc3a4b5083c4dc207419b8af5acdccb34",
+      "worktree_sha256": "af0e7a3602d779723851d5495b8b0de89e35c38b7d76ab24b32d736ef8127475",
+      "size": 39470,
+      "lines": 686
+    },
+    {
+      "path": "cns_planner/application/project_state.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "9bbc4db1031424cdbd1c0d4e3e30417c7f7f34c1",
+      "index_blob": "e8de62f0de5ee1d1e1b89eff5710c2aa6eaa4744",
+      "worktree_sha256": "b72a4cf5e5640ac930ad8d2d18561b531813c3f4f7c180bb3a25b5cdc8c05b01",
+      "size": 50834,
+      "lines": 916
+    },
+    {
+      "path": "cns_planner/domain/cns_service_contract.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "11db6c10de69225960a8c2fdcb271c87da17dc43",
+      "index_blob": "99622edc258385f7025de2ed9103eb97c52ccb58",
+      "worktree_sha256": "4b560a40a15e1b0eb08b7f3833c8f2373741e8e2b484796a2f2e1e522b8b08b4",
+      "size": 42801,
+      "lines": 952
+    },
+    {
+      "path": "cns_planner/domain/cns_service_registry.py",
+      "category": "business",
+      "xy": " M",
+      "head_blob": "7679495b84311ad072d6e2a89c3844805cbc3b1a",
+      "index_blob": "7679495b84311ad072d6e2a89c3844805cbc3b1a",
+      "worktree_sha256": "2bc867d32262860c004f253c2a8ce10125b6d12e7f72901e2c4a1a5639d42aea",
+      "size": 31446,
+      "lines": 665
+    },
+    {
+      "path": "cns_planner/domain/navigation_integrity_monitoring.py",
+      "category": "business",
+      "xy": " M",
+      "head_blob": "f8419c649810eb7d98f079182014a1b24bc0c50e",
+      "index_blob": "f8419c649810eb7d98f079182014a1b24bc0c50e",
+      "worktree_sha256": "361bdb8acd863bc59ef3106b5e839996890c02d424c16f0ee39edf5b3960f87d",
+      "size": 24740,
+      "lines": 521
+    },
+    {
+      "path": "cns_planner/reporting/map_templates/template_catalog.py",
+      "category": "business",
+      "xy": " M",
+      "head_blob": "0f0717cf54bb308e7505060bb8bdc726d8e750e5",
+      "index_blob": "0f0717cf54bb308e7505060bb8bdc726d8e750e5",
+      "worktree_sha256": "bad4d1d6257de20387161c9bf60787c906af46ff2653bdf4c1f94055ab72fafd",
+      "size": 29270,
+      "lines": 620
+    },
+    {
+      "path": "cns_planner/tasks/handlers.py",
+      "category": "business",
+      "xy": "MM",
+      "head_blob": "efba419341f6d911494aaecc98328a806a30bc13",
+      "index_blob": "0f4b2fe23f7652d3e0ec19fdb76883a8282e0fec",
+      "worktree_sha256": "2f23c6f07dade6daf41a4cad564ecea6b4d5ce2124162cc8bc781090ea6aa6be",
+      "size": 18612,
+      "lines": 360
+    },
+    {
+      "path": "cns_planner/tasks/service.py",
+      "category": "business",
+      "xy": "M ",
+      "head_blob": "235015347406ebf54e5e417055c4f9d8553f6131",
+      "index_blob": "93e29a1452f56c7a0f823f7f2e68cbbdd13ba5b9",
+      "worktree_sha256": "141c48c6e461673a45462d9c4f773dd66a7ec188647b2616444eaaed42612bf0",
+      "size": 31911,
+      "lines": 710
+    },
+    {
+      "path": "cns_planner/tasks/task_specs.py",
+      "category": "business",
+      "xy": "MM",
+      "head_blob": "9c6033c12e696fd76cf829675c7e983a083e1280",
+      "index_blob": "9090bd42ce41d5bc712c687fae8b24f21960262c",
+      "worktree_sha256": "e61c80c01951162c5c1461f1e35d292896f7879b9277c3335044149ec420c4f3",
+      "size": 94376,
+      "lines": 2008
+    },
+    {
+      "path": "tests/p14_protected_sha256.json",
+      "category": "test",
+      "xy": " M",
+      "head_blob": "da6121971fb42f2070320e4df203d83ae022ba9e",
+      "index_blob": "da6121971fb42f2070320e4df203d83ae022ba9e",
+      "worktree_sha256": "9c009106d9be4c84ffa7c9cab72aa00ebf978de80f77e856ff51d3c7e886a649",
+      "size": 456,
+      "lines": 6
+    },
+    {
+      "path": "tests/test_algorithm_registry.py",
+      "category": "test",
+      "xy": "M ",
+      "head_blob": "6f4edff107c9bf098f152e3536ad35e1581cd413",
+      "index_blob": "0273803fc454d0885f1fef5650a0d44fa6e76ec1",
+      "worktree_sha256": "d02c9fa63d73bfc963f547e205fb1c2231f97eddd6ddd967f8f73c48519cb96e",
+      "size": 11884,
+      "lines": 243
+    },
+    {
+      "path": "tests/test_cns_communication_rid_services.py",
+      "category": "test",
+      "xy": "M ",
+      "head_blob": "1197b2347ed074b7b5de6b0a2a38e1966f1b7962",
+      "index_blob": "7198da3f4c0561de013f2ed245b20eb1349936d2",
+      "worktree_sha256": "76760d030ea3c301dd39f2a2914c18f286ab88ef4b34712423c990ce175b769c",
+      "size": 35706,
+      "lines": 705
+    },
+    {
+      "path": "tests/test_p16_prefilter_and_prepared_cells.py",
+      "category": "test",
+      "xy": "M ",
+      "head_blob": "2ca80f3f39a4e558d1826b74c578e18baea34a79",
+      "index_blob": "58b6fd02d6721c96ed51357d10f3ac058d8c7fc0",
+      "worktree_sha256": "896052ebb86247eb4a2c81c8ec6ff87d46f7055e5ad2f22944de2aaf38a33615",
+      "size": 9143,
+      "lines": 199
+    },
+    {
+      "path": "tests/test_phase4_b6r_immutable_task_input.py",
+      "category": "test",
+      "xy": " M",
+      "head_blob": "992d09ba71790a8e773427540dc415ee191bb425",
+      "index_blob": "992d09ba71790a8e773427540dc415ee191bb425",
+      "worktree_sha256": "d156862caa7991a7280e977ddc72315069bb837625919e0d40ab55d97f30b874",
+      "size": 45408,
+      "lines": 1033
+    },
+    {
+      "path": "tests/test_phase4_b6x_heavy_task_runtime.py",
+      "category": "test",
+      "xy": " M",
+      "head_blob": "dc6cde9ec979d0d4acdba82e80b1779cdad05b50",
+      "index_blob": "dc6cde9ec979d0d4acdba82e80b1779cdad05b50",
+      "worktree_sha256": "d7902aac26ab0f0bdad927ae3bbb3ca803fa4b7883aea1c0d61137fb97e6bacc",
+      "size": 33458,
+      "lines": 773
+    },
+    {
+      "path": "tests/test_phase4_b9r1_async_admission.py",
+      "category": "test",
+      "xy": " M",
+      "head_blob": "17efe604dabe62f02eb9c2e29129924e33dd09a6",
+      "index_blob": "17efe604dabe62f02eb9c2e29129924e33dd09a6",
+      "worktree_sha256": "7fc563b5cc013c293890eb4094dd7bee1962df60b1ea1e84ef92aeccaecde216",
+      "size": 43179,
+      "lines": 961
+    },
+    {
+      "path": "tests/test_required_cns_adoption_services.py",
+      "category": "test",
+      "xy": "M ",
+      "head_blob": "036759f3cd54723b930e4fe8ef041aeaac5a98cb",
+      "index_blob": "045df2d6bcfc56a14e00ea1bd6264683f7dbdfd2",
+      "worktree_sha256": "7cfb2b2e8e09328468d196fd43a6f9a7a60f9d1a9daef278caad1808d954a31a",
+      "size": 23360,
+      "lines": 481
+    },
+    {
+      "path": "tests/test_round2_surface_wiring.py",
+      "category": "test",
+      "xy": "M ",
+      "head_blob": "a81636dd10824069852a95dcc746be42774f8de3",
+      "index_blob": "e60bcc143952e404fdb77302415792cd32bdf2bb",
+      "worktree_sha256": "eaf2d0ef3ad4ee406877a75c5e5f62f42e5ece1f3a55f9d29b99fdd0bbc9ff58",
+      "size": 93925,
+      "lines": 1930
+    }
+  ],
+  "untracked": [
+    {
+      "path": "cns_planner/application/navigation_integrity_research_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "6a8362af4d353a146cd10d5f6002d6bc84647a860fc3aed01c7682578cccaac3",
+      "size": 1260,
+      "lines": 18
+    },
+    {
+      "path": "cns_planner/application/navigation_planning_integration.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "50dc0eae56c75ff1f7ec17482d2f0dc67a3d252ef39b3d0b14decf8f38a771c2",
+      "size": 28573,
+      "lines": 568
+    },
+    {
+      "path": "cns_planner/application/research_compute_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "b0881af26ff4304b56feb6af227ecd3c56b7826c5aecc65157fdc93a861cd764",
+      "size": 45669,
+      "lines": 946
+    },
+    {
+      "path": "cns_planner/application/research_input_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "0401cae0743d48fd789830ea62059e372f0c7c677f8d62dbabd48d38e48f3cac",
+      "size": 14445,
+      "lines": 330
+    },
+    {
+      "path": "cns_planner/application/research_map_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "273f84dca3a64d64870498cabe2b8bfa49b7b12aa3270846575acf56d80e23a0",
+      "size": 9438,
+      "lines": 232
+    },
+    {
+      "path": "cns_planner/application/research_parameters.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "47cb8728df2ec9829434c810429e120c16e1a008561776518b0eb51ed9b66e31",
+      "size": 8179,
+      "lines": 196
+    },
+    {
+      "path": "cns_planner/application/research_report_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "2b3d4af8407b75638a89cde670d1191980c7cd74370c32be927083aa947c9430",
+      "size": 24722,
+      "lines": 544
+    },
+    {
+      "path": "cns_planner/application/research_run_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "c0f908f175725a450e9e5922f9fad53c454971cad68575118f035a8384fb6195",
+      "size": 17506,
+      "lines": 362
+    },
+    {
+      "path": "cns_planner/application/research_visualization_service.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "f2b873d8426d23eb0c335d216752d836e794fef6f4bb7e25cabde94750f735be",
+      "size": 23143,
+      "lines": 501
+    },
+    {
+      "path": "cns_planner/domain/navigation_integrity_contract_v2.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "fe5b5f60ff655e81e65d91b73eb82b2d2242d257cc2886acd84f8dcffe5c0b43",
+      "size": 16248,
+      "lines": 407
+    },
+    {
+      "path": "cns_planner/domain/navigation_middle_reuse.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "fa3ebadcac485a86634794e19138269e38805b5cf64a6db40abb293cd4c15ab2",
+      "size": 10680,
+      "lines": 163
+    },
+    {
+      "path": "cns_planner/gis/egm2008_geoid.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "233292f900b2bfa432d59ef82e83442cd7db4d1b804179c36c8d40dcbbbf7e8b",
+      "size": 17047,
+      "lines": 411
+    },
+    {
+      "path": "cns_planner/site_planner/navigation_middle_reuse_v1.py",
+      "category": "business",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "18d140235e10769607975918792e287b25d3cabb2bdff81cc13da84e432f6cb2",
+      "size": 1086,
+      "lines": 20
+    },
+    {
+      "path": "cns_planner/web/js/research_3d.js",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "67115e4f103521925619c2a2fbfe0d6f5a745b4feae643fab3e791837838e79f",
+      "size": 39751,
+      "lines": 924
+    },
+    {
+      "path": "cns_planner/web/js/research_app.js",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "6b108336825f29a4374e4fc453643a2aaae4a28cd82e4ad53640b03fa91f4c77",
+      "size": 22721,
+      "lines": 546
+    },
+    {
+      "path": "cns_planner/web/js/research_map.js",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "46d306af8fe04c6aaaf8462149d2c0f84ff23ae469922fec08a89fe62010402e",
+      "size": 4319,
+      "lines": 113
+    },
+    {
+      "path": "cns_planner/web/js/research_map_renderer.js",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "85683845955359397ba5c693e25e25e7d8770d25779a68678d1f0fb8a04e912c",
+      "size": 13671,
+      "lines": 373
+    },
+    {
+      "path": "cns_planner/web/js/research_runs.js",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "dadcebef8de4fb1bbb1f4516f387db65e97bb7a18f22263844d5232f9e8e7d75",
+      "size": 5409,
+      "lines": 122
+    },
+    {
+      "path": "cns_planner/web/js/visualization3d/basemap.js",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "f641eaeb3860c4d6fb0ffc9be1779c50c4f7ef73647e9d4de815e8625a1a9743",
+      "size": 44178,
+      "lines": 855
+    },
+    {
+      "path": "cns_planner/web/research.css",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "f23385d44feb62b69859690e99ff65f640e70e9a68eff446d6fc245c75858e99",
+      "size": 11977,
+      "lines": 121
+    },
+    {
+      "path": "cns_planner/web/research.html",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "9ce6ac6905079079b5874fd1d6c700d9f2abcb35bcec4e5631d61779925262b7",
+      "size": 9054,
+      "lines": 158
+    },
+    {
+      "path": "cns_planner/web/research3d.css",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "1d86d6749340f1f9b80a3825bd86663c90823da03c573cf536c6e176932a2c4b",
+      "size": 5380,
+      "lines": 60
+    },
+    {
+      "path": "cns_planner/web/research_3d.html",
+      "category": "frontend",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "33f8f9f200ee1ada06e172f524a78858d8b464a8d12081b375f1b0aa59d5400c",
+      "size": 8031,
+      "lines": 134
+    },
+    {
+      "path": "config/navigation_integrity/endpoint_middle_reuse_v1.json",
+      "category": "config",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "c30fcc38e0bf39df6955c2379278effcc5561a478b5ca5917b9a936936c19249",
+      "size": 146,
+      "lines": 6
+    },
+    {
+      "path": "config/navigation_integrity/planning.example.json",
+      "category": "config",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "9ff99db30ef593fa5f7fdf49ac77c506face4295d7a019f6dc1b506a01d303c3",
+      "size": 257,
+      "lines": 11
+    },
+    {
+      "path": "config/navigation_integrity/selection.schema.json",
+      "category": "config",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "6db062d2c2bc854f00828faf8ee8c5f0ee2645d50df51d30e788be18e87c7dd3",
+      "size": 709,
+      "lines": 18
+    },
+    {
+      "path": "tests/c3a_research_run.test.mjs",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "3335da83bdcfd4914d7797a867c6189d96a93156f260fdd2967cd2ce27c7f4e0",
+      "size": 1521,
+      "lines": 27
+    },
+    {
+      "path": "tests/c3b_research_ui.test.mjs",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "feca7104455886860115aa03f243c5e74b1be6d62b12619dcdf585b04fac1301",
+      "size": 3967,
+      "lines": 81
+    },
+    {
+      "path": "tests/c3c_research_map_labels.test.mjs",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "f2e5880b1d4e36a06a7fbf58ee7e6d768ce278dae915a1997c5e041298f04a18",
+      "size": 1150,
+      "lines": 26
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/endpoint_context.json",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "03551395a1035db7e4a41b6d0c797577686dbbfbb3ad8c099bf2e71701a02288",
+      "size": 25655,
+      "lines": 692
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/endpoint_input.json",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "8d0d4d2a4f4f20d0b2917b9d642ad0e8b377405c351ec9ccf819897cd72d93af",
+      "size": 2192,
+      "lines": 96
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/middle_bindings.json",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "1518ba7a09d78d24ded9f5dcac89625d719e4f4125dde532b798584b9760a69a",
+      "size": 111,
+      "lines": 4
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/sites.json",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "f83736798c260eb4b35f08e742029ede2da007eed89da8c564fe9fab6d043da8",
+      "size": 810620,
+      "lines": 30386
+    },
+    {
+      "path": "tests/fixtures/navigation_middle_reuse/stations.json",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "979d84ecb0359da6bdafb0d4b0359d97f0fda7a6badcf207546dd76cf8ec08e1",
+      "size": 4473,
+      "lines": 200
+    },
+    {
+      "path": "tests/test_c2b_middle_projection.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "ace310587cb23ad53b8ff1c9cea160ab06c56f00a2c255c66e5f9feaa64aeed5",
+      "size": 3754,
+      "lines": 98
+    },
+    {
+      "path": "tests/test_c3a_research_run.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "0d0ae819630ccbcf5768ac98c357d7bcea856fcfd2dbe264a02790020e3de22c",
+      "size": 3655,
+      "lines": 73
+    },
+    {
+      "path": "tests/test_c3b_research_ui.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "ac0fb3ff95262a3697e5c7c69d83f9e2e38c964090ab406d7d90d4b788bce517",
+      "size": 9827,
+      "lines": 209
+    },
+    {
+      "path": "tests/test_c3c_research_figures.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "46e88d547a0551d04fe2f33eac54d3ad40674c69568dc0d5ed960c3a8ff72abe",
+      "size": 4772,
+      "lines": 97
+    },
+    {
+      "path": "tests/test_c3c_research_report.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "f1edfcc20d0d4a04392fe53939f5e8798694b48484a300b1575c63a057376760",
+      "size": 9335,
+      "lines": 196
+    },
+    {
+      "path": "tests/test_c3c_research_visualization.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "804b17ddc2408908d15dfbda570175330d2f2f61fe45b0712cc8f977e2cc0f20",
+      "size": 13381,
+      "lines": 273
+    },
+    {
+      "path": "tests/test_navigation_middle_reuse_v1.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "be1727e02c0f9b52f070614f4104be8e21a1209c2fe41304361dd070a06a1a24",
+      "size": 7835,
+      "lines": 143
+    },
+    {
+      "path": "tests/test_navigation_planning_integration.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "a53dd2c6368680272bbe33e403405ca04a2060a69dc8bb213a451be790c1c95f",
+      "size": 9122,
+      "lines": 150
+    },
+    {
+      "path": "tests/test_round40a_navigation_integrity_v2.py",
+      "category": "test",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "a3666ddb38e998acb24f8f18f4fe33b4d04d43c70c7ba93cd259d9b7337ea3a7",
+      "size": 19993,
+      "lines": 436
+    },
+    {
+      "path": "tools/build_r0005_research_dispatch.py",
+      "category": "tool",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "27910a19ffffdea02f9f6024c63fc7d77d0b299eda90054bf2bf771e567327d2",
+      "size": 6560,
+      "lines": 150
+    },
+    {
+      "path": "tools/build_r0005_terrain_grid.py",
+      "category": "figure-tool",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "b921b7665343afc1a96291c2ccf17a47ab13506dd9c43c757a40afb42d5088a6",
+      "size": 13124,
+      "lines": 329
+    },
+    {
+      "path": "tools/render_r0005_research_figures.py",
+      "category": "figure-tool",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "c477923907ed2280b383e2480ebdd13c3a1cb368658c469e6d018e5cde702aea",
+      "size": 30895,
+      "lines": 659
+    },
+    {
+      "path": "tools/serve_r0005_research.py",
+      "category": "tool",
+      "xy": "??",
+      "head_blob": null,
+      "index_blob": null,
+      "worktree_sha256": "2a1c47d4a9d0c2c7686c93d3b82aa9db5137c0396b8dc2d934bc178a0a6f026e",
+      "size": 4206,
+      "lines": 84
+    }
+  ]
+}
