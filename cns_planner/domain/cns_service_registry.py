@@ -190,7 +190,7 @@ def endpoint_scope_only_subsystems(requirements):
     codes = set()
     for code, name in (("C", "communication"), ("N", "navigation"), ("S", "surveillance")):
         service_map = normalize_service_requirements(
-            code, (requirements or {}).get(name) or {},
+            code, (requirements or {}).get(name) or {}, allow_research_v2=True,
         )
         if not service_map:
             continue
@@ -206,8 +206,14 @@ def endpoint_scope_only_subsystems(requirements):
     return frozenset(codes)
 
 
-def normalize_service_requirements(subsystem, requirement, *, field="required_cns"):
+def normalize_service_requirements(subsystem, requirement, *, field="required_cns",
+                                   allow_research_v2=True):
     """Normalize the optional ``services`` map on one subsystem requirement.
+
+    ``allow_research_v2`` 默认 ``True``：本函数是**读取/消费**型归一化（P14 走廊、
+    endpoint 作用域判定等都直接调用），研究状态里的 v2 合同必须能通过。**写入/载入**
+    边界 ``normalize_required_cns`` 与正式 Adopt 入口 ``canonicalize_requirement_services``
+    显式传 ``False``，因此正式 ProjectState 不能仅凭 ``version`` 字段启用研究 v2。
 
     Absence returns ``None`` so callers can preserve the byte/shape semantics of
     legacy projects.  Presence is explicit opt-in and each item is normalized in
@@ -231,6 +237,7 @@ def normalize_service_requirements(subsystem, requirement, *, field="required_cn
             raise ValueError(f"{field}.services[{key}] 必须是对象")
         result[key] = _normalize_service_requirement(
             code, key, raw_value, field=f"{field}.services[{key}]",
+            allow_research_v2=allow_research_v2,
         )
     return result
 
@@ -246,7 +253,10 @@ def required_services_for(subsystem, requirement):
 
     code = str(subsystem or "").strip().upper()
     item = requirement if isinstance(requirement, dict) else {}
-    services = normalize_service_requirements(code, item)
+    #: 读取视图只重建已落库的 service 条目：研究链的 v2 合同已由研究输入显式产生，
+    #: 这里放行 v2 以便 P14/P15 读取；**写入/载入**路径仍由 ``normalize_required_cns``
+    #: 的默认 ``allow_research_v2=False`` 拒绝，正式 ProjectState 不能凭 version 启用 v2。
+    services = normalize_service_requirements(code, item, allow_research_v2=True)
     if services is not None:
         return [deepcopy(value) for value in services.values() if value.get("required") is True]
     if item.get("required") is not True:
@@ -448,7 +458,9 @@ def canonicalize_requirement_services(subsystem, requirement, *, field="required
     """
 
     item = requirement if isinstance(requirement, dict) else {}
-    explicit = normalize_service_requirements(subsystem, item, field=field)
+    explicit = normalize_service_requirements(
+        subsystem, item, field=field, allow_research_v2=False,
+    )
     if explicit is not None:
         #: 提前跑一遍 canonical 校验（fail-closed），但**原样**返回调用方声明的映射，
         #: 让 ``normalize_required_cns`` 成为唯一规范化写入点（避免双重规范化差异）。
@@ -476,7 +488,8 @@ def canonicalize_requirement_services(subsystem, requirement, *, field="required
     }
 
 
-def _normalize_service_requirement(subsystem, key, value, *, field):
+def _normalize_service_requirement(subsystem, key, value, *, field,
+                                   allow_research_v2=False):
     explicit = validated_service_key(
         value.get("service_key"), subsystem=subsystem, field=f"{field}.service_key",
     )
@@ -526,6 +539,7 @@ def _normalize_service_requirement(subsystem, key, value, *, field):
             source.get("planning"), field=f"{field}.planning",
             fallback_confirmed=normalized.get("confirmed", False),
             fallback_source=normalized.get("source"),
+            allow_research_v2=allow_research_v2,
         )
     #: Round 29-H：Radar 的 **Radar-I orientation-first** 规划契约必须随服务身份一起
     #: 进入 canonical ``services``（显式声明与 recommendation 派生两条路径**同一结果**）。
@@ -595,10 +609,29 @@ NAVIGATION_INTEGRITY_POLICY_SOURCE = (
 
 
 def _normalize_navigation_integrity_planning(value, *, field, fallback_confirmed=False,
-                                             fallback_source=None):
+                                             fallback_source=None,
+                                             allow_research_v2=False):
     raw = value if isinstance(value, dict) else {}
     if value is not None and not isinstance(value, dict):
         raise ValueError(f"{field} 必须是对象")
+    #: 研究专用 v2 兼容层：只有输入**显式**声明 ``navigation_integrity_monitoring_v2``
+    #: （``contract_version`` 或等价的 ``version``）才会进入；未声明版本的正式 v1
+    #: 默认路径与下面的历史归一化逐字段一致，绝不隐式升级到 v2。未知版本 / 版本冲突
+    #: 在此 fail-closed（绝不静默降级回 v1）。
+    from .navigation_integrity_contract_v2 import normalize_planning
+    research_planning = normalize_planning(raw, field=field)
+    if research_planning is not None:
+        #: 权限边界：正式 ProjectState 写入/载入路径不得**仅凭** version 字段启用
+        #: 研究专用 v2 合同。``allow_research_v2`` 只能由研究链在自己的调用点显式传入，
+        #: 它不是一个可被 ProjectState 序列化字段满足的开关。正式路径遇到 v2 一律
+        #: fail-closed，绝不静默降级为 v1（降级会掩盖越权输入）。
+        if not allow_research_v2:
+            raise ValueError(
+                f"{field} 声明了研究专用 N v2 合同 "
+                "(navigation_integrity_monitoring_v2)，但当前调用路径不允许 "
+                "research_isolated v2；正式 ProjectState 只能使用 v1 合同"
+            )
+        return research_planning
     fixed = {
         "placement_scope": "route_endpoints",
         "required_monitor_per_endpoint": 1,

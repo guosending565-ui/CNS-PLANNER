@@ -347,6 +347,12 @@ class HeavyTaskService:
                 "contract_fields": list(TASK_REQUIRED_FIELDS),
             },
         }
+        if task_type == "r0005_research_checkpoint_restore":
+            payload = record.get("worker_payload") or {}
+            view.update({key: deepcopy(payload.get(key)) for key in (
+                "run_id", "input_version", "contract_version", "authoritative_result_list_sha256", "mode", "source_run_id")})
+            view["result_ready"] = self.store.publish_record(record["task_id"]) is not None
+            view["confirmation_allowed"] = False
         return view
 
     @staticmethod

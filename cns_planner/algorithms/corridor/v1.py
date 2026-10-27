@@ -73,7 +73,7 @@ class CNSServiceCorridorV1:
         surface_facts_fingerprint=None, radar_service_evidence=None,
         radar_metric_projector=None, navigation_service_evidence=None,
         navigation_metric_projector=None, navigation_endpoint_evidence=None,
-        prepared_cells=None,
+        prepared_cells=None, navigation_integrity_supplement=None,
     ):
         """评估服务走廊。
 
@@ -115,6 +115,17 @@ class CNSServiceCorridorV1:
         因此旧调用方的行为、结果与指纹逐字段不变；传入时结果与不传必须逐字段一致
         （``prepared`` 条目只含对该组合幂等的记忆化字段，见 :meth:`prepare_cells`）。
         """
+        if navigation_integrity_supplement is not None:
+            #: B2-1：P14 只**追加**版本化 supplement，不替换任何 canonical 字段。
+            #: 未知合同版本 / 非 proposal 的载荷一律拒绝，绝不静默接受。
+            if (
+                not isinstance(navigation_integrity_supplement, dict)
+                or str(navigation_integrity_supplement.get("contract_version") or "")
+                != "navigation_integrity_supplement_v1"
+            ):
+                raise ValueError("未知 navigation_integrity_supplement 合同版本")
+            if navigation_integrity_supplement.get("proposal_only") is not True:
+                raise ValueError("navigation_integrity_supplement 必须是 proposal_only")
         if isinstance(preflight, dict):
             tier = preflight.get("tier")
             if tier == COMPLEXITY_TIER_CEILING:
@@ -176,6 +187,13 @@ class CNSServiceCorridorV1:
             fingerprint_input["navigation_service_evidence"] = navigation_service_evidence
         if navigation_endpoint_evidence is not None:
             fingerprint_input["navigation_endpoint_evidence"] = navigation_endpoint_evidence
+        #: B2-1：完整 ``nav-planning-`` supplement 身份（含其 input_fingerprint）进入
+        #: P14 输入指纹。配置变化必须改变 canonical P14 身份，否则重算后仍可能被
+        #: 误判 current。无配置时该键不存在，旧 P14 指纹逐字节不变。
+        if navigation_integrity_supplement is not None:
+            fingerprint_input["navigation_integrity_supplement"] = (
+                navigation_integrity_supplement
+            )
         input_fingerprint = _fingerprint(fingerprint_input)
         geometry_fingerprint = _fingerprint([
             {"route_id": item.get("route_id"), "path": item.get("path")} for item in routes or []
@@ -233,6 +251,15 @@ class CNSServiceCorridorV1:
         }
         if navigation_endpoint_evidence is not None:
             result["endpoint_service_evidence"] = deepcopy(navigation_endpoint_evidence)
+        #: B2-1：版本化 NM3 supplement 只追加，**不替换** ``status`` / ``routes`` /
+        #: ``voxels`` / ``endpoint_service_evidence``。无配置时不产生该键。
+        if navigation_integrity_supplement is not None:
+            result["navigation_integrity_supplement"] = deepcopy(
+                navigation_integrity_supplement
+            )
+            result["navigation_integrity_supplement_fingerprint"] = (
+                navigation_integrity_supplement.get("input_fingerprint")
+            )
         return result
 
     def prepare_cells(self, grid, grid_attributes, surface_class_provider=None):

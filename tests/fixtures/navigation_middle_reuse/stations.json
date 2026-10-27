@@ -1,0 +1,200 @@
+[
+  {
+    "site_id": "NEW-422750-3300500",
+    "physical_group": "NEW-422750-3300500",
+    "coordinate": [
+      122.2003998020633,
+      29.832559601101323
+    ],
+    "ground_egm2008_m": 10.300000190734863,
+    "mount_m": 5.0,
+    "origin_egm2008_m": 15.300000190734863,
+    "new": true,
+    "reuse_class": "greenfield",
+    "devices": [
+      "C",
+      "S"
+    ],
+    "N_roles": [],
+    "conditional_cost": 184.0,
+    "unknowns": [
+      "permission",
+      "construction",
+      "power_backhaul",
+      "RF_LOS_interference",
+      "GNSS_environment"
+    ]
+  },
+  {
+    "site_id": "NEW-425000-3301500",
+    "physical_group": "NEW-425000-3301500",
+    "coordinate": [
+      122.2236175354575,
+      29.84172251968838
+    ],
+    "ground_egm2008_m": 8.710000038146973,
+    "mount_m": 5.0,
+    "origin_egm2008_m": 13.710000038146973,
+    "new": true,
+    "reuse_class": "greenfield",
+    "devices": [
+      "C",
+      "S"
+    ],
+    "N_roles": [],
+    "conditional_cost": 184.0,
+    "unknowns": [
+      "permission",
+      "construction",
+      "power_backhaul",
+      "RF_LOS_interference",
+      "GNSS_environment"
+    ]
+  },
+  {
+    "site_id": "takeoff_landing_site:N006",
+    "physical_group": "PHY:RLS-2597716FD302",
+    "coordinate": [
+      122.1883333333,
+      29.8194444444
+    ],
+    "ground_egm2008_m": 72.08999633789062,
+    "mount_m": 5.0,
+    "origin_egm2008_m": 77.08999633789062,
+    "new": false,
+    "reuse_class": "existing_shared_site",
+    "devices": [
+      "C",
+      "S"
+    ],
+    "N_roles": [],
+    "conditional_cost": 79.0,
+    "unknowns": [
+      "source_CRS_and_installation_survey",
+      "permission",
+      "bearing_capacity",
+      "power_backhaul",
+      "GNSS_environment",
+      "RF_LOS_interference",
+      "certification"
+    ]
+  },
+  {
+    "site_id": "tower-colocation:33090301000160",
+    "physical_group": "PHY:tower-colocation:33090301000160",
+    "coordinate": [
+      122.240242,
+      29.839593
+    ],
+    "ground_egm2008_m": 45.2599983215332,
+    "mount_m": 15.0,
+    "origin_egm2008_m": 60.2599983215332,
+    "new": false,
+    "reuse_class": "tower_colocation_host",
+    "devices": [
+      "C",
+      "S"
+    ],
+    "N_roles": [],
+    "conditional_cost": 74.0,
+    "unknowns": [
+      "source_CRS_and_installation_survey",
+      "permission",
+      "bearing_capacity",
+      "power_backhaul",
+      "GNSS_environment",
+      "RF_LOS_interference",
+      "certification"
+    ]
+  },
+  {
+    "site_id": "tower-colocation:330903500010001628",
+    "physical_group": "PHY:tower-colocation:330903500010001628",
+    "coordinate": [
+      122.187705,
+      29.822895
+    ],
+    "ground_egm2008_m": 30.549999237060547,
+    "mount_m": 15.0,
+    "origin_egm2008_m": 45.54999923706055,
+    "new": false,
+    "reuse_class": "tower_colocation_host",
+    "devices": [
+      "C",
+      "S",
+      "N"
+    ],
+    "N_roles": [
+      "destination"
+    ],
+    "conditional_cost": 94.0,
+    "unknowns": [
+      "source_CRS_and_installation_survey",
+      "permission",
+      "bearing_capacity",
+      "power_backhaul",
+      "GNSS_environment",
+      "RF_LOS_interference",
+      "certification"
+    ]
+  },
+  {
+    "site_id": "tower-colocation:330903908000000198",
+    "physical_group": "PHY:tower-colocation:330903908000000198",
+    "coordinate": [
+      122.254463,
+      29.868569
+    ],
+    "ground_egm2008_m": 13.670000076293945,
+    "mount_m": 3.0,
+    "origin_egm2008_m": 34.9980583190918,
+    "new": false,
+    "reuse_class": "tower_colocation_host",
+    "devices": [
+      "C",
+      "S"
+    ],
+    "N_roles": [],
+    "conditional_cost": 74.0,
+    "unknowns": [
+      "source_CRS_and_installation_survey",
+      "permission",
+      "bearing_capacity",
+      "power_backhaul",
+      "GNSS_environment",
+      "RF_LOS_interference",
+      "certification"
+    ]
+  },
+  {
+    "site_id": "tower-colocation:330903908000000672",
+    "physical_group": "PHY:tower-colocation:330903908000000672",
+    "coordinate": [
+      122.269081,
+      29.872551
+    ],
+    "ground_egm2008_m": 1.75,
+    "mount_m": 31.0,
+    "origin_egm2008_m": 32.75,
+    "new": false,
+    "reuse_class": "tower_colocation_host",
+    "devices": [
+      "C",
+      "S",
+      "N"
+    ],
+    "N_roles": [
+      "origin"
+    ],
+    "conditional_cost": 94.0,
+    "unknowns": [
+      "source_CRS_and_installation_survey",
+      "permission",
+      "bearing_capacity",
+      "power_backhaul",
+      "GNSS_environment",
+      "RF_LOS_interference",
+      "certification"
+    ]
+  }
+]

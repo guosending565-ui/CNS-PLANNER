@@ -55,12 +55,18 @@ def build_navigation_integrity_endpoint_evidence(
     """Build canonical endpoint evidence for routes explicitly requiring the service."""
 
     route_results = []
+    route_contracts = {}
     providers = _installed_providers(existing_facilities)
     for route in routes or []:
         route_id = str(route.get("route_id") or "")
         requirement = navigation_integrity_requirement_for(required_cns, route_id)
         if requirement is None:
             continue
+        #: 研究专用显式 v2 兼容层：只有该 route 的 planning 显式声明 v2 时才返回
+        #: 合同；未声明版本（正式 v1 默认）返回 ``None``，下方调用保持历史形状。
+        contract = _research_contract_for(requirement)
+        if isinstance(contract, dict):
+            route_contracts[route_id] = (contract, requirement)
         endpoints = {}
         for role in ENDPOINT_ROLES:
             site_id, coordinate = _route_endpoint(route, role)
@@ -70,7 +76,7 @@ def build_navigation_integrity_endpoint_evidence(
             ]
             delivery = _delivery_fact(communication_delivery, route_id, role)
             endpoints[role] = _endpoint_record(
-                role, site_id, coordinate, matching, delivery,
+                role, site_id, coordinate, matching, delivery, contract=contract,
             )
 
         # A physical monitor/site is never allowed to discharge both endpoint duties.
@@ -118,8 +124,30 @@ def build_navigation_integrity_endpoint_evidence(
             "device_model_or_vendor_performance", "gnss_integrity_certified_or_passed",
         ],
     }
+    if route_contracts:
+        #: v2 路由的正式 policy **只来自该 route 自己的 planning**；v1 路由（无合同）
+        #: 保持上面的历史 ``policy`` 字段与输出形状，不新增任何字段。
+        from .navigation_integrity_contract_v2 import apply_evidence_policy
+        apply_evidence_policy(result, route_contracts)
     result["input_fingerprint"] = stable_fingerprint(result, prefix="nav-integrity-")
     return result
+
+
+def _research_contract_for(requirement):
+    """研究专用 v2 兼容层的唯一入口（未声明版本时返回 ``None`` = v1）。"""
+
+    from .navigation_integrity_contract_v2 import contract_from_requirement
+    return contract_from_requirement(requirement)
+
+
+def _research_contract_view(endpoint):
+    from .navigation_integrity_contract_v2 import contract_view
+    return contract_view(endpoint)
+
+
+def _research_endpoint_contract(endpoint):
+    from .navigation_integrity_contract_v2 import endpoint_contract
+    return endpoint_contract(endpoint)
 
 
 def endpoint_gap_evidence(endpoint_evidence):
@@ -138,6 +166,7 @@ def endpoint_gap_evidence(endpoint_evidence):
                     "coordinate": endpoint.get("coordinate"),
                     "reasons": endpoint.get("reasons") or [REASON_MISSING[role]],
                     "status": STATUS_CONFIRMED_DEFICIT,
+                    **_research_contract_view(endpoint),
                 })
             elif endpoint.get("status") == STATUS_UNKNOWN:
                 unknown.append({
@@ -146,6 +175,7 @@ def endpoint_gap_evidence(endpoint_evidence):
                     "coordinate": endpoint.get("coordinate"),
                     "reasons": endpoint.get("reasons") or [REASON_EVIDENCE_UNKNOWN],
                     "status": STATUS_UNKNOWN,
+                    **_research_contract_view(endpoint),
                 })
         routes.append({
             "route_id": route.get("route_id"), "service_key": SERVICE_KEY,
@@ -168,7 +198,7 @@ def _endpoint_state(role, endpoint):
     """endpoint → P16 可索引的稳定状态视图（只做改名与状态归一，不引入新口径）。"""
 
     status = str(endpoint.get("status") or STATUS_UNKNOWN)
-    return {
+    state = {
         "endpoint_role": role,
         "takeoff_landing_site_id": endpoint.get("takeoff_landing_site_id"),
         "coordinate": deepcopy(endpoint.get("coordinate")),
@@ -179,6 +209,8 @@ def _endpoint_state(role, endpoint):
         "distinct_site_ids": deepcopy(endpoint.get("distinct_site_ids") or []),
         "integrity_measurement_status": endpoint.get("integrity_measurement_status"),
     }
+    state.update(_research_contract_view(endpoint))
+    return state
 
 
 def navigation_integrity_monitor_actions(endpoint_gap):
@@ -234,6 +266,8 @@ def navigation_integrity_monitor_actions(endpoint_gap):
                     "site_binding": "takeoff_landing_site",
                     "semantics": "endpoint_monitor_missing_with_complete_site_identity",
                 },
+                #: v2：动作与 endpoint 证据读取**同一**合同与半径（v1 gap 不含这些键）。
+                **_research_contract_view(gap),
             })
     return sorted(actions, key=lambda item: item["action_id"])
 
@@ -338,8 +372,16 @@ def _hypothetical_monitor_provider(role, action):
 
 
 def _recompute_endpoint(endpoint, role):
-    """按"当前 provider 集合 + 基线 delivery 事实"重算 endpoint 状态（纯函数）。"""
+    """按"当前 provider 集合 + 基线 delivery 事实"重算 endpoint 状态（纯函数）。
 
+    v2 endpoint 记录带 ``contract_version`` / ``local_monitoring_radius_m``：what-if
+    装上 monitor 仍须通过同一水平半径判定，因此委派给研究专用 v2 兼容层；v1 记录
+    没有这两个字段，保持下面的历史语义不变。
+    """
+
+    if _research_endpoint_contract(endpoint) is not None:
+        from .navigation_integrity_contract_v2 import recompute_endpoint
+        return recompute_endpoint(endpoint, role)
     providers = list(endpoint.get("selected_installed_providers") or [])
     site_id = endpoint.get("takeoff_landing_site_id")
     coordinate = endpoint.get("coordinate")
@@ -407,7 +449,11 @@ def _route_endpoint(route, role):
     return (None if site_id in (None, "") else str(site_id), deepcopy(coordinate))
 
 
-def _endpoint_record(role, site_id, coordinate, providers, delivery):
+def _endpoint_record(role, site_id, coordinate, providers, delivery, contract=None):
+    if contract is not None:
+        #: 显式 v2（或 v2 身份不完整哨兵）由研究专用兼容层生成 endpoint 记录。
+        from .navigation_integrity_contract_v2 import endpoint_record
+        return endpoint_record(role, site_id, coordinate, providers, delivery, contract)
     reasons = []
     if not site_id or not _coordinate_usable(coordinate):
         planning = status = STATUS_UNKNOWN

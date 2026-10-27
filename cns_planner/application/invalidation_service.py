@@ -692,6 +692,16 @@ class InvalidationService:
             self.session, "closed_loop_assessment", "closed_loop_input_changed"
         )
 
+    def navigation_integrity_planning_changed(self):
+        """Explicit policy/scenario identity changed: P14 -> P15 -> P16 -> P17.
+
+        B1（D-012-F1-C2）起由唯一配置命令
+        ``CNSInputService.set_navigation_integrity_planning`` 在**归一化值真的变化**
+        时调用；同值写入不触发。这里不持久化策略、不新增结果 writer，只复用既有
+        P14→P15→P16→P17→P18/report 单向链与 Route Safety Evidence sink。
+        """
+        self.cns_corridor()
+
     def cns_corridor(self):
         """Stale only the P14 corridor result; never mutate centerline products."""
         state = self.session.state

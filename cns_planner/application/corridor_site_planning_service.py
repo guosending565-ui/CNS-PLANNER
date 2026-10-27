@@ -25,6 +25,10 @@ from ..domain.cns_service_registry import planner_family_for, service_registry_e
 from ..domain.navigation_augmentation import (
     build_navigation_service_evidence,
 )
+from ..domain.navigation_middle_reuse import (
+    POLICY_CONTRACT as NAVIGATION_MIDDLE_POLICY_CONTRACT,
+    POLICY_ID as NAVIGATION_MIDDLE_REUSE_FAMILY,
+)
 from ..domain.navigation_integrity_monitoring import (
     PLANNER_FAMILY as ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY,
     endpoint_gap_evidence, hypothetical_endpoint_monitor_evidence,
@@ -197,7 +201,28 @@ class CorridorSitePlanningService:
         selected_radar_actions = []
         selected_navigation_actions = []
         selected_endpoint_actions = []
+        selected_middle_actions = []
+        self.__dict__.pop("_navigation_middle_invalidated", None)
+        self.__dict__.pop("_navigation_middle", None)
+        self.__dict__.pop("_navigation_supplement", None)
         stop_reason = None
+        #: B2-2：显式 NM3 配置存在时，在**同一选择循环**开始前冻结一次研究性
+        #: 中段评价（与 P14 supplement 同一 ``nav-planning-`` 身份）。它只读
+        #: state / 工作副本，不写 canonical；候选动作仅作为 middle family 追加。
+        #: 无配置时 ``middle_state is None``，旧 P16 的候选 / 排序 / 停止 / cap
+        #: 逐字段不变。
+        middle_state = self._init_navigation_middle(state, facilities, baseline_corridor)
+        if middle_state and middle_state.get("status") in (
+            "upstream_identity_mismatch", "upstream_missing",
+        ):
+            return {"result": None, "missing_reason": middle_state["reason"]}
+        if middle_state:
+            actions.extend(middle_state["candidate_actions"])
+            actions.sort(key=lambda item: item["action_id"])
+        self.__dict__["_navigation_middle"] = middle_state
+        self.__dict__["_navigation_supplement"] = (
+            _navigation_middle_supplement(middle_state) if middle_state else None
+        )
         performance = _new_performance_profile(actions)
         #: Round 30-C3B（收口）：达选择上限时只读 existence probe 的**逐 tier 复用缓存**。
         #: 探测到正向候选时直接早停（不生成完整 candidate_impacts）；探测不到时把这份
@@ -224,8 +249,40 @@ class CorridorSitePlanningService:
                 )
                 current_gap = _project_endpoint_gap(current_gap, current_endpoint_evidence)
                 performance["endpoint_fast_path_apply_count"] += 1
+            elif action.get("planner_family") == NAVIGATION_MIDDLE_REUSE_FAMILY:
+                #: B2-2：typed middle N 动作**只**经既有 ``dispatch_middle_actions``
+                #: 分流；绝不落入 ``_apply_cumulative_action``，也绝不写
+                #: ``existing_cns_facilities``。supplement 随之更新，后续 P14→P15
+                #: 重算消费同一份冻结 supplement。
+                selected_middle_actions.append(deepcopy(action))
+                _apply_navigation_middle_action(
+                    self.__dict__.get("_navigation_middle"), action,
+                )
+                self.__dict__["_navigation_supplement"] = _navigation_middle_supplement(
+                    self.__dict__.get("_navigation_middle"),
+                )
             else:
                 facilities = _apply_cumulative_action(facilities, action)
+                #: B2-2：C/RID 动作改变工作设施后，**重新评价**中段共址资格
+                #: （四物理组 / local C / 航段约束）。失去资格的中段动作从本次
+                #: 选择中移除并如实登记，绝不静默保留失效提案。
+                invalidated = self._refresh_navigation_middle(
+                    facilities, selected_middle_actions,
+                )
+                if invalidated:
+                    invalid_ids = set(invalidated)
+                    selected[:] = [
+                        item for item in selected
+                        if item.get("action_id") not in invalid_ids
+                    ]
+                    selected_ids.difference_update(invalid_ids)
+                    selected_middle_actions[:] = [
+                        item for item in selected_middle_actions
+                        if item.get("action_id") not in invalid_ids
+                    ]
+                    self.__dict__.setdefault(
+                        "_navigation_middle_invalidated", [],
+                    ).extend(sorted(invalid_ids))
             if action.get("planner_family") != ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
                 current_corridor, current_gap = self._rerun(
                     facilities, radar_actions=selected_radar_actions,
@@ -267,11 +324,17 @@ class CorridorSitePlanningService:
                 #: 停止条件（Round 2.8 与 P17 一致化）：
                 #: 离散 objective 满足 **且** 连续服务投影达到可接受（或阈值证据不足，
                 #: 此时不得声称"已满足连续服务"，只能如实继续/报告）。
-                if _confirmed_objectives_met(current_gap) and (
-                    _continuous_service_acceptance(
-                        current_gap, continuous_threshold_m,
-                        continuous_route_speed_mps, continuous_aircraft_id,
-                    ).get("acceptable") is not False
+                #: B2-2：显式 NM3 配置存在时，中段 typed residual 也是同一条停止判据的
+                #: 组成部分 —— 不能因为 C/RID 已满足就丢掉仍未解决的中段 N 职责。
+                if (
+                    _confirmed_objectives_met(current_gap)
+                    and not _navigation_middle_residual(self)
+                    and (
+                        _continuous_service_acceptance(
+                            current_gap, continuous_threshold_m,
+                            continuous_route_speed_mps, continuous_aircraft_id,
+                        ).get("acceptable") is not False
+                    )
                 ):
                     stop_reason = "all_required_services_acceptable"
                     break
@@ -426,6 +489,7 @@ class CorridorSitePlanningService:
         final_radar_actions = []
         final_navigation_actions = []
         final_endpoint_actions = []
+        final_middle_actions = []
         for action in selected:
             family = action.get("planner_family")
             if family == "directional_radar":
@@ -435,14 +499,19 @@ class CorridorSitePlanningService:
             elif family == ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
                 #: endpoint 动作**不**进入 facilities，也**不**触发走廊重算。
                 final_endpoint_actions.append(deepcopy(action))
+            elif family == NAVIGATION_MIDDLE_REUSE_FAMILY:
+                #: 中段 N 动作**不**进入 facilities；只以冻结 supplement 进入
+                #: P14→P15 的最终重算（hypothetical provider）。
+                final_middle_actions.append(deepcopy(action))
             else:
                 final_facilities = _apply_cumulative_action(final_facilities, action)
         corridor_selected = bool(
-            final_radar_actions or final_navigation_actions
+            final_radar_actions or final_navigation_actions or final_middle_actions
             or any(
                 action.get("planner_family") not in (
                     "directional_radar", NAVIGATION_REFERENCE_STATION_PLANNER_FAMILY,
                     ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY,
+                    NAVIGATION_MIDDLE_REUSE_FAMILY,
                 ) for action in selected
             )
         )
@@ -478,7 +547,19 @@ class CorridorSitePlanningService:
             aircraft_id=continuous_aircraft_id,
         )
         cumulative_gain = result.get("confirmed_requirement_unit_volume_gain", 0.0)
-        authoritative_gain = final_impact.get("confirmed_requirement_unit_volume_gain", 0.0)
+        #: B2-2：typed middle 的增益单位是 **requirement unit**（每条中段职责 1），
+        #: 与 C/RID 的规划体积代理不同量纲。它照常进入同一 P16 累计增益（同一
+        #: selection/cap/stop 聚合），但在本块单独披露，绝不声称它是体积。
+        middle_gain = sum(
+            float((item.get("impact") or {}).get(
+                "confirmed_requirement_unit_volume_gain") or 0.0)
+            for item in selected
+            if item.get("planner_family") == NAVIGATION_MIDDLE_REUSE_FAMILY
+        )
+        authoritative_gain = (
+            final_impact.get("confirmed_requirement_unit_volume_gain", 0.0)
+            + middle_gain
+        )
         #: 连续服务判定与 P17 同源（同一阈值、同一投影口径）：这里如实说明它在验证
         #: 连续服务，而不是另起一次 P17 计算 —— P17 仍是严格下游的独立结果。
         report(0.93, "正在进行连续服务验证")
@@ -531,6 +612,15 @@ class CorridorSitePlanningService:
                 "persisted_as_upstream": False,
             },
         })
+        #: B2-2：typed middle 消费结果（只读、proposal-only）。无显式 NM3 配置时
+        #: 不写该键，旧 P16 结果 shape 逐字节不变。
+        middle_state = self.__dict__.get("_navigation_middle")
+        if middle_state is not None:
+            result["navigation_integrity_middle"] = _navigation_middle_result(
+                middle_state, selected,
+                invalidated=self.__dict__.get("_navigation_middle_invalidated") or [],
+            )
+            result["navigation_integrity_middle_requirement_unit_gain"] = middle_gain
         #: Round 29-K：Radar 的规划 authority 在上游 ``radar_surveillance_layout``。
         #: P16 **只读**披露其结论：proven managed gap 是**事实缺口**，绝不被改写成
         #: satisfied，也绝不进入 P16 的 action search（``p16_actionable=false``）。
@@ -566,12 +656,17 @@ class CorridorSitePlanningService:
             ["部分共塔站址高程为工程估计，实施前需现场勘察确认。"]
             if estimated_ids else []
         )
-        if not selected and _confirmed_objectives_met(baseline_gap) and (
-            baseline_acceptance.get("acceptable") is not False
+        if (
+            not selected and _confirmed_objectives_met(baseline_gap)
+            and not _navigation_middle_residual(self)
+            and baseline_acceptance.get("acceptable") is not False
         ):
             result["status"] = "no_action_required"
             result["stop_reason"] = "confirmed_objectives_already_met"
-        elif not selected and not actionable_targets and not unknown:
+        elif (
+            not selected and not actionable_targets and not unknown
+            and not _navigation_middle_residual(self)
+        ):
             #: Round 29-K：除「上游规划权威已证明不可行的 managed Radar 缺口」之外
             #: 没有任何可行动目标 ⇒ 这不是「P16 找不到方案」，而是「该缺口不属于
             #: P16 的规划权限、也不再重评」。factual gap 仍原样保留给
@@ -853,6 +948,12 @@ class CorridorSitePlanningService:
                 "evidence": [], "regressions": [],
             }, None, None)
         family = action.get("planner_family")
+        if family == NAVIGATION_MIDDLE_REUSE_FAMILY:
+            #: B2-2：typed middle 动作的**专用 what-if**。它只对冻结 supplement
+            #: 的 responsibilities 做 ``dispatch_middle_actions`` 累计试算，绝不
+            #: 落入走廊设施追加，也不重跑 P14/P15（中段 N provider 不影响 C/RID
+            #: 几何；P14/P15 的最终重算只在中选时发生一次）。
+            return self._navigation_middle_what_if(action, iteration), None, None
         if family == ENDPOINT_INTEGRITY_MONITOR_PLANNER_FAMILY:
             #: Round 29-G：endpoint 完整性监测的**专用 what-if**。
             #: 只重算 caller-owned 假想 endpoint provider 证据 → endpoint_gap_evidence，
@@ -998,6 +1099,154 @@ class CorridorSitePlanningService:
         if key:
             cache[key] = deepcopy(evidence)
         return evidence
+
+    # ---- B2-2：typed middle 冻结评价 / 共址重评 / what-if -------------------
+    def _init_navigation_middle(self, state, facilities, baseline_corridor):
+        """冻结显式 NM3 中段评价（只读；无配置时返回 ``None``）。
+
+        配置存在时要求 current P14 已携带同一 ``nav-planning-`` 身份的 supplement；
+        若重新评价的身份与 P14 不一致，**拒绝混用两套身份**（fail-closed），绝不
+        让 P16 用一份与 canonical P14 不同的事实继续布设。
+        """
+
+        from .navigation_planning_integration import (
+            SUPPLEMENT_CONTRACT_VERSION, navigation_integrity_middle_evaluation,
+            read_navigation_planning_config,
+        )
+        from .project_state import NAVIGATION_INTEGRITY_PLANNING_KEY
+
+        raw = state.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
+        config = read_navigation_planning_config(
+            {NAVIGATION_INTEGRITY_PLANNING_KEY: raw}
+        )
+        if config is None:
+            return None
+        supplement = (baseline_corridor or {}).get("navigation_integrity_supplement")
+        if (
+            not isinstance(supplement, dict)
+            or str(supplement.get("contract_version") or "")
+            != SUPPLEMENT_CONTRACT_VERSION
+        ):
+            return {
+                "status": "upstream_missing",
+                "reason": "显式 NM3 配置要求 current P14 navigation_integrity_supplement",
+            }
+        evaluation = navigation_integrity_middle_evaluation(
+            planning_config=raw,
+            routes=state.get("operational_routes") or [],
+            required_cns=state.get("required_cns") or {},
+            facilities=facilities,
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+        )
+        if evaluation is None:
+            return None
+        if evaluation.get("evaluated") is None:
+            #: missing_data：没有候选动作，但保留版本化 supplement 供如实披露。
+            return {
+                "status": "missing_data", "evaluated": None,
+                "supplement": deepcopy(evaluation["supplement"]),
+                "baseline_supplement": deepcopy(evaluation["supplement"]),
+                "responsibilities": [], "residual_gaps": [],
+                "baseline_responsibilities": [], "baseline_residual_gaps": [],
+                "candidate_actions": [], "selected_actions": [],
+                "config_fingerprint": evaluation["supplement"].get("input_fingerprint"),
+                "facility_authority": evaluation["supplement"].get("facility_authority"),
+                "policy_id": evaluation["supplement"].get("policy_id"),
+                "policy_version": evaluation["supplement"].get("policy_version"),
+                "unmapped_reuse_class_count": 0,
+            }
+        expected = str(supplement.get("input_fingerprint") or "")
+        actual = str((evaluation.get("evaluated") or {}).get("input_fingerprint") or "")
+        if not expected or actual != expected:
+            return {
+                "status": "upstream_identity_mismatch",
+                "reason": (
+                    "P14 navigation_integrity_supplement 身份与当前冻结输入不一致："
+                    "拒绝混用两套 nav-planning 身份"
+                ),
+            }
+        return _navigation_middle_from_evaluation(evaluation)
+
+    def _refresh_navigation_middle(self, facilities, selected_middle_actions):
+        """C/RID 变更后重新评价中段共址资格，并重放已选中段动作。
+
+        返回失去资格（同物理组 / 同航段 / local C 不再成立 / 已不在候选）的动作
+        id；调用方必须把它们从本次选中集合中移除并如实登记。绝不静默保留失效提案。
+        """
+
+        middle = self.__dict__.get("_navigation_middle")
+        if middle is None:
+            return []
+        from .navigation_planning_integration import (
+            navigation_integrity_middle_evaluation,
+        )
+        from .project_state import NAVIGATION_INTEGRITY_PLANNING_KEY
+
+        state = self.session.state
+        raw = state.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
+        evaluation = navigation_integrity_middle_evaluation(
+            planning_config=raw,
+            routes=state.get("operational_routes") or [],
+            required_cns=state.get("required_cns") or {},
+            facilities=facilities,
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+        )
+        if evaluation is None or evaluation.get("evaluated") is None:
+            #: 中段评价不再可用：所有已选中段动作都不能继续保持。
+            return [
+                str(item.get("action_id")) for item in selected_middle_actions or []
+            ]
+        new_middle = _navigation_middle_from_evaluation(evaluation)
+        by_id = {
+            str(item.get("action_id")): item
+            for item in new_middle.get("candidate_actions") or []
+        }
+        rows = new_middle["responsibilities"]
+        invalidated, kept = [], []
+        for action in selected_middle_actions or []:
+            candidate = by_id.get(str(action.get("action_id")))
+            if candidate is None:
+                invalidated.append(str(action.get("action_id")))
+                continue
+            try:
+                applied = _dispatch_navigation_middle(rows, candidate, new_middle)
+            except ValueError:
+                invalidated.append(str(action.get("action_id")))
+                continue
+            rows = applied["responsibilities"]
+            kept.append(deepcopy(action))
+        new_middle["responsibilities"] = rows
+        new_middle["residual_gaps"] = _navigation_middle_residual_rows(rows)
+        new_middle["selected_actions"] = kept
+        new_middle["invalidated_action_ids"] = list(invalidated)
+        self.__dict__["_navigation_middle"] = new_middle
+        self.__dict__["_navigation_supplement"] = _navigation_middle_supplement(
+            new_middle,
+        )
+        return invalidated
+
+    def _navigation_middle_what_if(self, action, iteration):
+        """typed middle 候选的专用 what-if（只 dispatch，不重跑走廊）。"""
+
+        middle = self.__dict__.get("_navigation_middle")
+        if not middle or middle.get("status"):
+            return _navigation_middle_ineligible(
+                action, iteration, "中段冻结评价不可用",
+            )
+        try:
+            after = _dispatch_navigation_middle(
+                middle["responsibilities"], action, middle,
+            )
+        except ValueError as exc:
+            return _navigation_middle_ineligible(action, iteration, str(exc))
+        impact = _navigation_middle_impact(
+            action, middle["residual_gaps"], after["residual_gaps"],
+        )
+        impact["iteration"] = iteration
+        impact["middle_supplement_fingerprint"] = middle.get("config_fingerprint")
+        return impact
 
     def _canonical_candidate_actions(self, state, targets, baseline_gap):
         """P16 canonical candidate families 的**唯一**构造入口（Round 29-K 业务裁定）。
@@ -1154,20 +1403,338 @@ class CorridorSitePlanningService:
             )
         if performance is not None:
             performance["full_corridor_rerun_count"] += 1
+        #: B2-2：what-if / 最终收口必须携带**冻结** supplement。plan 内由中段状态
+        #: 维护；没有该键时（诊断入口 / 旧调用）回退到 current P14 的 supplement，
+        #: 绝不重新生成第二份身份。
+        if "_navigation_supplement" in self.__dict__:
+            navigation_supplement = self.__dict__.get("_navigation_supplement")
+        else:
+            navigation_supplement = (
+                self.session.state.get("cns_corridor_assessment") or {}
+            ).get("navigation_integrity_supplement")
         return rerun_corridor_chain(
             self.session.state, self.corridor_model,
             self.corridor_gap_analyzer, facilities,
             radar_service_evidence=radar_evidence,
             navigation_service_evidence=navigation_evidence,
             prepared_cells=prepared_cells, timings=performance,
+            navigation_integrity_supplement=navigation_supplement,
         )
 
+
+
+# ---- B2-2：typed middle 动作 / what-if / 结果（只读，proposal-only） ---------
+
+#: NM3 研究站点类别 → P16 reuse tier 的**显式**映射。研究用 ``greenfield`` 与
+#: P16 的 ``new_build_candidate`` 是同一"新建"语义；其余类别同名直通。未知类别
+#: 保持原值、不猜测，并在结果中单独披露 ``unmapped_reuse_class_count``。
+_NAVIGATION_MIDDLE_TIER_ALIASES = {
+    "greenfield": "new_build_candidate",
+    "existing_cns_facility": "existing_cns_facility",
+    "existing_shared_site": "existing_shared_site",
+    "tower_colocation_host": "tower_colocation_host",
+    "candidate_site": "candidate_site",
+    "new_build_candidate": "new_build_candidate",
+}
+
+
+def _navigation_middle_candidate_actions(evaluated):
+    """Project frozen research candidates into P16's typed middle action shape."""
+
+    actions = []
+    for raw in (evaluated.get("P16") or {}).get("candidate_actions") or []:
+        action = deepcopy(raw)
+        source_reuse = str(action.get("reuse_class") or "")
+        action["middle_source_reuse_class"] = source_reuse or None
+        action["reuse_class"] = _NAVIGATION_MIDDLE_TIER_ALIASES.get(
+            source_reuse, source_reuse,
+        )
+        action["planner_family"] = NAVIGATION_MIDDLE_REUSE_FAMILY
+        action["service_key"] = (
+            action.get("service_key") or "N:navigation_integrity_monitoring"
+        )
+        action["subsystem"] = "N"
+        action["proposal_only"] = True
+        action["written_into_existing_cns"] = False
+        action["persisted_as_upstream"] = False
+        raw_eligibility = (
+            action.get("eligibility")
+            if isinstance(action.get("eligibility"), dict) else {}
+        )
+        action["eligibility"] = {
+            "status": "eligible",
+            "source_status": raw_eligibility.get("status"),
+            "source_eligibility": raw_eligibility.get("source_eligibility"),
+            "qualification": deepcopy(action.get("qualification")),
+            "unknowns": deepcopy(action.get("unknowns") or []),
+            "reasons": [],
+            "semantics": (
+                "typed_middle_candidate_from_frozen_research_evaluation_"
+                "installation_not_authorized"
+            ),
+        }
+        action["planning_profile"] = action.get("planning_profile") or {
+            "reuse_class": action.get("reuse_class"),
+            "add_device_allowed": None,
+            "planning_cost": None, "cost_unit": None,
+            "source": "navigation_integrity_middle_research",
+            "confirmed": False, "status": "missing_data",
+        }
+        action.setdefault("device_service_key", "N:navigation_integrity_monitoring")
+        actions.append(action)
+    return sorted(actions, key=lambda item: str(item.get("action_id") or ""))
+
+
+def _navigation_middle_from_evaluation(evaluation):
+    """Freeze one successful research evaluation as P16 middle working state."""
+
+    evaluated = evaluation["evaluated"]
+    supplement = evaluation["supplement"]
+    actions = _navigation_middle_candidate_actions(evaluated)
+    return {
+        "status": None,
+        "evaluated": evaluated,
+        "supplement": deepcopy(supplement),
+        "baseline_supplement": deepcopy(supplement),
+        "responsibilities": deepcopy(evaluated["P14"]["responsibilities"]),
+        "baseline_responsibilities": deepcopy(evaluated["P14"]["responsibilities"]),
+        "residual_gaps": deepcopy(evaluated["P15"]["residual_gaps"]),
+        "baseline_residual_gaps": deepcopy(evaluated["P15"]["residual_gaps"]),
+        "candidate_actions": actions,
+        "selected_actions": [],
+        "config_fingerprint": evaluated.get("input_fingerprint"),
+        "facility_authority": evaluated.get("facility_authority"),
+        "policy_id": (supplement or {}).get("policy_id"),
+        "policy_version": (supplement or {}).get("policy_version"),
+        "unmapped_reuse_class_count": sum(
+            1 for item in actions
+            if str(item.get("reuse_class") or "") not in REUSE_TIERS
+        ),
+    }
+
+
+def _navigation_middle_supplement(middle):
+    """Return the working supplement with the current typed responsibility rows."""
+
+    if not isinstance(middle, dict):
+        return None
+    supplement = deepcopy(middle.get("supplement") or {})
+    if not supplement:
+        return None
+    supplement["responsibilities"] = deepcopy(middle.get("responsibilities") or [])
+    supplement["residual_gaps"] = deepcopy(middle.get("residual_gaps") or [])
+    return supplement
+
+
+def _navigation_middle_residual_rows(rows):
+    return [
+        dict(
+            responsibility_id=row.get("responsibility_id"),
+            role=row.get("role"),
+            segment_index=row.get("segment_index"),
+            planning_status=row.get("planning_status"),
+        )
+        for row in rows or []
+        if isinstance(row, dict) and row.get("planning_status") != "satisfied"
+    ]
+
+
+def _dispatch_navigation_middle(rows, action, middle):
+    """Apply one typed middle action through the existing research dispatcher."""
+
+    from .navigation_planning_integration import dispatch_middle_actions
+
+    return dispatch_middle_actions(
+        rows, [action], middle["candidate_actions"],
+    )
+
+
+def _apply_navigation_middle_action(middle, action):
+    """Apply one selected middle action to the frozen working state in place."""
+
+    if not isinstance(middle, dict) or middle.get("status"):
+        raise ValueError("中段冻结评价不可用，不能应用动作")
+    applied = _dispatch_navigation_middle(middle["responsibilities"], action, middle)
+    middle["responsibilities"] = applied["responsibilities"]
+    middle["residual_gaps"] = applied["residual_gaps"]
+    middle["selected_actions"] = [
+        *(middle.get("selected_actions") or []), deepcopy(action),
+    ]
+
+
+def _navigation_middle_ineligible(action, iteration, reason):
+    return {
+        "action_id": action.get("action_id"), "iteration": iteration,
+        "status": "ineligible",
+        "confirmed_requirement_unit_volume_gain": 0.0,
+        "confirmed_gain": 0.0,
+        "continuous_service_gain": None,
+        "continuous_service_gain_threshold_crossed": False,
+        "continuous_service_gain_improved": False,
+        "newly_met_confirmed_objectives": 0,
+        "confirmed_targets": [], "target_progress": [],
+        "remaining_deficit": {
+            "assessed_target_count": 0,
+            "confirmed_deficit_targets": 0, "unknown_targets": 0,
+        },
+        "evidence_status": "no_confirmed_progress",
+        "evidence": [], "regressions": [], "unknown_regressions": [],
+        "unknown_targets": [], "unknown_reason_counts": {},
+        "reasons": [str(reason)],
+        "middle_gap_reduction": 0,
+        "provider_semantics": "hypothetical_only",
+        "written_into_existing_cns": False,
+    }
+
+
+def _navigation_middle_impact(action, before_rows, after_rows):
+    """Typed middle what-if impact (requirement-unit count, never a volume)."""
+
+    before = [
+        row for row in before_rows or []
+        if isinstance(row, dict) and row.get("planning_status") != "satisfied"
+    ]
+    after = [
+        row for row in after_rows or []
+        if isinstance(row, dict) and row.get("planning_status") != "satisfied"
+    ]
+    after_ids = {str(row.get("responsibility_id")) for row in after}
+    resolved = [
+        row for row in before
+        if str(row.get("responsibility_id")) not in after_ids
+    ]
+    count = len(resolved)
+    if count <= 0:
+        return _navigation_middle_ineligible(
+            action, None, "typed middle what-if 未产生新的 requirement-unit 进度",
+        )
+    return {
+        "action_id": action.get("action_id"),
+        "status": "eligible",
+        "confirmed_requirement_unit_volume_gain": float(count),
+        "confirmed_gain": float(count),
+        "continuous_service_gain": None,
+        "continuous_service_gain_threshold_crossed": False,
+        "continuous_service_gain_improved": False,
+        "newly_met_confirmed_objectives": count,
+        "confirmed_targets": [
+            str(row.get("responsibility_id")) for row in resolved
+        ],
+        "target_progress": [
+            {
+                "target_id": str(row.get("responsibility_id")),
+                "before_units": 0, "after_units": 1,
+                "unit_gain": 1, "unit_volume_gain": 1.0,
+                "after_combined_status": "satisfied",
+            }
+            for row in resolved
+        ],
+        "remaining_deficit": {
+            "assessed_target_count": len(before),
+            "confirmed_deficit_targets": len(after),
+            "unknown_targets": 0,
+        },
+        "evidence_status": "typed_middle_requirement_unit_progress",
+        "evidence": [{
+            "kind": "navigation_integrity_typed_middle_what_if",
+            "policy_id": NAVIGATION_MIDDLE_REUSE_FAMILY,
+            "provider_semantics": "hypothetical:",
+            "written_into_existing_cns": False,
+        }],
+        "regressions": [], "unknown_regressions": [], "unknown_targets": [],
+        "unknown_reason_counts": {},
+        "reasons": [
+            f"typed middle 动作解决 {count} 条中段 N 职责；"
+            "收益单位是 requirement unit，不是覆盖体积"
+        ],
+        "middle_gap_reduction": count,
+        "gain_semantics": "typed_middle_requirement_unit_count_not_volume",
+        "provider_semantics": "hypothetical_only",
+        "written_into_existing_cns": False,
+    }
+
+
+def _navigation_middle_result(middle, selected, invalidated=None):
+    """Public, proposal-only P16 block for typed middle consumption + P17 handoff."""
+
+    evaluated = middle.get("evaluated")
+    residual = middle.get("residual_gaps") or []
+    baseline_residual = middle.get("baseline_residual_gaps") or []
+    selected_middle = [
+        item for item in selected or []
+        if item.get("planner_family") == NAVIGATION_MIDDLE_REUSE_FAMILY
+    ]
+    candidates = middle.get("candidate_actions") or []
+    gain = max(0, len(baseline_residual) - len(residual))
+    return {
+        "available": evaluated is not None and not middle.get("status"),
+        "status": middle.get("status") or (
+            "typed_middle_gaps_residual" if residual else "satisfied"
+        ),
+        "semantics": (
+            "typed_p15_middle_gaps_consumed_through_dispatch_middle_actions_"
+            "caller_owned_hypothetical_never_written_into_existing_cns"
+        ),
+        "policy_id": middle.get("policy_id"),
+        "policy_version": middle.get("policy_version"),
+        "contract_version": (middle.get("supplement") or {}).get("contract_version"),
+        "config_fingerprint": middle.get("config_fingerprint"),
+        "facility_authority": middle.get("facility_authority"),
+        "facility_authority_is_research_assumption": (
+            middle.get("facility_authority") == "research_assumption"
+        ),
+        #: 预检 1：正式入口没有 installed / delivery 容器；默认 None 是"未提供"，
+        #: 不是"无安装设施/无交付约束"。这里如实披露，绝不用 None 冒充完整事实。
+        "installed_facilities_available": False,
+        "communication_delivery_available": False,
+        "candidate_action_count": len(candidates),
+        "candidate_action_ids": sorted(
+            str(item.get("action_id")) for item in candidates
+        ),
+        "unmapped_reuse_class_count": int(
+            middle.get("unmapped_reuse_class_count") or 0
+        ),
+        "selected_action_ids": sorted(
+            str(item.get("action_id")) for item in selected_middle
+        ),
+        "applied_action_ids": sorted(
+            str(item.get("action_id")) for item in selected_middle
+        ),
+        "baseline_responsibilities": deepcopy(
+            middle.get("baseline_responsibilities") or []
+        ),
+        "baseline_residual_gaps": deepcopy(baseline_residual),
+        "responsibilities": deepcopy(middle.get("responsibilities") or []),
+        "residual_gaps": deepcopy(residual),
+        "middle_gap_count": len(residual),
+        "middle_requirement_unit_gain": float(gain),
+        "gain_semantics": "typed_middle_requirement_unit_count_not_volume",
+        "invalidated_action_ids": sorted(
+            str(item) for item in (invalidated or middle.get("invalidated_action_ids") or [])
+        ),
+        "provider_semantics": "hypothetical:",
+        "proposal_only": True,
+        "actual_delivery": "unknown",
+        "canonical_published": False,
+        "written_into_existing_cns": False,
+        "persisted_as_upstream": False,
+        "requires_user_confirmation_and_apply": True,
+        "qualification": deepcopy(NAVIGATION_MIDDLE_POLICY_CONTRACT.get("qualification")),
+        "supplement": _navigation_middle_supplement(middle),
+    }
+
+
+def _navigation_middle_residual(service):
+    """Whether the frozen P16 middle state still has unresolved typed gaps."""
+
+    middle = service.__dict__.get("_navigation_middle")
+    return bool(middle and middle.get("residual_gaps"))
 
 
 def rerun_corridor_chain(
     state, corridor_model_prototype, corridor_gap_prototype, facilities,
     *, radar_service_evidence=None, navigation_service_evidence=None,
-    prepared_cells=None, timings=None,
+    prepared_cells=None, timings=None, navigation_integrity_supplement=None,
 ):
     """Run the existing P14→P15 chain on caller-owned working data.
 
@@ -1203,6 +1770,8 @@ def rerun_corridor_chain(
         radar_service_evidence=radar_service_evidence,
         navigation_service_evidence=navigation_service_evidence,
         prepared_cells=prepared_cells,
+        #: B2-2：冻结 supplement 与正式 P14 同一身份，typed middle gaps 不丢失。
+        navigation_integrity_supplement=navigation_integrity_supplement,
     )
     if timings is not None:
         timings["p14_seconds"] += time.perf_counter() - started

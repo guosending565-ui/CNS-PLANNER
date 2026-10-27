@@ -1,0 +1,96 @@
+{
+  "route": {
+    "route_id": "R0005",
+    "start_node_id": "N005",
+    "end_node_id": "N006",
+    "start": [
+      122.2672222222,
+      29.8666666667
+    ],
+    "end": [
+      122.1883333333,
+      29.8194444444
+    ],
+    "direction": "N005→N006",
+    "status": "passed",
+    "path": [
+      [
+        122.2672222222,
+        29.8666666667
+      ],
+      [
+        122.26611111111112,
+        29.86611111111111
+      ],
+      [
+        122.265,
+        29.86277777777778
+      ],
+      [
+        122.22277777777778,
+        29.846111111111114
+      ],
+      [
+        122.19944444444445,
+        29.835
+      ],
+      [
+        122.18944444444443,
+        29.82277777777778
+      ],
+      [
+        122.18944444444443,
+        29.821666666666665
+      ],
+      [
+        122.18944444444443,
+        29.820555555555558
+      ],
+      [
+        122.1883333333,
+        29.8194444444
+      ]
+    ],
+    "kind": "research_candidate_endpoint_view",
+    "operational_route": false,
+    "candidate_fingerprint": "layeredcandv1-516638a5914a73c430835d826205ed7648b42dd888a15a253289ea3ef6ae111f",
+    "altitude_layer_id": "ALT-100"
+  },
+  "facilities": {
+    "items": [
+      {
+        "site_id": "tower-colocation:330903500010001628",
+        "distinct_site_id": "PHY:tower-colocation:330903500010001628",
+        "coordinate": [
+          122.187705,
+          29.822895
+        ],
+        "takeoff_landing_site_id": "N006",
+        "devices": [
+          {
+            "device_id": "monitor:tower-colocation:330903500010001628",
+            "service_key": "N:navigation_integrity_monitoring",
+            "status": "active"
+          }
+        ]
+      },
+      {
+        "site_id": "tower-colocation:330903908000000672",
+        "distinct_site_id": "PHY:tower-colocation:330903908000000672",
+        "coordinate": [
+          122.269081,
+          29.872551
+        ],
+        "takeoff_landing_site_id": "N005",
+        "devices": [
+          {
+            "device_id": "monitor:tower-colocation:330903908000000672",
+            "service_key": "N:navigation_integrity_monitoring",
+            "status": "active"
+          }
+        ]
+      }
+    ]
+  },
+  "communication_delivery": "unknown"
+}

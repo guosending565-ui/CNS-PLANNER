@@ -194,5 +194,6 @@ def test_prefilter_is_disabled_when_facts_are_insufficient():
 def test_prefilter_uses_device_geometry_envelope_not_service_label():
     state = _state()
     far = _action([0.5, 0.5], service_key="C:communication")
-    #: 设备目录给出 40 m 包络；service policy 给出 4000 m 上界。取**较大者**（保守）。
-    assert _action_provider_envelope_m(far, state) == 4000.0
+    #: 设备目录给出 40 m 包络；service policy 给出 2000 m 上界（2026-10-27 半径裁定）。
+    #: 取**较大者**（保守）。
+    assert _action_provider_envelope_m(far, state) == 2000.0

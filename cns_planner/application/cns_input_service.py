@@ -349,6 +349,68 @@ class CNSInputService:
         self.invalidation.workflow("navigation_site_suitability")
         return self._save()
 
+    def navigation_integrity_planning_snapshot(self):
+        """只读投影：归一化配置 + 稳定配置身份指纹（未配置时指纹为 ``None``）。"""
+
+        from .project_state import (
+            NAVIGATION_INTEGRITY_PLANNING_KEY,
+            navigation_integrity_planning_inputs,
+            normalize_navigation_integrity_planning,
+        )
+
+        state = self.session.state
+        config = normalize_navigation_integrity_planning(
+            state.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
+        )
+        frozen = navigation_integrity_planning_inputs(config)
+        return {
+            NAVIGATION_INTEGRITY_PLANNING_KEY: deepcopy(config),
+            "input_fingerprint": frozen.get(
+                "navigation_integrity_planning_fingerprint"
+            ),
+        }
+
+    def set_navigation_integrity_planning(self, payload):
+        """B1：显式 NM3 规划配置的**唯一**写入命令。
+
+        * 请求体既可以是 ``{"navigation_integrity_planning": {...}}``，也可以直接是
+          配置对象；``None`` 表示清除（回到旧 N v2 行为）；
+        * 复用 ``read_navigation_planning_config`` 归一化，未知版本 / 未知字段直接
+          ``ValueError``，且 state 逐字节不变（归一化发生在赋值之前）；
+        * 归一化值与当前值相同 → 不保存、不触发失效、revision 不变；
+        * 变化 → 只调用既有 ``navigation_integrity_planning_changed()``（P14→P15→
+          P16→P17 + Route Safety Evidence + P18/active report），然后走既有
+          ``_save``。
+        """
+
+        from .project_state import (
+            NAVIGATION_INTEGRITY_PLANNING_KEY,
+            normalize_navigation_integrity_planning,
+        )
+
+        if not isinstance(payload, dict):
+            raise ValueError("navigation_integrity_planning 请求必须是对象")
+        if NAVIGATION_INTEGRITY_PLANNING_KEY in payload:
+            unknown = set(payload) - {NAVIGATION_INTEGRITY_PLANNING_KEY}
+            if unknown:
+                raise ValueError(
+                    "navigation_integrity_planning 请求包含未知字段："
+                    + "、".join(sorted(unknown))
+                )
+            raw = payload.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
+        else:
+            raw = payload
+        config = normalize_navigation_integrity_planning(raw)
+        state = self.session.state
+        previous = normalize_navigation_integrity_planning(
+            state.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
+        )
+        if config == previous:
+            return self.snapshot()
+        state[NAVIGATION_INTEGRITY_PLANNING_KEY] = config
+        self.invalidation.navigation_integrity_planning_changed()
+        return self._save()
+
     def candidates_from_existing(self):
         facilities = self.session.state["existing_cns_facilities"].get("items", [])
         items = [{

@@ -17,7 +17,7 @@ def wants_async_submission(path, payload):
       否则保持原有同步语义（不改变任何既有调用方的行为）。
     """
 
-    if str(path) == "/api/tasks" or str(path).startswith("/api/tasks/"):
+    if str(path) in ("/api/tasks", "/api/research/runs") or str(path).startswith("/api/tasks/"):
         return True
     if not _wants_async(payload):
         return False
@@ -58,7 +58,15 @@ class ApiHandler(BaseHTTPRequestHandler):
         return self.server.context
 
     def respond(self, data, content_type="application/json; charset=utf-8", status=200, cache=False, headers=None):
-        if not isinstance(data, bytes): data = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        if not isinstance(data, bytes):
+            # 文本型响应（HTML / Markdown / CSV 等）必须按文本编码，不能走 JSON 字符串
+            # 编码：否则报告正文会被包成 `"…\\n…"`，浏览器/下载文件里出现字面量 `\n`。
+            if str(content_type).lower().startswith("text/") or str(content_type).lower() in (
+                "application/xhtml+xml", "application/xml", "image/svg+xml",
+            ):
+                data = str(data).encode("utf-8")
+            else:
+                data = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "private, max-age=86400" if cache else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -85,6 +93,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "/api/map-figures/state",
             )
             or url.path == "/api/tasks" or url.path.startswith("/api/tasks/")
+            or url.path.startswith("/api/research/runs/")
         ) and not valid_token(self.headers, self.context.token):
             return self.respond({"error": "无效会话"}, status=403)
         try:
@@ -92,7 +101,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             revision = int(self.context.workflow.state.get("revision") or 0)
             self.respond(
                 response.data, response.content_type, response.status, response.cache,
-                headers={"X-CNS-Revision": revision},
+                headers={"X-CNS-Revision": revision, **(response.headers or {})},
             )
         except Exception as exc: self.respond({"error": str(exc)}, status=400)
 

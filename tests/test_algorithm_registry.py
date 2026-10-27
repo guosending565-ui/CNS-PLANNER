@@ -68,6 +68,7 @@ def test_default_registry_contains_only_executable_current_manifests_and_no_pyth
         ("timeline_model", "route_service_timeline_v1", "1.0"),
         ("protection_model", "tactical_protection_envelope_v1", "1.0"),
         ("site_planner", "corridor_reuse_first_site_planner_v2", "2.2"),
+        ("site_planner", "navigation_integrity_endpoint_middle_reuse_v1", "1.0"),
         ("corridor_model", "cns_service_corridor_v1", "1.3"),
         ("corridor_gap_analyzer", "cns_corridor_gap_v1", "1.2"),
         ("requirement_model", "manual_required_cns_v1", "1.0"),

@@ -69,10 +69,18 @@ TERMINAL = (SUCCEEDED, FAILED, CANCELLED, STALE)
 
 
 def file_sha256(path):
+    """P14 canonical content SHA: line endings are not protected semantics.
+
+    The workspace is checked out with ``core.autocrlf=true``, so raw Windows
+    bytes are CRLF while the historical protected values were recorded on LF.
+    Hashing the canonical LF form keeps this guard about source content instead
+    of the developer's checkout platform.
+    """
+
     digest = sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
+            digest.update(chunk.replace(b"\r\n", b"\n"))
     return digest.hexdigest()
 
 

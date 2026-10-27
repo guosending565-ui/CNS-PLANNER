@@ -228,10 +228,15 @@ REDUNDANCY_BY_SURFACE_SURFACES = ("land", "coastal_uncertain", "sea")
 
 #: 冻结的业务规则：surface → 几何规划半径（米）。
 #: 这些数字**只是几何规划半径**，不是实测覆盖，也不是保证通信/探测距离。
+#:
+#: 2026-10-27 负责人裁定：历史 4 km 通信保障半径无效，生产统一 2 km
+#: （land / coastal_uncertain / sea = 2000 m）。冗余要求不变（land/coastal 2 站、
+#: sea 1 站）。设备条目上显式的 ``coverage_geometry.radius_by_surface`` 仍是
+#: authoritative geometry；本 policy 只在该设备未显式声明时兜底。
 COMMUNICATION_RADIUS_BY_SURFACE = {
-    "land": 4000.0,
-    "coastal_uncertain": 4000.0,
-    "sea": 4000.0,
+    "land": 2000.0,
+    "coastal_uncertain": 2000.0,
+    "sea": 2000.0,
 }
 RID_RADIUS_BY_SURFACE = {
     "land": 2000.0,

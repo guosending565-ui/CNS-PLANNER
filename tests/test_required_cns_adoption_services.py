@@ -42,8 +42,9 @@ from cns_planner.domain.cns_service_registry import (  # noqa: E402
 DEFAULTS = ROOT / "cns_planner" / "config" / "defaults.json"
 
 #: 本轮裁定的冻结数值（与 cns_service_contract 的既有 canonical 常量一致）。
+#: 2026-10-27 负责人裁定：通信 4 km 无效，统一 2 km。
 EXPECTED_COMMUNICATION = {
-    "radius_by_surface": {"land": 4000.0, "coastal_uncertain": 4000.0, "sea": 4000.0},
+    "radius_by_surface": {"land": 2000.0, "coastal_uncertain": 2000.0, "sea": 2000.0},
     "redundancy_by_surface": {"land": 2, "sea": 1, "coastal_uncertain": 2},
 }
 EXPECTED_RID = {

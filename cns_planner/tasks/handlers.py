@@ -187,6 +187,32 @@ def publish_task_result(workflow, record, *, workdir):
     staged = run_result.get("staged") if isinstance(run_result.get("staged"), dict) else None
     summary = deepcopy(run_result.get("summary") or {})
 
+    from ..application.research_run_service import (
+        FRESH_TASK_TYPE as RESEARCH_FRESH_TASK_TYPE,
+        TASK_TYPE as RESEARCH_TASK_TYPE,
+    )
+    if task_type in (RESEARCH_TASK_TYPE, RESEARCH_FRESH_TASK_TYPE):
+        if staged is None or not getattr(workflow, "research_only", False):
+            raise TaskPublishError("research-only runtime and staged manifest required")
+        committed = publish_staged_artifact(workdir, staged)
+        manifest = _load_staged_payload(workdir, staged, committed)
+        if (manifest.get("authority") != "research_isolated"
+                or manifest.get("run_id") != (record.get("worker_payload") or {}).get("run_id")
+                or manifest.get("confirmation_allowed") is not False):
+            raise TaskPublishError("invalid research manifest identity")
+        from pathlib import Path
+        from ..application.research_run_service import identifier, file_sha
+        from ..persistence.project_repository import ProjectRepository
+        import json
+        manifest_path = Path(workdir).parent / "runs" / identifier(manifest["run_id"]) / "run_manifest.json"
+        ProjectRepository(manifest_path).save_bytes(
+            (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+        )
+        committed["run_manifest_sha256"] = file_sha(manifest_path)
+        # This is a research artifact publication only. No ProjectState writer.
+        return {"task_type": task_type, "scope": "研究结果（检查点恢复）",
+                "status": "published", "summary": summary, "artifact_ref": committed}
+
     if task_type == PROBE_TASK_TYPE:
         workflow.state[PROBE_STATE_KEY] = {
             "task_id": record.get("task_id"),

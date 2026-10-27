@@ -149,6 +149,34 @@ class CNSCorridorService:
             "surface_class_facts": deepcopy(state.get("surface_class_facts") or {}),
             "surface_facts_fingerprint": surface_facts_fingerprint_for(state),
         }
+        #: B1（D-012-F1-C2）：显式 NM3 规划配置必须与异步提交路径
+        #: （``tasks.task_specs._corridor_inputs``）冻结**同一份归一化值 + 同一配置
+        #: 身份指纹**。无配置时 helper 返回空字典，既有 P14 输入逐字节不变。
+        from .project_state import (
+            NAVIGATION_INTEGRITY_PLANNING_KEY,
+            navigation_integrity_planning_inputs,
+        )
+
+        inputs.update(navigation_integrity_planning_inputs(
+            payload[NAVIGATION_INTEGRITY_PLANNING_KEY]
+            if NAVIGATION_INTEGRITY_PLANNING_KEY in payload
+            else state.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
+        ))
+        #: B2-1：完整 ``nav-planning-`` supplement 输入身份在**同一处**冻结。
+        #: 同步入口与 ``task_specs._corridor_inputs`` 调用同一个 helper；无配置时
+        #: 返回空字典，既有 P14 输入与指纹逐字节不变。
+        from .navigation_planning_integration import (
+            navigation_integrity_supplement_inputs,
+        )
+
+        inputs.update(navigation_integrity_supplement_inputs(
+            planning_config=inputs.get(NAVIGATION_INTEGRITY_PLANNING_KEY),
+            routes=inputs["routes"],
+            required_cns=inputs["required_cns"],
+            facilities=inputs["existing_facilities"],
+            candidate_sites=state.get("candidate_sites") or {},
+            tower_colocation=state.get("tower_colocation_candidates") or {},
+        ))
         radar_evidence = build_radar_service_evidence(
             state.get("required_cns") or {}, state.get("radar_surveillance_layout") or {},
             route_ids=[item.get("route_id") for item in state.get("operational_routes") or []],
@@ -216,6 +244,10 @@ class CNSCorridorService:
                 ),
                 radar_service_evidence=inputs.get("radar_service_evidence"),
                 navigation_service_evidence=inputs.get("navigation_service_evidence"),
+                #: B2-1：已冻结的版本化 NM3 supplement（无配置时为 ``None``）。
+                navigation_integrity_supplement=inputs.get(
+                    "navigation_integrity_supplement"
+                ),
             )
         except CorridorComplexityBlocked as exc:
             raise CorridorScaleNotAccepted(exc.estimate, str(exc)) from exc

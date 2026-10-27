@@ -1,0 +1,692 @@
+{
+  "requirements": {
+    "status": "passed",
+    "source": "explicit_adoption_from_required_cns_recommendation",
+    "project_default": {
+      "communication": {
+        "status": "passed",
+        "required": true,
+        "coverage_requirement": 0.95,
+        "max_gap_m": 1000.0,
+        "latency_ms": 1000.0,
+        "redundancy": 1,
+        "type": {
+          "service_type": "command_control",
+          "technology": "dedicated_radio",
+          "network_scope": "dedicated",
+          "interfaces": [
+            "ip"
+          ]
+        },
+        "performance": {
+          "max_latency_s": 1.0,
+          "lost_link_threshold_s": null,
+          "max_continuous_outage_s": null,
+          "max_cumulative_outage_s": null,
+          "min_availability": null,
+          "min_redundancy": 1
+        },
+        "contingency": null,
+        "source": "engineering_assumption",
+        "confirmed": true,
+        "confirmation_status": "confirmed",
+        "service_key": "C:communication",
+        "redundancy_by_surface": {
+          "land": 2,
+          "sea": 1,
+          "coastal_uncertain": 2
+        },
+        "services": {
+          "C:communication": {
+            "service_key": "C:communication",
+            "required": true,
+            "confirmed": true,
+            "status": "passed",
+            "source": "engineering_assumption",
+            "service_requirement_source": "derived_from_confirmed_subsystem_service_key",
+            "geometry": {
+              "model": "hemisphere",
+              "model_scope": "geometric_only",
+              "omnidirectional": true,
+              "horizontal_coverage_deg": 360.0,
+              "geometry_semantics": "geometric_only_omnidirectional_hemisphere"
+            },
+            "radius_by_surface": {
+              "land": 4000.0,
+              "coastal_uncertain": 4000.0,
+              "sea": 4000.0
+            },
+            "redundancy_by_surface": {
+              "land": 2,
+              "sea": 1,
+              "coastal_uncertain": 2
+            },
+            "radius_basis": "geometric_planning_radius",
+            "maturity": "engineering_planning_baseline",
+            "parameter_origin": "round2_frozen_engineering_planning_parameter",
+            "parameter_semantics": "engineering_planning_baseline_not_verified_device_specification",
+            "missing_device_evidence": [
+              "manufacturer",
+              "model_number",
+              "frequency",
+              "tx_power",
+              "sensitivity",
+              "detection_probability",
+              "capacity",
+              "throughput",
+              "link_budget"
+            ],
+            "not_evaluated": [
+              "terrain_LOS",
+              "building_blocking",
+              "diffraction",
+              "interference",
+              "link_budget",
+              "capacity",
+              "throughput",
+              "latency"
+            ],
+            "coverage_requirement": 0.95,
+            "type": {
+              "service_type": null,
+              "technology": "unknown",
+              "network_scope": "unknown",
+              "interfaces": []
+            },
+            "performance": {
+              "max_latency_s": null,
+              "lost_link_threshold_s": null,
+              "max_continuous_outage_s": null,
+              "max_cumulative_outage_s": null,
+              "min_availability": null,
+              "min_redundancy": null
+            },
+            "contingency": null,
+            "confirmation_status": "confirmed",
+            "latency_ms": null,
+            "redundancy": null
+          }
+        }
+      },
+      "navigation": {
+        "status": "passed",
+        "required": true,
+        "coverage_requirement": 0.95,
+        "accuracy_m": 10.0,
+        "integrity": true,
+        "redundancy": 1,
+        "type": {
+          "technology": "unknown"
+        },
+        "performance": {
+          "max_horizontal_error_m": 10.0,
+          "max_vertical_error_m": null,
+          "integrity_required": true,
+          "max_time_to_alert_s": null,
+          "max_degradation_time_s": null,
+          "min_availability": null,
+          "min_redundancy": 1
+        },
+        "contingency": null,
+        "source": "engineering_assumption",
+        "confirmed": true,
+        "confirmation_status": "confirmed",
+        "services": {
+          "N:navigation_integrity_monitoring": {
+            "service_key": "N:navigation_integrity_monitoring",
+            "required": true,
+            "confirmed": true,
+            "status": "passed",
+            "source": "engineering_assumption",
+            "service_requirement_source": "derived_from_confirmed_subsystem_service_key",
+            "type": {
+              "technology": "gnss_integrity_monitoring",
+              "service_subtype": "navigation_integrity_monitoring",
+              "target": "gnss_navigation_performance"
+            },
+            "planning": {
+              "placement_scope": "route_endpoints",
+              "required_monitor_per_endpoint": 1,
+              "required_endpoint_roles": [
+                "origin",
+                "destination"
+              ],
+              "require_distinct_physical_site_per_endpoint": true,
+              "preferred_site_binding": "takeoff_landing_site",
+              "local_monitoring_radius_m": 10000.0,
+              "local_monitoring_radius_semantics": "engineering_local_monitoring_context_not_rtk_baseline_not_certified_gbas_service_volume",
+              "corridor_monitoring_required": false,
+              "delivery_service_key": "C:communication",
+              "confirmed": true,
+              "maturity": "engineering_assumption",
+              "source": "Round29-E 用户确认：导航完整性监测设备优先布设在航路起点和终点起降场，两端各至少1套独立设备；当前不沿航路中段强制布站；10 km 为 CNS-PLANNER 舟山案例局地监测关联范围工程假设，不代表 RTK baseline 或认证 GBAS service volume。"
+            },
+            "performance": {
+              "max_horizontal_error_m": null,
+              "max_vertical_error_m": null,
+              "integrity_required": null,
+              "max_time_to_alert_s": null,
+              "max_degradation_time_s": null,
+              "min_availability": null,
+              "min_redundancy": null
+            },
+            "contingency": null,
+            "confirmation_status": "confirmed",
+            "accuracy_m": null,
+            "integrity": null,
+            "redundancy": null,
+            "service_subtype": "navigation_integrity_monitoring"
+          }
+        }
+      },
+      "surveillance": {
+        "status": "passed",
+        "required": true,
+        "coverage_requirement": 0.95,
+        "update_interval_s": 2.0,
+        "redundancy": 1,
+        "type": {
+          "target_cooperation": "cooperative",
+          "sensor_mode": "passive",
+          "technology": "network_remote_id",
+          "service_subtype": "cooperative_surveillance"
+        },
+        "performance": {
+          "min_detection_range_m": null,
+          "min_detection_probability": null,
+          "max_update_interval_s": 2.0,
+          "max_track_loss_s": null,
+          "max_alert_latency_s": null,
+          "min_availability": null,
+          "min_redundancy": 1
+        },
+        "contingency": null,
+        "source": "engineering_assumption",
+        "confirmed": true,
+        "confirmation_status": "confirmed",
+        "service_key": "S:rid_cooperative",
+        "redundancy_by_surface": {
+          "land": 2,
+          "sea": 1,
+          "coastal_uncertain": 2
+        },
+        "service_subtype": "cooperative_surveillance",
+        "services": {
+          "S:rid_cooperative": {
+            "service_key": "S:rid_cooperative",
+            "required": true,
+            "confirmed": true,
+            "status": "passed",
+            "source": "engineering_assumption",
+            "service_requirement_source": "derived_from_confirmed_subsystem_service_key",
+            "geometry": {
+              "model": "hemisphere",
+              "model_scope": "geometric_only",
+              "omnidirectional": true,
+              "horizontal_coverage_deg": 360.0,
+              "geometry_semantics": "geometric_only_omnidirectional_hemisphere"
+            },
+            "radius_by_surface": {
+              "land": 2000.0,
+              "coastal_uncertain": 2000.0,
+              "sea": 5000.0
+            },
+            "redundancy_by_surface": {
+              "land": 2,
+              "sea": 1,
+              "coastal_uncertain": 2
+            },
+            "radius_basis": "geometric_planning_radius",
+            "maturity": "engineering_planning_baseline",
+            "parameter_origin": "round2_frozen_engineering_planning_parameter",
+            "parameter_semantics": "engineering_planning_baseline_not_verified_device_specification",
+            "missing_device_evidence": [
+              "manufacturer",
+              "model_number",
+              "frequency",
+              "tx_power",
+              "sensitivity",
+              "detection_probability",
+              "capacity",
+              "throughput",
+              "link_budget"
+            ],
+            "not_evaluated": [
+              "terrain_LOS",
+              "building_blocking",
+              "RF_propagation",
+              "receiver_sensitivity",
+              "packet_collision",
+              "interference",
+              "real_antenna_pattern"
+            ],
+            "coverage_requirement": 0.95,
+            "type": {
+              "target_cooperation": "cooperative",
+              "sensor_mode": null,
+              "technology": "network_remote_id",
+              "service_subtype": "cooperative_surveillance"
+            },
+            "performance": {
+              "min_detection_range_m": null,
+              "min_detection_probability": null,
+              "max_update_interval_s": null,
+              "max_track_loss_s": null,
+              "max_alert_latency_s": null,
+              "min_availability": null,
+              "min_redundancy": null
+            },
+            "contingency": null,
+            "confirmation_status": "confirmed",
+            "update_interval_s": null,
+            "redundancy": null,
+            "service_subtype": "cooperative_surveillance"
+          }
+        }
+      }
+    },
+    "route_overrides": {
+      "R0003": {
+        "communication": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "max_gap_m": 1000.0,
+          "latency_ms": 1000.0,
+          "redundancy": 1,
+          "type": {
+            "service_type": null,
+            "technology": "unknown",
+            "network_scope": "unknown",
+            "interfaces": []
+          },
+          "performance": {
+            "max_latency_s": 1.0,
+            "lost_link_threshold_s": null,
+            "max_continuous_outage_s": null,
+            "max_cumulative_outage_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed"
+        },
+        "navigation": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "accuracy_m": 10.0,
+          "integrity": true,
+          "redundancy": 1,
+          "type": {
+            "technology": "unknown"
+          },
+          "performance": {
+            "max_horizontal_error_m": 10.0,
+            "max_vertical_error_m": null,
+            "integrity_required": true,
+            "max_time_to_alert_s": null,
+            "max_degradation_time_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed"
+        },
+        "surveillance": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "update_interval_s": 2.0,
+          "redundancy": 1,
+          "type": {
+            "target_cooperation": null,
+            "sensor_mode": null,
+            "technology": "unknown"
+          },
+          "performance": {
+            "min_detection_range_m": null,
+            "min_detection_probability": null,
+            "max_update_interval_s": 2.0,
+            "max_track_loss_s": null,
+            "max_alert_latency_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed"
+        }
+      },
+      "R0004": {
+        "communication": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "max_gap_m": 1000.0,
+          "latency_ms": 1000.0,
+          "redundancy": 1,
+          "type": {
+            "service_type": null,
+            "technology": "unknown",
+            "network_scope": "unknown",
+            "interfaces": []
+          },
+          "performance": {
+            "max_latency_s": 1.0,
+            "lost_link_threshold_s": null,
+            "max_continuous_outage_s": null,
+            "max_cumulative_outage_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed"
+        },
+        "navigation": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "accuracy_m": 10.0,
+          "integrity": true,
+          "redundancy": 1,
+          "type": {
+            "technology": "unknown"
+          },
+          "performance": {
+            "max_horizontal_error_m": 10.0,
+            "max_vertical_error_m": null,
+            "integrity_required": true,
+            "max_time_to_alert_s": null,
+            "max_degradation_time_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed"
+        },
+        "surveillance": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "update_interval_s": 2.0,
+          "redundancy": 1,
+          "type": {
+            "target_cooperation": null,
+            "sensor_mode": null,
+            "technology": "unknown"
+          },
+          "performance": {
+            "min_detection_range_m": null,
+            "min_detection_probability": null,
+            "max_update_interval_s": 2.0,
+            "max_track_loss_s": null,
+            "max_alert_latency_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed"
+        }
+      },
+      "R0005": {
+        "communication": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "max_gap_m": 1000.0,
+          "latency_ms": 1000.0,
+          "redundancy": 1,
+          "type": {
+            "service_type": "command_control",
+            "technology": "dedicated_radio",
+            "network_scope": "dedicated",
+            "interfaces": [
+              "ip"
+            ]
+          },
+          "performance": {
+            "max_latency_s": 1.0,
+            "lost_link_threshold_s": null,
+            "max_continuous_outage_s": null,
+            "max_cumulative_outage_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed",
+          "service_key": "C:communication",
+          "redundancy_by_surface": {
+            "land": 2,
+            "sea": 1,
+            "coastal_uncertain": 2
+          },
+          "services": {
+            "C:communication": {
+              "service_key": "C:communication",
+              "required": true,
+              "confirmed": true,
+              "status": "passed",
+              "source": "round29f_canonical_service_registry",
+              "service_requirement_source": "round29f_formal_four_service_adoption",
+              "type": {
+                "service_type": null,
+                "technology": "unknown",
+                "network_scope": "unknown",
+                "interfaces": []
+              },
+              "performance": {
+                "max_latency_s": null,
+                "lost_link_threshold_s": null,
+                "max_continuous_outage_s": null,
+                "max_cumulative_outage_s": null,
+                "min_availability": null,
+                "min_redundancy": null
+              },
+              "contingency": null,
+              "confirmation_status": "confirmed",
+              "latency_ms": null,
+              "redundancy": null
+            }
+          }
+        },
+        "navigation": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "accuracy_m": 10.0,
+          "integrity": true,
+          "redundancy": 1,
+          "type": {
+            "technology": "unknown"
+          },
+          "performance": {
+            "max_horizontal_error_m": 10.0,
+            "max_vertical_error_m": null,
+            "integrity_required": true,
+            "max_time_to_alert_s": null,
+            "max_degradation_time_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed",
+          "service_key": "N:navigation_integrity_monitoring",
+          "services": {
+            "N:navigation_integrity_monitoring": {
+              "service_key": "N:navigation_integrity_monitoring",
+              "required": true,
+              "confirmed": true,
+              "status": "passed",
+              "source": "round29f_canonical_service_registry",
+              "service_requirement_source": "round29f_formal_four_service_adoption",
+              "type": {
+                "technology": "gnss_integrity_monitoring",
+                "service_subtype": "navigation_integrity_monitoring",
+                "target": "gnss_navigation_performance"
+              },
+              "performance": {
+                "max_horizontal_error_m": null,
+                "max_vertical_error_m": null,
+                "integrity_required": null,
+                "max_time_to_alert_s": null,
+                "max_degradation_time_s": null,
+                "min_availability": null,
+                "min_redundancy": null
+              },
+              "contingency": null,
+              "confirmation_status": "confirmed",
+              "accuracy_m": null,
+              "integrity": null,
+              "redundancy": null,
+              "service_subtype": "navigation_integrity_monitoring",
+              "planning": {
+                "contract_version": "navigation_integrity_monitoring_v2",
+                "placement_scope": "route_endpoints",
+                "required_monitor_per_endpoint": 1,
+                "required_endpoint_roles": [
+                  "origin",
+                  "destination"
+                ],
+                "require_distinct_physical_site_per_endpoint": true,
+                "preferred_site_binding": "takeoff_landing_site",
+                "local_monitoring_radius_m": 1000.0,
+                "radius_basis": "engineering_assumption",
+                "local_monitoring_radius_semantics": "engineering_local_monitoring_context_not_rtk_baseline_not_certified_gbas_service_volume",
+                "corridor_monitoring_required": false,
+                "delivery_service_key": "C:communication",
+                "confirmed": false,
+                "maturity": "engineering_assumption",
+                "source": "用户正式假设（2026-10-22）：导航完好性监视按每个起降点 1 km 局地监测关联范围规划；1 km 为 engineering_assumption，不代表 RTK baseline 或认证 GBAS service volume；每个起降点仍需 1 套独立物理设备，不沿航路中段强制布站。"
+              }
+            }
+          }
+        },
+        "surveillance": {
+          "status": "passed",
+          "required": true,
+          "coverage_requirement": 0.95,
+          "update_interval_s": 2.0,
+          "redundancy": 1,
+          "type": {
+            "target_cooperation": "cooperative",
+            "sensor_mode": "passive",
+            "technology": "network_remote_id",
+            "service_subtype": "cooperative_surveillance"
+          },
+          "performance": {
+            "min_detection_range_m": null,
+            "min_detection_probability": null,
+            "max_update_interval_s": 2.0,
+            "max_track_loss_s": null,
+            "max_alert_latency_s": null,
+            "min_availability": null,
+            "min_redundancy": 1
+          },
+          "contingency": null,
+          "source": "engineering_assumption",
+          "confirmed": true,
+          "confirmation_status": "confirmed",
+          "service_key": "S:rid_cooperative",
+          "redundancy_by_surface": {
+            "land": 2,
+            "sea": 1,
+            "coastal_uncertain": 2
+          },
+          "service_subtype": "cooperative_surveillance",
+          "services": {
+            "S:rid_cooperative": {
+              "service_key": "S:rid_cooperative",
+              "required": true,
+              "confirmed": true,
+              "status": "passed",
+              "source": "round29f_canonical_service_registry",
+              "service_requirement_source": "round29f_formal_four_service_adoption",
+              "type": {
+                "target_cooperation": "cooperative",
+                "sensor_mode": null,
+                "technology": "network_remote_id",
+                "service_subtype": "cooperative_surveillance"
+              },
+              "performance": {
+                "min_detection_range_m": null,
+                "min_detection_probability": null,
+                "max_update_interval_s": null,
+                "max_track_loss_s": null,
+                "max_alert_latency_s": null,
+                "min_availability": null,
+                "min_redundancy": null
+              },
+              "contingency": null,
+              "confirmation_status": "confirmed",
+              "update_interval_s": null,
+              "redundancy": null,
+              "service_subtype": "cooperative_surveillance"
+            },
+            "S:radar_noncooperative": {
+              "service_key": "S:radar_noncooperative",
+              "required": true,
+              "confirmed": true,
+              "status": "passed",
+              "source": "round29f_canonical_service_registry",
+              "service_requirement_source": "round29f_formal_four_service_adoption",
+              "type": {
+                "target_cooperation": "non_cooperative",
+                "sensor_mode": null,
+                "technology": "radar",
+                "service_subtype": "noncooperative_surveillance"
+              },
+              "planning_policy": {
+                "required": true,
+                "allowed_radar_types": [
+                  "radar_i"
+                ],
+                "orientation_optimization": true,
+                "orientation_policy": "bearing_derived_critical_angles",
+                "existing_tower_first": true,
+                "max_panels_per_tower": 4,
+                "allow_automatic_radar_ii_escalation": false,
+                "allow_range_relaxation": false,
+                "gap_after_proven_infeasibility": true,
+                "validation_sample_spacing_m": 5.0
+              },
+              "performance": {
+                "min_detection_range_m": null,
+                "min_detection_probability": null,
+                "max_update_interval_s": null,
+                "max_track_loss_s": null,
+                "max_alert_latency_s": null,
+                "min_availability": null,
+                "min_redundancy": null
+              },
+              "contingency": null,
+              "confirmation_status": "confirmed",
+              "update_interval_s": null,
+              "redundancy": null,
+              "service_subtype": "noncooperative_surveillance"
+            }
+          },
+          "service_requirement_mode": "all_required"
+        }
+      }
+    },
+    "metadata": {
+      "semantics": "mission_requirement_not_aircraft_capability"
+    }
+  }
+}

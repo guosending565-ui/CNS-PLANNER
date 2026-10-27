@@ -68,10 +68,12 @@ P14_BASELINE = Path(__file__).with_name("p14_protected_sha256.json")
 
 
 def file_sha256(path):
+    """P14 canonical content SHA; CRLF/LF checkout differences are not semantics."""
+
     digest = sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
+            digest.update(chunk.replace(b"\r\n", b"\n"))
     return digest.hexdigest()
 
 

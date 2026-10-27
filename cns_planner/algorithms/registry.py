@@ -14,6 +14,7 @@ from .corridor_gap.v1 import CNSCorridorGapAnalyzerV1
 from ..layered_route_planner.theta_star_v2 import LayeredRiskAwareThetaStarV2
 from ..gap.v2 import CNSGapAnalyzerV2
 from ..site_planner.corridor_reuse_first_v2 import CorridorReuseFirstSitePlannerV2
+from ..site_planner.navigation_middle_reuse_v1 import NavigationIntegrityEndpointMiddleReuseV1
 from ..risk.v1 import RiskModelV1
 from .requirements.manual_v1 import ManualRequiredCNSV1
 from .requirements.operational_context_v2 import OperationalContextRequiredCNSV2
@@ -188,6 +189,8 @@ def normalize_algorithm_selection(value):
             raise ValueError(f"{algorithm_type} 的 algorithm_type 不一致")
         if not all(str(entry.get(name) or "").strip() for name in ("algorithm_id", "version")):
             raise ValueError(f"{algorithm_type} 算法选择缺少 id/version")
+        if entry['algorithm_id'] == NavigationIntegrityEndpointMiddleReuseV1.algorithm_id:
+            raise ValueError('中段复用策略仅通过显式研究入口消费，尚不可替换 canonical P16')
         if not isinstance(entry["parameters"], dict):
             raise ValueError(f"{algorithm_type} parameters 必须是对象")
         parameters = deepcopy(entry["parameters"])
@@ -220,6 +223,7 @@ def build_default_algorithm_registry(defaults):
     registry.register(_timeline_manifest(), lambda parameters: RouteServiceTimelineV1(parameters))
     registry.register(_protection_manifest(), lambda parameters: TacticalProtectionEnvelopeV1(parameters))
     registry.register(_corridor_site_planner_v2_manifest(), lambda parameters: CorridorReuseFirstSitePlannerV2(parameters))
+    registry.register(_navigation_middle_reuse_manifest(), lambda parameters: NavigationIntegrityEndpointMiddleReuseV1(parameters))
     registry.register(_corridor_manifest(), lambda parameters: CNSServiceCorridorV1(parameters))
     registry.register(_corridor_gap_manifest(), lambda parameters: CNSCorridorGapAnalyzerV1(parameters))
     registry.register(_manual_requirement_manifest(), lambda parameters: ManualRequiredCNSV1(parameters))
@@ -398,6 +402,20 @@ def _protection_manifest():
         ("响应分量相加", "响应期内相对接近速度恒定"),
         ("不是法规 Well-Clear 或正式 DAA Detection Volume", "不评估飞机动力学"),
         (),
+    )
+
+
+def _navigation_middle_reuse_manifest():
+    return AlgorithmManifest(
+        'site_planner', NavigationIntegrityEndpointMiddleReuseV1.algorithm_id, '1.0',
+        '导航端点与中段共址复用 V1', 'CNS-PLANNER', 'conditional_research',
+        '两端各1套N，两个不同内部航段各1套N，以1000m内合法水平见证关联。',
+        ('route', 'selected_sites', 'site_pool', 'endpoint_evidence'),
+        ('selected_actions', 'stations', 'counts', 'planning_status'),
+        {'type':'object','additionalProperties':False,'properties':{'middle_segment_indices':
+            {'type':'array','minItems':2,'maxItems':2,'uniqueItems':True,'items':{'type':'integer','minimum':1}}}},
+        ('四物理组独立，本地C共址，优先已选站址',),
+        ('条件可行方案；不提供三级最优证明；不写ProjectState',),
     )
 
 

@@ -15,6 +15,7 @@ from ..domain.reporting import mark_active_report_stale
 from .closed_loop_service import rerun_p7_p10_chain
 from .continuous_service_service import STEP6_ALLOWED_ACCEPTABILITY
 from .corridor_site_planning_service import rerun_corridor_chain
+from .plan_projection import split_plan_actions
 from .production_write_authority import assert_write_authority
 from .result_currentness import projected_result
 
@@ -285,14 +286,18 @@ class PlanReviewService:
         stored = confirmed.get("source_fingerprints") or {}
         if any(current.get(key) != stored.get(key) for key in current):
             return self._rejected("stale_plan", "RequiredCNS/routes/设施/候选/设备/P14-P16 baseline 已变化")
+        facility_actions, _radar_actions, _navigation_actions, middle_actions = (
+            split_plan_actions(confirmed.get("confirmed_actions") or [])
+        )
         original = deepcopy(state)
         try:
             baseline = deepcopy(original)
             rerun_p7_p10_chain(baseline, self.coverage_model, self.capability_model, self.timeline_model, self.gap_model)
             working = deepcopy(baseline)
+            commit_actions = facility_actions if middle_actions else (confirmed.get("confirmed_actions") or [])
             facilities, refs = _apply_actions(
                 working.get("existing_cns_facilities") or {},
-                confirmed.get("confirmed_actions") or [],
+                commit_actions,
                 (confirmed.get("application") or {}).get("application_id"),
                 confirmed.get("variant_id"),
             )
@@ -301,9 +306,19 @@ class PlanReviewService:
             p10_gate = _p10_gate(baseline.get("cns_gap_analysis_v2") or {}, working.get("cns_gap_analysis_v2") or {})
             if p10_gate["status"] != "passed":
                 return self._rejected(p10_gate["status"], p10_gate["reason"])
-            planned_p14, planned_p15 = rerun_corridor_chain(
-                working, self.corridor_model, self.corridor_gap_analyzer, facilities,
-            )
+            if middle_actions:
+                #: P14/P15 与 Preview、P17 消费同一份 PlanProjectionBuilder 投影，
+                #: 不再用 working 设施单独重算一套没有 supplement 的身份。
+                apply_projection = self._navigation_projection(
+                    confirmed.get("confirmed_actions") or [],
+                    projection_id=f"p18_apply:{confirmed.get('plan_id')}",
+                )
+                planned_p14 = deepcopy(apply_projection.get("corridor_assessment") or {})
+                planned_p15 = deepcopy(apply_projection.get("corridor_gap_assessment") or {})
+            else:
+                planned_p14, planned_p15 = rerun_corridor_chain(
+                    working, self.corridor_model, self.corridor_gap_analyzer, facilities,
+                )
             evaluation = (confirmed.get("variant") or {}).get("evaluation") or {}
             if (
                 planned_p14.get("input_fingerprint") != evaluation.get("planned_p14_fingerprint")
@@ -316,6 +331,18 @@ class PlanReviewService:
                 "status": "applied", "applied_refs": refs,
                 "planning_origin": {"plan_id": confirmed.get("plan_id"), "variant_id": confirmed.get("variant_id")},
             })
+            if middle_actions:
+                committed_plan["application"].update({
+                    "not_applied_action_ids": sorted(
+                        str(item.get("action_id") or "")
+                        for item in (*_radar_actions, *_navigation_actions, *middle_actions)
+                    ),
+                    "not_applied_semantics": (
+                        "radar/navigation/middle actions are caller-owned hypothetical "
+                        "providers, not ExistingCNS facilities; only facility actions "
+                        "are written by P18 Apply"
+                    ),
+                })
             facilities_changed = facilities != (original.get("existing_cns_facilities") or {})
             if facilities_changed:
                 state["existing_cns_facilities"] = facilities
@@ -340,11 +367,32 @@ class PlanReviewService:
 
     def _evaluate_variant(self, state, review, variant):
         actions = self._actions(variant.get("selected_action_ids") or [])
-        facilities, refs = _apply_actions(
-            deepcopy(state.get("existing_cns_facilities") or {}), actions,
-            f"PVAPP-{variant['variant_id']}", variant["variant_id"],
+        facility_actions, _radar_actions, _navigation_actions, middle_actions = (
+            split_plan_actions(actions)
         )
-        p14, p15 = rerun_corridor_chain(state, self.corridor_model, self.corridor_gap_analyzer, facilities)
+        #: P18 Preview 与 P17 必须消费**同一份** PlanProjectionBuilder 投影。
+        #: typed middle N 动作只进入该投影的冻结 NM3 supplement，绝不写入工作设施
+        #: （否则会被当成普通走廊 radio 设备，错误改变 C/RID/Radar 几何判定）。
+        plan_projection = self._navigation_projection(
+            actions, projection_id=f"p18_variant:{variant['variant_id']}",
+        ) if middle_actions else None
+        if middle_actions:
+            facilities, refs = _apply_actions(
+                deepcopy(state.get("existing_cns_facilities") or {}),
+                facility_actions,
+                f"PVAPP-{variant['variant_id']}", variant["variant_id"],
+            )
+            p14 = deepcopy(plan_projection.get("corridor_assessment") or {})
+            p15 = deepcopy(plan_projection.get("corridor_gap_assessment") or {})
+        else:
+            #: 无 NM3 middle 动作时保持既有 P18 预览路径逐字段不变。
+            facilities, refs = _apply_actions(
+                deepcopy(state.get("existing_cns_facilities") or {}), actions,
+                f"PVAPP-{variant['variant_id']}", variant["variant_id"],
+            )
+            p14, p15 = rerun_corridor_chain(
+                state, self.corridor_model, self.corridor_gap_analyzer, facilities,
+            )
         baseline = projected_result(state, "cns_corridor_gap_assessment") or {}
         #: Round 2.6：本 variant **自己的** post-plan P17 投影结论。
         #: 绝不再复制权威 P17 结论，也绝不在 Confirm 之前改写现网事实。
@@ -358,11 +406,31 @@ class PlanReviewService:
             "comparison_matrix": comparison_matrix(p15),
             "confirmation_gate": confirmation_gate(baseline, p15),
             "action_summary": action_summary(actions),
+            "not_applied_action_ids": sorted(
+                str(item.get("action_id") or "")
+                for item in (*_radar_actions, *_navigation_actions, *middle_actions)
+            ),
             "continuous_service_projection": self._variant_p17_projection(
                 state, actions, projection_result, projected, projection_meta,
             ),
         }
         variant["status"] = "evaluated"
+
+    def _navigation_projection(self, actions, *, projection_id):
+        """复用既有投影构建器；不重写 P14–P17 算法，也不写任何 state。"""
+
+        projection = None if self.plan_projection is None else self.plan_projection.project(
+            actions, projection_id=projection_id,
+            original_action_ids=[
+                str(item.get("action_id") or "") for item in actions or []
+            ],
+        )
+        if split_plan_actions(actions)[3]:
+            if projection is None or projection.get("available") is not True:
+                raise ValueError(
+                    "P18 NM3 supplement 投影不可用，不得预览、确认或应用"
+                )
+        return projection
 
     def _variant_p17(self, actions):
         """算本 variant 的 projected P17（只读；不写任何状态）。"""

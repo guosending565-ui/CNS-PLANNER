@@ -36,6 +36,7 @@ from copy import deepcopy
 from ..domain.cns_service_contract import SERVICE_KEY_NAVIGATION_RTK_AUGMENTATION
 from ..domain.cns_service_registry import planner_family_for
 from ..domain.navigation_augmentation import build_navigation_service_evidence
+from ..domain.navigation_middle_reuse import POLICY_ID as NAVIGATION_MIDDLE_PLANNER_FAMILY
 from ..domain.radar_service_evidence import radar_what_if_service_evidence
 from .navigation_reference_station_planning_service import hypothetical_navigation_sites
 
@@ -65,27 +66,37 @@ def project_facilities(existing, actions):
         actions or [], key=lambda item: str(item.get("action_id") or "")
     ):
         family = action.get("planner_family")
-        if family in (PLANNER_FAMILY_DIRECTIONAL_RADAR, NAVIGATION_PLANNER_FAMILY):
-            #: 定向雷达与导航站**绝不**作为普通设施累加：它们分别经 Radar / 导航
-            #: 服务证据进入 P14（与 P16 what-if 同一口径）。
+        if family in (
+            PLANNER_FAMILY_DIRECTIONAL_RADAR, NAVIGATION_PLANNER_FAMILY,
+            NAVIGATION_MIDDLE_PLANNER_FAMILY,
+        ):
+            #: 定向雷达、导航站与 typed middle N 动作**绝不**作为普通设施累加：
+            #: 它们分别经 Radar / 导航 / 冻结 NM3 supplement 进入 P14（与 P16
+            #: what-if 同一口径）。
             continue
         facilities = _apply_cumulative_action(facilities, action)
     return facilities
 
 
 def split_plan_actions(actions):
-    """把 action 拆成 ``(facilities_actions, radar_actions, navigation_actions)``。"""
+    """把 action 拆成 ``(facilities, radar, navigation, middle)`` 四组。
 
-    facilities, radar, navigation = [], [], []
+    typed middle N 动作必须有**显式**分支；否则它会落入默认设施桶，被
+    ``project_facilities`` 写成假想设施，污染 ``written_into_existing_cns``。
+    """
+
+    facilities, radar, navigation, middle = [], [], [], []
     for action in actions or []:
         family = action.get("planner_family")
         if family == PLANNER_FAMILY_DIRECTIONAL_RADAR:
             radar.append(deepcopy(action))
         elif family == NAVIGATION_PLANNER_FAMILY:
             navigation.append(deepcopy(action))
+        elif family == NAVIGATION_MIDDLE_PLANNER_FAMILY:
+            middle.append(deepcopy(action))
         else:
             facilities.append(deepcopy(action))
-    return facilities, radar, navigation
+    return facilities, radar, navigation, middle
 
 
 def projected_already_applied(actions):
@@ -95,6 +106,108 @@ def projected_already_applied(actions):
         str(item.get("action_id") or "") for item in actions or []
         if str(item.get("status") or "") in ("applied", "already_installed")
     )
+
+
+def _project_middle_supplement(state, middle_actions):
+    """Replay P16 typed middle actions on the frozen baseline responsibilities.
+
+    P17 投影**不重新评价** NM3，也不重新生成第二份 ``nav-planning-`` 身份：它只消费
+    P16 canonical 结果里冻结的 baseline responsibilities + candidate_actions，并继续
+    通过既有 ``dispatch_middle_actions`` 累计。任何候选缺失 / 资格拒绝都 fail-closed
+    为 ``available=False``，绝不让 P17 消费一份未经本次评价的动作。
+    """
+
+    base = (state.get("cns_corridor_assessment") or {}).get(
+        "navigation_integrity_supplement"
+    )
+    if not middle_actions:
+        return {
+            "available": False,
+            "unavailable_reason": "no_middle_actions",
+            "written_into_existing_cns": False,
+            "persisted_as_upstream": False,
+        }
+    from .result_currentness import projected_result
+
+    plan = projected_result(state, "cns_corridor_site_plan") or {}
+    block = plan.get("navigation_integrity_middle")
+    unavailable = {
+        "available": False,
+        "applied_action_ids": [
+            str(item.get("action_id")) for item in middle_actions
+        ],
+        "written_into_existing_cns": False,
+        "persisted_as_upstream": False,
+    }
+    #: 旧 / stale 的 P16 middle 块**不是**当前证据：绝不把旧结果投影成新结论。
+    if plan.get("status") in (None, "stale", "not_calculated", "missing_data"):
+        return {
+            **unavailable,
+            "unavailable_reason": "p16_middle_state_not_current",
+        }
+    if not isinstance(block, dict) or block.get("available") is not True:
+        return {
+            **unavailable,
+            "unavailable_reason": "p16_middle_state_unavailable",
+        }
+    from .navigation_planning_integration import dispatch_middle_actions
+
+    candidates = [
+        deepcopy(item) for item in plan.get("candidate_actions") or []
+        if item.get("planner_family") == NAVIGATION_MIDDLE_PLANNER_FAMILY
+    ]
+    by_id = {str(item.get("action_id")): item for item in candidates}
+    rows = deepcopy(block.get("baseline_responsibilities") or [])
+    residual = deepcopy(block.get("baseline_residual_gaps") or [])
+    applied_ids = []
+    for action in middle_actions:
+        candidate = by_id.get(str(action.get("action_id")))
+        if candidate is None:
+            return {
+                **unavailable,
+                "unavailable_reason": "middle_action_not_in_frozen_candidates",
+            }
+        try:
+            applied = dispatch_middle_actions(rows, [candidate], candidates)
+        except ValueError as exc:
+            return {
+                **unavailable,
+                "unavailable_reason": "middle_action_qualification_rejected",
+                "reason": str(exc),
+            }
+        rows = applied["responsibilities"]
+        residual = applied["residual_gaps"]
+        applied_ids.append(str(action.get("action_id")))
+    supplement = deepcopy(block.get("supplement") or base or {})
+    if not isinstance(supplement, dict) or not supplement:
+        return {
+            **unavailable,
+            "unavailable_reason": "middle_supplement_missing",
+        }
+    supplement["responsibilities"] = deepcopy(rows)
+    supplement["residual_gaps"] = deepcopy(residual)
+    return {
+        "available": True,
+        "applied_action_ids": applied_ids,
+        "baseline_responsibilities": deepcopy(
+            block.get("baseline_responsibilities") or []
+        ),
+        "baseline_residual_gaps": deepcopy(
+            block.get("baseline_residual_gaps") or []
+        ),
+        "responsibilities": deepcopy(rows),
+        "residual_gaps": deepcopy(residual),
+        "middle_gap_count": len(residual),
+        "provider_semantics": "hypothetical:",
+        "written_into_existing_cns": False,
+        "persisted_as_upstream": False,
+        "supplement": supplement,
+        "supplement_fingerprint": supplement.get("input_fingerprint"),
+        "facility_authority": supplement.get("facility_authority"),
+        "proposal_only": True,
+        "actual_delivery": "unknown",
+        "canonical_published": False,
+    }
 
 
 class PlanProjectionBuilder:
@@ -141,7 +254,19 @@ class PlanProjectionBuilder:
             }
 
         facilities = project_facilities(state.get("existing_cns_facilities") or {}, selected)
-        _facility_actions, radar_actions, navigation_actions = split_plan_actions(selected)
+        (
+            _facility_actions, radar_actions, navigation_actions, middle_actions,
+        ) = split_plan_actions(selected)
+
+        #: typed middle N 动作：消费 P16 冻结的 baseline responsibilities + 候选，
+        #: 经既有 ``dispatch_middle_actions`` 累计；不重新评价 NM3、不生成第二份身份。
+        navigation_integrity_projection = _project_middle_supplement(
+            state, middle_actions,
+        )
+        navigation_supplement = (
+            navigation_integrity_projection.get("supplement")
+            if navigation_integrity_projection.get("available") is True else None
+        )
 
         radar_evidence = None
         if radar_actions:
@@ -175,6 +300,9 @@ class PlanProjectionBuilder:
             facilities,
             radar_service_evidence=radar_evidence,
             navigation_service_evidence=navigation_evidence,
+            #: 投影态必须消费与 P16 同一份冻结 typed middle supplement，否则 P15 的
+            #: typed gaps / P17 披露会与 P16 选择漂移。
+            navigation_integrity_supplement=navigation_supplement,
         )
         return {
             "available": True,
@@ -202,6 +330,13 @@ class PlanProjectionBuilder:
             "persisted_as_upstream": False,
             "requires_user_confirmation_and_apply": True,
             "written_into_existing_cns": False,
+            **(
+                {
+                    "middle_action_count": len(middle_actions),
+                    "navigation_integrity_projection": navigation_integrity_projection,
+                }
+                if middle_actions else {}
+            ),
         }
 
     # ------------------------------------------------------- P17 评估输入封装
@@ -240,6 +375,8 @@ class PlanProjectionBuilder:
                 #: Round 30-C2A：P17 的 post-plan 层与 baseline 共享同一份权威
                 #: Radar 规划 artifact（只读消费，绝不写入 ExistingCNS）。
                 "radar_surveillance_layout",
+                #: P17 投影态披露 typed middle 的动作 / 剩余职责 / 冻结 supplement。
+                "navigation_integrity_projection", "middle_action_count",
             )
             if key in projection
         }

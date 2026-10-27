@@ -3,7 +3,7 @@
 本文件只覆盖本轮新增的**纯算法/domain 契约**：
 
 * A. RID 动态范围（land 2000 / coastal_uncertain 2000 / sea 5000 / unknown fail-closed）
-* B. Communication 范围（land / coastal_uncertain / sea 均为 4000）
+* B. Communication 范围（land / coastal_uncertain / sea 均为 2000；2026-10-27 半径裁定）
 * C. ``evaluate_geometry_point``（list）与 ``GeometricProviderIndex``（index）逐项一致
 * D/E. Communication / RID 的 distinct-site 计数（含 coast 按 land、sea 单站）
 * F. service 隔离（Communication 与 RID 绝不互相充数）
@@ -182,10 +182,11 @@ def test_rid_effective_radius_resolution_and_urban_fact_only():
 
 
 @pytest.mark.parametrize("surface_class", ("land", "coastal_uncertain", "sea"))
-def test_communication_four_kilometre_radius_on_every_decidable_surface(surface_class):
+def test_communication_two_kilometre_radius_on_every_decidable_surface(surface_class):
+    #: 2026-10-27 负责人裁定：4 km 通信半径无效，统一 2 km。
     providers = [communication_provider()]
-    inside = sample(longitude=longitude_offset(3990.0), surface_class=surface_class)
-    outside = sample(longitude=longitude_offset(4010.0), surface_class=surface_class)
+    inside = sample(longitude=longitude_offset(1990.0), surface_class=surface_class)
+    outside = sample(longitude=longitude_offset(2010.0), surface_class=surface_class)
     assert evaluate_geometry_point(inside, providers)["covered"] is True
     assert evaluate_geometry_point(outside, providers)["covered"] is False
 
@@ -476,7 +477,7 @@ def rid_device(device_id, *, site_id=None, radius_by_surface=None):
 def communication_device(device_id):
     return normalize_device({
         "device_id": device_id, "name": device_id, "subsystem": "C", "role": "existing",
-        "radius_m": 4000.0, "mtbf_h": 1000,
+        "radius_m": 2000.0, "mtbf_h": 1000,
         "service_key": SERVICE_KEY_COMMUNICATION,
         "type": {"technology": "dedicated_radio", "interfaces": ["ip"]},
         "performance": {"max_latency_s": 1.0, "min_redundancy": 1},

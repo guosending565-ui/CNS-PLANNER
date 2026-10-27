@@ -228,6 +228,57 @@ def empty_safety_assessment():
     }
 
 
+#: B1（D-012-F1-C2）：显式 NM3「导航端点与中段共址复用」规划配置的**唯一**持久化
+#: 键。``None`` 表示未配置，P14–P17 继续走既有 N v2 路径；只有
+#: ``CNSInputService.set_navigation_integrity_planning`` 可以写它。
+NAVIGATION_INTEGRITY_PLANNING_KEY = "navigation_integrity_planning"
+
+
+def normalize_navigation_integrity_planning(value):
+    """规范化显式 NM3 规划配置；**复用**唯一解析器，不另写第二套解析。
+
+    * ``None`` → ``None``（未配置，保持旧 N v2 行为）；
+    * 其余形态交给 :func:`read_navigation_planning_config`：未知版本 / 未知字段 /
+      非 ``site_planner`` / 非两个独立中段绑定一律 ``ValueError``；
+    * 正式持久化配置要求**两个独立** ``middle_bindings``（与本轮接口矩阵 §1.1
+      一致）；NM3 研究回放仍可直接使用其宽松解析，不受此处收紧影响。
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("navigation_integrity_planning 必须是对象或 null")
+    from .navigation_planning_integration import read_navigation_planning_config
+
+    config = read_navigation_planning_config({NAVIGATION_INTEGRITY_PLANNING_KEY: value})
+    if config is None:
+        return None
+    if config.get("middle_bindings") is None:
+        raise ValueError("正式 navigation_integrity_planning 要求两个独立中段职责绑定")
+    return config
+
+
+def navigation_integrity_planning_inputs(value):
+    """B1：worker 快照/输入视图使用的**归一化配置 + 稳定身份指纹**。
+
+    返回值直接并入 immutable snapshot。未配置时返回**空字典**：因此无配置路径的
+    P14/P16 既有输入身份逐字节不变，绝不凭空多出两个 ``None`` 键。
+    """
+
+    config = normalize_navigation_integrity_planning(value)
+    if config is None:
+        return {}
+    from ..domain.route_safety_evidence_v2 import stable_fingerprint
+
+    return {
+        NAVIGATION_INTEGRITY_PLANNING_KEY: config,
+        "navigation_integrity_planning_fingerprint": stable_fingerprint(
+            {NAVIGATION_INTEGRITY_PLANNING_KEY: config},
+            prefix="nav-planning-config-",
+        ),
+    }
+
+
 def blank_project(defaults):
     risks = {
         "environment": assessment("not_calculated", "GRC 环境/航路规划风险接口"),
@@ -335,6 +386,9 @@ def blank_project(defaults):
         "continuous_service_acceptability": empty_continuous_service_acceptability(),
         "cns_continuous_service_policy": default_continuous_service_policy(),
         "cns_operation_scenario": default_operation_scenario(),
+        # B1（D-012-F1-C2）：显式 NM3 导航完整性规划配置。默认 ``None`` = 未配置，
+        # P14–P17 走原 N v2 路径；唯一写入者是 CNSInputService 的专用命令。
+        "navigation_integrity_planning": None,
         "cns_plan_review": empty_plan_review(),
         "confirmed_cns_plan": empty_confirmed_plan(),
         "cns_planning_reports": empty_report_collection(),
@@ -708,6 +762,11 @@ def normalize_project(value, grid_service):
     )
     value["cns_operation_scenario"] = normalize_operation_scenario(
         value.get("cns_operation_scenario")
+    )
+    # B1：显式 NM3 规划配置的 additive backfill。旧项目缺失该键时得到 ``None``
+    # （未配置），绝不从任何既有字段推断，也绝不在此自动写盘。
+    value[NAVIGATION_INTEGRITY_PLANNING_KEY] = normalize_navigation_integrity_planning(
+        value.get(NAVIGATION_INTEGRITY_PLANNING_KEY)
     )
     # 两条 policy 都规范化完成后统一处理迁移派生失效（P11 与 P16 同一规则）。
     _mark_proposals_stale_after_reuse_tier_migration(

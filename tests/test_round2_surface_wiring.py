@@ -119,7 +119,7 @@ def rid_device(identifier="RID1", *, radii=None, urban=None):
 def communication_device(identifier="COM1", *, radii=None):
     return normalize_device({
         "device_id": identifier, "name": identifier, "subsystem": "C", "role": "existing",
-        "radius_m": 4000.0, "mtbf_h": 1000,
+        "radius_m": 2000.0, "mtbf_h": 1000,
         "type": {"technology": "dedicated_radio", "interfaces": ["ip"]},
         "service_key": SERVICE_KEY_COMMUNICATION,
         "performance": {"max_latency_s": 0.2, "min_redundancy": 1},
@@ -1004,9 +1004,11 @@ def test_rid_3km_land_not_covered_and_3km_sea_covered():
 
 
 def test_communication_land_one_site_covers_but_redundancy_short(tmp_path):
+    #: 2026-10-27 半径裁定（2 km）：单站置于航路中点才能覆盖全长；只调整测试几何，
+    #: 不改"单站覆盖有、land 冗余不足（要求 2 个不同物理站址）"的判定语义。
     workflow = _configure(
         tmp_path, devices=[communication_device("COM1")],
-        facilities=[facility("F1", (0.0, 0.0005), [communication_device("COM1")])],
+        facilities=[facility("F1", (0.01, 0.0005), [communication_device("COM1")])],
         radius_surface=COMMUNICATION_RADIUS_BY_SURFACE,
     )
     facts, provider = _land_and_sea_facts(tmp_path, workflow)

@@ -39,6 +39,7 @@ class Response:
     content_type: str = "application/json; charset=utf-8"
     status: int = 200
     cache: bool = False
+    headers: object = None
 
 
 #: artifact 读取失败的**用户可见**中文提示（技术 code 另走 ``code`` 字段）。
@@ -66,6 +67,96 @@ class ApiRouter:
 
     def get(self, path, query, headers):
         context, workflow, data = self.context, self.context.workflow, self.context.data
+        research = getattr(context, "research_runs", None)
+        if path == "/api/research/bootstrap":
+            if research is None:
+                return Response({"error": "research_runtime_not_enabled"}, status=404)
+            return Response(research.bootstrap(context.token))
+        if path.startswith("/api/research/runs/"):
+            if research is None:
+                return Response({"error": "research_runtime_not_enabled"}, status=404)
+            parts = path[len("/api/research/runs/"):].split("/")
+            try:
+                if len(parts) == 3 and parts[1] == "results":
+                    raw, manifest = research.result(parts[0], parts[2])
+                    return Response(raw, headers={
+                        "X-CNS-Run-ID": manifest["run_id"],
+                        "X-CNS-Input-Version": manifest["input_version"]["id"],
+                        "X-CNS-Contract-Version": manifest["contract_version"],
+                        "X-CNS-Result-List-SHA256": manifest["authoritative_result_list_sha256"],
+                        "X-CNS-Result-SHA256": manifest["stages"][parts[2]]["result_sha256"],
+                        "X-CNS-Authority": "research_isolated",
+                    })
+                manifest = research.manifest(parts[0])
+                if len(parts) == 1 or parts[1:] == ["manifest"]:
+                    return Response(manifest, headers={
+                        "X-CNS-Run-ID": manifest["run_id"],
+                        "X-CNS-Input-Version": manifest["input_version"]["id"],
+                        "X-CNS-Input-Fingerprint": manifest["input_version"].get(
+                            "input_fingerprint", ""),
+                        "X-CNS-Contract-Version": manifest["contract_version"],
+                        "X-CNS-Result-List-SHA256": manifest["authoritative_result_list_sha256"],
+                        "X-CNS-Authority": "research_isolated",
+                    })
+                if parts[1:] == ["results"]:
+                    return Response({key: manifest[key] for key in (
+                        "run_id", "input_version", "contract_version",
+                        "authoritative_result_list_sha256", "authoritative_results", "stages")})
+                if parts[1:] == ["visualization-3d"]:
+                    payload = research.visualization_3d(parts[0])
+                    return Response(payload, headers={
+                        "X-CNS-Run-ID": manifest["run_id"],
+                        "X-CNS-Input-Version": manifest["input_version"]["id"],
+                        "X-CNS-Input-Fingerprint": manifest["input_version"].get(
+                            "input_fingerprint", ""),
+                        "X-CNS-Contract-Version": manifest["contract_version"],
+                        "X-CNS-Result-List-SHA256": manifest["authoritative_result_list_sha256"],
+                        "X-CNS-Visual-3D-SHA256": payload["payload_sha256"],
+                        "X-CNS-Vertical-Reference": "EGM2008_orthometric_to_WGS84_ellipsoidal",
+                        "X-CNS-Authority": "research_isolated",
+                    })
+                if parts[1:] == ["map"]:
+                    if not manifest.get("map_projection"):
+                        raise ValueError("run_map_projection_missing")
+                    return Response(manifest["map_projection"], headers={
+                        "X-CNS-Run-ID": manifest["run_id"],
+                        "X-CNS-Input-Version": manifest["input_version"]["id"],
+                        "X-CNS-Contract-Version": manifest["contract_version"],
+                        "X-CNS-Result-List-SHA256": manifest["authoritative_result_list_sha256"],
+                        "X-CNS-Authority": "research_isolated",
+                    })
+                if parts[1:] == ["report"]:
+                    format_name = str((query or {}).get("format", ["html"])[0] or "html").lower()
+                    if format_name not in ("html", "markdown", "md"):
+                        raise ValueError("unsupported_report_format")
+                    content, content_type, _manifest, report = research.report(
+                        parts[0], "markdown" if format_name in ("markdown", "md") else "html")
+                    return Response(content, content_type, headers={
+                        "X-CNS-Run-ID": manifest["run_id"],
+                        "X-CNS-Input-Version": manifest["input_version"]["id"],
+                        "X-CNS-Contract-Version": manifest["contract_version"],
+                        "X-CNS-Result-List-SHA256": manifest["authoritative_result_list_sha256"],
+                        "X-CNS-Report-Payload-SHA256": report["report_payload_sha256"],
+                        "X-CNS-Report-SHA256": report["report_sha256"],
+                        "X-CNS-Authority": "research_isolated",
+                    })
+            except KeyError as exc:
+                return Response({"error": str(exc)}, status=404)
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=409)
+            except Exception as exc:  # noqa: BLE001 - 三维投影 fail-closed 稳定错误码
+                from ..application.research_visualization_service import (
+                    Visualization3DUnavailable,
+                )
+
+                if isinstance(exc, Visualization3DUnavailable):
+                    return Response(exc.as_dict(), status=409)
+                raise
+            return Response({"error": "unknown_research_resource"}, status=404)
+        if (research is not None and path.startswith("/api/")
+                and not (path == "/api/health" or path == "/api/tasks"
+                         or path.startswith("/api/tasks/"))):
+            return Response({"error": "research_runtime_read_scope_only"}, status=404)
         if path == "/api/compatibility/catalog":
             return Response(workflow.compatibility_catalog_snapshot())
         research_gets = {
@@ -547,6 +638,20 @@ class ApiRouter:
 
     def post(self, path, payload):
         context, workflow, data = self.context, self.context.workflow, self.context.data
+        if path == "/api/research/runs":
+            if getattr(context, "research_runs", None) is None:
+                return Response({"error": "research_runtime_not_enabled"}, status=404)
+            from ..application.research_run_service import FRESH_TASK_TYPE, TASK_TYPE
+            mode = (payload or {}).get("mode") if isinstance(payload, dict) else None
+            if mode == "resume_checkpoint":
+                return self._task_submit(TASK_TYPE, payload)
+            if mode == "fresh_compute":
+                return self._task_submit(FRESH_TASK_TYPE, payload)
+            return Response({"error": "research_mode_not_supported",
+                             "detail": "mode 必须是 resume_checkpoint 或 fresh_compute"}, status=400)
+        if getattr(context, "research_runs", None) is not None:
+            if path != "/api/tasks" and not path.startswith("/api/tasks/"):
+                return Response({"error": "research_runtime_no_formal_mutations"}, status=403)
         original_path = path
         research_request = original_path != path
         # ---- Phase4-B6X：heavy task 提交（HTTP 202 + task_id） ------------------
@@ -929,6 +1034,23 @@ class ApiRouter:
             else CONFLICT_RETURN_EXISTING
         )
         service = self._task_service(drive=True)
+        from ..application.research_run_service import (
+            FRESH_TASK_TYPE as RESEARCH_FRESH_TASK_TYPE,
+            TASK_TYPE as RESEARCH_TASK_TYPE,
+        )
+        research_task_types = (RESEARCH_TASK_TYPE, RESEARCH_FRESH_TASK_TYPE)
+        if (getattr(self.context, "research_runs", None) is not None
+                and task_type not in research_task_types):
+            return Response({"error": "research_runtime_task_type_forbidden"}, status=403)
+        if task_type in research_task_types:
+            if getattr(self.context, "research_runs", None) is None:
+                return Response({"error": "research_runtime_not_enabled"}, status=403)
+            with service._lock:
+                existing = next((r for r in service.store.list() if
+                    (r.get("worker_payload") or {}).get("run_id") == payload.get("run_id")), None)
+                if existing:
+                    return Response({"error": "run_id_already_exists", "task_id": existing["task_id"]}, status=409)
+                return self._research_submit_locked(service, task_type, payload)
         try:
             record, created = service.submit(task_type, payload, conflict_policy=policy)
         except TaskConflictError as exc:
@@ -977,6 +1099,39 @@ class ApiRouter:
         merged["data_source_paths"] = {**resolved, **dict(payload.get("data_source_paths") or {})}
         return merged
 
+    def _research_submit_locked(self, service, task_type, payload):
+        from ..application.research_run_service import FRESH_TASK_TYPE, fresh_inputs, recovery_inputs
+        try:
+            if task_type == FRESH_TASK_TYPE:
+                inputs = fresh_inputs(self.context.workflow.state, payload)
+            else:
+                inputs = recovery_inputs(self.context.workflow.state, payload)
+            record, created = service.submit(task_type, payload)
+        except ValueError as exc:
+            return Response({"error": "research_submission_rejected", "detail": str(exc)}, status=400)
+        if task_type == FRESH_TASK_TYPE:
+            descriptor = inputs["fresh_input"]
+            return Response({
+                "task_id": record["task_id"], "run_id": inputs["run_id"],
+                "mode": "fresh_compute", "solver_executed": True,
+                "source_root": descriptor["root"],
+                "source_run_id": descriptor.get("source_run_id"),
+                "source_state_sha256": descriptor.get("source_state_sha256"),
+                "route_id": descriptor.get("route_id", "R0005"),
+                "task_status": record["status"],
+                "message": "已提交 fresh compute 任务；将在隔离研究根真实执行 P14→P18",
+            }, status=202 if created else 200)
+        checkpoint = inputs["checkpoint"]
+        return Response({
+            "task_id": record["task_id"], "run_id": inputs["run_id"],
+            "mode": "resume_checkpoint", "solver_executed": False,
+            "input_version": checkpoint["input_version"],
+            "contract_version": checkpoint["contract_version"],
+            "authoritative_result_list_sha256": checkpoint["authoritative_result_list_sha256"],
+            "source_run_id": checkpoint["source_run_id"], "task_status": record["status"],
+            "message": "已提交检查点恢复任务；P14–P18 不重新求解",
+        }, status=202 if created else 200)
+
     def _task_cancel(self, task_id):
         from ..tasks.task_store import TaskNotFoundError
 
@@ -997,7 +1152,10 @@ class ApiRouter:
         return Response({"task": view, "message": message, "cancel_outcome": outcome})
 
     def _static(self, path):
-        relative = "index.html" if path == "/" else path.lstrip("/")
+        research = getattr(self.context, "research_runs", None) is not None
+        relative = ("research.html" if research else "index.html") if path == "/" else path.lstrip("/")
+        if research and relative in ("research", "research/"):
+            relative = "research.html"
         target = (self.context.static / relative).resolve()
         static_root = self.context.static.resolve()
         if static_root not in target.parents or not target.is_file():

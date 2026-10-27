@@ -1967,6 +1967,31 @@ for _spec in (_CORRIDOR_SPEC, _PCF_SPEC, _P15_SPEC, _P16_SPEC, _RADAR_SPEC, _PRO
               _LAYERED_ROUTE_VALIDATION_SPEC):
     register_task_spec(_spec)
 
+# Recovery adapter: uses the same immutable snapshots, worker and TaskStore.
+from ..application.research_run_service import (
+    FRESH_TASK_TYPE as RESEARCH_FRESH_TASK_TYPE,
+    TASK_TYPE as RESEARCH_TASK_TYPE, fresh_compute, fresh_inputs, recovery_inputs,
+    restore_checkpoint,
+)
+register_task_spec(TaskSpec(
+    task_type=RESEARCH_TASK_TYPE, task_name="R0005 研究检查点恢复",
+    message="研究检查点等待后台校验重载（不重新求解）",
+    business_endpoint="/api/research/runs",
+    scope_key=lambda state, payload: "research:" + str(payload.get("run_id", "")),
+    input_snapshot=recovery_inputs, runner=restore_checkpoint,
+    algorithm_types=(), release="research_isolated_read_only",
+))
+# Fresh compute adapter: same snapshots / worker / TaskStore; runs the product
+# P14->P18 chain in the isolated research root and publishes a run manifest.
+register_task_spec(TaskSpec(
+    task_type=RESEARCH_FRESH_TASK_TYPE, task_name="R0005 研究 fresh compute",
+    message="研究 fresh compute 等待后台执行 P14→P18",
+    business_endpoint="/api/research/runs",
+    scope_key=lambda state, payload: "research:" + str(payload.get("run_id", "")),
+    input_snapshot=fresh_inputs, runner=fresh_compute,
+    algorithm_types=(), release="research_isolated_fresh_compute",
+))
+
 
 __all__ = [
     "CORRIDOR_TASK_TYPE", "LAYERED_CANDIDATE_TASK_TYPE",

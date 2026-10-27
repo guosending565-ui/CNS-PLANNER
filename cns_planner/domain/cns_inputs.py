@@ -130,7 +130,7 @@ def pending_required_cns() -> RequiredCNS:
     }
 
 
-def normalize_required_cns(value: dict | None) -> RequiredCNS:
+def normalize_required_cns(value: dict | None, *, allow_research_v2: bool = False) -> RequiredCNS:
     result = pending_required_cns()
     if value is None:
         return result
@@ -139,6 +139,7 @@ def normalize_required_cns(value: dict | None) -> RequiredCNS:
     result.update({key: deepcopy(current) for key, current in value.items() if key not in ("project_default", "route_overrides")})
     result["project_default"] = _normalize_requirement_set(
         value.get("project_default") or result["project_default"], field="required_cns.project_default",
+        allow_research_v2=allow_research_v2,
     )
     overrides = value.get("route_overrides") or {}
     if not isinstance(overrides, dict):
@@ -146,6 +147,7 @@ def normalize_required_cns(value: dict | None) -> RequiredCNS:
     result["route_overrides"] = {
         str(route_id): _normalize_requirement_set(
             item, field=f"required_cns.route_overrides[{route_id}]",
+            allow_research_v2=allow_research_v2,
         )
         for route_id, item in overrides.items()
     }
@@ -389,7 +391,7 @@ def normalize_requirement_service_identity(value, *, field="required_cns"):
     return result
 
 
-def _normalize_requirement_set(value, *, field="required_cns"):
+def _normalize_requirement_set(value, *, field="required_cns", allow_research_v2=False):
     if not isinstance(value, dict):
         raise ValueError("CNS 需求集合必须是对象")
     template = pending_required_cns()["project_default"]
@@ -415,6 +417,7 @@ def _normalize_requirement_set(value, *, field="required_cns"):
         merged = sync_aliases(subsystem_codes[name], merged, field=item_field)
         services = normalize_service_requirements(
             subsystem_codes[name], current, field=item_field,
+            allow_research_v2=allow_research_v2,
         )
         if services is not None:
             merged["services"] = services

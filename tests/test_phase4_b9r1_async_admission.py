@@ -681,8 +681,12 @@ def test_p14_protected_baseline_matches_workspace():
         "cns_planner/algorithms/service_capability/v1.py",
         "tests/test_cns_corridor.py",
     }
+    # Canonical P14 content hash: the workspace checkout is CRLF, while the
+    # protected fixture is recorded in LF. Line endings are not semantics.
     actual = {
-        name: hashlib.sha256((REPO_ROOT / name).read_bytes()).hexdigest()
+        name: hashlib.sha256(
+            (REPO_ROOT / name).read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest()
         for name in baseline
     }
     assert actual == baseline
@@ -700,12 +704,19 @@ def test_p14_protected_baseline_matches_workspace():
     # 冒充 Radar 评估高度），并让 S 子系统的 all_required 聚合显式支持
     # service-level not_applicable；corridor/v1.py 与 tests/test_cns_corridor.py 的
     # 哈希随之上移。
+    # C3-B 显式复核后的定向重新基线化（证据：_work/c3b/p14-review.json）：
+    # * corridor/v1.py 仅新增 ``navigation_integrity_supplement`` 的追加式合同：
+    #   未知版本拒绝、proposal_only 校验、有配置时才进入 P14 指纹；无配置时旧
+    #   结果与指纹逐字段不变。规范化 LF 后的内容 SHA 随之上移。
+    # * geometric_3d.py / service_capability/v1.py / test_cns_corridor.py 的
+    #   Git 内容与旧基线**逐字节一致**；Windows 工作区仅因 core.autocrlf 呈
+    #   CRLF，所以按规范化 LF 计算，不把换行差异登记为语义漂移。
     # 该断言的作用是"任何改动都必须显式登记"，并不是允许静默漂移。
     assert baseline["cns_planner/algorithms/coverage/geometric_3d.py"] == (
         "68f39a884ce173d11ae943a85bdb9f7b66daea2f124cdd8e5bc716a745c5f01b"
     )
     assert baseline["cns_planner/algorithms/corridor/v1.py"] == (
-        "a01a250aea542a3c99d2e217429f740d1e4885226abc85043637188b0e39191c"
+        "80240cf8d79b50f6b7edc429443b8913c27cad63fa7fcfd4fa906d5443742cf7"
     )
     assert baseline["cns_planner/algorithms/service_capability/v1.py"] == (
         "4632d2996e2fc59b8d21ec79e98676e1731d87106d53b2b600a9d176f2352a1c"
