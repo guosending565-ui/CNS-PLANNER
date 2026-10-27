@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R0005 研究运行 · Cesium 三维 · CNS Planner</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/vendor/cesium/Widgets/widgets.css">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/research.css">
+<link rel="stylesheet" href="/research3d.css">
+<script>window.CESIUM_BASE_URL = '/vendor/cesium/';</script>
+<script src="/vendor/cesium/Cesium.js"></script>
+</head>
+<body class="research-body research3d-body">
+<header class="research-topbar">
+  <div class="research-brand">
+    <strong>CNS Planner</strong>
+    <span class="research-slash">/</span>
+    <span>R0005 研究运行 · Cesium 三维</span>
+    <span class="research-badge" id="authorityBadge">research_isolated</span>
+  </div>
+  <div class="research-topbar-spacer"></div>
+  <div class="research-run-picker">
+    <label for="runSelect">已发布运行</label>
+    <select id="runSelect" aria-label="选择已发布研究运行"></select>
+    <button id="loadRun" class="research-btn secondary">加载</button>
+    <a id="backTo2d" class="research-btn secondary" href="/">二维视图</a>
+  </div>
+  <div class="research-connection" id="connection">连接研究运行时…</div>
+</header>
+
+<main class="research3d-shell">
+  <div id="cesiumContainer" aria-label="R0005 Cesium 三维视图"></div>
+
+  <aside class="research3d-panel research3d-left">
+    <section class="research-card">
+      <div class="research-card-head"><h2>三维图层</h2><span class="research-pill" id="layerState">加载中</span></div>
+      <div class="research3d-layers" id="layerToggles">
+        <label><input type="checkbox" data-layer="terrain" checked><i class="sw terrain"></i>FABDEM 地形</label>
+        <label><input type="checkbox" data-layer="route" checked><i class="sw route"></i>R0005 航路（含高度墙）</label>
+        <label><input type="checkbox" data-layer="sites" checked><i class="sw host"></i>7 个物理站址</label>
+        <label><input type="checkbox" data-layer="devices" checked><i class="sw device"></i>18 台设备方案</label>
+        <label><input type="checkbox" data-layer="N" checked><i class="sw n"></i>N 动作</label>
+        <hr>
+        <label><input type="checkbox" data-layer="C" checked><i class="sw c"></i>C 通信半径（2 km）</label>
+        <label><input type="checkbox" data-layer="RID" checked><i class="sw rid"></i>RID 合作半径</label>
+        <label><input type="checkbox" data-layer="S" checked><i class="sw s"></i>S 监视半径（unknown）</label>
+        <label class="locked"><input type="checkbox" data-layer="Radar" disabled><i class="sw radar"></i>Radar：未计算，不画覆盖</label>
+      </div>
+      <div class="research3d-camera">
+        <button class="research-btn secondary" data-camera="overview">全景</button>
+        <button class="research-btn secondary" data-camera="top">俯视</button>
+        <button class="research-btn secondary" data-camera="oblique">侧视</button>
+        <button class="research-btn secondary" data-camera="route">沿航路</button>
+      </div>
+      <div class="research3d-note">
+        三维位置使用真实 WGS84 经纬度；航路高度按 EGM2008 正高 100 m 逐点换算为椭球高。
+      </div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>垂直基准</h2><span class="research-pill" id="verticalState">待加载</span></div>
+      <div class="research-kv"><span>正高基准</span><b id="verticalCanonical">—</b></div>
+      <div class="research-kv"><span>Cesium 基准</span><b id="verticalCesium">—</b></div>
+      <div class="research-kv"><span>高度层</span><b id="verticalLayer">—</b></div>
+      <div class="research-kv"><span>N 范围</span><b id="verticalN">—</b></div>
+      <div class="research-kv"><span>geoid</span><code id="verticalGeoid">—</code></div>
+      <div class="research3d-note" id="verticalNote">h = H + N，逐点使用 EGM2008 geoid。</div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>地形与来源</h2><span class="research-pill" id="terrainState">待加载</span></div>
+      <div class="research-kv"><span>地形</span><b id="terrainSource">—</b></div>
+      <div class="research-kv"><span>网格</span><b id="terrainGrid">—</b></div>
+      <div class="research-kv"><span>高程范围</span><b id="terrainRange">—</b></div>
+      <div class="research-kv"><span>NoData</span><b id="terrainNodata">—</b></div>
+      <div class="research3d-note">FABDEM 30 m 仅用于显示，不是卫星影像，也不构成净空业务结论。</div>
+    </section>
+  </aside>
+
+  <aside class="research3d-panel research3d-right">
+    <section class="research-card research3d-inspector" id="inspector">
+      <div class="research-card-head"><h2>点击查看详情</h2><span class="research-pill" id="inspectState">未选择</span></div>
+      <div id="inspectBody" class="research3d-inspect-body">
+        <p class="research3d-empty">点击航路、站址、设备或 N 动作，查看身份、假设状态、证据来源与所属 run。</p>
+      </div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>跨端身份</h2><span class="research-pill" id="identityState">待加载</span></div>
+      <div class="research-kv"><span>run_id</span><code id="identityRunId">—</code></div>
+      <div class="research-kv"><span>input_version</span><code id="identityInputVersion">—</code></div>
+      <div class="research-kv"><span>contract_version</span><code id="identityContract">—</code></div>
+      <div class="research-kv"><span>结果清单 SHA</span><code id="identityResultSha">—</code></div>
+      <div class="research-kv"><span>3D 载荷 SHA</span><code id="identityPayloadSha">—</code></div>
+      <div class="research-kv"><span>manifest SHA</span><code id="identityManifestSha">—</code></div>
+      <div class="research3d-note">二维、三维、QGIS 与报告均消费同一 run manifest；三维不重算业务覆盖。</div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>研究输入计数</h2><span class="research-pill" id="countState">—</span></div>
+      <div class="research-counts research3d-counts">
+        <div><b id="countSites">—</b><span>站址</span></div>
+        <div><b id="countDevices">—</b><span>设备</span></div>
+        <div><b id="countHosts">—</b><span>既有宿主</span></div>
+        <div><b id="countPlanned">—</b><span>规划新建</span></div>
+        <div><b id="countN">—</b><span>N 动作</span></div>
+      </div>
+      <div class="research3d-note" id="countNote">C / RID 覆盖圈只投影设备输入半径，不是业务覆盖结论。</div>
+    </section>
+  </aside>
+
+  <div class="research3d-banner" id="radarBanner">Radar: not_calculated / unknown · 缺 radar_surveillance_layout · 不绘制有效覆盖</div>
+  <div class="research3d-legend">
+    <span><i class="dot planned"></i>规划新建站址</span>
+    <span><i class="dot host"></i>既有宿主</span>
+    <span><i class="dot n"></i>N 动作（proposal_only）</span>
+    <span><i class="dot device"></i>设备（C/N/RID）</span>
+    <span><i class="dot unknown"></i>unknown 永不为满足</span>
+  </div>
+  <div class="research3d-credit" id="credit">底图：无卫星影像 · FABDEM 30 m 地形晕渲 · EGM2008 → WGS84 椭球高</div>
+  <div class="research3d-boot" id="boot"><div>正在加载 Cesium 三维场景…</div><small id="bootStep">读取 run manifest</small></div>
+</main>
+
+<footer class="research-footer">
+  <span id="footerState">研究运行时只读 · 正式 ProjectState / Git / 原始数据均未写入</span>
+  <span id="footerIdentity">—</span>
+</footer>
+<div class="research-toast" id="toast" hidden></div>
+
+<script type="module" src="/js/research_3d.js"></script>
+</body>
+</html>
