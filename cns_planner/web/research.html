@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R0005 研究运行 · CNS Planner</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/research.css">
+</head>
+<body class="research-body">
+<header class="research-topbar">
+  <div class="research-brand">
+    <strong>CNS Planner</strong>
+    <span class="research-slash">/</span>
+    <span>R0005 研究运行</span>
+    <span class="research-badge" id="authorityBadge">research_isolated</span>
+  </div>
+  <div class="research-topbar-spacer"></div>
+  <div class="research-run-picker">
+    <label for="runSelect">已发布运行</label>
+    <select id="runSelect" aria-label="选择已发布研究运行"></select>
+    <button id="loadRun" class="research-btn secondary">加载</button>
+    <button id="refreshRun" class="research-btn secondary" title="重新读取同一 run manifest">刷新</button>
+    <a id="open3d" class="research-btn secondary" href="/research_3d.html">Cesium 三维</a>
+  </div>
+  <div class="research-connection" id="connection">连接研究运行时…</div>
+</header>
+
+<main class="research-shell">
+  <aside class="research-panel research-left">
+    <section class="research-card">
+      <div class="research-card-head"><h2>研究输入</h2><span class="research-pill" id="inputReady">加载中</span></div>
+      <div class="research-kv"><span>航路</span><b id="inputRoute">R0005</b></div>
+      <div class="research-kv"><span>源运行</span><b id="sourceRunId">—</b></div>
+      <div class="research-kv"><span>输入状态 SHA</span><code id="sourceStateSha" title="">—</code></div>
+      <div class="research-kv"><span>通信半径合同</span><b id="twoKmStatus">—</b></div>
+      <div class="research-counts" id="inputCounts">
+        <div><b>—</b><span>站点</span></div>
+        <div><b>—</b><span>设备</span></div>
+        <div><b>—</b><span>既有宿主</span></div>
+        <div><b>—</b><span>规划新建</span></div>
+        <div><b>—</b><span>N 动作</span></div>
+      </div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>允许修改的研究参数</h2><span class="research-pill warning" id="parameterChanged">默认</span></div>
+      <p class="research-note">仅 N 中段监视宿主是研究假设。改动会生成新的输入指纹并触发真实 <code>fresh_compute</code>；不改业务门限，不代表已安装/已批准。</p>
+      <label class="research-field" for="siteSelectA"><span>中段 seg 3 宿主</span><select id="siteSelectA"></select></label>
+      <label class="research-field" for="siteSelectB"><span>中段 seg 4 宿主</span><select id="siteSelectB"></select></label>
+      <div class="research-param-meta">
+        <span>合同 <code>c3b-research-parameters-1</code></span>
+        <span id="parameterDraft">默认输入</span>
+      </div>
+      <button id="submitResearch" class="research-btn primary" disabled>提交真实 fresh_compute</button>
+      <div class="research-hint" id="submitHint">载入研究输入后可用</div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>任务查询</h2><span class="research-pill" id="taskState">未提交</span></div>
+      <div class="research-kv"><span>task_id</span><code id="taskId">—</code></div>
+      <div class="research-kv"><span>run_id</span><code id="runningRunId">—</code></div>
+      <div class="research-kv"><span>进度</span><span id="taskProgress">—</span></div>
+      <div class="research-progress"><i id="taskProgressBar"></i></div>
+      <div class="research-kv"><span>消息</span><span id="taskMessage">—</span></div>
+      <div class="research-kv"><span>求解器</span><b id="solverExecuted">未运行</b></div>
+    </section>
+
+    <section class="research-card compact">
+      <div class="research-card-head"><h2>运行记录</h2><span class="research-pill" id="runCount">0</span></div>
+      <div id="runList" class="research-run-list"></div>
+    </section>
+  </aside>
+
+  <section class="research-map-stage">
+    <div class="research-map-head">
+      <div>
+        <h1>R0005 · 7 站 18 设备 · 二维研究视图</h1>
+        <p id="mapSubtitle">等待 run manifest</p>
+      </div>
+      <div class="research-map-actions">
+        <button id="fitMap" class="research-btn secondary">缩放至全域</button>
+      </div>
+    </div>
+    <div class="research-map-wrap" id="researchMapWrap">
+      <canvas id="researchCanvas" aria-label="R0005 研究二维地图"></canvas>
+      <div class="research-map-tooltip" id="mapTooltip" hidden></div>
+      <div class="research-map-inspect" id="mapInspect" hidden></div>
+      <div class="research-map-layers" id="layerToggles">
+        <div class="layer-title">分层显示</div>
+        <label><input type="checkbox" data-layer="C" checked><i style="background:#0f8a78"></i>C 通信</label>
+        <label><input type="checkbox" data-layer="RID" checked><i style="background:#2f9e6f"></i>RID 合作</label>
+        <label><input type="checkbox" data-layer="Radar" checked><i style="background:#c62828"></i>Radar 未计算</label>
+        <label><input type="checkbox" data-layer="S" checked><i style="background:#69737c"></i>S 未知</label>
+        <label><input type="checkbox" data-layer="N" checked><i style="background:#7256a1"></i>N 动作</label>
+        <hr>
+        <label><input type="checkbox" data-layer="route" checked><i style="background:#123a5c"></i>R0005 航路</label>
+      </div>
+      <div class="research-map-legend">
+        <span><i class="dot route"></i>航路</span>
+        <span><i class="dot host"></i>既有宿主</span>
+        <span><i class="dot planned"></i>规划新建</span>
+        <span><i class="dot n"></i><span id="nActionLegend">4 个 N 动作</span></span>
+        <span><i class="dot unknown"></i>unknown / not_calculated 永不为满足</span>
+      </div>
+      <div class="research-map-kpis" id="mapKpis">
+        <div><b>—</b><span>站</span></div>
+        <div><b>—</b><span>设备</span></div>
+        <div><b>—</b><span>N 动作</span></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="research-panel research-right">
+    <section class="research-card">
+      <div class="research-card-head"><h2>身份一致性</h2><span class="research-pill" id="identityState">待加载</span></div>
+      <div class="research-kv"><span>run_id</span><code id="identityRunId">—</code></div>
+      <div class="research-kv"><span>input_version</span><code id="identityInputVersion">—</code></div>
+      <div class="research-kv"><span>contract_version</span><code id="identityContract">—</code></div>
+      <div class="research-kv"><span>结果清单 SHA</span><code id="identityResultSha">—</code></div>
+      <div class="research-kv"><span>参数指纹</span><code id="identityParameterSha">—</code></div>
+      <div class="research-identity-note" id="identityNote">地图、阶段与报告必须消费同一 manifest。</div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>P14–P18</h2><span class="research-pill bad" id="confirmationBadge">禁止 Confirm / Apply</span></div>
+      <div class="research-stages" id="stageCards"></div>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>阶段结果</h2><span class="research-pill" id="stageDetailLabel">选择阶段</span></div>
+      <div class="research-stage-tabs" id="stageTabs"></div>
+      <pre class="research-json" id="stageDetail">点击阶段查看权威结果摘要；界面不会重新计算覆盖。</pre>
+    </section>
+
+    <section class="research-card">
+      <div class="research-card-head"><h2>研究报告</h2><span class="research-pill" id="reportState">未生成</span></div>
+      <p class="research-note">报告由 API 从同一 run manifest 生成，包含研究输入、2 km 合同、NM3 基线、P16/P17/P18 规划投影、覆盖/缺口、P14–P18、Radar 四段（适用依据—缺失输入—受影响结论—后续验证条件）、成本 unknown、实际交付未证明及结果 SHA。</p>
+      <div class="research-report-actions">
+        <button id="downloadReport" class="research-btn primary" disabled>导出 HTML 报告</button>
+        <button id="downloadMarkdown" class="research-btn secondary" disabled>导出 Markdown</button>
+      </div>
+      <div class="research-report-sha"><span>报告 SHA</span><code id="reportSha">—</code></div>
+      <pre class="research-report-preview" id="reportPreview">加载运行后生成预览…</pre>
+    </section>
+  </aside>
+</main>
+
+<footer class="research-footer">
+  <span id="footerState">研究运行时只读 · 正式 ProjectState / Git / 原始数据均未写入</span>
+  <span id="footerIdentity">—</span>
+</footer>
+<div class="research-toast" id="toast" hidden></div>
+
+<script type="module" src="/js/research_app.js"></script>
+</body>
+</html>
