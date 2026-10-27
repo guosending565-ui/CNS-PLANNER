@@ -77,7 +77,8 @@ CNS_SERVICE_COLORS = {
 CNS_COVERAGE_POLICY = {
     "C:communication": {
         "omnidirectional": True,
-        "radius_by_surface_m": {"land": 4000.0, "coastal_uncertain": 4000.0, "sea": 4000.0},
+        #: 2026-10-27 负责人裁定：4 km 通信半径无效，统一 2 km（制图口径同步）。
+        "radius_by_surface_m": {"land": 2000.0, "coastal_uncertain": 2000.0, "sea": 2000.0},
         "radius_basis": "geometric_planning_radius",
         "radius_semantics": "planning_service_radius_not_measured_radio_propagation",
         "redundancy_by_surface": {"land": 2, "coastal_uncertain": 2, "sea": 1},
@@ -181,9 +182,9 @@ LAYER_DISPLAY_NAMES = {
     "cns_comm_proposal": "通信规划提案（未确认）",
     "cns_rid_proposal": "RID 规划提案（未确认）",
     "cns_nav_proposal": "导航完整性监测点提案（未确认）",
-    "cns_coverage_comm": "通信规划服务半径 4 km",
+    "cns_coverage_comm": "通信规划服务半径 2 km",
     "cns_coverage_rid_land": "RID 陆地/沿海规划范围 2 km",
-    "cns_coverage_rid_sea": "RID 海上延伸规划范围 2–5 km",
+    "cns_coverage_rid_sea": "RID 海上规划范围 5 km",
     "cns_radar_context": "Radar 评估候选站址（未选中）",
     #: Round31-C：正式分级规划下 Stage B 会给出 I 型 + II 型混合方案，
     #: 图例必须让两类型号都可辨识（Ⅰ型蓝 / Ⅱ型紫），不得只暗示 "Radar-I"。
@@ -273,7 +274,7 @@ CNS_SHARED_PARAMETERS = {
     # 工程审计条（地图 CRS / 经纬网 CRS / revision / 未显示图层）**默认关闭**：
     # 正式图只保留业务披露，审计信息仍完整保存在 FigureSpec.metadata 与导出报告里。
     "audit_footer": False,
-    # 覆盖圈全部位于航路 10 km 邻域内（通信 4 km / RID 5 km，站址距航路 ≤ 2 km），
+    # 覆盖圈全部位于航路 10 km 邻域内（通信 2 km / RID 5 km，站址距航路 ≤ 2 km），
     # 因此 10 km 缓冲足够容纳覆盖圈；该参数只是把这条判断写进 FigureSpec 供审计。
     "coverage_display_margin_km": 7.0,
     "show_synthetic_existing_facilities": False,

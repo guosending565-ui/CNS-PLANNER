@@ -381,7 +381,10 @@ def test_communication_consumes_only_communication_actions(tmp_path):
         assert key not in ("cns_rid_proposal", "cns_nav_proposal", "cns_radar_limitation")
 
 
-def test_communication_draws_the_4km_planning_radius(tmp_path):
+def test_communication_draws_the_device_input_radius(tmp_path):
+    #: 图件按**设备输入半径**绘制；本 fixture 是历史 4 km 设备（COMM-BASELINE-4KM），
+    #: 用于证明制图忠实输入、不越权改写业务半径。合同口径 2 km 由 D-017 管理，
+    #: 历史设备数据迁移见 docs/21 §11 B10。
     service, _, _ = _service(tmp_path)
     spec = service.build_figure(template_id="communication_layout_v1", route_id="R0005")
     assert _circle_radii(spec) == {"cns_coverage_comm": 4000.0}
@@ -389,7 +392,7 @@ def test_communication_draws_the_4km_planning_radius(tmp_path):
     assert layer.feature_count == 3
     detail = layer.source_detail
     assert detail["is_measured_propagation_contour"] is False
-    assert detail["radius_semantics"] == "communication_omnidirectional_planning_service_radius_4km"
+    assert detail["radius_semantics"] == "communication_omnidirectional_planning_service_radius"
 
 
 def test_communication_reports_proposal_not_confirmed(tmp_path):

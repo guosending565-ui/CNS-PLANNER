@@ -2626,7 +2626,7 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
             "disclosure_id": "communication_radius_disclosure",
             "title": "通信规划服务半径",
             "lines": [
-                "绿色圆圈为 omnidirectional 规划服务半径 4 km（陆 / 海 / 沿海一致）。",
+                "绿色圆圈为 omnidirectional 规划服务半径 2 km（陆 / 海 / 沿海一致）。",
                 "它是 planning service radius，不是实测无线传播等值线。",
                 "设施为 P16 规划提案（未确认），未通过 Step6 正式确认。",
             ],
@@ -2637,9 +2637,9 @@ def _cns_disclosures(template_id, assembly, services, parameters, radar):
             "disclosure_id": "rid_radius_disclosure",
             "title": "RID surface-aware 规划范围",
             "lines": [
-                "RID footprint = 2 km 全向基础区 +（2–5 km 环带 ∩ confirmed sea）。",
+                "RID 输入半径 = 陆地/沿海 2 km，海上 5 km（surface-aware；海上延伸需 confirmed sea）。",
                 "陆地 / 沿海不确定 / unknown 最大 2 km；仅 confirmed sea 延伸至 5 km。",
-                "RID 是合作监视（omnidirectional），不是 Radar，图上没有任何扇区 / panel。",
+                "覆盖圈只是设备输入半径投影，不是保障结果；RID 是合作监视（omnidirectional），不是 Radar。",
                 "设施为 P16 规划提案（未确认）。",
             ],
         })
@@ -2809,9 +2809,9 @@ def materialize_cns(ctx):
         ) if comm_records else None
         if comm_records and radius:
             layers.append(_cns_coverage_layer(
-                ctx, "cns_coverage_comm", "通信规划服务半径 4 km", comm_records, radius,
+                ctx, "cns_coverage_comm", "通信规划服务半径 2 km", comm_records, radius,
                 assembly, service_key=SERVICE_COMMUNICATION, metric_crs=metric_crs,
-                semantics="communication_omnidirectional_planning_service_radius_4km",
+                semantics="communication_omnidirectional_planning_service_radius",
             ))
     rid_footprint_metadata = {}
     if SERVICE_RID in services:
